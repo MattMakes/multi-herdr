@@ -38,4 +38,6 @@ if [ ! -x "$PY" ]; then
 fi
 
 export PYTHONPATH="$ENGINE${PYTHONPATH:+:$PYTHONPATH}"
+# The engine beside this script wins: python -m must not put the current folder first (Python 3.11+).
+export PYTHONSAFEPATH=1
 exec "$PY" -m hark "$@"

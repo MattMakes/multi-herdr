@@ -485,9 +485,18 @@ fn nfr_02_a_quiet_tick_writes_nothing() {
 /// when nothing changed. When only time moves, a rollup window start moves
 /// too: the events that leave the window leave its rollup, and the file is
 /// rewritten with them gone.
+///
+/// Oracle, counted by hand from `fixtures/telemetry/EXPECTED.md` (token
+/// total = in + cw5m + cw1h + c.read + out):
+/// - rec-o1 (17:00-17:10): 177 + 1900 + 2000 + 156000 + 695 = 160772.
+/// - rec-a2 (17:25-17:26): 100 + 0 + 2502 + 184363 + 1710 = 188675.
+/// - prime p1 (13:00): 50 + 200 + 1000 + 40 = 1290; p2 (13:01): 20 + 0 + 1200 + 30 = 1250.
+/// - pi (12:53-12:55) and opencode (12:53) are older than both windows.
+///
+/// At 18:00 the 5h window starts at 13:00 and holds all 4 groups: 351987.
+/// At 19:00 it starts at 14:00 and the prime events leave: 349447.
 #[test]
 fn nfr_02_a_moving_window_drops_old_events_without_new_input() {
-    use horch_core::telemetry::collect::{self, done_record_ids, read_ledgers};
     let w = world(Part::Whole);
     let mut c = Collector::open_at(&w.state, w.loc.clone(), Probing::Never, now()).unwrap();
     let first = c.tick(now()).unwrap();
@@ -497,13 +506,6 @@ fn nfr_02_a_moving_window_drops_old_events_without_new_input() {
     assert_eq!(c.timing.written("events"), 0, "no new input");
     assert_eq!(events(&w).len(), stored);
 
-    let done = done_record_ids(&read_ledgers(&w.state));
-    let since = collect::window_start("5h", later);
-    let want = store::rollup(&events(&w), since.as_deref(), &done);
-    assert_ne!(first.rollups["5h"], want, "an event leaves the 5h window");
-    assert_eq!(moved.rollups["5h"], want);
-    let on_disk = Snapshot::read(&collect::snapshot_path(&w.state)).unwrap();
-    assert_eq!(on_disk.generated_at, clock::stamp(later), "rewritten");
     let total = |s: &Snapshot| -> u64 {
         s.rollups["5h"]
             .by_kind
@@ -511,8 +513,11 @@ fn nfr_02_a_moving_window_drops_old_events_without_new_input() {
             .map(|r| r.tokens.total())
             .sum()
     };
+    assert_eq!(total(&first), 160_772 + 188_675 + 1_290 + 1_250);
+    assert_eq!(total(&moved), 160_772 + 188_675, "the prime events leave");
+    let on_disk = Snapshot::read(&collect::snapshot_path(&w.state)).unwrap();
+    assert_eq!(on_disk.generated_at, clock::stamp(later), "rewritten");
     assert_eq!(total(&on_disk), total(&moved));
-    assert!(total(&moved) < total(&first));
 }
 
 /// A Claude session copied from the A2 fixture, with its own ledger.

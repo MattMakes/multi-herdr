@@ -77,15 +77,22 @@ Format:
 ```
 
 `step_sec` is the time between samples (default `0.1`). The scale of a sample
-is the larger of the 2 axis ratios `drawn / natural`. Per `src`:
+is the larger of the 2 axis ratios `drawn / natural`. A canvas `drawImage` of a
+`<video>` is a sample too (`"source": "video"`, natural = `videoWidth` x
+`videoHeight`). Pixel art passes: a sample with `"sampling": "nearest"` at the
+same whole-number scale on both axes (`3x`, within `0.02`) is not an upscale.
+`1.2x` stays the limit for smoothed scaling. Per `src`:
 
 - fail when 1 sample has a scale of `1.2` or more;
 - warn when consecutive samples above `1.12` last `0.5 s` or more
   (`count x step_sec`). A warning goes to `warnings` in the report and does
   not fail the gate.
 
-`--raster-sizes` overrides the path. When the file is absent the check reports
-`skipped` and passes. A file that does not parse, or a natural size of `0`,
+`--raster-sizes` overrides the path. When the file is absent, the check fails
+if a scene source draws a raster (`<img>`, `<video>`, `drawImage`, a `.png`,
+`.jpg`, `.webp` or `.mp4` path) or `captures/` holds a plate, and skips
+otherwise. A report with `0` samples fails: an empty report proves nothing.
+A file that does not parse, or a natural size of `0`,
 is a bad input (exit `2`). Owner of a fix: `video-capture` (capture at a larger
 size) or `video-animator` (draw it smaller).
 

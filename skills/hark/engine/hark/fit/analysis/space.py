@@ -30,36 +30,36 @@ OFF = -150.0
 
 def is_stereo(x: Any, tol_db: float = -60) -> bool:
     """True when x has 2 channels whose side is more than ``tol_db`` re the mid."""
-    a = np.asarray(x, dtype=float)
-    if a.ndim != 2 or a.shape[1] < 2:
+    av = np.asarray(x, dtype=float)
+    if av.ndim != 2 or av.shape[1] < 2:
         return False
-    m = (a[:, 0] + a[:, 1]) / 2
-    s = (a[:, 0] - a[:, 1]) / 2
-    em, es = float(np.sum(m ** 2)), float(np.sum(s ** 2))
-    if es <= 0:
+    mv = (av[:, 0] + av[:, 1]) / 2
+    sv = (av[:, 0] - av[:, 1]) / 2
+    emv, esv = float(np.sum(mv ** 2)), float(np.sum(sv ** 2))
+    if esv <= 0:
         return False
-    return bool(em <= 0 or 10 * np.log10(es / em) > tol_db)
+    return bool(emv <= 0 or 10 * np.log10(esv / emv) > tol_db)
 
 
-def _frames(m: np.ndarray, nfft: int, hop: int) -> np.ndarray:
-    k = len(m) // hop + 1
-    buf = np.zeros((k - 1) * hop + nfft)
-    buf[nfft // 2:nfft // 2 + len(m)] = m[:len(buf) - nfft // 2]
-    win = np.hanning(nfft + 2)[1:-1]
-    idx = np.arange(k)[:, None] * hop + np.arange(nfft)[None, :]
-    return np.fft.rfft(buf[idx] * win, axis=1)
+def _frame_grid(mv: np.ndarray, fft_n: int, step_n: int) -> np.ndarray:
+    ix = len(mv) // step_n + 1
+    bufv = np.zeros((ix - 1) * step_n + fft_n)
+    bufv[fft_n // 2:fft_n // 2 + len(mv)] = mv[:len(bufv) - fft_n // 2]
+    winv = np.hanning(fft_n + 2)[1:-1]
+    sel_i = np.arange(ix)[:, None] * step_n + np.arange(fft_n)[None, :]
+    return np.fft.rfft(bufv[sel_i] * winv, axis=1)
 
 
 def side_powers(x: Any, centers=BANDS, nfft: int = 1024, hop: int = 240) -> dict:
     """Per band and frame: mid power PM, side power PS and Re(S conj(M)) as C."""
-    a = as_stereo(x)
-    fm = _frames((a[:, 0] + a[:, 1]) / 2, nfft, hop)
-    fs = _frames((a[:, 0] - a[:, 1]) / 2, nfft, hop)
-    w = tri_masks(centers, nfft).T
-    return {"t": np.arange(fm.shape[0]) * hop / SR,
-            "PM": (np.abs(fm) ** 2 @ w).T,
-            "PS": (np.abs(fs) ** 2 @ w).T,
-            "C": (np.real(fs * np.conj(fm)) @ w).T}
+    av = as_stereo(x)
+    fmv = _frame_grid((av[:, 0] + av[:, 1]) / 2, nfft, hop)
+    fsv = _frame_grid((av[:, 0] - av[:, 1]) / 2, nfft, hop)
+    wv = tri_masks(centers, nfft).T
+    return {"t": np.arange(fmv.shape[0]) * hop / SR,
+            "PM": (np.abs(fmv) ** 2 @ wv).T,
+            "PS": (np.abs(fsv) ** 2 @ wv).T,
+            "C": (np.real(fsv * np.conj(fmv)) @ wv).T}
 
 
 def diffuse_power(P: dict) -> np.ndarray:
@@ -68,205 +68,205 @@ def diffuse_power(P: dict) -> np.ndarray:
 
 def band_powers(m: np.ndarray, centers=BANDS, nfft: int = 1024, hop: int = 240) -> np.ndarray:
     """Per band x frame power of a mono signal."""
-    f = _frames(np.asarray(m, dtype=float), nfft, hop)
+    f = _frame_grid(np.asarray(m, dtype=float), nfft, hop)
     return (np.abs(f) ** 2 @ tri_masks(centers, nfft).T).T
 
 
-def _env_1ms(m: np.ndarray) -> np.ndarray:
-    n = len(m)
-    c = np.concatenate([[0.0], np.cumsum(m ** 2)])
-    centres = np.arange(0, n, 48)
-    lo = np.clip(centres - 120, 0, n)
-    hi = np.clip(centres + 120, 0, n)
-    return (c[hi] - c[lo]) / np.maximum(hi - lo, 1)
+def _env_per_ms(mv: np.ndarray) -> np.ndarray:
+    cnt = len(mv)
+    cv = np.concatenate([[0.0], np.cumsum(mv ** 2)])
+    cen_l = np.arange(0, cnt, 48)
+    low_i = np.clip(cen_l - 120, 0, cnt)
+    high_i = np.clip(cen_l + 120, 0, cnt)
+    return (cv[high_i] - cv[low_i]) / np.maximum(high_i - low_i, 1)
 
 
 def active_span(x: Any) -> tuple[int, int, int]:
     """(onset, peak, end) sample indices of the active part."""
-    a = np.asarray(x, dtype=float)
-    m = a.mean(axis=1) if a.ndim == 2 else a
-    n = len(m)
-    env = _env_1ms(m)
-    if len(env) < 3:
-        return 0, 0, n
-    env = uniform_filter1d(env, 10, mode="nearest")
-    ip = int(np.argmax(env))
-    pk = float(env[ip])
-    if pk <= 0:
-        return 0, 0, n
-    thr = _active_threshold(env, pk)
-    onset = int(np.argmax(env >= pk * 1e-3))
-    above = np.nonzero(db(env) >= db(pk) + thr)[0]
-    last = int(above[-1]) if len(above) else ip
-    return onset * 48, ip * 48, min(n, last * 48 + 48)
+    av = np.asarray(x, dtype=float)
+    mv = av.mean(axis=1) if av.ndim == 2 else av
+    cnt = len(mv)
+    envl = _env_per_ms(mv)
+    if len(envl) < 3:
+        return 0, 0, cnt
+    envl = uniform_filter1d(envl, 10, mode="nearest")
+    ipv = int(np.argmax(envl))
+    pkv = float(envl[ipv])
+    if pkv <= 0:
+        return 0, 0, cnt
+    thrv = _on_threshold(envl, pkv)
+    ons = int(np.argmax(envl >= pkv * 1e-3))
+    over = np.nonzero(db(envl) >= db(pkv) + thrv)[0]
+    last_i = int(over[-1]) if len(over) else ipv
+    return ons * 48, ipv * 48, min(cnt, last_i * 48 + 48)
 
 
-def _active_threshold(env: np.ndarray, pk: float) -> float:
-    if len(env) < 80:
+def _on_threshold(envl: np.ndarray, pkv: float) -> float:
+    if len(envl) < 80:
         return -40.0
-    d = db(env)
-    fl = min(float(np.median(d[5:50])), float(np.median(d[-25:-12])))
-    return float(np.clip(fl + 3 - float(db(pk)), -45.0, -12.0))
+    dv = db(envl)
+    flv = min(float(np.median(dv[5:50])), float(np.median(dv[-25:-12])))
+    return float(np.clip(flv + 3 - float(db(pkv)), -45.0, -12.0))
 
 
 def tail_span(x: Any, start_s: float = 0.03, min_s: float = 0.02) -> tuple[int, int] | None:
-    _, peak, end = active_span(x)
-    first = peak + int(round(start_s * SR))
-    if end - first < min_s * SR:
+    _, pkv2, stop_i = active_span(x)
+    first_i = pkv2 + int(round(start_s * SR))
+    if stop_i - first_i < min_s * SR:
         return None
-    return first, end
+    return first_i, stop_i
 
 
 def corr(L: np.ndarray, R: np.ndarray) -> float | None:
-    el, er = float(np.sum(L * L)), float(np.sum(R * R))
-    if el < 1e-20 or er < 1e-20:
+    elv, erv = float(np.sum(L * L)), float(np.sum(R * R))
+    if elv < 1e-20 or erv < 1e-20:
         return None
-    return float(np.sum(L * R) / np.sqrt(el * er))
+    return float(np.sum(L * R) / np.sqrt(elv * erv))
 
 
 def tail_corr(x: Any, span: tuple[int, int] | None = None) -> float | None:
-    a = as_stereo(x)
-    span = span or tail_span(a)
+    av = as_stereo(x)
+    span = span or tail_span(av)
     if span is None:
         return None
-    return corr(a[span[0]:span[1], 0], a[span[0]:span[1], 1])
+    return corr(av[span[0]:span[1], 0], av[span[0]:span[1], 1])
 
 
 def needs_space(x: Any, max_corr: float = 0.7) -> bool:
-    a = np.asarray(x, dtype=float)
-    if not is_stereo(a):
+    av = np.asarray(x, dtype=float)
+    if not is_stereo(av):
         return False
-    tc = tail_corr(a)
-    return tc is not None and tc <= max_corr
+    tcorr = tail_corr(av)
+    return tcorr is not None and tcorr <= max_corr
 
 
 # ---------------------------------------------------------------- layer
 
-def _on(model: dict, part: str) -> np.ndarray:
-    return np.asarray(model.get(f"{part}_db", [OFF] * len(model["bands"])), dtype=float) > -140
+def _is_on(model: dict, piece: str) -> np.ndarray:
+    return np.asarray(model.get(f"{piece}_db", [OFF] * len(model["bands"])), dtype=float) > -140
 
 
 def impulse(model: dict, part: str = "side", seed: int = 0, flat_iters: int = 4) -> np.ndarray:
     """The impulse response of one part (unit-energy bands at their gains)."""
-    gains = np.asarray(model[f"{part}_db"], dtype=float)
-    on = gains > -140
-    out = np.zeros(1)
-    if np.any(on):
-        out = _impulse_bands(model, part, seed, flat_iters, gains, on)
-    return out
+    gain_l = np.asarray(model[f"{part}_db"], dtype=float)
+    start_i = gain_l > -140
+    res = np.zeros(1)
+    if np.any(start_i):
+        res = _bands_of_impulse(model, part, seed, flat_iters, gain_l, start_i)
+    return res
 
 
-def _impulse_bands(model, part, seed, flat_iters, gains, on) -> np.ndarray:
-    rt = np.clip(np.asarray(model["rt60"], dtype=float), 0.02, 3.0)
-    t, rise = _rise(model, float(rt[on].max()))
-    length = len(t)
-    r = np.random.default_rng((int(seed) * 7919 + SALT[part]) & 0xFFFFFFFF)
-    nfft = next_fast_len(2 * length)
-    spec = rfft(r.standard_normal(nfft))
-    masks = tri_masks(model["bands"], nfft)
-    out = np.zeros(length)
-    for b in np.nonzero(on)[0]:
-        env = rise * np.exp(-6.907755 * np.maximum(t, 0) / rt[b])
-        out += _unit_band(spec, masks[b], env, nfft, flat_iters) * 10.0 ** (gains[b] / 20.0)
-    return out
+def _bands_of_impulse(model, piece, seed, n_flat, gain_l, start_i) -> np.ndarray:
+    rtv = np.clip(np.asarray(model["rt60"], dtype=float), 0.02, 3.0)
+    tv, rise = _rise_curve(model, float(rtv[start_i].max()))
+    len_n = len(tv)
+    rv = np.random.default_rng((int(seed) * 7919 + SALT[piece]) & 0xFFFFFFFF)
+    fft_n = next_fast_len(2 * len_n)
+    specv = rfft(rv.standard_normal(fft_n))
+    mask_l = tri_masks(model["bands"], fft_n)
+    res = np.zeros(len_n)
+    for bv in np.nonzero(start_i)[0]:
+        envl = rise * np.exp(-6.907755 * np.maximum(tv, 0) / rtv[bv])
+        res += _band_unit(specv, mask_l[bv], envl, fft_n, n_flat) * 10.0 ** (gain_l[bv] / 20.0)
+    return res
 
 
-def _rise(model: dict, rt_max: float) -> tuple[np.ndarray, np.ndarray]:
+def _rise_curve(model: dict, max_rt: float) -> tuple[np.ndarray, np.ndarray]:
     """Times from the predelay and the build-up curve over the impulse length."""
-    build = max(float(model.get("build", 1e-4)), 1e-4)
-    pre = float(model.get("predelay", 0.002))
-    length = int((pre + build + min(3.0, rt_max)) * SR) + 1
-    t = np.arange(length) / SR - pre
-    return t, np.where(t >= 0, 1.0 - np.exp(-np.maximum(t, 0) / build), 0.0)
+    bld = max(float(model.get("build", 1e-4)), 1e-4)
+    prev = float(model.get("predelay", 0.002))
+    len_n = int((prev + bld + min(3.0, max_rt)) * SR) + 1
+    tv = np.arange(len_n) / SR - prev
+    return tv, np.where(tv >= 0, 1.0 - np.exp(-np.maximum(tv, 0) / bld), 0.0)
 
 
-def _unit_band(spec, mask, env, nfft, flat_iters) -> np.ndarray:
-    h = irfft(spec * mask, nfft)[:len(env)] * env
-    h = _flatten(h, mask, env, nfft, flat_iters)
-    e = np.sqrt(np.sum(h ** 2))
-    return h / e if e > 0 else np.zeros(len(h))
+def _band_unit(specv, msk, envl, fft_n, n_flat) -> np.ndarray:
+    hv = irfft(specv * msk, fft_n)[:len(envl)] * envl
+    hv = _flat_spec(hv, msk, envl, fft_n, n_flat)
+    ev = np.sqrt(np.sum(hv ** 2))
+    return hv / ev if ev > 0 else np.zeros(len(hv))
 
 
-def _flatten(h: np.ndarray, mask: np.ndarray, env: np.ndarray, nfft: int, iters: int) -> np.ndarray:
-    for _ in range(iters):
-        sp = rfft(h, nfft)
-        sp = mask * np.exp(1j * np.angle(sp))
-        h = irfft(sp, nfft)[:len(h)] * env
-    return h
+def _flat_spec(hv: np.ndarray, msk: np.ndarray, envl: np.ndarray, fft_n: int, n_iter: int) -> np.ndarray:
+    for _ in range(n_iter):
+        spv = rfft(hv, fft_n)
+        spv = msk * np.exp(1j * np.angle(spv))
+        hv = irfft(spv, fft_n)[:len(hv)] * envl
+    return hv
 
 
 def wet(model: dict, dry: np.ndarray, seed: int = 0, n: int | None = None,
         part: str = "side") -> np.ndarray:
     """One part of the wet layer: the dry's channel mean convolved with its impulse."""
     from scipy.signal import fftconvolve
-    d = np.asarray(dry, dtype=float)
-    m = d.mean(axis=1) if d.ndim == 2 else d
-    n = len(m) if n is None else int(n)
-    h = impulse(model, part, seed)
-    if not np.any(h) or len(m) == 0:
+    dv = np.asarray(dry, dtype=float)
+    mv = dv.mean(axis=1) if dv.ndim == 2 else dv
+    n = len(mv) if n is None else int(n)
+    hv = impulse(model, part, seed)
+    if not np.any(hv) or len(mv) == 0:
         return np.zeros(n)
-    y = fftconvolve(m, h)
-    return np.pad(y, (0, max(0, n - len(y))))[:n]
+    yv = fftconvolve(mv, hv)
+    return np.pad(yv, (0, max(0, n - len(yv))))[:n]
 
 
 def tail_s(model: dict) -> float:
-    on = _on(model, "side") | _on(model, "mid")
-    if not np.any(on):
+    start_i = _is_on(model, "side") | _is_on(model, "mid")
+    if not np.any(start_i):
         return 0.0
-    rt = np.clip(np.asarray(model["rt60"], dtype=float), 0.02, 3.0)
+    rtv = np.clip(np.asarray(model["rt60"], dtype=float), 0.02, 3.0)
     return float(model.get("predelay", 0.002) + max(model.get("build", 1e-4), 1e-4)
-                 + min(3.0, float(rt[on].max())))
+                 + min(3.0, float(rtv[start_i].max())))
 
 
-def _band_split(x: np.ndarray, nfft: int, masks: np.ndarray) -> np.ndarray:
-    sp = rfft(x, nfft)
-    return np.array([irfft(sp * m, nfft)[:len(x)] for m in masks])
+def _split_bands(x: np.ndarray, fft_n: int, mask_l: np.ndarray) -> np.ndarray:
+    spv = rfft(x, fft_n)
+    return np.array([irfft(spv * mv, fft_n)[:len(x)] for mv in mask_l])
 
 
-def _orthogonal(ws: np.ndarray, refs: list[np.ndarray], bands) -> np.ndarray:
-    n = len(ws)
-    nfft = next_fast_len(n + 8192)
-    masks = tri_masks(bands, nfft)
-    wb = _band_split(ws, nfft, masks)
-    rb = [_band_split(r, nfft, masks) for r in refs]
-    for b in range(len(masks)):
-        basis: list[np.ndarray] = []
-        for r in rb:
-            v = r[b].copy()
-            for u in basis:
-                v -= np.dot(v, u) * u
-            nv = np.linalg.norm(v)
-            if nv >= 1e-12:
-                basis.append(v / nv)
-        for u in basis:
-            wb[b] -= np.dot(wb[b], u) * u
-    return wb.sum(axis=0)
+def _ortho(wsv: np.ndarray, ref_l: list[np.ndarray], band_l) -> np.ndarray:
+    cnt = len(wsv)
+    fft_n = next_fast_len(cnt + 8192)
+    mask_l = tri_masks(band_l, fft_n)
+    wbv = _split_bands(wsv, fft_n, mask_l)
+    rbv = [_split_bands(rv, fft_n, mask_l) for rv in ref_l]
+    for bv in range(len(mask_l)):
+        base_m: list[np.ndarray] = []
+        for rv in rbv:
+            vv = rv[bv].copy()
+            for uv in base_m:
+                vv -= np.dot(vv, uv) * uv
+            nvv = np.linalg.norm(vv)
+            if nvv >= 1e-12:
+                base_m.append(vv / nvv)
+        for uv in base_m:
+            wbv[bv] -= np.dot(wbv[bv], uv) * uv
+    return wbv.sum(axis=0)
 
 
 def render_space(model: dict | None, dry: np.ndarray, seed: int = 0, width: float = 1,
                  ring: bool = False, limit: bool = True) -> np.ndarray:
     """Dry plus wet as (n, 2). A null model returns the dry with no finish."""
-    y = as_stereo(dry)
-    if model and len(y):
-        y = _with_space(model, y, seed, width, ring, limit)
-    return y
+    yv = as_stereo(dry)
+    if model and len(yv):
+        yv = _add_space(model, yv, seed, width, ring, limit)
+    return yv
 
 
-def _with_space(model: dict, y: np.ndarray, seed: int, width: float, ring: bool, limit: bool) -> np.ndarray:
-    if ring:
-        y = np.vstack([y, np.zeros((int(tail_s(model) * SR) + 1, 2))])
-    n = len(y)
-    wm = _part_wet(model, y, seed, n, "mid")
-    ws = _part_wet(model, y, seed, n, "side")
-    if np.any(ws):
-        refs = [(y[:, 0] - y[:, 1]) / 2, (y[:, 0] + y[:, 1]) / 2 + wm]
-        ws = _orthogonal(ws, refs, model["bands"]) * width
-    y = y + np.column_stack([wm + ws, wm - ws])
-    return finish(y, SR, 0.0, -1.0, limit)
+def _add_space(model: dict, yv: np.ndarray, seed: int, width: float, ringv: bool, lim: bool) -> np.ndarray:
+    if ringv:
+        yv = np.vstack([yv, np.zeros((int(tail_s(model) * SR) + 1, 2))])
+    cnt = len(yv)
+    wmv = _wet_part(model, yv, seed, cnt, "mid")
+    wsv = _wet_part(model, yv, seed, cnt, "side")
+    if np.any(wsv):
+        ref_l = [(yv[:, 0] - yv[:, 1]) / 2, (yv[:, 0] + yv[:, 1]) / 2 + wmv]
+        wsv = _ortho(wsv, ref_l, model["bands"]) * width
+    yv = yv + np.column_stack([wmv + wsv, wmv - wsv])
+    return finish(yv, SR, 0.0, -1.0, lim)
 
 
-def _part_wet(model: dict, y: np.ndarray, seed: int, n: int, part: str) -> np.ndarray:
-    return wet(model, y, seed, n, part) if np.any(_on(model, part)) else np.zeros(n)
+def _wet_part(model: dict, yv: np.ndarray, seed: int, cnt: int, piece: str) -> np.ndarray:
+    return wet(model, yv, seed, cnt, piece) if np.any(_is_on(model, piece)) else np.zeros(cnt)
 
 
 # ---------------------------------------------------------------- fit
@@ -274,220 +274,220 @@ def _part_wet(model: dict, y: np.ndarray, seed: int, n: int, part: str) -> np.nd
 def fit_space(x: Any, sr: int = 48000, dry: np.ndarray | None = None, max_corr: float = 0.7,
               iters: int = 3, need_db: float = -15, mid_need_db: float = -10) -> dict | None:
     """A space model for a stereo recording with a decorrelated tail, or None."""
-    a = as_stereo(x) if isinstance(x, str) else as_stereo(resample(np.asarray(x, float), sr))
-    st = _space_start(a, dry, max_corr, mid_need_db)
-    out = None
-    if st is not None and st[3]["rel"] >= need_db:
-        out = _space_finish(a, *st, iters, need_db, mid_need_db)
-    return out
+    av = as_stereo(x) if isinstance(x, str) else as_stereo(resample(np.asarray(x, float), sr))
+    stv = _begin_space(av, dry, max_corr, mid_need_db)
+    res = None
+    if stv is not None and stv[3]["rel"] >= need_db:
+        res = _end_space(av, *stv, iters, need_db, mid_need_db)
+    return res
 
 
-def _space_start(a: np.ndarray, dry, max_corr: float, mid_need_db: float):
+def _begin_space(av: np.ndarray, dry, max_corr: float, mid_want_db: float):
     """(span, tail corr, context, need) when a has a decorrelated tail to model, else None."""
-    span = tail_span(a) if is_stereo(a) else None
-    tc = tail_corr(a, span) if span else None
-    if tc is None or tc > max_corr:
+    spn = tail_span(av) if is_stereo(av) else None
+    tcorr = tail_corr(av, spn) if spn else None
+    if tcorr is None or tcorr > max_corr:
         return None
-    ctx = _tail_context(a, span)
-    need = None if ctx is None else _needs(ctx, a, dry, span, tc, mid_need_db)
-    return None if need is None else (span, tc, ctx, need)
+    state = _tail_state(av, spn)
+    want = None if state is None else _need_calc(state, av, dry, spn, tcorr, mid_want_db)
+    return None if want is None else (spn, tcorr, state, want)
 
 
-def _space_finish(a, span, tc, ctx, need, iters, need_db, mid_need_db) -> dict | None:
-    model = _start_model(ctx, need, span, tc)
-    src = need["dry"] if need["dry"] is not None else a
-    for _ in range(iters):
-        _iterate(model, src, ctx, need)
-    _mid_check(model, a, src)
-    return _level_side(model, a, src, span, tc, need, iters, need_db, mid_need_db)
+def _end_space(av, spn, tcorr, state, want, n_iter, want_db, mid_want_db) -> dict | None:
+    model = _seed_model(state, want, spn, tcorr)
+    srcv = want["dry"] if want["dry"] is not None else av
+    for _ in range(n_iter):
+        _refine_loop(model, srcv, state, want)
+    _check_mid(model, av, srcv)
+    return _side_level(model, av, srcv, spn, tcorr, want, n_iter, want_db, mid_want_db)
 
 
-def _tail_context(a: np.ndarray, span: tuple[int, int]) -> dict | None:
-    P = side_powers(a)
-    frames = (P["t"] * SR >= span[0]) & (P["t"] * SR < span[1])
-    if np.count_nonzero(frames) < 3:
+def _tail_state(av: np.ndarray, spn: tuple[int, int]) -> dict | None:
+    pmat = side_powers(av)
+    frm = (pmat["t"] * SR >= spn[0]) & (pmat["t"] * SR < spn[1])
+    if np.count_nonzero(frm) < 3:
         return None
-    dif = uniform_filter1d(diffuse_power(P), 5, axis=1, mode="nearest")
-    mid = uniform_filter1d(P["PM"], 5, axis=1, mode="nearest")
-    return {"P": P, "frames": frames, "dif": dif, "mid": mid,
-            "E_dif": dif[:, frames].sum(axis=1), "E_mid": mid[:, frames].sum(axis=1)}
+    diffv = uniform_filter1d(diffuse_power(pmat), 5, axis=1, mode="nearest")
+    midv = uniform_filter1d(pmat["PM"], 5, axis=1, mode="nearest")
+    return {"P": pmat, "frames": frm, "dif": diffv, "mid": midv,
+            "E_dif": diffv[:, frm].sum(axis=1), "E_mid": midv[:, frm].sum(axis=1)}
 
 
-def _needs(ctx: dict, a, dry, span, tc, mid_need_db) -> dict | None:
-    parts = (ctx["E_dif"].copy(), np.zeros(len(BANDS)), 1.0, None)
+def _need_calc(state: dict, av, dry, spn, tcorr, mid_want_db) -> dict | None:
+    pieces = (state["E_dif"].copy(), np.zeros(len(BANDS)), 1.0, None)
     if dry is not None:
-        parts = _dry_needs(ctx, a, dry, span, tc, mid_need_db)
-    return None if parts is None else _need_dict(ctx, *parts)
+        pieces = _needs_of_dry(state, av, dry, spn, tcorr, mid_want_db)
+    return None if pieces is None else _need_record(state, *pieces)
 
 
-def _dry_needs(ctx: dict, a, dry, span, tc, mid_need_db):
+def _needs_of_dry(state: dict, av, dry, spn, tcorr, mid_want_db):
     """(side need, mid need, dry tail corr, padded dry), or None when the dry is not drier."""
-    d2 = as_stereo(dry)
-    d2 = np.pad(d2, ((0, max(0, len(a) - len(d2))), (0, 0)))[:len(a)]
-    tc_dry = tail_corr(d2, span)
-    if tc_dry is None or tc_dry <= tc + 0.1:
+    dv2 = as_stereo(dry)
+    dv2 = np.pad(dv2, ((0, max(0, len(av) - len(dv2))), (0, 0)))[:len(av)]
+    tcorr_dry = tail_corr(dv2, spn)
+    if tcorr_dry is None or tcorr_dry <= tcorr + 0.1:
         return None
-    side_need, mid_need = ctx["E_dif"].copy(), np.zeros(len(BANDS))
-    dctx = _tail_context(d2, span)
-    if dctx is not None:
-        side_need = np.maximum(ctx["E_dif"] - dctx["E_dif"], 0.0)
-        short = np.maximum(ctx["E_mid"] - dctx["E_mid"], 0.0)
-        mid_need = np.where(short >= ctx["E_mid"] * 10 ** (mid_need_db / 10), short, 0.0)
-    return side_need, mid_need, tc_dry, d2
+    side_want, mid_want = state["E_dif"].copy(), np.zeros(len(BANDS))
+    dstate = _tail_state(dv2, spn)
+    if dstate is not None:
+        side_want = np.maximum(state["E_dif"] - dstate["E_dif"], 0.0)
+        shrt = np.maximum(state["E_mid"] - dstate["E_mid"], 0.0)
+        mid_want = np.where(shrt >= state["E_mid"] * 10 ** (mid_want_db / 10), shrt, 0.0)
+    return side_want, mid_want, tcorr_dry, dv2
 
 
-def _need_dict(ctx: dict, side_need, mid_need, tc_dry, d2) -> dict | None:
-    tot = float(side_need.sum())
-    if tot <= 0 or ctx["E_dif"].sum() <= 0:
+def _need_record(state: dict, side_want, mid_want, tcorr_dry, dv2) -> dict | None:
+    totv = float(side_want.sum())
+    if totv <= 0 or state["E_dif"].sum() <= 0:
         return None
-    rel = float(db(tot) - db(ctx["E_dif"].sum()))
-    return {"side": side_need, "mid": mid_need, "rel": rel, "tc_dry": tc_dry, "dry": d2}
+    relv = float(db(totv) - db(state["E_dif"].sum()))
+    return {"side": side_want, "mid": mid_want, "rel": relv, "tc_dry": tcorr_dry, "dry": dv2}
 
 
-def _decay_slope(curve_db: np.ndarray, t: np.ndarray) -> float | None:
-    sel = curve_db >= curve_db.max() - 30
-    if np.count_nonzero(sel) < 4:
+def _slope_of_decay(crv_db: np.ndarray, tv: np.ndarray) -> float | None:
+    pick = crv_db >= crv_db.max() - 30
+    if np.count_nonzero(pick) < 4:
         return None
-    slope = float(np.polyfit(t[sel], curve_db[sel], 1)[0])
-    return slope if slope < -1 else None
+    slp = float(np.polyfit(tv[pick], crv_db[pick], 1)[0])
+    return slp if slp < -1 else None
 
 
-def _start_model(ctx: dict, need: dict, span, tc) -> dict:
-    live = need["side"] > need["side"].max() * 1e-4
-    rt_max = float(np.clip(4 * (span[1] - span[0]) / SR, 0.1, 3.0))
-    rt = _band_rts(ctx, live, rt_max)
-    live_mid = need["mid"] > max(need["mid"].max(), 1e-300) * 1e-4
-    live_mid &= need["mid"] > 0
+def _seed_model(state: dict, want: dict, spn, tcorr) -> dict:
+    alive = want["side"] > want["side"].max() * 1e-4
+    max_rt = float(np.clip(4 * (spn[1] - spn[0]) / SR, 0.1, 3.0))
+    rtv = _rt_per_band(state, alive, max_rt)
+    alive_mid = want["mid"] > max(want["mid"].max(), 1e-300) * 1e-4
+    alive_mid &= want["mid"] > 0
     return {"kind": "space", "version": VERSION, "predelay": 0.002,
-            "build": _build_s(ctx), "bands": list(BANDS),
-            "rt60": [round(float(r), 4) for r in rt],
-            "side_db": _start_gains(live), "mid_db": _start_gains(live_mid),
-            "tail_corr": round(float(tc), 4), "_rt_max": rt_max,
-            "_live": {"side": live, "mid": live_mid}}
+            "build": _build_side(state), "bands": list(BANDS),
+            "rt60": [round(float(rv), 4) for rv in rtv],
+            "side_db": _seed_gains(alive), "mid_db": _seed_gains(alive_mid),
+            "tail_corr": round(float(tcorr), 4), "_rt_max": max_rt,
+            "_live": {"side": alive, "mid": alive_mid}}
 
 
-def _build_s(ctx: dict) -> float:
+def _build_side(state: dict) -> float:
     """Build-up time: the diffuse power peak after the mid power peak."""
-    tdif = ctx["P"]["t"][int(np.argmax(ctx["dif"].sum(axis=0)))]
-    tmid = ctx["P"]["t"][int(np.argmax(ctx["mid"].sum(axis=0)))]
-    return float(np.clip(tdif - tmid, 0.005, 0.08))
+    tdiff = state["P"]["t"][int(np.argmax(state["dif"].sum(axis=0)))]
+    tmidv = state["P"]["t"][int(np.argmax(state["mid"].sum(axis=0)))]
+    return float(np.clip(tdiff - tmidv, 0.005, 0.08))
 
 
-def _band_rts(ctx: dict, live: np.ndarray, rt_max: float) -> np.ndarray:
+def _rt_per_band(state: dict, alive: np.ndarray, max_rt: float) -> np.ndarray:
     """RT60 per band from the diffuse decay slope. Bands with no slope get the median."""
-    t = ctx["P"]["t"][ctx["frames"]]
-    rts = []
-    for b in range(len(BANDS)):
-        s = _decay_slope(db(ctx["dif"][b, ctx["frames"]]), t) if live[b] else None
-        rts.append(-60.0 / s if s else None)
-    known = [r for r in rts if r]
-    fill = float(np.median(known)) if known else 0.5
-    return np.clip([r if r else fill for r in rts], 0.05, rt_max)
+    tv = state["P"]["t"][state["frames"]]
+    rt_l = []
+    for bv in range(len(BANDS)):
+        sv = _slope_of_decay(db(state["dif"][bv, state["frames"]]), tv) if alive[bv] else None
+        rt_l.append(-60.0 / sv if sv else None)
+    knw = [rv for rv in rt_l if rv]
+    fillv = float(np.median(knw)) if knw else 0.5
+    return np.clip([rv if rv else fillv for rv in rt_l], 0.05, max_rt)
 
 
-def _start_gains(live: np.ndarray) -> list[float]:
-    return [0.0 if v else OFF for v in live]
+def _seed_gains(alive: np.ndarray) -> list[float]:
+    return [0.0 if vv else OFF for vv in alive]
 
 
-def _iterate(model: dict, src: np.ndarray, ctx: dict, need: dict) -> None:
-    t = ctx["P"]["t"][ctx["frames"]]
-    for part in ("side", "mid"):
-        live = model["_live"][part]
-        if not np.any(live):
+def _refine_loop(model: dict, srcv: np.ndarray, state: dict, want: dict) -> None:
+    tv = state["P"]["t"][state["frames"]]
+    for piece in ("side", "mid"):
+        alive = model["_live"][piece]
+        if not np.any(alive):
             continue
-        w = wet(model, src, 0, len(src), part)
-        bp = uniform_filter1d(band_powers(w), 5, axis=1, mode="nearest")
-        ew = bp[:, ctx["frames"]].sum(axis=1)
-        gains = np.asarray(model[f"{part}_db"], dtype=float)
-        ok = live & (ew > 0) & (need[part] > 0)
-        gains[ok] += 10 * np.log10(need[part][ok] / ew[ok])
-        if part == "side":
-            _rate_fix(model, bp[:, ctx["frames"]], ctx["dif"][:, ctx["frames"]], t, live)
-        model[f"{part}_db"] = [round(float(g), 2) for g in np.clip(gains, OFF, 40.0)]
+        wv = wet(model, srcv, 0, len(srcv), piece)
+        bpv = uniform_filter1d(band_powers(wv), 5, axis=1, mode="nearest")
+        ewv = bpv[:, state["frames"]].sum(axis=1)
+        gain_l = np.asarray(model[f"{piece}_db"], dtype=float)
+        good = alive & (ewv > 0) & (want[piece] > 0)
+        gain_l[good] += 10 * np.log10(want[piece][good] / ewv[good])
+        if piece == "side":
+            _fix_rate(model, bpv[:, state["frames"]], state["dif"][:, state["frames"]], tv, alive)
+        model[f"{piece}_db"] = [round(float(gv), 2) for gv in np.clip(gain_l, OFF, 40.0)]
 
 
-def _rate_fix(model, wet_p, need_p, t, live) -> None:
-    rt = np.asarray(model["rt60"], dtype=float)
-    for b in np.nonzero(live)[0]:
-        sw = _decay_slope(db(wet_p[b]), t)
-        sn = _decay_slope(db(need_p[b]), t)
-        if sw and sn:
-            rt[b] = np.clip(rt[b] * np.clip(sw / sn, 0.5, 2.0), 0.05, model["_rt_max"])
-    model["rt60"] = [round(float(r), 4) for r in rt]
+def _fix_rate(model, wetp, wantp, tv, alive) -> None:
+    rtv = np.asarray(model["rt60"], dtype=float)
+    for bv in np.nonzero(alive)[0]:
+        swv = _slope_of_decay(db(wetp[bv]), tv)
+        snv = _slope_of_decay(db(wantp[bv]), tv)
+        if swv and snv:
+            rtv[bv] = np.clip(rtv[bv] * np.clip(swv / snv, 0.5, 2.0), 0.05, model["_rt_max"])
+    model["rt60"] = [round(float(rv), 4) for rv in rtv]
 
 
-def _mid_check(model: dict, a: np.ndarray, src: np.ndarray) -> None:
+def _check_mid(model: dict, av: np.ndarray, srcv: np.ndarray) -> None:
     if not np.any(model["_live"]["mid"]):
         return
-    m = a.mean(axis=1)
-    base = src.mean(axis=1)
-    with_mid = base + wet(model, src, 0, len(src), "mid")
-    if mel_db_distance(m, with_mid)[0] > mel_db_distance(m, base)[0] + 0.02:
+    mv = av.mean(axis=1)
+    basev = srcv.mean(axis=1)
+    has_mid = basev + wet(model, srcv, 0, len(srcv), "mid")
+    if mel_db_distance(mv, has_mid)[0] > mel_db_distance(mv, basev)[0] + 0.02:
         model["mid_db"] = [OFF] * len(BANDS)
         model["_live"]["mid"] = np.zeros(len(BANDS), bool)
 
 
-def _pool(model, src, span):
-    s0, s1 = span
-    acc = np.zeros(6)
+def _pooled(model, srcv, spn):
+    sv0, sv1 = spn
+    accum = np.zeros(6)
     for seed in range(4):
-        wm = wet(model, src, seed, len(src), "mid")[s0:s1]
-        ws = wet(model, src, seed, len(src), "side")[s0:s1]
-        a_, b_ = src[s0:s1, 0] + wm, src[s0:s1, 1] + wm
-        acc += [a_ @ a_, b_ @ b_, ws @ ws, a_ @ b_, a_ @ ws, b_ @ ws]
-    return acc
+        wmv = wet(model, srcv, seed, len(srcv), "mid")[sv0:sv1]
+        wsv = wet(model, srcv, seed, len(srcv), "side")[sv0:sv1]
+        av_, bv_ = srcv[sv0:sv1, 0] + wmv, srcv[sv0:sv1, 1] + wmv
+        accum += [av_ @ av_, bv_ @ bv_, wsv @ wsv, av_ @ bv_, av_ @ wsv, bv_ @ wsv]
+    return accum
 
 
-def _corr_at(acc, g):
-    aa, bb, ss, ab, as_, bs = acc
-    den = (aa + 2 * g * as_ + g * g * ss) * (bb - 2 * g * bs + g * g * ss)
-    return (ab - g * as_ + g * bs - g * g * ss) / np.sqrt(max(den, 1e-300))
+def _corr_window(accum, gv):
+    aav, bbv, ssv, abv, asv, bsv = accum
+    denom = (aav + 2 * gv * asv + gv * gv * ssv) * (bbv - 2 * gv * bsv + gv * gv * ssv)
+    return (abv - gv * asv + gv * bsv - gv * gv * ssv) / np.sqrt(max(denom, 1e-300))
 
 
-def _level_side(model, a, src, span, tc, need, iters, need_db, mid_need_db) -> dict | None:
-    best = _side_offset(model, src, span, tc)
-    live = model["_live"]["side"]
-    model["side_db"] = [round(float(np.clip(g + best, OFF, 40.0)), 2) if live[i] else OFF
-                        for i, g in enumerate(model["side_db"])]
-    tc_wet = tail_corr(render_space(_public(model), src, 0, limit=False), span)
-    if tc_wet is None or abs(tc_wet - tc) >= abs(need["tc_dry"] - tc):
+def _side_level(model, av, srcv, spn, tcorr, want, n_iter, want_db, mid_want_db) -> dict | None:
+    winner = _offset_side(model, srcv, spn, tcorr)
+    alive = model["_live"]["side"]
+    model["side_db"] = [round(float(np.clip(gv + winner, OFF, 40.0)), 2) if alive[ii] else OFF
+                        for ii, gv in enumerate(model["side_db"])]
+    tcorr_wet = tail_corr(render_space(_public_view(model), srcv, 0, limit=False), spn)
+    if tcorr_wet is None or abs(tcorr_wet - tcorr) >= abs(want["tc_dry"] - tcorr):
         return None
-    out = _public(model)
-    out["fit"] = _fit_info(model, need, iters, need_db, mid_need_db, best, tc_wet)
-    return out
+    res = _public_view(model)
+    res["fit"] = _info_of_fit(model, want, n_iter, want_db, mid_want_db, winner, tcorr_wet)
+    return res
 
 
-def _side_offset(model, src, span, tc) -> float:
+def _offset_side(model, srcv, spn, tcorr) -> float:
     """Side gain offset (dB) that best matches the recording's tail correlation."""
-    acc = _pool(model, src, span)
-    offs = np.arange(-12.0, 12.0001, 0.5)
-    cs = [_corr_at(acc, 10 ** (o / 20)) for o in offs]
-    return float(offs[int(np.argmin(np.abs(np.asarray(cs) - tc)))])
+    accum = _pooled(model, srcv, spn)
+    off_l = np.arange(-12.0, 12.0001, 0.5)
+    csv = [_corr_window(accum, 10 ** (ov / 20)) for ov in off_l]
+    return float(off_l[int(np.argmin(np.abs(np.asarray(csv) - tcorr)))])
 
 
-def _fit_info(model, need, iters, need_db, mid_need_db, best, tc_wet) -> dict:
-    return {"need_db": need_db,
-            "mid_need_db": mid_need_db if np.any(model["_live"]["mid"]) else None,
-            "iters": iters, "dry": need["dry"] is not None, "side_offset_db": best,
-            "tail_corr_dry": round(float(need["tc_dry"]), 4),
-            "tail_corr_wet": round(float(tc_wet), 4)}
+def _info_of_fit(model, want, n_iter, want_db, mid_want_db, winner, tcorr_wet) -> dict:
+    return {"need_db": want_db,
+            "mid_need_db": mid_want_db if np.any(model["_live"]["mid"]) else None,
+            "iters": n_iter, "dry": want["dry"] is not None, "side_offset_db": winner,
+            "tail_corr_dry": round(float(want["tc_dry"]), 4),
+            "tail_corr_wet": round(float(tcorr_wet), 4)}
 
 
-def _public(model: dict) -> dict:
-    return {k: v for k, v in model.items() if not k.startswith("_")}
+def _public_view(model: dict) -> dict:
+    return {ix: vv for ix, vv in model.items() if not ix.startswith("_")}
 
 
 def describe(model: dict | None) -> str:
     if not model:
         return "no space layer"
-    side = np.asarray(model["side_db"]) > -140
-    mid = np.asarray(model["mid_db"]) > -140
-    on = side | mid
-    if not np.any(on):
+    side_v = np.asarray(model["side_db"]) > -140
+    midv = np.asarray(model["mid_db"]) > -140
+    start_i = side_v | midv
+    if not np.any(start_i):
         return "space layer: silent"
-    rt = np.asarray(model["rt60"])[on]
-    bands = np.asarray(model["bands"])[on]
-    parts = "side + mid" if np.any(mid) else "side only"
-    return (f"space layer: {parts}, rt60 {rt.min():.2f}-{rt.max():.2f} s over "
-            f"{bands.min():.0f}-{bands.max():.0f} Hz, build {model['build'] * 1000:.0f} ms, "
+    rtv = np.asarray(model["rt60"])[start_i]
+    band_l = np.asarray(model["bands"])[start_i]
+    pieces = "side + mid" if np.any(midv) else "side only"
+    return (f"space layer: {pieces}, rt60 {rtv.min():.2f}-{rtv.max():.2f} s over "
+            f"{band_l.min():.0f}-{band_l.max():.0f} Hz, build {model['build'] * 1000:.0f} ms, "
             f"recording tail correlation {model['tail_corr']:.2f}")

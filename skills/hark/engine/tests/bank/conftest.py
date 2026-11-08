@@ -1,10 +1,4 @@
-"""Fixtures of the bank tests: stand-ins, test recipes and a fixture bank.
-
-Stand-ins: a module of another unit that is not built yet (core, the forge
-engine, the recipe registry, fit) gets a small stand-in here, and only while the
-real module is absent (implementer-notes rule 2). A stand-in follows the
-ARCHITECTURE.md signature and does just enough for the bank logic. Tests that
-need the real knob engine check ``real_knobs()`` and skip on a stand-in.
+"""Fixtures of the bank tests: test recipes and a fixture bank.
 
 Test recipes follow the recipe contract (ARCHITECTURE 8.2) and are built in
 this file, never taken from the package. The fixture ``fixture_bank`` writes 4
@@ -14,12 +8,7 @@ small bank files into ``tmp_path`` and points the bank at them.
 from __future__ import annotations
 
 import argparse
-import importlib
-import importlib.util
 import json
-import math
-import re
-import sys
 import types
 from pathlib import Path
 
@@ -27,416 +16,6 @@ import numpy as np
 import pytest
 
 SR = 48000
-STAND_INS: list[str] = []
-
-
-# ---------------------------------------------------------------- stand-in plumbing
-
-
-def _spec(name: str):
-    try:
-        return importlib.util.find_spec(name)
-    except (ModuleNotFoundError, ValueError):
-        return None
-
-
-def _namespace_path(name: str) -> list[str] | None:
-    """The folders of a namespace package (no ``__init__.py``), else None."""
-    spec = _spec(name)
-    if spec is None or spec.origin not in (None, "namespace"):
-        return None
-    return list(spec.submodule_search_locations or [])
-
-
-def _absent(name: str) -> bool:
-    """True when the module is missing, or is only a namespace package of its sub-packages."""
-    return _spec(name) is None or _namespace_path(name) is not None
-
-
-def _install(name: str, attrs: dict) -> types.ModuleType:
-    mod = types.ModuleType(name)
-    mod.__dict__.update(attrs)
-    folders = _namespace_path(name)
-    if folders is not None:
-        mod.__path__ = folders
-    mod.STAND_IN = True
-    parent_name, _, leaf = name.rpartition(".")
-    if parent_name and parent_name not in sys.modules:
-        if _absent(parent_name):
-            _install(parent_name, {"__path__": []})
-        else:
-            importlib.import_module(parent_name)
-    sys.modules[name] = mod
-    if parent_name:
-        setattr(sys.modules[parent_name], leaf, mod)
-    STAND_INS.append(name)
-    return mod
-
-
-def _maybe(name: str, build) -> None:
-    if _absent(name):
-        _install(name, build())
-
-
-# ---------------------------------------------------------------- core stand-ins
-
-
-def _audio() -> dict:
-    import soundfile
-    import soxr
-
-    class AudioError(RuntimeError):
-        pass
-
-    def resample(x, sr_from, sr_to):
-        y = np.asarray(x, dtype=np.float32)
-        return y if sr_from == sr_to else np.asarray(soxr.resample(y, sr_from, sr_to, quality="VHQ"), np.float32)
-
-    def load(path, sr=48000, mono=False, start=None, end=None, cache=True):
-        try:
-            x, fs = soundfile.read(str(path), dtype="float32")
-        except Exception as exc:  # noqa: BLE001
-            raise AudioError(f"{path}: {exc}") from None
-        x = resample(x, fs, sr)
-        return x.mean(axis=1) if mono and x.ndim == 2 else x
-
-    def write_wav(path, x, sr=48000, subtype="PCM_24"):
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        soundfile.write(str(path), np.asarray(x), int(sr), subtype=subtype)
-        return str(path)
-
-    def to_mono(x):
-        x = np.asarray(x)
-        return x.mean(axis=1) if x.ndim == 2 else x
-
-    return {"SR": SR, "Audio": np.ndarray, "AudioError": AudioError, "load": load, "resample": resample,
-            "write_wav": write_wav, "to_mono": to_mono}
-
-
-def _features() -> dict:
-    from scipy.signal import lfilter
-
-    shelf = ([1.53512485958697, -2.69169618940638, 1.19839281085285], [1.0, -1.69065929318241, 0.73248077421585])
-    high = ([1.0, -2.0, 1.0], [1.0, -1.99004745483398, 0.99007225036621])
-
-    def k_weight(x, sr=48000):
-        return lfilter(*high, lfilter(*shelf, np.asarray(x, dtype=np.float64), axis=0), axis=0)
-
-    return {"k_weight": k_weight}
-
-
-def _report() -> dict:
-    def add_common(parser):
-        parser.add_argument("--json", action="store_true")
-        parser.add_argument("--out", dest="out")
-        parser.add_argument("--threads", type=int)
-
-    def clean(obj):
-        return json.loads(json.dumps(obj, default=lambda v: v.item() if hasattr(v, "item") else str(v)))
-
-    def emit(result, args, text=None):
-        body = json.dumps(clean(result), indent=1)
-        print(body if getattr(args, "json", False) else (text or result.get("summary", "")))
-        if getattr(args, "out", None):
-            Path(args.out).write_text(body + "\n", encoding="utf-8")
-        return result
-
-    return {"add_common": add_common, "emit": emit, "clean": clean}
-
-
-def _config() -> dict:
-    import os
-
-    return {"HOME": Path(os.environ.get("HARK_HOME") or Path.home() / ".cache" / "hark")}
-
-
-# ---------------------------------------------------------------- forge engine stand-ins
-
-
-def _dsp() -> dict:
-    return {"rng": lambda seed: np.random.default_rng(int(seed) & 0xFFFFFFFF)}
-
-
-def _db(v: float, ref: float) -> float:
-    return round(20 * math.log10(v / ref + 1e-12), 1)
-
-
-def _polish() -> dict:
-    def peak_of(x):
-        return float(np.max(np.abs(x))) or 1e-12
-
-    def clicks(x, thr=18.0):
-        x = np.asarray(x, dtype=np.float64)
-        return {"clicks": 0, "click_times": [], "edge_db": _db(max(abs(x[0]), abs(x[-1])), peak_of(x))}
-
-    def dc(x):
-        return {"dc_db": _db(abs(float(np.mean(x))), peak_of(x)), "infra_db": None}
-
-    def truncated(x):
-        x = np.asarray(x, dtype=np.float64)
-        tail = x[-96:]
-        return {"trunc_db": _db(float(np.sqrt(np.mean(tail * tail))), peak_of(x)), "end_db": None}
-
-    def silence(x):
-        x = np.asarray(x, dtype=np.float64)
-        live = np.nonzero(np.abs(x) >= peak_of(x) * 1e-3)[0]
-        quiet = (np.abs(x[live[0]: live[-1] + 1]) < 1e-6).astype(int)
-        edges = np.diff(np.concatenate([[0], quiet, [0]]))
-        runs = np.nonzero(edges == -1)[0] - np.nonzero(edges == 1)[0]
-        long = runs[runs >= 96]
-        return {"silence_ms": round(float(long.sum()) / 48, 1), "silence_max_ms": round(float(runs.max(initial=0)) / 48, 1)}
-
-    def clipping(x):
-        x = np.asarray(x, dtype=np.float64).reshape(len(x), -1)
-        runs = 0
-        for ch in x.T:
-            top = np.isclose(np.abs(ch), np.abs(ch).max()) & (np.abs(ch) >= 0.999)
-            edges = np.diff(np.concatenate([[0], top.astype(int), [0]]))
-            runs += int(np.sum((np.nonzero(edges == -1)[0] - np.nonzero(edges == 1)[0]) >= 3))
-        return {"clip_runs": runs, "overs": int(np.sum(np.abs(x) > 1.0))}
-
-    def attack(x):
-        return {"attack_ms": round(float(np.argmax(np.abs(x))) / 48, 2), "onset_hf_db": None}
-
-    def body(x):
-        x = np.asarray(x, dtype=np.float64)
-        return {"crest_db": _db(peak_of(x), float(np.sqrt(np.mean(x * x))) or 1e-12)}
-
-    return {"clicks": clicks, "dc": dc, "truncated": truncated, "silence": silence, "clipping": clipping,
-            "attack": attack, "body": body, "ring": lambda x, legacy=False: {"ring_z": 0.0, "ring_ms": 0.0},
-            "tail": lambda x: {"bump_db": 0.0, "decay_db_s": None, "t40_ms": None},
-            "resonances": lambda x, top=3: {"res_db": 0.0, "res_hz": None, "res_peaks": []}}
-
-
-WHOOSH = ("whoosh_fast", "whoosh_big", "pro_whoosh_big", "swish", "swipe")
-NOISE = ("whoosh_fast", "whoosh_big", "swish", "swipe", "glitch", "pro_glitch", "typing_key", "pro_typing_key",
-         "pro_typing_run")
-PITCH = {"notify": ("f0", 220.0, 3200.0), "pluck": ("f0", 130.0, 2100.0)}
-NAMES = ("C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B")
-
-
-class KnobError(ValueError):
-    pass
-
-def midi(p):
-    m = re.fullmatch(r"([A-Ga-g])([#sb]{0,2})(-?\d+)", str(p).strip())
-    if not m:
-        return None
-    pc = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}[m.group(1).upper()]
-    acc = m.group(2)
-    return 12 * (int(m.group(3)) + 1) + pc + acc.count("#") + acc.count("s") - acc.count("b")
-
-def hz(p):
-    if isinstance(p, bool):
-        raise KnobError("a pitch must be a note or Hz")
-    if isinstance(p, (int, float)):
-        f = float(p)
-    elif midi(p) is not None:
-        f = 440.0 * 2 ** ((midi(p) - 69) / 12)
-    else:
-        m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(hz)?\s*", str(p), re.I)
-        if not m:
-            raise KnobError(f"pitch {p!r}: give a note (E5, Fs4) or Hz (440, 440hz)")
-        f = float(m.group(1))
-    if not 8 <= f <= 20000:
-        raise KnobError(f"pitch {p!r} is outside 8 Hz - 20 kHz")
-    return f
-
-def note(f):
-    n = 69 + 12 * math.log2(f / 440)
-    k = round(n)
-    cents = round(100 * (n - k))
-    name = f"{NAMES[k % 12]}{k // 12 - 1}"
-    return name + (f" {cents:+d}c" if abs(cents) >= 5 else "")
-
-def label(p):
-    f = hz(p)
-    n = 69 + 12 * math.log2(f / 440)
-    if abs(n - round(n)) < 0.05:
-        return note(440 * 2 ** ((round(n) - 69) / 12)).replace("#", "s")
-    return f"{round(f, 2):g}hz"
-
-def describe(entry):
-    cat = entry.get("category")
-    spec = PITCH.get(cat)
-    pitch = None if spec is None else {"param": spec[0], "native_hz": entry["params"][spec[0]],
-                                       "note": note(entry["params"][spec[0]]), "range_hz": [spec[1], spec[2]]}
-    out = {"dur": "shape" if cat in WHOOSH else "trim", "apex": cat in WHOOSH, "pitch": pitch,
-           "tonal": {"decay": None, "onset": None, "bright": None, "width": None}}
-    if pitch is None:
-        out["why"] = "a noise sound has no pitch" if cat in NOISE else "this category has no pitch parameter"
-    return out
-
-def validate(entry, dur=None, apex=None, pitch=None, **_):
-    sid, cat = entry.get("id"), entry.get("category")
-    if apex is not None and cat not in WHOOSH:
-        raise KnobError(f"{sid}: apex works only on the whoosh family; use dur and align on end")
-    if dur is not None and not 0.01 <= dur <= (4.4 if cat in WHOOSH else 60):
-        raise KnobError(f"{sid}: dur {dur} is out of range")
-    if apex is not None and not (0.01 <= apex <= 4.3 and (dur is None or apex < dur - 0.02)):
-        raise KnobError(f"{sid}: apex {apex} is out of range")
-    if pitch is not None:
-        f = hz(pitch)
-        if cat in NOISE:
-            raise KnobError(f"{sid}: a noise sound has no pitch")
-        spec = PITCH.get(cat)
-        if spec is None:
-            raise KnobError(f"{sid}: this category has no pitch parameter")
-        if not spec[1] <= f <= spec[2]:
-            raise KnobError(f"{sid}: pitch {note(f)} ({f:.1f} Hz) is outside {spec[1]:g}-{spec[2]:g} Hz")
-
-def fit_length(x, dur, keep_s=None):
-    n = int(round(dur * SR))
-    x = np.asarray(x, dtype=np.float64)
-    if len(x) <= n:
-        pad = np.zeros((n - len(x),) + x.shape[1:])
-        return np.concatenate([x, pad]), f"pad {round((n - len(x)) / 48)} ms"
-    y = x[:n].copy()
-    k = min(n, max(480, min(7200, n // 4)))
-    fade = 0.5 * (1 + np.cos(np.linspace(0, np.pi, k)))
-    y[-k:] *= fade.reshape(-1, *([1] * (y.ndim - 1)))
-    return y, f"trim {round((len(x) - n) / 48)} ms"
-
-def place_apex(x, pk, apex):
-    shift = int(round((apex - pk) * 1000)) * 48
-    x = np.asarray(x, dtype=np.float64)
-    if shift >= 0:
-        return np.concatenate([np.zeros((shift,) + x.shape[1:]), x]), f"head pad {shift // 48} ms"
-    return x[-shift:], f"head trim {-shift // 48} ms"
-
-def apply(entry, run, dur=None, apex=None, pitch=None, **_):
-    from hark.forge.bank import bank
-
-    validate(entry, dur=dur, apex=apex, pitch=pitch)
-    edits, edit = {}, {}
-    if pitch is not None:
-        param = PITCH[entry["category"]][0]
-        edit[param] = hz(pitch)
-    x = run(edit) if edit else run()
-    if apex is not None:
-        x, fit = place_apex(x, bank.times(x)["peak_s"], apex)
-        edits["apex"] = {"target": apex, "fit": fit}
-    if dur is not None:
-        x, fit = fit_length(x, dur)
-        edits["dur"] = {"target": dur, "method": describe(entry)["dur"], "renders": 1, "fit": fit}
-    if apex is not None:
-        m = bank.times(x)["peak_s"]
-        edits["apex"].update(measured=m, err_ms=round(1000 * (m - apex), 1), ok=abs(m - apex) <= 0.005)
-    if pitch is not None:
-        f = hz(pitch)
-        got = bank.estimate_pitch(x, near_hz=f, span_st=2.0)
-        cents = None if got is None else round(1200 * math.log2(got / f))
-        edits["pitch"] = {"target_hz": f, "note": note(f), "param": param, "params": edit, "measured_hz": got,
-                          "cents_off": cents, "ok": cents is not None and abs(cents) <= 50}
-    return x, edits
-
-def pitch_warning(edits):
-    p = (edits or {}).get("pitch") or {}
-    if p.get("ok") is not False:
-        return None
-    if p.get("measured_hz") is None:
-        return {"code": "pitch_off", "msg": f"pitch {p.get('note')} missed: the render has no clear partial"}
-    return {"code": "pitch_off", "msg": f"pitch {p.get('note')} missed: measured {p['measured_hz']:.1f} Hz"}
-
-
-def _knobs() -> dict:
-    return {"KnobError": KnobError, "midi": midi, "hz": hz, "note": note, "label": label, "describe": describe,
-            "validate": validate, "apply": apply, "fit_length": fit_length, "place_apex": place_apex,
-            "pitch_warning": pitch_warning}
-
-
-class NotReproducible(ValueError):
-    pass
-
-def resolve(b):
-    from hark.forge import recipes
-
-    return getattr(recipes.load(b["recipe"]), b.get("fn", "render"))
-
-def raw(b):
-    from hark.forge.engine import dsp
-
-    x = np.asarray(resolve(b)(dict(b["params"]), dsp.rng(b.get("seed", 0))), dtype=np.float64)
-    return None if not x.size or float(np.max(np.abs(x))) < 1e-7 else x
-
-def level(x, b):
-    gain = b.get("gain", 10 ** (b.get("gain_db", 0.0) / 20))
-    return (x * (10 ** (b.get("peak_db", -1.0) / 20) / np.max(np.abs(x))) * gain).astype(np.float32)
-
-def rerender(b):
-    x = raw(b)
-    if x is None:
-        raise NotReproducible("the render failed")
-    return level(x, b)
-
-def compare(x, y):
-    x, y = np.asarray(x), np.asarray(y)
-    if x.ndim == 1:
-        x = x[:, None]
-    if y.ndim == 1:
-        y = y[:, None]
-    return float(np.max(np.abs(x - y))) if x.shape == y.shape else math.inf
-
-def block(report, pick):
-    return {**pick["render"]}
-
-def render_ref(fn):
-    return None
-
-
-def _schema() -> dict:
-    return {"NotReproducible": NotReproducible, "resolve": resolve, "raw": raw, "level": level,
-            "rerender": rerender, "compare": compare, "block": block, "render_ref": render_ref, "TOL": 1e-6}
-
-
-def _recipes() -> dict:
-    class UnknownRecipe(KeyError):
-        pass
-
-    def load(name):
-        raise UnknownRecipe(name)
-
-    def seed_path(name):
-        return Path("/nonexistent") / f"{name}.json"
-
-    return {"FOLDERS": ("ui", "impacts", "motion", "risers"), "UnknownRecipe": UnknownRecipe, "load": load,
-            "names": lambda: [], "seed_path": seed_path}
-
-
-def _fit() -> dict:
-    def render(model, seed=0, take=None, bed=True, **knobs):
-        raise ValueError(f"no fit renderer for kind {model.get('kind')!r}")
-
-    def load(path):
-        return json.loads(Path(path).read_text(encoding="utf-8"))
-
-    return {"render": render, "load": load}
-
-
-def _fit_auto() -> dict:
-    return {"kind_of": lambda model: model.get("kind"),
-            "knobs_of": lambda model: {"vary": 0.0} if model.get("tones", True) else {}}
-
-
-_maybe("hark.core.audio", _audio)
-_maybe("hark.core.features", _features)
-_maybe("hark.core.report", _report)
-_maybe("hark.core.config", _config)
-_maybe("hark.forge.engine.dsp", _dsp)
-_maybe("hark.forge.engine.polish", _polish)
-_maybe("hark.forge.engine.knobs", _knobs)
-_maybe("hark.forge.engine.schema", _schema)
-_maybe("hark.forge.recipes", _recipes)
-_maybe("hark.forge.recipes.tonal", lambda: {"measure": lambda x: {"dur_s": len(x) / SR, "corr": 1.0}})
-_maybe("hark.fit", _fit)
-_maybe("hark.fit.pipeline.auto", _fit_auto)
-
-
-def real_knobs() -> bool:
-    """True when the knob engine is the real T-16 module."""
-    from hark.forge.engine import knobs
-
-    return not getattr(knobs, "STAND_IN", False)
 
 
 # ---------------------------------------------------------------- test recipes (ARCHITECTURE 8.2)
@@ -454,10 +33,10 @@ def _fade_out(x: np.ndarray, ms: float = 5.0) -> np.ndarray:
 
 
 def bell_render(p: dict, rng: np.random.Generator) -> np.ndarray:
-    """A struck sine: 2 ms rise, exponential decay, tiny seeded noise."""
+    """A struck sine: 2 ms rise, exponential decay, tiny seeded noise; it dies out by its end (no cut tail)."""
     n = int(round(p["length"] * SR))
     t = _t(n)
-    env = (1 - np.exp(-t / 0.002)) * np.exp(-t / p["tau"])
+    env = (1 - np.exp(-t / 0.002)) * np.exp(-t / p["tau"]) * (1 - t / p["length"]) ** 2
     x = np.sin(2 * np.pi * p["f0"] * t + rng.uniform(0, 0.2)) * env + 1e-4 * rng.standard_normal(n) * env
     return _fade_out(x)
 
@@ -520,7 +99,27 @@ def test_recipes(monkeypatch):
         return fit_render(model, seed, **kw) if model.get("kind") == "test_sine" else real_fit(model, seed, *a, **kw)
 
     monkeypatch.setattr(hark.fit, "render", fit)
+    _route_test_fit_kind(monkeypatch)
     return TEST_RECIPES
+
+
+def _route_test_fit_kind(monkeypatch) -> None:
+    """The real fit pipeline knows 6 kinds; teach its kind and knob lookups the test kind ``test_sine``."""
+    from hark.fit.pipeline import auto
+
+    real_kind, real_knobs = auto.kind_of, auto.knobs_of
+
+    def kind_of(model):
+        return "test_sine" if isinstance(model, dict) and model.get("kind") == "test_sine" else real_kind(model)
+
+    def knobs_of(model):
+        if not (isinstance(model, dict) and model.get("kind") == "test_sine"):
+            return real_knobs(model)
+        vary = {} if model.get("tones") is False else {"vary": ((0.0, 1.0), 0.0, "per-take jitter")}
+        return {"gain_db": ((-12.0, 12.0), 0.0, "level"), **vary}
+
+    monkeypatch.setattr(auto, "kind_of", kind_of)
+    monkeypatch.setattr(auto, "knobs_of", knobs_of)
 
 
 # ---------------------------------------------------------------- the fixture bank
@@ -551,7 +150,7 @@ FIXTURE_FILES = {
     ]),
     "fit": ("fit1t", [
         ("fit/tick/domino", {"type": "fit", "category": "fit", "member": "tick/domino",
-                             "model": {"kind": "test_sine", "f0": 5000.0}, "seed": 0, "vary": 0.3,
+                             "model": {"kind": "test_sine", "f0": 5000.0}, "seed": 1, "vary": 0.3,
                              "source": {"id": "t", "title": "t", "author": "t", "license": "CC0", "url": "t"},
                              "fit": {"kind": "test_sine", "chosen": None, "class": "struck"}, "kinds": ["tick"],
                              "notes": "a test fit", "pitch_hz": None}),
@@ -592,24 +191,32 @@ def fixture_bank(tmp_path, monkeypatch, hark_home):
 
 
 @pytest.fixture
-def real_registry():
-    """Skip while the recipe registry (``hark.forge.recipes.load``, T-16) is a stand-in."""
-    from hark.forge import recipes
-
-    if getattr(recipes, "STAND_IN", False):
-        pytest.skip("needs the real recipe registry (T-16)")
-    return recipes
-
-
-@pytest.fixture
 def shipped():
     """The package bank, or a ``needs-bank`` skip until integration builds it (ARCHITECTURE 12.1)."""
     from hark.forge.bank import bank
 
     folder = Path(bank.PKG_DIR) / "data"
-    if sorted(p.name for p in folder.glob("*.json")) != ["fit.json", "forge04.json", "forge_v2.json", "pluck.json"]:
+    # fit.json waits for the operator's CC0 decision (ARCHITECTURE 15, bank Q5); the other 3 files ship
+    if not {"forge04.json", "forge_v2.json", "pluck.json"} <= {p.name for p in folder.glob("*.json")}:
         pytest.skip("needs-bank: the shipped bank files are built by integration (25b)")
+    bank.reload()
     return bank
+
+
+# Gaps of the shipped bank, each one open in the integration report (T-33). Remove an id once it ships clean.
+# - forge04 members that fail their take audit, so build --forge04 leaves them out.
+OPEN_FORGE04 = frozenset({"mallet/pluck", "whoosh_big/thump_deep"})
+# - derived forge_v2 ids with no render whose default take passes sfx check (T-41): the file lists them under dropped.
+DROPPED_DERIVED = frozenset({
+    "pro_typing_run/blip", "pro_typing_run/double", "pro_typing_run/glass", "pro_typing_run/soft",
+    "pro_typing_run/standard", "pro_typing_run/tick",
+})
+
+
+@pytest.fixture
+def open_ids() -> dict:
+    """The documented gaps of the shipped bank: forge04 members and derived ids left out."""
+    return {"forge04": OPEN_FORGE04, "dropped": DROPPED_DERIVED}
 
 
 @pytest.fixture

@@ -1,0 +1,68 @@
+{
+ "_doc": "A full 12 s launch beat that uses every mixer feature. It works as a single-file design or as a fragment. Every file name starting with SWAP- is a placeholder: swap it for a real recording from the manifests. Until then mix.py stops and lists each missing file. Names carry the fragment prefix demo. so 2 fragments never collide.",
+ "duration": 12.0,
+ "cues": "out/cues.json",
+
+ "samples": {
+  "demo.press":   {"file": "audio/assets/ui/SWAP-mouse-click.wav", "start": 0.100, "end": 0.150, "mono": true, "eq": {"hp": 150}, "norm_peak_db": -6, "fade_in": 0.001, "fade_out": 0.010, "_doc": "the press of one recorded click; trim starts 3-5 ms before the attack"},
+  "demo.release": {"file": "audio/assets/ui/SWAP-mouse-click.wav", "start": 0.180, "end": 0.230, "mono": true, "eq": {"hp": 150}, "norm_peak_db": -8, "fade_in": 0.001, "fade_out": 0.010},
+  "demo.space":   {"file": "audio/assets/keyboard/SWAP-spacebar.wav", "mono": true, "eq": {"hp": 120, "highshelf": [6000, -3]}, "norm_peak_db": -8},
+  "demo.swish":   {"file": "audio/assets/motion/SWAP-stick-swish.wav", "eq": {"hp": 200}, "norm_peak_db": -6, "fade_out": 0.060},
+  "demo.swish_tail": {"file": "audio/assets/motion/SWAP-stick-swish.wav", "start": 0.150, "pitch": -3, "eq": {"lp": 6000}, "norm_peak_db": -14, "fade_in": 0.010, "fade_out": 0.080, "_doc": "a lower, darker copy of the swish tail: size without a second sound"},
+  "demo.cork":    {"file": "audio/assets/ui/SWAP-cork-pop.wav", "mono": true, "pitch": 2, "eq": {"peq": [[3500, 1.2, -3]]}, "norm_peak_db": -9},
+  "demo.riser":   {"file": "audio/assets/motion/SWAP-cymbal-roll.wav", "env": [[0.0, -24], [1.5, -8], [2.0, 0]], "fade_in": 0.500, "fade_out": 0.020, "norm_peak_db": -8},
+  "demo.impact":  {"file": "audio/assets/impacts/SWAP-deep-drum.wav", "mono": true, "eq": {"hp": 35, "lowshelf": [90, 2]}, "norm_peak_db": -3, "fade_out": 0.300},
+  "demo.slam":    {"file": "audio/assets/impacts/SWAP-wood-slam.wav", "end": 0.120, "mono": true, "eq": {"hp": 800}, "norm_peak_db": -10, "fade_out": 0.040, "_doc": "a short top transient over the drum body"},
+  "demo.celesta": {"file": "audio/assets/logo/SWAP-celesta-note.wav", "eq": {"hp": 200}, "norm_peak_db": -10, "fade_out": 0.400, "_doc": "one soft note in the track's key; tune with pitch within +-2 semitones"},
+  "demo.air":     {"file": "audio/assets/motion/SWAP-soft-air.wav", "glide": [-2, 0], "eq": {"hp": 300}, "norm_peak_db": -16, "fade_in": 0.200, "fade_out": 0.200}
+ },
+
+ "slices": {
+  "demo.keys": {"file": "audio/assets/keyboard/SWAP-typing.wav", "max": 16, "mono": true, "eq": {"hp": 120}, "norm_peak_db": -9, "_doc": "one recording of many keys cut into single hits"}
+ },
+
+ "pools": {
+  "demo.press": ["demo.press"], "demo.release": ["demo.release"], "demo.space": ["demo.space"],
+  "demo.swish": ["demo.swish"], "demo.swish_tail": ["demo.swish_tail"], "demo.cork": ["demo.cork"],
+  "demo.riser": ["demo.riser"], "demo.impact": ["demo.impact"], "demo.slam": ["demo.slam"],
+  "demo.celesta": ["demo.celesta"], "demo.keys": ["demo.keys#*"]
+ },
+
+ "rules": [
+  {"name": "demo.click.press",   "match": {"kind": "click"}, "pool": "demo.press", "mode": "fixed", "gain_db": -4, "pan": 0, "_doc": "one click voice at one level, centred"},
+  {"name": "demo.click.release", "match": {"kind": "click"}, "pool": "demo.release", "mode": "fixed", "gain_db": -6, "pan": 0, "offset": 0.085, "no_cue": true, "_doc": "release 85 ms after the press and 2 dB lower"},
+  {"name": "demo.type",  "match": {"kind": "key", "variant": "word"}, "pool": "demo.keys", "mode": "cycle", "jitter_db": 1.5, "pitch": [-0.1, 0.1], "gain_db": -8, "pan": 0},
+  {"name": "demo.space", "match": {"kind": "key", "variant": "space"}, "pool": "demo.space", "gain_db": -9, "pan": 0},
+  {"name": "demo.whoosh", "match": {"kind": "whoosh"}, "pool": "demo.swish", "align": "peak", "pan_scale": 0.5, "gain_db": -6},
+  {"name": "demo.whoosh.tail", "match": {"kind": "whoosh"}, "pool": "demo.swish_tail", "align": "peak", "offset": 0.08, "pan_scale": 0.5, "gain_db": -9, "no_cue": true},
+  {"name": "demo.pops", "match": {"kind": "pop", "from": 5.5, "to": 7.0}, "pool": "demo.cork", "pitch_ramp": [0, 2], "gain_ramp": [0, 1.5], "pan_scale": 0.3, "gain_db": -8, "_doc": "a run of pops rises 2 semitones and 1.5 dB"},
+  {"name": "demo.riser", "match": {"kind": "riser"}, "pool": "demo.riser", "align": "end", "offset": -0.03, "pan": 0, "gain_db": -10, "_doc": "the riser ends 30 ms before the hit"},
+  {"name": "demo.hit",     "match": {"kind": "hit"}, "pool": "demo.impact", "pan": 0, "gain_db": -2},
+  {"name": "demo.hit.top", "match": {"kind": "hit"}, "pool": "demo.slam", "pan": 0, "gain_db": -6},
+  {"name": "demo.logo", "match": {"kind": "bell"}, "pool": "demo.celesta", "pan": 0, "gain_db": -8}
+ ],
+
+ "place": [
+  {"sample": "demo.air", "at": 9.95, "align": "peak", "gain_db": -12, "_doc": "an air lift that peaks just before the logo chime"}
+ ],
+
+ "ambience": [
+  {"name": "demo.room", "file": "audio/assets/ambience/SWAP-quiet-room.wav", "src_start": 2.0, "src_end": 42.0, "at": 0.0, "until": 7.0, "fade_in": 1.0, "fade_out": 1.0, "gain_db": -24, "width": 0.8, "eq": {"hp": 80, "lp": 12000}, "auto": [[5.5, 0], [7.0, -6]], "_doc": "a quiet room tone under the UI section, from a clean window of the recording"}
+ ],
+
+ "music": {
+  "file": "audio/assets/music/SWAP-track.wav",
+  "src_bpm": 120,
+  "target_bpm": 120,
+  "stretch": "none",
+  "gain_db": -6,
+  "segments": [
+   {"label": "bars 1-4: the intro, quiet under the UI", "src_from": 0.0, "src_to": 8.0, "at": 0.0},
+   {"label": "bars 17-18: the drop on the hero frame, then a long fade under the logo", "src_from": 32.0, "src_to": 36.0, "at": 8.0, "tail_fade": 2.5}
+  ]
+ },
+
+ "_buses_doc": "buses and master are read from the top-level file only. They are here so this file also works as a single-file design.",
+ "buses": {"music": {"auto": [[0.0, 0], [1.9, 0], [2.0, -6], [2.9, -6], [3.2, 0]]}, "amb": {"gain_db": 0}, "sfx": {"gain_db": 0}},
+ "master": {"lufs": -14, "ceiling": 0.77, "no_glue": true}
+}

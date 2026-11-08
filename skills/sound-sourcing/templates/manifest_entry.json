@@ -1,0 +1,20 @@
+{
+ "_doc": "One object per downloaded recording in audio/assets/manifests/<category>.json (a JSON list). Copy every field from the item's own page. Never guess the rights. attribution is null for CC0, Mixkit and Pixabay.",
+ "id": "fs-123456",
+ "category": "ui",
+ "file": "audio/assets/ui/fs-123456_trackpad-tap.wav",
+ "title": "TITLE AS THE PAGE GIVES IT",
+ "author": "AUTHOR AS THE PAGE GIVES IT",
+ "source": "freesound",
+ "page_url": "https://freesound.org/people/AUTHOR/sounds/123456/",
+ "download_url": "https://cdn.freesound.org/previews/123/123456_7890-hq.ogg",
+ "rights": "CC BY 4.0",
+ "rights_url": "https://creativecommons.org/licenses/by/4.0/",
+ "attribution": "\"TITLE\" by AUTHOR (https://freesound.org/people/AUTHOR/sounds/123456/), licensed under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)",
+ "need": "the single click voice of the film",
+ "rank": 1,
+ "best_segment": [0.10, 0.26],
+ "notes": "What the recording is and how it was made (from the page). What was measured: press at 0.12 s, release 85 ms later and 3 dB softer, floor -78 dBFS, no room sound. Use the second take; avoid the first (a handling bump at 0.02 s).",
+ "analysis": {"duration": 4.21, "codec": "vorbis", "kbps": 192.0, "src_rate": 44100, "channels": 2, "peak_dbfs": -3.2, "lufs": -24.1, "noise_floor_dbfs": -78.0, "clipped_samples": 0, "attack_at": 0.118, "centroid_hz": 3400.0, "rolloff95_hz": 15800.0, "onsets": [0.118, 0.203]},
+ "hark": {"realness": "real or pro-produced (p_real 0.91)", "match": {"query": "one dry laptop touchpad tap", "z": 3.4, "verdict": "strong"}}
+}

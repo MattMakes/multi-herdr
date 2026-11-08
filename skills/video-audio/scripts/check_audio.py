@@ -44,7 +44,8 @@ EDGE_SILENCE_MAX_SEC = 0.20
 DROPOUT_MAX_SEC = 0.80
 ALLOWED_SILENCE_SLACK_SEC = 0.05
 EDGE_EPSILON_SEC = 0.01
-SILENCE_FILTER = "ebur128=peak=true:framelog=info,silencedetect=n=-50dB:d=0.2"
+SILENCE_FLOOR_DB = -50.0
+SILENCE_FILTER = f"ebur128=peak=true:framelog=info,silencedetect=n={SILENCE_FLOOR_DB:g}dB:d=0.2"
 SYNC_EPSILON_SEC = 0.01
 SFX_SYNC_TOLERANCE_SEC = 0.04
 SFX_BAND_MARGIN_DB = 3.0
@@ -53,9 +54,12 @@ ENVELOPE_WINDOW_SEC = 0.005
 HERO_LOUDNESS_SLACK_LU = 0.5
 MOMENTARY_WINDOW_SEC = 0.4
 LEVEL_WINDOW_SEC = 0.1
-PAYOFF_UNDER_P90_DB = 15.0
-PAYOFF_MAX_DBFS = -30.0
-PAYOFF_MIN_SEC = 0.4
+BREAKDOWN_MAX_DIP_DB = 12.0
+REMOVED_SILENCE_KEY = "payoff_silence_sec"
+REMOVED_FIELD_MESSAGE = (f"meta.{REMOVED_SILENCE_KEY} is removed: do not plan silence before the payoff. "
+                         f"Delete it, or use the optional meta.payoff_breakdown_sec "
+                         f"(a dip of at most {BREAKDOWN_MAX_DIP_DB:g} dB)")
+MUSIC_GRID_MESSAGE = "--music needs --beats or --sync-sheet for the bar grid"
 DROP_MIN_JUMP_DB = 6.0
 ANALYSIS_RATE = 16000
 BANDS = {"low": "lowpass=f=150", "mid": "highpass=f=150,lowpass=f=2000",
@@ -156,6 +160,11 @@ def measure(path):
 
 def _err(errors, rule, message):
     errors.append({"rule": rule, "message": message})
+
+
+def _err_if(errors, condition, rule, message):
+    """Add the error only when condition is true."""
+    errors.extend([{"rule": rule, "message": message}] if condition else [])
 
 
 def _load_json(path):
@@ -522,24 +531,61 @@ def check_hero(momentary, hero, errors):
     return {"loudest_lufs": round(loudest, 2), "hero_lufs": None if math.isinf(best) else round(best, 2)}
 
 
-def check_payoff_silence(mix, planned, errors):
-    """A quiet run of >= 0.4 s inside meta.payoff_silence_sec."""
-    levels = _levels(_pcm(mix), LEVEL_WINDOW_SEC)
-    finite = sorted(v for v in levels if v != -math.inf)
-    p90 = finite[int(0.9 * (len(finite) - 1))] if finite else -math.inf
-    limit = min(p90 - PAYOFF_UNDER_P90_DB, PAYOFF_MAX_DBFS)
-    run = longest = 0
-    for k, level in enumerate(levels):
-        inside = (planned[0] - ALLOWED_SILENCE_SLACK_SEC <= k * LEVEL_WINDOW_SEC
-                  and (k + 1) * LEVEL_WINDOW_SEC <= planned[1] + ALLOWED_SILENCE_SLACK_SEC)
-        run = run + 1 if inside and level <= limit else 0
-        longest = max(longest, run)
-    quiet = round(longest * LEVEL_WINDOW_SEC, 3)
-    if quiet < PAYOFF_MIN_SEC - 1e-9:
-        _err(errors, "mix.payoff_silence",
-             f"the planned silence {list(planned)} s has {quiet} s under {limit:.1f} dBFS; "
-             f"it needs >= {PAYOFF_MIN_SEC} s")
-    return {"p90_dbfs": round(p90, 2), "limit_dbfs": round(limit, 2), "quiet_sec": quiet}
+def _median(values):
+    ordered = sorted(values)
+    return ordered[len(ordered) // 2] if ordered else -math.inf
+
+
+def _outside_window(levels, planned):
+    """Return the finite 0.1 s levels that lie fully outside the planned window."""
+    def outside(k):
+        return (k + 1) * LEVEL_WINDOW_SEC <= planned[0] or k * LEVEL_WINDOW_SEC >= planned[1]
+    return [v for k, v in enumerate(levels) if v != -math.inf and outside(k)]
+
+
+def _silent_runs(silences, planned):
+    """Return the silencedetect runs that overlap the planned window, rounded."""
+    return [[round(a, 3), round(b, 3)] for a, b in silences if a < planned[1] and b > planned[0]]
+
+
+def _silent_message(planned, silent):
+    return (f"the breakdown {list(planned)} s is silent (under {SILENCE_FLOOR_DB:g} dBFS) at "
+            f"{silent} s; a breakdown dips, it never stops")
+
+
+def _dip_message(planned, dip):
+    return (f"the breakdown {list(planned)} s dips {dip:.1f} dB under the rest of the mix; "
+            f"the limit is {BREAKDOWN_MAX_DIP_DB:g} dB")
+
+
+def _breakdown_problem(planned, silent, levels):
+    """Return the error message for a breakdown, or None when it passes."""
+    dip = levels["dip_db"]
+    is_silent = bool(silent) or levels["breakdown_dbfs"] is None
+    too_deep = dip is not None and dip > BREAKDOWN_MAX_DIP_DB
+    deep = _dip_message(planned, dip) if too_deep else None
+    return _silent_message(planned, silent) if is_silent else deep
+
+
+def check_payoff_breakdown(mix, planned, silences, errors):
+    """meta.payoff_breakdown_sec is a dip of <= 12 dB under the rest of the mix, never silent.
+
+    The dip is the median 0.1 s level outside the window minus the RMS level of the window.
+    Silent means a silencedetect run (under SILENCE_FLOOR_DB) overlaps the window.
+    """
+    samples = _pcm(mix)
+    reference = _median(_outside_window(_levels(samples, LEVEL_WINDOW_SEC), planned))
+    inside = _rms_db(samples, planned[0], planned[1])
+    levels = {"reference_dbfs": _round_db(reference), "breakdown_dbfs": _round_db(inside),
+              "dip_db": _round_db(reference - inside)}
+    problem = _breakdown_problem(planned, _silent_runs(silences, planned), levels)
+    if problem:
+        _err(errors, "mix.payoff_breakdown", problem)
+    return levels
+
+
+def _round_db(value):
+    return None if math.isinf(value) or math.isnan(value) else round(value, 2)
 
 
 def check_drop(music, beats, hero, errors):
@@ -606,32 +652,64 @@ def _has_music(timeline, errors):
     return True
 
 
+def _range_problem(key, value, required):
+    """Return the error message for meta.<key>, or None when it is valid."""
+    bad = f"meta.{key} must be [start_sec, end_sec] with start_sec < end_sec"
+    missing = f"meta.{key} is required when meta.bpm says the film has music" if required else None
+    return bad if value == "bad" else (missing if value is None else None)
+
+
+def _plan_range(timeline, key, rule, required, errors):
+    """Return meta.<key> as (start, end) or None. Report a bad or a missing required range."""
+    value = _meta_range(timeline, key)
+    message = _range_problem(key, value, required)
+    _err_if(errors, message is not None, rule, message)
+    return None if value == "bad" else value
+
+
+def _reject_removed_field(timeline, errors):
+    """Reject meta.payoff_silence_sec: no gate plans silence before the payoff."""
+    present = _meta_range(timeline, REMOVED_SILENCE_KEY) is not None
+    _err_if(errors, present, "plan.removed_field", REMOVED_FIELD_MESSAGE)
+
+
 def _plan_ranges(timeline, errors):
+    """Return (hero_sec, payoff_breakdown_sec), each (start, end) or None."""
     music = _has_music(timeline, errors)
-    out = {}
-    for key, rule in (("hero_sec", "mix.hero_loudest"), ("payoff_silence_sec", "mix.payoff_silence")):
-        value = _meta_range(timeline, key)
-        if value == "bad":
-            _err(errors, rule, f"meta.{key} must be [start_sec, end_sec] with start_sec < end_sec")
-            value = None
-        elif value is None and music:
-            _err(errors, rule, f"meta.{key} is required when meta.bpm says the film has music")
-        out[key] = value
-    return out
+    _reject_removed_field(timeline, errors)
+    return (_plan_range(timeline, "hero_sec", "mix.hero_loudest", music, errors),
+            _plan_range(timeline, "payoff_breakdown_sec", "mix.payoff_breakdown", False, errors))
+
+
+def _music_drop_metrics(beats, music, hero, errors):
+    """With --music, return {"music_drop": ...} for the drop of the bed on the bar grid."""
+    _err_if(errors, bool(music) and beats is None, "music.drop", MUSIC_GRID_MESSAGE)
+    can_measure = bool(music) and beats is not None
+    return {"music_drop": check_drop(music, beats, hero, errors)} if can_measure else {}
+
+
+def _hero_metrics(metrics, hero, errors):
+    """Return {"hero": ...} when the plan has a hero, else {}."""
+    return {"hero": check_hero(metrics["momentary"], hero, errors)} if hero else {}
+
+
+def _breakdown_metrics(mix, metrics, breakdown, errors):
+    """Return {"payoff_breakdown": ...} when the plan has a breakdown, else {}."""
+    found = check_payoff_breakdown(mix, breakdown, metrics["silences"], errors) if breakdown else None
+    return {"payoff_breakdown": found} if breakdown else {}
+
+
+def _check_plan(mix, metrics, timeline, errors):
+    """Check the hero and the breakdown of the plan. Return the hero range."""
+    hero, breakdown = _plan_ranges(timeline, errors)
+    metrics.update(_hero_metrics(metrics, hero, errors))
+    metrics.update(_breakdown_metrics(mix, metrics, breakdown, errors))
+    return hero
 
 
 def _check_arc(mix, metrics, timeline, beats, music, errors):
-    plan = _plan_ranges(timeline, errors)
-    if plan["hero_sec"]:
-        metrics["hero"] = check_hero(metrics["momentary"], plan["hero_sec"], errors)
-    if plan["payoff_silence_sec"]:
-        metrics["payoff_silence"] = check_payoff_silence(mix, plan["payoff_silence_sec"], errors)
-    if music:
-        if beats is None:
-            _err(errors, "music.drop", "--music needs --beats or --sync-sheet for the bar grid")
-        else:
-            metrics["music_drop"] = check_drop(music, beats, plan["hero_sec"], errors)
-    return plan
+    """Check the hero, the breakdown and the music drop."""
+    metrics.update(_music_drop_metrics(beats, music, _check_plan(mix, metrics, timeline, errors), errors))
 
 
 def _check_mix(mix, timeline_path, errors):
@@ -678,19 +756,13 @@ def _check_grid_and_cues(inputs, metrics, timeline, errors):
     return beats
 
 
-def _silence_ranges(timeline, plan):
-    """Return the allowed silence ranges, with the planned payoff silence."""
-    payoff = plan["payoff_silence_sec"]
-    return _allowed(timeline) + ([payoff] if payoff else [])
-
-
 def _check_all(mix, inputs):
     """Run every check that inputs select and return the report dict."""
     errors = []
     metrics, timeline = _check_mix(mix, inputs["timeline_path"], errors)
-    plan = _check_arc(mix, metrics, timeline, _check_grid_and_cues(inputs, metrics, timeline, errors),
-                      inputs["music"], errors)
-    check_silences(metrics["silences"], metrics["duration_sec"], _silence_ranges(timeline, plan), errors)
+    _check_arc(mix, metrics, timeline, _check_grid_and_cues(inputs, metrics, timeline, errors),
+               inputs["music"], errors)
+    check_silences(metrics["silences"], metrics["duration_sec"], _allowed(timeline), errors)
     return _report(mix, metrics, errors)
 
 
@@ -795,10 +867,37 @@ def _print_sfx(folder):
     return 0
 
 
+class _InputErrorReport:
+    """On an input error inside the block, write a passed: false report to out."""
+
+    def __init__(self, out, mix):
+        self.out = out
+        self.mix = mix
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, kind, exc, trace):
+        failed = isinstance(exc, (BeatError, ToolError, OSError))
+        if failed:
+            write_report(_input_report(exc, self.mix), self.out)
+        return False
+
+
+def _gate_report(args):
+    """Run check() on the CLI inputs. An input error writes passed: false to --out."""
+    inputs = (args.mix, args.timeline, args.beats, args.sync_sheet, args.sfx_cues,
+              args.sfx_bus, args.bed, args.music, args.bed_beats)
+    with _InputErrorReport(args.out, args.mix):
+        return check(*inputs)
+
+
 def _run_gate(args):
-    """Run the audio gate, write its report, and return its exit code."""
-    report = check(args.mix, args.timeline, args.beats, args.sync_sheet, args.sfx_cues,
-                   args.sfx_bus, args.bed, args.music, args.bed_beats)
+    """Run the audio gate, write its report, and return its exit code.
+
+    An input error writes a passed: false report to --out and returns 2.
+    """
+    report = _gate_report(args)
     write_report(report, args.out)
     print(json.dumps(report, indent=2))
     return 0 if report["passed"] else 1
@@ -812,6 +911,7 @@ def _run_cli(parser, args):
         return self_test()
     if sfx_folder:
         return _print_sfx(sfx_folder)
+    _remove_stale_report(args.out)
     _validate_cli(parser, args)
     return _run_gate(args)
 
@@ -821,10 +921,22 @@ def main(argv=None):
     return _run_cli(parser, parser.parse_args(argv))
 
 
+def _remove_stale_report(out):
+    """Delete an earlier --out report, so a failed run never leaves an old pass."""
+    path = out or ""
+    stale = bool(path) and os.path.lexists(path)
+    if stale:
+        os.remove(path)
+
+
+def _input_report(exc, mix=None):
+    """Return the passed: false report for an input error."""
+    return {"passed": False, "file": mix, "errors": [{"rule": "input", "message": str(exc)}]}
+
+
 def _input_error(exc):
     """Print an input error and return exit code 2."""
-    error = {"passed": False, "errors": [{"rule": "input", "message": str(exc)}]}
-    print(json.dumps(error))
+    print(json.dumps(_input_report(exc)))
     return 2
 
 
@@ -948,25 +1060,96 @@ def _arc_tests(p, expect):
     expect("fail the loudest moment off the hero",
            check(p("hero.wav"), p("hero-bad.json")), ["mix.hero_loudest"])
 
-    _synth(p("payoff.wav"), f"{tone}*if(between(t,2.0,2.6),0.03,1)", 5, -14.0)
-    _synth(p("plain5.wav"), tone, 5, -14.0)
-    _write(p("payoff.json"), {"meta": {"duration_sec": 5.0, "payoff_silence_sec": [1.9, 2.7]}})
-    expect("pass a planned silence before the payoff", check(p("payoff.wav"), p("payoff.json")), [])
-    expect("fail a planned silence that is not quiet",
-           check(p("plain5.wav"), p("payoff.json")), ["mix.payoff_silence"])
-    _write(p("music.json"), {"meta": {"duration_sec": 4.0, "bpm": 120}})
-    expect("fail meta.bpm without hero_sec and payoff_silence_sec",
-           check(p("good.wav"), p("music.json")), ["mix.hero_loudest", "mix.payoff_silence"])
+    _breakdown_dip_tests(p, expect, tone)
+    _breakdown_plan_tests(p, expect, tone)
+    _drop_tests(p, expect, tone)
 
+
+def _drop_tests(p, expect, tone):
+    """The drop of the bed lands on the hero start."""
     _synth(p("good8.wav"), tone, 8, -14.0)
     _render(p("music.wav"), "if(lt(t,4),0.02,0.5)*sin(2*PI*60*t)", 8)
     _write(p("beats8.json"), {"bpm": 120, "beats_sec": [k * 0.5 for k in range(16)],
                               "downbeats_sec": [0.0, 2.0, 4.0, 6.0]})
     for name, hero, rules in (("on", [4.0, 5.0], []), ("off", [6.0, 7.0], ["music.drop"])):
-        _write(p(f"drop-{name}.json"), {"meta": {"duration_sec": 8.0, "hero_sec": hero}})
-        expect(f"{'pass' if not rules else 'fail'} the drop {name} the hero",
-               check(p("good8.wav"), p(f"drop-{name}.json"), p("beats8.json"), music=p("music.wav")),
-               rules)
+        _drop_case(p, expect, name, hero, rules)
+
+
+def _drop_case(p, expect, name, hero, rules):
+    """Check the drop of music.wav against 1 hero range."""
+    _write(p(f"drop-{name}.json"), {"meta": {"duration_sec": 8.0, "hero_sec": hero}})
+    report = check(p("good8.wav"), p(f"drop-{name}.json"), p("beats8.json"), music=p("music.wav"))
+    expect(f"{'pass' if not rules else 'fail'} the drop {name} the hero", report, rules)
+
+
+def _breakdown_dip_tests(p, expect, tone):
+    """A breakdown dips <= 12 dB and is never silent."""
+    plan = p("breakdown.json")
+    _write(plan, {"meta": {"duration_sec": 5.0, "payoff_breakdown_sec": [2.0, 2.6]}})
+    # Gains 0.5, 0.1 and 0 are dips of 6 dB, 20 dB and silence.
+    for case in BREAKDOWN_CASES:
+        _dip_case(p, expect, tone, case)
+
+
+# (name, gain in the breakdown, failed rules)
+BREAKDOWN_CASES = (("6db", 0.5, []), ("20db", 0.1, ["mix.payoff_breakdown"]),
+                   ("silent", 0, ["mix.payoff_breakdown"]))
+
+
+def _dip_case(p, expect, tone, case):
+    """Render a 5 s tone with the breakdown at the case gain, and check it."""
+    wav = p(f"breakdown-{case[0]}.wav")
+    _synth(wav, f"{tone}*if(between(t,2.0,2.6),{case[1]},1)", 5, -14.0)
+    expect(f"{'pass' if not case[2] else 'fail'} a breakdown dip of {case[0]}",
+           check(wav, p("breakdown.json")), case[2])
+
+
+def _breakdown_plan_tests(p, expect, tone):
+    """No payoff field is required, the old silence field fails, and bpm needs a hero."""
+    _write(p("music.json"), {"meta": {"duration_sec": 4.0, "bpm": 120, "hero_sec": [1.5, 2.5]}})
+    _synth(p("music-hero.wav"), f"{tone}*if(between(t,1.6,2.4),2,1)", 4, -14.0)
+    expect("pass meta.bpm with no payoff field", check(p("music-hero.wav"), p("music.json")), [])
+    _removed_field_test(p, expect)
+
+
+def _removed_field_test(p, expect):
+    """The old payoff silence field fails, and meta.bpm without a hero fails."""
+    _write(p("old-silence.json"), {"meta": {"duration_sec": 4.0, REMOVED_SILENCE_KEY: [1.0, 1.5]}})
+    expect("reject the removed payoff silence field",
+           check(p("good.wav"), p("old-silence.json")), ["plan.removed_field"])
+    _write(p("music-nohero.json"), {"meta": {"duration_sec": 4.0, "bpm": 120}})
+    expect("fail meta.bpm without hero_sec",
+           check(p("good.wav"), p("music-nohero.json")), ["mix.hero_loudest"])
+
+
+def _cli_report_tests(p, failures):
+    """--out never keeps a stale pass: exit 1 writes false, an input error writes false."""
+    out = p("qa/audio-check.json")
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    _cli_case(out, ("CLI exit 1 and --out report", [p("quiet.wav")], 1), failures)
+    _cli_case(out, ("CLI input error over a passing report writes passed: false",
+                    [p("good.wav"), "--timeline", p("missing.json")], 2), failures)
+
+
+def _cli_over_stale(out, args):
+    """Run the CLI with --out over a stale passing report. Return (exit code, report)."""
+    _write(out, {"passed": True})
+    cmd = [sys.executable, os.path.abspath(__file__), *args, "--out", out]
+    code = subprocess.run(cmd, capture_output=True, check=False).returncode
+    return code, (_load_json(out) if os.path.isfile(out) else {})
+
+
+def _cli_case(out, case, failures):
+    """The CLI exits with the wanted code and leaves passed: false with an error."""
+    code, report = _cli_over_stale(out, case[1])
+    ok = code == case[2] and _is_failed_report(report)
+    print(f"{'ok  ' if ok else 'FAIL'} {case[0]}")
+    failures.extend([] if ok else [f"{case[0]}: exit {code}, report {report}"])
+
+
+def _is_failed_report(report):
+    """Return True when the report says passed: false and names an error."""
+    return report.get("passed") is False and bool(report.get("errors"))
 
 
 def _bed_beat_tests(p, expect, failures):
@@ -1074,13 +1257,7 @@ def self_test():
         _arc_tests(p, expect)
         _bed_beat_tests(p, expect, failures)
 
-        out = p("qa/audio-check.json")
-        code = subprocess.run([sys.executable, os.path.abspath(__file__), p("quiet.wav"),
-                               "--out", out], capture_output=True, check=False).returncode
-        ok = code == 1 and os.path.isfile(out) and _load_json(out)["passed"] is False
-        print(f"{'ok  ' if ok else 'FAIL'} CLI exit 1 and --out report")
-        if not ok:
-            failures.append(f"CLI: exit {code}, report exists {os.path.isfile(out)}")
+        _cli_report_tests(p, failures)
 
     skill_md = os.path.join(skill_dir, "SKILL.md")
     size = os.path.getsize(skill_md) if os.path.isfile(skill_md) else SKILL_MD_MAX_BYTES

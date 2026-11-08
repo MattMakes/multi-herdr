@@ -122,8 +122,21 @@ def test_typing_metadata():
     assert len(typing.DEFAULTS) == 22
 
 
-def test_typing_key_rng_formula():
-    assert typing.key_rng(7).uniform() == np.random.default_rng(7 * 7919 + 31).uniform()
+# Recorded once from key_rng(7) on numpy 2 and reviewed. It pins the per-key seed across versions:
+# a changed seed formula changes every typed run that users already tuned.
+KEY_7_FIRST_UNIFORM = 0.7605958890389746
+
+
+def test_typing_key_rng_is_stable_per_key():
+    assert np.array_equal(typing.key_rng(7).uniform(size=4), typing.key_rng(7).uniform(size=4))
+
+
+def test_typing_key_rng_differs_between_keys():
+    assert not np.array_equal(typing.key_rng(7).uniform(size=4), typing.key_rng(8).uniform(size=4))
+
+
+def test_typing_key_rng_seed_is_pinned():
+    assert typing.key_rng(7).uniform() == KEY_7_FIRST_UNIFORM
 
 
 def test_typing_key_is_mono_and_high_passed():

@@ -48,9 +48,9 @@ def _cands(x):
 
 def test_fnd_1_strokes_land_on_clicks():
     cands, _, _ = _cands(clicks_signal())
-    # librosa can also flag the start of the room tone (a stroke of about 1 dB prominence); the spec
-    # counts the 5 click strokes, so strokes under 20 dB prominence are left out of the count.
-    strokes = [c for c in cands if c["kind"] == "stroke" and c["prom"] >= 20]
+    # librosa also flags the start of the room tone; that onset has no attack (nothing reaches floor + 10 dB),
+    # so it gives no stroke.
+    strokes = [c for c in cands if c["kind"] == "stroke"]
     assert len(strokes) == 5
     for s, t, nxt in zip(strokes, CLICK_TIMES, list(CLICK_TIMES[1:]) + [6.0]):
         assert t - 0.015 <= s["start"] <= t

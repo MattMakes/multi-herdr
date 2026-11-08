@@ -24,8 +24,8 @@ the video project folder.
    beat grid: at `bpm` B, 1 beat is `60 / B` s.
 3. Write narration and the caption for each scene. Count words. Give
    every shown text its read hold.
-4. List the key terms. With music, write `rhythm`, the hero and the
-   payoff silence.
+4. List the key terms. With music, write `rhythm` and the hero. Do not
+   plan silence before the payoff.
 5. Write `STORYBOARD.md`, then `timeline.json` from it.
 6. Run the checker. Fix every error. Run it again until it passes.
 
@@ -109,10 +109,10 @@ bottom edge.
 | `lufs_target` | number | `-14` unless the brief says otherwise. |
 | `allow_dark_intro` | boolean | Optional. `true` only when the direction asks for a dark open. Render QA reads it. |
 | `allowed_silences` | list | Optional. Planned silent ranges as `[start_sec, end_sec]` pairs, `0 <= start_sec < end_sec <= duration_sec`. `check_audio.py` does not flag a silence inside one. |
-| `bpm` | number | Optional. Greater than 0. Present means the film has music. Then `rhythm`, `hero_sec` and `payoff_silence_sec` are required. 1 bar is 4 beats: `240 / bpm` s. |
+| `bpm` | number | Optional. Greater than 0. Present means the film has music. Then `rhythm` and `hero_sec` are required. 1 bar is 4 beats: `240 / bpm` s. |
 | `terms` | list | Optional. Key terms as non-empty strings. Each must be said in some narration and shown in some caption or `on_screen_text`. |
 | `hero_sec` | list | Optional, required with `bpm`. `[start_sec, end_sec]` of the hero moment, the payoff the film builds to. |
-| `payoff_silence_sec` | list | Optional, required with `bpm`. `[start_sec, end_sec]` of the planned silence before the payoff. It ends at or before `hero_sec` start. Needs `hero_sec`. `check_audio.py` reads it too. |
+| `payoff_breakdown_sec` | list | Optional. `[start_sec, end_sec]` of a breakdown before the payoff: the music dips by at most 12 dB and is never silent. It ends at or before `hero_sec` start. Needs `hero_sec`. `check_audio.py` checks the dip. The old `payoff_silence_sec` is rejected. |
 
 ### scenes[]
 
@@ -169,8 +169,8 @@ holds, UI crops, declared static holds, `capture_scale`, and the pre-capture zoo
 | 8 | `read_hold` | Each caption and `on_screen_text` item holds `duration_sec - motion.reveal_sec` of at least 1.0 s plus 0.3 s for each word, and never under 1.5 s. |
 | 9 | `terms` | Each `meta.terms` entry is said in a narration and shown in a caption or `on_screen_text`. Whole words, any case. |
 | 10 | `rhythm` | Energy is an integer 0 to 10. Stretches are in order, do not overlap, and stay inside the film. Each event is inside its stretch. With `meta.bpm`, the sheet is not empty. |
-| 11 | `event_gap` | With `meta.bpm`: no part of the film longer than 2 bars has no event (a scene start or an `events_sec` time), except inside a `stop` stretch or `payoff_silence_sec`. |
-| 12 | `hero` | `meta.hero_sec` is inside 30 % to 90 % of `meta.duration_sec`. With `meta.bpm`, `hero_sec` and `payoff_silence_sec` exist and the silence ends at or before the hero start. |
+| 11 | `event_gap` | With `meta.bpm`: no part of the film longer than 2 bars has no event (a scene start or an `events_sec` time), except inside a `stop` stretch. |
+| 12 | `hero` | `meta.hero_sec` is inside 30 % to 90 % of `meta.duration_sec`. With `meta.bpm`, `hero_sec` exists. `payoff_breakdown_sec`, when present, ends at or before the hero start. |
 | 13 | `directions` | `DIRECTION.md` next to `timeline.json` passes the direction rules of `video-direction` (3 directions, key frames, 1 `chosen:` line). |
 | 14 | `materials` | When a scene has kind `capture`, `materials/materials.md` exists (written by `materials.mjs` of `video-capture`) and every file in its table exists in `materials/`. |
 | 15 | `schema` | Every field in the tables above has the right type. IDs are non-empty and unique. A schema error stops the other gates, so fix it first. |
@@ -190,7 +190,7 @@ pad is longer than its scene, it sets
 `duration_sec = max(planned, vo + 0.25)`, recomputes every later
 `start_sec` and `meta.duration_sec`, and runs the checker again. Plan
 narration at 2.2 to 2.5 words/s so this change stays small. The same step
-moves `rhythm`, `hero_sec`, `payoff_silence_sec` and `allowed_silences` with
+moves `rhythm`, `hero_sec`, `payoff_breakdown_sec` and `allowed_silences` with
 the scenes. A time inside a scene that grew scales with that scene.
 
 ## Hand-off

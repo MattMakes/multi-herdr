@@ -106,7 +106,14 @@ export function h264Args(fps) {
   ];
 }
 
-export const AAC_ARGS = ["-c:a", "aac", "-b:a", "320k", "-ar", "48000", "-ac", "2"];
+// Native ffmpeg aac raised the true peak by up to 4 dB; AudioToolbox aac_at (macOS) did not.
+// Use aac_at when this ffmpeg lists it, else native aac. Gate loudness on the encoded MP4.
+let aacEncoder;
+const listsAacAt = () => /^\s*A\S*\s+aac_at\s/m.test(spawnSync("ffmpeg", ["-hide_banner", "-encoders"], { encoding: "utf8" }).stdout ?? "");
+export function aacArgs() {
+  aacEncoder ??= listsAacAt() ? "aac_at" : "aac";
+  return ["-c:a", aacEncoder, "-b:a", "320k", "-ar", "48000", "-ac", "2"];
+}
 
 export function encodeFrames(framesDir, fps, outFile) {
   const input = ["-framerate", String(fps), "-start_number", "0", "-i", join(framesDir, "frame_%06d.png")];
@@ -200,6 +207,8 @@ class Cdp {
 // fixed device scale, sRGB output, grayscale font antialiasing, no background throttling.
 // A window below Chrome's minimum size can stall Page.captureScreenshot for good, so the
 // window never goes below WINDOW_MIN; Emulation.setDeviceMetricsOverride sets the viewport.
+// --allow-file-access-from-files lets a file:// scene read its own image pixels. Without it
+// the canvas is tainted and the pre-upscale check cannot run. It has no effect on http pages.
 const WINDOW_MIN = { width: 800, height: 600 };
 
 function chromeArgs(userDataDir, width, height) {
@@ -211,7 +220,7 @@ function chromeArgs(userDataDir, width, height) {
     "--disable-background-timer-throttling", "--disable-renderer-backgrounding",
     "--disable-backgrounding-occluded-windows", "--disable-extensions",
     "--no-first-run", "--no-default-browser-check", "--disable-sync",
-    "--disable-component-update", "--metrics-recording-only", "about:blank",
+    "--disable-component-update", "--metrics-recording-only", "--allow-file-access-from-files", "about:blank",
   ];
 }
 
@@ -532,9 +541,18 @@ function canvasDraws(probe, canvas) {
   return fresh.draws;
 }
 
+// The pixel size of an <img> or a <video> frame.
+function sourceSize(img) {
+  return img instanceof HTMLVideoElement ? [img.videoWidth, img.videoHeight] : [img.naturalWidth, img.naturalHeight];
+}
+
+function isDrawable(img) {
+  return (img instanceof HTMLImageElement || img instanceof HTMLVideoElement) && sourceSize(img)[0] > 0;
+}
+
 // drawImage(img, dx, dy), (img, dx, dy, dw, dh) or (img, sx, sy, sw, sh, dx, dy, dw, dh).
 function drawSource(img, rest) {
-  return rest.length === 8 ? [rest[2], rest[3]] : [img.naturalWidth, img.naturalHeight];
+  return rest.length === 8 ? [rest[2], rest[3]] : sourceSize(img);
 }
 
 function drawDest(rest, source) {
@@ -547,12 +565,13 @@ function drawRecord(ctx, img, rest) {
   const dest = drawDest(rest, source);
   const m = ctx.getTransform();
   const size = [Math.abs(dest[0]) * Math.hypot(m.a, m.b), Math.abs(dest[1]) * Math.hypot(m.c, m.d)];
-  return { src: img.currentSrc || img.src, natural: source, size };
+  const video = img instanceof HTMLVideoElement;
+  return { src: img.currentSrc || img.src, natural: source, size, video, smooth: ctx.imageSmoothingEnabled };
 }
 
 function recordDraw(probe, ctx, img, rest) {
   const draws = canvasDraws(probe, ctx.canvas);
-  return img instanceof HTMLImageElement && img.naturalWidth > 0 && draws.push(drawRecord(ctx, img, rest));
+  return isDrawable(img) && draws.push(drawRecord(ctx, img, rest));
 }
 
 function rasterProbe() {
@@ -570,7 +589,7 @@ function rasterProbe() {
   window.__rasterProbe = probe;
 }
 
-const PROBE_FUNCTIONS = [canvasDraws, drawSource, drawDest, drawRecord, recordDraw, rasterProbe];
+const PROBE_FUNCTIONS = [canvasDraws, sourceSize, isDrawable, drawSource, drawDest, drawRecord, recordDraw, rasterProbe];
 const PROBE_SCRIPT = `(() => {\n${PROBE_FUNCTIONS.map(String).join("\n")}\nrasterProbe();\n})();`;
 const installRasterProbe = (cdp, sessionId) => cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: PROBE_SCRIPT }, sessionId);
 
@@ -621,8 +640,14 @@ function pixelsOf(canvas) {
   return canvas.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, canvas.width, canvas.height).data;
 }
 
-const channelError = (a, b, i) => (a[i] - b[i]) ** 2;
-const pixelError = (a, b, i) => channelError(a, b, i) + channelError(a, b, i + 1) + channelError(a, b, i + 2);
+// Page functions are sent as source text, so each one is a named function declaration.
+function channelError(a, b, i) {
+  return (a[i] - b[i]) ** 2;
+}
+
+function pixelError(a, b, i) {
+  return channelError(a, b, i) + channelError(a, b, i + 1) + channelError(a, b, i + 2);
+}
 
 function rgbPsnr(a, b) {
   let squared = 0;
@@ -656,8 +681,14 @@ async function detectDetail(url, natural, factor, threshold) {
   return psnr > threshold ? { real_px: real, detail_scale: factor, detail_psnr_db: Math.round(psnr * 10) / 10 } : null;
 }
 
-const ignoreDetailError = () => null;
-const measureDetail = (...args) => detectDetail(...args).catch(ignoreDetailError);
+// A check that cannot run must not read as a pass: the report keeps the error.
+function detailError(e) {
+  return { detail_error: String(e?.message ?? e) };
+}
+
+function measureDetail(...args) {
+  return detectDetail(...args).catch(detailError);
+}
 
 function detailFacts(url, natural, factor, threshold) {
   const cache = (window.__rasterDetail ??= new Map());
@@ -737,15 +768,24 @@ function posterSample(v) {
   return posterUp ? boxSample(v, v.poster, getComputedStyle(v).objectFit) : null;
 }
 
-// `this` is the canvas scale, CSS px per canvas px.
+// "nearest" when the context or the canvas CSS turns smoothing off.
+function drawFacts(d, pixelated) {
+  const sampling = d.smooth && !pixelated ? "smooth" : "nearest";
+  return d.video ? { source: "video", sampling } : { sampling };
+}
+
+// `this` is the canvas: its scale in CSS px per canvas px, and its CSS image-rendering.
 function scaledDraw(d) {
-  return [d.src, d.natural, [d.size[0] * this[0], d.size[1] * this[1]]];
+  const size = [d.size[0] * this.scale[0], d.size[1] * this.scale[1]];
+  return [d.src, d.natural, size, drawFacts(d, this.pixelated)];
 }
 
 function canvasSamples([canvas, entry]) {
   const r = canvas.getBoundingClientRect();
   const drawn = canvas.isConnected && canvas.width > 0 && canvas.height > 0 && isShown(canvas, r);
-  return drawn ? entry.draws.map(scaledDraw, [r.width / canvas.width, r.height / canvas.height]) : [];
+  const scale = [r.width / canvas.width, r.height / canvas.height];
+  const pixelated = drawn && getComputedStyle(canvas).imageRendering === "pixelated";
+  return drawn ? entry.draws.map(scaledDraw, { scale, pixelated }) : [];
 }
 
 // `this` is the background box of 1 element.
@@ -784,9 +824,10 @@ function usableSample(s) {
   return Boolean(s) && s[1][0] > 0 && s[1][1] > 0;
 }
 
-async function enrichSample(sample) {
-  const detail = await detailFacts(sample[0], sample[1], 2, 40);
-  return [...sample, detail];
+// A video frame has no file to decode, so it gets no pre-upscale check.
+async function enrichSample([url, n, size, facts]) {
+  const detail = facts?.source === "video" ? null : await detailFacts(url, n, 2, 40);
+  return [url, n, size, { ...facts, ...detail }];
 }
 
 function sampleRecord([url, n, size, detail]) {
@@ -806,9 +847,9 @@ async function measureRasters() {
 }
 
 const PAGE_FUNCTIONS = [rasterName, isRaster, isShown, loadRaster, loadNatural, naturalSize, pixelCanvas, pixelsOf, rgbPsnr,
-  channelError, pixelError, originalPixels, roundTripPixels, detectDetail, ignoreDetailError, measureDetail, detailFacts,
+  channelError, pixelError, originalPixels, roundTripPixels, detectDetail, detailError, measureDetail, detailFacts,
   fitScales, fitSize, trimmed, splitLayers, layerUrl,
-  axisLength, keepRatio, lengthSize, backgroundSize, boxSample, imageSample, svgFit, svgImageSample, posterSample, scaledDraw,
+  axisLength, keepRatio, lengthSize, backgroundSize, boxSample, imageSample, svgFit, svgImageSample, posterSample, drawFacts, scaledDraw,
   canvasSamples, layerSample, axisScale, backgroundBox, backgroundSamples, roundTenth, deviceTenth, usableSample, enrichSample, sampleRecord,
   measureRasters];
 
@@ -1203,7 +1244,8 @@ function masterPlan(s, i, frames, ctx) {
 
 function planScene(s, i, ctx) {
   const frames = sceneFrames(s, ctx.info.fps);
-  return ctx.clipFiles[i] ? clipPlan(s, i, frames, ctx) : masterPlan(s, i, frames, ctx);
+  const plan = ctx.clipFiles[i] ? clipPlan(s, i, frames, ctx) : masterPlan(s, i, frames, ctx);
+  return { ...plan, frames: frames[1] - frames[0] };
 }
 
 const masterTap = (p, i) => (p.clip ? "" : `[m${i}]`);
@@ -1211,22 +1253,30 @@ const outLabel = (_, i) => `[v${i}]`;
 const chainOf = (p) => p.chain;
 const modeOf = (p) => p.mode;
 const asInput = (file) => ["-i", file];
-const audioArgs = (info) => (info.audio ? ["-map", "0:a:0", ...AAC_ARGS] : []);
+const audioArgs = (info) => (info.audio ? ["-map", "[a]", ...aacArgs()] : []);
+const addFrames = (n, p) => n + p.frames;
 const clipFileFor = (ctx) => (s) => sceneClip(ctx.sceneClips, s.id, ctx.aspect);
 const planFor = (ctx) => (s, i) => planScene(s, i, ctx);
 
-function aspectGraph(plans) {
+// Pad (or cut) the audio to the exact video length. A mux that stops at the first stream end cut 3 frames.
+function padAudio(plans, fps) {
+  const samples = Math.round((plans.reduce(addFrames, 0) / fps) * 48000);
+  return `[0:a:0]aresample=48000,apad,atrim=end_sample=${samples}[a]`;
+}
+
+function aspectGraph(plans, info) {
   const taps = plans.map(masterTap).filter(Boolean);
   const split = taps.length ? [`[0:v]split=${taps.length}${taps.join("")}`] : [];
   const concat = `${plans.map(outLabel).join("")}concat=n=${plans.length}:v=1:a=0[v]`;
-  return [...split, ...plans.map(chainOf), concat].join(";");
+  const audio = info.audio ? [padAudio(plans, info.fps)] : [];
+  return [...split, ...plans.map(chainOf), concat, ...audio].join(";");
 }
 
 async function exportAspect(ctx) {
   const clipFiles = ctx.timeline.scenes.map(clipFileFor(ctx));
   const plans = ctx.timeline.scenes.map(planFor({ ...ctx, clipFiles }));
-  const args = ["-i", ctx.master, ...clipFiles.filter(Boolean).flatMap(asInput), "-filter_complex", aspectGraph(plans), "-map", "[v]"];
-  await ffmpeg([...args, ...audioArgs(ctx.info), ...h264Args(ctx.info.fps), "-shortest", ctx.outFile]);
+  const args = ["-i", ctx.master, ...clipFiles.filter(Boolean).flatMap(asInput), "-filter_complex", aspectGraph(plans, ctx.info), "-map", "[v]"];
+  await ffmpeg([...args, ...audioArgs(ctx.info), ...h264Args(ctx.info.fps), ctx.outFile]);
   return plans.map(modeOf);
 }
 
@@ -1466,7 +1516,7 @@ async function testEncode(root) {
 
 async function makeMaster(file) {
   const sources = ["-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=30:duration=3", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=3"];
-  await ffmpeg([...sources, "-ac", "2", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", ...AAC_ARGS, "-shortest", file]);
+  await ffmpeg([...sources, "-ac", "2", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", ...aacArgs(), file]);
 }
 
 async function checkAspectExport(outDir, [aspect, size]) {
@@ -1672,19 +1722,26 @@ window.__videoMeta = { duration: 0.5 };
 window.__seekToFrame = function () {};
 </script></body></html>`;
 
-const KINDS_HTML = `<!doctype html><html><body style="margin:0;display:flex;align-items:flex-start">
+const KINDS_HTML = `<!doctype html><html><head><style>body > * { flex-shrink: 0 }</style></head><body style="margin:0;display:flex;align-items:flex-start">
 <img id="src" src="canvas.png" style="display:none">
 <div style="width:200px;height:130px;background:url(bg.png) no-repeat;background-size:130px auto"></div>
 <canvas id="c" width="130" height="130"></canvas>
+<video id="clip" src="clip.mp4" muted preload="auto" style="display:none"></video>
+<canvas id="cv" width="130" height="130"></canvas>
 <video poster="poster.png" width="130" height="130"></video>
 <svg width="130" height="130"><image href="svg.png" width="130" height="130"/></svg>
 <img src="vector.svg" style="width:130px;height:130px">
 <script>
 window.__videoMeta = { duration: 0.2 };
-window.__seekToFrame = function () {
+window.__seekToFrame = async function () {
   const ctx = document.getElementById("c").getContext("2d");
   ctx.clearRect(0, 0, 130, 130);
   ctx.drawImage(document.getElementById("src"), 0, 0, 130, 130);
+  const clip = document.getElementById("clip");
+  if (clip.readyState < 2) await new Promise((ok) => clip.addEventListener("loadeddata", ok, { once: true }));
+  const vctx = document.getElementById("cv").getContext("2d");
+  vctx.imageSmoothingEnabled = false;
+  vctx.drawImage(clip, 0, 0, 130, 130);
 };
 </script></body></html>`;
 
@@ -1702,16 +1759,33 @@ const readJson = (file) => JSON.parse(readFileSync(file, "utf8"));
 const rasterRender = (scene, out, rasterSizes) => renderScene({ scene, out, fps: 10, width: 720, height: 160, rasterSizes });
 const sizeLine = (s) => `${s.src} ${s.natural_px.join("x")} -> ${s.drawn_px.join("x")}`;
 
-async function testRasterKinds(root) {
+// Every image kind, a vector SVG that is skipped, and a 100 px video clip for a canvas draw.
+async function rasterKindsDir(root) {
   const dir = await rasterDir(root, "raster-kinds", ["bg.png", "canvas.png", "poster.png", "svg.png"]);
   writeFileSync(join(dir, "vector.svg"), VECTOR_SVG);
   writeFileSync(join(dir, "index.html"), KINDS_HTML);
+  await ffmpeg(["-f", "lavfi", "-i", "testsrc2=s=100x100:rate=10:duration=1", "-pix_fmt", "yuv420p", join(dir, "clip.mp4")]);
+  return dir;
+}
+
+async function testRasterKinds(root) {
+  const dir = await rasterKindsDir(root);
   await rasterRender(join(dir, "index.html"), join(dir, "frames"), join(dir, "raster-sizes.json"));
   const report = readJson(join(dir, "raster-sizes.json"));
   assertEq(report.step_sec, RASTER_STEP_SEC, "step_sec");
   const at = (t) => report.samples.filter((s) => s.t_sec === t).map(sizeLine);
-  const want = ["bg.png", "canvas.png", "poster.png", "svg.png"].map((f) => `${f} 100x100 -> 130x130`);
+  const want = KIND_FILES.map((f) => `${f} 100x100 -> 130x130`);
   assertEq([at(0), at(0.1)], [want, want], "samples at 0 and 0.1 s");
+  checkDrawFacts(report.samples);
+}
+
+const KIND_FILES = ["bg.png", "canvas.png", "clip.mp4", "poster.png", "svg.png"];
+const drawFactsOf = (samples, src) => samples.filter((s) => s.src === src).map((s) => [s.source, s.sampling, s.real_px])[0];
+
+// A canvas video draw is marked as video and nearest (smoothing off); an image draw is smooth.
+function checkDrawFacts(samples) {
+  assertEq(drawFactsOf(samples, "clip.mp4"), ["video", "nearest", undefined], "canvas video draw");
+  assertEq(drawFactsOf(samples, "canvas.png"), [undefined, "smooth", undefined], "canvas image draw");
 }
 
 const QA_SCRIPTS = join(SKILL_DIR, "..", "video-qa", "scripts");
@@ -1749,6 +1823,7 @@ async function testRasterClean(root) {
   const samples = readJson(join(dir, "clean.json")).samples;
   assertEq(samples.length, 5, "5 samples in 0.5 s");
   check(samples.every((sample) => !sample.real_px), "sharp 100 px frame is reported as pre-upscaled");
+  check(samples.every((sample) => !sample.detail_error), "the pre-upscale check could not read the image pixels");
   if (noQa()) return NO_QA;
   check(qaRasterPasses(join(dir, "clean.json")), "qa_video raster_upscale fails the clean 1x report");
 }
@@ -1817,7 +1892,7 @@ const CHROME_TESTS = [
   ["blurred frames are byte-identical forward and reverse", testBlurReverse],
   ["--scenes renders HTML scenes in parallel workers with tail handles", testParallelScenes],
   ["scope check passes a fix inside scope and names a changed scene outside it", testScope],
-  ["raster sizes cover background, canvas, poster and SVG image, not SVG files", testRasterKinds],
+  ["raster sizes cover background, canvas image and video, poster and SVG image, not SVG files", testRasterKinds],
   ["qa_video raster_upscale passes a 1x image from --scene --raster-sizes", testRasterClean],
   ["raster sizes detect a frame pre-upscaled by 2x", testPreUpscaledRaster],
   ["qa_video raster_upscale fails a 1.3x image in render/raster-sizes.json from --scenes", testRasterScenes],

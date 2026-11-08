@@ -14,7 +14,6 @@ import pytest
 from hark.fit.analysis import gesture, modal, module_for, sinusoidal, space, spectral
 
 SR = 48000
-HERE = os.path.dirname(os.path.abspath(__file__))
 ENGINE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
@@ -43,28 +42,6 @@ def _mel(a, b):
     a = a.mean(axis=1) if a.ndim == 2 else a
     b = b.mean(axis=1) if b.ndim == 2 else b
     return modal.mel_distance(a, b)[0]
-
-
-# ---------------------------------------------------------------- A-1 .. A-4
-
-@pytest.mark.skip(reason="needs-data: the 12 validation references")
-def test_a_1_validation_clap():
-    pass
-
-
-@pytest.mark.skip(reason="needs-data: the 12 validation references")
-def test_a_2_validation_mel_gap():
-    pass
-
-
-@pytest.mark.skip(reason="needs-data: the 12 validation references and describe (ML)")
-def test_a_3_validation_describe_tag():
-    pass
-
-
-@pytest.mark.skip(reason="needs-data: the replication benchmark set")
-def test_a_4_replication_benchmark():
-    pass
 
 
 # ---------------------------------------------------------------- A-5
@@ -127,8 +104,6 @@ def test_a_5_every_kind_renders(models):
 _RENDER_SCRIPT = """
 import json, sys
 import numpy as np
-sys.path.insert(0, sys.argv[3])
-import conftest  # installs the core stand-ins only while hark.core is absent
 from hark.fit.analysis import module_for
 m = json.load(open(sys.argv[1]))
 np.save(sys.argv[2], module_for(m["kind"]).render(m, 3))
@@ -147,7 +122,7 @@ def test_a_6_render_is_pure_across_processes(models, tmp_path, key):
     outs = []
     for i in range(2):
         out = tmp_path / f"y{i}.npy"
-        subprocess.run([sys.executable, str(script), str(mp), str(out), HERE], check=True, env=env,
+        subprocess.run([sys.executable, str(script), str(mp), str(out)], check=True, env=env,
                        cwd=os.path.dirname(os.path.abspath(__file__)))
         outs.append(np.load(out))
     assert np.array_equal(outs[0], outs[1])

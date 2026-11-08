@@ -14,6 +14,10 @@ scan reads .html, .js, .mjs and .css files and reports:
   - a CSS transition on a moving property (or "all") with a linear timing.
 Opacity, colour and other non-moving properties may be linear.
 
+--raster-sizes fails a sample drawn more than 1.2x its natural size, and fails
+a report with 0 samples. A sample with "sampling": "nearest" at a whole-number
+scale (pixel art) passes.
+
 A constant move is sometimes right: a slow camera drift, a ticker, a progress
 bar. Mark it with the comment "motion-ok: linear <reason>" on the line of the
 call or the line above it.
@@ -31,6 +35,7 @@ from pathlib import Path
 SUFFIXES = {".html", ".htm", ".js", ".mjs", ".css"}
 ALLOW = "motion-ok: linear"
 MAX_RASTER_SCALE = 1.2
+INTEGER_TOL = 0.02
 
 CALL = re.compile(r"\.(to|fromTo|from|animate)\s*\(")
 MOVING_KEY = re.compile(
@@ -113,6 +118,20 @@ RASTER_ERRORS = (FileNotFoundError, UnicodeDecodeError, json.JSONDecodeError, Va
 SCAN_ERRORS = (FileNotFoundError, UnicodeDecodeError)
 
 
+class Caught:
+    """A with-block that keeps 1 exception of the given kinds in .error instead of raising it."""
+
+    def __init__(self, kinds):
+        self.kinds, self.error = kinds, None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, kind, error, _trace):
+        self.error = error if kind is not None and issubclass(kind, self.kinds) else None
+        return self.error is not None
+
+
 def is_pair(value):
     return isinstance(value, list) and len(value) == 2 and all(isinstance(v, (int, float)) for v in value)
 
@@ -125,18 +144,29 @@ def sample_scale(sample):
     return max(d / n for d, n in zip(drawn, natural))
 
 
-def raster_upscales(report):
-    """Samples whose drawn width or height is more than 1.2x its natural size."""
+def pixel_art(sample):
+    """A nearest-neighbour draw at the same whole-number scale on both axes keeps every pixel sharp."""
+    natural, drawn = sample.get("real_px", sample.get("natural_px")), sample["drawn_px"]
+    scales = [d / n for d, n in zip(drawn, natural)]
+    k = round(scales[0])
+    return sample.get("sampling") == "nearest" and k >= 1 and all(abs(v - k) <= INTEGER_TOL for v in scales)
+
+
+def report_samples(report):
     samples = report.get("samples") if isinstance(report, dict) else None
     if not isinstance(samples, list):
         raise ValueError("report needs a samples list")
+    return samples
+
+
+def raster_upscales(samples):
+    """Samples whose drawn width or height is more than 1.2x its natural size, except pixel art."""
     scaled = [(sample, sample_scale(sample)) for sample in samples]
-    return [(sample, scale) for sample, scale in scaled if scale > MAX_RASTER_SCALE + 1e-9]
+    return [(sample, scale) for sample, scale in scaled if scale > MAX_RASTER_SCALE + 1e-9 and not pixel_art(sample)]
 
 
-def read_raster_upscales(path):
-    report = json.loads(Path(path).read_text(encoding="utf-8"))
-    return raster_upscales(report)
+def read_raster_samples(path):
+    return report_samples(json.loads(Path(path).read_text(encoding="utf-8")))
 
 
 def read_error(prefix, error):
@@ -156,14 +186,33 @@ def raster_line(path, sample, scale):
     return f"{path}: {sample.get('src', '<unknown>')} at {sample.get('t_sec', '<unknown>')} s is {scale:.3f}x; maximum is {MAX_RASTER_SCALE:.1f}x{measured}"
 
 
-def check_raster_sizes(path):
-    try:
-        hits = read_raster_upscales(path)
-    except RASTER_ERRORS as e:
-        return read_error("cannot read raster sizes: ", e)
+def raster_report(path):
+    samples = read_raster_samples(path)
+    return samples, raster_upscales(samples), None
+
+
+def read_raster_report(path):
+    """Return (samples, upscaled samples, read error) of a raster size report."""
+    caught = Caught(RASTER_ERRORS)
+    with caught:
+        return raster_report(path)
+    return [], [], caught.error
+
+
+def raster_summary(path, samples, hits):
+    empty = f"scan_linear_motion: {path} has 0 samples; an empty size report fails"
+    upscaled = f"scan_linear_motion: {len(hits)} raster upscale(s) over {MAX_RASTER_SCALE:.1f}x"
+    return empty if not samples else upscaled if hits else "scan_linear_motion: raster sizes pass"
+
+
+def report_raster(path, samples, hits):
     lines = [raster_line(path, sample, scale) for sample, scale in hits]
-    summary = f"scan_linear_motion: {len(hits)} raster upscale(s) over {MAX_RASTER_SCALE:.1f}x" if hits else "scan_linear_motion: raster sizes pass"
-    return report_hits(lines, summary, hits)
+    return report_hits(lines, raster_summary(path, samples, hits), hits or not samples)
+
+
+def check_raster_sizes(path):
+    samples, hits, error = read_raster_report(path)
+    return read_error("cannot read raster sizes: ", error) if error else report_raster(path, samples, hits)
 
 
 def check_linear_motion(paths):
@@ -243,7 +292,23 @@ def exit_failures(root):
 def raster_failures(root):
     clean = failure_if(raster_exit(root / "raster-clean.json", [120, 60]), 0, "1.2x raster sample does not pass")
     bad = failure_if(raster_exit(root / "raster-bad.json", [121, 50]), 1, "1.21x raster sample does not fail")
-    return clean + bad + pre_upscale_failures(root)
+    return clean + bad + pre_upscale_failures(root) + empty_failures(root) + pixel_art_failures(root)
+
+
+def empty_failures(root):
+    path = root / "raster-empty.json"
+    path.write_text(json.dumps({"samples": []}), encoding="utf-8")
+    return failure_if(check_raster_sizes(path), 1, "a raster report with 0 samples does not fail")
+
+
+def pixel_art_failures(root):
+    nearest = failure_if(raster_exit(root / "raster-nn-3x.json", [300, 150], sampling="nearest"), 0,
+                         "a 3x nearest-neighbour pixel-art sample does not pass")
+    smooth = failure_if(raster_exit(root / "raster-smooth-3x.json", [300, 150]), 1,
+                        "a 3x smoothed sample does not fail")
+    fraction = failure_if(raster_exit(root / "raster-nn-2.5x.json", [250, 125], sampling="nearest"), 1,
+                          "a 2.5x nearest-neighbour sample does not fail")
+    return nearest + smooth + fraction
 
 
 def failure_if(got, want, message):
@@ -255,10 +320,12 @@ def pre_upscale_failures(root):
     return [] if exit_code == 1 else ["a pre-upscaled raster does not fail at its measured real resolution"]
 
 
-def raster_exit(path, drawn, real=None):
+def raster_exit(path, drawn, real=None, sampling=None):
     sample = {"t_sec": 0, "src": "plate.png", "natural_px": [100, 50], "drawn_px": drawn}
     if real:
         sample["real_px"] = real
+    if sampling:
+        sample["sampling"] = sampling
     path.write_text(json.dumps({"samples": [sample]}), encoding="utf-8")
     return check_raster_sizes(path)
 

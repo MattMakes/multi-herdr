@@ -1,7 +1,8 @@
-"""Recipe keypress: one press of a mechanical keyboard key, built from the physics of the key.
+"""Mechanical keyboard key: one press and release, modelled part by part.
 
-The board layout (mode layout, microphone pair, room) comes from ``key`` through a
-fixed per-key generator. A press varies only force, timing and noise.
+Every key number owns a fixed layout (its mode clouds, the two microphone
+positions and their rooms). A take only changes the finger force, the timing
+and the noise, so two takes of one key sound like the same physical key.
 """
 
 from __future__ import annotations
@@ -12,387 +13,439 @@ import numpy as np
 from scipy import signal
 
 from hark.forge.engine import dsp
-from hark.forge.recipes.ui import _layers as L
+from hark.forge.recipes.ui import _layers as kit
 
 TARGET = "a single mechanical keyboard key press with a crisp click and a short thock"
 TARGETS = {"typing_key": TARGET}
 ALTS = ["a wooden knock", "a computer mouse click", "a typewriter key", "a cork pop"]
 REFSET = "typing_key"
-REFS = [f"{L.ref_root()}/keyboard/{name}.wav"
-        for name in ("kb_thock_01", "kb_thock_02", "kb_thock_03", "kb_thock_04", "kb_enter_01", "kb_space_01")]
+_REF_NAMES = "kb_thock_01 kb_thock_02 kb_thock_03 kb_thock_04 kb_enter_01 kb_space_01".split()
+REFS = [kit.ref_root() + "/keyboard/" + stem + ".wav" for stem in _REF_NAMES]
 
-SPACE = {
-    "click_tc": (3e-5, 4e-4, "log"), "click_tau": (1.5e-4, 1e-3, "log"), "click_lvl": (0.1, 2.0, "log"),
-    "click_lo": (6500, 9500, "log"), "click_tilt": (-3.0, 3.0), "crack": (0.2, 2.0, "log"), "snap": (0.0, 1.0),
-    "cap_f": (900, 1800, "log"), "cap_tau": (0.0015, 0.0045, "log"), "cap_noise": (0.0, 1.0),
-    "cap_n": (6, 30, "int"), "cap_cl": (0.1, 1.0, "log"), "cap_fast": (0.0005, 0.003, "log"),
-    "cap_res": (0.05, 1.0, "log"), "mid_f": (110, 260, "log"), "mid_tau": (0.003, 0.016, "log"),
-    "mid_lvl": (0.01, 0.2, "log"), "thock_f": (55, 90, "log"), "thock_tau": (0.045, 0.1, "log"),
-    "thock_lvl": (0.05, 0.8, "log"), "thock_rise": (0.001, 0.025, "log"), "case_f": (70, 220, "log"),
-    "case_lvl": (0.0, 0.8), "case_dec": (0.3, 1.0), "up_delay": (0.07, 0.125), "up_lvl": (0.08, 0.35, "log"),
-    "up_pitch": (0.9, 1.5), "tick_lvl": (0.0, 1.0), "tick_dt": (0.004, 0.025, "log"),
-    "pre_len": (0.004, 0.025, "log"), "pre_lvl": (0.001, 0.06, "log"), "ping_f": (7500, 11000, "log"),
-    "ping_tau": (0.004, 0.03, "log"), "ping_lvl": (0.04, 0.3), "room_wet": (0.0, 0.4), "rt60": (0.05, 0.4, "log"),
-    "room_size": (0.0, 1.0), "room_damp": (0.2, 0.95), "room_model": ["sparse", "diffuse"],
-    "floor_db": (-78.0, -55.0), "rumble": (0.0, 0.7), "clip": (0.12, 0.4), "hpf": (36, 46, "log"),
-    "key": (0, 999, "int"), "top_lvl": (0.0, 2.5), "top_lo": (1800, 4500, "log"), "top_tau": (0.0006, 0.004, "log"),
-    "jacket_lvl": (0.0, 0.9), "jacket_dt": (0.003, 0.012, "log"), "pre_gap": (0.0005, 0.006, "log"),
-    "width": (0.0, 0.6),
-}
+SPACE = kit.space_table("""
+    click_tc 3e-5 4e-4 log
+    click_tau 1.5e-4 1e-3 log
+    click_lvl 0.1 2.0 log
+    click_lo 6500 9500 log
+    click_tilt -3.0 3.0
+    crack 0.2 2.0 log
+    snap 0.0 1.0
+    cap_f 900 1800 log
+    cap_tau 0.0015 0.0045 log
+    cap_noise 0.0 1.0
+    cap_n 6 30 int
+    cap_cl 0.1 1.0 log
+    cap_fast 0.0005 0.003 log
+    cap_res 0.05 1.0 log
+    mid_f 110 260 log
+    mid_tau 0.003 0.016 log
+    mid_lvl 0.01 0.2 log
+    thock_f 55 90 log
+    thock_tau 0.045 0.1 log
+    thock_lvl 0.05 0.8 log
+    thock_rise 0.001 0.025 log
+    case_f 70 220 log
+    case_lvl 0.0 0.8
+    case_dec 0.3 1.0
+    up_delay 0.07 0.125
+    up_lvl 0.08 0.35 log
+    up_pitch 0.9 1.5
+    tick_lvl 0.0 1.0
+    tick_dt 0.004 0.025 log
+    pre_len 0.004 0.025 log
+    pre_lvl 0.001 0.06 log
+    ping_f 7500 11000 log
+    ping_tau 0.004 0.03 log
+    ping_lvl 0.04 0.3
+    room_wet 0.0 0.4
+    rt60 0.05 0.4 log
+    room_size 0.0 1.0
+    room_damp 0.2 0.95
+    room_model | sparse diffuse
+    floor_db -78.0 -55.0
+    rumble 0.0 0.7
+    clip 0.12 0.4
+    hpf 36 46 log
+    key 0 999 int
+    top_lvl 0.0 2.5
+    top_lo 1800 4500 log
+    top_tau 0.0006 0.004 log
+    jacket_lvl 0.0 0.9
+    jacket_dt 0.003 0.012 log
+    pre_gap 0.0005 0.006 log
+    width 0.0 0.6
+""")
 
-V1_DEFAULTS = {
-    "click_tc": 7.62977e-05, "click_tau": 0.000400034, "click_lvl": 0.195527, "click_lo": 7323.18,
-    "click_tilt": -1.25571, "crack": 0.395643, "snap": 0.0, "cap_f": 1489.18, "cap_tau": 0.00399449,
-    "cap_noise": 1.0, "cap_n": 7, "cap_cl": 0.357156, "cap_fast": 0.000995191, "cap_res": 0.749554,
-    "mid_f": 205.793, "mid_tau": 0.00918634, "mid_lvl": 0.0902506, "thock_f": 86.8567, "thock_tau": 0.0549253,
-    "thock_lvl": 0.226067, "thock_rise": 0.00834742, "case_f": 70.0, "case_lvl": 0.581134, "case_dec": 0.736866,
-    "up_delay": 0.124575, "up_lvl": 0.0969741, "up_pitch": 1.04402, "tick_lvl": 0.581597, "tick_dt": 0.0111911,
-    "pre_len": 0.0128195, "pre_lvl": 0.0207414, "ping_f": 9083.43, "ping_tau": 0.00578368, "ping_lvl": 0.122274,
-    "room_wet": 0.261726, "rt60": 0.113685, "room_size": 0.212985, "room_damp": 0.95, "room_model": "sparse",
-    "floor_db": -55.0, "rumble": 0.0177183, "clip": 0.38353, "hpf": 44.5337, "key": 999,
-}
+# The first tuned set. A parameter set without ``top_lvl`` renders this older sound.
+V1_DEFAULTS = kit.value_table("""
+    click_tc 7.62977e-05  click_tau 0.000400034  click_lvl 0.195527  click_lo 7323.18
+    click_tilt -1.25571  crack 0.395643  snap 0.0  cap_f 1489.18  cap_tau 0.00399449
+    cap_noise 1.0  cap_n 7  cap_cl 0.357156  cap_fast 0.000995191  cap_res 0.749554
+    mid_f 205.793  mid_tau 0.00918634  mid_lvl 0.0902506  thock_f 86.8567  thock_tau 0.0549253
+    thock_lvl 0.226067  thock_rise 0.00834742  case_f 70.0  case_lvl 0.581134  case_dec 0.736866
+    up_delay 0.124575  up_lvl 0.0969741  up_pitch 1.04402  tick_lvl 0.581597  tick_dt 0.0111911
+    pre_len 0.0128195  pre_lvl 0.0207414  ping_f 9083.43  ping_tau 0.00578368  ping_lvl 0.122274
+    room_wet 0.261726  rt60 0.113685  room_size 0.212985  room_damp 0.95  room_model sparse
+    floor_db -55.0  rumble 0.0177183  clip 0.38353  hpf 44.5337  key 999
+""")
 
-DEFAULTS = dict(V1_DEFAULTS, click_lvl=0.6, thock_tau=0.05, clip=0.24, top_lvl=0.8, top_lo=2500.0, top_tau=0.0015,
-                jacket_lvl=0.0, jacket_dt=0.008, pre_gap=0.002, pre_len=0.006, width=0.2)
+DEFAULTS = {**V1_DEFAULTS, **kit.value_table("""
+    click_lvl 0.6  thock_tau 0.05  clip 0.24  top_lvl 0.8  top_lo 2500.0  top_tau 0.0015
+    jacket_lvl 0.0  jacket_dt 0.008  pre_gap 0.002  pre_len 0.006  width 0.2
+""")}
 
-N_CONTACT_S = 0.12
+_HIT_WINDOW_S = 0.12
 
-
-# ------------------------------------------------------------ building blocks
 
 def key_rng(key: int, part: int) -> np.random.Generator:
-    """The fixed per-key generator of one layout part."""
+    """Generator that fixes one layout part of one key. It is the same in every take."""
     return np.random.default_rng(int(key) * 7919 + part * 104729 + 17)
 
 
+# --------------------------------------------------------------- signal parts
+
 def ring(freqs, taus, amps, n: int, r: np.random.Generator) -> np.ndarray:
-    """K1: a sum of decaying sines, each computed over its first 9 time constants."""
-    y = np.zeros(n)
-    for f, d, a in zip(freqs, taus, amps):
-        if a == 0 or f >= 0.47 * L.SR:
+    """Add up decaying sines. Each one is only computed for 9 of its time constants."""
+    acc = np.zeros(n)
+    nyq_edge = 0.47 * kit.SR
+    for freq, tau, gain in zip(freqs, taus, amps):
+        if gain == 0 or freq >= nyq_edge:
             continue
-        m = min(n, int(9 * d * L.SR) + 2)
-        t = L.t_of(m)
-        y[:m] += a * np.exp(-t / d) * np.sin(2 * np.pi * f * t + r.uniform(0, 2 * np.pi))
-    return y
+        span = min(n, int(9 * tau * kit.SR) + 2)
+        tt = kit.t_of(span)
+        acc[:span] += gain * kit.decay(tt, tau) * kit.osc(freq, tt, r.uniform(0, kit.TWO_PI))
+    return acc
 
 
 def cloud(f_lo: float, f_hi: float, count: int, tau_lo: float, tau_hi: float, n: int, kr: np.random.Generator,
           r: np.random.Generator, tilt: float = -3.0, detune: float = 0.002) -> np.ndarray:
-    """K2: a mode cloud whose layout comes from ``kr``; detune and phases come from ``r``."""
+    """Many modes between f_lo and f_hi. ``kr`` places them; ``r`` detunes them and sets phases."""
     count = int(count)
-    f = np.sort(np.exp(kr.uniform(math.log(f_lo), math.log(f_hi), count)))
-    amps = 10 ** (tilt * np.log2(f / f_lo) / 20) * kr.uniform(0.3, 1.0, count)
-    f = f * (1 + detune * r.standard_normal(count))
-    u = np.clip(np.log(f / f_lo) / math.log(f_hi / f_lo), 0, 1)
-    taus = np.exp(math.log(tau_lo) + u * (math.log(tau_hi) - math.log(tau_lo)))
-    return ring(f, taus, amps, n, r)
+    span = math.log(f_hi / f_lo)
+    centres = np.sort(np.exp(kr.uniform(math.log(f_lo), math.log(f_hi), count)))
+    gains = 10 ** (tilt * np.log2(centres / f_lo) / 20) * kr.uniform(0.3, 1.0, count)
+    centres = centres * (1 + detune * r.standard_normal(count))
+    pos = np.clip(np.log(centres / f_lo) / span, 0, 1)
+    decays = np.exp(math.log(tau_lo) + pos * (math.log(tau_hi) - math.log(tau_lo)))
+    return ring(centres, decays, gains, n, r)
 
 
 def hiss(lo: float, hi: float, tau: float, n: int, r: np.random.Generator, order: int = 2) -> np.ndarray:
-    """K3: decaying band noise, zero-padded to n."""
-    m = min(n, int(9 * tau * L.SR) + 2)
-    w = dsp.butter(r.standard_normal(m), "band", (lo, min(hi, 21600.0)), order) * np.exp(-L.t_of(m) / tau)
-    return L.fit(np.asarray(w, dtype=float), n)
+    """Band-limited noise with an exponential decay, padded with zeros to n samples."""
+    span = min(n, int(9 * tau * kit.SR) + 2)
+    burst = kit.bandpass(r.standard_normal(span), lo, min(hi, 21600.0), order)
+    burst = burst * kit.decay(kit.t_of(span), tau)
+    return kit.fit(np.asarray(burst, dtype=float), n)
 
 
 def pulse(tc: float) -> np.ndarray:
-    """K4: a half-sine contact pulse of unit area."""
-    k = max(1, int(round(tc * L.SR)))
-    p = np.sin(np.pi * (np.arange(k) + 0.5) / k)
-    return p / p.sum()
+    """Half a sine period, scaled so that its samples add up to 1."""
+    width = max(1, int(round(tc * kit.SR)))
+    arch = np.sin(np.pi * (np.arange(width) + 0.5) / width)
+    return arch / arch.sum()
 
 
-def drive(ir: np.ndarray, tc: float) -> np.ndarray:
-    """K4b: the response driven by a contact pulse, cut to the response length."""
-    return signal.fftconvolve(ir, pulse(tc))[: len(ir)]
+def _strike(response: np.ndarray, touch: float) -> np.ndarray:
+    """Excite a response with a contact pulse and keep its original length."""
+    return signal.fftconvolve(response, pulse(touch))[: len(response)]
 
 
 def energy(x: np.ndarray, ms: float = 5.0) -> np.ndarray:
-    """K6: divide by the RMS of the first ``ms`` milliseconds."""
-    k = max(8, L.n_of(ms / 1000))
-    return x / (L.rms(x[:k]) + 1e-12)
+    """Scale x so that its opening ``ms`` milliseconds have unit RMS."""
+    head = max(8, kit.n_of(ms / 1000))
+    return x / (kit.rms(x[:head]) + 1e-12)
 
 
-def crack(r: np.random.Generator, n: int, tau: float, tc: float) -> np.ndarray:
-    """K7: a broadband crack driven by the contact pulse."""
-    m = min(n, max(L.n_of(9 * tau), 8))
-    w = dsp.butter(r.standard_normal(m) * np.exp(-L.t_of(m) / tau), "high", 1200, 1)
-    return drive(L.fit(np.asarray(w, dtype=float), n), tc)
+def _crack(gen: np.random.Generator, size: int, fall: float, touch: float) -> np.ndarray:
+    span = min(size, max(kit.n_of(9 * fall), 8))
+    burst = kit.highpass(gen.standard_normal(span) * kit.decay(kit.t_of(span), fall), 1200, 1)
+    return _strike(kit.fit(np.asarray(burst, dtype=float), size), touch)
 
 
-def contact(p: dict, r: np.random.Generator, n: int, part: int, pitch: float = 1.0, bright: float = 1.0):
-    """K8: a single plastic impact (part 0 bottom-out, part 1 top-out)."""
-    kr = key_rng(p["key"], part)
-    tc = p["click_tc"] * math.exp(0.15 * r.standard_normal())
-    hf = _click_part(p, r, n, kr, tc)
-    cap = _cap(p, r, n, kr, pitch, tc)
-    mid = _case_body(p, r, n, kr, pitch)
-    snap = _snap(kr, n)
-    x = bright * p["click_lvl"] * energy(hf) + energy(cap) + p["mid_lvl"] * energy(mid)
-    if p.get("top_lvl", 0) > 0:
-        top = drive(hiss(p["top_lo"], 12000, p["top_tau"], n, r, 2), tc)
-        x = x + bright * p["top_lvl"] * energy(top)
-    return L.unit(L.unit(x) + p["snap"] * snap)
+def _bright_part(cfg: dict, gen: np.random.Generator, size: int, lay: np.random.Generator, touch: float) -> np.ndarray:
+    fall = cfg["click_tau"]
+    modes = kit.unit(cloud(cfg["click_lo"], 18000, 40, 1.6 * fall, 0.6 * fall, size, lay, gen, tilt=cfg["click_tilt"]))
+    bright = _strike(modes, touch)
+    split = kit.unit(_crack(gen, size, 0.4 * fall, 0.5 * touch))
+    return kit.unit(bright) + cfg["crack"] * split
 
 
-def _click_part(p: dict, r: np.random.Generator, n: int, kr: np.random.Generator, tc: float) -> np.ndarray:
-    """K8 high part: the driven click cloud plus the crack at `crack`."""
-    hf = drive(L.unit(cloud(p["click_lo"], 18000, 40, 1.6 * p["click_tau"], 0.6 * p["click_tau"], n, kr, r,
-                            tilt=p["click_tilt"])), tc)
-    cr = L.unit(crack(r, n, 0.4 * p["click_tau"], 0.5 * tc))
-    return L.unit(hf) + p["crack"] * cr
+def _keycap(cfg: dict, gen: np.random.Generator, size: int, lay: np.random.Generator, pitch: float,
+            touch: float) -> np.ndarray:
+    base = cfg["cap_f"] * pitch
+    fall = cfg["cap_tau"]
+    tonal = ring([base], [1.2 * fall], [1.0], size, gen)
+    tonal = tonal + cfg["cap_cl"] * kit.unit(cloud(1.08 * base, 2.3 * base, cfg["cap_n"], 0.9 * fall, 0.45 * fall,
+                                                 size, lay, gen))
+    noisy = hiss(0.75 * base, 2.4 * base, 0.8 * fall, size, gen)
+    mix = (1 - cfg["cap_noise"]) * energy(tonal) + cfg["cap_noise"] * energy(noisy)
+    hold = cfg["cap_res"]
+    mix = mix * (hold + (1 - hold) * kit.decay(kit.t_of(size), cfg["cap_fast"]))
+    return _strike(mix, max(touch, 0.00012))
 
 
-def _snap(kr: np.random.Generator, n: int) -> np.ndarray:
-    """K8 snap: a negative Hann pulse of 0.25-0.6 ms (length fixed per key)."""
-    k = max(3, int(kr.uniform(0.25, 0.6) * 1e-3 * L.SR))
-    snap = np.zeros(n)
-    snap[: min(k, n)] = -np.hanning(k)[: min(k, n)]
-    return snap
+def _housing(cfg: dict, gen: np.random.Generator, size: int, lay: np.random.Generator, pitch: float) -> np.ndarray:
+    root = cfg["mid_f"] * pitch
+    steps = (1.0, lay.uniform(1.35, 1.6), lay.uniform(1.9, 2.4))
+    fall = cfg["mid_tau"]
+    return ring([root * s for s in steps], [fall, 0.7 * fall, 0.5 * fall], [1.0, 0.5, 0.3], size, gen)
 
 
-def _cap(p: dict, r: np.random.Generator, n: int, kr: np.random.Generator, pitch: float, tc: float) -> np.ndarray:
-    cf = p["cap_f"] * pitch
-    tau = p["cap_tau"]
-    modes = ring([cf], [1.2 * tau], [1.0], n, r)
-    modes = modes + p["cap_cl"] * L.unit(cloud(1.08 * cf, 2.3 * cf, p["cap_n"], 0.9 * tau, 0.45 * tau, n, kr, r))
-    band = hiss(0.75 * cf, 2.4 * cf, 0.8 * tau, n, r)
-    cap = (1 - p["cap_noise"]) * energy(modes) + p["cap_noise"] * energy(band)
-    cap = cap * (p["cap_res"] + (1 - p["cap_res"]) * np.exp(-L.t_of(n) / p["cap_fast"]))
-    return drive(cap, max(tc, 0.00012))
+def _dent(lay: np.random.Generator, size: int) -> np.ndarray:
+    """A short negative bump; its width (0.25 to 0.6 ms) belongs to the key."""
+    width = max(3, int(lay.uniform(0.25, 0.6) * 1e-3 * kit.SR))
+    keep = min(width, size)
+    out = np.zeros(size)
+    out[:keep] = -np.hanning(width)[:keep]
+    return out
 
 
-def _case_body(p: dict, r: np.random.Generator, n: int, kr: np.random.Generator, pitch: float) -> np.ndarray:
-    mf = p["mid_f"] * pitch
-    ratios = (1.0, kr.uniform(1.35, 1.6), kr.uniform(1.9, 2.4))
-    tau = p["mid_tau"]
-    return ring([mf * q for q in ratios], [tau, 0.7 * tau, 0.5 * tau], [1.0, 0.5, 0.3], n, r)
+def _plastic_hit(cfg: dict, gen: np.random.Generator, size: int, part: int, pitch: float = 1.0,
+                 bright: float = 1.0) -> np.ndarray:
+    """One plastic collision. Part 0 is the bottom-out, part 1 the return to the top."""
+    lay = key_rng(cfg["key"], part)
+    touch = cfg["click_tc"] * math.exp(0.15 * gen.standard_normal())
+    hi_band = _bright_part(cfg, gen, size, lay, touch)
+    cap = _keycap(cfg, gen, size, lay, pitch, touch)
+    body = _housing(cfg, gen, size, lay, pitch)
+    dent = _dent(lay, size)
+    mix = bright * cfg["click_lvl"] * energy(hi_band) + energy(cap) + cfg["mid_lvl"] * energy(body)
+    if cfg.get("top_lvl", 0) > 0:
+        upper = _strike(hiss(cfg["top_lo"], 12000, cfg["top_tau"], size, gen, 2), touch)
+        mix = mix + bright * cfg["top_lvl"] * energy(upper)
+    return kit.unit(kit.unit(mix) + cfg["snap"] * dent)
 
 
-def ping(p: dict, r: np.random.Generator, n: int, pitch_k: float = 1.0) -> np.ndarray:
-    """K9: the spring ping."""
-    f = p["ping_f"] * pitch_k
-    tau = p["ping_tau"]
-    return L.unit(ring([f, 1.013 * f, 1.62 * f], [tau, 0.8 * tau, 0.4 * tau], [1.0, 0.5, 0.1], n, r))
+def _spring(cfg: dict, gen: np.random.Generator, size: int, scale: float = 1.0) -> np.ndarray:
+    base = cfg["ping_f"] * scale
+    fall = cfg["ping_tau"]
+    return kit.unit(ring([base, 1.013 * base, 1.62 * base], [fall, 0.8 * fall, 0.4 * fall], [1.0, 0.5, 0.1], size, gen))
 
 
-def low_wave(p: dict, r: np.random.Generator, n: int) -> np.ndarray:
-    """K10: the board and desk wave ("thock") driven by the finger push."""
-    n = max(1, n)
-    f = p["thock_f"] * (1 + 0.01 * r.standard_normal())
-    t = L.t_of(n)
-    tau = p["thock_tau"]
-    ir = np.exp(-t / tau) * np.sin(2 * np.pi * f * t)
-    ir = ir + p["case_lvl"] * np.exp(-t / (tau * p["case_dec"])) * np.sin(2 * np.pi * p["case_f"] * t + 0.5)
-    k = max(2, L.n_of(p["thock_rise"]))
-    force = 0.5 - 0.5 * np.cos(2 * np.pi * np.arange(k) / k)
-    y = signal.fftconvolve(ir, force / force.sum())[:n]
-    return L.unit(dsp.butter(y, "high", 0.75 * min(f, p["case_f"]), 2))
+def _thock(cfg: dict, gen: np.random.Generator, size: int) -> np.ndarray:
+    """The low board and desk resonance, pushed by a smooth finger force."""
+    size = max(1, size)
+    freq = cfg["thock_f"] * (1 + 0.01 * gen.standard_normal())
+    tt = kit.t_of(size)
+    fall = cfg["thock_tau"]
+    resp = kit.decay(tt, fall) * kit.osc(freq, tt)
+    resp = resp + cfg["case_lvl"] * kit.decay(tt, fall * cfg["case_dec"]) * kit.osc(cfg["case_f"], tt, 0.5)
+    rise = max(2, kit.n_of(cfg["thock_rise"]))
+    push = 0.5 - 0.5 * np.cos(kit.TWO_PI * np.arange(rise) / rise)
+    out = signal.fftconvolve(resp, push / push.sum())[:size]
+    return kit.unit(kit.highpass(out, 0.75 * min(freq, cfg["case_f"])))
 
 
-def friction(p: dict, r: np.random.Generator, n: int) -> np.ndarray:
-    """K11: the friction swell of the key travel before the hit."""
-    m = L.n_of(p["pre_len"])
-    w = dsp.butter(r.standard_normal(m), "band", (700, 9000), 2)
-    hits = r.uniform(size=m) < 0.004
-    grit = np.where(hits, 4 * r.standard_normal(m), 0.0)
-    grit = dsp.butter(grit, "high", 2000, 1)
-    u = np.linspace(0, 1, m)
-    return L.fit(L.unit((w + grit) * u ** 2), n)
+def _travel(cfg: dict, gen: np.random.Generator, size: int) -> np.ndarray:
+    """Rubbing noise of the stem that swells while the key goes down."""
+    span = kit.n_of(cfg["pre_len"])
+    rub = kit.bandpass(gen.standard_normal(span), 700, 9000)
+    spots = gen.uniform(size=span) < 0.004
+    grains = kit.highpass(np.where(spots, 4 * gen.standard_normal(span), 0.0), 2000, 1)
+    swell = np.linspace(0, 1, span) ** 2
+    return kit.fit(kit.unit((rub + grains) * swell), size)
 
 
-def _room_tail(kr: np.random.Generator, p: dict) -> np.ndarray:
-    """K12 tail: noise in 3 bands, each with its own damped decay, under a soft onset ramp."""
-    rt60 = p["rt60"]
-    m = L.n_of(min(0.6, 1.1 * rt60 + 0.03))
-    w = kr.standard_normal(m)
-    t = L.t_of(m)
-    bands = ((dsp.butter(w, "low", 700, 2), 1.0), (dsp.butter(w, "band", (700, 4000), 2), 0.75),
-             (dsp.butter(w, "high", 4000, 2), 0.25))
-    ir = np.zeros(m)
-    for b, k in bands:
-        rt_b = max(0.02, rt60 * (1 - p["room_damp"] * (1 - k)))
-        ir += b * np.exp(-6.91 * t / rt_b)
-    ramp = 0.0015 + 0.008 * p["room_size"]
-    return ir * np.where(t > 0.0008, 1 - np.exp(-t / ramp), 0.0)
+# --------------------------------------------------------------- rooms, mics
+
+def _diffuse_ir(lay: np.random.Generator, cfg: dict) -> np.ndarray:
+    """Three noise bands that decay at their own rates, under a soft onset."""
+    rt60 = cfg["rt60"]
+    span = kit.n_of(min(0.6, 1.1 * rt60 + 0.03))
+    seed_noise = lay.standard_normal(span)
+    tt = kit.t_of(span)
+    split = [(kit.lowpass(seed_noise, 700), 1.0),
+             (kit.bandpass(seed_noise, 700, 4000), 0.75),
+             (kit.highpass(seed_noise, 4000), 0.25)]
+    out = np.zeros(span)
+    for band, keep in split:
+        out += band * np.exp(-6.91 * tt / max(0.02, rt60 * (1 - cfg["room_damp"] * (1 - keep))))
+    onset = 0.0015 + 0.008 * cfg["room_size"]
+    return out * np.where(tt > 0.0008, 1 - kit.decay(tt, onset), 0.0)
 
 
-def diffuse_room(x: np.ndarray, kr: np.random.Generator, p: dict) -> np.ndarray:
-    """K12: a diffuse-field room of a small furnished space."""
-    ir = _room_tail(kr, p)
-    m = len(ir)
-    d = int(kr.uniform(0.8e-3, 2.5e-3) * L.SR)
-    if d < m:
-        ir[d] += 0.35 * math.sqrt(float(np.sum(ir ** 2)))
-    ir = 0.6 * dsp.butter(ir, "low", 9000, 1) + 0.4 * ir
-    wet = signal.fftconvolve(x, ir)[: len(x)] / (math.sqrt(float(np.sum(ir ** 2))) + 1e-12)
-    return x + p["room_wet"] * wet
+def _diffuse_room(sig: np.ndarray, lay: np.random.Generator, cfg: dict) -> np.ndarray:
+    ir = _diffuse_ir(lay, cfg)
+    lag = int(lay.uniform(0.8e-3, 2.5e-3) * kit.SR)
+    if lag < len(ir):
+        ir[lag] += 0.35 * math.sqrt(float(np.sum(ir ** 2)))
+    ir = 0.6 * kit.lowpass(ir, 9000, 1) + 0.4 * ir
+    norm = math.sqrt(float(np.sum(ir ** 2))) + 1e-12
+    return sig + cfg["room_wet"] * (signal.fftconvolve(sig, ir)[: len(sig)] / norm)
 
 
-def spaced_pair(x: np.ndarray, p: dict) -> np.ndarray:
-    """K13: a spaced microphone pair, each channel in its own small room."""
-    kr = key_rng(p["key"], 9)
-    chans = []
-    for c in range(2):
-        m = int(0.007 * L.SR)
-        ir = np.zeros(m)
-        ir[int(kr.uniform(0, 0.25e-3) * L.SR)] = 1.0
-        refl = np.zeros(m)
-        for _ in range(6):
-            i = int(kr.uniform(0.3e-3, 6.5e-3) * L.SR)
-            refl[min(i, m - 1)] += kr.uniform(0.03, 0.12) * kr.choice([-1.0, 1.0])
-        ir = ir + dsp.butter(refl, "low", 12000, 1)
-        y = signal.fftconvolve(x, ir)[: len(x)]
-        chans.append(_mic_room(y, key_rng(p["key"], 10 + c), p))
-    return np.column_stack(chans)
+def _room_for(y: np.ndarray, lay: np.random.Generator, cfg: dict) -> np.ndarray:
+    model = cfg["room_model"]
+    if model == "diffuse":
+        return _diffuse_room(y, lay, cfg)
+    if model != "sparse":
+        raise ValueError(f"unknown room_model {model!r}")
+    wet = dsp.room(y, lay, rt60=cfg["rt60"], size=cfg["room_size"], damp=cfg["room_damp"], wet=cfg["room_wet"])
+    return np.asarray(wet, dtype=float)[: len(y)]
 
 
-def _mic_room(y: np.ndarray, kr: np.random.Generator, p: dict) -> np.ndarray:
-    if p["room_model"] == "diffuse":
-        return diffuse_room(y, kr, p)
-    if p["room_model"] != "sparse":
-        raise ValueError(f"unknown room_model {p['room_model']!r}")
-    out = dsp.room(y, kr, rt60=p["rt60"], size=p["room_size"], damp=p["room_damp"], wet=p["room_wet"])
-    return np.asarray(out, dtype=float)[: len(y)]
+def _mic_ir(lay: np.random.Generator) -> np.ndarray:
+    span = int(0.007 * kit.SR)
+    direct = np.zeros(span)
+    direct[int(lay.uniform(0, 0.25e-3) * kit.SR)] = 1.0
+    bounces = np.zeros(span)
+    for _ in range(6):
+        at = min(int(lay.uniform(0.3e-3, 6.5e-3) * kit.SR), span - 1)
+        bounces[at] += lay.uniform(0.03, 0.12) * lay.choice([-1.0, 1.0])
+    return direct + kit.lowpass(bounces, 12000, 1)
 
 
-def noise_floor(n: int, r: np.random.Generator, rumble: float, low_edge: float = 25.0) -> np.ndarray:
-    """K14: the session noise floor (hiss plus a low rumble), unit standard deviation."""
-    s = n / L.SR
-    h = L.fit(dsp.noise(s, r, "pink") + dsp.noise(s, r, "white"), n)
-    h = dsp.butter(h, "low", r.uniform(17000, 20000), 4)
-    rum = dsp.butter(L.fit(dsp.noise(s, r, "brown"), n), "band", (low_edge, 120), 2)
-    y = (1 - rumble) * h / (np.std(h) + 1e-12) + 2 * rumble * rum / (np.std(rum) + 1e-12)
-    return y / (np.std(y) + 1e-12)
+def _two_mics(sig: np.ndarray, cfg: dict) -> np.ndarray:
+    """Two spaced microphones; each one hears the key through its own small room."""
+    layout = key_rng(cfg["key"], 9)
+    sides = []
+    for side in (0, 1):
+        heard = signal.fftconvolve(sig, _mic_ir(layout))[: len(sig)]
+        sides.append(_room_for(heard, key_rng(cfg["key"], 10 + side), cfg))
+    return np.column_stack(sides)
+
+
+def _floor(size: int, gen: np.random.Generator, rumble: float, low_edge: float = 25.0) -> np.ndarray:
+    """Background hiss mixed with a low rumble, at unit standard deviation."""
+    secs = size / kit.SR
+    air = kit.fit(dsp.noise(secs, gen, "pink") + dsp.noise(secs, gen, "white"), size)
+    air = kit.lowpass(air, gen.uniform(17000, 20000), 4)
+    low = kit.bandpass(kit.fit(dsp.noise(secs, gen, "brown"), size), low_edge, 120)
+    mix = (1 - rumble) * air / (np.std(air) + 1e-12) + 2 * rumble * low / (np.std(low) + 1e-12)
+    return mix / (np.std(mix) + 1e-12)
 
 
 # --------------------------------------------------------------------- render
 
-def _v1_merged(p: dict) -> dict:
-    """V1 defaults under p. The v2 keys stay absent unless p has them (a v1 set renders the v1 sound)."""
-    return dict(V1_DEFAULTS, **(p or {}))
+def _lead_in(cfg: dict, gen: np.random.Generator, newer: bool) -> float:
+    """Seconds of key travel before the bottom-out."""
+    gap = cfg["pre_gap"] * math.exp(0.2 * gen.standard_normal()) if newer else gen.uniform(0.003, 0.02)
+    lead = cfg["pre_len"] + gap
+    if newer and cfg["jacket_lvl"] > 0.005:
+        lead += cfg["jacket_dt"]
+    return lead
 
 
-def _pre_time(p: dict, r: np.random.Generator, v2: bool) -> float:
-    pre = p["pre_len"] + (p["pre_gap"] * math.exp(0.2 * r.standard_normal()) if v2 else r.uniform(0.003, 0.02))
-    if v2 and p["jacket_lvl"] > 0.005:
-        pre += p["jacket_dt"]
-    return pre
+def _add_jacket(buf: np.ndarray, cfg: dict, gen: np.random.Generator, lead: float, hit_n: int) -> None:
+    """Add the rattle of the keycap jacket just before the bottom-out."""
+    rattle = cloud(2500, 15000, 24, 0.0012, 0.0004, hit_n, key_rng(cfg["key"], 6), gen, tilt=0.0)
+    rattle = _strike(kit.unit(rattle), 4e-5)
+    when = max(0.0, lead - cfg["jacket_dt"] * (1 + 0.06 * gen.standard_normal()))
+    kit.add_at(buf, rattle, kit.n_of(when), cfg["jacket_lvl"])
 
 
-def _press(x: np.ndarray, p: dict, r: np.random.Generator, pre: float, nh: int, v2: bool) -> None:
-    n = len(x)
-    force = math.exp(0.1 * r.standard_normal())
-    L.add_at(x, friction(p, r, n), L.n_of(max(0.0, pre - p["pre_len"])), p["pre_lvl"])
-    if v2 and p["jacket_lvl"] > 0.005:
-        jk = drive(L.unit(cloud(2500, 15000, 24, 0.0012, 0.0004, nh, key_rng(p["key"], 6), r, tilt=0.0)), 4e-5)
-        t_j = max(0.0, pre - p["jacket_dt"] * (1 + 0.06 * r.standard_normal()))
-        L.add_at(x, jk, L.n_of(t_j), p["jacket_lvl"])
-    i = L.n_of(pre)
-    L.add_at(x, contact(p, r, nh, 0, bright=force), i)
-    L.add_at(x, ping(p, r, nh), i, p["ping_lvl"])
-    L.add_at(x, low_wave(p, r, n - i), i, p["thock_lvl"] * force)
+def _down(buf: np.ndarray, cfg: dict, gen: np.random.Generator, lead: float, hit_n: int, newer: bool) -> None:
+    total = len(buf)
+    force = math.exp(0.1 * gen.standard_normal())
+    kit.add_at(buf, _travel(cfg, gen, total), kit.n_of(max(0.0, lead - cfg["pre_len"])), cfg["pre_lvl"])
+    if newer and cfg["jacket_lvl"] > 0.005:
+        _add_jacket(buf, cfg, gen, lead, hit_n)
+    at = kit.n_of(lead)
+    kit.add_at(buf, _plastic_hit(cfg, gen, hit_n, 0, bright=force), at)
+    kit.add_at(buf, _spring(cfg, gen, hit_n), at, cfg["ping_lvl"])
+    kit.add_at(buf, _thock(cfg, gen, total - at), at, cfg["thock_lvl"] * force)
 
 
-def _release_ticks(x: np.ndarray, p: dict, r: np.random.Generator, tu: float, nh: int) -> None:
-    """K10 ticks: 2 tiny clicks tick_dt before the key comes up, the 2nd 3-9 ms later."""
-    t1 = tu - p["tick_dt"] * (1 + 0.08 * r.standard_normal())
-    kr = key_rng(p["key"], 5)
-    for off, gain in ((0.0, 1.0), (r.uniform(0.003, 0.009), r.uniform(0.4, 1.0))):
-        tk = drive(L.unit(cloud(3000, 14000, 14, 0.0008, 0.0003, nh, kr, r)), 5e-5)
-        L.add_at(x, tk, L.n_of(max(0.0, min(t1 + off, tu - 0.001))), gain * p["tick_lvl"] * p["up_lvl"])
+def _pre_release_ticks(buf: np.ndarray, cfg: dict, gen: np.random.Generator, t_up: float, hit_n: int) -> None:
+    """Two small ticks just before the key returns; the second follows by 3 to 9 ms."""
+    first = t_up - cfg["tick_dt"] * (1 + 0.08 * gen.standard_normal())
+    layout = key_rng(cfg["key"], 5)
+    for delay, gain in ((0.0, 1.0), (gen.uniform(0.003, 0.009), gen.uniform(0.4, 1.0))):
+        tick = _strike(kit.unit(cloud(3000, 14000, 14, 0.0008, 0.0003, hit_n, layout, gen)), 5e-5)
+        when = max(0.0, min(first + delay, t_up - 0.001))
+        kit.add_at(buf, tick, kit.n_of(when), gain * cfg["tick_lvl"] * cfg["up_lvl"])
 
 
-def _release(x: np.ndarray, p: dict, r: np.random.Generator, pre: float, nh: int) -> None:
-    n = len(x)
-    tu = pre + p["up_delay"] * (1 + 0.04 * r.standard_normal())
-    if p["tick_lvl"] > 0.005:
-        _release_ticks(x, p, r, tu, nh)
-    iu = L.n_of(tu)
-    L.add_at(x, contact(p, r, nh, 1, pitch=p["up_pitch"], bright=1.2), iu, p["up_lvl"])
-    L.add_at(x, ping(p, r, nh, pitch_k=1 + 0.01 * r.standard_normal()), iu, 0.7 * p["ping_lvl"] * p["up_lvl"])
-    L.add_at(x, low_wave(p, r, max(1, n - iu)), iu, 0.3 * p["thock_lvl"] * p["up_lvl"])
+def _up(buf: np.ndarray, cfg: dict, gen: np.random.Generator, lead: float, hit_n: int) -> None:
+    total = len(buf)
+    up_gain = cfg["up_lvl"]
+    t_up = lead + cfg["up_delay"] * (1 + 0.04 * gen.standard_normal())
+    if cfg["tick_lvl"] > 0.005:
+        _pre_release_ticks(buf, cfg, gen, t_up, hit_n)
+    at = kit.n_of(t_up)
+    kit.add_at(buf, _plastic_hit(cfg, gen, hit_n, 1, pitch=cfg["up_pitch"], bright=1.2), at, up_gain)
+    kit.add_at(buf, _spring(cfg, gen, hit_n, scale=1 + 0.01 * gen.standard_normal()), at,
+               0.7 * cfg["ping_lvl"] * up_gain)
+    kit.add_at(buf, _thock(cfg, gen, max(1, total - at)), at, 0.3 * cfg["thock_lvl"] * up_gain)
 
 
-def _session(st: np.ndarray, p: dict, r: np.random.Generator) -> np.ndarray:
-    if "width" in p:
-        mid = st.mean(axis=1)
-        side = (st[:, 0] - st[:, 1]) / 2
-        st = np.column_stack([mid + p["width"] * side, mid - p["width"] * side])
-    st = dsp.butter(st, "high", 22, 2)
-    pk = L.peak(st)
-    edge = p["hpf"] if "hpf" in p else 25.0
-    for c in range(2):
-        st[:, c] += noise_floor(len(st), r, p["rumble"], low_edge=edge) * pk * 10 ** (p["floor_db"] / 20)
-    if "hpf" in p:
-        st = dsp.butter(st, "high", p["hpf"], 8)
-    return st
+def _capture(st: np.ndarray, cfg: dict, gen: np.random.Generator) -> np.ndarray:
+    """Stereo width, the noise floor of the session and the final high-pass."""
+    if "width" in cfg:
+        centre = st.mean(axis=1)
+        diff = (st[:, 0] - st[:, 1]) / 2
+        st = np.column_stack([centre + cfg["width"] * diff, centre - cfg["width"] * diff])
+    st = kit.highpass(st, 22)
+    level = kit.peak(st)
+    has_hpf = "hpf" in cfg
+    edge = cfg["hpf"] if has_hpf else 25.0
+    for ch in (0, 1):
+        st[:, ch] += _floor(len(st), gen, cfg["rumble"], low_edge=edge) * level * 10 ** (cfg["floor_db"] / 20)
+    return kit.highpass(st, cfg["hpf"], 8) if has_hpf else st
 
 
 def render(p: dict, rng: np.random.Generator) -> np.ndarray:
-    """One key press: stereo float64 at 48 kHz, about 0.13-0.45 s; the level is not normalised."""
-    p = _v1_merged(p)
-    v2 = "top_lvl" in p
-    pre = _pre_time(p, rng, v2)
-    dur = pre + p["clip"] * (1 + 0.05 * rng.standard_normal())
-    n = L.n_of(dur + 0.05)
-    nh = L.n_of(N_CONTACT_S)
-    x = np.zeros(n)
-    _press(x, p, rng, pre, nh, v2)
-    _release(x, p, rng, pre, nh)
-    st = _session(spaced_pair(x, p), p, rng)
-    st = st[: L.n_of(dur)]
-    st = dsp.fade(st, 0.002, rng.uniform(0.025, 0.05))
-    return np.asarray(st, dtype=np.float64)
+    """Render one press. Stereo float64 at 48 kHz, 0.13 to 0.45 s long; the level is left as is."""
+    p = {**V1_DEFAULTS, **(p or {})}
+    newer = "top_lvl" in p
+    lead = _lead_in(p, rng, newer)
+    length = lead + p["clip"] * (1 + 0.05 * rng.standard_normal())
+    hit_n = kit.n_of(_HIT_WINDOW_S)
+    buf = np.zeros(kit.n_of(length + 0.05))
+    _down(buf, p, rng, lead, hit_n, newer)
+    _up(buf, p, rng, lead, hit_n)
+    out = _capture(_two_mics(buf, p), p, rng)[: kit.n_of(length)]
+    out = dsp.fade(out, 0.002, rng.uniform(0.025, 0.05))
+    return np.asarray(out, dtype=np.float64)
 
 
-# ---------------------------------------------------------------- v2 checks
+# ---------------------------------------------------------- critic helpers
+
+def _level_frames(sig: np.ndarray, hop: int) -> np.ndarray:
+    count = max(1, len(sig) // hop)
+    power = np.square(sig[: count * hop]).reshape(count, hop).mean(axis=1)
+    return 10 * np.log10(power + 1e-14)
+
+
+def _attack_ms(mono: np.ndarray) -> float:
+    """Rise time in 1 ms frames of the 2-12 kHz band, from 20 dB under its peak to the peak."""
+    band = _level_frames(kit.bandpass(mono, 2000, 12000, 4), 48)
+    top = int(np.argmax(band))
+    return float(top - np.nonzero(band[: top + 1] >= band[top] - 20)[0][0])
+
+
+def _bright_share_db(mono: np.ndarray) -> float:
+    """Share of the power between 2 and 12 kHz, in dB with 1 decimal."""
+    spec = np.abs(np.fft.rfft(mono)) ** 2
+    hz = np.fft.rfftfreq(len(mono), 1 / kit.SR)
+    share = float(spec[(hz >= 2000) & (hz < 12000)].sum() / (spec.sum() + 1e-30))
+    return round(10 * math.log10(share + 1e-14), 1)
+
+
+def _tail_ms(mono: np.ndarray) -> float:
+    """Milliseconds from the loudest 5 ms frame until 40 dB under it, or to the end."""
+    coarse = _level_frames(mono, 240)
+    loud = int(np.argmax(coarse))
+    quiet = np.nonzero(coarse[loud:] <= coarse[loud] - 40)[0]
+    return float(quiet[0] * 5) if len(quiet) else float((len(coarse) - loud) * 5)
+
 
 def key_stats(x: np.ndarray) -> dict:
-    """Onset (2-12 kHz), top share in dB and time to -40 dB of a key render."""
-    m = x.mean(axis=1) if x.ndim == 2 else np.asarray(x, dtype=float)
-    return {"onset_ms": _onset_ms(m), "top_db": _top_db(m), "t40_ms": _t40_ms(m)}
-
-
-def _onset_ms(m: np.ndarray) -> float:
-    """Rise time in 1 ms frames of the 2-12 kHz band, from -20 dB under its peak to the peak."""
-    e1 = _frames_db(dsp.butter(m, "band", (2000, 12000), 4), 48)
-    ip = int(np.argmax(e1))
-    within = np.nonzero(e1[: ip + 1] >= e1[ip] - 20)[0]
-    return float(ip - within[0])
-
-
-def _top_db(m: np.ndarray) -> float:
-    """The 2-12 kHz share of the power, in dB (1 decimal)."""
-    pw = np.abs(np.fft.rfft(m)) ** 2
-    f = np.fft.rfftfreq(len(m), 1 / L.SR)
-    top = float(pw[(f >= 2000) & (f < 12000)].sum() / (pw.sum() + 1e-30))
-    return round(10 * math.log10(top + 1e-14), 1)
-
-
-def _t40_ms(m: np.ndarray) -> float:
-    """Time in ms from the 5 ms-frame peak to -40 dB under it (or to the end)."""
-    e5 = _frames_db(m, 240)
-    j = int(np.argmax(e5))
-    below = np.nonzero(e5[j:] <= e5[j] - 40)[0]
-    return float(below[0] * 5) if len(below) else float((len(e5) - j) * 5)
-
-
-def _frames_db(x: np.ndarray, hop: int) -> np.ndarray:
-    k = max(1, len(x) // hop)
-    fr = np.square(x[: k * hop]).reshape(k, hop).mean(axis=1)
-    return 10 * np.log10(fr + 1e-14)
+    """Measure a render: attack time in the 2-12 kHz band, its power share in dB, and the -40 dB time."""
+    mono = x.mean(axis=1) if x.ndim == 2 else np.asarray(x, dtype=float)
+    return {"onset_ms": _attack_ms(mono), "top_db": _bright_share_db(mono), "t40_ms": _tail_ms(mono)}
 
 
 def key_penalty(x: np.ndarray) -> float:
-    """The v2 key extra term, 0 to -1.5: a bright enough top and a short enough tail."""
-    s = key_stats(x)
-    return -0.75 * (min(1.0, max(0.0, -5 - s["top_db"]) / 6) + min(1.0, max(0.0, s["t40_ms"] - 200) / 100))
+    """Score from 0 down to -1.5: it asks for a bright top and a tail under 200 ms."""
+    st = key_stats(x)
+    dull = min(1.0, max(0.0, -5 - st["top_db"]) / 6)
+    long_tail = min(1.0, max(0.0, st["t40_ms"] - 200) / 100)
+    return -0.75 * (dull + long_tail)
 
 
 def extra_for(cat: str, weight: float = 1.0):
-    """The critic extra function of a category, or None (only ``typing_key`` has one)."""
-    if cat != "typing_key":
-        return None
-    return lambda x, row=None: weight * key_penalty(x)
+    """Critic extra for ``typing_key``; no other category gets one."""
+    if cat == "typing_key":
+        return lambda x, row=None: weight * key_penalty(x)
+    return None

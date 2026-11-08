@@ -12,6 +12,7 @@ import copy
 import glob
 import hashlib
 import json
+import math
 import os
 import re
 from collections.abc import Callable, Iterable
@@ -50,6 +51,12 @@ TOLERANCE_DUR = 0.10
 TOLERANCE_CENTROID = 1.26
 TOLERANCE_LUFS = 3.0
 TOLERANCE_CENTS = 50.0
+# Default takes that keep their audit warning (bank-kit-sfx part 2, 3.11): build --derive does not re-derive them.
+KNOWN_WARNINGS = frozenset({
+    "pro_zip/up", "pro_zip/up_hi", "pro_zip/arc", "logo_sting/zip_ping", "pro_logo_sting/sweep_hit", "pop/2",
+    "pro_pop/bloop", "typing_key/light", "typing_key/laptop", "pro_hover_tick/air", "pro_hover_tick/glass",
+    "hover_tick/detent", "pro_typing_key/soft", "glitch/dropout", "logo_sting/reverse_bloom", "pro_shimmer/m3",
+})
 
 
 def _hark_version() -> str:
@@ -302,11 +309,16 @@ def _defaults_for(module: Any, fn: str) -> dict:
     return dict(getattr(module, "DEFAULTS", {}) or {})
 
 
+def _is_space(params: dict) -> bool:
+    """True for a search sub-space (ranges as tuples), not a parameter set (hover's FAMILIES)."""
+    return any(isinstance(v, tuple) for v in params.values())
+
+
 def _from_families(module: Any, category: str, member: str) -> dict | None:
     families = getattr(module, "FAMILIES", None) or {}
     for cat in [category, *sorted(families)]:
         found = dict(families.get(cat) or []).get(member)
-        if found is not None:
+        if found is not None and not _is_space(found):
             return dict(found)
     return None
 
@@ -317,6 +329,37 @@ def _from_family(module: Any, category: str, member: str) -> dict | None:
         labels = [*names.get(cat, [])]
         if member in labels and labels.index(member) < len(family.get(cat, [])):
             return dict(family[cat][labels.index(member)])
+    return None
+
+
+# Extra palettes kept in their own tables: (params table, names table).
+_NAMED_TABLES = (("RUNS", "RUN_NAMES"), ("FAMILY_MID", "FAMILY_NAMES_MID"))
+
+
+def _names_for(family: str, member: str) -> list[str]:
+    """The member name, plus the name without the family's lead word (notify/mid_tine -> tine in mid_ding)."""
+    lead = family.split("_", 1)[0] + "_"
+    return [member, member[len(lead):]] if "_" in family and member.startswith(lead) else [member]
+
+
+def _from_named_tables(module: Any, category: str, member: str) -> dict | None:
+    for table_name, names_name in _NAMED_TABLES:
+        table, names = getattr(module, table_name, None) or {}, getattr(module, names_name, None) or {}
+        for family in sorted(table):
+            labels = [*names.get(family, [])]
+            for name in _names_for(family, member):
+                if name in labels and labels.index(name) < len(table[family]):
+                    return dict(table[family][labels.index(name)])
+    return None
+
+
+def _from_flat_tables(module: Any, category: str, member: str) -> dict | None:
+    """Member -> params tables: FAMILIES_BY_CAT[category], then the flat R6 and FAMILIES (riser)."""
+    by_cat = (getattr(module, "FAMILIES_BY_CAT", None) or {}).get(category) or {}
+    for table in (by_cat, getattr(module, "R6", None) or {}, getattr(module, "FAMILIES", None) or {}):
+        found = table.get(member) if isinstance(table, dict) else None
+        if isinstance(found, dict) and not _is_space(found):
+            return dict(found)
     return None
 
 
@@ -334,15 +377,19 @@ def _from_recipe_for(module: Any, category: str, member: str) -> dict | None:
     return None
 
 
-def _from_seed_bank(recipe: str, member: str) -> dict | None:
+def _from_seed_bank(recipe: str, category: str, member: str) -> dict | None:
     from hark.forge import recipes
 
-    path = recipes.seed_path(recipe)
+    try:
+        path = recipes.seed_path(recipe)
+    except recipes.UnknownRecipe:  # a recipe outside the package registry has no seed bank
+        return None
     if not os.path.isfile(path):
         return None
     entries = json.loads(Path(path).read_text(encoding="utf-8")).get("entries") or []
     hits = [e for e in entries if e.get("member") == member]
-    hits.sort(key=lambda e: 0 if e.get("delivered") else 1)
+    # "delivered" names the category the member was delivered for: prefer that category, then any delivery
+    hits.sort(key=lambda e: 0 if e.get("delivered") == category else 1 if e.get("delivered") else 2)
     return dict(hits[0]["params"]) if hits else None
 
 
@@ -351,11 +398,11 @@ def member_params(recipe: str, fn: str, category: str, member: str) -> dict:
     from hark.forge import recipes
 
     module = recipes.load(recipe)
-    for finder in (_from_families, _from_family, _from_recipe_for):
+    for finder in (_from_families, _from_family, _from_named_tables, _from_flat_tables, _from_recipe_for):
         found = finder(module, category, member)
         if found is not None:
             return {**_defaults_for(module, fn), **found}
-    found = _from_seed_bank(recipe, member)
+    found = _from_seed_bank(recipe, category, member)
     if found is None:
         raise B.BankError(f"recipe {recipe} has no palette member {member!r}")
     return {**_defaults_for(module, fn), **found}
@@ -414,34 +461,56 @@ def _f04_member(sound_id: str, row: dict, ref_clap: dict | None, recorded: dict)
     entry["meta"] = M.meta_of(y)
     entry["profile"] = _tonal_profile(y)
     audit = _take_audit(entry, sound_id, row["seed"])
-    if not audit.pop("own_ok") or audit["clean"] < F04_CLEAN_MIN:
-        raise ValueError(f"take audit: {audit['clean']} / {F04_TAKES} clean ({', '.join(audit['warnings'])})")
+    own_ok = audit.pop("own_ok")
+    if not own_ok or audit["clean"] < F04_CLEAN_MIN:
+        first, last = audit["seeds"]
+        raise AuditRefusal(f"take audit: {audit['clean']} / {F04_TAKES} clean on seeds {first}-{last}, own take "
+                           f"{'clean' if own_ok else 'not clean'} ({', '.join(audit['warnings'])})")
     entry["audit"] = audit
     entry["original"] = _originality(sound_id, entry, ref_clap, recorded)
     return entry
 
 
+class AuditRefusal(ValueError):
+    """A forge04 member that fails its take audit (left out of the file unless strict)."""
+
+
+def _f04_left_out(log: Callable | None, refused: list[str]) -> None:
+    """Log each member left out by its take audit, then a warning summary."""
+    if not refused:
+        return
+    for line in refused:
+        _say(log, f"refused {line}")
+    _say(log, f"warning: {len(refused)} member(s) failed the take audit and are left out (--strict refuses the file)")
+
+
 def build_forge04(out: str, version: str | None = None, ref_clap: dict | None = None,
-                  log: Callable | None = None, recorded: dict | None = None) -> dict:
+                  log: Callable | None = None, recorded: dict | None = None, strict: bool = False) -> dict:
     """Build the forge04 file from the recipe palettes (part 1, 7.3).
 
     ``recorded`` maps an id to ``{digest, max_ref_clap}`` of an earlier
     measurement. Without a value the entry gets the null originality marker.
+    A member that fails its take audit is left out and logged; ``strict``
+    refuses the whole file instead. Every other refusal refuses the file.
     """
     members = B.catalog()["forge04"]
     doc = _header("forge04", version, "short, soft palette members for launch films cut to music")
     doc["categories"] = {c: _category(c) for c in
                          ("cut_hit", "reverse_swell", "ui_pop", "knock", "mallet", "drip", "shutter")}
-    doc["entries"], failures = {}, []
+    doc["entries"], failures, refused = {}, [], []
     for sound_id in sorted(members):
         try:
             doc["entries"][sound_id] = _f04_member(sound_id, members[sound_id], ref_clap, recorded or {})
+        except AuditRefusal as exc:
+            refused.append(f"{sound_id}: {exc}")
+            continue
         except (ValueError, B.BankError, ImportError, AttributeError) as exc:
             failures.append(f"{sound_id}: {exc}")
             continue
         if ref_clap and sound_id in ref_clap:
             _say(log, f"{sound_id}: digest {block_digest(doc['entries'][sound_id])}")
-    _refuse(failures)
+    _refuse(failures + (refused if strict else []))
+    _f04_left_out(log, refused)
     return _wrote(log, out, doc)
 
 
@@ -504,31 +573,156 @@ def _forge_v2_ids() -> list[str]:
                   if not i.startswith(("fit/", "pluck/")) and i not in skip)
 
 
-def _derive_entry(sound_id: str) -> dict:
+def _log_gap(got: float, want: float, tolerance: float) -> float:
+    """|log(got / want)| in units of a ratio tolerance."""
+    return abs(math.log(max(got, 1e-3) / max(want, 1e-3))) / math.log(tolerance)
+
+
+def _time_gaps(row: dict, meta: dict) -> list[float]:
+    dur = row.get("dur_s") or meta["dur_s"]
+    gaps = [_log_gap(meta["dur_s"], dur, 1 + TOLERANCE_DUR)]
+    if row.get("peak_s") is not None:
+        gaps.append(abs(meta["peak_s"] - row["peak_s"]) / max(0.02, 0.1 * dur))
+    return gaps
+
+
+def _tone_gaps(row: dict, meta: dict) -> list[float]:
+    gaps = []
+    if row.get("centroid_hz") and meta.get("centroid_hz"):
+        gaps.append(_log_gap(meta["centroid_hz"], row["centroid_hz"], TOLERANCE_CENTROID))
+    if row.get("lufs_m_max") is not None and meta.get("lufs_m_max") is not None:
+        gaps.append(abs(meta["lufs_m_max"] - row["lufs_m_max"]) / TOLERANCE_LUFS)
+    return gaps
+
+
+def _target_distance(row: dict, meta: dict) -> float:
+    """How far a render's measures are from a catalogue row, in units of the row tolerances."""
+    return float(sum(_time_gaps(row, meta)) + sum(_tone_gaps(row, meta)))
+
+
+def _seed_members(recipe: str, category: str) -> dict:
+    """member -> params of the seed-bank entries delivered for the category."""
+    from hark.forge import recipes
+
+    try:
+        path = recipes.seed_path(recipe)
+    except recipes.UnknownRecipe:  # a recipe outside the package registry has no seed bank
+        return {}
+    if not os.path.isfile(path):
+        return {}
+    entries = json.loads(Path(path).read_text(encoding="utf-8")).get("entries") or []
+    return {e["member"]: dict(e["params"]) for e in entries if e.get("delivered") == category and e.get("member")}
+
+
+def _candidates(recipe: str, fn: str, category: str, cache: dict) -> dict:
+    """member -> (params, meta) of every render the category can fall back on, rendered once."""
+    key = (recipe, category)
+    if key not in cache:
+        from hark.forge import recipes
+
+        base = _defaults_for(recipes.load(recipe), fn)
+        pool = {m: {**base, **p} for m, p in _seed_members(recipe, category).items()} or {"defaults": base}
+        rows = {m: (p, _meta(_render_entry(_entry(category, m, recipe, fn, p, 0), f"{category}/{m}"), category, p))
+                for m, p in pool.items()}
+        # Row order (T-41; the spec gives no rule): ascending rendered length, then member id. It breaks distance ties.
+        cache[key] = dict(sorted(rows.items(), key=lambda kv: (kv[1][1]["dur_s"], kv[0])))
+    return cache[key]
+
+
+def _ranked(sound_id: str, recipe: str, fn: str, cache: dict, used: set) -> list[str]:
+    """Candidates nearest first; a candidate used before costs 1 tolerance unit more; ties keep the row order."""
+    category = sound_id.split("/", 1)[0]
+    row = B.catalog()["targets"].get(sound_id) or {}
+    pool = _candidates(recipe, fn, category, cache)
+    return sorted(pool, key=lambda m: _target_distance(row, pool[m][1]) + ((category, m) in used))
+
+
+def _closest(sound_id: str, recipe: str, fn: str, cache: dict, used: set) -> tuple[str, dict]:
+    """The candidate closest to the catalogue row."""
+    category = sound_id.split("/", 1)[0]
+    best = _ranked(sound_id, recipe, fn, cache, used)[0]
+    used.add((category, best))
+    return best, dict(_candidates(recipe, fn, category, cache)[best][0])
+
+
+class Dropped(ValueError):
+    """A derived id with no render whose default take passes sfx check; the file lists it under ``dropped``."""
+
+
+def _derived(sound_id: str, recipe: str, fn: str, params: dict) -> dict | None:
+    """The entry for these params, or None when its default take fails sfx check (a known warning passes)."""
     category, member = sound_id.split("/", 1)
-    recipe = B.catalog()["categories"][category]["recipe"]
-    fn = _derive_fn(recipe, category)
-    entry = _entry(category, member, recipe, fn, member_params(recipe, fn, category, member), 0, mode="designed")
+    entry = _entry(category, member, recipe, fn, params, 0, mode="designed")
+    if sound_id not in KNOWN_WARNINGS and not B.render({**entry, "id": sound_id})[1]["checks"]["ok"]:
+        return None
     entry["meta"] = _meta(_render_entry(entry, sound_id), category, entry["params"])
     return entry
 
 
-def build_derive(out: str, version: str | None = None, log: Callable | None = None) -> dict:
-    """The forge file from the recipe family tables, seed 0 (ARCHITECTURE 12.2)."""
-    doc = _header("forge_v2", version, "derived from the recipe family tables (seed 0, designed); no critic run")
-    doc["categories"], doc["entries"], failures = {}, {}, []
-    for sound_id in _forge_v2_ids():
-        try:
-            entry = _derive_entry(sound_id)
-        except (ValueError, B.BankError, ImportError, AttributeError, KeyError) as exc:
-            failures.append(f"{sound_id}: {exc}")
+def _first_source(sound_id: str, recipe: str, fn: str, cache: dict, used: set,
+                  log: Callable | None) -> tuple[str | None, dict]:
+    """The named palette member, else the closest render (ARCHITECTURE 12.2): (closest member or None, params)."""
+    category, member = sound_id.split("/", 1)
+    try:
+        return None, member_params(recipe, fn, category, member)
+    except B.BankError:
+        source, params = _closest(sound_id, recipe, fn, cache, used)
+        _say(log, f"{sound_id}: no palette member {member!r}; closest render is {recipe} {category}/{source}")
+        return source, params
+
+
+def _derive_entry(sound_id: str, cache: dict, used: set, log: Callable | None) -> dict:
+    """The derived entry whose default take passes sfx check; ``Dropped`` when no candidate render passes."""
+    category = sound_id.split("/", 1)[0]
+    recipe = B.catalog()["categories"][category]["recipe"]
+    fn = _derive_fn(recipe, category)
+    source, params = _first_source(sound_id, recipe, fn, cache, used, log)
+    entry = _derived(sound_id, recipe, fn, params)
+    if entry is not None:
+        return entry
+    # T-41: the first render fails sfx check, so try the next-closest renders in order
+    for member in _ranked(sound_id, recipe, fn, cache, used):
+        if member == source:
             continue
-        doc["entries"][sound_id] = entry
-        doc["categories"].setdefault(entry["category"], _category(entry["category"]))
-        misses = target_misses(sound_id, entry["meta"])
-        _say(log, f"{sound_id}: {entry['meta']['dur_s']:.3f} s" + (f"; misses {'; '.join(misses)}" if misses else ""))
+        entry = _derived(sound_id, recipe, fn, dict(_candidates(recipe, fn, category, cache)[member][0]))
+        if entry is not None:
+            used.add((category, member))
+            _say(log, f"{sound_id}: first render fails sfx check; next-closest passing render is {category}/{member}")
+            return entry
+    raise Dropped(f"no render of {recipe} {category} passes sfx check (first render and "
+                  f"{len(_candidates(recipe, fn, category, cache))} candidate(s) tried)")
+
+
+def build_derive(out: str, version: str | None = None, log: Callable | None = None) -> dict:
+    """The forge file from the recipe family tables, seed 0 (ARCHITECTURE 12.2).
+
+    Every entry's default take passes sfx check, except the known warnings. An id with
+    no passing render is left out and listed under ``dropped`` with its reason.
+    """
+    doc = _header("forge_v2", version, "derived from the recipe family tables (seed 0, designed); no critic run")
+    doc["dropped"], doc["categories"], doc["entries"] = {}, {}, {}
+    cache: dict = {}
+    used: set = set()
+    failures = [f for sound_id in _forge_v2_ids() if (f := _derive_into(doc, sound_id, cache, used, log))]
     _refuse(failures)
     return _wrote(log, out, doc)
+
+
+def _derive_into(doc: dict, sound_id: str, cache: dict, used: set, log: Callable | None) -> str | None:
+    """Add one derived id to ``doc`` (entry or dropped); the failure line when it is refused, else None."""
+    try:
+        entry = _derive_entry(sound_id, cache, used, log)
+    except Dropped as exc:
+        doc["dropped"][sound_id] = str(exc)
+        _say(log, f"{sound_id}: dropped: {exc}")
+        return None
+    except (ValueError, B.BankError, ImportError, AttributeError, KeyError) as exc:
+        return f"{sound_id}: {exc}"
+    doc["entries"][sound_id] = entry
+    doc["categories"].setdefault(entry["category"], _category(entry["category"]))
+    misses = target_misses(sound_id, entry["meta"])
+    _say(log, f"{sound_id}: {entry['meta']['dur_s']:.3f} s" + (f"; misses {'; '.join(misses)}" if misses else ""))
+    return None
 
 
 # ---------------------------------------------------------------- 7.4 add-fit

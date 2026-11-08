@@ -30,6 +30,7 @@ At each point it reads every visible raster image:
 | `<img>` | decoded image | box after `object-fit` |
 | CSS `background-image: url()` | decoded image | `background-size` in the padding box, times the CSS transform scale |
 | `<canvas>` `drawImage` of an `<img>` | source rectangle | destination size times the context transform and the canvas CSS scale |
+| `<canvas>` `drawImage` of a `<video>` | `videoWidth` x `videoHeight`, or the source rectangle | destination size times the context transform and the canvas CSS scale |
 | `<video poster>` | decoded poster | box after `object-fit`, while the poster shows |
 | SVG `<image>` | decoded image | box after `preserveAspectRatio` |
 
@@ -39,6 +40,15 @@ Visible means a non-zero box that touches the viewport and passes
 are vector, so they are skipped. 2 copies of 1 image at 1 time give 1 sample,
 the larger one, so a copy does not lengthen a warning run.
 
+A sample has `t_sec`, `src`, `natural_px` and `drawn_px`. A video draw adds
+`"source": "video"`, with `src` the file name of `currentSrc`. A draw with
+nearest-neighbour scaling (`imageSmoothingEnabled` false, or CSS
+`image-rendering: pixelated`) adds `"sampling": "nearest"`. The gate passes
+such a draw at a whole-number scale (pixel art).
+
+A report with `0` samples fails the gate. A scene that draws a plate must
+produce samples.
+
 ## Pre-upscaled plates
 
 The render also checks whether a raster was enlarged before the 1.2x gate.
@@ -46,7 +56,9 @@ It downscales the decoded pixels by the claimed 2x export factor, enlarges
 them back with nearest-neighbour sampling, and compares the RGB pixels with
 the decoded source. A round-trip PSNR above 40 dB means the file contains no
 meaningful detail above half its dimensions. The report then adds `real_px`,
-`detail_scale`, and `detail_psnr_db` to the sample. The gate uses `real_px`,
+`detail_scale`, and `detail_psnr_db` to the sample. When the detail check
+throws, the sample gets `detail_error` (the error message) instead, and the
+gate fails that sample with the message. The gate uses `real_px`,
 reports that measured resolution, and therefore rejects a pre-upscaled plate
 even when its file dimensions equal its drawn dimensions.
 
@@ -56,4 +68,4 @@ Limits:
   `clearRect` on it. A canvas that only draws shapes after a seek keeps the
   draws of the seek before.
 - A rotated element reports its bounding box, which is larger than the image.
-- Canvas draws of a canvas, a video or an `ImageBitmap` are not counted.
+- Canvas draws of a canvas or an `ImageBitmap` are not counted.

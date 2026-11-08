@@ -203,7 +203,7 @@
    "note": "A gated glockenspiel note with a voice an octave below (0.35 s), C pentatonic, made wide. Notes land about 20 ms early."
   },
   "text": {
-   "sound": "mallet/pluck",
+   "sound": "mallet/celesta",
    "takes": 1,
    "pitches": [
     "C4",
@@ -217,11 +217,18 @@
    "bed_db": 4,
    "offset_ms": 0,
    "min_gap_ms": 110,
-   "note": "One soft felt pluck per resolved fragment, low under the bed."
+   "note": "One soft, gated celesta note per resolved fragment, low under the bed. It stands in for the felt pluck mallet/pluck, which the take audit refuses (see swaps)."
   }
  },
  "off": {
   "suck": "a reverse whoosh into a cut puts a lead-in on top of the hit; the dip in the music already does that"
+ },
+ "swaps": {
+  "text": {
+   "from": "mallet/pluck",
+   "to": "mallet/celesta",
+   "reason": "mallet/pluck fails its take audit (it rings at the attack and its pitch test fails), so the bank leaves it out. mallet/celesta is the closest passing text sound by measured profile: attack 25 ms (46), centroid 1065 Hz (464), 20 dB decay 127 ms (105); its 5 pitch takes are clean."
+  }
  },
  "mix": {
   "level": "bed",

@@ -16,10 +16,20 @@ Create these text files before production work starts:
 - `plans/<unit>.md` contains one unit's goal, context, prior work, changes,
   owned files, excluded files, checks and report shape. Use 1 plan per unit.
 
-Large media stays outside git. Commit text sources such as plans, scripts,
-timelines, storyboards, scene HTML and audio scripts. Each worker runs in a git
+Workers do not commit working media. Commit text sources such as plans,
+scripts, timelines, storyboards, scene HTML and audio scripts. Each worker runs in a git
 worktree. Its worktree does not contain untracked media from another checkout.
 Every plan uses absolute paths to the shared media root from `CONTEXT.md`.
+
+Deliver the finished video. The finished deliverables are the product: an
+operator said "The mp4's are missing ... THATS THE MOST IMPORTANT PART". After
+the last critic round passes, the orchestrator does these steps:
+
+1. Commit the finished deliverables through git LFS in 1 PR.
+2. Check `git lfs ls-files` against the deliverable list. Every deliverable
+   must be in the list.
+3. Check the PR state before each push. Do not push to a merged or closed PR.
+4. Give the operator 1 link to the PR.
 
 ### Queue each unit with horch 0.4.6
 
@@ -237,8 +247,9 @@ timing to `video-director` before wave 4.
   Do not hand-build an `ffmpeg` command for the master.
 - Probe: the editor renders frames `0`, `K` and `2K` of the hook scene cold
   forward to `qa/probe/forward/`, then the same frames with `--reverse` to
-  `qa/probe/reverse/`. Without the probe, wave 6 skips the determinism
-  check.
+  `qa/probe/reverse/`. Without the probe, the determinism check reports
+  skip. A check reports pass, fail or skip. A skip of a check that applies
+  is a FAIL.
 - Gate: `ffprobe` on `render/master.mp4`, as the `video-render` skill shows.
 - Pass rule: `h264` High level `42`, `yuv420p`, CFR at `meta.fps`, frame
   count equal to `meta.duration_sec` x fps, AAC `48000` Hz stereo.

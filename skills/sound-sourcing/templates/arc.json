@@ -1,0 +1,7 @@
+{
+ "_doc": "Target loudness per film bar, in dB relative to the track's loud bars: 0 = its biggest sections, -6 = a groove, -10 = a breakdown, -14 = a quiet intro. Derive it from the picture map: quiet under the cold open and the typing, the groove for the feature beats, a breakdown before the turn, the build, the big section from the drop, a resolve under the logo. This example: a 30 s film at 120 BPM has 15 bars (2 s each); the drop is on film bar 9 (16.0 s); the logo starts on bar 13.",
+ "film_bpm": 120,
+ "beats_per_bar": 4,
+ "drop_film_bar": 9,
+ "arc": [-14, -13, -8, -6, -6, -10, -9, -5, 0, 0, 0, 0, -9, -11, -13]
+}

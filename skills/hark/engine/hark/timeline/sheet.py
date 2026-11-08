@@ -1,592 +1,602 @@
-"""hark sheet: one annotated PNG of a timeline result, for agents that can look at images (sheet-video part 2)."""
+"""``hark sheet``: render a timeline result as one annotated PNG.
+
+The picture stacks horizontal lanes that share one time axis (frames, sections,
+labelled events, spectrogram, waveform, loudness, sync marks) under a short text
+header. It is meant for agents that can read images.
+"""
 
 from __future__ import annotations
 
 import argparse
 import os
-from dataclasses import dataclass, field
 
-import numpy as np
+import numpy
 
 from hark.timeline.timeline import add_window_flags, timeline
 
 __all__ = ["sheet", "stagger", "log_spectrogram", "tick_step", "add_cli", "KIND_COLOURS", "STATUS_COLOURS"]
 
-DPI = 100
-KIND_COLOURS = {"WHOOSH": "#1f77b4", "RISER": "#17becf", "HIT": "#d62728", "KEY": "#2ca02c", "UI": "#8c564b",
-                "STEP": "#bcbd22", "FOLEY": "#e377c2", "NOTE": "#9467bd", "DRUM": "#ff7f0e", "VOICE": "#0b6e4f",
-                "-": "#7f7f7f"}
-STATUS_COLOURS = {"OK": "#2ca02c", "near": "#ff9f1c", "swell": "#1f77b4", "peak": "#9467bd", "off": "#d62728",
-                  "no sound": "#d62728"}
-UNKNOWN = "#777777"
-CUT_COLOUR = "#00a6d6"
-CUT_DASH = (0, (4, 3))
-STEPS = (0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300)
-LANE_H = {"frames": 1.55, "sections": 0.6, "events": 1.55, "spectrogram": 3.6, "waveform": 0.95, "loudness": 1.75,
-          "sync": 0.75}
-LANE_TITLES = {"frames": "frames", "sections": "sections", "events": "events", "spectrogram": "spectrogram",
-               "waveform": "waveform", "loudness": "loudness", "sync": "sync /\nbeats"}
-INSIDE_TITLES = ("spectrogram", "waveform", "loudness")
-SPEC_ROWS, SPEC_LO, SPEC_HI, SPEC_RANGE = 240, 30.0, 16000.0, 75.0
-ROWS = 4
+KIND_COLOURS = {
+    "WHOOSH": "#1f77b4", "RISER": "#17becf", "HIT": "#d62728", "KEY": "#2ca02c",
+    "UI": "#8c564b", "STEP": "#bcbd22", "FOLEY": "#e377c2", "NOTE": "#9467bd",
+    "DRUM": "#ff7f0e", "VOICE": "#0b6e4f", "-": "#7f7f7f",
+}
+STATUS_COLOURS = {
+    "OK": "#2ca02c", "near": "#ff9f1c", "swell": "#1f77b4", "peak": "#9467bd",
+    "off": "#d62728", "no sound": "#d62728",
+}
+
+_PX_PER_IN = 100
+_FALLBACK_COLOUR = "#777777"
+_INK_DARK = "#444444"
+_INK_PALE = "#777777"
+_RULE = "#bbbbbb"
+
+# Lane name -> (height in inches, title). Order here is the order on the page.
+_LANES = {
+    "frames": (1.55, "frames"),
+    "sections": (0.6, "sections"),
+    "events": (1.55, "events"),
+    "spectrogram": (3.6, "spectrogram"),
+    "waveform": (0.95, "waveform"),
+    "loudness": (1.75, "loudness"),
+    "sync": (0.75, "sync /\nbeats"),
+}
+_TITLE_ON_PLOT = frozenset({"spectrogram", "waveform", "loudness"})
+
+_TICK_CHOICES = (0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300)
+_MAX_TICKS = 24
+
+_BANDS = 240
+_BAND_LOW_HZ = 30.0
+_BAND_HIGH_HZ = 16000.0
+_SHOWN_DB = 75.0
+_FFT = 4096
+_RATE = 48000
+
+_LABEL_ROWS = 4
+
+_CUT_STYLE = {"color": "#00a6d6", "linestyle": (0, (4, 3)), "linewidth": 1.0}
+_KEY_TEXT = ("markers: v cue, <> cut; colours: green OK, amber near, blue swell, violet level peak, "
+             "red off or no sound")
+_TAG_NOTE = "labels are kind + CLAP tag, hints only; pale with ? = under 12 dB over the bed"
 
 
-def fmt_t(t) -> str:
-    from hark.core.report import fmt_t as core_fmt
+def _clock(t) -> str:
+    from hark.core.report import fmt_t
 
-    return core_fmt(t)
+    return fmt_t(t)
 
 
-# ---------------------------------------------------------------- geometry
-
-@dataclass
-class Geometry:
-    """Pixel and inch sizes of one sheet."""
-
-    width: int
-    has_picture: bool
-    fs: float = 0.0
-    left: int = 0
-    right: int = 64
-    plot_px: int = 0
-    lf: float = 0.0
-    char_px: float = 0.0
-    lanes: list = field(default_factory=list)
-
-    def __post_init__(self):
-        self.width = int(min(max(self.width, 1000), 2400))
-        self.fs = max(11.0, self.width / 125)
-        self.left = max(92, int(6.4 * self.fs) + 8)
-        self.plot_px = self.width - self.left - self.right
-        self.lf = 0.85 * self.fs
-        self.char_px = 0.602 * self.lf * 100 / 72
-        names = (["frames"] if self.has_picture else []) + ["sections", "events", "spectrogram", "waveform",
-                                                             "loudness", "sync"]
-        self.lanes = [(n, LANE_H[n]) for n in names]
-
+# ---------------------------------------------------------------- time axis
 
 def tick_step(span: float) -> float:
-    """The first step that gives at most 24 ticks over the span, else 600 s."""
-    for s in STEPS:
-        if span / s <= 24:
-            return float(s)
-    return 600.0
+    """Smallest tick spacing that keeps the axis at 24 ticks or fewer (600 s past the table)."""
+    return next((float(c) for c in _TICK_CHOICES if span / c <= _MAX_TICKS), 600.0)
 
 
-def tick_label(t: float, step: float) -> str:
-    m, s = divmod(t + 1e-9, 60)
+def _tick_text(t: float, step: float) -> str:
+    minutes, secs = divmod(t + 1e-9, 60)
+    whole = int(minutes)
     if step >= 1:
-        return f"{int(m)}:{int(s):02d}"
-    if step == 0.25:
-        return f"{int(m)}:{s:05.2f}"
-    return f"{int(m)}:{s:04.1f}"
+        return f"{whole}:{int(secs):02d}"
+    return f"{whole}:{secs:05.2f}" if step == 0.25 else f"{whole}:{secs:04.1f}"
 
 
-def ticks(t0: float, t1: float) -> tuple[np.ndarray, float]:
-    step = tick_step(max(t1 - t0, 1e-6))
-    first = np.ceil(t0 / step - 1e-9) * step
-    return np.arange(first, t1 + 1e-9, step), step
+def _tick_positions(low: float, high: float) -> tuple[numpy.ndarray, float]:
+    step = tick_step(max(high - low, 1e-6))
+    start = numpy.ceil(low / step - 1e-9) * step
+    return numpy.arange(start, high + 1e-9, step), step
 
 
-# ---------------------------------------------------------------- header
+# ---------------------------------------------------------------- header text
 
-def _sync_line(kind: str, st: dict) -> str:
-    fr = "within_1_frame" if "frame_ms" in st else "within_40ms"
-    word = "1 frame" if fr == "within_1_frame" else "40 ms"
-    s = f"{kind}: {st['n']}, OK within {word} {100 * st['hit_' + fr]:.0f}% (chance {100 * st.get('chance_' + fr, 0):.0f}%)"
-    if "accent_" + fr in st:
-        s += f", accents {100 * st['accent_' + fr]:.0f}% (chance {100 * st['accent_chance_' + fr]:.0f}%)"
-    if st.get("answered_by_level_peak"):
-        s += f", {st['answered_by_level_peak']} met only by a level peak"
-    return s + f", {len(st['no_sound'])} without a hit"
+def _pct(x) -> str:
+    return f"{100 * x:.0f}%"
 
 
-def _level_items(r: dict) -> list[str]:
-    L = r["loudness"]
-    if L.get("integrated_lufs") is not None:
-        s = f"{L['integrated_lufs']:.1f} LUFS   TP {L['true_peak_dbtp']:.1f} dBTP"
-        return [s + (f"   LRA {L['lra_lu']:.1f} LU" if L.get("lra_lu") is not None else "")]
-    if not r.get("has_audio", True):
-        return ["no audio stream"]
-    return ["digital silence"] if L.get("digital_silence") else []
+def _describe_sync(which: str, stats: dict) -> str:
+    one_frame = "frame_ms" in stats
+    suffix = "within_1_frame" if one_frame else "within_40ms"
+    tol = "1 frame" if one_frame else "40 ms"
+    parts = [f"{which}: {stats['n']}, OK within {tol} {_pct(stats['hit_' + suffix])} "
+             f"(chance {_pct(stats.get('chance_' + suffix, 0))})"]
+    if "accent_" + suffix in stats:
+        parts.append(f"accents {_pct(stats['accent_' + suffix])} "
+                     f"(chance {_pct(stats['accent_chance_' + suffix])})")
+    only_peak = stats.get("answered_by_level_peak")
+    if only_peak:
+        parts.append(f"{only_peak} met only by a level peak")
+    parts.append(f"{len(stats['no_sound'])} without a hit")
+    return ", ".join(parts)
 
 
-GREY, PALE = "#444444", "#777777"
-LEGEND = "markers: v cue, <> cut; colours: green OK, amber near, blue swell, violet level peak, red off or no sound"
+def _level_summary(res: dict) -> list[str]:
+    lv = res["loudness"]
+    if lv.get("integrated_lufs") is None:
+        if not res.get("has_audio", True):
+            return ["no audio stream"]
+        return ["digital silence"] if lv.get("digital_silence") else []
+    text = f"{lv['integrated_lufs']:.1f} LUFS   TP {lv['true_peak_dbtp']:.1f} dBTP"
+    if lv.get("lra_lu") is not None:
+        text += f"   LRA {lv['lra_lu']:.1f} LU"
+    return [text]
 
 
-def _tempo_item(mu: dict) -> list[str]:
-    if mu.get("tempo") is None or mu.get("confidence") == "none":
+def _tempo_summary(music: dict) -> list[str]:
+    bpm = music.get("tempo")
+    if bpm is None or music.get("confidence") == "none":
         return []
-    alt = f" (or {mu['tempo_alt']})" if mu.get("tempo_alt") else ""
-    return [f"~{mu['tempo']}{alt} BPM ({mu['confidence']})"]
-
-
-def _sync_lines(r: dict, fs: float) -> list[tuple]:
-    blocks = [(k, r["sync"].get(k)) for k in ("cuts", "cues")]
-    return [(_sync_line(k, b["stats"]), 0.95 * fs, "normal", GREY) for k, b in blocks if b and b["items"]]
-
-
-def _legend_lines(r: dict, fs: float) -> list[tuple]:
-    out = []
-    if r["sync"]:
-        legend = LEGEND + ("; dashed lines are picture cuts" if r["cuts"] else "")
-        out.append((legend, 0.72 * fs, "normal", PALE))
-    if any(e.get("label") for e in r["events"]):
-        out.append(("labels are kind + CLAP tag, hints only; pale with ? = under 12 dB over the bed",
-                    0.72 * fs, "normal", PALE))
-    return out
+    other = music.get("tempo_alt")
+    shown = f"{bpm} (or {other})" if other else f"{bpm}"
+    return [f"~{shown} BPM ({music['confidence']})"]
 
 
 def header_lines(r: dict, fs: float) -> list[tuple[str, float, str, str]]:
-    """(text, size pt, weight, colour) per header line."""
-    name = os.path.basename(r["file"])
-    items = _level_items(r) + _tempo_item(r["music"]) + [f"{len(r['events'])} events"]
-    return [(f"{name}   {fmt_t(r['start'])}-{fmt_t(r['end'])}", 1.25 * fs, "bold", "black"),
-            ("    ".join(items), 0.95 * fs, "normal", GREY), *_sync_lines(r, fs), *_legend_lines(r, fs)]
+    """Header rows as (text, point size, weight, colour), top to bottom."""
+    title = f"{os.path.basename(r['file'])}   {_clock(r['start'])}-{_clock(r['end'])}"
+    facts = _level_summary(r) + _tempo_summary(r["music"]) + [f"{len(r['events'])} events"]
+    rows = [(title, 1.25 * fs, "bold", "black"), ("    ".join(facts), 0.95 * fs, "normal", _INK_DARK)]
+    for which in ("cuts", "cues"):
+        block = r["sync"].get(which)
+        if block and block["items"]:
+            rows.append((_describe_sync(which, block["stats"]), 0.95 * fs, "normal", _INK_DARK))
+    small = 0.72 * fs
+    if r["sync"]:
+        key = _KEY_TEXT + ("; dashed lines are picture cuts" if r["cuts"] else "")
+        rows.append((key, small, "normal", _INK_PALE))
+    if any(ev.get("label") for ev in r["events"]):
+        rows.append((_TAG_NOTE, small, "normal", _INK_PALE))
+    return rows
 
 
-def header_height(lines) -> float:
-    return 0.22 + sum(size * 1.45 / 72 for _, size, _, _ in lines)
+def _header_inches(rows) -> float:
+    return 0.22 + sum(row[1] * 1.45 / 72 for row in rows)
 
 
-# ---------------------------------------------------------------- event labels
+# ---------------------------------------------------------------- label placement
 
-def stagger(items, t0: float, t1: float, plot_px: float, char_px: float, rows: int = ROWS) -> list[tuple]:
-    """Greedy label rows. items: (priority, t, text). Returns (row, t, span start, text); never overlapping."""
-    pps = plot_px / max(t1 - t0, 1e-9)
-    taken: list[list[tuple[float, float]]] = [[] for _ in range(rows)]
-    placed = []
-    for _, t, text in sorted(items, key=lambda it: it[0]):
-        w = (len(text) * char_px + 16) / pps
-        a, b = t - 0.15 * w, t + 0.85 * w
-        if b > t1:
-            a, b = t1 - w, t1
-        a = max(a, t0)
-        row = next((k for k in range(rows) if all(b <= s or a >= e for s, e in taken[k])), None)
-        if row is None:
+def _fits(row_spans, low: float, high: float) -> bool:
+    return all(high <= s or low >= e for s, e in row_spans)
+
+
+def stagger(items, t0: float, t1: float, plot_px: float, char_px: float, rows: int = _LABEL_ROWS) -> list[tuple]:
+    """Place labels greedily into rows, best priority first, without overlap.
+
+    ``items`` holds (priority, t, text). The result holds (row, t, left edge, text);
+    a label that fits no row is dropped.
+    """
+    px_per_s = plot_px / max(t1 - t0, 1e-9)
+    used: list[list[tuple[float, float]]] = [[] for _ in range(rows)]
+    out = []
+    for _, at, text in sorted(items, key=lambda item: item[0]):
+        span = (len(text) * char_px + 16) / px_per_s
+        low, high = at - 0.15 * span, at + 0.85 * span
+        if high > t1:
+            low, high = t1 - span, t1
+        low = max(low, t0)
+        free = [k for k in range(rows) if _fits(used[k], low, high)]
+        if free:
+            used[free[0]].append((low, high))
+            out.append((free[0], at, low, text))
+    return out
+
+
+def _label_candidates(res: dict) -> list[tuple]:
+    hit_times = {it.get("event_t") for blk in res["sync"].values() for it in blk["items"]}
+    hit_times.discard(None)
+    cands = []
+    for ev in res["events"]:
+        if not ev.get("label"):
             continue
-        taken[row].append((a, b))
-        placed.append((row, t, a, text))
-    return placed
+        mark = "" if ev.get("exposed") else "?"
+        rank = (0 if ev["t"] in hit_times else 1, -ev.get("prominence_db", 0))
+        cands.append((rank, ev["t"], f"{ev['kind']}{mark} {ev['label']}"))
+    return cands
 
 
-def label_items(r: dict) -> list[tuple]:
-    answered = set()
-    for block in r["sync"].values():
-        answered.update(it.get("event_t") for it in block["items"] if it.get("event_t") is not None)
-    items = []
-    for e in r["events"]:
-        if e.get("label"):
-            text = f"{e['kind']}{'' if e.get('exposed') else '?'} {e['label']}"
-            items.append(((0 if e["t"] in answered else 1, -e.get("prominence_db", 0)), e["t"], text))
-    return items
+# ---------------------------------------------------------------- spectrogram maths
+
+def _triangle_bank() -> tuple[numpy.ndarray, numpy.ndarray]:
+    """Unit-area triangular filters on log-spaced centres, and those centres."""
+    pts = numpy.geomspace(_BAND_LOW_HZ, _BAND_HIGH_HZ, _BANDS + 2)
+    hz = numpy.fft.rfftfreq(_FFT, 1 / _RATE)
+    bank = numpy.zeros((_BANDS, hz.size))
+    for row, (low, mid, high) in enumerate(zip(pts[:-2], pts[1:-1], pts[2:])):
+        rise = (hz - low) / (mid - low)
+        fall = (high - hz) / (high - mid)
+        weights = numpy.clip(numpy.minimum(rise, fall), 0, None)
+        if not weights.any():
+            weights[int(numpy.argmin(numpy.abs(hz - mid)))] = 1.0
+        bank[row] = weights / weights.sum()
+    return bank, pts[1:-1]
 
 
-# ---------------------------------------------------------------- spectrogram
-
-def _log_bank(n_fft: int) -> tuple[np.ndarray, np.ndarray]:
-    edges = np.geomspace(SPEC_LO, SPEC_HI, SPEC_ROWS + 2)
-    f = np.fft.rfftfreq(n_fft, 1 / 48000)
-    bank = np.zeros((SPEC_ROWS, f.size))
-    for k in range(SPEC_ROWS):
-        a, c, b = edges[k], edges[k + 1], edges[k + 2]
-        tri = np.clip(np.minimum((f - a) / (c - a), (b - f) / (b - c)), 0, None)
-        if not tri.any():
-            tri[int(np.argmin(np.abs(f - c)))] = 1.0
-        bank[k] = tri / tri.sum()
-    return bank, edges[1:-1]
-
-
-def log_spectrogram(m: np.ndarray, plot_px: int) -> tuple[np.ndarray, np.ndarray]:
-    """(dB matrix of shape (240, columns), row centre frequencies)."""
-    n_fft = 4096
-    m = np.asarray(m, dtype=np.float64)
-    hop = max(64, int(len(m) / max(plot_px, 1)))
-    y = np.pad(m, n_fft // 2)
-    n = 1 + max(0, y.size - n_fft) // hop
-    win = np.hanning(n_fft + 1)[:-1]
-    bank, centres = _log_bank(n_fft)
-    cols = []
-    for i0 in range(0, n, 512):
-        idx = (np.arange(i0, min(n, i0 + 512)) * hop)[:, None] + np.arange(n_fft)[None, :]
-        spec = np.fft.rfft(y[idx] * win, axis=1)
-        cols.append(bank @ (spec.real ** 2 + spec.imag ** 2).T)
-    return 10 * np.log10(np.concatenate(cols, axis=1) + 1e-14), centres
+def log_spectrogram(m: numpy.ndarray, plot_px: int) -> tuple[numpy.ndarray, numpy.ndarray]:
+    """Band power in dB, shape (240, columns), plus the band centre frequencies."""
+    sig = numpy.asarray(m, dtype=numpy.float64)
+    hop = max(64, int(len(sig) / max(plot_px, 1)))
+    padded = numpy.pad(sig, _FFT // 2)
+    n_cols = 1 + max(0, padded.size - _FFT) // hop
+    taper = numpy.hanning(_FFT + 1)[:-1]
+    bank, centres = _triangle_bank()
+    offsets = numpy.arange(_FFT)[None, :]
+    chunks = []
+    for first in range(0, n_cols, 512):
+        starts = numpy.arange(first, min(n_cols, first + 512)) * hop
+        spec = numpy.fft.rfft(padded[starts[:, None] + offsets] * taper, axis=1)
+        chunks.append(bank @ (spec.real ** 2 + spec.imag ** 2).T)
+    return 10 * numpy.log10(numpy.concatenate(chunks, axis=1) + 1e-14), centres
 
 
-def spec_scale(S: np.ndarray) -> tuple[float, float]:
-    top = max(float(np.percentile(S, 99.7)), -40.0)
-    return top - SPEC_RANGE, top
+def spec_scale(S: numpy.ndarray) -> tuple[float, float]:
+    ceiling = max(float(numpy.percentile(S, 99.7)), -40.0)
+    return ceiling - _SHOWN_DB, ceiling
 
 
-# ---------------------------------------------------------------- drawing context
+def waveform_title(m: numpy.ndarray) -> str:
+    peak = float(numpy.max(numpy.abs(m))) if m.size else 0.0
+    if peak == 0:
+        return "waveform: digital silence"
+    full = max(float(numpy.percentile(numpy.abs(m), 99.9)), 1e-9)
+    return f"waveform (full height {20 * numpy.log10(full):.0f} dBFS, peak {20 * numpy.log10(peak):.1f} dBFS)"
 
-@dataclass
-class Canvas:
-    fig: object
-    geo: Geometry
-    r: dict
-    t0: float
-    t1: float
-    axes: dict = field(default_factory=dict)
-    titles: dict = field(default_factory=lambda: dict(LANE_TITLES))
+
+def _min_max_columns(sig: numpy.ndarray, n_cols: int):
+    """Per-column min and max of ``sig`` over equal slices, and each slice centre."""
+    cut = numpy.linspace(0, sig.size, n_cols + 1).astype(int)
+    lows, highs = [], []
+    for a, b in zip(cut[:-1], cut[1:]):
+        piece = sig[a:b]
+        lows.append(piece.min() if b > a else 0.0)
+        highs.append(piece.max() if b > a else 0.0)
+    return numpy.array(lows), numpy.array(highs), (cut[:-1] + cut[1:]) / 2
+
+
+def _lufs_line(block: dict | None):
+    if not block or not block.get("lufs"):
+        return numpy.zeros(0), numpy.zeros(0)
+    vals = numpy.maximum(numpy.asarray(block["lufs"], dtype=float), -60)
+    return block["t0"] + block["dt"] * numpy.arange(vals.size), vals
+
+
+_AT_LEFT = {"ha": "left", "va": "center"}
+_AT_RIGHT = {"ha": "right", "va": "center"}
+_AT_TOP_LEFT = {"ha": "left", "va": "top"}
+
+
+def _bare_y(pane, low, high) -> None:
+    """Fix the vertical range of a lane and hide its y ticks."""
+    pane.set_ylim(low, high)
+    pane.set_yticks([])
+
+
+def _stroke(pane, x, y0, y1, **style) -> None:
+    pane.plot([x, x], [y0, y1], **style)
+
+
+# ---------------------------------------------------------------- the drawing
+
+class _Page:
+    """One sheet being drawn: page sizes, the result, and one axes per lane."""
+
+    def __init__(self, res: dict, width: int):
+        self.res = res
+        self.begin, self.until = res["start"], res["end"]
+        self._size_text(width)
+        names = [tally for tally in _LANES if tally != "frames" or res.get("video")]
+        self.lanes = [(tally, _LANES[tally][0]) for tally in names]
+        self.titles = {tally: t for tally, (_, t) in _LANES.items()}
+        self.header = header_lines(res, self.pt)
+        self._head_in = _header_inches(self.header)
+        lanes_in = sum(h for _, h in self.lanes)
+        self.height_in = round((self._head_in + lanes_in + 0.55) * 100) / 100
+        self.fig = None
+        self.pane: dict = {}
+
+    def _size_text(self, width: int) -> None:
+        """Page width, font size, left margin, plot width and label glyph width."""
+        self.width = int(min(max(width, 1000), 2400))
+        self.pt = max(11.0, self.width / 125)
+        self.left = max(92, int(6.4 * self.pt) + 8)
+        self.plot_px = self.width - self.left - 64
+        self.label_pt = 0.85 * self.pt
+        self.char_px = 0.602 * self.label_pt * 100 / 72
 
     @property
     def span(self) -> float:
-        return max(self.t1 - self.t0, 1e-9)
+        return max(self.until - self.begin, 1e-9)
 
     @property
-    def pps(self) -> float:
-        return self.geo.plot_px / self.span
+    def px_per_s(self) -> float:
+        return self.plot_px / self.span
+
+    def open(self) -> None:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        self.fig = plt.figure(figsize=(self.width / _PX_PER_IN, self.height_in), dpi=_PX_PER_IN, facecolor="white")
+        top = self.height_in - self._head_in
+        for name, h in self.lanes:
+            top -= h
+            box = (self.left / self.width, top / self.height_in, self.plot_px / self.width,
+                   (h - 0.06) / self.height_in)
+            self.pane[name] = self.fig.add_axes(box)
+
+    def write_header(self) -> None:
+        y = 0.12
+        for text, size, weight, colour in self.header:
+            half = size * 0.725 / 72
+            y += half
+            self.fig.text(0.008, 1 - y / self.height_in, text, **_AT_LEFT, fontsize=size,
+                          fontweight=weight, color=colour)
+            y += half
+
+    # ---- lanes
+
+    def frames_lane(self, pane) -> int:
+        from hark.timeline import video as vid
+
+        src = self.res["video"]
+        meta = vid.info(src)
+        thumb_w = (_LANES["frames"][0] * _PX_PER_IN - 18) * (meta.get("width") or 16) / (meta.get("height") or 9)
+        n_slots = max(1, int(self.plot_px // (thumb_w + 6)))
+        _bare_y(pane, 0, 1)
+        slot = self.span / n_slots
+        shown = sum(self._thumbnail(pane, src, self.begin + k * slot, self.begin + (k + 1) * slot, thumb_w)
+                    for k in range(n_slots))
+        pane.set_xlim(self.begin, self.until)
+        return shown
+
+    def _thumbnail(self, pane, src: str, a: float, b: float, thumb_w: float) -> int:
+        """Draw one slot's frame and its tick; return 1 when a frame was drawn."""
+        from hark.timeline import video as vid
+
+        when = next((min(c + 0.15, b - 0.05) for c in self.res["cuts"] if a <= c < b - 0.2), (a + b) / 2)
+        img = vid.frame(src, when, width=int(1.5 * thumb_w))
+        _stroke(pane, when, 0, 0.12, color="#222222", linewidth=1.0)
+        if img is None:
+            return 0
+        centre, half = (a + b) / 2, thumb_w / self.px_per_s / 2
+        pane.imshow(numpy.asarray(img), extent=(centre - half, centre + half, 0.12, 1.0), aspect="auto", zorder=2)
+        return 1
+
+    def sections_lane(self, pane) -> None:
+        from matplotlib.patches import Rectangle
+
+        _bare_y(pane, 0, 1)
+        glyph_px = 0.55 * self.pt * 0.9 * 100 / 72
+        for k, sec in enumerate(self.res["sections"]):
+            a, b = max(sec["start"], self.begin), min(sec["end"], self.until)
+            if b <= a:
+                continue
+            fill = "#f3e9d2" if k % 2 else "#dbe8f5"
+            pane.add_patch(Rectangle((a, 0.08), b - a, 0.84, facecolor=fill, edgecolor="#999999", linewidth=0.6))
+            room = int((b - a) * self.px_per_s / glyph_px) - 1
+            if room < 4:
+                continue
+            name = sec["label"]
+            if len(name) > room:
+                name = name[: room - 2] + ".."
+            pane.text(a + 4 / self.px_per_s, 0.5, name, **_AT_LEFT, fontsize=0.9 * self.pt, clip_on=True)
+
+    def events_lane(self, pane) -> tuple[int, int, list]:
+        cands = _label_candidates(self.res)
+        spots = stagger(cands, self.begin, self.until, self.plot_px, self.char_px)
+        kind_at = {ev["t"]: ev["kind"] for ev in self.res["events"] if ev.get("label")}
+        _bare_y(pane, 0, _LABEL_ROWS)
+        for row, at, low, text in spots:
+            colour = KIND_COLOURS.get(kind_at.get(at, "-"), _FALLBACK_COLOUR)
+            y = _LABEL_ROWS - row - 0.5
+            fade = 0.55 if text.split(" ", 1)[0].endswith("?") else 1.0
+            _stroke(pane, at, 0, y, color=colour, linewidth=0.8, alpha=fade)
+            pane.text(low + 8 / self.px_per_s, y, text, **_AT_LEFT, fontsize=self.label_pt,
+                    family="monospace", color="white", clip_on=True,
+                    bbox={"boxstyle": "square,pad=0.25", "fc": colour, "ec": "none", "alpha": fade})
+        kinds = sorted({kind_at.get(spot[1], "-") for spot in spots})
+        return len(spots), len(cands), kinds
+
+    def spectrogram_lane(self, pane, sig: numpy.ndarray) -> None:
+        power, centres = log_spectrogram(sig, self.plot_px)
+        low, high = spec_scale(power)
+        pane.imshow(power, origin="lower", aspect="auto", cmap="magma", vmin=low, vmax=high, interpolation="bilinear",
+                  extent=(self.begin, self.until, 0, _BANDS))
+        hz_marks = [50, 100, 200, 500, 1000, 2000, 5000, 10000]
+        pane.set_yticks(numpy.interp(numpy.log(hz_marks), numpy.log(centres), numpy.arange(_BANDS) + 0.5))
+        pane.set_yticklabels(["50", "100", "200", "500", "1k", "2k", "5k", "10k"])
+        for ev in self.res["events"]:
+            at = ev["t"]
+            if not self.begin <= at <= self.until:
+                continue
+            strong = bool(ev.get("label"))
+            tick = (0.07 if strong else 0.035) * _BANDS
+            _stroke(pane, at, _BANDS - tick, _BANDS, color="white", linewidth=1.0 if strong else 0.6,
+                    alpha=0.9 if strong else 0.55)
+        pane.set_ylim(0, _BANDS)
+
+    def waveform_lane(self, pane, sig: numpy.ndarray) -> None:
+        count = sig.size
+        full = max(float(numpy.percentile(numpy.abs(sig), 99.9)) if count else 0.0, 1e-9)
+        lows, highs, mids = _min_max_columns(sig, max(1, min(self.plot_px, count)))
+        xs = self.begin + mids / max(count, 1) * self.span
+        pane.fill_between(xs, numpy.clip(lows / full, -1, 1), numpy.clip(highs / full, -1, 1), color="#5a6b7d", linewidth=0)
+        _bare_y(pane, -1.05, 1.05)
+        self.titles["waveform"] = waveform_title(sig)
+
+    def loudness_lane(self, pane) -> None:
+        lv = self.res["loudness"]
+        for quiet in lv.get("silences", []):
+            pane.axvspan(quiet["start"], quiet["end"], color="#ffe14d", alpha=0.45, linewidth=0)
+        mt, mv = _lufs_line(lv.get("momentary"))
+        st, sv = _lufs_line(lv.get("short_term"))
+        if mt.size:
+            pane.plot(mt, mv, color="#5b9bd5", linewidth=0.8, label="momentary")
+        if st.size:
+            pane.plot(st, sv, color="#1f3c88", linewidth=2.0, label="short-term")
+        self._integrated_mark(pane, lv.get("integrated_lufs"))
+        for clip_t in lv.get("clipping", {}).get("times", []):
+            _stroke(pane, clip_t, -3, 0, color="#d62728", linewidth=1.2)
+        pane.set_ylim(-60, 0)
+        pane.set_yticks([-50, -40, -30, -20, -10])
+        if mt.size or st.size:
+            pane.legend(loc="lower left", fontsize=0.65 * self.pt, frameon=False, ncol=3)
+
+    def _integrated_mark(self, pane, whole) -> None:
+        if whole is None or whole <= -60:
+            return
+        pane.axhline(whole, color="#d62728", linestyle="--", linewidth=1.0, label="integrated")
+        pane.text(1.005, (whole + 60) / 60, f"{whole:.1f}", transform=pane.transAxes, **_AT_LEFT,
+                  fontsize=0.72 * self.pt, color="#d62728")
+
+    def sync_lane(self, pane) -> None:
+        music = self.res["music"]
+        _bare_y(pane, 0, 1)
+        if music.get("beats") and music.get("confidence") != "none":
+            bars = set(music.get("downbeats", []))
+            for bt in music["beats"]:
+                if not self.begin <= bt <= self.until:
+                    continue
+                strong = bt in bars
+                _stroke(pane, bt, 0, 0.45 if strong else 0.28, color="#111111" if strong else "#999999",
+                        linewidth=0.8)
+        for which, glyph, y in (("cues", "v", 0.84), ("cuts", "D", 0.6)):
+            for it in self.res["sync"].get(which, {}).get("items", []):
+                pane.plot([it["t"]], [y], marker=glyph, markersize=0.55 * self.pt, linestyle="none",
+                        color=STATUS_COLOURS.get(it.get("status"), _FALLBACK_COLOUR), markeredgecolor="#333333",
+                        markeredgewidth=0.4)
+
+    # ---- finishing touches
+
+    def kind_chips(self, kinds) -> None:
+        x = 1 - 8 / self.width
+        small = 0.72 * self.pt
+        for kind in reversed(kinds):
+            self.fig.text(x, 1 - 0.2 / self.height_in, kind, **_AT_RIGHT, fontsize=small, color="white",
+                          bbox={"boxstyle": "round,pad=0.3", "fc": KIND_COLOURS.get(kind, _FALLBACK_COLOUR),
+                                "ec": "none"})
+            x -= (len(kind) * 0.65 * 0.72 * self.pt * 100 / 72 + 18) / self.width
+
+    def dress(self, name: str, pane, bottom: bool) -> None:
+        where, step = _tick_positions(self.begin, self.until)
+        pane.set_xlim(self.begin, self.until)
+        pane.set_xticks(where)
+        pane.set_xticklabels([_tick_text(t, step) for t in where] if bottom else [], fontsize=0.8 * self.pt)
+        if bottom:
+            pane.set_xlabel("time (m:ss)", fontsize=0.85 * self.pt)
+        for spine in pane.spines.values():
+            spine.set_color(_RULE)
+            spine.set_linewidth(0.6)
+        pane.tick_params(axis="both", labelsize=0.72 * self.pt, length=3, color=_RULE)
+        title = self.titles[name]
+        if name in _TITLE_ON_PLOT:
+            pane.text(0.004, 0.96, title, transform=pane.transAxes, **_AT_TOP_LEFT, fontsize=0.8 * self.pt,
+                    zorder=20, bbox={"boxstyle": "square,pad=0.2", "fc": "white", "ec": "none", "alpha": 0.75})
+        else:
+            pane.text(-0.004, 0.5, title, transform=pane.transAxes, **_AT_RIGHT, fontsize=0.72 * self.pt,
+                    color="#333333")
+
+    def cut_marks(self) -> None:
+        inside = [c for c in self.res["cuts"] if self.begin <= c <= self.until]
+        for name, pane in self.pane.items():
+            if name == "events":
+                continue
+            depth = 0 if name == "frames" else 15
+            for c in inside:
+                pane.axvline(c, zorder=depth, **_CUT_STYLE)
 
 
-def _layout(fig, geo: Geometry, top_in: float, height_in: float) -> dict:
-    axes = {}
-    y = height_in - top_in
-    for name, h in geo.lanes:
-        y -= h
-        rect = (geo.left / geo.width, y / height_in, geo.plot_px / geo.width, (h - 0.06) / height_in)
-        axes[name] = fig.add_axes(rect)
-    return axes
+def build_figure(r: dict, m: numpy.ndarray, width: int):
+    """Draw the whole sheet; return (figure, counts with page size in px)."""
+    page = _Page(r, width)
+    page.open()
+    page.write_header()
+    pane = page.pane
+    thumbs = page.frames_lane(pane["frames"]) if "frames" in pane else 0
+    page.sections_lane(pane["sections"])
+    placed, tagged, kinds = page.events_lane(pane["events"])
+    page.spectrogram_lane(pane["spectrogram"], m)
+    page.waveform_lane(pane["waveform"], m)
+    page.loudness_lane(pane["loudness"])
+    page.sync_lane(pane["sync"])
+    page.kind_chips(kinds)
+    bottom = page.lanes[-1][0]
+    for name, lane_ax in pane.items():
+        page.dress(name, lane_ax, name == bottom)
+    page.cut_marks()
+    counts = {"thumbnails": thumbs, "labelled_events": placed, "tagged_events": tagged,
+              "width": page.width, "height": int(round(page.height_in * _PX_PER_IN))}
+    return page.fig, counts
 
 
-def _style_axis(ax, name: str, cv: Canvas, bottom: bool) -> None:
-    pos, step = ticks(cv.t0, cv.t1)
-    ax.set_xlim(cv.t0, cv.t1)
-    ax.set_xticks(pos)
-    ax.set_xticklabels([tick_label(t, step) for t in pos] if bottom else [], fontsize=0.8 * cv.geo.fs)
-    if bottom:
-        ax.set_xlabel("time (m:ss)", fontsize=0.85 * cv.geo.fs)
-    for sp in ax.spines.values():
-        sp.set_color("#bbbbbb")
-        sp.set_linewidth(0.6)
-    ax.tick_params(axis="both", labelsize=0.72 * cv.geo.fs, length=3, color="#bbbbbb")
-    _lane_title(ax, name, cv.titles[name], cv.geo.fs)
+# ---------------------------------------------------------------- entry point
+
+def _mono(res: dict, path: str) -> numpy.ndarray:
+    if res.get("has_audio", True):
+        from hark.core import audio
+
+        return numpy.asarray(audio.load(path, mono=True, start=res["start"], end=res["end"]), dtype=numpy.float64)
+    return numpy.zeros(int(round((res["end"] - res["start"]) * _RATE)))
 
 
-def _lane_title(ax, name: str, title: str, fs: float) -> None:
-    if name in INSIDE_TITLES:
-        ax.text(0.004, 0.96, title, transform=ax.transAxes, ha="left", va="top", fontsize=0.8 * fs, zorder=20,
-                bbox={"boxstyle": "square,pad=0.2", "fc": "white", "ec": "none", "alpha": 0.75})
-    else:
-        ax.text(-0.004, 0.5, title, transform=ax.transAxes, ha="right", va="center", fontsize=0.72 * fs,
-                color="#333333")
+def _png_path(path: str, chosen) -> str:
+    if chosen:
+        return os.path.abspath(chosen)
+    stem = os.path.splitext(os.path.basename(path))[0]
+    return os.path.abspath(os.path.join(os.getcwd(), stem + "_sheet.png"))
 
 
-def _draw_header(fig, lines, height_in: float) -> None:
-    y = 0.12
-    for text, size, weight, colour in lines:
-        y += size * 0.725 / 72
-        fig.text(0.008, 1 - y / height_in, text, ha="left", va="center", fontsize=size, fontweight=weight,
-                 color=colour)
-        y += size * 0.725 / 72
-
-
-def _cut_lines(cv: Canvas) -> None:
-    for name, ax in cv.axes.items():
-        if name == "events":
-            continue
-        for c in cv.r["cuts"]:
-            if cv.t0 <= c <= cv.t1:
-                ax.axvline(c, color=CUT_COLOUR, linestyle=CUT_DASH, linewidth=1.0,
-                           zorder=0 if name == "frames" else 15)
-
-
-# ---------------------------------------------------------------- lanes
-
-def _frame_time(cuts, a: float, b: float) -> float:
-    for c in cuts:
-        if a <= c < b - 0.2:
-            return min(c + 0.15, b - 0.05)
-    return (a + b) / 2
-
-
-def _thumb(cv: Canvas, ax, span: tuple[float, float], tw: float) -> int:
-    """Draw the frame of one slot with its tick; 1 when a frame was drawn."""
-    from hark.timeline import video as vid
-
-    a, b = span
-    t = _frame_time(cv.r["cuts"], a, b)
-    img = vid.frame(cv.r["video"], t, width=int(1.5 * tw))
-    ax.plot([t, t], [0, 0.12], color="#222222", linewidth=1.0)
-    if img is None:
-        return 0
-    mid, half = (a + b) / 2, tw / cv.pps / 2
-    ax.imshow(np.asarray(img), extent=(mid - half, mid + half, 0.12, 1.0), aspect="auto", zorder=2)
-    return 1
-
-
-def draw_frames(cv: Canvas, ax) -> int:
-    from hark.timeline import video as vid
-
-    info = vid.info(cv.r["video"])
-    tw = (LANE_H["frames"] * DPI - 18) * (info.get("width") or 16) / (info.get("height") or 9)
-    slots = max(1, int(cv.geo.plot_px // (tw + 6)))
-    ax.set_ylim(0, 1)
-    ax.set_yticks([])
-    step = cv.span / slots
-    drawn = sum(_thumb(cv, ax, (cv.t0 + k * step, cv.t0 + (k + 1) * step), tw) for k in range(slots))
-    ax.set_xlim(cv.t0, cv.t1)
-    return drawn
-
-
-def draw_sections(cv: Canvas, ax) -> None:
-    from matplotlib.patches import Rectangle
-
-    fs = cv.geo.fs
-    ax.set_ylim(0, 1)
-    ax.set_yticks([])
-    for k, s in enumerate(cv.r["sections"]):
-        a, b = max(s["start"], cv.t0), min(s["end"], cv.t1)
-        if b <= a:
-            continue
-        ax.add_patch(Rectangle((a, 0.08), b - a, 0.84, facecolor="#dbe8f5" if k % 2 == 0 else "#f3e9d2",
-                               edgecolor="#999999", linewidth=0.6))
-        cap = int((b - a) * cv.pps / (0.55 * fs * 0.9 * 100 / 72)) - 1
-        if cap >= 4:
-            text = s["label"] if len(s["label"]) <= cap else s["label"][: cap - 2] + ".."
-            ax.text(a + 4 / cv.pps, 0.5, text, ha="left", va="center", fontsize=0.9 * fs, clip_on=True)
-
-
-def _draw_label(cv: Canvas, ax, placed: tuple, colour: str) -> None:
-    row, t, a, text = placed
-    y = ROWS - row - 0.5
-    alpha = 0.55 if text.split(" ", 1)[0].endswith("?") else 1.0
-    ax.plot([t, t], [0, y], color=colour, linewidth=0.8, alpha=alpha)
-    ax.text(a + 8 / cv.pps, y, text, ha="left", va="center", fontsize=cv.geo.lf, family="monospace",
-            color="white", clip_on=True, bbox={"boxstyle": "square,pad=0.25", "fc": colour, "ec": "none",
-                                               "alpha": alpha})
-
-
-def draw_events(cv: Canvas, ax) -> tuple[int, int, list]:
-    items = label_items(cv.r)
-    placed = stagger(items, cv.t0, cv.t1, cv.geo.plot_px, cv.geo.char_px)
-    kind_of = {e["t"]: e["kind"] for e in cv.r["events"] if e.get("label")}
-    ax.set_ylim(0, ROWS)
-    ax.set_yticks([])
-    for p in placed:
-        _draw_label(cv, ax, p, KIND_COLOURS.get(kind_of.get(p[1], "-"), UNKNOWN))
-    kinds = sorted({kind_of.get(t, "-") for _, t, _, _ in placed})
-    return len(placed), len(items), kinds
-
-
-def draw_kind_chips(fig, kinds, geo: Geometry, height_in: float) -> None:
-    x = 1 - 8 / geo.width
-    for kind in reversed(kinds):
-        fig.text(x, 1 - 0.2 / height_in, kind, ha="right", va="center", fontsize=0.72 * geo.fs, color="white",
-                     bbox={"boxstyle": "round,pad=0.3", "fc": KIND_COLOURS.get(kind, UNKNOWN), "ec": "none"})
-        x -= (len(kind) * 0.65 * 0.72 * geo.fs * 100 / 72 + 18) / geo.width
-
-
-def draw_spectrogram(cv: Canvas, ax, m: np.ndarray) -> None:
-    S, centres = log_spectrogram(m, cv.geo.plot_px)
-    lo, hi = spec_scale(S)
-    ax.imshow(S, origin="lower", aspect="auto", cmap="magma", vmin=lo, vmax=hi, interpolation="bilinear",
-              extent=(cv.t0, cv.t1, 0, SPEC_ROWS))
-    marks = [50, 100, 200, 500, 1000, 2000, 5000, 10000]
-    ax.set_yticks(np.interp(np.log(marks), np.log(centres), np.arange(SPEC_ROWS) + 0.5))
-    ax.set_yticklabels(["50", "100", "200", "500", "1k", "2k", "5k", "10k"])
-    for e in cv.r["events"]:
-        if cv.t0 <= e["t"] <= cv.t1:
-            big = bool(e.get("label"))
-            h = (0.07 if big else 0.035) * SPEC_ROWS
-            ax.plot([e["t"], e["t"]], [SPEC_ROWS - h, SPEC_ROWS], color="white", linewidth=1.0 if big else 0.6,
-                    alpha=0.9 if big else 0.55)
-    ax.set_ylim(0, SPEC_ROWS)
-
-
-def waveform_title(m: np.ndarray) -> str:
-    peak = float(np.max(np.abs(m))) if m.size else 0.0
-    if peak == 0:
-        return "waveform: digital silence"
-    scale = max(float(np.percentile(np.abs(m), 99.9)), 1e-9)
-    return f"waveform (full height {20 * np.log10(scale):.0f} dBFS, peak {20 * np.log10(peak):.1f} dBFS)"
-
-
-def _column_extremes(m: np.ndarray, cols: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """(min, max, centre sample) of m in `cols` equal columns."""
-    edges = np.linspace(0, m.size, cols + 1).astype(int)
-    pairs = list(zip(edges[:-1], edges[1:]))
-    lo = np.array([m[a:b].min() if b > a else 0.0 for a, b in pairs])
-    hi = np.array([m[a:b].max() if b > a else 0.0 for a, b in pairs])
-    return lo, hi, (edges[:-1] + edges[1:]) / 2
-
-
-def draw_waveform(cv: Canvas, ax, m: np.ndarray) -> None:
-    n = m.size
-    scale = max(float(np.percentile(np.abs(m), 99.9)) if n else 0.0, 1e-9)
-    lo, hi, centre = _column_extremes(m, max(1, min(cv.geo.plot_px, n)))
-    t = cv.t0 + centre / max(n, 1) * cv.span
-    ax.fill_between(t, np.clip(lo / scale, -1, 1), np.clip(hi / scale, -1, 1), color="#5a6b7d", linewidth=0)
-    ax.set_ylim(-1.05, 1.05)
-    ax.set_yticks([])
-    cv.titles["waveform"] = waveform_title(m)
-
-
-def _curve(block: dict | None) -> tuple[np.ndarray, np.ndarray]:
-    if not block or not block.get("lufs"):
-        return np.zeros(0), np.zeros(0)
-    v = np.maximum(np.asarray(block["lufs"], dtype=float), -60)
-    return block["t0"] + block["dt"] * np.arange(v.size), v
-
-
-def _draw_curves(ax, L: dict) -> bool:
-    """Momentary and short-term curves; True when either was drawn."""
-    tm, vm = _curve(L.get("momentary"))
-    ts, vs = _curve(L.get("short_term"))
-    if tm.size:
-        ax.plot(tm, vm, color="#5b9bd5", linewidth=0.8, label="momentary")
-    if ts.size:
-        ax.plot(ts, vs, color="#1f3c88", linewidth=2.0, label="short-term")
-    return bool(tm.size or ts.size)
-
-
-def _draw_integrated(cv: Canvas, ax, I: float | None) -> None:
-    if I is None or I <= -60:
-        return
-    ax.axhline(I, color="#d62728", linestyle="--", linewidth=1.0, label="integrated")
-    ax.text(1.005, (I + 60) / 60, f"{I:.1f}", transform=ax.transAxes, ha="left", va="center",
-            fontsize=0.72 * cv.geo.fs, color="#d62728")
-
-
-def draw_loudness(cv: Canvas, ax) -> None:
-    L = cv.r["loudness"]
-    for g in L.get("silences", []):
-        ax.axvspan(g["start"], g["end"], color="#ffe14d", alpha=0.45, linewidth=0)
-    curves = _draw_curves(ax, L)
-    _draw_integrated(cv, ax, L.get("integrated_lufs"))
-    for c in L.get("clipping", {}).get("times", []):
-        ax.plot([c, c], [-3, 0], color="#d62728", linewidth=1.2)
-    ax.set_ylim(-60, 0)
-    ax.set_yticks([-50, -40, -30, -20, -10])
-    if curves:
-        ax.legend(loc="lower left", fontsize=0.65 * cv.geo.fs, frameon=False, ncol=3)
-
-
-def draw_sync(cv: Canvas, ax) -> None:
-    mu = cv.r["music"]
-    ax.set_ylim(0, 1)
-    ax.set_yticks([])
-    if mu.get("beats") and mu.get("confidence") != "none":
-        down = set(mu.get("downbeats", []))
-        for b in mu["beats"]:
-            if cv.t0 <= b <= cv.t1:
-                tall = b in down
-                ax.plot([b, b], [0, 0.45 if tall else 0.28], color="#111111" if tall else "#999999", linewidth=0.8)
-    for kind, marker, y in (("cues", "v", 0.84), ("cuts", "D", 0.6)):
-        for it in cv.r["sync"].get(kind, {}).get("items", []):
-            ax.plot([it["t"]], [y], marker=marker, markersize=0.55 * cv.geo.fs, linestyle="none",
-                    color=STATUS_COLOURS.get(it.get("status"), UNKNOWN), markeredgecolor="#333333",
-                    markeredgewidth=0.4)
-
-
-# ---------------------------------------------------------------- the sheet
-
-def _audio(r: dict, path: str) -> np.ndarray:
-    n = int(round((r["end"] - r["start"]) * 48000))
-    if not r.get("has_audio", True):
-        return np.zeros(n)
-    from hark.core import audio
-
-    return np.asarray(audio.load(path, mono=True, start=r["start"], end=r["end"]), dtype=np.float64)
-
-
-def _new_figure(r: dict, width: int):
-    """(figure, geometry, header lines, header height in, figure height in)."""
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    geo = Geometry(width, bool(r.get("video")))
-    lines = header_lines(r, geo.fs)
-    head = header_height(lines)
-    height_in = round((head + sum(h for _, h in geo.lanes) + 0.55) * 100) / 100
-    fig = plt.figure(figsize=(geo.width / DPI, height_in), dpi=DPI, facecolor="white")
-    return fig, geo, lines, head, height_in
-
-
-def build_figure(r: dict, m: np.ndarray, width: int):
-    """Draw every lane; returns (figure, counts)."""
-    fig, geo, lines, head, height_in = _new_figure(r, width)
-    cv = Canvas(fig, geo, r, r["start"], r["end"])
-    cv.axes = _layout(fig, geo, head, height_in)
-    _draw_header(fig, lines, height_in)
-    counts = _draw_lanes(cv, m)
-    draw_kind_chips(fig, counts.pop("kinds"), geo, height_in)
-    last = geo.lanes[-1][0]
-    for name, ax in cv.axes.items():
-        _style_axis(ax, name, cv, bottom=name == last)
-    _cut_lines(cv)
-    return fig, dict(counts, width=geo.width, height=int(round(height_in * DPI)))
-
-
-def _draw_lanes(cv: Canvas, m: np.ndarray) -> dict:
-    ax = cv.axes
-    thumbs = draw_frames(cv, ax["frames"]) if "frames" in ax else 0
-    draw_sections(cv, ax["sections"])
-    placed, tagged, kinds = draw_events(cv, ax["events"])
-    draw_spectrogram(cv, ax["spectrogram"], m)
-    draw_waveform(cv, ax["waveform"], m)
-    draw_loudness(cv, ax["loudness"])
-    draw_sync(cv, ax["sync"])
-    return {"thumbnails": thumbs, "labelled_events": placed, "tagged_events": tagged, "kinds": kinds}
-
-
-def default_png(path: str) -> str:
-    return os.path.join(os.getcwd(), os.path.splitext(os.path.basename(path))[0] + "_sheet.png")
-
-
-def _summary(png: str, c: dict, r: dict) -> str:
+def _report(png: str, tally: dict, res: dict) -> str:
     from hark.timeline._dsp import ascii_safe
 
+    window = f"{_clock(res['start'])}-{_clock(res['end'])}"
     return ascii_safe(
-        f"Wrote {png} ({c['width']}x{c['height']} px) for {fmt_t(r['start'])}-{fmt_t(r['end'])}: "
-        f"{c['thumbnails']} frames, {c['labelled_events']} of {c['tagged_events']} tagged events labelled, "
-        f"{len(r['events'])} event ticks, {len(r['cuts'])} cut lines. Open it with an image viewer or a file "
-        f"read tool to look at it.")
+        f"Wrote {png} ({tally['width']}x{tally['height']} px) for {window}: "
+        f"{tally['thumbnails']} frames, {tally['labelled_events']} of {tally['tagged_events']} tagged events labelled, "
+        f"{len(res['events'])} event ticks, {len(res['cuts'])} cut lines. "
+        "Open it with an image viewer or a file read tool to look at it.")
 
 
 def sheet(path, out_png=None, video=None, cues=None, start=None, end=None, detail="normal", width=2000,
           tl=None) -> dict:
-    """Draw one annotated PNG of a timeline result (run or reused) and return what it holds."""
+    """Render a timeline result (given as ``tl`` or computed now) to a PNG; describe what it shows."""
     import matplotlib.pyplot as plt
 
-    r = tl if tl is not None else timeline(path, video=video, cues=cues, start=start, end=end, detail=detail)
-    png = os.path.abspath(out_png or default_png(path))
-    fig, counts = build_figure(r, _audio(r, path), width)
+    res = tl if tl is not None else timeline(path, video=video, cues=cues, start=start, end=end, detail=detail)
+    png = _png_path(path, out_png)
+    fig, tally = build_figure(res, _mono(res, path), width)
     os.makedirs(os.path.dirname(png), exist_ok=True)
-    fig.savefig(png, dpi=DPI, facecolor="white")
+    fig.savefig(png, dpi=_PX_PER_IN, facecolor="white")
     plt.close(fig)
-    summary = _summary(png, counts, r)
-    return {"png": png, "width": counts["width"], "height": counts["height"], "start": r["start"], "end": r["end"],
-            "thumbnails": counts["thumbnails"], "labelled_events": counts["labelled_events"],
-            "tagged_events": counts["tagged_events"], "events": r["events"], "cuts": r["cuts"],
-            "timeline_summary": r["summary"], "summary": summary,
-            "text": summary + "\n\nTimeline: " + r["summary"]}
+    line = _report(png, tally, res)
+    out = {"png": png, "width": tally["width"], "height": tally["height"], "start": res["start"], "end": res["end"]}
+    for key in ("thumbnails", "labelled_events", "tagged_events"):
+        out[key] = tally[key]
+    out.update(events=res["events"], cuts=res["cuts"], timeline_summary=res["summary"], summary=line,
+               text=line + "\n\nTimeline: " + res["summary"])
+    return out
 
 
 # ---------------------------------------------------------------- CLI
 
-def _handler(args: argparse.Namespace) -> int:
+def _run_cli(args: argparse.Namespace) -> int:
     from hark.core.report import emit
     from hark.models import require_ml
 
     require_ml("sheet")
-    res = sheet(args.file, args.png, video=args.video, cues=args.cues, start=args.start, end=args.end,
-                detail=args.detail, width=args.width)
-    emit(res, args)
+    emit(sheet(args.file, args.png, video=args.video, cues=args.cues, start=args.start, end=args.end,
+               detail=args.detail, width=args.width), args)
     return 0
 
 
 def add_cli(sub) -> None:
-    """Register `hark sheet`."""
+    """Add the ``hark sheet`` subcommand."""
     from hark.core.report import add_common
 
-    p = sub.add_parser("sheet", help="one annotated PNG of the timeline, for agents that can look at images")
-    add_window_flags(p)
-    p.add_argument("-o", dest="png", help="output PNG (default <file stem>_sheet.png in the current folder)")
-    p.add_argument("--width", type=int, default=2000, help="image width in px, 1000-2400 (default 2000)")
-    add_common(p)
-    p.set_defaults(func=_handler)
+    cmd = sub.add_parser("sheet", help="one annotated PNG of the timeline, for agents that can look at images")
+    add_window_flags(cmd)
+    cmd.add_argument("-o", dest="png", help="output PNG (default <file stem>_sheet.png in the current folder)")
+    cmd.add_argument("--width", type=int, default=2000, help="image width in px, 1000-2400 (default 2000)")
+    add_common(cmd)
+    cmd.set_defaults(func=_run_cli)

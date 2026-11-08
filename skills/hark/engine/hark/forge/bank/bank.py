@@ -449,11 +449,11 @@ def build_pluck(out: str, version: str | None = None, log: Callable | None = Non
 
 
 def build_forge04(out: str, version: str | None = None, ref_clap: dict | None = None,
-                  log: Callable | None = None) -> dict:
-    """Build the forge04 file from the recipe palettes (part 1, 7.3)."""
+                  log: Callable | None = None, strict: bool = False) -> dict:
+    """Build the forge04 file from the recipe palettes (part 1, 7.3); strict refuses take-audit failures."""
     from hark.forge.bank import _build
 
-    return _build.build_forge04(out, version, ref_clap, log)
+    return _build.build_forge04(out, version, ref_clap, log, strict=strict)
 
 
 def build_derive(out: str, version: str | None = None, log: Callable | None = None) -> dict:

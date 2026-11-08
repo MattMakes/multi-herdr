@@ -198,6 +198,8 @@ Input: the local mono audio. Output: `(start, end, kind, priority)`.
    4. Attack start: in env1, look at frames within ±30 ms of o. The attack is
       the first 1 ms frame whose level reaches max(floor + 10, local max -
       30) (floor is the 5 ms floor). start = max(0, attack - 0.005).
+      When no frame in that window reaches the level, the onset has no
+      attack and gives no stroke (an onset in room tone or noise).
    5. Never start before the end of the previous kept stroke.
    6. end = min(end, nx - 0.002 (or d for the last onset), start + 2.0).
    7. Keep the stroke when end - start >= 0.02 s. Prominence =

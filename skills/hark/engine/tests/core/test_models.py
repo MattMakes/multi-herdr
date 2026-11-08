@@ -183,10 +183,24 @@ def test_models_init_imports_only_stdlib():
 # ---------------------------------------------------------------- real models (ML tier, pre-filled cache)
 
 
+# The user's offline flag and hub cache, read before the autouse cfg fixture clears them.
+_REAL_OFFLINE = __import__("hark.core.config", fromlist=["offline"]).offline()
+_REAL_HF_CACHE = __import__("hark.core.config", fromlist=["HF_CACHE"]).HF_CACHE
+
+
 @pytest.fixture
-def real_clap():
-    if __import__("hark.core.config", fromlist=["offline"]).offline() is None:
+def real_models(cfg, monkeypatch):
+    """The user's pre-filled hub cache, offline; embedding caches stay in tmp_path."""
+    if _REAL_OFFLINE is None:
         pytest.skip("needs-data: a pre-filled model cache with an offline flag (no test downloads)")
+    monkeypatch.setenv(_REAL_OFFLINE, "1")
+    cfg.HF_CACHE = _REAL_HF_CACHE
+    monkeypatch.setattr(clap, "_INSTANCE", None)
+    monkeypatch.setattr(ast, "_INSTANCE", None)
+
+
+@pytest.fixture
+def real_clap(real_models):
     return clap.get()
 
 
@@ -221,11 +235,32 @@ def test_at_37_embed_text_dedup(real_clap):
 
 
 @pytest.mark.ml
-def test_at_38_ast_probs():
-    if __import__("hark.core.config", fromlist=["offline"]).offline() is None:
-        pytest.skip("needs-data: a pre-filled model cache with an offline flag (no test downloads)")
+def test_at_38_ast_probs(real_models):
     tagger = ast.get()
     p = tagger.probs(0.1 * np.sin(np.arange(30 * SR) / 20.0).astype(np.float32))[0]
     assert p.shape == (527,) and p.min() >= 0 and p.max() <= 1
     top = tagger.top(p, 5)
     assert [v for _, v in top] == sorted((v for _, v in top), reverse=True)
+
+
+def test_redirects_note_filtered_by_exact_message(caplog):
+    # T-41: only the exact torch redirects note is dropped; other records of that logger still pass
+    import logging
+
+    _common.drop_redirects_note()
+    _common.drop_redirects_note()  # idempotent
+    logger = logging.getLogger(_common.REDIRECTS_LOGGER)
+    assert logger.filters.count(_common._not_redirects_note) == 1
+    with caplog.at_level(logging.WARNING, logger=_common.REDIRECTS_LOGGER):
+        logger.warning(_common.REDIRECTS_NOTE)
+        logger.warning("NOTE: something else")
+    assert [r.getMessage() for r in caplog.records] == ["NOTE: something else"]
+
+
+@pytest.mark.ml
+def test_torch_import_prints_no_redirects_note():
+    import subprocess
+
+    code = "from hark.models import _common; _common.torch_ready('CLAP'); import transformers"
+    got = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300, check=True)
+    assert "Redirects are currently not supported" not in got.stderr

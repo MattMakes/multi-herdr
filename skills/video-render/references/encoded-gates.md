@@ -10,7 +10,7 @@ Measure `master.mp4` with:
 ffmpeg -hide_banner -i render/master.mp4 -af ebur128=peak=true -f null -
 ```
 
-The integrated loudness target is `-14 LUFS`. Accept values from `-15 LUFS` through `-13 LUFS`. The encoded true peak must be `-1.0 dBTP` or lower. Keep the source WAV at `-2.0 dBTP` or lower because AAC encoding can add about `1 dB`.
+The integrated loudness target is `-14 LUFS`. Accept values from `-15 LUFS` through `-13 LUFS`. The encoded true peak must be `-1.0 dBTP` or lower. AAC encoding can raise the true peak by up to `+4 dB`: native ffmpeg `aac` did so in the retro, and macOS `aac_at` did not. The render scripts use `aac_at` when `ffmpeg -encoders` lists it, else native `aac`. Leave that margin below `-1.0 dBTP` in the source WAV, and always gate on the encoded MP4.
 
 ## Frame counts
 
@@ -24,7 +24,17 @@ Run the same command for `9x16.mp4`, `preview.mp4` and every other derived MP4. 
 
 ## Exact frame selection
 
-Do not use the ffmpeg `trim` filter on a clip with odd timestamps. Select exact frame numbers with `select='between(n,A,B)'` and add `-fps_mode passthrough`.
+Do not use the ffmpeg `trim` filter on a clip with odd timestamps. Select exact frame numbers with `select='between(n,A,B)'`, restamp them, and write constant 60 fps:
+
+```sh
+ffmpeg -i in.mp4 -vf "select='between(n,A,B)',setpts=N/(60*TB)" -fps_mode cfr -r 60 out.mp4
+```
+
+Do not use `-fps_mode passthrough` with `-r`: that pair gives an error. Count the packets of `out.mp4` with `ffprobe -count_packets`. It must equal `B - A + 1`.
+
+## Audio length
+
+Do not mux with `-shortest`. It cut the last 3 frames. Pad the audio to the video length instead, for example `apad,atrim=end_sample=<frames / fps * 48000>`.
 
 ## Real master timeline
 

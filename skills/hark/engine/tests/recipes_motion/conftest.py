@@ -1,9 +1,4 @@
-"""Fixtures for the motion recipe tests (recipes-motion AT1-AT4, AT7, AT17-AT23, AT29).
-
-``load(name)`` imports a motion recipe. It skips the test when a module of another
-unit that the recipe needs is not built yet: the forge engine (T-16) for every recipe,
-``risers/riser`` for zip and ``risers/notify`` for shimmer (ARCHITECTURE 8.5).
-"""
+"""Fixtures for the motion recipe tests (recipes-motion AT1-AT4, AT7, AT17-AT23, AT29)."""
 
 from __future__ import annotations
 
@@ -16,27 +11,15 @@ import pytest
 
 SR = 48000
 RECIPES = ("whoosh", "swish", "swipe", "brightswish", "zip", "hover", "shimmer")
-PROVIDERS = {
-    "zip": ("hark.forge.recipes.risers.riser",),
-    "shimmer": ("hark.forge.recipes.risers.notify",),
-}
-ENGINE = ("hark.forge.engine.dsp", "hark.forge.engine.fx")
-
-
-def require(*modules: str) -> None:
-    """Skip the running test unless every module imports."""
-    for name in modules:
-        pytest.importorskip(name, reason=f"needs {name} (another unit, not built yet)")
 
 
 def load_recipe(name: str) -> types.ModuleType:
-    require(*ENGINE, *PROVIDERS.get(name, ()))
     return importlib.import_module(f"hark.forge.recipes.motion.{name}")
 
 
 @pytest.fixture
 def load() -> Callable[[str], types.ModuleType]:
-    """load(name) -> the recipe module, or a skip when a provider is absent."""
+    """load(name) -> the recipe module."""
     return load_recipe
 
 

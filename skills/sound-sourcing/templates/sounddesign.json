@@ -1,0 +1,22 @@
+{
+ "_doc": "The top-level design. The lead owns this file: includes, buses and master. Each designer owns one fragment in audio/design/. Keys that start with _ are comments.",
+ "duration": 12.0,
+ "cues": "out/cues.json",
+ "include": [
+  "audio/design/music.json",
+  "audio/design/ambience.json",
+  "audio/design/ui.json",
+  "audio/design/keyboard.json",
+  "audio/design/motion.json",
+  "audio/design/impacts.json",
+  "audio/design/logo.json"
+ ],
+ "_buses_doc": "music: down 6 dB under the typing (2.0-2.9 s) so the keys read, back up for the transition, +1.5 dB into the drop at 8.0 s, 3 dB lower under the logo from 10.0 s. Every step sits on a splice or under a transient. amb and sfx stay at 0.",
+ "buses": {
+  "music": {"auto": [[0.0, 0], [1.9, 0], [2.0, -6], [2.9, -6], [3.2, 0], [7.5, 0], [8.0, 1.5], [9.8, 1.5], [10.0, -3]]},
+  "amb": {"gain_db": 0},
+  "sfx": {"gain_db": 0}
+ },
+ "_master_doc": "-14 LUFS integrated with a true-peak ceiling of 0.77 linear gives about -1 dBTP after AAC. Use -15 or -16 only with a written reason, for example a dynamic orchestral track that the limiter would flatten.",
+ "master": {"lufs": -14, "ceiling": 0.77, "no_glue": true}
+}

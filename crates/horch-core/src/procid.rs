@@ -509,9 +509,11 @@ mod tests {
         let theirs = started_at(child.id()).expect("the child runs");
         child.kill().unwrap();
         child.wait().unwrap();
-        // Linux counts from a boot time in whole seconds.
+        // Linux counts start times from a boot time in whole seconds, so
+        // the child can read up to 1 s plus 1 clock tick early (CI saw
+        // 1.003 s). Allow 2 s.
         assert!(
-            theirs + Duration::from_secs(1) >= before,
+            theirs + Duration::from_secs(2) >= before,
             "{theirs:?} {before:?}"
         );
         assert!(theirs >= mine);

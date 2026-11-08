@@ -70,8 +70,20 @@ CAPTURE_SCALE_STEP = 0.5
 MENU_MESSAGE = "ui and menu scenes total %.3f s; the scaled limit is %.3f s (8 s per 80 s of film)"
 ENERGY_MIN, ENERGY_MAX = 0, 10
 MAX_GAP_BARS = 2
+REMOVED_SILENCE_KEY = "payoff_silence_sec"
+REMOVED_FIELD_MESSAGE = (
+    "meta.%s is removed: do not plan silence before the payoff. Delete it, or use the optional "
+    "meta.payoff_breakdown_sec (a dip of at most 12 dB, never silent)" % REMOVED_SILENCE_KEY
+)
+RANGE_KEYS = ("hero_sec", "payoff_breakdown_sec")
+RANGE_MESSAGE = "meta.%s must be [start_sec, end_sec] with 0 <= start_sec < end_sec <= meta.duration_sec"
 BEATS_PER_BAR = 4
 HERO_EARLIEST, HERO_LATEST = 0.30, 0.90
+HERO_WINDOW_MESSAGE = "meta.hero_sec [%.3f, %.3f] s must sit inside %.3f s to %.3f s (30 %% to 90 %% of the film)"
+BREAKDOWN_LATE_MESSAGE = "meta.payoff_breakdown_sec ends at %.3f s, after the hero start %.3f s"
+HERO_MISSING_MESSAGE = "a film with music (meta.bpm) needs meta.hero_sec"
+EVENT_GAP_MESSAGE = ("%.3f s to %.3f s has no event for %.2f s; the limit is %d bars (%.2f s) "
+                     "outside a declared stop")
 MIN_DIRECTIONS = 3
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 HEX_COLOR = re.compile(r"#[0-9A-Fa-f]{6}\b")
@@ -103,6 +115,10 @@ class Report:
             entry["scene"] = scene
         self.errors.append(entry)
 
+    def add_all(self, rule, messages):
+        """Add 1 error with rule for each message."""
+        self.errors.extend({"rule": rule, "message": message} for message in messages)
+
 
 def scene_label(scene, index):
     if isinstance(scene, dict) and non_empty_str(scene.get("id")):
@@ -111,39 +127,84 @@ def scene_label(scene, index):
 
 
 def check_meta(meta, report):
-    if not isinstance(meta, dict):
-        report.add("schema", "meta must be an object")
-        return
-    for key in ("id", "title"):
-        if not non_empty_str(meta.get(key)):
-            report.add("schema", "meta.%s must be a non-empty string" % key)
+    is_object = isinstance(meta, dict)
+    fields = meta if is_object else {}
+    messages = meta_errors(fields) if is_object else ["meta must be an object"]
+    for message in messages:
+        report.add("schema", message)
+    if "allowed_silences" in fields:
+        check_allowed_silences(fields["allowed_silences"], fields.get("duration_sec"), report)
+
+
+def meta_errors(meta):
+    """Return the schema messages for the meta object."""
+    return meta_identity_errors(meta) + meta_value_errors(meta) + meta_range_errors(meta)
+
+
+def failed(checks):
+    """Return the message of every (bad, message) pair that is bad."""
+    return [message for bad, message in checks if bad]
+
+
+def optional_ok(meta, key, test):
+    """Return True when meta has no key, or its value passes test."""
+    return key not in meta or test(meta[key])
+
+
+def is_positive(value):
+    return is_number(value) and value > 0
+
+
+def is_term_list(value):
+    return isinstance(value, list) and all(non_empty_str(t) for t in value)
+
+
+def meta_identity_errors(meta):
+    """Return the schema messages for id, title, aspect, fps and the frame size."""
     aspect = meta.get("aspect")
-    if aspect not in ASPECTS:
-        report.add("schema", "meta.aspect must be one of %s" % sorted(ASPECTS))
-    if meta.get("fps") not in FPS_VALUES or not is_int(meta.get("fps")):
-        report.add("schema", "meta.fps must be 30 or 60")
-    width, height = meta.get("width"), meta.get("height")
-    if not (is_int(width) and is_int(height)):
-        report.add("schema", "meta.width and meta.height must be integers")
-    elif aspect in ASPECTS and (width, height) != ASPECTS[aspect]:
-        report.add("schema", "meta.width x meta.height must be %dx%d for aspect %s" % (ASPECTS[aspect] + (aspect,)))
-    if not is_number(meta.get("duration_sec")) or meta.get("duration_sec") <= 0:
-        report.add("schema", "meta.duration_sec must be a number > 0")
-    if not is_number(meta.get("lufs_target")):
-        report.add("schema", "meta.lufs_target must be a number")
-    if "allow_dark_intro" in meta and not isinstance(meta["allow_dark_intro"], bool):
-        report.add("schema", "meta.allow_dark_intro must be a boolean when present")
-    if "allowed_silences" in meta:
-        check_allowed_silences(meta["allowed_silences"], meta.get("duration_sec"), report)
-    if "bpm" in meta and not (is_number(meta["bpm"]) and meta["bpm"] > 0):
-        report.add("schema", "meta.bpm must be a number > 0 when present")
-    if "terms" in meta and not (isinstance(meta["terms"], list) and all(non_empty_str(t) for t in meta["terms"])):
-        report.add("schema", "meta.terms must be a list of non-empty strings when present")
-    for key in ("hero_sec", "payoff_silence_sec"):
-        if key in meta and not is_range(meta[key], meta.get("duration_sec")):
-            report.add("schema", "meta.%s must be [start_sec, end_sec] with 0 <= start_sec < end_sec <= meta.duration_sec" % key)
-    if "payoff_silence_sec" in meta and "hero_sec" not in meta:
-        report.add("schema", "meta.payoff_silence_sec needs meta.hero_sec")
+    names = failed((not non_empty_str(meta.get(key)), "meta.%s must be a non-empty string" % key)
+                   for key in ("id", "title"))
+    checks = (
+        (aspect not in ASPECTS, "meta.aspect must be one of %s" % sorted(ASPECTS)),
+        (meta.get("fps") not in FPS_VALUES or not is_int(meta.get("fps")), "meta.fps must be 30 or 60"),
+    )
+    return names + failed(checks) + frame_size_errors((meta.get("width"), meta.get("height")), aspect)
+
+
+def frame_size_errors(size, aspect):
+    """Return the schema messages for meta.width and meta.height."""
+    integers = all(is_int(value) for value in size)
+    expected = ASPECTS.get(aspect)
+    wrong = integers and expected is not None and size != expected
+    return failed((
+        (not integers, "meta.width and meta.height must be integers"),
+        (wrong, "meta.width x meta.height must be %s for aspect %s" % ("%dx%d" % (expected or (0, 0)), aspect)),
+    ))
+
+
+def meta_value_errors(meta):
+    """Return the schema messages for the duration, loudness and optional value fields."""
+    return failed((
+        (not is_positive(meta.get("duration_sec")), "meta.duration_sec must be a number > 0"),
+        (not is_number(meta.get("lufs_target")), "meta.lufs_target must be a number"),
+        (not optional_ok(meta, "allow_dark_intro", lambda v: isinstance(v, bool)),
+         "meta.allow_dark_intro must be a boolean when present"),
+        (not optional_ok(meta, "bpm", is_positive), "meta.bpm must be a number > 0 when present"),
+        (not optional_ok(meta, "terms", is_term_list),
+         "meta.terms must be a list of non-empty strings when present"),
+    ))
+
+
+def meta_range_errors(meta):
+    """Return the schema messages for the hero, the breakdown and the removed silence field."""
+    duration = meta.get("duration_sec")
+    ranges = failed((key in meta and not is_range(meta[key], duration), RANGE_MESSAGE % key)
+                    for key in RANGE_KEYS)
+    return ranges + failed((
+        ("payoff_breakdown_sec" in meta and "hero_sec" not in meta,
+         "meta.payoff_breakdown_sec needs meta.hero_sec"),
+        (REMOVED_SILENCE_KEY in meta, REMOVED_FIELD_MESSAGE),
+    ))
 
 
 def is_range(value, duration):
@@ -694,44 +755,55 @@ def open_pieces(start, end, stops):
 
 
 def check_event_gap(meta, scenes, rhythm, report):
-    if "bpm" not in meta:
-        return
-    limit = MAX_GAP_BARS * BEATS_PER_BAR * 60.0 / meta["bpm"]
+    has_music = "bpm" in meta
+    gaps = event_gaps(meta, scenes, rhythm) if has_music else []
+    report.add_all("event_gap", [EVENT_GAP_MESSAGE % gap for gap in gaps])
+
+
+def event_times(meta, scenes, rhythm):
+    """Return the sorted event times: film edges, scene starts and rhythm events."""
     events = {0.0, meta["duration_sec"]} | {scene["start_sec"] for scene in scenes}
     events |= {event for item in rhythm for event in item.get("events_sec", [])}
+    return sorted(events)
+
+
+def event_gaps(meta, scenes, rhythm):
+    """Return (start, end, length, bars, limit) for each gap over the limit outside a stop."""
+    limit = MAX_GAP_BARS * BEATS_PER_BAR * 60.0 / meta["bpm"]
+    pieces = open_gap_pieces(event_times(meta, scenes, rhythm), rhythm)
+    over = limit + START_TOLERANCE_SEC
+    return [(a, b, b - a, MAX_GAP_BARS, limit) for a, b in pieces if b - a > over]
+
+
+def open_gap_pieces(ordered, rhythm):
+    """Return the parts between the sorted event times that no stop stretch covers."""
     stops = [(item["start_sec"], item["end_sec"]) for item in rhythm if item.get("stop")]
-    if "payoff_silence_sec" in meta:
-        stops.append(tuple(meta["payoff_silence_sec"]))
-    ordered = sorted(events)
-    for a, b in zip(ordered, ordered[1:]):
-        for start, end in open_pieces(a, b, stops):
-            if end - start > limit + START_TOLERANCE_SEC:
-                report.add(
-                    "event_gap",
-                    "%.3f s to %.3f s has no event for %.2f s; the limit is %d bars (%.2f s) outside a declared stop"
-                    % (start, end, end - start, MAX_GAP_BARS, limit),
-                )
+    return [piece for a, b in zip(ordered, ordered[1:]) for piece in open_pieces(a, b, stops)]
 
 
 def check_hero(meta, report):
-    duration = meta["duration_sec"]
+    report.add_all("hero", hero_errors(meta))
+
+
+def hero_errors(meta):
+    """Return the hero messages: a missing hero with music, a hero out of its window, a late breakdown."""
     hero = meta.get("hero_sec")
-    if hero is None:
-        if "bpm" in meta:
-            report.add("hero", "a film with music (meta.bpm) needs meta.hero_sec")
-        return
-    if hero[0] < HERO_EARLIEST * duration or hero[1] > HERO_LATEST * duration:
-        report.add(
-            "hero",
-            "meta.hero_sec [%.3f, %.3f] s must sit inside %.3f s to %.3f s (30 %% to 90 %% of the film)"
-            % (hero[0], hero[1], HERO_EARLIEST * duration, HERO_LATEST * duration),
-        )
-    silence = meta.get("payoff_silence_sec")
-    if silence is None:
-        if "bpm" in meta:
-            report.add("hero", "a film with music (meta.bpm) needs meta.payoff_silence_sec before the hero")
-    elif silence[1] > hero[0] + START_TOLERANCE_SEC:
-        report.add("hero", "meta.payoff_silence_sec ends at %.3f s, after the hero start %.3f s" % (silence[1], hero[0]))
+    missing = [HERO_MISSING_MESSAGE] if "bpm" in meta else []
+    return missing if hero is None else hero_window_errors(meta, hero) + breakdown_errors(meta, hero)
+
+
+def hero_window_errors(meta, hero):
+    """Return a message when the hero is outside 30 % to 90 % of the film."""
+    earliest, latest = HERO_EARLIEST * meta["duration_sec"], HERO_LATEST * meta["duration_sec"]
+    outside = hero[0] < earliest or hero[1] > latest
+    return [HERO_WINDOW_MESSAGE % (hero[0], hero[1], earliest, latest)] if outside else []
+
+
+def breakdown_errors(meta, hero):
+    """Return a message when meta.payoff_breakdown_sec ends after the hero start."""
+    end = (meta.get("payoff_breakdown_sec") or [0.0, -math.inf])[1]
+    late = end > hero[0] + START_TOLERANCE_SEC
+    return [BREAKDOWN_LATE_MESSAGE % (end, hero[0])] if late else []
 
 
 def check_menu_time(meta, scenes, report):
@@ -979,6 +1051,18 @@ def run(timeline_path, out_path, zoom_plan_path=None):
     return report_result(timeline_path, out_path, errors)
 
 
+# valid_timeline() plus these fields is a film with music: bpm 120, 1 bar = 2 s.
+MUSIC_META = {"bpm": 120, "terms": ["flaky tests"], "hero_sec": [12.0, 13.5],
+              "payoff_breakdown_sec": [11.5, 12.0]}
+MUSIC_RHYTHM = [
+    {"start_sec": 0.0, "end_sec": 2.5, "energy": 8},
+    {"start_sec": 2.5, "end_sec": 7.5, "energy": 5, "events_sec": [5.0]},
+    {"start_sec": 7.5, "end_sec": 11.5, "energy": 6, "events_sec": [10.0]},
+    {"start_sec": 11.5, "end_sec": 12.0, "energy": 0, "stop": True},
+    {"start_sec": 12.0, "end_sec": 15.0, "energy": 10},
+]
+
+
 def self_test():
     import copy
     import subprocess
@@ -1095,23 +1179,17 @@ def self_test():
             return {error["rule"] for error in check_directions(tmp)}
 
     def music_timeline():
-        """valid_timeline() with music: bpm 120 (1 bar = 2 s), rhythm, hero, silence and terms."""
+        """valid_timeline() with music: bpm 120 (1 bar = 2 s), rhythm, hero, breakdown and terms."""
         timeline = valid_timeline()
-        timeline["meta"].update({
-            "bpm": 120,
-            "terms": ["flaky tests"],
-            "hero_sec": [12.0, 13.5],
-            "payoff_silence_sec": [11.5, 12.0],
-        })
-        timeline["scenes"][0]["narration"] = "Flaky tests waste hours."
-        timeline["scenes"][0]["caption"] = "Stop flaky tests"
-        timeline["rhythm"] = [
-            {"start_sec": 0.0, "end_sec": 2.5, "energy": 8},
-            {"start_sec": 2.5, "end_sec": 7.5, "energy": 5, "events_sec": [5.0]},
-            {"start_sec": 7.5, "end_sec": 11.5, "energy": 6, "events_sec": [10.0]},
-            {"start_sec": 11.5, "end_sec": 12.0, "energy": 0, "stop": True},
-            {"start_sec": 12.0, "end_sec": 15.0, "energy": 10},
-        ]
+        timeline["meta"].update(copy.deepcopy(MUSIC_META))
+        timeline["scenes"][0].update(narration="Flaky tests waste hours.", caption="Stop flaky tests")
+        timeline["rhythm"] = copy.deepcopy(MUSIC_RHYTHM)
+        return timeline
+
+    def music_timeline_with(key, value):
+        """music_timeline() with meta.<key> set to value."""
+        timeline = music_timeline()
+        timeline["meta"][key] = value
         return timeline
 
     def reframe(scale):
@@ -1469,7 +1547,7 @@ def self_test():
             # 30 % of 15 s is 4.5 s, 90 % is 13.5 s.
             self.timeline = music_timeline()
             self.timeline["meta"]["hero_sec"] = [13.0, 14.0]
-            self.timeline["meta"]["payoff_silence_sec"] = [12.5, 13.0]
+            self.timeline["meta"]["payoff_breakdown_sec"] = [12.5, 13.0]
             self.timeline["rhythm"][3:] = [
                 {"start_sec": 11.5, "end_sec": 12.5, "energy": 4},
                 {"start_sec": 12.5, "end_sec": 13.0, "energy": 0, "stop": True},
@@ -1478,17 +1556,22 @@ def self_test():
             self.assertEqual(rules_of(self.timeline), {"hero"})
             self.assert_cli_fails_with("hero")
 
-        def test_13_hero_needs_silence_with_music(self):
+        def test_13_music_needs_no_payoff_field(self):
             self.timeline = music_timeline()
-            del self.timeline["meta"]["payoff_silence_sec"]
-            self.timeline["rhythm"][3]["stop"] = False
-            self.timeline["rhythm"][3]["events_sec"] = [11.75]
+            del self.timeline["meta"]["payoff_breakdown_sec"]
+            self.assertEqual(rules_of(self.timeline), set())
+
+        def test_13_breakdown_must_end_by_hero_start(self):
+            self.timeline = music_timeline()
+            self.timeline["meta"]["payoff_breakdown_sec"] = [11.5, 12.5]
             self.assertEqual(rules_of(self.timeline), {"hero"})
 
-        def test_13_silence_must_end_by_hero_start(self):
+        def test_13_removed_silence_field_is_rejected(self):
             self.timeline = music_timeline()
-            self.timeline["meta"]["payoff_silence_sec"] = [11.5, 12.5]
-            self.assertEqual(rules_of(self.timeline), {"hero"})
+            del self.timeline["meta"]["payoff_breakdown_sec"]
+            self.timeline["meta"][REMOVED_SILENCE_KEY] = [11.5, 12.0]
+            self.assertEqual(rules_of(self.timeline), {"schema"})
+            self.assert_cli_fails_with("schema")
 
         def test_13_hero_without_music_needs_no_silence(self):
             self.timeline["meta"]["hero_sec"] = [12.0, 13.5]
@@ -1497,17 +1580,18 @@ def self_test():
         def test_13_hero_needed_with_music(self):
             self.timeline = music_timeline()
             del self.timeline["meta"]["hero_sec"]
-            del self.timeline["meta"]["payoff_silence_sec"]
+            del self.timeline["meta"]["payoff_breakdown_sec"]
             self.timeline["rhythm"][3]["stop"] = False
             self.timeline["rhythm"][3]["events_sec"] = [11.75]
             self.assertEqual(rules_of(self.timeline), {"hero"})
 
         def test_14_schema_of_new_fields(self):
-            for key, value in (("bpm", 0), ("terms", "flaky"), ("hero_sec", [3.0]),
-                               ("payoff_silence_sec", [1.0, 0.5])):
-                timeline = music_timeline()
-                timeline["meta"][key] = value
-                self.assertEqual(rules_of(timeline), {"schema"}, key)
+            cases = (("bpm", 0), ("terms", "flaky"), ("hero_sec", [3.0]),
+                     ("payoff_breakdown_sec", [1.0, 0.5]))
+            for key, value in cases:
+                self.assertEqual(rules_of(music_timeline_with(key, value)), {"schema"}, key)
+
+        def test_14_schema_of_rhythm_and_on_screen_text(self):
             timeline = valid_timeline()
             timeline["rhythm"] = [{"start_sec": 0.0, "end_sec": 2.0, "energy": 3}]
             self.assertEqual(rules_of(timeline), {"schema"}, "rhythm without meta.bpm")

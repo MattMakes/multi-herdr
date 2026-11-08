@@ -51,11 +51,11 @@ _AIR_OFF = {"noise_db": -60.0, "noise_ratio": 1.5, "noise_q": 1.0, "teeth": 0.0,
 
 
 def _member(values: tuple) -> dict[str, Any]:
-    d = {k: (v if isinstance(v, str) else float(v)) for k, v in zip(_KEYS, values)}
-    return {**d, **_AIR_OFF}
+    dv = {kn: (v if isinstance(v, str) else float(v)) for kn, v in zip(_KEYS, values)}
+    return {**dv, **_AIR_OFF}
 
 
-FAMILIES: dict[str, dict[str, Any]] = {name: _member(col) for name, col in _COLUMNS.items()}
+FAMILIES: dict[str, dict[str, Any]] = {label: _member(col) for label, col in _COLUMNS.items()}
 DEFAULTS: dict[str, Any] = dict(FAMILIES["up"])
 
 _R2_KEYS = ("length", "f0", "f1", "fpk", "pk_at", "arc_back", "bend", "h2_db", "h3_db", "h5_db",
@@ -80,213 +80,213 @@ _R3 = {
 }
 
 
-def _round2(name: str) -> dict[str, float]:
-    return {k: float(v) for k, v in zip(_R2_KEYS, _R2[name])}
+def _round2(label: str) -> dict[str, float]:
+    return {kn: float(v) for kn, v in zip(_R2_KEYS, _R2[label])}
 
 
-def _round3(name: str) -> dict[str, float]:
-    return {k: float(v) for k, v in zip(tuple(_AIR_OFF), _R3[name])}
+def _round3(label: str) -> dict[str, float]:
+    return {kn: float(v) for kn, v in zip(tuple(_AIR_OFF), _R3[label])}
 
 
-def _pro(name: str) -> dict[str, Any]:
-    return {**FAMILIES[name], **_round2(name), **_round3(name)}
+def _pro(label: str) -> dict[str, Any]:
+    return {**FAMILIES[label], **_round2(label), **_round3(label)}
 
 
-_PRO = {name: _pro(name) for name in _COLUMNS}
-_PRO["air_up"] = {**FAMILIES["up"], **{k: float(v) for k, v in zip(_R2_KEYS, _R2["up"])}, **{
+_PRO = {label: _pro(label) for label in _COLUMNS}
+_PRO["air_up"] = {**FAMILIES["up"], **{kn: float(v) for kn, v in zip(_R2_KEYS, _R2["up"])}, **{
     "length": 0.2, "f0": 300.0, "f1": 4500.0, "h2_db": -20.0, "h3_db": -30.0, "saw_db": -12.0,
     "noise_db": -4.0, "noise_ratio": 1.2, "noise_q": 1.4, "teeth": 0.35, "teeth_hz": 110.0,
     "att_ms": 25.0, "tilt_db": 6.0}}
 FAMILIES_BY_CAT: dict[str, dict[str, dict[str, Any]]] = {"pro_zip": _PRO}
 
 
-def trajectory(p: dict, n: int) -> np.ndarray:
+def trajectory(cfg: dict, ns: int) -> np.ndarray:
     """The pitch per sample (section 7.6); a straight line on a log axis, or an arc."""
-    t = np.linspace(0.0, 1.0, n)
-    if p["shape"] == "arc":
-        return _arc(p, t)
-    f0 = float(p["f0"])
-    return f0 * (_end_pitch(p, f0) / f0) ** (t ** (2 ** p["bend"]))
+    tax = np.linspace(0.0, 1.0, ns)
+    if cfg["shape"] == "arc":
+        return _arc(cfg, tax)
+    fa = float(cfg["f0"])
+    return fa * (_end_pitch(cfg, fa) / fa) ** (tax ** (2 ** cfg["bend"]))
 
 
-def _end_pitch(p: dict, f0: float) -> float:
+def _end_pitch(cfg: dict, fa: float) -> float:
     """f1, or 4 f0 (up) or f0 / 4 (down) when the sweep is under 1.5 times."""
-    f1 = float(p["f1"])
-    if p["shape"] == "up" and f1 < 1.5 * f0:
-        return 4 * f0
-    if p["shape"] == "down" and f1 > f0 / 1.5:
-        return f0 / 4
-    return f1
+    fb = float(cfg["f1"])
+    if cfg["shape"] == "up" and fb < 1.5 * fa:
+        return 4 * fa
+    if cfg["shape"] == "down" and fb > fa / 1.5:
+        return fa / 4
+    return fb
 
 
-def _arc(p: dict, u_: np.ndarray) -> np.ndarray:
+def _arc(cfg: dict, u_: np.ndarray) -> np.ndarray:
     """The arc of 7.6: up to fpk on a sine, back to f0 x arc_back on a cosine (log2 Hz)."""
-    a, f0 = float(p["pk_at"]), float(p["f0"])
-    lo, pk, back = np.log2(f0), np.log2(p["fpk"]), np.log2(f0 * p["arc_back"])
-    rise = lo + (pk - lo) * np.sin(0.5 * np.pi * np.clip(u_ / a, 0, 1))
-    fall = pk + (back - pk) * (1 - np.cos(0.5 * np.pi * np.clip((u_ - a) / (1 - a), 0, 1)))
-    return 2 ** np.where(u_ <= a, rise, fall)
+    amp, fa = float(cfg["pk_at"]), float(cfg["f0"])
+    lo, peak, back = np.log2(fa), np.log2(cfg["fpk"]), np.log2(fa * cfg["arc_back"])
+    rise = lo + (peak - lo) * np.sin(0.5 * np.pi * np.clip(u_ / amp, 0, 1))
+    fall = peak + (back - peak) * (1 - np.cos(0.5 * np.pi * np.clip((u_ - amp) / (1 - amp), 0, 1)))
+    return 2 ** np.where(u_ <= amp, rise, fall)
 
 
-def _voice(p: dict, f: np.ndarray, cents: float, rng: np.random.Generator) -> np.ndarray:
-    fk = f * 2 ** (cents / 1200.0)
-    phi = 2 * np.pi * np.cumsum(fk) / SR + rng.uniform(0, 2 * np.pi)
-    ratio = float(p["fm_ratio"])
-    m = 0.0
-    if p["fm"] > 0.01:
-        fmi = p["fm"] * np.clip((14000 - fk * (1 + 2 * ratio)) / 4000.0, 0, 1)
-        m = fmi * np.sin(ratio * phi)
-    v = np.sin(phi + m)
-    for h, key in ((2, "h2_db"), (3, "h3_db"), (5, "h5_db")):
-        fade = np.clip((18000 - h * fk) / 3000.0, 0, 1)
-        v = v + 10 ** (p[key] / 20.0) * fade * np.sin(h * phi + 0.5 * h * m)
-    if p["sub_db"] > -47:
-        v = v + 10 ** (p["sub_db"] / 20.0) * np.sin(0.5 * phi)
+def _voice(cfg: dict, freq: np.ndarray, cents: float, gen: np.random.Generator) -> np.ndarray:
+    fk = freq * 2 ** (cents / 1200.0)
+    phs0 = 2 * np.pi * np.cumsum(fk) / SR + gen.uniform(0, 2 * np.pi)
+    ratio = float(cfg["fm_ratio"])
+    mv = 0.0
+    if cfg["fm"] > 0.01:
+        fmi = cfg["fm"] * np.clip((14000 - fk * (1 + 2 * ratio)) / 4000.0, 0, 1)
+        mv = fmi * np.sin(ratio * phs0)
+    v = np.sin(phs0 + mv)
+    for hv, key in ((2, "h2_db"), (3, "h3_db"), (5, "h5_db")):
+        fade = np.clip((18000 - hv * fk) / 3000.0, 0, 1)
+        v = v + 10 ** (cfg[key] / 20.0) * fade * np.sin(hv * phs0 + 0.5 * hv * mv)
+    if cfg["sub_db"] > -47:
+        v = v + 10 ** (cfg["sub_db"] / 20.0) * np.sin(0.5 * phs0)
     return v
 
 
-def _voices(p: dict, f: np.ndarray, rng: np.random.Generator) -> np.ndarray:
-    out = np.zeros((len(f), 2))
-    side_gain = 0.5 * min(1.0, p["detune"] / 4.0)
-    for cents, pan, gain in ((0.0, 0.0, 1.0), (-p["detune"], -1.0, side_gain),
-                             (p["detune"], 1.0, side_gain)):
-        v = _voice(p, f, cents, rng)
-        gl, gr = u.pan_gains(pan * p["width"])
-        out[:, 0] += gain * v * gl
-        out[:, 1] += gain * v * gr
-    return out
+def _voices(cfg: dict, freq: np.ndarray, gen: np.random.Generator) -> np.ndarray:
+    res = np.zeros((len(freq), 2))
+    side_gain = 0.5 * min(1.0, cfg["detune"] / 4.0)
+    for cents, pan, gain in ((0.0, 0.0, 1.0), (-cfg["detune"], -1.0, side_gain),
+                             (cfg["detune"], 1.0, side_gain)):
+        v = _voice(cfg, freq, cents, gen)
+        gl, gr = u.pan_gains(pan * cfg["width"])
+        res[:, 0] += gain * v * gl
+        res[:, 1] += gain * v * gr
+    return res
 
 
-def _saw(p: dict, f: np.ndarray, rng: np.random.Generator) -> np.ndarray:
-    saw = np.zeros(len(f))
-    for c in (-p["detune"], 0.0, p["detune"]):
-        saw += dsp.osc(f * 2 ** (c / 1200.0), "saw", phase=rng.uniform(0, 1))[: len(f)]
-    saw = dsp.svf(saw, np.clip(f * p["saw_lp"], 150, 16000), 1.1, "low")
-    saw = dsp.svf(saw, np.clip(1.05 * f * p["saw_lp"], 150, 16000), 0.7, "low")
+def _saw(cfg: dict, freq: np.ndarray, gen: np.random.Generator) -> np.ndarray:
+    saw = np.zeros(len(freq))
+    for cv in (-cfg["detune"], 0.0, cfg["detune"]):
+        saw += dsp.osc(freq * 2 ** (cv / 1200.0), "saw", phase=gen.uniform(0, 1))[: len(freq)]
+    saw = dsp.svf(saw, np.clip(freq * cfg["saw_lp"], 150, 16000), 1.1, "low")
+    saw = dsp.svf(saw, np.clip(1.05 * freq * cfg["saw_lp"], 150, 16000), 0.7, "low")
     return dsp.butter(saw, "low", 15000.0, 6)
 
 
-def _tone(p: dict, f: np.ndarray, rng: np.random.Generator) -> np.ndarray:
-    out = _voices(p, f, rng)
-    if p["saw_db"] > -47:
-        saw = _saw(p, f, rng)
-        out = out / lvl(out) + 10 ** (p["saw_db"] / 20.0) * stereo_of(saw) / lvl(saw)
-    return out / lvl(out)
+def _tone(cfg: dict, freq: np.ndarray, gen: np.random.Generator) -> np.ndarray:
+    res = _voices(cfg, freq, gen)
+    if cfg["saw_db"] > -47:
+        saw = _saw(cfg, freq, gen)
+        res = res / lvl(res) + 10 ** (cfg["saw_db"] / 20.0) * stereo_of(saw) / lvl(saw)
+    return res / lvl(res)
 
 
-def _noises(p: dict, f: np.ndarray, rng: np.random.Generator) -> np.ndarray:
-    n = len(f)
-    air = dsp.svf(rng.standard_normal(n), np.clip(1.5 * f, 200, 16000), p["air_q"], "bandn")
-    y = 10 ** (p["air_db"] / 20.0) * stereo_of(air) / lvl(air)
-    if p["noise_db"] > -59:
-        wide = dsp.svf(rng.standard_normal(n), np.clip(f * p["noise_ratio"], 250, 15000),
-                       p["noise_q"], "band")
+def _noises(cfg: dict, freq: np.ndarray, gen: np.random.Generator) -> np.ndarray:
+    ns = len(freq)
+    airv = dsp.svf(gen.standard_normal(ns), np.clip(1.5 * freq, 200, 16000), cfg["air_q"], "bandn")
+    sig = 10 ** (cfg["air_db"] / 20.0) * stereo_of(airv) / lvl(airv)
+    if cfg["noise_db"] > -59:
+        wide = dsp.svf(gen.standard_normal(ns), np.clip(freq * cfg["noise_ratio"], 250, 15000),
+                       cfg["noise_q"], "band")
         wide = dsp.butter(wide, "low", 16000.0, 4)
-        y = y + 10 ** (p["noise_db"] / 20.0) * stereo_of(wide) / lvl(wide)
-    return y
+        sig = sig + 10 ** (cfg["noise_db"] / 20.0) * stereo_of(wide) / lvl(wide)
+    return sig
 
 
-def _envelope(p: dict, f: np.ndarray) -> np.ndarray:
-    length = float(p["length"])
-    t = u.times(len(f))
-    a = np.clip(t / (p["att_ms"] / 1000.0), 0, 1)
-    rl = np.clip((length - t) / (p["rel_ms"] / 1000.0), 0, 1)
-    env = (0.5 - 0.5 * np.cos(np.pi * a)) * (0.5 - 0.5 * np.cos(np.pi * rl))
-    env = env * 10 ** (p["tilt_db"] * (t / length) / 20.0)
-    if p["teeth"] > 0.01:
-        rate = p["teeth_hz"] * np.sqrt(f / np.exp(np.mean(np.log(f))))
-        env = env * (1 - p["teeth"] * (0.5 - 0.5 * np.cos(2 * np.pi * np.cumsum(rate) / SR)))
+def _envelope(cfg: dict, freq: np.ndarray) -> np.ndarray:
+    length = float(cfg["length"])
+    tax = u.times(len(freq))
+    amp = np.clip(tax / (cfg["att_ms"] / 1000.0), 0, 1)
+    rl = np.clip((length - tax) / (cfg["rel_ms"] / 1000.0), 0, 1)
+    env = (0.5 - 0.5 * np.cos(np.pi * amp)) * (0.5 - 0.5 * np.cos(np.pi * rl))
+    env = env * 10 ** (cfg["tilt_db"] * (tax / length) / 20.0)
+    if cfg["teeth"] > 0.01:
+        rate = cfg["teeth_hz"] * np.sqrt(freq / np.exp(np.mean(np.log(freq))))
+        env = env * (1 - cfg["teeth"] * (0.5 - 0.5 * np.cos(2 * np.pi * np.cumsum(rate) / SR)))
     return env
 
 
-def _room(y: np.ndarray, p: dict) -> np.ndarray:
-    n = len(y)
+def _room(sig: np.ndarray, cfg: dict) -> np.ndarray:
+    ns = len(sig)
     tail = u.samples(0.3)
-    wet = wet_of(y, 0.3, n + tail, size=0.3, predelay=0.004, lowcut=300)
-    y = np.vstack([y, np.zeros((tail, 2))]) + p["verb"] * wet / lvl(wet) * lvl(y)
-    y = dsp.trim_tail(y, -60.0, 0.004)
-    return dsp.fade(y, 0.0, min(0.02, 0.1 * p["length"]))
+    wetv = wet_of(sig, 0.3, ns + tail, size=0.3, predelay=0.004, lowcut=300)
+    sig = np.vstack([sig, np.zeros((tail, 2))]) + cfg["verb"] * wetv / lvl(wetv) * lvl(sig)
+    sig = dsp.trim_tail(sig, -60.0, 0.004)
+    return dsp.fade(sig, 0.0, min(0.02, 0.1 * cfg["length"]))
 
 
-def _remove_dc(y: np.ndarray) -> np.ndarray:
-    h = np.hanning(len(y)) if len(y) > 1 else np.ones(1)
-    return y - (y.mean(axis=0) / h.mean())[None, :] * h[:, None]
+def _remove_dc(sig: np.ndarray) -> np.ndarray:
+    hv = np.hanning(len(sig)) if len(sig) > 1 else np.ones(1)
+    return sig - (sig.mean(axis=0) / hv.mean())[None, :] * hv[:, None]
 
 
-def render(p: dict, rng: np.random.Generator) -> np.ndarray:
+def render(cfg: dict, gen: np.random.Generator) -> np.ndarray:
     """One take of the zip (section 7.7), float64 stereo at 48 kHz."""
-    q = {**DEFAULTS, **p}
-    n = u.samples(q["length"])
-    f = trajectory(q, n)
-    y = _tone(q, f, rng) + _noises(q, f, rng)
-    y = dsp.butter(y * _envelope(q, f)[:, None], "high", 40.0, 2)
-    if q["sat"] > 0.1:
-        y = dsp.butter(fx.saturate(y, q["sat"], mode="tanh"), "low", 18000.0, 4)
-    if q["verb"] > 0.005:
-        y = _room(y, q)
-    y = dsp.fade(y, 0.0005, 0.002)
-    return u.below_full_scale(_remove_dc(np.asarray(y, dtype=float)))
+    qv = {**DEFAULTS, **cfg}
+    ns = u.samples(qv["length"])
+    freq = trajectory(qv, ns)
+    sig = _tone(qv, freq, gen) + _noises(qv, freq, gen)
+    sig = dsp.butter(sig * _envelope(qv, freq)[:, None], "high", 40.0, 2)
+    if qv["sat"] > 0.1:
+        sig = dsp.butter(fx.saturate(sig, qv["sat"], mode="tanh"), "low", 18000.0, 4)
+    if qv["verb"] > 0.005:
+        sig = _room(sig, qv)
+    sig = dsp.fade(sig, 0.0005, 0.002)
+    return u.below_full_scale(_remove_dc(np.asarray(sig, dtype=float)))
 
 
-def ridge(x: np.ndarray, hop_ms: float = 2.5, win: int = 1024) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def ridge(wav: np.ndarray, hop_ms: float = 2.5, win: int = 1024) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """The strongest-bin frequency per frame: (frame times s, Hz, level dB re the loudest frame)."""
-    m = np.concatenate([np.zeros(win // 2), u.mono(x), np.zeros(win // 2)])
+    mv = np.concatenate([np.zeros(win // 2), u.mono(wav), np.zeros(win // 2)])
     hop = max(1, int(round(hop_ms * SR / 1000.0)))
-    count = 1 + max(0, (len(m) - win) // hop)
-    w = np.hanning(win)
-    frames = np.stack([m[i * hop : i * hop + win] * w for i in range(count)])
+    count = 1 + max(0, (len(mv) - win) // hop)
+    wv = np.hanning(win)
+    frames = np.stack([mv[ix * hop : ix * hop + win] * wv for ix in range(count)])
     mag = np.abs(np.fft.rfft(frames, axis=1))
     mag[:, :2] = 0.0
-    k = np.argmax(mag, axis=1)
-    level = 20 * np.log10(mag[np.arange(count), k] + u.EPS)
-    return np.arange(count) * hop / SR, k * SR / win, level - level.max()
+    kn = np.argmax(mag, axis=1)
+    level = 20 * np.log10(mag[np.arange(count), kn] + u.EPS)
+    return np.arange(count) * hop / SR, kn * SR / win, level - level.max()
 
 
-def _slope(t: np.ndarray, y: np.ndarray) -> float:
-    return float(np.polyfit(t, y, 1)[0]) if len(t) >= 2 else 0.0
+def _slope(tax: np.ndarray, sig: np.ndarray) -> float:
+    return float(np.polyfit(tax, sig, 1)[0]) if len(tax) >= 2 else 0.0
 
 
-def _sweep(x: np.ndarray) -> tuple[float, float, bool]:
-    t, f, level = ridge(x)
-    keep = (level >= -20) & (f > 0)
-    t, lf = t[keep], np.log2(np.maximum(f[keep], 1.0))
+def _sweep(wav: np.ndarray) -> tuple[float, float, bool]:
+    tax, freq, level = ridge(wav)
+    keep = (level >= -20) & (freq > 0)
+    tax, lf = tax[keep], np.log2(np.maximum(freq[keep], 1.0))
     if len(lf) < 4:
         return 0.0, 0.0, False
-    half = _arc_rate(t, lf)
-    rate, arc = (_slope(t, lf), False) if half is None else (half, True)
+    half = _arc_rate(tax, lf)
+    rate, arc = (_slope(tax, lf), False) if half is None else (half, True)
     return float(lf.max() - lf.min()), rate, arc
 
 
-def _arc_rate(t: np.ndarray, lf: np.ndarray) -> float | None:
+def _arc_rate(tax: np.ndarray, lf: np.ndarray) -> float | None:
     """The steeper half slope when the 2 halves sweep opposite ways above 3 oct/s, else None."""
-    h = len(lf) // 2
-    if h < 3 or len(lf) - h < 3:
+    hv = len(lf) // 2
+    if hv < 3 or len(lf) - hv < 3:
         return None
-    a, b = _slope(t[:h], lf[:h]), _slope(t[h:], lf[h:])
-    if a * b >= 0 or min(abs(a), abs(b)) <= 3:
+    amp, bv = _slope(tax[:hv], lf[:hv]), _slope(tax[hv:], lf[hv:])
+    if amp * bv >= 0 or min(abs(amp), abs(bv)) <= 3:
         return None
-    return a if abs(a) >= abs(b) else b
+    return amp if abs(amp) >= abs(bv) else bv
 
 
-def measure(x: np.ndarray) -> dict[str, Any]:
+def measure(wav: np.ndarray) -> dict[str, Any]:
     """Length, attack, active span, end level, width and the sweep rate of a zip (section 7.8)."""
-    m = u.mono(x)
-    k = max(1, len(m) // 240)
-    blocks = m[: k * 240].reshape(k, 240) if len(m) >= 240 else m[None, :]
+    mv = u.mono(wav)
+    kn = max(1, len(mv) // 240)
+    blocks = mv[: kn * 240].reshape(kn, 240) if len(mv) >= 240 else mv[None, :]
     e = 20 * np.log10(np.sqrt(np.mean(blocks * blocks, axis=1)) + u.EPS)
     top = int(np.argmax(e))
-    live = np.nonzero(e >= e[top] - 30)[0]
-    span, rate, arc = _sweep(x)
-    return {"length_s": len(m) / SR, "attack_ms": 5.0 * top,
-            "active_s": (live[-1] - live[0] + 1) * 0.005, "end_db": float(e[-1] - e[top]),
-            "side_db": side_db(x), "oct_span": span, "oct_per_s": rate, "arc": arc}
+    livev = np.nonzero(e >= e[top] - 30)[0]
+    span, rate, arc = _sweep(wav)
+    return {"length_s": len(mv) / SR, "attack_ms": 5.0 * top,
+            "active_s": (livev[-1] - livev[0] + 1) * 0.005, "end_db": float(e[-1] - e[top]),
+            "side_db": side_db(wav), "oct_span": span, "oct_per_s": rate, "arc": arc}
 
 
-def target_check(x: np.ndarray, row: Any = None) -> float:
+def target_check(wav: np.ndarray, row: Any = None) -> float:
     """A penalty score in [-3, 0] against the measured pro zips (section 7.8)."""
-    m = measure(x)
-    r = abs(m["oct_per_s"])
-    lo, span = (8.0, 1.0) if m["arc"] else (12.0, 1.5)
-    penalty = (max(0.0, lo - r) / 6 + max(0.0, r - 75) / 20 + 1.5 * max(0.0, span - m["oct_span"])
-               + 10 * max(0.0, m["active_s"] - 0.33) + max(0.0, m["side_db"] + 10) / 6)
+    mv = measure(wav)
+    r = abs(mv["oct_per_s"])
+    lo, span = (8.0, 1.0) if mv["arc"] else (12.0, 1.5)
+    penalty = (max(0.0, lo - r) / 6 + max(0.0, r - 75) / 20 + 1.5 * max(0.0, span - mv["oct_span"])
+               + 10 * max(0.0, mv["active_s"] - 0.33) + max(0.0, mv["side_db"] + 10) / 6)
     return -min(3.0, penalty)

@@ -1,68 +1,15 @@
-"""Fixtures of the listen tests: stand-ins for absent units, stub models, isolated caches."""
+"""Fixtures of the listen tests: stub models and isolated caches."""
 
 from __future__ import annotations
 
 import argparse
 import hashlib
-import importlib
-import importlib.util
-import sys
 import types
-from pathlib import Path
 
 import numpy as np
 import pytest
 
 SR = 48000
-
-
-def _load_standins() -> types.ModuleType:
-    path = Path(__file__).with_name("standins.py")
-    spec = importlib.util.spec_from_file_location("hark_listen_test_standins", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-def _absent(name: str) -> bool:
-    if name in sys.modules:
-        return False
-    try:
-        return importlib.util.find_spec(name) is None
-    except (ModuleNotFoundError, ValueError):
-        return True
-
-
-def _ensure_package(name: str) -> None:
-    if not _absent(name):
-        importlib.import_module(name)
-        return
-    pkg = types.ModuleType(name, "stand-in package")
-    pkg.__path__ = []
-    sys.modules[name] = pkg
-    parent, _, child = name.rpartition(".")
-    setattr(sys.modules[parent], child, pkg)
-
-
-def _install_standins() -> list[str]:
-    standins = _load_standins()
-    import hark
-
-    installed = []
-    for name, factory in standins.FACTORIES.items():
-        if not _absent(name):
-            continue
-        parent, _, child = name.rpartition(".")
-        if parent != "hark":
-            _ensure_package(parent)
-        mod = factory()
-        sys.modules[name] = mod
-        setattr(sys.modules[parent], child, mod)
-        installed.append(name)
-    return installed
-
-
-STANDINS = _install_standins()
 
 
 # ---------------------------------------------------------------- stub models

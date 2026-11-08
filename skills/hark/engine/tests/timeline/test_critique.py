@@ -241,7 +241,7 @@ def test_c14_spec_keys_in_listen_table():
     from hark.listen.profile import METRICS
     from hark.timeline.critique import SPEC
 
-    keys = set(METRICS) if isinstance(METRICS, dict) else {m["key"] for m in METRICS}
+    keys = {m[0] for m in METRICS}
     assert {k for k in SPEC if k != "p_real"} <= keys
 
 
@@ -257,7 +257,8 @@ def test_reference_film_is_scored_leave_one_out(wav, hark_home):
         fm = film_metrics(p, use_ast=False)
         films.append({"id": f"ref_{k}", "style": "", "duration": fm["duration"], "has_video": False,
                       "metrics": fm["metrics"], "chance": fm["chance"], "arc": fm["arc"]})
-    res = critique(paths[1], profile=aggregate(films), use_ast=False, use_realness=False)
+    prof = dict(aggregate(films), n=len(films), films=films)  # the profile JSON shape that hark profile writes
+    res = critique(paths[1], profile=prof, use_ast=False, use_realness=False)
     assert res["reference_match"] == {"id": "ref_2", "scored_against": 2}
     assert res["profile_n"] == 2 and res["profile"] == "custom"
     assert "reference ref_2" in res["summary"]

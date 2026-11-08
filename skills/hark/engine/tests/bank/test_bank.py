@@ -22,15 +22,23 @@ def _sine(f: float, dur: float, amp: float = 0.5) -> np.ndarray:
 # ---------------------------------------------------------------- AT-1, loading and merge
 
 
-def test_at_1_ids_counts_and_version_shipped(shipped):
+def test_at_1_ids_counts_and_version_shipped(shipped, open_ids):
     b = shipped
-    assert len(b.ids()) == 252 and b.ids() == sorted(b.ids())
+    files = b._bank().files
+    has_fit = any(f.endswith("/fit.json") for f in files.values())
+    want = {"forge_v2.json": 183 - len(open_ids["dropped"]), "forge04.json": 51 - len(open_ids["forge04"]),
+            "pluck.json": 3}
+    tags = ["forge_v2h1", "forge04h1", "pluck1h"]
+    if has_fit:  # fit.json ships only after the operator allows the 15 CC0 downloads (bank Q5)
+        want["fit.json"], tags = 15, ["forge_v2h1", "forge04h1", "fit1h", "pluck1h"]
+    assert b.ids() == sorted(b.ids()) and len(b.ids()) == sum(want.values())
+    assert not (open_ids["forge04"] | open_ids["dropped"]) & set(b.ids())
     counts: dict[str, int] = {}
     for sound_id in b.ids():
-        name = b._bank().files[sound_id].rsplit("/", 1)[-1]
+        name = files[sound_id].rsplit("/", 1)[-1]
         counts[name] = counts.get(name, 0) + 1
-    assert counts == {"forge_v2.json": 183, "forge04.json": 51, "fit.json": 15, "pluck.json": 3}
-    assert b.VERSION.split("+") == ["forge_v2h1", "forge04h1", "fit1h", "pluck1h"]
+    assert counts == want
+    assert b.VERSION.split("+") == tags
 
 
 def test_at_1_ids_counts_and_version_fixture(fixture_bank):
@@ -369,7 +377,7 @@ def test_build_from_forge_finals(fixture_bank, tmp_path):
     assert not (tmp_path / "other.json").exists()
 
 
-def test_build_pluck_with_real_recipe(tmp_path, hark_home, real_registry):
+def test_build_pluck_with_real_recipe(tmp_path, hark_home):
     pytest.importorskip("hark.forge.recipes.impacts.pluck")
     doc = bank.build_pluck(str(tmp_path / "pluck.json"))
     assert sorted(doc["entries"]) == ["pluck/kalimba", "pluck/kalimba_ring", "pluck/kalimba_soft"]
@@ -408,6 +416,31 @@ def test_build_forge04_from_palette(fixture_bank, tmp_path, monkeypatch):
         bank.build_forge04(str(tmp_path / "f4.json"))
 
 
+def test_build_forge04_leaves_out_audit_failures(fixture_bank, test_recipes, tmp_path, monkeypatch):
+    from hark.forge.bank import _build
+
+    row = {"recipe": "t_bell", "fn": "render", "seed": 40, "kinds": ["bell"], "notes": "a test member"}
+    _catalog_with(monkeypatch, {"notify/m9": row, "notify/m9b": {**row, "seed": 50}}, {})
+    families = test_recipes["t_bell"].FAMILIES
+    monkeypatch.setitem(families, "notify", [*families["notify"], ("m9b", {"f0": 990.0})])
+    real_audit = _build._take_audit
+
+    def audit(entry, sound_id, seed):
+        got = real_audit(entry, sound_id, seed)
+        return {**got, "clean": 2, "own_ok": False, "warnings": ["ring"]} if sound_id == "notify/m9b" else got
+
+    monkeypatch.setattr(_build, "_take_audit", audit)
+    lines: list[str] = []
+    doc = bank.build_forge04(str(tmp_path / "forge04.json"), log=lines.append)
+    assert list(doc["entries"]) == ["notify/m9"]
+    assert "refused notify/m9b: take audit: 2 / 6 clean on seeds 50-55, own take not clean (ring)" in lines
+    assert any(line.startswith("warning: 1 member(s) failed the take audit") for line in lines)
+    target = tmp_path / "strict.json"
+    with pytest.raises(bank.BankError, match="notify/m9b: take audit"):
+        bank.build_forge04(str(target), strict=True)
+    assert not target.exists()
+
+
 def test_build_derive_logs_target_misses(fixture_bank, tmp_path, monkeypatch):
     target = {"dur_s": 2.0, "peak_s": 0.005, "centroid_hz": 880.0, "lufs_m_max": -20.0}
     _catalog_with(monkeypatch, {}, {"notify/m9": target, "fit/x/y": {}, "pluck/kalimba": {}})
@@ -417,6 +450,43 @@ def test_build_derive_logs_target_misses(fixture_bank, tmp_path, monkeypatch):
     assert list(doc["entries"]) == ["notify/m9"] and entry["seed"] == 0 and entry["mode"] == "designed"
     assert any(line.startswith("notify/m9: ") and "misses dur" in line for line in lines)
     assert lines[-1].startswith("wrote ") and "1 entries (forge_v2h1)" in lines[-1]
+
+
+def test_build_derive_drops_an_id_with_no_passing_render(fixture_bank, tmp_path, monkeypatch):
+    # T-41: every render fails sfx check, so the id is left out and listed under dropped with its reason
+    from hark.forge.bank import _build
+
+    target = {"dur_s": 2.0, "peak_s": 0.005, "centroid_hz": 880.0, "lufs_m_max": -20.0}
+    _catalog_with(monkeypatch, {}, {"notify/m9": target})
+    monkeypatch.setattr(_build, "_derived", lambda *a: None)
+    lines: list[str] = []
+    doc = bank.build_derive(str(tmp_path / "forge_v2.json"), log=lines.append)
+    assert doc["entries"] == {} and "passes sfx check" in doc["dropped"]["notify/m9"]
+    assert any(line.startswith("notify/m9: dropped: ") for line in lines)
+    assert json.loads((tmp_path / "forge_v2.json").read_text())["dropped"] == doc["dropped"]
+
+
+def test_derive_entry_takes_the_next_closest_passing_render(monkeypatch):
+    # T-41: the first render fails sfx check; the nearest candidate that passes stands in
+    from hark.forge.bank import _build
+
+    pool = {"near": ({"p": 1}, {}), "mid": ({"p": 2}, {}), "far": ({"p": 3}, {})}
+    monkeypatch.setattr(_build, "_derive_fn", lambda recipe, category: "render")
+    monkeypatch.setattr(_build, "_first_source", lambda *a: ("near", {"p": 1}))
+    monkeypatch.setattr(_build, "_candidates", lambda *a: pool)
+    monkeypatch.setattr(_build, "_ranked", lambda *a: ["near", "mid", "far"])
+    monkeypatch.setattr(_build, "_derived", lambda sid, r, fn, params: {"params": params} if params["p"] >= 2 else None)
+    used: set = set()
+    lines: list[str] = []
+    entry = _build._derive_entry("notify/m9", {}, used, lines.append)
+    assert entry["params"] == {"p": 2} and ("notify", "mid") in used
+    assert lines == ["notify/m9: first render fails sfx check; next-closest passing render is notify/mid"]
+
+
+def test_at_34_dropped_ids_listed_shipped(shipped, open_ids):
+    doc = json.loads((shipped.PKG_DIR / "data" / "forge_v2.json").read_text(encoding="utf-8"))
+    assert set(doc["dropped"]) == open_ids["dropped"] and all(doc["dropped"].values())
+    assert not set(doc["dropped"]) & set(shipped.ids())
 
 
 def test_maintenance_cli_build_error(fixture_bank, tmp_path, monkeypatch, capsys):

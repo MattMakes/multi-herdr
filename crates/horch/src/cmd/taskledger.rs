@@ -2667,7 +2667,7 @@ pub fn done_cmd(
     let in_pane = in_worker_pane(ctx);
     // One push budget for the wakes and the report, inside the agent's
     // command timeout (#67).
-    let budget = delivery::start_push_budget(delivery::DONE_PUSH_BUDGET);
+    let budget = delivery::start_push_budget(delivery::done_push_budget(&ctx.settings.faults));
     if budget.is_some() && in_pane {
         eprintln!("{}", super::messaging::CLOSING);
     }
@@ -2700,7 +2700,7 @@ pub fn handoff_cmd(ctx: &RuntimeContext, mut store: Store, path: &Path) -> Resul
     let wid = worker_id(ctx)?;
     let file = handoff_file(ctx, path)?;
     let in_pane = in_worker_pane(ctx);
-    let budget = delivery::start_push_budget(delivery::DONE_PUSH_BUDGET);
+    let budget = delivery::start_push_budget(delivery::done_push_budget(&ctx.settings.faults));
     if budget.is_some() && in_pane {
         eprintln!("{}", super::messaging::CLOSING);
     }

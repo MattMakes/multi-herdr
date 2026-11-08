@@ -576,7 +576,7 @@ fn g58_claude_workers_share_read_only_preapprovals() {
     let r = Roster::builtin().unwrap();
     let expected = &r.require("sonnet").unwrap().allowed_tools;
     assert!(expected.iter().any(|p| p == "Bash(git status *)"));
-    let mut count = 0;
+    let mut names = Vec::new();
     for name in r.names() {
         let t = r.require(name).unwrap();
         if t.agent.as_str() == "claude"
@@ -591,10 +591,13 @@ fn g58_claude_workers_share_read_only_preapprovals() {
                 .cloned()
                 .collect();
             assert_eq!(t.allowed_tools, want, "{name}");
-            count += 1;
+            names.push(name);
         }
     }
-    assert_eq!(count, 82);
+    assert_eq!(names.len(), 83);
+    // sound-engineer runs on claude; audio-reviewer runs on agy.
+    assert!(names.contains(&"sound-engineer"), "{names:?}");
+    assert!(!names.contains(&"audio-reviewer"), "{names:?}");
     for pattern in expected {
         assert!(
             matches!(pattern.as_str(), "Read" | "Grep" | "Glob") || pattern.starts_with("Bash(")

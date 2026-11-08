@@ -78,132 +78,179 @@ SPACE: dict[str, Any] = {
 
 # ------------------------------------------------------------------------------------------------ bases (15.4)
 
-REVEAL = dict(mode="reveal", root=880.0, chord="add9", material="bar", bloom_decay=2.2, bright=0.6, open_ms=120.0,
-              strike=0.5, shimmer=0.25, hit=0.3, sub=0.25, swell=0.0, swell_level=0.2, verb=0.35, verb_rt=2.6,
-              width=0.6, low_cut=25.0)
-CHIRP_R2 = dict(mode="chirp", chirp_f0=1500.0, chirp_f1=150.0, chirp_ms=85.0, chirp_harm=0.7, hum_f=76.0,
-                hum_sink=0.6, hum_formant=500.0, hum_buzz=0.9, hum_level=0.8, hum_fast=0.045, hum_slow=0.2,
-                hum_mix=0.06, length=0.85, sub=0.0, shimmer=0.0, verb=0.05, verb_rt=0.8, width=0.0, root=880.0,
-                material="bar", bright=0.5, land=0.0, land_f=800.0, thud=0.0, sub_db=45.0)
-CHIRP_R3 = {**CHIRP_R2, **dict(land=0.5, land_f=1400.0, thud=0.5, hum_level=0.95, hum_fast=0.05, chirp_harm=1.0,
-                               sub=0.25, sub_db=100.0)}
-CHIRP_R4 = {**CHIRP_R3, **dict(zap=0.0, zap_k=6.0, ctick=0.0, double=0.0, double_gap=0.05)}
-LAUNCH = dict(mode="launch", lead="whoosh", lead_s=0.45, lead_level=0.45, lead_f0=600.0, lead_f1=9000.0, tick=1.0,
-              tick_f=5000.0, tick_ms=6.0, thump=0.08, thump_f=150.0, material="glass", root=1318.5, notes="fifth",
-              bright=0.7, ring=0.9, strike_tau=0.12, ring_mix=0.25, ring_tau=0.3, bloom_att=0.0, shimmer=0.4,
-              shimmer_tau=0.35, verb=0.2, verb_rt=1.0, width=0.6, low_cut=140.0, bloom_delay=0.012)
-GESTURE = dict(mode="gesture", gesture="chirp_hum", g_f0=1600.0, g_f1=160.0, g_ms=85.0, g_lead=1.0, g_root=76.0,
-               g_notes="one", g_warm=0.35, g_att=0.0, g_tau1=0.06, g_mix=0.12, g_tau2=0.3, g_sink=0.5, g_land=0.5,
-               g_land_f=800.0, g_air=0.25, g_hit=0.0, g_low_f=55.0, g_low_tau=0.15, g_snap=0.2, g_snap_f=5000.0,
-               g_snap_ms=5.0, g_gap=0.075, g_tap_f=1400.0, g_wet=0.3, g_rt=1.0, g_length=0.8, g_tone=1.0,
-               g_mat="sine", g_bend=0.0, g_chorus=0.0, g_verb="hall")
+REVEAL = {"mode": "reveal", "root": 880.0, "chord": "add9", "material": "bar", "bloom_decay": 2.2, "bright": 0.6,
+          "open_ms": 120.0,
+              "strike": 0.5, "shimmer": 0.25, "hit": 0.3, "sub": 0.25, "swell": 0.0, "swell_level": 0.2, "verb": 0.35,
+              "verb_rt": 2.6,
+              "width": 0.6, "low_cut": 25.0}
+CHIRP_R2 = {"mode": "chirp", "chirp_f0": 1500.0, "chirp_f1": 150.0, "chirp_ms": 85.0, "chirp_harm": 0.7, "hum_f": 76.0,
+                "hum_sink": 0.6, "hum_formant": 500.0, "hum_buzz": 0.9, "hum_level": 0.8, "hum_fast": 0.045,
+                "hum_slow": 0.2,
+                "hum_mix": 0.06, "length": 0.85, "sub": 0.0, "shimmer": 0.0, "verb": 0.05, "verb_rt": 0.8,
+                "width": 0.0, "root": 880.0,
+                "material": "bar", "bright": 0.5, "land": 0.0, "land_f": 800.0, "thud": 0.0, "sub_db": 45.0}
+CHIRP_R3 = {**CHIRP_R2, **{"land": 0.5, "land_f": 1400.0, "thud": 0.5, "hum_level": 0.95, "hum_fast": 0.05,
+                           "chirp_harm": 1.0,
+                               "sub": 0.25, "sub_db": 100.0}}
+CHIRP_R4 = {**CHIRP_R3, **{"zap": 0.0, "zap_k": 6.0, "ctick": 0.0, "double": 0.0, "double_gap": 0.05}}
+LAUNCH = {"mode": "launch", "lead": "whoosh", "lead_s": 0.45, "lead_level": 0.45, "lead_f0": 600.0, "lead_f1": 9000.0,
+          "tick": 1.0,
+              "tick_f": 5000.0, "tick_ms": 6.0, "thump": 0.08, "thump_f": 150.0, "material": "glass", "root": 1318.5,
+              "notes": "fifth",
+              "bright": 0.7, "ring": 0.9, "strike_tau": 0.12, "ring_mix": 0.25, "ring_tau": 0.3, "bloom_att": 0.0,
+              "shimmer": 0.4,
+              "shimmer_tau": 0.35, "verb": 0.2, "verb_rt": 1.0, "width": 0.6, "low_cut": 140.0, "bloom_delay": 0.012}
+GESTURE = {"mode": "gesture", "gesture": "chirp_hum", "g_f0": 1600.0, "g_f1": 160.0, "g_ms": 85.0, "g_lead": 1.0,
+           "g_root": 76.0,
+               "g_notes": "one", "g_warm": 0.35, "g_att": 0.0, "g_tau1": 0.06, "g_mix": 0.12, "g_tau2": 0.3,
+               "g_sink": 0.5, "g_land": 0.5,
+               "g_land_f": 800.0, "g_air": 0.25, "g_hit": 0.0, "g_low_f": 55.0, "g_low_tau": 0.15, "g_snap": 0.2,
+               "g_snap_f": 5000.0,
+               "g_snap_ms": 5.0, "g_gap": 0.075, "g_tap_f": 1400.0, "g_wet": 0.3, "g_rt": 1.0, "g_length": 0.8,
+               "g_tone": 1.0,
+               "g_mat": "sine", "g_bend": 0.0, "g_chorus": 0.0, "g_verb": "hall"}
 BASES = {"chirp": CHIRP_R2, "launch": LAUNCH, "gesture": GESTURE, "reveal": REVEAL}
 
 # ------------------------------------------------------------------------------------------------ families (15.5)
 
 
-def _members(base: dict, rows: list[tuple[str, dict]]) -> list[tuple[str, dict]]:
-    return [(name, {**base, **kw}) for name, kw in rows]
+def _members(bed: dict, spec_rows: list[tuple[str, dict]]) -> list[tuple[str, dict]]:
+    return [(label, {**bed, **extra}) for label, extra in spec_rows]
 
 
 _LAUNCH_A = [
     ("whoosh_glass", {}),
-    ("zip_ping", dict(lead="chirp", lead_s=0.16, lead_level=0.4, lead_f0=420.0, lead_f1=2600.0, tick=0.9,
-                      tick_f=6000.0, tick_ms=4.0, thump=0.0, material="bar", root=1760.0, notes="octave",
-                      strike_tau=0.1, ring_mix=0.2, bright=0.45, ring_tau=0.28, shimmer=0.15, verb=0.15, width=0.3,
-                      low_cut=300.0)),
-    ("reverse_bloom", dict(lead="swell", lead_s=0.5, lead_level=0.35, tick=0.8, tick_f=4500.0, tick_ms=8.0,
-                           thump=0.15, thump_f=110.0, material="bar", root=1480.0, notes="ninth", strike_tau=0.15,
-                           ring_mix=0.3, ring_tau=0.32, shimmer=0.3, verb=0.3, verb_rt=1.2, width=0.7,
-                           low_cut=90.0)),
-    ("spark", dict(lead="none", lead_level=0.3, tick=1.1, tick_f=7000.0, tick_ms=3.0, thump=0.0,
-                   material="triangle", root=1318.5, notes="one", strike_tau=0.09, bright=0.35, ring_mix=0.3,
-                   ring_tau=0.28, shimmer=0.6, shimmer_tau=0.4, verb=0.15, width=0.9, low_cut=300.0)),
-    ("soft_bloom", dict(lead="whoosh", lead_s=0.3, lead_f0=300.0, lead_f1=4000.0, lead_level=0.3, tick=0.7,
-                        tick_f=4000.0, tick_ms=10.0, thump=0.18, thump_f=130.0, material="tubular", root=987.8,
-                        notes="fourth", bloom_att=0.06, strike_tau=0.16, ring_mix=0.25, ring_tau=0.32,
-                        shimmer=0.25, verb=0.3, verb_rt=1.1, width=0.5, low_cut=100.0)),
+    ("zip_ping", {"lead": "chirp", "lead_s": 0.16, "lead_level": 0.4, "lead_f0": 420.0, "lead_f1": 2600.0, "tick": 0.9,
+                      "tick_f": 6000.0, "tick_ms": 4.0, "thump": 0.0, "material": "bar", "root": 1760.0,
+                      "notes": "octave",
+                      "strike_tau": 0.1, "ring_mix": 0.2, "bright": 0.45, "ring_tau": 0.28, "shimmer": 0.15,
+                      "verb": 0.15, "width": 0.3,
+                      "low_cut": 300.0}),
+    ("reverse_bloom", {"lead": "swell", "lead_s": 0.5, "lead_level": 0.35, "tick": 0.8, "tick_f": 4500.0,
+                       "tick_ms": 8.0,
+                           "thump": 0.15, "thump_f": 110.0, "material": "bar", "root": 1480.0, "notes": "ninth",
+                           "strike_tau": 0.15,
+                           "ring_mix": 0.3, "ring_tau": 0.32, "shimmer": 0.3, "verb": 0.3, "verb_rt": 1.2, "width": 0.7,
+                           "low_cut": 90.0}),
+    ("spark", {"lead": "none", "lead_level": 0.3, "tick": 1.1, "tick_f": 7000.0, "tick_ms": 3.0, "thump": 0.0,
+                   "material": "triangle", "root": 1318.5, "notes": "one", "strike_tau": 0.09, "bright": 0.35,
+                   "ring_mix": 0.3,
+                   "ring_tau": 0.28, "shimmer": 0.6, "shimmer_tau": 0.4, "verb": 0.15, "width": 0.9, "low_cut": 300.0}),
+    ("soft_bloom", {"lead": "whoosh", "lead_s": 0.3, "lead_f0": 300.0, "lead_f1": 4000.0, "lead_level": 0.3,
+                    "tick": 0.7,
+                        "tick_f": 4000.0, "tick_ms": 10.0, "thump": 0.18, "thump_f": 130.0, "material": "tubular",
+                        "root": 987.8,
+                        "notes": "fourth", "bloom_att": 0.06, "strike_tau": 0.16, "ring_mix": 0.25, "ring_tau": 0.32,
+                        "shimmer": 0.25, "verb": 0.3, "verb_rt": 1.1, "width": 0.5, "low_cut": 100.0}),
 ]
 _LAUNCH_B = {"whoosh_glass": (0.04, 55, 0.16), "zip_ping": (0.044, 73, 0.1), "reverse_bloom": (0.045, 46, 0.24),
              "spark": (0.03, 82, 0.09), "soft_bloom": (0.041, 62, 0.2)}
 _LAUNCH_C = {
-    "whoosh_glass": dict(lead_s=0.1896, lead_level=0.4168, tick=0.7978, tick_f=3631.0, thump=0.1648, bright=0.7076,
-                         ring=0.9497, strike_tau=0.1913, ring_mix=0.2039, ring_tau=0.2963, shimmer=0.2202,
-                         verb=0.2948, width=0.319, bloom_delay=0.0078, shimmer_smooth=1.0),
-    "zip_ping": dict(shimmer=0.105, shimmer_smooth=1.0),
-    "reverse_bloom": dict(swell_trim=0.045, lead_s=0.36, shimmer=0.21, shimmer_smooth=1.0),
-    "spark": dict(shimmer=0.42, shimmer_smooth=1.0),
-    "soft_bloom": dict(lead_s=0.2471, lead_level=0.3126, shimmer=0.175, shimmer_smooth=1.0),
+    "whoosh_glass": {"lead_s": 0.1896, "lead_level": 0.4168, "tick": 0.7978, "tick_f": 3631.0, "thump": 0.1648,
+                     "bright": 0.7076,
+                         "ring": 0.9497, "strike_tau": 0.1913, "ring_mix": 0.2039, "ring_tau": 0.2963,
+                         "shimmer": 0.2202,
+                         "verb": 0.2948, "width": 0.319, "bloom_delay": 0.0078, "shimmer_smooth": 1.0},
+    "zip_ping": {"shimmer": 0.105, "shimmer_smooth": 1.0},
+    "reverse_bloom": {"swell_trim": 0.045, "lead_s": 0.36, "shimmer": 0.21, "shimmer_smooth": 1.0},
+    "spark": {"shimmer": 0.42, "shimmer_smooth": 1.0},
+    "soft_bloom": {"lead_s": 0.2471, "lead_level": 0.3126, "shimmer": 0.175, "shimmer_smooth": 1.0},
 }
 _LOGO_R3 = _members(LAUNCH, _LAUNCH_A)
-_LOGO_R4 = [(name, {**p, "low": float(_LAUNCH_B[name][0]), "low_f": float(_LAUNCH_B[name][1]),
-                    "low_tau": float(_LAUNCH_B[name][2])}) for name, p in _LOGO_R3]
-_LOGO_R5 = [(name, {**p, **_LAUNCH_C[name]}) for name, p in _LOGO_R4]
+_LOGO_R4 = [(label, {**cfg, "low": float(_LAUNCH_B[label][0]), "low_f": float(_LAUNCH_B[label][1]),
+                    "low_tau": float(_LAUNCH_B[label][2])}) for label, cfg in _LOGO_R3]
+_LOGO_R5 = [(label, {**cfg, **_LAUNCH_C[label]}) for label, cfg in _LOGO_R4]
 
 _GESTURE_ROWS = [
-    ("chirp_hum", dict(g_f0=1500.0, g_f1=150.0, g_ms=85.0, g_root=76.0, g_warm=0.15, g_tau1=0.07, g_mix=0.15,
-                       g_tau2=0.2, g_sink=0.5, g_land=0.8, g_land_f=900.0, g_air=0.1, g_snap=0.0, g_tone=0.6,
-                       g_wet=0.45, g_rt=1.4, g_length=0.9, g_verb="fdn")),
-    ("zap_bloom", dict(gesture="zap_bloom", g_f0=7000.0, g_f1=700.0, g_ms=60.0, g_lead=0.5, g_air=0.3,
-                       g_root=261.6, g_notes="fifth", g_warm=0.35, g_att=0.04, g_tau1=0.08, g_mix=0.15, g_tau2=0.28,
-                       g_snap=0.0, g_chorus=0.2, g_wet=0.4, g_rt=1.2, g_length=0.9, g_verb="fdn")),
-    ("sweep_hit", dict(gesture="sweep_hit", g_f0=220.0, g_f1=1760.0, g_ms=320.0, g_lead=0.7, g_air=0.6, g_hit=0.6,
-                       g_low_f=52.0, g_low_tau=0.12, g_tone=0.55, g_snap=0.6, g_snap_f=3500.0, g_snap_ms=8.0,
-                       g_root=330.0, g_notes="fifth", g_warm=0.2, g_tau1=0.08, g_mix=0.12, g_tau2=0.25, g_wet=0.3,
-                       g_rt=1.0, g_length=0.75)),
-    ("taps_tone", dict(gesture="taps_tone", g_gap=0.075, g_tap_f=1046.5, g_lead=0.8, g_root=523.25, g_notes="one",
-                       g_mat="bar", g_warm=0.35, g_att=0.0, g_bend=0.3, g_tau1=0.06, g_mix=0.12, g_tau2=0.25,
-                       g_snap=0.6, g_snap_f=7000.0, g_snap_ms=3.0, g_wet=0.35, g_rt=1.1, g_length=0.8,
-                       g_verb="fdn")),
-    ("swell_sting", dict(gesture="swell_sting", g_ms=450.0, g_lead=0.6, g_root=293.66, g_notes="triad",
-                         g_warm=0.12, g_chorus=0.4, g_tau1=0.08, g_mix=0.12, g_tau2=0.28, g_hit=0.0, g_low_f=48.0,
-                         g_snap=0.0, g_air=0.5, g_wet=0.45, g_rt=1.2, g_length=0.85)),
+    ("chirp_hum", {"g_f0": 1500.0, "g_f1": 150.0, "g_ms": 85.0, "g_root": 76.0, "g_warm": 0.15, "g_tau1": 0.07,
+                   "g_mix": 0.15,
+                       "g_tau2": 0.2, "g_sink": 0.5, "g_land": 0.8, "g_land_f": 900.0, "g_air": 0.1, "g_snap": 0.0,
+                       "g_tone": 0.6,
+                       "g_wet": 0.45, "g_rt": 1.4, "g_length": 0.9, "g_verb": "fdn"}),
+    ("zap_bloom", {"gesture": "zap_bloom", "g_f0": 7000.0, "g_f1": 700.0, "g_ms": 60.0, "g_lead": 0.5, "g_air": 0.3,
+                       "g_root": 261.6, "g_notes": "fifth", "g_warm": 0.35, "g_att": 0.04, "g_tau1": 0.08,
+                       "g_mix": 0.15, "g_tau2": 0.28,
+                       "g_snap": 0.0, "g_chorus": 0.2, "g_wet": 0.4, "g_rt": 1.2, "g_length": 0.9, "g_verb": "fdn"}),
+    ("sweep_hit", {"gesture": "sweep_hit", "g_f0": 220.0, "g_f1": 1760.0, "g_ms": 320.0, "g_lead": 0.7, "g_air": 0.6,
+                   "g_hit": 0.6,
+                       "g_low_f": 52.0, "g_low_tau": 0.12, "g_tone": 0.55, "g_snap": 0.6, "g_snap_f": 3500.0,
+                       "g_snap_ms": 8.0,
+                       "g_root": 330.0, "g_notes": "fifth", "g_warm": 0.2, "g_tau1": 0.08, "g_mix": 0.12,
+                       "g_tau2": 0.25, "g_wet": 0.3,
+                       "g_rt": 1.0, "g_length": 0.75}),
+    ("taps_tone", {"gesture": "taps_tone", "g_gap": 0.075, "g_tap_f": 1046.5, "g_lead": 0.8, "g_root": 523.25,
+                   "g_notes": "one",
+                       "g_mat": "bar", "g_warm": 0.35, "g_att": 0.0, "g_bend": 0.3, "g_tau1": 0.06, "g_mix": 0.12,
+                       "g_tau2": 0.25,
+                       "g_snap": 0.6, "g_snap_f": 7000.0, "g_snap_ms": 3.0, "g_wet": 0.35, "g_rt": 1.1, "g_length": 0.8,
+                       "g_verb": "fdn"}),
+    ("swell_sting", {"gesture": "swell_sting", "g_ms": 450.0, "g_lead": 0.6, "g_root": 293.66, "g_notes": "triad",
+                         "g_warm": 0.12, "g_chorus": 0.4, "g_tau1": 0.08, "g_mix": 0.12, "g_tau2": 0.28, "g_hit": 0.0,
+                         "g_low_f": 48.0,
+                         "g_snap": 0.0, "g_air": 0.5, "g_wet": 0.45, "g_rt": 1.2, "g_length": 0.85}),
 ]
-_CHIRP_HIGH = dict(chirp_f0=2600.0, chirp_f1=240.0, chirp_ms=70.0, hum_f=98.0, hum_formant=600.0, length=0.7,
-                   hum_slow=0.16)
+_CHIRP_HIGH = {"chirp_f0": 2600.0, "chirp_f1": 240.0, "chirp_ms": 70.0, "hum_f": 98.0, "hum_formant": 600.0,
+               "length": 0.7,
+                   "hum_slow": 0.16}
 _PRO_R4 = [
-    ("ref", dict(ctick=0.4)),
-    ("zap", {**_CHIRP_HIGH, **dict(land_f=1100.0, thud=0.3, hum_buzz=0.55, sub=0.15, sub_db=110.0, zap=0.6,
-                                   zap_k=4.0, chirp_harm=0.5, ctick=0.2)}),
-    ("deep", dict(chirp_f0=950.0, chirp_f1=100.0, chirp_ms=130.0, hum_f=56.0, hum_formant=380.0, sub=0.35,
-                  length=1.0, hum_slow=0.26, thud=0.7, land=0.4, land_f=650.0, hum_level=1.05, hum_buzz=1.0,
-                  sub_db=100.0, ctick=0.3, hum_sink=1.0)),
-    ("bell", dict(shimmer=0.1, root=1100.0, hum_buzz=0.3, hum_formant=520.0, land=0.35, zap=0.2, zap_k=8.0,
-                  thud=0.4, bell_decay=0.16, chirp_harm=0.4, ctick=0.25, hum_level=0.75)),
-    ("double", dict(hum_slow=0.3, hum_mix=0.08, length=1.0, hum_sink=0.8, chirp_harm=0.8, land=0.3, thud=0.55,
-                    sub=0.2, sub_db=90.0, double=0.7, double_gap=0.012, zap=0.4, zap_k=7.0, chirp_f0=1700.0,
-                    hum_f=70.0)),
+    ("ref", {"ctick": 0.4}),
+    ("zap", {**_CHIRP_HIGH, **{"land_f": 1100.0, "thud": 0.3, "hum_buzz": 0.55, "sub": 0.15, "sub_db": 110.0,
+                               "zap": 0.6,
+                                   "zap_k": 4.0, "chirp_harm": 0.5, "ctick": 0.2}}),
+    ("deep", {"chirp_f0": 950.0, "chirp_f1": 100.0, "chirp_ms": 130.0, "hum_f": 56.0, "hum_formant": 380.0, "sub": 0.35,
+                  "length": 1.0, "hum_slow": 0.26, "thud": 0.7, "land": 0.4, "land_f": 650.0, "hum_level": 1.05,
+                  "hum_buzz": 1.0,
+                  "sub_db": 100.0, "ctick": 0.3, "hum_sink": 1.0}),
+    ("bell", {"shimmer": 0.1, "root": 1100.0, "hum_buzz": 0.3, "hum_formant": 520.0, "land": 0.35, "zap": 0.2,
+              "zap_k": 8.0,
+                  "thud": 0.4, "bell_decay": 0.16, "chirp_harm": 0.4, "ctick": 0.25, "hum_level": 0.75}),
+    ("double", {"hum_slow": 0.3, "hum_mix": 0.08, "length": 1.0, "hum_sink": 0.8, "chirp_harm": 0.8, "land": 0.3,
+                "thud": 0.55,
+                    "sub": 0.2, "sub_db": 90.0, "double": 0.7, "double_gap": 0.012, "zap": 0.4, "zap_k": 7.0,
+                    "chirp_f0": 1700.0,
+                    "hum_f": 70.0}),
 ]
 _PRO_R3 = [
     ("ref", {}),
-    ("high", {**_CHIRP_HIGH, **dict(land_f=1100.0, thud=0.3, hum_buzz=0.55, sub=0.15, sub_db=110.0)}),
-    ("deep", dict(chirp_f0=1200.0, chirp_f1=120.0, chirp_ms=105.0, hum_f=62.0, hum_formant=380.0, sub=0.35,
-                  length=1.0, hum_slow=0.26, thud=0.7, land=0.4, land_f=650.0, hum_level=1.05, hum_buzz=1.0,
-                  sub_db=100.0)),
-    ("bell", dict(shimmer=0.1, root=1100.0, hum_buzz=0.4, hum_formant=520.0, land=0.35, thud=0.4, bell_decay=0.16,
-                  chirp_f0=1900.0, chirp_f1=190.0, chirp_ms=75.0, hum_f=84.0)),
-    ("long", dict(hum_slow=0.45, hum_mix=0.1, length=1.3, hum_sink=0.8, chirp_harm=0.7, verb=0.12, verb_rt=1.2,
-                  land=0.3, thud=0.55, sub=0.2, sub_db=80.0)),
+    ("high", {**_CHIRP_HIGH, **{"land_f": 1100.0, "thud": 0.3, "hum_buzz": 0.55, "sub": 0.15, "sub_db": 110.0}}),
+    ("deep", {"chirp_f0": 1200.0, "chirp_f1": 120.0, "chirp_ms": 105.0, "hum_f": 62.0, "hum_formant": 380.0,
+              "sub": 0.35,
+                  "length": 1.0, "hum_slow": 0.26, "thud": 0.7, "land": 0.4, "land_f": 650.0, "hum_level": 1.05,
+                  "hum_buzz": 1.0,
+                  "sub_db": 100.0}),
+    ("bell", {"shimmer": 0.1, "root": 1100.0, "hum_buzz": 0.4, "hum_formant": 520.0, "land": 0.35, "thud": 0.4,
+              "bell_decay": 0.16,
+                  "chirp_f0": 1900.0, "chirp_f1": 190.0, "chirp_ms": 75.0, "hum_f": 84.0}),
+    ("long", {"hum_slow": 0.45, "hum_mix": 0.1, "length": 1.3, "hum_sink": 0.8, "chirp_harm": 0.7, "verb": 0.12,
+              "verb_rt": 1.2,
+                  "land": 0.3, "thud": 0.55, "sub": 0.2, "sub_db": 80.0}),
 ]
 _REVEAL_R2 = [
-    ("glass_bloom", dict(material="glass", root=1760.0, chord="add9", bloom_decay=1.2, bright=0.8, strike=0.8,
-                         shimmer=0.35, hit=0.15, sub=0.0, low_cut=450.0, open_ms=30.0)),
-    ("triangle", dict(material="triangle", root=1480.0, chord="fifth", bloom_decay=1.9, bright=0.85, open_ms=10.0,
-                      strike=0.9, shimmer=0.15, hit=0.1, sub=0.0, verb=0.25, low_cut=500.0)),
-    ("fm_reveal", dict(material="fm", root=1320.0, chord="major", bloom_decay=1.3, bright=0.8, swell=0.6,
-                       swell_level=0.25, hit=0.2, sub=0.0, open_ms=60.0, low_cut=350.0)),
-    ("chime_hit", dict(material="tubular", root=1175.0, chord="sus2", bloom_decay=1.5, bright=0.75, strike=0.8,
-                       hit=0.3, sub=0.0, shimmer=0.1, verb=0.4, verb_rt=2.4, low_cut=300.0, open_ms=25.0)),
-    ("bar_sparkle", dict(material="bar", root=1980.0, chord="octave", bloom_decay=1.1, bright=0.8, strike=0.9,
-                         shimmer=0.55, hit=0.0, sub=0.0, width=0.9, open_ms=10.0, low_cut=500.0)),
+    ("glass_bloom", {"material": "glass", "root": 1760.0, "chord": "add9", "bloom_decay": 1.2, "bright": 0.8,
+                     "strike": 0.8,
+                         "shimmer": 0.35, "hit": 0.15, "sub": 0.0, "low_cut": 450.0, "open_ms": 30.0}),
+    ("triangle", {"material": "triangle", "root": 1480.0, "chord": "fifth", "bloom_decay": 1.9, "bright": 0.85,
+                  "open_ms": 10.0,
+                      "strike": 0.9, "shimmer": 0.15, "hit": 0.1, "sub": 0.0, "verb": 0.25, "low_cut": 500.0}),
+    ("fm_reveal", {"material": "fm", "root": 1320.0, "chord": "major", "bloom_decay": 1.3, "bright": 0.8, "swell": 0.6,
+                       "swell_level": 0.25, "hit": 0.2, "sub": 0.0, "open_ms": 60.0, "low_cut": 350.0}),
+    ("chime_hit", {"material": "tubular", "root": 1175.0, "chord": "sus2", "bloom_decay": 1.5, "bright": 0.75,
+                   "strike": 0.8,
+                       "hit": 0.3, "sub": 0.0, "shimmer": 0.1, "verb": 0.4, "verb_rt": 2.4, "low_cut": 300.0,
+                       "open_ms": 25.0}),
+    ("bar_sparkle", {"material": "bar", "root": 1980.0, "chord": "octave", "bloom_decay": 1.1, "bright": 0.8,
+                     "strike": 0.9,
+                         "shimmer": 0.55, "hit": 0.0, "sub": 0.0, "width": 0.9, "open_ms": 10.0, "low_cut": 500.0}),
 ]
 _PRO_R2 = [
     ("ref", {}),
     ("high", dict(_CHIRP_HIGH)),
-    ("deep", dict(chirp_f0=1200.0, chirp_f1=120.0, chirp_ms=105.0, hum_f=62.0, hum_formant=380.0, sub=0.25,
-                  length=1.0, hum_slow=0.26)),
-    ("bell", dict(shimmer=0.1, root=950.0, hum_buzz=0.4, hum_formant=520.0)),
-    ("long", dict(hum_slow=0.45, hum_mix=0.1, length=1.3, hum_sink=0.8, chirp_harm=0.7, verb=0.12, verb_rt=1.2)),
+    ("deep", {"chirp_f0": 1200.0, "chirp_f1": 120.0, "chirp_ms": 105.0, "hum_f": 62.0, "hum_formant": 380.0,
+              "sub": 0.25,
+                  "length": 1.0, "hum_slow": 0.26}),
+    ("bell", {"shimmer": 0.1, "root": 950.0, "hum_buzz": 0.4, "hum_formant": 520.0}),
+    ("long", {"hum_slow": 0.45, "hum_mix": 0.1, "length": 1.3, "hum_sink": 0.8, "chirp_harm": 0.7, "verb": 0.12,
+              "verb_rt": 1.2}),
 ]
 
 FAMILIES = {"logo_sting": _LOGO_R5, "pro_logo_sting": _members(GESTURE, _GESTURE_ROWS)}
@@ -239,8 +286,8 @@ CHIRP_SEARCH = (["chirp_f0", "chirp_f1", "chirp_ms", "chirp_harm", "hum_f", "hum
 
 def space_for(cat: str) -> dict:
     """The search space of a category: its search keys, with the category limits where given."""
-    keys, limits = SEARCH[cat]
-    return {k: limits.get(k, SPACE[k]) for k in keys}
+    klist, lims = SEARCH[cat]
+    return {kn: lims.get(kn, SPACE[kn]) for kn in klist}
 
 
 _RECIPE_TABLES = (FAMILIES, TARGETS, ALTS)
@@ -248,684 +295,695 @@ _RECIPE_TABLES = (FAMILIES, TARGETS, ALTS)
 
 def recipe_for(cat: str, preset: int | str = 0) -> types.SimpleNamespace:
     """A recipe object that searches the category keys around one preset (index or name)."""
-    families, targets, alts = _RECIPE_TABLES
-    name, params = families[cat][preset] if isinstance(preset, int) else (preset, dict(families[cat])[preset])
-    return types.SimpleNamespace(MODULE=MODULE, SPACE=space_for(cat), DEFAULTS=dict(params), render=render,
-                                 TARGET=targets[cat], ALTS=list(alts), REFSET=cat, PRESET=name)
+    fams, tgts, alt_list = _RECIPE_TABLES
+    label, pset = fams[cat][preset] if isinstance(preset, int) else (preset, dict(fams[cat])[preset])
+    return types.SimpleNamespace(MODULE=MODULE, SPACE=space_for(cat), DEFAULTS=dict(pset), render=render,
+                                 TARGET=tgts[cat], ALTS=list(alt_list), REFSET=cat, PRESET=label)
 
 
 # ------------------------------------------------------------------------------------------------ small helpers
 
 
-def _up(x: np.ndarray) -> np.ndarray:
+def _up(wav: np.ndarray) -> np.ndarray:
     """Unit peak."""
-    return x / (np.max(np.abs(x)) + 1e-12)
+    return wav / (np.max(np.abs(wav)) + 1e-12)
 
 
-def _st(x: np.ndarray) -> np.ndarray:
-    return x if x.ndim == 2 else np.column_stack([x, x])
+def _st(wav: np.ndarray) -> np.ndarray:
+    return wav if wav.ndim == 2 else np.column_stack([wav, wav])
 
 
-def _fit(x: np.ndarray, n: int) -> np.ndarray:
-    if len(x) >= n:
-        return x[:n]
-    return np.concatenate([x, np.zeros((n - len(x),) + x.shape[1:])])
+def _fit(wav: np.ndarray, ns: int) -> np.ndarray:
+    if len(wav) >= ns:
+        return wav[:ns]
+    return np.concatenate([wav, np.zeros((ns - len(wav),) + wav.shape[1:])])
 
 
-def _delayed(x: np.ndarray, d: int, n: int) -> np.ndarray:
-    out = np.zeros((n,) + x.shape[1:])
-    if d < n:
-        m = min(len(x), n - d)
-        out[d:d + m] = x[:m]
-    return out
+def _delayed(wav: np.ndarray, lag: int, ns: int) -> np.ndarray:
+    mix = np.zeros((ns,) + wav.shape[1:])
+    if lag < ns:
+        cnt = min(len(wav), ns - lag)
+        mix[lag:lag + cnt] = wav[:cnt]
+    return mix
 
 
-def _conv(x: np.ndarray, h: np.ndarray, n: int) -> np.ndarray:
-    return _fit(fftconvolve(x, h), n)
+def _conv(wav: np.ndarray, ir: np.ndarray, ns: int) -> np.ndarray:
+    return _fit(fftconvolve(wav, ir), ns)
 
 
-def _hall(rng, rt60: float, damp: float, size: float, predelay: float, seconds: float | None = None) -> np.ndarray:
-    return hall_ir(rt60, damp, size, predelay, seconds, rng=rng)
+def _hall(gen, rtime: float, hfd: float, room: float, pdel: float, span_s: float | None = None) -> np.ndarray:
+    return hall_ir(rtime, hfd, room, pdel, span_s, rng=gen)
 
 
-def _hp_cut(x: np.ndarray, low_cut: float) -> np.ndarray:
-    return bw(x, "high", low_cut, 2 if low_cut < 60 else 4)
+def _hp_cut(wav: np.ndarray, lcut: float) -> np.ndarray:
+    return bw(wav, "high", lcut, 2 if lcut < 60 else 4)
 
 
-def _widen(hi: np.ndarray, width: float) -> np.ndarray:
+def _widen(upper: np.ndarray, wd: float) -> np.ndarray:
     """The part above 600 Hz made wide: decor(hi) - [hi, hi]."""
-    return fx.decorrelate(hi, 0.8 * width, 250) - _st(hi)
+    return fx.decorrelate(upper, 0.8 * wd, 250) - _st(upper)
 
 
-def fx_granular(src: np.ndarray, seconds: float, rng: np.random.Generator) -> np.ndarray:
+def fx_granular(feed: np.ndarray, span_s: float, gen: np.random.Generator) -> np.ndarray:
     """The coarse shimmer cloud: grains 50 ms, 50 per second, an octave up."""
-    return fx.granular(src, seconds, rng, grain=0.05, density=50, pos=(0.0, 0.6), pos_jitter=0.05, pitch=12.0,
+    return fx.granular(feed, span_s, gen, grain=0.05, density=50, pos=(0.0, 0.6), pos_jitter=0.05, pitch=12.0,
                        pitch_jitter=0.15, spread=0.9)
 
 
-def _smooth_shimmer(src: np.ndarray, seconds: float, k: float, rng) -> np.ndarray:
-    return fx.granular(src, seconds, rng, grain=0.05 * (1 + 0.8 * k), density=50 * (1 + 3 * k), pos=(0.0, 0.6),
+def _smooth_shimmer(feed: np.ndarray, span_s: float, kn: float, gen) -> np.ndarray:
+    return fx.granular(feed, span_s, gen, grain=0.05 * (1 + 0.8 * kn), density=50 * (1 + 3 * kn), pos=(0.0, 0.6),
                        pos_jitter=0.05, pitch=12.0, pitch_jitter=0.15, spread=0.9)
 
 
-def _noise_tick(n: int, ms: float, rng, min_len: int) -> np.ndarray:
+def _noise_tick(ns: int, msec: float, gen, floor_n: int) -> np.ndarray:
     """White noise with a cubic fall and a 0.2 ms rise, L samples long."""
-    L = min(n, max(min_len, n_of(ms / 1000)))
-    i = np.arange(L)
-    return rng.standard_normal(L) * (1 - i / L) ** 3 * (1 - np.exp(-i / (0.0002 * SR)))
+    span = min(ns, max(floor_n, n_of(msec / 1000)))
+    ix = np.arange(span)
+    return gen.standard_normal(span) * (1 - ix / span) ** 3 * (1 - np.exp(-ix / (0.0002 * SR)))
 
 
-def low_strike(low_f: float, low_tau: float, n: int) -> np.ndarray:
+def low_strike(lf: float, lt: float, ns: int) -> np.ndarray:
     """A pitched low strike from 2.5 x low_f onto low_f, rising over 12 ms (no random draws)."""
-    t = t_of(n)
-    ph = 2 * np.pi * np.cumsum(low_f * (1 + 1.5 * np.exp(-t / 0.035))) / SR
-    y = (np.sin(ph) + 0.25 * np.sin(2 * ph)) * np.clip(t / 0.012, 0, 1) ** 2 * np.exp(-t / low_tau)
-    return _up(bw(y, "high", 25, 2))
+    tax = t_of(ns)
+    phase = 2 * np.pi * np.cumsum(lf * (1 + 1.5 * np.exp(-tax / 0.035))) / SR
+    sig = (np.sin(phase) + 0.25 * np.sin(2 * phase)) * np.clip(tax / 0.012, 0, 1) ** 2 * np.exp(-tax / lt)
+    return _up(bw(sig, "high", 25, 2))
 
 
 # ------------------------------------------------------------------------------------------------ chirp (15.8)
 
 
-def _chirp_track(p: dict, n: int) -> tuple[int, float, np.ndarray, np.ndarray]:
-    T = p["chirp_ms"] / 1000
-    L = min(n, n_of(1.25 * T))
-    t = t_of(L)
-    f = p["chirp_f0"] * (p["chirp_f1"] / p["chirp_f0"]) ** np.clip(t / T, 0, 1)
-    return L, T, t, f
+def _chirp_track(cfg: dict, ns: int) -> tuple[int, float, np.ndarray, np.ndarray]:
+    dur = cfg["chirp_ms"] / 1000
+    span = min(ns, n_of(1.25 * dur))
+    tax = t_of(span)
+    freq = cfg["chirp_f0"] * (cfg["chirp_f1"] / cfg["chirp_f0"]) ** np.clip(tax / dur, 0, 1)
+    return span, dur, tax, freq
 
 
-def chirp(p: dict, n: int, rng) -> np.ndarray:
-    L, T, t, f = _chirp_track(p, n)
-    ph = 2 * np.pi * np.cumsum(f) / SR + rng.uniform(0, 0.3)
-    y = np.sin(ph) + p["chirp_harm"] * (0.5 * np.sin(2 * ph) + 0.25 * np.sin(3 * ph))
-    y[2 * f >= 0.45 * SR] = 0.0
-    e = (1 - np.exp(-t / 0.003)) * (0.3 + 0.7 * np.clip(t / T, 0, 1)) * np.clip((1.25 - t / T) / 0.25, 0, 1) ** 1.5
-    out = np.zeros(n)
-    out[:L] = y * e
-    return _up(out)
+def chirp(cfg: dict, ns: int, gen) -> np.ndarray:
+    span, dur, tax, freq = _chirp_track(cfg, ns)
+    phase = 2 * np.pi * np.cumsum(freq) / SR + gen.uniform(0, 0.3)
+    sig = np.sin(phase) + cfg["chirp_harm"] * (0.5 * np.sin(2 * phase) + 0.25 * np.sin(3 * phase))
+    sig[2 * freq >= 0.45 * SR] = 0.0
+    env = (1 - np.exp(-tax / 0.003)) * (0.3 + 0.7 * np.clip(tax / dur, 0, 1)) * np.clip((1.25 - tax / dur) / 0.25, 0,
+                                                                                        1) ** 1.5
+    mix = np.zeros(ns)
+    mix[:span] = sig * env
+    return _up(mix)
 
 
-def _hum_partials(p: dict, f: np.ndarray, rng) -> np.ndarray:
+def _hum_partials(cfg: dict, freq: np.ndarray, gen) -> np.ndarray:
     """12 harmonics of the hum, shaped by a formant at hum_formant and the buzz amount."""
-    ph = 2 * np.pi * np.cumsum(f) / SR
-    y = np.zeros(len(f))
-    for k in range(1, 13):
-        a = (1 / k) ** (1.6 - 1.1 * p["hum_buzz"])
-        form = 1 / (1 + (np.log2(k * f / p["hum_formant"]) / 0.7) ** 2)
-        y += np.where(k * f < 0.45 * SR, a * (0.35 + form) * np.sin(k * ph + rng.uniform(0, 6.28)), 0.0)
-    return y
+    phase = 2 * np.pi * np.cumsum(freq) / SR
+    sig = np.zeros(len(freq))
+    for kn in range(1, 13):
+        amp = (1 / kn) ** (1.6 - 1.1 * cfg["hum_buzz"])
+        fmt = 1 / (1 + (np.log2(kn * freq / cfg["hum_formant"]) / 0.7) ** 2)
+        sig += np.where(kn * freq < 0.45 * SR, amp * (0.35 + fmt) * np.sin(kn * phase + gen.uniform(0, 6.28)), 0.0)
+    return sig
 
 
-def hum(p: dict, n: int, t0: float, rng) -> np.ndarray:
-    t = t_of(n)
-    tt = np.maximum(t - t0, 0)
-    f = p["hum_f"] * 2.0 ** (-p["hum_sink"] * np.clip(tt / max(t[-1] - t0, 0.1), 0, 1) ** 0.7)
-    e = (np.exp(-tt / p["hum_fast"]) + p["hum_mix"] * np.exp(-tt / p["hum_slow"])) * (1 - np.exp(-tt / 0.004))
-    return _up(_hum_partials(p, f, rng) * np.where(t >= t0, e, 0.0))
+def hum(cfg: dict, ns: int, onset: float, gen) -> np.ndarray:
+    tax = t_of(ns)
+    since = np.maximum(tax - onset, 0)
+    freq = cfg["hum_f"] * 2.0 ** (-cfg["hum_sink"] * np.clip(since / max(tax[-1] - onset, 0.1), 0, 1) ** 0.7)
+    decays = np.exp(-since / cfg["hum_fast"]) + cfg["hum_mix"] * np.exp(-since / cfg["hum_slow"])
+    env = decays * (1 - np.exp(-since / 0.004))
+    return _up(_hum_partials(cfg, freq, gen) * np.where(tax >= onset, env, 0.0))
 
 
-def landing(p: dict, n: int, t0: float) -> np.ndarray:
+def landing(cfg: dict, ns: int, onset: float) -> np.ndarray:
     """A landing blob that bends down and a thud onto 2 x hum_f (no random draws)."""
-    t = t_of(n)
-    tt = np.maximum(t - t0, 0)
-    on = (t >= t0) * (1 - np.exp(-tt / 0.002))
-    live = tt > 0
-    y = np.zeros(n)
-    if p["land"] > 0.01:
-        f = p["land_f"] * 2.0 ** (-0.5 * (1 - np.exp(-tt / 0.03)))
-        y += p["land"] * np.sin(2 * np.pi * np.cumsum(f * live) / SR) * np.exp(-tt / 0.025) * on
-    if p["thud"] > 0.01:
-        f = 2 * p["hum_f"] * (1 + np.exp(-tt / 0.04))
-        y += p["thud"] * np.sin(2 * np.pi * np.cumsum(f * live) / SR) * np.exp(-tt / 0.05) * on
-    return y
+    tax = t_of(ns)
+    since = np.maximum(tax - onset, 0)
+    gate = (tax >= onset) * (1 - np.exp(-since / 0.002))
+    alive = since > 0
+    sig = np.zeros(ns)
+    if cfg["land"] > 0.01:
+        freq = cfg["land_f"] * 2.0 ** (-0.5 * (1 - np.exp(-since / 0.03)))
+        sig += cfg["land"] * np.sin(2 * np.pi * np.cumsum(freq * alive) / SR) * np.exp(-since / 0.025) * gate
+    if cfg["thud"] > 0.01:
+        freq = 2 * cfg["hum_f"] * (1 + np.exp(-since / 0.04))
+        sig += cfg["thud"] * np.sin(2 * np.pi * np.cumsum(freq * alive) / SR) * np.exp(-since / 0.05) * gate
+    return sig
 
 
-def zap(p: dict, n: int, rng) -> np.ndarray:
-    L, T, t, f = _chirp_track(p, n)
-    y = svf(rng.standard_normal(L), np.minimum(p["zap_k"] * f, 15000), 3, "bandn")
-    e = (1 - np.exp(-t / 0.002)) * (0.4 + 0.6 * np.clip(t / T, 0, 1)) * np.clip((1.25 - t / T) / 0.25, 0, 1) ** 1.5
-    out = np.zeros(n)
-    out[:L] = bw(y * e, "low", 13000, 2)
-    return _up(out)
+def zap(cfg: dict, ns: int, gen) -> np.ndarray:
+    span, dur, tax, freq = _chirp_track(cfg, ns)
+    sig = svf(gen.standard_normal(span), np.minimum(cfg["zap_k"] * freq, 15000), 3, "bandn")
+    env = (1 - np.exp(-tax / 0.002)) * (0.4 + 0.6 * np.clip(tax / dur, 0, 1)) * np.clip((1.25 - tax / dur) / 0.25, 0,
+                                                                                        1) ** 1.5
+    mix = np.zeros(ns)
+    mix[:span] = bw(sig * env, "low", 13000, 2)
+    return _up(mix)
 
 
-def ctick(n: int, t0: float, rng) -> np.ndarray:
-    L = n_of(0.005)
-    i = np.arange(L)
-    w = bw(rng.standard_normal(L) * (1 - i / L) ** 3 * (1 - np.exp(-i / (0.0002 * SR))), "band", (5000, 13000), 2)
-    return _delayed(w / (np.max(np.abs(w)) + 1e-12), n_of(t0), n)
+def ctick(ns: int, onset: float, gen) -> np.ndarray:
+    span = n_of(0.005)
+    ix = np.arange(span)
+    burst = bw(gen.standard_normal(span) * (1 - ix / span) ** 3 * (1 - np.exp(-ix / (0.0002 * SR))), "band", (5000,
+                                                                                                              13000), 2)
+    return _delayed(burst / (np.max(np.abs(burst)) + 1e-12), n_of(onset), ns)
 
 
-def _chirp_sub(p: dict, n: int, t0: float, rng) -> np.ndarray:
-    sd = {**dict(_subdrop.FAMILIES["pro_sub_drop"])["ref"], "f0": p["hum_f"], "f1": 0.66 * p["hum_f"],
-          "bloom": 0.06, "click": 0.0, "length": p["length"], "decay_db": p.get("sub_db", 45.0)}
-    s = _subdrop.render(sd, rng)
-    s = s.mean(axis=1) if s.ndim == 2 else s
-    return _delayed(s, n_of(t0), n)
+def _chirp_sub(cfg: dict, ns: int, onset: float, gen) -> np.ndarray:
+    subcfg = {**dict(_subdrop.FAMILIES["pro_sub_drop"])["ref"], "f0": cfg["hum_f"], "f1": 0.66 * cfg["hum_f"],
+          "bloom": 0.06, "click": 0.0, "length": cfg["length"], "decay_db": cfg.get("sub_db", 45.0)}
+    secs = _subdrop.render(subcfg, gen)
+    secs = secs.mean(axis=1) if secs.ndim == 2 else secs
+    return _delayed(secs, n_of(onset), ns)
 
 
-def _pre_chirp(p: dict, rng) -> np.ndarray:
-    q = {**p, "chirp_f0": min(3500.0, 1.35 * p["chirp_f0"]), "chirp_f1": 2.5 * p["chirp_f1"],
-         "chirp_ms": 0.55 * p["chirp_ms"]}
-    k = n_of(1.25 * q["chirp_ms"] / 1000)
-    pre = chirp(q, k, rng)
-    if p.get("zap", 0.0) > 0.005:
-        pre = pre + p["zap"] * zap(q, k, rng)
-    return np.concatenate([_up(pre), np.zeros(n_of(p.get("double_gap", 0.05)))])
+def _pre_chirp(cfg: dict, gen) -> np.ndarray:
+    shifted = {**cfg, "chirp_f0": min(3500.0, 1.35 * cfg["chirp_f0"]), "chirp_f1": 2.5 * cfg["chirp_f1"],
+         "chirp_ms": 0.55 * cfg["chirp_ms"]}
+    kn = n_of(1.25 * shifted["chirp_ms"] / 1000)
+    pre = chirp(shifted, kn, gen)
+    if cfg.get("zap", 0.0) > 0.005:
+        pre = pre + cfg["zap"] * zap(shifted, kn, gen)
+    return np.concatenate([_up(pre), np.zeros(n_of(cfg.get("double_gap", 0.05)))])
 
 
-def _chirp_core(p: dict, n: int, t0: float, rng) -> np.ndarray:
+def _chirp_core(cfg: dict, ns: int, onset: float, gen) -> np.ndarray:
     """The chirp, the hum it lands on, the landing blob and thud, the zap and the landing tick."""
-    y = chirp(p, n, rng) + p["hum_level"] * hum(p, n, t0, rng)
-    if p.get("land", 0.0) > 0.01 or p.get("thud", 0.0) > 0.01:
-        y = y + landing(p, n, t0)
-    if p.get("zap", 0.0) > 0.005:
-        y = y + p["zap"] * zap(p, n, rng)
-    if p.get("ctick", 0.0) > 0.005:
-        y = y + p["ctick"] * ctick(n, t0, rng)
-    return y
+    sig = chirp(cfg, ns, gen) + cfg["hum_level"] * hum(cfg, ns, onset, gen)
+    if cfg.get("land", 0.0) > 0.01 or cfg.get("thud", 0.0) > 0.01:
+        sig = sig + landing(cfg, ns, onset)
+    if cfg.get("zap", 0.0) > 0.005:
+        sig = sig + cfg["zap"] * zap(cfg, ns, gen)
+    if cfg.get("ctick", 0.0) > 0.005:
+        sig = sig + cfg["ctick"] * ctick(ns, onset, gen)
+    return sig
 
 
-def _chirp_extras(p: dict, y: np.ndarray, t0: float, rng) -> np.ndarray:
+def _chirp_extras(cfg: dict, sig: np.ndarray, onset: float, gen) -> np.ndarray:
     """The sub drop and the bell partial from the landing, then the hall."""
-    n = len(y)
-    if p["sub"] > 0.01:
-        y = y + p["sub"] * _chirp_sub(p, n, t0, rng)
-    if p["shimmer"] > 0.01:
-        b = dsp.bell(p["root"], max(0.3, p["length"] - t0), rng, "bar", decay=p.get("bell_decay", 0.35),
+    ns = len(sig)
+    if cfg["sub"] > 0.01:
+        sig = sig + cfg["sub"] * _chirp_sub(cfg, ns, onset, gen)
+    if cfg["shimmer"] > 0.01:
+        bl = dsp.bell(cfg["root"], max(0.3, cfg["length"] - onset), gen, "bar", decay=cfg.get("bell_decay", 0.35),
                      bright=0.3, strike=0.0)
-        y = y + 0.6 * p["shimmer"] * _delayed(b, n_of(t0), n)
-    if p["verb"] > 0.01:
-        y = y + p["verb"] * _conv(y, _hall(rng, p["verb_rt"], 0.6, 0.5, 0.008), n)
-    return y
+        sig = sig + 0.6 * cfg["shimmer"] * _delayed(bl, n_of(onset), ns)
+    if cfg["verb"] > 0.01:
+        sig = sig + cfg["verb"] * _conv(sig, _hall(gen, cfg["verb_rt"], 0.6, 0.5, 0.008), ns)
+    return sig
 
 
-def render_chirp(p: dict, rng: np.random.Generator) -> np.ndarray:
+def render_chirp(cfg: dict, gen: np.random.Generator) -> np.ndarray:
     """A falling chirp landing on a low hum; L = R."""
-    t0 = 0.92 * p["chirp_ms"] / 1000
-    y = _chirp_extras(p, _chirp_core(p, n_of(p["length"]), t0, rng), t0, rng)
-    if p.get("double", 0.0) > 0.005:
-        y = np.concatenate([p["double"] * np.max(np.abs(y)) * _pre_chirp(p, rng), y])
-    y = dsp.fade(bw(y, "high", 30, 2), 0.0008, min(0.12, 0.2 * p["length"]))
-    return np.column_stack([y, y])
+    onset = 0.92 * cfg["chirp_ms"] / 1000
+    sig = _chirp_extras(cfg, _chirp_core(cfg, n_of(cfg["length"]), onset, gen), onset, gen)
+    if cfg.get("double", 0.0) > 0.005:
+        sig = np.concatenate([cfg["double"] * np.max(np.abs(sig)) * _pre_chirp(cfg, gen), sig])
+    sig = dsp.fade(bw(sig, "high", 30, 2), 0.0008, min(0.12, 0.2 * cfg["length"]))
+    return np.column_stack([sig, sig])
 
 
 # ------------------------------------------------------------------------------------------------ reveal (15.9)
 
 
-def _bell_partials(material: str) -> Any:
-    return TRIANGLE if material == "triangle" else material
+def _bell_partials(matname: str) -> Any:
+    return TRIANGLE if matname == "triangle" else matname
 
 
-def reveal_note(p: dict, f: float, s: float, rng) -> np.ndarray:
-    if p["material"] == "fm":
-        bd = p["bloom_decay"]
-        x = dsp.fm(f, 1.4, 3 + 5 * p["bright"], s, decay=0.45 * bd, index_decay=0.12, attack=0.002)
-        x = x + 0.35 * dsp.fm(2 * f, 3.5, 2.0, s, decay=0.2 * bd, index_decay=0.05, attack=0.002)
-        return _up(x)
-    tri = p["material"] == "triangle"
-    return dsp.bell(f, s, rng, _bell_partials(p["material"]), decay=p["bloom_decay"] * (0.35 if tri else 0.5),
-                    slope=0.5 if p["material"] in ("triangle", "glass") else 0.8, bright=p["bright"], beat=1.2,
-                    strike=0.2 + 0.6 * p["strike"])
+def reveal_note(cfg: dict, freq: float, secs: float, gen) -> np.ndarray:
+    if cfg["material"] == "fm":
+        bdec = cfg["bloom_decay"]
+        wav = dsp.fm(freq, 1.4, 3 + 5 * cfg["bright"], secs, decay=0.45 * bdec, index_decay=0.12, attack=0.002)
+        wav = wav + 0.35 * dsp.fm(2 * freq, 3.5, 2.0, secs, decay=0.2 * bdec, index_decay=0.05, attack=0.002)
+        return _up(wav)
+    is_tri = cfg["material"] == "triangle"
+    return dsp.bell(freq, secs, gen, _bell_partials(cfg["material"]),
+                    decay=cfg["bloom_decay"] * (0.35 if is_tri else 0.5),
+                    slope=0.5 if cfg["material"] in ("triangle", "glass") else 0.8, bright=cfg["bright"], beat=1.2,
+                    strike=0.2 + 0.6 * cfg["strike"])
 
 
-def bloom(p: dict, rng) -> np.ndarray:
-    s = min(5.5, 1.6 * p["bloom_decay"] + 0.4)
-    n = n_of(s)
-    y = np.zeros(n)
-    for j, st in enumerate(CHORDS[p["chord"]]):
-        f = p["root"] * 2.0 ** (st / 12)
-        if f > 9000:
+def bloom(cfg: dict, gen) -> np.ndarray:
+    secs = min(5.5, 1.6 * cfg["bloom_decay"] + 0.4)
+    ns = n_of(secs)
+    sig = np.zeros(ns)
+    for nth, semi in enumerate(CHORDS[cfg["chord"]]):
+        freq = cfg["root"] * 2.0 ** (semi / 12)
+        if freq > 9000:
             continue
-        x = reveal_note(p, f, s, rng) * 0.85 ** j
-        d = n_of(j * rng.uniform(0.004, 0.012))
-        y[d:] += x[:n - d]
-    fc = 900 + 17000 * (1 - np.exp(-t_of(n) / max(p["open_ms"] / 1000, 0.005)))
-    return _up(svf(y, fc, 0.6, "low"))
+        wav = reveal_note(cfg, freq, secs, gen) * 0.85 ** nth
+        lag = n_of(nth * gen.uniform(0.004, 0.012))
+        sig[lag:] += wav[:ns - lag]
+    cut = 900 + 17000 * (1 - np.exp(-t_of(ns) / max(cfg["open_ms"] / 1000, 0.005)))
+    return _up(svf(sig, cut, 0.6, "low"))
 
 
-def _reveal_layers(p: dict, b: np.ndarray, rng) -> np.ndarray:
-    n = len(b)
-    out = _st(b).copy()
-    if p["shimmer"] > 0.01:
-        sh = fx_granular(bw(b[:n_of(1)], "high", 2500, 2), n / SR, rng)
-        sh = _fit(sh, n) * np.exp(-t_of(n) / max(0.4, 0.6 * p["bloom_decay"]))[:, None]
-        out = out + p["shimmer"] * _up(sh)
-    if p["width"] > 0.01:
-        out = out + _widen(bw(b, "high", 600, 2), p["width"])
-    if p["verb"] > 0.01:
-        for c in range(2):
-            out[:, c] += p["verb"] * _conv(out[:, c], _hall(rng, p["verb_rt"], 0.35, 0.8, 0.02 + 0.004 * c), n)
-    return out
+def _reveal_layers(cfg: dict, bl: np.ndarray, gen) -> np.ndarray:
+    ns = len(bl)
+    mix = _st(bl).copy()
+    if cfg["shimmer"] > 0.01:
+        gr = fx_granular(bw(bl[:n_of(1)], "high", 2500, 2), ns / SR, gen)
+        gr = _fit(gr, ns) * np.exp(-t_of(ns) / max(0.4, 0.6 * cfg["bloom_decay"]))[:, None]
+        mix = mix + cfg["shimmer"] * _up(gr)
+    if cfg["width"] > 0.01:
+        mix = mix + _widen(bw(bl, "high", 600, 2), cfg["width"])
+    if cfg["verb"] > 0.01:
+        for chan in range(2):
+            mix[:, chan] += cfg["verb"] * _conv(mix[:, chan], _hall(gen, cfg["verb_rt"], 0.35, 0.8,
+                                                                    0.02 + 0.004 * chan), ns)
+    return mix
 
 
-def _reveal_hits(p: dict, out: np.ndarray, rng) -> np.ndarray:
-    n, pk = len(out), np.max(np.abs(out))
-    if p["hit"] > 0.01:
-        hp = {**dict(_impact.FAMILIES["impact"])["punch"], "roll_hold": 0.5, "roll_fall": 0.25, "hall_rt": 1.4,
+def _reveal_hits(cfg: dict, mix: np.ndarray, gen) -> np.ndarray:
+    ns, peak = len(mix), np.max(np.abs(mix))
+    if cfg["hit"] > 0.01:
+        hitcfg = {**dict(_impact.FAMILIES["impact"])["punch"], "roll_hold": 0.5, "roll_fall": 0.25, "hall_rt": 1.4,
               "hall_wet": 0.35, "floor_db": -110, "crack_f": 3500}
-        h = _st(_impact.render(hp, rng))[:n]
-        out[:len(h)] += p["hit"] * pk * _up(h)
-    if p["sub"] > 0.01:
-        sd = {**dict(_subdrop.FAMILIES["sub_drop"])["808"], "length": 1.6, "click": 0.0}
-        s = _st(_subdrop.render(sd, rng))[:n]
-        out[:len(s)] += p["sub"] * pk * _up(s)
-    return out
+        ir = _st(_impact.render(hitcfg, gen))[:ns]
+        mix[:len(ir)] += cfg["hit"] * peak * _up(ir)
+    if cfg["sub"] > 0.01:
+        subcfg = {**dict(_subdrop.FAMILIES["sub_drop"])["808"], "length": 1.6, "click": 0.0}
+        secs = _st(_subdrop.render(subcfg, gen))[:ns]
+        mix[:len(secs)] += cfg["sub"] * peak * _up(secs)
+    return mix
 
 
-def _reveal_swell(p: dict, b: np.ndarray, pk: float, rng) -> np.ndarray:
-    k = n_of(p["swell"])
-    h = _hall(rng, max(0.6, 1.8 * p["swell"]), 0.3, 0.7, 0.0, 1.3 * p["swell"] + 0.2)
-    sw = _conv(b[:n_of(0.25)], h, k)[::-1] * np.linspace(0, 1, k) ** 2
-    sw = p["swell_level"] * pk * _up(dsp.fade(sw, 0.01, 0.002))
-    return _st(sw)
+def _reveal_swell(cfg: dict, bl: np.ndarray, peak: float, gen) -> np.ndarray:
+    kn = n_of(cfg["swell"])
+    ir = _hall(gen, max(0.6, 1.8 * cfg["swell"]), 0.3, 0.7, 0.0, 1.3 * cfg["swell"] + 0.2)
+    rise = _conv(bl[:n_of(0.25)], ir, kn)[::-1] * np.linspace(0, 1, kn) ** 2
+    rise = cfg["swell_level"] * peak * _up(dsp.fade(rise, 0.01, 0.002))
+    return _st(rise)
 
 
-def render_reveal(p: dict, rng: np.random.Generator) -> np.ndarray:
+def render_reveal(cfg: dict, gen: np.random.Generator) -> np.ndarray:
     """A chord bloom with an optional build, hit, sub, shimmer and hall."""
-    b = bloom(p, rng)
-    out = _reveal_hits(p, _reveal_layers(p, b, rng), rng)
-    if p["swell"] > 0.02:
-        out = np.concatenate([_reveal_swell(p, b, np.max(np.abs(out)), rng), out])
-    out = dsp.trim_tail(_hp_cut(out, p["low_cut"]), -66.0, 0.05)
-    return dsp.fade(out, 0.001, min(0.4, 0.15 * len(out) / SR))
+    bl = bloom(cfg, gen)
+    mix = _reveal_hits(cfg, _reveal_layers(cfg, bl, gen), gen)
+    if cfg["swell"] > 0.02:
+        mix = np.concatenate([_reveal_swell(cfg, bl, np.max(np.abs(mix)), gen), mix])
+    mix = dsp.trim_tail(_hp_cut(mix, cfg["low_cut"]), -66.0, 0.05)
+    return dsp.fade(mix, 0.001, min(0.4, 0.15 * len(mix) / SR))
 
 
 # ------------------------------------------------------------------------------------------------ launch (15.10)
 
 
-def lead_whoosh(p: dict, n: int, rng) -> np.ndarray:
-    t = t_of(n)
-    u = t / max(t[-1], 1e-6)
-    fc = p["lead_f0"] * (p["lead_f1"] / p["lead_f0"]) ** (u ** 1.7)
-    lvl = 0.03 + 0.97 * (np.exp(4.5 * u) - 1) / (np.exp(4.5) - 1)
-    base = _fit(dsp.air(n / SR, rng, center=2000.0, flutter=0.35, rate=7.0), n)
-    chans = []
+def lead_whoosh(cfg: dict, ns: int, gen) -> np.ndarray:
+    tax = t_of(ns)
+    prog = tax / max(tax[-1], 1e-6)
+    cut = cfg["lead_f0"] * (cfg["lead_f1"] / cfg["lead_f0"]) ** (prog ** 1.7)
+    gain = 0.03 + 0.97 * (np.exp(4.5 * prog) - 1) / (np.exp(4.5) - 1)
+    bed = _fit(dsp.air(ns / SR, gen, center=2000.0, flutter=0.35, rate=7.0), ns)
+    pair = []
     for _ in range(2):
-        w = 0.5 * base + 0.5 * _fit(dsp.air(n / SR, rng, center=2000.0, flutter=0.35, rate=7.0), n)
-        y = svf(w, fc, 1.1, "bandn") + 0.35 * svf(w, np.minimum(2.2 * fc, 16000), 0.8, "bandn")
-        chans.append(y * lvl)
-    return _up(dsp.fade(np.column_stack(chans), 0.03, 0.002))
+        burst = 0.5 * bed + 0.5 * _fit(dsp.air(ns / SR, gen, center=2000.0, flutter=0.35, rate=7.0), ns)
+        sig = svf(burst, cut, 1.1, "bandn") + 0.35 * svf(burst, np.minimum(2.2 * cut, 16000), 0.8, "bandn")
+        pair.append(sig * gain)
+    return _up(dsp.fade(np.column_stack(pair), 0.03, 0.002))
 
 
-def lead_chirp(p: dict, n: int, rng) -> np.ndarray:
-    t = t_of(n)
-    u = t / max(t[-1], 1e-6)
-    f = p["lead_f0"] * (p["lead_f1"] / p["lead_f0"]) ** (u ** 1.3)
-    ph = 2 * np.pi * np.cumsum(f) / SR + rng.uniform(0, 0.3)
-    y = np.sin(ph) + 0.35 * np.sin(2 * ph) * (2 * f < 0.4 * SR) + 0.15 * np.sin(3 * ph) * (3 * f < 0.4 * SR)
-    y = _up(dsp.fade(y * (0.05 + 0.95 * u ** 2.2), 0.004, 0.0))
-    return _st(y)
+def lead_chirp(cfg: dict, ns: int, gen) -> np.ndarray:
+    tax = t_of(ns)
+    prog = tax / max(tax[-1], 1e-6)
+    freq = cfg["lead_f0"] * (cfg["lead_f1"] / cfg["lead_f0"]) ** (prog ** 1.3)
+    phase = 2 * np.pi * np.cumsum(freq) / SR + gen.uniform(0, 0.3)
+    sig = (np.sin(phase) + 0.35 * np.sin(2 * phase) * (2 * freq < 0.4 * SR)
+           + 0.15 * np.sin(3 * phase) * (3 * freq < 0.4 * SR))
+    sig = _up(dsp.fade(sig * (0.05 + 0.95 * prog ** 2.2), 0.004, 0.0))
+    return _st(sig)
 
 
-def lead_swell(p: dict, n: int, b: np.ndarray, rng) -> np.ndarray:
-    h = _hall(rng, max(0.6, 1.8 * p["lead_s"]), 0.3, 0.7, 0.0, 1.3 * p["lead_s"] + 0.2)
-    d = int(round(p.get("swell_trim", 0.0) * SR))
-    sw = _fit(fftconvolve(b[:n_of(0.25)], h)[d:d + n], n)[::-1]
-    sw = sw * (0.03 + 0.97 * np.linspace(0, 1, n) ** 2)
-    return _up(dsp.fade(fx.decorrelate(sw, 0.6, 250), 0.03, 0.0))
+def lead_swell(cfg: dict, ns: int, bl: np.ndarray, gen) -> np.ndarray:
+    ir = _hall(gen, max(0.6, 1.8 * cfg["lead_s"]), 0.3, 0.7, 0.0, 1.3 * cfg["lead_s"] + 0.2)
+    lag = int(round(cfg.get("swell_trim", 0.0) * SR))
+    rise = _fit(fftconvolve(bl[:n_of(0.25)], ir)[lag:lag + ns], ns)[::-1]
+    rise = rise * (0.03 + 0.97 * np.linspace(0, 1, ns) ** 2)
+    return _up(dsp.fade(fx.decorrelate(rise, 0.6, 250), 0.03, 0.0))
 
 
-def launch_tick(p: dict, n: int, rng) -> np.ndarray:
-    w = bw(_noise_tick(n, p["tick_ms"], rng, 16), "high", p["tick_f"], 2)
-    y = np.zeros(n)
-    y[:len(w)] = _up(w)
-    k = min(n, n_of(0.0004))
-    y[:k] += 0.35 * (0.5 - 0.5 * np.cos(2 * np.pi * np.arange(k) / max(1, k - 1)))
-    return _up(y)
+def launch_tick(cfg: dict, ns: int, gen) -> np.ndarray:
+    burst = bw(_noise_tick(ns, cfg["tick_ms"], gen, 16), "high", cfg["tick_f"], 2)
+    sig = np.zeros(ns)
+    sig[:len(burst)] = _up(burst)
+    kn = min(ns, n_of(0.0004))
+    sig[:kn] += 0.35 * (0.5 - 0.5 * np.cos(2 * np.pi * np.arange(kn) / max(1, kn - 1)))
+    return _up(sig)
 
 
-def launch_thump(p: dict, n: int) -> np.ndarray:
-    t = t_of(n)
-    f = p["thump_f"] * (1 + np.exp(-t / 0.03))
-    return _up(np.sin(2 * np.pi * np.cumsum(f) / SR) * np.exp(-t / 0.07) * (1 - np.exp(-t / 0.001)))
+def launch_thump(cfg: dict, ns: int) -> np.ndarray:
+    tax = t_of(ns)
+    freq = cfg["thump_f"] * (1 + np.exp(-tax / 0.03))
+    return _up(np.sin(2 * np.pi * np.cumsum(freq) / SR) * np.exp(-tax / 0.07) * (1 - np.exp(-tax / 0.001)))
 
 
-def launch_note(p: dict, f: float, s: float, rng) -> np.ndarray:
-    if p["material"] == "fm":
-        x = dsp.fm(f, 1.4, 2 + 4 * p["bright"], s, decay=10, index_decay=0.06, attack=0.002)
-        x = x + 0.25 * dsp.fm(2 * f, 3.5, 1.5, s, decay=10, index_decay=0.03, attack=0.002)
-        return _up(x)
-    return dsp.bell(f, s, rng, _bell_partials(p["material"]), decay=1.2,
-                    slope=0.5 if p["material"] in ("triangle", "glass") else 0.7, bright=p["bright"], beat=1.5,
+def launch_note(cfg: dict, freq: float, secs: float, gen) -> np.ndarray:
+    if cfg["material"] == "fm":
+        wav = dsp.fm(freq, 1.4, 2 + 4 * cfg["bright"], secs, decay=10, index_decay=0.06, attack=0.002)
+        wav = wav + 0.25 * dsp.fm(2 * freq, 3.5, 1.5, secs, decay=10, index_decay=0.03, attack=0.002)
+        return _up(wav)
+    return dsp.bell(freq, secs, gen, _bell_partials(cfg["material"]), decay=1.2,
+                    slope=0.5 if cfg["material"] in ("triangle", "glass") else 0.7, bright=cfg["bright"], beat=1.5,
                     strike=0.0)
 
 
-def short_bloom(p: dict, n: int, rng) -> np.ndarray:
+def short_bloom(cfg: dict, ns: int, gen) -> np.ndarray:
     """1 or 2 bloom notes with a flam and a concave decay."""
-    s = n / SR
-    t = t_of(n)
-    y = np.zeros(n)
-    for j, st in enumerate(DYADS[p["notes"]]):
-        f = p["root"] * 2.0 ** (st / 12)
-        if f > 9500:
+    secs = ns / SR
+    tax = t_of(ns)
+    sig = np.zeros(ns)
+    for nth, semi in enumerate(DYADS[cfg["notes"]]):
+        freq = cfg["root"] * 2.0 ** (semi / 12)
+        if freq > 9500:
             continue
-        x = _fit(launch_note(p, f, s, rng), n) * 0.7 ** j
-        y += _delayed(x, n_of(j * rng.uniform(0.006, 0.014)), n)
-    e = (1 - p["ring_mix"]) * np.exp(-t / p["strike_tau"]) + p["ring_mix"] * np.exp(-t / p["ring_tau"])
-    att = p["bloom_att"]
-    if att <= 0.003:
-        return _up(y * e)
-    e = np.where(t < att, e * (1 - (1 - t / att) ** 2), e)
-    fc = 1500 + 16000 * (1 - np.exp(-t / max(1.5 * att, 0.005)))
-    return _up(svf(y * e, fc, 0.6, "low"))
+        wav = _fit(launch_note(cfg, freq, secs, gen), ns) * 0.7 ** nth
+        sig += _delayed(wav, n_of(nth * gen.uniform(0.006, 0.014)), ns)
+    env = (1 - cfg["ring_mix"]) * np.exp(-tax / cfg["strike_tau"]) + cfg["ring_mix"] * np.exp(-tax / cfg["ring_tau"])
+    atk = cfg["bloom_att"]
+    if atk <= 0.003:
+        return _up(sig * env)
+    env = np.where(tax < atk, env * (1 - (1 - tax / atk) ** 2), env)
+    cut = 1500 + 16000 * (1 - np.exp(-tax / max(1.5 * atk, 0.005)))
+    return _up(svf(sig * env, cut, 0.6, "low"))
 
 
-def _launch_shimmer(p: dict, b: np.ndarray, n: int, rng) -> np.ndarray:
+def _launch_shimmer(cfg: dict, bl: np.ndarray, ns: int, gen) -> np.ndarray:
     """The granular layer from the bloom's 2.5 to 9 kHz band: coarse, or smooth when shimmer_smooth is set."""
-    src = bw(b[:n_of(0.5)], "band", (2500, 9000), 4)
-    k = p.get("shimmer_smooth", 0.0)
-    sh = fx_granular(src, n / SR, rng) if k <= 0.005 else _smooth_shimmer(src, n / SR, k, rng)
-    t = t_of(n)
-    return _up(_fit(sh, n) * ((1 - np.exp(-t / 0.02)) * np.exp(-t / p["shimmer_tau"]))[:, None])
+    feed = bw(bl[:n_of(0.5)], "band", (2500, 9000), 4)
+    kn = cfg.get("shimmer_smooth", 0.0)
+    gr = fx_granular(feed, ns / SR, gen) if kn <= 0.005 else _smooth_shimmer(feed, ns / SR, kn, gen)
+    tax = t_of(ns)
+    return _up(_fit(gr, ns) * ((1 - np.exp(-tax / 0.02)) * np.exp(-tax / cfg["shimmer_tau"]))[:, None])
 
 
-def _launch_room(p: dict, body: np.ndarray, rng) -> np.ndarray:
+def _launch_room(cfg: dict, core: np.ndarray, gen) -> np.ndarray:
     """A short hall per channel, fed only above 500 Hz."""
-    send = bw(body, "high", 500, 4)
-    for c in range(2):
-        h = _hall(rng, p["verb_rt"], 0.6, 0.5, 0.008 + 0.003 * c)
-        body[:, c] += p["verb"] * _conv(send[:, c], h, len(body))
-    return body
+    feedv = bw(core, "high", 500, 4)
+    for chan in range(2):
+        ir = _hall(gen, cfg["verb_rt"], 0.6, 0.5, 0.008 + 0.003 * chan)
+        core[:, chan] += cfg["verb"] * _conv(feedv[:, chan], ir, len(core))
+    return core
 
 
-def _launch_body(p: dict, b: np.ndarray, n: int, rng) -> np.ndarray:
-    hit = p["tick"] * launch_tick(p, n, rng)
-    if p["thump"] > 0.01:
-        hit = hit + p["thump"] * launch_thump(p, n)
-    body = _st(p["ring"] * b + hit).copy()
-    if p["width"] > 0.01:
-        body = body + _widen(p["ring"] * bw(b, "high", 600, 2), p["width"])
-    if p["shimmer"] > 0.01:
-        body = body + p["shimmer"] * p["ring"] * _launch_shimmer(p, b, n, rng)
-    return _launch_room(p, body, rng) if p["verb"] > 0.01 else body
+def _launch_body(cfg: dict, bl: np.ndarray, ns: int, gen) -> np.ndarray:
+    hit_sig = cfg["tick"] * launch_tick(cfg, ns, gen)
+    if cfg["thump"] > 0.01:
+        hit_sig = hit_sig + cfg["thump"] * launch_thump(cfg, ns)
+    core = _st(cfg["ring"] * bl + hit_sig).copy()
+    if cfg["width"] > 0.01:
+        core = core + _widen(cfg["ring"] * bw(bl, "high", 600, 2), cfg["width"])
+    if cfg["shimmer"] > 0.01:
+        core = core + cfg["shimmer"] * cfg["ring"] * _launch_shimmer(cfg, bl, ns, gen)
+    return _launch_room(cfg, core, gen) if cfg["verb"] > 0.01 else core
 
 
-def _launch_lead(p: dict, kind: str, m: int, b: np.ndarray, rng) -> np.ndarray:
-    if kind == "chirp":
-        return lead_chirp(p, m, rng)
-    if kind == "swell":
-        return lead_swell(p, m, b, rng)
-    return lead_whoosh(p, m, rng)
+def _launch_lead(cfg: dict, style: str, cnt: int, bl: np.ndarray, gen) -> np.ndarray:
+    if style == "chirp":
+        return lead_chirp(cfg, cnt, gen)
+    if style == "swell":
+        return lead_swell(cfg, cnt, bl, gen)
+    return lead_whoosh(cfg, cnt, gen)
 
 
-def _with_lead(p: dict, body: np.ndarray, b: np.ndarray, n_lead: int, rng) -> np.ndarray:
+def _with_lead(cfg: dict, core: np.ndarray, bl: np.ndarray, n_lead: int, gen) -> np.ndarray:
     """The lead-in before the hit; it runs 12 ms past the hit start and fades out there."""
-    kind = p["lead"] if p["lead_level"] > 0.005 else "none"
-    k = n_of(0.012)
-    ld = _launch_lead(p, kind, n_lead + k, b, rng)
-    ld[n_lead:] *= (np.linspace(1, 0, k) ** 2)[:, None]
-    out = np.concatenate([np.zeros((n_lead, 2)), body])
-    out[:n_lead + k] += p["lead_level"] * np.max(np.abs(body)) * ld
-    return out
+    style = cfg["lead"] if cfg["lead_level"] > 0.005 else "none"
+    kn = n_of(0.012)
+    lead_sig = _launch_lead(cfg, style, n_lead + kn, bl, gen)
+    lead_sig[n_lead:] *= (np.linspace(1, 0, kn) ** 2)[:, None]
+    mix = np.concatenate([np.zeros((n_lead, 2)), core])
+    mix[:n_lead + kn] += cfg["lead_level"] * np.max(np.abs(core)) * lead_sig
+    return mix
 
 
-def _lead_samples(p: dict) -> int:
+def _lead_samples(cfg: dict) -> int:
     """The lead length; 0 for no lead, a quiet lead, or a lead of 64 samples or less."""
-    n_lead = 0 if p["lead"] == "none" or p["lead_level"] <= 0.005 else n_of(p["lead_s"])
+    n_lead = 0 if cfg["lead"] == "none" or cfg["lead_level"] <= 0.005 else n_of(cfg["lead_s"])
     return n_lead if n_lead > 64 else 0
 
 
-def _bloom_fade_in(b: np.ndarray, delay: float) -> np.ndarray:
-    d = n_of(delay) if delay > 0 else 0
-    if d > 1:
-        b[:d] *= 1 - (1 - np.linspace(0, 1, d)) ** 3
-    return b
+def _bloom_fade_in(bl: np.ndarray, pause: float) -> np.ndarray:
+    lag = n_of(pause) if pause > 0 else 0
+    if lag > 1:
+        bl[:lag] *= 1 - (1 - np.linspace(0, 1, lag)) ** 3
+    return bl
 
 
-def render_launch(p: dict, rng: np.random.Generator) -> np.ndarray:
+def render_launch(cfg: dict, gen: np.random.Generator) -> np.ndarray:
     """A lead-in, a bright hit, a short bloom with shimmer, a short room and a smooth fade."""
-    n = n_of(min(4.0, max(0.6, 5.5 * p["ring_tau"], 6 * p["strike_tau"]) + 0.3))
-    b = _bloom_fade_in(short_bloom(p, n, rng), p.get("bloom_delay", 0.0))
-    body = _launch_body(p, b, n, rng)
-    pk = np.max(np.abs(body))
-    n_lead = _lead_samples(p)
-    out = _hp_cut(_with_lead(p, body, b, n_lead, rng) if n_lead else body, p["low_cut"])
-    if p.get("low", 0.0) > 0.005:
-        out[n_lead:n_lead + n] += (p["low"] * pk * low_strike(p["low_f"], p["low_tau"], n))[:, None]
-    out = dsp.trim_tail(bw(out, "low", 16500, 4), -62.0, 0.05)
-    return dsp.fade(out, 0.0015, min(0.3, 0.2 * len(out) / SR))
+    ns = n_of(min(4.0, max(0.6, 5.5 * cfg["ring_tau"], 6 * cfg["strike_tau"]) + 0.3))
+    bl = _bloom_fade_in(short_bloom(cfg, ns, gen), cfg.get("bloom_delay", 0.0))
+    core = _launch_body(cfg, bl, ns, gen)
+    peak = np.max(np.abs(core))
+    n_lead = _lead_samples(cfg)
+    mix = _hp_cut(_with_lead(cfg, core, bl, n_lead, gen) if n_lead else core, cfg["low_cut"])
+    if cfg.get("low", 0.0) > 0.005:
+        mix[n_lead:n_lead + ns] += (cfg["low"] * peak * low_strike(cfg["low_f"], cfg["low_tau"], ns))[:, None]
+    mix = dsp.trim_tail(bw(mix, "low", 16500, 4), -62.0, 0.05)
+    return dsp.fade(mix, 0.0015, min(0.3, 0.2 * len(mix) / SR))
 
 
 # ------------------------------------------------------------------------------------------------ gesture (15.11)
 
 
-def g_sweep(n: int, f0: float, f1: float, T: float, c: float, rng) -> tuple[np.ndarray, np.ndarray]:
-    u = np.clip(t_of(n) / max(T, 1e-4), 0, 1) ** c
-    f = f0 * (f1 / f0) ** u
-    return 2 * np.pi * np.cumsum(f) / SR + rng.uniform(0, 0.3), f
+def g_sweep(ns: int, fa: float, fb: float, dur: float, chan: float, gen) -> tuple[np.ndarray, np.ndarray]:
+    prog = np.clip(t_of(ns) / max(dur, 1e-4), 0, 1) ** chan
+    freq = fa * (fb / fa) ** prog
+    return 2 * np.pi * np.cumsum(freq) / SR + gen.uniform(0, 0.3), freq
 
 
-def _g_partials(p: dict, harm_tau: float) -> tuple:
-    if p["g_mat"] == "sine" or p["g_mat"] not in G_MATS:
-        return ((2, 0.55, harm_tau), (3, 0.22, 0.6 * harm_tau))
-    return G_MATS[p["g_mat"]]
+def _g_partials(cfg: dict, ovt_tau: float) -> tuple:
+    if cfg["g_mat"] == "sine" or cfg["g_mat"] not in G_MATS:
+        return ((2, 0.55, ovt_tau), (3, 0.22, 0.6 * ovt_tau))
+    return G_MATS[cfg["g_mat"]]
 
 
-def _g_freq(p: dict, f: float, t: np.ndarray, sink: float) -> np.ndarray:
+def _g_freq(cfg: dict, freq: float, tax: np.ndarray, drop: float) -> np.ndarray:
     """The tone pitch: it sinks sink octaves over the tone, and starts g_bend semitones sharp."""
-    fr = f * 2.0 ** (-sink * np.clip(t / max(t[-1] if len(t) else 0.0, 0.1), 0, 1) ** 0.7)
-    if p["g_bend"] > 0.01:
-        fr = fr * 2.0 ** ((p["g_bend"] / 12) * np.exp(-t / 0.025))
-    return fr
+    fcurve = freq * 2.0 ** (-drop * np.clip(tax / max(tax[-1] if len(tax) else 0.0, 0.1), 0, 1) ** 0.7)
+    if cfg["g_bend"] > 0.01:
+        fcurve = fcurve * 2.0 ** ((cfg["g_bend"] / 12) * np.exp(-tax / 0.025))
+    return fcurve
 
 
-def _g_osc(ph: np.ndarray, det: np.ndarray, ch: float, k: float, phi: float) -> np.ndarray:
+def _g_osc(phase: np.ndarray, dtn: np.ndarray, chor: float, kn: float, phs0: float) -> np.ndarray:
     """A partial k of the tone, with +-8 cent chorus copies when g_chorus is set."""
-    if ch <= 0.01:
-        return np.sin(k * ph + phi)
-    side = np.sin(k * (ph + det) + phi + 1.3) + np.sin(k * (ph - det) + phi + 2.6)
-    return (np.sin(k * ph + phi) + 0.5 * ch * side) / (1 + ch)
+    if chor <= 0.01:
+        return np.sin(kn * phase + phs0)
+    flank = np.sin(kn * (phase + dtn) + phs0 + 1.3) + np.sin(kn * (phase - dtn) + phs0 + 2.6)
+    return (np.sin(kn * phase + phs0) + 0.5 * chor * flank) / (1 + chor)
 
 
-def _g_voice(p: dict, t: np.ndarray, fr: np.ndarray, harm_tau: float, rng) -> np.ndarray:
-    cycles = 2 * np.pi * np.cumsum(fr) / SR
-    ph = cycles + rng.uniform(0, 6.28)
-    det = (2.0 ** (8 / 1200) - 1) * cycles
-    y = _g_osc(ph, det, p["g_chorus"], 1, 0.0)
-    for k, a, tau in _g_partials(p, harm_tau):
-        if k * np.max(fr) < 0.42 * SR and a * p["g_warm"] > 0:
-            y = y + a * p["g_warm"] * np.exp(-t / tau) * _g_osc(ph, det, p["g_chorus"], k, rng.uniform(0, 6.28))
-    return y
+def _g_voice(cfg: dict, tax: np.ndarray, fcurve: np.ndarray, ovt_tau: float, gen) -> np.ndarray:
+    cyc = 2 * np.pi * np.cumsum(fcurve) / SR
+    phase = cyc + gen.uniform(0, 6.28)
+    dtn = (2.0 ** (8 / 1200) - 1) * cyc
+    sig = _g_osc(phase, dtn, cfg["g_chorus"], 1, 0.0)
+    for kn, amp, tc in _g_partials(cfg, ovt_tau):
+        if kn * np.max(fcurve) < 0.42 * SR and amp * cfg["g_warm"] > 0:
+            sig = sig + amp * cfg["g_warm"] * np.exp(-tax / tc) * _g_osc(phase, dtn, cfg["g_chorus"], kn,
+                                                                         gen.uniform(0, 6.28))
+    return sig
 
 
-def _g_env(p: dict, t: np.ndarray, y: np.ndarray, att: float) -> np.ndarray:
+def _g_env(cfg: dict, tax: np.ndarray, sig: np.ndarray, atk: float) -> np.ndarray:
     """The concave decay, with an opening swell-in (and low-pass) when att is set."""
-    e = (1 - p["g_mix"]) * np.exp(-t / p["g_tau1"]) + p["g_mix"] * np.exp(-t / p["g_tau2"])
-    if att <= 0.003:
-        return y * e * (1 - np.exp(-t / 0.0015))
-    e = e * (1 - (1 - np.clip(t / att, 0, 1)) ** 2)
-    return svf(y * e, 900 + 15000 * (1 - np.exp(-t / max(1.2 * att, 0.004))), 0.6, "low")
+    env = (1 - cfg["g_mix"]) * np.exp(-tax / cfg["g_tau1"]) + cfg["g_mix"] * np.exp(-tax / cfg["g_tau2"])
+    if atk <= 0.003:
+        return sig * env * (1 - np.exp(-tax / 0.0015))
+    env = env * (1 - (1 - np.clip(tax / atk, 0, 1)) ** 2)
+    return svf(sig * env, 900 + 15000 * (1 - np.exp(-tax / max(1.2 * atk, 0.004))), 0.6, "low")
 
 
-def g_tone(n: int, f: float, p: dict, rng, sink: float = 0.0, att: float = 0.0, harm_tau: float = 0.12) -> np.ndarray:
+def g_tone(ns: int, freq: float, cfg: dict, gen, drop: float = 0.0, atk: float = 0.0,
+           ovt_tau: float = 0.12) -> np.ndarray:
     """A sine with at most a few extra partials, a concave decay and an optional opening swell-in."""
-    t = t_of(n)
-    fr = _g_freq(p, f, t, sink)
-    return _up(_g_env(p, t, _g_voice(p, t, fr, harm_tau, rng), att))
+    tax = t_of(ns)
+    fcurve = _g_freq(cfg, freq, tax, drop)
+    return _up(_g_env(cfg, tax, _g_voice(cfg, tax, fcurve, ovt_tau, gen), atk))
 
 
-def g_chord(n: int, p: dict, rng, att: float = 0.0) -> np.ndarray:
-    y = np.zeros(n)
-    for j, st in enumerate(CHORDS_G[p["g_notes"]]):
-        f = p["g_root"] * 2.0 ** (st / 12)
-        if f <= 9000:
-            y += _delayed(g_tone(n, f, p, rng, att=att) * 0.72 ** j, n_of(j * rng.uniform(0.005, 0.012)), n)
-    return _up(y)
+def g_chord(ns: int, cfg: dict, gen, atk: float = 0.0) -> np.ndarray:
+    sig = np.zeros(ns)
+    for nth, semi in enumerate(CHORDS_G[cfg["g_notes"]]):
+        freq = cfg["g_root"] * 2.0 ** (semi / 12)
+        if freq <= 9000:
+            sig += _delayed(g_tone(ns, freq, cfg, gen, atk=atk) * 0.72 ** nth, n_of(nth * gen.uniform(0.005, 0.012)),
+                            ns)
+    return _up(sig)
 
 
-def noise_ride(n: int, f: np.ndarray, k: float, q: float, rng) -> np.ndarray:
-    y = svf(rng.standard_normal(n), np.clip(k * f, 200, 14000), q, "bandn")
-    return bw(y, "low", 13000, 2)
+def noise_ride(ns: int, freq: np.ndarray, kn: float, shifted: float, gen) -> np.ndarray:
+    sig = svf(gen.standard_normal(ns), np.clip(kn * freq, 200, 14000), shifted, "bandn")
+    return bw(sig, "low", 13000, 2)
 
 
-def g_snap(n: int, p: dict, rng) -> np.ndarray:
-    w = _noise_tick(n, p["g_snap_ms"], rng, 32)
-    w = bw(w, "band", (p["g_snap_f"] / 1.6, min(1.8 * p["g_snap_f"], 16000)), 2)
-    y = np.zeros(n)
-    y[:len(w)] = _up(w)
-    return y
+def g_snap(ns: int, cfg: dict, gen) -> np.ndarray:
+    burst = _noise_tick(ns, cfg["g_snap_ms"], gen, 32)
+    burst = bw(burst, "band", (cfg["g_snap_f"] / 1.6, min(1.8 * cfg["g_snap_f"], 16000)), 2)
+    sig = np.zeros(ns)
+    sig[:len(burst)] = _up(burst)
+    return sig
 
 
-def g_hit(n: int, p: dict, rng) -> np.ndarray:
-    y = p["g_hit"] * low_strike(p["g_low_f"], p["g_low_tau"], n)
-    if p["g_snap"] > 0.005:
-        y = y + p["g_snap"] * g_snap(n, p, rng)
-    return y / np.max(np.abs(y)) if np.max(np.abs(y)) > 0 else y
+def g_hit(ns: int, cfg: dict, gen) -> np.ndarray:
+    sig = cfg["g_hit"] * low_strike(cfg["g_low_f"], cfg["g_low_tau"], ns)
+    if cfg["g_snap"] > 0.005:
+        sig = sig + cfg["g_snap"] * g_snap(ns, cfg, gen)
+    return sig / np.max(np.abs(sig)) if np.max(np.abs(sig)) > 0 else sig
 
 
-def g_tail(dry: np.ndarray, p: dict, rng) -> np.ndarray:
+def g_tail(drysig: np.ndarray, cfg: dict, gen) -> np.ndarray:
     """2 independent wet returns, fed only with content above 250 Hz; the dry part stays mono."""
-    n = len(dry)
-    out = _st(dry).copy()
-    if p["g_wet"] <= 0.005:
-        return out
-    send = bw(dry, "high", 250, 2)
-    if p["g_verb"] == "fdn":
-        wet = fx.reverb(send, rng, rt60=p["g_rt"], size=0.7, predelay=0.012, damp=0.5, wet=1.0, dry=0.0,
+    ns = len(drysig)
+    mix = _st(drysig).copy()
+    if cfg["g_wet"] <= 0.005:
+        return mix
+    feedv = bw(drysig, "high", 250, 2)
+    if cfg["g_verb"] == "fdn":
+        wetv = fx.reverb(feedv, gen, rt60=cfg["g_rt"], size=0.7, predelay=0.012, damp=0.5, wet=1.0, dry=0.0,
                         stereo=True, width=1.0)
-        return out + p["g_wet"] * _fit(_st(wet), n)
-    for c in range(2):
-        out[:, c] += p["g_wet"] * _conv(send, _hall(rng, p["g_rt"], 0.55, 0.6, 0.012 + 0.005 * c), n)
-    return out
+        return mix + cfg["g_wet"] * _fit(_st(wetv), ns)
+    for chan in range(2):
+        mix[:, chan] += cfg["g_wet"] * _conv(feedv, _hall(gen, cfg["g_rt"], 0.55, 0.6, 0.012 + 0.005 * chan), ns)
+    return mix
 
 
-def _after(n: int, i0: int, x: np.ndarray) -> np.ndarray:
+def _after(ns: int, at: int, wav: np.ndarray) -> np.ndarray:
     """x placed from sample i0 in an n-sample buffer."""
-    out = np.zeros(n)
-    out[i0:] = x
-    return out
+    mix = np.zeros(ns)
+    mix[at:] = wav
+    return mix
 
 
-def _hum_lead(p: dict, n: int, T: float, rng) -> np.ndarray:
+def _hum_lead(cfg: dict, ns: int, dur: float, gen) -> np.ndarray:
     """The falling chirp of chirp_hum: a crescendo into the landing, gone soon after T."""
-    t = t_of(n)
-    ph, f = g_sweep(n, p["g_f0"], p["g_f1"], T, 1.0, rng)
-    ec = (1 - np.exp(-t / 0.003)) * (0.3 + 0.7 * np.clip(t / T, 0, 1)) * np.clip((1.2 - t / T) / 0.2, 0, 1) ** 1.5
-    lead = (np.sin(ph) + 0.12 * np.sin(2 * ph)) * ec
-    if p["g_air"] > 0.005:
-        lead = lead + 0.5 * p["g_air"] * noise_ride(n, f, 5, 3, rng) * ec
-    return _up(lead)
+    tax = t_of(ns)
+    phase, freq = g_sweep(ns, cfg["g_f0"], cfg["g_f1"], dur, 1.0, gen)
+    env_c = (1 - np.exp(-tax / 0.003)) * (0.3 + 0.7 * np.clip(tax / dur, 0, 1)) * np.clip((1.2 - tax / dur) / 0.2, 0,
+                                                                                          1) ** 1.5
+    intro = (np.sin(phase) + 0.12 * np.sin(2 * phase)) * env_c
+    if cfg["g_air"] > 0.005:
+        intro = intro + 0.5 * cfg["g_air"] * noise_ride(ns, freq, 5, 3, gen) * env_c
+    return _up(intro)
 
 
-def _gesture_chirp_hum(p: dict, rng) -> np.ndarray:
-    T = p["g_ms"] / 1000
-    n = n_of(T + p["g_length"])
-    i0 = min(n, n_of(0.92 * T))
-    tone = _after(n, i0, g_tone(n - i0, p["g_root"], p, rng, sink=p["g_sink"], harm_tau=0.2))
-    y = p["g_lead"] * _hum_lead(p, n, T, rng) + p["g_tone"] * tone
-    if p["g_land"] > 0.005:
-        y = y + landing({"land": p["g_land"], "land_f": p["g_land_f"], "thud": 0.0, "hum_f": p["g_root"]}, n,
-                        0.92 * T)
-    if p["g_snap"] > 0.005:
-        y[i0:] += p["g_snap"] * g_snap(n - i0, p, rng)
-    return y
+def _gesture_chirp_hum(cfg: dict, gen) -> np.ndarray:
+    dur = cfg["g_ms"] / 1000
+    ns = n_of(dur + cfg["g_length"])
+    at = min(ns, n_of(0.92 * dur))
+    tone = _after(ns, at, g_tone(ns - at, cfg["g_root"], cfg, gen, drop=cfg["g_sink"], ovt_tau=0.2))
+    sig = cfg["g_lead"] * _hum_lead(cfg, ns, dur, gen) + cfg["g_tone"] * tone
+    if cfg["g_land"] > 0.005:
+        sig = sig + landing({"land": cfg["g_land"], "land_f": cfg["g_land_f"], "thud": 0.0, "hum_f": cfg["g_root"]}, ns,
+                        0.92 * dur)
+    if cfg["g_snap"] > 0.005:
+        sig[at:] += cfg["g_snap"] * g_snap(ns - at, cfg, gen)
+    return sig
 
 
-def _zap_lead(p: dict, n: int, T: float, rng) -> np.ndarray:
+def _zap_lead(cfg: dict, ns: int, dur: float, gen) -> np.ndarray:
     """A noise zap and a sine zap on the same falling sweep, blended by g_air."""
-    t = t_of(n)
-    _, f = g_sweep(n, p["g_f0"], p["g_f1"], T, 0.6, rng)
-    ez = (1 - np.exp(-t / 0.002)) * np.clip(1 - t / (1.15 * T), 0, 1) ** 0.7
-    nz = noise_ride(n, f, 1.3, 3, rng) * ez
-    ph, f = g_sweep(n, p["g_f0"], p["g_f1"], T, 0.6, rng)
-    sz = (np.sin(ph) + 0.1 * np.sin(2 * ph) * (2 * f < 0.42 * SR)) * ez
-    return _up((1 - p["g_air"]) * _up(sz) + p["g_air"] * _up(nz))
+    tax = t_of(ns)
+    _, freq = g_sweep(ns, cfg["g_f0"], cfg["g_f1"], dur, 0.6, gen)
+    env_z = (1 - np.exp(-tax / 0.002)) * np.clip(1 - tax / (1.15 * dur), 0, 1) ** 0.7
+    hiss = noise_ride(ns, freq, 1.3, 3, gen) * env_z
+    phase, freq = g_sweep(ns, cfg["g_f0"], cfg["g_f1"], dur, 0.6, gen)
+    tone_z = (np.sin(phase) + 0.1 * np.sin(2 * phase) * (2 * freq < 0.42 * SR)) * env_z
+    return _up((1 - cfg["g_air"]) * _up(tone_z) + cfg["g_air"] * _up(hiss))
 
 
-def _gesture_zap_bloom(p: dict, rng) -> np.ndarray:
-    T = p["g_ms"] / 1000
-    n = n_of(T + p["g_length"])
-    i0 = min(n, n_of(0.7 * T))
-    lead = _zap_lead(p, n, T, rng)
-    return p["g_lead"] * lead + p["g_tone"] * _after(n, i0, g_chord(n - i0, p, rng, att=p["g_att"]))
+def _gesture_zap_bloom(cfg: dict, gen) -> np.ndarray:
+    dur = cfg["g_ms"] / 1000
+    ns = n_of(dur + cfg["g_length"])
+    at = min(ns, n_of(0.7 * dur))
+    intro = _zap_lead(cfg, ns, dur, gen)
+    return cfg["g_lead"] * intro + cfg["g_tone"] * _after(ns, at, g_chord(ns - at, cfg, gen, atk=cfg["g_att"]))
 
 
-def _sweep_lead(p: dict, n: int, T: float, rng) -> np.ndarray:
+def _sweep_lead(cfg: dict, ns: int, dur: float, gen) -> np.ndarray:
     """A rising sweep that grows exponentially and stops 6 ms after T."""
-    t = t_of(n)
-    ph, f = g_sweep(n, p["g_f0"], p["g_f1"], T, 1.6, rng)
-    u = np.clip(t / T, 0, 1)
-    stop = (t < T + 0.006) * np.clip((T + 0.006 - t) / 0.006, 0, 1) ** 0.5
-    lvl = (0.02 + 0.98 * (np.exp(4 * u) - 1) / (np.exp(4) - 1)) * stop
-    lead = (np.sin(ph) + 0.15 * np.sin(2 * ph)) * lvl
-    if p["g_air"] > 0.005:
-        lead = lead + p["g_air"] * noise_ride(n, f, 4, 1.4, rng) * lvl
-    return _up(dsp.fade(lead, 0.02, 0.0))
+    tax = t_of(ns)
+    phase, freq = g_sweep(ns, cfg["g_f0"], cfg["g_f1"], dur, 1.6, gen)
+    prog = np.clip(tax / dur, 0, 1)
+    stop = (tax < dur + 0.006) * np.clip((dur + 0.006 - tax) / 0.006, 0, 1) ** 0.5
+    gain = (0.02 + 0.98 * (np.exp(4 * prog) - 1) / (np.exp(4) - 1)) * stop
+    intro = (np.sin(phase) + 0.15 * np.sin(2 * phase)) * gain
+    if cfg["g_air"] > 0.005:
+        intro = intro + cfg["g_air"] * noise_ride(ns, freq, 4, 1.4, gen) * gain
+    return _up(dsp.fade(intro, 0.02, 0.0))
 
 
-def _gesture_sweep_hit(p: dict, rng) -> np.ndarray:
-    T = p["g_ms"] / 1000
-    nl = n_of(T)
-    n = nl + n_of(p["g_length"])
-    lead = _sweep_lead(p, n, T, rng)
-    hit = _after(n, nl, g_hit(n - nl, p, rng))
-    return p["g_lead"] * lead + hit + p["g_tone"] * _after(n, nl, g_chord(n - nl, p, rng))
+def _gesture_sweep_hit(cfg: dict, gen) -> np.ndarray:
+    dur = cfg["g_ms"] / 1000
+    n_head = n_of(dur)
+    ns = n_head + n_of(cfg["g_length"])
+    intro = _sweep_lead(cfg, ns, dur, gen)
+    hit_sig = _after(ns, n_head, g_hit(ns - n_head, cfg, gen))
+    return cfg["g_lead"] * intro + hit_sig + cfg["g_tone"] * _after(ns, n_head, g_chord(ns - n_head, cfg, gen))
 
 
-def _tap(p: dict, j: int, k: int, rng) -> np.ndarray:
+def _tap(cfg: dict, nth: int, kn: int, gen) -> np.ndarray:
     """Tap j: a short sine ping, the second a whole tone higher, plus a little snap."""
-    tk = t_of(k)
-    fq = p["g_tap_f"] * (1 + 0.06 * np.exp(-tk / 0.004)) * 2.0 ** (2 * j / 12)
-    tap = np.sin(2 * np.pi * np.cumsum(fq) / SR) * np.exp(-tk / 0.011) * (1 - np.exp(-tk / 0.0004))
-    return _up(tap + 0.25 * g_snap(k, {**p, "g_snap_ms": 2.5}, rng))
+    tap_t = t_of(kn)
+    tap_f = cfg["g_tap_f"] * (1 + 0.06 * np.exp(-tap_t / 0.004)) * 2.0 ** (2 * nth / 12)
+    ping = np.sin(2 * np.pi * np.cumsum(tap_f) / SR) * np.exp(-tap_t / 0.011) * (1 - np.exp(-tap_t / 0.0004))
+    return _up(ping + 0.25 * g_snap(kn, {**cfg, "g_snap_ms": 2.5}, gen))
 
 
-def _gesture_taps_tone(p: dict, rng) -> np.ndarray:
-    i2 = n_of(2 * p["g_gap"])
-    n = i2 + n_of(p["g_length"])
-    k = n_of(0.05)
-    y = np.zeros(n + k)
-    for j, lv in ((0, 0.55), (1, 0.75)):
-        i = n_of(j * p["g_gap"])
-        y[i:i + k] += p["g_lead"] * lv * _tap(p, j, k, rng)
-    y = y[:n]
-    y[i2:] += p["g_tone"] * g_chord(n - i2, p, rng, att=p["g_att"])
-    if p["g_snap"] > 0.005:
-        y[i2:] += 0.5 * p["g_snap"] * g_snap(n - i2, p, rng)
-    return y
+def _gesture_taps_tone(cfg: dict, gen) -> np.ndarray:
+    at2 = n_of(2 * cfg["g_gap"])
+    ns = at2 + n_of(cfg["g_length"])
+    kn = n_of(0.05)
+    sig = np.zeros(ns + kn)
+    for nth, lvl0 in ((0, 0.55), (1, 0.75)):
+        ix = n_of(nth * cfg["g_gap"])
+        sig[ix:ix + kn] += cfg["g_lead"] * lvl0 * _tap(cfg, nth, kn, gen)
+    sig = sig[:ns]
+    sig[at2:] += cfg["g_tone"] * g_chord(ns - at2, cfg, gen, atk=cfg["g_att"])
+    if cfg["g_snap"] > 0.005:
+        sig[at2:] += 0.5 * cfg["g_snap"] * g_snap(ns - at2, cfg, gen)
+    return sig
 
 
-def _swell_air(p: dict, sw: np.ndarray, rng) -> np.ndarray:
-    u = np.linspace(0, 1, len(sw))
-    air = bw(rng.standard_normal(len(sw)) * u ** 3, "band", (3000, 12000), 2)
-    return dsp.fade(_up(sw + p["g_air"] * _up(air)), 0.03, 0.0)
+def _swell_air(cfg: dict, rise: np.ndarray, gen) -> np.ndarray:
+    prog = np.linspace(0, 1, len(rise))
+    hiss2 = bw(gen.standard_normal(len(rise)) * prog ** 3, "band", (3000, 12000), 2)
+    return dsp.fade(_up(rise + cfg["g_air"] * _up(hiss2)), 0.03, 0.0)
 
 
-def _swell_lead(p: dict, stab: np.ndarray, nl: int, rng) -> np.ndarray:
+def _swell_lead(cfg: dict, chord_sig: np.ndarray, n_head: int, gen) -> np.ndarray:
     """The stab's hall response reversed in time, so it swells into the stab; it ends 12 ms after it."""
-    T = p["g_ms"] / 1000
-    h = _hall(rng, max(0.6, 2 * T), 0.4, 0.7, 0.0, 1.3 * T + 0.25)
-    k, a = n_of(0.012), n_of(0.02)
-    sw = _fit(fftconvolve(stab[:n_of(0.3)], h)[a:a + nl + k], nl + k)[::-1]
-    sw = _up(dsp.fade(sw * (0.02 + 0.98 * np.linspace(0, 1, len(sw)) ** 2.2), 0.03, 0.0))
-    if p["g_air"] > 0.005:
-        sw = _swell_air(p, sw, rng)
-    sw[nl:] *= np.linspace(1, 0, len(sw) - nl) ** 2
-    return sw
+    dur = cfg["g_ms"] / 1000
+    ir = _hall(gen, max(0.6, 2 * dur), 0.4, 0.7, 0.0, 1.3 * dur + 0.25)
+    kn, amp = n_of(0.012), n_of(0.02)
+    rise = _fit(fftconvolve(chord_sig[:n_of(0.3)], ir)[amp:amp + n_head + kn], n_head + kn)[::-1]
+    rise = _up(dsp.fade(rise * (0.02 + 0.98 * np.linspace(0, 1, len(rise)) ** 2.2), 0.03, 0.0))
+    if cfg["g_air"] > 0.005:
+        rise = _swell_air(cfg, rise, gen)
+    rise[n_head:] *= np.linspace(1, 0, len(rise) - n_head) ** 2
+    return rise
 
 
-def _gesture_swell_sting(p: dict, rng) -> np.ndarray:
-    nl, nb = n_of(p["g_ms"] / 1000), n_of(p["g_length"])
-    stab = g_chord(nb, p, rng)
-    sw = _swell_lead(p, stab, nl, rng)
-    y = np.zeros(nl + nb)
-    m = min(len(sw), len(y))
-    y[:m] += p["g_lead"] * sw[:m]
-    y[nl:] += p["g_tone"] * stab + 0.8 * g_hit(nb, p, rng)
-    return y
+def _gesture_swell_sting(cfg: dict, gen) -> np.ndarray:
+    n_head, n_body = n_of(cfg["g_ms"] / 1000), n_of(cfg["g_length"])
+    chord_sig = g_chord(n_body, cfg, gen)
+    rise = _swell_lead(cfg, chord_sig, n_head, gen)
+    sig = np.zeros(n_head + n_body)
+    cnt = min(len(rise), len(sig))
+    sig[:cnt] += cfg["g_lead"] * rise[:cnt]
+    sig[n_head:] += cfg["g_tone"] * chord_sig + 0.8 * g_hit(n_body, cfg, gen)
+    return sig
 
 
 _GESTURE_FNS = {"chirp_hum": _gesture_chirp_hum, "zap_bloom": _gesture_zap_bloom,
                 "sweep_hit": _gesture_sweep_hit, "taps_tone": _gesture_taps_tone}
 
 
-def render_gesture(p: dict, rng: np.random.Generator) -> np.ndarray:
+def render_gesture(cfg: dict, gen: np.random.Generator) -> np.ndarray:
     """A launch-reveal motion: a mono dry part and a wide tail; an unknown gesture renders swell_sting."""
-    y = _GESTURE_FNS.get(p["gesture"], _gesture_swell_sting)(p, rng)
-    out = g_tail(bw(y, "high", 30, 2), p, rng)
-    out = dsp.trim_tail(bw(out, "low", 16000, 4), -64.0, 0.05)
-    return dsp.fade(out, 0.0008, min(0.25, 0.2 * len(out) / SR))
+    sig = _GESTURE_FNS.get(cfg["gesture"], _gesture_swell_sting)(cfg, gen)
+    mix = g_tail(bw(sig, "high", 30, 2), cfg, gen)
+    mix = dsp.trim_tail(bw(mix, "low", 16000, 4), -64.0, 0.05)
+    return dsp.fade(mix, 0.0008, min(0.25, 0.2 * len(mix) / SR))
 
 
 # ------------------------------------------------------------------------------------------------ render (15.7)
@@ -933,10 +991,10 @@ def render_gesture(p: dict, rng: np.random.Generator) -> np.ndarray:
 _DISPATCH = ({"chirp": render_chirp, "launch": render_launch, "gesture": render_gesture}, BASES, REVEAL, DEFAULTS)
 
 
-def render(p: dict, rng: np.random.Generator) -> np.ndarray:
+def render(cfg: dict, gen: np.random.Generator) -> np.ndarray:
     """One sting, (n, 2) float64, normalised to an absolute peak of 0.89; p overlays the base of its mode."""
-    idioms, bases, reveal, defaults = _DISPATCH
-    p = p or {}
-    mode = p.get("mode", defaults["mode"])
-    y = idioms.get(mode, render_reveal)({**bases.get(mode, reveal), **p}, rng)
-    return y * 0.89 / (np.max(np.abs(y)) + 1e-12)
+    table, bset, rbase, dflt = _DISPATCH
+    cfg = cfg or {}
+    md = cfg.get("mode", dflt["mode"])
+    sig = table.get(md, render_reveal)({**bset.get(md, rbase), **cfg}, gen)
+    return sig * 0.89 / (np.max(np.abs(sig)) + 1e-12)

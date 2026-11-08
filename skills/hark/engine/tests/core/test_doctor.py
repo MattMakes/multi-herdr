@@ -22,7 +22,7 @@ def clap_cached(cfg, snapshot, pin_files):
 
 @pytest.fixture
 def fake_bank(monkeypatch, tmp_path):
-    """Install a stand-in hark.forge.bank.bank (only while the real module is absent)."""
+    """Put a fake hark.forge.bank.bank in sys.modules for one test (doctor imports it by name)."""
 
     def install(ids=(), version="t1", broken=None, files=()):
         mod = types.ModuleType("hark.forge.bank.bank")
@@ -41,11 +41,7 @@ def fake_bank(monkeypatch, tmp_path):
         monkeypatch.setitem(sys.modules, "hark.forge.bank.bank", mod)
         return mod
 
-    try:
-        import hark.forge.bank.bank  # noqa: F401
-    except ModuleNotFoundError:
-        return install
-    pytest.skip("the real bank module exists; doctor uses it")
+    return install
 
 
 def test_at_25_cached_and_missing_models(cfg, clap_cached, run_hark):
@@ -159,6 +155,16 @@ def test_e_d1_bank_line_then_problems(cfg, fake_bank, monkeypatch, tmp_path):
     assert r["summary"].startswith("Sound bank t1: 3 sounds (1 forge, 1 plucks, 1 fitted from CC0 recordings; "
                                    f"extra files from HARK_BANK: {extra}). Problems: ")
     assert "data file hark/data/listen/vocab.json missing" in r["problems"]
+
+
+def test_vocab_stats_missing_is_a_note(cfg, fake_bank, monkeypatch):
+    # T-41: vocab_stats.json does not ship, so its absence is a note with the build command, not a problem
+    fake_bank(ids=("a/1",))
+    monkeypatch.setattr(doctor, "_data_files", lambda: {"listen/vocab.json": True, "listen/vocab_stats.json": False})
+    r = doctor.check()
+    assert not any("vocab_stats" in p for p in r["problems"])
+    note = next(n for n in r["notes"] if "vocab_stats.json" in n)
+    assert "python -m hark.listen.vocabulary --build-stats" in note
 
 
 def test_e_d2_broken_bank(cfg, fake_bank):
