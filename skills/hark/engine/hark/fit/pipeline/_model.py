@@ -65,17 +65,22 @@ def array_channels(x: np.ndarray) -> int:
     return 1 if np.array_equal(x[:, 0], x[:, 1]) else 2
 
 
+def _sines_channels(model: dict) -> int:
+    if "channels" in model:
+        return int(model["channels"])
+    return 2 if float(model.get("width", -120)) > -50 else 1
+
+
+_CHANNELS = {
+    "morph": lambda m: max(channels_of(m["a"]), channels_of(m["b"])),
+    "spectral": lambda m: 2 if m.get("stereo") else int(m.get("channels", 1)),
+    "sines": _sines_channels,
+}
+
+
 def _model_channels(model: dict) -> int:
-    name = kind_of(model)
-    if name == "morph":
-        return max(channels_of(model["a"]), channels_of(model["b"]))
-    if name == "spectral":
-        return 2 if model.get("stereo") else int(model.get("channels", 1))
-    if name == "sines":
-        if "channels" in model:
-            return int(model["channels"])
-        return 2 if float(model.get("width", -120)) > -50 else 1
-    return int(model.get("channels", 1))
+    rule = _CHANNELS.get(kind_of(model), lambda m: int(m.get("channels", 1)))
+    return rule(model)
 
 
 def channels_of(x_or_model: Any) -> int:
@@ -101,18 +106,20 @@ def as_two(y: np.ndarray, channels: int) -> np.ndarray:
     return m[:, None]
 
 
+def _plain_scalar(o: Any) -> Any:
+    v = o.item() if isinstance(o, np.generic) else o
+    return None if isinstance(v, float) and not math.isfinite(v) else v
+
+
 def _jsonable(o: Any) -> Any:
+    """Plain JSON values: numpy arrays and scalars become lists and numbers, non-finite floats None."""
+    if isinstance(o, np.ndarray):
+        o = o.tolist()
     if isinstance(o, dict):
         return {str(k): _jsonable(v) for k, v in o.items()}
     if isinstance(o, (list, tuple)):
         return [_jsonable(v) for v in o]
-    if isinstance(o, np.ndarray):
-        return _jsonable(o.tolist())
-    if isinstance(o, np.generic):
-        return o.item()
-    if isinstance(o, float) and not math.isfinite(o):
-        return None
-    return o
+    return _plain_scalar(o)
 
 
 def save(model: dict, path: str) -> None:
