@@ -93,18 +93,27 @@ def synth_partials(partials, n, sr=SR, cents=None):
     return y
 
 
-def _partial_wave(p, i0, i1, sr, cents):
-    t = np.arange(i0, i1) / sr
+def _partial_freq(p, t, cents, i0, i1):
     fr = np.asarray(p["freq"], dtype=float)
-    am = np.asarray(p["amp"], dtype=float)
     f = 2.0 ** np.interp(t, fr[:, 0], np.log2(np.maximum(fr[:, 1], 1e-6)))
     if cents is not None:
         f = f * 2.0 ** (cents[i0:i1] / 1200.0)
+    return f
+
+
+def _partial_amp(p, t):
+    am = np.asarray(p["amp"], dtype=float)
     a = 10.0 ** (np.interp(t, am[:, 0], am[:, 1]) / 20.0)
     rise = max(float(p.get("rise", 0.0002)), 1e-9)
     rel = max(float(p.get("rel", 0.0)), 1e-9)
     end = p["t1"] + p["rel"]
-    a = a * np.clip((t - p["t0"]) / rise, 0.0, 1.0) * np.clip((end - t) / rel, 0.0, 1.0)
+    return a * np.clip((t - p["t0"]) / rise, 0.0, 1.0) * np.clip((end - t) / rel, 0.0, 1.0)
+
+
+def _partial_wave(p, i0, i1, sr, cents):
+    t = np.arange(i0, i1) / sr
+    f = _partial_freq(p, t, cents, i0, i1)
+    a = _partial_amp(p, t)
     a[f >= 0.49 * sr] = 0.0
     ph = p["ph"] + TWO_PI * (np.cumsum(f) - f[0]) / sr + TWO_PI * f[0] * (i0 / sr - p["t0"])
     return a * np.cos(ph)
@@ -127,25 +136,26 @@ def synth_atoms(transients, n, sr=SR):
     return y
 
 
+def _noise_band(spec, shaped, keep, nfft, pad, n, t, times, lev):
+    band = irfft(spec * shaped, nfft)[pad:pad + n]
+    rms = np.sqrt(np.mean(band ** 2))
+    if rms <= 0:
+        return 0.0
+    return band * (keep / rms) * 10.0 ** (np.interp(t, times, lev) / 20.0)
+
+
 def synth_noise(bands, times, levels, n, seed=0, sr=SR, pad=4096, hf=None):
     """Band noise with dB-linear level curves per band."""
-    y = np.zeros(n)
-    if n <= 0:
-        return y
-    rng = np.random.default_rng(int(seed) & 0xFFFFFFFF)
-    nfft = 1 << int(np.ceil(np.log2(n + 2 * pad)))
-    spec = rfft(rng.standard_normal(nfft))
-    masks = tri_masks(bands, nfft, sr)
-    shaped, keep = _hf_shape(masks, nfft, sr, hf)
-    t = np.arange(n) / sr
-    for b, lev in enumerate(levels):
-        if max(lev) < -140:
-            continue
-        band = irfft(spec * shaped[b], nfft)[pad:pad + n]
-        rms = np.sqrt(np.mean(band ** 2))
-        if rms <= 0:
-            continue
-        y += band * (keep[b] / rms) * 10.0 ** (np.interp(t, times, lev) / 20.0)
+    y = np.zeros(max(n, 0))
+    if n > 0:
+        rng = np.random.default_rng(int(seed) & 0xFFFFFFFF)
+        nfft = 1 << int(np.ceil(np.log2(n + 2 * pad)))
+        spec = rfft(rng.standard_normal(nfft))
+        shaped, keep = _hf_shape(tri_masks(bands, nfft, sr), nfft, sr, hf)
+        t = np.arange(n) / sr
+        for b, lev in enumerate(levels):
+            if max(lev) >= -140:
+                y = y + _noise_band(spec, shaped[b], keep[b], nfft, pad, n, t, times, lev)
     return y
 
 
@@ -243,27 +253,30 @@ def field_at(field, f):
 def modal_plan(model, seed, size=1.0, damping=1.0, brightness=0.0, hardness=1.0,
                vary=0.0, spacing=1.0):
     """Strike times and mode rows after the knobs."""
-    gens = modal_gens(seed)
-    rj = gens[1]
+    rj = modal_gens(seed)[1]
     strikes = model["strikes"]
     coherent = bool(model.get("coherent"))
     told = [s["t"] for s in strikes]
-    tnew = _strike_times(told, spacing, vary, coherent, rj)
-    stretch = max(size / damping, 0.001)
-    tilt = brightness + 4.0 * np.log2(max(hardness, 0.001))
-    fields = vary_fields(rj, 3) if coherent else None
-    move = coherent and (vary > 0 or size != 1 or spacing != 1)
-    plan = []
-    for i, s in enumerate(strikes):
-        rows = _plan_modes(s["modes"], size, stretch, tilt, vary, fields, rj)
-        if move and i > 0 and len(rows):
-            f0 = np.asarray([m[0] for m in s["modes"]], dtype=float)
-            rows[:, 3] += TWO_PI * (rows[:, 0] * (tnew[i] - tnew[0]) - f0 * (told[i] - told[0]))
-        rows = rows[rows[:, 0] < 0.47 * SR] if len(rows) else rows
-        att = _plan_contact(s.get("attack", []), size, hardness, tilt)
-        plan.append({"t": tnew[i], "t_old": told[i], "ramp_ms": s.get("ramp_ms", 0.0) / max(hardness, 1e-3),
-                     "modes": rows, "attack": att})
-    return plan, stretch
+    ctx = {"size": size, "stretch": max(size / damping, 0.001), "hardness": hardness,
+           "tilt": brightness + 4.0 * np.log2(max(hardness, 0.001)), "vary": vary, "rj": rj,
+           "told": told, "tnew": _strike_times(told, spacing, vary, coherent, rj)}
+    ctx["fields"] = vary_fields(rj, 3) if coherent else None
+    ctx["move"] = coherent and (vary > 0 or size != 1 or spacing != 1)
+    plan = [_plan_strike(i, s, ctx) for i, s in enumerate(strikes)]
+    return plan, ctx["stretch"]
+
+
+def _plan_strike(i, s, ctx):
+    rows = _plan_modes(s["modes"], ctx["size"], ctx["stretch"], ctx["tilt"], ctx["vary"], ctx["fields"],
+                       ctx["rj"])
+    tnew, told = ctx["tnew"], ctx["told"]
+    if ctx["move"] and i > 0 and len(rows):
+        f0 = np.asarray([m[0] for m in s["modes"]], dtype=float)
+        rows[:, 3] += TWO_PI * (rows[:, 0] * (tnew[i] - tnew[0]) - f0 * (told[i] - told[0]))
+    rows = rows[rows[:, 0] < 0.47 * SR] if len(rows) else rows
+    att = _plan_contact(s.get("attack", []), ctx["size"], ctx["hardness"], ctx["tilt"])
+    return {"t": tnew[i], "t_old": told[i], "ramp_ms": s.get("ramp_ms", 0.0) / max(ctx["hardness"], 1e-3),
+            "modes": rows, "attack": att}
 
 
 def _strike_times(told, spacing, vary, coherent, rj):
@@ -304,13 +317,7 @@ def _plan_contact(attack, size, hardness, tilt):
     return rows[rows[:, 0] < 0.47 * SR]
 
 
-def ring_extension(plan, length):
-    """Seconds to add after ``length`` so the modes ring 60 dB down."""
-    sums = [np.sqrt(np.sum(p["modes"][:, 2] ** 2)) for p in plan if len(p["modes"])]
-    if not sums or max(sums) <= 0:
-        return 0.0
-    ref = max(sums)
-    thr = ref * 1e-3
+def _ring_end_power(plan, length, thr):
     end, power = 0.0, 0.0
     for p in plan:
         for f, tau, a, _ in p["modes"]:
@@ -318,12 +325,25 @@ def ring_extension(plan, length):
                 end = max(end, p["t"] + tau * np.log(a / thr))
             if length > p["t"]:
                 power += (a * np.exp(-(length - p["t"]) / tau)) ** 2
-    if end <= length + 0.001:
-        return 0.0
+    return end, power
+
+
+def _ring_len(end, power, ref, length, first):
     level = 10.0 * np.log10(max(power, 1e-300) / ref ** 2)
     lo = 0.2 if level > -50 else 0.06
-    first = plan[0]["t"]
     return float(min(max(end - length, lo), max(lo, 0.5 * (length - first))))
+
+
+def ring_extension(plan, length):
+    """Seconds to add after ``length`` so the modes ring 60 dB down."""
+    sums = [np.sqrt(np.sum(p["modes"][:, 2] ** 2)) for p in plan if len(p["modes"])]
+    ref = max(sums) if sums else 0.0
+    ext = 0.0
+    if ref > 0:
+        end, power = _ring_end_power(plan, length, ref * 1e-3)
+        if end > length + 0.001:
+            ext = _ring_len(end, power, ref, length, plan[0]["t"])
+    return ext
 
 
 def mode_wave(rows, n, sr=SR):
@@ -369,15 +389,19 @@ def modal_noise_env(model, plan, n_grid, stretch, size, brightness, hardness, no
     cut = _segment_cuts(model, plan, tg, stretch, ring)
     env = np.array([_band_level(b, old, cut) for b in nz["env"]])
     cent = erb_centres(nz["edges"])
-    lc = np.log2(cent)
-    if size != 1:
-        env = np.array([np.interp(lc + np.log2(size), lc, env[:, k]) for k in range(n_grid)]).T
-    env = env + (brightness * np.log2(cent / 1000.0))[:, None] + noise
+    env = _size_shift(env, cent, size) + (brightness * np.log2(cent / 1000.0))[:, None] + noise
     if hardness != 1:
         env = env + np.outer(4 * np.log2(hardness) * np.log2(cent / 1000.0), _hard_window(plan, tg))
     if vary:
         env = env + (1.5 * vary * rj.standard_normal(len(cent)))[:, None]
     return env
+
+
+def _size_shift(env, cent, size):
+    if size == 1:
+        return env
+    lc = np.log2(cent)
+    return np.array([np.interp(lc + np.log2(size), lc, env[:, k]) for k in range(env.shape[1])]).T
 
 
 def _seg_index(plan, tg):
@@ -395,6 +419,16 @@ def _old_times(plan, tg, stretch):
     return to[seg] + orel
 
 
+def _segment_cut(i, plan, tn, to, end, stretch):
+    last = i + 1 >= len(plan)
+    c = end if last else to[i + 1]
+    old_len = c - to[i]
+    new_len = old_len * max(1.0, stretch) if last else tn[i + 1] - tn[i]
+    if stretch != 1 or abs(new_len - old_len) > 1e-12:
+        c -= GRID_S
+    return c
+
+
 def _segment_cuts(model, plan, tg, stretch, ring):
     length = model["length_s"]
     if not plan:
@@ -402,14 +436,7 @@ def _segment_cuts(model, plan, tg, stretch, ring):
     seg, tn = _seg_index(plan, tg)
     to = [p["t_old"] for p in plan]
     end = length - (model.get("fade_out_s", 0.0) if (ring and model.get("coherent")) else 0.0)
-    cuts = []
-    for i in range(len(plan)):
-        c = to[i + 1] if i + 1 < len(plan) else end
-        old_len = c - to[i]
-        new_len = (tn[i + 1] - tn[i]) if i + 1 < len(plan) else old_len * max(1.0, stretch)
-        if stretch != 1 or abs(new_len - old_len) > 1e-12:
-            c -= GRID_S
-        cuts.append(c)
+    cuts = [_segment_cut(i, plan, tn, to, end, stretch) for i in range(len(plan))]
     return np.asarray(cuts)[seg]
 
 
@@ -447,25 +474,29 @@ def modal_noise(env, n, edges, r):
     return irfft(total, nfft)[:n]
 
 
+def _side_t(st, mid, plan, stretch, size, sign):
+    bands = np.asarray(st["bands"], dtype=float) / size
+    old = _old_times(plan, np.arange(len(mid)) / SR, stretch)
+    pan = np.array([np.interp(old, st["times"], p) for p in st["pan"]])
+    dif = np.array([np.interp(old, st["times"], d) for d in st["diffuse"]])
+    return side_from_gains(mid, bands, pan, dif, sign)
+
+
+def _side_rho(rho, mid, edges, sign):
+    n = len(mid)
+    nfft = next_fast_len(n + 16384)
+    shape = np.sqrt(np.sum((np.asarray(rho)[:, None] * erb_masks(nfft, edges)) ** 2, axis=0))
+    return irfft(rfft(mid, nfft) * (-1j * sign) * shape, nfft)[:n]
+
+
 def modal_side(model, mid, plan, stretch, size, width, sign):
     """The side channel of a stereo modal render."""
-    n = len(mid)
-    st = model.get("side_t")
-    if st and width > 0:
-        bands = np.asarray(st["bands"], dtype=float) / size
-        tg = np.arange(n) / SR
-        old = _old_times(plan, tg, stretch)
-        pan = np.array([np.interp(old, st["times"], p) for p in st["pan"]])
-        dif = np.array([np.interp(old, st["times"], d) for d in st["diffuse"]])
-        return side_from_gains(mid, bands, pan, dif, sign) * width
-    rho = model.get("side")
-    if rho and width > 0:
-        nfft = next_fast_len(n + 16384)
-        masks = erb_masks(nfft, model["noise"]["edges"])
-        shape = np.sqrt(np.sum((np.asarray(rho)[:, None] * masks) ** 2, axis=0))
-        q = rfft(mid, nfft) * (-1j * sign) * shape
-        return irfft(q, nfft)[:n] * width
-    return np.zeros(n)
+    side = np.zeros(len(mid))
+    if width > 0 and model.get("side_t"):
+        side = _side_t(model["side_t"], mid, plan, stretch, size, sign) * width
+    elif width > 0 and model.get("side"):
+        side = _side_rho(model["side"], mid, model["noise"]["edges"], sign) * width
+    return side
 
 
 def room_ir(r, size):
@@ -490,37 +521,56 @@ def add_room(chans, room, size, r):
 def render_model(model, seed=0, size=1.0, damping=1.0, brightness=0.0, hardness=1.0, noise=0.0,
                  width=1.0, room=0.0, vary=0.0, spacing=1.0, gain=0.0, stereo=None, ring=None):
     """Render a modal model: float64 at 48 kHz, (n,) or (n, 2)."""
+    k = {"size": size, "damping": damping, "brightness": brightness, "hardness": hardness,
+         "noise": noise, "width": width, "room": room, "vary": vary, "spacing": spacing,
+         "ring": vary > 0 if ring is None else ring,
+         "stereo": int(model.get("channels", 1)) == 2 if stereo is None else stereo}
+    return _render_knobs(model, seed, k) * 10.0 ** (gain / 20.0)
+
+
+def _render_knobs(model, seed, k):
     gens = modal_gens(seed)
-    if ring is None:
-        ring = vary > 0
-    if stereo is None:
-        stereo = int(model.get("channels", 1)) == 2
-    plan, stretch = modal_plan(model, seed, size, damping, brightness, hardness, vary, spacing)
+    plan, stretch = modal_plan(model, seed, k["size"], k["damping"], k["brightness"], k["hardness"],
+                               k["vary"], k["spacing"])
+    n, n_nom = _render_lengths(model, plan, stretch, k["ring"])
+    env = modal_noise_env(model, plan, int(np.ceil(n / (GRID_S * SR))) + 2, stretch, k["size"],
+                          k["brightness"], k["hardness"], k["noise"], k["vary"], k["ring"], gens[1])
+    mid = _modal_mid(model, plan, env, n, n_nom, k["ring"], gens[2])
+    side = None
+    if k["stereo"]:
+        sign = -1.0 if gens[3].uniform() < 0.5 else 1.0
+        side = modal_side(model, mid, plan, stretch, k["size"], k["width"], sign)
+    return _end_fade(_modal_out(mid, side, k["room"], k["size"], gens[5]), n)
+
+
+def _modal_out(mid, side, room, size, r):
+    chans = [mid] if side is None else [mid + side, mid - side]
+    if room > 0:
+        chans = add_room(chans, room, size, r)
+    return chans[0] if side is None else np.column_stack(chans)
+
+
+def _render_lengths(model, plan, stretch, ring):
     length = _new_length(model, plan, stretch)
     ext = ring_extension(plan, length) if ring else 0.0
     n = max(1, int(round((length + ext) * SR)))
-    n_nom = min(n, int(round(length * SR)))
-    det = _modal_det(model, plan, n, n_nom, ring)
-    n_grid = int(np.ceil(n / (GRID_S * SR))) + 2
-    env = modal_noise_env(model, plan, n_grid, stretch, size, brightness, hardness, noise, vary,
-                          ring, gens[1])
-    mid = det
+    return n, min(n, int(round(length * SR)))
+
+
+def _modal_mid(model, plan, env, n, n_nom, ring, r):
+    mid = _modal_det(model, plan, n, n_nom, ring)
     if env.size and np.max(env) > -200.0:
-        mid = det + modal_noise(env, n, model["noise"]["edges"], gens[2])
+        mid = mid + modal_noise(env, n, model["noise"]["edges"], r)
     if ring and n > n_nom:
         mid[n_nom:] *= 10.0 ** (-3.0 * np.arange(n - n_nom) / (n - n_nom))
-    chans = [mid]
-    if stereo:
-        sign = -1.0 if gens[3].uniform() < 0.5 else 1.0
-        side = modal_side(model, mid, plan, stretch, size, width, sign)
-        chans = [mid + side, mid - side]
-    if room > 0:
-        chans = add_room(chans, room, size, gens[5])
-    y = np.column_stack(chans) if stereo else chans[0]
+    return mid
+
+
+def _end_fade(y, n):
     k = min(n, int(0.001 * SR))
     if k > 0:
         y[n - k:] = (y[n - k:].T * np.linspace(1.0, 0.0, k)).T
-    return y * 10.0 ** (gain / 20.0)
+    return y
 
 
 def _new_length(model, plan, stretch):
@@ -529,21 +579,27 @@ def _new_length(model, plan, stretch):
     return plan[-1]["t"] + (model["length_s"] - plan[-1]["t_old"]) * max(1.0, stretch)
 
 
+def _add_sub(y, sub, n):
+    if sub and sub.get("x"):
+        up = resample_poly(np.asarray(sub["x"], dtype=float), SUB_DEC, 1)
+        m = min(n, len(up))
+        y[:m] += up[:m]
+
+
+def _apply_fade(y, fo, n_nom):
+    nf = int(round(fo * SR))
+    if nf > 0:
+        k = min(nf, n_nom)
+        y[n_nom - k:n_nom] *= np.linspace(1.0, 0.0, k)
+        y[n_nom:] = 0.0
+
+
 def _modal_det(model, plan, n, n_nom, ring):
     y = np.zeros(n)
     coherent = bool(model.get("coherent"))
     for i, p in enumerate(plan):
         s0, w = strike_wave(p, n, i == 0, coherent)
         y[s0:s0 + len(w)] += w
-    sub = model.get("sub")
-    if sub and sub.get("x"):
-        up = resample_poly(np.asarray(sub["x"], dtype=float), SUB_DEC, 1)
-        m = min(n, len(up))
-        y[:m] += up[:m]
-    fo = 0.0 if ring else float(model.get("fade_out_s", 0.0))
-    nf = int(round(fo * SR))
-    if nf > 0:
-        k = min(nf, n_nom)
-        y[n_nom - k:n_nom] *= np.linspace(1.0, 0.0, k)
-        y[n_nom:] = 0.0
+    _add_sub(y, model.get("sub"), n)
+    _apply_fade(y, 0.0 if ring else float(model.get("fade_out_s", 0.0)), n_nom)
     return y
