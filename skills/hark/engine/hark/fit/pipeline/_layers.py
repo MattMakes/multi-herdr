@@ -42,26 +42,33 @@ def fit_kind(x: Any, kind: str, fast: bool = False, name: str | None = None, **o
     return model
 
 
+def _quiet_modal(m: dict) -> None:
+    noise = m.get("noise") or {}
+    noise["env"] = [[[float(p[0]), -240.0] for p in band] for band in noise.get("env", [])]
+    m["noise"] = noise
+    m["side"] = None
+    m.pop("side_t", None)
+
+
+def _quiet_sines(m: dict) -> None:
+    res = m.get("residual") or {}
+    bands = list(res.get("bands") or [1000.0])[:1]
+    times = list(res.get("times") or [0.0])
+    m["residual"] = dict(res, bands=bands, times=times, db=[[-150.0] * len(times)])
+    m["width"] = -120.0
+
+
+_QUIET = {"modal": _quiet_modal, "sines": _quiet_sines}
+
+
 def deterministic(model: dict) -> dict:
     """A copy of a modal or sines model without its noise."""
     name = kind_of(model)
-    m = {k: copy.deepcopy(v) for k, v in model.items() if k not in ("post", "fit_engine")}
-    if name == "modal":
-        noise = m.get("noise") or {}
-        noise["env"] = [[[float(p[0]), -240.0] for p in band] for band in noise.get("env", [])]
-        m["noise"] = noise
-        m["side"] = None
-        m.pop("side_t", None)
-        m["channels"] = 1
-    elif name == "sines":
-        res = m.get("residual") or {}
-        bands = list(res.get("bands") or [1000.0])[:1]
-        times = list(res.get("times") or [0.0])
-        m["residual"] = dict(res, bands=bands, times=times, db=[[-150.0] * len(times)])
-        m["width"] = -120.0
-        m["channels"] = 1
-    else:
+    if name not in _QUIET:
         raise ValueError(f"deterministic: a {name} model has no deterministic copy")
+    m = {k: copy.deepcopy(v) for k, v in model.items() if k not in ("post", "fit_engine")}
+    _QUIET[name](m)
+    m["channels"] = 1
     m["layer"] = "deterministic"
     return m
 

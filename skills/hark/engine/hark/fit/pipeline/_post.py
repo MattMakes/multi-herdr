@@ -76,27 +76,48 @@ def _orig_time(t: np.ndarray, scale: float, anchor: float) -> np.ndarray:
     return anchor + (t - anchor) / scale if anchor else t / scale
 
 
-def _clamp_gains(y: np.ndarray, pre: dict, scale: float, anchor: float) -> np.ndarray | None:
+def _pre_gains(e: np.ndarray, db: np.ndarray, k: int, scale: float, anchor: float) -> np.ndarray:
+    """Cuts that hold the pre-onset frames 1.5 dB over the recording's pre-roll."""
+    if not (k and len(db)):
+        return np.zeros(k)
+    tc = _orig_time((np.arange(k) + 0.5) * ATTACK_FRAME_S, scale, anchor)
+    want = np.interp(tc / ATTACK_FRAME_S - 0.5, np.arange(len(db)), db)
+    return np.minimum(0.0, want + 1.5 - e[:k])
+
+
+def _attack_want(att: list, na: int) -> np.ndarray:
+    if len(att) > 1:
+        return np.interp(np.linspace(0, len(att) - 1, na), np.arange(len(att)), att)
+    return np.full(na, att[0])
+
+
+def _attack_gains(e: np.ndarray, att: list, na: int) -> np.ndarray:
+    """Gains (+-9 dB) that follow the recording's attack, faded out over 8 frames."""
+    m = len(e)
+    if not (na and m):
+        return np.zeros(m)
+    ga = np.clip(_attack_want(att, na)[:m] - e, -9, 9)
+    fade = np.minimum(1.0, (m - 1 - np.arange(m)) / 8.0)
+    return ga * np.clip(fade, 0, 1)
+
+
+def _clamp_frames(n: int, pre: dict, scale: float, anchor: float) -> tuple:
+    """(pre-onset frames, attack frames, all frames) after time scaling, capped at n samples."""
     np_ = _pre_frames(float(pre["t_on"]), scale, anchor)
-    att = list(pre.get("attack_db") or [])
-    na = int(round(len(att) * scale)) if scale != 1 else len(att)
-    nb = min(len(y) // ATTACK_HOP, np_ + na)
+    n_att = len(pre.get("attack_db") or [])
+    na = int(round(n_att * scale)) if scale != 1 else n_att
+    nb = min(n // ATTACK_HOP, np_ + na)
+    return min(np_, nb), na, nb
+
+
+def _clamp_gains(y: np.ndarray, pre: dict, scale: float, anchor: float) -> np.ndarray | None:
+    k, na, nb = _clamp_frames(len(y), pre, scale, anchor)
     if nb < 2:
         return None
     e = frame_db(mono(y), ATTACK_HOP, nb)
-    g = np.zeros(nb)
     db = np.asarray(pre.get("db") or [], dtype=np.float64)
-    k = min(np_, nb)
-    if k and len(db):
-        tc = _orig_time((np.arange(k) + 0.5) * ATTACK_FRAME_S, scale, anchor)
-        want = np.interp(tc / ATTACK_FRAME_S - 0.5, np.arange(len(db)), db)
-        g[:k] = np.minimum(0.0, want + 1.5 - e[:k])
-    if na and nb > k:
-        want = np.interp(np.linspace(0, len(att) - 1, na), np.arange(len(att)), att) if len(att) > 1 else np.full(na, att[0])
-        m = nb - k
-        ga = np.clip(want[:m] - e[k:nb], -9, 9)
-        fade = np.minimum(1.0, (m - 1 - np.arange(m)) / 8.0) if m else ga
-        g[k:nb] = ga * np.clip(fade, 0, 1)
+    att = list(pre.get("attack_db") or [])
+    g = np.concatenate([_pre_gains(e, db, k, scale, anchor), _attack_gains(e[k:nb], att, na)])
     if pre.get("v") == 2:
         return np.concatenate([_smooth_part(g[:k]), _smooth_part(g[k:])])
     return _smooth_part(g)
@@ -111,28 +132,40 @@ def _smooth_part(g: np.ndarray) -> np.ndarray:
     return smooth121(np.where(wide < 0, np.minimum(wide, g), g))
 
 
+def _clamp_curve(g: np.ndarray) -> np.ndarray:
+    """Per-sample linear gain from the 0.25 ms frame gains, back to 0 dB at the end."""
+    span = len(g) * ATTACK_HOP
+    gs = np.interp(np.arange(span), np.append((np.arange(len(g)) + 0.5) * ATTACK_HOP, span),
+                   np.append(g, 0.0))
+    return 10 ** (gs / 20)
+
+
+def _hp_clamp(y: np.ndarray, lin: np.ndarray, hp: float) -> np.ndarray:
+    """Apply the clamp only above hp Hz: add the high-passed gain change to the render."""
+    span = len(lin)
+    end = min(len(y), span + int(round(0.02 * SR)))
+    full = np.ones(end)
+    full[:span] = lin
+    corr = _scale(y[:end], full - 1.0)
+    if len(corr) > 30:
+        sos = signal.butter(4, float(hp), "highpass", fs=SR, output="sos")
+        corr = signal.sosfiltfilt(sos, corr, axis=0)
+    out = y.copy()
+    out[:end] = out[:end] + corr
+    return out
+
+
 def attack_clamp(y: np.ndarray, pre: dict, scale: float = 1, anchor: float = 0) -> np.ndarray:
     """Restore the recording's attack shape over the first frames of a render."""
     g = _clamp_gains(y, pre, scale, anchor)
     if g is None:
         return y
-    span = len(g) * ATTACK_HOP
-    gs = np.interp(np.arange(span), np.append((np.arange(len(g)) + 0.5) * ATTACK_HOP, span),
-                   np.append(g, 0.0))
-    lin = 10 ** (gs / 20)
-    out = y.copy()
+    lin = _clamp_curve(g)
     hp = pre.get("hp_hz")
-    if not hp:
-        out[:span] = _scale(y[:span], lin)
-        return out
-    end = min(len(y), span + int(round(0.02 * SR)))
-    full = np.ones(end)
-    full[:span] = lin
-    corr = _scale(y[:end], full - 1.0)
-    sos = signal.butter(4, float(hp), "highpass", fs=SR, output="sos")
-    if len(corr) > 30:
-        corr = signal.sosfiltfilt(sos, corr, axis=0)
-    out[:end] = out[:end] + corr
+    if hp:
+        return _hp_clamp(y, lin, hp)
+    out = y.copy()
+    out[: len(lin)] = _scale(y[: len(lin)], lin)
     return out
 
 
@@ -202,20 +235,52 @@ def _noise_c() -> float:
     return float(np.sum(w ** 2) / np.sum(w) ** 2 * math.log(2))
 
 
+def _is_line(db: np.ndarray, med: np.ndarray, k: int) -> bool:
+    return db[k] >= med[k] + 10 and db[k] >= db[k - 1] and db[k] >= db[k + 1]
+
+
+def _line(db: np.ndarray, power: np.ndarray, k: int) -> tuple:
+    """(frequency Hz, amplitude) of a spectral line at bin k, parabolic refined."""
+    a, b, c = db[k - 1], db[k], db[k + 1]
+    curv = a - 2 * b + c
+    off = 0.5 * (a - c) / curv if curv < 0 else 0.0
+    amp = math.sqrt(4 * float(power[k - 1: k + 2].sum()) / 1.5)
+    return (k + off) * SR / 1024, amp
+
+
 def _bed_lines(power: np.ndarray) -> tuple[list, np.ndarray]:
     db = 10 * np.log10(np.maximum(power, 1e-30))
     med = signal.medfilt(db, 15) if len(db) >= 15 else np.full_like(db, np.median(db))
-    lines = []
+    ks = [k for k in range(1, len(db) - 1) if _is_line(db, med, k)]
     out = power.copy()
-    for k in range(1, len(db) - 1):
-        if db[k] >= med[k] + 10 and db[k] >= db[k - 1] and db[k] >= db[k + 1]:
-            a, b, c = db[k - 1], db[k], db[k + 1]
-            curv = a - 2 * b + c
-            off = 0.5 * (a - c) / curv if curv < 0 else 0.0
-            amp = math.sqrt(4 * float(power[k - 1: k + 2].sum()) / 1.5)
-            lines.append(((k + off) * SR / 1024, amp))
-            out[k - 1: k + 2] = 10 ** (med[k - 1: k + 2] / 10)
-    return lines, out
+    for k in ks:
+        out[k - 1: k + 2] = 10 ** (med[k - 1: k + 2] / 10)
+    return [_line(db, power, k) for k in ks], out
+
+
+def _shaped_noise(r: np.random.Generator, power: np.ndarray, nb: int) -> np.ndarray:
+    white = r.standard_normal(nb + 1024)
+    _, _, z = signal.stft(white, nperseg=1024, noverlap=768, window="hann")
+    z = z * np.sqrt(power / _noise_c())[:, None]
+    _, x = signal.istft(z, nperseg=1024, noverlap=768, window="hann")
+    return np.pad(x, (0, max(0, nb - len(x))))[:nb]
+
+
+def _line_tones(lines: list, phases: np.ndarray, nb: int) -> np.ndarray:
+    t = np.arange(nb) / SR
+    x = np.zeros(nb)
+    for (f, a), ph in zip(lines, phases):
+        x = x + a * np.cos(2 * np.pi * f * t + ph)
+    return x
+
+
+def _bed_fades(x: np.ndarray) -> np.ndarray:
+    """A 2 ms linear fade-in and a 10 ms linear fade-out."""
+    nb = len(x)
+    fi, fo = min(nb, int(0.002 * SR)), min(nb, int(0.010 * SR))
+    x[:fi] *= np.arange(fi) / max(fi, 1)
+    x[nb - fo:] *= np.arange(fo, 0, -1) / max(fo, 1)
+    return x
 
 
 def bed_noise(bed: dict, n: int, seed: int = 0) -> np.ndarray:
@@ -224,24 +289,11 @@ def bed_noise(bed: dict, n: int, seed: int = 0) -> np.ndarray:
     y = np.zeros(n)
     if nb <= 0:
         return y
-    power = 10 ** (np.asarray(bed["psd_db"], dtype=np.float64) / 10)
-    lines, power = _bed_lines(power)
+    lines, power = _bed_lines(10 ** (np.asarray(bed["psd_db"], dtype=np.float64) / 10))
     r = np.random.default_rng([seed & 0xFFFFFFFF, 77])
     phases = r.uniform(0, 2 * np.pi, len(lines))
-    white = r.standard_normal(nb + 1024)
-    _, _, z = signal.stft(white, nperseg=1024, noverlap=768, window="hann")
-    z = z * np.sqrt(power / _noise_c())[:, None]
-    _, x = signal.istft(z, nperseg=1024, noverlap=768, window="hann")
-    x = np.pad(x, (0, max(0, nb - len(x))))[:nb]
-    t = np.arange(nb) / SR
-    for (f, a), ph in zip(lines, phases):
-        x = x + a * np.cos(2 * np.pi * f * t + ph)
-    fi, fo = min(nb, int(0.002 * SR)), min(nb, int(0.010 * SR))
-    if fi:
-        x[:fi] *= np.arange(fi) / fi
-    if fo:
-        x[nb - fo:] *= np.arange(fo, 0, -1) / fo
-    y[:nb] = x
+    x = _shaped_noise(r, power, nb)
+    y[:nb] = _bed_fades(x + _line_tones(lines, phases, nb))
     return y
 
 

@@ -101,19 +101,28 @@ def _with_clamp(X: np.ndarray, renders: list, p: dict, noise: bool) -> dict | No
 # ---------------------------------------------------------------- envelope calibration
 
 
+def _env_start(p: dict) -> int:
+    """The first 5 ms frame after the attack clamp onset plus 8 ms."""
+    t_on = float((p.get("pre") or {}).get("t_on", 0))
+    return int(np.ceil((t_on + 0.008) / 0.005))
+
+
+def _env_gains(e0: np.ndarray, er: np.ndarray, start: int) -> np.ndarray:
+    top = max(e0.max(), er.max())
+    g = np.clip(e0 - er, -12, 6)
+    g[(e0 < top - 70) & (er < top - 70)] = 0
+    g[: min(start, len(g))] = 0
+    g = smooth121(smooth121(g))
+    g[:2] *= np.array([0.33, 0.67])[: len(g[:2])]
+    return g
+
+
 def _env_curve(X: np.ndarray, renders: list, p: dict) -> dict | None:
     e0 = frame_db(mono(X), 240)
     es = [frame_db(mono(apply_post(y, p)), 240, len(e0)) for y in renders if len(y) >= len(e0) * 240]
     if not es or len(e0) < 3:
         return None
-    er = np.mean(es, axis=0)
-    top = max(e0.max(), er.max())
-    g = np.clip(e0 - er, -12, 6)
-    g[(e0 < top - 70) & (er < top - 70)] = 0
-    start = int(np.ceil((float((p.get("pre") or {}).get("t_on", 0)) + 0.008) / 0.005))
-    g[: min(start, len(g))] = 0
-    g = smooth121(smooth121(g))
-    g[:2] *= np.array([0.33, 0.67])[: len(g[:2])]
+    g = _env_gains(e0, np.mean(es, axis=0), _env_start(p))
     return {"hop": 0.005, "db": np.round(g, 2).tolist()}
 
 
@@ -202,18 +211,25 @@ def _rdp(pts: np.ndarray, tol: float) -> np.ndarray:
     return np.asarray(rdp(pts.tolist(), tol))
 
 
-def fit_gate(X: np.ndarray, renders: list, pre: dict | None = None) -> dict | None:
-    """A gain curve that cuts where the renders ring on after the recording fell, or None."""
+def _gate_start(e0: np.ndarray, pre: dict | None) -> int:
+    if pre:
+        return int(round(float(pre["t_on"]) / 0.0005))
+    return int(np.argmax(e0 >= e0.max() - 20))
+
+
+def _gate_cut(X: np.ndarray, renders: list, pre: dict | None) -> np.ndarray:
+    """The cleaned gate cut in dB per 0.5 ms frame, or an empty array."""
     e0 = _gate_env(mono(X))
     if len(e0) < 8 or not renders:
-        return None
-    er = _render_env(renders, len(e0))
-    e0, er = ndimage.median_filter(e0, 3, mode="nearest"), ndimage.median_filter(er, 3, mode="nearest")
-    if pre:
-        start = int(round(float(pre["t_on"]) / 0.0005))
-    else:
-        start = int(np.argmax(e0 >= e0.max() - 20))
-    cut = _clean_runs(_raw_cut(e0, er, start))
+        return np.zeros(0)
+    er = ndimage.median_filter(_render_env(renders, len(e0)), 3, mode="nearest")
+    e0 = ndimage.median_filter(e0, 3, mode="nearest")
+    return _clean_runs(_raw_cut(e0, er, _gate_start(e0, pre)))
+
+
+def fit_gate(X: np.ndarray, renders: list, pre: dict | None = None) -> dict | None:
+    """A gain curve that cuts where the renders ring on after the recording fell, or None."""
+    cut = _gate_cut(X, renders, pre)
     if not np.any(cut < -0.5):
         return None
     t = (np.arange(len(cut)) + 1) * 0.0005
@@ -234,6 +250,22 @@ def _try_gate(X: np.ndarray, renders: list, p: dict, sc: Callable, base: tuple) 
     return q if s < base[0] and c >= base[1] - 0.005 else p
 
 
+def _try_clamp(X: np.ndarray, renders: list, p: dict, sc: Callable, noise: bool) -> dict:
+    q = _with_clamp(X, renders, p, noise)
+    keep = q is not None and (not noise or sc(q)[0] < sc(p)[0])
+    return q if keep else p
+
+
+def _try_env(X: np.ndarray, renders: list, p: dict, max_db: float) -> dict:
+    env = _env_curve(X, renders, p)
+    if env is None:
+        return p
+    q = dict(p, env=env)
+    q["eq_db"] = fit_eq(X, [apply_post(y, {"env": env}) for y in renders], 1, max_db)
+    q["gain_db"] = level_gain(X, renders, q)
+    return q
+
+
 def fit_post(X: np.ndarray, renders: list, iters: int = 2, max_db: float = 12, envelope: bool = False,
              gate: bool = True, judge: Judge | None = None, sharp: bool = True, noise: bool = False) -> dict:
     """A post stage fitted from renders (not finished) against the recording X."""
@@ -243,15 +275,9 @@ def fit_post(X: np.ndarray, renders: list, iters: int = 2, max_db: float = 12, e
     p: dict[str, Any] = {"eq_db": fit_eq(X, renders, iters, max_db), "gain_db": 0.0}
     p["gain_db"] = round(level_gain(X, renders, p), 3)
     if sharp:
-        q = _with_clamp(X, renders, p, noise)
-        if q is not None and (not noise or sc(q)[0] < sc(p)[0]):
-            p = q
+        p = _try_clamp(X, renders, p, sc, noise)
     if envelope:
-        env = _env_curve(X, renders, p)
-        if env is not None:
-            p = dict(p, env=env)
-            p["eq_db"] = fit_eq(X, [apply_post(y, {"env": env}) for y in renders], 1, max_db)
-            p["gain_db"] = level_gain(X, renders, p)
+        p = _try_env(X, renders, p, max_db)
     if gate:
         p = _try_gate(X, renders, p, sc, sc(p))
     return p
