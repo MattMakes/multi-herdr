@@ -62,8 +62,8 @@ def live_ms(y: np.ndarray, sr: int = SR, db: float = LIVE_DB) -> float:
     return round(float(np.count_nonzero(ms >= ms.max() * 10 ** (db / 10))) * hop * 1000 / sr, 2)
 
 
-def _glide_frames(m: np.ndarray, sr: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Per frame: band power T, strongest frequency fp, and the power near fp."""
+def _band_power(m: np.ndarray, sr: int) -> tuple[np.ndarray, np.ndarray]:
+    """Frame power spectra inside GLIDE_BAND, and their frequencies."""
     if len(m) < GLIDE_WIN:
         m = np.concatenate([m, np.zeros(GLIDE_WIN - len(m))])
     count = 1 + (len(m) - GLIDE_WIN) // GLIDE_HOP
@@ -71,7 +71,12 @@ def _glide_frames(m: np.ndarray, sr: int) -> tuple[np.ndarray, np.ndarray, np.nd
     power = np.abs(np.fft.rfft(m[idx] * np.hanning(GLIDE_WIN), GLIDE_NFFT, axis=1)) ** 2
     freqs = np.fft.rfftfreq(GLIDE_NFFT, 1.0 / sr)
     keep = (freqs >= GLIDE_BAND[0]) & (freqs <= GLIDE_BAND[1])
-    power, freqs = power[:, keep], freqs[keep]
+    return power[:, keep], freqs[keep]
+
+
+def _glide_frames(m: np.ndarray, sr: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Per frame: band power T, strongest frequency fp, and the power near fp."""
+    power, freqs = _band_power(m, sr)
     total = power.sum(axis=1)
     fp = freqs[np.argmax(power, axis=1)]
     half = np.maximum(fp * (2 ** (3 / 12) - 1), 2 * sr / GLIDE_WIN)
@@ -103,22 +108,35 @@ def _track_climb(track: list[int], st: np.ndarray, t: np.ndarray) -> tuple[float
     return float(climb[k]), float(t[track[start]]), float(t[track[k]])
 
 
-def rising_glide(y: np.ndarray, sr: int = SR) -> dict[str, Any]:
-    """The largest pitch climb of a tonal track (part 2, 3.6)."""
-    total, fp, near = _glide_frames(mono(y), sr)
+def _tonal_frames(total: np.ndarray, near: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Active frames (within GLIDE_ACTIVE_DB of the loudest) and the tonal ones among them."""
     active = total >= total.max() * 10 ** (GLIDE_ACTIVE_DB / 10) if total.max() > 0 else total > 0
-    tonal = active & (near >= 0.5 * total)
-    st = 12 * np.log2(np.maximum(fp, 1e-9) / 440.0)
-    t = np.arange(len(total)) * GLIDE_HOP / sr + (GLIDE_WIN / 2) / sr
-    best = (0.0, None, None)
+    return active, active & (near >= 0.5 * total)
+
+
+def _best_climb(tonal: np.ndarray, st: np.ndarray, t: np.ndarray) -> tuple[float, Any, Any]:
+    best: tuple[float, Any, Any] = (0.0, None, None)
     for track in _tracks(np.nonzero(tonal)[0], st):
         climb = _track_climb(track, st, t)
         if climb[0] > best[0]:
             best = climb
+    return best
+
+
+def _round_or_none(v: float | None, digits: int) -> float | None:
+    return None if v is None else round(v, digits)
+
+
+def rising_glide(y: np.ndarray, sr: int = SR) -> dict[str, Any]:
+    """The largest pitch climb of a tonal track (part 2, 3.6)."""
+    total, fp, near = _glide_frames(mono(y), sr)
+    active, tonal = _tonal_frames(total, near)
+    st = 12 * np.log2(np.maximum(fp, 1e-9) / 440.0)
+    t = np.arange(len(total)) * GLIDE_HOP / sr + (GLIDE_WIN / 2) / sr
+    rise, fr, to = _best_climb(tonal, st, t)
     share = round(float(tonal.sum()) / max(1, int(active.sum())), 2)
-    fr = None if best[1] is None else round(best[1], 3)
-    to = None if best[2] is None else round(best[2], 3)
-    return {"tonal_share": share, "rise_st": round(best[0], 1), "from_s": fr, "to_s": to}
+    return {"tonal_share": share, "rise_st": round(rise, 1), "from_s": _round_or_none(fr, 3),
+            "to_s": _round_or_none(to, 3)}
 
 
 def _layer_env(m: np.ndarray) -> np.ndarray:
@@ -129,15 +147,25 @@ def _layer_env(m: np.ndarray) -> np.ndarray:
     return e - e.max()
 
 
+def _is_peak(e: np.ndarray, i: int) -> bool:
+    """A local maximum of ``e`` within LAYER_PEAK_DB of the loudest."""
+    rises = i == 0 or e[i] >= e[i - 1]
+    falls = i == len(e) - 1 or e[i] >= e[i + 1]
+    return bool(e[i] >= LAYER_PEAK_DB and rises and falls)
+
+
+def _no_dip(e: np.ndarray, last: int, c: int) -> bool:
+    """True when the level between two peaks never dips LAYER_DIP_DB below the lower one."""
+    return bool(e[last: c + 1].min() > min(e[last], e[c]) - LAYER_DIP_DB)
+
+
 def _attack_frames(e: np.ndarray, sr: int) -> list[int]:
-    cands = [i for i in range(len(e)) if e[i] >= LAYER_PEAK_DB
-             and (i == 0 or e[i] >= e[i - 1]) and (i == len(e) - 1 or e[i] >= e[i + 1])]
     kept: list[int] = []
     span = LAYER_SPAN_S * sr / LAYER_HOP
-    for c in cands:
+    for c in (i for i in range(len(e)) if _is_peak(e, i)):
         if kept and c - kept[0] > span:
             break
-        if kept and e[kept[-1]: c + 1].min() > min(e[kept[-1]], e[c]) - LAYER_DIP_DB:
+        if kept and _no_dip(e, kept[-1], c):
             kept[-1] = c if e[c] > e[kept[-1]] else kept[-1]
         else:
             kept.append(c)
@@ -207,27 +235,68 @@ def _silent(a: _Audit, peak: float, live: float) -> bool:
     return True
 
 
-def _artifact_rules(a: _Audit, p: dict, designed: bool, gated: bool) -> None:
-    if (p.get("clicks") or 0) > 0:
+def _above(p: dict, key: str, limit: float) -> bool:
+    """True when measure ``key`` exists and is over ``limit``."""
+    return p.get(key) is not None and p[key] > limit
+
+
+def _count(p: dict, key: str) -> float:
+    return p.get(key) or 0
+
+
+def _rule_clicks(a: _Audit, p: dict, designed: bool, gated: bool) -> None:
+    if _count(p, "clicks") > 0:
         times = ", ".join(f"{t:.3f}" for t in (p.get("click_times") or [])[:4])
         a.add("clicks", f"{p['clicks']} click(s) inside the sound at {times} s", not designed)
-    if p.get("edge_db") is not None and p["edge_db"] > EDGE_DB:
+
+
+def _rule_edge(a: _Audit, p: dict, designed: bool, gated: bool) -> None:
+    if _above(p, "edge_db", EDGE_DB):
         a.add("edge", f"the sound starts or ends at {p['edge_db']:.1f} dB re its peak: it clicks when played")
-    if (p.get("clip_runs") or 0) > 0 or (p.get("overs") or 0) > 0:
-        a.add("clipping", f"clipped: {p.get('clip_runs') or 0} flat top(s), {p.get('overs') or 0} sample(s) over full scale")
-    if p.get("dc_db") is not None and p["dc_db"] > DC_DB:
+
+
+def _rule_clipping(a: _Audit, p: dict, designed: bool, gated: bool) -> None:
+    runs, overs = _count(p, "clip_runs"), _count(p, "overs")
+    if runs > 0 or overs > 0:
+        a.add("clipping", f"clipped: {runs} flat top(s), {overs} sample(s) over full scale")
+
+
+def _rule_dc(a: _Audit, p: dict, designed: bool, gated: bool) -> None:
+    if _above(p, "dc_db", DC_DB):
         a.add("dc", f"DC offset at {p['dc_db']:.1f} dB re the peak")
-    if p.get("ring_z") is not None and p["ring_z"] > RING_Z:
-        a.add("ring", f"metallic comb ring in the tail ({p.get('ring_ms') or 0:.1f} ms delay, z {p['ring_z']:.1f})")
-    if p.get("trunc_db") is not None and p["trunc_db"] > TRUNC_DB:
-        if gated:
-            a.add("truncated", f"the tail stops at {p['trunc_db']:.1f} dB (the stop is the design)", False)
-        else:
-            a.add("truncated", f"the tail is cut at {p['trunc_db']:.1f} dB re the peak: fade it out or render it longer")
-    if (p.get("silence_ms") or 0) > SILENCE_MS:
+
+
+def _rule_ring(a: _Audit, p: dict, designed: bool, gated: bool) -> None:
+    if _above(p, "ring_z", RING_Z):
+        a.add("ring", f"metallic comb ring in the tail ({_count(p, 'ring_ms'):.1f} ms delay, z {p['ring_z']:.1f})")
+
+
+def _rule_truncated(a: _Audit, p: dict, designed: bool, gated: bool) -> None:
+    if not _above(p, "trunc_db", TRUNC_DB):
+        return
+    if gated:
+        a.add("truncated", f"the tail stops at {p['trunc_db']:.1f} dB (the stop is the design)", False)
+    else:
+        a.add("truncated", f"the tail is cut at {p['trunc_db']:.1f} dB re the peak: fade it out or render it longer")
+
+
+def _rule_silence(a: _Audit, p: dict, designed: bool, gated: bool) -> None:
+    if _count(p, "silence_ms") > SILENCE_MS:
         a.add("silence", f"{p['silence_ms']:.1f} ms of digital silence inside the sound", not designed)
-    if (p.get("bump_db") or 0) > TAIL_DB:
+
+
+def _rule_tail(a: _Audit, p: dict, designed: bool, gated: bool) -> None:
+    if _count(p, "bump_db") > TAIL_DB:
         a.add("tail", f"the level climbs {p['bump_db']:.1f} dB again after the peak (a second event or a roll)", False)
+
+
+ARTIFACT_RULES = (_rule_clicks, _rule_edge, _rule_clipping, _rule_dc, _rule_ring, _rule_truncated, _rule_silence,
+                  _rule_tail)
+
+
+def _artifact_rules(a: _Audit, p: dict, designed: bool, gated: bool) -> None:
+    for rule in ARTIFACT_RULES:
+        rule(a, p, designed, gated)
 
 
 def drip_allowed(glide: dict) -> bool:
@@ -280,7 +349,6 @@ def check(x: Any, sr: int | None = None, category: str | None = None, role: str 
           sound: str | None = None) -> dict[str, Any]:
     """Audit one sound: ``{ok, warnings, notes, summary, measures, glide, layers, context}``."""
     y, base = _load(x, sr)
-    name = sound or base or "sound"
     context = {k: v for k, v in (("category", category), ("role", role), ("sound", sound)) if v}
     a = _Audit()
     peak = float(np.max(np.abs(y))) if y.size else 0.0
@@ -289,16 +357,27 @@ def check(x: Any, sr: int | None = None, category: str | None = None, role: str 
     if _silent(a, peak, live):
         result["measures"] = _measures({}, peak, live)
     else:
-        p = _polish(y)
-        m = mono(y)
-        gated = category in GATED or int(np.argmax(np.abs(m))) >= ENDS_ON_PEAK * len(m)
-        _artifact_rules(a, p, category in DESIGNED, gated)
-        result["glide"], result["layers"] = rising_glide(y), layers(y)
-        _glide_rule(a, result["glide"], category)
-        _layer_rules(a, result["layers"], role, category)
-        result["measures"] = _measures(p, peak, live)
-    result.update(ok=not a.warnings, warnings=a.warnings, notes=a.notes, summary=_summary(name, a))
+        result.update(_audible_rules(a, y, category, role))
+        result["measures"] = _measures(result.pop("polish"), peak, live)
+    result.update(ok=not a.warnings, warnings=a.warnings, notes=a.notes,
+                  summary=_summary(sound or base or "sound", a))
     return result
+
+
+def _ends_on_peak(y: np.ndarray) -> bool:
+    m = mono(y)
+    return int(np.argmax(np.abs(m))) >= ENDS_ON_PEAK * len(m)
+
+
+def _audible_rules(a: _Audit, y: np.ndarray, category: str | None, role: str | None) -> dict[str, Any]:
+    """Run the rules after ``silent``; returns ``{polish, glide, layers}``."""
+    p = _polish(y)
+    gated = category in GATED or _ends_on_peak(y)
+    _artifact_rules(a, p, category in DESIGNED, gated)
+    glide, lay = rising_glide(y), layers(y)
+    _glide_rule(a, glide, category)
+    _layer_rules(a, lay, role, category)
+    return {"polish": p, "glide": glide, "layers": lay}
 
 
 # ---------------------------------------------------------------- list, render, check
@@ -436,10 +515,19 @@ def add_cli(sub: argparse._SubParsersAction) -> None:
     p = sub.add_parser("sfx", help="one bank sound by id, aimed at the picture; audit any effect")
     p.set_defaults(func=_help_of(p))
     s = p.add_subparsers(dest="sfx_command")
+    for leaf in (_add_list(s), _add_render(s), _add_check(s)):
+        report.add_common(leaf)
+
+
+def _add_list(s: argparse._SubParsersAction) -> argparse.ArgumentParser:
     lp = s.add_parser("list", help="list the bank sounds")
     lp.add_argument("--category")
     lp.add_argument("--kind")
     lp.set_defaults(func=_cmd_list)
+    return lp
+
+
+def _add_render(s: argparse._SubParsersAction) -> argparse.ArgumentParser:
     rp = s.add_parser("render", help="render one take of a bank sound")
     rp.add_argument("sound")
     rp.add_argument("-o", "--output", required=True)
@@ -451,10 +539,13 @@ def add_cli(sub: argparse._SubParsersAction) -> None:
     rp.add_argument("--weight", type=float)
     rp.add_argument("--sr", type=int, default=SR, choices=SR_CHOICES)
     rp.set_defaults(func=_cmd_render)
+    return rp
+
+
+def _add_check(s: argparse._SubParsersAction) -> argparse.ArgumentParser:
     cp = s.add_parser("check", help="audit sound effect files with measurements only")
     cp.add_argument("files", nargs="+")
     cp.add_argument("--category")
     cp.add_argument("--role")
     cp.set_defaults(func=_cmd_check)
-    for leaf in (lp, rp, cp):
-        report.add_common(leaf)
+    return cp
