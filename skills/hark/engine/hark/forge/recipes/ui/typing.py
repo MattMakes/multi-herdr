@@ -1,7 +1,7 @@
-"""Recipe typing: a designed, high-passed digital typing tick, and a typed run in one file.
+"""Digital typing ticks: one high-passed key, plus a typed run built from many keys.
 
-The single key is the module recipe. The typed run is the recipe object ``RUN``.
-Both write to the same seed file; their critic contexts differ by target text.
+The module itself is the single-key recipe. ``RUN`` is a second recipe object for
+the typed run. Both share one seed file and differ in their critic target text.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import types
 import numpy as np
 
 from hark.forge.engine import dsp
-from hark.forge.recipes.ui import _layers as L
+from hark.forge.recipes.ui import _layers as kit
 
 TARGET = "a short crisp high-passed digital typing tick for a motion graphics title"
 RUN_TARGET = "a quick run of crisp high-passed digital typing ticks for an animated title"
@@ -21,322 +21,388 @@ ALTS = ["a mouse click", "a drop of water", "a hi-hat", "a spray can hiss"]
 RUN_ALTS = ["rain on a window", "a hi-hat pattern", "a clock ticking", "popcorn popping"]
 REFSET = "pro_typing_key"
 
-SPACE = {
-    "ridge": (6500, 13500, "log"), "ridge_db": (0.0, 12.0), "ridge_q": (0.5, 2.5, "log"),
-    "lowcut": (2500, 5000, "log"), "hicut": (12000, 20000, "log"), "att": (0.0015, 0.005, "log"),
-    "att_curve": (0.6, 3.0, "log"), "tau1": (0.0012, 0.006, "log"), "tail_db": (-40.0, -12.0),
-    "tau2": (0.008, 0.05, "log"), "touch_db": (-30.0, -4.0), "touch_dt": (0.0015, 0.008, "log"),
-    "rattle_db": (-40.0, -18.0), "tink_db": (-40.0, 2.0), "rel_db": (-40.0, -14.0),
-    "rel_dt": (0.035, 0.075, "log"), "length": (0.05, 0.1), "gate": (0.004, 0.02, "log"), "key": (0, 999, "int"),
-    "grain": (0.0, 1.0), "grain_rate": (300, 4000, "log"), "tink_glide": (-12.0, 12.0),
-}
+SPACE = kit.space_table("""
+    ridge 6500 13500 log
+    ridge_db 0.0 12.0
+    ridge_q 0.5 2.5 log
+    lowcut 2500 5000 log
+    hicut 12000 20000 log
+    att 0.0015 0.005 log
+    att_curve 0.6 3.0 log
+    tau1 0.0012 0.006 log
+    tail_db -40.0 -12.0
+    tau2 0.008 0.05 log
+    touch_db -30.0 -4.0
+    touch_dt 0.0015 0.008 log
+    rattle_db -40.0 -18.0
+    tink_db -40.0 2.0
+    rel_db -40.0 -14.0
+    rel_dt 0.035 0.075 log
+    length 0.05 0.1
+    gate 0.004 0.02 log
+    key 0 999 int
+    grain 0.0 1.0
+    grain_rate 300 4000 log
+    tink_glide -12.0 12.0
+""")
 
-DEFAULTS = {
-    "ridge": 9600.0, "ridge_db": 6.0, "ridge_q": 1.0, "lowcut": 3400.0, "hicut": 16000.0, "att": 0.003,
-    "att_curve": 1.2, "tau1": 0.0025, "tail_db": -24.0, "tau2": 0.016, "touch_db": -12.0, "touch_dt": 0.003,
-    "rattle_db": -30.0, "tink_db": -32.0, "rel_db": -40.0, "rel_dt": 0.05, "length": 0.075, "gate": 0.008,
-    "key": 7, "grain": 0.0, "grain_rate": 1500.0, "tink_glide": 0.0,
-}
+DEFAULTS = kit.value_table("""
+    ridge 9600.0  ridge_db 6.0  ridge_q 1.0  lowcut 3400.0  hicut 16000.0  att 0.003
+    att_curve 1.2  tau1 0.0025  tail_db -24.0  tau2 0.016  touch_db -12.0  touch_dt 0.003
+    rattle_db -30.0  tink_db -32.0  rel_db -40.0  rel_dt 0.05  length 0.075  gate 0.008
+    key 7  grain 0.0  grain_rate 1500.0  tink_glide 0.0
+""")
 
-RUN_SPACE = dict(SPACE, rate=(8.5, 14.0), jit=(0.12, 0.35), lvl_jit=(1.0, 4.5), accent=(0.0, 0.35),
-                 gap=(0.0, 0.2), var=(0.01, 0.08), dur=(1.1, 1.9), swell_db=(-60.0, -26.0), swell_len=(0.2, 0.5))
-RUN_DEFAULTS = dict(DEFAULTS, rate=11.5, jit=0.22, lvl_jit=2.5, accent=0.15, gap=0.08, var=0.04, dur=1.5,
-                    swell_db=-42.0, swell_len=0.3)
+RUN_SPACE = {**SPACE, **kit.space_table("""
+    rate 8.5 14.0
+    jit 0.12 0.35
+    lvl_jit 1.0 4.5
+    accent 0.0 0.35
+    gap 0.0 0.2
+    var 0.01 0.08
+    dur 1.1 1.9
+    swell_db -60.0 -26.0
+    swell_len 0.2 0.5
+""")}
+RUN_DEFAULTS = {**DEFAULTS, **kit.value_table("""
+    rate 11.5  jit 0.22  lvl_jit 2.5  accent 0.15  gap 0.08  var 0.04  dur 1.5
+    swell_db -42.0  swell_len 0.3
+""")}
 
-OFF_DB = -39.5
-LAYOUTS = 5
+# A layer whose level sits at or under this many dB is left out.
+_SILENT_DB = -39.5
+# The typed run moves between this many key layouts.
+_LAYOUT_COUNT = 5
+_TOP_RIDGE_HZ = 16000.0
+
+
+def _gain(level_db: float) -> float:
+    return 10 ** (level_db / 20)
 
 
 def key_rng(key: int, part: int = 0) -> np.random.Generator:
-    """The fixed per-key generator (only part 0 is used)."""
+    """Generator tied to one key number; the recipe only uses part 0."""
     return np.random.default_rng(int(key) * 7919 + part * 104729 + 31)
 
 
-# ------------------------------------------------------------ building blocks
+# ---------------------------------------------------------------- key parts
 
-def band(w: np.ndarray, p: dict, ridge: float | None = None) -> np.ndarray:
-    """Y1: order-6 high-pass, ridge boost, gentle low-pass, and a steep cut at 18.5 kHz."""
-    y = dsp.butter(w, "high", p["lowcut"], 6)
-    y = dsp.peq(y, p["ridge"] if ridge is None else ridge, p["ridge_db"], p["ridge_q"])
-    y = dsp.butter(y, "low", p["hicut"], 2)
-    return np.asarray(dsp.butter(y, "low", 18500, 8), dtype=float)
+def _ridge_filter(sig: np.ndarray, cfg: dict, ridge: float | None = None) -> np.ndarray:
+    """Steep high-pass, a peaking boost at the ridge, a soft top roll-off and a hard cut at 18.5 kHz."""
+    centre = cfg["ridge"] if ridge is None else ridge
+    out = kit.highpass(sig, cfg["lowcut"], 6)
+    out = dsp.peq(out, centre, cfg["ridge_db"], cfg["ridge_q"])
+    out = kit.lowpass(out, cfg["hicut"])
+    return np.asarray(kit.lowpass(out, 18500, 8), dtype=float)
 
 
 def burst_env(n: int, att: float, curve: float, tau1: float, tail: float, tau2: float) -> np.ndarray:
-    """Y2: a power-curve attack, then a fast drop into a faint long tail."""
-    n = max(0, n)
-    a = max(2, L.n_of(att))
-    k = min(a, n)
-    e = np.empty(n)
-    e[:k] = (np.arange(k) / a) ** curve
-    td = (np.arange(k, n) - (k - 1)) / L.SR
-    e[k:] = (1 - tail) * np.exp(-td / tau1) + tail * np.exp(-td / tau2)
-    return e
+    """Envelope that rises along a power curve, drops fast, then fades in a quiet long tail."""
+    size = max(0, n)
+    rise = max(2, kit.n_of(att))
+    head = min(rise, size)
+    shape = np.empty(size)
+    shape[:head] = (np.arange(head) / rise) ** curve
+    since = (np.arange(head, size) - (head - 1)) / kit.SR
+    shape[head:] = (1 - tail) * kit.decay(since, tau1) + tail * kit.decay(since, tau2)
+    return shape
 
 
-def _velvet(n: int, r: np.random.Generator, rate: float) -> np.ndarray:
-    blk = max(1, int(L.SR / rate))
-    starts = np.arange(0, n, blk)
-    pos = starts + r.integers(0, blk, len(starts))
-    sign = np.where(r.uniform(size=len(starts)) < 0.5, -1.0, 1.0)
-    amp = r.uniform(0.3, 1.0, len(starts))
-    imp = np.zeros(n)
-    keep = pos < n
-    imp[pos[keep]] = (sign * amp)[keep]
-    return imp / (L.rms(imp) + 1e-12)
+def _sparse_grain(size: int, gen: np.random.Generator, rate: float) -> np.ndarray:
+    """One random signed impulse per block of 1/rate s, scaled to unit RMS."""
+    step = max(1, int(kit.SR / rate))
+    block_starts = np.arange(0, size, step)
+    count = len(block_starts)
+    where = block_starts + gen.integers(0, step, count)
+    signs = np.where(gen.uniform(size=count) < 0.5, -1.0, 1.0)
+    sizes = gen.uniform(0.3, 1.0, count)
+    out = np.zeros(size)
+    inside = where < size
+    out[where[inside]] = (signs * sizes)[inside]
+    return out / (kit.rms(out) + 1e-12)
 
 
-def _rattle(env: np.ndarray, p: dict, r: np.random.Generator, kr: np.random.Generator, k_hit: int) -> None:
-    n = len(env)
-    for _ in range(int(kr.integers(1, 4))):
-        tj = k_hit / L.SR + kr.uniform(0.012, 0.045) * (1 + 0.1 * r.standard_normal())
-        lvl_db = p["rattle_db"] + kr.uniform(-4.0, 2.0)
-        tau = kr.uniform(0.001, 0.003)
-        i = L.n_of(tj)
-        if i < n - 8:
-            t = L.t_of(n - i)
-            env[i:] += 10 ** (lvl_db / 20) * np.exp(-t / tau) * np.minimum(1.0, t / 0.0004)
+def _add_rattle(shape: np.ndarray, cfg: dict, gen: np.random.Generator, lay: np.random.Generator,
+                hit_at: int) -> None:
+    """Add 1 to 3 small late rebounds to the envelope."""
+    size = len(shape)
+    for _ in range(int(lay.integers(1, 4))):
+        when = hit_at / kit.SR + lay.uniform(0.012, 0.045) * (1 + 0.1 * gen.standard_normal())
+        level = cfg["rattle_db"] + lay.uniform(-4.0, 2.0)
+        fall = lay.uniform(0.001, 0.003)
+        start = kit.n_of(when)
+        if start >= size - 8:
+            continue
+        since = kit.t_of(size - start)
+        shape[start:] += _gain(level) * kit.decay(since, fall) * np.minimum(1.0, since / 0.0004)
 
 
-def _tink_partial(t: np.ndarray, f: float, glide: float, r: np.random.Generator) -> np.ndarray:
-    """The phase of 1 tink partial: a fixed tone, or a tone that glides by `glide` semitones in about 5 ms."""
-    f1 = f * (1 + 0.003 * r.standard_normal())
+def _partial_phase(tt: np.ndarray, freq: float, glide: float, gen: np.random.Generator) -> np.ndarray:
+    """Phase of one tink partial. With a glide it bends by that many semitones over about 5 ms."""
+    base = freq * (1 + 0.003 * gen.standard_normal())
     if glide == 0:
-        return 2 * np.pi * f1 * t
-    fi = np.minimum(f1 * 2 ** ((glide / 12) * (1 - np.exp(-t / 0.005))), 17000.0)
-    return 2 * np.pi * np.cumsum(fi) / L.SR
+        return kit.TWO_PI * base * tt
+    track = np.minimum(base * 2 ** ((glide / 12) * (1 - kit.decay(tt, 0.005))), 17000.0)
+    return kit.TWO_PI * np.cumsum(track) / kit.SR
 
 
-def _tink(y: np.ndarray, p: dict, r: np.random.Generator, kr: np.random.Generator, k_hit: int,
-          ridge_k: float) -> None:
-    fs = np.sort(kr.uniform(5000, 12500, 3)) * ridge_k
-    taus = kr.uniform(0.002, 0.006, 3)
-    m = len(y) - k_hit
-    if m <= 0:
+def _add_tink(out: np.ndarray, cfg: dict, gen: np.random.Generator, lay: np.random.Generator, hit_at: int,
+              ridge_k: float) -> None:
+    """Add three small metallic partials after the hit, levelled against the opening 10 ms."""
+    freqs = np.sort(lay.uniform(5000, 12500, 3)) * ridge_k
+    falls = lay.uniform(0.002, 0.006, 3)
+    span = len(out) - hit_at
+    if span <= 0:
         return
-    t = L.t_of(m)
-    tk = np.zeros(m)
-    for f, a, tau in zip(fs, (1.0, 0.6, 0.4), taus):
-        ph = _tink_partial(t, f, p["tink_glide"], r)
-        tk += a * np.exp(-t / tau) * np.sin(ph + r.uniform(0, 6.28))
-    ramp = min(24, m)
-    tk[:ramp] *= np.arange(ramp) / 24
-    w = L.n_of(0.01)
-    y[k_hit:] += 10 ** (p["tink_db"] / 20) * tk * L.rms(y[:w]) / (L.rms(tk[:w]) + 1e-12)
+    tt = kit.t_of(span)
+    ring = np.zeros(span)
+    for freq, level, fall in zip(freqs, (1.0, 0.6, 0.4), falls):
+        phase = _partial_phase(tt, freq, cfg["tink_glide"], gen)
+        ring += level * kit.decay(tt, fall) * np.sin(phase + gen.uniform(0, 6.28))
+    fade_in = min(24, span)
+    ring[:fade_in] *= np.arange(fade_in) / 24
+    win = kit.n_of(0.01)
+    out[hit_at:] += _gain(cfg["tink_db"]) * ring * kit.rms(out[:win]) / (kit.rms(ring[:win]) + 1e-12)
 
 
-def _release(y: np.ndarray, p: dict, r: np.random.Generator, t_rel: float, ridge: float, tail: float) -> None:
-    i = L.n_of(t_rel)
-    m = len(y) - i
-    if m <= 0:
+def _add_lift(out: np.ndarray, cfg: dict, gen: np.random.Generator, t_lift: float, ridge: float,
+              tail: float) -> None:
+    """Add the softer, brighter tick of the key coming back up."""
+    start = kit.n_of(t_lift)
+    span = len(out) - start
+    if span <= 0:
         return
-    er = burst_env(m, 0.0008, 1.0, 0.6 * p["tau1"], 0.5 * tail, 0.4 * p["tau2"])
-    rr = band(r.standard_normal(m) * er, p, ridge=min(1.15 * ridge, 16000.0))
-    y[i:] += 10 ** (p["rel_db"] / 20) * L.unit(rr) * L.peak(y)
+    shape = burst_env(span, 0.0008, 1.0, 0.6 * cfg["tau1"], 0.5 * tail, 0.4 * cfg["tau2"])
+    noise = _ridge_filter(gen.standard_normal(span) * shape, cfg, ridge=min(1.15 * ridge, _TOP_RIDGE_HZ))
+    out[start:] += _gain(cfg["rel_db"]) * kit.unit(noise) * kit.peak(out)
 
 
-def _edit(y: np.ndarray, gate: float, end: int) -> np.ndarray:
-    g = max(1, min(len(y) - 2, L.n_of(gate)))
-    end = min(len(y), end)
-    out = np.array(y[:end], dtype=float)
-    k0 = max(0, end - g)
-    out[k0:] *= 0.5 + 0.5 * np.cos(np.pi * np.arange(1, end - k0 + 1) / (end - k0))
+def _cut(sig: np.ndarray, gate: float, end: int) -> np.ndarray:
+    """Cut at ``end`` with a raised-cosine fade over the last ``gate`` seconds."""
+    fade = max(1, min(len(sig) - 2, kit.n_of(gate)))
+    end = min(len(sig), end)
+    out = np.array(sig[:end], dtype=float)
+    first = max(0, end - fade)
+    width = end - first
+    out[first:] *= 0.5 + 0.5 * np.cos(np.pi * np.arange(1, width + 1) / width)
     return out
 
 
-def _key_frame(p: dict, r: np.random.Generator) -> tuple[float | None, int, int]:
-    """The release time (None without a release), the sample count and the end sample of the edit."""
-    length = p["length"] * (1 + 0.06 * r.standard_normal())
-    rel_on = p["rel_db"] > OFF_DB
-    t_rel = p["touch_dt"] + p["rel_dt"] * (1 + 0.08 * r.standard_normal())
-    n = L.n_of(max(length, t_rel + 0.025 if rel_on else 0.0))
-    return (t_rel if rel_on else None), n, (n if rel_on else L.n_of(length))
+def _timing(cfg: dict, gen: np.random.Generator) -> tuple[float | None, int, int]:
+    """Return the lift time (None when the lift is off), the buffer size and the cut sample."""
+    length = cfg["length"] * (1 + 0.06 * gen.standard_normal())
+    has_lift = cfg["rel_db"] > _SILENT_DB
+    t_lift = cfg["touch_dt"] + cfg["rel_dt"] * (1 + 0.08 * gen.standard_normal())
+    if has_lift:
+        size = kit.n_of(max(length, t_lift + 0.025))
+        return t_lift, size, size
+    size = kit.n_of(max(length, 0.0))
+    return None, size, kit.n_of(length)
 
 
-def _key_noise(p: dict, r: np.random.Generator, n: int) -> np.ndarray:
-    """White noise, mixed with velvet grain when `grain` > 0."""
-    w = r.standard_normal(n)
-    if p["grain"] > 0:
-        w = (1 - p["grain"]) * w + p["grain"] * _velvet(n, r, p["grain_rate"])
-    return w
+def _source(cfg: dict, gen: np.random.Generator, size: int) -> np.ndarray:
+    """White noise, blended with sparse grain when ``grain`` is above 0."""
+    noise = gen.standard_normal(size)
+    mix = cfg["grain"]
+    if mix > 0:
+        noise = (1 - mix) * noise + mix * _sparse_grain(size, gen, cfg["grain_rate"])
+    return noise
 
 
-def _key_env(p: dict, r: np.random.Generator, n: int) -> tuple[np.ndarray, int, float]:
-    """The touch and hit envelope (Y2), the hit sample and the tail level."""
-    k_hit = min(n, L.n_of(p["touch_dt"] * (1 + 0.1 * r.standard_normal())))
-    tail = 10 ** ((p["tail_db"] + 1.5 * r.standard_normal()) / 20)
-    hit = np.zeros(n)
-    hit[k_hit:] = burst_env(n - k_hit, 0.6 * p["att"], p["att_curve"], p["tau1"], tail, p["tau2"])
-    touch = 10 ** (p["touch_db"] / 20) * burst_env(n, p["att"], p["att_curve"], 0.7 * p["tau1"], 0.3 * tail,
-                                                    0.5 * p["tau2"])
-    return np.maximum(hit, touch), k_hit, tail
+def _contact_shape(cfg: dict, gen: np.random.Generator, size: int) -> tuple[np.ndarray, int, float]:
+    """Return the envelope of finger touch and key hit, the hit sample and the tail level."""
+    hit_at = min(size, kit.n_of(cfg["touch_dt"] * (1 + 0.1 * gen.standard_normal())))
+    tail = _gain(cfg["tail_db"] + 1.5 * gen.standard_normal())
+    att, curve, tau1, tau2 = cfg["att"], cfg["att_curve"], cfg["tau1"], cfg["tau2"]
+    hit = np.zeros(size)
+    hit[hit_at:] = burst_env(size - hit_at, 0.6 * att, curve, tau1, tail, tau2)
+    touch = _gain(cfg["touch_db"]) * burst_env(size, att, curve, 0.7 * tau1, 0.3 * tail, 0.5 * tau2)
+    return np.maximum(hit, touch), hit_at, tail
 
 
-def one_key(p: dict, r: np.random.Generator, force: float = 1.0, ridge_k: float = 1.0) -> np.ndarray:
-    """One mono key tick: touch, hit, optional rattle, tink and release, then the edit."""
-    kr = key_rng(p["key"])
-    t_rel, n, end = _key_frame(p, r)
-    ridge = p["ridge"] * ridge_k * (1 + 0.015 * r.standard_normal())
-    w = _key_noise(p, r, n)
-    env, k_hit, tail = _key_env(p, r, n)
-    if p["rattle_db"] > OFF_DB:
-        _rattle(env, p, r, kr, k_hit)
-    y = band(w * env, p, ridge=min(ridge, 16000.0))
-    if p["tink_db"] > OFF_DB:
-        _tink(y, p, r, kr, k_hit, ridge_k)
-    if t_rel is not None:
-        _release(y, p, r, t_rel, ridge, tail)
-    y = _edit(y, p["gate"], end)
-    return force * L.unit(y)
+def _tick(cfg: dict, gen: np.random.Generator, force: float = 1.0, ridge_k: float = 1.0) -> np.ndarray:
+    """A mono key tick: touch and hit, then the optional rattle, tink and lift, then the cut."""
+    lay = key_rng(cfg["key"])
+    t_lift, size, end = _timing(cfg, gen)
+    ridge = cfg["ridge"] * ridge_k * (1 + 0.015 * gen.standard_normal())
+    noise = _source(cfg, gen, size)
+    shape, hit_at, tail = _contact_shape(cfg, gen, size)
+    if cfg["rattle_db"] > _SILENT_DB:
+        _add_rattle(shape, cfg, gen, lay, hit_at)
+    out = _ridge_filter(noise * shape, cfg, ridge=min(ridge, _TOP_RIDGE_HZ))
+    if cfg["tink_db"] > _SILENT_DB:
+        _add_tink(out, cfg, gen, lay, hit_at, ridge_k)
+    if t_lift is not None:
+        _add_lift(out, cfg, gen, t_lift, ridge, tail)
+    return force * kit.unit(_cut(out, cfg["gate"], end))
+
+
+def _both_channels(mono: np.ndarray) -> np.ndarray:
+    return np.column_stack([mono, mono]).astype(np.float64)
 
 
 def render(p: dict, rng: np.random.Generator) -> np.ndarray:
-    """One key: stereo (2 equal channels) float64 at 48 kHz, 50-100 ms; peak about 1 x force."""
-    p = L.merged(DEFAULTS, p)
+    """Render one key: 2 equal channels, float64 at 48 kHz, 50 to 100 ms, peak near the force."""
+    cfg = kit.merged(DEFAULTS, p)
     force = math.exp(0.08 * rng.standard_normal())
-    y = dsp.fade(one_key(p, rng, force), 0.0, 0.0015)
-    return np.column_stack([y, y]).astype(np.float64)
+    return _both_channels(dsp.fade(_tick(cfg, rng, force), 0.0, 0.0015))
 
 
-# ------------------------------------------------------------------ typed run
+# ---------------------------------------------------------------- typed run
 
 def key_times(p: dict, r: np.random.Generator) -> list[float]:
-    """Jittered key onsets with word gaps, from 0 until dur - 0.07 s."""
-    med = 1 / p["rate"]
-    times, t = [], 0.0
-    while t < p["dur"] - 0.07:
-        times.append(t)
-        d = med * math.exp(p["jit"] * r.standard_normal())
+    """Key start times with jitter and word gaps, from 0 up to dur - 0.07 s."""
+    typical = 1 / p["rate"]
+    lo, hi = 0.62 * typical, 1.75 * typical
+    stop = p["dur"] - 0.07
+    now, starts = 0.0, []
+    while now < stop:
+        starts.append(now)
+        step = typical * math.exp(p["jit"] * r.standard_normal())
         if r.uniform() < p["gap"]:
-            d *= r.uniform(1.4, 1.7)
-        t += min(max(d, 0.62 * med), 1.75 * med)
-    return times
+            step *= r.uniform(1.4, 1.7)
+        now += min(max(step, lo), hi)
+    return starts
 
 
 def _pick_layout(r: np.random.Generator, prev: int) -> int:
-    k = int(r.integers(0, LAYOUTS))
-    if k == prev:
-        k = (k + 1 + int(r.integers(0, LAYOUTS - 1))) % LAYOUTS
-    return k
+    """Pick a layout index at random, never the same one twice in a row."""
+    pick = int(r.integers(0, _LAYOUT_COUNT))
+    if pick != prev:
+        return pick
+    return (pick + 1 + int(r.integers(0, _LAYOUT_COUNT - 1))) % _LAYOUT_COUNT
 
 
-def _place_keys(y: np.ndarray, p: dict, r: np.random.Generator, times: list[float]) -> None:
-    prev, lvl = -1, 0.0
-    for t in times:
-        k = _pick_layout(r, prev)
-        prev = k
-        lvl = 0.6 * lvl + p["lvl_jit"] * r.standard_normal()
-        gain_db = lvl + (r.uniform(3, 5) if r.uniform() < p["accent"] else 0.0)
-        ridge_k = math.exp(p["var"] * (k - 2) / 2 + 0.3 * p["var"] * r.standard_normal())
-        key = one_key(dict(p, key=int(p["key"]) + 101 * k), r, 1.0, ridge_k)
-        L.add_at(y, key, L.n_of(t) if t > 0 else 0, 10 ** (min(gain_db, 6.0) / 20))
+def _lay_down_keys(out: np.ndarray, cfg: dict, gen: np.random.Generator, starts: list[float]) -> None:
+    last, drift = -1, 0.0
+    spread = cfg["var"]
+    for when in starts:
+        layout = _pick_layout(gen, last)
+        last = layout
+        drift = 0.6 * drift + cfg["lvl_jit"] * gen.standard_normal()
+        boost = gen.uniform(3, 5) if gen.uniform() < cfg["accent"] else 0.0
+        level = drift + boost
+        ridge_k = math.exp(spread * (layout - 2) / 2 + 0.3 * spread * gen.standard_normal())
+        tick = _tick(dict(cfg, key=int(cfg["key"]) + 101 * layout), gen, 1.0, ridge_k)
+        kit.add_at(out, tick, kit.n_of(when) if when > 0 else 0, _gain(min(level, 6.0)))
 
 
-def _swell(y: np.ndarray, p: dict, r: np.random.Generator, last: float) -> None:
-    m = min(len(y), L.n_of(min(p["swell_len"], last)))
-    s = dsp.butter(dsp.noise(m / L.SR, r, "brown")[:m], "band", (90, 900), 2)
-    s = L.unit(s * np.linspace(0, 1, m) ** 2.5)
-    y[len(y) - m:] += 10 ** (p["swell_db"] / 20) * L.peak(y) * s
+def _add_swell(out: np.ndarray, cfg: dict, gen: np.random.Generator, last: float) -> None:
+    """Add a dark noise swell that grows under the closing keys."""
+    span = min(len(out), kit.n_of(min(cfg["swell_len"], last)))
+    rumble = kit.bandpass(dsp.noise(span / kit.SR, gen, "brown")[:span], 90, 900)
+    rumble = kit.unit(rumble * np.linspace(0, 1, span) ** 2.5)
+    out[len(out) - span:] += _gain(cfg["swell_db"]) * kit.peak(out) * rumble
 
 
 def render_run(p: dict, rng: np.random.Generator) -> np.ndarray:
-    """A typed run as one file: stereo (2 equal channels) float64 at 48 kHz, about dur s."""
-    p = L.merged(RUN_DEFAULTS, p)
-    times = key_times(p, rng)
-    n = L.n_of(times[-1] + p["length"] + 0.06)
-    y = np.zeros(n)
-    _place_keys(y, p, rng, times)
-    if p["swell_db"] > -59:
-        _swell(y, p, rng, times[-1])
-    bed = dsp.butter(rng.standard_normal(n), "band", (p["lowcut"], 16000), 2)
-    y = y + bed / (np.std(bed) + 1e-12) * L.peak(y) * 10 ** (-68 / 20)
-    y = dsp.fade(y, 0.002, 0.004)
-    return np.column_stack([y, y]).astype(np.float64)
+    """Render a typed run: 2 equal channels, float64 at 48 kHz, close to ``dur`` seconds."""
+    cfg = kit.merged(RUN_DEFAULTS, p)
+    starts = key_times(cfg, rng)
+    size = kit.n_of(starts[-1] + cfg["length"] + 0.06)
+    out = np.zeros(size)
+    _lay_down_keys(out, cfg, rng, starts)
+    if cfg["swell_db"] > -59:
+        _add_swell(out, cfg, rng, starts[-1])
+    hiss = kit.bandpass(rng.standard_normal(size), cfg["lowcut"], 16000)
+    out = out + hiss / (np.std(hiss) + 1e-12) * kit.peak(out) * 10 ** (-68 / 20)
+    return _both_channels(dsp.fade(out, 0.002, 0.004))
 
 
-# --------------------------------------------------------------- study checks
+# ------------------------------------------------------------ critic checks
+
+def _to_mono(x: np.ndarray) -> np.ndarray:
+    arr = np.asarray(x, dtype=float)
+    return arr.mean(axis=1) if arr.ndim == 2 else arr
+
 
 def env_db(x: np.ndarray) -> np.ndarray:
-    """Y3: 1 ms frames of mean square in dB, relative to the loudest frame."""
-    m = L.fit(_mono(x), max(48, len(_mono(x))))
-    k = len(m) // 48
-    fr = np.square(m[: k * 48]).reshape(k, 48).mean(axis=1)
-    e = 10 * np.log10(fr + 1e-14)
-    return e - e.max()
+    """Level of each 1 ms frame in dB, with the loudest frame at 0."""
+    mono = _to_mono(x)
+    mono = kit.fit(mono, max(48, len(mono)))
+    frames = len(mono) // 48
+    power = np.square(mono[: frames * 48]).reshape(frames, 48).mean(axis=1)
+    level = 10 * np.log10(power + 1e-14)
+    return level - level.max()
 
 
-def _mono(x: np.ndarray) -> np.ndarray:
-    x = np.asarray(x, dtype=float)
-    return x.mean(axis=1) if x.ndim == 2 else x
+def _ms_to(mono: np.ndarray, floor_db: float) -> float | None:
+    """Milliseconds from the peak of a 10 ms running mean until the level reaches ``floor_db``."""
+    smooth = np.convolve(np.square(mono), np.ones(480) / 480, mode="same")[::48]
+    level = 10 * np.log10(smooth + 1e-14)
+    level = level - level.max()
+    top = int(np.argmax(level))
+    hits = np.nonzero(level[top:] <= floor_db)[0]
+    return float(hits[0]) if len(hits) else None
 
 
-def _fall_ms(m: np.ndarray, db: float) -> float | None:
-    sm = np.convolve(np.square(m), np.ones(480) / 480, mode="same")[::48]
-    e = 10 * np.log10(sm + 1e-14)
-    e = e - e.max()
-    ip = int(np.argmax(e))
-    below = np.nonzero(e[ip:] <= db)[0]
-    return float(below[0]) if len(below) else None
-
-
-def _lo2k_db(m: np.ndarray) -> float:
-    pw = np.abs(np.fft.rfft(m * np.hanning(len(m)))) ** 2
-    f = np.fft.rfftfreq(len(m), 1 / L.SR)
-    return round(10 * math.log10(pw[f < 2000].sum() / (pw.sum() + 1e-30) + 1e-14), 1)
+def _low_share_db(mono: np.ndarray) -> float:
+    """Share of the power under 2 kHz, in dB with 1 decimal."""
+    spec = np.abs(np.fft.rfft(mono * np.hanning(len(mono)))) ** 2
+    hz = np.fft.rfftfreq(len(mono), 1 / kit.SR)
+    share = spec[hz < 2000].sum() / (spec.sum() + 1e-30)
+    return round(10 * math.log10(share + 1e-14), 1)
 
 
 def key_stats(x: np.ndarray) -> dict:
-    """attack_ms, t20_ms, t40_ms, lo2k_db and length_s of one key render."""
-    m = _mono(x)
-    e = env_db(m)
-    ip = int(np.argmax(e))
-    i20 = int(np.nonzero(e[: ip + 1] >= -20)[0][0])
-    return {"attack_ms": float(ip - i20), "t20_ms": _fall_ms(m, -20), "t40_ms": _fall_ms(m, -40),
-            "lo2k_db": _lo2k_db(m), "length_s": round(len(m) / L.SR, 3)}
+    """Measure one key: attack_ms, t20_ms, t40_ms, lo2k_db and length_s."""
+    mono = _to_mono(x)
+    level = env_db(mono)
+    top = int(np.argmax(level))
+    first = int(np.nonzero(level[: top + 1] >= -20)[0][0])
+    return {"attack_ms": float(top - first), "t20_ms": _ms_to(mono, -20), "t40_ms": _ms_to(mono, -40),
+            "lo2k_db": _low_share_db(mono), "length_s": round(len(mono) / kit.SR, 3)}
 
 
 def outside(v: float | None, lo: float, hi: float, scale: float) -> float:
-    """Distance of v from [lo, hi] in units of scale; 1 when v is missing."""
+    """How far v lies outside [lo, hi], in units of scale. A missing v counts as 1."""
     if v is None:
         return 1.0
     return max(0.0, lo - v, v - hi) / scale
 
 
 def key_penalty(x: np.ndarray) -> float:
-    """The key extra term, 0 to -3: film attack, decay, top-only band and length."""
-    s = key_stats(x)
-    terms = (outside(s["attack_ms"], 1.5, 5.5, 3), outside(s["t20_ms"], 10, 19, 6), outside(s["t40_ms"], 42, 72, 25),
-             max(0.0, s["lo2k_db"] + 30) / 10, outside(s["length_s"], 0.05, 0.1, 0.03))
-    return -min(3.0, 0.75 * sum(min(1.0, v) for v in terms))
+    """Score from 0 down to -3 for attack, decay, missing lows and length of one key."""
+    st = key_stats(x)
+    misses = [outside(st["attack_ms"], 1.5, 5.5, 3), outside(st["t20_ms"], 10, 19, 6),
+              outside(st["t40_ms"], 42, 72, 25), max(0.0, st["lo2k_db"] + 30) / 10,
+              outside(st["length_s"], 0.05, 0.1, 0.03)]
+    return -min(3.0, 0.75 * sum(min(1.0, m) for m in misses))
 
 
 def run_stats(x: np.ndarray) -> dict:
-    """keys, med_ms, min_ms, max_ms and lo2k_db of a typed run."""
-    m = _mono(x)
-    e = env_db(m)
-    kept: list[int] = []
-    for i in np.nonzero((e[1:] > -32) & (e[:-1] <= -32))[0] + 1:
-        if not kept or i - kept[-1] >= 45:
-            kept.append(int(i))
-    d = np.diff(kept) if len(kept) >= 2 else np.array([0])
-    return {"keys": len(kept), "med_ms": float(np.median(d)), "min_ms": float(d.min()), "max_ms": float(d.max()),
-            "lo2k_db": _lo2k_db(m)}
+    """Measure a typed run: keys, med_ms, min_ms, max_ms and lo2k_db."""
+    mono = _to_mono(x)
+    level = env_db(mono)
+    rising = np.nonzero((level[1:] > -32) & (level[:-1] <= -32))[0] + 1
+    onsets: list[int] = []
+    for at in rising:
+        if onsets and at - onsets[-1] < 45:
+            continue
+        onsets.append(int(at))
+    gaps = np.diff(onsets) if len(onsets) >= 2 else np.array([0])
+    return {"keys": len(onsets), "med_ms": float(np.median(gaps)), "min_ms": float(gaps.min()),
+            "max_ms": float(gaps.max()), "lo2k_db": _low_share_db(mono)}
 
 
 def run_penalty(x: np.ndarray) -> float:
-    """The run extra term, 0 to -3: key spacing, top-only band and at least 10 keys."""
-    s = run_stats(x)
-    total = min(1.0, outside(s["med_ms"], 72, 100, 20)) + min(1.0, max(0.0, s["lo2k_db"] + 28) / 10)
-    total += 0.5 if s["keys"] < 10 else 0.0
-    return -min(3.0, 0.75 * total)
+    """Score from 0 down to -3 for key spacing, missing lows and fewer than 10 keys."""
+    st = run_stats(x)
+    score = min(1.0, outside(st["med_ms"], 72, 100, 20)) + min(1.0, max(0.0, st["lo2k_db"] + 28) / 10)
+    if st["keys"] < 10:
+        score += 0.5
+    return -min(3.0, 0.75 * score)
+
+
+_PENALTIES = {"pro_typing_key": key_penalty, "pro_typing_run": run_penalty}
 
 
 def extra_for(cat: str, weight: float = 1.0):
-    """The critic extra function of ``pro_typing_key`` or ``pro_typing_run``, else None."""
-    fn = {"pro_typing_key": key_penalty, "pro_typing_run": run_penalty}.get(cat)
-    if fn is None:
+    """Critic extra for ``pro_typing_key`` or ``pro_typing_run``; None for other categories."""
+    judge = _PENALTIES.get(cat)
+    if judge is None:
         return None
-    return lambda x, row=None: weight * fn(x)
+    return lambda x, row=None: weight * judge(x)
 
 
 RUN = types.SimpleNamespace(
