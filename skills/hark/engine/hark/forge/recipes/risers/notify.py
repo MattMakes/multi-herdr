@@ -47,8 +47,8 @@ _ROWS: list[tuple[str, Any, Any]] = [
     ("c_itau", (0.006, 0.06, "log"), 0.02), ("ring", (0.1, 4.0, "log"), 1.0), ("soft", (0.0, 0.08), 0.0),
     ("bell_len", (0.0, 2.6), 0.0),
 ]
-SPACE: dict[str, Any] = {k: spec for k, spec, _ in _ROWS}
-DEFAULTS: dict[str, Any] = {k: d for k, _, d in _ROWS}
+SPACE: dict[str, Any] = {kn: spec for kn, spec, _ in _ROWS}
+DEFAULTS: dict[str, Any] = {kn: dv for kn, _, dv in _ROWS}
 
 PARTIALS = {
     "celesta": ((1, 2, 3.98, 6.9, 10.1), (1, 0.06, 0.22, 0.05, 0.03)),
@@ -68,30 +68,38 @@ MATS = {
 
 # ------------------------------------------------------------------------------------------------ families (12.6)
 
-LADDER = [1822.0 * SEMI ** k for k in range(5)]
+LADDER = [1822.0 * SEMI ** kn for kn in range(5)]
 
 
-def _over(base: dict, **kw: Any) -> dict:
-    out = dict(DEFAULTS)
-    out.update(base)
-    out.update(kw)
-    return out
+def _over(basev: dict, **kw: Any) -> dict:
+    res = dict(DEFAULTS)
+    res.update(basev)
+    res.update(kw)
+    return res
 
 
-_CLEAN = dict(style="ding", step_db=-30, hold=0.034, hold_tau=0.25, drop_db=-20, drop_ms=4, ring_tau=0.05,
-              bright=0.25, p2=3.42, oct=0, detune=0.8, tick_db=-30, tick_f=9000, body_db=-22, body_ratio=0.5,
-              body_in=0.03, body_tau=0.13, body_p3=0.25, body_p7=0.2, trem=0.35, trem_hz=24, drive=0,
-              head_drive=0, air=-60, p3=0, verb=0.15, rt60=0.3, width=0.7, head_width=0.15, length=0.3, fade=0.05,
-              hp=500)
+_CLEAN = {"style": "ding", "step_db": -30, "hold": 0.034, "hold_tau": 0.25, "drop_db": -20, "drop_ms": 4,
+          "ring_tau": 0.05,
+              "bright": 0.25, "p2": 3.42, "oct": 0, "detune": 0.8, "tick_db": -30, "tick_f": 9000, "body_db": -22,
+              "body_ratio": 0.5,
+              "body_in": 0.03, "body_tau": 0.13, "body_p3": 0.25, "body_p7": 0.2, "trem": 0.35, "trem_hz": 24,
+              "drive": 0,
+              "head_drive": 0, "air": -60, "p3": 0, "verb": 0.15, "rt60": 0.3, "width": 0.7, "head_width": 0.15,
+              "length": 0.3, "fade": 0.05,
+              "hp": 500}
 _R5 = [
-    ("ding_1822", dict(f0=LADDER[0], att=0.0015, length=0.26)),
-    ("ding_1930", dict(f0=LADDER[1], att=0.012, step_db=-26, hold=0.04, body_db=-21, width=0.9, head_width=0.25,
-                       length=0.27)),
-    ("ding_2045", dict(f0=LADDER[2], att=0.003, hold=0.036, body_tau=0.2, body_db=-20, length=0.36, trem=0.45)),
-    ("ding_2167", dict(f0=LADDER[3], att=0.011, step_db=-26, hold=0.04, bright=0.32, width=0.9, head_width=0.25,
-                       length=0.3)),
-    ("ding_2296", dict(f0=LADDER[4], att=0.004, hold=0.03, bright=0.2, body_ratio=1.0, body_p3=0.15, body_p7=0,
-                       body_db=-19, body_tau=0.16, trem=0.25, length=0.26)),
+    ("ding_1822", {"f0": LADDER[0], "att": 0.0015, "length": 0.26}),
+    ("ding_1930", {"f0": LADDER[1], "att": 0.012, "step_db": -26, "hold": 0.04, "body_db": -21, "width": 0.9,
+                   "head_width": 0.25,
+                       "length": 0.27}),
+    ("ding_2045", {"f0": LADDER[2], "att": 0.003, "hold": 0.036, "body_tau": 0.2, "body_db": -20, "length": 0.36,
+                   "trem": 0.45}),
+    ("ding_2167", {"f0": LADDER[3], "att": 0.011, "step_db": -26, "hold": 0.04, "bright": 0.32, "width": 0.9,
+                   "head_width": 0.25,
+                       "length": 0.3}),
+    ("ding_2296", {"f0": LADDER[4], "att": 0.004, "hold": 0.03, "bright": 0.2, "body_ratio": 1.0, "body_p3": 0.15,
+                   "body_p7": 0,
+                       "body_db": -19, "body_tau": 0.16, "trem": 0.25, "length": 0.26}),
 ]
 
 _R3_KEYS = ("style f0 interval att step_db hold hold_tau drop_db drop_ms ring_tau bright p2 oct detune tick_db "
@@ -126,16 +134,17 @@ FAMILY = {
     "pro_notify": [_over(_CLEAN, **kw) for _, kw in _R5],
     "notify": [_over({"style": "bell"}, **dict(zip(_BELL_KEYS, cols))) for _, cols in _BELL_COLS],
 }
-FAMILY_NAMES = {"pro_notify": [name for name, _ in _R5], "notify": [name for name, _ in _BELL_COLS]}
-FAMILY_R5 = {"pro_notify": [dict(p) for p in FAMILY["pro_notify"]]}
+FAMILY_NAMES = {"pro_notify": [label for label, _ in _R5], "notify": [label for label, _ in _BELL_COLS]}
+FAMILY_R5 = {"pro_notify": [dict(cfg) for cfg in FAMILY["pro_notify"]]}
 FAMILY_NAMES_R5 = {"pro_notify": list(FAMILY_NAMES["pro_notify"])}
 FAMILY_R3 = {"pro_notify": [_over({}, **dict(zip(_R3_KEYS, cols))) for cols in _R3_COLS]}
 R4_EDITS = {
-    "notify": [{"strike_max": 12, "slope": 1.1, "hard": h, "strike": s} for h, s in _R4_PAIRS],
+    "notify": [{"strike_max": 12, "slope": 1.1, "hard": hv, "strike": sv} for hv, sv in _R4_PAIRS],
     "pro_notify": [{"body_db": -13} for _ in range(5)],
 }
 
-_CHIME = dict(style="chime", drive=0, head_drive=0, hp=500, verb=0.14, rt60=0.3, width=0.7, fade=0.05, detune=0.8)
+_CHIME = {"style": "chime", "drive": 0, "head_drive": 0, "hp": 500, "verb": 0.14, "rt60": 0.3, "width": 0.7,
+          "fade": 0.05, "detune": 0.8}
 _R6 = [
     ("film_ding", dict(FAMILY["pro_notify"][0])),
     ("fm_bell", _over(_CHIME, f0=LADDER[1], mat="fm", att=0.005, c_fast=0.9, c_tf=0.011, c_ts=0.16, c_index=1.8,
@@ -147,8 +156,8 @@ _R6 = [
     ("octave_body", _over(_CHIME, f0=LADDER[2], mat="film", att=0.0015, c_fast=0.9, c_tf=0.013, c_ts=0.1,
                           c_mallet=-30, c_hard=0.7, length=0.3, c_sub=0.1)),
 ]
-FAMILY_R6 = {"pro_notify": [p for _, p in _R6]}
-FAMILY_NAMES_R6 = {"pro_notify": [name for name, _ in _R6]}
+FAMILY_R6 = {"pro_notify": [cfg for _, cfg in _R6]}
+FAMILY_NAMES_R6 = {"pro_notify": [label for label, _ in _R6]}
 
 _MID_KEYS = ("f0 mat att detune verb rt60 width length fade hp c_fast c_tf c_ts c_mallet c_hard c_bend c_sub "
              "c_index c_itau ring soft").split()
@@ -158,9 +167,9 @@ _MID_COLS = [
     ("wood", (880, "wood", 0.00814, 1.68, 0.35, 0.363, 0.229, 0.317, 0.0613, 254.7, 0.596, 0.0291, 0.077, -25.3,
               0.058, 22.9, 0.45, 4.38, 0.0064, 0.65, 0.047)),
 ]
-FAMILY_MID = {"mid_ding": [_over({"style": "chime", "drive": 0, "c_motif": "single"}, **dict(zip(_MID_KEYS, c)))
-                           for _, c in _MID_COLS]}
-FAMILY_NAMES_MID = {"mid_ding": [name for name, _ in _MID_COLS]}
+FAMILY_MID = {"mid_ding": [_over({"style": "chime", "drive": 0, "c_motif": "single"}, **dict(zip(_MID_KEYS, cv)))
+                           for _, cv in _MID_COLS]}
+FAMILY_NAMES_MID = {"mid_ding": [label for label, _ in _MID_COLS]}
 
 
 _TABLES = (FAMILY, FAMILY_NAMES, R4_EDITS)
@@ -170,8 +179,9 @@ def delivered(cat: str) -> list[tuple[str, dict]]:
     """The delivered members of a category as (name, full params): pro_notify round 5, notify with R4_EDITS."""
     family, names, edits = _TABLES
     if cat == "notify":
-        return [(name, {**p, **edit}) for name, p, edit in zip(names["notify"], family["notify"], edits["notify"])]
-    return list(zip(names[cat], (dict(p) for p in family[cat])))
+        return [(label, {**cfg, **edit}) for label, cfg, edit in zip(names["notify"], family["notify"],
+                                                                     edits["notify"])]
+    return list(zip(names[cat], (dict(cfg) for cfg in family[cat])))
 
 
 # ------------------------------------------------------------------------------------------------ knobs (12.7, 12.8)
@@ -198,350 +208,352 @@ RING_KEYS = {
 _SPACE_TABLES = (FINE, SPACE, DEFAULTS)
 
 
-def family_space(params: dict, style: str | None = None) -> dict:
+def family_space(pset: dict, style: str | None = None) -> dict:
     """SPACE with every key pinned to the member's value except the FINE keys of its style."""
-    fine, space, defaults = _SPACE_TABLES
-    free = set(fine.get(style or params.get("style") or "ding", ()))
-    return {k: spec if k in free else [params.get(k, defaults[k])] for k, spec in space.items()}
+    fine, space, dflt = _SPACE_TABLES
+    free = set(fine.get(style or pset.get("style") or "ding", ()))
+    return {kn: spec if kn in free else [pset.get(kn, dflt[kn])] for kn, spec in space.items()}
 
 
-def ring_scaled(p: dict, ring: float | None = None) -> dict:
+def ring_scaled(cfg: dict, ring: float | None = None) -> dict:
     """The decay knob: multiply the style's time constants by ring."""
-    ring = ring if ring is not None else p.get("ring", 1.0)
-    out = dict(p)
+    ring = ring if ring is not None else cfg.get("ring", 1.0)
+    res = dict(cfg)
     if ring == 1:
-        return out
-    for k in RING_KEYS.get(p.get("style"), ()):
-        if k in out:
-            out[k] = out[k] * ring
-    return out
+        return res
+    for kn in RING_KEYS.get(cfg.get("style"), ()):
+        if kn in res:
+            res[kn] = res[kn] * ring
+    return res
 
 
 # ------------------------------------------------------------------------------------------------ common pieces
 
 
-def _unit_peak(x: np.ndarray) -> np.ndarray:
-    return x / (np.max(np.abs(x)) + 1e-12)
+def _unit_peak(wav: np.ndarray) -> np.ndarray:
+    return wav / (np.max(np.abs(wav)) + 1e-12)
 
 
-def _rc_rise(x: np.ndarray, k: int) -> np.ndarray:
-    k = min(len(x), k)
-    if k > 1:
-        w = 0.5 - 0.5 * np.cos(np.pi * np.arange(k) / (k - 1))
-        x[:k] *= w if x.ndim == 1 else w[:, None]
-    return x
+def _rc_rise(wav: np.ndarray, kn: int) -> np.ndarray:
+    kn = min(len(wav), kn)
+    if kn > 1:
+        wv = 0.5 - 0.5 * np.cos(np.pi * np.arange(kn) / (kn - 1))
+        wav[:kn] *= wv if wav.ndim == 1 else wv[:, None]
+    return wav
 
 
-def _cos2_fade(x: np.ndarray, k: int) -> np.ndarray:
-    k = min(len(x), k)
-    if k > 1:
-        w = np.cos(0.5 * np.pi * np.arange(k) / (k - 1)) ** 2
-        x[len(x) - k:] *= w if x.ndim == 1 else w[:, None]
-    return x
+def _cos2_fade(wav: np.ndarray, kn: int) -> np.ndarray:
+    kn = min(len(wav), kn)
+    if kn > 1:
+        wv = np.cos(0.5 * np.pi * np.arange(kn) / (kn - 1)) ** 2
+        wav[len(wav) - kn:] *= wv if wav.ndim == 1 else wv[:, None]
+    return wav
 
 
-def _partial(t: np.ndarray, f: float, amp: float, d: float, rng: np.random.Generator) -> np.ndarray:
-    phi = rng.uniform(0, 2 * np.pi)
-    y = np.sin(2 * np.pi * f * t + phi)
-    if d > 0:
-        y = (y + 0.6 * np.sin(2 * np.pi * (f + d * rng.uniform(0.6, 1.4)) * t + phi)) / 1.6
-    return amp * y
+def _partial(tax: np.ndarray, freq: float, amp: float, dv: float, gen: np.random.Generator) -> np.ndarray:
+    phs0 = gen.uniform(0, 2 * np.pi)
+    sig = np.sin(2 * np.pi * freq * tax + phs0)
+    if dv > 0:
+        sig = (sig + 0.6 * np.sin(2 * np.pi * (freq + dv * gen.uniform(0.6, 1.4)) * tax + phs0)) / 1.6
+    return amp * sig
 
 
-def _tick(p: dict, n: int, rng: np.random.Generator) -> np.ndarray:
-    k = min(n, n_of(0.004))
-    w = bw(rng.standard_normal(k), "band", (p["tick_f"] / 1.6, min(1.6 * p["tick_f"], 20000)), 2)
-    out = np.zeros(n)
-    out[:k] = _unit_peak(w * np.exp(-t_of(k) / 0.0007)) * 10 ** (p["tick_db"] / 20)
-    return out
+def _tick(cfg: dict, ns: int, gen: np.random.Generator) -> np.ndarray:
+    kn = min(ns, n_of(0.004))
+    wv = bw(gen.standard_normal(kn), "band", (cfg["tick_f"] / 1.6, min(1.6 * cfg["tick_f"], 20000)), 2)
+    res = np.zeros(ns)
+    res[:kn] = _unit_peak(wv * np.exp(-t_of(kn) / 0.0007)) * 10 ** (cfg["tick_db"] / 20)
+    return res
 
 
-def _finish(p: dict, x: np.ndarray, override: float = -1.0) -> np.ndarray:
-    drive = override if override >= 0 else p["drive"]
+def _finish(cfg: dict, wav: np.ndarray, override: float = -1.0) -> np.ndarray:
+    drive = override if override >= 0 else cfg["drive"]
     if drive > 0.2:
-        x = fx.saturate(x, drive, mix=0.6)
-    return bw(x, "high", p["hp"], 4)
+        wav = fx.saturate(wav, drive, mix=0.6)
+    return bw(wav, "high", cfg["hp"], 4)
 
 
-def _end(p: dict, y: np.ndarray, n_len: int, fade: float | None = None) -> np.ndarray:
-    if len(y) >= n_len:
-        y = y[:n_len].copy()
+def _end(cfg: dict, sig: np.ndarray, n_len: int, fade: float | None = None) -> np.ndarray:
+    if len(sig) >= n_len:
+        sig = sig[:n_len].copy()
     else:
-        y = np.concatenate([y, np.zeros((n_len - len(y),) + y.shape[1:])])
-    y = _cos2_fade(y, n_of(p["fade"] if fade is None else fade))
-    return _rc_rise(y, n_of(0.0003))
+        sig = np.concatenate([sig, np.zeros((n_len - len(sig),) + sig.shape[1:])])
+    sig = _cos2_fade(sig, n_of(cfg["fade"] if fade is None else fade))
+    return _rc_rise(sig, n_of(0.0003))
 
 
-def _soft(p: dict, y: np.ndarray) -> np.ndarray:
-    if p["soft"] > 0:
-        y = _rc_rise(y, n_of(p["soft"]))
-    return y
+def _soft(cfg: dict, sig: np.ndarray) -> np.ndarray:
+    if cfg["soft"] > 0:
+        sig = _rc_rise(sig, n_of(cfg["soft"]))
+    return sig
 
 
-def _plate(y: np.ndarray, send: np.ndarray, p: dict, rng: np.random.Generator) -> np.ndarray:
+def _plate(sig: np.ndarray, feedv: np.ndarray, cfg: dict, gen: np.random.Generator) -> np.ndarray:
     """Add verb x the wet return of send; y is zero-padded to the wet length."""
-    wet = fx.reverb(send, rng, rt60=p["rt60"], size=0.25, predelay=0.006, damp=0.45, wet=1.0, dry=0.0, stereo=True,
-                    width=0.4 + p["width"])
-    if len(wet) > len(y):
-        y = np.concatenate([y, np.zeros((len(wet) - len(y), 2))])
-    y = y.copy()
-    y[:len(wet)] += p["verb"] * wet
-    return y
+    wetv = fx.reverb(feedv, gen, rt60=cfg["rt60"], size=0.25, predelay=0.006, damp=0.45, wet=1.0, dry=0.0, stereo=True,
+                    width=0.4 + cfg["width"])
+    if len(wetv) > len(sig):
+        sig = np.concatenate([sig, np.zeros((len(wetv) - len(sig), 2))])
+    sig = sig.copy()
+    sig[:len(wetv)] += cfg["verb"] * wetv
+    return sig
 
 
 # ------------------------------------------------------------------------------------------------ ding (12.10)
 
 
-def _head_tone(p: dict, t: np.ndarray, rng) -> np.ndarray:
-    f0 = p["f0"]
-    head = _partial(t, f0, 1, p["detune"], rng)
-    if f0 * p["p2"] < 0.45 * SR:
-        head += p["bright"] * np.exp(-t / 0.09) * _partial(t, f0 * p["p2"], 1, 0, rng)
-    if p["oct"] > 0:
-        head += p["oct"] * _partial(t, 2 * f0, 1, 0, rng)
-    if p["p3"] > 0:
-        for q, a in ((2.756, 1.0), (5.404, 0.6)):
-            if f0 * q < 0.4 * SR:
-                head += p["p3"] * a * np.exp(-t / (p["p3_tau"] * 2.756 / q)) * _partial(t, f0 * q, 1, 1.5, rng)
+def _head_tone(cfg: dict, tax: np.ndarray, gen) -> np.ndarray:
+    fa = cfg["f0"]
+    head = _partial(tax, fa, 1, cfg["detune"], gen)
+    if fa * cfg["p2"] < 0.45 * SR:
+        head += cfg["bright"] * np.exp(-tax / 0.09) * _partial(tax, fa * cfg["p2"], 1, 0, gen)
+    if cfg["oct"] > 0:
+        head += cfg["oct"] * _partial(tax, 2 * fa, 1, 0, gen)
+    if cfg["p3"] > 0:
+        for qv, a in ((2.756, 1.0), (5.404, 0.6)):
+            if fa * qv < 0.4 * SR:
+                head += cfg["p3"] * a * np.exp(-tax / (cfg["p3_tau"] * 2.756 / qv)) * _partial(tax, fa * qv, 1, 1.5,
+                                                                                               gen)
     return head
 
 
-def head_env(p: dict, t: np.ndarray) -> np.ndarray:
+def head_env(cfg: dict, tax: np.ndarray) -> np.ndarray:
     """Onset step and rise, sag, the gated drop, and the ring after it."""
-    s = 10 ** (p["step_db"] / 20)
-    rise = s + (1 - s) * (0.5 - 0.5 * np.cos(np.pi * np.clip(t / p["att"], 0, 1)))
-    sag = np.exp(-t / p["hold_tau"])
-    dt = max(p["drop_ms"] / 1000, 0.001)
-    fl = 10 ** (p["drop_db"] / 20)
-    gate = 1 - (1 - fl) * (0.5 - 0.5 * np.cos(np.pi * np.clip((t - p["hold"]) / dt, 0, 1)))
-    after = np.where(t > p["hold"] + dt, np.exp(-(t - p["hold"] - dt) / p["ring_tau"]), 1.0)
+    sv = 10 ** (cfg["step_db"] / 20)
+    rise = sv + (1 - sv) * (0.5 - 0.5 * np.cos(np.pi * np.clip(tax / cfg["att"], 0, 1)))
+    sag = np.exp(-tax / cfg["hold_tau"])
+    dt = max(cfg["drop_ms"] / 1000, 0.001)
+    fl = 10 ** (cfg["drop_db"] / 20)
+    gate = 1 - (1 - fl) * (0.5 - 0.5 * np.cos(np.pi * np.clip((tax - cfg["hold"]) / dt, 0, 1)))
+    after = np.where(tax > cfg["hold"] + dt, np.exp(-(tax - cfg["hold"] - dt) / cfg["ring_tau"]), 1.0)
     e = rise * sag * gate * after
     e[0] = 0.0
     return e
 
 
-def _air(p: dict, t: np.ndarray, rng) -> np.ndarray:
-    lo = p["air_lo"] if p["air_lo"] > 0 else min(3000.0, 1.4 * p["f0"])
-    w = bw(rng.standard_normal(len(t)), "band", (lo, 16000), 2 if lo < 6000 else 4)
-    w = w / (np.sqrt(np.mean(w ** 2)) + 1e-12)
-    ea = np.exp(-t / p["air_tau"])
-    k = min(len(t), n_of(0.001))
-    ea[:k] *= np.linspace(0, 1, k)
-    return 0.7 * 10 ** (p["air"] / 20) * w * ea
+def _air(cfg: dict, tax: np.ndarray, gen) -> np.ndarray:
+    lo = cfg["air_lo"] if cfg["air_lo"] > 0 else min(3000.0, 1.4 * cfg["f0"])
+    wv = bw(gen.standard_normal(len(tax)), "band", (lo, 16000), 2 if lo < 6000 else 4)
+    wv = wv / (np.sqrt(np.mean(wv ** 2)) + 1e-12)
+    ea = np.exp(-tax / cfg["air_tau"])
+    kn = min(len(tax), n_of(0.001))
+    ea[:kn] *= np.linspace(0, 1, kn)
+    return 0.7 * 10 ** (cfg["air"] / 20) * wv * ea
 
 
-def _body_tone(p: dict, t: np.ndarray, rng) -> np.ndarray:
+def _body_tone(cfg: dict, tax: np.ndarray, gen) -> np.ndarray:
     """The body partial at F = f0 x body_ratio, with partials at 3 x and 6.965 x, normalised by their sum."""
-    F = p["f0"] * p["body_ratio"]
-    body = _partial(t, F, 1, 0.8, rng)
+    F = cfg["f0"] * cfg["body_ratio"]
+    bodyv = _partial(tax, F, 1, 0.8, gen)
     norm = 1.0
-    for m, a in ((3, p["body_p3"]), (6.965, p["body_p7"])):
-        if a > 0 and F * m < 0.45 * SR:
-            body = body + a * _partial(t, F * m, 1, 0, rng)
+    for mv, a in ((3, cfg["body_p3"]), (6.965, cfg["body_p7"])):
+        if a > 0 and F * mv < 0.45 * SR:
+            bodyv = bodyv + a * _partial(tax, F * mv, 1, 0, gen)
             norm += a
-    return body / norm
+    return bodyv / norm
 
 
-def _body(p: dict, t: np.ndarray, rng) -> np.ndarray:
-    t0 = 0.6 * p["hold"]
-    ein = np.clip((t - t0) / max(p["body_in"], 0.001), 0, 1)
-    env = (0.5 - 0.5 * np.cos(np.pi * ein)) * np.exp(-np.maximum(t - t0, 0) / p["body_tau"])
-    trem = 1 - p["trem"] * (0.5 - 0.5 * np.cos(2 * np.pi * p["trem_hz"] * t + rng.uniform(0, 1)))
-    return _body_tone(p, t, rng) * env * trem * 10 ** (p["body_db"] / 20)
+def _body(cfg: dict, tax: np.ndarray, gen) -> np.ndarray:
+    onset = 0.6 * cfg["hold"]
+    ein = np.clip((tax - onset) / max(cfg["body_in"], 0.001), 0, 1)
+    env = (0.5 - 0.5 * np.cos(np.pi * ein)) * np.exp(-np.maximum(tax - onset, 0) / cfg["body_tau"])
+    trem = 1 - cfg["trem"] * (0.5 - 0.5 * np.cos(2 * np.pi * cfg["trem_hz"] * tax + gen.uniform(0, 1)))
+    return _body_tone(cfg, tax, gen) * env * trem * 10 ** (cfg["body_db"] / 20)
 
 
-def ding(p: dict, n: int, rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
+def ding(cfg: dict, ns: int, gen: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
     """(head, body) of one ding, both mono, both starting at t = 0."""
-    t = t_of(n)
-    head = _head_tone(p, t, rng) * head_env(p, t)
-    if p["air"] > -59:
-        head = head + _air(p, t, rng)
-    head = head + _tick(p, n, rng)
-    return head, _body(p, t, rng)
+    tax = t_of(ns)
+    head = _head_tone(cfg, tax, gen) * head_env(cfg, tax)
+    if cfg["air"] > -59:
+        head = head + _air(cfg, tax, gen)
+    head = head + _tick(cfg, ns, gen)
+    return head, _body(cfg, tax, gen)
 
 
-def _delayed(x: np.ndarray, off: int, n: int) -> np.ndarray:
-    out = np.zeros(n)
-    if off < n:
-        out[off:] = x[:n - off]
-    return out
+def _delayed(wav: np.ndarray, off: int, ns: int) -> np.ndarray:
+    res = np.zeros(ns)
+    if off < ns:
+        res[off:] = wav[:ns - off]
+    return res
 
 
-def _render_ding(p: dict, n: int, n_len: int, rng) -> np.ndarray:
-    head, body = ding(p, n, rng)
-    if p["style"] == "success":
-        h2, b2 = ding({**p, "f0": p["f0"] * SEMI ** p["interval"]}, n, rng)
-        g, off = 10 ** (p["second_db"] / 20), n_of(p["gap"])
-        body = body * np.clip(1 - t_of(n) / (p["gap"] + 0.03), 0.25, 1) + g * _delayed(b2, off, n)
-        head = head + g * _delayed(h2, off, n)
-    head = _finish(p, head, p["head_drive"])
-    body = _finish(p, body)
-    S = fx.decorrelate(body, p["width"], 600)
-    y = fx.decorrelate(head, p["head_width"], 1500) + S
-    if p["verb"] > 0.005:
-        y = _plate(y, 0.3 * np.column_stack([head, head]) + S, p, rng)
-    return _end(p, _soft(p, y), n_len)
+def _render_ding(cfg: dict, ns: int, n_len: int, gen) -> np.ndarray:
+    head, bodyv = ding(cfg, ns, gen)
+    if cfg["style"] == "success":
+        h2, b2 = ding({**cfg, "f0": cfg["f0"] * SEMI ** cfg["interval"]}, ns, gen)
+        g, off = 10 ** (cfg["second_db"] / 20), n_of(cfg["gap"])
+        bodyv = bodyv * np.clip(1 - t_of(ns) / (cfg["gap"] + 0.03), 0.25, 1) + g * _delayed(b2, off, ns)
+        head = head + g * _delayed(h2, off, ns)
+    head = _finish(cfg, head, cfg["head_drive"])
+    bodyv = _finish(cfg, bodyv)
+    S = fx.decorrelate(bodyv, cfg["width"], 600)
+    sig = fx.decorrelate(head, cfg["head_width"], 1500) + S
+    if cfg["verb"] > 0.005:
+        sig = _plate(sig, 0.3 * np.column_stack([head, head]) + S, cfg, gen)
+    return _end(cfg, _soft(cfg, sig), n_len)
 
 
 # ------------------------------------------------------------------------------------------------ bell (12.10)
 
 
-def _bell_partial(p: dict, q: float, ge: float, t: np.ndarray, rng) -> np.ndarray:
+def _bell_partial(cfg: dict, qv: float, ge: float, tax: np.ndarray, gen) -> np.ndarray:
     """One bell partial of ratio q: a slow beat, a decay that is faster for higher partials, the early drop."""
-    tau = max(p["decay"] * q ** -p["slope"], 0.004)
-    am = 1 - 0.35 * (0.5 - 0.5 * np.cos(2 * np.pi * p["beat"] * rng.uniform(0.5, 1.5) * t))
-    env = np.exp(-t / tau)
+    tc = max(cfg["decay"] * qv ** -cfg["slope"], 0.004)
+    am = 1 - 0.35 * (0.5 - 0.5 * np.cos(2 * np.pi * cfg["beat"] * gen.uniform(0.5, 1.5) * tax))
+    env = np.exp(-tax / tc)
     if ge > 0:
-        env = env * (1 + ge * min(1.0, 0.5 + 0.25 * q) * np.exp(-t / p["early_tau"]))
-    return env * am * np.sin(2 * np.pi * p["f0"] * q * t + rng.uniform(0, 6.3))
+        env = env * (1 + ge * min(1.0, 0.5 + 0.25 * qv) * np.exp(-tax / cfg["early_tau"]))
+    return env * am * np.sin(2 * np.pi * cfg["f0"] * qv * tax + gen.uniform(0, 6.3))
 
 
-def _bell_partials(p: dict, t: np.ndarray, rng) -> np.ndarray:
-    ratios, amps = PARTIALS[p["partials"]]
-    ge = 10 ** (p["early_db"] / 20) - 1
-    y = np.zeros(len(t))
-    for q, a in zip(ratios, amps):
-        if p["f0"] * q <= 0.45 * SR:
-            y += a * q ** (1.5 * (p["hard"] - 0.5)) * _bell_partial(p, q, ge, t, rng)
-    return y / (1 + 0.75 * ge) if ge > 0 else y
+def _bell_partials(cfg: dict, tax: np.ndarray, gen) -> np.ndarray:
+    ratios, amps = PARTIALS[cfg["partials"]]
+    ge = 10 ** (cfg["early_db"] / 20) - 1
+    sig = np.zeros(len(tax))
+    for qv, a in zip(ratios, amps):
+        if cfg["f0"] * qv <= 0.45 * SR:
+            sig += a * qv ** (1.5 * (cfg["hard"] - 0.5)) * _bell_partial(cfg, qv, ge, tax, gen)
+    return sig / (1 + 0.75 * ge) if ge > 0 else sig
 
 
-def _strike_modes(p: dict, t: np.ndarray, rng) -> np.ndarray:
-    ys = np.zeros(len(t))
-    for q in (6.1, 8.7, 11.9, 15.3, 19.6):
-        f = p["f0"] * q * rng.uniform(0.98, 1.02)
-        if f > 17000 or q > p["strike_max"]:
+def _strike_modes(cfg: dict, tax: np.ndarray, gen) -> np.ndarray:
+    ys = np.zeros(len(tax))
+    for qv in (6.1, 8.7, 11.9, 15.3, 19.6):
+        freq = cfg["f0"] * qv * gen.uniform(0.98, 1.02)
+        if freq > 17000 or qv > cfg["strike_max"]:
             continue
-        tau = p["strike_tau"] * np.sqrt(6.1 / q)
-        ys += rng.uniform(0.5, 1) * np.exp(-t / tau) * np.sin(2 * np.pi * f * t + rng.uniform(0, 6.3))
-    return 10 ** (p["strike"] / 20) * ys
+        tc = cfg["strike_tau"] * np.sqrt(6.1 / qv)
+        ys += gen.uniform(0.5, 1) * np.exp(-tax / tc) * np.sin(2 * np.pi * freq * tax + gen.uniform(0, 6.3))
+    return 10 ** (cfg["strike"] / 20) * ys
 
 
-def bell(p: dict, n: int, rng: np.random.Generator) -> np.ndarray:
+def bell(cfg: dict, ns: int, gen: np.random.Generator) -> np.ndarray:
     """A modal struck tone with a free ring-out (mono)."""
-    t = t_of(n)
-    y = _bell_partials(p, t, rng)
-    if p["strike"] > -59:
-        y = y + _strike_modes(p, t, rng)
-    y = _rc_rise(y, n_of(max(0.5 * p["att"], 0.0005)))
-    k = min(n, n_of(0.006))
-    m = bw(rng.standard_normal(k), "low", 2000 + 14000 * p["hard"], 2) * np.exp(-t_of(k) / 0.001)
-    y[:k] += (0.05 + 0.25 * p["hard"]) * _unit_peak(m) * np.max(np.abs(y))
-    return y + _tick(p, n, rng) * np.max(np.abs(y))
+    tax = t_of(ns)
+    sig = _bell_partials(cfg, tax, gen)
+    if cfg["strike"] > -59:
+        sig = sig + _strike_modes(cfg, tax, gen)
+    sig = _rc_rise(sig, n_of(max(0.5 * cfg["att"], 0.0005)))
+    kn = min(ns, n_of(0.006))
+    mv = bw(gen.standard_normal(kn), "low", 2000 + 14000 * cfg["hard"], 2) * np.exp(-t_of(kn) / 0.001)
+    sig[:kn] += (0.05 + 0.25 * cfg["hard"]) * _unit_peak(mv) * np.max(np.abs(sig))
+    return sig + _tick(cfg, ns, gen) * np.max(np.abs(sig))
 
 
-def _render_bell(p: dict, n: int, n_len: int, rng) -> np.ndarray:
-    y = _finish(p, _soft(p, bell(p, n, rng)))
-    y = fx.decorrelate(y, 0.5 * p["width"], 600)
-    if p["room"] > 0:
-        y = fx.reverb(y, rng, rt60=0.35 + 1.5 * p["room"], size=0.35, predelay=0.008, damp=0.55, wet=p["room"],
+def _render_bell(cfg: dict, ns: int, n_len: int, gen) -> np.ndarray:
+    sig = _finish(cfg, _soft(cfg, bell(cfg, ns, gen)))
+    sig = fx.decorrelate(sig, 0.5 * cfg["width"], 600)
+    if cfg["room"] > 0:
+        sig = fx.reverb(sig, gen, rt60=0.35 + 1.5 * cfg["room"], size=0.35, predelay=0.008, damp=0.55, wet=cfg["room"],
                       stereo=True, width=0.8)
-    if p["early_db"] > 0 or p["strike"] > -59:
-        return _end(p, y, n_len, max(p["fade"], 0.25))
-    return _end(p, y, n_len, max(p["fade"], 0.4 * n_len / SR))
+    if cfg["early_db"] > 0 or cfg["strike"] > -59:
+        return _end(cfg, sig, n_len, max(cfg["fade"], 0.25))
+    return _end(cfg, sig, n_len, max(cfg["fade"], 0.4 * n_len / SR))
 
 
 # ------------------------------------------------------------------------------------------------ chime (12.10)
 
 
-def _two_rate(p: dict, tm: np.ndarray, dm: float = 1.0) -> np.ndarray:
-    return p["c_fast"] * np.exp(-tm / (p["c_tf"] * dm)) + (1 - p["c_fast"]) * np.exp(-tm / (p["c_ts"] * dm))
+def _two_rate(cfg: dict, tm: np.ndarray, dm: float = 1.0) -> np.ndarray:
+    return cfg["c_fast"] * np.exp(-tm / (cfg["c_tf"] * dm)) + (1 - cfg["c_fast"]) * np.exp(-tm / (cfg["c_ts"] * dm))
 
 
-def _phase(f: np.ndarray, rng) -> np.ndarray:
-    return 2 * np.pi * np.cumsum(f) / SR + rng.uniform(0, 6.3)
+def _phase(freq: np.ndarray, gen) -> np.ndarray:
+    return 2 * np.pi * np.cumsum(freq) / SR + gen.uniform(0, 6.3)
 
 
-def _mat_tone(p: dict, f0: float, t, tm, bend, rng) -> np.ndarray:
-    if p["mat"] == "fm":
-        idx = p["c_index"] * np.exp(-tm / p["c_itau"]) + 0.25
-        mod = _phase(2.4 * f0 * bend, rng)
-        car = _phase(f0 * bend, rng)
-        return np.sin(car + idx * np.sin(mod)) * _two_rate(p, tm)
-    y = np.zeros(len(t))
-    for q, a, dm in MATS[p["mat"]]:
-        f = f0 * q
-        if f > 0.42 * SR:
+def _mat_tone(cfg: dict, fa: float, tax, tm, bend, gen) -> np.ndarray:
+    if cfg["mat"] == "fm":
+        idx = cfg["c_index"] * np.exp(-tm / cfg["c_itau"]) + 0.25
+        mod = _phase(2.4 * fa * bend, gen)
+        car = _phase(fa * bend, gen)
+        return np.sin(car + idx * np.sin(mod)) * _two_rate(cfg, tm)
+    sig = np.zeros(len(tax))
+    for qv, a, dm in MATS[cfg["mat"]]:
+        freq = fa * qv
+        if freq > 0.42 * SR:
             continue
-        ph = _phase(f * bend, rng)
-        tone = np.sin(ph)
-        if p["detune"] > 0:
-            tone = (tone + 0.5 * np.sin(ph + 2 * np.pi * p["detune"] * rng.uniform(0.6, 1.4) * t)) / 1.5
-        y += a * _two_rate(p, tm, dm) * tone
-    return y
+        phase = _phase(freq * bend, gen)
+        tone = np.sin(phase)
+        if cfg["detune"] > 0:
+            tone = (tone + 0.5 * np.sin(phase + 2 * np.pi * cfg["detune"] * gen.uniform(0.6, 1.4) * tax)) / 1.5
+        sig += a * _two_rate(cfg, tm, dm) * tone
+    return sig
 
 
-def _chime_mallet(p: dict, n: int, rng) -> np.ndarray:
+def _chime_mallet(cfg: dict, ns: int, gen) -> np.ndarray:
     """A short band of noise: felt (c_hard 0) is low and soft, metal (1) is high and short."""
-    k, h = min(n, n_of(0.008)), p["c_hard"]
-    w = bw(rng.standard_normal(k), "band", (1500 + 4000 * h, min(4000 + 12000 * h, 18000)), 2)
-    tk = t_of(k)
-    return 10 ** (p["c_mallet"] / 20) * _unit_peak(w * (1 - np.exp(-tk / 0.0003)) * np.exp(-tk / (0.0035 - 0.0027 * h)))
+    kn, hv = min(ns, n_of(0.008)), cfg["c_hard"]
+    wv = bw(gen.standard_normal(kn), "band", (1500 + 4000 * hv, min(4000 + 12000 * hv, 18000)), 2)
+    tkv = t_of(kn)
+    return 10 ** (cfg["c_mallet"] / 20) * _unit_peak(
+        wv * (1 - np.exp(-tkv / 0.0003)) * np.exp(-tkv / (0.0035 - 0.0027 * hv)))
 
 
-def _sub_body(p: dict, f0: float, t: np.ndarray, tm: np.ndarray, bend: np.ndarray, rng) -> np.ndarray:
-    ramp = 0.5 - 0.5 * np.cos(np.pi * np.clip(t / 0.02, 0, 1))
-    return p["c_sub"] * ramp * np.exp(-tm / p["c_ts"]) * np.sin(_phase(0.5 * f0 * bend, rng))
+def _sub_body(cfg: dict, fa: float, tax: np.ndarray, tm: np.ndarray, bend: np.ndarray, gen) -> np.ndarray:
+    ramp = 0.5 - 0.5 * np.cos(np.pi * np.clip(tax / 0.02, 0, 1))
+    return cfg["c_sub"] * ramp * np.exp(-tm / cfg["c_ts"]) * np.sin(_phase(0.5 * fa * bend, gen))
 
 
-def strike(p: dict, n: int, f0: float, rng: np.random.Generator) -> np.ndarray:
+def strike(cfg: dict, ns: int, fa: float, gen: np.random.Generator) -> np.ndarray:
     """One chime strike of the chosen material (mono)."""
-    t = t_of(n)
-    bend = 2.0 ** ((p["c_bend"] / 1200) * np.exp(-t / 0.01))
-    a = max(p["att"], 0.0006)
-    tm = np.maximum(t - a, 0)
-    y = _mat_tone(p, f0, t, tm, bend, rng)
-    if p["c_sub"] > 0:
-        y = y + _sub_body(p, f0, t, tm, bend, rng)
-    y = y * (0.5 - 0.5 * np.cos(np.pi * np.clip(t / a, 0, 1)))
-    if p["c_mallet"] > -59:
-        mallet = _chime_mallet(p, n, rng)
-        y[:len(mallet)] += mallet
-    return y
+    tax = t_of(ns)
+    bend = 2.0 ** ((cfg["c_bend"] / 1200) * np.exp(-tax / 0.01))
+    a = max(cfg["att"], 0.0006)
+    tm = np.maximum(tax - a, 0)
+    sig = _mat_tone(cfg, fa, tax, tm, bend, gen)
+    if cfg["c_sub"] > 0:
+        sig = sig + _sub_body(cfg, fa, tax, tm, bend, gen)
+    sig = sig * (0.5 - 0.5 * np.cos(np.pi * np.clip(tax / a, 0, 1)))
+    if cfg["c_mallet"] > -59:
+        mallet = _chime_mallet(cfg, ns, gen)
+        sig[:len(mallet)] += mallet
+    return sig
 
 
-def chime(p: dict, n: int, rng: np.random.Generator) -> np.ndarray:
-    y = strike(p, n, p["f0"], rng)
-    if p["c_motif"] in ("up", "flam"):
-        off = min(n, n_of(p["gap"]))
-        f2 = p["f0"] * SEMI ** p["interval"] if p["c_motif"] == "up" else p["f0"]
-        y2 = strike(p, n - off, f2, rng) if n - off > 0 else np.zeros(0)
-        if p["c_motif"] == "up":
-            y = y * np.clip(1 - t_of(n) / (p["gap"] + 0.04), 0.3, 1)
-        y[off:] += 10 ** (p["second_db"] / 20) * y2
-    return y
+def chime(cfg: dict, ns: int, gen: np.random.Generator) -> np.ndarray:
+    sig = strike(cfg, ns, cfg["f0"], gen)
+    if cfg["c_motif"] in ("up", "flam"):
+        off = min(ns, n_of(cfg["gap"]))
+        f2 = cfg["f0"] * SEMI ** cfg["interval"] if cfg["c_motif"] == "up" else cfg["f0"]
+        y2 = strike(cfg, ns - off, f2, gen) if ns - off > 0 else np.zeros(0)
+        if cfg["c_motif"] == "up":
+            sig = sig * np.clip(1 - t_of(ns) / (cfg["gap"] + 0.04), 0.3, 1)
+        sig[off:] += 10 ** (cfg["second_db"] / 20) * y2
+    return sig
 
 
-def _render_chime(p: dict, n: int, n_len: int, rng) -> np.ndarray:
-    y = _finish(p, _soft(p, chime(p, n, rng)))
-    y = fx.decorrelate(y, 0.5 * p["width"], 1200)
-    if p["verb"] > 0.005:
-        y = _plate(y, y, p, rng)
-    return _end(p, y, n_len)
+def _render_chime(cfg: dict, ns: int, n_len: int, gen) -> np.ndarray:
+    sig = _finish(cfg, _soft(cfg, chime(cfg, ns, gen)))
+    sig = fx.decorrelate(sig, 0.5 * cfg["width"], 1200)
+    if cfg["verb"] > 0.005:
+        sig = _plate(sig, sig, cfg, gen)
+    return _end(cfg, sig, n_len)
 
 
 # ------------------------------------------------------------------------------------------------ render
 
 
-def render(p: dict, rng: np.random.Generator) -> np.ndarray:
+def render(cfg: dict, gen: np.random.Generator) -> np.ndarray:
     """One notify take, (n, 2) float64; n = samples of length (bell: bell_len, else at least 0.5 s)."""
-    q = dict(DEFAULTS)
-    q.update(p or {})
-    if q["ring"] != 1:
-        q = ring_scaled(q)
-    p = q
-    L = p["length"]
-    if p["style"] == "bell":
-        L = p["bell_len"] if p["bell_len"] > 0 else max(p["length"], 0.5)
-    n_len = n_of(L)
-    n = n_len + n_of(0.05)
-    if p["style"] == "bell":
-        return headroom(_render_bell(p, n, n_len, rng))
-    if p["style"] == "chime":
-        return headroom(_render_chime(p, n, n_len, rng))
-    if p["style"] != "success":
-        p = {**p, "style": "ding"}
-    return headroom(_render_ding(p, n, n_len, rng))
+    qv = dict(DEFAULTS)
+    qv.update(cfg or {})
+    if qv["ring"] != 1:
+        qv = ring_scaled(qv)
+    cfg = qv
+    span = cfg["length"]
+    if cfg["style"] == "bell":
+        span = cfg["bell_len"] if cfg["bell_len"] > 0 else max(cfg["length"], 0.5)
+    n_len = n_of(span)
+    ns = n_len + n_of(0.05)
+    if cfg["style"] == "bell":
+        return headroom(_render_bell(cfg, ns, n_len, gen))
+    if cfg["style"] == "chime":
+        return headroom(_render_chime(cfg, ns, n_len, gen))
+    if cfg["style"] != "success":
+        cfg = {**cfg, "style": "ding"}
+    return headroom(_render_ding(cfg, ns, n_len, gen))
 
 
 # ------------------------------------------------------------------------------------------------ measure (12.11)
@@ -549,106 +561,107 @@ def render(p: dict, rng: np.random.Generator) -> np.ndarray:
 REGIONS = ((0, 150), (150, 500), (500, 1000), (1000, 4000), (4000, 12000), (12000, 24000))
 
 
-def _hann(m: int) -> np.ndarray:
-    return 0.5 - 0.5 * np.cos(2 * np.pi * np.arange(m) / max(1, m - 1))
+def _hann(mv: int) -> np.ndarray:
+    return 0.5 - 0.5 * np.cos(2 * np.pi * np.arange(mv) / max(1, mv - 1))
 
 
-def _env_db(m: np.ndarray, ms: float) -> np.ndarray:
-    h = max(1, int(SR * ms / 1000))
-    k = len(m) // h
-    if k < 1:
+def _env_db(mv: np.ndarray, msec: float) -> np.ndarray:
+    hv = max(1, int(SR * msec / 1000))
+    kn = len(mv) // hv
+    if kn < 1:
         return np.array([-120.0])
-    return 20 * np.log10(np.sqrt(np.mean(m[:k * h].reshape(k, h) ** 2, axis=1)) + 1e-12)
+    return 20 * np.log10(np.sqrt(np.mean(mv[:kn * hv].reshape(kn, hv) ** 2, axis=1)) + 1e-12)
 
 
 def _fall_ms(e2: np.ndarray, drop: float) -> float | None:
-    p = int(np.argmax(e2))
-    below = np.nonzero(e2[p:] < e2[p] - drop)[0]
+    cfg = int(np.argmax(e2))
+    below = np.nonzero(e2[cfg:] < e2[cfg] - drop)[0]
     return float(below[0] * 2) if len(below) else None
 
 
-def _spectrum_fields(m: np.ndarray) -> dict:
-    P = np.abs(np.fft.rfft(m * _hann(len(m)))) ** 2
-    f = np.fft.rfftfreq(len(m), 1 / SR)
+def _spectrum_fields(mv: np.ndarray) -> dict:
+    P = np.abs(np.fft.rfft(mv * _hann(len(mv)))) ** 2
+    freq = np.fft.rfftfreq(len(mv), 1 / SR)
     tot = P.sum() + 1e-20
-    shares = [round(float(10 * np.log10(P[(f >= a) & (f < b)].sum() / tot + 1e-12)), 1) for a, b in REGIONS]
+    shares = [round(float(10 * np.log10(P[(freq >= a) & (freq < bv)].sum() / tot + 1e-12)), 1) for a, bv in REGIONS]
     cs = 1000 * 2.0 ** (np.arange(-10, 11) / 3)
-    lv = [max(-60.0, float(10 * np.log10(P[(f >= c / 2 ** (1 / 6)) & (f < c * 2 ** (1 / 6))].sum() / tot + 1e-12)))
-          for c in cs]
-    tilt = round(float(np.polyfit(np.log2(cs), lv, 1)[0]), 2)
+    lvl0 = [max(-60.0,
+                float(10 * np.log10(P[(freq >= cv / 2 ** (1 / 6)) & (freq < cv * 2 ** (1 / 6))].sum() / tot + 1e-12)))
+          for cv in cs]
+    tilt = round(float(np.polyfit(np.log2(cs), lvl0, 1)[0]), 2)
     return {"shares": shares, "tilt": tilt}
 
 
-def _stereo_fields(x: np.ndarray) -> dict:
-    L, R = x[:, 0], x[:, 1]
-    corr = float(np.corrcoef(L, R)[0, 1]) if np.std(L) > 0 and np.std(R) > 0 else 1.0
-    M, S = (L + R) / 2, (L - R) / 2
-    side = 10 * np.log10(np.mean(S ** 2) / (np.mean(M ** 2) + 1e-20) + 1e-12)
-    return {"corr": round(corr, 3), "side_mid_db": round(float(side), 1)}
+def _stereo_fields(wav: np.ndarray) -> dict:
+    span, R = wav[:, 0], wav[:, 1]
+    corr = float(np.corrcoef(span, R)[0, 1]) if np.std(span) > 0 and np.std(R) > 0 else 1.0
+    M, S = (span + R) / 2, (span - R) / 2
+    sidev = 10 * np.log10(np.mean(S ** 2) / (np.mean(M ** 2) + 1e-20) + 1e-12)
+    return {"corr": round(corr, 3), "side_mid_db": round(float(sidev), 1)}
 
 
-def _frame_peaks(m: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def _frame_peaks(mv: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Level (dB) and peak frequency of 512-sample Hann frames every 240 samples."""
-    w = _hann(512)
-    f = np.fft.rfftfreq(4096, 1 / SR)
-    frames = [m[i:i + 512] * w for i in range(0, len(m) - 512, 240)]
-    lv = np.array([10 * np.log10(np.mean(fr ** 2) + 1e-20) for fr in frames])
-    pk = np.array([f[np.argmax(np.abs(np.fft.rfft(fr, 4096)))] for fr in frames])
-    return lv, pk
+    wv = _hann(512)
+    freq = np.fft.rfftfreq(4096, 1 / SR)
+    frames = [mv[ix:ix + 512] * wv for ix in range(0, len(mv) - 512, 240)]
+    lvl0 = np.array([10 * np.log10(np.mean(fcurve ** 2) + 1e-20) for fcurve in frames])
+    peak = np.array([freq[np.argmax(np.abs(np.fft.rfft(fcurve, 4096)))] for fcurve in frames])
+    return lvl0, peak
 
 
-def _ridge(m: np.ndarray) -> dict | None:
-    lv, pk = _frame_peaks(m)
-    if not len(lv):
+def _ridge(mv: np.ndarray) -> dict | None:
+    lvl0, peak = _frame_peaks(mv)
+    if not len(lvl0):
         return None
-    kept = pk[lv >= lv.max() - 30]
+    kept = peak[lvl0 >= lvl0.max() - 30]
     return {"start_hz": round(float(kept[0])), "end_hz": round(float(kept[-1])), "max_hz": round(float(kept.max())),
             "min_hz": round(float(kept.min())),
             "sweep_oct": round(float(np.log2(max(kept[-1], 1) / max(kept[0], 1))), 2)}
 
 
-def _time_fields(m: np.ndarray) -> tuple[dict, int]:
+def _time_fields(mv: np.ndarray) -> tuple[dict, int]:
     """Attack, t20, t40 and peak time, and the first 1 ms block within 20 dB of the peak."""
-    e1 = _env_db(m, 1)
-    pk = int(np.argmax(e1))
-    first = int(np.nonzero(e1 >= e1[pk] - 20)[0][0])
-    e2 = np.convolve(_env_db(m, 2), np.ones(5) / 5, mode="same")
-    return {"attack_ms": float(pk - first), "t20_ms": _fall_ms(e2, 20), "t40_ms": _fall_ms(e2, 40),
-            "peak_t": round(pk / 1000, 4)}, first
+    e1 = _env_db(mv, 1)
+    peak = int(np.argmax(e1))
+    first = int(np.nonzero(e1 >= e1[peak] - 20)[0][0])
+    e2 = np.convolve(_env_db(mv, 2), np.ones(5) / 5, mode="same")
+    return {"attack_ms": float(peak - first), "t20_ms": _fall_ms(e2, 20), "t40_ms": _fall_ms(e2, 40),
+            "peak_t": round(peak / 1000, 4)}, first
 
 
-def _head_hz(m: np.ndarray, first: int) -> dict:
+def _head_hz(mv: np.ndarray, first: int) -> dict:
     """The strongest frequency of the 40 ms from the onset; absent for a very short signal."""
     a = int(first * SR / 1000)
-    seg = m[a:a + 1920]
+    seg = mv[a:a + 1920]
     if len(seg) <= 256:
         return {}
     spec = np.abs(np.fft.rfft(seg * _hann(len(seg)), 8192))
     return {"head_hz": round(float(np.fft.rfftfreq(8192, 1 / SR)[np.argmax(spec)]))}
 
 
-def measure(x: np.ndarray) -> dict:
+def measure(wav: np.ndarray) -> dict:
     """Model-free cue measurements (12.11): attack, decay times, spectrum shares, tilt, stereo, head pitch, ridge."""
-    x = np.asarray(x, float)
-    x = x if x.ndim == 2 else np.column_stack([x, x])
-    m = x.mean(axis=1)
-    times, first = _time_fields(m)
-    out: dict[str, Any] = {"length_s": round(len(m) / SR, 3), **times, **_spectrum_fields(m), **_stereo_fields(x),
-                           **_head_hz(m, first)}
-    ridge = _ridge(m)
+    wav = np.asarray(wav, float)
+    wav = wav if wav.ndim == 2 else np.column_stack([wav, wav])
+    mv = wav.mean(axis=1)
+    times, first = _time_fields(mv)
+    res: dict[str, Any] = {"length_s": round(len(mv) / SR, 3), **times, **_spectrum_fields(mv), **_stereo_fields(wav),
+                           **_head_hz(mv, first)}
+    ridge = _ridge(mv)
     if ridge is not None:
-        out["ridge"] = ridge
-    return out
+        res["ridge"] = ridge
+    return res
 
 
 # ------------------------------------------------------------------------------------------------ penalties (12.12)
 
 
-def outside(v: float | None, lo: float, hi: float, s: float) -> float:
+def outside(v: float | None, lo: float, hiv: float, sv: float) -> float:
     """Distance of v outside [lo, hi] in units of s; 1.0 when v is missing."""
     if v is None:
         return 1.0
-    return max(lo - v, v - hi, 0.0) / s
+    return max(lo - v, v - hiv, 0.0) / sv
 
 
 TARGETS = {
@@ -659,26 +672,26 @@ TARGETS = {
 }
 
 
-def penalty_fields(x: np.ndarray) -> dict:
+def penalty_fields(wav: np.ndarray) -> dict:
     """measure(x) plus low_db (energy under 500 Hz), sub_db and sweep_oct."""
-    m = measure(x)
-    sh = m["shares"]
-    m["low_db"] = float(10 * np.log10(10 ** (sh[0] / 10) + 10 ** (sh[1] / 10) + 1e-12))
-    m["sub_db"] = sh[0]
-    if "ridge" in m:
-        m["sweep_oct"] = m["ridge"]["sweep_oct"]
-    return m
+    mv = measure(wav)
+    shv = mv["shares"]
+    mv["low_db"] = float(10 * np.log10(10 ** (shv[0] / 10) + 10 ** (shv[1] / 10) + 1e-12))
+    mv["sub_db"] = shv[0]
+    if "ridge" in mv:
+        mv["sweep_oct"] = mv["ridge"]["sweep_oct"]
+    return mv
 
 
-def pro_penalty(x: np.ndarray, cat: str) -> float:
+def pro_penalty(wav: np.ndarray, cat: str) -> float:
     if cat not in TARGETS:
         return 0.0
-    m = penalty_fields(x)
-    return float(sum(min(2.0, outside(m.get(k), lo, hi, s)) for k, lo, hi, s in TARGETS[cat]))
+    mv = penalty_fields(wav)
+    return float(sum(min(2.0, outside(mv.get(kn), lo, hiv, sv)) for kn, lo, hiv, sv in TARGETS[cat]))
 
 
 def extra_for(cat: str, weight: float = 1.0) -> Callable[[np.ndarray, Any], float]:
     """A critic extra check: -weight x pro_penalty(x, cat)."""
-    def extra(x: np.ndarray, row: Any = None) -> float:
-        return -weight * pro_penalty(x, cat)
+    def extra(wav: np.ndarray, row: Any = None) -> float:
+        return -weight * pro_penalty(wav, cat)
     return extra

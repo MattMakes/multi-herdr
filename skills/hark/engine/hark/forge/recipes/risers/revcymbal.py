@@ -36,126 +36,126 @@ _COLS = {
     "breath": (0.7, 30.0, 1.3, 0.094, 0.0, 0.06, 1200, 1.499, 0.12, 60, 0.3, 1.5, 150, -24, 0.366, 14.0, 0.5818,
                0.2272, 0.5846),
 }
-FAMILIES = {"reverse_swell": [(name, {k: float(v) for k, v in zip(_KEYS, cols)}) for name, cols in _COLS.items()]}
+FAMILIES = {"reverse_swell": [(label, {kn: float(v) for kn, v in zip(_KEYS, cols)}) for label, cols in _COLS.items()]}
 DEFAULTS = dict(FAMILIES["reverse_swell"][0][1])
 
 
-def level_db(p: dict, t: np.ndarray) -> tuple[np.ndarray, float]:
+def level_db(cfg: dict, tax: np.ndarray) -> tuple[np.ndarray, float]:
     """Level in dB relative to the peak (9.5), and the peak time."""
-    T, hd = p["length"], p["hold"]
-    rise = -p["swell_db"] * (1 - np.clip(t / T, 0, 1)) ** p["curve"]
-    plateau = p["hold_db"] * (t - T) / hd if hd > 0 else np.zeros_like(t)
-    fall = p["hold_db"] - 8.686 * (t - T - hd) / p["tail_tau"]
-    out = np.where(t <= T, rise, np.where(t <= T + hd, plateau, fall))
-    return out, T
+    dur, hd = cfg["length"], cfg["hold"]
+    rise = -cfg["swell_db"] * (1 - np.clip(tax / dur, 0, 1)) ** cfg["curve"]
+    plateau = cfg["hold_db"] * (tax - dur) / hd if hd > 0 else np.zeros_like(tax)
+    fall = cfg["hold_db"] - 8.686 * (tax - dur - hd) / cfg["tail_tau"]
+    res = np.where(tax <= dur, rise, np.where(tax <= dur + hd, plateau, fall))
+    return res, dur
 
 
-def _rms(x: np.ndarray) -> float:
-    return float(np.sqrt(np.mean(x ** 2))) + 1e-12
+def _rms(wav: np.ndarray) -> float:
+    return float(np.sqrt(np.mean(wav ** 2))) + 1e-12
 
 
-def _control(n: int, fc: float, rng: np.random.Generator) -> np.ndarray:
+def _control(ns: int, fc: float, gen: np.random.Generator) -> np.ndarray:
     """P6: white noise low-passed (order 2) at fc, unit standard deviation."""
-    y = bw(rng.standard_normal(n), "low", fc, 2)
-    return y / (np.std(y) + 1e-12)
+    sig = bw(gen.standard_normal(ns), "low", fc, 2)
+    return sig / (np.std(sig) + 1e-12)
 
 
-def _metal(p: dict, n: int, lo: float, hi: float, rng: np.random.Generator) -> np.ndarray:
-    k = int(round(p["partials"]))
-    f = np.exp(rng.uniform(np.log(lo), np.log(hi), k))
-    sigma = max(0.3, p["bw"] / 3)
-    wts = np.exp(-0.5 * (np.log2(f / p["cym_f"]) / sigma) ** 2) * rng.uniform(0.4, 1.0, k)
-    ctrl = _control(n, 3.0, rng)
-    shifts = rng.integers(0, n, k)
-    phases = rng.uniform(0, 2 * np.pi, k)
-    t = t_of(n)
-    y = np.zeros(n)
-    for j in range(k):
-        am = 1 + 0.35 * p["shimmer"] * np.roll(ctrl, int(shifts[j]))
-        y += wts[j] * am * np.sin(2 * np.pi * f[j] * t + phases[j])
-    return y / _rms(y)
+def _metal(cfg: dict, ns: int, lo: float, hiv: float, gen: np.random.Generator) -> np.ndarray:
+    kn = int(round(cfg["partials"]))
+    freq = np.exp(gen.uniform(np.log(lo), np.log(hiv), kn))
+    sigma = max(0.3, cfg["bw"] / 3)
+    wts = np.exp(-0.5 * (np.log2(freq / cfg["cym_f"]) / sigma) ** 2) * gen.uniform(0.4, 1.0, kn)
+    ctrl = _control(ns, 3.0, gen)
+    shifts = gen.integers(0, ns, kn)
+    phases = gen.uniform(0, 2 * np.pi, kn)
+    tax = t_of(ns)
+    sig = np.zeros(ns)
+    for nth in range(kn):
+        am = 1 + 0.35 * cfg["shimmer"] * np.roll(ctrl, int(shifts[nth]))
+        sig += wts[nth] * am * np.sin(2 * np.pi * freq[nth] * tax + phases[nth])
+    return sig / _rms(sig)
 
 
-def texture(p: dict, n: int, rng: np.random.Generator) -> tuple[np.ndarray, float]:
+def texture(cfg: dict, ns: int, gen: np.random.Generator) -> tuple[np.ndarray, float]:
     """One channel of metallic partials blended with band noise (9.6); returns (x, hi)."""
-    lo = max(60.0, p["cym_f"] / 2 ** (p["bw"] / 2))
-    hi = min(18000.0, p["cym_f"] * 2 ** (p["bw"] / 2))
-    metal = _metal(p, n, lo, hi, rng)
-    noise = bw(rng.standard_normal(n), "band", (lo, hi), 2)
-    noise = dsp.peq(noise, p["cym_f"], 6.0, 1.0)
+    lo = max(60.0, cfg["cym_f"] / 2 ** (cfg["bw"] / 2))
+    hiv = min(18000.0, cfg["cym_f"] * 2 ** (cfg["bw"] / 2))
+    metal = _metal(cfg, ns, lo, hiv, gen)
+    noise = bw(gen.standard_normal(ns), "band", (lo, hiv), 2)
+    noise = dsp.peq(noise, cfg["cym_f"], 6.0, 1.0)
     noise = noise / _rms(noise)
-    x = p["metal"] * metal + (1 - p["metal"]) * noise
-    return x / _rms(x), hi
+    wav = cfg["metal"] * metal + (1 - cfg["metal"]) * noise
+    return wav / _rms(wav), hiv
 
 
-def _flutter(p: dict, n: int, rng: np.random.Generator) -> np.ndarray:
-    d = p["flut_depth"]
-    return np.exp(d * _control(n, p["flut_f"], rng) - 0.5 * d * d)
+def _flutter(cfg: dict, ns: int, gen: np.random.Generator) -> np.ndarray:
+    dv = cfg["flut_depth"]
+    return np.exp(dv * _control(ns, cfg["flut_f"], gen) - 0.5 * dv * dv)
 
 
-def _channels(p: dict, n: int, rng: np.random.Generator):
+def _channels(cfg: dict, ns: int, gen: np.random.Generator):
     """Left and right (texture, low body, flutter) with correlation about sqrt(1 - width^2)."""
-    xl, hi = texture(p, n, rng)
-    xr, _ = texture(p, n, rng)
-    lows = [bw(rng.standard_normal(n), "band", (100.0, 450.0), 2) for _ in range(2)]
-    fls = [_flutter(p, n, rng) for _ in range(2)]
-    w = p["width"]
-    k = np.sqrt(max(0.0, 1 - w * w))
+    xl, hiv = texture(cfg, ns, gen)
+    xr, _ = texture(cfg, ns, gen)
+    lows = [bw(gen.standard_normal(ns), "band", (100.0, 450.0), 2) for _ in range(2)]
+    fls = [_flutter(cfg, ns, gen) for _ in range(2)]
+    wv = cfg["width"]
+    kn = np.sqrt(max(0.0, 1 - wv * wv))
     left = (xl, lows[0], fls[0])
-    right = (k * xl + w * xr, k * lows[0] + w * lows[1], k * fls[0] + w * fls[1])
-    return (left, right), hi
+    right = (kn * xl + wv * xr, kn * lows[0] + wv * lows[1], kn * fls[0] + wv * fls[1])
+    return (left, right), hiv
 
 
-def _edit_end(y: np.ndarray, p: dict) -> int:
+def _edit_end(sig: np.ndarray, cfg: dict) -> int:
     """Cut 20 ms after the first 5 ms block, at or after the loudest, that is 60 dB under it (9.7 step 9)."""
-    m = y.mean(axis=1)
-    h = 240
-    k = max(1, len(m) // h)
-    e = 20 * np.log10(np.sqrt(np.mean(m[:k * h].reshape(k, h) ** 2, axis=1)) + 1e-12) if len(m) >= h else \
+    mv = sig.mean(axis=1)
+    hv = 240
+    kn = max(1, len(mv) // hv)
+    env = 20 * np.log10(np.sqrt(np.mean(mv[:kn * hv].reshape(kn, hv) ** 2, axis=1)) + 1e-12) if len(mv) >= hv else \
         np.array([0.0])
-    i = int(np.argmax(e))
-    quiet = np.nonzero(e[i:] < e[i] - 60)[0]
-    block = i + int(quiet[0]) if len(quiet) else k
-    return min(len(y), block * h + n_of(0.02))
+    ix = int(np.argmax(env))
+    quiet = np.nonzero(env[ix:] < env[ix] - 60)[0]
+    block = ix + int(quiet[0]) if len(quiet) else kn
+    return min(len(sig), block * hv + n_of(0.02))
 
 
-def _sizes(p: dict) -> int:
+def _sizes(cfg: dict) -> int:
     """9.7 step 1: the peak, the plateau, the fall to -60 dB and 20 ms, plus some room tail; at most 4 s."""
-    tail = p["length"] + p["hold"] + p["tail_tau"] * 60 / 8.686 + 0.02
-    return n_of(min(4.0, tail + 0.3 * p["rt60"] * min(1.0, 4 * p["room"])))
+    tail = cfg["length"] + cfg["hold"] + cfg["tail_tau"] * 60 / 8.686 + 0.02
+    return n_of(min(4.0, tail + 0.3 * cfg["rt60"] * min(1.0, 4 * cfg["room"])))
 
 
-def _shaped(p: dict, chans, hi: float, a: np.ndarray) -> np.ndarray:
+def _shaped(cfg: dict, pair, hiv: float, amp: np.ndarray) -> np.ndarray:
     """9.7 steps 5 and 6: a low-pass that opens as the level grows, the low body, the level and flutter."""
-    cut = np.clip(1.3 * hi * 2.0 ** (-p["open"] * (1 - np.sqrt(a))), 300, 20000)
-    out = []
-    for x, low, flut in chans:
-        y = svf(x, cut, 0.7, "low")
-        if p["low_db"] > -49.5:
-            y = y + 10 ** (p["low_db"] / 20) * low / _rms(low)
-        out.append(y * a * flut)
-    return bw(np.column_stack(out), "high", p["hp"], 2)
+    cut = np.clip(1.3 * hiv * 2.0 ** (-cfg["open"] * (1 - np.sqrt(amp))), 300, 20000)
+    res = []
+    for wav, low, flut in pair:
+        sig = svf(wav, cut, 0.7, "low")
+        if cfg["low_db"] > -49.5:
+            sig = sig + 10 ** (cfg["low_db"] / 20) * low / _rms(low)
+        res.append(sig * amp * flut)
+    return bw(np.column_stack(res), "high", cfg["hp"], 2)
 
 
-def _room(p: dict, y: np.ndarray, rng) -> np.ndarray:
+def _room(cfg: dict, sig: np.ndarray, gen) -> np.ndarray:
     """The forge-core reverb, cut to the dry length; a non-finite result keeps the dry signal."""
-    wet = fx.reverb(y, rng, rt60=p["rt60"], size=0.5, predelay=0.008, damp=0.4, wet=p["room"], width=1.0,
-                    lines=16, stereo=True, tail=max(0.2, p["rt60"]))[:len(y)]
-    return wet if np.all(np.isfinite(wet)) and len(wet) == len(y) else y
+    wetv = fx.reverb(sig, gen, rt60=cfg["rt60"], size=0.5, predelay=0.008, damp=0.4, wet=cfg["room"], width=1.0,
+                    lines=16, stereo=True, tail=max(0.2, cfg["rt60"]))[:len(sig)]
+    return wetv if np.all(np.isfinite(wetv)) and len(wetv) == len(sig) else sig
 
 
-def render(p: dict, rng: np.random.Generator) -> np.ndarray:
+def render(cfg: dict, gen: np.random.Generator) -> np.ndarray:
     """One take, (n, 2), normalised to an absolute peak of 0.89."""
-    p = {**DEFAULTS, **(p or {})}
-    n = _sizes(p)
-    a = 10 ** (np.maximum(level_db(p, t_of(n))[0], -120) / 20)
-    chans, hi = _channels(p, n, rng)
-    y = _shaped(p, chans, hi, a)
-    if p["room"] > 0.01:
-        y = _room(p, y, rng)
-    y = bw(y, "low", 19000, 4)
-    y = dsp.fade(y[:_edit_end(y, p)], 0.004, 0.02)
-    return 0.89 * y / (np.max(np.abs(y)) + 1e-12)
+    cfg = {**DEFAULTS, **(cfg or {})}
+    ns = _sizes(cfg)
+    amp = 10 ** (np.maximum(level_db(cfg, t_of(ns))[0], -120) / 20)
+    pair, hiv = _channels(cfg, ns, gen)
+    sig = _shaped(cfg, pair, hiv, amp)
+    if cfg["room"] > 0.01:
+        sig = _room(cfg, sig, gen)
+    sig = bw(sig, "low", 19000, 4)
+    sig = dsp.fade(sig[:_edit_end(sig, cfg)], 0.004, 0.02)
+    return 0.89 * sig / (np.max(np.abs(sig)) + 1e-12)
 
 
 _RECIPE = (MODULE, FAMILIES, SPACE, TARGETS, ALTS, REFSET)
