@@ -196,7 +196,7 @@ def _paths_of_morph(pa_path: str, pb_path: str, output: str | None, dir_out: str
 def _mono_padded(xs_l: list) -> list:
     from hark.fit.pipeline._post import mono
 
-    msv = [monov(np.asarray(xv, dtype=np.float64)) for xv in xs_l]
+    msv = [mono(np.asarray(xv, dtype=np.float64)) for xv in xs_l]
     cnt = max(len(mv) for mv in msv)
     return [np.pad(mv, (0, cnt - len(mv))) for mv in msv]
 

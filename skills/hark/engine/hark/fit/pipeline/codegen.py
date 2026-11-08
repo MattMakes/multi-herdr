@@ -166,7 +166,7 @@ def _cat_for(src_v: str | None) -> str | None:
     try:
         from hark.forge.engine import refsets
 
-        return _lookup_category(set_l.load(), _normalise(src_v))
+        return _lookup_category(refsets.load(), _normalise(src_v))
     except Exception:
         return None
 
@@ -196,7 +196,7 @@ def _words_of_category(cat_v: str) -> str | None:
     try:
         from hark.forge.engine import refsets
 
-        text = set_l.CATEGORIES.get(cat_v)
+        text = refsets.CATEGORIES.get(cat_v)
     except Exception:
         return None
     return re.sub(r"\s*\([^()]*\)\s*$", "", text) if text else None
