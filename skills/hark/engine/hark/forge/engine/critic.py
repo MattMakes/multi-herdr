@@ -34,7 +34,7 @@ DESIGNED_WORDS = ("glitch", "stutter", "sub drop", "sub-drop", "subdrop", "blip"
 ENV_PASS, POLISH_PASS, TONE_PASS = 1.5, 1.5, 1.25
 GATED = ("glitch", "pro_glitch", "riser", "pro_riser", "zip", "pro_zip", "pro_impact")
 SHARE_KEYS = {"sh150": "<150", "sh1k": "150-1k", "sh4k": "1-4k", "sh12k": "4-12k", "shhi": ">12k"}
-_NEG = -200.0
+_NO_FLOOR = -200.0
 
 STUDY_TARGETS: dict[str, dict[str, tuple[float, float]]] = {
     "pro_whoosh_big": {"length": (0.5, 1.2), "attack": (100, 350), "t20": (60, 160), "t40": (180, 400),
@@ -50,20 +50,20 @@ STUDY_TARGETS: dict[str, dict[str, tuple[float, float]]] = {
     "logo_sting": {"length": (0.8, 2.5), "t40": (250, 1200), "corr": (0.6, 1.0)},
     "pro_logo_sting": {"length": (0.5, 1.5), "attack": (0, 90), "t20": (30, 110), "t40": (150, 450),
                        "corr": (0.9, 1.0)},
-    "glitch": {"length": (0.2, 1.5), "sh150": (_NEG, -10), "corr": (-0.3, 0.6)},
-    "pro_glitch": {"length": (0.3, 1.0), "sh150": (_NEG, -12), "sh12k": (-8, 0), "corr": (-0.3, 0.4)},
-    "pro_shimmer": {"length": (1.4, 2.6), "attack": (150, 800), "sh150": (_NEG, -30), "corr": (-0.2, 0.45)},
+    "glitch": {"length": (0.2, 1.5), "sh150": (_NO_FLOOR, -10), "corr": (-0.3, 0.6)},
+    "pro_glitch": {"length": (0.3, 1.0), "sh150": (_NO_FLOOR, -12), "sh12k": (-8, 0), "corr": (-0.3, 0.4)},
+    "pro_shimmer": {"length": (1.4, 2.6), "attack": (150, 800), "sh150": (_NO_FLOOR, -30), "corr": (-0.2, 0.45)},
     "pro_pop": {"length": (0.05, 0.2), "attack": (0, 60), "t20": (3, 30), "corr": (0.9, 1.0)},
     "pro_tap": {"length": (0.06, 0.2), "attack": (2, 15), "t20": (10, 30), "t40": (18, 50), "corr": (0.85, 1.0)},
-    "pro_click": {"length": (0.02, 0.08), "attack": (0, 4), "t20": (4, 20), "sh150": (_NEG, -20),
+    "pro_click": {"length": (0.02, 0.08), "attack": (0, 4), "t20": (4, 20), "sh150": (_NO_FLOOR, -20),
                   "sh12k": (-10, 0), "corr": (0.9, 1.0)},
-    "pro_typing_run": {"sh150": (_NEG, -25), "sh1k": (_NEG, -20), "corr": (0.9, 1.0)},
+    "pro_typing_run": {"sh150": (_NO_FLOOR, -25), "sh1k": (_NO_FLOOR, -20), "corr": (0.9, 1.0)},
     "pro_zip": {"length": (0.12, 0.4), "attack": (10, 50), "corr": (0.85, 1.0)},
     "zip": {"length": (0.12, 0.4), "attack": (10, 50), "corr": (0.85, 1.0)},
     "downlifter": {"length": (1.0, 4.0), "attack": (0, 80), "t40": (500, 3500), "corr": (0.3, 1.0)},
 }
 
-_CAPS = {"tone": 3.0, "env": 2.0, "polish": 1.5}
+_PART_CAP = {"tone": 3.0, "env": 2.0, "polish": 1.5}
 
 
 # ---------------------------------------------------------------- listen services
@@ -79,45 +79,45 @@ class ListenServices:
         require_ml("forge critic")
         from hark.listen import compare, realness, vocabulary
 
-        self._voc_mod, self._real, self._cmp = vocabulary, realness, compare
-        self.voc = vocabulary.get()
-        self.model = realness.load_model()
+        self._vocab, self._realmod, self._cmpmod = vocabulary, realness, compare
+        self.vocab_obj = vocabulary.get()
+        self.real_model = realness.load_model()
 
     def embed_text(self, texts: Sequence[str]) -> np.ndarray:
-        return self.voc.embed_text(list(texts))
+        return self.vocab_obj.embed_text(list(texts))
 
     def calibrate_z(self, E: np.ndarray, Q: np.ndarray) -> np.ndarray:
-        return np.asarray(self.voc.calibrate(E, Q).z_q)
+        return np.asarray(self.vocab_obj.calibrate(E, Q).z_q)
 
     def top_terms(self, e: np.ndarray, k: int = 3) -> list[str]:
-        return [t[0] for t in self.voc.top_terms(e, k)]
+        return [tv[0] for tv in self.vocab_obj.top_terms(e, k)]
 
     def embed_files(self, paths: Sequence[str]) -> np.ndarray:
-        return np.asarray(self._voc_mod.embed_files(list(paths), pad=self._voc_mod.PAD))
+        return np.asarray(self._vocab.embed_files(list(paths), pad=self._vocab.PAD))
 
     def embed_audio(self, arrays: Sequence[np.ndarray]) -> np.ndarray:
-        return np.asarray(self._voc_mod.embed_audio(list(arrays), pad=self._voc_mod.PAD))
+        return np.asarray(self._vocab.embed_audio(list(arrays), pad=self._vocab.PAD))
 
     def audible(self, m: np.ndarray) -> bool:
-        return bool(self._real.audible(m))
+        return bool(self._realmod.audible(m))
 
     def pure_tone(self, m: np.ndarray) -> bool:
-        return bool(self._real.pure_tone(m))
+        return bool(self._realmod.pure_tone(m))
 
     def p_real(self, m: np.ndarray, e: np.ndarray) -> float:
-        heads = self.model["heads"]
-        sf = self._real.signal_features(m)
-        lc = self._real.head_logit(heads["clap"], e)
-        ls = self._real.head_logit(heads["signal"], [sf[k] for k in heads["signal"]["inputs"]]) if sf else 0.0
-        return float(self._real.fuse(self.model, {"clap": lc, "signal": ls}))
+        head_map = self.real_model["heads"]
+        sig_f = self._realmod.signal_features(m)
+        logit_c = self._realmod.head_logit(head_map["clap"], e)
+        logit_s = self._realmod.head_logit(head_map["signal"], [sig_f[ky] for ky in head_map["signal"]["inputs"]]) if sig_f else 0.0
+        return float(self._realmod.fuse(self.real_model, {"clap": logit_c, "signal": logit_s}))
 
     def feats(self, x: np.ndarray) -> dict:
         from hark.core.features import measure
 
-        return dict(self._cmp.feats(measure(x, light=True), x))
+        return dict(self._cmpmod.feats(measure(x, light=True), x))
 
     def typicality(self, e: np.ndarray, A: np.ndarray, k: int) -> float | None:
-        return self._cmp.typicality(e, A, k).get("z")
+        return self._cmpmod.typicality(e, A, k).get("z")
 
     def tagger_name(self) -> str:
         from hark.models import ast
@@ -127,125 +127,125 @@ class ListenServices:
     def tags(self, m: np.ndarray) -> tuple[list, float]:
         from hark.models import ast
 
-        T = ast.get()
-        p = np.asarray(T.probs(m)) if hasattr(T, "probs") else self._probs_via_file(T, m)
-        synth = [T.index[c] for c in self._real.SYNTH_CLASSES if c in T.index] \
-            if hasattr(self._real, "SYNTH_CLASSES") else []
-        return list(T.top(p, 3)), round(float(max((p[i] for i in synth), default=0.0)), 3)
+        tagger = ast.get()
+        pv = np.asarray(tagger.probs(m)) if hasattr(tagger, "probs") else self._probs_from_wav(tagger, m)
+        synth_p = [tagger.index[chk] for chk in self._realmod.SYNTH_CLASSES if chk in tagger.index] \
+            if hasattr(self._realmod, "SYNTH_CLASSES") else []
+        return list(tagger.top(pv, 3)), round(float(max((pv[ix] for ix in synth_p), default=0.0)), 3)
 
     @staticmethod
-    def _probs_via_file(T: Any, m: np.ndarray) -> np.ndarray:
+    def _probs_from_wav(tagger: Any, mono_x: np.ndarray) -> np.ndarray:
         import tempfile
 
         from hark.core.audio import write_wav
 
-        with tempfile.TemporaryDirectory() as d:
-            path = write_wav(os.path.join(d, "x.wav"), m)
-            return np.asarray(T.probs_file(path))
+        with tempfile.TemporaryDirectory() as dpath:
+            fpath = write_wav(os.path.join(dpath, "x.wav"), mono_x)
+            return np.asarray(tagger.probs_file(fpath))
 
 
-_SERVICES: Any = None
-_SVC_LOCK = threading.Lock()
+_SHARED_SVC: Any = None
+_BUILD_GUARD = threading.Lock()
 
 
 def services() -> Any:
     """The process-wide listen services (built on first use)."""
-    global _SERVICES
-    with _SVC_LOCK:
-        if _SERVICES is None:
-            _SERVICES = ListenServices()
-        return _SERVICES
+    global _SHARED_SVC
+    with _BUILD_GUARD:
+        if _SHARED_SVC is None:
+            _SHARED_SVC = ListenServices()
+        return _SHARED_SVC
 
 
 # ---------------------------------------------------------------- study targets
 
-def _corr(x: np.ndarray) -> float:
-    if x.ndim != 2:
+def _lr_correlation(sig: np.ndarray) -> float:
+    if sig.ndim != 2:
         return 1.0
-    a, b = x[:, 0] - x[:, 0].mean(), x[:, 1] - x[:, 1].mean()
-    den = math.sqrt(float(np.sum(a * a) * np.sum(b * b)))
-    return round(float(np.sum(a * b) / den), 3) if den > 0 else 1.0
+    arr, rhs = sig[:, 0] - sig[:, 0].mean(), sig[:, 1] - sig[:, 1].mean()
+    denom = math.sqrt(float(np.sum(arr * arr) * np.sum(rhs * rhs)))
+    return round(float(np.sum(arr * rhs) / denom), 3) if denom > 0 else 1.0
 
 
-def _span_measures(m: np.ndarray) -> dict:
-    k = len(m) // 480
-    if k < 2:
+def _extent(mono_x: np.ndarray) -> dict:
+    ky = len(mono_x) // 480
+    if ky < 2:
         return {}
-    e = 10 * np.log10(np.mean(m[: k * 480].reshape(k, 480) ** 2, axis=1) + 1e-20)
-    act = np.flatnonzero(e >= e.max() - 50)
-    span = act[-1] - act[0] + 1
-    return {"length": round(span * 0.01, 3), "peak_frac": round((int(np.argmax(e)) - act[0] + 0.5) / span, 3)}
+    emb = 10 * np.log10(np.mean(mono_x[: ky * 480].reshape(ky, 480) ** 2, axis=1) + 1e-20)
+    busy = np.flatnonzero(emb >= emb.max() - 50)
+    width = busy[-1] - busy[0] + 1
+    return {"length": round(width * 0.01, 3), "peak_frac": round((int(np.argmax(emb)) - busy[0] + 0.5) / width, 3)}
 
 
 def study_measures(x: Any) -> dict:
     """Length, peak position, attack and decay times, region shares and stereo correlation."""
     from hark.forge.engine.search import envelope_stats
 
-    a = np.asarray(x, dtype=float) if not isinstance(x, (str, os.PathLike)) else tn.as_mono(x)
-    m = a.mean(axis=1) if a.ndim == 2 else a
-    out = _span_measures(m)
-    env = envelope_stats(m)
-    out.update(attack=round(env["attack_ms"], 1), t20=round(env["t20_ms"], 1), t40=round(env["t40_ms"], 1))
-    sh = tn.shares(m)
-    out.update({k: sh[r] for k, r in SHARE_KEYS.items()})
-    out["corr"] = _corr(a)
-    return out
+    arr = np.asarray(x, dtype=float) if not isinstance(x, (str, os.PathLike)) else tn.as_mono(x)
+    mono_x = arr.mean(axis=1) if arr.ndim == 2 else arr
+    res = _extent(mono_x)
+    envd = envelope_stats(mono_x)
+    res.update(attack=round(envd["attack_ms"], 1), t20=round(envd["t20_ms"], 1), t40=round(envd["t40_ms"], 1))
+    shr = tn.shares(mono_x)
+    res.update({ky: shr[rw] for ky, rw in SHARE_KEYS.items()})
+    res["corr"] = _lr_correlation(arr)
+    return res
 
 
 def widen_targets(targets: dict, ref_measures: Sequence[dict]) -> dict:
     """Each range grows to include every ref's value."""
-    out = {}
-    for k, (lo, hi) in targets.items():
-        vals = [m[k] for m in ref_measures if m.get(k) is not None]
-        out[k] = (min([lo] + vals), max([hi] + vals))
-    return out
+    res = {}
+    for ky, (low, high) in targets.items():
+        seen = [mono_x[ky] for mono_x in ref_measures if mono_x.get(ky) is not None]
+        res[ky] = (min([low] + seen), max([high] + seen))
+    return res
 
 
-def _dist(v: float, lo: float, hi: float) -> float:
-    return max(lo - v, v - hi, 0.0)
+def _outside_by(val: float, low: float, high: float) -> float:
+    return max(low - val, val - high, 0.0)
 
 
-def _study_share(key: str, v: float, lo: float, hi: float) -> tuple[str, float, str]:
-    return "tone", min(2.0, _dist(v, lo, hi) / 6), f"{SHARE_KEYS[key]} share {v:+.1f} dB (target {lo}..{hi})"
+def _share_cost(name: str, val: float, low: float, high: float) -> tuple[str, float, str]:
+    return "tone", min(2.0, _outside_by(val, low, high) / 6), f"{SHARE_KEYS[name]} share {val:+.1f} dB (target {low}..{high})"
 
 
-def _study_corr(key: str, v: float, lo: float, hi: float) -> tuple[str, float, str]:
-    return "polish", min(1.5, _dist(v, lo, hi) / 0.3), f"stereo corr {v:.2f} (target {lo}..{hi})"
+def _stereo_cost(name: str, val: float, low: float, high: float) -> tuple[str, float, str]:
+    return "polish", min(1.5, _outside_by(val, low, high) / 0.3), f"stereo corr {val:.2f} (target {low}..{high})"
 
 
-def _study_peak(key: str, v: float, lo: float, hi: float) -> tuple[str, float, str]:
-    return "env", min(1.5, _dist(v, lo, hi) / 0.25), f"peak at {v:.0%} of the sound (target {lo:.0%}..{hi:.0%})"
+def _peak_cost(name: str, val: float, low: float, high: float) -> tuple[str, float, str]:
+    return "env", min(1.5, _outside_by(val, low, high) / 0.25), f"peak at {val:.0%} of the sound (target {low:.0%}..{high:.0%})"
 
 
-def _study_time(key: str, v: float, lo: float, hi: float) -> tuple[str, float, str]:
-    fl, unit = (1e-3, "s") if key == "length" else (1.0, "ms")
-    vv, lo2, hi2 = max(v, fl), max(lo, fl), max(hi, lo, fl)
-    p = min(1.5, max(math.log2(lo2 / vv), math.log2(vv / hi2), 0.0))
-    return "env", p, f"{key} {v}{unit} (target {lo}..{hi})"
+def _time_cost(name: str, val: float, low: float, high: float) -> tuple[str, float, str]:
+    lowest, unit_s = (1e-3, "s") if name == "length" else (1.0, "ms")
+    vc, lo_c, hi_c = max(val, lowest), max(low, lowest), max(high, low, lowest)
+    pv = min(1.5, max(math.log2(lo_c / vc), math.log2(vc / hi_c), 0.0))
+    return "env", pv, f"{name} {val}{unit_s} (target {low}..{high})"
 
 
-_STUDY = {"corr": _study_corr, "peak_frac": _study_peak}
+_COST_FOR = {"corr": _stereo_cost, "peak_frac": _peak_cost}
 
 
-def _study_one(key: str, v: float, lo: float, hi: float) -> tuple[str, float, str]:
-    fn = _study_share if key in SHARE_KEYS else _STUDY.get(key, _study_time)
-    return fn(key, v, lo, hi)
+def _target_cost(name: str, val: float, low: float, high: float) -> tuple[str, float, str]:
+    cost_fn = _share_cost if name in SHARE_KEYS else _COST_FOR.get(name, _time_cost)
+    return cost_fn(name, val, low, high)
 
 
 def study_penalties(sm: dict, targets: dict) -> tuple[dict, dict, str]:
     """(penalty per part, off-target keys, words) of study measures against targets."""
-    pen = {"tone": 0.0, "env": 0.0, "polish": 0.0}
-    off, texts = {}, []
-    for key, (lo, hi) in targets.items():
-        if sm.get(key) is None:
+    cost = {"tone": 0.0, "env": 0.0, "polish": 0.0}
+    miss, notes = {}, []
+    for name, (low, high) in targets.items():
+        if sm.get(name) is None:
             continue
-        part, p, text = _study_one(key, float(sm[key]), lo, hi)
-        if p > 0:
-            off[key] = round(p, 3)
-            pen[part] += p
-            texts.append(text)
-    pen = {k: min(_CAPS[k], v) for k, v in pen.items()}
-    return pen, off, ("study targets: " + "; ".join(texts)) if texts else "study targets met"
+        slot, pv, phrase = _target_cost(name, float(sm[name]), low, high)
+        if pv > 0:
+            miss[name] = round(pv, 3)
+            cost[slot] += pv
+            notes.append(phrase)
+    cost = {ky: min(_PART_CAP[ky], val) for ky, val in cost.items()}
+    return cost, miss, ("study targets: " + "; ".join(notes)) if notes else "study targets met"
 
 
 # ---------------------------------------------------------------- pure helpers
@@ -259,121 +259,121 @@ def resolve_mode(mode: str, target: str, refs: Sequence[Any] | None) -> str:
     """'real' or 'designed'; auto is designed with no refs or a designed target word."""
     if mode in ("real", "designed"):
         return mode
-    low = (target or "").lower()
-    if not refs or any(w in low for w in DESIGNED_WORDS):
+    lower = (target or "").lower()
+    if not refs or any(wd in lower for wd in DESIGNED_WORDS):
         return "designed"
     return "real"
 
 
-def _total(r: dict, W: dict, mode: str) -> float:
-    def g(k: str) -> float:
-        return float(r.get(k) or 0.0)
+def _v2_sum(rw: dict, wts: dict, mode_s: str) -> float:
+    def num(ky: str) -> float:
+        return float(rw.get(ky) or 0.0)
 
-    typ = r.get("ref_typ_z")
-    gain = {"match": min(g("match_z"), 6), "real": 2 * g("p_real") - 1 if mode == "real" else 0.0,
-            "typ": float(np.clip(typ, -3, 2)) if typ is not None else 0.0}
-    cost = {"feat": g("feat_pen"), "alt": max(0.0, 0.5 - g("alt_margin")), "tone": g("tone_pen"),
-            "env": g("env_pen"), "art": g("art_pen"), "polish": g("polish_pen")}
-    return sum(W[k] * v for k, v in gain.items()) - sum(W[k] * v for k, v in cost.items())
+    typ_z = rw.get("ref_typ_z")
+    plus = {"match": min(num("match_z"), 6), "real": 2 * num("p_real") - 1 if mode_s == "real" else 0.0,
+            "typ": float(np.clip(typ_z, -3, 2)) if typ_z is not None else 0.0}
+    minus = {"feat": num("feat_pen"), "alt": max(0.0, 0.5 - num("alt_margin")), "tone": num("tone_pen"),
+            "env": num("env_pen"), "art": num("art_pen"), "polish": num("polish_pen")}
+    return sum(wts[ky] * val for ky, val in plus.items()) - sum(wts[ky] * val for ky, val in minus.items())
 
 
-def _passes(r: dict, mode: str) -> bool:
-    def g(k: str) -> float:
-        return float(r.get(k) or 0.0)
+def _v2_ok(rw: dict, mode_s: str) -> bool:
+    def num(ky: str) -> float:
+        return float(rw.get(ky) or 0.0)
 
-    typ = r.get("ref_typ_z")
-    checks = [g("match_z") >= 3, g("alt_margin") > 0, mode != "real" or g("p_real") >= 0.77,
-              typ is None or typ >= -2, g("feat_pen") <= 1, not r.get("hard"), g("env_pen") <= ENV_PASS,
-              g("polish_pen") <= POLISH_PASS, not r.get("tone_far")]
-    return all(checks)
+    typ_z = rw.get("ref_typ_z")
+    ok_list = [num("match_z") >= 3, num("alt_margin") > 0, mode_s != "real" or num("p_real") >= 0.77,
+              typ_z is None or typ_z >= -2, num("feat_pen") <= 1, not rw.get("hard"), num("env_pen") <= ENV_PASS,
+              num("polish_pen") <= POLISH_PASS, not rw.get("tone_far")]
+    return all(ok_list)
 
 
 def total_v2(r: dict, W: dict | None = None, mode: str = "real") -> tuple[float, bool]:
     """The version-2 total and pass of a critic row."""
     W = {**W2, **(W or {})}
-    return float(_total(r, W, mode)), _passes(r, mode)
+    return float(_v2_sum(r, W, mode)), _v2_ok(r, mode)
 
 
-def _mono(x: Any) -> np.ndarray:
-    a = np.asarray(x, dtype=np.float32)
-    return a.mean(axis=1).astype(np.float32) if a.ndim == 2 else a
+def _flat32(sig: Any) -> np.ndarray:
+    arr = np.asarray(sig, dtype=np.float32)
+    return arr.mean(axis=1).astype(np.float32) if arr.ndim == 2 else arr
 
 
-def _stereo(x: Any) -> np.ndarray:
-    a = np.asarray(x, dtype=np.float32)
-    return np.column_stack([a, a]) if a.ndim == 1 else a
+def _two_ch(sig: Any) -> np.ndarray:
+    arr = np.asarray(sig, dtype=np.float32)
+    return np.column_stack([arr, arr]) if arr.ndim == 1 else arr
 
 
-def _list_audio(refs: Any) -> list[str]:
-    if not refs:
+def _audio_paths(ref_paths: Any) -> list[str]:
+    if not ref_paths:
         return []
-    items = [refs] if isinstance(refs, (str, os.PathLike)) else list(refs)
+    entries = [ref_paths] if isinstance(ref_paths, (str, os.PathLike)) else list(ref_paths)
     try:
         from hark.core.audio import list_media
 
-        return list(list_media([str(p) for p in items]))
+        return list(list_media([str(pv) for pv in entries]))
     except ImportError:
-        return [str(p) for p in items if os.path.isfile(str(p))]
+        return [str(pv) for pv in entries if os.path.isfile(str(pv))]
 
 
-def _feat_stats(F: Sequence[dict]) -> dict:
-    stats = {}
-    for k in FEATS:
-        vals = [f[k] for f in F if f.get(k) is not None]
-        if len(vals) < 2:
+def _feature_spread(fvs: Sequence[dict]) -> dict:
+    spread = {}
+    for ky in FEATS:
+        seen = [fd[ky] for fd in fvs if fd.get(ky) is not None]
+        if len(seen) < 2:
             continue
-        v = np.log(np.maximum(vals, 1e-3)) if k in LOG else np.asarray(vals, dtype=float)
-        floor = 0.15 if k in LOG else 1.5
-        iqr = float(np.percentile(v, 75) - np.percentile(v, 25))
-        stats[k] = (float(np.median(v)), max(iqr / 1.35, floor))
-    return stats
+        val = np.log(np.maximum(seen, 1e-3)) if ky in LOG else np.asarray(seen, dtype=float)
+        min_sd = 0.15 if ky in LOG else 1.5
+        quart = float(np.percentile(val, 75) - np.percentile(val, 25))
+        spread[ky] = (float(np.median(val)), max(quart / 1.35, min_sd))
+    return spread
 
 
-def _bname(p: Any) -> str:
-    return os.path.basename(str(p).replace("\\", "/"))
+def _file_label(pv: Any) -> str:
+    return os.path.basename(str(pv).replace("\\", "/"))
 
 
-_TONE_KEYS = ("tone_db", "tone_ratio", "outside", "t40_ms", "t40_ref", "length_s", "length_ref", "shares",
+_TONE_FIELDS = ("tone_db", "tone_ratio", "outside", "t40_ms", "t40_ref", "length_s", "length_ref", "shares",
               "shares_ref_med", "words")
 # (penalty part, the row key that, when set, means another check already judged this part)
-_STUDY_PARTS = (("tone", "tone_ratio"), ("env", "env_ratio"), ("polish", None))
+_TARGET_SLOTS = (("tone", "tone_ratio"), ("env", "env_ratio"), ("polish", None))
 
 
-def _weights(weights: dict | None, tone: float) -> dict:
-    W = {**W2, **(weights or {})}
-    if tone > 0 and "tone" not in (weights or {}):
-        W["tone"] = tone
-    return W
+def _merge_weights(wt_in: dict | None, tone_w: float) -> dict:
+    wts = {**W2, **(wt_in or {})}
+    if tone_w > 0 and "tone" not in (wt_in or {}):
+        wts["tone"] = tone_w
+    return wts
 
 
-def _study_setup(category: str | None, study: dict | None, gated: bool | None) -> tuple[dict, bool]:
-    targets = copy.deepcopy(STUDY_TARGETS.get(category or "", {}) if study is None else study)
-    return targets, (category in GATED) if gated is None else bool(gated)
+def _targets_and_gate(cat: str | None, tg_in: dict | None, gate: bool | None) -> tuple[dict, bool]:
+    tg_d = copy.deepcopy(STUDY_TARGETS.get(cat or "", {}) if tg_in is None else tg_in)
+    return tg_d, (cat in GATED) if gate is None else bool(gate)
 
 
-def _check_words(r: dict) -> list[str]:
+def _note_list(rw: dict) -> list[str]:
     """The words of the tone, envelope, polish and study checks, in that order."""
-    words = [(r.get("tone") or {}).get("words"), (r.get("env") or {}).get("words"), r.get("polish_words")]
-    study = r.get("study") or {}
-    words.append(study.get("words") if study.get("off") else None)
-    return [w for w in words if w]
+    note = [(rw.get("tone") or {}).get("words"), (rw.get("env") or {}).get("words"), rw.get("polish_words")]
+    tg_in = rw.get("study") or {}
+    note.append(tg_in.get("words") if tg_in.get("off") else None)
+    return [wd for wd in note if wd]
 
 
-def _total_v1(match: float, p: float, typ: float | None, feat_pen: float, margin: float) -> tuple[float, bool]:
-    t = float(np.clip(typ, -3, 2)) if typ is not None else 0.0
-    total = min(match, 6) + 2 * (2 * p - 1) + 0.5 * t - 0.7 * feat_pen - max(0.0, 0.5 - margin)
-    checks = [match >= 3, margin > 0, p >= 0.77, typ is None or typ >= -2, feat_pen <= 1]
-    return float(total), all(checks)
+def _v1_sum(mz: float, pv: float, typ_z: float | None, fpen: float, gap: float) -> tuple[float, bool]:
+    tv = float(np.clip(typ_z, -3, 2)) if typ_z is not None else 0.0
+    tot = min(mz, 6) + 2 * (2 * pv - 1) + 0.5 * tv - 0.7 * fpen - max(0.0, 0.5 - gap)
+    ok_list = [mz >= 3, gap > 0, pv >= 0.77, typ_z is None or typ_z >= -2, fpen <= 1]
+    return float(tot), all(ok_list)
 
 
-def _apply_study(row: dict, pen: dict) -> dict:
+def _add_target_costs(rec: dict, cost: dict) -> dict:
     """Add study penalties to parts no other check judged; return the parts used."""
-    used = {}
-    for part, judged in _STUDY_PARTS:
-        if pen[part] > 0 and (judged is None or row.get(judged) is None):
-            row[f"{part}_pen"] = row.get(f"{part}_pen", 0.0) + pen[part]
-            used[part] = pen[part]
-    return used
+    applied = {}
+    for slot, seen_by in _TARGET_SLOTS:
+        if cost[slot] > 0 and (seen_by is None or rec.get(seen_by) is None):
+            rec[f"{slot}_pen"] = rec.get(f"{slot}_pen", 0.0) + cost[slot]
+            applied[slot] = cost[slot]
+    return applied
 
 
 # ---------------------------------------------------------------- Critic
@@ -385,52 +385,52 @@ class Critic:
                  extra: Callable | None = None, tone: float = 0.0, tone_target: float | None = None,
                  mode: str = "auto", version: int = 2, weights: dict | None = None, category: str | None = None,
                  study: dict | None = None, gated: bool | None = None):
-        self.target, self.alts, self.k, self.extra = target, list(alts or []), k, extra
+        self.target, self.alts, self.nn_k, self.extra = target, list(alts or []), k, extra
         self.tone, self.tone_target, self.version, self.category = tone, tone_target, version, category
-        self.W = _weights(weights, tone)
-        self.svc = services()
-        self.Q = self.svc.embed_text([target] + self.alts)
-        self.refs = _list_audio(refs)
+        self.W = _merge_weights(weights, tone)
+        self.listen = services()
+        self.text_emb = self.listen.embed_text([target] + self.alts)
+        self.refs = _audio_paths(refs)
         self.mode = resolve_mode(mode, target, self.refs)
-        self.study, self.gated = _study_setup(category, study, gated)
-        self._memo: dict = {}
-        self._stats_memo: dict = {}
-        self._study_ref: list | None = None
-        self._load_refs()
+        self.study, self.is_gated = _targets_and_gate(category, study, gated)
+        self._ref_rows: dict = {}
+        self._loo_spread: dict = {}
+        self._ref_targets: list | None = None
+        self._prepare_refs()
 
-    def _load_refs(self) -> None:
-        self.ref_audio = [self._load(p) for p in self.refs]
+    def _prepare_refs(self) -> None:
+        self.ref_audio = [self._read_audio(pv) for pv in self.refs]
         if self.refs:
-            self.A = np.asarray(self.svc.embed_files(self.refs))
-            self.ref_feats = [self.svc.feats(_stereo(x)) for x in self.ref_audio]
-            self.stats = _feat_stats(self.ref_feats)
-            self.tone_ref = tn.ToneRef(self.ref_audio)
-            self.env_ref = tn.EnvRef(self.ref_audio, names=self.refs)
+            self.A = np.asarray(self.listen.embed_files(self.refs))
+            self.ref_fv = [self.listen.feats(_two_ch(sig)) for sig in self.ref_audio]
+            self.spread_tbl = _feature_spread(self.ref_fv)
+            self.tone_chk = tn.ToneRef(self.ref_audio)
+            self.env_chk = tn.EnvRef(self.ref_audio, names=self.refs)
         else:
-            self.A, self.ref_feats, self.stats, self.tone_ref, self.env_ref = None, [], {}, None, None
+            self.A, self.ref_fv, self.spread_tbl, self.tone_chk, self.env_chk = None, [], {}, None, None
         self.polish_ref = pol.PolishRef(self.ref_audio, designed=self.mode == "designed",
-                                        gated=self.gated and self.mode == "designed")
+                                        gated=self.is_gated and self.mode == "designed")
 
     @staticmethod
-    def _load(p: str) -> np.ndarray:
+    def _read_audio(pv: str) -> np.ndarray:
         from hark.core.audio import load
 
-        return np.asarray(load(p), dtype=np.float32)
+        return np.asarray(load(pv), dtype=np.float32)
 
     # -- embedding and ref sets
 
     def embed(self, xs: Sequence[Any], batch: int = 16) -> np.ndarray:
         """Text-audio embeddings of the mono mixes."""
-        out = [self.svc.embed_audio([_mono(x) for x in xs[i:i + batch]]) for i in range(0, len(xs), batch)]
-        return np.concatenate(out, axis=0) if out else np.zeros((0, 512))
+        res = [self.listen.embed_audio([_flat32(sig) for sig in xs[ix:ix + batch]]) for ix in range(0, len(xs), batch)]
+        return np.concatenate(res, axis=0) if res else np.zeros((0, 512))
 
-    def _ref_set(self, ex: int | None) -> tuple[list[int], dict]:
-        keep = [i for i in range(len(self.refs)) if i != ex]
-        if ex is None:
-            return keep, self.stats
-        if ex not in self._stats_memo:
-            self._stats_memo[ex] = _feat_stats([self.ref_feats[i] for i in keep])
-        return keep, self._stats_memo[ex]
+    def _kept_refs(self, left: int | None) -> tuple[list[int], dict]:
+        kept = [ix for ix in range(len(self.refs)) if ix != left]
+        if left is None:
+            return kept, self.spread_tbl
+        if left not in self._loo_spread:
+            self._loo_spread[left] = _feature_spread([self.ref_fv[ix] for ix in kept])
+        return kept, self._loo_spread[left]
 
     # -- scoring
 
@@ -441,212 +441,212 @@ class Critic:
         if not xs:
             return []
         E = self.embed(xs) if E is None else E
-        Z = self.svc.calibrate_z(E, self.Q)
+        zs = self.listen.calibrate_z(E, self.text_emb)
         exclude = list(exclude) if exclude is not None else [None] * len(xs)
-        return [self._row(i, x, E[i], Z[i], exclude[i]) for i, x in enumerate(xs)]
+        return [self._judge_one(ix, sig, E[ix], zs[ix], exclude[ix]) for ix, sig in enumerate(xs)]
 
-    def _row(self, i: int, x: Any, e: np.ndarray, z: np.ndarray, ex: int | None) -> dict:
-        m = _mono(x)
-        if not len(m) or not self.svc.audible(m):
-            return {"i": i, "total": -math.inf, "passes": False, "summary": "silent"}
-        keep, stats = self._ref_set(ex)
-        row = {"i": i, "mode": self.mode}
-        self._model_terms(row, m, x, e, z, keep, stats)
-        if ex is not None:
-            row["left_out"] = _bname(self.refs[ex])
-        self._tone_terms(row, x, ex)
-        self._free_terms(row, x, ex, keep)
-        row["total_v1"] = row["total"]
+    def _judge_one(self, ix: int, sig: Any, emb: np.ndarray, zrow: np.ndarray, left: int | None) -> dict:
+        mono_x = _flat32(sig)
+        if not len(mono_x) or not self.listen.audible(mono_x):
+            return {"i": ix, "total": -math.inf, "passes": False, "summary": "silent"}
+        kept, spread = self._kept_refs(left)
+        rec = {"i": ix, "mode": self.mode}
+        self._add_model(rec, mono_x, sig, emb, zrow, kept, spread)
+        if left is not None:
+            rec["left_out"] = _file_label(self.refs[left])
+        self._add_tone(rec, sig, left)
+        self._add_measures(rec, sig, left, kept)
+        rec["total_v1"] = rec["total"]
         if self.version >= 2:
-            row["total"], row["passes"] = total_v2(row, self.W, self.mode)
+            rec["total"], rec["passes"] = total_v2(rec, self.W, self.mode)
         if self.extra is not None:
-            row["extra"] = float(self.extra(x, row))
-            row["total"] += row["extra"]
-        row["summary"] = self._summary(row)
-        return row
+            rec["extra"] = float(self.extra(sig, rec))
+            rec["total"] += rec["extra"]
+        rec["summary"] = self._headline(rec)
+        return rec
 
-    def _model_terms(self, row: dict, m: np.ndarray, x: Any, e: np.ndarray, z: np.ndarray, keep: list[int],
-                     stats: dict) -> None:
-        match, alt_zs = float(z[0]), [float(v) for v in z[1:]]
-        margin = match - max(alt_zs) if alt_zs else 9.0
-        p = self._p_real(m, e)
-        feats = self.svc.feats(_stereo(x))
-        feat_pen, dev = self._feat_pen(feats, stats)
-        typ, near = self._typicality(e, keep)
-        total, passes = _total_v1(match, p, typ, feat_pen, margin)
-        row.update(match_z=match, alt_z=max(alt_zs) if alt_zs else None, alt_zs=alt_zs, alt_margin=margin,
-                   p_real=round(p, 3), ref_typ_z=typ, nearest_ref=near, feat_pen=feat_pen, feat_dev=dev,
-                   feats=feats, total=total, passes=passes, sounds_like=self.svc.top_terms(e, 3))
+    def _add_model(self, rec: dict, mono_x: np.ndarray, sig: Any, emb: np.ndarray, zrow: np.ndarray, kept: list[int],
+                     spread: dict) -> None:
+        mz, other_z = float(zrow[0]), [float(val) for val in zrow[1:]]
+        gap = mz - max(other_z) if other_z else 9.0
+        pv = self._realness(mono_x, emb)
+        fv = self.listen.feats(_two_ch(sig))
+        fpen, devs = self._feature_cost(fv, spread)
+        typ_z, closest = self._typical(emb, kept)
+        tot, ok = _v1_sum(mz, pv, typ_z, fpen, gap)
+        rec.update(match_z=mz, alt_z=max(other_z) if other_z else None, alt_zs=other_z, alt_margin=gap,
+                   p_real=round(pv, 3), ref_typ_z=typ_z, nearest_ref=closest, feat_pen=fpen, feat_dev=devs,
+                   feats=fv, total=tot, passes=ok, sounds_like=self.listen.top_terms(emb, 3))
 
-    def _p_real(self, m: np.ndarray, e: np.ndarray) -> float:
-        p = self.svc.p_real(m, e)
-        return min(p, 0.03) if self.svc.pure_tone(m) else p
+    def _realness(self, mono_x: np.ndarray, emb: np.ndarray) -> float:
+        pv = self.listen.p_real(mono_x, emb)
+        return min(pv, 0.03) if self.listen.pure_tone(mono_x) else pv
 
     @staticmethod
-    def _feat_pen(feats: dict, stats: dict) -> tuple[float, dict]:
-        dev, pen, n = {}, 0.0, 0
-        for k, (med, sd) in stats.items():
-            if feats.get(k) is None:
+    def _feature_cost(fv: dict, spread: dict) -> tuple[float, dict]:
+        devs, cost, cnt = {}, 0.0, 0
+        for ky, (mid, sdev) in spread.items():
+            if fv.get(ky) is None:
                 continue
-            v = math.log(max(feats[k], 1e-3)) if k in LOG else float(feats[k])
-            zk = (v - med) / sd
-            dev[k] = round(zk, 2)
-            pen += max(0.0, abs(zk) - 1.5)
-            n += 1
-        return pen / max(1, n), dev
+            val = math.log(max(fv[ky], 1e-3)) if ky in LOG else float(fv[ky])
+            zv = (val - mid) / sdev
+            devs[ky] = round(zv, 2)
+            cost += max(0.0, abs(zv) - 1.5)
+            cnt += 1
+        return cost / max(1, cnt), devs
 
-    def _typicality(self, e: np.ndarray, keep: list[int]) -> tuple[float | None, str | None]:
-        if self.A is None or len(keep) < 3:
+    def _typical(self, emb: np.ndarray, kept: list[int]) -> tuple[float | None, str | None]:
+        if self.A is None or len(kept) < 3:
             return None, None
-        A = self.A[keep]
-        typ = self.svc.typicality(e, A, self.k)
-        near = _bname(self.refs[keep[int(np.argmax(A @ e))]])
-        return (None if typ is None else float(typ)), near
+        embs_ref = self.A[kept]
+        typ_z = self.listen.typicality(emb, embs_ref, self.nn_k)
+        closest = _file_label(self.refs[kept[int(np.argmax(embs_ref @ emb))]])
+        return (None if typ_z is None else float(typ_z)), closest
 
-    def _tone_terms(self, row: dict, x: Any, ex: int | None) -> None:
-        t = self.tone_ref.check(x, exclude=ex) if self.tone_ref is not None and self.tone_ref.n else None
-        if not t:
+    def _add_tone(self, rec: dict, sig: Any, left: int | None) -> None:
+        tv = self.tone_chk.check(sig, exclude=left) if self.tone_chk is not None and self.tone_chk.n else None
+        if not tv:
             return
         if self.tone_target:
-            t["tone_ratio"] = round(t["tone_db"] / self.tone_target, 2)
-        row["tone"] = {k: t.get(k) for k in _TONE_KEYS}
-        row["tone_db"], row["tone_ratio"] = t["tone_db"], t["tone_ratio"]
-        row["tone_pen"] = self.tone_ref.penalty(t)
-        far = self._tone_far(t)
+            tv["tone_ratio"] = round(tv["tone_db"] / self.tone_target, 2)
+        rec["tone"] = {ky: tv.get(ky) for ky in _TONE_FIELDS}
+        rec["tone_db"], rec["tone_ratio"] = tv["tone_db"], tv["tone_ratio"]
+        rec["tone_pen"] = self.tone_chk.penalty(tv)
+        limit = self._tone_limit(tv)
         if self.version < 2 and self.tone > 0:
-            self._tone_v1(row, t, far)
-        row["tone_far"] = bool(far is not None and t["tone_db"] > TONE_PASS * far)
+            self._apply_tone_v1(rec, tv, limit)
+        rec["tone_far"] = bool(limit is not None and tv["tone_db"] > TONE_PASS * limit)
 
-    def _tone_far(self, t: dict) -> float | None:
+    def _tone_limit(self, tv: dict) -> float | None:
         if self.tone_target:
             return 1.6 * self.tone_target
-        return max(t["tone_ref"]) if t.get("tone_ref") else None
+        return max(tv["tone_ref"]) if tv.get("tone_ref") else None
 
-    def _tone_v1(self, row: dict, t: dict, far: float | None) -> None:
-        row["total"] -= self.tone * row["tone_pen"]
-        if far is not None and t["tone_db"] > far:
-            row["passes"] = False
+    def _apply_tone_v1(self, rec: dict, tv: dict, limit: float | None) -> None:
+        rec["total"] -= self.tone * rec["tone_pen"]
+        if limit is not None and tv["tone_db"] > limit:
+            rec["passes"] = False
 
-    def _free_terms(self, row: dict, x: Any, ex: int | None, keep: list[int]) -> None:
-        G = tn.bandgram(x)
-        if self.env_ref is not None and self.env_ref.n:
-            ev = self.env_ref.check(x, exclude=ex, G=G)
-            if ev:
-                keys = ("env_db", "env_ratio", "env_ref", "env_out", "env_out_ref", "nearest", "anchor", "stretch",
+    def _add_measures(self, rec: dict, sig: Any, left: int | None, kept: list[int]) -> None:
+        bandg = tn.bandgram(sig)
+        if self.env_chk is not None and self.env_chk.n:
+            env_chk = self.env_chk.check(sig, exclude=left, G=bandg)
+            if env_chk:
+                fields = ("env_db", "env_ratio", "env_ref", "env_out", "env_out_ref", "nearest", "anchor", "stretch",
                         "shift_ms", "outside", "words")
-                row["env"] = {k: ev.get(k) for k in keys}
-                row.update(env_db=ev["env_db"], env_ratio=ev["env_ratio"], env_out=ev["env_out"],
-                           env_pen=tn.EnvRef.penalty(ev))
-        self._polish_terms(row, x, ex, G)
-        if self.study and len(keep) < 3:
-            self._study_terms(row, x, ex)
+                rec["env"] = {ky: env_chk.get(ky) for ky in fields}
+                rec.update(env_db=env_chk["env_db"], env_ratio=env_chk["env_ratio"], env_out=env_chk["env_out"],
+                           env_pen=tn.EnvRef.penalty(env_chk))
+        self._add_polish(rec, sig, left, bandg)
+        if self.study and len(kept) < 3:
+            self._add_targets(rec, sig, left)
 
-    def _polish_terms(self, row: dict, x: Any, ex: int | None, G: np.ndarray) -> None:
-        c = self.polish_ref.check(x, exclude=ex, G=G)
-        lim = c["limits"]
-        row["artifacts"] = {"pen": c["art_pen"], "hard": c["hard"], **{k: lim.get(k) for k in c["art"]}}
-        row["polish"] = {"pen": c["polish_pen"], **{k: lim.get(k) for k in c["polish"]}}
-        row["measures"] = {k: v for k, v in c["measures"].items() if k != "res_peaks"}
-        row.update(art_pen=c["art_pen"], polish_pen=c["polish_pen"], hard=c["hard"], polish_words=c["words"])
+    def _add_polish(self, rec: dict, sig: Any, left: int | None, bandg: np.ndarray) -> None:
+        chk = self.polish_ref.check(sig, exclude=left, G=bandg)
+        lims = chk["limits"]
+        rec["artifacts"] = {"pen": chk["art_pen"], "hard": chk["hard"], **{ky: lims.get(ky) for ky in chk["art"]}}
+        rec["polish"] = {"pen": chk["polish_pen"], **{ky: lims.get(ky) for ky in chk["polish"]}}
+        rec["measures"] = {ky: val for ky, val in chk["measures"].items() if ky != "res_peaks"}
+        rec.update(art_pen=chk["art_pen"], polish_pen=chk["polish_pen"], hard=chk["hard"], polish_words=chk["words"])
 
-    def _study_terms(self, row: dict, x: Any, ex: int | None) -> None:
-        if self._study_ref is None:
-            self._study_ref = [study_measures(a) for a in self.ref_audio]
-        others = [m for j, m in enumerate(self._study_ref) if j != ex]
-        tg = widen_targets(self.study, others)
-        sm = study_measures(x)
-        pen, off, words = study_penalties(sm, tg)
-        used = _apply_study(row, pen)
-        row["study"] = {"measures": sm, "targets": tg, "off": off, "pen": used, "words": words}
+    def _add_targets(self, rec: dict, sig: Any, left: int | None) -> None:
+        if self._ref_targets is None:
+            self._ref_targets = [study_measures(arr) for arr in self.ref_audio]
+        rest = [mono_x for jx, mono_x in enumerate(self._ref_targets) if jx != left]
+        goals = widen_targets(self.study, rest)
+        sm = study_measures(sig)
+        cost, miss, note = study_penalties(sm, goals)
+        applied = _add_target_costs(rec, cost)
+        rec["study"] = {"measures": sm, "targets": goals, "off": miss, "pen": applied, "words": note}
 
-    def _summary(self, r: dict) -> str:
-        return ("PASS " if r["passes"] else "") + f"total {r['total']:.2f}: " + "; ".join(self._summary_parts(r))
+    def _headline(self, rw: dict) -> str:
+        return ("PASS " if rw["passes"] else "") + f"total {rw['total']:.2f}: " + "; ".join(self._headline_bits(rw))
 
-    def _summary_parts(self, r: dict) -> list[str]:
-        return self._summary_head(r) + self._summary_tail(r)
+    def _headline_bits(self, rw: dict) -> list[str]:
+        return self._model_bits(rw) + self._check_bits(rw)
 
-    def _summary_head(self, r: dict) -> list[str]:
-        alt = f" (best alternative {r['alt_z']:+.2f})" if r.get("alt_z") is not None else ""
-        designed = " (not required: designed)" if self.mode == "designed" else ""
-        parts = [f"match z {r['match_z']:+.2f}" + alt, f"p_real {r['p_real']:.2f}" + designed]
-        if r.get("ref_typ_z") is not None:
-            parts.append(f"typicality vs refs z {r['ref_typ_z']:+.2f} (nearest {r.get('nearest_ref')})")
-        return parts
+    def _model_bits(self, rw: dict) -> list[str]:
+        alt_s = f" (best alternative {rw['alt_z']:+.2f})" if rw.get("alt_z") is not None else ""
+        des_s = " (not required: designed)" if self.mode == "designed" else ""
+        bits = [f"match z {rw['match_z']:+.2f}" + alt_s, f"p_real {rw['p_real']:.2f}" + des_s]
+        if rw.get("ref_typ_z") is not None:
+            bits.append(f"typicality vs refs z {rw['ref_typ_z']:+.2f} (nearest {rw.get('nearest_ref')})")
+        return bits
 
     @staticmethod
-    def _summary_tail(r: dict) -> list[str]:
-        far = [f"{k} {v:+.1f}" for k, v in (r.get("feat_dev") or {}).items() if abs(v) > 1.5]
-        parts = ["outside the refs: " + ", ".join(far)] if far else []
-        parts.append("sounds like: " + ", ".join(r.get("sounds_like") or []))
-        return parts + _check_words(r)
+    def _check_bits(rw: dict) -> list[str]:
+        limit = [f"{ky} {val:+.1f}" for ky, val in (rw.get("feat_dev") or {}).items() if abs(val) > 1.5]
+        bits = ["outside the refs: " + ", ".join(limit)] if limit else []
+        bits.append("sounds like: " + ", ".join(rw.get("sounds_like") or []))
+        return bits + _note_list(rw)
 
     # -- refs and checks
 
     def score_files(self, paths: Sequence[str]) -> list[dict]:
         """Score audio files."""
-        return self.score([self._load(p) for p in paths])
+        return self.score([self._read_audio(pv) for pv in paths])
 
     def score_refs(self, loo: bool = True) -> list[dict]:
         """Score every ref with this critic; with loo each ref is judged against the others."""
-        key = (loo, tuple(sorted(self.W.items())), self.mode, self.version, id(self.extra), tuple(self.refs))
-        if key not in self._memo:
+        name = (loo, tuple(sorted(self.W.items())), self.mode, self.version, id(self.extra), tuple(self.refs))
+        if name not in self._ref_rows:
             if not self.refs:
-                self._memo[key] = []
+                self._ref_rows[name] = []
             else:
-                ex = list(range(len(self.refs))) if loo else None
-                rows = self.score(self.ref_audio, E=self.A, exclude=ex)
-                for r, p in zip(rows, self.refs):
-                    r["file"] = _bname(p)
-                self._memo[key] = rows
-        return copy.deepcopy(self._memo[key])
+                left = list(range(len(self.refs))) if loo else None
+                tbl = self.score(self.ref_audio, E=self.A, exclude=left)
+                for rw, pv in zip(tbl, self.refs):
+                    rw["file"] = _file_label(pv)
+                self._ref_rows[name] = tbl
+        return copy.deepcopy(self._ref_rows[name])
 
     def consistency(self, xs: Sequence[Any]) -> dict:
         """Loudness spread of the sounds, and of the refs when there are refs."""
-        out = pol.loudness_spread(list(xs))
+        res = pol.loudness_spread(list(xs))
         if self.refs:
-            out["refs"] = pol.loudness_spread(self.ref_audio)
-        return out
+            res["refs"] = pol.loudness_spread(self.ref_audio)
+        return res
 
     def holdout(self, xs: Sequence[Any], cache: bool = True) -> list[dict]:
         """Held-out AudioSet tags (never part of the objective)."""
-        return [copy.deepcopy(_holdout_one(self.svc, _mono(x), cache)) for x in xs]
+        return [copy.deepcopy(_tags_for(self.listen, _flat32(sig), cache)) for sig in xs]
 
 
 _HOLD: dict[str, dict] = {}
 
 
-def _hold_dir() -> Path:
-    home = os.environ.get("HARK_HOME") or os.path.join("~", ".cache", "hark")
-    return Path(home).expanduser() / "emb" / "forge_holdout"
+def _tag_cache_dir() -> Path:
+    base_dir = os.environ.get("HARK_HOME") or os.path.join("~", ".cache", "hark")
+    return Path(base_dir).expanduser() / "emb" / "forge_holdout"
 
 
-def _read_hold(path: Path) -> dict | None:
+def _load_tags(fpath: Path) -> dict | None:
     try:
-        got = json.loads(path.read_text())
+        cached = json.loads(fpath.read_text())
     except (OSError, ValueError):
         return None
-    got["audioset_top"] = [tuple(t) for t in got.get("audioset_top") or []]
-    return got
+    cached["audioset_top"] = [tuple(tv) for tv in cached.get("audioset_top") or []]
+    return cached
 
 
-def _holdout_one(svc: Any, m: np.ndarray, cache: bool) -> dict:
-    key = f"{svc.tagger_name()}/{holdout_key(m)}"
-    path = _hold_dir() / (key.replace("/", "__") + ".json")
-    got = (_HOLD.get(key) or (_read_hold(path) if path.is_file() else None)) if cache else None
-    if got is None:
-        top, synth = svc.tags(m)
-        got = {"audioset_top": [tuple(t) for t in top], "audioset_synth_max": synth}
-        if cache:
-            _write_quietly(path, got)
-    _HOLD[key] = got
-    return got
+def _tags_for(srv: Any, mono_x: np.ndarray, use_cache: bool) -> dict:
+    name = f"{srv.tagger_name()}/{holdout_key(mono_x)}"
+    fpath = _tag_cache_dir() / (name.replace("/", "__") + ".json")
+    cached = (_HOLD.get(name) or (_load_tags(fpath) if fpath.is_file() else None)) if use_cache else None
+    if cached is None:
+        best, synth_p = srv.tags(mono_x)
+        cached = {"audioset_top": [tuple(tv) for tv in best], "audioset_synth_max": synth_p}
+        if use_cache:
+            _save_tags(fpath, cached)
+    _HOLD[name] = cached
+    return cached
 
 
-def _write_quietly(path: Path, obj: dict) -> None:
+def _save_tags(fpath: Path, data: dict) -> None:
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f"{path.name}.tmp{os.getpid()}")
-        tmp.write_text(json.dumps(obj))
-        os.replace(tmp, path)
+        fpath.parent.mkdir(parents=True, exist_ok=True)
+        tmp_p = fpath.with_name(f"{fpath.name}.tmp{os.getpid()}")
+        tmp_p.write_text(json.dumps(data))
+        os.replace(tmp_p, fpath)
     except OSError:
         pass
