@@ -107,24 +107,23 @@ class ClapEmbedding:
             feats = _common.pool_output(self.model.get_text_features(**tokens))
         return _common.unit_rows(feats.float().cpu().numpy())
 
+    def _learn_phrases(self, pending: list[str], batch: int) -> None:
+        """Encode phrases not seen before, in batches, and keep them on disk."""
+        for lo in range(0, len(pending), batch):
+            group = pending[lo: lo + batch]
+            for phrase, vector in zip(group, self._encode_phrases(group)):
+                self._text[_common.key24(phrase)] = vector
+        if pending:
+            self._store_phrases()
+
     def embed_text(self, texts: str | Sequence[str], batch: int = TEXT_BATCH) -> numpy.ndarray:
         """Unit text vectors, shape (n, 512); each text is encoded once and kept on disk."""
         phrases = [texts] if isinstance(texts, str) else list(texts)
         if not phrases:
             return _nothing()
         hashes = [_common.key24(phrase) for phrase in phrases]
-        fresh = {}
-        for phrase, digest in zip(phrases, hashes):
-            if digest not in self._text:
-                fresh.setdefault(phrase, None)
-        pending = list(fresh)
-        for lo in range(0, len(pending), batch):
-            group = pending[lo: lo + batch]
-            vectors = self._encode_phrases(group)
-            for phrase, vector in zip(group, vectors):
-                self._text[_common.key24(phrase)] = vector
-        if pending:
-            self._store_phrases()
+        unseen = dict.fromkeys(p for p, h in zip(phrases, hashes) if h not in self._text)
+        self._learn_phrases(list(unseen), batch)
         return numpy.stack([self._text[digest] for digest in hashes]).astype(numpy.float32)
 
     # audio side --------------------------------------------------------

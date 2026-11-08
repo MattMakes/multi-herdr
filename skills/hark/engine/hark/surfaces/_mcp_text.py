@@ -25,30 +25,46 @@ def clean(obj: Any) -> Any:
         return {str(key): clean(item) for key, item in obj.items()}
     if isinstance(obj, (list, tuple, set)):
         return [clean(item) for item in obj]
+    return _clean_leaf(obj)
+
+
+def _clean_leaf(obj: Any) -> Any:
+    """Arrays become lists, non-finite floats become None, other objects their text."""
     if hasattr(obj, "tolist") and not isinstance(obj, (str, bytes)):
         return clean(obj.tolist())
     if isinstance(obj, float) and not math.isfinite(obj):
         return None
-    if obj is None or isinstance(obj, (bool, int, float, str)):
-        return obj
-    return str(obj)
+    return obj if obj is None or isinstance(obj, (bool, int, float, str)) else str(obj)
+
+
+def _squeeze_text(value: str, cap: int, outer: bool) -> str:
+    return value[:STRING_CAP] + " ..." if len(value) > STRING_CAP else value
+
+
+def _squeeze_list(value: list, cap: int, outer: bool) -> list:
+    kept = [_squeeze(item, cap) for item in value[:cap]]
+    if len(value) > cap:
+        kept.append(f"... +{len(value) - cap} more")
+    return kept
+
+
+def _squeeze_dict(value: dict, cap: int, outer: bool) -> dict:
+    return {key: _squeeze(item, cap) for key, item in value.items()
+            if not (outer and key in ("summary", "text"))}
+
+
+_SQUEEZERS = (
+    (float, lambda value, cap, outer: round(value, 3)),
+    (str, _squeeze_text),
+    (list, _squeeze_list),
+    (dict, _squeeze_dict),
+)
 
 
 def _squeeze(value: Any, cap: int, outer: bool = False) -> Any:
     """One shrink pass: round floats, cut strings, cap lists; the outer dict loses summary and text."""
-    if isinstance(value, float):
-        return round(value, 3)
-    if isinstance(value, str):
-        return value[:STRING_CAP] + " ..." if len(value) > STRING_CAP else value
-    if isinstance(value, list):
-        kept = [_squeeze(item, cap) for item in value[:cap]]
-        if len(value) > cap:
-            kept.append(f"... +{len(value) - cap} more")
-        return kept
-    if isinstance(value, dict):
-        return {key: _squeeze(item, cap) for key, item in value.items()
-                if not (outer and key in ("summary", "text"))}
-    return value
+    handler = next((fn for kind, fn in _SQUEEZERS if isinstance(value, kind)), None)
+    return value if handler is None else handler(value, cap, outer)
 
 
 def _tight(value: Any) -> str:
@@ -85,21 +101,28 @@ def compact_json(result: Any) -> str:
     return _tight({"cut": "the result does not fit the compact view; full=true returns it"})
 
 
+def _body(record: dict, full: bool) -> str:
+    body = str(record.get("text") or "").strip()
+    if full or len(body) <= BODY_LIMIT:
+        return body
+    return body[:BODY_LIMIT] + f"\n(text cut at {BODY_LIMIT} characters; full=true gives all of it)"
+
+
+def _payload(record: dict, full: bool) -> str:
+    if full:
+        return "JSON: " + json.dumps(clean(record), ensure_ascii=False)
+    return "JSON (compact): " + compact_json(record)
+
+
 def format_result(result: Any, full: bool = False, ignored: list[str] | None = None) -> str:
     """The reply text of a tool: summary, body, a note on ignored arguments, then JSON."""
     record = result if isinstance(result, dict) else {"summary": str(result)}
     summary = str(record.get("summary") or "").strip()
-    body = str(record.get("text") or "").strip()
-    if not full and len(body) > BODY_LIMIT:
-        body = body[:BODY_LIMIT] + f"\n(text cut at {BODY_LIMIT} characters; full=true gives all of it)"
+    body = _body(record, full)
     if summary and body.startswith(summary):
         summary = ""
     note = f"(this hark version ignored: {', '.join(ignored)})" if ignored else ""
-    if full:
-        payload = "JSON: " + json.dumps(clean(record), ensure_ascii=False)
-    else:
-        payload = "JSON (compact): " + compact_json(record)
-    return "\n\n".join(part for part in (summary, body, note, payload) if part)
+    return "\n\n".join(part for part in (summary, body, note, _payload(record, full)) if part)
 
 
 def _loudness(m: dict) -> str:
@@ -118,7 +141,7 @@ def _peaks(m: dict) -> str:
     return text
 
 
-def _clauses(m: dict, secs: str) -> list[str]:
+def _level_clauses(m: dict, secs: str) -> list[str]:
     said = [f"{secs} s", _loudness(m), _peaks(m)]
     if m.get("lra_lu") is not None:
         said.append(f"LRA {m['lra_lu']} LU")
@@ -127,6 +150,11 @@ def _clauses(m: dict, secs: str) -> list[str]:
     for field, word in (("brightness_hz", "brightness"), ("bandwidth_hz", "bandwidth")):
         if m.get(field):
             said.append(f"{word} {m[field] / 1000:.1f} kHz")
+    return said
+
+
+def _shape_clauses(m: dict) -> list[str]:
+    said = []
     if m.get("attack_ms") is not None:
         tail = f", decay {m['decay_ms']} ms" if m.get("decay_ms") is not None else ""
         said.append(f"attack {m['attack_ms']} ms{tail}")
@@ -136,6 +164,10 @@ def _clauses(m: dict, secs: str) -> list[str]:
         tonic = (m.get("key") or [{}])[0].get("key", "?") if m.get("key") else "?"
         said.append(f"tempo ~{m['tempo']} BPM, key {tonic}")
     return said
+
+
+def _clauses(m: dict, secs: str) -> list[str]:
+    return _level_clauses(m, secs) + _shape_clauses(m)
 
 
 def measure_summary(m: dict) -> str:

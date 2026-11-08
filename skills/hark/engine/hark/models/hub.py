@@ -62,11 +62,8 @@ def _refuse_reason(spec: Spec) -> RuntimeError | None:
         "HARK_HOME at one")
 
 
-def fetch(spec: Spec) -> Spec:
-    """Pull the wanted revision into ``<HARK_HOME>/hf`` and return a fresh Spec."""
-    refusal = _refuse_reason(spec)
-    if refusal is not None:
-        raise refusal
+def _pull(spec: Spec) -> None:
+    """Run the download; MLMissing passes through, any other failure becomes RuntimeError."""
     config.ensure_dirs()
     _, failure = outcome(_download, spec.model_id, spec.revision, config.HF_CACHE, allow_list(spec))
     if isinstance(failure, MLMissing):
@@ -74,12 +71,24 @@ def fetch(spec: Spec) -> Spec:
     if failure is not None:
         raise RuntimeError(f"could not download {spec.label} into {config.HF_CACHE}: "
                            f"{type(failure).__name__}: {failure}") from failure
-    after = resolve(spec.model_id, None if spec.pinned else spec.revision)
-    if after.state == "cached":
-        return after
+
+
+def _still_missing(spec: Spec, after: Spec) -> RuntimeError:
     note = "" if spec.pinned else "; hark loads safetensors weights only"
-    raise RuntimeError(f"{spec.label}: after the download, {', '.join(after.missing) or 'files'} are still missing "
-                       f"in {model_dir(spec.model_id)}{note}")
+    return RuntimeError(f"{spec.label}: after the download, {', '.join(after.missing) or 'files'} are still "
+                        f"missing in {model_dir(spec.model_id)}{note}")
+
+
+def fetch(spec: Spec) -> Spec:
+    """Pull the wanted revision into ``<HARK_HOME>/hf`` and return a fresh Spec."""
+    refusal = _refuse_reason(spec)
+    if refusal is not None:
+        raise refusal
+    _pull(spec)
+    after = resolve(spec.model_id, None if spec.pinned else spec.revision)
+    if after.state != "cached":
+        raise _still_missing(spec, after)
+    return after
 
 
 def ensure(model_id: str, revision: str | None = None) -> Spec:

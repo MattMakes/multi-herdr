@@ -63,28 +63,77 @@ def _failure(path: str, prov: Any, model: str, clip: dict | None, exc: BaseExcep
             "uploaded": clip, "summary": line, "text": line, "error": reason}
 
 
+def _upload_info(clip: dict, reply: dict) -> dict:
+    upload = dict(clip, method=reply.get("method"))
+    if reply.get("files_api_deleted") is not None:
+        upload["files_api_deleted"] = reply["files_api_deleted"]
+    return upload
+
+
+def _explain_unparsed(out: dict, prov: Any, clip: dict, reply: dict) -> None:
+    out["raw"] = scrub(reply.get("text") or "")[:RAW_CAP]
+    tail = " [Only the first {:g} s were sent; use --start / --end for other parts.]".format(
+        clip["seconds"]) if clip.get("trimmed") else ""
+    out["summary"] = (f"{prov.name} answered, but not in parseable JSON (finish reason "
+                      f"{reply.get('finish_reason')}); the raw answer is attached." + tail)
+
+
 def _result(path: str, prov: Any, model: str, clip: dict, reply: dict, ctx: str, notes: list[str],
             took: float) -> dict[str, Any]:
     found = parse_json(reply.get("text") or "")
     shown = reply.get("model_version") or model
-    upload = dict(clip, method=reply.get("method"))
-    if reply.get("files_api_deleted") is not None:
-        upload["files_api_deleted"] = reply["files_api_deleted"]
     out: dict[str, Any] = {"enabled": True, "ok": found is not None, "path": path, "provider": prov.name,
-                           "model": shown, "uploaded": upload, "seconds": took,
+                           "model": shown, "uploaded": _upload_info(clip, reply), "seconds": took,
                            "usage": reply.get("usage") or {}, "finish_reason": reply.get("finish_reason"),
                            "context_sent": ctx, "notes": notes}
     if found is None:
-        out["raw"] = scrub(reply.get("text") or "")[:RAW_CAP]
-        tail = " [Only the first {:g} s were sent; use --start / --end for other parts.]".format(
-            clip["seconds"]) if clip.get("trimmed") else ""
-        out["summary"] = (f"{prov.name} answered, but not in parseable JSON (finish reason "
-                          f"{reply.get('finish_reason')}); the raw answer is attached." + tail)
+        _explain_unparsed(out, prov, clip, reply)
     else:
         out["critique"] = normalize(found, offset=clip["start"], clip_len=clip["seconds"])
         out["summary"] = parsed_summary(prov.name, shown, out["critique"], clip)
     out["text"] = render(out)
     return out
+
+
+def _refuse_early(path: str, prov: Any) -> None:
+    """AudioError for a missing file; AgyCannotHear when the probe says agy hears no audio."""
+    if not os.path.isfile(path):
+        from hark.core.audio import AudioError
+
+        raise AudioError(f"no such file: {path}")
+    if getattr(prov, "name", "") == "agy" and AGY_VERDICT != "HEARS":
+        raise AgyCannotHear("agy cannot hear audio files (probe verdict "
+                            f"{AGY_VERDICT}); the LLM critique is unavailable and nothing was sent.")
+
+
+def _gate(path: str, prov: Any, chosen: str, consent: bool) -> dict[str, Any] | None:
+    """The off result when the provider is not ready or consent is missing; None when the call may go."""
+    if not prov.ready():
+        return _disabled(path, prov, chosen,
+                         f"The LLM critique is off: the {prov.name} provider is not ready. "
+                         "The rest of hark works without it.", prov.how_to_enable())
+    if consent:
+        return None
+    return _disabled(path, prov, chosen,
+                     f"Nothing was uploaded. Sending {os.path.basename(path)} to {prov.name} ({chosen}) "
+                     "needs the user's explicit consent.",
+                     [f"Ask the user for permission to send this audio to {prov.name} for an AI review.",
+                      "With permission, run again with --yes-upload (CLI) or consent=True (Python, MCP)."])
+
+
+def _ask(path: str, prov: Any, chosen: str, opts: dict[str, Any]) -> dict[str, Any]:
+    """Encode the clip, build the context and prompt, call the provider and shape the answer."""
+    clip = None
+    try:
+        payload, mime, clip = encode(path, opts["start"], opts["end"], opts["max_seconds"])
+        ctx, notes = context(path, clip, opts["video"], opts["with_timeline"], opts["cuts"])
+        question = build_prompt(ctx, opts["prompt"], opts["synth_intended"])
+        began = time.monotonic()
+        reply = prov.generate(payload, mime, question, chosen)
+        took = round(time.monotonic() - began, 1)
+    except Exception as exc:
+        return _failure(path, prov, chosen, clip, exc)
+    return _result(path, prov, chosen, clip, reply, ctx, notes, took)
 
 
 def critique(path: str, prompt: str | None = None, provider: Any = "agy", model: str | None = None,
@@ -97,35 +146,14 @@ def critique(path: str, prompt: str | None = None, provider: Any = "agy", model:
     """
     prov = get_provider(provider)
     path = str(path)
-    if not os.path.isfile(path):
-        from hark.core.audio import AudioError
-
-        raise AudioError(f"no such file: {path}")
-    if getattr(prov, "name", "") == "agy" and AGY_VERDICT != "HEARS":
-        raise AgyCannotHear("agy cannot hear audio files (probe verdict "
-                            f"{AGY_VERDICT}); the LLM critique is unavailable and nothing was sent.")
+    _refuse_early(path, prov)
     chosen = prov.model(model)
-    if not prov.ready():
-        return _disabled(path, prov, chosen,
-                         f"The LLM critique is off: the {prov.name} provider is not ready. "
-                         "The rest of hark works without it.", prov.how_to_enable())
-    if not consent:
-        return _disabled(path, prov, chosen,
-                         f"Nothing was uploaded. Sending {os.path.basename(path)} to {prov.name} ({chosen}) "
-                         "needs the user's explicit consent.",
-                         [f"Ask the user for permission to send this audio to {prov.name} for an AI review.",
-                          "With permission, run again with --yes-upload (CLI) or consent=True (Python, MCP)."])
-    clip = None
-    try:
-        payload, mime, clip = encode(path, start, end, max_seconds)
-        ctx, notes = context(path, clip, video, with_timeline, cuts)
-        question = build_prompt(ctx, prompt, synth_intended)
-        began = time.monotonic()
-        reply = prov.generate(payload, mime, question, chosen)
-        took = round(time.monotonic() - began, 1)
-    except Exception as exc:
-        return _failure(path, prov, chosen, clip, exc)
-    return _result(path, prov, chosen, clip, reply, ctx, notes, took)
+    blocked = _gate(path, prov, chosen, consent)
+    if blocked is not None:
+        return blocked
+    opts = {"prompt": prompt, "video": video, "with_timeline": with_timeline, "start": start, "end": end,
+            "max_seconds": max_seconds, "cuts": cuts, "synth_intended": synth_intended}
+    return _ask(path, prov, chosen, opts)
 
 
 # command line ---------------------------------------------------------

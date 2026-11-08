@@ -53,6 +53,16 @@ def _empty() -> numpy.ndarray:
     return numpy.zeros((0, N_CLASSES), numpy.float32)
 
 
+def _pool_rows(table: numpy.ndarray, sizes: list[int], reduce: str) -> numpy.ndarray:
+    """Collapse each clip's consecutive window rows to one row by max (or mean)."""
+    if not sizes:
+        return _empty()
+    pool = numpy.max if reduce == "max" else numpy.mean
+    bounds = numpy.cumsum([0, *sizes])
+    pooled = [pool(table[lo:hi], axis=0) for lo, hi in zip(bounds[:-1], bounds[1:])]
+    return numpy.stack(pooled).astype(numpy.float32)
+
+
 class TagScoring:
     """Turn clips and files into AudioSet class probabilities."""
 
@@ -66,22 +76,16 @@ class TagScoring:
             raw = self.model(**tensors).logits.float()
         return torch.sigmoid(raw).cpu().numpy().astype(numpy.float32)
 
+    def _score_windows(self, windows: list[numpy.ndarray], batch: int) -> numpy.ndarray:
+        scored = [self._score_batch(windows[i: i + batch]) for i in range(0, len(windows), batch)]
+        return numpy.concatenate(scored) if scored else _empty()
+
     def probs(self, arrays: numpy.ndarray | Sequence[numpy.ndarray], reduce: str = "max", batch: int = BATCH) -> numpy.ndarray:
         """Class probabilities, shape (n, 527), for n clips at 48 kHz."""
         single = isinstance(arrays, numpy.ndarray) and arrays.ndim == 1
-        clips = [arrays] if single else list(arrays)
-        per_clip = [_segments(c) for c in clips]
-        flat = [w for windows in per_clip for w in windows]
-        scored = [self._score_batch(flat[i: i + batch]) for i in range(0, len(flat), batch)]
-        table = numpy.concatenate(scored) if scored else _empty()
-        pool = numpy.max if reduce == "max" else numpy.mean
-        result, at = [], 0
-        for windows in per_clip:
-            result.append(pool(table[at: at + len(windows)], axis=0))
-            at += len(windows)
-        if not result:
-            return _empty()
-        return numpy.stack(result).astype(numpy.float32)
+        per_clip = [_segments(c) for c in ([arrays] if single else list(arrays))]
+        table = self._score_windows([w for windows in per_clip for w in windows], batch)
+        return _pool_rows(table, [len(windows) for windows in per_clip], reduce)
 
     def probs_file(self, path: str, start: float | None = None, end: float | None = None,
                    reduce: str = "max") -> numpy.ndarray:

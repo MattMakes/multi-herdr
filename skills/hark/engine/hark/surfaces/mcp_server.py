@@ -119,15 +119,17 @@ def t_ab(a: str, b: str, query: str | None = None, refs: Any = None, a_start: fl
     return _run("ab", args, full)
 
 
+def _realness_row(row: dict) -> str:
+    chance = row.get("p_real")
+    cell = f"{chance:6.2f}" if isinstance(chance, (int, float)) else f"{'-':>6}"
+    name = os.path.basename(str(row.get("path") or row.get("file") or ""))
+    why = row.get("why") or row.get("summary") or ""
+    return f"{cell}  {str(row.get('verdict') or '-'):<24} {name}: {why}"
+
+
 def _realness_table(record: dict) -> str:
-    lines = [str(record.get("summary") or ""), "p_real  verdict                  file: main reason"]
-    for row in record.get("files") or record.get("results") or []:
-        chance = row.get("p_real")
-        cell = f"{chance:6.2f}" if isinstance(chance, (int, float)) else f"{'-':>6}"
-        name = os.path.basename(str(row.get("path") or row.get("file") or ""))
-        why = row.get("why") or row.get("summary") or ""
-        lines.append(f"{cell}  {str(row.get('verdict') or '-'):<24} {name}: {why}")
-    return "\n".join(lines)
+    rows = [_realness_row(row) for row in record.get("files") or record.get("results") or []]
+    return "\n".join([str(record.get("summary") or ""), "p_real  verdict                  file: main reason", *rows])
 
 
 def _require_realness_model() -> None:
@@ -139,15 +141,8 @@ def _require_realness_model() -> None:
                         "weaker evidence.")
 
 
-def t_realness(path: str, start: float | None = None, end: float | None = None, ast: bool = False,
-               full: bool = False) -> ToolResult:
-    backing("realness")
-    _require_realness_model()
-    if not isinstance(path, str) or not path.strip():
-        raise ToolError("path: a file path is required")
-    where = absolute(path)
-    if os.path.isfile(where):
-        return _run("realness", {"path": where, "start": start, "end": end, "ast": ast or None}, full)
+def _realness_batch(where: str, start: Any, end: Any, ast: bool, full: bool) -> ToolResult:
+    """Judge every media file under a folder or glob in one call."""
     if not os.path.isdir(where) and not any(ch in where for ch in "*?["):
         file_arg(where)
     many = paths_arg(where, "path")
@@ -160,6 +155,18 @@ def t_realness(path: str, start: float | None = None, end: float | None = None, 
     record = _as_record(res)
     record["text"] = _realness_table(record)
     return ToolResult(format_result(record, full, ignored))
+
+
+def t_realness(path: str, start: float | None = None, end: float | None = None, ast: bool = False,
+               full: bool = False) -> ToolResult:
+    backing("realness")
+    _require_realness_model()
+    if not isinstance(path, str) or not path.strip():
+        raise ToolError("path: a file path is required")
+    where = absolute(path)
+    if os.path.isfile(where):
+        return _run("realness", {"path": where, "start": start, "end": end, "ast": ast or None}, full)
+    return _realness_batch(where, start, end, ast, full)
 
 
 def _soundtrack_args(path: str, video: Any, cues: Any, start: Any, end: Any, detail: str) -> dict[str, Any]:

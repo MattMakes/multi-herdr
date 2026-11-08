@@ -23,6 +23,11 @@ _LOCK = threading.RLock()
 _INSTANCE: AST | None = None
 
 
+def _label_list(id2label: dict) -> list[str]:
+    """Class names in class-index order."""
+    return [str(id2label[k]) for k in range(len(id2label))]
+
+
 class AST(TagScoring):
     """A loaded AudioSet tagger, bound to one model snapshot and one cache folder."""
 
@@ -32,16 +37,13 @@ class AST(TagScoring):
 
         config.ensure_dirs()
         self.model_id, self.revision = _common.wanted(model_id, config.AST_MODEL, config.AST_REVISION)
-        spec = hub.ensure(self.model_id, self.revision)
-        self.spec = spec
-        self.weights = spec.weights
-        self.dir = spec.snapshot
+        self.spec = spec = hub.ensure(self.model_id, self.revision)
+        self.weights, self.dir = spec.weights, spec.snapshot
         self.extractor = _common.load_pretrained(ASTFeatureExtractor, spec)
         raw = _common.load_pretrained(ASTForAudioClassification, spec, **_common.load_options(spec))
         self.model, self.precision = _common.choose_precision(torch, raw.eval())
         self.dtype = torch.bfloat16 if self.precision == "bf16" else torch.float32
-        names = self.model.config.id2label
-        self.labels = [str(names[k]) for k in range(len(names))]
+        self.labels = _label_list(self.model.config.id2label)
         self.index = dict(zip(self.labels, range(len(self.labels))))
         self.cache_dir = _common.embed_store("ast", spec, self.precision)
         self._torch = torch

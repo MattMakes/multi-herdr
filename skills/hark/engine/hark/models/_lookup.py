@@ -12,7 +12,12 @@ import os
 from pathlib import Path
 
 from hark.core import config
-from hark.models._spec import Spec, absolute_path, looks_like_sha, slug  # noqa: F401  (slug is re-exported)
+from hark.models._spec import (  # noqa: F401  (slug is re-exported)
+    Spec,
+    absolute_path,
+    looks_like_sha,
+    slug,
+)
 
 SAFETENSORS = ("model.safetensors", "model.safetensors.index.json")
 PICKLE = ("pytorch_model.bin", "pytorch_model.bin.index.json")

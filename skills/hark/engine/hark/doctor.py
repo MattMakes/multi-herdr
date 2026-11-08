@@ -190,8 +190,9 @@ def _summary(bank: dict, faults: list[str], advice: list[str]) -> str:
     return " ".join(piece for piece in pieces if piece)
 
 
-def _gather(fetch_missing: bool) -> dict[str, Any]:
-    state: dict[str, Any] = {
+def _environment() -> dict[str, Any]:
+    """Python, hark settings, packages and the ffmpeg tools: the first fields of the report."""
+    return {
         "python": platform.python_version(),
         "hark_home": config.HOME,
         "threads": config.threads(),
@@ -204,10 +205,15 @@ def _gather(fetch_missing: bool) -> dict[str, Any]:
         "torch_cuda_used": False,
         "offline": config.offline(),
     }
+
+
+def _gather(fetch_missing: bool) -> dict[str, Any]:
+    state = _environment()
     if fetch_missing:
         state["fetched"] = fetch()
-    state["models"] = models()
-    state["models_cached"] = {model_id: row["snapshot"] is not None for model_id, row in state["models"].items()}
+    rows = models()
+    state["models"] = rows
+    state["models_cached"] = {model_id: row["snapshot"] is not None for model_id, row in rows.items()}
     state["agy"] = shutil.which("agy")
     state["data_files"] = _data_files()
     state["bank"] = bank_info()
