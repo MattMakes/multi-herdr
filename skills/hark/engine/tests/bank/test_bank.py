@@ -26,12 +26,13 @@ def test_at_1_ids_counts_and_version_shipped(shipped, open_ids):
     b = shipped
     files = b._bank().files
     has_fit = any(f.endswith("/fit.json") for f in files.values())
-    want = {"forge_v2.json": 183, "forge04.json": 51 - len(open_ids["forge04"]), "pluck.json": 3}
+    want = {"forge_v2.json": 183 - len(open_ids["dropped"]), "forge04.json": 51 - len(open_ids["forge04"]),
+            "pluck.json": 3}
     tags = ["forge_v2h1", "forge04h1", "pluck1h"]
     if has_fit:  # fit.json ships only after the operator allows the 15 CC0 downloads (bank Q5)
         want["fit.json"], tags = 15, ["forge_v2h1", "forge04h1", "fit1h", "pluck1h"]
     assert b.ids() == sorted(b.ids()) and len(b.ids()) == sum(want.values())
-    assert not open_ids["forge04"] & set(b.ids())
+    assert not (open_ids["forge04"] | open_ids["dropped"]) & set(b.ids())
     counts: dict[str, int] = {}
     for sound_id in b.ids():
         name = files[sound_id].rsplit("/", 1)[-1]
@@ -449,6 +450,43 @@ def test_build_derive_logs_target_misses(fixture_bank, tmp_path, monkeypatch):
     assert list(doc["entries"]) == ["notify/m9"] and entry["seed"] == 0 and entry["mode"] == "designed"
     assert any(line.startswith("notify/m9: ") and "misses dur" in line for line in lines)
     assert lines[-1].startswith("wrote ") and "1 entries (forge_v2h1)" in lines[-1]
+
+
+def test_build_derive_drops_an_id_with_no_passing_render(fixture_bank, tmp_path, monkeypatch):
+    # T-41: every render fails sfx check, so the id is left out and listed under dropped with its reason
+    from hark.forge.bank import _build
+
+    target = {"dur_s": 2.0, "peak_s": 0.005, "centroid_hz": 880.0, "lufs_m_max": -20.0}
+    _catalog_with(monkeypatch, {}, {"notify/m9": target})
+    monkeypatch.setattr(_build, "_derived", lambda *a: None)
+    lines: list[str] = []
+    doc = bank.build_derive(str(tmp_path / "forge_v2.json"), log=lines.append)
+    assert doc["entries"] == {} and "passes sfx check" in doc["dropped"]["notify/m9"]
+    assert any(line.startswith("notify/m9: dropped: ") for line in lines)
+    assert json.loads((tmp_path / "forge_v2.json").read_text())["dropped"] == doc["dropped"]
+
+
+def test_derive_entry_takes_the_next_closest_passing_render(monkeypatch):
+    # T-41: the first render fails sfx check; the nearest candidate that passes stands in
+    from hark.forge.bank import _build
+
+    pool = {"near": ({"p": 1}, {}), "mid": ({"p": 2}, {}), "far": ({"p": 3}, {})}
+    monkeypatch.setattr(_build, "_derive_fn", lambda recipe, category: "render")
+    monkeypatch.setattr(_build, "_first_source", lambda *a: ("near", {"p": 1}))
+    monkeypatch.setattr(_build, "_candidates", lambda *a: pool)
+    monkeypatch.setattr(_build, "_ranked", lambda *a: ["near", "mid", "far"])
+    monkeypatch.setattr(_build, "_derived", lambda sid, r, fn, params: {"params": params} if params["p"] >= 2 else None)
+    used: set = set()
+    lines: list[str] = []
+    entry = _build._derive_entry("notify/m9", {}, used, lines.append)
+    assert entry["params"] == {"p": 2} and ("notify", "mid") in used
+    assert lines == ["notify/m9: first render fails sfx check; next-closest passing render is notify/mid"]
+
+
+def test_at_34_dropped_ids_listed_shipped(shipped, open_ids):
+    doc = json.loads((shipped.PKG_DIR / "data" / "forge_v2.json").read_text(encoding="utf-8"))
+    assert set(doc["dropped"]) == open_ids["dropped"] and all(doc["dropped"].values())
+    assert not set(doc["dropped"]) & set(shipped.ids())
 
 
 def test_maintenance_cli_build_error(fixture_bank, tmp_path, monkeypatch, capsys):

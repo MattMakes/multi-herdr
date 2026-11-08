@@ -637,18 +637,17 @@ def shipped():
 # Gaps of the shipped bank, each one open in the integration report (T-33). Remove an id once it ships clean.
 # - forge04 members that fail their take audit, so build --forge04 leaves them out.
 OPEN_FORGE04 = frozenset({"mallet/pluck", "whoosh_big/thump_deep"})
-# - derived forge_v2 entries (the closest-render fallback, no critic run) whose default take fails sfx check.
-OPEN_DERIVED = frozenset({
-    "click/double", "glitch/crush", "glitch/data", "glitch/stutter", "pro_glitch/data", "pro_hover_tick/detent",
+# - derived forge_v2 ids with no render whose default take passes sfx check (T-41): the file lists them under dropped.
+DROPPED_DERIVED = frozenset({
     "pro_typing_run/blip", "pro_typing_run/double", "pro_typing_run/glass", "pro_typing_run/soft",
-    "pro_typing_run/standard", "pro_typing_run/tick", "toggle/off", "toggle/on", "typing_key/crisp",
+    "pro_typing_run/standard", "pro_typing_run/tick",
 })
 
 
 @pytest.fixture
 def open_ids() -> dict:
-    """The documented gaps of the shipped bank: forge04 members left out and derived takes that fail the audit."""
-    return {"forge04": OPEN_FORGE04, "derived": OPEN_DERIVED}
+    """The documented gaps of the shipped bank: forge04 members and derived ids left out."""
+    return {"forge04": OPEN_FORGE04, "dropped": DROPPED_DERIVED}
 
 
 @pytest.fixture

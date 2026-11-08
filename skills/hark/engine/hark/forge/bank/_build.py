@@ -51,6 +51,12 @@ TOLERANCE_DUR = 0.10
 TOLERANCE_CENTROID = 1.26
 TOLERANCE_LUFS = 3.0
 TOLERANCE_CENTS = 50.0
+# Default takes that keep their audit warning (bank-kit-sfx part 2, 3.11): build --derive does not re-derive them.
+KNOWN_WARNINGS = frozenset({
+    "pro_zip/up", "pro_zip/up_hi", "pro_zip/arc", "logo_sting/zip_ping", "pro_logo_sting/sweep_hit", "pop/2",
+    "pro_pop/bloop", "typing_key/light", "typing_key/laptop", "pro_hover_tick/air", "pro_hover_tick/glass",
+    "hover_tick/detent", "pro_typing_key/soft", "glitch/dropout", "logo_sting/reverse_bloom", "pro_shimmer/m3",
+})
 
 
 def _hark_version() -> str:
@@ -598,7 +604,10 @@ def _seed_members(recipe: str, category: str) -> dict:
     """member -> params of the seed-bank entries delivered for the category."""
     from hark.forge import recipes
 
-    path = recipes.seed_path(recipe)
+    try:
+        path = recipes.seed_path(recipe)
+    except recipes.UnknownRecipe:  # a recipe outside the package registry has no seed bank
+        return {}
     if not os.path.isfile(path):
         return {}
     entries = json.loads(Path(path).read_text(encoding="utf-8")).get("entries") or []
@@ -618,39 +627,87 @@ def _candidates(recipe: str, fn: str, category: str, cache: dict) -> dict:
     return cache[key]
 
 
-def _closest(sound_id: str, recipe: str, fn: str, cache: dict, used: set) -> tuple[str, dict]:
-    """The candidate closest to the catalogue row; a candidate used before costs 1 tolerance unit more."""
+def _ranked(sound_id: str, recipe: str, fn: str, cache: dict, used: set) -> list[str]:
+    """Candidates nearest first; a candidate used before costs 1 tolerance unit more."""
     category = sound_id.split("/", 1)[0]
     row = B.catalog()["targets"].get(sound_id) or {}
     pool = _candidates(recipe, fn, category, cache)
-    best = min(pool, key=lambda m: _target_distance(row, pool[m][1]) + ((category, m) in used))
+    return sorted(pool, key=lambda m: (_target_distance(row, pool[m][1]) + ((category, m) in used), m))
+
+
+def _closest(sound_id: str, recipe: str, fn: str, cache: dict, used: set) -> tuple[str, dict]:
+    """The candidate closest to the catalogue row."""
+    category = sound_id.split("/", 1)[0]
+    best = _ranked(sound_id, recipe, fn, cache, used)[0]
     used.add((category, best))
-    return best, dict(pool[best][0])
+    return best, dict(_candidates(recipe, fn, category, cache)[best][0])
 
 
-def _derive_entry(sound_id: str, cache: dict, used: set, log: Callable | None) -> dict:
+class Dropped(ValueError):
+    """A derived id with no render whose default take passes sfx check; the file lists it under ``dropped``."""
+
+
+def _derived(sound_id: str, recipe: str, fn: str, params: dict) -> dict | None:
+    """The entry for these params, or None when its default take fails sfx check (a known warning passes)."""
     category, member = sound_id.split("/", 1)
-    recipe = B.catalog()["categories"][category]["recipe"]
-    fn = _derive_fn(recipe, category)
-    try:
-        params = member_params(recipe, fn, category, member)
-    except B.BankError:  # no named member: the closest render stands in (ARCHITECTURE 12.2)
-        source, params = _closest(sound_id, recipe, fn, cache, used)
-        _say(log, f"{sound_id}: no palette member {member!r}; closest render is {recipe} {category}/{source}")
     entry = _entry(category, member, recipe, fn, params, 0, mode="designed")
+    if sound_id not in KNOWN_WARNINGS and not B.render({**entry, "id": sound_id})[1]["checks"]["ok"]:
+        return None
     entry["meta"] = _meta(_render_entry(entry, sound_id), category, entry["params"])
     return entry
 
 
+def _first_source(sound_id: str, recipe: str, fn: str, cache: dict, used: set,
+                  log: Callable | None) -> tuple[str | None, dict]:
+    """The named palette member, else the closest render (ARCHITECTURE 12.2): (closest member or None, params)."""
+    category, member = sound_id.split("/", 1)
+    try:
+        return None, member_params(recipe, fn, category, member)
+    except B.BankError:
+        source, params = _closest(sound_id, recipe, fn, cache, used)
+        _say(log, f"{sound_id}: no palette member {member!r}; closest render is {recipe} {category}/{source}")
+        return source, params
+
+
+def _derive_entry(sound_id: str, cache: dict, used: set, log: Callable | None) -> dict:
+    """The derived entry whose default take passes sfx check; ``Dropped`` when no candidate render passes."""
+    category = sound_id.split("/", 1)[0]
+    recipe = B.catalog()["categories"][category]["recipe"]
+    fn = _derive_fn(recipe, category)
+    source, params = _first_source(sound_id, recipe, fn, cache, used, log)
+    entry = _derived(sound_id, recipe, fn, params)
+    if entry is not None:
+        return entry
+    # T-41: the first render fails sfx check, so try the next-closest renders in order
+    for member in _ranked(sound_id, recipe, fn, cache, used):
+        if member == source:
+            continue
+        entry = _derived(sound_id, recipe, fn, dict(_candidates(recipe, fn, category, cache)[member][0]))
+        if entry is not None:
+            used.add((category, member))
+            _say(log, f"{sound_id}: first render fails sfx check; next-closest passing render is {category}/{member}")
+            return entry
+    raise Dropped(f"no render of {recipe} {category} passes sfx check (first render and "
+                  f"{len(_candidates(recipe, fn, category, cache))} candidate(s) tried)")
+
+
 def build_derive(out: str, version: str | None = None, log: Callable | None = None) -> dict:
-    """The forge file from the recipe family tables, seed 0 (ARCHITECTURE 12.2)."""
+    """The forge file from the recipe family tables, seed 0 (ARCHITECTURE 12.2).
+
+    Every entry's default take passes sfx check, except the known warnings. An id with
+    no passing render is left out and listed under ``dropped`` with its reason.
+    """
     doc = _header("forge_v2", version, "derived from the recipe family tables (seed 0, designed); no critic run")
-    doc["categories"], doc["entries"], failures = {}, {}, []
+    doc["dropped"], doc["categories"], doc["entries"], failures = {}, {}, {}, []
     cache: dict = {}
     used: set = set()
     for sound_id in _forge_v2_ids():
         try:
             entry = _derive_entry(sound_id, cache, used, log)
+        except Dropped as exc:
+            doc["dropped"][sound_id] = str(exc)
+            _say(log, f"{sound_id}: dropped: {exc}")
+            continue
         except (ValueError, B.BankError, ImportError, AttributeError, KeyError) as exc:
             failures.append(f"{sound_id}: {exc}")
             continue

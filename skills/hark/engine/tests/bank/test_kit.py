@@ -363,11 +363,11 @@ def test_launch_mix_block_validates():
     assert all(s["offset_ms"] is not None for s in doc["roles"].values() if s)
 
 
-def test_at_34_default_takes_audit_shipped(shipped, open_ids):
+def test_at_34_default_takes_audit_shipped(shipped):
     known = {"pro_zip/up", "pro_zip/up_hi", "pro_zip/arc", "logo_sting/zip_ping", "pro_logo_sting/sweep_hit", "pop/2",
              "pro_pop/bloop", "typing_key/light", "typing_key/laptop", "pro_hover_tick/air", "pro_hover_tick/glass",
              "hover_tick/detent", "pro_typing_key/soft", "glitch/dropout", "logo_sting/reverse_bloom",
-             "pro_shimmer/m3"} | open_ids["derived"]
+             "pro_shimmer/m3"}
     bad = [i for i in shipped.ids() if i not in known and not shipped.render(i)[1]["checks"]["ok"]]
     assert bad == []
 

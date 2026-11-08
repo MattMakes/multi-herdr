@@ -37,6 +37,8 @@ ML_PACKAGES = frozenset({"torch", "transformers"})
 OPTIONAL_PACKAGES = frozenset({"mcp"})
 DATA_FILES = ("listen/vocab.json", "listen/vocab_stats.json", "listen/realness_model.json",
               "timeline/launch_profile.json")
+# Data files that do not ship (ARCHITECTURE 12): a missing one is a note with the command that builds it.
+OPTIONAL_DATA = {"listen/vocab_stats.json": "python -m hark.listen.vocabulary --build-stats REF ..."}
 
 
 # ---------------------------------------------------------------- basics
@@ -299,7 +301,14 @@ def _install_problems(result: dict) -> list[str]:
     problems += [f"sound bank: {bank_error}"] if bank_error is not None else []
     problems += _tool_problems({k: result[k] for k in ("ffmpeg", "ffprobe")})
     data_dir = f"{Path(config.PKG_DIR).name}/data"
-    return problems + [f"data file {data_dir}/{n} missing" for n, ok in result["data_files"].items() if not ok]
+    return problems + [f"data file {data_dir}/{n} missing" for n, ok in result["data_files"].items()
+                       if not ok and n not in OPTIONAL_DATA]
+
+
+def _data_notes(result: dict) -> list[str]:
+    data_dir = f"{Path(config.PKG_DIR).name}/data"
+    return [f"data file {data_dir}/{n} is not built; build it with: {OPTIONAL_DATA[n]}"
+            for n, ok in result["data_files"].items() if not ok and n in OPTIONAL_DATA]
 
 
 def _model_problems(result: dict, uncached: list[str]) -> list[str]:
@@ -311,7 +320,7 @@ def _model_problems(result: dict, uncached: list[str]) -> list[str]:
 
 def _notes(result: dict, uncached: list[str]) -> list[str]:
     agy = [] if shutil.which("agy") else ["agy not found on PATH; the optional LLM critique needs it"]
-    return _model_notes(uncached, result["offline"]) + _ml_note() + agy
+    return _model_notes(uncached, result["offline"]) + _ml_note() + agy + _data_notes(result)
 
 
 def _problems(result: dict) -> tuple[list[str], list[str], list[str]]:

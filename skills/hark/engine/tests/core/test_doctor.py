@@ -157,6 +157,16 @@ def test_e_d1_bank_line_then_problems(cfg, fake_bank, monkeypatch, tmp_path):
     assert "data file hark/data/listen/vocab.json missing" in r["problems"]
 
 
+def test_vocab_stats_missing_is_a_note(cfg, fake_bank, monkeypatch):
+    # T-41: vocab_stats.json does not ship, so its absence is a note with the build command, not a problem
+    fake_bank(ids=("a/1",))
+    monkeypatch.setattr(doctor, "_data_files", lambda: {"listen/vocab.json": True, "listen/vocab_stats.json": False})
+    r = doctor.check()
+    assert not any("vocab_stats" in p for p in r["problems"])
+    note = next(n for n in r["notes"] if "vocab_stats.json" in n)
+    assert "python -m hark.listen.vocabulary --build-stats" in note
+
+
 def test_e_d2_broken_bank(cfg, fake_bank):
     fake_bank(broken="bad file")
     r = doctor.check()
