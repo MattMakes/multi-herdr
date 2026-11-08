@@ -481,3 +481,17 @@ def build_modules() -> dict[str, types.ModuleType]:
         mods[name] = mod
     mods["hark.forge.recipes.tonal"].room = room_t
     return mods
+
+
+def search_render(recipe, params, seed):
+    """Stand-in for hark.forge.engine.search.render (ARCHITECTURE.md 8.2): -1 dBFS float32, or None."""
+    try:
+        y = np.asarray(recipe.render(dict(params), rng(seed)), dtype=np.float64)
+    except Exception:
+        return None
+    if y.size == 0 or not np.all(np.isfinite(y)):
+        return None
+    peak = float(np.max(np.abs(y)))
+    if peak < 1e-7:
+        return None
+    return (y * (10 ** (-1 / 20) / peak)).astype(np.float32)

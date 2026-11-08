@@ -77,3 +77,30 @@ def take():
         return render(dict(params), np.random.default_rng(seed & 0xFFFFFFFF))
 
     return run
+
+
+def _search_render():
+    try:
+        from hark.forge.engine import search
+    except ImportError:
+        return _load_standins().search_render
+    return search.render
+
+
+@pytest.fixture
+def forge_render():
+    """forge_render(recipe, params, seed): the forge wrapper (real when present, else the stand-in)."""
+    return _search_render()
+
+
+def load_recipe(name: str):
+    """Import an impact recipe; thump skips while its provider motion/whoosh is absent."""
+    if name == "thump":
+        pytest.importorskip("hark.forge.recipes.motion.whoosh")
+    return importlib.import_module(f"hark.forge.recipes.impacts.{name}")
+
+
+@pytest.fixture
+def recipe_module():
+    """recipe_module(name) -> the recipe module (see load_recipe)."""
+    return load_recipe
