@@ -144,13 +144,13 @@ def _edit(y: np.ndarray, gate: float, end: int) -> np.ndarray:
     return out
 
 
-def _key_frame(p: dict, r: np.random.Generator) -> tuple[float, bool, float, int]:
-    """The key's length, whether it has a release, the release time and the sample count."""
+def _key_frame(p: dict, r: np.random.Generator) -> tuple[float | None, int, int]:
+    """The release time (None without a release), the sample count and the end sample of the edit."""
     length = p["length"] * (1 + 0.06 * r.standard_normal())
     rel_on = p["rel_db"] > OFF_DB
     t_rel = p["touch_dt"] + p["rel_dt"] * (1 + 0.08 * r.standard_normal())
     n = L.n_of(max(length, t_rel + 0.025 if rel_on else 0.0))
-    return length, rel_on, t_rel, n
+    return (t_rel if rel_on else None), n, (n if rel_on else L.n_of(length))
 
 
 def _key_noise(p: dict, r: np.random.Generator, n: int) -> np.ndarray:
@@ -175,7 +175,7 @@ def _key_env(p: dict, r: np.random.Generator, n: int) -> tuple[np.ndarray, int, 
 def one_key(p: dict, r: np.random.Generator, force: float = 1.0, ridge_k: float = 1.0) -> np.ndarray:
     """One mono key tick: touch, hit, optional rattle, tink and release, then the edit."""
     kr = key_rng(p["key"])
-    length, rel_on, t_rel, n = _key_frame(p, r)
+    t_rel, n, end = _key_frame(p, r)
     ridge = p["ridge"] * ridge_k * (1 + 0.015 * r.standard_normal())
     w = _key_noise(p, r, n)
     env, k_hit, tail = _key_env(p, r, n)
@@ -184,9 +184,9 @@ def one_key(p: dict, r: np.random.Generator, force: float = 1.0, ridge_k: float 
     y = band(w * env, p, ridge=min(ridge, 16000.0))
     if p["tink_db"] > OFF_DB:
         _tink(y, p, r, kr, k_hit, ridge_k)
-    if rel_on:
+    if t_rel is not None:
         _release(y, p, r, t_rel, ridge, tail)
-    y = _edit(y, p["gate"], n if rel_on else L.n_of(length))
+    y = _edit(y, p["gate"], end)
     return force * L.unit(y)
 
 

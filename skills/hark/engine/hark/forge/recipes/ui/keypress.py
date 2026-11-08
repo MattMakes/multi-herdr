@@ -125,19 +125,31 @@ def contact(p: dict, r: np.random.Generator, n: int, part: int, pitch: float = 1
     """K8: a single plastic impact (part 0 bottom-out, part 1 top-out)."""
     kr = key_rng(p["key"], part)
     tc = p["click_tc"] * math.exp(0.15 * r.standard_normal())
-    hf = drive(L.unit(cloud(p["click_lo"], 18000, 40, 1.6 * p["click_tau"], 0.6 * p["click_tau"], n, kr, r,
-                            tilt=p["click_tilt"])), tc)
-    cr = L.unit(crack(r, n, 0.4 * p["click_tau"], 0.5 * tc))
+    hf = _click_part(p, r, n, kr, tc)
     cap = _cap(p, r, n, kr, pitch, tc)
     mid = _case_body(p, r, n, kr, pitch)
-    k = max(3, int(kr.uniform(0.25, 0.6) * 1e-3 * L.SR))
-    snap = np.zeros(n)
-    snap[: min(k, n)] = -np.hanning(k)[: min(k, n)]
-    x = bright * p["click_lvl"] * energy(L.unit(hf) + p["crack"] * cr) + energy(cap) + p["mid_lvl"] * energy(mid)
+    snap = _snap(kr, n)
+    x = bright * p["click_lvl"] * energy(hf) + energy(cap) + p["mid_lvl"] * energy(mid)
     if p.get("top_lvl", 0) > 0:
         top = drive(hiss(p["top_lo"], 12000, p["top_tau"], n, r, 2), tc)
         x = x + bright * p["top_lvl"] * energy(top)
     return L.unit(L.unit(x) + p["snap"] * snap)
+
+
+def _click_part(p: dict, r: np.random.Generator, n: int, kr: np.random.Generator, tc: float) -> np.ndarray:
+    """K8 high part: the driven click cloud plus the crack at `crack`."""
+    hf = drive(L.unit(cloud(p["click_lo"], 18000, 40, 1.6 * p["click_tau"], 0.6 * p["click_tau"], n, kr, r,
+                            tilt=p["click_tilt"])), tc)
+    cr = L.unit(crack(r, n, 0.4 * p["click_tau"], 0.5 * tc))
+    return L.unit(hf) + p["crack"] * cr
+
+
+def _snap(kr: np.random.Generator, n: int) -> np.ndarray:
+    """K8 snap: a negative Hann pulse of 0.25-0.6 ms (length fixed per key)."""
+    k = max(3, int(kr.uniform(0.25, 0.6) * 1e-3 * L.SR))
+    snap = np.zeros(n)
+    snap[: min(k, n)] = -np.hanning(k)[: min(k, n)]
+    return snap
 
 
 def _cap(p: dict, r: np.random.Generator, n: int, kr: np.random.Generator, pitch: float, tc: float) -> np.ndarray:
@@ -190,21 +202,26 @@ def friction(p: dict, r: np.random.Generator, n: int) -> np.ndarray:
     return L.fit(L.unit((w + grit) * u ** 2), n)
 
 
-def diffuse_room(x: np.ndarray, kr: np.random.Generator, p: dict) -> np.ndarray:
-    """K12: a diffuse-field room of a small furnished space."""
+def _room_tail(kr: np.random.Generator, p: dict) -> np.ndarray:
+    """K12 tail: noise in 3 bands, each with its own damped decay, under a soft onset ramp."""
     rt60 = p["rt60"]
     m = L.n_of(min(0.6, 1.1 * rt60 + 0.03))
     w = kr.standard_normal(m)
     t = L.t_of(m)
-    ramp = 0.0015 + 0.008 * p["room_size"]
-    onset = np.where(t > 0.0008, 1 - np.exp(-t / ramp), 0.0)
     bands = ((dsp.butter(w, "low", 700, 2), 1.0), (dsp.butter(w, "band", (700, 4000), 2), 0.75),
              (dsp.butter(w, "high", 4000, 2), 0.25))
     ir = np.zeros(m)
     for b, k in bands:
         rt_b = max(0.02, rt60 * (1 - p["room_damp"] * (1 - k)))
         ir += b * np.exp(-6.91 * t / rt_b)
-    ir = ir * onset
+    ramp = 0.0015 + 0.008 * p["room_size"]
+    return ir * np.where(t > 0.0008, 1 - np.exp(-t / ramp), 0.0)
+
+
+def diffuse_room(x: np.ndarray, kr: np.random.Generator, p: dict) -> np.ndarray:
+    """K12: a diffuse-field room of a small furnished space."""
+    ir = _room_tail(kr, p)
+    m = len(ir)
     d = int(kr.uniform(0.8e-3, 2.5e-3) * L.SR)
     if d < m:
         ir[d] += 0.35 * math.sqrt(float(np.sum(ir ** 2)))
@@ -278,15 +295,20 @@ def _press(x: np.ndarray, p: dict, r: np.random.Generator, pre: float, nh: int, 
     L.add_at(x, low_wave(p, r, n - i), i, p["thock_lvl"] * force)
 
 
+def _release_ticks(x: np.ndarray, p: dict, r: np.random.Generator, tu: float, nh: int) -> None:
+    """K10 ticks: 2 tiny clicks tick_dt before the key comes up, the 2nd 3-9 ms later."""
+    t1 = tu - p["tick_dt"] * (1 + 0.08 * r.standard_normal())
+    kr = key_rng(p["key"], 5)
+    for off, gain in ((0.0, 1.0), (r.uniform(0.003, 0.009), r.uniform(0.4, 1.0))):
+        tk = drive(L.unit(cloud(3000, 14000, 14, 0.0008, 0.0003, nh, kr, r)), 5e-5)
+        L.add_at(x, tk, L.n_of(max(0.0, min(t1 + off, tu - 0.001))), gain * p["tick_lvl"] * p["up_lvl"])
+
+
 def _release(x: np.ndarray, p: dict, r: np.random.Generator, pre: float, nh: int) -> None:
     n = len(x)
     tu = pre + p["up_delay"] * (1 + 0.04 * r.standard_normal())
     if p["tick_lvl"] > 0.005:
-        t1 = tu - p["tick_dt"] * (1 + 0.08 * r.standard_normal())
-        kr = key_rng(p["key"], 5)
-        for off, gain in ((0.0, 1.0), (r.uniform(0.003, 0.009), r.uniform(0.4, 1.0))):
-            tk = drive(L.unit(cloud(3000, 14000, 14, 0.0008, 0.0003, nh, kr, r)), 5e-5)
-            L.add_at(x, tk, L.n_of(max(0.0, min(t1 + off, tu - 0.001))), gain * p["tick_lvl"] * p["up_lvl"])
+        _release_ticks(x, p, r, tu, nh)
     iu = L.n_of(tu)
     L.add_at(x, contact(p, r, nh, 1, pitch=p["up_pitch"], bright=1.2), iu, p["up_lvl"])
     L.add_at(x, ping(p, r, nh, pitch_k=1 + 0.01 * r.standard_normal()), iu, 0.7 * p["ping_lvl"] * p["up_lvl"])
@@ -330,18 +352,31 @@ def render(p: dict, rng: np.random.Generator) -> np.ndarray:
 def key_stats(x: np.ndarray) -> dict:
     """Onset (2-12 kHz), top share in dB and time to -40 dB of a key render."""
     m = x.mean(axis=1) if x.ndim == 2 else np.asarray(x, dtype=float)
-    hb = dsp.butter(m, "band", (2000, 12000), 4)
-    e1 = _frames_db(hb, 48)
+    return {"onset_ms": _onset_ms(m), "top_db": _top_db(m), "t40_ms": _t40_ms(m)}
+
+
+def _onset_ms(m: np.ndarray) -> float:
+    """Rise time in 1 ms frames of the 2-12 kHz band, from -20 dB under its peak to the peak."""
+    e1 = _frames_db(dsp.butter(m, "band", (2000, 12000), 4), 48)
     ip = int(np.argmax(e1))
     within = np.nonzero(e1[: ip + 1] >= e1[ip] - 20)[0]
+    return float(ip - within[0])
+
+
+def _top_db(m: np.ndarray) -> float:
+    """The 2-12 kHz share of the power, in dB (1 decimal)."""
     pw = np.abs(np.fft.rfft(m)) ** 2
     f = np.fft.rfftfreq(len(m), 1 / L.SR)
     top = float(pw[(f >= 2000) & (f < 12000)].sum() / (pw.sum() + 1e-30))
+    return round(10 * math.log10(top + 1e-14), 1)
+
+
+def _t40_ms(m: np.ndarray) -> float:
+    """Time in ms from the 5 ms-frame peak to -40 dB under it (or to the end)."""
     e5 = _frames_db(m, 240)
     j = int(np.argmax(e5))
     below = np.nonzero(e5[j:] <= e5[j] - 40)[0]
-    t40 = float(below[0] * 5) if len(below) else float((len(e5) - j) * 5)
-    return {"onset_ms": float(ip - within[0]), "top_db": round(10 * math.log10(top + 1e-14), 1), "t40_ms": t40}
+    return float(below[0] * 5) if len(below) else float((len(e5) - j) * 5)
 
 
 def _frames_db(x: np.ndarray, hop: int) -> np.ndarray:

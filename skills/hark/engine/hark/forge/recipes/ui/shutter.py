@@ -71,7 +71,12 @@ FAMILIES = {"shutter": list(zip(FAMILY_NAMES["shutter"], FAMILY["shutter"]))}
 
 def family_space(params: dict) -> dict:
     """The full space with gap and b_hz pinned to the member's values (T15)."""
-    return tonal.family_space(SPACE, dict(DEFAULTS, **params), FINE)
+    return tonal.family_space(SPACE, _member(params), FINE)
+
+
+def _member(params: dict) -> dict:
+    """A full parameter set: the defaults under the member's values."""
+    return dict(DEFAULTS, **params)
 
 
 def measure(x: np.ndarray) -> dict:
@@ -119,11 +124,16 @@ def _stage_b(p: dict, r: np.random.Generator, kb: int, b_hz: float) -> np.ndarra
     if p["body"] > -59:
         b = b + 10 ** (p["body"] / 20) * tonal.thump(kb, p["body_f"], p["body_ms"] / 1000, rise=0.0008)
     if p["rattle"] > -59:
-        hz = p["rattle_hz"]
-        rr = tonal.burst(kb, r, hz / 1.6, 1.6 * hz, 0.006, rise=0.002)
-        s = min(kb, _n(0.004))
-        b = b + 10 ** (p["rattle"] / 20) * np.concatenate([np.zeros(s), rr])[:kb]
+        b = b + _rattle(p, r, kb)
     return b
+
+
+def _rattle(p: dict, r: np.random.Generator, kb: int) -> np.ndarray:
+    """Stage B rattle: a band burst at rattle_hz that starts 4 ms late."""
+    hz = p["rattle_hz"]
+    rr = tonal.burst(kb, r, hz / 1.6, 1.6 * hz, 0.006, rise=0.002)
+    s = min(kb, _n(0.004))
+    return 10 ** (p["rattle"] / 20) * np.concatenate([np.zeros(s), rr])[:kb]
 
 
 def _whirr(p: dict, r: np.random.Generator, gap: float) -> np.ndarray:
@@ -134,12 +144,8 @@ def _whirr(p: dict, r: np.random.Generator, gap: float) -> np.ndarray:
     return 10 ** (p["whirr"] / 20) * _peak1(w)
 
 
-def render(p: dict, rng: np.random.Generator) -> np.ndarray:
-    """One shutter take: stereo float64 at 48 kHz, at most about 1 s."""
-    p = dict(DEFAULTS, **(p or {}))
-    gap = p["gap"] * math.exp(0.03 * rng.standard_normal())
-    b_hz = p["b_hz"] * math.exp(0.03 * rng.standard_normal())
-    a_hz = p["a_hz"] * math.exp(0.03 * rng.standard_normal())
+def _stages(p: dict, rng: np.random.Generator, gap: float, a_hz: float, b_hz: float) -> np.ndarray:
+    """Stage A at a_db, then stage B gap seconds later, on a buffer of at most 1 s."""
     tail = 7 * max(p["b_decay"], p["body_ms"] / 1000 if p["body"] > -59 else 0.0)
     n = _n(min(1.0, gap + tail + 0.03))
     a = _stage_a(p, rng, a_hz)
@@ -149,6 +155,17 @@ def render(p: dict, rng: np.random.Generator) -> np.ndarray:
     ka = min(len(a), n)
     y[:ka] += 10 ** (p["a_db"] / 20) * a[:ka]
     y[n - kb:] += b
+    return y
+
+
+def render(p: dict, rng: np.random.Generator) -> np.ndarray:
+    """One shutter take: stereo float64 at 48 kHz, at most about 1 s."""
+    p = dict(DEFAULTS, **(p or {}))
+    gap = p["gap"] * math.exp(0.03 * rng.standard_normal())
+    b_hz = p["b_hz"] * math.exp(0.03 * rng.standard_normal())
+    a_hz = p["a_hz"] * math.exp(0.03 * rng.standard_normal())
+    y = _stages(p, rng, gap, a_hz, b_hz)
+    n = len(y)
     if p["whirr"] > -59:
         w = _whirr(p, rng, gap)
         y[: min(n, len(w))] += w[: min(n, len(w))]

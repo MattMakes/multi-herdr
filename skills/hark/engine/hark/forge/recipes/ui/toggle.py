@@ -151,8 +151,7 @@ def render(p: dict, rng: np.random.Generator) -> np.ndarray:
     main, snd = _contacts(p, rng, gap, lvl)
     if p["hp_steep"] == 1:
         main = dsp.butter(main, "high", p["hp"], 2)
-    main = L.finish_chain(main, p["hp"], p["deharsh"], p["deharsh_f"], p["sat"], p["lp"])
-    snd = L.finish_chain(snd, max(p["hp"], 300), p["deharsh"], p["deharsh_f"], 0, p["lp"])
+    main, snd = L.finish_pair(main, snd, p)
     st = L.tiny_space(main, rng, p["room"], p["width"])
     st = L.room_tail(st, snd, rng, p, size=0.15)
     st = L.end_gate(st, gap + p["tail"], p["release_ms"] / 1000, start=PRE)

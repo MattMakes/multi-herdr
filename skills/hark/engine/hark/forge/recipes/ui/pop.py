@@ -124,16 +124,12 @@ def _svf_noise(r: np.random.Generator, n: int, fc, q: float) -> np.ndarray:
 
 
 def _v1_body(p: dict, r: np.random.Generator, n: int) -> np.ndarray:
-    t = L.t_of(n)
     wob = wobble(p["wobble"], n, r)
     body = gliding_ring(p["f0"], p["q"], p["rise"], p["rise_tau"], p["att"], p["h2"], n, r, wob)
     body += p["f2_amp"] * gliding_ring(p["f0"] * p["f2_ratio"], p["f2_q"], p["rise"] * p["f2_follow"],
                                        p["rise_tau"], p["att"], 0.0, n, r, wob)
     if p["breath_amp"] > 0.01:
-        fc = pitch_track(p["f0"], p["rise"], p["rise_tau"], n, wob)
-        br = _svf_noise(r, n, fc, max(2.0, p["q"] / 2))
-        br *= (1 - np.exp(-t / max(p["att"], 0.0003))) * np.exp(-t / p["breath_tau"])
-        body += p["breath_amp"] * L.unit(br)
+        body += p["breath_amp"] * _v1_breath(p, r, n, wob)
     if p["sub_amp"] > 0.01:
         sub = gliding_ring(p["f0"] * p["sub_ratio"], 0.7 * p["q"], 0.4 * p["rise"], 0.6 * p["rise_tau"],
                            max(p["att"], 0.0002), p["h2"], n, r, np.zeros(n))
@@ -141,19 +137,36 @@ def _v1_body(p: dict, r: np.random.Generator, n: int) -> np.ndarray:
     return body
 
 
+def _v1_breath(p: dict, r: np.random.Generator, n: int, wob: np.ndarray) -> np.ndarray:
+    """V1 breath: band noise that tracks the ring pitch, unit peak."""
+    t = L.t_of(n)
+    fc = pitch_track(p["f0"], p["rise"], p["rise_tau"], n, wob)
+    br = _svf_noise(r, n, fc, max(2.0, p["q"] / 2))
+    br *= (1 - np.exp(-t / max(p["att"], 0.0003))) * np.exp(-t / p["breath_tau"])
+    return L.unit(br)
+
+
 def _v1_event(p: dict, r: np.random.Generator, n: int) -> np.ndarray:
     t = L.t_of(n)
-    tick = tear_crackle(p["click_w"], p["tear"], p["jerks"], n, r)
-    if p["click_lp"] < 19000:
-        tick = dsp.butter(tick, "low", p["click_lp"], 2)
-    x = p["click_amp"] * tick
+    x = p["click_amp"] * _v1_tick(p, r, n)
     shred = dsp.butter(r.standard_normal(n), "high", p["shred_hp"], 2) * np.exp(-t / p["shred_tau"])
     x = x + 0.5 * p["shred_amp"] * shred
     L.add_at(x, _v1_body(p, r, n), L.n_of(p["ring_delay"]) if p["ring_delay"] > 0 else 0)
     hiss = _svf_noise(r, n, p["hiss_f"], p["hiss_q"]) * (1 - np.exp(-t / 0.0003)) * np.exp(-t / p["hiss_tau"])
-    x = x + p["hiss_amp"] * L.unit(hiss)
-    puff = np.sin(2 * np.pi * p["puff_f"] * t) * np.exp(-2.5 * p["puff_f"] * t) * (1 - np.exp(-t / 0.0004))
-    return x + p["puff_amp"] * puff
+    return x + p["hiss_amp"] * L.unit(hiss) + p["puff_amp"] * _v1_puff(p, t)
+
+
+def _v1_tick(p: dict, r: np.random.Generator, n: int) -> np.ndarray:
+    """V1 rupture tick with its tear crackle, low-passed below 19 kHz when click_lp asks."""
+    tick = tear_crackle(p["click_w"], p["tear"], p["jerks"], n, r)
+    if p["click_lp"] < 19000:
+        tick = dsp.butter(tick, "low", p["click_lp"], 2)
+    return tick
+
+
+def _v1_puff(p: dict, t: np.ndarray) -> np.ndarray:
+    """V1 puff: a heavily damped low sine at puff_f."""
+    return np.sin(2 * np.pi * p["puff_f"] * t) * np.exp(-2.5 * p["puff_f"] * t) * (1 - np.exp(-t / 0.0004))
 
 
 def _leak(p: dict, r: np.random.Generator) -> np.ndarray:
@@ -272,8 +285,13 @@ def family_space(params: dict, style: str | None = None) -> dict:
     style = style or params.get("style") or "chirp"
     if style not in FINE:
         raise ValueError(f"unknown pop style {style!r}")
-    full = dict(V2_DEFAULTS, **params)
+    full = _v2_member(params)
     return {k: (spec if k in FINE[style] else [full[k]]) for k, spec in V2_SPACE.items()}
+
+
+def _v2_member(params: dict) -> dict:
+    """A full version 2 parameter set: the version 2 defaults under the member's values."""
+    return dict(V2_DEFAULTS, **params)
 
 
 def _fade_hi(f, k: float):
@@ -334,17 +352,22 @@ def _natural_tail(y: np.ndarray, p: dict, r: np.random.Generator) -> np.ndarray:
     b = min(len(y), L.n_of(0.004))
     y[len(y) - b:] *= np.cos(np.linspace(0, np.pi / 2, b)) ** 2
     if p["c_pre"] > -59:
-        m = L.n_of(p["c_pre_t"])
-        t = L.t_of(m)
-        pre = np.sin(2 * np.pi * p["c_pre_hz"] * t) * np.exp(-np.maximum(t - 0.00125, 0) / 0.002)
-        kp = min(m, L.n_of(0.0025))
-        pre[:kp] *= np.hanning(kp)
-        y = np.concatenate([10 ** (p["c_pre"] / 20) * pre, y])
+        y = np.concatenate([10 ** (p["c_pre"] / 20) * _pre_tick(p), y])
     if p["c_room"] > 0.005:
         y = fx.reverb(y, r, rt60=0.1 + 0.4 * p["c_room"], size=0.12, predelay=0.003, damp=0.6, wet=p["c_room"],
                       stereo=True, width=0.25)
         y = dsp.trim_tail(np.asarray(y, dtype=float), -56.0, 0.012)
     return np.asarray(y, dtype=float)
+
+
+def _pre_tick(p: dict) -> np.ndarray:
+    """W3 soft pre-tick: a Hann-faded sine at c_pre_hz that decays after 1.25 ms, c_pre_t long."""
+    m = L.n_of(p["c_pre_t"])
+    t = L.t_of(m)
+    pre = np.sin(2 * np.pi * p["c_pre_hz"] * t) * np.exp(-np.maximum(t - 0.00125, 0) / 0.002)
+    kp = min(m, L.n_of(0.0025))
+    pre[:kp] *= np.hanning(kp)
+    return pre
 
 
 def natural_chirp(p: dict, r: np.random.Generator) -> np.ndarray:
@@ -430,15 +453,20 @@ def _step_gate(p: dict, s: np.ndarray, lp: np.ndarray, log_at) -> tuple[np.ndarr
     sp = np.maximum(s, 0)
     held = log_at(np.clip(np.floor(sp / B) * B / p["sweep"], 0, 1))
     lp = np.where(s < p["sweep"], (1 - p["steps"]) * lp + p["steps"] * held, lp)
+    raw = _block_shape(p, s, sp, B)
+    depth = p["steps"] if p["gdepth"] < 0 else p["gdepth"]
+    g = np.where(s >= 0, 1 - depth * (1 - (0.5 - 0.5 * np.cos(np.pi * raw))), 1.0)
+    return lp, g
+
+
+def _block_shape(p: dict, s: np.ndarray, sp: np.ndarray, B: float) -> np.ndarray:
+    """W6 gate shape, 0-1: a duty-cycle trapezoid per block, then a 0.7 ms rise after the landing."""
     t_land = math.ceil(p["sweep"] / B - 1e-9) * B
     x = np.mod(sp, B) / B
     e_f = 0.0007 / B
     e_r = max(e_f, p["s_att"] * p["duty"])
-    raw = np.where(s < t_land, np.clip(np.minimum(x / e_r, (p["duty"] - x) / e_f), 0, 1),
-                   np.clip((s - t_land) / 0.0007, 0, 1))
-    depth = p["steps"] if p["gdepth"] < 0 else p["gdepth"]
-    g = np.where(s >= 0, 1 - depth * (1 - (0.5 - 0.5 * np.cos(np.pi * raw))), 1.0)
-    return lp, g
+    return np.where(s < t_land, np.clip(np.minimum(x / e_r, (p["duty"] - x) / e_f), 0, 1),
+                    np.clip((s - t_land) / 0.0007, 0, 1))
 
 
 def _chirp_level(p: dict, s: np.ndarray, u: np.ndarray) -> np.ndarray:
@@ -531,18 +559,37 @@ def _chirp_layers(y: np.ndarray, p: dict, r: np.random.Generator, f: np.ndarray,
     return y
 
 
+def _blip_env(y: np.ndarray, p: dict, t: np.ndarray) -> np.ndarray:
+    """W7 gate on y: raised-cosine attack, hold to `box`, raised-cosine release, b_tau decay throughout."""
+    a = np.clip(t / p["b_att"], 0, 1)
+    rl = np.clip((t - p["box"]) / p["b_rel"], 0, 1)
+    return y * (0.5 - 0.5 * np.cos(np.pi * a)) * (0.5 + 0.5 * np.cos(np.pi * rl)) * np.exp(-t / p["b_tau"])
+
+
 def blip(p: dict, r: np.random.Generator) -> np.ndarray:
     """W7: a gated tone burst with harmonics and an optional pitch drop."""
     n = L.n_of(p["box"] + p["b_rel"] + p["fade"] + 0.004)
     t = L.t_of(n)
     f = p["f_blip"] * 2 ** (-(p["b_drop"] / 12) * np.clip(t / max(p["box"], 1e-3), 0, 1))
     y = harmonics(np.cumsum(2 * np.pi * f / L.SR) + r.uniform(0, 2 * np.pi), f, p["harm"], p["odd"])
-    a = np.clip(t / p["b_att"], 0, 1)
-    rl = np.clip((t - p["box"]) / p["b_rel"], 0, 1)
-    y = y * (0.5 - 0.5 * np.cos(np.pi * a)) * (0.5 + 0.5 * np.cos(np.pi * rl)) * np.exp(-t / p["b_tau"])
+    y = _blip_env(y, p, t)
     if p["tick_db"] > -39:
         y = y + click(n, p["tick_db"], p["tick_hz"], r, p["tick_ms"])
     return y
+
+
+def _daughter(p: dict, t: np.ndarray) -> np.ndarray:
+    """W8 daughter ring at `daughter`: a smaller bubble at d_ratio, rising 0.4x as far, decaying 0.6x as long."""
+    d = p["f0"] * p["d_ratio"] * (1 + 0.4 * p["rise"] * (1 - np.exp(-t / (0.6 * p["rise_tau"]))))
+    de = (1 - np.exp(-t / max(p["att"], 0.0003))) * np.exp(-t / (0.6 * p["q_tau"]))
+    return p["daughter"] * de * np.sin(np.cumsum(2 * np.pi * d / L.SR))
+
+
+def _bubble_ring(p: dict, r: np.random.Generator, t: np.ndarray, trk: np.ndarray) -> np.ndarray:
+    """W8 ring: the rising sine on pitch track trk with a quieter 2nd harmonic that decays twice as fast."""
+    ph = np.cumsum(2 * np.pi * trk / L.SR) + r.uniform(-0.3, 0.3)
+    env = (1 - np.exp(-t / p["att"])) * np.exp(-t / p["q_tau"])
+    return env * np.sin(ph) + p["h2"] * env ** 2 * np.sin(2 * ph + 0.4)
 
 
 def bubble(p: dict, r: np.random.Generator) -> np.ndarray:
@@ -550,13 +597,9 @@ def bubble(p: dict, r: np.random.Generator) -> np.ndarray:
     n = L.n_of(max(p["length"], 0.06) + 0.05)
     t = L.t_of(n)
     trk = p["f0"] * (1 + p["rise"] * (1 - np.exp(-t / p["rise_tau"])))
-    ph = np.cumsum(2 * np.pi * trk / L.SR) + r.uniform(-0.3, 0.3)
-    env = (1 - np.exp(-t / p["att"])) * np.exp(-t / p["q_tau"])
-    y = env * np.sin(ph) + p["h2"] * env ** 2 * np.sin(2 * ph + 0.4)
+    y = _bubble_ring(p, r, t, trk)
     if p["daughter"] > 0.01:
-        d = p["f0"] * p["d_ratio"] * (1 + 0.4 * p["rise"] * (1 - np.exp(-t / (0.6 * p["rise_tau"]))))
-        de = (1 - np.exp(-t / max(p["att"], 0.0003))) * np.exp(-t / (0.6 * p["q_tau"]))
-        L.add_at(y, p["daughter"] * de * np.sin(np.cumsum(2 * np.pi * d / L.SR)), L.n_of(p["d_delay"]))
+        L.add_at(y, _daughter(p, t), L.n_of(p["d_delay"]))
     if p["breath"] > 0.01:
         b = _svf_noise(r, n, trk, 4) * (1 - np.exp(-t / 0.0006)) * np.exp(-t / 0.006)
         y = y + p["breath"] * L.unit(b)
@@ -584,22 +627,31 @@ def render_v2(p: dict, rng: np.random.Generator) -> np.ndarray:
     p = dict(V2_DEFAULTS, **(p or {}))
     if p["style"] not in STYLES:
         raise ValueError(f"unknown pop style {p['style']!r}")
-    y = np.asarray(STYLES[p["style"]](p, rng), dtype=float)
+    y = _v2_tone(np.asarray(STYLES[p["style"]](p, rng), dtype=float), p)
+    if p["style"] == "bubble":
+        y = _bubble_out(y, p, rng)
+    elif p["style"] == "blip":
+        y = y[: min(len(y), max(L.n_of(p["length"]), L.n_of(p["box"] + p["b_rel"] + 0.002)))]
+    return _end_fade(y, p["fade"]).astype(np.float64)
+
+
+def _v2_tone(y: np.ndarray, p: dict) -> np.ndarray:
+    """Version 2 tone chain: optional half-mix tanh drive, 4-pole high-pass, optional low-pass."""
     if p["drive"] > 0.2:
         y = np.asarray(fx.saturate(y, drive_db=p["drive"], mode="tanh", mix=0.5, level="rms"), dtype=float)
     y = dsp.butter(y, "high", p["hp"], 4)
     if p["lp"] < 17500:
         y = dsp.butter(y, "low", p["lp"], 2)
-    y = np.asarray(y, dtype=float)
-    if p["style"] == "bubble":
-        y = _bubble_out(y, p, rng)
-    elif p["style"] == "blip":
-        y = y[: min(len(y), max(L.n_of(p["length"]), L.n_of(p["box"] + p["b_rel"] + 0.002)))]
-    k = min(len(y), L.n_of(p["fade"]))
+    return np.asarray(y, dtype=float)
+
+
+def _end_fade(y: np.ndarray, fade: float) -> np.ndarray:
+    """A copy of y with a cos^2 fade-out over its last `fade` seconds (mono or stereo)."""
+    k = min(len(y), L.n_of(fade))
     w = np.cos(np.linspace(0, np.pi / 2, k)) ** 2
     y = np.array(y, dtype=float)
     y[len(y) - k:] *= w if y.ndim == 1 else w[:, None]
-    return y.astype(np.float64)
+    return y
 
 
 def render(p: dict, rng: np.random.Generator) -> np.ndarray:

@@ -75,7 +75,12 @@ FAMILIES = {"ui_pop": list(zip(FAMILY_NAMES["ui_pop"], FAMILY["ui_pop"]))}
 
 def family_space(params: dict) -> dict:
     """The full space with every character key pinned to the member's value (T15)."""
-    return tonal.family_space(SPACE, dict(DEFAULTS, **params), FINE)
+    return tonal.family_space(SPACE, _member(params), FINE)
+
+
+def _member(params: dict) -> dict:
+    """A full parameter set: the defaults under the member's values."""
+    return dict(DEFAULTS, **params)
 
 
 def measure(x: np.ndarray) -> dict:
@@ -129,6 +134,19 @@ def _layers(y: np.ndarray, p: dict, r: np.random.Generator, n: int, tau: float, 
     return y
 
 
+def _pops(q: dict, rng: np.random.Generator, f0: float, tau: float) -> np.ndarray:
+    """The pop, and the optional second pop dgap later at dratio pitch and dbl dB."""
+    double = q["dbl"] > -59
+    gap = q["dgap"] if double else 0.0
+    n = max(1, int(round(min(0.8, q["onset"] + q["hold"] + 7 * tau + gap + 0.01) * tonal.SR)))
+    y = _one_pop(q, rng, n, f0, tau)
+    if double:
+        k = max(1, int(round(gap * tonal.SR)))
+        if k < n:
+            y[k:] += _one_pop(q, rng, n - k, f0 * q["dratio"], 0.9 * tau, 10 ** (q["dbl"] / 20))
+    return y
+
+
 def render(p: dict, rng: np.random.Generator) -> np.ndarray:
     """One pop take: stereo float64 at 48 kHz, at most about 0.8 s."""
     p = dict(DEFAULTS, **(p or {}))
@@ -136,15 +154,7 @@ def render(p: dict, rng: np.random.Generator) -> np.ndarray:
     f0 = p["f0"] * math.exp(0.02 * j[0])
     tau = p["tau"] * math.exp(0.08 * j[1])
     onset = p["onset"] * math.exp(0.1 * j[2])
-    q = dict(p, onset=onset)
-    double = p["dbl"] > -59
-    gap = p["dgap"] if double else 0.0
-    n = max(1, int(round(min(0.8, onset + p["hold"] + 7 * tau + gap + 0.01) * tonal.SR)))
-    y = _one_pop(q, rng, n, f0, tau)
-    if double:
-        k = max(1, int(round(gap * tonal.SR)))
-        if k < n:
-            y[k:] += _one_pop(q, rng, n - k, f0 * p["dratio"], 0.9 * tau, 10 ** (p["dbl"] / 20))
-    y = _layers(y, p, rng, n, tau, onset)
+    y = _pops(dict(p, onset=onset), rng, f0, tau)
+    y = _layers(y, p, rng, len(y), tau, onset)
     st = tonal.finish(y, rng, hp=p["hp"], lp=p["lp"], room_wet=p["room"], rt60=p["rt"], width=p["width"], cut=400)
     return np.asarray(st, dtype=np.float64)

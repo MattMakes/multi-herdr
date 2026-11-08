@@ -136,17 +136,30 @@ def end_gate(x: np.ndarray, length: float, release: float, start: float = 0.0) -
     return y * (g if y.ndim == 1 else g[:, None])
 
 
-def finish_chain(x: np.ndarray, hp: float = 120, deharsh: float = 0, deharsh_f: float = 3200, sat: float = 0,
-                 lp: float | None = None) -> np.ndarray:
-    """L5: high-pass, de-harsh dip, low-pass, light tanh saturation."""
-    y = dsp.butter(x, "high", hp, 4 if hp > 800 else 2)
+def _tone_stages(y: np.ndarray, deharsh: float, deharsh_f: float, lp: float | None) -> np.ndarray:
+    """L5 middle: the optional de-harsh dip and the optional low-pass."""
     if deharsh > 0.05:
         y = dsp.peq(y, deharsh_f, -deharsh, 1.2)
     if lp is not None:
         y = dsp.butter(y, "low", lp, 2)
+    return y
+
+
+def finish_chain(x: np.ndarray, hp: float = 120, deharsh: float = 0, deharsh_f: float = 3200, sat: float = 0,
+                 lp: float | None = None) -> np.ndarray:
+    """L5: high-pass, de-harsh dip, low-pass, light tanh saturation."""
+    y = dsp.butter(x, "high", hp, 4 if hp > 800 else 2)
+    y = _tone_stages(y, deharsh, deharsh_f, lp)
     if sat > 0.05:
         y = fx.saturate(y, drive_db=sat, mode="tanh", level="peak")
     return np.asarray(y, dtype=float)
+
+
+def finish_pair(main: np.ndarray, snd: np.ndarray, p: dict) -> tuple[np.ndarray, np.ndarray]:
+    """L5 on the dry signal and on the room send (send: high-pass at 300 Hz or more, no saturation)."""
+    main = finish_chain(main, p["hp"], p["deharsh"], p["deharsh_f"], p["sat"], p["lp"])
+    snd = finish_chain(snd, max(p["hp"], 300), p["deharsh"], p["deharsh_f"], 0, p["lp"])
+    return main, snd
 
 
 def tiny_space(x: np.ndarray, r: np.random.Generator, wet: float, width: float = 0.0, size: float = 0.12,

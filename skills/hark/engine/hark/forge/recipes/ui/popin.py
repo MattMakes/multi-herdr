@@ -149,6 +149,11 @@ def _ring(p: dict, r: np.random.Generator, f: float, att: float) -> np.ndarray:
     return L.unit(0.6 * L.unit(rg) + 0.8 * nz)
 
 
+def _sub(p: dict, r: np.random.Generator, f: float, att: float, hold: float, rel: float) -> np.ndarray:
+    """The octave-down partner: slower attack, longer release, half the drop, no harmonics."""
+    return L.designed_thump(0.5 * f, BODY_S, 1.3 * att, hold, 1.2 * rel, drop=0.5 * p["drop"], harm=0.0, r=r)
+
+
 def body(p: dict, r: np.random.Generator, f: float, level: float) -> np.ndarray:
     """One body hit: designed thump, sag, octave-down partner, quiet ring, light drive."""
     att, hold, rel = p["att_ms"] / 1000, p["hold_ms"] / 1000, p["rel_ms"] / 1000
@@ -157,8 +162,7 @@ def body(p: dict, r: np.random.Generator, f: float, level: float) -> np.ndarray:
         u = np.clip((L.t_of(len(y)) - att) / max(0.001, hold), 0, 1)
         y = y * 10 ** (-p["sag_db"] * u / 20)
     if p["sub"] > 0.01:
-        y = y + p["sub"] * L.designed_thump(0.5 * f, BODY_S, 1.3 * att, hold, 1.2 * rel, drop=0.5 * p["drop"],
-                                            harm=0.0, r=r)
+        y = y + p["sub"] * _sub(p, r, f, att, hold, rel)
     if p.get("ring_db", -60.0) > OFF_DB:
         y = L.unit(y) + 10 ** (p["ring_db"] / 20) * _ring(p, r, f, att)
     if p["sat"] > 0.05:
@@ -203,27 +207,46 @@ def _air(p: dict, r: np.random.Generator, bus: np.ndarray, pk: float) -> np.ndar
     return nz * env / (env.max() + 1e-12) * pk * 10 ** (p["air_db"] / 20)
 
 
-def _buses(p: dict, r: np.random.Generator, f: float, lvl: float):
-    n = L.n_of(BUFFER_S)
+def _body_bus(p: dict, r: np.random.Generator, f: float, lvl: float, n: int) -> np.ndarray:
+    """The body hit, its optional double and the optional knock, on 1 bus."""
     bus = np.zeros(n)
     L.add_at(bus, body(p, r, f, lvl), L.n_of(PRE))
     if p["dbl"] > 0.02:
         L.add_at(bus, body(p, r, f * p["dbl_ratio"], p["dbl"] * lvl), L.n_of(PRE + p["dbl_dt"]))
     if p["knock"] > 0.005:
         _knock(bus, p, r, lvl)
-    contact_on = p.get("contact_db", -60.0) > OFF_DB
-    cbus = _contact(p, r, n, L.peak(bus)) if contact_on else np.zeros(n)
-    bus = np.asarray(dsp.butter(bus, "high", p["hp"], 2), dtype=float)
+    return bus
+
+
+def _tick_bus(p: dict, r: np.random.Generator, bus: np.ndarray) -> np.ndarray:
+    """The tick (and its double) at tick_db under the body peak, plus the optional air."""
     tk = _tick(p, r)
     pk = L.peak(bus)
-    tbus = np.zeros(n)
+    tbus = np.zeros(len(bus))
     t_tick = PRE + 0.6 * p["att_ms"] / 1000
     L.add_at(tbus, tk, L.n_of(t_tick), pk * 10 ** (p["tick_db"] / 20))
     if p["dbl"] > 0.02:
         L.add_at(tbus, tk, L.n_of(t_tick + p["dbl_dt"]), pk * p["dbl"] * 10 ** ((p["tick_db"] - 3) / 20))
     if p["air_db"] > OFF_DB:
         tbus = tbus + _air(p, r, bus, pk)
-    return bus, cbus, tbus, contact_on
+    return tbus
+
+
+def _buses(p: dict, r: np.random.Generator, f: float, lvl: float):
+    n = L.n_of(BUFFER_S)
+    bus = _body_bus(p, r, f, lvl, n)
+    contact_on = p.get("contact_db", -60.0) > OFF_DB
+    cbus = _contact(p, r, n, L.peak(bus)) if contact_on else np.zeros(n)
+    bus = np.asarray(dsp.butter(bus, "high", p["hp"], 2), dtype=float)
+    return bus, cbus, _tick_bus(p, r, bus), contact_on
+
+
+def _stereo(p: dict, f: float, bus: np.ndarray, cbus: np.ndarray, tbus: np.ndarray) -> np.ndarray:
+    """Haas offset of width / (6 f) on the right body, the contact in both, the decorrelated tick on top."""
+    d = L.n_of(p["width"] / (6 * f)) if p["width"] > 0.02 else 0
+    right = np.concatenate([np.zeros(d), bus])[: len(bus)]
+    st = np.column_stack([bus + cbus, right + cbus])
+    return st + L.fit(np.asarray(fx.decorrelate(tbus, p["tick_width"], 800.0), dtype=float), len(st))
 
 
 def render(p: dict, rng: np.random.Generator) -> np.ndarray:
@@ -232,10 +255,7 @@ def render(p: dict, rng: np.random.Generator) -> np.ndarray:
     f = p["body_f"] * math.exp(0.012 * rng.standard_normal())
     lvl = 10 ** (0.02 * rng.standard_normal())
     bus, cbus, tbus, contact_on = _buses(p, rng, f, lvl)
-    d = L.n_of(p["width"] / (6 * f)) if p["width"] > 0.02 else 0
-    right = np.concatenate([np.zeros(d), bus])[: len(bus)]
-    st = np.column_stack([bus + cbus, right + cbus])
-    st = st + L.fit(np.asarray(fx.decorrelate(tbus, p["tick_width"], 800.0), dtype=float), len(st))
+    st = _stereo(p, f, bus, cbus, tbus)
     st = np.asarray(dsp.butter(st, "low", p["lp"], 2), dtype=float)
     st = L.end_gate(st, p["length"], p["release_ms"] / 1000, start=PRE)
     if contact_on:

@@ -116,6 +116,20 @@ def family_params(cat: str, fam: str) -> dict:
 FAMILIES = {cat: [(name, family_params(cat, name)) for name in boxes] for cat, boxes in BOXES.items()}
 
 
+def _add_release(x: np.ndarray, snd: np.ndarray, p: dict, rng: np.random.Generator, lvl: float) -> None:
+    """The release click: softer, 1.18x higher, rel_dt after the press (L7)."""
+    q = dict(p, body=p["body"] * 0.5, tone=p["tone"] * 0.8)
+    y, ys = L.click_layers(q, rng, pitch_scale=1.18, level=p["rel"] * lvl, send=True)
+    k = L.n_of(p["rel_dt"] * math.exp(0.05 * rng.standard_normal()))
+    L.add_at(x, y, k)
+    L.add_at(snd, ys, k)
+
+
+def _lead(x: np.ndarray) -> np.ndarray:
+    """The signal after a 2 ms silent lead."""
+    return np.concatenate([np.zeros(L.n_of(0.002)), x])
+
+
 def render(p: dict, rng: np.random.Generator) -> np.ndarray:
     """One click take: stereo float64 at 48 kHz, 2 ms lead, about 27-160 ms long."""
     p = L.merged(DEFAULTS, p)
@@ -123,16 +137,8 @@ def render(p: dict, rng: np.random.Generator) -> np.ndarray:
     x, snd = L.click_layers(p, rng, level=lvl, send=True)
     rel_on = p["rel"] > 0.004
     if rel_on:
-        q = dict(p, body=p["body"] * 0.5, tone=p["tone"] * 0.8)
-        y, ys = L.click_layers(q, rng, pitch_scale=1.18, level=p["rel"] * lvl, send=True)
-        k = L.n_of(p["rel_dt"] * math.exp(0.05 * rng.standard_normal()))
-        L.add_at(x, y, k)
-        L.add_at(snd, ys, k)
-    x = L.finish_chain(x, p["hp"], p["deharsh"], p["deharsh_f"], p["sat"], p["lp"])
-    snd = L.finish_chain(snd, max(p["hp"], 300), p["deharsh"], p["deharsh_f"], 0, p["lp"])
-    lead = np.zeros(L.n_of(0.002))
-    x = np.concatenate([lead, x])
-    snd = np.concatenate([lead, snd])
+        _add_release(x, snd, p, rng, lvl)
+    x, snd = (_lead(v) for v in L.finish_pair(x, snd, p))
     st = L.tiny_space(x, rng, p["room"], p["width"])
     st = L.room_tail(st, snd, rng, p)
     end = max(p["length"], p["rel_dt"] + 0.015 if rel_on else 0.0)
