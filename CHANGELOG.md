@@ -7,6 +7,14 @@
 ## v0.4.8 - 2026-11-09
 
 - Video skills now separate short form (15-90 s) from long form (3-15 min YouTube episodes).
+- horch no longer types mail over your prompt when the channel relay is live.
+  The courier's redeliveries and the `horch fleet` startup probe go through
+  the relay, and the probe no longer asks the orchestrator to run `horch inbox`.
+  When a live relay refuses or does not confirm a `horch tell orchestrator`
+  line, the courier redelivers it through the relay instead of typing it.
+- A stalled network no longer hangs `horch ledger finish`. Every git fetch,
+  ls-remote and push that horch runs now stops after 10 min (push) or 3 min
+  (others) and reports the command, so you can run finish again.
 
 ## v0.4.7 - 2026-11-08
 

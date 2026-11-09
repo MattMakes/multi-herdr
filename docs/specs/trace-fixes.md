@@ -93,6 +93,14 @@ Unknown fields are an error under `--dry-run`. Values in backticks are literal.
 
 - `<mail-id>` is the id of the mail file (`pending/<id>.json`), shortened to 8 hex characters.
 - A redelivery repeats the same id. A reader that has seen an id ignores it.
+- Orchestrator mail goes through the channel relay first. The courier's redelivery and digest, and
+  the `horch fleet` startup probe, are typed into the orchestrator pane only when the relay is
+  down. An idle pane can hold the operator's draft, and typed text lands on it. The relay's answer
+  confirms the startup probe: it needs no `horch inbox` and gets no redelivery.
+- `horch tell orchestrator` from a role never types into the orchestrator pane while the relay
+  answers a ping. When the live relay refuses or does not confirm the line, the mail stays pending
+  without a first push, and the courier redelivers it through the relay. `horch tell` prints 1
+  stderr line that says so. A tell with no sender has no mail, and it still types the line.
 - `horch tell <role> --answers <question-id> "<text>"` closes exactly that question. A tell
   without `--answers` closes nothing.
 - A horch-raised `QUESTION`/`BLOCKED` names the ledger action that answers it; that action closes

@@ -766,8 +766,12 @@ fn pr(env: &Env<'_>, row: &Row, wt: &WorktreeRow, direction: &str) -> Result<Don
     };
     let tip = prepare(env.git, env.root, row, wt)?;
     let b = &wt.branch;
-    env.git
-        .run(env.root, &["push", "--quiet", remote, &format!("{b}:{b}")])?;
+    let push = env
+        .git
+        .try_network(env.root, &["push", "--quiet", remote, &format!("{b}:{b}")])?;
+    if !push.ok {
+        bail!("git push {remote} {b}:{b} failed: {}", push.stderr);
+    }
     let mut create = Command::new(gh);
     create
         .current_dir(env.root)

@@ -302,7 +302,7 @@ fn arc_30_e2e_tell_types_when_no_relay_runs() {
 }
 
 #[test]
-fn arc_30_e2e_tell_types_when_the_relay_fails() {
+fn arc_30_e2e_a_live_relay_that_fails_leaves_the_tell_for_the_courier() {
     let mut h = world("arc30-failed-relay");
     install_codex_queue(&mut h, 1);
     install_thread_record(&h);
@@ -313,11 +313,11 @@ fn arc_30_e2e_tell_types_when_the_relay_fails() {
     let sent = tell(&h);
     assert!(sent.status.success(), "{}", stderr(&sent));
     assert!(stderr(&sent).contains(
-        "horch tell: the channel relay did not take the message (error: codex queue exited with exit status: 1); typing it instead"
+        "the channel relay did not take or confirm the message (error: codex queue exited with exit status: 1); the courier redelivers it through the relay"
     ));
-    let typed = typed_lines(&h);
-    assert_eq!(typed.len(), 1, "{typed:?}");
-    assert!(typed[0].to_string().contains(&mail_line(&h, "DONE: e2e")));
+    assert!(typed_lines(&h).is_empty());
+    let pending = Mail::under(&h.state, WORKSPACE).pending().unwrap();
+    assert_eq!(pending.len(), 1);
     let (lines, _) = relay.stop();
     assert_eq!(lines.len(), 1, "each relay stdout line parses as JSON");
 }

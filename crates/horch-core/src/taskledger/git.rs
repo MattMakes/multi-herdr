@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use horch_marketplace::git::GitRunner;
 
+use crate::vcs::network;
+
 /// A git binary.
 #[derive(Debug, Clone)]
 pub struct Git {
@@ -43,6 +45,30 @@ impl Git {
         let out = self.runner.output(dir, args).with_context(|| {
             format!("running {} {}", self.runner.bin().display(), args.join(" "))
         })?;
+        Ok(Out {
+            ok: out.status == 0,
+            stdout: String::from_utf8_lossy(&out.stdout).trim_end().to_string(),
+            stderr: String::from_utf8_lossy(&out.stderr).trim_end().to_string(),
+        })
+    }
+
+    /// Run a git command that talks to a remote (`fetch`, `ls-remote`,
+    /// `push`, `pull`) through [`network::output`], with stall limits and a
+    /// wall-clock bound. Like [`Git::try_run`], a non-zero exit is not an
+    /// error; a passed bound is a failed output whose stderr names the
+    /// command and the bound.
+    pub fn try_network(&self, dir: &Path, args: &[&str]) -> Result<Out> {
+        let out = match network::output(self.runner.bin(), dir, args) {
+            Ok(out) => out,
+            Err(e) => {
+                let timeout = e.downcast::<network::Timeout>()?;
+                return Ok(Out {
+                    ok: false,
+                    stdout: String::new(),
+                    stderr: timeout.to_string(),
+                });
+            }
+        };
         Ok(Out {
             ok: out.status == 0,
             stdout: String::from_utf8_lossy(&out.stdout).trim_end().to_string(),

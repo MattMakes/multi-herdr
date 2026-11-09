@@ -801,7 +801,7 @@ fn finish_landed(
         &new[..new.len().min(12)]
     );
     if let Some(remote) = &cx.run.remote {
-        let push = cx.tools.git.try_run(
+        let push = cx.tools.git.try_network(
             &cx.root,
             &["push", remote, &format!("{run_branch}:{run_branch}")],
         )?;
@@ -864,7 +864,7 @@ pub(crate) fn reopen_if_new_commits(
 
 /// Whether `remote`'s run branch holds `commit` (after a fetch).
 fn remote_has(git: &Git, root: &Path, remote: &str, run_branch: &str, commit: &str) -> bool {
-    let _ = git.try_run(root, &["fetch", remote, run_branch]);
+    let _ = git.try_network(root, &["fetch", remote, run_branch]);
     let remote_ref = format!("refs/remotes/{remote}/{run_branch}");
     git.rev(root, &remote_ref).is_ok() && git.is_ancestor(root, commit, &remote_ref)
 }
@@ -881,7 +881,7 @@ fn land_again(cx: &Ctx<'_>, wt: &WorktreeRow, run_branch: &str, log: &Path) -> R
         return Ok(Outcome::pass(&landed, None, "already landed"));
     }
     let _lock = land_lock(cx)?;
-    let push = git.try_run(
+    let push = git.try_network(
         &cx.root,
         &["push", remote, &format!("{run_branch}:{run_branch}")],
     )?;
@@ -918,7 +918,7 @@ fn land_shared(cx: &Ctx<'_>, run_branch: &str, log: &Path) -> Result<Outcome> {
         }
     }
     if let Some(remote) = &cx.run.remote {
-        let push = git.try_run(
+        let push = git.try_network(
             &cx.root,
             &["push", remote, &format!("{run_branch}:{run_branch}")],
         )?;
