@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+## v0.4.8 - 2026-11-09
+
 - Video skills now separate short form (15-90 s) from long form (3-15 min YouTube episodes).
 
 ## v0.4.7 - 2026-11-08
