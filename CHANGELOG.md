@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+- Video skills now separate short form (15-90 s) from long form (3-15 min YouTube episodes).
+
 ## v0.4.7 - 2026-11-08
 
 - `herdr-fleet` starts again while another fleet runs in the same project.

@@ -40,6 +40,7 @@ RULES = [
     "zoom",
     "directions",
     "materials",
+    "format",
     "schema",
 ]
 
@@ -84,6 +85,25 @@ BREAKDOWN_LATE_MESSAGE = "meta.payoff_breakdown_sec ends at %.3f s, after the he
 HERO_MISSING_MESSAGE = "a film with music (meta.bpm) needs meta.hero_sec"
 EVENT_GAP_MESSAGE = ("%.3f s to %.3f s has no event for %.2f s; the limit is %d bars (%.2f s) "
                      "outside a declared stop")
+FORMATS = ("short", "long")
+FORMAT_MESSAGE = 'meta.format must be "short" or "long"'
+SHORT_MIN_SEC, SHORT_MAX_SEC = 15.0, 90.0
+LONG_MIN_SEC, LONG_MAX_SEC = 180.0, 900.0
+CHAPTER_MIN_SEC, CHAPTER_MAX_SEC = 30.0, 180.0
+MIN_CHAPTERS = 3
+END_SCREEN_MIN_SEC, END_SCREEN_MAX_SEC = 5.0, 20.0
+CHAPTER_FIELDS = ("id", "title", "start_sec", "hook")
+SHORT_DURATION_MESSAGE = "short: meta.duration_sec %.3f s must be 15 s to 90 s (+-0.05 s)"
+SHORT_CHAPTERS_MESSAGE = "short: meta.chapters must be absent; only a long film has chapters"
+LONG_DURATION_MESSAGE = "long: meta.duration_sec %.3f s must be 180 s to 900 s"
+LONG_ASPECT_MESSAGE = 'long: meta.aspect is %s; it must be "16:9"'
+END_SCREEN_MESSAGE = "long: meta.end_screen_sec must be a number from 5 to 20"
+CHAPTERS_SHAPE_MESSAGE = ("long: meta.chapters must be a list of {id, title, start_sec, hook} objects "
+                          "with non-empty strings and a number start_sec")
+CHAPTER_COUNT_MESSAGE = "long: meta.chapters has %d chapters; a long film needs 3 or more"
+CHAPTER_FIRST_MESSAGE = "long: meta.chapters[0].start_sec must be 0"
+CHAPTER_ORDER_MESSAGE = "long: meta.chapters[%d].start_sec %.3f s must be greater than %.3f s"
+CHAPTER_LENGTH_MESSAGE = "long: chapter %s runs %.3f s; each chapter must be 30 s to 180 s"
 MIN_DIRECTIONS = 3
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 HEX_COLOR = re.compile(r"#[0-9A-Fa-f]{6}\b")
@@ -165,6 +185,7 @@ def meta_identity_errors(meta):
     names = failed((not non_empty_str(meta.get(key)), "meta.%s must be a non-empty string" % key)
                    for key in ("id", "title"))
     checks = (
+        (meta.get("format") not in FORMATS, FORMAT_MESSAGE),
         (aspect not in ASPECTS, "meta.aspect must be one of %s" % sorted(ASPECTS)),
         (meta.get("fps") not in FPS_VALUES or not is_int(meta.get("fps")), "meta.fps must be 30 or 60"),
     )
@@ -806,6 +827,61 @@ def breakdown_errors(meta, hero):
     return [BREAKDOWN_LATE_MESSAGE % (end, hero[0])] if late else []
 
 
+def check_format(meta, report):
+    report.add_all("format", format_errors(meta))
+
+
+def format_errors(meta):
+    """Return the messages for the short or long rules of meta.format."""
+    return short_errors(meta) if meta["format"] == "short" else long_errors(meta)
+
+
+def short_errors(meta):
+    duration = meta["duration_sec"]
+    low, high = SHORT_MIN_SEC - TOTAL_TOLERANCE_SEC, SHORT_MAX_SEC + TOTAL_TOLERANCE_SEC
+    return failed((
+        (not low <= duration <= high, SHORT_DURATION_MESSAGE % duration),
+        ("chapters" in meta, SHORT_CHAPTERS_MESSAGE),
+    ))
+
+
+def long_errors(meta):
+    duration = meta["duration_sec"]
+    end_screen = meta.get("end_screen_sec")
+    return failed((
+        (not LONG_MIN_SEC <= duration <= LONG_MAX_SEC, LONG_DURATION_MESSAGE % duration),
+        (meta["aspect"] != "16:9", LONG_ASPECT_MESSAGE % meta["aspect"]),
+        (not (is_number(end_screen) and END_SCREEN_MIN_SEC <= end_screen <= END_SCREEN_MAX_SEC),
+         END_SCREEN_MESSAGE),
+    )) + chapter_errors(meta.get("chapters"), duration)
+
+
+def is_chapter(item):
+    if not (isinstance(item, dict) and all(key in item for key in CHAPTER_FIELDS)):
+        return False
+    texts = all(non_empty_str(item[key]) for key in ("id", "title", "hook"))
+    return texts and is_number(item["start_sec"])
+
+
+def chapter_errors(chapters, duration):
+    """Return the messages for the meta.chapters list of a long film."""
+    if not (isinstance(chapters, list) and all(is_chapter(item) for item in chapters)):
+        return [CHAPTERS_SHAPE_MESSAGE]
+    starts = [item["start_sec"] for item in chapters]
+    count = failed(((len(chapters) < MIN_CHAPTERS, CHAPTER_COUNT_MESSAGE % len(chapters)),
+                    (bool(starts) and starts[0] != 0, CHAPTER_FIRST_MESSAGE)))
+    order = [CHAPTER_ORDER_MESSAGE % (index, start, prev)
+             for index, (prev, start) in enumerate(zip(starts, starts[1:]), 1) if start <= prev]
+    return count + order + (chapter_length_errors(chapters, duration) if not order else [])
+
+
+def chapter_length_errors(chapters, duration):
+    ends = [item["start_sec"] for item in chapters[1:]] + [duration]
+    spans = [(item["id"], end - item["start_sec"]) for item, end in zip(chapters, ends)]
+    return [CHAPTER_LENGTH_MESSAGE % (cid, span) for cid, span in spans
+            if not CHAPTER_MIN_SEC <= span <= CHAPTER_MAX_SEC]
+
+
 def check_menu_time(meta, scenes, report):
     menu_sec = sum(scene["duration_sec"] for scene in scenes if scene["kind"] in ("ui", "menu"))
     limit = meta["duration_sec"] * MENU_SEC_PER_FILM_SEC
@@ -987,6 +1063,7 @@ def run_story_gates(meta, scenes, rhythm, report):
     check_event_gap(meta, scenes, rhythm, report)
     check_hero(meta, report)
     check_menu_time(meta, scenes, report)
+    check_format(meta, report)
 
 
 def run_scene_gates(scenes, report, gates):
@@ -1093,6 +1170,7 @@ def self_test():
             "meta": {
                 "id": "demo-launch",
                 "title": "Demo launch",
+                "format": "short",
                 "aspect": "16:9",
                 "fps": 60,
                 "width": 1920,
@@ -1191,6 +1269,27 @@ def self_test():
         timeline = music_timeline()
         timeline["meta"][key] = value
         return timeline
+
+    def long_timeline(duration=300.0, chapter_starts=(0.0, 60.0, 150.0, 240.0), end_screen=10):
+        """A long film: the valid hook scene, then 5 s scenes that alternate diagram and motion."""
+        timeline = valid_timeline()
+        hook = timeline["scenes"][0]
+        scenes, start, index = [hook], hook["duration_sec"], 1
+        while start < duration - 1e-9:
+            length = min(5.0, duration - start)
+            scenes.append(dict(copy.deepcopy(hook), id="s%03d" % index, kind=("diagram", "motion")[index % 2],
+                               start_sec=start, duration_sec=length, caption="", narration="",
+                               beat_in=int(start * 2), beat_out=int((start + length) * 2),
+                               focal_point=([0.3, 0.4], [0.7, 0.4])[index % 2]))
+            start, index = start + length, index + 1
+        timeline["scenes"] = scenes
+        timeline["meta"].update(format="long", duration_sec=duration, end_screen_sec=end_screen, chapters=[
+            {"id": "c%d" % n, "title": "Chapter %d" % n, "start_sec": at, "hook": "Hook %d" % n}
+            for n, at in enumerate(chapter_starts, 1)])
+        return timeline
+
+    def format_messages(timeline):
+        return [error["message"] for error in check_timeline(timeline) if error["rule"] == "format"]
 
     def reframe(scale):
         return {"scale": scale, "focal_point": [0.5, 0.4], "from_sec": 0.0, "to_sec": 1.2}
@@ -1598,6 +1697,63 @@ def self_test():
             timeline = valid_timeline()
             timeline["scenes"][0]["on_screen_text"] = "Stop"
             self.assertEqual(rules_of(timeline), {"schema"}, "on_screen_text")
+
+        def test_17_format_missing_fails(self):
+            del self.timeline["meta"]["format"]
+            self.assertEqual(rules_of(self.timeline), {"schema"})
+            self.assertIn(FORMAT_MESSAGE, [error["message"] for error in check_timeline(self.timeline)])
+            self.assert_cli_fails_with("schema")
+
+        def test_17_long_300_s_with_4_chapters_passes(self):
+            self.timeline = long_timeline()
+            self.assertEqual(check_timeline(self.timeline), [])
+            with tempfile.TemporaryDirectory() as tmp:
+                proc = subprocess.run([sys.executable, script, write_project(tmp, self.timeline)],
+                                      capture_output=True, text=True, timeout=60)
+            self.assertEqual(proc.returncode, 0, proc.stdout)
+
+        def test_17_long_74_s_fails(self):
+            self.timeline = long_timeline(74.0, (0.0, 30.0, 60.0))
+            self.assertIn(LONG_DURATION_MESSAGE % 74.0, format_messages(self.timeline))
+            self.assert_cli_fails_with("format")
+
+        def test_17_long_vertical_fails(self):
+            self.timeline = long_timeline()
+            self.timeline["meta"].update({"aspect": "9:16", "width": 1080, "height": 1920})
+            self.assertEqual(rules_of(self.timeline), {"format"})
+            self.assertEqual(format_messages(self.timeline), [LONG_ASPECT_MESSAGE % "9:16"])
+
+        def test_17_long_2_chapters_fails(self):
+            self.timeline = long_timeline(chapter_starts=(0.0, 150.0))
+            self.assertEqual(format_messages(self.timeline), [CHAPTER_COUNT_MESSAGE % 2])
+
+        def test_17_long_200_s_chapter_fails(self):
+            self.timeline = long_timeline(chapter_starts=(0.0, 50.0, 250.0))
+            self.assertEqual(format_messages(self.timeline), [CHAPTER_LENGTH_MESSAGE % ("c2", 200.0)])
+
+        def test_17_long_chapter_order_and_shape_fail(self):
+            self.timeline = long_timeline(chapter_starts=(0.0, 100.0, 100.0, 200.0))
+            self.assertEqual(format_messages(self.timeline), [CHAPTER_ORDER_MESSAGE % (2, 100.0, 100.0)])
+            self.timeline = long_timeline(chapter_starts=(10.0, 100.0, 200.0))
+            self.assertIn(CHAPTER_FIRST_MESSAGE, format_messages(self.timeline))
+            del self.timeline["meta"]["chapters"][1]["hook"]
+            self.assertEqual(format_messages(self.timeline), [CHAPTERS_SHAPE_MESSAGE])
+
+        def test_17_long_without_end_screen_fails(self):
+            self.timeline = long_timeline()
+            del self.timeline["meta"]["end_screen_sec"]
+            self.assertEqual(format_messages(self.timeline), [END_SCREEN_MESSAGE])
+            self.timeline["meta"]["end_screen_sec"] = 25
+            self.assertEqual(format_messages(self.timeline), [END_SCREEN_MESSAGE])
+
+        def test_17_short_with_chapters_fails(self):
+            self.timeline["meta"]["chapters"] = long_timeline()["meta"]["chapters"]
+            self.assertEqual(format_messages(self.timeline), [SHORT_CHAPTERS_MESSAGE])
+
+        def test_17_short_duration_range(self):
+            self.assertEqual(short_errors({"duration_sec": 90.05}), [])
+            self.assertEqual(short_errors({"duration_sec": 91.0}), [SHORT_DURATION_MESSAGE % 91.0])
+            self.assertEqual(short_errors({"duration_sec": 14.9}), [SHORT_DURATION_MESSAGE % 14.9])
 
         def test_15_directions_pass(self):
             self.assertEqual(directions_rules(), set())

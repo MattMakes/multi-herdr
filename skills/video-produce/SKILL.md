@@ -41,6 +41,18 @@ Project tools resolve skill scripts at run time and fail when resolution or exec
 
 ## 1. Pick the workflow
 
+Set the format first. Read the operator's words. Write `Format: short` or
+`Format: long` in `PRODUCTION.md` before any other step.
+
+- "short", "Shorts", "TikTok", "Reels", "vertical", "feed", "teaser", "landing page", "hero video": `short`.
+- "long", "episode", "devlog episode", "YouTube video", "full video", any length of 3 min or more: `long`.
+- "N videos and M shorts": the N videos are `long`. The M shorts are `short`.
+- Any other request: ask the operator. Do not guess.
+
+A length from 91 s to 179 s fits neither format. Ask the operator to choose 90 s (`short`) or 180 s or more (`long`).
+
+A `long` film runs 180 s to 900 s, in `16:9`, with captions only and no voice-over. A `short` film runs 15 s to 90 s.
+
 Read the operator's 1-line request. Pick the first row that matches.
 
 | Request says | Workflow | Recipe |
@@ -55,8 +67,9 @@ the row you picked in `PRODUCTION.md` under "Reading". Ask the operator only
 for a value that changes the result and has no default: the product, or
 the channel when the request names none.
 
-Defaults when the request is silent: length `30` s, aspect `16:9`,
+Defaults when the request is silent: `short` format, length `30` s, aspect `16:9`,
 channel "landing page hero", voice `Samantha` (macOS `say`).
+A request for episodes or a YouTube video is `long`, aspect `16:9`, captions only.
 
 ## 2. PRODUCTION.md
 
@@ -67,7 +80,8 @@ Request: "<the operator's words, unchanged>"
 Workflow: <launch-film | app-explainer | ab | batch>
 Reading: <1 sentence: how you read the request, and why>
 Project folder: video/<slug>/
-Length: <15 | 30 | 60 | 90> s. Aspects: <16:9, 9:16, 1:1>. Channel: <where it plays>
+Format: <short | long>
+Length: <15 | 30 | 60 | 90> s (short) or <180-900> s (long). Aspects: <16:9, 9:16, 1:1> (short) or 16:9 (long). Channel: <where it plays>
 Loaded notes: <n> entries from <fleet notes path> (topics: <list>)
 Direction: <picked direction id> (A/B: <id 1> and <id 2>)
 Batch: <manifest path, or none>
