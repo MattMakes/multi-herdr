@@ -32,6 +32,7 @@ strip, then score the 8 axes blind. Use `video-direction` to judge the film
 against its brief and direction. Each round is a fresh session: do not read
 builder notes, chat history, commit messages or earlier `qa/critique-
 round-*.md` files.
+Read `meta.format` (`short` or `long`) and follow the rules of that format.
 
 Find `<skill-dir>`: your briefing says "use the fleet copy under
 <path>". The folder of skill `<id>` is `<path>/<id>`, and that folder is the

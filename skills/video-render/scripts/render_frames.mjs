@@ -1012,8 +1012,14 @@ function chapterWarnings(list, total) {
 
 // A chapter starts at scene 0 and at every scene with a "title". When no scene has a
 // title, every scene starts a chapter. Times are floored to whole seconds.
+// A "long" timeline lists its chapters in meta.chapters; each start_sec is floored.
+const isLong = (meta) => meta.format === "long";
+const declaredChapter = (c) => ({ sec: Math.floor(c.start_sec), title: String(c.title).trim() });
+const chapterListFor = (timeline) => (isLong(timeline.meta) && Array.isArray(timeline.meta.chapters)
+  ? timeline.meta.chapters.map(declaredChapter) : chapterList(timeline));
+
 export function chapters(timeline) {
-  const list = chapterList(timeline);
+  const list = chapterListFor(timeline);
   const total = Number(timeline.meta.duration_sec) || 0;
   const stamp = total >= 3600 ? longStamp : shortStamp;
   return { text: list.map((c) => `${stamp(c.sec)} ${c.title}\n`).join(""), warnings: chapterWarnings(list, total) };
@@ -1300,10 +1306,9 @@ function writeTextFiles({ timeline, outDir, report }) {
   report.warnings.push(...ch.warnings);
 }
 
-async function writeCover({ master, outDir, hook, coverSec, report }) {
-  const at = coverSec ?? hook.start_sec + hook.duration_sec * 0.75;
+async function writeCover({ master, outDir, coverSec, report }) {
   const file = join(outDir, "cover.jpg");
-  await ffmpeg(["-ss", String(at), "-i", master, "-frames:v", "1", "-vf", fitFilter(ASPECTS["16x9"]), "-q:v", "2", file]);
+  await ffmpeg(["-ss", String(coverSec), "-i", master, "-frames:v", "1", "-vf", fitFilter(ASPECTS["16x9"]), "-q:v", "2", file]);
   report.outputs.push(file);
 }
 
@@ -1365,12 +1370,29 @@ async function writeAspect(ctx, aspect) {
   ctx.report.warnings.push(...modes.filter((m) => m.mode === "fit").map((m) => fitWarning(aspect, m.scene)));
 }
 
+// A "long" film ships 16x9 only. A short cut is a separate "short" production.
+export const publishAspects = (meta, aspects) => (isLong(meta) ? aspects.filter((a) => a === "16x9") : aspects);
+
+// The cover of a "long" film comes from the hero chapter, the last one: 75 % into it.
+const hookCover = (hook) => hook.start_sec + hook.duration_sec * 0.75;
+const heroCover = (last, total) => last.start_sec + (total - last.start_sec) * 0.75;
+const heroChapter = (meta) => (isLong(meta) ? meta.chapters?.at(-1) : undefined);
+
+export function coverSecFor({ meta }, hook) {
+  const last = heroChapter(meta);
+  return last ? heroCover(last, Number(meta.duration_sec)) : hookCover(hook);
+}
+
 export async function packagePublish(opts) {
   opts.aspects.forEach(checkAspect);
   const timeline = loadTimeline(opts.timelineFile);
+  const dropped = opts.aspects.filter((a) => !publishAspects(timeline.meta, opts.aspects).includes(a));
+  opts = { ...opts, aspects: publishAspects(timeline.meta, opts.aspects) };
   const info = await probe(opts.master);
   mkdirSync(opts.outDir, { recursive: true });
-  const ctx = { ...opts, timeline, info, hook: hookScene(timeline), report: { outputs: [], warnings: [], reframe: {} } };
+  const hook = hookScene(timeline);
+  const ctx = { ...opts, coverSec: opts.coverSec ?? coverSecFor(timeline, hook), timeline, info, hook, report: { outputs: [], warnings: [], reframe: {} } };
+  ctx.report.warnings.push(...dropped.map((a) => `${a}: skipped; meta.format is long and ships 16x9 only`));
   writeTextFiles(ctx);
   await writeCover(ctx);
   await writePreviews(ctx);
@@ -1499,6 +1521,25 @@ function testChapters() {
   const ch = chapters(FIXTURE);
   assertEq(ch.text, "0:00 Demo Launch\n0:01 The demo\n0:02 Get started\n", "chapters");
   assertEq(ch.warnings.length, 3, "YouTube 10 s warnings");
+}
+
+const LONG = {
+  meta: { ...FIXTURE.meta, format: "long", duration_sec: 300, end_screen_sec: 10,
+    chapters: [
+      { id: "c1", title: "Cold open", start_sec: 0, hook: "Watch this." },
+      { id: "c2", title: "Building the keep", start_sec: 75, hook: "Now build." },
+      { id: "c3", title: "The siege", start_sec: 190, hook: "They come." },
+    ] },
+  scenes: FIXTURE.scenes,
+};
+
+function testLongChapters() {
+  assertEq(chapters(LONG).text, "0:00 Cold open\n1:15 Building the keep\n3:10 The siege\n", "long chapters.txt");
+  assertEq(chapters(LONG).warnings, [], "long chapters warnings");
+  assertEq(publishAspects(LONG.meta, ["16x9", "9x16", "1x1"]), ["16x9"], "long ships 16x9 only");
+  assertEq(publishAspects(FIXTURE.meta, ["16x9", "9x16", "1x1"]), ["16x9", "9x16", "1x1"], "short keeps all aspects");
+  assertEq(coverSecFor(LONG, LONG.scenes[0]), 272.5, "long cover in hero chapter");
+  assertEq(coverSecFor(FIXTURE, FIXTURE.scenes[0]), 0.75, "short cover in hook");
 }
 
 const testCrop = () => CROP_CASES.forEach(([args, want, what]) => assertEq(cropWindow(...args), want, what));
@@ -1868,6 +1909,7 @@ const BASE_TESTS = [
   ["captions.srt is deterministic and wraps at 42 chars, 2 lines", testSrt],
   ["captions.vtt matches the srt cues", testVtt],
   ["chapters.txt uses scene titles and start_sec", testChapters],
+  ["long chapters.txt comes from meta.chapters, 16x9 only, cover from the last chapter", testLongChapters],
   ["crop window follows focal_point and keeps critical_regions", testCrop],
   ["--frames parses counts, lists and --reverse", testFrames],
   ["ffmpeg encodes PNG frames to CFR H.264 High yuv420p", testEncode],

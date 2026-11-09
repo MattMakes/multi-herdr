@@ -1,6 +1,6 @@
 ---
 name: video-storyboard
-description: "Use when a video project has BRIEF.md and DIRECTION.md and needs a beat-timed plan before capture, animation, audio or render start. Writes STORYBOARD.md and the canonical timeline.json (meta plus scenes with timing, beats, narration, captions, plates, motion, safe-zone regions and focal points), then proves it with scripts/check_timeline.py: numeric gates for the hook, scenes, captions, narration, visual variety, safe zones, timing, sync, terms, rhythm, hero, menu time, directions, materials and schema."
+description: "Use when a video project has BRIEF.md and DIRECTION.md and needs a beat-timed plan before capture, animation, audio or render start. Writes STORYBOARD.md and the canonical timeline.json (meta plus scenes with timing, beats, narration, captions, plates, motion, safe-zone regions and focal points), then proves it with scripts/check_timeline.py: 20 numeric gates, from the hook and captions to sync, hero, format (short or long) and schema."
 ---
 
 # Video Storyboard
@@ -18,8 +18,9 @@ the video project folder.
 
 ## Order of work
 
-1. Read `BRIEF.md` and `DIRECTION.md`. Take the archetype beat list and
-   scale it to `meta.duration_sec`.
+1. Read `BRIEF.md` and `DIRECTION.md`. Copy its `Format:` line to `meta.format`.
+   Scale the archetype beats to `meta.duration_sec`. Plan `long` chapter by
+   chapter. Each chapter opens on its `hook` caption (`references/formats.md`).
 2. Split each beat into scenes of 2 s to 8 s. Snap every cut to the music
    beat grid: at `bpm` B, 1 beat is `60 / B` s.
 3. Write narration and the caption for each scene. Count words. Give
@@ -68,6 +69,7 @@ bottom edge.
   "meta": {
     "id": "acme-launch",
     "title": "Acme launch film",
+    "format": "short",
     "aspect": "16:9",
     "fps": 60,
     "width": 1920,
@@ -102,10 +104,13 @@ bottom edge.
 |---|---|---|
 | `id` | string | Non-empty. The project slug. |
 | `title` | string | Non-empty. |
+| `format` | string | Required. `short` or `long`. |
+| `chapters` | list | Required for `long`, absent for `short`. `{id, title, start_sec, hook}` items. |
+| `end_screen_sec` | number | Required for `long`. 5 to 20. |
 | `aspect` | string | `16:9`, `9:16` or `1:1`. |
 | `fps` | integer | `30` or `60`. |
 | `width`, `height` | integer | Must match the aspect: `1920x1080`, `1080x1920`, `1080x1080`. |
-| `duration_sec` | number | Greater than 0. The sum of scene durations, within 0.05 s. |
+| `duration_sec` | number | `short`: 15 to 90. `long`: 180 to 900. The sum of scene durations, within 0.05 s. |
 | `lufs_target` | number | `-14` unless the brief says otherwise. |
 | `allow_dark_intro` | boolean | Optional. `true` only when the direction asks for a dark open. Render QA reads it. |
 | `allowed_silences` | list | Optional. Planned silent ranges as `[start_sec, end_sec]` pairs, `0 <= start_sec < end_sec <= duration_sec`. `check_audio.py` does not flag a silence inside one. |
@@ -136,15 +141,7 @@ bottom edge.
 
 ### rhythm[]
 
-Optional top-level list, required with `meta.bpm`. 1 entry per stretch of
-the film, in time order, with no overlap.
-
-| Field | Type | Rule |
-|---|---|---|
-| `start_sec`, `end_sec` | number | The stretch, inside `0` to `meta.duration_sec`. |
-| `energy` | integer | 0 (still) to 10 (peak). A lift after the hook, a dip before the payoff, the peak on the hero. |
-| `events_sec` | list | Optional. Times of planned events inside the stretch: a reveal, a hit, a text landing. Scene starts count as events already. |
-| `stop` | boolean | Optional. `true` marks a declared stop, a planned still part with no events. |
+Optional top-level list, required with `meta.bpm`. See `references/scene-fields.md`.
 
 Extra fields are allowed. The checker ignores them. Add them only when a
 later phase reads them, and write them into `STORYBOARD.md` too.
@@ -152,7 +149,7 @@ later phase reads them, and write them into `STORYBOARD.md` too.
 See `references/scene-fields.md` for optional reframes, proof insets, plate
 holds, UI crops, declared static holds, `capture_scale`, and the pre-capture zoom plan.
 
-## The 19 plan gates
+## The 20 plan gates
 
 `check_timeline.py` checks these. Each error in `qa/plan-check.json` has a
 `rule`, a `message` and, when it applies, a `scene` id.
@@ -170,7 +167,7 @@ holds, UI crops, declared static holds, `capture_scale`, and the pre-capture zoo
 | 9 | `terms` | Each `meta.terms` entry is said in a narration and shown in a caption or `on_screen_text`. Whole words, any case. |
 | 10 | `rhythm` | Energy is an integer 0 to 10. Stretches are in order, do not overlap, and stay inside the film. Each event is inside its stretch. With `meta.bpm`, the sheet is not empty. |
 | 11 | `event_gap` | With `meta.bpm`: no part of the film longer than 2 bars has no event (a scene start or an `events_sec` time), except inside a `stop` stretch. |
-| 12 | `hero` | `meta.hero_sec` is inside 30 % to 90 % of `meta.duration_sec`. With `meta.bpm`, `hero_sec` exists. `payoff_breakdown_sec`, when present, ends at or before the hero start. |
+| 12 | `hero` | Both formats: `meta.hero_sec` is inside 30 % to 90 % of `meta.duration_sec`. With `meta.bpm`, `hero_sec` exists. `payoff_breakdown_sec`, when present, ends at or before the hero start. |
 | 13 | `directions` | `DIRECTION.md` next to `timeline.json` passes the direction rules of `video-direction` (3 directions, key frames, 1 `chosen:` line). |
 | 14 | `materials` | When a scene has kind `capture`, `materials/materials.md` exists (written by `materials.mjs` of `video-capture`) and every file in its table exists in `materials/`. |
 | 15 | `schema` | Every field in the tables above has the right type. IDs are non-empty and unique. A schema error stops the other gates, so fix it first. |
@@ -178,6 +175,9 @@ holds, UI crops, declared static holds, `capture_scale`, and the pre-capture zoo
 | 17 | `sync` | With music, cuts are within 0.020 s of a beat and locked actions are within 0.070 s. |
 | 18 | `menu_time` | UI and menu scenes total at most 8 s per 80 s of film, scaled by duration. |
 | 19 | `zoom` | The largest reframe or inset scale divided by `capture_scale` is at most 1.2. See `references/scene-fields.md`. |
+| 20 | `format` | The duration range. `short`: no `chapters`. `long`: `16:9`, `end_screen_sec`, 3+ chapters of 30 s to 180 s. |
+
+A `long` film has no narration. The `read_hold` rule carries the story.
 
 ## Fix a failing gate
 

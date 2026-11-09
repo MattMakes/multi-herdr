@@ -31,6 +31,7 @@ Use `video-storyboard` to write `STORYBOARD.md` and `timeline.json`, and
 prove the plan with `check_timeline.py`. Read the real product first: the
 code, the brand tokens and the UI. You write no scene code, no capture and
 no audio.
+Read `meta.format` (`short` or `long`) and follow the rules of that format.
 
 Find `<skill-dir>`: your briefing says "use the fleet copy under
 <path>". The folder of skill `<id>` is `<path>/<id>`, and that folder is the

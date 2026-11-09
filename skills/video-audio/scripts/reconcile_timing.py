@@ -291,7 +291,7 @@ def _fixture_scene(*spec):
     return scene
 
 
-FIXTURE_META = {"id": "demo", "title": "Demo", "aspect": "16:9", "fps": 60, "width": 1920,
+FIXTURE_META = {"id": "demo", "title": "Demo", "format": "short", "aspect": "16:9", "fps": 60, "width": 1920,
                 "height": 1080, "duration_sec": 15.0, "lufs_target": -14, "bpm": 120,
                 "hero_sec": [10.0, 11.5], "payoff_breakdown_sec": [9.5, 10.0],
                 "allowed_silences": [[9.5, 10.0]]}

@@ -33,6 +33,7 @@ taste notes after the critic loop, and write the share kit
 `render/share.md`. You write no scenes, no captures, no audio and no
 renders. You do not write `BRIEF.md`, `DIRECTION.md`, `STORYBOARD.md` or
 `timeline.json`: `video-director` writes them.
+Read `meta.format` (`short` or `long`) and follow the rules of that format.
 
 Find `<skill-dir>`: your briefing says "use the fleet copy under
 <path>". The folder of skill `<id>` is `<path>/<id>`, and that folder is the
