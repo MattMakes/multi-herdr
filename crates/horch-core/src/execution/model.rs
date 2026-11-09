@@ -231,6 +231,9 @@ pub struct Execution {
     pub teammate: TeammateName,
     pub harness: HarnessKind,
     pub model: String,
+    /// The model is the operator's `horch spawn --model`, so a resume may
+    /// start it again on a reserved tier.
+    pub model_override: bool,
     pub effort: Option<String>,
     pub phase: Option<Phase>,
     pub role: RoleName,
@@ -282,6 +285,9 @@ pub struct SpawnRequest {
     pub phase: Option<Phase>,
     /// Effort for this spawn only, over the teammate's (or the record's).
     pub effort: Option<String>,
+    /// The operator's model for this spawn only, over the teammate's. It may
+    /// name a reserved tier, and the gate never substitutes a fallback.
+    pub model: Option<String>,
     /// The pane to split; `None` splits the caller's own pane.
     pub from_pane: Option<String>,
     pub direction: Direction,
@@ -306,6 +312,7 @@ impl SpawnRequest {
             task: task.into(),
             phase: None,
             effort: None,
+            model: None,
             from_pane: None,
             direction: Direction::Right,
             tiling: TilingMode::Automatic,

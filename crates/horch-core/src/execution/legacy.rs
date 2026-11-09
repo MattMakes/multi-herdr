@@ -143,6 +143,11 @@ pub struct LedgerRecordV1 {
     /// drops it on rewrite; `horch context` then resolves the window now.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compact_window: Option<LedgerWindow>,
+    /// `model` is the operator's `horch spawn --model`. Absent unless set,
+    /// so a record without it keeps its bytes. An older binary ignores the
+    /// key, and its resume then refuses a reserved model as before.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub model_override: bool,
 }
 
 /// A launch's native auto-compact window decision, in the ledger's own
@@ -210,6 +215,7 @@ impl Default for LedgerRecordV1 {
             finished_at: None,
             skills: Vec::new(),
             compact_window: None,
+            model_override: false,
         }
     }
 }

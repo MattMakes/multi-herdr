@@ -441,7 +441,9 @@ fn the_orchestrator_briefing_differs_only_where_sanctioned() {
     let only_fable_head = "== You are the fleet's only orchestrator ==\n\
         You run on whichever model `horch fleet` was started with (fable, opus,\n\
         astra or sol). horch spawn starts a worker on Fable or Astra only for the\n\
-        creative council (fable-creative, astra-creative), so every other worker reads\n\
+        creative council (fable-creative, astra-creative), or when the operator asks\n\
+        for it: then add `--model fable` to that one horch spawn line, and say so in\n\
+        your spawn report. Never add it on your own. So every other worker reads\n\
         your instructions on Opus or Codex Sol at best, often on something cheaper.\n\
         Write every task for that reader:\n\
         - State the goal and what \"done\" looks like, explicitly. Do not leave the\n\

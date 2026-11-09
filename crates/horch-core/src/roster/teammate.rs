@@ -18,15 +18,19 @@ use crate::harness::HarnessKind;
 ///
 /// `horch spawn` refuses ordinary workers on either tier, whichever flavor is
 /// orchestrating. Only the exact names in `TOP_TIER_SEATS` may start there,
-/// and each seat may use only its assigned tier. The orchestrator writes every
-/// other brief for an Opus/Codex-Sol reader.
+/// and each seat may use only its assigned tier. The one exception is the
+/// operator's own `horch spawn --model` ([`ModelSource::Operator`]): it may
+/// name a reserved tier for any worker, and the orchestrator passes it only
+/// when the operator asks. The orchestrator writes every other brief for an
+/// Opus/Codex-Sol reader.
 pub(crate) const ORCHESTRATOR_TIERS: [(&str, &str); 2] =
     [("fable", "opus"), ("astra", "codex-sol")];
 
 /// The creative council's top-tier seats, and the tier each one runs on.
-/// The only workers `horch spawn` starts on a reserved tier, and only by
-/// name: never as a fallback, never picked by a router or planner, never in
-/// a competition. A teammate file cannot add a seat; this list can.
+/// The only workers `horch spawn` starts on a reserved tier from a teammate
+/// file, and only by name: never as a fallback, never picked by a router or
+/// planner, never in a competition. A teammate file cannot add a seat; this
+/// list can. The operator's `--model` is the other way onto a reserved tier.
 pub(crate) const TOP_TIER_SEATS: [(&str, &str); 2] =
     [("fable-creative", "fable"), ("astra-creative", "astra")];
 
@@ -42,11 +46,23 @@ pub(crate) const ORCHESTRATOR_ONLY_SKILLS: [&str; 2] = ["orchestrate", "skill-cr
 /// Workers are the orchestrator's only way to delegate.
 pub(crate) const ORCHESTRATOR_DENIED_TOOLS: [&str; 2] = ["Agent", "RemoteTrigger"];
 
+/// Where the model a spawn starts came from. The reserved-tier check takes
+/// it as a typed input, so only the operator's flag opens a reserved tier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelSource {
+    /// The teammate file, a fallback, a router or planner choice, or a
+    /// record that did not come from an override.
+    Teammate,
+    /// The operator's `horch spawn --model`, or the resume of a record that
+    /// one started.
+    Operator,
+}
+
 /// The reserved tier a model belongs to, if any.
 ///
 /// Matched on the model's name segments rather than the whole slug, because the
 /// two agents name their models differently and both keep moving: `fable`,
-/// `claude-fable-5-1` and `gpt-6-astra` are all reserved, while `opus` and
+/// `claude-fable-5-2` and `gpt-6-astra` are all reserved, while `opus` and
 /// `gpt-5.6-sol` are not. A version bump stays reserved without an edit here.
 pub fn reserved_tier(model: &str) -> Option<(&'static str, &'static str)> {
     model

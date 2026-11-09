@@ -51,6 +51,8 @@ pub struct SpawnArgs {
     pub phase: Option<Phase>,
     /// Effort for this spawn only, over the teammate file's (or the record's).
     pub effort: Option<String>,
+    /// The operator's model for this spawn only, over the teammate file's.
+    pub model: Option<String>,
     pub role: Option<String>,
     pub from_pane: Option<String>,
     pub direction: Direction,
@@ -643,6 +645,7 @@ fn build_request(args: &SpawnArgs, task: &str) -> Result<SpawnRequest> {
         return Err(SpawnError::from(plan::PlanError::NothingToSpawn).into());
     }
     (req.resume, req.phase, req.effort) = (args.resume.clone(), args.phase, args.effort.clone());
+    req.model = args.model.clone();
     (req.from_pane, req.direction, req.tiling) =
         (args.from_pane.clone(), args.direction, args.tiling);
     req.flags = GateFlags {
@@ -979,6 +982,7 @@ mod tests {
             resume: resume.map(str::to_string),
             phase: None,
             effort: None,
+            model: None,
             role: None,
             from_pane: None,
             direction: Direction::Right,

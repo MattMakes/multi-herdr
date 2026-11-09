@@ -59,7 +59,10 @@ Model facts go stale faster than the roster. Before changing a level, check
 each harness in use for these:
 - **Latest models and tiers.** Claude aliases (`fable`/`opus`/`sonnet`/`haiku`)
   track releases on their own. Codex slugs, `provider/model` ids and the
-  opencode free list do not.
+  opencode free list do not. To see what an alias resolves to, run
+  `env -u ANTHROPIC_API_KEY claude -p --model <alias> --output-format json "Say ok"`
+  and read the `modelUsage` key. On 2026-11-09 `fable` was `claude-fable-5-2`
+  ($8/$40, cache read $0.20). Point `MODEL_ALIASES` in `usage.rs` at it.
 - **Prices per MTok:** input, cached input or cache read, cache write, and
   output. Note any promotional price and its end date.
 - **Valid effort levels, and each model's default.** Check the flag or config
@@ -103,7 +106,8 @@ Each rule below comes from cezaar#40 or from measurement in this repo:
 7. **Local and free tiers are judged on quality, not cost.** pi costs
    wall-clock time. The opencode free tier costs confidentiality.
 8. **Keep the reserved tiers reserved.** Never give a worker `fable` or
-   `astra`.
+   `astra`. The operator's one-spawn `horch spawn --model` is not a roster
+   setting.
 
 ## 5. Edit
 

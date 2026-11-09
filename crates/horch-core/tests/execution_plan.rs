@@ -1364,3 +1364,147 @@ fn arc_18_agent_exit_recorded() {
     store.record_exit("rec-1", Some(3)).unwrap();
     assert!(store.get("rec-1").unwrap().execution_status().is_live());
 }
+
+// ─── horch spawn --model ────────────────────────────────────────────────────
+
+/// `req` with the operator's `--model`.
+fn with_model(mut r: SpawnRequest, model: &str) -> SpawnRequest {
+    r.model = Some(model.to_string());
+    r
+}
+
+/// The `claude` command line the plan's launch teammate builds.
+fn launch_args(p: &ExecutionPlan) -> Vec<String> {
+    let w = world(None);
+    let env = horch_core::harness::launch::LaunchEnv::from_context(&w.ctx);
+    let session = horch_core::harness::launch::session_for(
+        p.launch.teammate.agent.capabilities(),
+        &p.launch.session,
+    );
+    let cmd = horch_core::harness::launch::command_with_skills_in(
+        &env,
+        &p.launch.teammate,
+        session,
+        "go",
+        None,
+        None,
+    )
+    .unwrap();
+    cmd.get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect()
+}
+
+fn has_model_flag(args: &[String], model: &str) -> bool {
+    args.windows(2).any(|w| w[0] == "--model" && w[1] == model)
+}
+
+/// The operator's `--model fable` starts an ordinary Claude teammate on
+/// Fable: the launch, the record and the plan all name it.
+#[test]
+fn spawn_model_fable_is_allowed_for_an_ordinary_claude_teammate() {
+    for model in ["fable", "claude-fable-5-2"] {
+        let p = plan(&with_model(req("sonnet", "x"), model), "all-ok", None).unwrap();
+        assert_eq!(p.launch.model, model);
+        assert_eq!(p.launch.teammate.model.as_deref(), Some(model));
+        assert_eq!(p.execution.model, model);
+        assert!(p.execution.model_override, "the record keeps the override");
+        let args = launch_args(&p);
+        assert!(has_model_flag(&args, model), "{args:?}");
+        let record = from_execution(&p.execution);
+        assert_eq!(record.model, model);
+        assert!(record.model_override);
+    }
+}
+
+/// A teammate file that says `model: fable` is still refused: only the
+/// operator's flag opens the reserved tier.
+#[test]
+fn a_teammate_file_on_fable_is_still_refused_without_the_flag() {
+    let mut r = roster();
+    let mut t = r.require("sonnet").unwrap().clone();
+    t.name = "fable-worker".into();
+    t.model = Some("fable".into());
+    t.effort = Some("medium".into());
+    r.insert_for_test(t);
+    let skills = bundled_skills();
+    let ids = ids();
+    let v = view("all-ok");
+    let r_ = req("fable-worker", "x");
+    let inputs = PlanInputs {
+        roster: &r,
+        skills: &skills,
+        gate: needs_gate(&r_, &r).then_some(GateInputs {
+            view: &v,
+            balance: BalanceMode::Auto,
+        }),
+        existing: None,
+        now: horch_core::clock::parse(NOW).unwrap(),
+        ids: &ids,
+        project: Path::new("/work/alpha"),
+    };
+    let e = plan_launch(&r_, &inputs).unwrap_err();
+    assert!(matches!(e, PlanError::Unspawnable(_)), "{e}");
+    assert!(e.to_string().contains("reserved"), "{e}");
+}
+
+/// A Claude model on a Codex teammate is refused, and the message says to
+/// pick a Claude teammate. A Codex model on a Claude teammate is refused too.
+#[test]
+fn spawn_model_must_suit_the_teammates_agent() {
+    let e = plan(&with_model(req("codex-sol", "x"), "fable"), "all-ok", None).unwrap_err();
+    assert!(matches!(e, PlanError::BadModel(_)), "{e}");
+    let msg = e.to_string();
+    assert!(msg.contains("Claude model"), "{msg}");
+    assert!(msg.contains("pick a Claude teammate"), "{msg}");
+    let e = plan(
+        &with_model(req("sonnet", "x"), "gpt-6-astra"),
+        "all-ok",
+        None,
+    )
+    .unwrap_err();
+    assert!(matches!(e, PlanError::BadModel(_)), "{e}");
+}
+
+/// With `--model`, the gate never substitutes a fallback: it refuses
+/// instead, and `--force` spawns the chosen model on the chosen teammate.
+#[test]
+fn spawn_model_never_substitutes_a_fallback() {
+    let plain = plan(
+        &req("researcher", "look"),
+        "claude-exhausted-codex-ok",
+        None,
+    )
+    .unwrap();
+    assert!(plain.execution.via.is_some(), "the fixture substitutes");
+    let e = plan(
+        &with_model(req("researcher", "look"), "fable"),
+        "claude-exhausted-codex-ok",
+        None,
+    )
+    .unwrap_err();
+    assert!(matches!(e, PlanError::Refused { .. }), "{e}");
+    let mut forced = with_model(req("researcher", "look"), "fable");
+    forced.flags.force = true;
+    let p = plan(&forced, "claude-exhausted-codex-ok", None).unwrap();
+    assert_eq!(p.execution.via, None);
+    assert_eq!(p.launch.teammate.name, "researcher");
+    assert_eq!(p.launch.teammate.model.as_deref(), Some("fable"));
+}
+
+/// A resume of an override record starts the same model again. A record
+/// with a reserved model and no override flag is still refused.
+#[test]
+fn resume_keeps_an_override_and_refuses_a_hand_edited_record() {
+    let mut rec = record("sonnet", "claude", "fable");
+    rec.model_override = true;
+    let p = plan(&resume("rec-1", ""), "all-ok", Some(&rec)).unwrap();
+    assert_eq!(p.launch.model, "fable");
+    assert_eq!(p.launch.teammate.model.as_deref(), Some("fable"));
+    assert!(p.execution.model_override);
+    assert!(has_model_flag(&launch_args(&p), "fable"));
+
+    let edited = record("sonnet", "claude", "fable");
+    let e = plan(&resume("rec-1", ""), "all-ok", Some(&edited)).unwrap_err();
+    assert!(matches!(e, PlanError::Unspawnable(_)), "{e}");
+}

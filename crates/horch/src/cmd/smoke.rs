@@ -225,6 +225,7 @@ fn smoke_spawn_args(root_pane: &str) -> SpawnArgs {
         task: String::new(),
         phase: None,
         effort: None,
+        model: None,
         resume: None,
         role: None,
         // What `horch spawn` does by default: split the calling pane,

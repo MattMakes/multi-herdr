@@ -707,6 +707,7 @@ mod trf_33_34_tests {
             resume: None,
             phase: None,
             effort: None,
+            model: None,
             role: None,
             from_pane: None,
             direction: Direction::Right,

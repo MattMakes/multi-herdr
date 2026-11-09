@@ -54,7 +54,7 @@ Keep `ai_docs/plans/<run-slug>/decisions.md`: operator decisions, reasons, rejec
    - Local — `pi`. Use for anything that must not leave the machine.
 4. Effort is set per teammate in its frontmatter, tuned to the role. `horch spawn <teammate> --effort <level>` overrides it for one spawn: raise it for a fix that already failed review, lower it for a mechanical task. For a different kind of reasoning, spawn a stronger teammate instead.
 5. For ledger add and ticket maps, Codex fleet_write permits project/.git writes and network; plan mode only reads.
-6. The top tier is reserved. `horch spawn` refuses Fable and Astra for every worker but the 2 creative council seats (§10), whichever flavor orchestrates.
+6. The top tier is reserved. `horch spawn` refuses Fable and Astra for any worker but the 2 council seats (§10). Add `--model fable` ONLY when the operator asks; say so in the spawn report.
 7. Select a phase with `--phase research|plan|implementation|validation` when the assignment differs from the teammate's default.
 8. Review a risky change with the other vendor. `codex-reviewer` reviews Claude-built work; `architect-reviewer` or `qa-engineer` review Codex-built work. A second model family shares fewer blind spots with the author. A ticket's `**Review:**` sets the code-sweep rounds: none 0, light 1, full up to 3.
 
