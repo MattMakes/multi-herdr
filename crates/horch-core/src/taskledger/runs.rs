@@ -745,7 +745,7 @@ fn gate_worktree_row(conn: &Connection, run: &Run, tip: &str) -> Result<()> {
                 &format!(
                     "INSERT INTO worktrees (worktree_id, task_id, worker_id, repo_root, path,
                         branch, base, base_commit, status, origin, created_at)
-                     VALUES (?1, NULL, NULL, ?2, ?3, '(detached)', ?4, ?5, {open}, 'native', ?6)"
+                     VALUES (?1, NULL, NULL, ?2, ?3, '', ?4, ?5, {open}, 'native', ?6)"
                 ),
                 params![id, run.project_root, path, base, tip, util::now()],
             )?;

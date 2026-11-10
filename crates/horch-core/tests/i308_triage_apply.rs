@@ -12,6 +12,7 @@ use horch_core::taskledger::git::Git;
 use horch_core::taskledger::runs::{self, NewRun};
 use horch_core::taskledger::triage::apply::{self, Applied, Env};
 use horch_core::taskledger::triage::{self, refs, reply, Measure, Row};
+use horch_core::taskledger::Store;
 use i308_support::{commit, git, write, World};
 
 /// A git that writes each call to `<top>/git.log`, then runs the host git.
@@ -489,4 +490,111 @@ fn a_decision_closes_the_open_finding_of_its_worktree() {
         )
         .unwrap();
     assert_eq!(status, "dismissed");
+}
+
+/// A run `r1` with its gate folder `.worktrees/_gate-r1` at the main tip,
+/// made the way `horch ledger run gate` makes it: a detached worktree, and
+/// the row that `record_gate` writes.
+fn gate_worktree(w: &mut World) -> (PathBuf, String) {
+    let root = w.root.clone();
+    let run = w
+        .store
+        .immediate(|tx| {
+            runs::create(
+                tx,
+                &root,
+                &NewRun {
+                    slug: "r1".into(),
+                    base_branch: Some("main".into()),
+                    run_branch: Some("main".into()),
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
+    let tip = w.rev("main");
+    let path = runs::gate_dir(&run);
+    git(
+        &root,
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "--detach",
+            &path.to_string_lossy(),
+            &tip,
+        ],
+    );
+    w.store
+        .immediate(|tx| {
+            runs::record_gate(
+                tx,
+                &runs::Gate {
+                    gate_id: 0,
+                    run_id: run.run_id.clone(),
+                    tip_sha: tip.clone(),
+                    command: "true".into(),
+                    exit_code: Some(0),
+                    log_path: None,
+                    started_at: "now".into(),
+                    ended_at: None,
+                },
+            )
+        })
+        .unwrap();
+    (path, tip)
+}
+
+#[test]
+fn delete_removes_a_run_gate_worktree_with_a_detached_head_and_keeps_every_branch() {
+    let mut w = World::new();
+    let (path, tip) = gate_worktree(&mut w);
+    let g = w.git.clone();
+    let a = decide(&mut w, &g, "_gate-r1", "DELETE", "");
+    assert!(a.ok, "{}", a.line());
+    assert!(!path.exists(), "the gate folder goes");
+    let trash = git(
+        &w.root,
+        &[
+            "for-each-ref",
+            "--format=%(refname) %(objectname)",
+            "refs/horch/trash/_gate-r1/",
+        ],
+    );
+    assert!(
+        trash.ends_with(&tip),
+        "the trash ref holds the gate tip: {trash}"
+    );
+    assert!(w.has_ref("refs/heads/main"), "main stays");
+    assert_eq!(w.rev("main"), tip);
+    let branches = git(
+        &w.root,
+        &["for-each-ref", "--format=%(refname)", "refs/heads/"],
+    );
+    assert_eq!(branches, "refs/heads/main");
+}
+
+#[test]
+fn delete_succeeds_on_a_gate_row_that_the_old_bug_left_cleanup_failed() {
+    let mut w = World::new();
+    let (path, tip) = gate_worktree(&mut w);
+    let g = w.git.clone();
+    // The ledger of 2026-11-10: the literal `(detached)` as the branch, a row
+    // of an earlier failed DELETE, and the file at the version before the fix.
+    w.store
+        .conn()
+        .execute(
+            "UPDATE worktrees SET branch = '(detached)', status = 'cleanup_failed' WHERE path = ?1",
+            [path.to_string_lossy()],
+        )
+        .unwrap();
+    w.store
+        .conn()
+        .pragma_update(None, "user_version", 7)
+        .unwrap();
+    w.store = Store::open(&w.top.join("ledger.sqlite3")).unwrap();
+    let a = decide(&mut w, &g, "_gate-r1", "DELETE", "");
+    assert!(a.ok, "{}", a.line());
+    assert!(!path.exists());
+    assert_eq!(w.rev("main"), tip);
 }

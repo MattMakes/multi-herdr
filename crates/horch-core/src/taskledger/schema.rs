@@ -12,7 +12,7 @@ use rusqlite::Connection;
 use super::model::*;
 
 /// The schema version this binary writes.
-pub const VERSION: i64 = 7;
+pub const VERSION: i64 = 8;
 
 /// A rule that applies to rows this ledger writes, not to imported ones
 /// (section 11.2): `CHECK (origin = 'import' OR <expr>)`.
@@ -490,6 +490,11 @@ CREATE INDEX session_records_by_slug ON session_records(slug);",
     )
 }
 
+/// Version 8: a run-gate worktree row held the literal `(detached)` as its
+/// branch, which triage apply read as a branch name. An empty branch is the
+/// word for no branch.
+const V8: &str = "UPDATE worktrees SET branch = '' WHERE branch = '(detached)';";
+
 /// Bring the database to [`VERSION`]. A file from a newer binary is refused:
 /// this one would not know its columns.
 ///
@@ -640,6 +645,9 @@ fn migrate_unchecked(conn: &mut Connection, guard: &dyn Fn(i64) -> Result<()>) -
     if current < 7 {
         tx.execute_batch(&v7())
             .context("adding the trace-fixes columns and tables")?;
+    }
+    if current < 8 {
+        tx.execute_batch(V8)?;
     }
     tx.pragma_update(None, "user_version", VERSION)?;
     tx.commit()?;
@@ -1063,7 +1071,16 @@ mod v7_tests {
     /// 1 project row.
     fn file_at(path: &std::path::Path, version: i64) {
         let conn = Connection::open(path).unwrap();
-        let steps = [v1(), V2.into(), V3.into(), V4.into(), v5(), V6.into(), v7()];
+        let steps = [
+            v1(),
+            V2.into(),
+            V3.into(),
+            V4.into(),
+            v5(),
+            V6.into(),
+            v7(),
+            V8.into(),
+        ];
         assert_eq!(steps.len() as i64, VERSION, "add the new step here");
         for sql in &steps[..version as usize] {
             conn.execute_batch(sql).unwrap();
@@ -1117,5 +1134,49 @@ mod v7_tests {
                 "{name}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod v8_tests {
+    use super::*;
+
+    #[test]
+    fn migrate_from_version_7_empties_the_detached_branch_and_keeps_real_branches() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ledger.sqlite3");
+        {
+            let store = crate::taskledger::Store::open(&path).unwrap();
+            let conn = store.conn();
+            conn.execute_batch(
+                "INSERT INTO worktrees (worktree_id, repo_root, path, branch, base, status, origin, created_at)
+                    VALUES ('gate', '/r', '/r/.worktrees/_gate-r1', '(detached)', 'main', 'cleanup_failed', 'native', 'then'),
+                           ('feat', '/r', '/r/.worktrees/feat', 'feat', 'main', 'open', 'native', 'then'),
+                           ('none', '/r', '/r/.worktrees/none', '', 'main', 'open', 'native', 'then');",
+            )
+            .unwrap();
+            conn.pragma_update(None, "user_version", 7).unwrap();
+        }
+        let store = crate::taskledger::Store::open(&path).unwrap();
+        let conn = store.conn();
+        let v: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, VERSION);
+        let branches: Vec<(String, String)> = conn
+            .prepare("SELECT worktree_id, branch FROM worktrees ORDER BY worktree_id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            branches,
+            [
+                ("feat".to_string(), "feat".to_string()),
+                ("gate".to_string(), String::new()),
+                ("none".to_string(), String::new()),
+            ]
+        );
     }
 }

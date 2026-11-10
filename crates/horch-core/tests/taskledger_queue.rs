@@ -439,10 +439,10 @@ fn a_schema_2_ledger_migrates_forward_and_keeps_its_rows() {
     drop(store);
     // Take the file back to schema 2: undo v7, v6 and the v5 columns, then
     // the 3 columns of v3 and the 2 of v4. A step left in place runs again
-    // and fails (`duplicate column name`).
+    // and fails (`duplicate column name`). v8 only updates rows: nothing to undo.
     assert_eq!(
         horch_core::taskledger::schema::VERSION,
-        7,
+        8,
         "undo the new version here"
     );
     let path = dir.path().join("ledger.sqlite3");

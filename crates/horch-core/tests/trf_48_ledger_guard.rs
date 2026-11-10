@@ -33,9 +33,10 @@ PRAGMA user_version = 6;";
 
 /// A version 6 ledger at `path` with 1 project row.
 fn version_6_file(path: &Path) {
+    // v8 only updates rows: the downgrade needs no statement for it.
     assert_eq!(
         schema::VERSION,
-        7,
+        8,
         "update DOWNGRADE_V7_TO_V6 for the new version"
     );
     drop(Store::open(path).unwrap());
