@@ -98,7 +98,7 @@ impl std::str::FromStr for PaneKind {
 /// Codex) and passes its model as the pane's `--model`, which wins over the
 /// file's own `model:`. Opus is the default because it is the cheapest model
 /// that orchestrates well (cezaar#40 measured Opus 5.5 at $4/$20 against
-/// Fable's $10/$50); Fable and Astra stay one word away for work that needs
+/// Fable 5.1's $10/$50; Fable 5.2 is $8/$40); Fable and Astra stay one word away for work that needs
 /// the top tier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FleetFlavor {
@@ -544,6 +544,7 @@ fn steward_spawn_args(root_pane: &str, run: &str) -> super::spawn::SpawnArgs {
         resume: None,
         phase: None,
         effort: None,
+        model: None,
         role: None,
         from_pane: Some(root_pane.to_string()),
         direction: Direction::Right,

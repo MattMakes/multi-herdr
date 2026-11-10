@@ -22,7 +22,8 @@ use crate::execution::model::{
 use crate::execution::store::{to_execution, PANE_CLOSED};
 use crate::harness::HarnessKind;
 use crate::ids::{ExecutionId, IdError, RoleName, SessionId, WorkerId, WorkspaceId};
-use crate::roster::{effort_problem, Phase, Roster, Teammate};
+use crate::roster::validation::model_agent_problem;
+use crate::roster::{effort_problem, ModelSource, Phase, Roster, Teammate};
 use crate::routing::decision::{self, Decision, RoutingDecision, RoutingMode, RoutingProvenance};
 use crate::routing::policy::BalanceMode;
 use crate::routing::quota::QuotaView;
@@ -85,6 +86,8 @@ pub enum PlanError {
         reason: String,
     },
     BadEffort(String),
+    /// `--model` names a model the teammate's agent cannot run.
+    BadModel(String),
     SkillUnsupported(String),
     /// A gated spawn was planned without [`GateInputs`]: a caller bug.
     MissingGate,
@@ -103,6 +106,7 @@ impl std::fmt::Display for PlanError {
             Self::UnknownTeammate(m)
             | Self::Unspawnable(m)
             | Self::BadEffort(m)
+            | Self::BadModel(m)
             | Self::SkillUnsupported(m) => f.write_str(m),
             Self::NotResumable { reason, .. } => f.write_str(reason),
             Self::MissingGate => f.write_str("the spawn gate ran without a quota view"),
@@ -166,6 +170,8 @@ fn fresh_session(agent: HarnessKind, minted: &SessionId) -> SessionMode {
 struct Draft {
     teammate: Teammate,
     model: String,
+    /// Where `model` came from: the reserved-tier check reads it.
+    model_source: ModelSource,
     session: SessionMode,
     via: Option<String>,
     substitution_reason: Option<String>,
@@ -260,7 +266,11 @@ fn resume_teammate(
     if record.effort.is_some() {
         teammate.effort = record.effort.clone();
     }
-    Roster::is_spawnable(&teammate).map_err(unspawnable)?;
+    if record.model_override {
+        teammate.model = Some(record.model.clone());
+    } else {
+        Roster::is_spawnable(&teammate).map_err(unspawnable)?;
+    }
     Ok(teammate)
 }
 
@@ -276,6 +286,11 @@ fn draft_resume(key: &str, req: &SpawnRequest, inputs: &PlanInputs) -> Result<Dr
     let resumed = to_execution(record).map_err(|e| refusal(record, e.to_string()))?;
     Ok(Draft {
         model: record.model.clone(),
+        model_source: if record.model_override {
+            ModelSource::Operator
+        } else {
+            ModelSource::Teammate
+        },
         session: SessionMode::Resume(SessionId::new(session_id)?),
         via: record.via.clone(),
         substitution_reason: record.substitution_reason.clone(),
@@ -285,16 +300,33 @@ fn draft_resume(key: &str, req: &SpawnRequest, inputs: &PlanInputs) -> Result<Dr
     })
 }
 
+/// The operator's `--model` replaces the teammate's model, if the agent can
+/// run it. The reserved-tier check then sees [`ModelSource::Operator`].
+fn apply_model(teammate: &mut Teammate, req: &SpawnRequest) -> Result<ModelSource, PlanError> {
+    let Some(model) = &req.model else {
+        return Ok(ModelSource::Teammate);
+    };
+    if let Some(why) = model_agent_problem(teammate.agent, model) {
+        return Err(PlanError::BadModel(format!("{}: {why}", teammate.name)));
+    }
+    teammate.model = Some(model.clone());
+    Ok(ModelSource::Operator)
+}
+
 fn draft_fresh(name: &str, req: &SpawnRequest, inputs: &PlanInputs) -> Result<Draft, PlanError> {
     let mut teammate = require(inputs.roster, name)?.clone();
     teammate.phase = resolve_phase(req.phase, None, teammate.phase);
-    Roster::is_spawnable(&teammate).map_err(unspawnable)?;
+    let model_source = apply_model(&mut teammate, req)?;
+    if model_source == ModelSource::Teammate {
+        Roster::is_spawnable(&teammate).map_err(unspawnable)?;
+    }
     let mut routing = RoutingProvenance::ungated(&teammate)?;
     if req.pinned {
         routing.mode = RoutingMode::Pinned;
     }
     Ok(Draft {
         model: teammate.model.clone().unwrap_or_default(),
+        model_source,
         session: fresh_session(teammate.agent, &inputs.ids.session),
         teammate,
         via: None,
@@ -314,13 +346,16 @@ fn gate(
 ) -> Result<Option<String>, PlanError> {
     let g = inputs.gate.ok_or(PlanError::MissingGate)?;
     let roster = inputs.roster;
-    let decision = decision::decide(&draft.teammate, roster, g.view, g.balance, req.flags);
+    // The operator chose the model: never substitute a fallback for it.
+    let mut flags = req.flags;
+    flags.exact |= draft.model_source == ModelSource::Operator;
+    let decision = decision::decide(&draft.teammate, roster, g.view, g.balance, flags);
     if let Some(routing) = RoutingProvenance::from_decision(
         &draft.teammate,
         roster,
         g.view,
         &decision,
-        RoutingMode::for_gate(g.balance, req.flags),
+        RoutingMode::for_gate(g.balance, flags),
     )? {
         draft.routing = routing;
     }
@@ -342,7 +377,8 @@ fn gate(
             draft.teammate = merged;
             draft.via = Some(via.clone());
             draft.substitution_reason = Some(reason.clone());
-            Roster::model_is_spawnable(&draft.model, &draft.teammate.name).map_err(unspawnable)?;
+            Roster::model_is_spawnable(&draft.model, &draft.teammate.name, draft.model_source)
+                .map_err(unspawnable)?;
         }
         Decision::Spawn { .. } => {}
     }
@@ -442,6 +478,7 @@ fn fresh_execution(
         teammate: draft.teammate.name.parse()?,
         harness: draft.teammate.agent,
         model: draft.model.clone(),
+        model_override: draft.model_source == ModelSource::Operator,
         effort: draft.teammate.effort.clone(),
         phase: draft.teammate.phase,
         // A placeholder until `finish_plan`.
@@ -493,8 +530,10 @@ pub fn plan_launch(req: &SpawnRequest, inputs: &PlanInputs) -> Result<ExecutionP
     // The last gate before launch, and the only one that sees what will
     // ACTUALLY start: a resume takes its model from the ledger record, so a
     // stale or hand-edited record could otherwise start a second top-tier
-    // session behind an ordinary tier name.
-    Roster::model_is_spawnable(&draft.model, &draft.teammate.name).map_err(unspawnable)?;
+    // session behind an ordinary tier name. Only the operator's `--model`
+    // (or the resume of a record it started) may name a reserved tier here.
+    Roster::model_is_spawnable(&draft.model, &draft.teammate.name, draft.model_source)
+        .map_err(unspawnable)?;
 
     let gate_line = gate_if_needed(&mut draft, req, inputs)?;
     apply_effort(&mut draft, req)?;

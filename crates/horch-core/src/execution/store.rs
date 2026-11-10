@@ -191,6 +191,7 @@ pub fn to_execution(r: &LedgerRecordV1) -> Result<Execution, LegacyError> {
         teammate: r.tier.parse()?,
         harness: r.agent.parse().map_err(LegacyError::Agent)?,
         model: r.model.clone(),
+        model_override: r.model_override,
         effort: r.effort.clone(),
         phase: r.phase,
         role: r.role.parse()?,
@@ -294,6 +295,7 @@ pub fn from_execution(e: &Execution) -> LedgerRecordV1 {
         finished_at: e.finished_at.clone(),
         skills: e.skills.clone(),
         compact_window: None,
+        model_override: e.model_override,
     }
 }
 

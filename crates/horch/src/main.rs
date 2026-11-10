@@ -365,6 +365,12 @@ enum ProjectCommand {
         /// keeps the level it ran at unless this is given.
         #[arg(long, value_name = "LEVEL")]
         effort: Option<String>,
+        /// Override the teammate's model for this one spawn (e.g. fable,
+        /// claude-fable-5-2). The operator's choice: it may name a reserved
+        /// tier, the orchestrator passes it only when the operator asks, and
+        /// no fallback replaces it. A resume keeps it.
+        #[arg(long, value_name = "MODEL", conflicts_with = "resume")]
+        model: Option<String>,
         /// Override the auto role name (<teammate>-<n>).
         #[arg(long, value_name = "NAME")]
         role: Option<String>,
@@ -1069,6 +1075,7 @@ impl ProjectCommand {
                 resume,
                 phase,
                 effort,
+                model,
                 role,
                 from_pane,
                 direction,
@@ -1086,6 +1093,7 @@ impl ProjectCommand {
                     resume,
                     phase,
                     effort,
+                    model,
                     role,
                     from_pane,
                     direction,

@@ -14,8 +14,8 @@ use super::teammate::{
     CONTEXT_MESSAGE_PLACEHOLDERS, CONTEXT_WINDOWS_BASE, HARNESS_DEFAULTS_BASE,
 };
 use super::{
-    effort_problem, reserved_tier, Base, ExecDecision, ExecRule, PermissionMode, Roster, Teammate,
-    BRIEF_DESCRIPTION_MAX, FLEET_ORCHESTRATORS, ORCHESTRATOR_DENIED_TOOLS,
+    effort_problem, reserved_tier, Base, ExecDecision, ExecRule, ModelSource, PermissionMode,
+    Roster, Teammate, BRIEF_DESCRIPTION_MAX, FLEET_ORCHESTRATORS, ORCHESTRATOR_DENIED_TOOLS,
     ORCHESTRATOR_ONLY_SKILLS, TOP_TIER_SEATS,
 };
 use crate::compaction::window::{
@@ -61,12 +61,45 @@ fn builtin_compact_at_problems(builtins: &[(&str, &str)]) -> Vec<String> {
         .collect()
 }
 
+/// Claude Code's model aliases. A Claude model is one of these, or a
+/// `claude-*` id, each with an optional `[1m]` suffix.
+const CLAUDE_ALIASES: [&str; 5] = ["fable", "opus", "sonnet", "haiku", "opusplan"];
+
+fn is_claude_model(model: &str) -> bool {
+    let m = model.trim().to_ascii_lowercase();
+    let m = m.strip_suffix("[1m]").unwrap_or(&m);
+    CLAUDE_ALIASES.contains(&m) || m.starts_with("claude-")
+}
+
+/// Why `model` does not suit `agent`, or `None` if it does: a Claude model
+/// runs only on a Claude teammate, and a Claude teammate runs only a Claude
+/// model. `horch spawn --model` applies it to the operator's model.
+pub fn model_agent_problem(agent: HarnessKind, model: &str) -> Option<String> {
+    let claude = is_claude_model(model);
+    match agent {
+        HarnessKind::Claude if !claude => Some(format!(
+            "{model} is not a Claude model, and this teammate runs on claude; \
+             use fable, opus, sonnet, haiku or a claude-* model id"
+        )),
+        HarnessKind::Claude | HarnessKind::None => None,
+        _ if claude => Some(format!(
+            "{model} is a Claude model, and this teammate runs on {agent}; \
+             pick a Claude teammate"
+        )),
+        _ => None,
+    }
+}
+
 impl Roster {
     /// Whether this teammate may be started by `horch spawn`. Orchestrators
     /// are launched by `pane-launch`, never spawned, so this is where the
     /// one-top-tier-session rule bites.
     pub fn is_spawnable(t: &Teammate) -> Result<()> {
-        Roster::model_is_spawnable(t.model.as_deref().unwrap_or_default(), &t.name)
+        Roster::model_is_spawnable(
+            t.model.as_deref().unwrap_or_default(),
+            &t.name,
+            ModelSource::Teammate,
+        )
     }
 
     /// The same rule, applied to the model a spawn is actually about to launch.
@@ -75,7 +108,11 @@ impl Roster {
     /// from the teammate file, so checking the file alone would leave a stale or
     /// hand-edited record able to start a second top-tier session behind an
     /// innocent-looking tier name.
-    pub(crate) fn model_is_spawnable(model: &str, who: &str) -> Result<()> {
+    ///
+    /// [`ModelSource::Operator`] is the operator's `horch spawn --model`: it
+    /// may put any worker on a reserved tier. A top-tier seat still runs only
+    /// on its own tier.
+    pub(crate) fn model_is_spawnable(model: &str, who: &str, source: ModelSource) -> Result<()> {
         let model_tier = reserved_tier(model);
         if let Some((_, seat_tier)) = TOP_TIER_SEATS.iter().find(|(seat, _)| *seat == who) {
             if model_tier.is_some_and(|(tier, _)| tier == *seat_tier) {
@@ -86,7 +123,7 @@ impl Roster {
                  the seat must run on its own reserved tier"
             );
         }
-        if let Some((tier, instead)) = model_tier {
+        if let Some((tier, instead)) = model_tier.filter(|_| source == ModelSource::Teammate) {
             bail!(
                 "'{who}' runs on {model}, and the {tier} tier is reserved for the \
                  orchestrator; the fleet has at most one top-tier session, whichever \
@@ -3124,7 +3161,7 @@ w3-codex: sandbox is Claude only; agent codex cannot honour it";
             ("fable-creative", "gpt-6-astra"),
             ("astra-creative", "claude-fable-5-1"),
         ] {
-            let err = Roster::model_is_spawnable(model, name)
+            let err = Roster::model_is_spawnable(model, name, ModelSource::Teammate)
                 .unwrap_err()
                 .to_string();
             assert!(err.contains("must run on its own reserved tier"), "{err}");
@@ -3158,7 +3195,7 @@ w3-codex: sandbox is Claude only; agent codex cannot honour it";
         }
         for ok in ["opus", "sonnet", "gpt-5.6-sol", "gpt-5.6-terra"] {
             assert!(
-                Roster::model_is_spawnable(ok, "t").is_ok(),
+                Roster::model_is_spawnable(ok, "t", ModelSource::Teammate).is_ok(),
                 "{ok} must stay spawnable"
             );
         }
@@ -3169,14 +3206,60 @@ w3-codex: sandbox is Claude only; agent codex cannot honour it";
     /// to the resolved model as its last gate before the pane starts.
     #[test]
     fn arc_28_a_seat_resumes_only_on_its_own_tier() {
-        assert!(Roster::model_is_spawnable("claude-fable-5-1", "fable-creative").is_ok());
-        assert!(Roster::model_is_spawnable("gpt-6-astra", "astra-creative").is_ok());
-        assert!(Roster::model_is_spawnable("gpt-6-astra", "fable-creative").is_err());
-        let err = Roster::model_is_spawnable("gpt-6-astra", "opus-3")
+        assert!(Roster::model_is_spawnable(
+            "claude-fable-5-1",
+            "fable-creative",
+            ModelSource::Teammate
+        )
+        .is_ok());
+        assert!(
+            Roster::model_is_spawnable("gpt-6-astra", "astra-creative", ModelSource::Teammate)
+                .is_ok()
+        );
+        assert!(
+            Roster::model_is_spawnable("gpt-6-astra", "fable-creative", ModelSource::Teammate)
+                .is_err()
+        );
+        let err = Roster::model_is_spawnable("gpt-6-astra", "opus-3", ModelSource::Teammate)
             .unwrap_err()
             .to_string();
         assert!(err.contains("opus-3"), "{err}");
         assert!(err.contains("astra"), "{err}");
+    }
+
+    /// The operator's `--model` may put any worker on a reserved tier. A seat
+    /// still runs only on its own tier.
+    #[test]
+    fn an_operator_model_opens_a_reserved_tier_for_any_worker() {
+        for model in ["fable", "claude-fable-5-2", "gpt-6-astra"] {
+            assert!(
+                Roster::model_is_spawnable(model, "backend-developer", ModelSource::Operator)
+                    .is_ok(),
+                "{model}"
+            );
+        }
+        assert!(
+            Roster::model_is_spawnable("opus", "fable-creative", ModelSource::Operator).is_err()
+        );
+    }
+
+    /// A Claude model runs only on a Claude teammate, and a Claude teammate
+    /// only on a Claude model. Other agents name their own models.
+    #[test]
+    fn a_model_must_suit_its_agent() {
+        for (agent, model) in [
+            (HarnessKind::Claude, "fable"),
+            (HarnessKind::Claude, "claude-fable-5-2"),
+            (HarnessKind::Claude, "sonnet[1m]"),
+            (HarnessKind::Codex, "gpt-6-astra"),
+            (HarnessKind::Prime, "anthropic/claude-opus-5-5"),
+            (HarnessKind::OpenCode, "opencode/big-pickle"),
+        ] {
+            assert_eq!(model_agent_problem(agent, model), None, "{agent} {model}");
+        }
+        let why = model_agent_problem(HarnessKind::Codex, "fable").unwrap();
+        assert!(why.contains("pick a Claude teammate"), "{why}");
+        assert!(model_agent_problem(HarnessKind::Claude, "gpt-6-astra").is_some());
     }
 
     /// And nothing the orchestrator is offered runs on a reserved tier, but a

@@ -320,8 +320,8 @@ as they finish. No worker is started before there is a job for it.
 The flavor picks who orchestrates and nothing else. All four read the same
 roster and spawn the same workers, so a Codex orchestrator still reaches for
 `opus` when a task wants Claude, and a Claude one still reaches for `codex-sol`.
-Opus is the default because it orchestrates well at well under half Fable's
-price (Opus 5.5 is $4/$20 per MTok against Fable 5.1's $10/$50).
+Opus is the default because it orchestrates well at half Fable's price
+(Opus 5.5 is $4/$20 per MTok against Fable 5.2's $8/$40).
 
 ### Top-tier sessions: the orchestrator and the creative council
 
@@ -334,6 +334,15 @@ creative and out-of-the-box work: the 2 seats and `opus-creative` each write a
 design alone, and a fresh `fable-creative` combines them. The rule is matched
 on the tier name rather than an exact model slug, so a version bump stays
 reserved without an edit.
+
+The one exception is the operator's own choice: `horch spawn <teammate>
+--model fable` (or `--model claude-fable-5-2`) starts any Claude teammate on
+Fable for that one spawn. The orchestrator passes `--model fable` only when
+the operator asks for it, and says so in its spawn report. The gate never
+swaps in a fallback for a chosen model, and a resume starts the same model
+again. A teammate file, a fallback, a router or planner choice and a
+competition still cannot reach a reserved tier. A Claude model on a Codex
+teammate is refused: pick a Claude teammate.
 
 Every other briefing is written for an Opus or Codex-Sol reader: the
 orchestrator does the reasoning that needs its tier, writes the result to a
@@ -773,7 +782,7 @@ Every teammate states its model and effort in its file, and `horch teammates
 
 | agent | model | effort levels | notes |
 |---|---|---|---|
-| `claude` | alias: `fable` `opus` `sonnet` `haiku` | `low` `medium` `high` `xhigh` `max` | Not on `haiku`: Haiku 4.5 has no effort setting |
+| `claude` | alias: `fable` (Fable 5.2) `opus` `sonnet` `haiku`, or a `claude-*` id | `low` `medium` `high` `xhigh` `max` | Not on `haiku`: Haiku 4.5 has no effort setting |
 | `codex` | literal slug, e.g. `gpt-5.6-sol` | `none` `low` `medium` `high` `xhigh` `max` | Required on an offered teammate. Never `minimal` (API error) or `ultra` (multiplies spend) |
 | `opencode` | `provider/model` | the model's variants | The free `opencode/*` models have none, so no effort |
 | `pi` `prime` | `provider/id` | `off` `minimal` `low` `medium` `high` `xhigh` `max` | |
@@ -786,7 +795,9 @@ Effort follows the role, as in
 - the orchestrator runs at medium.
 
 `horch spawn <teammate> --effort <level>` overrides the level for one spawn,
-and the ledger records the level each session actually ran at. Levels are not
+and the ledger records the level each session actually ran at.
+`--model <model>` overrides the model the same way, checked against the
+teammate's agent. Levels are not
 comparable across vendors: codex "high" is not claude "high".
 
 **Where effort gets overridden behind your back:**

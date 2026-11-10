@@ -116,6 +116,10 @@ impl Price {
 pub fn builtin_prices() -> BTreeMap<String, Price> {
     let mut m = BTreeMap::new();
     // Anthropic, from cezaar#49 (platform.claude.com pricing).
+    // Fable 5.2, from anthropic.com/claude/fable and the Fable 5.2
+    // migration guide (read 2026-11-09): $8 / $40, cache reads $0.20,
+    // writes 1.25x and 2x. The 5.1 row stays: old transcripts name it.
+    m.insert("claude-fable-5-2".into(), Price::new(8.0, 40.0, 0.20));
     m.insert("claude-fable-5-1".into(), Price::new(10.0, 50.0, 0.25));
     m.insert("claude-opus-5-5".into(), Price::new(4.0, 20.0, 0.20));
     m.insert("claude-opus-5".into(), Price::new(5.0, 25.0, 0.50));
@@ -216,7 +220,9 @@ pub(crate) fn canonical_model(model: &str) -> String {
 
 /// Short model names and the price-table key each currently points at.
 const MODEL_ALIASES: [(&str, &str); 4] = [
-    ("fable", "claude-fable-5-1"),
+    // Claude Code 2.1.321 resolves `fable` to Fable 5.2: a `claude -p
+    // --model fable` result names claude-fable-5-2 (seen 2026-11-09).
+    ("fable", "claude-fable-5-2"),
     ("opus", "claude-opus-5-5"),
     // Claude Code resolves `sonnet` to Sonnet 5.5: its transcripts name
     // claude-sonnet-5-5 (seen 2026-10-04).
@@ -933,6 +939,27 @@ mod tests {
         assert!(unpriced.is_empty(), "no price: {unpriced:?}");
     }
 
+    /// Fable 5.2 has its own row, the `fable` alias names it, and the 5.1 row
+    /// stays for old transcripts.
+    #[test]
+    fn fable_alias_prices_as_fable_5_2_and_fable_5_1_keeps_its_row() {
+        let prices = builtin_prices();
+        let fable = price_for(&prices, "fable").unwrap();
+        assert_eq!(
+            (fable.input, fable.output, fable.cache_read),
+            (8.0, 40.0, 0.20)
+        );
+        let million = Tokens {
+            cache_write_5m: 1_000_000,
+            cache_write_1h: 1_000_000,
+            ..Tokens::default()
+        };
+        // Cache writes: 1.25x and 2x of $8 input.
+        assert!((fable.cost(&million) - (10.0 + 16.0)).abs() < 1e-9);
+        let old = price_for(&prices, "claude-fable-5-1").unwrap();
+        assert_eq!((old.input, old.output, old.cache_read), (10.0, 50.0, 0.25));
+    }
+
     #[test]
     fn models_are_canonicalised_and_free_or_unknown_ones_are_told_apart() {
         for (raw, key) in [
@@ -974,7 +1001,7 @@ mod tests {
                 "anthropic/claude-haiku-4-5-20251001[1m]",
                 "claude-haiku-4-5",
             ),
-            ("fable", "claude-fable-5-1"),
+            ("fable", "claude-fable-5-2"),
             ("haiku", "claude-haiku-4-5"),
             ("claude-opus-5-5-2025101", "claude-opus-5-5-2025101"),
             ("claude-opus-5-5-2025101x", "claude-opus-5-5-2025101x"),

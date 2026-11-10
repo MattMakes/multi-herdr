@@ -479,3 +479,51 @@ fn arc_16_crash_after_insert_not_live() {
         .collect();
     assert_eq!(live.len(), 1, "only the new spawn is live");
 }
+
+/// The operator's `horch spawn <teammate> --model fable` starts an ordinary
+/// Claude teammate on Fable: the real `claude` command line has
+/// `--model fable`, the record keeps the override, and a resume starts
+/// Fable again.
+#[test]
+fn spawn_model_fable_reaches_the_claude_command_line_and_the_resume() {
+    let h = fleet("spawn-model-fable", "exec,stay");
+    let pane = spawn(&h, &["backend-developer", "--model", "fable"]);
+    let fresh = records(&h)
+        .into_iter()
+        .find(|r| r["tier"] == "backend-developer")
+        .expect("the spawn wrote a record");
+    let id = fresh["record_id"].as_str().unwrap().to_string();
+    let role = fresh["role"].as_str().unwrap().to_string();
+    assert_eq!(fresh["model"], "fable", "{fresh}");
+    assert_eq!(fresh["model_override"], true, "{fresh}");
+
+    let has_fable = |c: &Value| {
+        c["argv"]
+            .as_array()
+            .unwrap()
+            .windows(2)
+            .any(|w| w[0] == "--model" && w[1] == "fable")
+    };
+    let launch = wait_for_or(
+        "the claude launch",
+        || h.calls_of("claude").into_iter().last(),
+        || pane_context(&h, &pane, &id),
+    );
+    assert!(has_fable(&launch), "{launch}");
+    let session = wait_for("the session id", || {
+        record(&h, &id)["session_id"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+    });
+    done(&h, &pane, &role, &id);
+
+    let pane2 = spawn(&h, &["--resume", &id]);
+    let resumed = wait_for("the resumed launch", || {
+        launch_naming(&h, "claude", &session)
+    });
+    assert!(has_fable(&resumed), "{resumed}");
+    let r = record(&h, &id);
+    assert_eq!(r["model_override"], true, "{r}");
+    done(&h, &pane2, r["role"].as_str().unwrap(), &id);
+}
