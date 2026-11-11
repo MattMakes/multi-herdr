@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+## v0.4.9 - 2026-11-11
+
 - New teammate `game-design-juicer`: run `horch spawn game-design-juicer` in a
   game project, or hand it a design document, and it writes a ranked report of
   "juice" ideas (hit-stop, squash and stretch, screen kick, particles, sound
