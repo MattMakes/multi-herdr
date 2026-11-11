@@ -31,8 +31,17 @@ pub(crate) const ORCHESTRATOR_TIERS: [(&str, &str); 2] =
 /// file, and only by name: never as a fallback, never picked by a router or
 /// planner, never in a competition. A teammate file cannot add a seat; this
 /// list can. The operator's `--model` is the other way onto a reserved tier.
-pub(crate) const TOP_TIER_SEATS: [(&str, &str); 2] =
-    [("fable-creative", "fable"), ("astra-creative", "astra")];
+pub(crate) const TOP_TIER_SEATS: [(&str, &str); 3] = [
+    ("fable-creative", "fable"),
+    ("astra-creative", "astra"),
+    ("game-design-juicer", "fable"),
+];
+
+/// The operator's exception to the seat rules: these seats may name
+/// `fallbacks`, a fallback may share the seat's pool when it runs on another
+/// model family (Fable and Opus have separate scoped windows), and a
+/// substituted launch runs on the fallback's ordinary model.
+pub(crate) const SEATS_WITH_FALLBACKS: [&str; 1] = ["game-design-juicer"];
 
 /// The teammate files `horch fleet` launches as the orchestrator.
 pub(crate) const FLEET_ORCHESTRATORS: [&str; 2] = ["orchestrator", "orchestrator-codex"];

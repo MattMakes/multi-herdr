@@ -4,6 +4,13 @@
 
 ## Unreleased
 
+- New teammate `game-design-juicer`: run `horch spawn game-design-juicer` in a
+  game project, or hand it a design document, and it writes a ranked report of
+  "juice" ideas (hit-stop, squash and stretch, screen kick, particles, sound
+  variety), each with starting values and how to check it, balanced so frequent
+  actions stay light and big moments stand out. It runs on Fable and falls back
+  to Opus when Fable's own usage window is used up.
+
 ## v0.4.8 - 2026-11-09
 
 - Video skills now separate short form (15-90 s) from long form (3-15 min YouTube episodes).

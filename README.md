@@ -344,6 +344,12 @@ again. A teammate file, a fallback, a router or planner choice and a
 competition still cannot reach a reserved tier. A Claude model on a Codex
 teammate is refused: pick a Claude teammate.
 
+`game-design-juicer` is a third Fable seat, by the operator's exception
+(`SEATS_WITH_FALLBACKS`). It starts only when named, like the council seats,
+but it names `opus` as its fallback: when Fable's own window is used up and
+Opus still has room, it runs on Opus at the same high effort. A pool-wide
+Claude limit blocks both.
+
 Every other briefing is written for an Opus or Codex-Sol reader: the
 orchestrator does the reasoning that needs its tier, writes the result to a
 file, and hands the execution down. The seats are a list in the code
@@ -429,6 +435,7 @@ registry to update.
 | `fable-creative`       | Claude | Fable  | high   | Creative council seat; also combines the designs |
 | `astra-creative`       | Codex  | Astra  | high   | Creative council seat |
 | `opus-creative`        | Claude | Opus   | high   | Creative council seat |
+| `game-design-juicer`   | Claude | Fable (Opus fallback) | high | Studies a game or design doc; proposes balanced juice |
 | `sonnet` `opus` `codex-sol` | | | medium | Generic fallbacks |
 | `codex-terra` `codex-luna` | Codex | Terra / Luna | low | Cheap generics: grunt work, mechanical runs |
 | `opencode-ultra` `opencode-pickle` `opencode-lightning` | OpenCode | free tier | - | Free workers, for public/OSS work |

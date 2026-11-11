@@ -62,7 +62,7 @@ pub use teammate::{
 };
 pub(crate) use teammate::{
     BRIEF_DESCRIPTION_MAX, FLEET_ORCHESTRATORS, ORCHESTRATOR_DENIED_TOOLS,
-    ORCHESTRATOR_ONLY_SKILLS, TOP_TIER_SEATS,
+    ORCHESTRATOR_ONLY_SKILLS, SEATS_WITH_FALLBACKS, TOP_TIER_SEATS,
 };
 pub use validation::{fallback_problems, fallback_warnings};
 

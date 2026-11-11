@@ -16,7 +16,7 @@ use super::teammate::{
 use super::{
     effort_problem, reserved_tier, Base, ExecDecision, ExecRule, ModelSource, PermissionMode,
     Roster, Teammate, BRIEF_DESCRIPTION_MAX, FLEET_ORCHESTRATORS, ORCHESTRATOR_DENIED_TOOLS,
-    ORCHESTRATOR_ONLY_SKILLS, TOP_TIER_SEATS,
+    ORCHESTRATOR_ONLY_SKILLS, SEATS_WITH_FALLBACKS, TOP_TIER_SEATS,
 };
 use crate::compaction::window::{
     headroom, native_trigger, threshold, BASE_THRESHOLD, HEADROOM_FLOOR,
@@ -116,6 +116,11 @@ impl Roster {
         let model_tier = reserved_tier(model);
         if let Some((_, seat_tier)) = TOP_TIER_SEATS.iter().find(|(seat, _)| *seat == who) {
             if model_tier.is_some_and(|(tier, _)| tier == *seat_tier) {
+                return Ok(());
+            }
+            // The operator's exception: substituted onto its fallback's
+            // ordinary model. Another reserved tier stays refused.
+            if SEATS_WITH_FALLBACKS.contains(&who) && model_tier.is_none() {
                 return Ok(());
             }
             bail!(
@@ -327,6 +332,7 @@ impl Roster {
         if TOP_TIER_SEATS
             .iter()
             .any(|(seat, _)| *seat == t.name.as_str())
+            && !SEATS_WITH_FALLBACKS.contains(&t.name.as_str())
             && !t.fallbacks.is_empty()
         {
             problems.push(format!(
@@ -1803,7 +1809,12 @@ fn fallback_pair_problems(
         out.push(format!("{who}: fallback '{fb}' is not spawnable: {e:#}"));
     }
     let fpool = quota::pool_for(f.agent.as_str(), f.model.as_deref().unwrap_or_default());
-    if fpool == pool {
+    // The operator's exception: a seat's fallback on another model family
+    // has its own scoped window, so it can help on the same pool.
+    let other_family = SEATS_WITH_FALLBACKS.contains(&who.as_str())
+        && quota::model_family(t.model.as_deref().unwrap_or_default())
+            != quota::model_family(f.model.as_deref().unwrap_or_default());
+    if fpool == pool && !other_family {
         out.push(format!(
             "{who}: fallback '{fb}' draws from the same pool ({pool}), so it cannot help"
         ));
@@ -2236,6 +2247,7 @@ w3-codex: sandbox is Claude only; agent codex cannot honour it";
                 | "fable-creative"
                 | "astra-creative"
                 | "opus-creative"
+                | "game-design-juicer"
                 | "ue-tech-lead"
                 | "godot-tech-lead"
                 | "video-director"
@@ -2918,8 +2930,8 @@ w3-codex: sandbox is Claude only; agent codex cannot honour it";
             .collect();
         assert_eq!(
             covered.len(),
-            78,
-            "the rule should cover 78 claude teammates"
+            79,
+            "the rule should cover 79 claude teammates"
         );
         // sound-engineer runs on claude; audio-reviewer runs on agy.
         assert!(covered.contains(&"sound-engineer"), "{covered:?}");
@@ -3166,6 +3178,41 @@ w3-codex: sandbox is Claude only; agent codex cannot honour it";
                 .to_string();
             assert!(err.contains("must run on its own reserved tier"), "{err}");
         }
+    }
+
+    /// The operator's exception: game-design-juicer is a Fable seat that may
+    /// fall back to an ordinary model, never to the other reserved tier. The
+    /// council seats keep the old rule.
+    #[test]
+    fn a_seat_with_fallbacks_runs_on_its_fallback_model_only() {
+        let juicer = "game-design-juicer";
+        for ok in ["fable", "claude-fable-5-2", "opus", "claude-opus-5-5"] {
+            assert!(
+                Roster::model_is_spawnable(ok, juicer, ModelSource::Teammate).is_ok(),
+                "{ok}"
+            );
+        }
+        assert!(Roster::model_is_spawnable("gpt-6-astra", juicer, ModelSource::Teammate).is_err());
+        assert!(
+            Roster::model_is_spawnable("opus", "fable-creative", ModelSource::Teammate).is_err()
+        );
+
+        // Its opus fallback shares the claude pool but not the model family.
+        let mut r = Roster::builtin().unwrap();
+        assert!(
+            fallback_problems(&r).is_empty(),
+            "{:?}",
+            fallback_problems(&r)
+        );
+        // A fallback on the same family could not help, so it still fails.
+        let mut twin = r.require("opus").unwrap().clone();
+        twin.name = "fable-twin".into();
+        twin.model = Some("claude-fable-5-2".into());
+        r.teammates.insert(twin.name.clone(), twin);
+        r.teammates.get_mut(juicer).unwrap().fallbacks = vec!["fable-twin".into()];
+        assert!(fallback_problems(&r)
+            .iter()
+            .any(|p| p.contains(juicer) && p.contains("same pool")));
     }
 
     /// A file that asks for a reserved tier is refused at spawn unless it is a

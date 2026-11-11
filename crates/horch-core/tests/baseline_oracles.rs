@@ -85,6 +85,7 @@ const SKIP_NEW_TEAMMATES: &[&str] = &[
     "design-director",
     "design-system-engineer",
     "fable-creative",
+    "game-design-juicer",
     "godot-ai-programmer",
     "godot-animator",
     "godot-code-reviewer",
