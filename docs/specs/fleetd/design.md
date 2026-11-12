@@ -99,7 +99,7 @@ Each requirement has an ID that the failure analysis and the tests point back to
 | FR-1 | `horch idea add` shall record each idea as one immutable file and one `captured` ledger row, with no AI involved. | Intake test: two ideas added back to back produce two files and two rows. |
 | FR-2 | The dispatcher shall be deterministic code that keeps exactly one sub-orchestrator per idea from `clarifying` to `integrating`, and never gives one process two ideas. | Property test over the idea state machine; the ledger shows one idea per sub-orchestrator attempt. |
 | FR-3 | A plan shall be committed to the ledger all-or-nothing, and only after it passes schema, DAG and coverage checks. | Plan validator unit tests; a plan missing a requirement is rejected. |
-| FR-4 | Every task shall name a worker profile, its inputs, its outputs and a machine-checkable acceptance check. | Plan schema. |
+| FR-4 | Every task shall name a worker profile, its `kind`, its inputs, its outputs and a machine-checkable acceptance check. For a judgment kind the check is structural (the file exists, the schema or the required sections are valid), and the plan shall pair the task with a judge task in a different session from the author, on a different provider when the roster has one. | Plan schema; plan validation refuses a judgment task with no paired judge task. |
 | FR-5 | The supervisor shall assign tasks to workers (push). Workers shall never search for work. | No code path where an agent queries the ledger for open tasks. |
 | FR-6 | A worker profile shall declare CLI, model, skills, MCP servers, sandbox, writable paths, context budget, timeouts and restart policy. | Profile schema; the adapter refuses an incomplete profile. |
 | FR-7 | All task and result hand-off shall be through files under `FLEET_ROOT`. The only bytes ever sent into a terminal are a fixed doorbell line written by the supervisor's code. | Grep of the code for mux send calls; doorbell text is a constant. |
@@ -115,7 +115,7 @@ Each requirement has an ID that the failure analysis and the tests point back to
 | --- | --- | --- |
 | RR-1 | Liveness shall be judged from outside the model: process state, wrapper heartbeat, CLI hook events and output activity. | Fault injection: kill -STOP a worker; alarm fires within one lease. |
 | RR-2 | A task shall be held by a lease with an expiry. An expired lease returns the task to ready or escalates; it never stays assigned. | Property test over the state machine. |
-| RR-3 | A task shall reach done only when its result file exists, validates, and its acceptance check passes when run by the supervisor. | Worker that says "done" without artifacts stays not-done. |
+| RR-3 | A task shall reach done only when its result file exists, validates, and its acceptance check passes when run by the supervisor. For a code kind, today's review scripts shall also pass. For a judgment kind, its judge task shall report no open CRITICAL item. | Worker that says "done" without artifacts stays not-done; a document with an open CRITICAL item stays not-done. |
 | RR-4 | The supervisor shall reconcile desired and actual state on a fixed period as well as on file events, so a missed event is caught by the next pass. | Drop all file watch events (inotify on Linux) in a test; tasks still complete. |
 | RR-5 | Exactly one process shall write the ledger. Every other component writes files that it ingests. | SQLite opened read-only everywhere else. |
 | RR-6 | Every retry shall be bounded. After the profile's max attempts, the task is escalated to the user, not retried forever. | State machine test. |
@@ -217,11 +217,24 @@ Sub-orchestrators and workers never touch the ledger, each other or git worktree
 | **Sub-orchestrator** | Claude Code, Opus 5.5, interactive in herdr pane `idea-NNNN`, a fresh process for each phase of one idea. | Researching the idea, interviewing you, writing `assumptions.md`, then `spec.md`, `requirements.yaml` and `plan.yaml`; answering its workers' questions; replanning a failed task. | Seeing another idea, approving its own assumptions, creating tasks or worktrees directly, or typing into another pane. |
 | **fleet-run wrapper** | A small program that every agent process is launched through, one per attempt. | Building the attempt's private config home from the profile, starting the CLI in its own process group through the platform layer, writing `heartbeat.json`, mapping CLI events and hooks to agent state, reporting state to herdr, enforcing wall-clock and token budgets, writing `exit.json`. | Deciding outcomes. It reports facts; fleetd decides. |
 | **Worker** | Any agent CLI (Claude Code, Codex, Antigravity or Gemini CLI) started by the wrapper with a named profile. | Doing one task attempt in the worktree fleetd leased to it and writing `outbox/result.json`. | Finding work, touching the ledger, creating or removing worktrees, or working on more than one task. |
-| **Verifier** | Code inside fleetd that runs each task's acceptance commands in the worktree with a timeout. Judgment checks become a separate reviewer task with its own profile. | Writing `verdict.json` and moving the task to `done` or back to `ready`. | Trusting a worker's own claim of success. |
+| **Verifier** | Code inside fleetd that runs each task's check in the worktree with today's check timeout (`preservation-05-contracts-and-values.md`, row V-10). The acceptance commands run in the sandbox profile of the task's worker, never with the rights of fleetd. For a code kind, today's review scripts then run unchanged. For a judgment kind, the check is structural, and a paired judge task reviews the content (see Done for each kind of task). | Writing `verdict.json` and moving the task to `done` or back to `ready`. | Trusting a worker's own claim of success. |
 | **Integrator** | A worker profile used for the last task of each plan. | Merging the idea's task branches into `fleet/I-xxxx/integration` and running the full suite. | Merging to `main`. You merge. |
 | **Docs sync** | A scheduled job (daily, plus on any CLI version change). | Mirroring each CLI's docs, recording versions, running adapter conformance tests. | Changing a profile by itself. It opens a task when something drifts. |
 | **Platform layer** | 1 interface inside horch with 1 module per OS (for example `platform/mac.rs`, `platform/linux.rs`, `platform/windows.rs`). | Service install and restart, process facts (alive, start time, children, process group), stop and kill of a process group, file watching, sandboxing, sleep and wake, the transport of the fleetd command channel (a Unix socket, or a named pipe on Windows), and the machine probe (free disk, load). | Failing silently. Where an OS has no equivalent, the module returns an explicit "not supported" value, and core code decides what to do. |
 | **herdr** | The pane runtime, in a dedicated session `herdr --session fleet`, also under the service manager of the OS. | Terminals, agent names, screen-based status, the sidebar you watch. | Holding any state fleetd depends on. If herdr restarts, the reconciler rebuilds from the ledger and files. |
+
+**Done for each kind of task.** Each task declares a `kind`. Code kinds are `feature`, `quality`, `refactor` and `security`. Judgment kinds are `research`, `design`, `docs`, `report` and `creative`.
+
+- **Code kind.** The task's check runs. Then today's review scripts run unchanged: the code-sweep rounds, the findings F<n>, the answers file, the waivers and the verification profiles. Their limits stay: at most 2 requeues, and review rounds of 1 (light) and 3 (full) (`preservation-05-contracts-and-values.md`, row V-14).
+- **Judgment kind.** The verifier runs a structural check: the file exists, and the schema or the required sections are valid. Plan validation refuses a plan in which a judgment task has no paired judge task. The judge runs in a different session from the author, on a different provider when the roster has one. It ranks each miss:
+
+| Rank | Effect |
+| --- | --- |
+| CRITICAL | Blocks. A fresh session, not the author and not the judge, fixes it. Then a fresh judge checks only the earlier CRITICAL items and the change. |
+| HIGH | Does not block alone. The sub-orchestrator of the feature fixes it or dismisses it with a written reason. |
+| MEDIUM, LOW | Never block. |
+
+"Good enough" passes. The second judge cannot raise new MEDIUM or LOW items; this is the guard against gold-plating. After 2 fix rounds, a result that still has a CRITICAL item goes to you.
 
 **Supervision tree and restart policy (OTP style)**
 
@@ -331,6 +344,7 @@ base_branch: main
 tasks:
   - key: backoff
     title: Add exponential backoff to SyncClient.request
+    kind: feature
     profile: coder-codex
     covers: [R1]
     inputs: [src/sync/client.py]
@@ -341,6 +355,7 @@ tasks:
     budget: {max_minutes: 40, max_tokens: 400000}
   - key: logging
     title: Log each retry with attempt and delay
+    kind: feature
     profile: coder-claude
     covers: [R2]
     after: [backoff]
@@ -348,11 +363,27 @@ tasks:
       - run: pytest tests/test_backoff.py -q -k logs
   - key: integrate
     title: Merge task branches and run the full suite
+    kind: quality
     profile: integrator
     covers: [R3]
     after: [backoff, logging]
     acceptance:
       - run: pytest -q
+  - key: retry-doc
+    title: Document the retry behavior in docs/sync.md
+    kind: docs              # a judgment kind: structural check plus a judge
+    profile: writer-claude
+    covers: [R2]
+    outputs: [docs/sync.md]
+    acceptance:
+      - sections: [docs/sync.md, "## Retries"]   # structural: the file and the section exist
+  - key: retry-doc-judge
+    title: Judge docs/sync.md against R1 and R2
+    kind: report
+    judges: retry-doc       # plan validation refuses a judgment task with no judge
+    profile: judge-codex    # a different session, and a different provider from the author
+    after: [retry-doc]
+    outputs: [docs/sync.review.md]   # each miss ranked CRITICAL, HIGH, MEDIUM or LOW
 ```
 
 **Example: task.yaml (written by fleetd)**
@@ -828,7 +859,7 @@ Every failure you listed, plus twenty-three more found while reading the code, t
 | FM-6 | Worker finishes but never reports | Work lost or redone | Stop gate refuses to end the turn without `result.json`; exec mode exit without result triggers one repair resume; the next attempt reuses the same worktree | Prevented; worst case one retry that starts from the work | RR-3 |
 | FM-7 | Watchdog misses updates | Any of the above lingers | One supervised daemon, level-triggered pass every 5 s, full scans instead of trusting events, actions in code instead of mail to an LLM | 5 s | RR-4, RR-5 |
 | FM-8 | Stacked ideas get merged | Wrong plan, tangled branches | Each idea is its own file, ledger row and sub-orchestrator; a fresh process per phase whose only memory is that idea's folder; the dispatcher never gives a process two ideas | Prevented | FR-1, FR-2 |
-| FM-9 | Worker claims done but work is broken | Bad code lands | Only the verifier's acceptance commands move a task to done | At verification | RR-3 |
+| FM-9 | Worker claims done but work is broken | Bad code lands | Only the verifier moves a task to done: the acceptance commands, then for a code kind today's review scripts, and for a judgment kind the structural check and the paired judge | At verification | RR-3 |
 | FM-10 | Plan has a cycle, missing profile or uncovered requirement | Deadlock or gap | Plan validator rejects before commit; the sub-orchestrator reruns ticketing with the errors | Prevented | FR-3 |
 | FM-11 | fleetd crashes mid-pass | Half-applied state | Every pass is one SQLite transaction; ingestion is idempotent; the service manager of the OS restarts it; the next pass rebuilds from ledger and files | Under 30 s | RR-7, RR-8 |
 | FM-12 | fleetd hangs | Nothing moves | The service manager's watchdog kills and restarts it when the pass stops pinging (on Linux systemd `WatchdogSec=30`). Where the OS has no watchdog, the platform layer returns "not supported" | 30 s where the OS has a watchdog | RR-7, PL-3 |
@@ -852,6 +883,7 @@ Every failure you listed, plus twenty-three more found while reading the code, t
 | FM-30 | An unclear idea is built wrong | Runs wasted on the wrong thing | Research and interview first; `assumptions.md` with no open items; no spec until you approve; every requirement cites an approved assumption or your answer | Prevented at approval | FR-10 |
 | FM-31 | A sub-orchestrator dies mid-interview or mid-phase | Answers or a half-written spec lost | Each answer recorded with `horch idea note` as it is given; fresh process per phase resumes from the folder; the reconciler restarts a missing pane | 5 to 30 s | FR-2, RR-7 |
 | FM-32 | A model approves its own assumptions or forges an approval | Work starts without your yes | `horch idea approve` refuses inside any fleet attempt and profiles deny it; fleetd writes `approval.json` with the hash you saw and ignores any other; invariant I7 checked every pass | Prevented | FR-10 |
+| FM-33 | A document passes a structural check but is wrong | A wrong design, report or doc is accepted | Plan validation requires a paired judge task in a different session, on a different provider when the roster has one; a CRITICAL miss blocks and a fresh session fixes it; a fresh judge checks only the earlier CRITICAL items and the change; after 2 fix rounds it goes to you | At the judge task | FR-4, RR-3 |
 
 ## Migration plan
 
@@ -863,7 +895,7 @@ Each phase keeps the fleet usable. New behaviour ships behind a run-level flag, 
 2. **Phase 1: `horch fleetd`, supervised and level-triggered.** Move the watchdog's pass into a long-lived daemon under the service manager of each OS through the platform layer (on Linux a systemd user unit with `WatchdogSec`), a 5 s pass and invariants I1 to I5. It acts in code (stop by recorded PID, requeue, respawn) instead of only mailing the orchestrator. Remove the lazy `ensure` start. *Gate:* FM-4, FM-7, FM-12, FM-13 green.
 3. **Phase 2: leases and capped waits.** Schema v8 adds a `leases` table. Renewal comes only from earned activity. `worker_waits` rows get `max_wait_s` (default 1 h) and must point at a live question or review. Replace "3 checks of 600 s" with the stall ladder. Add the `waiting_quota` state, the required `fallback` persona in the roster, and the restart on a fallback of another provider. *Gate:* FM-3, FM-5 green; a usage-limited worker is not reaped and burns no attempt; the idle-claim scenario is caught in under 10 min.
 4. **Phase 3: worktree leases and rescue.** Extend the existing `worktrees` table with state, owner, base and rescue columns, and make fleetd (through `horch spawn` until Phase 4) the only code that runs `git worktree add` or `remove`, writing the row first. Add the worktree reconciler, the verified rescue to `refs/horch/rescue/`, reuse by the next attempt, invariant I6, `horch worktrees` and `horch worktree restore`. Run it once in report-only mode to list the orphans already on your disk before it acts. *Gate:* FM-25 to FM-28 green; a worker killed with dirty and untracked files loses nothing.
-5. **Phase 4: push dispatch and the result gate.** `horch spawn` binds a task before the pane exists and writes `task.yaml` and `START.md`; `CLAIM_TASK` goes away. Add Stop hooks for Claude Code, Codex and Antigravity and a `horch result` command that writes `result.json`. fleetd runs the finish steps (check, sweeps, land) as the verifier instead of the worker detaching them and waiting for a typed NOTE. *Gate:* FM-2, FM-6, FM-9 green.
+5. **Phase 4: push dispatch and the result gate.** `horch spawn` binds a task before the pane exists and writes `task.yaml` and `START.md`; `CLAIM_TASK` goes away. Add Stop hooks for Claude Code, Codex and Antigravity and a `horch result` command that writes `result.json`. fleetd runs the finish steps (check, sweeps, land) as the verifier instead of the worker detaching them and waiting for a typed NOTE. For a code kind the review scripts carry over unchanged: code-sweep rounds, findings F<n>, the answers file, waivers and verification profiles, with their limits (V-14). *Gate:* FM-2, FM-6, FM-9 green.
 6. **Phase 5: one ledger writer.** Worker commands (`progress`, `result`, `ask`) write files into the attempt's outbox; fleetd ingests them. Every other process opens the ledger read-only, enforced by a new `arch_scan` rule. Remove Codex's `broad_ledger_rule` sandbox escape. *Gate:* FM-17, FM-24 green; arch test passes.
 7. **Phase 6: the idea dispatcher and sub-orchestrators.** Schema v9 gives `ideas` the state machine above and adds `horch idea add` (with the `--direct` fast lane), `ideas`, `show`, `note`, `approve`, `revise`, `park` and `bump`. Add the dispatcher loop to fleetd, invariant I7, and the `idea-lead` persona, which runs today's brief, spec-writer and ticket-writer steps for one idea in its own interactive pane, a fresh process per phase. Extend `add-map --dry-run` and `scripts/check-req-coverage.sh` into the plan validator (schema, DAG, coverage, profiles, citations to approved assumptions). Retire the long-lived orchestrator conversation, and allow one run per idea with several at once in place of one non-solo run per workspace. *Gate:* FM-1, FM-8, FM-10, FM-16, FM-29 to FM-32 green.
 8. **Phase 7: docs sync and conformance, then exec mode.** Widen `herdr-docs-sync` to every CLI with the conformance suite and unhealthy marking. Then make exec mode the default worker mode and set `context-windows.md` to 256000 for every seat (today it is 300000 for the orchestrator and 200000 for opus). *Gate:* FM-18 to FM-20 green.
