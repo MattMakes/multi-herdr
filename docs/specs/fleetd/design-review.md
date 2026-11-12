@@ -4,11 +4,11 @@ Scope: `docs/specs/fleetd/design.md` at `0505712d`, compared with amendments A0 
 
 ## Verdict
 
-FAIL — CRITICAL: 1; HIGH: 3; MEDIUM: 0; LOW: 0.
+FAIL - CRITICAL: 1; HIGH: 3; MEDIUM: 0; LOW: 0.
 
 ## CRITICAL
 
-### J1 — A0, A1 — `docs/specs/fleetd/design.md:15`
+### J1 - A0, A1 - `docs/specs/fleetd/design.md:15`
 
 > A missed event is caught on the next pass, and a hung daemon is restarted.
 
@@ -18,7 +18,7 @@ Correction: Define hang detection through the platform layer for all 3 hosts, or
 
 ## HIGH
 
-### J2 — A3, A6 — `docs/specs/fleetd/design.md:738`
+### J2 - A3, A6 - `docs/specs/fleetd/design.md:738`
 
 > with no `--to` it starts a new feature whose branch name fleetd makes from the ticket title.
 
@@ -26,7 +26,7 @@ Line 859 instead says the sub-orchestrator supplies the name and fleetd creates 
 
 Correction: Give a `--direct` feature one branch-name source and one creation trigger in both sections.
 
-### J3 — A3, A4 — `docs/specs/fleetd/design.md:139`
+### J3 - A3, A4 - `docs/specs/fleetd/design.md:139`
 
 > `horch idea add --direct <ticket file>` shall ... make a plan with 1 task
 
@@ -34,7 +34,7 @@ Lines 131 and 267 require every judgment task to have a paired judge task, so th
 
 Correction: State whether `--direct` excludes judgment kinds or may create the required second judge task.
 
-### J4 — A4 — `docs/specs/fleetd/design.md:426`
+### J4 - A4 - `docs/specs/fleetd/design.md:426`
 
 > kind: report
 > judges: retry-doc
