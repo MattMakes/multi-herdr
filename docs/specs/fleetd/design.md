@@ -122,6 +122,7 @@ Each requirement has an ID that the failure analysis and the tests point back to
 | RR-8 | All file writes in the protocol shall be atomic (write to a temp name, fsync, rename) and ingestion shall be idempotent. | Crash test during writes. |
 | RR-9 | No worktree shall be removed until its commits and its uncommitted and untracked files are saved on a rescue ref, and that ref is read back and shown to hold them. | Kill a worker with dirty and untracked files; after cleanup the rescue ref contains every one. |
 | RR-10 | The reconciler shall compare the worktree ledger with `git worktree list` and the work directory on every pass, and adopt or rescue anything on disk that the ledger does not own. | Create a worktree by hand; it is adopted or rescued within one pass. |
+| RR-11 | A worker that shows a usage limit or a provider outage shall not be treated as stuck, and shall not burn an attempt. If its persona's fallback is on another provider, fleetd shall restart the task at once on a new worker of the fallback persona, on the same worktree. Otherwise the task shall wait in `waiting_quota` with its lease paused until the pool resets. If both pools are limited, the task shall wait. | Phase 0 test: a usage-limited worker is not reaped, and its attempt count does not change. |
 
 **Safety and isolation (SR)**
 
@@ -441,7 +442,7 @@ CREATE TABLE tasks (
   profile      TEXT NOT NULL,
   state        TEXT NOT NULL CHECK (state IN
                ('pending','ready','leased','running','stalled','verifying',
-                'blocked_on_user','done','failed','escalated','cancelled')),
+                'blocked_on_user','waiting_quota','done','failed','escalated','cancelled')),
   attempts     INTEGER NOT NULL DEFAULT 0,
   max_attempts INTEGER NOT NULL DEFAULT 3,
   spec_json    TEXT NOT NULL,              -- the task as committed
@@ -501,7 +502,7 @@ CREATE TABLE ingested (                    -- makes file ingestion idempotent
 **Three rules that make the ledger trustworthy**
 
 1. **One door.** All writes go through `transition(entity, id, to_state, cause)`, which looks up the allowed-transition table, writes the row and the event in one transaction, and raises on anything illegal. There is no other `UPDATE`.
-2. **Leases, not claims.** A task in `leased` or `running` always has a lease row with an expiry. Leases are renewed by fleetd from outside signals (heartbeat file, process alive, output or hook activity), never by the model. When `expires_at` passes, the reconciler moves the task to `stalled` in the same pass that notices it.
+2. **Leases, not claims.** A task in `leased` or `running` always has a lease row with an expiry. Leases are renewed by fleetd from outside signals (heartbeat file, process alive, output or hook activity), never by the model. When `expires_at` passes, the reconciler moves the task to `stalled` in the same pass that notices it. A task in `waiting_quota` has its lease paused: the lease does not expire, and the task leaves the state when its pool resets.
 3. **Invariants checked every pass.** The reconciler asserts these and repairs or escalates on any breach:
    - I1: every `leased`/`running` task has exactly one unexpired lease and one attempt with a live process or pane.
    - I2: no task is `ready` while any dependency is not `done`.
@@ -533,6 +534,7 @@ sandbox: workspace-write
 compact_window: 256000
 
 # new fields
+fallback: opus                 # required: the roster refuses a persona without one
 run_mode: exec                 # exec (run to completion) | interactive (herdr agent)
 writable_paths: ["{task_dir}", "{worktree}"]   # nothing else, ledger included
 network: [crates.io, static.crates.io, github.com]
@@ -550,6 +552,8 @@ budget:
   max_tokens: 600000           # whole attempt, across compactions
 ---
 ```
+
+**Every worker persona names a fallback persona.** The roster refuses to load a persona without one. fleetd uses it when the persona's pool shows a usage limit or a provider outage (see the stall ladder).
 
 **How each adapter applies a profile**
 
@@ -701,6 +705,8 @@ fleetd derives one agent state per attempt: `starting`, `working`, `waiting_appr
 
 **Stall ladder.** Every rung is code with a fixed timer; none depends on a model reading anything.
 
+A usage limit or a provider outage is not a stall. A worker that shows one is not stuck, is never reaped as stuck, and does not burn an attempt. If the persona's fallback is on another provider, fleetd restarts the task at once on a new worker of the fallback persona, on the same worktree. If not, the task goes to `waiting_quota`, its lease is paused, and it leaves the state when the pool resets. If both pools are limited, the task waits; fleetd does not go to a third persona. Today no code enforces "never reap a usage-limited worker": the rule is only in the orchestrator briefing (`preservation-04-behavior.md`, row S6). fleetd enforces it in code.
+
 1. `idle_no_result` in an interactive pane: send the constant doorbell once. For Claude Code a Stop hook already refuses to let the turn end until `result.json` exists (see Worker profiles), so this rung is mostly for other CLIs.
 2. Still idle 2 minutes later: doorbell again and record it.
 3. Still idle, or `hung` at any point: end the attempt. Stop the process group through the platform layer (on Linux: SIGINT, wait 20 s, then SIGKILL). Record outcome `stalled`.
@@ -814,7 +820,7 @@ Every failure you listed, plus twenty-three more found while reading the code, t
 | FM-2 | Worker starts but doesn't find its work | Idle pane, task never runs | Push dispatch: fleetd binds the task to the attempt and writes `task.yaml` before launch; no claim, persona match or run lookup | Prevented; a launch that never starts fails at 90 s | FR-5 |
 | FM-3 | Worker holds a task and sits idle | Task blocked for hours or days | Leases renewed only on earned activity; waits capped by `max_wait_s` and need a live question or review row behind them | About 7 min | RR-2 |
 | FM-4 | Agent process dies silently | Task looks running | PID and start time checked every 5 s pass; wrapper heartbeat stale at 30 s | 5 to 30 s | RR-1 |
-| FM-5 | Agent alive but stuck at a login, rate-limit, trust or error prompt | Looks alive forever | herdr `blocked` state, `Notification` and `PermissionRequest` hooks, no activity past `stall_after`; profiles pre-approve so any dialog is a defect | Immediately for dialogs, 5 min otherwise | RR-1, FR-8 |
+| FM-5 | Agent alive but stuck at a login, rate-limit, trust or error prompt | Looks alive forever | A usage limit or a provider outage is not a stall: no attempt is burned, the task restarts at once on the fallback persona when it is on another provider, else waits in `waiting_quota` with its lease paused until the pool resets. A login, trust or error prompt: herdr `blocked` state, `Notification` and `PermissionRequest` hooks, no activity past `stall_after`; profiles pre-approve so any dialog is a defect | Immediately for dialogs and usage limits, 5 min otherwise | RR-1, RR-11, FR-8 |
 | FM-6 | Worker finishes but never reports | Work lost or redone | Stop gate refuses to end the turn without `result.json`; exec mode exit without result triggers one repair resume; the next attempt reuses the same worktree | Prevented; worst case one retry that starts from the work | RR-3 |
 | FM-7 | Watchdog misses updates | Any of the above lingers | One supervised daemon, level-triggered pass every 5 s, full scans instead of trusting events, actions in code instead of mail to an LLM | 5 s | RR-4, RR-5 |
 | FM-8 | Stacked ideas get merged | Wrong plan, tangled branches | Each idea is its own file, ledger row and sub-orchestrator; a fresh process per phase whose only memory is that idea's folder; the dispatcher never gives a process two ideas | Prevented | FR-1, FR-2 |
@@ -851,7 +857,7 @@ Each phase keeps the fleet usable. New behaviour ships behind a run-level flag, 
 
 1. **Phase 0: reproduce every failure in tests.** Add scenarios to `crates/horch-e2e` using the fake harness and the existing fault points: an agent that never claims, one that claims and stops, one that exits without `done`, a killed watchdog, a herdr server restart, two stacked ideas, a worker killed with dirty and untracked files in its worktree. Today most should fail. *Gate:* FM-1 to FM-8 and FM-25 each have a red test.
 2. **Phase 1: `horch fleetd`, supervised and level-triggered.** Move the watchdog's pass into a long-lived daemon under the service manager of each OS through the platform layer (on Linux a systemd user unit with `WatchdogSec`), a 5 s pass and invariants I1 to I5. It acts in code (stop by recorded PID, requeue, respawn) instead of only mailing the orchestrator. Remove the lazy `ensure` start. *Gate:* FM-4, FM-7, FM-12, FM-13 green.
-3. **Phase 2: leases and capped waits.** Schema v8 adds a `leases` table. Renewal comes only from earned activity. `worker_waits` rows get `max_wait_s` (default 1 h) and must point at a live question or review. Replace "3 checks of 600 s" with the stall ladder. *Gate:* FM-3, FM-5 green; the idle-claim scenario is caught in under 10 min.
+3. **Phase 2: leases and capped waits.** Schema v8 adds a `leases` table. Renewal comes only from earned activity. `worker_waits` rows get `max_wait_s` (default 1 h) and must point at a live question or review. Replace "3 checks of 600 s" with the stall ladder. Add the `waiting_quota` state, the required `fallback` persona in the roster, and the restart on a fallback of another provider. *Gate:* FM-3, FM-5 green; a usage-limited worker is not reaped and burns no attempt; the idle-claim scenario is caught in under 10 min.
 4. **Phase 3: worktree leases and rescue.** Extend the existing `worktrees` table with state, owner, base and rescue columns, and make fleetd (through `horch spawn` until Phase 4) the only code that runs `git worktree add` or `remove`, writing the row first. Add the worktree reconciler, the verified rescue to `refs/horch/rescue/`, reuse by the next attempt, invariant I6, `horch worktrees` and `horch worktree restore`. Run it once in report-only mode to list the orphans already on your disk before it acts. *Gate:* FM-25 to FM-28 green; a worker killed with dirty and untracked files loses nothing.
 5. **Phase 4: push dispatch and the result gate.** `horch spawn` binds a task before the pane exists and writes `task.yaml` and `START.md`; `CLAIM_TASK` goes away. Add Stop hooks for Claude Code, Codex and Antigravity and a `horch result` command that writes `result.json`. fleetd runs the finish steps (check, sweeps, land) as the verifier instead of the worker detaching them and waiting for a typed NOTE. *Gate:* FM-2, FM-6, FM-9 green.
 6. **Phase 5: one ledger writer.** Worker commands (`progress`, `result`, `ask`) write files into the attempt's outbox; fleetd ingests them. Every other process opens the ledger read-only, enforced by a new `arch_scan` rule. Remove Codex's `broad_ledger_rule` sandbox escape. *Gate:* FM-17, FM-24 green; arch test passes.
