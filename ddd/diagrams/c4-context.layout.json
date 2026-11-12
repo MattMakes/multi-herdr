@@ -1,5 +1,5 @@
 {
-  "engine": "elk",
+  "engine": "elk+incremental",
   "width": 1152,
   "height": 976,
   "nodes": {
@@ -30,6 +30,12 @@
     "github": {
       "x": 24,
       "y": 600,
+      "w": 320,
+      "h": 64
+    },
+    "herdr": {
+      "x": 416,
+      "y": 488,
       "w": 320,
       "h": 64
     },
@@ -188,8 +194,32 @@
         }
       ],
       "labelAt": {
-        "x": 413,
+        "x": 516,
         "y": 611.3
+      }
+    },
+    "herdr->system": {
+      "points": [
+        {
+          "x": 736,
+          "y": 520
+        },
+        {
+          "x": 772,
+          "y": 520
+        },
+        {
+          "x": 772,
+          "y": 540
+        },
+        {
+          "x": 808,
+          "y": 540
+        }
+      ],
+      "labelAt": {
+        "x": 754,
+        "y": 510
       }
     },
     "operator->system": {
@@ -404,8 +434,32 @@
         }
       ],
       "labelAt": {
-        "x": 709,
+        "x": 576,
         "y": 931.3
+      }
+    },
+    "system->worker": {
+      "points": [
+        {
+          "x": 808,
+          "y": 540
+        },
+        {
+          "x": 744,
+          "y": 540
+        },
+        {
+          "x": 744,
+          "y": 56
+        },
+        {
+          "x": 344,
+          "y": 56
+        }
+      ],
+      "labelAt": {
+        "x": 663,
+        "y": 46
       }
     },
     "worker->system": {
@@ -433,6 +487,6 @@
       }
     }
   },
-  "fingerprint": "99030cc8-2167fca6",
+  "fingerprint": "a09ee2db-7fd8f5bb",
   "optionsKey": "{\"direction\":\"RIGHT\",\"spacing\":\"comfortable\"}"
 }

@@ -2,7 +2,7 @@
   "schema_version": 1,
   "step": "connect",
   "produced_by": "ddd-connect",
-  "produced_at": "2026-11-12T17:49:58Z",
+  "produced_at": "2026-11-12T20:51:30Z",
   "mode": "auto",
   "depth": "standard",
   "inputs": [
@@ -32,7 +32,7 @@
     },
     {
       "id": "A4",
-      "text": "Operator commands travel as horch CLI requests over the fleetd command channel (Unix socket or named pipe), drawn as via other. When fleetd is down the request goes to a file that fleetd reads at start (design: The command channel).",
+      "text": "Operator commands travel as horch CLI requests over the fleetd command channel (Unix socket or named pipe, through the platform layer), drawn as via other. When fleetd is down the request goes to a request file that fleetd reads at start (design: The command channel). Each request carries an idempotency_key, and a refusal carries its reason (orchestrator, D15).",
       "confidence": "high"
     },
     {
@@ -42,50 +42,46 @@
     },
     {
       "id": "A6",
-      "text": "3 message ids are minted here: launch-environment (query), start-agent-process (command) and trial-merge-result (query). Discover has no id for these calls.",
-      "confidence": "medium"
+      "text": "3 message ids were minted here: launch-environment (query), start-agent-process (command) and trial-merge-result (query). Discover adopted all 3 (discover N10): start-agent-process is a discover command, and the 2 queries reuse discover read-model ids.",
+      "confidence": "high"
     },
     {
       "id": "A7",
-      "text": "The facts of the fleet-run wrapper (exit.json) are drawn as coming from agent-cli. Which context owns the wrapper code is open (decision D2, Q1).",
-      "confidence": "medium"
+      "text": "The fleet-run wrapper belongs to worker-profiles (D2 option B, orchestrator D15). It writes heartbeat.json and exit.json. exit.json stays drawn as coming from agent-cli, because it records the exit fact of the CLI process.",
+      "confidence": "high"
     },
     {
       "id": "A8",
-      "text": "git is called by 2 contexts: worktree-custody for worktrees and integration for refs, bundles and trial merges (Q3).",
+      "text": "git is called by 2 contexts, split by concern: worktree-custody for worktrees and rescue refs, integration for branches, merges, bundles and trial merges (orchestrator, D15).",
+      "confidence": "high"
+    },
+    {
+      "id": "A9",
+      "text": "worker-profiles owns start-agent-process (decompose N8). task-execution and ideas send it; worker-profiles resolves the launch environment, runs the fleet-run wrapper and starts it in its own process group through the platform layer. When the profile needs a pane, the caller gets the pane from the herdr adapter of fleet-runtime (R12, R13) and passes it in the request.",
       "confidence": "medium"
+    },
+    {
+      "id": "A10",
+      "text": "Each file of the design workspace layout that crosses the process boundary is 1 message: task.yaml (assign-task), inbox/START.md (start-work), heartbeat.json (heartbeat-written), verdict.json (task-verdict-written), plan.verdict.json (plan-verdict-written) and approval.json (assumptions-approved). The path names its 1 writer (design: Workspace layout and file protocol, rule 3). 6 of these ids are minted here, because discover has no id for them: assign-task, start-work, heartbeat-written, task-verdict-written, plan-verdict-written and agent-status-changed (Q6).",
+      "confidence": "high"
+    },
+    {
+      "id": "A11",
+      "text": "Payload field names are the snake_case names of the design (orchestrator, D15). A file message uses the field names of the design example of that file; an in-memory event uses <entity>_id.",
+      "confidence": "high"
+    },
+    {
+      "id": "A12",
+      "text": "The model has 9 flows, 2 more than the 4 to 7 of depth standard. F2 and F3 were split at a hand-off (F8, F9) to keep each flow at 9 messages or fewer after the new file and pull request messages.",
+      "confidence": "high"
     }
   ],
   "open_questions": [
     {
-      "id": "Q1",
-      "text": "Which context owns the fleet-run wrapper: task-execution, worker-profiles or fleet-runtime (decision D2)?",
-      "blocking": false,
-      "owner": "operator"
-    },
-    {
-      "id": "Q2",
-      "text": "Can discover adopt the minted ids launch-environment, start-agent-process and trial-merge-result?",
+      "id": "Q6",
+      "text": "Can discover adopt the 6 minted ids assign-task, start-work (commands) and heartbeat-written, task-verdict-written, plan-verdict-written, agent-status-changed (events)?",
       "blocking": false,
       "owner": "ddd-discover"
-    },
-    {
-      "id": "Q3",
-      "text": "git has 2 callers (worktree-custody and integration). Is split ownership by concern acceptable, or must 1 context own all git calls?",
-      "blocking": false,
-      "owner": "operator"
-    },
-    {
-      "id": "Q4",
-      "text": "R6 and R7 make 2 core contexts depend on each other (CC1). Should decompose declare them a partnership?",
-      "blocking": false,
-      "owner": "operator"
-    },
-    {
-      "id": "Q5",
-      "text": "Does the sub-orchestrator answer a worker question with a file in the idea folder or with horch idea note over the command channel?",
-      "blocking": false,
-      "owner": "operator"
     }
   ],
   "notes_for_downstream": [
@@ -112,9 +108,10 @@
       "kind": "decision",
       "for": [
         "define",
-        "code"
+        "code",
+        "contracts"
       ],
-      "text": "Sharpens decompose N2: every launch asks worker-profiles launch-environment, then calls fleet-runtime start-agent-process. Neither ideas nor task-execution builds an environment or starts a process itself."
+      "text": "Sharpens decompose N2 and follows decompose N8: task-execution and ideas send start-agent-process to worker-profiles. worker-profiles resolves the launch environment, runs the fleet-run wrapper (D2 option B) and starts it through the platform layer. Neither ideas nor task-execution builds an environment or starts a process itself."
     },
     {
       "id": "N4",
@@ -124,6 +121,41 @@
         "code"
       ],
       "text": "Sharpens decompose N6: abandon-task-branch must wait for worktree-rescued before the branch is dropped (CC7), and no git call or process start runs inside a ledger transaction (CC6)."
+    },
+    {
+      "id": "N5",
+      "kind": "decision",
+      "for": [
+        "code"
+      ],
+      "text": "D2 option B (orchestrator, D15): the fleet-run wrapper belongs to worker-profiles, not fleet-runtime. It builds the private config home, scrubs the environment, maps CLI events, writes heartbeat.json and exit.json, and calls the platform interface for the process group and kill."
+    },
+    {
+      "id": "N6",
+      "kind": "decision",
+      "for": [
+        "define",
+        "code"
+      ],
+      "text": "Answers Q4 (orchestrator, D15): task-execution and integration are a partnership. R6 and R7 change together; both directions stay versioned in-memory events (CC1)."
+    },
+    {
+      "id": "N7",
+      "kind": "boundary",
+      "for": [
+        "define",
+        "code",
+        "contracts"
+      ],
+      "text": "9 messages are new and cross a process boundary: assign-task (task.yaml), start-work (START.md), heartbeat-written (heartbeat.json), task-verdict-written (verdict.json), plan-verdict-written (plan.verdict.json), assumptions-approved (approval.json), agent-status-changed (herdr), open-pull-request and pull-request-merged (github)."
+    },
+    {
+      "id": "N8",
+      "kind": "decision",
+      "for": [
+        "contracts"
+      ],
+      "text": "Contract rules (orchestrator, D15): each command-channel request and request file carries idempotency_key; a refused request returns its reason; result.json status is 1 of completed, blocked, failed; reset_at of usage-limit-reported is optional, and when it is absent fleetd waits until the pool probe reports ok."
     }
   ],
   "decisions": [
@@ -240,14 +272,17 @@
           ]
         }
       ],
-      "rationale": "The design names the wrapper as a component but not a context. Recommendation: B, because the wrapper's variable part is per CLI adapter; the strongest argument against it is that heartbeat facts feed the task-execution lease every 10 s.",
+      "rationale": "Decided by the orchestrator (D15). The operator can reverse it. The design names the wrapper as a component but not a context. Recommendation: B, because the wrapper's variable part is per CLI adapter; the strongest argument against it is that heartbeat facts feed the task-execution lease every 10 s. The orchestrator chose B, the recommendation of this step. Reason of the orchestrator: the wrapper is the profile made real (private config home, environment scrub, adapter event mapping), and the scrub needs 1 owner. Process group and kill go through the platform interface, which each context calls. This differs from the recommendation of the code step (fleet-runtime).",
       "would_flip_if": [
         "The wrapper holds lease logic",
         "The adapters move into fleet-runtime"
       ],
       "records": {
-        "open_question": "Q1"
-      }
+        "assumption": "A7"
+      },
+      "chosen": "B",
+      "made_by": "strategist",
+      "confidence": "medium"
     }
   ],
   "flows": [
@@ -272,7 +307,7 @@
           "kind": "command",
           "sync": true,
           "via": "other",
-          "note": "horch CLI request over the fleetd command channel (fleet-runtime); a request file when fleetd is down"
+          "note": "horch CLI request over the fleetd command channel; a request file with the same idempotency_key when fleetd is down"
         },
         {
           "seq": 2,
@@ -286,12 +321,12 @@
         {
           "seq": 3,
           "from": "ideas",
-          "to": "fleet-runtime",
+          "to": "worker-profiles",
           "message": "start-agent-process",
           "kind": "command",
           "sync": true,
           "via": "in-process",
-          "note": "sub-orchestrator pane idea-NNNN through the herdr adapter; env from launch-environment"
+          "note": "sub-orchestrator CLI in a pane that ideas gets from the herdr adapter; worker-profiles builds the env"
         },
         {
           "seq": 4,
@@ -352,18 +387,16 @@
           "when": "direct ticket path"
         }
       ],
-      "mermaid": "sequenceDiagram\n  autonumber\n  actor operator as Operator\n  participant ideas as Ideas\n  participant fleet_runtime as Fleet runtime\n  actor sub_orchestrator as Sub-orchestrator\n  participant integration as Landing and integration\n  operator->>ideas: add-idea (command via other)\n  Note over operator,ideas: horch CLI request over the fleetd command channel (fleet-runtime)#59; a request file when fleetd is down\n  ideas-->>operator: add-idea (response via other)\n  ideas->>fleet_runtime: start-agent-process (command via in-process)\n  Note over ideas,fleet_runtime: sub-orchestrator pane idea-NNNN through the herdr adapter#59; env from launch-environment\n  sub_orchestrator-)ideas: write-assumptions (command via file)\n  Note over sub_orchestrator,ideas: assumptions.md after the interview\n  ideas-)integration: assumptions-written (event via in-process)\n  integration-)ideas: feature-opened (event via in-process)\n  ideas-)operator: approval-requested (event via file)\n  Note over ideas,operator: needs-you/ file\n  opt direct ticket path\n    operator->>ideas: add-direct-idea (command via other)\n    ideas-)integration: direct-idea-accepted (event via in-process)\n  end"
+      "mermaid": "sequenceDiagram\n  autonumber\n  actor operator as Operator\n  participant ideas as Ideas\n  participant worker_profiles as Worker profiles and adapters\n  actor sub_orchestrator as Sub-orchestrator\n  participant integration as Landing and integration\n  operator->>ideas: add-idea (command via other)\n  Note over operator,ideas: horch CLI request over the fleetd command channel#59; a request file with the same idempotency_key when fleetd is down\n  ideas-->>operator: add-idea (response via other)\n  ideas->>worker_profiles: start-agent-process (command via in-process)\n  Note over ideas,worker_profiles: sub-orchestrator CLI in a pane that ideas gets from the herdr adapter#59; worker-profiles builds the env\n  sub_orchestrator-)ideas: write-assumptions (command via file)\n  Note over sub_orchestrator,ideas: assumptions.md after the interview\n  ideas-)integration: assumptions-written (event via in-process)\n  integration-)ideas: feature-opened (event via in-process)\n  ideas-)operator: approval-requested (event via file)\n  Note over ideas,operator: needs-you/ file\n  opt direct ticket path\n    operator->>ideas: add-direct-idea (command via other)\n    ideas-)integration: direct-idea-accepted (event via in-process)\n  end"
     },
     {
       "id": "F2",
-      "name": "Approve, plan, and launch the first attempt",
+      "name": "Approve and commit the plan",
       "scenario": "S1",
       "kind": "happy-path",
-      "summary": "S1 part 2, from approval to a running attempt. The operator approves, the sub-orchestrator writes the spec and plan.yaml, plan validation commits it, task-execution leases a task in the same ledger transaction as the worktree lease row, worktree-custody creates the worktree after the commit, and task-execution launches the attempt with the environment that worker-profiles builds.",
+      "summary": "S1 part 2, from approval to a committed plan. The operator approves, fleetd writes approval.json, the sub-orchestrator writes the spec and plan.yaml, plan validation writes plan.verdict.json and commits the plan. F8 continues with the lease and the launch.",
       "policies": [
-        "promote-on-plan-committed",
-        "create-worktree-on-lease",
-        "launch-on-worktree"
+        "promote-on-plan-committed"
       ],
       "steps": [
         {
@@ -374,10 +407,20 @@
           "kind": "command",
           "sync": true,
           "via": "other",
-          "note": "horch CLI request over the fleetd command channel (fleet-runtime); a request file when fleetd is down"
+          "note": "horch CLI request over the fleetd command channel; a request file with the same idempotency_key when fleetd is down"
         },
         {
           "seq": 2,
+          "from": "ideas",
+          "to": "sub-orchestrator",
+          "message": "assumptions-approved",
+          "kind": "event",
+          "sync": false,
+          "via": "file",
+          "note": "approval.json with the hash you saw"
+        },
+        {
+          "seq": 3,
           "from": "sub-orchestrator",
           "to": "ideas",
           "message": "write-spec",
@@ -387,86 +430,47 @@
           "note": "spec.md and requirements.yaml"
         },
         {
-          "seq": 3,
+          "seq": 4,
           "from": "sub-orchestrator",
           "to": "ideas",
           "message": "submit-plan",
           "kind": "command",
           "sync": false,
           "via": "file",
-          "note": "plan.yaml; fleetd validates it and writes plan.verdict.json"
+          "note": "plan.yaml"
         },
         {
-          "seq": 4,
+          "seq": 5,
+          "from": "ideas",
+          "to": "sub-orchestrator",
+          "message": "plan-verdict-written",
+          "kind": "event",
+          "sync": false,
+          "via": "file",
+          "note": "plan.verdict.json"
+        },
+        {
+          "seq": 6,
           "from": "ideas",
           "to": "task-execution",
           "message": "plan-committed",
           "kind": "event",
           "sync": false,
           "via": "in-process"
-        },
-        {
-          "seq": 5,
-          "from": "task-execution",
-          "to": "worktree-custody",
-          "message": "task-leased",
-          "kind": "event",
-          "sync": false,
-          "via": "in-process",
-          "note": "the worktree lease row commits in the same ledger transaction; git worktree add runs after the commit"
-        },
-        {
-          "seq": 6,
-          "from": "worktree-custody",
-          "to": "task-execution",
-          "message": "worktree-created",
-          "kind": "event",
-          "sync": false,
-          "via": "in-process"
-        },
-        {
-          "seq": 7,
-          "from": "task-execution",
-          "to": "worker-profiles",
-          "message": "launch-environment",
-          "kind": "query",
-          "sync": true,
-          "via": "in-process"
-        },
-        {
-          "seq": 8,
-          "from": "worker-profiles",
-          "to": "task-execution",
-          "message": "launch-environment",
-          "kind": "response",
-          "sync": true,
-          "via": "in-process",
-          "note": "ANTHROPIC_API_KEY is never in the env"
-        },
-        {
-          "seq": 9,
-          "from": "task-execution",
-          "to": "fleet-runtime",
-          "message": "start-agent-process",
-          "kind": "command",
-          "sync": true,
-          "via": "in-process",
-          "note": "fleet-run wrapper in its own process group; START.md path is the argument"
         }
       ],
-      "mermaid": "sequenceDiagram\n  autonumber\n  actor operator as Operator\n  participant ideas as Ideas\n  actor sub_orchestrator as Sub-orchestrator\n  participant task_execution as Task execution\n  participant worktree_custody as Worktree custody\n  participant worker_profiles as Worker profiles and adapters\n  participant fleet_runtime as Fleet runtime\n  operator->>ideas: approve-assumptions (command via other)\n  Note over operator,ideas: horch CLI request over the fleetd command channel (fleet-runtime)#59; a request file when fleetd is down\n  sub_orchestrator-)ideas: write-spec (command via file)\n  Note over sub_orchestrator,ideas: spec.md and requirements.yaml\n  sub_orchestrator-)ideas: submit-plan (command via file)\n  Note over sub_orchestrator,ideas: plan.yaml#59; fleetd validates it and writes plan.verdict.json\n  ideas-)task_execution: plan-committed (event via in-process)\n  task_execution-)worktree_custody: task-leased (event via in-process)\n  Note over task_execution,worktree_custody: the worktree lease row commits in the same ledger transaction#59; git worktree add runs after the commit\n  worktree_custody-)task_execution: worktree-created (event via in-process)\n  task_execution->>worker_profiles: launch-environment (query via in-process)\n  worker_profiles-->>task_execution: launch-environment (response via in-process)\n  Note over worker_profiles,task_execution: ANTHROPIC_API_KEY is never in the env\n  task_execution->>fleet_runtime: start-agent-process (command via in-process)\n  Note over task_execution,fleet_runtime: fleet-run wrapper in its own process group#59; START.md path is the argument"
+      "mermaid": "sequenceDiagram\n  autonumber\n  actor operator as Operator\n  participant ideas as Ideas\n  actor sub_orchestrator as Sub-orchestrator\n  participant task_execution as Task execution\n  operator->>ideas: approve-assumptions (command via other)\n  Note over operator,ideas: horch CLI request over the fleetd command channel#59; a request file with the same idempotency_key when fleetd is down\n  ideas-)sub_orchestrator: assumptions-approved (event via file)\n  Note over ideas,sub_orchestrator: approval.json with the hash you saw\n  sub_orchestrator-)ideas: write-spec (command via file)\n  Note over sub_orchestrator,ideas: spec.md and requirements.yaml\n  sub_orchestrator-)ideas: submit-plan (command via file)\n  Note over sub_orchestrator,ideas: plan.yaml\n  ideas-)sub_orchestrator: plan-verdict-written (event via file)\n  Note over ideas,sub_orchestrator: plan.verdict.json\n  ideas-)task_execution: plan-committed (event via in-process)"
     },
     {
       "id": "F3",
-      "name": "Verify, land, roll up and close",
+      "name": "Verify, land and roll up",
       "scenario": "S1",
       "kind": "happy-path",
-      "summary": "S1 part 3, from the worker's result to the merged feature. The worker writes result.json, the wrapper writes exit.json, the verifier moves the task to done, integration lands the task branch on the feature branch, worktree-custody removes the worktree, ideas rolls the idea up, integration runs the full gate and opens the pull request, and the clock finds the merge in the primary branch by content.",
+      "summary": "S1 part 4, from the worker's result to the idea roll-up. The worker writes result.json, the wrapper writes exit.json, the verifier writes verdict.json and moves the task to done, integration lands the task branch on the feature branch, worktree-custody removes the worktree and ideas rolls the idea up. F9 continues with the pull request.",
       "policies": [
         "ready-branch-on-done",
         "after-landing",
-        "full-gate-on-landed",
-        "close-on-feature-merged"
+        "full-gate-on-landed"
       ],
       "steps": [
         {
@@ -477,7 +481,7 @@
           "kind": "command",
           "sync": false,
           "via": "file",
-          "note": "outbox/result.json"
+          "note": "outbox/result.json; status completed, blocked or failed"
         },
         {
           "seq": 2,
@@ -492,6 +496,16 @@
         {
           "seq": 3,
           "from": "task-execution",
+          "to": "sub-orchestrator",
+          "message": "task-verdict-written",
+          "kind": "event",
+          "sync": false,
+          "via": "file",
+          "note": "verdict.json"
+        },
+        {
+          "seq": 4,
+          "from": "task-execution",
           "to": "integration",
           "message": "task-done",
           "kind": "event",
@@ -500,7 +514,7 @@
           "note": "only the verifier emits it"
         },
         {
-          "seq": 4,
+          "seq": 5,
           "from": "integration",
           "to": "worktree-custody",
           "message": "task-branch-landed",
@@ -510,7 +524,7 @@
           "note": "after the bundle passes the fast gate"
         },
         {
-          "seq": 5,
+          "seq": 6,
           "from": "integration",
           "to": "ideas",
           "message": "task-branch-landed",
@@ -519,45 +533,16 @@
           "via": "in-process"
         },
         {
-          "seq": 6,
+          "seq": 7,
           "from": "ideas",
           "to": "integration",
           "message": "idea-tasks-landed",
           "kind": "event",
           "sync": false,
           "via": "in-process"
-        },
-        {
-          "seq": 7,
-          "from": "integration",
-          "to": "operator",
-          "message": "pull-request-opened",
-          "kind": "event",
-          "sync": false,
-          "via": "other",
-          "note": "after the full gate passes; pr setting gh or manual"
-        },
-        {
-          "seq": 8,
-          "from": "clock",
-          "to": "integration",
-          "message": "check-merged",
-          "kind": "command",
-          "sync": false,
-          "via": "in-process",
-          "note": "reads git: in the primary branch by content"
-        },
-        {
-          "seq": 9,
-          "from": "integration",
-          "to": "ideas",
-          "message": "feature-merged",
-          "kind": "event",
-          "sync": false,
-          "via": "in-process"
         }
       ],
-      "mermaid": "sequenceDiagram\n  autonumber\n  actor worker as Worker\n  participant task_execution as Task execution\n  participant agent_cli as Agent CLI process (external)\n  participant integration as Landing and integration\n  participant worktree_custody as Worktree custody\n  participant ideas as Ideas\n  actor operator as Operator\n  participant clock as Clock (external)\n  worker-)task_execution: write-result (command via file)\n  Note over worker,task_execution: outbox/result.json\n  agent_cli-)task_execution: attempt-exited (event via file)\n  Note over agent_cli,task_execution: exit.json, written by the fleet-run wrapper\n  task_execution-)integration: task-done (event via in-process)\n  Note over task_execution,integration: only the verifier emits it\n  integration-)worktree_custody: task-branch-landed (event via in-process)\n  Note over integration,worktree_custody: after the bundle passes the fast gate\n  integration-)ideas: task-branch-landed (event via in-process)\n  ideas-)integration: idea-tasks-landed (event via in-process)\n  integration-)operator: pull-request-opened (event via other)\n  Note over integration,operator: after the full gate passes#59; pr setting gh or manual\n  clock-)integration: check-merged (command via in-process)\n  Note over clock,integration: reads git: in the primary branch by content\n  integration-)ideas: feature-merged (event via in-process)"
+      "mermaid": "sequenceDiagram\n  autonumber\n  actor worker as Worker\n  participant task_execution as Task execution\n  participant agent_cli as Agent CLI process (external)\n  actor sub_orchestrator as Sub-orchestrator\n  participant integration as Landing and integration\n  participant worktree_custody as Worktree custody\n  participant ideas as Ideas\n  worker-)task_execution: write-result (command via file)\n  Note over worker,task_execution: outbox/result.json#59; status completed, blocked or failed\n  agent_cli-)task_execution: attempt-exited (event via file)\n  Note over agent_cli,task_execution: exit.json, written by the fleet-run wrapper\n  task_execution-)sub_orchestrator: task-verdict-written (event via file)\n  Note over task_execution,sub_orchestrator: verdict.json\n  task_execution-)integration: task-done (event via in-process)\n  Note over task_execution,integration: only the verifier emits it\n  integration-)worktree_custody: task-branch-landed (event via in-process)\n  Note over integration,worktree_custody: after the bundle passes the fast gate\n  integration-)ideas: task-branch-landed (event via in-process)\n  ideas-)integration: idea-tasks-landed (event via in-process)"
     },
     {
       "id": "F4",
@@ -602,7 +587,7 @@
         {
           "seq": 4,
           "from": "task-execution",
-          "to": "fleet-runtime",
+          "to": "worker-profiles",
           "message": "start-agent-process",
           "kind": "command",
           "sync": true,
@@ -637,14 +622,14 @@
           "via": "in-process"
         }
       ],
-      "mermaid": "sequenceDiagram\n  autonumber\n  actor provider_pool as Provider pool\n  participant task_execution as Task execution\n  participant worker_profiles as Worker profiles and adapters\n  participant fleet_runtime as Fleet runtime\n  actor worker as Worker\n  participant agent_cli as Agent CLI process (external)\n  participant integration as Landing and integration\n  provider_pool-)task_execution: usage-limit-reported (event via other)\n  Note over provider_pool,task_execution: reported through the wrapper and the quota probe\n  task_execution->>worker_profiles: launch-environment (query via in-process)\n  Note over task_execution,worker_profiles: fallback persona on another provider\n  worker_profiles-->>task_execution: launch-environment (response via in-process)\n  task_execution->>fleet_runtime: start-agent-process (command via in-process)\n  Note over task_execution,fleet_runtime: same worktree, no attempt burned\n  worker-)task_execution: write-result (command via file)\n  agent_cli-)task_execution: attempt-exited (event via file)\n  task_execution-)integration: task-done (event via in-process)"
+      "mermaid": "sequenceDiagram\n  autonumber\n  actor provider_pool as Provider pool\n  participant task_execution as Task execution\n  participant worker_profiles as Worker profiles and adapters\n  actor worker as Worker\n  participant agent_cli as Agent CLI process (external)\n  participant integration as Landing and integration\n  provider_pool-)task_execution: usage-limit-reported (event via other)\n  Note over provider_pool,task_execution: reported through the wrapper and the quota probe\n  task_execution->>worker_profiles: launch-environment (query via in-process)\n  Note over task_execution,worker_profiles: fallback persona on another provider\n  worker_profiles-->>task_execution: launch-environment (response via in-process)\n  task_execution->>worker_profiles: start-agent-process (command via in-process)\n  Note over task_execution,worker_profiles: same worktree, no attempt burned\n  worker-)task_execution: write-result (command via file)\n  agent_cli-)task_execution: attempt-exited (event via file)\n  task_execution-)integration: task-done (event via in-process)"
     },
     {
       "id": "F5",
       "name": "Stalled attempt, worker question and resumed work",
       "scenario": "S3",
       "kind": "alternative",
-      "summary": "S3. The clock ends a stalled attempt, worktree-custody keeps the tree, a retry starts in the same worktree, the worker asks a question, the sub-orchestrator records its own assumption or answers from approved items, and task-execution relaunches the attempt.",
+      "summary": "S3. The clock ends a stalled attempt, worktree-custody keeps the tree, a retry starts in the same worktree, the worker asks a question, the sub-orchestrator records its own assumption or answers from approved items through the command channel, and task-execution relaunches the attempt.",
       "policies": [
         "resume-on-own-assumption",
         "resume-on-answer"
@@ -672,7 +657,7 @@
         {
           "seq": 3,
           "from": "task-execution",
-          "to": "fleet-runtime",
+          "to": "worker-profiles",
           "message": "start-agent-process",
           "kind": "command",
           "sync": true,
@@ -705,8 +690,9 @@
           "to": "ideas",
           "message": "answer-question",
           "kind": "command",
-          "sync": false,
-          "via": "file"
+          "sync": true,
+          "via": "other",
+          "note": "horch CLI request over the fleetd command channel (orchestrator, D15)"
         },
         {
           "seq": 7,
@@ -731,14 +717,14 @@
         {
           "seq": 9,
           "from": "task-execution",
-          "to": "fleet-runtime",
+          "to": "worker-profiles",
           "message": "start-agent-process",
           "kind": "command",
           "sync": true,
           "via": "in-process"
         }
       ],
-      "mermaid": "sequenceDiagram\n  autonumber\n  participant clock as Clock (external)\n  participant task_execution as Task execution\n  participant worktree_custody as Worktree custody\n  participant fleet_runtime as Fleet runtime\n  actor worker as Worker\n  participant ideas as Ideas\n  actor sub_orchestrator as Sub-orchestrator\n  clock-)task_execution: apply-stall-ladder (command via in-process)\n  task_execution-)worktree_custody: attempt-failed (event via in-process)\n  Note over task_execution,worktree_custody: the worktree is kept for the retry\n  task_execution->>fleet_runtime: start-agent-process (command via in-process)\n  Note over task_execution,fleet_runtime: retry after backoff with a handoff file\n  worker-)ideas: ask-question (command via file)\n  Note over worker,ideas: outbox/questions/#59; the worker commits and exits\n  ideas-)sub_orchestrator: worker-question-asked (event via file)\n  Note over ideas,sub_orchestrator: inbox file plus the constant doorbell line\n  sub_orchestrator-)ideas: answer-question (command via file)\n  opt no approved item covers it\n    ideas-)task_execution: own-assumption-recorded (event via in-process)\n  end\n  opt an approved item covers it\n    ideas-)task_execution: question-answered (event via in-process)\n  end\n  task_execution->>fleet_runtime: start-agent-process (command via in-process)"
+      "mermaid": "sequenceDiagram\n  autonumber\n  participant clock as Clock (external)\n  participant task_execution as Task execution\n  participant worktree_custody as Worktree custody\n  participant worker_profiles as Worker profiles and adapters\n  actor worker as Worker\n  participant ideas as Ideas\n  actor sub_orchestrator as Sub-orchestrator\n  clock-)task_execution: apply-stall-ladder (command via in-process)\n  task_execution-)worktree_custody: attempt-failed (event via in-process)\n  Note over task_execution,worktree_custody: the worktree is kept for the retry\n  task_execution->>worker_profiles: start-agent-process (command via in-process)\n  Note over task_execution,worker_profiles: retry after backoff with a handoff file\n  worker-)ideas: ask-question (command via file)\n  Note over worker,ideas: outbox/questions/#59; the worker commits and exits\n  ideas-)sub_orchestrator: worker-question-asked (event via file)\n  Note over ideas,sub_orchestrator: inbox file plus the constant doorbell line\n  sub_orchestrator->>ideas: answer-question (command via other)\n  Note over sub_orchestrator,ideas: horch CLI request over the fleetd command channel (orchestrator, D15)\n  opt no approved item covers it\n    ideas-)task_execution: own-assumption-recorded (event via in-process)\n  end\n  opt an approved item covers it\n    ideas-)task_execution: question-answered (event via in-process)\n  end\n  task_execution->>worker_profiles: start-agent-process (command via in-process)"
     },
     {
       "id": "F6",
@@ -806,12 +792,12 @@
         {
           "seq": 6,
           "from": "task-execution",
-          "to": "operator",
+          "to": "ideas",
           "message": "task-escalated",
           "kind": "event",
           "sync": false,
-          "via": "file",
-          "note": "needs-you/ file"
+          "via": "in-process",
+          "note": "ideas puts the task on the 1 needs-you list"
         },
         {
           "seq": 7,
@@ -830,7 +816,7 @@
           "kind": "command",
           "sync": true,
           "via": "other",
-          "note": "horch CLI request over the fleetd command channel (fleet-runtime); a request file when fleetd is down"
+          "note": "horch CLI request over the fleetd command channel; a request file with the same idempotency_key when fleetd is down"
         },
         {
           "seq": 9,
@@ -842,7 +828,7 @@
           "via": "other"
         }
       ],
-      "mermaid": "sequenceDiagram\n  autonumber\n  participant task_execution as Task execution\n  participant ideas as Ideas\n  actor sub_orchestrator as Sub-orchestrator\n  participant worktree_custody as Worktree custody\n  actor operator as Operator\n  participant integration as Landing and integration\n  task_execution-)ideas: replan-requested (event via in-process)\n  Note over task_execution,ideas: after the last attempt\n  sub_orchestrator-)ideas: replan-task (command via file)\n  opt the replan validates\n    ideas-)task_execution: task-replanned (event via in-process)\n  end\n  opt the replan is refused\n    ideas-)task_execution: plan-refused (event via in-process)\n  end\n  opt a rescue commit fails\n    worktree_custody-)task_execution: rescue-failed (event via in-process)\n  end\n  task_execution-)operator: task-escalated (event via file)\n  Note over task_execution,operator: needs-you/ file\n  task_execution-)integration: task-escalated (event via in-process)\n  operator->>integration: abandon-task-branch (command via other)\n  Note over operator,integration: horch CLI request over the fleetd command channel (fleet-runtime)#59; a request file when fleetd is down\n  integration-->>operator: abandon-task-branch (response via other)"
+      "mermaid": "sequenceDiagram\n  autonumber\n  participant task_execution as Task execution\n  participant ideas as Ideas\n  actor sub_orchestrator as Sub-orchestrator\n  participant worktree_custody as Worktree custody\n  participant integration as Landing and integration\n  actor operator as Operator\n  task_execution-)ideas: replan-requested (event via in-process)\n  Note over task_execution,ideas: after the last attempt\n  sub_orchestrator-)ideas: replan-task (command via file)\n  opt the replan validates\n    ideas-)task_execution: task-replanned (event via in-process)\n  end\n  opt the replan is refused\n    ideas-)task_execution: plan-refused (event via in-process)\n  end\n  opt a rescue commit fails\n    worktree_custody-)task_execution: rescue-failed (event via in-process)\n  end\n  task_execution-)ideas: task-escalated (event via in-process)\n  Note over task_execution,ideas: ideas puts the task on the 1 needs-you list\n  task_execution-)integration: task-escalated (event via in-process)\n  operator->>integration: abandon-task-branch (command via other)\n  Note over operator,integration: horch CLI request over the fleetd command channel#59; a request file with the same idempotency_key when fleetd is down\n  integration-->>operator: abandon-task-branch (response via other)"
     },
     {
       "id": "F7",
@@ -942,6 +928,161 @@
         }
       ],
       "mermaid": "sequenceDiagram\n  autonumber\n  participant git as git (external)\n  participant integration as Landing and integration\n  participant task_execution as Task execution\n  participant ideas as Ideas\n  actor operator as Operator\n  git-)integration: primary-branch-moved (event via other)\n  Note over git,integration: the reconcile pass reads the primary branch ref\n  integration->>git: trial-merge-result (query via other)\n  Note over integration,git: git merge-tree#59; outside any ledger transaction\n  git-->>integration: trial-merge-result (response via other)\n  integration-)task_execution: resolver-task-opened (event via in-process)\n  Note over integration,task_execution: a normal task of a code kind\n  task_execution-)integration: task-done (event via in-process)\n  opt a task branch conflicts in a bundle\n    integration-)task_execution: task-branch-conflicted (event via in-process)\n  end\n  integration-)ideas: task-branch-landed (event via in-process)\n  ideas-)integration: idea-tasks-landed (event via in-process)\n  integration-)operator: pull-request-opened (event via other)"
+    },
+    {
+      "id": "F8",
+      "name": "Lease, write the task files and launch the first attempt",
+      "scenario": "S1",
+      "kind": "happy-path",
+      "summary": "S1 part 3, from the committed plan (F2) to a running attempt. task-execution leases a task in the same ledger transaction as the worktree lease row, worktree-custody creates the worktree after the commit, task-execution writes task.yaml and START.md, and worker-profiles starts the fleet-run wrapper. The wrapper heartbeat and the herdr agent status then renew the lease. F3 continues at the result.",
+      "policies": [
+        "create-worktree-on-lease",
+        "launch-on-worktree",
+        "start-process-on-launch"
+      ],
+      "steps": [
+        {
+          "seq": 1,
+          "from": "task-execution",
+          "to": "worktree-custody",
+          "message": "task-leased",
+          "kind": "event",
+          "sync": false,
+          "via": "in-process",
+          "note": "the worktree lease row commits in the same ledger transaction; git worktree add runs after the commit"
+        },
+        {
+          "seq": 2,
+          "from": "worktree-custody",
+          "to": "task-execution",
+          "message": "worktree-created",
+          "kind": "event",
+          "sync": false,
+          "via": "in-process"
+        },
+        {
+          "seq": 3,
+          "from": "task-execution",
+          "to": "worker",
+          "message": "assign-task",
+          "kind": "command",
+          "sync": false,
+          "via": "file",
+          "note": "task.yaml, written before the launch"
+        },
+        {
+          "seq": 4,
+          "from": "task-execution",
+          "to": "worker",
+          "message": "start-work",
+          "kind": "command",
+          "sync": false,
+          "via": "file",
+          "note": "inbox/START.md, written before the launch"
+        },
+        {
+          "seq": 5,
+          "from": "task-execution",
+          "to": "worker-profiles",
+          "message": "start-agent-process",
+          "kind": "command",
+          "sync": true,
+          "via": "in-process",
+          "note": "fleet-run wrapper in its own process group; START.md path is the argument; ANTHROPIC_API_KEY is never in the env"
+        },
+        {
+          "seq": 6,
+          "from": "worker-profiles",
+          "to": "task-execution",
+          "message": "heartbeat-written",
+          "kind": "event",
+          "sync": false,
+          "via": "file",
+          "note": "heartbeat.json every 10 s"
+        },
+        {
+          "seq": 7,
+          "from": "herdr",
+          "to": "task-execution",
+          "message": "agent-status-changed",
+          "kind": "event",
+          "sync": false,
+          "via": "other",
+          "note": "through the herdr adapter; session.snapshot is re-read every pass"
+        }
+      ],
+      "mermaid": "sequenceDiagram\n  autonumber\n  participant task_execution as Task execution\n  participant worktree_custody as Worktree custody\n  actor worker as Worker\n  participant worker_profiles as Worker profiles and adapters\n  participant herdr as herdr (external)\n  task_execution-)worktree_custody: task-leased (event via in-process)\n  Note over task_execution,worktree_custody: the worktree lease row commits in the same ledger transaction#59; git worktree add runs after the commit\n  worktree_custody-)task_execution: worktree-created (event via in-process)\n  task_execution-)worker: assign-task (command via file)\n  Note over task_execution,worker: task.yaml, written before the launch\n  task_execution-)worker: start-work (command via file)\n  Note over task_execution,worker: inbox/START.md, written before the launch\n  task_execution->>worker_profiles: start-agent-process (command via in-process)\n  Note over task_execution,worker_profiles: fleet-run wrapper in its own process group#59; START.md path is the argument#59; ANTHROPIC_API_KEY is never in the env\n  worker_profiles-)task_execution: heartbeat-written (event via file)\n  Note over worker_profiles,task_execution: heartbeat.json every 10 s\n  herdr-)task_execution: agent-status-changed (event via other)\n  Note over herdr,task_execution: through the herdr adapter#59; session.snapshot is re-read every pass"
+    },
+    {
+      "id": "F9",
+      "name": "Open the pull request and close the feature",
+      "scenario": "S1",
+      "kind": "happy-path",
+      "summary": "S1 part 5, from the full gate (F3) to the merged feature. integration opens the pull request on GitHub, tells the operator, GitHub reports the merge, and the clock confirms the merge in the primary branch by content before ideas closes the idea.",
+      "policies": [
+        "close-on-feature-merged"
+      ],
+      "steps": [
+        {
+          "seq": 1,
+          "from": "integration",
+          "to": "github",
+          "message": "open-pull-request",
+          "kind": "command",
+          "sync": true,
+          "via": "other",
+          "note": "after the full gate passes; pr setting gh or manual"
+        },
+        {
+          "seq": 2,
+          "from": "github",
+          "to": "integration",
+          "message": "open-pull-request",
+          "kind": "response",
+          "sync": true,
+          "via": "other"
+        },
+        {
+          "seq": 3,
+          "from": "integration",
+          "to": "operator",
+          "message": "pull-request-opened",
+          "kind": "event",
+          "sync": false,
+          "via": "other"
+        },
+        {
+          "seq": 4,
+          "from": "github",
+          "to": "integration",
+          "message": "pull-request-merged",
+          "kind": "event",
+          "sync": false,
+          "via": "other",
+          "note": "read by the reconcile pass",
+          "when": "pr setting gh"
+        },
+        {
+          "seq": 5,
+          "from": "clock",
+          "to": "integration",
+          "message": "check-merged",
+          "kind": "command",
+          "sync": false,
+          "via": "in-process",
+          "note": "reads git: in the primary branch by content"
+        },
+        {
+          "seq": 6,
+          "from": "integration",
+          "to": "ideas",
+          "message": "feature-merged",
+          "kind": "event",
+          "sync": false,
+          "via": "in-process"
+        }
+      ],
+      "mermaid": "sequenceDiagram\n  autonumber\n  participant integration as Landing and integration\n  participant github as GitHub (external)\n  actor operator as Operator\n  participant clock as Clock (external)\n  participant ideas as Ideas\n  integration->>github: open-pull-request (command via other)\n  Note over integration,github: after the full gate passes#59; pr setting gh or manual\n  github-->>integration: open-pull-request (response via other)\n  integration-)operator: pull-request-opened (event via other)\n  opt pr setting gh\n    github-)integration: pull-request-merged (event via other)\n    Note over github,integration: read by the reconcile pass\n  end\n  clock-)integration: check-merged (command via in-process)\n  Note over clock,integration: reads git: in the primary branch by content\n  integration-)ideas: feature-merged (event via in-process)"
     }
   ],
   "messages": [
@@ -955,21 +1096,24 @@
       "contract": "ui",
       "payload": [
         "text",
-        "featureId?"
+        "feature_id?",
+        "idempotency_key"
       ],
       "delivery": "sync",
       "response_payload": [
-        "ideaId"
+        "outcome (accepted or refused)",
+        "reason (when refused)"
       ],
       "channels": [
         {
           "via": "file",
           "sync": false,
           "delivery": "at-least-once",
-          "note": "request file under the state root when fleetd is down; fleetd reads it at start"
+          "note": "request file under the state root when fleetd is down; fleetd reads it at start; the file carries the same idempotency_key"
         }
       ],
-      "description": "horch idea add"
+      "description": "horch idea add",
+      "idempotency": "fleetd applies a request once per idempotency_key and returns the first outcome again"
     },
     {
       "id": "add-direct-idea",
@@ -980,23 +1124,25 @@
       ],
       "contract": "ui",
       "payload": [
-        "ticketFile",
-        "featureId?"
+        "ticket_file",
+        "feature_id?",
+        "idempotency_key"
       ],
       "delivery": "sync",
       "response_payload": [
-        "ideaId",
-        "featureId"
+        "outcome (accepted or refused)",
+        "reason (when refused)"
       ],
       "channels": [
         {
           "via": "file",
           "sync": false,
           "delivery": "at-least-once",
-          "note": "request file under the state root when fleetd is down; fleetd reads it at start"
+          "note": "request file under the state root when fleetd is down; fleetd reads it at start; the file carries the same idempotency_key"
         }
       ],
-      "description": "horch idea add --direct"
+      "description": "horch idea add --direct",
+      "idempotency": "fleetd applies a request once per idempotency_key and returns the first outcome again"
     },
     {
       "id": "approve-assumptions",
@@ -1007,22 +1153,24 @@
       ],
       "contract": "ui",
       "payload": [
-        "ideaId",
-        "assumptionsHash"
+        "idea_id",
+        "assumptions_hash",
+        "idempotency_key"
       ],
       "delivery": "sync",
       "response_payload": [
-        "approved"
+        "outcome (accepted or refused)",
+        "reason (when refused)"
       ],
       "channels": [
         {
           "via": "file",
           "sync": false,
           "delivery": "at-least-once",
-          "note": "request file under the state root when fleetd is down; fleetd reads it at start"
+          "note": "request file under the state root when fleetd is down; fleetd reads it at start; the file carries the same idempotency_key"
         }
       ],
-      "idempotency": "an approval of the same assumptionsHash is a no-op; a stale hash is refused"
+      "idempotency": "an approval of the same assumptionsHash is a no-op; a stale hash is refused; fleetd applies a request once per idempotency_key and returns the first outcome again"
     },
     {
       "id": "abandon-task-branch",
@@ -1034,21 +1182,23 @@
       "contract": "ui",
       "payload": [
         "branch",
-        "taskId"
+        "task_id",
+        "idempotency_key"
       ],
       "delivery": "sync",
       "response_payload": [
-        "rescueRef"
+        "outcome (accepted or refused)",
+        "reason (when refused)"
       ],
       "channels": [
         {
           "via": "file",
           "sync": false,
           "delivery": "at-least-once",
-          "note": "request file under the state root when fleetd is down; fleetd reads it at start"
+          "note": "request file under the state root when fleetd is down; fleetd reads it at start; the file carries the same idempotency_key"
         }
       ],
-      "idempotency": "an abandoned branch is not abandoned twice; the rescue ref is returned again"
+      "idempotency": "an abandoned branch is not abandoned twice; the rescue ref is returned again; fleetd applies a request once per idempotency_key and returns the first outcome again"
     },
     {
       "id": "write-assumptions",
@@ -1059,7 +1209,7 @@
       ],
       "contract": "ui",
       "payload": [
-        "ideaId",
+        "idea_id",
         "assumptions.md"
       ],
       "delivery": "at-least-once",
@@ -1074,7 +1224,7 @@
       ],
       "contract": "ui",
       "payload": [
-        "ideaId",
+        "idea_id",
         "spec.md",
         "requirements.yaml"
       ],
@@ -1090,7 +1240,7 @@
       ],
       "contract": "ui",
       "payload": [
-        "ideaId",
+        "idea_id",
         "plan.yaml"
       ],
       "delivery": "at-least-once",
@@ -1105,12 +1255,26 @@
       ],
       "contract": "ui",
       "payload": [
-        "questionId",
+        "question_id",
         "answer|assumption",
-        "citation?"
+        "citation?",
+        "idempotency_key"
       ],
-      "delivery": "at-least-once",
-      "idempotency": "once per questionId; a second answer is refused"
+      "delivery": "sync",
+      "idempotency": "once per question_id; a second answer is refused with its reason",
+      "response_payload": [
+        "outcome (accepted or refused)",
+        "reason (when refused)"
+      ],
+      "channels": [
+        {
+          "via": "file",
+          "sync": false,
+          "delivery": "at-least-once",
+          "note": "request file under the state root when fleetd is down; fleetd reads it at start; the file carries the same idempotency_key"
+        }
+      ],
+      "description": "horch CLI request of the sub-orchestrator over the fleetd command channel (orchestrator, D15); fleetd stays the only ledger writer"
     },
     {
       "id": "replan-task",
@@ -1121,8 +1285,8 @@
       ],
       "contract": "ui",
       "payload": [
-        "taskId",
-        "planChange"
+        "task_id",
+        "plan_change"
       ],
       "delivery": "at-least-once",
       "idempotency": "once per (taskId, replan round); 1 replan per task"
@@ -1136,12 +1300,16 @@
       ],
       "contract": "ui",
       "payload": [
-        "taskId",
-        "attemptId",
-        "status",
-        "commits[]"
+        "task",
+        "attempt",
+        "status (completed|blocked|failed)",
+        "summary",
+        "commits[]",
+        "files_changed[]",
+        "acceptance_self_check[]",
+        "notes_for_next"
       ],
-      "description": "outbox/result.json, written with fleet result",
+      "description": "outbox/result.json, written with horch result; status is 1 of the closed list completed, blocked, failed (orchestrator, D15)",
       "delivery": "at-least-once",
       "idempotency": "once per attemptId; result.json is immutable"
     },
@@ -1154,8 +1322,8 @@
       ],
       "contract": "ui",
       "payload": [
-        "taskId",
-        "questionId",
+        "task_id",
+        "question_id",
         "text"
       ],
       "description": "outbox/questions/, written with fleet ask",
@@ -1171,13 +1339,13 @@
       ],
       "contract": "external-api",
       "payload": [
-        "attemptId",
-        "exitStatus",
-        "hasResult"
+        "attempt_id",
+        "exit_status",
+        "has_result"
       ],
       "delivery": "at-least-once",
       "idempotency": "once per attemptId; exit.json is immutable",
-      "description": "exit.json, written by the fleet-run wrapper from the process fact"
+      "description": "exit.json, written by the fleet-run wrapper (worker-profiles, D2) from the exit fact of the CLI process"
     },
     {
       "id": "usage-limit-reported",
@@ -1188,12 +1356,13 @@
       ],
       "contract": "external-api",
       "payload": [
-        "attemptId",
+        "attempt_id",
         "pool",
-        "resetAt"
+        "reset_at?"
       ],
       "delivery": "at-least-once",
-      "idempotency": "once per (attemptId, pool); a repeat for a moved attempt is ignored"
+      "idempotency": "once per (attemptId, pool); a repeat for a moved attempt is ignored",
+      "description": "reset_at is optional (orchestrator, D15): when it is absent, fleetd waits until the pool probe reports ok"
     },
     {
       "id": "primary-branch-moved",
@@ -1204,7 +1373,7 @@
       ],
       "contract": "external-api",
       "payload": [
-        "primaryBranch",
+        "primary_branch",
         "tip"
       ],
       "delivery": "at-least-once",
@@ -1219,8 +1388,8 @@
       ],
       "contract": "external-api",
       "payload": [
-        "featureA",
-        "featureB|primary"
+        "feature_a",
+        "feature_b|primary"
       ],
       "delivery": "sync",
       "response_payload": [
@@ -1238,7 +1407,7 @@
       ],
       "contract": "external-api",
       "payload": [
-        "featureId"
+        "feature_id"
       ],
       "delivery": "at-least-once",
       "idempotency": "feature-merged is emitted once per featureId"
@@ -1252,7 +1421,7 @@
       ],
       "contract": "external-api",
       "payload": [
-        "attemptId"
+        "attempt_id"
       ],
       "delivery": "at-least-once",
       "idempotency": "each rung is recorded once per (attemptId, rung)"
@@ -1266,8 +1435,8 @@
       ],
       "contract": "ui",
       "payload": [
-        "ideaId",
-        "assumptionsHash"
+        "idea_id",
+        "assumptions_hash"
       ],
       "delivery": "at-least-once",
       "idempotency": "1 needs-you file per (ideaId, assumptionsHash)"
@@ -1281,8 +1450,8 @@
       ],
       "contract": "ui",
       "payload": [
-        "taskId",
-        "questionId",
+        "task_id",
+        "question_id",
         "text"
       ],
       "delivery": "at-least-once",
@@ -1293,17 +1462,18 @@
       "kind": "event",
       "producer": "task-execution",
       "consumers": [
-        "operator",
+        "ideas",
         "integration"
       ],
       "contract": "customer-supplier",
       "payload": [
-        "taskId",
+        "task_id",
         "reason"
       ],
       "delivery": "at-least-once",
       "idempotency": "the reconcile pass is level-triggered, so a reaction can run again; 1 needs-you file per (taskId, reason); integration records it once per taskId",
-      "version": "1"
+      "version": "1",
+      "description": "ideas puts the task on the 1 needs-you list (decompose N9); the operator sees it there"
     },
     {
       "id": "pull-request-opened",
@@ -1314,8 +1484,8 @@
       ],
       "contract": "ui",
       "payload": [
-        "featureId",
-        "prUrl"
+        "feature_id",
+        "pr_url"
       ],
       "delivery": "at-least-once",
       "idempotency": "1 pull request per featureId"
@@ -1329,8 +1499,8 @@
       ],
       "contract": "published-language",
       "payload": [
-        "ideaId",
-        "featureId?"
+        "idea_id",
+        "feature_id?"
       ],
       "delivery": "at-least-once",
       "idempotency": "the reconcile pass is level-triggered, so a reaction can run again; integration opens at most 1 feature per idea; open-feature is a no-op when the idea has a feature",
@@ -1345,10 +1515,10 @@
       ],
       "contract": "published-language",
       "payload": [
-        "featureId",
+        "feature_id",
         "branch",
-        "primaryBranch",
-        "ideaId"
+        "primary_branch",
+        "idea_id"
       ],
       "delivery": "at-least-once",
       "idempotency": "the reconcile pass is level-triggered, so a reaction can run again; ideas requests approval once per (ideaId, assumptionsHash)",
@@ -1363,9 +1533,9 @@
       ],
       "contract": "published-language",
       "payload": [
-        "ideaId",
-        "ticketFile",
-        "featureId?"
+        "idea_id",
+        "ticket_file",
+        "feature_id?"
       ],
       "delivery": "at-least-once",
       "idempotency": "the reconcile pass is level-triggered, so a reaction can run again; at most 1 feature per idea",
@@ -1380,8 +1550,8 @@
       ],
       "contract": "customer-supplier",
       "payload": [
-        "ideaId",
-        "taskIds[]"
+        "idea_id",
+        "task_ids[]"
       ],
       "delivery": "at-least-once",
       "idempotency": "the reconcile pass is level-triggered, so a reaction can run again; promote-task is a no-op for a task past planned",
@@ -1396,13 +1566,14 @@
       ],
       "contract": "customer-supplier",
       "payload": [
-        "ideaId",
-        "taskId?",
+        "idea_id",
+        "task_id?",
         "reasons[]"
       ],
       "delivery": "at-least-once",
       "idempotency": "the reconcile pass is level-triggered, so a reaction can run again; escalate-task is a no-op for an escalated task",
-      "version": "1"
+      "version": "1",
+      "description": "each refusal carries its reasons"
     },
     {
       "id": "task-replanned",
@@ -1413,8 +1584,8 @@
       ],
       "contract": "customer-supplier",
       "payload": [
-        "taskId",
-        "planChange"
+        "task_id",
+        "plan_change"
       ],
       "delivery": "at-least-once",
       "idempotency": "the reconcile pass is level-triggered, so a reaction can run again; promote once per (taskId, replan round)",
@@ -1429,8 +1600,8 @@
       ],
       "contract": "customer-supplier",
       "payload": [
-        "questionId",
-        "taskId"
+        "question_id",
+        "task_id"
       ],
       "delivery": "at-least-once",
       "idempotency": "the reconcile pass is level-triggered, so a reaction can run again; 1 launch per (taskId, questionId)",
@@ -1445,8 +1616,8 @@
       ],
       "contract": "customer-supplier",
       "payload": [
-        "questionId",
-        "taskId"
+        "question_id",
+        "task_id"
       ],
       "delivery": "at-least-once",
       "idempotency": "the reconcile pass is level-triggered, so a reaction can run again; 1 launch per (taskId, questionId)",
@@ -1461,8 +1632,8 @@
       ],
       "contract": "published-language",
       "payload": [
-        "ideaId",
-        "featureId"
+        "idea_id",
+        "feature_id"
       ],
       "delivery": "at-least-once",
       "idempotency": "the reconcile pass is level-triggered, so a reaction can run again; the full gate runs once per (featureId, feature tip)",
@@ -1477,7 +1648,7 @@
       ],
       "contract": "published-language",
       "payload": [
-        "taskId",
+        "task_id",
         "attempts"
       ],
       "delivery": "at-least-once",
@@ -1493,9 +1664,9 @@
       ],
       "contract": "customer-supplier",
       "payload": [
-        "taskId",
-        "attemptId",
-        "worktreeId",
+        "task_id",
+        "attempt_id",
+        "worktree_id",
         "branch"
       ],
       "delivery": "at-least-once",
@@ -1511,8 +1682,8 @@
       ],
       "contract": "customer-supplier",
       "payload": [
-        "attemptId",
-        "taskId",
+        "attempt_id",
+        "task_id",
         "outcome"
       ],
       "delivery": "at-least-once",
@@ -1528,7 +1699,7 @@
       ],
       "contract": "customer-supplier",
       "payload": [
-        "taskId",
+        "task_id",
         "branch",
         "verdict"
       ],
@@ -1545,8 +1716,8 @@
       ],
       "contract": "published-language",
       "payload": [
-        "worktreeId",
-        "taskId",
+        "worktree_id",
+        "task_id",
         "path",
         "branch"
       ],
@@ -1563,8 +1734,8 @@
       ],
       "contract": "published-language",
       "payload": [
-        "worktreeId",
-        "taskId"
+        "worktree_id",
+        "task_id"
       ],
       "delivery": "at-least-once",
       "idempotency": "the reconcile pass is level-triggered, so a reaction can run again; escalate-task is a no-op for an escalated task",
@@ -1580,7 +1751,7 @@
       "contract": "published-language",
       "payload": [
         "branch",
-        "taskId"
+        "task_id"
       ],
       "delivery": "at-least-once",
       "idempotency": "the reconcile pass is level-triggered, so a reaction can run again; 1 new attempt per (taskId, conflicting feature tip)",
@@ -1595,8 +1766,8 @@
       ],
       "contract": "published-language",
       "payload": [
-        "featureId",
-        "taskId",
+        "feature_id",
+        "task_id",
         "conflict"
       ],
       "delivery": "at-least-once",
@@ -1614,8 +1785,8 @@
       "contract": "published-language",
       "payload": [
         "branch",
-        "taskId",
-        "featureId",
+        "task_id",
+        "feature_id",
         "tip"
       ],
       "delivery": "at-least-once",
@@ -1631,7 +1802,7 @@
       ],
       "contract": "published-language",
       "payload": [
-        "featureId"
+        "feature_id"
       ],
       "delivery": "at-least-once",
       "idempotency": "the reconcile pass is level-triggered, so a reaction can run again; close-idea is a no-op for a merged idea",
@@ -1648,32 +1819,34 @@
       "contract": "customer-supplier",
       "payload": [
         "profile",
-        "taskId|ideaId",
-        "attemptId?"
+        "task_id|idea_id",
+        "attempt_id?"
       ],
       "delivery": "sync",
       "response_payload": [
         "cli",
         "flags[]",
         "env (scrubbed: no ANTHROPIC_API_KEY)",
-        "configHomeFiles[]",
-        "sandboxProfile"
+        "config_home_files[]",
+        "sandbox_profile"
       ],
       "version": "1",
-      "description": "minted: resolve a profile to the exact launch of 1 process"
+      "description": "resolve a profile to the exact launch of 1 process; task-execution reads it to check a fallback persona and its provider (F4); worker-profiles uses it inside start-agent-process"
     },
     {
       "id": "start-agent-process",
       "kind": "command",
       "producer": "task-execution",
       "consumers": [
-        "fleet-runtime"
+        "worker-profiles"
       ],
-      "contract": "open-host-service",
+      "contract": "customer-supplier",
       "payload": [
-        "launchEnvironment",
-        "startFile|pane",
-        "processGroup"
+        "profile",
+        "task_id|idea_id",
+        "attempt_id?",
+        "start_file",
+        "pane?"
       ],
       "delivery": "sync",
       "response_payload": [
@@ -1682,7 +1855,197 @@
         "pane"
       ],
       "version": "1",
-      "description": "minted: start the fleet-run wrapper (attempt) or a herdr pane (sub-orchestrator) through the platform layer and the herdr adapter. ideas sends it too, for sub-orchestrator panes."
+      "description": "worker-profiles owns it (decompose N8, D2): it resolves the launch environment and starts the fleet-run wrapper (attempt) or the sub-orchestrator CLI (pane) through the platform layer; ideas sends it too (R11)",
+      "idempotency": "1 process per attempt_id, or per idea_id for a sub-orchestrator; a start for a live recorded process is a no-op"
+    },
+    {
+      "id": "open-pull-request",
+      "kind": "command",
+      "producer": "integration",
+      "consumers": [
+        "github"
+      ],
+      "contract": "external-api",
+      "payload": [
+        "feature_id",
+        "branch",
+        "base_branch"
+      ],
+      "response_payload": [
+        "pr"
+      ],
+      "delivery": "sync",
+      "idempotency": "1 pull request per feature_id; integration reads features.pr first and does not open a second one",
+      "description": "after the full gate passes; pr setting gh opens it with gh, manual pushes the feature branch and records the compare URL; a stacked feature uses the lower feature branch as base (design: Features, landing and integration)"
+    },
+    {
+      "id": "pull-request-merged",
+      "kind": "event",
+      "producer": "github",
+      "consumers": [
+        "integration"
+      ],
+      "contract": "external-api",
+      "payload": [
+        "feature_id",
+        "pr",
+        "merge_commit"
+      ],
+      "delivery": "at-least-once",
+      "idempotency": "once per feature_id; check-merged confirms the merge in the primary branch by content before feature-merged",
+      "description": "the merge fact from GitHub; a manual merge is found by check-merged alone"
+    },
+    {
+      "id": "assign-task",
+      "kind": "command",
+      "producer": "task-execution",
+      "consumers": [
+        "worker"
+      ],
+      "contract": "ui",
+      "payload": [
+        "task",
+        "idea",
+        "key",
+        "attempt",
+        "profile",
+        "worktree",
+        "branch",
+        "read_first[]",
+        "goal",
+        "covers[]",
+        "acceptance[]",
+        "lease{expires, renew_every_s}",
+        "report_to"
+      ],
+      "delivery": "at-least-once",
+      "version": "1",
+      "idempotency": "task.yaml is written by fleetd before the launch, atomic and never rewritten; a change is a new attempt",
+      "description": "task.yaml, written by fleetd from the committed plan (design: Workspace layout and file protocol)"
+    },
+    {
+      "id": "start-work",
+      "kind": "command",
+      "producer": "task-execution",
+      "consumers": [
+        "worker"
+      ],
+      "contract": "ui",
+      "payload": [
+        "task_yaml",
+        "rescue_commit?",
+        "progress_notes?"
+      ],
+      "delivery": "at-least-once",
+      "version": "1",
+      "idempotency": "1 inbox/START.md per attempt; the doorbell line that points at it is constant (FM-15)",
+      "description": "inbox/START.md, what the worker reads first; its path is the launch argument"
+    },
+    {
+      "id": "heartbeat-written",
+      "kind": "event",
+      "producer": "worker-profiles",
+      "consumers": [
+        "task-execution"
+      ],
+      "contract": "customer-supplier",
+      "payload": [
+        "task",
+        "attempt",
+        "pid",
+        "pgid",
+        "mux_pane",
+        "proc_state",
+        "agent_state",
+        "last_output_at",
+        "last_tool_event",
+        "tokens",
+        "seq",
+        "written_at"
+      ],
+      "delivery": "at-most-once",
+      "version": "1",
+      "idempotency": "the file is rewritten every 10 s; the highest seq wins and a lower or equal seq is ignored",
+      "description": "heartbeat.json, written by the fleet-run wrapper (worker-profiles, D2), not the model; an outside signal that renews the lease"
+    },
+    {
+      "id": "task-verdict-written",
+      "kind": "event",
+      "producer": "task-execution",
+      "consumers": [
+        "sub-orchestrator"
+      ],
+      "contract": "ui",
+      "payload": [
+        "task",
+        "attempt",
+        "decision",
+        "reasons[]"
+      ],
+      "delivery": "at-least-once",
+      "version": "1",
+      "idempotency": "1 verdict.json per verified attempt; fleetd is its only writer",
+      "description": "verdict.json, the decision of the verifier"
+    },
+    {
+      "id": "plan-verdict-written",
+      "kind": "event",
+      "producer": "ideas",
+      "consumers": [
+        "sub-orchestrator"
+      ],
+      "contract": "ui",
+      "payload": [
+        "idea",
+        "decision (committed|refused)",
+        "reasons[]"
+      ],
+      "delivery": "at-least-once",
+      "version": "1",
+      "idempotency": "1 plan.verdict.json per (idea, plan content hash)",
+      "description": "plan.verdict.json, the result of plan validation; a refusal carries its reasons"
+    },
+    {
+      "id": "assumptions-approved",
+      "kind": "event",
+      "producer": "ideas",
+      "consumers": [
+        "sub-orchestrator"
+      ],
+      "contract": "ui",
+      "payload": [
+        "idea",
+        "assumptions_hash"
+      ],
+      "delivery": "at-least-once",
+      "version": "1",
+      "idempotency": "fleetd writes approval.json only on your approve, with the hash you saw, and ignores any other approval.json (FM-32, I7)",
+      "description": "approval.json, written by fleetd when you run horch idea approve"
+    },
+    {
+      "id": "agent-status-changed",
+      "kind": "event",
+      "producer": "herdr",
+      "consumers": [
+        "task-execution",
+        "ideas"
+      ],
+      "contract": "external-api",
+      "payload": [
+        "pane",
+        "agent_status"
+      ],
+      "delivery": "at-most-once",
+      "channels": [
+        {
+          "via": "other",
+          "sync": true,
+          "delivery": "sync",
+          "note": "session.snapshot, re-read in every pass (level-triggered)"
+        }
+      ],
+      "idempotency": "edge events can be lost by design; each pass re-reads session.snapshot, so a repeat or a loss changes nothing",
+      "description": "pane.agent_status_changed from the herdr socket events.subscribe, received through the herdr adapter of fleet-runtime (R12, R13): working, blocked on a dialog, or idle"
     }
   ],
   "integration_patterns": [
@@ -1720,13 +2083,13 @@
       "relationship": "R6",
       "mechanism": "in-process-call",
       "assumed_distance": "same-deployable",
-      "rationale": "Both contexts are code inside the 1 fleetd process (design: Architecture and roles; scale target 1 deployable). task-done and task-escalated as in-memory events; integration hosts mark-branch-ready."
+      "rationale": "Both contexts are code inside the 1 fleetd process (design: Architecture and roles; scale target 1 deployable). task-done and task-escalated as in-memory events; integration hosts mark-branch-ready. R6 and R7 are a partnership (orchestrator, D15): they change together."
     },
     {
       "relationship": "R7",
       "mechanism": "in-process-call",
       "assumed_distance": "same-deployable",
-      "rationale": "Both contexts are code inside the 1 fleetd process (design: Architecture and roles; scale target 1 deployable). task-branch-conflicted and resolver-task-opened as in-memory events; task-execution launches the attempt."
+      "rationale": "Both contexts are code inside the 1 fleetd process (design: Architecture and roles; scale target 1 deployable). task-branch-conflicted and resolver-task-opened as in-memory events; task-execution launches the attempt. R6 and R7 are a partnership (orchestrator, D15)."
     },
     {
       "relationship": "R8",
@@ -1744,25 +2107,25 @@
       "relationship": "R10",
       "mechanism": "in-process-call",
       "assumed_distance": "same-deployable",
-      "rationale": "Both contexts are code inside the 1 fleetd process (design: Architecture and roles; scale target 1 deployable). Direct synchronous query launch-environment at launch: task-execution cannot start a process without the scrubbed env (decompose N2)."
+      "rationale": "Both contexts are code inside the 1 fleetd process (design: Architecture and roles; scale target 1 deployable). task-execution sends start-agent-process to worker-profiles, which owns the environment scrub and the fleet-run wrapper (decompose N8, D2). task-execution asks launch-environment synchronously only to check a fallback persona (F4). heartbeat.json comes back as a file."
     },
     {
       "relationship": "R11",
       "mechanism": "in-process-call",
       "assumed_distance": "same-deployable",
-      "rationale": "Both contexts are code inside the 1 fleetd process (design: Architecture and roles; scale target 1 deployable). The same launch-environment query, asked by ideas for a sub-orchestrator pane. F1 shows it as a note on start-agent-process, not as its own step, to keep F1 within 9 messages."
+      "rationale": "Both contexts are code inside the 1 fleetd process (design: Architecture and roles; scale target 1 deployable). ideas sends start-agent-process to worker-profiles for a sub-orchestrator pane (F1), with the same environment scrub."
     },
     {
       "relationship": "R12",
       "mechanism": "in-process-call",
       "assumed_distance": "same-deployable",
-      "rationale": "Both contexts are code inside the 1 fleetd process (design: Architecture and roles; scale target 1 deployable). Calls through the fleet-runtime facade: start-agent-process, process facts, the single ledger writer (decompose N5)."
+      "rationale": "Both contexts are code inside the 1 fleetd process (design: Architecture and roles; scale target 1 deployable). Calls through the fleet-runtime facade: the single ledger writer (decompose N5) and the herdr adapter, which gives panes and delivers agent-status-changed. Process starts go through worker-profiles, not fleet-runtime. No flow draws a step to fleet-runtime: the ledger writer sits under every step (A3), and the flows draw the herdr adapter as herdr itself."
     },
     {
       "relationship": "R13",
       "mechanism": "in-process-call",
       "assumed_distance": "same-deployable",
-      "rationale": "Both contexts are code inside the 1 fleetd process (design: Architecture and roles; scale target 1 deployable). The same facade for ideas: the command channel delivers horch idea commands, and start-agent-process opens sub-orchestrator panes through the herdr adapter."
+      "rationale": "Both contexts are code inside the 1 fleetd process (design: Architecture and roles; scale target 1 deployable). The same facade for ideas: the command channel delivers horch idea commands and the answers of the sub-orchestrator, and the herdr adapter gives sub-orchestrator panes. No flow draws a step to fleet-runtime: the ledger writer sits under every step (A3), and the flows draw the herdr adapter as herdr itself."
     }
   ],
   "coupling_concerns": [
@@ -1780,7 +2143,7 @@
         "F6",
         "F7"
       ],
-      "mitigation": "Keep both directions as versioned in-memory events only, never direct calls; decompose can declare R6 and R7 a partnership (Q4).",
+      "mitigation": "Keep both directions as versioned in-memory events only, never direct calls. The orchestrator (D15) declared R6 and R7 a partnership: the 2 contexts plan their changes together (answers Q4).",
       "saga_candidate": false
     },
     {
@@ -1844,7 +2207,7 @@
       "severity": "medium",
       "smell": "event-should-be-command",
       "flows": [
-        "F2"
+        "F8"
       ],
       "mitigation": "task-execution acts as the process manager of dispatch: lease and worktree lease row in 1 transaction, then create-worktree, then launch on worktree-created, with a timeout back to ready.",
       "saga_candidate": true
@@ -1855,13 +2218,13 @@
       "contexts": [
         "integration",
         "worktree-custody",
-        "fleet-runtime"
+        "worker-profiles"
       ],
       "severity": "high",
       "smell": "external-in-transaction",
       "flows": [
-        "F2",
-        "F7"
+        "F7",
+        "F8"
       ],
       "mitigation": "Commit, then call, then record the outcome as an event in the next pass; never call git or start a process while the ledger transaction is open.",
       "saga_candidate": false
@@ -1883,7 +2246,7 @@
     },
     {
       "id": "CC8",
-      "text": "plan-refused is an ideas fact, but escalate-task runs in task-execution, which owns neither the plan nor the reasons. The operator inbox owner is also open (decompose Q3).",
+      "text": "plan-refused is an ideas fact, but escalate-task runs in task-execution, which owns neither the plan nor the reasons.",
       "contexts": [
         "ideas",
         "task-execution"
@@ -1893,7 +2256,7 @@
       "flows": [
         "F6"
       ],
-      "mitigation": "Keep the policy in task-execution only for a replan of an existing task; a refused first plan stays in ideas. Settle the needs-you owner in define.",
+      "mitigation": "Keep the policy in task-execution only for a replan of an existing task; a refused first plan stays in ideas. ideas owns the 1 needs-you list (orchestrator, D15), so task-escalated goes back to ideas (F6).",
       "saga_candidate": false
     },
     {
@@ -1910,15 +2273,47 @@
         "F3",
         "F7"
       ],
-      "mitigation": "Keep 1 thin event (branch, taskId, featureId, tip); each consumer reads its own rows.",
+      "mitigation": "Keep 1 thin event (branch, task_id, feature_id, tip); each consumer reads its own rows.",
       "saga_candidate": false
     }
   ],
   "sagas": [],
   "plain_words": {
-    "what": "We drew how the 6 parts of fleetd pass work to each other, in 7 step-by-step flows and 42 named messages.",
-    "decided": "All 6 parts run in 1 program, so they talk by in-memory messages that a 5-second loop re-checks. Only the operator's commands, the agents' files, git, GitHub and process starts leave the program.",
+    "what": "We drew how the 6 parts of fleetd pass work to each other, in 9 step-by-step flows and 51 named messages.",
+    "decided": "All 6 parts run in 1 program, so they talk by in-memory messages that a 5-second loop re-checks. Only the operator's commands, the agents' files, herdr, git, GitHub and process starts leave the program. worker-profiles starts every agent process.",
     "assumed": "We assumed a lost in-memory message is harmless because the loop re-reads the database every 5 seconds and redoes missing work.",
     "riskiest": "If a part reacts twice to the same message and is not built to ignore the repeat, it can launch a worker twice or open 2 features for 1 idea."
-  }
+  },
+  "deprecated": [
+    {
+      "id": "Q1",
+      "collection": "open_questions",
+      "reason": "Answered (orchestrator, D15): worker-profiles owns the fleet-run wrapper. Recorded in D2 (option B) and A7.",
+      "since": "2026-11-12"
+    },
+    {
+      "id": "Q2",
+      "collection": "open_questions",
+      "reason": "Answered by discover N10: discover adopted start-agent-process (command) and launch-environment and trial-merge-result (read models, modelled here as queries). Recorded in A6.",
+      "since": "2026-11-12"
+    },
+    {
+      "id": "Q3",
+      "collection": "open_questions",
+      "reason": "Answered (orchestrator, D15): git has 2 callers, split by concern. worktree-custody calls git for worktrees and rescue refs, integration for branches and merges. Recorded in A8.",
+      "since": "2026-11-12"
+    },
+    {
+      "id": "Q4",
+      "collection": "open_questions",
+      "reason": "Answered (orchestrator, D15): task-execution and integration are a partnership. Recorded in CC1, R6, R7 and N6. decompose still names R6 customer-supplier and R7 published-language.",
+      "since": "2026-11-12"
+    },
+    {
+      "id": "Q5",
+      "collection": "open_questions",
+      "reason": "Answered (orchestrator, D15): the sub-orchestrator answers a worker question through the command channel; fleetd stays the only ledger writer. Recorded in answer-question and F5.",
+      "since": "2026-11-12"
+    }
+  ]
 }
