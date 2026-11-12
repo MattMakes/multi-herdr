@@ -649,7 +649,7 @@ CREATE TABLE ingested (                    -- makes file ingestion idempotent
    - I5: every live pane and process under the fleet belongs to a live attempt; anything else is an orphan and is stopped.
    - I6: every worktree that `git worktree list` or `/fleet/work/` shows has a `worktrees` row, every row that is not `removed` has its directory, and no worktree is removed unless its branch landed or its rescue ref was verified.
    - I7: no idea is past `awaiting_approval` unless `approved_sha256` matches the current `assumptions.md`, and every idea from `clarifying` to `integrating` has exactly one live sub-orchestrator attempt or is waiting on you.
-   - I8: a task is `landed`, and a feature is `merged`, only when its changes are in the target branch by content. This holds for a squash merge.
+   - I8: a task branch is `landed`, and a feature is `merged`, only when its changes are in the target branch by content. This holds for a squash merge.
    - I9: a feature branch and the primary branch move only by fast-forward to a candidate that passed its gate.
    - I10: before each rebase or forced update of a branch, a rescue ref of the old tip exists.
    - I11: every fleet branch in git has a `branches` row; one without is adopted as an orphan row and reported, never deleted.
@@ -657,6 +657,18 @@ CREATE TABLE ingested (                    -- makes file ingestion idempotent
    - I13: a sub-orchestrator exists for each feature that is not merged and not abandoned.
 
 The task state machine is drawn under Supervision, liveness and reconciliation.
+
+**A state name is never written without its entity.** Each state machine has its own table and column, so the ledger is not ambiguous. Each status line, event, log line and message that gives a state also gives the kind of entity: task, task branch, feature, worktree or idea.
+
+**States that share a name**
+
+| State | Meaning |
+| --- | --- |
+| task `ready` | Its dependencies are done, and it is not dispatched. |
+| task branch `ready` | It is verified, and it waits for the next bundle. |
+| feature `ready` | Its full gate passed on its tip over the current primary branch. |
+| task branch `landed` | Its changes are in the feature branch by content. |
+| worktree `landed` | Its branch is landed, so nothing in it is unique. |
 
 ## Worker profiles and adapters
 
@@ -753,7 +765,7 @@ Each `add` writes one immutable file and one ledger row in state `captured`, and
 | `specifying` | Sub-orchestrator | `spec.md` and `requirements.yaml` validate, and every requirement cites an approved assumption or one of your answers. |
 | `ticketing` | Sub-orchestrator | Tickets and `plan.yaml` pass the plan validator and commit in one transaction. |
 | `in_progress` | Workers; the sub-orchestrator answers their questions and replans failed tasks | Every task is done. |
-| `integrating` | fleetd | Every task of the idea is `landed` on its feature branch. The idea waits here until its feature's changes are in the primary branch. |
+| `integrating` | fleetd | Every task of the idea is `done`, and every task branch of the idea is `landed` on its feature branch. The idea waits here until its feature's changes are in the primary branch. |
 | `merged` | Nobody | Terminal. Reached only when git shows its feature's changes in the primary branch and every worktree of the idea is removed. |
 | `parked`, `cancelled` | You | `horch idea park` or `cancel`; escalations also park. Worktrees are rescued first. |
 
@@ -899,7 +911,7 @@ fleetd keeps these behaviors of today's land path (`preservation-04-behavior.md`
 
 fleetd checks these on every pass against git. They are invariants I8 to I13 in the Ledger section.
 
-1. A task is `landed`, and a feature is `merged`, only when its changes are in the target branch by content. This holds for a squash merge.
+1. A task branch is `landed`, and a feature is `merged`, only when its changes are in the target branch by content. This holds for a squash merge.
 2. A feature branch and the primary branch move only by fast-forward to a candidate that passed its gate. A landing cannot overwrite another.
 3. Before each rebase or forced update of a branch, fleetd writes a rescue ref of the old tip.
 4. A fleet branch in git that has no ledger row is adopted as an orphan row and reported. It is never deleted.
@@ -913,7 +925,7 @@ fleetd checks these on every pass against git. They are invariants I8 to I13 in 
 - **Stack on evidence.** When the trial merge of 2 features conflicts, fleetd puts the younger feature on top of the older one. The conflict becomes 1 resolver task for a fresh agent. The agent gets the conflict in `zdiff3` form, the requirements of both features for those files, and the unit tests of both. It makes 1 commit for each requirement. The task lands on the younger feature's branch.
 - **Continuous rebase.** When the primary branch moves, fleetd rebases each feature branch, the bottom of a stack first. After a clean rebase the fast gate runs again. A conflict becomes a resolver task. `rerere` is on.
 - **Build on what is in flight.** At plan time the sub-orchestrator gets the diffs of the files that in-flight features already changed. It can propose to build on one of them. The proposal is in the assumptions that you approve.
-- **The full gate.** The full gate runs once for a feature, when its tasks are landed, on its tip over the current primary branch. Failures become triage tasks of the feature. If either tip moves after a pass, the pass is stale and the gate runs again before the feature is marked ready.
+- **The full gate.** The full gate runs once for a feature, when its task branches are landed, on its tip over the current primary branch. Failures become triage tasks of the feature. If either tip moves after a pass, the pass is stale and the gate runs again before the feature is marked ready.
 - **Two declared gates.** Each project declares its fast gate (its unit tests) and its full gate (the fast gate plus the end-to-end tests). Plan validation refuses a plan for a project that did not declare both. This repository has no unit-only command today (`research-03-this-repo.md`, F10).
 - **The pull request.** A project setting `pr` is `gh` or `manual`. `manual` pushes the feature branch and shows the compare URL. A stacked feature's pull request has the lower feature's branch as its base. A project setting says who merges; the default is you.
 - **Merged.** A feature is `merged` when its changes are in the primary branch. fleetd reads this from git, not from the GitHub API.
@@ -991,7 +1003,7 @@ def reconcile():
         land_bundles(tx)                      # ready task branches -> 1 bundle per feature, fast gate, fast-forward
         integrate_features(tx)                # trial merges, stacks, rebases, resolver tasks, full gate
         check_invariants(tx)                  # I1..I13, repair or escalate
-        roll_up_ideas(tx)                     # all tasks landed on the feature branch -> integrating; merged once git shows the feature in the primary branch and trees removed
+        roll_up_ideas(tx)                     # all task branches landed on the feature branch -> integrating; merged once git shows the feature in the primary branch and trees removed
     write_heartbeat(now)            # time of the last full pass; `horch fleetd check` reads it
     platform.watchdog_ping()        # systemd_notify("WATCHDOG=1") on Linux; macOS and Windows use `horch fleetd check`
 ```
