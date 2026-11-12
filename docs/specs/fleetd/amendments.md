@@ -361,3 +361,21 @@ The fault: the Preservation analysis of the design lists rows 06 S10 to S13 and 
 New content: add row 06 S14 to the same table as rows 06 S11 to S13. Its content: the source design assumed systemd or launchd, `WatchdogSec`, `/proc`, inotify and Unix signals to a process group, and it did not name Windows. D1, A1 and A15 answer it: the platform layer, and hang detection on all 3 OSes.
 
 Places: the Preservation analysis.
+
+# Fix round 2
+
+The judge of ticket 23 read the round 2 change of the design and gave the verdict FAIL: 1 CRITICAL (L1) and 1 LOW (L2). The review is `docs/specs/fleetd/design-review-3.md`. A19, A20 and A21 are stated. Amendment A22 is the decision on L1 and L2.
+
+## A22. A red test of Phase 0 does not block a gate (fixes L1, CRITICAL)
+
+The fault: Phase 0 adds red tests. Each stays red until the phase that makes it green. The test of PL-6 says "the test suite passes before the move and after it". With the red tests of Phase 0 in the suite, Phase P cannot pass its gate.
+
+New content:
+
+- Phase 0 keeps a list of expected failures. Each red test of Phase 0 is on the list, with the phase that makes it green. A test run passes when each test that is not on the list passes, and each test that is on the list fails. A phase removes its tests from the list. "Green" for a failure mode means that its test passes and is not on the list.
+- The test of PL-6 becomes: on each of macOS, Linux and Windows, each test has the same result before the move and after it. A test that passes before the move passes after it. A test on the list of expected failures still fails.
+- The gate of Phase P stays "PL-2 and PL-6 green". Phase P needs only what Phase 0 and Phase P give.
+- The sentence "A phase is released when its fault-injection tests pass" becomes "A phase is released when the tests of its gate pass". Reason: the gate of Phase P is not a fault-injection test. Change the same words in the row of D9 in the Amendments table.
+- L2: the sentence "made 13 decisions" must agree with the rows of the Amendments table. D16 is a decision of the operator. Give the count that the table shows.
+
+Places: Requirements (PL-6); the Migration plan (the paragraph before the phases, Phase 0, Phase P); the Amendments section (its first sentence, the D9 row, and a new row "Fix round 2: A22 (L1, L2)").
