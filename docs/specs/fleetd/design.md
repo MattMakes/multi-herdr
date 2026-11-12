@@ -128,7 +128,7 @@ Each requirement has an ID that the failure analysis and the tests point back to
 | FR-1 | `horch idea add` shall record each idea as one immutable file and one `captured` ledger row, with no AI involved. | Intake test: two ideas added back to back produce two files and two rows. |
 | FR-2 | The dispatcher shall be deterministic code that keeps 1 sub-orchestrator for each feature; 1 process never plans 2 ideas at the same time. | Property test over the idea state machine; the ledger shows one idea per sub-orchestrator attempt. |
 | FR-3 | A plan shall be committed to the ledger all-or-nothing, and only after it passes schema, DAG and coverage checks. | Plan validator unit tests; a plan missing a requirement is rejected. |
-| FR-4 | Every task shall name a worker profile, its `kind`, its inputs, its outputs and a machine-checkable acceptance check. For a judgment kind the check is structural (the file exists, the schema or the required sections are valid), and the plan shall pair the task with a judge task in a different session from the author, on a different provider when the roster has one. | Plan schema; plan validation refuses a judgment task with no paired judge task. |
+| FR-4 | Every task shall name a worker profile, its `kind`, its inputs, its outputs and a machine-checkable acceptance check. For a judgment kind the check is structural (the file exists, the schema or the required sections are valid), and the plan shall pair the task with a judge task in a different session from the author, on a different provider when the roster has one. The judgment kinds are `research`, `design`, `docs`, `report` and `creative`. A judge task has the kind `judge`, and it needs no judge task. | Plan schema; plan validation refuses a judgment task with no paired judge task. |
 | FR-5 | The supervisor shall assign tasks to workers (push). Workers shall never search for work. | No code path where an agent queries the ledger for open tasks. |
 | FR-6 | A worker profile shall declare CLI, model, skills, MCP servers, sandbox, writable paths, context budget, timeouts and restart policy. | Profile schema; the adapter refuses an incomplete profile. |
 | FR-7 | All task and result hand-off shall be through files under `FLEET_ROOT`. The only bytes ever sent into a terminal are a fixed doorbell line written by the supervisor's code. | Grep of the code for mux send calls; doorbell text is a constant. |
@@ -262,10 +262,10 @@ Sub-orchestrators and workers never touch the ledger, each other or git worktree
 | **Platform layer** | 1 interface inside horch with 1 module per OS (for example `platform/mac.rs`, `platform/linux.rs`, `platform/windows.rs`). | Service install and restart, hang detection, process facts (alive, start time, children, process group), stop and kill of a process group, file watching, sandboxing, sleep and wake, the transport of the fleetd command channel (a Unix socket, or a named pipe on Windows), and the machine probe (free disk, load). | Failing silently. Where an OS has no equivalent, the module returns an explicit "not supported" value, and core code decides what to do. |
 | **herdr** | The pane runtime, in a dedicated session `herdr --session fleet`, also under the service manager of the OS. | Terminals, agent names, screen-based status, the sidebar you watch. | Holding any state fleetd depends on. If herdr restarts, the reconciler rebuilds from the ledger and files. |
 
-**Done for each kind of task.** Each task declares a `kind`. Code kinds are `feature`, `quality`, `refactor` and `security`. Judgment kinds are `research`, `design`, `docs`, `report` and `creative`.
+**Done for each kind of task.** Each task declares a `kind`. Code kinds are `feature`, `quality`, `refactor` and `security`. Judgment kinds are `research`, `design`, `docs`, `report` and `creative`. A judge task has the kind `judge`. It is not a judgment kind. A resolver task has a code kind, and it follows the code path.
 
 - **Code kind.** The task's check runs. Then today's review scripts run unchanged: the code-sweep rounds, the findings F<n>, the answers file, the waivers and the verification profiles. Their limits stay: at most 2 requeues, and review rounds of 1 (light) and 3 (full) (`preservation-05-contracts-and-values.md`, row V-14).
-- **Judgment kind.** The verifier runs a structural check: the file exists, and the schema or the required sections are valid. Plan validation refuses a plan in which a judgment task has no paired judge task. The judge runs in a different session from the author, on a different provider when the roster has one. It ranks each miss:
+- **Judgment kind.** The verifier runs a structural check: the file exists, and the schema or the required sections are valid. Plan validation refuses a plan in which a task of a judgment kind (`research`, `design`, `docs`, `report` or `creative`) has no paired judge task. The judge runs in a different session from the author, on a different provider when the roster has one. It ranks each miss:
 
 | Rank | Effect |
 | --- | --- |
@@ -274,6 +274,8 @@ Sub-orchestrators and workers never touch the ledger, each other or git worktree
 | MEDIUM, LOW | Never block. |
 
 "Good enough" passes. The second judge cannot raise new MEDIUM or LOW items; this is the guard against gold-plating. After 2 fix rounds, a result that still has a CRITICAL item goes to you.
+
+- **Judge kind.** A task of kind `judge` needs no judge task. This is the explicit end of the chain. The verifier runs a structural check on its verdict file: the file exists, it has 1 verdict, and each finding has a rank.
 
 **Supervision tree and restart policy (OTP style)**
 
@@ -426,7 +428,7 @@ tasks:
       - sections: [docs/sync.md, "## Retries"]   # structural: the file and the section exist
   - key: retry-doc-judge
     title: Judge docs/sync.md against R1 and R2
-    kind: report
+    kind: judge             # not a judgment kind: it needs no judge of its own
     judges: retry-doc       # plan validation refuses a judgment task with no judge
     profile: judge-codex    # a different session, and a different provider from the author
     after: [retry-doc]
