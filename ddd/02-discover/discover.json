@@ -1,0 +1,3363 @@
+{
+  "schema_version": 1,
+  "step": "discover",
+  "produced_by": "ddd-discover",
+  "produced_at": "2026-11-12T17:20:05Z",
+  "mode": "auto",
+  "depth": "standard",
+  "inputs": [
+    "ddd/01-understand/understand.json",
+    "ddd/manifest.json",
+    "ddd/glossary.md",
+    "docs/specs/fleetd/design.md",
+    "docs/architecture.md",
+    "docs/specs/fleetd/preservation-04-behavior.md",
+    "docs/specs/fleetd/preservation-05-contracts-and-values.md",
+    "docs/specs/fleetd/preservation-06-wiring-and-platform.md",
+    "ai_docs/plans/fleetd-design/ddd-context.md"
+  ],
+  "assumptions": [
+    {
+      "id": "A1",
+      "confidence": "high",
+      "text": "The board is to-be: it models fleetd as design.md describes it, not today's horch. Today's differences appear as conflict hotspots H1 to H4 (design.md wins over the other sources, per the run context)."
+    },
+    {
+      "id": "A2",
+      "confidence": "medium",
+      "text": "The 5 phases and 4 pivotal events are a hypothesis drawn from the idea state machine (captured to merged) and the landing state machine. Decision D1 records the alternatives."
+    },
+    {
+      "id": "A3",
+      "confidence": "medium",
+      "text": "Daemon supervision (stale heartbeat, restart, self-update) and adapter conformance are cross-cutting. They sit at the end of the executing phase (sequence 540 to 580, before Task Done) because they act on running attempts. Decision D2 records the alternatives."
+    },
+    {
+      "id": "A4",
+      "confidence": "high",
+      "text": "fleetd components (idea dispatcher, verifier, landing, wrapper, reconciler) are our own system, not actors. Their commands have actor null and are issued by policies, or have the clock as actor when the reconcile pass fires them. No 'orchestrator' actor exists (understand N3)."
+    },
+    {
+      "id": "A5",
+      "confidence": "medium",
+      "text": "The judge, resolver and triage workers are the 'worker' actor running a task of a given kind (understand A5)."
+    },
+    {
+      "id": "A6",
+      "confidence": "high",
+      "text": "The event order follows understand N7 (idea states), N8 (task branch states building, verifying, ready, in_bundle, landed with side states conflicted, gate_failed, abandoned) and N9 (worktree states reserved, created, active, landing, landed, orphaned, rescued, removed)."
+    },
+    {
+      "id": "A7",
+      "confidence": "medium",
+      "text": "'Worktree landed' (nothing unique left) is folded into Task Branch Landed and Worktree Removed; it is not a separate event."
+    },
+    {
+      "id": "A8",
+      "confidence": "low",
+      "text": "Feature Opened happens after Assumptions Written for an idea with no --to, as the Features section says; the idea row records its feature at capture only for --to (H7)."
+    },
+    {
+      "id": "A9",
+      "confidence": "medium",
+      "text": "The fleetd command channel, request files while fleetd is down, and the herdr pane mapping are design-level transport; they are not on the board."
+    },
+    {
+      "id": "A10",
+      "confidence": "high",
+      "text": "Event count 82 is above the standard band (25 to 60). The design has 4 state machines (idea, task, task branch, worktree) plus feature integration; merging them further hides the language conflicts H4 and H6."
+    }
+  ],
+  "open_questions": [
+    {
+      "id": "Q1",
+      "blocking": false,
+      "owner": "operator",
+      "text": "Which feature does an idea with no --to belong to between capture and the first assumptions (H7)?"
+    },
+    {
+      "id": "Q2",
+      "blocking": false,
+      "owner": "operator",
+      "text": "What is the time limit of a worker question before it escalates, and does it pause outside working hours (H10)?"
+    },
+    {
+      "id": "Q3",
+      "blocking": false,
+      "owner": "operator",
+      "text": "Does an operator requeue also restore the single replan, and how do the 2 review requeues count against max_attempts (H12)?"
+    },
+    {
+      "id": "Q4",
+      "blocking": false,
+      "owner": "operator",
+      "text": "Where on the timeline does daemon supervision and adapter conformance belong: in executing, in its own phase, or off the idea timeline (D2)?"
+    },
+    {
+      "id": "Q5",
+      "blocking": false,
+      "owner": "operator",
+      "text": "Are the 5 phases and 4 pivotal events the right cut of the flow (D1)?"
+    }
+  ],
+  "actors": [
+    {
+      "id": "operator",
+      "name": "Operator",
+      "from_understand": "operator"
+    },
+    {
+      "id": "sub-orchestrator",
+      "name": "Sub-orchestrator",
+      "from_understand": "sub-orchestrator"
+    },
+    {
+      "id": "worker",
+      "name": "Worker",
+      "from_understand": "worker"
+    },
+    {
+      "id": "friend",
+      "name": "Friend",
+      "from_understand": "friend"
+    }
+  ],
+  "external_systems": [
+    {
+      "id": "clock",
+      "name": "Clock",
+      "description": "The fleetd reconcile pass (every 5 s) and the fixed timers it reads. It fires every time-triggered command. Time counts only while the machine is awake."
+    },
+    {
+      "id": "agent-cli",
+      "name": "Agent CLI process",
+      "description": "The Claude Code, Codex, Antigravity, OpenCode, pi or Prime process of 1 attempt. Its exit is a process fact that the wrapper and the platform layer report."
+    },
+    {
+      "id": "git",
+      "name": "git",
+      "description": "Worktrees, branches, refs and merge-tree trial merges. The source of truth for 'in the primary branch by content'."
+    },
+    {
+      "id": "github",
+      "name": "GitHub",
+      "description": "Hosts the pull request of a feature (pr setting gh) or the compare URL (pr setting manual)."
+    },
+    {
+      "id": "os-service-manager",
+      "name": "OS service manager",
+      "description": "launchd, systemd, or a Windows service and Task Scheduler. Keeps fleetd and herdr running and restarts them."
+    },
+    {
+      "id": "provider-pool",
+      "name": "Provider pool",
+      "description": "A usage pool of 1 provider (understand actor provider-pool). It reports usage limits, outages and window resets."
+    },
+    {
+      "id": "herdr",
+      "name": "herdr",
+      "description": "The pane runtime in session 'fleet'. Shows panes, agent status and notifications. Holds no state that fleetd depends on."
+    }
+  ],
+  "phases": [
+    {
+      "id": "clarifying",
+      "name": "Clarifying an idea",
+      "order": 1
+    },
+    {
+      "id": "planning",
+      "name": "Planning",
+      "order": 2
+    },
+    {
+      "id": "executing",
+      "name": "Executing and verifying tasks",
+      "order": 3
+    },
+    {
+      "id": "landing",
+      "name": "Landing task branches",
+      "order": 4
+    },
+    {
+      "id": "integrating",
+      "name": "Integrating the feature",
+      "order": 5
+    }
+  ],
+  "events": [
+    {
+      "id": "idea-captured",
+      "name": "Idea Captured",
+      "phase": "clarifying",
+      "sequence": 10,
+      "actor": "operator",
+      "triggered_by": "add-idea",
+      "pivotal": false,
+      "data": [
+        "ideaId",
+        "text",
+        "featureId?"
+      ],
+      "description": "horch idea add writes 1 immutable idea file and 1 ledger row in state captured. --to joins an open feature."
+    },
+    {
+      "id": "sub-orchestrator-started",
+      "name": "Sub-Orchestrator Started",
+      "phase": "clarifying",
+      "sequence": 20,
+      "actor": null,
+      "triggered_by": "start-sub-orchestrator",
+      "pivotal": false,
+      "data": [
+        "ideaId",
+        "featureId",
+        "pane",
+        "phase"
+      ],
+      "description": "fleetd opens pane idea-NNNN with a fresh sub-orchestrator process for the phase. The idea moves to clarifying."
+    },
+    {
+      "id": "interview-question-asked",
+      "name": "Interview Question Asked",
+      "phase": "clarifying",
+      "sequence": 30,
+      "actor": "sub-orchestrator",
+      "triggered_by": "ask-operator",
+      "pivotal": false,
+      "data": [
+        "ideaId",
+        "question"
+      ],
+      "description": "The sub-orchestrator asks the operator 1 question in its pane, after it reads the code and docs the idea touches."
+    },
+    {
+      "id": "interview-answer-recorded",
+      "name": "Interview Answer Recorded",
+      "phase": "clarifying",
+      "sequence": 40,
+      "actor": "operator",
+      "triggered_by": "answer-interview-question",
+      "pivotal": false,
+      "data": [
+        "ideaId",
+        "question",
+        "answer"
+      ],
+      "description": "horch idea note appends the question and the answer to interview.md."
+    },
+    {
+      "id": "idea-amended",
+      "name": "Idea Amended",
+      "phase": "clarifying",
+      "sequence": 50,
+      "actor": "operator",
+      "triggered_by": "amend-idea",
+      "pivotal": false,
+      "data": [
+        "ideaId",
+        "amendment"
+      ],
+      "description": "horch idea amend adds 1 amendment file. Before approval it joins the interview. After approval it becomes a revise."
+    },
+    {
+      "id": "assumptions-written",
+      "name": "Assumptions Written",
+      "phase": "clarifying",
+      "sequence": 60,
+      "actor": "sub-orchestrator",
+      "triggered_by": "write-assumptions",
+      "pivotal": false,
+      "data": [
+        "ideaId",
+        "assumptions[]"
+      ],
+      "description": "assumptions.md validates with no item marked [open]."
+    },
+    {
+      "id": "feature-opened",
+      "name": "Feature Opened",
+      "phase": "clarifying",
+      "sequence": 70,
+      "actor": null,
+      "triggered_by": "open-feature",
+      "pivotal": false,
+      "data": [
+        "featureId",
+        "name",
+        "branch",
+        "primaryBranch"
+      ],
+      "description": "fleetd checks the kebab-case name, writes the features row, then creates the feature branch. For a --direct idea with no --to it happens at acceptance."
+    },
+    {
+      "id": "approval-requested",
+      "name": "Approval Requested",
+      "phase": "clarifying",
+      "sequence": 80,
+      "actor": null,
+      "triggered_by": "request-approval",
+      "pivotal": false,
+      "data": [
+        "ideaId",
+        "assumptionsHash"
+      ],
+      "description": "The idea moves to awaiting_approval. fleetd posts a herdr notification and lists the idea under Needs you. The idea lease is paused."
+    },
+    {
+      "id": "idea-parked",
+      "name": "Idea Parked",
+      "phase": "clarifying",
+      "sequence": 90,
+      "actor": null,
+      "triggered_by": "park-idea",
+      "pivotal": false,
+      "data": [
+        "ideaId",
+        "reason"
+      ],
+      "description": "The idea leaves the queue: 7 days with no answer, an escalation, or horch idea park. Worktrees are rescued first."
+    },
+    {
+      "id": "idea-cancelled",
+      "name": "Idea Cancelled",
+      "phase": "clarifying",
+      "sequence": 100,
+      "actor": "operator",
+      "triggered_by": "cancel-idea",
+      "pivotal": false,
+      "data": [
+        "ideaId"
+      ],
+      "description": "horch idea cancel. Worktrees are rescued first."
+    },
+    {
+      "id": "assumptions-revised",
+      "name": "Assumptions Revised",
+      "phase": "clarifying",
+      "sequence": 110,
+      "actor": "operator",
+      "triggered_by": "revise-assumptions",
+      "pivotal": false,
+      "data": [
+        "ideaId",
+        "text"
+      ],
+      "description": "horch idea revise sends the idea back to clarifying."
+    },
+    {
+      "id": "assumptions-approved",
+      "name": "Assumptions Approved",
+      "phase": "clarifying",
+      "sequence": 120,
+      "actor": "operator",
+      "triggered_by": "approve-assumptions",
+      "pivotal": true,
+      "data": [
+        "ideaId",
+        "assumptionsHash"
+      ],
+      "description": "horch idea approve, run outside any fleet attempt. fleetd writes approval.json with the hash of the assumptions the operator saw."
+    },
+    {
+      "id": "direct-idea-accepted",
+      "name": "Direct Idea Accepted",
+      "phase": "planning",
+      "sequence": 130,
+      "actor": "operator",
+      "triggered_by": "add-direct-idea",
+      "pivotal": false,
+      "data": [
+        "ideaId",
+        "ticketFile",
+        "featureId"
+      ],
+      "description": "horch idea add --direct: no research and no interview. The idea goes from captured to ticketing. The ticket stands for the approval."
+    },
+    {
+      "id": "spec-written",
+      "name": "Spec Written",
+      "phase": "planning",
+      "sequence": 140,
+      "actor": "sub-orchestrator",
+      "triggered_by": "write-spec",
+      "pivotal": false,
+      "data": [
+        "ideaId",
+        "requirements[]"
+      ],
+      "description": "spec.md and requirements.yaml validate, and every requirement cites an approved assumption or an operator answer. The idea moves to ticketing."
+    },
+    {
+      "id": "plan-submitted",
+      "name": "Plan Submitted",
+      "phase": "planning",
+      "sequence": 150,
+      "actor": "sub-orchestrator",
+      "triggered_by": "submit-plan",
+      "pivotal": false,
+      "data": [
+        "ideaId",
+        "tasks[]",
+        "dependencies"
+      ],
+      "description": "The tickets and plan.yaml are on disk for validation."
+    },
+    {
+      "id": "plan-refused",
+      "name": "Plan Refused",
+      "phase": "planning",
+      "sequence": 160,
+      "actor": null,
+      "triggered_by": "validate-plan",
+      "pivotal": false,
+      "data": [
+        "ideaId",
+        "reasons[]"
+      ],
+      "description": "The plan validator refuses the plan, for example a judgment task with no paired judge, or a project with no declared fast and full gate. A refused --direct plan goes to needs-you/."
+    },
+    {
+      "id": "plan-committed",
+      "name": "Plan Committed",
+      "phase": "planning",
+      "sequence": 170,
+      "actor": null,
+      "triggered_by": "validate-plan",
+      "pivotal": true,
+      "data": [
+        "ideaId",
+        "taskIds[]"
+      ],
+      "description": "The plan passes validation and its tasks commit in 1 transaction. The idea moves to in_progress. No task exists outside a committed plan."
+    },
+    {
+      "id": "task-promoted",
+      "name": "Task Promoted",
+      "phase": "executing",
+      "sequence": 200,
+      "actor": null,
+      "triggered_by": "promote-task",
+      "pivotal": false,
+      "data": [
+        "taskId"
+      ],
+      "description": "Every dependency of the task is done, or its quota pool reset, or the operator requeued it."
+    },
+    {
+      "id": "task-leased",
+      "name": "Task Leased",
+      "phase": "executing",
+      "sequence": 210,
+      "actor": null,
+      "triggered_by": "dispatch-task",
+      "pivotal": false,
+      "data": [
+        "taskId",
+        "attemptId",
+        "leaseExpires",
+        "worktreeId",
+        "branch"
+      ],
+      "description": "fleetd binds the task to a new attempt. In the same transaction it writes the worktree row (reserved) and the task branch row (building)."
+    },
+    {
+      "id": "worktree-created",
+      "name": "Worktree Created",
+      "phase": "executing",
+      "sequence": 220,
+      "actor": null,
+      "triggered_by": "create-worktree",
+      "pivotal": false,
+      "data": [
+        "worktreeId",
+        "path",
+        "branch"
+      ],
+      "description": "fleetd runs git worktree add. A retried attempt reuses the existing worktree."
+    },
+    {
+      "id": "attempt-launched",
+      "name": "Attempt Launched",
+      "phase": "executing",
+      "sequence": 230,
+      "actor": null,
+      "triggered_by": "launch-attempt",
+      "pivotal": false,
+      "data": [
+        "taskId",
+        "attemptId",
+        "profile",
+        "startFile"
+      ],
+      "description": "fleetd writes task.yaml and inbox/START.md, then starts the CLI through the fleet-run wrapper with START.md as its argument."
+    },
+    {
+      "id": "lease-renewed",
+      "name": "Lease Renewed",
+      "phase": "executing",
+      "sequence": 240,
+      "actor": "clock",
+      "triggered_by": "renew-lease",
+      "pivotal": false,
+      "data": [
+        "attemptId",
+        "expires"
+      ],
+      "description": "The process is alive, the heartbeat is under 30 s old, and there was activity within stall_after."
+    },
+    {
+      "id": "lease-expired",
+      "name": "Lease Expired",
+      "phase": "executing",
+      "sequence": 250,
+      "actor": "clock",
+      "triggered_by": "renew-lease",
+      "pivotal": false,
+      "data": [
+        "attemptId"
+      ],
+      "description": "No earned renewal: the lease expires within 120 s of the stall threshold."
+    },
+    {
+      "id": "attempt-stalled",
+      "name": "Attempt Stalled",
+      "phase": "executing",
+      "sequence": 260,
+      "actor": "clock",
+      "triggered_by": "apply-stall-ladder",
+      "pivotal": false,
+      "data": [
+        "attemptId",
+        "agentState"
+      ],
+      "description": "The stall ladder reached its last rung: idle with no result after 2 doorbells, hung, no first signal in 90 s, or blocked on a permission dialog."
+    },
+    {
+      "id": "usage-limit-reported",
+      "name": "Usage Limit Reported",
+      "phase": "executing",
+      "sequence": 270,
+      "actor": "provider-pool",
+      "triggered_by": null,
+      "pivotal": false,
+      "data": [
+        "attemptId",
+        "pool",
+        "resetAt"
+      ],
+      "description": "The worker shows a usage limit or a provider outage. This is not a stall and burns no attempt."
+    },
+    {
+      "id": "fallback-assigned",
+      "name": "Fallback Persona Assigned",
+      "phase": "executing",
+      "sequence": 280,
+      "actor": null,
+      "triggered_by": "move-to-fallback",
+      "pivotal": false,
+      "data": [
+        "taskId",
+        "fallbackProfile"
+      ],
+      "description": "The fallback persona is on another provider: the task restarts at once on a new worker of the fallback, on the same worktree."
+    },
+    {
+      "id": "quota-wait-started",
+      "name": "Quota Wait Started",
+      "phase": "executing",
+      "sequence": 290,
+      "actor": null,
+      "triggered_by": "move-to-fallback",
+      "pivotal": false,
+      "data": [
+        "taskId",
+        "pool"
+      ],
+      "description": "No fallback on another provider: the task waits in waiting_quota with its lease paused. fleetd does not go to a third persona."
+    },
+    {
+      "id": "quota-window-reset",
+      "name": "Quota Window Reset",
+      "phase": "executing",
+      "sequence": 300,
+      "actor": "provider-pool",
+      "triggered_by": null,
+      "pivotal": false,
+      "data": [
+        "pool"
+      ],
+      "description": "The usage window of the pool resets."
+    },
+    {
+      "id": "worker-question-asked",
+      "name": "Worker Question Asked",
+      "phase": "executing",
+      "sequence": 310,
+      "actor": "worker",
+      "triggered_by": "ask-question",
+      "pivotal": false,
+      "data": [
+        "taskId",
+        "questionId",
+        "text"
+      ],
+      "description": "The worker writes 1 question file, commits its work in progress and exits. The task parks with no process. The question is a ledger row with an owner and a time limit."
+    },
+    {
+      "id": "question-answered",
+      "name": "Question Answered",
+      "phase": "executing",
+      "sequence": 320,
+      "actor": "sub-orchestrator",
+      "triggered_by": "answer-question",
+      "pivotal": false,
+      "data": [
+        "questionId",
+        "answer",
+        "citation?"
+      ],
+      "description": "The approved assumptions or the spec cover the question; fleetd checks that the cited line exists. Or the sub-orchestrator replans the task."
+    },
+    {
+      "id": "own-assumption-recorded",
+      "name": "Own Assumption Recorded",
+      "phase": "executing",
+      "sequence": 330,
+      "actor": "sub-orchestrator",
+      "triggered_by": "answer-question",
+      "pivotal": false,
+      "data": [
+        "questionId",
+        "assumption"
+      ],
+      "description": "Nothing approved covers the question and it changes no assumption: the sub-orchestrator decides and records a reversible assumption marked as its own decision (D13)."
+    },
+    {
+      "id": "revise-requested",
+      "name": "Revise Requested",
+      "phase": "executing",
+      "sequence": 340,
+      "actor": "sub-orchestrator",
+      "triggered_by": "answer-question",
+      "pivotal": false,
+      "data": [
+        "questionId",
+        "ideaId",
+        "affectedTasks[]"
+      ],
+      "description": "The answer changes an approved assumption. It goes to the operator as a revise. Only the affected tasks pause."
+    },
+    {
+      "id": "question-escalated",
+      "name": "Question Escalated",
+      "phase": "executing",
+      "sequence": 350,
+      "actor": "clock",
+      "triggered_by": "escalate-question",
+      "pivotal": false,
+      "data": [
+        "questionId"
+      ],
+      "description": "The question passed its time limit. It goes to needs-you/ with a herdr notification."
+    },
+    {
+      "id": "result-written",
+      "name": "Result Written",
+      "phase": "executing",
+      "sequence": 360,
+      "actor": "worker",
+      "triggered_by": "write-result",
+      "pivotal": false,
+      "data": [
+        "taskId",
+        "attemptId",
+        "status",
+        "commits[]"
+      ],
+      "description": "outbox/result.json lands. A stop hook, or the wrapper repair pass, refuses to end the attempt without it."
+    },
+    {
+      "id": "attempt-exited",
+      "name": "Attempt Exited",
+      "phase": "executing",
+      "sequence": 370,
+      "actor": "agent-cli",
+      "triggered_by": null,
+      "pivotal": false,
+      "data": [
+        "attemptId",
+        "exitStatus",
+        "hasResult"
+      ],
+      "description": "The CLI process group exited. The wrapper writes exit.json. Exec mode turns 'stopped' into 'process exited'."
+    },
+    {
+      "id": "check-passed",
+      "name": "Check Passed",
+      "phase": "executing",
+      "sequence": 380,
+      "actor": null,
+      "triggered_by": "run-check",
+      "pivotal": false,
+      "data": [
+        "taskId",
+        "verdict"
+      ],
+      "description": "The verifier ran the acceptance commands (or the structural check for a judgment or judge kind) in the worktree, in the sandbox of the worker, within the check timeout."
+    },
+    {
+      "id": "check-failed",
+      "name": "Check Failed",
+      "phase": "executing",
+      "sequence": 390,
+      "actor": null,
+      "triggered_by": "run-check",
+      "pivotal": false,
+      "data": [
+        "taskId",
+        "verdict"
+      ],
+      "description": "An acceptance command failed. The claim of the worker does not count."
+    },
+    {
+      "id": "review-passed",
+      "name": "Review Passed",
+      "phase": "executing",
+      "sequence": 400,
+      "actor": null,
+      "triggered_by": "run-review",
+      "pivotal": false,
+      "data": [
+        "taskId",
+        "rounds"
+      ],
+      "description": "Code kind only: today's review scripts pass unchanged (code-sweep rounds, findings F<n>, answers file, waivers)."
+    },
+    {
+      "id": "review-failed",
+      "name": "Review Failed",
+      "phase": "executing",
+      "sequence": 410,
+      "actor": null,
+      "triggered_by": "run-review",
+      "pivotal": false,
+      "data": [
+        "taskId",
+        "findings[]"
+      ],
+      "description": "The review scripts requeue the task (at most 2 requeues)."
+    },
+    {
+      "id": "judge-verdict-written",
+      "name": "Judge Verdict Written",
+      "phase": "executing",
+      "sequence": 420,
+      "actor": "worker",
+      "triggered_by": "write-judge-verdict",
+      "pivotal": false,
+      "data": [
+        "judgeTaskId",
+        "judgedTaskId",
+        "findings[rank]"
+      ],
+      "description": "The paired judge task, in another session and on another provider when the roster has one, ranks each miss CRITICAL, HIGH, MEDIUM or LOW."
+    },
+    {
+      "id": "critical-fix-opened",
+      "name": "Critical Fix Opened",
+      "phase": "executing",
+      "sequence": 430,
+      "actor": null,
+      "triggered_by": "open-critical-fix",
+      "pivotal": false,
+      "data": [
+        "judgedTaskId",
+        "round"
+      ],
+      "description": "A CRITICAL miss blocks. A fresh session fixes it, then a fresh judge checks only the earlier CRITICAL items and the change."
+    },
+    {
+      "id": "high-finding-settled",
+      "name": "High Finding Settled",
+      "phase": "executing",
+      "sequence": 440,
+      "actor": "sub-orchestrator",
+      "triggered_by": "settle-high-finding",
+      "pivotal": false,
+      "data": [
+        "findingId",
+        "fixedOrReason"
+      ],
+      "description": "A HIGH miss does not block alone. The sub-orchestrator fixes it or dismisses it with a written reason."
+    },
+    {
+      "id": "attempt-failed",
+      "name": "Attempt Failed",
+      "phase": "executing",
+      "sequence": 450,
+      "actor": null,
+      "triggered_by": "end-attempt",
+      "pivotal": false,
+      "data": [
+        "attemptId",
+        "outcome"
+      ],
+      "description": "1 state for every non-verified outcome: stalled, no_result, lease expired, check failed. fleetd stops the process group and requeues in 1 transaction before any signal."
+    },
+    {
+      "id": "retry-scheduled",
+      "name": "Retry Scheduled",
+      "phase": "executing",
+      "sequence": 460,
+      "actor": null,
+      "triggered_by": "schedule-retry",
+      "pivotal": false,
+      "data": [
+        "taskId",
+        "nextAttempt",
+        "backoff"
+      ],
+      "description": "Attempts remain: a new attempt starts after backoff (30 s, 2 min, 8 min) in the same worktree with a handoff file."
+    },
+    {
+      "id": "replan-requested",
+      "name": "Replan Requested",
+      "phase": "executing",
+      "sequence": 470,
+      "actor": null,
+      "triggered_by": "schedule-retry",
+      "pivotal": false,
+      "data": [
+        "taskId"
+      ],
+      "description": "No attempts remain: the task goes to the sub-orchestrator of its idea to replan once."
+    },
+    {
+      "id": "task-replanned",
+      "name": "Task Replanned",
+      "phase": "executing",
+      "sequence": 480,
+      "actor": "sub-orchestrator",
+      "triggered_by": "replan-task",
+      "pivotal": false,
+      "data": [
+        "taskId",
+        "planChange"
+      ],
+      "description": "The sub-orchestrator changes the failed task. The changed plan validates again."
+    },
+    {
+      "id": "task-escalated",
+      "name": "Task Escalated",
+      "phase": "executing",
+      "sequence": 490,
+      "actor": null,
+      "triggered_by": "escalate-task",
+      "pivotal": false,
+      "data": [
+        "taskId",
+        "reason"
+      ],
+      "description": "The replan failed too, or 2 fix rounds left a CRITICAL item, or a rescue failed verification. The task goes to needs-you/."
+    },
+    {
+      "id": "task-requeued",
+      "name": "Task Requeued",
+      "phase": "executing",
+      "sequence": 500,
+      "actor": "operator",
+      "triggered_by": "requeue-task",
+      "pivotal": false,
+      "data": [
+        "taskId",
+        "attemptFloor"
+      ],
+      "description": "An operator requeue resets the attempt count (04 L8) and resumes on the same worktree (04 L5)."
+    },
+    {
+      "id": "worktree-orphaned",
+      "name": "Worktree Orphaned",
+      "phase": "executing",
+      "sequence": 510,
+      "actor": "clock",
+      "triggered_by": "reconcile-worktrees",
+      "pivotal": false,
+      "data": [
+        "worktreeId",
+        "path"
+      ],
+      "description": "The reconciler finds a tree with no live owner, or a directory with no row. A tree that vanished without fleetd is escalated."
+    },
+    {
+      "id": "worktree-rescued",
+      "name": "Worktree Rescued",
+      "phase": "executing",
+      "sequence": 520,
+      "actor": null,
+      "triggered_by": "rescue-worktree",
+      "pivotal": false,
+      "data": [
+        "worktreeId",
+        "rescueRef",
+        "fileCount"
+      ],
+      "description": "fleetd commits the full tree to refs/horch/rescue/<task>/<n> with a private index and verifies it byte for byte before any removal."
+    },
+    {
+      "id": "rescue-failed",
+      "name": "Rescue Failed",
+      "phase": "executing",
+      "sequence": 530,
+      "actor": null,
+      "triggered_by": "rescue-worktree",
+      "pivotal": false,
+      "data": [
+        "worktreeId"
+      ],
+      "description": "The rescue commit does not match the tree. The tree stays in place."
+    },
+    {
+      "id": "fleetd-hang-detected",
+      "name": "Fleetd Hang Detected",
+      "phase": "executing",
+      "sequence": 540,
+      "actor": "clock",
+      "triggered_by": "check-fleetd",
+      "pivotal": false,
+      "data": [
+        "lastPassAt"
+      ],
+      "description": "horch fleetd check (launchd timer, Windows scheduled task, every horch command) or the systemd watchdog sees no full pass for 30 s of awake time."
+    },
+    {
+      "id": "horch-version-installed",
+      "name": "New Horch Version Installed",
+      "phase": "executing",
+      "sequence": 550,
+      "actor": "friend",
+      "triggered_by": "self-update",
+      "pivotal": false,
+      "data": [
+        "version"
+      ],
+      "description": "horch self-update replaces the binary."
+    },
+    {
+      "id": "fleetd-restarted",
+      "name": "Fleetd Restarted",
+      "phase": "executing",
+      "sequence": 560,
+      "actor": "os-service-manager",
+      "triggered_by": "restart-fleetd",
+      "pivotal": false,
+      "data": [
+        "version"
+      ],
+      "description": "fleetd starts again and recovers from the ledger and the files. It exits only between passes (04 S7)."
+    },
+    {
+      "id": "adapter-conformance-failed",
+      "name": "Adapter Conformance Failed",
+      "phase": "executing",
+      "sequence": 570,
+      "actor": "clock",
+      "triggered_by": "run-conformance-tests",
+      "pivotal": false,
+      "data": [
+        "cli",
+        "version"
+      ],
+      "description": "Docs sync (daily, plus on a CLI version change) ran the conformance test of an adapter and it failed."
+    },
+    {
+      "id": "profile-marked-unhealthy",
+      "name": "Profile Marked Unhealthy",
+      "phase": "executing",
+      "sequence": 580,
+      "actor": null,
+      "triggered_by": "mark-profile-unhealthy",
+      "pivotal": false,
+      "data": [
+        "profile",
+        "reason"
+      ],
+      "description": "The profile gets no new dispatch until a conformance test passes. A permission dialog in an attempt does the same."
+    },
+    {
+      "id": "task-done",
+      "name": "Task Done",
+      "phase": "executing",
+      "sequence": 590,
+      "actor": null,
+      "triggered_by": "mark-task-done",
+      "pivotal": true,
+      "data": [
+        "taskId",
+        "verdict"
+      ],
+      "description": "Only the verifier moves a task to done: the check passed, then the review (code kind), or the judge with no CRITICAL item (judgment kind)."
+    },
+    {
+      "id": "task-branch-verified",
+      "name": "Task Branch Verified",
+      "phase": "landing",
+      "sequence": 600,
+      "actor": null,
+      "triggered_by": "mark-branch-ready",
+      "pivotal": false,
+      "data": [
+        "branch",
+        "taskId"
+      ],
+      "description": "The task branch leaves verifying and waits for the next bundle."
+    },
+    {
+      "id": "bundle-built",
+      "name": "Bundle Built",
+      "phase": "landing",
+      "sequence": 610,
+      "actor": null,
+      "triggered_by": "build-bundle",
+      "pivotal": false,
+      "data": [
+        "featureId",
+        "candidate",
+        "branches[]"
+      ],
+      "description": "1 candidate from the feature branch tip plus each ready task branch in queue order. Each task keeps its commits."
+    },
+    {
+      "id": "task-branch-conflicted",
+      "name": "Task Branch Conflicted",
+      "phase": "landing",
+      "sequence": 620,
+      "actor": null,
+      "triggered_by": "build-bundle",
+      "pivotal": false,
+      "data": [
+        "branch"
+      ],
+      "description": "The rebase of the task branch conflicts. The same worker resolves it (today's behavior)."
+    },
+    {
+      "id": "fast-gate-passed",
+      "name": "Fast Gate Passed",
+      "phase": "landing",
+      "sequence": 630,
+      "actor": null,
+      "triggered_by": "run-fast-gate",
+      "pivotal": false,
+      "data": [
+        "candidate"
+      ],
+      "description": "The unit tests of the project pass once on the candidate."
+    },
+    {
+      "id": "fast-gate-failed",
+      "name": "Fast Gate Failed",
+      "phase": "landing",
+      "sequence": 640,
+      "actor": null,
+      "triggered_by": "run-fast-gate",
+      "pivotal": false,
+      "data": [
+        "candidate"
+      ],
+      "description": "The fast gate fails on the candidate."
+    },
+    {
+      "id": "task-branch-landed",
+      "name": "Task Branch Landed",
+      "phase": "landing",
+      "sequence": 650,
+      "actor": null,
+      "triggered_by": "fast-forward-feature-branch",
+      "pivotal": false,
+      "data": [
+        "branch",
+        "featureId",
+        "tip"
+      ],
+      "description": "Under the land lock, after the check that the task is still held (04 F9), the feature branch fast-forwards to the candidate."
+    },
+    {
+      "id": "task-branch-gate-failed",
+      "name": "Task Branch Gate Failed",
+      "phase": "landing",
+      "sequence": 660,
+      "actor": null,
+      "triggered_by": "bisect-bundle",
+      "pivotal": false,
+      "data": [
+        "branch"
+      ],
+      "description": "fleetd bisects the bundle. The failing branch goes to gate_failed; the others go on."
+    },
+    {
+      "id": "triage-task-opened",
+      "name": "Triage Task Opened",
+      "phase": "landing",
+      "sequence": 670,
+      "actor": null,
+      "triggered_by": "open-triage-task",
+      "pivotal": false,
+      "data": [
+        "featureId",
+        "failure"
+      ],
+      "description": "A gate failure becomes a triage task of the feature, owned by its sub-orchestrator."
+    },
+    {
+      "id": "task-branch-abandoned",
+      "name": "Task Branch Abandoned",
+      "phase": "landing",
+      "sequence": 680,
+      "actor": "operator",
+      "triggered_by": "abandon-task-branch",
+      "pivotal": false,
+      "data": [
+        "branch",
+        "rescueRef"
+      ],
+      "description": "Only the operator abandons a task branch. A rescue ref is kept."
+    },
+    {
+      "id": "worktree-removed",
+      "name": "Worktree Removed",
+      "phase": "landing",
+      "sequence": 690,
+      "actor": null,
+      "triggered_by": "remove-worktree",
+      "pivotal": false,
+      "data": [
+        "worktreeId"
+      ],
+      "description": "Nothing in the tree is unique any more. fleetd removes it, and deletes the branch only when it is merged and no git stash entry names it (04 W6)."
+    },
+    {
+      "id": "idea-tasks-landed",
+      "name": "Idea Tasks Landed",
+      "phase": "landing",
+      "sequence": 700,
+      "actor": null,
+      "triggered_by": "roll-up-idea",
+      "pivotal": true,
+      "data": [
+        "ideaId",
+        "featureId"
+      ],
+      "description": "Every task of the idea is landed on its feature branch. The idea moves to integrating."
+    },
+    {
+      "id": "primary-branch-moved",
+      "name": "Primary Branch Moved",
+      "phase": "integrating",
+      "sequence": 710,
+      "actor": "git",
+      "triggered_by": null,
+      "pivotal": false,
+      "data": [
+        "primaryBranch",
+        "tip"
+      ],
+      "description": "The base branch of the project moved."
+    },
+    {
+      "id": "trial-merge-passed",
+      "name": "Trial Merge Passed",
+      "phase": "integrating",
+      "sequence": 720,
+      "actor": null,
+      "triggered_by": "run-trial-merges",
+      "pivotal": false,
+      "data": [
+        "featureA",
+        "featureB|primary"
+      ],
+      "description": "git merge-tree --write-tree with no checkout. The result is a ledger fact."
+    },
+    {
+      "id": "trial-merge-conflicted",
+      "name": "Trial Merge Conflicted",
+      "phase": "integrating",
+      "sequence": 730,
+      "actor": null,
+      "triggered_by": "run-trial-merges",
+      "pivotal": false,
+      "data": [
+        "featureA",
+        "featureB|primary",
+        "paths[]"
+      ],
+      "description": "2 in-flight features, or a feature and the primary branch, conflict."
+    },
+    {
+      "id": "feature-stacked",
+      "name": "Feature Stacked",
+      "phase": "integrating",
+      "sequence": 740,
+      "actor": null,
+      "triggered_by": "stack-feature",
+      "pivotal": false,
+      "data": [
+        "youngerFeature",
+        "olderFeature"
+      ],
+      "description": "The younger feature is put on top of the older one."
+    },
+    {
+      "id": "resolver-task-opened",
+      "name": "Resolver Task Opened",
+      "phase": "integrating",
+      "sequence": 750,
+      "actor": null,
+      "triggered_by": "open-resolver-task",
+      "pivotal": false,
+      "data": [
+        "featureId",
+        "conflict",
+        "requirements"
+      ],
+      "description": "1 code-kind task for a fresh agent with the conflict in zdiff3 form and the requirements and unit tests of both features. It lands on the younger feature branch."
+    },
+    {
+      "id": "feature-branch-rebased",
+      "name": "Feature Branch Rebased",
+      "phase": "integrating",
+      "sequence": 760,
+      "actor": null,
+      "triggered_by": "rebase-feature-branch",
+      "pivotal": false,
+      "data": [
+        "featureId",
+        "oldTipRescueRef",
+        "newTip"
+      ],
+      "description": "Bottom of a stack first. A rescue ref of the old tip is written before the rebase. The fast gate runs again."
+    },
+    {
+      "id": "feature-rebase-conflicted",
+      "name": "Feature Rebase Conflicted",
+      "phase": "integrating",
+      "sequence": 770,
+      "actor": null,
+      "triggered_by": "rebase-feature-branch",
+      "pivotal": false,
+      "data": [
+        "featureId",
+        "paths[]"
+      ],
+      "description": "The rebase conflicts. The conflict becomes a resolver task."
+    },
+    {
+      "id": "full-gate-passed",
+      "name": "Full Gate Passed",
+      "phase": "integrating",
+      "sequence": 780,
+      "actor": null,
+      "triggered_by": "run-full-gate",
+      "pivotal": false,
+      "data": [
+        "featureId",
+        "tip",
+        "primaryTip"
+      ],
+      "description": "The fast gate plus the end-to-end tests pass on the feature tip over the current primary branch. The pass is stale once either tip moves."
+    },
+    {
+      "id": "full-gate-failed",
+      "name": "Full Gate Failed",
+      "phase": "integrating",
+      "sequence": 790,
+      "actor": null,
+      "triggered_by": "run-full-gate",
+      "pivotal": false,
+      "data": [
+        "featureId",
+        "failures[]"
+      ],
+      "description": "Failures become triage tasks of the feature."
+    },
+    {
+      "id": "feature-marked-ready",
+      "name": "Feature Marked Ready",
+      "phase": "integrating",
+      "sequence": 800,
+      "actor": null,
+      "triggered_by": "mark-feature-ready",
+      "pivotal": false,
+      "data": [
+        "featureId"
+      ],
+      "description": "The feature has a fresh full gate pass."
+    },
+    {
+      "id": "pull-request-opened",
+      "name": "Pull Request Opened",
+      "phase": "integrating",
+      "sequence": 810,
+      "actor": null,
+      "triggered_by": "open-pull-request",
+      "pivotal": false,
+      "data": [
+        "featureId",
+        "prUrl"
+      ],
+      "description": "fleetd pushes the feature branch. pr gh opens the pull request, pr manual shows the compare URL. A stacked feature's pull request has the lower feature branch as its base."
+    },
+    {
+      "id": "pull-request-merged",
+      "name": "Pull Request Merged",
+      "phase": "integrating",
+      "sequence": 820,
+      "actor": "github",
+      "triggered_by": "merge-pull-request",
+      "pivotal": false,
+      "data": [
+        "prUrl"
+      ],
+      "description": "By default the operator merges. A project setting can say otherwise."
+    },
+    {
+      "id": "feature-merged",
+      "name": "Feature Merged",
+      "phase": "integrating",
+      "sequence": 830,
+      "actor": "clock",
+      "triggered_by": "check-merged",
+      "pivotal": false,
+      "data": [
+        "featureId"
+      ],
+      "description": "fleetd reads from git, by content, that the feature changes are in the primary branch. This holds for a squash merge."
+    },
+    {
+      "id": "idea-merged",
+      "name": "Idea Merged",
+      "phase": "integrating",
+      "sequence": 840,
+      "actor": null,
+      "triggered_by": "close-idea",
+      "pivotal": false,
+      "data": [
+        "ideaId",
+        "unlandedRescueRefs[]"
+      ],
+      "description": "Terminal. Every worktree of the idea is removed. The closing note lists any rescue ref that never landed."
+    }
+  ],
+  "commands": [
+    {
+      "id": "add-idea",
+      "name": "Add Idea",
+      "actor": "operator",
+      "produces": [
+        "idea-captured"
+      ],
+      "description": "horch idea add \"...\" or -f notes.md, optional --to <feature>."
+    },
+    {
+      "id": "start-sub-orchestrator",
+      "name": "Start Sub-Orchestrator",
+      "actor": null,
+      "produces": [
+        "sub-orchestrator-started"
+      ],
+      "description": "fleetd starts 1 fresh process per phase in the pane of the feature, and restarts a dead or missing one on the next pass."
+    },
+    {
+      "id": "ask-operator",
+      "name": "Ask Operator",
+      "actor": "sub-orchestrator",
+      "produces": [
+        "interview-question-asked"
+      ],
+      "description": "1 question at a time: what done looks like, scope edges, constraints, affected areas, priority."
+    },
+    {
+      "id": "answer-interview-question",
+      "name": "Answer Interview Question",
+      "actor": "operator",
+      "produces": [
+        "interview-answer-recorded"
+      ],
+      "description": "The operator answers in the pane. horch idea note records it."
+    },
+    {
+      "id": "amend-idea",
+      "name": "Amend Idea",
+      "actor": "operator",
+      "produces": [
+        "idea-amended"
+      ],
+      "description": "horch idea amend <id> \"...\"."
+    },
+    {
+      "id": "write-assumptions",
+      "name": "Write Assumptions",
+      "actor": "sub-orchestrator",
+      "produces": [
+        "assumptions-written"
+      ],
+      "description": "Writes assumptions.md: [confirmed] and [assumed] items, none [open]."
+    },
+    {
+      "id": "open-feature",
+      "name": "Open Feature",
+      "actor": null,
+      "produces": [
+        "feature-opened"
+      ],
+      "description": "Writes the features row, then creates the feature branch."
+    },
+    {
+      "id": "request-approval",
+      "name": "Request Approval",
+      "actor": null,
+      "produces": [
+        "approval-requested"
+      ],
+      "description": "Moves the idea to awaiting_approval and notifies the operator. Reminds once an hour in working hours."
+    },
+    {
+      "id": "park-idea",
+      "name": "Park Idea",
+      "actor": null,
+      "produces": [
+        "idea-parked"
+      ],
+      "description": "Issued by policy after 7 days of waiting or an escalation. The operator also runs horch idea park."
+    },
+    {
+      "id": "cancel-idea",
+      "name": "Cancel Idea",
+      "actor": "operator",
+      "produces": [
+        "idea-cancelled"
+      ],
+      "description": "horch idea cancel."
+    },
+    {
+      "id": "revise-assumptions",
+      "name": "Revise Assumptions",
+      "actor": "operator",
+      "produces": [
+        "assumptions-revised"
+      ],
+      "description": "horch idea revise <id> \"...\"."
+    },
+    {
+      "id": "approve-assumptions",
+      "name": "Approve Assumptions",
+      "actor": "operator",
+      "produces": [
+        "assumptions-approved"
+      ],
+      "description": "horch idea approve <id>. Refused inside any fleet attempt; profiles deny it."
+    },
+    {
+      "id": "add-direct-idea",
+      "name": "Add Direct Idea",
+      "actor": "operator",
+      "produces": [
+        "direct-idea-accepted"
+      ],
+      "description": "horch idea add --direct <ticket file>, optional --to. Refused inside a fleet attempt."
+    },
+    {
+      "id": "write-spec",
+      "name": "Write Spec",
+      "actor": "sub-orchestrator",
+      "produces": [
+        "spec-written"
+      ],
+      "description": "Writes spec.md and requirements.yaml after approval."
+    },
+    {
+      "id": "submit-plan",
+      "name": "Submit Plan",
+      "actor": "sub-orchestrator",
+      "produces": [
+        "plan-submitted"
+      ],
+      "description": "Writes tickets and plan.yaml."
+    },
+    {
+      "id": "validate-plan",
+      "name": "Validate Plan",
+      "actor": null,
+      "produces": [
+        "plan-refused",
+        "plan-committed"
+      ],
+      "description": "The plan validator: paired judges, declared gates, model guide, overlapping paths. Commits tasks in 1 transaction."
+    },
+    {
+      "id": "promote-task",
+      "name": "Promote Task",
+      "actor": null,
+      "produces": [
+        "task-promoted"
+      ],
+      "description": "pending to ready when every dependency is done, or waiting_quota to ready when the pool resets."
+    },
+    {
+      "id": "dispatch-task",
+      "name": "Dispatch Task",
+      "actor": null,
+      "produces": [
+        "task-leased"
+      ],
+      "description": "No cap. Only the health guards (free disk, load) and the pacing of the pool hold dispatch."
+    },
+    {
+      "id": "create-worktree",
+      "name": "Create Worktree",
+      "actor": null,
+      "produces": [
+        "worktree-created"
+      ],
+      "description": "git worktree add on the task branch. Only fleetd creates worktrees."
+    },
+    {
+      "id": "launch-attempt",
+      "name": "Launch Attempt",
+      "actor": null,
+      "produces": [
+        "attempt-launched"
+      ],
+      "description": "Starts the wrapper and the CLI in its own process group. A resume after an answer also launches."
+    },
+    {
+      "id": "renew-lease",
+      "name": "Renew Lease",
+      "actor": "clock",
+      "produces": [
+        "lease-renewed",
+        "lease-expired"
+      ],
+      "description": "Every reconcile pass (5 s). Lease time counts only while the machine is awake."
+    },
+    {
+      "id": "apply-stall-ladder",
+      "name": "Apply Stall Ladder",
+      "actor": "clock",
+      "produces": [
+        "attempt-stalled"
+      ],
+      "description": "Every pass: doorbell, doorbell after 2 min, then end. stall_after default 5 min; start timeout 90 s."
+    },
+    {
+      "id": "move-to-fallback",
+      "name": "Move To Fallback",
+      "actor": null,
+      "produces": [
+        "fallback-assigned",
+        "quota-wait-started"
+      ],
+      "description": "Fallback persona on another provider, else waiting_quota with the lease paused."
+    },
+    {
+      "id": "ask-question",
+      "name": "Ask Question",
+      "actor": "worker",
+      "produces": [
+        "worker-question-asked"
+      ],
+      "description": "Writes 1 question file, commits work in progress, exits."
+    },
+    {
+      "id": "answer-question",
+      "name": "Answer Question",
+      "actor": "sub-orchestrator",
+      "produces": [
+        "question-answered",
+        "own-assumption-recorded",
+        "revise-requested"
+      ],
+      "description": "fleetd starts the owner on each pass until an answer is recorded. 4 cases (design, Ideas, How a worker's question is resolved)."
+    },
+    {
+      "id": "escalate-question",
+      "name": "Escalate Question",
+      "actor": "clock",
+      "produces": [
+        "question-escalated"
+      ],
+      "description": "Fires when the time limit of the question row passes."
+    },
+    {
+      "id": "write-result",
+      "name": "Write Result",
+      "actor": "worker",
+      "produces": [
+        "result-written"
+      ],
+      "description": "horch result writes outbox/result.json."
+    },
+    {
+      "id": "run-check",
+      "name": "Run Check",
+      "actor": null,
+      "produces": [
+        "check-passed",
+        "check-failed"
+      ],
+      "description": "The verifier, with today's check timeout (20 min, max 24 h)."
+    },
+    {
+      "id": "run-review",
+      "name": "Run Review",
+      "actor": null,
+      "produces": [
+        "review-passed",
+        "review-failed"
+      ],
+      "description": "Today's review scripts, unchanged. Rounds: light 1, full 3."
+    },
+    {
+      "id": "write-judge-verdict",
+      "name": "Write Judge Verdict",
+      "actor": "worker",
+      "produces": [
+        "judge-verdict-written"
+      ],
+      "description": "The worker of a judge task writes its verdict file."
+    },
+    {
+      "id": "open-critical-fix",
+      "name": "Open Critical Fix",
+      "actor": null,
+      "produces": [
+        "critical-fix-opened"
+      ],
+      "description": "At most 2 fix rounds."
+    },
+    {
+      "id": "settle-high-finding",
+      "name": "Settle High Finding",
+      "actor": "sub-orchestrator",
+      "produces": [
+        "high-finding-settled"
+      ],
+      "description": "Fix or dismiss with a written reason."
+    },
+    {
+      "id": "end-attempt",
+      "name": "End Attempt",
+      "actor": null,
+      "produces": [
+        "attempt-failed"
+      ],
+      "description": "Stops the process group through the platform layer (Linux: SIGINT, 20 s, SIGKILL)."
+    },
+    {
+      "id": "schedule-retry",
+      "name": "Schedule Retry",
+      "actor": null,
+      "produces": [
+        "retry-scheduled",
+        "replan-requested"
+      ],
+      "description": "Reads max_attempts and backoff from the profile."
+    },
+    {
+      "id": "replan-task",
+      "name": "Replan Task",
+      "actor": "sub-orchestrator",
+      "produces": [
+        "task-replanned"
+      ],
+      "description": "Once per task."
+    },
+    {
+      "id": "escalate-task",
+      "name": "Escalate Task",
+      "actor": null,
+      "produces": [
+        "task-escalated"
+      ],
+      "description": "Writes to needs-you/ and posts a herdr notification."
+    },
+    {
+      "id": "requeue-task",
+      "name": "Requeue Task",
+      "actor": "operator",
+      "produces": [
+        "task-requeued"
+      ],
+      "description": "Resets attempt_floor."
+    },
+    {
+      "id": "reconcile-worktrees",
+      "name": "Reconcile Worktrees",
+      "actor": "clock",
+      "produces": [
+        "worktree-orphaned"
+      ],
+      "description": "Every pass reads rows and /fleet/work; every 60 s also git worktree list --porcelain."
+    },
+    {
+      "id": "rescue-worktree",
+      "name": "Rescue Worktree",
+      "actor": null,
+      "produces": [
+        "worktree-rescued",
+        "rescue-failed"
+      ],
+      "description": "Private index, commit-tree, update-ref, then verify."
+    },
+    {
+      "id": "mark-task-done",
+      "name": "Mark Task Done",
+      "actor": null,
+      "produces": [
+        "task-done"
+      ],
+      "description": "The verifier writes verdict.json."
+    },
+    {
+      "id": "check-fleetd",
+      "name": "Check Fleetd",
+      "actor": "clock",
+      "produces": [
+        "fleetd-hang-detected"
+      ],
+      "description": "Every 30 s on macOS and Windows; WatchdogSec=30 on Linux; before each horch command."
+    },
+    {
+      "id": "self-update",
+      "name": "Self Update",
+      "actor": "friend",
+      "produces": [
+        "horch-version-installed"
+      ],
+      "description": "horch self-update. The operator runs it too."
+    },
+    {
+      "id": "restart-fleetd",
+      "name": "Restart Fleetd",
+      "actor": "os-service-manager",
+      "produces": [
+        "fleetd-restarted"
+      ],
+      "description": "Restart always, through the platform layer."
+    },
+    {
+      "id": "run-conformance-tests",
+      "name": "Run Conformance Tests",
+      "actor": "clock",
+      "produces": [
+        "adapter-conformance-failed"
+      ],
+      "description": "Daily plus on any CLI version change."
+    },
+    {
+      "id": "mark-profile-unhealthy",
+      "name": "Mark Profile Unhealthy",
+      "actor": null,
+      "produces": [
+        "profile-marked-unhealthy"
+      ],
+      "description": "Blocks new dispatch on the profile."
+    },
+    {
+      "id": "mark-branch-ready",
+      "name": "Mark Branch Ready",
+      "actor": null,
+      "produces": [
+        "task-branch-verified"
+      ],
+      "description": "verifying to ready."
+    },
+    {
+      "id": "build-bundle",
+      "name": "Build Bundle",
+      "actor": null,
+      "produces": [
+        "bundle-built",
+        "task-branch-conflicted"
+      ],
+      "description": "1 bundle per feature from the ready task branches in queue order."
+    },
+    {
+      "id": "run-fast-gate",
+      "name": "Run Fast Gate",
+      "actor": null,
+      "produces": [
+        "fast-gate-passed",
+        "fast-gate-failed"
+      ],
+      "description": "The declared fast gate of the project."
+    },
+    {
+      "id": "fast-forward-feature-branch",
+      "name": "Fast-Forward Feature Branch",
+      "actor": null,
+      "produces": [
+        "task-branch-landed"
+      ],
+      "description": "Land lock 1 h, 5 tries. A red land resets to the tip before the rebase (04 F7)."
+    },
+    {
+      "id": "bisect-bundle",
+      "name": "Bisect Bundle",
+      "actor": null,
+      "produces": [
+        "task-branch-gate-failed"
+      ],
+      "description": "Finds the failing task branch."
+    },
+    {
+      "id": "open-triage-task",
+      "name": "Open Triage Task",
+      "actor": null,
+      "produces": [
+        "triage-task-opened"
+      ],
+      "description": "A task of the feature for a gate failure."
+    },
+    {
+      "id": "abandon-task-branch",
+      "name": "Abandon Task Branch",
+      "actor": "operator",
+      "produces": [
+        "task-branch-abandoned"
+      ],
+      "description": "Operator only."
+    },
+    {
+      "id": "remove-worktree",
+      "name": "Remove Worktree",
+      "actor": null,
+      "produces": [
+        "worktree-removed"
+      ],
+      "description": "Only after landed or a verified rescue."
+    },
+    {
+      "id": "roll-up-idea",
+      "name": "Roll Up Idea",
+      "actor": null,
+      "produces": [
+        "idea-tasks-landed"
+      ],
+      "description": "in_progress to integrating."
+    },
+    {
+      "id": "run-trial-merges",
+      "name": "Run Trial Merges",
+      "actor": null,
+      "produces": [
+        "trial-merge-passed",
+        "trial-merge-conflicted"
+      ],
+      "description": "Each in-flight feature against the primary branch and against each other in-flight feature."
+    },
+    {
+      "id": "stack-feature",
+      "name": "Stack Feature",
+      "actor": null,
+      "produces": [
+        "feature-stacked"
+      ],
+      "description": "Sets stacked_on to the older feature."
+    },
+    {
+      "id": "open-resolver-task",
+      "name": "Open Resolver Task",
+      "actor": null,
+      "produces": [
+        "resolver-task-opened"
+      ],
+      "description": "At most 100 changed lines or 2 files, else split by file. rerere is on."
+    },
+    {
+      "id": "rebase-feature-branch",
+      "name": "Rebase Feature Branch",
+      "actor": null,
+      "produces": [
+        "feature-branch-rebased",
+        "feature-rebase-conflicted"
+      ],
+      "description": "Writes a rescue ref of the old tip first."
+    },
+    {
+      "id": "run-full-gate",
+      "name": "Run Full Gate",
+      "actor": null,
+      "produces": [
+        "full-gate-passed",
+        "full-gate-failed"
+      ],
+      "description": "Once for a feature when its tasks are landed, again when a pass goes stale."
+    },
+    {
+      "id": "mark-feature-ready",
+      "name": "Mark Feature Ready",
+      "actor": null,
+      "produces": [
+        "feature-marked-ready"
+      ],
+      "description": "features.state open to ready."
+    },
+    {
+      "id": "open-pull-request",
+      "name": "Open Pull Request",
+      "actor": null,
+      "produces": [
+        "pull-request-opened"
+      ],
+      "description": "pr setting gh or manual."
+    },
+    {
+      "id": "merge-pull-request",
+      "name": "Merge Pull Request",
+      "actor": "operator",
+      "produces": [
+        "pull-request-merged"
+      ],
+      "description": "On GitHub, or a plain git merge. The default merger is the operator."
+    },
+    {
+      "id": "check-merged",
+      "name": "Check Merged",
+      "actor": "clock",
+      "produces": [
+        "feature-merged"
+      ],
+      "description": "Every pass reads git, not the GitHub API."
+    },
+    {
+      "id": "close-idea",
+      "name": "Close Idea",
+      "actor": null,
+      "produces": [
+        "idea-merged"
+      ],
+      "description": "Needs every worktree of the idea removed."
+    }
+  ],
+  "policies": [
+    {
+      "id": "start-lead-on-capture",
+      "name": "Whenever an idea is captured, start a sub-orchestrator for its feature",
+      "when": "idea-captured",
+      "then": [
+        "start-sub-orchestrator"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "open-feature-on-assumptions",
+      "name": "Whenever assumptions are written for an idea with no feature branch, open the feature",
+      "when": "assumptions-written",
+      "then": [
+        "open-feature"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "request-approval-on-feature",
+      "name": "Whenever the feature of an idea with valid assumptions is open, request approval",
+      "when": "feature-opened",
+      "then": [
+        "request-approval"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "restart-lead-on-revise",
+      "name": "Whenever assumptions are revised, start a fresh sub-orchestrator in clarifying",
+      "when": "assumptions-revised",
+      "then": [
+        "start-sub-orchestrator"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "park-on-unanswered-approval",
+      "name": "Whenever approval is requested and 7 days pass with no answer, park the idea",
+      "when": "approval-requested",
+      "then": [
+        "park-idea"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "specify-on-approval",
+      "name": "Whenever assumptions are approved, start a fresh sub-orchestrator in specifying",
+      "when": "assumptions-approved",
+      "then": [
+        "start-sub-orchestrator"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "open-feature-on-direct",
+      "name": "Whenever a direct idea with no --to is accepted, open a feature named from the ticket title",
+      "when": "direct-idea-accepted",
+      "then": [
+        "open-feature"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "validate-on-plan-submitted",
+      "name": "Whenever a plan is submitted, validate it",
+      "when": "plan-submitted",
+      "then": [
+        "validate-plan"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "escalate-on-plan-refused",
+      "name": "Whenever a direct plan is refused, escalate it to needs-you",
+      "when": "plan-refused",
+      "then": [
+        "escalate-task"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "promote-on-plan-committed",
+      "name": "Whenever a plan is committed, promote the tasks with no dependencies",
+      "when": "plan-committed",
+      "then": [
+        "promote-task"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "dispatch-on-ready",
+      "name": "Whenever a task is ready, dispatch it unless a health guard or pacing holds it",
+      "when": "task-promoted",
+      "then": [
+        "dispatch-task"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "create-worktree-on-lease",
+      "name": "Whenever a task is leased, create its worktree unless one exists",
+      "when": "task-leased",
+      "then": [
+        "create-worktree"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "launch-on-worktree",
+      "name": "Whenever a worktree is created for a leased task, launch the attempt",
+      "when": "worktree-created",
+      "then": [
+        "launch-attempt"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "end-on-stall",
+      "name": "Whenever an attempt stalls, end the attempt",
+      "when": "attempt-stalled",
+      "then": [
+        "end-attempt"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "end-on-lease-expired",
+      "name": "Whenever a lease expires, end the attempt",
+      "when": "lease-expired",
+      "then": [
+        "end-attempt"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "fallback-on-usage-limit",
+      "name": "Whenever a usage limit is reported, move the task to its fallback or to waiting_quota",
+      "when": "usage-limit-reported",
+      "then": [
+        "move-to-fallback"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "launch-on-fallback",
+      "name": "Whenever a task moves to its fallback, launch a new attempt on the same worktree",
+      "when": "fallback-assigned",
+      "then": [
+        "launch-attempt"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "promote-on-quota-reset",
+      "name": "Whenever a quota window resets, promote the tasks waiting on that pool",
+      "when": "quota-window-reset",
+      "then": [
+        "promote-task"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "start-owner-on-question",
+      "name": "Whenever a worker asks a question, start its owner sub-orchestrator until an answer is recorded",
+      "when": "worker-question-asked",
+      "then": [
+        "start-sub-orchestrator"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "resume-on-answer",
+      "name": "Whenever a question is answered, resume the worker session with the answer",
+      "when": "question-answered",
+      "then": [
+        "launch-attempt"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "resume-on-own-assumption",
+      "name": "Whenever the sub-orchestrator records its own assumption, resume the worker session",
+      "when": "own-assumption-recorded",
+      "then": [
+        "launch-attempt"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "operator-decides-revise",
+      "name": "Whenever a revise is requested, the operator approves or revises the changed assumption",
+      "when": "revise-requested",
+      "then": [
+        "approve-assumptions",
+        "revise-assumptions"
+      ],
+      "kind": "manual"
+    },
+    {
+      "id": "verify-on-exit",
+      "name": "Whenever an attempt exits with a result, run its check",
+      "when": "attempt-exited",
+      "then": [
+        "run-check"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "repair-on-exit-without-result",
+      "name": "Whenever an attempt exits with commits and no result, resume once to write the result",
+      "when": "attempt-exited",
+      "then": [
+        "write-result"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "review-on-check-passed",
+      "name": "Whenever the check of a code-kind task passes, run the review scripts",
+      "when": "check-passed",
+      "then": [
+        "run-review"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "done-on-judge-check",
+      "name": "Whenever the structural check of a judge task passes, mark it done",
+      "when": "check-passed",
+      "then": [
+        "mark-task-done"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "end-on-check-failed",
+      "name": "Whenever a check fails, end the attempt as failed",
+      "when": "check-failed",
+      "then": [
+        "end-attempt"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "done-on-review-passed",
+      "name": "Whenever the review passes, mark the task done",
+      "when": "review-passed",
+      "then": [
+        "mark-task-done"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "end-on-review-failed",
+      "name": "Whenever the review fails, end the attempt as failed",
+      "when": "review-failed",
+      "then": [
+        "end-attempt"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "settle-judge-verdict",
+      "name": "Whenever a judge verdict is written, mark the judged task done with no CRITICAL, else open a fix",
+      "when": "judge-verdict-written",
+      "then": [
+        "mark-task-done",
+        "open-critical-fix"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "lead-settles-high",
+      "name": "Whenever a judge verdict has a HIGH finding, the sub-orchestrator fixes or dismisses it",
+      "when": "judge-verdict-written",
+      "then": [
+        "settle-high-finding"
+      ],
+      "kind": "manual"
+    },
+    {
+      "id": "escalate-after-two-fixes",
+      "name": "Whenever a second critical fix still leaves a CRITICAL item, escalate the task",
+      "when": "critical-fix-opened",
+      "then": [
+        "escalate-task"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "retry-on-attempt-failed",
+      "name": "Whenever an attempt fails, retry after backoff or request a replan",
+      "when": "attempt-failed",
+      "then": [
+        "schedule-retry"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "launch-on-retry",
+      "name": "Whenever a retry is scheduled, launch the next attempt in the same worktree after backoff",
+      "when": "retry-scheduled",
+      "then": [
+        "launch-attempt"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "lead-replans-on-request",
+      "name": "Whenever a replan is requested, the sub-orchestrator replans the task once",
+      "when": "replan-requested",
+      "then": [
+        "replan-task"
+      ],
+      "kind": "manual"
+    },
+    {
+      "id": "promote-on-replan",
+      "name": "Whenever a task is replanned, promote it",
+      "when": "task-replanned",
+      "then": [
+        "promote-task"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "promote-on-requeue",
+      "name": "Whenever the operator requeues a task, promote it",
+      "when": "task-requeued",
+      "then": [
+        "promote-task"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "rescue-on-orphan",
+      "name": "Whenever a worktree is orphaned, rescue it before any cleanup",
+      "when": "worktree-orphaned",
+      "then": [
+        "rescue-worktree"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "escalate-on-rescue-failed",
+      "name": "Whenever a rescue fails verification, escalate",
+      "when": "rescue-failed",
+      "then": [
+        "escalate-task"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "ready-branch-on-done",
+      "name": "Whenever a task is done, mark its task branch ready",
+      "when": "task-done",
+      "then": [
+        "mark-branch-ready",
+        "promote-task"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "restart-on-stale-heartbeat",
+      "name": "Whenever the fleetd heartbeat goes stale, restart fleetd",
+      "when": "fleetd-hang-detected",
+      "then": [
+        "restart-fleetd"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "restart-on-binary-change",
+      "name": "Whenever the horch binary is updated, restart fleetd on the new binary",
+      "when": "horch-version-installed",
+      "then": [
+        "restart-fleetd"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "block-profile-on-conformance",
+      "name": "Whenever adapter conformance fails, mark the profile unhealthy",
+      "when": "adapter-conformance-failed",
+      "then": [
+        "mark-profile-unhealthy"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "bundle-on-ready",
+      "name": "Whenever a task branch is ready, add it to the next bundle of its feature",
+      "when": "task-branch-verified",
+      "then": [
+        "build-bundle"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "gate-on-bundle",
+      "name": "Whenever a bundle is built, run the fast gate on it",
+      "when": "bundle-built",
+      "then": [
+        "run-fast-gate"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "relaunch-on-conflict",
+      "name": "Whenever a task branch conflicts, the same worker resolves the rebase",
+      "when": "task-branch-conflicted",
+      "then": [
+        "launch-attempt"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "land-on-fast-gate-pass",
+      "name": "Whenever the fast gate passes, fast-forward the feature branch",
+      "when": "fast-gate-passed",
+      "then": [
+        "fast-forward-feature-branch"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "bisect-on-fast-gate-fail",
+      "name": "Whenever the fast gate fails, bisect the bundle",
+      "when": "fast-gate-failed",
+      "then": [
+        "bisect-bundle"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "triage-on-gate-failed",
+      "name": "Whenever a task branch fails the gate, open a triage task",
+      "when": "task-branch-gate-failed",
+      "then": [
+        "open-triage-task"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "after-landing",
+      "name": "Whenever a task branch lands, remove its worktree, roll up the idea and run trial merges",
+      "when": "task-branch-landed",
+      "then": [
+        "remove-worktree",
+        "roll-up-idea",
+        "run-trial-merges"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "full-gate-on-landed",
+      "name": "Whenever every task of an idea is landed, run the full gate of its feature",
+      "when": "idea-tasks-landed",
+      "then": [
+        "run-full-gate"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "on-primary-moved",
+      "name": "Whenever the primary branch moves, rebase each feature branch and run trial merges",
+      "when": "primary-branch-moved",
+      "then": [
+        "rebase-feature-branch",
+        "run-trial-merges"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "stack-on-conflict",
+      "name": "Whenever a trial merge of 2 features conflicts, stack the younger feature on the older one",
+      "when": "trial-merge-conflicted",
+      "then": [
+        "stack-feature"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "resolve-on-stack",
+      "name": "Whenever a feature is stacked, open 1 resolver task",
+      "when": "feature-stacked",
+      "then": [
+        "open-resolver-task"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "resolve-on-rebase-conflict",
+      "name": "Whenever a feature rebase conflicts, open a resolver task",
+      "when": "feature-rebase-conflicted",
+      "then": [
+        "open-resolver-task"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "gate-on-rebase",
+      "name": "Whenever a feature branch is rebased, run the fast gate again",
+      "when": "feature-branch-rebased",
+      "then": [
+        "run-fast-gate"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "ready-on-full-gate",
+      "name": "Whenever the full gate passes, mark the feature ready",
+      "when": "full-gate-passed",
+      "then": [
+        "mark-feature-ready"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "triage-on-full-gate-failed",
+      "name": "Whenever the full gate fails, open triage tasks of the feature",
+      "when": "full-gate-failed",
+      "then": [
+        "open-triage-task"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "pr-on-ready",
+      "name": "Whenever a feature is ready, push it and open its pull request",
+      "when": "feature-marked-ready",
+      "then": [
+        "open-pull-request"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "operator-merges",
+      "name": "Whenever a pull request is opened, the operator reviews and merges it",
+      "when": "pull-request-opened",
+      "then": [
+        "merge-pull-request"
+      ],
+      "kind": "manual"
+    },
+    {
+      "id": "close-on-feature-merged",
+      "name": "Whenever a feature is merged, close each of its ideas once their worktrees are removed",
+      "when": "feature-merged",
+      "then": [
+        "close-idea"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "operator-decides-escalation",
+      "name": "Whenever a task is escalated, the operator requeues or abandons it",
+      "when": "task-escalated",
+      "then": [
+        "requeue-task",
+        "abandon-task-branch"
+      ],
+      "kind": "manual"
+    }
+  ],
+  "read_models": [
+    {
+      "id": "idea-board",
+      "name": "Idea board and assumptions (horch ideas, horch idea show)",
+      "informs": "approve-assumptions",
+      "used_by": "operator",
+      "description": "Every idea, its state, what it waits on, and the assumptions to approve or revise."
+    },
+    {
+      "id": "interview-record",
+      "name": "Idea folder (idea.md, amendments, interview.md)",
+      "informs": "write-assumptions",
+      "used_by": "sub-orchestrator",
+      "description": "The only memory of a fresh sub-orchestrator process."
+    },
+    {
+      "id": "in-flight-diffs",
+      "name": "Diffs of in-flight features",
+      "informs": "submit-plan",
+      "used_by": "sub-orchestrator",
+      "description": "The files that in-flight features already changed, so a plan can propose to build on one."
+    },
+    {
+      "id": "approved-assumptions-and-spec",
+      "name": "Approved assumptions, spec and decision log",
+      "informs": "answer-question",
+      "used_by": "sub-orchestrator",
+      "description": "What the sub-orchestrator cites when it answers a worker question."
+    },
+    {
+      "id": "start-file",
+      "name": "Task file and START.md",
+      "informs": "write-result",
+      "used_by": "worker",
+      "description": "task.yaml and inbox/START.md: goal, acceptance, lease, rescue commit and earlier progress notes."
+    },
+    {
+      "id": "judge-findings",
+      "name": "Judge findings",
+      "informs": "settle-high-finding",
+      "used_by": "sub-orchestrator",
+      "description": "The ranked misses of a judge verdict."
+    },
+    {
+      "id": "needs-you-queue",
+      "name": "Needs-you queue",
+      "informs": "requeue-task",
+      "used_by": "operator",
+      "description": "needs-you/ with the reason, the screen excerpt or the rescue refs of each escalation."
+    },
+    {
+      "id": "worktree-list",
+      "name": "Worktree list (horch worktrees)",
+      "informs": "abandon-task-branch",
+      "used_by": "operator",
+      "description": "Every tree with its state, task, owner, age, size and rescue refs."
+    },
+    {
+      "id": "pull-request-view",
+      "name": "Pull request or compare view",
+      "informs": "merge-pull-request",
+      "used_by": "operator",
+      "description": "The feature diff over the primary branch with its full gate result."
+    }
+  ],
+  "aggregate_candidates": [
+    {
+      "id": "idea",
+      "name": "Idea",
+      "handles": [
+        "add-idea",
+        "add-direct-idea",
+        "amend-idea",
+        "write-assumptions",
+        "request-approval",
+        "approve-assumptions",
+        "revise-assumptions",
+        "park-idea",
+        "cancel-idea",
+        "write-spec",
+        "roll-up-idea",
+        "close-idea"
+      ],
+      "emits": [
+        "idea-captured",
+        "direct-idea-accepted",
+        "idea-amended",
+        "assumptions-written",
+        "approval-requested",
+        "assumptions-approved",
+        "assumptions-revised",
+        "idea-parked",
+        "idea-cancelled",
+        "spec-written",
+        "idea-tasks-landed",
+        "idea-merged"
+      ]
+    },
+    {
+      "id": "plan",
+      "name": "Plan",
+      "handles": [
+        "submit-plan",
+        "validate-plan",
+        "replan-task"
+      ],
+      "emits": [
+        "plan-submitted",
+        "plan-refused",
+        "plan-committed",
+        "task-replanned"
+      ]
+    },
+    {
+      "id": "feature",
+      "name": "Feature",
+      "handles": [
+        "open-feature",
+        "stack-feature",
+        "rebase-feature-branch",
+        "run-full-gate",
+        "mark-feature-ready",
+        "open-pull-request",
+        "check-merged"
+      ],
+      "emits": [
+        "feature-opened",
+        "feature-stacked",
+        "feature-branch-rebased",
+        "feature-rebase-conflicted",
+        "full-gate-passed",
+        "full-gate-failed",
+        "feature-marked-ready",
+        "pull-request-opened",
+        "feature-merged"
+      ]
+    },
+    {
+      "id": "task",
+      "name": "Task",
+      "handles": [
+        "promote-task",
+        "dispatch-task",
+        "schedule-retry",
+        "mark-task-done",
+        "escalate-task",
+        "requeue-task",
+        "move-to-fallback"
+      ],
+      "emits": [
+        "task-promoted",
+        "task-leased",
+        "retry-scheduled",
+        "replan-requested",
+        "task-done",
+        "task-escalated",
+        "task-requeued",
+        "fallback-assigned",
+        "quota-wait-started"
+      ]
+    },
+    {
+      "id": "attempt",
+      "name": "Attempt",
+      "handles": [
+        "launch-attempt",
+        "renew-lease",
+        "apply-stall-ladder",
+        "end-attempt"
+      ],
+      "emits": [
+        "attempt-launched",
+        "lease-renewed",
+        "lease-expired",
+        "attempt-stalled",
+        "attempt-failed"
+      ]
+    },
+    {
+      "id": "verification",
+      "name": "Verification",
+      "handles": [
+        "run-check",
+        "run-review",
+        "open-critical-fix"
+      ],
+      "emits": [
+        "check-passed",
+        "check-failed",
+        "review-passed",
+        "review-failed",
+        "critical-fix-opened"
+      ]
+    },
+    {
+      "id": "question",
+      "name": "Question",
+      "handles": [
+        "ask-question",
+        "answer-question",
+        "escalate-question"
+      ],
+      "emits": [
+        "worker-question-asked",
+        "question-answered",
+        "own-assumption-recorded",
+        "revise-requested",
+        "question-escalated"
+      ]
+    },
+    {
+      "id": "worktree",
+      "name": "Worktree",
+      "handles": [
+        "create-worktree",
+        "reconcile-worktrees",
+        "rescue-worktree",
+        "remove-worktree"
+      ],
+      "emits": [
+        "worktree-created",
+        "worktree-orphaned",
+        "worktree-rescued",
+        "rescue-failed",
+        "worktree-removed"
+      ]
+    },
+    {
+      "id": "task-branch",
+      "name": "Task branch",
+      "handles": [
+        "mark-branch-ready",
+        "build-bundle",
+        "run-fast-gate",
+        "fast-forward-feature-branch",
+        "bisect-bundle",
+        "abandon-task-branch"
+      ],
+      "emits": [
+        "task-branch-verified",
+        "bundle-built",
+        "task-branch-conflicted",
+        "fast-gate-passed",
+        "fast-gate-failed",
+        "task-branch-landed",
+        "task-branch-gate-failed",
+        "task-branch-abandoned"
+      ]
+    },
+    {
+      "id": "worker-profile",
+      "name": "Worker profile",
+      "handles": [
+        "run-conformance-tests",
+        "mark-profile-unhealthy"
+      ],
+      "emits": [
+        "adapter-conformance-failed",
+        "profile-marked-unhealthy"
+      ]
+    }
+  ],
+  "pivotal_events": [
+    "assumptions-approved",
+    "plan-committed",
+    "task-done",
+    "idea-tasks-landed"
+  ],
+  "hotspots": [
+    {
+      "id": "H1",
+      "kind": "conflict",
+      "near": "attempt-launched",
+      "text": "Today a worker 'claims' a task and the 'task' row carries the run; fleetd splits this into task (planned unit from plan.yaml), attempt (1 run of 1 worker: A1, A2) and lease (the time-limited hold that renews only on earned activity). Readers of today's ledger and code will read 'task' where fleetd means 'attempt' (understand N1)."
+    },
+    {
+      "id": "H2",
+      "kind": "conflict",
+      "near": "feature-opened",
+      "text": "'Feature' is also a task kind (kind: feature, a code kind) and a word for any change. In fleetd a Feature is 1 sub-orchestrator, 1 feature branch and 1 pull request holding 1 main idea and its follow-on ideas. Which meaning does each document use (understand N2)?"
+    },
+    {
+      "id": "H3",
+      "kind": "conflict",
+      "near": "sub-orchestrator-started",
+      "text": "'Orchestrator' today is 1 long-lived LLM conversation that receives ideas, creates tasks and reads mail. In fleetd it does not exist: a deterministic idea dispatcher and 1 sub-orchestrator per feature replace it. Today's mail contract still names [orchestrator re #<id>] answers (understand N3)."
+    },
+    {
+      "id": "H4",
+      "kind": "conflict",
+      "near": "task-done",
+      "text": "'Done' today is a model action (horch ledger done / horch done). In fleetd only the verifier moves a task to done, and 'landed' (on the feature branch) and 'merged' (in the primary branch by content) are later, separate facts. A reader can take 'done' to mean the work reached the primary branch (understand N4)."
+    },
+    {
+      "id": "H5",
+      "kind": "conflict",
+      "near": "judge-verdict-written",
+      "text": "'Judgment kind' (research, design, docs, report, creative) and the kind 'judge' sound alike. A judgment task needs a paired judge task; a judge task needs no judge. A resolver task has a code kind. Mixing them breaks plan validation (understand N12)."
+    },
+    {
+      "id": "H6",
+      "kind": "conflict",
+      "near": "task-branch-verified",
+      "text": "'Ready' names 3 states: a task is ready when its dependencies are done (not yet dispatched); a task branch is ready when it is verified and waits for a bundle; a feature is ready when its full gate passed. 'Landed' is both a task branch state and a worktree state. Which one does a status line mean?"
+    },
+    {
+      "id": "H7",
+      "kind": "unclear",
+      "near": "idea-captured",
+      "text": "The idea row records its feature (ideas.feature_id), but the feature row and branch are written when the sub-orchestrator first writes assumptions. Which feature does an idea with no --to point at between capture and assumptions, and what does horch ideas show for it?"
+    },
+    {
+      "id": "H8",
+      "kind": "risk",
+      "near": "task-branch-landed",
+      "text": "The Preservation analysis rows (04 W6, F9, F7, F5, L5, L9, W8, W9, F11, S7, L6, L8, S8, S10, M5, 05 E-10, 06 S1 to S15) are hard inputs. Each must have exactly 1 owner in the model; a row that falls between 2 owners is a behavior fleetd silently drops (understand N15)."
+    },
+    {
+      "id": "H9",
+      "kind": "unclear",
+      "near": "task-leased",
+      "text": "What number counts as 'full use' of the subscription usage that pacing aims for? Pacing holds dispatch per pool window, but the design gives no target (understand Q1)."
+    },
+    {
+      "id": "H10",
+      "kind": "unclear",
+      "near": "question-escalated",
+      "text": "A worker question has 'a time limit' before it escalates, but the design gives no value for it, and it does not say if the limit pauses while the operator is outside working hours."
+    },
+    {
+      "id": "H11",
+      "kind": "external",
+      "near": "fast-gate-passed",
+      "text": "Plan validation refuses a project that has not declared a fast gate and a full gate, and this repository has no unit-only command today (research-03 F10, understand Q8). Until one is declared, no plan of this repository can commit."
+    },
+    {
+      "id": "H12",
+      "kind": "unclear",
+      "near": "task-requeued",
+      "text": "A task gets max_attempts attempts, then 1 replan, then goes to the operator. A requeue resets attempt_floor (04 L8). Does a requeued task also get a new replan, and how does the 2-requeue limit of the review scripts count against attempts?"
+    },
+    {
+      "id": "H13",
+      "kind": "risk",
+      "near": "lease-expired",
+      "text": "Lease and stall time count only while the machine is awake. If the platform layer reports sleep and wake wrongly on 1 OS, leases expire during a sleep and every worker burns an attempt at wake."
+    },
+    {
+      "id": "H14",
+      "kind": "missing",
+      "near": "adapter-conformance-failed",
+      "text": "Docs sync and adapter conformance are collapsed to 2 events here. The flow that turns a drift into a task (who owns it, how a profile becomes healthy again) is not stormed."
+    },
+    {
+      "id": "H15",
+      "kind": "external",
+      "near": "pull-request-merged",
+      "text": "A project setting says who merges a feature; the default is the operator. When the setting lets fleetd merge, which gate and which actor stands for the merge decision?"
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "S1",
+      "name": "Happy path: 1 rough idea becomes 1 merged feature",
+      "actors": [
+        "operator",
+        "sub-orchestrator",
+        "worker",
+        "clock",
+        "agent-cli",
+        "github"
+      ],
+      "events": [
+        "idea-captured",
+        "sub-orchestrator-started",
+        "interview-question-asked",
+        "interview-answer-recorded",
+        "assumptions-written",
+        "feature-opened",
+        "approval-requested",
+        "assumptions-approved",
+        "spec-written",
+        "plan-submitted",
+        "plan-committed",
+        "task-promoted",
+        "task-leased",
+        "worktree-created",
+        "attempt-launched",
+        "lease-renewed",
+        "result-written",
+        "attempt-exited",
+        "check-passed",
+        "review-passed",
+        "task-done",
+        "task-branch-verified",
+        "bundle-built",
+        "fast-gate-passed",
+        "task-branch-landed",
+        "worktree-removed",
+        "idea-tasks-landed",
+        "trial-merge-passed",
+        "full-gate-passed",
+        "feature-marked-ready",
+        "pull-request-opened",
+        "pull-request-merged",
+        "feature-merged",
+        "idea-merged"
+      ]
+    },
+    {
+      "id": "S2",
+      "name": "A usage limit moves the task to its fallback persona with no burned attempt",
+      "actors": [
+        "worker",
+        "provider-pool",
+        "clock"
+      ],
+      "events": [
+        "task-leased",
+        "worktree-created",
+        "attempt-launched",
+        "usage-limit-reported",
+        "fallback-assigned",
+        "attempt-launched",
+        "result-written",
+        "attempt-exited",
+        "check-passed",
+        "review-passed",
+        "task-done"
+      ],
+      "loops": true
+    },
+    {
+      "id": "S3",
+      "name": "A worker stalls, its tree is kept, and the retry continues the same work",
+      "actors": [
+        "worker",
+        "clock",
+        "agent-cli",
+        "sub-orchestrator"
+      ],
+      "events": [
+        "attempt-launched",
+        "attempt-stalled",
+        "attempt-failed",
+        "retry-scheduled",
+        "attempt-launched",
+        "worker-question-asked",
+        "own-assumption-recorded",
+        "attempt-launched",
+        "result-written",
+        "attempt-exited",
+        "check-passed",
+        "review-passed",
+        "task-done"
+      ],
+      "loops": true
+    },
+    {
+      "id": "S4",
+      "name": "2 in-flight features conflict and are stacked with 1 resolver task",
+      "actors": [
+        "git",
+        "clock",
+        "worker",
+        "operator",
+        "github"
+      ],
+      "events": [
+        "task-branch-landed",
+        "idea-tasks-landed",
+        "trial-merge-conflicted",
+        "feature-stacked",
+        "resolver-task-opened",
+        "task-promoted",
+        "task-done",
+        "task-branch-landed",
+        "full-gate-passed",
+        "feature-marked-ready",
+        "pull-request-opened"
+      ],
+      "loops": true
+    }
+  ],
+  "glossary": [
+    {
+      "term": "Idea",
+      "definition": "A rough request from the operator that 1 fixed state machine moves from captured to merged; only code advances it.",
+      "avoid": [
+        "ticket (a ticket enters as a --direct idea)",
+        "request"
+      ],
+      "context": null
+    },
+    {
+      "term": "Feature",
+      "definition": "1 sub-orchestrator, 1 feature branch and 1 pull request to the primary branch, holding 1 main idea and its follow-on ideas. The task kind 'feature' is a different thing (H2).",
+      "avoid": [
+        "project",
+        "epic"
+      ],
+      "context": null
+    },
+    {
+      "term": "Sub-Orchestrator",
+      "definition": "The interactive Opus 5.5 agent of 1 feature that clarifies, specifies and plans 1 idea at a time, with a fresh process per phase.",
+      "avoid": [
+        "orchestrator",
+        "lead"
+      ],
+      "context": null
+    },
+    {
+      "term": "Assumption",
+      "definition": "1 line in assumptions.md, [confirmed] or [assumed], that the operator approves or revises; the sub-orchestrator can also record its own reversible one.",
+      "avoid": [
+        "requirement"
+      ],
+      "context": null
+    },
+    {
+      "term": "Plan",
+      "definition": "The validated plan.yaml of 1 idea: tasks, dependencies, checks, paired judges. No task exists outside a committed plan.",
+      "avoid": [
+        "ticket list"
+      ],
+      "context": null
+    },
+    {
+      "term": "Task",
+      "definition": "A planned unit of work from plan.yaml with a kind, a check and an owner path set; it survives many attempts (H1).",
+      "avoid": [
+        "job",
+        "claim"
+      ],
+      "context": null
+    },
+    {
+      "term": "Attempt",
+      "definition": "1 run of 1 worker on 1 task (A1, A2, ...), launched through the wrapper and ended by fleetd.",
+      "avoid": [
+        "run",
+        "session"
+      ],
+      "context": null
+    },
+    {
+      "term": "Lease",
+      "definition": "The time-limited hold of an attempt on its task that renews only on earned activity and pauses during sleep and waiting_quota.",
+      "avoid": [
+        "claim",
+        "lock"
+      ],
+      "context": null
+    },
+    {
+      "term": "Worktree",
+      "definition": "The git working tree that fleetd leases to 1 task before it exists and never removes before its work is landed or rescued.",
+      "avoid": [
+        "checkout",
+        "workspace"
+      ],
+      "context": null
+    },
+    {
+      "term": "Rescue Ref",
+      "definition": "A verified commit under refs/horch/rescue/ that saves the full state of a tree or an old branch tip before cleanup or rebase.",
+      "avoid": [
+        "backup",
+        "archive ref (a different ref family)"
+      ],
+      "context": null
+    },
+    {
+      "term": "Task Branch",
+      "definition": "The branch of 1 task that lands on its feature branch through the landing state machine.",
+      "avoid": [
+        "worker branch"
+      ],
+      "context": null
+    },
+    {
+      "term": "Feature Branch",
+      "definition": "The branch of 1 feature that collects its landed task branches and reaches the primary branch through 1 pull request.",
+      "avoid": [
+        "integration branch"
+      ],
+      "context": null
+    },
+    {
+      "term": "Primary Branch",
+      "definition": "The base branch of a project; main in this repository, not in every project.",
+      "avoid": [
+        "main",
+        "master",
+        "trunk"
+      ],
+      "context": null
+    },
+    {
+      "term": "Bundle",
+      "definition": "1 candidate made from the feature branch tip plus every ready task branch of that feature, tested once by the fast gate.",
+      "avoid": [
+        "batch",
+        "merge train"
+      ],
+      "context": null
+    },
+    {
+      "term": "Fast Gate",
+      "definition": "The declared unit-test command of a project that every bundle and every rebased feature branch must pass.",
+      "avoid": [
+        "CI",
+        "check"
+      ],
+      "context": null
+    },
+    {
+      "term": "Full Gate",
+      "definition": "The fast gate plus the end-to-end tests, run on a feature tip over the current primary branch; a pass goes stale when either tip moves.",
+      "avoid": [
+        "CI",
+        "e2e run"
+      ],
+      "context": null
+    },
+    {
+      "term": "Trial Merge",
+      "definition": "A merge-tree result between 2 in-flight features, or a feature and the primary branch, recorded in the ledger with no checkout.",
+      "avoid": [
+        "dry run"
+      ],
+      "context": null
+    },
+    {
+      "term": "Resolver Task",
+      "definition": "A code-kind task that resolves 1 conflict between stacked features, at most 100 changed lines or 2 files.",
+      "avoid": [
+        "merge task"
+      ],
+      "context": null
+    },
+    {
+      "term": "Judge Task",
+      "definition": "A task of kind judge that ranks the misses of 1 judgment-kind task CRITICAL, HIGH, MEDIUM or LOW; it needs no judge itself (H5).",
+      "avoid": [
+        "review task",
+        "judgment task"
+      ],
+      "context": null
+    },
+    {
+      "term": "Fallback",
+      "definition": "The persona that a worker persona names for use when its provider pool shows a usage limit or an outage.",
+      "avoid": [
+        "backup model"
+      ],
+      "context": null
+    }
+  ],
+  "decisions": [
+    {
+      "id": "D1",
+      "kind": "boundary",
+      "question": "Where are the pivotal events that cut the fleetd timeline into phases?",
+      "options": [
+        {
+          "id": "A",
+          "summary": "4 pivotal events (assumptions approved, plan committed, task done, idea tasks landed) and 5 phases: clarifying, planning, executing, landing, integrating.",
+          "pros": [
+            "Each pivotal event is a state change of the design: approval gate, plan commit, verifier verdict, landed roll-up",
+            "Matches the actor changes in N7"
+          ],
+          "cons": [
+            "Planning is a short phase with 5 events"
+          ],
+          "risks": [
+            "Decompose may split planning from clarifying although 1 sub-orchestrator does both"
+          ]
+        },
+        {
+          "id": "B",
+          "summary": "2 pivotal events (assumptions approved, task done) and 3 phases: shaping, building, integrating.",
+          "pros": [
+            "Fewer, broader phases; the conservative reading"
+          ],
+          "cons": [
+            "Hides the landing state machine inside building or integrating",
+            "Hides the plan commit, the moment a task can first exist"
+          ],
+          "risks": [
+            "Landing and feature integration look like 1 context"
+          ]
+        },
+        {
+          "id": "C",
+          "summary": "5 pivotal events (add task done split from verification, so a separate verifying phase) and 6 phases.",
+          "pros": [
+            "Makes the verifier a visible phase, as the design stresses 'done is a fact on disk'"
+          ],
+          "cons": [
+            "Verification interleaves with attempts (check failed loops back to an attempt), so the phase edge is not a before and after"
+          ],
+          "risks": [
+            "Decompose cuts a verifier context that cannot decide alone"
+          ]
+        }
+      ],
+      "confidence": "medium",
+      "rationale": "Recommendation: A. The design names an approval gate, a plan commit, a verifier verdict and a landed roll-up as distinct facts. Strongest argument against A: clarifying and planning are 1 sub-orchestrator on 1 idea folder, so the cut between them may not be a context boundary.",
+      "would_flip_if": [
+        "The operator treats planning as part of clarifying",
+        "The operator wants the verifier as its own phase"
+      ],
+      "records": {
+        "open_question": "Q5"
+      }
+    },
+    {
+      "id": "D2",
+      "kind": "boundary",
+      "question": "Where do daemon supervision and adapter conformance sit on the timeline?",
+      "options": [
+        {
+          "id": "A",
+          "summary": "At the end of the executing phase, because they act on running attempts and profiles.",
+          "pros": [
+            "Keeps 5 phases",
+            "Near the attempts they protect"
+          ],
+          "cons": [
+            "They are not part of 1 idea's flow"
+          ],
+          "risks": [
+            "Decompose reads them as part of task execution"
+          ]
+        },
+        {
+          "id": "B",
+          "summary": "In their own 'operating' phase outside the idea flow.",
+          "pros": [
+            "Shows that they run on a schedule for the whole fleet"
+          ],
+          "cons": [
+            "A phase with no before and after on the idea timeline"
+          ],
+          "risks": [
+            "A 6th phase that is not on the timeline confuses connect"
+          ]
+        },
+        {
+          "id": "C",
+          "summary": "Off the board, as a missing hotspot only.",
+          "pros": [
+            "Smallest board"
+          ],
+          "cons": [
+            "Drops 04 S10 (restart on new binary) and the conformance gate from the model"
+          ],
+          "risks": [
+            "A preservation row has no owner"
+          ]
+        }
+      ],
+      "confidence": "low",
+      "rationale": "Recommendation: A, recorded as assumption A3. Strongest argument against A: these events have no idea or task in their data, so they belong to a fleet-wide context, which B shows more honestly.",
+      "would_flip_if": [
+        "Decompose finds a separate daemon or platform context"
+      ],
+      "records": {
+        "open_question": "Q4"
+      }
+    }
+  ],
+  "notes_for_downstream": [
+    {
+      "id": "N1",
+      "kind": "language",
+      "for": [
+        "decompose",
+        "define"
+      ],
+      "text": "H1 sharpens understand N1: the board gives task and attempt their own aggregate candidates, and the lease events (lease-renewed, lease-expired) belong to the attempt, not the task."
+    },
+    {
+      "id": "N2",
+      "kind": "language",
+      "for": [
+        "decompose",
+        "define"
+      ],
+      "text": "H2 sharpens understand N2: the feature aggregate owns feature-opened to feature-merged; the task kind 'feature' (a code kind) is a different meaning of the same word."
+    },
+    {
+      "id": "N3",
+      "kind": "language",
+      "for": [
+        "decompose",
+        "define"
+      ],
+      "text": "H3 sharpens understand N3: every dispatcher command on the board has actor null (policy) or clock; today's mail contract (05 C-1) still names [orchestrator re #<id>] answers, so the word survives in a preserved contract."
+    },
+    {
+      "id": "N4",
+      "kind": "language",
+      "for": [
+        "decompose",
+        "define"
+      ],
+      "text": "H4 sharpens understand N4: done (verifier), landed (on the feature branch) and merged (in the primary branch by content) are 3 facts at 3 pivotal moments: task-done, idea-tasks-landed, feature-merged."
+    },
+    {
+      "id": "N5",
+      "kind": "language",
+      "for": [
+        "decompose",
+        "define"
+      ],
+      "text": "H5 sharpens understand N12: on the board the judge verdict, critical fix and high finding events belong to the verification of the judged task, not to the judge task."
+    },
+    {
+      "id": "N6",
+      "kind": "language",
+      "for": [
+        "decompose",
+        "define"
+      ],
+      "text": "H6: 'ready' is a task state, a task branch state and a feature state; 'landed' is a task branch state and a worktree state. Each context that owns one state machine owns its own meaning."
+    },
+    {
+      "id": "N7",
+      "kind": "boundary",
+      "for": [
+        "decompose"
+      ],
+      "text": "The actor changes on the board: operator and sub-orchestrator own clarifying and planning; workers and the clock-driven reconcile pass own executing; fleetd code alone owns landing and integrating, with the operator back only at the pull request merge. The 4 pivotal events sit on those changes."
+    },
+    {
+      "id": "N8",
+      "kind": "risk",
+      "for": [
+        "decompose",
+        "define"
+      ],
+      "text": "H8 sharpens understand N15: the Worktree and Task branch aggregates own most no-loss preservation rows (04 W6, W8, W9, F5, F7, F9, F11, L5, L9); Task and Attempt own S7, S8, L6, L8; the daemon owns S10. Each row needs exactly 1 owning context."
+    }
+  ],
+  "plain_words": {
+    "what": "This step lists, in time order, everything that happens to 1 idea in fleetd: from 'horch idea add' to the feature merged in the primary branch, with the people and programs that cause each step.",
+    "decided": "The flow has 5 phases cut at 4 moments: the operator approves the assumptions, the plan commits, the verifier marks a task done, and every task of the idea lands on its feature branch.",
+    "assumed": "The daemon restart and adapter checks fit at the end of task execution, and a feature is opened only when the first assumptions exist. Both are open for the operator.",
+    "riskiest": "The words 'ready', 'landed' and 'done' each mean 2 or 3 different states. If later steps merge them, a status can say work is safe when it has not reached the primary branch."
+  }
+}

@@ -4,7 +4,7 @@
   "title": "fleetd: the horch fleet control plane",
   "ddd_dir": "ddd",
   "created": "2026-11-12T16:45:13Z",
-  "updated": "2026-11-12T16:51:45Z",
+  "updated": "2026-11-12T17:20:06Z",
   "mode": "auto",
   "depth": "standard",
   "scale_target": {
@@ -32,7 +32,14 @@
       ]
     },
     "discover": {
-      "status": "pending"
+      "status": "done",
+      "updated": "2026-11-12T17:20:06Z",
+      "mode": "auto",
+      "open_questions": 5,
+      "artifacts": [
+        "ddd/02-discover/discover.json",
+        "ddd/02-discover/event-storm.md"
+      ]
     },
     "decompose": {
       "status": "pending"
