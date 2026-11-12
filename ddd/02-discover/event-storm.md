@@ -4,16 +4,16 @@
 
 This step lists, in time order, everything that happens to 1 idea in fleetd: from 'horch idea add' to the feature merged in the primary branch, with the people and programs that cause each step.
 
-**Decided:** The flow has 5 phases cut at 4 moments: the operator approves the assumptions, the plan commits, the verifier marks a task done, and every task of the idea lands on its feature branch.
+**Decided:** The idea flow has 5 phases cut at 4 moments: the operator approves the assumptions, the plan commits, the verifier marks a task done, and the task branch of every task of the idea lands on its feature branch. Daemon supervision and adapter checks are a 6th phase outside the idea flow.
 
-**Assumed:** The daemon restart and adapter checks fit at the end of task execution, and a feature is opened only when the first assumptions exist. Both are open for the operator.
+**Assumed:** An idea with no --to gets its feature row at capture and its feature branch at its first assumptions. A worker question waits 15 min for its sub-orchestrator before it goes to the operator.
 
-**Riskiest:** The words 'ready', 'landed' and 'done' each mean 2 or 3 different states. If later steps merge them, a status can say work is safe when it has not reached the primary branch.
+**Riskiest:** The words 'ready' and 'landed' each name 2 or 3 states. The design now makes each message name the entity with the state. If a later step drops the entity, a status can say work is safe when it has not reached the primary branch.
 
 ---
 
-_Step 2 (discover) - produced by `ddd-discover` - mode `auto` - depth `standard` - 2026-11-12T17:20:05Z_
-_Inputs: `ddd/01-understand/understand.json`, `ddd/manifest.json`, `ddd/glossary.md`, `docs/specs/fleetd/design.md`, `docs/architecture.md`, `docs/specs/fleetd/preservation-04-behavior.md`, `docs/specs/fleetd/preservation-05-contracts-and-values.md`, `docs/specs/fleetd/preservation-06-wiring-and-platform.md`, `ai_docs/plans/fleetd-design/ddd-context.md`_
+_Step 2 (discover) - produced by `ddd-discover` - mode `auto` - depth `standard` - 2026-11-12T20:29:42Z_
+_Inputs: `ddd/01-understand/understand.json`, `ddd/manifest.json`, `ddd/glossary.md`, `docs/specs/fleetd/design.md`, `docs/architecture.md`, `docs/specs/fleetd/preservation-04-behavior.md`, `docs/specs/fleetd/preservation-05-contracts-and-values.md`, `docs/specs/fleetd/preservation-06-wiring-and-platform.md`, `ai_docs/plans/fleetd-design/ddd-context.md`, `docs/specs/fleetd/amendments.md (Revision round 2 and Fix round 2, A19 to A22)`, `ai_docs/plans/fleetd-design/ddd-revision-context.md (revision round 2 decisions and answers)`_
 
 > Rendered from `discover.json` by `ddd discover render`. The JSON is the chain: edit it (or re-run `/ddd-discover`) and re-render rather than editing this file by hand.
 
@@ -32,13 +32,13 @@ _Inputs: `ddd/01-understand/understand.json`, `ddd/manifest.json`, `ddd/glossary
 
 ## Summary
 
-- **82 events** in **5 phases** (depth `standard` expects roughly 25-60); **4 pivotal**: Assumptions Approved (assumptions-approved), Plan Committed (plan-committed), Task Done (task-done), Idea Tasks Landed (idea-tasks-landed)
-- 64 commands, 62 policies, 9 read models, 4 actors, 7 external systems, 10 aggregate candidates
-- 15 hotspots, 4 scenarios, 20 glossary terms, 10 assumptions, 5 open questions (0 blocking)
+- **83 events** in **6 phases** (depth `standard` expects roughly 25-60); **4 pivotal**: Assumptions Approved (assumptions-approved), Plan Committed (plan-committed), Task Done (task-done), Idea Task Branches Landed (idea-tasks-landed)
+- 65 commands, 63 policies, 11 read models, 4 actors, 7 external systems, 10 aggregate candidates
+- 15 hotspots, 4 scenarios, 20 glossary terms, 11 assumptions, 1 open questions (0 blocking)
 
 ## Timeline
 
-1. Clarifying an idea -> 2. Planning -> 3. Executing and verifying tasks -> 4. Landing task branches -> 5. Integrating the feature
+1. Clarifying an idea -> 2. Planning -> 3. Executing and verifying tasks -> 4. Landing task branches -> 5. Integrating the feature -> 6. Operating the fleet (outside the idea flow)
 
 ### Phase 1 - Clarifying an idea
 
@@ -46,13 +46,13 @@ _12 events - id `clarifying`_
 
 | # | Event | Triggered by | Actor | Read model | Whenever this, then | Notes |
 |---|---|---|---|---|---|---|
-| 10 | **Idea Captured** [H7] `idea-captured` | Add Idea `add-idea` | Operator |  | Start Sub-Orchestrator | horch idea add writes 1 immutable idea file and 1 ledger row in state captured. --to joins an open feature. - data: ideaId, text, featureId? |
+| 10 | **Idea Captured** [H7] `idea-captured` | Add Idea `add-idea` | Operator |  | Start Sub-Orchestrator | horch idea add writes 1 immutable idea file and 1 ledger row in state captured. --to joins an open feature. With no --to, the idea gets a new features row at capture (orchestrator, D15). - data: ideaId, text, featureId |
 | 20 | **Sub-Orchestrator Started** [H3] `sub-orchestrator-started` | Start Sub-Orchestrator `start-sub-orchestrator` |  |  |  | fleetd opens pane idea-NNNN with a fresh sub-orchestrator process for the phase. The idea moves to clarifying. - data: ideaId, featureId, pane, phase |
 | 30 | **Interview Question Asked** `interview-question-asked` | Ask Operator `ask-operator` | Sub-orchestrator |  |  | The sub-orchestrator asks the operator 1 question in its pane, after it reads the code and docs the idea touches. - data: ideaId, question |
 | 40 | **Interview Answer Recorded** `interview-answer-recorded` | Answer Interview Question `answer-interview-question` | Operator |  |  | horch idea note appends the question and the answer to interview.md. - data: ideaId, question, answer |
 | 50 | **Idea Amended** `idea-amended` | Amend Idea `amend-idea` | Operator |  |  | horch idea amend adds 1 amendment file. Before approval it joins the interview. After approval it becomes a revise. - data: ideaId, amendment |
 | 60 | **Assumptions Written** `assumptions-written` | Write Assumptions `write-assumptions` | Sub-orchestrator | Idea folder (idea.md, amendments, interview.md) | Open Feature | assumptions.md validates with no item marked [open]. - data: ideaId, assumptions[] |
-| 70 | **Feature Opened** [H2] `feature-opened` | Open Feature `open-feature` |  |  | Request Approval | fleetd checks the kebab-case name, writes the features row, then creates the feature branch. For a --direct idea with no --to it happens at acceptance. - data: featureId, name, branch, primaryBranch |
+| 70 | **Feature Opened** [H2] `feature-opened` | Open Feature `open-feature` |  |  | Request Approval | fleetd checks the kebab-case name, then creates the feature branch. The features row exists since capture (orchestrator, D15). For a --direct idea with no --to it happens at acceptance. - data: featureId, name, branch, primaryBranch |
 | 80 | **Approval Requested** `approval-requested` | Request Approval `request-approval` |  |  | Park Idea | The idea moves to awaiting_approval. fleetd posts a herdr notification and lists the idea under Needs you. The idea lease is paused. - data: ideaId, assumptionsHash |
 | 90 | **Idea Parked** `idea-parked` | Park Idea `park-idea` |  |  |  | The idea leaves the queue: 7 days with no answer, an escalation, or horch idea park. Worktrees are rescued first. - data: ideaId, reason |
 | 100 | **Idea Cancelled** `idea-cancelled` | Cancel Idea `cancel-idea` | Operator |  |  | horch idea cancel. Worktrees are rescued first. - data: ideaId |
@@ -61,7 +61,7 @@ _12 events - id `clarifying`_
 
 Hotspots in this phase:
 
-- **H7** (unclear, near `idea-captured`): The idea row records its feature (ideas.feature_id), but the feature row and branch are written when the sub-orchestrator first writes assumptions. Which feature does an idea with no --to point at between capture and assumptions, and what does horch ideas show for it?
+- **H7** (unclear, near `idea-captured`): The idea row records its feature (ideas.feature_id), but the feature row and branch are written when the sub-orchestrator first writes assumptions. Which feature does an idea with no --to point at between capture and assumptions, and what does horch ideas show for it? Answered (orchestrator, D15): the idea gets its features row at capture and its feature branch at its first assumptions.
 - **H3** (conflict, near `sub-orchestrator-started`): 'Orchestrator' today is 1 long-lived LLM conversation that receives ideas, creates tasks and reads mail. In fleetd it does not exist: a deterministic idea dispatcher and 1 sub-orchestrator per feature replace it. Today's mail contract still names [orchestrator re #<id>] answers (understand N3).
 - **H2** (conflict, near `feature-opened`): 'Feature' is also a task kind (kind: feature, a code kind) and a word for any change. In fleetd a Feature is 1 sub-orchestrator, 1 feature branch and 1 pull request holding 1 main idea and its follow-on ideas. Which meaning does each document use (understand N2)?
 
@@ -217,60 +217,55 @@ flowchart LR
 
 ### Phase 3 - Executing and verifying tasks
 
-_40 events - id `executing`_
+_36 events - id `executing`_
 
 | # | Event | Triggered by | Actor | Read model | Whenever this, then | Notes |
 |---|---|---|---|---|---|---|
-| 200 | **Task Promoted** `task-promoted` | Promote Task `promote-task` |  |  | Dispatch Task | Every dependency of the task is done, or its quota pool reset, or the operator requeued it. - data: taskId |
-| 210 | **Task Leased** [H9] `task-leased` | Dispatch Task `dispatch-task` |  |  | Create Worktree | fleetd binds the task to a new attempt. In the same transaction it writes the worktree row (reserved) and the task branch row (building). - data: taskId, attemptId, leaseExpires, worktreeId, branch |
-| 220 | **Worktree Created** `worktree-created` | Create Worktree `create-worktree` |  |  | Launch Attempt | fleetd runs git worktree add. A retried attempt reuses the existing worktree. - data: worktreeId, path, branch |
-| 230 | **Attempt Launched** [H1] `attempt-launched` | Launch Attempt `launch-attempt` |  |  |  | fleetd writes task.yaml and inbox/START.md, then starts the CLI through the fleet-run wrapper with START.md as its argument. - data: taskId, attemptId, profile, startFile |
-| 240 | **Lease Renewed** `lease-renewed` | Renew Lease `renew-lease` | Clock |  |  | The process is alive, the heartbeat is under 30 s old, and there was activity within stall_after. - data: attemptId, expires |
-| 250 | **Lease Expired** [H13] `lease-expired` | Renew Lease `renew-lease` | Clock |  | End Attempt | No earned renewal: the lease expires within 120 s of the stall threshold. - data: attemptId |
-| 260 | **Attempt Stalled** `attempt-stalled` | Apply Stall Ladder `apply-stall-ladder` | Clock |  | End Attempt | The stall ladder reached its last rung: idle with no result after 2 doorbells, hung, no first signal in 90 s, or blocked on a permission dialog. - data: attemptId, agentState |
-| 270 | **Usage Limit Reported** `usage-limit-reported` | external: Provider pool | Provider pool |  | Move To Fallback | The worker shows a usage limit or a provider outage. This is not a stall and burns no attempt. - data: attemptId, pool, resetAt |
-| 280 | **Fallback Persona Assigned** `fallback-assigned` | Move To Fallback `move-to-fallback` |  |  | Launch Attempt | The fallback persona is on another provider: the task restarts at once on a new worker of the fallback, on the same worktree. - data: taskId, fallbackProfile |
-| 290 | **Quota Wait Started** `quota-wait-started` | Move To Fallback `move-to-fallback` |  |  |  | No fallback on another provider: the task waits in waiting_quota with its lease paused. fleetd does not go to a third persona. - data: taskId, pool |
-| 300 | **Quota Window Reset** `quota-window-reset` | external: Provider pool | Provider pool |  | Promote Task | The usage window of the pool resets. - data: pool |
-| 310 | **Worker Question Asked** `worker-question-asked` | Ask Question `ask-question` | Worker |  | Start Sub-Orchestrator | The worker writes 1 question file, commits its work in progress and exits. The task parks with no process. The question is a ledger row with an owner and a time limit. - data: taskId, questionId, text |
-| 320 | **Question Answered** `question-answered` | Answer Question `answer-question` | Sub-orchestrator | Approved assumptions, spec and decision log | Launch Attempt | The approved assumptions or the spec cover the question; fleetd checks that the cited line exists. Or the sub-orchestrator replans the task. - data: questionId, answer, citation? |
-| 330 | **Own Assumption Recorded** `own-assumption-recorded` | Answer Question `answer-question` | Sub-orchestrator | Approved assumptions, spec and decision log | Launch Attempt | Nothing approved covers the question and it changes no assumption: the sub-orchestrator decides and records a reversible assumption marked as its own decision (D13). - data: questionId, assumption |
-| 340 | **Revise Requested** `revise-requested` | Answer Question `answer-question` | Sub-orchestrator | Approved assumptions, spec and decision log | Approve Assumptions, Revise Assumptions (manual) | The answer changes an approved assumption. It goes to the operator as a revise. Only the affected tasks pause. - data: questionId, ideaId, affectedTasks[] |
-| 350 | **Question Escalated** [H10] `question-escalated` | Escalate Question `escalate-question` | Clock |  |  | The question passed its time limit. It goes to needs-you/ with a herdr notification. - data: questionId |
-| 360 | **Result Written** `result-written` | Write Result `write-result` | Worker | Task file and START.md |  | outbox/result.json lands. A stop hook, or the wrapper repair pass, refuses to end the attempt without it. - data: taskId, attemptId, status, commits[] |
-| 370 | **Attempt Exited** `attempt-exited` | external: Agent CLI process | Agent CLI process |  | Run Check; Write Result | The CLI process group exited. The wrapper writes exit.json. Exec mode turns 'stopped' into 'process exited'. - data: attemptId, exitStatus, hasResult |
-| 380 | **Check Passed** `check-passed` | Run Check `run-check` |  |  | Run Review; Mark Task Done | The verifier ran the acceptance commands (or the structural check for a judgment or judge kind) in the worktree, in the sandbox of the worker, within the check timeout. - data: taskId, verdict |
-| 390 | **Check Failed** `check-failed` | Run Check `run-check` |  |  | End Attempt | An acceptance command failed. The claim of the worker does not count. - data: taskId, verdict |
-| 400 | **Review Passed** `review-passed` | Run Review `run-review` |  |  | Mark Task Done | Code kind only: today's review scripts pass unchanged (code-sweep rounds, findings F<n>, answers file, waivers). - data: taskId, rounds |
-| 410 | **Review Failed** `review-failed` | Run Review `run-review` |  |  | End Attempt | The review scripts requeue the task (at most 2 requeues). - data: taskId, findings[] |
-| 420 | **Judge Verdict Written** [H5] `judge-verdict-written` | Write Judge Verdict `write-judge-verdict` | Worker |  | Mark Task Done, Open Critical Fix; Settle High Finding (manual) | The paired judge task, in another session and on another provider when the roster has one, ranks each miss CRITICAL, HIGH, MEDIUM or LOW. - data: judgeTaskId, judgedTaskId, findings[rank] |
-| 430 | **Critical Fix Opened** `critical-fix-opened` | Open Critical Fix `open-critical-fix` |  |  | Escalate Task | A CRITICAL miss blocks. A fresh session fixes it, then a fresh judge checks only the earlier CRITICAL items and the change. - data: judgedTaskId, round |
-| 440 | **High Finding Settled** `high-finding-settled` | Settle High Finding `settle-high-finding` | Sub-orchestrator | Judge findings |  | A HIGH miss does not block alone. The sub-orchestrator fixes it or dismisses it with a written reason. - data: findingId, fixedOrReason |
-| 450 | **Attempt Failed** `attempt-failed` | End Attempt `end-attempt` |  |  | Schedule Retry | 1 state for every non-verified outcome: stalled, no_result, lease expired, check failed. fleetd stops the process group and requeues in 1 transaction before any signal. - data: attemptId, outcome |
-| 460 | **Retry Scheduled** `retry-scheduled` | Schedule Retry `schedule-retry` |  |  | Launch Attempt | Attempts remain: a new attempt starts after backoff (30 s, 2 min, 8 min) in the same worktree with a handoff file. - data: taskId, nextAttempt, backoff |
-| 470 | **Replan Requested** `replan-requested` | Schedule Retry `schedule-retry` |  |  | Replan Task (manual) | No attempts remain: the task goes to the sub-orchestrator of its idea to replan once. - data: taskId |
-| 480 | **Task Replanned** `task-replanned` | Replan Task `replan-task` | Sub-orchestrator |  | Promote Task | The sub-orchestrator changes the failed task. The changed plan validates again. - data: taskId, planChange |
-| 490 | **Task Escalated** `task-escalated` | Escalate Task `escalate-task` |  |  | Requeue Task, Abandon Task Branch (manual) | The replan failed too, or 2 fix rounds left a CRITICAL item, or a rescue failed verification. The task goes to needs-you/. - data: taskId, reason |
-| 500 | **Task Requeued** [H12] `task-requeued` | Requeue Task `requeue-task` | Operator | Needs-you queue | Promote Task | An operator requeue resets the attempt count (04 L8) and resumes on the same worktree (04 L5). - data: taskId, attemptFloor |
-| 510 | **Worktree Orphaned** `worktree-orphaned` | Reconcile Worktrees `reconcile-worktrees` | Clock |  | Rescue Worktree | The reconciler finds a tree with no live owner, or a directory with no row. A tree that vanished without fleetd is escalated. - data: worktreeId, path |
-| 520 | **Worktree Rescued** `worktree-rescued` | Rescue Worktree `rescue-worktree` |  |  |  | fleetd commits the full tree to refs/horch/rescue/<task>/<n> with a private index and verifies it byte for byte before any removal. - data: worktreeId, rescueRef, fileCount |
-| 530 | **Rescue Failed** `rescue-failed` | Rescue Worktree `rescue-worktree` |  |  | Escalate Task | The rescue commit does not match the tree. The tree stays in place. - data: worktreeId |
-| 540 | **Fleetd Hang Detected** `fleetd-hang-detected` | Check Fleetd `check-fleetd` | Clock |  | Restart Fleetd | horch fleetd check (launchd timer, Windows scheduled task, every horch command) or the systemd watchdog sees no full pass for 30 s of awake time. - data: lastPassAt |
-| 550 | **New Horch Version Installed** `horch-version-installed` | Self Update `self-update` | Friend |  | Restart Fleetd | horch self-update replaces the binary. - data: version |
-| 560 | **Fleetd Restarted** `fleetd-restarted` | Restart Fleetd `restart-fleetd` | OS service manager |  |  | fleetd starts again and recovers from the ledger and the files. It exits only between passes (04 S7). - data: version |
-| 570 | **Adapter Conformance Failed** [H14] `adapter-conformance-failed` | Run Conformance Tests `run-conformance-tests` | Clock |  | Mark Profile Unhealthy | Docs sync (daily, plus on a CLI version change) ran the conformance test of an adapter and it failed. - data: cli, version |
-| 580 | **Profile Marked Unhealthy** `profile-marked-unhealthy` | Mark Profile Unhealthy `mark-profile-unhealthy` |  |  |  | The profile gets no new dispatch until a conformance test passes. A permission dialog in an attempt does the same. - data: profile, reason |
-| 590 | **Task Done** (pivotal) [H4] `task-done` | Mark Task Done `mark-task-done` |  |  | Mark Branch Ready, Promote Task | Only the verifier moves a task to done: the check passed, then the review (code kind), or the judge with no CRITICAL item (judgment kind). - data: taskId, verdict |
+| 180 | **Task Promoted** `task-promoted` | Promote Task `promote-task` |  |  | Dispatch Task | Every dependency of the task is done, or its quota pool reset, or the operator requeued it. - data: taskId |
+| 190 | **Task Leased** [H9] `task-leased` | Dispatch Task `dispatch-task` |  |  | Create Worktree | fleetd binds the task to a new attempt. In the same transaction it writes the worktree row (reserved) and the task branch row (building). - data: taskId, attemptId, leaseExpires, worktreeId, branch |
+| 200 | **Worktree Created** `worktree-created` | Create Worktree `create-worktree` |  |  | Launch Attempt | fleetd runs git worktree add. A retried attempt reuses the existing worktree. - data: worktreeId, path, branch |
+| 210 | **Attempt Launched** [H1] `attempt-launched` | Launch Attempt `launch-attempt` |  |  | Start Agent Process | fleetd writes task.yaml and inbox/START.md for the attempt. The start of the process follows as Agent Process Started. - data: taskId, attemptId, profile, startFile |
+| 220 | **Agent Process Started** `agent-process-started` | Start Agent Process `start-agent-process` |  | Launch environment of a profile |  | The fleet-run wrapper and the CLI run in their own process group, started through the platform layer and the herdr adapter with the launch environment of the profile. - data: attemptId\|ideaId, pid, pgid, pane |
+| 230 | **Lease Renewed** `lease-renewed` | Renew Lease `renew-lease` | Clock |  |  | The process is alive, the heartbeat is under 30 s old, and there was activity within stall_after. - data: attemptId, expires |
+| 240 | **Lease Expired** [H13] `lease-expired` | Renew Lease `renew-lease` | Clock |  | End Attempt | No earned renewal: the lease expires within 120 s of the stall threshold. - data: attemptId |
+| 250 | **Attempt Stalled** `attempt-stalled` | Apply Stall Ladder `apply-stall-ladder` | Clock |  | End Attempt | The stall ladder reached its last rung: idle with no result after 2 doorbells, hung, no first signal in 90 s, or blocked on a permission dialog. - data: attemptId, agentState |
+| 260 | **Usage Limit Reported** `usage-limit-reported` | external: Provider pool | Provider pool |  | Move To Fallback | The worker shows a usage limit or a provider outage. This is not a stall and burns no attempt. - data: attemptId, pool, resetAt |
+| 270 | **Fallback Persona Assigned** `fallback-assigned` | Move To Fallback `move-to-fallback` |  |  | Launch Attempt | The fallback persona is on another provider: the task restarts at once on a new worker of the fallback, on the same worktree. - data: taskId, fallbackProfile |
+| 280 | **Quota Wait Started** `quota-wait-started` | Move To Fallback `move-to-fallback` |  |  |  | No fallback on another provider: the task waits in waiting_quota with its lease paused. fleetd does not go to a third persona. - data: taskId, pool |
+| 290 | **Quota Window Reset** `quota-window-reset` | external: Provider pool | Provider pool |  | Promote Task | The usage window of the pool resets. - data: pool |
+| 300 | **Worker Question Asked** `worker-question-asked` | Ask Question `ask-question` | Worker |  | Start Sub-Orchestrator | The worker writes 1 question file, commits its work in progress and exits. The task parks with no process. The question is a ledger row with an owner and a time limit. - data: taskId, questionId, text |
+| 310 | **Question Answered** `question-answered` | Answer Question `answer-question` | Sub-orchestrator | Approved assumptions, spec and decision log | Launch Attempt | The approved assumptions or the spec cover the question; fleetd checks that the cited line exists. Or the sub-orchestrator replans the task. - data: questionId, answer, citation? |
+| 320 | **Own Assumption Recorded** `own-assumption-recorded` | Answer Question `answer-question` | Sub-orchestrator | Approved assumptions, spec and decision log | Launch Attempt | Nothing approved covers the question and it changes no assumption: the sub-orchestrator decides and records a reversible assumption marked as its own decision (D13). - data: questionId, assumption |
+| 330 | **Revise Requested** `revise-requested` | Answer Question `answer-question` | Sub-orchestrator | Approved assumptions, spec and decision log | Approve Assumptions, Revise Assumptions (manual) | The answer changes an approved assumption. It goes to the operator as a revise. Only the affected tasks pause. - data: questionId, ideaId, affectedTasks[] |
+| 340 | **Question Escalated** [H10] `question-escalated` | Escalate Question `escalate-question` | Clock |  |  | The question passed its time limit. It goes to needs-you/ with a herdr notification. - data: questionId |
+| 350 | **Result Written** `result-written` | Write Result `write-result` | Worker | Task file and START.md |  | outbox/result.json lands. A stop hook, or the wrapper repair pass, refuses to end the attempt without it. - data: taskId, attemptId, status, commits[] |
+| 360 | **Attempt Exited** `attempt-exited` | external: Agent CLI process | Agent CLI process |  | Run Check; Write Result | The CLI process group exited. The wrapper writes exit.json. Exec mode turns 'stopped' into 'process exited'. - data: attemptId, exitStatus, hasResult |
+| 370 | **Check Passed** `check-passed` | Run Check `run-check` |  |  | Run Review; Mark Task Done | The verifier ran the acceptance commands (or the structural check for a judgment or judge kind) in the worktree, in the sandbox of the worker, within the check timeout. - data: taskId, verdict |
+| 380 | **Check Failed** `check-failed` | Run Check `run-check` |  |  | End Attempt | An acceptance command failed. The claim of the worker does not count. - data: taskId, verdict |
+| 390 | **Review Passed** `review-passed` | Run Review `run-review` |  |  | Mark Task Done | Code kind only: today's review scripts pass unchanged (code-sweep rounds, findings F<n>, answers file, waivers). - data: taskId, rounds |
+| 400 | **Review Failed** `review-failed` | Run Review `run-review` |  |  | End Attempt | The review scripts requeue the task (at most 2 requeues). - data: taskId, findings[] |
+| 410 | **Judge Verdict Written** [H5] `judge-verdict-written` | Write Judge Verdict `write-judge-verdict` | Worker |  | Mark Task Done, Open Critical Fix; Settle High Finding (manual) | The paired judge task, in another session and on another provider when the roster has one, ranks each miss CRITICAL, HIGH, MEDIUM or LOW. - data: judgeTaskId, judgedTaskId, findings[rank] |
+| 420 | **Critical Fix Opened** `critical-fix-opened` | Open Critical Fix `open-critical-fix` |  |  | Escalate Task | A CRITICAL miss blocks. A fresh session fixes it, then a fresh judge checks only the earlier CRITICAL items and the change. - data: judgedTaskId, round |
+| 430 | **High Finding Settled** `high-finding-settled` | Settle High Finding `settle-high-finding` | Sub-orchestrator | Judge findings |  | A HIGH miss does not block alone. The sub-orchestrator fixes it or dismisses it with a written reason. - data: findingId, fixedOrReason |
+| 440 | **Attempt Failed** `attempt-failed` | End Attempt `end-attempt` |  |  | Schedule Retry | 1 state for every non-verified outcome: stalled, no_result, lease expired, check failed. fleetd stops the process group and requeues in 1 transaction before any signal. - data: attemptId, outcome |
+| 450 | **Retry Scheduled** `retry-scheduled` | Schedule Retry `schedule-retry` |  |  | Launch Attempt | Attempts remain: a new attempt starts after backoff (30 s, 2 min, 8 min) in the same worktree with a handoff file. - data: taskId, nextAttempt, backoff |
+| 460 | **Replan Requested** `replan-requested` | Schedule Retry `schedule-retry` |  |  | Replan Task (manual) | No attempts remain: the task goes to the sub-orchestrator of its idea to replan once. - data: taskId |
+| 470 | **Task Replanned** `task-replanned` | Replan Task `replan-task` | Sub-orchestrator |  | Promote Task | The sub-orchestrator changes the failed task. The changed plan validates again. - data: taskId, planChange |
+| 480 | **Task Escalated** `task-escalated` | Escalate Task `escalate-task` |  |  | Requeue Task, Abandon Task Branch (manual) | The replan failed too, or 2 fix rounds left a CRITICAL item, or a rescue failed verification. The task goes to needs-you/. - data: taskId, reason |
+| 490 | **Task Requeued** [H12] `task-requeued` | Requeue Task `requeue-task` | Operator | Needs-you queue | Promote Task | An operator requeue resets the attempt count (04 L8) and resumes on the same worktree (04 L5). - data: taskId, attemptFloor |
+| 500 | **Worktree Orphaned** `worktree-orphaned` | Reconcile Worktrees `reconcile-worktrees` | Clock |  | Rescue Worktree | The reconciler finds a tree with no live owner, or a directory with no row. A tree that vanished without fleetd is escalated. - data: worktreeId, path |
+| 510 | **Worktree Rescued** `worktree-rescued` | Rescue Worktree `rescue-worktree` |  |  |  | fleetd commits the full tree to refs/horch/rescue/<task>/<n> with a private index and verifies it byte for byte before any removal. - data: worktreeId, rescueRef, fileCount |
+| 520 | **Rescue Failed** `rescue-failed` | Rescue Worktree `rescue-worktree` |  |  | Escalate Task | The rescue commit does not match the tree. The tree stays in place. - data: worktreeId |
+| 530 | **Task Done** (pivotal) [H4] `task-done` | Mark Task Done `mark-task-done` |  |  | Mark Branch Ready, Promote Task | Only the verifier moves a task to done: the check passed, then the review (code kind), or the judge with no CRITICAL item (judgment kind). - data: taskId, verdict |
 
 Hotspots in this phase:
 
 - **H9** (unclear, near `task-leased`): What number counts as 'full use' of the subscription usage that pacing aims for? Pacing holds dispatch per pool window, but the design gives no target (understand Q1).
 - **H1** (conflict, near `attempt-launched`): Today a worker 'claims' a task and the 'task' row carries the run; fleetd splits this into task (planned unit from plan.yaml), attempt (1 run of 1 worker: A1, A2) and lease (the time-limited hold that renews only on earned activity). Readers of today's ledger and code will read 'task' where fleetd means 'attempt' (understand N1).
 - **H13** (risk, near `lease-expired`): Lease and stall time count only while the machine is awake. If the platform layer reports sleep and wake wrongly on 1 OS, leases expire during a sleep and every worker burns an attempt at wake.
-- **H10** (unclear, near `question-escalated`): A worker question has 'a time limit' before it escalates, but the design gives no value for it, and it does not say if the limit pauses while the operator is outside working hours.
+- **H10** (unclear, near `question-escalated`): A worker question has 'a time limit' before it escalates, but the design gives no value for it, and it does not say if the limit pauses while the operator is outside working hours. Answered (orchestrator, D15): 15 min with no answer from a running sub-orchestrator, as a starting value. The wait for the operator has no limit.
 - **H5** (conflict, near `judge-verdict-written`): 'Judgment kind' (research, design, docs, report, creative) and the kind 'judge' sound alike. A judgment task needs a paired judge task; a judge task needs no judge. A resolver task has a code kind. Mixing them breaks plan validation (understand N12).
-- **H12** (unclear, near `task-requeued`): A task gets max_attempts attempts, then 1 replan, then goes to the operator. A requeue resets attempt_floor (04 L8). Does a requeued task also get a new replan, and how does the 2-requeue limit of the review scripts count against attempts?
-- **H14** (missing, near `adapter-conformance-failed`): Docs sync and adapter conformance are collapsed to 2 events here. The flow that turns a drift into a task (who owns it, how a profile becomes healthy again) is not stormed.
+- **H12** (unclear, near `task-requeued`): A task gets max_attempts attempts, then 1 replan, then goes to the operator. A requeue resets attempt_floor (04 L8). Does a requeued task also get a new replan, and how does the 2-requeue limit of the review scripts count against attempts? Answered in part (orchestrator, D15): an operator requeue sets the attempt count to 0; a review requeue keeps its own counter. The replan stays open (Q3).
 - **H4** (conflict, near `task-done`): 'Done' today is a model action (horch ledger done / horch done). In fleetd only the verifier moves a task to done, and 'landed' (on the feature branch) and 'merged' (in the primary branch by content) are later, separate facts. A reader can take 'done' to mean the work reached the primary branch (understand N4).
 
 ```mermaid
@@ -297,6 +292,10 @@ flowchart LR
     e_attempt_launched["Attempt Launched"]:::event
     c_launch_attempt["Launch Attempt"]:::command
     h_H1>"H1: Today a worker 'claims' a task and the 'task' row carries t..."]:::hotspot
+    p_start_process_on_launch{{"Whenever an attempt is launched, start its agent process from the lau..."}}:::policy
+    e_agent_process_started["Agent Process Started"]:::event
+    c_start_agent_process["Start Agent Process"]:::command
+    r_launch_environment(["Launch environment of a profile"]):::readmodel
     e_lease_renewed["Lease Renewed"]:::event
     c_renew_lease["Clock<br/>Renew Lease"]:::command
     e_lease_expired["Lease Expired"]:::event
@@ -387,20 +386,6 @@ flowchart LR
     c_rescue_worktree["Rescue Worktree"]:::command
     e_rescue_failed["Rescue Failed"]:::event
     p_escalate_on_rescue_failed{{"Whenever a rescue fails verification, escalate"}}:::policy
-    e_fleetd_hang_detected["Fleetd Hang Detected"]:::event
-    c_check_fleetd["Clock<br/>Check Fleetd"]:::command
-    p_restart_on_stale_heartbeat{{"Whenever the fleetd heartbeat goes stale, restart fleetd"}}:::policy
-    e_horch_version_installed["New Horch Version Installed"]:::event
-    c_self_update["Friend<br/>Self Update"]:::command
-    p_restart_on_binary_change{{"Whenever the horch binary is updated, restart fleetd on the new binary"}}:::policy
-    e_fleetd_restarted["Fleetd Restarted"]:::event
-    c_restart_fleetd["OS service manager<br/>Restart Fleetd"]:::command
-    e_adapter_conformance_failed["Adapter Conformance Failed"]:::event
-    c_run_conformance_tests["Clock<br/>Run Conformance Tests"]:::command
-    h_H14>"H14: Docs sync and adapter conformance are collapsed to 2 events..."]:::hotspot
-    p_block_profile_on_conformance{{"Whenever adapter conformance fails, mark the profile unhealthy"}}:::policy
-    e_profile_marked_unhealthy["Profile Marked Unhealthy"]:::event
-    c_mark_profile_unhealthy["Mark Profile Unhealthy"]:::command
     e_task_done["Task Done"]:::pivotal
     c_mark_task_done["Mark Task Done"]:::command
     h_H4>"H4: 'Done' today is a model action horch ledger done / horch do..."]:::hotspot
@@ -422,7 +407,12 @@ flowchart LR
   e_worktree_created ~~~ e_attempt_launched
   c_launch_attempt --> e_attempt_launched
   e_attempt_launched -.- h_H1
-  e_attempt_launched ~~~ e_lease_renewed
+  e_attempt_launched --> p_start_process_on_launch
+  p_start_process_on_launch --> c_start_agent_process
+  e_attempt_launched ~~~ e_agent_process_started
+  r_launch_environment -.-> c_start_agent_process
+  c_start_agent_process --> e_agent_process_started
+  e_agent_process_started ~~~ e_lease_renewed
   c_renew_lease --> e_lease_renewed
   e_lease_renewed ~~~ e_lease_expired
   c_renew_lease --> e_lease_expired
@@ -547,24 +537,7 @@ flowchart LR
   c_rescue_worktree --> e_rescue_failed
   e_rescue_failed --> p_escalate_on_rescue_failed
   p_escalate_on_rescue_failed --> c_escalate_task
-  e_rescue_failed ~~~ e_fleetd_hang_detected
-  c_check_fleetd --> e_fleetd_hang_detected
-  e_fleetd_hang_detected --> p_restart_on_stale_heartbeat
-  p_restart_on_stale_heartbeat --> c_restart_fleetd
-  e_fleetd_hang_detected ~~~ e_horch_version_installed
-  c_self_update --> e_horch_version_installed
-  e_horch_version_installed --> p_restart_on_binary_change
-  p_restart_on_binary_change --> c_restart_fleetd
-  e_horch_version_installed ~~~ e_fleetd_restarted
-  c_restart_fleetd --> e_fleetd_restarted
-  e_fleetd_restarted ~~~ e_adapter_conformance_failed
-  c_run_conformance_tests --> e_adapter_conformance_failed
-  e_adapter_conformance_failed -.- h_H14
-  e_adapter_conformance_failed --> p_block_profile_on_conformance
-  p_block_profile_on_conformance --> c_mark_profile_unhealthy
-  e_adapter_conformance_failed ~~~ e_profile_marked_unhealthy
-  c_mark_profile_unhealthy --> e_profile_marked_unhealthy
-  e_profile_marked_unhealthy ~~~ e_task_done
+  e_rescue_failed ~~~ e_task_done
   c_mark_task_done --> e_task_done
   e_task_done -.- h_H4
   e_task_done --> p_ready_branch_on_done
@@ -578,21 +551,21 @@ _11 events - id `landing`_
 
 | # | Event | Triggered by | Actor | Read model | Whenever this, then | Notes |
 |---|---|---|---|---|---|---|
-| 600 | **Task Branch Verified** [H6] `task-branch-verified` | Mark Branch Ready `mark-branch-ready` |  |  | Build Bundle | The task branch leaves verifying and waits for the next bundle. - data: branch, taskId |
-| 610 | **Bundle Built** `bundle-built` | Build Bundle `build-bundle` |  |  | Run Fast Gate | 1 candidate from the feature branch tip plus each ready task branch in queue order. Each task keeps its commits. - data: featureId, candidate, branches[] |
-| 620 | **Task Branch Conflicted** `task-branch-conflicted` | Build Bundle `build-bundle` |  |  | Launch Attempt | The rebase of the task branch conflicts. The same worker resolves it (today's behavior). - data: branch |
-| 630 | **Fast Gate Passed** [H11] `fast-gate-passed` | Run Fast Gate `run-fast-gate` |  |  | Fast-Forward Feature Branch | The unit tests of the project pass once on the candidate. - data: candidate |
-| 640 | **Fast Gate Failed** `fast-gate-failed` | Run Fast Gate `run-fast-gate` |  |  | Bisect Bundle | The fast gate fails on the candidate. - data: candidate |
-| 650 | **Task Branch Landed** [H8] `task-branch-landed` | Fast-Forward Feature Branch `fast-forward-feature-branch` |  |  | Remove Worktree, Roll Up Idea, Run Trial Merges | Under the land lock, after the check that the task is still held (04 F9), the feature branch fast-forwards to the candidate. - data: branch, featureId, tip |
-| 660 | **Task Branch Gate Failed** `task-branch-gate-failed` | Bisect Bundle `bisect-bundle` |  |  | Open Triage Task | fleetd bisects the bundle. The failing branch goes to gate_failed; the others go on. - data: branch |
-| 670 | **Triage Task Opened** `triage-task-opened` | Open Triage Task `open-triage-task` |  |  |  | A gate failure becomes a triage task of the feature, owned by its sub-orchestrator. - data: featureId, failure |
-| 680 | **Task Branch Abandoned** `task-branch-abandoned` | Abandon Task Branch `abandon-task-branch` | Operator | Worktree list (horch worktrees) |  | Only the operator abandons a task branch. A rescue ref is kept. - data: branch, rescueRef |
-| 690 | **Worktree Removed** `worktree-removed` | Remove Worktree `remove-worktree` |  |  |  | Nothing in the tree is unique any more. fleetd removes it, and deletes the branch only when it is merged and no git stash entry names it (04 W6). - data: worktreeId |
-| 700 | **Idea Tasks Landed** (pivotal) `idea-tasks-landed` | Roll Up Idea `roll-up-idea` |  |  | Run Full Gate | Every task of the idea is landed on its feature branch. The idea moves to integrating. - data: ideaId, featureId |
+| 540 | **Task Branch Verified** [H6] `task-branch-verified` | Mark Branch Ready `mark-branch-ready` |  |  | Build Bundle | The task branch leaves verifying and waits for the next bundle. - data: branch, taskId |
+| 550 | **Bundle Built** `bundle-built` | Build Bundle `build-bundle` |  |  | Run Fast Gate | 1 candidate from the feature branch tip plus each ready task branch in queue order. Each task keeps its commits. - data: featureId, candidate, branches[] |
+| 560 | **Task Branch Conflicted** `task-branch-conflicted` | Build Bundle `build-bundle` |  |  | Launch Attempt | The rebase of the task branch conflicts. The same worker resolves it (today's behavior). - data: branch |
+| 570 | **Fast Gate Passed** [H11] `fast-gate-passed` | Run Fast Gate `run-fast-gate` |  |  | Fast-Forward Feature Branch | The unit tests of the project pass once on the candidate. - data: candidate |
+| 580 | **Fast Gate Failed** `fast-gate-failed` | Run Fast Gate `run-fast-gate` |  |  | Bisect Bundle | The fast gate fails on the candidate. - data: candidate |
+| 590 | **Task Branch Landed** [H8] `task-branch-landed` | Fast-Forward Feature Branch `fast-forward-feature-branch` |  |  | Remove Worktree, Roll Up Idea, Run Trial Merges | Under the land lock, after the check that the task is still held (04 F9), the feature branch fast-forwards to the candidate. - data: branch, featureId, tip |
+| 600 | **Task Branch Gate Failed** `task-branch-gate-failed` | Bisect Bundle `bisect-bundle` |  |  | Open Triage Task | fleetd bisects the bundle. The failing branch goes to gate_failed; the others go on. - data: branch |
+| 610 | **Triage Task Opened** `triage-task-opened` | Open Triage Task `open-triage-task` |  |  |  | A gate failure becomes a triage task of the feature, owned by its sub-orchestrator. - data: featureId, failure |
+| 620 | **Task Branch Abandoned** `task-branch-abandoned` | Abandon Task Branch `abandon-task-branch` | Operator | Worktree list (horch worktrees) |  | Only the operator abandons a task branch. A rescue ref is kept. - data: branch, rescueRef |
+| 630 | **Worktree Removed** `worktree-removed` | Remove Worktree `remove-worktree` |  |  |  | Nothing in the tree is unique any more. fleetd removes it, and deletes the branch only when it is merged and no git stash entry names it (04 W6). - data: worktreeId |
+| 640 | **Idea Task Branches Landed** (pivotal) `idea-tasks-landed` | Roll Up Idea `roll-up-idea` |  |  | Run Full Gate | The task branch of every task of the idea is landed on its feature branch. The idea moves to integrating. - data: ideaId, featureId |
 
 Hotspots in this phase:
 
-- **H6** (conflict, near `task-branch-verified`): 'Ready' names 3 states: a task is ready when its dependencies are done (not yet dispatched); a task branch is ready when it is verified and waits for a bundle; a feature is ready when its full gate passed. 'Landed' is both a task branch state and a worktree state. Which one does a status line mean?
+- **H6** (conflict, near `task-branch-verified`): 'Ready' names 3 states: a task is ready when its dependencies are done (not yet dispatched); a task branch is ready when it is verified and waits for a bundle; a feature is ready when its full gate passed. 'Landed' is both a task branch state and a worktree state. Which one does a status line mean? Answered (design A20): the state names stay, and each status line, event, log line and message that gives a state also gives the kind of its entity. A task is done; its task branch is landed.
 - **H11** (external, near `fast-gate-passed`): Plan validation refuses a project that has not declared a fast gate and a full gate, and this repository has no unit-only command today (research-03 F10, understand Q8). Until one is declared, no plan of this repository can commit.
 - **H8** (risk, near `task-branch-landed`): The Preservation analysis rows (04 W6, F9, F7, F5, L5, L9, W8, W9, F11, S7, L6, L8, S8, S10, M5, 05 E-10, 06 S1 to S15) are hard inputs. Each must have exactly 1 owner in the model; a row that falls between 2 owners is a behavior fleetd silently drops (understand N15).
 
@@ -638,9 +611,9 @@ flowchart LR
     r_worktree_list(["Worktree list horch worktrees"]):::readmodel
     e_worktree_removed["Worktree Removed"]:::event
     c_remove_worktree["Remove Worktree"]:::command
-    e_idea_tasks_landed["Idea Tasks Landed"]:::pivotal
+    e_idea_tasks_landed["Idea Task Branches Landed"]:::pivotal
     c_roll_up_idea["Roll Up Idea"]:::command
-    p_full_gate_on_landed{{"Whenever every task of an idea is landed, run the full gate of its fe..."}}:::policy
+    p_full_gate_on_landed{{"Whenever the task branch of every task of an idea is landed, run the..."}}:::policy
     stub_run_full_gate["Run Full Gate -> Integrating the feature"]:::command
   end
   c_mark_branch_ready --> e_task_branch_verified
@@ -694,20 +667,20 @@ _14 events - id `integrating`_
 
 | # | Event | Triggered by | Actor | Read model | Whenever this, then | Notes |
 |---|---|---|---|---|---|---|
-| 710 | **Primary Branch Moved** `primary-branch-moved` | external: git | git |  | Rebase Feature Branch, Run Trial Merges | The base branch of the project moved. - data: primaryBranch, tip |
-| 720 | **Trial Merge Passed** `trial-merge-passed` | Run Trial Merges `run-trial-merges` |  |  |  | git merge-tree --write-tree with no checkout. The result is a ledger fact. - data: featureA, featureB\|primary |
-| 730 | **Trial Merge Conflicted** `trial-merge-conflicted` | Run Trial Merges `run-trial-merges` |  |  | Stack Feature | 2 in-flight features, or a feature and the primary branch, conflict. - data: featureA, featureB\|primary, paths[] |
-| 740 | **Feature Stacked** `feature-stacked` | Stack Feature `stack-feature` |  |  | Open Resolver Task | The younger feature is put on top of the older one. - data: youngerFeature, olderFeature |
-| 750 | **Resolver Task Opened** `resolver-task-opened` | Open Resolver Task `open-resolver-task` |  |  |  | 1 code-kind task for a fresh agent with the conflict in zdiff3 form and the requirements and unit tests of both features. It lands on the younger feature branch. - data: featureId, conflict, requirements |
-| 760 | **Feature Branch Rebased** `feature-branch-rebased` | Rebase Feature Branch `rebase-feature-branch` |  |  | Run Fast Gate | Bottom of a stack first. A rescue ref of the old tip is written before the rebase. The fast gate runs again. - data: featureId, oldTipRescueRef, newTip |
-| 770 | **Feature Rebase Conflicted** `feature-rebase-conflicted` | Rebase Feature Branch `rebase-feature-branch` |  |  | Open Resolver Task | The rebase conflicts. The conflict becomes a resolver task. - data: featureId, paths[] |
-| 780 | **Full Gate Passed** `full-gate-passed` | Run Full Gate `run-full-gate` |  |  | Mark Feature Ready | The fast gate plus the end-to-end tests pass on the feature tip over the current primary branch. The pass is stale once either tip moves. - data: featureId, tip, primaryTip |
-| 790 | **Full Gate Failed** `full-gate-failed` | Run Full Gate `run-full-gate` |  |  | Open Triage Task | Failures become triage tasks of the feature. - data: featureId, failures[] |
-| 800 | **Feature Marked Ready** `feature-marked-ready` | Mark Feature Ready `mark-feature-ready` |  |  | Open Pull Request | The feature has a fresh full gate pass. - data: featureId |
-| 810 | **Pull Request Opened** `pull-request-opened` | Open Pull Request `open-pull-request` |  |  | Merge Pull Request (manual) | fleetd pushes the feature branch. pr gh opens the pull request, pr manual shows the compare URL. A stacked feature's pull request has the lower feature branch as its base. - data: featureId, prUrl |
-| 820 | **Pull Request Merged** [H15] `pull-request-merged` | Merge Pull Request `merge-pull-request` | GitHub | Pull request or compare view |  | By default the operator merges. A project setting can say otherwise. - data: prUrl |
-| 830 | **Feature Merged** `feature-merged` | Check Merged `check-merged` | Clock |  | Close Idea | fleetd reads from git, by content, that the feature changes are in the primary branch. This holds for a squash merge. - data: featureId |
-| 840 | **Idea Merged** `idea-merged` | Close Idea `close-idea` |  |  |  | Terminal. Every worktree of the idea is removed. The closing note lists any rescue ref that never landed. - data: ideaId, unlandedRescueRefs[] |
+| 650 | **Primary Branch Moved** `primary-branch-moved` | external: git | git |  | Rebase Feature Branch, Run Trial Merges | The base branch of the project moved. - data: primaryBranch, tip |
+| 660 | **Trial Merge Passed** `trial-merge-passed` | Run Trial Merges `run-trial-merges` |  |  |  | git merge-tree --write-tree with no checkout. The result is a ledger fact. - data: featureA, featureB\|primary |
+| 670 | **Trial Merge Conflicted** `trial-merge-conflicted` | Run Trial Merges `run-trial-merges` |  |  | Stack Feature | 2 in-flight features, or a feature and the primary branch, conflict. - data: featureA, featureB\|primary, paths[] |
+| 680 | **Feature Stacked** `feature-stacked` | Stack Feature `stack-feature` |  | Trial merge result | Open Resolver Task | The younger feature is put on top of the older one. - data: youngerFeature, olderFeature |
+| 690 | **Resolver Task Opened** `resolver-task-opened` | Open Resolver Task `open-resolver-task` |  |  |  | 1 code-kind task for a fresh agent with the conflict in zdiff3 form and the requirements and unit tests of both features. It lands on the younger feature branch. - data: featureId, conflict, requirements |
+| 700 | **Feature Branch Rebased** `feature-branch-rebased` | Rebase Feature Branch `rebase-feature-branch` |  |  | Run Fast Gate | Bottom of a stack first. A rescue ref of the old tip is written before the rebase. The fast gate runs again. - data: featureId, oldTipRescueRef, newTip |
+| 710 | **Feature Rebase Conflicted** `feature-rebase-conflicted` | Rebase Feature Branch `rebase-feature-branch` |  |  | Open Resolver Task | The rebase conflicts. The conflict becomes a resolver task. - data: featureId, paths[] |
+| 720 | **Full Gate Passed** `full-gate-passed` | Run Full Gate `run-full-gate` |  |  | Mark Feature Ready | The fast gate plus the end-to-end tests pass on the feature tip over the current primary branch. The pass is stale once either tip moves. - data: featureId, tip, primaryTip |
+| 730 | **Full Gate Failed** `full-gate-failed` | Run Full Gate `run-full-gate` |  |  | Open Triage Task | Failures become triage tasks of the feature. - data: featureId, failures[] |
+| 740 | **Feature Marked Ready** `feature-marked-ready` | Mark Feature Ready `mark-feature-ready` |  |  | Open Pull Request | The feature has a fresh full gate pass. - data: featureId |
+| 750 | **Pull Request Opened** `pull-request-opened` | Open Pull Request `open-pull-request` |  |  | Merge Pull Request (manual) | fleetd pushes the feature branch. pr gh opens the pull request, pr manual shows the compare URL. A stacked feature's pull request has the lower feature branch as its base. - data: featureId, prUrl |
+| 760 | **Pull Request Merged** [H15] `pull-request-merged` | Merge Pull Request `merge-pull-request` | GitHub | Pull request or compare view |  | By default the operator merges. A project setting can say otherwise. - data: prUrl |
+| 770 | **Feature Merged** `feature-merged` | Check Merged `check-merged` | Clock |  | Close Idea | fleetd reads from git, by content, that the feature changes are in the primary branch. This holds for a squash merge. - data: featureId |
+| 780 | **Idea Merged** `idea-merged` | Close Idea `close-idea` |  |  |  | Terminal. Every worktree of the idea is removed. The closing note lists any rescue ref that never landed. - data: ideaId, unlandedRescueRefs[] |
 
 Hotspots in this phase:
 
@@ -733,6 +706,7 @@ flowchart LR
     p_stack_on_conflict{{"Whenever a trial merge of 2 features conflicts, stack the younger fea..."}}:::policy
     e_feature_stacked["Feature Stacked"]:::event
     c_stack_feature["Stack Feature"]:::command
+    r_trial_merge_result(["Trial merge result"]):::readmodel
     p_resolve_on_stack{{"Whenever a feature is stacked, open 1 resolver task"}}:::policy
     e_resolver_task_opened["Resolver Task Opened"]:::event
     c_open_resolver_task["Open Resolver Task"]:::command
@@ -775,6 +749,7 @@ flowchart LR
   e_trial_merge_conflicted --> p_stack_on_conflict
   p_stack_on_conflict --> c_stack_feature
   e_trial_merge_conflicted ~~~ e_feature_stacked
+  r_trial_merge_result -.-> c_stack_feature
   c_stack_feature --> e_feature_stacked
   e_feature_stacked --> p_resolve_on_stack
   p_resolve_on_stack --> c_open_resolver_task
@@ -816,6 +791,66 @@ flowchart LR
   c_close_idea --> e_idea_merged
 ```
 
+### Phase 6 - Operating the fleet (outside the idea flow)
+
+_5 events - id `operating`_
+
+| # | Event | Triggered by | Actor | Read model | Whenever this, then | Notes |
+|---|---|---|---|---|---|---|
+| 790 | **Fleetd Hang Detected** `fleetd-hang-detected` | Check Fleetd `check-fleetd` | Clock |  | Restart Fleetd | horch fleetd check (launchd timer, Windows scheduled task, every horch command) or the systemd watchdog sees no full pass for 30 s of awake time. - data: lastPassAt |
+| 800 | **New Horch Version Installed** `horch-version-installed` | Self Update `self-update` | Friend |  | Restart Fleetd | horch self-update replaces the binary. - data: version |
+| 810 | **Fleetd Restarted** `fleetd-restarted` | Restart Fleetd `restart-fleetd` | OS service manager |  |  | fleetd starts again and recovers from the ledger and the files. It exits only between passes (04 S7). - data: version |
+| 820 | **Adapter Conformance Failed** [H14] `adapter-conformance-failed` | Run Conformance Tests `run-conformance-tests` | Clock |  | Mark Profile Unhealthy | Docs sync (daily, plus on a CLI version change) ran the conformance test of an adapter and it failed. - data: cli, version |
+| 830 | **Profile Marked Unhealthy** `profile-marked-unhealthy` | Mark Profile Unhealthy `mark-profile-unhealthy` |  |  |  | The profile gets no new dispatch until a conformance test passes. A permission dialog in an attempt does the same. - data: profile, reason |
+
+Hotspots in this phase:
+
+- **H14** (missing, near `adapter-conformance-failed`): Docs sync and adapter conformance are collapsed to 2 events here. The flow that turns a drift into a task (who owns it, how a profile becomes healthy again) is not stormed.
+
+```mermaid
+flowchart LR
+  classDef event fill:#F6A623,stroke:#8A5A00,color:#000
+  classDef pivotal fill:#F6A623,stroke:#000,stroke-width:3px,color:#000
+  classDef command fill:#8FB8FF,stroke:#1F4E9C,color:#000
+  classDef policy fill:#C9A7EB,stroke:#5B2D8E,color:#000
+  classDef readmodel fill:#9EDF9C,stroke:#2E7D32,color:#000
+  classDef hotspot fill:#FF3B8D,stroke:#8B0040,color:#fff
+  classDef external fill:#F8C6DF,stroke:#A3325F,color:#000
+  subgraph ph_operating["6 - Operating the fleet outside the idea flow"]
+    direction LR
+    e_fleetd_hang_detected["Fleetd Hang Detected"]:::event
+    c_check_fleetd["Clock<br/>Check Fleetd"]:::command
+    p_restart_on_stale_heartbeat{{"Whenever the fleetd heartbeat goes stale, restart fleetd"}}:::policy
+    e_horch_version_installed["New Horch Version Installed"]:::event
+    c_self_update["Friend<br/>Self Update"]:::command
+    p_restart_on_binary_change{{"Whenever the horch binary is updated, restart fleetd on the new binary"}}:::policy
+    e_fleetd_restarted["Fleetd Restarted"]:::event
+    c_restart_fleetd["OS service manager<br/>Restart Fleetd"]:::command
+    e_adapter_conformance_failed["Adapter Conformance Failed"]:::event
+    c_run_conformance_tests["Clock<br/>Run Conformance Tests"]:::command
+    h_H14>"H14: Docs sync and adapter conformance are collapsed to 2 events..."]:::hotspot
+    p_block_profile_on_conformance{{"Whenever adapter conformance fails, mark the profile unhealthy"}}:::policy
+    e_profile_marked_unhealthy["Profile Marked Unhealthy"]:::event
+    c_mark_profile_unhealthy["Mark Profile Unhealthy"]:::command
+  end
+  c_check_fleetd --> e_fleetd_hang_detected
+  e_fleetd_hang_detected --> p_restart_on_stale_heartbeat
+  p_restart_on_stale_heartbeat --> c_restart_fleetd
+  e_fleetd_hang_detected ~~~ e_horch_version_installed
+  c_self_update --> e_horch_version_installed
+  e_horch_version_installed --> p_restart_on_binary_change
+  p_restart_on_binary_change --> c_restart_fleetd
+  e_horch_version_installed ~~~ e_fleetd_restarted
+  c_restart_fleetd --> e_fleetd_restarted
+  e_fleetd_restarted ~~~ e_adapter_conformance_failed
+  c_run_conformance_tests --> e_adapter_conformance_failed
+  e_adapter_conformance_failed -.- h_H14
+  e_adapter_conformance_failed --> p_block_profile_on_conformance
+  p_block_profile_on_conformance --> c_mark_profile_unhealthy
+  e_adapter_conformance_failed ~~~ e_profile_marked_unhealthy
+  c_mark_profile_unhealthy --> e_profile_marked_unhealthy
+```
+
 ## Actors
 
 | Actor | id | From understand |
@@ -847,7 +882,7 @@ flowchart LR
 | Answer Interview Question | `answer-interview-question` | Operator | `interview-answer-recorded` | The operator answers in the pane. horch idea note records it. |
 | Amend Idea | `amend-idea` | Operator | `idea-amended` | horch idea amend <id> "...". |
 | Write Assumptions | `write-assumptions` | Sub-orchestrator | `assumptions-written` | Writes assumptions.md: [confirmed] and [assumed] items, none [open]. |
-| Open Feature | `open-feature` | (policy / system) | `feature-opened` | Writes the features row, then creates the feature branch. |
+| Open Feature | `open-feature` | (policy / system) | `feature-opened` | Creates the feature branch of the features row that capture wrote. |
 | Request Approval | `request-approval` | (policy / system) | `approval-requested` | Moves the idea to awaiting_approval and notifies the operator. Reminds once an hour in working hours. |
 | Park Idea | `park-idea` | (policy / system) | `idea-parked` | Issued by policy after 7 days of waiting or an escalation. The operator also runs horch idea park. |
 | Cancel Idea | `cancel-idea` | Operator | `idea-cancelled` | horch idea cancel. |
@@ -861,12 +896,13 @@ flowchart LR
 | Dispatch Task | `dispatch-task` | (policy / system) | `task-leased` | No cap. Only the health guards (free disk, load) and the pacing of the pool hold dispatch. |
 | Create Worktree | `create-worktree` | (policy / system) | `worktree-created` | git worktree add on the task branch. Only fleetd creates worktrees. |
 | Launch Attempt | `launch-attempt` | (policy / system) | `attempt-launched` | Starts the wrapper and the CLI in its own process group. A resume after an answer also launches. |
+| Start Agent Process | `start-agent-process` | (policy / system) | `agent-process-started` | Starts the fleet-run wrapper of an attempt, or the herdr pane of a sub-orchestrator, from the launch environment. The sub-orchestrator start sends it too. |
 | Renew Lease | `renew-lease` | Clock | `lease-renewed`, `lease-expired` | Every reconcile pass (5 s). Lease time counts only while the machine is awake. |
 | Apply Stall Ladder | `apply-stall-ladder` | Clock | `attempt-stalled` | Every pass: doorbell, doorbell after 2 min, then end. stall_after default 5 min; start timeout 90 s. |
 | Move To Fallback | `move-to-fallback` | (policy / system) | `fallback-assigned`, `quota-wait-started` | Fallback persona on another provider, else waiting_quota with the lease paused. |
 | Ask Question | `ask-question` | Worker | `worker-question-asked` | Writes 1 question file, commits work in progress, exits. |
 | Answer Question | `answer-question` | Sub-orchestrator | `question-answered`, `own-assumption-recorded`, `revise-requested` | fleetd starts the owner on each pass until an answer is recorded. 4 cases (design, Ideas, How a worker's question is resolved). |
-| Escalate Question | `escalate-question` | Clock | `question-escalated` | Fires when the time limit of the question row passes. |
+| Escalate Question | `escalate-question` | Clock | `question-escalated` | Fires when a running sub-orchestrator has not answered the question in 15 min (a starting value, orchestrator D15). The wait for the operator has no limit. |
 | Write Result | `write-result` | Worker | `result-written` | horch result writes outbox/result.json. |
 | Run Check | `run-check` | (policy / system) | `check-passed`, `check-failed` | The verifier, with today's check timeout (20 min, max 24 h). |
 | Run Review | `run-review` | (policy / system) | `review-passed`, `review-failed` | Today's review scripts, unchanged. Rounds: light 1, full 3. |
@@ -899,7 +935,7 @@ flowchart LR
 | Stack Feature | `stack-feature` | (policy / system) | `feature-stacked` | Sets stacked_on to the older feature. |
 | Open Resolver Task | `open-resolver-task` | (policy / system) | `resolver-task-opened` | At most 100 changed lines or 2 files, else split by file. rerere is on. |
 | Rebase Feature Branch | `rebase-feature-branch` | (policy / system) | `feature-branch-rebased`, `feature-rebase-conflicted` | Writes a rescue ref of the old tip first. |
-| Run Full Gate | `run-full-gate` | (policy / system) | `full-gate-passed`, `full-gate-failed` | Once for a feature when its tasks are landed, again when a pass goes stale. |
+| Run Full Gate | `run-full-gate` | (policy / system) | `full-gate-passed`, `full-gate-failed` | Once for a feature when the task branches of its tasks are landed, again when a pass goes stale. |
 | Mark Feature Ready | `mark-feature-ready` | (policy / system) | `feature-marked-ready` | features.state open to ready. |
 | Open Pull Request | `open-pull-request` | (policy / system) | `pull-request-opened` | pr setting gh or manual. |
 | Merge Pull Request | `merge-pull-request` | Operator | `pull-request-merged` | On GitHub, or a plain git merge. The default merger is the operator. |
@@ -923,6 +959,7 @@ flowchart LR
 | Whenever a task is ready, dispatch it unless a health guard or pacing holds it `dispatch-on-ready` | `task-promoted` | `dispatch-task` | automatic |
 | Whenever a task is leased, create its worktree unless one exists `create-worktree-on-lease` | `task-leased` | `create-worktree` | automatic |
 | Whenever a worktree is created for a leased task, launch the attempt `launch-on-worktree` | `worktree-created` | `launch-attempt` | automatic |
+| Whenever an attempt is launched, start its agent process from the launch environment of its profile `start-process-on-launch` | `attempt-launched` | `start-agent-process` | automatic |
 | Whenever an attempt stalls, end the attempt `end-on-stall` | `attempt-stalled` | `end-attempt` | automatic |
 | Whenever a lease expires, end the attempt `end-on-lease-expired` | `lease-expired` | `end-attempt` | automatic |
 | Whenever a usage limit is reported, move the task to its fallback or to waiting_quota `fallback-on-usage-limit` | `usage-limit-reported` | `move-to-fallback` | automatic |
@@ -960,7 +997,7 @@ flowchart LR
 | Whenever the fast gate fails, bisect the bundle `bisect-on-fast-gate-fail` | `fast-gate-failed` | `bisect-bundle` | automatic |
 | Whenever a task branch fails the gate, open a triage task `triage-on-gate-failed` | `task-branch-gate-failed` | `open-triage-task` | automatic |
 | Whenever a task branch lands, remove its worktree, roll up the idea and run trial merges `after-landing` | `task-branch-landed` | `remove-worktree`, `roll-up-idea`, `run-trial-merges` | automatic |
-| Whenever every task of an idea is landed, run the full gate of its feature `full-gate-on-landed` | `idea-tasks-landed` | `run-full-gate` | automatic |
+| Whenever the task branch of every task of an idea is landed, run the full gate of its feature `full-gate-on-landed` | `idea-tasks-landed` | `run-full-gate` | automatic |
 | Whenever the primary branch moves, rebase each feature branch and run trial merges `on-primary-moved` | `primary-branch-moved` | `rebase-feature-branch`, `run-trial-merges` | automatic |
 | Whenever a trial merge of 2 features conflicts, stack the younger feature on the older one `stack-on-conflict` | `trial-merge-conflicted` | `stack-feature` | automatic |
 | Whenever a feature is stacked, open 1 resolver task `resolve-on-stack` | `feature-stacked` | `open-resolver-task` | automatic |
@@ -986,6 +1023,8 @@ flowchart LR
 | Needs-you queue | `needs-you-queue` | `requeue-task` | Operator |
 | Worktree list (horch worktrees) | `worktree-list` | `abandon-task-branch` | Operator |
 | Pull request or compare view | `pull-request-view` | `merge-pull-request` | Operator |
+| Launch environment of a profile | `launch-environment` | `start-agent-process` |  |
+| Trial merge result | `trial-merge-result` | `stack-feature` |  |
 
 ## Aggregate candidates
 
@@ -1008,8 +1047,8 @@ _Outside-in: the thing that receives these commands and decides, then emits thes
 
 - **Assumptions Approved** `assumptions-approved` - seq 120, phase Clarifying an idea
 - **Plan Committed** `plan-committed` - seq 170, phase Planning
-- **Task Done** `task-done` - seq 590, phase Executing and verifying tasks
-- **Idea Tasks Landed** `idea-tasks-landed` - seq 700, phase Landing task branches
+- **Task Done** `task-done` - seq 530, phase Executing and verifying tasks
+- **Idea Task Branches Landed** `idea-tasks-landed` - seq 640, phase Landing task branches
 
 ## Hotspots
 
@@ -1020,13 +1059,13 @@ _Outside-in: the thing that receives these commands and decides, then emits thes
 | H3 | conflict | `sub-orchestrator-started` | 'Orchestrator' today is 1 long-lived LLM conversation that receives ideas, creates tasks and reads mail. In fleetd it does not exist: a deterministic idea dispatcher and 1 sub-orchestrator per feature replace it. Today's mail contract still names [orchestrator re #<id>] answers (understand N3). |
 | H4 | conflict | `task-done` | 'Done' today is a model action (horch ledger done / horch done). In fleetd only the verifier moves a task to done, and 'landed' (on the feature branch) and 'merged' (in the primary branch by content) are later, separate facts. A reader can take 'done' to mean the work reached the primary branch (understand N4). |
 | H5 | conflict | `judge-verdict-written` | 'Judgment kind' (research, design, docs, report, creative) and the kind 'judge' sound alike. A judgment task needs a paired judge task; a judge task needs no judge. A resolver task has a code kind. Mixing them breaks plan validation (understand N12). |
-| H6 | conflict | `task-branch-verified` | 'Ready' names 3 states: a task is ready when its dependencies are done (not yet dispatched); a task branch is ready when it is verified and waits for a bundle; a feature is ready when its full gate passed. 'Landed' is both a task branch state and a worktree state. Which one does a status line mean? |
-| H7 | unclear | `idea-captured` | The idea row records its feature (ideas.feature_id), but the feature row and branch are written when the sub-orchestrator first writes assumptions. Which feature does an idea with no --to point at between capture and assumptions, and what does horch ideas show for it? |
+| H6 | conflict | `task-branch-verified` | 'Ready' names 3 states: a task is ready when its dependencies are done (not yet dispatched); a task branch is ready when it is verified and waits for a bundle; a feature is ready when its full gate passed. 'Landed' is both a task branch state and a worktree state. Which one does a status line mean? Answered (design A20): the state names stay, and each status line, event, log line and message that gives a state also gives the kind of its entity. A task is done; its task branch is landed. |
+| H7 | unclear | `idea-captured` | The idea row records its feature (ideas.feature_id), but the feature row and branch are written when the sub-orchestrator first writes assumptions. Which feature does an idea with no --to point at between capture and assumptions, and what does horch ideas show for it? Answered (orchestrator, D15): the idea gets its features row at capture and its feature branch at its first assumptions. |
 | H8 | risk | `task-branch-landed` | The Preservation analysis rows (04 W6, F9, F7, F5, L5, L9, W8, W9, F11, S7, L6, L8, S8, S10, M5, 05 E-10, 06 S1 to S15) are hard inputs. Each must have exactly 1 owner in the model; a row that falls between 2 owners is a behavior fleetd silently drops (understand N15). |
 | H9 | unclear | `task-leased` | What number counts as 'full use' of the subscription usage that pacing aims for? Pacing holds dispatch per pool window, but the design gives no target (understand Q1). |
-| H10 | unclear | `question-escalated` | A worker question has 'a time limit' before it escalates, but the design gives no value for it, and it does not say if the limit pauses while the operator is outside working hours. |
+| H10 | unclear | `question-escalated` | A worker question has 'a time limit' before it escalates, but the design gives no value for it, and it does not say if the limit pauses while the operator is outside working hours. Answered (orchestrator, D15): 15 min with no answer from a running sub-orchestrator, as a starting value. The wait for the operator has no limit. |
 | H11 | external | `fast-gate-passed` | Plan validation refuses a project that has not declared a fast gate and a full gate, and this repository has no unit-only command today (research-03 F10, understand Q8). Until one is declared, no plan of this repository can commit. |
-| H12 | unclear | `task-requeued` | A task gets max_attempts attempts, then 1 replan, then goes to the operator. A requeue resets attempt_floor (04 L8). Does a requeued task also get a new replan, and how does the 2-requeue limit of the review scripts count against attempts? |
+| H12 | unclear | `task-requeued` | A task gets max_attempts attempts, then 1 replan, then goes to the operator. A requeue resets attempt_floor (04 L8). Does a requeued task also get a new replan, and how does the 2-requeue limit of the review scripts count against attempts? Answered in part (orchestrator, D15): an operator requeue sets the attempt count to 0; a review requeue keeps its own counter. The replan stays open (Q3). |
 | H13 | risk | `lease-expired` | Lease and stall time count only while the machine is awake. If the platform layer reports sleep and wake wrongly on 1 OS, leases expire during a sleep and every worker burns an attempt at wake. |
 | H14 | missing | `adapter-conformance-failed` | Docs sync and adapter conformance are collapsed to 2 events here. The flow that turns a drift into a task (who owns it, how a profile becomes healthy again) is not stormed. |
 | H15 | external | `pull-request-merged` | A project setting says who merges a feature; the default is the operator. When the setting lets fleetd merge, which gate and which actor stands for the merge decision? |
@@ -1035,19 +1074,19 @@ _Outside-in: the thing that receives these commands and decides, then emits thes
 
 **S1 - Happy path: 1 rough idea becomes 1 merged feature** (Operator, Sub-orchestrator, Worker, Clock, Agent CLI process, GitHub)
 
-Idea Captured -> Sub-Orchestrator Started -> Interview Question Asked -> Interview Answer Recorded -> Assumptions Written -> Feature Opened -> Approval Requested -> Assumptions Approved -> Spec Written -> Plan Submitted -> Plan Committed -> Task Promoted -> Task Leased -> Worktree Created -> Attempt Launched -> Lease Renewed -> Result Written -> Attempt Exited -> Check Passed -> Review Passed -> Task Done -> Task Branch Verified -> Bundle Built -> Fast Gate Passed -> Task Branch Landed -> Worktree Removed -> Idea Tasks Landed -> Trial Merge Passed -> Full Gate Passed -> Feature Marked Ready -> Pull Request Opened -> Pull Request Merged -> Feature Merged -> Idea Merged
+Idea Captured -> Sub-Orchestrator Started -> Interview Question Asked -> Interview Answer Recorded -> Assumptions Written -> Feature Opened -> Approval Requested -> Assumptions Approved -> Spec Written -> Plan Submitted -> Plan Committed -> Task Promoted -> Task Leased -> Worktree Created -> Attempt Launched -> Agent Process Started -> Lease Renewed -> Result Written -> Attempt Exited -> Check Passed -> Review Passed -> Task Done -> Task Branch Verified -> Bundle Built -> Fast Gate Passed -> Task Branch Landed -> Worktree Removed -> Idea Task Branches Landed -> Trial Merge Passed -> Full Gate Passed -> Feature Marked Ready -> Pull Request Opened -> Pull Request Merged -> Feature Merged -> Idea Merged
 
 **S2 - A usage limit moves the task to its fallback persona with no burned attempt** (Worker, Provider pool, Clock) _(loops)_
 
-Task Leased -> Worktree Created -> Attempt Launched -> Usage Limit Reported -> Fallback Persona Assigned -> Attempt Launched -> Result Written -> Attempt Exited -> Check Passed -> Review Passed -> Task Done
+Task Leased -> Worktree Created -> Attempt Launched -> Agent Process Started -> Usage Limit Reported -> Fallback Persona Assigned -> Attempt Launched -> Result Written -> Attempt Exited -> Check Passed -> Review Passed -> Task Done
 
 **S3 - A worker stalls, its tree is kept, and the retry continues the same work** (Worker, Clock, Agent CLI process, Sub-orchestrator) _(loops)_
 
-Attempt Launched -> Attempt Stalled -> Attempt Failed -> Retry Scheduled -> Attempt Launched -> Worker Question Asked -> Own Assumption Recorded -> Attempt Launched -> Result Written -> Attempt Exited -> Check Passed -> Review Passed -> Task Done
+Attempt Launched -> Agent Process Started -> Attempt Stalled -> Attempt Failed -> Retry Scheduled -> Attempt Launched -> Worker Question Asked -> Own Assumption Recorded -> Attempt Launched -> Result Written -> Attempt Exited -> Check Passed -> Review Passed -> Task Done
 
 **S4 - 2 in-flight features conflict and are stacked with 1 resolver task** (git, Clock, Worker, Operator, GitHub) _(loops)_
 
-Task Branch Landed -> Idea Tasks Landed -> Trial Merge Conflicted -> Feature Stacked -> Resolver Task Opened -> Task Promoted -> Task Done -> Task Branch Landed -> Full Gate Passed -> Feature Marked Ready -> Pull Request Opened
+Task Branch Landed -> Idea Task Branches Landed -> Trial Merge Conflicted -> Feature Stacked -> Resolver Task Opened -> Task Promoted -> Task Done -> Task Branch Landed -> Full Gate Passed -> Feature Marked Ready -> Pull Request Opened
 
 ## Glossary seed (system-wide, context: null)
 
@@ -1077,23 +1116,20 @@ Task Branch Landed -> Idea Tasks Landed -> Trial Merge Conflicted -> Feature Sta
 ## Assumptions
 
 - **A1** (high): The board is to-be: it models fleetd as design.md describes it, not today's horch. Today's differences appear as conflict hotspots H1 to H4 (design.md wins over the other sources, per the run context).
-- **A2** (medium): The 5 phases and 4 pivotal events are a hypothesis drawn from the idea state machine (captured to merged) and the landing state machine. Decision D1 records the alternatives.
-- **A3** (medium): Daemon supervision (stale heartbeat, restart, self-update) and adapter conformance are cross-cutting. They sit at the end of the executing phase (sequence 540 to 580, before Task Done) because they act on running attempts. Decision D2 records the alternatives.
+- **A2** (high): The idea flow has 5 phases (clarifying, planning, executing, landing, integrating) cut at 4 pivotal events (decision D1, option A, decided by the orchestrator, D15).
+- **A3** (high): Daemon supervision (stale heartbeat, restart, self-update) and adapter conformance are their own phase, operating, outside the idea flow (decision D2, option B, decided by the orchestrator, D15). The reconcile loop supervises each phase, not only executing. The operating phase has no pivotal event and no before and after on the idea timeline.
 - **A4** (high): fleetd components (idea dispatcher, verifier, landing, wrapper, reconciler) are our own system, not actors. Their commands have actor null and are issued by policies, or have the clock as actor when the reconcile pass fires them. No 'orchestrator' actor exists (understand N3).
 - **A5** (medium): The judge, resolver and triage workers are the 'worker' actor running a task of a given kind (understand A5).
 - **A6** (high): The event order follows understand N7 (idea states), N8 (task branch states building, verifying, ready, in_bundle, landed with side states conflicted, gate_failed, abandoned) and N9 (worktree states reserved, created, active, landing, landed, orphaned, rescued, removed).
 - **A7** (medium): 'Worktree landed' (nothing unique left) is folded into Task Branch Landed and Worktree Removed; it is not a separate event.
-- **A8** (low): Feature Opened happens after Assumptions Written for an idea with no --to, as the Features section says; the idea row records its feature at capture only for --to (H7).
+- **A8** (low): An idea with no --to gets its features row at capture and its feature branch at its first assumptions, so Feature Opened (the branch) happens after Assumptions Written (answer of the orchestrator, D15, to Q1 and H7).
 - **A9** (medium): The fleetd command channel, request files while fleetd is down, and the herdr pane mapping are design-level transport; they are not on the board.
-- **A10** (high): Event count 82 is above the standard band (25 to 60). The design has 4 state machines (idea, task, task branch, worktree) plus feature integration; merging them further hides the language conflicts H4 and H6.
+- **A10** (high): Event count 83 is above the standard band (25 to 60). The design has 4 state machines (idea, task, task branch, worktree) plus feature integration; merging them further hides the language conflicts H4 and H6.
+- **A11** (high): A state name is never written without the kind of its entity (design A20). The shared names stay: ready (task, task branch, feature) and landed (task branch, worktree). A task is done; its task branch is landed.
 
 ## Open questions
 
-- **Q1**: Which feature does an idea with no --to belong to between capture and the first assumptions (H7)? - owner: operator
-- **Q2**: What is the time limit of a worker question before it escalates, and does it pause outside working hours (H10)? - owner: operator
-- **Q3**: Does an operator requeue also restore the single replan, and how do the 2 review requeues count against max_attempts (H12)? - owner: operator
-- **Q4**: Where on the timeline does daemon supervision and adapter conformance belong: in executing, in its own phase, or off the idea timeline (D2)? - owner: operator
-- **Q5**: Are the 5 phases and 4 pivotal events the right cut of the flow (D1)? - owner: operator
+- **Q3**: Does an operator requeue also restore the single replan (H12)? Answered part (orchestrator, D15): an operator requeue sets the attempt count to 0, and a requeue by a review keeps its own counter. - owner: operator
 
 ## Notes for downstream
 
@@ -1104,6 +1140,17 @@ _Findings addressed to later steps (contract section 3). Only the JSON reaches t
 - **N3** (language -> decompose, define): H3 sharpens understand N3: every dispatcher command on the board has actor null (policy) or clock; today's mail contract (05 C-1) still names [orchestrator re #<id>] answers, so the word survives in a preserved contract.
 - **N4** (language -> decompose, define): H4 sharpens understand N4: done (verifier), landed (on the feature branch) and merged (in the primary branch by content) are 3 facts at 3 pivotal moments: task-done, idea-tasks-landed, feature-merged.
 - **N5** (language -> decompose, define): H5 sharpens understand N12: on the board the judge verdict, critical fix and high finding events belong to the verification of the judged task, not to the judge task.
-- **N6** (language -> decompose, define): H6: 'ready' is a task state, a task branch state and a feature state; 'landed' is a task branch state and a worktree state. Each context that owns one state machine owns its own meaning.
+- **N6** (language -> decompose, define): H6, answered by design A20: 'ready' is a task state, a task branch state and a feature state; 'landed' is a task branch state and a worktree state. The names stay. Each context that owns one state machine owns its own meaning, and each status line, event, log line and message names the entity kind with the state.
 - **N7** (boundary -> decompose): The actor changes on the board: operator and sub-orchestrator own clarifying and planning; workers and the clock-driven reconcile pass own executing; fleetd code alone owns landing and integrating, with the operator back only at the pull request merge. The 4 pivotal events sit on those changes.
 - **N8** (risk -> decompose, define): H8 sharpens understand N15: the Worktree and Task branch aggregates own most no-loss preservation rows (04 W6, W8, W9, F5, F7, F9, F11, L5, L9); Task and Attempt own S7, S8, L6, L8; the daemon owns S10. Each row needs exactly 1 owning context.
+- **N9** (decision -> decompose, connect, organise, define): D2 option B (orchestrator, D15): the board has a 6th phase, operating, outside the idea flow. It holds fleetd-hang-detected, horch-version-installed, fleetd-restarted, adapter-conformance-failed and profile-marked-unhealthy. The reconcile loop supervises every phase, so these events carry no idea or task.
+- **N10** (language -> decompose, connect, define, code): Answers connect Q2: discover adopts the ids of connect. start-agent-process is a command (event agent-process-started, policy start-process-on-launch). launch-environment and trial-merge-result are read models, which connect models as queries.
+- **N11** (process -> decompose, define, code): Q1 answered (orchestrator, D15): an idea with no --to gets its features row at capture and its feature branch at its first assumptions. idea-captured always carries featureId; feature-opened creates only the branch.
+- **N12** (process -> define, code): Q2 and Q3 answers (orchestrator, D15): a worker question escalates to the operator after 15 min with no answer from a running sub-orchestrator (a starting value); the wait for the operator has no limit. An operator requeue sets the attempt count to 0; a review requeue keeps its own counter. Whether an operator requeue restores the replan stays open (Q3).
+
+## Deprecated (kept for id stability)
+
+- {"id": "Q1", "collection": "open_questions", "reason": "Answered (orchestrator, D15): an idea with no --to gets its features row at capture and its feature branch at its first assumptions. Recorded in A8, H7, idea-captured and feature-opened.", "since": "2026-11-12"}
+- {"id": "Q2", "collection": "open_questions", "reason": "Answered (orchestrator, D15): a worker question escalates to the operator after 15 min with no answer from a running sub-orchestrator. This is a starting value. The wait for the operator has no limit. Recorded in H10 and escalate-question.", "since": "2026-11-12"}
+- {"id": "Q4", "collection": "open_questions", "reason": "Answered (orchestrator, D15): decision D2, option B. Supervision and adapter conformance are their own phase, operating, outside the idea flow. Recorded in D2 and A3.", "since": "2026-11-12"}
+- {"id": "Q5", "collection": "open_questions", "reason": "Answered (orchestrator, D15): decision D1, option A. 5 phases and 4 pivotal events. Recorded in D1 and A2.", "since": "2026-11-12"}

@@ -2,7 +2,7 @@
   "schema_version": 1,
   "step": "discover",
   "produced_by": "ddd-discover",
-  "produced_at": "2026-11-12T17:20:05Z",
+  "produced_at": "2026-11-12T20:29:42Z",
   "mode": "auto",
   "depth": "standard",
   "inputs": [
@@ -14,7 +14,9 @@
     "docs/specs/fleetd/preservation-04-behavior.md",
     "docs/specs/fleetd/preservation-05-contracts-and-values.md",
     "docs/specs/fleetd/preservation-06-wiring-and-platform.md",
-    "ai_docs/plans/fleetd-design/ddd-context.md"
+    "ai_docs/plans/fleetd-design/ddd-context.md",
+    "docs/specs/fleetd/amendments.md (Revision round 2 and Fix round 2, A19 to A22)",
+    "ai_docs/plans/fleetd-design/ddd-revision-context.md (revision round 2 decisions and answers)"
   ],
   "assumptions": [
     {
@@ -24,13 +26,13 @@
     },
     {
       "id": "A2",
-      "confidence": "medium",
-      "text": "The 5 phases and 4 pivotal events are a hypothesis drawn from the idea state machine (captured to merged) and the landing state machine. Decision D1 records the alternatives."
+      "confidence": "high",
+      "text": "The idea flow has 5 phases (clarifying, planning, executing, landing, integrating) cut at 4 pivotal events (decision D1, option A, decided by the orchestrator, D15)."
     },
     {
       "id": "A3",
-      "confidence": "medium",
-      "text": "Daemon supervision (stale heartbeat, restart, self-update) and adapter conformance are cross-cutting. They sit at the end of the executing phase (sequence 540 to 580, before Task Done) because they act on running attempts. Decision D2 records the alternatives."
+      "confidence": "high",
+      "text": "Daemon supervision (stale heartbeat, restart, self-update) and adapter conformance are their own phase, operating, outside the idea flow (decision D2, option B, decided by the orchestrator, D15). The reconcile loop supervises each phase, not only executing. The operating phase has no pivotal event and no before and after on the idea timeline."
     },
     {
       "id": "A4",
@@ -55,7 +57,7 @@
     {
       "id": "A8",
       "confidence": "low",
-      "text": "Feature Opened happens after Assumptions Written for an idea with no --to, as the Features section says; the idea row records its feature at capture only for --to (H7)."
+      "text": "An idea with no --to gets its features row at capture and its feature branch at its first assumptions, so Feature Opened (the branch) happens after Assumptions Written (answer of the orchestrator, D15, to Q1 and H7)."
     },
     {
       "id": "A9",
@@ -65,39 +67,20 @@
     {
       "id": "A10",
       "confidence": "high",
-      "text": "Event count 82 is above the standard band (25 to 60). The design has 4 state machines (idea, task, task branch, worktree) plus feature integration; merging them further hides the language conflicts H4 and H6."
+      "text": "Event count 83 is above the standard band (25 to 60). The design has 4 state machines (idea, task, task branch, worktree) plus feature integration; merging them further hides the language conflicts H4 and H6."
+    },
+    {
+      "id": "A11",
+      "confidence": "high",
+      "text": "A state name is never written without the kind of its entity (design A20). The shared names stay: ready (task, task branch, feature) and landed (task branch, worktree). A task is done; its task branch is landed."
     }
   ],
   "open_questions": [
     {
-      "id": "Q1",
-      "blocking": false,
-      "owner": "operator",
-      "text": "Which feature does an idea with no --to belong to between capture and the first assumptions (H7)?"
-    },
-    {
-      "id": "Q2",
-      "blocking": false,
-      "owner": "operator",
-      "text": "What is the time limit of a worker question before it escalates, and does it pause outside working hours (H10)?"
-    },
-    {
       "id": "Q3",
       "blocking": false,
       "owner": "operator",
-      "text": "Does an operator requeue also restore the single replan, and how do the 2 review requeues count against max_attempts (H12)?"
-    },
-    {
-      "id": "Q4",
-      "blocking": false,
-      "owner": "operator",
-      "text": "Where on the timeline does daemon supervision and adapter conformance belong: in executing, in its own phase, or off the idea timeline (D2)?"
-    },
-    {
-      "id": "Q5",
-      "blocking": false,
-      "owner": "operator",
-      "text": "Are the 5 phases and 4 pivotal events the right cut of the flow (D1)?"
+      "text": "Does an operator requeue also restore the single replan (H12)? Answered part (orchestrator, D15): an operator requeue sets the attempt count to 0, and a requeue by a review keeps its own counter."
     }
   ],
   "actors": [
@@ -184,6 +167,11 @@
       "id": "integrating",
       "name": "Integrating the feature",
       "order": 5
+    },
+    {
+      "id": "operating",
+      "name": "Operating the fleet (outside the idea flow)",
+      "order": 6
     }
   ],
   "events": [
@@ -198,9 +186,9 @@
       "data": [
         "ideaId",
         "text",
-        "featureId?"
+        "featureId"
       ],
-      "description": "horch idea add writes 1 immutable idea file and 1 ledger row in state captured. --to joins an open feature."
+      "description": "horch idea add writes 1 immutable idea file and 1 ledger row in state captured. --to joins an open feature. With no --to, the idea gets a new features row at capture (orchestrator, D15)."
     },
     {
       "id": "sub-orchestrator-started",
@@ -289,7 +277,7 @@
         "branch",
         "primaryBranch"
       ],
-      "description": "fleetd checks the kebab-case name, writes the features row, then creates the feature branch. For a --direct idea with no --to it happens at acceptance."
+      "description": "fleetd checks the kebab-case name, then creates the feature branch. The features row exists since capture (orchestrator, D15). For a --direct idea with no --to it happens at acceptance."
     },
     {
       "id": "approval-requested",
@@ -436,7 +424,7 @@
       "id": "task-promoted",
       "name": "Task Promoted",
       "phase": "executing",
-      "sequence": 200,
+      "sequence": 180,
       "actor": null,
       "triggered_by": "promote-task",
       "pivotal": false,
@@ -449,7 +437,7 @@
       "id": "task-leased",
       "name": "Task Leased",
       "phase": "executing",
-      "sequence": 210,
+      "sequence": 190,
       "actor": null,
       "triggered_by": "dispatch-task",
       "pivotal": false,
@@ -466,7 +454,7 @@
       "id": "worktree-created",
       "name": "Worktree Created",
       "phase": "executing",
-      "sequence": 220,
+      "sequence": 200,
       "actor": null,
       "triggered_by": "create-worktree",
       "pivotal": false,
@@ -481,7 +469,7 @@
       "id": "attempt-launched",
       "name": "Attempt Launched",
       "phase": "executing",
-      "sequence": 230,
+      "sequence": 210,
       "actor": null,
       "triggered_by": "launch-attempt",
       "pivotal": false,
@@ -491,13 +479,29 @@
         "profile",
         "startFile"
       ],
-      "description": "fleetd writes task.yaml and inbox/START.md, then starts the CLI through the fleet-run wrapper with START.md as its argument."
+      "description": "fleetd writes task.yaml and inbox/START.md for the attempt. The start of the process follows as Agent Process Started."
+    },
+    {
+      "id": "agent-process-started",
+      "name": "Agent Process Started",
+      "phase": "executing",
+      "sequence": 220,
+      "actor": null,
+      "triggered_by": "start-agent-process",
+      "pivotal": false,
+      "data": [
+        "attemptId|ideaId",
+        "pid",
+        "pgid",
+        "pane"
+      ],
+      "description": "The fleet-run wrapper and the CLI run in their own process group, started through the platform layer and the herdr adapter with the launch environment of the profile."
     },
     {
       "id": "lease-renewed",
       "name": "Lease Renewed",
       "phase": "executing",
-      "sequence": 240,
+      "sequence": 230,
       "actor": "clock",
       "triggered_by": "renew-lease",
       "pivotal": false,
@@ -511,7 +515,7 @@
       "id": "lease-expired",
       "name": "Lease Expired",
       "phase": "executing",
-      "sequence": 250,
+      "sequence": 240,
       "actor": "clock",
       "triggered_by": "renew-lease",
       "pivotal": false,
@@ -524,7 +528,7 @@
       "id": "attempt-stalled",
       "name": "Attempt Stalled",
       "phase": "executing",
-      "sequence": 260,
+      "sequence": 250,
       "actor": "clock",
       "triggered_by": "apply-stall-ladder",
       "pivotal": false,
@@ -538,7 +542,7 @@
       "id": "usage-limit-reported",
       "name": "Usage Limit Reported",
       "phase": "executing",
-      "sequence": 270,
+      "sequence": 260,
       "actor": "provider-pool",
       "triggered_by": null,
       "pivotal": false,
@@ -553,7 +557,7 @@
       "id": "fallback-assigned",
       "name": "Fallback Persona Assigned",
       "phase": "executing",
-      "sequence": 280,
+      "sequence": 270,
       "actor": null,
       "triggered_by": "move-to-fallback",
       "pivotal": false,
@@ -567,7 +571,7 @@
       "id": "quota-wait-started",
       "name": "Quota Wait Started",
       "phase": "executing",
-      "sequence": 290,
+      "sequence": 280,
       "actor": null,
       "triggered_by": "move-to-fallback",
       "pivotal": false,
@@ -581,7 +585,7 @@
       "id": "quota-window-reset",
       "name": "Quota Window Reset",
       "phase": "executing",
-      "sequence": 300,
+      "sequence": 290,
       "actor": "provider-pool",
       "triggered_by": null,
       "pivotal": false,
@@ -594,7 +598,7 @@
       "id": "worker-question-asked",
       "name": "Worker Question Asked",
       "phase": "executing",
-      "sequence": 310,
+      "sequence": 300,
       "actor": "worker",
       "triggered_by": "ask-question",
       "pivotal": false,
@@ -609,7 +613,7 @@
       "id": "question-answered",
       "name": "Question Answered",
       "phase": "executing",
-      "sequence": 320,
+      "sequence": 310,
       "actor": "sub-orchestrator",
       "triggered_by": "answer-question",
       "pivotal": false,
@@ -624,7 +628,7 @@
       "id": "own-assumption-recorded",
       "name": "Own Assumption Recorded",
       "phase": "executing",
-      "sequence": 330,
+      "sequence": 320,
       "actor": "sub-orchestrator",
       "triggered_by": "answer-question",
       "pivotal": false,
@@ -638,7 +642,7 @@
       "id": "revise-requested",
       "name": "Revise Requested",
       "phase": "executing",
-      "sequence": 340,
+      "sequence": 330,
       "actor": "sub-orchestrator",
       "triggered_by": "answer-question",
       "pivotal": false,
@@ -653,7 +657,7 @@
       "id": "question-escalated",
       "name": "Question Escalated",
       "phase": "executing",
-      "sequence": 350,
+      "sequence": 340,
       "actor": "clock",
       "triggered_by": "escalate-question",
       "pivotal": false,
@@ -666,7 +670,7 @@
       "id": "result-written",
       "name": "Result Written",
       "phase": "executing",
-      "sequence": 360,
+      "sequence": 350,
       "actor": "worker",
       "triggered_by": "write-result",
       "pivotal": false,
@@ -682,7 +686,7 @@
       "id": "attempt-exited",
       "name": "Attempt Exited",
       "phase": "executing",
-      "sequence": 370,
+      "sequence": 360,
       "actor": "agent-cli",
       "triggered_by": null,
       "pivotal": false,
@@ -697,7 +701,7 @@
       "id": "check-passed",
       "name": "Check Passed",
       "phase": "executing",
-      "sequence": 380,
+      "sequence": 370,
       "actor": null,
       "triggered_by": "run-check",
       "pivotal": false,
@@ -711,7 +715,7 @@
       "id": "check-failed",
       "name": "Check Failed",
       "phase": "executing",
-      "sequence": 390,
+      "sequence": 380,
       "actor": null,
       "triggered_by": "run-check",
       "pivotal": false,
@@ -725,7 +729,7 @@
       "id": "review-passed",
       "name": "Review Passed",
       "phase": "executing",
-      "sequence": 400,
+      "sequence": 390,
       "actor": null,
       "triggered_by": "run-review",
       "pivotal": false,
@@ -739,7 +743,7 @@
       "id": "review-failed",
       "name": "Review Failed",
       "phase": "executing",
-      "sequence": 410,
+      "sequence": 400,
       "actor": null,
       "triggered_by": "run-review",
       "pivotal": false,
@@ -753,7 +757,7 @@
       "id": "judge-verdict-written",
       "name": "Judge Verdict Written",
       "phase": "executing",
-      "sequence": 420,
+      "sequence": 410,
       "actor": "worker",
       "triggered_by": "write-judge-verdict",
       "pivotal": false,
@@ -768,7 +772,7 @@
       "id": "critical-fix-opened",
       "name": "Critical Fix Opened",
       "phase": "executing",
-      "sequence": 430,
+      "sequence": 420,
       "actor": null,
       "triggered_by": "open-critical-fix",
       "pivotal": false,
@@ -782,7 +786,7 @@
       "id": "high-finding-settled",
       "name": "High Finding Settled",
       "phase": "executing",
-      "sequence": 440,
+      "sequence": 430,
       "actor": "sub-orchestrator",
       "triggered_by": "settle-high-finding",
       "pivotal": false,
@@ -796,7 +800,7 @@
       "id": "attempt-failed",
       "name": "Attempt Failed",
       "phase": "executing",
-      "sequence": 450,
+      "sequence": 440,
       "actor": null,
       "triggered_by": "end-attempt",
       "pivotal": false,
@@ -810,7 +814,7 @@
       "id": "retry-scheduled",
       "name": "Retry Scheduled",
       "phase": "executing",
-      "sequence": 460,
+      "sequence": 450,
       "actor": null,
       "triggered_by": "schedule-retry",
       "pivotal": false,
@@ -825,7 +829,7 @@
       "id": "replan-requested",
       "name": "Replan Requested",
       "phase": "executing",
-      "sequence": 470,
+      "sequence": 460,
       "actor": null,
       "triggered_by": "schedule-retry",
       "pivotal": false,
@@ -838,7 +842,7 @@
       "id": "task-replanned",
       "name": "Task Replanned",
       "phase": "executing",
-      "sequence": 480,
+      "sequence": 470,
       "actor": "sub-orchestrator",
       "triggered_by": "replan-task",
       "pivotal": false,
@@ -852,7 +856,7 @@
       "id": "task-escalated",
       "name": "Task Escalated",
       "phase": "executing",
-      "sequence": 490,
+      "sequence": 480,
       "actor": null,
       "triggered_by": "escalate-task",
       "pivotal": false,
@@ -866,7 +870,7 @@
       "id": "task-requeued",
       "name": "Task Requeued",
       "phase": "executing",
-      "sequence": 500,
+      "sequence": 490,
       "actor": "operator",
       "triggered_by": "requeue-task",
       "pivotal": false,
@@ -880,7 +884,7 @@
       "id": "worktree-orphaned",
       "name": "Worktree Orphaned",
       "phase": "executing",
-      "sequence": 510,
+      "sequence": 500,
       "actor": "clock",
       "triggered_by": "reconcile-worktrees",
       "pivotal": false,
@@ -894,7 +898,7 @@
       "id": "worktree-rescued",
       "name": "Worktree Rescued",
       "phase": "executing",
-      "sequence": 520,
+      "sequence": 510,
       "actor": null,
       "triggered_by": "rescue-worktree",
       "pivotal": false,
@@ -909,7 +913,7 @@
       "id": "rescue-failed",
       "name": "Rescue Failed",
       "phase": "executing",
-      "sequence": 530,
+      "sequence": 520,
       "actor": null,
       "triggered_by": "rescue-worktree",
       "pivotal": false,
@@ -919,77 +923,10 @@
       "description": "The rescue commit does not match the tree. The tree stays in place."
     },
     {
-      "id": "fleetd-hang-detected",
-      "name": "Fleetd Hang Detected",
-      "phase": "executing",
-      "sequence": 540,
-      "actor": "clock",
-      "triggered_by": "check-fleetd",
-      "pivotal": false,
-      "data": [
-        "lastPassAt"
-      ],
-      "description": "horch fleetd check (launchd timer, Windows scheduled task, every horch command) or the systemd watchdog sees no full pass for 30 s of awake time."
-    },
-    {
-      "id": "horch-version-installed",
-      "name": "New Horch Version Installed",
-      "phase": "executing",
-      "sequence": 550,
-      "actor": "friend",
-      "triggered_by": "self-update",
-      "pivotal": false,
-      "data": [
-        "version"
-      ],
-      "description": "horch self-update replaces the binary."
-    },
-    {
-      "id": "fleetd-restarted",
-      "name": "Fleetd Restarted",
-      "phase": "executing",
-      "sequence": 560,
-      "actor": "os-service-manager",
-      "triggered_by": "restart-fleetd",
-      "pivotal": false,
-      "data": [
-        "version"
-      ],
-      "description": "fleetd starts again and recovers from the ledger and the files. It exits only between passes (04 S7)."
-    },
-    {
-      "id": "adapter-conformance-failed",
-      "name": "Adapter Conformance Failed",
-      "phase": "executing",
-      "sequence": 570,
-      "actor": "clock",
-      "triggered_by": "run-conformance-tests",
-      "pivotal": false,
-      "data": [
-        "cli",
-        "version"
-      ],
-      "description": "Docs sync (daily, plus on a CLI version change) ran the conformance test of an adapter and it failed."
-    },
-    {
-      "id": "profile-marked-unhealthy",
-      "name": "Profile Marked Unhealthy",
-      "phase": "executing",
-      "sequence": 580,
-      "actor": null,
-      "triggered_by": "mark-profile-unhealthy",
-      "pivotal": false,
-      "data": [
-        "profile",
-        "reason"
-      ],
-      "description": "The profile gets no new dispatch until a conformance test passes. A permission dialog in an attempt does the same."
-    },
-    {
       "id": "task-done",
       "name": "Task Done",
       "phase": "executing",
-      "sequence": 590,
+      "sequence": 530,
       "actor": null,
       "triggered_by": "mark-task-done",
       "pivotal": true,
@@ -1003,7 +940,7 @@
       "id": "task-branch-verified",
       "name": "Task Branch Verified",
       "phase": "landing",
-      "sequence": 600,
+      "sequence": 540,
       "actor": null,
       "triggered_by": "mark-branch-ready",
       "pivotal": false,
@@ -1017,7 +954,7 @@
       "id": "bundle-built",
       "name": "Bundle Built",
       "phase": "landing",
-      "sequence": 610,
+      "sequence": 550,
       "actor": null,
       "triggered_by": "build-bundle",
       "pivotal": false,
@@ -1032,7 +969,7 @@
       "id": "task-branch-conflicted",
       "name": "Task Branch Conflicted",
       "phase": "landing",
-      "sequence": 620,
+      "sequence": 560,
       "actor": null,
       "triggered_by": "build-bundle",
       "pivotal": false,
@@ -1045,7 +982,7 @@
       "id": "fast-gate-passed",
       "name": "Fast Gate Passed",
       "phase": "landing",
-      "sequence": 630,
+      "sequence": 570,
       "actor": null,
       "triggered_by": "run-fast-gate",
       "pivotal": false,
@@ -1058,7 +995,7 @@
       "id": "fast-gate-failed",
       "name": "Fast Gate Failed",
       "phase": "landing",
-      "sequence": 640,
+      "sequence": 580,
       "actor": null,
       "triggered_by": "run-fast-gate",
       "pivotal": false,
@@ -1071,7 +1008,7 @@
       "id": "task-branch-landed",
       "name": "Task Branch Landed",
       "phase": "landing",
-      "sequence": 650,
+      "sequence": 590,
       "actor": null,
       "triggered_by": "fast-forward-feature-branch",
       "pivotal": false,
@@ -1086,7 +1023,7 @@
       "id": "task-branch-gate-failed",
       "name": "Task Branch Gate Failed",
       "phase": "landing",
-      "sequence": 660,
+      "sequence": 600,
       "actor": null,
       "triggered_by": "bisect-bundle",
       "pivotal": false,
@@ -1099,7 +1036,7 @@
       "id": "triage-task-opened",
       "name": "Triage Task Opened",
       "phase": "landing",
-      "sequence": 670,
+      "sequence": 610,
       "actor": null,
       "triggered_by": "open-triage-task",
       "pivotal": false,
@@ -1113,7 +1050,7 @@
       "id": "task-branch-abandoned",
       "name": "Task Branch Abandoned",
       "phase": "landing",
-      "sequence": 680,
+      "sequence": 620,
       "actor": "operator",
       "triggered_by": "abandon-task-branch",
       "pivotal": false,
@@ -1127,7 +1064,7 @@
       "id": "worktree-removed",
       "name": "Worktree Removed",
       "phase": "landing",
-      "sequence": 690,
+      "sequence": 630,
       "actor": null,
       "triggered_by": "remove-worktree",
       "pivotal": false,
@@ -1138,9 +1075,9 @@
     },
     {
       "id": "idea-tasks-landed",
-      "name": "Idea Tasks Landed",
+      "name": "Idea Task Branches Landed",
       "phase": "landing",
-      "sequence": 700,
+      "sequence": 640,
       "actor": null,
       "triggered_by": "roll-up-idea",
       "pivotal": true,
@@ -1148,13 +1085,13 @@
         "ideaId",
         "featureId"
       ],
-      "description": "Every task of the idea is landed on its feature branch. The idea moves to integrating."
+      "description": "The task branch of every task of the idea is landed on its feature branch. The idea moves to integrating."
     },
     {
       "id": "primary-branch-moved",
       "name": "Primary Branch Moved",
       "phase": "integrating",
-      "sequence": 710,
+      "sequence": 650,
       "actor": "git",
       "triggered_by": null,
       "pivotal": false,
@@ -1168,7 +1105,7 @@
       "id": "trial-merge-passed",
       "name": "Trial Merge Passed",
       "phase": "integrating",
-      "sequence": 720,
+      "sequence": 660,
       "actor": null,
       "triggered_by": "run-trial-merges",
       "pivotal": false,
@@ -1182,7 +1119,7 @@
       "id": "trial-merge-conflicted",
       "name": "Trial Merge Conflicted",
       "phase": "integrating",
-      "sequence": 730,
+      "sequence": 670,
       "actor": null,
       "triggered_by": "run-trial-merges",
       "pivotal": false,
@@ -1197,7 +1134,7 @@
       "id": "feature-stacked",
       "name": "Feature Stacked",
       "phase": "integrating",
-      "sequence": 740,
+      "sequence": 680,
       "actor": null,
       "triggered_by": "stack-feature",
       "pivotal": false,
@@ -1211,7 +1148,7 @@
       "id": "resolver-task-opened",
       "name": "Resolver Task Opened",
       "phase": "integrating",
-      "sequence": 750,
+      "sequence": 690,
       "actor": null,
       "triggered_by": "open-resolver-task",
       "pivotal": false,
@@ -1226,7 +1163,7 @@
       "id": "feature-branch-rebased",
       "name": "Feature Branch Rebased",
       "phase": "integrating",
-      "sequence": 760,
+      "sequence": 700,
       "actor": null,
       "triggered_by": "rebase-feature-branch",
       "pivotal": false,
@@ -1241,7 +1178,7 @@
       "id": "feature-rebase-conflicted",
       "name": "Feature Rebase Conflicted",
       "phase": "integrating",
-      "sequence": 770,
+      "sequence": 710,
       "actor": null,
       "triggered_by": "rebase-feature-branch",
       "pivotal": false,
@@ -1255,7 +1192,7 @@
       "id": "full-gate-passed",
       "name": "Full Gate Passed",
       "phase": "integrating",
-      "sequence": 780,
+      "sequence": 720,
       "actor": null,
       "triggered_by": "run-full-gate",
       "pivotal": false,
@@ -1270,7 +1207,7 @@
       "id": "full-gate-failed",
       "name": "Full Gate Failed",
       "phase": "integrating",
-      "sequence": 790,
+      "sequence": 730,
       "actor": null,
       "triggered_by": "run-full-gate",
       "pivotal": false,
@@ -1284,7 +1221,7 @@
       "id": "feature-marked-ready",
       "name": "Feature Marked Ready",
       "phase": "integrating",
-      "sequence": 800,
+      "sequence": 740,
       "actor": null,
       "triggered_by": "mark-feature-ready",
       "pivotal": false,
@@ -1297,7 +1234,7 @@
       "id": "pull-request-opened",
       "name": "Pull Request Opened",
       "phase": "integrating",
-      "sequence": 810,
+      "sequence": 750,
       "actor": null,
       "triggered_by": "open-pull-request",
       "pivotal": false,
@@ -1311,7 +1248,7 @@
       "id": "pull-request-merged",
       "name": "Pull Request Merged",
       "phase": "integrating",
-      "sequence": 820,
+      "sequence": 760,
       "actor": "github",
       "triggered_by": "merge-pull-request",
       "pivotal": false,
@@ -1324,7 +1261,7 @@
       "id": "feature-merged",
       "name": "Feature Merged",
       "phase": "integrating",
-      "sequence": 830,
+      "sequence": 770,
       "actor": "clock",
       "triggered_by": "check-merged",
       "pivotal": false,
@@ -1337,7 +1274,7 @@
       "id": "idea-merged",
       "name": "Idea Merged",
       "phase": "integrating",
-      "sequence": 840,
+      "sequence": 780,
       "actor": null,
       "triggered_by": "close-idea",
       "pivotal": false,
@@ -1346,6 +1283,73 @@
         "unlandedRescueRefs[]"
       ],
       "description": "Terminal. Every worktree of the idea is removed. The closing note lists any rescue ref that never landed."
+    },
+    {
+      "id": "fleetd-hang-detected",
+      "name": "Fleetd Hang Detected",
+      "phase": "operating",
+      "sequence": 790,
+      "actor": "clock",
+      "triggered_by": "check-fleetd",
+      "pivotal": false,
+      "data": [
+        "lastPassAt"
+      ],
+      "description": "horch fleetd check (launchd timer, Windows scheduled task, every horch command) or the systemd watchdog sees no full pass for 30 s of awake time."
+    },
+    {
+      "id": "horch-version-installed",
+      "name": "New Horch Version Installed",
+      "phase": "operating",
+      "sequence": 800,
+      "actor": "friend",
+      "triggered_by": "self-update",
+      "pivotal": false,
+      "data": [
+        "version"
+      ],
+      "description": "horch self-update replaces the binary."
+    },
+    {
+      "id": "fleetd-restarted",
+      "name": "Fleetd Restarted",
+      "phase": "operating",
+      "sequence": 810,
+      "actor": "os-service-manager",
+      "triggered_by": "restart-fleetd",
+      "pivotal": false,
+      "data": [
+        "version"
+      ],
+      "description": "fleetd starts again and recovers from the ledger and the files. It exits only between passes (04 S7)."
+    },
+    {
+      "id": "adapter-conformance-failed",
+      "name": "Adapter Conformance Failed",
+      "phase": "operating",
+      "sequence": 820,
+      "actor": "clock",
+      "triggered_by": "run-conformance-tests",
+      "pivotal": false,
+      "data": [
+        "cli",
+        "version"
+      ],
+      "description": "Docs sync (daily, plus on a CLI version change) ran the conformance test of an adapter and it failed."
+    },
+    {
+      "id": "profile-marked-unhealthy",
+      "name": "Profile Marked Unhealthy",
+      "phase": "operating",
+      "sequence": 830,
+      "actor": null,
+      "triggered_by": "mark-profile-unhealthy",
+      "pivotal": false,
+      "data": [
+        "profile",
+        "reason"
+      ],
+      "description": "The profile gets no new dispatch until a conformance test passes. A permission dialog in an attempt does the same."
     }
   ],
   "commands": [
@@ -1410,7 +1414,7 @@
       "produces": [
         "feature-opened"
       ],
-      "description": "Writes the features row, then creates the feature branch."
+      "description": "Creates the feature branch of the features row that capture wrote."
     },
     {
       "id": "request-approval",
@@ -1531,6 +1535,15 @@
       "description": "Starts the wrapper and the CLI in its own process group. A resume after an answer also launches."
     },
     {
+      "id": "start-agent-process",
+      "name": "Start Agent Process",
+      "actor": null,
+      "produces": [
+        "agent-process-started"
+      ],
+      "description": "Starts the fleet-run wrapper of an attempt, or the herdr pane of a sub-orchestrator, from the launch environment. The sub-orchestrator start sends it too."
+    },
+    {
       "id": "renew-lease",
       "name": "Renew Lease",
       "actor": "clock",
@@ -1586,7 +1599,7 @@
       "produces": [
         "question-escalated"
       ],
-      "description": "Fires when the time limit of the question row passes."
+      "description": "Fires when a running sub-orchestrator has not answered the question in 15 min (a starting value, orchestrator D15). The wait for the operator has no limit."
     },
     {
       "id": "write-result",
@@ -1892,7 +1905,7 @@
         "full-gate-passed",
         "full-gate-failed"
       ],
-      "description": "Once for a feature when its tasks are landed, again when a pass goes stale."
+      "description": "Once for a feature when the task branches of its tasks are landed, again when a pass goes stale."
     },
     {
       "id": "mark-feature-ready",
@@ -2055,6 +2068,15 @@
       "when": "worktree-created",
       "then": [
         "launch-attempt"
+      ],
+      "kind": "automatic"
+    },
+    {
+      "id": "start-process-on-launch",
+      "name": "Whenever an attempt is launched, start its agent process from the launch environment of its profile",
+      "when": "attempt-launched",
+      "then": [
+        "start-agent-process"
       ],
       "kind": "automatic"
     },
@@ -2398,7 +2420,7 @@
     },
     {
       "id": "full-gate-on-landed",
-      "name": "Whenever every task of an idea is landed, run the full gate of its feature",
+      "name": "Whenever the task branch of every task of an idea is landed, run the full gate of its feature",
       "when": "idea-tasks-landed",
       "then": [
         "run-full-gate"
@@ -2570,6 +2592,20 @@
       "informs": "merge-pull-request",
       "used_by": "operator",
       "description": "The feature diff over the primary branch with its full gate result."
+    },
+    {
+      "id": "launch-environment",
+      "name": "Launch environment of a profile",
+      "informs": "start-agent-process",
+      "used_by": null,
+      "description": "worker-profiles resolves a profile to the exact launch of 1 process: CLI, flags, scrubbed environment, private config home and sandbox profile. fleetd code reads it; no actor sees it."
+    },
+    {
+      "id": "trial-merge-result",
+      "name": "Trial merge result",
+      "informs": "stack-feature",
+      "used_by": null,
+      "description": "The answer of git merge-tree for 2 tips: clean, or the conflicting paths. fleetd code reads it before it stacks a feature; no actor sees it."
     }
   ],
   "aggregate_candidates": [
@@ -2810,13 +2846,13 @@
       "id": "H6",
       "kind": "conflict",
       "near": "task-branch-verified",
-      "text": "'Ready' names 3 states: a task is ready when its dependencies are done (not yet dispatched); a task branch is ready when it is verified and waits for a bundle; a feature is ready when its full gate passed. 'Landed' is both a task branch state and a worktree state. Which one does a status line mean?"
+      "text": "'Ready' names 3 states: a task is ready when its dependencies are done (not yet dispatched); a task branch is ready when it is verified and waits for a bundle; a feature is ready when its full gate passed. 'Landed' is both a task branch state and a worktree state. Which one does a status line mean? Answered (design A20): the state names stay, and each status line, event, log line and message that gives a state also gives the kind of its entity. A task is done; its task branch is landed."
     },
     {
       "id": "H7",
       "kind": "unclear",
       "near": "idea-captured",
-      "text": "The idea row records its feature (ideas.feature_id), but the feature row and branch are written when the sub-orchestrator first writes assumptions. Which feature does an idea with no --to point at between capture and assumptions, and what does horch ideas show for it?"
+      "text": "The idea row records its feature (ideas.feature_id), but the feature row and branch are written when the sub-orchestrator first writes assumptions. Which feature does an idea with no --to point at between capture and assumptions, and what does horch ideas show for it? Answered (orchestrator, D15): the idea gets its features row at capture and its feature branch at its first assumptions."
     },
     {
       "id": "H8",
@@ -2834,7 +2870,7 @@
       "id": "H10",
       "kind": "unclear",
       "near": "question-escalated",
-      "text": "A worker question has 'a time limit' before it escalates, but the design gives no value for it, and it does not say if the limit pauses while the operator is outside working hours."
+      "text": "A worker question has 'a time limit' before it escalates, but the design gives no value for it, and it does not say if the limit pauses while the operator is outside working hours. Answered (orchestrator, D15): 15 min with no answer from a running sub-orchestrator, as a starting value. The wait for the operator has no limit."
     },
     {
       "id": "H11",
@@ -2846,7 +2882,7 @@
       "id": "H12",
       "kind": "unclear",
       "near": "task-requeued",
-      "text": "A task gets max_attempts attempts, then 1 replan, then goes to the operator. A requeue resets attempt_floor (04 L8). Does a requeued task also get a new replan, and how does the 2-requeue limit of the review scripts count against attempts?"
+      "text": "A task gets max_attempts attempts, then 1 replan, then goes to the operator. A requeue resets attempt_floor (04 L8). Does a requeued task also get a new replan, and how does the 2-requeue limit of the review scripts count against attempts? Answered in part (orchestrator, D15): an operator requeue sets the attempt count to 0; a review requeue keeps its own counter. The replan stays open (Q3)."
     },
     {
       "id": "H13",
@@ -2895,6 +2931,7 @@
         "task-leased",
         "worktree-created",
         "attempt-launched",
+        "agent-process-started",
         "lease-renewed",
         "result-written",
         "attempt-exited",
@@ -2928,6 +2965,7 @@
         "task-leased",
         "worktree-created",
         "attempt-launched",
+        "agent-process-started",
         "usage-limit-reported",
         "fallback-assigned",
         "attempt-launched",
@@ -2950,6 +2988,7 @@
       ],
       "events": [
         "attempt-launched",
+        "agent-process-started",
         "attempt-stalled",
         "attempt-failed",
         "retry-scheduled",
@@ -3216,14 +3255,16 @@
         }
       ],
       "confidence": "medium",
-      "rationale": "Recommendation: A. The design names an approval gate, a plan commit, a verifier verdict and a landed roll-up as distinct facts. Strongest argument against A: clarifying and planning are 1 sub-orchestrator on 1 idea folder, so the cut between them may not be a context boundary.",
+      "rationale": "Decided by the orchestrator (D15). The operator can reverse it. Recommendation: A. The design names an approval gate, a plan commit, a verifier verdict and a landed roll-up as distinct facts. Strongest argument against A: clarifying and planning are 1 sub-orchestrator on 1 idea folder, so the cut between them may not be a context boundary.",
       "would_flip_if": [
         "The operator treats planning as part of clarifying",
         "The operator wants the verifier as its own phase"
       ],
       "records": {
-        "open_question": "Q5"
-      }
+        "assumption": "A2"
+      },
+      "chosen": "A",
+      "made_by": "strategist"
     },
     {
       "id": "D2",
@@ -3272,13 +3313,15 @@
         }
       ],
       "confidence": "low",
-      "rationale": "Recommendation: A, recorded as assumption A3. Strongest argument against A: these events have no idea or task in their data, so they belong to a fleet-wide context, which B shows more honestly.",
+      "rationale": "Decided by the orchestrator (D15). The operator can reverse it. Recommendation: A, recorded as assumption A3. Strongest argument against A: these events have no idea or task in their data, so they belong to a fleet-wide context, which B shows more honestly. The orchestrator chose B, not the recommendation A. Reason: the reconcile loop supervises each phase (sub-orchestrators in clarifying, landing rows, questions), not only executing.",
       "would_flip_if": [
         "Decompose finds a separate daemon or platform context"
       ],
       "records": {
-        "open_question": "Q4"
-      }
+        "assumption": "A3"
+      },
+      "chosen": "B",
+      "made_by": "strategist"
     }
   ],
   "notes_for_downstream": [
@@ -3334,7 +3377,7 @@
         "decompose",
         "define"
       ],
-      "text": "H6: 'ready' is a task state, a task branch state and a feature state; 'landed' is a task branch state and a worktree state. Each context that owns one state machine owns its own meaning."
+      "text": "H6, answered by design A20: 'ready' is a task state, a task branch state and a feature state; 'landed' is a task branch state and a worktree state. The names stay. Each context that owns one state machine owns its own meaning, and each status line, event, log line and message names the entity kind with the state."
     },
     {
       "id": "N7",
@@ -3352,12 +3395,79 @@
         "define"
       ],
       "text": "H8 sharpens understand N15: the Worktree and Task branch aggregates own most no-loss preservation rows (04 W6, W8, W9, F5, F7, F9, F11, L5, L9); Task and Attempt own S7, S8, L6, L8; the daemon owns S10. Each row needs exactly 1 owning context."
+    },
+    {
+      "id": "N9",
+      "kind": "decision",
+      "for": [
+        "decompose",
+        "connect",
+        "organise",
+        "define"
+      ],
+      "text": "D2 option B (orchestrator, D15): the board has a 6th phase, operating, outside the idea flow. It holds fleetd-hang-detected, horch-version-installed, fleetd-restarted, adapter-conformance-failed and profile-marked-unhealthy. The reconcile loop supervises every phase, so these events carry no idea or task."
+    },
+    {
+      "id": "N10",
+      "kind": "language",
+      "for": [
+        "decompose",
+        "connect",
+        "define",
+        "code"
+      ],
+      "text": "Answers connect Q2: discover adopts the ids of connect. start-agent-process is a command (event agent-process-started, policy start-process-on-launch). launch-environment and trial-merge-result are read models, which connect models as queries."
+    },
+    {
+      "id": "N11",
+      "kind": "process",
+      "for": [
+        "decompose",
+        "define",
+        "code"
+      ],
+      "text": "Q1 answered (orchestrator, D15): an idea with no --to gets its features row at capture and its feature branch at its first assumptions. idea-captured always carries featureId; feature-opened creates only the branch."
+    },
+    {
+      "id": "N12",
+      "kind": "process",
+      "for": [
+        "define",
+        "code"
+      ],
+      "text": "Q2 and Q3 answers (orchestrator, D15): a worker question escalates to the operator after 15 min with no answer from a running sub-orchestrator (a starting value); the wait for the operator has no limit. An operator requeue sets the attempt count to 0; a review requeue keeps its own counter. Whether an operator requeue restores the replan stays open (Q3)."
     }
   ],
   "plain_words": {
     "what": "This step lists, in time order, everything that happens to 1 idea in fleetd: from 'horch idea add' to the feature merged in the primary branch, with the people and programs that cause each step.",
-    "decided": "The flow has 5 phases cut at 4 moments: the operator approves the assumptions, the plan commits, the verifier marks a task done, and every task of the idea lands on its feature branch.",
-    "assumed": "The daemon restart and adapter checks fit at the end of task execution, and a feature is opened only when the first assumptions exist. Both are open for the operator.",
-    "riskiest": "The words 'ready', 'landed' and 'done' each mean 2 or 3 different states. If later steps merge them, a status can say work is safe when it has not reached the primary branch."
-  }
+    "decided": "The idea flow has 5 phases cut at 4 moments: the operator approves the assumptions, the plan commits, the verifier marks a task done, and the task branch of every task of the idea lands on its feature branch. Daemon supervision and adapter checks are a 6th phase outside the idea flow.",
+    "assumed": "An idea with no --to gets its feature row at capture and its feature branch at its first assumptions. A worker question waits 15 min for its sub-orchestrator before it goes to the operator.",
+    "riskiest": "The words 'ready' and 'landed' each name 2 or 3 states. The design now makes each message name the entity with the state. If a later step drops the entity, a status can say work is safe when it has not reached the primary branch."
+  },
+  "deprecated": [
+    {
+      "id": "Q1",
+      "collection": "open_questions",
+      "reason": "Answered (orchestrator, D15): an idea with no --to gets its features row at capture and its feature branch at its first assumptions. Recorded in A8, H7, idea-captured and feature-opened.",
+      "since": "2026-11-12"
+    },
+    {
+      "id": "Q2",
+      "collection": "open_questions",
+      "reason": "Answered (orchestrator, D15): a worker question escalates to the operator after 15 min with no answer from a running sub-orchestrator. This is a starting value. The wait for the operator has no limit. Recorded in H10 and escalate-question.",
+      "since": "2026-11-12"
+    },
+    {
+      "id": "Q4",
+      "collection": "open_questions",
+      "reason": "Answered (orchestrator, D15): decision D2, option B. Supervision and adapter conformance are their own phase, operating, outside the idea flow. Recorded in D2 and A3.",
+      "since": "2026-11-12"
+    },
+    {
+      "id": "Q5",
+      "collection": "open_questions",
+      "reason": "Answered (orchestrator, D15): decision D1, option A. 5 phases and 4 pivotal events. Recorded in D1 and A2.",
+      "since": "2026-11-12"
+    }
+  ]
 }
