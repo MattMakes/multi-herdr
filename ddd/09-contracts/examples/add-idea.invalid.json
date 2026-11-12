@@ -2,7 +2,14 @@
   {
     "why": "an idea with empty text has nothing to clarify",
     "payload": {
-      "text": ""
+      "text": "",
+      "idempotency_key": "add-idea-7f3a9c2e"
+    }
+  },
+  {
+    "why": "every command channel request and request file carries idempotency_key, so a retry or a re-read request file has no second effect",
+    "payload": {
+      "text": "Retry sync with backoff and log each retry"
     }
   }
 ]

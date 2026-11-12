@@ -1,5 +1,5 @@
 {
-  "taskId": "T-0007-02",
-  "questionId": "T-0007-02/A1/Q1",
+  "task_id": "T-0007-02",
+  "question_id": "T-0007-02/A1/Q1",
   "text": "Should the retry delay be logged in ms or in s?"
 }

@@ -2,8 +2,8 @@
   {
     "why": "the other side is a feature id or the literal primary",
     "payload": {
-      "featureA": "F-0003",
-      "featureB": "main"
+      "feature_a": "F-0003",
+      "feature_b": "main"
     }
   }
 ]

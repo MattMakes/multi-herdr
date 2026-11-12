@@ -1,4 +1,4 @@
 {
-  "ideaId": "I-0012",
+  "idea_id": "I-0012",
   "assumptions": "# I-0012 assumptions\n1. [confirmed] Retries apply to all sync requests, not uploads. (Q3)\n2. [assumed] Max 5 tries is enough; no config option needed.\n3. [assumed] Log level INFO for each retry.\n"
 }

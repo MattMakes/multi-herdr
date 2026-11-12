@@ -6,11 +6,11 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "ideaId",
+    "idea_id",
     "plan"
   ],
   "properties": {
-    "ideaId": {
+    "idea_id": {
       "type": "string",
       "pattern": "^I-[0-9]{4,}$",
       "description": "The idea in ticketing."
@@ -30,7 +30,7 @@
         "idea": {
           "type": "string",
           "pattern": "^I-[0-9]{4,}$",
-          "description": "Must equal ideaId."
+          "description": "Must equal idea_id."
         },
         "repo": {
           "type": "string",

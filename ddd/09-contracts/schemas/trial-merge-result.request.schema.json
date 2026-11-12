@@ -6,16 +6,16 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "featureA",
-    "featureB"
+    "feature_a",
+    "feature_b"
   ],
   "properties": {
-    "featureA": {
+    "feature_a": {
       "type": "string",
       "pattern": "^F-[0-9]{4,}$",
       "description": "The in-flight feature whose tip is merged."
     },
-    "featureB": {
+    "feature_b": {
       "type": "string",
       "pattern": "^(F-[0-9]{4,}|primary)$",
       "description": "The other in-flight feature, or the literal primary for the primary branch."

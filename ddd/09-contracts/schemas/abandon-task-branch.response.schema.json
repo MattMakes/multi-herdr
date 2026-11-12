@@ -2,17 +2,55 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "ddd/09-contracts/schemas/abandon-task-branch.response.schema.json",
   "title": "Abandon Task Branch response",
-  "description": "The rescue ref that keeps the abandoned work.",
+  "description": "The reply of fleetd. When outcome is accepted it carries the rescue ref; when refused it carries the reason (orchestrator, D15). A retry with the same idempotency_key returns this reply again.",
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "rescueRef"
+    "outcome"
   ],
   "properties": {
-    "rescueRef": {
+    "outcome": {
+      "type": "string",
+      "enum": [
+        "accepted",
+        "refused"
+      ],
+      "description": "Closed list from connect response_payload: accepted, or refused with its reason (orchestrator, D15)."
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Why fleetd refused the request, e.g. a stale assumptions hash, a wrong state, or a caller inside a fleet attempt. Present only when outcome is refused."
+    },
+    "rescue_ref": {
       "type": "string",
       "pattern": "^refs/horch/rescue/",
       "description": "The verified rescue ref, e.g. refs/horch/rescue/T-0007-03/1."
+    }
+  },
+  "if": {
+    "properties": {
+      "outcome": {
+        "const": "refused"
+      }
+    },
+    "required": [
+      "outcome"
+    ]
+  },
+  "then": {
+    "required": [
+      "reason"
+    ]
+  },
+  "else": {
+    "required": [
+      "rescue_ref"
+    ],
+    "not": {
+      "required": [
+        "reason"
+      ]
     }
   }
 }

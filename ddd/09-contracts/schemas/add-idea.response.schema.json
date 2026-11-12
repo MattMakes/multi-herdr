@@ -2,17 +2,55 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "ddd/09-contracts/schemas/add-idea.response.schema.json",
   "title": "Add Idea response",
-  "description": "The id of the captured idea.",
+  "description": "The reply of fleetd. When outcome is accepted it carries the captured idea; when refused it carries the reason (orchestrator, D15). A retry with the same idempotency_key returns this reply again.",
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "ideaId"
+    "outcome"
   ],
   "properties": {
-    "ideaId": {
+    "outcome": {
+      "type": "string",
+      "enum": [
+        "accepted",
+        "refused"
+      ],
+      "description": "Closed list from connect response_payload: accepted, or refused with its reason (orchestrator, D15)."
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Why fleetd refused the request, e.g. a stale assumptions hash, a wrong state, or a caller inside a fleet attempt. Present only when outcome is refused."
+    },
+    "idea_id": {
       "type": "string",
       "pattern": "^I-[0-9]{4,}$",
       "description": "The new idea id, printed by horch idea add."
+    }
+  },
+  "if": {
+    "properties": {
+      "outcome": {
+        "const": "refused"
+      }
+    },
+    "required": [
+      "outcome"
+    ]
+  },
+  "then": {
+    "required": [
+      "reason"
+    ]
+  },
+  "else": {
+    "required": [
+      "idea_id"
+    ],
+    "not": {
+      "required": [
+        "reason"
+      ]
     }
   }
 }

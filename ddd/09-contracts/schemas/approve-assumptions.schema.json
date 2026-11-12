@@ -6,19 +6,26 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "ideaId",
-    "assumptionsHash"
+    "idea_id",
+    "assumptions_hash",
+    "idempotency_key"
   ],
   "properties": {
-    "ideaId": {
+    "idea_id": {
       "type": "string",
       "pattern": "^I-[0-9]{4,}$",
       "description": "The idea in awaiting_approval."
     },
-    "assumptionsHash": {
+    "assumptions_hash": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$",
       "description": "sha256 of the assumptions.md the operator saw with horch idea show."
+    },
+    "idempotency_key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "Opaque key that the horch CLI makes once per command run. The command channel request and the request file of the same run carry the same key. fleetd applies a request once per key and returns the first outcome again (orchestrator, D15)."
     }
   }
 }

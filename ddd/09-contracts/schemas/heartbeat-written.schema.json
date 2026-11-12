@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ddd/09-contracts/schemas/heartbeat-written.schema.json",
+  "title": "Heartbeat Written",
+  "description": "heartbeat.json, rewritten every 10 s by the fleet-run wrapper (worker-profiles), not the model. Field names from the design example.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "task",
+    "attempt",
+    "pid",
+    "pgid",
+    "proc_state",
+    "agent_state",
+    "seq",
+    "written_at"
+  ],
+  "properties": {
+    "task": {
+      "type": "string",
+      "pattern": "^T-[0-9]{4,}-[0-9]{2,}$",
+      "description": "The task of the attempt."
+    },
+    "attempt": {
+      "type": "string",
+      "pattern": "^A[0-9]+$",
+      "description": "The attempt directory name."
+    },
+    "pid": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "PID of the agent process."
+    },
+    "pgid": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Process group id of the agent process."
+    },
+    "mux_pane": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Optional. The herdr pane, e.g. herdr:fleet/w-ada."
+    },
+    "proc_state": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Process state seen by the wrapper. Known value in the design: running. Open string: the design gives no closed list."
+    },
+    "agent_state": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Agent state mapped from CLI events and hooks. Known value in the design: working. Open string: the design gives no closed list."
+    },
+    "last_output_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Optional. Time of the last output of the CLI."
+    },
+    "last_tool_event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "at",
+        "name"
+      ],
+      "properties": {
+        "at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Time of the tool event."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The tool name."
+        }
+      },
+      "description": "Optional. The last tool event of the CLI."
+    },
+    "tokens": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "context",
+        "limit"
+      ],
+      "properties": {
+        "context": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Tokens in the context now."
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The context limit, tokens (256000)."
+        }
+      },
+      "description": "Optional. Context use."
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Sequence number. The highest seq wins; a lower or equal seq is ignored."
+    },
+    "written_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the wrapper wrote the file."
+    }
+  }
+}

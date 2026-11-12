@@ -1,6 +1,6 @@
 {
-  "taskId": "T-0007-02",
-  "planChange": {
+  "task_id": "T-0007-02",
+  "plan_change": {
     "key": "logging",
     "title": "Log each retry with attempt and delay in ms",
     "kind": "feature",

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ddd/09-contracts/schemas/open-pull-request.schema.json",
+  "title": "Open Pull Request",
+  "description": "Our call to GitHub (pr gh) or the push of the feature branch (pr manual) for a ready feature.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "feature_id",
+    "branch",
+    "base_branch"
+  ],
+  "properties": {
+    "feature_id": {
+      "type": "string",
+      "pattern": "^F-[0-9]{4,}$",
+      "description": "The ready feature."
+    },
+    "branch": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The feature branch."
+    },
+    "base_branch": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The primary branch, or the lower feature branch for a stacked feature."
+    }
+  }
+}

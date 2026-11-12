@@ -2,11 +2,34 @@
   {
     "why": "a result names its task and attempt with the design field names task and attempt",
     "payload": {
-      "taskId": "T-0007-02",
-      "attemptId": "A1",
+      "task_id": "T-0007-02",
+      "attempt_id": "A1",
       "status": "completed",
       "summary": "Done.",
       "commits": []
+    }
+  },
+  {
+    "why": "status is 1 of the closed list completed, blocked, failed",
+    "payload": {
+      "task": "T-0007-02",
+      "attempt": "A1",
+      "status": "partial",
+      "summary": "Added retry logging in SyncClient._retry with attempt and delay.",
+      "commits": [
+        "3f9c2ab"
+      ],
+      "files_changed": [
+        "src/sync/client.py",
+        "tests/test_backoff.py"
+      ],
+      "acceptance_self_check": [
+        {
+          "run": "pytest tests/test_backoff.py -q -k logs",
+          "exit": 0
+        }
+      ],
+      "notes_for_next": "Delay is logged in ms."
     }
   }
 ]

@@ -6,11 +6,11 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "ideaId",
+    "idea_id",
     "assumptions"
   ],
   "properties": {
-    "ideaId": {
+    "idea_id": {
       "type": "string",
       "pattern": "^I-[0-9]{4,}$",
       "description": "The idea in clarifying."

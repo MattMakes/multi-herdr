@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ddd/09-contracts/schemas/start-work.schema.json",
+  "title": "Start Work",
+  "description": "inbox/START.md, what the worker reads first; its path is the launch argument. Carried as its 3 parts: the task.yaml path and, on a retry, the rescue commit and the progress notes of the last attempt.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "task_yaml"
+  ],
+  "properties": {
+    "task_yaml": {
+      "type": "string",
+      "pattern": "task\\.yaml$",
+      "description": "Absolute path of the task.yaml of the task."
+    },
+    "rescue_commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{7,40}$",
+      "description": "Optional, retry only. The commit of the rescue ref that the worker starts from."
+    },
+    "progress_notes": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Optional, retry only. The progress notes of the last attempt."
+    }
+  },
+  "dependentRequired": {
+    "rescue_commit": [
+      "progress_notes"
+    ]
+  }
+}

@@ -1,0 +1,14 @@
+[
+  {
+    "why": "a refused request returns its reason",
+    "payload": {
+      "outcome": "refused"
+    }
+  },
+  {
+    "why": "an accepted request returns the captured idea",
+    "payload": {
+      "outcome": "accepted"
+    }
+  }
+]

@@ -6,12 +6,11 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "attemptId",
-    "pool",
-    "resetAt"
+    "attempt_id",
+    "pool"
   ],
   "properties": {
-    "attemptId": {
+    "attempt_id": {
       "type": "string",
       "pattern": "^(T-[0-9]{4,}-[0-9]{2,}/A[0-9]+|I-[0-9]{4,}/[a-z_]+/[0-9]+)$",
       "description": "The attempt that hit the limit."
@@ -21,10 +20,10 @@
       "minLength": 1,
       "description": "The usage pool of the persona's provider, as named in the worker profile."
     },
-    "resetAt": {
+    "reset_at": {
       "type": "string",
       "format": "date-time",
-      "description": "When the pool resets, UTC."
+      "description": "Optional. When the pool resets, UTC. Absent when the provider gives no reset time (for example an outage): fleetd then waits until the pool probe reports ok (orchestrator, D15)."
     }
   }
 }

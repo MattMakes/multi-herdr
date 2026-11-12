@@ -1,4 +1,5 @@
 {
   "branch": "fleet/I-0007/T-0007-03",
-  "taskId": "T-0007-03"
+  "task_id": "T-0007-03",
+  "idempotency_key": "abandon-task-branch-7f3a9c2e"
 }

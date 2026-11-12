@@ -2,7 +2,7 @@
   {
     "why": "the request names the exact file version to approve",
     "payload": {
-      "ideaId": "I-0012"
+      "idea_id": "I-0012"
     }
   }
 ]

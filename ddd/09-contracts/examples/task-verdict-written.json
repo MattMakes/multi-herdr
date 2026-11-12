@@ -1,0 +1,8 @@
+{
+  "task": "T-0007-02",
+  "attempt": "A1",
+  "decision": "done",
+  "reasons": [
+    "pytest tests/test_backoff.py -q -k logs exited 0 in the worker sandbox"
+  ]
+}

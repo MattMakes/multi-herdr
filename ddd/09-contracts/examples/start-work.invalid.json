@@ -1,0 +1,9 @@
+[
+  {
+    "why": "a retry names the rescue commit together with the progress notes of the last attempt",
+    "payload": {
+      "task_yaml": "/fleet/tasks/T-0007-02/task.yaml",
+      "rescue_commit": "3f9c2ab"
+    }
+  }
+]

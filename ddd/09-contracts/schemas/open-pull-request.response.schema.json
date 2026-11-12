@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ddd/09-contracts/schemas/open-pull-request.response.schema.json",
+  "title": "Open Pull Request response",
+  "description": "The pull request that GitHub opened, or the compare URL for pr manual.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "pr"
+  ],
+  "properties": {
+    "pr": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https://",
+      "description": "The pull request URL or the compare URL; fleetd stores it in features.pr."
+    }
+  }
+}

@@ -6,11 +6,11 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "primaryBranch",
+    "primary_branch",
     "tip"
   ],
   "properties": {
-    "primaryBranch": {
+    "primary_branch": {
       "type": "string",
       "minLength": 1,
       "description": "The project's base branch, ledger features.primary_branch, e.g. main."

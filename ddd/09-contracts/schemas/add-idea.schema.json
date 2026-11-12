@@ -6,7 +6,8 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "text"
+    "text",
+    "idempotency_key"
   ],
   "properties": {
     "text": {
@@ -14,10 +15,16 @@
       "minLength": 1,
       "description": "The idea text, or the content of the file given with horch idea add -f."
     },
-    "featureId": {
+    "feature_id": {
       "type": "string",
       "pattern": "^F-[0-9]{4,}$",
       "description": "Optional. The feature the idea joins (horch idea add --to). Absent: the idea starts a new feature."
+    },
+    "idempotency_key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "Opaque key that the horch CLI makes once per command run. The command channel request and the request file of the same run carry the same key. fleetd applies a request once per key and returns the first outcome again (orchestrator, D15)."
     }
   }
 }

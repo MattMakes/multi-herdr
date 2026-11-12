@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ddd/09-contracts/schemas/assign-task.schema.json",
+  "title": "Assign Task",
+  "description": "task.yaml, written by fleetd from the committed plan before the launch. Field names from the design example.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "task",
+    "idea",
+    "key",
+    "attempt",
+    "profile",
+    "worktree",
+    "branch",
+    "goal",
+    "covers",
+    "acceptance",
+    "lease",
+    "report_to"
+  ],
+  "properties": {
+    "task": {
+      "type": "string",
+      "pattern": "^T-[0-9]{4,}-[0-9]{2,}$",
+      "description": "The task id."
+    },
+    "idea": {
+      "type": "string",
+      "pattern": "^I-[0-9]{4,}$",
+      "description": "The idea of the task."
+    },
+    "key": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "description": "The task key of the plan, kebab-case."
+    },
+    "attempt": {
+      "type": "string",
+      "pattern": "^A[0-9]+$",
+      "description": "The attempt directory name, e.g. A1."
+    },
+    "profile": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The worker profile in /fleet/profiles/."
+    },
+    "worktree": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Absolute path of the git worktree of the task, leased by fleetd."
+    },
+    "branch": {
+      "type": "string",
+      "pattern": "^fleet/",
+      "description": "The task branch, e.g. fleet/I-0007/logging."
+    },
+    "read_first": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true,
+      "description": "Optional. Absolute paths the worker reads first."
+    },
+    "goal": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The goal of the task in 1 sentence."
+    },
+    "covers": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^R[0-9]+$"
+      },
+      "minItems": 1,
+      "uniqueItems": true,
+      "description": "The requirement ids of requirements.yaml that the task covers (I3)."
+    },
+    "acceptance": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "run"
+        ],
+        "properties": {
+          "run": {
+            "type": "string",
+            "minLength": 1,
+            "description": "A shell command that the verifier runs in the worker sandbox; exit 0 passes."
+          }
+        }
+      },
+      "description": "The machine-checkable acceptance checks (FR-4)."
+    },
+    "lease": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "expires",
+        "renew_every_s"
+      ],
+      "properties": {
+        "expires": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the lease expires unless fleetd renews it."
+        },
+        "renew_every_s": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Renewal interval, seconds."
+        }
+      },
+      "description": "The lease of the attempt. fleetd renews it from outside signals, never the model."
+    },
+    "report_to": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Absolute path of the attempt outbox/ directory."
+    }
+  }
+}

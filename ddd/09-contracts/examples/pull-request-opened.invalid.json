@@ -2,8 +2,8 @@
   {
     "why": "the operator opens the link in a browser",
     "payload": {
-      "featureId": "F-0003",
-      "prUrl": "feature/retry-sync-backoff"
+      "feature_id": "F-0003",
+      "pr_url": "feature/retry-sync-backoff"
     }
   }
 ]

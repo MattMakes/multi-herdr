@@ -1,0 +1,11 @@
+[
+  {
+    "why": "a task sent back to ready carries at least 1 reason",
+    "payload": {
+      "task": "T-0007-02",
+      "attempt": "A1",
+      "decision": "ready",
+      "reasons": []
+    }
+  }
+]

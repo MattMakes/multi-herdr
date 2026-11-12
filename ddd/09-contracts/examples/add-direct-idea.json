@@ -1,4 +1,5 @@
 {
-  "ticketFile": "docs/tickets/sync/01-backoff.md",
-  "featureId": "F-0003"
+  "ticket_file": "docs/tickets/sync/01-backoff.md",
+  "feature_id": "F-0003",
+  "idempotency_key": "add-direct-idea-7f3a9c2e"
 }

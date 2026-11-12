@@ -2,16 +2,47 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "ddd/09-contracts/schemas/approve-assumptions.response.schema.json",
   "title": "Approve Assumptions response",
-  "description": "Whether fleetd recorded the approval.",
+  "description": "The reply of fleetd. When outcome is accepted it carries nothing more; when refused it carries the reason (orchestrator, D15). A retry with the same idempotency_key returns this reply again.",
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "approved"
+    "outcome"
   ],
   "properties": {
-    "approved": {
-      "type": "boolean",
-      "description": "true: fleetd wrote approval.json with this hash (or had already). false: refused, because the hash is not the hash of the current assumptions.md or the idea is not in awaiting_approval."
+    "outcome": {
+      "type": "string",
+      "enum": [
+        "accepted",
+        "refused"
+      ],
+      "description": "Closed list from connect response_payload: accepted, or refused with its reason (orchestrator, D15)."
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Why fleetd refused the request, e.g. a stale assumptions hash, a wrong state, or a caller inside a fleet attempt. Present only when outcome is refused."
+    }
+  },
+  "if": {
+    "properties": {
+      "outcome": {
+        "const": "refused"
+      }
+    },
+    "required": [
+      "outcome"
+    ]
+  },
+  "then": {
+    "required": [
+      "reason"
+    ]
+  },
+  "else": {
+    "not": {
+      "required": [
+        "reason"
+      ]
     }
   }
 }

@@ -2,21 +2,34 @@
   {
     "why": "a covered answer must cite the approved line",
     "payload": {
-      "questionId": "T-0007-02/A1/Q1",
+      "question_id": "T-0007-02/A1/Q1",
       "answer": {
         "case": "covered",
         "text": "Log at INFO."
-      }
+      },
+      "idempotency_key": "answer-question-7f3a9c2e"
     }
   },
   {
     "why": "the answer case is the closed list of ledger questions.answer_case",
     "payload": {
-      "questionId": "T-0007-02/A1/Q1",
+      "question_id": "T-0007-02/A1/Q1",
       "answer": {
         "case": "guess",
         "text": "Log at INFO."
-      }
+      },
+      "idempotency_key": "answer-question-7f3a9c2e"
+    }
+  },
+  {
+    "why": "every command channel request and request file carries idempotency_key, so a retry or a re-read request file has no second effect",
+    "payload": {
+      "question_id": "T-0007-02/A1/Q1",
+      "answer": {
+        "case": "covered",
+        "text": "Log the delay in milliseconds at INFO level."
+      },
+      "citation": "assumptions.md#3"
     }
   }
 ]

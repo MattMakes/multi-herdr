@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ddd/09-contracts/schemas/assumptions-approved.schema.json",
+  "title": "Assumptions Approved",
+  "description": "approval.json, written by fleetd when the operator runs horch idea approve. fleetd ignores an approval.json that any other process writes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "idea",
+    "assumptions_hash"
+  ],
+  "properties": {
+    "idea": {
+      "type": "string",
+      "pattern": "^I-[0-9]{4,}$",
+      "description": "The approved idea."
+    },
+    "assumptions_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "sha256 of the assumptions.md the operator saw."
+    }
+  }
+}

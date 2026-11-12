@@ -2,8 +2,16 @@
   {
     "why": "the hash binds the approval to the exact file the operator saw; a short hash is not a sha256",
     "payload": {
-      "ideaId": "I-0012",
-      "assumptionsHash": "9f2c4e1"
+      "idea_id": "I-0012",
+      "assumptions_hash": "9f2c4e1",
+      "idempotency_key": "approve-assumptions-7f3a9c2e"
+    }
+  },
+  {
+    "why": "every command channel request and request file carries idempotency_key, so a retry or a re-read request file has no second effect",
+    "payload": {
+      "idea_id": "I-0012",
+      "assumptions_hash": "9f2c4e1a7b3d5f60812a4c6e8b0d2f4a6c8e0b2d4f6a8c0e2b4d6f8a0c2e4b6d"
     }
   }
 ]

@@ -2,7 +2,15 @@
   {
     "why": "a ticket is a Markdown file in format C1",
     "payload": {
-      "ticketFile": "ticket.txt"
+      "ticket_file": "ticket.txt",
+      "idempotency_key": "add-direct-idea-7f3a9c2e"
+    }
+  },
+  {
+    "why": "every command channel request and request file carries idempotency_key, so a retry or a re-read request file has no second effect",
+    "payload": {
+      "ticket_file": "docs/tickets/sync/01-backoff.md",
+      "feature_id": "F-0003"
     }
   }
 ]

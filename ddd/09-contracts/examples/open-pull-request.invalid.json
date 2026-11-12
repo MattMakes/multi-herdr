@@ -1,0 +1,9 @@
+[
+  {
+    "why": "a pull request needs a base: the primary branch or the lower feature branch",
+    "payload": {
+      "feature_id": "F-0003",
+      "branch": "retry-logging"
+    }
+  }
+]

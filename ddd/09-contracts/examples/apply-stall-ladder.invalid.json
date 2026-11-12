@@ -2,7 +2,7 @@
   {
     "why": "an attempt id names its task and attempt number",
     "payload": {
-      "attemptId": "A1"
+      "attempt_id": "A1"
     }
   }
 ]

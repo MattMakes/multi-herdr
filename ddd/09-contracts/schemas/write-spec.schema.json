@@ -6,12 +6,12 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "ideaId",
+    "idea_id",
     "spec",
     "requirements"
   ],
   "properties": {
-    "ideaId": {
+    "idea_id": {
       "type": "string",
       "pattern": "^I-[0-9]{4,}$",
       "description": "The idea in specifying."
@@ -33,7 +33,7 @@
         "idea": {
           "type": "string",
           "pattern": "^I-[0-9]{4,}$",
-          "description": "Must equal ideaId."
+          "description": "Must equal idea_id."
         },
         "requirements": {
           "type": "array",

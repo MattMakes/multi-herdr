@@ -1,0 +1,20 @@
+{
+  "task": "T-0007-02",
+  "attempt": "A1",
+  "pid": 48211,
+  "pgid": 48211,
+  "mux_pane": "herdr:fleet/w-ada",
+  "proc_state": "running",
+  "agent_state": "working",
+  "last_output_at": "2026-11-10T15:12:03-07:00",
+  "last_tool_event": {
+    "at": "2026-11-10T15:11:58-07:00",
+    "name": "Bash"
+  },
+  "tokens": {
+    "context": 118400,
+    "limit": 256000
+  },
+  "seq": 412,
+  "written_at": "2026-11-10T15:12:05-07:00"
+}

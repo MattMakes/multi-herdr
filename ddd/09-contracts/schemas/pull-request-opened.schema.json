@@ -6,16 +6,16 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "featureId",
-    "prUrl"
+    "feature_id",
+    "pr_url"
   ],
   "properties": {
-    "featureId": {
+    "feature_id": {
       "type": "string",
       "pattern": "^F-[0-9]{4,}$",
       "description": "The ready feature."
     },
-    "prUrl": {
+    "pr_url": {
       "type": "string",
       "format": "uri",
       "pattern": "^https://",

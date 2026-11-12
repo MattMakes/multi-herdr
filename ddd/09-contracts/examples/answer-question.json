@@ -1,8 +1,9 @@
 {
-  "questionId": "T-0007-02/A1/Q1",
+  "question_id": "T-0007-02/A1/Q1",
   "answer": {
     "case": "covered",
     "text": "Log the delay in milliseconds at INFO level."
   },
-  "citation": "assumptions.md#3"
+  "citation": "assumptions.md#3",
+  "idempotency_key": "answer-question-7f3a9c2e"
 }

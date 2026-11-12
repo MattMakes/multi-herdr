@@ -2,7 +2,7 @@
   {
     "why": "a judge task must name the task it judges",
     "payload": {
-      "ideaId": "I-0007",
+      "idea_id": "I-0007",
       "plan": {
         "idea": "I-0007",
         "repo": "/fleet/repos/app",
@@ -22,7 +22,7 @@
   {
     "why": "an acceptance item is either a run command or a sections check, never both",
     "payload": {
-      "ideaId": "I-0007",
+      "idea_id": "I-0007",
       "plan": {
         "idea": "I-0007",
         "repo": "/fleet/repos/app",

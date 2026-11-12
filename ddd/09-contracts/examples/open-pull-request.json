@@ -1,0 +1,5 @@
+{
+  "feature_id": "F-0003",
+  "branch": "retry-logging",
+  "base_branch": "main"
+}

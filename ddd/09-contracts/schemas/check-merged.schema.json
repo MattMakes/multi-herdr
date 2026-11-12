@@ -6,10 +6,10 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "featureId"
+    "feature_id"
   ],
   "properties": {
-    "featureId": {
+    "feature_id": {
       "type": "string",
       "pattern": "^F-[0-9]{4,}$",
       "description": "The feature whose pull request is open."

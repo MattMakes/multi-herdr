@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ddd/09-contracts/schemas/plan-verdict-written.schema.json",
+  "title": "Plan Verdict Written",
+  "description": "plan.verdict.json, the result of plan validation for 1 plan content hash.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "idea",
+    "decision",
+    "reasons"
+  ],
+  "properties": {
+    "idea": {
+      "type": "string",
+      "pattern": "^I-[0-9]{4,}$",
+      "description": "The idea of the plan."
+    },
+    "decision": {
+      "type": "string",
+      "enum": [
+        "committed",
+        "refused"
+      ],
+      "description": "Closed list from connect: committed (all tasks written in 1 transaction) or refused."
+    },
+    "reasons": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "The refusal reasons, e.g. a requirement no task covers. At least 1 when refused."
+    }
+  },
+  "if": {
+    "properties": {
+      "decision": {
+        "const": "refused"
+      }
+    },
+    "required": [
+      "decision"
+    ]
+  },
+  "then": {
+    "properties": {
+      "reasons": {
+        "minItems": 1
+      }
+    }
+  }
+}

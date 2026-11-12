@@ -2,7 +2,7 @@
   {
     "why": "the validator refuses assumptions.md while any item is marked [open]",
     "payload": {
-      "ideaId": "I-0012",
+      "idea_id": "I-0012",
       "assumptions": "# I-0012 assumptions\n1. [open] Should uploads retry too?\n"
     }
   }

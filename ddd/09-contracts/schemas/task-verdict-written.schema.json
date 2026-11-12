@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ddd/09-contracts/schemas/task-verdict-written.schema.json",
+  "title": "Task Verdict Written",
+  "description": "verdict.json, the decision of the verifier. fleetd is its only writer.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "task",
+    "attempt",
+    "decision",
+    "reasons"
+  ],
+  "properties": {
+    "task": {
+      "type": "string",
+      "pattern": "^T-[0-9]{4,}-[0-9]{2,}$",
+      "description": "The verified task."
+    },
+    "attempt": {
+      "type": "string",
+      "pattern": "^A[0-9]+$",
+      "description": "The verified attempt."
+    },
+    "decision": {
+      "type": "string",
+      "enum": [
+        "done",
+        "ready"
+      ],
+      "description": "Closed list from the design Verifier row: done (the task is verified) or ready (the task goes back for another attempt)."
+    },
+    "reasons": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Why. At least 1 reason when decision is ready."
+    }
+  },
+  "if": {
+    "properties": {
+      "decision": {
+        "const": "ready"
+      }
+    },
+    "required": [
+      "decision"
+    ]
+  },
+  "then": {
+    "properties": {
+      "reasons": {
+        "minItems": 1
+      }
+    }
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ddd/09-contracts/schemas/agent-status-changed.schema.json",
+  "title": "Agent Status Changed",
+  "description": "Our view of pane.agent_status_changed from the herdr socket, read by the herdr adapter of fleet-runtime.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "pane",
+    "agent_status"
+  ],
+  "properties": {
+    "pane": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The herdr pane id of the agent."
+    },
+    "agent_status": {
+      "type": "string",
+      "enum": [
+        "idle",
+        "working",
+        "blocked",
+        "done",
+        "unknown"
+      ],
+      "description": "Closed list of the herdr status in the design (herdr table, Status row). unknown does not prove completion."
+    }
+  }
+}

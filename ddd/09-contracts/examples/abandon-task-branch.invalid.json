@@ -3,7 +3,15 @@
     "why": "only a fleet task branch can be abandoned; the primary branch never can",
     "payload": {
       "branch": "main",
-      "taskId": "T-0007-03"
+      "task_id": "T-0007-03",
+      "idempotency_key": "abandon-task-branch-7f3a9c2e"
+    }
+  },
+  {
+    "why": "every command channel request and request file carries idempotency_key, so a retry or a re-read request file has no second effect",
+    "payload": {
+      "branch": "fleet/I-0007/T-0007-03",
+      "task_id": "T-0007-03"
     }
   }
 ]

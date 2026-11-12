@@ -6,20 +6,20 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "taskId",
-    "questionId",
+    "task_id",
+    "question_id",
     "text"
   ],
   "properties": {
-    "taskId": {
+    "task_id": {
       "type": "string",
       "pattern": "^T-[0-9]{4,}-[0-9]{2,}$",
       "description": "The task of the attempt."
     },
-    "questionId": {
+    "question_id": {
       "type": "string",
       "pattern": "^T-[0-9]{4,}-[0-9]{2,}/A[0-9]+/Q[0-9]+$",
-      "description": "The question id; it starts with the taskId and the attempt."
+      "description": "The question id; it starts with the task_id and the attempt."
     },
     "text": {
       "type": "string",

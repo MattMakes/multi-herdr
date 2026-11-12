@@ -1,0 +1,9 @@
+[
+  {
+    "why": "the merge fact names its feature",
+    "payload": {
+      "pr": "https://github.com/MattMakes/multi-herdr/pull/349",
+      "merge_commit": "8e315e04"
+    }
+  }
+]

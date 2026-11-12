@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ddd/09-contracts/schemas/pull-request-merged.schema.json",
+  "title": "Pull Request Merged",
+  "description": "Our view of the merge fact from GitHub. check-merged confirms the merge by content before feature-merged.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "feature_id",
+    "pr"
+  ],
+  "properties": {
+    "feature_id": {
+      "type": "string",
+      "pattern": "^F-[0-9]{4,}$",
+      "description": "The merged feature."
+    },
+    "pr": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https://",
+      "description": "The pull request URL, features.pr."
+    },
+    "merge_commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{7,40}$",
+      "description": "Optional. The merge commit on the primary branch, when GitHub reports one."
+    }
+  }
+}

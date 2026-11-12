@@ -1,0 +1,26 @@
+{
+  "task": "T-0007-02",
+  "idea": "I-0007",
+  "key": "logging",
+  "attempt": "A1",
+  "profile": "coder-claude",
+  "worktree": "/fleet/work/T-0007-02",
+  "branch": "fleet/I-0007/logging",
+  "read_first": [
+    "/fleet/ideas/I-0007/requirements.yaml"
+  ],
+  "goal": "Log each retry with attempt and delay.",
+  "covers": [
+    "R2"
+  ],
+  "acceptance": [
+    {
+      "run": "pytest tests/test_backoff.py -q -k logs"
+    }
+  ],
+  "lease": {
+    "expires": "2026-11-10T15:31:40-07:00",
+    "renew_every_s": 10
+  },
+  "report_to": "/fleet/tasks/T-0007-02/attempts/A1/outbox/"
+}

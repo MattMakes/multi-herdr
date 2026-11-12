@@ -1,0 +1,9 @@
+[
+  {
+    "why": "the hash binds the approval to the exact file the operator saw; a short hash is not a sha256",
+    "payload": {
+      "idea": "I-0012",
+      "assumptions_hash": "9f2c4e1"
+    }
+  }
+]

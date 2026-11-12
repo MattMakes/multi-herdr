@@ -1,4 +1,4 @@
 {
-  "taskId": "T-0007-03",
+  "task_id": "T-0007-03",
   "reason": "attempts exhausted after 1 replan: the verifier rejected 3 attempts"
 }

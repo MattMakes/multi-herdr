@@ -1,0 +1,9 @@
+[
+  {
+    "why": "agent_status is 1 of the herdr status values",
+    "payload": {
+      "pane": "herdr:fleet/w-ada",
+      "agent_status": "busy"
+    }
+  }
+]

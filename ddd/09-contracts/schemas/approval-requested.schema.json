@@ -6,16 +6,16 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "ideaId",
-    "assumptionsHash"
+    "idea_id",
+    "assumptions_hash"
   ],
   "properties": {
-    "ideaId": {
+    "idea_id": {
       "type": "string",
       "pattern": "^I-[0-9]{4,}$",
       "description": "The idea in awaiting_approval."
     },
-    "assumptionsHash": {
+    "assumptions_hash": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$",
       "description": "sha256 of the assumptions.md to approve; horch idea approve sends it back."

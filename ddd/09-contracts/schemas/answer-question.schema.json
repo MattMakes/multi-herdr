@@ -6,11 +6,12 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "questionId",
-    "answer"
+    "question_id",
+    "answer",
+    "idempotency_key"
   ],
   "properties": {
-    "questionId": {
+    "question_id": {
       "type": "string",
       "pattern": "^T-[0-9]{4,}-[0-9]{2,}/A[0-9]+/Q[0-9]+$",
       "description": "The open question being answered."
@@ -45,6 +46,12 @@
       "type": "string",
       "minLength": 1,
       "description": "The approved line the answer cites, e.g. assumptions.md#2. Required when case is covered; fleetd checks that it exists."
+    },
+    "idempotency_key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "Opaque key that the horch CLI makes once per command run. The command channel request and the request file of the same run carry the same key. fleetd applies a request once per key and returns the first outcome again (orchestrator, D15)."
     }
   },
   "if": {

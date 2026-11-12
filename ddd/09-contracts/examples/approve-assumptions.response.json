@@ -1,3 +1,4 @@
 {
-  "approved": true
+  "outcome": "refused",
+  "reason": "stale assumptions_hash: assumptions.md changed after you read it"
 }
