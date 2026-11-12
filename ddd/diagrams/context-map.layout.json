@@ -1,7 +1,7 @@
 {
-  "engine": "elk",
+  "engine": "elk+incremental",
   "width": 1240,
-  "height": 392,
+  "height": 384,
   "nodes": {
     "fleet-runtime": {
       "x": 144,
@@ -411,6 +411,6 @@
       }
     }
   },
-  "fingerprint": "acbe904-f04de1f4",
+  "fingerprint": "c4698940-6e6cbe14",
   "optionsKey": "{\"direction\":\"RIGHT\",\"spacing\":\"comfortable\"}"
 }

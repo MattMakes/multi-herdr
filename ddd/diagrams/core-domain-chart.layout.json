@@ -1,0 +1,45 @@
+{
+  "engine": "fixed",
+  "width": 824,
+  "height": 580,
+  "nodes": {
+    "fleet-runtime": {
+      "x": 280,
+      "y": 340,
+      "w": 152,
+      "h": 64
+    },
+    "ideas": {
+      "x": 352,
+      "y": 196,
+      "w": 152,
+      "h": 64
+    },
+    "integration": {
+      "x": 556,
+      "y": 144,
+      "w": 176,
+      "h": 72
+    },
+    "task-execution": {
+      "x": 556,
+      "y": 48,
+      "w": 176,
+      "h": 72
+    },
+    "worker-profiles": {
+      "x": 180,
+      "y": 244,
+      "w": 152,
+      "h": 64
+    },
+    "worktree-custody": {
+      "x": 356,
+      "y": 116,
+      "w": 152,
+      "h": 64
+    }
+  },
+  "groups": {},
+  "edges": {}
+}
