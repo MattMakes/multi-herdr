@@ -2,7 +2,7 @@
   "schema_version": 1,
   "step": "organise",
   "produced_by": "ddd-organise",
-  "produced_at": "2026-11-12T20:56:47Z",
+  "produced_at": "2026-11-12T21:59:01Z",
   "mode": "auto",
   "depth": "standard",
   "inputs": [
@@ -63,7 +63,7 @@
     },
     {
       "id": "A10",
-      "text": "Docs sync and adapter conformance run as a horch subcommand inside the 1 deployable, and fleetd schedules it daily and on a CLI version change (decision D2 option A, orchestrator, D15). Phase 7 widens crates/herdr-docs-sync into this subcommand. Which context turns a drift into a task stays open (decompose Q2).",
+      "text": "Docs sync and adapter conformance run as a horch subcommand inside the 1 deployable, and fleetd schedules it daily and on a CLI version change (decision D2 option A, orchestrator, D15). Phase 7 widens crates/herdr-docs-sync into this subcommand. The subcommand reports a drift to ideas as a --direct idea, so ideas creates the task (decompose Q2, answered).",
       "confidence": "medium"
     },
     {
@@ -94,7 +94,7 @@
     },
     {
       "id": "N3",
-      "text": "Decision D2 option A (orchestrator, D15): docs sync and adapter conformance are a horch subcommand inside the 1 deployable, scheduled by fleetd daily and on a CLI version change. Phase 7 widens crates/herdr-docs-sync into it; no second binary ships. Its owning context stays open (decompose Q2).",
+      "text": "Decision D2 option A (orchestrator, D15): docs sync and adapter conformance are a horch subcommand inside the 1 deployable, scheduled by fleetd daily and on a CLI version change. Phase 7 widens crates/herdr-docs-sync into it; no second binary ships. The subcommand reports a drift to ideas as a --direct idea, and worker-profiles marks a profile unhealthy and healthy again (decompose Q2, answered).",
       "for": [
         "define",
         "code"

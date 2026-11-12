@@ -2,7 +2,7 @@
   "schema_version": 1,
   "step": "decompose",
   "produced_by": "ddd-decompose",
-  "produced_at": "2026-11-12T20:36:28Z",
+  "produced_at": "2026-11-12T21:56:02Z",
   "mode": "auto",
   "depth": "standard",
   "inputs": [
@@ -71,14 +71,7 @@
       "confidence": "medium"
     }
   ],
-  "open_questions": [
-    {
-      "id": "Q2",
-      "text": "Docs sync and adapter conformance are stormed as 2 events only (discover H14). Which context turns a drift into a task, and how does a profile become healthy again?",
-      "blocking": false,
-      "owner": "operator"
-    }
-  ],
+  "open_questions": [],
   "notes_for_downstream": [
     {
       "id": "N1",
@@ -442,6 +435,7 @@
         "plan-submitted",
         "plan-refused",
         "plan-committed",
+        "plan-verdict-written",
         "worker-question-asked",
         "question-answered",
         "own-assumption-recorded",
@@ -505,13 +499,13 @@
         "attempt-launched",
         "lease-renewed",
         "lease-expired",
+        "agent-status-changed",
         "attempt-stalled",
         "usage-limit-reported",
         "fallback-assigned",
         "quota-wait-started",
         "quota-window-reset",
         "result-written",
-        "attempt-exited",
         "check-passed",
         "check-failed",
         "review-passed",
@@ -524,12 +518,15 @@
         "replan-requested",
         "task-escalated",
         "task-requeued",
-        "task-done"
+        "task-done",
+        "task-verdict-written"
       ],
       "commands": [
         "promote-task",
         "dispatch-task",
         "launch-attempt",
+        "assign-task",
+        "start-work",
         "renew-lease",
         "apply-stall-ladder",
         "move-to-fallback",
@@ -676,7 +673,9 @@
       "events": [
         "adapter-conformance-failed",
         "profile-marked-unhealthy",
-        "agent-process-started"
+        "agent-process-started",
+        "heartbeat-written",
+        "attempt-exited"
       ],
       "commands": [
         "run-conformance-tests",
@@ -754,6 +753,7 @@
         "plan-submitted",
         "plan-refused",
         "plan-committed",
+        "plan-verdict-written",
         "worker-question-asked",
         "question-answered",
         "own-assumption-recorded",
@@ -834,13 +834,13 @@
         "attempt-launched",
         "lease-renewed",
         "lease-expired",
+        "agent-status-changed",
         "attempt-stalled",
         "usage-limit-reported",
         "fallback-assigned",
         "quota-wait-started",
         "quota-window-reset",
         "result-written",
-        "attempt-exited",
         "check-passed",
         "check-failed",
         "review-passed",
@@ -853,12 +853,15 @@
         "replan-requested",
         "task-escalated",
         "task-requeued",
-        "task-done"
+        "task-done",
+        "task-verdict-written"
       ],
       "owns_commands": [
         "promote-task",
         "dispatch-task",
         "launch-attempt",
+        "assign-task",
+        "start-work",
         "renew-lease",
         "apply-stall-ladder",
         "move-to-fallback",
@@ -1065,7 +1068,9 @@
       "owns_events": [
         "adapter-conformance-failed",
         "profile-marked-unhealthy",
-        "agent-process-started"
+        "agent-process-started",
+        "heartbeat-written",
+        "attempt-exited"
       ],
       "owns_commands": [
         "run-conformance-tests",
@@ -1178,15 +1183,15 @@
       "id": "R6",
       "upstream": "task-execution",
       "downstream": "integration",
-      "pattern": "customer-supplier",
-      "description": "task-execution -> integration, customer-supplier: task-done triggers mark-branch-ready; task-escalated lets the operator run abandon-task-branch. Integration asks task-execution to run triage and resolver tasks (open-triage-task, open-resolver-task create normal tasks), so the task contract is task-execution's to serve. Async."
+      "pattern": "partnership",
+      "description": "task-execution -> integration, partnership (orchestrator, D15): task-done triggers mark-branch-ready; task-escalated lets the operator run abandon-task-branch. Integration asks task-execution to run triage and resolver tasks (open-triage-task, open-resolver-task create normal tasks). R6 and R7 change together: the 2 contexts plan their changes together. Async."
     },
     {
       "id": "R7",
       "upstream": "integration",
       "downstream": "task-execution",
-      "pattern": "published-language",
-      "description": "integration -> task-execution, published-language: task-branch-conflicted triggers launch-attempt on the same task. task-execution consumes the conflict fact as-is. Async."
+      "pattern": "partnership",
+      "description": "integration -> task-execution, partnership (orchestrator, D15): task-branch-conflicted triggers launch-attempt on the same task. R6 and R7 change together: the 2 contexts plan their changes together. Async."
     },
     {
       "id": "R8",
@@ -1231,7 +1236,7 @@
       "description": "fleet-runtime -> ideas, open-host-service: the command channel carries horch idea commands to fleetd, and the herdr adapter hosts and supervises sub-orchestrator panes. Same interface as R12. Sync calls."
     }
   ],
-  "context_map_mermaid": "flowchart LR\n  ideas[\"Ideas\"]\n  task_execution[\"Task execution\"]\n  worktree_custody[\"Worktree custody\"]\n  integration[\"Landing and integration\"]\n  worker_profiles[\"Worker profiles and adapters\"]\n  fleet_runtime[\"Fleet runtime\"]\n  ideas -->|\"R1 published-language\"| integration\n  ideas -->|\"R2 customer-supplier\"| task_execution\n  task_execution -->|\"R3 published-language\"| ideas\n  task_execution -->|\"R4 customer-supplier\"| worktree_custody\n  worktree_custody -->|\"R5 published-language\"| task_execution\n  task_execution -->|\"R6 customer-supplier\"| integration\n  integration -->|\"R7 published-language\"| task_execution\n  integration -->|\"R8 published-language\"| worktree_custody\n  integration -->|\"R9 published-language\"| ideas\n  worker_profiles -->|\"R10 customer-supplier\"| task_execution\n  worker_profiles -->|\"R11 customer-supplier\"| ideas\n  fleet_runtime -->|\"R12 open-host-service\"| task_execution\n  fleet_runtime -->|\"R13 open-host-service\"| ideas",
+  "context_map_mermaid": "flowchart LR\n  ideas[\"Ideas\"]\n  task_execution[\"Task execution\"]\n  worktree_custody[\"Worktree custody\"]\n  integration[\"Landing and integration\"]\n  worker_profiles[\"Worker profiles and adapters\"]\n  fleet_runtime[\"Fleet runtime\"]\n  ideas -->|\"R1 published-language\"| integration\n  ideas -->|\"R2 customer-supplier\"| task_execution\n  task_execution -->|\"R3 published-language\"| ideas\n  task_execution -->|\"R4 customer-supplier\"| worktree_custody\n  worktree_custody -->|\"R5 published-language\"| task_execution\n  task_execution -->|\"R6 partnership\"| integration\n  integration -->|\"R7 partnership\"| task_execution\n  integration -->|\"R8 published-language\"| worktree_custody\n  integration -->|\"R9 published-language\"| ideas\n  worker_profiles -->|\"R10 customer-supplier\"| task_execution\n  worker_profiles -->|\"R11 customer-supplier\"| ideas\n  fleet_runtime -->|\"R12 open-host-service\"| task_execution\n  fleet_runtime -->|\"R13 open-host-service\"| ideas",
   "plain_words": {
     "what": "This step cut fleetd into 6 parts, each with its own words and its own data: ideas, task execution, worktree custody, landing and integration, worker profiles, and the fleet runtime.",
     "decided": "6 parts, all modules inside the 1 horch binary, joined by 13 named links. Each of the 83 events and 65 commands has exactly 1 owner. The platform layer is a shared library that every part calls, not a part.",
@@ -1249,6 +1254,12 @@
       "id": "Q3",
       "collection": "open_questions",
       "reason": "Answered (orchestrator, D15): there is 1 needs-you list, and ideas owns it. An escalated task goes on that list. Recorded in A7, the ideas term Needs-you list and N9.",
+      "since": "2026-11-12"
+    },
+    {
+      "id": "Q2",
+      "collection": "open_questions",
+      "reason": "Answered (orchestrator, D15): worker-profiles marks a profile unhealthy and healthy again, because it owns the profiles and the conformance results. The docs sync subcommand reports a drift to ideas as a --direct idea, so ideas creates the task.",
       "since": "2026-11-12"
     }
   ]

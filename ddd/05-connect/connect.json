@@ -2,7 +2,7 @@
   "schema_version": 1,
   "step": "connect",
   "produced_by": "ddd-connect",
-  "produced_at": "2026-11-12T20:51:30Z",
+  "produced_at": "2026-11-12T21:59:01Z",
   "mode": "auto",
   "depth": "standard",
   "inputs": [
@@ -47,7 +47,7 @@
     },
     {
       "id": "A7",
-      "text": "The fleet-run wrapper belongs to worker-profiles (D2 option B, orchestrator D15). It writes heartbeat.json and exit.json. exit.json stays drawn as coming from agent-cli, because it records the exit fact of the CLI process.",
+      "text": "The fleet-run wrapper belongs to worker-profiles (D2 option B, orchestrator D15). It writes heartbeat.json and exit.json. attempt-exited (exit.json) comes from worker-profiles, the writer of the file; the file records the exit fact of the CLI process.",
       "confidence": "high"
     },
     {
@@ -76,14 +76,7 @@
       "confidence": "high"
     }
   ],
-  "open_questions": [
-    {
-      "id": "Q6",
-      "text": "Can discover adopt the 6 minted ids assign-task, start-work (commands) and heartbeat-written, task-verdict-written, plan-verdict-written, agent-status-changed (events)?",
-      "blocking": false,
-      "owner": "ddd-discover"
-    }
-  ],
+  "open_questions": [],
   "notes_for_downstream": [
     {
       "id": "N1",
@@ -485,7 +478,7 @@
         },
         {
           "seq": 2,
-          "from": "agent-cli",
+          "from": "worker-profiles",
           "to": "task-execution",
           "message": "attempt-exited",
           "kind": "event",
@@ -542,7 +535,7 @@
           "via": "in-process"
         }
       ],
-      "mermaid": "sequenceDiagram\n  autonumber\n  actor worker as Worker\n  participant task_execution as Task execution\n  participant agent_cli as Agent CLI process (external)\n  actor sub_orchestrator as Sub-orchestrator\n  participant integration as Landing and integration\n  participant worktree_custody as Worktree custody\n  participant ideas as Ideas\n  worker-)task_execution: write-result (command via file)\n  Note over worker,task_execution: outbox/result.json#59; status completed, blocked or failed\n  agent_cli-)task_execution: attempt-exited (event via file)\n  Note over agent_cli,task_execution: exit.json, written by the fleet-run wrapper\n  task_execution-)sub_orchestrator: task-verdict-written (event via file)\n  Note over task_execution,sub_orchestrator: verdict.json\n  task_execution-)integration: task-done (event via in-process)\n  Note over task_execution,integration: only the verifier emits it\n  integration-)worktree_custody: task-branch-landed (event via in-process)\n  Note over integration,worktree_custody: after the bundle passes the fast gate\n  integration-)ideas: task-branch-landed (event via in-process)\n  ideas-)integration: idea-tasks-landed (event via in-process)"
+      "mermaid": "sequenceDiagram\n  autonumber\n  actor worker as Worker\n  participant task_execution as Task execution\n  participant worker_profiles as Worker profiles and adapters\n  actor sub_orchestrator as Sub-orchestrator\n  participant integration as Landing and integration\n  participant worktree_custody as Worktree custody\n  participant ideas as Ideas\n  worker-)task_execution: write-result (command via file)\n  Note over worker,task_execution: outbox/result.json#59; status completed, blocked or failed\n  worker_profiles-)task_execution: attempt-exited (event via file)\n  Note over worker_profiles,task_execution: exit.json, written by the fleet-run wrapper\n  task_execution-)sub_orchestrator: task-verdict-written (event via file)\n  Note over task_execution,sub_orchestrator: verdict.json\n  task_execution-)integration: task-done (event via in-process)\n  Note over task_execution,integration: only the verifier emits it\n  integration-)worktree_custody: task-branch-landed (event via in-process)\n  Note over integration,worktree_custody: after the bundle passes the fast gate\n  integration-)ideas: task-branch-landed (event via in-process)\n  ideas-)integration: idea-tasks-landed (event via in-process)"
     },
     {
       "id": "F4",
@@ -605,7 +598,7 @@
         },
         {
           "seq": 6,
-          "from": "agent-cli",
+          "from": "worker-profiles",
           "to": "task-execution",
           "message": "attempt-exited",
           "kind": "event",
@@ -622,7 +615,7 @@
           "via": "in-process"
         }
       ],
-      "mermaid": "sequenceDiagram\n  autonumber\n  actor provider_pool as Provider pool\n  participant task_execution as Task execution\n  participant worker_profiles as Worker profiles and adapters\n  actor worker as Worker\n  participant agent_cli as Agent CLI process (external)\n  participant integration as Landing and integration\n  provider_pool-)task_execution: usage-limit-reported (event via other)\n  Note over provider_pool,task_execution: reported through the wrapper and the quota probe\n  task_execution->>worker_profiles: launch-environment (query via in-process)\n  Note over task_execution,worker_profiles: fallback persona on another provider\n  worker_profiles-->>task_execution: launch-environment (response via in-process)\n  task_execution->>worker_profiles: start-agent-process (command via in-process)\n  Note over task_execution,worker_profiles: same worktree, no attempt burned\n  worker-)task_execution: write-result (command via file)\n  agent_cli-)task_execution: attempt-exited (event via file)\n  task_execution-)integration: task-done (event via in-process)"
+      "mermaid": "sequenceDiagram\n  autonumber\n  actor provider_pool as Provider pool\n  participant task_execution as Task execution\n  participant worker_profiles as Worker profiles and adapters\n  actor worker as Worker\n  participant integration as Landing and integration\n  provider_pool-)task_execution: usage-limit-reported (event via other)\n  Note over provider_pool,task_execution: reported through the wrapper and the quota probe\n  task_execution->>worker_profiles: launch-environment (query via in-process)\n  Note over task_execution,worker_profiles: fallback persona on another provider\n  worker_profiles-->>task_execution: launch-environment (response via in-process)\n  task_execution->>worker_profiles: start-agent-process (command via in-process)\n  Note over task_execution,worker_profiles: same worktree, no attempt burned\n  worker-)task_execution: write-result (command via file)\n  worker_profiles-)task_execution: attempt-exited (event via file)\n  task_execution-)integration: task-done (event via in-process)"
     },
     {
       "id": "F5",
@@ -1333,11 +1326,11 @@
     {
       "id": "attempt-exited",
       "kind": "event",
-      "producer": "agent-cli",
+      "producer": "worker-profiles",
       "consumers": [
         "task-execution"
       ],
-      "contract": "external-api",
+      "contract": "customer-supplier",
       "payload": [
         "attempt_id",
         "exit_status",
@@ -1465,7 +1458,7 @@
         "ideas",
         "integration"
       ],
-      "contract": "customer-supplier",
+      "contract": "partnership",
       "payload": [
         "task_id",
         "reason"
@@ -1697,7 +1690,7 @@
       "consumers": [
         "integration"
       ],
-      "contract": "customer-supplier",
+      "contract": "partnership",
       "payload": [
         "task_id",
         "branch",
@@ -1748,7 +1741,7 @@
       "consumers": [
         "task-execution"
       ],
-      "contract": "published-language",
+      "contract": "partnership",
       "payload": [
         "branch",
         "task_id"
@@ -1764,7 +1757,7 @@
       "consumers": [
         "task-execution"
       ],
-      "contract": "published-language",
+      "contract": "partnership",
       "payload": [
         "feature_id",
         "task_id",
@@ -2313,6 +2306,12 @@
       "id": "Q5",
       "collection": "open_questions",
       "reason": "Answered (orchestrator, D15): the sub-orchestrator answers a worker question through the command channel; fleetd stays the only ledger writer. Recorded in answer-question and F5.",
+      "since": "2026-11-12"
+    },
+    {
+      "id": "Q6",
+      "collection": "open_questions",
+      "reason": "Answered (discover N13): discover adopts the 6 ids with the types of connect. assign-task and start-work are commands. heartbeat-written, task-verdict-written, plan-verdict-written and agent-status-changed are events.",
       "since": "2026-11-12"
     }
   ]

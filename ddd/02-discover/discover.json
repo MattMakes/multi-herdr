@@ -2,7 +2,7 @@
   "schema_version": 1,
   "step": "discover",
   "produced_by": "ddd-discover",
-  "produced_at": "2026-11-12T20:29:42Z",
+  "produced_at": "2026-11-12T21:55:50Z",
   "mode": "auto",
   "depth": "standard",
   "inputs": [
@@ -421,6 +421,21 @@
       "description": "The plan passes validation and its tasks commit in 1 transaction. The idea moves to in_progress. No task exists outside a committed plan."
     },
     {
+      "id": "plan-verdict-written",
+      "name": "Plan Verdict Written",
+      "phase": "planning",
+      "sequence": 175,
+      "actor": null,
+      "triggered_by": "validate-plan",
+      "pivotal": false,
+      "data": [
+        "ideaId",
+        "decision",
+        "reasons[]"
+      ],
+      "description": "The plan validator writes plan.verdict.json for the sub-orchestrator: committed or refused. A refusal carries its reasons (connect A10)."
+    },
+    {
       "id": "task-promoted",
       "name": "Task Promoted",
       "phase": "executing",
@@ -498,6 +513,23 @@
       "description": "The fleet-run wrapper and the CLI run in their own process group, started through the platform layer and the herdr adapter with the launch environment of the profile."
     },
     {
+      "id": "heartbeat-written",
+      "name": "Heartbeat Written",
+      "phase": "executing",
+      "sequence": 225,
+      "actor": null,
+      "triggered_by": "start-agent-process",
+      "pivotal": false,
+      "data": [
+        "attemptId",
+        "pid",
+        "pgid",
+        "agentState",
+        "seq"
+      ],
+      "description": "The fleet-run wrapper (worker-profiles), not the model, rewrites heartbeat.json every 10 s. Renew Lease reads it as an outside signal (connect A10)."
+    },
+    {
       "id": "lease-renewed",
       "name": "Lease Renewed",
       "phase": "executing",
@@ -523,6 +555,20 @@
         "attemptId"
       ],
       "description": "No earned renewal: the lease expires within 120 s of the stall threshold."
+    },
+    {
+      "id": "agent-status-changed",
+      "name": "Agent Status Changed",
+      "phase": "executing",
+      "sequence": 245,
+      "actor": "herdr",
+      "triggered_by": null,
+      "pivotal": false,
+      "data": [
+        "pane",
+        "agentStatus"
+      ],
+      "description": "herdr reports the agent status of a pane through its socket events: working, blocked on a dialog, or idle. The stall ladder reads it (connect A10)."
     },
     {
       "id": "attempt-stalled",
@@ -935,6 +981,22 @@
         "verdict"
       ],
       "description": "Only the verifier moves a task to done: the check passed, then the review (code kind), or the judge with no CRITICAL item (judgment kind)."
+    },
+    {
+      "id": "task-verdict-written",
+      "name": "Task Verdict Written",
+      "phase": "executing",
+      "sequence": 535,
+      "actor": null,
+      "triggered_by": "mark-task-done",
+      "pivotal": false,
+      "data": [
+        "taskId",
+        "attemptId",
+        "decision",
+        "reasons[]"
+      ],
+      "description": "The verifier writes verdict.json, its decision for the attempt, for the sub-orchestrator (connect A10)."
     },
     {
       "id": "task-branch-verified",
@@ -1494,7 +1556,8 @@
       "actor": null,
       "produces": [
         "plan-refused",
-        "plan-committed"
+        "plan-committed",
+        "plan-verdict-written"
       ],
       "description": "The plan validator: paired judges, declared gates, model guide, overlapping paths. Commits tasks in 1 transaction."
     },
@@ -1535,11 +1598,30 @@
       "description": "Starts the wrapper and the CLI in its own process group. A resume after an answer also launches."
     },
     {
+      "id": "assign-task",
+      "name": "Assign Task",
+      "actor": null,
+      "produces": [
+        "attempt-launched"
+      ],
+      "description": "fleetd writes task.yaml for the attempt from the committed plan, before the launch. It is atomic and never rewritten; a change is a new attempt. The worker reads it (connect A10)."
+    },
+    {
+      "id": "start-work",
+      "name": "Start Work",
+      "actor": null,
+      "produces": [
+        "attempt-launched"
+      ],
+      "description": "fleetd writes inbox/START.md, the first file the worker reads, before the launch. Its path is the launch argument (connect A10)."
+    },
+    {
       "id": "start-agent-process",
       "name": "Start Agent Process",
       "actor": null,
       "produces": [
-        "agent-process-started"
+        "agent-process-started",
+        "heartbeat-written"
       ],
       "description": "Starts the fleet-run wrapper of an attempt, or the herdr pane of a sub-orchestrator, from the launch environment. The sub-orchestrator start sends it too."
     },
@@ -1727,7 +1809,8 @@
       "name": "Mark Task Done",
       "actor": null,
       "produces": [
-        "task-done"
+        "task-done",
+        "task-verdict-written"
       ],
       "description": "The verifier writes verdict.json."
     },
@@ -3436,6 +3519,14 @@
         "code"
       ],
       "text": "Q2 and Q3 answers (orchestrator, D15): a worker question escalates to the operator after 15 min with no answer from a running sub-orchestrator (a starting value); the wait for the operator has no limit. An operator requeue sets the attempt count to 0; a review requeue keeps its own counter. Whether an operator requeue restores the replan stays open (Q3)."
+    },
+    {
+      "id": "N13",
+      "kind": "language",
+      "for": [
+        "connect"
+      ],
+      "text": "Answers connect Q6: discover adopts the 6 ids of connect with the types of connect. assign-task and start-work are commands (both lead to attempt-launched). heartbeat-written, task-verdict-written, plan-verdict-written and agent-status-changed are events."
     }
   ],
   "plain_words": {

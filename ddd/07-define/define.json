@@ -2,7 +2,7 @@
   "schema_version": 1,
   "step": "define",
   "produced_by": "ddd-define",
-  "produced_at": "2026-11-12T21:06:49Z",
+  "produced_at": "2026-11-12T21:59:18Z",
   "mode": "auto",
   "depth": "standard",
   "inputs": [
@@ -182,14 +182,7 @@
       "confidence": "medium"
     }
   ],
-  "open_questions": [
-    {
-      "id": "Q6",
-      "text": "Invariant I10 needs a rescue ref of the old tip before each rebase or forced update of a branch. The git split puts rescue refs in worktree-custody and rebases in integration, and connect has no message between them for it. Does integration call the rescue module of worktree-custody in-process (recommended), or write the I10 ref itself?",
-      "blocking": false,
-      "owner": "operator"
-    }
-  ],
+  "open_questions": [],
   "canvases": [
     {
       "context": "ideas",
@@ -854,25 +847,6 @@
           ]
         },
         {
-          "collaborator": "agent-cli",
-          "relationship": "anticorruption-layer",
-          "messages": [
-            {
-              "id": "attempt-exited",
-              "kind": "event",
-              "name": "Attempt Exited",
-              "payload": [
-                "attempt_id",
-                "exit_status",
-                "has_result"
-              ],
-              "delivery": "at-least-once",
-              "via": "file",
-              "sync": false
-            }
-          ]
-        },
-        {
           "collaborator": "provider-pool",
           "relationship": "anticorruption-layer",
           "messages": [
@@ -1079,6 +1053,19 @@
                 "written_at"
               ],
               "delivery": "at-most-once",
+              "via": "file",
+              "sync": false
+            },
+            {
+              "id": "attempt-exited",
+              "kind": "event",
+              "name": "Attempt Exited",
+              "payload": [
+                "attempt_id",
+                "exit_status",
+                "has_result"
+              ],
+              "delivery": "at-least-once",
               "via": "file",
               "sync": false
             }
@@ -2344,6 +2331,19 @@
               "delivery": "at-most-once",
               "via": "file",
               "sync": false
+            },
+            {
+              "id": "attempt-exited",
+              "kind": "event",
+              "name": "Attempt Exited",
+              "payload": [
+                "attempt_id",
+                "exit_status",
+                "has_result"
+              ],
+              "delivery": "at-least-once",
+              "via": "file",
+              "sync": false
             }
           ]
         },
@@ -2423,7 +2423,7 @@
         "[decompose A11] worker-profiles owns start-agent-process and agent-process-started: it starts the fleet-run wrapper of an attempt, or the herdr pane of a sub-orchestrator, from the launch environment of the profile (discover N10). This keeps the environment scrub with 1 owner (decision D3). (confidence medium)",
         "[strategize A6] Worker profiles is supporting with medium investment because it owns the ANTHROPIC_API_KEY scrub (C2, an absolute operator rule). Its complexity is the rate of change of the agent CLIs, not domain rules. (confidence high)",
         "[connect A1] All 6 contexts run in the 1 fleetd process, so every context-to-context message is in-process. Only the command channel, the file protocol, the herdr adapter, the platform layer, git and GitHub cross a process boundary (design: Architecture and roles). (confidence high)",
-        "[connect A7] The fleet-run wrapper belongs to worker-profiles (D2 option B, orchestrator D15). It writes heartbeat.json and exit.json. exit.json stays drawn as coming from agent-cli, because it records the exit fact of the CLI process. (confidence high)",
+        "[connect A7] The fleet-run wrapper belongs to worker-profiles (D2 option B, orchestrator D15). It writes heartbeat.json and exit.json. attempt-exited (exit.json) comes from worker-profiles, the writer of the file; the file records the exit fact of the CLI process. (confidence high)",
         "[connect A9] worker-profiles owns start-agent-process (decompose N8). task-execution and ideas send it; worker-profiles resolves the launch environment, runs the fleet-run wrapper and starts it in its own process group through the platform layer. When the profile needs a pane, the caller gets the pane from the herdr adapter of fleet-runtime (R12, R13) and passes it in the request. (confidence medium)",
         "[organise A3] The fleet-run wrapper and horch fleetd check are process roles of the same horch binary, not deployables. The design maps the wrapper to today's horch worker subcommand (design: Where multi-herdr stands today) and names horch fleetd check as a horch command (design: Architecture and roles). worker-profiles owns the wrapper (orchestrator, D15; connect D2, connect N3): the wrapper is the profile made real, and the environment scrub has 1 owner. The deployable is the same. (confidence high)",
         "[organise A4] The data store is 1 SQLite ledger (~/.horch/ledger.sqlite3, WAL) plus the workspace files, both owned by the 1 deployable. Inside the ledger each context owns its tables: ideas owns ideas, requirements, questions; task-execution owns tasks, task_deps, task_covers, attempts, leases; worktree-custody owns worktrees; integration owns features, branches, gate_runs, trial_merges; fleet-runtime owns events and ingested; worker-profiles owns no table (its profiles are teammate files). Source: design Ledger schema with the aggregates of discover and decompose. (confidence medium)",
@@ -2889,6 +2889,12 @@
       "id": "Q5",
       "collection": "open_questions",
       "reason": "Answered (orchestrator, D15): decision D2 option A, specification-model plus approver. Recorded in D2 and A18.",
+      "since": "2026-11-12"
+    },
+    {
+      "id": "Q6",
+      "collection": "open_questions",
+      "reason": "Answered (orchestrator, D15): integration calls the rescue module of worktree-custody in-process before each rebase or forced update of a branch (invariant I10). worktree-custody stays the only writer of rescue refs.",
       "since": "2026-11-12"
     }
   ]

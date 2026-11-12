@@ -12,7 +12,7 @@ This step lists, in time order, everything that happens to 1 idea in fleetd: fro
 
 ---
 
-_Step 2 (discover) - produced by `ddd-discover` - mode `auto` - depth `standard` - 2026-11-12T20:29:42Z_
+_Step 2 (discover) - produced by `ddd-discover` - mode `auto` - depth `standard` - 2026-11-12T21:55:50Z_
 _Inputs: `ddd/01-understand/understand.json`, `ddd/manifest.json`, `ddd/glossary.md`, `docs/specs/fleetd/design.md`, `docs/architecture.md`, `docs/specs/fleetd/preservation-04-behavior.md`, `docs/specs/fleetd/preservation-05-contracts-and-values.md`, `docs/specs/fleetd/preservation-06-wiring-and-platform.md`, `ai_docs/plans/fleetd-design/ddd-context.md`, `docs/specs/fleetd/amendments.md (Revision round 2 and Fix round 2, A19 to A22)`, `ai_docs/plans/fleetd-design/ddd-revision-context.md (revision round 2 decisions and answers)`_
 
 > Rendered from `discover.json` by `ddd discover render`. The JSON is the chain: edit it (or re-run `/ddd-discover`) and re-render rather than editing this file by hand.
@@ -32,8 +32,8 @@ _Inputs: `ddd/01-understand/understand.json`, `ddd/manifest.json`, `ddd/glossary
 
 ## Summary
 
-- **83 events** in **6 phases** (depth `standard` expects roughly 25-60); **4 pivotal**: Assumptions Approved (assumptions-approved), Plan Committed (plan-committed), Task Done (task-done), Idea Task Branches Landed (idea-tasks-landed)
-- 65 commands, 63 policies, 11 read models, 4 actors, 7 external systems, 10 aggregate candidates
+- **87 events** in **6 phases** (depth `standard` expects roughly 25-60); **4 pivotal**: Assumptions Approved (assumptions-approved), Plan Committed (plan-committed), Task Done (task-done), Idea Task Branches Landed (idea-tasks-landed)
+- 67 commands, 63 policies, 11 read models, 4 actors, 7 external systems, 10 aggregate candidates
 - 15 hotspots, 4 scenarios, 20 glossary terms, 11 assumptions, 1 open questions (0 blocking)
 
 ## Timeline
@@ -156,7 +156,7 @@ flowchart LR
 
 ### Phase 2 - Planning
 
-_5 events - id `planning`_
+_6 events - id `planning`_
 
 | # | Event | Triggered by | Actor | Read model | Whenever this, then | Notes |
 |---|---|---|---|---|---|---|
@@ -165,6 +165,7 @@ _5 events - id `planning`_
 | 150 | **Plan Submitted** `plan-submitted` | Submit Plan `submit-plan` | Sub-orchestrator | Diffs of in-flight features | Validate Plan | The tickets and plan.yaml are on disk for validation. - data: ideaId, tasks[], dependencies |
 | 160 | **Plan Refused** `plan-refused` | Validate Plan `validate-plan` |  |  | Escalate Task | The plan validator refuses the plan, for example a judgment task with no paired judge, or a project with no declared fast and full gate. A refused --direct plan goes to needs-you/. - data: ideaId, reasons[] |
 | 170 | **Plan Committed** (pivotal) `plan-committed` | Validate Plan `validate-plan` |  |  | Promote Task | The plan passes validation and its tasks commit in 1 transaction. The idea moves to in_progress. No task exists outside a committed plan. - data: ideaId, taskIds[] |
+| 175 | **Plan Verdict Written** `plan-verdict-written` | Validate Plan `validate-plan` |  |  |  | The plan validator writes plan.verdict.json for the sub-orchestrator: committed or refused. A refusal carries its reasons (connect A10). - data: ideaId, decision, reasons[] |
 
 ```mermaid
 flowchart LR
@@ -194,6 +195,7 @@ flowchart LR
     e_plan_committed["Plan Committed"]:::pivotal
     p_promote_on_plan_committed{{"Whenever a plan is committed, promote the tasks with no dependencies"}}:::policy
     stub_promote_task["Promote Task -> Executing and verifying tasks"]:::command
+    e_plan_verdict_written["Plan Verdict Written"]:::event
   end
   c_add_direct_idea --> e_direct_idea_accepted
   e_direct_idea_accepted --> p_open_feature_on_direct
@@ -213,11 +215,13 @@ flowchart LR
   c_validate_plan --> e_plan_committed
   e_plan_committed --> p_promote_on_plan_committed
   p_promote_on_plan_committed --> stub_promote_task
+  e_plan_committed ~~~ e_plan_verdict_written
+  c_validate_plan --> e_plan_verdict_written
 ```
 
 ### Phase 3 - Executing and verifying tasks
 
-_36 events - id `executing`_
+_39 events - id `executing`_
 
 | # | Event | Triggered by | Actor | Read model | Whenever this, then | Notes |
 |---|---|---|---|---|---|---|
@@ -226,8 +230,10 @@ _36 events - id `executing`_
 | 200 | **Worktree Created** `worktree-created` | Create Worktree `create-worktree` |  |  | Launch Attempt | fleetd runs git worktree add. A retried attempt reuses the existing worktree. - data: worktreeId, path, branch |
 | 210 | **Attempt Launched** [H1] `attempt-launched` | Launch Attempt `launch-attempt` |  |  | Start Agent Process | fleetd writes task.yaml and inbox/START.md for the attempt. The start of the process follows as Agent Process Started. - data: taskId, attemptId, profile, startFile |
 | 220 | **Agent Process Started** `agent-process-started` | Start Agent Process `start-agent-process` |  | Launch environment of a profile |  | The fleet-run wrapper and the CLI run in their own process group, started through the platform layer and the herdr adapter with the launch environment of the profile. - data: attemptId\|ideaId, pid, pgid, pane |
+| 225 | **Heartbeat Written** `heartbeat-written` | Start Agent Process `start-agent-process` |  | Launch environment of a profile |  | The fleet-run wrapper (worker-profiles), not the model, rewrites heartbeat.json every 10 s. Renew Lease reads it as an outside signal (connect A10). - data: attemptId, pid, pgid, agentState, seq |
 | 230 | **Lease Renewed** `lease-renewed` | Renew Lease `renew-lease` | Clock |  |  | The process is alive, the heartbeat is under 30 s old, and there was activity within stall_after. - data: attemptId, expires |
 | 240 | **Lease Expired** [H13] `lease-expired` | Renew Lease `renew-lease` | Clock |  | End Attempt | No earned renewal: the lease expires within 120 s of the stall threshold. - data: attemptId |
+| 245 | **Agent Status Changed** `agent-status-changed` | external: herdr | herdr |  |  | herdr reports the agent status of a pane through its socket events: working, blocked on a dialog, or idle. The stall ladder reads it (connect A10). - data: pane, agentStatus |
 | 250 | **Attempt Stalled** `attempt-stalled` | Apply Stall Ladder `apply-stall-ladder` | Clock |  | End Attempt | The stall ladder reached its last rung: idle with no result after 2 doorbells, hung, no first signal in 90 s, or blocked on a permission dialog. - data: attemptId, agentState |
 | 260 | **Usage Limit Reported** `usage-limit-reported` | external: Provider pool | Provider pool |  | Move To Fallback | The worker shows a usage limit or a provider outage. This is not a stall and burns no attempt. - data: attemptId, pool, resetAt |
 | 270 | **Fallback Persona Assigned** `fallback-assigned` | Move To Fallback `move-to-fallback` |  |  | Launch Attempt | The fallback persona is on another provider: the task restarts at once on a new worker of the fallback, on the same worktree. - data: taskId, fallbackProfile |
@@ -257,6 +263,7 @@ _36 events - id `executing`_
 | 510 | **Worktree Rescued** `worktree-rescued` | Rescue Worktree `rescue-worktree` |  |  |  | fleetd commits the full tree to refs/horch/rescue/<task>/<n> with a private index and verifies it byte for byte before any removal. - data: worktreeId, rescueRef, fileCount |
 | 520 | **Rescue Failed** `rescue-failed` | Rescue Worktree `rescue-worktree` |  |  | Escalate Task | The rescue commit does not match the tree. The tree stays in place. - data: worktreeId |
 | 530 | **Task Done** (pivotal) [H4] `task-done` | Mark Task Done `mark-task-done` |  |  | Mark Branch Ready, Promote Task | Only the verifier moves a task to done: the check passed, then the review (code kind), or the judge with no CRITICAL item (judgment kind). - data: taskId, verdict |
+| 535 | **Task Verdict Written** `task-verdict-written` | Mark Task Done `mark-task-done` |  |  |  | The verifier writes verdict.json, its decision for the attempt, for the sub-orchestrator (connect A10). - data: taskId, attemptId, decision, reasons[] |
 
 Hotspots in this phase:
 
@@ -296,11 +303,14 @@ flowchart LR
     e_agent_process_started["Agent Process Started"]:::event
     c_start_agent_process["Start Agent Process"]:::command
     r_launch_environment(["Launch environment of a profile"]):::readmodel
+    e_heartbeat_written["Heartbeat Written"]:::event
     e_lease_renewed["Lease Renewed"]:::event
     c_renew_lease["Clock<br/>Renew Lease"]:::command
     e_lease_expired["Lease Expired"]:::event
     h_H13>"H13: Lease and stall time count only while the machine is awake...."]:::hotspot
     p_end_on_lease_expired{{"Whenever a lease expires, end the attempt"}}:::policy
+    e_agent_status_changed["Agent Status Changed"]:::event
+    x_herdr[["herdr"]]:::external
     e_attempt_stalled["Attempt Stalled"]:::event
     c_apply_stall_ladder["Clock<br/>Apply Stall Ladder"]:::command
     p_end_on_stall{{"Whenever an attempt stalls, end the attempt"}}:::policy
@@ -391,6 +401,7 @@ flowchart LR
     h_H4>"H4: 'Done' today is a model action horch ledger done / horch do..."]:::hotspot
     p_ready_branch_on_done{{"Whenever a task is done, mark its task branch ready"}}:::policy
     stub_mark_branch_ready["Mark Branch Ready -> Landing task branches"]:::command
+    e_task_verdict_written["Task Verdict Written"]:::event
   end
   c_promote_task --> e_task_promoted
   e_task_promoted --> p_dispatch_on_ready
@@ -412,14 +423,18 @@ flowchart LR
   e_attempt_launched ~~~ e_agent_process_started
   r_launch_environment -.-> c_start_agent_process
   c_start_agent_process --> e_agent_process_started
-  e_agent_process_started ~~~ e_lease_renewed
+  e_agent_process_started ~~~ e_heartbeat_written
+  c_start_agent_process --> e_heartbeat_written
+  e_heartbeat_written ~~~ e_lease_renewed
   c_renew_lease --> e_lease_renewed
   e_lease_renewed ~~~ e_lease_expired
   c_renew_lease --> e_lease_expired
   e_lease_expired -.- h_H13
   e_lease_expired --> p_end_on_lease_expired
   p_end_on_lease_expired --> c_end_attempt
-  e_lease_expired ~~~ e_attempt_stalled
+  e_lease_expired ~~~ e_agent_status_changed
+  x_herdr --> e_agent_status_changed
+  e_agent_status_changed ~~~ e_attempt_stalled
   c_apply_stall_ladder --> e_attempt_stalled
   e_attempt_stalled --> p_end_on_stall
   p_end_on_stall --> c_end_attempt
@@ -543,6 +558,8 @@ flowchart LR
   e_task_done --> p_ready_branch_on_done
   p_ready_branch_on_done --> stub_mark_branch_ready
   p_ready_branch_on_done --> c_promote_task
+  e_task_done ~~~ e_task_verdict_written
+  c_mark_task_done --> e_task_verdict_written
 ```
 
 ### Phase 4 - Landing task branches
@@ -891,12 +908,14 @@ flowchart LR
 | Add Direct Idea | `add-direct-idea` | Operator | `direct-idea-accepted` | horch idea add --direct <ticket file>, optional --to. Refused inside a fleet attempt. |
 | Write Spec | `write-spec` | Sub-orchestrator | `spec-written` | Writes spec.md and requirements.yaml after approval. |
 | Submit Plan | `submit-plan` | Sub-orchestrator | `plan-submitted` | Writes tickets and plan.yaml. |
-| Validate Plan | `validate-plan` | (policy / system) | `plan-refused`, `plan-committed` | The plan validator: paired judges, declared gates, model guide, overlapping paths. Commits tasks in 1 transaction. |
+| Validate Plan | `validate-plan` | (policy / system) | `plan-refused`, `plan-committed`, `plan-verdict-written` | The plan validator: paired judges, declared gates, model guide, overlapping paths. Commits tasks in 1 transaction. |
 | Promote Task | `promote-task` | (policy / system) | `task-promoted` | pending to ready when every dependency is done, or waiting_quota to ready when the pool resets. |
 | Dispatch Task | `dispatch-task` | (policy / system) | `task-leased` | No cap. Only the health guards (free disk, load) and the pacing of the pool hold dispatch. |
 | Create Worktree | `create-worktree` | (policy / system) | `worktree-created` | git worktree add on the task branch. Only fleetd creates worktrees. |
 | Launch Attempt | `launch-attempt` | (policy / system) | `attempt-launched` | Starts the wrapper and the CLI in its own process group. A resume after an answer also launches. |
-| Start Agent Process | `start-agent-process` | (policy / system) | `agent-process-started` | Starts the fleet-run wrapper of an attempt, or the herdr pane of a sub-orchestrator, from the launch environment. The sub-orchestrator start sends it too. |
+| Assign Task | `assign-task` | (policy / system) | `attempt-launched` | fleetd writes task.yaml for the attempt from the committed plan, before the launch. It is atomic and never rewritten; a change is a new attempt. The worker reads it (connect A10). |
+| Start Work | `start-work` | (policy / system) | `attempt-launched` | fleetd writes inbox/START.md, the first file the worker reads, before the launch. Its path is the launch argument (connect A10). |
+| Start Agent Process | `start-agent-process` | (policy / system) | `agent-process-started`, `heartbeat-written` | Starts the fleet-run wrapper of an attempt, or the herdr pane of a sub-orchestrator, from the launch environment. The sub-orchestrator start sends it too. |
 | Renew Lease | `renew-lease` | Clock | `lease-renewed`, `lease-expired` | Every reconcile pass (5 s). Lease time counts only while the machine is awake. |
 | Apply Stall Ladder | `apply-stall-ladder` | Clock | `attempt-stalled` | Every pass: doorbell, doorbell after 2 min, then end. stall_after default 5 min; start timeout 90 s. |
 | Move To Fallback | `move-to-fallback` | (policy / system) | `fallback-assigned`, `quota-wait-started` | Fallback persona on another provider, else waiting_quota with the lease paused. |
@@ -916,7 +935,7 @@ flowchart LR
 | Requeue Task | `requeue-task` | Operator | `task-requeued` | Resets attempt_floor. |
 | Reconcile Worktrees | `reconcile-worktrees` | Clock | `worktree-orphaned` | Every pass reads rows and /fleet/work; every 60 s also git worktree list --porcelain. |
 | Rescue Worktree | `rescue-worktree` | (policy / system) | `worktree-rescued`, `rescue-failed` | Private index, commit-tree, update-ref, then verify. |
-| Mark Task Done | `mark-task-done` | (policy / system) | `task-done` | The verifier writes verdict.json. |
+| Mark Task Done | `mark-task-done` | (policy / system) | `task-done`, `task-verdict-written` | The verifier writes verdict.json. |
 | Check Fleetd | `check-fleetd` | Clock | `fleetd-hang-detected` | Every 30 s on macOS and Windows; WatchdogSec=30 on Linux; before each horch command. |
 | Self Update | `self-update` | Friend | `horch-version-installed` | horch self-update. The operator runs it too. |
 | Restart Fleetd | `restart-fleetd` | OS service manager | `fleetd-restarted` | Restart always, through the platform layer. |
@@ -1147,6 +1166,7 @@ _Findings addressed to later steps (contract section 3). Only the JSON reaches t
 - **N10** (language -> decompose, connect, define, code): Answers connect Q2: discover adopts the ids of connect. start-agent-process is a command (event agent-process-started, policy start-process-on-launch). launch-environment and trial-merge-result are read models, which connect models as queries.
 - **N11** (process -> decompose, define, code): Q1 answered (orchestrator, D15): an idea with no --to gets its features row at capture and its feature branch at its first assumptions. idea-captured always carries featureId; feature-opened creates only the branch.
 - **N12** (process -> define, code): Q2 and Q3 answers (orchestrator, D15): a worker question escalates to the operator after 15 min with no answer from a running sub-orchestrator (a starting value); the wait for the operator has no limit. An operator requeue sets the attempt count to 0; a review requeue keeps its own counter. Whether an operator requeue restores the replan stays open (Q3).
+- **N13** (language -> connect): Answers connect Q6: discover adopts the 6 ids of connect with the types of connect. assign-task and start-work are commands (both lead to attempt-launched). heartbeat-written, task-verdict-written, plan-verdict-written and agent-status-changed are events.
 
 ## Deprecated (kept for id stability)
 

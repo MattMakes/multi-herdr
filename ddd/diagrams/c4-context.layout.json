@@ -3,12 +3,6 @@
   "width": 1152,
   "height": 976,
   "nodes": {
-    "agent-cli": {
-      "x": 24,
-      "y": 120,
-      "w": 320,
-      "h": 64
-    },
     "clock": {
       "x": 24,
       "y": 216,
@@ -78,30 +72,6 @@
   },
   "groups": {},
   "edges": {
-    "agent-cli->system": {
-      "points": [
-        {
-          "x": 344,
-          "y": 152
-        },
-        {
-          "x": 752,
-          "y": 152
-        },
-        {
-          "x": 752,
-          "y": 501.9
-        },
-        {
-          "x": 808,
-          "y": 501.9
-        }
-      ],
-      "labelAt": {
-        "x": 398,
-        "y": 142
-      }
-    },
     "clock->system": {
       "points": [
         {
@@ -487,6 +457,6 @@
       }
     }
   },
-  "fingerprint": "b4e751f6-3852d0ac",
+  "fingerprint": "6b1e300c-a8e23214",
   "optionsKey": "{\"direction\":\"RIGHT\",\"spacing\":\"comfortable\"}"
 }

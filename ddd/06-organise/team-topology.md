@@ -126,7 +126,7 @@ All rows go through the single ledger writer in `fleet-runtime` (decompose N5). 
 - **A7** (medium) Cognitive load of core-team is high; mitigation as above.
 - **A8** (medium) Each context owns its workspace folders: idea folders to `ideas`, task and attempt folders to `task-execution`, profile files to `worker-profiles` (understand N17).
 - **A9** (high) The platform layer is the leaf crate `crates/horch-platform` inside the 1 deployable, not a context and not a deployable (design A19, D16).
-- **A10** (medium) Docs sync and adapter conformance run as a horch subcommand that fleetd schedules (D2 option A). Its owning context stays open (decompose Q2).
+- **A10** (medium) Docs sync and adapter conformance run as a horch subcommand that fleetd schedules (D2 option A). The subcommand reports a drift to ideas as a --direct idea, so ideas creates the task (decompose Q2, answered).
 - **A11** (high) An `arch_scan` rule enforces the context boundaries (orchestrator, D15).
 
 ## Open questions
@@ -138,6 +138,6 @@ None open. Q1 and Q2 are answered (orchestrator, D15) and listed as deprecated i
 
 ## Notes for downstream
 
-- **N3** (decision; define, code) Docs sync is a horch subcommand in the 1 deployable; its owning context stays open (decompose Q2).
+- **N3** (decision; define, code) Docs sync is a horch subcommand in the 1 deployable. It reports a drift to ideas as a --direct idea, and worker-profiles marks a profile unhealthy and healthy again (decompose Q2, answered).
 - **N4** (boundary; define, code) An `arch_scan` rule enforces the context boundaries.
 - **N5** (boundary; code) `crates/horch-platform` is a leaf library crate linked into the 1 deployable; deployable_count stays 1.

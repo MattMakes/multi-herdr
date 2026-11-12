@@ -2,7 +2,7 @@
   "schema_version": 1,
   "step": "contracts",
   "produced_by": "ddd-contracts",
-  "produced_at": "2026-11-12T21:40:29Z",
+  "produced_at": "2026-11-12T21:59:26Z",
   "mode": "auto",
   "depth": "standard",
   "inputs": [
@@ -89,7 +89,7 @@
     },
     {
       "id": "A15",
-      "text": "heartbeat-written has a contract although organise puts the wrapper and task-execution in 1 deployable: the fleet-run wrapper is its own process and writes heartbeat.json, so the file crosses a process boundary (revision context, contracts). The check warns about this; the warning is expected.",
+      "text": "heartbeat-written and attempt-exited have a contract although organise puts the wrapper and task-execution in 1 deployable: the fleet-run wrapper is its own process and writes heartbeat.json and exit.json, so each file crosses a process boundary (revision context, contracts; consistency gap 5). The check warns about both; the warnings are expected.",
       "confidence": "high"
     },
     {
@@ -583,9 +583,9 @@
       "description": "The agent process of an attempt has exited; the fact lets fleetd end the attempt and decide its outcome.",
       "entityStatus": "Draft",
       "version": "1.0",
-      "domain": "task-execution",
+      "domain": "worker-profiles",
       "owners": [
-        "agent-cli"
+        "core-team"
       ],
       "consumers": [
         "task-execution"
@@ -593,7 +593,7 @@
       "reviewers": [
         "core-team"
       ],
-      "pattern": "anticorruption-layer",
+      "pattern": "customer-supplier",
       "delivery": "at-least-once",
       "via": "file",
       "schema": "ddd/09-contracts/schemas/attempt-exited.schema.json",
@@ -602,8 +602,8 @@
         "Once per attempt_id: exit.json is immutable, and a second ingest is a no-op.",
         "The wrapper reports facts and decides nothing; fleetd decides the outcome (no_result when has_result is false and the repair resume fails)."
       ],
-      "termsOfUse": "The agent CLI owns the wire fact; this schema is our view of it at the ACL boundary. Changes in The agent CLI land in the fleet-run wrapper; nothing else reads The agent CLI directly. Additive changes only within version 1.x.",
-      "glossary": "ddd/glossary.md#task-execution-context",
+      "termsOfUse": "Additive changes only within version 1.x; a removed, renamed or retyped field is 2.0. The fleet-run wrapper (worker-profiles) writes exit.json from the exit fact of the CLI process; fleetd and the wrapper ship in 1 binary.",
+      "glossary": "ddd/glossary.md#worker-profiles-and-adapters-context",
       "provenance": {
         "connect": "attempt-exited",
         "relationship": null,
@@ -611,9 +611,7 @@
           "F3",
           "F4"
         ]
-      },
-      "inherited": true,
-      "direction": "inbound"
+      }
     },
     {
       "id": "usage-limit-reported",
@@ -1275,7 +1273,7 @@
       "reviewers": [
         "core-team"
       ],
-      "pattern": "customer-supplier",
+      "pattern": "partnership",
       "delivery": "at-least-once",
       "via": "in-process",
       "schema": "ddd/09-contracts/schemas/task-escalated.schema.json",

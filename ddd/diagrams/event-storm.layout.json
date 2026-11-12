@@ -1,22 +1,22 @@
 {
   "engine": "fixed",
-  "width": 5200,
-  "height": 2112,
+  "width": 5208,
+  "height": 2448,
   "nodes": {
     "abandon-task-branch": {
-      "x": 3184,
+      "x": 3192,
       "y": 480,
       "w": 112,
       "h": 56
     },
     "abandon-task-branch@operator": {
-      "x": 3184,
+      "x": 3192,
       "y": 396,
       "w": 112,
       "h": 56
     },
     "adapter-conformance-failed": {
-      "x": 4928,
+      "x": 4936,
       "y": 228,
       "w": 112,
       "h": 56
@@ -46,14 +46,26 @@
       "h": 56
     },
     "after-landing": {
-      "x": 3448,
+      "x": 3456,
       "y": 312,
       "w": 112,
       "h": 56
     },
     "agent-process-started": {
-      "x": 2392,
+      "x": 2520,
       "y": 228,
+      "w": 112,
+      "h": 56
+    },
+    "agent-status-changed": {
+      "x": 2144,
+      "y": 564,
+      "w": 112,
+      "h": 56
+    },
+    "agent-status-changed@herdr": {
+      "x": 2144,
+      "y": 396,
       "w": 112,
       "h": 56
     },
@@ -82,25 +94,25 @@
       "h": 56
     },
     "answer-question": {
-      "x": 2008,
+      "x": 2392,
       "y": 816,
       "w": 112,
       "h": 56
     },
     "answer-question@sub-orchestrator": {
-      "x": 2008,
+      "x": 2392,
       "y": 732,
       "w": 112,
       "h": 56
     },
     "apply-stall-ladder": {
-      "x": 1888,
+      "x": 2272,
       "y": 480,
       "w": 112,
       "h": 56
     },
     "apply-stall-ladder@clock": {
-      "x": 1888,
+      "x": 2272,
       "y": 396,
       "w": 112,
       "h": 56
@@ -124,7 +136,7 @@
       "h": 56
     },
     "approved-assumptions-and-spec": {
-      "x": 1888,
+      "x": 2272,
       "y": 816,
       "w": 112,
       "h": 56
@@ -142,14 +154,20 @@
       "h": 56
     },
     "ask-question": {
-      "x": 1760,
+      "x": 2144,
       "y": 816,
       "w": 112,
       "h": 56
     },
     "ask-question@worker": {
-      "x": 1760,
+      "x": 2144,
       "y": 732,
+      "w": 112,
+      "h": 56
+    },
+    "assign-task": {
+      "x": 2272,
+      "y": 2160,
       "w": 112,
       "h": 56
     },
@@ -172,67 +190,67 @@
       "h": 56
     },
     "attempt-exited": {
-      "x": 1760,
+      "x": 2264,
       "y": 1236,
       "w": 112,
       "h": 56
     },
     "attempt-exited@agent-cli": {
-      "x": 1760,
+      "x": 2264,
       "y": 1068,
       "w": 112,
       "h": 56
     },
     "attempt-failed": {
-      "x": 2136,
+      "x": 2520,
       "y": 1572,
       "w": 112,
       "h": 56
     },
     "attempt-launched": {
-      "x": 2144,
+      "x": 2272,
       "y": 228,
       "w": 112,
       "h": 56
     },
     "attempt-stalled": {
-      "x": 1888,
+      "x": 2272,
       "y": 564,
       "w": 112,
       "h": 56
     },
     "bisect-bundle": {
-      "x": 2808,
+      "x": 2816,
       "y": 480,
       "w": 112,
       "h": 56
     },
     "bisect-on-fast-gate-fail": {
-      "x": 3320,
+      "x": 3328,
       "y": 312,
       "w": 112,
       "h": 56
     },
     "block-profile-on-conformance": {
-      "x": 4928,
+      "x": 4936,
       "y": 312,
       "w": 112,
       "h": 56
     },
     "build-bundle": {
-      "x": 2936,
+      "x": 2944,
       "y": 144,
       "w": 112,
       "h": 56
     },
     "bundle-built": {
-      "x": 2936,
+      "x": 2944,
       "y": 228,
       "w": 112,
       "h": 56
     },
     "bundle-on-ready": {
-      "x": 2808,
+      "x": 2816,
       "y": 312,
       "w": 112,
       "h": 56
@@ -250,67 +268,67 @@
       "h": 56
     },
     "check-failed": {
-      "x": 2016,
+      "x": 2520,
       "y": 1236,
       "w": 112,
       "h": 56
     },
     "check-fleetd": {
-      "x": 4544,
+      "x": 4552,
       "y": 144,
       "w": 112,
       "h": 56
     },
     "check-fleetd@clock": {
-      "x": 4544,
+      "x": 4552,
       "y": 60,
       "w": 112,
       "h": 56
     },
     "check-merged": {
-      "x": 3616,
+      "x": 3624,
       "y": 816,
       "w": 112,
       "h": 56
     },
     "check-merged@clock": {
-      "x": 3616,
+      "x": 3624,
       "y": 732,
       "w": 112,
       "h": 56
     },
     "check-passed": {
-      "x": 1888,
+      "x": 2392,
       "y": 1236,
       "w": 112,
       "h": 56
     },
     "close-idea": {
-      "x": 3744,
+      "x": 3752,
       "y": 816,
       "w": 112,
       "h": 56
     },
     "close-on-feature-merged": {
-      "x": 3616,
+      "x": 3624,
       "y": 984,
       "w": 112,
       "h": 56
     },
     "create-worktree": {
-      "x": 2016,
+      "x": 2144,
       "y": 144,
       "w": 112,
       "h": 56
     },
     "create-worktree-on-lease": {
-      "x": 1888,
+      "x": 2016,
       "y": 312,
       "w": 112,
       "h": 56
     },
     "critical-fix-opened": {
-      "x": 1760,
+      "x": 2144,
       "y": 1572,
       "w": 112,
       "h": 56
@@ -322,61 +340,61 @@
       "h": 56
     },
     "dispatch-on-ready": {
-      "x": 1760,
+      "x": 1888,
       "y": 312,
       "w": 112,
       "h": 56
     },
     "dispatch-task": {
-      "x": 1888,
+      "x": 2016,
       "y": 144,
       "w": 112,
       "h": 56
     },
     "done-on-judge-check": {
-      "x": 1888,
+      "x": 2392,
       "y": 1320,
       "w": 112,
       "h": 56
     },
     "done-on-review-passed": {
-      "x": 2144,
+      "x": 2648,
       "y": 1320,
       "w": 112,
       "h": 56
     },
     "end-attempt": {
-      "x": 2136,
+      "x": 2520,
       "y": 1488,
       "w": 112,
       "h": 56
     },
     "end-on-check-failed": {
-      "x": 2016,
+      "x": 2520,
       "y": 1320,
       "w": 112,
       "h": 56
     },
     "end-on-lease-expired": {
-      "x": 1760,
+      "x": 2016,
       "y": 648,
       "w": 112,
       "h": 56
     },
     "end-on-review-failed": {
-      "x": 2272,
-      "y": 1320,
+      "x": 1888,
+      "y": 1656,
       "w": 112,
       "h": 56
     },
     "end-on-stall": {
-      "x": 1888,
+      "x": 2272,
       "y": 648,
       "w": 112,
       "h": 56
     },
     "escalate-after-two-fixes": {
-      "x": 1760,
+      "x": 2144,
       "y": 1656,
       "w": 112,
       "h": 56
@@ -388,73 +406,73 @@
       "h": 56
     },
     "escalate-on-rescue-failed": {
-      "x": 2392,
-      "y": 1992,
+      "x": 1888,
+      "y": 2328,
       "w": 112,
       "h": 56
     },
     "escalate-question": {
-      "x": 2392,
-      "y": 816,
+      "x": 1888,
+      "y": 1152,
       "w": 112,
       "h": 56
     },
     "escalate-question@clock": {
-      "x": 2392,
-      "y": 732,
+      "x": 1888,
+      "y": 1068,
       "w": 112,
       "h": 56
     },
     "escalate-task": {
-      "x": 1760,
+      "x": 2144,
       "y": 1824,
       "w": 112,
       "h": 56
     },
     "fallback-assigned": {
-      "x": 2144,
+      "x": 2528,
       "y": 564,
       "w": 112,
       "h": 56
     },
     "fallback-on-usage-limit": {
-      "x": 2016,
+      "x": 2400,
       "y": 648,
       "w": 112,
       "h": 56
     },
     "fast-forward-feature-branch": {
-      "x": 3448,
+      "x": 3456,
       "y": 144,
       "w": 112,
       "h": 56
     },
     "fast-gate-failed": {
-      "x": 3320,
+      "x": 3328,
       "y": 228,
       "w": 112,
       "h": 56
     },
     "fast-gate-passed": {
-      "x": 3192,
+      "x": 3200,
       "y": 228,
       "w": 112,
       "h": 56
     },
     "feature-branch-rebased": {
-      "x": 4376,
+      "x": 4384,
       "y": 228,
       "w": 112,
       "h": 56
     },
     "feature-marked-ready": {
-      "x": 4000,
+      "x": 4008,
       "y": 564,
       "w": 112,
       "h": 56
     },
     "feature-merged": {
-      "x": 3616,
+      "x": 3624,
       "y": 900,
       "w": 112,
       "h": 56
@@ -466,67 +484,73 @@
       "h": 56
     },
     "feature-rebase-conflicted": {
-      "x": 3616,
+      "x": 3624,
       "y": 564,
       "w": 112,
       "h": 56
     },
     "feature-stacked": {
-      "x": 4120,
+      "x": 4128,
       "y": 228,
       "w": 112,
       "h": 56
     },
     "fleetd-hang-detected": {
-      "x": 4544,
+      "x": 4552,
       "y": 228,
       "w": 112,
       "h": 56
     },
     "fleetd-restarted": {
-      "x": 4800,
+      "x": 4808,
       "y": 228,
       "w": 112,
       "h": 56
     },
     "full-gate-failed": {
-      "x": 3872,
+      "x": 3880,
       "y": 564,
       "w": 112,
       "h": 56
     },
     "full-gate-on-landed": {
-      "x": 3440,
+      "x": 3448,
       "y": 648,
       "w": 112,
       "h": 56
     },
     "full-gate-passed": {
-      "x": 3744,
+      "x": 3752,
       "y": 564,
       "w": 112,
       "h": 56
     },
     "gate-on-bundle": {
-      "x": 2936,
+      "x": 2944,
       "y": 312,
       "w": 112,
       "h": 56
     },
     "gate-on-rebase": {
-      "x": 4376,
+      "x": 4384,
       "y": 312,
       "w": 112,
       "h": 56
     },
+    "heartbeat-written": {
+      "x": 2648,
+      "y": 228,
+      "w": 112,
+      "h": 56
+    },
     "high-finding-settled": {
-      "x": 2008,
+      "x": 2392,
       "y": 1572,
       "w": 112,
       "h": 56
     },
     "horch-version-installed": {
-      "x": 4672,
+      "x": 4680,
       "y": 228,
       "w": 112,
       "h": 56
@@ -556,7 +580,7 @@
       "h": 56
     },
     "idea-merged": {
-      "x": 3744,
+      "x": 3752,
       "y": 900,
       "w": 112,
       "h": 56
@@ -568,7 +592,7 @@
       "h": 56
     },
     "idea-tasks-landed": {
-      "x": 3440,
+      "x": 3448,
       "y": 564,
       "w": 112,
       "h": 56
@@ -598,139 +622,139 @@
       "h": 56
     },
     "judge-findings": {
-      "x": 1888,
+      "x": 2272,
       "y": 1488,
       "w": 112,
       "h": 56
     },
     "judge-verdict-written": {
-      "x": 2400,
-      "y": 1236,
+      "x": 2016,
+      "y": 1572,
       "w": 112,
       "h": 56
     },
     "land-on-fast-gate-pass": {
-      "x": 3192,
+      "x": 3200,
       "y": 312,
       "w": 112,
       "h": 56
     },
     "launch-attempt": {
-      "x": 2144,
-      "y": 144,
-      "w": 112,
-      "h": 56
-    },
-    "launch-environment": {
       "x": 2272,
       "y": 144,
       "w": 112,
       "h": 56
     },
+    "launch-environment": {
+      "x": 2400,
+      "y": 144,
+      "w": 112,
+      "h": 56
+    },
     "launch-on-fallback": {
-      "x": 2144,
+      "x": 2528,
       "y": 648,
       "w": 112,
       "h": 56
     },
     "launch-on-retry": {
-      "x": 2264,
+      "x": 2648,
       "y": 1656,
       "w": 112,
       "h": 56
     },
     "launch-on-worktree": {
-      "x": 2016,
+      "x": 2144,
       "y": 312,
       "w": 112,
       "h": 56
     },
     "lead-replans-on-request": {
-      "x": 2392,
-      "y": 1656,
+      "x": 1888,
+      "y": 1992,
       "w": 112,
       "h": 56
     },
     "lead-settles-high": {
-      "x": 2400,
-      "y": 1320,
+      "x": 2016,
+      "y": 1656,
       "w": 112,
       "h": 56
     },
     "lease-expired": {
-      "x": 1760,
+      "x": 2016,
       "y": 564,
       "w": 112,
       "h": 56
     },
     "lease-expired@clock": {
-      "x": 1760,
+      "x": 2016,
       "y": 396,
       "w": 112,
       "h": 56
     },
     "lease-renewed": {
-      "x": 2520,
-      "y": 228,
+      "x": 1888,
+      "y": 564,
       "w": 112,
       "h": 56
     },
     "mark-branch-ready": {
-      "x": 2808,
+      "x": 2816,
       "y": 144,
       "w": 112,
       "h": 56
     },
     "mark-feature-ready": {
-      "x": 4000,
+      "x": 4008,
       "y": 480,
       "w": 112,
       "h": 56
     },
     "mark-profile-unhealthy": {
-      "x": 5056,
+      "x": 5064,
       "y": 144,
       "w": 112,
       "h": 56
     },
     "mark-task-done": {
-      "x": 2520,
-      "y": 1824,
+      "x": 2016,
+      "y": 2160,
       "w": 112,
       "h": 56
     },
     "merge-pull-request": {
-      "x": 4376,
+      "x": 4384,
       "y": 480,
       "w": 112,
       "h": 56
     },
     "merge-pull-request@operator": {
-      "x": 4376,
+      "x": 4384,
       "y": 396,
       "w": 112,
       "h": 56
     },
     "move-to-fallback": {
-      "x": 2144,
+      "x": 2528,
       "y": 480,
       "w": 112,
       "h": 56
     },
     "needs-you-queue": {
-      "x": 1888,
+      "x": 2272,
       "y": 1824,
       "w": 112,
       "h": 56
     },
     "on-primary-moved": {
-      "x": 3616,
+      "x": 3624,
       "y": 312,
       "w": 112,
       "h": 56
     },
     "open-critical-fix": {
-      "x": 1760,
+      "x": 2144,
       "y": 1488,
       "w": 112,
       "h": 56
@@ -754,49 +778,49 @@
       "h": 56
     },
     "open-pull-request": {
-      "x": 4128,
+      "x": 4136,
       "y": 480,
       "w": 112,
       "h": 56
     },
     "open-resolver-task": {
-      "x": 4248,
+      "x": 4256,
       "y": 144,
       "w": 112,
       "h": 56
     },
     "open-triage-task": {
-      "x": 2936,
+      "x": 2944,
       "y": 480,
       "w": 112,
       "h": 56
     },
     "operator-decides-escalation": {
-      "x": 1760,
+      "x": 2144,
       "y": 1992,
       "w": 112,
       "h": 56
     },
     "operator-decides-revise": {
-      "x": 2264,
+      "x": 2648,
       "y": 984,
       "w": 112,
       "h": 56
     },
     "operator-merges": {
-      "x": 4128,
+      "x": 4136,
       "y": 648,
       "w": 112,
       "h": 56
     },
     "own-assumption-recorded": {
-      "x": 2136,
+      "x": 2520,
       "y": 900,
       "w": 112,
       "h": 56
     },
     "own-assumption-recorded@sub-orchestrator": {
-      "x": 2136,
+      "x": 2520,
       "y": 732,
       "w": 112,
       "h": 56
@@ -831,26 +855,32 @@
       "w": 112,
       "h": 56
     },
+    "plan-verdict-written": {
+      "x": 1720,
+      "y": 228,
+      "w": 112,
+      "h": 56
+    },
     "pr-on-ready": {
-      "x": 4000,
+      "x": 4008,
       "y": 648,
       "w": 112,
       "h": 56
     },
     "primary-branch-moved": {
-      "x": 3616,
+      "x": 3624,
       "y": 228,
       "w": 112,
       "h": 56
     },
     "primary-branch-moved@git": {
-      "x": 3616,
+      "x": 3624,
       "y": 60,
       "w": 112,
       "h": 56
     },
     "profile-marked-unhealthy": {
-      "x": 5056,
+      "x": 5064,
       "y": 228,
       "w": 112,
       "h": 56
@@ -862,152 +892,152 @@
       "h": 56
     },
     "promote-on-quota-reset": {
-      "x": 2400,
-      "y": 648,
+      "x": 2016,
+      "y": 984,
       "w": 112,
       "h": 56
     },
     "promote-on-replan": {
-      "x": 2520,
-      "y": 1656,
+      "x": 2016,
+      "y": 1992,
       "w": 112,
       "h": 56
     },
     "promote-on-requeue": {
-      "x": 2008,
+      "x": 2392,
       "y": 1992,
       "w": 112,
       "h": 56
     },
     "promote-task": {
-      "x": 1760,
+      "x": 1888,
       "y": 144,
       "w": 112,
       "h": 56
     },
     "pull-request-merged": {
-      "x": 4376,
+      "x": 4384,
       "y": 564,
       "w": 112,
       "h": 56
     },
     "pull-request-opened": {
-      "x": 4128,
+      "x": 4136,
       "y": 564,
       "w": 112,
       "h": 56
     },
     "pull-request-view": {
-      "x": 4256,
+      "x": 4264,
       "y": 480,
       "w": 112,
       "h": 56
     },
     "question-answered": {
-      "x": 2008,
+      "x": 2392,
       "y": 900,
       "w": 112,
       "h": 56
     },
     "question-escalated": {
-      "x": 2392,
-      "y": 900,
+      "x": 1888,
+      "y": 1236,
       "w": 112,
       "h": 56
     },
     "quota-wait-started": {
-      "x": 2272,
-      "y": 564,
+      "x": 1888,
+      "y": 900,
       "w": 112,
       "h": 56
     },
     "quota-window-reset": {
-      "x": 2400,
-      "y": 564,
+      "x": 2016,
+      "y": 900,
       "w": 112,
       "h": 56
     },
     "quota-window-reset@provider-pool": {
-      "x": 2400,
-      "y": 396,
+      "x": 2016,
+      "y": 732,
       "w": 112,
       "h": 56
     },
     "ready-branch-on-done": {
-      "x": 2520,
-      "y": 1992,
+      "x": 2016,
+      "y": 2328,
       "w": 112,
       "h": 56
     },
     "ready-on-full-gate": {
-      "x": 3744,
+      "x": 3752,
       "y": 648,
       "w": 112,
       "h": 56
     },
     "rebase-feature-branch": {
-      "x": 4376,
+      "x": 4384,
       "y": 144,
       "w": 112,
       "h": 56
     },
     "reconcile-worktrees": {
-      "x": 2136,
+      "x": 2520,
       "y": 1824,
       "w": 112,
       "h": 56
     },
     "reconcile-worktrees@clock": {
-      "x": 2136,
+      "x": 2520,
       "y": 1740,
       "w": 112,
       "h": 56
     },
     "relaunch-on-conflict": {
-      "x": 3064,
+      "x": 3072,
       "y": 312,
       "w": 112,
       "h": 56
     },
     "remove-worktree": {
-      "x": 3312,
+      "x": 3320,
       "y": 480,
       "w": 112,
       "h": 56
     },
     "renew-lease": {
-      "x": 2520,
-      "y": 144,
+      "x": 1888,
+      "y": 480,
       "w": 112,
       "h": 56
     },
     "renew-lease@clock": {
-      "x": 2520,
-      "y": 60,
+      "x": 1888,
+      "y": 396,
       "w": 112,
       "h": 56
     },
     "repair-on-exit-without-result": {
-      "x": 1760,
+      "x": 2264,
       "y": 1320,
       "w": 112,
       "h": 56
     },
     "replan-requested": {
-      "x": 2392,
-      "y": 1572,
+      "x": 1888,
+      "y": 1908,
       "w": 112,
       "h": 56
     },
     "replan-task": {
-      "x": 2520,
-      "y": 1488,
+      "x": 2016,
+      "y": 1824,
       "w": 112,
       "h": 56
     },
     "replan-task@sub-orchestrator": {
-      "x": 2520,
-      "y": 1404,
+      "x": 2016,
+      "y": 1740,
       "w": 112,
       "h": 56
     },
@@ -1024,61 +1054,61 @@
       "h": 56
     },
     "requeue-task": {
-      "x": 2008,
+      "x": 2392,
       "y": 1824,
       "w": 112,
       "h": 56
     },
     "requeue-task@operator": {
-      "x": 2008,
+      "x": 2392,
       "y": 1740,
       "w": 112,
       "h": 56
     },
     "rescue-failed": {
-      "x": 2392,
-      "y": 1908,
+      "x": 1888,
+      "y": 2244,
       "w": 112,
       "h": 56
     },
     "rescue-on-orphan": {
-      "x": 2136,
+      "x": 2520,
       "y": 1992,
       "w": 112,
       "h": 56
     },
     "rescue-worktree": {
-      "x": 2264,
+      "x": 2648,
       "y": 1824,
       "w": 112,
       "h": 56
     },
     "resolve-on-rebase-conflict": {
-      "x": 3616,
+      "x": 3624,
       "y": 648,
       "w": 112,
       "h": 56
     },
     "resolve-on-stack": {
-      "x": 4120,
+      "x": 4128,
       "y": 312,
       "w": 112,
       "h": 56
     },
     "resolver-task-opened": {
-      "x": 4248,
+      "x": 4256,
       "y": 228,
       "w": 112,
       "h": 56
     },
     "restart-fleetd": {
-      "x": 4800,
+      "x": 4808,
       "y": 144,
       "w": 112,
       "h": 56
     },
     "restart-fleetd@os-service-manager": {
-      "x": 4800,
+      "x": 4808,
       "y": 60,
       "w": 112,
       "h": 56
@@ -1090,61 +1120,61 @@
       "h": 56
     },
     "restart-on-binary-change": {
-      "x": 4672,
+      "x": 4680,
       "y": 312,
       "w": 112,
       "h": 56
     },
     "restart-on-stale-heartbeat": {
-      "x": 4544,
+      "x": 4552,
       "y": 312,
       "w": 112,
       "h": 56
     },
     "result-written": {
-      "x": 2640,
-      "y": 900,
+      "x": 2136,
+      "y": 1236,
       "w": 112,
       "h": 56
     },
     "resume-on-answer": {
-      "x": 2008,
+      "x": 2392,
       "y": 984,
       "w": 112,
       "h": 56
     },
     "resume-on-own-assumption": {
-      "x": 2136,
+      "x": 2520,
       "y": 984,
       "w": 112,
       "h": 56
     },
     "retry-on-attempt-failed": {
-      "x": 2136,
+      "x": 2520,
       "y": 1656,
       "w": 112,
       "h": 56
     },
     "retry-scheduled": {
-      "x": 2264,
+      "x": 2648,
       "y": 1572,
       "w": 112,
       "h": 56
     },
     "review-failed": {
-      "x": 2272,
-      "y": 1236,
+      "x": 1888,
+      "y": 1572,
       "w": 112,
       "h": 56
     },
     "review-on-check-passed": {
-      "x": 1888,
+      "x": 2392,
       "y": 1320,
       "w": 112,
       "h": 56
     },
     "review-passed": {
-      "x": 2144,
+      "x": 2648,
       "y": 1236,
       "w": 112,
       "h": 56
@@ -1162,98 +1192,98 @@
       "h": 56
     },
     "revise-requested": {
-      "x": 2264,
+      "x": 2648,
       "y": 900,
       "w": 112,
       "h": 56
     },
     "revise-requested@sub-orchestrator": {
-      "x": 2264,
+      "x": 2648,
       "y": 732,
       "w": 112,
       "h": 56
     },
     "roll-up-idea": {
-      "x": 3440,
+      "x": 3448,
       "y": 480,
       "w": 112,
       "h": 56
     },
     "run-check": {
-      "x": 1888,
+      "x": 2392,
       "y": 1152,
       "w": 112,
       "h": 56
     },
     "run-conformance-tests": {
-      "x": 4928,
+      "x": 4936,
       "y": 144,
       "w": 112,
       "h": 56
     },
     "run-conformance-tests@clock": {
-      "x": 4928,
+      "x": 4936,
       "y": 60,
       "w": 112,
       "h": 56
     },
     "run-fast-gate": {
-      "x": 3192,
+      "x": 3200,
       "y": 144,
       "w": 112,
       "h": 56
     },
     "run-full-gate": {
-      "x": 3744,
+      "x": 3752,
       "y": 480,
       "w": 112,
       "h": 56
     },
     "run-review": {
-      "x": 2144,
+      "x": 2648,
       "y": 1152,
       "w": 112,
       "h": 56
     },
     "run-trial-merges": {
-      "x": 3744,
+      "x": 3752,
       "y": 144,
       "w": 112,
       "h": 56
     },
     "schedule-retry": {
-      "x": 2264,
+      "x": 2648,
       "y": 1488,
       "w": 112,
       "h": 56
     },
     "self-update": {
-      "x": 4672,
+      "x": 4680,
       "y": 144,
       "w": 112,
       "h": 56
     },
     "self-update@friend": {
-      "x": 4672,
+      "x": 4680,
       "y": 60,
       "w": 112,
       "h": 56
     },
     "settle-high-finding": {
-      "x": 2008,
+      "x": 2392,
       "y": 1488,
       "w": 112,
       "h": 56
     },
     "settle-high-finding@sub-orchestrator": {
-      "x": 2008,
+      "x": 2392,
       "y": 1404,
       "w": 112,
       "h": 56
     },
     "settle-judge-verdict": {
-      "x": 2400,
-      "y": 1320,
+      "x": 2016,
+      "y": 1656,
       "w": 112,
       "h": 56
     },
@@ -1270,26 +1300,26 @@
       "h": 56
     },
     "stack-feature": {
-      "x": 4120,
+      "x": 4128,
       "y": 144,
       "w": 112,
       "h": 56
     },
     "stack-on-conflict": {
-      "x": 3872,
+      "x": 3880,
       "y": 312,
       "w": 112,
       "h": 56
     },
     "start-agent-process": {
-      "x": 2392,
+      "x": 2520,
       "y": 144,
       "w": 112,
       "h": 56
     },
     "start-file": {
-      "x": 2520,
-      "y": 816,
+      "x": 2016,
+      "y": 1152,
       "w": 112,
       "h": 56
     },
@@ -1300,13 +1330,13 @@
       "h": 56
     },
     "start-owner-on-question": {
-      "x": 1760,
+      "x": 2144,
       "y": 984,
       "w": 112,
       "h": 56
     },
     "start-process-on-launch": {
-      "x": 2144,
+      "x": 2272,
       "y": 312,
       "w": 112,
       "h": 56
@@ -1314,6 +1344,12 @@
     "start-sub-orchestrator": {
       "x": 160,
       "y": 144,
+      "w": 112,
+      "h": 56
+    },
+    "start-work": {
+      "x": 2400,
+      "y": 2160,
       "w": 112,
       "h": 56
     },
@@ -1336,115 +1372,121 @@
       "h": 56
     },
     "task-branch-abandoned": {
-      "x": 3184,
+      "x": 3192,
       "y": 564,
       "w": 112,
       "h": 56
     },
     "task-branch-conflicted": {
-      "x": 3064,
+      "x": 3072,
       "y": 228,
       "w": 112,
       "h": 56
     },
     "task-branch-gate-failed": {
-      "x": 2808,
+      "x": 2816,
       "y": 564,
       "w": 112,
       "h": 56
     },
     "task-branch-landed": {
-      "x": 3448,
+      "x": 3456,
       "y": 228,
       "w": 112,
       "h": 56
     },
     "task-branch-verified": {
-      "x": 2808,
+      "x": 2816,
       "y": 228,
       "w": 112,
       "h": 56
     },
     "task-done": {
-      "x": 2520,
-      "y": 1908,
+      "x": 2016,
+      "y": 2244,
       "w": 112,
       "h": 56
     },
     "task-escalated": {
-      "x": 1760,
+      "x": 2144,
       "y": 1908,
       "w": 112,
       "h": 56
     },
     "task-leased": {
-      "x": 1888,
+      "x": 2016,
       "y": 228,
       "w": 112,
       "h": 56
     },
     "task-promoted": {
-      "x": 1760,
+      "x": 1888,
       "y": 228,
       "w": 112,
       "h": 56
     },
     "task-replanned": {
-      "x": 2520,
-      "y": 1572,
-      "w": 112,
-      "h": 56
-    },
-    "task-requeued": {
-      "x": 2008,
+      "x": 2016,
       "y": 1908,
       "w": 112,
       "h": 56
     },
+    "task-requeued": {
+      "x": 2392,
+      "y": 1908,
+      "w": 112,
+      "h": 56
+    },
+    "task-verdict-written": {
+      "x": 2144,
+      "y": 2244,
+      "w": 112,
+      "h": 56
+    },
     "triage-on-full-gate-failed": {
-      "x": 3872,
+      "x": 3880,
       "y": 648,
       "w": 112,
       "h": 56
     },
     "triage-on-gate-failed": {
-      "x": 2808,
+      "x": 2816,
       "y": 648,
       "w": 112,
       "h": 56
     },
     "triage-task-opened": {
-      "x": 2936,
+      "x": 2944,
       "y": 564,
       "w": 112,
       "h": 56
     },
     "trial-merge-conflicted": {
-      "x": 3872,
+      "x": 3880,
       "y": 228,
       "w": 112,
       "h": 56
     },
     "trial-merge-passed": {
-      "x": 3744,
+      "x": 3752,
       "y": 228,
       "w": 112,
       "h": 56
     },
     "trial-merge-result": {
-      "x": 4000,
+      "x": 4008,
       "y": 144,
       "w": 112,
       "h": 56
     },
     "usage-limit-reported": {
-      "x": 2016,
+      "x": 2400,
       "y": 564,
       "w": 112,
       "h": 56
     },
     "usage-limit-reported@provider-pool": {
-      "x": 2016,
+      "x": 2400,
       "y": 396,
       "w": 112,
       "h": 56
@@ -1462,43 +1504,43 @@
       "h": 56
     },
     "verify-on-exit": {
-      "x": 1760,
+      "x": 2264,
       "y": 1320,
       "w": 112,
       "h": 56
     },
     "worker-question-asked": {
-      "x": 1760,
+      "x": 2144,
       "y": 900,
       "w": 112,
       "h": 56
     },
     "worktree-created": {
-      "x": 2016,
+      "x": 2144,
       "y": 228,
       "w": 112,
       "h": 56
     },
     "worktree-list": {
-      "x": 3064,
+      "x": 3072,
       "y": 480,
       "w": 112,
       "h": 56
     },
     "worktree-orphaned": {
-      "x": 2136,
+      "x": 2520,
       "y": 1908,
       "w": 112,
       "h": 56
     },
     "worktree-removed": {
-      "x": 3312,
+      "x": 3320,
       "y": 564,
       "w": 112,
       "h": 56
     },
     "worktree-rescued": {
-      "x": 2264,
+      "x": 2648,
       "y": 1908,
       "w": 112,
       "h": 56
@@ -1516,26 +1558,26 @@
       "h": 56
     },
     "write-judge-verdict": {
-      "x": 2400,
-      "y": 1152,
+      "x": 2016,
+      "y": 1488,
       "w": 112,
       "h": 56
     },
     "write-judge-verdict@worker": {
-      "x": 2400,
-      "y": 1068,
+      "x": 2016,
+      "y": 1404,
       "w": 112,
       "h": 56
     },
     "write-result": {
-      "x": 2640,
-      "y": 816,
+      "x": 2136,
+      "y": 1152,
       "w": 112,
       "h": 56
     },
     "write-result@worker": {
-      "x": 2640,
-      "y": 732,
+      "x": 2136,
+      "y": 1068,
       "w": 112,
       "h": 56
     },
@@ -1557,11 +1599,11 @@
     "abandon-task-branch->task-branch-abandoned": {
       "points": [
         {
-          "x": 3240,
+          "x": 3248,
           "y": 536
         },
         {
-          "x": 3240,
+          "x": 3248,
           "y": 564
         }
       ],
@@ -1570,11 +1612,11 @@
     "abandon-task-branch@operator->abandon-task-branch": {
       "points": [
         {
-          "x": 3240,
+          "x": 3248,
           "y": 452
         },
         {
-          "x": 3240,
+          "x": 3248,
           "y": 480
         }
       ],
@@ -1583,11 +1625,11 @@
     "adapter-conformance-failed->block-profile-on-conformance": {
       "points": [
         {
-          "x": 4984,
+          "x": 4992,
           "y": 284
         },
         {
-          "x": 4984,
+          "x": 4992,
           "y": 312
         }
       ],
@@ -1648,19 +1690,19 @@
     "after-landing->remove-worktree": {
       "points": [
         {
-          "x": 3504,
+          "x": 3512,
           "y": 368
         },
         {
-          "x": 3504,
+          "x": 3512,
           "y": 466
         },
         {
-          "x": 3368,
+          "x": 3376,
           "y": 466
         },
         {
-          "x": 3368,
+          "x": 3376,
           "y": 480
         }
       ],
@@ -1669,19 +1711,19 @@
     "after-landing->roll-up-idea": {
       "points": [
         {
-          "x": 3504,
+          "x": 3512,
           "y": 368
         },
         {
+          "x": 3512,
+          "y": 466
+        },
+        {
           "x": 3504,
           "y": 466
         },
         {
-          "x": 3496,
-          "y": 466
-        },
-        {
-          "x": 3496,
+          "x": 3504,
           "y": 480
         }
       ],
@@ -1690,20 +1732,33 @@
     "after-landing->run-trial-merges": {
       "points": [
         {
-          "x": 3560,
+          "x": 3568,
           "y": 340
         },
         {
-          "x": 3736,
+          "x": 3744,
           "y": 340
-        },
-        {
-          "x": 3736,
-          "y": 172
         },
         {
           "x": 3744,
           "y": 172
+        },
+        {
+          "x": 3752,
+          "y": 172
+        }
+      ],
+      "labelAt": null
+    },
+    "agent-status-changed@herdr->agent-status-changed": {
+      "points": [
+        {
+          "x": 2200,
+          "y": 452
+        },
+        {
+          "x": 2200,
+          "y": 564
         }
       ],
       "labelAt": null
@@ -1763,19 +1818,19 @@
     "answer-question->own-assumption-recorded": {
       "points": [
         {
-          "x": 2064,
+          "x": 2448,
           "y": 872
         },
         {
-          "x": 2064,
+          "x": 2448,
           "y": 886
         },
         {
-          "x": 2192,
+          "x": 2576,
           "y": 886
         },
         {
-          "x": 2192,
+          "x": 2576,
           "y": 900
         }
       ],
@@ -1784,11 +1839,11 @@
     "answer-question->question-answered": {
       "points": [
         {
-          "x": 2064,
+          "x": 2448,
           "y": 872
         },
         {
-          "x": 2064,
+          "x": 2448,
           "y": 900
         }
       ],
@@ -1797,19 +1852,19 @@
     "answer-question->revise-requested": {
       "points": [
         {
-          "x": 2064,
+          "x": 2448,
           "y": 872
         },
         {
-          "x": 2064,
+          "x": 2448,
           "y": 886
         },
         {
-          "x": 2320,
+          "x": 2704,
           "y": 886
         },
         {
-          "x": 2320,
+          "x": 2704,
           "y": 900
         }
       ],
@@ -1818,11 +1873,11 @@
     "answer-question@sub-orchestrator->answer-question": {
       "points": [
         {
-          "x": 2064,
+          "x": 2448,
           "y": 788
         },
         {
-          "x": 2064,
+          "x": 2448,
           "y": 816
         }
       ],
@@ -1831,11 +1886,11 @@
     "apply-stall-ladder->attempt-stalled": {
       "points": [
         {
-          "x": 1944,
+          "x": 2328,
           "y": 536
         },
         {
-          "x": 1944,
+          "x": 2328,
           "y": 564
         }
       ],
@@ -1844,11 +1899,11 @@
     "apply-stall-ladder@clock->apply-stall-ladder": {
       "points": [
         {
-          "x": 1944,
+          "x": 2328,
           "y": 452
         },
         {
-          "x": 1944,
+          "x": 2328,
           "y": 480
         }
       ],
@@ -1896,11 +1951,11 @@
     "approved-assumptions-and-spec->answer-question": {
       "points": [
         {
-          "x": 2000,
+          "x": 2384,
           "y": 844
         },
         {
-          "x": 2008,
+          "x": 2392,
           "y": 844
         }
       ],
@@ -1935,11 +1990,11 @@
     "ask-question->worker-question-asked": {
       "points": [
         {
-          "x": 1816,
+          "x": 2200,
           "y": 872
         },
         {
-          "x": 1816,
+          "x": 2200,
           "y": 900
         }
       ],
@@ -1948,11 +2003,11 @@
     "ask-question@worker->ask-question": {
       "points": [
         {
-          "x": 1816,
+          "x": 2200,
           "y": 788
         },
         {
-          "x": 1816,
+          "x": 2200,
           "y": 816
         }
       ],
@@ -2000,11 +2055,11 @@
     "attempt-exited->repair-on-exit-without-result": {
       "points": [
         {
-          "x": 1816,
+          "x": 2320,
           "y": 1292
         },
         {
-          "x": 1816,
+          "x": 2320,
           "y": 1320
         }
       ],
@@ -2013,11 +2068,11 @@
     "attempt-exited->verify-on-exit": {
       "points": [
         {
-          "x": 1816,
+          "x": 2320,
           "y": 1292
         },
         {
-          "x": 1816,
+          "x": 2320,
           "y": 1320
         }
       ],
@@ -2026,11 +2081,11 @@
     "attempt-exited@agent-cli->attempt-exited": {
       "points": [
         {
-          "x": 1816,
+          "x": 2320,
           "y": 1124
         },
         {
-          "x": 1816,
+          "x": 2320,
           "y": 1236
         }
       ],
@@ -2039,11 +2094,11 @@
     "attempt-failed->retry-on-attempt-failed": {
       "points": [
         {
-          "x": 2192,
+          "x": 2576,
           "y": 1628
         },
         {
-          "x": 2192,
+          "x": 2576,
           "y": 1656
         }
       ],
@@ -2052,11 +2107,11 @@
     "attempt-launched->start-process-on-launch": {
       "points": [
         {
-          "x": 2200,
+          "x": 2328,
           "y": 284
         },
         {
-          "x": 2200,
+          "x": 2328,
           "y": 312
         }
       ],
@@ -2065,11 +2120,11 @@
     "attempt-stalled->end-on-stall": {
       "points": [
         {
-          "x": 1944,
+          "x": 2328,
           "y": 620
         },
         {
-          "x": 1944,
+          "x": 2328,
           "y": 648
         }
       ],
@@ -2078,11 +2133,11 @@
     "bisect-bundle->task-branch-gate-failed": {
       "points": [
         {
-          "x": 2864,
+          "x": 2872,
           "y": 536
         },
         {
-          "x": 2864,
+          "x": 2872,
           "y": 564
         }
       ],
@@ -2091,19 +2146,19 @@
     "bisect-on-fast-gate-fail->bisect-bundle": {
       "points": [
         {
-          "x": 3376,
+          "x": 3384,
           "y": 368
         },
         {
-          "x": 3376,
+          "x": 3384,
           "y": 466
         },
         {
-          "x": 2864,
+          "x": 2872,
           "y": 466
         },
         {
-          "x": 2864,
+          "x": 2872,
           "y": 480
         }
       ],
@@ -2112,19 +2167,19 @@
     "block-profile-on-conformance->mark-profile-unhealthy": {
       "points": [
         {
-          "x": 5040,
-          "y": 340
-        },
-        {
           "x": 5048,
           "y": 340
-        },
-        {
-          "x": 5048,
-          "y": 172
         },
         {
           "x": 5056,
+          "y": 340
+        },
+        {
+          "x": 5056,
+          "y": 172
+        },
+        {
+          "x": 5064,
           "y": 172
         }
       ],
@@ -2133,11 +2188,11 @@
     "build-bundle->bundle-built": {
       "points": [
         {
-          "x": 2992,
+          "x": 3000,
           "y": 200
         },
         {
-          "x": 2992,
+          "x": 3000,
           "y": 228
         }
       ],
@@ -2146,19 +2201,19 @@
     "build-bundle->task-branch-conflicted": {
       "points": [
         {
-          "x": 2992,
+          "x": 3000,
           "y": 200
         },
         {
-          "x": 2992,
+          "x": 3000,
           "y": 214
         },
         {
-          "x": 3120,
+          "x": 3128,
           "y": 214
         },
         {
-          "x": 3120,
+          "x": 3128,
           "y": 228
         }
       ],
@@ -2167,11 +2222,11 @@
     "bundle-built->gate-on-bundle": {
       "points": [
         {
-          "x": 2992,
+          "x": 3000,
           "y": 284
         },
         {
-          "x": 2992,
+          "x": 3000,
           "y": 312
         }
       ],
@@ -2180,19 +2235,19 @@
     "bundle-on-ready->build-bundle": {
       "points": [
         {
-          "x": 2920,
-          "y": 340
-        },
-        {
           "x": 2928,
           "y": 340
-        },
-        {
-          "x": 2928,
-          "y": 172
         },
         {
           "x": 2936,
+          "y": 340
+        },
+        {
+          "x": 2936,
+          "y": 172
+        },
+        {
+          "x": 2944,
           "y": 172
         }
       ],
@@ -2227,11 +2282,11 @@
     "check-failed->end-on-check-failed": {
       "points": [
         {
-          "x": 2072,
+          "x": 2576,
           "y": 1292
         },
         {
-          "x": 2072,
+          "x": 2576,
           "y": 1320
         }
       ],
@@ -2240,11 +2295,11 @@
     "check-fleetd->fleetd-hang-detected": {
       "points": [
         {
-          "x": 4600,
+          "x": 4608,
           "y": 200
         },
         {
-          "x": 4600,
+          "x": 4608,
           "y": 228
         }
       ],
@@ -2253,11 +2308,11 @@
     "check-fleetd@clock->check-fleetd": {
       "points": [
         {
-          "x": 4600,
+          "x": 4608,
           "y": 116
         },
         {
-          "x": 4600,
+          "x": 4608,
           "y": 144
         }
       ],
@@ -2266,11 +2321,11 @@
     "check-merged->feature-merged": {
       "points": [
         {
-          "x": 3672,
+          "x": 3680,
           "y": 872
         },
         {
-          "x": 3672,
+          "x": 3680,
           "y": 900
         }
       ],
@@ -2279,11 +2334,11 @@
     "check-merged@clock->check-merged": {
       "points": [
         {
-          "x": 3672,
+          "x": 3680,
           "y": 788
         },
         {
-          "x": 3672,
+          "x": 3680,
           "y": 816
         }
       ],
@@ -2292,11 +2347,11 @@
     "check-passed->done-on-judge-check": {
       "points": [
         {
-          "x": 1944,
+          "x": 2448,
           "y": 1292
         },
         {
-          "x": 1944,
+          "x": 2448,
           "y": 1320
         }
       ],
@@ -2305,11 +2360,11 @@
     "check-passed->review-on-check-passed": {
       "points": [
         {
-          "x": 1944,
+          "x": 2448,
           "y": 1292
         },
         {
-          "x": 1944,
+          "x": 2448,
           "y": 1320
         }
       ],
@@ -2318,11 +2373,11 @@
     "close-idea->idea-merged": {
       "points": [
         {
-          "x": 3800,
+          "x": 3808,
           "y": 872
         },
         {
-          "x": 3800,
+          "x": 3808,
           "y": 900
         }
       ],
@@ -2331,19 +2386,19 @@
     "close-on-feature-merged->close-idea": {
       "points": [
         {
-          "x": 3728,
-          "y": 1012
-        },
-        {
           "x": 3736,
           "y": 1012
-        },
-        {
-          "x": 3736,
-          "y": 844
         },
         {
           "x": 3744,
+          "y": 1012
+        },
+        {
+          "x": 3744,
+          "y": 844
+        },
+        {
+          "x": 3752,
           "y": 844
         }
       ],
@@ -2352,11 +2407,11 @@
     "create-worktree->worktree-created": {
       "points": [
         {
-          "x": 2072,
+          "x": 2200,
           "y": 200
         },
         {
-          "x": 2072,
+          "x": 2200,
           "y": 228
         }
       ],
@@ -2365,19 +2420,19 @@
     "create-worktree-on-lease->create-worktree": {
       "points": [
         {
-          "x": 2000,
+          "x": 2128,
           "y": 340
         },
         {
-          "x": 2008,
+          "x": 2136,
           "y": 340
         },
         {
-          "x": 2008,
+          "x": 2136,
           "y": 172
         },
         {
-          "x": 2016,
+          "x": 2144,
           "y": 172
         }
       ],
@@ -2386,11 +2441,11 @@
     "critical-fix-opened->escalate-after-two-fixes": {
       "points": [
         {
-          "x": 1816,
+          "x": 2200,
           "y": 1628
         },
         {
-          "x": 1816,
+          "x": 2200,
           "y": 1656
         }
       ],
@@ -2412,19 +2467,19 @@
     "dispatch-on-ready->dispatch-task": {
       "points": [
         {
-          "x": 1872,
+          "x": 2000,
           "y": 340
         },
         {
-          "x": 1880,
+          "x": 2008,
           "y": 340
         },
         {
-          "x": 1880,
+          "x": 2008,
           "y": 172
         },
         {
-          "x": 1888,
+          "x": 2016,
           "y": 172
         }
       ],
@@ -2433,11 +2488,11 @@
     "dispatch-task->task-leased": {
       "points": [
         {
-          "x": 1944,
+          "x": 2072,
           "y": 200
         },
         {
-          "x": 1944,
+          "x": 2072,
           "y": 228
         }
       ],
@@ -2446,20 +2501,20 @@
     "done-on-judge-check->mark-task-done": {
       "points": [
         {
-          "x": 1944,
+          "x": 2448,
           "y": 1376
         },
         {
-          "x": 1944,
-          "y": 1810
+          "x": 2448,
+          "y": 2146
         },
         {
-          "x": 2576,
-          "y": 1810
+          "x": 2072,
+          "y": 2146
         },
         {
-          "x": 2576,
-          "y": 1824
+          "x": 2072,
+          "y": 2160
         }
       ],
       "labelAt": null
@@ -2467,20 +2522,20 @@
     "done-on-review-passed->mark-task-done": {
       "points": [
         {
-          "x": 2200,
+          "x": 2704,
           "y": 1376
         },
         {
-          "x": 2200,
-          "y": 1810
+          "x": 2704,
+          "y": 2146
         },
         {
-          "x": 2576,
-          "y": 1810
+          "x": 2072,
+          "y": 2146
         },
         {
-          "x": 2576,
-          "y": 1824
+          "x": 2072,
+          "y": 2160
         }
       ],
       "labelAt": null
@@ -2488,11 +2543,11 @@
     "end-attempt->attempt-failed": {
       "points": [
         {
-          "x": 2192,
+          "x": 2576,
           "y": 1544
         },
         {
-          "x": 2192,
+          "x": 2576,
           "y": 1572
         }
       ],
@@ -2501,19 +2556,11 @@
     "end-on-check-failed->end-attempt": {
       "points": [
         {
-          "x": 2072,
+          "x": 2576,
           "y": 1376
         },
         {
-          "x": 2072,
-          "y": 1474
-        },
-        {
-          "x": 2192,
-          "y": 1474
-        },
-        {
-          "x": 2192,
+          "x": 2576,
           "y": 1488
         }
       ],
@@ -2522,19 +2569,19 @@
     "end-on-lease-expired->end-attempt": {
       "points": [
         {
-          "x": 1816,
+          "x": 2072,
           "y": 704
         },
         {
-          "x": 1816,
+          "x": 2072,
           "y": 1474
         },
         {
-          "x": 2192,
+          "x": 2576,
           "y": 1474
         },
         {
-          "x": 2192,
+          "x": 2576,
           "y": 1488
         }
       ],
@@ -2543,20 +2590,20 @@
     "end-on-review-failed->end-attempt": {
       "points": [
         {
-          "x": 2328,
-          "y": 1376
+          "x": 2000,
+          "y": 1684
         },
         {
-          "x": 2328,
-          "y": 1474
+          "x": 2512,
+          "y": 1684
         },
         {
-          "x": 2192,
-          "y": 1474
+          "x": 2512,
+          "y": 1516
         },
         {
-          "x": 2192,
-          "y": 1488
+          "x": 2520,
+          "y": 1516
         }
       ],
       "labelAt": null
@@ -2564,19 +2611,19 @@
     "end-on-stall->end-attempt": {
       "points": [
         {
-          "x": 1944,
+          "x": 2328,
           "y": 704
         },
         {
-          "x": 1944,
+          "x": 2328,
           "y": 1474
         },
         {
-          "x": 2192,
+          "x": 2576,
           "y": 1474
         },
         {
-          "x": 2192,
+          "x": 2576,
           "y": 1488
         }
       ],
@@ -2585,11 +2632,11 @@
     "escalate-after-two-fixes->escalate-task": {
       "points": [
         {
-          "x": 1816,
+          "x": 2200,
           "y": 1712
         },
         {
-          "x": 1816,
+          "x": 2200,
           "y": 1824
         }
       ],
@@ -2606,11 +2653,11 @@
           "y": 1810
         },
         {
-          "x": 1816,
+          "x": 2200,
           "y": 1810
         },
         {
-          "x": 1816,
+          "x": 2200,
           "y": 1824
         }
       ],
@@ -2619,19 +2666,19 @@
     "escalate-on-rescue-failed->escalate-task": {
       "points": [
         {
-          "x": 2392,
-          "y": 2020
+          "x": 2000,
+          "y": 2356
         },
         {
-          "x": 1880,
-          "y": 2020
+          "x": 2136,
+          "y": 2356
         },
         {
-          "x": 1880,
+          "x": 2136,
           "y": 1852
         },
         {
-          "x": 1872,
+          "x": 2144,
           "y": 1852
         }
       ],
@@ -2640,12 +2687,12 @@
     "escalate-question->question-escalated": {
       "points": [
         {
-          "x": 2448,
-          "y": 872
+          "x": 1944,
+          "y": 1208
         },
         {
-          "x": 2448,
-          "y": 900
+          "x": 1944,
+          "y": 1236
         }
       ],
       "labelAt": null
@@ -2653,12 +2700,12 @@
     "escalate-question@clock->escalate-question": {
       "points": [
         {
-          "x": 2448,
-          "y": 788
+          "x": 1944,
+          "y": 1124
         },
         {
-          "x": 2448,
-          "y": 816
+          "x": 1944,
+          "y": 1152
         }
       ],
       "labelAt": null
@@ -2666,11 +2713,11 @@
     "escalate-task->task-escalated": {
       "points": [
         {
-          "x": 1816,
+          "x": 2200,
           "y": 1880
         },
         {
-          "x": 1816,
+          "x": 2200,
           "y": 1908
         }
       ],
@@ -2679,11 +2726,11 @@
     "fallback-assigned->launch-on-fallback": {
       "points": [
         {
-          "x": 2200,
+          "x": 2584,
           "y": 620
         },
         {
-          "x": 2200,
+          "x": 2584,
           "y": 648
         }
       ],
@@ -2692,19 +2739,19 @@
     "fallback-on-usage-limit->move-to-fallback": {
       "points": [
         {
-          "x": 2128,
+          "x": 2512,
           "y": 676
         },
         {
-          "x": 2136,
+          "x": 2520,
           "y": 676
         },
         {
-          "x": 2136,
+          "x": 2520,
           "y": 508
         },
         {
-          "x": 2144,
+          "x": 2528,
           "y": 508
         }
       ],
@@ -2713,11 +2760,11 @@
     "fast-forward-feature-branch->task-branch-landed": {
       "points": [
         {
-          "x": 3504,
+          "x": 3512,
           "y": 200
         },
         {
-          "x": 3504,
+          "x": 3512,
           "y": 228
         }
       ],
@@ -2726,11 +2773,11 @@
     "fast-gate-failed->bisect-on-fast-gate-fail": {
       "points": [
         {
-          "x": 3376,
+          "x": 3384,
           "y": 284
         },
         {
-          "x": 3376,
+          "x": 3384,
           "y": 312
         }
       ],
@@ -2739,11 +2786,11 @@
     "fast-gate-passed->land-on-fast-gate-pass": {
       "points": [
         {
-          "x": 3248,
+          "x": 3256,
           "y": 284
         },
         {
-          "x": 3248,
+          "x": 3256,
           "y": 312
         }
       ],
@@ -2752,11 +2799,11 @@
     "feature-branch-rebased->gate-on-rebase": {
       "points": [
         {
-          "x": 4432,
+          "x": 4440,
           "y": 284
         },
         {
-          "x": 4432,
+          "x": 4440,
           "y": 312
         }
       ],
@@ -2765,11 +2812,11 @@
     "feature-marked-ready->pr-on-ready": {
       "points": [
         {
-          "x": 4056,
+          "x": 4064,
           "y": 620
         },
         {
-          "x": 4056,
+          "x": 4064,
           "y": 648
         }
       ],
@@ -2778,11 +2825,11 @@
     "feature-merged->close-on-feature-merged": {
       "points": [
         {
-          "x": 3672,
+          "x": 3680,
           "y": 956
         },
         {
-          "x": 3672,
+          "x": 3680,
           "y": 984
         }
       ],
@@ -2804,11 +2851,11 @@
     "feature-rebase-conflicted->resolve-on-rebase-conflict": {
       "points": [
         {
-          "x": 3672,
+          "x": 3680,
           "y": 620
         },
         {
-          "x": 3672,
+          "x": 3680,
           "y": 648
         }
       ],
@@ -2817,11 +2864,11 @@
     "feature-stacked->resolve-on-stack": {
       "points": [
         {
-          "x": 4176,
+          "x": 4184,
           "y": 284
         },
         {
-          "x": 4176,
+          "x": 4184,
           "y": 312
         }
       ],
@@ -2830,11 +2877,11 @@
     "fleetd-hang-detected->restart-on-stale-heartbeat": {
       "points": [
         {
-          "x": 4600,
+          "x": 4608,
           "y": 284
         },
         {
-          "x": 4600,
+          "x": 4608,
           "y": 312
         }
       ],
@@ -2843,11 +2890,11 @@
     "full-gate-failed->triage-on-full-gate-failed": {
       "points": [
         {
-          "x": 3928,
+          "x": 3936,
           "y": 620
         },
         {
-          "x": 3928,
+          "x": 3936,
           "y": 648
         }
       ],
@@ -2856,19 +2903,19 @@
     "full-gate-on-landed->run-full-gate": {
       "points": [
         {
-          "x": 3552,
+          "x": 3560,
           "y": 676
-        },
-        {
-          "x": 3736,
-          "y": 676
-        },
-        {
-          "x": 3736,
-          "y": 508
         },
         {
           "x": 3744,
+          "y": 676
+        },
+        {
+          "x": 3744,
+          "y": 508
+        },
+        {
+          "x": 3752,
           "y": 508
         }
       ],
@@ -2877,11 +2924,11 @@
     "full-gate-passed->ready-on-full-gate": {
       "points": [
         {
-          "x": 3800,
+          "x": 3808,
           "y": 620
         },
         {
-          "x": 3800,
+          "x": 3808,
           "y": 648
         }
       ],
@@ -2890,19 +2937,19 @@
     "gate-on-bundle->run-fast-gate": {
       "points": [
         {
-          "x": 3048,
+          "x": 3056,
           "y": 340
-        },
-        {
-          "x": 3184,
-          "y": 340
-        },
-        {
-          "x": 3184,
-          "y": 172
         },
         {
           "x": 3192,
+          "y": 340
+        },
+        {
+          "x": 3192,
+          "y": 172
+        },
+        {
+          "x": 3200,
           "y": 172
         }
       ],
@@ -2911,19 +2958,19 @@
     "gate-on-rebase->run-fast-gate": {
       "points": [
         {
-          "x": 4376,
+          "x": 4384,
           "y": 340
         },
         {
-          "x": 3312,
+          "x": 3320,
           "y": 340
         },
         {
-          "x": 3312,
+          "x": 3320,
           "y": 172
         },
         {
-          "x": 3304,
+          "x": 3312,
           "y": 172
         }
       ],
@@ -2932,11 +2979,11 @@
     "horch-version-installed->restart-on-binary-change": {
       "points": [
         {
-          "x": 4728,
+          "x": 4736,
           "y": 284
         },
         {
-          "x": 4728,
+          "x": 4736,
           "y": 312
         }
       ],
@@ -2971,11 +3018,11 @@
     "idea-tasks-landed->full-gate-on-landed": {
       "points": [
         {
-          "x": 3496,
+          "x": 3504,
           "y": 620
         },
         {
-          "x": 3496,
+          "x": 3504,
           "y": 648
         }
       ],
@@ -3010,11 +3057,11 @@
     "judge-findings->settle-high-finding": {
       "points": [
         {
-          "x": 2000,
+          "x": 2384,
           "y": 1516
         },
         {
-          "x": 2008,
+          "x": 2392,
           "y": 1516
         }
       ],
@@ -3023,12 +3070,12 @@
     "judge-verdict-written->lead-settles-high": {
       "points": [
         {
-          "x": 2456,
-          "y": 1292
+          "x": 2072,
+          "y": 1628
         },
         {
-          "x": 2456,
-          "y": 1320
+          "x": 2072,
+          "y": 1656
         }
       ],
       "labelAt": null
@@ -3036,12 +3083,12 @@
     "judge-verdict-written->settle-judge-verdict": {
       "points": [
         {
-          "x": 2456,
-          "y": 1292
+          "x": 2072,
+          "y": 1628
         },
         {
-          "x": 2456,
-          "y": 1320
+          "x": 2072,
+          "y": 1656
         }
       ],
       "labelAt": null
@@ -3049,19 +3096,19 @@
     "land-on-fast-gate-pass->fast-forward-feature-branch": {
       "points": [
         {
-          "x": 3304,
+          "x": 3312,
           "y": 340
-        },
-        {
-          "x": 3440,
-          "y": 340
-        },
-        {
-          "x": 3440,
-          "y": 172
         },
         {
           "x": 3448,
+          "y": 340
+        },
+        {
+          "x": 3448,
+          "y": 172
+        },
+        {
+          "x": 3456,
           "y": 172
         }
       ],
@@ -3070,11 +3117,11 @@
     "launch-attempt->attempt-launched": {
       "points": [
         {
-          "x": 2200,
+          "x": 2328,
           "y": 200
         },
         {
-          "x": 2200,
+          "x": 2328,
           "y": 228
         }
       ],
@@ -3083,11 +3130,11 @@
     "launch-environment->start-agent-process": {
       "points": [
         {
-          "x": 2384,
+          "x": 2512,
           "y": 172
         },
         {
-          "x": 2392,
+          "x": 2520,
           "y": 172
         }
       ],
@@ -3096,12 +3143,20 @@
     "launch-on-fallback->launch-attempt": {
       "points": [
         {
-          "x": 2200,
-          "y": 648
+          "x": 2528,
+          "y": 676
         },
         {
-          "x": 2200,
-          "y": 200
+          "x": 2392,
+          "y": 676
+        },
+        {
+          "x": 2392,
+          "y": 172
+        },
+        {
+          "x": 2384,
+          "y": 172
         }
       ],
       "labelAt": null
@@ -3109,19 +3164,19 @@
     "launch-on-retry->launch-attempt": {
       "points": [
         {
-          "x": 2264,
+          "x": 2648,
           "y": 1684
         },
         {
-          "x": 2264,
+          "x": 2392,
           "y": 1684
         },
         {
-          "x": 2264,
+          "x": 2392,
           "y": 172
         },
         {
-          "x": 2256,
+          "x": 2384,
           "y": 172
         }
       ],
@@ -3130,19 +3185,19 @@
     "launch-on-worktree->launch-attempt": {
       "points": [
         {
-          "x": 2128,
+          "x": 2256,
           "y": 340
         },
         {
-          "x": 2136,
+          "x": 2264,
           "y": 340
         },
         {
-          "x": 2136,
+          "x": 2264,
           "y": 172
         },
         {
-          "x": 2144,
+          "x": 2272,
           "y": 172
         }
       ],
@@ -3151,20 +3206,20 @@
     "lead-replans-on-request->replan-task": {
       "points": [
         {
-          "x": 2504,
-          "y": 1684
+          "x": 2000,
+          "y": 2020
         },
         {
-          "x": 2512,
-          "y": 1684
+          "x": 2008,
+          "y": 2020
         },
         {
-          "x": 2512,
-          "y": 1516
+          "x": 2008,
+          "y": 1852
         },
         {
-          "x": 2520,
-          "y": 1516
+          "x": 2016,
+          "y": 1852
         }
       ],
       "labelAt": null
@@ -3172,20 +3227,20 @@
     "lead-settles-high->settle-high-finding": {
       "points": [
         {
-          "x": 2456,
-          "y": 1376
+          "x": 2128,
+          "y": 1684
         },
         {
-          "x": 2456,
-          "y": 1474
+          "x": 2384,
+          "y": 1684
         },
         {
-          "x": 2064,
-          "y": 1474
+          "x": 2384,
+          "y": 1516
         },
         {
-          "x": 2064,
-          "y": 1488
+          "x": 2392,
+          "y": 1516
         }
       ],
       "labelAt": null
@@ -3193,11 +3248,11 @@
     "lease-expired->end-on-lease-expired": {
       "points": [
         {
-          "x": 1816,
+          "x": 2072,
           "y": 620
         },
         {
-          "x": 1816,
+          "x": 2072,
           "y": 648
         }
       ],
@@ -3206,11 +3261,11 @@
     "lease-expired@clock->lease-expired": {
       "points": [
         {
-          "x": 1816,
+          "x": 2072,
           "y": 452
         },
         {
-          "x": 1816,
+          "x": 2072,
           "y": 564
         }
       ],
@@ -3219,11 +3274,11 @@
     "mark-branch-ready->task-branch-verified": {
       "points": [
         {
-          "x": 2864,
+          "x": 2872,
           "y": 200
         },
         {
-          "x": 2864,
+          "x": 2872,
           "y": 228
         }
       ],
@@ -3232,11 +3287,11 @@
     "mark-feature-ready->feature-marked-ready": {
       "points": [
         {
-          "x": 4056,
+          "x": 4064,
           "y": 536
         },
         {
-          "x": 4056,
+          "x": 4064,
           "y": 564
         }
       ],
@@ -3245,11 +3300,11 @@
     "mark-profile-unhealthy->profile-marked-unhealthy": {
       "points": [
         {
-          "x": 5112,
+          "x": 5120,
           "y": 200
         },
         {
-          "x": 5112,
+          "x": 5120,
           "y": 228
         }
       ],
@@ -3258,12 +3313,33 @@
     "mark-task-done->task-done": {
       "points": [
         {
-          "x": 2576,
-          "y": 1880
+          "x": 2072,
+          "y": 2216
         },
         {
-          "x": 2576,
-          "y": 1908
+          "x": 2072,
+          "y": 2244
+        }
+      ],
+      "labelAt": null
+    },
+    "mark-task-done->task-verdict-written": {
+      "points": [
+        {
+          "x": 2072,
+          "y": 2216
+        },
+        {
+          "x": 2072,
+          "y": 2230
+        },
+        {
+          "x": 2200,
+          "y": 2230
+        },
+        {
+          "x": 2200,
+          "y": 2244
         }
       ],
       "labelAt": null
@@ -3271,11 +3347,11 @@
     "merge-pull-request->pull-request-merged": {
       "points": [
         {
-          "x": 4432,
+          "x": 4440,
           "y": 536
         },
         {
-          "x": 4432,
+          "x": 4440,
           "y": 564
         }
       ],
@@ -3284,11 +3360,11 @@
     "merge-pull-request@operator->merge-pull-request": {
       "points": [
         {
-          "x": 4432,
+          "x": 4440,
           "y": 452
         },
         {
-          "x": 4432,
+          "x": 4440,
           "y": 480
         }
       ],
@@ -3297,11 +3373,11 @@
     "move-to-fallback->fallback-assigned": {
       "points": [
         {
-          "x": 2200,
+          "x": 2584,
           "y": 536
         },
         {
-          "x": 2200,
+          "x": 2584,
           "y": 564
         }
       ],
@@ -3310,20 +3386,20 @@
     "move-to-fallback->quota-wait-started": {
       "points": [
         {
-          "x": 2200,
+          "x": 2584,
           "y": 536
         },
         {
-          "x": 2200,
-          "y": 550
+          "x": 2584,
+          "y": 886
         },
         {
-          "x": 2328,
-          "y": 550
+          "x": 1944,
+          "y": 886
         },
         {
-          "x": 2328,
-          "y": 564
+          "x": 1944,
+          "y": 900
         }
       ],
       "labelAt": null
@@ -3331,11 +3407,11 @@
     "needs-you-queue->requeue-task": {
       "points": [
         {
-          "x": 2000,
+          "x": 2384,
           "y": 1852
         },
         {
-          "x": 2008,
+          "x": 2392,
           "y": 1852
         }
       ],
@@ -3344,19 +3420,19 @@
     "on-primary-moved->rebase-feature-branch": {
       "points": [
         {
-          "x": 3728,
+          "x": 3736,
           "y": 340
-        },
-        {
-          "x": 4368,
-          "y": 340
-        },
-        {
-          "x": 4368,
-          "y": 172
         },
         {
           "x": 4376,
+          "y": 340
+        },
+        {
+          "x": 4376,
+          "y": 172
+        },
+        {
+          "x": 4384,
           "y": 172
         }
       ],
@@ -3365,19 +3441,19 @@
     "on-primary-moved->run-trial-merges": {
       "points": [
         {
-          "x": 3728,
-          "y": 340
-        },
-        {
           "x": 3736,
           "y": 340
-        },
-        {
-          "x": 3736,
-          "y": 172
         },
         {
           "x": 3744,
+          "y": 340
+        },
+        {
+          "x": 3744,
+          "y": 172
+        },
+        {
+          "x": 3752,
           "y": 172
         }
       ],
@@ -3386,11 +3462,11 @@
     "open-critical-fix->critical-fix-opened": {
       "points": [
         {
-          "x": 1816,
+          "x": 2200,
           "y": 1544
         },
         {
-          "x": 1816,
+          "x": 2200,
           "y": 1572
         }
       ],
@@ -3454,11 +3530,11 @@
     "open-pull-request->pull-request-opened": {
       "points": [
         {
-          "x": 4184,
+          "x": 4192,
           "y": 536
         },
         {
-          "x": 4184,
+          "x": 4192,
           "y": 564
         }
       ],
@@ -3467,11 +3543,11 @@
     "open-resolver-task->resolver-task-opened": {
       "points": [
         {
-          "x": 4304,
+          "x": 4312,
           "y": 200
         },
         {
-          "x": 4304,
+          "x": 4312,
           "y": 228
         }
       ],
@@ -3480,11 +3556,11 @@
     "open-triage-task->triage-task-opened": {
       "points": [
         {
-          "x": 2992,
+          "x": 3000,
           "y": 536
         },
         {
-          "x": 2992,
+          "x": 3000,
           "y": 564
         }
       ],
@@ -3493,19 +3569,19 @@
     "operator-decides-escalation->abandon-task-branch": {
       "points": [
         {
-          "x": 1872,
+          "x": 2256,
           "y": 2020
-        },
-        {
-          "x": 3176,
-          "y": 2020
-        },
-        {
-          "x": 3176,
-          "y": 508
         },
         {
           "x": 3184,
+          "y": 2020
+        },
+        {
+          "x": 3184,
+          "y": 508
+        },
+        {
+          "x": 3192,
           "y": 508
         }
       ],
@@ -3514,19 +3590,19 @@
     "operator-decides-escalation->requeue-task": {
       "points": [
         {
-          "x": 1872,
+          "x": 2256,
           "y": 2020
         },
         {
-          "x": 2000,
+          "x": 2384,
           "y": 2020
         },
         {
-          "x": 2000,
+          "x": 2384,
           "y": 1852
         },
         {
-          "x": 2008,
+          "x": 2392,
           "y": 1852
         }
       ],
@@ -3535,7 +3611,7 @@
     "operator-decides-revise->approve-assumptions": {
       "points": [
         {
-          "x": 2264,
+          "x": 2648,
           "y": 1012
         },
         {
@@ -3556,7 +3632,7 @@
     "operator-decides-revise->revise-assumptions": {
       "points": [
         {
-          "x": 2264,
+          "x": 2648,
           "y": 1012
         },
         {
@@ -3577,19 +3653,19 @@
     "operator-merges->merge-pull-request": {
       "points": [
         {
-          "x": 4240,
+          "x": 4248,
           "y": 676
-        },
-        {
-          "x": 4368,
-          "y": 676
-        },
-        {
-          "x": 4368,
-          "y": 508
         },
         {
           "x": 4376,
+          "y": 676
+        },
+        {
+          "x": 4376,
+          "y": 508
+        },
+        {
+          "x": 4384,
           "y": 508
         }
       ],
@@ -3598,11 +3674,11 @@
     "own-assumption-recorded->resume-on-own-assumption": {
       "points": [
         {
-          "x": 2192,
+          "x": 2576,
           "y": 956
         },
         {
-          "x": 2192,
+          "x": 2576,
           "y": 984
         }
       ],
@@ -3611,11 +3687,11 @@
     "own-assumption-recorded@sub-orchestrator->own-assumption-recorded": {
       "points": [
         {
-          "x": 2192,
+          "x": 2576,
           "y": 788
         },
         {
-          "x": 2192,
+          "x": 2576,
           "y": 900
         }
       ],
@@ -3697,19 +3773,19 @@
     "pr-on-ready->open-pull-request": {
       "points": [
         {
-          "x": 4112,
-          "y": 676
-        },
-        {
           "x": 4120,
           "y": 676
-        },
-        {
-          "x": 4120,
-          "y": 508
         },
         {
           "x": 4128,
+          "y": 676
+        },
+        {
+          "x": 4128,
+          "y": 508
+        },
+        {
+          "x": 4136,
           "y": 508
         }
       ],
@@ -3718,11 +3794,11 @@
     "primary-branch-moved->on-primary-moved": {
       "points": [
         {
-          "x": 3672,
+          "x": 3680,
           "y": 284
         },
         {
-          "x": 3672,
+          "x": 3680,
           "y": 312
         }
       ],
@@ -3731,11 +3807,11 @@
     "primary-branch-moved@git->primary-branch-moved": {
       "points": [
         {
-          "x": 3672,
+          "x": 3680,
           "y": 116
         },
         {
-          "x": 3672,
+          "x": 3680,
           "y": 228
         }
       ],
@@ -3748,15 +3824,15 @@
           "y": 340
         },
         {
-          "x": 1752,
+          "x": 1880,
           "y": 340
         },
         {
-          "x": 1752,
+          "x": 1880,
           "y": 172
         },
         {
-          "x": 1760,
+          "x": 1888,
           "y": 172
         }
       ],
@@ -3765,19 +3841,19 @@
     "promote-on-quota-reset->promote-task": {
       "points": [
         {
-          "x": 2400,
-          "y": 676
+          "x": 2016,
+          "y": 1012
         },
         {
-          "x": 1880,
-          "y": 676
+          "x": 2008,
+          "y": 1012
         },
         {
-          "x": 1880,
+          "x": 2008,
           "y": 172
         },
         {
-          "x": 1872,
+          "x": 2000,
           "y": 172
         }
       ],
@@ -3786,19 +3862,19 @@
     "promote-on-replan->promote-task": {
       "points": [
         {
-          "x": 2520,
-          "y": 1684
+          "x": 2016,
+          "y": 2020
         },
         {
-          "x": 1880,
-          "y": 1684
+          "x": 2008,
+          "y": 2020
         },
         {
-          "x": 1880,
+          "x": 2008,
           "y": 172
         },
         {
-          "x": 1872,
+          "x": 2000,
           "y": 172
         }
       ],
@@ -3807,19 +3883,19 @@
     "promote-on-requeue->promote-task": {
       "points": [
         {
+          "x": 2392,
+          "y": 2020
+        },
+        {
           "x": 2008,
           "y": 2020
         },
         {
-          "x": 1880,
-          "y": 2020
-        },
-        {
-          "x": 1880,
+          "x": 2008,
           "y": 172
         },
         {
-          "x": 1872,
+          "x": 2000,
           "y": 172
         }
       ],
@@ -3828,11 +3904,11 @@
     "promote-task->task-promoted": {
       "points": [
         {
-          "x": 1816,
+          "x": 1944,
           "y": 200
         },
         {
-          "x": 1816,
+          "x": 1944,
           "y": 228
         }
       ],
@@ -3841,11 +3917,11 @@
     "pull-request-opened->operator-merges": {
       "points": [
         {
-          "x": 4184,
+          "x": 4192,
           "y": 620
         },
         {
-          "x": 4184,
+          "x": 4192,
           "y": 648
         }
       ],
@@ -3854,11 +3930,11 @@
     "pull-request-view->merge-pull-request": {
       "points": [
         {
-          "x": 4368,
+          "x": 4376,
           "y": 508
         },
         {
-          "x": 4376,
+          "x": 4384,
           "y": 508
         }
       ],
@@ -3867,11 +3943,11 @@
     "question-answered->resume-on-answer": {
       "points": [
         {
-          "x": 2064,
+          "x": 2448,
           "y": 956
         },
         {
-          "x": 2064,
+          "x": 2448,
           "y": 984
         }
       ],
@@ -3880,12 +3956,12 @@
     "quota-window-reset->promote-on-quota-reset": {
       "points": [
         {
-          "x": 2456,
-          "y": 620
+          "x": 2072,
+          "y": 956
         },
         {
-          "x": 2456,
-          "y": 648
+          "x": 2072,
+          "y": 984
         }
       ],
       "labelAt": null
@@ -3893,12 +3969,12 @@
     "quota-window-reset@provider-pool->quota-window-reset": {
       "points": [
         {
-          "x": 2456,
-          "y": 452
+          "x": 2072,
+          "y": 788
         },
         {
-          "x": 2456,
-          "y": 564
+          "x": 2072,
+          "y": 900
         }
       ],
       "labelAt": null
@@ -3906,19 +3982,19 @@
     "ready-branch-on-done->mark-branch-ready": {
       "points": [
         {
-          "x": 2632,
-          "y": 2020
-        },
-        {
-          "x": 2800,
-          "y": 2020
-        },
-        {
-          "x": 2800,
-          "y": 172
+          "x": 2128,
+          "y": 2356
         },
         {
           "x": 2808,
+          "y": 2356
+        },
+        {
+          "x": 2808,
+          "y": 172
+        },
+        {
+          "x": 2816,
           "y": 172
         }
       ],
@@ -3927,19 +4003,19 @@
     "ready-branch-on-done->promote-task": {
       "points": [
         {
-          "x": 2520,
-          "y": 2020
+          "x": 2016,
+          "y": 2356
         },
         {
-          "x": 1880,
-          "y": 2020
+          "x": 2008,
+          "y": 2356
         },
         {
-          "x": 1880,
+          "x": 2008,
           "y": 172
         },
         {
-          "x": 1872,
+          "x": 2000,
           "y": 172
         }
       ],
@@ -3948,19 +4024,19 @@
     "ready-on-full-gate->mark-feature-ready": {
       "points": [
         {
-          "x": 3856,
+          "x": 3864,
           "y": 676
-        },
-        {
-          "x": 3992,
-          "y": 676
-        },
-        {
-          "x": 3992,
-          "y": 508
         },
         {
           "x": 4000,
+          "y": 676
+        },
+        {
+          "x": 4000,
+          "y": 508
+        },
+        {
+          "x": 4008,
           "y": 508
         }
       ],
@@ -3969,11 +4045,11 @@
     "rebase-feature-branch->feature-branch-rebased": {
       "points": [
         {
-          "x": 4432,
+          "x": 4440,
           "y": 200
         },
         {
-          "x": 4432,
+          "x": 4440,
           "y": 228
         }
       ],
@@ -3982,19 +4058,19 @@
     "rebase-feature-branch->feature-rebase-conflicted": {
       "points": [
         {
-          "x": 4432,
+          "x": 4440,
           "y": 200
         },
         {
-          "x": 4432,
+          "x": 4440,
           "y": 550
         },
         {
-          "x": 3672,
+          "x": 3680,
           "y": 550
         },
         {
-          "x": 3672,
+          "x": 3680,
           "y": 564
         }
       ],
@@ -4003,11 +4079,11 @@
     "reconcile-worktrees->worktree-orphaned": {
       "points": [
         {
-          "x": 2192,
+          "x": 2576,
           "y": 1880
         },
         {
-          "x": 2192,
+          "x": 2576,
           "y": 1908
         }
       ],
@@ -4016,11 +4092,11 @@
     "reconcile-worktrees@clock->reconcile-worktrees": {
       "points": [
         {
-          "x": 2192,
+          "x": 2576,
           "y": 1796
         },
         {
-          "x": 2192,
+          "x": 2576,
           "y": 1824
         }
       ],
@@ -4029,19 +4105,19 @@
     "relaunch-on-conflict->launch-attempt": {
       "points": [
         {
-          "x": 3064,
+          "x": 3072,
           "y": 340
         },
         {
-          "x": 2264,
+          "x": 2392,
           "y": 340
         },
         {
-          "x": 2264,
+          "x": 2392,
           "y": 172
         },
         {
-          "x": 2256,
+          "x": 2384,
           "y": 172
         }
       ],
@@ -4050,11 +4126,11 @@
     "remove-worktree->worktree-removed": {
       "points": [
         {
-          "x": 3368,
+          "x": 3376,
           "y": 536
         },
         {
-          "x": 3368,
+          "x": 3376,
           "y": 564
         }
       ],
@@ -4063,19 +4139,19 @@
     "renew-lease->lease-expired": {
       "points": [
         {
-          "x": 2576,
-          "y": 200
+          "x": 1944,
+          "y": 536
         },
         {
-          "x": 2576,
+          "x": 1944,
           "y": 550
         },
         {
-          "x": 1816,
+          "x": 2072,
           "y": 550
         },
         {
-          "x": 1816,
+          "x": 2072,
           "y": 564
         }
       ],
@@ -4084,12 +4160,12 @@
     "renew-lease->lease-renewed": {
       "points": [
         {
-          "x": 2576,
-          "y": 200
+          "x": 1944,
+          "y": 536
         },
         {
-          "x": 2576,
-          "y": 228
+          "x": 1944,
+          "y": 564
         }
       ],
       "labelAt": null
@@ -4097,12 +4173,12 @@
     "renew-lease@clock->renew-lease": {
       "points": [
         {
-          "x": 2576,
-          "y": 116
+          "x": 1944,
+          "y": 452
         },
         {
-          "x": 2576,
-          "y": 144
+          "x": 1944,
+          "y": 480
         }
       ],
       "labelAt": null
@@ -4110,20 +4186,20 @@
     "repair-on-exit-without-result->write-result": {
       "points": [
         {
-          "x": 1872,
+          "x": 2264,
           "y": 1348
         },
         {
-          "x": 2632,
+          "x": 2256,
           "y": 1348
         },
         {
-          "x": 2632,
-          "y": 844
+          "x": 2256,
+          "y": 1180
         },
         {
-          "x": 2640,
-          "y": 844
+          "x": 2248,
+          "y": 1180
         }
       ],
       "labelAt": null
@@ -4131,12 +4207,12 @@
     "replan-requested->lead-replans-on-request": {
       "points": [
         {
-          "x": 2448,
-          "y": 1628
+          "x": 1944,
+          "y": 1964
         },
         {
-          "x": 2448,
-          "y": 1656
+          "x": 1944,
+          "y": 1992
         }
       ],
       "labelAt": null
@@ -4144,12 +4220,12 @@
     "replan-task->task-replanned": {
       "points": [
         {
-          "x": 2576,
-          "y": 1544
+          "x": 2072,
+          "y": 1880
         },
         {
-          "x": 2576,
-          "y": 1572
+          "x": 2072,
+          "y": 1908
         }
       ],
       "labelAt": null
@@ -4157,12 +4233,12 @@
     "replan-task@sub-orchestrator->replan-task": {
       "points": [
         {
-          "x": 2576,
-          "y": 1460
+          "x": 2072,
+          "y": 1796
         },
         {
-          "x": 2576,
-          "y": 1488
+          "x": 2072,
+          "y": 1824
         }
       ],
       "labelAt": null
@@ -4204,11 +4280,11 @@
     "requeue-task->task-requeued": {
       "points": [
         {
-          "x": 2064,
+          "x": 2448,
           "y": 1880
         },
         {
-          "x": 2064,
+          "x": 2448,
           "y": 1908
         }
       ],
@@ -4217,11 +4293,11 @@
     "requeue-task@operator->requeue-task": {
       "points": [
         {
-          "x": 2064,
+          "x": 2448,
           "y": 1796
         },
         {
-          "x": 2064,
+          "x": 2448,
           "y": 1824
         }
       ],
@@ -4230,12 +4306,12 @@
     "rescue-failed->escalate-on-rescue-failed": {
       "points": [
         {
-          "x": 2448,
-          "y": 1964
+          "x": 1944,
+          "y": 2300
         },
         {
-          "x": 2448,
-          "y": 1992
+          "x": 1944,
+          "y": 2328
         }
       ],
       "labelAt": null
@@ -4243,19 +4319,19 @@
     "rescue-on-orphan->rescue-worktree": {
       "points": [
         {
-          "x": 2248,
+          "x": 2632,
           "y": 2020
         },
         {
-          "x": 2256,
+          "x": 2640,
           "y": 2020
         },
         {
-          "x": 2256,
+          "x": 2640,
           "y": 1852
         },
         {
-          "x": 2264,
+          "x": 2648,
           "y": 1852
         }
       ],
@@ -4264,20 +4340,20 @@
     "rescue-worktree->rescue-failed": {
       "points": [
         {
-          "x": 2320,
+          "x": 2704,
           "y": 1880
         },
         {
-          "x": 2320,
-          "y": 1894
+          "x": 2704,
+          "y": 2230
         },
         {
-          "x": 2448,
-          "y": 1894
+          "x": 1944,
+          "y": 2230
         },
         {
-          "x": 2448,
-          "y": 1908
+          "x": 1944,
+          "y": 2244
         }
       ],
       "labelAt": null
@@ -4285,11 +4361,11 @@
     "rescue-worktree->worktree-rescued": {
       "points": [
         {
-          "x": 2320,
+          "x": 2704,
           "y": 1880
         },
         {
-          "x": 2320,
+          "x": 2704,
           "y": 1908
         }
       ],
@@ -4298,19 +4374,19 @@
     "resolve-on-rebase-conflict->open-resolver-task": {
       "points": [
         {
-          "x": 3728,
+          "x": 3736,
           "y": 676
-        },
-        {
-          "x": 4240,
-          "y": 676
-        },
-        {
-          "x": 4240,
-          "y": 172
         },
         {
           "x": 4248,
+          "y": 676
+        },
+        {
+          "x": 4248,
+          "y": 172
+        },
+        {
+          "x": 4256,
           "y": 172
         }
       ],
@@ -4319,19 +4395,19 @@
     "resolve-on-stack->open-resolver-task": {
       "points": [
         {
-          "x": 4232,
-          "y": 340
-        },
-        {
           "x": 4240,
           "y": 340
-        },
-        {
-          "x": 4240,
-          "y": 172
         },
         {
           "x": 4248,
+          "y": 340
+        },
+        {
+          "x": 4248,
+          "y": 172
+        },
+        {
+          "x": 4256,
           "y": 172
         }
       ],
@@ -4340,11 +4416,11 @@
     "restart-fleetd->fleetd-restarted": {
       "points": [
         {
-          "x": 4856,
+          "x": 4864,
           "y": 200
         },
         {
-          "x": 4856,
+          "x": 4864,
           "y": 228
         }
       ],
@@ -4353,11 +4429,11 @@
     "restart-fleetd@os-service-manager->restart-fleetd": {
       "points": [
         {
-          "x": 4856,
+          "x": 4864,
           "y": 116
         },
         {
-          "x": 4856,
+          "x": 4864,
           "y": 144
         }
       ],
@@ -4387,19 +4463,19 @@
     "restart-on-binary-change->restart-fleetd": {
       "points": [
         {
-          "x": 4784,
-          "y": 340
-        },
-        {
           "x": 4792,
           "y": 340
-        },
-        {
-          "x": 4792,
-          "y": 172
         },
         {
           "x": 4800,
+          "y": 340
+        },
+        {
+          "x": 4800,
+          "y": 172
+        },
+        {
+          "x": 4808,
           "y": 172
         }
       ],
@@ -4408,19 +4484,19 @@
     "restart-on-stale-heartbeat->restart-fleetd": {
       "points": [
         {
-          "x": 4656,
+          "x": 4664,
           "y": 340
-        },
-        {
-          "x": 4792,
-          "y": 340
-        },
-        {
-          "x": 4792,
-          "y": 172
         },
         {
           "x": 4800,
+          "y": 340
+        },
+        {
+          "x": 4800,
+          "y": 172
+        },
+        {
+          "x": 4808,
           "y": 172
         }
       ],
@@ -4429,19 +4505,19 @@
     "resume-on-answer->launch-attempt": {
       "points": [
         {
-          "x": 2120,
+          "x": 2392,
           "y": 1012
         },
         {
-          "x": 2136,
+          "x": 2392,
           "y": 1012
         },
         {
-          "x": 2136,
+          "x": 2392,
           "y": 172
         },
         {
-          "x": 2144,
+          "x": 2384,
           "y": 172
         }
       ],
@@ -4450,19 +4526,19 @@
     "resume-on-own-assumption->launch-attempt": {
       "points": [
         {
-          "x": 2248,
+          "x": 2520,
           "y": 1012
         },
         {
-          "x": 2136,
+          "x": 2392,
           "y": 1012
         },
         {
-          "x": 2136,
+          "x": 2392,
           "y": 172
         },
         {
-          "x": 2144,
+          "x": 2384,
           "y": 172
         }
       ],
@@ -4471,19 +4547,19 @@
     "retry-on-attempt-failed->schedule-retry": {
       "points": [
         {
-          "x": 2248,
+          "x": 2632,
           "y": 1684
         },
         {
-          "x": 2256,
+          "x": 2640,
           "y": 1684
         },
         {
-          "x": 2256,
+          "x": 2640,
           "y": 1516
         },
         {
-          "x": 2264,
+          "x": 2648,
           "y": 1516
         }
       ],
@@ -4492,11 +4568,11 @@
     "retry-scheduled->launch-on-retry": {
       "points": [
         {
-          "x": 2320,
+          "x": 2704,
           "y": 1628
         },
         {
-          "x": 2320,
+          "x": 2704,
           "y": 1656
         }
       ],
@@ -4505,12 +4581,12 @@
     "review-failed->end-on-review-failed": {
       "points": [
         {
-          "x": 2328,
-          "y": 1292
+          "x": 1944,
+          "y": 1628
         },
         {
-          "x": 2328,
-          "y": 1320
+          "x": 1944,
+          "y": 1656
         }
       ],
       "labelAt": null
@@ -4518,19 +4594,19 @@
     "review-on-check-passed->run-review": {
       "points": [
         {
-          "x": 2000,
+          "x": 2504,
           "y": 1348
         },
         {
-          "x": 2136,
+          "x": 2640,
           "y": 1348
         },
         {
-          "x": 2136,
+          "x": 2640,
           "y": 1180
         },
         {
-          "x": 2144,
+          "x": 2648,
           "y": 1180
         }
       ],
@@ -4539,11 +4615,11 @@
     "review-passed->done-on-review-passed": {
       "points": [
         {
-          "x": 2200,
+          "x": 2704,
           "y": 1292
         },
         {
-          "x": 2200,
+          "x": 2704,
           "y": 1320
         }
       ],
@@ -4578,11 +4654,11 @@
     "revise-requested->operator-decides-revise": {
       "points": [
         {
-          "x": 2320,
+          "x": 2704,
           "y": 956
         },
         {
-          "x": 2320,
+          "x": 2704,
           "y": 984
         }
       ],
@@ -4591,11 +4667,11 @@
     "revise-requested@sub-orchestrator->revise-requested": {
       "points": [
         {
-          "x": 2320,
+          "x": 2704,
           "y": 788
         },
         {
-          "x": 2320,
+          "x": 2704,
           "y": 900
         }
       ],
@@ -4604,11 +4680,11 @@
     "roll-up-idea->idea-tasks-landed": {
       "points": [
         {
-          "x": 3496,
+          "x": 3504,
           "y": 536
         },
         {
-          "x": 3496,
+          "x": 3504,
           "y": 564
         }
       ],
@@ -4617,19 +4693,19 @@
     "run-check->check-failed": {
       "points": [
         {
-          "x": 1944,
+          "x": 2448,
           "y": 1208
         },
         {
-          "x": 1944,
+          "x": 2448,
           "y": 1222
         },
         {
-          "x": 2072,
+          "x": 2576,
           "y": 1222
         },
         {
-          "x": 2072,
+          "x": 2576,
           "y": 1236
         }
       ],
@@ -4638,11 +4714,11 @@
     "run-check->check-passed": {
       "points": [
         {
-          "x": 1944,
+          "x": 2448,
           "y": 1208
         },
         {
-          "x": 1944,
+          "x": 2448,
           "y": 1236
         }
       ],
@@ -4651,11 +4727,11 @@
     "run-conformance-tests->adapter-conformance-failed": {
       "points": [
         {
-          "x": 4984,
+          "x": 4992,
           "y": 200
         },
         {
-          "x": 4984,
+          "x": 4992,
           "y": 228
         }
       ],
@@ -4664,11 +4740,11 @@
     "run-conformance-tests@clock->run-conformance-tests": {
       "points": [
         {
-          "x": 4984,
+          "x": 4992,
           "y": 116
         },
         {
-          "x": 4984,
+          "x": 4992,
           "y": 144
         }
       ],
@@ -4677,19 +4753,19 @@
     "run-fast-gate->fast-gate-failed": {
       "points": [
         {
-          "x": 3248,
+          "x": 3256,
           "y": 200
         },
         {
-          "x": 3248,
+          "x": 3256,
           "y": 214
         },
         {
-          "x": 3376,
+          "x": 3384,
           "y": 214
         },
         {
-          "x": 3376,
+          "x": 3384,
           "y": 228
         }
       ],
@@ -4698,11 +4774,11 @@
     "run-fast-gate->fast-gate-passed": {
       "points": [
         {
-          "x": 3248,
+          "x": 3256,
           "y": 200
         },
         {
-          "x": 3248,
+          "x": 3256,
           "y": 228
         }
       ],
@@ -4711,19 +4787,19 @@
     "run-full-gate->full-gate-failed": {
       "points": [
         {
-          "x": 3800,
+          "x": 3808,
           "y": 536
         },
         {
-          "x": 3800,
+          "x": 3808,
           "y": 550
         },
         {
-          "x": 3928,
+          "x": 3936,
           "y": 550
         },
         {
-          "x": 3928,
+          "x": 3936,
           "y": 564
         }
       ],
@@ -4732,11 +4808,11 @@
     "run-full-gate->full-gate-passed": {
       "points": [
         {
-          "x": 3800,
+          "x": 3808,
           "y": 536
         },
         {
-          "x": 3800,
+          "x": 3808,
           "y": 564
         }
       ],
@@ -4745,20 +4821,20 @@
     "run-review->review-failed": {
       "points": [
         {
-          "x": 2200,
+          "x": 2704,
           "y": 1208
         },
         {
-          "x": 2200,
-          "y": 1222
+          "x": 2704,
+          "y": 1558
         },
         {
-          "x": 2328,
-          "y": 1222
+          "x": 1944,
+          "y": 1558
         },
         {
-          "x": 2328,
-          "y": 1236
+          "x": 1944,
+          "y": 1572
         }
       ],
       "labelAt": null
@@ -4766,11 +4842,11 @@
     "run-review->review-passed": {
       "points": [
         {
-          "x": 2200,
+          "x": 2704,
           "y": 1208
         },
         {
-          "x": 2200,
+          "x": 2704,
           "y": 1236
         }
       ],
@@ -4779,19 +4855,19 @@
     "run-trial-merges->trial-merge-conflicted": {
       "points": [
         {
-          "x": 3800,
+          "x": 3808,
           "y": 200
         },
         {
-          "x": 3800,
+          "x": 3808,
           "y": 214
         },
         {
-          "x": 3928,
+          "x": 3936,
           "y": 214
         },
         {
-          "x": 3928,
+          "x": 3936,
           "y": 228
         }
       ],
@@ -4800,11 +4876,11 @@
     "run-trial-merges->trial-merge-passed": {
       "points": [
         {
-          "x": 3800,
+          "x": 3808,
           "y": 200
         },
         {
-          "x": 3800,
+          "x": 3808,
           "y": 228
         }
       ],
@@ -4813,20 +4889,20 @@
     "schedule-retry->replan-requested": {
       "points": [
         {
-          "x": 2320,
+          "x": 2704,
           "y": 1544
         },
         {
-          "x": 2320,
-          "y": 1558
+          "x": 2704,
+          "y": 1894
         },
         {
-          "x": 2448,
-          "y": 1558
+          "x": 1944,
+          "y": 1894
         },
         {
-          "x": 2448,
-          "y": 1572
+          "x": 1944,
+          "y": 1908
         }
       ],
       "labelAt": null
@@ -4834,11 +4910,11 @@
     "schedule-retry->retry-scheduled": {
       "points": [
         {
-          "x": 2320,
+          "x": 2704,
           "y": 1544
         },
         {
-          "x": 2320,
+          "x": 2704,
           "y": 1572
         }
       ],
@@ -4847,11 +4923,11 @@
     "self-update->horch-version-installed": {
       "points": [
         {
-          "x": 4728,
+          "x": 4736,
           "y": 200
         },
         {
-          "x": 4728,
+          "x": 4736,
           "y": 228
         }
       ],
@@ -4860,11 +4936,11 @@
     "self-update@friend->self-update": {
       "points": [
         {
-          "x": 4728,
+          "x": 4736,
           "y": 116
         },
         {
-          "x": 4728,
+          "x": 4736,
           "y": 144
         }
       ],
@@ -4873,11 +4949,11 @@
     "settle-high-finding->high-finding-settled": {
       "points": [
         {
-          "x": 2064,
+          "x": 2448,
           "y": 1544
         },
         {
-          "x": 2064,
+          "x": 2448,
           "y": 1572
         }
       ],
@@ -4886,11 +4962,11 @@
     "settle-high-finding@sub-orchestrator->settle-high-finding": {
       "points": [
         {
-          "x": 2064,
+          "x": 2448,
           "y": 1460
         },
         {
-          "x": 2064,
+          "x": 2448,
           "y": 1488
         }
       ],
@@ -4899,20 +4975,12 @@
     "settle-judge-verdict->mark-task-done": {
       "points": [
         {
-          "x": 2456,
-          "y": 1376
+          "x": 2072,
+          "y": 1712
         },
         {
-          "x": 2456,
-          "y": 1810
-        },
-        {
-          "x": 2576,
-          "y": 1810
-        },
-        {
-          "x": 2576,
-          "y": 1824
+          "x": 2072,
+          "y": 2160
         }
       ],
       "labelAt": null
@@ -4920,20 +4988,20 @@
     "settle-judge-verdict->open-critical-fix": {
       "points": [
         {
-          "x": 2456,
-          "y": 1376
+          "x": 2128,
+          "y": 1684
         },
         {
-          "x": 2456,
-          "y": 1474
+          "x": 2136,
+          "y": 1684
         },
         {
-          "x": 1816,
-          "y": 1474
+          "x": 2136,
+          "y": 1516
         },
         {
-          "x": 1816,
-          "y": 1488
+          "x": 2144,
+          "y": 1516
         }
       ],
       "labelAt": null
@@ -4962,11 +5030,11 @@
     "stack-feature->feature-stacked": {
       "points": [
         {
-          "x": 4176,
+          "x": 4184,
           "y": 200
         },
         {
-          "x": 4176,
+          "x": 4184,
           "y": 228
         }
       ],
@@ -4975,19 +5043,19 @@
     "stack-on-conflict->stack-feature": {
       "points": [
         {
-          "x": 3984,
+          "x": 3992,
           "y": 340
-        },
-        {
-          "x": 4112,
-          "y": 340
-        },
-        {
-          "x": 4112,
-          "y": 172
         },
         {
           "x": 4120,
+          "y": 340
+        },
+        {
+          "x": 4120,
+          "y": 172
+        },
+        {
+          "x": 4128,
           "y": 172
         }
       ],
@@ -4996,11 +5064,32 @@
     "start-agent-process->agent-process-started": {
       "points": [
         {
-          "x": 2448,
+          "x": 2576,
           "y": 200
         },
         {
-          "x": 2448,
+          "x": 2576,
+          "y": 228
+        }
+      ],
+      "labelAt": null
+    },
+    "start-agent-process->heartbeat-written": {
+      "points": [
+        {
+          "x": 2576,
+          "y": 200
+        },
+        {
+          "x": 2576,
+          "y": 214
+        },
+        {
+          "x": 2704,
+          "y": 214
+        },
+        {
+          "x": 2704,
           "y": 228
         }
       ],
@@ -5009,12 +5098,12 @@
     "start-file->write-result": {
       "points": [
         {
-          "x": 2632,
-          "y": 844
+          "x": 2128,
+          "y": 1180
         },
         {
-          "x": 2640,
-          "y": 844
+          "x": 2136,
+          "y": 1180
         }
       ],
       "labelAt": null
@@ -5043,7 +5132,7 @@
     "start-owner-on-question->start-sub-orchestrator": {
       "points": [
         {
-          "x": 1760,
+          "x": 2144,
           "y": 1012
         },
         {
@@ -5064,19 +5153,19 @@
     "start-process-on-launch->start-agent-process": {
       "points": [
         {
-          "x": 2256,
-          "y": 340
-        },
-        {
           "x": 2384,
           "y": 340
         },
         {
-          "x": 2384,
+          "x": 2512,
+          "y": 340
+        },
+        {
+          "x": 2512,
           "y": 172
         },
         {
-          "x": 2392,
+          "x": 2520,
           "y": 172
         }
       ],
@@ -5124,11 +5213,11 @@
     "task-branch-conflicted->relaunch-on-conflict": {
       "points": [
         {
-          "x": 3120,
+          "x": 3128,
           "y": 284
         },
         {
-          "x": 3120,
+          "x": 3128,
           "y": 312
         }
       ],
@@ -5137,11 +5226,11 @@
     "task-branch-gate-failed->triage-on-gate-failed": {
       "points": [
         {
-          "x": 2864,
+          "x": 2872,
           "y": 620
         },
         {
-          "x": 2864,
+          "x": 2872,
           "y": 648
         }
       ],
@@ -5150,11 +5239,11 @@
     "task-branch-landed->after-landing": {
       "points": [
         {
-          "x": 3504,
+          "x": 3512,
           "y": 284
         },
         {
-          "x": 3504,
+          "x": 3512,
           "y": 312
         }
       ],
@@ -5163,11 +5252,11 @@
     "task-branch-verified->bundle-on-ready": {
       "points": [
         {
-          "x": 2864,
+          "x": 2872,
           "y": 284
         },
         {
-          "x": 2864,
+          "x": 2872,
           "y": 312
         }
       ],
@@ -5176,12 +5265,12 @@
     "task-done->ready-branch-on-done": {
       "points": [
         {
-          "x": 2576,
-          "y": 1964
+          "x": 2072,
+          "y": 2300
         },
         {
-          "x": 2576,
-          "y": 1992
+          "x": 2072,
+          "y": 2328
         }
       ],
       "labelAt": null
@@ -5189,11 +5278,11 @@
     "task-escalated->operator-decides-escalation": {
       "points": [
         {
-          "x": 1816,
+          "x": 2200,
           "y": 1964
         },
         {
-          "x": 1816,
+          "x": 2200,
           "y": 1992
         }
       ],
@@ -5202,11 +5291,11 @@
     "task-leased->create-worktree-on-lease": {
       "points": [
         {
-          "x": 1944,
+          "x": 2072,
           "y": 284
         },
         {
-          "x": 1944,
+          "x": 2072,
           "y": 312
         }
       ],
@@ -5215,11 +5304,11 @@
     "task-promoted->dispatch-on-ready": {
       "points": [
         {
-          "x": 1816,
+          "x": 1944,
           "y": 284
         },
         {
-          "x": 1816,
+          "x": 1944,
           "y": 312
         }
       ],
@@ -5228,12 +5317,12 @@
     "task-replanned->promote-on-replan": {
       "points": [
         {
-          "x": 2576,
-          "y": 1628
+          "x": 2072,
+          "y": 1964
         },
         {
-          "x": 2576,
-          "y": 1656
+          "x": 2072,
+          "y": 1992
         }
       ],
       "labelAt": null
@@ -5241,11 +5330,11 @@
     "task-requeued->promote-on-requeue": {
       "points": [
         {
-          "x": 2064,
+          "x": 2448,
           "y": 1964
         },
         {
-          "x": 2064,
+          "x": 2448,
           "y": 1992
         }
       ],
@@ -5254,19 +5343,19 @@
     "triage-on-full-gate-failed->open-triage-task": {
       "points": [
         {
-          "x": 3872,
+          "x": 3880,
           "y": 676
         },
         {
-          "x": 3056,
+          "x": 3064,
           "y": 676
         },
         {
-          "x": 3056,
+          "x": 3064,
           "y": 508
         },
         {
-          "x": 3048,
+          "x": 3056,
           "y": 508
         }
       ],
@@ -5275,19 +5364,19 @@
     "triage-on-gate-failed->open-triage-task": {
       "points": [
         {
-          "x": 2920,
-          "y": 676
-        },
-        {
           "x": 2928,
           "y": 676
-        },
-        {
-          "x": 2928,
-          "y": 508
         },
         {
           "x": 2936,
+          "y": 676
+        },
+        {
+          "x": 2936,
+          "y": 508
+        },
+        {
+          "x": 2944,
           "y": 508
         }
       ],
@@ -5296,11 +5385,11 @@
     "trial-merge-conflicted->stack-on-conflict": {
       "points": [
         {
-          "x": 3928,
+          "x": 3936,
           "y": 284
         },
         {
-          "x": 3928,
+          "x": 3936,
           "y": 312
         }
       ],
@@ -5309,11 +5398,11 @@
     "trial-merge-result->stack-feature": {
       "points": [
         {
-          "x": 4112,
+          "x": 4120,
           "y": 172
         },
         {
-          "x": 4120,
+          "x": 4128,
           "y": 172
         }
       ],
@@ -5322,11 +5411,11 @@
     "usage-limit-reported->fallback-on-usage-limit": {
       "points": [
         {
-          "x": 2072,
+          "x": 2456,
           "y": 620
         },
         {
-          "x": 2072,
+          "x": 2456,
           "y": 648
         }
       ],
@@ -5335,11 +5424,11 @@
     "usage-limit-reported@provider-pool->usage-limit-reported": {
       "points": [
         {
-          "x": 2072,
+          "x": 2456,
           "y": 452
         },
         {
-          "x": 2072,
+          "x": 2456,
           "y": 564
         }
       ],
@@ -5400,22 +5489,43 @@
       ],
       "labelAt": null
     },
+    "validate-plan->plan-verdict-written": {
+      "points": [
+        {
+          "x": 1520,
+          "y": 200
+        },
+        {
+          "x": 1520,
+          "y": 214
+        },
+        {
+          "x": 1776,
+          "y": 214
+        },
+        {
+          "x": 1776,
+          "y": 228
+        }
+      ],
+      "labelAt": null
+    },
     "verify-on-exit->run-check": {
       "points": [
         {
-          "x": 1872,
+          "x": 2376,
           "y": 1348
         },
         {
-          "x": 1880,
+          "x": 2384,
           "y": 1348
         },
         {
-          "x": 1880,
+          "x": 2384,
           "y": 1180
         },
         {
-          "x": 1888,
+          "x": 2392,
           "y": 1180
         }
       ],
@@ -5424,11 +5534,11 @@
     "worker-question-asked->start-owner-on-question": {
       "points": [
         {
-          "x": 1816,
+          "x": 2200,
           "y": 956
         },
         {
-          "x": 1816,
+          "x": 2200,
           "y": 984
         }
       ],
@@ -5437,11 +5547,11 @@
     "worktree-created->launch-on-worktree": {
       "points": [
         {
-          "x": 2072,
+          "x": 2200,
           "y": 284
         },
         {
-          "x": 2072,
+          "x": 2200,
           "y": 312
         }
       ],
@@ -5450,11 +5560,11 @@
     "worktree-list->abandon-task-branch": {
       "points": [
         {
-          "x": 3176,
+          "x": 3184,
           "y": 508
         },
         {
-          "x": 3184,
+          "x": 3192,
           "y": 508
         }
       ],
@@ -5463,11 +5573,11 @@
     "worktree-orphaned->rescue-on-orphan": {
       "points": [
         {
-          "x": 2192,
+          "x": 2576,
           "y": 1964
         },
         {
-          "x": 2192,
+          "x": 2576,
           "y": 1992
         }
       ],
@@ -5502,12 +5612,12 @@
     "write-judge-verdict->judge-verdict-written": {
       "points": [
         {
-          "x": 2456,
-          "y": 1208
+          "x": 2072,
+          "y": 1544
         },
         {
-          "x": 2456,
-          "y": 1236
+          "x": 2072,
+          "y": 1572
         }
       ],
       "labelAt": null
@@ -5515,12 +5625,12 @@
     "write-judge-verdict@worker->write-judge-verdict": {
       "points": [
         {
-          "x": 2456,
-          "y": 1124
+          "x": 2072,
+          "y": 1460
         },
         {
-          "x": 2456,
-          "y": 1152
+          "x": 2072,
+          "y": 1488
         }
       ],
       "labelAt": null
@@ -5528,12 +5638,12 @@
     "write-result->result-written": {
       "points": [
         {
-          "x": 2696,
-          "y": 872
+          "x": 2192,
+          "y": 1208
         },
         {
-          "x": 2696,
-          "y": 900
+          "x": 2192,
+          "y": 1236
         }
       ],
       "labelAt": null
@@ -5541,12 +5651,12 @@
     "write-result@worker->write-result": {
       "points": [
         {
-          "x": 2696,
-          "y": 788
+          "x": 2192,
+          "y": 1124
         },
         {
-          "x": 2696,
-          "y": 816
+          "x": 2192,
+          "y": 1152
         }
       ],
       "labelAt": null

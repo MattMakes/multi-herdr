@@ -120,15 +120,15 @@ sequenceDiagram
   autonumber
   actor worker as Worker
   participant task_execution as Task execution
-  participant agent_cli as Agent CLI process (external)
+  participant worker_profiles as Worker profiles and adapters
   actor sub_orchestrator as Sub-orchestrator
   participant integration as Landing and integration
   participant worktree_custody as Worktree custody
   participant ideas as Ideas
   worker-)task_execution: write-result (command via file)
   Note over worker,task_execution: outbox/result.json#59; status completed, blocked or failed
-  agent_cli-)task_execution: attempt-exited (event via file)
-  Note over agent_cli,task_execution: exit.json, written by the fleet-run wrapper
+  worker_profiles-)task_execution: attempt-exited (event via file)
+  Note over worker_profiles,task_execution: exit.json, written by the fleet-run wrapper
   task_execution-)sub_orchestrator: task-verdict-written (event via file)
   Note over task_execution,sub_orchestrator: verdict.json
   task_execution-)integration: task-done (event via in-process)
@@ -142,7 +142,7 @@ sequenceDiagram
 | # | From | To | Message | Kind | Sync | Via |
 |---|---|---|---|---|---|---|
 | 1 | worker | task-execution | `write-result` | command | no | file |
-| 2 | agent-cli | task-execution | `attempt-exited` | event | no | file |
+| 2 | worker-profiles | task-execution | `attempt-exited` | event | no | file |
 | 3 | task-execution | sub-orchestrator | `task-verdict-written` | event | no | file |
 | 4 | task-execution | integration | `task-done` | event | no | in-process |
 | 5 | integration | worktree-custody | `task-branch-landed` | event | no | in-process |
@@ -162,7 +162,6 @@ sequenceDiagram
   participant task_execution as Task execution
   participant worker_profiles as Worker profiles and adapters
   actor worker as Worker
-  participant agent_cli as Agent CLI process (external)
   participant integration as Landing and integration
   provider_pool-)task_execution: usage-limit-reported (event via other)
   Note over provider_pool,task_execution: reported through the wrapper and the quota probe
@@ -172,7 +171,7 @@ sequenceDiagram
   task_execution->>worker_profiles: start-agent-process (command via in-process)
   Note over task_execution,worker_profiles: same worktree, no attempt burned
   worker-)task_execution: write-result (command via file)
-  agent_cli-)task_execution: attempt-exited (event via file)
+  worker_profiles-)task_execution: attempt-exited (event via file)
   task_execution-)integration: task-done (event via in-process)
 ```
 
@@ -183,7 +182,7 @@ sequenceDiagram
 | 3 | worker-profiles | task-execution | `launch-environment` | response | yes | in-process |
 | 4 | task-execution | worker-profiles | `start-agent-process` | command | yes | in-process |
 | 5 | worker | task-execution | `write-result` | command | no | file |
-| 6 | agent-cli | task-execution | `attempt-exited` | event | no | file |
+| 6 | worker-profiles | task-execution | `attempt-exited` | event | no | file |
 | 7 | task-execution | integration | `task-done` | event | no | in-process |
 
 ### F5 — Stalled attempt, worker question and resumed work (scenario S3: A worker stalls, its tree is kept, and the retry continues the same work)
@@ -413,7 +412,7 @@ sequenceDiagram
 | `replan-task` | command | sub-orchestrator | ideas | task_id, plan_change | at-least-once | ui | idempotency: once per (taskId, replan round); 1 replan per task |
 | `write-result` | command | worker | task-execution | task, attempt, status (completed|blocked|failed), summary, commits[], files_changed[], acceptance_self_check[], notes_for_next | at-least-once | ui | idempotency: once per attemptId; result.json is immutable; outbox/result.json, written with horch result; status is 1 of the closed list completed, blocked, failed (orchestrator, D15) |
 | `ask-question` | command | worker | ideas | task_id, question_id, text | at-least-once | ui | idempotency: once per questionId (1 file each); outbox/questions/, written with fleet ask |
-| `attempt-exited` | event | agent-cli | task-execution | attempt_id, exit_status, has_result | at-least-once | external-api | idempotency: once per attemptId; exit.json is immutable; exit.json, written by the fleet-run wrapper (worker-profiles, D2) from the exit fact of the CLI process |
+| `attempt-exited` | event | worker-profiles | task-execution | attempt_id, exit_status, has_result | at-least-once | customer-supplier | idempotency: once per attemptId; exit.json is immutable; exit.json, written by the fleet-run wrapper (worker-profiles, D2) from the exit fact of the CLI process |
 | `usage-limit-reported` | event | provider-pool | task-execution | attempt_id, pool, reset_at? | at-least-once | external-api | idempotency: once per (attemptId, pool); a repeat for a moved attempt is ignored; reset_at is optional (orchestrator, D15): when it is absent, fleetd waits until the pool probe reports ok |
 | `primary-branch-moved` | event | git | integration | primary_branch, tip | at-least-once | external-api | idempotency: once per (primaryBranch, tip) |
 | `trial-merge-result` | query | git | integration | feature_a, feature_b|primary | sync | external-api | response: clean, paths[]; minted: git merge-tree trial merge |
@@ -421,7 +420,7 @@ sequenceDiagram
 | `apply-stall-ladder` | command | clock | task-execution | attempt_id | at-least-once | external-api | idempotency: each rung is recorded once per (attemptId, rung) |
 | `approval-requested` | event | ideas | operator | idea_id, assumptions_hash | at-least-once | ui | idempotency: 1 needs-you file per (ideaId, assumptionsHash) |
 | `worker-question-asked` | event | ideas | sub-orchestrator | task_id, question_id, text | at-least-once | ui | idempotency: 1 inbox file per questionId |
-| `task-escalated` | event | task-execution | ideas, integration | task_id, reason | at-least-once | customer-supplier | v1; idempotency: the reconcile pass is level-triggered, so a reaction can run again; 1 needs-you file per (taskId, reason); integration records it once per taskId; ideas puts the task on the 1 needs-you list (decompose N9); the operator sees it there |
+| `task-escalated` | event | task-execution | ideas, integration | task_id, reason | at-least-once | partnership | v1; idempotency: the reconcile pass is level-triggered, so a reaction can run again; 1 needs-you file per (taskId, reason); integration records it once per taskId; ideas puts the task on the 1 needs-you list (decompose N9); the operator sees it there |
 | `pull-request-opened` | event | integration | operator | feature_id, pr_url | at-least-once | ui | idempotency: 1 pull request per featureId |
 | `assumptions-written` | event | ideas | integration | idea_id, feature_id? | at-least-once | published-language | v1; idempotency: the reconcile pass is level-triggered, so a reaction can run again; integration opens at most 1 feature per idea; open-feature is a no-op when the idea has a feature |
 | `feature-opened` | event | integration | ideas | feature_id, branch, primary_branch, idea_id | at-least-once | published-language | v1; idempotency: the reconcile pass is level-triggered, so a reaction can run again; ideas requests approval once per (ideaId, assumptionsHash) |
@@ -435,11 +434,11 @@ sequenceDiagram
 | `replan-requested` | event | task-execution | ideas | task_id, attempts | at-least-once | published-language | v1; idempotency: the reconcile pass is level-triggered, so a reaction can run again; 1 replan per task |
 | `task-leased` | event | task-execution | worktree-custody | task_id, attempt_id, worktree_id, branch | at-least-once | customer-supplier | v1; idempotency: the reconcile pass is level-triggered, so a reaction can run again; create-worktree is a no-op when the worktree exists for the task |
 | `attempt-failed` | event | task-execution | worktree-custody | attempt_id, task_id, outcome | at-least-once | customer-supplier | v1; idempotency: the reconcile pass is level-triggered, so a reaction can run again; the worktree state moves once per attemptId |
-| `task-done` | event | task-execution | integration | task_id, branch, verdict | at-least-once | customer-supplier | v1; idempotency: the reconcile pass is level-triggered, so a reaction can run again; mark-branch-ready is a no-op for a ready branch |
+| `task-done` | event | task-execution | integration | task_id, branch, verdict | at-least-once | partnership | v1; idempotency: the reconcile pass is level-triggered, so a reaction can run again; mark-branch-ready is a no-op for a ready branch |
 | `worktree-created` | event | worktree-custody | task-execution | worktree_id, task_id, path, branch | at-least-once | published-language | v1; idempotency: the reconcile pass is level-triggered, so a reaction can run again; launch once per (taskId, attemptId) |
 | `rescue-failed` | event | worktree-custody | task-execution | worktree_id, task_id | at-least-once | published-language | v1; idempotency: the reconcile pass is level-triggered, so a reaction can run again; escalate-task is a no-op for an escalated task |
-| `task-branch-conflicted` | event | integration | task-execution | branch, task_id | at-least-once | published-language | v1; idempotency: the reconcile pass is level-triggered, so a reaction can run again; 1 new attempt per (taskId, conflicting feature tip) |
-| `resolver-task-opened` | event | integration | task-execution | feature_id, task_id, conflict | at-least-once | published-language | v1; idempotency: the reconcile pass is level-triggered, so a reaction can run again; 1 resolver task per (featureId, conflict) |
+| `task-branch-conflicted` | event | integration | task-execution | branch, task_id | at-least-once | partnership | v1; idempotency: the reconcile pass is level-triggered, so a reaction can run again; 1 new attempt per (taskId, conflicting feature tip) |
+| `resolver-task-opened` | event | integration | task-execution | feature_id, task_id, conflict | at-least-once | partnership | v1; idempotency: the reconcile pass is level-triggered, so a reaction can run again; 1 resolver task per (featureId, conflict) |
 | `task-branch-landed` | event | integration | worktree-custody, ideas | branch, task_id, feature_id, tip | at-least-once | published-language | v1; idempotency: the reconcile pass is level-triggered, so a reaction can run again; remove-worktree and roll-up-idea are no-ops when already done |
 | `feature-merged` | event | integration | ideas | feature_id | at-least-once | published-language | v1; idempotency: the reconcile pass is level-triggered, so a reaction can run again; close-idea is a no-op for a merged idea |
 | `launch-environment` | query | worker-profiles | task-execution, ideas | profile, task_id|idea_id, attempt_id? | sync | customer-supplier | v1; response: cli, flags[], env (scrubbed: no ANTHROPIC_API_KEY), config_home_files[], sandbox_profile; resolve a profile to the exact launch of 1 process; task-execution reads it to check a fallback persona and its provider (F4); worker-profiles uses it inside start-agent-process |
@@ -463,8 +462,8 @@ sequenceDiagram
 | R3 | task-execution → ideas | published-language | in-process-call | same-deployable | Both contexts are code inside the 1 fleetd process (design: Architecture and roles; scale target 1 deployable). replan-requested as an in-memory event; the sub-orchestrator does the replan through files. |
 | R4 | task-execution → worktree-custody | customer-supplier | in-process-call | same-deployable | Both contexts are code inside the 1 fleetd process (design: Architecture and roles; scale target 1 deployable). task-leased and the worktree lease row commit in 1 ledger transaction; git worktree add runs after the commit (decompose R4, CC5). |
 | R5 | worktree-custody → task-execution | published-language | in-process-call | same-deployable | Both contexts are code inside the 1 fleetd process (design: Architecture and roles; scale target 1 deployable). worktree-created and rescue-failed as in-memory events read in the next pass. |
-| R6 | task-execution → integration | customer-supplier | in-process-call | same-deployable | Both contexts are code inside the 1 fleetd process (design: Architecture and roles; scale target 1 deployable). task-done and task-escalated as in-memory events; integration hosts mark-branch-ready. R6 and R7 are a partnership (orchestrator, D15): they change together. |
-| R7 | integration → task-execution | published-language | in-process-call | same-deployable | Both contexts are code inside the 1 fleetd process (design: Architecture and roles; scale target 1 deployable). task-branch-conflicted and resolver-task-opened as in-memory events; task-execution launches the attempt. R6 and R7 are a partnership (orchestrator, D15). |
+| R6 | task-execution → integration | partnership | in-process-call | same-deployable | Both contexts are code inside the 1 fleetd process (design: Architecture and roles; scale target 1 deployable). task-done and task-escalated as in-memory events; integration hosts mark-branch-ready. R6 and R7 are a partnership (orchestrator, D15): they change together. |
+| R7 | integration → task-execution | partnership | in-process-call | same-deployable | Both contexts are code inside the 1 fleetd process (design: Architecture and roles; scale target 1 deployable). task-branch-conflicted and resolver-task-opened as in-memory events; task-execution launches the attempt. R6 and R7 are a partnership (orchestrator, D15). |
 | R8 | integration → worktree-custody | published-language | in-process-call | same-deployable | Both contexts are code inside the 1 fleetd process (design: Architecture and roles; scale target 1 deployable). task-branch-landed as an in-memory event; worktree-custody refuses a removal that loses work (04 W6). |
 | R9 | integration → ideas | published-language | in-process-call | same-deployable | Both contexts are code inside the 1 fleetd process (design: Architecture and roles; scale target 1 deployable). task-branch-landed and feature-merged as in-memory events; ideas never reads git. |
 | R10 | worker-profiles → task-execution | customer-supplier | in-process-call | same-deployable | Both contexts are code inside the 1 fleetd process (design: Architecture and roles; scale target 1 deployable). task-execution sends start-agent-process to worker-profiles, which owns the environment scrub and the fleet-run wrapper (decompose N8, D2). task-execution asks launch-environment synchronously only to check a fallback persona (F4). heartbeat.json comes back as a file. |
@@ -491,6 +490,7 @@ sequenceDiagram
 - `Q3` (open_questions) — Answered (orchestrator, D15): git has 2 callers, split by concern. worktree-custody calls git for worktrees and rescue refs, integration for branches and merges. Recorded in A8. — since 2026-11-12
 - `Q4` (open_questions) — Answered (orchestrator, D15): task-execution and integration are a partnership. Recorded in CC1, R6, R7 and N6. decompose still names R6 customer-supplier and R7 published-language. — since 2026-11-12
 - `Q5` (open_questions) — Answered (orchestrator, D15): the sub-orchestrator answers a worker question through the command channel; fleetd stays the only ledger writer. Recorded in answer-question and F5. — since 2026-11-12
+- `Q6` (open_questions) — Answered (discover N13): discover adopts the 6 ids with the types of connect. assign-task and start-work are commands. heartbeat-written, task-verdict-written, plan-verdict-written and agent-status-changed are events. — since 2026-11-12
 
 ## Assumptions
 
@@ -500,7 +500,7 @@ sequenceDiagram
 - **A4** (high) Operator commands travel as horch CLI requests over the fleetd command channel (Unix socket or named pipe, through the platform layer), drawn as via other. When fleetd is down the request goes to a request file that fleetd reads at start (design: The command channel). Each request carries an idempotency_key, and a refusal carries its reason (orchestrator, D15).
 - **A5** (high) Agent hand-offs (assumptions.md, plan.yaml, result.json, questions, exit.json) are files: atomic, immutable and read in the pass, so they are at-least-once and idempotent on path and content hash (design: Workspace layout and file protocol).
 - **A6** (high) 3 message ids were minted here: launch-environment (query), start-agent-process (command) and trial-merge-result (query). Discover adopted all 3 (discover N10): start-agent-process is a discover command, and the 2 queries reuse discover read-model ids.
-- **A7** (high) The fleet-run wrapper belongs to worker-profiles (D2 option B, orchestrator D15). It writes heartbeat.json and exit.json. exit.json stays drawn as coming from agent-cli, because it records the exit fact of the CLI process.
+- **A7** (high) The fleet-run wrapper belongs to worker-profiles (D2 option B, orchestrator D15). It writes heartbeat.json and exit.json. attempt-exited (exit.json) comes from worker-profiles, the writer of the file; the file records the exit fact of the CLI process.
 - **A8** (high) git is called by 2 contexts, split by concern: worktree-custody for worktrees and rescue refs, integration for branches, merges, bundles and trial merges (orchestrator, D15).
 - **A9** (medium) worker-profiles owns start-agent-process (decompose N8). task-execution and ideas send it; worker-profiles resolves the launch environment, runs the fleet-run wrapper and starts it in its own process group through the platform layer. When the profile needs a pane, the caller gets the pane from the herdr adapter of fleet-runtime (R12, R13) and passes it in the request.
 - **A10** (high) Each file of the design workspace layout that crosses the process boundary is 1 message: task.yaml (assign-task), inbox/START.md (start-work), heartbeat.json (heartbeat-written), verdict.json (task-verdict-written), plan.verdict.json (plan-verdict-written) and approval.json (assumptions-approved). The path names its 1 writer (design: Workspace layout and file protocol, rule 3). 6 of these ids are minted here, because discover has no id for them: assign-task, start-work, heartbeat-written, task-verdict-written, plan-verdict-written and agent-status-changed (Q6).
@@ -509,7 +509,7 @@ sequenceDiagram
 
 ## Open questions
 
-- **Q6** Can discover adopt the 6 minted ids assign-task, start-work (commands) and heartbeat-written, task-verdict-written, plan-verdict-written, agent-status-changed (events)? — owner: ddd-discover
+None.
 
 ---
 Next step: `/ddd-organise` groups contexts into teams and deployables using the coupling concerns and sync chains above.

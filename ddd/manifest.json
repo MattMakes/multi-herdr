@@ -4,7 +4,7 @@
   "title": "fleetd: the horch fleet control plane",
   "ddd_dir": "ddd",
   "created": "2026-11-12T16:45:13Z",
-  "updated": "2026-11-12T21:40:37Z",
+  "updated": "2026-11-12T22:09:20Z",
   "mode": "auto",
   "depth": "standard",
   "scale_target": {
@@ -33,7 +33,7 @@
     },
     "discover": {
       "status": "done",
-      "updated": "2026-11-12T20:29:48Z",
+      "updated": "2026-11-12T21:56:11Z",
       "mode": "auto",
       "open_questions": 1,
       "artifacts": [
@@ -43,9 +43,9 @@
     },
     "decompose": {
       "status": "done",
-      "updated": "2026-11-12T20:36:28Z",
+      "updated": "2026-11-12T21:57:19Z",
       "mode": "auto",
-      "open_questions": 1,
+      "open_questions": 0,
       "artifacts": [
         "ddd/03-decompose/decompose.json",
         "ddd/03-decompose/subdomains.md"
@@ -53,7 +53,7 @@
     },
     "strategize": {
       "status": "done",
-      "updated": "2026-11-12T20:42:00Z",
+      "updated": "2026-11-12T21:59:35Z",
       "mode": "auto",
       "open_questions": 0,
       "artifacts": [
@@ -63,9 +63,9 @@
     },
     "connect": {
       "status": "done",
-      "updated": "2026-11-12T20:51:31Z",
+      "updated": "2026-11-12T22:00:37Z",
       "mode": "auto",
-      "open_questions": 1,
+      "open_questions": 0,
       "artifacts": [
         "ddd/05-connect/connect.json",
         "ddd/05-connect/decisions/D1-A.json",
@@ -76,7 +76,7 @@
     },
     "organise": {
       "status": "done",
-      "updated": "2026-11-12T20:57:22Z",
+      "updated": "2026-11-12T22:02:08Z",
       "mode": "auto",
       "open_questions": 0,
       "artifacts": [
@@ -90,9 +90,9 @@
     },
     "define": {
       "status": "done",
-      "updated": "2026-11-12T21:06:57Z",
+      "updated": "2026-11-12T22:04:35Z",
       "mode": "auto",
-      "open_questions": 1,
+      "open_questions": 0,
       "artifacts": [
         "ddd/07-define/define.json",
         "ddd/07-define/fleet-runtime/bounded-context-canvas.md",
@@ -106,7 +106,7 @@
     },
     "code": {
       "status": "done",
-      "updated": "2026-11-12T21:27:01Z",
+      "updated": "2026-11-12T22:07:02Z",
       "mode": "auto",
       "open_questions": 1,
       "artifacts": [
@@ -133,7 +133,7 @@
     },
     "contracts": {
       "status": "done",
-      "updated": "2026-11-12T21:40:37Z",
+      "updated": "2026-11-12T22:09:20Z",
       "mode": "auto",
       "open_questions": 0,
       "artifacts": [
