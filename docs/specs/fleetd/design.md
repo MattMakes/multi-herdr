@@ -496,8 +496,8 @@ PRAGMA foreign_keys = ON;
 
 CREATE TABLE features (                    -- 1 sub-orchestrator, 1 feature branch, 1 pull request
   id          TEXT PRIMARY KEY,            -- F-0003
-  name        TEXT UNIQUE,                 -- kebab-case, from the sub-orchestrator; checked by fleetd
-  branch      TEXT UNIQUE,                 -- created when the sub-orchestrator first writes its assumptions
+  name        TEXT UNIQUE,                 -- kebab-case, from the sub-orchestrator, or from the ticket title of a --direct idea; checked by fleetd
+  branch      TEXT UNIQUE,                 -- created when the sub-orchestrator first writes its assumptions, or when fleetd accepts a --direct idea
   primary_branch TEXT NOT NULL,            -- the project's base branch
   stacked_on  TEXT REFERENCES features(id), -- the older feature, after a trial merge conflicted
   state       TEXT NOT NULL CHECK (state IN ('open','ready','merged','abandoned')),
@@ -736,7 +736,7 @@ horch ideas                      # the board: every idea, its state, what it wai
 
 Each `add` writes one immutable file and one ledger row in state `captured`, and prints the ID. Half-formed ideas are fine; making them clear is the sub-orchestrator's job.
 
-**Everything is an idea, with a fast lane.** There is 1 state machine and 1 way in. There is no task without an idea. `horch idea add --direct <ticket file>` takes a ticket that you wrote. It skips research and the interview, and makes a plan with 1 task. The idea goes from `captured` to `ticketing`; the ticket you wrote stands for your approval, and `horch idea add --direct` refuses to run inside a fleet attempt, like `horch idea approve`. The plan still passes plan validation, and the task still needs a check. When plan validation refuses the `--direct` plan, the idea goes to `needs-you/` with the reason. A `--direct` idea belongs to a feature (see Features, landing and integration): with `--to <feature>` it joins that feature, and with no `--to` it starts a new feature whose branch name fleetd makes from the ticket title. The feature of a `--direct` idea still has a sub-orchestrator, which owns its questions, conflicts and gate failures.
+**Everything is an idea, with a fast lane.** There is 1 state machine and 1 way in. There is no task without an idea. `horch idea add --direct <ticket file>` takes a ticket that you wrote. It skips research and the interview, and makes a plan with 1 task. The idea goes from `captured` to `ticketing`; the ticket you wrote stands for your approval, and `horch idea add --direct` refuses to run inside a fleet attempt, like `horch idea approve`. The plan still passes plan validation, and the task still needs a check. When plan validation refuses the `--direct` plan, the idea goes to `needs-you/` with the reason. A `--direct` idea belongs to a feature (see Features, landing and integration): with `--to <feature>` it joins that feature and uses its branch. With no `--to` it starts a new feature, and it has no assumptions phase. For it, fleetd makes the branch name from the ticket title (kebab-case, with a number suffix when the name exists), and creates the branch when it accepts the idea. fleetd writes the ledger row first. The feature of a `--direct` idea still has a sub-orchestrator, which owns its questions, conflicts and gate failures.
 
 **The idea state machine**
 
@@ -858,6 +858,7 @@ The primary branch is the base branch of a project. It is `main` in this reposit
 
 - A feature is 1 sub-orchestrator, 1 feature branch and 1 pull request to the primary branch. It holds 1 main idea and its follow-on ideas.
 - fleetd creates the feature branch when the sub-orchestrator first writes its assumptions. The sub-orchestrator gives the name. fleetd checks that it is kebab-case and unique. fleetd writes the ledger row before it creates the branch.
+- A `--direct` idea with no `--to` has no assumptions phase. For it, fleetd makes the branch name from the ticket title (kebab-case, with a number suffix when the name exists), and creates the branch when it accepts the idea. fleetd writes the ledger row first. A `--direct` idea with `--to` uses the branch of that feature.
 - `horch idea add --to <feature>` adds an idea to an open feature. Its tasks land on that feature branch. With no `--to`, the idea starts a new feature. An idea belongs to exactly 1 feature, and the ledger records it.
 - A feature is an intake funnel until its pull request merges. After the merge, a follow-up idea starts a new feature.
 - The sub-orchestrator of a feature plans 1 idea at a time, with a fresh process for each phase. Tasks of several ideas of 1 feature run in parallel.
