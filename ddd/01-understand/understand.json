@@ -1,0 +1,1051 @@
+{
+  "schema_version": 1,
+  "step": "understand",
+  "produced_by": "ddd-understand",
+  "produced_at": "2026-11-12T16:51:40Z",
+  "mode": "auto",
+  "depth": "standard",
+  "inputs": [
+    "docs/specs/fleetd/design.md",
+    "docs/architecture.md",
+    "docs/specs/fleetd/preservation-04-behavior.md",
+    "docs/specs/fleetd/preservation-05-contracts-and-values.md",
+    "docs/specs/fleetd/preservation-06-wiring-and-platform.md",
+    "docs/specs/fleetd/research-01-industry-practice.md",
+    "ticket docs/tickets/fleetd-design/11-ddd-understand.md and the DDD context file of the run (fixed mode, depth, scale and sources)"
+  ],
+  "assumptions": [
+    {
+      "id": "A1",
+      "text": "Lifecycle is brownfield: horch runs in production today, and the design is a set of changes to horch, not a rewrite (design.md, Where multi-herdr stands today, Keep, change, add).",
+      "confidence": "high"
+    },
+    {
+      "id": "A2",
+      "text": "The operator is the single primary actor. Friends who install horch through horch self-update are a secondary segment with the same needs and no approval role.",
+      "confidence": "medium"
+    },
+    {
+      "id": "A3",
+      "text": "horch earns no revenue. Its value is operator throughput: approved ideas that reach the primary branch per unit of subscription usage.",
+      "confidence": "medium"
+    },
+    {
+      "id": "A4",
+      "text": "The design gives no number for full use of the subscription usage. G4 uses a proxy: no pool ends its window with usage left while a task is ready, and a usage limit burns 0 attempts.",
+      "confidence": "low"
+    },
+    {
+      "id": "A5",
+      "text": "A judge, a resolver and a triage agent are workers that run a task of a given kind. They are not separate actors.",
+      "confidence": "medium"
+    },
+    {
+      "id": "A6",
+      "text": "Evolution stages: the control-plane capabilities are custom because no product does them for local agent CLIs; pane hosting is a product (herdr); host platform services are a commodity (each OS provides them).",
+      "confidence": "medium"
+    },
+    {
+      "id": "A7",
+      "text": "The alternatives are inferred from the design and the research files: today's horch with 1 orchestrator conversation, agents run by hand, and hosted merge queues (GitHub merge queue, bors, Mergify).",
+      "confidence": "medium"
+    },
+    {
+      "id": "A8",
+      "text": "The /fleet paths in the design are a neutral layout. In horch, /fleet/ideas/<id>/ is ai_docs/plans/<run>/, /fleet/tasks/ is under the state root, and the ledger stays at ~/.horch/ledger.sqlite3.",
+      "confidence": "high"
+    },
+    {
+      "id": "A9",
+      "text": "When the design and another source disagree, the design wins. The other sources describe the system of today.",
+      "confidence": "high"
+    },
+    {
+      "id": "A10",
+      "text": "Mode auto, depth standard, 1 deployable unit and 1 team are fixed by the run. The operator and the AI agents of the fleet count as 1 team.",
+      "confidence": "high"
+    }
+  ],
+  "open_questions": [
+    {
+      "id": "Q1",
+      "text": "What number counts as full use of the subscription usage for G4: a share of each pool window consumed by its reset, or a count of ready tasks left waiting while a pool has usage?",
+      "blocking": false,
+      "owner": "operator"
+    },
+    {
+      "id": "Q2",
+      "text": "Do the 178 existing OS-specific sites in production code move behind the new platform layer, and when? The design calls this a separate decision (Architecture and roles, One platform layer for three OSes).",
+      "blocking": false,
+      "owner": "operator"
+    },
+    {
+      "id": "Q3",
+      "text": "Which Windows transport carries the fleetd command channel? The design lists it under To confirm by test.",
+      "blocking": false,
+      "owner": "live test"
+    },
+    {
+      "id": "Q4",
+      "text": "How are Codex hooks pre-trusted for unattended workers (managed or requirements config)? The stop gate of Codex depends on it.",
+      "blocking": false,
+      "owner": "live test"
+    },
+    {
+      "id": "Q5",
+      "text": "Does a private HOME fully isolate agy config, skills and MCP, and keep its login?",
+      "blocking": false,
+      "owner": "live test"
+    },
+    {
+      "id": "Q6",
+      "text": "Does herdr pane report-agent state override the screen-based status, which fields do herdr custom key commands take, and do the herdr facts hold for preview 0.9.4 against 0.9.5?",
+      "blocking": false,
+      "owner": "live test"
+    },
+    {
+      "id": "Q7",
+      "text": "Is 100 changed lines or 2 files the right size limit for a resolver task, and how accurate is a structural merge tool on the recorded conflicts of this repository?",
+      "blocking": false,
+      "owner": "live test"
+    },
+    {
+      "id": "Q8",
+      "text": "This repository has no unit-only command today (research-03 F10), and plan validation refuses a project with no declared fast gate. Which command is the fast gate of this repository?",
+      "blocking": false,
+      "owner": "operator"
+    }
+  ],
+  "system": {
+    "name": "fleetd: the horch fleet control plane",
+    "one_liner": "A supervised daemon inside horch that takes rough ideas from the operator, runs AI coding agents on them, and keeps every task, worktree and branch accounted for until the work reaches the primary branch.",
+    "problem": "The operator runs a fleet of AI coding agents with horch. Tasks get forgotten, workers do not find work or sit idle on it, finished work is never reported, the watchdog misses updates, stacked ideas merge in one orchestrator conversation, and dead workers leave orphaned worktrees. Each failure comes from a job that horch still leaves to an LLM.",
+    "why_now": "Daily stalls and lost worktrees cost subscription usage and operator attention. horch already has the parts (recorded PIDs, a supervisor per worker, worktrees per task, finish steps), and a design review on 2026-11-11 and 2026-11-12 approved the design.",
+    "lifecycle": "brownfield"
+  },
+  "business_model": {
+    "customer_segments": [
+      "The operator: a solo developer who runs a fleet of AI coding agents on 1 machine",
+      "Friends who install horch and get new releases through horch self-update"
+    ],
+    "value_propositions": [
+      "No task stalls silently: every task ends verified done or escalated with a reason",
+      "No paid-for work is lost: every worktree and branch is known and rescued before removal",
+      "Rough ideas in, approved plans out: 1 idea at a time, nothing built before approval",
+      "The subscription usage is used fully across agent CLIs and providers",
+      "Parallel features reach the primary branch through 1 pull request each, with conflicts found early"
+    ],
+    "channels": [
+      "The horch CLI (horch idea add, horch ideas, horch status, horch idea approve)",
+      "herdr panes, the herdr sidebar and herdr notifications",
+      "The needs-you folder",
+      "GitHub releases and horch self-update"
+    ],
+    "customer_relationships": [
+      "Self-service from the terminal",
+      "An interview with the operator in the pane of each sub-orchestrator",
+      "Quick approval of written assumptions by the operator"
+    ],
+    "revenue_streams": [
+      "None: horch is the operator's own tool; the return is operator throughput (assumed)"
+    ],
+    "key_resources": [
+      "The ledger (1 SQLite file, 1 writer)",
+      "The files of the fleet workspace (ideas, tasks, attempts, rescue manifests)",
+      "Git repositories, worktrees and rescue refs",
+      "The worker profiles in teammates/",
+      "Subscription usage of each provider pool",
+      "The host machine: disk, CPU and memory"
+    ],
+    "key_activities": [
+      "Dispatch ideas through a fixed state machine",
+      "Plan 1 idea at a time with operator approval",
+      "Bind tasks to workers and supervise attempts with leases",
+      "Verify each task on disk",
+      "Lease, reconcile and rescue worktrees",
+      "Land task branches and integrate features",
+      "Pace dispatch to each usage window",
+      "Keep each agent CLI adapter conformant"
+    ],
+    "key_partners": [
+      "herdr (pane runtime)",
+      "Agent CLI vendors: Anthropic (Claude Code), OpenAI (Codex CLI), Google (Antigravity), OpenCode, pi, Prime",
+      "OS service managers: launchd, systemd, Windows services and Task Scheduler",
+      "GitHub (releases, gh for pull requests)"
+    ],
+    "cost_structure": [
+      "Subscription usage of each provider pool",
+      "Machine resources: disk for worktrees, CPU and memory for agent processes",
+      "Operator attention for interviews, approvals and escalations"
+    ],
+    "value_proposition_links": [
+      {
+        "value_proposition": "No task stalls silently: every task ends verified done or escalated with a reason",
+        "capabilities": [
+          "cap-task-supervision",
+          "cap-task-verification",
+          "cap-operator-attention"
+        ],
+        "beats": [
+          "alt-horch-orchestrator-conversation"
+        ]
+      },
+      {
+        "value_proposition": "No paid-for work is lost: every worktree and branch is known and rescued before removal",
+        "capabilities": [
+          "cap-worktree-custody",
+          "cap-fleet-record"
+        ],
+        "beats": [
+          "alt-horch-orchestrator-conversation",
+          "alt-hand-run-agents"
+        ]
+      },
+      {
+        "value_proposition": "Rough ideas in, approved plans out: 1 idea at a time, nothing built before approval",
+        "capabilities": [
+          "cap-idea-intake",
+          "cap-idea-planning"
+        ],
+        "beats": [
+          "alt-horch-orchestrator-conversation"
+        ]
+      },
+      {
+        "value_proposition": "The subscription usage is used fully across agent CLIs and providers",
+        "capabilities": [
+          "cap-usage-pacing",
+          "cap-agent-cli-adaption"
+        ],
+        "beats": [
+          "alt-hand-run-agents"
+        ]
+      },
+      {
+        "value_proposition": "Parallel features reach the primary branch through 1 pull request each, with conflicts found early",
+        "capabilities": [
+          "cap-feature-integration"
+        ],
+        "beats": [
+          "alt-horch-orchestrator-conversation",
+          "alt-hosted-merge-queue"
+        ]
+      }
+    ]
+  },
+  "goals": [
+    {
+      "id": "G1",
+      "statement": "No task stalls silently: every task ends verified done or escalated to the operator with a reason",
+      "metric": "Minutes from a worker going idle on a held task until fleetd retries or escalates it; count of tasks left assigned with an expired lease",
+      "target": "Under 10 min (about 7 min by design); 0 tasks left assigned with an expired lease",
+      "horizon": "Release of migration Phase 2"
+    },
+    {
+      "id": "G2",
+      "statement": "No work that a worker paid for is lost",
+      "metric": "Count of worktrees or branches removed without being landed, merged or saved on a verified rescue ref",
+      "target": "0",
+      "horizon": "Release of migration Phase 3"
+    },
+    {
+      "id": "G3",
+      "statement": "Each idea is built only from its own approved, validated plan and reaches the primary branch through its feature",
+      "metric": "Count of tasks that exist outside an approved, validated plan, plus count of processes that planned 2 ideas at the same time",
+      "target": "0",
+      "horizon": "Release of migration Phase 6"
+    },
+    {
+      "id": "G4",
+      "statement": "The fleet uses the subscription usage fully and gets as much work done as possible",
+      "metric": "Pool windows that reset with usage left while a task was ready; attempts burned by a usage limit or a provider outage",
+      "target": "0 attempts burned by a usage limit; target for unused usage per window to confirm (Q1)",
+      "horizon": "Release of migration Phase 2"
+    }
+  ],
+  "actors": [
+    {
+      "id": "operator",
+      "name": "Operator",
+      "kind": "person",
+      "role": "primary",
+      "description": "The developer who drops ideas into the queue, answers interviews, approves assumptions, receives escalations and merges each feature's pull request",
+      "goals": [
+        "G1",
+        "G2",
+        "G3",
+        "G4"
+      ]
+    },
+    {
+      "id": "sub-orchestrator",
+      "name": "Sub-orchestrator",
+      "kind": "system",
+      "role": "secondary",
+      "description": "An interactive Claude Code process, 1 per feature, a fresh process per phase, that plans 1 idea at a time and answers its workers' questions",
+      "goals": [
+        "G3"
+      ]
+    },
+    {
+      "id": "worker",
+      "name": "Worker",
+      "kind": "system",
+      "role": "secondary",
+      "description": "Any agent CLI started with a named profile for 1 attempt of 1 task in a worktree that fleetd leased to it; also runs judge, resolver and triage tasks",
+      "goals": [
+        "G1",
+        "G2",
+        "G4"
+      ]
+    },
+    {
+      "id": "friend",
+      "name": "Friend",
+      "kind": "person",
+      "role": "secondary",
+      "description": "A person who installs horch and gets each release through horch self-update",
+      "goals": [
+        "G2"
+      ]
+    },
+    {
+      "id": "provider-pool",
+      "name": "Provider pool",
+      "kind": "organisation",
+      "role": "off-stage",
+      "description": "A model provider's subscription usage window (Anthropic, OpenAI, Google, OpenCode, local); a usage limit or outage can block a worker",
+      "goals": [
+        "G4"
+      ]
+    }
+  ],
+  "impacts": [
+    {
+      "id": "I1",
+      "actor": "operator",
+      "change": "Stops checking panes to find workers that stalled, sit idle or never reported",
+      "goal": "G1"
+    },
+    {
+      "id": "I2",
+      "actor": "worker",
+      "change": "Ends every attempt with a result file, or exits so the attempt is retried from its committed work",
+      "goal": "G1"
+    },
+    {
+      "id": "I3",
+      "actor": "operator",
+      "change": "Stops recovering or redoing work from orphaned worktrees and lost branches",
+      "goal": "G2"
+    },
+    {
+      "id": "I4",
+      "actor": "worker",
+      "change": "Works only in the worktree fleetd leased to it and never creates or removes a worktree",
+      "goal": "G2"
+    },
+    {
+      "id": "I5",
+      "actor": "friend",
+      "change": "Gets each new phase through horch self-update, and the running daemon restarts on the new binary with no lost task",
+      "goal": "G2"
+    },
+    {
+      "id": "I6",
+      "actor": "operator",
+      "change": "Drops rough ideas into a queue at any time instead of typing them into 1 orchestrator conversation",
+      "goal": "G3"
+    },
+    {
+      "id": "I7",
+      "actor": "operator",
+      "change": "Approves each idea's written assumptions before any spec or task exists",
+      "goal": "G3"
+    },
+    {
+      "id": "I8",
+      "actor": "sub-orchestrator",
+      "change": "Plans 1 idea at a time from its idea folder and decides worker questions itself unless they change product direction, scope or a trade-off the operator owns",
+      "goal": "G3"
+    },
+    {
+      "id": "I9",
+      "actor": "operator",
+      "change": "Merges 1 pull request per feature instead of reconciling task branches by hand",
+      "goal": "G3"
+    },
+    {
+      "id": "I10",
+      "actor": "worker",
+      "change": "Moves to its fallback persona or waits for the pool to reset when it hits a usage limit, instead of being reaped",
+      "goal": "G4"
+    },
+    {
+      "id": "I11",
+      "actor": "operator",
+      "change": "Stops sizing parallel work by hand and leaves pacing to fleetd",
+      "goal": "G4"
+    }
+  ],
+  "deliverables": [
+    {
+      "id": "D1",
+      "impact": "I1",
+      "description": "A task whose worker stops making progress loses its lease within minutes and is retried or escalated",
+      "priority": "must"
+    },
+    {
+      "id": "D2",
+      "impact": "I1",
+      "description": "1 status view of every idea, task, lease and worker with its last signal",
+      "priority": "should"
+    },
+    {
+      "id": "D3",
+      "impact": "I1",
+      "description": "Each escalation lands in needs-you, in horch ideas and as a herdr notification",
+      "priority": "should"
+    },
+    {
+      "id": "D4",
+      "impact": "I2",
+      "description": "A stop gate that refuses to end a turn without a result file",
+      "priority": "must"
+    },
+    {
+      "id": "D5",
+      "impact": "I2",
+      "description": "The task file and the start note are written before the worker launches",
+      "priority": "must"
+    },
+    {
+      "id": "D6",
+      "impact": "I3",
+      "description": "A rescue ref is written and read back before any worktree is removed",
+      "priority": "must"
+    },
+    {
+      "id": "D7",
+      "impact": "I3",
+      "description": "horch worktrees and horch worktree restore",
+      "priority": "should"
+    },
+    {
+      "id": "D8",
+      "impact": "I4",
+      "description": "Each worktree is leased in the ledger before it exists, and only fleetd creates or removes it",
+      "priority": "must"
+    },
+    {
+      "id": "D9",
+      "impact": "I5",
+      "description": "horch self-update restarts the running daemon on the new binary",
+      "priority": "must"
+    },
+    {
+      "id": "D10",
+      "impact": "I6",
+      "description": "horch idea add, with the --direct fast lane and --to for an open feature",
+      "priority": "must"
+    },
+    {
+      "id": "D11",
+      "impact": "I6",
+      "description": "The horch ideas board",
+      "priority": "could"
+    },
+    {
+      "id": "D12",
+      "impact": "I7",
+      "description": "horch idea approve, which only works outside any fleet process and records the hash of the assumptions seen",
+      "priority": "must"
+    },
+    {
+      "id": "D13",
+      "impact": "I8",
+      "description": "A fresh sub-orchestrator process for each phase, with the idea folder as its only memory",
+      "priority": "must"
+    },
+    {
+      "id": "D14",
+      "impact": "I8",
+      "description": "Worker questions with an owner, a state and a time limit",
+      "priority": "should"
+    },
+    {
+      "id": "D15",
+      "impact": "I9",
+      "description": "Task branches land on their feature branch in bundles behind the fast gate, and each feature opens 1 pull request",
+      "priority": "must"
+    },
+    {
+      "id": "D16",
+      "impact": "I10",
+      "description": "A required fallback persona for every worker persona, and the waiting_quota state",
+      "priority": "must"
+    },
+    {
+      "id": "D17",
+      "impact": "I11",
+      "description": "Dispatch paced to each pool's usage window and paused only by the disk and load health guards",
+      "priority": "should"
+    }
+  ],
+  "capabilities": [
+    {
+      "id": "cap-idea-intake",
+      "name": "Idea intake and dispatch",
+      "description": "Capture rough ideas with no AI, assign each to 1 feature, and move each idea through the fixed idea state machine",
+      "evolution": "custom"
+    },
+    {
+      "id": "cap-idea-planning",
+      "name": "Idea clarification and planning",
+      "description": "Research, interview, written assumptions, operator approval, spec, requirements and a plan that passes validation (schema, DAG, coverage, model guide)",
+      "evolution": "custom"
+    },
+    {
+      "id": "cap-task-supervision",
+      "name": "Task supervision",
+      "description": "Push dispatch of tasks to workers, earned leases, liveness from outside the model, the stall ladder, retries and escalation",
+      "evolution": "custom"
+    },
+    {
+      "id": "cap-task-verification",
+      "name": "Task verification",
+      "description": "Decide done from facts on disk: acceptance checks in the worker's sandbox, today's review scripts for code kinds, a paired judge for judgment kinds",
+      "evolution": "custom"
+    },
+    {
+      "id": "cap-worktree-custody",
+      "name": "Worktree custody and rescue",
+      "description": "Lease each worktree before it exists, reconcile it with git, and save its work on a verified rescue ref before any removal",
+      "evolution": "custom"
+    },
+    {
+      "id": "cap-feature-integration",
+      "name": "Feature landing and integration",
+      "description": "Land task branches on the feature branch in gated bundles, find conflicts between features by trial merges, stack and rebase features, and open 1 pull request per feature",
+      "evolution": "custom"
+    },
+    {
+      "id": "cap-usage-pacing",
+      "name": "Usage pacing and fallback",
+      "description": "Read each pool's usage window, pace dispatch to it, move a limited task to a fallback persona or to waiting_quota, and pause only on health guards",
+      "evolution": "custom"
+    },
+    {
+      "id": "cap-agent-cli-adaption",
+      "name": "Agent CLI adaption and conformance",
+      "description": "Turn 1 worker profile into exact flags, env and files for each agent CLI, keep logins and env scrubs, sync CLI docs and prove each adapter by conformance checks",
+      "evolution": "custom"
+    },
+    {
+      "id": "cap-fleet-record",
+      "name": "Fleet record keeping",
+      "description": "1 event log of every state change with its cause, written by 1 writer through legal transitions, with forward-only schema changes",
+      "evolution": "custom"
+    },
+    {
+      "id": "cap-operator-attention",
+      "name": "Operator attention and escalation",
+      "description": "Put everything that needs the operator in 1 place, remind during working hours, and park what waits too long",
+      "evolution": "custom"
+    },
+    {
+      "id": "cap-host-services",
+      "name": "Host platform services",
+      "description": "Service install and restart, hang detection, process facts, process-group stop, file watching, sandboxing, sleep and wake, and the machine probe on macOS, Linux and Windows",
+      "evolution": "commodity"
+    },
+    {
+      "id": "cap-pane-hosting",
+      "name": "Terminal pane hosting",
+      "description": "Terminals, agent names, screen-based status and the sidebar the operator watches",
+      "evolution": "product"
+    }
+  ],
+  "constraints": [
+    {
+      "id": "C1",
+      "kind": "technical",
+      "text": "fleetd is a subcommand of the single horch binary: 1 deployable unit, so the CLI and the daemon always have the same version"
+    },
+    {
+      "id": "C2",
+      "kind": "organisational",
+      "text": "Absolute operator rule: ANTHROPIC_API_KEY is never used and is removed from every child process, pane command line, detached child, updater and probe; every claude run uses the subscription login. agy children lose GEMINI_API_KEY, GOOGLE_API_KEY and GOOGLE_GEMINI_BASE_URL"
+    },
+    {
+      "id": "C3",
+      "kind": "technical",
+      "text": "macOS, Linux and Windows are first-class hosts. Core fleetd code has no cfg(target_os), cfg(unix) or cfg(windows); it calls 1 platform interface with 1 module per OS, and an OS without an equivalent returns an explicit not-supported value"
+    },
+    {
+      "id": "C4",
+      "kind": "technical",
+      "text": "Exactly 1 process writes the ledger (SQLite in WAL mode, ~/.horch/ledger.sqlite3). Schema migration is forward-only at daemon start, a backup is written first (3 kept), a newer schema is refused, and a development build does not migrate the shared ledger"
+    },
+    {
+      "id": "C5",
+      "kind": "organisational",
+      "text": "Only the operator approves an idea's assumptions, with a command run outside any fleet process; a model can never approve for the operator"
+    },
+    {
+      "id": "C6",
+      "kind": "technical",
+      "text": "fleetd keeps the behaviors of the Preservation analysis, among them 04 W6, F9, F7, F5, L5, L9, W8, W9, F11, S7, L6, L8, S8, S10 and M5"
+    },
+    {
+      "id": "C7",
+      "kind": "technical",
+      "text": "fleetd keeps the contract surface: exit codes 0, 1, 2 and 3, the mail contract for interactive panes, the UNLANDED and UNREGISTERED reports, horch self-update and its release assets, ticket format C1 and project facts"
+    },
+    {
+      "id": "C8",
+      "kind": "technical",
+      "text": "fleetd keeps today's fixed values: land lock 1 h with 5 tries, check timeout 20 min (max 24 h), git push 10 min and other git network calls 3 min, code-sweep at most 2 requeues and review rounds of 1 (light) and 3 (full)"
+    },
+    {
+      "id": "C9",
+      "kind": "timeline",
+      "text": "Migration runs in 8 phases (0 to 7) in order. Each phase is released to every user at once when its fault-injection tests pass; the tests are the only gate"
+    },
+    {
+      "id": "C10",
+      "kind": "contractual",
+      "text": "Agent CLI vendors set the terms: each provider pool has a usage window and limits, Codex user hooks need trust, and a new CLI release is used only after the update cooldown of more than 1 week"
+    },
+    {
+      "id": "C11",
+      "kind": "technical",
+      "text": "The only bytes typed into a terminal are 1 fixed doorbell line written by fleetd's code; all hand-off between agents is through files written atomically"
+    },
+    {
+      "id": "C12",
+      "kind": "technical",
+      "text": "Each agent works inside a context limit of 256k tokens"
+    },
+    {
+      "id": "C13",
+      "kind": "budget",
+      "text": "There is no spend budget and no cap on features, sub-orchestrators or workers. Only health guards for free disk and machine load pause new dispatch"
+    },
+    {
+      "id": "C14",
+      "kind": "technical",
+      "text": "herdr holds no state that fleetd depends on; after a herdr restart fleetd rebuilds from the ledger and the files"
+    }
+  ],
+  "non_goals": [
+    "Running the fleet across several machines: 1 host and 1 disk in version 1",
+    "Replacing herdr's interface: herdr stays the place where the operator watches panes",
+    "Agents merging to protected branches or deploying: integration stops at a pull request for the operator to merge",
+    "A syntax-aware merge driver in version 1",
+    "1 pull request for several features",
+    "A spend budget or a cap on parallel work",
+    "An AI that decides what happens next to an idea: the dispatcher is plain code"
+  ],
+  "existing_systems": [
+    {
+      "name": "horch task ledger (schema v7) and its finish steps",
+      "role": "Tasks, claims, worker rows, worktrees table, check, sweeps and land",
+      "will": "integrate"
+    },
+    {
+      "name": "horch ledger watch (the lazily started watchdog)",
+      "role": "Edge-triggered stall checks that mail the orchestrator",
+      "will": "replace"
+    },
+    {
+      "name": "The long-lived orchestrator conversation",
+      "role": "Receives ideas, creates tasks, reads worker mail and watchdog wakes",
+      "will": "replace"
+    },
+    {
+      "name": "horch worker supervisor (run_worker)",
+      "role": "Per-worker supervisor thread and checkins; becomes the fleet-run wrapper",
+      "will": "integrate"
+    },
+    {
+      "name": "teammates roster",
+      "role": "Worker profiles as teammate frontmatter",
+      "will": "integrate"
+    },
+    {
+      "name": "herdr-docs-sync",
+      "role": "Mirrors herdr docs; widened to every agent CLI with conformance",
+      "will": "replace"
+    },
+    {
+      "name": "herdr",
+      "role": "Pane runtime, agent status, notifications",
+      "will": "integrate"
+    },
+    {
+      "name": "Agent CLIs: Claude Code, Codex CLI, Antigravity, OpenCode, pi, Prime",
+      "role": "Run the agents of the fleet",
+      "will": "integrate"
+    },
+    {
+      "name": "git",
+      "role": "Worktrees, branches, refs, merge-tree trial merges",
+      "will": "integrate"
+    },
+    {
+      "name": "GitHub and gh",
+      "role": "Pull requests (pr setting gh or manual) and release assets",
+      "will": "integrate"
+    },
+    {
+      "name": "OS service managers: launchd, systemd, Windows service and Task Scheduler",
+      "role": "Keep fleetd and herdr running and restart them",
+      "will": "integrate"
+    },
+    {
+      "name": "Provider quota probes",
+      "role": "Read usage limits through each CLI's own client",
+      "will": "integrate"
+    }
+  ],
+  "alternatives": [
+    {
+      "id": "alt-horch-orchestrator-conversation",
+      "name": "Today's horch with 1 long-lived orchestrator conversation",
+      "kind": "in-house-tool",
+      "used_by": [
+        "operator",
+        "worker",
+        "sub-orchestrator"
+      ],
+      "strengths": "Already runs; has recorded PIDs, a supervisor per worker, worktrees per task, finish steps and review scripts; flexible because an LLM decides",
+      "weaknesses": "Tasks exist only if the LLM creates them; workers claim and sit idle; done is a model action; the watchdog is lazy and edge-triggered; ideas blur in 1 context; orphaned worktrees",
+      "capabilities": [
+        "cap-idea-intake",
+        "cap-idea-planning",
+        "cap-task-supervision",
+        "cap-task-verification",
+        "cap-worktree-custody",
+        "cap-feature-integration",
+        "cap-operator-attention"
+      ]
+    },
+    {
+      "id": "alt-hand-run-agents",
+      "name": "Agent CLIs run by hand in terminal panes",
+      "kind": "manual-process",
+      "used_by": [
+        "operator"
+      ],
+      "strengths": "No setup; the operator sees and steers every agent; each CLI's own login and features",
+      "weaknesses": "Does not scale past a few panes; usage windows go unused while the operator sleeps; no record of worktrees, leases or results",
+      "capabilities": [
+        "cap-usage-pacing",
+        "cap-agent-cli-adaption",
+        "cap-worktree-custody"
+      ]
+    },
+    {
+      "id": "alt-hosted-merge-queue",
+      "name": "Hosted merge queues (GitHub merge queue, bors, Mergify)",
+      "kind": "competitor",
+      "used_by": [
+        "operator"
+      ],
+      "strengths": "Proven batching, bisection of a failed batch and testing on the latest base",
+      "weaknesses": "Work on pull requests to a protected base on a hosted CI, not on local agent task branches; no early conflict detection between in-flight features; no tie to the task record",
+      "capabilities": [
+        "cap-feature-integration"
+      ]
+    }
+  ],
+  "scale_target": {
+    "deployables_min": 1,
+    "deployables_max": 1,
+    "teams": 1,
+    "users": "1 operator per host, plus friends on their own hosts",
+    "notes": "fleetd is a subcommand of the single horch binary. The operator and the fleet of AI agents are 1 team."
+  },
+  "decisions": [
+    {
+      "id": "D1",
+      "question": "Is fleetd a change to horch or a new system that replaces it?",
+      "kind": "foundation",
+      "options": [
+        {
+          "id": "A",
+          "summary": "Brownfield: fleetd is a set of changes to horch (keep, change, add)",
+          "pros": [
+            "Reuses the ledger, procid, herdr client, adapters and arch tests",
+            "Each phase keeps the fleet usable"
+          ],
+          "cons": [
+            "Old shapes such as the v7 schema constrain the new model"
+          ],
+          "risks": [
+            "A preserved behavior is dropped by accident"
+          ]
+        },
+        {
+          "id": "B",
+          "summary": "Rewrite: a new control plane that replaces horch",
+          "pros": [
+            "A clean model with no legacy shapes"
+          ],
+          "cons": [
+            "Loses the preserved behaviors and the adapters"
+          ],
+          "risks": [
+            "Lost work and a stuck fleet during the switch"
+          ]
+        },
+        {
+          "id": "C",
+          "summary": "Greenfield beside horch: a separate daemon that horch calls",
+          "pros": [
+            "Independent release"
+          ],
+          "cons": [
+            "2 versions of CLI and daemon can differ"
+          ],
+          "risks": [
+            "Breaks C1: 1 binary, 1 version"
+          ]
+        }
+      ],
+      "chosen": "A",
+      "confidence": "high",
+      "rationale": "The design says the design is a set of changes to horch, not a rewrite (Where multi-herdr stands today, Keep, change, add), and fleetd is a subcommand of the single horch binary (Amendment D9).",
+      "would_flip_if": [
+        "The operator decides to fork horch into a new product"
+      ],
+      "made_by": "step",
+      "records": {
+        "assumption": "A1"
+      }
+    },
+    {
+      "id": "D2",
+      "question": "Do the 178 existing OS-specific sites in production code move behind the new platform layer?",
+      "kind": "foundation",
+      "options": [
+        {
+          "id": "A",
+          "summary": "Only new fleetd code uses the platform layer; existing sites stay",
+          "pros": [
+            "Smallest change",
+            "Matches the design's scope for the layer"
+          ],
+          "cons": [
+            "2 styles of OS code live side by side"
+          ],
+          "risks": [
+            "Windows gaps in old code (Unix sockets, unknown machine probe) stay hidden"
+          ]
+        },
+        {
+          "id": "B",
+          "summary": "Move the existing sites that fleetd calls behind the layer as each phase touches them",
+          "pros": [
+            "Fleetd paths become first-class on all 3 OSes",
+            "Work is spread over the phases"
+          ],
+          "cons": [
+            "Each phase grows"
+          ],
+          "risks": [
+            "A phase gate covers less than the code it changes"
+          ]
+        },
+        {
+          "id": "C",
+          "summary": "Move all 178 sites behind the layer in 1 dedicated phase",
+          "pros": [
+            "1 consistent rule enforced by arch_scan everywhere"
+          ],
+          "cons": [
+            "A large change with no failure it fixes directly"
+          ],
+          "risks": [
+            "Delays the phases that stop daily stalls"
+          ]
+        }
+      ],
+      "rationale": "Recommendation: B. The design makes Windows first-class (D1) but keeps the migration of existing sites as a separate decision. Moving the sites that fleetd calls, as each phase touches them, closes the Windows gaps that matter to fleetd without a big-bang phase. Strongest argument against: it blurs each phase's fault-injection gate with refactoring work.",
+      "would_flip_if": [
+        "Windows is not used day to day",
+        "arch_scan can enforce the rule only on whole crates",
+        "A phase gate fails because of a moved site"
+      ],
+      "made_by": "step",
+      "records": {
+        "open_question": "Q2"
+      }
+    }
+  ],
+  "notes_for_downstream": [
+    {
+      "id": "N1",
+      "text": "'Task', 'attempt' and 'lease' are 3 things: a task is a planned unit of work from plan.yaml; an attempt is 1 run of 1 worker on it (A1, A2, ...); a lease is the time-limited hold that renews only on earned activity. A task survives many attempts; a worktree survives attempts too.",
+      "for": [
+        "discover",
+        "decompose",
+        "define"
+      ],
+      "kind": "language"
+    },
+    {
+      "id": "N2",
+      "text": "'Feature' means 1 sub-orchestrator, 1 feature branch and 1 pull request to the primary branch; it holds 1 main idea and its follow-on ideas. 'Task branch' lands on the feature branch; 'feature branch' reaches the 'primary branch' (the project's base branch, not always main).",
+      "for": [
+        "discover",
+        "decompose",
+        "define"
+      ],
+      "kind": "language"
+    },
+    {
+      "id": "N3",
+      "text": "'Orchestrator' today means 1 long-lived LLM conversation. In fleetd it is gone: a deterministic idea dispatcher (code) plus 1 sub-orchestrator per feature replace it. Do not model an 'orchestrator' actor.",
+      "for": [
+        "discover",
+        "decompose"
+      ],
+      "kind": "language"
+    },
+    {
+      "id": "N4",
+      "text": "'Done' today is a model action (horch ledger done). In fleetd only the verifier moves a task to done. 'Landed' (on the feature branch) and 'merged' (in the primary branch, read from git by content) are later, separate facts.",
+      "for": [
+        "discover",
+        "decompose",
+        "define"
+      ],
+      "kind": "language"
+    },
+    {
+      "id": "N5",
+      "text": "fleetd is the only ledger writer. Every other component (CLI commands, wrapper, workers, sub-orchestrators) writes files or sends requests on the command channel, and fleetd ingests them. Every other process opens the ledger read-only.",
+      "for": [
+        "decompose",
+        "connect",
+        "define",
+        "code"
+      ],
+      "kind": "boundary"
+    },
+    {
+      "id": "N6",
+      "text": "Scale is fixed: 1 deployable unit (fleetd is a subcommand of the single horch binary) and 1 team. Contexts become modules inside horch-core, not services.",
+      "for": [
+        "decompose",
+        "organise",
+        "code"
+      ],
+      "kind": "decision"
+    },
+    {
+      "id": "N7",
+      "text": "Idea state order: captured -> clarifying -> awaiting_approval -> specifying -> ticketing -> in_progress -> integrating -> merged; a --direct idea goes captured -> ticketing; parked and cancelled are side states. Only code advances an idea.",
+      "for": [
+        "discover"
+      ],
+      "kind": "process"
+    },
+    {
+      "id": "N8",
+      "text": "Task branch landing order: building -> verifying -> ready -> in_bundle -> landed; side states conflicted, gate_failed and abandoned. Every branch is a ledger row with 1 owner and a time limit before it exists.",
+      "for": [
+        "discover"
+      ],
+      "kind": "process"
+    },
+    {
+      "id": "N9",
+      "text": "Worktree order: reserved -> created -> active -> landing, or orphaned when the owner dies; a rescue ref is written and read back before any removal; a retried attempt reuses the same worktree.",
+      "for": [
+        "discover"
+      ],
+      "kind": "process"
+    },
+    {
+      "id": "N10",
+      "text": "A usage limit or provider outage is not a stall: no attempt is burned; the task restarts at once on a fallback persona of another provider, else waits in waiting_quota with its lease paused. Lease time counts only while the machine is awake.",
+      "for": [
+        "discover",
+        "decompose"
+      ],
+      "kind": "process"
+    },
+    {
+      "id": "N11",
+      "text": "A worker question nothing approved covers and that changes no assumption is decided by the sub-orchestrator as its own reversible assumption. Only product direction, scope or a trade-off the operator must own goes to the operator (D13).",
+      "for": [
+        "discover",
+        "define"
+      ],
+      "kind": "process"
+    },
+    {
+      "id": "N12",
+      "text": "'Judgment kinds' are research, design, docs, report and creative; each needs a paired judge task in another session, on another provider when the roster has one. A 'judge task' has kind judge and needs no judge. A 'resolver task' has a code kind. Code kinds are feature, quality, refactor and security.",
+      "for": [
+        "discover",
+        "define"
+      ],
+      "kind": "language"
+    },
+    {
+      "id": "N13",
+      "text": "The platform layer is a boundary: core fleetd code has no OS cfg; 1 module per OS implements 1 interface; a missing equivalent returns an explicit not-supported value that core code decides on.",
+      "for": [
+        "decompose",
+        "code"
+      ],
+      "kind": "boundary"
+    },
+    {
+      "id": "N14",
+      "text": "Terminal pane hosting: herdr is the alternative and it wins - do not build. Host platform services: each OS's service manager, process and sandbox facilities win - do not build, only wrap them.",
+      "for": [
+        "strategize"
+      ],
+      "kind": "decision"
+    },
+    {
+      "id": "N15",
+      "text": "Preservation is a hard input: the rows of the Preservation analysis in design.md (W6, F9, F7, F5, L5, L9, W8, W9, F11, S7, L6, L8, S8, S10, M5, E-10, S1 to S15) must each be owned by a context and kept.",
+      "for": [
+        "discover",
+        "define",
+        "code"
+      ],
+      "kind": "risk"
+    },
+    {
+      "id": "N16",
+      "text": "ANTHROPIC_API_KEY must never reach any child process; the roster rejects a teammate file that sets it. This is an absolute operator rule and belongs to whichever context launches agents.",
+      "for": [
+        "define",
+        "code"
+      ],
+      "kind": "risk"
+    },
+    {
+      "id": "N17",
+      "text": "The /fleet paths in the design are neutral: /fleet/ideas/<id>/ is ai_docs/plans/<run>/, /fleet/tasks/ is under the state root, and the ledger stays at ~/.horch/ledger.sqlite3. fleet helper commands are horch subcommands.",
+      "for": [
+        "define",
+        "code"
+      ],
+      "kind": "other"
+    }
+  ],
+  "plain_words": {
+    "what": "We wrote down why fleetd exists, who it serves, what counts as success and how big it may get.",
+    "decided": "fleetd is a change to horch, not a new product. It ships inside the 1 horch binary, for 1 operator and 1 team. Success is 4 numbers: idle tasks caught in under 10 minutes, 0 lost work, 0 tasks outside an approved plan, 0 attempts burned by usage limits.",
+    "assumed": "The design gives no number for using the subscription fully, so we used a proxy: no usage window resets with usage left while work is ready.",
+    "riskiest": "If the proxy for full usage is wrong, later steps may build pacing toward the wrong target. The 178 old OS-specific code sites are also still undecided, which affects how first-class Windows really is."
+  }
+}

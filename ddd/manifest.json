@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "project": "fleetd",
+  "title": "fleetd: the horch fleet control plane",
+  "ddd_dir": "ddd",
+  "created": "2026-11-12T16:45:13Z",
+  "updated": "2026-11-12T16:51:45Z",
+  "mode": "auto",
+  "depth": "standard",
+  "scale_target": {
+    "deployables_min": 1,
+    "deployables_max": 1,
+    "teams": 1,
+    "notes": "fleetd is a subcommand of the single horch binary. The operator and the fleet of AI agents are 1 team."
+  },
+  "sources": [
+    "docs/specs/fleetd/design.md",
+    "docs/architecture.md",
+    "docs/specs/fleetd/preservation-04-behavior.md",
+    "docs/specs/fleetd/preservation-05-contracts-and-values.md",
+    "docs/specs/fleetd/preservation-06-wiring-and-platform.md"
+  ],
+  "steps": {
+    "understand": {
+      "status": "done",
+      "updated": "2026-11-12T16:51:45Z",
+      "mode": "auto",
+      "open_questions": 8,
+      "artifacts": [
+        "ddd/01-understand/understand.json",
+        "ddd/01-understand/understand.md"
+      ]
+    },
+    "discover": {
+      "status": "pending"
+    },
+    "decompose": {
+      "status": "pending"
+    },
+    "strategize": {
+      "status": "pending"
+    },
+    "connect": {
+      "status": "pending"
+    },
+    "organise": {
+      "status": "pending"
+    },
+    "define": {
+      "status": "pending"
+    },
+    "code": {
+      "status": "pending"
+    },
+    "contracts": {
+      "status": "pending"
+    }
+  }
+}
