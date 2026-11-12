@@ -1,0 +1,21 @@
+{
+  "ideaId": "I-0007",
+  "spec": "# I-0007 spec\nThe sync client retries failed requests with exponential backoff and logs each retry.\n",
+  "requirements": {
+    "idea": "I-0007",
+    "requirements": [
+      {
+        "id": "R1",
+        "text": "Sync client retries failed requests with exponential backoff, max 5 tries."
+      },
+      {
+        "id": "R2",
+        "text": "Each retry is logged with attempt number and delay."
+      },
+      {
+        "id": "R3",
+        "text": "Existing sync tests still pass."
+      }
+    ]
+  }
+}

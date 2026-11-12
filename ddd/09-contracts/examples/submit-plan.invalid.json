@@ -1,0 +1,51 @@
+[
+  {
+    "why": "a judge task must name the task it judges",
+    "payload": {
+      "ideaId": "I-0007",
+      "plan": {
+        "idea": "I-0007",
+        "repo": "/fleet/repos/app",
+        "feature": "F-0003",
+        "base_branch": "feature/retry-sync-backoff",
+        "tasks": [
+          {
+            "key": "retry-doc-judge",
+            "title": "Judge docs/sync.md",
+            "kind": "judge",
+            "profile": "judge-codex"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "why": "an acceptance item is either a run command or a sections check, never both",
+    "payload": {
+      "ideaId": "I-0007",
+      "plan": {
+        "idea": "I-0007",
+        "repo": "/fleet/repos/app",
+        "feature": "F-0003",
+        "base_branch": "feature/retry-sync-backoff",
+        "tasks": [
+          {
+            "key": "backoff",
+            "title": "Add backoff",
+            "kind": "feature",
+            "profile": "coder-codex",
+            "acceptance": [
+              {
+                "run": "pytest -q",
+                "sections": [
+                  "docs/sync.md",
+                  "## Retries"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+]

@@ -1,0 +1,1038 @@
+{
+  "schema_version": 1,
+  "step": "contracts",
+  "produced_by": "ddd-contracts",
+  "produced_at": "2026-11-12T18:47:21Z",
+  "mode": "auto",
+  "depth": "standard",
+  "inputs": [
+    "ddd/05-connect/connect.json",
+    "ddd/07-define/define.json",
+    "ddd/06-organise/organise.json",
+    "ddd/03-decompose/decompose.json",
+    "ddd/02-discover/discover.json",
+    "ddd/08-code/code.json",
+    "ddd/glossary.md",
+    "docs/specs/fleetd/design.md"
+  ],
+  "assumptions": [
+    {
+      "id": "A1",
+      "text": "Answers connect N1 and code N1: contracts cover only the messages that leave the horch process or have a human, an agent or an external system on 1 end: the command channel, the file protocol and the external facts. The 21 in-process messages get no wire schema; contracts.md lists them for code-level tests.",
+      "confidence": "high"
+    },
+    {
+      "id": "A2",
+      "text": "Answers code N2: every entry id equals its connect message id, so the code.json tests 'contract: <id>' and 'idempotent: <id>' bind to these entries. Each semantics line keeps the connect idempotency key as written.",
+      "confidence": "high"
+    },
+    {
+      "id": "A3",
+      "text": "write-result and submit-plan use the field names of the design examples of result.json and plan.yaml (task, attempt, files_changed, base_branch), not the connect payload names (taskId, attemptId), because the design wins over a later artifact and the ticket says to keep the design names. Decision D1 records the call for the files that the design gives no example for.",
+      "confidence": "high"
+    },
+    {
+      "id": "A4",
+      "text": "Every other entry keeps the connect payload names in camelCase as an interim, until the operator decides D1.",
+      "confidence": "medium"
+    },
+    {
+      "id": "A5",
+      "text": "Id formats come from the comments of the design ledger schema: I-0007, F-0003, T-0007-02, T-0007-02/A1 or I-0007/clarifying/1, T-0007-02/A1/Q1, refs/horch/rescue/T-0007-03/1, fleet/I-0007/T-0007-03.",
+      "confidence": "high"
+    },
+    {
+      "id": "A6",
+      "text": "A Markdown file of the file protocol (assumptions.md, spec.md) is carried as 1 string field with the whole file content; requirements.yaml and plan.yaml are carried as objects with the design field names.",
+      "confidence": "medium"
+    },
+    {
+      "id": "A7",
+      "text": "answer-question carries the answer as an object {case, text}. case is the closed list of ledger questions.answer_case (covered, revise, replan, own_decision). connect writes 'answer|assumption'; an own_decision answer is the assumption case.",
+      "confidence": "medium"
+    },
+    {
+      "id": "A8",
+      "text": "replan-task carries planChange as 1 task in the plan.yaml task shape, with the same key.",
+      "confidence": "medium"
+    },
+    {
+      "id": "A9",
+      "text": "result.json requires task, attempt, status, summary and commits; files_changed, acceptance_self_check and notes_for_next are optional. commits may be empty.",
+      "confidence": "medium"
+    },
+    {
+      "id": "A10",
+      "text": "attempt-exited exitStatus is the integer exit code, or null when a signal ended the process (ledger attempts.exit_code is nullable).",
+      "confidence": "medium"
+    },
+    {
+      "id": "A11",
+      "text": "approve-assumptions answers approved false for a refusal (stale hash, or idea not in awaiting_approval). The reply carries no reason field because connect lists none.",
+      "confidence": "medium"
+    },
+    {
+      "id": "A12",
+      "text": "The request of trial-merge-result names the other side as a feature id or the literal 'primary' for the primary branch.",
+      "confidence": "medium"
+    },
+    {
+      "id": "A13",
+      "text": "task.kind and task-escalated.reason stay open strings: the design names known values but no closed list.",
+      "confidence": "high"
+    }
+  ],
+  "open_questions": [
+    {
+      "id": "Q1",
+      "text": "task.yaml, inbox/START.md, heartbeat.json, verdict.json, plan.verdict.json and approval.json cross a process boundary between fleetd, the wrapper and agents, but connect has no message for them, so this step has no contract for them. Should ddd-connect add a message for each? The design gives examples of task.yaml and heartbeat.json, and protocol rule 4 needs a schema for every file type.",
+      "blocking": false,
+      "owner": "ddd-connect"
+    },
+    {
+      "id": "Q2",
+      "text": "add-idea and add-direct-idea have no idempotency key, but their request-file channel is at-least-once. A request file ingested twice creates 2 ideas. Should the request carry a request id that fleetd de-duplicates on?",
+      "blocking": false,
+      "owner": "ddd-connect"
+    },
+    {
+      "id": "Q3",
+      "text": "result.json status: the design shows only 'completed'. Which other values may a worker write (for example blocked, partial), and is the list closed?",
+      "blocking": false,
+      "owner": "ddd-connect"
+    },
+    {
+      "id": "Q4",
+      "text": "connect payload names differ from the design file field names (taskId and attemptId against task and attempt). Should ddd-connect adopt the design names, so that a prefill re-run does not add the connect names back to write-result?",
+      "blocking": false,
+      "owner": "ddd-connect"
+    },
+    {
+      "id": "Q5",
+      "text": "approve-assumptions replies only approved. Should the reply carry the refusal reason (stale hash, wrong state, caller inside a fleet attempt)?",
+      "blocking": false,
+      "owner": "ddd-connect"
+    },
+    {
+      "id": "Q6",
+      "text": "usage-limit-reported requires resetAt. A provider outage can have no known reset time. Should resetAt be optional, and what does fleetd wait for then?",
+      "blocking": false,
+      "owner": "ddd-connect"
+    }
+  ],
+  "entries": [
+    {
+      "id": "add-idea",
+      "kind": "command",
+      "name": "Add Idea",
+      "description": "The operator captures an idea from any terminal; fleetd records it as captured, and the dispatcher starts its sub-orchestrator on the next pass.",
+      "entityStatus": "Draft",
+      "version": "1.0",
+      "domain": "ideas",
+      "owners": [
+        "core-team"
+      ],
+      "consumers": [
+        "ideas"
+      ],
+      "reviewers": [
+        "core-team"
+      ],
+      "pattern": "open-host-service",
+      "delivery": "sync",
+      "via": "other",
+      "schema": "ddd/09-contracts/schemas/add-idea.schema.json",
+      "example": "ddd/09-contracts/examples/add-idea.json",
+      "semantics": [
+        "Each accepted request creates exactly 1 immutable idea.md and 1 ledger row in state captured, and the reply carries its new ideaId.",
+        "No idempotency key exists: a request file that is ingested twice creates 2 ideas (open question Q2).",
+        "Only fleetd writes the ledger. When fleetd is down, horch writes a request file and fleetd reads it at start, so the reply arrives only on the sync channel."
+      ],
+      "termsOfUse": "Additive changes only within version 1.x; a removed, renamed or retyped field is 2.0. The horch CLI and fleetd ship in 1 binary, so the operator never meets a version skew, but a request file written by an older horch and read at start must still validate.",
+      "glossary": "ddd/glossary.md#ideas-context",
+      "provenance": {
+        "connect": "add-idea",
+        "relationship": null,
+        "flows": [
+          "F1"
+        ]
+      },
+      "channels": [
+        {
+          "via": "file",
+          "sync": false,
+          "delivery": "at-least-once",
+          "note": "request file under the state root when fleetd is down; fleetd reads it at start"
+        }
+      ],
+      "client": "operator"
+    },
+    {
+      "id": "add-direct-idea",
+      "kind": "command",
+      "name": "Add Direct Idea",
+      "description": "The operator adds a ticket they wrote; the ticket stands for their approval, so the idea skips research, the interview and the assumptions phase and goes to ticketing.",
+      "entityStatus": "Draft",
+      "version": "1.0",
+      "domain": "ideas",
+      "owners": [
+        "core-team"
+      ],
+      "consumers": [
+        "ideas"
+      ],
+      "reviewers": [
+        "core-team"
+      ],
+      "pattern": "open-host-service",
+      "delivery": "sync",
+      "via": "other",
+      "schema": "ddd/09-contracts/schemas/add-direct-idea.schema.json",
+      "example": "ddd/09-contracts/examples/add-direct-idea.json",
+      "semantics": [
+        "The command is refused when the caller's process tree contains a recorded fleet attempt, like horch idea approve.",
+        "Without featureId, fleetd creates a new feature whose branch name is the kebab-case ticket title with a number suffix when the name exists, and returns its featureId.",
+        "fleetd writes the ledger row before it creates the branch. A plan that plan validation refuses sends the idea to needs-you/ with the reason.",
+        "No idempotency key exists: a request file that is ingested twice creates 2 ideas (open question Q2)."
+      ],
+      "termsOfUse": "Additive changes only within version 1.x; a removed, renamed or retyped field is 2.0. The horch CLI and fleetd ship in 1 binary, so the operator never meets a version skew, but a request file written by an older horch and read at start must still validate.",
+      "glossary": "ddd/glossary.md#ideas-context",
+      "provenance": {
+        "connect": "add-direct-idea",
+        "relationship": null,
+        "flows": [
+          "F1"
+        ]
+      },
+      "channels": [
+        {
+          "via": "file",
+          "sync": false,
+          "delivery": "at-least-once",
+          "note": "request file under the state root when fleetd is down; fleetd reads it at start"
+        }
+      ],
+      "client": "operator"
+    },
+    {
+      "id": "approve-assumptions",
+      "kind": "command",
+      "name": "Approve Assumptions",
+      "description": "The operator approves the assumptions of an idea; this licenses the sub-orchestrator to write the spec, and no spec or task exists for the idea before it.",
+      "entityStatus": "Draft",
+      "version": "1.0",
+      "domain": "ideas",
+      "owners": [
+        "core-team"
+      ],
+      "consumers": [
+        "ideas"
+      ],
+      "reviewers": [
+        "core-team"
+      ],
+      "pattern": "open-host-service",
+      "delivery": "sync",
+      "via": "other",
+      "schema": "ddd/09-contracts/schemas/approve-assumptions.schema.json",
+      "example": "ddd/09-contracts/examples/approve-assumptions.json",
+      "semantics": [
+        "An approval of the same assumptionsHash is a no-op that answers approved true again; a stale hash is refused with approved false.",
+        "fleetd writes approval.json itself with the hash the operator saw and ignores an approval.json written by any other process (FR-10, I7).",
+        "The command is refused when the caller's process tree contains a recorded fleet attempt, and agent profiles deny it."
+      ],
+      "termsOfUse": "Additive changes only within version 1.x; a removed, renamed or retyped field is 2.0. The horch CLI and fleetd ship in 1 binary, so the operator never meets a version skew, but a request file written by an older horch and read at start must still validate.",
+      "glossary": "ddd/glossary.md#ideas-context",
+      "provenance": {
+        "connect": "approve-assumptions",
+        "relationship": null,
+        "flows": [
+          "F2"
+        ]
+      },
+      "channels": [
+        {
+          "via": "file",
+          "sync": false,
+          "delivery": "at-least-once",
+          "note": "request file under the state root when fleetd is down; fleetd reads it at start"
+        }
+      ],
+      "client": "operator"
+    },
+    {
+      "id": "abandon-task-branch",
+      "kind": "command",
+      "name": "Abandon Task Branch",
+      "description": "The operator abandons an escalated task branch; its work survives on a rescue ref, and the branch leaves the landing queue for good.",
+      "entityStatus": "Draft",
+      "version": "1.0",
+      "domain": "integration",
+      "owners": [
+        "core-team"
+      ],
+      "consumers": [
+        "integration"
+      ],
+      "reviewers": [
+        "core-team"
+      ],
+      "pattern": "open-host-service",
+      "delivery": "sync",
+      "via": "other",
+      "schema": "ddd/09-contracts/schemas/abandon-task-branch.schema.json",
+      "example": "ddd/09-contracts/examples/abandon-task-branch.json",
+      "semantics": [
+        "Only the operator abandons a task branch; abandoned is terminal.",
+        "The branch is dropped only after its rescue ref exists and is verified (I10, CC7); the reply always names that ref.",
+        "An abandoned branch is not abandoned twice: a repeat returns the same rescueRef and changes nothing."
+      ],
+      "termsOfUse": "Additive changes only within version 1.x; a removed, renamed or retyped field is 2.0. The horch CLI and fleetd ship in 1 binary, so the operator never meets a version skew, but a request file written by an older horch and read at start must still validate.",
+      "glossary": "ddd/glossary.md#landing-and-integration-context",
+      "provenance": {
+        "connect": "abandon-task-branch",
+        "relationship": null,
+        "flows": [
+          "F6"
+        ]
+      },
+      "channels": [
+        {
+          "via": "file",
+          "sync": false,
+          "delivery": "at-least-once",
+          "note": "request file under the state root when fleetd is down; fleetd reads it at start"
+        }
+      ],
+      "client": "operator"
+    },
+    {
+      "id": "write-assumptions",
+      "kind": "command",
+      "name": "Write Assumptions",
+      "description": "The sub-orchestrator ends clarifying with assumptions.md; a valid file opens the feature on first write and asks the operator for approval.",
+      "entityStatus": "Draft",
+      "version": "1.0",
+      "domain": "ideas",
+      "owners": [
+        "core-team"
+      ],
+      "consumers": [
+        "ideas"
+      ],
+      "reviewers": [
+        "core-team"
+      ],
+      "pattern": "open-host-service",
+      "delivery": "at-least-once",
+      "via": "file",
+      "schema": "ddd/09-contracts/schemas/write-assumptions.schema.json",
+      "example": "ddd/09-contracts/examples/write-assumptions.json",
+      "semantics": [
+        "fleetd ingests the file once per (path, content hash); the file is written atomically and never edited after it lands.",
+        "A file with any item marked [open] is refused; a valid file moves the idea to awaiting_approval and triggers approval-requested.",
+        "The [assumed] items are exactly what the operator approves; a revise sends the idea back to clarifying and needs a new file."
+      ],
+      "termsOfUse": "Additive changes only within version 1.x; a removed, renamed or retyped field is 2.0. fleetd rejects a file or request that fails this schema (design protocol rule 4), so a 2.0 ships together with the matching horch, fleet helper and prompt changes.",
+      "glossary": "ddd/glossary.md#ideas-context",
+      "provenance": {
+        "connect": "write-assumptions",
+        "relationship": null,
+        "flows": [
+          "F1"
+        ]
+      },
+      "client": "sub-orchestrator"
+    },
+    {
+      "id": "write-spec",
+      "kind": "command",
+      "name": "Write Spec",
+      "description": "The sub-orchestrator writes the spec and the numbered requirements of an approved idea; valid files move the idea to ticketing.",
+      "entityStatus": "Draft",
+      "version": "1.0",
+      "domain": "ideas",
+      "owners": [
+        "core-team"
+      ],
+      "consumers": [
+        "ideas"
+      ],
+      "reviewers": [
+        "core-team"
+      ],
+      "pattern": "open-host-service",
+      "delivery": "at-least-once",
+      "via": "file",
+      "schema": "ddd/09-contracts/schemas/write-spec.schema.json",
+      "example": "ddd/09-contracts/examples/write-spec.json",
+      "semantics": [
+        "fleetd ingests the pair once per (ideaId, content hash); both files are written atomically.",
+        "fleetd accepts the files only while the idea holds an approval.json whose hash matches the current assumptions.md (FR-10).",
+        "Every requirement cites an approved assumption or one of the operator's answers; a requirement without a citation fails validation."
+      ],
+      "termsOfUse": "Additive changes only within version 1.x; a removed, renamed or retyped field is 2.0. fleetd rejects a file or request that fails this schema (design protocol rule 4), so a 2.0 ships together with the matching horch, fleet helper and prompt changes.",
+      "glossary": "ddd/glossary.md#ideas-context",
+      "provenance": {
+        "connect": "write-spec",
+        "relationship": null,
+        "flows": [
+          "F2"
+        ]
+      },
+      "client": "sub-orchestrator"
+    },
+    {
+      "id": "submit-plan",
+      "kind": "command",
+      "name": "Submit Plan",
+      "description": "The sub-orchestrator submits the plan of an idea; a plan that passes validation commits all its tasks in 1 transaction and the idea goes to in_progress.",
+      "entityStatus": "Draft",
+      "version": "1.0",
+      "domain": "ideas",
+      "owners": [
+        "core-team"
+      ],
+      "consumers": [
+        "ideas"
+      ],
+      "reviewers": [
+        "core-team"
+      ],
+      "pattern": "open-host-service",
+      "delivery": "at-least-once",
+      "via": "file",
+      "schema": "ddd/09-contracts/schemas/submit-plan.schema.json",
+      "example": "ddd/09-contracts/examples/submit-plan.json",
+      "semantics": [
+        "fleetd ingests the plan once per (ideaId, plan content hash); plan.verdict.json records the result of each ingest.",
+        "A plan commits all-or-nothing, only after schema, DAG, coverage, profile and citation checks pass; every requirement must be covered by at least 1 task (I3).",
+        "A plan is refused when the project declares no fast gate and full gate, or when a judgment-kind task has no paired judge task in another session.",
+        "Only a committed plan creates tasks; no AI creates a task any other way (FM-1)."
+      ],
+      "termsOfUse": "Additive changes only within version 1.x; a removed, renamed or retyped field is 2.0. fleetd rejects a file or request that fails this schema (design protocol rule 4), so a 2.0 ships together with the matching horch, fleet helper and prompt changes.",
+      "glossary": "ddd/glossary.md#ideas-context",
+      "provenance": {
+        "connect": "submit-plan",
+        "relationship": null,
+        "flows": [
+          "F2"
+        ]
+      },
+      "client": "sub-orchestrator"
+    },
+    {
+      "id": "answer-question",
+      "kind": "command",
+      "name": "Answer Question",
+      "description": "The sub-orchestrator answers a worker question; an answer lets fleetd resume the parked task with it.",
+      "entityStatus": "Draft",
+      "version": "1.0",
+      "domain": "ideas",
+      "owners": [
+        "core-team"
+      ],
+      "consumers": [
+        "ideas"
+      ],
+      "reviewers": [
+        "core-team"
+      ],
+      "pattern": "open-host-service",
+      "delivery": "at-least-once",
+      "via": "file",
+      "schema": "ddd/09-contracts/schemas/answer-question.schema.json",
+      "example": "ddd/09-contracts/examples/answer-question.json",
+      "semantics": [
+        "fleetd records 1 answer per questionId; a second answer for the same questionId is refused.",
+        "A covered answer must carry a citation, and fleetd checks that the cited line exists.",
+        "A revise answer goes to the operator and pauses only the affected tasks; an own_decision answer is recorded as an assumption the operator can reverse.",
+        "The answer goes to the decision log of the feature and to every later task of the feature."
+      ],
+      "termsOfUse": "Additive changes only within version 1.x; a removed, renamed or retyped field is 2.0. fleetd rejects a file or request that fails this schema (design protocol rule 4), so a 2.0 ships together with the matching horch, fleet helper and prompt changes.",
+      "glossary": "ddd/glossary.md#ideas-context",
+      "provenance": {
+        "connect": "answer-question",
+        "relationship": null,
+        "flows": [
+          "F5"
+        ]
+      },
+      "client": "sub-orchestrator"
+    },
+    {
+      "id": "replan-task",
+      "kind": "command",
+      "name": "Replan Task",
+      "description": "The sub-orchestrator replans a task that task-execution gave back; the replanned task returns to task-execution.",
+      "entityStatus": "Draft",
+      "version": "1.0",
+      "domain": "ideas",
+      "owners": [
+        "core-team"
+      ],
+      "consumers": [
+        "ideas"
+      ],
+      "reviewers": [
+        "core-team"
+      ],
+      "pattern": "open-host-service",
+      "delivery": "at-least-once",
+      "via": "file",
+      "schema": "ddd/09-contracts/schemas/replan-task.schema.json",
+      "example": "ddd/09-contracts/examples/replan-task.json",
+      "semantics": [
+        "fleetd accepts 1 replan per task: once per (taskId, replan round). A task that fails after its replan goes to needs-you/.",
+        "The replanned task passes the same plan checks as a plan; coverage of the idea's requirements must still hold (I3)."
+      ],
+      "termsOfUse": "Additive changes only within version 1.x; a removed, renamed or retyped field is 2.0. fleetd rejects a file or request that fails this schema (design protocol rule 4), so a 2.0 ships together with the matching horch, fleet helper and prompt changes.",
+      "glossary": "ddd/glossary.md#ideas-context",
+      "provenance": {
+        "connect": "replan-task",
+        "relationship": null,
+        "flows": [
+          "F6"
+        ]
+      },
+      "client": "sub-orchestrator"
+    },
+    {
+      "id": "write-result",
+      "kind": "command",
+      "name": "Write Result",
+      "description": "The worker claims its attempt is finished; the claim licenses fleetd to run the verifier, and only the verifier moves the task to done.",
+      "entityStatus": "Draft",
+      "version": "1.0",
+      "domain": "task-execution",
+      "owners": [
+        "core-team"
+      ],
+      "consumers": [
+        "task-execution"
+      ],
+      "reviewers": [
+        "core-team"
+      ],
+      "pattern": "open-host-service",
+      "delivery": "at-least-once",
+      "via": "file",
+      "schema": "ddd/09-contracts/schemas/write-result.schema.json",
+      "example": "ddd/09-contracts/examples/write-result.json",
+      "semantics": [
+        "1 result per attempt: result.json is written atomically and never rewritten; fleetd ingests it once per (task, attempt).",
+        "The result is a claim, not a fact: a task is done only when result.json validates and the verifier's check passes in the worker sandbox (RR-3, SR-4).",
+        "acceptance_self_check is advisory; the verifier never trusts it.",
+        "A process that exits with commits and no result gets 1 short resume of the same session to write it; an exit without a valid result is outcome no_result."
+      ],
+      "termsOfUse": "Additive changes only within version 1.x; a removed, renamed or retyped field is 2.0. fleetd rejects a file or request that fails this schema (design protocol rule 4), so a 2.0 ships together with the matching horch, fleet helper and prompt changes.",
+      "glossary": "ddd/glossary.md#task-execution-context",
+      "provenance": {
+        "connect": "write-result",
+        "relationship": null,
+        "flows": [
+          "F3",
+          "F4"
+        ]
+      },
+      "client": "worker"
+    },
+    {
+      "id": "ask-question",
+      "kind": "command",
+      "name": "Ask Question",
+      "description": "A worker asks a blocking question; the worker commits its work in progress and exits, and its task parks with no process until the answer arrives.",
+      "entityStatus": "Draft",
+      "version": "1.0",
+      "domain": "ideas",
+      "owners": [
+        "core-team"
+      ],
+      "consumers": [
+        "ideas"
+      ],
+      "reviewers": [
+        "core-team"
+      ],
+      "pattern": "open-host-service",
+      "delivery": "at-least-once",
+      "via": "file",
+      "schema": "ddd/09-contracts/schemas/ask-question.schema.json",
+      "example": "ddd/09-contracts/examples/ask-question.json",
+      "semantics": [
+        "1 file per questionId; fleetd ingests each file once and creates 1 ledger question row owned by the sub-orchestrator of the feature.",
+        "The worker exits after it writes the file; the other tasks of the feature go on.",
+        "Past the question's time limit, fleetd escalates it to needs-you/ with a herdr notification (RR-12)."
+      ],
+      "termsOfUse": "Additive changes only within version 1.x; a removed, renamed or retyped field is 2.0. fleetd rejects a file or request that fails this schema (design protocol rule 4), so a 2.0 ships together with the matching horch, fleet helper and prompt changes.",
+      "glossary": "ddd/glossary.md#ideas-context",
+      "provenance": {
+        "connect": "ask-question",
+        "relationship": null,
+        "flows": [
+          "F5"
+        ]
+      },
+      "client": "worker"
+    },
+    {
+      "id": "attempt-exited",
+      "kind": "event",
+      "name": "Attempt Exited",
+      "description": "The agent process of an attempt has exited; the fact lets fleetd end the attempt and decide its outcome.",
+      "entityStatus": "Draft",
+      "version": "1.0",
+      "domain": "task-execution",
+      "owners": [
+        "agent-cli"
+      ],
+      "consumers": [
+        "task-execution"
+      ],
+      "reviewers": [
+        "core-team"
+      ],
+      "pattern": "anticorruption-layer",
+      "delivery": "at-least-once",
+      "via": "file",
+      "schema": "ddd/09-contracts/schemas/attempt-exited.schema.json",
+      "example": "ddd/09-contracts/examples/attempt-exited.json",
+      "semantics": [
+        "Once per attemptId: exit.json is immutable, and a second ingest is a no-op.",
+        "The wrapper reports facts and decides nothing; fleetd decides the outcome (no_result when hasResult is false and the repair resume fails)."
+      ],
+      "termsOfUse": "The agent CLI owns the wire fact; this schema is our view of it at the ACL boundary. Changes in The agent CLI land in the fleet-run wrapper; nothing else reads The agent CLI directly. Additive changes only within version 1.x.",
+      "glossary": "ddd/glossary.md#task-execution-context",
+      "provenance": {
+        "connect": "attempt-exited",
+        "relationship": null,
+        "flows": [
+          "F3",
+          "F4"
+        ]
+      },
+      "inherited": true,
+      "direction": "inbound"
+    },
+    {
+      "id": "usage-limit-reported",
+      "kind": "event",
+      "name": "Usage Limit Reported",
+      "description": "A worker's provider pool hit a usage limit or an outage; the attempt is not stuck and burns no attempt.",
+      "entityStatus": "Draft",
+      "version": "1.0",
+      "domain": "task-execution",
+      "owners": [
+        "provider-pool"
+      ],
+      "consumers": [
+        "task-execution"
+      ],
+      "reviewers": [
+        "core-team"
+      ],
+      "pattern": "anticorruption-layer",
+      "delivery": "at-least-once",
+      "via": "other",
+      "schema": "ddd/09-contracts/schemas/usage-limit-reported.schema.json",
+      "example": "ddd/09-contracts/examples/usage-limit-reported.json",
+      "semantics": [
+        "Once per (attemptId, pool); a repeat for an attempt that already moved to its fallback is ignored.",
+        "Never a stall: fleetd restarts the task at once on the fallback persona when it is on another provider, else the task waits in waiting_quota with its lease paused until resetAt (RR-11)."
+      ],
+      "termsOfUse": "The provider owns the wire fact; this schema is our view of it at the ACL boundary. Changes in The provider land in the worker-profiles adapter of that CLI; nothing else reads The provider directly. Additive changes only within version 1.x.",
+      "glossary": "ddd/glossary.md#task-execution-context",
+      "provenance": {
+        "connect": "usage-limit-reported",
+        "relationship": null,
+        "flows": [
+          "F4"
+        ]
+      },
+      "inherited": true,
+      "direction": "inbound"
+    },
+    {
+      "id": "primary-branch-moved",
+      "kind": "event",
+      "name": "Primary Branch Moved",
+      "description": "The primary branch has a new tip; feature branches rebase, bottom of a stack first, and trial merges run again.",
+      "entityStatus": "Draft",
+      "version": "1.0",
+      "domain": "integration",
+      "owners": [
+        "git"
+      ],
+      "consumers": [
+        "integration"
+      ],
+      "reviewers": [
+        "core-team"
+      ],
+      "pattern": "anticorruption-layer",
+      "delivery": "at-least-once",
+      "via": "other",
+      "schema": "ddd/09-contracts/schemas/primary-branch-moved.schema.json",
+      "example": "ddd/09-contracts/examples/primary-branch-moved.json",
+      "semantics": [
+        "Once per (primaryBranch, tip); a second report of the same tip is a no-op.",
+        "Each feature branch rebases and its fast gate runs again; a full gate pass judged on the old tip goes stale."
+      ],
+      "termsOfUse": "git owns the wire fact; this schema is our view of it at the ACL boundary. Changes in git land in the integration git adapter; nothing else reads git directly. Additive changes only within version 1.x.",
+      "glossary": "ddd/glossary.md#landing-and-integration-context",
+      "provenance": {
+        "connect": "primary-branch-moved",
+        "relationship": null,
+        "flows": [
+          "F7"
+        ]
+      },
+      "inherited": true,
+      "direction": "inbound"
+    },
+    {
+      "id": "trial-merge-result",
+      "kind": "query",
+      "name": "Trial Merge Result",
+      "description": "git answers whether 2 tips merge cleanly, with no checkout; a conflict stacks the younger feature on the older one and opens 1 resolver task.",
+      "entityStatus": "Draft",
+      "version": "1.0",
+      "domain": "integration",
+      "owners": [
+        "git"
+      ],
+      "consumers": [
+        "integration"
+      ],
+      "reviewers": [
+        "core-team"
+      ],
+      "pattern": "anticorruption-layer",
+      "delivery": "sync",
+      "via": "other",
+      "schema": "ddd/09-contracts/schemas/trial-merge-result.schema.json",
+      "example": "ddd/09-contracts/examples/trial-merge-result.json",
+      "semantics": [
+        "Advisory and safe to repeat: git merge-tree --write-tree changes no branch and no worktree; the result is a ledger fact keyed by (left tip, right tip).",
+        "The answer is valid only for the 2 tips it judged; a move of either tip needs a new trial merge.",
+        "The call runs outside the ledger write transaction and has a 3 min wall-clock bound with no retry (04 F11, CC6)."
+      ],
+      "termsOfUse": "git owns the wire fact; this schema is our view of it at the ACL boundary. Changes in git land in the integration git adapter; nothing else reads git directly. Additive changes only within version 1.x.",
+      "glossary": "ddd/glossary.md#landing-and-integration-context",
+      "provenance": {
+        "connect": "trial-merge-result",
+        "relationship": null,
+        "flows": [
+          "F7"
+        ]
+      },
+      "inherited": true,
+      "direction": "inbound"
+    },
+    {
+      "id": "check-merged",
+      "kind": "command",
+      "name": "Check Merged",
+      "description": "The clock asks integration whether a feature's changes are in the primary branch; a yes moves the feature to merged.",
+      "entityStatus": "Draft",
+      "version": "1.0",
+      "domain": "integration",
+      "owners": [
+        "clock"
+      ],
+      "consumers": [
+        "integration"
+      ],
+      "reviewers": [
+        "core-team"
+      ],
+      "pattern": "anticorruption-layer",
+      "delivery": "at-least-once",
+      "via": "in-process",
+      "schema": "ddd/09-contracts/schemas/check-merged.schema.json",
+      "example": "ddd/09-contracts/examples/check-merged.json",
+      "semantics": [
+        "Level-triggered and safe to repeat: feature-merged is emitted once per featureId.",
+        "Merged is read from git by content, also after a squash merge, never from the GitHub API (I8)."
+      ],
+      "termsOfUse": "The clock owns the wire fact; this schema is our view of it at the ACL boundary. Changes in The clock land in the fleetd pass loop; nothing else reads The clock directly. Additive changes only within version 1.x.",
+      "glossary": "ddd/glossary.md#landing-and-integration-context",
+      "provenance": {
+        "connect": "check-merged",
+        "relationship": null,
+        "flows": [
+          "F3"
+        ]
+      },
+      "inherited": true,
+      "direction": "inbound"
+    },
+    {
+      "id": "apply-stall-ladder",
+      "kind": "command",
+      "name": "Apply Stall Ladder",
+      "description": "The clock asks task-execution to move a quiet attempt 1 rung down the stall ladder: doorbell, doorbell again, then end the attempt as stalled.",
+      "entityStatus": "Draft",
+      "version": "1.0",
+      "domain": "task-execution",
+      "owners": [
+        "clock"
+      ],
+      "consumers": [
+        "task-execution"
+      ],
+      "reviewers": [
+        "core-team"
+      ],
+      "pattern": "anticorruption-layer",
+      "delivery": "at-least-once",
+      "via": "in-process",
+      "schema": "ddd/09-contracts/schemas/apply-stall-ladder.schema.json",
+      "example": "ddd/09-contracts/examples/apply-stall-ladder.json",
+      "semantics": [
+        "Each rung is recorded once per (attemptId, rung); a repeat of the same rung does nothing.",
+        "Time counts only while the machine is awake; a sleep never moves a rung (PL-4).",
+        "A usage limit is never a stall: an attempt in waiting_quota gets no rung."
+      ],
+      "termsOfUse": "The clock owns the wire fact; this schema is our view of it at the ACL boundary. Changes in The clock land in the fleetd pass loop; nothing else reads The clock directly. Additive changes only within version 1.x.",
+      "glossary": "ddd/glossary.md#task-execution-context",
+      "provenance": {
+        "connect": "apply-stall-ladder",
+        "relationship": null,
+        "flows": [
+          "F5"
+        ]
+      },
+      "inherited": true,
+      "direction": "inbound"
+    },
+    {
+      "id": "approval-requested",
+      "kind": "event",
+      "name": "Approval Requested",
+      "description": "fleetd asks the operator to approve an idea's assumptions; until the operator approves or revises, the idea's lease is paused.",
+      "entityStatus": "Draft",
+      "version": "1.0",
+      "domain": "ideas",
+      "owners": [
+        "core-team"
+      ],
+      "consumers": [
+        "operator"
+      ],
+      "reviewers": [
+        "core-team"
+      ],
+      "pattern": "open-host-service",
+      "delivery": "at-least-once",
+      "via": "file",
+      "schema": "ddd/09-contracts/schemas/approval-requested.schema.json",
+      "example": "ddd/09-contracts/examples/approval-requested.json",
+      "semantics": [
+        "1 needs-you/ file per (ideaId, assumptionsHash), plus a herdr notification; a revised assumptions.md gets a new file.",
+        "Waiting is not a stall: 1 reminder an hour during working hours, and after 7 days with no answer the idea goes to parked with a note in needs-you/."
+      ],
+      "termsOfUse": "Additive changes only within version 1.x; a removed, renamed or retyped field is 2.0. The horch CLI and fleetd ship in 1 binary, so the operator never meets a version skew, but a request file written by an older horch and read at start must still validate.",
+      "glossary": "ddd/glossary.md#ideas-context",
+      "provenance": {
+        "connect": "approval-requested",
+        "relationship": null,
+        "flows": [
+          "F1"
+        ]
+      },
+      "client": "operator"
+    },
+    {
+      "id": "worker-question-asked",
+      "kind": "event",
+      "name": "Worker Question Asked",
+      "description": "fleetd hands a worker's question to the sub-orchestrator of its feature, which owns the answer.",
+      "entityStatus": "Draft",
+      "version": "1.0",
+      "domain": "ideas",
+      "owners": [
+        "core-team"
+      ],
+      "consumers": [
+        "sub-orchestrator"
+      ],
+      "reviewers": [
+        "core-team"
+      ],
+      "pattern": "open-host-service",
+      "delivery": "at-least-once",
+      "via": "file",
+      "schema": "ddd/09-contracts/schemas/worker-question-asked.schema.json",
+      "example": "ddd/09-contracts/examples/worker-question-asked.json",
+      "semantics": [
+        "1 inbox file per questionId; delivery repeats on each pass, and fleetd starts the owner when it is not running, until an answer is recorded.",
+        "A sub-orchestrator sees only the questions of its own feature (FM-16)."
+      ],
+      "termsOfUse": "Additive changes only within version 1.x; a removed, renamed or retyped field is 2.0. fleetd rejects a file or request that fails this schema (design protocol rule 4), so a 2.0 ships together with the matching horch, fleet helper and prompt changes.",
+      "glossary": "ddd/glossary.md#ideas-context",
+      "provenance": {
+        "connect": "worker-question-asked",
+        "relationship": null,
+        "flows": [
+          "F5"
+        ]
+      },
+      "client": "sub-orchestrator"
+    },
+    {
+      "id": "task-escalated",
+      "kind": "event",
+      "name": "Task Escalated",
+      "description": "A task needs the operator; its task branch stops landing and stays listed for a decision until the operator requeues or abandons it.",
+      "entityStatus": "Draft",
+      "version": "1.0",
+      "domain": "task-execution",
+      "owners": [
+        "core-team"
+      ],
+      "consumers": [
+        "operator",
+        "integration"
+      ],
+      "reviewers": [
+        "core-team"
+      ],
+      "pattern": "customer-supplier",
+      "delivery": "at-least-once",
+      "via": "file",
+      "schema": "ddd/09-contracts/schemas/task-escalated.schema.json",
+      "example": "ddd/09-contracts/examples/task-escalated.json",
+      "semantics": [
+        "The reconcile pass is level-triggered, so the reaction can run again: 1 needs-you/ file per (taskId, reason), and integration records it once per taskId.",
+        "Nothing is removed on escalation: the worktree and branch stay, and only the operator abandons the branch.",
+        "An operator requeue of the task resets its attempt count (attempt_floor, 04 L8)."
+      ],
+      "termsOfUse": "Additive changes only within version 1.x; a removed, renamed or retyped field is 2.0. The horch CLI and fleetd ship in 1 binary, so the operator never meets a version skew, but a request file written by an older horch and read at start must still validate.",
+      "glossary": "ddd/glossary.md#task-execution-context",
+      "provenance": {
+        "connect": "task-escalated",
+        "relationship": "R6",
+        "flows": [
+          "F6"
+        ]
+      },
+      "channels": [
+        {
+          "via": "in-process",
+          "sync": false,
+          "delivery": "at-least-once",
+          "note": "integration reads the escalation in the reconcile pass of the same horch process; the pass is level-triggered, so integration records it once per taskId"
+        }
+      ],
+      "client": "operator"
+    },
+    {
+      "id": "pull-request-opened",
+      "kind": "event",
+      "name": "Pull Request Opened",
+      "description": "A feature passed its full gate on the current primary branch and its pull request is open; the operator may merge it.",
+      "entityStatus": "Draft",
+      "version": "1.0",
+      "domain": "integration",
+      "owners": [
+        "core-team"
+      ],
+      "consumers": [
+        "operator"
+      ],
+      "reviewers": [
+        "core-team"
+      ],
+      "pattern": "open-host-service",
+      "delivery": "at-least-once",
+      "via": "other",
+      "schema": "ddd/09-contracts/schemas/pull-request-opened.schema.json",
+      "example": "ddd/09-contracts/examples/pull-request-opened.json",
+      "semantics": [
+        "1 pull request per featureId; a repeat of the reaction returns the same prUrl.",
+        "A stacked feature's pull request has the lower feature's branch as its base.",
+        "The operator merges by default; fleetd reads merged from git, not from this URL."
+      ],
+      "termsOfUse": "Additive changes only within version 1.x; a removed, renamed or retyped field is 2.0. The horch CLI and fleetd ship in 1 binary, so the operator never meets a version skew, but a request file written by an older horch and read at start must still validate.",
+      "glossary": "ddd/glossary.md#landing-and-integration-context",
+      "provenance": {
+        "connect": "pull-request-opened",
+        "relationship": null,
+        "flows": [
+          "F3",
+          "F7"
+        ]
+      },
+      "client": "operator"
+    }
+  ],
+  "decisions": [
+    {
+      "id": "D1",
+      "kind": "integration",
+      "question": "Which field-name convention do the file and command-channel payloads use when the design gives no example of the file?",
+      "options": [
+        {
+          "id": "A",
+          "summary": "Keep the connect payload names in camelCase (taskId, ideaId) for every file without a design example.",
+          "pros": [
+            "Matches connect and code.json as written (code N2)",
+            "No upstream re-run needed"
+          ],
+          "cons": [
+            "2 conventions on 1 wire: result.json uses task and files_changed, other files use taskId"
+          ],
+          "risks": [
+            "A worker prompt or the fleet helper mixes the 2 conventions and fleetd rejects the file"
+          ]
+        },
+        {
+          "id": "B",
+          "summary": "Use the design convention everywhere: snake_case and short id names (task, attempt, idea, feature), as in result.json, task.yaml, plan.yaml and heartbeat.json.",
+          "pros": [
+            "1 convention on the whole file protocol",
+            "Matches every file example in the design"
+          ],
+          "cons": [
+            "Renames connect payload names; connect and code.json need a re-run to match"
+          ],
+          "risks": [
+            "A prefill re-run before connect adopts the names adds the camelCase names back"
+          ]
+        },
+        {
+          "id": "C",
+          "summary": "Use camelCase everywhere, and rename the design example fields too (taskId, filesChanged).",
+          "pros": [
+            "1 convention",
+            "Matches connect"
+          ],
+          "cons": [
+            "Contradicts the approved design examples"
+          ],
+          "risks": [
+            "The implementation follows the design and drifts from the contracts"
+          ]
+        }
+      ],
+      "confidence": "medium",
+      "rationale": "Recommendation: B. The design is approved and every file example in it uses snake_case and short id names, so 1 convention on the wire follows the design. Strongest argument against: connect and code.json then need a re-run to match, and until then the chain carries 2 vocabularies. The step keeps A as an interim for files without a design example (assumption A4) and leaves the call to the operator.",
+      "would_flip_if": [
+        "The operator wants the wire names to match the Rust field names and those are camelCase through serde",
+        "The design gains an example that uses camelCase",
+        "ddd-connect is not re-run before implementation"
+      ],
+      "made_by": "step",
+      "records": {
+        "assumption": "A4"
+      }
+    }
+  ],
+  "plain_words": {
+    "what": "This step wrote 21 contracts: the exact shape of each file or request that crosses a process line in fleetd. These are operator commands, files the sub-orchestrators and workers write, files fleetd writes for them, and facts from git, the agent CLI, the provider and the clock. Each contract has a schema, a good example and bad examples it must reject.",
+    "decided": "The 21 messages that stay inside the 1 horch binary get no contract, only code tests. result.json and plan.yaml keep the field names of the design examples.",
+    "assumed": "The other files keep the connect names (taskId, ideaId) for now. The operator decides the single naming style at the review (decision D1).",
+    "riskiest": "task.yaml, heartbeat.json and verdict.json have no contract, because connect lists no message for them (Q1). A worker or the wrapper built from this catalogue alone would miss them."
+  }
+}

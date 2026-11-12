@@ -1,0 +1,18 @@
+[
+  {
+    "why": "a clean merge has no conflicting paths",
+    "payload": {
+      "clean": true,
+      "paths": [
+        "src/sync/client.py"
+      ]
+    }
+  },
+  {
+    "why": "a conflict names at least 1 path",
+    "payload": {
+      "clean": false,
+      "paths": []
+    }
+  }
+]

@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ddd/09-contracts/schemas/add-idea.response.schema.json",
+  "title": "Add Idea response",
+  "description": "The id of the captured idea.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "ideaId"
+  ],
+  "properties": {
+    "ideaId": {
+      "type": "string",
+      "pattern": "^I-[0-9]{4,}$",
+      "description": "The new idea id, printed by horch idea add."
+    }
+  }
+}

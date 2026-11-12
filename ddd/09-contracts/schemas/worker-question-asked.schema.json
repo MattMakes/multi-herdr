@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ddd/09-contracts/schemas/worker-question-asked.schema.json",
+  "title": "Worker Question Asked",
+  "description": "An inbox file for the sub-orchestrator: a worker of its feature asks a question.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "taskId",
+    "questionId",
+    "text"
+  ],
+  "properties": {
+    "taskId": {
+      "type": "string",
+      "pattern": "^T-[0-9]{4,}-[0-9]{2,}$",
+      "description": "The parked task."
+    },
+    "questionId": {
+      "type": "string",
+      "pattern": "^T-[0-9]{4,}-[0-9]{2,}/A[0-9]+/Q[0-9]+$",
+      "description": "The question id; the answer must name it."
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The worker's question, verbatim."
+    }
+  }
+}

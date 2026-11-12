@@ -1,0 +1,13 @@
+[
+  {
+    "why": "a spec with no requirement gives the plan nothing to cover",
+    "payload": {
+      "ideaId": "I-0007",
+      "spec": "# I-0007 spec\n",
+      "requirements": {
+        "idea": "I-0007",
+        "requirements": []
+      }
+    }
+  }
+]

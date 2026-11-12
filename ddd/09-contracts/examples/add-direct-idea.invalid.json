@@ -1,0 +1,8 @@
+[
+  {
+    "why": "a ticket is a Markdown file in format C1",
+    "payload": {
+      "ticketFile": "ticket.txt"
+    }
+  }
+]

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ddd/09-contracts/schemas/add-direct-idea.response.schema.json",
+  "title": "Add Direct Idea response",
+  "description": "The new idea and the feature it belongs to.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "ideaId",
+    "featureId"
+  ],
+  "properties": {
+    "ideaId": {
+      "type": "string",
+      "pattern": "^I-[0-9]{4,}$",
+      "description": "The new idea id."
+    },
+    "featureId": {
+      "type": "string",
+      "pattern": "^F-[0-9]{4,}$",
+      "description": "The feature of the idea: the one named with --to, or the new one fleetd created."
+    }
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ddd/09-contracts/schemas/add-direct-idea.schema.json",
+  "title": "Add Direct Idea",
+  "description": "The operator adds a ticket of their own as an idea on the fast lane.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "ticketFile"
+  ],
+  "properties": {
+    "ticketFile": {
+      "type": "string",
+      "pattern": "\\.md$",
+      "description": "Path of the operator's Markdown ticket in format C1."
+    },
+    "featureId": {
+      "type": "string",
+      "pattern": "^F-[0-9]{4,}$",
+      "description": "Optional (--to). The feature the idea joins and whose branch it uses. Absent: fleetd starts a new feature."
+    }
+  }
+}

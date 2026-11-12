@@ -1,0 +1,207 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ddd/09-contracts/schemas/submit-plan.schema.json",
+  "title": "Submit Plan",
+  "description": "The sub-orchestrator submits plan.yaml for validation and commit.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "ideaId",
+    "plan"
+  ],
+  "properties": {
+    "ideaId": {
+      "type": "string",
+      "pattern": "^I-[0-9]{4,}$",
+      "description": "The idea in ticketing."
+    },
+    "plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "idea",
+        "repo",
+        "feature",
+        "base_branch",
+        "tasks"
+      ],
+      "description": "plan.yaml, field names from the design example.",
+      "properties": {
+        "idea": {
+          "type": "string",
+          "pattern": "^I-[0-9]{4,}$",
+          "description": "Must equal ideaId."
+        },
+        "repo": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Absolute path of the repository, e.g. /fleet/repos/app."
+        },
+        "feature": {
+          "type": "string",
+          "pattern": "^F-[0-9]{4,}$",
+          "description": "The feature of the idea."
+        },
+        "base_branch": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The feature branch; every task of the plan lands here."
+        },
+        "tasks": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/planTask"
+          },
+          "description": "Tasks and their dependencies."
+        }
+      }
+    }
+  },
+  "$defs": {
+    "planTask": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "title",
+        "kind",
+        "profile"
+      ],
+      "properties": {
+        "key": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]*$",
+          "description": "Task key, unique in the plan, kebab-case. With the idea it forms ledger UNIQUE (idea_id, key)."
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "description": "One-line task title."
+        },
+        "ticket": {
+          "type": "string",
+          "pattern": "\\.md$",
+          "description": "Path of the Markdown ticket in format C1, relative to the idea folder."
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Task kind. Known values in the design: feature, quality, docs, judge. Open string: the design gives no closed list."
+        },
+        "profile": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Name of a worker profile in /fleet/profiles/."
+        },
+        "covers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^R[0-9]+$"
+          },
+          "uniqueItems": true,
+          "description": "Requirement ids from requirements.yaml that this task covers."
+        },
+        "inputs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Repository paths the task reads."
+        },
+        "outputs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Repository paths the task owns. No 2 running tasks of 1 feature own overlapping paths."
+        },
+        "after": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true,
+          "description": "Keys of tasks that must be done first."
+        },
+        "acceptance": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/acceptance"
+          },
+          "description": "Checks the verifier runs in the worker sandbox."
+        },
+        "budget": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "max_minutes": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Wall-clock hang guard in minutes."
+            }
+          },
+          "description": "Hang guard only. There is no token budget."
+        },
+        "judges": {
+          "type": "string",
+          "description": "Key of the judgment task this judge task reviews. Required when kind is judge."
+        }
+      },
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "judge"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "required": [
+          "judges"
+        ]
+      }
+    },
+    "acceptance": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": false,
+      "properties": {
+        "run": {
+          "type": "string",
+          "minLength": 1,
+          "description": "A shell command; exit 0 passes."
+        },
+        "sections": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "Structural check: [file path, Markdown heading] that must exist."
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "run"
+          ]
+        },
+        {
+          "required": [
+            "sections"
+          ]
+        }
+      ]
+    }
+  }
+}

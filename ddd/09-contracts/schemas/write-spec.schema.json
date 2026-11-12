@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ddd/09-contracts/schemas/write-spec.schema.json",
+  "title": "Write Spec",
+  "description": "The sub-orchestrator writes spec.md and requirements.yaml after approval.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "ideaId",
+    "spec",
+    "requirements"
+  ],
+  "properties": {
+    "ideaId": {
+      "type": "string",
+      "pattern": "^I-[0-9]{4,}$",
+      "description": "The idea in specifying."
+    },
+    "spec": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The full Markdown of spec.md."
+    },
+    "requirements": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "idea",
+        "requirements"
+      ],
+      "description": "requirements.yaml, field names from the design example.",
+      "properties": {
+        "idea": {
+          "type": "string",
+          "pattern": "^I-[0-9]{4,}$",
+          "description": "Must equal ideaId."
+        },
+        "requirements": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "text"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^R[0-9]+$",
+                "description": "Requirement id, R1, R2, ..."
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1,
+                "description": "One testable requirement."
+              }
+            }
+          },
+          "description": "The numbered acceptance list."
+        }
+      }
+    }
+  }
+}

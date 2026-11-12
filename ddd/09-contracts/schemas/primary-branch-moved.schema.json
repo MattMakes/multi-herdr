@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ddd/09-contracts/schemas/primary-branch-moved.schema.json",
+  "title": "Primary Branch Moved",
+  "description": "The primary branch has a new tip.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "primaryBranch",
+    "tip"
+  ],
+  "properties": {
+    "primaryBranch": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The project's base branch, ledger features.primary_branch, e.g. main."
+    },
+    "tip": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$",
+      "description": "The new tip of the primary branch."
+    }
+  }
+}

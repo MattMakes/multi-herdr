@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ddd/09-contracts/schemas/approve-assumptions.schema.json",
+  "title": "Approve Assumptions",
+  "description": "The operator approves the assumptions.md they saw.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "ideaId",
+    "assumptionsHash"
+  ],
+  "properties": {
+    "ideaId": {
+      "type": "string",
+      "pattern": "^I-[0-9]{4,}$",
+      "description": "The idea in awaiting_approval."
+    },
+    "assumptionsHash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "sha256 of the assumptions.md the operator saw with horch idea show."
+    }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ddd/09-contracts/schemas/abandon-task-branch.response.schema.json",
+  "title": "Abandon Task Branch response",
+  "description": "The rescue ref that keeps the abandoned work.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "rescueRef"
+  ],
+  "properties": {
+    "rescueRef": {
+      "type": "string",
+      "pattern": "^refs/horch/rescue/",
+      "description": "The verified rescue ref, e.g. refs/horch/rescue/T-0007-03/1."
+    }
+  }
+}

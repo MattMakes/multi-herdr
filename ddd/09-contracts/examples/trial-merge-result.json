@@ -1,0 +1,6 @@
+{
+  "clean": false,
+  "paths": [
+    "src/sync/client.py"
+  ]
+}

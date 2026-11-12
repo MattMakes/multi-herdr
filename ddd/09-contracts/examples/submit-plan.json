@@ -1,0 +1,72 @@
+{
+  "ideaId": "I-0007",
+  "plan": {
+    "idea": "I-0007",
+    "repo": "/fleet/repos/app",
+    "feature": "F-0003",
+    "base_branch": "feature/retry-sync-backoff",
+    "tasks": [
+      {
+        "key": "backoff",
+        "title": "Add exponential backoff to SyncClient.request",
+        "ticket": "tickets/01-backoff.md",
+        "kind": "feature",
+        "profile": "coder-codex",
+        "covers": [
+          "R1"
+        ],
+        "inputs": [
+          "src/sync/client.py"
+        ],
+        "outputs": [
+          "src/sync/client.py",
+          "tests/test_backoff.py"
+        ],
+        "acceptance": [
+          {
+            "run": "pytest tests/test_backoff.py -q"
+          },
+          {
+            "run": "pytest tests/sync -q"
+          }
+        ],
+        "budget": {
+          "max_minutes": 40
+        }
+      },
+      {
+        "key": "retry-doc",
+        "title": "Document the retry behavior in docs/sync.md",
+        "kind": "docs",
+        "profile": "writer-claude",
+        "covers": [
+          "R2"
+        ],
+        "outputs": [
+          "docs/sync.md"
+        ],
+        "acceptance": [
+          {
+            "sections": [
+              "docs/sync.md",
+              "## Retries"
+            ]
+          }
+        ]
+      },
+      {
+        "key": "retry-doc-judge",
+        "title": "Judge docs/sync.md against R1 and R2",
+        "kind": "judge",
+        "judges": "retry-doc",
+        "profile": "judge-codex",
+        "after": [
+          "retry-doc"
+        ],
+        "outputs": [
+          "docs/sync.review.md"
+        ]
+      }
+    ]
+  }
+}

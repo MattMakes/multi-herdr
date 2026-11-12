@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ddd/09-contracts/schemas/usage-limit-reported.schema.json",
+  "title": "Usage Limit Reported",
+  "description": "A provider pool reports a usage limit or an outage for an attempt.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "attemptId",
+    "pool",
+    "resetAt"
+  ],
+  "properties": {
+    "attemptId": {
+      "type": "string",
+      "pattern": "^(T-[0-9]{4,}-[0-9]{2,}/A[0-9]+|I-[0-9]{4,}/[a-z_]+/[0-9]+)$",
+      "description": "The attempt that hit the limit."
+    },
+    "pool": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The usage pool of the persona's provider, as named in the worker profile."
+    },
+    "resetAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the pool resets, UTC."
+    }
+  }
+}

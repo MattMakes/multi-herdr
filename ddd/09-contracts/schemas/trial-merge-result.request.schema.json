@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ddd/09-contracts/schemas/trial-merge-result.request.schema.json",
+  "title": "Trial Merge Result request",
+  "description": "The 2 sides of the trial merge.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "featureA",
+    "featureB"
+  ],
+  "properties": {
+    "featureA": {
+      "type": "string",
+      "pattern": "^F-[0-9]{4,}$",
+      "description": "The in-flight feature whose tip is merged."
+    },
+    "featureB": {
+      "type": "string",
+      "pattern": "^(F-[0-9]{4,}|primary)$",
+      "description": "The other in-flight feature, or the literal primary for the primary branch."
+    }
+  }
+}

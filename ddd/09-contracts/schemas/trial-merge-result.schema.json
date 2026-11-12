@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ddd/09-contracts/schemas/trial-merge-result.schema.json",
+  "title": "Trial Merge Result",
+  "description": "The answer of a git merge-tree trial merge: clean or the conflicting paths.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "clean",
+    "paths"
+  ],
+  "properties": {
+    "clean": {
+      "type": "boolean",
+      "description": "true when the 2 tips merge with no conflict."
+    },
+    "paths": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true,
+      "description": "Conflicting paths, ledger trial_merges.conflict_files. Empty exactly when clean is true."
+    }
+  },
+  "if": {
+    "properties": {
+      "clean": {
+        "const": true
+      }
+    },
+    "required": [
+      "clean"
+    ]
+  },
+  "then": {
+    "properties": {
+      "paths": {
+        "maxItems": 0
+      }
+    }
+  },
+  "else": {
+    "properties": {
+      "paths": {
+        "minItems": 1
+      }
+    }
+  }
+}

@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ddd/09-contracts/schemas/write-result.schema.json",
+  "title": "Write Result",
+  "description": "The worker's claimed result, outbox/result.json. Field names from the design example.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "task",
+    "attempt",
+    "status",
+    "summary",
+    "commits"
+  ],
+  "properties": {
+    "task": {
+      "type": "string",
+      "pattern": "^T-[0-9]{4,}-[0-9]{2,}$",
+      "description": "The task of the attempt."
+    },
+    "attempt": {
+      "type": "string",
+      "pattern": "^A[0-9]+$",
+      "description": "The attempt directory name, e.g. A1."
+    },
+    "status": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The worker's claim. Known value in the design: completed. Open string: the design gives no closed list (open question Q3)."
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "description": "What the worker did, in 1 or 2 sentences."
+    },
+    "commits": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{7,40}$"
+      },
+      "uniqueItems": true,
+      "description": "Commit ids on the task branch, short or full hex. May be empty."
+    },
+    "files_changed": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Repository paths the attempt changed."
+    },
+    "acceptance_self_check": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "run",
+          "exit"
+        ],
+        "properties": {
+          "run": {
+            "type": "string"
+          },
+          "exit": {
+            "type": "integer",
+            "description": "Exit code the worker saw."
+          }
+        }
+      },
+      "description": "The worker's own run of the acceptance commands. Advisory: the verifier runs them again."
+    },
+    "notes_for_next": {
+      "type": "string",
+      "description": "Notes for the next task or attempt."
+    }
+  }
+}

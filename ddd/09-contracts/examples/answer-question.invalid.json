@@ -1,0 +1,22 @@
+[
+  {
+    "why": "a covered answer must cite the approved line",
+    "payload": {
+      "questionId": "T-0007-02/A1/Q1",
+      "answer": {
+        "case": "covered",
+        "text": "Log at INFO."
+      }
+    }
+  },
+  {
+    "why": "the answer case is the closed list of ledger questions.answer_case",
+    "payload": {
+      "questionId": "T-0007-02/A1/Q1",
+      "answer": {
+        "case": "guess",
+        "text": "Log at INFO."
+      }
+    }
+  }
+]

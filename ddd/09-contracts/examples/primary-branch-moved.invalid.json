@@ -1,0 +1,9 @@
+[
+  {
+    "why": "a tip is a full commit id, so 2 reports of the same tip de-duplicate",
+    "payload": {
+      "primaryBranch": "main",
+      "tip": "cb9655c6"
+    }
+  }
+]

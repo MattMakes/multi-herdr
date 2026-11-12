@@ -1,0 +1,9 @@
+[
+  {
+    "why": "only a fleet task branch can be abandoned; the primary branch never can",
+    "payload": {
+      "branch": "main",
+      "taskId": "T-0007-03"
+    }
+  }
+]

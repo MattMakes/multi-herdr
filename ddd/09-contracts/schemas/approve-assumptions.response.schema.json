@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ddd/09-contracts/schemas/approve-assumptions.response.schema.json",
+  "title": "Approve Assumptions response",
+  "description": "Whether fleetd recorded the approval.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "approved"
+  ],
+  "properties": {
+    "approved": {
+      "type": "boolean",
+      "description": "true: fleetd wrote approval.json with this hash (or had already). false: refused, because the hash is not the hash of the current assumptions.md or the idea is not in awaiting_approval."
+    }
+  }
+}

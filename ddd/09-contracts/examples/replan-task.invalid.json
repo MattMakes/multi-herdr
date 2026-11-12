@@ -1,0 +1,13 @@
+[
+  {
+    "why": "a replanned task still needs a profile to run on",
+    "payload": {
+      "taskId": "T-0007-02",
+      "planChange": {
+        "key": "logging",
+        "title": "Log each retry",
+        "kind": "feature"
+      }
+    }
+  }
+]

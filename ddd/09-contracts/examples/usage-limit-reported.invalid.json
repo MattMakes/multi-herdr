@@ -1,0 +1,9 @@
+[
+  {
+    "why": "without a pool fleetd cannot pick a fallback on another provider",
+    "payload": {
+      "attemptId": "T-0007-02/A1",
+      "resetAt": "2026-11-10T20:00:00Z"
+    }
+  }
+]

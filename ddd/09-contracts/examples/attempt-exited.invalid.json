@@ -1,0 +1,9 @@
+[
+  {
+    "why": "an exit fact always says whether a result exists",
+    "payload": {
+      "attemptId": "T-0007-02/A1",
+      "exitStatus": 0
+    }
+  }
+]

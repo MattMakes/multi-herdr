@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ddd/09-contracts/schemas/check-merged.schema.json",
+  "title": "Check Merged",
+  "description": "The clock asks integration to check whether a feature is in the primary branch.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "featureId"
+  ],
+  "properties": {
+    "featureId": {
+      "type": "string",
+      "pattern": "^F-[0-9]{4,}$",
+      "description": "The feature whose pull request is open."
+    }
+  }
+}

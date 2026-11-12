@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ddd/09-contracts/schemas/task-escalated.schema.json",
+  "title": "Task Escalated",
+  "description": "A task needs the operator; written to needs-you/ and recorded by integration.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "taskId",
+    "reason"
+  ],
+  "properties": {
+    "taskId": {
+      "type": "string",
+      "pattern": "^T-[0-9]{4,}-[0-9]{2,}$",
+      "description": "The escalated task."
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Why the task escalated. Known reasons: attempts and the replan are exhausted, the plan was refused, a rescue failed, a judge CRITICAL item is left after 2 fix rounds, a profile defect (waiting_approval). Open string."
+    }
+  }
+}

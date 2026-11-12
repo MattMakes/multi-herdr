@@ -1,0 +1,12 @@
+[
+  {
+    "why": "a result names its task and attempt with the design field names task and attempt",
+    "payload": {
+      "taskId": "T-0007-02",
+      "attemptId": "A1",
+      "status": "completed",
+      "summary": "Done.",
+      "commits": []
+    }
+  }
+]

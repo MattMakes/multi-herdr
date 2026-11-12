@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ddd/09-contracts/schemas/pull-request-opened.schema.json",
+  "title": "Pull Request Opened",
+  "description": "A feature has a current full gate pass and its pull request is open.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "featureId",
+    "prUrl"
+  ],
+  "properties": {
+    "featureId": {
+      "type": "string",
+      "pattern": "^F-[0-9]{4,}$",
+      "description": "The ready feature."
+    },
+    "prUrl": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https://",
+      "description": "The pull request URL (pr gh) or the compare URL (pr manual), ledger features.pr."
+    }
+  }
+}
