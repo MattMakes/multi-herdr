@@ -28,7 +28,7 @@ A design review on 2026-11-11 and 2026-11-12 made 13 decisions. This document in
 
 | # | Decision | Sections changed |
 | --- | --- | --- |
-| D1 | fleetd supports macOS, Linux and Windows as first-class hosts. All OS-specific code sits behind 1 platform layer with 1 module per OS, so core code has no `cfg(target_os)`. Migration of the existing OS-specific code is a separate decision. | Summary; Goals, non-goals and defaults; Requirements (PL-1 to PL-4); Architecture and roles (fleetd, wrapper, Platform layer, What each OS provides); Supervision, liveness and reconciliation; Failure modes (FM-11, FM-12); Migration plan (Phase 1); Open questions |
+| D1 | fleetd supports macOS, Linux and Windows as first-class hosts. All OS-specific code sits behind 1 platform layer with 1 module per OS, so core code has no `cfg(target_os)`. D16 decides the move of the existing OS-specific code. | Summary; Goals, non-goals and defaults; Requirements (PL-1 to PL-4); Architecture and roles (fleetd, wrapper, Platform layer, What each OS provides); Supervision, liveness and reconciliation; Failure modes (FM-11, FM-12); Migration plan (Phase 1); Open questions |
 | D2 | A usage limit or a provider outage is not a stall. Every worker persona names a fallback. The task restarts at once on a fallback of another provider, else waits in `waiting_quota` with its lease paused. No attempt is burned. | Summary; Requirements (RR-11); Ledger; Worker profiles and adapters (`fallback`); Supervision, liveness and reconciliation; Failure modes (FM-5); Migration plan (Phase 2) |
 | D3 | Everything is an idea. `horch idea add --direct <ticket file>` is a fast lane for a ticket you wrote: no research, no interview, a plan with 1 work task, plus its judge task when the kind is a judgment kind, that still passes plan validation and still needs a check. | Summary; Requirements (FR-10, FR-12); Ideas; Migration plan (Phase 6) |
 | D4 | A judgment task gets a structural check and a paired judge in a different session, on a different provider when the roster has one. The judge ranks each miss CRITICAL, HIGH, MEDIUM or LOW, and only CRITICAL blocks. | Summary; Requirements (FR-4, RR-3); Architecture and roles (Verifier, Done for each kind of task); Workspace layout (plan example); Failure modes (FM-9, FM-33) |
@@ -42,7 +42,9 @@ A design review on 2026-11-11 and 2026-11-12 made 13 decisions. This document in
 | D12 | A feature is an intake funnel until its pull request merges. `horch idea add --to <feature>` joins an open feature; with no `--to`, an idea starts a new feature. | Features, landing and integration (Features); Ideas; Ledger (`ideas.feature_id`) |
 | D13 | A worker question that nothing approved covers and that changes no assumption is decided by the sub-orchestrator as its own reversible assumption. Only product direction, scope or a trade-off you must own goes to you. | Ideas (question flow); Requirements (RR-12); Ledger (`questions`); Workspace layout; Failure modes (FM-35) |
 | D14 | The DDD run does all 9 steps as an auto draft. | No section changed |
+| D16 | The 178 existing OS-specific sites in production code move into the platform layer in 1 dedicated phase, Phase P, between Phase 0 and Phase 1. The move changes no behavior. | Summary; Amendments (D1); Goals, non-goals and defaults (Host OS); Requirements (PL-2, PL-6); Architecture and roles (Platform layer, One platform layer for three OSes); Migration plan (Phase 0, Phase P, Phase 1, New work for each phase); Open questions |
 | Fix round 1 | A15 to A18 (J1 to J4): hang detection on all 3 OSes; the branch of a `--direct` feature; a `--direct` plan of a judgment kind; the kind `judge`, which needs no judge. | Amendments (D3); Goals, non-goals and defaults; Requirements (FR-4, FR-12, PL-2, PL-5); Architecture and roles (fleetd, Platform layer, Done for each kind of task, Supervision tree, What each OS provides); Workspace layout (plan example); Ledger (`features`); Ideas; Features, landing and integration (Features); Supervision, liveness and reconciliation; Failure modes (FM-12); Migration plan (Phase 0, Phase 1) |
+| Revision round 2: A19 to A21 | A19 (D16): the platform layer phase; A20 (discover hotspot H6): a state name is never written without its entity, and the states that share a name; A21: preservation row 06 S14. | Summary; Amendments (D1, D16); Goals, non-goals and defaults (Host OS); Requirements (PL-2, PL-6); Architecture and roles (Platform layer, One platform layer for three OSes); Ledger (States that share a name, I8); Ideas (`integrating`); Features, landing and integration (No work is lost, Between features); Supervision, liveness and reconciliation (reconcile pass); Preservation analysis (06 S14); Migration plan (Phase 0, Phase P, Phase 1, New work for each phase); Open questions |
 
 The orchestrator settled some engineering details in the same review: the verifier sandbox (SR-4), the command channel, waits, the `pr` setting, knowledge across ideas, the plan format and the adapters that carry over. The review also added the Preservation analysis and the new Phase 0 tests.
 
@@ -1278,7 +1280,7 @@ Phases 1 to 4 remove most of the stalls you see day to day and stop worktrees fr
 
 ## Open questions
 
-Your 5 choices are answered below. Eight facts need a live test; none blocks Phases 0 to 5.
+Your 6 choices are answered below. Eight facts need a live test; none blocks Phases 0 to 5.
 
 **Your call (answered)**
 
@@ -1288,6 +1290,7 @@ Your 5 choices are answered below. Eight facts need a live test; none blocks Pha
 | One run, one branch and one PR per idea, with several ideas running at once? | No: 1 feature branch and 1 pull request per feature, which holds 1 main idea and its follow-on ideas. Several features run at once, in parallel by default. See Features, landing and integration. | D5, D10, D11, D12 |
 | How many sub-orchestrator panes at once? | No cap. 1 sub-orchestrator per feature; an idle one stops after 30 min to free memory. Only health guards pause new dispatch. | D8 |
 | Which host runs the fleet day to day, macOS (launchd) or Linux (systemd)? | All 3: macOS, Linux and Windows, behind 1 platform layer. | D1 |
+| When does the existing OS-specific code move into the platform layer? | In 1 dedicated phase, Phase P, after Phase 0 and before Phase 1. All 178 production sites move, with no change of behavior. The `cfg` sites in tests stay. | D16 |
 | Is 1 hour the right cap on a worker's declared wait? | An exec worker that asks a question exits, and its task parks with no process and no time limit. The 1 h cap applies only to an interactive persona. | Settled by the orchestrator with D8; question flow D13 |
 
 **To confirm by test**
