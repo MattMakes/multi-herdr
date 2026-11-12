@@ -83,5 +83,6 @@ Size: medium → keep only the latest GateRun per gate kind and the latest Trial
 - Internal domain events: the events in §6 → written as event rows by `LedgerEventLog`.
 
 ## 10. Notes & open questions
-- Q5: a rebase does not wait for running attempts of the feature.
-- define Q1 (pull-request messages) stays with ddd-connect; the GitHub collaboration sits behind PullRequestGateway.
+- Q5 answered (orchestrator, D15): a rebase does not wait for running attempts of the feature; their task branches rebase at landing.
+- The rescue ref of the old tip comes from worktree-custody through RescueRefGateway; the rebase runs only after the ref reads back (A13, define N6).
+- define Q1 answered: connect has open-pull-request and pull-request-merged; the GitHub collaboration sits behind PullRequestGateway and GitObserver.

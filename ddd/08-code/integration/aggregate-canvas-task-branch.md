@@ -81,4 +81,4 @@ Size: small → no snapshots needed.
 
 ## 10. Notes & open questions
 - 04 L5 and 04 L9 (unlanded work kept and listed) are owned here, as decompose N3 says.
-- Q5: a task branch that no longer applies after a feature rebase goes to conflicted at build-bundle.
+- Q5 answered (orchestrator, D15): task branches rebase at landing; a task branch that no longer applies after a feature rebase goes to conflicted at build-bundle.

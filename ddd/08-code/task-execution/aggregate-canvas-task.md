@@ -95,6 +95,6 @@ Size: small → no snapshots needed. Attempts keep ids, PIDs and outcomes only, 
 - Internal domain events: the events in §6 → written as event rows by `LedgerEventLog`.
 
 ## 10. Notes & open questions
-- Q1: the owner of the fleet-run wrapper decides where the heartbeat and exit files are produced; the Task reads them only as facts.
-- Q4: herdr agent status reaches the Task as a LivenessProbe reading, not as a message.
-- Q5: a feature rebase does not wait for running attempts in this design.
+- Q1 answered (orchestrator, D15): worker-profiles owns the fleet-run wrapper, which writes heartbeat.json and exit.json; the Task reads them only as facts.
+- Q4 answered (orchestrator, D15): herdr agent status is the message agent-status-changed; the Task reads it through the LivenessProbe reading.
+- Q5 answered (orchestrator, D15): a feature rebase does not wait for running attempts; task branches rebase at landing.

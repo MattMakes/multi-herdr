@@ -2,11 +2,11 @@
 
 | | |
 |---|---|
-| Classification | supporting (cost-reducer) · sourcing build · pattern **active-record** |
+| Classification | supporting (cost-reducer) · sourcing build · pattern **domain-model** (plan validation module only; intake and questions active-record, A12) |
 | Deployable | `horch` (modular-monolith) · team `core-team` · data store own (the ledger, single writer fleetd) |
 | Module path | `crates/horch-core/src/fleetd/ideas` |
-| Structure | records + use cases (active record) |
-| Purpose | Ideas takes each rough idea of the operator from capture to 1 committed, validated plan, and closes the idea when its feature is merged (G3). It decides when an idea may move to its next state, holds the operator approval gate, and answers worker questions against the approved assumptions, so that no AI plans 2 ideas at once and no task exists outside an approved plan (FR-2, FR-10, FR-12). It does not run tasks (task-execution), land branches or open the feature (integration), or start processes (fleet-runtime). - canvas: `ddd/07-define/ideas/bounded-context-canvas.md` |
+| Structure | hexagonal for the Plan aggregate; records + use cases (active record) for intake and questions |
+| Purpose | Ideas takes each rough idea of the operator from capture to 1 committed, validated plan, and closes the idea when its feature is merged (G3). It decides when an idea may move to its next state, holds the operator approval gate, and answers worker questions against the approved assumptions, so that no AI plans 2 ideas at once and no task exists outside an approved plan (FR-2, FR-10, FR-12). It does not run tasks (task-execution), land branches or open the feature (integration), or start processes (worker-profiles). It owns the 1 needs-you list, where everything that waits for the operator is shown. - canvas: `ddd/07-define/ideas/bounded-context-canvas.md` |
 | Domain roles | specification-model, approver |
 
 ## 1. Module layout
@@ -16,6 +16,7 @@ crates/horch-core/src/fleetd/ideas/
   domain/
     idea.rs            Idea record and its state table
     question.rs        Question record
+    plan.rs            Plan aggregate: the plan validation module
     plan_validator.rs  PlanValidator domain service (pure)
   application/
     commands.rs        1 use case per owned command
@@ -27,11 +28,15 @@ crates/horch-core/src/fleetd/ideas/
     memory.rs          in-memory fakes for tests
     gateways.rs        adapters to other contexts and adopted systems
 ```
-Dependency rule: `domain/` imports nothing outside itself and std; `application/` imports `domain/` only; `adapters/` may import both and existing horch-core modules. No file under `crates/horch-core/src/fleetd/` holds `cfg(target_os)`, `cfg(unix)` or `cfg(windows)`. Enforced by `crates/horch-core/tests/arch_scan.rs` (tests: `fitness_domain_imports_nothing_outward`, `fitness_fleetd_tree_has_no_os_cfg`, `fitness_only_fleet_runtime_opens_the_ledger_writable`).
+Dependency rule: `domain/` imports nothing outside itself and std; `application/` imports `domain/` only; `adapters/` may import both and existing horch-core modules. No production file of the workspace outside `crates/horch-platform` holds `cfg(target_os)`, `cfg(unix)`, `cfg(windows)` or `cfg(target_family)` (PL-2, from Phase P). Enforced by `crates/horch-core/tests/arch_scan.rs` (tests: `fitness_domain_imports_nothing_outward`, `fitness_workspace_production_code_has_no_os_cfg_outside_horch_platform`, `fitness_only_fleet_runtime_opens_the_ledger_writable`, `fitness_no_context_touches_foreign_tables`).
 Composition root: `crates/horch/src/cmd/fleetd.rs` (daemon and `horch fleetd check`) wires every adapter to its port; short-lived CLI commands wire the read-only queries and the command channel client.
 
 ## 2. Domain model
-No aggregates by design (pattern = active-record, strategize N2). The records and their rules:
+| Aggregate | Root | Invariants | Commands → events | Canvas |
+|---|---|---|---|---|
+| `plan` | `Plan` | 6 | 3 commands → 4 events | `aggregate-canvas-plan.md` |
+
+Plan validation is the only domain-model module of ideas (strategize D1 option C, orchestrator D15). Idea intake and questions stay active-record records in IdeasStore; their use cases are transaction scripts (A12). ideas owns the 1 needs-you list: approvals, parked ideas, escalated questions and escalated tasks (A14). The rules:
 - Only code advances an idea. When an idea is captured, the dispatcher starts its sub-orchestrator on the next pass and the idea goes to clarifying; a --direct idea goes to ticketing with no research and no interview (FR-1, FR-2, FR-12).
 - An idea passes awaiting_approval only when approval.json, written by fleetd, holds the sha256 of the current assumptions.md, and the approve command ran outside every fleet attempt. An approval written by any other process is ignored (FR-10, I7, C5).
 - The assumptions validator refuses assumptions.md while any item is marked [open]. When the file validates, fleetd requests the operator approval and posts a herdr notification.
@@ -63,12 +68,12 @@ Domain services: `PlanValidator`: Schema, DAG, coverage, profiles, model guide, 
 | `ApproveAssumptions` | `approve-assumptions` | horch idea approve <id>. Refused inside any fleet attempt; profiles deny it. fleetd writes approval.json with the sha256 the operator saw; any other approval file is ignored (I7). | store rows | see §2 |
 | `AddDirectIdea` | `add-direct-idea` | horch idea add --direct <ticket file>, optional --to. Refused inside a fleet attempt. | store rows | see §2 |
 | `WriteSpec` | `write-spec` | Writes spec.md and requirements.yaml after approval. | store rows | see §2 |
-| `SubmitPlan` | `submit-plan` | Writes tickets and plan.yaml. | store rows | see §2 |
-| `ValidatePlan` | `validate-plan` | The plan validator: paired judges, declared gates, model guide, overlapping paths. Commits tasks in 1 transaction. | store rows | see §2 |
+| `SubmitPlan` | `submit-plan` | Writes tickets and plan.yaml. | `Plan` by id | see §2 |
+| `ValidatePlan` | `validate-plan` | The plan validator: paired judges, declared gates, model guide, overlapping paths. Commits tasks in 1 transaction. | `Plan` by id | see §2 |
 | `AskQuestion` | `ask-question` | Writes 1 question file, commits work in progress, exits. | store rows | see §2 |
 | `AnswerQuestion` | `answer-question` | fleetd starts the owner on each pass until an answer is recorded. 4 cases (design, Ideas, How a worker's question is resolved). | store rows | see §2 |
 | `EscalateQuestion` | `escalate-question` | Fires when the time limit of the question row passes. | store rows | see §2 |
-| `ReplanTask` | `replan-task` | Once per task. | store rows | see §2 |
+| `ReplanTask` | `replan-task` | Once per task. | `Plan` by id | see §2 |
 | `RollUpIdea` | `roll-up-idea` | in_progress to integrating. | store rows | see §2 |
 | `CloseIdea` | `close-idea` | Needs every worktree of the idea removed. | store rows | see §2 |
 
@@ -78,26 +83,28 @@ Transaction: 1 aggregate (or 1 store call set) per use case through the one-door
 ### Driving
 | Port | Operations | Called by |
 |---|---|---|
-| `IdeasCommands` | one operation per use case; called by the command channel (horch idea ...), the reconcile pass and the idea-folder ingester | CommandChannelHandler and ReconcilePassDriver |
+| `IdeasCommands` | one operation per use case; called by the command channel (horch idea ..., and the answers of a sub-orchestrator to worker questions), the reconcile pass and the idea-folder ingester | CommandChannelHandler and ReconcilePassDriver |
 | `IdeasQueries` | read models IdeaBoard, InterviewRecord, InFlightDiffs, ApprovedAssumptionsAndSpec |  |
-| `IdeasEventHandlers` | policies on feature-opened, replan-requested, task-branch-landed, feature-merged | InProcessReconcileConsumer |
+| `IdeasEventHandlers` | policies on feature-opened, replan-requested, task-branch-landed, feature-merged, task-escalated (onto the needs-you list) and agent-status-changed (sub-orchestrator pane state) | InProcessReconcileConsumer |
 | `IdeaFolderIngest` | assumptions.md, spec.md, requirements.yaml, plan.yaml, question and answer files; 1 ingestion per (path, sha256) | IdeaFolderIngester |
 
 ### Driven
 | Port | Operations | Why it exists |
 |---|---|---|
-| `IdeasStore` | ideas, requirements, questions rows and sub-orchestrator attempt rows (task_id null) | persistence, collaborator or infrastructure need named in the operations |
+| `IdeasStore` | active-record rows of idea intake and questions: ideas, requirements, questions and sub-orchestrator attempt rows (task_id null) | persistence, collaborator or infrastructure need named in the operations |
 | `EventPublisher` | writes the event row in the same ledger transaction | persistence, collaborator or infrastructure need named in the operations |
 | `LaunchEnvironmentGateway` | asks worker-profiles for the idea-lead launch environment | persistence, collaborator or infrastructure need named in the operations |
-| `AgentProcessGateway` | starts or stops the sub-orchestrator pane through fleet-runtime | persistence, collaborator or infrastructure need named in the operations |
-| `NeedsYouInbox` | approval requests, parked ideas and escalated questions; herdr notification | persistence, collaborator or infrastructure need named in the operations |
+| `AgentProcessGateway` | sends start-agent-process to worker-profiles to start or stop the sub-orchestrator pane; never inside a ledger transaction | persistence, collaborator or infrastructure need named in the operations |
+| `NeedsYouInbox` | the 1 needs-you list (OR-3): approval requests, parked ideas, escalated questions and escalated tasks; herdr notification | persistence, collaborator or infrastructure need named in the operations |
 | `AttemptContext` | tells whether the caller runs inside a fleet attempt, so approve and --direct refuse there | persistence, collaborator or infrastructure need named in the operations |
 | `Clock` | 30 min idle stop, 7 day park, question time limit, hourly reminder | persistence, collaborator or infrastructure need named in the operations |
+| `PlanRepository` | load and save Plan with its PlannedTasks by idea id and content hash | persistence, collaborator or infrastructure need named in the operations |
+| `IdeaFolderWriter` | writes plan.verdict.json (plan-verdict-written) and approval.json (assumptions-approved) into the idea folder, atomic; fleetd is their only writer | persistence, collaborator or infrastructure need named in the operations |
 
 ## 5. Adapters
 | Port | Implementation | Technology | Notes |
 |---|---|---|---|
-| `IdeasCommands` | `CommandChannelHandler` | production | and ReconcilePassDriver |
+| `IdeasCommands` | `CommandChannelHandler and ReconcilePassDriver` | production | - |
 | `IdeasEventHandlers` | `InProcessReconcileConsumer` | production | - |
 | `IdeaFolderIngest` | `IdeaFolderIngester` | production | - |
 | `IdeasStore` | `SqliteIdeasStore` | production | - |
@@ -106,7 +113,7 @@ Transaction: 1 aggregate (or 1 store call set) per use case through the one-door
 | `EventPublisher` | `RecordingEventPublisher` | in-memory fake | - |
 | `LaunchEnvironmentGateway` | `InProcessWorkerProfiles` | production | - |
 | `LaunchEnvironmentGateway` | `FakeLaunchEnvironment` | in-memory fake | - |
-| `AgentProcessGateway` | `InProcessFleetRuntime` | production | - |
+| `AgentProcessGateway` | `InProcessWorkerProfiles` | production | - |
 | `AgentProcessGateway` | `FakeAgentProcesses` | in-memory fake | - |
 | `NeedsYouInbox` | `NeedsYouFolder` | production | - |
 | `NeedsYouInbox` | `InMemoryNeedsYou` | in-memory fake | - |
@@ -114,21 +121,27 @@ Transaction: 1 aggregate (or 1 store call set) per use case through the one-door
 | `AttemptContext` | `FakeAttemptContext` | in-memory fake | - |
 | `Clock` | `PlatformAwakeClock` | production | - |
 | `Clock` | `FakeClock` | in-memory fake | - |
+| `PlanRepository` | `SqlitePlanRepository` | production | - |
+| `PlanRepository` | `InMemoryPlanRepository` | in-memory fake | - |
+| `IdeaFolderWriter` | `FsIdeaFolderWriter` | production | ProtectedFiles of fleet-runtime |
+| `IdeaFolderWriter` | `InMemoryIdeaFolder` | in-memory fake | - |
 
 ## 6. Domain events
 ### Published
 | Event (`discover` id) | Produced by | Consumers | Contract payload (`connect.json`) | Delivery | Contract test |
 |---|---|---|---|---|---|
-| `approval-requested` | use case that emits it (§3) | operator | ideaId, assumptionsHash | at-least-once | `contract: approval-requested` |
-| `worker-question-asked` | use case that emits it (§3) | sub-orchestrator | taskId, questionId, text | at-least-once | `contract: worker-question-asked` |
-| `assumptions-written` | use case that emits it (§3) | integration | ideaId, featureId? | at-least-once | `contract: assumptions-written` |
-| `direct-idea-accepted` | use case that emits it (§3) | integration | ideaId, ticketFile, featureId? | at-least-once | `contract: direct-idea-accepted` |
-| `plan-committed` | use case that emits it (§3) | task-execution | ideaId, taskIds[] | at-least-once | `contract: plan-committed` |
-| `plan-refused` | use case that emits it (§3) | task-execution | ideaId, taskId?, reasons[] | at-least-once | `contract: plan-refused` |
-| `task-replanned` | use case that emits it (§3) | task-execution | taskId, planChange | at-least-once | `contract: task-replanned` |
-| `question-answered` | use case that emits it (§3) | task-execution | questionId, taskId | at-least-once | `contract: question-answered` |
-| `own-assumption-recorded` | use case that emits it (§3) | task-execution | questionId, taskId | at-least-once | `contract: own-assumption-recorded` |
-| `idea-tasks-landed` | use case that emits it (§3) | integration | ideaId, featureId | at-least-once | `contract: idea-tasks-landed` |
+| `approval-requested` | use case that emits it (§3) | operator | idea_id, assumptions_hash | at-least-once | `contract: approval-requested` |
+| `worker-question-asked` | use case that emits it (§3) | sub-orchestrator | task_id, question_id, text | at-least-once | `contract: worker-question-asked` |
+| `assumptions-written` | use case that emits it (§3) | integration | idea_id, feature_id? | at-least-once | `contract: assumptions-written` |
+| `direct-idea-accepted` | use case that emits it (§3) | integration | idea_id, ticket_file, feature_id? | at-least-once | `contract: direct-idea-accepted` |
+| `plan-committed` | use case that emits it (§3) | task-execution | idea_id, task_ids[] | at-least-once | `contract: plan-committed` |
+| `plan-refused` | use case that emits it (§3) | task-execution | idea_id, task_id?, reasons[] | at-least-once | `contract: plan-refused` |
+| `task-replanned` | use case that emits it (§3) | task-execution | task_id, plan_change | at-least-once | `contract: task-replanned` |
+| `question-answered` | use case that emits it (§3) | task-execution | question_id, task_id | at-least-once | `contract: question-answered` |
+| `own-assumption-recorded` | use case that emits it (§3) | task-execution | question_id, task_id | at-least-once | `contract: own-assumption-recorded` |
+| `idea-tasks-landed` | use case that emits it (§3) | integration | idea_id, feature_id | at-least-once | `contract: idea-tasks-landed` |
+| `plan-verdict-written` | use case that emits it (§3) | sub-orchestrator | idea, decision (committed|refused), reasons[] | refused), reasons[] | `contract: plan-verdict-written` |
+| `assumptions-approved` | use case that emits it (§3) | sub-orchestrator | idea, assumptions_hash | at-least-once | `contract: assumptions-approved` |
 
 ### Consumed
 | Event | From | Policy (`discover` id) | Handled by | Handler → command | Delivery | Idempotency |
@@ -137,6 +150,8 @@ Transaction: 1 aggregate (or 1 store call set) per use case through the one-door
 | `replan-requested` | task-execution | policy (see canvas) | policy | reconcile pass handler | at-least-once | the reconcile pass is level-triggered, so a reaction can run again; 1 replan per task - test `idempotent: replan-requested` |
 | `task-branch-landed` | integration | policy (see canvas) | policy | reconcile pass handler | at-least-once | the reconcile pass is level-triggered, so a reaction can run again; remove-worktree and roll-up-idea are no-ops when already done - test `idempotent: task-branch-landed` |
 | `feature-merged` | integration | policy (see canvas) | policy | reconcile pass handler | at-least-once | the reconcile pass is level-triggered, so a reaction can run again; close-idea is a no-op for a merged idea - test `idempotent: feature-merged` |
+| `task-escalated` | task-execution | policy (see canvas) | policy | reconcile pass handler | at-least-once | the reconcile pass is level-triggered, so a reaction can run again; 1 needs-you file per (taskId, reason); integration records it once per taskId - test `idempotent: task-escalated` |
+| `agent-status-changed` | herdr | policy (see canvas) | policy | reconcile pass handler | at-least-once | edge events can be lost by design; each pass re-reads session.snapshot, so a repeat or a loss changes nothing - test `idempotent: agent-status-changed` |
 
 ## 7. Read models
 | Read model | Source events | Readers | Storage | Rebuild |
@@ -145,6 +160,7 @@ Transaction: 1 aggregate (or 1 store call set) per use case through the one-door
 | `InterviewRecord` | interview-question-asked, interview-answer-recorded, idea-amended | operator and agents through horch CLI read-only commands | ledger tables and files of this context | derived again on each pass from the ledger |
 | `InFlightDiffs` | plan-committed, idea-tasks-landed | operator and agents through horch CLI read-only commands | ledger tables and files of this context | derived again on each pass from the ledger |
 | `ApprovedAssumptionsAndSpec` | assumptions-approved, assumptions-revised, spec-written, own-assumption-recorded | operator and agents through horch CLI read-only commands | ledger tables and files of this context | derived again on each pass from the ledger |
+| `NeedsYouList` | approval-requested, idea-parked, question-escalated, task-escalated, task-requeued | operator and agents through horch CLI read-only commands | ledger tables and files of this context | derived again on each pass from the ledger |
 
 ## 8. Persistence
 Tables ideas, requirements, questions and the sub-orchestrator rows of attempts (task_id null, assumption A6). Idea-folder files are ingested once per (path, sha256) through the ingested table. approval.json is written only by fleetd, after the approve request arrives on the command channel from a caller outside every fleet attempt (I7).
@@ -163,25 +179,36 @@ Tables ideas, requirements, questions and the sub-orchestrator rows of attempts 
 | fault injection | `fm29_idea_waiting_7_days_is_parked` | An idea waiting 7 days goes to parked with a needs-you note (FM-29) |
 | fault injection | `fm35_unanswered_question_escalates` | A worker question is re-driven until answered and escalates past its limit (RR-12, FM-35) |
 | use case | `given_ticket_file_when_add_direct_then_ticketing_with_1_task_and_its_judge` | use case: add-direct-idea |
-| contract | `published approval-requested carries exactly ideaId, assumptionsHash (connect.json payload) and nothing consumers did not ask for` | contract: approval-requested |
-| contract | `published worker-question-asked carries exactly taskId, questionId, text (connect.json payload) and nothing consumers did not ask for` | contract: worker-question-asked |
-| contract | `published assumptions-written carries exactly ideaId, featureId? (connect.json payload) and nothing consumers did not ask for` | contract: assumptions-written |
-| contract | `published direct-idea-accepted carries exactly ideaId, ticketFile, featureId? (connect.json payload) and nothing consumers did not ask for` | contract: direct-idea-accepted |
-| contract | `published plan-committed carries exactly ideaId, taskIds[] (connect.json payload) and nothing consumers did not ask for` | contract: plan-committed |
-| contract | `published plan-refused carries exactly ideaId, taskId?, reasons[] (connect.json payload) and nothing consumers did not ask for` | contract: plan-refused |
-| contract | `published task-replanned carries exactly taskId, planChange (connect.json payload) and nothing consumers did not ask for` | contract: task-replanned |
-| contract | `published question-answered carries exactly questionId, taskId (connect.json payload) and nothing consumers did not ask for` | contract: question-answered |
-| contract | `published own-assumption-recorded carries exactly questionId, taskId (connect.json payload) and nothing consumers did not ask for` | contract: own-assumption-recorded |
-| contract | `published idea-tasks-landed carries exactly ideaId, featureId (connect.json payload) and nothing consumers did not ask for` | contract: idea-tasks-landed |
+| contract | `published approval-requested carries exactly idea_id, assumptions_hash (connect.json payload) and nothing consumers did not ask for` | contract: approval-requested |
+| contract | `published worker-question-asked carries exactly task_id, question_id, text (connect.json payload) and nothing consumers did not ask for` | contract: worker-question-asked |
+| contract | `published assumptions-written carries exactly idea_id, feature_id? (connect.json payload) and nothing consumers did not ask for` | contract: assumptions-written |
+| contract | `published direct-idea-accepted carries exactly idea_id, ticket_file, feature_id? (connect.json payload) and nothing consumers did not ask for` | contract: direct-idea-accepted |
+| contract | `published plan-committed carries exactly idea_id, task_ids[] (connect.json payload) and nothing consumers did not ask for` | contract: plan-committed |
+| contract | `published plan-refused carries exactly idea_id, task_id?, reasons[] (connect.json payload) and nothing consumers did not ask for` | contract: plan-refused |
+| contract | `published task-replanned carries exactly task_id, plan_change (connect.json payload) and nothing consumers did not ask for` | contract: task-replanned |
+| contract | `published question-answered carries exactly question_id, task_id (connect.json payload) and nothing consumers did not ask for` | contract: question-answered |
+| contract | `published own-assumption-recorded carries exactly question_id, task_id (connect.json payload) and nothing consumers did not ask for` | contract: own-assumption-recorded |
+| contract | `published idea-tasks-landed carries exactly idea_id, feature_id (connect.json payload) and nothing consumers did not ask for` | contract: idea-tasks-landed |
 | idempotency | `handling feature-opened twice (same message id) has the same effect as once` | idempotent: feature-opened |
 | idempotency | `handling replan-requested twice (same message id) has the same effect as once` | idempotent: replan-requested |
 | idempotency | `handling task-branch-landed twice (same message id) has the same effect as once` | idempotent: task-branch-landed |
 | idempotency | `handling feature-merged twice (same message id) has the same effect as once` | idempotent: feature-merged |
+| invariant | `plan_with_a_dependency_cycle_is_refused` | The task dependencies of a plan form a graph with no cycle (FR-3) |
+| invariant | `plan_without_declared_fast_gate_is_refused` | A plan of a project with no declared fast gate is refused |
+| invariant | `second_replan_of_a_task_is_refused` | A task is replanned at most once |
+| transition | `transition_refused_to_submitted_needs_a_new_content_hash` | transition: refused -> submitted |
+| invariant | `question_escalates_after_15_min_and_operator_wait_has_no_limit` | A worker question with no answer from a running sub-orchestrator escalates to the operator after 15 min; the wait for the operator has no limit (orchestrator, D15) |
+| invariant | `sub_orchestrator_answer_arrives_on_the_command_channel` | The sub-orchestrator answers a worker question through the command channel; fleetd stays the only ledger writer |
+| invariant | `escalated_task_appears_on_the_1_needs_you_list` | There is 1 needs-you list and ideas owns it (OR-3, decompose N9) |
+| contract | `published plan-verdict-written carries exactly idea, decision (committed|refused), reasons[] (connect.json payload) and nothing consumers did not ask for` | contract: plan-verdict-written |
+| contract | `published assumptions-approved carries exactly idea, assumptions_hash (connect.json payload) and nothing consumers did not ask for` | contract: assumptions-approved |
+| idempotency | `handling task-escalated twice (same task_id, reason) has the same effect as once` | idempotent: task-escalated |
+| idempotency | `handling agent-status-changed twice (same pane, agent_status; each pass re-reads session.snapshot) has the same effect as once` | idempotent: agent-status-changed |
 | fitness | `fitness_domain_imports_nothing_outward` | §1 |
 
 ## 10. Integration & anti-corruption
-Talks to worker-profiles and fleet-runtime only through LaunchEnvironmentGateway and AgentProcessGateway to start the sub-orchestrator pane (connect N3). Sub-orchestrators reach this context only as files in the idea folder; the operator reaches it through horch idea commands on the command channel.
+Talks to worker-profiles only through LaunchEnvironmentGateway and AgentProcessGateway to start the sub-orchestrator pane (connect N3, D3). A sub-orchestrator answers a worker question through the command channel, and fleetd stays the only ledger writer. The herdr agent status arrives as agent-status-changed. Sub-orchestrators reach this context only as files in the idea folder; the operator reaches it through horch idea commands on the command channel.
 
 ## 11. Decisions, assumptions, open points
-- Decisions D1 (module root) and D4 (only the verifier sets done) apply to every context; D2 applies to task-execution; D3 (wrapper owner) is open.
-- Assumptions: A1, A2, A5, A7, A9, A6 · Open questions: Q1 to Q6 in code.json where they name this context.
+- Decisions D1 (module root) and D4 (only the verifier sets done) apply to every context; D2 applies to task-execution; D3 (wrapper owner) is option B, worker-profiles (orchestrator, D15).
+- Assumptions: A1, A2, A5, A7, A9, A6, A12, A14 · Open question: Q3 in code.json where it names this context.

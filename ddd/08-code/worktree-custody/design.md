@@ -26,7 +26,7 @@ crates/horch-core/src/fleetd/worktree_custody/
     memory.rs          in-memory fakes for tests
     gateways.rs        adapters to other contexts and adopted systems
 ```
-Dependency rule: `domain/` imports nothing outside itself and std; `application/` imports `domain/` only; `adapters/` may import both and existing horch-core modules. No file under `crates/horch-core/src/fleetd/` holds `cfg(target_os)`, `cfg(unix)` or `cfg(windows)`. Enforced by `crates/horch-core/tests/arch_scan.rs` (tests: `fitness_domain_imports_nothing_outward`, `fitness_fleetd_tree_has_no_os_cfg`, `fitness_only_fleet_runtime_opens_the_ledger_writable`).
+Dependency rule: `domain/` imports nothing outside itself and std; `application/` imports `domain/` only; `adapters/` may import both and existing horch-core modules. No production file of the workspace outside `crates/horch-platform` holds `cfg(target_os)`, `cfg(unix)`, `cfg(windows)` or `cfg(target_family)` (PL-2, from Phase P). Enforced by `crates/horch-core/tests/arch_scan.rs` (tests: `fitness_domain_imports_nothing_outward`, `fitness_workspace_production_code_has_no_os_cfg_outside_horch_platform`, `fitness_only_fleet_runtime_opens_the_ledger_writable`, `fitness_no_context_touches_foreign_tables`).
 Composition root: `crates/horch/src/cmd/fleetd.rs` (daemon and `horch fleetd check`) wires every adapter to its port; short-lived CLI commands wire the read-only queries and the command channel client.
 
 ## 2. Domain model
@@ -56,20 +56,21 @@ Transaction: 1 aggregate (or 1 store call set) per use case through the one-door
 | `WorktreeCustodyCommands` | create, reconcile, rescue, remove; called by the reconcile pass and horch worktree restore | ReconcilePassDriver and CommandChannelHandler |
 | `WorktreeCustodyQueries` | read model WorktreeRows for horch worktrees |  |
 | `WorktreeCustodyEventHandlers` | policies on task-leased, attempt-failed, task-branch-landed | InProcessReconcileConsumer |
+| `RescueRefs` | in-process call from integration: write and read back a rescue ref of a branch tip before a rebase or forced update (I10, define N6) | InProcessWorktreeCustody |
 
 ### Driven
 | Port | Operations | Why it exists |
 |---|---|---|
 | `WorktreeCustodyStore` | worktrees rows; the reserved row is written in the leasing transaction | persistence, collaborator or infrastructure need named in the operations |
 | `EventPublisher` | writes the event row in the same ledger transaction | persistence, collaborator or infrastructure need named in the operations |
-| `WorktreeGitGateway` | git worktree add, list --porcelain, remove; private-index rescue commit, update-ref, read back; stash list; never inside a ledger transaction | persistence, collaborator or infrastructure need named in the operations |
+| `WorktreeGitGateway` | the only caller of git worktree add, list --porcelain and remove, and the only writer of refs under refs/horch/rescue/ (define N5); private-index rescue commit, update-ref, read back; stash list; never inside a ledger transaction | persistence, collaborator or infrastructure need named in the operations |
 | `WorkDirScanner` | lists the work directory and reads dirty and untracked state | persistence, collaborator or infrastructure need named in the operations |
 | `Clock` | the 60 s git worktree list cadence and the 30 day trash ref expiry | persistence, collaborator or infrastructure need named in the operations |
 
 ## 5. Adapters
 | Port | Implementation | Technology | Notes |
 |---|---|---|---|
-| `WorktreeCustodyCommands` | `ReconcilePassDriver` | production | and CommandChannelHandler |
+| `WorktreeCustodyCommands` | `ReconcilePassDriver and CommandChannelHandler` | production | - |
 | `WorktreeCustodyEventHandlers` | `InProcessReconcileConsumer` | production | - |
 | `WorktreeCustodyStore` | `SqliteWorktreeStore` | production | extends the worktrees table |
 | `WorktreeCustodyStore` | `InMemoryWorktreeStore` | in-memory fake | - |
@@ -81,13 +82,14 @@ Transaction: 1 aggregate (or 1 store call set) per use case through the one-door
 | `WorkDirScanner` | `FakeWorkDir` | in-memory fake | - |
 | `Clock` | `PlatformAwakeClock` | production | - |
 | `Clock` | `FakeClock` | in-memory fake | - |
+| `RescueRefs` | `InProcessWorktreeCustody` | production | - |
 
 ## 6. Domain events
 ### Published
 | Event (`discover` id) | Produced by | Consumers | Contract payload (`connect.json`) | Delivery | Contract test |
 |---|---|---|---|---|---|
-| `worktree-created` | use case that emits it (§3) | task-execution | worktreeId, taskId, path, branch | at-least-once | `contract: worktree-created` |
-| `rescue-failed` | use case that emits it (§3) | task-execution | worktreeId, taskId | at-least-once | `contract: rescue-failed` |
+| `worktree-created` | use case that emits it (§3) | task-execution | worktree_id, task_id, path, branch | at-least-once | `contract: worktree-created` |
+| `rescue-failed` | use case that emits it (§3) | task-execution | worktree_id, task_id | at-least-once | `contract: rescue-failed` |
 
 ### Consumed
 | Event | From | Policy (`discover` id) | Handled by | Handler → command | Delivery | Idempotency |
@@ -116,16 +118,17 @@ Extends the existing worktrees table with state, owner_attempt, base_sha, head_s
 | preservation | `pres_04_w9_triage_commits_untracked_before_delete` | Triage commits modified and untracked files before ARCHIVE or DELETE (04 W9) |
 | invariant | `reserved_row_left_by_crash_is_created_or_dropped_next_pass` | A worktree row is written before the directory exists (FR-11) |
 | invariant | `retry_reuses_the_same_worktree` | A retry, a fallback restart or a resume reuses the same worktree |
-| contract | `published worktree-created carries exactly worktreeId, taskId, path, branch (connect.json payload) and nothing consumers did not ask for` | contract: worktree-created |
-| contract | `published rescue-failed carries exactly worktreeId, taskId (connect.json payload) and nothing consumers did not ask for` | contract: rescue-failed |
+| contract | `published worktree-created carries exactly worktree_id, task_id, path, branch (connect.json payload) and nothing consumers did not ask for` | contract: worktree-created |
+| contract | `published rescue-failed carries exactly worktree_id, task_id (connect.json payload) and nothing consumers did not ask for` | contract: rescue-failed |
 | idempotency | `handling task-leased twice (same message id) has the same effect as once` | idempotent: task-leased |
 | idempotency | `handling attempt-failed twice (same message id) has the same effect as once` | idempotent: attempt-failed |
 | idempotency | `handling task-branch-landed twice (same message id) has the same effect as once` | idempotent: task-branch-landed |
+| invariant | `rescue_ref_for_integration_reads_back_before_return` | A rescue ref asked for by integration is written and read back before the call returns (I10, define N6) |
 | fitness | `fitness_domain_imports_nothing_outward` | §1 |
 
 ## 10. Integration & anti-corruption
-Wraps taskledger::worktree_ops and the triage ref code (04 W6, W8, W9) behind WorktreeGitGateway. Reacts to task-leased, attempt-failed and task-branch-landed. Publishes worktree-created and rescue-failed to task-execution.
+Wraps taskledger::worktree_ops and the triage ref code (04 W6, W8, W9) behind WorktreeGitGateway. It alone calls git worktree add, remove and list and writes refs under refs/horch/rescue/ (define N5); integration asks it for a rescue ref through RescueRefs before a rebase (A13). Reacts to task-leased, attempt-failed and task-branch-landed. Publishes worktree-created and rescue-failed to task-execution.
 
 ## 11. Decisions, assumptions, open points
-- Decisions D1 (module root) and D4 (only the verifier sets done) apply to every context; D2 applies to task-execution; D3 (wrapper owner) is open.
-- Assumptions: A1, A2, A5, A7, A9 · Open questions: Q1 to Q6 in code.json where they name this context.
+- Decisions D1 (module root) and D4 (only the verifier sets done) apply to every context; D2 applies to task-execution; D3 (wrapper owner) is option B, worker-profiles (orchestrator, D15).
+- Assumptions: A1, A2, A5, A7, A9, A13 · Open question: Q3 in code.json where it names this context.

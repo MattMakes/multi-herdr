@@ -2,7 +2,7 @@
   "schema_version": 1,
   "step": "code",
   "produced_by": "ddd-code",
-  "produced_at": "2026-11-12T18:33:41Z",
+  "produced_at": "2026-11-12T21:26:56Z",
   "mode": "auto",
   "depth": "standard",
   "inputs": [
@@ -27,7 +27,8 @@
     "docs/specs/fleetd/preservation-05-contracts-and-values.md",
     "docs/specs/fleetd/preservation-06-wiring-and-platform.md",
     "crates/horch-core/src/lib.rs",
-    "crates/horch-core/tests/arch_scan.rs"
+    "crates/horch-core/tests/arch_scan.rs",
+    "docs/specs/fleetd/amendments.md"
   ],
   "assumptions": [
     {
@@ -62,12 +63,12 @@
     },
     {
       "id": "A7",
-      "text": "The platform layer lives at crates/horch-core/src/platform/ with mod.rs (the trait and NotSupported) and mac.rs, linux.rs, windows.rs; it is owned by fleet-runtime (design D1, strategize N1). Only these 3 files hold cfg(target_os).",
+      "text": "The platform layer is the leaf crate crates/horch-platform with its root at crates/horch-platform/src/: lib.rs holds the 1 interface and the NotSupported value, and mac.rs, linux.rs and windows.rs implement it (design A19, understand N13). It depends on no crate of the workspace, no context owns it, and each context calls it directly (decompose N7, strategize N1). Only these files hold OS cfg in production code (PL-2).",
       "confidence": "high"
     },
     {
       "id": "A8",
-      "text": "The implementation plan follows the 8 phases of the design migration plan in order (Phase 0 to Phase 7). Slice numbers follow the phases, so a slice is released only when its fault-injection gate passes (design D9).",
+      "text": "The implementation plan follows the 9 phases of the design migration plan in order: Phase 0, Phase P, then Phases 1 to 7 (design A19, A22, understand N19). Slice numbers follow the phases, and the Phase P slice comes right after the Phase 0 slice, so a slice is released only when its gate passes (design D9).",
       "confidence": "high"
     },
     {
@@ -79,42 +80,37 @@
       "id": "A10",
       "text": "Coined terms Verified Verdict, Stall Rung, Judged Tree, Path Claim, Awake Instant and Judge Finding name value objects and an entity that the canvases describe but do not name.",
       "confidence": "medium"
+    },
+    {
+      "id": "A11",
+      "text": "worker-profiles owns the fleet-run wrapper and the command start-agent-process (decision D3 option B, connect N5). The wrapper builds the private config home, scrubs the environment, maps CLI events, writes heartbeat.json and exit.json, and calls the platform interface for the process group and kill. Its composition root stays crates/horch/src/cmd/fleet_run.rs.",
+      "confidence": "high"
+    },
+    {
+      "id": "A12",
+      "text": "ideas takes the pattern domain-model, the most demanding pattern of its subdomain (strategize D1 option C). Only the plan validation module has an aggregate, Plan. Idea intake and questions stay active-record records in IdeasStore.",
+      "confidence": "high"
+    },
+    {
+      "id": "A13",
+      "text": "integration asks worktree-custody for each rescue ref through an in-process call (port RescueRefGateway), because worktree-custody alone writes refs under refs/horch/rescue/ (define N5, N6). No new cross-process message exists for it.",
+      "confidence": "medium"
+    },
+    {
+      "id": "A14",
+      "text": "The 1 needs-you list belongs to ideas (decompose N9). task-execution publishes task-escalated and writes no needs-you file; ideas puts the task on the list beside approvals and escalated questions.",
+      "confidence": "high"
+    },
+    {
+      "id": "A15",
+      "text": "The Phase 0 list of expected failures is a file in the repository that the test runner reads. Each entry names a test and the phase that makes it green. The design does not name the path, so the plan names none.",
+      "confidence": "medium"
     }
   ],
   "open_questions": [
     {
-      "id": "Q1",
-      "text": "Which context owns the fleet-run wrapper logic (connect D2, still open)? This step recommends fleet-runtime and keeps the composition root at crates/horch/src/cmd/fleet_run.rs in every option, so slices 0 to 3 do not depend on the answer. Slice 4 (Phase 4) needs it.",
-      "blocking": false,
-      "owner": "operator"
-    },
-    {
-      "id": "Q2",
-      "text": "Must the arch_scan fitness test also enforce that no context reads or writes the tables or folders of another context (organise Q2)? This step plans the rule as fitness_no_context_touches_foreign_tables and recommends yes.",
-      "blocking": false,
-      "owner": "operator"
-    },
-    {
       "id": "Q3",
-      "text": "Docs sync and adapter conformance have no owning context (organise D2 open). This step places run-conformance-tests in worker-profiles and leaves docs sync out of the plan until organise D2 is answered.",
-      "blocking": false,
-      "owner": "operator"
-    },
-    {
-      "id": "Q4",
-      "text": "herdr agent status is a liveness signal of task-execution with no connect message (define Q2). This step reads it through the LivenessProbe port over the fleet-runtime HerdrGateway. Must ddd-connect add the message?",
-      "blocking": false,
-      "owner": "ddd-connect"
-    },
-    {
-      "id": "Q5",
-      "text": "Does a feature rebase wait for the running attempts of the feature, or do their task branches rebase at landing (define Q3)? This step models the second: a task branch that no longer applies goes to conflicted at build-bundle.",
-      "blocking": false,
-      "owner": "operator"
-    },
-    {
-      "id": "Q6",
-      "text": "Migration of the 178 existing OS-specific sites into the platform layer is a separate decision (design D1). This plan touches only new fleetd code and the adapters that wrap existing modules.",
+      "text": "Docs sync and adapter conformance are a horch subcommand that fleetd schedules daily and on a CLI version change (organise D2 option A, orchestrator D15). Their owning context is still open (decompose Q2). This step places run-conformance-tests in worker-profiles and plans docs sync in the Phase 7 slice with no owning context.",
       "blocking": false,
       "owner": "operator"
     }
@@ -152,6 +148,16 @@
       "term": "Judged Tree",
       "definition": "The tree hash that a check, a review or a gate judged; a pass stands only while the tree is the same.",
       "context": "integration"
+    },
+    {
+      "term": "Requirement Coverage",
+      "definition": "The map from each requirement of an idea to the tasks of its plan that cover it; a plan with an uncovered requirement is refused.",
+      "context": "ideas"
+    },
+    {
+      "term": "Judge Pairing",
+      "definition": "The link from a judgment-kind task to its judge task in another session, on another provider when the roster has one.",
+      "context": "ideas"
     }
   ],
   "scaffold": {
@@ -173,86 +179,187 @@
       "collection": "aggregate_candidates",
       "reason": "Attempt is an entity inside the Task aggregate (decision D2): 04 S7 needs the attempt end and the task requeue in 1 transaction.",
       "since": "2026-11-12"
+    },
+    {
+      "id": "Q1",
+      "collection": "open_questions",
+      "reason": "Answered (orchestrator, D15): worker-profiles owns the fleet-run wrapper. Recorded in D3 (option B) and A11.",
+      "since": "2026-11-12"
+    },
+    {
+      "id": "Q2",
+      "collection": "open_questions",
+      "reason": "Answered (orchestrator, D15): an arch_scan rule enforces the context boundaries. Recorded as the test fitness_no_context_touches_foreign_tables in fleet-runtime.",
+      "since": "2026-11-12"
+    },
+    {
+      "id": "Q4",
+      "collection": "open_questions",
+      "reason": "Answered (orchestrator, D15): the agent status of herdr is the connect message agent-status-changed into task-execution and ideas. Both consume it idempotently.",
+      "since": "2026-11-12"
+    },
+    {
+      "id": "Q5",
+      "collection": "open_questions",
+      "reason": "Answered (orchestrator, D15): task branches rebase at landing, and a rebase of a feature branch does not wait for running attempts. Recorded in the integration test feature_rebase_during_running_attempt_then_landing_rebases_or_conflicts.",
+      "since": "2026-11-12"
+    },
+    {
+      "id": "Q6",
+      "collection": "open_questions",
+      "reason": "Answered (operator, D16): all 178 production sites move behind the platform layer in Phase P, between Phase 0 and Phase 1. Recorded in A7, A8 and the Phase P slice.",
+      "since": "2026-11-12"
+    },
+    {
+      "id": "idea",
+      "collection": "aggregate_candidates",
+      "reason": "Idea intake stays active-record (strategize D1 option C, orchestrator D15; strategize N2): its commands are transaction scripts over IdeasStore.",
+      "since": "2026-11-12"
+    },
+    {
+      "id": "question",
+      "collection": "aggregate_candidates",
+      "reason": "Questions stay active-record (strategize D1 option C, orchestrator D15; strategize N2): its commands are transaction scripts over IdeasStore.",
+      "since": "2026-11-12"
     }
   ],
   "contexts": [
     {
       "context": "ideas",
-      "implementation_pattern": "active-record",
+      "implementation_pattern": "domain-model",
       "deployable": "horch",
       "module_path": "crates/horch-core/src/fleetd/ideas",
-      "aggregates": [],
+      "aggregates": [
+        {
+          "id": "plan",
+          "name": "Plan",
+          "root_entity": "Plan",
+          "entities": [
+            "PlannedTask"
+          ],
+          "value_objects": [
+            "PlanId",
+            "PlanContentHash",
+            "TaskDag",
+            "RequirementCoverage",
+            "JudgePairing",
+            "DeclaredGates"
+          ],
+          "invariants": [
+            "I3: every requirement of an idea in in_progress or later is covered by at least 1 task that is not cancelled",
+            "A plan is committed all-or-nothing after every validator check passes (FR-3, FR-4)",
+            "A judgment-kind task without a paired judge refuses the plan",
+            "The task dependencies of a plan form a graph with no cycle (FR-3)",
+            "A plan of a project with no declared fast gate is refused",
+            "A task is replanned at most once"
+          ],
+          "commands": [
+            "submit-plan",
+            "validate-plan",
+            "replan-task"
+          ],
+          "events": [
+            "plan-submitted",
+            "plan-refused",
+            "plan-committed",
+            "task-replanned"
+          ],
+          "state_transitions": [
+            "none -> submitted (submit-plan, plan-submitted)",
+            "submitted -> committed (validate-plan, every check passes; plan-committed writes all tasks in 1 transaction)",
+            "submitted -> refused (validate-plan, any check fails; plan-refused carries the reasons)",
+            "refused -> submitted (submit-plan, a revised plan with a new content hash)",
+            "committed -> committed (replan-task, once per task; the changed plan passes the same checks; task-replanned)",
+            "rejected: committed with an uncovered requirement, a cycle, a judgment task without a paired judge or no declared fast gate",
+            "rejected: a second replan of 1 task"
+          ],
+          "canvas_path": "ddd/08-code/ideas/aggregate-canvas-plan.md"
+        }
+      ],
       "domain_services": [
         {
           "name": "PlanValidator",
-          "description": "Schema, DAG, coverage, profiles, model guide, paired judges, declared gates and citations to approved assumptions; pure over plan.yaml and the requirements."
+          "description": "Schema, DAG, coverage, profiles, model guide, paired judges, declared gates and citations to approved assumptions; pure over plan.yaml and the requirements. The Plan aggregate calls it before it commits."
         }
       ],
       "application_services": [
         {
           "name": "AddIdea",
           "command": "add-idea",
-          "description": "horch idea add \"...\" or -f notes.md, optional --to <feature>."
+          "description": "horch idea add \"...\" or -f notes.md, optional --to <feature>.",
+          "handled_by": "transaction-script"
         },
         {
           "name": "StartSubOrchestrator",
           "command": "start-sub-orchestrator",
-          "description": "fleetd starts 1 fresh process per phase in the pane of the feature, and restarts a dead or missing one on the next pass. Asks LaunchEnvironmentGateway, then AgentProcessGateway, after commit (connect N3)."
+          "description": "fleetd starts 1 fresh process per phase in the pane of the feature, and restarts a dead or missing one on the next pass. Asks LaunchEnvironmentGateway, then AgentProcessGateway, after commit (connect N3).",
+          "handled_by": "transaction-script"
         },
         {
           "name": "AskOperator",
           "command": "ask-operator",
-          "description": "1 question at a time: what done looks like, scope edges, constraints, affected areas, priority."
+          "description": "1 question at a time: what done looks like, scope edges, constraints, affected areas, priority.",
+          "handled_by": "transaction-script"
         },
         {
           "name": "AnswerInterviewQuestion",
           "command": "answer-interview-question",
-          "description": "The operator answers in the pane. horch idea note records it."
+          "description": "The operator answers in the pane. horch idea note records it.",
+          "handled_by": "transaction-script"
         },
         {
           "name": "AmendIdea",
           "command": "amend-idea",
-          "description": "horch idea amend <id> \"...\"."
+          "description": "horch idea amend <id> \"...\".",
+          "handled_by": "transaction-script"
         },
         {
           "name": "WriteAssumptions",
           "command": "write-assumptions",
-          "description": "Writes assumptions.md: [confirmed] and [assumed] items, none [open]."
+          "description": "Writes assumptions.md: [confirmed] and [assumed] items, none [open].",
+          "handled_by": "transaction-script"
         },
         {
           "name": "RequestApproval",
           "command": "request-approval",
-          "description": "Moves the idea to awaiting_approval and notifies the operator. Reminds once an hour in working hours."
+          "description": "Moves the idea to awaiting_approval and notifies the operator. Reminds once an hour in working hours.",
+          "handled_by": "transaction-script"
         },
         {
           "name": "ParkIdea",
           "command": "park-idea",
-          "description": "Issued by policy after 7 days of waiting or an escalation. The operator also runs horch idea park."
+          "description": "Issued by policy after 7 days of waiting or an escalation. The operator also runs horch idea park.",
+          "handled_by": "transaction-script"
         },
         {
           "name": "CancelIdea",
           "command": "cancel-idea",
-          "description": "horch idea cancel."
+          "description": "horch idea cancel.",
+          "handled_by": "transaction-script"
         },
         {
           "name": "ReviseAssumptions",
           "command": "revise-assumptions",
-          "description": "horch idea revise <id> \"...\"."
+          "description": "horch idea revise <id> \"...\".",
+          "handled_by": "transaction-script"
         },
         {
           "name": "ApproveAssumptions",
           "command": "approve-assumptions",
-          "description": "horch idea approve <id>. Refused inside any fleet attempt; profiles deny it. fleetd writes approval.json with the sha256 the operator saw; any other approval file is ignored (I7)."
+          "description": "horch idea approve <id>. Refused inside any fleet attempt; profiles deny it. fleetd writes approval.json with the sha256 the operator saw; any other approval file is ignored (I7).",
+          "handled_by": "transaction-script"
         },
         {
           "name": "AddDirectIdea",
           "command": "add-direct-idea",
-          "description": "horch idea add --direct <ticket file>, optional --to. Refused inside a fleet attempt."
+          "description": "horch idea add --direct <ticket file>, optional --to. Refused inside a fleet attempt.",
+          "handled_by": "transaction-script"
         },
         {
           "name": "WriteSpec",
           "command": "write-spec",
-          "description": "Writes spec.md and requirements.yaml after approval."
+          "description": "Writes spec.md and requirements.yaml after approval.",
+          "handled_by": "transaction-script"
         },
         {
           "name": "SubmitPlan",
@@ -267,17 +374,20 @@
         {
           "name": "AskQuestion",
           "command": "ask-question",
-          "description": "Writes 1 question file, commits work in progress, exits."
+          "description": "Writes 1 question file, commits work in progress, exits.",
+          "handled_by": "transaction-script"
         },
         {
           "name": "AnswerQuestion",
           "command": "answer-question",
-          "description": "fleetd starts the owner on each pass until an answer is recorded. 4 cases (design, Ideas, How a worker's question is resolved)."
+          "description": "fleetd starts the owner on each pass until an answer is recorded. 4 cases (design, Ideas, How a worker's question is resolved).",
+          "handled_by": "transaction-script"
         },
         {
           "name": "EscalateQuestion",
           "command": "escalate-question",
-          "description": "Fires when the time limit of the question row passes."
+          "description": "Fires when the time limit of the question row passes.",
+          "handled_by": "transaction-script"
         },
         {
           "name": "ReplanTask",
@@ -287,19 +397,21 @@
         {
           "name": "RollUpIdea",
           "command": "roll-up-idea",
-          "description": "in_progress to integrating."
+          "description": "in_progress to integrating.",
+          "handled_by": "transaction-script"
         },
         {
           "name": "CloseIdea",
           "command": "close-idea",
-          "description": "Needs every worktree of the idea removed."
+          "description": "Needs every worktree of the idea removed.",
+          "handled_by": "transaction-script"
         }
       ],
       "ports": [
         {
           "name": "IdeasCommands",
           "kind": "driving",
-          "description": "one operation per use case; called by the command channel (horch idea ...), the reconcile pass and the idea-folder ingester"
+          "description": "one operation per use case; called by the command channel (horch idea ..., and the answers of a sub-orchestrator to worker questions), the reconcile pass and the idea-folder ingester"
         },
         {
           "name": "IdeasQueries",
@@ -309,7 +421,7 @@
         {
           "name": "IdeasEventHandlers",
           "kind": "driving",
-          "description": "policies on feature-opened, replan-requested, task-branch-landed, feature-merged"
+          "description": "policies on feature-opened, replan-requested, task-branch-landed, feature-merged, task-escalated (onto the needs-you list) and agent-status-changed (sub-orchestrator pane state)"
         },
         {
           "name": "IdeaFolderIngest",
@@ -319,7 +431,7 @@
         {
           "name": "IdeasStore",
           "kind": "driven",
-          "description": "ideas, requirements, questions rows and sub-orchestrator attempt rows (task_id null)"
+          "description": "active-record rows of idea intake and questions: ideas, requirements, questions and sub-orchestrator attempt rows (task_id null)"
         },
         {
           "name": "EventPublisher",
@@ -334,12 +446,12 @@
         {
           "name": "AgentProcessGateway",
           "kind": "driven",
-          "description": "starts or stops the sub-orchestrator pane through fleet-runtime"
+          "description": "sends start-agent-process to worker-profiles to start or stop the sub-orchestrator pane; never inside a ledger transaction"
         },
         {
           "name": "NeedsYouInbox",
           "kind": "driven",
-          "description": "approval requests, parked ideas and escalated questions; herdr notification"
+          "description": "the 1 needs-you list (OR-3): approval requests, parked ideas, escalated questions and escalated tasks; herdr notification"
         },
         {
           "name": "AttemptContext",
@@ -350,6 +462,16 @@
           "name": "Clock",
           "kind": "driven",
           "description": "30 min idle stop, 7 day park, question time limit, hourly reminder"
+        },
+        {
+          "name": "PlanRepository",
+          "kind": "driven",
+          "description": "load and save Plan with its PlannedTasks by idea id and content hash"
+        },
+        {
+          "name": "IdeaFolderWriter",
+          "kind": "driven",
+          "description": "writes plan.verdict.json (plan-verdict-written) and approval.json (assumptions-approved) into the idea folder, atomic; fleetd is their only writer"
         }
       ],
       "adapters": [
@@ -391,7 +513,7 @@
         },
         {
           "port": "AgentProcessGateway",
-          "implementation": "InProcessFleetRuntime"
+          "implementation": "InProcessWorkerProfiles"
         },
         {
           "port": "AgentProcessGateway",
@@ -420,6 +542,22 @@
         {
           "port": "Clock",
           "implementation": "FakeClock"
+        },
+        {
+          "port": "PlanRepository",
+          "implementation": "SqlitePlanRepository"
+        },
+        {
+          "port": "PlanRepository",
+          "implementation": "InMemoryPlanRepository"
+        },
+        {
+          "port": "IdeaFolderWriter",
+          "implementation": "FsIdeaFolderWriter (ProtectedFiles of fleet-runtime)"
+        },
+        {
+          "port": "IdeaFolderWriter",
+          "implementation": "InMemoryIdeaFolder"
         }
       ],
       "read_models": [
@@ -459,6 +597,16 @@
             "assumptions-revised",
             "spec-written",
             "own-assumption-recorded"
+          ]
+        },
+        {
+          "name": "NeedsYouList",
+          "source_events": [
+            "approval-requested",
+            "idea-parked",
+            "question-escalated",
+            "task-escalated",
+            "task-requeued"
           ]
         }
       ],
@@ -509,43 +657,43 @@
         },
         {
           "invariant": "contract: approval-requested",
-          "test": "published approval-requested carries exactly ideaId, assumptionsHash (connect.json payload) and nothing consumers did not ask for"
+          "test": "published approval-requested carries exactly idea_id, assumptions_hash (connect.json payload) and nothing consumers did not ask for"
         },
         {
           "invariant": "contract: worker-question-asked",
-          "test": "published worker-question-asked carries exactly taskId, questionId, text (connect.json payload) and nothing consumers did not ask for"
+          "test": "published worker-question-asked carries exactly task_id, question_id, text (connect.json payload) and nothing consumers did not ask for"
         },
         {
           "invariant": "contract: assumptions-written",
-          "test": "published assumptions-written carries exactly ideaId, featureId? (connect.json payload) and nothing consumers did not ask for"
+          "test": "published assumptions-written carries exactly idea_id, feature_id? (connect.json payload) and nothing consumers did not ask for"
         },
         {
           "invariant": "contract: direct-idea-accepted",
-          "test": "published direct-idea-accepted carries exactly ideaId, ticketFile, featureId? (connect.json payload) and nothing consumers did not ask for"
+          "test": "published direct-idea-accepted carries exactly idea_id, ticket_file, feature_id? (connect.json payload) and nothing consumers did not ask for"
         },
         {
           "invariant": "contract: plan-committed",
-          "test": "published plan-committed carries exactly ideaId, taskIds[] (connect.json payload) and nothing consumers did not ask for"
+          "test": "published plan-committed carries exactly idea_id, task_ids[] (connect.json payload) and nothing consumers did not ask for"
         },
         {
           "invariant": "contract: plan-refused",
-          "test": "published plan-refused carries exactly ideaId, taskId?, reasons[] (connect.json payload) and nothing consumers did not ask for"
+          "test": "published plan-refused carries exactly idea_id, task_id?, reasons[] (connect.json payload) and nothing consumers did not ask for"
         },
         {
           "invariant": "contract: task-replanned",
-          "test": "published task-replanned carries exactly taskId, planChange (connect.json payload) and nothing consumers did not ask for"
+          "test": "published task-replanned carries exactly task_id, plan_change (connect.json payload) and nothing consumers did not ask for"
         },
         {
           "invariant": "contract: question-answered",
-          "test": "published question-answered carries exactly questionId, taskId (connect.json payload) and nothing consumers did not ask for"
+          "test": "published question-answered carries exactly question_id, task_id (connect.json payload) and nothing consumers did not ask for"
         },
         {
           "invariant": "contract: own-assumption-recorded",
-          "test": "published own-assumption-recorded carries exactly questionId, taskId (connect.json payload) and nothing consumers did not ask for"
+          "test": "published own-assumption-recorded carries exactly question_id, task_id (connect.json payload) and nothing consumers did not ask for"
         },
         {
           "invariant": "contract: idea-tasks-landed",
-          "test": "published idea-tasks-landed carries exactly ideaId, featureId (connect.json payload) and nothing consumers did not ask for"
+          "test": "published idea-tasks-landed carries exactly idea_id, feature_id (connect.json payload) and nothing consumers did not ask for"
         },
         {
           "invariant": "idempotent: feature-opened",
@@ -562,6 +710,50 @@
         {
           "invariant": "idempotent: feature-merged",
           "test": "handling feature-merged twice (same message id) has the same effect as once"
+        },
+        {
+          "invariant": "The task dependencies of a plan form a graph with no cycle (FR-3)",
+          "test": "plan_with_a_dependency_cycle_is_refused"
+        },
+        {
+          "invariant": "A plan of a project with no declared fast gate is refused",
+          "test": "plan_without_declared_fast_gate_is_refused"
+        },
+        {
+          "invariant": "A task is replanned at most once",
+          "test": "second_replan_of_a_task_is_refused"
+        },
+        {
+          "invariant": "transition: refused -> submitted",
+          "test": "transition_refused_to_submitted_needs_a_new_content_hash"
+        },
+        {
+          "invariant": "A worker question with no answer from a running sub-orchestrator escalates to the operator after 15 min; the wait for the operator has no limit (orchestrator, D15)",
+          "test": "question_escalates_after_15_min_and_operator_wait_has_no_limit"
+        },
+        {
+          "invariant": "The sub-orchestrator answers a worker question through the command channel; fleetd stays the only ledger writer",
+          "test": "sub_orchestrator_answer_arrives_on_the_command_channel"
+        },
+        {
+          "invariant": "There is 1 needs-you list and ideas owns it (OR-3, decompose N9)",
+          "test": "escalated_task_appears_on_the_1_needs_you_list"
+        },
+        {
+          "invariant": "contract: plan-verdict-written",
+          "test": "published plan-verdict-written carries exactly idea, decision (committed|refused), reasons[] (connect.json payload) and nothing consumers did not ask for"
+        },
+        {
+          "invariant": "contract: assumptions-approved",
+          "test": "published assumptions-approved carries exactly idea, assumptions_hash (connect.json payload) and nothing consumers did not ask for"
+        },
+        {
+          "invariant": "idempotent: task-escalated",
+          "test": "handling task-escalated twice (same task_id, reason) has the same effect as once"
+        },
+        {
+          "invariant": "idempotent: agent-status-changed",
+          "test": "handling agent-status-changed twice (same pane, agent_status; each pass re-reads session.snapshot) has the same effect as once"
         }
       ],
       "design_path": "ddd/08-code/ideas/design.md"
@@ -799,7 +991,7 @@
         {
           "name": "EscalateTask",
           "command": "escalate-task",
-          "description": "Writes to needs-you/ and posts a herdr notification."
+          "description": "Publishes task-escalated with its reason. ideas puts the task on the 1 needs-you list (A14)."
         },
         {
           "name": "RequeueTask",
@@ -821,12 +1013,12 @@
         {
           "name": "TaskExecutionQueries",
           "kind": "driving",
-          "description": "read models StartFile, JudgeFindings, NeedsYouQueue; used by horch CLI read-only commands"
+          "description": "read models StartFile and JudgeFindings; used by horch CLI read-only commands"
         },
         {
           "name": "TaskExecutionEventHandlers",
           "kind": "driving",
-          "description": "policies on plan-committed, plan-refused, task-replanned, question-answered, own-assumption-recorded, worktree-created, rescue-failed, task-branch-conflicted, resolver-task-opened; at-least-once, idempotent on the connect key"
+          "description": "policies on plan-committed, plan-refused, task-replanned, question-answered, own-assumption-recorded, worktree-created, rescue-failed, task-branch-conflicted, resolver-task-opened; at-least-once, idempotent on the connect key, agent-status-changed"
         },
         {
           "name": "AttemptFileIngest",
@@ -856,7 +1048,7 @@
         {
           "name": "AgentProcessGateway",
           "kind": "driven",
-          "description": "calls fleet-runtime start-agent-process and stop-process-group; never inside a ledger transaction"
+          "description": "sends start-agent-process to worker-profiles; never inside a ledger transaction (connect N3, N4)"
         },
         {
           "name": "CheckRunner",
@@ -866,7 +1058,7 @@
         {
           "name": "LivenessProbe",
           "kind": "driven",
-          "description": "process alive with start time, heartbeat age, last activity, herdr agent state"
+          "description": "process alive with start time through the platform interface, heartbeat age from heartbeat-written, last activity, and the herdr agent status from agent-status-changed"
         },
         {
           "name": "QuotaGateway",
@@ -874,14 +1066,14 @@
           "description": "pool usage window and reset time from the CLI clients (06 S13)"
         },
         {
-          "name": "NeedsYouInbox",
-          "kind": "driven",
-          "description": "writes needs-you files and posts a herdr notification"
-        },
-        {
           "name": "Clock",
           "kind": "driven",
           "description": "awake time for leases and stall rungs (PL-4)"
+        },
+        {
+          "name": "WorkerFiles",
+          "kind": "driven",
+          "description": "writes task.yaml (assign-task) and inbox/START.md (start-work) before the launch, and verdict.json (task-verdict-written); atomic, never rewritten"
         }
       ],
       "adapters": [
@@ -931,7 +1123,7 @@
         },
         {
           "port": "AgentProcessGateway",
-          "implementation": "InProcessFleetRuntime"
+          "implementation": "InProcessWorkerProfiles"
         },
         {
           "port": "AgentProcessGateway",
@@ -947,7 +1139,7 @@
         },
         {
           "port": "LivenessProbe",
-          "implementation": "PlatformLivenessProbe (platform layer, procid, herdr adapter)"
+          "implementation": "PlatformLivenessProbe (crates/horch-platform, heartbeat.json, agent-status-changed)"
         },
         {
           "port": "LivenessProbe",
@@ -962,20 +1154,20 @@
           "implementation": "FakeQuota"
         },
         {
-          "port": "NeedsYouInbox",
-          "implementation": "NeedsYouFolder"
-        },
-        {
-          "port": "NeedsYouInbox",
-          "implementation": "InMemoryNeedsYou"
-        },
-        {
           "port": "Clock",
           "implementation": "PlatformAwakeClock"
         },
         {
           "port": "Clock",
           "implementation": "FakeClock"
+        },
+        {
+          "port": "WorkerFiles",
+          "implementation": "FsWorkerFiles (ProtectedFiles of fleet-runtime)"
+        },
+        {
+          "port": "WorkerFiles",
+          "implementation": "InMemoryWorkerFiles"
         }
       ],
       "read_models": [
@@ -992,13 +1184,6 @@
             "judge-verdict-written",
             "critical-fix-opened",
             "high-finding-settled"
-          ]
-        },
-        {
-          "name": "NeedsYouQueue",
-          "source_events": [
-            "task-escalated",
-            "task-requeued"
           ]
         }
       ],
@@ -1109,31 +1294,31 @@
         },
         {
           "invariant": "idempotent: attempt-exited",
-          "test": "handling attempt-exited twice (same attemptId; exit.json is immutable) has the same effect as once"
+          "test": "handling attempt-exited twice (same attempt_id; exit.json is immutable) has the same effect as once"
         },
         {
           "invariant": "idempotent: usage-limit-reported",
-          "test": "handling usage-limit-reported twice (same attemptId, pool) has the same effect as once; a repeat for a moved attempt is ignored"
+          "test": "handling usage-limit-reported twice (same attempt_id, pool) has the same effect as once; a repeat for a moved attempt is ignored"
         },
         {
           "invariant": "contract: task-escalated",
-          "test": "published task-escalated carries exactly taskId, reason (connect.json payload) and nothing consumers did not ask for"
+          "test": "published task-escalated carries exactly task_id, reason (connect.json payload) and nothing consumers did not ask for"
         },
         {
           "invariant": "contract: replan-requested",
-          "test": "published replan-requested carries exactly taskId, attempts (connect.json payload) and nothing consumers did not ask for"
+          "test": "published replan-requested carries exactly task_id, attempts (connect.json payload) and nothing consumers did not ask for"
         },
         {
           "invariant": "contract: task-leased",
-          "test": "published task-leased carries exactly taskId, attemptId, worktreeId, branch (connect.json payload) and nothing consumers did not ask for"
+          "test": "published task-leased carries exactly task_id, attempt_id, worktree_id, branch (connect.json payload) and nothing consumers did not ask for"
         },
         {
           "invariant": "contract: attempt-failed",
-          "test": "published attempt-failed carries exactly attemptId, taskId, outcome (connect.json payload) and nothing consumers did not ask for"
+          "test": "published attempt-failed carries exactly attempt_id, task_id, outcome (connect.json payload) and nothing consumers did not ask for"
         },
         {
           "invariant": "contract: task-done",
-          "test": "published task-done carries exactly taskId, branch, verdict (connect.json payload) and nothing consumers did not ask for"
+          "test": "published task-done carries exactly task_id, branch, verdict (connect.json payload) and nothing consumers did not ask for"
         },
         {
           "invariant": "idempotent: plan-committed",
@@ -1170,6 +1355,38 @@
         {
           "invariant": "idempotent: resolver-task-opened",
           "test": "handling resolver-task-opened twice (same message id) has the same effect as once"
+        },
+        {
+          "invariant": "An operator requeue sets the attempt count to 0; a review requeue keeps its own counter (orchestrator, D15)",
+          "test": "review_requeue_keeps_its_own_counter"
+        },
+        {
+          "invariant": "result.json has a status from the closed list completed, blocked, failed",
+          "test": "result_json_with_another_status_is_refused"
+        },
+        {
+          "invariant": "A usage limit with no reset_at waits until the pool probe reports ok",
+          "test": "usage_limit_without_reset_at_waits_for_pool_probe_ok"
+        },
+        {
+          "invariant": "contract: assign-task",
+          "test": "published assign-task carries exactly task, idea, key, attempt, profile, worktree, branch, read_first[], goal, covers[], acceptance[], lease{expires, renew_every_s}, report_to (connect.json payload) and nothing consumers did not ask for"
+        },
+        {
+          "invariant": "contract: start-work",
+          "test": "published start-work carries exactly task_yaml, rescue_commit?, progress_notes? (connect.json payload) and nothing consumers did not ask for"
+        },
+        {
+          "invariant": "contract: task-verdict-written",
+          "test": "published task-verdict-written carries exactly task, attempt, decision, reasons[] (connect.json payload) and nothing consumers did not ask for"
+        },
+        {
+          "invariant": "idempotent: heartbeat-written",
+          "test": "handling heartbeat-written twice (same seq; a lower or equal seq is ignored) has the same effect as once"
+        },
+        {
+          "invariant": "idempotent: agent-status-changed",
+          "test": "handling agent-status-changed twice (same pane, agent_status; each pass re-reads session.snapshot) has the same effect as once"
         }
       ],
       "design_path": "ddd/08-code/task-execution/design.md"
@@ -1232,7 +1449,7 @@
         {
           "name": "WorktreeGitGateway",
           "kind": "driven",
-          "description": "git worktree add, list --porcelain, remove; private-index rescue commit, update-ref, read back; stash list; never inside a ledger transaction"
+          "description": "the only caller of git worktree add, list --porcelain and remove, and the only writer of refs under refs/horch/rescue/ (define N5); private-index rescue commit, update-ref, read back; stash list; never inside a ledger transaction"
         },
         {
           "name": "WorkDirScanner",
@@ -1243,6 +1460,11 @@
           "name": "Clock",
           "kind": "driven",
           "description": "the 60 s git worktree list cadence and the 30 day trash ref expiry"
+        },
+        {
+          "name": "RescueRefs",
+          "kind": "driving",
+          "description": "in-process call from integration: write and read back a rescue ref of a branch tip before a rebase or forced update (I10, define N6)"
         }
       ],
       "adapters": [
@@ -1293,6 +1515,10 @@
         {
           "port": "Clock",
           "implementation": "FakeClock"
+        },
+        {
+          "port": "RescueRefs",
+          "implementation": "InProcessWorktreeCustody"
         }
       ],
       "read_models": [
@@ -1346,11 +1572,11 @@
         },
         {
           "invariant": "contract: worktree-created",
-          "test": "published worktree-created carries exactly worktreeId, taskId, path, branch (connect.json payload) and nothing consumers did not ask for"
+          "test": "published worktree-created carries exactly worktree_id, task_id, path, branch (connect.json payload) and nothing consumers did not ask for"
         },
         {
           "invariant": "contract: rescue-failed",
-          "test": "published rescue-failed carries exactly worktreeId, taskId (connect.json payload) and nothing consumers did not ask for"
+          "test": "published rescue-failed carries exactly worktree_id, task_id (connect.json payload) and nothing consumers did not ask for"
         },
         {
           "invariant": "idempotent: task-leased",
@@ -1363,6 +1589,10 @@
         {
           "invariant": "idempotent: task-branch-landed",
           "test": "handling task-branch-landed twice (same message id) has the same effect as once"
+        },
+        {
+          "invariant": "A rescue ref asked for by integration is written and read back before the call returns (I10, define N6)",
+          "test": "rescue_ref_for_integration_reads_back_before_return"
         }
       ],
       "design_path": "ddd/08-code/worktree-custody/design.md"
@@ -1572,7 +1802,7 @@
         {
           "name": "RebaseFeatureBranch",
           "command": "rebase-feature-branch",
-          "description": "Writes a rescue ref of the old tip first."
+          "description": "Asks worktree-custody for a rescue ref of the old tip first (RescueRefGateway, A13). Does not wait for running attempts; their task branches rebase at landing."
         },
         {
           "name": "RunFullGate",
@@ -1619,7 +1849,7 @@
         {
           "name": "GitObserver",
           "kind": "driving",
-          "description": "primary-branch-moved and check-merged facts read from git each pass (clock initiated)"
+          "description": "primary-branch-moved and check-merged facts read from git each pass (clock initiated), and pull-request-merged from GitHub"
         },
         {
           "name": "FeatureRepository",
@@ -1639,7 +1869,7 @@
         {
           "name": "GitGateway",
           "kind": "driven",
-          "description": "merge-tree, rebase, fast-forward, rescue ref write and read back, content containment, stash list; never inside a ledger transaction; network calls bounded (04 F11)"
+          "description": "the only caller of rebase, merge-tree, fast-forward, push and branch delete (define N5); content containment, stash list; never inside a ledger transaction; network calls bounded (04 F11)"
         },
         {
           "name": "GateRunner",
@@ -1649,7 +1879,7 @@
         {
           "name": "PullRequestGateway",
           "kind": "driven",
-          "description": "opens a pull request with pr gh, or pushes and builds the compare URL with pr manual"
+          "description": "open-pull-request: opens a pull request with pr gh, or pushes and builds the compare URL with pr manual"
         },
         {
           "name": "LandLock",
@@ -1660,6 +1890,11 @@
           "name": "Clock",
           "kind": "driven",
           "description": "due_at of branch rows and gate staleness"
+        },
+        {
+          "name": "RescueRefGateway",
+          "kind": "driven",
+          "description": "asks worktree-custody to write and read back a rescue ref of the old tip before each rebase or forced update (I10, A13)"
         }
       ],
       "adapters": [
@@ -1742,6 +1977,14 @@
         {
           "port": "Clock",
           "implementation": "FakeClock"
+        },
+        {
+          "port": "RescueRefGateway",
+          "implementation": "InProcessWorktreeCustody"
+        },
+        {
+          "port": "RescueRefGateway",
+          "implementation": "FakeRescueRefs"
         }
       ],
       "read_models": [
@@ -1848,31 +2091,31 @@
         },
         {
           "invariant": "idempotent: primary-branch-moved",
-          "test": "handling primary-branch-moved twice (same primaryBranch, tip) has the same effect as once"
+          "test": "handling primary-branch-moved twice (same primary_branch, tip) has the same effect as once"
         },
         {
           "invariant": "contract: pull-request-opened",
-          "test": "published pull-request-opened carries exactly featureId, prUrl (connect.json payload) and nothing consumers did not ask for"
+          "test": "published pull-request-opened carries exactly feature_id, pr_url (connect.json payload) and nothing consumers did not ask for"
         },
         {
           "invariant": "contract: feature-opened",
-          "test": "published feature-opened carries exactly featureId, branch, primaryBranch, ideaId (connect.json payload) and nothing consumers did not ask for"
+          "test": "published feature-opened carries exactly feature_id, branch, primary_branch, idea_id (connect.json payload) and nothing consumers did not ask for"
         },
         {
           "invariant": "contract: task-branch-conflicted",
-          "test": "published task-branch-conflicted carries exactly branch, taskId (connect.json payload) and nothing consumers did not ask for"
+          "test": "published task-branch-conflicted carries exactly branch, task_id (connect.json payload) and nothing consumers did not ask for"
         },
         {
           "invariant": "contract: resolver-task-opened",
-          "test": "published resolver-task-opened carries exactly featureId, taskId, conflict (connect.json payload) and nothing consumers did not ask for"
+          "test": "published resolver-task-opened carries exactly feature_id, task_id, conflict (connect.json payload) and nothing consumers did not ask for"
         },
         {
           "invariant": "contract: task-branch-landed",
-          "test": "published task-branch-landed carries exactly branch, taskId, featureId, tip (connect.json payload) and nothing consumers did not ask for"
+          "test": "published task-branch-landed carries exactly branch, task_id, feature_id, tip (connect.json payload) and nothing consumers did not ask for"
         },
         {
           "invariant": "contract: feature-merged",
-          "test": "published feature-merged carries exactly featureId (connect.json payload) and nothing consumers did not ask for"
+          "test": "published feature-merged carries exactly feature_id (connect.json payload) and nothing consumers did not ask for"
         },
         {
           "invariant": "idempotent: task-escalated",
@@ -1893,6 +2136,26 @@
         {
           "invariant": "idempotent: task-done",
           "test": "handling task-done twice (same message id) has the same effect as once"
+        },
+        {
+          "invariant": "No rebase runs before the rescue ref of the old tip reads back (I10, define N6)",
+          "test": "no_rebase_runs_before_the_rescue_ref_reads_back"
+        },
+        {
+          "invariant": "Task branches rebase at landing; a feature rebase does not wait for running attempts (define N7)",
+          "test": "feature_rebase_during_running_attempt_then_landing_rebases_or_conflicts"
+        },
+        {
+          "invariant": "Only worktree-custody calls git worktree and writes refs/horch/rescue/; only integration calls rebase, merge-tree, fast-forward, push and branch delete (define N5)",
+          "test": "fitness_git_calls_split_by_concern"
+        },
+        {
+          "invariant": "contract: open-pull-request",
+          "test": "published open-pull-request carries exactly feature_id, branch, base_branch (connect.json payload) and nothing consumers did not ask for"
+        },
+        {
+          "invariant": "idempotent: pull-request-merged",
+          "test": "handling pull-request-merged twice (same feature_id) has the same effect as once"
         }
       ],
       "design_path": "ddd/08-code/integration/design.md"
@@ -1914,6 +2177,11 @@
           "name": "MarkProfileUnhealthy",
           "command": "mark-profile-unhealthy",
           "description": "Blocks new dispatch on the profile."
+        },
+        {
+          "name": "StartAgentProcess",
+          "command": "start-agent-process",
+          "description": "Resolves the launch environment, writes the private config home and starts the fleet-run wrapper (or the sub-orchestrator pane) in its own process group through the platform interface. Runs after the ledger transaction commits. 1 process per attempt_id (A11)."
         }
       ],
       "ports": [
@@ -1956,6 +2224,21 @@
           "name": "Clock",
           "kind": "driven",
           "description": "update cooldown of more than 1 week (06 S7)"
+        },
+        {
+          "name": "AgentProcesses",
+          "kind": "driving",
+          "description": "start-agent-process and stop for task-execution and ideas (connect message start-agent-process, in-process)"
+        },
+        {
+          "name": "ProcessHost",
+          "kind": "driven",
+          "description": "starts, stops and kills a process group through the platform interface; opens a pane through the fleet-runtime HerdrGateway"
+        },
+        {
+          "name": "HeartbeatPublisher",
+          "kind": "driven",
+          "description": "the fleet-run wrapper writes heartbeat.json every 10 s (heartbeat-written) and exit.json, atomic, in the attempt outbox"
         }
       ],
       "adapters": [
@@ -2014,6 +2297,26 @@
         {
           "port": "Clock",
           "implementation": "FakeClock"
+        },
+        {
+          "port": "AgentProcesses",
+          "implementation": "InProcessWorkerProfiles"
+        },
+        {
+          "port": "ProcessHost",
+          "implementation": "PlatformProcessHost (crates/horch-platform)"
+        },
+        {
+          "port": "ProcessHost",
+          "implementation": "FakeProcessHost"
+        },
+        {
+          "port": "HeartbeatPublisher",
+          "implementation": "FleetRunWrapper (crates/horch/src/cmd/fleet_run.rs)"
+        },
+        {
+          "port": "HeartbeatPublisher",
+          "implementation": "InMemoryHeartbeats"
         }
       ],
       "read_models": [
@@ -2081,6 +2384,18 @@
         {
           "invariant": "Each agent runs with a 256k context limit (FR-9)",
           "test": "launch_environment_sets_256k_context_limit"
+        },
+        {
+          "invariant": "1 process per attempt_id; a start for a live recorded process is a no-op",
+          "test": "start_agent_process_for_a_live_attempt_is_a_no_op"
+        },
+        {
+          "invariant": "The fleet-run wrapper scrubs the environment and builds the private config home before the CLI starts (A11)",
+          "test": "wrapper_scrubs_env_and_builds_config_home_before_exec"
+        },
+        {
+          "invariant": "contract: heartbeat-written",
+          "test": "published heartbeat-written carries exactly task, attempt, pid, pgid, mux_pane, proc_state, agent_state, last_output_at, last_tool_event, tokens, seq, written_at (connect.json payload) and nothing consumers did not ask for"
         }
       ],
       "design_path": "ddd/08-code/worker-profiles/design.md"
@@ -2116,14 +2431,9 @@
           "description": "check-fleetd, self-update, restart-fleetd; called by horch fleetd check, horch self-update and the service manager"
         },
         {
-          "name": "AgentProcesses",
-          "kind": "driving",
-          "description": "start-agent-process and stop-process-group for task-execution and ideas (connect message start-agent-process)"
-        },
-        {
           "name": "CommandChannel",
           "kind": "driving",
-          "description": "operator requests from horch CLI commands over the socket or named pipe, or request files when fleetd is down"
+          "description": "operator requests and sub-orchestrator answers from horch CLI commands over the socket or named pipe, or request files when fleetd is down; each request carries idempotency_key, and a refused request returns its reason"
         },
         {
           "name": "ReconcilePass",
@@ -2138,12 +2448,12 @@
         {
           "name": "Platform",
           "kind": "driven",
-          "description": "the 1 platform interface: service install and restart, hang detection, process facts, stop a process group, file watching, sandbox, sleep and wake, channel transport, machine probe; returns NotSupported where an OS has no equivalent"
+          "description": "the platform interface of the leaf crate crates/horch-platform, which no context owns (decompose N7); fleet-runtime calls it for service install and restart, hang detection, sleep and wake, file watching and the channel transport (Phase 1 concerns); returns NotSupported where an OS has no equivalent"
         },
         {
           "name": "HerdrGateway",
           "kind": "driven",
-          "description": "herdr panes, agent status, the 1 doorbell line, notifications (adopted system, 06 S2 warning)"
+          "description": "herdr panes, the agent status (published as agent-status-changed to task-execution and ideas), the 1 doorbell line, notifications (adopted system, 06 S2 warning)"
         },
         {
           "name": "ProtectedFiles",
@@ -2167,10 +2477,6 @@
           "implementation": "FleetdCli (crates/horch/src/cmd/fleetd.rs)"
         },
         {
-          "port": "AgentProcesses",
-          "implementation": "InProcessFleetRuntime"
-        },
-        {
           "port": "CommandChannel",
           "implementation": "PlatformChannelServer"
         },
@@ -2192,15 +2498,15 @@
         },
         {
           "port": "Platform",
-          "implementation": "MacPlatform (platform/mac.rs)"
+          "implementation": "MacPlatform (crates/horch-platform/src/mac.rs)"
         },
         {
           "port": "Platform",
-          "implementation": "LinuxPlatform (platform/linux.rs)"
+          "implementation": "LinuxPlatform (crates/horch-platform/src/linux.rs)"
         },
         {
           "port": "Platform",
-          "implementation": "WindowsPlatform (platform/windows.rs)"
+          "implementation": "WindowsPlatform (crates/horch-platform/src/windows.rs)"
         },
         {
           "port": "Platform",
@@ -2283,8 +2589,8 @@
           "test": "pres_06_s12_unknown_probe_neither_pauses_nor_passes"
         },
         {
-          "invariant": "Core fleetd code has no OS cfg (PL-2, PL-3)",
-          "test": "fitness_fleetd_tree_has_no_os_cfg"
+          "invariant": "Production code of the workspace has no OS cfg outside crates/horch-platform; a build script that cannot call it is named with its reason (PL-2)",
+          "test": "fitness_workspace_production_code_has_no_os_cfg_outside_horch_platform"
         },
         {
           "invariant": "A missing OS equivalent returns NotSupported (PL-3)",
@@ -2305,6 +2611,38 @@
         {
           "invariant": "The only bytes typed into a terminal are the 1 fixed doorbell line (FR-7)",
           "test": "only_the_fixed_doorbell_line_is_typed"
+        },
+        {
+          "invariant": "The Phase P move changes no behavior: on macOS, Linux and Windows each test has the same result before and after it, and a test on the list of expected failures still fails (PL-6)",
+          "test": "pl6_each_test_has_the_same_result_before_and_after_the_move"
+        },
+        {
+          "invariant": "A run passes when each test off the list of expected failures passes and each test on it fails; each entry names the phase that makes it green (A22)",
+          "test": "expected_failures_list_gates_the_run"
+        },
+        {
+          "invariant": "No context reads or writes the ledger tables or workspace folders of another context (organise N4)",
+          "test": "fitness_no_context_touches_foreign_tables"
+        },
+        {
+          "invariant": "A hung fleetd is detected and restarted on macOS (06 S14)",
+          "test": "pres_06_s14_hung_fleetd_restarted_on_macos"
+        },
+        {
+          "invariant": "A hung fleetd is detected and restarted on Linux (06 S14)",
+          "test": "pres_06_s14_hung_fleetd_restarted_on_linux"
+        },
+        {
+          "invariant": "A hung fleetd is detected and restarted on Windows (06 S14)",
+          "test": "pres_06_s14_hung_fleetd_restarted_on_windows"
+        },
+        {
+          "invariant": "fleetd applies a request once per idempotency_key and returns the first outcome again",
+          "test": "request_with_a_seen_idempotency_key_returns_the_first_outcome"
+        },
+        {
+          "invariant": "A refused request returns its reason",
+          "test": "refused_request_returns_its_reason"
         }
       ],
       "design_path": "ddd/08-code/fleet-runtime/design.md"
@@ -2487,15 +2825,17 @@
           "diagram": "ddd/08-code/decisions/D3-C.json"
         }
       ],
-      "rationale": "Recommended option C. Strongest argument against it: fleet-runtime then owns 4 process roles and the team has high cognitive load (organise warning). The call is upstream (connect D2) and stays open for the operator.",
+      "rationale": "Decided by the orchestrator (D15). The operator can reverse it. Chosen: B. Reason of the orchestrator: the wrapper is the profile made real (private config home, environment scrub, adapter event mapping), and the scrub needs 1 owner. Process group and kill go through the platform interface, which each context calls. This differs from the recommendation of this step. The step recommended C: Recommended option C. Strongest argument against it: fleet-runtime then owns 4 process roles and the team has high cognitive load (organise warning).",
       "would_flip_if": [
-        "The operator assigns the wrapper in connect D2",
+        "The wrapper holds lease logic",
         "The CLI event map turns out to need task state"
       ],
-      "made_by": "step",
+      "made_by": "strategist",
       "records": {
-        "open_question": "Q1"
-      }
+        "assumption": "A11"
+      },
+      "chosen": "B",
+      "confidence": "medium"
     },
     {
       "id": "D4",
@@ -2558,7 +2898,7 @@
   "notes_for_downstream": [
     {
       "id": "N1",
-      "text": "The code step adds no message across a process boundary. start-agent-process and launch-environment stay in-process calls (ports AgentProcesses and LaunchEnvironmentQuery). The file protocol (result.json, exit.json, heartbeat.json, idea-folder files) and the command channel are the contracts that need schemas.",
+      "text": "The code step adds no message across a process boundary. start-agent-process and launch-environment stay in-process calls into worker-profiles (port AgentProcesses and LaunchEnvironmentQuery). The file protocol (task.yaml, START.md, result.json, exit.json, heartbeat.json, verdict.json, plan.verdict.json, approval.json, idea-folder files), the command channel, herdr agent status and GitHub are the contracts that need schemas.",
       "for": [
         "contracts"
       ],
@@ -2571,12 +2911,36 @@
         "contracts"
       ],
       "kind": "process"
+    },
+    {
+      "id": "N3",
+      "for": [
+        "contracts"
+      ],
+      "kind": "process",
+      "text": "Contract and idempotency tests now quote the connect payloads in the snake_case names of the design. New tests: contract for assign-task, start-work, task-verdict-written, heartbeat-written, plan-verdict-written, assumptions-approved and open-pull-request; idempotent for pull-request-merged, agent-status-changed, heartbeat-written and task-escalated."
+    },
+    {
+      "id": "N4",
+      "for": [
+        "contracts"
+      ],
+      "kind": "decision",
+      "text": "worker-profiles owns the fleet-run wrapper (D3 option B), so heartbeat.json and exit.json have worker-profiles as producer and task-execution as consumer. The command channel tests are request_with_a_seen_idempotency_key_returns_the_first_outcome and refused_request_returns_its_reason in fleet-runtime."
+    },
+    {
+      "id": "N5",
+      "for": [
+        "contracts"
+      ],
+      "kind": "boundary",
+      "text": "The platform layer (crates/horch-platform) and the in-process rescue ref call from integration to worktree-custody are code seams, not wire contracts. Cover them with the fitness and module tests named in code.json."
     }
   ],
   "plain_words": {
     "what": "This step turns the 6 parts of the fleetd design into a code plan for Rust: which folders, which types, which interfaces, which tests, and in which order to build them. It writes no code.",
-    "decided": "All 6 parts live as modules under crates/horch-core/src/fleetd/. Only the 2 core parts get aggregates (rich objects that guard their own rules): Task and Verification in task-execution, Feature and TaskBranch in integration. An attempt lives inside its task, so a crash can never end the attempt and forget the task. 140 named tests cover the 13 invariants, the preservation rows and 10 high-priority fault scenarios. The build order is the 8 phases of the design.",
-    "assumed": "We assumed the existing modules stay where they are and get wrapped, not moved. We also assumed nothing else may mark a task done: only the verifier can create the value that does it.",
-    "riskiest": "Wrapping old modules means 2 code paths live side by side until each phase removes the old one. If a phase forgets to remove its old path, the old watchdog and the new fleetd can both act on 1 task. The owner of the per-attempt wrapper program is still open and must be chosen before Phase 4."
+    "decided": "All 6 parts live as modules under crates/horch-core/src/fleetd/. The OS-specific code lives in its own small crate, crates/horch-platform, that every part calls. 3 parts get aggregates (rich objects that guard their own rules): Task and Verification in task-execution, Feature and TaskBranch in integration, and Plan in ideas. An attempt lives inside its task, so a crash can never end the attempt and forget the task. worker-profiles starts every agent process and owns the per-attempt wrapper. The build order is the 9 phases of the design, with Phase P (moving the OS code) right after Phase 0.",
+    "assumed": "We assumed the existing modules stay where they are and get wrapped, not moved. We also assumed nothing else may mark a task done: only the verifier can create the value that does it. Integration asks worktree-custody for each rescue ref instead of writing it itself.",
+    "riskiest": "Wrapping old modules means 2 code paths live side by side until each phase removes the old one. If a phase forgets to remove its old path, the old watchdog and the new fleetd can both act on 1 task. Phase P moves 178 OS-specific sites at once; its only safety net is that every test gives the same result before and after the move."
   }
 }

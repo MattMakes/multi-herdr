@@ -20,9 +20,9 @@
       },
       {
         "id": "fr",
-        "label": "fleet-runtime",
-        "sublabel": "platform layer",
-        "kind": "context"
+        "label": "horch-platform",
+        "sublabel": "leaf crate, no context",
+        "kind": "external"
       },
       {
         "id": "cli",
@@ -48,7 +48,7 @@
       },
       {
         "id": "e2",
-        "from": "cli",
+        "from": "wp",
         "to": "te",
         "label": "heartbeat.json, exit.json",
         "kind": "command"
