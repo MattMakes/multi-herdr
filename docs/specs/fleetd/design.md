@@ -127,6 +127,7 @@ Each requirement has an ID that the failure analysis and the tests point back to
 | RR-9 | No worktree shall be removed until its commits and its uncommitted and untracked files are saved on a rescue ref, and that ref is read back and shown to hold them. | Kill a worker with dirty and untracked files; after cleanup the rescue ref contains every one. |
 | RR-10 | The reconciler shall compare the worktree ledger with `git worktree list` and the work directory on every pass, and adopt or rescue anything on disk that the ledger does not own. | Create a worktree by hand; it is adopted or rescued within one pass. |
 | RR-11 | A worker that shows a usage limit or a provider outage shall not be treated as stuck, and shall not burn an attempt. If its persona's fallback is on another provider, fleetd shall restart the task at once on a new worker of the fallback persona, on the same worktree. Otherwise the task shall wait in `waiting_quota` with its lease paused until the pool resets. If both pools are limited, the task shall wait. | Phase 0 test: a usage-limited worker is not reaped, and its attempt count does not change. |
+| RR-12 | A worker question shall be a ledger row with an owner, a state and a time limit. fleetd shall start the owner on each pass until an answer is recorded, resume the worker with the answer or start a fresh worker from the question, the answer and the committed work, and escalate the question to you past its time limit. | Phase 0 test: a question whose owner is not running is answered after fleetd starts it; an unanswered question reaches `needs-you/` at its limit. |
 
 **Safety and isolation (SR)**
 
@@ -301,7 +302,7 @@ Every hand-off is a file under `/fleet`, written atomically, never edited after 
       inbox/START.md          what the worker is told to read first
       outbox/progress.jsonl   worker progress notes (append only)
       outbox/result.json      worker's claimed result
-      outbox/questions/       blocking questions, one file each
+      outbox/questions/       blocking questions, one file each; the worker commits its work and exits
       heartbeat.json          written by the fleet-run wrapper, not the model
       transcript.jsonl        the CLI's own event stream
       home/                   per-attempt config dir for the CLI
@@ -578,6 +579,18 @@ CREATE TABLE trial_merges (               -- facts from git merge-tree --write-t
   PRIMARY KEY (left_tip, right_tip)
 );
 
+CREATE TABLE questions (                   -- 1 row per worker question
+  id          TEXT PRIMARY KEY,            -- T-0007-02/A1/Q1
+  task_id     TEXT NOT NULL REFERENCES tasks(id),
+  feature_id  TEXT NOT NULL REFERENCES features(id),
+  owner       TEXT NOT NULL,               -- the sub-orchestrator of the feature
+  state       TEXT NOT NULL CHECK (state IN ('open','answered','escalated')),
+  answer_case TEXT CHECK (answer_case IN ('covered','revise','replan','own_decision')),
+  citation    TEXT,                        -- checked by fleetd for a covered answer
+  due_at      TEXT NOT NULL,               -- past it, escalates to needs-you
+  asked_at    TEXT NOT NULL, answered_at TEXT
+);
+
 CREATE TABLE events (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
   at TEXT NOT NULL, entity TEXT NOT NULL, entity_id TEXT NOT NULL,
@@ -736,7 +749,23 @@ The validator refuses the file while any item is marked `[open]`. `[assumed]` it
 
 **A worker that waits holds no process.** An exec worker that asks a question exits. Its task parks with no process and no time limit. The 1 h cap on a declared wait (`max_wait_s`) applies only to an interactive persona; at the cap the process exits and the task parks in the same way.
 
-**Questions from workers go to the sub-orchestrator, not to you.** It answers from the approved assumptions and spec. Only a question that would change an approved assumption comes to you, as a small `revise` on the same idea, which pauses only the affected tasks.
+**How a worker's question is resolved.**
+
+1. The worker writes 1 question file, commits its work in progress, and exits. The task parks. The other tasks of the feature go on.
+2. The question is a ledger row with an owner (the sub-orchestrator of the feature), a state and a time limit.
+3. On each pass, fleetd starts the owner if it is not running. Delivery repeats until an answer is recorded.
+4. The answer is 1 of 4 cases:
+
+| Case | What occurs |
+| --- | --- |
+| The approved assumptions or the spec cover it | The sub-orchestrator answers and cites the line. fleetd checks that the citation exists. |
+| The answer changes an approved assumption | It goes to you as a `revise`. Only the affected tasks pause. |
+| The question shows a flaw in the plan | The sub-orchestrator replans the task. |
+| Nothing approved covers it, and it changes no assumption | The sub-orchestrator decides when the code or the spec makes the answer clear. It records the answer as a new assumption marked as its own decision. You can reverse it. Only product direction, scope or a trade-off that you must own goes to you. |
+
+5. fleetd resumes the worker's session with the answer. If the resume fails, a fresh worker starts from the question, the answer and the committed work.
+6. The answer goes to the decision log of the feature and to every later task of the feature.
+7. Past its time limit, a question escalates to you in `needs-you/`, with a herdr notification.
 
 **Amendments.** Before `awaiting_approval`, an amendment joins the interview. After approval it becomes a revise with its own approval. Once the idea is merged, it becomes a new idea with `depends_on`.
 
@@ -1039,6 +1068,7 @@ Every failure you listed, plus twenty-three more found while reading the code, t
 | FM-32 | A model approves its own assumptions or forges an approval | Work starts without your yes | `horch idea approve` refuses inside any fleet attempt and profiles deny it; fleetd writes `approval.json` with the hash you saw and ignores any other; invariant I7 checked every pass | Prevented | FR-10 |
 | FM-33 | A document passes a structural check but is wrong | A wrong design, report or doc is accepted | Plan validation requires a paired judge task in a different session, on a different provider when the roster has one; a CRITICAL miss blocks and a fresh session fixes it; a fresh judge checks only the earlier CRITICAL items and the change; after 2 fix rounds it goes to you | At the judge task | FR-4, RR-3 |
 | FM-34 | Daemon and CLI of different versions | Old code acts on a newer ledger, or the reverse | fleetd is a subcommand of the single `horch` binary; `horch self-update` restarts the daemon on the new binary at once; a CLI that finds an older daemon restarts it; a newer schema is refused | Prevented; at the next CLI call otherwise | OR-6 |
+| FM-35 | A question is never answered | The task parks for ever | Each question is a ledger row with an owner, a state and a time limit; fleetd starts the owner on each pass and repeats delivery until an answer is recorded; past the limit it escalates to `needs-you/` with a herdr notification | At the time limit | RR-12, OR-3 |
 
 ## Migration plan
 
