@@ -135,6 +135,7 @@ Each requirement has an ID that the failure analysis and the tests point back to
 | SR-1 | Each worker shall write only to its task directory and its worktree, plus paths its profile names. | Sandbox conformance test per CLI. |
 | SR-2 | Secrets shall reach agents only through env vars named in the profile, never through task files. | Lint on task files. |
 | SR-3 | No agent shall push to a protected branch, deploy, or message anyone outside the fleet. | Git hooks and profile defaults. |
+| SR-4 | An acceptance command shall run in the sandbox profile of the task's worker, never with the rights of fleetd. | A check that writes outside the worker's allowed paths is refused. |
 
 **Platform (PL)**
 
@@ -180,7 +181,11 @@ Not confirmed: whether herdr can set MCP servers, skills or context limits per a
 
 ### The agent CLIs
 
+The OpenCode, pi and Prime adapters of today carry over with Claude Code, Codex and Antigravity (`preservation-06-wiring-and-platform.md`, row S15). The table covers the 3 CLIs that the design changes most.
+
 All three CLIs can be fully configured per process and all three have a headless mode and hooks, but only Claude Code and Codex expose a compaction threshold, and every one of them has a trust or approval prompt that can freeze an unattended pane unless it is pre-seeded.
+
+On 2026-11-11 this machine ran herdr 0.9.4-preview, Claude Code 2.1.322 and Codex CLI 0.167.0. The table below was written from the documents of the versions it names, and Phase 7 verifies it again.
 
 Versions as documented on 2026-11-10: Claude Code docs up to v2.1.290 ([CLI reference](https://code.claude.com/docs/en/cli-reference.md), [env vars](https://code.claude.com/docs/en/env-vars.md), [hooks](https://code.claude.com/docs/en/hooks.md), [sandboxing](https://code.claude.com/docs/en/sandboxing.md)); Codex CLI 0.161.0 ([config reference](https://learn.chatgpt.com/docs/config-file/config-reference.md), [non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode.md), [sandboxing](https://learn.chatgpt.com/docs/sandboxing.md), [hooks](https://learn.chatgpt.com/docs/hooks.md)); Antigravity CLI `agy` 1.4.4+, Google's successor to Gemini CLI since May 2026 ([CLI reference](https://antigravity.google/docs/cli/reference), [headless](https://antigravity.google/docs/cli/headless), [hooks](https://antigravity.google/docs/hooks?tab=cli), [sandbox](https://antigravity.google/docs/sandbox?tab=cli)).
 
@@ -248,6 +253,8 @@ Sub-orchestrators and workers never touch the ledger, each other or git worktree
 - fleetd supervises attempts: one-for-one, so a crashed worker never affects its siblings. Each profile sets `max_attempts` and backoff. After the last attempt the task goes back to its idea's sub-orchestrator to replan once, then to you.
 - The wrapper supervises its CLI process group: on a wall-clock breach it stops the whole group through the platform layer, so no grandchild processes linger. On Linux the module sends SIGINT, waits 20 s, then SIGKILLs the group.
 
+**The command channel.** Each `horch` command that changes state sends a request to fleetd over its channel (a Unix socket, or a named pipe on Windows, through the platform layer). When fleetd is down, the command writes a request file, and fleetd reads it at start. fleetd stays the only ledger writer.
+
 **One platform layer for three OSes.** Core fleetd code has no `cfg(target_os)`, `cfg(unix)` or `cfg(windows)`. It calls the platform interface. The Linux details in this document (`systemd`, `Restart=always`, `WatchdogSec=30`, `/proc`, `inotify`, bubblewrap, `SIGINT` then `SIGKILL`) are the Linux module's implementation. The layer is for new fleetd code. Migration of the 178 existing OS-specific sites in production code is a separate decision (`docs/specs/fleetd/preservation-06-wiring-and-platform.md`, section 6).
 
 **What each OS provides** (from `preservation-06-wiring-and-platform.md`, sections 7 and 8)
@@ -306,6 +313,10 @@ Every hand-off is a file under `/fleet`, written atomically, never edited after 
   run/                        pid files, lock, mux handles
 ```
 
+**Knowledge across ideas.** Project facts (today `horch note --fact`) go to every sub-orchestrator. Each feature keeps its own decisions file.
+
+**Plan and ticket formats.** `plan.yaml` replaces today's `MAP.md`. A ticket stays a Markdown file in today's format C1 (`docs/specs/ticket-format.md`), and `plan.yaml` names it.
+
 **Protocol rules**
 
 1. **Atomic writes.** A writer writes `name.tmp`, fsyncs, then renames to `name`. Readers ignore `*.tmp`. A half-written file can never be read.
@@ -350,6 +361,7 @@ base_branch: main
 tasks:
   - key: backoff
     title: Add exponential backoff to SyncClient.request
+    ticket: tickets/01-backoff.md   # Markdown, today's format C1
     kind: feature
     profile: coder-codex
     covers: [R1]
@@ -628,7 +640,7 @@ liveness:
   start_timeout_s: 90          # no first signal -> attempt failed
   stall_after_s: 300           # no activity -> lease not renewed
   lease_s: 120
-  max_wait_s: 3600             # cap on any declared wait (today: up to 7 days)
+  max_wait_s: 3600             # interactive personas only: cap on a declared wait (today: up to 7 days)
 retry:
   max_attempts: 3
   backoff_s: [30, 120, 480]
@@ -646,6 +658,8 @@ budget:
 - Higher effort needs a stated reason.
 - A Sonnet task must be marked as "no decisions".
 - Fable needs your flag.
+
+**Adapters.** Today's OpenCode, pi and Prime adapters (launch, skills, resume, context and quota readers) carry over with Claude Code, Codex and Antigravity (`preservation-06-wiring-and-platform.md`, row S15). Dropping them would remove the `opencode-zen` and `local` pools.
 
 **How each adapter applies a profile**
 
@@ -719,6 +733,8 @@ The validator refuses the file while any item is marked `[open]`. `[assumed]` it
 **Quick approval stays with you, in code.** When an idea reaches `awaiting_approval`, fleetd posts a herdr notification and `horch ideas` shows it under Needs you. `horch idea show I-0012` prints the assumptions; `approve` or `revise` records your decision. The sub-orchestrator cannot approve for you: `horch idea approve` refuses to run when its caller's process tree contains any recorded fleet attempt, agent profiles deny the command, and fleetd writes `approval.json` itself, with the hash of the assumptions you saw, and ignores one written by anyone else. A herdr key binding can map one key to approve the focused idea pane (herdr supports custom key commands; the exact fields are unconfirmed).
 
 **Waiting on you is not a stall.** While an idea is in `clarifying` with a question open, or in `awaiting_approval`, its lease is paused and fleetd sends one reminder an hour during your working hours. After 30 minutes it stops the idle sub-orchestrator process to free memory; an open question or your approval starts it again from the folder. After 7 days with no answer the idea moves to `parked`, with a note in `needs-you/`, so the queue only counts ideas that can move.
+
+**A worker that waits holds no process.** An exec worker that asks a question exits. Its task parks with no process and no time limit. The 1 h cap on a declared wait (`max_wait_s`) applies only to an interactive persona; at the cap the process exits and the task parks in the same way.
 
 **Questions from workers go to the sub-orchestrator, not to you.** It answers from the approved assumptions and spec. Only a question that would change an approved assumption comes to you, as a small `revise` on the same idea, which pauses only the affected tasks.
 
@@ -991,7 +1007,7 @@ Every failure you listed, plus twenty-three more found while reading the code, t
 | --- | --- | --- | --- | --- | --- |
 | FM-1 | Orchestrator forgets to create a task | Part of an idea is never built, silently | No AI creates tasks: they come only from a validated `plan.yaml`, committed in one transaction after your approval; the coverage check fails the plan if any requirement has no task | Prevented | FR-3, FR-4, FR-10 |
 | FM-2 | Worker starts but doesn't find its work | Idle pane, task never runs | Push dispatch: fleetd binds the task to the attempt and writes `task.yaml` before launch; no claim, persona match or run lookup | Prevented; a launch that never starts fails at 90 s | FR-5 |
-| FM-3 | Worker holds a task and sits idle | Task blocked for hours or days | Leases renewed only on earned activity; waits capped by `max_wait_s` and need a live question or review row behind them | About 7 min | RR-2 |
+| FM-3 | Worker holds a task and sits idle | Task blocked for hours or days | Leases renewed only on earned activity; an exec worker that asks a question exits and its task parks with no process; an interactive persona's waits are capped by `max_wait_s` and need a live question or review row behind them | About 7 min | RR-2 |
 | FM-4 | Agent process dies silently | Task looks running | PID and start time checked every 5 s pass; wrapper heartbeat stale at 30 s | 5 to 30 s | RR-1 |
 | FM-5 | Agent alive but stuck at a login, rate-limit, trust or error prompt | Looks alive forever | A usage limit or a provider outage is not a stall: no attempt is burned, the task restarts at once on the fallback persona when it is on another provider, else waits in `waiting_quota` with its lease paused until the pool resets. A login, trust or error prompt: herdr `blocked` state, `Notification` and `PermissionRequest` hooks, no activity past `stall_after`; profiles pre-approve so any dialog is a defect | Immediately for dialogs and usage limits, 5 min otherwise | RR-1, RR-11, FR-8 |
 | FM-6 | Worker finishes but never reports | Work lost or redone | Stop gate refuses to end the turn without `result.json`; exec mode exit without result triggers one repair resume; the next attempt reuses the same worktree | Prevented; worst case one retry that starts from the work | RR-3 |
@@ -1036,11 +1052,11 @@ Each phase keeps the fleet usable. A phase is released when its fault-injection 
 
 1. **Phase 0: reproduce every failure in tests.** Add scenarios to `crates/horch-e2e` using the fake harness and the existing fault points: an agent that never claims, one that claims and stops, one that exits without `done`, a killed watchdog, a herdr server restart, two ideas sent back to back, a worker killed with dirty and untracked files in its worktree. Today most should fail. *Gate:* FM-1 to FM-8 and FM-25 each have a red test.
 2. **Phase 1: `horch fleetd`, supervised and level-triggered.** Move the watchdog's pass into a long-lived daemon under the service manager of each OS through the platform layer (on Linux a systemd user unit with `WatchdogSec`), a 5 s pass and invariants I1 to I5. It acts in code (stop by recorded PID, requeue, respawn) instead of only mailing the orchestrator. Remove the lazy `ensure` start. *Gate:* FM-4, FM-7, FM-12, FM-13 green.
-3. **Phase 2: leases and capped waits.** Schema v8 adds a `leases` table. Renewal comes only from earned activity. `worker_waits` rows get `max_wait_s` (default 1 h) and must point at a live question or review. Replace "3 checks of 600 s" with the stall ladder. Add the `waiting_quota` state, the required `fallback` persona in the roster, and the restart on a fallback of another provider. *Gate:* FM-3, FM-5 green; a usage-limited worker is not reaped and burns no attempt; the idle-claim scenario is caught in under 10 min.
+3. **Phase 2: leases and capped waits.** Schema v8 adds a `leases` table. Renewal comes only from earned activity. `worker_waits` rows of an interactive persona get `max_wait_s` (default 1 h) and must point at a live question or review; an exec worker that asks a question exits and its task parks. Replace "3 checks of 600 s" with the stall ladder. Add the `waiting_quota` state, the required `fallback` persona in the roster, and the restart on a fallback of another provider. *Gate:* FM-3, FM-5 green; a usage-limited worker is not reaped and burns no attempt; the idle-claim scenario is caught in under 10 min.
 4. **Phase 3: worktree leases and rescue.** Extend the existing `worktrees` table with state, owner, base and rescue columns, and make fleetd (through `horch spawn` until Phase 4) the only code that runs `git worktree add` or `remove`, writing the row first. Add the worktree reconciler, the verified rescue to `refs/horch/rescue/`, reuse by the next attempt, invariant I6, `horch worktrees` and `horch worktree restore`. Run it once in report-only mode to list the orphans already on your disk before it acts. *Gate:* FM-25 to FM-28 green; a worker killed with dirty and untracked files loses nothing.
 5. **Phase 4: push dispatch and the result gate.** `horch spawn` binds a task before the pane exists and writes `task.yaml` and `START.md`; `CLAIM_TASK` goes away. Add Stop hooks for Claude Code, Codex and Antigravity and a `horch result` command that writes `result.json`. fleetd runs the finish steps (check, sweeps, land) as the verifier instead of the worker detaching them and waiting for a typed NOTE. For a code kind the review scripts carry over unchanged: code-sweep rounds, findings F<n>, the answers file, waivers and verification profiles, with their limits (V-14). *Gate:* FM-2, FM-6, FM-9 green.
-6. **Phase 5: one ledger writer.** Worker commands (`progress`, `result`, `ask`) write files into the attempt's outbox; fleetd ingests them. Every other process opens the ledger read-only, enforced by a new `arch_scan` rule. Remove Codex's `broad_ledger_rule` sandbox escape. *Gate:* FM-17, FM-24 green; arch test passes.
-7. **Phase 6: the idea dispatcher and sub-orchestrators.** Schema v9 gives `ideas` the state machine above and adds `horch idea add` (with the `--direct` fast lane), `ideas`, `show`, `note`, `approve`, `revise` and `park`. Add the dispatcher loop to fleetd, invariant I7, and the `idea-lead` persona, which runs today's brief, spec-writer and ticket-writer steps for one idea in its own interactive pane, a fresh process per phase. Extend `add-map --dry-run` and `scripts/check-req-coverage.sh` into the plan validator (schema, DAG, coverage, profiles, citations to approved assumptions). Retire the long-lived orchestrator conversation, and allow one feature branch per feature with several at once in place of one non-solo run per workspace. Add the `features`, `branches`, `gate_runs` and `trial_merges` tables and `horch idea add --to`. *Gate:* FM-1, FM-8, FM-10, FM-16, FM-29 to FM-32 green.
+6. **Phase 5: one ledger writer.** Worker commands (`progress`, `result`, `ask`) write files into the attempt's outbox; fleetd ingests them. Every other process opens the ledger read-only, enforced by a new `arch_scan` rule. Remove Codex's `broad_ledger_rule` sandbox escape. Each `horch` command that changes state sends a request to fleetd over its command channel, or writes a request file when fleetd is down. *Gate:* FM-17, FM-24 green; arch test passes.
+7. **Phase 6: the idea dispatcher and sub-orchestrators.** Schema v9 gives `ideas` the state machine above and adds `horch idea add` (with the `--direct` fast lane), `ideas`, `show`, `note`, `approve`, `revise` and `park`. Add the dispatcher loop to fleetd, invariant I7, and the `idea-lead` persona, which runs today's brief, spec-writer and ticket-writer steps for one idea in its own interactive pane, a fresh process per phase. `plan.yaml` replaces `MAP.md`; tickets stay Markdown in format C1 and `plan.yaml` names them. Extend `add-map --dry-run` and `scripts/check-req-coverage.sh` into the plan validator (schema, DAG, coverage, profiles, citations to approved assumptions). Retire the long-lived orchestrator conversation, and allow one feature branch per feature with several at once in place of one non-solo run per workspace. Add the `features`, `branches`, `gate_runs` and `trial_merges` tables and `horch idea add --to`. *Gate:* FM-1, FM-8, FM-10, FM-16, FM-29 to FM-32 green.
 8. **Phase 7: docs sync and conformance, then exec mode.** Widen `herdr-docs-sync` to every CLI with the conformance suite and unhealthy marking. Then make exec mode the default worker mode and set `context-windows.md` to 256000 for every seat (today it is 300000 for the orchestrator and 200000 for opus). *Gate:* FM-18 to FM-20 green.
 
 Phases 1 to 4 remove most of the stalls you see day to day and stop worktrees from being lost. Phase 6 is the largest change and depends on Phase 5, because a plan has to land through the single writer to be all-or-nothing, and only fleetd may record your approvals.
