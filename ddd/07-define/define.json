@@ -1,0 +1,2547 @@
+{
+  "schema_version": 1,
+  "step": "define",
+  "produced_by": "ddd-define",
+  "produced_at": "2026-11-12T18:11:22Z",
+  "mode": "auto",
+  "depth": "standard",
+  "inputs": [
+    "ddd/01-understand/understand.json",
+    "ddd/02-discover/discover.json",
+    "ddd/03-decompose/decompose.json",
+    "ddd/04-strategize/strategize.json",
+    "ddd/05-connect/connect.json",
+    "ddd/06-organise/organise.json",
+    "ddd/manifest.json",
+    "ddd/glossary.md"
+  ],
+  "assumptions": [
+    {
+      "id": "A1",
+      "text": "ideas: 'conformist' guessed for external system sub-orchestrator (core contexts protect their model; others conform) - confirm",
+      "confidence": "low"
+    },
+    {
+      "id": "A2",
+      "text": "ideas: 'conformist' guessed for external system worker (core contexts protect their model; others conform) - confirm",
+      "confidence": "low"
+    },
+    {
+      "id": "A3",
+      "text": "ideas: 'conformist' guessed for external system clock (core contexts protect their model; others conform) - confirm",
+      "confidence": "low"
+    },
+    {
+      "id": "A4",
+      "text": "task-execution: 'anticorruption-layer' guessed for external system worker (core contexts protect their model; others conform) - confirm",
+      "confidence": "low"
+    },
+    {
+      "id": "A5",
+      "text": "task-execution: 'anticorruption-layer' guessed for external system agent-cli (core contexts protect their model; others conform) - confirm",
+      "confidence": "low"
+    },
+    {
+      "id": "A6",
+      "text": "task-execution: 'anticorruption-layer' guessed for external system provider-pool (core contexts protect their model; others conform) - confirm",
+      "confidence": "low"
+    },
+    {
+      "id": "A7",
+      "text": "task-execution: 'anticorruption-layer' guessed for external system clock (core contexts protect their model; others conform) - confirm",
+      "confidence": "low"
+    },
+    {
+      "id": "A8",
+      "text": "task-execution: 'anticorruption-layer' guessed for external system sub-orchestrator (core contexts protect their model; others conform) - confirm",
+      "confidence": "low"
+    },
+    {
+      "id": "A9",
+      "text": "worktree-custody: 'conformist' guessed for external system clock (core contexts protect their model; others conform) - confirm",
+      "confidence": "low"
+    },
+    {
+      "id": "A10",
+      "text": "integration: 'anticorruption-layer' guessed for external system git (core contexts protect their model; others conform) - confirm",
+      "confidence": "low"
+    },
+    {
+      "id": "A11",
+      "text": "integration: 'anticorruption-layer' guessed for external system clock (core contexts protect their model; others conform) - confirm",
+      "confidence": "low"
+    },
+    {
+      "id": "A12",
+      "text": "worker-profiles: 'conformist' guessed for external system clock (core contexts protect their model; others conform) - confirm",
+      "confidence": "low"
+    },
+    {
+      "id": "A13",
+      "text": "fleet-runtime: 'conformist' guessed for external system clock (core contexts protect their model; others conform) - confirm",
+      "confidence": "low"
+    },
+    {
+      "id": "A14",
+      "text": "fleet-runtime: 'conformist' guessed for external system os-service-manager (core contexts protect their model; others conform) - confirm",
+      "confidence": "low"
+    },
+    {
+      "id": "A15",
+      "text": "Worker, wrapper and sub-orchestrator input reaches fleetd only as files of the fleetd file protocol, which ingestion validates and reads idempotently (FR-7, RR-8). So the core contexts guard these inputs with an anticorruption layer, and the pre-fill guesses A4, A5, A7, A8, A10 and A11 hold.",
+      "confidence": "medium"
+    },
+    {
+      "id": "A16",
+      "text": "fleetd earns no revenue. It saves operator time and paid usage (G1, G2, G4). So the business model of ideas, task-execution, worktree-custody, integration and fleet-runtime is cost-reducer. Decision D1 is open for the 2 core contexts.",
+      "confidence": "medium"
+    },
+    {
+      "id": "A17",
+      "text": "worker-profiles is a compliance-enforcer: its main value is that every launch obeys the ANTHROPIC_API_KEY rule and the login rules (C2, 05 E-10, 06 S1, S3).",
+      "confidence": "medium"
+    },
+    {
+      "id": "A18",
+      "text": "ideas plays the specification-model role (it produces the validated plan that task-execution executes) and the approver role (the operator approval gate, FR-10). Decision D2 is open.",
+      "confidence": "low"
+    },
+    {
+      "id": "A19",
+      "text": "integration receives pull-request-merged from GitHub only as a hint to check sooner. The fact merged is read from git by content (I8, design Between features). The row is added to the integration canvas.",
+      "confidence": "medium"
+    },
+    {
+      "id": "A20",
+      "text": "integration sends open-pull-request to GitHub when the project setting pr is gh. With pr manual it pushes the feature branch and shows the compare URL; no GitHub call is made.",
+      "confidence": "medium"
+    },
+    {
+      "id": "A21",
+      "text": "Metric thresholds use the fixed values of the design (pass 5 s, start timeout 90 s, lease 120 s, stall_after 300 s, heartbeat check 30 s). An invariant metric has the target 0 violations.",
+      "confidence": "medium"
+    },
+    {
+      "id": "A22",
+      "text": "The define step changes no upstream relationship. Every message id on a canvas comes from connect or discover; the 2 GitHub rows use discover ids.",
+      "confidence": "high"
+    }
+  ],
+  "open_questions": [
+    {
+      "id": "Q1",
+      "text": "pull-request-merged and open-pull-request are discover ids that no connect message carries, but integration talks to GitHub through them (A19, A20). Must ddd-connect add them as messages of the integration and GitHub collaboration?",
+      "blocking": false,
+      "owner": "ddd-connect"
+    },
+    {
+      "id": "Q2",
+      "text": "herdr is an external system with no message on any canvas. Its agent status (pane.agent_status_changed) is 1 of the 4 liveness signals of task-execution. Must ddd-connect add it as a message into task-execution through the fleet-runtime herdr adapter?",
+      "blocking": false,
+      "owner": "ddd-connect"
+    },
+    {
+      "id": "Q3",
+      "text": "Competing criteria: integration rebases a feature branch each time the primary branch moves, while task-execution runs attempts on task branches cut from that feature branch. Does a rebase wait for the running attempts of the feature, or do their task branches rebase at landing (conflicted state)?",
+      "blocking": false,
+      "owner": "operator"
+    },
+    {
+      "id": "Q4",
+      "text": "Business model of the 2 core contexts (decision D1): cost-reducer, revenue-generator or engagement-creator?",
+      "blocking": false,
+      "owner": "operator"
+    },
+    {
+      "id": "Q5",
+      "text": "Domain role of ideas (decision D2): specification-model with approver, execution-context, or approver alone?",
+      "blocking": false,
+      "owner": "operator"
+    }
+  ],
+  "canvases": [
+    {
+      "context": "ideas",
+      "name": "Ideas",
+      "purpose": "Ideas takes each rough idea of the operator from capture to 1 committed, validated plan, and closes the idea when its feature is merged (G3). It decides when an idea may move to its next state, holds the operator approval gate, and answers worker questions against the approved assumptions, so that no AI plans 2 ideas at once and no task exists outside an approved plan (FR-2, FR-10, FR-12). It does not run tasks (task-execution), land branches or open the feature (integration), or start processes (fleet-runtime).",
+      "strategic_classification": {
+        "domain": "supporting",
+        "business_model": "cost-reducer",
+        "evolution": "custom"
+      },
+      "domain_roles": [
+        "specification-model",
+        "approver"
+      ],
+      "domain_roles_rationale": "It builds a document, the plan, that is validated only at the hand-over event plan-committed (FR-3) and then executed by task-execution: a specification model. It holds the operator approval gate, where an idea goes on only with the operator's approved hash (FR-10, I7): an approver. Decision D2 is open ([define A18]).",
+      "inbound": [
+        {
+          "collaborator": "operator",
+          "relationship": "user-interaction",
+          "messages": [
+            {
+              "id": "add-idea",
+              "kind": "command",
+              "name": "Add Idea",
+              "payload": [
+                "text",
+                "featureId?"
+              ],
+              "delivery": "sync",
+              "via": "other",
+              "sync": true,
+              "response": {
+                "id": "add-idea",
+                "name": "Add Idea",
+                "payload": [
+                  "text",
+                  "featureId?"
+                ]
+              }
+            },
+            {
+              "id": "add-direct-idea",
+              "kind": "command",
+              "name": "Add Direct Idea",
+              "payload": [
+                "ticketFile",
+                "featureId?"
+              ],
+              "delivery": "sync",
+              "via": "other",
+              "sync": true
+            },
+            {
+              "id": "approve-assumptions",
+              "kind": "command",
+              "name": "Approve Assumptions",
+              "payload": [
+                "ideaId",
+                "assumptionsHash"
+              ],
+              "delivery": "sync",
+              "via": "other",
+              "sync": true
+            },
+            {
+              "id": "answer-interview-question",
+              "kind": "command",
+              "name": "Answer Interview Question"
+            },
+            {
+              "id": "amend-idea",
+              "kind": "command",
+              "name": "Amend Idea"
+            },
+            {
+              "id": "cancel-idea",
+              "kind": "command",
+              "name": "Cancel Idea"
+            },
+            {
+              "id": "revise-assumptions",
+              "kind": "command",
+              "name": "Revise Assumptions"
+            }
+          ]
+        },
+        {
+          "collaborator": "sub-orchestrator",
+          "relationship": "conformist",
+          "messages": [
+            {
+              "id": "write-assumptions",
+              "kind": "command",
+              "name": "Write Assumptions",
+              "payload": [
+                "ideaId",
+                "assumptions.md"
+              ],
+              "delivery": "at-least-once",
+              "via": "file",
+              "sync": false
+            },
+            {
+              "id": "write-spec",
+              "kind": "command",
+              "name": "Write Spec",
+              "payload": [
+                "ideaId",
+                "spec.md",
+                "requirements.yaml"
+              ],
+              "delivery": "at-least-once",
+              "via": "file",
+              "sync": false
+            },
+            {
+              "id": "submit-plan",
+              "kind": "command",
+              "name": "Submit Plan",
+              "payload": [
+                "ideaId",
+                "plan.yaml"
+              ],
+              "delivery": "at-least-once",
+              "via": "file",
+              "sync": false
+            },
+            {
+              "id": "answer-question",
+              "kind": "command",
+              "name": "Answer Question",
+              "payload": [
+                "questionId",
+                "answer|assumption",
+                "citation?"
+              ],
+              "delivery": "at-least-once",
+              "via": "file",
+              "sync": false
+            },
+            {
+              "id": "replan-task",
+              "kind": "command",
+              "name": "Replan Task",
+              "payload": [
+                "taskId",
+                "planChange"
+              ],
+              "delivery": "at-least-once",
+              "via": "file",
+              "sync": false
+            },
+            {
+              "id": "ask-operator",
+              "kind": "command",
+              "name": "Ask Operator"
+            }
+          ]
+        },
+        {
+          "collaborator": "worker",
+          "relationship": "conformist",
+          "messages": [
+            {
+              "id": "ask-question",
+              "kind": "command",
+              "name": "Ask Question",
+              "payload": [
+                "taskId",
+                "questionId",
+                "text"
+              ],
+              "delivery": "at-least-once",
+              "via": "file",
+              "sync": false
+            }
+          ]
+        },
+        {
+          "collaborator": "integration",
+          "relationship": "published-language",
+          "messages": [
+            {
+              "id": "feature-opened",
+              "kind": "event",
+              "name": "Feature Opened",
+              "payload": [
+                "featureId",
+                "branch",
+                "primaryBranch",
+                "ideaId"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "task-branch-landed",
+              "kind": "event",
+              "name": "Task Branch Landed",
+              "payload": [
+                "branch",
+                "taskId",
+                "featureId",
+                "tip"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "feature-merged",
+              "kind": "event",
+              "name": "Feature Merged",
+              "payload": [
+                "featureId"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            }
+          ]
+        },
+        {
+          "collaborator": "task-execution",
+          "relationship": "published-language",
+          "messages": [
+            {
+              "id": "replan-requested",
+              "kind": "event",
+              "name": "Replan Requested",
+              "payload": [
+                "taskId",
+                "attempts"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            }
+          ]
+        },
+        {
+          "collaborator": "worker-profiles",
+          "relationship": "customer-supplier",
+          "messages": [
+            {
+              "id": "launch-environment",
+              "kind": "query",
+              "name": "launch-environment",
+              "payload": [
+                "profile",
+                "taskId|ideaId",
+                "attemptId?"
+              ],
+              "delivery": "sync",
+              "via": "in-process",
+              "sync": true
+            }
+          ]
+        },
+        {
+          "collaborator": "clock",
+          "relationship": "conformist",
+          "messages": [
+            {
+              "id": "escalate-question",
+              "kind": "command",
+              "name": "Escalate Question"
+            }
+          ]
+        }
+      ],
+      "outbound": [
+        {
+          "collaborator": "operator",
+          "relationship": "user-interaction",
+          "messages": [
+            {
+              "id": "approval-requested",
+              "kind": "event",
+              "name": "Approval Requested",
+              "payload": [
+                "ideaId",
+                "assumptionsHash"
+              ],
+              "delivery": "at-least-once",
+              "via": "file",
+              "sync": false
+            }
+          ]
+        },
+        {
+          "collaborator": "sub-orchestrator",
+          "relationship": "conformist",
+          "messages": [
+            {
+              "id": "worker-question-asked",
+              "kind": "event",
+              "name": "Worker Question Asked",
+              "payload": [
+                "taskId",
+                "questionId",
+                "text"
+              ],
+              "delivery": "at-least-once",
+              "via": "file",
+              "sync": false
+            }
+          ]
+        },
+        {
+          "collaborator": "integration",
+          "relationship": "published-language",
+          "messages": [
+            {
+              "id": "assumptions-written",
+              "kind": "event",
+              "name": "Assumptions Written",
+              "payload": [
+                "ideaId",
+                "featureId?"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "direct-idea-accepted",
+              "kind": "event",
+              "name": "Direct Idea Accepted",
+              "payload": [
+                "ideaId",
+                "ticketFile",
+                "featureId?"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "idea-tasks-landed",
+              "kind": "event",
+              "name": "Idea Tasks Landed",
+              "payload": [
+                "ideaId",
+                "featureId"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            }
+          ]
+        },
+        {
+          "collaborator": "task-execution",
+          "relationship": "customer-supplier",
+          "messages": [
+            {
+              "id": "plan-committed",
+              "kind": "event",
+              "name": "Plan Committed",
+              "payload": [
+                "ideaId",
+                "taskIds[]"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "plan-refused",
+              "kind": "event",
+              "name": "Plan Refused",
+              "payload": [
+                "ideaId",
+                "taskId?",
+                "reasons[]"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "task-replanned",
+              "kind": "event",
+              "name": "Task Replanned",
+              "payload": [
+                "taskId",
+                "planChange"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "question-answered",
+              "kind": "event",
+              "name": "Question Answered",
+              "payload": [
+                "questionId",
+                "taskId"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "own-assumption-recorded",
+              "kind": "event",
+              "name": "Own Assumption Recorded",
+              "payload": [
+                "questionId",
+                "taskId"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            }
+          ]
+        },
+        {
+          "collaborator": "fleet-runtime",
+          "relationship": "open-host-service",
+          "messages": [
+            {
+              "id": "start-agent-process",
+              "kind": "command",
+              "name": "start-agent-process",
+              "payload": [
+                "launchEnvironment",
+                "startFile|pane",
+                "processGroup"
+              ],
+              "delivery": "sync",
+              "via": "in-process",
+              "sync": true
+            }
+          ]
+        }
+      ],
+      "ubiquitous_language": [
+        {
+          "term": "Idea",
+          "definition": "A rough request from the operator that 1 fixed state machine moves from captured to merged; only code advances it",
+          "avoid": [
+            "ticket (a ticket enters as a --direct idea)",
+            "request"
+          ]
+        },
+        {
+          "term": "Sub-Orchestrator",
+          "definition": "The interactive Opus 5.5 agent of 1 feature that clarifies, specifies and plans 1 idea at a time, with a fresh process per phase",
+          "avoid": [
+            "orchestrator",
+            "lead"
+          ]
+        },
+        {
+          "term": "Assumption",
+          "definition": "1 line in assumptions.md, [confirmed] or [assumed], that the operator approves or revises; also a reversible assumption that the sub-orchestrator records to answer a worker question (understand N11)",
+          "avoid": [
+            "requirement"
+          ]
+        },
+        {
+          "term": "Plan",
+          "definition": "The validated plan.yaml of 1 idea: tasks, dependencies, checks, paired judges. No task exists outside a committed plan",
+          "avoid": [
+            "ticket list"
+          ]
+        },
+        {
+          "term": "Spec",
+          "definition": "spec.md and requirements.yaml of 1 idea. Every requirement cites an approved assumption or an operator answer. It is written only after approval, in the phase specifying (FR-10)."
+        },
+        {
+          "term": "Question",
+          "definition": "A worker question to the sub-orchestrator of its feature. It ends as an answer, an own assumption, a revise request, or an escalation to the operator"
+        },
+        {
+          "term": "Orchestrator",
+          "definition": "Not a role in fleetd. The word survives only in the preserved mail contract tag [orchestrator re #<id>] (discover N3)"
+        }
+      ],
+      "business_decisions": [
+        "Only code advances an idea. When an idea is captured, the dispatcher starts its sub-orchestrator on the next pass and the idea goes to clarifying; a --direct idea goes to ticketing with no research and no interview (FR-1, FR-2, FR-12).",
+        "An idea passes awaiting_approval only when approval.json, written by fleetd, holds the sha256 of the current assumptions.md, and the approve command ran outside every fleet attempt. An approval written by any other process is ignored (FR-10, I7, C5).",
+        "The assumptions validator refuses assumptions.md while any item is marked [open]. When the file validates, fleetd requests the operator approval and posts a herdr notification.",
+        "While an idea waits on the operator, its lease is paused. After 30 min idle the sub-orchestrator process stops; after 7 days with no answer the idea goes to parked with a note in needs-you/.",
+        "When the assumptions are approved, or revised and approved again, the dispatcher starts a fresh sub-orchestrator process for the next phase. No phase carries a context window into the next (understand N11 keeps the decision rule of the sub-orchestrator).",
+        "A plan is committed all-or-nothing, and only after it passes schema, DAG, coverage, profile and citation checks; a plan for a project with no declared fast gate and full gate is refused (FR-3, FR-4). A judgment-kind task without a paired judge task in another session refuses the plan (understand N12).",
+        "Every requirement of an idea in in_progress or later is covered by at least 1 task that is not cancelled (I3).",
+        "A worker question is a ledger row with an owner, the sub-orchestrator of the feature. On each pass fleetd starts the owner if it is not running, until an answer is recorded; past its time limit the question escalates to needs-you/ (RR-12, discover Q2 for the limit).",
+        "The sub-orchestrator answers a question in 1 of 4 ways: cite the approved line, send a revise to the operator, replan the task, or record its own reversible assumption. Only product direction, scope or a trade-off the operator must own goes to the operator (understand N11, design decision D13).",
+        "When task-execution asks for a replan, the sub-orchestrator replans the task once; the replanned task goes back to task-execution as task-replanned.",
+        "When every task of the idea is landed on its feature branch, the idea goes to integrating. When the feature is merged and every worktree of the idea is removed, the idea goes to merged (discover N4).",
+        "Every feature that is not merged and not abandoned has exactly 1 live sub-orchestrator or waits on the operator (I7, I13). The dispatcher starts a missing one and stops an extra one on each pass, through worker-profiles launch-environment and fleet-runtime start-agent-process (connect N3)."
+      ],
+      "assumptions": [
+        "[understand A3] horch earns no revenue. Its value is operator throughput: approved ideas that reach the primary branch per unit of subscription usage. (confidence medium)",
+        "[understand A7] The alternatives are inferred from the design and the research files: today's horch with 1 orchestrator conversation, agents run by hand, and hosted merge queues (GitHub merge queue, bors, Mergify). (confidence medium)",
+        "[understand A8] The /fleet paths in the design are a neutral layout. In horch, /fleet/ideas/<id>/ is ai_docs/plans/<run>/, /fleet/tasks/ is under the state root, and the ledger stays at ~/.horch/ledger.sqlite3. (confidence high)",
+        "[discover A2] The 5 phases and 4 pivotal events are a hypothesis drawn from the idea state machine (captured to merged) and the landing state machine. Decision D1 records the alternatives. (confidence medium)",
+        "[discover A4] fleetd components (idea dispatcher, verifier, landing, wrapper, reconciler) are our own system, not actors. Their commands have actor null and are issued by policies, or have the clock as actor when the reconcile pass fires them. No 'orchestrator' actor exists (understand N3). (confidence high)",
+        "[discover A6] The event order follows understand N7 (idea states), N8 (task branch states building, verifying, ready, in_bundle, landed with side states conflicted, gate_failed, abandoned) and N9 (worktree states reserved, created, active, landing, landed, orphaned, rescued, removed). (confidence high)",
+        "[discover A8] Feature Opened happens after Assumptions Written for an idea with no --to, as the Features section says; the idea row records its feature at capture only for --to (H7). (confidence low)",
+        "[discover A10] Event count 82 is above the standard band (25 to 60). The design has 4 state machines (idea, task, task branch, worktree) plus feature integration; merging them further hides the language conflicts H4 and H6. (confidence high)",
+        "[decompose A3] The question aggregate (worker-question-asked to question-escalated) belongs to ideas, because the sub-orchestrator answers it against the idea's assumptions. Open decision D2. (confidence medium)",
+        "[decompose A7] Operator attention (cap-operator-attention) maps to ideas, because approvals, interview questions and question escalation live there. Task escalation (task-escalated) stays in task-execution and reaches the operator through the same inbox. (confidence low)",
+        "[strategize A1] Ideas is classified supporting, not core (decision D1 is open). Its 24 events are the transitions of 1 fixed idea state machine; the judgment work (research, interview, assumptions, spec, plan) is done by the sub-orchestrator model, not by fleetd code. Scored diff 6, cplx 5. (confidence medium)",
+        "[strategize A2] Core stays the minority: 2 of 6 subdomains (task-execution, integration). Ideas would make 3 of 6, which is half, not a minority (ticket rule for this run). (confidence medium)",
+        "[connect A5] Agent hand-offs (assumptions.md, plan.yaml, result.json, questions, exit.json) are files: atomic, immutable and read in the pass, so they are at-least-once and idempotent on path and content hash (design: Workspace layout and file protocol). (confidence high)",
+        "[organise A2] 1 deployable unit, the horch binary, holds all 6 contexts as modules inside horch-core. The design settles it: fleetd is a subcommand of the single horch binary, so the CLI and the daemon cannot have different versions (design: Amendments D9, Migration plan, FM-34; understand C1, N6; decompose N1). Decision D1 records the options. (confidence high)",
+        "[organise A4] The data store is 1 SQLite ledger (~/.horch/ledger.sqlite3, WAL) plus the workspace files, both owned by the 1 deployable. Inside the ledger each context owns its tables: ideas owns ideas, requirements, questions; task-execution owns tasks, task_deps, task_covers, attempts, leases; worktree-custody owns worktrees; integration owns features, branches, gate_runs, trial_merges; fleet-runtime owns events and ingested; worker-profiles owns no table (its profiles are teammate files). Source: design Ledger schema with the aggregates of discover and decompose. (confidence medium)",
+        "[upstream] … 2 more upstream assumptions name this context - see the step JSON files",
+        "[define A1] 'conformist' guessed for external system sub-orchestrator (core contexts protect their model; others conform) - confirm",
+        "[define A2] 'conformist' guessed for external system worker (core contexts protect their model; others conform) - confirm",
+        "[define A3] 'conformist' guessed for external system clock (core contexts protect their model; others conform) - confirm",
+        "[define A16] Business model cost-reducer.",
+        "[define A18] Roles specification-model and approver; decision D2 is open."
+      ],
+      "verification_metrics": [
+        "Business (G3): count of tasks that exist outside a committed, validated plan, plus count of processes that planned 2 ideas at once. Target 0.",
+        "Business (G3): count of ideas past awaiting_approval whose approved_sha256 does not match the current assumptions.md (I7). Target 0.",
+        "Structural: count of ledger writes to ideas, plans or questions tables that come from code outside the ideas module (organise N2). Target 0."
+      ],
+      "open_questions": [
+        "[understand Q8] This repository has no unit-only command today (research-03 F10), and plan validation refuses a project with no declared fast gate. Which command is the fast gate of this repository?",
+        "[discover Q1] Which feature does an idea with no --to belong to between capture and the first assumptions (H7)?",
+        "[discover Q2] What is the time limit of a worker question before it escalates, and does it pause outside working hours (H10)?",
+        "[discover Q4] Where on the timeline does daemon supervision and adapter conformance belong: in executing, in its own phase, or off the idea timeline (D2)?",
+        "[decompose Q3] Which inbox holds an escalated task for the operator: the ideas context (with approvals and questions) or task-execution? The design puts everything for the operator in 1 place but names no owner.",
+        "[strategize Q1] Is ideas a core subdomain? The idea dispatcher is a fixed state machine in code, but G3 and the value proposition 'rough ideas in, approved plans out' depend on it (decision D1).",
+        "[connect Q5] Does the sub-orchestrator answer a worker question with a file in the idea folder or with horch idea note over the command channel?",
+        "[discover H2 near feature-opened - conflict] 'Feature' is also a task kind (kind: feature, a code kind) and a word for any change. In fleetd a Feature is 1 sub-orchestrator, 1 feature branch and 1 pull request holding 1 main idea and its follow-on ideas. Which meaning does each document use (understand N2)?",
+        "[discover H3 near sub-orchestrator-started - conflict] 'Orchestrator' today is 1 long-lived LLM conversation that receives ideas, creates tasks and reads mail. In fleetd it does not exist: a deterministic idea dispatcher and 1 sub-orchestrator per feature replace it. Today's mail contract still names [orchestrator re #<id>] answers (understand N3).",
+        "[discover H7 near idea-captured - unclear] The idea row records its feature (ideas.feature_id), but the feature row and branch are written when the sub-orchestrator first writes assumptions. Which feature does an idea with no --to point at between capture and assumptions, and what does horch ideas show for it?",
+        "[discover H10 near question-escalated - unclear] A worker question has 'a time limit' before it escalates, but the design gives no value for it, and it does not say if the limit pauses while the operator is outside working hours.",
+        "[connect CC2 - coupling, medium] ideas and task-execution depend on each other: plan and answer events go to task-execution, replan-requested comes back to ideas.",
+        "[connect CC3 - coupling, medium] ideas and integration depend on each other: assumptions-written and idea-tasks-landed go to integration, feature-opened, task-branch-landed and feature-merged come back.",
+        "[connect CC8 - coupling, medium] plan-refused is an ideas fact, but escalate-task runs in task-execution, which owns neither the plan nor the reasons. The operator inbox owner is also open (decompose Q3).",
+        "[connect CC9 - coupling, low] task-branch-landed has 2 consumers that need different data: worktree-custody needs the task and worktree, ideas needs the feature and idea roll-up.",
+        "[define Q5] Domain role of ideas (decision D2)."
+      ],
+      "canvas_path": "ddd/07-define/ideas/bounded-context-canvas.md",
+      "subdomains": [
+        "ideas"
+      ],
+      "owning_team": "core-team",
+      "deployable": "horch",
+      "implementation_pattern": "active-record"
+    },
+    {
+      "context": "task-execution",
+      "name": "Task execution",
+      "purpose": "Task execution decides which worker runs each ready task, holds every attempt to an earned lease, and decides from facts on disk when a task is done, so that no task stalls silently (G1) and the subscription usage is used fully (G4). It serves the sub-orchestrator and the operator: they see each task verified done or escalated with a reason. It does not plan tasks (ideas), keep worktrees (worktree-custody), land branches (integration), or build launch environments and start processes (worker-profiles, fleet-runtime).",
+      "strategic_classification": {
+        "domain": "core",
+        "business_model": "cost-reducer",
+        "evolution": "custom"
+      },
+      "domain_roles": [
+        "execution-context"
+      ],
+      "domain_roles_rationale": "It owns the task, attempt and verification aggregates and moves them through state machines with real invariants (I1, I2, I4, I5, RR-2, RR-3). Policies and the clock drive almost all of its 17 commands; the worker, agent CLI and provider pool inputs pass an internal anticorruption layer ([define A15]), not a gateway role.",
+      "inbound": [
+        {
+          "collaborator": "worker",
+          "relationship": "anticorruption-layer",
+          "messages": [
+            {
+              "id": "write-result",
+              "kind": "command",
+              "name": "Write Result",
+              "payload": [
+                "taskId",
+                "attemptId",
+                "status",
+                "commits[]"
+              ],
+              "delivery": "at-least-once",
+              "via": "file",
+              "sync": false
+            },
+            {
+              "id": "write-judge-verdict",
+              "kind": "command",
+              "name": "Write Judge Verdict"
+            }
+          ]
+        },
+        {
+          "collaborator": "agent-cli",
+          "relationship": "anticorruption-layer",
+          "messages": [
+            {
+              "id": "attempt-exited",
+              "kind": "event",
+              "name": "Attempt Exited",
+              "payload": [
+                "attemptId",
+                "exitStatus",
+                "hasResult"
+              ],
+              "delivery": "at-least-once",
+              "via": "file",
+              "sync": false
+            }
+          ]
+        },
+        {
+          "collaborator": "provider-pool",
+          "relationship": "anticorruption-layer",
+          "messages": [
+            {
+              "id": "usage-limit-reported",
+              "kind": "event",
+              "name": "Usage Limit Reported",
+              "payload": [
+                "attemptId",
+                "pool",
+                "resetAt"
+              ],
+              "delivery": "at-least-once",
+              "via": "other",
+              "sync": false
+            }
+          ]
+        },
+        {
+          "collaborator": "clock",
+          "relationship": "anticorruption-layer",
+          "messages": [
+            {
+              "id": "apply-stall-ladder",
+              "kind": "command",
+              "name": "Apply Stall Ladder",
+              "payload": [
+                "attemptId"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "renew-lease",
+              "kind": "command",
+              "name": "Renew Lease"
+            }
+          ]
+        },
+        {
+          "collaborator": "ideas",
+          "relationship": "customer-supplier",
+          "messages": [
+            {
+              "id": "plan-committed",
+              "kind": "event",
+              "name": "Plan Committed",
+              "payload": [
+                "ideaId",
+                "taskIds[]"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "plan-refused",
+              "kind": "event",
+              "name": "Plan Refused",
+              "payload": [
+                "ideaId",
+                "taskId?",
+                "reasons[]"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "task-replanned",
+              "kind": "event",
+              "name": "Task Replanned",
+              "payload": [
+                "taskId",
+                "planChange"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "question-answered",
+              "kind": "event",
+              "name": "Question Answered",
+              "payload": [
+                "questionId",
+                "taskId"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "own-assumption-recorded",
+              "kind": "event",
+              "name": "Own Assumption Recorded",
+              "payload": [
+                "questionId",
+                "taskId"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            }
+          ]
+        },
+        {
+          "collaborator": "worktree-custody",
+          "relationship": "published-language",
+          "messages": [
+            {
+              "id": "worktree-created",
+              "kind": "event",
+              "name": "Worktree Created",
+              "payload": [
+                "worktreeId",
+                "taskId",
+                "path",
+                "branch"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "rescue-failed",
+              "kind": "event",
+              "name": "Rescue Failed",
+              "payload": [
+                "worktreeId",
+                "taskId"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            }
+          ]
+        },
+        {
+          "collaborator": "integration",
+          "relationship": "published-language",
+          "messages": [
+            {
+              "id": "task-branch-conflicted",
+              "kind": "event",
+              "name": "Task Branch Conflicted",
+              "payload": [
+                "branch",
+                "taskId"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "resolver-task-opened",
+              "kind": "event",
+              "name": "Resolver Task Opened",
+              "payload": [
+                "featureId",
+                "taskId",
+                "conflict"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            }
+          ]
+        },
+        {
+          "collaborator": "worker-profiles",
+          "relationship": "customer-supplier",
+          "messages": [
+            {
+              "id": "launch-environment",
+              "kind": "query",
+              "name": "launch-environment",
+              "payload": [
+                "profile",
+                "taskId|ideaId",
+                "attemptId?"
+              ],
+              "delivery": "sync",
+              "via": "in-process",
+              "sync": true
+            }
+          ]
+        },
+        {
+          "collaborator": "sub-orchestrator",
+          "relationship": "anticorruption-layer",
+          "messages": [
+            {
+              "id": "settle-high-finding",
+              "kind": "command",
+              "name": "Settle High Finding"
+            }
+          ]
+        },
+        {
+          "collaborator": "operator",
+          "relationship": "user-interaction",
+          "messages": [
+            {
+              "id": "requeue-task",
+              "kind": "command",
+              "name": "Requeue Task"
+            }
+          ]
+        }
+      ],
+      "outbound": [
+        {
+          "collaborator": "operator",
+          "relationship": "user-interaction",
+          "messages": [
+            {
+              "id": "task-escalated",
+              "kind": "event",
+              "name": "Task Escalated",
+              "payload": [
+                "taskId",
+                "reason"
+              ],
+              "delivery": "at-least-once",
+              "via": "file",
+              "sync": false
+            }
+          ]
+        },
+        {
+          "collaborator": "integration",
+          "relationship": "customer-supplier",
+          "messages": [
+            {
+              "id": "task-escalated",
+              "kind": "event",
+              "name": "Task Escalated",
+              "payload": [
+                "taskId",
+                "reason"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "task-done",
+              "kind": "event",
+              "name": "Task Done",
+              "payload": [
+                "taskId",
+                "branch",
+                "verdict"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            }
+          ]
+        },
+        {
+          "collaborator": "ideas",
+          "relationship": "published-language",
+          "messages": [
+            {
+              "id": "replan-requested",
+              "kind": "event",
+              "name": "Replan Requested",
+              "payload": [
+                "taskId",
+                "attempts"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            }
+          ]
+        },
+        {
+          "collaborator": "worktree-custody",
+          "relationship": "customer-supplier",
+          "messages": [
+            {
+              "id": "task-leased",
+              "kind": "event",
+              "name": "Task Leased",
+              "payload": [
+                "taskId",
+                "attemptId",
+                "worktreeId",
+                "branch"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "attempt-failed",
+              "kind": "event",
+              "name": "Attempt Failed",
+              "payload": [
+                "attemptId",
+                "taskId",
+                "outcome"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            }
+          ]
+        },
+        {
+          "collaborator": "fleet-runtime",
+          "relationship": "open-host-service",
+          "messages": [
+            {
+              "id": "start-agent-process",
+              "kind": "command",
+              "name": "start-agent-process",
+              "payload": [
+                "launchEnvironment",
+                "startFile|pane",
+                "processGroup"
+              ],
+              "delivery": "sync",
+              "via": "in-process",
+              "sync": true
+            }
+          ]
+        },
+        {
+          "collaborator": "worker-profiles",
+          "relationship": "customer-supplier",
+          "messages": [
+            {
+              "id": "launch-environment",
+              "kind": "query",
+              "name": "launch-environment",
+              "payload": [
+                "profile",
+                "taskId|ideaId",
+                "attemptId?"
+              ],
+              "delivery": "sync",
+              "via": "in-process",
+              "sync": true,
+              "response": {
+                "id": "launch-environment",
+                "name": "launch-environment",
+                "payload": [
+                  "profile",
+                  "taskId|ideaId",
+                  "attemptId?"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "ubiquitous_language": [
+        {
+          "term": "Task",
+          "definition": "A planned unit of work from plan.yaml with a kind, a check and an owner path set; it survives many attempts (H1)",
+          "avoid": [
+            "job",
+            "claim"
+          ]
+        },
+        {
+          "term": "Attempt",
+          "definition": "1 run of 1 worker on 1 task (A1, A2, ...), launched through the wrapper and ended by fleetd",
+          "avoid": [
+            "run",
+            "session"
+          ]
+        },
+        {
+          "term": "Lease",
+          "definition": "The time-limited hold of 1 attempt on its task. It renews only on earned activity and pauses during sleep and waiting_quota (discover N1)",
+          "avoid": [
+            "claim",
+            "lock"
+          ]
+        },
+        {
+          "term": "Fallback",
+          "definition": "The persona that a worker persona names for use when its provider pool shows a usage limit or an outage",
+          "avoid": [
+            "backup model"
+          ]
+        },
+        {
+          "term": "Judge Task",
+          "definition": "A task of kind judge that ranks the misses of 1 judgment-kind task CRITICAL, HIGH, MEDIUM or LOW; it needs no judge itself (H5)",
+          "avoid": [
+            "review task",
+            "judgment task"
+          ]
+        },
+        {
+          "term": "Resolver Task",
+          "definition": "A code-kind task that resolves 1 conflict between stacked features, at most 100 changed lines or 2 files",
+          "avoid": [
+            "merge task"
+          ]
+        },
+        {
+          "term": "Check",
+          "definition": "The acceptance command of a task. The verifier runs it in the worktree, in the sandbox profile of the worker"
+        },
+        {
+          "term": "Done",
+          "definition": "A task state that only the verifier sets, from facts on disk. It does not mean landed or merged (understand N4)"
+        },
+        {
+          "term": "Ready",
+          "definition": "A task state: every dependency is done and the task waits for dispatch (discover N6)"
+        },
+        {
+          "term": "Feature",
+          "definition": "A code kind of a task (with quality, refactor and security). It is not the feature of the integration context (discover N2)"
+        },
+        {
+          "term": "Verification",
+          "definition": "The check of 1 attempt's result that decides done: result.json validates, the task check passes in the worker's sandbox, and the review (code kinds) or the paired judge (judgment kinds) passes. It is the only writer of done."
+        }
+      ],
+      "business_decisions": [
+        "Only the verifier moves a task to done. A task is done only when result.json exists and validates, and its check passes when fleetd runs it in the worker's sandbox; a code kind also needs today's review scripts to pass, and a judgment kind needs its judge task to report no open CRITICAL item (RR-3, SR-4, understand N4, discover N4).",
+        "When a plan is committed, every task whose dependencies are all done becomes ready; no task is ready while a dependency is not done (I2). A refused plan escalates its tasks.",
+        "fleetd pushes each ready task to a worker: it leases the task, asks worktree-custody for the worktree, writes task.yaml and inbox/START.md, then launches the attempt. A worker never searches for work (FR-5).",
+        "A lease renews only when the process is alive, the wrapper heartbeat is under 30 s old, and activity happened within stall_after (default 300 s). An expired lease ends the attempt; a task never stays assigned with an expired lease (RR-1, RR-2, I1).",
+        "Lease and stall time count only while the machine is awake. A sleep never expires a lease (PL-4).",
+        "Stall ladder: idle_no_result gets the constant doorbell once, again 2 min later; still idle or hung ends the attempt with outcome stalled; waiting_approval ends the attempt and marks the profile unhealthy; an exit without a valid result is outcome no_result.",
+        "A reap ends the attempt and requeues the task in 1 ledger transaction before any signal is sent (04 S7). The stop signals only the recorded PID with its start time, and refuses a worker of another host (04 S8).",
+        "A usage limit or a provider outage is not a stall and burns no attempt. If the persona's fallback is on another provider, the task restarts at once on the fallback persona in the same worktree; else it waits in waiting_quota with its lease paused until the pool resets (RR-11).",
+        "fleetd paces dispatch to each pool's usage window so that the usage is consumed by the reset (OR-4, 06 S13). The target of full use is open (understand Q1).",
+        "Any non-verified outcome retries after a backoff of 30 s, 2 min, then 8 min in the same worktree, with a handoff file, while attempts remain under the profile's max_attempts. Then the task goes to its sub-orchestrator for 1 replan, then to needs-you/ (RR-6).",
+        "An operator requeue of a held task resets its attempt count (attempt_floor, 04 L8). A task parked by done --unlanded keeps its worktree and its dependents stay blocked (04 L5 with integration).",
+        "No 2 running tasks of 1 feature own overlapping paths, and an exclusive task runs alone (04 L6).",
+        "A judge verdict with an open CRITICAL item opens a fix in a fresh session; after 2 fix rounds with a CRITICAL item left, the task escalates to the operator. A HIGH finding goes to the sub-orchestrator to fix or dismiss. A second judge raises no new MEDIUM or LOW item (FR-4, FM-33, discover N5).",
+        "A worker that exits with commits and no result gets 1 short resume of the same session to write the result; the wrapper does this, not the model.",
+        "When a question is answered, or the sub-orchestrator records its own assumption, the parked task resumes its worker session with the answer; if the resume fails, a fresh worker starts from the question, the answer and the committed work (RR-12).",
+        "A failed rescue of the task's worktree escalates the task; nothing is removed (RR-9). A task branch that conflicts on landing goes back to the same worker.",
+        "No worker runs more than 1 attempt at a time (I4). Every live pane and process under the fleet belongs to a live attempt; anything else is stopped (I5).",
+        "Every launch asks worker-profiles for the launch environment and calls fleet-runtime start-agent-process; this context never builds an environment or starts a process itself (connect N3, decompose N2). No process start runs inside a ledger transaction (connect N4)."
+      ],
+      "assumptions": [
+        "[understand A4] The design gives no number for full use of the subscription usage. G4 uses a proxy: no pool ends its window with usage left while a task is ready, and a usage limit burns 0 attempts. (confidence low)",
+        "[understand A5] A judge, a resolver and a triage agent are workers that run a task of a given kind. They are not separate actors. (confidence medium)",
+        "[understand A8] The /fleet paths in the design are a neutral layout. In horch, /fleet/ideas/<id>/ is ai_docs/plans/<run>/, /fleet/tasks/ is under the state root, and the ledger stays at ~/.horch/ledger.sqlite3. (confidence high)",
+        "[discover A3] Daemon supervision (stale heartbeat, restart, self-update) and adapter conformance are cross-cutting. They sit at the end of the executing phase (sequence 540 to 580, before Task Done) because they act on running attempts. Decision D2 records the alternatives. (confidence medium)",
+        "[discover A5] The judge, resolver and triage workers are the 'worker' actor running a task of a given kind (understand A5). (confidence medium)",
+        "[discover A6] The event order follows understand N7 (idea states), N8 (task branch states building, verifying, ready, in_bundle, landed with side states conflicted, gate_failed, abandoned) and N9 (worktree states reserved, created, active, landing, landed, orphaned, rescued, removed). (confidence high)",
+        "[discover A7] 'Worktree landed' (nothing unique left) is folded into Task Branch Landed and Worktree Removed; it is not a separate event. (confidence medium)",
+        "[discover A8] Feature Opened happens after Assumptions Written for an idea with no --to, as the Features section says; the idea row records its feature at capture only for --to (H7). (confidence low)",
+        "[discover A10] Event count 82 is above the standard band (25 to 60). The design has 4 state machines (idea, task, task branch, worktree) plus feature integration; merging them further hides the language conflicts H4 and H6. (confidence high)",
+        "[decompose A2] The verifier stays a module of task-execution because it reads and writes the same task states and the reap rule (04 S7) needs 1 transaction. Open decision D1. (confidence medium)",
+        "[decompose A5] Worktree custody is its own context, not a part of integration, because the worktree lease and the no-loss rules differ from the branch landing rules. Open decision D4. (confidence medium)",
+        "[decompose A7] Operator attention (cap-operator-attention) maps to ideas, because approvals, interview questions and question escalation live there. Task escalation (task-escalated) stays in task-execution and reaches the operator through the same inbox. (confidence low)",
+        "[decompose A8] Triage and resolver tasks are opened by integration but run as normal tasks in task-execution; integration asks task-execution for them. (confidence high)",
+        "[strategize A1] Ideas is classified supporting, not core (decision D1 is open). Its 24 events are the transitions of 1 fixed idea state machine; the judgment work (research, interview, assumptions, spec, plan) is done by the sub-orchestrator model, not by fleetd code. Scored diff 6, cplx 5. (confidence medium)",
+        "[strategize A2] Core stays the minority: 2 of 6 subdomains (task-execution, integration). Ideas would make 3 of 6, which is half, not a minority (ticket rule for this run). (confidence medium)",
+        "[upstream] … 5 more upstream assumptions name this context - see the step JSON files",
+        "[define A4] 'anticorruption-layer' guessed for external system worker (core contexts protect their model; others conform) - confirm",
+        "[define A5] 'anticorruption-layer' guessed for external system agent-cli (core contexts protect their model; others conform) - confirm",
+        "[define A6] 'anticorruption-layer' guessed for external system provider-pool (core contexts protect their model; others conform) - confirm",
+        "[define A7] 'anticorruption-layer' guessed for external system clock (core contexts protect their model; others conform) - confirm",
+        "[define A8] 'anticorruption-layer' guessed for external system sub-orchestrator (core contexts protect their model; others conform) - confirm",
+        "[define A15] Worker, wrapper and agent CLI input passes an internal anticorruption layer of validated files.",
+        "[define A16] Business model cost-reducer; decision D1 is open.",
+        "[define A21] Metric thresholds use the design's fixed values."
+      ],
+      "verification_metrics": [
+        "Business (G1): minutes from a worker going idle on a held task until fleetd retries or escalates it. Target under 10 min (about 7 min by design).",
+        "Business (G1): count of tasks left assigned with an expired lease, from check_invariants I1. Target 0.",
+        "Business (G4): attempts burned by a usage limit or a provider outage. Target 0.",
+        "Structural: count of code paths outside the verification module that set a task to done (notes N1). Target 0."
+      ],
+      "open_questions": [
+        "[understand Q1] What number counts as full use of the subscription usage for G4: a share of each pool window consumed by its reset, or a count of ready tasks left waiting while a pool has usage?",
+        "[understand Q7] Is 100 changed lines or 2 files the right size limit for a resolver task, and how accurate is a structural merge tool on the recorded conflicts of this repository?",
+        "[discover Q1] Which feature does an idea with no --to belong to between capture and the first assumptions (H7)?",
+        "[decompose Q2] Docs sync and adapter conformance are stormed as 2 events only (discover H14). Which context turns a drift into a task, and how does a profile become healthy again?",
+        "[decompose Q3] Which inbox holds an escalated task for the operator: the ideas context (with approvals and questions) or task-execution? The design puts everything for the operator in 1 place but names no owner.",
+        "[connect Q1] Which context owns the fleet-run wrapper: task-execution, worker-profiles or fleet-runtime (decision D2)?",
+        "[discover H1 near attempt-launched - conflict] Today a worker 'claims' a task and the 'task' row carries the run; fleetd splits this into task (planned unit from plan.yaml), attempt (1 run of 1 worker: A1, A2) and lease (the time-limited hold that renews only on earned activity). Readers of today's ledger and code will read 'task' where fleetd means 'attempt' (understand N1).",
+        "[discover H4 near task-done - conflict] 'Done' today is a model action (horch ledger done / horch done). In fleetd only the verifier moves a task to done, and 'landed' (on the feature branch) and 'merged' (in the primary branch by content) are later, separate facts. A reader can take 'done' to mean the work reached the primary branch (understand N4).",
+        "[discover H5 near judge-verdict-written - conflict] 'Judgment kind' (research, design, docs, report, creative) and the kind 'judge' sound alike. A judgment task needs a paired judge task; a judge task needs no judge. A resolver task has a code kind. Mixing them breaks plan validation (understand N12).",
+        "[discover H9 near task-leased - unclear] What number counts as 'full use' of the subscription usage that pacing aims for? Pacing holds dispatch per pool window, but the design gives no target (understand Q1).",
+        "[discover H12 near task-requeued - unclear] A task gets max_attempts attempts, then 1 replan, then goes to the operator. A requeue resets attempt_floor (04 L8). Does a requeued task also get a new replan, and how does the 2-requeue limit of the review scripts count against attempts?",
+        "[discover H13 near lease-expired - risk] Lease and stall time count only while the machine is awake. If the platform layer reports sleep and wake wrongly on 1 OS, leases expire during a sleep and every worker burns an attempt at wake.",
+        "[connect CC1 - coupling, high] task-execution and integration depend on each other: task-done and task-escalated go one way, task-branch-conflicted and resolver-task-opened go the other. Both are core, so a change in one state machine can force a change in the other.",
+        "[connect CC2 - coupling, medium] ideas and task-execution depend on each other: plan and answer events go to task-execution, replan-requested comes back to ideas.",
+        "[connect CC4 - coupling, medium] task-execution and worktree-custody depend on each other (R4 and R5): the worktree lifecycle follows the task lease and the attempt end, and launch waits for the worktree.",
+        "[upstream] … 2 more upstream questions name this context - see the step JSON files",
+        "[define Q2] herdr agent status is a liveness signal with no connect message.",
+        "[define Q3] Feature rebase while attempts of the feature run.",
+        "[define Q4] Business model of the core contexts (decision D1)."
+      ],
+      "canvas_path": "ddd/07-define/task-execution/bounded-context-canvas.md",
+      "subdomains": [
+        "task-execution"
+      ],
+      "owning_team": "core-team",
+      "deployable": "horch",
+      "implementation_pattern": "domain-model"
+    },
+    {
+      "context": "worktree-custody",
+      "name": "Worktree custody",
+      "purpose": "Worktree custody owns every worktree from the moment it is reserved to the moment it is removed, so that no work a worker paid for is lost (G2). It decides when a worktree may be created, reused, rescued or removed, and it reconciles the ledger, the work directory and git on every pass. It serves task-execution, which gets a worktree for each leased task. It does not land or delete branches (integration) and does not decide task states (task-execution).",
+      "strategic_classification": {
+        "domain": "supporting",
+        "business_model": "cost-reducer",
+        "evolution": "custom"
+      },
+      "domain_roles": [
+        "execution-context"
+      ],
+      "domain_roles_rationale": "It owns the worktree aggregate, whose lifecycle (reserved, created, landing, landed, orphaned, removed) protects invariant I6 and rescue rule RR-9. The clock and policies drive its 4 commands; no person commands it.",
+      "inbound": [
+        {
+          "collaborator": "task-execution",
+          "relationship": "customer-supplier",
+          "messages": [
+            {
+              "id": "task-leased",
+              "kind": "event",
+              "name": "Task Leased",
+              "payload": [
+                "taskId",
+                "attemptId",
+                "worktreeId",
+                "branch"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "attempt-failed",
+              "kind": "event",
+              "name": "Attempt Failed",
+              "payload": [
+                "attemptId",
+                "taskId",
+                "outcome"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            }
+          ]
+        },
+        {
+          "collaborator": "integration",
+          "relationship": "published-language",
+          "messages": [
+            {
+              "id": "task-branch-landed",
+              "kind": "event",
+              "name": "Task Branch Landed",
+              "payload": [
+                "branch",
+                "taskId",
+                "featureId",
+                "tip"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            }
+          ]
+        },
+        {
+          "collaborator": "clock",
+          "relationship": "conformist",
+          "messages": [
+            {
+              "id": "reconcile-worktrees",
+              "kind": "command",
+              "name": "Reconcile Worktrees"
+            }
+          ]
+        }
+      ],
+      "outbound": [
+        {
+          "collaborator": "task-execution",
+          "relationship": "published-language",
+          "messages": [
+            {
+              "id": "worktree-created",
+              "kind": "event",
+              "name": "Worktree Created",
+              "payload": [
+                "worktreeId",
+                "taskId",
+                "path",
+                "branch"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "rescue-failed",
+              "kind": "event",
+              "name": "Rescue Failed",
+              "payload": [
+                "worktreeId",
+                "taskId"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            }
+          ]
+        }
+      ],
+      "ubiquitous_language": [
+        {
+          "term": "Worktree",
+          "definition": "The git working tree that fleetd leases to 1 task before it exists and never removes before its work is landed or rescued",
+          "avoid": [
+            "checkout",
+            "workspace"
+          ]
+        },
+        {
+          "term": "Rescue Ref",
+          "definition": "A verified commit under refs/horch/rescue/ that saves the full state of a tree or an old branch tip before cleanup or rebase",
+          "avoid": [
+            "backup",
+            "archive ref (a different ref family)"
+          ]
+        },
+        {
+          "term": "Worktree Lease",
+          "definition": "Same as Lease in this context: the worktree row that holds 1 worktree for 1 task and 1 owner. It is not the attempt lease of task-execution (decompose N4)."
+        },
+        {
+          "term": "Orphan",
+          "definition": "A worktree, on disk or in git worktree list, that the ledger does not own or whose owner attempt is dead. It is adopted or rescued, never deleted."
+        },
+        {
+          "term": "Lease",
+          "definition": "The worktree lease: the ledger row written in the same transaction that leases the task, before the directory exists. It holds the worktree for 1 task until its work is landed or rescued"
+        },
+        {
+          "term": "Landed",
+          "definition": "A worktree state: nothing in the worktree is unique any more, so fleetd may remove it (discover N6)"
+        },
+        {
+          "term": "Orphaned",
+          "definition": "A worktree on disk with no live owner attempt, or with no ledger row"
+        }
+      ],
+      "business_decisions": [
+        "A worktree row is written in the same transaction that leases the task, before the directory exists. Only fleetd creates or removes worktrees (FR-11). A row left in reserved by a crash is created or dropped on the next pass.",
+        "No worktree is removed until its commits, its uncommitted files and its untracked files are saved on a rescue ref under refs/horch/rescue/, and that ref is read back and shown to hold them (RR-9). A rescue that fails verification leaves the tree in place and escalates the task.",
+        "Every pass compares the ledger with the work directory, and git worktree list every 60 s. A worktree on disk with no row, or with no live owner attempt, is adopted or rescued within 1 pass and never deleted (RR-10, I6).",
+        "Drop and cleanup refuse a dirty tree, a branch with a git stash entry, unpublished unique commits, and a HEAD that moved during the checks (04 W6).",
+        "Archive and trash refs only move forward, each ref write is read back before a folder is removed, and trash refs expire after 30 days (04 W8). Triage commits modified and untracked files before ARCHIVE or DELETE (04 W9).",
+        "A worktree survives attempts: a retry, a fallback restart or a resume reuses the same worktree (understand N1). The worktree goes to landing when its task branch is verified and to landed when the branch landed; only a landed or rescued worktree is removed (decompose N6).",
+        "An abandoned task branch is dropped only after worktree-rescued is recorded (connect N4). No git call runs inside a ledger transaction."
+      ],
+      "assumptions": [
+        "[discover A6] The event order follows understand N7 (idea states), N8 (task branch states building, verifying, ready, in_bundle, landed with side states conflicted, gate_failed, abandoned) and N9 (worktree states reserved, created, active, landing, landed, orphaned, rescued, removed). (confidence high)",
+        "[discover A7] 'Worktree landed' (nothing unique left) is folded into Task Branch Landed and Worktree Removed; it is not a separate event. (confidence medium)",
+        "[discover A10] Event count 82 is above the standard band (25 to 60). The design has 4 state machines (idea, task, task branch, worktree) plus feature integration; merging them further hides the language conflicts H4 and H6. (confidence high)",
+        "[decompose A5] Worktree custody is its own context, not a part of integration, because the worktree lease and the no-loss rules differ from the branch landing rules. Open decision D4. (confidence medium)",
+        "[strategize A5] Worktree custody is supporting with medium investment. Its no-loss rule (rescue ref written and read back before any removal) is 1 invariant over a 8-state lifecycle, not an algorithm; a failure breaks G2, so it gets invariant tests and fault-injection tests. (confidence medium)",
+        "[connect A8] git is called by 2 contexts: worktree-custody for worktrees and integration for refs, bundles and trial merges (Q3). (confidence medium)",
+        "[organise A4] The data store is 1 SQLite ledger (~/.horch/ledger.sqlite3, WAL) plus the workspace files, both owned by the 1 deployable. Inside the ledger each context owns its tables: ideas owns ideas, requirements, questions; task-execution owns tasks, task_deps, task_covers, attempts, leases; worktree-custody owns worktrees; integration owns features, branches, gate_runs, trial_merges; fleet-runtime owns events and ingested; worker-profiles owns no table (its profiles are teammate files). Source: design Ledger schema with the aggregates of discover and decompose. (confidence medium)",
+        "[define A9] 'conformist' guessed for external system clock (core contexts protect their model; others conform) - confirm",
+        "[define A16] Business model cost-reducer.",
+        "[define A21] Metric thresholds use the design's fixed values."
+      ],
+      "verification_metrics": [
+        "Business (G2): count of worktrees removed without being landed, merged or saved on a verified rescue ref. Target 0.",
+        "Business (G2): passes in which an orphan worktree stays unadopted and unrescued after 1 pass. Target 0.",
+        "Structural: count of git worktree add or remove calls outside the worktree-custody module, from arch_scan (FR-11). Target 0."
+      ],
+      "open_questions": [
+        "[decompose Q1] Worktree custody has an ISH verdict of unsure. The 2 most doubtful heuristics are user_personas (no actor drives it but the clock) and brand. Is it a context of its own or a part of integration (decision D4)?",
+        "[connect Q3] git has 2 callers (worktree-custody and integration). Is split ownership by concern acceptable, or must 1 context own all git calls?",
+        "[connect CC4 - coupling, medium] task-execution and worktree-custody depend on each other (R4 and R5): the worktree lifecycle follows the task lease and the attempt end, and launch waits for the worktree.",
+        "[connect CC5 - coupling, medium] task-leased is an event, but task-execution cannot launch until the worktree exists, and a failed git worktree add must come back to task-execution. The event hides a command that needs a result.",
+        "[connect CC6 - coupling, high] Trial merges, git worktree add and remove, and process starts are external calls. If one runs inside the ledger write transaction, a slow git or a hung process start holds the only writer.",
+        "[connect CC7 - coupling, high] abandon-task-branch drops a task branch in integration, but the rescue ref that keeps the work is made in worktree-custody (04 W6). Both must happen, in order, or work is lost.",
+        "[connect CC9 - coupling, low] task-branch-landed has 2 consumers that need different data: worktree-custody needs the task and worktree, ideas needs the feature and idea roll-up."
+      ],
+      "canvas_path": "ddd/07-define/worktree-custody/bounded-context-canvas.md",
+      "subdomains": [
+        "worktree-custody"
+      ],
+      "owning_team": "core-team",
+      "deployable": "horch",
+      "implementation_pattern": "active-record"
+    },
+    {
+      "context": "integration",
+      "name": "Landing and integration",
+      "purpose": "Integration decides when verified task branches land on their feature branch and when a feature is ready for its pull request, so that each idea reaches the primary branch through its own feature (G3) and no landing overwrites other work (G2). It serves the operator, who merges 1 tested pull request per feature, and the sub-orchestrator, which gets conflicts as resolver tasks. It finds conflicts between features early by trial merges and keeps each feature branch rebased. It does not verify tasks (task-execution) and does not remove worktrees (worktree-custody).",
+      "strategic_classification": {
+        "domain": "core",
+        "business_model": "cost-reducer",
+        "evolution": "custom"
+      },
+      "domain_roles": [
+        "execution-context"
+      ],
+      "domain_roles_rationale": "It owns the task-branch and feature aggregates and the land lock, with state machines and the no-loss invariants I8 to I12. Only fleetd code and 2 operator commands act here; git and GitHub pass an internal anticorruption layer ([define A15]).",
+      "inbound": [
+        {
+          "collaborator": "operator",
+          "relationship": "user-interaction",
+          "messages": [
+            {
+              "id": "abandon-task-branch",
+              "kind": "command",
+              "name": "Abandon Task Branch",
+              "payload": [
+                "branch",
+                "taskId"
+              ],
+              "delivery": "sync",
+              "via": "other",
+              "sync": true,
+              "response": {
+                "id": "abandon-task-branch",
+                "name": "Abandon Task Branch",
+                "payload": [
+                  "branch",
+                  "taskId"
+                ]
+              }
+            },
+            {
+              "id": "merge-pull-request",
+              "kind": "command",
+              "name": "Merge Pull Request"
+            }
+          ]
+        },
+        {
+          "collaborator": "git",
+          "relationship": "anticorruption-layer",
+          "messages": [
+            {
+              "id": "primary-branch-moved",
+              "kind": "event",
+              "name": "Primary Branch Moved",
+              "payload": [
+                "primaryBranch",
+                "tip"
+              ],
+              "delivery": "at-least-once",
+              "via": "other",
+              "sync": false
+            },
+            {
+              "id": "trial-merge-result",
+              "kind": "query",
+              "name": "trial-merge-result",
+              "payload": [
+                "featureA",
+                "featureB|primary"
+              ],
+              "delivery": "sync"
+            }
+          ]
+        },
+        {
+          "collaborator": "clock",
+          "relationship": "anticorruption-layer",
+          "messages": [
+            {
+              "id": "check-merged",
+              "kind": "command",
+              "name": "Check Merged",
+              "payload": [
+                "featureId"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            }
+          ]
+        },
+        {
+          "collaborator": "task-execution",
+          "relationship": "customer-supplier",
+          "messages": [
+            {
+              "id": "task-escalated",
+              "kind": "event",
+              "name": "Task Escalated",
+              "payload": [
+                "taskId",
+                "reason"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "task-done",
+              "kind": "event",
+              "name": "Task Done",
+              "payload": [
+                "taskId",
+                "branch",
+                "verdict"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            }
+          ]
+        },
+        {
+          "collaborator": "ideas",
+          "relationship": "published-language",
+          "messages": [
+            {
+              "id": "assumptions-written",
+              "kind": "event",
+              "name": "Assumptions Written",
+              "payload": [
+                "ideaId",
+                "featureId?"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "direct-idea-accepted",
+              "kind": "event",
+              "name": "Direct Idea Accepted",
+              "payload": [
+                "ideaId",
+                "ticketFile",
+                "featureId?"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "idea-tasks-landed",
+              "kind": "event",
+              "name": "Idea Tasks Landed",
+              "payload": [
+                "ideaId",
+                "featureId"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            }
+          ]
+        },
+        {
+          "collaborator": "github",
+          "relationship": "anticorruption-layer",
+          "messages": [
+            {
+              "id": "pull-request-merged",
+              "kind": "event",
+              "name": "Pull Request Merged"
+            }
+          ]
+        }
+      ],
+      "outbound": [
+        {
+          "collaborator": "operator",
+          "relationship": "user-interaction",
+          "messages": [
+            {
+              "id": "pull-request-opened",
+              "kind": "event",
+              "name": "Pull Request Opened",
+              "payload": [
+                "featureId",
+                "prUrl"
+              ],
+              "delivery": "at-least-once",
+              "via": "other",
+              "sync": false
+            }
+          ]
+        },
+        {
+          "collaborator": "ideas",
+          "relationship": "published-language",
+          "messages": [
+            {
+              "id": "feature-opened",
+              "kind": "event",
+              "name": "Feature Opened",
+              "payload": [
+                "featureId",
+                "branch",
+                "primaryBranch",
+                "ideaId"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "task-branch-landed",
+              "kind": "event",
+              "name": "Task Branch Landed",
+              "payload": [
+                "branch",
+                "taskId",
+                "featureId",
+                "tip"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "feature-merged",
+              "kind": "event",
+              "name": "Feature Merged",
+              "payload": [
+                "featureId"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            }
+          ]
+        },
+        {
+          "collaborator": "task-execution",
+          "relationship": "published-language",
+          "messages": [
+            {
+              "id": "task-branch-conflicted",
+              "kind": "event",
+              "name": "Task Branch Conflicted",
+              "payload": [
+                "branch",
+                "taskId"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "resolver-task-opened",
+              "kind": "event",
+              "name": "Resolver Task Opened",
+              "payload": [
+                "featureId",
+                "taskId",
+                "conflict"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            }
+          ]
+        },
+        {
+          "collaborator": "worktree-custody",
+          "relationship": "published-language",
+          "messages": [
+            {
+              "id": "task-branch-landed",
+              "kind": "event",
+              "name": "Task Branch Landed",
+              "payload": [
+                "branch",
+                "taskId",
+                "featureId",
+                "tip"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            }
+          ]
+        },
+        {
+          "collaborator": "git",
+          "relationship": "anticorruption-layer",
+          "messages": [
+            {
+              "id": "trial-merge-result",
+              "kind": "query",
+              "name": "trial-merge-result",
+              "payload": [
+                "featureA",
+                "featureB|primary"
+              ],
+              "delivery": "sync",
+              "via": "other",
+              "sync": true,
+              "response": {
+                "id": "trial-merge-result",
+                "name": "trial-merge-result",
+                "payload": [
+                  "featureA",
+                  "featureB|primary"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "collaborator": "github",
+          "relationship": "anticorruption-layer",
+          "messages": [
+            {
+              "id": "open-pull-request",
+              "kind": "command",
+              "name": "Open Pull Request"
+            }
+          ]
+        }
+      ],
+      "ubiquitous_language": [
+        {
+          "term": "Feature",
+          "definition": "1 sub-orchestrator, 1 feature branch and 1 pull request to the primary branch, holding 1 main idea and its follow-on ideas (understand N2). The feature aggregate owns feature-opened to feature-merged (discover N2)",
+          "avoid": [
+            "project",
+            "epic"
+          ]
+        },
+        {
+          "term": "Feature Branch",
+          "definition": "The branch of 1 feature that collects its landed task branches and reaches the primary branch through 1 pull request",
+          "avoid": [
+            "integration branch"
+          ]
+        },
+        {
+          "term": "Task Branch",
+          "definition": "The branch of 1 task that lands on its feature branch through the landing state machine",
+          "avoid": [
+            "worker branch"
+          ]
+        },
+        {
+          "term": "Primary Branch",
+          "definition": "The base branch of a project; main in this repository, not in every project",
+          "avoid": [
+            "main",
+            "master",
+            "trunk"
+          ]
+        },
+        {
+          "term": "Bundle",
+          "definition": "1 candidate made from the feature branch tip plus every ready task branch of that feature, tested once by the fast gate",
+          "avoid": [
+            "batch",
+            "merge train"
+          ]
+        },
+        {
+          "term": "Fast Gate",
+          "definition": "The declared unit-test command of a project that every bundle and every rebased feature branch must pass",
+          "avoid": [
+            "CI",
+            "check"
+          ]
+        },
+        {
+          "term": "Full Gate",
+          "definition": "The fast gate plus the end-to-end tests, run on a feature tip over the current primary branch; a pass goes stale when either tip moves",
+          "avoid": [
+            "CI",
+            "e2e run"
+          ]
+        },
+        {
+          "term": "Trial Merge",
+          "definition": "A merge-tree result between 2 in-flight features, or a feature and the primary branch, recorded in the ledger with no checkout",
+          "avoid": [
+            "dry run"
+          ]
+        },
+        {
+          "term": "Resolver Task",
+          "definition": "A code-kind task that resolves 1 conflict between stacked features, at most 100 changed lines or 2 files",
+          "avoid": [
+            "merge task"
+          ]
+        },
+        {
+          "term": "Ready",
+          "definition": "A task branch is ready when it is verified and waits for a bundle. A feature is ready when its full gate passed and its pull request can open (discover N6)"
+        },
+        {
+          "term": "Landed",
+          "definition": "A task branch state: the branch is fast-forwarded onto its feature branch after the fast gate passed (understand N4)"
+        },
+        {
+          "term": "Merged",
+          "definition": "A feature fact read from git by content: the feature branch is in the primary branch (understand N4)"
+        },
+        {
+          "term": "Trial merge result",
+          "definition": "The answer of a git merge-tree trial merge between 2 features, or a feature and the primary branch: clean, or the conflicting paths. Coined in connect (assumption A6)"
+        }
+      ],
+      "business_decisions": [
+        "A feature opens when its sub-orchestrator first writes assumptions, or when fleetd accepts a --direct idea; it gets 1 feature branch from the primary branch (understand N2, discover N2).",
+        "A task branch becomes ready only when its task is done (verified). Several ready task branches of 1 feature form 1 bundle on the feature branch tip in queue order; the fast gate runs once on it. No human approves a landing on a feature branch.",
+        "On a fast gate pass, the feature branch moves forward to the bundle by fast-forward only (I9). On a failure, fleetd bisects the bundle; the failing task branch goes to gate_failed and its triage task goes to the sub-orchestrator.",
+        "Under the land lock (1 h, 5 tries), just before the fast-forward, fleetd checks that the task is still landing and held by its worker; a cancelled task lands nothing (04 F9).",
+        "A red land after a rebase resets the branch to its tip from before the land (04 F7). A passed step stands only for the tree it judged; new commits reopen the land and every later step (04 F5).",
+        "Every git network call has a wall-clock bound: push 10 min, others 3 min, and it never retries (04 F11).",
+        "A task is landed, and a feature is merged, only when its changes are in the target branch by content, also after a squash merge (I8). Merged is read from git, not from the GitHub API ([define A19]).",
+        "Before each rebase or forced update of a branch, a rescue ref of the old tip exists (I10). A fleet branch with no ledger row is adopted as an orphan row and reported, never deleted (I11). A branch is deleted only when landed, merged or rescued, and no git stash entry names it (I12).",
+        "When a feature tip or the primary branch moves, fleetd trial-merges each in-flight feature against the primary branch and every other in-flight feature with git merge-tree, no checkout. A conflict stacks the younger feature on the older one and opens 1 resolver task of at most 100 changed lines or 2 files (understand Q7).",
+        "When the primary branch moves, each feature branch rebases, bottom of a stack first, and the fast gate runs again; a rebase conflict opens a resolver task.",
+        "When every task of an idea is landed, the full gate runs on the feature tip over the current primary branch. A pass goes stale when either tip moves. A failure opens triage tasks of the feature.",
+        "A feature is ready only with a current full gate pass. Then its pull request opens: with pr gh through GitHub, with pr manual by a push and the compare URL. The operator merges by default.",
+        "A task branch parked by done --unlanded keeps its worktree, and unlanded work stays listed for a decision; a finding is decided once (04 L5, L9).",
+        "An escalated task branch is abandoned only by the operator; a rescue ref is kept, and the branch is dropped only after worktree-rescued (connect N4)."
+      ],
+      "assumptions": [
+        "[understand A3] horch earns no revenue. Its value is operator throughput: approved ideas that reach the primary branch per unit of subscription usage. (confidence medium)",
+        "[understand A4] The design gives no number for full use of the subscription usage. G4 uses a proxy: no pool ends its window with usage left while a task is ready, and a usage limit burns 0 attempts. (confidence low)",
+        "[discover A2] The 5 phases and 4 pivotal events are a hypothesis drawn from the idea state machine (captured to merged) and the landing state machine. Decision D1 records the alternatives. (confidence medium)",
+        "[discover A6] The event order follows understand N7 (idea states), N8 (task branch states building, verifying, ready, in_bundle, landed with side states conflicted, gate_failed, abandoned) and N9 (worktree states reserved, created, active, landing, landed, orphaned, rescued, removed). (confidence high)",
+        "[discover A7] 'Worktree landed' (nothing unique left) is folded into Task Branch Landed and Worktree Removed; it is not a separate event. (confidence medium)",
+        "[discover A8] Feature Opened happens after Assumptions Written for an idea with no --to, as the Features section says; the idea row records its feature at capture only for --to (H7). (confidence low)",
+        "[discover A10] Event count 82 is above the standard band (25 to 60). The design has 4 state machines (idea, task, task branch, worktree) plus feature integration; merging them further hides the language conflicts H4 and H6. (confidence high)",
+        "[decompose A5] Worktree custody is its own context, not a part of integration, because the worktree lease and the no-loss rules differ from the branch landing rules. Open decision D4. (confidence medium)",
+        "[decompose A8] Triage and resolver tasks are opened by integration but run as normal tasks in task-execution; integration asks task-execution for them. (confidence high)",
+        "[strategize A2] Core stays the minority: 2 of 6 subdomains (task-execution, integration). Ideas would make 3 of 6, which is half, not a minority (ticket rule for this run). (confidence medium)",
+        "[connect A8] git is called by 2 contexts: worktree-custody for worktrees and integration for refs, bundles and trial merges (Q3). (confidence medium)",
+        "[organise A4] The data store is 1 SQLite ledger (~/.horch/ledger.sqlite3, WAL) plus the workspace files, both owned by the 1 deployable. Inside the ledger each context owns its tables: ideas owns ideas, requirements, questions; task-execution owns tasks, task_deps, task_covers, attempts, leases; worktree-custody owns worktrees; integration owns features, branches, gate_runs, trial_merges; fleet-runtime owns events and ingested; worker-profiles owns no table (its profiles are teammate files). Source: design Ledger schema with the aggregates of discover and decompose. (confidence medium)",
+        "[organise A7] The cognitive load of core-team is high: 6 contexts and 2 core contexts (task-execution, integration). No second team exists to take a context, so the mitigation is module boundaries that a test enforces, 1 context per task where possible, and the 8 migration phases that add the contexts one at a time (understand C9). (confidence medium)",
+        "[define A10] 'anticorruption-layer' guessed for external system git (core contexts protect their model; others conform) - confirm",
+        "[define A11] 'anticorruption-layer' guessed for external system clock (core contexts protect their model; others conform) - confirm",
+        "[define A15] git and GitHub pass an internal anticorruption layer.",
+        "[define A16] Business model cost-reducer; decision D1 is open.",
+        "[define A19] pull-request-merged is only a hint; merged is read from git.",
+        "[define A20] open-pull-request goes to GitHub only with pr gh."
+      ],
+      "verification_metrics": [
+        "Business (G2): count of branches deleted while not landed, merged or rescued, or named by a git stash entry (I12). Target 0.",
+        "Business (G3): count of features marked merged whose changes are not in the primary branch by content (I8). Target 0.",
+        "Business (G3): share of landed task branches that hit a conflict. Baseline 2.7% of 376 (research-03 F7); target at most the baseline.",
+        "Structural: count of feature branch or primary branch moves that are not a fast-forward to a gated candidate (I9). Target 0."
+      ],
+      "open_questions": [
+        "[understand Q1] What number counts as full use of the subscription usage for G4: a share of each pool window consumed by its reset, or a count of ready tasks left waiting while a pool has usage?",
+        "[understand Q7] Is 100 changed lines or 2 files the right size limit for a resolver task, and how accurate is a structural merge tool on the recorded conflicts of this repository?",
+        "[understand Q8] This repository has no unit-only command today (research-03 F10), and plan validation refuses a project with no declared fast gate. Which command is the fast gate of this repository?",
+        "[discover Q1] Which feature does an idea with no --to belong to between capture and the first assumptions (H7)?",
+        "[decompose Q1] Worktree custody has an ISH verdict of unsure. The 2 most doubtful heuristics are user_personas (no actor drives it but the clock) and brand. Is it a context of its own or a part of integration (decision D4)?",
+        "[connect Q3] git has 2 callers (worktree-custody and integration). Is split ownership by concern acceptable, or must 1 context own all git calls?",
+        "[discover H2 near feature-opened - conflict] 'Feature' is also a task kind (kind: feature, a code kind) and a word for any change. In fleetd a Feature is 1 sub-orchestrator, 1 feature branch and 1 pull request holding 1 main idea and its follow-on ideas. Which meaning does each document use (understand N2)?",
+        "[discover H6 near task-branch-verified - conflict] 'Ready' names 3 states: a task is ready when its dependencies are done (not yet dispatched); a task branch is ready when it is verified and waits for a bundle; a feature is ready when its full gate passed. 'Landed' is both a task branch state and a worktree state. Which one does a status line mean?",
+        "[discover H8 near task-branch-landed - risk] The Preservation analysis rows (04 W6, F9, F7, F5, L5, L9, W8, W9, F11, S7, L6, L8, S8, S10, M5, 05 E-10, 06 S1 to S15) are hard inputs. Each must have exactly 1 owner in the model; a row that falls between 2 owners is a behavior fleetd silently drops (understand N15).",
+        "[discover H11 near fast-gate-passed - external] Plan validation refuses a project that has not declared a fast gate and a full gate, and this repository has no unit-only command today (research-03 F10, understand Q8). Until one is declared, no plan of this repository can commit.",
+        "[discover H15 near pull-request-merged - external] A project setting says who merges a feature; the default is the operator. When the setting lets fleetd merge, which gate and which actor stands for the merge decision?",
+        "[connect CC1 - coupling, high] task-execution and integration depend on each other: task-done and task-escalated go one way, task-branch-conflicted and resolver-task-opened go the other. Both are core, so a change in one state machine can force a change in the other.",
+        "[connect CC3 - coupling, medium] ideas and integration depend on each other: assumptions-written and idea-tasks-landed go to integration, feature-opened, task-branch-landed and feature-merged come back.",
+        "[connect CC6 - coupling, high] Trial merges, git worktree add and remove, and process starts are external calls. If one runs inside the ledger write transaction, a slow git or a hung process start holds the only writer.",
+        "[connect CC7 - coupling, high] abandon-task-branch drops a task branch in integration, but the rescue ref that keeps the work is made in worktree-custody (04 W6). Both must happen, in order, or work is lost.",
+        "[upstream] … 1 more upstream questions name this context - see the step JSON files",
+        "[define Q1] Must ddd-connect add the GitHub messages?",
+        "[define Q3] Feature rebase while attempts of the feature run.",
+        "[define Q4] Business model of the core contexts (decision D1)."
+      ],
+      "canvas_path": "ddd/07-define/integration/bounded-context-canvas.md",
+      "subdomains": [
+        "integration"
+      ],
+      "owning_team": "core-team",
+      "deployable": "horch",
+      "implementation_pattern": "domain-model"
+    },
+    {
+      "context": "worker-profiles",
+      "name": "Worker profiles and adapters",
+      "purpose": "Worker profiles turns 1 named worker profile into the exact CLI, flags, environment, config files and sandbox of each agent launch, so that every agent runs on the operator's subscription logins and never with ANTHROPIC_API_KEY (C2). It serves ideas and task-execution, which ask it for a launch environment before every launch. It keeps the adapters of every agent CLI correct by docs sync and conformance tests, and marks a profile unhealthy when its adapter fails. It does not start processes (fleet-runtime) and does not choose which task runs (task-execution).",
+      "strategic_classification": {
+        "domain": "supporting",
+        "business_model": "compliance-enforcer",
+        "evolution": "custom"
+      },
+      "domain_roles": [
+        "enforcer"
+      ],
+      "domain_roles_rationale": "Every launch of every context passes through its launch-environment query, which applies the environment scrub and the login rules (decompose N2, connect N3). It ensures that other contexts carry out the operator's credential rule: an enforcer. It owns 1 aggregate, the worker profile, with few commands.",
+      "inbound": [
+        {
+          "collaborator": "task-execution",
+          "relationship": "customer-supplier",
+          "messages": [
+            {
+              "id": "launch-environment",
+              "kind": "query",
+              "name": "launch-environment",
+              "payload": [
+                "profile",
+                "taskId|ideaId",
+                "attemptId?"
+              ],
+              "delivery": "sync",
+              "via": "in-process",
+              "sync": true,
+              "response": {
+                "id": "launch-environment",
+                "name": "launch-environment",
+                "payload": [
+                  "profile",
+                  "taskId|ideaId",
+                  "attemptId?"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "collaborator": "clock",
+          "relationship": "conformist",
+          "messages": [
+            {
+              "id": "run-conformance-tests",
+              "kind": "command",
+              "name": "Run Conformance Tests"
+            }
+          ]
+        }
+      ],
+      "outbound": [
+        {
+          "collaborator": "task-execution",
+          "relationship": "customer-supplier",
+          "messages": [
+            {
+              "id": "launch-environment",
+              "kind": "query",
+              "name": "launch-environment",
+              "payload": [
+                "profile",
+                "taskId|ideaId",
+                "attemptId?"
+              ],
+              "delivery": "sync",
+              "via": "in-process",
+              "sync": true
+            }
+          ]
+        },
+        {
+          "collaborator": "ideas",
+          "relationship": "customer-supplier",
+          "messages": [
+            {
+              "id": "launch-environment",
+              "kind": "query",
+              "name": "launch-environment",
+              "payload": [
+                "profile",
+                "taskId|ideaId",
+                "attemptId?"
+              ],
+              "delivery": "sync",
+              "via": "in-process",
+              "sync": true
+            }
+          ]
+        }
+      ],
+      "ubiquitous_language": [
+        {
+          "term": "Worker Profile",
+          "definition": "The teammate file of 1 persona: agent CLI, model, effort, skills, MCP servers, sandbox, writable paths, network, liveness, retry and fallback. Profile is its short name."
+        },
+        {
+          "term": "Adapter",
+          "definition": "The code for 1 agent CLI that turns a worker profile into the exact flags, environment and files of a launch, and reads its quota and context."
+        },
+        {
+          "term": "Persona",
+          "definition": "A named worker profile that a plan task names. Every worker persona names a fallback persona on another provider when the roster has one."
+        },
+        {
+          "term": "Conformance",
+          "definition": "The test that launches 1 adapter and reads back its effective settings (sandbox, context limit, hooks, scrubbed environment). A pass makes the profile healthy."
+        },
+        {
+          "term": "Profile",
+          "definition": "A named worker profile: the CLI, model, effort, sandbox and permission rules that 1 attempt runs with"
+        },
+        {
+          "term": "Healthy",
+          "definition": "A profile whose adapter passed its last conformance test. Dispatch does not choose an unhealthy profile"
+        },
+        {
+          "term": "Launch environment",
+          "definition": "The exact CLI, flags, scrubbed environment, config home files and sandbox profile that worker-profiles resolves for 1 process launch. Coined in connect (assumption A6)"
+        }
+      ],
+      "business_decisions": [
+        "ANTHROPIC_API_KEY is removed from the environment of every launch: attempt, sub-orchestrator pane, detached child, updater and probe. The roster rejects a teammate file that sets it (05 E-10, 06 S1, understand N16, decompose N2).",
+        "agy children lose GEMINI_API_KEY, GOOGLE_API_KEY and GOOGLE_GEMINI_BASE_URL, and the roster rejects them (06 S3). Secrets reach agents only through env vars that the profile names, never through task files (SR-2).",
+        "A profile must declare CLI, model, skills, MCP servers, sandbox, writable paths, context budget, timeouts and restart policy, and every worker persona must name a fallback persona; the roster refuses an incomplete profile (FR-6).",
+        "A sandboxed persona does not start on a host that cannot sandbox it (06 S9). Each worker writes only to its task directory, its worktree and the paths its profile names (SR-1).",
+        "When an adapter conformance test fails, its profile is marked unhealthy, and dispatch does not choose an unhealthy profile until a conformance test passes. A waiting_approval stall also marks the profile unhealthy.",
+        "The private CODEX_HOME links every entry of the real codex home except rules/, the Prime agent dir links auth.json, and every codex launch gets --dangerously-bypass-hook-trust (06 S4, S5, S6). Trust writes stay narrow (06 S10).",
+        "A new agent CLI release is used only after the update cooldown of more than 1 week; a CLI with unreadable release dates is held back. Pane auto-update stays off for claude and codex (06 S7, S8, C10).",
+        "Each agent runs with a context limit of 256k tokens, set through the CLI's own setting where one exists; else the wrapper ends the attempt with a handoff at 256k (FR-9). The OpenCode, pi and Prime adapters carry over (06 S15)."
+      ],
+      "assumptions": [
+        "[discover A3] Daemon supervision (stale heartbeat, restart, self-update) and adapter conformance are cross-cutting. They sit at the end of the executing phase (sequence 540 to 580, before Task Done) because they act on running attempts. Decision D2 records the alternatives. (confidence medium)",
+        "[decompose A4] Worker profiles and adapters are their own context because of their rate of change and their credential rules, although the storm holds only 2 of their events (discover H14). Open decision D3. (confidence medium)",
+        "[strategize A6] Worker profiles is supporting with medium investment because it owns the ANTHROPIC_API_KEY scrub (C2, an absolute operator rule). Its complexity is the rate of change of the agent CLIs, not domain rules. (confidence high)",
+        "[connect A1] All 6 contexts run in the 1 fleetd process, so every context-to-context message is in-process. Only the command channel, the file protocol, the herdr adapter, the platform layer, git and GitHub cross a process boundary (design: Architecture and roles). (confidence high)",
+        "[organise A4] The data store is 1 SQLite ledger (~/.horch/ledger.sqlite3, WAL) plus the workspace files, both owned by the 1 deployable. Inside the ledger each context owns its tables: ideas owns ideas, requirements, questions; task-execution owns tasks, task_deps, task_covers, attempts, leases; worktree-custody owns worktrees; integration owns features, branches, gate_runs, trial_merges; fleet-runtime owns events and ingested; worker-profiles owns no table (its profiles are teammate files). Source: design Ledger schema with the aggregates of discover and decompose. (confidence medium)",
+        "[organise A6] herdr, the agent CLIs, git, GitHub and the OS service managers are external systems behind adapters in fleet-runtime and the other owning contexts. None is a deployable of this design (strategize N1; design: Architecture and roles). (confidence high)",
+        "[organise A8] Each context owns its workspace folders inside the 1 deployable: ideas owns the idea folders (ai_docs/plans/<run>/, design /fleet/ideas/), task-execution owns the task and attempt folders under the state root, worker-profiles owns the teammate profile files (understand N17; design: Workspace layout and file protocol). (confidence medium)",
+        "[define A12] 'conformist' guessed for external system clock (core contexts protect their model; others conform) - confirm",
+        "[define A17] Business model compliance-enforcer."
+      ],
+      "verification_metrics": [
+        "Business (C2): count of child processes, panes, probes or updaters started with ANTHROPIC_API_KEY in their environment. Target 0.",
+        "Business (G1): count of attempts dispatched on an unhealthy profile. Target 0.",
+        "Structural: count of process launches that do not take their environment from launch-environment (connect N3). Target 0."
+      ],
+      "open_questions": [
+        "[discover Q4] Where on the timeline does daemon supervision and adapter conformance belong: in executing, in its own phase, or off the idea timeline (D2)?",
+        "[decompose Q2] Docs sync and adapter conformance are stormed as 2 events only (discover H14). Which context turns a drift into a task, and how does a profile become healthy again?",
+        "[connect Q1] Which context owns the fleet-run wrapper: task-execution, worker-profiles or fleet-runtime (decision D2)?",
+        "[discover H14 near adapter-conformance-failed - missing] Docs sync and adapter conformance are collapsed to 2 events here. The flow that turns a drift into a task (who owns it, how a profile becomes healthy again) is not stormed."
+      ],
+      "canvas_path": "ddd/07-define/worker-profiles/bounded-context-canvas.md",
+      "subdomains": [
+        "worker-profiles"
+      ],
+      "owning_team": "core-team",
+      "deployable": "horch",
+      "implementation_pattern": "active-record"
+    },
+    {
+      "context": "fleet-runtime",
+      "name": "Fleet runtime",
+      "purpose": "Fleet runtime keeps fleetd alive and current on macOS, Linux and Windows, so that supervision never stops silently and no work is lost on a restart (G1, G2). It provides every other context with the single ledger writer, the command channel, the platform layer and the start of agent processes. It decides when fleetd is hung or old and restarts it. It does not decide the rows of other contexts' tables (organise N2) or any task, idea, worktree or branch state.",
+      "strategic_classification": {
+        "domain": "supporting",
+        "business_model": "cost-reducer",
+        "evolution": "custom"
+      },
+      "domain_roles": [
+        "gateway",
+        "execution-context"
+      ],
+      "domain_roles_rationale": "It wraps the OS service managers, herdr and the OS process and file facts behind 1 platform interface, and translates them for core code: a gateway. It also executes the daemon lifecycle (heartbeat, hang restart, binary restart, schema migration): an execution context with no domain aggregate.",
+      "inbound": [
+        {
+          "collaborator": "task-execution",
+          "relationship": "open-host-service",
+          "messages": [
+            {
+              "id": "start-agent-process",
+              "kind": "command",
+              "name": "start-agent-process",
+              "payload": [
+                "launchEnvironment",
+                "startFile|pane",
+                "processGroup"
+              ],
+              "delivery": "sync",
+              "via": "in-process",
+              "sync": true
+            }
+          ]
+        },
+        {
+          "collaborator": "ideas",
+          "relationship": "open-host-service",
+          "messages": [
+            {
+              "id": "start-agent-process",
+              "kind": "command",
+              "name": "start-agent-process",
+              "payload": [
+                "launchEnvironment",
+                "startFile|pane",
+                "processGroup"
+              ],
+              "delivery": "sync",
+              "via": "in-process",
+              "sync": true
+            }
+          ]
+        },
+        {
+          "collaborator": "clock",
+          "relationship": "conformist",
+          "messages": [
+            {
+              "id": "check-fleetd",
+              "kind": "command",
+              "name": "Check Fleetd"
+            }
+          ]
+        },
+        {
+          "collaborator": "friend",
+          "relationship": "user-interaction",
+          "messages": [
+            {
+              "id": "self-update",
+              "kind": "command",
+              "name": "Self Update"
+            }
+          ]
+        },
+        {
+          "collaborator": "os-service-manager",
+          "relationship": "conformist",
+          "messages": [
+            {
+              "id": "restart-fleetd",
+              "kind": "command",
+              "name": "Restart Fleetd"
+            }
+          ]
+        }
+      ],
+      "outbound": [],
+      "ubiquitous_language": [
+        {
+          "term": "fleetd",
+          "definition": "The supervised daemon role of the horch binary (horch fleetd): the only ledger writer, which runs the reconcile pass of all 6 contexts every 5 s (organise N1)."
+        },
+        {
+          "term": "Heartbeat",
+          "definition": "The time of fleetd's last full pass, written after each pass. horch fleetd check reads it. It is not the wrapper heartbeat.json of an attempt."
+        },
+        {
+          "term": "Platform Layer",
+          "definition": "1 interface with 1 module per OS for service install and restart, hang detection, process facts, process group stop, file watching, sandboxing, sleep and wake, the command channel transport and the machine probe (PL-2)."
+        },
+        {
+          "term": "Command Channel",
+          "definition": "The local transport on which CLI commands and agents send requests to fleetd. fleetd validates each request and writes the result to the ledger."
+        },
+        {
+          "term": "Ledger",
+          "definition": "The SQLite file ~/.horch/ledger.sqlite3 in WAL mode: an event log plus derived tables. Only fleetd writes it; each context owns its own tables (understand N17, organise N2)."
+        },
+        {
+          "term": "Check",
+          "definition": "horch fleetd check: the heartbeat check that restarts fleetd when its last full pass is older than 30 s of awake time. It is not a task check"
+        },
+        {
+          "term": "Start agent process",
+          "definition": "The fleet-runtime call that starts the fleet-run wrapper of 1 attempt, or 1 sub-orchestrator pane through the herdr adapter, in its own process group. Coined in connect (assumption A6)"
+        }
+      ],
+      "business_decisions": [
+        "Exactly 1 process, fleetd, writes the ledger; every other process opens it read-only and sends requests on the command channel or writes files (RR-5, C4, understand N5). Each context still decides the rows of its own tables (organise N2, decompose N5).",
+        "fleetd writes a heartbeat after each full pass. When the heartbeat is older than 30 s of awake time, horch fleetd check restarts the service; on Linux the systemd watchdog does it. Every horch CLI command makes the same check before it sends its request (PL-5).",
+        "When the horch binary changes, fleetd restarts on the new binary at once; a CLI that finds an older daemon restarts it. The control loop exits only between passes (OR-6, 04 S10, 04 S7).",
+        "Schema migration is forward-only at daemon start: a backup is written first and 3 are kept, a newer schema is refused, and a development build does not migrate the shared ledger (OR-6, C4).",
+        "Core fleetd code has no OS cfg. It calls 1 platform interface with 1 module per OS; an OS without an equivalent returns an explicit not-supported value that core code decides on (PL-2, PL-3).",
+        "New dispatch pauses only while free disk or machine load is past a safety floor, and resumes by itself. A probe that returns unknown (Windows today, 06 S12) is reported, never read as healthy or unhealthy (OR-5).",
+        "Mail and outbox directories are mode 0700 and files 0600; a directory that another user owns or can write is refused (04 M5). All protocol file writes are atomic (RR-8).",
+        "The only bytes typed into a terminal are 1 fixed doorbell line from fleetd's code (FR-7, C11). horch warns when herdr resume_agents_on_restore is not false (06 S2).",
+        "start-agent-process starts each process in its own process group or job object and runs no process start inside a ledger transaction (connect N4). After a herdr restart, fleetd rebuilds from the ledger and the files (C14).",
+        "Worker reports reach fleetd as files, not through the Unix-socket channel relay or report socket, so Windows loses no report (06 S11)."
+      ],
+      "assumptions": [
+        "[understand A8] The /fleet paths in the design are a neutral layout. In horch, /fleet/ideas/<id>/ is ai_docs/plans/<run>/, /fleet/tasks/ is under the state root, and the ledger stays at ~/.horch/ledger.sqlite3. (confidence high)",
+        "[discover A1] The board is to-be: it models fleetd as design.md describes it, not today's horch. Today's differences appear as conflict hotspots H1 to H4 (design.md wins over the other sources, per the run context). (confidence high)",
+        "[discover A3] Daemon supervision (stale heartbeat, restart, self-update) and adapter conformance are cross-cutting. They sit at the end of the executing phase (sequence 540 to 580, before Task Done) because they act on running attempts. Decision D2 records the alternatives. (confidence medium)",
+        "[discover A4] fleetd components (idea dispatcher, verifier, landing, wrapper, reconciler) are our own system, not actors. Their commands have actor null and are issued by policies, or have the clock as actor when the reconcile pass fires them. No 'orchestrator' actor exists (understand N3). (confidence high)",
+        "[discover A9] The fleetd command channel, request files while fleetd is down, and the herdr pane mapping are design-level transport; they are not on the board. (confidence medium)",
+        "[decompose A6] The ledger is infrastructure that fleet-runtime owns as the single writer. Each context owns the state transitions of its own aggregates; it is not a shared kernel. (confidence medium)",
+        "[strategize A1] Ideas is classified supporting, not core (decision D1 is open). Its 24 events are the transitions of 1 fixed idea state machine; the judgment work (research, interview, assumptions, spec, plan) is done by the sub-orchestrator model, not by fleetd code. Scored diff 6, cplx 5. (confidence medium)",
+        "[strategize A3] The 2 cores use domain-model: state rows are the truth, and the events table is the audit trail that the one door writes beside each row in the same transaction (design, Ledger, rule 1 One door). Decision D2 keeps the event-sourced reading open. (confidence medium)",
+        "[strategize A4] Fleet runtime is supporting, not generic. Its pane hosting (herdr) and host services (launchd, systemd, Windows service) are adopted and only wrapped, as understand N14 says. The single ledger writer, the command channel and the platform layer interface have no product to buy, so the subdomain as a whole is built. (confidence high)",
+        "[strategize A7] Every subdomain has evolution custom: each has at least 1 custom capability. The commodity and product capabilities of fleet-runtime (host services, pane hosting) are adopted systems, not built parts. (confidence high)",
+        "[connect A1] All 6 contexts run in the 1 fleetd process, so every context-to-context message is in-process. Only the command channel, the file protocol, the herdr adapter, the platform layer, git and GitHub cross a process boundary (design: Architecture and roles). (confidence high)",
+        "[connect A2] Cross-context events are in-memory events consumed in the level-triggered 5 s reconcile pass, which re-derives work from ledger rows, so a lost event is caught on the next pass. Delivery is at-least-once and every consumer is idempotent on a natural key (design: Supervision, liveness and reconciliation; decision D1). (confidence high)",
+        "[connect A3] Every state change in every flow commits through the single ledger writer in fleet-runtime (decompose N5). The flows do not draw that call on each step. (confidence high)",
+        "[connect A4] Operator commands travel as horch CLI requests over the fleetd command channel (Unix socket or named pipe), drawn as via other. When fleetd is down the request goes to a file that fleetd reads at start (design: The command channel). (confidence high)",
+        "[organise A2] 1 deployable unit, the horch binary, holds all 6 contexts as modules inside horch-core. The design settles it: fleetd is a subcommand of the single horch binary, so the CLI and the daemon cannot have different versions (design: Amendments D9, Migration plan, FM-34; understand C1, N6; decompose N1). Decision D1 records the options. (confidence high)",
+        "[upstream] … 3 more upstream assumptions name this context - see the step JSON files",
+        "[define A13] 'conformist' guessed for external system clock (core contexts protect their model; others conform) - confirm",
+        "[define A14] 'conformist' guessed for external system os-service-manager (core contexts protect their model; others conform) - confirm",
+        "[define A16] Business model cost-reducer.",
+        "[define A21] Metric thresholds use the design's fixed values."
+      ],
+      "verification_metrics": [
+        "Business (G1): seconds of awake time from a fleetd hang to its restart. Target under 60 s (30 s threshold plus a 30 s check interval).",
+        "Business (G2): tasks lost or duplicated across a fleetd restart on a new binary (RR-7, OR-6). Target 0.",
+        "Structural: count of processes other than fleetd that open the ledger for writing, and count of OS cfg sites in core fleetd code (RR-5, PL-2). Target 0."
+      ],
+      "open_questions": [
+        "[understand Q2] Do the 178 existing OS-specific sites in production code move behind the new platform layer, and when? The design calls this a separate decision (Architecture and roles, One platform layer for three OSes).",
+        "[understand Q3] Which Windows transport carries the fleetd command channel? The design lists it under To confirm by test.",
+        "[strategize Q2] Does 'event log plus derived tables' (design, Ledger) mean the derived tables are rebuilt from the events table (event-sourced), or that the row and the event are written together and the row is the truth (decision D2)?",
+        "[connect Q1] Which context owns the fleet-run wrapper: task-execution, worker-profiles or fleet-runtime (decision D2)?",
+        "[connect Q5] Does the sub-orchestrator answer a worker question with a file in the idea folder or with horch idea note over the command channel?",
+        "[organise Q1] Where does docs sync run: as a horch subcommand that fleetd schedules inside the 1 deployable, or as the separate agent-docs-sync binary that grows from crates/herdr-docs-sync (decision D2)? No context owns docs sync yet (decompose Q2).",
+        "[connect CC6 - coupling, high] Trial merges, git worktree add and remove, and process starts are external calls. If one runs inside the ledger write transaction, a slow git or a hung process start holds the only writer."
+      ],
+      "canvas_path": "ddd/07-define/fleet-runtime/bounded-context-canvas.md",
+      "subdomains": [
+        "fleet-runtime"
+      ],
+      "owning_team": "core-team",
+      "deployable": "horch",
+      "implementation_pattern": "active-record"
+    }
+  ],
+  "system_context_c4_mermaid": "C4Context\n  title System context - fleetd: the horch fleet control plane\n  Person(operator, \"Operator\", \"The developer who drops ideas into the queue, answers interviews, approves assumptions, receives escalations and merges each feature's pull request\")\n  System_Ext(sub_orchestrator, \"Sub-orchestrator\", \"An interactive Claude Code process, 1 per feature, a fresh process per phase, that plans 1 idea at a time and answers its workers' questions\")\n  System_Ext(worker, \"Worker\", \"Any agent CLI started with a named profile for 1 attempt of 1 task in a worktree that fleetd leased to it; also runs judge, resolver and triage tasks\")\n  Person(friend, \"Friend\", \"A person who installs horch and gets each release through horch self-update\")\n  System(fleetd, \"fleetd: the horch fleet control plane\", \"A supervised daemon inside horch that takes rough ideas from the operator, runs AI coding agents on them, and keeps every task, worktree and branch accounted for until the work reaches the primary branch.\")\n  System_Ext(clock, \"Clock\", \"The fleetd reconcile pass (every 5 s) and the fixed timers it reads. It fires every time-triggered command. Time counts only while the machine is awake.\")\n  System_Ext(agent_cli, \"Agent CLI process\", \"The Claude Code, Codex, Antigravity, OpenCode, pi or Prime process of 1 attempt. Its exit is a process fact that the wrapper and the platform layer report.\")\n  System_Ext(git, \"git\", \"Worktrees, branches, refs and merge-tree trial merges. The source of truth for 'in the primary branch by content'.\")\n  System_Ext(github, \"GitHub\", \"Hosts the pull request of a feature (pr setting gh) or the compare URL (pr setting manual).\")\n  System_Ext(os_service_manager, \"OS service manager\", \"launchd, systemd, or a Windows service and Task Scheduler. Keeps fleetd and herdr running and restarts them.\")\n  System_Ext(provider_pool, \"Provider pool\", \"A usage pool of 1 provider (understand actor provider-pool). It reports usage limits, outages and window resets.\")\n  System_Ext(herdr, \"herdr\", \"The pane runtime in session 'fleet'. Shows panes, agent status and notifications. Holds no state that fleetd depends on.\")\n  Rel(operator, fleetd, \"Add Idea, Add Direct Idea, Approve Assumptions, Answer Interview Question, Amend Idea, Cancel Idea, Revise Assumptions, Requeue Task, Abandon Task Branch, Merge Pull Request\")\n  Rel(sub_orchestrator, fleetd, \"Write Assumptions, Write Spec, Submit Plan, Answer Question, Replan Task, Ask Operator, Settle High Finding\")\n  Rel(worker, fleetd, \"Ask Question, Write Result, Write Judge Verdict\")\n  Rel(clock, fleetd, \"Escalate Question, Apply Stall Ladder, Renew Lease, Reconcile Worktrees, Check Merged, Run Conformance Tests, Check Fleetd\")\n  Rel(agent_cli, fleetd, \"Attempt Exited\")\n  Rel(provider_pool, fleetd, \"Usage Limit Reported\")\n  Rel(git, fleetd, \"Primary Branch Moved, trial-merge-result\")\n  Rel(friend, fleetd, \"Self Update\")\n  Rel(os_service_manager, fleetd, \"Restart Fleetd\")\n  Rel(fleetd, operator, \"Approval Requested, Task Escalated, Pull Request Opened\")\n  Rel(fleetd, sub_orchestrator, \"Worker Question Asked\")\n  Rel(fleetd, git, \"trial-merge-result\")\n  Rel(github, fleetd, \"Pull Request Merged\")\n  Rel(fleetd, github, \"Open Pull Request\")\n",
+  "quality_attributes": [
+    {
+      "context": "task-execution",
+      "attribute": "correctness",
+      "requirement": "A task reaches done only from the verifier, from facts on disk (RR-3).",
+      "priority": "high",
+      "scenario": "When a worker writes done in its transcript but leaves no valid result.json, then the task stays not-done and the attempt ends as no_result within 1 pass (5 s)."
+    },
+    {
+      "context": "task-execution",
+      "attribute": "fault-tolerance",
+      "requirement": "A stalled worker loses its lease and its task is retried or escalated; no task stays assigned with an expired lease (RR-1, RR-2, I1).",
+      "priority": "high",
+      "scenario": "When a worker process is stopped with kill -STOP during an attempt, then the alarm fires within 1 lease (120 s after stall_after) and the task is retried or escalated."
+    },
+    {
+      "context": "task-execution",
+      "attribute": "recoverability",
+      "requirement": "A restart of fleetd loses and duplicates no task (RR-7, 04 S7).",
+      "priority": "high",
+      "scenario": "When fleetd is killed in the middle of a reap, then after restart the attempt is ended and the task requeued exactly once, and outcomes equal a clean run."
+    },
+    {
+      "context": "task-execution",
+      "attribute": "availability",
+      "requirement": "A usage limit burns no attempt; the task moves to the fallback persona or waits in waiting_quota (RR-11).",
+      "priority": "high",
+      "scenario": "When a worker's pool reports a usage limit, then its attempt count does not change and the task restarts on the fallback persona at once or waits until the pool resets."
+    },
+    {
+      "context": "integration",
+      "attribute": "integrity",
+      "requirement": "No branch moves except by fast-forward to a gated candidate, and no branch is deleted unless landed, merged or rescued (I9, I10, I12).",
+      "priority": "high",
+      "scenario": "When a bundle fails the fast gate after a rebase, then the feature branch stays at its old tip, the branch resets to its tip from before the land (04 F7), and a rescue ref of the old tip exists."
+    },
+    {
+      "context": "integration",
+      "attribute": "correctness",
+      "requirement": "Landed and merged are read from git by content, also for a squash merge (I8).",
+      "priority": "high",
+      "scenario": "When the operator squash-merges a feature's pull request, then on the next pass the feature becomes merged and its ideas close only after every worktree is removed."
+    },
+    {
+      "context": "integration",
+      "attribute": "availability",
+      "requirement": "A stalled git network call never holds the land lock for longer than its bound (04 F11).",
+      "priority": "medium",
+      "scenario": "When a git push stalls on the network, then it ends at 10 min (other calls at 3 min), is not retried, and the land lock is free for the next bundle."
+    },
+    {
+      "context": "worktree-custody",
+      "attribute": "recoverability",
+      "requirement": "No worktree is removed before its work is landed or on a verified rescue ref (RR-9, I6).",
+      "priority": "high",
+      "scenario": "When a worker is killed with dirty and untracked files, then after cleanup the rescue ref holds every file, read back before removal."
+    },
+    {
+      "context": "worker-profiles",
+      "attribute": "confidentiality",
+      "requirement": "ANTHROPIC_API_KEY never reaches a child process (C2, 05 E-10, 06 S1).",
+      "priority": "high",
+      "scenario": "When the operator's shell has ANTHROPIC_API_KEY set and fleetd launches an attempt, a sub-orchestrator pane, a probe or an updater, then no child environment holds the key."
+    },
+    {
+      "context": "fleet-runtime",
+      "attribute": "availability",
+      "requirement": "A hung fleetd is restarted on all 3 OSes (PL-5).",
+      "priority": "high",
+      "scenario": "When fleetd hangs on macOS, Linux or Windows, then the heartbeat check restarts it within 60 s of awake time and the next pass continues from the ledger."
+    },
+    {
+      "context": "fleet-runtime",
+      "attribute": "portability",
+      "requirement": "Core fleetd code has no OS cfg; a missing OS equivalent returns not-supported (PL-2, PL-3).",
+      "priority": "medium",
+      "scenario": "When the Windows machine probe returns unknown, then dispatch reports it and neither pauses nor treats it as healthy."
+    },
+    {
+      "context": "ideas",
+      "attribute": "integrity",
+      "requirement": "Only the operator approves an idea's assumptions (FR-10, I7, C5).",
+      "priority": "high",
+      "scenario": "When a sub-orchestrator writes approval.json or runs horch idea approve, then the idea stays in awaiting_approval and fleetd ignores the file."
+    }
+  ],
+  "notes_for_downstream": [
+    {
+      "id": "N1",
+      "text": "Sharpens understand N4 and discover N4: task-execution owns exactly 1 writer of the task state done, the verification module. ddd-code must give no other code path (wrapper, worker file, CLI command) a way to set done; a test proves that a result file alone leaves the task in verifying (RR-3).",
+      "for": [
+        "code"
+      ],
+      "kind": "boundary"
+    },
+    {
+      "id": "N2",
+      "text": "Each canvas lists its invariants by id (I1 to I13) and its preservation rows by id. ddd-code must turn each listed invariant into 1 check of check_invariants and 1 test in the owning module: task-execution I1, I2, I4, I5; ideas I3, I7, I13; worktree-custody I6; integration I8 to I12. For the active-record contexts the tests are invariant tests with no aggregate (strategize N2): the approval hash (I7) in ideas, the rescue ref before removal (RR-9) in worktree-custody, and the ANTHROPIC_API_KEY scrub in worker-profiles.",
+      "for": [
+        "code"
+      ],
+      "kind": "risk"
+    },
+    {
+      "id": "N3",
+      "text": "Quality attributes of the core contexts are fault-injection scenarios of the design (FM rows). ddd-code must name a test for each quality_attributes row with priority high before the implementation plan names a module.",
+      "for": [
+        "code"
+      ],
+      "kind": "process"
+    },
+    {
+      "id": "N4",
+      "text": "Confirms and sharpens decompose N3, discover N8 and understand N15: the business_decisions of each canvas cite its preservation rows by id, and each row has exactly 1 owning canvas. 04 L5 is cited by task-execution (the parked task) and integration (the unlanded branch); integration owns it, as decompose N3 says. ddd-code must give each row 1 test in its owning module.",
+      "for": [
+        "code"
+      ],
+      "kind": "risk"
+    }
+  ],
+  "decisions": [
+    {
+      "id": "D1",
+      "question": "Which business model fits the 2 core contexts, task-execution and integration?",
+      "kind": "classification",
+      "options": [
+        {
+          "id": "A",
+          "summary": "cost-reducer: they save operator time and paid usage that today is lost to stalls and lost work.",
+          "pros": [
+            "Matches G1, G2 and G4, which count lost time, lost work and unused usage",
+            "fleetd is a tool of 1 team and earns no money"
+          ],
+          "cons": [
+            "Hides that task-execution produces the output that the operator wants"
+          ],
+          "risks": [
+            "A reviewer reads cost-reducer as low priority and starves a core context"
+          ]
+        },
+        {
+          "id": "B",
+          "summary": "revenue-generator (the pre-fill suggestion): they produce the work output that is the purpose of the fleet.",
+          "pros": [
+            "Shows that these 2 contexts make the value of the fleet"
+          ],
+          "cons": [
+            "No revenue exists; the label is false for a personal tool"
+          ],
+          "risks": [
+            "The label invites revenue metrics that the goals do not have"
+          ]
+        },
+        {
+          "id": "C",
+          "summary": "engagement-creator: they keep the operator using the fleet by making the work reliable.",
+          "pros": [
+            "Ties to the value proposition: rough ideas in, merged work out"
+          ],
+          "cons": [
+            "No goal measures engagement"
+          ],
+          "risks": [
+            "Metrics drift to usage counts instead of no lost work"
+          ]
+        }
+      ],
+      "rationale": "Recommendation A. The goals measure lost time, lost work and unused usage, which is the shape of a cost-reducer. Strongest argument against: the core contexts produce the output of the fleet, and B says that more directly.",
+      "would_flip_if": [
+        "The operator counts merged features per week as the main goal of the fleet",
+        "fleetd becomes a product that friends pay for",
+        "A goal measures operator engagement"
+      ],
+      "made_by": "step",
+      "records": {
+        "assumption": "A16"
+      }
+    },
+    {
+      "id": "D2",
+      "question": "Which domain role fits the ideas context?",
+      "kind": "classification",
+      "options": [
+        {
+          "id": "A",
+          "summary": "specification-model plus approver: ideas builds the plan that task-execution executes, and it holds the operator approval gate.",
+          "pros": [
+            "The plan is a specification that is validated only at the hand-over event plan-committed (FR-3)",
+            "The approval gate (FR-10, I7) is an approver behavior"
+          ],
+          "cons": [
+            "2 roles"
+          ],
+          "risks": [
+            "The worker question flow (RR-12) is execution behavior and does not fit either role"
+          ]
+        },
+        {
+          "id": "B",
+          "summary": "execution-context (the pre-fill suggestion): ideas tracks each idea through a fixed state machine.",
+          "pros": [
+            "The idea state machine is a real execution with invariants I3, I7, I13"
+          ],
+          "cons": [
+            "Hides that the plan is a draft until it validates"
+          ],
+          "risks": [
+            "ddd-code builds rich aggregates where a validated document is enough"
+          ]
+        },
+        {
+          "id": "C",
+          "summary": "approver alone: ideas decides if an idea may progress (assumptions approved, plan valid).",
+          "pros": [
+            "1 role"
+          ],
+          "cons": [
+            "Ignores that ideas writes the plan, spec and questions"
+          ],
+          "risks": [
+            "The question flow has no home in the role"
+          ]
+        }
+      ],
+      "rationale": "Recommendation A. The plan is drafted, validated at 1 hand-over and then executed elsewhere, which is the specification-model heuristic; the approval gate is the approver heuristic. Strongest argument against: the idea state machine and the question flow are execution behavior, so B is also defensible.",
+      "would_flip_if": [
+        "The question flow moves to task-execution (decompose decision D2)",
+        "The plan can change after plan-committed without a replan",
+        "The approval gate moves out of ideas"
+      ],
+      "made_by": "step",
+      "records": {
+        "assumption": "A18"
+      }
+    }
+  ],
+  "plain_words": {
+    "what": "This step wrote 1 page for each of the 6 parts of fleetd. Each page says what the part decides, who it talks to, its words, its rules and how to measure it.",
+    "decided": "Only the verifier says a task is done. Only fleetd writes the ledger. No worktree or branch is deleted before its work is saved. Every agent launch goes through 1 place that removes ANTHROPIC_API_KEY.",
+    "assumed": "We guessed the business label of each part: fleetd earns no money, so most parts save cost. We guessed that ideas writes a plan and approves it, more than it runs work. Both are open for the operator.",
+    "riskiest": "The rules come from the design, so they are safe. The riskiest part is the GitHub and herdr links: no earlier step gave them messages, so we added 2 GitHub rows by hand and asked the connect step to confirm."
+  }
+}

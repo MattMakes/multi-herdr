@@ -4,7 +4,7 @@
   "title": "fleetd: the horch fleet control plane",
   "ddd_dir": "ddd",
   "created": "2026-11-12T16:45:13Z",
-  "updated": "2026-11-12T18:00:00Z",
+  "updated": "2026-11-12T18:11:22Z",
   "mode": "auto",
   "depth": "standard",
   "scale_target": {
@@ -89,7 +89,20 @@
       ]
     },
     "define": {
-      "status": "pending"
+      "status": "done",
+      "updated": "2026-11-12T18:11:22Z",
+      "mode": "auto",
+      "open_questions": 5,
+      "artifacts": [
+        "ddd/07-define/define.json",
+        "ddd/07-define/fleet-runtime/bounded-context-canvas.md",
+        "ddd/07-define/ideas/bounded-context-canvas.md",
+        "ddd/07-define/integration/bounded-context-canvas.md",
+        "ddd/07-define/system-context.md",
+        "ddd/07-define/task-execution/bounded-context-canvas.md",
+        "ddd/07-define/worker-profiles/bounded-context-canvas.md",
+        "ddd/07-define/worktree-custody/bounded-context-canvas.md"
+      ]
     },
     "code": {
       "status": "pending"
