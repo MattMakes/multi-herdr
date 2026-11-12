@@ -154,6 +154,7 @@ Each requirement has an ID that the failure analysis and the tests point back to
 | OR-3 | Anything that needs you shall land in one place (`/fleet/needs-you/`), in `horch ideas`, and as a herdr notification. | Escalation test. |
 | OR-4 | fleetd shall read the usage window of each pool and dispatch so that the usage is consumed by the reset. | Pacing test with a fake pool window. |
 | OR-5 | fleetd shall pause new dispatch only while free disk or machine load is past a safety floor, and shall resume by itself. A machine probe that returns unknown (Windows today) shall be reported, not read as healthy or unhealthy. | Fault injection: a low-disk probe pauses dispatch; a normal probe resumes it. |
+| OR-6 | `horch self-update` shall restart the running daemon on the new binary at once, and a CLI that finds an older daemon shall restart it. Schema migration shall be forward-only at daemon start; a newer schema is refused, a backup is written before each migration, and a development build does not migrate the shared ledger. | Phase 0 test: a daemon restart on a new binary in the middle of a run loses no task. |
 
 ## What herdr and the agent CLIs give us
 
@@ -1021,12 +1022,17 @@ Every failure you listed, plus twenty-three more found while reading the code, t
 | FM-31 | A sub-orchestrator dies mid-interview or mid-phase | Answers or a half-written spec lost | Each answer recorded with `horch idea note` as it is given; fresh process per phase resumes from the folder; the reconciler restarts a missing pane | 5 to 30 s | FR-2, RR-7 |
 | FM-32 | A model approves its own assumptions or forges an approval | Work starts without your yes | `horch idea approve` refuses inside any fleet attempt and profiles deny it; fleetd writes `approval.json` with the hash you saw and ignores any other; invariant I7 checked every pass | Prevented | FR-10 |
 | FM-33 | A document passes a structural check but is wrong | A wrong design, report or doc is accepted | Plan validation requires a paired judge task in a different session, on a different provider when the roster has one; a CRITICAL miss blocks and a fresh session fixes it; a fresh judge checks only the earlier CRITICAL items and the change; after 2 fix rounds it goes to you | At the judge task | FR-4, RR-3 |
+| FM-34 | Daemon and CLI of different versions | Old code acts on a newer ledger, or the reverse | fleetd is a subcommand of the single `horch` binary; `horch self-update` restarts the daemon on the new binary at once; a CLI that finds an older daemon restarts it; a newer schema is refused | Prevented; at the next CLI call otherwise | OR-6 |
 
 ## Migration plan
 
 Migrate in eight phases, each a small set of horch changes with a fault-injection test as its exit gate, starting with the supervised loop, leases and worktree rescue because they stop the daily stalls and the lost work with the least code.
 
-Each phase keeps the fleet usable. New behaviour ships behind a run-level flag, becomes the default once its gate passes for a week of real runs, and the old path is then deleted.
+Each phase keeps the fleet usable. A phase is released when its fault-injection tests pass, and it is on for every user at once. The tests are the only gate.
+
+**Rollout is automatic and immediate.** fleetd is a subcommand of the single `horch` binary, so the CLI and the daemon cannot have different versions. `horch self-update` installs a new release and restarts the running daemon on the new binary at once. This is safe because all state is in the ledger and in files, and the loop derives everything again on its next pass. Today the watchdog already restarts itself when its binary changes (`preservation-04-behavior.md`, row S10). A CLI that finds an older daemon restarts it. Harness updates keep today's rule: a release must be more than a week old (`update_cooldown_days`).
+
+**Schema migration is forward-only and runs at daemon start.** Today's safety stays (`preservation-05-contracts-and-values.md`, rows L-3, L-4, L-5): a newer schema is refused, a backup file is written before each migration, and a development build does not migrate the shared ledger.
 
 1. **Phase 0: reproduce every failure in tests.** Add scenarios to `crates/horch-e2e` using the fake harness and the existing fault points: an agent that never claims, one that claims and stops, one that exits without `done`, a killed watchdog, a herdr server restart, two ideas sent back to back, a worker killed with dirty and untracked files in its worktree. Today most should fail. *Gate:* FM-1 to FM-8 and FM-25 each have a red test.
 2. **Phase 1: `horch fleetd`, supervised and level-triggered.** Move the watchdog's pass into a long-lived daemon under the service manager of each OS through the platform layer (on Linux a systemd user unit with `WatchdogSec`), a 5 s pass and invariants I1 to I5. It acts in code (stop by recorded PID, requeue, respawn) instead of only mailing the orchestrator. Remove the lazy `ensure` start. *Gate:* FM-4, FM-7, FM-12, FM-13 green.
