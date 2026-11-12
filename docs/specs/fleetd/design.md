@@ -590,7 +590,7 @@ horch ideas                      # the board: every idea, its state, what it wai
 
 Each `add` writes one immutable file and one ledger row in state `captured`, and prints the ID. Half-formed ideas are fine; making them clear is the sub-orchestrator's job.
 
-**Everything is an idea, with a fast lane.** There is 1 state machine and 1 way in. There is no task without an idea. `horch idea add --direct <ticket file>` takes a ticket that you wrote. It skips research and the interview, and makes a plan with 1 task. The idea goes from `captured` to `ticketing`; the ticket you wrote stands for your approval, and `horch idea add --direct` refuses to run inside a fleet attempt, like `horch idea approve`. The plan still passes plan validation, and the task still needs a check.
+**Everything is an idea, with a fast lane.** There is 1 state machine and 1 way in. There is no task without an idea. `horch idea add --direct <ticket file>` takes a ticket that you wrote. It skips research and the interview, and makes a plan with 1 task. The idea goes from `captured` to `ticketing`; the ticket you wrote stands for your approval, and `horch idea add --direct` refuses to run inside a fleet attempt, like `horch idea approve`. The plan still passes plan validation, and the task still needs a check. When plan validation refuses the `--direct` plan, the idea goes to `needs-you/` with the reason. A `--direct` idea belongs to a feature (see Features, landing and integration): with `--to <feature>` it joins that feature, and with no `--to` it starts a new feature whose branch name fleetd makes from the ticket title. The feature of a `--direct` idea still has a sub-orchestrator, which owns its questions, conflicts and gate failures.
 
 **The idea state machine**
 
