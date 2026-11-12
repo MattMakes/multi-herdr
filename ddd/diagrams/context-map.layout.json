@@ -1,6 +1,6 @@
 {
   "engine": "elk+incremental",
-  "width": 1240,
+  "width": 1256,
   "height": 384,
   "nodes": {
     "fleet-runtime": {
@@ -40,7 +40,14 @@
       "h": 64
     }
   },
-  "groups": {},
+  "groups": {
+    "horch": {
+      "x": 8,
+      "y": -16,
+      "w": 1224,
+      "h": 336
+    }
+  },
   "edges": {
     "R1": {
       "points": [
@@ -411,6 +418,6 @@
       }
     }
   },
-  "fingerprint": "c4698940-6e6cbe14",
+  "fingerprint": "996293b6-57e936f6",
   "optionsKey": "{\"direction\":\"RIGHT\",\"spacing\":\"comfortable\"}"
 }

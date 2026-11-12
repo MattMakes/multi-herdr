@@ -1,0 +1,100 @@
+{
+  "format": "ddd-diagram-spec",
+  "version": 1,
+  "id": "teams-deployables",
+  "kind": "architecture",
+  "title": "Option B: separate agent-docs-sync job",
+  "subtitle": "decision D2 option B, derived from the organise teams and deployables",
+  "source": {
+    "step": "organise",
+    "file": "organise.json"
+  },
+  "graph": {
+    "nodes": [
+      {
+        "id": "horch",
+        "label": "horch binary",
+        "sublabel": "6 context modules",
+        "kind": "deployable",
+        "deployKind": "modular-monolith",
+        "contexts": [
+          {
+            "id": "ideas",
+            "label": "Ideas"
+          },
+          {
+            "id": "task-execution",
+            "label": "Task execution"
+          },
+          {
+            "id": "worktree-custody",
+            "label": "Worktree custody"
+          },
+          {
+            "id": "integration",
+            "label": "Landing and integration"
+          },
+          {
+            "id": "worker-profiles",
+            "label": "Worker profiles"
+          },
+          {
+            "id": "fleet-runtime",
+            "label": "Fleet runtime"
+          }
+        ],
+        "w": 320,
+        "h": 88,
+        "group": "core-team",
+        "context": "",
+        "searchText": "horch modular-monolith ideas task-execution worktree-custody integration worker-profiles fleet-runtime",
+        "title": "fleetd, CLI, wrapper and fleetd check are process roles of 1 binary"
+      },
+      {
+        "id": "agent-docs-sync",
+        "label": "agent-docs-sync job",
+        "sublabel": "docs mirror and conformance",
+        "kind": "deployable",
+        "deployKind": "job",
+        "contexts": [],
+        "w": 160,
+        "h": 88,
+        "group": "core-team",
+        "context": "",
+        "searchText": "agent-docs-sync job ",
+        "title": "Widened from crates/herdr-docs-sync, run on a schedule"
+      }
+    ],
+    "edges": [
+      {
+        "id": "agent-docs-sync->horch",
+        "from": "agent-docs-sync",
+        "to": "horch",
+        "kind": "dependency",
+        "rels": [
+          "drift result file"
+        ],
+        "label": "drift result file"
+      }
+    ],
+    "groups": [
+      {
+        "id": "core-team",
+        "label": "Operator and agent fleet",
+        "sublabel": "stream-aligned · load high",
+        "kind": "team",
+        "members": [
+          "horch",
+          "agent-docs-sync"
+        ]
+      }
+    ]
+  },
+  "layoutOptions": {
+    "direction": "RIGHT",
+    "spacing": "comfortable"
+  },
+  "notes": [
+    "2 of a 1-1 target. Follows the design text on crates/herdr-docs-sync."
+  ]
+}

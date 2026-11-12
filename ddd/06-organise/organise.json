@@ -1,0 +1,278 @@
+{
+  "schema_version": 1,
+  "step": "organise",
+  "produced_by": "ddd-organise",
+  "produced_at": "2026-11-12T17:59:16Z",
+  "mode": "auto",
+  "depth": "standard",
+  "inputs": [
+    "ddd/manifest.json",
+    "ddd/03-decompose/decompose.json",
+    "ddd/05-connect/connect.json",
+    "ddd/04-strategize/strategize.json",
+    "ddd/01-understand/understand.json",
+    "ddd/glossary.md",
+    "docs/specs/fleetd/design.md",
+    "docs/architecture.md"
+  ],
+  "assumptions": [
+    {
+      "id": "A1",
+      "text": "1 stream-aligned team, core-team, owns all 6 contexts: the operator and the fleet of AI agents (manifest scale_target notes; understand N6; strategize N3). The size is not recorded because the number of agents changes from run to run and has no cap (understand C13).",
+      "confidence": "high"
+    },
+    {
+      "id": "A2",
+      "text": "1 deployable unit, the horch binary, holds all 6 contexts as modules inside horch-core. The design settles it: fleetd is a subcommand of the single horch binary, so the CLI and the daemon cannot have different versions (design: Amendments D9, Migration plan, FM-34; understand C1, N6; decompose N1). Decision D1 records the options.",
+      "confidence": "high"
+    },
+    {
+      "id": "A3",
+      "text": "The fleet-run wrapper and horch fleetd check are process roles of the same horch binary, not deployables. The design maps the wrapper to today's horch worker subcommand (design: Where multi-herdr stands today) and names horch fleetd check as a horch command (design: Architecture and roles). The owning context of the wrapper is still open (connect D2, Q1); the deployable is the same for every answer.",
+      "confidence": "medium"
+    },
+    {
+      "id": "A4",
+      "text": "The data store is 1 SQLite ledger (~/.horch/ledger.sqlite3, WAL) plus the workspace files, both owned by the 1 deployable. Inside the ledger each context owns its tables: ideas owns ideas, requirements, questions; task-execution owns tasks, task_deps, task_covers, attempts, leases; worktree-custody owns worktrees; integration owns features, branches, gate_runs, trial_merges; fleet-runtime owns events and ingested; worker-profiles owns no table (its profiles are teammate files). Source: design Ledger schema with the aggregates of discover and decompose.",
+      "confidence": "medium"
+    },
+    {
+      "id": "A5",
+      "text": "The questions table belongs to ideas, as decompose D2 recommends (still open): the sub-orchestrator answers worker questions and ideas emits own-assumption-recorded and question-answered (connect F5). If decompose D2 or the operator inbox owner (decompose Q3) goes to task-execution, the questions table moves with it.",
+      "confidence": "low"
+    },
+    {
+      "id": "A6",
+      "text": "herdr, the agent CLIs, git, GitHub and the OS service managers are external systems behind adapters in fleet-runtime and the other owning contexts. None is a deployable of this design (strategize N1; design: Architecture and roles).",
+      "confidence": "high"
+    },
+    {
+      "id": "A7",
+      "text": "The cognitive load of core-team is high: 6 contexts and 2 core contexts (task-execution, integration). No second team exists to take a context, so the mitigation is module boundaries that a test enforces, 1 context per task where possible, and the 8 migration phases that add the contexts one at a time (understand C9).",
+      "confidence": "medium"
+    },
+    {
+      "id": "A8",
+      "text": "Each context owns its workspace folders inside the 1 deployable: ideas owns the idea folders (ai_docs/plans/<run>/, design /fleet/ideas/), task-execution owns the task and attempt folders under the state root, worker-profiles owns the teammate profile files (understand N17; design: Workspace layout and file protocol).",
+      "confidence": "medium"
+    }
+  ],
+  "open_questions": [
+    {
+      "id": "Q1",
+      "text": "Where does docs sync run: as a horch subcommand that fleetd schedules inside the 1 deployable, or as the separate agent-docs-sync binary that grows from crates/herdr-docs-sync (decision D2)? No context owns docs sync yet (decompose Q2).",
+      "blocking": false,
+      "owner": "operator"
+    },
+    {
+      "id": "Q2",
+      "text": "Must a test enforce the module boundaries of the 6 contexts (for example an arch_scan rule: no context writes the tables or folders of another context)? This is the main mitigation of the high cognitive load (A7).",
+      "blocking": false,
+      "owner": "operator"
+    }
+  ],
+  "notes_for_downstream": [
+    {
+      "id": "N1",
+      "text": "The 1 deployable runs in 4 process roles of the same horch binary: the fleetd daemon (horch fleetd, the only ledger writer, runs the reconcile pass of all 6 contexts), short-lived CLI commands (read the ledger read-only, send requests on the command channel), the fleet-run wrapper (1 per attempt), and horch fleetd check (the heartbeat check). The module of a context can run in more than 1 role; only the fleetd role writes the ledger.",
+      "for": [
+        "define",
+        "code"
+      ],
+      "kind": "decision"
+    },
+    {
+      "id": "N2",
+      "text": "Sharpens decompose N5: each context owns its own ledger tables and workspace folders (A4, A8). fleet-runtime commits the write, but only the owning context decides the rows of its tables. No context reads or joins the tables of another context; it uses that module's contract or its events.",
+      "for": [
+        "define",
+        "code"
+      ],
+      "kind": "boundary"
+    }
+  ],
+  "teams": [
+    {
+      "id": "core-team",
+      "name": "Operator and agent fleet",
+      "type": "stream-aligned",
+      "owns_contexts": [
+        "ideas",
+        "task-execution",
+        "worktree-custody",
+        "integration",
+        "worker-profiles",
+        "fleet-runtime"
+      ],
+      "cognitive_load": "high",
+      "notes": "1 human operator plus a changing number of AI agents (no cap, understand C13). Runs the horch binary on the operator's machine; reached through the horch CLI, herdr panes and the needs-you folder. Load is high because the team owns 6 contexts and 2 core contexts. Mitigation: no second team exists, so keep each context a module with its own tables and folders, enforce the boundaries with a test (Q2), give an agent 1 context per task where possible, and add the contexts in the 8 migration phases."
+    }
+  ],
+  "interactions": [],
+  "deployables": [
+    {
+      "id": "horch",
+      "name": "horch binary",
+      "kind": "modular-monolith",
+      "contexts": [
+        "ideas",
+        "task-execution",
+        "worktree-custody",
+        "integration",
+        "worker-profiles",
+        "fleet-runtime"
+      ],
+      "team": "core-team",
+      "data_store": "own",
+      "independent_deploy": true,
+      "rationale": "fleetd is a subcommand of the single horch binary, so the CLI, the daemon and the wrapper always have the same version and horch self-update restarts the daemon on the new binary (design: Amendments D9, FM-34; understand C1). All 13 relationships are in-process calls and events (connect N1), task-execution reaches worker-profiles and fleet-runtime with synchronous calls (connect F2, F4), and 1 team owns every context. No split reason is in the inputs. Released through horch self-update and the GitHub release assets (understand C7)."
+    }
+  ],
+  "topology_style": "modular-monolith",
+  "deployable_count": 1,
+  "scale_check": {
+    "target_min": 1,
+    "target_max": 1,
+    "within_target": true,
+    "note": "1 of a 1-1 target. Why not fewer: 1 is the minimum. Why not more: ideas, integration and worktree-custody have async-only inbound, but no input gives a split reason (no independent scaling, runtime, regulation, stack or second team), the design requires 1 binary so the CLI and daemon cannot differ in version (D9, FM-34), the only ledger writer is 1 process (understand C4), and task-execution, worker-profiles and fleet-runtime are joined by synchronous calls (connect F2, F4)."
+  },
+  "decisions": [
+    {
+      "id": "D1",
+      "question": "Is the fleetd design 1 deployable, or do the daemon or the fleet-run wrapper ship as their own binaries?",
+      "kind": "topology",
+      "options": [
+        {
+          "id": "A",
+          "summary": "1 modular monolith: the horch binary holds all 6 contexts; fleetd, the CLI commands, the wrapper and fleetd check are process roles of it.",
+          "pros": [
+            "The CLI and the daemon cannot have different versions (FM-34)",
+            "horch self-update replaces 1 release asset and restarts the daemon at once (D9)",
+            "Matches connect: all 13 relationships are in-process"
+          ],
+          "cons": [
+            "1 team carries 6 contexts in 1 codebase; the load is high (A7)",
+            "A fault in any module can stop the 1 daemon process"
+          ],
+          "risks": [
+            "Modules reach into each other's tables and the context boundaries erode without a test (Q2)"
+          ],
+          "diagram": "ddd/06-organise/decisions/D1-A.json"
+        },
+        {
+          "id": "B",
+          "summary": "2 deployables: a fleetd daemon binary and the horch CLI binary, joined by the command channel.",
+          "pros": [
+            "The daemon can restart or update without a new CLI",
+            "A smaller daemon binary"
+          ],
+          "cons": [
+            "The CLI and the daemon can have different versions, the failure FM-34 prevents",
+            "2 release assets for horch self-update (understand C7)"
+          ],
+          "risks": [
+            "Old code acts on a newer ledger, or the reverse (FM-34)"
+          ],
+          "diagram": "ddd/06-organise/decisions/D1-B.json"
+        },
+        {
+          "id": "C",
+          "summary": "2 deployables: the horch binary and a separate small fleet-run wrapper binary launched once per attempt.",
+          "pros": [
+            "The wrapper process is small and starts fast",
+            "The wrapper can be built without the ledger code"
+          ],
+          "cons": [
+            "A second release asset and a second version to keep in step",
+            "Today the wrapper is the horch worker subcommand; a split adds work for no stated need"
+          ],
+          "risks": [
+            "A wrapper of an older version writes heartbeat.json or exit.json in a shape fleetd no longer reads"
+          ]
+        }
+      ],
+      "chosen": "A",
+      "confidence": "high",
+      "rationale": "The design settles it: fleetd is a subcommand of the single horch binary, so the CLI and the daemon cannot have different versions (design: Amendments D9, Migration plan, FM-34). The manifest target is 1 to 1.",
+      "would_flip_if": [
+        "The operator changes D9 and accepts a daemon that updates apart from the CLI",
+        "fleetd must run on a different machine from the CLI",
+        "A second team takes a context and needs its own release train"
+      ],
+      "made_by": "step",
+      "records": {
+        "assumption": "A2"
+      }
+    },
+    {
+      "id": "D2",
+      "question": "Where does docs sync and adapter conformance run: inside the 1 deployable or as its own job binary?",
+      "kind": "topology",
+      "options": [
+        {
+          "id": "A",
+          "summary": "A horch subcommand inside the 1 deployable that fleetd schedules daily and on a CLI version change. Recommended.",
+          "pros": [
+            "Keeps the 1-1 scale target and 1 release asset",
+            "fleetd sees a CLI version change first and can start the run at once (FM-19)",
+            "A drift becomes a task through the only ledger writer"
+          ],
+          "cons": [
+            "Moves crates/herdr-docs-sync code into the horch binary",
+            "The horch binary gets the docs fetch and mirror code"
+          ],
+          "risks": [
+            "A slow docs fetch runs inside the daemon and delays the reconcile pass, unless it runs as its own process role"
+          ],
+          "diagram": "ddd/06-organise/decisions/D2-A.json"
+        },
+        {
+          "id": "B",
+          "summary": "A separate agent-docs-sync job binary, widened from crates/herdr-docs-sync as design Docs sync says, run on a schedule.",
+          "pros": [
+            "Follows the design text: generalise crates/herdr-docs-sync into agent-docs-sync",
+            "The daemon never runs network fetches for docs"
+          ],
+          "cons": [
+            "A second deployable breaks the 1-1 scale target",
+            "A second release asset and a second scheduler entry on 3 OSes"
+          ],
+          "risks": [
+            "The job and the daemon disagree on the profile health format after an update"
+          ],
+          "diagram": "ddd/06-organise/decisions/D2-B.json"
+        },
+        {
+          "id": "C",
+          "summary": "A development tool in the repository only; the conformance results ship inside each horch release.",
+          "pros": [
+            "No runtime code on the user's machine for docs sync"
+          ],
+          "cons": [
+            "A CLI update between 2 horch releases is not caught before dispatch, which FM-19 requires",
+            "Contradicts design: Docs sync runs daily and on any CLI version change"
+          ],
+          "risks": [
+            "Every worker of an updated CLI fails until the next horch release (FM-19)"
+          ]
+        }
+      ],
+      "confidence": "medium",
+      "rationale": "Recommendation A: it keeps the fixed target of 1 deployable and lets fleetd react to a CLI version change. The strongest argument against A: the design says to generalise crates/herdr-docs-sync, which is its own binary today, and B follows that text. The design does not say whether the widened tool ships in the horch binary, so the operator decides.",
+      "would_flip_if": [
+        "The operator wants docs sync to run when fleetd is down",
+        "The docs fetch needs network access that the daemon must not have"
+      ],
+      "made_by": "step",
+      "records": {
+        "open_question": "Q1"
+      }
+    }
+  ],
+  "plain_words": {
+    "what": "We decided who owns each part of fleetd and how many separate programs ship.",
+    "decided": "1 team (the operator and the AI agents) owns all 6 parts. All 6 parts ship in 1 program, the horch binary, as separate modules.",
+    "assumed": "Each part keeps its own database tables and folders inside that 1 program, and no part edits another part's tables.",
+    "riskiest": "1 team owns 6 parts, 2 of them core. If nothing checks the module walls, the parts tangle and a later split costs much more. Where docs sync runs is still open (D2)."
+  }
+}

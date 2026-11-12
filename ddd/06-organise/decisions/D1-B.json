@@ -1,0 +1,100 @@
+{
+  "format": "ddd-diagram-spec",
+  "version": 1,
+  "id": "teams-deployables",
+  "kind": "architecture",
+  "title": "Option B: separate fleetd daemon binary",
+  "subtitle": "decision D1 option B, derived from the organise teams and deployables",
+  "source": {
+    "step": "organise",
+    "file": "organise.json"
+  },
+  "graph": {
+    "nodes": [
+      {
+        "id": "horch-cli",
+        "label": "horch CLI",
+        "sublabel": "read-only ledger, sends requests",
+        "kind": "deployable",
+        "deployKind": "service",
+        "contexts": [],
+        "w": 160,
+        "h": 88,
+        "group": "core-team",
+        "context": "",
+        "searchText": "horch-cli service ",
+        "title": "Short-lived CLI commands"
+      },
+      {
+        "id": "fleetd",
+        "label": "fleetd daemon",
+        "sublabel": "6 context modules",
+        "kind": "deployable",
+        "deployKind": "modular-monolith",
+        "contexts": [
+          {
+            "id": "ideas",
+            "label": "Ideas"
+          },
+          {
+            "id": "task-execution",
+            "label": "Task execution"
+          },
+          {
+            "id": "worktree-custody",
+            "label": "Worktree custody"
+          },
+          {
+            "id": "integration",
+            "label": "Landing and integration"
+          },
+          {
+            "id": "worker-profiles",
+            "label": "Worker profiles"
+          },
+          {
+            "id": "fleet-runtime",
+            "label": "Fleet runtime"
+          }
+        ],
+        "w": 320,
+        "h": 88,
+        "group": "core-team",
+        "context": "",
+        "searchText": "fleetd modular-monolith ideas task-execution worktree-custody integration worker-profiles fleet-runtime",
+        "title": "The only ledger writer"
+      }
+    ],
+    "edges": [
+      {
+        "id": "horch-cli->fleetd",
+        "from": "horch-cli",
+        "to": "fleetd",
+        "kind": "dependency",
+        "rels": [
+          "command channel"
+        ],
+        "label": "command channel"
+      }
+    ],
+    "groups": [
+      {
+        "id": "core-team",
+        "label": "Operator and agent fleet",
+        "sublabel": "stream-aligned · load high",
+        "kind": "team",
+        "members": [
+          "horch-cli",
+          "fleetd"
+        ]
+      }
+    ]
+  },
+  "layoutOptions": {
+    "direction": "RIGHT",
+    "spacing": "comfortable"
+  },
+  "notes": [
+    "2 of a 1-1 target. The CLI and the daemon can differ in version (FM-34)."
+  ]
+}

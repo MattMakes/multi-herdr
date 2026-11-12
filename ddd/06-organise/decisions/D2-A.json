@@ -1,0 +1,74 @@
+{
+  "format": "ddd-diagram-spec",
+  "version": 1,
+  "id": "teams-deployables",
+  "kind": "architecture",
+  "title": "Option A: docs sync is a horch subcommand",
+  "subtitle": "decision D2 option A, derived from the organise teams and deployables",
+  "source": {
+    "step": "organise",
+    "file": "organise.json"
+  },
+  "graph": {
+    "nodes": [
+      {
+        "id": "horch",
+        "label": "horch binary",
+        "sublabel": "6 context modules + docs sync role",
+        "kind": "deployable",
+        "deployKind": "modular-monolith",
+        "contexts": [
+          {
+            "id": "ideas",
+            "label": "Ideas"
+          },
+          {
+            "id": "task-execution",
+            "label": "Task execution"
+          },
+          {
+            "id": "worktree-custody",
+            "label": "Worktree custody"
+          },
+          {
+            "id": "integration",
+            "label": "Landing and integration"
+          },
+          {
+            "id": "worker-profiles",
+            "label": "Worker profiles"
+          },
+          {
+            "id": "fleet-runtime",
+            "label": "Fleet runtime"
+          }
+        ],
+        "w": 320,
+        "h": 88,
+        "group": "core-team",
+        "context": "",
+        "searchText": "horch modular-monolith ideas task-execution worktree-custody integration worker-profiles fleet-runtime",
+        "title": "fleetd schedules docs sync daily and on a CLI version change"
+      }
+    ],
+    "edges": [],
+    "groups": [
+      {
+        "id": "core-team",
+        "label": "Operator and agent fleet",
+        "sublabel": "stream-aligned · load high",
+        "kind": "team",
+        "members": [
+          "horch"
+        ]
+      }
+    ]
+  },
+  "layoutOptions": {
+    "direction": "RIGHT",
+    "spacing": "comfortable"
+  },
+  "notes": [
+    "1 of a 1-1 target. Recommended; open for the operator (Q1)."
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "engine": "elk",
+  "width": 880,
+  "height": 192,
+  "nodes": {
+    "horch": {
+      "x": 40,
+      "y": 64,
+      "w": 800,
+      "h": 88
+    }
+  },
+  "groups": {
+    "core-team": {
+      "x": 24,
+      "y": 24,
+      "w": 832,
+      "h": 144
+    }
+  },
+  "edges": {},
+  "fingerprint": "81e5fade-65ff7806",
+  "optionsKey": "{\"direction\":\"RIGHT\",\"spacing\":\"comfortable\"}"
+}
