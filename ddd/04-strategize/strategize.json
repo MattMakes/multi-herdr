@@ -2,7 +2,7 @@
   "schema_version": 1,
   "step": "strategize",
   "produced_by": "ddd-strategize",
-  "produced_at": "2026-11-12T17:38:28Z",
+  "produced_at": "2026-11-12T20:41:54Z",
   "mode": "auto",
   "depth": "standard",
   "inputs": [
@@ -16,8 +16,8 @@
   "assumptions": [
     {
       "id": "A1",
-      "text": "Ideas is classified supporting, not core (decision D1 is open). Its 24 events are the transitions of 1 fixed idea state machine; the judgment work (research, interview, assumptions, spec, plan) is done by the sub-orchestrator model, not by fleetd code. Scored diff 6, cplx 5.",
-      "confidence": "medium"
+      "text": "Ideas stays supporting, not core. Decision D1 took option C (orchestrator, D15): the subdomain is split by module. Plan validation is a domain-model module: it holds the rules of coverage, the DAG, judge pairing, the model guide and the declared gates. Idea intake and worker questions stay active-record. The judgment work (research, interview, assumptions, spec, plan) is done by the sub-orchestrator model, not by fleetd code. Scored diff 6, cplx 5.",
+      "confidence": "high"
     },
     {
       "id": "A2",
@@ -26,12 +26,12 @@
     },
     {
       "id": "A3",
-      "text": "The 2 cores use domain-model: state rows are the truth, and the events table is the audit trail that the one door writes beside each row in the same transaction (design, Ledger, rule 1 One door). Decision D2 keeps the event-sourced reading open.",
-      "confidence": "medium"
+      "text": "The 2 cores use domain-model: state rows are the truth, and the events table is the audit trail that the one door writes beside each row in the same transaction (design, Ledger, rule 1 One door). Decision D2 took option A (orchestrator, D15): a domain model with an events table, not event-sourced.",
+      "confidence": "high"
     },
     {
       "id": "A4",
-      "text": "Fleet runtime is supporting, not generic. Its pane hosting (herdr) and host services (launchd, systemd, Windows service) are adopted and only wrapped, as understand N14 says. The single ledger writer, the command channel and the platform layer interface have no product to buy, so the subdomain as a whole is built.",
+      "text": "Fleet runtime is supporting, not generic. Its pane hosting (herdr) and host services (launchd, systemd, Windows service) are adopted and only wrapped, as understand N14 says. The single ledger writer and the command channel have no product to buy, so the subdomain as a whole is built. The platform layer is the leaf crate crates/horch-platform (design A19). It is not part of fleet-runtime and has no subdomain (decompose N7).",
       "confidence": "high"
     },
     {
@@ -50,20 +50,7 @@
       "confidence": "high"
     }
   ],
-  "open_questions": [
-    {
-      "id": "Q1",
-      "text": "Is ideas a core subdomain? The idea dispatcher is a fixed state machine in code, but G3 and the value proposition 'rough ideas in, approved plans out' depend on it (decision D1).",
-      "blocking": false,
-      "owner": "operator"
-    },
-    {
-      "id": "Q2",
-      "text": "Does 'event log plus derived tables' (design, Ledger) mean the derived tables are rebuilt from the events table (event-sourced), or that the row and the event are written together and the row is the truth (decision D2)?",
-      "blocking": false,
-      "owner": "operator"
-    }
-  ],
+  "open_questions": [],
   "decisions": [
     {
       "id": "D1",
@@ -116,17 +103,18 @@
           ]
         }
       ],
-      "confidence": "medium",
-      "rationale": "Recommendation: A. The strongest argument against it is that plan validation and the approval hash are real invariants; ddd-code can still give the plan aggregate invariant tests inside a supporting context. The design does not settle the classification, so the operator decides.",
+      "confidence": "high",
+      "rationale": "Decided by the orchestrator (D15). The operator can reverse it. Chosen: C. Plan validation is a domain-model module (it holds the rules of coverage, the DAG, judge pairing, the model guide and the declared gates). Intake and questions stay active-record. Reason: these plan rules are real invariants, and they decide whether a task may start; a flat model lets them leak into callers. The split is a module boundary inside the ideas context, not a new subdomain, so decompose stays as it is. The step recommended A: Recommendation: A. The strongest argument against it is that plan validation and the approval hash are real invariants; ddd-code can still give the plan aggregate invariant tests inside a supporting context. The design does not settle the classification, so the operator decides.",
       "would_flip_if": [
         "Plan validation rules turn out to need more than 1 aggregate",
         "The operator names the idea pipeline as the reason to use fleetd",
         "An idea bug, not a task stall, is the main failure in the first runs"
       ],
-      "made_by": "step",
+      "made_by": "strategist",
       "records": {
         "assumption": "A1"
-      }
+      },
+      "chosen": "C"
     },
     {
       "id": "D2",
@@ -177,17 +165,18 @@
           ]
         }
       ],
-      "confidence": "medium",
-      "rationale": "Recommendation: A. The strongest argument against it is the design's own phrase 'derived tables'. The design does not settle which store is the truth, so the operator decides.",
+      "confidence": "high",
+      "rationale": "Decided by the orchestrator (D15). The operator can reverse it. Chosen: A, a domain model with an events table, not event-sourced. This is the recommendation of the step. Recommendation: A. The strongest argument against it is the design's own phrase 'derived tables'. The design does not settle which store is the truth, so the operator decides.",
       "would_flip_if": [
         "The operator needs 'state as of' queries for a past pass",
         "The design means the derived tables are rebuilt from events",
         "Row and event drift is seen in fault-injection tests"
       ],
-      "made_by": "step",
+      "made_by": "strategist",
       "records": {
         "assumption": "A3"
-      }
+      },
+      "chosen": "A"
     }
   ],
   "classifications": [
@@ -234,15 +223,15 @@
       "model_complexity": 5,
       "evolution": "custom",
       "sourcing": "build",
-      "implementation_pattern": "active-record",
+      "implementation_pattern": "domain-model",
       "investment": "medium",
       "goal_ids": [
         "G3"
       ],
       "history_is_asset": false,
-      "rationale": "supporting - G3 depends on it, and today's alternative is ideas typed into 1 orchestrator conversation; rule 3 (diff 6 with cplx 5 is below the core rule); cplx 5 because fleetd code runs 1 fixed idea state machine and the judgment work is done by the sub-orchestrator model (A1, decision D1 open). Medium investment: it feeds the core task-execution with committed plans.",
+      "rationale": "supporting - G3 depends on it, and today's alternative is ideas typed into 1 orchestrator conversation; rule 3 (diff 6 with cplx 5 is below the core rule); cplx 5 because fleetd code runs 1 fixed idea state machine and the judgment work is done by the sub-orchestrator model (A1). Pattern domain-model for the plan validation module only (D1 option C, orchestrator D15): coverage, the DAG, judge pairing, the model guide and the declared gates are invariants. Intake and questions stay active-record. Medium investment: it feeds the core task-execution with committed plans.",
       "evolution_rationale": "custom: cap-idea-intake, cap-idea-planning and cap-operator-attention are custom.",
-      "future_direction": "Hidden core: the hard part (research, interview, assumptions, plan) is done by the sub-orchestrator model. Keep the dispatcher flat; give plan validation and the approval hash invariant tests. Re-check the type at review (D1, Q1)."
+      "future_direction": "Hidden core: the hard part (research, interview, assumptions, plan) is done by the sub-orchestrator model. Keep the dispatcher, intake and questions flat (active-record). Give plan validation an aggregate with invariant tests, and keep the approval hash under test. Review in 6 to 12 months."
     },
     {
       "subdomain": "worktree-custody",
@@ -292,9 +281,9 @@
         "G1"
       ],
       "history_is_asset": false,
-      "rationale": "supporting - G1 needs a daemon that is itself watched; today's alternative is horch ledger watch, the lazily started watchdog; rule 3 (diff 3 but not solved elsewhere as a whole, so rule 1 does not fire); cplx 4 from the single ledger writer, the command channel and 1 platform interface for 3 OSes (C3). Pane hosting (herdr) and host services (OS service managers) are adopted and wrapped, not built (understand N14, A4). Medium investment: a hang stops the whole fleet.",
+      "rationale": "supporting - G1 needs a daemon that is itself watched; today's alternative is horch ledger watch, the lazily started watchdog; rule 3 (diff 3 but not solved elsewhere as a whole, so rule 1 does not fire); cplx 4 from the single ledger writer, the command channel and the supervision of the daemon on 3 OSes (C3). Pane hosting (herdr) and host services (OS service managers) are adopted and wrapped, not built (understand N14, A4). The platform layer is a leaf crate outside every context (decompose N7). Medium investment: a hang stops the whole fleet.",
       "evolution_rationale": "custom: cap-fleet-record is custom; cap-host-services is commodity and cap-pane-hosting is product, and both are adopted as existing systems.",
-      "future_direction": "Supporting, kept thin. The herdr adapter and the OS service manager modules are adapters, not models. Q2 of understand (moving the 178 OS-specific sites behind the platform layer) decides its size."
+      "future_direction": "Supporting, kept thin. The herdr adapter and the service manager calls are adapters, not models. D16 settled the old question of understand Q2: Phase P moves all 178 OS-specific sites into crates/horch-platform before Phase 1, so fleet-runtime calls the platform interface and owns no OS module."
     }
   ],
   "core_domains": [
@@ -332,11 +321,11 @@
       "validate_by": "0 attempts burned by a usage limit in Phase 2, and a target set for unused usage per window."
     }
   ],
-  "summary": "2 of 6 subdomains are core: task-execution (decisive) and integration. Ideas, worktree-custody, worker-profiles and fleet-runtime are supporting and built simply. Nothing is generic: herdr and the OS service managers are adopted inside fleet-runtime as adapters. Every subdomain is built in horch-core; 2 classification calls (D1, D2) stay open for the operator.",
+  "summary": "2 of 6 subdomains are core: task-execution (decisive) and integration. Ideas, worktree-custody, worker-profiles and fleet-runtime are supporting and built simply; only the plan validation module of ideas gets a domain model (D1 option C). The ledger is a domain model with an audit events table, not event-sourced (D2 option A). Nothing is generic: herdr and the OS service managers are adopted inside fleet-runtime as adapters. Every subdomain is built in horch-core, and the platform layer is the leaf crate crates/horch-platform.",
   "notes_for_downstream": [
     {
       "id": "N1",
-      "text": "Sharpens understand N14: fleet-runtime builds only the single ledger writer, the command channel and the platform interface. herdr and the OS service managers are adopted systems behind adapters in fleet-runtime; no context models panes or services.",
+      "text": "Sharpens understand N14 and follows decompose N7: fleet-runtime builds only the single ledger writer, the command channel and the herdr adapter. herdr and the OS service managers are adopted systems behind adapters; no context models panes or services. The platform layer (crates/horch-platform) is a leaf crate outside fleet-runtime.",
       "for": [
         "connect",
         "code"
@@ -345,7 +334,7 @@
     },
     {
       "id": "N2",
-      "text": "Only task-execution and integration get aggregates (domain-model). ideas, worktree-custody, worker-profiles and fleet-runtime are active-record with invariant tests; their invariants (approval hash, rescue ref before removal, ANTHROPIC_API_KEY scrub) still need tests.",
+      "text": "Aggregates go to task-execution, integration and the plan validation module of ideas (domain-model, D1 option C). Plan validation holds coverage, the DAG, judge pairing, the model guide and the declared gates. Idea intake, questions, worktree-custody, worker-profiles and fleet-runtime are active-record with invariant tests (approval hash, rescue ref before removal, ANTHROPIC_API_KEY scrub).",
       "for": [
         "define",
         "code"
@@ -359,13 +348,36 @@
         "organise"
       ],
       "kind": "decision"
+    },
+    {
+      "id": "N4",
+      "text": "D2 option A (orchestrator, D15): the ledger is a domain model with an events table, not event-sourced. transition() writes the state row and 1 event in 1 transaction; the row is the truth, and no table is rebuilt from events.",
+      "for": [
+        "define",
+        "code"
+      ],
+      "kind": "decision"
     }
   ],
   "plain_words": {
     "what": "We decided which parts of fleetd need the most careful design, and which parts stay simple.",
-    "decided": "2 of 6 parts are core: running and checking tasks, and landing branches on features. The other 4 parts are built simply. We buy nothing new. herdr and the OS service managers are used as they are.",
-    "assumed": "The ideas part is not core, because an AI does its hard thinking and the code is 1 fixed state machine. We also assumed the ledger rows are the truth and the events table is an audit log.",
-    "riskiest": "If plan checks in the ideas part grow into many rules, the simple design there will leak bugs, and a task could start without an approved plan."
+    "decided": "2 of 6 parts are core: running and checking tasks, and landing branches on features. The other 4 parts are built simply, except the plan checks of the ideas part, which get a careful model. The ledger rows are the truth, and the events table is an audit log. We buy nothing new. herdr and the OS service managers are used as they are.",
+    "assumed": "The ideas part is not core, because an AI does its hard thinking and the code is 1 fixed state machine plus the plan checks.",
+    "riskiest": "If the simple parts of the ideas part (intake and questions) grow rules, the flat design there will leak bugs."
   },
-  "chart_mermaid": "quadrantChart\n  title Core domain chart - fleetd the horch fleet control plane\n  x-axis Low model complexity --> High model complexity\n  y-axis Low business differentiation --> High business differentiation\n  quadrant-1 Core - build a rich model\n  quadrant-2 Short-term or hidden core\n  quadrant-3 Generic - buy or adopt\n  quadrant-4 Supporting - suspect if complex\n  Landing and integration: [0.80, 0.70]\n  Task execution: [0.80, 0.90]\n  Fleet runtime: [0.40, 0.30]\n  Ideas: [0.50, 0.60]\n  Worker profiles and adapters: [0.40, 0.50]\n  Worktree custody: [0.51, 0.60]"
+  "chart_mermaid": "quadrantChart\n  title Core domain chart - fleetd the horch fleet control plane\n  x-axis Low model complexity --> High model complexity\n  y-axis Low business differentiation --> High business differentiation\n  quadrant-1 Core - build a rich model\n  quadrant-2 Short-term or hidden core\n  quadrant-3 Generic - buy or adopt\n  quadrant-4 Supporting - suspect if complex\n  Landing and integration: [0.80, 0.70]\n  Task execution: [0.80, 0.90]\n  Fleet runtime: [0.40, 0.30]\n  Ideas: [0.50, 0.60]\n  Worker profiles and adapters: [0.40, 0.50]\n  Worktree custody: [0.51, 0.60]",
+  "deprecated": [
+    {
+      "id": "Q1",
+      "collection": "open_questions",
+      "reason": "Answered (orchestrator, D15): option C of D1. Ideas stays supporting; plan validation is a domain-model module, and intake and questions stay active-record. Recorded in D1 and A1.",
+      "since": "2026-11-12"
+    },
+    {
+      "id": "Q2",
+      "collection": "open_questions",
+      "reason": "Answered (orchestrator, D15): option A of D2. The row is the truth and the events table is the audit trail; the ledger is not event-sourced. Recorded in D2 and A3.",
+      "since": "2026-11-12"
+    }
+  ]
 }
