@@ -4,7 +4,7 @@
   "title": "fleetd: the horch fleet control plane",
   "ddd_dir": "ddd",
   "created": "2026-11-12T16:45:13Z",
-  "updated": "2026-11-12T17:20:06Z",
+  "updated": "2026-11-12T17:31:23Z",
   "mode": "auto",
   "depth": "standard",
   "scale_target": {
@@ -42,7 +42,14 @@
       ]
     },
     "decompose": {
-      "status": "pending"
+      "status": "done",
+      "updated": "2026-11-12T17:31:23Z",
+      "mode": "auto",
+      "open_questions": 3,
+      "artifacts": [
+        "ddd/03-decompose/decompose.json",
+        "ddd/03-decompose/subdomains.md"
+      ]
     },
     "strategize": {
       "status": "pending"

@@ -21,3 +21,33 @@
 **Resolver Task** - A code-kind task that resolves 1 conflict between stacked features, at most 100 changed lines or 2 files. _Avoid_: merge task
 **Judge Task** - A task of kind judge that ranks the misses of 1 judgment-kind task CRITICAL, HIGH, MEDIUM or LOW; it needs no judge itself (H5). _Avoid_: review task, judgment task
 **Fallback** - The persona that a worker persona names for use when its provider pool shows a usage limit or an outage. _Avoid_: backup model
+
+## Ideas context
+**Assumption** - 1 line in assumptions.md, [confirmed] or [assumed], that the operator approves or revises; also a reversible assumption that the sub-orchestrator records to answer a worker question (understand N11).
+**Question** - A worker question to the sub-orchestrator of its feature. It ends as an answer, an own assumption, a revise request, or an escalation to the operator.
+**Orchestrator** - Not a role in fleetd. The word survives only in the preserved mail contract tag [orchestrator re #<id>] (discover N3).
+
+## Task execution context
+**Lease** - The time-limited hold of 1 attempt on its task. It renews only on earned activity and pauses during sleep and waiting_quota (discover N1).
+**Ready** - A task state: every dependency is done and the task waits for dispatch (discover N6).
+**Done** - A task state that only the verifier sets, from facts on disk. It does not mean landed or merged (understand N4).
+**Check** - The acceptance command of a task. The verifier runs it in the worktree, in the sandbox profile of the worker.
+**Feature** - A code kind of a task (with quality, refactor and security). It is not the feature of the integration context (discover N2).
+
+## Worktree custody context
+**Lease** - The worktree lease: the ledger row written in the same transaction that leases the task, before the directory exists. It holds the worktree for 1 task until its work is landed or rescued.
+**Landed** - A worktree state: nothing in the worktree is unique any more, so fleetd may remove it (discover N6).
+**Orphaned** - A worktree on disk with no live owner attempt, or with no ledger row.
+
+## Landing and integration context
+**Feature** - 1 sub-orchestrator, 1 feature branch and 1 pull request to the primary branch, holding 1 main idea and its follow-on ideas (understand N2). The feature aggregate owns feature-opened to feature-merged (discover N2).
+**Ready** - A task branch is ready when it is verified and waits for a bundle. A feature is ready when its full gate passed and its pull request can open (discover N6).
+**Landed** - A task branch state: the branch is fast-forwarded onto its feature branch after the fast gate passed (understand N4).
+**Merged** - A feature fact read from git by content: the feature branch is in the primary branch (understand N4).
+
+## Worker profiles and adapters context
+**Profile** - A named worker profile: the CLI, model, effort, sandbox and permission rules that 1 attempt runs with.
+**Healthy** - A profile whose adapter passed its last conformance test. Dispatch does not choose an unhealthy profile.
+
+## Fleet runtime context
+**Check** - horch fleetd check: the heartbeat check that restarts fleetd when its last full pass is older than 30 s of awake time. It is not a task check.
