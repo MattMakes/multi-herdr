@@ -48,7 +48,7 @@ The fleet's correctness lives in a small deterministic supervisor and in files o
 | Process manager for the supervisor | The service manager of the OS, through the platform layer: launchd on macOS, a systemd user unit on Linux, a Windows service on Windows; restart always and a watchdog where the OS has one | The thing that watches everything is itself watched. |
 | Idea dispatcher | Deterministic code inside fleetd; no AI | Queue order, slots and state changes must not depend on a model remembering. |
 | Sub-orchestrator | Claude Code, Opus 5.5, interactive in its own herdr pane, one per feature, planning 1 idea at a time, a fresh process per phase | You answer its questions in place, and a fresh process per idea removes cross-idea merging. |
-| Workers | Headless run-to-completion processes shown live in herdr panes | A process that exits cannot sit idle holding a task. |
+| Workers | Exec mode: headless run-to-completion processes shown live in herdr panes. A worker starts, does its task and exits. A persona can be marked interactive | A process that exits cannot sit idle holding a task. |
 | Code isolation | One git worktree per task under `/fleet/work/`, created by fleetd from a ledger lease | Workers never collide on files, and no worktree exists that the ledger doesn't know. |
 | Timers | Heartbeat every 10 s, lease 120 s, stall alarm at 5 min without progress | Starting points to tune from real runs. |
 
@@ -615,7 +615,7 @@ compact_window: 256000
 
 # new fields
 fallback: opus                 # required: the roster refuses a persona without one
-run_mode: exec                 # exec (run to completion) | interactive (herdr agent)
+mode: exec                     # exec (run to completion, the default) | interactive (herdr agent)
 writable_paths: ["{task_dir}", "{worktree}"]   # nothing else, ledger included
 network: [crates.io, static.crates.io, github.com]
 liveness:
@@ -643,13 +643,13 @@ budget:
 | `writable_paths` | `--add-dir` each path; `sandbox.filesystem.allowWrite` | `--add-dir`, or `sandbox_workspace_write.writable_roots`. Drop `broad_ledger_rule`: workers no longer write the ledger | `--add-dir` plus `permissions.allow: write_file(path/)` |
 | `network` | `sandbox.network.allowedDomains` | `network_access=true` plus the proxy domain list | `read_url(host)` entries |
 | `compact_window` | `CLAUDE_CODE_AUTO_COMPACT_WINDOW=256000` in the settings env | `model_auto_compact_token_limit=256000` | Not settable: the wrapper ends the attempt with a handoff at 256k |
-| `run_mode: exec` | `claude -p --output-format stream-json --verbose --include-hook-events` | `codex exec --json` | `agy -p --output-format stream-json` |
-| `run_mode: interactive` | `herdr agent start <role> --kind claude` | `--kind codex` | `--kind agy` (exec preferred: herdr counts it idle at its prompt) |
+| `mode: exec` | `claude -p --output-format stream-json --verbose --include-hook-events` | `codex exec --json` | `agy -p --output-format stream-json` |
+| `mode: interactive` | `herdr agent start <role> --kind claude` | `--kind codex` | `--kind agy` (exec preferred: herdr counts it idle at its prompt) |
 | `result_gate` | `Stop` hook: exit 2 with "run `horch result` first" while `result.json` is missing | `Stop` hook (managed config, since user hooks need trust) | `Stop` hook; plus the wrapper's repair pass in every case |
 | Liveness feed | `http` hooks on `PreToolUse`, `PostToolUse`, `Notification`, `PermissionRequest` post to the wrapper | Command hooks on the same events; `--json` stream | `PreToolUse`, `PostToolUse` hooks; `step_update` events |
 | Never waits on a dialog | `--permission-mode dontAsk` with explicit allow rules; `--permission-prompts none` in exec | `-a never` | `--mode auto`; parse the stream for soft denials |
 
-**Exec or interactive.** Exec mode is the default for workers because a run-to-completion process cannot sit idle: when the model stops, the process exits and the wrapper sees it at once. You still watch it live, because the wrapper renders the stream into the pane. Interactive mode stays for sub-orchestrators, which interview you in their panes, for personas you like to steer by hand, and for any CLI whose headless mode can't do the job. In interactive mode the stop gate and the `idle_no_result` rung carry the same guarantee one step later.
+**Exec or interactive.** Exec mode is the default for workers because a run-to-completion process cannot sit idle: when the model stops, the process exits and the wrapper sees it at once. You still watch it live, because the wrapper renders the stream into the pane. Interactive mode stays for sub-orchestrators, which interview you in their panes, for personas you like to steer by hand, and for any CLI whose headless mode can't do the job. In interactive mode the stop gate and the `idle_no_result` rung carry the same guarantee one step later. Sub-orchestrators are interactive. A persona marked interactive is also the way for you to pair with a worker in a pane.
 
 ## Ideas: the dispatcher and sub-orchestrators
 
