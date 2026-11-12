@@ -384,7 +384,8 @@ requirements:
 ```yaml
 idea: I-0007
 repo: /fleet/repos/app
-base_branch: main
+feature: F-0003
+base_branch: feature/retry-sync-backoff   # the feature branch; every task of the plan lands here
 tasks:
   - key: backoff
     title: Add exponential backoff to SyncClient.request
@@ -406,7 +407,7 @@ tasks:
     after: [backoff]
     acceptance:
       - run: pytest tests/test_backoff.py -q -k logs
-  - key: integrate
+  - key: sync-suite
     title: Run the existing sync suite on the feature branch
     kind: quality
     profile: coder-codex
@@ -718,7 +719,7 @@ budget:
 
 ## Ideas: the dispatcher and sub-orchestrators
 
-The top of the fleet is a program, not a model: you drop rough ideas into a queue, and the dispatcher inside fleetd keeps one sub-orchestrator pane running for every idea that is not yet settled, moving each idea through a fixed state machine that only code can advance.
+The top of the fleet is a program, not a model: you drop rough ideas into a queue, and the dispatcher inside fleetd keeps one sub-orchestrator pane running for every feature that is not merged or abandoned, moving each idea through a fixed state machine that only code can advance.
 
 An AI orchestrator gets cloudy because one conversation holds every idea at once. Here no AI sees more than one idea, and no AI decides what happens next to an idea. The dispatcher reads the idea's state and the files in its folder, and starts the next step.
 
@@ -1179,7 +1180,7 @@ Names and paths only. No secret and no value of a variable is written here. `Ver
 
 ## Failure modes and effects
 
-Every failure you listed, plus twenty-three more found while reading the code, the CLI docs and your new requirements, is either prevented by construction or caught by a timer in code within minutes, and each traces to a requirement in the last column.
+Every failure you listed, plus twenty-six more found while reading the code, the CLI docs and your new requirements, is either prevented by construction or caught by a timer in code within minutes, and each traces to a requirement in the last column.
 
 "Caught within" assumes the default timers (reconcile every 5 s, git scan every 60 s, lease 120 s, stall after 5 min). Rows FM-1 to FM-8 and FM-25 are the failures you reported.
 
@@ -1192,7 +1193,7 @@ Every failure you listed, plus twenty-three more found while reading the code, t
 | FM-5 | Agent alive but stuck at a login, rate-limit, trust or error prompt | Looks alive forever | A usage limit or a provider outage is not a stall: no attempt is burned, the task restarts at once on the fallback persona when it is on another provider, else waits in `waiting_quota` with its lease paused until the pool resets. A login, trust or error prompt: herdr `blocked` state, `Notification` and `PermissionRequest` hooks, no activity past `stall_after`; profiles pre-approve so any dialog is a defect | Immediately for dialogs and usage limits, 5 min otherwise | RR-1, RR-11, FR-8 |
 | FM-6 | Worker finishes but never reports | Work lost or redone | Stop gate refuses to end the turn without `result.json`; exec mode exit without result triggers one repair resume; the next attempt reuses the same worktree | Prevented; worst case one retry that starts from the work | RR-3 |
 | FM-7 | Watchdog misses updates | Any of the above lingers | One supervised daemon, level-triggered pass every 5 s, full scans instead of trusting events, actions in code instead of mail to an LLM | 5 s | RR-4, RR-5 |
-| FM-8 | Stacked ideas get merged | Wrong plan, tangled branches | Each idea is its own file, ledger row and sub-orchestrator; a fresh process per phase whose only memory is that idea's folder; the dispatcher never gives a process two ideas | Prevented | FR-1, FR-2 |
+| FM-8 | Stacked ideas get merged | Wrong plan, tangled branches | Each idea is its own file, ledger row and sub-orchestrator; a fresh process per phase whose only memory is that idea's folder; 1 process never plans 2 ideas at the same time | Prevented | FR-1, FR-2 |
 | FM-9 | Worker claims done but work is broken | Bad code lands | Only the verifier moves a task to done: the acceptance commands, then for a code kind today's review scripts, and for a judgment kind the structural check and the paired judge | At verification | RR-3 |
 | FM-10 | Plan has a cycle, missing profile or uncovered requirement | Deadlock or gap | Plan validator rejects before commit; the sub-orchestrator reruns ticketing with the errors | Prevented | FR-3 |
 | FM-11 | fleetd crashes mid-pass | Half-applied state | Every pass is one SQLite transaction; ingestion is idempotent; the service manager of the OS restarts it; the next pass rebuilds from ledger and files | Under 30 s | RR-7, RR-8 |
@@ -1200,7 +1201,7 @@ Every failure you listed, plus twenty-three more found while reading the code, t
 | FM-13 | herdr server restarts | Every agent process is gone | Reconciler sees dead PIDs and missing panes, fails those attempts, rescues their worktrees and retries in them; sub-orchestrators restart from their folders | 5 to 30 s | RR-4 |
 | FM-14 | Two workers on one task | Conflicting commits | Lease row is unique per task and a worktree has one owner; fleetd stops the old attempt by recorded PID before starting the next (your ADR 0002) | Prevented | RR-2 |
 | FM-15 | Typed prompt lost or delivered twice | Missed or duplicated instruction | Nothing meaningful is typed. The doorbell is constant and idempotent; content lives in files | Prevented | FR-7 |
-| FM-16 | One AI conversation buried in ideas, worker mail and wakes | Context churn, ideas blur | There is no long-lived orchestrator conversation. Reports go to files and the ledger; a sub-orchestrator sees only its own idea's questions; you read `horch ideas` and `needs-you/` | Prevented | OR-3, FR-2 |
+| FM-16 | One AI conversation buried in ideas, worker mail and wakes | Context churn, ideas blur | There is no long-lived orchestrator conversation. Reports go to files and the ledger; a sub-orchestrator sees only its own feature's questions; you read `horch ideas` and `needs-you/` | Prevented | OR-3, FR-2 |
 | FM-17 | Codex sandbox blocks writes to the task folder | No result, looks like a stall | Task folder in `writable_roots`; conformance test proves the write; the old `horch ledger` sandbox escape is no longer needed | Before dispatch | SR-1, FR-8 |
 | FM-18 | Trust or approval prompt on first launch | Pane frozen | Trust pre-seeded in each private config home; conformance check "no trust prompt" | Before dispatch | FR-8 |
 | FM-19 | CLI update changes a flag or default | Every worker of that CLI fails | Docs sync plus conformance on version change; failing CLI marked unhealthy | Before dispatch | FR-8 |
