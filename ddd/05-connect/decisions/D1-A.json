@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "Option A: in-memory events, level-triggered pass"
+  },
+  "participants": [
+    {
+      "id": "ideas",
+      "type": "backend",
+      "label": "ideas"
+    },
+    {
+      "id": "ledger",
+      "type": "backend",
+      "label": "ledger writer"
+    },
+    {
+      "id": "integration",
+      "type": "backend",
+      "label": "integration"
+    }
+  ],
+  "messages": [
+    {
+      "from": "ideas",
+      "to": "ledger",
+      "y": 100,
+      "label": "commit row + assumptions-written"
+    },
+    {
+      "from": "ideas",
+      "to": "integration",
+      "y": 140,
+      "label": "assumptions-written",
+      "variant": "async"
+    },
+    {
+      "from": "integration",
+      "to": "ledger",
+      "y": 180,
+      "label": "next pass: re-read rows, open-feature if missing"
+    }
+  ]
+}

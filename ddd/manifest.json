@@ -4,7 +4,7 @@
   "title": "fleetd: the horch fleet control plane",
   "ddd_dir": "ddd",
   "created": "2026-11-12T16:45:13Z",
-  "updated": "2026-11-12T17:38:40Z",
+  "updated": "2026-11-12T17:50:18Z",
   "mode": "auto",
   "depth": "standard",
   "scale_target": {
@@ -62,7 +62,17 @@
       ]
     },
     "connect": {
-      "status": "pending"
+      "status": "done",
+      "updated": "2026-11-12T17:50:18Z",
+      "mode": "auto",
+      "open_questions": 5,
+      "artifacts": [
+        "ddd/05-connect/connect.json",
+        "ddd/05-connect/decisions/D1-A.json",
+        "ddd/05-connect/decisions/D1-B.json",
+        "ddd/05-connect/decisions/D1-C.json",
+        "ddd/05-connect/message-flows.md"
+      ]
     },
     "organise": {
       "status": "pending"

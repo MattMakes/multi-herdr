@@ -43,11 +43,14 @@
 **Feature** - 1 sub-orchestrator, 1 feature branch and 1 pull request to the primary branch, holding 1 main idea and its follow-on ideas (understand N2). The feature aggregate owns feature-opened to feature-merged (discover N2).
 **Ready** - A task branch is ready when it is verified and waits for a bundle. A feature is ready when its full gate passed and its pull request can open (discover N6).
 **Landed** - A task branch state: the branch is fast-forwarded onto its feature branch after the fast gate passed (understand N4).
+**Trial merge result** - The answer of a git merge-tree trial merge between 2 features, or a feature and the primary branch: clean, or the conflicting paths. Coined in connect (assumption A6).
 **Merged** - A feature fact read from git by content: the feature branch is in the primary branch (understand N4).
 
 ## Worker profiles and adapters context
 **Profile** - A named worker profile: the CLI, model, effort, sandbox and permission rules that 1 attempt runs with.
 **Healthy** - A profile whose adapter passed its last conformance test. Dispatch does not choose an unhealthy profile.
+**Launch environment** - The exact CLI, flags, scrubbed environment, config home files and sandbox profile that worker-profiles resolves for 1 process launch. Coined in connect (assumption A6).
 
 ## Fleet runtime context
 **Check** - horch fleetd check: the heartbeat check that restarts fleetd when its last full pass is older than 30 s of awake time. It is not a task check.
+**Start agent process** - The fleet-runtime call that starts the fleet-run wrapper of 1 attempt, or 1 sub-orchestrator pane through the herdr adapter, in its own process group. Coined in connect (assumption A6).

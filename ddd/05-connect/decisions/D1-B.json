@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "Option B: outbox table and relay"
+  },
+  "participants": [
+    {
+      "id": "ideas",
+      "type": "backend",
+      "label": "ideas"
+    },
+    {
+      "id": "ledger",
+      "type": "backend",
+      "label": "ledger writer"
+    },
+    {
+      "id": "integration",
+      "type": "backend",
+      "label": "integration"
+    }
+  ],
+  "messages": [
+    {
+      "from": "ideas",
+      "to": "ledger",
+      "y": 100,
+      "label": "commit row + outbox row"
+    },
+    {
+      "from": "ledger",
+      "to": "integration",
+      "y": 140,
+      "label": "relay delivers outbox row",
+      "variant": "async"
+    },
+    {
+      "from": "integration",
+      "to": "ledger",
+      "y": 180,
+      "label": "inbox de-dup + open-feature"
+    }
+  ]
+}

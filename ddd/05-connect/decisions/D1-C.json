@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "Option C: direct call in 1 transaction"
+  },
+  "participants": [
+    {
+      "id": "ideas",
+      "type": "backend",
+      "label": "ideas"
+    },
+    {
+      "id": "ledger",
+      "type": "backend",
+      "label": "ledger writer"
+    },
+    {
+      "id": "integration",
+      "type": "backend",
+      "label": "integration"
+    }
+  ],
+  "messages": [
+    {
+      "from": "ideas",
+      "to": "integration",
+      "y": 100,
+      "label": "open-feature (call)"
+    },
+    {
+      "from": "integration",
+      "to": "ideas",
+      "y": 140,
+      "label": "feature-opened",
+      "variant": "return"
+    },
+    {
+      "from": "ideas",
+      "to": "ledger",
+      "y": 180,
+      "label": "commit both rows"
+    }
+  ]
+}
