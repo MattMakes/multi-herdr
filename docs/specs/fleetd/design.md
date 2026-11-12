@@ -47,7 +47,7 @@ The fleet's correctness lives in a small deterministic supervisor and in files o
 | Host OS | macOS, Linux and Windows, all first-class, behind 1 platform layer | The release pipeline already builds 5 targets for the 3 OSes. Core fleetd code has no OS-specific branches, so a change for one OS does not break another. |
 | Process manager for the supervisor | The service manager of the OS, through the platform layer: launchd on macOS, a systemd user unit on Linux, a Windows service on Windows; restart always and a watchdog where the OS has one | The thing that watches everything is itself watched. |
 | Idea dispatcher | Deterministic code inside fleetd; no AI | Queue order, slots and state changes must not depend on a model remembering. |
-| Sub-orchestrator | Claude Code, Opus 5.5, interactive in its own herdr pane, one per unsettled idea, a fresh process per phase | You answer its questions in place, and a fresh process per idea removes cross-idea merging. |
+| Sub-orchestrator | Claude Code, Opus 5.5, interactive in its own herdr pane, one per feature, planning 1 idea at a time, a fresh process per phase | You answer its questions in place, and a fresh process per idea removes cross-idea merging. |
 | Workers | Headless run-to-completion processes shown live in herdr panes | A process that exits cannot sit idle holding a task. |
 | Code isolation | One git worktree per task under `/fleet/work/`, created by fleetd from a ledger lease | Workers never collide on files, and no worktree exists that the ledger doesn't know. |
 | Timers | Heartbeat every 10 s, lease 120 s, stall alarm at 5 min without progress | Starting points to tune from real runs. |
@@ -76,7 +76,7 @@ This is from reading [MattMakes/multi-herdr](https://github.com/MattMakes/multi-
 | --- | --- | --- |
 | fleetd (control plane) | A new long-lived `horch fleetd`, replacing the lazily started `horch ledger watch` | Change |
 | Idea dispatcher | A deterministic loop inside fleetd plus `horch idea add`, replacing the orchestrator conversation | Replace |
-| Sub-orchestrator | A new `idea-lead` persona, one interactive pane per unsettled idea, driving the existing spec-writer and ticket-writer steps | Add |
+| Sub-orchestrator | A new `idea-lead` persona, one interactive pane per feature, driving the existing spec-writer and ticket-writer steps | Add |
 | fleet-run wrapper | `horch worker` (`execution/lifecycle.rs` `run_worker`), plus a stop gate and earned leases | Change |
 | Ledger | The task ledger (`taskledger/schema.rs`, schema v7), with leases, an ideas table, worktree leases and one writer | Change |
 | Worker profile | Teammate frontmatter in `teammates/` (`roster/teammate.rs`), plus a few fields | Change |
@@ -97,7 +97,7 @@ Each requirement has an ID that the failure analysis and the tests point back to
 | ID | Requirement | Verified by |
 | --- | --- | --- |
 | FR-1 | `horch idea add` shall record each idea as one immutable file and one `captured` ledger row, with no AI involved. | Intake test: two ideas added back to back produce two files and two rows. |
-| FR-2 | The dispatcher shall be deterministic code that keeps exactly one sub-orchestrator per idea from `clarifying` to `integrating`, and never gives one process two ideas. | Property test over the idea state machine; the ledger shows one idea per sub-orchestrator attempt. |
+| FR-2 | The dispatcher shall be deterministic code that keeps 1 sub-orchestrator for each feature; 1 process never plans 2 ideas at the same time. | Property test over the idea state machine; the ledger shows one idea per sub-orchestrator attempt. |
 | FR-3 | A plan shall be committed to the ledger all-or-nothing, and only after it passes schema, DAG and coverage checks. | Plan validator unit tests; a plan missing a requirement is rejected. |
 | FR-4 | Every task shall name a worker profile, its `kind`, its inputs, its outputs and a machine-checkable acceptance check. For a judgment kind the check is structural (the file exists, the schema or the required sections are valid), and the plan shall pair the task with a judge task in a different session from the author, on a different provider when the roster has one. | Plan schema; plan validation refuses a judgment task with no paired judge task. |
 | FR-5 | The supervisor shall assign tasks to workers (push). Workers shall never search for work. | No code path where an agent queries the ledger for open tasks. |
@@ -213,12 +213,12 @@ Sub-orchestrators and workers never touch the ledger, each other or git worktree
 | Component | What it is | Owns | Never does |
 | --- | --- | --- | --- |
 | **fleetd** | One long-running `horch fleetd` process under the service manager of the OS (launchd, systemd or a Windows service), installed and restarted through the platform layer. On Linux: a systemd user unit with `Restart=always` and `WatchdogSec=30`. The control plane. | The ledger (sole writer), the idea dispatcher, plan validation and commit, task dispatch, leases, worktree leases and rescue, the reconcile loop, acceptance checks, escalation, the herdr adapter. | Calling an LLM. It is plain code, so its behaviour is testable and repeatable. |
-| **Idea dispatcher** | Code inside fleetd: the idea state machine and the slot count. | Moving each idea to its next state when the required files validate, keeping one sub-orchestrator pane per unsettled idea, recording your approvals. | Judging an idea's content. It only checks that files exist, validate and carry your approval. |
-| **Sub-orchestrator** | Claude Code, Opus 5.5, interactive in herdr pane `idea-NNNN`, a fresh process for each phase of one idea. | Researching the idea, interviewing you, writing `assumptions.md`, then `spec.md`, `requirements.yaml` and `plan.yaml`; answering its workers' questions; replanning a failed task. | Seeing another idea, approving its own assumptions, creating tasks or worktrees directly, or typing into another pane. |
+| **Idea dispatcher** | Code inside fleetd: the idea state machine and the slot count. | Moving each idea to its next state when the required files validate, keeping one sub-orchestrator pane per feature, recording your approvals. | Judging an idea's content. It only checks that files exist, validate and carry your approval. |
+| **Sub-orchestrator** | Claude Code, Opus 5.5, interactive in herdr pane `idea-NNNN`, one per feature, a fresh process for each phase of one idea, planning 1 idea at a time. | Researching the idea, interviewing you, writing `assumptions.md`, then `spec.md`, `requirements.yaml` and `plan.yaml`; answering its workers' questions; replanning a failed task. | Seeing another idea, approving its own assumptions, creating tasks or worktrees directly, or typing into another pane. |
 | **fleet-run wrapper** | A small program that every agent process is launched through, one per attempt. | Building the attempt's private config home from the profile, starting the CLI in its own process group through the platform layer, writing `heartbeat.json`, mapping CLI events and hooks to agent state, reporting state to herdr, enforcing wall-clock and token budgets, writing `exit.json`. | Deciding outcomes. It reports facts; fleetd decides. |
 | **Worker** | Any agent CLI (Claude Code, Codex, Antigravity or Gemini CLI) started by the wrapper with a named profile. | Doing one task attempt in the worktree fleetd leased to it and writing `outbox/result.json`. | Finding work, touching the ledger, creating or removing worktrees, or working on more than one task. |
 | **Verifier** | Code inside fleetd that runs each task's check in the worktree with today's check timeout (`preservation-05-contracts-and-values.md`, row V-10). The acceptance commands run in the sandbox profile of the task's worker, never with the rights of fleetd. For a code kind, today's review scripts then run unchanged. For a judgment kind, the check is structural, and a paired judge task reviews the content (see Done for each kind of task). | Writing `verdict.json` and moving the task to `done` or back to `ready`. | Trusting a worker's own claim of success. |
-| **Integrator** | A worker profile used for the last task of each plan. | Merging the idea's task branches into `fleet/I-xxxx/integration` and running the full suite. | Merging to `main`. You merge. |
+| **Landing** | Code inside fleetd: the landing state machine, bundles, trial merges and the 2 gates (see Features, landing and integration). | Landing task branches on their feature branch, rebasing feature branches, opening resolver and triage tasks, running the full gate, pushing the feature branch for its pull request. | Merging to the primary branch, unless the project setting says so. By default you merge. |
 | **Docs sync** | A scheduled job (daily, plus on any CLI version change). | Mirroring each CLI's docs, recording versions, running adapter conformance tests. | Changing a profile by itself. It opens a task when something drifts. |
 | **Platform layer** | 1 interface inside horch with 1 module per OS (for example `platform/mac.rs`, `platform/linux.rs`, `platform/windows.rs`). | Service install and restart, process facts (alive, start time, children, process group), stop and kill of a process group, file watching, sandboxing, sleep and wake, the transport of the fleetd command channel (a Unix socket, or a named pipe on Windows), and the machine probe (free disk, load). | Failing silently. Where an OS has no equivalent, the module returns an explicit "not supported" value, and core code decides what to do. |
 | **herdr** | The pane runtime, in a dedicated session `herdr --session fleet`, also under the service manager of the OS. | Terminals, agent names, screen-based status, the sidebar you watch. | Holding any state fleetd depends on. If herdr restarts, the reconciler rebuilds from the ledger and files. |
@@ -362,9 +362,9 @@ tasks:
     acceptance:
       - run: pytest tests/test_backoff.py -q -k logs
   - key: integrate
-    title: Merge task branches and run the full suite
+    title: Run the existing sync suite on the feature branch
     kind: quality
-    profile: integrator
+    profile: coder-codex
     covers: [R3]
     after: [backoff, logging]
     acceptance:
@@ -447,8 +447,20 @@ Today your agents write the ledger directly. That is the root of "orchestrator f
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
+CREATE TABLE features (                    -- 1 sub-orchestrator, 1 feature branch, 1 pull request
+  id          TEXT PRIMARY KEY,            -- F-0003
+  name        TEXT UNIQUE,                 -- kebab-case, from the sub-orchestrator; checked by fleetd
+  branch      TEXT UNIQUE,                 -- created when the sub-orchestrator first writes its assumptions
+  primary_branch TEXT NOT NULL,            -- the project's base branch
+  stacked_on  TEXT REFERENCES features(id), -- the older feature, after a trial merge conflicted
+  state       TEXT NOT NULL CHECK (state IN ('open','ready','merged','abandoned')),
+  pr          TEXT,                        -- pull request or compare URL
+  created_at  TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+
 CREATE TABLE ideas (
   id          TEXT PRIMARY KEY,            -- I-0007
+  feature_id  TEXT NOT NULL REFERENCES features(id), -- exactly 1 feature; --to or a new one
   state       TEXT NOT NULL CHECK (state IN
               ('captured','clarifying','awaiting_approval','specifying',
                'ticketing','in_progress','integrating','merged',
@@ -518,6 +530,36 @@ CREATE TABLE worktrees (                   -- a row exists before the directory 
   seen_at     TEXT, created_at TEXT NOT NULL
 );
 
+CREATE TABLE branches (                    -- a row exists before the branch does
+  name        TEXT PRIMARY KEY,            -- fleet/I-0007/T-0007-03
+  feature_id  TEXT NOT NULL REFERENCES features(id),
+  task_id     TEXT REFERENCES tasks(id),   -- null for a feature branch
+  landing_state TEXT CHECK (landing_state IN
+              ('building','verifying','ready','in_bundle','landed',
+               'conflicted','gate_failed','abandoned')),  -- task branches
+  owner       TEXT NOT NULL,               -- worker, fleetd, sub-orchestrator or operator
+  due_at      TEXT NOT NULL,               -- past it, the row escalates
+  queue_seq   INTEGER,                     -- bundle order
+  rescue_ref  TEXT,                        -- written before each rebase or forced update
+  orphan      INTEGER NOT NULL DEFAULT 0   -- found in git with no row, adopted and reported
+);
+
+CREATE TABLE gate_runs (
+  id          INTEGER PRIMARY KEY,
+  feature_id  TEXT NOT NULL REFERENCES features(id),
+  gate        TEXT NOT NULL CHECK (gate IN ('fast','full')),
+  tip         TEXT NOT NULL,               -- the candidate or feature tip it judged
+  base_tip    TEXT NOT NULL,               -- the feature branch or primary branch tip it judged
+  result      TEXT NOT NULL CHECK (result IN ('pass','fail')),  -- a pass is stale once either tip moves
+  at          TEXT NOT NULL
+);
+
+CREATE TABLE trial_merges (               -- facts from git merge-tree --write-tree
+  left_ref TEXT, right_ref TEXT, left_tip TEXT, right_tip TEXT,
+  clean INTEGER NOT NULL, conflict_files TEXT, at TEXT NOT NULL,
+  PRIMARY KEY (left_tip, right_tip)
+);
+
 CREATE TABLE events (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
   at TEXT NOT NULL, entity TEXT NOT NULL, entity_id TEXT NOT NULL,
@@ -543,6 +585,12 @@ CREATE TABLE ingested (                    -- makes file ingestion idempotent
    - I5: every live pane and process under the fleet belongs to a live attempt; anything else is an orphan and is stopped.
    - I6: every worktree that `git worktree list` or `/fleet/work/` shows has a `worktrees` row, every row that is not `removed` has its directory, and no worktree is removed unless its branch landed or its rescue ref was verified.
    - I7: no idea is past `awaiting_approval` unless `approved_sha256` matches the current `assumptions.md`, and every idea from `clarifying` to `integrating` has exactly one live sub-orchestrator attempt or is waiting on you.
+   - I8: a task is `landed`, and a feature is `merged`, only when its changes are in the target branch by content. This holds for a squash merge.
+   - I9: a feature branch and the primary branch move only by fast-forward to a candidate that passed its gate.
+   - I10: before each rebase or forced update of a branch, a rescue ref of the old tip exists.
+   - I11: every fleet branch in git has a `branches` row; one without is adopted as an orphan row and reported, never deleted.
+   - I12: a branch is deleted only when it is landed, merged or rescued, and no `git stash` entry names it.
+   - I13: a sub-orchestrator exists for each feature that is not merged and not abandoned.
 
 The task state machine is drawn under Supervision, liveness and reconciliation.
 
@@ -633,13 +681,13 @@ Each `add` writes one immutable file and one ledger row in state `captured`, and
 | `specifying` | Sub-orchestrator | `spec.md` and `requirements.yaml` validate, and every requirement cites an approved assumption or one of your answers. |
 | `ticketing` | Sub-orchestrator | Tickets and `plan.yaml` pass the plan validator and commit in one transaction. |
 | `in_progress` | Workers; the sub-orchestrator answers their questions and replans failed tasks | Every task is done. |
-| `integrating` | Integrator worker | The idea's branch is landed and its PR is open. |
-| `merged` | Nobody | Terminal. Reached only when git shows the PR merged and every worktree of the idea is removed. |
+| `integrating` | fleetd | Every task of the idea is `landed` on its feature branch. The idea waits here until its feature's changes are in the primary branch. |
+| `merged` | Nobody | Terminal. Reached only when git shows its feature's changes in the primary branch and every worktree of the idea is removed. |
 | `parked`, `cancelled` | You | `horch idea park` or `cancel`; escalations also park. Worktrees are rescued first. |
 
 &#91;embedded content: idea state machine · 8 states and 1 approval gate\]
 
-Every state from clarifying to integrating has one sub-orchestrator pane; captured and merged have none. Merged also requires that every worktree of the idea is gone.
+Every idea belongs to exactly 1 feature, and every feature that is not merged and not abandoned has 1 sub-orchestrator. Merged also requires that every worktree of the idea is gone.
 
 **How many sub-orchestrators.** One per idea in any state from `clarifying` to `integrating`, capped by `max_sub_orchestrators` (default 4). Extra ideas wait in `captured`, oldest first, unless you raise one with `horch idea bump`. The count always matches the queue, because the reconciler starts a missing pane or stops an extra one on every pass.
 
@@ -677,7 +725,7 @@ Today a worker creates its own worktree, so one that dies mid-task leaves a dire
 | `reserved` | Row written in the same transaction that leases the task. No directory yet. | fleetd runs `git worktree add` on branch `fleet/I-0007/T-0007-03` → `created`. A row left here by a crash is created or dropped on the next pass. |
 | `created` | Directory and branch exist; no attempt holds it. | An attempt starts with it as its working directory → `active`. |
 | `active` | Owned by exactly one live attempt. HEAD, the dirty flag and disk size are refreshed on each git scan. | The attempt ends: verified → `landing`; retried → back to `created`, so the next attempt continues in the same tree; owner dead → `orphaned`. |
-| `landing` | The verifier or integrator is merging its branch. | Its commits are reachable from the idea's integration branch → `landed`. |
+| `landing` | Its branch is in the landing state machine (see Features, landing and integration). | Its branch is `landed` on the feature branch → `landed`. |
 | `landed` | Nothing in it is unique any more. | fleetd removes it and deletes the branch only if it is merged → `removed`. |
 | `orphaned` | On disk with no live owner, or on disk with no row at all. | Rescued and verified → `rescued`. |
 | `rescued` | Its full state is saved on a rescue ref and checked. | Adopted by the next attempt of its task, or removed when its idea is merged or cancelled. |
@@ -714,6 +762,82 @@ fleetd then writes `/fleet/rescue/T-0007-03-1.json` with the ref, the old HEAD, 
 **Ideas finish clean.** An idea reaches `merged` only when every one of its worktrees is `removed`, and its closing note lists any rescue ref that never landed. `horch worktrees` lists every tree with its state, task, owner, age and size, and `horch worktree restore T-0007-03` turns a rescue ref back into a branch `rescue/T-0007-03-1` and a working tree.
 
 **Built on what horch has.** The existing `worktrees` table gains the state, owner and rescue columns, triage reads them, and `refs/horch/rescue/` sits beside your archive and trash refs under the same retention rules.
+
+## Features, landing and integration
+
+Work lands in 2 steps, and the ledger tracks each branch through both: a task branch lands on its feature branch automatically, and a feature branch reaches the primary branch through 1 pull request.
+
+The primary branch is the base branch of a project. It is `main` in this repository, but it is not `main` in every project fleetd runs.
+
+### Features
+
+- A feature is 1 sub-orchestrator, 1 feature branch and 1 pull request to the primary branch. It holds 1 main idea and its follow-on ideas.
+- fleetd creates the feature branch when the sub-orchestrator first writes its assumptions. The sub-orchestrator gives the name. fleetd checks that it is kebab-case and unique. fleetd writes the ledger row before it creates the branch.
+- `horch idea add --to <feature>` adds an idea to an open feature. Its tasks land on that feature branch. With no `--to`, the idea starts a new feature. An idea belongs to exactly 1 feature, and the ledger records it.
+- A feature is an intake funnel until its pull request merges. After the merge, a follow-up idea starts a new feature.
+- The sub-orchestrator of a feature plans 1 idea at a time, with a fresh process for each phase. Tasks of several ideas of 1 feature run in parallel.
+
+### Landing a task branch on its feature branch
+
+Every branch is a ledger row before it exists. Each row has a landing state, 1 owner and a time limit. Past the limit it escalates. No state is silent.
+
+| State | Owner | Leaves when |
+| --- | --- | --- |
+| `building` | worker | the worker writes its result |
+| `verifying` | fleetd | the check, and for a code kind the review, pass |
+| `ready` | fleetd | fleetd puts it in the next bundle |
+| `in_bundle` | fleetd | the bundle passes the fast gate and the feature branch moves forward |
+| `landed` | nobody | terminal |
+| `conflicted` | the same worker | its rebase conflict is resolved (today's behavior) |
+| `gate_failed` | sub-orchestrator | its triage task lands |
+| `abandoned` | operator only | terminal; a rescue ref is kept |
+
+**The bundle.** When several task branches of 1 feature are `ready` together, fleetd builds 1 candidate from the feature branch tip plus each ready task branch in queue order. Each task's commits are kept. The fast gate runs once on the candidate. On a pass, the feature branch moves forward to it. On a failure, fleetd bisects the bundle, sends the failing task to `gate_failed`, and the others go on. No ready branch is forgotten, because each one is a row that fleetd reads on every pass.
+
+No human approves a landing on a feature branch.
+
+fleetd keeps these behaviors of today's land path (`preservation-04-behavior.md`):
+
+- F9: under the land lock, just before the fast-forward, fleetd checks that the task is still the worker's. A task cancelled earlier lands nothing.
+- F7: a red land resets the branch to its tip from before the rebase.
+- F5: a passed step stands only for the tree it judged. New commits reopen the land and every later step.
+- F11: every git network call has a time limit (push 10 min, others 3 min).
+- L6: 2 running tasks of 1 feature never own overlapping paths.
+
+### No work is lost
+
+fleetd checks these on every pass against git. They are invariants I8 to I13 in the Ledger section.
+
+1. A task is `landed`, and a feature is `merged`, only when its changes are in the target branch by content. This holds for a squash merge.
+2. A feature branch and the primary branch move only by fast-forward to a candidate that passed its gate. A landing cannot overwrite another.
+3. Before each rebase or forced update of a branch, fleetd writes a rescue ref of the old tip.
+4. A fleet branch in git that has no ledger row is adopted as an orphan row and reported. It is never deleted.
+5. A branch is deleted only when it is landed, merged or rescued. A `git stash` entry that names the branch blocks the deletion (`preservation-04-behavior.md`, row W6).
+6. A sub-orchestrator exists for each feature that is not merged and not abandoned.
+
+### Between features
+
+- **Parallel is the default.** Any number of features can change the same file. A shared file name never makes a feature wait.
+- **Early detection.** When a feature branch tip or the primary branch moves, fleetd makes a trial merge of each in-flight feature against the primary branch and against each other in-flight feature. It uses `git merge-tree --write-tree`, with no checkout. The result is a fact in the ledger.
+- **Stack on evidence.** When the trial merge of 2 features conflicts, fleetd puts the younger feature on top of the older one. The conflict becomes 1 resolver task for a fresh agent. The agent gets the conflict in `zdiff3` form, the requirements of both features for those files, and the unit tests of both. It makes 1 commit for each requirement. The task lands on the younger feature's branch.
+- **Continuous rebase.** When the primary branch moves, fleetd rebases each feature branch, the bottom of a stack first. After a clean rebase the fast gate runs again. A conflict becomes a resolver task. `rerere` is on.
+- **Build on what is in flight.** At plan time the sub-orchestrator gets the diffs of the files that in-flight features already changed. It can propose to build on one of them. The proposal is in the assumptions that you approve.
+- **The full gate.** The full gate runs once for a feature, when its tasks are landed, on its tip over the current primary branch. Failures become triage tasks of the feature. If either tip moves after a pass, the pass is stale and the gate runs again before the feature is marked ready.
+- **Two declared gates.** Each project declares its fast gate (its unit tests) and its full gate (the fast gate plus the end-to-end tests). Plan validation refuses a plan for a project that did not declare both. This repository has no unit-only command today (`research-03-this-repo.md`, F10).
+- **The pull request.** A project setting `pr` is `gh` or `manual`. `manual` pushes the feature branch and shows the compare URL. A stacked feature's pull request has the lower feature's branch as its base. A project setting says who merges; the default is you.
+- **Merged.** A feature is `merged` when its changes are in the primary branch. fleetd reads this from git, not from the GitHub API.
+- **Starting values, to tune from data.** A resolver task covers at most 100 changed lines or 2 files, else fleetd splits it by file.
+- **Not in version 1.** A syntax-aware merge driver: there is no accuracy data for Rust, and in Java wrong clean merges rose from 3% to 11% (`research-02-merge-tools-and-agent-systems.md`, F13). 1 pull request for several features: 1 bad feature would block the others, and each feature loses its own pull request. Both are follow-ups.
+
+**The evidence**
+
+| Fact | Value | Source |
+| --- | --- | --- |
+| Ideas that change a hot file | 46% to 54% | `research-03-this-repo.md`, F1 |
+| Landed tasks that hit a conflict | 2.7% of 376 | `research-03-this-repo.md`, F7 |
+| Files changed by 2 or more tasks on 1 branch, and the land conflicts they gave | 66 files, 3 conflicts | `research-03-this-repo.md`, F8 |
+| Clean merges that break the build or the tests | about 3% | `research-02-merge-tools-and-agent-systems.md`, F13 |
+| 1 agent that builds 2 features, against 2 agents plus a merge | about 30% better | `research-02-merge-tools-and-agent-systems.md`, F20 |
 
 ## Supervision, liveness and reconciliation
 
@@ -762,7 +886,7 @@ def reconcile():
     with ledger.tx() as tx:
         ingest(tx, files)                     # idempotent by (path, sha256)
         advance_ideas(tx, files)              # idea state machine: files valid -> next state
-        keep_sub_orchestrators(tx, snap)      # one pane per unsettled idea, up to the cap
+        keep_sub_orchestrators(tx, snap)      # one per feature that is not merged or abandoned
         promote_pending(tx)                   # deps all done -> ready
         dispatch(tx, free_slots(snap))        # lease worktree, write task.yaml + START.md, launch
         for a in live_attempts(tx):
@@ -773,8 +897,10 @@ def reconcile():
         run_due_verifications(tx)             # async jobs, verdict.json on completion
         reconcile_worktrees(tx, trees)        # adopt, mark orphaned, rescue, remove landed
         stop_orphans(snap, procs, tx)         # panes or pids not owned by a live attempt
-        check_invariants(tx)                  # I1..I7, repair or escalate
-        roll_up_ideas(tx)                     # all tasks done -> integrating; merged once PR merged and trees removed
+        land_bundles(tx)                      # ready task branches -> 1 bundle per feature, fast gate, fast-forward
+        integrate_features(tx)                # trial merges, stacks, rebases, resolver tasks, full gate
+        check_invariants(tx)                  # I1..I13, repair or escalate
+        roll_up_ideas(tx)                     # all tasks landed on the feature branch -> integrating; merged once git shows the feature in the primary branch and trees removed
     platform.watchdog_ping()        # systemd_notify("WATCHDOG=1") on Linux; not supported where the OS has no watchdog
 ```
 
@@ -891,13 +1017,13 @@ Migrate in eight phases, each a small set of horch changes with a fault-injectio
 
 Each phase keeps the fleet usable. New behaviour ships behind a run-level flag, becomes the default once its gate passes for a week of real runs, and the old path is then deleted.
 
-1. **Phase 0: reproduce every failure in tests.** Add scenarios to `crates/horch-e2e` using the fake harness and the existing fault points: an agent that never claims, one that claims and stops, one that exits without `done`, a killed watchdog, a herdr server restart, two stacked ideas, a worker killed with dirty and untracked files in its worktree. Today most should fail. *Gate:* FM-1 to FM-8 and FM-25 each have a red test.
+1. **Phase 0: reproduce every failure in tests.** Add scenarios to `crates/horch-e2e` using the fake harness and the existing fault points: an agent that never claims, one that claims and stops, one that exits without `done`, a killed watchdog, a herdr server restart, two ideas sent back to back, a worker killed with dirty and untracked files in its worktree. Today most should fail. *Gate:* FM-1 to FM-8 and FM-25 each have a red test.
 2. **Phase 1: `horch fleetd`, supervised and level-triggered.** Move the watchdog's pass into a long-lived daemon under the service manager of each OS through the platform layer (on Linux a systemd user unit with `WatchdogSec`), a 5 s pass and invariants I1 to I5. It acts in code (stop by recorded PID, requeue, respawn) instead of only mailing the orchestrator. Remove the lazy `ensure` start. *Gate:* FM-4, FM-7, FM-12, FM-13 green.
 3. **Phase 2: leases and capped waits.** Schema v8 adds a `leases` table. Renewal comes only from earned activity. `worker_waits` rows get `max_wait_s` (default 1 h) and must point at a live question or review. Replace "3 checks of 600 s" with the stall ladder. Add the `waiting_quota` state, the required `fallback` persona in the roster, and the restart on a fallback of another provider. *Gate:* FM-3, FM-5 green; a usage-limited worker is not reaped and burns no attempt; the idle-claim scenario is caught in under 10 min.
 4. **Phase 3: worktree leases and rescue.** Extend the existing `worktrees` table with state, owner, base and rescue columns, and make fleetd (through `horch spawn` until Phase 4) the only code that runs `git worktree add` or `remove`, writing the row first. Add the worktree reconciler, the verified rescue to `refs/horch/rescue/`, reuse by the next attempt, invariant I6, `horch worktrees` and `horch worktree restore`. Run it once in report-only mode to list the orphans already on your disk before it acts. *Gate:* FM-25 to FM-28 green; a worker killed with dirty and untracked files loses nothing.
 5. **Phase 4: push dispatch and the result gate.** `horch spawn` binds a task before the pane exists and writes `task.yaml` and `START.md`; `CLAIM_TASK` goes away. Add Stop hooks for Claude Code, Codex and Antigravity and a `horch result` command that writes `result.json`. fleetd runs the finish steps (check, sweeps, land) as the verifier instead of the worker detaching them and waiting for a typed NOTE. For a code kind the review scripts carry over unchanged: code-sweep rounds, findings F<n>, the answers file, waivers and verification profiles, with their limits (V-14). *Gate:* FM-2, FM-6, FM-9 green.
 6. **Phase 5: one ledger writer.** Worker commands (`progress`, `result`, `ask`) write files into the attempt's outbox; fleetd ingests them. Every other process opens the ledger read-only, enforced by a new `arch_scan` rule. Remove Codex's `broad_ledger_rule` sandbox escape. *Gate:* FM-17, FM-24 green; arch test passes.
-7. **Phase 6: the idea dispatcher and sub-orchestrators.** Schema v9 gives `ideas` the state machine above and adds `horch idea add` (with the `--direct` fast lane), `ideas`, `show`, `note`, `approve`, `revise`, `park` and `bump`. Add the dispatcher loop to fleetd, invariant I7, and the `idea-lead` persona, which runs today's brief, spec-writer and ticket-writer steps for one idea in its own interactive pane, a fresh process per phase. Extend `add-map --dry-run` and `scripts/check-req-coverage.sh` into the plan validator (schema, DAG, coverage, profiles, citations to approved assumptions). Retire the long-lived orchestrator conversation, and allow one run per idea with several at once in place of one non-solo run per workspace. *Gate:* FM-1, FM-8, FM-10, FM-16, FM-29 to FM-32 green.
+7. **Phase 6: the idea dispatcher and sub-orchestrators.** Schema v9 gives `ideas` the state machine above and adds `horch idea add` (with the `--direct` fast lane), `ideas`, `show`, `note`, `approve`, `revise`, `park` and `bump`. Add the dispatcher loop to fleetd, invariant I7, and the `idea-lead` persona, which runs today's brief, spec-writer and ticket-writer steps for one idea in its own interactive pane, a fresh process per phase. Extend `add-map --dry-run` and `scripts/check-req-coverage.sh` into the plan validator (schema, DAG, coverage, profiles, citations to approved assumptions). Retire the long-lived orchestrator conversation, and allow one feature branch per feature with several at once in place of one non-solo run per workspace. Add the `features`, `branches`, `gate_runs` and `trial_merges` tables and `horch idea add --to`. *Gate:* FM-1, FM-8, FM-10, FM-16, FM-29 to FM-32 green.
 8. **Phase 7: docs sync and conformance, then exec mode.** Widen `herdr-docs-sync` to every CLI with the conformance suite and unhealthy marking. Then make exec mode the default worker mode and set `context-windows.md` to 256000 for every seat (today it is 300000 for the orchestrator and 200000 for opus). *Gate:* FM-18 to FM-20 green.
 
 Phases 1 to 4 remove most of the stalls you see day to day and stop worktrees from being lost. Phase 6 is the largest change and depends on Phase 5, because a plan has to land through the single writer to be all-or-nothing, and only fleetd may record your approvals.
