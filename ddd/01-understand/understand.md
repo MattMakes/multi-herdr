@@ -6,17 +6,17 @@
 | Mode / depth | auto / standard |
 | Lifecycle | brownfield (horch runs today; fleetd is a set of changes to it) |
 | Produced | 2026-11-12 by ddd-understand |
-| Inputs | docs/specs/fleetd/design.md, docs/architecture.md, docs/specs/fleetd/preservation-04-behavior.md, docs/specs/fleetd/preservation-05-contracts-and-values.md, docs/specs/fleetd/preservation-06-wiring-and-platform.md, docs/specs/fleetd/research-01-industry-practice.md, the ticket and the DDD context file of the run |
+| Inputs | docs/specs/fleetd/design.md, docs/specs/fleetd/amendments.md (A19 to A22), the revision context of round 2, docs/architecture.md, docs/specs/fleetd/preservation-04-behavior.md, docs/specs/fleetd/preservation-05-contracts-and-values.md, docs/specs/fleetd/preservation-06-wiring-and-platform.md, docs/specs/fleetd/research-01-industry-practice.md, the ticket and the DDD context file of the run |
 
 ## In plain words
 
 We wrote down why fleetd exists, who it serves, what counts as success and how big it may get.
 
-**Decided:** fleetd is a change to horch, not a new product. It ships inside the 1 horch binary, for 1 operator and 1 team. Success is 4 numbers: idle tasks caught in under 10 minutes, 0 lost work, 0 tasks outside an approved plan, 0 attempts burned by usage limits.
+**Decided:** fleetd is a change to horch, not a new product. It ships inside the 1 horch binary, for 1 operator and 1 team. Success is 4 numbers: idle tasks caught in under 10 minutes, 0 lost work, 0 tasks outside an approved plan, 0 attempts burned by usage limits. All 178 old OS-specific code sites move behind the platform layer in 1 phase, Phase P, before Phase 1 (operator decision D16).
 
 **Assumed:** The design gives no number for using the subscription fully, so we used a proxy: no usage window resets with usage left while work is ready.
 
-**Riskiest:** If the proxy for full usage is wrong, later steps may build pacing toward the wrong target. The 178 old OS-specific code sites are also still undecided, which affects how first-class Windows really is.
+**Riskiest:** If the proxy for full usage is wrong, later steps may build pacing toward the wrong target.
 
 ---
 
@@ -130,7 +130,7 @@ We wrote down why fleetd exists, who it serves, what counts as success and how b
 | cap-agent-cli-adaption | Agent CLI adaption and conformance | 1 profile into exact flags, env and files per CLI; logins and env scrubs; docs sync and conformance checks | custom |
 | cap-fleet-record | Fleet record keeping | 1 event log of every state change with its cause, 1 writer, legal transitions, forward-only schema changes | custom |
 | cap-operator-attention | Operator attention and escalation | Everything that needs the operator in 1 place, reminders in working hours, park what waits too long | custom |
-| cap-host-services | Host platform services | Service restart, hang detection, process facts, group stop, file watching, sandboxing, sleep and wake, machine probe on 3 OSes | commodity |
+| cap-host-services | Host platform services | Service restart, hang detection, process facts, group stop, file watching, sandboxing, sleep and wake, machine probe on 3 OSes; from Phase P also process identity, signals, file locks, permissions, paths, links, shell quoting, local sockets and pipes, child detach | commodity |
 | cap-pane-hosting | Terminal pane hosting | Terminals, agent names, screen-based status and the sidebar (herdr) | product |
 
 ## 6. Constraints
@@ -139,13 +139,13 @@ We wrote down why fleetd exists, who it serves, what counts as success and how b
 |---|---|---|
 | C1 | technical | fleetd is a subcommand of the single horch binary: 1 deployable unit, so the CLI and the daemon always have the same version |
 | C2 | organisational | Absolute operator rule: ANTHROPIC_API_KEY is never used and is removed from every child, pane line, detached child, updater and probe; every claude run uses the subscription login. agy children lose the Google API keys |
-| C3 | technical | macOS, Linux and Windows are first-class. Core fleetd code has no OS cfg; 1 platform interface, 1 module per OS, explicit not-supported values |
+| C3 | technical | macOS, Linux and Windows are first-class. Production code of the workspace has no OS cfg outside the platform layer; 1 platform interface, 1 module per OS, explicit not-supported values |
 | C4 | technical | Exactly 1 process writes the ledger (SQLite WAL, ~/.horch/ledger.sqlite3). Forward-only migration at daemon start, backup first (3 kept), newer schema refused, no migration from a development build |
 | C5 | organisational | Only the operator approves an idea's assumptions, with a command run outside any fleet process |
 | C6 | technical | fleetd keeps the behaviors of the Preservation analysis (04 W6, F9, F7, F5, L5, L9, W8, W9, F11, S7, L6, L8, S8, S10, M5 and the rest) |
 | C7 | technical | fleetd keeps the contract surface: exit codes 0 to 3, the mail contract, UNLANDED and UNREGISTERED reports, horch self-update and release assets, ticket format C1, project facts |
 | C8 | technical | Fixed values stay: land lock 1 h with 5 tries, check timeout 20 min (max 24 h), git push 10 min and other network calls 3 min, code-sweep at most 2 requeues, review rounds 1 and 3 |
-| C9 | timeline | 8 migration phases (0 to 7) in order; each released to every user at once when its fault-injection tests pass |
+| C9 | timeline | 9 migration phases (Phase 0, Phase P, then 1 to 7) in order; each released to every user at once when its gate test passes; Phase 0 keeps a list of expected failures |
 | C10 | contractual | Agent CLI vendors set the terms: usage windows and limits per pool, Codex user hooks need trust, a CLI release is used only after the update cooldown of more than 1 week |
 | C11 | technical | The only bytes typed into a terminal are 1 fixed doorbell line; all hand-off is through atomically written files |
 | C12 | technical | Each agent works inside a context limit of 256k tokens |
@@ -206,19 +206,21 @@ We wrote down why fleetd exists, who it serves, what counts as success and how b
 | A8 | /fleet paths are a neutral layout mapped to ai_docs/plans/<run>/, the state root and ~/.horch/ledger.sqlite3 | high |
 | A9 | When the design and another source disagree, the design wins | high |
 | A10 | Mode, depth, 1 deployable and 1 team are fixed by the run | high |
+| A11 | All 178 OS-specific production sites move behind the platform layer in Phase P, between Phase 0 and Phase 1, with no change of behavior; test cfg sites stay (D16, A19) | high |
 
 | Id | Question | Blocking | Owner |
 |---|---|---|---|
 | Q1 | What number counts as full use of the subscription usage for G4? | no | operator |
-| Q2 | Do the 178 existing OS-specific sites move behind the platform layer, and when? (open decision D2, recommendation: as each phase touches them) | no | operator |
 | Q3 | Which Windows transport carries the fleetd command channel? | no | live test |
 | Q4 | How are Codex hooks pre-trusted for unattended workers? | no | live test |
 | Q5 | Does a private HOME fully isolate agy and keep its login? | no | live test |
 | Q6 | herdr report-agent precedence, custom key command fields, and preview 0.9.4 against 0.9.5 | no | live test |
 | Q7 | Resolver task size limit, and accuracy of a structural merge tool on this repository | no | live test |
-| Q8 | Which command is the fast gate of this repository (no unit-only command today)? | no | operator |
+| Q8 | Which command is the fast gate of this repository (no unit-only command today)? Proposed answer (orchestrator, D15): the workspace tests without the crate horch-e2e; a run must confirm it | no | operator |
 
-Decisions: D1 (chosen A, brownfield change to horch, cites design "Keep, change, add" and amendment D9). D2 (open, no choice; recommendation B: move OS-specific sites that fleetd calls as each phase touches them).
+Answered: Q2 (the 178 OS-specific sites) is answered by the operator (D16), option C of D2, and is listed under `deprecated`.
+
+Decisions: D1 (chosen A, brownfield change to horch, cites design "Keep, change, add" and amendment D9). D2 (chosen C by the operator, D16: all 178 sites move in 1 dedicated phase, Phase P, between Phase 0 and Phase 1; the step recommended B, moving sites as each phase touches them).
 
 ### 10a. Notes for downstream steps
 
@@ -236,14 +238,18 @@ Decisions: D1 (chosen A, brownfield change to horch, cites design "Keep, change,
 | N10 | discover, decompose | process | A usage limit is not a stall; fallback or waiting_quota; lease time counts only while awake |
 | N11 | discover, define | process | Worker questions go to the sub-orchestrator; only product direction, scope or trade-offs go to the operator |
 | N12 | discover, define | language | Judgment kinds, judge kind, resolver task and code kinds |
-| N13 | decompose, code | boundary | The platform layer: no OS cfg in core; 1 module per OS; explicit not-supported |
+| N13 | decompose, organise, code | boundary | The platform layer is the leaf crate crates/horch-platform, not a context: no OS cfg outside it in production code; 1 module per OS; explicit not-supported; arch_scan enforces it |
 | N14 | strategize | decision | Pane hosting: herdr wins, do not build. Host platform services: the OS wins, only wrap |
 | N15 | discover, define, code | risk | Every preservation row must be owned by a context and kept |
 | N16 | define, code | risk | ANTHROPIC_API_KEY never reaches a child process |
 | N17 | define, code | other | /fleet paths are neutral and map to horch paths; fleet helper commands are horch subcommands |
+| N18 | discover, decompose, organise, code | decision | Phase P (D16, A19): create crates/horch-platform, move all 178 production OS sites with no change of behavior; gate PL-2 and PL-6 |
+| N19 | discover, code | process | 9 phases: 0, P, 1 to 7; Phase 0 keeps a list of expected failures; CI runs the tests on Windows from Phase 0 |
+| N20 | discover, connect, define | language | A state name is always written with its entity kind; a task is done, its task branch is landed (A20) |
 
 ## 11. Run log
 
 - Read: the 5 run sources, research-01, the ticket and the DDD context file.
 - Resolved: auto mode and standard depth from the run; scale 1 deployable and 1 team from the run; lifecycle brownfield because horch runs today and the design changes it.
 - Recorded: 10 assumptions, 8 open questions (0 blocking), 2 decisions (1 open), 17 notes for downstream.
+- Revision round 2 (2026-11-12): recorded D2 = C (operator, D16); answered Q2; added A11 and N18 to N20; changed C3, C9, cap-host-services, N13 and Q8 for amendments A19 to A22. Now: 11 assumptions, 7 open questions (0 blocking), 2 decisions (0 open), 20 notes.

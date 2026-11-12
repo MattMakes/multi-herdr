@@ -4,7 +4,7 @@
   "title": "fleetd: the horch fleet control plane",
   "ddd_dir": "ddd",
   "created": "2026-11-12T16:45:13Z",
-  "updated": "2026-11-12T18:47:35Z",
+  "updated": "2026-11-12T20:22:32Z",
   "mode": "auto",
   "depth": "standard",
   "scale_target": {
@@ -23,16 +23,16 @@
   "steps": {
     "understand": {
       "status": "done",
-      "updated": "2026-11-12T16:51:45Z",
+      "updated": "2026-11-12T20:22:32Z",
       "mode": "auto",
-      "open_questions": 8,
+      "open_questions": 7,
       "artifacts": [
         "ddd/01-understand/understand.json",
         "ddd/01-understand/understand.md"
       ]
     },
     "discover": {
-      "status": "done",
+      "status": "stale",
       "updated": "2026-11-12T17:20:06Z",
       "mode": "auto",
       "open_questions": 5,
@@ -42,7 +42,7 @@
       ]
     },
     "decompose": {
-      "status": "done",
+      "status": "stale",
       "updated": "2026-11-12T17:31:23Z",
       "mode": "auto",
       "open_questions": 3,
@@ -52,7 +52,7 @@
       ]
     },
     "strategize": {
-      "status": "done",
+      "status": "stale",
       "updated": "2026-11-12T17:38:40Z",
       "mode": "auto",
       "open_questions": 2,
@@ -62,7 +62,7 @@
       ]
     },
     "connect": {
-      "status": "done",
+      "status": "stale",
       "updated": "2026-11-12T17:50:18Z",
       "mode": "auto",
       "open_questions": 5,
@@ -75,7 +75,7 @@
       ]
     },
     "organise": {
-      "status": "done",
+      "status": "stale",
       "updated": "2026-11-12T18:00:00Z",
       "mode": "auto",
       "open_questions": 2,
@@ -89,7 +89,7 @@
       ]
     },
     "define": {
-      "status": "done",
+      "status": "stale",
       "updated": "2026-11-12T18:11:22Z",
       "mode": "auto",
       "open_questions": 5,
@@ -105,7 +105,7 @@
       ]
     },
     "code": {
-      "status": "done",
+      "status": "stale",
       "updated": "2026-11-12T18:33:48Z",
       "mode": "auto",
       "open_questions": 6,
@@ -131,7 +131,7 @@
       ]
     },
     "contracts": {
-      "status": "done",
+      "status": "stale",
       "updated": "2026-11-12T18:47:35Z",
       "mode": "auto",
       "open_questions": 6,

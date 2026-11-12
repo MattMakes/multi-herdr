@@ -2,7 +2,7 @@
   "schema_version": 1,
   "step": "understand",
   "produced_by": "ddd-understand",
-  "produced_at": "2026-11-12T16:51:40Z",
+  "produced_at": "2026-11-12T20:22:21Z",
   "mode": "auto",
   "depth": "standard",
   "inputs": [
@@ -12,7 +12,9 @@
     "docs/specs/fleetd/preservation-05-contracts-and-values.md",
     "docs/specs/fleetd/preservation-06-wiring-and-platform.md",
     "docs/specs/fleetd/research-01-industry-practice.md",
-    "ticket docs/tickets/fleetd-design/11-ddd-understand.md and the DDD context file of the run (fixed mode, depth, scale and sources)"
+    "ticket docs/tickets/fleetd-design/11-ddd-understand.md and the DDD context file of the run (fixed mode, depth, scale and sources)",
+    "docs/specs/fleetd/amendments.md (Revision round 2 and Fix round 2, A19 to A22)",
+    "ai_docs/plans/fleetd-design/ddd-revision-context.md (revision round 2 decisions)"
   ],
   "assumptions": [
     {
@@ -64,18 +66,17 @@
       "id": "A10",
       "text": "Mode auto, depth standard, 1 deployable unit and 1 team are fixed by the run. The operator and the AI agents of the fleet count as 1 team.",
       "confidence": "high"
+    },
+    {
+      "id": "A11",
+      "text": "All 178 existing OS-specific production sites move behind the platform layer in 1 dedicated phase, Phase P, between Phase 0 and Phase 1, with no change of behavior. The cfg sites in test code stay (operator decision D16; design amendment A19).",
+      "confidence": "high"
     }
   ],
   "open_questions": [
     {
       "id": "Q1",
       "text": "What number counts as full use of the subscription usage for G4: a share of each pool window consumed by its reset, or a count of ready tasks left waiting while a pool has usage?",
-      "blocking": false,
-      "owner": "operator"
-    },
-    {
-      "id": "Q2",
-      "text": "Do the 178 existing OS-specific sites in production code move behind the new platform layer, and when? The design calls this a separate decision (Architecture and roles, One platform layer for three OSes).",
       "blocking": false,
       "owner": "operator"
     },
@@ -111,7 +112,7 @@
     },
     {
       "id": "Q8",
-      "text": "This repository has no unit-only command today (research-03 F10), and plan validation refuses a project with no declared fast gate. Which command is the fast gate of this repository?",
+      "text": "This repository has no unit-only command today (research-03 F10), and plan validation refuses a project with no declared fast gate. Which command is the fast gate of this repository? Proposed answer (orchestrator, D15): the workspace tests without the crate horch-e2e. A run must confirm it.",
       "blocking": false,
       "owner": "operator"
     }
@@ -556,7 +557,7 @@
     {
       "id": "cap-host-services",
       "name": "Host platform services",
-      "description": "Service install and restart, hang detection, process facts, process-group stop, file watching, sandboxing, sleep and wake, and the machine probe on macOS, Linux and Windows",
+      "description": "Service install and restart, hang detection, process facts, process-group stop, file watching, sandboxing, sleep and wake, and the machine probe on macOS, Linux and Windows. From Phase P it also covers the concerns of the existing code: process identity, signals, file locks, file permissions, paths and home directories, links, shell quoting, local sockets and pipes, and detach of a child process",
       "evolution": "commodity"
     },
     {
@@ -580,7 +581,7 @@
     {
       "id": "C3",
       "kind": "technical",
-      "text": "macOS, Linux and Windows are first-class hosts. Core fleetd code has no cfg(target_os), cfg(unix) or cfg(windows); it calls 1 platform interface with 1 module per OS, and an OS without an equivalent returns an explicit not-supported value"
+      "text": "macOS, Linux and Windows are first-class hosts. Production code of the workspace has no cfg(target_os), cfg(unix), cfg(windows) or cfg(target_family), and no cfg! of these, outside the platform layer; it calls 1 platform interface with 1 module per OS, and an OS without an equivalent returns an explicit not-supported value"
     },
     {
       "id": "C4",
@@ -610,7 +611,7 @@
     {
       "id": "C9",
       "kind": "timeline",
-      "text": "Migration runs in 8 phases (0 to 7) in order. Each phase is released to every user at once when its fault-injection tests pass; the tests are the only gate"
+      "text": "Migration runs in 9 phases (Phase 0, Phase P, then Phases 1 to 7) in order. Each phase is released to every user at once when its gate test passes; the tests are the only gate. Phase 0 keeps a list of expected failures, so a red test of Phase 0 does not block a gate"
     },
     {
       "id": "C10",
@@ -872,16 +873,18 @@
           ]
         }
       ],
-      "rationale": "Recommendation: B. The design makes Windows first-class (D1) but keeps the migration of existing sites as a separate decision. Moving the sites that fleetd calls, as each phase touches them, closes the Windows gaps that matter to fleetd without a big-bang phase. Strongest argument against: it blurs each phase's fault-injection gate with refactoring work.",
+      "rationale": "Recommendation: B. The design makes Windows first-class (D1) but keeps the migration of existing sites as a separate decision. Moving the sites that fleetd calls, as each phase touches them, closes the Windows gaps that matter to fleetd without a big-bang phase. Strongest argument against: it blurs each phase's fault-injection gate with refactoring work. Decided by the operator (D16): option C. All 178 production sites move behind the platform layer in 1 dedicated phase, Phase P, between Phase 0 and Phase 1 (design amendment A19; Migration plan, Phase P). Reason: 1 rule that arch_scan enforces on all production code, and each gap of an OS visible in 1 file. The move changes no behavior (PL-6), and the cfg sites in test code stay.",
       "would_flip_if": [
         "Windows is not used day to day",
         "arch_scan can enforce the rule only on whole crates",
         "A phase gate fails because of a moved site"
       ],
-      "made_by": "step",
+      "made_by": "user",
       "records": {
-        "open_question": "Q2"
-      }
+        "assumption": "A11"
+      },
+      "chosen": "C",
+      "confidence": "high"
     }
   ],
   "notes_for_downstream": [
@@ -998,9 +1001,10 @@
     },
     {
       "id": "N13",
-      "text": "The platform layer is a boundary: core fleetd code has no OS cfg; 1 module per OS implements 1 interface; a missing equivalent returns an explicit not-supported value that core code decides on.",
+      "text": "The platform layer is a boundary, not a context: the leaf crate crates/horch-platform (design A19) with 1 module per OS (mac.rs, linux.rs, windows.rs) behind 1 interface. It depends on no other crate of the workspace, and each crate calls it. Production code of the workspace has no OS cfg outside it, and an arch_scan rule enforces this (PL-2). A missing equivalent returns an explicit not-supported value that the caller decides on.",
       "for": [
         "decompose",
+        "organise",
         "code"
       ],
       "kind": "boundary"
@@ -1040,12 +1044,50 @@
         "code"
       ],
       "kind": "other"
+    },
+    {
+      "id": "N18",
+      "text": "Phase P (operator decision D16, design A19) runs between Phase 0 and Phase 1. It creates crates/horch-platform and moves all 178 production OS-specific sites behind it, also the sites that a later phase deletes (for example the 45 socket sites of 06 S11). It changes no behavior, keeps each gap of an OS as an explicit not-supported value, and adds the arch_scan rule of PL-2. Gate: PL-2 and PL-6 green. The cfg sites in test code stay.",
+      "for": [
+        "discover",
+        "decompose",
+        "organise",
+        "code"
+      ],
+      "kind": "decision"
+    },
+    {
+      "id": "N19",
+      "text": "The migration has 9 phases: Phase 0, Phase P, then Phases 1 to 7 (design A19, A22). Phase 0 keeps a list of expected failures: each red test names the phase that makes it green, and a run passes when each test off the list passes and each test on the list fails. CI runs the test suite on Windows from Phase 0.",
+      "for": [
+        "discover",
+        "code"
+      ],
+      "kind": "process"
+    },
+    {
+      "id": "N20",
+      "text": "A state name is never written without the kind of its entity: task, task branch, feature, worktree or idea (design A20). Shared names: ready (task, task branch, feature) and landed (task branch, worktree). A task is done; its task branch is landed.",
+      "for": [
+        "discover",
+        "connect",
+        "define"
+      ],
+      "kind": "language"
     }
   ],
   "plain_words": {
     "what": "We wrote down why fleetd exists, who it serves, what counts as success and how big it may get.",
-    "decided": "fleetd is a change to horch, not a new product. It ships inside the 1 horch binary, for 1 operator and 1 team. Success is 4 numbers: idle tasks caught in under 10 minutes, 0 lost work, 0 tasks outside an approved plan, 0 attempts burned by usage limits.",
+    "decided": "fleetd is a change to horch, not a new product. It ships inside the 1 horch binary, for 1 operator and 1 team. Success is 4 numbers: idle tasks caught in under 10 minutes, 0 lost work, 0 tasks outside an approved plan, 0 attempts burned by usage limits. All 178 old OS-specific code sites move behind the platform layer in 1 phase, Phase P, before Phase 1 (operator decision D16).",
     "assumed": "The design gives no number for using the subscription fully, so we used a proxy: no usage window resets with usage left while work is ready.",
-    "riskiest": "If the proxy for full usage is wrong, later steps may build pacing toward the wrong target. The 178 old OS-specific code sites are also still undecided, which affects how first-class Windows really is."
-  }
+    "riskiest": "If the proxy for full usage is wrong, later steps may build pacing toward the wrong target."
+  },
+  "deprecated": [
+    {
+      "id": "Q2",
+      "collection": "open_questions",
+      "reason": "Answered by the operator (D16): option C of D2. All 178 production sites move behind the platform layer in Phase P, between Phase 0 and Phase 1. Recorded in D2 and A11.",
+      "since": "2026-11-12"
+    }
+  ]
 }
