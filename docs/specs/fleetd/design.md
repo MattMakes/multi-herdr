@@ -30,6 +30,7 @@ The fleet's correctness lives in a small deterministic supervisor and in files o
 - **G4:** All hand-off between agents happens through files on one shared workspace. No LLM ever types a task into another agent's terminal.
 - **G5:** Each agent works inside a context budget of about 256k tokens, and long work is split or checkpointed rather than left to drift.
 - **G6:** No work a worker paid for is lost. Every worktree is known to the ledger, and none is deleted until its changes are saved on a rescue branch.
+- **G7:** The fleet uses the subscription usage fully, so none is wasted, and gets as much work done as possible, responsibly. There is no spend budget and no cap on parallel work.
 
 **Non-goals for version 1**
 
@@ -46,7 +47,9 @@ The fleet's correctness lives in a small deterministic supervisor and in files o
 | Ledger | SQLite in WAL mode, one writing process | Simple, durable, inspectable with any SQLite tool. |
 | Host OS | macOS, Linux and Windows, all first-class, behind 1 platform layer | The release pipeline already builds 5 targets for the 3 OSes. Core fleetd code has no OS-specific branches, so a change for one OS does not break another. |
 | Process manager for the supervisor | The service manager of the OS, through the platform layer: launchd on macOS, a systemd user unit on Linux, a Windows service on Windows; restart always and a watchdog where the OS has one | The thing that watches everything is itself watched. |
-| Idea dispatcher | Deterministic code inside fleetd; no AI | Queue order, slots and state changes must not depend on a model remembering. |
+| Idea dispatcher | Deterministic code inside fleetd; no AI | Queue order and state changes must not depend on a model remembering. |
+| Spend and parallel work | No spend budget. No cap on features, sub-orchestrators or workers. Health guards pause new dispatch only while free disk or machine load is past a safety floor | The purpose is to use the subscription usage fully. A health guard protects the machine; it is not a cap. |
+| Default worker model | Opus 5.5 at medium effort. Higher effort needs a stated reason. A Sonnet task must be marked "no decisions". Fable needs your flag | Best intelligence per cost. Plan validation checks the guide. |
 | Sub-orchestrator | Claude Code, Opus 5.5, interactive in its own herdr pane, one per feature, planning 1 idea at a time, a fresh process per phase | You answer its questions in place, and a fresh process per idea removes cross-idea merging. |
 | Workers | Exec mode: headless run-to-completion processes shown live in herdr panes. A worker starts, does its task and exits. A persona can be marked interactive | A process that exits cannot sit idle holding a task. |
 | Code isolation | One git worktree per task under `/fleet/work/`, created by fleetd from a ledger lease | Workers never collide on files, and no worktree exists that the ledger doesn't know. |
@@ -149,6 +152,8 @@ Each requirement has an ID that the failure analysis and the tests point back to
 | OR-1 | `fleet status` shall show every idea, task, lease, worker and its last signal in one view. | Manual check. |
 | OR-2 | Every state change shall be an appended event with a cause, so any outcome can be explained after the fact. | Event table audit. |
 | OR-3 | Anything that needs you shall land in one place (`/fleet/needs-you/`), in `horch ideas`, and as a herdr notification. | Escalation test. |
+| OR-4 | fleetd shall read the usage window of each pool and dispatch so that the usage is consumed by the reset. | Pacing test with a fake pool window. |
+| OR-5 | fleetd shall pause new dispatch only while free disk or machine load is past a safety floor, and shall resume by itself. A machine probe that returns unknown (Windows today) shall be reported, not read as healthy or unhealthy. | Fault injection: a low-disk probe pauses dispatch; a normal probe resumes it. |
 
 ## What herdr and the agent CLIs give us
 
@@ -213,9 +218,9 @@ Sub-orchestrators and workers never touch the ledger, each other or git worktree
 | Component | What it is | Owns | Never does |
 | --- | --- | --- | --- |
 | **fleetd** | One long-running `horch fleetd` process under the service manager of the OS (launchd, systemd or a Windows service), installed and restarted through the platform layer. On Linux: a systemd user unit with `Restart=always` and `WatchdogSec=30`. The control plane. | The ledger (sole writer), the idea dispatcher, plan validation and commit, task dispatch, leases, worktree leases and rescue, the reconcile loop, acceptance checks, escalation, the herdr adapter. | Calling an LLM. It is plain code, so its behaviour is testable and repeatable. |
-| **Idea dispatcher** | Code inside fleetd: the idea state machine and the slot count. | Moving each idea to its next state when the required files validate, keeping one sub-orchestrator pane per feature, recording your approvals. | Judging an idea's content. It only checks that files exist, validate and carry your approval. |
+| **Idea dispatcher** | Code inside fleetd: the idea state machine. | Moving each idea to its next state when the required files validate, keeping one sub-orchestrator pane per feature, recording your approvals. | Judging an idea's content. It only checks that files exist, validate and carry your approval. |
 | **Sub-orchestrator** | Claude Code, Opus 5.5, interactive in herdr pane `idea-NNNN`, one per feature, a fresh process for each phase of one idea, planning 1 idea at a time. | Researching the idea, interviewing you, writing `assumptions.md`, then `spec.md`, `requirements.yaml` and `plan.yaml`; answering its workers' questions; replanning a failed task. | Seeing another idea, approving its own assumptions, creating tasks or worktrees directly, or typing into another pane. |
-| **fleet-run wrapper** | A small program that every agent process is launched through, one per attempt. | Building the attempt's private config home from the profile, starting the CLI in its own process group through the platform layer, writing `heartbeat.json`, mapping CLI events and hooks to agent state, reporting state to herdr, enforcing wall-clock and token budgets, writing `exit.json`. | Deciding outcomes. It reports facts; fleetd decides. |
+| **fleet-run wrapper** | A small program that every agent process is launched through, one per attempt. | Building the attempt's private config home from the profile, starting the CLI in its own process group through the platform layer, writing `heartbeat.json`, mapping CLI events and hooks to agent state, reporting state to herdr, enforcing the wall-clock limit (`max_minutes`, a hang guard) and the 256k context limit, writing `exit.json`. | Deciding outcomes. It reports facts; fleetd decides. |
 | **Worker** | Any agent CLI (Claude Code, Codex, Antigravity or Gemini CLI) started by the wrapper with a named profile. | Doing one task attempt in the worktree fleetd leased to it and writing `outbox/result.json`. | Finding work, touching the ledger, creating or removing worktrees, or working on more than one task. |
 | **Verifier** | Code inside fleetd that runs each task's check in the worktree with today's check timeout (`preservation-05-contracts-and-values.md`, row V-10). The acceptance commands run in the sandbox profile of the task's worker, never with the rights of fleetd. For a code kind, today's review scripts then run unchanged. For a judgment kind, the check is structural, and a paired judge task reviews the content (see Done for each kind of task). | Writing `verdict.json` and moving the task to `done` or back to `ready`. | Trusting a worker's own claim of success. |
 | **Landing** | Code inside fleetd: the landing state machine, bundles, trial merges and the 2 gates (see Features, landing and integration). | Landing task branches on their feature branch, rebasing feature branches, opening resolver and triage tasks, running the full gate, pushing the feature branch for its pull request. | Merging to the primary branch, unless the project setting says so. By default you merge. |
@@ -240,7 +245,7 @@ Sub-orchestrators and workers never touch the ledger, each other or git worktree
 
 - The service manager of the OS supervises fleetd and the herdr server: restart always, with a watchdog ping from fleetd's main loop where the OS has a watchdog. A hung fleetd is killed and restarted, and recovers from the ledger (RR-7).
 - fleetd supervises attempts: one-for-one, so a crashed worker never affects its siblings. Each profile sets `max_attempts` and backoff. After the last attempt the task goes back to its idea's sub-orchestrator to replan once, then to you.
-- The wrapper supervises its CLI process group: on budget or wall-clock breach it stops the whole group through the platform layer, so no grandchild processes linger. On Linux the module sends SIGINT, waits 20 s, then SIGKILLs the group.
+- The wrapper supervises its CLI process group: on a wall-clock breach it stops the whole group through the platform layer, so no grandchild processes linger. On Linux the module sends SIGINT, waits 20 s, then SIGKILLs the group.
 
 **One platform layer for three OSes.** Core fleetd code has no `cfg(target_os)`, `cfg(unix)` or `cfg(windows)`. It calls the platform interface. The Linux details in this document (`systemd`, `Restart=always`, `WatchdogSec=30`, `/proc`, `inotify`, bubblewrap, `SIGINT` then `SIGKILL`) are the Linux module's implementation. The layer is for new fleetd code. Migration of the 178 existing OS-specific sites in production code is a separate decision (`docs/specs/fleetd/preservation-06-wiring-and-platform.md`, section 6).
 
@@ -268,7 +273,7 @@ Every hand-off is a file under `/fleet`, written atomically, never edited after 
 
 ```
 /fleet/
-  fleet.toml                  global config (timers, slots, paths)
+  fleet.toml                  global config (timers, health floors, paths)
   profiles/                   worker profiles, one YAML per named worker
   prompts/                    idea-lead.md, worker-base.md
   ledger/fleet.db             SQLite, written only by fleetd
@@ -352,7 +357,7 @@ tasks:
     acceptance:
       - run: pytest tests/test_backoff.py -q
       - run: pytest tests/sync -q
-    budget: {max_minutes: 40, max_tokens: 400000}
+    budget: {max_minutes: 40}
   - key: logging
     title: Log each retry with attempt and delay
     kind: feature
@@ -465,7 +470,7 @@ CREATE TABLE ideas (
               ('captured','clarifying','awaiting_approval','specifying',
                'ticketing','in_progress','integrating','merged',
                'parked','cancelled')),
-  priority    INTEGER NOT NULL DEFAULT 0,  -- horch idea bump raises it
+  priority    INTEGER NOT NULL DEFAULT 0,
   pane        TEXT,                        -- herdr pane of its sub-orchestrator
   waiting_on_you_since TEXT,               -- set in clarifying with a question open, and in awaiting_approval
   approved_sha256 TEXT,                    -- hash of the assumptions.md you approved
@@ -628,12 +633,18 @@ retry:
   backoff_s: [30, 120, 480]
 result_gate: required          # stop hook or wrapper repair pass
 budget:
-  max_minutes: 60
-  max_tokens: 600000           # whole attempt, across compactions
+  max_minutes: 60              # a hang guard, not a spend limit
 ---
 ```
 
 **Every worker persona names a fallback persona.** The roster refuses to load a persona without one. fleetd uses it when the persona's pool shows a usage limit or a provider outage (see the stall ladder).
+
+**No budget, no cap, and the model guide.** There is no spend budget: a profile has no token limit. `max_minutes` stays as a hang guard, and the 256k context limit (G5) stays as a quality rule. There is no cap on features, sub-orchestrators or workers. Health guards are not caps: fleetd pauses new dispatch only while free disk or machine load is past a safety floor, and resumes by itself. On Windows the machine probe returns unknown today (`preservation-06-wiring-and-platform.md`, row S12). Pacing: fleetd reads the usage window of each pool and dispatches so that the usage is consumed by the reset. Plan validation checks the model guide:
+
+- Opus 5.5 at medium effort is the default.
+- Higher effort needs a stated reason.
+- A Sonnet task must be marked as "no decisions".
+- Fable needs your flag.
 
 **How each adapter applies a profile**
 
@@ -675,7 +686,7 @@ Each `add` writes one immutable file and one ledger row in state `captured`, and
 
 | State | Who acts | Leaves when |
 | --- | --- | --- |
-| `captured` | Dispatcher | A sub-orchestrator slot is free; it opens pane `idea-12` and moves to `clarifying`. An idea added with `--direct` moves to `ticketing`. |
+| `captured` | Dispatcher | On the next pass it opens pane `idea-12` and moves to `clarifying`. An idea added with `--direct` moves to `ticketing`. |
 | `clarifying` | Sub-orchestrator, with you in its pane | It has researched the repo and docs, interviewed you, and written `assumptions.md` with no item left open. |
 | `awaiting_approval` | You | You run `horch idea approve I-0012`, or `horch idea revise I-0012 "..."` to send it back to clarifying. |
 | `specifying` | Sub-orchestrator | `spec.md` and `requirements.yaml` validate, and every requirement cites an approved assumption or one of your answers. |
@@ -689,7 +700,7 @@ Each `add` writes one immutable file and one ledger row in state `captured`, and
 
 Every idea belongs to exactly 1 feature, and every feature that is not merged and not abandoned has 1 sub-orchestrator. Merged also requires that every worktree of the idea is gone.
 
-**How many sub-orchestrators.** One per idea in any state from `clarifying` to `integrating`, capped by `max_sub_orchestrators` (default 4). Extra ideas wait in `captured`, oldest first, unless you raise one with `horch idea bump`. The count always matches the queue, because the reconciler starts a missing pane or stops an extra one on every pass.
+**How many sub-orchestrators.** One for each feature that is not merged and not abandoned. There is no cap on features, sub-orchestrators or workers, so no idea waits in `captured` for a slot. The count always matches the ledger, because the reconciler starts a missing pane or stops an extra one on every pass.
 
 **A fresh process for every phase.** Clarifying, specifying, ticketing and supervising are each a new sub-orchestrator process in the same pane, whose only memory is the idea folder: `idea.md`, amendments, `interview.md`, `assumptions.md`, then `spec.md` and the plan. Nothing carries over in a context window, so nothing can blur between ideas or between phases, and a crashed sub-orchestrator restarts mid-phase from its files.
 
@@ -706,7 +717,7 @@ The validator refuses the file while any item is marked `[open]`. `[assumed]` it
 
 **Quick approval stays with you, in code.** When an idea reaches `awaiting_approval`, fleetd posts a herdr notification and `horch ideas` shows it under Needs you. `horch idea show I-0012` prints the assumptions; `approve` or `revise` records your decision. The sub-orchestrator cannot approve for you: `horch idea approve` refuses to run when its caller's process tree contains any recorded fleet attempt, agent profiles deny the command, and fleetd writes `approval.json` itself, with the hash of the assumptions you saw, and ignores one written by anyone else. A herdr key binding can map one key to approve the focused idea pane (herdr supports custom key commands; the exact fields are unconfirmed).
 
-**Waiting on you is not a stall.** While an idea is in `clarifying` with a question open, or in `awaiting_approval`, its lease is paused and fleetd sends one reminder an hour during your working hours. After 30 minutes it stops the idle sub-orchestrator process to free the slot; your answer or approval restarts it from the folder. After 7 days with no answer the idea moves to `parked`, with a note in `needs-you/`, so the queue only counts ideas that can move.
+**Waiting on you is not a stall.** While an idea is in `clarifying` with a question open, or in `awaiting_approval`, its lease is paused and fleetd sends one reminder an hour during your working hours. After 30 minutes it stops the idle sub-orchestrator process to free memory; an open question or your approval starts it again from the folder. After 7 days with no answer the idea moves to `parked`, with a note in `needs-you/`, so the queue only counts ideas that can move.
 
 **Questions from workers go to the sub-orchestrator, not to you.** It answers from the approved assumptions and spec. Only a question that would change an approved assumption comes to you, as a small `revise` on the same idea, which pauses only the affected tasks.
 
@@ -888,7 +899,7 @@ def reconcile():
         advance_ideas(tx, files)              # idea state machine: files valid -> next state
         keep_sub_orchestrators(tx, snap)      # one per feature that is not merged or abandoned
         promote_pending(tx)                   # deps all done -> ready
-        dispatch(tx, free_slots(snap))        # lease worktree, write task.yaml + START.md, launch
+        dispatch(tx, health(), pacing(tx))    # lease worktree, write task.yaml + START.md, launch; no cap
         for a in live_attempts(tx):
             state = liveness(a, snap, procs, files)
             renew_or_expire_lease(tx, a, state)
@@ -996,8 +1007,8 @@ Every failure you listed, plus twenty-three more found while reading the code, t
 | FM-17 | Codex sandbox blocks writes to the task folder | No result, looks like a stall | Task folder in `writable_roots`; conformance test proves the write; the old `horch ledger` sandbox escape is no longer needed | Before dispatch | SR-1, FR-8 |
 | FM-18 | Trust or approval prompt on first launch | Pane frozen | Trust pre-seeded in each private config home; conformance check "no trust prompt" | Before dispatch | FR-8 |
 | FM-19 | CLI update changes a flag or default | Every worker of that CLI fails | Docs sync plus conformance on version change; failing CLI marked unhealthy | Before dispatch | FR-8 |
-| FM-20 | Context drift past 256k, or a CLI with no compaction setting | Quality drops, loops | CLI compaction settings; wrapper ends the attempt with a handoff at the profile's token budget | At the limit | FR-9 |
-| FM-21 | Retry loop burns quota | Cost with no progress | Bounded attempts and backoff, one replan, then escalation; per-attempt token and time budgets | Bounded | RR-6 |
+| FM-20 | Context drift past 256k, or a CLI with no compaction setting | Quality drops, loops | CLI compaction settings; wrapper ends the attempt with a handoff at the 256k context limit | At the limit | FR-9 |
+| FM-21 | Retry loop burns quota | Cost with no progress | Bounded attempts and backoff, one replan, then escalation; a per-attempt wall-clock limit (`max_minutes`) as a hang guard | Bounded | RR-6 |
 | FM-22 | Orphan processes or panes after a reap | Leaked CPU, stray edits | Process-group kill plus exact pane close; invariant I5 stops anything not owned by a live attempt | 5 s | RR-4 |
 | FM-23 | Half-written file read | Corrupt result | Temp file, fsync, rename; readers skip `*.tmp`; schema validation | Prevented | RR-8 |
 | FM-24 | Ledger write contention or a stray writer | Busy errors, lost updates | Single writer; everything else opens read-only | Prevented | RR-5 |
@@ -1005,7 +1016,7 @@ Every failure you listed, plus twenty-three more found while reading the code, t
 | FM-26 | A worker or script creates a worktree outside fleetd | Unknown branch and directory | Profiles deny `git worktree`; `arch_scan` keeps it out of horch; the reconciler adopts any unknown tree as orphaned and rescues it | 60 s | FR-11, RR-10 |
 | FM-27 | A worktree with unmerged work is removed | Work lost | fleetd removes only `landed` trees or trees with a verified rescue ref; a directory that vanishes without a removal event is escalated | Prevented inside the fleet; 60 s otherwise | RR-9 |
 | FM-28 | Worktrees fill the disk | Builds fail, everything stalls | Size tracked on each git scan; over budget, fleetd removes landed and rescued trees of finished ideas and pauses dispatch before it would touch an active one | Before the budget is hit | RR-10, OR-1 |
-| FM-29 | An idea waits on you forever | Idea silently stuck | Waiting is a state, not a stall: slot freed after 30 min, herdr notification and hourly reminders, parked with a note after 7 days | Visible at once; parked at 7 days | OR-3 |
+| FM-29 | An idea waits on you forever | Idea silently stuck | Waiting is a state, not a stall: the idle process stops after 30 min to free memory, herdr notification and hourly reminders, parked with a note after 7 days | Visible at once; parked at 7 days | OR-3 |
 | FM-30 | An unclear idea is built wrong | Runs wasted on the wrong thing | Research and interview first; `assumptions.md` with no open items; no spec until you approve; every requirement cites an approved assumption or your answer | Prevented at approval | FR-10 |
 | FM-31 | A sub-orchestrator dies mid-interview or mid-phase | Answers or a half-written spec lost | Each answer recorded with `horch idea note` as it is given; fresh process per phase resumes from the folder; the reconciler restarts a missing pane | 5 to 30 s | FR-2, RR-7 |
 | FM-32 | A model approves its own assumptions or forges an approval | Work starts without your yes | `horch idea approve` refuses inside any fleet attempt and profiles deny it; fleetd writes `approval.json` with the hash you saw and ignores any other; invariant I7 checked every pass | Prevented | FR-10 |
@@ -1023,7 +1034,7 @@ Each phase keeps the fleet usable. New behaviour ships behind a run-level flag, 
 4. **Phase 3: worktree leases and rescue.** Extend the existing `worktrees` table with state, owner, base and rescue columns, and make fleetd (through `horch spawn` until Phase 4) the only code that runs `git worktree add` or `remove`, writing the row first. Add the worktree reconciler, the verified rescue to `refs/horch/rescue/`, reuse by the next attempt, invariant I6, `horch worktrees` and `horch worktree restore`. Run it once in report-only mode to list the orphans already on your disk before it acts. *Gate:* FM-25 to FM-28 green; a worker killed with dirty and untracked files loses nothing.
 5. **Phase 4: push dispatch and the result gate.** `horch spawn` binds a task before the pane exists and writes `task.yaml` and `START.md`; `CLAIM_TASK` goes away. Add Stop hooks for Claude Code, Codex and Antigravity and a `horch result` command that writes `result.json`. fleetd runs the finish steps (check, sweeps, land) as the verifier instead of the worker detaching them and waiting for a typed NOTE. For a code kind the review scripts carry over unchanged: code-sweep rounds, findings F<n>, the answers file, waivers and verification profiles, with their limits (V-14). *Gate:* FM-2, FM-6, FM-9 green.
 6. **Phase 5: one ledger writer.** Worker commands (`progress`, `result`, `ask`) write files into the attempt's outbox; fleetd ingests them. Every other process opens the ledger read-only, enforced by a new `arch_scan` rule. Remove Codex's `broad_ledger_rule` sandbox escape. *Gate:* FM-17, FM-24 green; arch test passes.
-7. **Phase 6: the idea dispatcher and sub-orchestrators.** Schema v9 gives `ideas` the state machine above and adds `horch idea add` (with the `--direct` fast lane), `ideas`, `show`, `note`, `approve`, `revise`, `park` and `bump`. Add the dispatcher loop to fleetd, invariant I7, and the `idea-lead` persona, which runs today's brief, spec-writer and ticket-writer steps for one idea in its own interactive pane, a fresh process per phase. Extend `add-map --dry-run` and `scripts/check-req-coverage.sh` into the plan validator (schema, DAG, coverage, profiles, citations to approved assumptions). Retire the long-lived orchestrator conversation, and allow one feature branch per feature with several at once in place of one non-solo run per workspace. Add the `features`, `branches`, `gate_runs` and `trial_merges` tables and `horch idea add --to`. *Gate:* FM-1, FM-8, FM-10, FM-16, FM-29 to FM-32 green.
+7. **Phase 6: the idea dispatcher and sub-orchestrators.** Schema v9 gives `ideas` the state machine above and adds `horch idea add` (with the `--direct` fast lane), `ideas`, `show`, `note`, `approve`, `revise` and `park`. Add the dispatcher loop to fleetd, invariant I7, and the `idea-lead` persona, which runs today's brief, spec-writer and ticket-writer steps for one idea in its own interactive pane, a fresh process per phase. Extend `add-map --dry-run` and `scripts/check-req-coverage.sh` into the plan validator (schema, DAG, coverage, profiles, citations to approved assumptions). Retire the long-lived orchestrator conversation, and allow one feature branch per feature with several at once in place of one non-solo run per workspace. Add the `features`, `branches`, `gate_runs` and `trial_merges` tables and `horch idea add --to`. *Gate:* FM-1, FM-8, FM-10, FM-16, FM-29 to FM-32 green.
 8. **Phase 7: docs sync and conformance, then exec mode.** Widen `herdr-docs-sync` to every CLI with the conformance suite and unhealthy marking. Then make exec mode the default worker mode and set `context-windows.md` to 256000 for every seat (today it is 300000 for the orchestrator and 200000 for opus). *Gate:* FM-18 to FM-20 green.
 
 Phases 1 to 4 remove most of the stalls you see day to day and stop worktrees from being lost. Phase 6 is the largest change and depends on Phase 5, because a plan has to land through the single writer to be all-or-nothing, and only fleetd may record your approvals.
