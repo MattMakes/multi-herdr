@@ -1026,6 +1026,131 @@ Run it daily, on `horch self-update`, and whenever fleetd sees a CLI binary whos
 | No trust prompt | No approval or trust dialog appears (herdr status never shows `blocked`). |
 | Stop gate | Exiting without a result triggers the stop hook (Claude Code) or the wrapper's repair pass. |
 
+## Preservation analysis
+
+fleetd keeps the behavior below. The full tables are in the 3 inventory files: `docs/specs/fleetd/preservation-04-behavior.md`, `docs/specs/fleetd/preservation-05-contracts-and-values.md` and `docs/specs/fleetd/preservation-06-wiring-and-platform.md`. This section lists every row that their summaries rank as `NOT MENTIONED`, and every row that the amended design names.
+
+Row ids are those of the inventory files. Some ids exist in 2 files, so each id carries the number of its file: `04 S7` is row S7 of `preservation-04-behavior.md`, and `06 S7` is row S7 of `preservation-06-wiring-and-platform.md`.
+
+### Behavioral invariants
+
+| # | Behavior | Location | Business reason | Risk if lost |
+| --- | --- | --- | --- | --- |
+| 04 W6 | `worktree drop` and cleanup refuse a dirty tree, a branch with a `git stash` entry, unpublished unique commits and a HEAD that moved during the checks. A rescue ref does not save stashes. | `worktree_ops.rs:177`, `:192`, `:215` | No lost work. | A drop deletes unsaved or stashed work. |
+| 04 F9 | Under the land lock, just before the fast-forward, the land checks that the task is still `landing` and held by this worker. | `land.rs:612`, `:567` | #136. | Cancelled work reaches the feature branch. |
+| 04 F7 | A red land after a rebase resets the branch to its tip from before the land. | `land.rs:581`, `:600` | No attempt starts from an unchecked rebase. | The next attempt builds on a state that no check passed. |
+| 04 F5 | A passed step stands only while its judged tree equals the tree now. New commits after a land reopen the land and every later step. | `finish/mod.rs:751`, `:765`, `land.rs:840` | #154. | Unchecked commits land. |
+| 04 L5 | `done --unlanded` parks the task with its worktree; its dependents stay blocked; `requeue` resumes it on the same worktree. | `finish/mod.rs:1098`, `tasks.rs:791`, `:1499` | trace-fixes D16. | The work of a task that cannot land is lost, or its dependents start without it. |
+| 04 L9 | `ledger unfinished`, `reopen` and `dismiss` keep a record of work that never landed. A finding is decided once. | `import.rs:964`, `:1010`, `cmd/taskledger.rs:1386` | `task-ledger.md:962`. | Unlanded branches and worktrees are not listed for a decision. |
+| 04 W8 | Archive and trash refs only move forward, and each ref write is read back before a folder is removed. Trash refs expire after 30 days. | `triage/refs.rs:16`, `:49`, `:89` | #308. | A ref write overwrites other work; a removal follows a failed write. |
+| 04 W9 | Triage commits modified and untracked files before ARCHIVE or DELETE, refuses a dirty or unique detached HEAD, and deletes a branch only when the trash ref holds its tip. | `triage/apply.rs:286`, `:324`, `:449` | #308. | Triage deletes uncommitted work or the default branch. |
+| 04 F11 | Every git network call has a wall-clock bound (push 10 min, others 3 min), ssh and http stall limits, and never retries. | `vcs/network.rs:27`, `:39`, `:44` | 2 finish runs hung for more than 1 h 50 min on 2026-11-08. | 1 stalled push holds the land lock for hours. |
+| 04 S7 | A reap ends the worker row and requeues the task in 1 transaction before any signal. The control loop exits only between passes. | `stop.rs:276`, `taskledger_watch.rs:35` | #216. | A restart in the middle of a reap loses the requeue; the kill counts as a crash. |
+| 04 L6 | No 2 running tasks own overlapping paths, and an exclusive task runs alone. Inside 1 feature this stays. | `tasks.rs:689`, `:698`, `:805`, `:767` | "2 workers never edit 1 file" (`task-ledger.md:211`). | 2 workers of 1 feature edit 1 file at the same time. |
+| 04 L8 | An operator requeue of a held task resets its attempt count (`attempt_floor`). | `tasks.rs:1499`, `:1514` | #168. | A task escalated once can never run again. |
+| 04 S8 | `stop` takes a worker id only, signals only the recorded PID with its start time, and refuses a worker of another host. | `stop.rs:233`, `:355`, `procid.rs:119` | ADR 0002. | A PID from another machine signals an unrelated local process. |
+| 04 S10 | The control loop restarts itself on the new binary when its binary file changes. | `taskledger_watch.rs:450`, `:490` | #216. | fleetd runs old code after `horch self-update`. |
+| 04 M5 | Mail and outbox directories are mode 0700 and files 0600. A directory that another user owns or can write is refused. | `messaging/mailbox.rs:9`, `mail.rs:446` | #77. | Another local user plants lines that an agent reads as instructions. |
+| 05 E-10, 06 S1 | `ANTHROPIC_API_KEY` is removed from every child process, every pane command line, every detached child, every updater and every probe, and the roster rejects a teammate file that sets it. | `runtime/process.rs:190`, `:277`, `workspace/paneshell.rs:11`, `harness/update.rs:507`, `quota_probe.rs:110`, `roster/validation.rs:481`, `:1681` | Absolute operator rule: every `claude` run uses the subscription login. | API billing instead of the subscription; a broken operator rule. |
+| 06 S2 | herdr's own pane resume uses an environment that horch did not scrub. horch warns when `resume_agents_on_restore` is not false. | `cmd/restore.rs:62` | The forbidden key can reach a resumed agent. | A herdr-resumed agent bills the API key. |
+| 06 S3 | `agy` children lose `GEMINI_API_KEY`, `GOOGLE_API_KEY` and `GOOGLE_GEMINI_BASE_URL`, and the roster rejects them. | `harness/antigravity.rs:26`, `roster/validation.rs:495` | `agy` stays on your Google login. | API billing instead of the login. |
+| 06 S9 | A sandboxed persona does not start on a host that cannot sandbox it (macOS needs `sandbox-exec`, Linux needs `bwrap` and `socat`, other OSes are refused). | `harness/claude.rs:1082` | A sandboxed persona never runs unsandboxed. | A worker writes outside its allowed paths. |
+| 06 S4 | The private `CODEX_HOME` is a directory of links to the real codex home except `rules/`, so `auth.json` reaches your login. | `harness/codex.rs:325` | Codex keeps its login in a private home. | A codex worker starts with no login and stalls. |
+| 06 S5 | The Prime agent dir links `auth.json`, so a refreshed token writes back to your file. | `harness/prime.rs:33`, `:907` | Prime keeps its login. | Prime workers lose their login. |
+| 06 S6 | Every codex launch gets `--dangerously-bypass-hook-trust`. | `harness/codex.rs:1379` | Unattended hooks run. | Codex hooks never fire, and the stop gate fails. |
+| 06 S7 | Agent CLI updates wait out a release cooldown; a CLI with unreadable release dates is held back. | `harness/cooldown.rs:1` | A new CLI release is not used in its first week. | A bad CLI release reaches every worker. |
+| 06 S8 | Pane auto-update is off for claude and codex; `herdr update` runs only on your request. | `harness-defaults.md:12`, `codex.rs:1353`, `harness/update.rs:30` | `herdr update` can stop the server and close every pane. | Panes update or close in the middle of a task. |
+| 06 S10 | Trust is written into the real stores under a lock, atomically, never for `/`, home or an ancestor of home, and never over an explicit codex `untrusted`. | `harness/trust.rs:1`, `:471` | Trust stays narrow. | A trust write opens home or overrides your choice. |
+| 06 S11 | The worker channel relay and the report socket need Unix sockets. Phase 5 moves worker reports to files. | `messaging/channel.rs:104`, `messaging/report.rs:237` | Windows is first-class (D1). | Lost worker reports on Windows. |
+| 06 S12 | The machine probe returns unknown disk, memory and load on Windows. | `runtime/machine.rs:322` | Input of the health guards. | The health guards have no input on Windows. |
+| 06 S13 | The quota probes read limits through each CLI's own client, so horch holds no credential. | `routing/quota.rs:9`, `quota_probe.rs:83`, `:140`, `:195` | `waiting_quota` and pacing depend on these readings. | No usage reading, or a held credential. |
+| 06 S15 | The OpenCode, pi and Prime adapters carry over. | `routing/quota.rs:46` | They give the `opencode-zen` and `local` pools. | Those pools are lost. |
+
+### Contract surface
+
+| Command or format | Who depends on it | Shape | Exit codes or status |
+| --- | --- | --- | --- |
+| Mail contract (05 C-1, M-1 to M-6, V-15) | Interactive sub-orchestrators and you | `horch tell <role> "<msg>"`; `[<role>]` sender tag, untagged text is you; `[orchestrator re #<id>]` answers; redelivery at 30, 60, 120, 240, 300 s, then every 300 s | 0 sent or queued; 1 error |
+| Report of unlanded work (05 M-7) | You and `ledger unfinished` | `... \| UNLANDED: <claim>: <reason>`, `... \| UNREGISTERED: <entry>` | Read by `taskledger/import.rs:462` |
+| `horch self-update` (05 C-14) | You and friends | `horch self-update [--check]`; also restarts the daemon (OR-6) | 0; 1 error; `--check` exits 0 either way |
+| Release assets (05 F-20) | `horch self-update` | `multi-herdr-v<version>-<target>.tar.gz` or `.zip`, `SHA256SUMS`, 5 targets | - |
+| Ticket (05 F-1) | ticket-writer, `plan.yaml` | `docs/tickets/<slug>/<NN>-<name>.md`, format C1 (`docs/specs/ticket-format.md`) | - |
+| Map (05 F-2) | `add-map` today | `MAP.md`, replaced by `plan.yaml` | - |
+| Project facts (05 F-11) | every sub-orchestrator | `horch note --fact`, `<state>/facts/<hash>.txt` | - |
+| Evidence logs (05 F-8) | `ledger steps`, reviewers | `~/.horch/evidence/<run>/<task>/...`, land locks under `evidence/locks/` | - |
+| Message spool (05 V-17) | mail readers | lines over 600 characters go to a spool file, kept 7 days | - |
+| Exit codes | every script that calls `horch` | `crates/horch/src/exit.rs` | 0 success, 1 failure, 2 collector held, 3 refused |
+
+### Domain assumptions
+
+| Value | Location | Why this value | Impact if changed |
+| --- | --- | --- | --- |
+| Land lock 1 h, stale margin 10 min, 5 tries; check timeout 20 min, max 24 h (05 V-10) | `finish/land.rs:18-40` | `task-ledger.md:661` | A lower value fails long test suites; no lock lets 2 lands race. |
+| `vcs/landing.rs` lock stale 1 h, timeout 30 s, heartbeat 60 s (05 V-11) | `vcs/landing.rs:20-22` | not recorded | As V-10. |
+| Code-sweep at most 2 requeues; review rounds light 1, full 3 (05 V-14) | `finish/codesweep.rs:280` | format C1 | Review loops, or no review. |
+| Git network bounds: push 10 min, others 3 min (04 F11) | `vcs/network.rs:27` | 2 finish runs hung for more than 1 h 50 min | A stalled call holds the land lock. |
+| Schema backups: 3 kept; `BUSY_TIMEOUT` 30 s (05 V-23, L-4) | `store.rs:14`, `schema.rs:520` | history before a migration | Lost history after a failed migration. |
+| Project facts: 100, 2048 bytes each (05 V-25) | `project_notes.rs:7-9` | oldest expire first | Facts lost, or prompt bloat. |
+| Routing: tight 0.85, exhausted 0.98, pace 1.25x at 0.50 used, probe 15 min (05 V-26) | `routing/policy.rs:66-82` | design 13.4 | Wrong refusal or spend. The pace factor in code is 1.25, not 1.5. |
+| Inline message limit 600 characters; spool kept 7 days (05 V-17) | `message.rs:17-21` | a busy TUI splits lines | Split lines lose the tag. |
+| Harness update cooldown (`update_cooldown_days`) | `harness/update.rs:275` | a release must be more than a week old | A bad CLI release reaches every worker. |
+
+### Wiring map
+
+| Interface | Implementation | Registration | Verified |
+| --- | --- | --- | --- |
+| `Harness::command` and `build_command` (env scrub) | 1 builder per harness: claude, codex, agy, opencode, pi, prime, none | `harness/mod.rs:121`, `:224` | no |
+| Launch flow | skills, briefing, trust, window, `prepare`, command, scrub, run, discovery, `finish` | `harness/launch.rs:519` | no |
+| OpenCode adapter (06 S15) | `OPENCODE_CONFIG_CONTENT`, `--auto`, `--pure`, `skills.paths`, session list resume | `harness/opencode.rs:190` | no |
+| pi and Prime adapters (06 S15) | `--model`, `--thinking`, `--skill <dir>`, `--session-id`; Prime private agent dir and daemon socket | `harness/pi.rs:134`, `prime.rs:1`, `:1048` | no |
+| Private `CODEX_HOME` of links (06 S4) | links every entry except `rules/` | `harness/codex.rs:325` | no |
+| Quota probes (06 S13) | claude `get_usage`, codex `account/rateLimits/read`, `agy /usage`, pi `ollama list` | `routing/quota_probe.rs:83`, `:140`, `:195`, `:282` | no |
+| Context readers | transcript tail, 256 KiB window, marker cache | `telemetry/context.rs:1` | no |
+| Update check and cooldown (06 S7, S8) | per-CLI lock, 24 h freshness, release cooldown; pane self-update off | `harness/update.rs:1`, `harness/cooldown.rs:1` | no |
+| Trust writes (06 S10) | `ensure_trusted` before `prepare` | `launch.rs:576`, `trust.rs:471` | no |
+| herdr calls | herdr CLI only, JSON envelope, own process group or job object, timeout | `workspace/herdr.rs:1`, `:676` | no |
+| Machine probe (06 S12) | `sysctl`, `vm_stat`, `statvfs`, `getloadavg`, `/proc/meminfo`; unknown on Windows | `runtime/machine.rs:322` | no |
+
+### Credential source inventory
+
+Names and paths only. No secret and no value of a variable is written here. `Verified in new code` is "no" for every row, because the new code does not exist.
+
+| Credential | Runtime source | Path or key name | Rotation | Proxy or cert required | Verified in new code |
+| --- | --- | --- | --- | --- | --- |
+| Claude subscription login | Claude's own store; horch sets no `CLAUDE_CONFIG_DIR` and removes `ANTHROPIC_API_KEY` | `$CLAUDE_CONFIG_DIR` or home; the Keychain on macOS | refreshed by Claude | none recorded | no |
+| Codex ChatGPT login | the private home's link to the real file | `$CODEX_HOME/auth.json` | yes | none recorded | no |
+| Google login for `agy` | your login; `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GOOGLE_GEMINI_BASE_URL` removed | `~/.gemini/` | yes | none recorded | no |
+| OpenCode providers | your OpenCode credentials, kept by `--pure` | OpenCode's own store | provider dependent | none recorded | no |
+| Prime login | linked into the private agent dir; refreshed through the link | Prime `auth.json` | yes | none recorded | no |
+| pi | local Ollama, no login | - | no | none recorded | no |
+| git fetch and push | your SSH key and agent; horch adds timeouts, never a key | SSH agent (`git-alt` host here) | no | none recorded | no |
+| `gh` for the `pr` setting | `gh auth login` store | `gh` config | yes | none recorded | no |
+| `horch self-update` | unauthenticated GitHub API | - | no | none recorded | no |
+| npm registry for cooldown dates | unauthenticated | - | no | none recorded | no |
+
+### Failure mode analysis
+
+| Risk | Likelihood | Impact | Mitigation |
+| --- | --- | --- | --- |
+| Stashed or uncommitted work deleted at cleanup (04 W6, W9) | Medium | Lost work | Invariant I12; triage commits before ARCHIVE or DELETE. |
+| Cancelled or half-rebased work lands (04 F9, F7, F5) | Low | Unchecked or unwanted code on the feature branch | Ownership check under the land lock; reset after a red land; a pass stands only for the tree it judged. |
+| A ref write overwrites work, or removal follows a failed write (04 W8) | Low | Lost work | Forward-only refs, read back before removal; invariant I10. |
+| A task that cannot land loses its work, or its dependents start early (04 L5, L9, 05 M-7) | Medium | Lost work | Task-level park with its worktree; `unfinished`, `reopen`, `dismiss`; the `UNLANDED:` report. |
+| A stalled git network call holds the land lock (04 F11) | High: seen on 2026-11-08 | Stuck fleet | Wall-clock bounds on every git network call. |
+| A restart in the middle of a reap loses the requeue (04 S7) | Low | Stuck task | Requeue in 1 transaction before any signal. |
+| An escalated task can never run again (04 L8) | Medium | Stuck task | Attempt reset on your requeue. |
+| 2 tasks of 1 feature edit 1 file (04 L6) | Medium | Conflicting commits | Own exclusion inside 1 feature. |
+| Long suites fail, or 2 lands race (05 V-10, V-11) | Medium | Stuck fleet | Keep today's land lock and check timeout values. |
+| A newer schema is opened by an older binary (05 L-3) | Medium with automatic updates | Corrupt or locked ledger | Newer schema refused; a CLI restarts an older daemon (OR-6). |
+| A failed migration loses history (05 L-4) | Low | Lost ledger history | Backup before each migration, 3 kept. |
+| A development build migrates the shared ledger (05 L-5) | Medium | Installed horch refuses the ledger | Dev-build guard (`HORCH_ALLOW_LEDGER_MIGRATE`). |
+| A test or scratch run writes the shared ledger (05 E-1, E-2) | Medium | Corrupt shared state | `HORCH_LEDGER_DB` and `HORCH_STATE_DIR` isolation stay beside `FLEET_ROOT`. |
+| `ANTHROPIC_API_KEY` reaches a child (05 E-10, 06 S1, S2) | Medium | API billing; broken operator rule | Scrub on every child, pane line, detached child, updater and probe; roster check; the herdr resume warning. |
+| Google keys reach `agy` (06 S3) | Low | API billing | Scrub and roster check. |
+| Another local user plants instructions (04 M5) | Low | Agent acts on planted lines | Mode 0700 and the owner check on every mail and outbox directory. |
+| A sandboxed persona runs unsandboxed (06 S9) | Low | Writes outside allowed paths | Refuse to start on a host that cannot sandbox it. |
+| `stop` signals a PID of another host (04 S8) | Low | An unrelated process is killed | Refuse a worker of another host. |
+
 ## Failure modes and effects
 
 Every failure you listed, plus twenty-three more found while reading the code, the CLI docs and your new requirements, is either prevented by construction or caught by a timer in code within minutes, and each traces to a requirement in the last column.
