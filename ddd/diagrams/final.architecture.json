@@ -9,12 +9,12 @@
   "layout": {
     "mode": "grid",
     "origin": [
-      230,
-      160
+      220,
+      210
     ],
-    "cols": 6,
-    "gapX": 230,
-    "gapY": 160,
+    "cols": 7,
+    "gapX": 220,
+    "gapY": 210,
     "cellW": 200,
     "cellH": 64
   },
@@ -24,8 +24,8 @@
       "type": "backend",
       "label": "Fleet runtime",
       "sublabel": "supporting domain",
-      "row": 2,
-      "col": 5,
+      "row": 3,
+      "col": 1,
       "size": [
         200,
         64
@@ -36,7 +36,7 @@
       "type": "backend",
       "label": "Ideas",
       "sublabel": "supporting domain",
-      "row": 5,
+      "row": 3,
       "col": 2,
       "size": [
         200,
@@ -49,7 +49,7 @@
       "label": "Landing and integration",
       "sublabel": "core domain",
       "tag": "core",
-      "row": 5,
+      "row": 2,
       "col": 3,
       "size": [
         200,
@@ -62,7 +62,7 @@
       "label": "Task execution",
       "sublabel": "core domain",
       "tag": "core",
-      "row": 3,
+      "row": 5,
       "col": 4,
       "size": [
         200,
@@ -74,7 +74,7 @@
       "type": "backend",
       "label": "Worker profiles and adapters",
       "sublabel": "supporting domain",
-      "row": 4,
+      "row": 6,
       "col": 1,
       "size": [
         200,
@@ -86,7 +86,7 @@
       "type": "backend",
       "label": "Worktree custody",
       "sublabel": "supporting domain",
-      "row": 3,
+      "row": 5,
       "col": 5,
       "size": [
         200,
@@ -98,20 +98,8 @@
       "type": "database",
       "label": "horch binary data",
       "sublabel": "own data store",
-      "row": 6,
+      "row": 2,
       "col": 1,
-      "size": [
-        200,
-        64
-      ]
-    },
-    {
-      "id": "agent-cli",
-      "type": "external",
-      "label": "Agent CLI process",
-      "sublabel": "external system",
-      "row": 7,
-      "col": 0,
       "size": [
         200,
         64
@@ -122,7 +110,7 @@
       "type": "external",
       "label": "Clock",
       "sublabel": "external system",
-      "row": 5,
+      "row": 1,
       "col": 0,
       "size": [
         200,
@@ -134,7 +122,31 @@
       "type": "external",
       "label": "git",
       "sublabel": "external system",
-      "row": 6,
+      "row": 3,
+      "col": 0,
+      "size": [
+        200,
+        64
+      ]
+    },
+    {
+      "id": "github",
+      "type": "external",
+      "label": "GitHub",
+      "sublabel": "external system",
+      "row": 2,
+      "col": 0,
+      "size": [
+        200,
+        64
+      ]
+    },
+    {
+      "id": "herdr",
+      "type": "external",
+      "label": "herdr",
+      "sublabel": "external system",
+      "row": 7,
       "col": 0,
       "size": [
         200,
@@ -158,7 +170,7 @@
       "type": "external",
       "label": "Provider pool",
       "sublabel": "actor",
-      "row": 0,
+      "row": 8,
       "col": 0,
       "size": [
         200,
@@ -170,7 +182,7 @@
       "type": "external",
       "label": "Sub-orchestrator",
       "sublabel": "actor",
-      "row": 2,
+      "row": 6,
       "col": 0,
       "size": [
         200,
@@ -182,8 +194,8 @@
       "type": "external",
       "label": "Worker",
       "sublabel": "actor",
-      "row": 1,
-      "col": 0,
+      "row": 0,
+      "col": 6,
       "size": [
         200,
         64
@@ -212,21 +224,21 @@
       "to": "integration",
       "label": "Abandon task branch",
       "variant": "default",
-      "fromSide": "bottom",
-      "toSide": "top",
+      "fromSide": "top",
+      "toSide": "bottom",
       "via": [
         [
-          330,
-          1190
+          320,
+          1197
         ],
         [
-          1620,
-          1190
+          1580,
+          1197
         ]
       ],
       "labelAt": [
-        975,
-        1180
+        950,
+        1187
       ]
     },
     {
@@ -235,21 +247,21 @@
       "to": "ideas",
       "label": "Add direct idea",
       "variant": "default",
-      "fromSide": "right",
-      "toSide": "left",
+      "fromSide": "top",
+      "toSide": "bottom",
       "via": [
         [
-          473,
-          1088
+          320,
+          1209
         ],
         [
-          473,
-          1312
+          1160,
+          1209
         ]
       ],
       "labelAt": [
-        545,
-        1200
+        740,
+        1199
       ]
     },
     {
@@ -258,21 +270,67 @@
       "to": "ideas",
       "label": "Add idea",
       "variant": "default",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "via": [
+        [
+          320,
+          1221
+        ],
+        [
+          1160,
+          1221
+        ]
+      ],
+      "labelAt": [
+        820,
+        1211
+      ]
+    },
+    {
+      "id": "agent-status-changed-to-ideas",
+      "from": "herdr",
+      "to": "ideas",
+      "label": "Agent status changed",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "via": [
+        [
+          320,
+          2037
+        ],
+        [
+          1160,
+          2037
+        ]
+      ],
+      "labelAt": [
+        740,
+        2027
+      ]
+    },
+    {
+      "id": "agent-status-changed-to-task-execution",
+      "from": "herdr",
+      "to": "task-execution",
+      "label": "Agent status changed",
+      "variant": "dashed",
       "fromSide": "right",
       "toSide": "left",
       "via": [
         [
-          485,
-          1088
+          518,
+          2160
         ],
         [
-          485,
-          1312
+          518,
+          1612
         ]
       ],
       "labelAt": [
-        545,
-        1216
+        530,
+        1886
       ]
     },
     {
@@ -281,21 +339,21 @@
       "to": "ideas",
       "label": "Answer question",
       "variant": "default",
-      "fromSide": "right",
-      "toSide": "left",
+      "fromSide": "top",
+      "toSide": "bottom",
       "via": [
         [
-          497,
-          640
+          320,
+          1715
         ],
         [
-          497,
-          1312
+          1160,
+          1715
         ]
       ],
       "labelAt": [
-        545,
-        976
+        740,
+        1705
       ]
     },
     {
@@ -308,17 +366,17 @@
       "toSide": "left",
       "via": [
         [
-          509,
-          1312
+          530,
+          516
         ],
         [
-          509,
-          864
+          530,
+          1612
         ]
       ],
       "labelAt": [
-        545,
-        1088
+        530,
+        1064
       ]
     },
     {
@@ -327,21 +385,21 @@
       "to": "operator",
       "label": "Approval requested",
       "variant": "dashed",
-      "fromSide": "top",
-      "toSide": "bottom",
+      "fromSide": "left",
+      "toSide": "right",
       "via": [
         [
-          1190,
-          1202
+          908,
+          1064
         ],
         [
-          330,
-          1202
+          908,
+          1338
         ]
       ],
       "labelAt": [
-        760,
-        1192
+        950,
+        1217
       ]
     },
     {
@@ -350,21 +408,21 @@
       "to": "ideas",
       "label": "Approve assumptions",
       "variant": "default",
-      "fromSide": "right",
-      "toSide": "left",
+      "fromSide": "top",
+      "toSide": "bottom",
       "via": [
         [
-          521,
-          1088
+          320,
+          1233
         ],
         [
-          521,
-          1312
+          1160,
+          1233
         ]
       ],
       "labelAt": [
-        545,
-        1184
+        740,
+        1223
       ]
     },
     {
@@ -373,21 +431,71 @@
       "to": "ideas",
       "label": "Ask question",
       "variant": "default",
+      "fromSide": "left",
+      "toSide": "right",
+      "via": [
+        [
+          2630,
+          242
+        ],
+        [
+          2630,
+          1064
+        ]
+      ],
+      "labelAt": [
+        2630,
+        653
+      ]
+    },
+    {
+      "id": "assign-task",
+      "from": "task-execution",
+      "to": "worker",
+      "label": "Assign task",
+      "variant": "default",
       "fromSide": "right",
       "toSide": "left",
       "via": [
         [
-          533,
-          416
+          2204,
+          1612
         ],
         [
-          533,
-          1312
+          2204,
+          242
         ]
       ],
       "labelAt": [
-        545,
-        864
+        2210,
+        927
+      ]
+    },
+    {
+      "id": "assumptions-approved",
+      "from": "ideas",
+      "to": "sub-orchestrator",
+      "label": "Assumptions approved",
+      "variant": "dashed",
+      "fromSide": "left",
+      "toSide": "top",
+      "via": [
+        [
+          920,
+          1064
+        ],
+        [
+          920,
+          1727
+        ],
+        [
+          320,
+          1727
+        ]
+      ],
+      "labelAt": [
+        620,
+        1717
       ]
     },
     {
@@ -398,11 +506,24 @@
       "variant": "dashed",
       "fromSide": "right",
       "toSide": "left",
-      "labelDy": 58
+      "via": [
+        [
+          1304,
+          1064
+        ],
+        [
+          1304,
+          790
+        ]
+      ],
+      "labelAt": [
+        1370,
+        927
+      ]
     },
     {
       "id": "attempt-exited",
-      "from": "agent-cli",
+      "from": "worker-profiles",
       "to": "task-execution",
       "label": "Attempt exited",
       "variant": "dashed",
@@ -410,17 +531,17 @@
       "toSide": "left",
       "via": [
         [
-          545,
-          1760
+          932,
+          1886
         ],
         [
-          545,
-          864
+          932,
+          1612
         ]
       ],
       "labelAt": [
-        545,
-        1312
+        950,
+        1749
       ]
     },
     {
@@ -439,21 +560,21 @@
       "to": "integration",
       "label": "Check merged",
       "variant": "default",
-      "fromSide": "top",
+      "fromSide": "bottom",
       "toSide": "top",
       "via": [
         [
-          330,
-          1214
+          320,
+          655
         ],
         [
-          1620,
-          1214
+          1580,
+          655
         ]
       ],
       "labelAt": [
-        975,
-        1204
+        950,
+        645
       ]
     },
     {
@@ -464,7 +585,20 @@
       "variant": "dashed",
       "fromSide": "right",
       "toSide": "left",
-      "labelDy": 67.59999999999991
+      "via": [
+        [
+          1316,
+          1064
+        ],
+        [
+          1316,
+          790
+        ]
+      ],
+      "labelAt": [
+        1370,
+        943
+      ]
     },
     {
       "id": "feature-merged",
@@ -474,7 +608,20 @@
       "variant": "dashed",
       "fromSide": "left",
       "toSide": "right",
-      "labelDy": 77.20000000000005
+      "via": [
+        [
+          1328,
+          790
+        ],
+        [
+          1328,
+          1064
+        ]
+      ],
+      "labelAt": [
+        1370,
+        911
+      ]
     },
     {
       "id": "feature-opened",
@@ -484,7 +631,43 @@
       "variant": "dashed",
       "fromSide": "left",
       "toSide": "right",
-      "labelDy": 86.79999999999995
+      "via": [
+        [
+          1340,
+          790
+        ],
+        [
+          1340,
+          1064
+        ]
+      ],
+      "labelAt": [
+        1370,
+        959
+      ]
+    },
+    {
+      "id": "heartbeat-written",
+      "from": "worker-profiles",
+      "to": "task-execution",
+      "label": "Heartbeat written",
+      "variant": "dashed",
+      "fromSide": "right",
+      "toSide": "left",
+      "via": [
+        [
+          944,
+          1886
+        ],
+        [
+          944,
+          1612
+        ]
+      ],
+      "labelAt": [
+        950,
+        1765
+      ]
     },
     {
       "id": "idea-tasks-landed",
@@ -494,7 +677,20 @@
       "variant": "dashed",
       "fromSide": "right",
       "toSide": "left",
-      "labelDy": 96.40000000000009
+      "via": [
+        [
+          1352,
+          1064
+        ],
+        [
+          1352,
+          790
+        ]
+      ],
+      "labelAt": [
+        1370,
+        895
+      ]
     },
     {
       "id": "launch-environment-to-ideas",
@@ -506,17 +702,17 @@
       "toSide": "left",
       "via": [
         [
-          963,
-          1088
+          956,
+          1886
         ],
         [
-          963,
-          1312
+          956,
+          1064
         ]
       ],
       "labelAt": [
-        975,
-        1232
+        950,
+        1475
       ]
     },
     {
@@ -529,17 +725,40 @@
       "toSide": "left",
       "via": [
         [
-          975,
-          1088
+          968,
+          1886
         ],
         [
-          975,
-          864
+          968,
+          1612
         ]
       ],
       "labelAt": [
-        975,
-        976
+        950,
+        1733
+      ]
+    },
+    {
+      "id": "open-pull-request",
+      "from": "integration",
+      "to": "github",
+      "label": "Open pull request",
+      "variant": "default",
+      "fromSide": "top",
+      "toSide": "top",
+      "via": [
+        [
+          1580,
+          667
+        ],
+        [
+          320,
+          667
+        ]
+      ],
+      "labelAt": [
+        1046,
+        657
       ]
     },
     {
@@ -552,17 +771,17 @@
       "toSide": "left",
       "via": [
         [
-          1381,
-          1312
+          1364,
+          1064
         ],
         [
-          1381,
-          864
+          1364,
+          1612
         ]
       ],
       "labelAt": [
-        1405,
-        1088
+        1370,
+        1338
       ]
     },
     {
@@ -575,17 +794,17 @@
       "toSide": "left",
       "via": [
         [
-          1393,
-          1312
+          1376,
+          1064
         ],
         [
-          1393,
-          864
+          1376,
+          1612
         ]
       ],
       "labelAt": [
-        1405,
-        1104
+        1370,
+        1354
       ]
     },
     {
@@ -598,17 +817,44 @@
       "toSide": "left",
       "via": [
         [
-          1405,
-          1312
+          1388,
+          1064
         ],
         [
-          1405,
-          864
+          1388,
+          1612
         ]
       ],
       "labelAt": [
-        1405,
-        1072
+        1370,
+        1322
+      ]
+    },
+    {
+      "id": "plan-verdict-written",
+      "from": "ideas",
+      "to": "sub-orchestrator",
+      "label": "Plan verdict written",
+      "variant": "dashed",
+      "fromSide": "left",
+      "toSide": "top",
+      "via": [
+        [
+          980,
+          1064
+        ],
+        [
+          980,
+          1739
+        ],
+        [
+          320,
+          1739
+        ]
+      ],
+      "labelAt": [
+        730,
+        1729
       ]
     },
     {
@@ -621,17 +867,40 @@
       "toSide": "bottom",
       "via": [
         [
-          330,
-          1432
+          320,
+          929
         ],
         [
-          1620,
-          1432
+          1580,
+          929
         ]
       ],
       "labelAt": [
-        975,
-        1422
+        950,
+        919
+      ]
+    },
+    {
+      "id": "pull-request-merged",
+      "from": "github",
+      "to": "integration",
+      "label": "Pull request merged",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "top",
+      "via": [
+        [
+          320,
+          679
+        ],
+        [
+          1580,
+          679
+        ]
+      ],
+      "labelAt": [
+        934,
+        669
       ]
     },
     {
@@ -640,21 +909,21 @@
       "to": "operator",
       "label": "Pull request opened",
       "variant": "dashed",
-      "fromSide": "top",
-      "toSide": "bottom",
+      "fromSide": "left",
+      "toSide": "right",
       "via": [
         [
-          1620,
-          1226
+          1400,
+          790
         ],
         [
-          330,
-          1226
+          1400,
+          1338
         ]
       ],
       "labelAt": [
-        1071,
-        1216
+        1370,
+        1064
       ]
     },
     {
@@ -667,17 +936,17 @@
       "toSide": "left",
       "via": [
         [
-          1417,
-          1312
+          1412,
+          1064
         ],
         [
-          1417,
-          864
+          1412,
+          1612
         ]
       ],
       "labelAt": [
-        1405,
-        1120
+        1370,
+        1370
       ]
     },
     {
@@ -686,21 +955,21 @@
       "to": "ideas",
       "label": "Replan requested",
       "variant": "dashed",
-      "fromSide": "bottom",
-      "toSide": "top",
+      "fromSide": "left",
+      "toSide": "right",
       "via": [
         [
-          2050,
-          984
+          1754,
+          1612
         ],
         [
-          1190,
-          984
+          1754,
+          1064
         ]
       ],
       "labelAt": [
-        1620,
-        974
+        1790,
+        1338
       ]
     },
     {
@@ -709,21 +978,21 @@
       "to": "ideas",
       "label": "Replan task",
       "variant": "default",
-      "fromSide": "right",
-      "toSide": "left",
+      "fromSide": "top",
+      "toSide": "bottom",
       "via": [
         [
-          557,
-          640
+          320,
+          1751
         ],
         [
-          557,
-          1312
+          1160,
+          1751
         ]
       ],
       "labelAt": [
-        545,
-        992
+        820,
+        1741
       ]
     },
     {
@@ -734,7 +1003,7 @@
       "variant": "dashed",
       "fromSide": "left",
       "toSide": "right",
-      "labelDy": 63.33333333333337
+      "labelDy": 63.33333333333326
     },
     {
       "id": "resolver-task-opened",
@@ -746,40 +1015,63 @@
       "toSide": "left",
       "via": [
         [
-          1817,
-          1312
+          1766,
+          790
         ],
         [
-          1817,
-          864
+          1766,
+          1612
         ]
       ],
       "labelAt": [
-        1835,
-        1088
+        1790,
+        1201
       ]
     },
     {
       "id": "start-agent-process",
       "from": "task-execution",
-      "to": "fleet-runtime",
+      "to": "worker-profiles",
       "label": "Start agent process",
+      "variant": "default",
+      "fromSide": "left",
+      "toSide": "right",
+      "via": [
+        [
+          1778,
+          1612
+        ],
+        [
+          1778,
+          1886
+        ]
+      ],
+      "labelAt": [
+        1790,
+        1749
+      ]
+    },
+    {
+      "id": "start-work",
+      "from": "task-execution",
+      "to": "worker",
+      "label": "Start work",
       "variant": "default",
       "fromSide": "right",
       "toSide": "left",
       "via": [
         [
-          2265,
-          864
+          2216,
+          1612
         ],
         [
-          2265,
-          640
+          2216,
+          242
         ]
       ],
       "labelAt": [
-        2265,
-        752
+        2210,
+        943
       ]
     },
     {
@@ -788,21 +1080,21 @@
       "to": "ideas",
       "label": "Submit plan",
       "variant": "default",
-      "fromSide": "right",
-      "toSide": "left",
+      "fromSide": "top",
+      "toSide": "bottom",
       "via": [
         [
-          569,
-          640
+          320,
+          1763
         ],
         [
-          569,
-          1312
+          1160,
+          1763
         ]
       ],
       "labelAt": [
-        545,
-        960
+        740,
+        1753
       ]
     },
     {
@@ -815,17 +1107,17 @@
       "toSide": "left",
       "via": [
         [
-          1829,
-          1312
+          1790,
+          790
         ],
         [
-          1829,
-          864
+          1790,
+          1612
         ]
       ],
       "labelAt": [
-        1835,
-        1104
+        1790,
+        1217
       ]
     },
     {
@@ -836,7 +1128,20 @@
       "variant": "dashed",
       "fromSide": "left",
       "toSide": "right",
-      "labelDy": 106
+      "via": [
+        [
+          1424,
+          790
+        ],
+        [
+          1424,
+          1064
+        ]
+      ],
+      "labelAt": [
+        1370,
+        975
+      ]
     },
     {
       "id": "task-branch-landed-to-worktree-custody",
@@ -844,21 +1149,21 @@
       "to": "worktree-custody",
       "label": "Task branch landed",
       "variant": "dashed",
-      "fromSide": "top",
-      "toSide": "bottom",
+      "fromSide": "bottom",
+      "toSide": "top",
       "via": [
         [
-          1620,
-          1238
+          1580,
+          941
         ],
         [
-          2480,
-          1238
+          2420,
+          941
         ]
       ],
       "labelAt": [
-        2050,
-        1228
+        2000,
+        931
       ]
     },
     {
@@ -871,17 +1176,40 @@
       "toSide": "right",
       "via": [
         [
-          1841,
-          864
+          1802,
+          1612
         ],
         [
-          1841,
-          1312
+          1802,
+          790
         ]
       ],
       "labelAt": [
-        1835,
-        1072
+        1790,
+        1185
+      ]
+    },
+    {
+      "id": "task-escalated-to-ideas",
+      "from": "task-execution",
+      "to": "ideas",
+      "label": "Task escalated",
+      "variant": "dashed",
+      "fromSide": "left",
+      "toSide": "right",
+      "via": [
+        [
+          1814,
+          1612
+        ],
+        [
+          1814,
+          1064
+        ]
+      ],
+      "labelAt": [
+        1790,
+        1354
       ]
     },
     {
@@ -894,40 +1222,17 @@
       "toSide": "right",
       "via": [
         [
-          1853,
-          864
+          1826,
+          1612
         ],
         [
-          1853,
-          1312
+          1826,
+          790
         ]
       ],
       "labelAt": [
-        1835,
-        1120
-      ]
-    },
-    {
-      "id": "task-escalated-to-operator",
-      "from": "task-execution",
-      "to": "operator",
-      "label": "Task escalated",
-      "variant": "dashed",
-      "fromSide": "bottom",
-      "toSide": "top",
-      "via": [
-        [
-          2050,
-          996
-        ],
-        [
-          330,
-          996
-        ]
-      ],
-      "labelAt": [
-        1190,
-        986
+        1790,
+        1233
       ]
     },
     {
@@ -938,7 +1243,7 @@
       "variant": "dashed",
       "fromSide": "right",
       "toSide": "left",
-      "labelDy": 68.66666666666663
+      "labelDy": 68.66666666666674
     },
     {
       "id": "task-replanned",
@@ -950,17 +1255,40 @@
       "toSide": "left",
       "via": [
         [
-          1429,
-          1312
+          1436,
+          1064
         ],
         [
-          1429,
-          864
+          1436,
+          1612
         ]
       ],
       "labelAt": [
-        1405,
-        1056
+        1370,
+        1306
+      ]
+    },
+    {
+      "id": "task-verdict-written",
+      "from": "task-execution",
+      "to": "sub-orchestrator",
+      "label": "Task verdict written",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "via": [
+        [
+          2000,
+          1775
+        ],
+        [
+          320,
+          1775
+        ]
+      ],
+      "labelAt": [
+        1160,
+        1765
       ]
     },
     {
@@ -973,17 +1301,17 @@
       "toSide": "bottom",
       "via": [
         [
-          330,
-          1444
+          320,
+          953
         ],
         [
-          1620,
-          1444
+          1580,
+          953
         ]
       ],
       "labelAt": [
-        1087,
-        1434
+        950,
+        943
       ]
     },
     {
@@ -996,17 +1324,17 @@
       "toSide": "left",
       "via": [
         [
-          581,
-          192
+          542,
+          2434
         ],
         [
-          581,
-          864
+          542,
+          1612
         ]
       ],
       "labelAt": [
-        545,
-        528
+        530,
+        2023
       ]
     },
     {
@@ -1016,20 +1344,24 @@
       "label": "Worker question asked",
       "variant": "dashed",
       "fromSide": "left",
-      "toSide": "right",
+      "toSide": "top",
       "via": [
         [
-          987,
-          1312
+          992,
+          1064
         ],
         [
-          987,
-          640
+          992,
+          1787
+        ],
+        [
+          320,
+          1787
         ]
       ],
       "labelAt": [
-        975,
-        992
+        656,
+        1777
       ]
     },
     {
@@ -1048,21 +1380,21 @@
       "to": "ideas",
       "label": "Write assumptions",
       "variant": "default",
-      "fromSide": "right",
-      "toSide": "left",
+      "fromSide": "top",
+      "toSide": "bottom",
       "via": [
         [
-          593,
-          640
+          320,
+          1799
         ],
         [
-          593,
-          1312
+          1160,
+          1799
         ]
       ],
       "labelAt": [
-        545,
-        1008
+        772,
+        1789
       ]
     },
     {
@@ -1071,21 +1403,21 @@
       "to": "task-execution",
       "label": "Write result",
       "variant": "default",
-      "fromSide": "right",
-      "toSide": "left",
+      "fromSide": "bottom",
+      "toSide": "top",
       "via": [
         [
-          605,
-          416
+          2840,
+          393
         ],
         [
-          605,
-          864
+          2000,
+          393
         ]
       ],
       "labelAt": [
-        545,
-        640
+        2420,
+        383
       ]
     },
     {
@@ -1094,21 +1426,21 @@
       "to": "ideas",
       "label": "Write spec",
       "variant": "default",
-      "fromSide": "right",
-      "toSide": "left",
+      "fromSide": "top",
+      "toSide": "bottom",
       "via": [
         [
-          617,
-          640
+          320,
+          1811
         ],
         [
-          617,
-          1312
+          1160,
+          1811
         ]
       ],
       "labelAt": [
-        545,
-        944
+        692,
+        1801
       ]
     }
   ]

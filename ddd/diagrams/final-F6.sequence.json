@@ -37,16 +37,16 @@
       "sublabel": "bounded context"
     },
     {
-      "id": "operator",
-      "type": "external",
-      "label": "Operator",
-      "sublabel": "actor"
-    },
-    {
       "id": "integration",
       "type": "backend",
       "label": "Landing and integration",
       "sublabel": "bounded context"
+    },
+    {
+      "id": "operator",
+      "type": "external",
+      "label": "Operator",
+      "sublabel": "actor"
     }
   ],
   "messages": [
@@ -93,7 +93,7 @@
     {
       "id": "F6-s6",
       "from": "task-execution",
-      "to": "operator",
+      "to": "ideas",
       "y": 405,
       "label": "Task escalated",
       "variant": "dashed"

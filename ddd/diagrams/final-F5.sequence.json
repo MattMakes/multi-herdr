@@ -7,7 +7,7 @@
     "quality_profile": "standard",
     "column_fit": "spread",
     "viewBox": [
-      1013,
+      1587,
       641
     ]
   },
@@ -31,9 +31,9 @@
       "sublabel": "bounded context"
     },
     {
-      "id": "fleet-runtime",
+      "id": "worker-profiles",
       "type": "backend",
-      "label": "Fleet runtime",
+      "label": "Worker profiles and adapters",
       "sublabel": "bounded context"
     },
     {
@@ -75,7 +75,7 @@
     {
       "id": "F5-s3",
       "from": "task-execution",
-      "to": "fleet-runtime",
+      "to": "worker-profiles",
       "y": 273,
       "label": "Start agent process",
       "variant": "default"
@@ -123,7 +123,7 @@
     {
       "id": "F5-s9",
       "from": "task-execution",
-      "to": "fleet-runtime",
+      "to": "worker-profiles",
       "y": 537,
       "label": "Start agent process",
       "variant": "default"

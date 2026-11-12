@@ -7,7 +7,7 @@
     "quality_profile": "standard",
     "column_fit": "spread",
     "viewBox": [
-      1587,
+      1169,
       553
     ]
   },
@@ -31,22 +31,10 @@
       "sublabel": "bounded context"
     },
     {
-      "id": "fleet-runtime",
-      "type": "backend",
-      "label": "Fleet runtime",
-      "sublabel": "bounded context"
-    },
-    {
       "id": "worker",
       "type": "external",
       "label": "Worker",
       "sublabel": "actor"
-    },
-    {
-      "id": "agent-cli",
-      "type": "external",
-      "label": "Agent CLI process",
-      "sublabel": "external system"
     },
     {
       "id": "integration",
@@ -83,7 +71,7 @@
     {
       "id": "F4-s4",
       "from": "task-execution",
-      "to": "fleet-runtime",
+      "to": "worker-profiles",
       "y": 317,
       "label": "Start agent process",
       "variant": "default"
@@ -98,7 +86,7 @@
     },
     {
       "id": "F4-s6",
-      "from": "agent-cli",
+      "from": "worker-profiles",
       "to": "task-execution",
       "y": 405,
       "label": "Attempt exited",
