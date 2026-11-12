@@ -105,8 +105,9 @@ Each requirement has an ID that the failure analysis and the tests point back to
 | FR-7 | All task and result hand-off shall be through files under `FLEET_ROOT`. The only bytes ever sent into a terminal are a fixed doorbell line written by the supervisor's code. | Grep of the code for mux send calls; doorbell text is a constant. |
 | FR-8 | A docs-sync job shall fetch each CLI's documentation, record the installed version, and run adapter conformance tests on change. | Sync log and test report per CLI version. |
 | FR-9 | Each agent shall run with a context limit of 256k tokens by default, set through the CLI's own setting where one exists. | Conformance test reads back the effective setting. |
-| FR-10 | No spec or task shall be written for an idea until you approve its assumptions, and only a command you run outside any fleet process can record that approval. | A sub-orchestrator that writes `approval.json` or runs `horch idea approve` leaves the idea in `awaiting_approval`. |
+| FR-10 | No spec or task shall be written for an idea until you approve its assumptions, or you add the idea yourself with `--direct`, and only a command you run outside any fleet process can record that approval. | A sub-orchestrator that writes `approval.json` or runs `horch idea approve` leaves the idea in `awaiting_approval`. |
 | FR-11 | Every worktree shall be leased in the ledger, tied to one task and one owner, before it is created, and only fleetd shall create or remove worktrees. | A worker's own `git worktree add` is flagged on the next pass; `arch_scan` finds no worktree calls outside fleetd. |
+| FR-12 | Every task shall belong to an idea. `horch idea add --direct <ticket file>` shall take a ticket you wrote, skip research and the interview, and make a plan with 1 task that still passes plan validation and still needs a check. | Intake test: a `--direct` idea produces 1 validated plan with 1 task; no code path creates a task without an idea. |
 
 **Reliability (RR)**
 
@@ -582,17 +583,20 @@ An AI orchestrator gets cloudy because one conversation holds every idea at once
 ```
 horch idea add "Retry sync with backoff and log each retry"
 horch idea add -f rough-notes.md
+horch idea add --direct ticket.md   # fast lane: a ticket you wrote, no research or interview
 horch idea amend I-0012 "Also cap the delay at 30 s"
 horch ideas                      # the board: every idea, its state, what it waits on
 ```
 
 Each `add` writes one immutable file and one ledger row in state `captured`, and prints the ID. Half-formed ideas are fine; making them clear is the sub-orchestrator's job.
 
+**Everything is an idea, with a fast lane.** There is 1 state machine and 1 way in. There is no task without an idea. `horch idea add --direct <ticket file>` takes a ticket that you wrote. It skips research and the interview, and makes a plan with 1 task. The idea goes from `captured` to `ticketing`; the ticket you wrote stands for your approval, and `horch idea add --direct` refuses to run inside a fleet attempt, like `horch idea approve`. The plan still passes plan validation, and the task still needs a check.
+
 **The idea state machine**
 
 | State | Who acts | Leaves when |
 | --- | --- | --- |
-| `captured` | Dispatcher | A sub-orchestrator slot is free; it opens pane `idea-12` and moves to `clarifying`. |
+| `captured` | Dispatcher | A sub-orchestrator slot is free; it opens pane `idea-12` and moves to `clarifying`. An idea added with `--direct` moves to `ticketing`. |
 | `clarifying` | Sub-orchestrator, with you in its pane | It has researched the repo and docs, interviewed you, and written `assumptions.md` with no item left open. |
 | `awaiting_approval` | You | You run `horch idea approve I-0012`, or `horch idea revise I-0012 "..."` to send it back to clarifying. |
 | `specifying` | Sub-orchestrator | `spec.md` and `requirements.yaml` validate, and every requirement cites an approved assumption or one of your answers. |
@@ -861,7 +865,7 @@ Each phase keeps the fleet usable. New behaviour ships behind a run-level flag, 
 4. **Phase 3: worktree leases and rescue.** Extend the existing `worktrees` table with state, owner, base and rescue columns, and make fleetd (through `horch spawn` until Phase 4) the only code that runs `git worktree add` or `remove`, writing the row first. Add the worktree reconciler, the verified rescue to `refs/horch/rescue/`, reuse by the next attempt, invariant I6, `horch worktrees` and `horch worktree restore`. Run it once in report-only mode to list the orphans already on your disk before it acts. *Gate:* FM-25 to FM-28 green; a worker killed with dirty and untracked files loses nothing.
 5. **Phase 4: push dispatch and the result gate.** `horch spawn` binds a task before the pane exists and writes `task.yaml` and `START.md`; `CLAIM_TASK` goes away. Add Stop hooks for Claude Code, Codex and Antigravity and a `horch result` command that writes `result.json`. fleetd runs the finish steps (check, sweeps, land) as the verifier instead of the worker detaching them and waiting for a typed NOTE. *Gate:* FM-2, FM-6, FM-9 green.
 6. **Phase 5: one ledger writer.** Worker commands (`progress`, `result`, `ask`) write files into the attempt's outbox; fleetd ingests them. Every other process opens the ledger read-only, enforced by a new `arch_scan` rule. Remove Codex's `broad_ledger_rule` sandbox escape. *Gate:* FM-17, FM-24 green; arch test passes.
-7. **Phase 6: the idea dispatcher and sub-orchestrators.** Schema v9 gives `ideas` the state machine above and adds `horch idea add`, `ideas`, `show`, `note`, `approve`, `revise`, `park` and `bump`. Add the dispatcher loop to fleetd, invariant I7, and the `idea-lead` persona, which runs today's brief, spec-writer and ticket-writer steps for one idea in its own interactive pane, a fresh process per phase. Extend `add-map --dry-run` and `scripts/check-req-coverage.sh` into the plan validator (schema, DAG, coverage, profiles, citations to approved assumptions). Retire the long-lived orchestrator conversation, and allow one run per idea with several at once in place of one non-solo run per workspace. *Gate:* FM-1, FM-8, FM-10, FM-16, FM-29 to FM-32 green.
+7. **Phase 6: the idea dispatcher and sub-orchestrators.** Schema v9 gives `ideas` the state machine above and adds `horch idea add` (with the `--direct` fast lane), `ideas`, `show`, `note`, `approve`, `revise`, `park` and `bump`. Add the dispatcher loop to fleetd, invariant I7, and the `idea-lead` persona, which runs today's brief, spec-writer and ticket-writer steps for one idea in its own interactive pane, a fresh process per phase. Extend `add-map --dry-run` and `scripts/check-req-coverage.sh` into the plan validator (schema, DAG, coverage, profiles, citations to approved assumptions). Retire the long-lived orchestrator conversation, and allow one run per idea with several at once in place of one non-solo run per workspace. *Gate:* FM-1, FM-8, FM-10, FM-16, FM-29 to FM-32 green.
 8. **Phase 7: docs sync and conformance, then exec mode.** Widen `herdr-docs-sync` to every CLI with the conformance suite and unhealthy marking. Then make exec mode the default worker mode and set `context-windows.md` to 256000 for every seat (today it is 300000 for the orchestrator and 200000 for opus). *Gate:* FM-18 to FM-20 green.
 
 Phases 1 to 4 remove most of the stalls you see day to day and stop worktrees from being lost. Phase 6 is the largest change and depends on Phase 5, because a plan has to land through the single writer to be all-or-nothing, and only fleetd may record your approvals.
