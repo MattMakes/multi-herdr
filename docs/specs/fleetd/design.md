@@ -1228,15 +1228,17 @@ Phases 1 to 4 remove most of the stalls you see day to day and stop worktrees fr
 
 ## Open questions
 
-Five choices are yours and four facts need a live test; none blocks Phases 0 to 5.
+Your 5 choices are answered below. Eight facts need a live test; none blocks Phases 0 to 5.
 
-**Your call**
+**Your call (answered)**
 
-- [ ] Exec mode as the default for workers? It is the strongest fix for idle workers, but you can no longer type into a worker mid-task. Interactive stays available per persona.
-- [ ] One run, one branch and one PR per idea, with several ideas running at once? Today it is one non-solo run per workspace.
-- [ ] How many sub-orchestrator panes at once? The default here is 4, and each is an Opus session that may sit waiting on you.
-- [ ] Which host runs the fleet day to day, macOS (launchd) or Linux (systemd)? The design needs a process supervisor either way.
-- [ ] Is 1 hour the right cap on a worker's declared wait? Today a question or review can hold a task for 7 days.
+| Question | Answer | Decision |
+| --- | --- | --- |
+| Exec mode as the default for workers? | Yes. A worker runs headless, does its task and exits. A persona can be marked interactive; sub-orchestrators are interactive, and an interactive persona is the way to pair with a worker in a pane. | D7 |
+| One run, one branch and one PR per idea, with several ideas running at once? | No: 1 feature branch and 1 pull request per feature, which holds 1 main idea and its follow-on ideas. Several features run at once, in parallel by default. See Features, landing and integration. | D5, D10, D11, D12 |
+| How many sub-orchestrator panes at once? | No cap. 1 sub-orchestrator per feature; an idle one stops after 30 min to free memory. Only health guards pause new dispatch. | D8 |
+| Which host runs the fleet day to day, macOS (launchd) or Linux (systemd)? | All 3: macOS, Linux and Windows, behind 1 platform layer. | D1 |
+| Is 1 hour the right cap on a worker's declared wait? | An exec worker that asks a question exits, and its task parks with no process and no time limit. The 1 h cap applies only to an interactive persona. | Settled by the orchestrator with D8; question flow D13 |
 
 **To confirm by test**
 
@@ -1244,3 +1246,7 @@ Five choices are yours and four facts need a live test; none blocks Phases 0 to 
 - [ ] Whether a private `HOME` fully isolates `agy` config, skills and MCP, and keeps its login.
 - [ ] Whether herdr's `pane report-agent` state from the wrapper overrides its screen-based detection in the sidebar, or sits beside it.
 - [ ] Which fields herdr's custom key commands take, so one key can run `horch idea approve` for the focused idea pane.
+- [ ] herdr preview 0.9.4 against 0.9.5: whether the facts in the herdr table hold for the installed preview.
+- [ ] A Windows transport for the fleetd command channel.
+- [ ] The size limit of a resolver task (starting value: 100 changed lines or 2 files).
+- [ ] The accuracy of a structural merge tool on this repository's recorded conflicts.
