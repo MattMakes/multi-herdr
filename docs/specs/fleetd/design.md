@@ -2,6 +2,8 @@
 
 Nov 10, 2026 · @Matthew
 
+Amended 2026-11-12 after a design review. See Amendments.
+
 ## Summary
 
 Make correctness a property of code and files, not of model memory: a supervised daemon owns the ledger and acts on facts it can check, workers are bound to tasks before they start and hold them only by earned leases, and a task is done only when its checks pass on disk.
@@ -10,13 +12,37 @@ Your multi-herdr (`horch`) already has the right parts: recorded PIDs, a supervi
 
 **The decisions that matter most**
 
-1. **One supervised, level-triggered control loop.** Replace the lazily started watchdog with `horch fleetd` under systemd or launchd. Every 5 s it compares the ledger with real processes, herdr panes and files, and fixes the difference itself. It is the only ledger writer. A missed event is caught on the next pass, and a hung daemon is restarted.
-2. **Push dispatch with leases, not claims.** fleetd binds a task to a worker and writes the task file before the agent starts, so there is nothing to find. The task is held by a lease that renews only on real activity, with waits capped at an hour, so an idle worker loses its task in minutes, not days.
-3. **Done is a fact on disk.** A stop hook will not let an agent end its turn without writing `result.json`, exec mode turns "stopped" into "process exited", and only the verifier's acceptance checks move a task to done.
-4. **A program dispatches ideas; an AI leads each one.** `horch idea add` drops a rough idea into a queue. A deterministic dispatcher inside fleetd moves each idea through a fixed state machine and keeps one sub-orchestrator pane per unsettled idea. That AI researches the idea, interviews you in its own pane, writes its assumptions down and waits for your quick approval before it writes the spec and tickets. Ideas cannot merge, and no task exists outside an approved, validated plan.
+1. **One supervised, level-triggered control loop.** Replace the lazily started watchdog with `horch fleetd`, which runs under the service manager of the OS (launchd, systemd or a Windows service) through 1 platform layer. Every 5 s it compares the ledger with real processes, herdr panes and files, and fixes the difference itself. It is the only ledger writer. A missed event is caught on the next pass, and a hung daemon is restarted.
+2. **Push dispatch with leases, not claims.** fleetd binds a task to a worker and writes the task file before the agent starts, so there is nothing to find. The task is held by a lease that renews only on real activity. An exec worker that waits on a question exits and its task parks, and an interactive persona's waits are capped at an hour, so an idle worker loses its task in minutes, not days. A usage limit is not a stall: the task moves to its fallback persona or waits in `waiting_quota`.
+3. **Done is a fact on disk.** A stop hook will not let an agent end its turn without writing `result.json`, exec mode turns "stopped" into "process exited", and only the verifier moves a task to done: its acceptance checks, then today's review scripts for code, or a paired judge task for a judgment task.
+4. **A program dispatches ideas; an AI leads each one.** `horch idea add` drops a rough idea into a queue. A deterministic dispatcher inside fleetd moves each idea through a fixed state machine and keeps one sub-orchestrator pane per feature. That AI plans 1 idea at a time: it researches the idea, interviews you in its own pane, writes its assumptions down and waits for your quick approval before it writes the spec and tickets. An idea belongs to exactly 1 feature, and the ledger records it. No task exists outside an approved, validated plan; a ticket you wrote enters through the `--direct` fast lane.
 5. **Every worktree is leased before it exists.** fleetd records each worktree in the ledger, tied to its task and owner, before it runs `git worktree add`; workers never create one. A reconciler compares the ledger with `git worktree list`, and anything orphaned is committed to a rescue branch before cleanup, so work you paid for is never lost.
+6. **Every task lands on a feature branch through a landing state machine in the ledger, and no branch is lost.** Every branch is a ledger row before it exists, with a landing state, 1 owner and a time limit. fleetd lands ready task branches in bundles behind the fast gate, detects conflicts between features early, and checks the no-loss invariants against git on every pass. Each feature reaches the primary branch through 1 pull request.
+7. **There is no spend budget and no cap on parallel work. Opus 5.5 at medium effort is the default worker.** The purpose is to use the subscription usage fully. fleetd paces dispatch to each pool's usage window, and only health guards for disk and load pause new dispatch.
 
 The migration takes eight phases, each gated by a fault-injection test. Phases 1 to 4 stop most daily stalls and stop losing worktrees.
+
+## Amendments
+
+A design review on 2026-11-11 and 2026-11-12 made 13 decisions. This document includes all of them.
+
+| # | Decision | Sections changed |
+| --- | --- | --- |
+| D1 | fleetd supports macOS, Linux and Windows as first-class hosts. All OS-specific code sits behind 1 platform layer with 1 module per OS, so core code has no `cfg(target_os)`. Migration of the existing OS-specific code is a separate decision. | Summary; Goals, non-goals and defaults; Requirements (PL-1 to PL-4); Architecture and roles (fleetd, wrapper, Platform layer, What each OS provides); Supervision, liveness and reconciliation; Failure modes (FM-11, FM-12); Migration plan (Phase 1); Open questions |
+| D2 | A usage limit or a provider outage is not a stall. Every worker persona names a fallback. The task restarts at once on a fallback of another provider, else waits in `waiting_quota` with its lease paused. No attempt is burned. | Summary; Requirements (RR-11); Ledger; Worker profiles and adapters (`fallback`); Supervision, liveness and reconciliation; Failure modes (FM-5); Migration plan (Phase 2) |
+| D3 | Everything is an idea. `horch idea add --direct <ticket file>` is a fast lane for a ticket you wrote: no research, no interview, a plan with 1 task that still passes plan validation and still needs a check. | Summary; Requirements (FR-10, FR-12); Ideas; Migration plan (Phase 6) |
+| D4 | A judgment task gets a structural check and a paired judge in a different session, on a different provider when the roster has one. The judge ranks each miss CRITICAL, HIGH, MEDIUM or LOW, and only CRITICAL blocks. | Summary; Requirements (FR-4, RR-3); Architecture and roles (Verifier, Done for each kind of task); Workspace layout (plan example); Failure modes (FM-9, FM-33) |
+| D5 | Features run in parallel by default. Conflicts are found early by trial merges, a conflict stacks the younger feature on the older one with 1 resolver task, feature branches are rebased continuously, and each project declares a fast gate and a full gate. | Features, landing and integration (Between features, evidence); Ledger (`gate_runs`, `trial_merges`); Open questions |
+| D6 | Code review keeps today's review scripts unchanged, with their limits. | Architecture and roles (Verifier, Done for each kind of task); Migration plan (Phase 4) |
+| D7 | Exec mode is the default for workers. A persona can be marked interactive; sub-orchestrators are interactive. | Goals, non-goals and defaults; Worker profiles and adapters (`mode`); Open questions |
+| D8 | No spend budget and no cap on parallel work. Health guards and pacing stay. Opus 5.5 at medium effort is the default, and plan validation checks the model guide. | Summary; Goals (G7) and defaults; Requirements (OR-4, OR-5); Architecture and roles; Ideas; Worker profiles and adapters; Workspace layout; Failure modes (FM-20, FM-21, FM-29); Open questions |
+| D9 | Rollout is automatic and immediate. fleetd is a subcommand of the single `horch` binary, `horch self-update` restarts the running daemon, and a phase is on for every user once its fault-injection tests pass. | Requirements (OR-6); Migration plan; Failure modes (FM-34) |
+| D10 | Every branch is a ledger row before it exists, with a landing state, 1 owner and a time limit. Ready task branches land in bundles behind the fast gate, and no-loss invariants are checked against git on every pass. | Features, landing and integration (Landing, No work is lost); Ledger (`branches`, I8 to I13); Worktrees; Supervision (reconcile pass) |
+| D11 | Every idea lands in a feature branch. A feature is 1 sub-orchestrator, 1 feature branch and 1 pull request to the primary branch. Task branches land on the feature branch with no human approval. | Summary; Features, landing and integration (Features); Requirements (FR-2); Goals, non-goals and defaults; Architecture and roles; Ledger (`features`); Ideas |
+| D12 | A feature is an intake funnel until its pull request merges. `horch idea add --to <feature>` joins an open feature; with no `--to`, an idea starts a new feature. | Features, landing and integration (Features); Ideas; Ledger (`ideas.feature_id`) |
+| D13 | A worker question that nothing approved covers and that changes no assumption is decided by the sub-orchestrator as its own reversible assumption. Only product direction, scope or a trade-off you must own goes to you. | Ideas (question flow); Requirements (RR-12); Ledger (`questions`); Workspace layout; Failure modes (FM-35) |
+
+The orchestrator settled some engineering details in the same review: the verifier sandbox (SR-4), the command channel, waits, the `pr` setting, knowledge across ideas, the plan format and the adapters that carry over. The review also added the Preservation analysis and the new Phase 0 tests.
 
 ## Goals, non-goals and defaults
 
