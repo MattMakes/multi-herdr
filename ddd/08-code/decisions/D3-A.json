@@ -1,0 +1,59 @@
+{
+  "format": "ddd-diagram-spec",
+  "version": 1,
+  "id": "D3-A",
+  "kind": "architecture",
+  "title": "Option A: task-execution owns the wrapper",
+  "graph": {
+    "nodes": [
+      {
+        "id": "te",
+        "label": "task-execution",
+        "sublabel": "core, owns wrapper",
+        "kind": "context"
+      },
+      {
+        "id": "wp",
+        "label": "worker-profiles",
+        "sublabel": "config home",
+        "kind": "context"
+      },
+      {
+        "id": "fr",
+        "label": "fleet-runtime",
+        "sublabel": "platform layer",
+        "kind": "context"
+      },
+      {
+        "id": "cli",
+        "label": "Agent CLI",
+        "sublabel": "external",
+        "kind": "external"
+      }
+    ],
+    "edges": [
+      {
+        "id": "e0",
+        "from": "te",
+        "to": "cli",
+        "label": "start and supervise",
+        "kind": "command"
+      },
+      {
+        "id": "e1",
+        "from": "te",
+        "to": "fr",
+        "label": "process group",
+        "kind": "command"
+      },
+      {
+        "id": "e2",
+        "from": "wp",
+        "to": "te",
+        "label": "launch-environment",
+        "kind": "command"
+      }
+    ],
+    "groups": []
+  }
+}

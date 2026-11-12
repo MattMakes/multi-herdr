@@ -1,0 +1,59 @@
+{
+  "format": "ddd-diagram-spec",
+  "version": 1,
+  "id": "D2-A",
+  "kind": "architecture",
+  "title": "Option A: Task, Attempt and Verification are 3 aggregates",
+  "graph": {
+    "nodes": [
+      {
+        "id": "reap",
+        "label": "Reap use case",
+        "sublabel": "04 S7: 1 transaction",
+        "kind": "context"
+      },
+      {
+        "id": "task",
+        "label": "Task",
+        "sublabel": "aggregate",
+        "kind": "aggregate"
+      },
+      {
+        "id": "attempt",
+        "label": "Attempt",
+        "sublabel": "aggregate, holds Lease",
+        "kind": "aggregate"
+      },
+      {
+        "id": "ver",
+        "label": "Verification",
+        "sublabel": "aggregate",
+        "kind": "aggregate"
+      }
+    ],
+    "edges": [
+      {
+        "id": "e0",
+        "from": "reap",
+        "to": "attempt",
+        "label": "end-attempt (tx 1)",
+        "kind": "command"
+      },
+      {
+        "id": "e1",
+        "from": "reap",
+        "to": "task",
+        "label": "requeue (tx 2)",
+        "kind": "command"
+      },
+      {
+        "id": "e2",
+        "from": "ver",
+        "to": "task",
+        "label": "mark-task-done",
+        "kind": "command"
+      }
+    ],
+    "groups": []
+  }
+}

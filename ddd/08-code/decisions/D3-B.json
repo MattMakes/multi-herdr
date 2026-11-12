@@ -1,0 +1,59 @@
+{
+  "format": "ddd-diagram-spec",
+  "version": 1,
+  "id": "D3-B",
+  "kind": "architecture",
+  "title": "Option B: worker-profiles owns the wrapper",
+  "graph": {
+    "nodes": [
+      {
+        "id": "te",
+        "label": "task-execution",
+        "sublabel": "core",
+        "kind": "context"
+      },
+      {
+        "id": "wp",
+        "label": "worker-profiles",
+        "sublabel": "owns wrapper",
+        "kind": "context"
+      },
+      {
+        "id": "fr",
+        "label": "fleet-runtime",
+        "sublabel": "platform layer",
+        "kind": "context"
+      },
+      {
+        "id": "cli",
+        "label": "Agent CLI",
+        "sublabel": "external",
+        "kind": "external"
+      }
+    ],
+    "edges": [
+      {
+        "id": "e0",
+        "from": "wp",
+        "to": "cli",
+        "label": "start and supervise",
+        "kind": "command"
+      },
+      {
+        "id": "e1",
+        "from": "wp",
+        "to": "fr",
+        "label": "process group",
+        "kind": "command"
+      },
+      {
+        "id": "e2",
+        "from": "cli",
+        "to": "te",
+        "label": "heartbeat.json, exit.json",
+        "kind": "command"
+      }
+    ],
+    "groups": []
+  }
+}

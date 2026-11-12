@@ -4,7 +4,7 @@
   "title": "fleetd: the horch fleet control plane",
   "ddd_dir": "ddd",
   "created": "2026-11-12T16:45:13Z",
-  "updated": "2026-11-12T18:11:22Z",
+  "updated": "2026-11-12T18:33:48Z",
   "mode": "auto",
   "depth": "standard",
   "scale_target": {
@@ -105,7 +105,30 @@
       ]
     },
     "code": {
-      "status": "pending"
+      "status": "done",
+      "updated": "2026-11-12T18:33:48Z",
+      "mode": "auto",
+      "open_questions": 6,
+      "artifacts": [
+        "ddd/08-code/code.json",
+        "ddd/08-code/decisions/D2-A.json",
+        "ddd/08-code/decisions/D2-B.json",
+        "ddd/08-code/decisions/D2-C.json",
+        "ddd/08-code/decisions/D3-A.json",
+        "ddd/08-code/decisions/D3-B.json",
+        "ddd/08-code/decisions/D3-C.json",
+        "ddd/08-code/fleet-runtime/design.md",
+        "ddd/08-code/ideas/design.md",
+        "ddd/08-code/implementation-plan.md",
+        "ddd/08-code/integration/aggregate-canvas-feature.md",
+        "ddd/08-code/integration/aggregate-canvas-task-branch.md",
+        "ddd/08-code/integration/design.md",
+        "ddd/08-code/task-execution/aggregate-canvas-task.md",
+        "ddd/08-code/task-execution/aggregate-canvas-verification.md",
+        "ddd/08-code/task-execution/design.md",
+        "ddd/08-code/worker-profiles/design.md",
+        "ddd/08-code/worktree-custody/design.md"
+      ]
     },
     "contracts": {
       "status": "pending"

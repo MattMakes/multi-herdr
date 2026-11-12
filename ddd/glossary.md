@@ -73,3 +73,11 @@ _Uses the shared meaning of_: **Feature Branch**, **Task Branch**, **Primary Bra
 **Ledger** — The SQLite file ~/.horch/ledger.sqlite3 in WAL mode: an event log plus derived tables. Only fleetd writes it; each context owns its own tables (understand N17, organise N2).
 **Check** — horch fleetd check: the heartbeat check that restarts fleetd when its last full pass is older than 30 s of awake time. It is not a task check.
 **Start agent process** — The fleet-runtime call that starts the fleet-run wrapper of 1 attempt, or 1 sub-orchestrator pane through the herdr adapter, in its own process group. Coined in connect (assumption A6).
+
+## Coined by ddd-code
+**Verified Verdict** - The value that only the verification module can create, and the only input that moves a task to done. (context: task-execution)
+**Stall Rung** - 1 step of the stall ladder: first doorbell, second doorbell, or end of the attempt. (context: task-execution)
+**Awake Instant** - A time reading that counts only awake machine time, used for leases and stall rungs. (context: task-execution)
+**Path Claim** - The set of paths a running task owns; 2 running tasks of 1 feature never hold overlapping claims. (context: task-execution)
+**Judge Finding** - 1 miss that a judge task reports, with a rank of CRITICAL, HIGH, MEDIUM or LOW. (context: task-execution)
+**Judged Tree** - The tree hash that a check, a review or a gate judged; a pass stands only while the tree is the same. (context: integration)

@@ -1,0 +1,46 @@
+{
+  "format": "ddd-diagram-spec",
+  "version": 1,
+  "id": "D2-C",
+  "kind": "architecture",
+  "title": "Option C: 1 Task aggregate with verification state",
+  "graph": {
+    "nodes": [
+      {
+        "id": "reap",
+        "label": "Reap use case",
+        "sublabel": "04 S7: 1 transaction",
+        "kind": "context"
+      },
+      {
+        "id": "task",
+        "label": "Task",
+        "sublabel": "aggregate: attempts, lease, checks, judge findings",
+        "kind": "aggregate"
+      },
+      {
+        "id": "check",
+        "label": "Check run",
+        "sublabel": "20 min, outside tx",
+        "kind": "external"
+      }
+    ],
+    "edges": [
+      {
+        "id": "e0",
+        "from": "reap",
+        "to": "task",
+        "label": "end attempt + requeue (1 tx)",
+        "kind": "command"
+      },
+      {
+        "id": "e1",
+        "from": "check",
+        "to": "task",
+        "label": "result written into Task",
+        "kind": "command"
+      }
+    ],
+    "groups": []
+  }
+}

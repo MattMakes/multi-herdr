@@ -1,0 +1,59 @@
+{
+  "format": "ddd-diagram-spec",
+  "version": 1,
+  "id": "D3-C",
+  "kind": "architecture",
+  "title": "Option C: fleet-runtime owns the wrapper (recommended)",
+  "graph": {
+    "nodes": [
+      {
+        "id": "te",
+        "label": "task-execution",
+        "sublabel": "core",
+        "kind": "context"
+      },
+      {
+        "id": "wp",
+        "label": "worker-profiles",
+        "sublabel": "CLI event map",
+        "kind": "context"
+      },
+      {
+        "id": "fr",
+        "label": "fleet-runtime",
+        "sublabel": "owns wrapper role",
+        "kind": "context"
+      },
+      {
+        "id": "cli",
+        "label": "Agent CLI",
+        "sublabel": "external",
+        "kind": "external"
+      }
+    ],
+    "edges": [
+      {
+        "id": "e0",
+        "from": "fr",
+        "to": "cli",
+        "label": "start and supervise",
+        "kind": "command"
+      },
+      {
+        "id": "e1",
+        "from": "wp",
+        "to": "fr",
+        "label": "CLI event map",
+        "kind": "command"
+      },
+      {
+        "id": "e2",
+        "from": "cli",
+        "to": "te",
+        "label": "heartbeat.json, exit.json",
+        "kind": "command"
+      }
+    ],
+    "groups": []
+  }
+}

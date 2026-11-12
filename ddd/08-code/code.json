@@ -1,0 +1,2582 @@
+{
+  "schema_version": 1,
+  "step": "code",
+  "produced_by": "ddd-code",
+  "produced_at": "2026-11-12T18:33:41Z",
+  "mode": "auto",
+  "depth": "standard",
+  "inputs": [
+    "ddd/manifest.json",
+    "ddd/01-understand/understand.json",
+    "ddd/02-discover/discover.json",
+    "ddd/03-decompose/decompose.json",
+    "ddd/04-strategize/strategize.json",
+    "ddd/05-connect/connect.json",
+    "ddd/06-organise/organise.json",
+    "ddd/07-define/define.json",
+    "ddd/glossary.md",
+    "ddd/07-define/ideas/bounded-context-canvas.md",
+    "ddd/07-define/task-execution/bounded-context-canvas.md",
+    "ddd/07-define/worktree-custody/bounded-context-canvas.md",
+    "ddd/07-define/integration/bounded-context-canvas.md",
+    "ddd/07-define/worker-profiles/bounded-context-canvas.md",
+    "ddd/07-define/fleet-runtime/bounded-context-canvas.md",
+    "README.md",
+    "docs/specs/fleetd/design.md",
+    "docs/specs/fleetd/preservation-04-behavior.md",
+    "docs/specs/fleetd/preservation-05-contracts-and-values.md",
+    "docs/specs/fleetd/preservation-06-wiring-and-platform.md",
+    "crates/horch-core/src/lib.rs",
+    "crates/horch-core/tests/arch_scan.rs"
+  ],
+  "assumptions": [
+    {
+      "id": "A1",
+      "text": "The language is Rust. The ticket of this step states it, README.md names it, and every existing crate is Rust. The framework is none: plain Rust with rusqlite for the ledger, as horch-core uses today.",
+      "confidence": "high"
+    },
+    {
+      "id": "A2",
+      "text": "Each context is 1 module under crates/horch-core/src/fleetd/<context>/ with domain/, application/ and adapters/ submodules (decision D1, understand N6). Existing modules (taskledger, vcs, runtime, roster, harness, routing, workspace) are wrapped by adapters and are not moved in this plan.",
+      "confidence": "medium"
+    },
+    {
+      "id": "A3",
+      "text": "Attempt and its Lease are entities and value objects inside the Task aggregate, not their own aggregate (decision D2), because 04 S7 needs the end of the attempt and the requeue of the task in 1 ledger transaction.",
+      "confidence": "medium"
+    },
+    {
+      "id": "A4",
+      "text": "Only the verification module can construct a VerifiedVerdict value, and Task::mark_done takes one; the one-door transition table also refuses verifying -> done with any cause other than verifier (decision D4, define N1).",
+      "confidence": "high"
+    },
+    {
+      "id": "A5",
+      "text": "Concurrency inside the ledger needs no optimistic retry: fleetd is the single writer and runs its pass serially (connect D1, design Ledger). Each aggregate still carries a version, and the one-door transition checks from_state, so a stale write fails loudly.",
+      "confidence": "high"
+    },
+    {
+      "id": "A6",
+      "text": "The attempts table holds task attempts (written by task-execution) and sub-orchestrator attempts with task_id null (written by ideas). Each context writes only its own row kind (organise N2).",
+      "confidence": "medium"
+    },
+    {
+      "id": "A7",
+      "text": "The platform layer lives at crates/horch-core/src/platform/ with mod.rs (the trait and NotSupported) and mac.rs, linux.rs, windows.rs; it is owned by fleet-runtime (design D1, strategize N1). Only these 3 files hold cfg(target_os).",
+      "confidence": "high"
+    },
+    {
+      "id": "A8",
+      "text": "The implementation plan follows the 8 phases of the design migration plan in order (Phase 0 to Phase 7). Slice numbers follow the phases, so a slice is released only when its fault-injection gate passes (design D9).",
+      "confidence": "high"
+    },
+    {
+      "id": "A9",
+      "text": "The fitness tests extend crates/horch-core/tests/arch_scan.rs, which already scans source files for forbidden lines. No new tool is needed.",
+      "confidence": "medium"
+    },
+    {
+      "id": "A10",
+      "text": "Coined terms Verified Verdict, Stall Rung, Judged Tree, Path Claim, Awake Instant and Judge Finding name value objects and an entity that the canvases describe but do not name.",
+      "confidence": "medium"
+    }
+  ],
+  "open_questions": [
+    {
+      "id": "Q1",
+      "text": "Which context owns the fleet-run wrapper logic (connect D2, still open)? This step recommends fleet-runtime and keeps the composition root at crates/horch/src/cmd/fleet_run.rs in every option, so slices 0 to 3 do not depend on the answer. Slice 4 (Phase 4) needs it.",
+      "blocking": false,
+      "owner": "operator"
+    },
+    {
+      "id": "Q2",
+      "text": "Must the arch_scan fitness test also enforce that no context reads or writes the tables or folders of another context (organise Q2)? This step plans the rule as fitness_no_context_touches_foreign_tables and recommends yes.",
+      "blocking": false,
+      "owner": "operator"
+    },
+    {
+      "id": "Q3",
+      "text": "Docs sync and adapter conformance have no owning context (organise D2 open). This step places run-conformance-tests in worker-profiles and leaves docs sync out of the plan until organise D2 is answered.",
+      "blocking": false,
+      "owner": "operator"
+    },
+    {
+      "id": "Q4",
+      "text": "herdr agent status is a liveness signal of task-execution with no connect message (define Q2). This step reads it through the LivenessProbe port over the fleet-runtime HerdrGateway. Must ddd-connect add the message?",
+      "blocking": false,
+      "owner": "ddd-connect"
+    },
+    {
+      "id": "Q5",
+      "text": "Does a feature rebase wait for the running attempts of the feature, or do their task branches rebase at landing (define Q3)? This step models the second: a task branch that no longer applies goes to conflicted at build-bundle.",
+      "blocking": false,
+      "owner": "operator"
+    },
+    {
+      "id": "Q6",
+      "text": "Migration of the 178 existing OS-specific sites into the platform layer is a separate decision (design D1). This plan touches only new fleetd code and the adapters that wrap existing modules.",
+      "blocking": false,
+      "owner": "operator"
+    }
+  ],
+  "language": "rust",
+  "framework": "none",
+  "architecture_style": "hexagonal",
+  "coined_terms": [
+    {
+      "term": "Verified Verdict",
+      "definition": "The value that only the verification module can create, and the only input that moves a task to done.",
+      "context": "task-execution"
+    },
+    {
+      "term": "Stall Rung",
+      "definition": "1 step of the stall ladder: first doorbell, second doorbell, or end of the attempt.",
+      "context": "task-execution"
+    },
+    {
+      "term": "Awake Instant",
+      "definition": "A time reading that counts only awake machine time, used for leases and stall rungs.",
+      "context": "task-execution"
+    },
+    {
+      "term": "Path Claim",
+      "definition": "The set of paths a running task owns; 2 running tasks of 1 feature never hold overlapping claims.",
+      "context": "task-execution"
+    },
+    {
+      "term": "Judge Finding",
+      "definition": "1 miss that a judge task reports, with a rank of CRITICAL, HIGH, MEDIUM or LOW.",
+      "context": "task-execution"
+    },
+    {
+      "term": "Judged Tree",
+      "definition": "The tree hash that a check, a review or a gate judged; a pass stands only while the tree is the same.",
+      "context": "integration"
+    }
+  ],
+  "scaffold": {
+    "generated": false,
+    "root": "crates/horch-core/src/fleetd/",
+    "files": []
+  },
+  "handoff": {
+    "plan_path": "ddd/08-code/implementation-plan.md",
+    "suggested_next": [
+      "ddd-contracts",
+      "software:create-plan",
+      "software:tdd"
+    ]
+  },
+  "deprecated": [
+    {
+      "id": "attempt",
+      "collection": "aggregate_candidates",
+      "reason": "Attempt is an entity inside the Task aggregate (decision D2): 04 S7 needs the attempt end and the task requeue in 1 transaction.",
+      "since": "2026-11-12"
+    }
+  ],
+  "contexts": [
+    {
+      "context": "ideas",
+      "implementation_pattern": "active-record",
+      "deployable": "horch",
+      "module_path": "crates/horch-core/src/fleetd/ideas",
+      "aggregates": [],
+      "domain_services": [
+        {
+          "name": "PlanValidator",
+          "description": "Schema, DAG, coverage, profiles, model guide, paired judges, declared gates and citations to approved assumptions; pure over plan.yaml and the requirements."
+        }
+      ],
+      "application_services": [
+        {
+          "name": "AddIdea",
+          "command": "add-idea",
+          "description": "horch idea add \"...\" or -f notes.md, optional --to <feature>."
+        },
+        {
+          "name": "StartSubOrchestrator",
+          "command": "start-sub-orchestrator",
+          "description": "fleetd starts 1 fresh process per phase in the pane of the feature, and restarts a dead or missing one on the next pass. Asks LaunchEnvironmentGateway, then AgentProcessGateway, after commit (connect N3)."
+        },
+        {
+          "name": "AskOperator",
+          "command": "ask-operator",
+          "description": "1 question at a time: what done looks like, scope edges, constraints, affected areas, priority."
+        },
+        {
+          "name": "AnswerInterviewQuestion",
+          "command": "answer-interview-question",
+          "description": "The operator answers in the pane. horch idea note records it."
+        },
+        {
+          "name": "AmendIdea",
+          "command": "amend-idea",
+          "description": "horch idea amend <id> \"...\"."
+        },
+        {
+          "name": "WriteAssumptions",
+          "command": "write-assumptions",
+          "description": "Writes assumptions.md: [confirmed] and [assumed] items, none [open]."
+        },
+        {
+          "name": "RequestApproval",
+          "command": "request-approval",
+          "description": "Moves the idea to awaiting_approval and notifies the operator. Reminds once an hour in working hours."
+        },
+        {
+          "name": "ParkIdea",
+          "command": "park-idea",
+          "description": "Issued by policy after 7 days of waiting or an escalation. The operator also runs horch idea park."
+        },
+        {
+          "name": "CancelIdea",
+          "command": "cancel-idea",
+          "description": "horch idea cancel."
+        },
+        {
+          "name": "ReviseAssumptions",
+          "command": "revise-assumptions",
+          "description": "horch idea revise <id> \"...\"."
+        },
+        {
+          "name": "ApproveAssumptions",
+          "command": "approve-assumptions",
+          "description": "horch idea approve <id>. Refused inside any fleet attempt; profiles deny it. fleetd writes approval.json with the sha256 the operator saw; any other approval file is ignored (I7)."
+        },
+        {
+          "name": "AddDirectIdea",
+          "command": "add-direct-idea",
+          "description": "horch idea add --direct <ticket file>, optional --to. Refused inside a fleet attempt."
+        },
+        {
+          "name": "WriteSpec",
+          "command": "write-spec",
+          "description": "Writes spec.md and requirements.yaml after approval."
+        },
+        {
+          "name": "SubmitPlan",
+          "command": "submit-plan",
+          "description": "Writes tickets and plan.yaml."
+        },
+        {
+          "name": "ValidatePlan",
+          "command": "validate-plan",
+          "description": "The plan validator: paired judges, declared gates, model guide, overlapping paths. Commits tasks in 1 transaction."
+        },
+        {
+          "name": "AskQuestion",
+          "command": "ask-question",
+          "description": "Writes 1 question file, commits work in progress, exits."
+        },
+        {
+          "name": "AnswerQuestion",
+          "command": "answer-question",
+          "description": "fleetd starts the owner on each pass until an answer is recorded. 4 cases (design, Ideas, How a worker's question is resolved)."
+        },
+        {
+          "name": "EscalateQuestion",
+          "command": "escalate-question",
+          "description": "Fires when the time limit of the question row passes."
+        },
+        {
+          "name": "ReplanTask",
+          "command": "replan-task",
+          "description": "Once per task."
+        },
+        {
+          "name": "RollUpIdea",
+          "command": "roll-up-idea",
+          "description": "in_progress to integrating."
+        },
+        {
+          "name": "CloseIdea",
+          "command": "close-idea",
+          "description": "Needs every worktree of the idea removed."
+        }
+      ],
+      "ports": [
+        {
+          "name": "IdeasCommands",
+          "kind": "driving",
+          "description": "one operation per use case; called by the command channel (horch idea ...), the reconcile pass and the idea-folder ingester"
+        },
+        {
+          "name": "IdeasQueries",
+          "kind": "driving",
+          "description": "read models IdeaBoard, InterviewRecord, InFlightDiffs, ApprovedAssumptionsAndSpec"
+        },
+        {
+          "name": "IdeasEventHandlers",
+          "kind": "driving",
+          "description": "policies on feature-opened, replan-requested, task-branch-landed, feature-merged"
+        },
+        {
+          "name": "IdeaFolderIngest",
+          "kind": "driving",
+          "description": "assumptions.md, spec.md, requirements.yaml, plan.yaml, question and answer files; 1 ingestion per (path, sha256)"
+        },
+        {
+          "name": "IdeasStore",
+          "kind": "driven",
+          "description": "ideas, requirements, questions rows and sub-orchestrator attempt rows (task_id null)"
+        },
+        {
+          "name": "EventPublisher",
+          "kind": "driven",
+          "description": "writes the event row in the same ledger transaction"
+        },
+        {
+          "name": "LaunchEnvironmentGateway",
+          "kind": "driven",
+          "description": "asks worker-profiles for the idea-lead launch environment"
+        },
+        {
+          "name": "AgentProcessGateway",
+          "kind": "driven",
+          "description": "starts or stops the sub-orchestrator pane through fleet-runtime"
+        },
+        {
+          "name": "NeedsYouInbox",
+          "kind": "driven",
+          "description": "approval requests, parked ideas and escalated questions; herdr notification"
+        },
+        {
+          "name": "AttemptContext",
+          "kind": "driven",
+          "description": "tells whether the caller runs inside a fleet attempt, so approve and --direct refuse there"
+        },
+        {
+          "name": "Clock",
+          "kind": "driven",
+          "description": "30 min idle stop, 7 day park, question time limit, hourly reminder"
+        }
+      ],
+      "adapters": [
+        {
+          "port": "IdeasCommands",
+          "implementation": "CommandChannelHandler and ReconcilePassDriver"
+        },
+        {
+          "port": "IdeasEventHandlers",
+          "implementation": "InProcessReconcileConsumer"
+        },
+        {
+          "port": "IdeaFolderIngest",
+          "implementation": "IdeaFolderIngester"
+        },
+        {
+          "port": "IdeasStore",
+          "implementation": "SqliteIdeasStore"
+        },
+        {
+          "port": "IdeasStore",
+          "implementation": "InMemoryIdeasStore"
+        },
+        {
+          "port": "EventPublisher",
+          "implementation": "LedgerEventLog"
+        },
+        {
+          "port": "EventPublisher",
+          "implementation": "RecordingEventPublisher"
+        },
+        {
+          "port": "LaunchEnvironmentGateway",
+          "implementation": "InProcessWorkerProfiles"
+        },
+        {
+          "port": "LaunchEnvironmentGateway",
+          "implementation": "FakeLaunchEnvironment"
+        },
+        {
+          "port": "AgentProcessGateway",
+          "implementation": "InProcessFleetRuntime"
+        },
+        {
+          "port": "AgentProcessGateway",
+          "implementation": "FakeAgentProcesses"
+        },
+        {
+          "port": "NeedsYouInbox",
+          "implementation": "NeedsYouFolder"
+        },
+        {
+          "port": "NeedsYouInbox",
+          "implementation": "InMemoryNeedsYou"
+        },
+        {
+          "port": "AttemptContext",
+          "implementation": "EnvAttemptContext"
+        },
+        {
+          "port": "AttemptContext",
+          "implementation": "FakeAttemptContext"
+        },
+        {
+          "port": "Clock",
+          "implementation": "PlatformAwakeClock"
+        },
+        {
+          "port": "Clock",
+          "implementation": "FakeClock"
+        }
+      ],
+      "read_models": [
+        {
+          "name": "IdeaBoard",
+          "source_events": [
+            "idea-captured",
+            "assumptions-written",
+            "approval-requested",
+            "assumptions-approved",
+            "idea-parked",
+            "idea-cancelled",
+            "plan-committed",
+            "idea-tasks-landed",
+            "idea-merged"
+          ]
+        },
+        {
+          "name": "InterviewRecord",
+          "source_events": [
+            "interview-question-asked",
+            "interview-answer-recorded",
+            "idea-amended"
+          ]
+        },
+        {
+          "name": "InFlightDiffs",
+          "source_events": [
+            "plan-committed",
+            "idea-tasks-landed"
+          ]
+        },
+        {
+          "name": "ApprovedAssumptionsAndSpec",
+          "source_events": [
+            "assumptions-approved",
+            "assumptions-revised",
+            "spec-written",
+            "own-assumption-recorded"
+          ]
+        }
+      ],
+      "tests": [
+        {
+          "invariant": "I3: every requirement of an idea in in_progress or later is covered by at least 1 task that is not cancelled",
+          "test": "i3_uncovered_requirement_is_reported_and_plan_refused"
+        },
+        {
+          "invariant": "I7: no idea is past awaiting_approval unless approved_sha256 matches the current assumptions.md",
+          "test": "i7_changed_assumptions_after_approval_hold_the_idea"
+        },
+        {
+          "invariant": "I7: no idea is past awaiting_approval unless approved_sha256 matches the current assumptions.md",
+          "test": "fm32_forged_approval_is_ignored"
+        },
+        {
+          "invariant": "I7: every idea from clarifying to integrating has exactly 1 live sub-orchestrator attempt or waits on the operator",
+          "test": "i7_missing_sub_orchestrator_is_started_extra_is_stopped"
+        },
+        {
+          "invariant": "I13: a sub-orchestrator exists for each feature that is not merged and not abandoned",
+          "test": "i13_open_feature_without_sub_orchestrator_gets_one"
+        },
+        {
+          "invariant": "horch idea approve and --direct refuse inside a fleet attempt (FR-10)",
+          "test": "approve_refused_inside_a_fleet_attempt"
+        },
+        {
+          "invariant": "A plan is committed all-or-nothing after every validator check passes (FR-3, FR-4)",
+          "test": "invalid_plan_commits_no_task"
+        },
+        {
+          "invariant": "A judgment-kind task without a paired judge refuses the plan",
+          "test": "plan_without_paired_judge_is_refused"
+        },
+        {
+          "invariant": "An idea waiting 7 days goes to parked with a needs-you note (FM-29)",
+          "test": "fm29_idea_waiting_7_days_is_parked"
+        },
+        {
+          "invariant": "A worker question is re-driven until answered and escalates past its limit (RR-12, FM-35)",
+          "test": "fm35_unanswered_question_escalates"
+        },
+        {
+          "invariant": "use case: add-direct-idea",
+          "test": "given_ticket_file_when_add_direct_then_ticketing_with_1_task_and_its_judge"
+        },
+        {
+          "invariant": "contract: approval-requested",
+          "test": "published approval-requested carries exactly ideaId, assumptionsHash (connect.json payload) and nothing consumers did not ask for"
+        },
+        {
+          "invariant": "contract: worker-question-asked",
+          "test": "published worker-question-asked carries exactly taskId, questionId, text (connect.json payload) and nothing consumers did not ask for"
+        },
+        {
+          "invariant": "contract: assumptions-written",
+          "test": "published assumptions-written carries exactly ideaId, featureId? (connect.json payload) and nothing consumers did not ask for"
+        },
+        {
+          "invariant": "contract: direct-idea-accepted",
+          "test": "published direct-idea-accepted carries exactly ideaId, ticketFile, featureId? (connect.json payload) and nothing consumers did not ask for"
+        },
+        {
+          "invariant": "contract: plan-committed",
+          "test": "published plan-committed carries exactly ideaId, taskIds[] (connect.json payload) and nothing consumers did not ask for"
+        },
+        {
+          "invariant": "contract: plan-refused",
+          "test": "published plan-refused carries exactly ideaId, taskId?, reasons[] (connect.json payload) and nothing consumers did not ask for"
+        },
+        {
+          "invariant": "contract: task-replanned",
+          "test": "published task-replanned carries exactly taskId, planChange (connect.json payload) and nothing consumers did not ask for"
+        },
+        {
+          "invariant": "contract: question-answered",
+          "test": "published question-answered carries exactly questionId, taskId (connect.json payload) and nothing consumers did not ask for"
+        },
+        {
+          "invariant": "contract: own-assumption-recorded",
+          "test": "published own-assumption-recorded carries exactly questionId, taskId (connect.json payload) and nothing consumers did not ask for"
+        },
+        {
+          "invariant": "contract: idea-tasks-landed",
+          "test": "published idea-tasks-landed carries exactly ideaId, featureId (connect.json payload) and nothing consumers did not ask for"
+        },
+        {
+          "invariant": "idempotent: feature-opened",
+          "test": "handling feature-opened twice (same message id) has the same effect as once"
+        },
+        {
+          "invariant": "idempotent: replan-requested",
+          "test": "handling replan-requested twice (same message id) has the same effect as once"
+        },
+        {
+          "invariant": "idempotent: task-branch-landed",
+          "test": "handling task-branch-landed twice (same message id) has the same effect as once"
+        },
+        {
+          "invariant": "idempotent: feature-merged",
+          "test": "handling feature-merged twice (same message id) has the same effect as once"
+        }
+      ],
+      "design_path": "ddd/08-code/ideas/design.md"
+    },
+    {
+      "context": "task-execution",
+      "implementation_pattern": "domain-model",
+      "deployable": "horch",
+      "module_path": "crates/horch-core/src/fleetd/task_execution",
+      "aggregates": [
+        {
+          "id": "task",
+          "name": "Task",
+          "root_entity": "Task",
+          "entities": [
+            "Attempt"
+          ],
+          "value_objects": [
+            "TaskId",
+            "TaskState",
+            "TaskKind",
+            "AttemptId",
+            "AttemptOutcome",
+            "Lease",
+            "AwakeInstant",
+            "StallRung",
+            "Backoff",
+            "AttemptBudget",
+            "PathClaim",
+            "ProfileRef",
+            "ResultFile",
+            "VerifiedVerdict"
+          ],
+          "invariants": [
+            "I1: a leased or running task has exactly 1 unexpired lease and 1 live attempt",
+            "I2: no task is ready while a dependency is not done",
+            "Only a VerifiedVerdict from the verification module moves a task to done (RR-3, define N1)",
+            "A reap ends the attempt and requeues the task in 1 transaction before any signal (04 S7)",
+            "A usage limit burns no attempt (RR-11)",
+            "An operator requeue resets the attempt count through attempt_floor (04 L8)",
+            "A task has at most max_attempts attempts, then 1 replan, then escalation (RR-6)"
+          ],
+          "commands": [
+            "promote-task",
+            "dispatch-task",
+            "launch-attempt",
+            "renew-lease",
+            "apply-stall-ladder",
+            "end-attempt",
+            "write-result",
+            "schedule-retry",
+            "mark-task-done",
+            "escalate-task",
+            "requeue-task",
+            "move-to-fallback"
+          ],
+          "events": [
+            "task-promoted",
+            "task-leased",
+            "attempt-launched",
+            "lease-renewed",
+            "lease-expired",
+            "attempt-stalled",
+            "attempt-failed",
+            "result-written",
+            "retry-scheduled",
+            "replan-requested",
+            "task-done",
+            "task-escalated",
+            "task-requeued",
+            "fallback-assigned",
+            "quota-wait-started"
+          ],
+          "state_transitions": [
+            "pending -> ready (promote-task, every dependency done)",
+            "ready -> leased (dispatch-task, lease and worktree row in 1 transaction)",
+            "leased -> running (launch-attempt, after worktree-created)",
+            "running -> running (renew-lease, earned activity only)",
+            "running -> stalled (renew-lease lease-expired, or apply-stall-ladder)",
+            "running -> verifying (attempt exit with a result file; write-result alone never leaves verifying)",
+            "running -> waiting_quota (move-to-fallback with no fallback on another provider)",
+            "running -> leased (move-to-fallback onto a fallback persona; attempt count unchanged)",
+            "running -> blocked_on_user (worker question; exec worker exits and the task parks)",
+            "waiting_quota -> ready (promote-task on quota-window-reset)",
+            "blocked_on_user -> leased (question-answered or own-assumption-recorded)",
+            "stalled|verifying -> failed (end-attempt with a non-verified outcome)",
+            "failed -> ready (schedule-retry while attempts remain)",
+            "failed -> escalated (escalate-task after the replan, or rescue-failed)",
+            "verifying -> done (mark-task-done with a VerifiedVerdict only)",
+            "escalated -> ready (requeue-task by the operator, attempt_floor reset)",
+            "any non-terminal -> cancelled (plan change)",
+            "rejected: done from any state without a VerifiedVerdict",
+            "rejected: ready while a dependency is not done",
+            "rejected: leased for a worker that already runs an attempt (I4)"
+          ],
+          "canvas_path": "ddd/08-code/task-execution/aggregate-canvas-task.md"
+        },
+        {
+          "id": "verification",
+          "name": "Verification",
+          "root_entity": "Verification",
+          "entities": [
+            "JudgeFinding"
+          ],
+          "value_objects": [
+            "VerificationId",
+            "CheckOutcome",
+            "ReviewOutcome",
+            "JudgedTree",
+            "FindingRank",
+            "FixRound",
+            "VerifiedVerdict"
+          ],
+          "invariants": [
+            "A verdict is verified only when result.json validates and the check passes in the worker sandbox",
+            "A code kind is verified only after the review scripts pass (V-14 limits)",
+            "A judgment kind is verified only with no open CRITICAL judge finding",
+            "At most 2 critical fix rounds, then the task escalates",
+            "A second judge raises no new MEDIUM or LOW finding"
+          ],
+          "commands": [
+            "run-check",
+            "run-review",
+            "write-judge-verdict",
+            "open-critical-fix",
+            "settle-high-finding"
+          ],
+          "events": [
+            "check-passed",
+            "check-failed",
+            "review-passed",
+            "review-failed",
+            "judge-verdict-written",
+            "critical-fix-opened",
+            "high-finding-settled"
+          ],
+          "state_transitions": [
+            "pending -> checking (run-check, result.json validates)",
+            "checking -> check_failed (run-check, check-failed)",
+            "checking -> reviewing (check-passed, code kind)",
+            "checking -> awaiting_judge (check-passed, judgment kind)",
+            "checking -> verified (check-passed, judge kind: structural check only)",
+            "reviewing -> verified (review-passed)",
+            "reviewing -> review_failed (review-failed)",
+            "awaiting_judge -> verified (write-judge-verdict, no CRITICAL item)",
+            "awaiting_judge -> critical_fix (open-critical-fix, round 1 or 2)",
+            "critical_fix -> awaiting_judge (fix written, a fresh judge checks the earlier CRITICAL items only)",
+            "critical_fix -> escalated (a CRITICAL item left after 2 rounds)",
+            "rejected: verified from pending, checking without a passed check, or awaiting_judge with an open CRITICAL item"
+          ],
+          "canvas_path": "ddd/08-code/task-execution/aggregate-canvas-verification.md"
+        }
+      ],
+      "domain_services": [
+        {
+          "name": "DispatchPlanner",
+          "description": "Picks ready tasks for workers across Task instances: I4, path overlap (04 L6), exclusive tasks, health guards and pool pacing. Pure: takes snapshots and a Clock reading."
+        },
+        {
+          "name": "StallLadder",
+          "description": "Maps a liveness snapshot (process alive, heartbeat age, activity age, agent state) and an awake-time reading to the next rung: doorbell, doorbell, end."
+        }
+      ],
+      "application_services": [
+        {
+          "name": "PromoteTask",
+          "command": "promote-task",
+          "description": "pending to ready when every dependency is done, or waiting_quota to ready when the pool resets."
+        },
+        {
+          "name": "DispatchTask",
+          "command": "dispatch-task",
+          "description": "No cap. Only the health guards (free disk, load) and the pacing of the pool hold dispatch."
+        },
+        {
+          "name": "LaunchAttempt",
+          "command": "launch-attempt",
+          "description": "Starts the wrapper and the CLI in its own process group. A resume after an answer also launches. Asks LaunchEnvironmentGateway, then AgentProcessGateway, after the ledger transaction commits (connect N3, N4)."
+        },
+        {
+          "name": "RenewLease",
+          "command": "renew-lease",
+          "description": "Every reconcile pass (5 s). Lease time counts only while the machine is awake."
+        },
+        {
+          "name": "ApplyStallLadder",
+          "command": "apply-stall-ladder",
+          "description": "Every pass: doorbell, doorbell after 2 min, then end. stall_after default 5 min; start timeout 90 s."
+        },
+        {
+          "name": "MoveToFallback",
+          "command": "move-to-fallback",
+          "description": "Fallback persona on another provider, else waiting_quota with the lease paused."
+        },
+        {
+          "name": "WriteResult",
+          "command": "write-result",
+          "description": "horch result writes outbox/result.json. Records the result on the Attempt. It never moves the task to done (define N1)."
+        },
+        {
+          "name": "RunCheck",
+          "command": "run-check",
+          "description": "The verifier, with today's check timeout (20 min, max 24 h)."
+        },
+        {
+          "name": "RunReview",
+          "command": "run-review",
+          "description": "Today's review scripts, unchanged. Rounds: light 1, full 3."
+        },
+        {
+          "name": "WriteJudgeVerdict",
+          "command": "write-judge-verdict",
+          "description": "The worker of a judge task writes its verdict file."
+        },
+        {
+          "name": "OpenCriticalFix",
+          "command": "open-critical-fix",
+          "description": "At most 2 fix rounds."
+        },
+        {
+          "name": "SettleHighFinding",
+          "command": "settle-high-finding",
+          "description": "Fix or dismiss with a written reason."
+        },
+        {
+          "name": "EndAttempt",
+          "command": "end-attempt",
+          "description": "Stops the process group through the platform layer (Linux: SIGINT, 20 s, SIGKILL)."
+        },
+        {
+          "name": "ScheduleRetry",
+          "command": "schedule-retry",
+          "description": "Reads max_attempts and backoff from the profile."
+        },
+        {
+          "name": "EscalateTask",
+          "command": "escalate-task",
+          "description": "Writes to needs-you/ and posts a herdr notification."
+        },
+        {
+          "name": "RequeueTask",
+          "command": "requeue-task",
+          "description": "Resets attempt_floor."
+        },
+        {
+          "name": "MarkTaskDone",
+          "command": "mark-task-done",
+          "description": "The verifier writes verdict.json. Takes a VerifiedVerdict; only the verification module can construct one (D4)."
+        }
+      ],
+      "ports": [
+        {
+          "name": "TaskExecutionCommands",
+          "kind": "driving",
+          "description": "one operation per use case; called by the reconcile pass, the file ingester and the command channel"
+        },
+        {
+          "name": "TaskExecutionQueries",
+          "kind": "driving",
+          "description": "read models StartFile, JudgeFindings, NeedsYouQueue; used by horch CLI read-only commands"
+        },
+        {
+          "name": "TaskExecutionEventHandlers",
+          "kind": "driving",
+          "description": "policies on plan-committed, plan-refused, task-replanned, question-answered, own-assumption-recorded, worktree-created, rescue-failed, task-branch-conflicted, resolver-task-opened; at-least-once, idempotent on the connect key"
+        },
+        {
+          "name": "AttemptFileIngest",
+          "kind": "driving",
+          "description": "result.json, exit.json, heartbeat.json, progress and usage-limit files of an attempt outbox (write-result, attempt-exited, usage-limit-reported); 1 ingestion per (path, sha256)"
+        },
+        {
+          "name": "TaskRepository",
+          "kind": "driven",
+          "description": "load and save Task with its Attempts and Lease through the one-door transition function of fleet-runtime"
+        },
+        {
+          "name": "VerificationRepository",
+          "kind": "driven",
+          "description": "load and save Verification by task id"
+        },
+        {
+          "name": "EventPublisher",
+          "kind": "driven",
+          "description": "writes the event row in the same ledger transaction as the state change; consumers react in the reconcile pass"
+        },
+        {
+          "name": "LaunchEnvironmentGateway",
+          "kind": "driven",
+          "description": "asks worker-profiles for the launch environment of a profile (sync, in-process)"
+        },
+        {
+          "name": "AgentProcessGateway",
+          "kind": "driven",
+          "description": "calls fleet-runtime start-agent-process and stop-process-group; never inside a ledger transaction"
+        },
+        {
+          "name": "CheckRunner",
+          "kind": "driven",
+          "description": "runs the acceptance command and the review scripts in the worktree in the worker sandbox, with the V-10 timeout"
+        },
+        {
+          "name": "LivenessProbe",
+          "kind": "driven",
+          "description": "process alive with start time, heartbeat age, last activity, herdr agent state"
+        },
+        {
+          "name": "QuotaGateway",
+          "kind": "driven",
+          "description": "pool usage window and reset time from the CLI clients (06 S13)"
+        },
+        {
+          "name": "NeedsYouInbox",
+          "kind": "driven",
+          "description": "writes needs-you files and posts a herdr notification"
+        },
+        {
+          "name": "Clock",
+          "kind": "driven",
+          "description": "awake time for leases and stall rungs (PL-4)"
+        }
+      ],
+      "adapters": [
+        {
+          "port": "TaskExecutionCommands",
+          "implementation": "ReconcilePassDriver (fleet-runtime) and CommandChannelHandler"
+        },
+        {
+          "port": "TaskExecutionEventHandlers",
+          "implementation": "InProcessReconcileConsumer"
+        },
+        {
+          "port": "AttemptFileIngest",
+          "implementation": "OutboxFileIngester (atomic files, ingested table)"
+        },
+        {
+          "port": "TaskRepository",
+          "implementation": "SqliteTaskRepository"
+        },
+        {
+          "port": "TaskRepository",
+          "implementation": "InMemoryTaskRepository"
+        },
+        {
+          "port": "VerificationRepository",
+          "implementation": "SqliteVerificationRepository"
+        },
+        {
+          "port": "VerificationRepository",
+          "implementation": "InMemoryVerificationRepository"
+        },
+        {
+          "port": "EventPublisher",
+          "implementation": "LedgerEventLog"
+        },
+        {
+          "port": "EventPublisher",
+          "implementation": "RecordingEventPublisher"
+        },
+        {
+          "port": "LaunchEnvironmentGateway",
+          "implementation": "InProcessWorkerProfiles"
+        },
+        {
+          "port": "LaunchEnvironmentGateway",
+          "implementation": "FakeLaunchEnvironment"
+        },
+        {
+          "port": "AgentProcessGateway",
+          "implementation": "InProcessFleetRuntime"
+        },
+        {
+          "port": "AgentProcessGateway",
+          "implementation": "FakeAgentProcesses"
+        },
+        {
+          "port": "CheckRunner",
+          "implementation": "SandboxedCheckRunner (wraps taskledger::finish review scripts)"
+        },
+        {
+          "port": "CheckRunner",
+          "implementation": "ScriptedCheckRunner"
+        },
+        {
+          "port": "LivenessProbe",
+          "implementation": "PlatformLivenessProbe (platform layer, procid, herdr adapter)"
+        },
+        {
+          "port": "LivenessProbe",
+          "implementation": "FakeLivenessProbe"
+        },
+        {
+          "port": "QuotaGateway",
+          "implementation": "CliQuotaProbe (routing::quota)"
+        },
+        {
+          "port": "QuotaGateway",
+          "implementation": "FakeQuota"
+        },
+        {
+          "port": "NeedsYouInbox",
+          "implementation": "NeedsYouFolder"
+        },
+        {
+          "port": "NeedsYouInbox",
+          "implementation": "InMemoryNeedsYou"
+        },
+        {
+          "port": "Clock",
+          "implementation": "PlatformAwakeClock"
+        },
+        {
+          "port": "Clock",
+          "implementation": "FakeClock"
+        }
+      ],
+      "read_models": [
+        {
+          "name": "StartFile",
+          "source_events": [
+            "task-leased",
+            "worktree-created"
+          ]
+        },
+        {
+          "name": "JudgeFindings",
+          "source_events": [
+            "judge-verdict-written",
+            "critical-fix-opened",
+            "high-finding-settled"
+          ]
+        },
+        {
+          "name": "NeedsYouQueue",
+          "source_events": [
+            "task-escalated",
+            "task-requeued"
+          ]
+        }
+      ],
+      "tests": [
+        {
+          "invariant": "I1: a leased or running task has exactly 1 unexpired lease and 1 live attempt",
+          "test": "i1_leased_task_without_unexpired_lease_is_stalled_in_the_same_pass"
+        },
+        {
+          "invariant": "I2: no task is ready while a dependency is not done",
+          "test": "i2_task_with_an_undone_dependency_is_not_promoted"
+        },
+        {
+          "invariant": "I4: no worker runs more than 1 attempt at a time",
+          "test": "i4_dispatch_refuses_a_worker_with_a_live_attempt"
+        },
+        {
+          "invariant": "I5: every live pane and process under the fleet belongs to a live attempt",
+          "test": "i5_orphan_process_or_pane_is_stopped"
+        },
+        {
+          "invariant": "Only a VerifiedVerdict from the verification module moves a task to done (RR-3, define N1)",
+          "test": "fm_result_file_alone_leaves_task_verifying"
+        },
+        {
+          "invariant": "Only a VerifiedVerdict from the verification module moves a task to done (RR-3, define N1)",
+          "test": "verified_verdict_has_no_constructor_outside_the_verification_module (compile-fail test)"
+        },
+        {
+          "invariant": "A reap ends the attempt and requeues the task in 1 transaction before any signal (04 S7)",
+          "test": "pres_04_s7_reap_requeues_in_1_transaction_before_the_signal"
+        },
+        {
+          "invariant": "A reap ends the attempt and requeues the task in 1 transaction before any signal (04 S7)",
+          "test": "fm_fleetd_killed_mid_reap_requeues_exactly_once"
+        },
+        {
+          "invariant": "Stop signals only the recorded PID with its start time and refuses another host (04 S8)",
+          "test": "pres_04_s8_stop_signals_only_the_recorded_pid_of_this_host"
+        },
+        {
+          "invariant": "An operator requeue resets the attempt count through attempt_floor (04 L8)",
+          "test": "pres_04_l8_operator_requeue_resets_the_attempt_count"
+        },
+        {
+          "invariant": "No 2 running tasks of 1 feature own overlapping paths; an exclusive task runs alone (04 L6)",
+          "test": "pres_04_l6_overlapping_paths_are_not_dispatched_together"
+        },
+        {
+          "invariant": "Quota probes read limits through each CLI client; horch holds no credential (06 S13)",
+          "test": "pres_06_s13_quota_probe_holds_no_credential"
+        },
+        {
+          "invariant": "A usage limit burns no attempt (RR-11)",
+          "test": "fm5_usage_limit_burns_no_attempt_and_moves_to_fallback"
+        },
+        {
+          "invariant": "A task has at most max_attempts attempts, then 1 replan, then escalation (RR-6)",
+          "test": "retry_backoff_30s_2m_8m_then_replan_then_escalate"
+        },
+        {
+          "invariant": "A stalled worker loses its lease (RR-1, RR-2)",
+          "test": "fm3_stopped_worker_loses_lease_and_task_is_retried"
+        },
+        {
+          "invariant": "Lease and stall time count only while the machine is awake (PL-4)",
+          "test": "sleep_does_not_expire_a_lease"
+        },
+        {
+          "invariant": "A verdict is verified only when result.json validates and the check passes in the worker sandbox",
+          "test": "check_runs_in_the_worker_sandbox_not_with_fleetd_rights"
+        },
+        {
+          "invariant": "A code kind is verified only after the review scripts pass (V-14 limits)",
+          "test": "code_kind_needs_review_pass_with_at_most_2_requeues"
+        },
+        {
+          "invariant": "A judgment kind is verified only with no open CRITICAL judge finding",
+          "test": "judgment_kind_with_open_critical_is_not_verified"
+        },
+        {
+          "invariant": "At most 2 critical fix rounds, then the task escalates",
+          "test": "third_critical_round_escalates_to_the_operator"
+        },
+        {
+          "invariant": "A second judge raises no new MEDIUM or LOW finding",
+          "test": "second_judge_new_medium_or_low_finding_is_dropped"
+        },
+        {
+          "invariant": "transition: verifying -> done",
+          "test": "transition_verifying_to_done_only_with_verified_verdict"
+        },
+        {
+          "invariant": "transition: running -> waiting_quota",
+          "test": "transition_running_to_waiting_quota_pauses_the_lease"
+        },
+        {
+          "invariant": "transition: escalated -> ready",
+          "test": "transition_escalated_to_ready_only_by_operator_requeue"
+        },
+        {
+          "invariant": "use case: dispatch-task",
+          "test": "given_ready_task_and_healthy_profile_when_dispatch_then_task_leased_and_worktree_row_reserved"
+        },
+        {
+          "invariant": "use case: write-result",
+          "test": "given_running_attempt_when_result_file_ingested_then_result_written_and_task_not_done"
+        },
+        {
+          "invariant": "idempotent: attempt-exited",
+          "test": "handling attempt-exited twice (same attemptId; exit.json is immutable) has the same effect as once"
+        },
+        {
+          "invariant": "idempotent: usage-limit-reported",
+          "test": "handling usage-limit-reported twice (same attemptId, pool) has the same effect as once; a repeat for a moved attempt is ignored"
+        },
+        {
+          "invariant": "contract: task-escalated",
+          "test": "published task-escalated carries exactly taskId, reason (connect.json payload) and nothing consumers did not ask for"
+        },
+        {
+          "invariant": "contract: replan-requested",
+          "test": "published replan-requested carries exactly taskId, attempts (connect.json payload) and nothing consumers did not ask for"
+        },
+        {
+          "invariant": "contract: task-leased",
+          "test": "published task-leased carries exactly taskId, attemptId, worktreeId, branch (connect.json payload) and nothing consumers did not ask for"
+        },
+        {
+          "invariant": "contract: attempt-failed",
+          "test": "published attempt-failed carries exactly attemptId, taskId, outcome (connect.json payload) and nothing consumers did not ask for"
+        },
+        {
+          "invariant": "contract: task-done",
+          "test": "published task-done carries exactly taskId, branch, verdict (connect.json payload) and nothing consumers did not ask for"
+        },
+        {
+          "invariant": "idempotent: plan-committed",
+          "test": "handling plan-committed twice (same message id) has the same effect as once"
+        },
+        {
+          "invariant": "idempotent: plan-refused",
+          "test": "handling plan-refused twice (same message id) has the same effect as once"
+        },
+        {
+          "invariant": "idempotent: task-replanned",
+          "test": "handling task-replanned twice (same message id) has the same effect as once"
+        },
+        {
+          "invariant": "idempotent: question-answered",
+          "test": "handling question-answered twice (same message id) has the same effect as once"
+        },
+        {
+          "invariant": "idempotent: own-assumption-recorded",
+          "test": "handling own-assumption-recorded twice (same message id) has the same effect as once"
+        },
+        {
+          "invariant": "idempotent: worktree-created",
+          "test": "handling worktree-created twice (same message id) has the same effect as once"
+        },
+        {
+          "invariant": "idempotent: rescue-failed",
+          "test": "handling rescue-failed twice (same message id) has the same effect as once"
+        },
+        {
+          "invariant": "idempotent: task-branch-conflicted",
+          "test": "handling task-branch-conflicted twice (same message id) has the same effect as once"
+        },
+        {
+          "invariant": "idempotent: resolver-task-opened",
+          "test": "handling resolver-task-opened twice (same message id) has the same effect as once"
+        }
+      ],
+      "design_path": "ddd/08-code/task-execution/design.md"
+    },
+    {
+      "context": "worktree-custody",
+      "implementation_pattern": "active-record",
+      "deployable": "horch",
+      "module_path": "crates/horch-core/src/fleetd/worktree_custody",
+      "aggregates": [],
+      "domain_services": [],
+      "application_services": [
+        {
+          "name": "CreateWorktree",
+          "command": "create-worktree",
+          "description": "git worktree add on the task branch. Only fleetd creates worktrees."
+        },
+        {
+          "name": "ReconcileWorktrees",
+          "command": "reconcile-worktrees",
+          "description": "Every pass reads rows and /fleet/work; every 60 s also git worktree list --porcelain."
+        },
+        {
+          "name": "RescueWorktree",
+          "command": "rescue-worktree",
+          "description": "Private index, commit-tree, update-ref, then verify. Reads the ref back and compares every file before any removal (RR-9)."
+        },
+        {
+          "name": "RemoveWorktree",
+          "command": "remove-worktree",
+          "description": "Only after landed or a verified rescue."
+        }
+      ],
+      "ports": [
+        {
+          "name": "WorktreeCustodyCommands",
+          "kind": "driving",
+          "description": "create, reconcile, rescue, remove; called by the reconcile pass and horch worktree restore"
+        },
+        {
+          "name": "WorktreeCustodyQueries",
+          "kind": "driving",
+          "description": "read model WorktreeRows for horch worktrees"
+        },
+        {
+          "name": "WorktreeCustodyEventHandlers",
+          "kind": "driving",
+          "description": "policies on task-leased, attempt-failed, task-branch-landed"
+        },
+        {
+          "name": "WorktreeCustodyStore",
+          "kind": "driven",
+          "description": "worktrees rows; the reserved row is written in the leasing transaction"
+        },
+        {
+          "name": "EventPublisher",
+          "kind": "driven",
+          "description": "writes the event row in the same ledger transaction"
+        },
+        {
+          "name": "WorktreeGitGateway",
+          "kind": "driven",
+          "description": "git worktree add, list --porcelain, remove; private-index rescue commit, update-ref, read back; stash list; never inside a ledger transaction"
+        },
+        {
+          "name": "WorkDirScanner",
+          "kind": "driven",
+          "description": "lists the work directory and reads dirty and untracked state"
+        },
+        {
+          "name": "Clock",
+          "kind": "driven",
+          "description": "the 60 s git worktree list cadence and the 30 day trash ref expiry"
+        }
+      ],
+      "adapters": [
+        {
+          "port": "WorktreeCustodyCommands",
+          "implementation": "ReconcilePassDriver and CommandChannelHandler"
+        },
+        {
+          "port": "WorktreeCustodyEventHandlers",
+          "implementation": "InProcessReconcileConsumer"
+        },
+        {
+          "port": "WorktreeCustodyStore",
+          "implementation": "SqliteWorktreeStore (extends the worktrees table)"
+        },
+        {
+          "port": "WorktreeCustodyStore",
+          "implementation": "InMemoryWorktreeStore"
+        },
+        {
+          "port": "EventPublisher",
+          "implementation": "LedgerEventLog"
+        },
+        {
+          "port": "EventPublisher",
+          "implementation": "RecordingEventPublisher"
+        },
+        {
+          "port": "WorktreeGitGateway",
+          "implementation": "CliWorktreeGit (taskledger::worktree_ops, triage refs)"
+        },
+        {
+          "port": "WorktreeGitGateway",
+          "implementation": "TempRepoWorktreeGit"
+        },
+        {
+          "port": "WorkDirScanner",
+          "implementation": "FsWorkDirScanner"
+        },
+        {
+          "port": "WorkDirScanner",
+          "implementation": "FakeWorkDir"
+        },
+        {
+          "port": "Clock",
+          "implementation": "PlatformAwakeClock"
+        },
+        {
+          "port": "Clock",
+          "implementation": "FakeClock"
+        }
+      ],
+      "read_models": [
+        {
+          "name": "WorktreeRows",
+          "source_events": [
+            "worktree-created",
+            "worktree-orphaned",
+            "worktree-rescued",
+            "rescue-failed",
+            "worktree-removed"
+          ]
+        }
+      ],
+      "tests": [
+        {
+          "invariant": "I6: every worktree on disk has a row, every row not removed has its directory, and none is removed unless landed or on a verified rescue ref",
+          "test": "i6_worktree_on_disk_without_row_is_adopted_not_deleted"
+        },
+        {
+          "invariant": "RR-9: no worktree is removed before its work is on a verified rescue ref",
+          "test": "rr9_rescue_ref_is_read_back_before_removal"
+        },
+        {
+          "invariant": "RR-9: no worktree is removed before its work is on a verified rescue ref",
+          "test": "fm_killed_worker_dirty_untracked_files_on_verified_rescue_ref"
+        },
+        {
+          "invariant": "A failed rescue leaves the tree and escalates (RR-9)",
+          "test": "failed_rescue_verification_keeps_the_tree"
+        },
+        {
+          "invariant": "Drop and cleanup refuse dirty tree, stash entry, unique commits, moved HEAD (04 W6)",
+          "test": "pres_04_w6_drop_refuses_dirty_stash_unique_or_moved_head"
+        },
+        {
+          "invariant": "Archive and trash refs only move forward and are read back; trash expires after 30 days (04 W8)",
+          "test": "pres_04_w8_refs_move_forward_and_are_read_back"
+        },
+        {
+          "invariant": "Triage commits modified and untracked files before ARCHIVE or DELETE (04 W9)",
+          "test": "pres_04_w9_triage_commits_untracked_before_delete"
+        },
+        {
+          "invariant": "A worktree row is written before the directory exists (FR-11)",
+          "test": "reserved_row_left_by_crash_is_created_or_dropped_next_pass"
+        },
+        {
+          "invariant": "A retry, a fallback restart or a resume reuses the same worktree",
+          "test": "retry_reuses_the_same_worktree"
+        },
+        {
+          "invariant": "contract: worktree-created",
+          "test": "published worktree-created carries exactly worktreeId, taskId, path, branch (connect.json payload) and nothing consumers did not ask for"
+        },
+        {
+          "invariant": "contract: rescue-failed",
+          "test": "published rescue-failed carries exactly worktreeId, taskId (connect.json payload) and nothing consumers did not ask for"
+        },
+        {
+          "invariant": "idempotent: task-leased",
+          "test": "handling task-leased twice (same message id) has the same effect as once"
+        },
+        {
+          "invariant": "idempotent: attempt-failed",
+          "test": "handling attempt-failed twice (same message id) has the same effect as once"
+        },
+        {
+          "invariant": "idempotent: task-branch-landed",
+          "test": "handling task-branch-landed twice (same message id) has the same effect as once"
+        }
+      ],
+      "design_path": "ddd/08-code/worktree-custody/design.md"
+    },
+    {
+      "context": "integration",
+      "implementation_pattern": "domain-model",
+      "deployable": "horch",
+      "module_path": "crates/horch-core/src/fleetd/integration",
+      "aggregates": [
+        {
+          "id": "feature",
+          "name": "Feature",
+          "root_entity": "Feature",
+          "entities": [
+            "GateRun",
+            "TrialMerge"
+          ],
+          "value_objects": [
+            "FeatureId",
+            "BranchName",
+            "Tip",
+            "FeatureState",
+            "GateKind",
+            "GateResult",
+            "StackLink",
+            "RescueRef",
+            "PrSetting",
+            "ConflictSet"
+          ],
+          "invariants": [
+            "I8: a feature is merged only when its changes are in the primary branch by content, also after a squash merge",
+            "I9: a feature branch moves only by fast-forward to a candidate that passed its gate",
+            "I10: before each rebase or forced update of a branch, a rescue ref of the old tip exists",
+            "A feature is ready only with a full gate pass on its current tip over the current primary branch",
+            "A gate pass goes stale when either judged tip moves (04 F5)",
+            "A feature is stacked on at most 1 older feature"
+          ],
+          "commands": [
+            "open-feature",
+            "run-trial-merges",
+            "stack-feature",
+            "open-resolver-task",
+            "rebase-feature-branch",
+            "run-full-gate",
+            "mark-feature-ready",
+            "open-pull-request",
+            "merge-pull-request",
+            "check-merged"
+          ],
+          "events": [
+            "feature-opened",
+            "trial-merge-passed",
+            "trial-merge-conflicted",
+            "feature-stacked",
+            "resolver-task-opened",
+            "feature-branch-rebased",
+            "feature-rebase-conflicted",
+            "full-gate-passed",
+            "full-gate-failed",
+            "feature-marked-ready",
+            "pull-request-opened",
+            "pull-request-merged",
+            "feature-merged"
+          ],
+          "state_transitions": [
+            "open -> open (rebase-feature-branch, rescue ref first; a conflict opens a resolver task)",
+            "open -> open (stack-feature after trial-merge-conflicted)",
+            "open -> ready (mark-feature-ready, current full gate pass)",
+            "ready -> open (a tip moves; the full gate pass goes stale)",
+            "ready -> merged (check-merged finds the changes by content)",
+            "open|ready -> abandoned (operator)",
+            "rejected: ready without a current full gate pass",
+            "rejected: merged read from the GitHub API alone",
+            "rejected: rebase with no rescue ref of the old tip"
+          ],
+          "canvas_path": "ddd/08-code/integration/aggregate-canvas-feature.md"
+        },
+        {
+          "id": "task-branch",
+          "name": "TaskBranch",
+          "root_entity": "TaskBranch",
+          "entities": [],
+          "value_objects": [
+            "BranchName",
+            "TaskId",
+            "LandingState",
+            "QueueSeq",
+            "Tip",
+            "RescueRef",
+            "DueAt",
+            "BranchOwner",
+            "Bundle"
+          ],
+          "invariants": [
+            "I8: a task branch is landed only when its changes are in the feature branch by content",
+            "I11: every fleet branch in git has a branches row; one without is adopted as an orphan row, never deleted",
+            "I12: a branch is deleted only when landed, merged or rescued, and no git stash entry names it",
+            "A task branch is ready only when its task is done (verified)",
+            "Under the land lock, just before the fast-forward, the task is still landing and held by its worker (04 F9)",
+            "A red land after a rebase resets the branch to its tip from before the land (04 F7)",
+            "An escalated task branch is abandoned only by the operator and only after worktree-rescued (connect N4)"
+          ],
+          "commands": [
+            "mark-branch-ready",
+            "build-bundle",
+            "run-fast-gate",
+            "fast-forward-feature-branch",
+            "bisect-bundle",
+            "open-triage-task",
+            "abandon-task-branch"
+          ],
+          "events": [
+            "task-branch-verified",
+            "bundle-built",
+            "task-branch-conflicted",
+            "fast-gate-passed",
+            "fast-gate-failed",
+            "task-branch-landed",
+            "task-branch-gate-failed",
+            "triage-task-opened",
+            "task-branch-abandoned"
+          ],
+          "state_transitions": [
+            "building -> verifying (task enters verifying)",
+            "verifying -> ready (mark-branch-ready on task-done)",
+            "ready -> in_bundle (build-bundle, queue order)",
+            "in_bundle -> conflicted (build-bundle, rebase conflict; the task goes back to its worker)",
+            "in_bundle -> landed (fast-forward-feature-branch after fast-gate-passed, under the land lock)",
+            "in_bundle -> gate_failed (bisect-bundle finds it; open-triage-task)",
+            "conflicted -> verifying (a new attempt of the same worker)",
+            "gate_failed -> verifying (triage task fixed)",
+            "any -> abandoned (abandon-task-branch by the operator, after worktree-rescued)",
+            "rejected: ready while the task is not done",
+            "rejected: landed for a cancelled task (04 F9)",
+            "rejected: deletion without landed, merged or rescued"
+          ],
+          "canvas_path": "ddd/08-code/integration/aggregate-canvas-task-branch.md"
+        }
+      ],
+      "domain_services": [
+        {
+          "name": "BundleBisector",
+          "description": "Finds the failing task branch of a red bundle from gate results; pure over GateRun facts."
+        },
+        {
+          "name": "StackPlanner",
+          "description": "Orders in-flight features from trial-merge facts: younger on older, bottom of a stack first for rebase."
+        }
+      ],
+      "application_services": [
+        {
+          "name": "OpenFeature",
+          "command": "open-feature",
+          "description": "Writes the features row, then creates the feature branch."
+        },
+        {
+          "name": "MarkBranchReady",
+          "command": "mark-branch-ready",
+          "description": "verifying to ready."
+        },
+        {
+          "name": "BuildBundle",
+          "command": "build-bundle",
+          "description": "1 bundle per feature from the ready task branches in queue order."
+        },
+        {
+          "name": "RunFastGate",
+          "command": "run-fast-gate",
+          "description": "The declared fast gate of the project."
+        },
+        {
+          "name": "FastForwardFeatureBranch",
+          "command": "fast-forward-feature-branch",
+          "description": "Land lock 1 h, 5 tries. A red land resets to the tip before the rebase (04 F7)."
+        },
+        {
+          "name": "BisectBundle",
+          "command": "bisect-bundle",
+          "description": "Finds the failing task branch."
+        },
+        {
+          "name": "OpenTriageTask",
+          "command": "open-triage-task",
+          "description": "A task of the feature for a gate failure."
+        },
+        {
+          "name": "AbandonTaskBranch",
+          "command": "abandon-task-branch",
+          "description": "Operator only."
+        },
+        {
+          "name": "RunTrialMerges",
+          "command": "run-trial-merges",
+          "description": "Each in-flight feature against the primary branch and against each other in-flight feature. Uses git merge-tree with no checkout through GitGateway; records TrialMerge entities on each Feature."
+        },
+        {
+          "name": "StackFeature",
+          "command": "stack-feature",
+          "description": "Sets stacked_on to the older feature."
+        },
+        {
+          "name": "OpenResolverTask",
+          "command": "open-resolver-task",
+          "description": "At most 100 changed lines or 2 files, else split by file. rerere is on."
+        },
+        {
+          "name": "RebaseFeatureBranch",
+          "command": "rebase-feature-branch",
+          "description": "Writes a rescue ref of the old tip first."
+        },
+        {
+          "name": "RunFullGate",
+          "command": "run-full-gate",
+          "description": "Once for a feature when its tasks are landed, again when a pass goes stale."
+        },
+        {
+          "name": "MarkFeatureReady",
+          "command": "mark-feature-ready",
+          "description": "features.state open to ready."
+        },
+        {
+          "name": "OpenPullRequest",
+          "command": "open-pull-request",
+          "description": "pr setting gh or manual."
+        },
+        {
+          "name": "MergePullRequest",
+          "command": "merge-pull-request",
+          "description": "On GitHub, or a plain git merge. The default merger is the operator. Runs only when the project pr setting lets fleetd merge; by default the operator merges and check-merged observes it."
+        },
+        {
+          "name": "CheckMerged",
+          "command": "check-merged",
+          "description": "Every pass reads git, not the GitHub API."
+        }
+      ],
+      "ports": [
+        {
+          "name": "IntegrationCommands",
+          "kind": "driving",
+          "description": "one operation per use case; called by the reconcile pass and the command channel (abandon-task-branch)"
+        },
+        {
+          "name": "IntegrationQueries",
+          "kind": "driving",
+          "description": "read models WorktreeList (branch side), PullRequestView, TrialMergeResult"
+        },
+        {
+          "name": "IntegrationEventHandlers",
+          "kind": "driving",
+          "description": "policies on task-done, task-escalated, assumptions-written, direct-idea-accepted, idea-tasks-landed"
+        },
+        {
+          "name": "GitObserver",
+          "kind": "driving",
+          "description": "primary-branch-moved and check-merged facts read from git each pass (clock initiated)"
+        },
+        {
+          "name": "FeatureRepository",
+          "kind": "driven",
+          "description": "load and save Feature with GateRuns and TrialMerges"
+        },
+        {
+          "name": "TaskBranchRepository",
+          "kind": "driven",
+          "description": "load and save TaskBranch by name"
+        },
+        {
+          "name": "EventPublisher",
+          "kind": "driven",
+          "description": "writes the event row in the same ledger transaction"
+        },
+        {
+          "name": "GitGateway",
+          "kind": "driven",
+          "description": "merge-tree, rebase, fast-forward, rescue ref write and read back, content containment, stash list; never inside a ledger transaction; network calls bounded (04 F11)"
+        },
+        {
+          "name": "GateRunner",
+          "kind": "driven",
+          "description": "runs the declared fast gate and full gate of the project on a candidate tip"
+        },
+        {
+          "name": "PullRequestGateway",
+          "kind": "driven",
+          "description": "opens a pull request with pr gh, or pushes and builds the compare URL with pr manual"
+        },
+        {
+          "name": "LandLock",
+          "kind": "driven",
+          "description": "the land lock (1 h, 5 tries)"
+        },
+        {
+          "name": "Clock",
+          "kind": "driven",
+          "description": "due_at of branch rows and gate staleness"
+        }
+      ],
+      "adapters": [
+        {
+          "port": "IntegrationCommands",
+          "implementation": "ReconcilePassDriver (fleet-runtime) and CommandChannelHandler"
+        },
+        {
+          "port": "IntegrationEventHandlers",
+          "implementation": "InProcessReconcileConsumer"
+        },
+        {
+          "port": "GitObserver",
+          "implementation": "GitPollObserver"
+        },
+        {
+          "port": "FeatureRepository",
+          "implementation": "SqliteFeatureRepository"
+        },
+        {
+          "port": "FeatureRepository",
+          "implementation": "InMemoryFeatureRepository"
+        },
+        {
+          "port": "TaskBranchRepository",
+          "implementation": "SqliteTaskBranchRepository"
+        },
+        {
+          "port": "TaskBranchRepository",
+          "implementation": "InMemoryTaskBranchRepository"
+        },
+        {
+          "port": "EventPublisher",
+          "implementation": "LedgerEventLog"
+        },
+        {
+          "port": "EventPublisher",
+          "implementation": "RecordingEventPublisher"
+        },
+        {
+          "port": "GitGateway",
+          "implementation": "CliGitGateway (vcs::git, vcs::network, vcs::landing)"
+        },
+        {
+          "port": "GitGateway",
+          "implementation": "TempRepoGitGateway (tests on a real temp repository)"
+        },
+        {
+          "port": "GateRunner",
+          "implementation": "ProjectGateRunner"
+        },
+        {
+          "port": "GateRunner",
+          "implementation": "ScriptedGateRunner"
+        },
+        {
+          "port": "PullRequestGateway",
+          "implementation": "GhCliPullRequests"
+        },
+        {
+          "port": "PullRequestGateway",
+          "implementation": "ManualCompareUrl"
+        },
+        {
+          "port": "PullRequestGateway",
+          "implementation": "FakePullRequests"
+        },
+        {
+          "port": "LandLock",
+          "implementation": "LedgerLandLock"
+        },
+        {
+          "port": "LandLock",
+          "implementation": "InMemoryLandLock"
+        },
+        {
+          "port": "Clock",
+          "implementation": "PlatformAwakeClock"
+        },
+        {
+          "port": "Clock",
+          "implementation": "FakeClock"
+        }
+      ],
+      "read_models": [
+        {
+          "name": "WorktreeList",
+          "source_events": [
+            "task-branch-verified",
+            "task-branch-landed",
+            "task-branch-abandoned"
+          ]
+        },
+        {
+          "name": "PullRequestView",
+          "source_events": [
+            "pull-request-opened",
+            "feature-merged"
+          ]
+        },
+        {
+          "name": "TrialMergeResult",
+          "source_events": [
+            "trial-merge-passed",
+            "trial-merge-conflicted",
+            "feature-stacked"
+          ]
+        }
+      ],
+      "tests": [
+        {
+          "invariant": "I8: a task branch is landed only when its changes are in the feature branch by content",
+          "test": "i8_task_branch_landed_by_content"
+        },
+        {
+          "invariant": "I8: a feature is merged only when its changes are in the primary branch by content, also after a squash merge",
+          "test": "fm_squash_merged_feature_is_merged_by_content"
+        },
+        {
+          "invariant": "I9: a feature branch moves only by fast-forward to a candidate that passed its gate",
+          "test": "i9_feature_branch_moves_only_by_fast_forward_to_a_gated_candidate"
+        },
+        {
+          "invariant": "I10: before each rebase or forced update of a branch, a rescue ref of the old tip exists",
+          "test": "i10_rebase_without_rescue_ref_is_refused"
+        },
+        {
+          "invariant": "I11: every fleet branch in git has a branches row; one without is adopted as an orphan row, never deleted",
+          "test": "i11_unknown_fleet_branch_is_adopted_as_orphan_and_reported"
+        },
+        {
+          "invariant": "I12: a branch is deleted only when landed, merged or rescued, and no git stash entry names it",
+          "test": "i12_branch_with_stash_entry_is_not_deleted"
+        },
+        {
+          "invariant": "A red land after a rebase resets the branch to its tip from before the land (04 F7)",
+          "test": "pres_04_f7_red_land_resets_to_tip_before_the_land"
+        },
+        {
+          "invariant": "Under the land lock, just before the fast-forward, the task is still landing and held by its worker (04 F9)",
+          "test": "pres_04_f9_cancelled_task_lands_nothing"
+        },
+        {
+          "invariant": "A gate pass goes stale when either judged tip moves (04 F5)",
+          "test": "pres_04_f5_new_commits_reopen_the_land_and_later_steps"
+        },
+        {
+          "invariant": "Every git network call has a wall-clock bound: push 10 min, others 3 min, no retry (04 F11)",
+          "test": "pres_04_f11_stalled_push_ends_at_10_min_and_frees_the_land_lock"
+        },
+        {
+          "invariant": "A task parked by done --unlanded keeps its worktree; dependents stay blocked (04 L5)",
+          "test": "pres_04_l5_unlanded_task_keeps_worktree_and_blocks_dependents"
+        },
+        {
+          "invariant": "Unfinished, reopen and dismiss keep a record of unlanded work; a finding is decided once (04 L9)",
+          "test": "pres_04_l9_unlanded_work_is_listed_and_decided_once"
+        },
+        {
+          "invariant": "A fast gate failure after a rebase keeps the feature tip and a rescue ref (I9, I10, I12)",
+          "test": "fm_failed_fast_gate_after_rebase_keeps_feature_tip_and_rescue_ref"
+        },
+        {
+          "invariant": "A feature is ready only with a full gate pass on its current tip over the current primary branch",
+          "test": "feature_ready_refused_with_stale_full_gate_pass"
+        },
+        {
+          "invariant": "A task branch is ready only when its task is done (verified)",
+          "test": "branch_ready_refused_while_task_not_done"
+        },
+        {
+          "invariant": "An escalated task branch is abandoned only by the operator and only after worktree-rescued (connect N4)",
+          "test": "abandon_waits_for_worktree_rescued"
+        },
+        {
+          "invariant": "A feature is stacked on at most 1 older feature",
+          "test": "conflicting_features_stack_younger_on_older_once"
+        },
+        {
+          "invariant": "use case: run-trial-merges",
+          "test": "given_2_features_touching_1_file_when_trial_merge_then_younger_stacked_and_1_resolver_task"
+        },
+        {
+          "invariant": "use case: build-bundle",
+          "test": "given_3_ready_branches_when_bundle_then_fast_gate_runs_once_and_none_is_forgotten"
+        },
+        {
+          "invariant": "idempotent: primary-branch-moved",
+          "test": "handling primary-branch-moved twice (same primaryBranch, tip) has the same effect as once"
+        },
+        {
+          "invariant": "contract: pull-request-opened",
+          "test": "published pull-request-opened carries exactly featureId, prUrl (connect.json payload) and nothing consumers did not ask for"
+        },
+        {
+          "invariant": "contract: feature-opened",
+          "test": "published feature-opened carries exactly featureId, branch, primaryBranch, ideaId (connect.json payload) and nothing consumers did not ask for"
+        },
+        {
+          "invariant": "contract: task-branch-conflicted",
+          "test": "published task-branch-conflicted carries exactly branch, taskId (connect.json payload) and nothing consumers did not ask for"
+        },
+        {
+          "invariant": "contract: resolver-task-opened",
+          "test": "published resolver-task-opened carries exactly featureId, taskId, conflict (connect.json payload) and nothing consumers did not ask for"
+        },
+        {
+          "invariant": "contract: task-branch-landed",
+          "test": "published task-branch-landed carries exactly branch, taskId, featureId, tip (connect.json payload) and nothing consumers did not ask for"
+        },
+        {
+          "invariant": "contract: feature-merged",
+          "test": "published feature-merged carries exactly featureId (connect.json payload) and nothing consumers did not ask for"
+        },
+        {
+          "invariant": "idempotent: task-escalated",
+          "test": "handling task-escalated twice (same message id) has the same effect as once"
+        },
+        {
+          "invariant": "idempotent: assumptions-written",
+          "test": "handling assumptions-written twice (same message id) has the same effect as once"
+        },
+        {
+          "invariant": "idempotent: direct-idea-accepted",
+          "test": "handling direct-idea-accepted twice (same message id) has the same effect as once"
+        },
+        {
+          "invariant": "idempotent: idea-tasks-landed",
+          "test": "handling idea-tasks-landed twice (same message id) has the same effect as once"
+        },
+        {
+          "invariant": "idempotent: task-done",
+          "test": "handling task-done twice (same message id) has the same effect as once"
+        }
+      ],
+      "design_path": "ddd/08-code/integration/design.md"
+    },
+    {
+      "context": "worker-profiles",
+      "implementation_pattern": "active-record",
+      "deployable": "horch",
+      "module_path": "crates/horch-core/src/fleetd/worker_profiles",
+      "aggregates": [],
+      "domain_services": [],
+      "application_services": [
+        {
+          "name": "RunConformanceTests",
+          "command": "run-conformance-tests",
+          "description": "Daily plus on any CLI version change."
+        },
+        {
+          "name": "MarkProfileUnhealthy",
+          "command": "mark-profile-unhealthy",
+          "description": "Blocks new dispatch on the profile."
+        }
+      ],
+      "ports": [
+        {
+          "name": "WorkerProfilesCommands",
+          "kind": "driving",
+          "description": "run-conformance-tests, mark-profile-unhealthy"
+        },
+        {
+          "name": "LaunchEnvironmentQuery",
+          "kind": "driving",
+          "description": "launch-environment: the scrubbed env, private config home, CLI argv, sandbox profile, context limit of a profile; answered to task-execution and ideas (connect message launch-environment)"
+        },
+        {
+          "name": "WorkerProfilesStore",
+          "kind": "driven",
+          "description": "profile health rows"
+        },
+        {
+          "name": "RosterSource",
+          "kind": "driven",
+          "description": "reads and validates teammate files (roster, harness defaults)"
+        },
+        {
+          "name": "HarnessAdapters",
+          "kind": "driven",
+          "description": "per-CLI launch builders: claude, codex, antigravity, opencode, pi, prime"
+        },
+        {
+          "name": "ConformanceRunner",
+          "kind": "driven",
+          "description": "runs the adapter conformance suite against an installed CLI"
+        },
+        {
+          "name": "ParentEnvironment",
+          "kind": "driven",
+          "description": "the environment of the fleetd process, read only to build a scrubbed child env"
+        },
+        {
+          "name": "Clock",
+          "kind": "driven",
+          "description": "update cooldown of more than 1 week (06 S7)"
+        }
+      ],
+      "adapters": [
+        {
+          "port": "WorkerProfilesCommands",
+          "implementation": "ReconcilePassDriver"
+        },
+        {
+          "port": "LaunchEnvironmentQuery",
+          "implementation": "InProcessWorkerProfiles"
+        },
+        {
+          "port": "WorkerProfilesStore",
+          "implementation": "SqliteProfileHealthStore"
+        },
+        {
+          "port": "WorkerProfilesStore",
+          "implementation": "InMemoryProfileHealthStore"
+        },
+        {
+          "port": "RosterSource",
+          "implementation": "TeammateFileRoster (roster::)"
+        },
+        {
+          "port": "RosterSource",
+          "implementation": "FixtureRoster"
+        },
+        {
+          "port": "HarnessAdapters",
+          "implementation": "HarnessLaunchBuilders (harness::)"
+        },
+        {
+          "port": "HarnessAdapters",
+          "implementation": "FakeHarness"
+        },
+        {
+          "port": "ConformanceRunner",
+          "implementation": "CliConformanceRunner"
+        },
+        {
+          "port": "ConformanceRunner",
+          "implementation": "ScriptedConformance"
+        },
+        {
+          "port": "ParentEnvironment",
+          "implementation": "ProcessParentEnvironment"
+        },
+        {
+          "port": "ParentEnvironment",
+          "implementation": "FixtureEnvironment"
+        },
+        {
+          "port": "Clock",
+          "implementation": "PlatformAwakeClock"
+        },
+        {
+          "port": "Clock",
+          "implementation": "FakeClock"
+        }
+      ],
+      "read_models": [
+        {
+          "name": "ProfileHealth",
+          "source_events": [
+            "adapter-conformance-failed",
+            "profile-marked-unhealthy"
+          ]
+        }
+      ],
+      "tests": [
+        {
+          "invariant": "ANTHROPIC_API_KEY never reaches a child process (05 E-10, 06 S1)",
+          "test": "fm_anthropic_api_key_reaches_no_child_process"
+        },
+        {
+          "invariant": "ANTHROPIC_API_KEY never reaches a child process (05 E-10, 06 S1)",
+          "test": "pres_05_e10_roster_rejects_a_teammate_file_that_sets_it"
+        },
+        {
+          "invariant": "agy children lose GEMINI_API_KEY, GOOGLE_API_KEY, GOOGLE_GEMINI_BASE_URL (06 S3)",
+          "test": "pres_06_s3_agy_env_is_scrubbed_and_roster_rejects"
+        },
+        {
+          "invariant": "The private CODEX_HOME links every entry except rules/ (06 S4)",
+          "test": "pres_06_s4_codex_home_links_all_but_rules"
+        },
+        {
+          "invariant": "The Prime agent dir links auth.json (06 S5)",
+          "test": "pres_06_s5_prime_links_auth_json"
+        },
+        {
+          "invariant": "Every codex launch gets --dangerously-bypass-hook-trust (06 S6)",
+          "test": "pres_06_s6_codex_launch_bypasses_hook_trust"
+        },
+        {
+          "invariant": "Agent CLI updates wait out a cooldown; unreadable dates are held back (06 S7)",
+          "test": "pres_06_s7_cli_release_younger_than_cooldown_is_held"
+        },
+        {
+          "invariant": "Pane auto-update is off for claude and codex (06 S8)",
+          "test": "pres_06_s8_pane_auto_update_off"
+        },
+        {
+          "invariant": "A sandboxed persona does not start on a host that cannot sandbox it (06 S9)",
+          "test": "pres_06_s9_sandboxed_persona_refused_without_sandbox"
+        },
+        {
+          "invariant": "Trust writes stay narrow (06 S10)",
+          "test": "pres_06_s10_trust_never_for_root_home_or_ancestor"
+        },
+        {
+          "invariant": "The OpenCode, pi and Prime adapters carry over (06 S15)",
+          "test": "pres_06_s15_opencode_pi_prime_adapters_build_a_launch"
+        },
+        {
+          "invariant": "Every worker persona names a fallback; an incomplete profile is refused (FR-6, RR-11)",
+          "test": "profile_without_fallback_is_refused"
+        },
+        {
+          "invariant": "An unhealthy profile is not dispatched until a conformance test passes",
+          "test": "unhealthy_profile_is_skipped_by_dispatch"
+        },
+        {
+          "invariant": "Each agent runs with a 256k context limit (FR-9)",
+          "test": "launch_environment_sets_256k_context_limit"
+        }
+      ],
+      "design_path": "ddd/08-code/worker-profiles/design.md"
+    },
+    {
+      "context": "fleet-runtime",
+      "implementation_pattern": "active-record",
+      "deployable": "horch",
+      "module_path": "crates/horch-core/src/fleetd/fleet_runtime",
+      "aggregates": [],
+      "domain_services": [],
+      "application_services": [
+        {
+          "name": "CheckFleetd",
+          "command": "check-fleetd",
+          "description": "Every 30 s on macOS and Windows; WatchdogSec=30 on Linux; before each horch command."
+        },
+        {
+          "name": "SelfUpdate",
+          "command": "self-update",
+          "description": "horch self-update. The operator runs it too."
+        },
+        {
+          "name": "RestartFleetd",
+          "command": "restart-fleetd",
+          "description": "Restart always, through the platform layer."
+        }
+      ],
+      "ports": [
+        {
+          "name": "FleetRuntimeCommands",
+          "kind": "driving",
+          "description": "check-fleetd, self-update, restart-fleetd; called by horch fleetd check, horch self-update and the service manager"
+        },
+        {
+          "name": "AgentProcesses",
+          "kind": "driving",
+          "description": "start-agent-process and stop-process-group for task-execution and ideas (connect message start-agent-process)"
+        },
+        {
+          "name": "CommandChannel",
+          "kind": "driving",
+          "description": "operator requests from horch CLI commands over the socket or named pipe, or request files when fleetd is down"
+        },
+        {
+          "name": "ReconcilePass",
+          "kind": "driving",
+          "description": "the 5 s level-triggered pass: read facts, call each context in order, check_invariants, write heartbeat"
+        },
+        {
+          "name": "Ledger",
+          "kind": "driven",
+          "description": "the one-door transition(entity, id, to_state, cause) with the allowed-transition table; writable only in the fleetd role"
+        },
+        {
+          "name": "Platform",
+          "kind": "driven",
+          "description": "the 1 platform interface: service install and restart, hang detection, process facts, stop a process group, file watching, sandbox, sleep and wake, channel transport, machine probe; returns NotSupported where an OS has no equivalent"
+        },
+        {
+          "name": "HerdrGateway",
+          "kind": "driven",
+          "description": "herdr panes, agent status, the 1 doorbell line, notifications (adopted system, 06 S2 warning)"
+        },
+        {
+          "name": "ProtectedFiles",
+          "kind": "driven",
+          "description": "atomic writes of protocol files; mail and outbox dirs 0700 and files 0600 (04 M5, RR-8)"
+        },
+        {
+          "name": "BinaryWatch",
+          "kind": "driven",
+          "description": "detects a changed horch binary for the restart (04 S10)"
+        },
+        {
+          "name": "Clock",
+          "kind": "driven",
+          "description": "awake time for the heartbeat age (PL-5)"
+        }
+      ],
+      "adapters": [
+        {
+          "port": "FleetRuntimeCommands",
+          "implementation": "FleetdCli (crates/horch/src/cmd/fleetd.rs)"
+        },
+        {
+          "port": "AgentProcesses",
+          "implementation": "InProcessFleetRuntime"
+        },
+        {
+          "port": "CommandChannel",
+          "implementation": "PlatformChannelServer"
+        },
+        {
+          "port": "CommandChannel",
+          "implementation": "RequestFileSpool"
+        },
+        {
+          "port": "ReconcilePass",
+          "implementation": "FleetdDaemonLoop"
+        },
+        {
+          "port": "Ledger",
+          "implementation": "SqliteLedger (taskledger::store, schema migrations)"
+        },
+        {
+          "port": "Ledger",
+          "implementation": "InMemoryLedger"
+        },
+        {
+          "port": "Platform",
+          "implementation": "MacPlatform (platform/mac.rs)"
+        },
+        {
+          "port": "Platform",
+          "implementation": "LinuxPlatform (platform/linux.rs)"
+        },
+        {
+          "port": "Platform",
+          "implementation": "WindowsPlatform (platform/windows.rs)"
+        },
+        {
+          "port": "Platform",
+          "implementation": "FakePlatform"
+        },
+        {
+          "port": "HerdrGateway",
+          "implementation": "HerdrCli (workspace::herdr)"
+        },
+        {
+          "port": "HerdrGateway",
+          "implementation": "FakeHerdr"
+        },
+        {
+          "port": "ProtectedFiles",
+          "implementation": "FsProtectedFiles (fsx, messaging::mailbox)"
+        },
+        {
+          "port": "ProtectedFiles",
+          "implementation": "TempDirProtectedFiles"
+        },
+        {
+          "port": "BinaryWatch",
+          "implementation": "MtimeBinaryWatch"
+        },
+        {
+          "port": "BinaryWatch",
+          "implementation": "FakeBinaryWatch"
+        },
+        {
+          "port": "Clock",
+          "implementation": "PlatformAwakeClock"
+        },
+        {
+          "port": "Clock",
+          "implementation": "FakeClock"
+        }
+      ],
+      "read_models": [
+        {
+          "name": "FleetdHeartbeat",
+          "source_events": [
+            "fleetd-hang-detected",
+            "fleetd-restarted",
+            "horch-version-installed"
+          ]
+        }
+      ],
+      "tests": [
+        {
+          "invariant": "Exactly 1 process writes the ledger (RR-5, C4)",
+          "test": "fitness_only_fleet_runtime_opens_the_ledger_writable"
+        },
+        {
+          "invariant": "Exactly 1 process writes the ledger (RR-5, C4)",
+          "test": "cli_command_opens_ledger_read_only_and_sends_a_request"
+        },
+        {
+          "invariant": "A hung fleetd is restarted on all 3 OSes (PL-5)",
+          "test": "fm12_hung_fleetd_restarted_on_each_os"
+        },
+        {
+          "invariant": "The control loop restarts on a changed binary, only between passes (04 S10)",
+          "test": "pres_04_s10_changed_binary_restarts_between_passes"
+        },
+        {
+          "invariant": "Mail and outbox dirs are 0700, files 0600; a foreign-owned dir is refused (04 M5)",
+          "test": "pres_04_m5_foreign_owned_outbox_is_refused"
+        },
+        {
+          "invariant": "horch warns when herdr resume_agents_on_restore is not false (06 S2)",
+          "test": "pres_06_s2_warns_on_herdr_resume_agents_on_restore"
+        },
+        {
+          "invariant": "Worker reports reach fleetd as files, not sockets (06 S11)",
+          "test": "pres_06_s11_worker_report_is_a_file_on_every_os"
+        },
+        {
+          "invariant": "A probe that returns unknown is reported, never healthy or unhealthy (06 S12, OR-5)",
+          "test": "pres_06_s12_unknown_probe_neither_pauses_nor_passes"
+        },
+        {
+          "invariant": "Core fleetd code has no OS cfg (PL-2, PL-3)",
+          "test": "fitness_fleetd_tree_has_no_os_cfg"
+        },
+        {
+          "invariant": "A missing OS equivalent returns NotSupported (PL-3)",
+          "test": "platform_not_supported_is_explicit_on_each_module"
+        },
+        {
+          "invariant": "Schema migration: backup first, newer schema refused, dev build does not migrate (OR-6, C4)",
+          "test": "newer_schema_is_refused_and_backup_precedes_migration"
+        },
+        {
+          "invariant": "All writes go through the one-door transition with the allowed-transition table",
+          "test": "illegal_transition_is_refused_and_writes_nothing"
+        },
+        {
+          "invariant": "No process start runs inside a ledger transaction (connect N4)",
+          "test": "start_agent_process_inside_transaction_panics_in_debug"
+        },
+        {
+          "invariant": "The only bytes typed into a terminal are the 1 fixed doorbell line (FR-7)",
+          "test": "only_the_fixed_doorbell_line_is_typed"
+        }
+      ],
+      "design_path": "ddd/08-code/fleet-runtime/design.md"
+    }
+  ],
+  "decisions": [
+    {
+      "id": "D1",
+      "question": "Where do the 6 context modules live in the existing crates?",
+      "kind": "foundation",
+      "options": [
+        {
+          "id": "A",
+          "summary": "New modules crates/horch-core/src/fleetd/<context>/ with domain, application and adapters; existing modules become adapters behind the new ports.",
+          "pros": [
+            "Matches understand N6: contexts are modules inside horch-core",
+            "Clear seam for the fitness tests",
+            "Existing tests of taskledger and vcs keep running while phases land"
+          ],
+          "cons": [
+            "2 code paths exist until each phase retires the old one",
+            "Adapters wrap code that is not hexagonal"
+          ],
+          "risks": [
+            "Old and new paths drift if a phase leaves the old one in place"
+          ]
+        },
+        {
+          "id": "B",
+          "summary": "Evolve existing modules in place: taskledger becomes task-execution, vcs becomes integration, and so on.",
+          "pros": [
+            "No wrapper code",
+            "1 code path at all times"
+          ],
+          "cons": [
+            "Existing modules mix concerns of several contexts (taskledger holds worktrees, landing and tasks)",
+            "No place for the dependency rule"
+          ],
+          "risks": [
+            "A large refactor before Phase 1 can start"
+          ]
+        },
+        {
+          "id": "C",
+          "summary": "A new crate horch-fleetd that horch depends on.",
+          "pros": [
+            "Compiler-enforced boundary to horch-core"
+          ],
+          "cons": [
+            "Contradicts understand N6 (modules inside horch-core)",
+            "Cyclic needs: fleetd adapters wrap horch-core modules and horch-core tests need fleetd"
+          ],
+          "risks": [
+            "Build time and a crate split nobody asked for"
+          ]
+        }
+      ],
+      "chosen": "A",
+      "confidence": "medium",
+      "rationale": "understand N6 puts the contexts inside horch-core, and the migration plan replaces old behaviour phase by phase, so the old modules must keep working behind adapters until their phase retires them.",
+      "would_flip_if": [
+        "The operator wants a crate boundary enforced by the compiler",
+        "A phase retires a whole existing module at once, so wrapping it costs more than moving it"
+      ],
+      "made_by": "step",
+      "records": {
+        "assumption": "A2"
+      }
+    },
+    {
+      "id": "D2",
+      "question": "Is Attempt its own aggregate or an entity inside Task?",
+      "kind": "boundary",
+      "options": [
+        {
+          "id": "A",
+          "summary": "3 aggregates as discover proposes: Task, Attempt, Verification.",
+          "pros": [
+            "Small aggregates",
+            "Attempt rows of sub-orchestrators fit without a task"
+          ],
+          "cons": [
+            "04 S7 needs the attempt end and the task requeue in 1 transaction, which crosses 2 aggregates"
+          ],
+          "risks": [
+            "A crash between the 2 writes loses the requeue (the #216 bug)"
+          ],
+          "diagram": "ddd/08-code/decisions/D2-A.json"
+        },
+        {
+          "id": "B",
+          "summary": "Task holds its Attempts and the Lease; Verification stays its own aggregate.",
+          "pros": [
+            "04 S7 and I1 are 1-aggregate transactions",
+            "A task has at most max_attempts attempts, so the aggregate stays small",
+            "Verification runs long checks outside the task transaction"
+          ],
+          "cons": [
+            "Sub-orchestrator attempts (task_id null) are not part of this aggregate and are written by ideas"
+          ],
+          "risks": [
+            "Task grows if attempts keep transcripts; they must keep only ids and outcomes"
+          ],
+          "diagram": "ddd/08-code/decisions/D2-B.json"
+        },
+        {
+          "id": "C",
+          "summary": "1 Task aggregate that also holds the verification state.",
+          "pros": [
+            "1 aggregate for every task fact"
+          ],
+          "cons": [
+            "A 20 min check holds the task aggregate",
+            "The only-the-verifier-sets-done rule has no module seam"
+          ],
+          "risks": [
+            "define N1 is harder to prove"
+          ],
+          "diagram": "ddd/08-code/decisions/D2-C.json"
+        }
+      ],
+      "chosen": "B",
+      "confidence": "medium",
+      "rationale": "04 S7 is a preservation row: the reap ends the attempt and requeues the task in 1 transaction before any signal. With 1 aggregate per transaction, the attempt must be inside Task. Verification stays apart so the verifier is the only module that can produce a VerifiedVerdict (define N1).",
+      "would_flip_if": [
+        "The ledger allows a multi-aggregate transaction as an explicit exception for the reap",
+        "Attempts must carry large state such as transcripts"
+      ],
+      "made_by": "step",
+      "records": {
+        "assumption": "A3"
+      }
+    },
+    {
+      "id": "D3",
+      "question": "Which context owns the fleet-run wrapper logic (connect D2)?",
+      "kind": "ownership",
+      "options": [
+        {
+          "id": "A",
+          "summary": "task-execution: the wrapper writes heartbeat.json and exit.json, which are task-execution facts.",
+          "pros": [
+            "The files it writes feed the lease and the stall ladder"
+          ],
+          "cons": [
+            "task-execution would start processes, against connect N3"
+          ],
+          "risks": [
+            "The process-group and sandbox code leaks into a core context"
+          ],
+          "diagram": "ddd/08-code/decisions/D3-A.json"
+        },
+        {
+          "id": "B",
+          "summary": "worker-profiles: the wrapper builds the private config home and maps CLI events per adapter.",
+          "pros": [
+            "Per-CLI event mapping sits with the harness adapters"
+          ],
+          "cons": [
+            "worker-profiles would own a process role and the 256k context guard at run time"
+          ],
+          "risks": [
+            "worker-profiles grows a runtime part"
+          ],
+          "diagram": "ddd/08-code/decisions/D3-B.json"
+        },
+        {
+          "id": "C",
+          "summary": "fleet-runtime: the wrapper is a process role of the binary, like fleetd and fleetd check; it asks worker-profiles for the CLI event map.",
+          "pros": [
+            "Process groups, the platform layer and atomic file writes already live there",
+            "Keeps both core contexts free of process code"
+          ],
+          "cons": [
+            "fleet-runtime is already the largest supporting context"
+          ],
+          "risks": [
+            "The CLI event map crosses from worker-profiles at run time"
+          ],
+          "diagram": "ddd/08-code/decisions/D3-C.json"
+        }
+      ],
+      "rationale": "Recommended option C. Strongest argument against it: fleet-runtime then owns 4 process roles and the team has high cognitive load (organise warning). The call is upstream (connect D2) and stays open for the operator.",
+      "would_flip_if": [
+        "The operator assigns the wrapper in connect D2",
+        "The CLI event map turns out to need task state"
+      ],
+      "made_by": "step",
+      "records": {
+        "open_question": "Q1"
+      }
+    },
+    {
+      "id": "D4",
+      "question": "How does the code make the verification module the only writer of done (define N1)?",
+      "kind": "foundation",
+      "options": [
+        {
+          "id": "A",
+          "summary": "A VerifiedVerdict type with a constructor private to the verification module; Task::mark_done takes it.",
+          "pros": [
+            "The compiler refuses any other path"
+          ],
+          "cons": [
+            "A type alone does not stop a raw SQL update"
+          ],
+          "risks": [
+            "A test helper exposes the constructor"
+          ]
+        },
+        {
+          "id": "B",
+          "summary": "The one-door transition table refuses verifying -> done unless the cause is verifier.",
+          "pros": [
+            "Holds for every writer of the ledger"
+          ],
+          "cons": [
+            "A runtime check only"
+          ],
+          "risks": [
+            "Any caller can pass the cause string"
+          ]
+        },
+        {
+          "id": "C",
+          "summary": "Both A and B, plus the test fm_result_file_alone_leaves_task_verifying.",
+          "pros": [
+            "Compile-time and run-time guards",
+            "The design already requires the one-door table"
+          ],
+          "cons": [
+            "2 mechanisms to keep in step"
+          ],
+          "risks": [
+            "Low"
+          ]
+        }
+      ],
+      "chosen": "C",
+      "confidence": "high",
+      "rationale": "The design requires the one-door transition table, so B costs nothing extra; A adds a compile-time guard for in-process callers, and define N1 asks for a test.",
+      "would_flip_if": [
+        "The one-door table is dropped from the design"
+      ],
+      "made_by": "step",
+      "records": {
+        "assumption": "A4"
+      }
+    }
+  ],
+  "notes_for_downstream": [
+    {
+      "id": "N1",
+      "text": "The code step adds no message across a process boundary. start-agent-process and launch-environment stay in-process calls (ports AgentProcesses and LaunchEnvironmentQuery). The file protocol (result.json, exit.json, heartbeat.json, idea-folder files) and the command channel are the contracts that need schemas.",
+      "for": [
+        "contracts"
+      ],
+      "kind": "boundary"
+    },
+    {
+      "id": "N2",
+      "text": "Each contract test name in code.json is 'contract: <message id>' and each idempotency test is 'idempotent: <message id>'. ddd-contracts should use the connect payloads of these messages and the idempotency keys as written.",
+      "for": [
+        "contracts"
+      ],
+      "kind": "process"
+    }
+  ],
+  "plain_words": {
+    "what": "This step turns the 6 parts of the fleetd design into a code plan for Rust: which folders, which types, which interfaces, which tests, and in which order to build them. It writes no code.",
+    "decided": "All 6 parts live as modules under crates/horch-core/src/fleetd/. Only the 2 core parts get aggregates (rich objects that guard their own rules): Task and Verification in task-execution, Feature and TaskBranch in integration. An attempt lives inside its task, so a crash can never end the attempt and forget the task. 140 named tests cover the 13 invariants, the preservation rows and 10 high-priority fault scenarios. The build order is the 8 phases of the design.",
+    "assumed": "We assumed the existing modules stay where they are and get wrapped, not moved. We also assumed nothing else may mark a task done: only the verifier can create the value that does it.",
+    "riskiest": "Wrapping old modules means 2 code paths live side by side until each phase removes the old one. If a phase forgets to remove its old path, the old watchdog and the new fleetd can both act on 1 task. The owner of the per-attempt wrapper program is still open and must be chosen before Phase 4."
+  }
+}

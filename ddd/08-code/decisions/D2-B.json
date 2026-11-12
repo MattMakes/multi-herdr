@@ -1,0 +1,46 @@
+{
+  "format": "ddd-diagram-spec",
+  "version": 1,
+  "id": "D2-B",
+  "kind": "architecture",
+  "title": "Option B: Task holds Attempts and Lease; Verification apart",
+  "graph": {
+    "nodes": [
+      {
+        "id": "reap",
+        "label": "Reap use case",
+        "sublabel": "04 S7: 1 transaction",
+        "kind": "context"
+      },
+      {
+        "id": "task",
+        "label": "Task",
+        "sublabel": "aggregate: Attempt entity, Lease value",
+        "kind": "aggregate"
+      },
+      {
+        "id": "ver",
+        "label": "Verification",
+        "sublabel": "aggregate: makes VerifiedVerdict",
+        "kind": "aggregate"
+      }
+    ],
+    "edges": [
+      {
+        "id": "e0",
+        "from": "reap",
+        "to": "task",
+        "label": "end attempt + requeue (1 tx)",
+        "kind": "command"
+      },
+      {
+        "id": "e1",
+        "from": "ver",
+        "to": "task",
+        "label": "VerifiedVerdict -> mark-task-done",
+        "kind": "command"
+      }
+    ],
+    "groups": []
+  }
+}
