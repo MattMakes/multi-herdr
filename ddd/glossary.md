@@ -29,6 +29,8 @@
 **Orchestrator** — Not a role in fleetd. The word survives only in the preserved mail contract tag [orchestrator re #<id>] (discover N3).
 _Uses the shared meaning of_: **Idea**, **Sub-Orchestrator**, **Plan**
 
+**Needs-you list** — The 1 place for everything that waits for the operator (design OR-3, /fleet/needs-you/): approvals, escalated worker questions and escalated tasks. ideas owns it (orchestrator, D15).
+
 ## Task execution context
 **Lease** — The time-limited hold of 1 attempt on its task. It renews only on earned activity and pauses during sleep and waiting_quota (discover N1). _Avoid_: claim, lock _(differs from the shared meaning — a boundary)_
 **Check** — The acceptance command of a task. The verifier runs it in the worktree, in the sandbox profile of the worker.

@@ -1,15 +1,15 @@
 # Subdomains and bounded contexts - fleetd
 
-_Step 3 of 9 (decompose) · mode: auto · depth: standard · produced: 2026-11-12T17:30:35Z_
-_Inputs: ddd/02-discover/discover.json, ddd/01-understand/understand.json, ddd/glossary.md, ddd/manifest.json, docs/specs/fleetd/design.md, ai_docs/plans/fleetd-design/ddd-context.md_
+_Step 3 of 9 (decompose) · mode: auto · depth: standard · produced: 2026-11-12T20:36:28Z_
+_Inputs: ddd/02-discover/discover.json, ddd/01-understand/understand.json, ddd/glossary.md, ddd/manifest.json, docs/specs/fleetd/design.md, ai_docs/plans/fleetd-design/ddd-context.md, ai_docs/plans/fleetd-design/ddd-revision-context.md_
 
 ## In plain words
 
 This step cut fleetd into 6 parts, each with its own words and its own data: ideas, task execution, worktree custody, landing and integration, worker profiles, and the fleet runtime.
 
-**Decided:** 6 parts, all modules inside the 1 horch binary, joined by 13 named links. Each of the 82 events and 64 commands has exactly 1 owner.
+**Decided:** 6 parts, all modules inside the 1 horch binary, joined by 13 named links. Each of the 83 events and 65 commands has exactly 1 owner. The platform layer is a shared library that every part calls, not a part.
 
-**Assumed:** The verifier lives inside task execution, and worker questions live inside ideas. Both are open decisions for the operator (D1, D2).
+**Assumed:** The verifier lives inside task execution, and worker questions live inside ideas. The orchestrator chose both (D1, D2), and the operator can reverse them.
 
 **Riskiest:** If worker profiles is not its own part, the rule that strips ANTHROPIC_API_KEY from every launch has no single owner, and 1 missed launch path bills the API key.
 
@@ -25,8 +25,8 @@ This step cut fleetd into 6 parts, each with its own words and its own data: ide
 | `task-execution` | task-execution | 25 / 17 | candidate | Dispatches each task of a committed plan to a worker, supervises each attempt with an earned lease and the stall ladder, paces dispatch to each usage pool, and decides done from facts on disk. |
 | `worktree-custody` | worktree-custody | 5 / 4 | unsure | Records each worktree before it exists, reconciles the ledger rows, the directories and git, and saves the work of each worktree on a verified rescue ref before any removal. |
 | `integration` | integration | 23 / 17 | candidate | Lands verified task branches on their feature branch in gated bundles, finds conflicts between features by trial merges, rebases and gates each feature branch, and opens its pull request to the primary branch. |
-| `worker-profiles` | worker-profiles | 2 / 2 | candidate | Turns 1 worker profile into the exact flags, environment and files for each agent CLI, keeps logins and environment scrubs, mirrors CLI docs and runs adapter conformance tests. |
-| `fleet-runtime` | fleet-runtime | 3 / 3 | merge | Keeps fleetd alive under the OS service manager, restarts it on a hang or a new binary, owns the platform layer, the command channel, the file protocol permissions and the single ledger writer, and adapts herdr. |
+| `worker-profiles` | worker-profiles | 3 / 3 | candidate | Turns 1 worker profile into the exact flags, environment and files for each agent CLI, keeps logins and environment scrubs, mirrors CLI docs and runs adapter conformance tests. |
+| `fleet-runtime` | fleet-runtime | 3 / 3 | merge | Keeps fleetd alive under the OS service manager, restarts it on a hang or a new binary, owns the command channel, the file protocol permissions and the single ledger writer, and adapts herdr. |
 
 Boundaries decided mainly by: the 4 pivotal events (assumptions-approved, plan-committed, task-done, idea-tasks-landed), the actor change from operator and sub-orchestrator to fleetd code (discover N7), and the words that change meaning across contexts: lease, ready, landed, check and feature.
 
@@ -38,8 +38,8 @@ Boundaries decided mainly by: the 4 pivotal events (assumptions-approved, plan-c
 | `task-execution` | Task execution | cap-task-supervision, cap-task-verification, cap-usage-pacing | task-promoted, task-leased, attempt-launched, lease-renewed, lease-expired, attempt-stalled, usage-limit-reported, fallback-assigned, quota-wait-started, quota-window-reset, result-written, attempt-exited, check-passed, check-failed, review-passed, review-failed, judge-verdict-written, critical-fix-opened, high-finding-settled, attempt-failed, retry-scheduled, replan-requested, task-escalated, task-requeued, task-done | promote-task, dispatch-task, launch-attempt, renew-lease, apply-stall-ladder, move-to-fallback, write-result, run-check, run-review, write-judge-verdict, open-critical-fix, settle-high-finding, end-attempt, schedule-retry, escalate-task, requeue-task, mark-task-done | pivotal-event, language-boundary, data-ownership, actor | The executing phase runs from plan-committed to the pivotal event task-done. Workers, the agent CLI process and the clock act here; the operator acts only on an escalated task. |
 | `worktree-custody` | Worktree custody | cap-worktree-custody | worktree-created, worktree-orphaned, worktree-rescued, rescue-failed, worktree-removed | create-worktree, reconcile-worktrees, rescue-worktree, remove-worktree | language-boundary, data-ownership, rate-of-change | The worktree lifecycle (reserved, created, active, landing, landed, orphaned, rescued, removed) crosses the executing and landing phases. Its no-loss rules change rarely and must not change with the landing or dispatch rules. |
 | `integration` | Landing and integration | cap-feature-integration | feature-opened, task-branch-verified, bundle-built, task-branch-conflicted, fast-gate-passed, fast-gate-failed, task-branch-landed, task-branch-gate-failed, triage-task-opened, task-branch-abandoned, primary-branch-moved, trial-merge-passed, trial-merge-conflicted, feature-stacked, resolver-task-opened, feature-branch-rebased, feature-rebase-conflicted, full-gate-passed, full-gate-failed, feature-marked-ready, pull-request-opened, pull-request-merged, feature-merged | open-feature, mark-branch-ready, build-bundle, run-fast-gate, fast-forward-feature-branch, bisect-bundle, open-triage-task, abandon-task-branch, run-trial-merges, stack-feature, open-resolver-task, rebase-feature-branch, run-full-gate, mark-feature-ready, open-pull-request, merge-pull-request, check-merged | pivotal-event, language-boundary, actor, data-ownership | The landing and integrating phases run from task-done through idea-tasks-landed to feature-merged. Only fleetd code acts here, until the operator merges the pull request (discover N7). |
-| `worker-profiles` | Worker profiles and adapters | cap-agent-cli-adaption | adapter-conformance-failed, profile-marked-unhealthy | run-conformance-tests, mark-profile-unhealthy | rate-of-change, language-boundary, regulatory | Agent CLIs change every week, much faster than the fleet rules. The credential rules (ANTHROPIC_API_KEY scrub, logins, sandbox) need 1 owner. |
-| `fleet-runtime` | Fleet runtime | cap-fleet-record, cap-host-services, cap-pane-hosting | fleetd-hang-detected, horch-version-installed, fleetd-restarted | check-fleetd, self-update, restart-fleetd | external-system, rate-of-change, actor | The friend who installs horch and the OS service manager act here, and no domain phase does. Each OS module changes with the OS, not with the fleet rules (understand N13). |
+| `worker-profiles` | Worker profiles and adapters | cap-agent-cli-adaption | adapter-conformance-failed, profile-marked-unhealthy, agent-process-started | run-conformance-tests, mark-profile-unhealthy, start-agent-process | rate-of-change, language-boundary, regulatory | Agent CLIs change every week, much faster than the fleet rules. The credential rules (ANTHROPIC_API_KEY scrub, logins, sandbox) need 1 owner. |
+| `fleet-runtime` | Fleet runtime | cap-fleet-record, cap-host-services, cap-pane-hosting | fleetd-hang-detected, horch-version-installed, fleetd-restarted | check-fleetd, self-update, restart-fleetd | external-system, rate-of-change, actor | The friend who installs horch and the OS service manager act here, and no domain phase does. Its OS concerns (service install, restart, hang detection) change with the OS, not with the fleet rules, and reach the OS through the platform layer, which is not a context (understand N13, A10). |
 
 ## 3. Bounded contexts (solution space)
 
@@ -53,6 +53,7 @@ Boundaries decided mainly by: the 4 pivotal events (assumptions-approved, plan-c
 - **Language here:** `Assumption` - 1 line in assumptions.md, [confirmed] or [assumed], that the operator approves or revises; also a reversible assumption that the sub-orchestrator records to answer a worker question (understand N11).
 - **Language here:** `Question` - A worker question to the sub-orchestrator of its feature. It ends as an answer, an own assumption, a revise request, or an escalation to the operator.
 - **Language here:** `Orchestrator` - Not a role in fleetd. The word survives only in the preserved mail contract tag [orchestrator re #<id>] (discover N3).
+- **Language here:** `Needs-you list` - The 1 place for everything that waits for the operator (design OR-3, /fleet/needs-you/): approvals, escalated worker questions and escalated tasks. ideas owns it (orchestrator, D15).
 
 ### `task-execution` - Task execution
 - **Purpose:** Dispatches each task of a committed plan to a worker, supervises each attempt with an earned lease and the stall ladder, paces dispatch to each usage pool, and decides done from facts on disk.
@@ -96,19 +97,19 @@ Boundaries decided mainly by: the 4 pivotal events (assumptions-approved, plan-c
 ### `worker-profiles` - Worker profiles and adapters
 - **Purpose:** Turns 1 worker profile into the exact flags, environment and files for each agent CLI, keeps logins and environment scrubs, mirrors CLI docs and runs adapter conformance tests.
 - **Subdomains:** worker-profiles  **Aggregates:** worker-profile
-- **Owns events:** adapter-conformance-failed, profile-marked-unhealthy
-- **Owns commands:** run-conformance-tests, mark-profile-unhealthy
-- **Boundary rationale:** Rate-of-change: CLI versions and flags change far more often than the task rules. Language: profile, adapter, persona and conformance appear nowhere else. Regulatory: it owns the environment scrub and login rules (05 E-10, 06 S1, S3 to S10, S15), so the ANTHROPIC_API_KEY rule has exactly 1 owner (understand N16). The storm holds only 2 of its events (discover H14), so decision D3 records the merge alternative.
+- **Owns events:** adapter-conformance-failed, profile-marked-unhealthy, agent-process-started
+- **Owns commands:** run-conformance-tests, mark-profile-unhealthy, start-agent-process
+- **Boundary rationale:** Rate-of-change: CLI versions and flags change far more often than the task rules. Language: profile, adapter, persona and conformance appear nowhere else. Regulatory: it owns the environment scrub and login rules (05 E-10, 06 S1, S3 to S10, S15), so the ANTHROPIC_API_KEY rule has exactly 1 owner (understand N16). The storm holds only 3 of its events (discover H14, plus agent-process-started of discover N10), so decision D3 records the merge alternative. It starts each agent process from the launch environment of its profile (start-agent-process), so no other context builds a launch.
 - **Independent Service Heuristics:** sense-check yes · brand probably · revenue no · cost tracking probably · data yes · personas no · cognitive load yes → **verdict: candidate**.
 - **Language here:** `Profile` - A named worker profile: the CLI, model, effort, sandbox and permission rules that 1 attempt runs with.
 - **Language here:** `Healthy` - A profile whose adapter passed its last conformance test. Dispatch does not choose an unhealthy profile.
 
 ### `fleet-runtime` - Fleet runtime
-- **Purpose:** Keeps fleetd alive under the OS service manager, restarts it on a hang or a new binary, owns the platform layer, the command channel, the file protocol permissions and the single ledger writer, and adapts herdr.
+- **Purpose:** Keeps fleetd alive under the OS service manager, restarts it on a hang or a new binary, owns the command channel, the file protocol permissions and the single ledger writer, and adapts herdr.
 - **Subdomains:** fleet-runtime  **Aggregates:** none
 - **Owns events:** fleetd-hang-detected, horch-version-installed, fleetd-restarted
 - **Owns commands:** check-fleetd, self-update, restart-fleetd
-- **Boundary rationale:** External-system: it wraps the OS service managers and herdr, which hold no state that fleetd depends on (understand N14: do not build, only wrap). It keeps the platform layer as 1 interface with 1 module per OS, so core code has no OS cfg (understand N13). It owns the single ledger writer and the command channel (understand N5) as infrastructure for every other context, and the rows 04 S10, 04 M5, 06 S2, S11 and S12. ISH verdict merge: it is a module, never a product of its own.
+- **Boundary rationale:** External-system: it wraps the OS service managers and herdr, which hold no state that fleetd depends on (understand N14: do not build, only wrap). It does not own the platform layer: the platform layer is the leaf crate crates/horch-platform that each context calls, not a context (design A19, understand N13, A10). fleet-runtime calls it for the service manager and hang detection. It owns the single ledger writer and the command channel (understand N5) as infrastructure for every other context, and the rows 04 S10, 04 M5, 06 S2, S11 and S12. ISH verdict merge: it is a module, never a product of its own.
 - **Wraps:** os-service-manager, herdr - this context holds the adapter for the external system; the system itself is not on the map.
 - **Independent Service Heuristics:** sense-check yes · brand no · revenue no · cost tracking no · data partial · personas partial · cognitive load yes → **verdict: merge**.
 - **Language here:** `Check` - horch fleetd check: the heartbeat check that restarts fleetd when its last full pass is older than 30 s of awake time. It is not a task check.
@@ -149,9 +150,9 @@ flowchart LR
 | R7 | `integration` → `task-execution` | published-language | integration -> task-execution, published-language: task-branch-conflicted triggers launch-attempt on the same task. task-execution consumes the conflict fact as-is. Async. |
 | R8 | `integration` → `worktree-custody` | published-language | integration -> worktree-custody, published-language: task-branch-landed triggers remove-worktree; the worktree moves to landing and landed with its task branch (N6). worktree-custody still refuses a removal that would lose work (04 W6). Async. |
 | R9 | `integration` → `ideas` | published-language | integration -> ideas, published-language: task-branch-landed triggers roll-up-idea, and feature-merged triggers close-idea. ideas consumes branch facts as-is and never reads git. Async. |
-| R10 | `worker-profiles` → `task-execution` | customer-supplier | worker-profiles -> task-execution, customer-supplier: launch-attempt resolves a profile to exact CLI flags, environment and files, with the ANTHROPIC_API_KEY scrub (N2); profile-marked-unhealthy removes a profile from dispatch and fallback. task-execution needs profiles that fit its dispatch and fallback rules and can negotiate them. Sync at launch. |
-| R11 | `worker-profiles` → `ideas` | customer-supplier | worker-profiles -> ideas, customer-supplier: start-sub-orchestrator launches a sub-orchestrator pane with a profile and the same environment scrub. Sync at launch. |
-| R12 | `fleet-runtime` → `task-execution` | open-host-service | fleet-runtime -> task-execution, open-host-service: the platform layer gives process facts, process-group stop, sandbox, sleep and wake, and the single ledger writer (N5) through 1 interface. The same interface serves every context, so open-host-service, not customer-supplier. Sync calls. |
+| R10 | `worker-profiles` → `task-execution` | customer-supplier | worker-profiles -> task-execution, customer-supplier: launch-attempt resolves a profile to exact CLI flags, environment and files, with the ANTHROPIC_API_KEY scrub (N2); profile-marked-unhealthy removes a profile from dispatch and fallback. task-execution needs profiles that fit its dispatch and fallback rules and can negotiate them. attempt-launched triggers start-agent-process (policy start-process-on-launch), and worker-profiles starts the fleet-run wrapper and emits agent-process-started (A11). Sync at launch. |
+| R11 | `worker-profiles` → `ideas` | customer-supplier | worker-profiles -> ideas, customer-supplier: start-sub-orchestrator launches a sub-orchestrator pane with a profile and the same environment scrub. The pane starts through start-agent-process too. Sync at launch. |
+| R12 | `fleet-runtime` → `task-execution` | open-host-service | fleet-runtime -> task-execution, open-host-service: fleet-runtime gives the single ledger writer (N5) through 1 interface. The platform layer is not part of this link: task-execution calls the leaf crate crates/horch-platform directly for process facts, process-group stop, sandbox, sleep and wake (A10). The same interface serves every context, so open-host-service, not customer-supplier. Sync calls. |
 | R13 | `fleet-runtime` → `ideas` | open-host-service | fleet-runtime -> ideas, open-host-service: the command channel carries horch idea commands to fleetd, and the herdr adapter hosts and supervises sub-orchestrator panes. Same interface as R12. Sync calls. |
 
 No pair of contexts is marked separate-ways: each context has at least 1 relationship. Pairs with no relationship (for example worktree-custody and ideas) exchange nothing directly.
@@ -172,6 +173,7 @@ No pair of contexts is marked separate-ways: each context has at least 1 relatio
 | Lease | `task-execution` | The time-limited hold of 1 attempt on its task. It renews only on earned activity and pauses during sleep and waiting_quota (discover N1). | yes |
 | Lease | `worktree-custody` | The worktree lease: the ledger row written in the same transaction that leases the task, before the directory exists. It holds the worktree for 1 task until its work is landed or rescued. | yes |
 | Merged | `integration` | A feature fact read from git by content: the feature branch is in the primary branch (understand N4). | yes |
+| Needs-you list | `ideas` | The 1 place for everything that waits for the operator (design OR-3, /fleet/needs-you/): approvals, escalated worker questions and escalated tasks. ideas owns it (orchestrator, D15). | yes |
 | Orchestrator | `ideas` | Not a role in fleetd. The word survives only in the preserved mail contract tag [orchestrator re #<id>] (discover N3). | yes |
 | Orphaned | `worktree-custody` | A worktree on disk with no live owner attempt, or with no ledger row. | yes |
 | Profile | `worker-profiles` | A named worker profile: the CLI, model, effort, sandbox and permission rules that 1 attempt runs with. | yes |
@@ -179,56 +181,66 @@ No pair of contexts is marked separate-ways: each context has at least 1 relatio
 | Ready | `task-execution` | A task state: every dependency is done and the task waits for dispatch (discover N6). | yes |
 | Ready | `integration` | A task branch is ready when it is verified and waits for a bundle. A feature is ready when its full gate passed and its pull request can open (discover N6). | yes |
 
-## 6. Decisions for the operator
+## 6. Decisions
 
-### D1: Is the verifier a context of its own, or a module of task-execution? (open, kind boundary)
+### D1: Is the verifier a context of its own, or a module of task-execution? (chosen A, orchestrator D15, kind boundary)
 - **A:** Module of task-execution: verification is an aggregate beside task and attempt. Pros: 1 transaction for attempt end, verdict and task state; The skill tie-break says merge when the boundary is unsure. Cons: The judge rank language (CRITICAL, HIGH) sits beside lease language. Risks: task-execution grows large.
 - **B:** Context of its own (verification) that task-execution calls after attempt-exited. Pros: Matches the design component 'Verifier'; Keeps judge and review rules apart from dispatch. Cons: Every done needs a cross-context call and an event back. Risks: The reap and requeue rule 04 S7 spans 2 contexts.
 - **C:** Merge verification into integration, since both run gates. Pros: All gates in 1 place. Cons: Mixes task done with branch landed, which the design keeps apart (understand N4). Risks: The word done changes meaning inside 1 model.
 - **Recommendation:** Recommend A. Verification shares the task states and the transaction of task-execution. Strongest argument against: the design lists the Verifier as its own component with its own rules for each task kind, so its rules may change apart from dispatch.
+- **Chosen:** A. Decided by the orchestrator (D15). The operator can reverse it.
 - **Would flip if:** The judge and review rules change on a different schedule from dispatch; Verification must run outside fleetd.
 
-### D2: Which context owns worker questions: ideas or task-execution? (open, kind ownership)
+### D2: Which context owns worker questions: ideas or task-execution? (chosen A, orchestrator D15, kind ownership)
 - **A:** ideas owns the question aggregate. Pros: The sub-orchestrator answers against the idea's assumptions; revise-requested goes to the operator approval flow of the idea. Cons: The worker, an actor of task-execution, asks it. Risks: The attempt pause and resume crosses 2 contexts.
 - **B:** task-execution owns the question aggregate. Pros: The attempt waits on it, so pause and resume stay inside 1 context. Cons: Answers create assumptions that belong to the idea. Risks: Assumption language leaks into task-execution.
 - **C:** A context of its own (operator attention) for questions, approvals and escalations. Pros: Matches cap-operator-attention. Cons: A seventh context above the 2 to 6 band at 1 deployable. Risks: A thin context with no own language.
-- **Recommendation:** Recommend A. The answer is an assumption of the idea. Strongest argument against: the attempt pause and resume then depends on another context.
+- **Recommendation:** Recommend A. The answer is an assumption of the idea. Strongest argument against: the attempt pause and resume then depends on another context. Source: design, the owner of a worker question is the sub-orchestrator of its feature (RR-12).
+- **Chosen:** A. Decided by the orchestrator (D15). The operator can reverse it.
 - **Would flip if:** Answers never change the idea's assumptions; The operator wants 1 inbox context.
 
-### D3: Are worker profiles and adapters a context of their own, or a part of task-execution? (open, kind boundary)
+### D3: Are worker profiles and adapters a context of their own, or a part of task-execution? (chosen A, orchestrator D15, kind boundary)
 - **A:** Own context worker-profiles. Pros: Rate of change of the CLIs; 1 owner for the credential and environment rules. Cons: Only 2 events in the storm. Risks: A thin context until docs sync is stormed.
 - **B:** Module of task-execution. Pros: Fewer contexts; launch-attempt already lives there. Cons: CLI churn changes the dispatch model. Risks: The ANTHROPIC_API_KEY rule has no clear owner.
 - **C:** Part of fleet-runtime, as a platform concern. Pros: Sandbox is a platform service. Cons: Profiles are domain choices, not OS facilities. Risks: fleet-runtime mixes OS and CLI churn.
-- **Recommendation:** Recommend A. The CLI adapters change weekly and carry the absolute credential rule. Strongest argument against: the storm shows only 2 events, and the skill tie-break says merge when unsure.
+- **Recommendation:** Recommend A. The CLI adapters change weekly and carry the absolute credential rule. Strongest argument against: the storm shows only 2 events, and the skill tie-break says merge when unsure. Reason of the orchestrator: the environment scrub has 1 owner.
+- **Chosen:** A. Decided by the orchestrator (D15). The operator can reverse it.
 - **Would flip if:** The docs sync storm shows no own language; CLI adapters stop changing often.
 
-### D4: Is worktree custody a context of its own, or a part of integration? (open, kind boundary)
+### D4: Is worktree custody a context of its own, or a part of integration? (chosen A, orchestrator D15, kind boundary)
 - **A:** Own context worktree-custody. Pros: Own meaning of lease and landed; Only fleetd creates or removes worktrees, from 1 place. Cons: ISH verdict unsure. Risks: 2 contexts adapt git.
 - **B:** Part of integration. Pros: All git writes in 1 context. Cons: A worktree exists from task-leased, long before landing. Risks: Landing changes can break the no-loss rules.
 - **C:** Part of task-execution, beside the attempt. Pros: The worktree is leased with the task. Cons: The worktree survives attempts and outlives the task until landed. Risks: Rescue logic mixes with the stall ladder.
 - **Recommendation:** Recommend A. The worktree has its own lifecycle and its own no-loss rows. Strongest argument against: integration also writes git, so 2 contexts adapt 1 external system.
+- **Chosen:** A. Decided by the orchestrator (D15). The operator can reverse it.
 - **Would flip if:** The worktree lifecycle is folded into the task branch lifecycle; No-loss rules move into git hooks.
 
 ## 7. Assumptions, open questions, notes for later steps
 
 - A1 (high) The 6 contexts are modules inside horch-core in 1 deployable unit and 1 team (understand N6). The boundaries are model boundaries, not process boundaries.
-- A2 (medium) The verifier stays a module of task-execution because it reads and writes the same task states and the reap rule (04 S7) needs 1 transaction. Open decision D1.
-- A3 (medium) The question aggregate (worker-question-asked to question-escalated) belongs to ideas, because the sub-orchestrator answers it against the idea's assumptions. Open decision D2.
-- A4 (medium) Worker profiles and adapters are their own context because of their rate of change and their credential rules, although the storm holds only 2 of their events (discover H14). Open decision D3.
-- A5 (medium) Worktree custody is its own context, not a part of integration, because the worktree lease and the no-loss rules differ from the branch landing rules. Open decision D4.
+- A2 (medium) The verifier stays a module of task-execution because it reads and writes the same task states and the reap rule (04 S7) needs 1 transaction. Decision D1, option A (orchestrator, D15).
+- A3 (medium) The question aggregate (worker-question-asked to question-escalated) belongs to ideas, because the sub-orchestrator answers it against the idea's assumptions. Decision D2, option A (orchestrator, D15).
+- A4 (medium) Worker profiles and adapters are their own context because of their rate of change and their credential rules, although the storm holds only 3 of their events (discover H14, N10). Decision D3, option A (orchestrator, D15).
+- A5 (medium) Worktree custody is its own context, not a part of integration, because the worktree lease and the no-loss rules differ from the branch landing rules. Decision D4, option A (orchestrator, D15).
 - A6 (medium) The ledger is infrastructure that fleet-runtime owns as the single writer. Each context owns the state transitions of its own aggregates; it is not a shared kernel.
-- A7 (low) Operator attention (cap-operator-attention) maps to ideas, because approvals, interview questions and question escalation live there. Task escalation (task-escalated) stays in task-execution and reaches the operator through the same inbox.
+- A7 (high) Operator attention (cap-operator-attention) maps to ideas. There is 1 needs-you list (design OR-3, /fleet/needs-you/), and ideas owns it (orchestrator, D15): approvals, interview questions, escalated worker questions and escalated tasks. task-execution emits task-escalated, and ideas puts it on the list.
 - A8 (high) Triage and resolver tasks are opened by integration but run as normal tasks in task-execution; integration asks task-execution for them.
 - A9 (medium) Each preservation row has 1 owning context, as listed in N3. The row texts come from the Preservation analysis of design.md.
-- Q1 (not blocking, owner: operator) Worktree custody has an ISH verdict of unsure. The 2 most doubtful heuristics are user_personas (no actor drives it but the clock) and brand. Is it a context of its own or a part of integration (decision D4)?
+- A10 (high) The platform layer is not a bounded context and has no subdomain. It is the leaf crate crates/horch-platform (design A19, understand N13), and each context calls it directly. fleet-runtime uses it like every other context.
+- A11 (medium) worker-profiles owns start-agent-process and agent-process-started: it starts the fleet-run wrapper of an attempt, or the herdr pane of a sub-orchestrator, from the launch environment of the profile (discover N10). This keeps the environment scrub with 1 owner (decision D3).
 - Q2 (not blocking, owner: operator) Docs sync and adapter conformance are stormed as 2 events only (discover H14). Which context turns a drift into a task, and how does a profile become healthy again?
-- Q3 (not blocking, owner: operator) Which inbox holds an escalated task for the operator: the ideas context (with approvals and questions) or task-execution? The design puts everything for the operator in 1 place but names no owner.
 - N1 (for: organise · decision) Sharpens understand N6: all 6 contexts are modules inside horch-core in 1 deployable; worktree-custody (ISH unsure) and fleet-runtime (ISH merge) are never deployables of their own.
 - N2 (for: connect, define, code · risk) Sharpens understand N16: worker-profiles owns the environment scrub. It builds the env of every launch (attempt, sub-orchestrator pane, probe, updater), so task-execution and ideas launch only through it.
 - N3 (for: define, code · risk) Sharpens discover N8. Preservation row owners: worktree-custody 04 W6, W8, W9; integration 04 F5, F7, F9, F11, L5, L9; task-execution 04 S7, S8, L6, L8 and 06 S13; worker-profiles 05 E-10, 06 S1, S3 to S10, S15; fleet-runtime 04 S10, 04 M5, 06 S2, S11, S12.
 - N4 (for: define, code · language) 'Check' means the task acceptance command in task-execution and horch fleetd check (the heartbeat check) in fleet-runtime. 'Lease' means the attempt lease in task-execution and the worktree lease in worktree-custody.
 - N5 (for: connect, code · boundary) Sharpens understand N5: fleet-runtime owns the single ledger writer and the command channel. Every other context changes the ledger only through it; each context still owns the legal transitions of its own aggregates.
 - N6 (for: connect, code · boundary) The task branch and the worktree are 2 aggregates in 2 contexts with 1 lifecycle link: a worktree goes to landing when its task branch is verified and to landed when the branch is landed. The link crosses R6 and R8.
+- N7 (for: strategize, connect, organise, define, code · boundary) Sharpens understand N13: the platform layer (crates/horch-platform, design A19) is not a bounded context, has no subdomain, and fleet-runtime does not own it. Each of the 6 contexts calls it directly. R12 and R13 carry only the ledger writer, the command channel and the herdr adapter.
+- N8 (for: connect, define, code · boundary) worker-profiles owns start-agent-process and agent-process-started (discover N10, A11). attempt-launched in task-execution and start-sub-orchestrator in ideas both start their process through it, so the environment scrub has 1 owner.
+- N9 (for: connect, define, code · decision) There is 1 needs-you list (design OR-3), and ideas owns it (orchestrator, D15). task-execution emits task-escalated, and ideas puts the task on the list beside approvals and escalated questions.
+- N10 (for: strategize, connect, organise, define, code · decision) The orchestrator (D15) took option A of D1 to D4: the verifier is a module of task-execution, worker questions belong to ideas, worker-profiles and worktree-custody are contexts of their own. The 6 contexts and 13 links stay.
+- Q1 (answered, deprecated 2026-11-12) Answered (orchestrator, D15): decision D4, option A. Worktree custody is its own context. Recorded in D4 and A5.
+- Q3 (answered, deprecated 2026-11-12) Answered (orchestrator, D15): there is 1 needs-you list, and ideas owns it. An escalated task goes on that list. Recorded in A7, the ideas term Needs-you list and N9.
 
 ### Upstream notes addressed to decompose, and how this step acts on each
 
@@ -241,7 +253,9 @@ No pair of contexts is marked separate-ways: each context has at least 1 relatio
 | understand N5 | fleet-runtime owns the single ledger writer and the command channel (A6, N5). |
 | understand N6 | All contexts are modules in 1 deployable (A1, N1). |
 | understand N10 | Usage limits and fallback stay inside task-execution, which adapts provider-pool; a usage limit is not a stall and burns no attempt. |
-| understand N13 | fleet-runtime owns the platform layer as 1 interface; R12 and R13 are open-host-service. |
+| understand N13 | The platform layer is the leaf crate crates/horch-platform that each context calls, not a context, and fleet-runtime does not own it (A10, N7). R12 and R13 stay open-host-service for the ledger writer, the command channel and the herdr adapter. |
+| understand N18, N19 | Phase P and the 9 phases change no boundary. No action in this step. |
+| understand N20 | Each context gives the entity kind with each state name (section 5). |
 | discover N1 | Lease-renewed and lease-expired are owned by the attempt aggregate in task-execution. |
 | discover N2 | The feature aggregate owns feature-opened to feature-merged in integration; the task kind feature is a separate task-execution term. |
 | discover N3 | Every dispatcher command stays with the aggregate it changes; the mail contract word is recorded as an ideas term. |
@@ -250,6 +264,9 @@ No pair of contexts is marked separate-ways: each context has at least 1 relatio
 | discover N6 | Ready and landed have a meaning per context (section 5). |
 | discover N7 | The actor changes decide the cuts between ideas, task-execution and integration. |
 | discover N8 | Each preservation row has 1 owning context (N3). |
+| discover N9 | The operating phase events stay with their owners: fleetd-hang-detected, horch-version-installed and fleetd-restarted in fleet-runtime; adapter-conformance-failed and profile-marked-unhealthy in worker-profiles. |
+| discover N10 | start-agent-process and agent-process-started belong to worker-profiles (A11, N8). launch-environment and trial-merge-result are read models of worker-profiles and integration. |
+| discover N11 | idea-captured carries featureId and stays in ideas; feature-opened creates only the branch and stays in integration. No boundary change. |
 
 ## 8. Next
 
