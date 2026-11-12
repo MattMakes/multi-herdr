@@ -1111,6 +1111,7 @@ Row ids are those of the inventory files. Some ids exist in 2 files, so each id 
 | 06 S11 | The worker channel relay and the report socket need Unix sockets. Phase 5 moves worker reports to files. | `messaging/channel.rs:104`, `messaging/report.rs:237` | Windows is first-class (D1). | Lost worker reports on Windows. |
 | 06 S12 | The machine probe returns unknown disk, memory and load on Windows. | `runtime/machine.rs:322` | Input of the health guards. | The health guards have no input on Windows. |
 | 06 S13 | The quota probes read limits through each CLI's own client, so horch holds no credential. | `routing/quota.rs:9`, `quota_probe.rs:83`, `:140`, `:195` | `waiting_quota` and pacing depend on these readings. | No usage reading, or a held credential. |
+| 06 S14 | The source design assumed systemd or launchd, `WatchdogSec`, `/proc`, inotify and Unix signals to a process group, and it did not name Windows. D1, A1 and A15 answer it: the platform layer, and hang detection on all 3 OSes. | `preservation-06-wiring-and-platform.md`, sections 7 and 8 | Windows is first-class (D1). | fleetd does not run, or a hung fleetd is not restarted, on an OS that the source design did not name. |
 | 06 S15 | The OpenCode, pi and Prime adapters carry over. | `routing/quota.rs:46` | They give the `opencode-zen` and `local` pools. | Those pools are lost. |
 
 ### Contract surface
