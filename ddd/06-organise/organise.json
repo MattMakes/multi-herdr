@@ -2,7 +2,7 @@
   "schema_version": 1,
   "step": "organise",
   "produced_by": "ddd-organise",
-  "produced_at": "2026-11-12T17:59:16Z",
+  "produced_at": "2026-11-12T20:56:47Z",
   "mode": "auto",
   "depth": "standard",
   "inputs": [
@@ -28,8 +28,8 @@
     },
     {
       "id": "A3",
-      "text": "The fleet-run wrapper and horch fleetd check are process roles of the same horch binary, not deployables. The design maps the wrapper to today's horch worker subcommand (design: Where multi-herdr stands today) and names horch fleetd check as a horch command (design: Architecture and roles). The owning context of the wrapper is still open (connect D2, Q1); the deployable is the same for every answer.",
-      "confidence": "medium"
+      "text": "The fleet-run wrapper and horch fleetd check are process roles of the same horch binary, not deployables. The design maps the wrapper to today's horch worker subcommand (design: Where multi-herdr stands today) and names horch fleetd check as a horch command (design: Architecture and roles). worker-profiles owns the wrapper (orchestrator, D15; connect D2, connect N3): the wrapper is the profile made real, and the environment scrub has 1 owner. The deployable is the same.",
+      "confidence": "high"
     },
     {
       "id": "A4",
@@ -38,8 +38,8 @@
     },
     {
       "id": "A5",
-      "text": "The questions table belongs to ideas, as decompose D2 recommends (still open): the sub-orchestrator answers worker questions and ideas emits own-assumption-recorded and question-answered (connect F5). If decompose D2 or the operator inbox owner (decompose Q3) goes to task-execution, the questions table moves with it.",
-      "confidence": "low"
+      "text": "The questions table belongs to ideas. decompose D2 option A (orchestrator, D15): worker questions belong to ideas, because the sub-orchestrator of the feature answers them. ideas also owns the 1 needs-you list (design OR-3; decompose N9). The sub-orchestrator answers through the command channel, and fleetd stays the only ledger writer.",
+      "confidence": "high"
     },
     {
       "id": "A6",
@@ -48,29 +48,31 @@
     },
     {
       "id": "A7",
-      "text": "The cognitive load of core-team is high: 6 contexts and 2 core contexts (task-execution, integration). No second team exists to take a context, so the mitigation is module boundaries that a test enforces, 1 context per task where possible, and the 8 migration phases that add the contexts one at a time (understand C9).",
+      "text": "The cognitive load of core-team is high: 6 contexts and 2 core contexts (task-execution, integration). No second team exists to take a context, so the mitigation is module boundaries that an arch_scan rule enforces (orchestrator, D15), 1 context per task where possible, and the 9 migration phases (Phase 0, Phase P, Phases 1 to 7) that add the contexts one at a time (understand C9, N19).",
       "confidence": "medium"
     },
     {
       "id": "A8",
       "text": "Each context owns its workspace folders inside the 1 deployable: ideas owns the idea folders (ai_docs/plans/<run>/, design /fleet/ideas/), task-execution owns the task and attempt folders under the state root, worker-profiles owns the teammate profile files (understand N17; design: Workspace layout and file protocol).",
       "confidence": "medium"
-    }
-  ],
-  "open_questions": [
-    {
-      "id": "Q1",
-      "text": "Where does docs sync run: as a horch subcommand that fleetd schedules inside the 1 deployable, or as the separate agent-docs-sync binary that grows from crates/herdr-docs-sync (decision D2)? No context owns docs sync yet (decompose Q2).",
-      "blocking": false,
-      "owner": "operator"
     },
     {
-      "id": "Q2",
-      "text": "Must a test enforce the module boundaries of the 6 contexts (for example an arch_scan rule: no context writes the tables or folders of another context)? This is the main mitigation of the high cognitive load (A7).",
-      "blocking": false,
-      "owner": "operator"
+      "id": "A9",
+      "text": "The platform layer is the leaf crate crates/horch-platform inside the 1 deployable (design A19, D16; understand N13; decompose N7). It is a library crate of the horch workspace, not a bounded context and not a deployable of its own: the horch binary links it, and each context calls it directly. Phase P creates it between Phase 0 and Phase 1 and moves the 178 production OS-specific sites behind it.",
+      "confidence": "high"
+    },
+    {
+      "id": "A10",
+      "text": "Docs sync and adapter conformance run as a horch subcommand inside the 1 deployable, and fleetd schedules it daily and on a CLI version change (decision D2 option A, orchestrator, D15). Phase 7 widens crates/herdr-docs-sync into this subcommand. Which context turns a drift into a task stays open (decompose Q2).",
+      "confidence": "medium"
+    },
+    {
+      "id": "A11",
+      "text": "An arch_scan rule enforces the context boundaries (orchestrator, D15): no context writes or reads the ledger tables or the workspace folders of another context. It sits beside the arch_scan rules of PL-2 (no OS cfg outside crates/horch-platform) and of Phase 5 (every process other than fleetd opens the ledger read-only).",
+      "confidence": "high"
     }
   ],
+  "open_questions": [],
   "notes_for_downstream": [
     {
       "id": "N1",
@@ -86,6 +88,32 @@
       "text": "Sharpens decompose N5: each context owns its own ledger tables and workspace folders (A4, A8). fleet-runtime commits the write, but only the owning context decides the rows of its tables. No context reads or joins the tables of another context; it uses that module's contract or its events.",
       "for": [
         "define",
+        "code"
+      ],
+      "kind": "boundary"
+    },
+    {
+      "id": "N3",
+      "text": "Decision D2 option A (orchestrator, D15): docs sync and adapter conformance are a horch subcommand inside the 1 deployable, scheduled by fleetd daily and on a CLI version change. Phase 7 widens crates/herdr-docs-sync into it; no second binary ships. Its owning context stays open (decompose Q2).",
+      "for": [
+        "define",
+        "code"
+      ],
+      "kind": "decision"
+    },
+    {
+      "id": "N4",
+      "text": "Sharpens N2 (orchestrator, D15): an arch_scan rule enforces the context boundaries. A context that reads or writes the ledger tables or the workspace folders of another context fails the rule.",
+      "for": [
+        "define",
+        "code"
+      ],
+      "kind": "boundary"
+    },
+    {
+      "id": "N5",
+      "text": "Sharpens understand N13 for placement: crates/horch-platform is a leaf library crate linked into the 1 deployable. It is not a deployable and not a context, so deployable_count stays 1 and no team interaction exists for it.",
+      "for": [
         "code"
       ],
       "kind": "boundary"
@@ -105,7 +133,7 @@
         "fleet-runtime"
       ],
       "cognitive_load": "high",
-      "notes": "1 human operator plus a changing number of AI agents (no cap, understand C13). Runs the horch binary on the operator's machine; reached through the horch CLI, herdr panes and the needs-you folder. Load is high because the team owns 6 contexts and 2 core contexts. Mitigation: no second team exists, so keep each context a module with its own tables and folders, enforce the boundaries with a test (Q2), give an agent 1 context per task where possible, and add the contexts in the 8 migration phases."
+      "notes": "1 human operator plus a changing number of AI agents (no cap, understand C13). Runs the horch binary on the operator's machine; reached through the horch CLI, herdr panes and the needs-you list. Load is high because the team owns 6 contexts and 2 core contexts. Mitigation: no second team exists, so keep each context a module with its own tables and folders, enforce the boundaries with an arch_scan rule (A11), give an agent 1 context per task where possible, and add the contexts in the 9 migration phases."
     }
   ],
   "interactions": [],
@@ -125,7 +153,7 @@
       "team": "core-team",
       "data_store": "own",
       "independent_deploy": true,
-      "rationale": "fleetd is a subcommand of the single horch binary, so the CLI, the daemon and the wrapper always have the same version and horch self-update restarts the daemon on the new binary (design: Amendments D9, FM-34; understand C1). All 13 relationships are in-process calls and events (connect N1), task-execution reaches worker-profiles and fleet-runtime with synchronous calls (connect F2, F4), and 1 team owns every context. No split reason is in the inputs. Released through horch self-update and the GitHub release assets (understand C7)."
+      "rationale": "fleetd is a subcommand of the single horch binary, so the CLI, the daemon and the wrapper always have the same version and horch self-update restarts the daemon on the new binary (design: Amendments D9, FM-34; understand C1). All 13 relationships are in-process calls and events (connect N1), task-execution reaches worker-profiles and fleet-runtime with synchronous calls (connect F2, F4), and 1 team owns every context. No split reason is in the inputs. Released through horch self-update and the GitHub release assets (understand C7). The platform layer is the leaf crate crates/horch-platform, linked into this binary (A9). Docs sync is a horch subcommand of this binary (D2, A10). worker-profiles owns the fleet-run wrapper role (A3)."
     }
   ],
   "topology_style": "modular-monolith",
@@ -155,7 +183,7 @@
             "A fault in any module can stop the 1 daemon process"
           ],
           "risks": [
-            "Modules reach into each other's tables and the context boundaries erode without a test (Q2)"
+            "Modules reach into each other's tables and the context boundaries erode; an arch_scan rule prevents it (A11)"
           ],
           "diagram": "ddd/06-organise/decisions/D1-A.json"
         },
@@ -257,22 +285,37 @@
           ]
         }
       ],
-      "confidence": "medium",
-      "rationale": "Recommendation A: it keeps the fixed target of 1 deployable and lets fleetd react to a CLI version change. The strongest argument against A: the design says to generalise crates/herdr-docs-sync, which is its own binary today, and B follows that text. The design does not say whether the widened tool ships in the horch binary, so the operator decides.",
+      "confidence": "high",
+      "rationale": "Decided by the orchestrator (D15). The operator can reverse it. Recommendation A: it keeps the fixed target of 1 deployable and lets fleetd react to a CLI version change. The strongest argument against A: the design says to generalise crates/herdr-docs-sync, which is its own binary today, and B follows that text. The design does not say whether the widened tool ships in the horch binary. The orchestrator chose A, the recommendation of this step.",
       "would_flip_if": [
         "The operator wants docs sync to run when fleetd is down",
         "The docs fetch needs network access that the daemon must not have"
       ],
-      "made_by": "step",
+      "made_by": "strategist",
       "records": {
-        "open_question": "Q1"
-      }
+        "assumption": "A10"
+      },
+      "chosen": "A"
     }
   ],
   "plain_words": {
     "what": "We decided who owns each part of fleetd and how many separate programs ship.",
-    "decided": "1 team (the operator and the AI agents) owns all 6 parts. All 6 parts ship in 1 program, the horch binary, as separate modules.",
+    "decided": "1 team (the operator and the AI agents) owns all 6 parts. All 6 parts ship in 1 program, the horch binary, as separate modules. The OS code sits in 1 library inside it (crates/horch-platform), and docs sync is a horch command inside it too.",
     "assumed": "Each part keeps its own database tables and folders inside that 1 program, and no part edits another part's tables.",
-    "riskiest": "1 team owns 6 parts, 2 of them core. If nothing checks the module walls, the parts tangle and a later split costs much more. Where docs sync runs is still open (D2)."
-  }
+    "riskiest": "1 team owns 6 parts, 2 of them core. An arch_scan rule checks the module walls; if the rule is weak, the parts tangle and a later split costs much more."
+  },
+  "deprecated": [
+    {
+      "id": "Q1",
+      "collection": "open_questions",
+      "reason": "Answered (orchestrator, D15): decision D2 option A. Docs sync is a horch subcommand that fleetd schedules inside the 1 deployable. Recorded in D2 and A10.",
+      "since": "2026-11-12"
+    },
+    {
+      "id": "Q2",
+      "collection": "open_questions",
+      "reason": "Answered (orchestrator, D15): an arch_scan rule enforces the context boundaries. Recorded in A11 and N4.",
+      "since": "2026-11-12"
+    }
+  ]
 }
