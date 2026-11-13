@@ -592,3 +592,95 @@ Places: the Amendments table; Architecture and roles; Worker profiles and adapte
 | S43-6 | MEDIUM | A28 |
 | S43-7 | MEDIUM | A24 |
 | S43-8 | MEDIUM | A31 |
+
+# Systems review round, fix round 2
+
+5 fresh reviewers read the design at commit `c8bf35ac`, after amendments A23 to A31. The reports are the 5 files `docs/specs/fleetd/system-review-*-2.md`. Each finding of the first reports is closed, except S40-8, S42-2 and S42-4. The fixes opened new gaps: 4 CRITICAL (T39-1, T39-2, T41-1, T43-1) and some HIGH. A new finding id is `T<report>-<n>`. Amendments A32 to A36 are the decisions. This is the last fix round: what a third review still finds open goes to the operator.
+
+## A32. Nothing slow runs between 2 heartbeats (T39-1, T39-2)
+
+The fault: part 3 of a pass runs `git worktree add` and `git worktree remove` before the heartbeat. Part 1 of a pass scans each outbox and each worktree with no limit. Each can take more than the hang limit, and then a healthy fleetd is restarted for ever.
+
+New content:
+
+- An effect that part 3 of a pass does itself is short by its nature: start a process through the launcher, signal a process, write or move a small file, `git update-ref` on a local ref. Each other effect is a job. Add the job kinds `worktree_add` and `worktree_remove`. A worktree in `reserved` waits for its `worktree_add` job, and the attempt launches only when the job passed. The general rule, stated 1 time: a git command that reads or writes a working tree, or that uses the network, is always a job.
+- The fact scans of part 1 have a budget, like the rows of part 2. fleetd scans the outbox of each live attempt and the request folder; it does not walk the whole tree. Each scan (outboxes, worktree folders, processes) has a cursor in the ledger (`pass_cursors`) and a time budget for 1 pass (a starting value in `fleet.toml`). When the budget ends, the scan stops, the pass goes on with the facts it has, and the next pass continues at the cursor. File watching puts a changed outbox at the front of the order. `git worktree list` is a job.
+- The whole pass has a time budget that is lower than the hang limit. fleetd looks at the time between 2 items and ends the pass in order: it commits, does the short effects, and writes the heartbeat. `horch status` shows the age of the oldest fact that waits for a scan.
+
+Places: Ledger (`jobs.kind`, `pass_cursors`); Worktrees (the state table rows `reserved`, `created`, `landed`); Supervision, liveness and reconciliation (the reconcile pass: parts 1 and 3 and their comments, "A pass has a work budget"); Requirements (PL-5); Failure modes (FM-12).
+
+## A33. What a job key means, and each job kind has a valid row (T41-3, T43-3, T40-4, T43-1)
+
+The fault: the rule "a job with the same kind and input key is not run 2 times" also stops the retry of a failed push and the next periodic fetch. A job that was stopped at its time limit never runs again. The job `docs_sync` has no kind in the list, and a job row needs a repository.
+
+New content:
+
+- There are 2 classes of job, and the design gives the class and the input key of each kind in 1 table.
+  - A pure job: its result depends only on its inputs. The kinds: a task check (the tip of the task branch and the check), a fast gate and a full gate (the candidate tip and the base tip), a trial merge (the 2 tips). A result of `passed` is used again. A result of `failed` is used again only when the job ran to its end and the check or gate gave the verdict. A job that ended as `abandoned` (stopped at its time limit, or its process was lost) has no verdict and runs again.
+  - An effect job: it changes or reads the world outside its inputs. The kinds: `fetch`, `push`, `rebase`, `rescue`, the build of a bundle candidate, `worktree_add`, `worktree_remove`, `docs_sync`, `conformance`. Its result is never used again. Each run is a new row with a run number. At most 1 row of 1 kind and 1 subject is `queued` or `running`. A `failed` push or fetch runs again after its backoff or at its next period.
+- The uniqueness rule of the table is: kind, subject, input key and run number.
+- The kind list of `jobs` has each kind that the design names, from the phase that adds the table: also `docs_sync` and `conformance`, which Phase 7 starts to use. The repository column can be empty for a job that belongs to no repository. The subject of a `docs_sync` job is the CLI and its version.
+
+Places: Ledger (`jobs`: the kind list, the columns, the uniqueness rule, the comment); Supervision, liveness and reconciliation ("Long work is a job"); Features, landing and integration (push and fetch); Docs sync and adapter conformance; Migration plan (New work for each phase, Phase 7); Failure modes (the row on a failed push).
+
+## A34. Each new state has an exit (T41-1, T40-2, T41-2, T40-1, T40-3, S40-8)
+
+The fault: 5 paths that A26 to A28 opened have no exit.
+
+New content:
+
+- A bundle in `passed` whose ref move fails its compare-and-set goes to `dropped`, and its members go back to `ready`. Add the bundle state `landed`: the move of the feature ref was observed. fleetd does not queue a rebase of a feature branch while 1 of its bundles is in `gating` or in `passed`.
+- fleetd owns the candidate refs `refs/horch/bundle/<id>`. It deletes the ref of a bundle that is `landed`, `failed` or `dropped` when no child bundle of it is still in `building`, `gating` or `passed`. It reads the ref store again to verify the deletion and tries again on the next pass when it failed. `horch status` shows the count of bundle refs.
+- A resolver attempt and a fix attempt of a task that is `done` are attempts of the task branch. Each has a lease and is watched by the stall ladder like an attempt of a `running` task. I1 says: each live attempt has exactly 1 lease. A failure of such an attempt does not move the task. It adds 1 to a counter on the `branches` row, and fleetd starts the next one after the backoff. At `max_attempts` of the profile, the branch goes to the needs-you list. `horch task requeue <task>` then sets the counter to 0 and starts 1 more. `horch branch abandon <branch>` is the other exit.
+- Each task state that is not terminal has an exit to `cancelled`: a replan that replaces the task, `horch task cancel`, or the cancel or abandon of its idea or feature. fleetd first stops the process group of a live attempt, then moves the task, then handles its branch by the rule of A27 (a rescue ref, then `abandoned`). The cancel of a judged task also cancels its judge task. A plan change that would leave a judgment task with no judge task is refused by plan validation.
+- The feature state `open` has an exit to `merged`: git shows the changes of the feature tip in the primary branch by content. Each idea in flight then moves to a new feature by the rule "A merge with ideas in flight". Add this exit to the `open` row of the feature state table and to the allowed transitions.
+
+Places: Ledger (`bundles.state`, `branches`: the counter; I1); Features, landing and integration (the feature state table, the landing state table, "The bundle", the paragraph on resolver and fix attempts); Supervision, liveness and reconciliation (the task state table, the stall ladder rung 6).
+
+## A35. An operator command needs a thing that a worker does not have (T42-1, T43-2)
+
+The fault: the command channel checks the OS user. A worker runs as the same user. So the check cannot tell you from a worker, and the refusal inside the `horch` command does not protect the protocol.
+
+New content:
+
+- fleetd decides at the server. Each request kind has a class: `operator` or `worker`. The design lists the class of each kind. The kinds of a worker (`progress`, `result`, `ask`) go through the outbox of its attempt and need no channel.
+- The operator token. fleetd makes a random token file in the state root at install, with mode 0600. The `horch` command reads it and sends it with each `operator` request, on the channel and in a request file. fleetd refuses an `operator` request that has no valid token, and records the refusal.
+- The sandbox is the wall. The sandbox profile of each worker denies 3 things: to read the token file, to connect to the command channel, and to write into the request folder. Profile validation refuses a profile whose sandbox rules allow 1 of them. The conformance suite has 1 check for it for each adapter.
+- A second check for the live channel. The platform layer gives the process of the peer. fleetd refuses an `operator` request from a process that belongs to the process group or job object of a live attempt, or that descends from its wrapper.
+- State the limit in the design in plain words: on an OS where a CLI has no sandbox (the platform module returns "not supported"), a worker has the rights of the user, and the token does not stop a hostile worker. `horch status` and plan validation mark such a profile as "no sandbox". The second check still applies.
+- The `requests` row records the class of the request and how it was authorized.
+- The gate of Phase 5 gets 1 test: from inside a worker sandbox, a raw request on the channel and a request file with the right owner are both refused, for each `operator` kind.
+
+Places: Requirements (SR-5, a new SR requirement for the token and the sandbox rule); Architecture and roles (the command channel, "Only you can send a command"); Ledger (`requests`); Worker profiles and adapters (the sandbox row of the profile, profile validation); Docs sync and adapter conformance (the checks for each adapter); Migration plan (Phase 5 and its row in the 2 tables); Failure modes (the row on a planted command).
+
+## A36. The migration text agrees with itself (S42-2, S42-4)
+
+The fault: the architecture still says that agents never touch the ledger, and Phases 1 to 4 need direct writes. FM-9 is marked green in Phase 4, and its judge path comes in Phase 6.
+
+New content:
+
+- Each sentence that says that only fleetd writes the ledger, or that an agent or a `horch` command never writes it, says "from Phase 5". The table "What a release does to a run in flight" says for Phases 1 to 4: a worker command and a `horch` command write the ledger directly, through `transition()`.
+- In the table "Where each rule becomes green", FM-9 and RR-3 become green in Phase 6. The gate of Phase 4 names a part test: "FM-9 for a code kind and for the structural check". The gate line of Phase 4 and the row of FM-9 say the same.
+
+Places: Architecture and roles (fleetd, the command channel, the roles table); Ledger (the writer rule); Migration plan (Phase 4, Phase 6, the 3 tables); Failure modes (FM-9).
+
+## The amendment for each finding of the second reports
+
+| Finding | Rank | Amendment |
+| --- | --- | --- |
+| T39-1 | CRITICAL | A32 |
+| T39-2 | CRITICAL | A32 |
+| T40-1 | HIGH | A34 |
+| T40-2 | HIGH | A34 |
+| T40-3 | HIGH | A34 |
+| T40-4 | HIGH | A33 |
+| S40-8 (still open) | HIGH | A34 |
+| T41-1 | CRITICAL | A34 |
+| T41-2 | HIGH | A34 |
+| T41-3 | HIGH | A33 |
+| T42-1 | HIGH | A35 |
+| S42-2 (still open) | HIGH | A36 |
+| S42-4 (still open) | HIGH | A36 |
+| T43-1 | CRITICAL | A33 |
+| T43-2 | HIGH | A35 |
+| T43-3 | HIGH | A33 |
