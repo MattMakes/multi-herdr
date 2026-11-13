@@ -379,3 +379,216 @@ New content:
 - L2: the sentence "made 13 decisions" must agree with the rows of the Amendments table. D16 is a decision of the operator. Give the count that the table shows.
 
 Places: Requirements (PL-6); the Migration plan (the paragraph before the phases, Phase 0, Phase P); the Amendments section (its first sentence, the D9 row, and a new row "Fix round 2: A22 (L1, L2)").
+
+# Systems review round
+
+The operator asked for 1 review of the whole design: is it coherent, and is it good systems design and systems engineering? 5 reviewers read the design at commit `043cc279`, 1 lens each. Each verdict is NOT SOUND. The reports are `docs/specs/fleetd/system-review-39-control-loop.md`, `system-review-40-state-machines.md`, `system-review-41-landing-and-git.md`, `system-review-42-migration-and-requirements.md` and `system-review-43-operations-and-agreement.md`. A finding id is `S<report>-<n>`.
+
+The orchestrator read each CRITICAL and HIGH finding against the lines of the design. Each one holds. Amendments A23 to A31 are the decisions. They are grouped by root cause, not by report. The table at the end gives the amendment for each finding.
+
+Rules for each amendment of this round:
+
+- Use what the design has. Do not add a subsystem when a rule on an existing table closes the failure scenario.
+- The section `## Checked and sound` of each report names mechanisms that are correct. Do not change them.
+- The section `## Answers` of each report names more places where the design is silent. When an amendment covers such a place, state the rule there also.
+- A decision of the operator (D1 to D4, D6 to D14, D16) does not change.
+
+## A23. Long work is a job. A pass never waits for it. (S39-1, S39-7, S39-5)
+
+The fault: the fast gate, the full gate, trial merges, rebases and git network calls run inside the reconcile pass. The heartbeat is written only after the pass. The hang check restarts fleetd when the heartbeat is older than 30 s. So a healthy fleetd with a long gate is restarted for ever.
+
+New content:
+
+- The design already runs a verification as an async job (`run_due_verifications`). The same rule now applies to each piece of work that can take more than 1 s: a task check, a fast gate, a full gate, the build of a bundle candidate, a trial merge, a rebase, a rescue, a `git fetch`, a `git push`.
+- Add 1 table `jobs`: id, kind, subject (the row that it works for), input key (for example the 2 tips of a trial merge, or the candidate tip and the base tip of a gate), state (`queued`, `running`, `passed`, `failed`, `abandoned`), pid and start time, the time limit, the result. `gate_runs` and `trial_merges` rows point at their job. A job with the same kind and input key is not run 2 times: its result is used again.
+- A job runs in its own process, outside the pass. fleetd supervises it like an attempt: the row first, then the process, alive by PID and start time, stopped at its time limit. After a restart of fleetd, a `running` job whose process is gone goes back to `queued`.
+- A pass only reads facts, decides, writes rows and starts or observes jobs. `land_bundles` and `integrate_features` in the reconcile pass become "queue the jobs that are due, and act on the jobs that ended".
+- A pass has a work budget. It handles at most a set count of rows of each kind (a starting value in `fleet.toml`), keeps a cursor in the ledger, and continues at the cursor on the next pass, in a fair order. A pass must end before the hang limit. `horch status` shows the age of the oldest row that waits for a pass.
+- Trial merges between features: fleetd queues 1 job for each pair of features whose sets of changed files share a file, keyed by the 2 tips. A pair with no shared file needs no job. A count of features of n does not make n times n jobs in 1 pass.
+- Remote git state is level-triggered: 1 `git fetch` job for each repository on a period (default 60 s, in `fleet.toml`). fleetd records the fetched tip and the time. Merge detection and gate freshness use the fetched tip. When a fetch fails, `horch status` shows since when the remote tip is stale.
+- At most 1 job that changes git state runs for 1 repository at a time. This removes git lock contention. Jobs that only read git can run together.
+
+Places: Architecture and roles (fleetd, Verifier); Ledger (new table `jobs`, `gate_runs`, `trial_merges`); Features, landing and integration; Supervision, liveness and reconciliation (the reconcile pass and its comments); Requirements (PL-5: say that the heartbeat does not depend on a job); Failure modes (FM-12).
+
+## A24. An effect outside the ledger: the row first, then the effect, then the observation (S39-2, S39-3, S39-4, S39-8, S43-1, S43-7)
+
+The fault: the design says that a pass is 1 SQLite transaction. A process start, a file write and a git ref move are not part of a transaction. A crash between the effect and the commit leaves the 2 out of step: 2 workers in 1 worktree, or a row that claims an effect that did not occur. Nothing stops 2 fleetd processes. A command request can be lost or applied 2 times. A worker file can be a link or have any size.
+
+New content:
+
+- The design already has the rule "the row first" for worktrees and branches. Make it the rule for each effect. A pass has 3 parts: (1) read the facts, with no transaction; (2) 1 transaction that decides and writes rows, each effect as a row in a state that says "intended" (for example an attempt in `launching`, a worktree in `reserved`, a job in `queued`); (3) after the commit, do the effects. The next pass observes each effect and moves its row on. No effect occurs inside the transaction.
+- Each effect is safe to repeat. Its key is the id of its row. A launch names the attempt id: the attempt folder, the wrapper and its heartbeat carry it. Before a launch, fleetd looks for a live process of that attempt id and does not launch a second one. An intended row with no effect after its time limit is done again or failed, by the same pass rule.
+- In the pass order, the stop of orphans and the observation of intended rows come before `dispatch`. A new attempt never starts in a worktree while a process of an older attempt of that task is alive.
+- 1 fleetd for 1 ledger, by a mechanism. fleetd holds an exclusive OS file lock through the platform layer for its whole life. A second fleetd that cannot take the lock exits at once. The ledger has 1 row with a generation number. fleetd adds 1 to it at each start. Each write transaction checks that the number is its own, and fleetd exits when it is not. A restart (the service manager, `horch fleetd check`, `horch self-update`) stops the old process by its recorded PID and start time, waits until the lock is free, and only then starts the new one.
+- A command request has a contract. Each request has a `request_id` that the client makes (this is the idempotency key of the DDD model), a kind, and a payload that never changes. Add 1 table `requests`: the id, the kind, the hash of the payload, the state (`pending`, `applied`, `refused`), the result and, for a refusal, the reason. fleetd applies a request and writes its `requests` row in 1 transaction. A request with an id that is already applied or refused gets the stored result again and has no second effect. A request file is moved to an archive folder only after its row is committed. The client can ask for the result of a `request_id` at any time.
+- The command channel accepts only the user that owns the ledger. The socket or named pipe checks the peer user through the platform layer. The request folder has mode 0700 and each file 0600, and fleetd checks the owner of a file before it reads it. On Windows the platform module sets an equal access rule. A worker cannot send an operator command: `approve`, `abandon` and `--direct` intake are refused inside a fleet attempt, as the design already says for `--direct`.
+- A file that a worker writes is not trusted. For each file type, the design gives: a size limit in bytes; for a log, a limit of lines; it must be a regular file; fleetd opens it without following a link; its real path is inside the outbox of its own attempt; the task id and attempt id in the payload equal those of the path. fleetd records a file that fails 1 of these checks as rejected, with the reason, in `ingested`, and does not read it again.
+- The file protocol has 3 kinds of file, and the rule "never edited after it lands" applies to the first only: an immutable message (`task.yaml`, `START.md`, `result.json`, a question file, `verdict.json`, a request file); a snapshot that is replaced atomically (`heartbeat.json`), which fleetd reads but does not ingest; an append-only log (`progress.jsonl`), which fleetd reads from the last offset that the ledger recorded.
+
+Places: Summary (item 1, say "1 transaction for the ledger changes of a pass"); Workspace layout and file protocol; Architecture and roles (fleetd, the command channel, the Platform layer row: add the file lock and the peer-user check to the concerns of Phase 1); Ledger (the rule "One door", new table `requests`, the generation row, `ingested`); Supervision, liveness and reconciliation (the reconcile pass); Requirements (RR-8, PL-2, the SR group); Failure modes (FM-11, FM-12, FM-15, FM-23, FM-24).
+
+## A25. One fleet clock for each timer (S39-6)
+
+The fault: lease time counts only awake time. Other timers do not say. After a sleep, a branch deadline and a question limit fire at once.
+
+New content:
+
+- fleetd keeps 1 fleet clock in the ledger: a count of seconds. Each pass adds the time since the last pass, but at most 2 times the pass period. So the clock does not run while the machine sleeps and does not run while fleetd is down. No actor is judged for a time in which nothing could act.
+- Each operational timer is a deadline on the fleet clock: the lease, each rung of the stall ladder, the start timeout, each retry backoff, the wait limits, the question limit, `due_at` of each row, the time limit of a job. PL-4 now names all of them.
+- These use calendar time, and the design says so for each: the hang check of fleetd itself (awake time from the platform layer, because the fleet clock stops with fleetd), the 7 day park, reminders, retention periods, the daily docs sync, the usage windows of a provider.
+
+Places: Requirements (PL-4); Ledger (the fleet clock row, the comment of each `due_at` column); Worker profiles and adapters (the timer list); Supervision, liveness and reconciliation ("A sleep does not expire a lease" becomes the general rule).
+
+## A26. The task state machine is complete (S40-1, S40-2, S40-3, S40-4)
+
+The fault: the task machine has 12 states and no table. The source design had a diagram here, and the conversion lost it (the line "embedded content: task state machine"). A judged task and its judge task wait for each other. An exit with a question, or on a usage limit, burns an attempt. A dependent task starts before the code of its dependency is on the feature branch.
+
+New content:
+
+- Add a task state table with the same columns as the worktree table: state, owner, leaves when, time limit. It has all 12 states of the `CHECK` list. It names: `leased` to `running` (the wrapper's first heartbeat); the state during a retry backoff (`ready` with a not-before time on the fleet clock); `failed` (owner: the sub-orchestrator of the feature, which replans 1 time, with a time limit; then `escalated`); `escalated` (owner: you; `horch task requeue` sets the attempt count to 0 and moves it to `ready`; `horch task cancel` moves it to `cancelled`); `blocked_on_user` (entered by a question; left by its answer); `done` and `cancelled` are terminal.
+- Replace the 3 lines "embedded content" of the design. For the task machine: the new table. For the idea machine: point at the idea state table that exists. For the components: a short list of each component and the files that go between them, from the Workspace layout section.
+- Order inside 1 pass: results are ingested and acted on before a lease is expired. A valid `result.json` that is present in a pass wins over a lease expiry in the same pass.
+- An illegal transition never stops the pass. `transition()` refuses it, records an event with the row and the cause, and the row goes to the needs-you list. Each other row of the pass goes on.
+- 2 exits are not failures and burn no attempt. An exit with a valid question file has the outcome `asked`: the task moves to `blocked_on_user`, and the worktree stays. An exit on a usage limit or an outage has the outcome `quota`: the task follows RR-11 (`waiting_quota`, or a restart on the fallback). Each adapter maps the usage-limit signal of its CLI in exec mode also. The Stop hook and the repair resume of the wrapper accept a question file in place of `result.json`. `finish_exited` looks for these 2 outcomes before it treats an exit as `no_result`.
+- When is a dependency met. For a normal dependency (`after:` on a task that is not the one it judges): the dependency is `done` and its task branch is `landed`. Invariant I2 and `promote_pending` use this rule, so the worktree of the dependent task has the code. The task state `done` means "verified". The task branch state `landed` means "its changes are in the feature branch".
+- The judge pair. A judge task depends on the task it judges in another way: the dependency is met when the judged task is in `verifying` and its structural check passed. The worktree of the judge task starts from the tip of the task branch of the judged task, so the judge reads the result before it lands. The judged task stays in `verifying`. It moves to `done` when its judge task is `done` with no open CRITICAL item. Then its task branch moves to `ready`. The task branch of the judge task holds only the verdict file on top of the judged branch, and it lands after it.
+- A fix round needs no change of the plan. When the judge reports an open CRITICAL item, fleetd starts a new attempt of the judged task, in a fresh session, with the verdict file as input, in the same worktree. Then it starts a new attempt of the judge task, in a fresh session, whose scope is the earlier CRITICAL items and the change. This is the "fresh session" of D4. A fix round counts in its own counter `fix_rounds` (limit 2), not in `max_attempts`. After 2 fix rounds with an open CRITICAL item, the judged task goes to `escalated`.
+- Phase 4 names "land" as a step of landing, not of the verifier.
+
+Places: Requirements (RR-3, FR-4); Architecture and roles (Done for each kind of task, the 3 "embedded content" lines); Workspace layout (the plan example: comments at `after:` and `judges:`); Ledger (`tasks`: the columns for the not-before time and `fix_rounds`; I2); Worker profiles and adapters (the Stop hook row, the usage-limit signal); Ideas (the question flow, step 1); Supervision, liveness and reconciliation (the stall ladder rungs 5 and 6, the reconcile pass order); Migration plan (Phase 4).
+
+## A27. The landing state machine survives a crash and a race (S41-3, S41-4, S40-5, S40-7, S41-7)
+
+The fault: a bundle and its bisect have no row. A branch move has no check of the tip that fleetd expected. `conflicted` and `in_bundle` have no exit that can occur. A cancelled task or a failed rescue blocks its idea for ever. Rescue refs have no class, no owner and no limit.
+
+New content:
+
+- Add 2 tables. `bundles`: id, feature, the base tip, the candidate ref (`refs/horch/bundle/<id>`) and tip, the parent bundle (for a bisect part), the state (`building`, `gating`, `passed`, `failed`, `dropped`), its job. `bundle_members`: bundle, task branch, position. A task branch is a member of at most 1 bundle that is not ended. A bisect is a set of child bundles of the failed bundle. After a restart, fleetd continues from the rows.
+- Each `branches` row stores the tip that fleetd last saw (local and remote). Each move of a ref is a compare-and-set: `git update-ref <ref> <new> <expected old>` for a local ref, and `--force-with-lease=<ref>:<expected old>` for a push that rewrites. When the tip is not the expected one, fleetd moves nothing, records the new tip, makes the gate result stale and decides again on the next pass. Someone else's commit is never overwritten.
+- When the tip of a feature branch moves while a bundle of that feature is in `building` or `gating`, the bundle goes to `dropped` and its members go back to `ready`. fleetd does not start a rebase of a feature branch while 1 of its bundles is in `gating`. It waits for the job, which has a time limit.
+- `conflicted`: the owner is fleetd, not "the same worker" (an exec worker has exited). fleetd starts a resolver attempt for that task branch in its worktree, with the conflict in `zdiff3` form and the tests of both sides. When the resolver result passes its check, the branch goes back to `ready`. `gate_failed`: fleetd starts a fix attempt of the task with the gate output; then the branch goes back to `verifying`.
+- Give a time limit (a starting value, on the fleet clock) for each landing state. At the limit the row goes to the needs-you list.
+- The roll-up of an idea counts only tasks that are not `cancelled` and task branches that are not `abandoned`. When a task is cancelled, fleetd writes a rescue ref of its branch and then moves the branch to `abandoned`. The operator is not the only actor that can set `abandoned`.
+- An idea is `merged` when each of its worktrees is `removed` or `rescued`. fleetd then removes the `rescued` trees. The rescue refs stay. The worktree states `landing` and `orphaned` get an exit to `rescued`. A rescue that fails its verification keeps the tree and puts 1 item on the needs-you list.
+- fleetd sets `rerere.enabled` and `merge.conflictStyle=zdiff3` in each worktree and each repository that it manages. It does not assume them.
+- Rescue refs have 2 classes, and fleetd owns both. `unique`: it holds work that is in no landed branch. It is kept until you decide (`horch worktree restore`, or a new command `horch rescue drop`). No collection deletes it. `superseded`: an old tip whose work is in a newer tip or in a landed branch. It expires 30 days after its feature is merged or abandoned, with the trash refs. `horch status` shows the count and the bytes of each class. When the `unique` class is over a budget (a starting value in `fleet.toml`), fleetd puts 1 item on the needs-you list. It deletes nothing.
+
+Places: Ledger (new tables `bundles`, `bundle_members`; `branches`: the tip columns; I9, I10, I12); Worktrees (the state table rows `landing`, `orphaned`, `rescued`; the rescue paragraph; "Ideas finish clean"); Features, landing and integration (the landing state table, "The bundle", "No work is lost"); Ideas (the rows `in_progress`, `integrating`, `merged`); Failure modes (FM-25 to FM-32).
+
+## A28. The feature state machine, and 1 sub-orchestrator for each feature (S41-2, S40-8, S43-2, S40-6, S41-5, S41-8, S43-6, S43-5, S43-4)
+
+The fault: the feature machine has 4 states and no table. I7 asks for 1 live sub-orchestrator for each idea; FR-2 and I13 ask for 1 for each feature. An idea that is added while the full gate runs is left with no owner when the feature merges. A stack has no rule for the end of its lower feature. A failed push and a closed pull request have no state. The needs-you list only grows. `horch status` cannot say why a ready task does not run.
+
+New content:
+
+- Add a feature state table: state, owner, leaves when, time limit.
+  - `open`: fleetd. It moves to `ready` when 2 things are true: each idea of the feature is `integrating` (or `cancelled` or `parked`), and the full gate passed on the feature tip over the fetched tip of the primary branch.
+  - `ready`: you (or fleetd when the project sets the merge to automatic). It moves back to `open` when its tip or the primary tip moves, or when a new idea is accepted with `--to`. It moves to `merged` when git shows its changes in the primary branch by content.
+  - `merged`: terminal. fleetd decides it 1 time and does not check it again.
+  - `abandoned`: terminal. Only you set it, with a new command `horch feature abandon <feature>`. fleetd first writes a rescue ref for each branch that is not landed.
+- The pull request follows the state. fleetd opens it, or shows the compare URL, only when the feature is `ready`. When the feature moves back to `open`, fleetd marks the pull request as a draft (`pr = gh`), or changes the needs-you item to "do not merge yet" (`pr = manual`).
+- A merge with ideas in flight (a call of the orchestrator; it reads D12 "then we start over"). You can merge a pull request at any time. When git shows the merge and the feature still has an idea that is not `integrating`, fleetd records the feature as `merged` and moves each such idea to a new feature. The new feature branch starts from the fetched primary tip. The sub-orchestrator and its pane go on with the new feature. Each task branch of a moved idea is rebased on the new feature branch, with a rescue ref first. No idea is left without a feature and an owner.
+- I7 counts for each feature: each feature that has an idea from `clarifying` to `integrating` has exactly 1 live sub-orchestrator attempt, or it waits for you. I13 stays. FR-2 stays.
+- Ideas of 1 feature are planned in order. While 1 idea of a feature is in `clarifying`, `specifying` or `ticketing`, a new idea of that feature waits in `captured`. Correct the sentence "no idea waits in `captured` for a slot": no idea waits for a slot of the fleet, and ideas of different features never wait for each other.
+- The live process of a feature, in any phase, owns the open worker questions of the whole feature. fleetd rings it when a question arrives. It answers open questions before it continues its phase. The question limit (15 min on the fleet clock, a starting value) covers a process that does not answer.
+- A stack edge ends with its lower feature. When the lower feature is `merged`: fleetd clears `stacked_on` of the upper one, rebases it on the fetched primary tip (a rescue ref first), runs both gates again, and sets the base of its pull request to the primary branch (`gh`), or changes its needs-you item (`manual`). When the lower feature is `abandoned`: fleetd rebases the upper one on the primary tip without the commits of the lower one. A conflict opens a resolver task. The owner of each step is fleetd.
+- Push and pull request results are facts on the feature row: the push state (`ok`, or `failed` with a retry count and a backoff, and after 3 failures 1 needs-you item), and the pull request state (`none`, `open`, `closed`). With `pr = gh`, fleetd reads a pull request that is closed and not merged and puts 1 item on the needs-you list: open it again, or run `horch feature abandon`. With `pr = manual`, you run `horch feature abandon`. A project can set `remote = none`: fleetd does not fetch, push or open a pull request, and a feature is `merged` when its changes are in the local primary branch.
+- The needs-you list has a life cycle. Each item has a stable key (its kind and its row), and a state: `open`, `resolved`, `superseded`. A producer writes by key, so 1 thing has 1 item. `horch ideas` and the folder show only `open` items. An item that is not open is removed after 30 days. The ideas context owns the list.
+- `horch status` shows each hold on dispatch with its cause: a health floor, pacing of a pool, an unhealthy profile, a git job that holds the repository, a missing fast gate. fleetd records an event when a global hold starts and when it ends.
+- The health guards also cover free memory, the count of processes and the count of open files of the user, from the machine probe of the platform layer. They pause new dispatch, as the disk and load floors do. They are not a cap on parallel work (D8).
+
+Places: Requirements (FR-2, OR-1, OR-3); Ledger (`features`: the columns for push state, pull request state and `stacked_on`; I7, I8, I13; a table for needs-you items); Ideas (the idea state table, "How many sub-orchestrators", the question flow); Features, landing and integration (Features, Between features, the pull request paragraph); Supervision, liveness and reconciliation (`keep_sub_orchestrators`, the health guards); Goals, non-goals and defaults (the health guard row).
+
+## A29. Each process starts through 1 launcher that removes the key (S43-3)
+
+The fault: the rule "`ANTHROPIC_API_KEY` is removed from every child process" is correct, but the new launch paths are not tied to it: the verifier, the jobs of A23, docs sync, the conformance launches. The native pane resume of herdr uses an environment that horch did not clean, and the design only warns.
+
+New content:
+
+- Each process that fleetd, the wrapper, a job, docs sync or the conformance suite starts goes through 1 launcher function. The launcher applies the environment rule of the profile, and it always removes `ANTHROPIC_API_KEY`. The worker-profiles context owns the rule. The platform layer owns the process start.
+- An `arch_scan` rule finds no direct process start in production code outside the launcher.
+- fleetd does not use the native agent resume of herdr. After a herdr restart, fleetd starts each attempt again through the launcher (FM-13). A pane that herdr restored by itself is an orphan by I5 and is stopped.
+- Do not write the value of an environment variable in the design.
+
+Places: Requirements (the SR group); Architecture and roles (fleet-run wrapper, Verifier, Platform layer); Worker profiles and adapters; Docs sync and adapter conformance; Preservation analysis (the rows on the key and on herdr resume); Failure modes (FM-13).
+
+## A30. Each phase can pass its own gate, and each rule has a gate (S41-1, S42-1, S42-2, S42-3, S42-4, S42-5, S41-6, S42-6)
+
+The fault: this class of fault was found 3 times (L1, S41-1, S42-1): a gate needs a thing that a later phase adds. Phase 1 needs leases (Phase 2) and rescue (Phase 3). Phase 4 needs the branch tables and the judge (Phase 6). The plan does not say what happens to a run that is in flight when a phase is released, and it does not stop an old watchdog that runs. 19 requirements and 9 failure modes have no gate. 6 preservation rows have no owner before cleanup starts.
+
+New content:
+
+- First make 1 table "What each gate needs": 1 row for each of the 9 phases: the gate, each mechanism the gate needs, the phase that gives each mechanism. Each mechanism must come from the same phase or an earlier one. Put this table in the Migration plan. Then correct each row that fails:
+  - Phase 1: its gate is FM-4, FM-7, FM-12, and the part of FM-13 that Phase 1 can do: fleetd sees the dead processes, ends the attempts and queues the tasks again with the worktree handling of today. Phase 1 adds I4, I5 and the process part of I1. It also adds the `jobs` table, the 3-part pass, the fleet clock, the file lock and the generation number (A23 to A25).
+  - Phase 2: the lease part of I1. Phase 3: the full FM-13 (the worktrees are rescued and used again) becomes green.
+  - Phase 4: move the tables `features`, `branches`, `bundles`, `bundle_members` and `gate_runs` from Phase 6 to Phase 4. In Phases 4 and 5, each run is 1 feature row and its run branch is the feature branch. The landing state machine and the 2 gates work on it. The gate of Phase 4 covers FM-9 for code kinds and for the structural check. The judge pair of A26 comes in Phase 6 with the plan, and its failure mode becomes green there.
+  - Phase 6 adds the idea level, several features at the same time, `trial_merges`, stacks, and the rules of A28.
+- The Summary says that fleetd is the only ledger writer. Say "from Phase 5". For Phases 1 to 4, state the rule: each writer calls the same `transition()` with the same table of allowed transitions, SQLite gives 1 writer at a time, and fleetd treats each row as a fact that it reads again on each pass. No rule of Phases 1 to 4 needs the single writer.
+- Phase 1 stops the old watchdog. At its first start, fleetd lists each recorded watchdog, stops each one by its PID and start time, and takes its runs. `horch ledger watch` then only points at fleetd. The gate of Phase 1 gets 1 test: an update with a live worker and a live old watchdog leaves 1 control path.
+- Each phase states 4 things for a run that is in flight when the phase is released: the backfill of old rows; what happens to old processes; which old commands and files still work; and 1 test in its gate that starts on the phase before and ends on the new phase. Starting content: Phase 2 gives a held task a lease with a full time. Phase 4: an attempt that began with a claim ends by the old path, and only a new attempt uses `task.yaml` and `result.json`; the attempt row records which. Phase 5: an old worker command writes to the outbox when its attempt has one, and sends a request to fleetd when not. Phase 6: each run that exists gets 1 idea row and 1 feature row. Phase 7: a worker that runs interactive goes on; exec is the default for new attempts.
+- Add 1 table "Where each rule becomes green" to the Migration plan: each requirement id and each failure mode FM-n, with the 1 phase whose gate makes its test green. The answer to question 5 of `system-review-42-migration-and-requirements.md` lists the ones with no gate today. Each gate line of a phase then names its rows. The no-loss invariants I8 to I12 get 1 test each, in the gate of the phase that first uses the invariant.
+- The preservation rows 04 W6, L5, L9, W8, W9 and L8 become requirements of Phase 3 with a test in its gate. The worktree reconciler stays in report-only mode until these tests are green.
+- Add 1 table of the numbers of the design: the value, its class (a fixed contract, a default with its key in `fleet.toml` or in a profile, or a starting value to tune), and where it is set. The answer to question 8 of the same report has the list.
+
+Places: Summary; Migration plan (each phase, the 2 new tables, "New work for each phase", the paragraph after it); Requirements (verification column where a gate is named); Failure modes; Preservation analysis.
+
+## A31. The design states the rules that only the DDD model has (S43-8)
+
+The fault: the orchestrator decided some rules in the DDD round (D15). They are in `ddd/` and not in the design. The design must be the source.
+
+New content: add a row "D15" to the Amendments table (decisions of the orchestrator in the DDD round; you can reverse each one), and state each rule in its section:
+
+- A request carries an idempotency key (A24 covers it). A refusal carries its reason.
+- `reset_at` of a usage limit is optional. When it is absent, fleetd waits until the pool probe reports ok.
+- `result.json` has a status from the closed list `completed`, `blocked`, `failed`.
+- A worker question goes to the needs-you list after 15 min with no answer from a running sub-orchestrator. This is a starting value. The wait for you has no limit.
+- A requeue by you sets the attempt count to 0. A requeue by a review keeps its own counter.
+- Supervision and conformance are an operating concern outside the flow of 1 idea.
+- Module owners inside the 1 binary: the fleet-run wrapper belongs to worker-profiles; plan validation is a module of ideas with its own rules; the needs-you list belongs to ideas; git has 2 callers, worktree-custody (worktrees and rescue refs) and integration (branches and merges); task-execution and integration change together; docs sync is a `horch` subcommand that fleetd schedules. An `arch_scan` rule enforces the module boundaries.
+- A drift that docs sync finds becomes an idea (the design already says so). The worker-profiles module marks a profile unhealthy, and healthy again when the conformance checks pass.
+
+Places: the Amendments table; Architecture and roles; Worker profiles and adapters; Ideas (the question flow); Docs sync and adapter conformance; Requirements (RR-11, RR-12).
+
+## The amendment for each finding
+
+| Finding | Rank | Amendment |
+| --- | --- | --- |
+| S39-1 | CRITICAL | A23 |
+| S39-2 | CRITICAL | A24 |
+| S39-3 | HIGH | A24 |
+| S39-4 | HIGH | A24 |
+| S39-5 | MEDIUM | A23 |
+| S39-6 | MEDIUM | A25 |
+| S39-7 | LOW, decision D8 | A23 (the work budget). D8 does not change. |
+| S39-8 | HIGH | A24 |
+| S40-1 | CRITICAL | A26 |
+| S40-2 | HIGH | A26 |
+| S40-3 | HIGH | A26 |
+| S40-4 | HIGH | A26 |
+| S40-5 | HIGH | A27 |
+| S40-6 | HIGH | A28 |
+| S40-7 | HIGH | A27 |
+| S40-8 | HIGH | A28 |
+| S41-1 | CRITICAL | A30 |
+| S41-2 | CRITICAL | A28 |
+| S41-3 | HIGH | A27 |
+| S41-4 | HIGH | A27 |
+| S41-5 | HIGH | A28 |
+| S41-6 | HIGH | A30 |
+| S41-7 | HIGH | A27 |
+| S41-8 | MEDIUM | A28 |
+| S42-1 | CRITICAL | A30 |
+| S42-2 | HIGH | A30 |
+| S42-3 | HIGH | A30 |
+| S42-4 | HIGH | A30 |
+| S42-5 | HIGH | A30 |
+| S42-6 | MEDIUM | A30 (the table of numbers) |
+| S42-7 | LOW, decision D16 | No change. Reported to the operator: Phase P comes before the phases that stop the daily stalls. |
+| S43-1 | HIGH | A24 |
+| S43-2 | CRITICAL | A28 |
+| S43-3 | MEDIUM | A29 |
+| S43-4 | LOW, decision D8 | A28 (more health guards). D8 does not change. |
+| S43-5 | MEDIUM | A28 |
+| S43-6 | MEDIUM | A28 |
+| S43-7 | MEDIUM | A24 |
+| S43-8 | MEDIUM | A31 |
