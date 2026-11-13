@@ -12,7 +12,7 @@ Your multi-herdr (`horch`) already has the right parts: recorded PIDs, a supervi
 
 **The decisions that matter most**
 
-1. **One supervised, level-triggered control loop.** Replace the lazily started watchdog with `horch fleetd`, which runs under the service manager of the OS (launchd, systemd or a Windows service) through 1 platform layer. Every 5 s it compares the ledger with real processes, herdr panes and files, and fixes the difference itself. It is the only ledger writer. A missed event is caught on the next pass, and a hung daemon is restarted.
+1. **One supervised, level-triggered control loop.** Replace the lazily started watchdog with `horch fleetd`, which runs under the service manager of the OS (launchd, systemd or a Windows service) through 1 platform layer. Every 5 s it compares the ledger with real processes, herdr panes and files, and fixes the difference itself. It is the only ledger writer, and 1 file lock makes sure that only 1 fleetd runs. A pass makes its ledger changes in 1 transaction and does its effects (a process start, a file write, a git ref move) after the commit, and the next pass observes each effect. A missed event is caught on the next pass, and a hung daemon is restarted.
 2. **Push dispatch with leases, not claims.** fleetd binds a task to a worker and writes the task file before the agent starts, so there is nothing to find. The task is held by a lease that renews only on real activity. An exec worker that waits on a question exits and its task parks, and an interactive persona's waits are capped at an hour, so an idle worker loses its task in minutes, not days. A usage limit is not a stall: the task moves to its fallback persona or waits in `waiting_quota`.
 3. **Done is a fact on disk.** A stop hook will not let an agent end its turn without writing `result.json`, exec mode turns "stopped" into "process exited", and only the verifier moves a task to done: its acceptance checks, then today's review scripts for code, or a paired judge task for a judgment task.
 4. **A program dispatches ideas; an AI leads each one.** `horch idea add` drops a rough idea into a queue. A deterministic dispatcher inside fleetd moves each idea through a fixed state machine and keeps one sub-orchestrator pane per feature. That AI plans 1 idea at a time: it researches the idea, interviews you in its own pane, writes its assumptions down and waits for your quick approval before it writes the spec and tickets. An idea belongs to exactly 1 feature, and the ledger records it. No task exists outside an approved, validated plan; a ticket you wrote enters through the `--direct` fast lane.
@@ -151,10 +151,10 @@ Each requirement has an ID that the failure analysis and the tests point back to
 | RR-2 | A task shall be held by a lease with an expiry. An expired lease returns the task to ready or escalates; it never stays assigned. | Property test over the state machine. |
 | RR-3 | A task shall reach done only when its result file exists, validates, and its acceptance check passes when run by the supervisor. For a code kind, today's review scripts shall also pass. For a judgment kind, its judge task shall report no open CRITICAL item. | Worker that says "done" without artifacts stays not-done; a document with an open CRITICAL item stays not-done. |
 | RR-4 | The supervisor shall reconcile desired and actual state on a fixed period as well as on file events, so a missed event is caught by the next pass. | Drop all file watch events (inotify on Linux) in a test; tasks still complete. |
-| RR-5 | Exactly one process shall write the ledger. Every other component writes files that it ingests. | SQLite opened read-only everywhere else. |
+| RR-5 | Exactly one process shall write the ledger. Every other component writes files that it ingests. Exactly one fleetd shall run for one ledger: it holds an exclusive file lock for its whole life, and each write transaction checks its generation. | SQLite opened read-only everywhere else. Phase 0 test: a second fleetd started beside a live one exits at once and does no effect. |
 | RR-6 | Every retry shall be bounded. After the profile's max attempts, the task is escalated to the user, not retried forever. | State machine test. |
 | RR-7 | The supervisor shall survive its own restart with no lost or duplicated task, by rebuilding state from the ledger and the files. | Kill the supervisor mid-run; compare outcomes with a clean run. |
-| RR-8 | All file writes in the protocol shall be atomic (write to a temp name, fsync, rename) and ingestion shall be idempotent. | Crash test during writes. |
+| RR-8 | Each write of a message or a snapshot in the protocol shall be atomic (write to a temp name, fsync, rename), a log shall be appended by whole lines, and ingestion shall be idempotent. Each effect outside the ledger (a process start or stop, a file write, a git ref move) shall be a committed row in an intended state before it occurs, shall be keyed by the id of that row, and shall be safe to repeat. Each command request shall carry a `request_id`, and a repeated `request_id` shall get the stored result with no second effect. | Crash test during writes. Phase 0 test: fleetd is killed after the commit of a launch and before the launch, and after the launch; in each case exactly 1 process of the attempt runs after the restart. Phase 0 test: a request sent 2 times with 1 `request_id` has 1 effect. |
 | RR-9 | No worktree shall be removed until its commits and its uncommitted and untracked files are saved on a rescue ref, and that ref is read back and shown to hold them. | Kill a worker with dirty and untracked files; after cleanup the rescue ref contains every one. |
 | RR-10 | The reconciler shall compare the worktree ledger with `git worktree list` and the work directory on every pass, and adopt or rescue anything on disk that the ledger does not own. | Create a worktree by hand; it is adopted or rescued within one pass. |
 | RR-11 | A worker that shows a usage limit or a provider outage shall not be treated as stuck, and shall not burn an attempt. If its persona's fallback is on another provider, fleetd shall restart the task at once on a new worker of the fallback persona, on the same worktree. Otherwise the task shall wait in `waiting_quota` with its lease paused until the pool resets. If both pools are limited, the task shall wait. | Phase 0 test: a usage-limited worker is not reaped, and its attempt count does not change. |
@@ -168,13 +168,15 @@ Each requirement has an ID that the failure analysis and the tests point back to
 | SR-2 | Secrets shall reach agents only through env vars named in the profile, never through task files. | Lint on task files. |
 | SR-3 | No agent shall push to a protected branch, deploy, or message anyone outside the fleet. | Git hooks and profile defaults. |
 | SR-4 | An acceptance command shall run in the sandbox profile of the task's worker, never with the rights of fleetd. | A check that writes outside the worker's allowed paths is refused. |
+| SR-5 | The command channel shall accept only the user that owns the ledger. The socket or named pipe shall check the peer user through the platform layer. The request folder shall have mode 0700 and each request file 0600, or an equal access rule on Windows, and fleetd shall check the owner of a file before it reads it. `horch idea approve`, `abandon` and `horch idea add --direct` shall refuse to run inside a fleet attempt. | Phase 0 test: a request from another user, and a request file of another owner or with a wider mode, are refused with a reason. |
+| SR-6 | fleetd shall not trust a file that a worker writes. It shall read a file only when it is a regular file, opened without following a link, under the size limit of its type, with its real path inside its own attempt folder, and with the task id and attempt id of its path. A file that fails is recorded as rejected and is not read again. | Phase 0 test: a `result.json` that is a symlink, a `progress.jsonl` over its limit, and a result with the attempt id of another attempt are each rejected, and fleetd stays healthy. |
 
 **Platform (PL)**
 
 | ID | Requirement | Verified by |
 | --- | --- | --- |
 | PL-1 | fleetd shall run on macOS, Linux and Windows as first-class hosts. | CI runs the test suite on all 3 OSes. |
-| PL-2 | Production code of the workspace shall have no `cfg(target_os)`, `cfg(unix)`, `cfg(windows)` or `cfg(target_family)`, and no `cfg!` of these, outside the platform layer. It shall call 1 platform interface, and each OS shall have 1 module that implements it. From Phase P, the interface covers the concerns of the existing code: process identity and liveness (alive, start time, parent, children); signals and stop; process groups (stop and kill of a group); file locks; file permissions; paths and home directories; symlinks and links; shell and quoting; local sockets and pipes; detach of a child process; the machine probe (free disk, memory, load); the sandbox host; and the small rest (for example archive format, file identity, user PATH). Phase 1 adds the fleetd concerns: service install and restart, hang detection, sleep and wake, file watching, and the transport of the fleetd command channel. Test code is not in scope. | From Phase P, an `arch_scan` rule finds no OS `cfg` in production code outside the platform layer. The rule names each site that cannot call the layer (a build script) by path, with its reason. |
+| PL-2 | Production code of the workspace shall have no `cfg(target_os)`, `cfg(unix)`, `cfg(windows)` or `cfg(target_family)`, and no `cfg!` of these, outside the platform layer. It shall call 1 platform interface, and each OS shall have 1 module that implements it. From Phase P, the interface covers the concerns of the existing code: process identity and liveness (alive, start time, parent, children); signals and stop; process groups (stop and kill of a group); file locks; file permissions; paths and home directories; symlinks and links; shell and quoting; local sockets and pipes; detach of a child process; the machine probe (free disk, memory, load); the sandbox host; and the small rest (for example archive format, file identity, user PATH). Phase 1 adds the fleetd concerns: service install and restart, hang detection, sleep and wake, file watching, the fleetd lock, and the transport of the fleetd command channel with its peer-user check. Test code is not in scope. | From Phase P, an `arch_scan` rule finds no OS `cfg` in production code outside the platform layer. The rule names each site that cannot call the layer (a build script) by path, with its reason. |
 | PL-3 | Where an OS has no equivalent, its module shall return an explicit "not supported" value, and core code shall decide what to do with it. Nothing shall fail silently. | Unit test per module for each concern it does not support. |
 | PL-4 | Lease time shall count only while the machine is awake. A sleep shall not expire a lease. | Phase 0 test: a machine sleep in the middle of an attempt does not expire its lease. |
 | PL-5 | A hung fleetd shall be restarted on all 3 OSes. On each pass, fleetd shall write a heartbeat: the time of its last full pass. On Linux the systemd watchdog restarts it. On macOS a launchd timer job, and on Windows a scheduled task, shall run `horch fleetd check` every 30 s. `horch fleetd check` shall restart the service when the heartbeat is older than 30 s of awake time. Each `horch` CLI command shall make the same check before it sends its request. The heartbeat shall not depend on a job: a pass never waits for a gate, a check, a trial merge, a rebase or a git network call, and a pass ends before the hang limit by its work budget. | Phase 0 test on each OS: a hung fleetd is restarted. Phase 0 test: a fast gate and a full gate of 5 min each run while fleetd stays healthy and is not restarted. |
@@ -257,7 +259,7 @@ Sub-orchestrators and workers never touch the ledger, each other or git worktree
 
 | Component | What it is | Owns | Never does |
 | --- | --- | --- | --- |
-| **fleetd** | One long-running `horch fleetd` process under the service manager of the OS (launchd, systemd or a Windows service), installed and restarted through the platform layer. On Linux: a systemd user unit with `Restart=always` and `WatchdogSec=30`. On macOS a launchd timer job, and on Windows a scheduled task, runs `horch fleetd check` every 30 s. The control plane. | The ledger (sole writer), the idea dispatcher, plan validation and commit, task dispatch, leases, worktree leases and rescue, the reconcile loop, the jobs (each piece of work that can take more than 1 s: a task check, a gate, a trial merge, a rebase, a rescue, a `git fetch`, a `git push`), acceptance checks, escalation, the herdr adapter. | Calling an LLM. It is plain code, so its behaviour is testable and repeatable. |
+| **fleetd** | One long-running `horch fleetd` process under the service manager of the OS (launchd, systemd or a Windows service), installed and restarted through the platform layer. On Linux: a systemd user unit with `Restart=always` and `WatchdogSec=30`. On macOS a launchd timer job, and on Windows a scheduled task, runs `horch fleetd check` every 30 s. The control plane. Exactly 1 fleetd runs for 1 ledger: it holds an exclusive file lock through the platform layer for its whole life (see One fleetd for each ledger). | The ledger (sole writer), the idea dispatcher, plan validation and commit, task dispatch, leases, worktree leases and rescue, the reconcile loop, the jobs (each piece of work that can take more than 1 s: a task check, a gate, a trial merge, a rebase, a rescue, a `git fetch`, a `git push`), acceptance checks, escalation, the herdr adapter. | Calling an LLM. It is plain code, so its behaviour is testable and repeatable. |
 | **Idea dispatcher** | Code inside fleetd: the idea state machine. | Moving each idea to its next state when the required files validate, keeping one sub-orchestrator pane per feature, recording your approvals. | Judging an idea's content. It only checks that files exist, validate and carry your approval. |
 | **Sub-orchestrator** | Claude Code, Opus 5.5, interactive in herdr pane `idea-NNNN`, one per feature, a fresh process for each phase of one idea, planning 1 idea at a time. | Researching the idea, interviewing you, writing `assumptions.md`, then `spec.md`, `requirements.yaml` and `plan.yaml`; answering its workers' questions; replanning a failed task. | Seeing another idea, approving its own assumptions, creating tasks or worktrees directly, or typing into another pane. |
 | **fleet-run wrapper** | A small program that every agent process is launched through, one per attempt. | Building the attempt's private config home from the profile, starting the CLI in its own process group through the platform layer, writing `heartbeat.json`, mapping CLI events and hooks to agent state, reporting state to herdr, enforcing the wall-clock limit (`max_minutes`, a hang guard) and the 256k context limit, writing `exit.json`. | Deciding outcomes. It reports facts; fleetd decides. |
@@ -265,7 +267,7 @@ Sub-orchestrators and workers never touch the ledger, each other or git worktree
 | **Verifier** | Code inside fleetd that queues each task's check as a job. The job runs the check in the worktree, in its own process outside the reconcile pass, with today's check timeout as its time limit (`preservation-05-contracts-and-values.md`, row V-10). The acceptance commands run in the sandbox profile of the task's worker, never with the rights of fleetd. For a code kind, today's review scripts then run unchanged. For a judgment kind, the check is structural, and a paired judge task reviews the content (see Done for each kind of task). | Writing `verdict.json` and moving the task to `done` or back to `ready`. | Trusting a worker's own claim of success. |
 | **Landing** | Code inside fleetd: the landing state machine, bundles, trial merges and the 2 gates (see Features, landing and integration). The build of a bundle candidate, each gate, each trial merge, each rebase, each `git fetch` and each `git push` is a job. A pass queues the jobs that are due and acts on the jobs that ended. It never waits for one. | Landing task branches on their feature branch, rebasing feature branches, opening resolver and triage tasks, running the full gate, pushing the feature branch for its pull request. | Merging to the primary branch, unless the project setting says so. By default you merge. |
 | **Docs sync** | A scheduled job (daily, plus on any CLI version change). | Mirroring each CLI's docs, recording versions, running adapter conformance tests. | Changing a profile by itself. It opens a task when something drifts. |
-| **Platform layer** | 1 interface inside horch with 1 module per OS: the leaf crate `crates/horch-platform`, with the modules `mac.rs`, `linux.rs` and `windows.rs`. It depends on no other crate of the workspace, and each crate of the workspace calls it. | From Phase P: process identity and liveness (alive, start time, parent, children), signals and stop, process groups (stop and kill of a group), file locks, file permissions, paths and home directories, symlinks and links, shell and quoting, local sockets and pipes, detach of a child process, the machine probe (free disk, memory, load), the sandbox host, and the small rest (for example archive format, file identity, user PATH). From Phase 1: service install and restart, hang detection, sleep and wake, file watching, and the transport of the fleetd command channel (a Unix socket, or a named pipe on Windows). | Failing silently. Where an OS has no equivalent, the module returns an explicit "not supported" value, and core code decides what to do. |
+| **Platform layer** | 1 interface inside horch with 1 module per OS: the leaf crate `crates/horch-platform`, with the modules `mac.rs`, `linux.rs` and `windows.rs`. It depends on no other crate of the workspace, and each crate of the workspace calls it. | From Phase P: process identity and liveness (alive, start time, parent, children), signals and stop, process groups (stop and kill of a group), file locks, file permissions, paths and home directories, symlinks and links, shell and quoting, local sockets and pipes, detach of a child process, the machine probe (free disk, memory, load), the sandbox host, and the small rest (for example archive format, file identity, user PATH). From Phase 1: service install and restart, hang detection, sleep and wake, file watching, the fleetd lock (an exclusive file lock held for the whole life of fleetd), and the transport of the fleetd command channel (a Unix socket, or a named pipe on Windows) with its peer-user check. | Failing silently. Where an OS has no equivalent, the module returns an explicit "not supported" value, and core code decides what to do. |
 | **herdr** | The pane runtime, in a dedicated session `herdr --session fleet`, also under the service manager of the OS. | Terminals, agent names, screen-based status, the sidebar you watch. | Holding any state fleetd depends on. If herdr restarts, the reconciler rebuilds from the ledger and files. |
 
 **Done for each kind of task.** Each task declares a `kind`. Code kinds are `feature`, `quality`, `refactor` and `security`. Judgment kinds are `research`, `design`, `docs`, `report` and `creative`. A judge task has the kind `judge`. It is not a judgment kind. A resolver task has a code kind, and it follows the code path.
@@ -289,7 +291,15 @@ Sub-orchestrators and workers never touch the ledger, each other or git worktree
 - fleetd supervises attempts: one-for-one, so a crashed worker never affects its siblings. Each profile sets `max_attempts` and backoff. After the last attempt the task goes back to its idea's sub-orchestrator to replan once, then to you.
 - The wrapper supervises its CLI process group: on a wall-clock breach it stops the whole group through the platform layer, so no grandchild processes linger. On Linux the module sends SIGINT, waits 20 s, then SIGKILLs the group.
 
-**The command channel.** Each `horch` command that changes state sends a request to fleetd over its channel (a Unix socket, or a named pipe on Windows, through the platform layer). When fleetd is down, the command writes a request file, and fleetd reads it at start. fleetd stays the only ledger writer.
+**The command channel.** Each `horch` command that changes state sends a request to fleetd over its channel (a Unix socket, or a named pipe on Windows, through the platform layer). When fleetd is down, the command writes a request file in `/fleet/run/requests/`, and fleetd reads it at start. fleetd stays the only ledger writer.
+
+- **Each request has a contract.** The client makes a `request_id` for each request. It is the idempotency key. A request also has a kind and a payload that never changes. A retry of the same command sends the same `request_id`.
+- **1 row for each request.** fleetd writes a `requests` row with the state `pending` when it reads a request. It applies the request and writes its result in 1 transaction: the row goes to `applied` with its result, or to `refused` with its reason. A request with an id that is already applied or refused gets the stored result again and has no second effect. A request with a known id and a different payload hash is refused.
+- **A request file is archived after its row.** fleetd moves a request file to `/fleet/run/requests/archive/` only after its `requests` row is committed. A crash before the commit leaves the file in place, and the next pass reads it again. A crash after the commit finds the row by its `request_id`, and the file is only archived.
+- **You can ask for the result.** `horch request <request_id>` prints the state and the result of a request at any time. A command that got no reply asks for the result of its `request_id` before it sends again.
+- **Only you can send a command.** The channel accepts only the user that owns the ledger. The socket or named pipe checks the peer user through the platform layer. The request folder has mode 0700 and each request file 0600, and fleetd checks the owner and the mode of a file before it reads it. On Windows the platform module sets an equal access rule. A file that fails these checks is refused and recorded with its reason. A worker cannot send an operator command: `horch idea approve`, `abandon` and `horch idea add --direct` refuse to run inside a fleet attempt.
+
+**One fleetd for each ledger.** fleetd takes the exclusive file lock `/fleet/run/fleetd.lock` through the platform layer when it starts, and holds it for its whole life. A second fleetd that cannot take the lock exits at once. The `fleetd` row of the ledger has a generation number, and fleetd adds 1 to it at each start, after it takes the lock. Each write transaction checks that the generation is its own. When it is not, fleetd exits with no effect. A restart by the service manager, by `horch fleetd check` or by `horch self-update` stops the old process by the PID and start time in the `fleetd` row, waits until the lock is free, and only then starts the new one. So 2 fleetd processes never do effects at the same time.
 
 **One platform layer for three OSes.** Production code of the workspace has no `cfg(target_os)`, `cfg(unix)`, `cfg(windows)` or `cfg(target_family)` outside the platform layer. It calls the platform interface. The Linux details in this document (`systemd`, `Restart=always`, `WatchdogSec=30`, `/proc`, `inotify`, bubblewrap, `SIGINT` then `SIGKILL`) are the Linux module's implementation. 4 crates have OS-specific code today: `horch-core`, `horch`, `herdr-install` and `horch-marketplace`. `herdr-install` and `horch-marketplace` do not depend on `horch-core`, so the layer is the leaf crate `crates/horch-platform`, and each crate calls it. Phase P moves all 178 existing OS-specific sites in production code behind the layer, with no change of behavior (D16, `docs/specs/fleetd/preservation-06-wiring-and-platform.md`, section 6). The 340 `cfg` sites in tests stay.
 
@@ -311,7 +321,7 @@ Sub-orchestrators and workers never touch the ledger, each other or git worktree
 
 ## Workspace layout and file protocol
 
-Every hand-off is a file under `/fleet`, written atomically, never edited after it lands, and named so that its owner and order are obvious from the path.
+Every hand-off is a file under `/fleet`, written atomically, of 1 of 3 kinds (an immutable message, a snapshot or an append-only log), and named so that its owner and order are obvious from the path.
 
 **Directory layout**
 
@@ -346,7 +356,9 @@ Every hand-off is a file under `/fleet`, written atomically, never edited after 
   rescue/                     one manifest per rescued worktree
   needs-you/                  approvals, questions and escalations, one file each
   docs/<cli>/<version>/       synced CLI documentation
-  run/                        pid files, lock, mux handles
+  run/                        pid files, fleetd.lock, mux handles
+    requests/                 request files while fleetd is down (mode 0700, each file 0600)
+      archive/                request files whose requests row is committed
 ```
 
 **Knowledge across ideas.** Project facts (today `horch note --fact`) go to every sub-orchestrator. Each feature keeps its own decisions file.
@@ -355,12 +367,30 @@ Every hand-off is a file under `/fleet`, written atomically, never edited after 
 
 **Protocol rules**
 
-1. **Atomic writes.** A writer writes `name.tmp`, fsyncs, then renames to `name`. Readers ignore `*.tmp`. A half-written file can never be read.
-2. **Immutable once landed.** `idea.md`, `task.yaml` and `result.json` are never rewritten. A change is a new attempt directory or a new sequence number.
+1. **Atomic writes.** A writer of a message or a snapshot writes `name.tmp`, fsyncs, then renames to `name`. Readers ignore `*.tmp`. A half-written file can never be read. A writer of a log appends whole lines, and fleetd reads only up to the last complete line.
+2. **3 kinds of file.** The rule "never edited after it lands" applies to the first kind only.
+
+| Kind | Files | Rule |
+| --- | --- | --- |
+| Immutable message | `idea.md`, `task.yaml`, `inbox/START.md`, `outbox/result.json`, a question file, `verdict.json`, a request file | Never rewritten. A change is a new attempt directory or a new sequence number. fleetd ingests it 1 time, by path and hash. |
+| Snapshot | `heartbeat.json` | Replaced atomically by its writer. fleetd reads the last one and does not ingest it. fleetd uses a snapshot only when its `seq` is higher than the last `seq` it used for that attempt. |
+| Append-only log | `outbox/progress.jsonl`, `transcript.jsonl` | Only appended. fleetd reads `progress.jsonl` from the last offset that the ledger recorded in `ingested`, and records the new offset. It reads only the tail of `transcript.jsonl`. |
 3. **One writer per file.** The path says who owns it: fleetd owns `task.yaml`, `inbox/` and `verdict.json`; the wrapper owns `heartbeat.json`; the agent owns `outbox/`.
 4. **Schemas.** Every file type has a JSON Schema in `/fleet/schemas/`. fleetd rejects a file that fails it and records why.
 5. **Agents use the `fleet` helper.** `fleet progress`, `fleet result` and `fleet ask`, plus `horch idea note` for sub-orchestrators, validate and write files for the agent, so a model never hand-assembles JSON. Raw writes still work if they validate.
 6. **The only terminal input is a constant.** When a pane must be woken, fleetd's code sends the fixed line `Read inbox/START.md in your task folder and continue.` Everything that changes lives in files.
+7. **A file that a worker writes is not trusted.** Before fleetd reads a file of the attempt folder or a request file, it checks: the file is a regular file; fleetd opens it without following a link; its real path is inside the outbox of its own attempt (for `heartbeat.json` and `transcript.jsonl`, inside its own attempt folder; for a request file, inside `/fleet/run/requests/`); its size is under the limit of its type; for a message or a snapshot of an attempt, the task id and the attempt id in the payload equal those of the path. fleetd records a file that fails 1 of these checks as `rejected`, with the reason, in `ingested`, and does not read that path again.
+
+| File | Size limit | Line limit |
+| --- | --- | --- |
+| `outbox/result.json` | 64 KiB | - |
+| A question file | 64 KiB | - |
+| A request file | 64 KiB | - |
+| `heartbeat.json` | 4 KiB | - |
+| `outbox/progress.jsonl` | 8 MiB | 10,000 lines, each at most 4 KiB |
+| `transcript.jsonl` | no limit on the file; fleetd reads at most the last 256 KiB | each line at most 1 MiB |
+
+These are starting values in `fleet.toml`, to tune from real runs.
 
 **Example: an idea, as `horch idea add` writes it**
 
@@ -556,6 +586,8 @@ CREATE TABLE attempts (
   task_id TEXT REFERENCES tasks(id),       -- null for a sub-orchestrator attempt
   idea_id TEXT REFERENCES ideas(id),
   worker TEXT NOT NULL, mux_handle TEXT, pid INTEGER, pid_start TEXT,
+  state TEXT NOT NULL CHECK (state IN ('launching','live','ended')),  -- launching: committed, the launch is an effect after the commit
+  heartbeat_seq INTEGER,                   -- the last heartbeat seq that fleetd used; a lower or equal one is ignored
   started_at TEXT, ended_at TEXT, exit_code INTEGER,
   outcome TEXT                             -- verified, rejected, crashed, timed_out, stalled, killed
 );
@@ -670,13 +702,37 @@ CREATE TABLE events (
 );
 
 CREATE TABLE ingested (                    -- makes file ingestion idempotent
-  path TEXT PRIMARY KEY, sha256 TEXT NOT NULL, at TEXT NOT NULL
+  path TEXT PRIMARY KEY,
+  sha256 TEXT,                             -- for a message; null for a log
+  log_offset INTEGER,                      -- for a log: the byte after the last complete line read
+  outcome TEXT NOT NULL CHECK (outcome IN ('accepted','rejected')),
+  reason TEXT,                             -- for a rejected file: the check it failed; the path is not read again
+  at TEXT NOT NULL
+);
+
+CREATE TABLE requests (                    -- 1 row per command request; makes each command idempotent
+  request_id  TEXT PRIMARY KEY,            -- made by the client: the idempotency key
+  kind        TEXT NOT NULL,               -- e.g. idea_add, approve, revise, cancel, requeue
+  payload_json TEXT NOT NULL,              -- never changes
+  payload_sha256 TEXT NOT NULL,            -- a known request_id with another hash is refused
+  caller      TEXT NOT NULL,               -- the peer user that the platform layer checked, or the owner of the request file
+  state       TEXT NOT NULL CHECK (state IN ('pending','applied','refused')),
+  result_json TEXT,                        -- returned again for a repeated request_id
+  reason      TEXT,                        -- for a refusal
+  received_at TEXT NOT NULL, decided_at TEXT
+);
+
+CREATE TABLE fleetd (                      -- exactly 1 row
+  id          INTEGER PRIMARY KEY CHECK (id = 1),
+  generation  INTEGER NOT NULL,            -- +1 at each start; each write transaction checks it
+  pid INTEGER NOT NULL, pid_start TEXT NOT NULL,  -- the fleetd that holds the generation and the lock
+  started_at  TEXT NOT NULL
 );
 ```
 
 **Three rules that make the ledger trustworthy**
 
-1. **One door.** All writes go through `transition(entity, id, to_state, cause)`, which looks up the allowed-transition table, writes the row and the event in one transaction, and raises on anything illegal. There is no other `UPDATE`.
+1. **One door.** All writes go through `transition(entity, id, to_state, cause)`, which looks up the allowed-transition table, writes the row and the event in one transaction, and raises on anything illegal. There is no other `UPDATE`. Each write transaction first checks that the generation in the `fleetd` row is its own, and fleetd exits when it is not. No effect outside the ledger (a process start or stop, a file write, a git command) occurs inside a transaction. An effect is a row in an intended state (an attempt in `launching`, a worktree in `reserved`, a job in `queued`), and fleetd does it after the commit (see The reconcile pass).
 2. **Leases, not claims.** A task in `leased` or `running` always has a lease row with an expiry. Leases are renewed by fleetd from outside signals (heartbeat file, process alive, output or hook activity), never by the model. When `expires_at` passes, the reconciler moves the task to `stalled` in the same pass that notices it. A task in `waiting_quota` has its lease paused: the lease does not expire, and the task leaves the state when its pool resets.
 3. **Invariants checked every pass.** The reconciler asserts these and repairs or escalates on any breach:
    - I1: every `leased`/`running` task has exactly one unexpired lease and one attempt with a live process or pane.
@@ -1021,34 +1077,51 @@ A usage limit or a provider outage is not a stall. A worker that shows one is no
 
 ```python
 def reconcile():
+    # Part 1: read the facts, with no transaction.
     snap  = mux.snapshot()          # herdr session.snapshot: panes, agents, status
-    procs = scan_processes()        # pids and pgids recorded in attempts
-    files = scan_outboxes()         # full scan; file watching only makes it run sooner
+    procs = scan_processes()        # pids and pgids of attempts and jobs, each with its attempt or job id
+    files = scan_outboxes()         # full scan, with the checks for an untrusted file; file watching only makes it run sooner
     trees = scan_worktrees()        # /fleet/work every pass, git worktree list every 60 s
+    reqs  = read_requests()         # from the channel, and request files in /fleet/run/requests/
+    # Part 2: 1 transaction that decides and writes rows. No effect occurs inside it.
     with ledger.tx() as tx:
-        ingest(tx, files)                     # idempotent by (path, sha256)
+        check_generation(tx)                  # the generation in the fleetd row is ours, else exit
+        apply_requests(tx, reqs)              # 1 requests row per request_id; a known id gets its stored result
+        ingest(tx, files)                     # messages by (path, sha256), logs by offset; rejected files recorded
+        observe_intents(tx, procs, trees)     # each intended row: effect seen -> next state; past its time limit -> again or failed
+        mark_orphans(tx, snap, procs)         # panes or pids not owned by a live attempt or job -> to stop
         advance_ideas(tx, files)              # idea state machine: files valid -> next state
-        keep_sub_orchestrators(tx, snap)      # one per feature that is not merged or abandoned
+        keep_sub_orchestrators(tx, snap)      # one per feature that is not merged or abandoned; a missing one -> attempt in launching
         promote_pending(tx)                   # deps all done -> ready
-        dispatch(tx, health(), pacing(tx))    # lease worktree, write task.yaml + START.md, launch; no cap
-        for a in live_attempts(tx):
+        dispatch(tx, health(), pacing(tx), budget)  # lease, worktree in reserved, attempt in launching; no cap
+        for a in live_attempts(tx, budget):
             state = liveness(a, snap, procs, files)
             renew_or_expire_lease(tx, a, state)
-            apply_stall_ladder(tx, a, state)
+            apply_stall_ladder(tx, a, state)  # a doorbell or a stop is recorded as an effect, not done here
         finish_exited(tx, procs)              # result -> verifying, else retry/escalate
         observe_jobs(tx, procs)               # ended jobs -> results; a running job whose process is gone -> queued
-        queue_due_jobs(tx, budget)            # task checks, gates, trial merges, rebases, rescues, fetch, push; never waits
-        reconcile_worktrees(tx, trees)        # adopt, mark orphaned, queue a rescue job, remove landed
-        stop_orphans(snap, procs, tx)         # panes or pids not owned by a live attempt
-        land_bundles(tx)                      # act on ended bundle and fast gate jobs; queue the next bundle
+        queue_due_jobs(tx, budget)            # task checks, gates, trial merges, rebases, rescues, fetch, push
+        reconcile_worktrees(tx, trees)        # adopt, mark orphaned, queue a rescue job, mark landed trees for removal
+        land_bundles(tx)                      # act on ended bundle and fast gate jobs; record the ref move; queue the next bundle
         integrate_features(tx)                # act on ended trial merge, rebase and full gate jobs; stacks, resolver tasks
         check_invariants(tx)                  # I1..I13, repair or escalate
         roll_up_ideas(tx)                     # all task branches landed on the feature branch -> integrating; merged once the fetched tip of the primary branch shows the feature and trees removed
+        effects = intended_effects(tx)        # every row in an intended state, stops first
+    # Part 3: after the commit, do the effects. Each is keyed by the id of its row and is safe to repeat.
+    for e in effects:
+        do_effect(e)                # stop an orphan or an ended attempt; git worktree add or remove; write task.yaml + START.md;
+                                    # launch an attempt; start a job; move a ref; send the doorbell; archive a request file
     write_heartbeat(now)            # time of the last full pass; `horch fleetd check` reads it
     platform.watchdog_ping()        # systemd_notify("WATCHDOG=1") on Linux; macOS and Windows use `horch fleetd check`
 ```
 
-Dispatch order matters for "workers don't find work": fleetd writes `task.yaml` and `inbox/START.md` before it launches the process, and passes the START.md path as the launch argument. The worker never searches; the task is the first thing it is given. If the process starts but never touches its files, the start timeout (90 s with no first heartbeat or activity) ends the attempt.
+**A pass has 3 parts: the row first, then the effect, then the observation.** (1) fleetd reads the facts, with no transaction. (2) 1 transaction decides and writes rows. Each effect is a row in a state that says "intended": an attempt in `launching`, a worktree in `reserved`, a job in `queued`, a ref move recorded on its `branches` row, a process to stop. (3) After the commit, fleetd does the effects. The next pass observes each effect and moves its row on. No effect occurs inside the transaction. So a crash before the commit leaves no effect, and a crash after the commit leaves an intended row that the next pass completes.
+
+- **Each effect is safe to repeat.** Its key is the id of its row. A launch names the attempt id: the attempt folder, the wrapper and its heartbeat carry it. Before a launch, fleetd looks for a live process of that attempt id, and does not launch a second one. A file that exists with the content of its row is not written again. An intended row with no effect after its time limit is done again or failed, by the same pass rule. An attempt in `launching` with no process past the start timeout is failed.
+- **Stops come before launches.** In part 2, the observation of intended rows and the marking of orphans come before `dispatch`. In part 3, each stop runs before each launch. A new attempt never starts in a worktree while a process of an older attempt of that task is alive: fleetd launches only when the process of each older attempt of the task is gone.
+- **An attempt id is never used again.** The attempt row is committed before its launch, so a restart of fleetd never makes a second attempt with the same id.
+
+Dispatch order matters for "workers don't find work": after the commit, fleetd writes `task.yaml` and `inbox/START.md` before it launches the process, and passes the START.md path as the launch argument. The worker never searches; the task is the first thing it is given. If the process starts but never touches its files, the start timeout (90 s with no first heartbeat or activity) ends the attempt.
 
 **Long work is a job. A pass never waits for it.** A pass only reads facts, decides, writes rows, and starts or observes jobs. Each piece of work that can take more than 1 s is a job: a task check, a fast gate, a full gate, the build of a bundle candidate, a trial merge, a rebase, a rescue, a `git fetch` and a `git push`. A job is a row in `jobs`, and it runs in its own process, outside the pass. fleetd supervises it like an attempt: the row first, then the process, alive by PID and start time, and stopped at its time limit. A job with the same kind and input key is not run 2 times: its result is used again. After a restart of fleetd, a `running` job whose process is gone goes back to `queued`. So a gate of 20 min or a check of 24 h does not delay the heartbeat.
 
@@ -1239,7 +1312,7 @@ Names and paths only. No secret and no value of a variable is written here. `Ver
 | A test or scratch run writes the shared ledger (05 E-1, E-2) | Medium | Corrupt shared state | `HORCH_LEDGER_DB` and `HORCH_STATE_DIR` isolation stay beside `FLEET_ROOT`. |
 | `ANTHROPIC_API_KEY` reaches a child (05 E-10, 06 S1, S2) | Medium | API billing; broken operator rule | Scrub on every child, pane line, detached child, updater and probe; roster check; the herdr resume warning. |
 | Google keys reach `agy` (06 S3) | Low | API billing | Scrub and roster check. |
-| Another local user plants instructions (04 M5) | Low | Agent acts on planted lines | Mode 0700 and the owner check on every mail and outbox directory. |
+| Another local user plants instructions or sends a command (04 M5) | Low | Agent acts on planted lines; unapproved work starts or approved work stops | Mode 0700 and the owner check on every mail, outbox and request directory; the peer-user check on the command channel (SR-5). |
 | A sandboxed persona runs unsandboxed (06 S9) | Low | Writes outside allowed paths | Refuse to start on a host that cannot sandbox it. |
 | `stop` signals a PID of another host (04 S8) | Low | An unrelated process is killed | Refuse a worker of another host. |
 
@@ -1261,11 +1334,11 @@ Every failure you listed, plus twenty-six more found while reading the code, the
 | FM-8 | Stacked ideas get merged | Wrong plan, tangled branches | Each idea is its own file, ledger row and sub-orchestrator; a fresh process per phase whose only memory is that idea's folder; 1 process never plans 2 ideas at the same time | Prevented | FR-1, FR-2 |
 | FM-9 | Worker claims done but work is broken | Bad code lands | Only the verifier moves a task to done: the acceptance commands, then for a code kind today's review scripts, and for a judgment kind the structural check and the paired judge | At verification | RR-3 |
 | FM-10 | Plan has a cycle, missing profile or uncovered requirement | Deadlock or gap | Plan validator rejects before commit; the sub-orchestrator reruns ticketing with the errors | Prevented | FR-3 |
-| FM-11 | fleetd crashes mid-pass | Half-applied state | Every pass is one SQLite transaction; ingestion is idempotent; the service manager of the OS restarts it; the next pass rebuilds from ledger and files | Under 30 s | RR-7, RR-8 |
-| FM-12 | fleetd hangs, or a long gate delays its heartbeat | Nothing moves, or a healthy fleetd is restarted for ever | Long work is a job outside the pass, and each pass has a work budget, so a healthy pass always ends before the hang limit. On Linux the systemd watchdog (`WatchdogSec=30`) kills and restarts it when the pass stops pinging. On macOS a launchd timer job, and on Windows a scheduled task, runs `horch fleetd check` every 30 s, and it restarts the service when the heartbeat is older than 30 s of awake time. Each `horch` CLI command makes the same check | 30 s to 60 s of awake time on every OS | RR-7, PL-5 |
+| FM-11 | fleetd crashes mid-pass | Half-applied state: an effect with no row, or a row that claims an effect that did not occur | The ledger changes of a pass are 1 SQLite transaction, and no effect occurs inside it. Each effect is a committed row in an intended state first, then the effect after the commit, keyed by its row id and safe to repeat, then the observation on the next pass. A crash before the commit leaves no effect; a crash after it leaves an intended row that the next pass completes or fails. Before a launch fleetd looks for a live process of the attempt id, and stops come before launches. Ingestion is idempotent; the service manager of the OS restarts fleetd; the next pass rebuilds from ledger and files | Under 30 s | RR-7, RR-8 |
+| FM-12 | fleetd hangs, or a long gate delays its heartbeat | Nothing moves, or a healthy fleetd is restarted for ever | Long work is a job outside the pass, and each pass has a work budget, so a healthy pass always ends before the hang limit. On Linux the systemd watchdog (`WatchdogSec=30`) kills and restarts it when the pass stops pinging. On macOS a launchd timer job, and on Windows a scheduled task, runs `horch fleetd check` every 30 s, and it restarts the service when the heartbeat is older than 30 s of awake time. Each `horch` CLI command makes the same check. Each restart stops the old process by its PID and start time and waits until the fleetd lock is free before it starts the new one, so 2 fleetd processes never run at once | 30 s to 60 s of awake time on every OS | RR-7, PL-5, RR-5 |
 | FM-13 | herdr server restarts | Every agent process is gone | Reconciler sees dead PIDs and missing panes, fails those attempts, rescues their worktrees and retries in them; sub-orchestrators restart from their folders | 5 to 30 s | RR-4 |
 | FM-14 | Two workers on one task | Conflicting commits | Lease row is unique per task and a worktree has one owner; fleetd stops the old attempt by recorded PID before starting the next (your ADR 0002) | Prevented | RR-2 |
-| FM-15 | Typed prompt lost or delivered twice | Missed or duplicated instruction | Nothing meaningful is typed. The doorbell is constant and idempotent; content lives in files | Prevented | FR-7 |
+| FM-15 | Typed prompt or command request lost or delivered twice | Missed or duplicated instruction | Nothing meaningful is typed. The doorbell is constant and idempotent; content lives in files. Each command request has a `request_id`: fleetd applies it and writes its `requests` row in 1 transaction, a repeated id gets the stored result with no second effect, and a request file is archived only after its row is committed | Prevented | FR-7, RR-8 |
 | FM-16 | One AI conversation buried in ideas, worker mail and wakes | Context churn, ideas blur | There is no long-lived orchestrator conversation. Reports go to files and the ledger; a sub-orchestrator sees only its own feature's questions; you read `horch ideas` and `needs-you/` | Prevented | OR-3, FR-2 |
 | FM-17 | Codex sandbox blocks writes to the task folder | No result, looks like a stall | Task folder in `writable_roots`; conformance test proves the write; the old `horch ledger` sandbox escape is no longer needed | Before dispatch | SR-1, FR-8 |
 | FM-18 | Trust or approval prompt on first launch | Pane frozen | Trust pre-seeded in each private config home; conformance check "no trust prompt" | Before dispatch | FR-8 |
@@ -1273,8 +1346,8 @@ Every failure you listed, plus twenty-six more found while reading the code, the
 | FM-20 | Context drift past 256k, or a CLI with no compaction setting | Quality drops, loops | CLI compaction settings; wrapper ends the attempt with a handoff at the 256k context limit | At the limit | FR-9 |
 | FM-21 | Retry loop burns quota | Cost with no progress | Bounded attempts and backoff, one replan, then escalation; a per-attempt wall-clock limit (`max_minutes`) as a hang guard | Bounded | RR-6 |
 | FM-22 | Orphan processes or panes after a reap | Leaked CPU, stray edits | Process-group kill plus exact pane close; invariant I5 stops anything not owned by a live attempt | 5 s | RR-4 |
-| FM-23 | Half-written file read | Corrupt result | Temp file, fsync, rename; readers skip `*.tmp`; schema validation | Prevented | RR-8 |
-| FM-24 | Ledger write contention or a stray writer | Busy errors, lost updates | Single writer; everything else opens read-only | Prevented | RR-5 |
+| FM-23 | Half-written, oversized, linked or foreign file read | Corrupt result, or fleetd runs out of memory and restarts on the same file | Temp file, fsync, rename; readers skip `*.tmp`; a log is read only to its last complete line; schema validation. A worker file is read only when it is a regular file, opened without following a link, under its size limit, inside its own attempt folder and with the ids of its path; a file that fails is recorded as rejected and not read again | Prevented | RR-8, SR-6 |
+| FM-24 | Ledger write contention, a stray writer, or 2 fleetd processes | Busy errors, lost updates, duplicate workers or competing branch moves | Single writer; everything else opens read-only. fleetd holds an exclusive file lock for its whole life, and a second fleetd exits at once; each write transaction checks the generation of the `fleetd` row; a restart stops the old process by its PID and start time and waits for the lock | Prevented | RR-5 |
 | FM-25 | Worker dies and leaves its worktree on disk | Paid-for work invisible, later deleted or redone | The worktree was leased before it existed, so owner death marks it `orphaned` in the same pass; a verified rescue ref is written before anything else; the next attempt reuses the tree | 5 to 30 s | FR-11, RR-9 |
 | FM-26 | A worker or script creates a worktree outside fleetd | Unknown branch and directory | Profiles deny `git worktree`; `arch_scan` keeps it out of horch; the reconciler adopts any unknown tree as orphaned and rescues it | 60 s | FR-11, RR-10 |
 | FM-27 | A worktree with unmerged work is removed | Work lost | fleetd removes only `landed` trees or trees with a verified rescue ref; a directory that vanishes without a removal event is escalated | Prevented inside the fleet; 60 s otherwise | RR-9 |
