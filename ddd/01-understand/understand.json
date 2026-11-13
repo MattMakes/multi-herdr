@@ -2,7 +2,7 @@
   "schema_version": 1,
   "step": "understand",
   "produced_by": "ddd-understand",
-  "produced_at": "2026-11-12T20:22:21Z",
+  "produced_at": "2026-11-13T06:30:45Z",
   "mode": "auto",
   "depth": "standard",
   "inputs": [
@@ -14,7 +14,9 @@
     "docs/specs/fleetd/research-01-industry-practice.md",
     "ticket docs/tickets/fleetd-design/11-ddd-understand.md and the DDD context file of the run (fixed mode, depth, scale and sources)",
     "docs/specs/fleetd/amendments.md (Revision round 2 and Fix round 2, A19 to A22)",
-    "ai_docs/plans/fleetd-design/ddd-revision-context.md (revision round 2 decisions)"
+    "ai_docs/plans/fleetd-design/ddd-revision-context.md (revision round 2 decisions)",
+    "docs/specs/fleetd/amendments.md (Systems review round, fix round 2 and closing fix, A23 to A37)",
+    "ai_docs/plans/fleetd-design/ddd-revision-3-context.md (revision round 3)"
   ],
   "assumptions": [
     {
@@ -489,7 +491,7 @@
     {
       "id": "D17",
       "impact": "I11",
-      "description": "Dispatch paced to each pool's usage window and paused only by the disk and load health guards",
+      "description": "Dispatch paced to each pool's usage window and paused only by the health guards for disk, load, memory, processes and open files",
       "priority": "should"
     }
   ],
@@ -576,7 +578,7 @@
     {
       "id": "C2",
       "kind": "organisational",
-      "text": "Absolute operator rule: ANTHROPIC_API_KEY is never used and is removed from every child process, pane command line, detached child, updater and probe; every claude run uses the subscription login. agy children lose GEMINI_API_KEY, GOOGLE_API_KEY and GOOGLE_GEMINI_BASE_URL"
+      "text": "Absolute operator rule: ANTHROPIC_API_KEY is never used and is removed from every child process, pane command line, detached child, updater and probe; every claude run uses the subscription login. agy children lose GEMINI_API_KEY, GOOGLE_API_KEY and GOOGLE_GEMINI_BASE_URL. Each process that fleetd, the wrapper, a job, docs sync or the conformance suite starts goes through 1 launcher that applies the environment rule of the profile and always removes ANTHROPIC_API_KEY (SR-7, A29)"
     },
     {
       "id": "C3",
@@ -586,7 +588,7 @@
     {
       "id": "C4",
       "kind": "technical",
-      "text": "Exactly 1 process writes the ledger (SQLite in WAL mode, ~/.horch/ledger.sqlite3). Schema migration is forward-only at daemon start, a backup is written first (3 kept), a newer schema is refused, and a development build does not migrate the shared ledger"
+      "text": "From Phase 5, exactly 1 process writes the ledger (SQLite in WAL mode, ~/.horch/ledger.sqlite3); in Phases 1 to 4 fleetd and the horch commands write it, each through the same transition() (A36). Exactly 1 fleetd runs for 1 ledger: it holds an exclusive file lock and each write transaction checks its generation number (A24). Schema migration is forward-only at daemon start, a backup is written first (3 kept), a newer schema is refused, and a development build does not migrate the shared ledger"
     },
     {
       "id": "C5",
@@ -606,12 +608,12 @@
     {
       "id": "C8",
       "kind": "technical",
-      "text": "fleetd keeps today's fixed values: land lock 1 h with 5 tries, check timeout 20 min (max 24 h), git push 10 min and other git network calls 3 min, code-sweep at most 2 requeues and review rounds of 1 (light) and 3 (full)"
+      "text": "fleetd keeps today's fixed values: land lock 1 h with 5 tries, check timeout 20 min (max 24 h), git push 10 min and other git network calls 3 min, code-sweep at most 2 requeues and review rounds of 1 (light) and 3 (full). Each git network call runs as a job, and its fixed value is the time limit of the job (A23)"
     },
     {
       "id": "C9",
       "kind": "timeline",
-      "text": "Migration runs in 9 phases (Phase 0, Phase P, then Phases 1 to 7) in order. Each phase is released to every user at once when its gate test passes; the tests are the only gate. Phase 0 keeps a list of expected failures, so a red test of Phase 0 does not block a gate"
+      "text": "Migration runs in 9 phases (Phase 0, Phase P, then Phases 1 to 7) in order. Each phase is released to every user at once when its gate test passes; the tests are the only gate. Phase 0 keeps a list of expected failures, so a red test of Phase 0 does not block a gate. Each requirement and each failure mode becomes green in exactly 1 phase gate, and each gate needs only mechanisms of its own phase or an earlier one (A30)"
     },
     {
       "id": "C10",
@@ -631,12 +633,17 @@
     {
       "id": "C13",
       "kind": "budget",
-      "text": "There is no spend budget and no cap on features, sub-orchestrators or workers. Only health guards for free disk and machine load pause new dispatch"
+      "text": "There is no spend budget and no cap on features, sub-orchestrators or workers. Only health guards pause new dispatch: free disk, machine load, free memory, the count of processes and the count of open files of the user (OR-5, A28)"
     },
     {
       "id": "C14",
       "kind": "technical",
       "text": "herdr holds no state that fleetd depends on; after a herdr restart fleetd rebuilds from the ledger and the files"
+    },
+    {
+      "id": "C15",
+      "kind": "technical",
+      "text": "A worker never runs without its sandbox: profile validation refuses a profile on an OS where the platform module returns not supported for its sandbox (preservation row 06 S9, A37). The sandbox of each worker denies a read of the operator token, a connection to the command channel and a write into the request folder, and fleetd refuses an operator request without a valid operator token (SR-8, A35)"
     }
   ],
   "non_goals": [
@@ -929,7 +936,7 @@
     },
     {
       "id": "N5",
-      "text": "fleetd is the only ledger writer. Every other component (CLI commands, wrapper, workers, sub-orchestrators) writes files or sends requests on the command channel, and fleetd ingests them. Every other process opens the ledger read-only.",
+      "text": "From Phase 5, fleetd is the only ledger writer. Every other component (CLI commands, wrapper, workers, sub-orchestrators) writes files or sends requests on the command channel, and fleetd ingests them. Every other process opens the ledger read-only. In Phases 1 to 4, fleetd and the horch commands of workers and of the operator write the ledger directly, each through the same transition() with the same table of allowed transitions (A36).",
       "for": [
         "decompose",
         "connect",
@@ -950,7 +957,7 @@
     },
     {
       "id": "N7",
-      "text": "Idea state order: captured -> clarifying -> awaiting_approval -> specifying -> ticketing -> in_progress -> integrating -> merged; a --direct idea goes captured -> ticketing; parked and cancelled are side states. Only code advances an idea.",
+      "text": "Idea state order: captured -> clarifying -> awaiting_approval -> specifying -> ticketing -> in_progress -> integrating -> merged; a --direct idea goes captured -> ticketing; parked and cancelled are side states. Only code advances an idea. Ideas of 1 feature are planned in order: an idea waits in captured while another idea of its feature is in clarifying, specifying or ticketing (A28).",
       "for": [
         "discover"
       ],
@@ -958,7 +965,7 @@
     },
     {
       "id": "N8",
-      "text": "Task branch landing order: building -> verifying -> ready -> in_bundle -> landed; side states conflicted, gate_failed and abandoned. Every branch is a ledger row with 1 owner and a time limit before it exists.",
+      "text": "Task branch landing order: building -> verifying -> ready -> in_bundle -> landed; side states conflicted, gate_failed and abandoned. Every branch is a ledger row with 1 owner and a time limit before it exists. fleetd owns conflicted and gate_failed: it starts a resolver attempt or a fix attempt of the task branch, and each failed one adds 1 to repair_attempts of the branch; at max_attempts the branch goes to the needs-you list, and horch branch abandon is the other exit (A27, A34). A bundle has the states building, gating, passed, landed, failed and dropped, and each ref move is a compare-and-set on the tip that fleetd last saw (A27, A34).",
       "for": [
         "discover"
       ],
@@ -966,7 +973,7 @@
     },
     {
       "id": "N9",
-      "text": "Worktree order: reserved -> created -> active -> landing, or orphaned when the owner dies; a rescue ref is written and read back before any removal; a retried attempt reuses the same worktree.",
+      "text": "Worktree order: reserved (with 1 worktree_add job) -> created -> active -> landing -> landed -> removed, or orphaned when the owner dies, then rescued; a rescue ref is written and read back before any removal; a retried attempt reuses the same worktree. Rescue refs have 2 classes: unique (kept until the operator restores or drops it) and superseded (expires after 30 days) (A27, A32).",
       "for": [
         "discover"
       ],
@@ -974,7 +981,7 @@
     },
     {
       "id": "N10",
-      "text": "A usage limit or provider outage is not a stall: no attempt is burned; the task restarts at once on a fallback persona of another provider, else waits in waiting_quota with its lease paused. Lease time counts only while the machine is awake.",
+      "text": "A usage limit or provider outage is not a stall: no attempt is burned (outcome quota); the task restarts at once on a fallback persona of another provider, else waits in waiting_quota with its lease paused. Each operational timer is a deadline on 1 fleet clock in the ledger, which does not run while the machine sleeps or while fleetd is down; the hang check of fleetd and max_minutes of the wrapper use awake time from the platform layer (A25).",
       "for": [
         "discover",
         "decompose"
@@ -1074,11 +1081,75 @@
         "define"
       ],
       "kind": "language"
+    },
+    {
+      "id": "N21",
+      "text": "Long work is a job (A23, A32, A33): each piece of work that can take more than 1 s runs as a jobs row outside the reconcile pass. 2 classes: a pure job (task_check, fast_gate, full_gate, trial_merge), whose verdict is used again, and an effect job (bundle_build, rebase, rescue, fetch, push, worktree_add, worktree_remove, worktree_list, docs_sync, conformance), whose result is never used again. Each run has a run number; runs that end abandoned are bounded (abandoned_run_limit 3), and horch job requeue resets the bound. A git command that reads or writes a working tree, or uses the network, is always a job.",
+      "for": [
+        "discover",
+        "decompose",
+        "strategize"
+      ],
+      "kind": "process"
+    },
+    {
+      "id": "N22",
+      "text": "A reconcile pass has 3 parts (A24, A32): read the facts with no transaction, 1 transaction that decides and writes rows, then the effects. Each effect has a row in an intended state first (an attempt in launching, a worktree in reserved, a queued job), is keyed by the id of its row and is safe to repeat. A pass has a work budget, a time budget below the 30 s hang limit and cursors in pass_cursors. A periodic git fetch job records each remote tip in remote_tips.",
+      "for": [
+        "discover",
+        "decompose"
+      ],
+      "kind": "process"
+    },
+    {
+      "id": "N23",
+      "text": "The task state machine has 12 states, each with 1 owner and 1 exit (A26, A34): pending, ready, leased, running, stalled, verifying, blocked_on_user, waiting_quota, done, failed, escalated, cancelled. The outcomes asked, quota and critical_open burn no attempt. A dependency is met when its task is done and its task branch is landed. In a judge pair the judged task stays in verifying until its judge task is done, and each fix round is a new attempt of each, counted in fix_rounds. Each task state that is not terminal has an exit to cancelled.",
+      "for": [
+        "discover",
+        "decompose"
+      ],
+      "kind": "process"
+    },
+    {
+      "id": "N24",
+      "text": "The feature state machine has 4 states: open, ready, merged and abandoned (A28, A34). The pull request follows the state, horch feature abandon is the only way to abandon, a merge with ideas in flight moves those ideas to a new feature, and each feature that is not merged and not abandoned has exactly 1 live sub-orchestrator (I7). push_state and pr_state are facts on the feature row, and remote = none is allowed. The needs-you list has a life cycle: each item has a stable key and the state open, resolved or superseded.",
+      "for": [
+        "discover",
+        "decompose"
+      ],
+      "kind": "process"
+    },
+    {
+      "id": "N25",
+      "text": "Each request kind has a class, operator or worker, and fleetd decides at the server (A35). An operator request carries the operator token; the worker kinds progress, result and ask go through the outbox of the attempt. A requests row with a request_id makes each command idempotent, and a refusal carries its reason (A24). A file that a worker writes is not trusted: limits, no links, the real path inside its own attempt folder (SR-6). A file is an immutable message, a snapshot or an append-only log.",
+      "for": [
+        "discover",
+        "decompose"
+      ],
+      "kind": "boundary"
+    },
+    {
+      "id": "N26",
+      "text": "The migration keeps its 9 phases with these changes (A30, A36): Phase 1 stops the old watchdog and adds the jobs table with each job kind; the tables features, branches, bundles, bundle_members, gate_runs and remote_tips come in Phase 4, where each run is 1 feature; fleetd is the only ledger writer from Phase 5. New requirements: RR-13 to RR-18 (the preservation rows 04 W6, L5, L9, W8, W9 and L8, gate of Phase 3) and SR-5 to SR-8.",
+      "for": [
+        "discover",
+        "code"
+      ],
+      "kind": "process"
+    },
+    {
+      "id": "N27",
+      "text": "The rules that only the DDD model had are now in the design (A31, decision D15): the wrapper belongs to worker-profiles, plan validation is a module of ideas, the needs-you list belongs to ideas, git has 2 callers (worktree-custody and integration), task-execution and integration change together, docs sync is a horch subcommand that fleetd schedules, supervision is an operating concern outside the flow of 1 idea, and an arch_scan rule enforces the module boundaries. Use the same names as the design.",
+      "for": [
+        "decompose",
+        "strategize"
+      ],
+      "kind": "decision"
     }
   ],
   "plain_words": {
     "what": "We wrote down why fleetd exists, who it serves, what counts as success and how big it may get.",
-    "decided": "fleetd is a change to horch, not a new product. It ships inside the 1 horch binary, for 1 operator and 1 team. Success is 4 numbers: idle tasks caught in under 10 minutes, 0 lost work, 0 tasks outside an approved plan, 0 attempts burned by usage limits. All 178 old OS-specific code sites move behind the platform layer in 1 phase, Phase P, before Phase 1 (operator decision D16).",
+    "decided": "fleetd is a change to horch, not a new product. It ships inside the 1 horch binary, for 1 operator and 1 team. Success is 4 numbers: idle tasks caught in under 10 minutes, 0 lost work, 0 tasks outside an approved plan, 0 attempts burned by usage limits. All 178 old OS-specific code sites move behind the platform layer in 1 phase, Phase P, before Phase 1 (operator decision D16). After the systems review (A23 to A37), long work runs as jobs outside the control loop, only fleetd writes the ledger from Phase 5, and a worker never runs without its sandbox.",
     "assumed": "The design gives no number for using the subscription fully, so we used a proxy: no usage window resets with usage left while work is ready.",
     "riskiest": "If the proxy for full usage is wrong, later steps may build pacing toward the wrong target."
   },

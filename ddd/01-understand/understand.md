@@ -12,7 +12,7 @@
 
 We wrote down why fleetd exists, who it serves, what counts as success and how big it may get.
 
-**Decided:** fleetd is a change to horch, not a new product. It ships inside the 1 horch binary, for 1 operator and 1 team. Success is 4 numbers: idle tasks caught in under 10 minutes, 0 lost work, 0 tasks outside an approved plan, 0 attempts burned by usage limits. All 178 old OS-specific code sites move behind the platform layer in 1 phase, Phase P, before Phase 1 (operator decision D16).
+**Decided:** fleetd is a change to horch, not a new product. It ships inside the 1 horch binary, for 1 operator and 1 team. Success is 4 numbers: idle tasks caught in under 10 minutes, 0 lost work, 0 tasks outside an approved plan, 0 attempts burned by usage limits. All 178 old OS-specific code sites move behind the platform layer in 1 phase, Phase P, before Phase 1 (operator decision D16). After the systems review (A23 to A37), long work runs as jobs outside the control loop, only fleetd writes the ledger from Phase 5, and a worker never runs without its sandbox.
 
 **Assumed:** The design gives no number for using the subscription fully, so we used a proxy: no usage window resets with usage left while work is ready.
 
@@ -105,7 +105,7 @@ We wrote down why fleetd exists, who it serves, what counts as success and how b
       - **D16** (must) A required fallback persona for every worker persona, and the waiting_quota state
   - **operator** (person, primary)
     - **I11** Stops sizing parallel work by hand and leaves pacing to fleetd
-      - **D17** (should) Dispatch paced to each pool's usage window and paused only by the disk and load health guards
+      - **D17** (should) Dispatch paced to each pool's usage window and paused only by the health guards for disk, load, memory, processes and open files
   - **provider-pool** (organisation, off-stage) - its usage limit or outage can block a worker
 
 | Id | Actor | Kind | Role | Description | Goals |
@@ -138,19 +138,20 @@ We wrote down why fleetd exists, who it serves, what counts as success and how b
 | Id | Kind | Constraint |
 |---|---|---|
 | C1 | technical | fleetd is a subcommand of the single horch binary: 1 deployable unit, so the CLI and the daemon always have the same version |
-| C2 | organisational | Absolute operator rule: ANTHROPIC_API_KEY is never used and is removed from every child, pane line, detached child, updater and probe; every claude run uses the subscription login. agy children lose the Google API keys |
+| C2 | organisational | Absolute operator rule: ANTHROPIC_API_KEY is never used and is removed from every child, pane line, detached child, updater and probe; every claude run uses the subscription login. agy children lose the Google API keys. Each process starts through 1 launcher that removes it (SR-7, A29) |
 | C3 | technical | macOS, Linux and Windows are first-class. Production code of the workspace has no OS cfg outside the platform layer; 1 platform interface, 1 module per OS, explicit not-supported values |
-| C4 | technical | Exactly 1 process writes the ledger (SQLite WAL, ~/.horch/ledger.sqlite3). Forward-only migration at daemon start, backup first (3 kept), newer schema refused, no migration from a development build |
+| C4 | technical | From Phase 5, exactly 1 process writes the ledger (SQLite WAL, ~/.horch/ledger.sqlite3); in Phases 1 to 4 each writer calls the same transition() (A36). 1 fleetd for 1 ledger: a file lock and a generation number (A24). Forward-only migration at daemon start, backup first (3 kept), newer schema refused, no migration from a development build |
 | C5 | organisational | Only the operator approves an idea's assumptions, with a command run outside any fleet process |
 | C6 | technical | fleetd keeps the behaviors of the Preservation analysis (04 W6, F9, F7, F5, L5, L9, W8, W9, F11, S7, L6, L8, S8, S10, M5 and the rest) |
 | C7 | technical | fleetd keeps the contract surface: exit codes 0 to 3, the mail contract, UNLANDED and UNREGISTERED reports, horch self-update and release assets, ticket format C1, project facts |
-| C8 | technical | Fixed values stay: land lock 1 h with 5 tries, check timeout 20 min (max 24 h), git push 10 min and other network calls 3 min, code-sweep at most 2 requeues, review rounds 1 and 3 |
-| C9 | timeline | 9 migration phases (Phase 0, Phase P, then 1 to 7) in order; each released to every user at once when its gate test passes; Phase 0 keeps a list of expected failures |
+| C8 | technical | Fixed values stay: land lock 1 h with 5 tries, check timeout 20 min (max 24 h), git push 10 min and other network calls 3 min, code-sweep at most 2 requeues, review rounds 1 and 3. Each git network call is a job with that time limit (A23) |
+| C9 | timeline | 9 migration phases (Phase 0, Phase P, then 1 to 7) in order; each released to every user at once when its gate test passes; Phase 0 keeps a list of expected failures; each requirement and failure mode is green in exactly 1 gate (A30) |
 | C10 | contractual | Agent CLI vendors set the terms: usage windows and limits per pool, Codex user hooks need trust, a CLI release is used only after the update cooldown of more than 1 week |
 | C11 | technical | The only bytes typed into a terminal are 1 fixed doorbell line; all hand-off is through atomically written files |
 | C12 | technical | Each agent works inside a context limit of 256k tokens |
-| C13 | budget | No spend budget and no cap on features, sub-orchestrators or workers; only disk and load health guards pause new dispatch |
+| C13 | budget | No spend budget and no cap on features, sub-orchestrators or workers; only health guards for disk, load, memory, processes and open files pause new dispatch (OR-5) |
 | C14 | technical | herdr holds no state fleetd depends on; after a herdr restart fleetd rebuilds from the ledger and files |
+| C15 | technical | A worker never runs without its sandbox: a profile is refused on an OS that cannot sandbox it (06 S9, A37). The sandbox denies the operator token, the command channel and the request folder; an operator request needs the operator token (SR-8, A35) |
 
 ## 7. Non-goals
 
@@ -230,12 +231,12 @@ Decisions: D1 (chosen A, brownfield change to horch, cites design "Keep, change,
 | N2 | discover, decompose, define | language | 'Feature' = 1 sub-orchestrator, 1 feature branch, 1 pull request; task branch lands on feature branch; feature branch reaches the primary branch (not always main) |
 | N3 | discover, decompose | language | 'Orchestrator' today is 1 LLM conversation; in fleetd it is replaced by the dispatcher (code) plus 1 sub-orchestrator per feature |
 | N4 | discover, decompose, define | language | 'Done' is set only by the verifier; 'landed' and 'merged' are later facts read from git |
-| N5 | decompose, connect, define, code | boundary | fleetd is the only ledger writer; everything else writes files or sends requests on the command channel |
+| N5 | decompose, connect, define, code | boundary | From Phase 5 fleetd is the only ledger writer; everything else writes files or sends requests on the command channel. In Phases 1 to 4 each writer calls transition() (A36) |
 | N6 | decompose, organise, code | decision | 1 deployable unit and 1 team; contexts become modules inside horch-core |
-| N7 | discover | process | Idea state order, with the --direct shortcut and the parked and cancelled side states |
-| N8 | discover | process | Task branch landing order, with conflicted, gate_failed and abandoned |
-| N9 | discover | process | Worktree order reserved, created, active, landing or orphaned; rescue before removal |
-| N10 | discover, decompose | process | A usage limit is not a stall; fallback or waiting_quota; lease time counts only while awake |
+| N7 | discover | process | Idea state order, with the --direct shortcut and the parked and cancelled side states; ideas of 1 feature are planned in order (A28) |
+| N8 | discover | process | Task branch landing order, with conflicted, gate_failed and abandoned; repair attempts on the branch; bundle states; compare-and-set ref moves (A27, A34) |
+| N9 | discover | process | Worktree order reserved (worktree_add job), created, active, landing, landed, removed, or orphaned then rescued; rescue before removal; unique and superseded rescue refs (A27, A32) |
+| N10 | discover, decompose | process | A usage limit is not a stall; fallback or waiting_quota; each timer is a deadline on the fleet clock; the hang check and max_minutes use awake time (A25) |
 | N11 | discover, define | process | Worker questions go to the sub-orchestrator; only product direction, scope or trade-offs go to the operator |
 | N12 | discover, define | language | Judgment kinds, judge kind, resolver task and code kinds |
 | N13 | decompose, organise, code | boundary | The platform layer is the leaf crate crates/horch-platform, not a context: no OS cfg outside it in production code; 1 module per OS; explicit not-supported; arch_scan enforces it |
@@ -246,6 +247,13 @@ Decisions: D1 (chosen A, brownfield change to horch, cites design "Keep, change,
 | N18 | discover, decompose, organise, code | decision | Phase P (D16, A19): create crates/horch-platform, move all 178 production OS sites with no change of behavior; gate PL-2 and PL-6 |
 | N19 | discover, code | process | 9 phases: 0, P, 1 to 7; Phase 0 keeps a list of expected failures; CI runs the tests on Windows from Phase 0 |
 | N20 | discover, connect, define | language | A state name is always written with its entity kind; a task is done, its task branch is landed (A20) |
+| N21 | discover, decompose, strategize | process | Long work is a job outside the pass: pure jobs and effect jobs, run numbers, a bound on abandoned runs, horch job requeue (A23, A32, A33) |
+| N22 | discover, decompose | process | A pass has 3 parts: facts, 1 transaction, effects; each effect has a row first; work and time budgets with cursors; a periodic fetch into remote_tips (A24, A32) |
+| N23 | discover, decompose | process | The task state machine: 12 states; asked, quota and critical_open burn no attempt; dependency met at done plus landed; the judge pair; an exit to cancelled (A26, A34) |
+| N24 | discover, decompose | process | The feature state machine: open, ready, merged, abandoned; the pull request follows it; 1 live sub-orchestrator per feature; the needs-you life cycle (A28, A34) |
+| N25 | discover, decompose | boundary | Request classes operator and worker, the operator token, idempotent requests with a refusal reason, untrusted worker files, 3 kinds of file (A24, A35) |
+| N26 | discover, code | process | Migration changes: Phase 1 stops the old watchdog and adds jobs; the landing tables in Phase 4; 1 writer from Phase 5; RR-13 to RR-18 and SR-5 to SR-8 (A30, A36) |
+| N27 | decompose, strategize | decision | The rules of the DDD round are in the design (A31, D15); use the same names |
 
 ## 11. Run log
 
@@ -253,3 +261,4 @@ Decisions: D1 (chosen A, brownfield change to horch, cites design "Keep, change,
 - Resolved: auto mode and standard depth from the run; scale 1 deployable and 1 team from the run; lifecycle brownfield because horch runs today and the design changes it.
 - Recorded: 10 assumptions, 8 open questions (0 blocking), 2 decisions (1 open), 17 notes for downstream.
 - Revision round 2 (2026-11-12): recorded D2 = C (operator, D16); answered Q2; added A11 and N18 to N20; changed C3, C9, cap-host-services, N13 and Q8 for amendments A19 to A22. Now: 11 assumptions, 7 open questions (0 blocking), 2 decisions (0 open), 20 notes.
+- Revision round 3 (2026-11-12): changed C2, C4, C8, C9, C13, D17, N5, N7 to N10 and the plain words; added C15 and N21 to N27, for amendments A23 to A37. Now: 11 assumptions, 7 open questions (0 blocking), 2 decisions (0 open), 15 constraints, 27 notes.
