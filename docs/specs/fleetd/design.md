@@ -134,7 +134,7 @@ Each requirement has an ID that the failure analysis and the tests point back to
 | FR-1 | `horch idea add` shall record each idea as one immutable file and one `captured` ledger row, with no AI involved. | Intake test: two ideas added back to back produce two files and two rows. |
 | FR-2 | The dispatcher shall be deterministic code that keeps 1 sub-orchestrator for each feature; 1 process never plans 2 ideas at the same time. | Property test over the idea state machine; the ledger shows one idea per sub-orchestrator attempt. |
 | FR-3 | A plan shall be committed to the ledger all-or-nothing, and only after it passes schema, DAG and coverage checks. | Plan validator unit tests; a plan missing a requirement is rejected. |
-| FR-4 | Every task shall name a worker profile, its `kind`, its inputs, its outputs and a machine-checkable acceptance check. For a judgment kind the check is structural (the file exists, the schema or the required sections are valid), and the plan shall pair the task with a judge task in a different session from the author, on a different provider when the roster has one. The judgment kinds are `research`, `design`, `docs`, `report` and `creative`. A judge task has the kind `judge`, and it needs no judge task. | Plan schema; plan validation refuses a judgment task with no paired judge task. |
+| FR-4 | Every task shall name a worker profile, its `kind`, its inputs, its outputs and a machine-checkable acceptance check. For a judgment kind the check is structural (the file exists, the schema or the required sections are valid), and the plan shall pair the task with a judge task in a different session from the author, on a different provider when the roster has one. The judge task names the judged task in `judges:`, and this is not a normal dependency (see Done for each kind of task). The judgment kinds are `research`, `design`, `docs`, `report` and `creative`. A judge task has the kind `judge`, and it needs no judge task. | Plan schema; plan validation refuses a judgment task with no paired judge task. |
 | FR-5 | The supervisor shall assign tasks to workers (push). Workers shall never search for work. | No code path where an agent queries the ledger for open tasks. |
 | FR-6 | A worker profile shall declare CLI, model, skills, MCP servers, sandbox, writable paths, context budget, timeouts and restart policy. | Profile schema; the adapter refuses an incomplete profile. |
 | FR-7 | All task and result hand-off shall be through files under `FLEET_ROOT`. The only bytes ever sent into a terminal are a fixed doorbell line written by the supervisor's code. | Grep of the code for mux send calls; doorbell text is a constant. |
@@ -150,7 +150,7 @@ Each requirement has an ID that the failure analysis and the tests point back to
 | --- | --- | --- |
 | RR-1 | Liveness shall be judged from outside the model: process state, wrapper heartbeat, CLI hook events and output activity. | Fault injection: kill -STOP a worker; alarm fires within one lease. |
 | RR-2 | A task shall be held by a lease with an expiry. An expired lease returns the task to ready or escalates; it never stays assigned. | Property test over the state machine. |
-| RR-3 | A task shall reach done only when its result file exists, validates, and its acceptance check passes when run by the supervisor. For a code kind, today's review scripts shall also pass. For a judgment kind, its judge task shall report no open CRITICAL item. | Worker that says "done" without artifacts stays not-done; a document with an open CRITICAL item stays not-done. |
+| RR-3 | A task shall reach done only when its result file exists, validates, and its acceptance check passes when run by the supervisor. For a code kind, today's review scripts shall also pass. For a judgment kind, its judge task shall report no open CRITICAL item: the judged task waits in `verifying` after its structural check passes, its judge task starts from the tip of its task branch, and the judged task moves to `done` when its judge task is `done` with no open CRITICAL item. An open CRITICAL item starts a fix round, counted in `fix_rounds` (limit 2), not in `max_attempts`. | Worker that says "done" without artifacts stays not-done; a document with an open CRITICAL item stays not-done. Phase 0 test: a judgment task and its judge task both reach `done` with no change of the plan, and a CRITICAL item gives 1 fix round. |
 | RR-4 | The supervisor shall reconcile desired and actual state on a fixed period as well as on file events, so a missed event is caught by the next pass. | Drop all file watch events (inotify on Linux) in a test; tasks still complete. |
 | RR-5 | Exactly one process shall write the ledger. Every other component writes files that it ingests. Exactly one fleetd shall run for one ledger: it holds an exclusive file lock for its whole life, and each write transaction checks its generation. | SQLite opened read-only everywhere else. Phase 0 test: a second fleetd started beside a live one exits at once and does no effect. |
 | RR-6 | Every retry shall be bounded. After the profile's max attempts, the task is escalated to the user, not retried forever. | State machine test. |
@@ -255,7 +255,16 @@ Versions as documented on 2026-11-10: Claude Code docs up to v2.1.290 ([CLI refe
 
 The design splits the system into a deterministic control plane (fleetd with its idea dispatcher, and the per-attempt wrapper) and disposable LLM processes that only read and write files, so models do judgment and code does bookkeeping.
 
-&#91;embedded content: components and the files between them\]
+**The components and the files between them** (paths from Workspace layout and file protocol):
+
+- You to fleetd: `horch` commands over the command channel, or a request file in `/fleet/run/requests/`. `horch idea add` writes `ideas/I-NNNN/idea.md`.
+- Sub-orchestrator to fleetd: `interview.md`, `assumptions.md`, `spec.md`, `requirements.yaml` and `plan.yaml` in `ideas/I-NNNN/`.
+- fleetd to the sub-orchestrator: `approval.json` and `plan.verdict.json` in `ideas/I-NNNN/`, and the worker questions of its feature.
+- fleetd to a worker: `task.yaml` and `attempts/A<n>/inbox/START.md` in `tasks/T-NNNN-NN/`, and the worktree `work/T-NNNN-NN/`.
+- Worker to fleetd: `outbox/result.json`, `outbox/progress.jsonl` and `outbox/questions/` of its attempt.
+- fleet-run wrapper to fleetd: `heartbeat.json` and `transcript.jsonl` of the attempt.
+- Verifier to fleetd: `verdict.json` of the task.
+- fleetd to you: `needs-you/` and herdr notifications.
 
 Sub-orchestrators and workers never touch the ledger, each other or git worktrees directly; fleetd is the only path between them, and it acts on files, your commands and process facts.
 
@@ -279,11 +288,21 @@ Sub-orchestrators and workers never touch the ledger, each other or git worktree
 
 | Rank | Effect |
 | --- | --- |
-| CRITICAL | Blocks. A fresh session, not the author and not the judge, fixes it. Then a fresh judge checks only the earlier CRITICAL items and the change. |
+| CRITICAL | Blocks. A fresh session, not the author and not the judge, fixes it: a new attempt of the judged task. Then a fresh judge checks only the earlier CRITICAL items and the change: a new attempt of the judge task. This is a fix round. |
 | HIGH | Does not block alone. The sub-orchestrator of the feature fixes it or dismisses it with a written reason. |
 | MEDIUM, LOW | Never block. |
 
 "Good enough" passes. The second judge cannot raise new MEDIUM or LOW items; this is the guard against gold-plating. After 2 fix rounds, a result that still has a CRITICAL item goes to you.
+
+**The judge pair.** A judge task depends on the task it judges in another way than a normal `after:` dependency:
+
+1. The judged task writes its result. The verifier runs its structural check. When the check passes, the judged task stays in `verifying`, and its task branch stays in `building`.
+2. The dependency of the judge task is now met. Its worktree starts from the tip of the task branch of the judged task, so the judge reads the result before it lands.
+3. The judge task writes its verdict file, and the verifier runs its structural check. Its task branch holds only the verdict file on top of the judged branch, and it stays in `building` while the judged task is not `done`.
+4. With no open CRITICAL item, the judge task moves to `done`. Then the judged task moves to `done`, and its task branch moves to `ready`. Then the task branch of the judge task moves to `ready`, and it lands after the judged branch.
+5. With an open CRITICAL item, the attempt of the judge task ends with the outcome `critical_open`. It is not a failure and burns no attempt. fleetd starts a fix round. It needs no change of the plan. fleetd adds 1 to `fix_rounds` of the judged task, moves the judged task from `verifying` to `ready` for its fix attempt, and moves the judge task from `verifying` to `pending`. The fix attempt runs in a fresh session, in the same worktree, with the verdict file as input. It does not count in `max_attempts`.
+6. The dependency of the judge task is met again when the fix attempt of the judged task passes its structural check. fleetd writes a rescue ref of the judge branch and moves it onto the new tip of the judged branch. Then the judge task runs its next attempt in a fresh session. Its scope is the earlier CRITICAL items and the change. Then step 3 runs again.
+7. After 2 fix rounds with an open CRITICAL item, the judged task and the judge task both move to `escalated`. So neither task leaves `done`.
 
 - **Judge kind.** A task of kind `judge` needs no judge task. This is the explicit end of the chain. The verifier runs a structural check on its verdict file: the file exists, it has 1 verdict, and each finding has a rank.
 
@@ -445,7 +464,7 @@ tasks:
     kind: feature
     profile: coder-claude
     covers: [R2]
-    after: [backoff]
+    after: [backoff]        # met when backoff is done and its task branch is landed on the feature branch
     acceptance:
       - run: pytest tests/test_backoff.py -q -k logs
   - key: sync-suite
@@ -467,9 +486,9 @@ tasks:
   - key: retry-doc-judge
     title: Judge docs/sync.md against R1 and R2
     kind: judge             # not a judgment kind: it needs no judge of its own
-    judges: retry-doc       # plan validation refuses a judgment task with no judge
+    judges: retry-doc       # plan validation refuses a judgment task with no judge; met when retry-doc is in verifying and its structural check passed
     profile: judge-codex    # a different session, and a different provider from the author
-    after: [retry-doc]
+                            # no after: [retry-doc]; the worktree starts from the tip of the retry-doc task branch, and retry-doc is done only after this verdict
     outputs: [docs/sync.review.md]   # each miss ranked CRITICAL, HIGH, MEDIUM or LOW
 ```
 
@@ -576,6 +595,10 @@ CREATE TABLE tasks (
                 'blocked_on_user','waiting_quota','done','failed','escalated','cancelled')),
   attempts     INTEGER NOT NULL DEFAULT 0,
   max_attempts INTEGER NOT NULL DEFAULT 3,
+  not_before   INTEGER,                    -- fleet clock: a ready task in a retry backoff is not dispatched before it
+  fix_rounds   INTEGER NOT NULL DEFAULT 0, -- judge fix rounds of a judged task; limit 2, not counted in attempts
+  replans      INTEGER NOT NULL DEFAULT 0, -- replans by the sub-orchestrator after failed; limit 1, then escalated
+  due_at       INTEGER,                    -- fleet clock: the time limit of the current state; past it, the row goes to needs-you
   spec_json    TEXT NOT NULL,              -- the task as committed
   UNIQUE (idea_id, key)
 );
@@ -591,7 +614,7 @@ CREATE TABLE attempts (
   state TEXT NOT NULL CHECK (state IN ('launching','live','ended')),  -- launching: committed, the launch is an effect after the commit
   heartbeat_seq INTEGER,                   -- the last heartbeat seq that fleetd used; a lower or equal one is ignored
   started_at TEXT, ended_at TEXT, exit_code INTEGER,
-  outcome TEXT                             -- verified, rejected, crashed, timed_out, stalled, killed
+  outcome TEXT                             -- verified, rejected, crashed, timed_out, stalled, killed, no_result; asked, quota and critical_open burn no attempt
 );
 
 CREATE TABLE leases (
@@ -737,11 +760,11 @@ CREATE TABLE fleetd (                      -- exactly 1 row
 
 **Three rules that make the ledger trustworthy**
 
-1. **One door.** All writes go through `transition(entity, id, to_state, cause)`, which looks up the allowed-transition table, writes the row and the event in one transaction, and raises on anything illegal. There is no other `UPDATE`. Each write transaction first checks that the generation in the `fleetd` row is its own, and fleetd exits when it is not. No effect outside the ledger (a process start or stop, a file write, a git command) occurs inside a transaction. An effect is a row in an intended state (an attempt in `launching`, a worktree in `reserved`, a job in `queued`), and fleetd does it after the commit (see The reconcile pass).
-2. **Leases, not claims.** A task in `leased` or `running` always has a lease row with an expiry. Leases are renewed by fleetd from outside signals (heartbeat file, process alive, output or hook activity), never by the model. When the fleet clock passes `expires_at`, the reconciler moves the task to `stalled` in the same pass that notices it. A task in `waiting_quota` has its lease paused: the lease does not expire, and the task leaves the state when its pool resets.
+1. **One door.** All writes go through `transition(entity, id, to_state, cause)`, which looks up the allowed-transition table, writes the row and the event in one transaction, and refuses anything illegal. An illegal transition never stops the pass: `transition()` refuses it, records an event with the row and the cause, and puts the row on the needs-you list. Each other row of the pass goes on. There is no other `UPDATE`. Each write transaction first checks that the generation in the `fleetd` row is its own, and fleetd exits when it is not. No effect outside the ledger (a process start or stop, a file write, a git command) occurs inside a transaction. An effect is a row in an intended state (an attempt in `launching`, a worktree in `reserved`, a job in `queued`), and fleetd does it after the commit (see The reconcile pass).
+2. **Leases, not claims.** A task in `leased` or `running` always has a lease row with an expiry. Leases are renewed by fleetd from outside signals (heartbeat file, process alive, output or hook activity), never by the model. When the fleet clock passes `expires_at`, the reconciler moves the task to `stalled` in the same pass that notices it, unless a valid `result.json` of the attempt is present in that pass: the result wins, and the task moves to `verifying`. A task in `waiting_quota` has its lease paused: the lease does not expire, and the task leaves the state when its pool resets.
 3. **Invariants checked every pass.** The reconciler asserts these and repairs or escalates on any breach:
    - I1: every `leased`/`running` task has exactly one unexpired lease and one attempt with a live process or pane.
-   - I2: no task is `ready` while any dependency is not `done`.
+   - I2: no task is `ready` while a dependency is not met. A normal dependency (`after:`) is met when its task is `done` and its task branch is `landed`. The dependency of a judge task on the task it judges (`judges:`) is met when the judged task is in `verifying` and its structural check passed. Task `done` means verified. Task branch `landed` means its changes are in the feature branch.
    - I3: every requirement of an idea in `in_progress` or later is covered by at least one non-cancelled task.
    - I4: no worker runs more than one attempt at a time.
    - I5: every live pane and process under the fleet belongs to a live attempt; anything else is an orphan and is stopped.
@@ -831,7 +854,8 @@ budget:
 | `compact_window` | `CLAUDE_CODE_AUTO_COMPACT_WINDOW=256000` in the settings env | `model_auto_compact_token_limit=256000` | Not settable: the wrapper ends the attempt with a handoff at 256k |
 | `mode: exec` | `claude -p --output-format stream-json --verbose --include-hook-events` | `codex exec --json` | `agy -p --output-format stream-json` |
 | `mode: interactive` | `herdr agent start <role> --kind claude` | `--kind codex` | `--kind agy` (exec preferred: herdr counts it idle at its prompt) |
-| `result_gate` | `Stop` hook: exit 2 with "run `horch result` first" while `result.json` is missing | `Stop` hook (managed config, since user hooks need trust) | `Stop` hook; plus the wrapper's repair pass in every case |
+| `result_gate` | `Stop` hook: exit 2 with "run `horch result` first" while both `result.json` and a question file are missing | `Stop` hook (managed config, since user hooks need trust), with the same rule | `Stop` hook, with the same rule; plus the wrapper's repair pass in every case, which also accepts a question file in place of `result.json` |
+| Usage-limit signal | The adapter maps the usage-limit and outage signal of the CLI in exec mode and in interactive mode to the outcome `quota` (the exact signal to confirm in conformance) | The same | The same |
 | Liveness feed | `http` hooks on `PreToolUse`, `PostToolUse`, `Notification`, `PermissionRequest` post to the wrapper | Command hooks on the same events; `--json` stream | `PreToolUse`, `PostToolUse` hooks; `step_update` events |
 | Never waits on a dialog | `--permission-mode dontAsk` with explicit allow rules; `--permission-prompts none` in exec | `-a never` | `--mode auto`; parse the stream for soft denials |
 
@@ -871,7 +895,7 @@ Each `add` writes one immutable file and one ledger row in state `captured`, and
 | `merged` | Nobody | Terminal. Reached only when git shows its feature's changes in the primary branch and every worktree of the idea is removed. |
 | `parked`, `cancelled` | You | `horch idea park` or `cancel`; escalations also park. Worktrees are rescued first. |
 
-&#91;embedded content: idea state machine · 8 states and 1 approval gate\]
+The table above is the idea state machine: 10 states, with 1 approval gate at `awaiting_approval`.
 
 Every idea belongs to exactly 1 feature, and every feature that is not merged and not abandoned has 1 sub-orchestrator. Merged also requires that every worktree of the idea is gone.
 
@@ -898,7 +922,7 @@ The validator refuses the file while any item is marked `[open]`. `[assumed]` it
 
 **How a worker's question is resolved.**
 
-1. The worker writes 1 question file, commits its work in progress, and exits. The task parks. The other tasks of the feature go on.
+1. The worker writes 1 question file, commits its work in progress, and exits. The Stop hook and the repair pass of the wrapper accept the question file in place of `result.json`. The attempt ends with the outcome `asked`, which is not a failure and burns no attempt. The task moves to `blocked_on_user`, and its worktree stays. The other tasks of the feature go on.
 2. The question is a ledger row with an owner (the sub-orchestrator of the feature), a state and a time limit.
 3. On each pass, fleetd starts the owner if it is not running. Delivery repeats until an answer is recorded.
 4. The answer is 1 of 4 cases:
@@ -1083,10 +1107,10 @@ A usage limit or a provider outage is not a stall. A worker that shows one is no
 2. Still idle 2 minutes later: doorbell again and record it.
 3. Still idle, or `hung` at any point: end the attempt. Stop the process group through the platform layer (on Linux: SIGINT, wait 20 s, then SIGKILL). Record outcome `stalled`.
 4. `waiting_approval`: this is a profile defect, because profiles pre-approve everything a task needs. fleetd ends the attempt, writes the screen excerpt to `needs-you/`, and marks the profile unhealthy until a conformance test passes.
-5. Process exited without a valid result: outcome `no_result`.
-6. Any non-verified outcome: if attempts remain, a new attempt starts after backoff (30 s, 2 min, 8 min) in the same worktree, with a handoff file built from the old attempt's `progress.jsonl`, `git diff` and transcript tail. Otherwise the task goes to its idea's sub-orchestrator to replan once, then to `needs-you/`.
+5. Process exited. fleetd looks first for the 2 exits that are not failures. A valid question file gives the outcome `asked`: the task moves to `blocked_on_user`, and its worktree stays. A usage-limit or outage signal of the adapter gives the outcome `quota`: the task follows RR-11. Neither burns an attempt. Only an exit with no valid result, no valid question file and no usage-limit signal gives the outcome `no_result`.
+6. Any other outcome that is not verified (`rejected`, `crashed`, `timed_out`, `stalled`, `killed`, `no_result`) burns 1 attempt. If attempts remain, the task moves to `ready` with `not_before` set to the end of the backoff (30 s, 2 min, 8 min) on the fleet clock, and dispatch does not lease it before then. The new attempt runs in the same worktree, with a handoff file built from the old attempt's `progress.jsonl`, `git diff` and transcript tail. Otherwise the task moves to `failed`: the sub-orchestrator of its feature replans it 1 time, within its time limit. Then the task moves to `escalated`, with 1 item in `needs-you/`.
 
-**Finishing without reporting is closed at both ends.** Inside the agent, a stop hook (or for exec mode, the wrapper on exit) checks for `result.json`. If a process exits with commits but no result, the wrapper runs one short resume of the same session with a fixed instruction to write the result, then exits. Outside the agent, "done" is defined only by the verifier running the acceptance commands, so a result that claims success without passing checks goes back to `ready`.
+**Finishing without reporting is closed at both ends.** Inside the agent, a stop hook (or for exec mode, the wrapper on exit) checks for `result.json` or a question file. If a process exits with commits but neither, the wrapper runs one short resume of the same session with a fixed instruction to write the result, then exits. Outside the agent, "done" is defined only by the verifier running the acceptance commands, so a result that claims success without passing checks goes back to `ready`.
 
 **The reconcile pass**
 
@@ -1108,13 +1132,13 @@ def reconcile():
         mark_orphans(tx, snap, procs)         # panes or pids not owned by a live attempt or job -> to stop
         advance_ideas(tx, files)              # idea state machine: files valid -> next state
         keep_sub_orchestrators(tx, snap)      # one per feature that is not merged or abandoned; a missing one -> attempt in launching
-        promote_pending(tx)                   # deps all done -> ready
-        dispatch(tx, health(), pacing(tx), budget)  # lease, worktree in reserved, attempt in launching; no cap
+        finish_exited(tx, procs, files)       # result -> verifying; question -> blocked_on_user (asked); usage limit -> RR-11 (quota); else no_result -> rung 6
+        promote_pending(tx)                   # each dependency met (I2) -> ready
+        dispatch(tx, health(), pacing(tx), budget)  # lease, worktree in reserved, attempt in launching; no cap; not before not_before
         for a in live_attempts(tx, budget):
             state = liveness(a, snap, procs, files)
-            renew_or_expire_lease(tx, a, state)
+            renew_or_expire_lease(tx, a, state)   # a valid result ingested in this pass wins over an expiry
             apply_stall_ladder(tx, a, state)  # a doorbell or a stop is recorded as an effect, not done here
-        finish_exited(tx, procs)              # result -> verifying, else retry/escalate
         observe_jobs(tx, procs)               # ended jobs -> results; a running job whose process is gone -> queued
         queue_due_jobs(tx, budget)            # task checks, gates, trial merges, rebases, rescues, fetch, push
         reconcile_worktrees(tx, trees)        # adopt, mark orphaned, queue a rescue job, mark landed trees for removal
@@ -1143,9 +1167,26 @@ Dispatch order matters for "workers don't find work": after the commit, fleetd w
 
 **A pass has a work budget.** A pass handles at most a set count of rows of each kind (`pass_budget` in `fleet.toml`, a starting value to tune). It keeps a cursor for each kind in `pass_cursors`, and the next pass continues at the cursor, so each row gets its turn in a fair order. This is not a cap on parallel work (D8): a row that a pass does not reach is handled on a later pass. A pass must end before the hang limit of 30 s. `horch status` shows, for each kind, the age of the oldest row that waits for a pass.
 
-&#91;embedded content: task state machine · 9 states\]
+**Order inside 1 pass.** Results are ingested and acted on before a lease is expired: `ingest` and `finish_exited` run before `renew_or_expire_lease`. A valid `result.json` that is present in a pass wins over a lease expiry in the same pass. An illegal transition fails only its row (see Three rules that make the ledger trustworthy).
 
-Only the verifier moves a task to done. A stall, a crash, a missing result and a failed check all land in the same attempt-failed state, which either retries or escalates, so no path leaves a task held and forgotten.
+**The task state machine**
+
+| State | Owner | Leaves when | Time limit |
+| --- | --- | --- | --- |
+| `pending` | fleetd | Each dependency is met (I2) → `ready`. A replan or `horch task cancel` → `cancelled`. In a fix round, a judge task waits here until the fix attempt of the judged task passes its structural check. | None. It waits for its dependencies. |
+| `ready` | fleetd | Dispatch leases it, when the fleet clock is past `not_before` (the end of a retry backoff) and no hold on dispatch applies → `leased`. `horch task cancel` → `cancelled`. | None. `horch status` shows each hold on dispatch with its cause. |
+| `leased` | fleetd | The first heartbeat of the wrapper → `running`. No first heartbeat or activity within the start timeout → the attempt ends `timed_out` (rung 6). | Start timeout, 90 s. |
+| `running` | The worker attempt, watched by fleetd | A valid `result.json` → `verifying`. A valid question file → `blocked_on_user` (outcome `asked`). A usage limit or an outage → `ready` at once on the fallback persona of another provider, or `waiting_quota` (outcome `quota`, RR-11). The lease expires → `stalled`. Any other exit → rung 6. | The lease, 120 s, renewed only on earned activity; `max_minutes` of the wrapper. |
+| `stalled` | fleetd | The process group of the attempt is stopped (rung 3) → rung 6: `ready` with `not_before`, or `failed`. A valid `result.json` present in the same pass → `verifying`. | The stop of the process group (on Linux, 20 s before SIGKILL). |
+| `verifying` | The verifier, through a check job | Code kind: the check and the review scripts pass → `done`; they fail → outcome `rejected`, rung 6. Judgment kind: the structural check passes, and the task waits here for its judge task (see The judge pair); the judge task is `done` → `done`; the judge reports an open CRITICAL item → `ready` for a fix attempt. | The time limit of the check job (today's check timeout). While it waits for its judge, the time limits of the judge task apply. |
+| `blocked_on_user` | The live process of the feature that owns the question, then you | The answer is recorded → `ready`. The worker resumes with the answer, or a fresh worker starts from the question, the answer and the committed work, in the same worktree. | None on the task. The question has its own limit, and past it the question escalates to you. |
+| `waiting_quota` | fleetd | The pool resets → `ready`. The lease is paused. | None. The usage window of the provider, in calendar time. |
+| `done` | The verifier | Terminal. `done` means verified. Its task branch then follows the landing state machine. | None. |
+| `failed` | The sub-orchestrator of the feature | It replans the task 1 time: the plan replaces the task → `cancelled`, or the task goes back → `ready` with its attempt count at 0. A task that reaches `failed` after its 1 replan (`replans` is 1), or a task past the time limit → `escalated`. | `replan_limit`, 30 min on the fleet clock, a starting value in `fleet.toml`. |
+| `escalated` | You, through 1 item on the needs-you list | `horch task requeue` sets the attempt count to 0 → `ready`. `horch task cancel` → `cancelled`. | None. |
+| `cancelled` | fleetd | Terminal. fleetd writes a rescue ref of its task branch, then moves the branch to `abandoned`. | None. |
+
+Only the verifier moves a task to done. A stall, a crash, a missing result and a failed check each burn 1 attempt through rung 6, which either retries after a backoff or moves the task to `failed`, then `escalated`, so no path leaves a task held and forgotten. A question and a usage limit burn no attempt.
 
 ## Docs sync and adapter conformance
 
@@ -1393,7 +1434,7 @@ Each phase keeps the fleet usable. A phase is released when the tests of its gat
 3. **Phase 1: `horch fleetd`, supervised and level-triggered.** Move the watchdog's pass into a long-lived daemon under the service manager of each OS through the platform layer (on Linux a systemd user unit with `WatchdogSec`; on macOS a launchd timer job and on Windows a scheduled task that run `horch fleetd check` every 30 s), a 5 s pass that writes a heartbeat, and invariants I1 to I5. Add the fleetd concerns to the platform interface: service install and restart, hang detection, sleep and wake, file watching, and the transport of the fleetd command channel. It acts in code (stop by recorded PID, requeue, respawn) instead of only mailing the orchestrator. Remove the lazy `ensure` start. *Gate:* FM-4, FM-7, FM-12, FM-13 green.
 4. **Phase 2: leases and capped waits.** Schema v8 adds a `leases` table. Renewal comes only from earned activity. `worker_waits` rows of an interactive persona get `max_wait_s` (default 1 h) and must point at a live question or review; an exec worker that asks a question exits and its task parks. Replace "3 checks of 600 s" with the stall ladder. Add the `waiting_quota` state, the required `fallback` persona in the roster, and the restart on a fallback of another provider. *Gate:* FM-3, FM-5 green; a usage-limited worker is not reaped and burns no attempt; the idle-claim scenario is caught in under 10 min.
 5. **Phase 3: worktree leases and rescue.** Extend the existing `worktrees` table with state, owner, base and rescue columns, and make fleetd (through `horch spawn` until Phase 4) the only code that runs `git worktree add` or `remove`, writing the row first. Add the worktree reconciler, the verified rescue to `refs/horch/rescue/`, reuse by the next attempt, invariant I6, `horch worktrees` and `horch worktree restore`. Run it once in report-only mode to list the orphans already on your disk before it acts. *Gate:* FM-25 to FM-28 green; a worker killed with dirty and untracked files loses nothing.
-6. **Phase 4: push dispatch and the result gate.** `horch spawn` binds a task before the pane exists and writes `task.yaml` and `START.md`; `CLAIM_TASK` goes away. Add Stop hooks for Claude Code, Codex and Antigravity and a `horch result` command that writes `result.json`. fleetd runs the finish steps (check, sweeps, land) as the verifier instead of the worker detaching them and waiting for a typed NOTE. For a code kind the review scripts carry over unchanged: code-sweep rounds, findings F<n>, the answers file, waivers and verification profiles, with their limits (V-14). *Gate:* FM-2, FM-6, FM-9 green.
+6. **Phase 4: push dispatch and the result gate.** `horch spawn` binds a task before the pane exists and writes `task.yaml` and `START.md`; `CLAIM_TASK` goes away. Add Stop hooks for Claude Code, Codex and Antigravity and a `horch result` command that writes `result.json`. fleetd runs the finish steps instead of the worker detaching them and waiting for a typed NOTE: the verifier runs the check and the sweeps and moves the task to `done`, and then the landing state machine lands its task branch. Land is a step of landing, not of the verifier. The Stop hooks and the repair pass accept a question file in place of `result.json`, and the outcomes `asked` and `quota` burn no attempt. For a code kind the review scripts carry over unchanged: code-sweep rounds, findings F<n>, the answers file, waivers and verification profiles, with their limits (V-14). *Gate:* FM-2, FM-6, FM-9 green.
 7. **Phase 5: one ledger writer.** Worker commands (`progress`, `result`, `ask`) write files into the attempt's outbox; fleetd ingests them. Moving worker reports to files removes the Unix-socket need of the worker channel on Windows (`preservation-06-wiring-and-platform.md`, row S11). The fleetd command channel still needs a Windows transport. Every other process opens the ledger read-only, enforced by a new `arch_scan` rule. Remove Codex's `broad_ledger_rule` sandbox escape. Each `horch` command that changes state sends a request to fleetd over its command channel, or writes a request file when fleetd is down. *Gate:* FM-17, FM-24 green; arch test passes.
 8. **Phase 6: the idea dispatcher and sub-orchestrators.** Schema v9 gives `ideas` the state machine above and adds `horch idea add` (with the `--direct` fast lane), `ideas`, `show`, `note`, `approve`, `revise` and `park`. Add the dispatcher loop to fleetd, invariant I7, and the `idea-lead` persona, which runs today's brief, spec-writer and ticket-writer steps for one idea in its own interactive pane, a fresh process per phase. `plan.yaml` replaces `MAP.md`; tickets stay Markdown in format C1 and `plan.yaml` names them. Extend `add-map --dry-run` and `scripts/check-req-coverage.sh` into the plan validator (schema, DAG, coverage, profiles, citations to approved assumptions). Retire the long-lived orchestrator conversation, and allow one feature branch per feature with several at once in place of one non-solo run per workspace. Add the `features`, `branches`, `gate_runs` and `trial_merges` tables and `horch idea add --to`. *Gate:* FM-1, FM-8, FM-10, FM-16, FM-29 to FM-32 green.
 9. **Phase 7: docs sync and conformance, then exec mode.** Widen `herdr-docs-sync` to every CLI with the conformance suite and unhealthy marking. Then make exec mode the default worker mode and set `context-windows.md` to 256000 for every seat (today it is 300000 for the orchestrator and 200000 for opus). *Gate:* FM-18 to FM-20 green.
