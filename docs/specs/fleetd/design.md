@@ -653,8 +653,29 @@ CREATE TABLE branches (                    -- a row exists before the branch doe
   due_at      INTEGER NOT NULL,            -- a deadline on the fleet clock (seconds); past it, the row escalates
   queue_seq   INTEGER,                     -- bundle order
   rescue_ref  TEXT,                        -- written before each rebase or forced update
+  seen_tip    TEXT,                        -- the local tip that fleetd last saw; each local ref move is a compare-and-set on it
+  seen_remote_tip TEXT,                    -- the remote tip that fleetd last saw; each push that rewrites uses --force-with-lease on it
   orphan      INTEGER NOT NULL DEFAULT 0   -- found in git with no row, adopted and reported
 );
+
+CREATE TABLE bundles (                     -- 1 candidate of ready task branches of 1 feature; a bisect part is a child bundle
+  id          INTEGER PRIMARY KEY,
+  feature_id  TEXT NOT NULL REFERENCES features(id),
+  base_tip    TEXT NOT NULL,               -- the feature branch tip that the candidate is built on
+  candidate_ref TEXT,                      -- refs/horch/bundle/<id>
+  candidate_tip TEXT,                      -- set when the build job ends
+  parent_id   INTEGER REFERENCES bundles(id), -- the failed bundle, for a bisect part
+  state       TEXT NOT NULL CHECK (state IN ('building','gating','passed','failed','dropped')),
+  job_id      INTEGER REFERENCES jobs(id), -- the build job, then the fast gate job
+  due_at      INTEGER NOT NULL             -- a deadline on the fleet clock; past it, the row goes to needs-you
+);
+
+CREATE TABLE bundle_members (
+  bundle_id   INTEGER NOT NULL REFERENCES bundles(id),
+  branch      TEXT NOT NULL REFERENCES branches(name),
+  position    INTEGER NOT NULL,            -- queue order inside the candidate
+  PRIMARY KEY (bundle_id, branch)
+);                                         -- a task branch is a member of at most 1 bundle that is not ended (building or gating)
 
 CREATE TABLE gate_runs (
   id          INTEGER PRIMARY KEY,
@@ -771,10 +792,10 @@ CREATE TABLE fleetd (                      -- exactly 1 row
    - I6: every worktree that `git worktree list` or `/fleet/work/` shows has a `worktrees` row, every row that is not `removed` has its directory, and no worktree is removed unless its branch landed or its rescue ref was verified.
    - I7: no idea is past `awaiting_approval` unless `approved_sha256` matches the current `assumptions.md`, and every idea from `clarifying` to `integrating` has exactly one live sub-orchestrator attempt or is waiting on you.
    - I8: a task branch is `landed`, and a feature is `merged`, only when its changes are in the target branch by content. This holds for a squash merge.
-   - I9: a feature branch and the primary branch move only by fast-forward to a candidate that passed its gate.
-   - I10: before each rebase or forced update of a branch, a rescue ref of the old tip exists.
+   - I9: a feature branch and the primary branch move only by fast-forward to a candidate that passed its gate. Each move of a ref is a compare-and-set on the tip that fleetd last saw (`seen_tip`, `seen_remote_tip`): `git update-ref <ref> <new> <expected old>` for a local ref, `--force-with-lease=<ref>:<expected old>` for a push that rewrites. When the tip is not the expected one, fleetd moves nothing, records the new tip, makes the gate result stale and decides again on the next pass.
+   - I10: before each rebase or forced update of a branch, a rescue ref of the old tip exists. A rescue ref of class `unique` is deleted only by you.
    - I11: every fleet branch in git has a `branches` row; one without is adopted as an orphan row and reported, never deleted.
-   - I12: a branch is deleted only when it is landed, merged or rescued, and no `git stash` entry names it.
+   - I12: a branch is deleted only when it is landed, merged or rescued, and no `git stash` entry names it. A task branch is a member of at most 1 bundle that is not ended.
    - I13: a sub-orchestrator exists for each feature that is not merged and not abandoned.
 
 The task state machine is drawn under Supervision, liveness and reconciliation.
@@ -890,14 +911,14 @@ Each `add` writes one immutable file and one ledger row in state `captured`, and
 | `awaiting_approval` | You | You run `horch idea approve I-0012`, or `horch idea revise I-0012 "..."` to send it back to clarifying. |
 | `specifying` | Sub-orchestrator | `spec.md` and `requirements.yaml` validate, and every requirement cites an approved assumption or one of your answers. |
 | `ticketing` | Sub-orchestrator | Tickets and `plan.yaml` pass the plan validator and commit in one transaction. |
-| `in_progress` | Workers; the sub-orchestrator answers their questions and replans failed tasks | Every task is done. |
-| `integrating` | fleetd | Every task of the idea is `done`, and every task branch of the idea is `landed` on its feature branch. The idea waits here until its feature's changes are in the primary branch. |
-| `merged` | Nobody | Terminal. Reached only when git shows its feature's changes in the primary branch and every worktree of the idea is removed. |
+| `in_progress` | Workers; the sub-orchestrator answers their questions and replans failed tasks | Every task that is not `cancelled` is `done`, and every task branch that is not `abandoned` is `landed` on its feature branch. A cancelled task does not block its idea: fleetd writes a rescue ref of its branch and moves the branch to `abandoned`. |
+| `integrating` | fleetd | Every task of the idea that is not `cancelled` is `done`, and every task branch that is not `abandoned` is `landed` on its feature branch. The idea waits here until its feature's changes are in the primary branch. |
+| `merged` | Nobody | Terminal. Reached only when git shows its feature's changes in the primary branch and each worktree of the idea is `removed` or `rescued`. fleetd then removes the `rescued` trees, and the rescue refs stay. |
 | `parked`, `cancelled` | You | `horch idea park` or `cancel`; escalations also park. Worktrees are rescued first. |
 
 The table above is the idea state machine: 10 states, with 1 approval gate at `awaiting_approval`.
 
-Every idea belongs to exactly 1 feature, and every feature that is not merged and not abandoned has 1 sub-orchestrator. Merged also requires that every worktree of the idea is gone.
+Every idea belongs to exactly 1 feature, and every feature that is not merged and not abandoned has 1 sub-orchestrator. Merged also requires that each worktree of the idea is `removed` or `rescued`.
 
 **How many sub-orchestrators.** One for each feature that is not merged and not abandoned. There is no cap on features, sub-orchestrators or workers, so no idea waits in `captured` for a slot. The count always matches the ledger, because the reconciler starts a missing pane or stops an extra one on every pass.
 
@@ -953,10 +974,10 @@ Today a worker creates its own worktree, so one that dies mid-task leaves a dire
 | `reserved` | Row written in the same transaction that leases the task. No directory yet. | fleetd runs `git worktree add` on branch `fleet/I-0007/T-0007-03` → `created`. A row left here by a crash is created or dropped on the next pass. |
 | `created` | Directory and branch exist; no attempt holds it. | An attempt starts with it as its working directory → `active`. |
 | `active` | Owned by exactly one live attempt. HEAD, the dirty flag and disk size are refreshed on each git scan. | The attempt ends: verified → `landing`; retried → back to `created`, so the next attempt continues in the same tree; owner dead → `orphaned`. |
-| `landing` | Its branch is in the landing state machine (see Features, landing and integration). | Its branch is `landed` on the feature branch → `landed`. |
+| `landing` | Its branch is in the landing state machine (see Features, landing and integration). A resolver attempt or a fix attempt of its branch runs in it. | Its branch is `landed` on the feature branch → `landed`. Its branch is `abandoned` → fleetd queues a rescue job; the rescue is verified → `rescued`. |
 | `landed` | Nothing in it is unique any more. | fleetd removes it and deletes the branch only if it is merged → `removed`. |
-| `orphaned` | On disk with no live owner, or on disk with no row at all. | Rescued and verified → `rescued`. |
-| `rescued` | Its full state is saved on a rescue ref and checked. | Adopted by the next attempt of its task, or removed when its idea is merged or cancelled. |
+| `orphaned` | On disk with no live owner, or on disk with no row at all. | Rescued and verified → `rescued`. A rescue that fails its verification keeps the tree here and puts 1 item on the needs-you list. |
+| `rescued` | Its full state is saved on a rescue ref and checked. | Adopted by the next attempt of its task. Its idea is `merged` or `cancelled` → fleetd removes it → `removed`. The rescue ref stays. |
 | `removed` | Gone from disk and from `git worktree list`. | Terminal. |
 
 **Only fleetd creates or removes worktrees.** Workers start inside a tree fleetd made. Their profiles deny `git worktree` through each CLI's permission rules, and a new `arch_scan` rule keeps worktree calls out of every horch code path except fleetd. A worker that makes one anyway is found by the reconciler as an unowned tree and rescued like any orphan.
@@ -981,15 +1002,15 @@ git update-ref refs/horch/rescue/T-0007-03/1 "$commit"
 git diff --quiet "$commit" && test -z "$(git ls-files --others --exclude-standard)"
 ```
 
-fleetd then writes `/fleet/rescue/T-0007-03-1.json` with the ref, the old HEAD, the file count, the size and the attempt. Only after that may a tree be removed. A rescue that fails verification leaves the tree in place and escalates. Ignored files such as build output are not saved, which keeps rescue refs small; a profile can list ignored paths worth keeping in `rescue_include`.
+fleetd then writes `/fleet/rescue/T-0007-03-1.json` with the ref, the old HEAD, the file count, the size and the attempt. Only after that may a tree be removed. A rescue that fails verification leaves the tree in place and puts 1 item on the needs-you list. Ignored files such as build output are not saved, which keeps rescue refs small; a profile can list ignored paths worth keeping in `rescue_include`.
 
 **Reuse, don't redo.** The next attempt of the same task gets the same worktree, with the rescue ref as a safety copy, and its `START.md` names the rescue commit and the last attempt's progress notes. Work you paid for becomes the starting point of the retry.
 
 **Disk.** `horch status` shows the total size of all trees. Above `worktree_disk_budget` (default 20 GB) fleetd removes `landed` and `rescued` trees of merged or cancelled ideas, oldest first. It never removes an `active` tree for space; it pauses new dispatch and tells you instead.
 
-**Ideas finish clean.** An idea reaches `merged` only when every one of its worktrees is `removed`, and its closing note lists any rescue ref that never landed. `horch worktrees` lists every tree with its state, task, owner, age and size, and `horch worktree restore T-0007-03` turns a rescue ref back into a branch `rescue/T-0007-03-1` and a working tree.
+**Ideas finish clean.** An idea reaches `merged` only when each of its worktrees is `removed` or `rescued`. fleetd then removes the `rescued` trees. The rescue refs stay, and its closing note lists each rescue ref of class `unique`. `horch worktrees` lists every tree with its state, task, owner, age and size, and `horch worktree restore T-0007-03` turns a rescue ref back into a branch `rescue/T-0007-03-1` and a working tree.
 
-**Built on what horch has.** The existing `worktrees` table gains the state, owner and rescue columns, triage reads them, and `refs/horch/rescue/` sits beside your archive and trash refs under the same retention rules.
+**Built on what horch has.** The existing `worktrees` table gains the state, owner and rescue columns, triage reads them, and `refs/horch/rescue/` sits beside your archive and trash refs. A rescue ref of class `superseded` follows the retention of the trash refs. A rescue ref of class `unique` is kept until you decide (see No work is lost).
 
 ## Features, landing and integration
 
@@ -1008,20 +1029,26 @@ The primary branch is the base branch of a project. It is `main` in this reposit
 
 ### Landing a task branch on its feature branch
 
-Every branch is a ledger row before it exists. Each row has a landing state, 1 owner and a time limit. Past the limit it escalates. No state is silent.
+Every branch is a ledger row before it exists. Each row has a landing state, 1 owner and a time limit. Past the limit the row goes to the needs-you list. No state is silent. Each time limit is a starting value in `fleet.toml`, on the fleet clock.
 
-| State | Owner | Leaves when |
-| --- | --- | --- |
-| `building` | worker | the worker writes its result |
-| `verifying` | fleetd | the check, and for a code kind the review, pass |
-| `ready` | fleetd | fleetd puts it in the next bundle |
-| `in_bundle` | fleetd | the bundle passes the fast gate and the feature branch moves forward |
-| `landed` | nobody | terminal |
-| `conflicted` | the same worker | its rebase conflict is resolved (today's behavior) |
-| `gate_failed` | sub-orchestrator | its triage task lands |
-| `abandoned` | operator only | terminal; a rescue ref is kept |
+| State | Owner | Leaves when | Time limit |
+| --- | --- | --- | --- |
+| `building` | worker | the task moves to `verifying` → `verifying`. The task is `cancelled` → fleetd writes a rescue ref, then → `abandoned`. | The time limits of its task. |
+| `verifying` | fleetd | the task is `done` → `ready`. For a judged task this is after its judge (see The judge pair). The check fails and a new attempt starts → `building`. The task is `cancelled` → rescue ref, then `abandoned`. | The time limits of its task. |
+| `ready` | fleetd | fleetd puts it in the next bundle → `in_bundle`. | 30 min. |
+| `in_bundle` | fleetd | its bundle passes the fast gate and the feature branch moves forward by compare-and-set → `landed`. Its bundle is `dropped` → `ready`. Its bundle fails: the bisect puts it in a child bundle (it stays), or finds it as the failing branch → `gate_failed`, or finds it clean → `ready`. A conflict when the candidate is built → `conflicted`. | The time limit of the build job and the fast gate job, plus 10 min. |
+| `landed` | nobody | terminal | None. |
+| `conflicted` | fleetd | fleetd starts a resolver attempt for this task branch in its worktree, with the conflict in `zdiff3` form and the tests of both sides. Its result passes its check → `ready`. | 60 min. |
+| `gate_failed` | fleetd | fleetd starts a fix attempt of the task, in its worktree, with the output of the gate. Its result passes the check → `verifying` → `ready`. | 60 min. |
+| `abandoned` | fleetd, or you with `horch feature abandon` | terminal; a rescue ref is kept | None. |
 
-**The bundle.** When several task branches of 1 feature are `ready` together, fleetd builds 1 candidate from the feature branch tip plus each ready task branch in queue order. Each task's commits are kept. The build of the candidate is a job, and the fast gate runs once on the candidate as a job. A pass never waits for either. A later pass reads the result of the gate job. On a pass of the gate, the feature branch moves forward to the candidate. On a failure, fleetd bisects the bundle, sends the failing task to `gate_failed`, and the others go on. No ready branch is forgotten, because each one is a row that fleetd reads on every pass.
+A resolver attempt and a fix attempt are attempts of the task row. The task stays `done`, because its own result was verified. The attempt is verified on the branch, and the branch, not the task, moves.
+
+**The bundle.** When several task branches of 1 feature are `ready` together, fleetd builds 1 candidate from the feature branch tip plus each ready task branch in queue order. Each task's commits are kept. fleetd first writes 1 `bundles` row in `building`, with the base tip, and 1 `bundle_members` row for each branch, in 1 transaction. The build of the candidate is a job that writes the ref `refs/horch/bundle/<id>`. Then the row moves to `gating`, and the fast gate runs once on the candidate as a job. A pass never waits for either. A later pass reads the result of the gate job. On a pass of the gate, the bundle moves to `passed`, and the feature branch moves forward to the candidate by compare-and-set from the base tip (I9). On a failure, the bundle moves to `failed`, and fleetd bisects it: each half is a child bundle with `parent_id`, built and gated in the same way. The failing branch goes to `gate_failed`, and the others go on. After a restart, fleetd continues each bundle from its row. No ready branch is forgotten, because each one is a row that fleetd reads on every pass.
+
+**A moved tip drops a bundle.** When the tip of a feature branch moves while a bundle of that feature is in `building` or `gating`, the bundle goes to `dropped`, and its members go back to `ready`. fleetd does not start a rebase of a feature branch while 1 of its bundles is in `gating`. It waits for the gate job, which has a time limit.
+
+**fleetd sets the git settings that it needs.** fleetd sets `rerere.enabled` and `merge.conflictStyle=zdiff3` in each worktree and each repository that it manages. It does not assume them.
 
 No human approves a landing on a feature branch.
 
@@ -1038,18 +1065,27 @@ fleetd keeps these behaviors of today's land path (`preservation-04-behavior.md`
 fleetd checks these on every pass against git. They are invariants I8 to I13 in the Ledger section.
 
 1. A task branch is `landed`, and a feature is `merged`, only when its changes are in the target branch by content. This holds for a squash merge.
-2. A feature branch and the primary branch move only by fast-forward to a candidate that passed its gate. A landing cannot overwrite another.
+2. A feature branch and the primary branch move only by fast-forward to a candidate that passed its gate. Each ref move is a compare-and-set on the tip that fleetd last saw. A landing cannot overwrite another, and someone else's commit is never overwritten.
 3. Before each rebase or forced update of a branch, fleetd writes a rescue ref of the old tip.
 4. A fleet branch in git that has no ledger row is adopted as an orphan row and reported. It is never deleted.
 5. A branch is deleted only when it is landed, merged or rescued. A `git stash` entry that names the branch blocks the deletion (`preservation-04-behavior.md`, row W6).
 6. A sub-orchestrator exists for each feature that is not merged and not abandoned.
+
+**Rescue refs have 2 classes, and fleetd owns both.** fleetd decides the class of each rescue ref by content, against the landed branches, each time it reads the ref.
+
+- `unique`: it holds work that is in no landed branch. It is kept until you decide: `horch worktree restore`, or `horch rescue drop <ref>`. No collection deletes it.
+- `superseded`: an old tip whose work is in a newer tip or in a landed branch. It expires 30 days after its feature is merged or abandoned, with the trash refs.
+
+`horch status` shows the count and the bytes of each class. When the `unique` class is over `rescue_unique_budget` (a starting value in `fleet.toml`), fleetd puts 1 item on the needs-you list. It deletes nothing.
+
+**A cancelled task does not block its idea.** When a task is cancelled, fleetd writes a rescue ref of its task branch and then moves the branch to `abandoned`. The roll-up of an idea counts only tasks that are not `cancelled` and task branches that are not `abandoned`.
 
 ### Between features
 
 - **Parallel is the default.** Any number of features can change the same file. A shared file name never makes a feature wait.
 - **Early detection.** When a feature branch tip or the primary branch moves, fleetd queues a trial merge job of each in-flight feature against the primary branch. Between features, it queues 1 job for each pair of in-flight features whose sets of changed files share a file. A pair with no shared file needs no job. A job is keyed by the 2 tips, so a pair whose tips did not move is not merged again: its result is used again. A count of features of n does not make n times n jobs in 1 pass. The job uses `git merge-tree --write-tree`, with no checkout. The result is a fact in the ledger.
 - **Stack on evidence.** When the trial merge of 2 features conflicts, fleetd puts the younger feature on top of the older one. The conflict becomes 1 resolver task for a fresh agent. The agent gets the conflict in `zdiff3` form, the requirements of both features for those files, and the unit tests of both. It makes 1 commit for each requirement. The task lands on the younger feature's branch.
-- **Continuous rebase.** When the fetched tip of the primary branch moves, fleetd queues a rebase job for each feature branch, the bottom of a stack first. After a clean rebase the fast gate job runs again. A conflict becomes a resolver task. `rerere` is on.
+- **Continuous rebase.** When the fetched tip of the primary branch moves, fleetd queues a rebase job for each feature branch, the bottom of a stack first. It does not start the rebase of a feature branch while 1 of its bundles is in `gating`, and the move of the tip drops each bundle of that feature in `building`. After a clean rebase the fast gate job runs again. A conflict becomes a resolver task. fleetd sets `rerere.enabled` itself.
 - **Build on what is in flight.** At plan time the sub-orchestrator gets the diffs of the files that in-flight features already changed. It can propose to build on one of them. The proposal is in the assumptions that you approve.
 - **The full gate.** The full gate runs once for a feature as a job, when its task branches are landed, on its tip over the fetched tip of the primary branch. Failures become triage tasks of the feature. If either tip moves after a pass, the pass is stale and the gate runs again before the feature is marked ready.
 - **Two declared gates.** Each project declares its fast gate (its unit tests) and its full gate (the fast gate plus the end-to-end tests). Plan validation refuses a plan for a project that did not declare both. This repository has no unit-only command today (`research-03-this-repo.md`, F10).
@@ -1145,7 +1181,7 @@ def reconcile():
         land_bundles(tx)                      # act on ended bundle and fast gate jobs; record the ref move; queue the next bundle
         integrate_features(tx)                # act on ended trial merge, rebase and full gate jobs; stacks, resolver tasks
         check_invariants(tx)                  # I1..I13, repair or escalate
-        roll_up_ideas(tx)                     # all task branches landed on the feature branch -> integrating; merged once the fetched tip of the primary branch shows the feature and trees removed
+        roll_up_ideas(tx)                     # each task not cancelled is done, each task branch not abandoned is landed -> integrating; merged once the fetched tip of the primary branch shows the feature and each tree is removed or rescued
         effects = intended_effects(tx)        # every row in an intended state, stops first
     # Part 3: after the commit, do the effects. Each is keyed by the id of its row and is safe to repeat.
     for e in effects:
@@ -1407,7 +1443,7 @@ Every failure you listed, plus twenty-six more found while reading the code, the
 | FM-22 | Orphan processes or panes after a reap | Leaked CPU, stray edits | Process-group kill plus exact pane close; invariant I5 stops anything not owned by a live attempt | 5 s | RR-4 |
 | FM-23 | Half-written, oversized, linked or foreign file read | Corrupt result, or fleetd runs out of memory and restarts on the same file | Temp file, fsync, rename; readers skip `*.tmp`; a log is read only to its last complete line; schema validation. A worker file is read only when it is a regular file, opened without following a link, under its size limit, inside its own attempt folder and with the ids of its path; a file that fails is recorded as rejected and not read again | Prevented | RR-8, SR-6 |
 | FM-24 | Ledger write contention, a stray writer, or 2 fleetd processes | Busy errors, lost updates, duplicate workers or competing branch moves | Single writer; everything else opens read-only. fleetd holds an exclusive file lock for its whole life, and a second fleetd exits at once; each write transaction checks the generation of the `fleetd` row; a restart stops the old process by its PID and start time and waits for the lock | Prevented | RR-5 |
-| FM-25 | Worker dies and leaves its worktree on disk | Paid-for work invisible, later deleted or redone | The worktree was leased before it existed, so owner death marks it `orphaned` in the same pass; a verified rescue ref is written before anything else; the next attempt reuses the tree | 5 to 30 s | FR-11, RR-9 |
+| FM-25 | Worker dies and leaves its worktree on disk | Paid-for work invisible, later deleted or redone | The worktree was leased before it existed, so owner death marks it `orphaned` in the same pass; a verified rescue ref is written before anything else; a rescue that fails its verification keeps the tree and puts 1 item on the needs-you list; the next attempt reuses the tree | 5 to 30 s | FR-11, RR-9 |
 | FM-26 | A worker or script creates a worktree outside fleetd | Unknown branch and directory | Profiles deny `git worktree`; `arch_scan` keeps it out of horch; the reconciler adopts any unknown tree as orphaned and rescues it | 60 s | FR-11, RR-10 |
 | FM-27 | A worktree with unmerged work is removed | Work lost | fleetd removes only `landed` trees or trees with a verified rescue ref; a directory that vanishes without a removal event is escalated | Prevented inside the fleet; 60 s otherwise | RR-9 |
 | FM-28 | Worktrees fill the disk | Builds fail, everything stalls | Size tracked on each git scan; over budget, fleetd removes landed and rescued trees of finished ideas and pauses dispatch before it would touch an active one | Before the budget is hit | RR-10, OR-1 |
@@ -1418,6 +1454,11 @@ Every failure you listed, plus twenty-six more found while reading the code, the
 | FM-33 | A document passes a structural check but is wrong | A wrong design, report or doc is accepted | Plan validation requires a paired judge task in a different session, on a different provider when the roster has one; a CRITICAL miss blocks and a fresh session fixes it; a fresh judge checks only the earlier CRITICAL items and the change; after 2 fix rounds it goes to you | At the judge task | FR-4, RR-3 |
 | FM-34 | Daemon and CLI of different versions | Old code acts on a newer ledger, or the reverse | fleetd is a subcommand of the single `horch` binary; `horch self-update` restarts the daemon on the new binary at once; a CLI that finds an older daemon restarts it; a newer schema is refused | Prevented; at the next CLI call otherwise | OR-6 |
 | FM-35 | A question is never answered | The task parks for ever | Each question is a ledger row with an owner, a state and a time limit; fleetd starts the owner on each pass and repeats delivery until an answer is recorded; past the limit it escalates to `needs-you/` with a herdr notification | At the time limit | RR-12, OR-3 |
+| FM-36 | fleetd restarts while a bundle or its bisect is in flight | A bundle is built 2 times, or a branch stays in `in_bundle` for ever | Each bundle and each bisect part is a `bundles` row with its members in `bundle_members`; a branch is in at most 1 bundle that is not ended; fleetd continues each bundle from its row | 1 pass after the restart | RR-7, I12 |
+| FM-37 | A branch tip moves under fleetd (a push by you, a rebase, another landing) | A landing overwrites a commit, or a gate result is used for another tip | Each ref move is a compare-and-set on `seen_tip` or `seen_remote_tip`; on a mismatch fleetd moves nothing, records the new tip and makes the gate result stale; a moved feature tip drops each bundle in `building` or `gating`, and no rebase starts while a bundle is in `gating` | 1 pass | I9 |
+| FM-38 | A task branch conflicts or fails the gate after its worker exited | The branch never lands, and its idea never reaches `integrating` | fleetd owns `conflicted` and `gate_failed`: it starts a resolver attempt or a fix attempt in the worktree; each landing state has a time limit, and past it 1 item goes on the needs-you list | At the time limit | I9, RR-6 |
+| FM-39 | A task is cancelled, or its rescue fails | Its idea and its feature wait for ever | fleetd writes a rescue ref and moves the branch of a cancelled task to `abandoned`; the roll-up skips cancelled tasks and abandoned branches; an idea is `merged` when each tree is `removed` or `rescued`; a failed rescue puts 1 item on the needs-you list | 1 pass | I8, I12 |
+| FM-40 | Rescue refs delete unique work, or grow with no bound | Work lost, or the repository grows for ever | 2 classes, both owned by fleetd: `unique` is kept until you run `horch worktree restore` or `horch rescue drop`; `superseded` expires 30 days after its feature ends; over `rescue_unique_budget`, 1 item goes on the needs-you list and nothing is deleted | At the budget | RR-9, I10 |
 
 ## Migration plan
 
