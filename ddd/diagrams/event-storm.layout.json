@@ -1,22 +1,46 @@
 {
   "engine": "fixed",
-  "width": 5208,
+  "width": 5456,
   "height": 2448,
   "nodes": {
+    "abandon-branch-on-task-cancelled": {
+      "x": 2272,
+      "y": 1992,
+      "w": 112,
+      "h": 56
+    },
+    "abandon-feature": {
+      "x": 4000,
+      "y": 1152,
+      "w": 112,
+      "h": 56
+    },
+    "abandon-feature@operator": {
+      "x": 4000,
+      "y": 1068,
+      "w": 112,
+      "h": 56
+    },
     "abandon-task-branch": {
-      "x": 3192,
+      "x": 3448,
       "y": 480,
       "w": 112,
       "h": 56
     },
     "abandon-task-branch@operator": {
-      "x": 3192,
+      "x": 3448,
       "y": 396,
       "w": 112,
       "h": 56
     },
     "adapter-conformance-failed": {
-      "x": 4936,
+      "x": 5056,
+      "y": 228,
+      "w": 112,
+      "h": 56
+    },
+    "adapter-conformance-passed": {
+      "x": 5312,
       "y": 228,
       "w": 112,
       "h": 56
@@ -166,7 +190,7 @@
       "h": 56
     },
     "assign-task": {
-      "x": 2272,
+      "x": 2400,
       "y": 2160,
       "w": 112,
       "h": 56
@@ -220,7 +244,7 @@
       "h": 56
     },
     "bisect-bundle": {
-      "x": 2816,
+      "x": 2944,
       "y": 480,
       "w": 112,
       "h": 56
@@ -232,7 +256,7 @@
       "h": 56
     },
     "block-profile-on-conformance": {
-      "x": 4936,
+      "x": 5056,
       "y": 312,
       "w": 112,
       "h": 56
@@ -246,6 +270,12 @@
     "bundle-built": {
       "x": 2944,
       "y": 228,
+      "w": 112,
+      "h": 56
+    },
+    "bundle-dropped": {
+      "x": 2816,
+      "y": 564,
       "w": 112,
       "h": 56
     },
@@ -267,6 +297,30 @@
       "w": 112,
       "h": 56
     },
+    "cancel-on-feature-abandoned": {
+      "x": 4000,
+      "y": 1320,
+      "w": 112,
+      "h": 56
+    },
+    "cancel-task": {
+      "x": 2272,
+      "y": 1824,
+      "w": 112,
+      "h": 56
+    },
+    "cancel-task@operator": {
+      "x": 2272,
+      "y": 1740,
+      "w": 112,
+      "h": 56
+    },
+    "cancel-tasks-on-idea-cancelled": {
+      "x": 416,
+      "y": 648,
+      "w": 112,
+      "h": 56
+    },
     "check-failed": {
       "x": 2520,
       "y": 1236,
@@ -274,25 +328,25 @@
       "h": 56
     },
     "check-fleetd": {
-      "x": 4552,
+      "x": 4672,
       "y": 144,
       "w": 112,
       "h": 56
     },
     "check-fleetd@clock": {
-      "x": 4552,
+      "x": 4672,
       "y": 60,
       "w": 112,
       "h": 56
     },
     "check-merged": {
-      "x": 3624,
+      "x": 4504,
       "y": 816,
       "w": 112,
       "h": 56
     },
     "check-merged@clock": {
-      "x": 3624,
+      "x": 4504,
       "y": 732,
       "w": 112,
       "h": 56
@@ -304,13 +358,13 @@
       "h": 56
     },
     "close-idea": {
-      "x": 3752,
-      "y": 816,
+      "x": 3872,
+      "y": 1152,
       "w": 112,
       "h": 56
     },
     "close-on-feature-merged": {
-      "x": 3624,
+      "x": 4504,
       "y": 984,
       "w": 112,
       "h": 56
@@ -363,6 +417,18 @@
       "w": 112,
       "h": 56
     },
+    "drop-rescue-ref": {
+      "x": 5056,
+      "y": 480,
+      "w": 112,
+      "h": 56
+    },
+    "drop-rescue-ref@operator": {
+      "x": 5056,
+      "y": 396,
+      "w": 112,
+      "h": 56
+    },
     "end-attempt": {
       "x": 2520,
       "y": 1488,
@@ -399,6 +465,12 @@
       "w": 112,
       "h": 56
     },
+    "escalate-branch-on-repair-limit": {
+      "x": 2520,
+      "y": 1656,
+      "w": 112,
+      "h": 56
+    },
     "escalate-on-plan-refused": {
       "x": 1464,
       "y": 312,
@@ -406,7 +478,7 @@
       "h": 56
     },
     "escalate-on-rescue-failed": {
-      "x": 1888,
+      "x": 2016,
       "y": 2328,
       "w": 112,
       "h": 56
@@ -426,6 +498,12 @@
     "escalate-task": {
       "x": 2144,
       "y": 1824,
+      "w": 112,
+      "h": 56
+    },
+    "escalate-task-branch": {
+      "x": 3072,
+      "y": 480,
       "w": 112,
       "h": 56
     },
@@ -459,20 +537,32 @@
       "w": 112,
       "h": 56
     },
-    "feature-branch-rebased": {
+    "feature-abandoned": {
+      "x": 4000,
+      "y": 1236,
+      "w": 112,
+      "h": 56
+    },
+    "feature-branch-pushed": {
       "x": 4384,
-      "y": 228,
+      "y": 564,
+      "w": 112,
+      "h": 56
+    },
+    "feature-branch-rebased": {
+      "x": 3744,
+      "y": 564,
       "w": 112,
       "h": 56
     },
     "feature-marked-ready": {
-      "x": 4008,
+      "x": 4256,
       "y": 564,
       "w": 112,
       "h": 56
     },
     "feature-merged": {
-      "x": 3624,
+      "x": 4504,
       "y": 900,
       "w": 112,
       "h": 56
@@ -484,43 +574,61 @@
       "h": 56
     },
     "feature-rebase-conflicted": {
-      "x": 3624,
+      "x": 3872,
       "y": 564,
       "w": 112,
       "h": 56
     },
+    "feature-reopened": {
+      "x": 3872,
+      "y": 900,
+      "w": 112,
+      "h": 56
+    },
     "feature-stacked": {
-      "x": 4128,
+      "x": 4376,
       "y": 228,
       "w": 112,
       "h": 56
     },
+    "fetch-remote": {
+      "x": 3744,
+      "y": 144,
+      "w": 112,
+      "h": 56
+    },
+    "fetch-remote@clock": {
+      "x": 3744,
+      "y": 60,
+      "w": 112,
+      "h": 56
+    },
     "fleetd-hang-detected": {
-      "x": 4552,
+      "x": 4672,
       "y": 228,
       "w": 112,
       "h": 56
     },
     "fleetd-restarted": {
-      "x": 4808,
+      "x": 4928,
       "y": 228,
       "w": 112,
       "h": 56
     },
     "full-gate-failed": {
-      "x": 3880,
+      "x": 4128,
       "y": 564,
       "w": 112,
       "h": 56
     },
     "full-gate-on-landed": {
-      "x": 3448,
-      "y": 648,
+      "x": 2816,
+      "y": 984,
       "w": 112,
       "h": 56
     },
     "full-gate-passed": {
-      "x": 3752,
+      "x": 4000,
       "y": 564,
       "w": 112,
       "h": 56
@@ -532,8 +640,8 @@
       "h": 56
     },
     "gate-on-rebase": {
-      "x": 4384,
-      "y": 312,
+      "x": 3744,
+      "y": 648,
       "w": 112,
       "h": 56
     },
@@ -550,7 +658,7 @@
       "h": 56
     },
     "horch-version-installed": {
-      "x": 4680,
+      "x": 4800,
       "y": 228,
       "w": 112,
       "h": 56
@@ -580,8 +688,14 @@
       "h": 56
     },
     "idea-merged": {
-      "x": 3752,
-      "y": 900,
+      "x": 3872,
+      "y": 1236,
+      "w": 112,
+      "h": 56
+    },
+    "idea-on-adapter-drift": {
+      "x": 5056,
+      "y": 312,
       "w": 112,
       "h": 56
     },
@@ -592,8 +706,14 @@
       "h": 56
     },
     "idea-tasks-landed": {
-      "x": 3448,
-      "y": 564,
+      "x": 2816,
+      "y": 900,
+      "w": 112,
+      "h": 56
+    },
+    "ideas-moved-to-new-feature": {
+      "x": 3744,
+      "y": 1236,
       "w": 112,
       "h": 56
     },
@@ -618,6 +738,18 @@
     "interview-record": {
       "x": 672,
       "y": 144,
+      "w": 112,
+      "h": 56
+    },
+    "job-abandoned": {
+      "x": 4800,
+      "y": 564,
+      "w": 112,
+      "h": 56
+    },
+    "job-requeued": {
+      "x": 4928,
+      "y": 564,
       "w": 112,
       "h": 56
     },
@@ -648,6 +780,12 @@
     "launch-environment": {
       "x": 2400,
       "y": 144,
+      "w": 112,
+      "h": 56
+    },
+    "launch-fix-on-critical": {
+      "x": 2144,
+      "y": 1656,
       "w": 112,
       "h": 56
     },
@@ -706,32 +844,50 @@
       "h": 56
     },
     "mark-feature-ready": {
-      "x": 4008,
+      "x": 4256,
+      "y": 480,
+      "w": 112,
+      "h": 56
+    },
+    "mark-profile-healthy": {
+      "x": 4672,
       "y": 480,
       "w": 112,
       "h": 56
     },
     "mark-profile-unhealthy": {
-      "x": 5064,
+      "x": 5184,
       "y": 144,
       "w": 112,
       "h": 56
     },
     "mark-task-done": {
-      "x": 2016,
+      "x": 2144,
       "y": 2160,
       "w": 112,
       "h": 56
     },
     "merge-pull-request": {
-      "x": 4384,
-      "y": 480,
+      "x": 4248,
+      "y": 816,
       "w": 112,
       "h": 56
     },
     "merge-pull-request@operator": {
-      "x": 4384,
-      "y": 396,
+      "x": 4248,
+      "y": 732,
+      "w": 112,
+      "h": 56
+    },
+    "move-ideas-on-merge": {
+      "x": 4504,
+      "y": 984,
+      "w": 112,
+      "h": 56
+    },
+    "move-ideas-to-new-feature": {
+      "x": 3744,
+      "y": 1152,
       "w": 112,
       "h": 56
     },
@@ -742,13 +898,25 @@
       "h": 56
     },
     "needs-you-queue": {
-      "x": 2272,
+      "x": 2400,
       "y": 1824,
       "w": 112,
       "h": 56
     },
+    "observe-jobs": {
+      "x": 4800,
+      "y": 480,
+      "w": 112,
+      "h": 56
+    },
+    "observe-jobs@clock": {
+      "x": 4800,
+      "y": 396,
+      "w": 112,
+      "h": 56
+    },
     "on-primary-moved": {
-      "x": 3624,
+      "x": 3872,
       "y": 312,
       "w": 112,
       "h": 56
@@ -778,20 +946,32 @@
       "h": 56
     },
     "open-pull-request": {
-      "x": 4136,
-      "y": 480,
+      "x": 4000,
+      "y": 816,
       "w": 112,
       "h": 56
     },
     "open-resolver-task": {
-      "x": 4256,
+      "x": 4504,
       "y": 144,
       "w": 112,
       "h": 56
     },
     "open-triage-task": {
-      "x": 2944,
+      "x": 3200,
       "y": 480,
+      "w": 112,
+      "h": 56
+    },
+    "operator-decides-branch": {
+      "x": 3072,
+      "y": 648,
+      "w": 112,
+      "h": 56
+    },
+    "operator-decides-closed-pr": {
+      "x": 4376,
+      "y": 984,
       "w": 112,
       "h": 56
     },
@@ -808,7 +988,13 @@
       "h": 56
     },
     "operator-merges": {
-      "x": 4136,
+      "x": 4000,
+      "y": 984,
+      "w": 112,
+      "h": 56
+    },
+    "operator-requeues-job": {
+      "x": 4800,
       "y": 648,
       "w": 112,
       "h": 56
@@ -862,26 +1048,38 @@
       "h": 56
     },
     "pr-on-ready": {
-      "x": 4008,
+      "x": 4256,
       "y": 648,
       "w": 112,
       "h": 56
     },
     "primary-branch-moved": {
-      "x": 3624,
+      "x": 3872,
       "y": 228,
       "w": 112,
       "h": 56
     },
-    "primary-branch-moved@git": {
-      "x": 3624,
+    "primary-branch-moved@clock": {
+      "x": 3872,
       "y": 60,
       "w": 112,
       "h": 56
     },
+    "profile-marked-healthy": {
+      "x": 4672,
+      "y": 564,
+      "w": 112,
+      "h": 56
+    },
     "profile-marked-unhealthy": {
-      "x": 5064,
+      "x": 5184,
       "y": 228,
+      "w": 112,
+      "h": 56
+    },
+    "promote-judge-on-structural-check": {
+      "x": 2392,
+      "y": 1320,
       "w": 112,
       "h": 56
     },
@@ -904,7 +1102,7 @@
       "h": 56
     },
     "promote-on-requeue": {
-      "x": 2392,
+      "x": 2520,
       "y": 1992,
       "w": 112,
       "h": 56
@@ -915,20 +1113,44 @@
       "w": 112,
       "h": 56
     },
+    "pull-request-closed": {
+      "x": 4376,
+      "y": 900,
+      "w": 112,
+      "h": 56
+    },
+    "pull-request-closed@github": {
+      "x": 4376,
+      "y": 732,
+      "w": 112,
+      "h": 56
+    },
     "pull-request-merged": {
-      "x": 4384,
-      "y": 564,
+      "x": 4248,
+      "y": 900,
       "w": 112,
       "h": 56
     },
     "pull-request-opened": {
-      "x": 4136,
-      "y": 564,
+      "x": 4000,
+      "y": 900,
       "w": 112,
       "h": 56
     },
     "pull-request-view": {
-      "x": 4264,
+      "x": 4128,
+      "y": 816,
+      "w": 112,
+      "h": 56
+    },
+    "push-failed": {
+      "x": 3744,
+      "y": 900,
+      "w": 112,
+      "h": 56
+    },
+    "push-feature-branch": {
+      "x": 4384,
       "y": 480,
       "w": 112,
       "h": 56
@@ -964,31 +1186,37 @@
       "h": 56
     },
     "ready-branch-on-done": {
-      "x": 2016,
+      "x": 2144,
       "y": 2328,
       "w": 112,
       "h": 56
     },
     "ready-on-full-gate": {
-      "x": 3752,
+      "x": 4000,
       "y": 648,
       "w": 112,
       "h": 56
     },
     "rebase-feature-branch": {
-      "x": 4384,
-      "y": 144,
+      "x": 3744,
+      "y": 480,
+      "w": 112,
+      "h": 56
+    },
+    "rebundle-on-dropped": {
+      "x": 2816,
+      "y": 648,
       "w": 112,
       "h": 56
     },
     "reconcile-worktrees": {
-      "x": 2520,
+      "x": 2648,
       "y": 1824,
       "w": 112,
       "h": 56
     },
     "reconcile-worktrees@clock": {
-      "x": 2520,
+      "x": 2648,
       "y": 1740,
       "w": 112,
       "h": 56
@@ -999,8 +1227,14 @@
       "w": 112,
       "h": 56
     },
+    "remote-tips-fetched": {
+      "x": 3744,
+      "y": 228,
+      "w": 112,
+      "h": 56
+    },
     "remove-worktree": {
-      "x": 3320,
+      "x": 3576,
       "y": 480,
       "w": 112,
       "h": 56
@@ -1014,6 +1248,12 @@
     "renew-lease@clock": {
       "x": 1888,
       "y": 396,
+      "w": 112,
+      "h": 56
+    },
+    "reopen-feature": {
+      "x": 3872,
+      "y": 816,
       "w": 112,
       "h": 56
     },
@@ -1053,62 +1293,80 @@
       "w": 112,
       "h": 56
     },
+    "requeue-job": {
+      "x": 4928,
+      "y": 480,
+      "w": 112,
+      "h": 56
+    },
+    "requeue-job@operator": {
+      "x": 4928,
+      "y": 396,
+      "w": 112,
+      "h": 56
+    },
     "requeue-task": {
-      "x": 2392,
+      "x": 2520,
       "y": 1824,
       "w": 112,
       "h": 56
     },
     "requeue-task@operator": {
-      "x": 2392,
+      "x": 2520,
       "y": 1740,
       "w": 112,
       "h": 56
     },
     "rescue-failed": {
-      "x": 1888,
+      "x": 2016,
       "y": 2244,
       "w": 112,
       "h": 56
     },
     "rescue-on-orphan": {
-      "x": 2520,
+      "x": 2648,
       "y": 1992,
       "w": 112,
       "h": 56
     },
+    "rescue-ref-dropped": {
+      "x": 5056,
+      "y": 564,
+      "w": 112,
+      "h": 56
+    },
     "rescue-worktree": {
-      "x": 2648,
-      "y": 1824,
+      "x": 1888,
+      "y": 2160,
       "w": 112,
       "h": 56
     },
     "resolve-on-rebase-conflict": {
-      "x": 3624,
+      "x": 3872,
       "y": 648,
       "w": 112,
       "h": 56
     },
     "resolve-on-stack": {
-      "x": 4128,
+      "x": 4376,
       "y": 312,
       "w": 112,
       "h": 56
     },
     "resolver-task-opened": {
-      "x": 4256,
+      "x": 4504,
       "y": 228,
       "w": 112,
       "h": 56
     },
     "restart-fleetd": {
-      "x": 4808,
+      "x": 4928,
       "y": 144,
       "w": 112,
       "h": 56
     },
     "restart-fleetd@os-service-manager": {
-      "x": 4808,
+      "x": 4928,
       "y": 60,
       "w": 112,
       "h": 56
@@ -1120,13 +1378,13 @@
       "h": 56
     },
     "restart-on-binary-change": {
-      "x": 4680,
+      "x": 4800,
       "y": 312,
       "w": 112,
       "h": 56
     },
     "restart-on-stale-heartbeat": {
-      "x": 4552,
+      "x": 4672,
       "y": 312,
       "w": 112,
       "h": 56
@@ -1152,6 +1410,12 @@
     "retry-on-attempt-failed": {
       "x": 2520,
       "y": 1656,
+      "w": 112,
+      "h": 56
+    },
+    "retry-push-on-failure": {
+      "x": 3744,
+      "y": 984,
       "w": 112,
       "h": 56
     },
@@ -1204,8 +1468,8 @@
       "h": 56
     },
     "roll-up-idea": {
-      "x": 3448,
-      "y": 480,
+      "x": 2816,
+      "y": 816,
       "w": 112,
       "h": 56
     },
@@ -1216,13 +1480,13 @@
       "h": 56
     },
     "run-conformance-tests": {
-      "x": 4936,
+      "x": 5056,
       "y": 144,
       "w": 112,
       "h": 56
     },
     "run-conformance-tests@clock": {
-      "x": 4936,
+      "x": 5056,
       "y": 60,
       "w": 112,
       "h": 56
@@ -1234,7 +1498,7 @@
       "h": 56
     },
     "run-full-gate": {
-      "x": 3752,
+      "x": 4000,
       "y": 480,
       "w": 112,
       "h": 56
@@ -1246,7 +1510,7 @@
       "h": 56
     },
     "run-trial-merges": {
-      "x": 3752,
+      "x": 4000,
       "y": 144,
       "w": 112,
       "h": 56
@@ -1258,13 +1522,13 @@
       "h": 56
     },
     "self-update": {
-      "x": 4680,
+      "x": 4800,
       "y": 144,
       "w": 112,
       "h": 56
     },
     "self-update@friend": {
-      "x": 4680,
+      "x": 4800,
       "y": 60,
       "w": 112,
       "h": 56
@@ -1300,13 +1564,13 @@
       "h": 56
     },
     "stack-feature": {
-      "x": 4128,
+      "x": 4376,
       "y": 144,
       "w": 112,
       "h": 56
     },
     "stack-on-conflict": {
-      "x": 3880,
+      "x": 4128,
       "y": 312,
       "w": 112,
       "h": 56
@@ -1348,7 +1612,7 @@
       "h": 56
     },
     "start-work": {
-      "x": 2400,
+      "x": 2528,
       "y": 2160,
       "w": 112,
       "h": 56
@@ -1372,7 +1636,7 @@
       "h": 56
     },
     "task-branch-abandoned": {
-      "x": 3192,
+      "x": 3448,
       "y": 564,
       "w": 112,
       "h": 56
@@ -1384,7 +1648,7 @@
       "h": 56
     },
     "task-branch-gate-failed": {
-      "x": 2816,
+      "x": 2944,
       "y": 564,
       "w": 112,
       "h": 56
@@ -1395,14 +1659,26 @@
       "w": 112,
       "h": 56
     },
+    "task-branch-repair-escalated": {
+      "x": 3072,
+      "y": 564,
+      "w": 112,
+      "h": 56
+    },
     "task-branch-verified": {
       "x": 2816,
       "y": 228,
       "w": 112,
       "h": 56
     },
+    "task-cancelled": {
+      "x": 2272,
+      "y": 1908,
+      "w": 112,
+      "h": 56
+    },
     "task-done": {
-      "x": 2016,
+      "x": 2144,
       "y": 2244,
       "w": 112,
       "h": 56
@@ -1432,50 +1708,62 @@
       "h": 56
     },
     "task-requeued": {
-      "x": 2392,
+      "x": 2520,
       "y": 1908,
       "w": 112,
       "h": 56
     },
     "task-verdict-written": {
-      "x": 2144,
+      "x": 2272,
       "y": 2244,
       "w": 112,
       "h": 56
     },
     "triage-on-full-gate-failed": {
-      "x": 3880,
+      "x": 4128,
       "y": 648,
       "w": 112,
       "h": 56
     },
     "triage-on-gate-failed": {
-      "x": 2816,
+      "x": 2944,
       "y": 648,
       "w": 112,
       "h": 56
     },
     "triage-task-opened": {
-      "x": 2944,
+      "x": 3200,
       "y": 564,
       "w": 112,
       "h": 56
     },
     "trial-merge-conflicted": {
-      "x": 3880,
+      "x": 4128,
       "y": 228,
       "w": 112,
       "h": 56
     },
     "trial-merge-passed": {
-      "x": 3752,
+      "x": 4000,
       "y": 228,
       "w": 112,
       "h": 56
     },
     "trial-merge-result": {
-      "x": 4008,
+      "x": 4256,
       "y": 144,
+      "w": 112,
+      "h": 56
+    },
+    "unblock-profile-on-conformance": {
+      "x": 5312,
+      "y": 312,
+      "w": 112,
+      "h": 56
+    },
+    "unstack-on-merged": {
+      "x": 4504,
+      "y": 984,
       "w": 112,
       "h": 56
     },
@@ -1522,26 +1810,26 @@
       "h": 56
     },
     "worktree-list": {
-      "x": 3072,
+      "x": 3328,
       "y": 480,
       "w": 112,
       "h": 56
     },
     "worktree-orphaned": {
-      "x": 2520,
+      "x": 2648,
       "y": 1908,
       "w": 112,
       "h": 56
     },
     "worktree-removed": {
-      "x": 3320,
+      "x": 3576,
       "y": 564,
       "w": 112,
       "h": 56
     },
     "worktree-rescued": {
-      "x": 2648,
-      "y": 1908,
+      "x": 1888,
+      "y": 2244,
       "w": 112,
       "h": 56
     },
@@ -1596,14 +1884,61 @@
   },
   "groups": {},
   "edges": {
+    "abandon-branch-on-task-cancelled->abandon-task-branch": {
+      "points": [
+        {
+          "x": 2384,
+          "y": 2020
+        },
+        {
+          "x": 3440,
+          "y": 2020
+        },
+        {
+          "x": 3440,
+          "y": 508
+        },
+        {
+          "x": 3448,
+          "y": 508
+        }
+      ],
+      "labelAt": null
+    },
+    "abandon-feature->feature-abandoned": {
+      "points": [
+        {
+          "x": 4056,
+          "y": 1208
+        },
+        {
+          "x": 4056,
+          "y": 1236
+        }
+      ],
+      "labelAt": null
+    },
+    "abandon-feature@operator->abandon-feature": {
+      "points": [
+        {
+          "x": 4056,
+          "y": 1124
+        },
+        {
+          "x": 4056,
+          "y": 1152
+        }
+      ],
+      "labelAt": null
+    },
     "abandon-task-branch->task-branch-abandoned": {
       "points": [
         {
-          "x": 3248,
+          "x": 3504,
           "y": 536
         },
         {
-          "x": 3248,
+          "x": 3504,
           "y": 564
         }
       ],
@@ -1612,11 +1947,11 @@
     "abandon-task-branch@operator->abandon-task-branch": {
       "points": [
         {
-          "x": 3248,
+          "x": 3504,
           "y": 452
         },
         {
-          "x": 3248,
+          "x": 3504,
           "y": 480
         }
       ],
@@ -1625,11 +1960,37 @@
     "adapter-conformance-failed->block-profile-on-conformance": {
       "points": [
         {
-          "x": 4992,
+          "x": 5112,
           "y": 284
         },
         {
-          "x": 4992,
+          "x": 5112,
+          "y": 312
+        }
+      ],
+      "labelAt": null
+    },
+    "adapter-conformance-failed->idea-on-adapter-drift": {
+      "points": [
+        {
+          "x": 5112,
+          "y": 284
+        },
+        {
+          "x": 5112,
+          "y": 312
+        }
+      ],
+      "labelAt": null
+    },
+    "adapter-conformance-passed->unblock-profile-on-conformance": {
+      "points": [
+        {
+          "x": 5368,
+          "y": 284
+        },
+        {
+          "x": 5368,
           "y": 312
         }
       ],
@@ -1698,11 +2059,11 @@
           "y": 466
         },
         {
-          "x": 3376,
+          "x": 3632,
           "y": 466
         },
         {
-          "x": 3376,
+          "x": 3632,
           "y": 480
         }
       ],
@@ -1716,15 +2077,15 @@
         },
         {
           "x": 3512,
-          "y": 466
+          "y": 802
         },
         {
-          "x": 3504,
-          "y": 466
+          "x": 2872,
+          "y": 802
         },
         {
-          "x": 3504,
-          "y": 480
+          "x": 2872,
+          "y": 816
         }
       ],
       "labelAt": null
@@ -1736,15 +2097,15 @@
           "y": 340
         },
         {
-          "x": 3744,
+          "x": 3992,
           "y": 340
         },
         {
-          "x": 3744,
+          "x": 3992,
           "y": 172
         },
         {
-          "x": 3752,
+          "x": 4000,
           "y": 172
         }
       ],
@@ -2091,6 +2452,19 @@
       ],
       "labelAt": null
     },
+    "attempt-failed->escalate-branch-on-repair-limit": {
+      "points": [
+        {
+          "x": 2576,
+          "y": 1628
+        },
+        {
+          "x": 2576,
+          "y": 1656
+        }
+      ],
+      "labelAt": null
+    },
     "attempt-failed->retry-on-attempt-failed": {
       "points": [
         {
@@ -2133,11 +2507,11 @@
     "bisect-bundle->task-branch-gate-failed": {
       "points": [
         {
-          "x": 2872,
+          "x": 3000,
           "y": 536
         },
         {
-          "x": 2872,
+          "x": 3000,
           "y": 564
         }
       ],
@@ -2154,11 +2528,11 @@
           "y": 466
         },
         {
-          "x": 2872,
+          "x": 3000,
           "y": 466
         },
         {
-          "x": 2872,
+          "x": 3000,
           "y": 480
         }
       ],
@@ -2167,19 +2541,19 @@
     "block-profile-on-conformance->mark-profile-unhealthy": {
       "points": [
         {
-          "x": 5048,
+          "x": 5168,
           "y": 340
         },
         {
-          "x": 5056,
+          "x": 5176,
           "y": 340
         },
         {
-          "x": 5056,
+          "x": 5176,
           "y": 172
         },
         {
-          "x": 5064,
+          "x": 5184,
           "y": 172
         }
       ],
@@ -2232,6 +2606,19 @@
       ],
       "labelAt": null
     },
+    "bundle-dropped->rebundle-on-dropped": {
+      "points": [
+        {
+          "x": 2872,
+          "y": 620
+        },
+        {
+          "x": 2872,
+          "y": 648
+        }
+      ],
+      "labelAt": null
+    },
     "bundle-on-ready->build-bundle": {
       "points": [
         {
@@ -2279,6 +2666,95 @@
       ],
       "labelAt": null
     },
+    "cancel-on-feature-abandoned->abandon-task-branch": {
+      "points": [
+        {
+          "x": 4000,
+          "y": 1348
+        },
+        {
+          "x": 3568,
+          "y": 1348
+        },
+        {
+          "x": 3568,
+          "y": 508
+        },
+        {
+          "x": 3560,
+          "y": 508
+        }
+      ],
+      "labelAt": null
+    },
+    "cancel-on-feature-abandoned->cancel-idea": {
+      "points": [
+        {
+          "x": 4000,
+          "y": 1348
+        },
+        {
+          "x": 536,
+          "y": 1348
+        },
+        {
+          "x": 536,
+          "y": 508
+        },
+        {
+          "x": 528,
+          "y": 508
+        }
+      ],
+      "labelAt": null
+    },
+    "cancel-task->task-cancelled": {
+      "points": [
+        {
+          "x": 2328,
+          "y": 1880
+        },
+        {
+          "x": 2328,
+          "y": 1908
+        }
+      ],
+      "labelAt": null
+    },
+    "cancel-task@operator->cancel-task": {
+      "points": [
+        {
+          "x": 2328,
+          "y": 1796
+        },
+        {
+          "x": 2328,
+          "y": 1824
+        }
+      ],
+      "labelAt": null
+    },
+    "cancel-tasks-on-idea-cancelled->cancel-task": {
+      "points": [
+        {
+          "x": 472,
+          "y": 704
+        },
+        {
+          "x": 472,
+          "y": 1810
+        },
+        {
+          "x": 2328,
+          "y": 1810
+        },
+        {
+          "x": 2328,
+          "y": 1824
+        }
+      ],
+      "labelAt": null
+    },
     "check-failed->end-on-check-failed": {
       "points": [
         {
@@ -2295,11 +2771,11 @@
     "check-fleetd->fleetd-hang-detected": {
       "points": [
         {
-          "x": 4608,
+          "x": 4728,
           "y": 200
         },
         {
-          "x": 4608,
+          "x": 4728,
           "y": 228
         }
       ],
@@ -2308,11 +2784,11 @@
     "check-fleetd@clock->check-fleetd": {
       "points": [
         {
-          "x": 4608,
+          "x": 4728,
           "y": 116
         },
         {
-          "x": 4608,
+          "x": 4728,
           "y": 144
         }
       ],
@@ -2321,11 +2797,11 @@
     "check-merged->feature-merged": {
       "points": [
         {
-          "x": 3680,
+          "x": 4560,
           "y": 872
         },
         {
-          "x": 3680,
+          "x": 4560,
           "y": 900
         }
       ],
@@ -2334,17 +2810,30 @@
     "check-merged@clock->check-merged": {
       "points": [
         {
-          "x": 3680,
+          "x": 4560,
           "y": 788
         },
         {
-          "x": 3680,
+          "x": 4560,
           "y": 816
         }
       ],
       "labelAt": null
     },
     "check-passed->done-on-judge-check": {
+      "points": [
+        {
+          "x": 2448,
+          "y": 1292
+        },
+        {
+          "x": 2448,
+          "y": 1320
+        }
+      ],
+      "labelAt": null
+    },
+    "check-passed->promote-judge-on-structural-check": {
       "points": [
         {
           "x": 2448,
@@ -2373,12 +2862,12 @@
     "close-idea->idea-merged": {
       "points": [
         {
-          "x": 3808,
-          "y": 872
+          "x": 3928,
+          "y": 1208
         },
         {
-          "x": 3808,
-          "y": 900
+          "x": 3928,
+          "y": 1236
         }
       ],
       "labelAt": null
@@ -2386,20 +2875,20 @@
     "close-on-feature-merged->close-idea": {
       "points": [
         {
-          "x": 3736,
-          "y": 1012
+          "x": 4560,
+          "y": 1040
         },
         {
-          "x": 3744,
-          "y": 1012
+          "x": 4560,
+          "y": 1138
         },
         {
-          "x": 3744,
-          "y": 844
+          "x": 3928,
+          "y": 1138
         },
         {
-          "x": 3752,
-          "y": 844
+          "x": 3928,
+          "y": 1152
         }
       ],
       "labelAt": null
@@ -2439,6 +2928,19 @@
       "labelAt": null
     },
     "critical-fix-opened->escalate-after-two-fixes": {
+      "points": [
+        {
+          "x": 2200,
+          "y": 1628
+        },
+        {
+          "x": 2200,
+          "y": 1656
+        }
+      ],
+      "labelAt": null
+    },
+    "critical-fix-opened->launch-fix-on-critical": {
       "points": [
         {
           "x": 2200,
@@ -2509,11 +3011,11 @@
           "y": 2146
         },
         {
-          "x": 2072,
+          "x": 2200,
           "y": 2146
         },
         {
-          "x": 2072,
+          "x": 2200,
           "y": 2160
         }
       ],
@@ -2530,12 +3032,38 @@
           "y": 2146
         },
         {
-          "x": 2072,
+          "x": 2200,
           "y": 2146
         },
         {
-          "x": 2072,
+          "x": 2200,
           "y": 2160
+        }
+      ],
+      "labelAt": null
+    },
+    "drop-rescue-ref->rescue-ref-dropped": {
+      "points": [
+        {
+          "x": 5112,
+          "y": 536
+        },
+        {
+          "x": 5112,
+          "y": 564
+        }
+      ],
+      "labelAt": null
+    },
+    "drop-rescue-ref@operator->drop-rescue-ref": {
+      "points": [
+        {
+          "x": 5112,
+          "y": 452
+        },
+        {
+          "x": 5112,
+          "y": 480
         }
       ],
       "labelAt": null
@@ -2642,6 +3170,27 @@
       ],
       "labelAt": null
     },
+    "escalate-branch-on-repair-limit->escalate-task-branch": {
+      "points": [
+        {
+          "x": 2632,
+          "y": 1684
+        },
+        {
+          "x": 3064,
+          "y": 1684
+        },
+        {
+          "x": 3064,
+          "y": 508
+        },
+        {
+          "x": 3072,
+          "y": 508
+        }
+      ],
+      "labelAt": null
+    },
     "escalate-on-plan-refused->escalate-task": {
       "points": [
         {
@@ -2666,7 +3215,7 @@
     "escalate-on-rescue-failed->escalate-task": {
       "points": [
         {
-          "x": 2000,
+          "x": 2128,
           "y": 2356
         },
         {
@@ -2723,6 +3272,19 @@
       ],
       "labelAt": null
     },
+    "escalate-task-branch->task-branch-repair-escalated": {
+      "points": [
+        {
+          "x": 3128,
+          "y": 536
+        },
+        {
+          "x": 3128,
+          "y": 564
+        }
+      ],
+      "labelAt": null
+    },
     "fallback-assigned->launch-on-fallback": {
       "points": [
         {
@@ -2753,6 +3315,27 @@
         {
           "x": 2528,
           "y": 508
+        }
+      ],
+      "labelAt": null
+    },
+    "fast-forward-feature-branch->bundle-dropped": {
+      "points": [
+        {
+          "x": 3512,
+          "y": 200
+        },
+        {
+          "x": 3512,
+          "y": 550
+        },
+        {
+          "x": 2872,
+          "y": 550
+        },
+        {
+          "x": 2872,
+          "y": 564
         }
       ],
       "labelAt": null
@@ -2796,15 +3379,28 @@
       ],
       "labelAt": null
     },
+    "feature-abandoned->cancel-on-feature-abandoned": {
+      "points": [
+        {
+          "x": 4056,
+          "y": 1292
+        },
+        {
+          "x": 4056,
+          "y": 1320
+        }
+      ],
+      "labelAt": null
+    },
     "feature-branch-rebased->gate-on-rebase": {
       "points": [
         {
-          "x": 4440,
-          "y": 284
+          "x": 3800,
+          "y": 620
         },
         {
-          "x": 4440,
-          "y": 312
+          "x": 3800,
+          "y": 648
         }
       ],
       "labelAt": null
@@ -2812,11 +3408,11 @@
     "feature-marked-ready->pr-on-ready": {
       "points": [
         {
-          "x": 4064,
+          "x": 4312,
           "y": 620
         },
         {
-          "x": 4064,
+          "x": 4312,
           "y": 648
         }
       ],
@@ -2825,11 +3421,37 @@
     "feature-merged->close-on-feature-merged": {
       "points": [
         {
-          "x": 3680,
+          "x": 4560,
           "y": 956
         },
         {
-          "x": 3680,
+          "x": 4560,
+          "y": 984
+        }
+      ],
+      "labelAt": null
+    },
+    "feature-merged->move-ideas-on-merge": {
+      "points": [
+        {
+          "x": 4560,
+          "y": 956
+        },
+        {
+          "x": 4560,
+          "y": 984
+        }
+      ],
+      "labelAt": null
+    },
+    "feature-merged->unstack-on-merged": {
+      "points": [
+        {
+          "x": 4560,
+          "y": 956
+        },
+        {
+          "x": 4560,
           "y": 984
         }
       ],
@@ -2851,11 +3473,11 @@
     "feature-rebase-conflicted->resolve-on-rebase-conflict": {
       "points": [
         {
-          "x": 3680,
+          "x": 3928,
           "y": 620
         },
         {
-          "x": 3680,
+          "x": 3928,
           "y": 648
         }
       ],
@@ -2864,12 +3486,59 @@
     "feature-stacked->resolve-on-stack": {
       "points": [
         {
-          "x": 4184,
+          "x": 4432,
           "y": 284
         },
         {
-          "x": 4184,
+          "x": 4432,
           "y": 312
+        }
+      ],
+      "labelAt": null
+    },
+    "fetch-remote->primary-branch-moved": {
+      "points": [
+        {
+          "x": 3800,
+          "y": 200
+        },
+        {
+          "x": 3800,
+          "y": 214
+        },
+        {
+          "x": 3928,
+          "y": 214
+        },
+        {
+          "x": 3928,
+          "y": 228
+        }
+      ],
+      "labelAt": null
+    },
+    "fetch-remote->remote-tips-fetched": {
+      "points": [
+        {
+          "x": 3800,
+          "y": 200
+        },
+        {
+          "x": 3800,
+          "y": 228
+        }
+      ],
+      "labelAt": null
+    },
+    "fetch-remote@clock->fetch-remote": {
+      "points": [
+        {
+          "x": 3800,
+          "y": 116
+        },
+        {
+          "x": 3800,
+          "y": 144
         }
       ],
       "labelAt": null
@@ -2877,11 +3546,11 @@
     "fleetd-hang-detected->restart-on-stale-heartbeat": {
       "points": [
         {
-          "x": 4608,
+          "x": 4728,
           "y": 284
         },
         {
-          "x": 4608,
+          "x": 4728,
           "y": 312
         }
       ],
@@ -2890,11 +3559,11 @@
     "full-gate-failed->triage-on-full-gate-failed": {
       "points": [
         {
-          "x": 3936,
+          "x": 4184,
           "y": 620
         },
         {
-          "x": 3936,
+          "x": 4184,
           "y": 648
         }
       ],
@@ -2903,19 +3572,19 @@
     "full-gate-on-landed->run-full-gate": {
       "points": [
         {
-          "x": 3560,
-          "y": 676
+          "x": 2928,
+          "y": 1012
         },
         {
-          "x": 3744,
-          "y": 676
+          "x": 3992,
+          "y": 1012
         },
         {
-          "x": 3744,
+          "x": 3992,
           "y": 508
         },
         {
-          "x": 3752,
+          "x": 4000,
           "y": 508
         }
       ],
@@ -2924,11 +3593,11 @@
     "full-gate-passed->ready-on-full-gate": {
       "points": [
         {
-          "x": 3808,
+          "x": 4056,
           "y": 620
         },
         {
-          "x": 3808,
+          "x": 4056,
           "y": 648
         }
       ],
@@ -2958,12 +3627,12 @@
     "gate-on-rebase->run-fast-gate": {
       "points": [
         {
-          "x": 4384,
-          "y": 340
+          "x": 3744,
+          "y": 676
         },
         {
           "x": 3320,
-          "y": 340
+          "y": 676
         },
         {
           "x": 3320,
@@ -2979,11 +3648,11 @@
     "horch-version-installed->restart-on-binary-change": {
       "points": [
         {
-          "x": 4736,
+          "x": 4856,
           "y": 284
         },
         {
-          "x": 4736,
+          "x": 4856,
           "y": 312
         }
       ],
@@ -3002,6 +3671,19 @@
       ],
       "labelAt": null
     },
+    "idea-cancelled->cancel-tasks-on-idea-cancelled": {
+      "points": [
+        {
+          "x": 472,
+          "y": 620
+        },
+        {
+          "x": 472,
+          "y": 648
+        }
+      ],
+      "labelAt": null
+    },
     "idea-captured->start-lead-on-capture": {
       "points": [
         {
@@ -3015,15 +3697,36 @@
       ],
       "labelAt": null
     },
+    "idea-on-adapter-drift->add-idea": {
+      "points": [
+        {
+          "x": 5056,
+          "y": 340
+        },
+        {
+          "x": 152,
+          "y": 340
+        },
+        {
+          "x": 152,
+          "y": 172
+        },
+        {
+          "x": 144,
+          "y": 172
+        }
+      ],
+      "labelAt": null
+    },
     "idea-tasks-landed->full-gate-on-landed": {
       "points": [
         {
-          "x": 3504,
-          "y": 620
+          "x": 2872,
+          "y": 956
         },
         {
-          "x": 3504,
-          "y": 648
+          "x": 2872,
+          "y": 984
         }
       ],
       "labelAt": null
@@ -3050,6 +3753,19 @@
         {
           "x": 792,
           "y": 172
+        }
+      ],
+      "labelAt": null
+    },
+    "job-abandoned->operator-requeues-job": {
+      "points": [
+        {
+          "x": 4856,
+          "y": 620
+        },
+        {
+          "x": 4856,
+          "y": 648
         }
       ],
       "labelAt": null
@@ -3135,6 +3851,27 @@
         },
         {
           "x": 2520,
+          "y": 172
+        }
+      ],
+      "labelAt": null
+    },
+    "launch-fix-on-critical->launch-attempt": {
+      "points": [
+        {
+          "x": 2256,
+          "y": 1684
+        },
+        {
+          "x": 2264,
+          "y": 1684
+        },
+        {
+          "x": 2264,
+          "y": 172
+        },
+        {
+          "x": 2272,
           "y": 172
         }
       ],
@@ -3287,11 +4024,24 @@
     "mark-feature-ready->feature-marked-ready": {
       "points": [
         {
-          "x": 4064,
+          "x": 4312,
           "y": 536
         },
         {
-          "x": 4064,
+          "x": 4312,
+          "y": 564
+        }
+      ],
+      "labelAt": null
+    },
+    "mark-profile-healthy->profile-marked-healthy": {
+      "points": [
+        {
+          "x": 4728,
+          "y": 536
+        },
+        {
+          "x": 4728,
           "y": 564
         }
       ],
@@ -3300,11 +4050,11 @@
     "mark-profile-unhealthy->profile-marked-unhealthy": {
       "points": [
         {
-          "x": 5120,
+          "x": 5240,
           "y": 200
         },
         {
-          "x": 5120,
+          "x": 5240,
           "y": 228
         }
       ],
@@ -3313,11 +4063,11 @@
     "mark-task-done->task-done": {
       "points": [
         {
-          "x": 2072,
+          "x": 2200,
           "y": 2216
         },
         {
-          "x": 2072,
+          "x": 2200,
           "y": 2244
         }
       ],
@@ -3326,19 +4076,19 @@
     "mark-task-done->task-verdict-written": {
       "points": [
         {
-          "x": 2072,
+          "x": 2200,
           "y": 2216
         },
         {
-          "x": 2072,
-          "y": 2230
-        },
-        {
           "x": 2200,
           "y": 2230
         },
         {
-          "x": 2200,
+          "x": 2328,
+          "y": 2230
+        },
+        {
+          "x": 2328,
           "y": 2244
         }
       ],
@@ -3347,12 +4097,12 @@
     "merge-pull-request->pull-request-merged": {
       "points": [
         {
-          "x": 4440,
-          "y": 536
+          "x": 4304,
+          "y": 872
         },
         {
-          "x": 4440,
-          "y": 564
+          "x": 4304,
+          "y": 900
         }
       ],
       "labelAt": null
@@ -3360,12 +4110,46 @@
     "merge-pull-request@operator->merge-pull-request": {
       "points": [
         {
-          "x": 4440,
-          "y": 452
+          "x": 4304,
+          "y": 788
         },
         {
-          "x": 4440,
-          "y": 480
+          "x": 4304,
+          "y": 816
+        }
+      ],
+      "labelAt": null
+    },
+    "move-ideas-on-merge->move-ideas-to-new-feature": {
+      "points": [
+        {
+          "x": 4560,
+          "y": 1040
+        },
+        {
+          "x": 4560,
+          "y": 1138
+        },
+        {
+          "x": 3800,
+          "y": 1138
+        },
+        {
+          "x": 3800,
+          "y": 1152
+        }
+      ],
+      "labelAt": null
+    },
+    "move-ideas-to-new-feature->ideas-moved-to-new-feature": {
+      "points": [
+        {
+          "x": 3800,
+          "y": 1208
+        },
+        {
+          "x": 3800,
+          "y": 1236
         }
       ],
       "labelAt": null
@@ -3407,12 +4191,38 @@
     "needs-you-queue->requeue-task": {
       "points": [
         {
-          "x": 2384,
+          "x": 2512,
           "y": 1852
         },
         {
-          "x": 2392,
+          "x": 2520,
           "y": 1852
+        }
+      ],
+      "labelAt": null
+    },
+    "observe-jobs->job-abandoned": {
+      "points": [
+        {
+          "x": 4856,
+          "y": 536
+        },
+        {
+          "x": 4856,
+          "y": 564
+        }
+      ],
+      "labelAt": null
+    },
+    "observe-jobs@clock->observe-jobs": {
+      "points": [
+        {
+          "x": 4856,
+          "y": 452
+        },
+        {
+          "x": 4856,
+          "y": 480
         }
       ],
       "labelAt": null
@@ -3420,20 +4230,33 @@
     "on-primary-moved->rebase-feature-branch": {
       "points": [
         {
-          "x": 3736,
-          "y": 340
+          "x": 3928,
+          "y": 368
         },
         {
-          "x": 4376,
-          "y": 340
+          "x": 3928,
+          "y": 466
         },
         {
-          "x": 4376,
-          "y": 172
+          "x": 3800,
+          "y": 466
         },
         {
-          "x": 4384,
-          "y": 172
+          "x": 3800,
+          "y": 480
+        }
+      ],
+      "labelAt": null
+    },
+    "on-primary-moved->reopen-feature": {
+      "points": [
+        {
+          "x": 3928,
+          "y": 368
+        },
+        {
+          "x": 3928,
+          "y": 816
         }
       ],
       "labelAt": null
@@ -3441,19 +4264,19 @@
     "on-primary-moved->run-trial-merges": {
       "points": [
         {
-          "x": 3736,
+          "x": 3984,
           "y": 340
         },
         {
-          "x": 3744,
+          "x": 3992,
           "y": 340
         },
         {
-          "x": 3744,
+          "x": 3992,
           "y": 172
         },
         {
-          "x": 3752,
+          "x": 4000,
           "y": 172
         }
       ],
@@ -3530,12 +4353,12 @@
     "open-pull-request->pull-request-opened": {
       "points": [
         {
-          "x": 4192,
-          "y": 536
+          "x": 4056,
+          "y": 872
         },
         {
-          "x": 4192,
-          "y": 564
+          "x": 4056,
+          "y": 900
         }
       ],
       "labelAt": null
@@ -3543,11 +4366,11 @@
     "open-resolver-task->resolver-task-opened": {
       "points": [
         {
-          "x": 4312,
+          "x": 4560,
           "y": 200
         },
         {
-          "x": 4312,
+          "x": 4560,
           "y": 228
         }
       ],
@@ -3556,12 +4379,75 @@
     "open-triage-task->triage-task-opened": {
       "points": [
         {
-          "x": 3000,
+          "x": 3256,
           "y": 536
         },
         {
-          "x": 3000,
+          "x": 3256,
           "y": 564
+        }
+      ],
+      "labelAt": null
+    },
+    "operator-decides-branch->abandon-task-branch": {
+      "points": [
+        {
+          "x": 3184,
+          "y": 676
+        },
+        {
+          "x": 3440,
+          "y": 676
+        },
+        {
+          "x": 3440,
+          "y": 508
+        },
+        {
+          "x": 3448,
+          "y": 508
+        }
+      ],
+      "labelAt": null
+    },
+    "operator-decides-branch->requeue-task": {
+      "points": [
+        {
+          "x": 3128,
+          "y": 704
+        },
+        {
+          "x": 3128,
+          "y": 1810
+        },
+        {
+          "x": 2576,
+          "y": 1810
+        },
+        {
+          "x": 2576,
+          "y": 1824
+        }
+      ],
+      "labelAt": null
+    },
+    "operator-decides-closed-pr->abandon-feature": {
+      "points": [
+        {
+          "x": 4432,
+          "y": 1040
+        },
+        {
+          "x": 4432,
+          "y": 1138
+        },
+        {
+          "x": 4056,
+          "y": 1138
+        },
+        {
+          "x": 4056,
+          "y": 1152
         }
       ],
       "labelAt": null
@@ -3573,15 +4459,15 @@
           "y": 2020
         },
         {
-          "x": 3184,
+          "x": 3440,
           "y": 2020
         },
         {
-          "x": 3184,
+          "x": 3440,
           "y": 508
         },
         {
-          "x": 3192,
+          "x": 3448,
           "y": 508
         }
       ],
@@ -3594,15 +4480,15 @@
           "y": 2020
         },
         {
-          "x": 2384,
+          "x": 2512,
           "y": 2020
         },
         {
-          "x": 2384,
+          "x": 2512,
           "y": 1852
         },
         {
-          "x": 2392,
+          "x": 2520,
           "y": 1852
         }
       ],
@@ -3653,19 +4539,40 @@
     "operator-merges->merge-pull-request": {
       "points": [
         {
+          "x": 4112,
+          "y": 1012
+        },
+        {
+          "x": 4240,
+          "y": 1012
+        },
+        {
+          "x": 4240,
+          "y": 844
+        },
+        {
           "x": 4248,
+          "y": 844
+        }
+      ],
+      "labelAt": null
+    },
+    "operator-requeues-job->requeue-job": {
+      "points": [
+        {
+          "x": 4912,
           "y": 676
         },
         {
-          "x": 4376,
+          "x": 4920,
           "y": 676
         },
         {
-          "x": 4376,
+          "x": 4920,
           "y": 508
         },
         {
-          "x": 4384,
+          "x": 4928,
           "y": 508
         }
       ],
@@ -3773,19 +4680,40 @@
     "pr-on-ready->open-pull-request": {
       "points": [
         {
-          "x": 4120,
+          "x": 4312,
+          "y": 704
+        },
+        {
+          "x": 4312,
+          "y": 802
+        },
+        {
+          "x": 4056,
+          "y": 802
+        },
+        {
+          "x": 4056,
+          "y": 816
+        }
+      ],
+      "labelAt": null
+    },
+    "pr-on-ready->push-feature-branch": {
+      "points": [
+        {
+          "x": 4368,
           "y": 676
         },
         {
-          "x": 4128,
+          "x": 4376,
           "y": 676
         },
         {
-          "x": 4128,
+          "x": 4376,
           "y": 508
         },
         {
-          "x": 4136,
+          "x": 4384,
           "y": 508
         }
       ],
@@ -3794,25 +4722,46 @@
     "primary-branch-moved->on-primary-moved": {
       "points": [
         {
-          "x": 3680,
+          "x": 3928,
           "y": 284
         },
         {
-          "x": 3680,
+          "x": 3928,
           "y": 312
         }
       ],
       "labelAt": null
     },
-    "primary-branch-moved@git->primary-branch-moved": {
+    "primary-branch-moved@clock->primary-branch-moved": {
       "points": [
         {
-          "x": 3680,
+          "x": 3928,
           "y": 116
         },
         {
-          "x": 3680,
+          "x": 3928,
           "y": 228
+        }
+      ],
+      "labelAt": null
+    },
+    "promote-judge-on-structural-check->promote-task": {
+      "points": [
+        {
+          "x": 2392,
+          "y": 1348
+        },
+        {
+          "x": 2008,
+          "y": 1348
+        },
+        {
+          "x": 2008,
+          "y": 172
+        },
+        {
+          "x": 2000,
+          "y": 172
         }
       ],
       "labelAt": null
@@ -3883,7 +4832,7 @@
     "promote-on-requeue->promote-task": {
       "points": [
         {
-          "x": 2392,
+          "x": 2520,
           "y": 2020
         },
         {
@@ -3914,15 +4863,41 @@
       ],
       "labelAt": null
     },
+    "pull-request-closed->operator-decides-closed-pr": {
+      "points": [
+        {
+          "x": 4432,
+          "y": 956
+        },
+        {
+          "x": 4432,
+          "y": 984
+        }
+      ],
+      "labelAt": null
+    },
+    "pull-request-closed@github->pull-request-closed": {
+      "points": [
+        {
+          "x": 4432,
+          "y": 788
+        },
+        {
+          "x": 4432,
+          "y": 900
+        }
+      ],
+      "labelAt": null
+    },
     "pull-request-opened->operator-merges": {
       "points": [
         {
-          "x": 4192,
-          "y": 620
+          "x": 4056,
+          "y": 956
         },
         {
-          "x": 4192,
-          "y": 648
+          "x": 4056,
+          "y": 984
         }
       ],
       "labelAt": null
@@ -3930,12 +4905,59 @@
     "pull-request-view->merge-pull-request": {
       "points": [
         {
-          "x": 4376,
-          "y": 508
+          "x": 4240,
+          "y": 844
         },
         {
-          "x": 4384,
-          "y": 508
+          "x": 4248,
+          "y": 844
+        }
+      ],
+      "labelAt": null
+    },
+    "push-failed->retry-push-on-failure": {
+      "points": [
+        {
+          "x": 3800,
+          "y": 956
+        },
+        {
+          "x": 3800,
+          "y": 984
+        }
+      ],
+      "labelAt": null
+    },
+    "push-feature-branch->feature-branch-pushed": {
+      "points": [
+        {
+          "x": 4440,
+          "y": 536
+        },
+        {
+          "x": 4440,
+          "y": 564
+        }
+      ],
+      "labelAt": null
+    },
+    "push-feature-branch->push-failed": {
+      "points": [
+        {
+          "x": 4440,
+          "y": 536
+        },
+        {
+          "x": 4440,
+          "y": 886
+        },
+        {
+          "x": 3800,
+          "y": 886
+        },
+        {
+          "x": 3800,
+          "y": 900
         }
       ],
       "labelAt": null
@@ -3982,7 +5004,7 @@
     "ready-branch-on-done->mark-branch-ready": {
       "points": [
         {
-          "x": 2128,
+          "x": 2256,
           "y": 2356
         },
         {
@@ -4003,7 +5025,7 @@
     "ready-branch-on-done->promote-task": {
       "points": [
         {
-          "x": 2016,
+          "x": 2144,
           "y": 2356
         },
         {
@@ -4024,19 +5046,19 @@
     "ready-on-full-gate->mark-feature-ready": {
       "points": [
         {
-          "x": 3864,
+          "x": 4112,
           "y": 676
         },
         {
-          "x": 4000,
+          "x": 4248,
           "y": 676
         },
         {
-          "x": 4000,
+          "x": 4248,
           "y": 508
         },
         {
-          "x": 4008,
+          "x": 4256,
           "y": 508
         }
       ],
@@ -4045,12 +5067,12 @@
     "rebase-feature-branch->feature-branch-rebased": {
       "points": [
         {
-          "x": 4440,
-          "y": 200
+          "x": 3800,
+          "y": 536
         },
         {
-          "x": 4440,
-          "y": 228
+          "x": 3800,
+          "y": 564
         }
       ],
       "labelAt": null
@@ -4058,20 +5080,41 @@
     "rebase-feature-branch->feature-rebase-conflicted": {
       "points": [
         {
-          "x": 4440,
-          "y": 200
+          "x": 3800,
+          "y": 536
         },
         {
-          "x": 4440,
+          "x": 3800,
           "y": 550
         },
         {
-          "x": 3680,
+          "x": 3928,
           "y": 550
         },
         {
-          "x": 3680,
+          "x": 3928,
           "y": 564
+        }
+      ],
+      "labelAt": null
+    },
+    "rebundle-on-dropped->build-bundle": {
+      "points": [
+        {
+          "x": 2928,
+          "y": 676
+        },
+        {
+          "x": 2936,
+          "y": 676
+        },
+        {
+          "x": 2936,
+          "y": 172
+        },
+        {
+          "x": 2944,
+          "y": 172
         }
       ],
       "labelAt": null
@@ -4079,11 +5122,11 @@
     "reconcile-worktrees->worktree-orphaned": {
       "points": [
         {
-          "x": 2576,
+          "x": 2704,
           "y": 1880
         },
         {
-          "x": 2576,
+          "x": 2704,
           "y": 1908
         }
       ],
@@ -4092,11 +5135,11 @@
     "reconcile-worktrees@clock->reconcile-worktrees": {
       "points": [
         {
-          "x": 2576,
+          "x": 2704,
           "y": 1796
         },
         {
-          "x": 2576,
+          "x": 2704,
           "y": 1824
         }
       ],
@@ -4126,11 +5169,11 @@
     "remove-worktree->worktree-removed": {
       "points": [
         {
-          "x": 3376,
+          "x": 3632,
           "y": 536
         },
         {
-          "x": 3376,
+          "x": 3632,
           "y": 564
         }
       ],
@@ -4179,6 +5222,19 @@
         {
           "x": 1944,
           "y": 480
+        }
+      ],
+      "labelAt": null
+    },
+    "reopen-feature->feature-reopened": {
+      "points": [
+        {
+          "x": 3928,
+          "y": 872
+        },
+        {
+          "x": 3928,
+          "y": 900
         }
       ],
       "labelAt": null
@@ -4277,14 +5333,40 @@
       ],
       "labelAt": null
     },
+    "requeue-job->job-requeued": {
+      "points": [
+        {
+          "x": 4984,
+          "y": 536
+        },
+        {
+          "x": 4984,
+          "y": 564
+        }
+      ],
+      "labelAt": null
+    },
+    "requeue-job@operator->requeue-job": {
+      "points": [
+        {
+          "x": 4984,
+          "y": 452
+        },
+        {
+          "x": 4984,
+          "y": 480
+        }
+      ],
+      "labelAt": null
+    },
     "requeue-task->task-requeued": {
       "points": [
         {
-          "x": 2448,
+          "x": 2576,
           "y": 1880
         },
         {
-          "x": 2448,
+          "x": 2576,
           "y": 1908
         }
       ],
@@ -4293,11 +5375,11 @@
     "requeue-task@operator->requeue-task": {
       "points": [
         {
-          "x": 2448,
+          "x": 2576,
           "y": 1796
         },
         {
-          "x": 2448,
+          "x": 2576,
           "y": 1824
         }
       ],
@@ -4306,11 +5388,11 @@
     "rescue-failed->escalate-on-rescue-failed": {
       "points": [
         {
-          "x": 1944,
+          "x": 2072,
           "y": 2300
         },
         {
-          "x": 1944,
+          "x": 2072,
           "y": 2328
         }
       ],
@@ -4319,20 +5401,20 @@
     "rescue-on-orphan->rescue-worktree": {
       "points": [
         {
-          "x": 2632,
-          "y": 2020
+          "x": 2704,
+          "y": 2048
         },
         {
-          "x": 2640,
-          "y": 2020
+          "x": 2704,
+          "y": 2146
         },
         {
-          "x": 2640,
-          "y": 1852
+          "x": 1944,
+          "y": 2146
         },
         {
-          "x": 2648,
-          "y": 1852
+          "x": 1944,
+          "y": 2160
         }
       ],
       "labelAt": null
@@ -4340,19 +5422,19 @@
     "rescue-worktree->rescue-failed": {
       "points": [
         {
-          "x": 2704,
-          "y": 1880
-        },
-        {
-          "x": 2704,
-          "y": 2230
+          "x": 1944,
+          "y": 2216
         },
         {
           "x": 1944,
           "y": 2230
         },
         {
-          "x": 1944,
+          "x": 2072,
+          "y": 2230
+        },
+        {
+          "x": 2072,
           "y": 2244
         }
       ],
@@ -4361,12 +5443,12 @@
     "rescue-worktree->worktree-rescued": {
       "points": [
         {
-          "x": 2704,
-          "y": 1880
+          "x": 1944,
+          "y": 2216
         },
         {
-          "x": 2704,
-          "y": 1908
+          "x": 1944,
+          "y": 2244
         }
       ],
       "labelAt": null
@@ -4374,19 +5456,19 @@
     "resolve-on-rebase-conflict->open-resolver-task": {
       "points": [
         {
-          "x": 3736,
+          "x": 3984,
           "y": 676
         },
         {
-          "x": 4248,
+          "x": 4496,
           "y": 676
         },
         {
-          "x": 4248,
+          "x": 4496,
           "y": 172
         },
         {
-          "x": 4256,
+          "x": 4504,
           "y": 172
         }
       ],
@@ -4395,19 +5477,19 @@
     "resolve-on-stack->open-resolver-task": {
       "points": [
         {
-          "x": 4240,
+          "x": 4488,
           "y": 340
         },
         {
-          "x": 4248,
+          "x": 4496,
           "y": 340
         },
         {
-          "x": 4248,
+          "x": 4496,
           "y": 172
         },
         {
-          "x": 4256,
+          "x": 4504,
           "y": 172
         }
       ],
@@ -4416,11 +5498,11 @@
     "restart-fleetd->fleetd-restarted": {
       "points": [
         {
-          "x": 4864,
+          "x": 4984,
           "y": 200
         },
         {
-          "x": 4864,
+          "x": 4984,
           "y": 228
         }
       ],
@@ -4429,11 +5511,11 @@
     "restart-fleetd@os-service-manager->restart-fleetd": {
       "points": [
         {
-          "x": 4864,
+          "x": 4984,
           "y": 116
         },
         {
-          "x": 4864,
+          "x": 4984,
           "y": 144
         }
       ],
@@ -4463,19 +5545,19 @@
     "restart-on-binary-change->restart-fleetd": {
       "points": [
         {
-          "x": 4792,
+          "x": 4912,
           "y": 340
         },
         {
-          "x": 4800,
+          "x": 4920,
           "y": 340
         },
         {
-          "x": 4800,
+          "x": 4920,
           "y": 172
         },
         {
-          "x": 4808,
+          "x": 4928,
           "y": 172
         }
       ],
@@ -4484,19 +5566,19 @@
     "restart-on-stale-heartbeat->restart-fleetd": {
       "points": [
         {
-          "x": 4664,
+          "x": 4784,
           "y": 340
         },
         {
-          "x": 4800,
+          "x": 4920,
           "y": 340
         },
         {
-          "x": 4800,
+          "x": 4920,
           "y": 172
         },
         {
-          "x": 4808,
+          "x": 4928,
           "y": 172
         }
       ],
@@ -4561,6 +5643,27 @@
         {
           "x": 2648,
           "y": 1516
+        }
+      ],
+      "labelAt": null
+    },
+    "retry-push-on-failure->push-feature-branch": {
+      "points": [
+        {
+          "x": 3856,
+          "y": 1012
+        },
+        {
+          "x": 4376,
+          "y": 1012
+        },
+        {
+          "x": 4376,
+          "y": 508
+        },
+        {
+          "x": 4384,
+          "y": 508
         }
       ],
       "labelAt": null
@@ -4680,12 +5783,12 @@
     "roll-up-idea->idea-tasks-landed": {
       "points": [
         {
-          "x": 3504,
-          "y": 536
+          "x": 2872,
+          "y": 872
         },
         {
-          "x": 3504,
-          "y": 564
+          "x": 2872,
+          "y": 900
         }
       ],
       "labelAt": null
@@ -4727,11 +5830,32 @@
     "run-conformance-tests->adapter-conformance-failed": {
       "points": [
         {
-          "x": 4992,
+          "x": 5112,
           "y": 200
         },
         {
-          "x": 4992,
+          "x": 5112,
+          "y": 228
+        }
+      ],
+      "labelAt": null
+    },
+    "run-conformance-tests->adapter-conformance-passed": {
+      "points": [
+        {
+          "x": 5112,
+          "y": 200
+        },
+        {
+          "x": 5112,
+          "y": 214
+        },
+        {
+          "x": 5368,
+          "y": 214
+        },
+        {
+          "x": 5368,
           "y": 228
         }
       ],
@@ -4740,11 +5864,11 @@
     "run-conformance-tests@clock->run-conformance-tests": {
       "points": [
         {
-          "x": 4992,
+          "x": 5112,
           "y": 116
         },
         {
-          "x": 4992,
+          "x": 5112,
           "y": 144
         }
       ],
@@ -4787,19 +5911,19 @@
     "run-full-gate->full-gate-failed": {
       "points": [
         {
-          "x": 3808,
+          "x": 4056,
           "y": 536
         },
         {
-          "x": 3808,
+          "x": 4056,
           "y": 550
         },
         {
-          "x": 3936,
+          "x": 4184,
           "y": 550
         },
         {
-          "x": 3936,
+          "x": 4184,
           "y": 564
         }
       ],
@@ -4808,11 +5932,11 @@
     "run-full-gate->full-gate-passed": {
       "points": [
         {
-          "x": 3808,
+          "x": 4056,
           "y": 536
         },
         {
-          "x": 3808,
+          "x": 4056,
           "y": 564
         }
       ],
@@ -4855,19 +5979,19 @@
     "run-trial-merges->trial-merge-conflicted": {
       "points": [
         {
-          "x": 3808,
+          "x": 4056,
           "y": 200
         },
         {
-          "x": 3808,
+          "x": 4056,
           "y": 214
         },
         {
-          "x": 3936,
+          "x": 4184,
           "y": 214
         },
         {
-          "x": 3936,
+          "x": 4184,
           "y": 228
         }
       ],
@@ -4876,11 +6000,11 @@
     "run-trial-merges->trial-merge-passed": {
       "points": [
         {
-          "x": 3808,
+          "x": 4056,
           "y": 200
         },
         {
-          "x": 3808,
+          "x": 4056,
           "y": 228
         }
       ],
@@ -4923,11 +6047,11 @@
     "self-update->horch-version-installed": {
       "points": [
         {
-          "x": 4736,
+          "x": 4856,
           "y": 200
         },
         {
-          "x": 4736,
+          "x": 4856,
           "y": 228
         }
       ],
@@ -4936,11 +6060,11 @@
     "self-update@friend->self-update": {
       "points": [
         {
-          "x": 4736,
+          "x": 4856,
           "y": 116
         },
         {
-          "x": 4736,
+          "x": 4856,
           "y": 144
         }
       ],
@@ -4980,6 +6104,14 @@
         },
         {
           "x": 2072,
+          "y": 2146
+        },
+        {
+          "x": 2200,
+          "y": 2146
+        },
+        {
+          "x": 2200,
           "y": 2160
         }
       ],
@@ -5030,11 +6162,11 @@
     "stack-feature->feature-stacked": {
       "points": [
         {
-          "x": 4184,
+          "x": 4432,
           "y": 200
         },
         {
-          "x": 4184,
+          "x": 4432,
           "y": 228
         }
       ],
@@ -5043,19 +6175,19 @@
     "stack-on-conflict->stack-feature": {
       "points": [
         {
-          "x": 3992,
+          "x": 4240,
           "y": 340
         },
         {
-          "x": 4120,
+          "x": 4368,
           "y": 340
         },
         {
-          "x": 4120,
+          "x": 4368,
           "y": 172
         },
         {
-          "x": 4128,
+          "x": 4376,
           "y": 172
         }
       ],
@@ -5150,6 +6282,27 @@
       ],
       "labelAt": null
     },
+    "start-process-on-launch->assign-task": {
+      "points": [
+        {
+          "x": 2328,
+          "y": 368
+        },
+        {
+          "x": 2328,
+          "y": 2146
+        },
+        {
+          "x": 2456,
+          "y": 2146
+        },
+        {
+          "x": 2456,
+          "y": 2160
+        }
+      ],
+      "labelAt": null
+    },
     "start-process-on-launch->start-agent-process": {
       "points": [
         {
@@ -5167,6 +6320,27 @@
         {
           "x": 2520,
           "y": 172
+        }
+      ],
+      "labelAt": null
+    },
+    "start-process-on-launch->start-work": {
+      "points": [
+        {
+          "x": 2328,
+          "y": 368
+        },
+        {
+          "x": 2328,
+          "y": 2146
+        },
+        {
+          "x": 2584,
+          "y": 2146
+        },
+        {
+          "x": 2584,
+          "y": 2160
         }
       ],
       "labelAt": null
@@ -5226,11 +6400,11 @@
     "task-branch-gate-failed->triage-on-gate-failed": {
       "points": [
         {
-          "x": 2872,
+          "x": 3000,
           "y": 620
         },
         {
-          "x": 2872,
+          "x": 3000,
           "y": 648
         }
       ],
@@ -5249,6 +6423,19 @@
       ],
       "labelAt": null
     },
+    "task-branch-repair-escalated->operator-decides-branch": {
+      "points": [
+        {
+          "x": 3128,
+          "y": 620
+        },
+        {
+          "x": 3128,
+          "y": 648
+        }
+      ],
+      "labelAt": null
+    },
     "task-branch-verified->bundle-on-ready": {
       "points": [
         {
@@ -5262,14 +6449,27 @@
       ],
       "labelAt": null
     },
+    "task-cancelled->abandon-branch-on-task-cancelled": {
+      "points": [
+        {
+          "x": 2328,
+          "y": 1964
+        },
+        {
+          "x": 2328,
+          "y": 1992
+        }
+      ],
+      "labelAt": null
+    },
     "task-done->ready-branch-on-done": {
       "points": [
         {
-          "x": 2072,
+          "x": 2200,
           "y": 2300
         },
         {
-          "x": 2072,
+          "x": 2200,
           "y": 2328
         }
       ],
@@ -5330,11 +6530,11 @@
     "task-requeued->promote-on-requeue": {
       "points": [
         {
-          "x": 2448,
+          "x": 2576,
           "y": 1964
         },
         {
-          "x": 2448,
+          "x": 2576,
           "y": 1992
         }
       ],
@@ -5343,41 +6543,41 @@
     "triage-on-full-gate-failed->open-triage-task": {
       "points": [
         {
-          "x": 3880,
+          "x": 4128,
           "y": 676
         },
         {
-          "x": 3064,
+          "x": 3320,
           "y": 676
         },
         {
-          "x": 3064,
+          "x": 3320,
           "y": 508
         },
         {
-          "x": 3056,
+          "x": 3312,
           "y": 508
         }
       ],
       "labelAt": null
     },
-    "triage-on-gate-failed->open-triage-task": {
+    "triage-on-gate-failed->launch-attempt": {
       "points": [
         {
-          "x": 2928,
-          "y": 676
-        },
-        {
-          "x": 2936,
-          "y": 676
-        },
-        {
-          "x": 2936,
-          "y": 508
-        },
-        {
           "x": 2944,
-          "y": 508
+          "y": 676
+        },
+        {
+          "x": 2392,
+          "y": 676
+        },
+        {
+          "x": 2392,
+          "y": 172
+        },
+        {
+          "x": 2384,
+          "y": 172
         }
       ],
       "labelAt": null
@@ -5385,11 +6585,11 @@
     "trial-merge-conflicted->stack-on-conflict": {
       "points": [
         {
-          "x": 3936,
+          "x": 4184,
           "y": 284
         },
         {
-          "x": 3936,
+          "x": 4184,
           "y": 312
         }
       ],
@@ -5398,12 +6598,54 @@
     "trial-merge-result->stack-feature": {
       "points": [
         {
-          "x": 4120,
+          "x": 4368,
           "y": 172
         },
         {
-          "x": 4128,
+          "x": 4376,
           "y": 172
+        }
+      ],
+      "labelAt": null
+    },
+    "unblock-profile-on-conformance->mark-profile-healthy": {
+      "points": [
+        {
+          "x": 5368,
+          "y": 368
+        },
+        {
+          "x": 5368,
+          "y": 466
+        },
+        {
+          "x": 4728,
+          "y": 466
+        },
+        {
+          "x": 4728,
+          "y": 480
+        }
+      ],
+      "labelAt": null
+    },
+    "unstack-on-merged->rebase-feature-branch": {
+      "points": [
+        {
+          "x": 4504,
+          "y": 1012
+        },
+        {
+          "x": 3864,
+          "y": 1012
+        },
+        {
+          "x": 3864,
+          "y": 508
+        },
+        {
+          "x": 3856,
+          "y": 508
         }
       ],
       "labelAt": null
@@ -5560,11 +6802,11 @@
     "worktree-list->abandon-task-branch": {
       "points": [
         {
-          "x": 3184,
+          "x": 3440,
           "y": 508
         },
         {
-          "x": 3192,
+          "x": 3448,
           "y": 508
         }
       ],
@@ -5573,11 +6815,11 @@
     "worktree-orphaned->rescue-on-orphan": {
       "points": [
         {
-          "x": 2576,
+          "x": 2704,
           "y": 1964
         },
         {
-          "x": 2576,
+          "x": 2704,
           "y": 1992
         }
       ],
