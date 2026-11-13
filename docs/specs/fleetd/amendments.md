@@ -684,3 +684,29 @@ Places: Architecture and roles (fleetd, the command channel, the roles table); L
 | T43-1 | CRITICAL | A33 |
 | T43-2 | HIGH | A35 |
 | T43-3 | HIGH | A33 |
+
+# Systems review round, closing fix
+
+5 fresh reviewers read the design at commit `5327458b`, after amendments A32 to A36. The reports are the 5 files `docs/specs/fleetd/system-review-*-3.md`. Each verdict is PASS. No CRITICAL finding is open, and there is no new one. 3 HIGH findings are open: S42-2, and T42-1 with T43-2, which are the same fault. Amendment A37 closes them.
+
+## A37. A worker never runs without its sandbox, and 2 sentences agree (T42-1, T43-2, S42-2)
+
+The fault of T42-1 and T43-2: A35 accepted a profile with no sandbox on an OS where the sandbox of a CLI is not supported. Such a worker can read the operator token and write a request file that fleetd accepts. This also contradicts preservation row 06 S9, which the design keeps: a sandboxed persona does not start on a host that cannot sandbox it. The orchestrator made that call in A35, and it was wrong. The behavior of today wins.
+
+New content:
+
+- Each worker profile and each sub-orchestrator profile has a sandbox. A worker never runs without it. Row 06 S9 stays as it is.
+- When the platform module returns "not supported" for the sandbox of a CLI on an OS, profile validation refuses the profile on that OS, with the reason. Plan validation refuses a plan that names the profile, and the fallback rule of the roster applies when the fallback has a sandbox on that OS. `horch status` shows the profile as "not available on this OS: no sandbox".
+- Remove the paragraph "The limit, in plain words" and each sentence that accepts or marks a profile as "no sandbox". Remove the same words from SR-8 and from the conformance check when they are there.
+- Say the consequence 1 time, in the table "What each OS provides": on Windows the sandbox of Claude Code is not supported today, so no Claude Code worker runs on Windows until its adapter has a sandbox there. fleetd, the ledger and each CLI that has a sandbox on Windows run. Add 1 row to Open questions: "Do you want workers with no sandbox on an OS that cannot sandbox a CLI? Default: no (06 S9). A yes gives such a worker the rights of the user, and it could send an operator command."
+- With this rule, the 3 denials of the sandbox (the token file, the command channel, the request folder) hold for each worker. The second check on the live channel stays as a second layer.
+
+The fault of S42-2: the row FM-24 of the failure modes still says "Single writer; everything else opens read-only" with no phase.
+
+New content:
+
+- In the row FM-24, say: from Phase 5 there is a single writer, and each other process opens the ledger read-only. In Phases 1 to 4 each writer calls `transition()`, and SQLite gives 1 writer at a time. Search the design 1 more time for a sentence that states the single writer with no phase, and correct it in the same way.
+
+1 small agreement (a note of the third review of the state machines, T40-1): rule 2 of the Ledger section says that a lease expiry moves "the task" to `stalled`. For a resolver attempt or a fix attempt of a task that is `done`, say: the lease expiry ends that attempt and adds 1 to `repair_attempts` of the branch, and the task does not move.
+
+Places: Requirements (SR-8); Architecture and roles (the command channel paragraphs, "What each OS provides"); Ledger (rule 2); Worker profiles and adapters (the paragraph "The sandbox of a profile denies the operator path"); Docs sync and adapter conformance (the check "Operator boundary"); Failure modes (FM-24); Open questions; the Amendments table (1 row "Systems review round, closing fix: A37").
