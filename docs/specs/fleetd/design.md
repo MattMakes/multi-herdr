@@ -178,7 +178,7 @@ Each requirement has an ID that the failure analysis and the tests point back to
 | PL-1 | fleetd shall run on macOS, Linux and Windows as first-class hosts. | CI runs the test suite on all 3 OSes. |
 | PL-2 | Production code of the workspace shall have no `cfg(target_os)`, `cfg(unix)`, `cfg(windows)` or `cfg(target_family)`, and no `cfg!` of these, outside the platform layer. It shall call 1 platform interface, and each OS shall have 1 module that implements it. From Phase P, the interface covers the concerns of the existing code: process identity and liveness (alive, start time, parent, children); signals and stop; process groups (stop and kill of a group); file locks; file permissions; paths and home directories; symlinks and links; shell and quoting; local sockets and pipes; detach of a child process; the machine probe (free disk, memory, load); the sandbox host; and the small rest (for example archive format, file identity, user PATH). Phase 1 adds the fleetd concerns: service install and restart, hang detection, sleep and wake, file watching, the fleetd lock, and the transport of the fleetd command channel with its peer-user check. Test code is not in scope. | From Phase P, an `arch_scan` rule finds no OS `cfg` in production code outside the platform layer. The rule names each site that cannot call the layer (a build script) by path, with its reason. |
 | PL-3 | Where an OS has no equivalent, its module shall return an explicit "not supported" value, and core code shall decide what to do with it. Nothing shall fail silently. | Unit test per module for each concern it does not support. |
-| PL-4 | Lease time shall count only while the machine is awake. A sleep shall not expire a lease. | Phase 0 test: a machine sleep in the middle of an attempt does not expire its lease. |
+| PL-4 | Each operational timer shall be a deadline on the fleet clock, which does not run while the machine sleeps or while fleetd is down: the lease, each rung of the stall ladder, the start timeout, each retry backoff, the wait limits (`max_wait_s` and the 30 min stop of an idle sub-orchestrator), the question limit, the `due_at` of each row, and the time limit of a job. 2 timers shall use awake time from the platform layer: the hang check of fleetd, and `max_minutes` of the fleet-run wrapper. These shall use calendar time: the 7 day park, the reminders, the retention periods, the daily docs sync and the usage windows of a provider. A sleep shall not expire a lease or fire a deadline. | Phase 0 test: a machine sleep in the middle of an attempt does not expire its lease. Phase 0 test: a sleep past the deadline of a branch, a question, a stall rung and a retry backoff fires none of them on wake; each fires after the rest of its fleet time. |
 | PL-5 | A hung fleetd shall be restarted on all 3 OSes. On each pass, fleetd shall write a heartbeat: the time of its last full pass. On Linux the systemd watchdog restarts it. On macOS a launchd timer job, and on Windows a scheduled task, shall run `horch fleetd check` every 30 s. `horch fleetd check` shall restart the service when the heartbeat is older than 30 s of awake time. Each `horch` CLI command shall make the same check before it sends its request. The heartbeat shall not depend on a job: a pass never waits for a gate, a check, a trial merge, a rebase or a git network call, and a pass ends before the hang limit by its work budget. | Phase 0 test on each OS: a hung fleetd is restarted. Phase 0 test: a fast gate and a full gate of 5 min each run while fleetd stays healthy and is not restarted. |
 | PL-6 | The move of the existing OS-specific code into the platform layer in Phase P shall change no behavior. A gap of 1 OS that exists today stays a gap, and its OS module states it as an explicit "not supported" value. | On each of macOS, Linux and Windows, each test has the same result before the move and after it. A test that passes before the move passes after it. A test on the list of expected failures still fails. The `arch_scan` rule of PL-2 passes. |
 
@@ -262,7 +262,7 @@ Sub-orchestrators and workers never touch the ledger, each other or git worktree
 | **fleetd** | One long-running `horch fleetd` process under the service manager of the OS (launchd, systemd or a Windows service), installed and restarted through the platform layer. On Linux: a systemd user unit with `Restart=always` and `WatchdogSec=30`. On macOS a launchd timer job, and on Windows a scheduled task, runs `horch fleetd check` every 30 s. The control plane. Exactly 1 fleetd runs for 1 ledger: it holds an exclusive file lock through the platform layer for its whole life (see One fleetd for each ledger). | The ledger (sole writer), the idea dispatcher, plan validation and commit, task dispatch, leases, worktree leases and rescue, the reconcile loop, the jobs (each piece of work that can take more than 1 s: a task check, a gate, a trial merge, a rebase, a rescue, a `git fetch`, a `git push`), acceptance checks, escalation, the herdr adapter. | Calling an LLM. It is plain code, so its behaviour is testable and repeatable. |
 | **Idea dispatcher** | Code inside fleetd: the idea state machine. | Moving each idea to its next state when the required files validate, keeping one sub-orchestrator pane per feature, recording your approvals. | Judging an idea's content. It only checks that files exist, validate and carry your approval. |
 | **Sub-orchestrator** | Claude Code, Opus 5.5, interactive in herdr pane `idea-NNNN`, one per feature, a fresh process for each phase of one idea, planning 1 idea at a time. | Researching the idea, interviewing you, writing `assumptions.md`, then `spec.md`, `requirements.yaml` and `plan.yaml`; answering its workers' questions; replanning a failed task. | Seeing another idea, approving its own assumptions, creating tasks or worktrees directly, or typing into another pane. |
-| **fleet-run wrapper** | A small program that every agent process is launched through, one per attempt. | Building the attempt's private config home from the profile, starting the CLI in its own process group through the platform layer, writing `heartbeat.json`, mapping CLI events and hooks to agent state, reporting state to herdr, enforcing the wall-clock limit (`max_minutes`, a hang guard) and the 256k context limit, writing `exit.json`. | Deciding outcomes. It reports facts; fleetd decides. |
+| **fleet-run wrapper** | A small program that every agent process is launched through, one per attempt. | Building the attempt's private config home from the profile, starting the CLI in its own process group through the platform layer, writing `heartbeat.json`, mapping CLI events and hooks to agent state, reporting state to herdr, enforcing the time limit `max_minutes` (a hang guard, counted in awake time from the platform layer, so it works while fleetd is down and a sleep does not use it up) and the 256k context limit, writing `exit.json`. | Deciding outcomes. It reports facts; fleetd decides. |
 | **Worker** | Any agent CLI (Claude Code, Codex, Antigravity or Gemini CLI) started by the wrapper with a named profile. | Doing one task attempt in the worktree fleetd leased to it and writing `outbox/result.json`. | Finding work, touching the ledger, creating or removing worktrees, or working on more than one task. |
 | **Verifier** | Code inside fleetd that queues each task's check as a job. The job runs the check in the worktree, in its own process outside the reconcile pass, with today's check timeout as its time limit (`preservation-05-contracts-and-values.md`, row V-10). The acceptance commands run in the sandbox profile of the task's worker, never with the rights of fleetd. For a code kind, today's review scripts then run unchanged. For a judgment kind, the check is structural, and a paired judge task reviews the content (see Done for each kind of task). | Writing `verdict.json` and moving the task to `done` or back to `ready`. | Trusting a worker's own claim of success. |
 | **Landing** | Code inside fleetd: the landing state machine, bundles, trial merges and the 2 gates (see Features, landing and integration). The build of a bundle candidate, each gate, each trial merge, each rebase, each `git fetch` and each `git push` is a job. A pass queues the jobs that are due and acts on the jobs that ended. It never waits for one. | Landing task branches on their feature branch, rebasing feature branches, opening resolver and triage tasks, running the full gate, pushing the feature branch for its pull request. | Merging to the primary branch, unless the project setting says so. By default you merge. |
@@ -289,7 +289,7 @@ Sub-orchestrators and workers never touch the ledger, each other or git worktree
 
 - The service manager of the OS supervises fleetd and the herdr server: restart always. On each pass, fleetd writes a heartbeat: the time of its last full pass. A pass never waits for a job, so a long gate does not delay the heartbeat. On Linux the systemd watchdog (`WatchdogSec`) restarts a hung fleetd. On macOS a launchd timer job runs `horch fleetd check` every 30 s, and on Windows a scheduled task does the same. `horch fleetd check` restarts the service when the heartbeat is older than 30 s of awake time. Sleep time does not count. Each `horch` CLI command also makes this check before it sends its request. A hung fleetd is killed and restarted on all 3 OSes, and recovers from the ledger (RR-7).
 - fleetd supervises attempts: one-for-one, so a crashed worker never affects its siblings. Each profile sets `max_attempts` and backoff. After the last attempt the task goes back to its idea's sub-orchestrator to replan once, then to you.
-- The wrapper supervises its CLI process group: on a wall-clock breach it stops the whole group through the platform layer, so no grandchild processes linger. On Linux the module sends SIGINT, waits 20 s, then SIGKILLs the group.
+- The wrapper supervises its CLI process group: when `max_minutes` of awake time pass, it stops the whole group through the platform layer, so no grandchild processes linger. On Linux the module sends SIGINT, waits 20 s, then SIGKILLs the group.
 
 **The command channel.** Each `horch` command that changes state sends a request to fleetd over its channel (a Unix socket, or a named pipe on Windows, through the platform layer). When fleetd is down, the command writes a request file in `/fleet/run/requests/`, and fleetd reads it at start. fleetd stays the only ledger writer.
 
@@ -486,7 +486,7 @@ goal: Log each retry with attempt and delay.
 covers: [R2]
 acceptance:
   - run: pytest tests/test_backoff.py -q -k logs
-lease: {expires: 2026-11-10T15:31:40-07:00, renew_every_s: 10}
+lease: {renew_every_s: 10}   # the expiry is a deadline on the fleet clock, kept in the ledger
 report_to: /fleet/tasks/T-0007-02/attempts/A1/outbox/
 ```
 
@@ -595,7 +595,7 @@ CREATE TABLE attempts (
 CREATE TABLE leases (
   task_id    TEXT PRIMARY KEY REFERENCES tasks(id),
   attempt_id TEXT NOT NULL REFERENCES attempts(id),
-  expires_at TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,             -- a deadline on the fleet clock (seconds)
   renewed_at TEXT NOT NULL,
   renew_basis TEXT NOT NULL                -- which signal renewed it
 );
@@ -625,7 +625,7 @@ CREATE TABLE branches (                    -- a row exists before the branch doe
               ('building','verifying','ready','in_bundle','landed',
                'conflicted','gate_failed','abandoned')),  -- task branches
   owner       TEXT NOT NULL,               -- worker, fleetd, sub-orchestrator or operator
-  due_at      TEXT NOT NULL,               -- past it, the row escalates
+  due_at      INTEGER NOT NULL,            -- a deadline on the fleet clock (seconds); past it, the row escalates
   queue_seq   INTEGER,                     -- bundle order
   rescue_ref  TEXT,                        -- written before each rebase or forced update
   orphan      INTEGER NOT NULL DEFAULT 0   -- found in git with no row, adopted and reported
@@ -660,6 +660,7 @@ CREATE TABLE jobs (                        -- each piece of work that can take m
   state       TEXT NOT NULL CHECK (state IN ('queued','running','passed','failed','abandoned')),
   pid INTEGER, pid_start TEXT,             -- the job process, alive by PID and start time
   time_limit_s INTEGER NOT NULL,           -- from the kind: the check timeout, a gate limit, a git network bound
+  deadline    INTEGER,                     -- start + time_limit_s on the fleet clock; past it, the job is stopped
   result_json TEXT,                        -- the outcome, read by the next pass
   created_at TEXT NOT NULL, started_at TEXT, ended_at TEXT,
   UNIQUE (kind, input_key)                 -- the same work is not run 2 times; its result is used again
@@ -689,7 +690,7 @@ CREATE TABLE questions (                   -- 1 row per worker question
   state       TEXT NOT NULL CHECK (state IN ('open','answered','escalated')),
   answer_case TEXT CHECK (answer_case IN ('covered','revise','replan','own_decision')),
   citation    TEXT,                        -- checked by fleetd for a covered answer
-  due_at      TEXT NOT NULL,               -- past it, escalates to needs-you
+  due_at      INTEGER NOT NULL,            -- a deadline on the fleet clock (seconds); past it, escalates to needs-you
   asked_at    TEXT NOT NULL, answered_at TEXT
 );
 
@@ -726,7 +727,9 @@ CREATE TABLE fleetd (                      -- exactly 1 row
   id          INTEGER PRIMARY KEY CHECK (id = 1),
   generation  INTEGER NOT NULL,            -- +1 at each start; each write transaction checks it
   pid INTEGER NOT NULL, pid_start TEXT NOT NULL,  -- the fleetd that holds the generation and the lock
-  started_at  TEXT NOT NULL
+  started_at  TEXT NOT NULL,
+  fleet_clock_s INTEGER NOT NULL,          -- the fleet clock: seconds; each pass adds the time since the last pass, at most 2 pass periods
+  clock_ticked_at TEXT NOT NULL            -- calendar time of the last tick, for status only
 );
 ```
 
@@ -800,6 +803,8 @@ budget:
   max_minutes: 60              # a hang guard, not a spend limit
 ---
 ```
+
+**The clock of each timer.** `start_timeout_s`, `stall_after_s`, `lease_s`, `max_wait_s` and `backoff_s` are durations on the fleet clock, so a sleep of the machine uses none of them (see Supervision, liveness and reconciliation). `max_minutes` is counted by the wrapper in awake time from the platform layer.
 
 **Every worker persona names a fallback persona.** The roster refuses to load a persona without one. fleetd uses it when the persona's pool shows a usage limit or a provider outage (see the stall ladder).
 
@@ -883,7 +888,7 @@ The validator refuses the file while any item is marked `[open]`. `[assumed]` it
 
 **Quick approval stays with you, in code.** When an idea reaches `awaiting_approval`, fleetd posts a herdr notification and `horch ideas` shows it under Needs you. `horch idea show I-0012` prints the assumptions; `approve` or `revise` records your decision. The sub-orchestrator cannot approve for you: `horch idea approve` refuses to run when its caller's process tree contains any recorded fleet attempt, agent profiles deny the command, and fleetd writes `approval.json` itself, with the hash of the assumptions you saw, and ignores one written by anyone else. A herdr key binding can map one key to approve the focused idea pane (herdr supports custom key commands; the exact fields are unconfirmed).
 
-**Waiting on you is not a stall.** While an idea is in `clarifying` with a question open, or in `awaiting_approval`, its lease is paused and fleetd sends one reminder an hour during your working hours. After 30 minutes it stops the idle sub-orchestrator process to free memory; an open question or your approval starts it again from the folder. After 7 days with no answer the idea moves to `parked`, with a note in `needs-you/`, so the queue only counts ideas that can move.
+**Waiting on you is not a stall.** While an idea is in `clarifying` with a question open, or in `awaiting_approval`, its lease is paused and fleetd sends one reminder an hour during your working hours. After 30 minutes on the fleet clock it stops the idle sub-orchestrator process to free memory; an open question or your approval starts it again from the folder. After 7 days of calendar time with no answer the idea moves to `parked`, with a note in `needs-you/`, so the queue only counts ideas that can move.
 
 **A worker that waits holds no process.** An exec worker that asks a question exits. Its task parks with no process and no time limit. The 1 h cap on a declared wait (`max_wait_s`) applies only to an interactive persona; at the cap the process exits and the task parks in the same way.
 
@@ -1058,7 +1063,13 @@ fleetd derives one agent state per attempt: `starting`, `working`, `waiting_appr
 
 **Lease renewal is earned, not claimed.** fleetd renews a lease only when the process is alive, the heartbeat is under 30 s old and there was activity within `stall_after`. A worker that holds a task and does nothing stops earning renewals, and its lease expires within 120 s of the stall threshold. That is how "took the task and sat on it" becomes impossible to hide.
 
-**A sleep does not expire a lease.** Lease time counts only while the machine is awake. The platform layer reports sleep and wake, and fleetd does not count the time the machine slept against a lease or a stall timer.
+**One fleet clock for each timer. A sleep fires no deadline.** fleetd keeps 1 fleet clock in the ledger, in the `fleetd` row: a count of seconds. Each pass adds the time since the last pass, but at most 2 times the pass period (10 s). So the clock does not run while the machine sleeps, and does not run while fleetd is down. No actor is judged for a time in which nothing could act. The fleet clock is level-triggered: it needs no sleep or wake event, and a restart of fleetd needs no repair of it.
+
+| Clock | Timers |
+| --- | --- |
+| Fleet clock | The lease; each rung of the stall ladder (`stall_after`, the 2 min doorbell rung); the start timeout; each retry backoff; the wait limits (`max_wait_s`, and the 30 min stop of an idle sub-orchestrator); the question limit; the `due_at` of each row; the time limit of a job. Each is a deadline on the fleet clock. |
+| Awake time from the platform layer | The hang check of fleetd, because the fleet clock stops with fleetd. `max_minutes` of the fleet-run wrapper, because the wrapper is the guard that must work while fleetd is down. |
+| Calendar time | The 7 day park; the hourly reminders; the retention periods (for example trash refs and the message spool); the daily docs sync; the usage windows of a provider. |
 
 **Stall ladder.** Every rung is code with a fixed timer; none depends on a model reading anything.
 
@@ -1086,6 +1097,7 @@ def reconcile():
     # Part 2: 1 transaction that decides and writes rows. No effect occurs inside it.
     with ledger.tx() as tx:
         check_generation(tx)                  # the generation in the fleetd row is ours, else exit
+        tick_fleet_clock(tx)                  # + time since the last pass, at most 2 pass periods; every deadline uses it
         apply_requests(tx, reqs)              # 1 requests row per request_id; a known id gets its stored result
         ingest(tx, files)                     # messages by (path, sha256), logs by offset; rejected files recorded
         observe_intents(tx, procs, trees)     # each intended row: effect seen -> next state; past its time limit -> again or failed
@@ -1344,7 +1356,7 @@ Every failure you listed, plus twenty-six more found while reading the code, the
 | FM-18 | Trust or approval prompt on first launch | Pane frozen | Trust pre-seeded in each private config home; conformance check "no trust prompt" | Before dispatch | FR-8 |
 | FM-19 | CLI update changes a flag or default | Every worker of that CLI fails | Docs sync plus conformance on version change; failing CLI marked unhealthy | Before dispatch | FR-8 |
 | FM-20 | Context drift past 256k, or a CLI with no compaction setting | Quality drops, loops | CLI compaction settings; wrapper ends the attempt with a handoff at the 256k context limit | At the limit | FR-9 |
-| FM-21 | Retry loop burns quota | Cost with no progress | Bounded attempts and backoff, one replan, then escalation; a per-attempt wall-clock limit (`max_minutes`) as a hang guard | Bounded | RR-6 |
+| FM-21 | Retry loop burns quota | Cost with no progress | Bounded attempts and backoff, one replan, then escalation; a per-attempt limit (`max_minutes`, in awake time) as a hang guard | Bounded | RR-6 |
 | FM-22 | Orphan processes or panes after a reap | Leaked CPU, stray edits | Process-group kill plus exact pane close; invariant I5 stops anything not owned by a live attempt | 5 s | RR-4 |
 | FM-23 | Half-written, oversized, linked or foreign file read | Corrupt result, or fleetd runs out of memory and restarts on the same file | Temp file, fsync, rename; readers skip `*.tmp`; a log is read only to its last complete line; schema validation. A worker file is read only when it is a regular file, opened without following a link, under its size limit, inside its own attempt folder and with the ids of its path; a file that fails is recorded as rejected and not read again | Prevented | RR-8, SR-6 |
 | FM-24 | Ledger write contention, a stray writer, or 2 fleetd processes | Busy errors, lost updates, duplicate workers or competing branch moves | Single writer; everything else opens read-only. fleetd holds an exclusive file lock for its whole life, and a second fleetd exits at once; each write transaction checks the generation of the `fleetd` row; a restart stops the old process by its PID and start time and waits for the lock | Prevented | RR-5 |
