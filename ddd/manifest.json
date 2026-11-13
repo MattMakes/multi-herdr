@@ -4,7 +4,7 @@
   "title": "fleetd: the horch fleet control plane",
   "ddd_dir": "ddd",
   "created": "2026-11-12T16:45:13Z",
-  "updated": "2026-11-13T06:37:46Z",
+  "updated": "2026-11-13T06:39:11Z",
   "mode": "auto",
   "depth": "standard",
   "scale_target": {
@@ -52,8 +52,8 @@
       ]
     },
     "strategize": {
-      "status": "stale",
-      "updated": "2026-11-12T21:59:35Z",
+      "status": "done",
+      "updated": "2026-11-13T06:39:11Z",
       "mode": "auto",
       "open_questions": 0,
       "artifacts": [

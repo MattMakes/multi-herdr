@@ -2,7 +2,7 @@
   "schema_version": 1,
   "step": "strategize",
   "produced_by": "ddd-strategize",
-  "produced_at": "2026-11-12T21:58:51Z",
+  "produced_at": "2026-11-13T06:39:04Z",
   "mode": "auto",
   "depth": "standard",
   "inputs": [
@@ -11,7 +11,8 @@
     "ddd/01-understand/understand.json",
     "ddd/manifest.json",
     "ddd/glossary.md",
-    "docs/specs/fleetd/design.md"
+    "docs/specs/fleetd/design.md",
+    "docs/specs/fleetd/amendments.md (Systems review round, fix round 2 and closing fix, A23 to A37)"
   ],
   "assumptions": [
     {
@@ -36,7 +37,7 @@
     },
     {
       "id": "A5",
-      "text": "Worktree custody is supporting with medium investment. Its no-loss rule (rescue ref written and read back before any removal) is 1 invariant over a 8-state lifecycle, not an algorithm; a failure breaks G2, so it gets invariant tests and fault-injection tests.",
+      "text": "Worktree custody is supporting with medium investment. Its no-loss rule (rescue ref written and read back before any removal) is 1 invariant over a 8-state lifecycle, not an algorithm; a failure breaks G2, so it gets invariant tests and fault-injection tests. Round 3: the rescue ref has 2 classes (unique, superseded), and each git step is a job (A27, A32); the score stays.",
       "confidence": "medium"
     },
     {
@@ -194,7 +195,7 @@
         "G4"
       ],
       "history_is_asset": false,
-      "rationale": "core - G1 (no task stalls silently) and G4 (use the subscription usage fully) are won or lost here; today's alternative is the long-lived orchestrator conversation with claims and a lazy watchdog, whose stalls are the reason for fleetd; rule 2 (diff >= 7); cplx 8 from the earned lease, the stall ladder, fallback and waiting_quota with a paused lease, retries, replan and the verifier with review scripts and paired judges; nothing to buy.",
+      "rationale": "core - G1 (no task stalls silently) and G4 (use the subscription usage fully) are won or lost here; today's alternative is the long-lived orchestrator conversation with claims and a lazy watchdog, whose stalls are the reason for fleetd; rule 2 (diff >= 7); cplx 8 from the earned lease, the stall ladder, fallback and waiting_quota with a paused lease, retries, replan and the verifier with review scripts and paired judges; nothing to buy. Round 3 (A26, A34): the task state table has 12 states with 1 owner and 1 exit each, an exit to cancelled from each state that is not terminal, 3 outcomes that burn no attempt (asked, quota, critical_open) and the judge pair with fix_rounds; this confirms cplx 8 and domain-model.",
       "evolution_rationale": "custom: cap-task-supervision, cap-task-verification and cap-usage-pacing are all custom; no product leases agent attempts across CLIs and usage pools.",
       "future_direction": "Decisive core (both scores >= 8): the big investment, aggregates for task, attempt and verification with invariant tests for I1, I2 and I4. Review in 6 to 12 months; usage pacing can move to supporting once the pacing rule is stable (bet B3)."
     },
@@ -212,7 +213,7 @@
         "G2"
       ],
       "history_is_asset": false,
-      "rationale": "core - G3 (each idea reaches the primary branch through its feature) depends on it, and G2 on its no-loss branch invariants; today's alternatives are hand reconciliation of task branches and hosted merge queues, which work on pull requests to a protected base, not on local task branches, and find no conflicts between in-flight features; rule 2 (diff >= 7); cplx 8 from bundles behind the fast gate, bisection, trial merges, stacking with resolver tasks and continuous rebases.",
+      "rationale": "core - G3 (each idea reaches the primary branch through its feature) depends on it, and G2 on its no-loss branch invariants; today's alternatives are hand reconciliation of task branches and hosted merge queues, which work on pull requests to a protected base, not on local task branches, and find no conflicts between in-flight features; rule 2 (diff >= 7); cplx 8 from bundles behind the fast gate, bisection, trial merges, stacking with resolver tasks and continuous rebases. Round 3 (A27, A28, A34): the bundle state machine with compare-and-set ref moves, repair attempts of a task branch, the feature state machine (open, ready, merged, abandoned) and the push and fetch jobs add rules, not new subdomains; this confirms cplx 8 and domain-model.",
       "evolution_rationale": "custom: cap-feature-integration is custom. Merge queues are a product for pull requests, but not for local task branches with a ledger row per branch.",
       "future_direction": "Core, not decisive (diff 7). Feature and task-branch aggregates own the landing state machine and the no-loss rows 04 F5, F7, F9, F11, L5, L9. If a hosted merge queue later supports local branches, the bundle and bisect part can become supporting (table-stakes former core); trial merges and stacking stay core (bet B2)."
     },
@@ -246,7 +247,7 @@
         "G2"
       ],
       "history_is_asset": false,
-      "rationale": "supporting - G2 (no work a worker paid for is lost) depends on it; today's alternative is worktrees made by workers and orphaned on disk; rule 3 (diff 6, cplx 5); cplx 5 from 1 lifecycle of 8 states and 1 invariant (rescue ref written and read back before any removal, design I6); git does the work and is wrapped. Medium investment because a failure breaks G2 (A5).",
+      "rationale": "supporting - G2 (no work a worker paid for is lost) depends on it; today's alternative is worktrees made by workers and orphaned on disk; rule 3 (diff 6, cplx 5); cplx 5 from 1 lifecycle of 8 states and 1 invariant (rescue ref written and read back before any removal, design I6); git does the work and is wrapped. Medium investment because a failure breaks G2 (A5). Round 3 (A27, A32): the worktree_add, worktree_remove, worktree_list and rescue jobs and the 2 rescue ref classes change no score.",
       "evolution_rationale": "custom: cap-worktree-custody is custom; git worktrees are a commodity, the custody rules around them are not.",
       "future_direction": "Supporting, kept simple: a worktree row per lifecycle plus a reconciler against git worktree list. Fault-injection tests for rows 04 W6, W8, W9. No timeline to change."
     },
@@ -264,7 +265,7 @@
         "G1"
       ],
       "history_is_asset": false,
-      "rationale": "supporting - G4 needs a fallback persona for every worker persona and G1 needs a liveness feed from each CLI; today's alternative is the teammates roster and agent CLIs run by hand; rule 3 (diff 5); cplx 4 from mapping 1 profile to the flags, environment and files of each CLI and from conformance tests. Medium investment because it owns the ANTHROPIC_API_KEY scrub (C2) and the CLIs change every week (C10).",
+      "rationale": "supporting - G4 needs a fallback persona for every worker persona and G1 needs a liveness feed from each CLI; today's alternative is the teammates roster and agent CLIs run by hand; rule 3 (diff 5); cplx 4 from mapping 1 profile to the flags, environment and files of each CLI and from conformance tests. Medium investment because it owns the ANTHROPIC_API_KEY scrub (C2) and the CLIs change every week (C10). Round 3 (A29, A35, A37): it also owns the 1 launcher, profile health and the sandbox deny rules, and it refuses a profile on an OS that cannot sandbox it. These are rules of 1 owner, not domain complexity, so cplx stays 4.",
       "evolution_rationale": "custom: cap-agent-cli-adaption is custom; no product maps 1 profile to every agent CLI.",
       "future_direction": "Supporting, kept as 1 adapter per CLI behind 1 profile shape. If the agent CLIs converge on 1 headless protocol, adapters move to transaction-script glue."
     },
@@ -272,7 +273,7 @@
       "subdomain": "fleet-runtime",
       "type": "supporting",
       "business_differentiation": 3,
-      "model_complexity": 4,
+      "model_complexity": 5,
       "evolution": "custom",
       "sourcing": "build",
       "implementation_pattern": "active-record",
@@ -281,7 +282,7 @@
         "G1"
       ],
       "history_is_asset": false,
-      "rationale": "supporting - G1 needs a daemon that is itself watched; today's alternative is horch ledger watch, the lazily started watchdog; rule 3 (diff 3 but not solved elsewhere as a whole, so rule 1 does not fire); cplx 4 from the single ledger writer, the command channel and the supervision of the daemon on 3 OSes (C3). Pane hosting (herdr) and host services (OS service managers) are adopted and wrapped, not built (understand N14, A4). The platform layer is a leaf crate outside every context (decompose N7). Medium investment: a hang stops the whole fleet.",
+      "rationale": "supporting - G1 needs a daemon that is itself watched; today's alternative is horch ledger watch, the lazily started watchdog; rule 3 (diff 3 but not solved elsewhere as a whole, so rule 1 does not fire); cplx 4 from the single ledger writer, the command channel and the supervision of the daemon on 3 OSes (C3). Pane hosting (herdr) and host services (OS service managers) are adopted and wrapped, not built (understand N14, A4). The platform layer is a leaf crate outside every context (decompose N7). Medium investment: a hang stops the whole fleet. Round 3 (A23 to A25, A32, A35): cplx goes from 4 to 5. fleet-runtime now also owns the reconcile pass in 3 parts with its budgets and cursors, the job runner, the fleet clock, the fleetd lock with its generation number and the request classes with the operator token check. These are infrastructure rules with no business differentiation, so it stays supporting and active-record with invariant tests.",
       "evolution_rationale": "custom: cap-fleet-record is custom; cap-host-services is commodity and cap-pane-hosting is product, and both are adopted as existing systems.",
       "future_direction": "Supporting, kept thin. The herdr adapter and the service manager calls are adapters, not models. D16 settled the old question of understand Q2: Phase P moves all 178 OS-specific sites into crates/horch-platform before Phase 1, so fleet-runtime calls the platform interface and owns no OS module."
     }
@@ -294,7 +295,7 @@
     {
       "id": "B1",
       "text": "A deterministic daemon with earned leases replaces the LLM orchestrator, and no task stalls silently.",
-      "risk": "The lease misreads activity: a slow but healthy worker loses its lease, or a sleep and wake on 1 OS expires every lease (discover H13).",
+      "risk": "The lease misreads activity: a slow but healthy worker loses its lease, or the fleet clock or the awake time from the platform layer is wrong on 1 OS (discover H13, answered by design A25).",
       "subdomains": [
         "task-execution",
         "fleet-runtime"
@@ -325,7 +326,7 @@
   "notes_for_downstream": [
     {
       "id": "N1",
-      "text": "Sharpens understand N14 and follows decompose N7: fleet-runtime builds only the single ledger writer, the command channel and the herdr adapter. herdr and the OS service managers are adopted systems behind adapters; no context models panes or services. The platform layer (crates/horch-platform) is a leaf crate outside fleet-runtime.",
+      "text": "Sharpens understand N14 and follows decompose N7: fleet-runtime builds the single ledger writer, the command channel with its request classes and operator token check, the reconcile pass in 3 parts, the job runner, the fleet clock and the herdr adapter (decompose N11, N12). herdr and the OS service managers are adopted systems behind adapters; no context models panes or services. The platform layer (crates/horch-platform) is a leaf crate outside fleet-runtime.",
       "for": [
         "connect",
         "code"
@@ -357,15 +358,25 @@
         "code"
       ],
       "kind": "decision"
+    },
+    {
+      "id": "N5",
+      "text": "Round 3 changes 1 score: fleet-runtime model_complexity goes from 4 to 5 for the job runner, the 3-part pass, the fleet clock and the operator token check (A23 to A25, A32, A35). No type, sourcing, pattern or investment changes, and the cores stay task-execution and integration. The bundle and feature state machines (A27, A28) are aggregates of the domain model of integration.",
+      "for": [
+        "organise",
+        "define",
+        "code"
+      ],
+      "kind": "decision"
     }
   ],
   "plain_words": {
     "what": "We decided which parts of fleetd need the most careful design, and which parts stay simple.",
-    "decided": "2 of 6 parts are core: running and checking tasks, and landing branches on features. The other 4 parts are built simply, except the plan checks of the ideas part, which get a careful model. The ledger rows are the truth, and the events table is an audit log. We buy nothing new. herdr and the OS service managers are used as they are.",
+    "decided": "2 of 6 parts are core: running and checking tasks, and landing branches on features. The other 4 parts are built simply, except the plan checks of the ideas part, which get a careful model. The ledger rows are the truth, and the events table is an audit log. We buy nothing new. herdr and the OS service managers are used as they are. After the systems review, fleet-runtime does more infrastructure work (jobs, the fleet clock, the operator token), but it stays supporting.",
     "assumed": "The ideas part is not core, because an AI does its hard thinking and the code is 1 fixed state machine plus the plan checks.",
     "riskiest": "If the simple parts of the ideas part (intake and questions) grow rules, the flat design there will leak bugs."
   },
-  "chart_mermaid": "quadrantChart\n  title Core domain chart - fleetd the horch fleet control plane\n  x-axis Low model complexity --> High model complexity\n  y-axis Low business differentiation --> High business differentiation\n  quadrant-1 Core - build a rich model\n  quadrant-2 Short-term or hidden core\n  quadrant-3 Generic - buy or adopt\n  quadrant-4 Supporting - suspect if complex\n  Landing and integration: [0.80, 0.70]\n  Task execution: [0.80, 0.90]\n  Fleet runtime: [0.40, 0.30]\n  Ideas: [0.50, 0.60]\n  Worker profiles and adapters: [0.40, 0.50]\n  Worktree custody: [0.51, 0.60]",
+  "chart_mermaid": "quadrantChart\n  title Core domain chart - fleetd the horch fleet control plane\n  x-axis Low model complexity --> High model complexity\n  y-axis Low business differentiation --> High business differentiation\n  quadrant-1 Core - build a rich model\n  quadrant-2 Short-term or hidden core\n  quadrant-3 Generic - buy or adopt\n  quadrant-4 Supporting - suspect if complex\n  Landing and integration: [0.80, 0.70]\n  Task execution: [0.80, 0.90]\n  Fleet runtime: [0.50, 0.30]\n  Ideas: [0.50, 0.60]\n  Worker profiles and adapters: [0.40, 0.50]\n  Worktree custody: [0.51, 0.60]",
   "deprecated": [
     {
       "id": "Q1",
