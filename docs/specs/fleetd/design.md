@@ -1303,7 +1303,7 @@ Dispatch order matters for "workers don't find work": after the commit, fleetd w
 | `rescue` | Effect | The worktree | The path and its HEAD | It ended `abandoned`. A rescue that fails its verification puts 1 item on the needs-you list. |
 | `fetch` | Effect | The repository | The repository and its remote | At each fetch period (`fetch_period_s`), also after a `failed` run. |
 | `push` | Effect | The feature | The feature tip and `seen_remote_tip` | After `push_not_before`, the end of its backoff, when the last run `failed` or ended `abandoned`. |
-| `worktree_add` | Effect | The worktree | The path, the branch and the base tip | It ended `abandoned`. A `failed` run drops the `reserved` row. |
+| `worktree_add` | Effect | The worktree | The path, the branch and the base tip | It ended `abandoned`. A `failed` run drops the `reserved` row. A run is safe to repeat: the folder of a `reserved` row holds no work, so a run first prunes a partial folder at its path, then adds the worktree. It passes only when the folder, its branch and its entry in `git worktree list` are seen. |
 | `worktree_remove` | Effect | The worktree | The path | It ended `abandoned` or `failed`, on the next pass. |
 | `worktree_list` | Effect | The repository | The repository | At each period (`worktree_list_period_s`, 60 s). It only reads git. |
 | `docs_sync` | Effect | The CLI and its version | The CLI and its version | Each day, on `horch self-update`, and on a new version of the CLI. It has no repository. |
@@ -1716,6 +1716,7 @@ Each number has 1 of 3 classes. A fixed contract changes only with a change of t
 | Code-sweep requeues and review rounds | 2 requeues; 1 round light, 3 rounds full | Fixed contract (05 V-14) | Today's review scripts |
 | Land lock | Stale after 1 h, timeout 30 s, heartbeat 60 s | Fixed contract (05 V-11) | `vcs/landing.rs` |
 | Git network calls | Push 10 min, others 3 min | Fixed contract (04 F11) | `vcs/network.rs`. Each is the time limit of its job. |
+| Time limit of a `worktree_add`, `worktree_remove`, `worktree_list`, `docs_sync` or `conformance` job | No value yet | Starting value | `fleet.toml`, `job_limit_s` for each kind |
 | Harness update cooldown | More than 7 days | Default | `update_cooldown_days` |
 
 ## Open questions
