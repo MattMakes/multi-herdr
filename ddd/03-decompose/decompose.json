@@ -2,7 +2,7 @@
   "schema_version": 1,
   "step": "decompose",
   "produced_by": "ddd-decompose",
-  "produced_at": "2026-11-12T21:56:02Z",
+  "produced_at": "2026-11-13T06:37:04Z",
   "mode": "auto",
   "depth": "standard",
   "inputs": [
@@ -12,7 +12,9 @@
     "ddd/manifest.json",
     "docs/specs/fleetd/design.md",
     "ai_docs/plans/fleetd-design/ddd-context.md",
-    "ai_docs/plans/fleetd-design/ddd-revision-context.md"
+    "ai_docs/plans/fleetd-design/ddd-revision-context.md",
+    "docs/specs/fleetd/amendments.md (Systems review round, fix round 2 and closing fix, A23 to A37)",
+    "ai_docs/plans/fleetd-design/ddd-revision-3-context.md (revision round 3)"
   ],
   "assumptions": [
     {
@@ -111,7 +113,7 @@
     },
     {
       "id": "N5",
-      "text": "Sharpens understand N5: fleet-runtime owns the single ledger writer and the command channel. Every other context changes the ledger only through it; each context still owns the legal transitions of its own aggregates.",
+      "text": "Sharpens understand N5: fleet-runtime owns the single ledger writer and the command channel. Every other context changes the ledger only through it; each context still owns the legal transitions of its own aggregates. From Phase 5 only (A36): in Phases 1 to 4 the horch commands also write, through the same transition().",
       "for": [
         "connect",
         "code"
@@ -161,7 +163,7 @@
     },
     {
       "id": "N10",
-      "text": "The orchestrator (D15) took option A of D1 to D4: the verifier is a module of task-execution, worker questions belong to ideas, worker-profiles and worktree-custody are contexts of their own. The 6 contexts and 13 links stay.",
+      "text": "The orchestrator (D15) took option A of D1 to D4: the verifier is a module of task-execution, worker questions belong to ideas, worker-profiles and worktree-custody are contexts of their own. The 6 contexts and 13 links stay. Round 3 adds R14 to R16 (fleet-runtime to integration, worktree-custody and worker-profiles: the ledger writer and the job runner). 6 contexts and 16 links.",
       "for": [
         "strategize",
         "connect",
@@ -170,6 +172,55 @@
         "code"
       ],
       "kind": "decision"
+    },
+    {
+      "id": "N11",
+      "text": "Long work is a job (A23, A32, A33). fleet-runtime owns the job runner: the jobs table, the run number, the bound on abandoned runs, observe-jobs and horch job requeue. Each context owns its job kinds and acts on their results: task-execution task_check; integration bundle_build, fast_gate, full_gate, trial_merge, rebase, fetch, push; worktree-custody worktree_add, worktree_remove, worktree_list, rescue; worker-profiles docs_sync, conformance. R14 to R16 carry it.",
+      "for": [
+        "connect",
+        "organise",
+        "define",
+        "code"
+      ],
+      "kind": "boundary"
+    },
+    {
+      "id": "N12",
+      "text": "fleet-runtime owns the reconcile pass in 3 parts (facts, 1 transaction, effects), each effect row in an intended state first, the work and time budgets with pass_cursors, the fleet clock, the fleetd lock and generation number, and the requests table with its request classes and the operator token check (A24, A25, A32, A35). worker-profiles owns the 1 launcher (SR-7) and the sandbox deny rules of each worker profile (SR-8, A37).",
+      "for": [
+        "connect",
+        "define",
+        "code"
+      ],
+      "kind": "boundary"
+    },
+    {
+      "id": "N13",
+      "text": "integration owns the bundle state machine (bundles, bundle_members), the feature state machine (open, ready, merged, abandoned), remote_tips, push_state and pr_state, and repair_attempts of a task branch (A27, A28, A34). integration also owns move-ideas-to-new-feature for a merge with ideas in flight, because it is a rule of the feature; ideas takes the new feature of each idea from the event (R9). worktree-custody owns the 2 rescue ref classes and horch rescue drop.",
+      "for": [
+        "connect",
+        "define",
+        "code"
+      ],
+      "kind": "boundary"
+    },
+    {
+      "id": "N14",
+      "text": "task-execution owns the exit to cancelled from each task state that is not terminal (cancel-task, A34). The order: stop the process group of a live attempt, cancel the task, then integration writes a rescue ref and abandons the task branch (R6). The cancel of a judged task also cancels its judge task.",
+      "for": [
+        "define",
+        "code"
+      ],
+      "kind": "process"
+    },
+    {
+      "id": "N15",
+      "text": "The design (A31, D15) now states the module owners with the same names as this step: the wrapper and the launcher belong to worker-profiles, plan validation and the needs-you list belong to ideas, git has 2 callers (worktree-custody, integration), task-execution and integration are a partnership, docs sync is a horch subcommand that fleetd schedules, and an arch_scan rule enforces the module boundaries.",
+      "for": [
+        "define",
+        "code"
+      ],
+      "kind": "language"
     }
   ],
   "decisions": [
@@ -519,7 +570,8 @@
         "task-escalated",
         "task-requeued",
         "task-done",
-        "task-verdict-written"
+        "task-verdict-written",
+        "task-cancelled"
       ],
       "commands": [
         "promote-task",
@@ -540,7 +592,8 @@
         "schedule-retry",
         "escalate-task",
         "requeue-task",
-        "mark-task-done"
+        "mark-task-done",
+        "cancel-task"
       ],
       "terms": [
         "Task",
@@ -572,13 +625,15 @@
         "worktree-orphaned",
         "worktree-rescued",
         "rescue-failed",
-        "worktree-removed"
+        "worktree-removed",
+        "rescue-ref-dropped"
       ],
       "commands": [
         "create-worktree",
         "reconcile-worktrees",
         "rescue-worktree",
-        "remove-worktree"
+        "remove-worktree",
+        "drop-rescue-ref"
       ],
       "terms": [
         "Worktree",
@@ -623,7 +678,16 @@
         "feature-marked-ready",
         "pull-request-opened",
         "pull-request-merged",
-        "feature-merged"
+        "feature-merged",
+        "bundle-dropped",
+        "task-branch-repair-escalated",
+        "remote-tips-fetched",
+        "feature-branch-pushed",
+        "push-failed",
+        "feature-reopened",
+        "pull-request-closed",
+        "feature-abandoned",
+        "ideas-moved-to-new-feature"
       ],
       "commands": [
         "open-feature",
@@ -642,7 +706,13 @@
         "mark-feature-ready",
         "open-pull-request",
         "merge-pull-request",
-        "check-merged"
+        "check-merged",
+        "escalate-task-branch",
+        "fetch-remote",
+        "push-feature-branch",
+        "reopen-feature",
+        "abandon-feature",
+        "move-ideas-to-new-feature"
       ],
       "terms": [
         "Feature",
@@ -675,12 +745,15 @@
         "profile-marked-unhealthy",
         "agent-process-started",
         "heartbeat-written",
-        "attempt-exited"
+        "attempt-exited",
+        "adapter-conformance-passed",
+        "profile-marked-healthy"
       ],
       "commands": [
         "run-conformance-tests",
         "mark-profile-unhealthy",
-        "start-agent-process"
+        "start-agent-process",
+        "mark-profile-healthy"
       ],
       "terms": [
         "Worker Profile",
@@ -698,7 +771,7 @@
     {
       "id": "fleet-runtime",
       "name": "Fleet runtime",
-      "description": "Keeps fleetd alive under the OS service manager, restarts it on a hang or a new binary, owns the command channel, the file protocol permissions and the single ledger writer, and adapts herdr.",
+      "description": "Keeps fleetd alive under the OS service manager, restarts it on a hang or a new binary, owns the command channel, the file protocol permissions and the single ledger writer, and adapts herdr. It runs each job outside the reconcile pass and keeps the fleet clock (A23, A25).",
       "capabilities": [
         "cap-fleet-record",
         "cap-host-services",
@@ -707,12 +780,16 @@
       "events": [
         "fleetd-hang-detected",
         "horch-version-installed",
-        "fleetd-restarted"
+        "fleetd-restarted",
+        "job-abandoned",
+        "job-requeued"
       ],
       "commands": [
         "check-fleetd",
         "self-update",
-        "restart-fleetd"
+        "restart-fleetd",
+        "observe-jobs",
+        "requeue-job"
       ],
       "terms": [
         "fleetd",
@@ -820,7 +897,7 @@
         "cognitive_load": "yes",
         "verdict": "candidate"
       },
-      "rationale": "Cut at the pivotal events assumptions-approved and plan-committed (pivotal-event) and by the actor change: operator and sub-orchestrator own clarifying and planning (discover N7). The idea, plan and question aggregates live here because the sub-orchestrator answers worker questions against the idea's assumptions (own-assumption-recorded, revise-requested). Closest alternative: put question in task-execution, where the worker asks it (decision D2). The idea dispatcher is code, not an actor; no 'orchestrator' actor exists (understand N3)."
+      "rationale": "Cut at the pivotal events assumptions-approved and plan-committed (pivotal-event) and by the actor change: operator and sub-orchestrator own clarifying and planning (discover N7). The idea, plan and question aggregates live here because the sub-orchestrator answers worker questions against the idea's assumptions (own-assumption-recorded, revise-requested). Closest alternative: put question in task-execution, where the worker asks it (decision D2). The idea dispatcher is code, not an actor; no 'orchestrator' actor exists (understand N3). From A28 it also plans the ideas of 1 feature in order, and keeps the needs-you list with its life cycle (open, resolved, superseded)."
     },
     {
       "id": "task-execution",
@@ -854,7 +931,8 @@
         "task-escalated",
         "task-requeued",
         "task-done",
-        "task-verdict-written"
+        "task-verdict-written",
+        "task-cancelled"
       ],
       "owns_commands": [
         "promote-task",
@@ -875,7 +953,8 @@
         "schedule-retry",
         "escalate-task",
         "requeue-task",
-        "mark-task-done"
+        "mark-task-done",
+        "cancel-task"
       ],
       "owns_aggregates": [
         "task",
@@ -918,7 +997,7 @@
         "cognitive_load": "partial",
         "verdict": "candidate"
       },
-      "rationale": "Cut between plan-committed and task-done (pivotal-event). Task, attempt and verification are 3 aggregate candidates with 1 shared language (task, attempt, lease, done) and 1 transaction rule: a reap ends the attempt and requeues the task in 1 transaction (04 S7). The verifier is a separate component in the design, but it reads and writes the same task states, so it stays a module here (decision D1). The context adapts the agent CLI process (attempt-exited, through the fleet-run wrapper) and the provider pools (usage-limit-reported, quota-window-reset); both adapters are internal."
+      "rationale": "Cut between plan-committed and task-done (pivotal-event). Task, attempt and verification are 3 aggregate candidates with 1 shared language (task, attempt, lease, done) and 1 transaction rule: a reap ends the attempt and requeues the task in 1 transaction (04 S7). The verifier is a separate component in the design, but it reads and writes the same task states, so it stays a module here (decision D1). The context adapts the agent CLI process (attempt-exited, through the fleet-run wrapper) and the provider pools (usage-limit-reported, quota-window-reset); both adapters are internal. From A26 and A34 it owns the task state table of 12 states with 1 owner and 1 exit each, the exit to cancelled from each state that is not terminal, the outcomes that burn no attempt (asked, quota, critical_open) and the judge pair with fix_rounds."
     },
     {
       "id": "worktree-custody",
@@ -931,13 +1010,15 @@
         "worktree-orphaned",
         "worktree-rescued",
         "rescue-failed",
-        "worktree-removed"
+        "worktree-removed",
+        "rescue-ref-dropped"
       ],
       "owns_commands": [
         "create-worktree",
         "reconcile-worktrees",
         "rescue-worktree",
-        "remove-worktree"
+        "remove-worktree",
+        "drop-rescue-ref"
       ],
       "owns_aggregates": [
         "worktree"
@@ -969,7 +1050,7 @@
         "cognitive_load": "yes",
         "verdict": "unsure"
       },
-      "rationale": "The worktree outlives attempts (understand N1) and its 'lease' and 'landed' mean different things from the attempt lease and the task branch state (language-boundary). Only this context may create or remove a worktree, and it owns the no-loss rows 04 W6, W8 and W9 (data-ownership, discover N8). Closest alternative: merge it into integration, which also changes git state (decision D4). It adapts git for worktree add, list and rescue refs; integration adapts git for branches."
+      "rationale": "The worktree outlives attempts (understand N1) and its 'lease' and 'landed' mean different things from the attempt lease and the task branch state (language-boundary). Only this context may create or remove a worktree, and it owns the no-loss rows 04 W6, W8 and W9 (data-ownership, discover N8). Closest alternative: merge it into integration, which also changes git state (decision D4). It adapts git for worktree add, list and rescue refs; integration adapts git for branches. From A27 and A32 it also owns the worktree_add, worktree_remove, worktree_list and rescue job kinds, the 2 classes of rescue ref (unique, superseded) and horch rescue drop."
     },
     {
       "id": "integration",
@@ -1000,7 +1081,16 @@
         "feature-marked-ready",
         "pull-request-opened",
         "pull-request-merged",
-        "feature-merged"
+        "feature-merged",
+        "bundle-dropped",
+        "task-branch-repair-escalated",
+        "remote-tips-fetched",
+        "feature-branch-pushed",
+        "push-failed",
+        "feature-reopened",
+        "pull-request-closed",
+        "feature-abandoned",
+        "ideas-moved-to-new-feature"
       ],
       "owns_commands": [
         "open-feature",
@@ -1019,7 +1109,13 @@
         "mark-feature-ready",
         "open-pull-request",
         "merge-pull-request",
-        "check-merged"
+        "check-merged",
+        "escalate-task-branch",
+        "fetch-remote",
+        "push-feature-branch",
+        "reopen-feature",
+        "abandon-feature",
+        "move-ideas-to-new-feature"
       ],
       "owns_aggregates": [
         "task-branch",
@@ -1041,6 +1137,10 @@
         {
           "term": "Merged",
           "meaning_here": "A feature fact read from git by content: the feature branch is in the primary branch (understand N4)."
+        },
+        {
+          "term": "Bundle",
+          "meaning_here": "A bundles row: 1 candidate of ready task branches of 1 feature on 1 base tip, with the states building, gating, passed, landed, failed and dropped. A bisect part is a child bundle (A27, A34)."
         }
       ],
       "wraps": [
@@ -1057,7 +1157,7 @@
         "cognitive_load": "probably",
         "verdict": "candidate"
       },
-      "rationale": "Cut at task-done and idea-tasks-landed (pivotal-event): after task-done the words change to branch, bundle, gate and merge, and only fleetd code acts (actor). The task-branch and feature aggregates and the land lock live here, with the no-loss rows 04 F5, F7, F9, F11, L5 and L9 (data-ownership). It adapts git (primary-branch-moved) and GitHub (pull-request-merged)."
+      "rationale": "Cut at task-done and idea-tasks-landed (pivotal-event): after task-done the words change to branch, bundle, gate and merge, and only fleetd code acts (actor). The task-branch and feature aggregates and the land lock live here, with the no-loss rows 04 F5, F7, F9, F11, L5 and L9 (data-ownership). It adapts git (primary-branch-moved) and GitHub (pull-request-merged). From A27, A28 and A34 it also owns the bundle state machine, the compare-and-set of each ref move, the repair attempts of a task branch, the feature state machine (open, ready, merged, abandoned), the push and fetch jobs with push_state, pr_state and remote_tips, and horch feature abandon and horch branch abandon."
     },
     {
       "id": "worker-profiles",
@@ -1070,12 +1170,15 @@
         "profile-marked-unhealthy",
         "agent-process-started",
         "heartbeat-written",
-        "attempt-exited"
+        "attempt-exited",
+        "adapter-conformance-passed",
+        "profile-marked-healthy"
       ],
       "owns_commands": [
         "run-conformance-tests",
         "mark-profile-unhealthy",
-        "start-agent-process"
+        "start-agent-process",
+        "mark-profile-healthy"
       ],
       "owns_aggregates": [
         "worker-profile"
@@ -1101,7 +1204,7 @@
         "cognitive_load": "yes",
         "verdict": "candidate"
       },
-      "rationale": "Rate-of-change: CLI versions and flags change far more often than the task rules. Language: profile, adapter, persona and conformance appear nowhere else. Regulatory: it owns the environment scrub and login rules (05 E-10, 06 S1, S3 to S10, S15), so the ANTHROPIC_API_KEY rule has exactly 1 owner (understand N16). The storm holds only 3 of its events (discover H14, plus agent-process-started of discover N10), so decision D3 records the merge alternative. It starts each agent process from the launch environment of its profile (start-agent-process), so no other context builds a launch."
+      "rationale": "Rate-of-change: CLI versions and flags change far more often than the task rules. Language: profile, adapter, persona and conformance appear nowhere else. Regulatory: it owns the environment scrub and login rules (05 E-10, 06 S1, S3 to S10, S15), so the ANTHROPIC_API_KEY rule has exactly 1 owner (understand N16). The storm holds only 3 of its events (discover H14, plus agent-process-started of discover N10), so decision D3 records the merge alternative. It starts each agent process from the launch environment of its profile (start-agent-process), so no other context builds a launch. From A29, A35 and A37 it also owns the 1 launcher that starts each process with the environment rule of the profile, profile health (unhealthy and healthy again), the sandbox deny rules of each worker (the operator token, the command channel, the request folder), and the refusal of a profile on an OS where its sandbox is not supported (06 S9)."
     },
     {
       "id": "fleet-runtime",
@@ -1112,18 +1215,32 @@
       "owns_events": [
         "fleetd-hang-detected",
         "horch-version-installed",
-        "fleetd-restarted"
+        "fleetd-restarted",
+        "job-abandoned",
+        "job-requeued"
       ],
       "owns_commands": [
         "check-fleetd",
         "self-update",
-        "restart-fleetd"
+        "restart-fleetd",
+        "observe-jobs",
+        "requeue-job"
       ],
-      "owns_aggregates": [],
+      "owns_aggregates": [
+        "job"
+      ],
       "terms": [
         {
           "term": "Check",
           "meaning_here": "horch fleetd check: the heartbeat check that restarts fleetd when its last full pass is older than 30 s of awake time. It is not a task check."
+        },
+        {
+          "term": "Job",
+          "meaning_here": "A jobs row and its process: work that can take more than 1 s and runs outside the reconcile pass. fleet-runtime runs and observes each job; the context that queues a job kind acts on its result (A23, A33)."
+        },
+        {
+          "term": "Fleet clock",
+          "meaning_here": "The count of seconds in the fleetd row that each pass advances. Every operational deadline of every context is on it (A25)."
         }
       ],
       "wraps": [
@@ -1140,7 +1257,7 @@
         "cognitive_load": "yes",
         "verdict": "merge"
       },
-      "rationale": "External-system: it wraps the OS service managers and herdr, which hold no state that fleetd depends on (understand N14: do not build, only wrap). It does not own the platform layer: the platform layer is the leaf crate crates/horch-platform that each context calls, not a context (design A19, understand N13, A10). fleet-runtime calls it for the service manager and hang detection. It owns the single ledger writer and the command channel (understand N5) as infrastructure for every other context, and the rows 04 S10, 04 M5, 06 S2, S11 and S12. ISH verdict merge: it is a module, never a product of its own."
+      "rationale": "External-system: it wraps the OS service managers and herdr, which hold no state that fleetd depends on (understand N14: do not build, only wrap). It does not own the platform layer: the platform layer is the leaf crate crates/horch-platform that each context calls, not a context (design A19, understand N13, A10). fleet-runtime calls it for the service manager and hang detection. It owns the single ledger writer and the command channel (understand N5) as infrastructure for every other context, and the rows 04 S10, 04 M5, 06 S2, S11 and S12. ISH verdict merge: it is a module, never a product of its own. From the systems review (A23 to A37) it also owns the reconcile pass in 3 parts with its work and time budgets and pass_cursors, the fleet clock, the fleetd lock and generation number, the job runner (the jobs table, observe-jobs, horch job requeue), and the requests table with the request classes and the operator token check of the command channel."
     }
   ],
   "relationships": [
@@ -1156,7 +1273,7 @@
       "upstream": "ideas",
       "downstream": "task-execution",
       "pattern": "customer-supplier",
-      "description": "ideas -> task-execution, customer-supplier: plan-committed and task-replanned trigger promote-task; plan-refused triggers escalate-task; question-answered and own-assumption-recorded trigger launch-attempt. The committed plan.yaml is the contract that every task comes from, and plan validation exists to serve task-execution (checks, owner paths, paired judges), so task-execution's needs shape ideas' plan schema. Async."
+      "description": "ideas -> task-execution, customer-supplier: plan-committed and task-replanned trigger promote-task; plan-refused triggers escalate-task; question-answered and own-assumption-recorded trigger launch-attempt. The committed plan.yaml is the contract that every task comes from, and plan validation exists to serve task-execution (checks, owner paths, paired judges), so task-execution's needs shape ideas' plan schema. Async. From A34: idea-cancelled triggers cancel-task for each task of the idea that is not terminal."
     },
     {
       "id": "R3",
@@ -1184,14 +1301,14 @@
       "upstream": "task-execution",
       "downstream": "integration",
       "pattern": "partnership",
-      "description": "task-execution -> integration, partnership (orchestrator, D15): task-done triggers mark-branch-ready; task-escalated lets the operator run abandon-task-branch. Integration asks task-execution to run triage and resolver tasks (open-triage-task, open-resolver-task create normal tasks). R6 and R7 change together: the 2 contexts plan their changes together. Async."
+      "description": "task-execution -> integration, partnership (orchestrator, D15): task-done triggers mark-branch-ready; task-escalated lets the operator run abandon-task-branch. Integration asks task-execution to run triage and resolver tasks (open-triage-task, open-resolver-task create normal tasks). R6 and R7 change together: the 2 contexts plan their changes together. Async. From A34: task-cancelled triggers abandon-task-branch after a rescue ref; attempt-failed of a resolver or fix attempt at max_attempts triggers escalate-task-branch."
     },
     {
       "id": "R7",
       "upstream": "integration",
       "downstream": "task-execution",
       "pattern": "partnership",
-      "description": "integration -> task-execution, partnership (orchestrator, D15): task-branch-conflicted triggers launch-attempt on the same task. R6 and R7 change together: the 2 contexts plan their changes together. Async."
+      "description": "integration -> task-execution, partnership (orchestrator, D15): task-branch-conflicted triggers launch-attempt on the same task. R6 and R7 change together: the 2 contexts plan their changes together. Async. From A27: task-branch-gate-failed starts a fix attempt of the task; task-branch-repair-escalated lets the operator run requeue-task."
     },
     {
       "id": "R8",
@@ -1205,7 +1322,7 @@
       "upstream": "integration",
       "downstream": "ideas",
       "pattern": "published-language",
-      "description": "integration -> ideas, published-language: task-branch-landed triggers roll-up-idea, and feature-merged triggers close-idea. ideas consumes branch facts as-is and never reads git. Async."
+      "description": "integration -> ideas, published-language: task-branch-landed triggers roll-up-idea, and feature-merged triggers close-idea. ideas consumes branch facts as-is and never reads git. Async. From A28: ideas-moved-to-new-feature (a merge with ideas in flight, owned by integration with the feature) gives each such idea its new feature, and feature-abandoned triggers cancel-idea."
     },
     {
       "id": "R10",
@@ -1219,14 +1336,14 @@
       "upstream": "worker-profiles",
       "downstream": "ideas",
       "pattern": "customer-supplier",
-      "description": "worker-profiles -> ideas, customer-supplier: start-sub-orchestrator launches a sub-orchestrator pane with a profile and the same environment scrub. The pane starts through start-agent-process too. Sync at launch."
+      "description": "worker-profiles -> ideas, customer-supplier: start-sub-orchestrator launches a sub-orchestrator pane with a profile and the same environment scrub. The pane starts through start-agent-process too. Sync at launch. From the design (Docs sync and adapter conformance): adapter-conformance-failed triggers add-idea, so a drift becomes an idea."
     },
     {
       "id": "R12",
       "upstream": "fleet-runtime",
       "downstream": "task-execution",
       "pattern": "open-host-service",
-      "description": "fleet-runtime -> task-execution, open-host-service: fleet-runtime gives the single ledger writer (N5) through 1 interface. The platform layer is not part of this link: task-execution calls the leaf crate crates/horch-platform directly for process facts, process-group stop, sandbox, sleep and wake (A10). The same interface serves every context, so open-host-service, not customer-supplier. Sync calls."
+      "description": "fleet-runtime -> task-execution, open-host-service: fleet-runtime gives the single ledger writer (N5) through 1 interface. The platform layer is not part of this link: task-execution calls the leaf crate crates/horch-platform directly for process facts, process-group stop, sandbox, sleep and wake (A10). The same interface serves every context, so open-host-service, not customer-supplier. Sync calls. From A23: fleet-runtime also runs each job that task-execution queues (task_check) through the same interface."
     },
     {
       "id": "R13",
@@ -1234,9 +1351,30 @@
       "downstream": "ideas",
       "pattern": "open-host-service",
       "description": "fleet-runtime -> ideas, open-host-service: the command channel carries horch idea commands to fleetd, and the herdr adapter hosts and supervises sub-orchestrator panes. Same interface as R12. Sync calls."
+    },
+    {
+      "id": "R14",
+      "upstream": "fleet-runtime",
+      "downstream": "integration",
+      "pattern": "open-host-service",
+      "description": "fleet-runtime -> integration, open-host-service: fleet-runtime gives the single ledger writer and the job runner (A23, A33). integration queues the jobs bundle_build, fast_gate, full_gate, trial_merge, rebase, fetch and push and acts on their results. Async: a pass never waits for a job."
+    },
+    {
+      "id": "R15",
+      "upstream": "fleet-runtime",
+      "downstream": "worktree-custody",
+      "pattern": "open-host-service",
+      "description": "fleet-runtime -> worktree-custody, open-host-service: the single ledger writer and the job runner (A23, A32). worktree-custody queues the jobs worktree_add, worktree_remove, worktree_list and rescue and acts on their results. Async."
+    },
+    {
+      "id": "R16",
+      "upstream": "fleet-runtime",
+      "downstream": "worker-profiles",
+      "pattern": "open-host-service",
+      "description": "fleet-runtime -> worker-profiles, open-host-service: the single ledger writer and the job runner (A33). fleetd queues the docs_sync and conformance jobs, and worker-profiles acts on their results. Async."
     }
   ],
-  "context_map_mermaid": "flowchart LR\n  ideas[\"Ideas\"]\n  task_execution[\"Task execution\"]\n  worktree_custody[\"Worktree custody\"]\n  integration[\"Landing and integration\"]\n  worker_profiles[\"Worker profiles and adapters\"]\n  fleet_runtime[\"Fleet runtime\"]\n  ideas -->|\"R1 published-language\"| integration\n  ideas -->|\"R2 customer-supplier\"| task_execution\n  task_execution -->|\"R3 published-language\"| ideas\n  task_execution -->|\"R4 customer-supplier\"| worktree_custody\n  worktree_custody -->|\"R5 published-language\"| task_execution\n  task_execution -->|\"R6 partnership\"| integration\n  integration -->|\"R7 partnership\"| task_execution\n  integration -->|\"R8 published-language\"| worktree_custody\n  integration -->|\"R9 published-language\"| ideas\n  worker_profiles -->|\"R10 customer-supplier\"| task_execution\n  worker_profiles -->|\"R11 customer-supplier\"| ideas\n  fleet_runtime -->|\"R12 open-host-service\"| task_execution\n  fleet_runtime -->|\"R13 open-host-service\"| ideas",
+  "context_map_mermaid": "flowchart LR\n  ideas[\"Ideas\"]\n  task_execution[\"Task execution\"]\n  worktree_custody[\"Worktree custody\"]\n  integration[\"Landing and integration\"]\n  worker_profiles[\"Worker profiles and adapters\"]\n  fleet_runtime[\"Fleet runtime\"]\n  ideas -->|\"R1 published-language\"| integration\n  ideas -->|\"R2 customer-supplier\"| task_execution\n  task_execution -->|\"R3 published-language\"| ideas\n  task_execution -->|\"R4 customer-supplier\"| worktree_custody\n  worktree_custody -->|\"R5 published-language\"| task_execution\n  task_execution -->|\"R6 partnership (mutual)\"| integration\n  integration -->|\"R7 partnership (mutual)\"| task_execution\n  integration -->|\"R8 published-language\"| worktree_custody\n  integration -->|\"R9 published-language\"| ideas\n  worker_profiles -->|\"R10 customer-supplier\"| task_execution\n  worker_profiles -->|\"R11 customer-supplier\"| ideas\n  fleet_runtime -->|\"R12 open-host-service\"| task_execution\n  fleet_runtime -->|\"R13 open-host-service\"| ideas\n  fleet_runtime -->|\"R14 open-host-service\"| integration\n  fleet_runtime -->|\"R15 open-host-service\"| worktree_custody\n  fleet_runtime -->|\"R16 open-host-service\"| worker_profiles",
   "plain_words": {
     "what": "This step cut fleetd into 6 parts, each with its own words and its own data: ideas, task execution, worktree custody, landing and integration, worker profiles, and the fleet runtime.",
     "decided": "6 parts, all modules inside the 1 horch binary, joined by 13 named links. Each of the 83 events and 65 commands has exactly 1 owner. The platform layer is a shared library that every part calls, not a part.",

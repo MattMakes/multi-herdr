@@ -69,6 +69,8 @@ _Uses the shared meaning of_: **Worktree**, **Rescue Ref**
 **Trial merge result** — The answer of a git merge-tree trial merge between 2 features, or a feature and the primary branch: clean, or the conflicting paths. Coined in connect (assumption A6).
 _Uses the shared meaning of_: **Feature Branch**, **Task Branch**, **Primary Branch**, **Bundle**, **Fast Gate**, **Full Gate**, **Trial Merge**, **Resolver Task**
 
+**Bundle** — A bundles row: 1 candidate of ready task branches of 1 feature on 1 base tip, with the states building, gating, passed, landed, failed and dropped. A bisect part is a child bundle (A27, A34).
+
 ## Worker profiles and adapters context
 **Worker Profile** — The teammate file of 1 persona: agent CLI, model, effort, skills, MCP servers, sandbox, writable paths, network, liveness, retry and fallback. Profile is its short name.
 **Adapter** — The code for 1 agent CLI that turns a worker profile into the exact flags, environment and files of a launch, and reads its quota and context.
@@ -87,3 +89,5 @@ _Uses the shared meaning of_: **Feature Branch**, **Task Branch**, **Primary Bra
 **Command Channel** — The local transport on which CLI commands and agents send requests to fleetd. fleetd validates each request and writes the result to the ledger.
 **Ledger** — The SQLite file ~/.horch/ledger.sqlite3 in WAL mode: an event log plus derived tables. Only fleetd writes it; each context owns its own tables (understand N17, organise N2).
 **Check** — horch fleetd check: the heartbeat check that restarts fleetd when its last full pass is older than 30 s of awake time. It is not a task check.
+**Job** — A jobs row and its process: work that can take more than 1 s and runs outside the reconcile pass. fleet-runtime runs and observes each job; the context that queues a job kind acts on its result (A23, A33).
+**Fleet clock** — The count of seconds in the fleetd row that each pass advances. Every operational deadline of every context is on it (A25).
