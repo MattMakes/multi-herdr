@@ -284,7 +284,7 @@ Sub-orchestrators and workers never touch the ledger, each other or git worktree
 | **Worker** | Any agent CLI (Claude Code, Codex, Antigravity or Gemini CLI) started by the wrapper with a named profile. | Doing one task attempt in the worktree fleetd leased to it and writing `outbox/result.json`. | Finding work, touching the ledger, creating or removing worktrees, or working on more than one task. |
 | **Verifier** | Code inside fleetd that queues each task's check as a job. The job runs the check in the worktree, in its own process outside the reconcile pass, with today's check timeout as its time limit (`preservation-05-contracts-and-values.md`, row V-10). The acceptance commands run in the sandbox profile of the task's worker, never with the rights of fleetd. The check job starts through the launcher (SR-7), so it never has `ANTHROPIC_API_KEY`. For a code kind, today's review scripts then run unchanged. For a judgment kind, the check is structural, and a paired judge task reviews the content (see Done for each kind of task). | Writing `verdict.json` and moving the task to `done` or back to `ready`. | Trusting a worker's own claim of success. |
 | **Landing** | Code inside fleetd: the landing state machine, bundles, trial merges and the 2 gates (see Features, landing and integration). The build of a bundle candidate, each gate, each trial merge, each rebase, each `git fetch` and each `git push` is a job. A pass queues the jobs that are due and acts on the jobs that ended. It never waits for one. | Landing task branches on their feature branch, rebasing feature branches, opening resolver and triage tasks, running the full gate, pushing the feature branch for its pull request. | Merging to the primary branch, unless the project setting says so. By default you merge. |
-| **Docs sync** | A `horch` subcommand that fleetd schedules as a job (daily, plus on any CLI version change). | Mirroring each CLI's docs, recording versions, running adapter conformance tests. | Changing a profile by itself. It opens a task when something drifts. |
+| **Docs sync** | A `horch` subcommand that fleetd schedules as a `docs_sync` job (daily, plus on any CLI version change), followed by a `conformance` job. Neither job has a repository. | Mirroring each CLI's docs, recording versions, running adapter conformance tests. | Changing a profile by itself. It opens a task when something drifts. |
 | **Platform layer** | 1 interface inside horch with 1 module per OS: the leaf crate `crates/horch-platform`, with the modules `mac.rs`, `linux.rs` and `windows.rs`. It depends on no other crate of the workspace, and each crate of the workspace calls it. It owns the process start. Only the launcher calls it (SR-7). | From Phase P: process identity and liveness (alive, start time, parent, children), signals and stop, process groups (stop and kill of a group), file locks, file permissions, paths and home directories, symlinks and links, shell and quoting, local sockets and pipes, detach of a child process, the machine probe (free disk, memory, load, the count of processes and of open files of the user), the sandbox host, and the small rest (for example archive format, file identity, user PATH). From Phase 1: service install and restart, hang detection, sleep and wake, file watching, the fleetd lock (an exclusive file lock held for the whole life of fleetd), and the transport of the fleetd command channel (a Unix socket, or a named pipe on Windows) with its peer-user check. | Failing silently. Where an OS has no equivalent, the module returns an explicit "not supported" value, and core code decides what to do. |
 | **herdr** | The pane runtime, in a dedicated session `herdr --session fleet`, also under the service manager of the OS. | Terminals, agent names, screen-based status, the sidebar you watch. | Holding any state fleetd depends on. If herdr restarts, the reconciler rebuilds from the ledger and files. |
 
@@ -708,34 +708,39 @@ CREATE TABLE gate_runs (
   gate        TEXT NOT NULL CHECK (gate IN ('fast','full')),
   tip         TEXT NOT NULL,               -- the candidate or feature tip it judged
   base_tip    TEXT NOT NULL,               -- the feature branch or primary branch tip it judged
-  job_id      INTEGER NOT NULL REFERENCES jobs(id), -- the gate runs as a job, outside the pass
+  job_id      INTEGER NOT NULL REFERENCES jobs(id), -- the gate runs as a job, outside the pass; its last run
   result      TEXT CHECK (result IN ('pass','fail')),  -- null while its job runs; a pass is stale once either tip moves
   at          TEXT NOT NULL
 );
 
 CREATE TABLE trial_merges (               -- facts from git merge-tree --write-tree
   left_ref TEXT, right_ref TEXT, left_tip TEXT, right_tip TEXT,
-  job_id  INTEGER NOT NULL REFERENCES jobs(id), -- the trial merge runs as a job, keyed by the 2 tips
+  job_id  INTEGER NOT NULL REFERENCES jobs(id), -- the trial merge runs as a job, keyed by the 2 tips; its last run
   clean INTEGER, conflict_files TEXT, at TEXT NOT NULL,  -- clean is null while its job runs
   PRIMARY KEY (left_tip, right_tip)
 );
 
 CREATE TABLE jobs (                        -- each piece of work that can take more than 1 s; it runs outside the pass
   id          INTEGER PRIMARY KEY,
-  kind        TEXT NOT NULL CHECK (kind IN
-              ('task_check','fast_gate','full_gate','bundle_build','trial_merge',
-               'rebase','rescue','fetch','push','worktree_add','worktree_remove','worktree_list')),
-  subject     TEXT NOT NULL,               -- the row it works for: a task, a branch, a feature, a worktree or a repository
-  repo        TEXT NOT NULL,               -- at most 1 job that changes git state runs for 1 repository at a time
-  input_key   TEXT NOT NULL,               -- e.g. the 2 tips of a trial merge, or the candidate tip and the base tip of a gate
-  state       TEXT NOT NULL CHECK (state IN ('queued','running','passed','failed','abandoned')),
+  kind        TEXT NOT NULL CHECK (kind IN  -- each kind of the design, from Phase 1; see The kinds of job
+              ('task_check','fast_gate','full_gate','trial_merge',
+               'bundle_build','rebase','rescue','fetch','push',
+               'worktree_add','worktree_remove','worktree_list','docs_sync','conformance')),
+  subject     TEXT NOT NULL,               -- the row it works for: a task, a bundle, a branch, a feature, a worktree, a repository, or a CLI and its version
+  repo        TEXT,                        -- null for a job of no repository (docs_sync, conformance); at most 1 job that changes git state runs for 1 repository at a time
+  input_key   TEXT NOT NULL,               -- given for each kind in The kinds of job
+  run         INTEGER NOT NULL DEFAULT 1,  -- 1 more for each new run of the same kind, subject and input key
+  abandoned_runs INTEGER NOT NULL DEFAULT 0, -- runs in a row of this key that ended abandoned; at abandoned_run_limit, no new run and 1 needs-you item; horch job requeue sets it to 0
+  not_before  INTEGER,                     -- fleet clock: a run after an abandoned run is not started before the end of its backoff
+  state       TEXT NOT NULL CHECK (state IN ('queued','running','passed','failed','abandoned')),  -- abandoned: stopped at its time limit, or its process was lost; it has no verdict
   pid INTEGER, pid_start TEXT,             -- the job process, alive by PID and start time
   time_limit_s INTEGER NOT NULL,           -- from the kind: the check timeout, a gate limit, a git network bound
   deadline    INTEGER,                     -- start + time_limit_s on the fleet clock; past it, the job is stopped
   result_json TEXT,                        -- the outcome, read by the next pass
   created_at TEXT NOT NULL, started_at TEXT, ended_at TEXT,
-  UNIQUE (kind, input_key)                 -- the same work is not run 2 times; its result is used again
+  UNIQUE (kind, subject, input_key, run)   -- a pure job's result is used again by its rules; an effect job's result never is
 );
+CREATE UNIQUE INDEX jobs_one_active ON jobs (kind, subject) WHERE state IN ('queued','running');  -- at most 1 run of 1 kind and 1 subject is queued or running
 
 CREATE TABLE remote_tips (                 -- remote git state, from the fetch job of each repository
   repo        TEXT NOT NULL,
@@ -1078,7 +1083,7 @@ The primary branch is the base branch of a project. It is `main` in this reposit
 
 **A merge with ideas in flight.** You can merge a pull request at any time. When git shows the merge and the feature still has an idea that is not `integrating`, `cancelled` or `parked`, fleetd records the feature as `merged` and moves each such idea to a new feature. The new feature branch starts from the fetched primary tip, and fleetd writes its row before the branch. The sub-orchestrator and its pane go on with the new feature. fleetd writes a rescue ref of each task branch of a moved idea, then rebases it on the new feature branch as a job. No idea is left without a feature and an owner, and no branch lands on the branch of a `merged` feature.
 
-**Push and pull request results are facts on the feature row.** A failed push job sets `push_state` to `failed`, adds 1 to `push_failures`, and sets `push_not_before` to the end of a backoff on the fleet clock. After 3 failures in a row, fleetd puts 1 item on the needs-you list. A passed push sets `push_state` to `ok` and `push_failures` to 0. `pr_state` is `none`, `open` or `closed`. With `pr = gh`, the fetch job reads the pull request state, and a pull request that is closed and not merged puts 1 item on the needs-you list: open it again, or run `horch feature abandon`. With `pr = manual`, you run `horch feature abandon` when you do not merge. A project can set `remote = none`: fleetd does not fetch, push or open a pull request, and a feature is `merged` when its changes are in the local primary branch.
+**Push and pull request results are facts on the feature row.** A push and a fetch are effect jobs, so a failed run is never used again: each retry is a new run of the job (see The kinds of job). A failed push job sets `push_state` to `failed`, adds 1 to `push_failures`, and sets `push_not_before` to the end of a backoff on the fleet clock. After `push_not_before`, fleetd queues the next run of the push job. After 3 failures in a row, fleetd puts 1 item on the needs-you list. A passed push sets `push_state` to `ok` and `push_failures` to 0. `pr_state` is `none`, `open` or `closed`. With `pr = gh`, the fetch job reads the pull request state, and a pull request that is closed and not merged puts 1 item on the needs-you list: open it again, or run `horch feature abandon`. With `pr = manual`, you run `horch feature abandon` when you do not merge. A project can set `remote = none`: fleetd does not fetch, push or open a pull request, and a feature is `merged` when its changes are in the local primary branch.
 
 ### Landing a task branch on its feature branch
 
@@ -1145,7 +1150,7 @@ fleetd checks these on every pass against git. They are invariants I8 to I13 in 
 - **The pull request.** A project setting `pr` is `gh` or `manual`. `manual` pushes the feature branch and shows the compare URL. Either one happens only when the feature is `ready` (see The pull request follows the state). A stacked feature's pull request has the lower feature's branch as its base. A project setting says who merges; the default is you.
 - **Merged.** A feature is `merged` when its changes are in the primary branch. fleetd reads this from git, not from the GitHub API, at the fetched tip of the primary branch. With `remote = none`, it reads the local primary branch.
 - **A stack edge ends with its lower feature.** The owner of each step is fleetd. When the lower feature is `merged`, fleetd clears `stacked_on` of the upper one, writes a rescue ref, rebases the upper one on the fetched primary tip, and runs both gates again. It sets the base of the pull request to the primary branch (`gh`), or changes its needs-you item (`manual`). When the lower feature is `abandoned`, fleetd clears `stacked_on`, writes a rescue ref, and rebases the upper one on the primary tip without the commits of the lower one. A conflict opens a resolver task.
-- **Remote git state is level-triggered.** 1 `git fetch` job runs for each repository on a period (`fetch_period_s`, default 60 s, in `fleet.toml`). fleetd records the fetched tip of each branch and the time in `remote_tips`. Merge detection and gate freshness use the fetched tip. So a pull request that you merge on the remote is seen within 1 period, with no local command. When a fetch fails, `horch status` shows since when the remote tip is stale.
+- **Remote git state is level-triggered.** 1 `git fetch` job runs for each repository on a period (`fetch_period_s`, default 60 s, in `fleet.toml`). fleetd records the fetched tip of each branch and the time in `remote_tips`. Merge detection and gate freshness use the fetched tip. So a pull request that you merge on the remote is seen within 1 period, with no local command. Each period is a new run of the `fetch` job, also after a failed run. When a fetch fails, `horch status` shows since when the remote tip is stale.
 - **1 git writer for each repository.** At most 1 job that changes git state runs for 1 repository at a time: a bundle build, a rebase, a rescue, a fetch, a push, a `worktree_add` or a `worktree_remove`. This removes git lock contention. Jobs that only read git, for example a trial merge or a `worktree_list`, can run together.
 - **Starting values, to tune from data.** A resolver task covers at most 100 changed lines or 2 files, else fleetd splits it by file.
 - **Not in version 1.** A syntax-aware merge driver: there is no accuracy data for Rust, and in Java wrong clean merges rose from 3% to 11% (`research-02-merge-tools-and-agent-systems.md`, F13). 1 pull request for several features: 1 bad feature would block the others, and each feature loses its own pull request. Both are follow-ups.
@@ -1230,7 +1235,7 @@ def reconcile():
             state = liveness(a, snap, procs, files)
             renew_or_expire_lease(tx, a, state)   # a valid result ingested in this pass wins over an expiry
             apply_stall_ladder(tx, a, state)  # a doorbell or a stop is recorded as an effect, not done here
-        observe_jobs(tx, procs)               # ended jobs -> results; a running job whose process is gone -> queued
+        observe_jobs(tx, procs)               # ended jobs -> results; a running job whose process is gone -> abandoned, and its next run is queued
         queue_due_jobs(tx, budget)            # task checks, gates, trial merges, rebases, rescues, fetch, push
         reconcile_worktrees(tx, trees)        # adopt, mark orphaned, queue a rescue job, mark landed trees for removal
         land_bundles(tx)                      # act on ended bundle and fast gate jobs; record the ref move; queue the next bundle
@@ -1255,7 +1260,26 @@ def reconcile():
 
 Dispatch order matters for "workers don't find work": after the commit, fleetd writes `task.yaml` and `inbox/START.md` before it launches the process, and passes the START.md path as the launch argument. The worker never searches; the task is the first thing it is given. If the process starts but never touches its files, the start timeout (90 s with no first heartbeat or activity) ends the attempt.
 
-**Long work is a job. A pass never waits for it.** A pass only reads facts, decides, writes rows, and starts or observes jobs. Each piece of work that can take more than 1 s is a job: a task check, a fast gate, a full gate, the build of a bundle candidate, a trial merge, a rebase, a rescue, a `git fetch`, a `git push`, a `git worktree add`, a `git worktree remove` and a `git worktree list`. The rule, stated 1 time: a git command that reads or writes a working tree, or that uses the network, is always a job. An effect that part 3 of a pass does itself is short by its nature: start a process through the launcher, signal a process, write or move a small file, or run `git update-ref` on a local ref. A job is a row in `jobs`, and it runs in its own process, outside the pass. fleetd supervises it like an attempt: the row first, then the process, alive by PID and start time, and stopped at its time limit. A job with the same kind and input key is not run 2 times: its result is used again. After a restart of fleetd, a `running` job whose process is gone goes back to `queued`. So a gate of 20 min or a check of 24 h does not delay the heartbeat.
+**Long work is a job. A pass never waits for it.** A pass only reads facts, decides, writes rows, and starts or observes jobs. Each piece of work that can take more than 1 s is a job: a task check, a fast gate, a full gate, the build of a bundle candidate, a trial merge, a rebase, a rescue, a `git fetch`, a `git push`, a `git worktree add`, a `git worktree remove` and a `git worktree list`. The rule, stated 1 time: a git command that reads or writes a working tree, or that uses the network, is always a job. An effect that part 3 of a pass does itself is short by its nature: start a process through the launcher, signal a process, write or move a small file, or run `git update-ref` on a local ref. A job is a row in `jobs`, and it runs in its own process, outside the pass. fleetd supervises it like an attempt: the row first, then the process, alive by PID and start time, and stopped at its time limit. When a pass finds that the process of a `running` job is gone, also after a restart of fleetd, the job ends `abandoned`, and fleetd queues its next run. So a gate of 20 min or a check of 24 h does not delay the heartbeat.
+
+**The kinds of job.** A job has 1 of 2 classes. A pure job: its result depends only on its input key. A result of `passed` is used again. A result of `failed` is used again only when the job ran to its end and the check, the gate or the trial merge gave the verdict. A job that ended `abandoned` has no verdict, and it runs again as a new run. An effect job: it changes or reads the world outside its input key. Its result is never used again: each need of it is a new run, with the next `run` number. For each kind and subject, at most 1 run is `queued` or `running`. Each run is a row in `jobs`, keyed by kind, subject, input key and run. Each retry is bounded (RR-6). A run after an `abandoned` run waits for a backoff on the fleet clock (`job_backoff_s`, 30 s, 120 s, 480 s), in `not_before` of its row. After 3 runs in a row of 1 kind, subject and input key that end `abandoned` (`abandoned_run_limit` in `fleet.toml`), fleetd queues no new run of it and puts 1 item on the needs-you list that names the job. The exit is yours: `horch job requeue <job>` queues 1 more run and sets the count to 0, and `horch task requeue` does the same for the `task_check` of its task. A new input key starts a new count.
+
+| Kind | Class | Subject | Input key | Runs again when |
+| --- | --- | --- | --- | --- |
+| `task_check` | Pure | The task | The tip of the task branch and the hash of the check | It ended `abandoned`. |
+| `fast_gate` | Pure | The bundle | The candidate tip and the base tip | It ended `abandoned`. |
+| `full_gate` | Pure | The feature | The feature tip and the fetched tip of the primary branch | It ended `abandoned`. |
+| `trial_merge` | Pure | The 2 features, or a feature and the primary branch | The 2 tips. Clean and conflict are both verdicts. | It ended `abandoned`. |
+| `bundle_build` | Effect | The bundle | The base tip and the tip of each member, in queue order | It ended `abandoned`. A new bundle is a new subject. |
+| `rebase` | Effect | The branch | The tip of the branch and the tip that it moves onto | It ended `abandoned`, or the tips moved. A conflict is a result, and it opens a resolver task. |
+| `rescue` | Effect | The worktree | The path and its HEAD | It ended `abandoned`. A rescue that fails its verification puts 1 item on the needs-you list. |
+| `fetch` | Effect | The repository | The repository and its remote | At each fetch period (`fetch_period_s`), also after a `failed` run. |
+| `push` | Effect | The feature | The feature tip and `seen_remote_tip` | After `push_not_before`, the end of its backoff, when the last run `failed` or ended `abandoned`. |
+| `worktree_add` | Effect | The worktree | The path, the branch and the base tip | It ended `abandoned`. A `failed` run drops the `reserved` row. |
+| `worktree_remove` | Effect | The worktree | The path | It ended `abandoned` or `failed`, on the next pass. |
+| `worktree_list` | Effect | The repository | The repository | At each period (`worktree_list_period_s`, 60 s). It only reads git. |
+| `docs_sync` | Effect | The CLI and its version | The CLI and its version | Each day, on `horch self-update`, and on a new version of the CLI. It has no repository. |
+| `conformance` | Effect | The CLI and its version | The CLI, its version and the hash of its adapter | After each `docs_sync` run, and on a new version of the CLI. It has no repository. |
 
 **A pass has a work budget.** A pass handles at most a set count of rows of each kind (`pass_budget` in `fleet.toml`, a starting value to tune). It keeps a cursor for each kind in `pass_cursors`, and the next pass continues at the cursor, so each row gets its turn in a fair order. This is not a cap on parallel work (D8): a row that a pass does not reach is handled on a later pass.
 
@@ -1329,7 +1353,7 @@ version_cmd = "agy --version"
 3. Run the adapter's conformance suite against the installed binary (below). Write `docs/<tool>/<version>/conformance.json`.
 4. If any check fails, the worker-profiles module marks every profile using that CLI as `unhealthy`, fleetd stops dispatching to it, and docs sync queues an idea "Update the \<tool> adapter for \<version>" with the diff and failing checks attached. You see it in `needs-you/`. When a later run of the conformance checks passes, the module marks each of those profiles healthy again.
 
-Docs sync is a `horch` subcommand. fleetd schedules it as a job, so it runs outside the reconcile pass. Supervision and conformance are an operating concern outside the flow of 1 idea: a drift that docs sync finds becomes an idea, like any other work.
+Docs sync is a `horch` subcommand. fleetd schedules it as a `docs_sync` job, so it runs outside the reconcile pass: steps 1 and 2. Step 3 is a `conformance` job, which fleetd queues after each `docs_sync` run and on a new version of a CLI. The subject of each is the CLI and its version, and it has no repository (see The kinds of job). Each is an effect job, so a daily run is a new run and never uses an old result. Supervision and conformance are an operating concern outside the flow of 1 idea: a drift that docs sync finds becomes an idea, like any other work.
 
 Each version command and each conformance launch starts through the launcher (SR-7), so it never has `ANTHROPIC_API_KEY`.
 
@@ -1527,7 +1551,7 @@ Every failure you listed, plus twenty-six more found while reading the code, the
 | FM-40 | Rescue refs delete unique work, or grow with no bound | Work lost, or the repository grows for ever | 2 classes, both owned by fleetd: `unique` is kept until you run `horch worktree restore` or `horch rescue drop`; `superseded` expires 30 days after its feature ends; over `rescue_unique_budget`, 1 item goes on the needs-you list and nothing is deleted | At the budget | RR-9, I10 |
 | FM-41 | You merge a pull request while an idea of its feature is in flight | The idea has no feature and no owner, or its branches land on a merged feature | fleetd records the feature as `merged` and moves each idea in flight to a new feature from the fetched primary tip, with its sub-orchestrator and pane; each task branch gets a rescue ref and a rebase | 1 fetch period | I7, I13 |
 | FM-42 | The lower feature of a stack is merged or abandoned | The upper feature keeps a base that is gone | fleetd clears `stacked_on`, writes a rescue ref, rebases the upper feature on the primary tip, runs both gates again and moves the base of its pull request; a conflict opens a resolver task | 1 fetch period | I10 |
-| FM-43 | A push fails, or you close a pull request without a merge | The feature waits for ever with no visible cause | `push_state` and `pr_state` are facts on the feature row; a push retries with a backoff, and 3 failures give 1 needs-you item; a closed pull request gives 1 needs-you item: open it again, or run `horch feature abandon` | 3 push attempts; 1 fetch period | OR-3 |
+| FM-43 | A push fails, or you close a pull request without a merge | The feature waits for ever with no visible cause | `push_state` and `pr_state` are facts on the feature row; a push retries with a backoff, and each retry is a new run of the push job, never an old result; 3 failures give 1 needs-you item; a closed pull request gives 1 needs-you item: open it again, or run `horch feature abandon` | 3 push attempts; 1 fetch period | OR-3 |
 | FM-44 | The needs-you list only grows | You cannot see what needs you | Each item has a stable key and a state; a producer writes by key; only `open` items are shown; an item that is not open is removed after 30 days | 1 pass | OR-3 |
 | FM-45 | A ready task does not run, and nothing says why | The fleet looks stuck | `horch status` shows each hold on dispatch with its cause; fleetd records an event when a global hold starts and ends; the health guards cover memory, processes and open files also | At once | OR-1, OR-5 |
 
@@ -1646,6 +1670,8 @@ Each number has 1 of 3 classes. A fixed contract changes only with a change of t
 | Time limits of the landing states | 30 min, 60 min, and the job limits plus 10 min | Starting value | `fleet.toml` |
 | Fetch period | 60 s | Default | `fleet.toml`, `fetch_period_s` |
 | Push failures before a needs-you item | 3 | Default | `fleet.toml`, `push_failure_limit` |
+| Runs in a row of 1 job key that end `abandoned` before a needs-you item | 3 | Default | `fleet.toml`, `abandoned_run_limit` |
+| Backoff between runs of a job after an `abandoned` run | 30 s, 120 s, 480 s | Default | `fleet.toml`, `job_backoff_s` |
 | Budget of `unique` rescue refs | No value yet | Starting value | `fleet.toml`, `rescue_unique_budget` |
 | Worktree disk budget | 20 GB | Default | `fleet.toml`, `worktree_disk_budget` |
 | Size of a resolver task | 100 changed lines or 2 files | Starting value | `fleet.toml`, `resolver_max_lines` and `resolver_max_files` |
