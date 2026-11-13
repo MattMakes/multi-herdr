@@ -212,7 +212,7 @@
         }
       ],
       "labelAt": {
-        "x": 440,
+        "x": 443,
         "y": 803.3
       }
     },
@@ -308,7 +308,7 @@
         }
       ],
       "labelAt": {
-        "x": 622,
+        "x": 528,
         "y": 451.3
       }
     },
@@ -457,6 +457,6 @@
       }
     }
   },
-  "fingerprint": "ac88a540-625a60de",
+  "fingerprint": "624635d9-1bca0e81",
   "optionsKey": "{\"direction\":\"RIGHT\",\"spacing\":\"comfortable\"}"
 }

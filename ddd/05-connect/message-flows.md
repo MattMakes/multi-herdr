@@ -12,7 +12,7 @@ We drew how the 6 parts of fleetd pass work to each other, in 9 step-by-step flo
 
 ---
 
-_Step 5 of the DDD chain (connect) · produced 2026-11-12T20:51:30Z · mode auto · depth standard · inputs: ddd/03-decompose/decompose.json, ddd/04-strategize/strategize.json, ddd/02-discover/discover.json, ddd/manifest.json, ddd/01-understand/understand.json, ddd/glossary.md, docs/specs/fleetd/design.md_
+_Step 5 of the DDD chain (connect) · produced 2026-11-13T06:52:56Z · mode auto · depth standard · inputs: ddd/03-decompose/decompose.json, ddd/04-strategize/strategize.json, ddd/02-discover/discover.json, ddd/manifest.json, ddd/01-understand/understand.json, ddd/glossary.md, docs/specs/fleetd/design.md_
 
 Rendered from `connect.json` by `ddd connect render`. The JSON is the chain (contract §7): edit it and re-render rather than editing tables here.
 
@@ -46,7 +46,7 @@ sequenceDiagram
   actor sub_orchestrator as Sub-orchestrator
   participant integration as Landing and integration
   operator->>ideas: add-idea (command via other)
-  Note over operator,ideas: horch CLI request over the fleetd command channel#59; a request file with the same idempotency_key when fleetd is down
+  Note over operator,ideas: horch CLI request of class operator over the fleetd command channel, with the operator token#59; a request file with the same request_id when fleetd is down (A24, A35)
   ideas-->>operator: add-idea (response via other)
   ideas->>worker_profiles: start-agent-process (command via in-process)
   Note over ideas,worker_profiles: sub-orchestrator CLI in a pane that ideas gets from the herdr adapter#59; worker-profiles builds the env
@@ -88,7 +88,7 @@ sequenceDiagram
   actor sub_orchestrator as Sub-orchestrator
   participant task_execution as Task execution
   operator->>ideas: approve-assumptions (command via other)
-  Note over operator,ideas: horch CLI request over the fleetd command channel#59; a request file with the same idempotency_key when fleetd is down
+  Note over operator,ideas: horch CLI request of class operator over the fleetd command channel, with the operator token#59; a request file with the same request_id when fleetd is down (A24, A35)
   ideas-)sub_orchestrator: assumptions-approved (event via file)
   Note over ideas,sub_orchestrator: approval.json with the hash you saw
   sub_orchestrator-)ideas: write-spec (command via file)
@@ -134,7 +134,7 @@ sequenceDiagram
   task_execution-)integration: task-done (event via in-process)
   Note over task_execution,integration: only the verifier emits it
   integration-)worktree_custody: task-branch-landed (event via in-process)
-  Note over integration,worktree_custody: after the bundle passes the fast gate
+  Note over integration,worktree_custody: after the bundle passes the fast gate job and the feature ref moves by compare-and-set from the base tip (A27)
   integration-)ideas: task-branch-landed (event via in-process)
   ideas-)integration: idea-tasks-landed (event via in-process)
 ```
@@ -210,8 +210,8 @@ sequenceDiagram
   Note over worker,ideas: outbox/questions/#59; the worker commits and exits
   ideas-)sub_orchestrator: worker-question-asked (event via file)
   Note over ideas,sub_orchestrator: inbox file plus the constant doorbell line
-  sub_orchestrator->>ideas: answer-question (command via other)
-  Note over sub_orchestrator,ideas: horch CLI request over the fleetd command channel (orchestrator, D15)
+  sub_orchestrator-)ideas: answer-question (command via file)
+  Note over sub_orchestrator,ideas: horch idea note writes a file in the idea folder#59; a worker-class request never uses the command channel (A35)
   opt no approved item covers it
     ideas-)task_execution: own-assumption-recorded (event via in-process)
   end
@@ -228,7 +228,7 @@ sequenceDiagram
 | 3 | task-execution | worker-profiles | `start-agent-process` | command | yes | in-process |
 | 4 | worker | ideas | `ask-question` | command | no | file |
 | 5 | ideas | sub-orchestrator | `worker-question-asked` | event | no | file |
-| 6 | sub-orchestrator | ideas | `answer-question` | command | yes | other |
+| 6 | sub-orchestrator | ideas | `answer-question` | command | no | file |
 | 7 | ideas | task-execution | `own-assumption-recorded` | event | no | in-process |
 | 8 | ideas | task-execution | `question-answered` | event | no | in-process |
 | 9 | task-execution | worker-profiles | `start-agent-process` | command | yes | in-process |
@@ -264,7 +264,7 @@ sequenceDiagram
   Note over task_execution,ideas: ideas puts the task on the 1 needs-you list
   task_execution-)integration: task-escalated (event via in-process)
   operator->>integration: abandon-task-branch (command via other)
-  Note over operator,integration: horch CLI request over the fleetd command channel#59; a request file with the same idempotency_key when fleetd is down
+  Note over operator,integration: horch CLI request of class operator over the fleetd command channel, with the operator token#59; a request file with the same request_id when fleetd is down (A24, A35)
   integration-->>operator: abandon-task-branch (response via other)
 ```
 
@@ -295,9 +295,9 @@ sequenceDiagram
   participant ideas as Ideas
   actor operator as Operator
   git-)integration: primary-branch-moved (event via other)
-  Note over git,integration: the reconcile pass reads the primary branch ref
+  Note over git,integration: the periodic fetch job (fetch_period_s, 60 s) records the remote tip in remote_tips#59; the next pass reads it (A23)
   integration->>git: trial-merge-result (query via other)
-  Note over integration,git: git merge-tree#59; outside any ledger transaction
+  Note over integration,git: git merge-tree as a trial_merge job keyed by the 2 tips, outside the pass#59; the next pass reads its result (A23)
   git-->>integration: trial-merge-result (response via other)
   integration-)task_execution: resolver-task-opened (event via in-process)
   Note over integration,task_execution: a normal task of a code kind
@@ -337,14 +337,14 @@ sequenceDiagram
   participant worker_profiles as Worker profiles and adapters
   participant herdr as herdr (external)
   task_execution-)worktree_custody: task-leased (event via in-process)
-  Note over task_execution,worktree_custody: the worktree lease row commits in the same ledger transaction#59; git worktree add runs after the commit
+  Note over task_execution,worktree_custody: the worktree row commits in reserved in the same ledger transaction#59; git worktree add runs after the commit as a worktree_add job (A32)
   worktree_custody-)task_execution: worktree-created (event via in-process)
   task_execution-)worker: assign-task (command via file)
   Note over task_execution,worker: task.yaml, written before the launch
   task_execution-)worker: start-work (command via file)
   Note over task_execution,worker: inbox/START.md, written before the launch
   task_execution->>worker_profiles: start-agent-process (command via in-process)
-  Note over task_execution,worker_profiles: fleet-run wrapper in its own process group#59; START.md path is the argument#59; ANTHROPIC_API_KEY is never in the env
+  Note over task_execution,worker_profiles: the attempt row commits in launching first#59; the fleet-run wrapper starts in its own process group through the 1 launcher (SR-7)#59; START.md path is the argument#59; ANTHROPIC_API_KEY is never in the env
   worker_profiles-)task_execution: heartbeat-written (event via file)
   Note over worker_profiles,task_execution: heartbeat.json every 10 s
   herdr-)task_execution: agent-status-changed (event via other)
@@ -363,25 +363,28 @@ sequenceDiagram
 
 ### F9 — Open the pull request and close the feature (scenario S1: Happy path: 1 rough idea becomes 1 merged feature)
 
-S1 part 5, from the full gate (F3) to the merged feature. integration opens the pull request on GitHub, tells the operator, GitHub reports the merge, and the clock confirms the merge in the primary branch by content before ideas closes the idea.
+S1 part 5, from the full gate (F3) to the merged feature. The feature is ready, integration pushes the feature branch as a push job, opens the pull request on GitHub, tells the operator, GitHub reports the merge, and the clock confirms the merge in the primary branch by content before ideas closes the idea.
 
-Policies realised: close-on-feature-merged
+Policies realised: close-on-feature-merged, pr-on-ready
 
 ```mermaid
 sequenceDiagram
   autonumber
   participant integration as Landing and integration
+  participant git as git (external)
   participant github as GitHub (external)
   actor operator as Operator
   participant clock as Clock (external)
   participant ideas as Ideas
+  integration-)git: push-feature-branch (command via other)
+  Note over integration,git: a push job after the full gate passes and the feature is ready#59; a push that rewrites uses --force-with-lease on seen_remote_tip#59; a failed run sets push_state failed and the next run waits for push_not_before (A28, A33)
   integration->>github: open-pull-request (command via other)
-  Note over integration,github: after the full gate passes#59; pr setting gh or manual
+  Note over integration,github: after the push job passed#59; pr setting gh opens it, manual records the compare URL#59; remote = none opens no pull request
   github-->>integration: open-pull-request (response via other)
   integration-)operator: pull-request-opened (event via other)
   opt pr setting gh
     github-)integration: pull-request-merged (event via other)
-    Note over github,integration: read by the reconcile pass
+    Note over github,integration: read by the fetch job (pr = gh)
   end
   clock-)integration: check-merged (command via in-process)
   Note over clock,integration: reads git: in the primary branch by content
@@ -390,25 +393,231 @@ sequenceDiagram
 
 | # | From | To | Message | Kind | Sync | Via |
 |---|---|---|---|---|---|---|
-| 1 | integration | github | `open-pull-request` | command | yes | other |
-| 2 | github | integration | `open-pull-request` | response | yes | other |
-| 3 | integration | operator | `pull-request-opened` | event | no | other |
-| 4 | github | integration | `pull-request-merged` | event | no | other |
-| 5 | clock | integration | `check-merged` | command | no | in-process |
-| 6 | integration | ideas | `feature-merged` | event | no | in-process |
+| 1 | integration | git | `push-feature-branch` | command | no | other |
+| 2 | integration | github | `open-pull-request` | command | yes | other |
+| 3 | github | integration | `open-pull-request` | response | yes | other |
+| 4 | integration | operator | `pull-request-opened` | event | no | other |
+| 5 | github | integration | `pull-request-merged` | event | no | other |
+| 6 | clock | integration | `check-merged` | command | no | in-process |
+| 7 | integration | ideas | `feature-merged` | event | no | in-process |
+
+### F10 — Cancel an idea, its tasks and their task branches (scenario S5: An idea is cancelled: its tasks are cancelled, and each task branch is rescued and abandoned)
+
+S5. The operator cancels an idea or 1 task. task-execution stops the process group of each live attempt, then cancels each task that is not terminal. integration asks worktree-custody for a rescue ref of each task branch and abandons the branch only after it exists (A34).
+
+Policies realised: cancel-tasks-on-idea-cancelled, abandon-branch-on-task-cancelled
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor operator as Operator
+  participant ideas as Ideas
+  participant task_execution as Task execution
+  participant integration as Landing and integration
+  participant worktree_custody as Worktree custody
+  operator->>ideas: cancel-idea (command via other)
+  Note over operator,ideas: horch CLI request of class operator over the fleetd command channel, with the operator token#59; a request file with the same request_id when fleetd is down (A24, A35)
+  ideas-->>operator: cancel-idea (response via other)
+  ideas-)task_execution: idea-cancelled (event via in-process)
+  opt the operator cancels 1 task
+    operator->>task_execution: cancel-task (command via other)
+    task_execution-->>operator: cancel-task (response via other)
+  end
+  task_execution-)integration: task-cancelled (event via in-process)
+  Note over task_execution,integration: after the process group of a live attempt is stopped through the platform layer
+  integration-)worktree_custody: rescue-worktree (command via in-process)
+  Note over integration,worktree_custody: a rescue job, outside the pass
+  worktree_custody-)integration: worktree-rescued (event via in-process)
+  Note over worktree_custody,integration: integration then moves the task branch to abandoned
+```
+
+| # | From | To | Message | Kind | Sync | Via |
+|---|---|---|---|---|---|---|
+| 1 | operator | ideas | `cancel-idea` | command | yes | other |
+| 2 | ideas | operator | `cancel-idea` | response | yes | other |
+| 3 | ideas | task-execution | `idea-cancelled` | event | no | in-process |
+| 4 | operator | task-execution | `cancel-task` | command | yes | other |
+| 5 | task-execution | operator | `cancel-task` | response | yes | other |
+| 6 | task-execution | integration | `task-cancelled` | event | no | in-process |
+| 7 | integration | worktree-custody | `rescue-worktree` | command | no | in-process |
+| 8 | worktree-custody | integration | `worktree-rescued` | event | no | in-process |
+
+### F11 — A task branch repair reaches its limit and the operator decides (no discover scenario — derived flow)
+
+No discover scenario covers this path. A task branch fails the gate, fleetd starts fix attempts of the done task, and each failure counts in repair_attempts of the branch, not in the attempts of the task. At max_attempts the branch goes on the needs-you list, and the operator requeues the task or abandons the branch (A27, A34). A conflicted branch with its resolver attempts follows the same path.
+
+Policies realised: triage-on-gate-failed, escalate-branch-on-repair-limit, operator-decides-branch
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant integration as Landing and integration
+  participant task_execution as Task execution
+  participant worker_profiles as Worker profiles and adapters
+  participant ideas as Ideas
+  actor operator as Operator
+  participant worktree_custody as Worktree custody
+  integration-)task_execution: task-branch-gate-failed (event via in-process)
+  Note over integration,task_execution: the bisect found the failing branch
+  worker_profiles-)task_execution: attempt-exited (event via file)
+  Note over worker_profiles,task_execution: exit.json of the fix attempt
+  task_execution-)integration: attempt-failed (event via in-process)
+  Note over task_execution,integration: the task stays done#59; repair_attempts of the branch goes up by 1
+  opt repair_attempts reaches max_attempts
+    integration-)ideas: task-branch-repair-escalated (event via in-process)
+    Note over integration,ideas: ideas puts 1 item on the needs-you list
+    integration-)task_execution: task-branch-repair-escalated (event via in-process)
+  end
+  opt the operator requeues: repair_attempts goes to 0 and 1 more attempt starts
+    operator->>task_execution: requeue-task (command via other)
+    Note over operator,task_execution: horch CLI request of class operator over the fleetd command channel, with the operator token#59; a request file with the same request_id when fleetd is down (A24, A35)
+  end
+  opt the operator abandons the branch
+    operator->>integration: abandon-task-branch (command via other)
+    Note over operator,integration: horch CLI request of class operator over the fleetd command channel, with the operator token#59; a request file with the same request_id when fleetd is down (A24, A35)
+    integration-)worktree_custody: rescue-worktree (command via in-process)
+    Note over integration,worktree_custody: a rescue job, outside the pass
+    worktree_custody-)integration: worktree-rescued (event via in-process)
+    Note over worktree_custody,integration: integration then moves the branch to abandoned and answers the request
+  end
+```
+
+| # | From | To | Message | Kind | Sync | Via |
+|---|---|---|---|---|---|---|
+| 1 | integration | task-execution | `task-branch-gate-failed` | event | no | in-process |
+| 2 | worker-profiles | task-execution | `attempt-exited` | event | no | file |
+| 3 | task-execution | integration | `attempt-failed` | event | no | in-process |
+| 4 | integration | ideas | `task-branch-repair-escalated` | event | no | in-process |
+| 5 | integration | task-execution | `task-branch-repair-escalated` | event | no | in-process |
+| 6 | operator | task-execution | `requeue-task` | command | yes | other |
+| 7 | operator | integration | `abandon-task-branch` | command | yes | other |
+| 8 | integration | worktree-custody | `rescue-worktree` | command | no | in-process |
+| 9 | worktree-custody | integration | `worktree-rescued` | event | no | in-process |
+
+### F12 — A closed pull request and an abandoned feature (no discover scenario — derived flow)
+
+No discover scenario covers this path. The fetch job reads a pull request that is closed and not merged, and 1 item goes on the needs-you list. The operator runs horch feature abandon. integration writes a rescue ref of each branch that is not landed, abandons it, and ideas cancels each idea of the feature that is not merged, which cancels its tasks (A28, A34).
+
+Policies realised: operator-decides-closed-pr, cancel-on-feature-abandoned, cancel-tasks-on-idea-cancelled
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant github as GitHub (external)
+  participant integration as Landing and integration
+  actor operator as Operator
+  participant worktree_custody as Worktree custody
+  participant ideas as Ideas
+  participant task_execution as Task execution
+  github-)integration: pull-request-closed (event via other)
+  Note over github,integration: read by the fetch job (pr = gh)#59; integration raises 1 needs-you item
+  operator->>integration: abandon-feature (command via other)
+  Note over operator,integration: horch CLI request of class operator over the fleetd command channel, with the operator token#59; a request file with the same request_id when fleetd is down (A24, A35)
+  integration-->>operator: abandon-feature (response via other)
+  integration-)worktree_custody: rescue-worktree (command via in-process)
+  Note over integration,worktree_custody: 1 rescue job for each branch of the feature that is not landed
+  worktree_custody-)integration: worktree-rescued (event via in-process)
+  Note over worktree_custody,integration: integration moves each such branch to abandoned
+  integration-)ideas: feature-abandoned (event via in-process)
+  ideas-)task_execution: idea-cancelled (event via in-process)
+  Note over ideas,task_execution: for each idea of the feature that is not merged
+  task_execution-)integration: task-cancelled (event via in-process)
+  Note over task_execution,integration: the branch already has its rescue ref and is abandoned
+```
+
+| # | From | To | Message | Kind | Sync | Via |
+|---|---|---|---|---|---|---|
+| 1 | github | integration | `pull-request-closed` | event | no | other |
+| 2 | operator | integration | `abandon-feature` | command | yes | other |
+| 3 | integration | operator | `abandon-feature` | response | yes | other |
+| 4 | integration | worktree-custody | `rescue-worktree` | command | no | in-process |
+| 5 | worktree-custody | integration | `worktree-rescued` | event | no | in-process |
+| 6 | integration | ideas | `feature-abandoned` | event | no | in-process |
+| 7 | ideas | task-execution | `idea-cancelled` | event | no | in-process |
+| 8 | task-execution | integration | `task-cancelled` | event | no | in-process |
+
+### F13 — A job is abandoned and the operator requeues it (no discover scenario — derived flow)
+
+No discover scenario covers this path. Long work is a job outside the pass (A23, A33). Part 1 of each pass reads the ended jobs. A job stopped at its time limit, or whose process is gone, ends abandoned, and the context that owns its kind waits for the next run. At abandoned_run_limit no new run starts, ideas puts 1 item on the needs-you list, and the operator runs horch job requeue.
+
+Policies realised: operator-requeues-job
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant clock as Clock (external)
+  participant fleet_runtime as Fleet runtime
+  participant integration as Landing and integration
+  participant ideas as Ideas
+  actor operator as Operator
+  clock-)fleet_runtime: observe-jobs (command via in-process)
+  Note over clock,fleet_runtime: part 1 of the pass reads the facts, with no transaction
+  fleet_runtime-)integration: job-abandoned (event via in-process)
+  Note over fleet_runtime,integration: for example a full_gate job past its time limit#59; the next run waits for the job backoff
+  opt abandoned_runs reaches abandoned_run_limit (3)
+    fleet_runtime-)ideas: job-abandoned (event via in-process)
+    Note over fleet_runtime,ideas: ideas puts 1 item on the needs-you list
+  end
+  operator->>fleet_runtime: requeue-job (command via other)
+  Note over operator,fleet_runtime: horch CLI request of class operator over the fleetd command channel, with the operator token#59; a request file with the same request_id when fleetd is down (A24, A35)
+  fleet_runtime-->>operator: requeue-job (response via other)
+  fleet_runtime-)integration: job-requeued (event via in-process)
+  Note over fleet_runtime,integration: the next run of the job starts
+```
+
+| # | From | To | Message | Kind | Sync | Via |
+|---|---|---|---|---|---|---|
+| 1 | clock | fleet-runtime | `observe-jobs` | command | no | in-process |
+| 2 | fleet-runtime | integration | `job-abandoned` | event | no | in-process |
+| 3 | fleet-runtime | ideas | `job-abandoned` | event | no | in-process |
+| 4 | operator | fleet-runtime | `requeue-job` | command | yes | other |
+| 5 | fleet-runtime | operator | `requeue-job` | response | yes | other |
+| 6 | fleet-runtime | integration | `job-requeued` | event | no | in-process |
+
+### F14 — Adapter drift becomes an idea, and the profile is healthy again (no discover scenario — derived flow)
+
+No discover scenario covers this path. fleetd schedules the docs_sync job, then the conformance job. A failed conformance check marks each profile of the adapter unhealthy, so dispatch holds, and ideas queues an idea to update the adapter. When the checks pass again, worker-profiles marks the profiles healthy (design: Docs sync and adapter conformance).
+
+Policies realised: block-profile-on-conformance, idea-on-adapter-drift, unblock-profile-on-conformance
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant clock as Clock (external)
+  participant worker_profiles as Worker profiles and adapters
+  participant task_execution as Task execution
+  participant ideas as Ideas
+  clock-)worker_profiles: run-conformance-tests (command via in-process)
+  Note over clock,worker_profiles: a conformance job after the docs_sync job
+  opt a conformance check fails
+    worker_profiles-)task_execution: profile-marked-unhealthy (event via in-process)
+    worker_profiles-)ideas: adapter-conformance-failed (event via in-process)
+    Note over worker_profiles,ideas: the idea follows the normal idea flow (F1)
+  end
+  opt each conformance check passes again
+    worker_profiles-)task_execution: profile-marked-healthy (event via in-process)
+  end
+```
+
+| # | From | To | Message | Kind | Sync | Via |
+|---|---|---|---|---|---|---|
+| 1 | clock | worker-profiles | `run-conformance-tests` | command | no | in-process |
+| 2 | worker-profiles | task-execution | `profile-marked-unhealthy` | event | no | in-process |
+| 3 | worker-profiles | ideas | `adapter-conformance-failed` | event | no | in-process |
+| 4 | worker-profiles | task-execution | `profile-marked-healthy` | event | no | in-process |
 
 ## Message catalogue
 
 | Message | Kind | Producer | Consumers | Payload | Delivery | Contract type | Notes |
 |---|---|---|---|---|---|---|---|
-| `add-idea` | command | operator | ideas | text, feature_id?, idempotency_key | sync | ui | idempotency: fleetd applies a request once per idempotency_key and returns the first outcome again; response: outcome (accepted or refused), reason (when refused); also via file (async, at-least-once): request file under the state root when fleetd is down; fleetd reads it at start; the file carries the same idempotency_key; horch idea add |
-| `add-direct-idea` | command | operator | ideas | ticket_file, feature_id?, idempotency_key | sync | ui | idempotency: fleetd applies a request once per idempotency_key and returns the first outcome again; response: outcome (accepted or refused), reason (when refused); also via file (async, at-least-once): request file under the state root when fleetd is down; fleetd reads it at start; the file carries the same idempotency_key; horch idea add --direct |
-| `approve-assumptions` | command | operator | ideas | idea_id, assumptions_hash, idempotency_key | sync | ui | idempotency: an approval of the same assumptionsHash is a no-op; a stale hash is refused; fleetd applies a request once per idempotency_key and returns the first outcome again; response: outcome (accepted or refused), reason (when refused); also via file (async, at-least-once): request file under the state root when fleetd is down; fleetd reads it at start; the file carries the same idempotency_key |
-| `abandon-task-branch` | command | operator | integration | branch, task_id, idempotency_key | sync | ui | idempotency: an abandoned branch is not abandoned twice; the rescue ref is returned again; fleetd applies a request once per idempotency_key and returns the first outcome again; response: outcome (accepted or refused), reason (when refused); also via file (async, at-least-once): request file under the state root when fleetd is down; fleetd reads it at start; the file carries the same idempotency_key |
+| `add-idea` | command | operator | ideas | text, feature_id?, request_id, operator_token | sync | ui | idempotency: fleetd applies a request once per request_id and returns the stored result again; a known request_id with a different payload hash is refused (A24); response: state (applied or refused), result (when applied), reason (when refused); also via file (async, at-least-once): request file in /fleet/run/requests/ when fleetd is down; fleetd reads it at start; the file carries the same request_id and the operator token (A24, A35); horch idea add |
+| `add-direct-idea` | command | operator | ideas | ticket_file, feature_id?, request_id, operator_token | sync | ui | idempotency: fleetd applies a request once per request_id and returns the stored result again; a known request_id with a different payload hash is refused (A24); response: state (applied or refused), result (when applied), reason (when refused); also via file (async, at-least-once): request file in /fleet/run/requests/ when fleetd is down; fleetd reads it at start; the file carries the same request_id and the operator token (A24, A35); horch idea add --direct |
+| `approve-assumptions` | command | operator | ideas | idea_id, assumptions_hash, request_id, operator_token | sync | ui | idempotency: an approval of the same assumptionsHash is a no-op; a stale hash is refused; fleetd applies a request once per request_id and returns the stored result again; a known request_id with a different payload hash is refused (A24); response: state (applied or refused), result (when applied), reason (when refused); also via file (async, at-least-once): request file in /fleet/run/requests/ when fleetd is down; fleetd reads it at start; the file carries the same request_id and the operator token (A24, A35) |
+| `abandon-task-branch` | command | operator | integration | branch, task_id, request_id, operator_token | sync | ui | idempotency: an abandoned branch is not abandoned twice; the rescue ref is returned again; fleetd applies a request once per request_id and returns the stored result again; a known request_id with a different payload hash is refused (A24); response: state (applied or refused), result (when applied), reason (when refused); also via file (async, at-least-once): request file in /fleet/run/requests/ when fleetd is down; fleetd reads it at start; the file carries the same request_id and the operator token (A24, A35) |
 | `write-assumptions` | command | sub-orchestrator | ideas | idea_id, assumptions.md | at-least-once | ui | idempotency: fleetd ingests a file once per (path, content hash); files are atomic and immutable |
 | `write-spec` | command | sub-orchestrator | ideas | idea_id, spec.md, requirements.yaml | at-least-once | ui | idempotency: once per (ideaId, content hash) |
 | `submit-plan` | command | sub-orchestrator | ideas | idea_id, plan.yaml | at-least-once | ui | idempotency: once per (ideaId, plan content hash); plan.verdict.json records the result |
-| `answer-question` | command | sub-orchestrator | ideas | question_id, answer|assumption, citation?, idempotency_key | sync | ui | idempotency: once per question_id; a second answer is refused with its reason; response: outcome (accepted or refused), reason (when refused); also via file (async, at-least-once): request file under the state root when fleetd is down; fleetd reads it at start; the file carries the same idempotency_key; horch CLI request of the sub-orchestrator over the fleetd command channel (orchestrator, D15); fleetd stays the only ledger writer |
+| `answer-question` | command | sub-orchestrator | ideas | question_id, answer|assumption, citation? | at-least-once | ui | idempotency: fleetd ingests the file 1 time, by path and hash; the question row moves to answered once per question_id; horch idea note of the sub-orchestrator writes a file in its idea folder. A request of class worker is a file and never uses the command channel or the request folder (design: The command channel, A35). fleetd checks the citation of a covered answer. |
 | `replan-task` | command | sub-orchestrator | ideas | task_id, plan_change | at-least-once | ui | idempotency: once per (taskId, replan round); 1 replan per task |
 | `write-result` | command | worker | task-execution | task, attempt, status (completed|blocked|failed), summary, commits[], files_changed[], acceptance_self_check[], notes_for_next | at-least-once | ui | idempotency: once per attemptId; result.json is immutable; outbox/result.json, written with horch result; status is 1 of the closed list completed, blocked, failed (orchestrator, D15) |
 | `ask-question` | command | worker | ideas | task_id, question_id, text | at-least-once | ui | idempotency: once per questionId (1 file each); outbox/questions/, written with fleet ask |
@@ -433,7 +642,7 @@ sequenceDiagram
 | `idea-tasks-landed` | event | ideas | integration | idea_id, feature_id | at-least-once | published-language | v1; idempotency: the reconcile pass is level-triggered, so a reaction can run again; the full gate runs once per (featureId, feature tip) |
 | `replan-requested` | event | task-execution | ideas | task_id, attempts | at-least-once | published-language | v1; idempotency: the reconcile pass is level-triggered, so a reaction can run again; 1 replan per task |
 | `task-leased` | event | task-execution | worktree-custody | task_id, attempt_id, worktree_id, branch | at-least-once | customer-supplier | v1; idempotency: the reconcile pass is level-triggered, so a reaction can run again; create-worktree is a no-op when the worktree exists for the task |
-| `attempt-failed` | event | task-execution | worktree-custody | attempt_id, task_id, outcome | at-least-once | customer-supplier | v1; idempotency: the reconcile pass is level-triggered, so a reaction can run again; the worktree state moves once per attemptId |
+| `attempt-failed` | event | task-execution | worktree-custody, integration | attempt_id, task_id, outcome | at-least-once | customer-supplier | v1; idempotency: the reconcile pass is level-triggered, so a reaction can run again; the worktree state moves once per attempt_id; repair_attempts of a branch goes up once per attempt_id; worktree-custody keeps the worktree for the retry. For a resolver or fix attempt of a done task, integration adds 1 to repair_attempts of the branch (A27, A34) |
 | `task-done` | event | task-execution | integration | task_id, branch, verdict | at-least-once | partnership | v1; idempotency: the reconcile pass is level-triggered, so a reaction can run again; mark-branch-ready is a no-op for a ready branch |
 | `worktree-created` | event | worktree-custody | task-execution | worktree_id, task_id, path, branch | at-least-once | published-language | v1; idempotency: the reconcile pass is level-triggered, so a reaction can run again; launch once per (taskId, attemptId) |
 | `rescue-failed` | event | worktree-custody | task-execution | worktree_id, task_id | at-least-once | published-language | v1; idempotency: the reconcile pass is level-triggered, so a reaction can run again; escalate-task is a no-op for an escalated task |
@@ -452,6 +661,28 @@ sequenceDiagram
 | `plan-verdict-written` | event | ideas | sub-orchestrator | idea, decision (committed|refused), reasons[] | at-least-once | ui | v1; idempotency: 1 plan.verdict.json per (idea, plan content hash); plan.verdict.json, the result of plan validation; a refusal carries its reasons |
 | `assumptions-approved` | event | ideas | sub-orchestrator | idea, assumptions_hash | at-least-once | ui | v1; idempotency: fleetd writes approval.json only on your approve, with the hash you saw, and ignores any other approval.json (FM-32, I7); approval.json, written by fleetd when you run horch idea approve |
 | `agent-status-changed` | event | herdr | task-execution, ideas | pane, agent_status | at-most-once | external-api | idempotency: edge events can be lost by design; each pass re-reads session.snapshot, so a repeat or a loss changes nothing; also via other (sync, sync): session.snapshot, re-read in every pass (level-triggered); pane.agent_status_changed from the herdr socket events.subscribe, received through the herdr adapter of fleet-runtime (R12, R13): working, blocked on a dialog, or idle |
+| `cancel-idea` | command | operator | ideas | idea_id, request_id, operator_token | sync | ui | idempotency: a cancelled idea is not cancelled twice; fleetd applies a request once per request_id and returns the stored result again; a known request_id with a different payload hash is refused (A24); response: state (applied or refused), result (when applied), reason (when refused); also via file (async, at-least-once): request file in /fleet/run/requests/ when fleetd is down; fleetd reads it at start; the file carries the same request_id and the operator token (A24, A35); horch idea cancel (request kind idea_cancel) |
+| `cancel-task` | command | operator | task-execution | task_id, request_id, operator_token | sync | ui | idempotency: a cancelled task is not cancelled twice; fleetd applies a request once per request_id and returns the stored result again; a known request_id with a different payload hash is refused (A24); response: state (applied or refused), result (when applied), reason (when refused); also via file (async, at-least-once): request file in /fleet/run/requests/ when fleetd is down; fleetd reads it at start; the file carries the same request_id and the operator token (A24, A35); horch task cancel (request kind task_cancel). A policy also issues it inside fleetd for a replan that replaces the task and for the cancel or abandon of its idea or feature (A34) |
+| `requeue-task` | command | operator | task-execution | task_id, request_id, operator_token | sync | ui | idempotency: fleetd applies a request once per request_id and returns the stored result again; a known request_id with a different payload hash is refused (A24); response: state (applied or refused), result (when applied), reason (when refused); also via file (async, at-least-once): request file in /fleet/run/requests/ when fleetd is down; fleetd reads it at start; the file carries the same request_id and the operator token (A24, A35); horch task requeue (request kind task_requeue). It sets the attempt count to 0, and for a task branch at its repair limit it sets repair_attempts to 0 and starts 1 more attempt (A27, D15) |
+| `abandon-feature` | command | operator | integration | feature_id, request_id, operator_token | sync | ui | idempotency: an abandoned feature is not abandoned twice; fleetd applies a request once per request_id and returns the stored result again; a known request_id with a different payload hash is refused (A24); response: state (applied or refused), result (when applied), reason (when refused); also via file (async, at-least-once): request file in /fleet/run/requests/ when fleetd is down; fleetd reads it at start; the file carries the same request_id and the operator token (A24, A35); horch feature abandon (request kind feature_abandon). Only the operator sets abandoned (A28) |
+| `requeue-job` | command | operator | fleet-runtime | job_id, request_id, operator_token | sync | ui | idempotency: fleetd applies a request once per request_id and returns the stored result again; a known request_id with a different payload hash is refused (A24); response: state (applied or refused), result (when applied), reason (when refused); also via file (async, at-least-once): request file in /fleet/run/requests/ when fleetd is down; fleetd reads it at start; the file carries the same request_id and the operator token (A24, A35); horch job requeue (request kind job_requeue). It sets abandoned_runs of the job key to 0, and the next run starts (A33) |
+| `drop-rescue-ref` | command | operator | worktree-custody | ref, request_id, operator_token | sync | ui | idempotency: a deleted ref is not deleted twice; fleetd applies a request once per request_id and returns the stored result again; a known request_id with a different payload hash is refused (A24); response: state (applied or refused), result (when applied), reason (when refused); also via file (async, at-least-once): request file in /fleet/run/requests/ when fleetd is down; fleetd reads it at start; the file carries the same request_id and the operator token (A24, A35); horch rescue drop (request kind rescue_drop). Only the operator deletes a rescue ref of class unique (A27, I10) |
+| `idea-cancelled` | event | ideas | task-execution | idea_id, cause | at-least-once | customer-supplier | v1; idempotency: the reconcile pass is level-triggered, so a reaction can run again; cancel-task is a no-op for a task that is terminal; task-execution cancels each task of the idea that is not terminal (cancel-tasks-on-idea-cancelled, A34) |
+| `task-cancelled` | event | task-execution | integration | task_id, branch, cause | at-least-once | partnership | v1; idempotency: the reconcile pass is level-triggered, so a reaction can run again; a branch is rescued and abandoned once per branch; fleetd first stops the process group of a live attempt, then moves the task to cancelled. integration then writes a rescue ref of the task branch and abandons it (abandon-branch-on-task-cancelled, A34) |
+| `rescue-worktree` | command | integration | worktree-custody | branch, task_id, worktree | at-least-once | customer-supplier | idempotency: 1 rescue ref per (branch, tip); a rescue job is keyed by its subject and tip (A33); integration asks worktree-custody to write a rescue ref before a branch is abandoned or rewritten. The rescue runs as a rescue job outside the pass (A23, CC7) |
+| `worktree-rescued` | event | worktree-custody | integration | branch, task_id, rescue_ref, rescue_class | at-least-once | published-language | v1; idempotency: the reconcile pass is level-triggered, so a reaction can run again; integration abandons a branch once per branch; the rescue ref exists, of class unique or superseded (A27). integration drops the branch only after this event (CC7) |
+| `task-branch-gate-failed` | event | integration | task-execution | branch, task_id, gate_output | at-least-once | partnership | v1; idempotency: the reconcile pass is level-triggered, so a reaction can run again; 1 fix attempt is started per (branch, repair_attempts); the bisect found the failing branch. fleetd starts a fix attempt of the task in its worktree with the gate output (triage-on-gate-failed, A27) |
+| `task-branch-repair-escalated` | event | integration | ideas, task-execution | branch, task_id, repair_attempts | at-least-once | published-language | v1; idempotency: 1 needs-you item per branch, written by key (design: The needs-you list has a life cycle); repair_attempts of the branch reached max_attempts of the task. ideas puts 1 item on the needs-you list. task-execution accepts horch task requeue of the done task, which sets repair_attempts to 0 and starts 1 more attempt of the branch. The task stays done (A27, A34) |
+| `feature-abandoned` | event | integration | ideas | feature_id | at-least-once | published-language | v1; idempotency: the reconcile pass is level-triggered, so a reaction can run again; cancel-idea is a no-op for an idea that is merged or cancelled; each branch of the feature that is not landed has a rescue ref and is abandoned first. ideas cancels each idea of the feature that is not merged (cancel-on-feature-abandoned, A28) |
+| `pull-request-closed` | event | github | integration | feature_id, pr_state | at-least-once | external-api | idempotency: once per feature_id and pr_state; read by the fetch job (pr = gh): the pull request is closed and not merged. pr_state is closed, and 1 item goes on the needs-you list (A28) |
+| `push-feature-branch` | command | integration | git | feature_id, branch, seen_remote_tip | at-least-once | external-api | idempotency: an effect job: a failed run is never used again, and each retry is a new run (A33); a push job of the feature branch, outside the pass. A push that rewrites uses --force-with-lease on seen_remote_tip. A passed push sets push_state ok; a failed push sets push_state failed and push_not_before (A28) |
+| `observe-jobs` | command | clock | fleet-runtime | pass | at-most-once | external-api | idempotency: each pass reads the ended jobs again; a job row ends once; part 1 of each pass reads the ended jobs and their results. A running job whose process is gone ends abandoned (A23) |
+| `job-abandoned` | event | fleet-runtime | task-execution, integration, worktree-custody, worker-profiles, ideas | job_id, kind, subject, abandoned_runs | at-least-once | open-host-service | v1; idempotency: the reconcile pass is level-triggered, so a reaction can run again; the owner context reads the job row; 1 needs-you item per job key; a job stopped at its time limit, or its process was lost. It has no verdict. The context that owns the job kind waits for the next run after the backoff. At abandoned_run_limit (3) no new run starts, and ideas puts 1 item on the needs-you list (A23, A33) |
+| `job-requeued` | event | fleet-runtime | task-execution, integration, worktree-custody, worker-profiles | job_id, kind, subject | at-least-once | open-host-service | v1; idempotency: the reconcile pass is level-triggered, so a reaction can run again; the next run starts once per job key; abandoned_runs of the job key is 0, and the next run starts (A33) |
+| `run-conformance-tests` | command | clock | worker-profiles | cli, version | at-least-once | external-api | idempotency: a conformance job keyed by the CLI and its version (A33); fleetd schedules the docs_sync job daily and on each CLI version change, then the conformance job. Neither job has a repository (design: Docs sync and adapter conformance) |
+| `adapter-conformance-failed` | event | worker-profiles | ideas | cli, version, failed_checks | at-least-once | customer-supplier | v1; idempotency: the reconcile pass is level-triggered, so a reaction can run again; 1 idea per (cli, version) drift; a conformance check failed, the check Operator boundary included. worker-profiles marks each profile of the adapter unhealthy, and ideas queues an idea to update the adapter (idea-on-adapter-drift) |
+| `profile-marked-unhealthy` | event | worker-profiles | task-execution | profile_id, reason | at-least-once | customer-supplier | v1; idempotency: the reconcile pass is level-triggered, so a reaction can run again; dispatch holds once per profile; fleetd dispatches no task to the profile; horch status shows the dispatch hold (A28) |
+| `profile-marked-healthy` | event | worker-profiles | task-execution | profile_id | at-least-once | customer-supplier | v1; idempotency: the reconcile pass is level-triggered, so a reaction can run again; dispatch resumes once per profile; the conformance checks of the adapter passed; fleetd dispatches to the profile again (unblock-profile-on-conformance) |
 
 ## Integration decisions (one per context-map relationship)
 
@@ -468,20 +699,25 @@ sequenceDiagram
 | R9 | integration → ideas | published-language | in-process-call | same-deployable | Both contexts are code inside the 1 fleetd process (design: Architecture and roles; scale target 1 deployable). task-branch-landed and feature-merged as in-memory events; ideas never reads git. |
 | R10 | worker-profiles → task-execution | customer-supplier | in-process-call | same-deployable | Both contexts are code inside the 1 fleetd process (design: Architecture and roles; scale target 1 deployable). task-execution sends start-agent-process to worker-profiles, which owns the environment scrub and the fleet-run wrapper (decompose N8, D2). task-execution asks launch-environment synchronously only to check a fallback persona (F4). heartbeat.json comes back as a file. |
 | R11 | worker-profiles → ideas | customer-supplier | in-process-call | same-deployable | Both contexts are code inside the 1 fleetd process (design: Architecture and roles; scale target 1 deployable). ideas sends start-agent-process to worker-profiles for a sub-orchestrator pane (F1), with the same environment scrub. |
-| R12 | fleet-runtime → task-execution | open-host-service | in-process-call | same-deployable | Both contexts are code inside the 1 fleetd process (design: Architecture and roles; scale target 1 deployable). Calls through the fleet-runtime facade: the single ledger writer (decompose N5) and the herdr adapter, which gives panes and delivers agent-status-changed. Process starts go through worker-profiles, not fleet-runtime. No flow draws a step to fleet-runtime: the ledger writer sits under every step (A3), and the flows draw the herdr adapter as herdr itself. |
+| R12 | fleet-runtime → task-execution | open-host-service | in-process-call | same-deployable | Both contexts are code inside the 1 fleetd process (design: Architecture and roles; scale target 1 deployable). Calls through the fleet-runtime facade: the single ledger writer (decompose N5) and the herdr adapter, which gives panes and delivers agent-status-changed. Process starts go through worker-profiles, not fleet-runtime. No flow draws a step to fleet-runtime: the ledger writer sits under every step (A3), and the flows draw the herdr adapter as herdr itself. Round 3: fleet-runtime also runs the task_check job of task-execution and delivers job-abandoned and job-requeued (F13). |
 | R13 | fleet-runtime → ideas | open-host-service | in-process-call | same-deployable | Both contexts are code inside the 1 fleetd process (design: Architecture and roles; scale target 1 deployable). The same facade for ideas: the command channel delivers horch idea commands and the answers of the sub-orchestrator, and the herdr adapter gives sub-orchestrator panes. No flow draws a step to fleet-runtime: the ledger writer sits under every step (A3), and the flows draw the herdr adapter as herdr itself. |
+| R14 | fleet-runtime → integration | open-host-service | in-process-call | same-deployable | Both contexts are code inside the 1 fleetd process (design: Architecture and roles; scale target 1 deployable). integration calls the fleet-runtime facade: the single ledger writer and the job runner. integration queues the jobs bundle_build, fast_gate, full_gate, trial_merge, rebase, fetch and push in the transaction of part 2 of a pass, and reads their results in part 1 of a later pass. A pass never waits for a job (A23, A33). F13 draws job-abandoned and job-requeued. |
+| R15 | fleet-runtime → worktree-custody | open-host-service | in-process-call | same-deployable | Both contexts are code inside the 1 fleetd process (design: Architecture and roles; scale target 1 deployable). worktree-custody calls the fleet-runtime facade: the single ledger writer and the job runner. worktree-custody queues the jobs worktree_add, worktree_remove, worktree_list and rescue in the transaction of part 2 of a pass, and reads their results in part 1 of a later pass. A pass never waits for a job (A23, A33). F13 draws job-abandoned and job-requeued with integration as the example owner; the same 2 events reach this context for its own job kinds, so no flow draws a separate step. |
+| R16 | fleet-runtime → worker-profiles | open-host-service | in-process-call | same-deployable | Both contexts are code inside the 1 fleetd process (design: Architecture and roles; scale target 1 deployable). worker-profiles calls the fleet-runtime facade: the single ledger writer and the job runner. worker-profiles queues the jobs docs_sync and conformance in the transaction of part 2 of a pass, and reads their results in part 1 of a later pass. A pass never waits for a job (A23, A33). F13 draws job-abandoned and job-requeued with integration as the example owner; the same 2 events reach this context for its own job kinds, so no flow draws a separate step. |
 
 ## Coupling concerns
 
-- **CC1** (high) — task-execution and integration depend on each other: task-done and task-escalated go one way, task-branch-conflicted and resolver-task-opened go the other. Both are core, so a change in one state machine can force a change in the other. — contexts: task-execution, integration — smell: bidirectional; flows: F3, F6, F7; mitigation: Keep both directions as versioned in-memory events only, never direct calls. The orchestrator (D15) declared R6 and R7 a partnership: the 2 contexts plan their changes together (answers Q4).
+- **CC1** (high) — task-execution and integration depend on each other: task-done, task-escalated, task-cancelled and attempt-failed go one way, task-branch-conflicted, task-branch-gate-failed and resolver-task-opened go the other. Both are core, so a change in one state machine can force a change in the other. — contexts: task-execution, integration — smell: bidirectional; flows: F3, F6, F7, F10, F11; mitigation: Keep both directions as versioned in-memory events only, never direct calls. The orchestrator (D15) declared R6 and R7 a partnership: the 2 contexts plan their changes together (answers Q4).
 - **CC2** (medium) — ideas and task-execution depend on each other: plan and answer events go to task-execution, replan-requested comes back to ideas. — contexts: ideas, task-execution — smell: bidirectional; flows: F2, F5, F6; mitigation: Accepted: decompose split the 2 directions into R2 and R3 on purpose. Both directions stay events.
 - **CC3** (medium) — ideas and integration depend on each other: assumptions-written and idea-tasks-landed go to integration, feature-opened, task-branch-landed and feature-merged come back. — contexts: ideas, integration — smell: bidirectional; flows: F1, F3, F7; mitigation: Accepted: R1 and R9 are both published languages; ideas never reads git and integration never reads idea files.
 - **CC4** (medium) — task-execution and worktree-custody depend on each other (R4 and R5): the worktree lifecycle follows the task lease and the attempt end, and launch waits for the worktree. — contexts: task-execution, worktree-custody — smell: bidirectional; flows: F2, F5, F6; mitigation: Accepted as the lifecycle link of decompose N6; keep it as events in both directions.
 - **CC5** (medium) — task-leased is an event, but task-execution cannot launch until the worktree exists, and a failed git worktree add must come back to task-execution. The event hides a command that needs a result. — contexts: task-execution, worktree-custody — smell: event-should-be-command; flows: F8; mitigation: task-execution acts as the process manager of dispatch: lease and worktree lease row in 1 transaction, then create-worktree, then launch on worktree-created, with a timeout back to ready.; saga / process-manager candidate — design it at deep depth
-- **CC6** (high) — Trial merges, git worktree add and remove, and process starts are external calls. If one runs inside the ledger write transaction, a slow git or a hung process start holds the only writer. — contexts: integration, worktree-custody, worker-profiles — smell: external-in-transaction; flows: F7, F8; mitigation: Commit, then call, then record the outcome as an event in the next pass; never call git or start a process while the ledger transaction is open.
-- **CC7** (high) — abandon-task-branch drops a task branch in integration, but the rescue ref that keeps the work is made in worktree-custody (04 W6). Both must happen, in order, or work is lost. — contexts: integration, worktree-custody — smell: distributed-transaction; flows: F6; mitigation: integration asks worktree-custody to rescue first and drops the branch only on worktree-rescued; integration owns this process.; saga / process-manager candidate — design it at deep depth
+- **CC6** (high) — Trial merges, git worktree add and remove, and process starts are external calls. If one runs inside the ledger write transaction, a slow git or a hung process start holds the only writer. — contexts: integration, worktree-custody, worker-profiles — smell: external-in-transaction; flows: F7, F8, F9, F13; mitigation: The design settles it (A23, A24, A32): a pass has 3 parts. Part 1 reads the facts with no transaction, part 2 writes each effect as a row in an intended state in 1 transaction, and part 3 runs the effects after the commit. Each git call is a job outside the pass, and each process start goes through the 1 launcher after the commit.
+- **CC7** (high) — abandon-task-branch drops a task branch in integration, but the rescue ref that keeps the work is made in worktree-custody (04 W6). Both must happen, in order, or work is lost. So integration sends rescue-worktree to worktree-custody and waits for worktree-rescued, while task-branch-landed goes the same way: a command and an event in both directions on R8. — contexts: integration, worktree-custody — smell: distributed-transaction; flows: F6, F10, F11, F12; mitigation: integration asks worktree-custody to rescue first (rescue-worktree) and drops the branch only on worktree-rescued; integration owns this process. The design states the order for a cancel, horch branch abandon and horch feature abandon (A27, A28, A34). The bidirectional link on R8 is accepted: git has 2 callers by concern (design: Module owners), so integration must ask worktree-custody for each rescue ref.; saga / process-manager candidate — design it at deep depth
 - **CC8** (medium) — plan-refused is an ideas fact, but escalate-task runs in task-execution, which owns neither the plan nor the reasons. — contexts: ideas, task-execution — smell: wrong-policy-host; flows: F6; mitigation: Keep the policy in task-execution only for a replan of an existing task; a refused first plan stays in ideas. ideas owns the 1 needs-you list (orchestrator, D15), so task-escalated goes back to ideas (F6).
 - **CC9** (low) — task-branch-landed has 2 consumers that need different data: worktree-custody needs the task and worktree, ideas needs the feature and idea roll-up. — contexts: integration, worktree-custody, ideas — smell: wide-fan-out; flows: F3, F7; mitigation: Keep 1 thin event (branch, task_id, feature_id, tip); each consumer reads its own rows.
+- **CC10** (medium) — A cancel and an abandon cross 3 contexts in a chain: ideas cancels an idea, task-execution cancels its tasks, integration rescues and abandons each branch through worktree-custody. horch feature abandon starts the same chain from integration. A step that is lost leaves a task, a branch or a worktree that is not terminal. — contexts: ideas, task-execution, integration, worktree-custody — smell: distributed-transaction; flows: F10, F12; mitigation: Each step is a local transaction on its own rows, and the level-triggered pass re-derives the next step from the rows: an idea in cancelled with a task that is not terminal, a task in cancelled with a branch that is not abandoned. Each task state that is not terminal has an exit to cancelled (A34).; saga / process-manager candidate — design it at deep depth
+- **CC11** (low) — job-abandoned and job-requeued fan out from fleet-runtime to the 4 contexts that own job kinds and to ideas for the needs-you item. — contexts: fleet-runtime, task-execution, integration, worktree-custody, worker-profiles, ideas — smell: wide-fan-out; flows: F13; mitigation: Keep 1 thin event (job_id, kind, subject, abandoned_runs). Each owner context reacts only to its own job kinds and reads its own rows; ideas writes the needs-you item by key.
 
 ## Deprecated (removed on a re-run; ids are never reused)
 
@@ -495,17 +731,19 @@ sequenceDiagram
 ## Assumptions
 
 - **A1** (high) All 6 contexts run in the 1 fleetd process, so every context-to-context message is in-process. Only the command channel, the file protocol, the herdr adapter, the platform layer, git and GitHub cross a process boundary (design: Architecture and roles).
-- **A2** (high) Cross-context events are in-memory events consumed in the level-triggered 5 s reconcile pass, which re-derives work from ledger rows, so a lost event is caught on the next pass. Delivery is at-least-once and every consumer is idempotent on a natural key (design: Supervision, liveness and reconciliation; decision D1).
+- **A2** (high) Cross-context events are in-memory events consumed in the level-triggered 5 s reconcile pass, which re-derives work from ledger rows, so a lost event is caught on the next pass. A pass has 3 parts (facts, 1 transaction, effects) and a work budget with cursors, and it never waits for a job (A23, A24, A32). Delivery is at-least-once and every consumer is idempotent on a natural key (design: Supervision, liveness and reconciliation; decision D1).
 - **A3** (high) Every state change in every flow commits through the single ledger writer in fleet-runtime (decompose N5). The flows do not draw that call on each step.
-- **A4** (high) Operator commands travel as horch CLI requests over the fleetd command channel (Unix socket or named pipe, through the platform layer), drawn as via other. When fleetd is down the request goes to a request file that fleetd reads at start (design: The command channel). Each request carries an idempotency_key, and a refusal carries its reason (orchestrator, D15).
+- **A4** (high) Operator commands travel as horch CLI requests of class operator over the fleetd command channel (Unix socket or named pipe, through the platform layer), drawn as via other. When fleetd is down the request goes to a request file in /fleet/run/requests/ that fleetd reads at start. Each request carries a request_id, its idempotency key, and the operator token; fleetd writes a requests row with the stored result or the refusal reason (design: The command channel, A24, A35). Requests of class worker (progress, result, ask, idea note) are files and never use the channel.
 - **A5** (high) Agent hand-offs (assumptions.md, plan.yaml, result.json, questions, exit.json) are files: atomic, immutable and read in the pass, so they are at-least-once and idempotent on path and content hash (design: Workspace layout and file protocol).
 - **A6** (high) 3 message ids were minted here: launch-environment (query), start-agent-process (command) and trial-merge-result (query). Discover adopted all 3 (discover N10): start-agent-process is a discover command, and the 2 queries reuse discover read-model ids.
 - **A7** (high) The fleet-run wrapper belongs to worker-profiles (D2 option B, orchestrator D15). It writes heartbeat.json and exit.json. attempt-exited (exit.json) comes from worker-profiles, the writer of the file; the file records the exit fact of the CLI process.
-- **A8** (high) git is called by 2 contexts, split by concern: worktree-custody for worktrees and rescue refs, integration for branches, merges, bundles and trial merges (orchestrator, D15).
+- **A8** (high) git is called by 2 contexts, split by concern: worktree-custody for worktrees and rescue refs, integration for branches, merges, bundles, trial merges, fetch and push (orchestrator, D15; design: Module owners). Each git call is a job outside the pass (A23).
 - **A9** (medium) worker-profiles owns start-agent-process (decompose N8). task-execution and ideas send it; worker-profiles resolves the launch environment, runs the fleet-run wrapper and starts it in its own process group through the platform layer. When the profile needs a pane, the caller gets the pane from the herdr adapter of fleet-runtime (R12, R13) and passes it in the request.
 - **A10** (high) Each file of the design workspace layout that crosses the process boundary is 1 message: task.yaml (assign-task), inbox/START.md (start-work), heartbeat.json (heartbeat-written), verdict.json (task-verdict-written), plan.verdict.json (plan-verdict-written) and approval.json (assumptions-approved). The path names its 1 writer (design: Workspace layout and file protocol, rule 3). 6 of these ids are minted here, because discover has no id for them: assign-task, start-work, heartbeat-written, task-verdict-written, plan-verdict-written and agent-status-changed (Q6).
 - **A11** (high) Payload field names are the snake_case names of the design (orchestrator, D15). A file message uses the field names of the design example of that file; an in-memory event uses <entity>_id.
-- **A12** (high) The model has 9 flows, 2 more than the 4 to 7 of depth standard. F2 and F3 were split at a hand-off (F8, F9) to keep each flow at 9 messages or fewer after the new file and pull request messages.
+- **A12** (high) The model has 14 flows, 7 more than the 4 to 7 of depth standard. F2 and F3 were split at a hand-off (F8, F9) to keep each flow at 9 messages or fewer. Round 3 adds F10 to F14, 1 flow for each new group of cross-context policies of discover (cancel, branch repair, feature abandon, jobs, adapter conformance).
+- **A13** (high) Round 3 adds 22 message ids, and each one is a discover command or event. 6 of them are operator requests of the design list of request kinds: cancel-idea, cancel-task, requeue-task, abandon-feature, requeue-job and drop-rescue-ref. No id is minted here in round 3.
+- **A14** (medium) pull-request-closed has no cross-context event for its needs-you item, so F12 draws it as a note: integration raises the item, and ideas owns the needs-you list (design: The needs-you list has a life cycle).
 
 ## Open questions
 
