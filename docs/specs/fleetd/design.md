@@ -177,7 +177,7 @@ Each requirement has an ID that the failure analysis and the tests point back to
 | PL-2 | Production code of the workspace shall have no `cfg(target_os)`, `cfg(unix)`, `cfg(windows)` or `cfg(target_family)`, and no `cfg!` of these, outside the platform layer. It shall call 1 platform interface, and each OS shall have 1 module that implements it. From Phase P, the interface covers the concerns of the existing code: process identity and liveness (alive, start time, parent, children); signals and stop; process groups (stop and kill of a group); file locks; file permissions; paths and home directories; symlinks and links; shell and quoting; local sockets and pipes; detach of a child process; the machine probe (free disk, memory, load); the sandbox host; and the small rest (for example archive format, file identity, user PATH). Phase 1 adds the fleetd concerns: service install and restart, hang detection, sleep and wake, file watching, and the transport of the fleetd command channel. Test code is not in scope. | From Phase P, an `arch_scan` rule finds no OS `cfg` in production code outside the platform layer. The rule names each site that cannot call the layer (a build script) by path, with its reason. |
 | PL-3 | Where an OS has no equivalent, its module shall return an explicit "not supported" value, and core code shall decide what to do with it. Nothing shall fail silently. | Unit test per module for each concern it does not support. |
 | PL-4 | Lease time shall count only while the machine is awake. A sleep shall not expire a lease. | Phase 0 test: a machine sleep in the middle of an attempt does not expire its lease. |
-| PL-5 | A hung fleetd shall be restarted on all 3 OSes. On each pass, fleetd shall write a heartbeat: the time of its last full pass. On Linux the systemd watchdog restarts it. On macOS a launchd timer job, and on Windows a scheduled task, shall run `horch fleetd check` every 30 s. `horch fleetd check` shall restart the service when the heartbeat is older than 30 s of awake time. Each `horch` CLI command shall make the same check before it sends its request. | Phase 0 test on each OS: a hung fleetd is restarted. |
+| PL-5 | A hung fleetd shall be restarted on all 3 OSes. On each pass, fleetd shall write a heartbeat: the time of its last full pass. On Linux the systemd watchdog restarts it. On macOS a launchd timer job, and on Windows a scheduled task, shall run `horch fleetd check` every 30 s. `horch fleetd check` shall restart the service when the heartbeat is older than 30 s of awake time. Each `horch` CLI command shall make the same check before it sends its request. The heartbeat shall not depend on a job: a pass never waits for a gate, a check, a trial merge, a rebase or a git network call, and a pass ends before the hang limit by its work budget. | Phase 0 test on each OS: a hung fleetd is restarted. Phase 0 test: a fast gate and a full gate of 5 min each run while fleetd stays healthy and is not restarted. |
 | PL-6 | The move of the existing OS-specific code into the platform layer in Phase P shall change no behavior. A gap of 1 OS that exists today stays a gap, and its OS module states it as an explicit "not supported" value. | On each of macOS, Linux and Windows, each test has the same result before the move and after it. A test that passes before the move passes after it. A test on the list of expected failures still fails. The `arch_scan` rule of PL-2 passes. |
 
 **Observability (OR)**
@@ -257,13 +257,13 @@ Sub-orchestrators and workers never touch the ledger, each other or git worktree
 
 | Component | What it is | Owns | Never does |
 | --- | --- | --- | --- |
-| **fleetd** | One long-running `horch fleetd` process under the service manager of the OS (launchd, systemd or a Windows service), installed and restarted through the platform layer. On Linux: a systemd user unit with `Restart=always` and `WatchdogSec=30`. On macOS a launchd timer job, and on Windows a scheduled task, runs `horch fleetd check` every 30 s. The control plane. | The ledger (sole writer), the idea dispatcher, plan validation and commit, task dispatch, leases, worktree leases and rescue, the reconcile loop, acceptance checks, escalation, the herdr adapter. | Calling an LLM. It is plain code, so its behaviour is testable and repeatable. |
+| **fleetd** | One long-running `horch fleetd` process under the service manager of the OS (launchd, systemd or a Windows service), installed and restarted through the platform layer. On Linux: a systemd user unit with `Restart=always` and `WatchdogSec=30`. On macOS a launchd timer job, and on Windows a scheduled task, runs `horch fleetd check` every 30 s. The control plane. | The ledger (sole writer), the idea dispatcher, plan validation and commit, task dispatch, leases, worktree leases and rescue, the reconcile loop, the jobs (each piece of work that can take more than 1 s: a task check, a gate, a trial merge, a rebase, a rescue, a `git fetch`, a `git push`), acceptance checks, escalation, the herdr adapter. | Calling an LLM. It is plain code, so its behaviour is testable and repeatable. |
 | **Idea dispatcher** | Code inside fleetd: the idea state machine. | Moving each idea to its next state when the required files validate, keeping one sub-orchestrator pane per feature, recording your approvals. | Judging an idea's content. It only checks that files exist, validate and carry your approval. |
 | **Sub-orchestrator** | Claude Code, Opus 5.5, interactive in herdr pane `idea-NNNN`, one per feature, a fresh process for each phase of one idea, planning 1 idea at a time. | Researching the idea, interviewing you, writing `assumptions.md`, then `spec.md`, `requirements.yaml` and `plan.yaml`; answering its workers' questions; replanning a failed task. | Seeing another idea, approving its own assumptions, creating tasks or worktrees directly, or typing into another pane. |
 | **fleet-run wrapper** | A small program that every agent process is launched through, one per attempt. | Building the attempt's private config home from the profile, starting the CLI in its own process group through the platform layer, writing `heartbeat.json`, mapping CLI events and hooks to agent state, reporting state to herdr, enforcing the wall-clock limit (`max_minutes`, a hang guard) and the 256k context limit, writing `exit.json`. | Deciding outcomes. It reports facts; fleetd decides. |
 | **Worker** | Any agent CLI (Claude Code, Codex, Antigravity or Gemini CLI) started by the wrapper with a named profile. | Doing one task attempt in the worktree fleetd leased to it and writing `outbox/result.json`. | Finding work, touching the ledger, creating or removing worktrees, or working on more than one task. |
-| **Verifier** | Code inside fleetd that runs each task's check in the worktree with today's check timeout (`preservation-05-contracts-and-values.md`, row V-10). The acceptance commands run in the sandbox profile of the task's worker, never with the rights of fleetd. For a code kind, today's review scripts then run unchanged. For a judgment kind, the check is structural, and a paired judge task reviews the content (see Done for each kind of task). | Writing `verdict.json` and moving the task to `done` or back to `ready`. | Trusting a worker's own claim of success. |
-| **Landing** | Code inside fleetd: the landing state machine, bundles, trial merges and the 2 gates (see Features, landing and integration). | Landing task branches on their feature branch, rebasing feature branches, opening resolver and triage tasks, running the full gate, pushing the feature branch for its pull request. | Merging to the primary branch, unless the project setting says so. By default you merge. |
+| **Verifier** | Code inside fleetd that queues each task's check as a job. The job runs the check in the worktree, in its own process outside the reconcile pass, with today's check timeout as its time limit (`preservation-05-contracts-and-values.md`, row V-10). The acceptance commands run in the sandbox profile of the task's worker, never with the rights of fleetd. For a code kind, today's review scripts then run unchanged. For a judgment kind, the check is structural, and a paired judge task reviews the content (see Done for each kind of task). | Writing `verdict.json` and moving the task to `done` or back to `ready`. | Trusting a worker's own claim of success. |
+| **Landing** | Code inside fleetd: the landing state machine, bundles, trial merges and the 2 gates (see Features, landing and integration). The build of a bundle candidate, each gate, each trial merge, each rebase, each `git fetch` and each `git push` is a job. A pass queues the jobs that are due and acts on the jobs that ended. It never waits for one. | Landing task branches on their feature branch, rebasing feature branches, opening resolver and triage tasks, running the full gate, pushing the feature branch for its pull request. | Merging to the primary branch, unless the project setting says so. By default you merge. |
 | **Docs sync** | A scheduled job (daily, plus on any CLI version change). | Mirroring each CLI's docs, recording versions, running adapter conformance tests. | Changing a profile by itself. It opens a task when something drifts. |
 | **Platform layer** | 1 interface inside horch with 1 module per OS: the leaf crate `crates/horch-platform`, with the modules `mac.rs`, `linux.rs` and `windows.rs`. It depends on no other crate of the workspace, and each crate of the workspace calls it. | From Phase P: process identity and liveness (alive, start time, parent, children), signals and stop, process groups (stop and kill of a group), file locks, file permissions, paths and home directories, symlinks and links, shell and quoting, local sockets and pipes, detach of a child process, the machine probe (free disk, memory, load), the sandbox host, and the small rest (for example archive format, file identity, user PATH). From Phase 1: service install and restart, hang detection, sleep and wake, file watching, and the transport of the fleetd command channel (a Unix socket, or a named pipe on Windows). | Failing silently. Where an OS has no equivalent, the module returns an explicit "not supported" value, and core code decides what to do. |
 | **herdr** | The pane runtime, in a dedicated session `herdr --session fleet`, also under the service manager of the OS. | Terminals, agent names, screen-based status, the sidebar you watch. | Holding any state fleetd depends on. If herdr restarts, the reconciler rebuilds from the ledger and files. |
@@ -285,7 +285,7 @@ Sub-orchestrators and workers never touch the ledger, each other or git worktree
 
 **Supervision tree and restart policy (OTP style)**
 
-- The service manager of the OS supervises fleetd and the herdr server: restart always. On each pass, fleetd writes a heartbeat: the time of its last full pass. On Linux the systemd watchdog (`WatchdogSec`) restarts a hung fleetd. On macOS a launchd timer job runs `horch fleetd check` every 30 s, and on Windows a scheduled task does the same. `horch fleetd check` restarts the service when the heartbeat is older than 30 s of awake time. Sleep time does not count. Each `horch` CLI command also makes this check before it sends its request. A hung fleetd is killed and restarted on all 3 OSes, and recovers from the ledger (RR-7).
+- The service manager of the OS supervises fleetd and the herdr server: restart always. On each pass, fleetd writes a heartbeat: the time of its last full pass. A pass never waits for a job, so a long gate does not delay the heartbeat. On Linux the systemd watchdog (`WatchdogSec`) restarts a hung fleetd. On macOS a launchd timer job runs `horch fleetd check` every 30 s, and on Windows a scheduled task does the same. `horch fleetd check` restarts the service when the heartbeat is older than 30 s of awake time. Sleep time does not count. Each `horch` CLI command also makes this check before it sends its request. A hung fleetd is killed and restarted on all 3 OSes, and recovers from the ledger (RR-7).
 - fleetd supervises attempts: one-for-one, so a crashed worker never affects its siblings. Each profile sets `max_attempts` and backoff. After the last attempt the task goes back to its idea's sub-orchestrator to replan once, then to you.
 - The wrapper supervises its CLI process group: on a wall-clock breach it stops the whole group through the platform layer, so no grandchild processes linger. On Linux the module sends SIGINT, waits 20 s, then SIGKILLs the group.
 
@@ -317,7 +317,7 @@ Every hand-off is a file under `/fleet`, written atomically, never edited after 
 
 ```
 /fleet/
-  fleet.toml                  global config (timers, health floors, paths)
+  fleet.toml                  global config (timers, health floors, paths, pass budget, fetch period)
   profiles/                   worker profiles, one YAML per named worker
   prompts/                    idea-lead.md, worker-base.md
   ledger/fleet.db             SQLite, written only by fleetd
@@ -605,14 +605,48 @@ CREATE TABLE gate_runs (
   gate        TEXT NOT NULL CHECK (gate IN ('fast','full')),
   tip         TEXT NOT NULL,               -- the candidate or feature tip it judged
   base_tip    TEXT NOT NULL,               -- the feature branch or primary branch tip it judged
-  result      TEXT NOT NULL CHECK (result IN ('pass','fail')),  -- a pass is stale once either tip moves
+  job_id      INTEGER NOT NULL REFERENCES jobs(id), -- the gate runs as a job, outside the pass
+  result      TEXT CHECK (result IN ('pass','fail')),  -- null while its job runs; a pass is stale once either tip moves
   at          TEXT NOT NULL
 );
 
 CREATE TABLE trial_merges (               -- facts from git merge-tree --write-tree
   left_ref TEXT, right_ref TEXT, left_tip TEXT, right_tip TEXT,
-  clean INTEGER NOT NULL, conflict_files TEXT, at TEXT NOT NULL,
+  job_id  INTEGER NOT NULL REFERENCES jobs(id), -- the trial merge runs as a job, keyed by the 2 tips
+  clean INTEGER, conflict_files TEXT, at TEXT NOT NULL,  -- clean is null while its job runs
   PRIMARY KEY (left_tip, right_tip)
+);
+
+CREATE TABLE jobs (                        -- each piece of work that can take more than 1 s; it runs outside the pass
+  id          INTEGER PRIMARY KEY,
+  kind        TEXT NOT NULL CHECK (kind IN
+              ('task_check','fast_gate','full_gate','bundle_build','trial_merge',
+               'rebase','rescue','fetch','push')),
+  subject     TEXT NOT NULL,               -- the row it works for: a task, a branch, a feature, a worktree or a repository
+  repo        TEXT NOT NULL,               -- at most 1 job that changes git state runs for 1 repository at a time
+  input_key   TEXT NOT NULL,               -- e.g. the 2 tips of a trial merge, or the candidate tip and the base tip of a gate
+  state       TEXT NOT NULL CHECK (state IN ('queued','running','passed','failed','abandoned')),
+  pid INTEGER, pid_start TEXT,             -- the job process, alive by PID and start time
+  time_limit_s INTEGER NOT NULL,           -- from the kind: the check timeout, a gate limit, a git network bound
+  result_json TEXT,                        -- the outcome, read by the next pass
+  created_at TEXT NOT NULL, started_at TEXT, ended_at TEXT,
+  UNIQUE (kind, input_key)                 -- the same work is not run 2 times; its result is used again
+);
+
+CREATE TABLE remote_tips (                 -- remote git state, from the fetch job of each repository
+  repo        TEXT NOT NULL,
+  branch      TEXT NOT NULL,               -- the primary branch or a feature branch, on the remote
+  tip         TEXT NOT NULL,               -- the tip that the last passed fetch saw
+  fetched_at  TEXT NOT NULL,               -- the calendar time of that fetch
+  stale_since TEXT,                        -- set by the first failed fetch after it; cleared by a passed fetch
+  PRIMARY KEY (repo, branch)
+);
+
+CREATE TABLE pass_cursors (                -- the work budget of a pass: where the next pass continues
+  kind        TEXT PRIMARY KEY,            -- e.g. dispatch, attempts, outbox files, worktrees, branches, features, jobs
+  after_key   TEXT,                        -- the last row handled; the next pass starts after it, and wraps at the end
+  lap_started_at TEXT NOT NULL,            -- when the cursor last wrapped
+  prev_lap_started_at TEXT                 -- a waiting row was last handled after this time
 );
 
 CREATE TABLE questions (                   -- 1 row per worker question
@@ -845,7 +879,7 @@ Today a worker creates its own worktree, so one that dies mid-task leaves a dire
 - A `reserved` row older than a minute with no directory is dropped.
 - A row whose directory vanished without fleetd removing it is escalated, because something outside the fleet deleted work.
 
-**Rescue before any cleanup.** Rescue never touches the worktree's own branch or index, so it is safe to run on a tree a dying process was still writing:
+**Rescue before any cleanup.** A rescue runs as a job, outside the reconcile pass. Rescue never touches the worktree's own branch or index, so it is safe to run on a tree a dying process was still writing:
 
 ```sh
 # fleetd, inside /fleet/work/T-0007-03
@@ -898,7 +932,7 @@ Every branch is a ledger row before it exists. Each row has a landing state, 1 o
 | `gate_failed` | sub-orchestrator | its triage task lands |
 | `abandoned` | operator only | terminal; a rescue ref is kept |
 
-**The bundle.** When several task branches of 1 feature are `ready` together, fleetd builds 1 candidate from the feature branch tip plus each ready task branch in queue order. Each task's commits are kept. The fast gate runs once on the candidate. On a pass, the feature branch moves forward to it. On a failure, fleetd bisects the bundle, sends the failing task to `gate_failed`, and the others go on. No ready branch is forgotten, because each one is a row that fleetd reads on every pass.
+**The bundle.** When several task branches of 1 feature are `ready` together, fleetd builds 1 candidate from the feature branch tip plus each ready task branch in queue order. Each task's commits are kept. The build of the candidate is a job, and the fast gate runs once on the candidate as a job. A pass never waits for either. A later pass reads the result of the gate job. On a pass of the gate, the feature branch moves forward to the candidate. On a failure, fleetd bisects the bundle, sends the failing task to `gate_failed`, and the others go on. No ready branch is forgotten, because each one is a row that fleetd reads on every pass.
 
 No human approves a landing on a feature branch.
 
@@ -907,7 +941,7 @@ fleetd keeps these behaviors of today's land path (`preservation-04-behavior.md`
 - F9: under the land lock, just before the fast-forward, fleetd checks that the task is still the worker's. A task cancelled earlier lands nothing.
 - F7: a red land resets the branch to its tip from before the rebase.
 - F5: a passed step stands only for the tree it judged. New commits reopen the land and every later step.
-- F11: every git network call has a time limit (push 10 min, others 3 min).
+- F11: every git network call has a time limit (push 10 min, others 3 min). Each one runs as a job, and its time limit is the time limit of the job.
 - L6: 2 running tasks of 1 feature never own overlapping paths.
 
 ### No work is lost
@@ -924,14 +958,16 @@ fleetd checks these on every pass against git. They are invariants I8 to I13 in 
 ### Between features
 
 - **Parallel is the default.** Any number of features can change the same file. A shared file name never makes a feature wait.
-- **Early detection.** When a feature branch tip or the primary branch moves, fleetd makes a trial merge of each in-flight feature against the primary branch and against each other in-flight feature. It uses `git merge-tree --write-tree`, with no checkout. The result is a fact in the ledger.
+- **Early detection.** When a feature branch tip or the primary branch moves, fleetd queues a trial merge job of each in-flight feature against the primary branch. Between features, it queues 1 job for each pair of in-flight features whose sets of changed files share a file. A pair with no shared file needs no job. A job is keyed by the 2 tips, so a pair whose tips did not move is not merged again: its result is used again. A count of features of n does not make n times n jobs in 1 pass. The job uses `git merge-tree --write-tree`, with no checkout. The result is a fact in the ledger.
 - **Stack on evidence.** When the trial merge of 2 features conflicts, fleetd puts the younger feature on top of the older one. The conflict becomes 1 resolver task for a fresh agent. The agent gets the conflict in `zdiff3` form, the requirements of both features for those files, and the unit tests of both. It makes 1 commit for each requirement. The task lands on the younger feature's branch.
-- **Continuous rebase.** When the primary branch moves, fleetd rebases each feature branch, the bottom of a stack first. After a clean rebase the fast gate runs again. A conflict becomes a resolver task. `rerere` is on.
+- **Continuous rebase.** When the fetched tip of the primary branch moves, fleetd queues a rebase job for each feature branch, the bottom of a stack first. After a clean rebase the fast gate job runs again. A conflict becomes a resolver task. `rerere` is on.
 - **Build on what is in flight.** At plan time the sub-orchestrator gets the diffs of the files that in-flight features already changed. It can propose to build on one of them. The proposal is in the assumptions that you approve.
-- **The full gate.** The full gate runs once for a feature, when its task branches are landed, on its tip over the current primary branch. Failures become triage tasks of the feature. If either tip moves after a pass, the pass is stale and the gate runs again before the feature is marked ready.
+- **The full gate.** The full gate runs once for a feature as a job, when its task branches are landed, on its tip over the fetched tip of the primary branch. Failures become triage tasks of the feature. If either tip moves after a pass, the pass is stale and the gate runs again before the feature is marked ready.
 - **Two declared gates.** Each project declares its fast gate (its unit tests) and its full gate (the fast gate plus the end-to-end tests). Plan validation refuses a plan for a project that did not declare both. This repository has no unit-only command today (`research-03-this-repo.md`, F10).
 - **The pull request.** A project setting `pr` is `gh` or `manual`. `manual` pushes the feature branch and shows the compare URL. A stacked feature's pull request has the lower feature's branch as its base. A project setting says who merges; the default is you.
-- **Merged.** A feature is `merged` when its changes are in the primary branch. fleetd reads this from git, not from the GitHub API.
+- **Merged.** A feature is `merged` when its changes are in the primary branch. fleetd reads this from git, not from the GitHub API, at the fetched tip of the primary branch.
+- **Remote git state is level-triggered.** 1 `git fetch` job runs for each repository on a period (`fetch_period_s`, default 60 s, in `fleet.toml`). fleetd records the fetched tip of each branch and the time in `remote_tips`. Merge detection and gate freshness use the fetched tip. So a pull request that you merge on the remote is seen within 1 period, with no local command. When a fetch fails, `horch status` shows since when the remote tip is stale.
+- **1 git writer for each repository.** At most 1 job that changes git state runs for 1 repository at a time: a bundle build, a rebase, a rescue, a fetch or a push. This removes git lock contention. Jobs that only read git, for example a trial merge, can run together.
 - **Starting values, to tune from data.** A resolver task covers at most 100 changed lines or 2 files, else fleetd splits it by file.
 - **Not in version 1.** A syntax-aware merge driver: there is no accuracy data for Rust, and in Java wrong clean merges rose from 3% to 11% (`research-02-merge-tools-and-agent-systems.md`, F13). 1 pull request for several features: 1 bad feature would block the others, and each feature loses its own pull request. Both are follow-ups.
 
@@ -1000,18 +1036,23 @@ def reconcile():
             renew_or_expire_lease(tx, a, state)
             apply_stall_ladder(tx, a, state)
         finish_exited(tx, procs)              # result -> verifying, else retry/escalate
-        run_due_verifications(tx)             # async jobs, verdict.json on completion
-        reconcile_worktrees(tx, trees)        # adopt, mark orphaned, rescue, remove landed
+        observe_jobs(tx, procs)               # ended jobs -> results; a running job whose process is gone -> queued
+        queue_due_jobs(tx, budget)            # task checks, gates, trial merges, rebases, rescues, fetch, push; never waits
+        reconcile_worktrees(tx, trees)        # adopt, mark orphaned, queue a rescue job, remove landed
         stop_orphans(snap, procs, tx)         # panes or pids not owned by a live attempt
-        land_bundles(tx)                      # ready task branches -> 1 bundle per feature, fast gate, fast-forward
-        integrate_features(tx)                # trial merges, stacks, rebases, resolver tasks, full gate
+        land_bundles(tx)                      # act on ended bundle and fast gate jobs; queue the next bundle
+        integrate_features(tx)                # act on ended trial merge, rebase and full gate jobs; stacks, resolver tasks
         check_invariants(tx)                  # I1..I13, repair or escalate
-        roll_up_ideas(tx)                     # all task branches landed on the feature branch -> integrating; merged once git shows the feature in the primary branch and trees removed
+        roll_up_ideas(tx)                     # all task branches landed on the feature branch -> integrating; merged once the fetched tip of the primary branch shows the feature and trees removed
     write_heartbeat(now)            # time of the last full pass; `horch fleetd check` reads it
     platform.watchdog_ping()        # systemd_notify("WATCHDOG=1") on Linux; macOS and Windows use `horch fleetd check`
 ```
 
 Dispatch order matters for "workers don't find work": fleetd writes `task.yaml` and `inbox/START.md` before it launches the process, and passes the START.md path as the launch argument. The worker never searches; the task is the first thing it is given. If the process starts but never touches its files, the start timeout (90 s with no first heartbeat or activity) ends the attempt.
+
+**Long work is a job. A pass never waits for it.** A pass only reads facts, decides, writes rows, and starts or observes jobs. Each piece of work that can take more than 1 s is a job: a task check, a fast gate, a full gate, the build of a bundle candidate, a trial merge, a rebase, a rescue, a `git fetch` and a `git push`. A job is a row in `jobs`, and it runs in its own process, outside the pass. fleetd supervises it like an attempt: the row first, then the process, alive by PID and start time, and stopped at its time limit. A job with the same kind and input key is not run 2 times: its result is used again. After a restart of fleetd, a `running` job whose process is gone goes back to `queued`. So a gate of 20 min or a check of 24 h does not delay the heartbeat.
+
+**A pass has a work budget.** A pass handles at most a set count of rows of each kind (`pass_budget` in `fleet.toml`, a starting value to tune). It keeps a cursor for each kind in `pass_cursors`, and the next pass continues at the cursor, so each row gets its turn in a fair order. This is not a cap on parallel work (D8): a row that a pass does not reach is handled on a later pass. A pass must end before the hang limit of 30 s. `horch status` shows, for each kind, the age of the oldest row that waits for a pass.
 
 &#91;embedded content: task state machine · 9 states\]
 
@@ -1221,7 +1262,7 @@ Every failure you listed, plus twenty-six more found while reading the code, the
 | FM-9 | Worker claims done but work is broken | Bad code lands | Only the verifier moves a task to done: the acceptance commands, then for a code kind today's review scripts, and for a judgment kind the structural check and the paired judge | At verification | RR-3 |
 | FM-10 | Plan has a cycle, missing profile or uncovered requirement | Deadlock or gap | Plan validator rejects before commit; the sub-orchestrator reruns ticketing with the errors | Prevented | FR-3 |
 | FM-11 | fleetd crashes mid-pass | Half-applied state | Every pass is one SQLite transaction; ingestion is idempotent; the service manager of the OS restarts it; the next pass rebuilds from ledger and files | Under 30 s | RR-7, RR-8 |
-| FM-12 | fleetd hangs | Nothing moves | On Linux the systemd watchdog (`WatchdogSec=30`) kills and restarts it when the pass stops pinging. On macOS a launchd timer job, and on Windows a scheduled task, runs `horch fleetd check` every 30 s, and it restarts the service when the heartbeat is older than 30 s of awake time. Each `horch` CLI command makes the same check | 30 s to 60 s of awake time on every OS | RR-7, PL-5 |
+| FM-12 | fleetd hangs, or a long gate delays its heartbeat | Nothing moves, or a healthy fleetd is restarted for ever | Long work is a job outside the pass, and each pass has a work budget, so a healthy pass always ends before the hang limit. On Linux the systemd watchdog (`WatchdogSec=30`) kills and restarts it when the pass stops pinging. On macOS a launchd timer job, and on Windows a scheduled task, runs `horch fleetd check` every 30 s, and it restarts the service when the heartbeat is older than 30 s of awake time. Each `horch` CLI command makes the same check | 30 s to 60 s of awake time on every OS | RR-7, PL-5 |
 | FM-13 | herdr server restarts | Every agent process is gone | Reconciler sees dead PIDs and missing panes, fails those attempts, rescues their worktrees and retries in them; sub-orchestrators restart from their folders | 5 to 30 s | RR-4 |
 | FM-14 | Two workers on one task | Conflicting commits | Lease row is unique per task and a worktree has one owner; fleetd stops the old attempt by recorded PID before starting the next (your ADR 0002) | Prevented | RR-2 |
 | FM-15 | Typed prompt lost or delivered twice | Missed or duplicated instruction | Nothing meaningful is typed. The doorbell is constant and idempotent; content lives in files | Prevented | FR-7 |
