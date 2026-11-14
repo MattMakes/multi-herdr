@@ -8,7 +8,7 @@ it, and how to keep many animated characters cheap.
 - Blended animations give wrong poses, pops, or values that drift toward zero.
 - You add IK, look-at, spring bones or constraints on top of played animation.
 - One animation set must drive several characters with different skeletons.
-- Root motion, method tracks or tweens must stay in step with physics or a fixed tick.
+- Root motion or tweens must stay in step with physics.
 - Animation or skinning shows up in the profiler and you need a way to cut it per character.
 
 ## How the engine works here
@@ -16,10 +16,10 @@ it, and how to keep many animated characters cheap.
 - `AnimationPlayer` and `AnimationTree` both extend `AnimationMixer`. The mixer owns the
   animation libraries, the track cache, the blend pass and root motion. The subclass only decides
   which animations play at which weight.
-- One mixer update: collect playing animations, blend every track, apply the values, emit
+- One mixer update blends every track of the playing animations, applies the values and emits
   `mixer_applied`. `callback_mode_process` picks idle, physics or manual stepping
   (`AnimationMixer.advance`). `callback_mode_method` picks deferred (default, safe when a method
-  track frees nodes) or immediate method calls.
+  track frees nodes) or immediate calls.
 - `deterministic` changes the blend maths. False (the `AnimationPlayer` default): weights are
   normalized to 1.0 and a track that is missing in one animation is left alone. True (the
   `AnimationTree` default): weights are not normalized and blending starts from an initial value,
@@ -33,8 +33,7 @@ it, and how to keep many animated characters cheap.
   lives on the tree node under `parameters/...`. Set values there, never on the shared node.
 - Skeleton order per frame: the mixer writes bone poses, then `Skeleton3D` runs each child
   `SkeletonModifier3D` in child order, blends each result by its `influence`, emits
-  `modification_processed` per modifier and `skeleton_updated` at the end, then skinning reads
-  the result. Modifier output is not stored back: the next frame starts from the animated pose.
+  `modification_processed` per modifier and `skeleton_updated` at the end. Skinning reads that.
   `Skeleton3D.modifier_callback_mode_process` picks idle, physics or manual
   (`Skeleton3D.advance`).
 
@@ -43,9 +42,8 @@ it, and how to keep many animated characters cheap.
 ### RESET tracks as the blend baseline
 
 In a deterministic tree, a property that only some animations key is blended against the `RESET`
-value, or against 0 when `RESET` has no such track. A missing baseline shows up as positions that
-slide to the origin or scales that shrink during cross-fades. Add every blended property to
-`RESET` with one key at time 0. For bones the baseline is bone rest, so no track is needed.
+value, or against 0 when `RESET` has no such track. The symptom is a position that slides to the
+origin during a cross-fade. Add every blended property to `RESET` with one key at time 0.
 
 ### Rest pose decides the rotation path
 
@@ -71,15 +69,14 @@ func _physics_process(delta: float) -> void:
 	move_and_slide()
 ```
 
-`root_motion_local` extracts translation as if it happened after rotation. `RootMotionView` gives
-a moving floor grid for preview. Trap: the `*_accumulator` values jump when a clip loops.
+`RootMotionView` gives a floor grid for preview. The `*_accumulator` values jump when a clip loops.
 
 ### Capture for blends from an unknown pose
 
 A track in `Animation.UPDATE_CAPTURE` mode starts from the value the property has right now. With
 `playback_auto_capture` (true by default) a plain `play()` does this for clips that hold capture
 tracks. `play_with_capture()` sets duration, transition and ease. Use it for hit reactions and UI
-that can be interrupted at any point. It costs nothing when no capture track exists.
+that can be interrupted at any point.
 
 ### State machine structure
 
@@ -88,14 +85,12 @@ that can be interrupted at any point. It costs nothing when no capture track exi
 - `advance_mode`: Enabled is used by `travel()` only. Auto fires on its own when
   `advance_condition` and `advance_expression` pass. Disabled blocks the edge.
 - `advance_expression` runs through `Expression` on `advance_expression_base_node`. It can call
-  methods and compare values, which removes the pairs of opposite bools that conditions need.
-  It is case sensitive and is evaluated each update, so keep it small.
+  methods and compare values, so no pairs of opposite bools are needed. It is case sensitive.
 - `state_machine_type`: Root, Nested (seek and end behave as one clip inside a parent) and
   Grouped (the parent machine travels through it; its `state_started` and `state_finished`
   signals reach the parent playback with the group name as prefix).
 - `break_loop_at_end` on a transition or on `AnimationNodeOneShot` lets an At End switch leave a
   looping clip at the end of the current cycle.
-- `xfade_time` is not scaled by time scale nodes placed after the machine.
 
 ### Locomotion that stays in phase
 
@@ -116,7 +111,8 @@ the modifier of its child bone.
 |---|---|---|
 | Head or turret aim with limits | `LookAtModifier3D` | 4.4 |
 | Hair, tails, cloth strips | `SpringBoneSimulator3D` + `SpringBoneCollision3D` children | 4.4 |
-| Copy, remap or aim a bone from another | `CopyTransformModifier3D`, `ConvertTransformModifier3D`, `AimModifier3D` | 4.5 |
+| Copy or remap a bone from another | `CopyTransformModifier3D`, `ConvertTransformModifier3D` | 4.5 |
+| Aim a bone at another bone | `AimModifier3D` | 4.5 |
 | Limb with pole target, exact | `TwoBoneIK3D` | 4.6 |
 | Long chains | `FABRIK3D`, `CCDIK3D`, `JacobianIK3D`, `SplineIK3D` | 4.6 |
 | Forearm twist after IK | `BoneTwistDisperser3D` | 4.6 |
@@ -126,8 +122,8 @@ the modifier of its child bone.
 - Iterative solvers (`IterateIK3D`) continue from last frame's result unless `deterministic` is
   on. `max_iterations` times `angular_delta_limit` caps the turn per frame (4 x 2 degrees by
   default), so a far target is reached over several frames.
-- `mutable_bone_axes = false` caches bone axes from rest. It is slightly faster. Turn it on only
-  when no earlier modifier moves bone positions.
+- `mutable_bone_axes = false` caches bone axes from rest: slightly faster, but valid only when
+  no earlier modifier moves bone positions.
 - Call `SpringBoneSimulator3D.reset()` after a teleport or a hard cut with no fade. Use
   `external_force` for wind. Do not scale the skeleton or its bones.
 - Fade a modifier in and out with `influence`. Set `active = false` to skip its cost.
@@ -135,8 +131,7 @@ the modifier of its child bone.
 ### Custom modifier
 
 Extend `SkeletonModifier3D` and override `_process_modification_with_delta()`. Read and write
-bone poses there. Write the full result and let the skeleton apply `influence`. The method can
-run once with delta 0.0 right after setup.
+bone poses there. Write the full result and let the skeleton apply `influence`.
 
 ### Sharing animations between characters
 
@@ -153,30 +148,13 @@ Bone animation and blending run on the CPU per character. Options, cheapest firs
 
 - Stop it: `VisibleOnScreenEnabler3D` disables processing of a target node when its box leaves
   the screen. The check is approximate and ignores occluders.
-- Tick it less: set distant mixers to manual and call `advance()` every Nth frame with the summed
-  delta.
+- Tick it less: set a distant mixer to `ANIMATION_CALLBACK_MODE_PROCESS_MANUAL` and call
+  `advance()` every Nth frame with the summed delta.
 - Replace it: for crowds, drop the skeleton and animate vertices in a shader on a `MultiMesh`,
   with phase and clip data in per-instance custom data. See `shaders-advanced`.
 - Import settings: 30 FPS bake is enough because playback interpolates. Keep the optimizer on.
   Use trimming and Remove Immutable Tracks. `Animation.compress()` cuts memory for long cutscene
   clips, is lossy, and makes tracks read-only in the editor.
-
-```gdscript
-extends Node
-
-@export var mixer: AnimationMixer
-@export var every_n_frames: int = 3
-var _acc: float = 0.0
-
-func _ready() -> void:
-	mixer.callback_mode_process = AnimationMixer.ANIMATION_CALLBACK_MODE_PROCESS_MANUAL
-
-func _process(delta: float) -> void:
-	_acc += delta
-	if Engine.get_process_frames() % every_n_frames == 0:
-		mixer.advance(_acc)
-		_acc = 0.0
-```
 
 ### Tween internals
 
@@ -186,46 +164,33 @@ func _process(delta: float) -> void:
 - A finished or killed tween is invalid and cannot take new tweeners. Create a new one per run,
   and `kill()` the old one first when two could fight over a property.
 - `set_process_mode(Tween.TWEEN_PROCESS_PHYSICS)` for anything that moves a body.
-- `set_parallel()` also pulls the tweener added just before it into the parallel step.
 - `tween_subtween()` (4.4) nests a timeline. The parent overrides the child's pause and process
   modes. `tween_await()` holds a step until a signal fires; add `AwaitTweener.set_timeout()`.
 - `PropertyTweener.set_custom_interpolator()` takes a callable such as a `Curve` sampler.
-  `Tween.interpolate_value()` is the same easing maths without a tween object.
 - `set_ignore_time_scale()` keeps UI motion at real speed during slow motion.
-- An infinite loop with zero total duration is stopped by the engine after a few rounds.
 
 ## Niche but useful
 
 - Animation markers (4.4): `play_section_with_markers()` plays a named part of a clip. One long
   imported clip can serve several actions.
-- Animation playback tracks drive other `AnimationPlayer` nodes. Good for cutscene sequencing.
-- Audio tracks blend volume in a tree. `audio_max_polyphony` caps voices per target player.
-- `AnimationMixer._post_process_key_value()` edits each key value before it is applied.
 - `AnimationPlayer.seek(t, true, true)` updates the pose without firing method and audio tracks.
-- Import slices cut one `default` timeline into named clips. "Save to file" keeps custom tracks
-  across reimports.
+- Import option "Save to file" keeps custom tracks on imported clips across reimports.
 - `AnimationNodeExtension` (4.4) is the base for custom blend tree nodes written in script.
 
 ## Traps
 
 - Bezier tracks and value tracks on the same property do not blend with each other.
 - `animation_finished` is not emitted for looping clips, nor by `seek()` to the end.
-- Nodes with a transform placed under an `AnimationPlayer` do not inherit a parent transform.
-- With an `AnimationTree` active, playback calls on its `AnimationPlayer` do not behave normally.
 - Outdated: `SkeletonIK3D` and the `Skeleton3D` global pose override methods are deprecated.
   Use the modifier nodes.
-- Outdated: `physical_bones_start_simulation()` on the skeleton. Use `PhysicalBoneSimulator3D`.
-- Method tracks do not run in the editor preview.
 
 ## Version notes
 
-- 4.4: markers, `LookAtModifier3D`, `SpringBoneSimulator3D`, `RetargetModifier3D`,
-  `tween_subtween()`, `AnimationNodeExtension`.
-- 4.5: `BoneConstraint3D` family, `ModifierBoneTarget3D`.
-- 4.6: `IKModifier3D` family, `BoneTwistDisperser3D`, `LimitAngularVelocityModifier3D`.
-  `current_animation` and `assigned_animation` became `StringName`. The default of
-  `MeshInstance3D.skeleton` changed; the old one is behind the project setting
-  `animation/compatibility/default_parent_skeleton_in_mesh_instance_3d`.
+- 4.4 to 4.6: the modifier nodes in the table above; markers, `tween_subtween()` and
+  `AnimationNodeExtension` in 4.4.
+- 4.6: `current_animation` and `assigned_animation` became `StringName`. The default of
+  `MeshInstance3D.skeleton` changed; project setting
+  `animation/compatibility/default_parent_skeleton_in_mesh_instance_3d` restores the old one.
 - 4.7: blend space `sync_mode` replaces the `sync` bool. A tree that stopped blending as before
   after the upgrade needs this property set.
 
@@ -234,20 +199,13 @@ func _process(delta: float) -> void:
 - `godot-animation-system`: setup steps and recipes for players, trees and each modifier node.
 - `godot-tween-animation`: tween recipes and easing tables.
 - `godot-assets-pipeline`: import settings for models and clips.
-- `godot-optimization`: where animation sits in the frame budget.
 
 ## Sources
 
 - https://docs.godotengine.org/en/stable/tutorials/animation/introduction.html
 - https://docs.godotengine.org/en/stable/tutorials/animation/animation_track_types.html
 - https://docs.godotengine.org/en/stable/tutorials/animation/animation_tree.html
-- https://docs.godotengine.org/en/stable/tutorials/animation/2d_skeletons.html
-- https://docs.godotengine.org/en/stable/tutorials/animation/cutout_animation.html
 - https://docs.godotengine.org/en/stable/tutorials/assets_pipeline/retargeting_3d_skeletons.html
 - https://docs.godotengine.org/en/stable/tutorials/assets_pipeline/importing_3d_scenes/import_configuration.html
-- https://docs.godotengine.org/en/stable/tutorials/performance/optimizing_3d_performance.html
 - https://docs.godotengine.org/en/stable/tutorials/performance/vertex_animation/animating_thousands_of_fish.html
 - https://docs.godotengine.org/en/stable/tutorials/migrating/upgrading_to_godot_4.7.html
-- https://docs.godotengine.org/en/stable/classes/class_animationmixer.html
-- https://docs.godotengine.org/en/stable/classes/class_skeletonmodifier3d.html
-- https://docs.godotengine.org/en/stable/classes/class_tween.html
