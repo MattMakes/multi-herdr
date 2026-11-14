@@ -7,21 +7,20 @@ profilers, monitors, debugger messages, command line flags, loggers and outside 
 
 - You must find which system, function or render pass uses the frame time.
 - You need numbers from an exported build or from a device, not from the editor.
-- You want your own graphs, debugger tab or error reports.
+- You want your own graphs, debugger tab or error reports, or must look inside the engine.
 - You need a repeatable benchmark or a capture that is the same on every run.
 - Object counts or memory grow and you must find what holds the objects.
-- The cost is inside the engine, where the script profiler cannot see.
 
 ## How the engine works here
 
-The editor debugger is a network link. The editor runs a debug server (TCP, port 6007 by default)
-and the game connects to it with `--remote-debug`. Breakpoints, the remote scene tree, monitors
-and profiler frames all travel over this link, so they work the same for a game on a phone.
-`EngineDebugger` is the game side of the link and `EditorDebuggerPlugin` the editor side.
+The editor debugger is a network link. The editor runs a debug server (the docs use
+`tcp://127.0.0.1:6007`) and the game connects with `--remote-debug`. Breakpoints, the remote
+scene tree, monitors and profiler frames travel over it, so they work the same for a game on a
+phone. `EngineDebugger` is the game side and `EditorDebuggerPlugin` the editor side.
 
 The Profiler tab times script functions and the engine's main steps. The Visual Profiler times
-render passes on CPU and GPU, and nothing else. Monitors sample counters all the time, also when
-their graph is closed. The two profilers are off until you press Start, because they slow the game.
+render passes on CPU and GPU, nothing else. Monitors sample counters all the time. The two
+profilers are off until you press Start, because they slow the game.
 
 Limits: the script profiler does not support C# (the docs name JetBrains dotTrace), time spent
 waiting for servers may be missing from it (a known bug), and breakpoints do not work in `@tool`
@@ -35,18 +34,16 @@ is ignored without a warning, so a debug-only flag on a release export does noth
 ### Read the Profiler by Self time
 
 Inclusive time counts callees; Self time counts only the function body. A function high in
-Inclusive and low in Self waits for something it calls. Switches: `--profiling` starts the script profiler from launch, the editor setting
-`debugger/profile_native_calls` adds engine methods (slower), and
-`debugger/profiler_frame_history_size` (default 3600) sets how far back the graph goes.
+Inclusive and low in Self waits for something it calls. `--profiling` starts the script
+profiler at launch. The editor setting `debugger/profile_native_calls` adds engine methods
+(slower); `debugger/profiler_frame_history_size` (default 3600 frames) sets the graph length.
 
 ### Read the Visual Profiler with care
 
-It shows only render work. A name
-with "(Parallel)" means several GPU tasks ran together, so turning one off saves less than its
-bar shows. Results depend on viewport size: compare runs at the same size. It does not work on
-the Compatibility renderer on macOS. `--gpu-profile` (or
-`ProjectSettings.debug/settings/stdout/print_gpu_profile`) prints the same data each second
-without the editor.
+A name with "(Parallel)" means several GPU tasks ran together, so turning one off saves less
+than its bar shows. Results depend on viewport size: compare runs at the same size. It does not
+work on the Compatibility renderer on macOS. `--gpu-profile` (or
+`ProjectSettings.debug/settings/stdout/print_gpu_profile`) prints the same data each second.
 
 ### Measure render time in the running game
 
@@ -82,23 +79,21 @@ Monitors. One slash in the id sets the category. The type formats the value:
 as ms) and `MONITOR_TYPE_PERCENTAGE` (give a fraction). The editor calls the callable about once
 per second, so return a stored value, not a fresh scan. Negative values are clamped to 0.
 `Performance.get_custom_monitor()` works in exported builds, release too: build an in-game
-overlay from the same monitors. Good design-side monitors: enemies alive, pool use, chunks loaded.
+overlay from the same monitors. Design-side examples: enemies alive, pool use.
 
-### Built-in monitors worth logging
-
-`Performance.get_monitor()` with `TIME_PROCESS`, `TIME_PHYSICS_PROCESS` and
-`TIME_NAVIGATION_PROCESS` splits the frame. `OBJECT_ORPHAN_NODE_COUNT` finds leaked nodes.
-`PHYSICS_2D_COLLISION_PAIRS` and `PHYSICS_3D_ISLAND_COUNT` explain physics cost. The
-`PIPELINE_COMPILATIONS_*` monitors count pipeline builds, the hitch at first draw.
+Built-in ones worth logging through `Performance.get_monitor()`: `TIME_PROCESS`,
+`TIME_PHYSICS_PROCESS` and `TIME_NAVIGATION_PROCESS` split the frame, `OBJECT_ORPHAN_NODE_COUNT`
+finds leaked nodes, `PHYSICS_2D_COLLISION_PAIRS` and `PHYSICS_3D_ISLAND_COUNT` explain physics
+cost, and the `PIPELINE_COMPILATIONS_*` group counts pipeline builds (the first-draw hitch).
 
 ### ObjectDB profiler (since 4.6)
 
 Debugger > ObjectDB Profiler takes a snapshot of every live `Object` in the running game. Take
 one after a level load, play, return to the same point, take a second, and use Diff Against.
 Classes shows count deltas per class. Nodes lists orphan nodes after the tree. RefCounted shows
-reference counts and detected cycles, which is how you find a resource that never frees. Objects
-shows inbound and outbound references. Snapshots are `.odb_snapshot` files in
-`user://objectdb_snapshots/`. Native memory of classes not exposed to scripts is not shown.
+reference counts and detected cycles: the way to find a resource that never frees. Objects shows
+who references whom. Snapshots are files in `user://objectdb_snapshots/`. Native memory of
+classes not exposed to scripts is not shown.
 
 ### Your own debugger channel
 
@@ -109,17 +104,16 @@ and a tuning value back. Game side, when `EngineDebugger.is_active()`:
 and a data `Array` and returns true when it handled it. Editor side: an `EditorDebuggerPlugin`
 returns true from `_has_capture("balance")`, handles `_capture(message, data, session_id)` and
 adds UI with `get_session(id).add_session_tab()`. Trap: the game callable gets the message
-without the prefix, the editor plugin gets it with the prefix. For a custom profiler, subclass `EngineProfiler` and register
-it with `EngineDebugger.register_profiler()`. Procedure: `godot-debugging`.
+without the prefix, the editor plugin gets it with the prefix. A custom profiler is an
+`EngineProfiler` passed to `EngineDebugger.register_profiler()`. Procedure: `godot-debugging`.
 
 ### Viewport debug draw modes
 
 Set `Viewport.debug_draw`. `DEBUG_DRAW_OVERDRAW` shows stacked pixels, `DEBUG_DRAW_WIREFRAME`
 triangle density, `DEBUG_DRAW_UNSHADED` and `DEBUG_DRAW_LIGHTING` split material from light
 cost, `DEBUG_DRAW_DISABLE_LOD` shows what mesh LOD saves, `DEBUG_DRAW_OCCLUDERS` the occlusion
-buffer. Traps: overdraw and lighting
-modes replace custom shaders, so vertex displacement vanishes. Several modes work only on
-Forward+ or Mobile. Wireframe on Compatibility needs
+buffer. Traps: overdraw and lighting modes replace custom shaders, so vertex displacement
+vanishes. Several modes work only on Forward+ or Mobile. Wireframe on Compatibility needs
 `RenderingServer.set_debug_generate_wireframes(true)` before meshes load.
 
 ### Command line flags for measuring
@@ -155,8 +149,9 @@ recording live play.
 ### Custom Logger and script backtraces (since 4.5)
 
 Subclass `Logger` and pass it to `OS.add_logger()` in `_init()` of an autoload. `_log_error()`
-gets file, line, text, type and `ScriptBacktrace` objects; `_log_message()` gets plain prints. Both are called from any thread, possibly at once: guard shared state with a `Mutex`.
-Do not print from inside them. `push_error()` and `push_warning()` arrive in `_log_error()`,
+gets file, line, text, type and `ScriptBacktrace` objects; `_log_message()` gets plain prints.
+Both can be called from any thread, at the same time: guard shared state with a `Mutex`, and
+do not print from inside them. `push_error()` and `push_warning()` arrive in `_log_error()`,
 not in `_log_message()`. Backtraces are filled in editor and debug builds. For release exports
 turn on `ProjectSettings.debug/settings/gdscript/always_track_call_stacks`.
 `always_track_local_variables` also keeps locals for `Engine.capture_script_backtraces(true)`,
@@ -165,9 +160,8 @@ at about 50 bytes per local variable in every class. Procedure: `godot-debugging
 ### Debug on the device
 
 Debug > Deploy with Remote Debug makes a one-click deploy connect back to the editor. Small
-Deploy with Network Filesystem serves project files over the network, which cuts deploy time for
-large games. Keep Debug Server Open accepts games started outside the editor. Only debug
-templates can be debugged remotely.
+Deploy with Network Filesystem serves project files over the network: faster deploys for large
+games. Keep Debug Server Open accepts games started outside the editor. Debug templates only.
 
 ### Outside profilers
 
@@ -179,20 +173,16 @@ templates can be debugged remotely.
   Perfetto is the Android tracer: category `godot` is cheap, `godot_scripting` traces every
   script call and is slow, so use it to find one bad call in a hitch.
 - Sanitizers need a custom build: `use_asan=yes` (about 2x slower), `use_ubsan=yes`,
-  `use_tsan=yes`. Address, memory and thread sanitizers cannot be combined. Use them for
-  engine, module and GDExtension memory bugs.
+  `use_tsan=yes`. Address, memory and thread sanitizers cannot be combined.
 
 ## Niche but useful
 
-- The Evaluator tab is a REPL at a breakpoint: it reads members and locals and calls methods.
 - A C++ crash backtrace needs a build with debug symbols. It is written to the session log: at
   next start, read the previous log in `user://logs/` for "Program crashed with signal".
 - Release builds flush stdout only at exit. Dedicated servers that feed a log service set
   `ProjectSettings.application/run/flush_stdout_on_print`.
-- The `breakpoint` keyword lives in the script, so it travels through version control.
 - Debug > Customize Run Instances starts several instances, each with its own arguments and
   feature tags: one host and two clients from one key press.
-- `--gpu-validation` turns on graphics API validation layers for driver-level errors.
 - `print_verbose()` prints only with `--verbose`; such lines can stay in shipped code.
 
 ## Traps
@@ -200,36 +190,30 @@ templates can be debugged remotely.
 - Profiling with V-Sync on, or in the editor build, and reading the result as shipping cost.
 - A debug-only flag on a release template: ignored without a message.
 - Outdated belief: release builds cannot give script stack traces. Since 4.5 they can.
-- A monitor callable that scans the tree shows up as a hitch once per second.
-- Trusting a 0 from a `Performance` monitor in release: some exist only in debug builds.
 
 ## Version notes
 
-- 4.5: `Logger` and `OS.add_logger()`; GDScript backtraces on errors; `ScriptBacktrace`;
-  `always_track_call_stacks` for release.
+- 4.4: no change to these tools was found in the docs.
+- 4.5: `Logger`, `OS.add_logger()`, `ScriptBacktrace`, GDScript backtraces on errors.
 - 4.6: ObjectDB Profiler tab; tracing profiler support (Tracy, Perfetto, Instruments).
-- 4.7: official Perfetto export templates are published with each stable release, so an Android
-  trace no longer needs an engine build.
+- 4.7: Perfetto export templates ship with each stable release, so an Android trace no longer
+  needs an engine build. The `type` argument of `add_custom_monitor()` exists in 4.7; the
+  version that added it is not confirmed.
 
 ## Related skills
 
 - `godot-debugging` - step-by-step Logger, debugger plugin, overlay and leak-check procedures.
 - `godot-perf-measure` - A/B measurement method on a noisy machine.
 - `godot-optimization` - what to change once the tool has named the bottleneck.
-- `godot-visual-verification` - screenshot and movie based checks.
 
 ## Sources
 
-- https://docs.godotengine.org/en/stable/tutorials/scripting/debug/debugger_panel.html
-- https://docs.godotengine.org/en/stable/tutorials/scripting/debug/the_profiler.html
-- https://docs.godotengine.org/en/stable/tutorials/scripting/debug/custom_performance_monitors.html
-- https://docs.godotengine.org/en/stable/tutorials/scripting/debug/objectdb_profiler.html
+- https://docs.godotengine.org/en/stable/tutorials/scripting/debug/index.html (all pages)
 - https://docs.godotengine.org/en/stable/tutorials/scripting/logging.html
 - https://docs.godotengine.org/en/stable/tutorials/editor/command_line_tutorial.html
 - https://docs.godotengine.org/en/stable/tutorials/animation/creating_movies.html
-- https://docs.godotengine.org/en/stable/engine_details/development/profiling/index.html
-- https://docs.godotengine.org/en/stable/engine_details/development/profiling/tracy.html
-- https://docs.godotengine.org/en/stable/engine_details/development/profiling/perfetto.html
+- https://docs.godotengine.org/en/stable/engine_details/development/profiling/index.html (and
+  its tracy, perfetto, hotspot, instruments and very_sleepy pages)
 - https://docs.godotengine.org/en/stable/engine_details/development/debugging/using_sanitizers.html
 - Class reference 4.7: Performance, EngineDebugger, EditorDebuggerPlugin, Logger, Viewport
 - https://godotengine.org/article/dev-snapshot-godot-4-6-beta-1/ (search summary only; page blocked)

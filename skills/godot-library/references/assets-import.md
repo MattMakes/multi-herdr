@@ -154,8 +154,8 @@ A renamed source material breaks the link.
 godot --headless --path . --import
 ```
 
-`--import` opens the editor, waits for all imports and quits. `--export-release`,
-`--export-debug` and `--export-pack` imply it. Caching `.godot/` between CI runs saves
+`--import` opens the editor, waits for all imports and quits. `--export-debug` and
+`--export-pack` are documented to imply it. Caching `.godot/` between CI runs saves
 the reimport. See `godot-headless-runs` for the full procedure.
 
 ## Niche but useful

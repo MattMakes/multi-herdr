@@ -112,8 +112,8 @@ macOS, Android and Linux with Wayland; on Windows and X11 the player must be abl
 - MSDF (`multichannel_signed_distance_field` in the import settings): one atlas serves every
   size, with no new rasterization when the size animates, and no grain when scaled down or in
   `Label3D`. Costs: higher baseline render cost on low-end mobile, no hinting so small text is
-  softer, no LCD subpixel mode. Outline
-  size is limited to half of `msdf_pixel_range` (default 16, so 8 pixels).
+  softer, no LCD subpixel mode. Outline size is limited to half of `msdf_pixel_range`
+  (default 16, so 8 pixels).
 - Rasterized fonts create glyphs per size on first use. Pre-render the needed sizes and
   character sets in the advanced import settings to avoid a hitch on first display.
 - With stretch mode `canvas_items`, font oversampling re-rasterizes at the real resolution

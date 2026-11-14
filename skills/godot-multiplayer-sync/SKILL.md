@@ -33,8 +33,8 @@ All examples target Godot 4.3+ with no deprecated APIs. GDScript is shown first,
 
 | Property | Description |
 |---|---|
-| `replication_interval` | Seconds between full sync updates. `0` = every physics frame |
-| `delta_interval` | Seconds between delta sync updates. `0` = disabled |
+| `replication_interval` | Seconds between sync updates of the `Always` properties. `0` = every network process frame |
+| `delta_interval` | Seconds between delta updates of the `On Change` properties. `0` = every network process frame (not off) |
 | `public_visibility` | When `true`, updates go to all peers (default) |
 | `visibility_filters` | Array of `Callable`s; each returns `true` if a peer should receive updates |
 

@@ -82,7 +82,7 @@ Use it for internal references in UI scenes: layout changes then cost no script 
 
 | Tool | Stores | Good for | Limit |
 |---|---|---|---|
-| Inherited scene | Differences from the base | Variants; edits of imported 3D scenes | Base nodes cannot be removed |
+| Inherited scene | Differences from the base | Variants; imported 3D edits | Base nodes cannot be removed |
 | Instanced child scene | Path plus root overrides | Reuse by composition | Parent sees only the root |
 | Editable Children | Inner-node overrides, in the parent | One-off tweaks | Parent depends on inner layout |
 
