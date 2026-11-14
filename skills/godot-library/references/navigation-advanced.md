@@ -87,17 +87,17 @@ var _params := NavigationPathQueryParameters3D.new()
 var _result := NavigationPathQueryResult3D.new()
 
 func _ready() -> void:
-    _params.map = get_world_3d().navigation_map
-    _params.metadata_flags = NavigationPathQueryParameters3D.PATH_METADATA_INCLUDE_NONE
-    _params.path_search_max_polygons = 2048
-    _params.simplify_path = true
-    _params.simplify_epsilon = 0.3
+	_params.map = get_world_3d().navigation_map
+	_params.metadata_flags = NavigationPathQueryParameters3D.PATH_METADATA_INCLUDE_NONE
+	_params.path_search_max_polygons = 2048
+	_params.simplify_path = true
+	_params.simplify_epsilon = 0.3
 
 func find_path(from: Vector3, to: Vector3) -> PackedVector3Array:
-    _params.start_position = from
-    _params.target_position = to
-    NavigationServer3D.query_path(_params, _result)
-    return _result.path
+	_params.start_position = from
+	_params.target_position = to
+	NavigationServer3D.query_path(_params, _result)
+	return _result.path
 ```
 
 `path_search_max_distance` and `path_search_max_polygons` stop the search and return a path to

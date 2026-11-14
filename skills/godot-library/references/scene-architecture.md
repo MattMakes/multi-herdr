@@ -109,10 +109,10 @@ for "any left?". Groups also work as interface tags: `is_in_group(&"damageable")
 capability test across scene borders. For hot sets, a typed static registry avoids the copy:
 
 ```gdscript
-class_name Enemy
+class_name Raider
 extends CharacterBody2D
 
-static var all: Array[Enemy] = []
+static var all: Array[Raider] = []
 
 func _enter_tree() -> void:
 	all.append(self)
@@ -148,8 +148,9 @@ systems' data. Lighter options:
 ### Scenes as named types
 
 A script class gives a type name; a scene gives fast, editable construction. Join them with a
-namespace script, so callers never write paths:
+namespace script, so callers never write paths (the 2 scene files are from your project):
 
+<!-- gdscript-check: skip -->
 ```gdscript
 class_name Scenes
 extends RefCounted

@@ -119,8 +119,7 @@ from motion vectors and depth. The vendors plugin post puts the gain at about 70
 frame budget. Two routes: Application SpaceWarp through the vendors plugin on Meta and
 Pico (needs 4.5+, Mobile renderer), or the multi-vendor
 `xr/openxr/extensions/frame_synthesis` setting (since 4.6; Compatibility and Mobile
-only). Do not enable both. Fast transparent objects and UI show artifacts first, so put
-UI on composition layers.
+only). Do not enable both.
 
 ### Composition layers for sharp UI and video
 
@@ -208,7 +207,7 @@ Unpersist before removing. A plane with a hole-punch material becomes an occlude
 - `XRServer.camera_locked_to_origin` (since 4.4) freezes head tracking for benchmarks
   and automated tests: every run renders the same view.
 - `OpenXRInterface.set_cpu_level()` and `set_gpu_level()` (since 4.5) ask the device for
-  a performance level; `cpu_level_changed` reports throttling.
+  a performance level; `cpu_level_changed` reports changes.
 - Eye gaze: an `XRController3D` with `tracker` `/user/eyes_ext` and a pose action.
 - `xr/openxr/submit_depth_buffer` can improve reprojection, but disables stencil.
 - Binding modifiers (`xr/openxr/binding_modifiers/*`) add dpad inputs and thresholds.
@@ -218,7 +217,7 @@ Unpersist before removing. A plane with a hole-punch material becomes an occlude
 - `XRBodyModifier3D` and `XRFaceModifier3D` apply body and face tracker data.
 - `--xr-mode off` runs the project flat; turn `xr/openxr/startup_alert` off and branch
   on `is_initialized()` for a desktop fallback.
-- Godot XR Tools addon: ready-made player body, movement, teleport and pickup scenes.
+- Godot XR Tools addon: ready-made player body, movement and teleport scenes.
 - The XR editor runs on Quest (Horizon OS v69+, since 4.4) and Android XR (4.6). With
   the build-environment companion app it exports Gradle builds on the headset.
 - Testing without wearing the headset: the Meta Toolkit extension configures the editor
@@ -244,14 +243,14 @@ Unpersist before removing. A plane with a hole-punch material becomes an occlude
 - Since 4.6 the engine bundles the Khronos OpenXR loader on Android, so one APK can run
   on several headsets without the vendors plugin. Store releases and vendor features
   (passthrough options, manifest entries) still need the plugin and a Gradle build.
-- Vendors plugin v4+ enables only the extensions you tick in project settings; an
-  upgrade from v3 can silently lose a feature. v5 needs 4.6 or later.
+- Vendors plugin v4+ enables only the extensions ticked in project settings, since
+  unused extensions can cost performance. v5 needs 4.6 or later.
 - WebXR starts as a flat page; a user click must start the session.
 
 ## Version notes
 
 - 4.3: frame timing rework; passthrough through the blend mode; `XRHandModifier3D`
-  replaces the deprecated `OpenXRHand`; composition layers.
+  replaces the deprecated `OpenXRHand`.
 - 4.4: hand tracking off by default; binding modifiers; `use_android_surface`;
   `camera_locked_to_origin`; XR editor on Quest.
 - 4.5: render models; foveation on the Mobile renderer; D3D12 OpenXR backend; motion
@@ -289,10 +288,7 @@ Unpersist before removing. A plane with a hole-punch material becomes an occlude
 - https://docs.godotengine.org/en/stable/tutorials/xr/xr_action_map.html
 - https://docs.godotengine.org/en/stable/tutorials/xr/xr_room_scale.html
 - https://docs.godotengine.org/en/stable/tutorials/xr/openxr_composition_layers.html
-- https://docs.godotengine.org/en/stable/tutorials/xr/xr_full_screen_effects.html
 - https://docs.godotengine.org/en/stable/tutorials/xr/ar_passthrough.html
 - https://docs.godotengine.org/en/stable/tutorials/xr/openxr_hand_tracking.html
 - https://docs.godotengine.org/en/stable/tutorials/xr/openxr_spatial_entities.html
 - https://docs.godotengine.org/en/stable/tutorials/xr/deploying_to_android.html
-- https://docs.godotengine.org/en/stable/tutorials/xr/webxr_intro.html
-- https://docs.godotengine.org/en/stable/tutorials/editor/using_the_xr_editor.html

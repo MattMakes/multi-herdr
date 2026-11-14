@@ -45,13 +45,13 @@ extends Node3D
 @export var half_life: float = 0.15
 
 func _process(delta: float) -> void:
-    if target == null:
-        return
-    var weight: float = 1.0 - exp(-0.6931 * delta / half_life)
-    global_position = global_position.lerp(target.global_position, weight)
-    var from := global_basis.orthonormalized().get_rotation_quaternion()
-    var to := target.global_basis.orthonormalized().get_rotation_quaternion()
-    global_basis = Basis(from.slerp(to, weight))
+	if target == null:
+		return
+	var weight: float = 1.0 - exp(-0.6931 * delta / half_life)
+	global_position = global_position.lerp(target.global_position, weight)
+	var from := global_basis.orthonormalized().get_rotation_quaternion()
+	var to := target.global_basis.orthonormalized().get_rotation_quaternion()
+	global_basis = Basis(from.slerp(to, weight))
 ```
 
 For a constant speed use `move_toward()` and `rotate_toward()`. For angles use `lerp_angle()`
@@ -75,16 +75,16 @@ the class reference warns that similar seeds can give similar streams.
 extends RefCounted
 
 func chunk_rng(world_seed: int, chunk: Vector2i) -> RandomNumberGenerator:
-    var rng := RandomNumberGenerator.new()
-    rng.seed = hash([world_seed, chunk.x, chunk.y])
-    return rng
+	var rng := RandomNumberGenerator.new()
+	rng.seed = hash([world_seed, chunk.x, chunk.y])
+	return rng
 
 func shuffle_with(rng: RandomNumberGenerator, items: Array) -> void:
-    for i: int in range(items.size() - 1, 0, -1):
-        var j: int = rng.randi_range(0, i)
-        var tmp: Variant = items[i]
-        items[i] = items[j]
-        items[j] = tmp
+	for i: int in range(items.size() - 1, 0, -1):
+		var j: int = rng.randi_range(0, i)
+		var tmp: Variant = items[i]
+		items[i] = items[j]
+		items[j] = tmp
 ```
 
 A per-chunk seed makes a chunk the same no matter the order chunks are built. Save `rng.state`
@@ -155,16 +155,16 @@ maps a world point back to a distance (rail grind, lane position, progress along
 extends MeshInstance3D
 
 func _ready() -> void:
-    var arrays: Array = []
-    arrays.resize(Mesh.ARRAY_MAX)
-    arrays[Mesh.ARRAY_VERTEX] = PackedVector3Array([
-        Vector3(0, 0, 0), Vector3(0, 0, 1), Vector3(1, 0, 0), Vector3(1, 0, 1)])
-    arrays[Mesh.ARRAY_NORMAL] = PackedVector3Array([
-        Vector3.UP, Vector3.UP, Vector3.UP, Vector3.UP])
-    arrays[Mesh.ARRAY_INDEX] = PackedInt32Array([0, 2, 1, 1, 2, 3])
-    var array_mesh := ArrayMesh.new()
-    array_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-    mesh = array_mesh
+	var arrays: Array = []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = PackedVector3Array([
+		Vector3(0, 0, 0), Vector3(0, 0, 1), Vector3(1, 0, 0), Vector3(1, 0, 1)])
+	arrays[Mesh.ARRAY_NORMAL] = PackedVector3Array([
+		Vector3.UP, Vector3.UP, Vector3.UP, Vector3.UP])
+	arrays[Mesh.ARRAY_INDEX] = PackedInt32Array([0, 2, 1, 1, 2, 3])
+	var array_mesh := ArrayMesh.new()
+	array_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	mesh = array_mesh
 ```
 
 Index shared vertices; split them only where normals or UVs must differ. Tangents need normals

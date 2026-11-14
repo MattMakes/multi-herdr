@@ -91,19 +91,19 @@ var _shape := SphereShape3D.new()
 var _query := PhysicsShapeQueryParameters3D.new()
 
 func _ready() -> void:
-    _shape.radius = 4.0
-    _query.shape = _shape
-    _query.collision_mask = 1 << 2
-    _query.collide_with_areas = false
+	_shape.radius = 4.0
+	_query.shape = _shape
+	_query.collision_mask = 1 << 2
+	_query.collide_with_areas = false
 
 func _physics_process(_delta: float) -> void:
-    _query.transform = global_transform
-    var space := get_world_3d().direct_space_state
-    var hits: Array[Dictionary] = space.intersect_shape(_query, 16)
-    for hit: Dictionary in hits:
-        var body := hit["collider"] as Node3D
-        if body != null:
-            body.add_to_group(&"alerted")
+	_query.transform = global_transform
+	var space := get_world_3d().direct_space_state
+	var hits: Array[Dictionary] = space.intersect_shape(_query, 16)
+	for hit: Dictionary in hits:
+		var body := hit["collider"] as Node3D
+		if body != null:
+			body.add_to_group(&"alerted")
 ```
 
 `cast_motion` returns the safe and unsafe fraction of a sweep (a cheap "how far can I move").
