@@ -16,6 +16,13 @@ Find the bottleneck class first. Fill rate test from the docs: V-Sync off, compa
 and a tiny window. Big gain = pixel (fragment) bound: lower resolution scale, simplify materials,
 cut overdraw and shadows. No gain = CPU or draw-call bound: cull, merge, instance.
 
+The rendering team's own framing: the frame rate is set by the slower of CPU and GPU, and 3D
+games are GPU-bound more often than 2D games. That is why occlusion culling runs on the CPU (it
+takes load off the GPU) and why 2D batching accepts a small GPU cost for a large CPU gain. Draw
+calls are a CPU cost: in the team's 4.3 benchmark of a scene with very many objects and shadowed
+omni lights, Vulkan API calls and draw-list recording took close to 30 % of CPU frame time, and
+the write-up names draw-call merging as the engine's weak spot.
+
 Per frame the engine frustum-culls instances (on several threads above
 `rendering/limits/spatial_indexer/threaded_cull_minimum_instances`, default 1000), then
 occlusion-culls, picks a mesh LOD, sorts opaque objects by material and shader to cut state
@@ -62,7 +69,8 @@ it only costs CPU. Rules:
 ### Automatic mesh LOD and its global dial
 
 Imported scenes (glTF, .blend, FBX; OBJ only when imported as Scene) get meshoptimizer LODs and a
-welded *shadow mesh* for free. Selection is by screen coverage, so FOV and resolution are already
+welded *shadow mesh* for free. Since 4.6 the generator keeps the shape of meshes built from
+separate parts much better, so retest assets where LOD was disabled for looking broken. Selection is by screen coverage, so FOV and resolution are already
 counted. `rendering/mesh_lod/lod_change/threshold_pixels` (default 1.0, tuned to be invisible) is
 a strong quality dial: `Viewport.mesh_lod_threshold` at 2 to 4 on low presets cuts primitives
 with little visible change. Per object use `lod_bias`. Shadows and reflection probes pick their
@@ -88,8 +96,35 @@ nothing by the whole AABB) and one LOD. So chunk by area, one `MultiMeshInstance
 Allocate `instance_count` once and move `visible_instance_count` instead of resizing. Set
 `custom_aabb` to skip the costly AABB recompute when instances move. Animate in the vertex shader
 with `INSTANCE_ID` or `INSTANCE_CUSTOM`. For bulk updates write the whole `buffer` once
-(`RenderingServer.multimesh_set_buffer()`), built on worker threads if needed. `godot-optimization`
-has the setup code.
+(`RenderingServer.multimesh_set_buffer()`), built on worker threads if needed. Since 4.4 MultiMesh
+instances take part in 3D physics interpolation (`physics_interpolation_quality`).
+
+```gdscript
+extends MultiMeshInstance3D
+
+const MAX_INSTANCES: int = 4096
+
+func _ready() -> void:
+	multimesh = MultiMesh.new()
+	multimesh.transform_format = MultiMesh.TRANSFORM_3D
+	multimesh.mesh = BoxMesh.new()
+	multimesh.instance_count = MAX_INSTANCES
+	multimesh.visible_instance_count = 0
+	multimesh.custom_aabb = AABB(Vector3(-50, 0, -50), Vector3(100, 10, 100))
+
+func show_first(count: int) -> void:
+	multimesh.visible_instance_count = mini(count, MAX_INSTANCES)
+```
+
+### Update mesh buffers in place, do not rebuild
+
+Rebuilding a mesh each frame frees and allocates GPU vertex arrays. In a team case study (a
+vertex-animated 2D polygon scene) that create-and-free work cost more than the drawing itself,
+and writing into the existing buffers took the frame from 35 ms to 13 ms. For your own dynamic
+geometry with a fixed vertex count, build the `ArrayMesh` once and call
+`surface_update_vertex_region()` / `surface_update_attribute_region()` (or the
+`RenderingServer.mesh_surface_update_vertex_region()` form). Better still, move the motion into the
+vertex shader.
 
 ### Cut material and shader variants
 
@@ -132,6 +167,8 @@ budget. Keep the decal box short along its projection axis. No decals in Compati
 
 ### Texture memory and sampling
 
+VRAM compression usually cuts texture size four to six times (4.6 release page). Import is done
+on the GPU by the Betsy compressor since 4.4, and 3D textures import up to twice as fast since 4.6.
 VRAM Compressed (S3TC/BPTC on desktop, ETC2/ASTC on mobile;
 `rendering/textures/vram_compression/import_etc2_astc` ships both) cuts memory and bandwidth.
 Lossless and Lossy shrink only the file; in VRAM they are uncompressed. Keep pixel art
@@ -149,7 +186,10 @@ Use small 3D density textures (64 cubed or less).
 ## Niche but useful
 
 - `shading_mode = SHADING_MODE_PER_VERTEX` on a material, or project-wide
-  `rendering/shading/overrides/force_vertex_shading`: big gain on weak mobile GPUs.
+  `rendering/shading/overrides/force_vertex_shading` (since 4.4): big gain on weak mobile GPUs,
+  and the base of a PSX-style look.
+- `use_z_clip_scale` on a material (since 4.5) keeps a first-person weapon from clipping into
+  walls without a second viewport.
 - `Viewport.debug_draw` overdraw mode and the editor's **Occlusion Culling Buffer** and **Disable
   Mesh LOD** views.
 - `rendering/driver/depth_prepass/enable` off: wins in fixed top-down views with little overdraw.
@@ -168,9 +208,15 @@ Use small 3D density textures (64 cubed or less).
 
 ## Version notes
 
-- 4.4: `Light3D.shadow_caster_mask`; CSG can be baked to a mesh for occluder and lightmap bakes.
-- 4.5: stencil modes on `BaseMaterial3D` (outline, x-ray) without an extra viewport pass.
-- 4.6: simplified SSAO in Compatibility; SSR rewritten; volumetric fog blending changed.
+- 4.4: `Light3D.shadow_caster_mask`; vertex shading works again (material mode and the project
+  override); Betsy GPU texture compressor; MultiMesh physics interpolation; CSG can be baked to a
+  mesh for occluder and lightmap bakes.
+- 4.5: stencil modes on `BaseMaterial3D` (outline, x-ray; see-through-wall masks) without an
+  extra viewport pass; `use_z_clip_scale` for view models; cheap specular occlusion
+  (`rendering/reflections/specular_occlusion/enabled`).
+- 4.6: better LOD shapes; reflection and radiance probes use octahedral maps (cheaper, less
+  memory); simplified SSAO in Compatibility; SSR rewritten (faster, half size by default);
+  volumetric fog blending changed.
 - 4.7: `AreaLight3D`; in Forward+ one visible area light adds cost to all objects in the scene.
 
 ## Related skills
@@ -184,6 +230,13 @@ Use small 3D density textures (64 cubed or less).
 
 ## Sources
 
+- https://godotengine.org/releases/4.4/
+- https://godotengine.org/releases/4.5/
+- https://godotengine.org/releases/4.6/
+- https://godotengine.org/releases/4.7/
+- https://godotengine.org/article/rendering-cpu-optimizations/
+- https://godotengine.org/article/rendering-acyclic-graph/
+- https://godotengine.org/article/dev-snapshot-godot-4-4-beta-1/
 - https://docs.godotengine.org/en/stable/tutorials/performance/gpu_optimization.html
 - https://docs.godotengine.org/en/stable/tutorials/performance/optimizing_3d_performance.html
 - https://docs.godotengine.org/en/stable/tutorials/3d/occlusion_culling.html

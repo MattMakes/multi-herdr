@@ -130,8 +130,9 @@ and play that as a cheap PCM voice.
 - Microphone: set `audio/driver/enable_input`, play an `AudioStreamMicrophone` on a bus that
   holds a capture or `AudioEffectRecord` effect, and mute that bus to avoid feedback. iOS also
   needs `audio/general/ios/session_category` set to a record category. A blocked microphone
-  returns silence, not an error. `AudioServer` also has an experimental direct path
-  (`set_input_device_active()`, `get_input_frames()`) that needs no player or bus.
+  returns silence, not an error. Since 4.6 `AudioServer` also has an experimental direct
+  path (`set_input_device_active()`, `get_input_frames_available()`, `get_input_frames()`)
+  that needs no player or bus: the cheapest route for voice chat capture.
 
 ### 3D audio that reads the level
 - `attenuation_model` picks inverse, inverse square, logarithmic or disabled. `unit_size`
@@ -145,19 +146,26 @@ and play that as a cheap PCM voice.
   `AudioListener3D`.
 
 ### Web: plan for the sample path
-On Web the default is `PLAYBACK_TYPE_SAMPLE` (`audio/general/default_playback_type.web`). It
-gives low latency without threads. Design the Web mix so it does not depend on bus effects,
-or set single players to `PLAYBACK_TYPE_STREAM` and accept more latency (less with thread
-support). Registering a stream as a sample on first play can hitch: call
-`AudioServer.register_stream_as_sample()` during loading. Only static streams can be sampled
-(`AudioStream.can_be_sampled()`).
+On Web the default is `PLAYBACK_TYPE_SAMPLE` (`audio/general/default_playback_type.web`).
+Why it exists (Web export in 4.3 report): without threads the engine mixer runs on the main
+loop, so mixing is tied to the frame rate. When frames drop, too few audio frames reach the
+buffer and the sound garbles. A sample is handed to the browser instead: the engine skips
+it in the mix phase and only tells the Web driver "play, pause, stop", and the driver keeps
+a Web Audio node chain per sample and per bus. The sound then survives frame drops. Design
+the Web mix so it does not depend on bus effects, or set single players to
+`PLAYBACK_TYPE_STREAM` and accept more latency (less with thread support). A stream is
+registered as a sample on first play, which can spike on low-end devices: call
+`AudioServer.register_stream_as_sample()` while the level loads. Only static streams (WAV,
+Ogg Vorbis, MP3) can be sampled (`AudioStream.can_be_sampled()`).
 
 ## Niche but useful
 
 - `AudioServer.playback_speed_scale` slows or speeds all audio, independent of
   `Engine.time_scale`. Use it for slow motion that should also pitch the mix.
-- `AudioStreamWAV.load_from_file()` and `AudioStreamOggVorbis.load_from_file()` load user
-  music or mod audio without the import step.
+- `AudioStreamWAV.load_from_file()` and `AudioStreamMP3.load_from_file()` (both since 4.4)
+  and `AudioStreamOggVorbis.load_from_file()` load user music or mod audio without import.
+- `AudioStreamPlayback.mix_audio()` (since 4.4) pulls mixed frames from a playback by hand,
+  for offline analysis such as beat or loudness detection at load time.
 - WAV loop points are in samples (`loop_begin`, `loop_end`) and support ping-pong and backward.
   Ogg and MP3 only have `loop_offset` in seconds and forward looping.
 - Text to speech lives on `DisplayServer` (`tts_speak()`, `tts_get_voices_for_language()`,
@@ -176,8 +184,16 @@ support). Registering a stream as a sample on first play can hitch: call
 
 ## Version notes
 
-- 4.4: `AudioStreamGenerator.mix_rate_mode`.
-- 4.7: `AudioEffectSpectrumAnalyzer.tap_back_pos` was removed.
+- 4.3: sample playback type, `AudioStreamInteractive`, `AudioStreamSynchronized`,
+  `AudioStreamPlaylist` (present in the 4.3 class reference).
+- 4.4: `AudioStreamGenerator.mix_rate_mode`; runtime WAV and MP3 loading; `mix_audio()`
+  exposed; `volume_linear` on the players; Quite OK Audio became the default WAV import
+  compression (4.4 dev 2 notes), so re-imported WAV files changed format.
+- 4.5: `AudioListener3D` tracks velocity for doppler (fix in 4.5 beta 5); before that only
+  the camera did.
+- 4.6: direct microphone buffer methods on `AudioServer`.
+- 4.7: `AudioEffectSpectrumAnalyzer.tap_back_pos` was removed together with a fix for
+  jittered analyzer values; the audio bus panel was reworked (editor only).
 - 4.7: default `area_mask` of `AudioStreamPlayer2D`/`AudioStreamPlayer3D` changed from 1 to 0.
   Projects that rely on `audio_bus_override` or reverb areas must set the mask layer again.
 
@@ -198,3 +214,10 @@ support). Registering a stream as a sample on first play can hitch: call
 - https://docs.godotengine.org/en/stable/tutorials/assets_pipeline/importing_audio_samples.html
 - https://docs.godotengine.org/en/stable/tutorials/export/exporting_for_web.html
 - https://docs.godotengine.org/en/stable/tutorials/migrating/upgrading_to_godot_4.7.html
+- https://godotengine.org/article/progress-report-web-export-in-4-3/
+- https://godotengine.org/releases/4.4/
+- https://godotengine.org/article/dev-snapshot-godot-4-4-dev-2/
+- https://godotengine.org/article/dev-snapshot-godot-4-4-dev-4/
+- https://godotengine.org/article/dev-snapshot-godot-4-5-beta-5/
+- https://godotengine.org/article/dev-snapshot-godot-4-6-dev-6/
+- https://godotengine.org/article/dev-snapshot-godot-4-7-beta-1/

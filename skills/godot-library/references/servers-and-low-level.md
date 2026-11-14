@@ -72,16 +72,22 @@ work of computing one from the commands.
 ### 3D instances by RID
 
 `RenderingServer.instance_create2(mesh_rid, scenario)` makes a visual instance in one call;
-`instance_set_transform()` moves it. Each instance is still its own object for the renderer
-(own draw, own culling), so this removes node cost, not draw cost. Call `instance_teleport()`
-after a jump to clear motion vectors. For draw cost use MultiMesh.
+`instance_set_transform()` moves it. Each instance is still culled and listed by itself, so this
+removes node cost, not renderer cost. The renderer helps on its side: since 4.0 culling is a
+cache-friendly brute-force pass on several threads, and objects with the same mesh and material
+are drawn as instances. Call `instance_teleport()` (since 4.5) after a jump to clear motion
+vectors. When per-object renderer cost is the limit, use MultiMesh.
 
 ### Interpolation differs between 2D and 3D
 
 2D physics interpolation lives in the server, so canvas items made by RID are interpolated
-(`canvas_item_set_interpolated()`). 3D interpolation lives in the scene layer, so 3D instances
-made by RID are not: blend the previous and current transform yourself with
-`Engine.get_physics_interpolation_fraction()`. MultiMesh is supported in both.
+(`canvas_item_set_interpolated()`). 3D is different. In 4.4 it was also done in the
+RenderingServer (4.4 had `instance_set_interpolated()`, which 4.5 removed). In 4.5 it moved to
+the SceneTree, because nodes need the interpolated transform and could not ask the server for
+it: the server sits behind a threaded command queue and a read would stall it. So since 4.5 a
+3D instance made by RID is not interpolated. Blend the previous and current transform yourself
+with `Engine.get_physics_interpolation_fraction()`. Nodes can read
+`Node3D.get_global_transform_interpolated()` (since 4.4). MultiMesh is covered in both.
 
 ### Physics bodies without nodes
 
@@ -105,6 +111,16 @@ Hold position, velocity and life in packed arrays in one manager (see `cpu-and-f
 Draw with one canvas item per entity or with one MultiMesh for all. For hits, test against the
 few targets by distance, or give each bullet a server body when it must hit world geometry. The
 docs point to the official Bullet Shower demo. They give no speedup factor: measure.
+
+### Update a mesh in place
+
+When geometry changes every frame but its vertex count does not, do not clear the mesh and add
+the surface again. `RenderingServer.mesh_surface_update_vertex_region()`, with
+`mesh_surface_update_attribute_region()` and `mesh_surface_update_skin_region()`, overwrite the
+bytes of an existing surface. The engine team measured the other way on animated `Polygon2D`
+nodes: 3.3 ms per frame to create vertex arrays and 5 ms to free them, in a frame that needed
+3.4 ms to draw. Moving `Polygon2D` to in-place updates in 4.7 took that frame from 35 ms to
+13 ms. Cost: you build the byte layout of the surface format yourself.
 
 ### MultiMesh: set the format, then the count
 
@@ -175,9 +191,11 @@ swarms and debris that no game rule needs to read back. Cost: the CPU does not k
 
 ### MultiMesh with physics interpolation
 
-If instance order is stable, set `buffer` each tick and the renderer blends. If order changes
-between ticks, call `set_buffer_interpolated(current, previous)`. After a first placement or a
-teleport call `reset_instances_physics_interpolation()`. `physics_interpolation_quality` has a
+Since 4.4 for 3D transforms and since 4.6 for 2D transforms. If instance order is stable, set
+`buffer` each tick and the renderer blends. If order changes between ticks, call
+`set_buffer_interpolated(current, previous)`. After a first placement or a teleport call
+`reset_instance_physics_interpolation(i)` for one instance or, since 4.6,
+`reset_instances_physics_interpolation()` for all. `physics_interpolation_quality` has a
 high setting for tick rates below about 20 or fast spins.
 
 ### Hook the frame
@@ -189,8 +207,9 @@ thumbnail. `call_on_render_thread()` runs a callable where `RenderingDevice` use
 ## Niche but useful
 
 - `RenderingServer.canvas_item_add_multimesh()` draws a 2D MultiMesh with no node at all.
-- `multimesh_allocate_data(..., use_indirect)` with `multimesh_get_command_buffer_rd_rid()` lets
-  a compute shader set the instance count on the GPU (the version that added it is not confirmed).
+- Since 4.4: `multimesh_allocate_data(..., use_indirect)` with
+  `multimesh_get_command_buffer_rd_rid()` lets a compute shader set the instance count on the
+  GPU, and `multimesh_get_buffer_rd_rid()` exposes the instance buffer to `RenderingDevice` code.
 - `NavigationServer3D.query_path()` and `map_get_path()` return paths with no agent node.
 - `body_attach_object_instance_id()` makes a raw body report an object of your choice in queries.
 - `AudioServer` is used directly for buses, volumes and effects; its script API has no call that
@@ -209,9 +228,14 @@ thumbnail. `call_on_render_thread()` runs a callable where `RenderingDevice` use
 
 ## Version notes
 
-- 4.4: 3D physics interpolation arrived, scene-side, so raw 3D instances stay uninterpolated.
-- 4.5, 4.6, 4.7: no change to these APIs was found in the docs. The MultiMesh and vertex
-  animation pages are flagged as outdated by the docs; the API names here are checked on 4.7.
+- 4.4: 3D physics interpolation, then inside the RenderingServer. MultiMesh interpolation
+  (`set_buffer_interpolated`, `physics_interpolation_quality`). MultiMesh indirect draw and
+  RenderingDevice buffer RIDs. Clearer error messages from MultiMesh functions.
+- 4.5: 3D interpolation moved to the SceneTree; `RenderingServer.instance_set_interpolated()`
+  and `instance_reset_physics_interpolation()` are gone. `instance_teleport()` added.
+- 4.6: MultiMesh interpolation for 2D transforms; `reset_instances_physics_interpolation()`.
+- 4.7: `Polygon2D` updates its mesh in place. The MultiMesh and vertex animation doc pages are
+  flagged as outdated by the docs; the API names here are checked against 4.7.2.
 
 ## Related skills
 
@@ -231,3 +255,9 @@ thumbnail. `call_on_render_thread()` runs a callable where `RenderingDevice` use
 - https://docs.godotengine.org/en/stable/tutorials/physics/interpolation/advanced_physics_interpolation.html
 - Class reference 4.7: RenderingServer, MultiMesh, PhysicsServer2D, World2D
 - https://github.com/godotengine/godot-demo-projects/tree/master/2d/bullet_shower (linked by docs)
+- https://godotengine.org/article/rendering-cpu-optimizations/
+- https://godotengine.org/article/godot-40-optimization-progress-report/
+- https://godotengine.org/article/dev-snapshot-godot-4-5-dev-4/
+- https://godotengine.org/article/dev-snapshot-godot-4-6-beta-1/
+- https://godotengine.org/releases/4.4/ and https://godotengine.org/releases/4.5/
+- Class reference XML of 4.3 to 4.6, used to date the APIs

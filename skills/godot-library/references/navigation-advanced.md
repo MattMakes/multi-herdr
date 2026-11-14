@@ -23,9 +23,12 @@ beats a navigation mesh.
   `edge_connection_margin` (costly). Fewer free edges means a faster sync.
 - Every setter is queued. The server applies the queue once per physics frame, in the middle
   of the tick, after `_physics_process`. A path query in `_ready()` sees an empty map. Wait for
-  `get_tree().physics_frame` or the `map_changed` signal. Since 4.5 regions also sync on a
-  background thread by default (`navigation/world/region_use_async_iterations`, next to
-  `map_use_async_iterations`): no main-thread stall, but one more step of delay.
+  `get_tree().physics_frame` or the `map_changed` signal. The map sync runs on a background
+  thread since 4.4 (`navigation/world/map_use_async_iterations`), and region and link updates
+  since 4.5 (`region_use_async_iterations`). The design goal: on a weak machine the map
+  updates less often instead of the whole game slowing down. The price is delay.
+- Until 4.5 `NavigationServer2D` was a proxy of the 3D server. It is now its own server, so a
+  2D-only export template can leave 3D navigation out, and the two are tuned separately.
 - A navigation mesh is the area where an agent centre may stand. The agent size is baked in
   (`agent_radius`, `agent_height`). Pathfinding ignores physics and visuals completely.
 - Path search is A* over polygons, then post-processing. Its cost follows the polygon and edge
@@ -44,7 +47,8 @@ Parse once with `NavigationServer3D.parse_source_geometry_data()` on the main th
 `bake_from_source_geometry_data_async()` and assign the mesh with `region_set_navigation_mesh()`
 in the callback. The stall people see is nearly always the parse step, not the bake. Parse
 colliders, not visual meshes (`geometry_parsed_geometry_type = PARSED_GEOMETRY_STATIC_COLLIDERS`):
-reading a visual mesh pulls arrays back from the GPU and blocks the renderer. Limit the parse
+reading a visual mesh pulls arrays back from the GPU and blocks the renderer. Since 4.4 the
+default parses both meshes and colliders (before: meshes only), so set it yourself. Limit the parse
 with `geometry_source_geometry_mode` and a group name.
 
 ### Skip the scene tree
@@ -100,8 +104,9 @@ func find_path(from: Vector3, to: Vector3) -> PackedVector3Array:
 the closest polygon found; set too low they send agents the wrong way. `path_return_max_length`
 and `path_return_max_radius` only clip the result (tactics games: movement range).
 `included_regions` and `excluded_regions` skip whole chunks early: include the start chunk and
-its ring of neighbours and accept a partial path toward a far target. `NavigationAgent3D` has the
-same properties. `navigation/pathfinding/max_threads` (4) bounds parallel queries on one map.
+its ring of neighbours and accept a partial path toward a far target. The limits, the clips,
+the region filters and `path_length` on the result (path distance for AI choices, no loop
+needed) all arrived in 4.5. `NavigationAgent3D` has the limit and clip properties. `navigation/pathfinding/max_threads` (4) bounds parallel queries on one map.
 
 ### Do not query more than needed
 
@@ -160,6 +165,7 @@ yourself, or the agent walks through the air.
 | Navigation mesh | free movement, large open areas, few big polygons | bake and sync cost |
 | `AStarGrid2D` | tile games, per-cell cost, fast edits (`set_point_solid`) | `update()` clears all point data; `jumping_enabled` ignores weights |
 | `AStar2D` / `AStar3D` | waypoint graphs, roads, room graphs | script `_compute_cost` is slow; `reserve_space()` first |
+| `AStar` + `neighbor_filter_enabled` (since 4.5) | one graph, per-unit rules in `_filter_neighbor` (locked doors, size) | a script call per neighbour |
 | Flow field (own code) | hundreds of agents, one target | one field per target, rebuilt on change |
 
 Per-tile navigation polygons on a `TileMapLayer` make a map of tiny polygons that is slow to
@@ -172,8 +178,15 @@ for cell movement use `AStarGrid2D`.
 - `map_get_closest_point_owner()`: which region (room, biome) an actor stands in, with no areas.
 - `map_get_iteration_id()`: cheap check for "did the map change since my path was made".
 - `agent_set_paused()`: off-screen agents leave the avoidance simulation.
+- `region_get_bounds()` (since 4.4): build the chunk lookup for `included_regions`.
+- `region_get_iteration_id()` (since 4.5): the same change check per region.
+- `navigation_engine = Dummy` under `navigation/2d/` and `navigation/3d/` (since 4.6): turn a
+  navigation server off without a custom engine build.
+- `SAMPLE_PARTITION_TRIANGULATE` for 2D baking (since 4.4): triangles instead of convex pieces.
+- `AStarGrid2D.get_point_data_in_region()` (since 4.4): dump a grid area for debug or saves.
 - `Performance.NAVIGATION_EDGE_MERGE_COUNT`, `NAVIGATION_EDGE_CONNECTION_COUNT` and
   `NAVIGATION_EDGE_FREE_COUNT`: merged-by-vertex must be far above the connection count.
+  Since 4.5 `NAVIGATION_2D_*` and `NAVIGATION_3D_*` variants split the numbers per server.
 - `Performance.TIME_NAVIGATION_PROCESS`: sync plus avoidance time. It is part of the physics
   time and does not include path queries.
 
@@ -187,14 +200,22 @@ for cell movement use `AStarGrid2D`.
 - A fast agent can overshoot `path_desired_distance` and turn back. Raise the distances.
 - Debug drawing is node based; server-only regions are not drawn. Debug calls are debug-build only.
 - GridMap: bake with the map cell size and lower `agent_radius` and `region_min_size` for small cells.
+- Since 4.5 `NavigationServer2D` avoidance callbacks pass a `Vector2`, not a `Vector3`.
+- Outdated: the 2020 design post uses a `Navigation` node and `get_next_location()`; neither
+  exists in 4.x. Its goals (region streaming, run-time baking, thread safety) still explain
+  the server design.
 
 ## Version notes
 
-- 4.4: `query_path()` takes an optional callback.
-- 4.5: async region sync by default; regions merge their own polygons first, then the map
-  merges free edges.
+- 4.4: async map sync. Path search uses a heap for open polygons (faster queries).
+  `query_path()` takes an optional callback. `navigation/pathfinding/max_threads`. Bakes parse
+  colliders by default. Obstacles follow their node transform. `AStarGrid2D` jumping is faster.
+- 4.5: dedicated 2D server. Async region and link sync by default. Regions merge their own
+  polygons first, then the map merges free edges. Path query limits and region filters.
+  Export templates can be built without navigation.
 - 4.6: `AStar2D`, `AStar3D` and `AStarGrid2D` return an empty path when the start point is
-  disabled or solid.
+  disabled or solid. The navigation engine is selectable, with `Dummy` to disable it.
+- 4.7: no navigation entry in the release page or the upgrade guide.
 
 ## Related skills
 
@@ -213,3 +234,11 @@ for cell movement use `AStarGrid2D`.
 - https://docs.godotengine.org/en/stable/tutorials/navigation/navigation_using_navigationlinks.html
 - https://docs.godotengine.org/en/stable/tutorials/migrating/upgrading_to_godot_4.5.html
 - https://docs.godotengine.org/en/stable/tutorials/migrating/upgrading_to_godot_4.6.html
+- https://godotengine.org/releases/4.4/
+- https://godotengine.org/releases/4.5/
+- https://godotengine.org/article/dev-snapshot-godot-4-4-dev-2/
+- https://godotengine.org/article/dev-snapshot-godot-4-4-beta-1/
+- https://godotengine.org/article/dev-snapshot-godot-4-5-dev-2/
+- https://godotengine.org/article/dev-snapshot-godot-4-5-beta-1/
+- https://godotengine.org/article/dev-snapshot-godot-4-6-beta-1/
+- https://godotengine.org/article/navigation-server-godot-4-0/

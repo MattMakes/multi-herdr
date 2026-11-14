@@ -31,6 +31,20 @@ Since 4.4 Vulkan and D3D12 fall back to each other, then to Compatibility
 (`rendering/rendering_device/fallback_to_opengl3`). That last fallback changes the look: test it
 or disable it. Override per run with `--rendering-driver` and `--rendering-method`.
 
+Why D3D12 became the new-project driver on Windows: the 4.6 release page says it is now about on
+par with Vulkan and has steadier driver support. Its shaders are translated SPIR-V to DXIL
+through Mesa NIR, which is why first launch is slower there and the shader baker matters. The
+Metal driver (since 4.4, Apple Silicon only) replaced MoltenVK; the release page reports it at
+least as fast and often much faster.
+
+Since 4.3 `RenderingDevice` records each frame into a directed acyclic graph: every draw list or
+compute list is one node, resource use is tracked, the commands are sorted and the GPU barriers
+are placed automatically. Independent passes (several GPU particle systems, for example) now run
+in parallel on the GPU. The graph itself cost under 1 % of CPU frame time in the team's benchmark,
+while Vulkan calls and draw-list recording took close to 30 % in a scene with very many objects
+and shadowed omni lights. The lesson for custom RD code: you do not manage barriers, and the unit
+of cost is the pass and the draw call.
+
 2D and 3D render to separate buffers. 3D is linear HDR; 2D is sRGB LDR unless `use_hdr_2d` is on.
 3D scaling changes only the 3D buffer; 2D and UI stay native.
 
@@ -84,7 +98,7 @@ has no ubershaders: draw each material and effect in view for one frame while lo
 
 Export preset option **Shader Baker > Enabled** stores the intermediate shader form in the PCK.
 It shortens first launch most on D3D12 and Metal, where
-conversion is slow. It does not remove pipeline stutter. Limits: Forward+ and Mobile only; only
+conversion is slow: the 4.5 release page reports about 20x shorter load on the TPS demo. It does not remove pipeline stutter. Limits: Forward+ and Mobile only; only
 the driver set for the platform; the editor must run on an OS that has that driver (D3D12 from
 Windows, Metal from macOS); not with `--headless` export, so a headless CI export ships unbaked.
 
@@ -102,14 +116,34 @@ Stylized, low-specular games: MSAA. Realistic: TAA or FSR2. For foliage under MS
 ### Scale 3D resolution instead of dropping effects
 
 `Viewport.scaling_3d_scale` is per axis: 0.5 renders a quarter of the pixels. Modes
-(`Viewport.scaling_3d_mode`): bilinear (free; the texture is just stretched), nearest (free, crisp,
-no supersampling), FSR 1 (spatial; pair with MSAA or TAA), FSR 2.2 (temporal, brings its own AA
-and ignores `use_taa`), MetalFX spatial/temporal (Metal driver only, set through
+(`Viewport.scaling_3d_mode`): bilinear (free; the texture is just stretched), nearest (since 4.7;
+free, crisp, for retro looks, no supersampling), FSR 1 (spatial; pair with MSAA or TAA), FSR 2.2 (temporal, brings its own AA
+and ignores `use_taa`), MetalFX spatial/temporal (since 4.4, Metal driver only, set through
 `rendering/scaling_3d/mode.ios` / `.macos`). FSR modes are Forward+ only. Below 1.0 the engine
 adds a negative mipmap bias by itself (`log2(scale)`), plus -0.25 with FXAA and -0.5 with TAA.
 `rendering/scaling_3d/fsr_sharpness` is inverted: 0.0 is sharpest. There is no built-in dynamic
-resolution; drive the scale from measured GPU time
-(`RenderingServer.viewport_set_measure_render_time()`).
+resolution; drive the scale from measured GPU time:
+
+```gdscript
+extends Node
+
+const TARGET_MS: float = 12.0
+var _rid: RID
+
+func _ready() -> void:
+	_rid = get_viewport().get_viewport_rid()
+	RenderingServer.viewport_set_measure_render_time(_rid, true)
+
+func _process(_delta: float) -> void:
+	var gpu_ms: float = RenderingServer.viewport_get_measured_render_time_gpu(_rid)
+	var vp: Viewport = get_viewport()
+	if gpu_ms > TARGET_MS:
+		vp.scaling_3d_scale = maxf(vp.scaling_3d_scale - 0.02, 0.5)
+	elif gpu_ms < TARGET_MS * 0.8:
+		vp.scaling_3d_scale = minf(vp.scaling_3d_scale + 0.01, 1.0)
+```
+
+Each scale change reallocates the 3D buffers, so step rarely and in small moves.
 
 ### SubViewport update and clear modes
 
@@ -146,13 +180,17 @@ cached. Forward+ and Mobile only, 3D stages only.
 
 ### Tonemapping and HDR output
 
-AgX (since 4.4) desaturates bright values toward white; it has its own `tonemap_agx_white` and
-`tonemap_agx_contrast`. HDR *output* (4.7; Windows via D3D12, macOS, iOS, visionOS, Linux Wayland;
-Forward+ and Mobile) needs `display/window/hdr/request_hdr_output`, `use_hdr_2d` on every viewport
+AgX (since 4.4) handles very bright scenes better than the older curves. `tonemap_agx_white` and
+`tonemap_agx_contrast` (since 4.6) keep bright hues steady at high contrast. Since 4.6 glow is
+blended before tonemapping. HDR *output* (since 4.7; Windows via D3D12, macOS, iOS, visionOS,
+Linux Wayland; Forward+ and Mobile) needs `display/window/hdr/request_hdr_output`, `use_hdr_2d` on every viewport
 in the chain, and no SDR-only feature in any `Environment`: Filmic or ACES tonemap, Soft Light
 glow, color correction. Linear, Reinhard and AgX map to `Window.get_output_max_linear_value()`:
 1.0 in SDR, changing with the screen and its brightness (signal
-`output_max_linear_value_changed`). Use it directly only for unlit UI highlights.
+`output_max_linear_value_changed`). Use it directly only for unlit UI highlights. The setting
+toggles without a restart, so offer players an HDR switch and a calibration screen. The design
+goal stated by the team: turning HDR on widens the range and leaves the SDR part of the image
+as it was.
 
 ## Niche but useful
 
@@ -163,6 +201,11 @@ glow, color correction. Linear, Reinhard and AgX map to `Window.get_output_max_l
 - `Viewport.debug_draw`: overdraw, shadow atlas, PSSM splits, clusters, motion vectors. Not on
   Compatibility.
 - `RenderingServer.get_current_rendering_method()`: detect a fallback and switch presets.
+- `DrawableTexture2D` (since 4.7): draw into a texture on the GPU without a SubViewport.
+- Mobile renderer gains: explicit half-float shader math (4.5), material debanding for 3D
+  through `use_debanding` (4.6), Vulkan subsampled images for foveated rendering (4.7). The 4.7
+  release page now recommends Mobile for new XR projects.
+- Android uses the Swappy frame pacing library since 4.4; nothing to configure.
 
 ## Traps
 
@@ -170,14 +213,21 @@ glow, color correction. Linear, Reinhard and AgX map to `Window.get_output_max_l
 - "The shader baker removes stutter": false. It shortens first launch only.
 - Mobile clamps HDR range (RGB10A2); glow and bright emission differ from Forward+.
 - Compatibility blends shadowed lights in sRGB space; a light changes look when its shadow is on.
+- Reverse Z (since 4.3; near plane = 1.0) broke clip-space shader code copied from old guides. A
+  full-screen quad needs `POSITION = vec4(VERTEX.xy, 1.0, 1.0);`. A write of `DEPTH = 0.0` now
+  means far. Compare depths in view space through `INV_PROJECTION_MATRIX` and nothing breaks.
 
 ## Version notes
 
-- 4.4: ubershaders, pipeline precompilation and monitors, Vulkan/D3D12 mutual fallback, AgX.
-- 4.5: shader baker, SMAA 1x.
-- 4.6: D3D12 written into new Windows projects; glow rewritten (default blend mode Screen); SSR
-  rewritten; fog blending changed (`rendering/environment/fog/use_legacy_blending` restores it).
-- 4.7: HDR output; Metal 4 used when the OS supports it (Metal 3 otherwise).
+- 4.3: reverse Z; acyclic render graph in `RenderingDevice`.
+- 4.4: ubershaders, pipeline precompilation and monitors, fallback to Compatibility when no RD
+  driver works, Metal driver and MetalFX, AgX, 2D batching in Forward+ and Mobile.
+- 4.5: shader baker, SMAA 1x, half-float math in Mobile.
+- 4.6: D3D12 written into new Windows projects; glow before tonemapping (default blend Screen);
+  AgX white and contrast; SSR rewritten; fog blending changed
+  (`rendering/environment/fog/use_legacy_blending` restores it).
+- 4.7: HDR output; nearest 3D scaling; `DrawableTexture2D`; Metal 4 when the OS supports it; each
+  render pass has its own environment uniform buffer (fewer copy dependencies).
 
 ## Related skills
 
@@ -189,6 +239,16 @@ glow, color correction. Linear, Reinhard and AgX map to `Window.get_output_max_l
 
 ## Sources
 
+- https://godotengine.org/releases/4.4/
+- https://godotengine.org/releases/4.5/
+- https://godotengine.org/releases/4.6/
+- https://godotengine.org/releases/4.7/
+- https://godotengine.org/article/rendering-acyclic-graph/
+- https://godotengine.org/article/introducing-reverse-z/
+- https://godotengine.org/article/hdr-output-arrives-in-godot-4-7/
+- https://godotengine.org/article/d3d12-adventures-in-shaderland/
+- https://godotengine.org/article/dev-snapshot-godot-4-4-beta-1/
+- https://godotengine.org/article/dev-snapshot-godot-4-6-beta-1/
 - https://docs.godotengine.org/en/stable/tutorials/rendering/renderers.html
 - https://docs.godotengine.org/en/stable/engine_details/architecture/internal_rendering_architecture.html
 - https://docs.godotengine.org/en/stable/tutorials/performance/pipeline_compilations.html

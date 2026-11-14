@@ -17,18 +17,22 @@ cost or unlock effects: uniforms scopes, screen textures, compile stutter, compu
 - A `.gdshader` is not what the GPU runs. Godot wraps your `vertex()`, `fragment()`, `light()`
   code into its own large template, then shader compilation (to SPIR-V on Vulkan) and pipeline
   compilation (driver, per mesh format and render state) follow. One shader means many pipelines.
-- Since 4.4 (Forward+ and Mobile) an "ubershader" pipeline is compiled when a mesh or node is
-  loaded, and specialized variants are compiled in the background. Stutter remains where the
+- Since 4.4 (Forward+ and Mobile) an "ubershader" is built at load time: one flexible but
+  slower version of each shader with every feature in it. A new object draws with it at once
+  while the specialized, faster pipeline compiles in the background. Stutter remains where the
   engine cannot see the need ahead of time. Compatibility has none of this, and 2D (canvas)
-  pipelines are never precompiled on any renderer.
+  pipelines are never precompiled on any renderer. 4.6 extended ubershaders to more Forward+
+  material and SDF variants.
 - What your shader touches decides its pass. Reading or writing `ALPHA` moves a spatial material
   to the transparent pipeline: no depth prepass benefit, sorted, drawn after opaque. `discard`
   also defeats the depth prepass for that surface.
 - Screen textures are copies. 3D: color is copied once after the opaque pass, so transparent
   objects are missing from it, and a material that samples it is itself treated as transparent.
   2D: copied when the first item needs it (see `2d-rendering`).
-- Depth is reverse-Z: 1.0 near, 0.0 far, non-linear. Forward+ and Mobile use NDC z in 0..1;
-  Compatibility uses -1..1.
+- Depth is reverse-Z since 4.3: 1.0 near, 0.0 far, non-linear, for far better precision at no
+  cost. Forward+ and Mobile use NDC z in 0..1; Compatibility uses -1..1. Shaders that go through
+  `PROJECTION_MATRIX` or `INV_PROJECTION_MATRIX` never notice; only code that writes raw clip
+  space `POSITION` or `DEPTH`, or compares raw depth values, must know the direction.
 - Uniform scopes: `uniform` (per material), `instance uniform` (per node, same material and
   batch), `global uniform` (project-wide, one buffer shared by all shader types).
 - Particle shaders (`start()`, `process()`) keep their output between frames. Sky shaders run
@@ -40,18 +44,23 @@ cost or unlock effects: uniforms scopes, screen textures, compile stutter, compu
 
 Declare `instance uniform vec4 tint : source_color = vec4(1.0);` and set it per node with
 `GeometryInstance3D.set_instance_shader_parameter()` or
-`CanvasItem.set_instance_shader_parameter()`. One material stays shared, so sorting and batching
-are kept. Limits: no textures, no arrays, about 16 per shader. To pick a texture per instance,
-pass a `sampler2DArray` as a normal uniform and an instance `int` layer. With several materials
-on one mesh, pin slots with `instance_index(n)` to stop name clashes.
+`CanvasItem.set_instance_shader_parameter()` (canvas shaders since 4.4). One material stays
+shared; in 2D the release notes state it does not break batching. Limits: no textures, no
+arrays, about 16 per shader. To pick a texture per instance, pass a `sampler2DArray` as a normal
+uniform and an instance `int` layer. With several materials on one mesh, pin slots with
+`instance_index(n)` to stop name clashes.
 
 ### Global uniforms for world state
 
 Add them in Project Settings > Shader Globals, declare `global uniform vec3 wind;` in any shader
 type, and write with `RenderingServer.global_shader_parameter_set()`. Writes are cheap at any
 rate. Reads are not: `global_shader_parameter_get()` syncs with the render thread, so keep your
-own copy. Use it for wind, player position for foliage bend, time of day, and an unscaled clock
-(`TIME` follows `Engine.time_scale`, ignores pause, and wraps at 3600 s by default).
+own copy. They reach every shader type, particle and sky shaders included, so one write can
+bend grass, tilt smoke and darken the sky. Patterns the engine's author lists: player position
+(foliage pushed aside), wind strength and direction, a wetness factor that shifts roughness on
+all materials when rain starts, and a world-aligned texture that follows the player whose
+channels mean "cut", "burnt" or local wind, so grass can be changed without touching meshes.
+Also an unscaled clock (`TIME` follows `Engine.time_scale`, ignores pause, wraps at 3600 s).
 
 ```gdscript
 extends Node
@@ -117,14 +126,16 @@ one scene early that uses each renderer feature you will turn on later (a reflec
 TAA or motion vectors, SDFGI, VoxelGI, lightmaps, normal-roughness readers); never change MSAA
 level during play. On Compatibility, and for all 2D shaders, the old way still applies: draw
 each material for one frame behind the loading screen. The export option Shader Baker (since
-4.5) removes the shader compile step at startup, mostly a win on Direct3D 12 and Metal; it does
-not remove pipeline stutter.
+4.5, off by default, per preset) scans scenes and resources and ships shaders precompiled in
+the target driver's format. It attacks startup time, not pipeline stutter: the 4.5 release
+page reports 20x shorter load for the TPS demo on Metal and Direct3D 12. Vulkan gains less.
 
 ### Cheap render modes
 
 `unshaded` skips lighting. `shadows_disabled`, `ambient_light_disabled`, `specular_disabled` and
-`diffuse_lambert` trim the lit path. `vertex_lighting` moves lighting to vertices: use it on
-shaded particles and distant props. `fog_disabled` suits additive effects. `depth_prepass_alpha`
+`diffuse_lambert` trim the lit path. `vertex_lighting` moves lighting to vertices (working
+since 4.4; the 4.3 setting did nothing): use it on shaded particles, distant props and
+PSX-style looks. `fog_disabled` suits additive effects. `depth_prepass_alpha`
 gives sorted-looking hair and foliage at the price of a second pass. Project-wide switches for
 weak devices: `rendering/shading/overrides/force_vertex_shading` and
 `rendering/shading/overrides/force_lambert_over_burley`.
@@ -160,6 +171,11 @@ state with a `Mutex`. The main stencil buffer cannot be copied out for these eff
 
 ### Stencil (since 4.5, experimental)
 
+Works on all three renderers. The idea: any mesh, even one that draws no color, writes a
+reference value into the stencil buffer; later materials draw only where a comparison with that
+value passes. Example from the release page: an unseen sphere around the player writes
+stencil, and wall materials draw only where it is not set, which cuts a view hole. Other uses
+shown by the team: outlines, X-ray silhouettes, cel-shaded light masks.
 `BaseMaterial3D.stencil_mode` offers Outline and X-Ray presets (they add a `next_pass`
 material) and Custom. Text shaders use the stencil modes listed in the spatial reference (`read`,
 `write`, `write_if_depth_fail`, `compare_*`); convert a preset material to a ShaderMaterial to
@@ -175,6 +191,9 @@ cubemap and show `texture(RADIANCE, EYEDIR)` for a static sky. `use_half_res_pas
 
 ## Niche but useful
 
+- Structs, uniform arrays (sampler arrays too, set from code), arrays as function arguments
+  and return values, and `int[2] a;` syntax all work: most Shadertoy code ports with few edits.
+- 4.7 text shader editor shows inline previews of intermediate values while you type.
 - `hint_enum("Low:0", "High:2")` gives an int uniform a named dropdown in the inspector.
 - `group_uniforms Name;` folds inspector parameters; `group_uniforms;` ends the group.
 - `LIGHT_VERTEX` (spatial and canvas) moves the lighting sample point without moving the pixel.
@@ -194,9 +213,14 @@ cubemap and show `texture(RADIANCE, EYEDIR)` for a static sky. `use_half_res_pas
 
 ## Version notes
 
-- 4.4: ubershaders and pipeline precompilation; renderer preprocessor defines.
-- 4.5: stencil modes; Shader Baker export option.
-- 4.7: visual shader `LinearToSRGB` no longer clamps to 0..1 on Forward+ and Mobile.
+- 4.3: reverse-Z depth (old `POSITION = vec4(VERTEX, 1.0)` quads broke).
+- 4.4: ubershaders and pipeline precompilation; renderer preprocessor defines; canvas
+  `instance uniform`; vertex shading implemented; `buffer_get_data_async()`.
+- 4.5: stencil modes; Shader Baker export option; Mobile renderer asks for half-precision
+  floats where the device supports them (speed and battery, no shader change needed).
+- 4.6: ubershaders for more Forward+ variants; shader optimizer pass in the Vulkan driver.
+- 4.7: inline shader previews; `DrawableTexture2D`; `hint_screen_texture` is rejected in shader
+  types that cannot use it; visual shader `LinearToSRGB` no longer clamps on Forward+/Mobile.
 
 ## Related skills
 
@@ -216,3 +240,12 @@ cubemap and show `texture(RADIANCE, EYEDIR)` for a static sky. `use_half_res_pas
 - https://docs.godotengine.org/en/stable/tutorials/rendering/compositor.html
 - https://docs.godotengine.org/en/stable/tutorials/performance/pipeline_compilations.html
 - https://docs.godotengine.org/en/stable/tutorials/3d/standard_material_3d.html
+- https://godotengine.org/releases/4.4/ , https://godotengine.org/releases/4.5/ ,
+  https://godotengine.org/releases/4.7/
+- https://godotengine.org/article/dev-snapshot-godot-4-4-dev-4/ (ubershader design)
+- https://godotengine.org/article/dev-snapshot-godot-4-5-beta-1/ (stencil, shader baker)
+- https://godotengine.org/article/dev-snapshot-godot-4-6-dev-1/
+- https://godotengine.org/article/dev-snapshot-godot-4-6-dev-6/
+- https://godotengine.org/article/godot-40-gets-global-and-instance-shader-uniforms/
+- https://godotengine.org/article/improvements-shaders-visual-shaders-godot-4/
+- https://godotengine.org/article/introducing-reverse-z/

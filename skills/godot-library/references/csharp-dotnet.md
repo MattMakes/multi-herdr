@@ -14,8 +14,11 @@ boundary, what it costs, the source generators, async, platform limits and mixed
 ## How the engine works here
 
 - C# runs on the modern .NET runtime, in a separate .NET build of the editor. The engine
-  ships what is needed to run compiled code; the .NET SDK (8 or later) is a
-  separate install. Android export needs .NET 9 or later.
+  ships what is needed to run compiled code; the .NET SDK is a separate install. The
+  bindings target .NET 8 since 4.4 (.NET 6 before), which is the minimum a project may
+  target; newer versions work. Android export needs .NET 9 or later.
+- Since 4.0 the engine hosts standard .NET instead of embedding Mono. Desktop runs CoreCLR
+  by default. Android runs the Mono runtime. iOS is compiled ahead of time with NativeAOT.
 - Every member of a type derived from `GodotObject` is a native interop call into C++. A
   read of `Position` and a write of `Position` are 2 calls, and the write also does the
   engine work (for a `Node3D`, a transform update).
@@ -30,7 +33,9 @@ boundary, what it costs, the source generators, async, platform limits and mixed
 - Roslyn source generators run at build time. They need the class to be `partial`, and they
   produce the nested `PropertyName`, `MethodName` and `SignalName` classes, the C# events
   for signals and the export metadata. The editor sees new exports and signals only after
-  a build.
+  a build. The team chose generators over reflection in 4.0 for 3 reasons: generated code
+  is faster, it survives trimming (the base for AOT), and it reports errors at build time.
+- `Godot.Variant` is a struct built so that value types such as `int` are not boxed.
 - Managed objects are garbage collected. The docs name GC pauses as a cause of stutter in
   complex projects and object pooling as the usual answer.
 - The docs put GDScript and C# in the same order of magnitude. C# wins when most time is
@@ -57,6 +62,8 @@ literals in `_Process`.
 ### Keep hot data in .NET types
 
 Use `List<T>`, `Dictionary<TKey, TValue>`, arrays and spans for data the engine never sees.
+Since 4.4 the bindings generate `ReadOnlySpan<T>` overloads for engine methods, so a slice
+or a stack buffer can be passed without a new array.
 Convert once at the boundary. Godot collections are for exports, signal arguments and API
 calls. LINQ over a Godot collection marshals every element on every pass; the collection's
 own instance methods (`Sort`, `Reverse`) are one interop call. `ToList` and `ToArray` copy
@@ -81,8 +88,9 @@ type parameter with `[MustBeVariant]`.
 
 ### Signals as events, and when they do not disconnect
 
-Declare a signal with `[Signal]` on a delegate whose name ends in `EventHandler`; emit with
-`EmitSignal(SignalName.X, ...)`, never with `Invoke`. Arguments must be Variant-compatible,
+Declare a signal with `[Signal]` on a delegate whose name ends in `EventHandler`. Emit with
+the generated typed method `EmitSignalX(...)` (since 4.4; arguments are checked at compile
+time) or with `EmitSignal(SignalName.X, ...)`, never with `Invoke`. Arguments must be Variant-compatible,
 so a plain C# class cannot be a signal argument. Freed objects normally disconnect, with 2
 exceptions on the receiver side: a lambda that captures a variable, and a custom signal
 connected with `+=`. Both keep calling into a freed object and raise
@@ -136,10 +144,22 @@ builds. Use them to keep one library working across engine versions and platform
 | iOS | Experimental; export only from macOS; simulator templates are x64 only |
 | Web | Not possible for C# projects |
 
-The 4.7 docs say nothing on NativeAOT or trimming. The iOS path is reported to compile
-ahead of time, which limits reflection-heavy libraries (reported by the Godot blog post on
-C# platform state for 4.2; not read in this session; test on a device). A Web prototype was
-shown in 2025 (reported by search results on a Godot blog post; not in 4.7).
+Details from the .NET team's platform report (written for 4.2; later changes noted):
+
+- Android uses the linux-bionic Mono runtime. In 4.2 it had no Android bindings, so some
+  .NET APIs (TLS, for example) crashed, and only 64-bit ABIs worked. Since 4.4 all Android
+  ABIs and base class library APIs are supported. Since 4.5 assemblies load straight from
+  the APK, which ended stale-cache and permission errors.
+- iOS uses NativeAOT, which trims unused code. The engine roots its bindings and the game
+  assemblies, but reflection-heavy libraries (serializers, dependency injection containers)
+  can still fail at run time. Test them on a device early.
+- Desktop accepts all 3 runtimes. NativeAOT is opt-in: set `PublishAot` in the `.csproj` and
+  root the assemblies with `TrimmerRootAssembly`, because the engine still uses reflection.
+- Web: .NET wants to be the main WebAssembly module and cannot be loaded as a side module,
+  which is why the export is missing. A prototype with a statically linked Mono ran in May
+  2025; its stated limits were matching WASM features and target framework between project
+  and template, invariant globalization only, and a 72 MiB pack (23.8 MiB with Brotli).
+  Web export is an active team priority but is not in 4.7.
 
 ## Diagnostics map
 
@@ -165,6 +185,11 @@ shown in 2025 (reported by search results on a Godot blog post; not in 4.7).
 - NuGet packages work through the `.csproj`. Commit the `.sln` and `.csproj`; ignore
   `.godot`. Deleting `.godot/mono` fixes many stale-build problems.
 - The docs suggest `System.Random` over `GD.Randf` and friends for C#-side randomness.
+- `MakeReadOnly` freezes a Godot collection: a cheap guard for shared config data.
+- Engine `int` and `float` are 64-bit, so APIs use `long` and `double` (`delta` included),
+  while vectors hold 32-bit floats. `Mathf` has both overloads; cast once, not per term.
+- Since 4.6 `Tr` and `TrN` calls in C# are collected when translation templates are made.
+- Always build with the newest .NET SDK, even when the project targets an older version.
 
 ## Traps
 
@@ -177,12 +202,15 @@ shown in 2025 (reported by search results on a Godot blog post; not in 4.7).
 
 ## Version notes
 
-- 4.4: `[ExportToolButton]`.
-- 4.5: Android export needs .NET 9 or later; other platforms stay on .NET 8 or later.
+- 4.4: .NET 8 minimum (projects are upgraded when opened), `[ExportToolButton]`, typed
+  `EmitSignalX` methods, `ReadOnlySpan<T>` overloads, all Android ABIs.
+- 4.5: Android export needs .NET 9 or later; assemblies load from the APK; fewer
+  `StringName` allocations for unimplemented `_Get` and `_Set` (4.5 dev 3 notes).
 - 4.6: some `AnimationPlayer` properties became `StringName` (source break in C#).
 - 4.7: `Animation.length` is `double` in C#. The SDK accepts `EnableGodotDotNetPreview` to
   opt in to prerelease packages of the new .NET bindings (GitHub PR 118001; not in the
-  docs; keep it off for production).
+  docs; keep it off for production). The team's stated goal behind them: one editor build
+  for everyone, with C# added as a plugin.
 
 ## Related skills
 
@@ -204,4 +232,15 @@ shown in 2025 (reported by search results on a Godot blog post; not in 4.7).
 - https://docs.godotengine.org/en/stable/tutorials/scripting/c_sharp/diagnostics/index.html
 - https://docs.godotengine.org/en/stable/tutorials/scripting/cross_language_scripting.html
 - https://docs.godotengine.org/en/stable/about/faq.html
+- https://godotengine.org/article/whats-new-in-csharp-for-godot-4-0/
+- https://godotengine.org/article/platform-state-in-csharp-for-godot-4-2/
+- https://godotengine.org/article/godotsharp-packages-net8/
+- https://godotengine.org/article/live-from-godotcon-boston-web-dotnet-prototype/
+- https://godotengine.org/article/dev-snapshot-godot-4-4-dev-3/
+- https://godotengine.org/article/dev-snapshot-godot-4-4-dev-4/
+- https://godotengine.org/article/dev-snapshot-godot-4-5-dev-3/
+- https://godotengine.org/releases/4.4/
+- https://godotengine.org/releases/4.5/
+- https://godotengine.org/releases/4.6/
+- https://godotengine.org/priorities/
 - https://github.com/godotengine/godot/pull/118001

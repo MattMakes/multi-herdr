@@ -26,7 +26,9 @@ really behave, how resources are cached and loaded, and how to find memory growt
 reference. A typed `Array[T]` is the same storage plus a type check on write. A packed array
 (`PackedInt32Array`, `PackedVector3Array`, ...) stores raw values: 4 bytes per int32, 12 per
 `Vector3` in a default build. `Dictionary` is a hash map from `Variant` to `Variant` that keeps
-insertion order. `String` and `StringName` keys with the same text are the same key.
+insertion order. `String` and `StringName` keys with the same text are the same key for lookup;
+since 4.4 a `StringName` key is stored as written, so `typeof(key)` and `is_same` can tell them
+apart.
 
 | Operation | Array | Dictionary |
 |---|---|---|
@@ -51,7 +53,10 @@ instance of that scene.
 ### Choose the container by element count and access pattern
 
 For small sets use typed arrays and dictionaries for readability. From tens of thousands of
-elements (the docs' own threshold), packed arrays win on memory, iteration and write speed.
+elements (the docs' own threshold), packed arrays win on memory, iteration and write speed. They
+grow by a factor of 1.5 since 4.6, so `resize()` once to the final size when it is known; there is
+no script-side reserve call. `Array.insert` became about 10x faster on average in 4.4 (4.4 dev 1
+notes), but it still shifts the tail.
 Struct-of-arrays works well in GDScript: one `PackedVector2Array` for positions, one
 `PackedFloat32Array` for lifetimes, one "alive count". Remove by swapping the last element in.
 
@@ -61,7 +66,10 @@ Struct-of-arrays works well in GDScript: one `PackedVector2Array` for positions,
 with `[]`. Limits: methods such as `get()`, `pop_back()`, `values()` still return `Variant`; nested
 typed collections (`Array[Array[int]]`) are not supported; either side of a dictionary can be
 `Variant`. An untyped array cannot be assigned to a typed variable: use `typed.assign(untyped)`,
-which converts and reports bad elements. `is_same_typed` compares two containers' types.
+which converts and reports bad elements. `is_same_typed` compares two containers' types. Typed
+dictionaries can be exported (`@export var loot: Dictionary[StringName, int]`): the Inspector then
+offers only matching key and value editors, which removes a class of data-entry bugs. The typing
+survives binary serialization (`var_to_bytes`).
 
 ### Know what a copy copies
 
@@ -74,10 +82,13 @@ which converts and reports bad elements. `is_same_typed` compares two containers
 | `Resource.duplicate(true)` | Copied | Only local ones (no path, or inside the same file) |
 | `Resource.duplicate_deep(Resource.DEEP_DUPLICATE_ALL)` | Copied | All, also external files |
 
-Since 4.5 `Resource.duplicate(true)` no longer copies external sub-resources; 4.4 did. Within one
-deep copy a sub-resource referenced twice is copied once and stays shared inside the copy.
-`duplicate()` fails on a custom resource whose `_init` has required parameters. Only stored
-properties (`@export` or `PROPERTY_USAGE_STORAGE`) are copied; plain script variables are not.
+4.5 rebuilt this logic. Before 4.5, `Resource.duplicate(true)` skipped sub-resources stored inside
+`Array` or `Dictionary` properties (a common silent-sharing bug) and copied external files; now it
+reaches into containers and copies only local sub-resources. Code written for 4.4 can change
+behaviour in both directions, so re-test every deep copy after an upgrade. Within one deep copy a
+sub-resource referenced twice is copied once and stays shared inside the copy. `duplicate()` fails
+on a custom resource whose `_init` has required parameters. Only stored properties (`@export` or
+`PROPERTY_USAGE_STORAGE`) are copied; plain script variables are not.
 
 ### Per-instance resources without manual copies
 
@@ -109,7 +120,9 @@ for a path. To keep an asset warm between levels, hold a reference in a long-liv
 Poll `load_threaded_get_status(path, progress)` once per frame. `load_threaded_get(path)` blocks
 when the load is not done, so call it only after `THREAD_LOAD_LOADED`. `use_sub_threads = true` is
 faster but can slow the main thread: use it on a loading screen, not during play. Instancing the
-loaded scene still runs on the main thread. Step-by-step code: `godot-scene-organization`.
+loaded scene still runs on the main thread. Step-by-step code: `godot-scene-organization`. The
+4.7 cycle fixed a deadlock in `load_threaded_get` and a race in `load_threaded_request`: stay on
+the latest 4.7 patch release when you load in the background.
 
 ### Break reference cycles
 
@@ -201,12 +214,14 @@ Node.print_orphan_nodes()
 
 ## Version notes
 
-- 4.4: typed dictionaries; `Dictionary.sort`; `Array.find_custom`; `ResourceLoader.get_cached_ref`.
+- 4.4: typed dictionaries; `StringName` keys kept as written; `Dictionary.sort`;
+  `Array.find_custom`; `ResourceLoader.get_cached_ref`; faster `Array.insert` and `String` insert,
+  join, replace and formatting.
 - 4.5: `duplicate_deep` on `Resource`, `Array`, `Dictionary`; `duplicate(true)` copies only local
   sub-resources; `Node.get_orphan_node_ids`.
-- 4.6: ObjectDB Profiler; `Node.DUPLICATE_INTERNAL_STATE`.
+- 4.6: ObjectDB Profiler; `Node.DUPLICATE_INTERNAL_STATE`; array growth factor 1.5.
 - 4.7: writing one element of a packed-array property in GDScript no longer calls the property
-  setter with the whole array.
+  setter with the whole array; threaded-loading deadlock and race fixes.
 
 ## Related skills
 
@@ -221,4 +236,13 @@ Node.print_orphan_nodes()
 - https://docs.godotengine.org/en/stable/tutorials/io/background_loading.html
 - https://docs.godotengine.org/en/stable/tutorials/scripting/debug/objectdb_profiler.html
 - https://docs.godotengine.org/en/stable/tutorials/migrating/upgrading_to_godot_4.5.html
+- https://godotengine.org/article/dev-snapshot-godot-4-4-dev-1/
+- https://godotengine.org/article/dev-snapshot-godot-4-4-dev-2/
+- https://godotengine.org/article/dev-snapshot-godot-4-4-dev-5/
+- https://godotengine.org/article/dev-snapshot-godot-4-5-dev-5/
+- https://godotengine.org/article/dev-snapshot-godot-4-6-dev-2/
+- https://godotengine.org/article/dev-snapshot-godot-4-7-beta-2/
+- https://godotengine.org/article/dev-snapshot-godot-4-7-beta-4/
+- https://godotengine.org/releases/4.5/
+- https://godotengine.org/releases/4.6/
 - https://github.com/godotengine/godot/blob/4.7-stable/core/io/resource.cpp

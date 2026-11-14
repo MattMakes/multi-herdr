@@ -36,6 +36,12 @@ collected and applied once at the end of the frame. `Node3D.force_update_transfo
 early and walks the children. A node gets `NOTIFICATION_TRANSFORM_CHANGED` only if it asked with
 `set_notify_transform(true)`; most visual and collision nodes ask by themselves.
 
+The renderer itself balances the two sides. The rendering lead writes that 2D batching costs the
+GPU a little and saves the CPU a lot, because 2D games reach the CPU limit first, while 3D
+occlusion culling runs on the CPU because 3D games reach the GPU limit first. Since 4.0 the
+renderer also culls with several threads and draws objects with the same mesh and material as
+instances. So in 2D, watch draw calls and script time; in 3D, check the GPU before the CPU.
+
 Built-in engine functions cost the same from every language. Only the code between the engine
 calls differs. A GDScript loop that calls one engine function per item pays for the loop.
 
@@ -54,6 +60,19 @@ accuracy, by the scheduler and by cold CPU caches.
 A 9x speedup of a 9 ms function in a 10 ms frame makes the frame 5x faster. The same speedup in a
 59 ms frame gives 51 ms. Find the largest part, fix it, measure again. The next largest part is
 often a different system.
+
+### Update server data, do not rebuild it
+
+The engine team's own case study: a game animated the vertices of about 20 `Polygon2D` nodes
+with an `AnimationPlayer`. A 35 ms frame held 15.7 ms of polygon rebuild, and of the 11.7 ms
+draw time 3.3 ms went to creating vertex arrays and 5 ms to freeing them. Each change freed the
+mesh, made a new one and uploaded it. Since 4.7 `Polygon2D` updates the existing mesh when it
+can: 35 ms became 13 ms (28 to 83 FPS on a Ryzen 5 9600X). The rule for your own code: a
+per-frame change that makes a server free and allocate a resource costs far more than the data
+upload. Keep counts stable and update in place (see `servers-and-low-level`). The same post warns
+that guesses fail: a branch added to skip work can stop the compiler from vectorizing a loop,
+and a cached value can be slower than computing twice when memory reads are the limit. This
+applies to C++ in a GDExtension as much as to the engine. Measure after every change.
 
 ### Turn processing off, do not branch inside it
 
@@ -133,9 +152,30 @@ CPU use grows about in step with `Engine.physics_ticks_per_second`. Some games r
 20 ticks. The costs are jitter and more input lag; below about 30, physics can break down. The
 answer to jitter is the built-in physics interpolation
 (`ProjectSettings.physics/common/physics_interpolation`), which the docs call orders of magnitude
-cheaper than a tick. For games with real-time player movement the docs advise to stay at 60.
+cheaper than a tick. The 4.4 release notes name mobile games as the main winner: lower the tick
+rate and keep smooth motion. For games with real-time player movement the docs advise to stay at 60.
 With your own interpolation or in a network game, set `Engine.physics_jitter_fix` to 0. If you
 raise the tick rate far above 60, raise `Engine.max_physics_steps_per_frame` too.
+
+### Let the engine merge physics bodies
+
+Since 4.5 `TileMapLayer` merges the collision shapes of cells inside a physics quadrant instead
+of one body per tile; the release notes call the old layout "extremely wasteful".
+`physics_quadrant_size` (default 16, so 256 cells) sets the chunk. Trap:
+`get_coords_for_body_rid()` gets less exact with larger quadrants; size 1 turns merging off.
+In 3D, new projects use Jolt Physics by default since 4.6 (existing projects keep their setting),
+and since 4.5 Jolt handles areas with `monitoring` off more cheaply: turn monitoring off on areas
+that only need to be detected.
+
+### Keep input handlers cheap
+
+`Input.use_accumulated_input` is on by default: similar events of one frame are merged, so
+`_input()` sees mouse motion at most once per rendered frame. Turning it off gives every event
+and more CPU use; do that only while the player draws a freehand line. On Windows, mice that
+poll at 2 kHz or more could stall the engine before 4.7.2. The fix post measured an 8 kHz mouse
+in captured mode at under 1 FPS on 4.7.1 against 1703 FPS with the fix, and a visible cursor at
+173 against 1103 FPS (Ryzen 9 9950X3D, V-Sync off). Ship on 4.7.2 or later. The post still asks
+projects to keep the `InputEventMouseMotion` path of `_input()` and `_unhandled_input()` light.
 
 ### Pick the cheapest spatial lookup
 
@@ -202,12 +242,16 @@ as JSON; the docs list both for editor builds only.
 
 ## Version notes
 
-- 4.4: physics interpolation became available in 3D (2D has it since 4.3).
-- 4.5: 3D interpolation moved into the SceneTree (reported by the 4.5 dev 4 post; no project
-  change needed). `ProjectSettings.physics/3d/physics_interpolation/scene_traversal` picks the
-  traversal method; keep `DEFAULT`.
-- 4.6: ObjectDB profiler for object-count and leak checks (see `debugging-and-profiling-tools`).
-- 4.7: no change to the items on this shelf was found in the docs.
+- 4.3: 2D physics interpolation. 4.4: 3D physics interpolation (both per the 4.4 release page).
+- 4.4: a large batch of core optimizations (`Array.insert`, several `String` functions) and a
+  SceneTree change that makes moving and renaming nodes in large scenes faster.
+- 4.5: 3D interpolation moved from the RenderingServer into the SceneTree, with an optimized
+  tree traversal; the API did not change. `physics/3d/physics_interpolation/scene_traversal`
+  (since 4.5) picks the method; keep `DEFAULT`. TileMapLayer physics chunking.
+  `Node.get_orphan_node_ids()` (since 4.5) lists orphans from code.
+- 4.6: Jolt Physics is the default 3D engine for new projects. ObjectDB profiler for leak checks.
+- 4.7: `Polygon2D` fast path; AnimationMixer, AnimationPlayer and AnimationTree optimizations.
+  4.7.2: Windows high polling rate mouse fix.
 
 ## Related skills
 
@@ -224,4 +268,12 @@ as JSON; the docs list both for editor builds only.
 - https://docs.godotengine.org/en/stable/tutorials/physics/interpolation/index.html
 - https://docs.godotengine.org/en/stable/tutorials/editor/command_line_tutorial.html
 - Class reference 4.7: Engine, Node, Node3D, OS, Performance
-- https://godotengine.org/article/dev-snapshot-godot-4-5-dev-4/ (search summary only; page blocked)
+- https://godotengine.org/article/rendering-cpu-optimizations/
+- https://godotengine.org/article/fixing-high-polling-rate-mice-on-windows/
+- https://godotengine.org/article/godot-40-optimization-progress-report/
+- https://godotengine.org/article/dev-snapshot-godot-4-4-dev-1/
+- https://godotengine.org/article/dev-snapshot-godot-4-5-dev-4/
+- https://godotengine.org/article/dev-snapshot-godot-4-5-dev-5/
+- https://godotengine.org/article/dev-snapshot-godot-4-7-beta-1/
+- https://godotengine.org/releases/4.4/ , https://godotengine.org/releases/4.5/ ,
+  https://godotengine.org/releases/4.6/

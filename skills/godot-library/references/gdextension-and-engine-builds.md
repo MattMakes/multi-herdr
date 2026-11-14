@@ -99,7 +99,27 @@ copy at export; on macOS they belong in `Contents/Frameworks`.
 since 4.2; debug builds only). With CMake, turn on `GODOTCPP_USE_HOT_RELOAD`. Treat it as
 a development aid: leave it off in the shipped `.gdextension`. From script,
 `GDExtensionManager` exposes `load_extension()`, `reload_extension()` and
-`get_loaded_extensions()`, plus the `extensions_reloaded` signal.
+`get_loaded_extensions()`, plus the `extensions_reloaded` signal. Since 4.7 the Project
+Settings window lists the project's extensions, which helps when one is loaded that
+nobody remembers adding.
+
+### Startup order and engine lifecycle
+
+Code at the core initialization level runs before most of the engine exists. Since 4.4
+the `Engine`, `OS`, `ProjectSettings` and `Time` singletons are registered early enough
+to use there. For everything else, since 4.5 an extension can register main loop
+callbacks (`startup`, `shutdown`, `frame`) instead of guessing when singletons are
+ready; the release notes name unreliable singleton access as the reason they exist.
+The `frame` callback is also the cheap way to tick a native system once per frame
+without a node.
+
+### Profile native code with a tracing profiler
+
+Since 4.6 the engine can be built with Tracy, Perfetto or Instruments support. These
+show script functions, engine calls and your extension's code on one timeline, which
+the built-in profiler cannot. Use one to prove where the time goes before and after a
+port to native code (see `debugging-and-profiling-tools`). On Android, Perfetto is the
+default tracing tool for editor and template builds since 4.7.
 
 ### Shipping per platform
 
@@ -138,8 +158,9 @@ with it:
 scons platform=web target=template_release build_profile=game.gdbuild optimize=size lto=full
 ```
 
-Detection misses classes used only in generated scripts, in `Expression` strings, and
-in extensions, so test the result. Size levers from the docs, largest first:
+Since 4.5 detection also sets build options (not only classes) and counts classes used
+by the project's extensions when the binding reports them. It still misses classes used
+only in generated scripts or `Expression` strings, so test the result. Size levers from the docs, largest first:
 
 | Lever | Note |
 |---|---|
@@ -173,6 +194,14 @@ Run the game or the extension's test project on a sanitizer build before blaming
 - `dev_build=yes` (`-O0`, asserts, `.dev` suffix) is for engine debugging; `dev_mode=yes`
   is a different alias (warnings as errors plus unit tests).
 - `javascript_eval=no` builds a Web template without `JavaScriptBridge`.
+- `wasm_simd=no` builds a Web template for browsers without WebAssembly SIMD; official
+  templates require SIMD since 4.5.
+- LibGodot (since 4.6): the engine built as a library, driven through `GodotInstance`
+  by a host application that owns startup and the main loop. Linux, Windows, macOS.
+- Since 4.6 the API marks object parameters and return values that must not be null.
+  Bindings for strict languages turn that into compile-time checks.
+- `GDExtensionManager.load_extension_from_function()` (since 4.6) registers an extension
+  from an init function, without a library file on disk.
 - `threads=no` builds the single-thread Web template.
 - Android templates: add `generate_android_binaries=yes` to the last architecture built.
 - `[icons]` in `.gdextension` gives extension nodes a 16x16 SVG editor icon.
@@ -194,11 +223,15 @@ Run the game or the extension's test project on a sanitizer build before blaming
 
 ## Version notes
 
-- 4.5: `optimize=size_extra`. Up to 4.5 the C header shipped as a file with the engine.
-- 4.6: the interface is published as JSON (`--dump-gdextension-interface-json`); the C
-  header is generated from it with `--dump-gdextension-interface`.
-- 4.7: no change to the rules above. Other bindings the manual lists, all community
-  made and not all production ready: D, Go, Kotlin/JVM, Nim, Rust, Swift, Odin.
+- 4.4: core singletons usable at the core initialization level.
+- 4.5: main loop callbacks; `optimize=size_extra`; build profiles detect build options
+  and extension classes; the API dump records float precision. Up to 4.5 the C header
+  shipped as a file with the engine.
+- 4.6: the interface is defined in JSON (`--dump-gdextension-interface-json`) and the C
+  header is generated from it (`--dump-gdextension-interface`); required parameters;
+  LibGodot; tracing profiler builds.
+- 4.7: extensions listed in Project Settings. Other bindings the manual lists, all
+  community made and not all production ready: D, Go, Kotlin/JVM, Nim, Rust, Swift, Odin.
 
 ## Related skills
 
@@ -210,6 +243,12 @@ Run the game or the extension's test project on a sanitizer build before blaming
 
 ## Sources
 
+- https://godotengine.org/releases/4.5/
+- https://godotengine.org/releases/4.6/
+- https://godotengine.org/releases/4.7/
+- https://godotengine.org/article/dev-snapshot-godot-4-4-dev-6/
+- https://godotengine.org/article/dev-snapshot-godot-4-6-dev-5/
+- https://godotengine.org/article/upcoming-serious-web-performance-boost/
 - https://docs.godotengine.org/en/stable/engine_details/engine_api/gdextension/what_is_gdextension.html
 - https://docs.godotengine.org/en/stable/engine_details/engine_api/gdextension/gdextension_file.html
 - https://docs.godotengine.org/en/stable/engine_details/engine_api/gdextension/gdextension_interface_json_file.html

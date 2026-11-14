@@ -71,9 +71,14 @@ func _notification(what: int) -> void:
   it, so its minimum size stays constant and no parent re-sorts.
 - Wrap many theme override calls in `begin_bulk_theme_override()` and `end_bulk_theme_override()`
   so `NOTIFICATION_THEME_CHANGED` fires once.
-- Animate with `offset_transform_*` (4.7). It is a visual transform that containers do not
-  overwrite and that does not trigger layout. With `offset_transform_visual_only` true, hit
-  testing stays at the laid out position.
+- Animate with `offset_transform_*` (4.7). A container rewrites the position, rotation and
+  scale of its children on every sort, so tweens on those properties are lost whenever a child
+  is added, removed or resized. The offset transform is a separate visual transform that
+  containers do not touch and that triggers no layout: buttons can slide in or pulse inside a
+  box container. With `offset_transform_visual_only` true, hit testing stays at the laid out
+  position. On 4.6 and older the workaround is a wrapper Control per animated child.
+- `pivot_offset_ratio` (4.6) set to (0.5, 0.5) keeps the pivot centered when the control
+  resizes. `pivot_offset` is in pixels and had to be recomputed in code.
 
 ### Maximum size (4.7)
 
@@ -117,8 +122,14 @@ macOS, Android and Linux with Wayland; on Windows and X11 the player must be abl
 - Rasterized fonts create glyphs per size on first use. Pre-render the needed sizes and
   character sets in the advanced import settings to avoid a hitch on first display.
 - With stretch mode `canvas_items`, font oversampling re-rasterizes at the real resolution
-  (`gui/fonts/dynamic_fonts/use_oversampling`). Per viewport: `Viewport.oversampling` and
-  `oversampling_override`. Scaled-down rasterized text needs mipmaps to avoid grain.
+  (`gui/fonts/dynamic_fonts/use_oversampling`). Since 4.5 oversampling is per viewport, not
+  global: `Viewport.oversampling` and `oversampling_override`, so a `SubViewport` or a second
+  window gets sharp text at its own scale. `DPITexture` (4.5) is an SVG-based texture that
+  re-rasterizes with the same factor; use it for icons that must stay crisp at any UI scale.
+  `CanvasItem.oversampling_with_scale` (4.7) follows the node's own scale. Scaled-down
+  rasterized text needs mipmaps to avoid grain.
+- `LabelSettings` stacks several outlines and shadows on one `Label` since 4.5
+  (`stacked_outline_count`, `stacked_shadow_count`). No duplicate labels needed.
 - `FontVariation` wraps one font file with variable axes, OpenType features (slashed zero,
   ligatures off), spacing, faux bold and its own `fallbacks`.
 - Missing glyphs fall through `Font.fallbacks`, then system fonts (`allow_system_fallback`).
@@ -134,6 +145,8 @@ macOS, Android and Linux with Wayland; on Windows and X11 the player must be abl
 - `threaded` moves shaping off the main thread. It does not make it faster; use it for
   logs of thousands of lines only.
 - Escape player text: replace `[` with `[lb]`, in names too.
+- Inline images can follow the text size since 4.7: `[img height=1em]`.
+- `scroll_following_visible_characters` (4.5) scrolls with a typewriter reveal.
 - A custom effect is a `RichTextEffect` script with a `bbcode` variable and
   `_process_custom_fx()`. One installed effect makes the label process every frame, so keep
   effects off idle screens.
@@ -149,17 +162,22 @@ macOS, Android and Linux with Wayland; on Windows and X11 the player must be abl
   the focused child.
 - `focus_behavior_recursive` (4.5) set to disabled removes a whole branch from focus, and
   `mouse_behavior_recursive` does the same for the mouse. One property blocks a screen
-  behind a dialog.
-- `grab_focus(true)` (4.6) takes focus without the focus visual, for mouse-driven flows.
+  behind a dialog, or a detail panel until an item is selected, with no per-child bookkeeping.
+- Since 4.6 a mouse or touch click no longer shows the focus outline on most controls. The
+  outline is for keyboard and pad navigation. `gui/common/show_focus_state_on_pointer_event`
+  sets the rule (never, text input controls only, always), and `grab_focus(true)` takes focus
+  from code without the visual. Style the focus state for pad users without it bothering mouse
+  users.
 - Do not use the `ui_*` actions for gameplay. Focus navigation consumes them.
 
 ### Long lists
 
 `Tree` and `ItemList` are single controls that draw their rows themselves, so a row is data, not
 a node. Prefer them over one scene per row for long lists. `Tree` cells support buttons,
-checkboxes, inline edit and custom drawing through `TreeItem.set_custom_draw_callback()`. When rows must be full scenes, recycle: keep only the
-visible count of row nodes plus one, drive them from a `VScrollBar` value, and rebind data on
-scroll. This is a pattern, not an engine feature.
+checkboxes, inline edit and custom drawing through `TreeItem.set_custom_draw_callback()`.
+When rows must be full scenes, recycle: keep only the visible count of row nodes plus one,
+drive them from a `VScrollBar` value, and rebind data on scroll. This is a pattern, not an
+engine feature.
 
 ### UI in a SubViewport or in 3D
 
@@ -183,7 +201,14 @@ Tooltips: `_make_custom_tooltip()` returns a fresh Control each time; the engine
 - `Viewport.gui_get_hovered_control()` with `is_ancestor_of()` answers "is the mouse over the
   UI" without a flag per panel.
 - `FoldableContainer` (4.5) with a shared `foldable_group` gives an accordion.
-- `ScrollContainer.scroll_hint_mode` (4.6) shows that more content exists.
+- `scroll_hint_mode` (4.6) on `ScrollContainer` and `Tree` shows that more content exists.
+- `PopupMenu.search_bar_enabled` (4.7) adds a filter field to long menus; it also works on
+  touch, where type-to-search does not.
+- `_get_cursor_shape()` (4.7) returns a cursor shape per position inside one control.
+- `TextureRect` can tile a region of an `AtlasTexture` since 4.7.
+- `SplitContainer` accepts more than two children since 4.6.
+- `Container.accessibility_region` (4.7) with `accessibility_name` marks a landmark, so a
+  screen reader can announce which panel holds the focus.
 - `application/run/low_processor_mode` redraws only on change. The editor menu
   Debug > Debug Canvas Item Redraws flashes each redrawn area, which finds a hidden animation.
 
@@ -198,10 +223,14 @@ Tooltips: `_make_custom_tooltip()` returns a fresh Control each time; the engine
 
 ## Version notes
 
-- 4.5: `FoldableContainer`, recursive mouse and focus behavior, screen reader support
-  (`accessibility_name`, `FOCUS_ACCESSIBILITY`).
-- 4.6: `grab_focus(hide_focus)`, scroll hints.
-- 4.7: `custom_maximum_size`, `offset_transform_*`, `RichTextLabel.add_image()` size units.
+- 4.5: `FoldableContainer`, recursive mouse and focus behavior, screen reader support through
+  AccessKit (`accessibility_name`, `FOCUS_ACCESSIBILITY`; still marked experimental in the
+  release notes), per-viewport oversampling, `DPITexture`, stacked label effects.
+- 4.6: click no longer shows focus, `grab_focus(hide_focus)`, `pivot_offset_ratio`, scroll
+  hints, `SplitContainer` with many children.
+- 4.7: `custom_maximum_size`, `offset_transform_*`, `PopupMenu` search bar,
+  `_get_cursor_shape()`, landmark regions, `RichTextLabel` image size units (`add_image()`
+  parameters changed).
 
 ## Related skills
 
@@ -221,3 +250,7 @@ Tooltips: `_make_custom_tooltip()` returns a fresh Control each time; the engine
 - https://docs.godotengine.org/en/stable/tutorials/ui/bbcode_in_richtextlabel.html
 - https://docs.godotengine.org/en/stable/tutorials/ui/creating_applications.html
 - https://docs.godotengine.org/en/stable/tutorials/rendering/multiple_resolutions.html
+- https://docs.godotengine.org/en/stable/tutorials/migrating/upgrading_to_godot_4.7.html
+- https://godotengine.org/releases/4.5/
+- https://godotengine.org/releases/4.6/
+- https://godotengine.org/releases/4.7/

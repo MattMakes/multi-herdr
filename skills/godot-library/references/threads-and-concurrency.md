@@ -30,8 +30,12 @@ parts are safe to call from there, and how to prove that a thread paid for itsel
   from 2 threads may not.
 - `Array` and `Dictionary`: reading and writing existing elements from several threads is
   allowed. Anything that changes the size needs a `Mutex`.
-- Signal methods on `Object` are thread-safe, but a callback runs on the emitting thread
-  unless the connection uses `CONNECT_DEFERRED`.
+- Signal methods on `Object` are thread-safe (locking added in 4.5, tightened in 4.7). Connect
+  with `CONNECT_DEFERRED` when a worker emits and the receiver touches the tree, so the
+  callback runs at idle time on the main thread.
+- The core team states the limit of node threading as a priority item: many built-in nodes
+  still assume a single thread, so splitting node work over threads often gains little
+  until they are audited. Plan for data and server work on threads first.
 
 ## Advanced techniques
 
@@ -141,7 +145,7 @@ resets the flag after the task.
 | --- | --- | --- |
 | `physics/2d/run_on_separate_thread`, `physics/3d/run_on_separate_thread` | off | Physics step on its own thread; physics API access only during physics process |
 | `rendering/driver/threads/thread_model` | 1 | The Separate model is marked experimental with known crashes (particles, window resize) |
-| `navigation/pathfinding/max_threads` | 4 | Parallel path queries per map; more threads cost memory and sync time |
+| `navigation/pathfinding/max_threads` (since 4.4) | 4 | Parallel path queries per map; more threads cost memory and sync time |
 | `rendering/limits/spatial_indexer/threaded_cull_minimum_instances` | 1000 | Below this, culling stays on 1 thread |
 
 With Jolt, physics on a separate thread loses node names in error messages.
@@ -164,8 +168,9 @@ the main thread. See the `navigation-advanced` shelf.
 
 ## Niche but useful
 
-- `WorkerThreadPool.get_caller_task_id` returns `-1` off the pool: a cheap "am I on a worker"
-  test. `Thread.is_main_thread` answers the other question.
+- `WorkerThreadPool.get_caller_task_id` (since 4.5) returns `-1` off the pool: a cheap "am I
+  on a worker" test. `get_caller_group_id` (since 4.5) does the same for group tasks.
+  `Thread.is_main_thread` (since 4.6) answers the other question.
 - `OS.get_thread_caller_id` and `OS.set_thread_name` make logs and native profilers readable.
 - `OS.has_feature("threads")` and `"nothreads"` select the fallback path at run time.
 - `MultiMesh.buffer`: fill one `PackedFloat32Array` on workers, assign it once on main.
@@ -177,9 +182,12 @@ the main thread. See the `navigation-advanced` shelf.
 
 - No `RWLock` is exposed to scripts in 4.7. It exists only in engine C++. Use `Mutex`.
 - Freeing a locked `Mutex`, or a `Semaphore` that a thread waits on, is undefined.
-- Web: the default export has no thread support (single-threaded since 4.3). Turning Thread
-  Support on needs cross-origin isolation headers, which block most ads and third-party
-  embeds; the PWA export option can inject the headers. Design a one-thread path first.
+- Web: the default export has no thread support (single-threaded since 4.3). Web threads
+  need `SharedArrayBuffer`, which browsers allow only on cross-origin isolated pages. The Web
+  team's report names the price: no calls to other sites, so no ad or third-party service
+  integration. The PWA export option can inject the headers. Design a one-thread path
+  first. Since 4.5 Web builds use WebAssembly SIMD by default, which gives some parallel
+  math without threads.
 - Measure in a release export on the weakest target; threads do not always help.
 - C# and C++ code may use its own threading classes; the scene-tree rules still apply.
 
@@ -193,10 +201,14 @@ Test with the pool busy, because the engine shares it. See the `cpu-and-frame-bu
 ## Version notes
 
 - 4.3: single-threaded Web export became the default.
-- 4.5: `Logger` class with thread-called virtual methods. Navigation map regions update on
-  threads by default (`navigation/world/region_use_async_iterations`).
-- 4.4 to 4.7: no change to the script API of `Thread`, `Mutex`, `Semaphore` or
-  `WorkerThreadPool` was found in the docs.
+- 4.4: navigation map sync moved to a background thread; `navigation/pathfinding/max_threads`
+  added; a batch of `WorkerThreadPool` and `ResourceLoader` fixes.
+- 4.5: `Logger` class with thread-called virtual methods; `get_caller_task_id` and
+  `get_caller_group_id`; thread-safe `Object` signals; navigation regions update on threads
+  by default (`navigation/world/region_use_async_iterations`); WebAssembly SIMD on Web.
+- 4.6: `Thread.is_main_thread`.
+- 4.7: signal thread-safety improved; fixes for a race in `load_threaded_request` and for
+  deadlocks in `load_threaded_get` (4.7 beta notes). Retest loaders that needed workarounds.
 
 ## Related skills
 
@@ -215,3 +227,13 @@ Test with the pool busy, because the engine shares it. See the `cpu-and-frame-bu
 - https://docs.godotengine.org/en/stable/classes/class_workerthreadpool.html
 - https://docs.godotengine.org/en/stable/classes/class_thread.html
 - https://docs.godotengine.org/en/stable/classes/class_node.html
+- https://godotengine.org/article/progress-report-web-export-in-4-3/
+- https://godotengine.org/article/dev-snapshot-godot-4-5-dev-3/
+- https://godotengine.org/article/dev-snapshot-godot-4-5-dev-5/
+- https://godotengine.org/article/dev-snapshot-godot-4-4-dev-2/
+- https://godotengine.org/article/dev-snapshot-godot-4-7-dev-3/
+- https://godotengine.org/article/dev-snapshot-godot-4-7-beta-2/
+- https://godotengine.org/article/dev-snapshot-godot-4-7-beta-4/
+- https://godotengine.org/releases/4.4/
+- https://godotengine.org/releases/4.5/
+- https://godotengine.org/priorities/

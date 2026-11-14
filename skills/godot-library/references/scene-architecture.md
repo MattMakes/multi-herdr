@@ -88,7 +88,9 @@ Use it for internal references in UI scenes: layout changes then cost no script 
 
 Prefer exported properties on the child root over Editable Children. Sub-resources of the base are
 shared, not copied. Since 4.6 scene files store a `unique_id` per node, so overrides in inherited
-and instancing scenes survive a rename or move of the base node.
+and instancing scenes survive a rename or move of the base node. Before 4.6 they were matched by
+path, and restructuring a base scene could silently drop them. Scenes saved by older versions have
+no ids: run Project > Tools > Upgrade Project Files once to re-save every scene.
 
 ### InstancePlaceholder for staged loading
 
@@ -130,7 +132,8 @@ unless you call `PhysicsServer3D.set_active(true)`.
 Order: `process_priority` and `process_physics_priority` (lower runs first) beat tree order. Give
 fixed numbers to stages, for example input -100, simulation 0, camera 100, so a camera never reads
 a target position from the last frame. For heavy independent subtrees see `process_thread_group`
-in the shelf `threads-and-concurrency`.
+in the shelf `threads-and-concurrency`; the core team lists "many nodes still assume a single
+thread" as an open priority, so test each node type before you rely on it.
 
 ### Autoload only for isolated systems
 
@@ -163,7 +166,10 @@ a separate script, or use `load()` inside a static factory.
 - `@tool` plus `_get_configuration_warnings()`: a scene states what it needs (a child of some
   type, a non-empty export) and the Scene dock shows the warning icon.
 - Typed `@export var hurtbox: Area2D`: the Inspector accepts only matching nodes.
-- `@abstract` on classes and methods (since 4.5): a base "interface" that cannot be instanced.
+- `@abstract` on classes and methods (since 4.5): a base "interface" that cannot be instanced; a
+  subclass that misses an abstract method is an error at parse time.
+- A signal name with a leading underscore (hidden from completion and docs since 4.6) marks a
+  signal as internal to the scene.
 
 ### Feature tags as structural switches
 
@@ -171,7 +177,8 @@ a separate script, or use `load()` inside a static factory.
 per-tag override (`application/run/main_scene.demo`), so a demo, a `dedicated_server` build or a
 platform can start from another root scene with no code branch. Read such values in code with
 `ProjectSettings.get_setting_with_override`. Custom tags exist only in exported builds, not when
-running from the editor.
+running from the editor. To run a variant root from the editor or CI, start it directly:
+`--scene <path or uid>` (since 4.5).
 
 ## Niche but useful
 
@@ -197,14 +204,18 @@ running from the editor.
 - Deep chains of inherited scenes: every level is one more file an override can hide in. Rule of
   thumb (not from the docs): stop at two levels and compose beyond that.
 - Version control: commit `.uid` and `.import` files, ignore `.godot/`. Set `* text=auto eol=lf`.
-  Keep scenes small and single-purpose so two workers rarely edit the same `.tscn`.
+  Move a `.uid` file together with its script. A missing one only warns on your machine and
+  breaks references on the next clone.
+- Keep scenes small and single-purpose so two workers rarely edit the same `.tscn`.
 
 ## Version notes
 
 - 4.4: `.uid` files for scripts and shaders; references survive moves done outside the editor.
-- 4.5: `@abstract`; `SceneTree.scene_changed`.
-- 4.6: per-node `unique_id` in scene files; `SceneTree.change_scene_to_node`.
-- 4.7: no structural change found in the upgrade notes for this area.
+- 4.5: `@abstract`; `SceneTree.scene_changed`; `--scene`; custom feature tags can be picked in the
+  Project Settings override dialog; `Node.duplicate` no longer copies internal nodes.
+- 4.6: per-node `unique_id` in scene files; `SceneTree.change_scene_to_node`; autoload entries
+  can be stored as UIDs; underscore signals hidden.
+- 4.7: no structural change in the release page or upgrade notes for this area.
 
 ## Related skills
 
@@ -223,3 +234,12 @@ running from the editor.
 - https://docs.godotengine.org/en/stable/tutorials/scripting/scene_unique_nodes.html
 - https://docs.godotengine.org/en/stable/tutorials/scripting/change_scenes_manually.html
 - https://docs.godotengine.org/en/stable/tutorials/export/feature_tags.html
+- https://godotengine.org/article/uid-changes-coming-to-godot-4-4/
+- https://godotengine.org/article/dev-snapshot-godot-4-5-dev-1/
+- https://godotengine.org/article/dev-snapshot-godot-4-5-dev-3/
+- https://godotengine.org/article/dev-snapshot-godot-4-5-dev-5/
+- https://godotengine.org/article/dev-snapshot-godot-4-6-dev-2/
+- https://godotengine.org/article/dev-snapshot-godot-4-6-dev-4/
+- https://godotengine.org/releases/4.5/
+- https://godotengine.org/releases/4.6/
+- https://godotengine.org/priorities/

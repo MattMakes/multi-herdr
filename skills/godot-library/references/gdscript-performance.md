@@ -14,15 +14,18 @@ features make it faster or slower, and the less-known annotations that speed up 
 ## How the engine works here
 
 - A script is parsed, analyzed (types and warnings) and compiled to bytecode. The VM runs one
-  opcode after another on `Variant` slots. There is no JIT or AOT in 4.7; the docs list both
-  only as plans.
+  opcode after another on `Variant` slots. There is no JIT or AOT in 4.7. The team lists
+  runtime speed as an active priority: GDScript is fast enough as glue between nodes, weak at
+  pure data crunching, and JIT or AOT are still only under investigation.
 - The compiler emits a specialized opcode when it knows the types at compile time. The 4.7
   opcode list (engine source) shows the pairs: `OPCODE_OPERATOR` and
   `OPCODE_OPERATOR_VALIDATED`, `OPCODE_GET_NAMED` and `OPCODE_GET_NAMED_VALIDATED`,
   `OPCODE_CALL` and `OPCODE_CALL_METHOD_BIND_VALIDATED_RETURN`, plus
   `OPCODE_CALL_BUILTIN_TYPE_VALIDATED` and `OPCODE_CALL_UTILITY_VALIDATED`. The plain form
   looks things up by name and checks types at run time. The validated form holds a direct
-  pointer to the operator, built-in method or engine method.
+  pointer to the operator, built-in method or engine method. The author of the VM gives the
+  reason: for 2 known integers the VM takes the raw values out of the `Variant` and adds
+  them in C++; the untyped path must first find the types and then the operation.
 - Loops have typed forms too: one iterate opcode per source type (`int`, `float`, vectors,
   `Array`, `Dictionary`, each packed array, and a range form). The generic form asks the
   `Variant` what it is on every step.
@@ -34,9 +37,22 @@ features make it faster or slower, and the less-known annotations that speed up 
   removes `assert` (the expression is not evaluated) and turns script backtraces off unless
   `debug/settings/gdscript/always_track_call_stacks` is on.
 
-Reported numbers (GitHub PR 70838, one micro-benchmark, Godot 4.0, 2023; measure first):
-release typed 3.3 ms, release untyped 6.4 ms, debug typed 16.0 ms, debug untyped 29.2 ms.
-Read it as: typing is worth about 2x in pure script math, and debug timings are not release
+Reported numbers, per instruction, typed against untyped (GDScript progress report "Typed
+instructions", synthetic loops, debug build, 2020; measure first):
+
+| Instruction | Typed is faster by |
+| --- | --- |
+| Engine class method call, arguments already of the right type | 120-150% |
+| Engine class method call, arguments need a check | 70-80% |
+| Built-in type method call (`Vector2`, `String`, ...) | 30-70% |
+| Operators, utility functions such as `sin()` | 25-50% |
+| `for` iteration (less for dictionaries and strings) | 10-50% |
+| Subscript and attribute access | 5-7% |
+
+So typing pays most on calls into the engine, and an argument that needs a conversion may
+lose the fast path: pass a `float` where a `float` is expected. A whole-function benchmark
+(GitHub PR 70838, Godot 4.0, 2023; measure first) reports release typed 3.3 ms, release
+untyped 6.4 ms, debug typed 16.0 ms, debug untyped 29.2 ms. Debug timings are not release
 timings.
 
 ## Advanced techniques
@@ -113,7 +129,8 @@ from the scene.
 
 `await` on a signal or a coroutine saves the function state and returns to the caller. The
 caller must `await` too if it needs the result. `await` on a plain value returns at once.
-Turn on `missing_await` (off by default) to catch a coroutine called without `await`. A
+Turn on `missing_await` (since 4.6, off by default) to catch a coroutine called without
+`await`. A
 function that awaits a signal that never fires never resumes: give long waits a timeout.
 
 ### Properties with setters
@@ -145,8 +162,10 @@ func _rebuild() -> void:
 	notify_property_list_changed()
 ```
 
-`@export_tool_button` (since 4.4) gives designers a one-click action. `@export_storage`
-saves a value and copies it on `duplicate` without showing it. `@export_custom` passes any
+`@export_tool_button` (since 4.4) gives designers a one-click action; the callable can be a
+method, a lambda or a bound call such as `print.bind("x")`. `@export_storage` saves a value
+and copies it on `duplicate` without showing it. `@export var v: Variant` (since 4.5) shows a
+type selector, so one slot can hold a number, a string or a color. `@export_custom` passes any
 hint, hint string and usage flags with no validation. `@export_file` stores a UID when one
 exists; `@export_file_path` keeps the raw path. For properties that depend on other values,
 override `_get_property_list` (add entries) and `_validate_property` (change or hide
@@ -157,10 +176,11 @@ existing ones) in a `@tool` script and call `notify_property_list_changed`.
 Each warning is a project setting under `debug/gdscript/warnings/` with 3 levels: ignore,
 warn, error. For a typed codebase raise `untyped_declaration`, `unsafe_method_access`,
 `unsafe_property_access`, `unsafe_cast` and `unsafe_call_argument` (all off by default).
-`return_value_discarded` (off) catches ignored `Error` results. `directory_rules` excludes
-`res://addons` by default, so third-party code does not fail your gate. Silence one line
-with `@warning_ignore("name")` and a region with `@warning_ignore_start` and
-`@warning_ignore_restore`.
+`return_value_discarded` (off) catches ignored `Error` results. `directory_rules` (since
+4.6; it replaced the `exclude_addons` switch) excludes `res://addons` by default and takes
+one include or exclude rule per folder, so you can gate your own addon and skip vendored
+ones. Silence one line with `@warning_ignore("name")` and a region with
+`@warning_ignore_start` and `@warning_ignore_restore` (both since 4.4).
 
 ### Abstract classes and variadic functions (since 4.5)
 
@@ -185,6 +205,11 @@ exist; forward with `Callable.callv`.
   (`application/run/flush_stdout_on_print` changes that). Do not time code that prints.
 - Format with `%` or `String.format` outside hot loops; `+` needs `str()` per value.
 - `Expression` runs designer formulas at run time; parse once, execute many times.
+- Since 4.6 a custom engine build can feed script functions to a tracing profiler (Tracy;
+  the release page also names Perfetto and Instruments). It shows single slow calls on a
+  timeline, which the built-in profiler averages away. See `debugging-and-profiling-tools`.
+- `Array.duplicate_deep` and `Dictionary.duplicate_deep` (since 4.5) state exactly what a
+  deep copy clones. Plain `duplicate(true)` does not copy resources nested in containers.
 
 ## Traps
 
@@ -199,8 +224,14 @@ exist; forward with `Callable.callv`.
 
 ## Version notes
 
-- 4.4: typed dictionaries, `@export_tool_button`, UID storage for `@export_file`.
-- 4.5: `@abstract`, variadic functions, script backtraces, `@export_file_path`.
+- 4.4: typed dictionaries, `@export_tool_button`, `@warning_ignore_start` and
+  `@warning_ignore_restore`, UID storage for `@export_file`, faster `StringName` dictionary
+  keys (4.4 dev 2 notes).
+- 4.5: `@abstract`, variadic functions, script backtraces with
+  `debug/settings/gdscript/always_track_call_stacks`, `@export_file_path`, `Variant`
+  exports, `duplicate_deep`.
+- 4.6: `missing_await` warning, `directory_rules`, tracing profiler support, fewer copies
+  when typed arrays and dictionaries are constructed (4.6 dev 1 notes).
 - 4.7: writing one element of a packed array property no longer calls that property's
   setter. An override of a method with a typed return now inherits the return type and needs
   an explicit `return`.
@@ -221,5 +252,15 @@ exist; forward with `Callable.callv`.
 - https://docs.godotengine.org/en/stable/tutorials/scripting/gdscript/gdscript_advanced.html
 - https://docs.godotengine.org/en/stable/tutorials/best_practices/data_preferences.html
 - https://docs.godotengine.org/en/stable/tutorials/scripting/logging.html
+- https://docs.godotengine.org/en/stable/tutorials/migrating/upgrading_to_godot_4.7.html
+- https://godotengine.org/article/gdscript-progress-report-typed-instructions/
+- https://godotengine.org/article/dev-snapshot-godot-4-4-dev-2/
+- https://godotengine.org/article/dev-snapshot-godot-4-4-dev-3/
+- https://godotengine.org/article/dev-snapshot-godot-4-6-dev-1/
+- https://godotengine.org/article/dev-snapshot-godot-4-6-dev-6/
+- https://godotengine.org/releases/4.4/
+- https://godotengine.org/releases/4.5/
+- https://godotengine.org/releases/4.6/
+- https://godotengine.org/priorities/
 - https://github.com/godotengine/godot/blob/4.7-stable/modules/gdscript/gdscript_function.h
 - https://github.com/godotengine/godot/pull/70838

@@ -36,7 +36,7 @@ files, background loading and logging.
 | JSON with native types | `JSON.from_native()` / `JSON.to_native()` (since 4.4) | all Variant types | only with `allow_objects` |
 | Variant binary | `var_to_bytes()`, `FileAccess.store_var()` | all Variant types, compact | only with objects allowed |
 | Variant text | `var_to_str()`, `ConfigFile` | all Variant types, readable | treat as untrusted input |
-| Resource | `ResourceSaver.save()` / `ResourceLoader.load()` | whole object graphs | yes: embedded scripts run |
+| Resource | `ResourceSaver.save()` / `ResourceLoader.load()` | whole object graphs | treat as code |
 
 - The Variant binary format is little-endian, padded to 4 bytes, with a type header per
   value. It is not the format of `.res` or `.scn` files. Objects are stored only as instance
@@ -47,10 +47,13 @@ files, background loading and logging.
 ### Choose the format by trust boundary
 A file the player can swap (shared saves, cloud saves, mods) is untrusted. For those use
 JSON or the Variant binary format with objects off, and validate every field after load.
-`ResourceLoader.load()` on a `.tres` or `.res` from outside the game will run a script
-embedded in it at load time (reported by GDQuest and the Safe Resource Loader addon; the
-class reference gives the same warning for `bytes_to_var_with_objects()`). Keep Resource
-saves for data that never leaves the machine, or do not use them for saves at all.
+The engine team's stated reason for keeping object decoding off by default: a decoded
+object can carry a script or force code to run while it is built, which reaches every file
+the process can touch (4.0 multiplayer report 4; the class reference repeats the warning
+on `bytes_to_var_with_objects()` and `get_var(true)`). A resource file is a full object
+graph with script references, so give `ResourceLoader.load()` on a file from outside the
+game the same distrust. Keep Resource saves for data that never leaves the machine, or do
+not use them for player saves.
 `godot-save-security` has the threat model and signing recipes.
 
 ### Crash-safe writes: temp file, then rename
@@ -146,9 +149,20 @@ Use this for user content only: project assets loaded this way skip import and r
 ### PCK and ZIP packs
 `ProjectSettings.load_resource_pack()` mounts a PCK or ZIP over `res://`; later packs
 replace files with the same path unless `replace_files` is false. That is the DLC and patch
-path. A pack can carry scripts, so a pack from an unknown source is code execution. For
-launcher patches the docs advise signing packs with a private key and checking with a
-public key in the main pack (`Crypto.verify()`).
+path. A pack can carry scripts, so a pack is a program: the security team's GodLoader
+statement compares the runtime plus a `.pck` to an interpreter plus a script, and notes the
+engine registers no file handler for `.pck`. A mod loader is therefore a "run this code"
+feature; say so to players and load mods only from places they chose. For launcher
+patches the docs advise signing packs with a private key and checking with a public key
+in the main pack (`Crypto.verify()`).
+
+Patch packs: a patch PCK can also delete files (since 4.4; `PCKPacker.add_file_removal()`
+when you build packs yourself). Since 4.6 the export dialog can delta-encode patches, so a
+patch holds only the changed parts of a file. Costs named by the docs: a patched resource
+loads slower, and each further patch on it adds to that; the base packs listed at export
+must be the exact files, in load order, that players have, because re-exporting an old
+version is not byte-identical; turn compression off for resources you intend to patch.
+`PCKPacker.add_file_from_buffer()` (since 4.7) writes pack entries from memory.
 
 ### Save cost on slow storage
 Serialize on the main thread into a `String` or `PackedByteArray` (fast), then hand the
@@ -160,17 +174,26 @@ the run state, so cloud sync moves less.
 
 ## Niche but useful
 
-- `FileAccess.create_temp()` and `DirAccess.create_temp()` (since 4.4) give scratch files
-  that delete themselves.
+- `FileAccess.create_temp()`, `DirAccess.create_temp()` and `OS.get_temp_dir()` (since
+  4.4) give scratch files that delete themselves and stay out of the user data folder.
+- `ResourceLoader.list_directory()` (since 4.4) lists a `res://` folder with the original
+  file names, also in an export. Use it instead of `DirAccess` to discover content.
+- `FileAccess.get_size()` and `get_access_time()` (static, since 4.5) and
+  `get_modified_time()` give save-slot metadata without opening the file.
+- `store_half()` / `get_half()` (since 4.4) write 16-bit floats for compact custom formats.
+- Android (since 4.6): the system file picker can load and save single files through the
+  Storage Access Framework without broad storage permissions (4.6 release page).
 - `ConfigFile` holds any Variant per key and round-trips types. Good for settings. It is
   Variant text: do not parse a `.cfg` from an untrusted source.
 - `ProjectSettings.globalize_path()` turns `user://` into an OS path for `OS.shell_open()`.
-- `Logger` with `OS.add_logger()` (since 4.5) receives every message and error for your own
-  file or telemetry. `_log_message()` is called from any thread: guard it with a `Mutex`.
+- `Logger` with `OS.add_logger()` (since 4.5) receives every message and error, with script
+  backtraces, for an in-game bug reporter. `_log_message()` is called from any thread:
+  guard it with a `Mutex`.
 - Built-in file logging: `debug/file_logging/enable_file_logging` (on for desktop only),
   `log_path` (`user://logs/godot.log`), `max_log_files` (5). Release builds flush stdout
   only at exit unless `application/run/flush_stdout_on_print` is set; stderr always flushes.
-- `debug/settings/gdscript/always_track_call_stacks` adds script backtraces to release logs.
+- `debug/settings/gdscript/always_track_call_stacks` (since 4.5) adds script backtraces to
+  release builds; they are off there by default for speed.
 - `FileAccess.set_extended_attribute()` (since 4.6) tags files on desktop file systems.
 
 ## Traps
@@ -185,10 +208,13 @@ the run state, so cloud sync moves less.
 ## Version notes
 
 - 4.4: all `FileAccess.store_*` methods return `bool`; `JSON.from_native()` and
-  `to_native()`; temp file and directory helpers.
-- 4.5: `Logger` class; script backtraces in logs.
-- 4.6: `FileAccess.create_temp()` takes a `FileAccess.ModeFlags` value; extended attributes.
-- 4.7: `ZIPPacker.start_file()` gained optional `permissions` and `modified_time`.
+  `to_native()`; temp file and directory helpers; `ResourceLoader.list_directory()`;
+  half-precision file methods; patch PCKs can remove files.
+- 4.5: `Logger` class and script backtraces; `FileAccess.get_size()`, `get_access_time()`.
+- 4.6: `FileAccess.create_temp()` takes a `FileAccess.ModeFlags` value; extended file
+  attributes; delta-encoded patch PCKs; Android file picker access.
+- 4.7: `ZIPPacker.start_file()` gained optional `permissions` and `modified_time`;
+  `PCKPacker.add_file_from_buffer()`.
 
 ## Related skills
 
@@ -207,5 +233,11 @@ the run state, so cloud sync moves less.
 - https://docs.godotengine.org/en/stable/tutorials/scripting/logging.html
 - https://docs.godotengine.org/en/stable/tutorials/export/exporting_pcks.html
 - https://docs.godotengine.org/en/stable/tutorials/export/exporting_for_web.html
-- https://www.gdquest.com/library/save_game_godot4 (search summary)
-- https://github.com/derkork/godot-safe-resource-loader (search summary)
+- https://godotengine.org/article/statement-on-godloader-malware-loader/
+- https://godotengine.org/article/multiplayer-changes-godot-4-0-report-4/
+- https://godotengine.org/releases/4.4/
+- https://godotengine.org/releases/4.5/
+- https://godotengine.org/releases/4.6/
+- https://godotengine.org/article/dev-snapshot-godot-4-4-dev-5/
+- https://godotengine.org/article/dev-snapshot-godot-4-5-dev-1/
+- https://godotengine.org/article/dev-snapshot-godot-4-7-dev-1/

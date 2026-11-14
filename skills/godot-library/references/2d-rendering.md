@@ -20,13 +20,18 @@ nodes and settings that fix it (tiles at scale, SDF, screen reads, pixel-perfect
 - Transform chain: item local -> canvas (`get_global_transform()`) -> viewport canvas transform
   (`Camera2D` writes `Viewport.canvas_transform`) -> stretch transform -> window. Scrolling by
   the canvas transform is cheaper than moving a root node with the whole level under it.
-- All three renderers batch 2D: consecutive items that share state go out as one draw call.
-  The docs do not list the break rules. In practice a batch ends when the texture, material,
-  blend mode or clip state changes between neighbours in draw order (engine behaviour, not in
-  the 4.7 docs; confirm with the draw-call counter below). Order matters, not node count.
-- 2D lights are applied in a single pass inside the item shader, at viewport resolution, not at
-  texel resolution. Shadows come from `LightOccluder2D` polygons into a shared shadow atlas
-  (`rendering/2d/shadow_atlas/size`, default 2048).
+- All three renderers batch 2D: consecutive similar items go out as one draw call. It was
+  Compatibility-only from 4.0; Forward+ and Mobile got it in 4.4. The engine team names the
+  winners: text, repeated sprites sharing a texture, tile maps, bullet hells. Neither docs nor
+  posts list the break rules. In practice a batch ends when texture, material, blend mode or
+  clip state changes between neighbours in draw order (not documented; confirm with the
+  draw-call counter below). Order matters, not node count.
+- Batching is a trade: much less CPU work, slightly more GPU work. A scene that cannot batch
+  pays the cost and gains nothing. 4.4 was slower than 4.3 on some GPU-bound low-end phones for
+  this reason; 4.6 redesigned the 2D renderer and measured 1.1x to 7x in GPU-bound cases.
+- 2D lights are applied in a single pass inside the item shader (3.x drew one pass per
+  light), at viewport resolution, not texel resolution. Shadows from `LightOccluder2D` polygons
+  and light textures share one atlas (`rendering/2d/shadow_atlas/size`, default 2048).
 - A 2D signed distance field of all occluders with `sdf_collision` on is built only when a
   shader or a `GPUParticles2D` collision asks for it. Unused, it costs nothing.
 - 2D has its own buffer and no depth buffer. FXAA does not touch 2D.
@@ -55,7 +60,8 @@ func _process(_delta: float) -> void:
 
 Pack sprites that draw near each other into one atlas, share one material, and keep items with
 a special shader together in draw order instead of interleaved. Use `instance uniform` values
-(`CanvasItem.set_instance_shader_parameter()`) instead of one material copy per sprite. If the
+(`CanvasItem.set_instance_shader_parameter()`, canvas shaders since 4.4) instead of one material
+copy per sprite: the release notes state this does not break batching. If the
 game shows many unique textures per frame, raise `rendering/2d/batching/uniform_set_cache_size`
 (default 4096); `rendering/2d/batching/item_buffer_size` (16384) caps commands per batch.
 
@@ -64,8 +70,9 @@ game shows many unique textures per frame, raise `rendering/2d/batching/uniform_
 `rendering_quadrant_size` (default 16) groups 16 x 16 cells into one canvas item. Bigger
 quadrants mean fewer items but a bigger rebuild when one cell changes. A Y-sorted layer ignores
 quadrants and groups by row instead, so keep Y-sort to the one layer that needs it.
-Since 4.5, `physics_quadrant_size` (default 16) merges collision shapes of similar cells in a
-quadrant. Trap: `get_coords_for_body_rid()` then returns the quadrant, not the cell. Set the size
+Before 4.5 every solid tile was its own physics body, which the engine team called extremely
+wasteful. Since 4.5, `physics_quadrant_size` (default 16) merges collision shapes of similar
+cells in a quadrant. Trap: `get_coords_for_body_rid()` then returns the quadrant, not the cell. Set the size
 to 1 for exact cells (this turns chunking off), or convert the hit position with
 `local_to_map()` instead.
 
@@ -97,9 +104,11 @@ func burn(coords: Vector2i) -> void:
 ### Scene tiles are nodes, not tiles
 
 A `TileSetScenesCollectionSource` instantiates one scene per placed cell, deferred to end of
-frame. Use it for a few interactive objects. For hundreds of decorations use atlas tiles, tile
+frame. Use it for a few interactive objects; the placed scenes are not editable nodes. Since
+4.6 scene tiles rotate in 90 degree steps. For hundreds of decorations use atlas tiles, tile
 animation (`TileSetAtlasSource.set_tile_animation_mode()` with
-`TILE_ANIMATION_MODE_RANDOM_START_TIMES` avoids synced flicker) or a MultiMesh.
+`TILE_ANIMATION_MODE_RANDOM_START_TIMES` avoids synced flicker) or a MultiMesh. Since 4.7 the
+2D editor's Scene Paint Mode scatters real nodes off the grid, with no TileSet setup.
 
 ### Cut overdraw with 2D meshes
 
@@ -139,6 +148,30 @@ rectangle clip, `Control.clip_contents` (a scissor) is far cheaper.
 directional shadows (the built-in ones are always infinite), cheap 2D ambient occlusion, and
 `GPUParticles2D` collision. Tune `rendering/2d/sdf/scale` (default half resolution) and
 `rendering/2d/sdf/oversize` (raise it if particles fall through occluders near screen edges).
+Distances are in global canvas units. The core pattern is circle tracing: step along a
+direction by the distance just read, so empty space costs few samples. This gives long drop
+shadows and light shafts that a blur shader could not afford.
+
+```gdshader
+shader_type canvas_item;
+render_mode unshaded;
+uniform vec2 dir = vec2(0.7, 0.7);
+uniform float max_dist = 300.0;
+
+void fragment() {
+	vec2 at = screen_uv_to_sdf(SCREEN_UV);
+	float travelled = 0.0;
+	for (int i = 0; i < 48 && travelled < max_dist; i++) {
+		float d = texture_sdf(at);
+		if (d < 0.01) {
+			break;
+		}
+		travelled += d;
+		at += d * normalize(dir);
+	}
+	COLOR = vec4(0.0, 0.0, 0.0, 0.6 * (1.0 - min(1.0, travelled / max_dist)));
+}
+```
 
 ### Lights that cost less
 
@@ -161,8 +194,15 @@ darkness, but it skips the light path. For blocky pixel-art lighting, snap `LIGH
 
 ### Parallax2D rules
 
+`Parallax2D` (4.3) replaces ParallaxBackground and ParallaxLayer; the old pair's context menu
+converts them. It is a plain `Node2D`, not a `CanvasLayer`, so it can sit in the same layer as
+a screen-reading mask, inside a `CanvasGroup` or after a `BackBufferCopy`, and it survives
+camera rotation. Put it in a `CanvasLayer` only if it must ignore zoom, and then make
+`follow_viewport` match the layer's `follow_viewport_enabled`.
 Textures must start at (0, 0) and extend right and down; `repeat_size` loops that canvas. Use
-`repeat_times` only to cover camera zoom-out. For split screen, clone the parallax nodes per
+`repeat_times` only to cover camera zoom-out; it repeats every child, so for one small sprite
+use `texture_repeat` plus a larger `region_rect` instead. `autoscroll` is free when unused. For
+split screen, clone the parallax nodes per
 `SubViewport` and separate them with `CanvasItem.visibility_layer` on a common parent and
 `Viewport.canvas_cull_mask`: a parent outside the mask hides all its children.
 
@@ -174,6 +214,11 @@ Textures must start at (0, 0) and extend right and down; `repeat_size` loops tha
 - `Light2D.BLEND_MODE_SUB` negative lights; `light_only` render mode shows a sprite only where lit.
 - `TileSetAtlasSource.use_texture_padding` (on by default) is what stops seams between tiles.
 - `TileMapLayer.tile_map_data`: the whole layer as bytes, for fast save and copy.
+- `DrawableTexture2D` (4.7): blit textures into a texture on the GPU for paint, trails, fog of
+  war or damage masks, without a SubViewport.
+- `draw_ellipse()` and `draw_ellipse_arc()` (4.6); `GradientTexture2D.FILL_CONIC` (4.7) for
+  radial sweeps and faux-3D shading ramps.
+- `_update_cells()` (4.4) tells a TileMapLayer script which cells changed.
 - `VisibleOnScreenEnabler2D` stops processing of off-screen subtrees in big worlds.
 - `REGION_RECT` in canvas shaders: `UV` covers the whole atlas, not the sprite region.
 
@@ -187,11 +232,15 @@ Textures must start at (0, 0) and extend right and down; `repeat_size` loops tha
 
 ## Version notes
 
-- 4.4: 2D batching reached Forward+ and Mobile (4.4 release notes; not re-read here, web
-  fetch was blocked). Before that only Compatibility batched.
+- 4.3: `Parallax2D`.
+- 4.4: 2D batching on Forward+ and Mobile; canvas `instance uniform`; `_update_cells()`;
+  several occluder polygons per tile; `TileMapLayer.occlusion_enabled`.
 - 4.5: TileMapLayer physics chunking on by default; `get_coords_for_body_rid()` changed meaning.
-- 4.7: line drawing no longer adds an antialiasing feather, so old lines look thinner. New
-  projects default to stretch mode `canvas_items` and aspect `expand`.
+- 4.6: 2D renderer redesign for GPU cost (1.1x to 7x, GPU-bound); rotatable scene tiles;
+  ellipse drawing.
+- 4.7: `DrawableTexture2D`; Scene Paint Mode; Polygon2D fast path; line drawing no longer adds
+  an antialiasing feather, so old lines look thinner. New projects default to stretch mode
+  `canvas_items` and aspect `expand`.
 
 ## Related skills
 
@@ -216,3 +265,10 @@ Textures must start at (0, 0) and extend right and down; `repeat_size` loops tha
 - https://docs.godotengine.org/en/stable/tutorials/migrating/upgrading_to_godot_4.5.html
 - https://docs.godotengine.org/en/stable/tutorials/migrating/upgrading_to_godot_4.7.html
 - https://docs.godotengine.org/en/stable/classes/class_tilemaplayer.html
+- https://godotengine.org/releases/4.4/ , https://godotengine.org/releases/4.5/ ,
+  https://godotengine.org/releases/4.6/ , https://godotengine.org/releases/4.7/
+- https://godotengine.org/article/dev-snapshot-godot-4-4-dev-3/ (batching on RD renderers)
+- https://godotengine.org/article/dev-snapshot-godot-4-6-dev-5/ (2D renderer cost numbers)
+- https://godotengine.org/article/dev-snapshot-godot-4-5-dev-1/ (chunk tilemap physics)
+- https://godotengine.org/article/parallax-progress-report/
+- https://godotengine.org/article/godots-2d-engine-gets-several-improvements-upcoming-40/

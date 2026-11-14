@@ -66,6 +66,10 @@ engine copies the connection list, disconnects every `CONNECT_ONE_SHOT` entry fi
 `Callable` in turn, synchronously, on the emitting thread. So connecting or disconnecting during an
 emission does not change who gets this emission. A target freed during the emission is skipped.
 
+**Casts.** The engine's own cast between `Object` classes does not use C++ RTTI. Since 4.5 it
+assumes single, non-virtual inheritance and has about 7x the throughput of `dynamic_cast` (4.5
+dev 2 notes). Type filtering inside engine calls is therefore cheap.
+
 ## Advanced techniques
 
 ### Pick the flush point on purpose
@@ -131,9 +135,11 @@ code twice.
 
 `CONNECT_DEFERRED` is the clean fix for "state changed while the physics server flushes queries":
 connect `body_entered` deferred and the handler may add or remove bodies freely.
-`CONNECT_APPEND_SOURCE_OBJECT` lets one handler serve many emitters without one `bind()` each.
-`set_block_signals(true)` silences an object during bulk setup. Signal methods are thread-safe, but
-handlers run on the emitting thread.
+`CONNECT_APPEND_SOURCE_OBJECT` lets one handler serve many emitters without one `bind()` each; the
+editor's connect dialog has it as "Append Source". `set_block_signals(true)` silences an object
+during bulk setup. Signal methods are thread-safe since 4.5 (hardened in 4.6.3 and 4.7), but handlers
+run on the emitting thread. Since 4.6 a signal whose name starts with an underscore is hidden from
+completion and generated docs: use that for signals that are private to a scene.
 
 ### Group calls as a cheap dirty flag
 
@@ -158,11 +164,24 @@ runners.
 
 ### UIDs for move-safe references
 
-Every resource file has a `uid://` id (in the file header for `.tscn`/`.tres`, in the `.import`
-file for imported assets, and since 4.4 in a `.uid` side file for scripts and shaders). `load()` and
-`preload()` accept `uid://` strings. `ResourceUID.path_to_uid`, `ResourceUID.uid_to_path` and
-`ResourceUID.ensure_path` convert. Since 4.4 `@export_file` stores a `uid://` string when set in the
-Inspector; `@export_file_path` (since 4.5) keeps `res://`. Normalise with `ensure_path` first.
+Every resource file has a `uid://` id: in the file header for `.tscn`/`.tres`, in the `.import`
+file for imported assets, and since 4.4 in a `.uid` side file for scripts and shaders (they are
+plain text with no place for metadata). Saved references hold the UID plus the path as a fallback.
+The engine team chose side files over one central table so that a file can be moved outside the
+editor together with its id, so that branches do not conflict in one shared file, and so that
+add-ons carry their own ids.
+
+- `load()` and `preload()` accept `uid://` strings. Copy a UID from the FileSystem dock context
+  menu; since 4.5 Ctrl-drag a resource into a script to insert a preload by UID.
+- Commit every `.uid` file. Move or delete it together with its script or shader. Without it the
+  project still runs through the path fallback, with one warning per reference, and two files that
+  swapped paths can be mixed up.
+- After upgrading an older project, run Project > Tools > Upgrade Project Files once, so all
+  scenes and resources are re-saved in one commit instead of as random diffs later.
+- `ResourceUID.path_to_uid`, `ResourceUID.uid_to_path` and `ResourceUID.ensure_path` (all since
+  4.5) convert. Since 4.4 `@export_file` stores a `uid://` string when set in the Inspector;
+  `@export_file_path` (since 4.5) keeps `res://`. Normalise with `ensure_path` before comparing.
+- JSON, certificate and translation files get no `.uid` file.
 
 ## Niche but useful
 
@@ -172,7 +191,13 @@ Inspector; `@export_file_path` (since 4.5) keeps `res://`. Normalise with `ensur
   use by `RID` see the shelf `servers-and-low-level`.
 - `request_ready()`: makes `_ready` run again at the next tree entry (pooled nodes).
 - `Object.get_incoming_connections()`: audit who listens to whom.
-- `SceneTree.scene_changed`: emitted after the new scene is in the tree; `await` it after a change.
+- `SceneTree.scene_changed` (since 4.5): emitted after the new scene is in the tree.
+- `--scene <path or uid>` on the command line (since 4.5): start any scene, for test runs and bots.
+- `Tween.tween_await(signal)` (since 4.7): a tween step that waits for a signal; cutscene sequencing
+  without a hand-written state machine.
+- Tracing profilers (Tracy, Perfetto, Instruments; since 4.6, custom engine build): the main loop
+  is marked with zones named like the steps above (physics, process, draw), and GDScript functions
+  show up in Tracy. Use them when the built-in profiler cannot explain a spike.
 - `Input.flush_buffered_events()` with `input_devices/buffering/agile_event_flushing`: input is
   flushed before each physics tick instead of once per frame.
 
@@ -189,11 +214,14 @@ Inspector; `@export_file_path` (since 4.5) keeps `res://`. Normalise with `ensur
 
 ## Version notes
 
-- 4.4: `.uid` side files for scripts and shaders; `@export_file` stores `uid://`.
-- 4.5: `@export_file_path`; `CONNECT_APPEND_SOURCE_OBJECT`; `SceneTree.scene_changed`.
+- 4.4: `.uid` side files for scripts and shaders; `@export_file` stores `uid://`; the SceneTree
+  processes node changes faster (moving and renaming nodes in large scenes).
+- 4.5: `@export_file_path`; `CONNECT_APPEND_SOURCE_OBJECT`; `SceneTree.scene_changed`; `ResourceUID`
+  path helpers; thread-safe signals; faster engine casts; `--scene`; GDExtension can register
+  main loop callbacks (startup, shutdown, frame).
 - 4.6: scene files store a `unique_id` per node, so renamed or moved nodes keep their overrides in
-  inherited and instanced scenes.
-- 4.7: no change to the frame order above (checked against the 4.7 source).
+  inherited and instanced scenes; underscore signals are hidden; tracing profiler support.
+- 4.7: `Tween.tween_await`; frame order above checked against the 4.7 source.
 
 ## Related skills
 
@@ -210,6 +238,18 @@ Inspector; `@export_file_path` (since 4.5) keeps `res://`. Normalise with `ensur
 - https://docs.godotengine.org/en/stable/tutorials/scripting/scene_tree.html
 - https://docs.godotengine.org/en/stable/engine_details/file_formats/tscn.html
 - https://docs.godotengine.org/en/stable/tutorials/migrating/upgrading_to_godot_4.4.html
+- https://godotengine.org/article/uid-changes-coming-to-godot-4-4/
+- https://godotengine.org/article/dev-snapshot-godot-4-4-dev-6/
+- https://godotengine.org/article/dev-snapshot-godot-4-5-dev-1/
+- https://godotengine.org/article/dev-snapshot-godot-4-5-dev-2/
+- https://godotengine.org/article/dev-snapshot-godot-4-5-dev-3/
+- https://godotengine.org/article/dev-snapshot-godot-4-5-dev-5/
+- https://godotengine.org/article/dev-snapshot-godot-4-6-dev-6/
+- https://godotengine.org/article/dev-snapshot-godot-4-7-dev-3/
+- https://godotengine.org/releases/4.4/
+- https://godotengine.org/releases/4.5/
+- https://godotengine.org/releases/4.6/
+- https://godotengine.org/releases/4.7/
 - https://github.com/godotengine/godot/blob/4.7-stable/main/main.cpp
 - https://github.com/godotengine/godot/blob/4.7-stable/scene/main/scene_tree.cpp
 - https://github.com/godotengine/godot/blob/4.7-stable/core/object/object.cpp

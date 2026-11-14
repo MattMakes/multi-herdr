@@ -51,15 +51,17 @@ result of `_get_configuration_warnings()` changes.
 extends Node3D
 
 @export var radius: float = 2.0
-@export_tool_button("Rebuild", "Callable") var rebuild_action: Callable = rebuild
+@export_tool_button("Rebuild", "Callable") var rebuild_action = rebuild
 
 func rebuild() -> void:
 	print("Rebuild with radius ", radius)
 	update_gizmos()
 ```
 
-The icon must be a built-in editor icon name. This replaces the old "bool export as a
-button" trick. The call has no undo; route real edits through the next technique.
+The exported variable is left untyped on purpose: that is the form the class reference
+shows. The icon must be a built-in editor icon name (`"Callable"` is the default). This
+replaces the old "bool export as a button" trick. The call has no undo by itself; wrap
+real edits in an undo action as shown next.
 
 ### Always go through `EditorUndoRedoManager`
 
@@ -89,7 +91,8 @@ actions. `UndoRedo.MERGE_ENDS` folds a drag into one step. Outside a plugin use
 
 A `@tool` script that extends `EditorScript` and implements `_run()`. Run it with
 **File > Run** (Ctrl+Shift+X), from the FileSystem dock, or, with a `class_name`, from
-the command palette. No undo: save first, and call
+the command palette (since 4.5), which turns a folder of such scripts into a project
+command list. No undo: save first, and call
 `EditorInterface.mark_scene_as_unsaved()` after edits. Skip children of instanced scenes
 (`node.owner != get_scene()`): edits to them are lost on reload.
 
@@ -104,7 +107,9 @@ A `--script` file must extend `SceneTree` or `MainLoop` and call `quit()`. Argum
 `--` come from `OS.get_cmdline_user_args()`. `--import` implies `--editor --quit`.
 Unknown flags give no warning. `--recovery-mode` opens a project with tool scripts,
 plugins and GDExtensions off, for when tool code crashes the editor at load.
-`godot-headless-runs` has the full run procedure.
+`godot-headless-runs` has the full run procedure. The core team lists reliable headless
+export as an open priority, so in CI check that the output file exists; do not trust
+the exit code alone.
 
 ### Custom inspectors
 
@@ -137,12 +142,17 @@ Return `true` from `_handles(object)` for one type, keep the object in `_edit` (
 `_forward_3d_draw_over_viewport` and request them with `update_overlays()`.
 `set_input_event_forwarding_always_enabled()` gives input without a selection.
 
-### Docks (changed in 4.6)
+### Docks (new API since 4.6)
 
-Create an `EditorDock`, add your scene as a child, set `title`, `default_slot`
+4.6 unified the dock system: bottom panels are docks, docks move between the sides and
+the bottom, and most can float. `EditorDock` (a `MarginContainer`, still marked
+experimental) is the root of a dock and owns its title, slots and saved layout. Old
+plugin calls keep working through compatibility code. Create an `EditorDock`, add your
+scene as a child, set `title`, `default_slot`
 (`EditorDock.DOCK_SLOT_*`, bottom slots included) and `available_layouts`, then
 `add_dock(dock)`. In `_exit_tree`: `remove_dock(dock)` and `queue_free()`.
-`add_control_to_dock` and `add_control_to_bottom_panel` are deprecated. `transient` suits
+`add_control_to_dock` and `add_control_to_bottom_panel` are deprecated. A dock is an
+accessibility landmark by default since 4.7 (`accessibility_region`). `transient` suits
 docks that open only for a selected node type.
 
 ### Custom settings
@@ -180,7 +190,17 @@ per-platform variants and extra files into `r_gen_files`.
 
 - `add_tool_menu_item`, `EditorInterface.get_command_palette().add_command`: cheap entry
   points for team tools.
-- `EditorInterface.get_editor_toaster().push_toast`: non-blocking feedback.
+- `EditorSettings.add_shortcut` (since 4.6) registers a plugin shortcut that users can
+  rebind in Editor Settings like a native one.
+- `PROPERTY_HINT_GROUP_ENABLE` (since 4.5) in `_get_property_list`: an inspector group
+  with a checkbox in its header, for optional feature blocks.
+- Since 4.5 an `@export var x: Variant` gets a type selector in the inspector.
+- Since 4.5 the editor language changes without a restart: quick test of plugin
+  translations.
+- Since 4.6 scene files store a unique ID per node, so inherited and instanced scenes
+  survive renames and moves of base nodes. Tools that write `.tscn` text must keep them.
+- `EditorInterface.get_editor_toaster().push_toast` (since 4.4): non-blocking feedback.
+- `EditorInterface.popup_quick_open` (since 4.4): the stock resource picker for tools.
 - `_build()` runs before every play; return `false` to block the run.
 - `_get_unsaved_status` and `_save_external_data`: join the editor's save prompt.
 - `add_autoload_singleton` in `_enable_plugin`: an addon installs its own autoload.
@@ -202,15 +222,22 @@ per-platform variants and extra files into `r_gen_files`.
 - Global `class_name` in an addon collides with host projects: prefix names, or preload
   by path. Keep everything under `addons/<name>/` and free all you added in `_exit_tree`.
 - C# plugins must be built before they can be enabled.
+- A bug where `remove_control_from_docks` freed the passed control was fixed in 4.7
+  beta 5; new code should use the `EditorDock` API.
+- Scripts and shaders have `.uid` files since 4.4: a tool that moves or deletes them on
+  disk must move or delete the `.uid` file too.
 
 ## Version notes
 
-- 4.4: `@export_tool_button`; `EditorContextMenuPlugin`; `.uid` files for scripts;
-  `EditorTranslationParserPlugin._parse_file` returns an `Array` (breaking).
-- 4.5: `create_action` gained `mark_unsaved`.
-- 4.6: unified docks and `EditorDock`; scene files store unique node IDs and drop
-  `load_steps`; `EditorFileDialog.add_side_menu` removed.
-- 4.7: `EditorInterface.get_unsaved_scenes`; `EditorVCSInterface._commit` gained `amend`.
+- 4.4: `@export_tool_button`; `EditorContextMenuPlugin`; `EditorToaster`;
+  `popup_quick_open`; `.uid` files; filesystem scans up to 3x faster on large projects
+  (release page); `EditorTranslationParserPlugin._parse_file` returns an `Array`.
+- 4.5: `create_action` gained `mark_unsaved`; named `EditorScript`s in the command
+  palette; `PROPERTY_HINT_GROUP_ENABLE`.
+- 4.6: unified docks and `EditorDock`; `EditorSettings` shortcut API; unique node IDs in
+  scene files, `load_steps` dropped; `EditorFileDialog.add_side_menu` removed.
+- 4.7: `EditorInterface.get_unsaved_scenes` and `ScriptEditor.get_unsaved_files` (absent
+  from the 4.6 class reference); `EditorVCSInterface._commit` gained `amend`.
 
 ## Related skills
 
@@ -231,4 +258,10 @@ per-platform variants and extra files into `r_gen_files`.
   (and `project_settings`, `external_editor`, `customizing_editor`,
   `managing_editor_features`, `script_editor` in that folder)
 - https://docs.godotengine.org/en/stable/tutorials/scripting/gdscript/gdscript_exports.html
-- https://godotengine.org/releases/4.6/ (search summary only; page fetch was blocked)
+- https://godotengine.org/releases/4.4/ , https://godotengine.org/releases/4.5/ ,
+  https://godotengine.org/releases/4.6/ , https://godotengine.org/releases/4.7/
+- https://godotengine.org/article/dev-snapshot-godot-4-6-beta-1/ (dock rework)
+- https://godotengine.org/article/dev-snapshot-godot-4-5-beta-1/
+- https://godotengine.org/article/dev-snapshot-godot-4-7-beta-5/
+- https://godotengine.org/article/uid-changes-coming-to-godot-4-4/
+- https://godotengine.org/priorities/

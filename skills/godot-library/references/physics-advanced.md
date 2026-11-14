@@ -30,8 +30,14 @@ direct space queries, shape cost, and the body types that need special care.
 - The space is locked outside the tick. `get_world_3d().direct_space_state` is safe only in
   `_physics_process`, also for a query that starts from `_input`.
 - Physics interpolation renders each node between its previous and current tick transform, so
-  the picture is one to two ticks old. 2D does this in the server. 3D does it in the scene
-  tree (since 4.5), so 3D bodies made with `PhysicsServer3D` alone are not interpolated.
+  the picture is one to two ticks old. 2D does this in the server (since 4.3). 3D arrived in
+  4.4 inside the RenderingServer and moved to the scene tree in 4.5, because nodes need the
+  interpolated transform and the server could not be asked for it. So 3D bodies made with
+  `PhysicsServer3D` alone are not interpolated.
+- Godot Physics detects collisions mostly with the separating axis test and uses a dynamic
+  BVH as broad phase. Cylinders do not fit that test and fall back to a generic GJK-EPA path;
+  this is why they are its weakest shape. A height map finds its triangles by grid lookup, and
+  rays walk the grid like a Bresenham line, so no triangle tree is searched.
 
 ## Advanced techniques
 
@@ -110,13 +116,15 @@ Cheapest to dearest: sphere, box, capsule, cylinder, one convex hull, several co
 trimesh. Trimesh (`ConcavePolygonShape3D`) works for static bodies only. Keep shape nodes
 unscaled and, if possible, untransformed. A static body with many shapes defeats the broad
 phase. Convex decomposition can make dozens of hulls for one prop; two boxes often do. Build
-level collision from a simplified mesh.
+level collision from a simplified mesh. For terrain use `HeightMapShape3D`, not a trimesh.
 
 ### Merge tile and grid colliders
 
-A body bumps on the seams between adjacent shapes ("ghost collisions"). Since 4.5
+A body bumps on the seams between adjacent shapes ("ghost collisions"). Before 4.5 every tile
+was its own body, which the 4.5 release notes call a likely cause of slow 2D physics. Since 4.5
 `TileMapLayer.physics_quadrant_size` (16) merges tile shapes per chunk; larger is smoother but
-slower to edit at run time, 1 disables it. Jolt reduces seams inside one body with
+slower to edit at run time, 1 disables it. One body now covers many cells, so
+`get_coords_for_body_rid()` no longer identifies a single cell. Jolt reduces seams inside one body with
 `collisions/active_edge_threshold` and enhanced internal edge removal, not between two bodies.
 
 ### Stop tunneling in layers
@@ -156,8 +164,11 @@ default pin joints (limbs crumple) with hinge joints for knees and elbows and co
 shoulders and hips (swing 20 to 90 degrees, twist 20 to 45). `physical_bones_start_simulation()`
 takes bone names for a partial ragdoll; a wrong name fails silently. Blend with the simulator's
 `influence`. Put bones on a layer the character capsule does not hit.
-`SoftBody3D` is not interpolated and is more robust in Jolt. Keep `simulation_precision` above
-5. Pin points to a `BoneAttachment3D` instead of parenting. Turn off import LOD for the mesh.
+`SoftBody3D` is more robust in Jolt. The 4.5 beta notes list physics interpolation support for
+it, while the 4.7 manual page still says it is not interpolated: test at a low tick rate. Keep
+`simulation_precision` above 5. Pin points to a `BoneAttachment3D` instead of parenting. Turn
+off import LOD for the mesh. Since 4.5 `apply_central_impulse()` and the other force calls
+work on soft bodies (wind gusts, hits).
 
 ### Large worlds
 
@@ -171,7 +182,12 @@ rebuilt, server and clients must match). See `worlds-and-streaming`.
 - `one_way_collision_direction` on `CollisionShape2D` (since 4.7): one-way walls and ceilings.
 - `SeparationRayShape3D`: a ray shape that holds a body above ground; steps without a capsule.
 - `collision_priority`: the higher body is pushed less in a penetration (player versus crates).
-- `physics_engine = Dummy`: a server build that needs no physics pays nothing.
+- `physics_engine = Dummy` (since 4.4): a server build that needs no physics pays nothing.
+- `debug_color` and `debug_fill` on `CollisionShape3D` (since 4.4): colour hitboxes, hurtboxes
+  and triggers differently under Debug > Visible Collision Shapes, also at run time.
+- The editor's game speed controls (since 4.6) slow a running game to inspect physics.
+- `MultiMesh.physics_interpolation_quality`: the high setting helps under about 20 ticks per
+  second or with fast rotation.
 - `MultiMesh.set_buffer_interpolated()` and `reset_instance_physics_interpolation()`: smooth
   instanced crowds at a low tick rate.
 - `Performance.PHYSICS_3D_ACTIVE_OBJECTS`, `PHYSICS_3D_COLLISION_PAIRS`, `PHYSICS_3D_ISLAND_COUNT`:
@@ -185,18 +201,26 @@ rebuilt, server and clients must match). See `worlds-and-streaming`.
 - `physics/3d/run_on_separate_thread`: API access is limited to the tick; with Jolt it is
   experimental and errors name nodes `<unknown>`.
 - Only `CPUParticles2D` is interpolated in 2D; GPU 2D particles are not.
-- Outdated: "Jolt is an add-on" (built in since 4.4) and the extension's `physics/jolt_3d/`
-  setting names (now `physics/jolt_physics_3d/`, several renamed).
+- Outdated: "Jolt is an add-on" or "experimental" (built in since 4.4, label dropped in 4.6)
+  and the extension's `physics/jolt_3d/` setting names (now `physics/jolt_physics_3d/`).
+- The extension's own joint nodes are not in the built-in module.
 
 ## Version notes
 
-- 4.4: Jolt built in (experimental). 3D physics interpolation.
-- 4.5: 3D interpolation moved to the scene tree. TileMapLayer collision chunks. Jolt setting
-  `areas_detect_static_bodies` removed (always on).
-- 4.6: Jolt is the engine of new 3D projects.
+- 4.3: 2D physics interpolation.
+- 4.4: Jolt built in (experimental). 3D physics interpolation, with MultiMesh support and
+  `get_global_transform_interpolated()`. Dummy physics servers. Collision shape debug colours.
+- 4.5: 3D interpolation moved to the scene tree (same API), with custom interpolation for
+  vehicle wheels. TileMapLayer collision chunks. Jolt updated to 5.3.0, cheaper non-monitoring
+  areas, setting `areas_detect_static_bodies` removed (always on). Forces on soft bodies.
+- 4.6: Jolt is the engine of new 3D projects and no longer experimental. MultiMesh
+  interpolation for 2D transforms. `reset_instances_physics_interpolation()`.
 - 4.7: Jolt `WorldBoundaryShape3D` plane distance sign flipped to match Godot Physics. Jolt
   `SoftBody3D` mass defaults to 1 kg in total and `linear_stiffness` changed: retune cloth.
-  `Area3D` reports soft bodies. One-way collision direction in 2D.
+  `Area3D` reports soft bodies. One-way collision direction in 2D (before, always "up").
+- Direction: the physics team plans to reshape the node API to mirror Jolt (per-shape
+  filtering and materials are proposed) and expects compatibility breaks. Keep physics setup
+  behind your own small helper functions.
 
 ## Related skills
 
@@ -217,3 +241,14 @@ rebuilt, server and clients must match). See `worlds-and-streaming`.
 - https://docs.godotengine.org/en/stable/tutorials/physics/large_world_coordinates.html
 - https://docs.godotengine.org/en/stable/tutorials/migrating/upgrading_to_godot_4.5.html
 - https://docs.godotengine.org/en/stable/tutorials/migrating/upgrading_to_godot_4.7.html
+- https://godotengine.org/releases/4.4/
+- https://godotengine.org/releases/4.5/
+- https://godotengine.org/releases/4.6/
+- https://godotengine.org/article/dev-snapshot-godot-4-4-beta-1/
+- https://godotengine.org/article/dev-snapshot-godot-4-5-dev-4/
+- https://godotengine.org/article/dev-snapshot-godot-4-5-dev-5/
+- https://godotengine.org/article/dev-snapshot-godot-4-5-beta-1/
+- https://godotengine.org/article/dev-snapshot-godot-4-6-beta-1/
+- https://godotengine.org/article/dev-snapshot-godot-4-7-beta-1/
+- https://godotengine.org/article/physics-progress-report-1/
+- https://godotengine.org/priorities/

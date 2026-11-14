@@ -111,9 +111,10 @@ local ones, so chunk borders match. `NoiseTexture2D` with `seamless` gives tilin
 ### Curves and gradients as designer data
 
 Export a `Curve` for damage falloff, XP per level, spawn rate over time, or stick response.
-`sample_baked(x)` is a table read; `sample(x)` evaluates exactly. `min_domain` and `max_domain`
-let x run beyond 0..1; since 4.4 points outside `min_value`..`max_value` are clamped, so widen
-the range first. `Gradient.sample()` does the same for colour (day cycle, heat, rarity) and
+`sample_baked(x)` is a table read; `sample(x)` evaluates exactly. Since 4.4 `min_domain` and
+`max_domain` let x run beyond 0..1, so a curve can use real units (level 1 to 50, metres,
+seconds) and needs no remap in code. Also since 4.4 points outside `min_value`..`max_value` are
+clamped, so widen the range first. `Gradient.sample()` does the same for colour (day cycle, heat, rarity) and
 `interpolation_color_space = GRADIENT_COLOR_SPACE_OKLAB` avoids grey midpoints. `CurveTexture`
 and `GradientTexture1D` pass the same data to shaders and particles.
 
@@ -176,10 +177,16 @@ Save a generated mesh with `ResourceSaver.save()` to skip generation on the next
 `GridMap` batches cells per octant (`cell_octant_size`, 8). Each cell stores an item and one of
 24 orientations. `MeshLibrary` items carry collision and navigation meshes;
 `bake_navigation` makes one region per cell, so match the map cell size. Good for modular
-levels built by code with `set_cell_item()`.
-CSG nodes are for blockout. Since 4.4 they use the Manifold library and reject non-manifold
-meshes. Keep trees small and separate. Convert the final shape with `bake_static_mesh()` and
-`bake_collision_shape()`; CSG updates one frame late, so wait a frame before baking.
+levels built by code with `set_cell_item()`. Since 4.7 `get_used_octants()`,
+`get_used_cells_in_octant()` and `get_octants_in_bounds()` let code work chunk by chunk (stream,
+save or simulate one octant) without a scan of `get_used_cells()`. 4.7 also adds a
+`MeshLibrary` editor, so the library no longer has to be edited in the Inspector.
+CSG nodes are for blockout. Since 4.4 they use the Manifold library: the old code was
+unstable and had no maintainer. A `CSGMesh3D` mesh must now be manifold (closed, each edge
+shared by two faces, with volume); planes and quads go in a `MeshInstance3D`. Keep trees small
+and separate. Convert the final shape with `bake_static_mesh()` (since 4.4) and
+`bake_collision_shape()`; CSG updates one frame late, so wait a frame before baking. Since 4.7
+`autosmooth` on the root with `smoothing_angle` (50 degrees) fixes faceted curved blockouts.
 
 ## Niche but useful
 
@@ -192,20 +199,27 @@ meshes. Keep trees small and separate. Convert the final shape with `bake_static
 - `ArrayMesh.custom_aabb`: stops wrong culling when a shader moves vertices.
 - `SurfaceTool.append_from()`: merge several meshes with transforms into one surface.
 - `AStarGrid2D`: grid pathfinding for generated maps; see `navigation-advanced`.
+- `Basis.is_orthonormal()` (since 4.7): assert a pure rotation before `slerp()` in debug builds.
+- `Curve3D.closed` (since 4.4): a looping path with no duplicate end point.
+- `Geometry2D.bresenham_line()` is exposed since 4.4.
 
 ## Traps
 
 - `is_equal_approx()` for float compares; `==` on computed floats fails at random.
 - `randi() % n` works; `randi_range(a, b)` includes both ends.
-- `hash()` values are for use inside one engine version. Do not store them in saves as ids.
+- Treat `hash()` values as valid inside one engine version (a caution; the docs promise no
+  stability). Do not store them in saves; an engine upgrade may change hashed chunk seeds.
 - `ARRAY_TANGENT` needs four floats per vertex; a wrong array size fails the whole surface.
 - `MeshDataTool` and `generate_normals()` expect `PRIMITIVE_TRIANGLES`.
 - A moving object far from the origin jitters: see large worlds in `physics-advanced`.
 
 ## Version notes
 
-- 4.4: `Curve` enforces its value range. CSG moved to Manifold (non-manifold input rejected).
-- 4.5 to 4.7: no behaviour change in these areas is listed in the upgrade guides.
+- 4.4: `Curve` domains beyond 0..1 and an enforced value range. `Curve3D.closed`. CSG moved to
+  Manifold (non-manifold input rejected), `bake_static_mesh()`. `Geometry2D.bresenham_line()`.
+- 4.5: nothing for these areas in the release page or the upgrade guide.
+- 4.6: the GridMap editor paints gap-free lines (Bresenham). No API change.
+- 4.7: GridMap octant queries, `MeshLibrary` editor, CSG `autosmooth`, `Basis.is_orthonormal()`.
 
 ## Related skills
 
@@ -227,3 +241,10 @@ meshes. Keep trees small and separate. Convert the final shape with `bake_static
 - https://docs.godotengine.org/en/stable/tutorials/physics/large_world_coordinates.html
 - https://docs.godotengine.org/en/stable/classes/class_geometry2d.html
 - https://docs.godotengine.org/en/stable/classes/class_randomnumbergenerator.html
+- https://godotengine.org/releases/4.4/
+- https://godotengine.org/releases/4.6/
+- https://godotengine.org/releases/4.7/
+- https://godotengine.org/article/dev-snapshot-godot-4-4-dev-4/
+- https://godotengine.org/article/dev-snapshot-godot-4-4-dev-6/
+- https://godotengine.org/article/dev-snapshot-godot-4-4-beta-1/
+- https://godotengine.org/article/dev-snapshot-godot-4-7-dev-3/

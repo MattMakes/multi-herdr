@@ -31,8 +31,13 @@ change memory, quality and load time, and how to automate the pipeline.
 - A glTF file is parsed into a `GLTFState`, then `GLTFDocument` generates nodes. In the
   editor a second stage (`ResourceImporterScene`) applies dock options, name suffixes,
   LODs, UV2, the post-import script, and saves a `.scn`. Runtime loading has only stage one.
-- `.blend` import calls an installed Blender to export glTF. FBX uses built-in ufbx;
-  files first added before 4.3 keep FBX2glTF until you switch them.
+- `.blend` import calls an installed Blender to export glTF, so only what Blender's glTF
+  exporter writes (extensions included) can arrive. FBX uses the built-in ufbx importer
+  since 4.3; files first added before 4.3 keep FBX2glTF until you switch them.
+- Resources are referenced by UID with the path as fallback. Imported files keep the UID
+  in `.import`, scenes and resources in their header. Since 4.4 scripts and shaders get
+  a `<file>.uid` next to them. UID files are editor data; export moves the mapping into
+  the UID database.
 
 ## Advanced techniques
 
@@ -50,6 +55,16 @@ An RGBA8 texture with mipmaps costs 5.33 MiB at 1024, 21.33 MiB at 2048 and 85.3
 mipmaps another 25 percent. Lossy only shrinks the file. VRAM compression also lowers
 sampling bandwidth, which helps integrated and mobile GPUs. Keep pixel art Lossless in 3D.
 
+### Know what makes VRAM import fast or slow
+
+Since 4.4 the BC formats are compressed on the GPU (Betsy,
+`rendering/textures/vram_compression/compress_with_gpu`). The 4.4 dev 1 post measured
+8K HDR panoramas with mipmaps at 92 to 99 s before and under 0.5 s after. Since 4.6, RGB sources are
+converted to RGBA on the GPU, which the 4.6 release page reports as up to two times
+faster for 3D textures. The GPU path needs a Vulkan, Direct3D 12 or Metal device and
+covers BC1, BC3, BC4, BC5 and BC6 only: ETC2, ASTC and BC7 still compress on the CPU,
+and so does a CI runner with no GPU.
+
 ### Control Detect 3D instead of disabling it
 
 A texture first used in a 3D material is reimported with mipmaps and VRAM compression.
@@ -63,8 +78,8 @@ use, or set the mode back to Lossless afterwards. Both keep the mipmaps.
 - DirectX-style normal maps need `process/normal_map_invert_y`.
 - `compress/hdr_compression`: HDR with alpha is not VRAM compressed by default (stored as
   RGBE9995). **Always** drops alpha. HDR VRAM compression needs **High Quality** (BPTC, ASTC).
-- `process/channel_remap/*` reorders or inverts channels on import, so a packed map from
-  another engine needs no edited copy.
+- `process/channel_remap/*` (since 4.5) reorders or inverts channels on import, so a
+  packed map from another engine needs no edited copy.
 - `process/hdr_clamp_exposure` removes sparkles in reflections from very bright panoramas.
 
 ### Size limits without touching sources
@@ -75,7 +90,7 @@ Lossy, 16384 for Basis Universal, 32768 otherwise.
 
 ### Basis Universal tuning
 
-`compress/uastc_level` raises quality and encode time. `compress/rdo_quality_loss` of 0.01
+`compress/uastc_level` (since 4.5) raises quality and encode time. `compress/rdo_quality_loss` of 0.01
 or more shrinks files at much longer encode time. Keep
 `rendering/textures/basis_universal/zstd_supercompression` on, or files are as large as
 plain VRAM textures. Float images fall back to VRAM Compressed.
@@ -84,7 +99,9 @@ plain VRAM textures. Float images fall back to VRAM Compressed.
 
 - `meshes/generate_lods` (default on) builds LODs with meshoptimizer; selection uses the
   viewport `mesh_lod_threshold`. Turn it off for meshes never seen from afar to cut size
-  and import time. **Normal Merge Angle** per mesh fixes shading breaks.
+  and import time. **Normal Merge Angle** per mesh fixes shading breaks. Since 4.6 the
+  simplifier prunes small separate parts, so multi-part meshes keep their shape at
+  distance; reimport old models to get it.
 - `meshes/create_shadow_meshes` welds vertices for cheaper shadow passes at equal quality.
 - `meshes/light_baking` set to **Static Lightmaps** generates UV2;
   `meshes/lightmap_texel_size` trades bake time for detail.
@@ -97,7 +114,7 @@ plain VRAM textures. Float images fall back to VRAM Compressed.
 `-col`, `-convcol`, `-colonly`, `-convcolonly`, `-occ`, `-occonly`, `-navmesh`, `-rigid`,
 `-vehicle`, `-wheel`, `-noimp` on objects; `-alpha`, `-vcol` on materials; `loop` or
 `cycle` at the start or end of a clip name. `-`, `$` and `_` all work, case-insensitive.
-`nodes/use_node_type_suffixes = false` keeps only the non-node suffixes;
+`nodes/use_node_type_suffixes = false` (since 4.4) keeps only the non-node suffixes;
 `nodes/use_name_suffixes = false` drops all, which matches runtime loading.
 
 ### Post-import script
@@ -130,7 +147,24 @@ into node metadata or typed nodes. The same code runs in exported games, unlike 
 and post-import scripts.
 `godot-assets-pipeline` shows the `append_from_file` and `generate_scene` calls.
 Runtime loads skip the editor stage: no generated LODs, shadow meshes or UV2.
-`FBXDocument` and `FBXState` follow the same shape.
+`FBXDocument` and `FBXState` (since 4.3) follow the same shape.
+
+Since 4.4 the importer reads `KHR_animation_pointer`: glTF animations can drive any
+mapped property (light color, camera FOV, material albedo or UV offset), not only
+transforms and blend shapes. Custom mappings between glTF JSON pointers and properties
+go in `_import_object_model_property` and `_export_object_model_property`.
+
+### FBX through ufbx
+
+ufbx applies unit conversion to the meshes, not to node scale, drops the extra
+`RootNode`, keeps the DCC material order, trims clips to the time range in the file
+header and computes bone rests from the bind pose, which helps retargeting.
+`animation/fps` only affects curve interpolation; clips keyed at 60 fps keep all keys.
+Blender writes FBX at 100x scale by default: export with **Apply Scalings: FBX Units
+Scale**. Do not switch an existing file from FBX2glTF to ufbx casually: the node
+hierarchy, rest poses and surface order change, which breaks inherited scenes,
+`NodePath`s in scripts and surface override materials. Skeleton-only FBX files that
+import as plain nodes need `nodes/import_as_skeleton_bones`.
 
 ### Shared animation sets
 
@@ -140,13 +174,29 @@ Import a glTF as **Animation Library** to get an `AnimationLibrary` and no scene
 A-pose sources. **Normalize Position Tracks** stores hip height in `motion_scale` so
 strides fit other heights. **Unique Node** keeps track paths equal across characters.
 Enable **Remove Tracks** for libraries, not for scenes with animated props.
+When the DCC bone rests must survive, skip **Overwrite Axis** and retarget at runtime
+with a `RetargetModifier3D` node (since 4.4).
 
 ### Keep hand edits across reimports
 
 A reimport rebuilds the whole scene. Safe routes: an inherited scene (add nodes, never
 remove); **Save to File** per mesh, material or animation (`.res` for big meshes; saved
 animations keep custom tracks); `materials/extract` (**Extract Once** keeps your edits).
-A renamed source material breaks the link.
+A renamed source material breaks the link. Since 4.5 the Import dock sets material
+extraction for many selected files at once, so several models can share one extracted
+material, and extracted resources are referenced by UID as well as path. A sub-resource
+inside an imported file cannot be referenced directly yet (an open editor team
+priority); extraction is the supported route.
+
+### UIDs in the pipeline
+
+Commit `.uid` files like `.import` files, and move or delete them together with their
+script or shader when you work outside the editor. A missing UID falls back to the path
+with a warning, which can silently pick the wrong file after two files swapped paths.
+`preload("uid://...")` works in scripts (copy the UID from the FileSystem dock menu;
+since 4.5, Ctrl-drag a resource into the script editor). After an upgrade from 4.3
+re-save all scenes and resources once (**Project > Tools > Upgrade Project Files**) to
+avoid scattered diffs later.
 
 ### Headless import for CI
 
@@ -166,20 +216,21 @@ the reimport. See `godot-headless-runs` for the full procedure.
 - `.gdignore` (empty file) in a folder: no import, no export, hidden from the dock.
 - **Keep File** / **Skip File** import types: ship a raw file, or exclude one.
 - `.dds` keeps its own mipmaps: the way to ship hand-made mip levels.
-- `DPITexture` for SVG: re-rasterized at runtime scale, no reimport.
+- `DPITexture` for SVG (since 4.5): re-rasterized at runtime scale, no reimport.
+- `AudioStreamWAV.load_from_file` (since 4.4) loads WAV at runtime, as Ogg and MP3
+  already could.
 - Filter script on animation import (`@+*_Loop`, then `+`/`-` track lines) strips tracks.
 - Animation **Slices**: cut one `default` timeline into named clips.
-- `animation/import_rest_as_RESET` adds a `RESET` clip from bone rests.
-- `nodes/root_script` attaches a script to the imported root.
-- WAV `force/mono`, `force/max_rate`, `edit/trim`: shrink audio, sources untouched.
-- OBJ **OBJ as Scene** mode unlocks scene options such as UV2 unwrap.
+- `animation/import_rest_as_RESET` adds a `RESET` clip from bone rests; a T-pose
+  reference file's `RESET` can serve as the silhouette template when retargeting.
+- `nodes/root_script` attaches a script to the imported root; since 4.5 other nodes can
+  get scripts in Advanced Import Settings.
 
 ## Traps
 
 - `mipmaps/limit` is not implemented; changing it does nothing.
 - Blender materials default to backface culling off; Godot then draws back faces.
 - Blend shapes need **Export Deformation Bones Only** in the Blender glTF exporter.
-- Triangulate in the DCC tool; engine triangulation of n-gons is unpredictable.
 - Looping audio never emits `finished`. Ogg and MP3 have a loop start only, forward only.
 - IMA ADPCM cannot seek and loops forward only. Quite OK Audio is the WAV default.
 - `.blend` in a repo needs Blender on every machine, CI included.
@@ -187,11 +238,16 @@ the reimport. See `godot-headless-runs` for the full procedure.
 
 ## Version notes
 
-- 4.4: GPU texture compressor for BC formats (`.../vram_compression/compress_with_gpu`;
-  reported in the 4.4 release notes as much faster). `.uid` files for scripts and
-  shaders; commit them. `EditorSceneFormatImporter._get_import_flags` removed.
-- 4.5: fix for non-joint nodes in skeletons; old files keep old behavior until
-  **Naming Version** is changed.
+- 4.3: ufbx importer, `FBXDocument`, rest-as-RESET and import-as-skeleton options.
+- 4.4: GPU texture compression; `.uid` files; `KHR_animation_pointer`;
+  `RetargetModifier3D`; runtime WAV loading; a fresh clone imports without the old
+  errors and editor restart; glTF blend shape and animation library names lose
+  unsupported characters (`:`, `/`, `,`, `[`);
+  `EditorSceneFormatImporter._get_import_flags` removed.
+- 4.5: batch material extraction in the Import dock; channel remap; `DPITexture`;
+  libjpeg-turbo for JPEG; fix for non-joint nodes in skeletons (old files keep old
+  behavior until **Naming Version** is changed).
+- 4.6: better LODs for multi-part meshes; faster RGB texture compression.
 - 4.7: `GLTFDocument` `IMPORT_FLAG_*` flags for runtime loads;
   `EditorSceneFormatImporter` constants moved into `ImportFlags`; font import `hinting`
   default changed.
@@ -217,4 +273,10 @@ the reimport. See `godot-headless-runs` for the full procedure.
 - https://docs.godotengine.org/en/stable/tutorials/editor/command_line_tutorial.html
 - https://docs.godotengine.org/en/stable/tutorials/migrating/upgrading_to_godot_4.7.html
   (and the 4.4, 4.5, 4.6 pages)
-- https://godotengine.org/releases/4.4/ (search summary only; page fetch was blocked)
+- https://godotengine.org/releases/4.4/ , https://godotengine.org/releases/4.5/ ,
+  https://godotengine.org/releases/4.6/
+- https://godotengine.org/article/introducing-the-improved-ufbx-importer-in-godot-4-3/
+- https://godotengine.org/article/uid-changes-coming-to-godot-4-4/
+- https://godotengine.org/article/dev-snapshot-godot-4-4-dev-1/
+- https://godotengine.org/article/dev-snapshot-godot-4-5-beta-1/
+- https://godotengine.org/priorities/
