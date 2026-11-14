@@ -151,9 +151,8 @@ Details from the .NET team's platform report (written for 4.2; later changes not
   ABIs and base class library APIs are supported. Since 4.5 assemblies load straight from
   the APK, which ended stale-cache and permission errors.
 - iOS uses NativeAOT, which trims unused code. The engine roots its bindings and the game
-  assemblies, but reflection-heavy libraries (serializers, dependency injection containers)
-  can still fail at run time. Test them on a device early.
-- Desktop accepts all 3 runtimes. NativeAOT is opt-in: set `PublishAot` in the `.csproj` and
+  assemblies, but code that relies on reflection can still fail at run time. Test them on a device early.
+- Desktop accepts all 3 runtimes. NativeAOT is opt-in: set `PublishAOT` in the `.csproj` and
   root the assemblies with `TrimmerRootAssembly`, because the engine still uses reflection.
 - Web: .NET wants to be the main WebAssembly module and cannot be loaded as a side module,
   which is why the export is missing. A prototype with a statically linked Mono ran in May

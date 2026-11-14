@@ -61,14 +61,16 @@ light cannot change at all.
 light into a texture. **Replace** uses it only past `directional_shadow_max_distance`; **Overlay**
 uses it everywhere under the real-time shadow, which smears on low texel density and cannot follow
 swaying foliage. So you can set a short max distance (sharp, cheap cascades) and still shadow far
-static geometry. Dynamic objects do not receive the mask. Switching modes needs no new bake.
+static geometry. Dynamic objects do not receive the mask. Switching modes needs no new bake. The
+4.4 release page calls the shorter dynamic shadow range a very important optimization, most of all
+on mobile.
 
 ### Lightmap quality without long bakes
 
 - Texel density: import option **Lightmap Texel Size** (default 0.2; 0.5 or more for large scenes
-  or indirect-only bakes). `LightmapGI.texel_scale` (since 4.4) scales a whole bake, so preview
-  at low scale and do the final bake at 1.0. Per mesh: `gi_lightmap_texel_scale`.
-- `supersampling` bakes at a higher density and downsamples: less noise and leaking at the same
+  or indirect-only bakes). `LightmapGI.texel_scale` scales a whole bake, so preview at low scale
+  and do the final bake at 1.0. Per mesh: `gi_lightmap_texel_scale` (since 4.4).
+- `supersampling` (since 4.4) bakes at a higher density and downsamples: less noise and leaking at the same
   file size, with more bake time and VRAM.
 - Denoiser: JNLM is built in (GPU; tune `denoiser_strength`, `denoiser_range`). OIDN keeps more
   shadow detail and hides seams; it is an external `oidnDenoise` binary set in Editor Settings
@@ -77,6 +79,8 @@ static geometry. Dynamic objects do not receive the mask. Switching modes needs 
   reflections come free; costs file size and a little run time.
 - Bicubic sampling (`rendering/lightmapping/lightmap_gi/use_bicubic_filter`, since 4.4, on by
   default) hides texel stairs; it also widens bleeding on very low-density maps.
+- Since 4.4 bakes include transparent objects, so colored glass casts tinted baked shadows, and
+  lightmap textures are compressed to cut memory.
 - Indoor only: `interior`, or `environment_mode` disabled, stops sky leaks and speeds the bake.
 - Save `light_data` as an external `.lmbake` file; commit `*.unwrap_cache` files (stable UV2).
 - Limits: 8 LightmapGI nodes rendered at once; a node bakes only its siblings and children; no
@@ -116,8 +120,30 @@ One probe per room; `box_projection` for box rooms. `update_mode` once (default)
 when the probe moves; always re-renders six faces each frame, so keep `enable_shadows` off there
 and raise `mesh_lod_threshold`. `ambient_mode` color or environment gives per-room ambient with no
 bake, which works for procedural levels. Up to 4 probes blend at a point; overlap them by only a
-few units. Probes pair with SSR: SSR for on-screen detail, the probe as fallback. Per-mesh limits:
+few units. Since 4.4 a smaller probe wins over a larger one it sits inside (no double reflection),
+so nest a small probe in a big room probe; `blend_distance` sets the fade width. Since 4.6 probes
+use octahedral maps: cheaper to render and lighter in memory. Probes pair with SSR: SSR for on-screen detail, the probe as fallback. Per-mesh limits:
 8 probes on Mobile, 2 on Compatibility.
+
+### Switch GI by quality preset
+
+GI is mostly GPU cost, so it is the first thing a low preset should drop.
+
+```gdscript
+extends Node
+
+@export var world: WorldEnvironment
+@export var voxel_gi: VoxelGI
+
+func apply_gi_preset(high: bool) -> void:
+	world.environment.sdfgi_enabled = high
+	world.environment.ssil_enabled = high
+	if voxel_gi != null:
+		voxel_gi.visible = high
+	RenderingServer.gi_set_use_half_resolution(not high)
+```
+
+Enable each feature once behind the loading screen, or the first switch compiles pipelines.
 
 ### Faking bounce with extra lights
 
@@ -157,7 +183,12 @@ Give `LightmapGI.camera_attributes` a fixed exposure, or bright scenes bake with
   day-night); `PROCESS_MODE_REALTIME` updates every frame with a fast filter and needs
   `radiance_size` 256.
 - `Environment.BG_KEEP` skips drawing a background in fully enclosed interiors.
-- `AreaLight3D` (4.7): rectangular light with optional `area_texture`. The costliest light type.
+- `AreaLight3D` (since 4.7): real-time rectangular light with optional `area_texture`, for
+  screens, windows and signs. It replaces the old "emissive mesh plus GI" trick and gives soft
+  shadows. The costliest light type; in Forward+ one visible area light adds cost to all objects.
+- Bent normal maps (`bent_normal_enabled`, since 4.5) improve specular occlusion and indirect
+  light on detailed props. Specular occlusion from ambient light (since 4.5, on by default)
+  stops sky reflections from shining inside cracks.
 - `light_negative` darkens a corner without geometry. `DirectionalLight3D.sky_mode` splits "sun
   disc in the sky" from "sun that lights the scene".
 - `ReflectionProbe.reflection_mask` limits which layers receive a probe.
@@ -169,13 +200,19 @@ Give `LightmapGI.camera_attributes` a fixed exposure, or bright scenes bake with
 - The editor preview sun and sky are not in the running game and not in lightmap bakes.
 - Compatibility: a light looks different once its shadow is on (sRGB-space extra pass).
 - Enabling SDFGI, VoxelGI or probes mid-game compiles new pipelines: show them once at load.
+- The team lists an SDFGI overhaul and a LightmapGI overhaul as active priorities: keep SDFGI
+  tuning in data (an `Environment` resource per preset), not spread through code.
 
 ## Version notes
 
-- 4.4: lightmap shadowmask, bicubic lightmap sampling, `texel_scale`, `shadow_caster_mask`, AgX.
-- 4.6: simplified SSAO in Compatibility; glow default blend is Screen; SSR rewritten; volumetric
-  fog blends brighter (lower density or `light_volumetric_fog_energy` after an upgrade).
-- 4.7: `AreaLight3D`; HDR output (Filmic and ACES stay SDR-only).
+- 4.4: lightmap shadowmask, bicubic sampling, supersampling, transparency in bakes and lightmap
+  compression; `shadow_caster_mask`; reflection probe priority and `blend_distance`; AgX.
+- 4.5: bent normal maps; specular occlusion; SMAA.
+- 4.6: AgX `tonemap_agx_white` and `tonemap_agx_contrast`; glow blended before tonemapping with
+  Screen as default; octahedral probe maps; SSR rewritten; simplified SSAO in Compatibility;
+  volumetric fog blends brighter (lower density or `light_volumetric_fog_energy` after an upgrade).
+- 4.7: `AreaLight3D`; clearcoat follows energy conservation and takes sky and probe reflections;
+  HDR output (Filmic and ACES stay SDR-only).
 
 ## Related skills
 
@@ -187,6 +224,13 @@ Give `LightmapGI.camera_attributes` a fixed exposure, or bright scenes bake with
 
 ## Sources
 
+- https://godotengine.org/releases/4.4/
+- https://godotengine.org/releases/4.5/
+- https://godotengine.org/releases/4.6/
+- https://godotengine.org/releases/4.7/
+- https://godotengine.org/article/dev-snapshot-godot-4-4-beta-1/
+- https://godotengine.org/article/dev-snapshot-godot-4-6-beta-1/
+- https://godotengine.org/priorities/
 - https://docs.godotengine.org/en/stable/tutorials/3d/global_illumination/introduction_to_global_illumination.html
 - https://docs.godotengine.org/en/stable/tutorials/3d/global_illumination/using_lightmap_gi.html
 - https://docs.godotengine.org/en/stable/tutorials/3d/global_illumination/using_voxel_gi.html

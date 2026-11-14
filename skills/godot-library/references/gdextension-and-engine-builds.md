@@ -247,7 +247,8 @@ Run the game or the extension's test project on a sanitizer build before blaming
 - https://godotengine.org/releases/4.6/
 - https://godotengine.org/releases/4.7/
 - https://godotengine.org/article/dev-snapshot-godot-4-4-dev-6/
-- https://godotengine.org/article/dev-snapshot-godot-4-6-dev-5/
+- https://godotengine.org/article/dev-snapshot-godot-4-6-dev-2/
+- https://godotengine.org/article/dev-snapshot-godot-4-5-dev-1/
 - https://godotengine.org/article/upcoming-serious-web-performance-boost/
 - https://docs.godotengine.org/en/stable/engine_details/engine_api/gdextension/what_is_gdextension.html
 - https://docs.godotengine.org/en/stable/engine_details/engine_api/gdextension/gdextension_file.html

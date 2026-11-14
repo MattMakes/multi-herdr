@@ -34,8 +34,9 @@ is ignored without a warning, so a debug-only flag on a release export does noth
 ### Read the Profiler by Self time
 
 Inclusive time counts callees; Self time counts only the function body. A function high in
-Inclusive and low in Self waits for something it calls. `--profiling` starts the script
-profiler at launch. The editor setting `debugger/profile_native_calls` adds engine methods
+Inclusive and low in Self waits for something it calls. Since 4.4 one Autostart checkbox starts
+all profilers when the project runs, so the first seconds of a scene load are captured, and
+the graph can be zoomed and panned. `--profiling` starts the script profiler at launch. The editor setting `debugger/profile_native_calls` adds engine methods
 (slower); `debugger/profiler_frame_history_size` (default 3600 frames) sets the graph length.
 
 ### Read the Visual Profiler with care
@@ -74,7 +75,7 @@ func _gpu() -> float:
 ### Custom monitors as project instruments
 
 `Performance.add_custom_monitor(id, callable, arguments, type)` adds a graph to Debugger >
-Monitors. One slash in the id sets the category. The type formats the value:
+Monitors. One slash in the id sets the category. The type (since 4.6) formats the value:
 `MONITOR_TYPE_QUANTITY`, `MONITOR_TYPE_MEMORY` (bytes), `MONITOR_TYPE_TIME` (give seconds, shown
 as ms) and `MONITOR_TYPE_PERCENTAGE` (give a fraction). The editor calls the callable about once
 per second, so return a stored value, not a fresh scan. Negative values are clamped to 0.
@@ -84,7 +85,8 @@ overlay from the same monitors. Design-side examples: enemies alive, pool use.
 Built-in ones worth logging through `Performance.get_monitor()`: `TIME_PROCESS`,
 `TIME_PHYSICS_PROCESS` and `TIME_NAVIGATION_PROCESS` split the frame, `OBJECT_ORPHAN_NODE_COUNT`
 finds leaked nodes, `PHYSICS_2D_COLLISION_PAIRS` and `PHYSICS_3D_ISLAND_COUNT` explain physics
-cost, and the `PIPELINE_COMPILATIONS_*` group counts pipeline builds (the first-draw hitch).
+cost, and the `PIPELINE_COMPILATIONS_*` group (since 4.4) counts pipeline builds, the first-draw
+hitch. `Node.get_orphan_node_ids()` (since 4.5) returns the orphans themselves.
 
 ### ObjectDB profiler (since 4.6)
 
@@ -134,9 +136,11 @@ vanishes. Several modes work only on Forward+ or Mobile. Wireframe on Compatibil
 A repeatable run fixes the frame count and the step:
 
 ```sh
-godot --path . --disable-vsync --fixed-fps 60 --quit-after 3600 --print-fps -- --bench=arena
+godot --path . --scene res://bench/arena.tscn --disable-vsync --fixed-fps 60 \
+	--quit-after 3600 --print-fps -- --seed=7
 ```
 
+`--scene` (since 4.5; editor builds and templates built with path overrides) starts any scene.
 Arguments after `--` reach the game through `OS.get_cmdline_user_args()`.
 
 ### Movie Maker mode for captures that repeat
@@ -152,10 +156,20 @@ Subclass `Logger` and pass it to `OS.add_logger()` in `_init()` of an autoload. 
 gets file, line, text, type and `ScriptBacktrace` objects; `_log_message()` gets plain prints.
 Both can be called from any thread, at the same time: guard shared state with a `Mutex`, and
 do not print from inside them. `push_error()` and `push_warning()` arrive in `_log_error()`,
-not in `_log_message()`. Backtraces are filled in editor and debug builds. For release exports
+not in `_log_message()`. Backtraces cover GDScript and C#, are filled in editor and debug
+builds, and since 4.5 are also printed by the crash handler. For release exports
 turn on `ProjectSettings.debug/settings/gdscript/always_track_call_stacks`.
 `always_track_local_variables` also keeps locals for `Engine.capture_script_backtraces(true)`,
 at about 50 bytes per local variable in every class. Procedure: `godot-debugging`.
+
+### Stepping and inspecting
+
+The Evaluator tab (since 4.4) is a REPL at a breakpoint: it reads locals and members and calls
+methods, which replaces most temporary prints. Step Out (since 4.6) leaves the current function.
+Since 4.5 several remote nodes can be selected in the running game at once, and
+`--ignore-error-breaks` stops the debugger from breaking on every script error during a soak
+test. Since 4.6 a file path in an Output panel error opens the script when clicked. The Video
+RAM tab lists meshes as well as textures since 4.5; a double click finds the resource.
 
 ### Debug on the device
 
@@ -167,11 +181,18 @@ games. Keep Debug Server Open accepts games started outside the editor. Debug te
 
 - Sampling (VerySleepy on Windows, Hotspot on Linux, Instruments on Apple): needs an engine build
   with symbols, `production=yes debug_symbols=yes`, not stripped.
-- Tracing (since 4.6, reported by the 4.6 beta 1 post): Tracy, Perfetto and Instruments
-  signposts; the engine already marks its main events. Tracy: build with
-  `profiler=tracy profiler_path=<dir>` and press Connect in Tracy before the game starts.
-  Perfetto is the Android tracer: category `godot` is cheap, `godot_scripting` traces every
-  script call and is slow, so use it to find one bad call in a hitch.
+- Tracing (since 4.6): the build system integrates Tracy, Perfetto and Instruments signposts,
+  and the engine already marks its main events. GDScript functions appear in the trace too; the
+  4.6 posts say that part works with Tracy only. Tracy: build with
+  `profiler=tracy profiler_path=<dir>` and press Connect in Tracy before the game starts (4.7
+  builds use Tracy's on-demand mode by default). Perfetto is the Android tracer and since 4.7
+  the default tracing tool of Android editor and template builds: category `godot` is cheap,
+  `godot_scripting` traces every script call and is slow, so use it to find one bad call.
+- What to look for, from the rendering team's own write-up: in a sampling profiler's thread
+  view, gaps where worker threads wait mean lost time. Shader conversion on Direct3D 12 was
+  threaded, but every thread waited on one global heap for memory; a heap per thread removed
+  11 seconds of load time in the TPS demo. Check thread use during loading, not only hot
+  functions. The team uses Superluminal for this.
 - Sanitizers need a custom build: `use_asan=yes` (about 2x slower), `use_ubsan=yes`,
   `use_tsan=yes`. Address, memory and thread sanitizers cannot be combined.
 
@@ -193,12 +214,15 @@ games. Keep Debug Server Open accepts games started outside the editor. Debug te
 
 ## Version notes
 
-- 4.4: no change to these tools was found in the docs.
-- 4.5: `Logger`, `OS.add_logger()`, `ScriptBacktrace`, GDScript backtraces on errors.
-- 4.6: ObjectDB Profiler tab; tracing profiler support (Tracy, Perfetto, Instruments).
-- 4.7: Perfetto export templates ship with each stable release, so an Android trace no longer
-  needs an engine build. The `type` argument of `add_custom_monitor()` exists in 4.7; the
-  version that added it is not confirmed.
+- 4.4: Autostart for all profilers, profiler zoom and pan, Evaluator tab, pipeline compilation
+  monitors, `print` in the local `-d` debugger.
+- 4.5: `Logger`, `OS.add_logger()`, `ScriptBacktrace`, `Engine.capture_script_backtraces()`,
+  `always_track_call_stacks`; script backtrace in crash output; `--scene`; meshes in Video RAM;
+  multi-select of remote nodes; 2D navigation monitors.
+- 4.6: ObjectDB Profiler; tracing profilers; Step Out; clickable Output paths; monitor types
+  (`MONITOR_TYPE_*`, the `type` argument of `add_custom_monitor()`).
+- 4.7: Perfetto templates ship with each stable release, so an Android trace needs no engine
+  build. Folding in the Visual Profiler tree. Tracy on-demand mode by default.
 
 ## Related skills
 
@@ -216,4 +240,12 @@ games. Keep Debug Server Open accepts games started outside the editor. Debug te
   its tracy, perfetto, hotspot, instruments and very_sleepy pages)
 - https://docs.godotengine.org/en/stable/engine_details/development/debugging/using_sanitizers.html
 - Class reference 4.7: Performance, EngineDebugger, EditorDebuggerPlugin, Logger, Viewport
-- https://godotengine.org/article/dev-snapshot-godot-4-6-beta-1/ (search summary only; page blocked)
+- https://godotengine.org/article/rendering-cpu-optimizations/
+- https://godotengine.org/article/dev-snapshot-godot-4-5-beta-1/
+- https://godotengine.org/article/dev-snapshot-godot-4-6-dev-4/
+- https://godotengine.org/article/dev-snapshot-godot-4-6-dev-6/
+- https://godotengine.org/article/dev-snapshot-godot-4-6-beta-1/
+- https://godotengine.org/article/dev-snapshot-godot-4-7-beta-1/
+- https://godotengine.org/releases/4.4/ , https://godotengine.org/releases/4.5/ ,
+  https://godotengine.org/releases/4.6/ , https://godotengine.org/releases/4.7/
+- Class reference XML of 4.3 to 4.6, used to date the APIs
