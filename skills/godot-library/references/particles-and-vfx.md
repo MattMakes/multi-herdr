@@ -17,11 +17,13 @@ missing per renderer, and when a trail, decal or MultiMesh does the job for less
 - `GPUParticles2D`/`GPUParticles3D` simulate in a particle shader on the GPU. The node allocates
   `amount` slots. GPU cost follows `amount` even when few particles are visible or
   `amount_ratio` is low. Emission rate is `amount * amount_ratio / lifetime` per second.
-- `CPUParticles2D`/`CPUParticles3D` simulate on the CPU and only render on the GPU. Fewer
-  features, lower ceiling, but they run on every device and can win when the GPU is the
-  bottleneck. No new features are planned for the 2D one.
+- `CPUParticles2D`/`CPUParticles3D` simulate on the CPU and only render on the GPU. They date
+  from the GLES2 renderer, which could not run GPU particles; every 4.x renderer can. The team
+  now treats them as a simpler low-end option, not a 1:1 fallback: since 4.2 they get no feature
+  the GPU nodes lack. They still win when the GPU is the bottleneck or counts are tiny.
 - A `ParticleProcessMaterial` is a generated `shader_type particles` shader. Each enabled feature
   adds code to it. A `ShaderMaterial` with your own `start()` and `process()` replaces it.
+  Since the 4.2 refactor the generated code is small functions shared by both stages.
 - The simulation steps at `fixed_fps` (default 30 on GPU nodes), not at the frame rate.
   `interpolate` blends between steps for display. Collision and attractors also run per step.
 - GPU particles are culled as one object by `visibility_aabb` (3D) or `visibility_rect` (2D),
@@ -45,7 +47,23 @@ missing per renderer, and when a trail, decal or MultiMesh does the job for less
 | Identical deterministic motion (rain sheet, star field) | MultiMesh + vertex shader |
 
 Build with GPU nodes, then use the editor's convert menu or `convert_from_particles()` to make
-the CPU fallback. GPU-only features do not convert.
+the CPU fallback (a CPU to GPU converter exists too). GPU-only features do not convert.
+
+### Stylized motion: drive velocity with curves, not forces
+
+Until 4.2 the stock material assumed physical motion: initial velocity plus acceleration and
+damping. That is clumsy for snappy, exaggerated effects. The 4.2 rework added direct controls,
+and they are the main tool for stylized VFX:
+
+- `directional_velocity_curve` (a `CurveXYZTexture`): velocity along axes over lifetime.
+- `radial_velocity_min`/`max` and `orbit_velocity_*` around `velocity_pivot`.
+- `velocity_limit_curve`: a hard speed cap over lifetime; the way to stop curve-driven motion,
+  since damping does not affect animated velocities.
+- `particle_flag_damping_as_friction`: slow down in proportion to speed instead of constantly.
+- `scale_over_velocity_curve`: stretch fast particles (speed lines) with no shader.
+- `emission_shape_offset` and `emission_shape_scale`: move or squash the emitter shape locally.
+- `interp_to_end`: push every live particle toward its end of life at once. Animate it to
+  dissolve an aura the moment a spell is cancelled, without waiting out lifetimes.
 
 ### Renderer support table
 
@@ -120,7 +138,7 @@ emitter leaves its smoke outside the box.
 ### Sub-emitters
 
 Set `sub_emitter` to another particle node and pick `sub_emitter_mode` (constant, at end, at
-collision, at start). The target stops emitting by itself. Its `amount` caps all children: when
+collision; at start since 4.4). The target stops emitting by itself. Its `amount` caps all children: when
 full, spawns are dropped silently. Rain: parent with `COLLISION_HIDE_ON_CONTACT`, child splash
 at collision. A system cannot be its own sub-emitter. In a custom shader, call
 `emit_subparticle()` with `FLAG_EMIT_*` bits.
@@ -132,7 +150,9 @@ at collision. A system cannot be its own sub-emitter. In a custom shader, call
   refreshes only when the collider node (or the camera with `follow_camera_enabled`) moves, not
   when meshes inside it move. `UPDATE_MODE_ALWAYS` is costly; use the lowest resolution with it.
 - `GPUParticlesCollisionSDF3D`: baked in the editor, static, handles caves and interiors, costs
-  more; resolution 16 to 512 cubed. Raise `thickness` if fast particles pass through.
+  more; resolution 16 to 512 cubed. Raise `thickness` if fast particles pass through. Memory
+  grows with volume, so it is the indoor tool; the height field is the outdoor one, and it
+  also keeps rain and snow out of roofed areas.
 - Parent a collider to a moving body to follow it. Masks: collider `cull_mask` against the
   emitter's visibility layers.
 
@@ -172,8 +192,15 @@ built-ins: `RESTART_*` flags, `USERDATA1`..`USERDATA6` for extra state, `COLLIDE
 
 ## Niche but useful
 
-- `request_particles_process()` with `speed_scale = 0.0` seeks a system: scrub VFX in cutscenes.
-- `use_fixed_seed` and `seed` give repeatable bursts for replays, tests and Movie Maker.
+- `request_particles_process()` (4.4) with `speed_scale = 0.0` seeks a system: scrub VFX in
+  cutscenes. `restart(true)` keeps the seed so the scrub is repeatable.
+- `use_fixed_seed` and `seed` (4.4) give repeatable bursts for replays, tests and Movie Maker.
+- `use_scale_3d` and `use_rotation_3d` / `use_rotation_velocity_3d` (4.7): per-axis random scale
+  and full 3D tumbling for mesh particles (debris, leaves) from the stock material.
+- `TRANSFORM_ALIGN_LOCAL_BILLBOARD` with `transform_align_axis` (4.7): face the camera while
+  keeping one axis, for flames and beams that must stay upright.
+- `particle_flag_inherit_emitter_scale` (4.7): scale the node to scale world-space particles.
+- `emission_ring_cone_angle` (4.4): turn the ring emitter into a cone for jets and fountains.
 - `emission_point_texture` (editor: create emission points from a mesh) spawns on a model's
   surface.
 - `DRAW_ORDER_INDEX` is the only 3D draw order with motion vectors: use it for opaque particles
@@ -189,7 +216,9 @@ built-ins: `RESTART_*` flags, `USERDATA1`..`USERDATA6` for extra state, `COLLIDE
 - An effect added by script compiles its pipelines on first show. Keep a hidden instance in the
   scene from load time (see `shaders-advanced`).
 - `alpha_curve` and `emission_curve` multiply vertex color: a 3D material needs
-  `vertex_color_use_as_albedo`.
+  `vertex_color_use_as_albedo`, and a custom draw shader must read `COLOR` itself.
+- 4.7 fixed angular velocity to match its documentation, and stopped particles from moving at
+  time scale 0. Effects tuned around the old behaviour need a look after upgrading.
 - A black-background flipbook needs Add blend, or an alpha channel.
 - `fixed_fps` does not slow the effect; `speed_scale` does.
 - The 2D particle page still tells you to turn physics interpolation off on 2D particle nodes
@@ -197,10 +226,14 @@ built-ins: `RESTART_*` flags, `USERDATA1`..`USERDATA6` for extra state, `COLLIDE
 
 ## Version notes
 
-- 4.4: `restart(keep_seed)` on all four particle nodes.
-- 4.7: `request_particles_process()` gained `process_time_residual`. Per-axis 3D scale and
-  rotation (`use_scale_3d`, `use_rotation_3d`), `TRANSFORM_ALIGN_LOCAL_BILLBOARD` and
-  `particle_flag_inherit_emitter_scale` are present in the 4.7 class reference.
+- 4.2: GPU particle rework: `amount_ratio`, `interp_to_end`, velocity curves and limits,
+  emission shape offset and scale; CPU particles frozen in features.
+- 4.4: `restart(keep_seed)`, fixed seeds and `request_particles_process()`; sub-emitter "at
+  start" mode; ring cone angle; emission shape gizmos for 3D particles in the editor.
+- 4.5: emission shape gizmos for 2D particles.
+- 4.7: `request_particles_process()` gained `process_time_residual`; per-axis 3D scale,
+  rotation and rotation velocity; local billboard alignment; inherit emitter scale (all absent
+  from the 4.6 class reference); angular velocity fix.
 
 ## Related skills
 
@@ -225,3 +258,10 @@ built-ins: `RESTART_*` flags, `USERDATA1`..`USERDATA6` for extra state, `COLLIDE
 - https://docs.godotengine.org/en/stable/tutorials/performance/pipeline_compilations.html
 - https://docs.godotengine.org/en/stable/classes/class_gpuparticles3d.html
 - https://docs.godotengine.org/en/stable/classes/class_particleprocessmaterial.html
+- https://godotengine.org/article/progress-report-state-of-particles/
+- https://godotengine.org/article/improvements-gpuparticles-godot-40/
+- https://godotengine.org/releases/4.4/ , https://godotengine.org/releases/4.7/
+- https://godotengine.org/article/dev-snapshot-godot-4-4-beta-1/
+- https://godotengine.org/article/dev-snapshot-godot-4-5-dev-1/
+- https://godotengine.org/article/dev-snapshot-godot-4-7-dev-3/
+- https://godotengine.org/article/dev-snapshot-godot-4-7-beta-1/

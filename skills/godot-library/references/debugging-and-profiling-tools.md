@@ -36,8 +36,9 @@ is ignored without a warning, so a debug-only flag on a release export does noth
 Inclusive time counts callees; Self time counts only the function body. A function high in
 Inclusive and low in Self waits for something it calls. Since 4.4 one Autostart checkbox starts
 all profilers when the project runs, so the first seconds of a scene load are captured, and
-the graph can be zoomed and panned. `--profiling` starts the script profiler at launch. The editor setting `debugger/profile_native_calls` adds engine methods
-(slower); `debugger/profiler_frame_history_size` (default 3600 frames) sets the graph length.
+the graph can be zoomed and panned. `--profiling` starts the script profiler at launch. The
+editor setting `debugger/profile_native_calls` adds engine methods (slower);
+`debugger/profiler_frame_history_size` (default 3600 frames) sets the graph length.
 
 ### Read the Visual Profiler with care
 
@@ -241,6 +242,10 @@ games. Keep Debug Server Open accepts games started outside the editor. Debug te
 - https://docs.godotengine.org/en/stable/engine_details/development/debugging/using_sanitizers.html
 - Class reference 4.7: Performance, EngineDebugger, EditorDebuggerPlugin, Logger, Viewport
 - https://godotengine.org/article/rendering-cpu-optimizations/
+- https://godotengine.org/article/dev-snapshot-godot-4-4-dev-5/
+- https://godotengine.org/article/dev-snapshot-godot-4-4-dev-6/
+- https://godotengine.org/article/dev-snapshot-godot-4-5-dev-1/
+- https://godotengine.org/article/dev-snapshot-godot-4-5-dev-5/
 - https://godotengine.org/article/dev-snapshot-godot-4-5-beta-1/
 - https://godotengine.org/article/dev-snapshot-godot-4-6-dev-4/
 - https://godotengine.org/article/dev-snapshot-godot-4-6-dev-6/

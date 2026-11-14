@@ -31,9 +31,12 @@ reader support, scaling, text to speech and other access options.
   `TextServerFallback` does neither.
 - For a right-to-left locale the engine mirrors anchors, margins, text alignment and
   container child order, but not coordinates or non-UI nodes.
-- Screen reader support (since 4.5) uses AccessKit on Windows, macOS and Linux. Each node
-  can own an accessibility element; built-in controls fill theirs. Updates run only
-  while an assistive app is active (`accessibility/general/accessibility_support`: Auto).
+- Screen reader support (since 4.5) uses AccessKit on Windows, macOS and Linux; mobile
+  and web are not covered yet, and the release page calls the feature experimental.
+  Each node can own an accessibility element; built-in controls fill theirs. Updates run
+  only while an assistive app is active
+  (`accessibility/general/accessibility_support`: Auto). The screen reader speaks, not
+  the game.
 
 ## Advanced techniques
 
@@ -63,7 +66,9 @@ assignments to `text`, `placeholder_text`, `tooltip_text`, and calls such as `ad
 A `# TRANSLATORS:` comment on or above the line reaches the translator.
 `# NO_TRANSLATE` skips a string. Update with `msgmerge --update fr.po messages.pot`.
 Fuzzy entries are not loaded. `.mo` files are smaller and faster to read; worth it from
-several thousand strings up. Custom formats: `EditorTranslationParserPlugin`.
+several thousand strings up. Custom formats: `EditorTranslationParserPlugin`. Since 4.6
+C# `Tr` and `TrN` calls are extracted too, and the same dialog can write a CSV template
+in place of a `.pot`.
 
 ### CSV with plurals and context (since 4.6)
 
@@ -85,7 +90,9 @@ localized strings into asterisks. Runtime toggle:
 `reload_pseudolocalization()`.
 
 Real locales: `godot --language fr`, the `internationalization/locale/test` setting (do
-not commit it), or **View > Preview Translation** in the editor (since 4.5).
+not commit it), or **View > Preview Translation** in the editor (since 4.5). The 4.5
+release page notes that layout direction did not follow the previewed locale, so check
+right-to-left layouts in a running game as well.
 
 ### Fonts per script
 
@@ -128,6 +135,13 @@ is read when it changes while focus is elsewhere: polite waits for the current s
 assertive interrupts. Use it for toasts and combat logs. `Control.FOCUS_ACCESSIBILITY`
 makes a control focusable only while a screen reader runs, so static text is reachable
 without changing keyboard flow for others. Keep `focus_next` order logical.
+`focus_behavior_recursive` (since 4.5) disables focus for a whole subtree, for example
+a menu hidden behind a dialog.
+
+Since 4.7, set `accessibility_region` on a `Container` and give it an
+`accessibility_name`: screen readers treat it as a landmark, announce it when focus
+enters, and let the user jump between regions (inventory, map, chat). A field named
+"Name" means little without the region it sits in.
 
 ### Custom-drawn nodes
 
@@ -143,7 +157,9 @@ func _notification(what: int) -> void:
 		AccessibilityServer.update_set_name(element, "Health: %d" % hit_points)
 ```
 
-Call `queue_accessibility_update()` when the value changes. Only call
+`AccessibilityServer` is new in 4.7; on 4.5 and 4.6 the same calls are
+`DisplayServer.accessibility_update_*`. Call `queue_accessibility_update()` when the
+value changes. Only call
 `get_accessibility_element()` inside this notification. `update_set_flag` with
 `FLAG_HIDDEN` hides decoration. `_get_accessibility_configuration_warnings()` in a tool
 script shows warnings in the Scene dock.
@@ -156,7 +172,7 @@ var high_contrast: bool = DisplayServer.accessibility_should_increase_contrast()
 var reader_on: bool = DisplayServer.accessibility_screen_reader_active() == 1
 ```
 
-Each returns 1, 0, or -1 for unknown; coverage differs (reduce animation: macOS and
+All three exist since 4.5. Each returns 1, 0, or -1 for unknown; coverage differs (reduce animation: macOS and
 Windows only). Use them as defaults for your own options.
 
 ### UI scale as an option
@@ -184,11 +200,13 @@ TTS, let players pick voice and rate and save both.
 
 - **Localization > Remaps**: another resource per locale (voice lines, textures with
   baked text). Loading the original path returns the remapped one.
-- `Control.translation_context` gives auto-translated text a context.
+- `Control.translation_context` (since 4.7) gives auto-translated text a context.
 - `Control.localize_numeral_system` converts digits in `SpinBox` and `ProgressBar`; use
-  `TranslationServer.format_number` for digits inside other text.
-- `TranslationDomain.set_locale_override`: one subtree in another language.
-- `Translation.plural_rules_override` fixes a wrong plural rule per file.
+  `TranslationServer.format_number` (since 4.6) for digits inside other text.
+- `TranslationDomain.set_locale_override` (since 4.5): one subtree in another language.
+- `Translation.plural_rules_override` (since 4.6) fixes a wrong plural rule per file.
+- Patch PCKs use delta encoding since 4.6: a patch that changes or adds a language
+  ships only the changed parts of large translation files.
 - `application/config/name_localized`: app name per locale.
 - `OS.get_locale_language()` for the first run; store the player's choice afterwards.
 - `--accessibility always` forces updates on, for inspection tools.
@@ -217,12 +235,17 @@ Build these from ordinary features; the engine has no switch for them.
 
 ## Version notes
 
-- 4.4: translation domains; `EditorTranslationParserPlugin._parse_file` changed (breaking).
-- 4.5: screen reader support through AccessKit and the `accessibility_*` properties;
-  editor translation preview. The release notes call editor screen reader support partial.
-- 4.6: CSV `?plural`, `?context`, `?pluralrule`; CSV import `compress` is now a mode.
+- 4.4: `TranslationDomain` (absent from the 4.3 class reference);
+  `EditorTranslationParserPlugin._parse_file` changed (breaking).
+- 4.5: screen reader support through AccessKit, the `accessibility_*` properties,
+  `FOCUS_ACCESSIBILITY`, the system preference queries; editor translation preview;
+  editor language switch without restart. In the editor only the Project Manager,
+  standard UI nodes and the inspector are covered (4.5 release page).
+- 4.6: CSV `?plural`, `?context`, `?pluralrule` and CSV templates; C# string
+  extraction; `TranslationServer.format_number`; CSV import `compress` is now a mode.
 - 4.7: `AccessibilityServer` singleton holds the accessibility API;
-  `Control.accessibility_live` uses its enum. `OptimizedTranslation.generate` returns `bool`.
+  `Control.accessibility_live` uses its enum; `Container.accessibility_region`;
+  `Control.translation_context`; `OptimizedTranslation.generate` returns `bool`.
 
 ## Related skills
 
@@ -242,4 +265,9 @@ Build these from ordinary features; the engine has no switch for them.
 - https://docs.godotengine.org/en/stable/tutorials/audio/text_to_speech.html
 - https://docs.godotengine.org/en/stable/tutorials/ui/gui_using_fonts.html
   (and `tutorials/rendering/multiple_resolutions`)
-- https://godotengine.org/releases/4.5/ (search summary only; page fetch was blocked)
+- https://godotengine.org/releases/4.5/ , https://godotengine.org/releases/4.6/ ,
+  https://godotengine.org/releases/4.7/
+- https://godotengine.org/article/dev-snapshot-godot-4-5-dev-3/ (screen reader support)
+- https://godotengine.org/article/dev-snapshot-godot-4-5-beta-1/
+- https://godotengine.org/article/dev-snapshot-godot-4-6-beta-1/ (CSV, C# extraction)
+- https://godotengine.org/article/godot-4-5-making-dreams-accessible/

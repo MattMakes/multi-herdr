@@ -70,8 +70,8 @@ on mobile.
 - Texel density: import option **Lightmap Texel Size** (default 0.2; 0.5 or more for large scenes
   or indirect-only bakes). `LightmapGI.texel_scale` scales a whole bake, so preview at low scale
   and do the final bake at 1.0. Per mesh: `gi_lightmap_texel_scale` (since 4.4).
-- `supersampling` (since 4.4) bakes at a higher density and downsamples: less noise and leaking at the same
-  file size, with more bake time and VRAM.
+- `supersampling` (since 4.4) bakes at a higher density and downsamples: less noise and leaking
+  at the same file size, with more bake time and VRAM.
 - Denoiser: JNLM is built in (GPU; tune `denoiser_strength`, `denoiser_range`). OIDN keeps more
   shadow detail and hides seams; it is an external `oidnDenoise` binary set in Editor Settings
   and chosen in `rendering/lightmapping/denoising/denoiser` (project-wide so a team matches).

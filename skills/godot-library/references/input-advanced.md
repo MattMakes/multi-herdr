@@ -54,8 +54,8 @@ singleton stores, and the settings and patterns that decide latency, rebinding a
 - `_input()` only for things that must see events before the GUI, such as an input recorder.
   Turn it off with `set_process_input(false)` when idle.
 - Inside these callbacks test the event (`event.is_action_pressed()`), not the singleton.
-  `Input.is_action_just_pressed_by_event()` tells whether this event was the one that started
-  the press.
+  `Input.is_action_just_pressed_by_event()` (4.5) tells whether this event was the one that
+  started the press.
 
 ### Three key codes, three jobs
 
@@ -104,7 +104,12 @@ Sources of delay and the control for each:
   let players change it in competitive games, because results differ per tick rate.
 - Physics interpolation adds latency for tick-driven motion. A higher tick rate offsets it.
 - Accumulation: `Input.use_accumulated_input = false` delivers every OS event at once. More
-  callbacks, more CPU. Worth it for drawing tools and precise aim, as below.
+  callbacks, more CPU. Worth it for drawing tools and precise aim, as below. Know the call
+  rate before you choose: with accumulation on, a motion handler runs up to once per rendered
+  frame (480 times a second on a 480 Hz display); with it off, once per mouse report, up to
+  8,000 a second on an 8 kHz mouse (figures from the engine team's article). Keep the
+  `InputEventMouseMotion` path of `_input()` and `_unhandled_input()` trivial: test the type
+  first and return.
 - Android: `input_devices/buffering/agile_event_flushing` flushes key, touch and pad events before
   every idle and physics step, which helps when several ticks run per frame. Android only.
 
@@ -126,6 +131,17 @@ func _unhandled_input(event: InputEvent) -> void:
 `screen_relative` is not scaled by the stretch settings. `relative` is, so aim speed would change
 with window size. `velocity` is zero while captured.
 
+### High polling rate mice on Windows
+
+Mice that report at 2 kHz or more could stall the engine on Windows before 4.7.2. Windows sends
+both raw and legacy motion messages, and the engine handled each one as it came. The engine
+team measured, on a top desktop CPU, an 8 kHz mouse in captured mode dropping 4.7.1 below 1 FPS
+and a visible cursor to 173 FPS, against 1703 and 1103 FPS with the fix (4097 FPS with no
+movement). 4.7.2 reads raw motion in buffered batches and dispatches legacy motion at most once
+per frame. Keys, buttons and wheel are unchanged. Linux was not affected. Slower CPUs hit the
+limit earlier, between 1 and 2 kHz. Consequences: ship on 4.7.2 or later, and treat "the game
+lags only when I move the mouse" reports from older builds as this bug, not as your code.
+
 ### Buffering and coyote time
 
 Store the physics tick of the last press and of the last grounded tick, and accept a jump when
@@ -134,19 +150,23 @@ both are within a small window. Count in ticks, not seconds, so replays and test
 
 ### Controllers
 
-- Since 4.5 desktop platforms use SDL 3 for pads. Android and Web still use the older engine
-  code, so test pads there separately.
+- Since 4.5 desktop platforms use SDL 3 for pads, and iOS since 4.7, so mappings and behavior
+  match other SDL games. The engine team moved to SDL because its own driver had piled up
+  issues and missed newer pad features. Android and Web still use the older engine code, so
+  test pads there separately.
 - Wrong mapping: test a mapping string with the `SDL_GAMECONTROLLERCONFIG` environment variable
   before shipping it. `Input.is_joy_known()` is false for an unmapped device.
 - `Input.get_joy_info()` returns vendor and product ids and, where present, `steam_input_index`.
   Use it with `get_joy_name()` to choose button glyphs. It is empty on Android and Web.
 - Pads send no echo events. For menu repeat, send your own `InputEventAction` from a timer.
-- Pad input arrives while the window is unfocused. Set
-  `input_devices/joypads/ignore_joypad_on_unfocused_application` for single-player games.
+- Pad input arrives while the window is unfocused, which can trigger actions (even a quit)
+  while the player is in another window. Since 4.7 the project setting
+  `input_devices/joypads/ignore_joypad_on_unfocused_application` blocks it. It is off by
+  default to keep old behavior; turn it on unless you rely on background input.
 - Rumble: `start_joy_vibration(device, weak, strong, duration)`. Duration 0 runs as long as the
   device allows. Always offer a strength setting.
 - LED (4.6): `has_joy_light()` and `set_joy_light()`. The color cannot be read back.
-- Motion sensors: `has_joy_motion_sensors()`, `set_joy_motion_sensors_enabled()`, then
+- Motion sensors (4.7): `has_joy_motion_sensors()`, `set_joy_motion_sensors_enabled()`, then
   calibrate with the pad lying still (`start_joy_motion_sensors_calibration()` and its stop
   call). `get_joy_gyroscope()` gives gyro aim. For shakes use `get_joy_accelerometer()` minus
   `get_joy_gravity()` and ignore readings briefly after a hit: the sensor reports the opposite
@@ -184,7 +204,9 @@ back button sends `NOTIFICATION_WM_GO_BACK_REQUEST`, and quits unless `quit_on_g
 ## Traps
 
 - Since 4.7 the mouse has device id `InputEvent.DEVICE_ID_MOUSE` and the keyboard
-  `DEVICE_ID_KEYBOARD`, no longer 0. Pad 0 can be device 0. Test by event type.
+  `DEVICE_ID_KEYBOARD`, no longer 0. Pad 0 can be device 0. Test by event type. The ids tell
+  keyboard and mouse from pads; they do not tell two keyboards apart.
+- Touch on Linux with Wayland exists since 4.7 and is basic: no pan or scale gestures yet.
 - The `ui_*` actions drive GUI focus. Do not reuse them for gameplay.
 - Android sensor events are off by default since 4.4. Enable them under the
   `input_devices/sensors` project settings.
@@ -192,10 +214,13 @@ back button sends `NOTIFICATION_WM_GO_BACK_REQUEST`, and quits unless `quit_on_g
 
 ## Version notes
 
-- 4.4: Android sensors off by default.
-- 4.5: SDL 3 pad driver on desktop.
-- 4.6: joypad LED control.
-- 4.7: device ids of mouse and keyboard changed; `VirtualJoystick`.
+- 4.4: Android sensors off by default. Apple controller code reworked (discovery, rumble).
+- 4.5: SDL 3 pad driver on Windows, macOS and Linux. `is_action_just_pressed_by_event()`.
+- 4.6: joypad LED control, the first of the planned advanced pad features.
+- 4.7: joypad gyroscope and accelerometer, ignore-unfocused-joypad setting, device ids for
+  mouse and keyboard, `VirtualJoystick` (fixed, dynamic and following modes), SDL 3 on iOS,
+  Wayland touch.
+- 4.7.2: high polling rate mouse fix on Windows.
 
 ## Related skills
 
@@ -214,3 +239,8 @@ back button sends `NOTIFICATION_WM_GO_BACK_REQUEST`, and quits unless `quit_on_g
 - https://docs.godotengine.org/en/stable/tutorials/inputs/handling_quit_requests.html
 - https://docs.godotengine.org/en/stable/tutorials/rendering/jitter_stutter.html
 - https://docs.godotengine.org/en/stable/tutorials/migrating/upgrading_to_godot_4.7.html
+- https://godotengine.org/article/fixing-high-polling-rate-mice-on-windows/
+- https://godotengine.org/releases/4.4/
+- https://godotengine.org/releases/4.5/
+- https://godotengine.org/releases/4.6/
+- https://godotengine.org/releases/4.7/
