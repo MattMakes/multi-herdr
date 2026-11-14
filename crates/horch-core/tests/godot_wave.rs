@@ -1,6 +1,6 @@
-//! The Godot wave (GDW-01 to GDW-12, `docs/specs/godot.md`): the Godot
-//! requirement, the 19 `godot-*` seats, the 80 `godot-*` skills and the
-//! gate's Godot checks.
+//! The Godot wave (GDW-01 to GDW-13, `docs/specs/godot.md`): the Godot
+//! requirement, the 19 `godot-*` seats, the 81 `godot-*` skills, the
+//! library shelves of each seat and the gate's Godot checks.
 //!
 //! The seat tests read the teammates through the public roster API and
 //! never depend on the context fields (`compact_at`, `compact_window`). The
@@ -384,9 +384,9 @@ fn gdw_06_copied_failures_fail_only_above_the_baseline() {
 }
 
 #[test]
-fn gdw_07_the_catalog_has_80_godot_skills_and_no_excluded_one() {
+fn gdw_07_the_catalog_has_81_godot_skills_and_no_excluded_one() {
     let skills = godot_skills();
-    assert_eq!(skills.len(), 80, "{skills:?}");
+    assert_eq!(skills.len(), 81, "{skills:?}");
     for name in EXCLUDED {
         assert!(!skills.contains(name), "{name} is excluded");
     }
@@ -431,14 +431,14 @@ fn gdw_07_godot_skills_carry_no_licence_or_credit_line() {
 }
 
 #[test]
-fn gdw_08_every_godot_seat_expects_5_to_10_skills_from_the_catalog() {
+fn gdw_08_every_godot_seat_expects_5_to_11_skills_from_the_catalog() {
     let roster = roster();
     let seats = seats(&roster);
     assert_eq!(seats.len(), 19);
     let catalog = SkillCatalog::bundled().unwrap();
     for t in seats {
         let n = t.skills.len();
-        assert!((5..=10).contains(&n), "{} expects {n} skills", t.name);
+        assert!((5..=11).contains(&n), "{} expects {n} skills", t.name);
         for s in t.skills.iter().chain(&t.available_skills) {
             assert!(
                 catalog.lookup(s).is_some(),
@@ -544,6 +544,86 @@ fn gdw_11_the_language_skill_is_on_every_godot_seat() {
     assert!(BUNDLED_SKILL_FILES
         .iter()
         .any(|(path, _)| *path == "godot-language-choice/references/evidence.md"));
+}
+
+/// The shelves (`references/<name>.md`) of the bundled `godot-library`.
+fn library_shelves() -> BTreeSet<&'static str> {
+    BUNDLED_SKILL_FILES
+        .iter()
+        .filter_map(|(path, _)| path.strip_prefix("godot-library/references/"))
+        .filter_map(|file| file.strip_suffix(".md"))
+        .collect()
+}
+
+#[test]
+fn gdw_13_every_godot_seat_names_its_library_shelves_high_in_its_briefing() {
+    const SKILL: &str = "godot-library";
+    const LEDGER: &str = "version-ledger";
+    let shelves = library_shelves();
+    assert!(shelves.contains(LEDGER), "{shelves:?}");
+
+    let roster = roster();
+    let seats = seats(&roster);
+    assert_eq!(seats.len(), 19);
+    let mut named: BTreeSet<&str> = BTreeSet::new();
+    for t in seats {
+        assert!(
+            t.skills.iter().any(|s| s == SKILL),
+            "{}: {SKILL} not in skills:",
+            t.name
+        );
+        // High up: the library block comes before the standing rules, and
+        // only the opening paragraph comes before the block.
+        let body = t.persona.as_str();
+        let block = body
+            .find("Library: the `godot-library` skill")
+            .unwrap_or_else(|| panic!("{}: no library block", t.name));
+        let rules = body
+            .find("Standing rules for Godot work")
+            .unwrap_or_else(|| panic!("{}: no standing rules", t.name));
+        assert!(block < rules, "{}: the library block is below the rules", t.name);
+        assert_eq!(
+            body[..block].trim_end().matches("\n\n").count(),
+            0,
+            "{}: the library block is not the 2nd paragraph",
+            t.name
+        );
+        let end = block + body[block..].find("\n\n").expect("the block ends");
+        let text = &body[block..end];
+        assert!(
+            text.contains("`references/version-ledger.md`"),
+            "{}: the block does not name the version ledger",
+            t.name
+        );
+        named.insert(LEDGER);
+        let mut own = 0;
+        for line in text.lines().filter(|l| l.starts_with("- `")) {
+            let shelf = line[3..].split('`').next().unwrap();
+            let known = shelves.get(shelf);
+            assert!(known.is_some(), "{}: no shelf {shelf}", t.name);
+            named.insert(known.unwrap());
+            own += 1;
+        }
+        assert!(own >= 5, "{}: names only {own} shelves", t.name);
+    }
+    let orphans: Vec<&&str> = shelves.difference(&named).collect();
+    assert!(orphans.is_empty(), "no seat names the shelves {orphans:?}");
+
+    // The index links every shelf, and the library is own text.
+    let index = BUNDLED_SKILL_FILES
+        .iter()
+        .find(|(path, _)| *path == "godot-library/SKILL.md")
+        .map(|(_, bytes)| String::from_utf8_lossy(bytes))
+        .expect("the library index is bundled");
+    for shelf in &shelves {
+        assert!(
+            index.contains(&format!("](references/{shelf}.md)")),
+            "the index does not link {shelf}"
+        );
+    }
+    let catalog = SkillCatalog::bundled().unwrap();
+    let copied = catalog.lookup(SKILL).unwrap().copied.as_ref().unwrap();
+    assert!(copied.copied_files.is_empty(), "{:?}", copied.copied_files);
 }
 
 /// Runs `godot-run.sh --version` in `project` with `GODOT_PATH` set to a

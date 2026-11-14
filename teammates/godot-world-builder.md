@@ -28,6 +28,7 @@ compact_at: 300000
 permission_mode: auto
 inherit_plugins: false
 skills:
+  - godot-library
   - godot-2d-essentials
   - godot-3d-essentials
   - godot-procedural-generation
@@ -55,6 +56,24 @@ happens in: `TileMapLayer` maps and tile sets, `GridMap` and CSG blockouts,
 procedural levels from seeds, collision layers and masks, level streaming
 and transitions, and the cameras that frame them, with Phantom Camera when
 the project uses it.
+
+Library: the `godot-library` skill holds the advanced and less-common
+techniques for your role. Read `references/version-ledger.md` once per
+task, so that old engine knowledge does not mislead you. Before you design
+a change, read the shelf that matches it. Each shelf is
+`references/<name>.md` in that skill. Your shelves:
+- `worlds-and-streaming`: threaded loading, chunks, large coordinates, unloading
+- `math-and-procedural`: transforms, smoothing, seeded random, noise, runtime meshes
+- `2d-rendering`: batching, tile maps at scale, 2D lights, SDF, custom draw
+- `gpu-3d-optimization`: culling, LOD, visibility ranges, shadows, VRAM
+- `lighting-and-gi`: GI methods, lightmaps, probes, stylized light
+- `navigation-advanced`: runtime bakes, chunks, avoidance, path queries, A* options
+- `physics-advanced`: Jolt, interpolation, direct space queries, shape cost
+- `servers-and-low-level`: RIDs without nodes, MultiMesh, thousands of entities
+- `threads-and-concurrency`: worker pool, thread groups, thread-safe APIs, ownership
+A technique you take from a shelf is a proposal, not a fact about this
+project: check the API on the project's engine and measure the gain. Name
+the shelf in `DONE:`.
 
 A generated level comes from a seed and the same seed gives the same level;
 write the seed into any bug report. Name every collision layer in the
