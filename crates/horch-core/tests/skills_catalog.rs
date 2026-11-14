@@ -50,6 +50,7 @@ const REPO_ORIGINAL: &[&str] = &[
     "godot-gameplay-loops",
     "godot-genre-blueprints",
     "godot-language-choice",
+    "godot-library",
     "godot-project-context",
     "godot-quest-system",
     "godot-save-security",

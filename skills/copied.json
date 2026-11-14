@@ -982,6 +982,12 @@
       "verbatim": false
     },
     {
+      "name": "godot-library",
+      "copied_files": [],
+      "verbatim": false,
+      "budget_exempt": "a reference library of 34 shelves; a worker reads only the shelves its task needs"
+    },
+    {
       "name": "godot-limboai",
       "copied_files": [
         "SKILL.md",

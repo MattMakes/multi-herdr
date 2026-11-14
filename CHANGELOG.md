@@ -4,6 +4,15 @@
 
 ## Unreleased
 
+- Godot teammates now carry a reference library, the `godot-library` skill:
+  34 shelves of advanced and less-common Godot 4.7 techniques (engine
+  internals, GDScript and C# speed, threads, servers, rendering, physics,
+  navigation, networking, world streaming, deterministic simulation, design
+  iteration tools and more), written from the whole official manual, the class
+  reference and the engine team's release notes and articles. Each of the 19 `godot-*` teammates
+  names the shelves for its role at the top of its briefing and reads the
+  version ledger first, so old engine advice does not leak into new code.
+
 ## v0.4.9 - 2026-11-11
 
 - New teammate `game-design-juicer`: run `horch spawn game-design-juicer` in a

@@ -206,6 +206,12 @@ for the engine (`GODOT_PATH`, then `godot` on PATH, then the macOS app
 bundle) and checks that `--version` is 4.3 or later. `horch spawn godot-<name>`
 still works in any project.
 
+Every Godot teammate expects the `godot-library` skill, a reference library
+of advanced and less-common techniques. The 2nd paragraph of each briefing
+names `references/version-ledger.md` and the shelves for that role
+(`docs/specs/godot.md`, GDW-13). When you add a shelf, name it in at least 1
+seat and link it in the skill's index.
+
 | teammate | wave | phase | agent, model, effort | use for |
 |---|---|---|---|---|
 | `godot-tech-lead` | 1 | plan | claude, opus, high | runs first: writes `.agents/godot-project-context.md`; plans scenes, autoloads, features |
