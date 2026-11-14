@@ -57,6 +57,7 @@ const REPO_ORIGINAL: &[&str] = &[
     "godot-sound-design",
     "godot-version-migration",
     "hark",
+    "incremental-game-design",
     "one-page-design",
     "orchestrate",
     "pixel-vfx",
@@ -120,6 +121,7 @@ const SKIP_NEW_TEAMMATES: &[&str] = &[
     "design-director",
     "design-system-engineer",
     "fable-creative",
+    "game-design-incremental-specialist",
     "game-design-juicer",
     "godot-ai-programmer",
     "godot-animator",
@@ -423,7 +425,10 @@ fn skills_bundled_size_budget() {
 /// capture and render scripts. The own-text `one-page-design` ships its page
 /// checker script, the checker's tests and an HTML starter page.
 /// `skill-intake` ships its `intake` tool as real `.py` files, so the gate's
-/// tests and the skill digest cover the tool itself.
+/// tests and the skill digest cover the tool itself. The own-text
+/// `incremental-game-design` ships its simulator and workbook scripts, its
+/// Godot project scan and 2 JSON assets (an example model and a reference
+/// curve).
 const EXEMPT_FROM_TEXT_ONLY: &[&str] = &[
     "blender-3d-print",
     "blender-addon-development",
@@ -454,6 +459,7 @@ const EXEMPT_FROM_TEXT_ONLY: &[&str] = &[
     "blender-video-editing",
     "blender-weather-fx",
     "hark",
+    "incremental-game-design",
     "one-page-design",
     "skill-creator",
     "skill-intake",

@@ -4,6 +4,17 @@
 
 ## Unreleased
 
+- New teammate `game-design-incremental-specialist` for incremental, idle and
+  upgrade-driven games. Run `horch spawn game-design-incremental-specialist` in
+  a game project, or hand it a design document or a one-page idea. It reviews
+  a build, designs the math of a new game, designs core and meta loops, and
+  proposes new systems. Its new `incremental-game-design` skill turns the game
+  into a model, plays it under 3 reset habits, and writes a pacing workbook
+  (.xlsx) that shows the beats, the lulls and the cause of each lull. A
+  proposed system is tested against a numbers-only control. On a Godot project
+  the skill's scan finds the cost formulas, the unlock signals and the
+  feedback each one fires. The scripts need Python 3 and `openpyxl`.
+
 ## v0.4.9 - 2026-11-11
 
 - New teammate `game-design-juicer`: run `horch spawn game-design-juicer` in a

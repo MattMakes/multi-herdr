@@ -63,6 +63,7 @@ To refresh a copied skill:
 | [design-imagery](design-imagery/SKILL.md) | combined and rewritten |
 | [design-system](design-system/SKILL.md) | combined and rewritten |
 | [game-juice](game-juice/SKILL.md) | own text |
+| [incremental-game-design](incremental-game-design/SKILL.md) | own text |
 | [landing-page](landing-page/SKILL.md) | combined and rewritten |
 | [motion-gsap](motion-gsap/SKILL.md) | combined and rewritten |
 | [one-page-design](one-page-design/SKILL.md) | own text |
