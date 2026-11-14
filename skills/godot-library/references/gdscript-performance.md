@@ -155,7 +155,7 @@ extends Node3D
 
 @export_custom(PROPERTY_HINT_NONE, "suffix:m") var altitude: float = 0.0
 @export_storage var baked_seed: int = 0
-@export_tool_button("Rebuild", "Callable") var rebuild_action: Callable = _rebuild
+@export_tool_button("Rebuild", "Callable") var rebuild_action = _rebuild
 
 func _rebuild() -> void:
 	baked_seed = randi()

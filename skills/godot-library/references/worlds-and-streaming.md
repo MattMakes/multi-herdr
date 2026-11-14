@@ -14,6 +14,14 @@ loading, chunking, precision, distance culling, and keeping memory and far-away 
 
 - There is no built-in world streaming. You build it from threaded resource loading,
   scenes as chunks, visibility ranges, and process/physics disabling.
+- There is also no texture or mesh streaming in 4.7 (no progressive mip or LOD loading
+  from disk). The project lead named streaming the most important missing feature for
+  open worlds in 2023, and it is still a listed rendering priority. Consequence: every
+  texture and mesh a loaded chunk references is in memory at full size. Chunk size, texture
+  resolution and unloading are your memory controls.
+- Scene nodes are meant for complex behavior on hundreds of objects, not tens of
+  thousands (same article). Dense worlds put the masses in `MultiMesh`, servers or plain
+  data, and keep nodes for what is near the player.
 - Loading a chunk has four costs with different homes. (1) Disk read and resource creation:
   can run on threads. (2) `PackedScene.instantiate()`: builds nodes; allowed off the main
   thread while the nodes are outside the tree. (3) `add_child`: main thread only; runs
@@ -22,11 +30,13 @@ loading, chunking, precision, distance culling, and keeping memory and far-away 
 - Resources are reference counted and cached by path. A second `load` of a cached path is
   free. A resource leaves memory when the last reference drops; there is no "unload" call.
 - Since 4.4, pipelines are precompiled when a mesh is loaded (also on a background thread)
-  and when a node first enters the tree, using ubershaders. 2D canvas pipelines are not
-  precompiled.
+  and when a node first enters the tree. The ubershader is a full-featured version of each
+  shader compiled at load; it draws a new object at once while the specialized, faster
+  pipeline compiles in the background. 2D canvas pipelines are not precompiled.
 - Positions are 32-bit floats in standard builds. The docs give these safe distances from
   the origin: 4096 m first person, 8192 m third person, 16384 m top-down, 32768 m for any
-  3D game. Beyond that you need double-precision builds or origin shifting.
+  3D game. Beyond that you need double-precision builds or origin shifting. For scale: the
+  engine blog measured about 6 cm steps at 1,000 km and 1 m steps at 10,000 km.
 
 ## Advanced techniques
 
@@ -99,7 +109,10 @@ player's first run, even if your own driver cache hides them. Fixes from the doc
 - For effects spawned by script (explosions, bullets), keep one hidden instance in the
   level so its pipelines compile at load.
 - Load meshes with the threaded loader so the Mesh step compiles off the main thread.
-- Since 4.5 enable the shader baker in the export preset to cut first-load time.
+- Since 4.5 more pipeline settings are detected at load, and the shader baker export
+  option precompiles shaders for the target driver. The release page reports about 20x
+  shorter load for the TPS demo on Metal and D3D12. It attacks startup time; ubershaders
+  attack mid-game hitches. Use both.
 
 ### Distance culling: visibility ranges and HLOD
 
@@ -133,7 +146,9 @@ Turn off `collision_enabled` and `navigation_enabled` on decorative layers.
 
 A `GridMap` merges cells into octants of `cell_octant_size` cells per axis (default 8) for
 rendering and physics. Larger octants mean fewer draw calls but coarser culling. For
-streamed 3D tile worlds use one GridMap per chunk.
+streamed 3D tile worlds use one GridMap per chunk. Since 4.7 the octants can be queried
+(`get_used_octants`, `get_octants_in_bounds`, `get_used_cells_in_octant`), which gives a
+ready spatial index for "what is in this area" without scanning every cell.
 
 ### Precision: origin shifting or double builds
 
@@ -159,7 +174,14 @@ func _physics_process(_delta: float) -> void:
 ```
 
 Large world coordinates need an engine and templates compiled with `precision=double`
-(feature tag `double`). What breaks or does not gain: GDExtensions must be rebuilt;
+(feature tag `double`). Why rendering still works: GPUs get no doubles (Metal has none,
+and some integrated GPUs crash on them). The engine splits each translation into two
+floats and applies only the model-to-camera translation at high precision; rotation,
+scale and everything in camera space stay single precision. The blog calls the cost small.
+It fixes object positions only: a planet-sized mesh still has imprecise vertices, and
+world-space math in your own shaders stays single precision.
+
+What breaks or does not gain: GDExtensions must be rebuilt;
 triplanar materials and `GPUParticles3D` without local coords still jitter; shaders using
 `world_vertex_coords` or `skip_vertex_transform` gain nothing; server and clients must use
 the same build type; 2D rendering does not gain. There is a CPU and memory cost; the docs
@@ -192,7 +214,16 @@ the authored chunk, keyed by chunk, and apply it right after instancing.
 - `Performance.RENDER_TEXTURE_MEM_USED`, `RENDER_VIDEO_MEM_USED`, `MEMORY_STATIC` and
   `OBJECT_RESOURCE_COUNT` as an in-game memory overlay while flying through the world.
 - ObjectDB Profiler (since 4.6): diff two snapshots to find what a freed chunk left behind.
-- `SceneTree.change_scene_to_node` switches to a scene you instanced and set up ahead.
+- `SceneTree.change_scene_to_node` (since 4.6) switches to a scene you instanced and set
+  up ahead, so the swap frame does no loading.
+- LightmapGI shadowmasks (since 4.4): baked shadows far away, dynamic shadows near. A short
+  dynamic shadow range is one of the larger savings in a big outdoor scene.
+- `Light3D.shadow_caster_mask` (since 4.4) keeps small props out of shadow passes.
+- Physics interpolation covers `MultiMesh` (since 4.4), so crowds can tick slowly.
+- Patch PCKs with delta encoding (since 4.6) ship only the changed parts of resources:
+  cheaper content updates for large worlds.
+- Automatic mesh LODs keep the shape of multi-part meshes better since 4.6; reimport old
+  assets to get them.
 - `ResourceLoader.get_dependencies(path)` lists what a chunk pulls in.
 - Terrain addons (clipmap or voxel terrain GDExtensions) solve terrain LOD, not object
   streaming.
@@ -207,10 +238,14 @@ the authored chunk, keyed by chunk, and apply it right after instancing.
 
 ## Version notes
 
-- 4.4: ubershaders and pipeline precompilation; typed dictionaries.
-- 4.5: shader baker; `TileMapLayer` physics chunking; navigation regions update on threads.
-- 4.6: ObjectDB Profiler; Jolt is the 3D default for new projects.
-- 4.7: nothing streaming-specific; see `version-ledger`.
+- 4.4: ubershaders and pipeline precompilation; navigation map sync on a background
+  thread; MultiMesh physics interpolation; shadowmasks; typed dictionaries.
+- 4.5: shader baker; more pipeline detection at load; `TileMapLayer` physics chunking;
+  navigation regions update on threads; a real 2D navigation server.
+- 4.6: ObjectDB snapshots; delta patch PCKs; better LOD generation; reflection probes use
+  octahedral maps (less memory); Jolt is the 3D default for new projects.
+- 4.7: `GridMap` octant queries; fixes for `load_threaded_get` deadlocks and a
+  `load_threaded_request` race (4.7 beta notes), so prefer 4.7.x for heavy threaded loading.
 
 ## Related skills
 
@@ -231,4 +266,13 @@ the authored chunk, keyed by chunk, and apply it right after instancing.
 - https://docs.godotengine.org/en/stable/tutorials/performance/thread_safe_apis.html
 - https://docs.godotengine.org/en/stable/tutorials/2d/using_tilemaps.html
 - https://docs.godotengine.org/en/stable/tutorials/navigation/navigation_using_navigationmeshes.html
-- Open-world blog posts could not be fetched in this session (web hosts blocked).
+- https://godotengine.org/article/emulating-double-precision-gpu-render-large-worlds/
+- https://godotengine.org/article/whats-missing-in-godot-for-aaa/
+- https://godotengine.org/releases/4.4/
+- https://godotengine.org/releases/4.5/
+- https://godotengine.org/releases/4.6/
+- https://godotengine.org/article/dev-snapshot-godot-4-5-dev-3/
+- https://godotengine.org/article/dev-snapshot-godot-4-7-beta-2/
+- https://godotengine.org/article/dev-snapshot-godot-4-7-beta-4/
+- https://godotengine.org/priorities/
+- Third-party open-world and terrain blogs were not reachable; none is cited.

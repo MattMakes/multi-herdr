@@ -31,7 +31,9 @@ Only the number of ticks per rendered frame varies. A simulation written only in
 
 `--fixed-fps <n>` replaces measured time with exactly `1/n` per frame, skips the tick cap and
 the frame delay. With vsync off or `--headless`, the game then runs as fast as the CPU
-allows and produces the same tick sequence every time. Movie Maker forces this mode.
+allows and produces the same tick sequence every time. The engine team describes it as
+non-real-time simulation: `delta` always has the same value however long a frame took.
+Movie Maker forces this mode.
 
 ## What is and is not deterministic
 
@@ -40,7 +42,7 @@ allows and produces the same tick sequence every time. Movie Maker forces this m
 | Integer math, `Vector2i`, `Vector3i` | Yes, everywhere |
 | `RandomNumberGenerator` with a set `seed` | Yes on one engine version; the algorithm (PCG32) is documented as an implementation detail |
 | `Dictionary` iteration | Insertion order (documented). Stable if inserts happen in a stable order |
-| `_physics_process` order | Priority, then tree order. Stable if the tree is built in a stable order |
+| `_physics_process` order | Priority, then tree order (engine source). Stable if the tree is built in a stable order |
 | Signal callbacks | Connection order in practice (engine source); not a documented promise |
 | `call_deferred` from one thread | Call order (documented) |
 | Float math in script | Same binary, same machine: yes. Across CPUs, compilers, platforms: not promised (reported by rollback addon authors; measure first) |
@@ -117,10 +119,21 @@ func _sim_tick() -> void:
 	pass
 ```
 
-Views interpolate between the last two sim states with `_accum / TICK`. If the sim lives in
-nodes instead, turn on physics interpolation (3D since 4.4) and use a low
-`Engine.physics_ticks_per_second`; raise `Engine.max_physics_steps_per_frame` when you raise
-the tick rate or the time scale, or the game slows down.
+Views interpolate between the last two sim states with `_accum / TICK`.
+
+### Low tick rate plus physics interpolation
+
+If the sim lives in nodes, turn on `physics/common/physics_interpolation` (2D since 4.3, 3D
+and MultiMesh since 4.4) and lower `Engine.physics_ticks_per_second`. The engine team's
+stated reason for the feature: run the physics update at a low rate, save CPU, and still
+look smooth on high refresh displays; mobile games gain most. Since 4.5 the 3D
+interpolation lives in the SceneTree, not the RenderingServer, so
+`Node3D.get_global_transform_interpolated` and node logic (cameras, attachments) can read
+the in-between transform. Rules: move things only in `_physics_process`; call
+`reset_physics_interpolation()` after a teleport; read the interpolated transform only for
+presentation, never for rules. Raise `Engine.max_physics_steps_per_frame` when you raise the
+tick rate or the time scale, or the game slows down. Set `Engine.physics_jitter_fix` to 0
+when you interpolate yourself or run a network game (class reference advice).
 
 ### Headless batch runs
 
@@ -155,7 +168,11 @@ replay reports the first bad tick. A replay is also the cheapest bug report form
 Keep sim state in typed arrays, packed arrays and dictionaries of plain values, keyed by
 your own integer IDs (not node paths, not instance IDs). `duplicate(true)` on that data is a
 snapshot; `var_to_bytes` makes it a save or a network packet. Uses: undo, "retry turn",
-AI look-ahead that simulates on a copy, save games, rollback.
+AI look-ahead that simulates on a copy, save games, rollback. Typed dictionaries (since
+4.4, `Dictionary[int, int]`) catch a wrong key type at the write, not at the desync. If
+state holds `Resource` objects, know that since 4.5 `duplicate(true)` copies only
+sub-resources internal to that resource and `duplicate_deep` gives explicit control over
+what is copied; a snapshot that silently shares a sub-resource is a classic rollback bug.
 
 ### Integer and fixed-point math where exactness matters
 
@@ -194,7 +211,16 @@ machine speed; use it only for presentation work.
   animation from sim ticks, so hit frames land on the same tick every run.
 - `GPUParticles3D.use_fixed_seed` and `seed` (since 4.4) make effects repeat for captures.
 - `PhysicsServer3D.set_active(false)` stops physics stepping while a turn-based sim runs.
-- The Game screen speed menu also scales the tick rate; `--time-scale` does not.
+- The Game screen speed menu (since 4.6) also scales the tick rate; `--time-scale` does not.
+- `IterateIK3D.deterministic` (since 4.6; `TwoBoneIK3D` and `SplineIK3D` always are): the
+  pose depends only on the target and the input pose, not on the previous frame. Peers that
+  share only the IK target then show the same pose. Pair it with
+  `LimitAngularVelocityModifier3D` to smooth the jumps this mode can produce.
+- `FileAccess.create_temp` (since 4.4) gives batch runs scratch files that delete
+  themselves.
+- A custom `Logger` (since 4.5) can collect errors per run in a batch, and script
+  backtraces work in release builds when
+  `debug/settings/gdscript/always_track_call_stacks` is on.
 
 ## Traps
 
@@ -210,10 +236,16 @@ machine speed; use it only for presentation work.
 
 ## Version notes
 
-- 4.4: 3D physics interpolation; particle fixed seeds; Game screen speed control.
-- 4.5: script backtraces in logs make batch-run failures readable.
-- 4.6: new projects use Jolt for 3D; golden values from Godot Physics change.
-- 4.7: Jolt soft body and world boundary behavior changed again (see `version-ledger`).
+- 4.4: 3D and MultiMesh physics interpolation; particle fixed seeds; typed dictionaries;
+  Jolt available as an experimental option.
+- 4.5: 3D interpolation moved to the SceneTree (same API); `duplicate_deep`; `Logger` and
+  script backtraces; `TileMapLayer` colliders merged into chunks (body-to-cell lookups
+  became approximate).
+- 4.6: new projects use Jolt for 3D, so golden values recorded with Godot Physics change;
+  Game screen speed menu; deterministic IK option.
+- 4.7: Jolt soft body and world boundary behavior changed again (see `version-ledger`);
+  keyboard and mouse events carry their own device IDs, which matters if recorded input
+  stores `InputEvent.device`.
 
 ## Related skills
 
@@ -235,5 +267,13 @@ machine speed; use it only for presentation work.
 - https://raw.githubusercontent.com/godotengine/godot/4.7/main/main_timer_sync.cpp
 - https://raw.githubusercontent.com/godotengine/godot/4.7/scene/main/scene_tree.cpp
 - https://raw.githubusercontent.com/godotengine/godot/4.7/core/object/object.cpp
+- https://raw.githubusercontent.com/godotengine/godot/4.7/scene/main/node.h
+- https://godotengine.org/releases/4.4/
+- https://godotengine.org/releases/4.5/
+- https://godotengine.org/releases/4.6/
+- https://godotengine.org/article/movie-maker-mode-arrives-in-godot-4/
+- https://godotengine.org/article/dev-snapshot-godot-4-4-dev-1/
+- https://godotengine.org/article/dev-snapshot-godot-4-5-dev-4/
+- https://godotengine.org/article/inverse-kinematics-returns-to-godot-4-6/
 - https://raw.githubusercontent.com/foxssake/netfox/main/README.md
-- Blog hosts (fixed-timestep and rollback articles) were blocked in this session.
+- Third-party blog hosts (fixed-timestep and rollback articles) were not reachable.

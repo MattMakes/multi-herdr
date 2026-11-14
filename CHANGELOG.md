@@ -8,8 +8,8 @@
   34 shelves of advanced and less-common Godot 4.7 techniques (engine
   internals, GDScript and C# speed, threads, servers, rendering, physics,
   navigation, networking, world streaming, deterministic simulation, design
-  iteration tools and more), written from the whole official manual and from
-  engine-team and practitioner write-ups. Each of the 19 `godot-*` teammates
+  iteration tools and more), written from the whole official manual, the class
+  reference and the engine team's release notes and articles. Each of the 19 `godot-*` teammates
   names the shelves for its role at the top of its briefing and reads the
   version ledger first, so old engine advice does not leak into new code.
 

@@ -2,7 +2,8 @@
 name: godot-library
 description: >-
   The reference library of advanced and less-common Godot 4.7 techniques, one shelf per area,
-  built from the whole official manual and from engine-team and practitioner write-ups. Use it
+  built from the whole official manual, the class reference and the engine team's release notes
+  and articles. Use it
   before you design or review any Godot system that must be fast, large, repeatable or easy to
   tune: engine internals, GDScript and C# speed, threads, servers and RIDs, frame budgets,
   rendering, GI, 2D, shaders, particles, physics, navigation, animation, UI, input, audio,
@@ -42,8 +43,10 @@ full set of options and not from the first one you remember.
   version and the measured numbers of this project win over any shelf.
 - **Version honesty.** A shelf targets 4.7 and marks what 4.4, 4.5, 4.6 or 4.7 added. On an
   older project, a marked feature may not exist; say so and choose another way.
-- **Sourced claims.** Each shelf ends with its sources. A claim marked "reported" comes from a
-  write-up and not from the manual: measure before you depend on it.
+- **Sourced claims.** Each shelf ends with its sources: manual pages, release pages and
+  engine-team articles. A version tag ("since 4.5") is proven by the release page or by the
+  class reference of the older versions. A claim marked "reported" has one source that the
+  manual does not confirm: measure before you depend on it.
 - **Advanced does not mean default.** Each technique names its cost. If the cost line
   describes your project, do not use the technique.
 - **No shelf replaces a procedure skill.** Each shelf ends with "Related skills"; use those
@@ -151,7 +154,7 @@ Every shelf has the same parts, in this order:
 - **Traps**: common mistakes and outdated beliefs.
 - **Version notes**: what 4.4 to 4.7 changed in this area.
 - **Related skills**: the procedure skills for the steps.
-- **Sources**: the manual pages and write-ups behind the shelf.
+- **Sources**: the manual pages, release pages and articles behind the shelf.
 
 The 4 cross-area shelves (version-ledger, design-iteration-toolkit,
 determinism-and-simulation, worlds-and-streaming) adapt the middle parts to their subject.

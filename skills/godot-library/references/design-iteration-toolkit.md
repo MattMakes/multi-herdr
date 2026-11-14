@@ -44,7 +44,7 @@ extends Resource
 @export_range(1, 500, 1, "or_greater") var health: int = 40
 @export_range(0.05, 5.0, 0.05, "exp", "suffix:s") var attack_interval: float = 1.0
 @export var damage: int = 5
-@export_tool_button("Print DPS", "Callable") var print_dps_action: Callable = print_dps
+@export_tool_button("Print DPS", "Callable") var print_dps_action = print_dps
 
 func print_dps() -> void:
 	print(damage / attack_interval)
