@@ -127,7 +127,7 @@ code twice.
 | `CONNECT_DEFERRED` | The call is queued and runs at the next flush. Arguments are copied now. |
 | `CONNECT_ONE_SHOT` | Disconnected before the call, so the handler may reconnect itself. |
 | `CONNECT_REFERENCE_COUNTED` | The same `Callable` may connect many times; each disconnect counts down. |
-| `CONNECT_APPEND_SOURCE_OBJECT` | The emitter is appended after the signal arguments. |
+| `CONNECT_APPEND_SOURCE_OBJECT` | Since 4.5. The emitter is appended after the signal arguments. |
 
 `CONNECT_DEFERRED` is the clean fix for "state changed while the physics server flushes queries":
 connect `body_entered` deferred and the handler may add or remove bodies freely.
@@ -190,7 +190,7 @@ Inspector; `@export_file_path` (since 4.5) keeps `res://`. Normalise with `ensur
 ## Version notes
 
 - 4.4: `.uid` side files for scripts and shaders; `@export_file` stores `uid://`.
-- 4.5: `@export_file_path`.
+- 4.5: `@export_file_path`; `CONNECT_APPEND_SOURCE_OBJECT`; `SceneTree.scene_changed`.
 - 4.6: scene files store a `unique_id` per node, so renamed or moved nodes keep their overrides in
   inherited and instanced scenes.
 - 4.7: no change to the frame order above (checked against the 4.7 source).

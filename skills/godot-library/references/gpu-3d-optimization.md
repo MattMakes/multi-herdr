@@ -128,8 +128,7 @@ Sorting errors: `sorting_offset` on the node, `render_priority` on the material.
 
 Cost follows screen coverage more than count. Enable `distance_fade_enabled` on `Decal`,
 `OmniLight3D` and `SpotLight3D`: past begin + length the element is culled and leaves the cluster
-budget. Keep the decal box short along its projection axis. Decals take no custom shader and do
-not exist in Compatibility.
+budget. Keep the decal box short along its projection axis. No decals in Compatibility.
 
 ### Texture memory and sampling
 
@@ -147,16 +146,12 @@ Temporal reprojection hides noise but ghosts behind fast lights and `FogVolume` 
 short-lived lights `light_volumetric_fog_energy` 0, which also removes them from the fog pass.
 Use small 3D density textures (64 cubed or less).
 
-### Vertex shading for the low end
-
-`shading_mode = SHADING_MODE_PER_VERTEX` on a material, or
-`rendering/shading/overrides/force_vertex_shading` for the whole project, moves lighting to
-vertices. Large gain on weak mobile GPUs and shaded particles, coarse on low-poly meshes.
-
 ## Niche but useful
 
+- `shading_mode = SHADING_MODE_PER_VERTEX` on a material, or project-wide
+  `rendering/shading/overrides/force_vertex_shading`: big gain on weak mobile GPUs.
 - `Viewport.debug_draw` overdraw mode and the editor's **Occlusion Culling Buffer** and **Disable
-  Mesh LOD** views show what each system really does.
+  Mesh LOD** views.
 - `rendering/driver/depth_prepass/enable` off: wins in fixed top-down views with little overdraw.
 - `VisibleOnScreenEnabler3D`: stop animation and logic for off-screen actors; skinning is costly.
 - Raise `Camera3D.near` before lowering `far` to fix Z-fighting; near matters far more.
@@ -170,7 +165,6 @@ vertices. Large gain on weak mobile GPUs and shaded particles, coarse on low-pol
 - Merging a whole level into one mesh kills culling: merge by area.
 - Billboards and impostors add overdraw when stacked; they trade vertices for fill rate.
 - Lights hidden by `light_cull_mask` still cast shadows from masked objects; set `cast_shadow`.
-- Resolution scale that changes nothing means the bottleneck is CPU or draw calls.
 
 ## Version notes
 
@@ -197,6 +191,7 @@ vertices. Large gain on weak mobile GPUs and shaded particles, coarse on low-pol
 - https://docs.godotengine.org/en/stable/tutorials/3d/visibility_ranges.html
 - https://docs.godotengine.org/en/stable/tutorials/performance/using_multimesh.html
 - https://docs.godotengine.org/en/stable/tutorials/3d/lights_and_shadows.html
+- https://docs.godotengine.org/en/stable/tutorials/3d/using_decals.html
 - https://docs.godotengine.org/en/stable/tutorials/3d/volumetric_fog.html
 - https://docs.godotengine.org/en/stable/tutorials/3d/3d_rendering_limitations.html
 - https://docs.godotengine.org/en/stable/tutorials/physics/large_world_coordinates.html

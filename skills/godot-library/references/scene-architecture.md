@@ -19,21 +19,19 @@ scene root a node was saved with. It drives saving, `%Name` lookup and what `fin
 default. `scene_file_path` is set only on the root of an instanced scene.
 
 Groups are stored in the `SceneTree` as name -> node list. A node outside the tree is in no list.
-Scene groups and global groups share one namespace; "global" only adds a name and description in
-Project Settings.
+Scene groups and global groups share one namespace.
 
 Autoloads are plain nodes added under `root` before the main scene, in the order of the Autoload
 list. Nothing makes them unique: the same script can be instanced again elsewhere.
 
-Instancing a `PackedScene` runs in engine code. Building the same subtree with `Node.new()` and
-`add_child` calls crosses the script API once per statement and is slower as the tree grows.
+Instancing a `PackedScene` runs in engine code. Building the same subtree in script crosses the
+script API once per statement and gets slower as the tree grows.
 
 ## Advanced techniques
 
 ### Scenes without outward dependencies
 
-A scene should run alone (F6). What it needs from outside is injected by whoever owns it. Five
-channels, from safest to tightest:
+A scene should run alone (F6). What it needs from outside is injected by its owner. Five channels:
 
 | Channel | Use | Note |
 |---|---|---|
@@ -52,14 +50,13 @@ Make B a child of A only when freeing A should free B. If B merely follows A, ke
 use `RemoteTransform2D` / `RemoteTransform3D` (push A's transform to a `remote_path`). To stop
 transform inheritance without moving the node, set `top_level = true` (`CanvasItem`, `Node3D`), or
 put a plain `Node` between them: it has no transform, so nothing passes through.
-Pays off for the player, the camera and UI that must survive a room swap. No special case in the
-swap code means no "remember to rescue the player" bug.
+Pays off for the player, the camera and UI that must survive a room swap: no "rescue the player
+first" special case in the swap code.
 
 ### One entry point, swap below it
 
 `Main` (controller script) with `World` and `GUI` children. Level changes replace children of
-`World`; `GUI` and the session state stay. `SceneTree.change_scene_to_file` replaces the whole
-current scene and is only right for small games.
+`World`; `GUI` and session state stay. `change_scene_to_file` replaces everything: small games only.
 
 | Way to leave a scene | Memory | Processing | Data |
 |---|---|---|---|
@@ -68,7 +65,7 @@ current scene and is only right for small games.
 | `remove_child` and keep the reference | Kept | Stops; leaves groups | Stale but intact |
 
 A removed subtree is an orphan: free it or re-add it, or it leaks. `change_scene_to_node(node)`
-takes a scene you already built and configured (level seed, save data). The old scene leaves the
+(since 4.6) takes a scene you already built and configured (level seed, save data). The old scene leaves the
 tree at once; the new one is added at the end of the frame, so `current_scene` is `null` in
 between. `await get_tree().scene_changed` before you touch the new scene.
 
@@ -79,27 +76,26 @@ between. `await get_tree().scene_changed` before you touch the new scene.
 see `%Hilt` of an instanced child, but `get_node("Hand/Sword/%Hilt")` and `%Sword/%Hilt` work); a
 node created at run time needs `owner` set and `unique_name_in_owner = true` to join the table; two
 nodes with the same unique name under one owner hide each other.
-Use it for every internal reference in UI scenes. Layout changes then cost zero script edits.
+Use it for internal references in UI scenes: layout changes then cost no script edits.
 
 ### Inheritance, composition, editable children
 
 | Tool | Stores | Good for | Limit |
 |---|---|---|---|
-| Inherited scene | Differences from the base scene | Variants; local edits of imported 3D scenes | Base nodes cannot be removed; sub-resources are shared with the base |
-| Instanced child scene | Path plus overridden root properties | Reuse by composition | Only the root is visible to the parent |
-| Editable Children | Overrides of inner nodes, saved in the parent | One-off tweaks | Parent depends on the child's inner layout |
+| Inherited scene | Differences from the base | Variants; edits of imported 3D scenes | Base nodes cannot be removed |
+| Instanced child scene | Path plus root overrides | Reuse by composition | Parent sees only the root |
+| Editable Children | Inner-node overrides, in the parent | One-off tweaks | Parent depends on inner layout |
 
-Prefer exported properties on the child root over Editable Children. Since 4.6 scene files store a
-`unique_id` per node, so overrides in inherited and instancing scenes survive a rename or move of
-the base node. Before 4.6 they were matched by path and were lost.
+Prefer exported properties on the child root over Editable Children. Sub-resources of the base are
+shared, not copied. Since 4.6 scene files store a `unique_id` per node, so overrides in inherited
+and instancing scenes survive a rename or move of the base node.
 
 ### InstancePlaceholder for staged loading
 
 Mark an instanced scene "Load As Placeholder". At run time the node is an `InstancePlaceholder`
 that holds only the path and the overridden properties. `create_instance(replace, custom_scene)`
 loads and inserts the real scene; `get_instance_path()` gives the path for a threaded preload
-first. Pays off for rooms behind doors and rarely opened UI: the parent scene loads fast and the
-layout stays visible in the editor.
+first. Pays off for rooms behind doors and rarely opened UI: the parent scene loads fast.
 Traps: a placeholder has no transform, so its children sit at the viewport origin until replaced;
 `create_instance` loads on the calling thread and is not thread-safe.
 
@@ -108,8 +104,7 @@ Traps: a placeholder has no transform, so its children sit at the viewport origi
 `get_nodes_in_group` builds a new `Array` in tree order on every call: fine per event, wasteful per
 frame per node. Use `get_first_node_in_group` for a single target and `get_node_count_in_group`
 for "any left?". Groups also work as interface tags: `is_in_group(&"damageable")` is a cheap
-capability test that works across scene borders. `add_to_group(name, true)` makes the membership
-persistent when a tool script packs the scene. For hot sets, a typed static registry is faster:
+capability test across scene borders. For hot sets, a typed static registry avoids the copy:
 
 ```gdscript
 class_name Enemy
@@ -146,7 +141,6 @@ systems' data. Lighter options:
 - Stateless helpers: `class_name` plus `static func`. No node, no load order.
 - Shared state without a node: `static var`. Cleared only when the script unloads.
 - Shared tunable data: one `Resource` file that several scenes export.
-- Scene-wide context: a node the scene root exposes; children reach it through `owner`.
 
 ### Scenes as named types
 
@@ -164,19 +158,12 @@ const BULLET: PackedScene = preload("res://weapons/bullet.tscn")
 Trap: a script that preloads the scene it is attached to forms a load cycle. Keep the constants in
 a separate script, or use `load()` inside a static factory.
 
-### Configure before add_child
-
-Set properties on a new node before it enters the tree. In the tree, many setters trigger updates
-(transform propagation, server calls, layout). This matters in spawners and procedural generation.
-Exception: values that need the tree, such as `global_position`.
-
 ### Contracts the editor can check
 
 - `@tool` plus `_get_configuration_warnings()`: a scene states what it needs (a child of some
   type, a non-empty export) and the Scene dock shows the warning icon.
 - Typed `@export var hurtbox: Area2D`: the Inspector accepts only matching nodes.
 - `@abstract` on classes and methods (since 4.5): a base "interface" that cannot be instanced.
-- Duck typing (`has_method`, groups) for loose plug-ins; typed bases for core systems.
 
 ### Feature tags as structural switches
 
@@ -193,8 +180,9 @@ running from the editor.
 - `Node.replace_by(node, true)`: swap a stand-in for the real node and keep groups and children.
 - `PackedScene.get_state()` (`SceneState`): read node types, groups and connections of a scene
   without instancing it. Good for validation tools and level catalogs.
+- Set properties before `add_child`: in the tree many setters trigger updates (transforms, server
+  calls, layout). Matters in spawners. Exception: values that need the tree (`global_position`).
 - `.gdignore` in a folder: the editor skips it (raw art sources, docs). Faster first import.
-- `NOTIFICATION_PARENTED`: wire a node to its parent even when the pair is built outside the tree.
 - A custom `MainLoop` or a `SceneTree` subclass: see the shelf `engine-internals`.
 - Keep `rpc` calls and `multiplayer` checks in a thin adapter node so gameplay scenes also run
   with no peer.
@@ -202,14 +190,12 @@ running from the editor.
 ## Traps
 
 - `get_node("../../Something")` in a reusable scene: an outward dependency in disguise.
-- A global `Sound.play()` pool autoload: global state, untraceable callers, fixed allocation.
-  Let each scene own its `AudioStreamPlayer` nodes.
+- A global sound-pool autoload: global state, untraceable callers. Let scenes own their players.
 - Belief "an autoload is a singleton". It is only an auto-added node.
 - `current_scene` right after a scene change call: it is still `null` or the old one.
-- Mixed-case file names: they work on Windows and fail after export to a case-sensitive
-  system. Use snake_case for files and folders, PascalCase for node names.
-- Deep inheritance chains of scenes: each level adds override lookups and merge risk. Two levels
-  is a practical limit; compose beyond that.
+- Mixed-case file names work on Windows and fail on case-sensitive systems. Use snake_case.
+- Deep chains of inherited scenes: every level is one more file an override can hide in. Rule of
+  thumb (not from the docs): stop at two levels and compose beyond that.
 - Version control: commit `.uid` and `.import` files, ignore `.godot/`. Set `* text=auto eol=lf`.
   Keep scenes small and single-purpose so two workers rarely edit the same `.tscn`.
 
@@ -217,7 +203,7 @@ running from the editor.
 
 - 4.4: `.uid` files for scripts and shaders; references survive moves done outside the editor.
 - 4.5: `@abstract`; `SceneTree.scene_changed`.
-- 4.6: per-node `unique_id` in scene files (robust inherited and instanced overrides).
+- 4.6: per-node `unique_id` in scene files; `SceneTree.change_scene_to_node`.
 - 4.7: no structural change found in the upgrade notes for this area.
 
 ## Related skills
@@ -226,7 +212,6 @@ running from the editor.
 - `godot-component-system`: building component nodes; this shelf gives the dependency rules.
 - `godot-dependency-injection`: autoload start-up order and injection patterns in detail.
 - `godot-event-bus`: when a global signal hub is justified.
-- `godot-project-setup`: folder layout and ignore files for a new project.
 - `godot-safe-refactor`: moving and renaming scenes without breaking references.
 
 ## Sources
@@ -234,13 +219,7 @@ running from the editor.
 - https://docs.godotengine.org/en/stable/tutorials/best_practices/scene_organization.html
 - https://docs.godotengine.org/en/stable/tutorials/best_practices/scenes_versus_scripts.html
 - https://docs.godotengine.org/en/stable/tutorials/best_practices/autoloads_versus_regular_nodes.html
-- https://docs.godotengine.org/en/stable/tutorials/best_practices/godot_interfaces.html
-- https://docs.godotengine.org/en/stable/tutorials/best_practices/logic_preferences.html
 - https://docs.godotengine.org/en/stable/tutorials/best_practices/project_organization.html
-- https://docs.godotengine.org/en/stable/tutorials/best_practices/version_control_systems.html
 - https://docs.godotengine.org/en/stable/tutorials/scripting/scene_unique_nodes.html
 - https://docs.godotengine.org/en/stable/tutorials/scripting/change_scenes_manually.html
-- https://docs.godotengine.org/en/stable/tutorials/scripting/pausing_games.html
-- https://docs.godotengine.org/en/stable/tutorials/scripting/groups.html
 - https://docs.godotengine.org/en/stable/tutorials/export/feature_tags.html
-- https://docs.godotengine.org/en/stable/classes/class_instanceplaceholder.html

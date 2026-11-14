@@ -52,8 +52,8 @@ without the editor.
 
 `RenderingServer.viewport_set_measure_render_time()` turns on per-viewport timers. Unlike FPS,
 the values stay correct under V-Sync or a frame cap. Full CPU render cost is the sum of all
-drawn viewports plus `get_frame_setup_time_cpu()`. Trap: under a low load the GPU lowers its
-clock, so GPU time can read higher with a cap than without.
+drawn viewports plus `get_frame_setup_time_cpu()`. Trap: a GPU under low load lowers its clock,
+so GPU time can read higher with a cap than without.
 
 ```gdscript
 extends Node
@@ -102,27 +102,14 @@ shows inbound and outbound references. Snapshots are `.odb_snapshot` files in
 
 ### Your own debugger channel
 
-Send structured data from the game to an editor tab.
-
-```gdscript
-extends Node
-
-func _ready() -> void:
-	if EngineDebugger.is_active():
-		EngineDebugger.register_message_capture("balance", _on_editor_message)
-		EngineDebugger.send_message("balance:wave", [3, 41.5])
-
-func _on_editor_message(message: String, data: Array) -> bool:
-	if message == "set_speed":
-		Engine.time_scale = float(data[0])
-		return true
-	return false
-```
-
-On the editor side an `EditorDebuggerPlugin` returns true from `_has_capture("balance")`, handles
-`_capture(message, data, session_id)` and adds UI with `get_session(id).add_session_tab()`.
-Trap: the game side gets the message without the prefix (`set_speed`), the editor side gets it
-with the prefix (`balance:wave`). For a custom profiler, subclass `EngineProfiler` and register
+Send structured data between the game and an editor tab, for example live balance numbers out
+and a tuning value back. Game side, when `EngineDebugger.is_active()`:
+`EngineDebugger.send_message("balance:wave", [3, 41.5])` and
+`EngineDebugger.register_message_capture("balance", callable)`; the callable takes the message
+and a data `Array` and returns true when it handled it. Editor side: an `EditorDebuggerPlugin`
+returns true from `_has_capture("balance")`, handles `_capture(message, data, session_id)` and
+adds UI with `get_session(id).add_session_tab()`. Trap: the game callable gets the message
+without the prefix, the editor plugin gets it with the prefix. For a custom profiler, subclass `EngineProfiler` and register
 it with `EngineDebugger.register_profiler()`. Procedure: `godot-debugging`.
 
 ### Viewport debug draw modes
@@ -139,16 +126,15 @@ Forward+ or Mobile. Wireframe on Compatibility needs
 
 | Flag | Builds | Use |
 |---|---|---|
-| `--disable-vsync` | all | Remove the display cap (a driver setting can still force it) |
+| `--disable-vsync` | all | Remove the display cap (a driver can still force it) |
 | `--print-fps` | all | FPS to stdout each second |
 | `--fixed-fps <fps>` | all | Same `delta` each frame, no real-time sync |
-| `--frame-delay <ms>` | all | Imitate a slow CPU |
+| `--frame-delay <ms>`, `--time-scale <s>` | all | Imitate a slow CPU; change game speed |
 | `--quit-after <n>` | all | Stop after n iterations |
-| `--profiling`, `--gpu-profile` | all | Script profiler on, GPU report to stdout |
+| `--profiling`, `--gpu-profile` | all | Script profiler on; GPU report to stdout |
 | `--remote-debug <uri>` | all | Connect to an editor debug server |
 | `--debug-collisions`, `--debug-paths` | debug | Draw shapes and paths |
 | `--debug-navigation`, `--debug-avoidance` | debug | Draw navigation and avoidance |
-| `--debug-canvas-item-redraw` | debug | Flash each 2D redraw request |
 | `--benchmark`, `--benchmark-file <path>` | editor | Startup timings, console or JSON |
 
 A repeatable run fixes the frame count and the step:
@@ -163,16 +149,16 @@ Arguments after `--` reach the game through `OS.get_cmdline_user_args()`.
 
 `--write-movie out.avi` (or `.png`, `.ogv`) with `--fixed-fps` renders every frame with the same
 step, however long a frame takes, so no frame is dropped. Use it for visual regression clips
-and trailers of heavy scenes. `OS.has_feature("movie")` is true in this mode and `Engine.get_write_movie_path()` gives
-the file. It is not for recording live play.
+and trailers of heavy scenes. `OS.has_feature("movie")` is true in this mode. It is not for
+recording live play.
 
 ### Custom Logger and script backtraces (since 4.5)
 
 Subclass `Logger` and pass it to `OS.add_logger()` in `_init()` of an autoload. `_log_error()`
 gets file, line, text, type and `ScriptBacktrace` objects; `_log_message()` gets plain prints. Both are called from any thread, possibly at once: guard shared state with a `Mutex`.
 Do not print from inside them. `push_error()` and `push_warning()` arrive in `_log_error()`,
-not in `_log_message()`. GDScript errors carry a backtrace in editor and debug builds. For
-release exports turn on `ProjectSettings.debug/settings/gdscript/always_track_call_stacks`.
+not in `_log_message()`. Backtraces are filled in editor and debug builds. For release exports
+turn on `ProjectSettings.debug/settings/gdscript/always_track_call_stacks`.
 `always_track_local_variables` also keeps locals for `Engine.capture_script_backtraces(true)`,
 at about 50 bytes per local variable in every class. Procedure: `godot-debugging`.
 
@@ -214,11 +200,11 @@ templates can be debugged remotely.
 - Profiling with V-Sync on, or in the editor build, and reading the result as shipping cost.
 - A debug-only flag on a release template: ignored without a message.
 - Outdated belief: release builds cannot give script stack traces. Since 4.5 they can.
+- A monitor callable that scans the tree shows up as a hitch once per second.
 - Trusting a 0 from a `Performance` monitor in release: some exist only in debug builds.
 
 ## Version notes
 
-- 4.4: no change to the tools on this shelf was found in the docs.
 - 4.5: `Logger` and `OS.add_logger()`; GDScript backtraces on errors; `ScriptBacktrace`;
   `always_track_call_stacks` for release.
 - 4.6: ObjectDB Profiler tab; tracing profiler support (Tracy, Perfetto, Instruments).
@@ -230,12 +216,10 @@ templates can be debugged remotely.
 - `godot-debugging` - step-by-step Logger, debugger plugin, overlay and leak-check procedures.
 - `godot-perf-measure` - A/B measurement method on a noisy machine.
 - `godot-optimization` - what to change once the tool has named the bottleneck.
-- `godot-headless-runs` - running the engine from scripts and CI without a window.
 - `godot-visual-verification` - screenshot and movie based checks.
 
 ## Sources
 
-- https://docs.godotengine.org/en/stable/tutorials/scripting/debug/overview_of_debugging_tools.html
 - https://docs.godotengine.org/en/stable/tutorials/scripting/debug/debugger_panel.html
 - https://docs.godotengine.org/en/stable/tutorials/scripting/debug/the_profiler.html
 - https://docs.godotengine.org/en/stable/tutorials/scripting/debug/custom_performance_monitors.html
