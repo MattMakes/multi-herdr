@@ -17,40 +17,24 @@ description: >-
 
 Target engine: **Godot 4.7** (4.7.2 is the latest stable release).
 
-This skill is a library, not a procedure. The other `godot-*` skills tell you how to do a job
-step by step. A shelf tells you what the engine really does in one area, which advanced or
-uncommon techniques exist there, when each one pays off for the game or for the team, what it
-costs and how it fails. Read a shelf before you design, so that the design starts from the
-full set of options and not from the first one you remember.
+This skill is a library, not a procedure. The other `godot-*` skills tell you how to do a job step by step. A shelf tells you what the engine really does in one area, which advanced or uncommon techniques exist there, when each one pays off for the game or for the team, what it costs and how it fails. Read a shelf before you design, so that the design starts from the full set of options and not from the first one you remember.
 
 ## How to use it
 
-1. Read [version-ledger](references/version-ledger.md) once per task. Models and blog posts
-   carry advice from Godot 3 and early Godot 4 that 4.7 made false.
-2. Find the shelf for your problem in the catalog below. Your seat's briefing names the shelves
-   for your role; the catalog holds all of them, and you may read any shelf.
-3. Read the whole shelf. Start with "Use this shelf when" and "How the engine works here";
-   the techniques make sense only with that model.
-4. Pick a technique by its "when it pays" line, not by how clever it is. Most games need the
-   simple form. A technique that removes a cost you did not measure adds only risk.
-5. Check each API name on the project's engine (`godot --doctool`, see `godot-build-verify`)
-   and measure the gain (`godot-perf-measure`) before you report it.
+1. Read [version-ledger](references/version-ledger.md) once per task. Models and blog posts carry advice from Godot 3 and early Godot 4 that 4.7 made false.
+2. Find the shelf for your problem in the catalog below. Your seat's briefing names the shelves for your role; the catalog holds all of them, and you may read any shelf.
+3. Read the whole shelf. Start with "Use this shelf when" and "How the engine works here"; the techniques make sense only with that model.
+4. Pick a technique by its "when it pays" line, not by how clever it is. Most games need the simple form. A technique that removes a cost you did not measure adds only risk.
+5. Check each API name on the project's engine (`godot --doctool`, see `godot-build-verify`) and measure the gain (`godot-perf-measure`) before you report it.
 6. Name the shelf and the technique in your report, so that a reviewer can check your source.
 
 ## Rules of the library
 
-- **A shelf proposes; the project decides.** The project context file, the pinned engine
-  version and the measured numbers of this project win over any shelf.
-- **Version honesty.** A shelf targets 4.7 and marks what 4.4, 4.5, 4.6 or 4.7 added. On an
-  older project, a marked feature may not exist; say so and choose another way.
-- **Sourced claims.** Each shelf ends with its sources: manual pages, release pages and
-  engine-team articles. A version tag ("since 4.5") is proven by the release page or by the
-  class reference of the older versions. A claim marked "reported" has one source that the
-  manual does not confirm: measure before you depend on it.
-- **Advanced does not mean default.** Each technique names its cost. If the cost line
-  describes your project, do not use the technique.
-- **No shelf replaces a procedure skill.** Each shelf ends with "Related skills"; use those
-  for the steps and the checks.
+- **A shelf proposes; the project decides.** The project context file, the pinned engine version and the measured numbers of this project win over any shelf.
+- **Version honesty.** A shelf targets 4.7 and marks what 4.4, 4.5, 4.6 or 4.7 added. On an older project, a marked feature may not exist; say so and choose another way.
+- **Sourced claims.** Each shelf ends with its sources: manual pages, release pages and engine-team articles. A version tag ("since 4.5") is proven by the release page or by the class reference of the older versions. A claim marked "reported" has one source that the manual does not confirm: measure before you depend on it.
+- **Advanced does not mean default.** Each technique names its cost. If the cost line describes your project, do not use the technique.
+- **No shelf replaces a procedure skill.** Each shelf ends with "Related skills"; use those for the steps and the checks.
 
 ## Catalog
 
@@ -148,20 +132,15 @@ Every shelf has the same parts, in this order:
 
 - **Use this shelf when**: the situations it serves.
 - **How the engine works here**: the internal model that explains the techniques.
-- **Advanced techniques**: each with what it is, when it pays, how to do it with exact API
-  names, and its cost and trap.
+- **Advanced techniques**: each with what it is, when it pays, how to do it with exact API names, and its cost and trap.
 - **Niche but useful**: uncommon features with one reason each to use them.
 - **Traps**: common mistakes and outdated beliefs.
 - **Version notes**: what 4.4 to 4.7 changed in this area.
 - **Related skills**: the procedure skills for the steps.
 - **Sources**: the manual pages, release pages and articles behind the shelf.
 
-The 4 cross-area shelves (version-ledger, design-iteration-toolkit,
-determinism-and-simulation, worlds-and-streaming) adapt the middle parts to their subject.
+The 4 cross-area shelves (version-ledger, design-iteration-toolkit, determinism-and-simulation, worlds-and-streaming) adapt the middle parts to their subject.
 
 ## Keeping the library true
 
-The library follows the latest stable Godot. When a new stable release ships, update
-version-ledger first, then each shelf whose area the release notes name. The gate parses every
-GDScript block and checks every engine name in a code block against the pinned engine version,
-so a renamed API fails the build and not a worker's task.
+The library follows the latest stable Godot. When a new stable release ships, update version-ledger first, then each shelf whose area the release notes name. The gate parses every GDScript block and checks every engine name in a code block against the pinned engine version, so a renamed API fails the build and not a worker's task.
