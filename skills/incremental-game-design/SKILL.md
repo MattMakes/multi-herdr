@@ -195,7 +195,9 @@ Use the reference patterns as questions. Each pattern in
 `references/reference-game-patterns.md` ends with a question to ask about the game. Answer
 the ones that apply. Three to five answers with evidence are better than fifteen without.
 For formulas, multiplier stacking, premium currency, and odds, use
-`references/reference-game-math.md`.
+`references/reference-game-math.md`. For what other games do (cost ratios, prestige
+formulas, softcaps, walls, reset timing), use `references/other-games-math.md`: a verdict on
+a formula is stronger with more than one game behind it.
 
 ## Step 6: Ideate, then prove
 
@@ -285,6 +287,7 @@ the charts and the live formula cells were not opened.
 | `references/indicators.md` | You read a workbook or set targets |
 | `references/reference-game-patterns.md` | You diagnose structure or look for what a strong incremental game does |
 | `references/reference-game-math.md` | You judge formulas, multiplier stacking, premium-currency flow, or odds |
+| `references/other-games-math.md` | You choose or judge a formula and want what other incremental games use: cost ratios, prestige shapes, softcaps, walls, stacking, reset timing |
 | `references/system-archetypes.md` | You propose systems |
 | `scripts/scan_godot.py` | Inventory of a Godot project |
 | `scripts/progression_workbook.py` | Simulation and workbook (the `pw_*.py` files beside it are its modules) |

@@ -116,8 +116,9 @@ level that the buyer bought.
 
 **Cost growth.** The reference game uses x1.05 to x1.5 for each level, by system: low values
 for lines with hundreds of levels, high values for lines with a small cap
-(reference-game-math.md has the table). A value far outside the range of similar lines is a
-question to ask, not an error.
+(reference-game-math.md has the table). Other games use x1.07 to x1.15 for generators and
+up to x2.5 for lines that must become a wall (other-games-math.md, section 1). A value far
+outside the range of similar lines is a question to ask, not an error.
 
 **Share of spending (Purchases sheet).** One line that takes most of a currency means that
 the other lines are not real options.
