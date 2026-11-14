@@ -1,0 +1,18 @@
+{
+ "title": "Reference: when Idle Obelisk Miner opens its systems",
+ "note": "Source: Idle Obelisk Miner Wiki (shminer.miraheze.org), read 2026-11-13. The axis is the Obelisk level (0 to 75), not time: the wiki gives no play-time data. Use this curve for its shape (many systems at the start, a steady feed in the first half, then cross-system gates), not for its exact values.",
+ "axis_max": 75,
+ "system_unlocks": [
+  {"level": 0, "system": "Mine floors and ores"}, {"level": 0, "system": "Craft bars"}, {"level": 0, "system": "Upgrades"},
+  {"level": 0, "system": "Sell"}, {"level": 0, "system": "Bombs"}, {"level": 0, "system": "Workshop"},
+  {"level": 0, "system": "Chests and relics"}, {"level": 0, "system": "Prestige (player level 20)"},
+  {"level": 2, "system": "Drones"}, {"level": 4, "system": "Skill tree"}, {"level": 10, "system": "Challenges"},
+  {"level": 12, "system": "Contracts"}, {"level": 15, "system": "Cards"}, {"level": 17, "system": "Pets"},
+  {"level": 18, "system": "Drone fuel"}, {"level": 19, "system": "Construct, veins, World 2 monument"},
+  {"level": 23, "system": "Stargazing"}, {"level": 26, "system": "Polychrome card tier"},
+  {"level": 30, "system": "Archaeology"}, {"level": 35, "system": "Platinized statues"},
+  {"level": 37, "system": "Fishing"}, {"level": 42, "system": "World 3 monument"},
+  {"level": 60, "system": "Infernal card tier"}, {"level": 64, "system": "World 4 monument"},
+  {"level": 66, "system": "Archaeology ascension"}, {"level": 70, "system": "Arcanist"}
+ ]
+}

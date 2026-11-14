@@ -1440,6 +1440,12 @@
       "verbatim": false
     },
     {
+      "name": "incremental-game-design",
+      "copied_files": [],
+      "verbatim": false,
+      "budget_exempt": "ships its tools: the progression simulator and workbook writer (5 Python modules) and the Godot project scan, plus the reference-game pattern and math references"
+    },
+    {
       "name": "ios-simulator-run",
       "copied_files": [
         "SKILL.md"

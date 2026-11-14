@@ -594,7 +594,7 @@ fn g58_claude_workers_share_read_only_preapprovals() {
             names.push(name);
         }
     }
-    assert_eq!(names.len(), 84);
+    assert_eq!(names.len(), 85);
     // sound-engineer runs on claude; audio-reviewer runs on agy.
     assert!(names.contains(&"sound-engineer"), "{names:?}");
     assert!(!names.contains(&"audio-reviewer"), "{names:?}");

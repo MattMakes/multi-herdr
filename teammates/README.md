@@ -320,6 +320,24 @@ on the web. It needs only `node` and the Read tool, which shows PNG files, so
 it has no MCP servers and `requires:` nothing. Every effect goes through at
 least 3 rounds of render, look and fix before `DONE:`.
 
+## The incremental game designer
+
+| teammate | phase | agent, model, effort | fallback | use for |
+|---|---|---|---|---|
+| `game-design-incremental-specialist` | plan | claude, opus, high | `codex-sol` | progression of incremental, idle and upgrade-driven games: review a build, design the math of a new game, design core and meta loops, propose and prove new systems |
+
+It carries `incremental-game-design` and names `game-juice`,
+`godot-economy-system` and `godot-gameplay-loops`. A Godot project adds
+`godot-balance-model-data`, `godot-upgrade-tree-design` and
+`godot-bot-balance-loop` through `skills_when`. It is offered in every
+project, because it also works from a design document or an idea before any
+project file exists. It reads a Godot project and does not run the engine, so
+it `requires:` nothing; the skill's scripts need `python3` and `openpyxl`.
+It writes a report, model JSON files and pacing workbooks (.xlsx) to the
+folder the task names, or `ai_docs/progression/<game>/`, and changes no game
+file unless the task says so. For a full juice pass it points the
+orchestrator at `game-design-juicer`.
+
 ## The skill intake team
 
 `skill-importer` imports a skill from a GitHub repo or a local folder with
