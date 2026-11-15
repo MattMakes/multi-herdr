@@ -374,6 +374,8 @@ struct Procs<'a> {
     parent: &'a dyn Fn(u32) -> Option<u32>,
     /// Whether a pid runs with the given start time.
     same: &'a dyn Fn(u32, u64) -> bool,
+    /// A sandbox-safe identity query, tried when `same` is blocked.
+    same_fallback: &'a dyn Fn(u32, u64) -> bool,
 }
 
 impl Procs<'static> {
@@ -382,6 +384,7 @@ impl Procs<'static> {
             me: std::process::id(),
             parent: &parent_pid,
             same: &horch_core::procid::is_same,
+            same_fallback: &horch_core::procid::is_same_sandboxed,
         }
     }
 }
@@ -401,7 +404,7 @@ fn runs_in(agent: Option<Agent>, procs: &Procs) -> bool {
     else {
         return false;
     };
-    if !(procs.same)(agent, started) {
+    if !(procs.same)(agent, started) && !(procs.same_fallback)(agent, started) {
         return false;
     }
     let mut pid = procs.me;
@@ -1031,6 +1034,7 @@ mod tests {
                 me,
                 parent: &parent,
                 same: &same,
+                same_fallback: &|_, _| false,
             },
         )
     }
@@ -1041,6 +1045,7 @@ mod tests {
             me: AGENT.pid,
             parent: &|_| None,
             same: &|_, _| true,
+            same_fallback: &|_, _| false,
         }
     }
 
@@ -1050,6 +1055,7 @@ mod tests {
             me: 91,
             parent: &|pid| (pid == 91).then_some(90),
             same: &|_, _| true,
+            same_fallback: &|_, _| false,
         }
     }
 
@@ -1290,6 +1296,25 @@ mod tests {
         };
         assert!(!tree_check(42, Some(unknown)), "no recorded start time");
         assert!(!tree_check(42, None), "no recorded agent");
+    }
+
+    /// Claude's macOS sandbox blocks the full process-info query for its
+    /// agent process. The sandbox-safe query still proves the agent's exact
+    /// start time before the caller's parent walk passes.
+    #[test]
+    fn trf_43_a_blocked_agent_query_uses_the_sandbox_safe_query() {
+        let parent = |pid: u32| match pid {
+            41 => Some(40),
+            42 => Some(41),
+            _ => None,
+        };
+        let procs = Procs {
+            me: 42,
+            parent: &parent,
+            same: &|_, _| false,
+            same_fallback: &|pid, started| (pid, started) == (40, 7),
+        };
+        assert!(runs_in(Some(AGENT), &procs));
     }
 
     /// TRF-43: the real process tree. This test process descends from its
