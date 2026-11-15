@@ -89,14 +89,17 @@ choose from** — there is no registry to update and nothing to recompile.
 ## The team
 
 `product-lead`, `researcher`, `staff-engineer`, `designer`,
-`architect-reviewer`, `frontend-developer`, `backend-developer` and
-`qa-engineer` are the specialists. Their `phase` selects a small portable
+`architect-reviewer`, `root-cause-auditor`, `frontend-developer`,
+`backend-developer` and `qa-engineer` are the specialists. Their `phase` selects a small portable
 skill catalog embedded in horch; `skills` adds named bundled skills for that
 role. Skills are discovered by each harness and read only when relevant.
 `product-lead` adds `product-requirements`, `staff-engineer` adds
 `system-design` (and names `api-contracts` and `data-migrations`),
 `architect-reviewer` adds `architecture-review`, and `backend-developer` adds
-`api-contracts` and `data-migrations`.
+`api-contracts` and `data-migrations`. `root-cause-auditor` adds
+`patch-around-audit`: it finds code that was patched around a stale comment,
+test or core flaw, reports each site with its evidence, and fixes the root
+cause when its task says so. It audits by default and keeps Edit for the fix.
 Claude specialists set `inherit_plugins: false` to switch off globally enabled
 plugins while preserving other operator settings and their declared MCP tools.
 
@@ -476,7 +479,7 @@ Each teammate's `effort:` follows its role, not its model
 | role | teammates | effort |
 |---|---|---|
 | orchestrator | `orchestrator`, `orchestrator-codex` | medium |
-| reviewers and planners | `architect-reviewer`, `qa-engineer`, `codex-reviewer`, `staff-engineer`, `product-lead` | high |
+| reviewers and planners | `architect-reviewer`, `root-cause-auditor`, `qa-engineer`, `codex-reviewer`, `staff-engineer`, `product-lead` | high |
 | builders and research | `backend-developer`, `frontend-developer`, `designer`, `researcher`, `sonnet`, `opus`, `codex-sol`, `codex-network`, `prime`, `spec-writer`, `ticket-writer` | medium |
 | runners | `codex-terra`, `codex-luna`, `pi` | low |
 | effort-matrix personas | `sonnet-*`, `opus-*` (effort is the role; see above) | low to max |

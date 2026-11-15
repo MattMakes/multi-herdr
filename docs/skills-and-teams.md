@@ -238,6 +238,7 @@ to no phase.
 | `opus-architect` | `codebase-design`; `improve-codebase-architecture`: deepening candidates in an HTML report under `ai_docs/reports/` (it has Write and no Edit, so it writes the report and edits no code) |
 | `fable-creative`, `astra-creative`, `opus-creative` | `creative-council`: diverge (1 design per seat, alone, under `ai_docs/designs/<slug>/`) or combine (`combined.md`, each part with its source letters) |
 | `game-design-juicer` | `game-juice`: audits each core action (input, hit-stop, deformation, direction, sound), balances by tier and frequency, writes a ranked idea report under `ai_docs/juice/` |
+| `root-cause-auditor` | `patch-around-audit`: finds sites where code was patched around a stale comment, test or core flaw; judges each (live invariant, stale comment, patched-around core, superseded intent); writes a report under `ai_docs/reviews/` with the decisions it needs first; fixes 1 site per commit when the task says so. Also `debug` and `tdd` for the fix |
 | `frontend-developer`, `opus-domain`, `opus`, `codex-sol`, `codex-reviewer` | name `codebase-design` under `available_skills` |
 
 ### Blender and the Unreal team

@@ -426,6 +426,7 @@ registry to update.
 | `qa-engineer`          | Claude | Sonnet | high   | Tests, e2e harnesses, bug reproduction       |
 | `codex-reviewer`       | Codex  | Sol    | high   | Cross-vendor review of Claude-built changes  |
 | `architect-reviewer-light` | Claude | Opus | medium | Code-sweep rounds 2 and 3 only. Read-only    |
+| `root-cause-auditor`   | Claude | Opus   | high   | Finds code patched around a stale comment or core flaw; fixes the root cause when told |
 | `codex-reviewer-light` | Codex  | Terra  | medium | Code-sweep rounds 2 and 3 only               |
 | `sonnet-sketch`        | Claude | Sonnet | low    | Drafts, brainstorms, boilerplate, one-file edits |
 | `sonnet-feature`       | Claude | Sonnet | medium | Standard features against a clear spec       |

@@ -12,6 +12,13 @@
   skips it. `comment-remover` carries the new clean-room skill
   `comment-pruning`. The first horch with this step migrates the task ledger to
   version 8 and keeps a backup.
+- New teammate `root-cause-auditor`: run `horch spawn root-cause-auditor` in
+  any project and it finds the places where code was patched around instead
+  of fixed: guards, special cases, flags and wrappers piled beside a comment,
+  test or core block that nobody changed. Its report lists each site with the
+  commits that patched it, the root cause, and the decisions it needs from
+  you first. Tell it which sites to fix and it rewrites each at the root,
+  1 commit per site. It runs on Opus at high effort.
 
 ## v0.4.9 - 2026-11-11
 
