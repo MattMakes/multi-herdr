@@ -58,6 +58,19 @@ pub fn is_same(pid: u32, started: u64) -> bool {
     start_time(pid) == Some(started)
 }
 
+/// Whether `pid` has `started`, using the macOS `KERN_PROC_PID` query that
+/// Claude's sandbox permits for an ancestor outside the sandbox.
+#[cfg(target_os = "macos")]
+pub fn is_same_sandboxed(pid: u32, started: u64) -> bool {
+    raw(pid).and_then(imp::sysctl_start_time) == Some(started)
+}
+
+/// Other platforms need no second process-identity query for this sandbox.
+#[cfg(not(target_os = "macos"))]
+pub fn is_same_sandboxed(_pid: u32, _started: u64) -> bool {
+    false
+}
+
 /// Whether process group `pgid` is still the one whose leader started at
 /// `started`: the leader runs with that start time and still leads the
 /// group; or the leader has ended and the group still has members, which
@@ -199,6 +212,57 @@ mod imp {
             )
         };
         (n == size).then(|| info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec)
+    }
+
+    /// `kern.proc.pid.<pid>` is readable in Claude's macOS sandbox for an
+    /// ancestor outside that sandbox. Its `kinfo_proc` starts with
+    /// `extern_proc.p_starttime`, a `timeval` in the public Darwin ABI.
+    pub(super) fn sysctl_start_time(pid: i32) -> Option<u64> {
+        const MAX_KINFO_PROC_SIZE: usize = 4096;
+        let mut mib = [libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_PID, pid];
+        let mut len = 0;
+        // SAFETY: `mib` holds 4 valid integers; a null output buffer asks only
+        // for the required length, and the remaining input pointers are null.
+        if unsafe {
+            libc::sysctl(
+                mib.as_mut_ptr(),
+                mib.len() as libc::c_uint,
+                std::ptr::null_mut(),
+                &mut len,
+                std::ptr::null_mut(),
+                0,
+            )
+        } != 0
+            || len < std::mem::size_of::<libc::timeval>()
+            || len > MAX_KINFO_PROC_SIZE
+        {
+            return None;
+        }
+        let mut bytes = vec![0_u8; len];
+        // SAFETY: `bytes` has `len` writable bytes, `mib` still holds 4
+        // valid integers, and the remaining input pointers are null.
+        if unsafe {
+            libc::sysctl(
+                mib.as_mut_ptr(),
+                mib.len() as libc::c_uint,
+                bytes.as_mut_ptr().cast(),
+                &mut len,
+                std::ptr::null_mut(),
+                0,
+            )
+        } != 0
+            || len < std::mem::size_of::<libc::timeval>()
+        {
+            return None;
+        }
+        // SAFETY: the successful sysctl wrote at least one `timeval`; the
+        // byte buffer need not be aligned, so read it unaligned.
+        let started = unsafe { std::ptr::read_unaligned(bytes.as_ptr().cast::<libc::timeval>()) };
+        let seconds = u64::try_from(started.tv_sec).ok()?;
+        let micros = u64::try_from(started.tv_usec).ok()?;
+        (micros < 1_000_000)
+            .then_some(())
+            .and_then(|()| seconds.checked_mul(1_000_000)?.checked_add(micros))
     }
 
     /// The start time is microseconds since the epoch.
@@ -493,6 +557,17 @@ mod tests {
         assert!(alive(me, None), "an old record: the pid exists");
         assert!(!is_same(me, started + 1));
         assert!(!alive(me, Some(started + 1)), "a reused pid is dead");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_sandbox_safe_sysctl_names_the_same_process_start() {
+        let me = std::process::id();
+        assert_eq!(
+            imp::sysctl_start_time(os_pid(me).unwrap()),
+            start_time(me),
+            "the sandbox fallback keeps the recorded identity"
+        );
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
