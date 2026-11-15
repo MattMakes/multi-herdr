@@ -1351,7 +1351,10 @@ mod tests {
     fn report_mode_sends_3_commands_and_refuses_the_rest() {
         use horch_core::messaging::report::{self, Request};
         use std::sync::{Arc, Mutex};
-        let tmp = tempfile::Builder::new().tempdir_in("/tmp").unwrap();
+        let tmp = tempfile::Builder::new()
+            .tempdir_in("/tmp")
+            .or_else(|_| tempfile::tempdir())
+            .unwrap();
         let path = report::socket_path(tmp.path(), "r1");
         let seen = Arc::new(Mutex::new(Vec::new()));
         let log = seen.clone();
