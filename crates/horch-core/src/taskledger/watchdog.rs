@@ -1064,7 +1064,8 @@ pub struct ReviewsIn {
 
 /// The review rounds of `run` at `now` whose reviews are all in for
 /// [`REVIEWS_IN_AFTER_S`] while the author waits (TRF-51): the parent is in
-/// flight, its live worker's code-sweep step waits, and no review of it is
+/// flight, its live worker's code-sweep or comment-sweep step waits, and no
+/// review of it is
 /// open. Each needs 1 `reviews-in` wake.
 pub fn reviews_waiting(conn: &Connection, run: &Run, now: &str) -> Result<Vec<ReviewsIn>> {
     let mut stmt = conn.prepare(&format!(
@@ -1073,11 +1074,14 @@ pub fn reviews_waiting(conn: &Connection, run: &Run, now: &str) -> Result<Vec<Re
            JOIN task_steps s ON s.task_id = t.task_id AND s.worker_id = t.current_worker_id
            JOIN tasks r ON r.parent_task_id = t.task_id AND r.kind = 'review'
           WHERE t.run_id = ?1 AND t.status IN ({in_flight})
-            AND s.name = {sweep} AND s.status = {running}
+            AND s.name IN ({sweeps}) AND s.status = {running}
           GROUP BY t.task_id, t.current_worker_id
          HAVING sum(r.status NOT IN ({ended})) = 0",
         in_flight = sql_words::list(sql_words::TASKS_IN_FLIGHT),
-        sweep = word(super::model::StepName::CodeSweep),
+        sweeps = sql_words::list(&[
+            super::model::StepName::CodeSweep,
+            super::model::StepName::CommentSweep,
+        ]),
         running = word(super::model::StepStatus::Running),
         ended = sql_words::list(sql_words::TASKS_ENDED),
     ))?;

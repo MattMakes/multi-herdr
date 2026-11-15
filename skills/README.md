@@ -343,3 +343,14 @@ The notes are in own text. A copied file keeps its upstream text and has a note 
 | [godot-version-migration](godot-version-migration/SKILL.md) | own text |
 | [godot-visual-verification](godot-visual-verification/SKILL.md) | adapted |
 | [godot-xr-development](godot-xr-development/SKILL.md) | combined |
+## Clean-room intake: comment-pruning
+
+`comment-pruning` belongs to no phase. It is own text, written clean-room with `skill-intake`. A security sweep read a local source named `comment-removal` (licence class none, sha256 `6df588214ed1`) in a quarantine, one role worker wrote behaviour specs in its own words, and a second role worker that never saw the source wrote the skill from the specs alone. No text or code was copied, so the skill needs no notice file and no runtime download.
+
+The specs the writer worked from and the sweep result are in [docs/cleanroom/comment-pruning/](../docs/cleanroom/comment-pruning/).
+
+| Skill | Kind |
+| --- | --- |
+| [comment-pruning](comment-pruning/SKILL.md) | own text (clean-room) |
+
+

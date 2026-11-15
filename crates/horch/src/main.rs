@@ -102,9 +102,11 @@ enum LaunchCommand {
         #[arg(long, value_name = "SESSION_ID")]
         resume: Option<String>,
         /// How much each task is verified before it lands; the default for
-        /// the run the orchestrator creates. `full`: check, AI code review
-        /// (code-sweep), complexity-sweep, recheck. `light` (the default):
-        /// check and complexity-sweep, no AI reviewers. `minimal`: check only.
+        /// the run the orchestrator creates. Every profile runs the check and
+        /// comment-sweep (a comment-remover worker deletes the comments the
+        /// task added). `full` adds AI code review (code-sweep),
+        /// complexity-sweep and recheck. `light` (the default) adds
+        /// complexity-sweep, no AI reviewers. `minimal` adds nothing.
         #[arg(long, value_name = "PROFILE", env = "HORCH_VERIFY")]
         verify: Option<horch_core::taskledger::model::VerifyProfile>,
     },

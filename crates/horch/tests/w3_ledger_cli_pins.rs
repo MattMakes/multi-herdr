@@ -430,6 +430,7 @@ fn assert_finish_steps(w: &World, id: &str) {
         steps,
         [
             ("check", "not_applicable"),
+            ("comment-sweep", "not_applicable"),
             ("code-sweep", "not_applicable"),
             ("complexity-sweep", "not_applicable"),
             ("recheck", "not_applicable"),
@@ -445,12 +446,12 @@ fn assert_finish_steps(w: &World, id: &str) {
         .lines()
         .map(|l| l.split_whitespace().collect())
         .collect();
-    assert_eq!(rows.len(), 7);
+    assert_eq!(rows.len(), 8);
     assert_eq!(&rows[0][..4], ["1", "check", "not_applicable", "not"]);
-    assert_eq!(&rows[4][..3], ["5", "land", "not_applicable"]);
-    assert_eq!(rows[6][..3], ["7", "cleanup", "passed"]);
+    assert_eq!(&rows[5][..3], ["6", "land", "not_applicable"]);
+    assert_eq!(rows[7][..3], ["8", "cleanup", "passed"]);
     let by_task = w.ok(&["ledger", "steps", "T-1", "--json"]);
-    assert_eq!(json(&by_task).as_array().unwrap().len(), 7);
+    assert_eq!(json(&by_task).as_array().unwrap().len(), 8);
 }
 
 #[test]

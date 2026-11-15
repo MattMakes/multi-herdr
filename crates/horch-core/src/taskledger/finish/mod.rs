@@ -8,6 +8,7 @@
 //! it are final, until a commit arrives that the run branch lacks.
 
 pub mod codesweep;
+pub mod comments;
 pub mod complexity;
 pub mod detach;
 pub mod land;
@@ -881,6 +882,7 @@ pub fn rereview(store: &mut Store, tools: &Tools, worker_id: &str) -> Result<()>
 fn run_step(store: &mut Store, cx: &Ctx<'_>, name: StepName) -> Result<Outcome> {
     match name {
         StepName::Check | StepName::Recheck => land::check(cx, name),
+        StepName::CommentSweep => comments::step(store, cx),
         StepName::CodeSweep => codesweep::step(store, cx),
         StepName::ComplexitySweep => complexity::step(cx),
         StepName::Land => land::land(store, cx),

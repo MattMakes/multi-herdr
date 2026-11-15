@@ -403,6 +403,14 @@ installed on this host". A skill that changes or disappears between
 `horch spawn` and the worker's start fails the launch, because the worker
 must run the skill digests that the ledger recorded.
 
+## The comment-remover teammate
+
+| teammate | phase | agent, model, effort | fallback | use for |
+|---|---|---|---|---|
+| `comment-remover` | implementation | claude, opus, medium | none | Finish step comment-sweep only: deletes the comments a task added and commits in the author's work folder. |
+
+It carries `comment-pruning`, written clean-room with `skill-intake` (see [docs/cleanroom/comment-pruning/](../docs/cleanroom/comment-pruning/)). It is hidden: horch spawns it for the finish step `comment-sweep` (see [docs/specs/comment-sweep.md](../docs/specs/comment-sweep.md)), and the orchestrator never picks it.
+
 ## The effort-matrix personas
 
 Eight more Claude specialists split the work by model tier and effort level

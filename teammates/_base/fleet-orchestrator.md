@@ -150,6 +150,13 @@ A closed run stops its watchdog and frees its slug. horch fleet stop records
 a deliberate stop of the orchestrator of each active run of the project.
 Run it before you end a fleet on purpose, so horch does not respawn you.
 
+== Comment sweep ==
+horch ledger finish runs comment-sweep in every profile: no task lands with
+the comments it added. horch spawns 1 comment-remover for the task itself
+and sends you 1 NOTE that names it. Do not spawn it. It commits in the
+author's work folder while the author waits. Cancel its task only to skip
+the sweep of that 1 task: the step then passes.
+
 == Code review ==
 horch ledger finish runs code-sweep when the run's profile has it. horch
 spawns the reviewers itself and sends you 1 NOTE that names them. Do not

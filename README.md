@@ -52,8 +52,9 @@ operator: a brief, or a rough idea
   | the run's watchdog wakes the orchestrator: a question, a stall,
   | a dead worker, tasks that can start, reviews in, the run settled
   v
-  horch ledger finish   check, code-sweep (horch spawns the reviewers),
-                        complexity-sweep, recheck,
+  horch ledger finish   check, comment-sweep (a comment-remover deletes
+                        the comments the task added), code-sweep (horch
+                        spawns the reviewers), complexity-sweep, recheck,
                         land (onto fleet/<slug>), pr, cleanup
   horch ledger done "<summary>"         closes the worker's pane
   (or horch ledger handoff <path>: the task goes back to the queue first)
@@ -97,6 +98,8 @@ on your machine; layers 5 and 6 run on GitHub.
 | 2 horch ledger finish  horch, in the worker's worktree                   |
 |   check             the task's check, else the run's (run new --check);  |
 |                     no check means no land, unless **Check:** none       |
+|   comment-sweep     a comment-remover deletes the comments on the lines  |
+|                     the task changed, and commits in the work folder     |
 |   code-sweep        horch spawns the reviewers; Review none 0, light 1,  |
 |                     full at most 3 rounds; Critical fails, Important     |
 |                     fails until fixed, answered (F<n>) or waived         |
@@ -1051,8 +1054,8 @@ it). The orchestrator queues tickets (`horch ledger run new`, `add-map`,
 `plan-workers`, or `horch ledger task` for a one-off) and spawns workers with
 no task; each worker claims its own
 (`horch ledger claim`), reports (`progress`), and cannot finish until
-`horch ledger finish` has run every step of the run: check, code-sweep,
-complexity-sweep, recheck, land on the run branch, the run's PR, and a
+`horch ledger finish` has run every step of the run: check, comment-sweep,
+code-sweep, complexity-sweep, recheck, land on the run branch, the run's PR, and a
 cleanup that refuses to lose work. The verification profile picks which of
 the checking steps a run uses (see below). Workers check in every 30 s, a watchdog
 reaps a worker that stops making progress, and workers are stopped only by
@@ -1081,13 +1084,13 @@ with land, pr and cleanup.
 
 | profile | steps before land | token cost |
 |---|---|---|
-| `full` | check, code-sweep, complexity-sweep, recheck | highest: code-sweep runs up to 3 AI reviewers per round, and a ticket's `**Review:**` sets the rounds (none 0, light 1, full at most 3) |
-| `light` (default) | check, complexity-sweep | low: the check is the task's own command; complexity-sweep is a local analyser for TS/JS/Python and clippy for Rust |
-| `minimal` | check | lowest |
+| `full` | check, comment-sweep, code-sweep, complexity-sweep, recheck | highest: code-sweep runs up to 3 AI reviewers per round, and a ticket's `**Review:**` sets the rounds (none 0, light 1, full at most 3) |
+| `light` (default) | check, comment-sweep, complexity-sweep | low: the check is the task's own command; comment-sweep is 1 `comment-remover` worker per task; complexity-sweep is a local analyser for TS/JS/Python and clippy for Rust |
+| `minimal` | check, comment-sweep | lowest: the check and 1 `comment-remover` worker per task |
 
 ```sh
 horch fleet --verify full       # AI code review for risky work
-horch fleet --verify minimal    # only the task's check gates landing
+horch fleet --verify minimal    # the task's check and the comment sweep
 export HORCH_VERIFY=full        # your own default for every fleet
 ```
 

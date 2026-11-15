@@ -4,6 +4,15 @@
 
 ## Unreleased
 
+- Every task now loses the comments it added before it lands. The new finish
+  step `comment-sweep` runs right after the check in every verification
+  profile (`minimal`, `light` and `full`): horch queues 1 task for the new
+  teammate `comment-remover`, which deletes the comments on the lines the task
+  changed and commits in the author's work folder. A change with no code file
+  skips it. `comment-remover` carries the new clean-room skill
+  `comment-pruning`. The first horch with this step migrates the task ledger to
+  version 8 and keeps a backup.
+
 ## v0.4.9 - 2026-11-11
 
 - New teammate `game-design-juicer`: run `horch spawn game-design-juicer` in a

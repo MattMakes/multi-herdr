@@ -483,6 +483,11 @@
       "verbatim": false
     },
     {
+      "name": "comment-pruning",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
       "name": "create-plan",
       "copied_files": [
         "SKILL.md"

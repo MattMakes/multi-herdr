@@ -395,6 +395,10 @@ installs only what passes 2 gates.
   brief file. No OS sandbox applies to the subagents unless the session has
   one, and the report says so.
 
+### Clean-room intake: comment-pruning
+
+`comment-remover` carries the clean-room skill `comment-pruning`. The skill was imported with `skill-intake` (see [skills/README.md](../skills/README.md)).
+
 ## `horch agent-list`: which harnesses can this machine run
 
 ```bash

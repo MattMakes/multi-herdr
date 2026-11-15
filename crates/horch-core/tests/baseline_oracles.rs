@@ -81,6 +81,7 @@ const SKIP_NEW_TEAMMATES: &[&str] = &[
     "blender-qa",
     "codex-reviewer-light",
     "codex-swift-reviewer",
+    "comment-remover",
     "design-critic",
     "design-director",
     "design-system-engineer",
