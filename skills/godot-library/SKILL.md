@@ -22,11 +22,12 @@ This skill is a library, not a procedure. The other `godot-*` skills tell you ho
 ## How to use it
 
 1. Read [version-ledger](references/version-ledger.md) once per task. Models and blog posts carry advice from Godot 3 and early Godot 4 that 4.7 made false.
-2. Find the shelf for your problem in the catalog below. Your seat's briefing names the shelves for your role; the catalog holds all of them, and you may read any shelf.
-3. Read the whole shelf. Start with "Use this shelf when" and "How the engine works here"; the techniques make sense only with that model.
-4. Pick a technique by its "when it pays" line, not by how clever it is. Most games need the simple form. A technique that removes a cost you did not measure adds only risk.
-5. Check each API name on the project's engine (`godot --doctool`, see `godot-build-verify`) and measure the gain (`godot-perf-measure`) before you report it.
-6. Name the shelf and the technique in your report, so that a reviewer can check your source.
+2. Read [principles-and-performance](references/principles-and-performance.md) before you add a class, a manager, an abstraction or an optimization. It shows where the fast choice and the simple choice are the same, and what to do where they are not.
+3. Find the shelf for your problem in the catalog below. Your seat's briefing names the shelves for your role; the catalog holds all of them, and you may read any shelf.
+4. Read the whole shelf. Start with "Use this shelf when" and "How the engine works here"; the techniques make sense only with that model.
+5. Pick a technique by its "when it pays" line, not by how clever it is. Most games need the simple form. A technique that removes a cost you did not measure adds only risk.
+6. Check each API name on the project's engine (`godot --doctool`, see `godot-build-verify`) and measure the gain (`godot-perf-measure`) before you report it.
+7. Name the shelf and the technique in your report, so that a reviewer can check your source.
 
 ## Rules of the library
 
@@ -43,6 +44,7 @@ This skill is a library, not a procedure. The other `godot-*` skills tell you ho
 | Shelf | Holds |
 |---|---|
 | [version-ledger](references/version-ledger.md) | what changed in 4.4 to 4.7, and beliefs that are now false |
+| [principles-and-performance](references/principles-and-performance.md) | where the fast choice is also the SRP, DRY, KISS or YAGNI choice |
 
 ### Engine and code
 
@@ -124,6 +126,7 @@ This skill is a library, not a procedure. The other `godot-*` skills tell you ho
 | The build is too large or loads slowly | export-and-platforms | assets-import, gdextension-and-engine-builds |
 | The game must run on Web or a phone | export-and-platforms | rendering-pipeline, threads-and-concurrency |
 | The UI is slow, or breaks in another language | ui-advanced | i18n-and-accessibility |
+| You are about to add a manager, a pool, a base class or an event bus | principles-and-performance | scene-architecture |
 | Old code or old advice may not fit 4.7 | version-ledger | the shelf of that area |
 
 ## What a shelf contains
@@ -139,7 +142,7 @@ Every shelf has the same parts, in this order:
 - **Related skills**: the procedure skills for the steps.
 - **Sources**: the manual pages, release pages and articles behind the shelf.
 
-The 4 cross-area shelves (version-ledger, design-iteration-toolkit, determinism-and-simulation, worlds-and-streaming) adapt the middle parts to their subject.
+The 5 cross-area shelves (version-ledger, principles-and-performance, design-iteration-toolkit, determinism-and-simulation, worlds-and-streaming) adapt the middle parts to their subject.
 
 ## Keeping the library true
 

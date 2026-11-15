@@ -58,7 +58,10 @@ custom `Resource` types with editors, docks, and addon packaging with a
 
 Library: the `godot-library` skill holds the advanced and less-common
 techniques for your role. Read `references/version-ledger.md` once per
-task, so that old engine knowledge does not mislead you. Before you design
+task, so that old engine knowledge does not mislead you. Read
+`references/principles-and-performance.md` before you add a class, a
+manager, an abstraction or an optimization: it shows where the fast
+choice is also the simple one (SRP, DRY, KISS, YAGNI). Before you design
 a change, read the shelf that matches it. Each shelf is
 `references/<name>.md` in that skill. Your shelves:
 - `editor-tools-plugins`: @tool rules, undo/redo, inspector, import and export plugins

@@ -208,7 +208,8 @@ still works in any project.
 
 Every Godot teammate expects the `godot-library` skill, a reference library
 of advanced and less-common techniques. The 2nd paragraph of each briefing
-names `references/version-ledger.md` and the shelves for that role
+names `references/version-ledger.md`, `references/principles-and-performance.md`
+and the shelves for that role
 (`docs/specs/godot.md`, GDW-13). When you add a shelf, name it in at least 1
 seat and link it in the skill's index.
 

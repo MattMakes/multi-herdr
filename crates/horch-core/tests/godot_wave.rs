@@ -558,9 +558,12 @@ fn library_shelves() -> BTreeSet<&'static str> {
 #[test]
 fn gdw_13_every_godot_seat_names_its_library_shelves_high_in_its_briefing() {
     const SKILL: &str = "godot-library";
-    const LEDGER: &str = "version-ledger";
+    // The 2 shelves every seat reads: the block's prose names them.
+    const EVERY_SEAT: [&str; 2] = ["version-ledger", "principles-and-performance"];
     let shelves = library_shelves();
-    assert!(shelves.contains(LEDGER), "{shelves:?}");
+    for shelf in EVERY_SEAT {
+        assert!(shelves.contains(shelf), "{shelves:?}");
+    }
 
     let roster = roster();
     let seats = seats(&roster);
@@ -590,12 +593,14 @@ fn gdw_13_every_godot_seat_names_its_library_shelves_high_in_its_briefing() {
         );
         let end = block + body[block..].find("\n\n").expect("the block ends");
         let text = &body[block..end];
-        assert!(
-            text.contains("`references/version-ledger.md`"),
-            "{}: the block does not name the version ledger",
-            t.name
-        );
-        named.insert(LEDGER);
+        for shelf in EVERY_SEAT {
+            assert!(
+                text.contains(&format!("`references/{shelf}.md`")),
+                "{}: the block does not name {shelf}",
+                t.name
+            );
+            named.insert(shelf);
+        }
         let mut own = 0;
         for line in text.lines().filter(|l| l.starts_with("- `")) {
             let shelf = line[3..].split('`').next().unwrap();
