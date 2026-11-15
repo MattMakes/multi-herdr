@@ -874,6 +874,32 @@ fn overlay_horch_paths(
             }
         }
     }
+    if teammate.horch_access == HorchAccess::Full {
+        if let Some(project) = env
+            .workdir
+            .as_deref()
+            .filter(|project| project.join(".git").is_dir())
+        {
+            // Claude Code denies `.git` writes inside the working directory
+            // by default. `sandbox.filesystem.allowWrite` must name the git
+            // common dir for commits and `.worktrees` for `git worktree add`.
+            changed |= add_entries(
+                settings,
+                [
+                    (
+                        FS,
+                        "allowWrite",
+                        project.join(".git").to_string_lossy().into_owned(),
+                    ),
+                    (
+                        FS,
+                        "allowWrite",
+                        project.join(".worktrees").to_string_lossy().into_owned(),
+                    ),
+                ],
+            )?;
+        }
+    }
     // The state root holds every worker's skills bundle, which the pane's
     // `horch` commands never write (ticket 28; R6).
     if let (HorchAccess::Full, Some(root)) = (teammate.horch_access, &env.state_root) {
@@ -1674,6 +1700,37 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A sandboxed ledger worker can create its ledger worktree and commit
+    /// there: git writes the main checkout's common dir and horch creates the
+    /// linked checkout under the project's `.worktrees` folder.
+    #[test]
+    fn a_sandboxed_launch_can_write_its_project_worktree_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+        let [env, _] = sandbox_envs(tmp.path());
+        if !host_can_sandbox(&env) {
+            return;
+        }
+        let env = LaunchEnv {
+            workdir: Some(tmp.path().to_path_buf()),
+            ..env
+        };
+        let built = super::super::launch::command_in(
+            &env,
+            &sandboxed(json!({})),
+            Session::Fresh("id"),
+            "go",
+            None,
+        )
+        .unwrap();
+        let writes = settings_arg(&built)["sandbox"]["filesystem"]["allowWrite"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert!(writes.contains(&json!(tmp.path().join(".git"))));
+        assert!(writes.contains(&json!(tmp.path().join(".worktrees"))));
     }
 
     /// A sandboxed `full` launch closes every skills bundle under the state
