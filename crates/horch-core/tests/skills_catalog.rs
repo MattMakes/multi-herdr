@@ -61,6 +61,7 @@ const REPO_ORIGINAL: &[&str] = &[
     "godot-version-migration",
     "hark",
     "incremental-game-design",
+    "make-videos",
     "one-page-design",
     "orchestrate",
     "patch-around-audit",

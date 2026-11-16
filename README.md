@@ -547,7 +547,9 @@ A fleet boots from this repository alone. The orchestrator briefing, the worker
 briefing and the orchestration playbook all ship here: the two briefings in
 [`teammates/_base/`](teammates/), the playbook as the bundled
 [`orchestrate`](skills/orchestrate/SKILL.md) skill, attached to
-`orchestrator` and `orchestrator-codex` by name. No `~/.claude/skills` entry
+`orchestrator` and `orchestrator-codex` by name. Both also carry
+[`make-videos`](skills/make-videos/SKILL.md), which turns a game's git history
+into a devblog video series. No `~/.claude/skills` entry
 and no plugin is required or consulted at boot, and an installed `horch` works
 with no checkout because both are compiled in.
 

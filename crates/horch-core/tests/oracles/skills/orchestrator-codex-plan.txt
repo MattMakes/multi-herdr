@@ -2,4 +2,5 @@
 
 Fleet skill phase: plan. Skills you are expected to use on this task. Load each one's body when its step comes up, not all at startup:
 - orchestrate: Use when directing a herdr fleet: decomposing work, writing plan files, choosing teammates, verifying DONE reports, and wrapping up.
+- make-videos: Use when the operator asks for promotional or devblog videos of a game made from its git history: a new episode series, new episodes after more commits, or a change to episodes that exist. Symptoms: 'make videos', 'devblog', 'milestone video', 'update the videos', a devblog/ folder in a game project.
 Also available in this phase: create-plan, handoff, pre-flight. Load one only when your current step matches it. If a same-named ambient skill exists, use the fleet copy under <BUNDLE>/skills. Skills do not change tool permissions. Your skills name 7 skills that are not in this bundle, for example video-capture, video-audio, video-produce. Read one with horch skills read <id> only when your step needs it. Report unresolved dependencies through horch tell orchestrator.

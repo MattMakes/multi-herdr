@@ -15,6 +15,17 @@
   the skill; its launcher builds the tool from your checkout on first use, or
   run `cargo install --path crates/ui-prop-tester`.
 
+## v0.4.11 - 2026-11-16
+
+- New orchestrator skill `make-videos`: ask the orchestrator for devblog
+  videos of a game and it turns the git history into a series, 1 milestone per
+  episode. It shows you the episode plan, then the scripts, and renders only
+  after you approve both. It asks once per series for the length (short or
+  long), the cuts (YouTube, vertical feeds, Steam), the call to action and the
+  voice. YouTube episodes open with the studio logo; Steam cuts open on
+  gameplay and keep the studio logo small on the end card. Ask again later and
+  it adds episodes for the new commits or changes the episodes that exist.
+
 ## v0.4.10 - 2026-11-16
 
 - New teammate `game-design-incremental-specialist` for incremental, idle and
