@@ -12,7 +12,7 @@ We drew how the 6 parts of fleetd pass work to each other, in 9 step-by-step flo
 
 ---
 
-_Step 5 of the DDD chain (connect) · produced 2026-11-13T06:52:56Z · mode auto · depth standard · inputs: ddd/03-decompose/decompose.json, ddd/04-strategize/strategize.json, ddd/02-discover/discover.json, ddd/manifest.json, ddd/01-understand/understand.json, ddd/glossary.md, docs/specs/fleetd/design.md_
+_Step 5 of the DDD chain (connect) · produced 2026-11-16T21:49:38Z · mode auto · depth standard · inputs: ddd/03-decompose/decompose.json, ddd/04-strategize/strategize.json, ddd/02-discover/discover.json, ddd/manifest.json, ddd/01-understand/understand.json, ddd/glossary.md, docs/specs/fleetd/design.md_
 
 Rendered from `connect.json` by `ddd connect render`. The JSON is the chain (contract §7): edit it and re-render rather than editing tables here.
 

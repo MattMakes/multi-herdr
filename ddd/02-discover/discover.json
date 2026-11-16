@@ -2,7 +2,7 @@
   "schema_version": 1,
   "step": "discover",
   "produced_by": "ddd-discover",
-  "produced_at": "2026-11-13T06:34:55Z",
+  "produced_at": "2026-11-16T21:49:12Z",
   "mode": "auto",
   "depth": "standard",
   "inputs": [
@@ -3266,7 +3266,9 @@
         "launch-attempt",
         "renew-lease",
         "apply-stall-ladder",
-        "end-attempt"
+        "end-attempt",
+        "assign-task",
+        "start-work"
       ],
       "emits": [
         "attempt-launched",
@@ -3377,6 +3379,21 @@
       "emits": [
         "job-abandoned",
         "job-requeued"
+      ]
+    },
+    {
+      "id": "bundle",
+      "name": "Bundle",
+      "handles": [
+        "build-bundle",
+        "run-fast-gate",
+        "bisect-bundle"
+      ],
+      "emits": [
+        "bundle-built",
+        "bundle-dropped",
+        "fast-gate-passed",
+        "fast-gate-failed"
       ]
     }
   ],

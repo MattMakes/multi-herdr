@@ -12,7 +12,7 @@ This step lists, in time order, everything that happens to 1 idea in fleetd: fro
 
 ---
 
-_Step 2 (discover) - produced by `ddd-discover` - mode `auto` - depth `standard` - 2026-11-13T06:34:55Z_
+_Step 2 (discover) - produced by `ddd-discover` - mode `auto` - depth `standard` - 2026-11-16T21:49:12Z_
 _Inputs: `ddd/01-understand/understand.json`, `ddd/manifest.json`, `ddd/glossary.md`, `docs/specs/fleetd/design.md`, `docs/architecture.md`, `docs/specs/fleetd/preservation-04-behavior.md`, `docs/specs/fleetd/preservation-05-contracts-and-values.md`, `docs/specs/fleetd/preservation-06-wiring-and-platform.md`, `ai_docs/plans/fleetd-design/ddd-context.md`, `docs/specs/fleetd/amendments.md (Revision round 2 and Fix round 2, A19 to A22)`, `ai_docs/plans/fleetd-design/ddd-revision-context.md (revision round 2 decisions and answers)`, `docs/specs/fleetd/amendments.md (Systems review round, fix round 2 and closing fix, A23 to A37)`, `ai_docs/plans/fleetd-design/ddd-revision-3-context.md (revision round 3)`_
 
 > Rendered from `discover.json` by `ddd discover render`. The JSON is the chain: edit it (or re-run `/ddd-discover`) and re-render rather than editing this file by hand.
@@ -33,7 +33,7 @@ _Inputs: `ddd/01-understand/understand.json`, `ddd/manifest.json`, `ddd/glossary
 ## Summary
 
 - **102 events** in **6 phases** (depth `standard` expects roughly 25-60); **4 pivotal**: Assumptions Approved (assumptions-approved), Plan Committed (plan-committed), Task Done (task-done), Idea Task Branches Landed (idea-tasks-landed)
-- 78 commands, 78 policies, 11 read models, 4 actors, 7 external systems, 11 aggregate candidates
+- 78 commands, 78 policies, 11 read models, 4 actors, 7 external systems, 12 aggregate candidates
 - 15 hotspots, 5 scenarios, 22 glossary terms, 11 assumptions, 1 open questions (0 blocking)
 
 ## Timeline
@@ -1211,13 +1211,14 @@ _Outside-in: the thing that receives these commands and decides, then emits thes
 | Plan | `plan` | `submit-plan`, `validate-plan`, `replan-task` | `plan-submitted`, `plan-refused`, `plan-committed`, `task-replanned` |
 | Feature | `feature` | `open-feature`, `stack-feature`, `rebase-feature-branch`, `run-full-gate`, `mark-feature-ready`, `open-pull-request`, `check-merged`, `fetch-remote`, `push-feature-branch`, `reopen-feature`, `abandon-feature`, `move-ideas-to-new-feature` | `feature-opened`, `feature-stacked`, `feature-branch-rebased`, `feature-rebase-conflicted`, `full-gate-passed`, `full-gate-failed`, `feature-marked-ready`, `pull-request-opened`, `feature-merged`, `remote-tips-fetched`, `feature-branch-pushed`, `push-failed`, `feature-reopened`, `feature-abandoned`, `ideas-moved-to-new-feature` |
 | Task | `task` | `promote-task`, `dispatch-task`, `schedule-retry`, `mark-task-done`, `escalate-task`, `requeue-task`, `move-to-fallback`, `cancel-task` | `task-promoted`, `task-leased`, `retry-scheduled`, `replan-requested`, `task-done`, `task-escalated`, `task-requeued`, `fallback-assigned`, `quota-wait-started`, `task-cancelled` |
-| Attempt | `attempt` | `launch-attempt`, `renew-lease`, `apply-stall-ladder`, `end-attempt` | `attempt-launched`, `lease-renewed`, `lease-expired`, `attempt-stalled`, `attempt-failed` |
+| Attempt | `attempt` | `launch-attempt`, `renew-lease`, `apply-stall-ladder`, `end-attempt`, `assign-task`, `start-work` | `attempt-launched`, `lease-renewed`, `lease-expired`, `attempt-stalled`, `attempt-failed` |
 | Verification | `verification` | `run-check`, `run-review`, `open-critical-fix` | `check-passed`, `check-failed`, `review-passed`, `review-failed`, `critical-fix-opened` |
 | Question | `question` | `ask-question`, `answer-question`, `escalate-question` | `worker-question-asked`, `question-answered`, `own-assumption-recorded`, `revise-requested`, `question-escalated` |
 | Worktree | `worktree` | `create-worktree`, `reconcile-worktrees`, `rescue-worktree`, `remove-worktree`, `drop-rescue-ref` | `worktree-created`, `worktree-orphaned`, `worktree-rescued`, `rescue-failed`, `worktree-removed`, `rescue-ref-dropped` |
 | Task branch | `task-branch` | `mark-branch-ready`, `build-bundle`, `run-fast-gate`, `fast-forward-feature-branch`, `bisect-bundle`, `abandon-task-branch`, `escalate-task-branch` | `task-branch-verified`, `bundle-built`, `task-branch-conflicted`, `fast-gate-passed`, `fast-gate-failed`, `task-branch-landed`, `task-branch-gate-failed`, `task-branch-abandoned`, `bundle-dropped`, `task-branch-repair-escalated` |
 | Worker profile | `worker-profile` | `run-conformance-tests`, `mark-profile-unhealthy`, `mark-profile-healthy` | `adapter-conformance-failed`, `profile-marked-unhealthy`, `adapter-conformance-passed`, `profile-marked-healthy` |
 | Job | `job` | `observe-jobs`, `requeue-job` | `job-abandoned`, `job-requeued` |
+| Bundle | `bundle` | `build-bundle`, `run-fast-gate`, `bisect-bundle` | `bundle-built`, `bundle-dropped`, `fast-gate-passed`, `fast-gate-failed` |
 
 ## Pivotal events
 
