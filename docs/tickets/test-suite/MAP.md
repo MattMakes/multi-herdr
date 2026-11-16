@@ -12,11 +12,12 @@ Spec: `docs/specs/test-suite-audit.md`
 | 06 | [U6: hark Python tautologies](06-u6-hark-tautology.md) | 01 | 2 |
 | 07 | [U7: skill-intake suite runs in parallel, and the gate runs the hark and one-page-design suites](07-u7-intake-parallel.md) | 01 | 2 |
 | 08 | [U8: one-page-design Chrome probe](08-u8-chrome-probe.md) | 01 | 2 |
+| 09 | [The hark test suite never reaches the network](09-hark-offline.md) |  | 2 |
 
 ## Waves
 
 - Wave 1: 01
-- Wave 2: 02, 03, 04, 05, 06, 07, 08
+- Wave 2: 02, 03, 04, 05, 06, 07, 08, 09
 
 ## Critical path
 
