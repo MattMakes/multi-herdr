@@ -707,6 +707,7 @@ version = "0.4.8"
 dependencies = [
  "anyhow",
  "clap",
+ "horch-platform",
  "serde",
  "serde_json",
  "sha2",
@@ -727,6 +728,7 @@ dependencies = [
  "flate2",
  "horch-core",
  "horch-marketplace",
+ "horch-platform",
  "libc",
  "ratatui",
  "rusqlite",
@@ -747,6 +749,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "horch-marketplace",
+ "horch-platform",
  "libc",
  "rusqlite",
  "serde",
@@ -774,12 +777,25 @@ dependencies = [
 name = "horch-marketplace"
 version = "0.4.8"
 dependencies = [
+ "horch-platform",
  "serde",
  "serde_json",
  "serde_yaml",
  "sha2",
  "tempfile",
  "thiserror",
+]
+
+[[package]]
+name = "horch-platform"
+version = "0.4.8"
+dependencies = [
+ "libc",
+ "tar",
+ "tempfile",
+ "windows-sys 0.61.2",
+ "winreg",
+ "zip",
 ]
 
 [[package]]
