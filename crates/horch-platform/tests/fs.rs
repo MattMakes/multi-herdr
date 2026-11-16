@@ -182,9 +182,10 @@ fn file_identity_differs_for_2_files_and_is_stable_for_1() {
     std::fs::write(&b, b"b").unwrap();
     let id = |p: &Path| fs::file_identity(&std::fs::metadata(p).unwrap());
     assert_ne!(id(&a), id(&b));
-    assert_eq!(id(&a), id(&a));
+    let a_id = id(&a);
+    assert_eq!(id(&a), a_id);
     std::fs::write(&a, b"new text").unwrap();
-    assert_eq!(id(&a), id(&a), "a write keeps the identity");
+    assert_eq!(id(&a), a_id, "a write keeps the identity");
 }
 
 #[cfg(windows)]

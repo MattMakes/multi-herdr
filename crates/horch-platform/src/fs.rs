@@ -58,11 +58,16 @@ pub fn open_no_block(options: &mut OpenOptions) -> Result<(), NotSupported> {
     os::open_no_block(options)
 }
 
-/// Rename `from` to `to`, and fail when `to` exists. A plain `rename`
-/// replaces an empty dir. Where the file system has no flag for this, a
-/// plain `rename`.
+/// Rename `from` to `to`, and fail when `to` exists, where the OS and the
+/// file system can refuse an existing target. A plain `rename` replaces an
+/// empty dir.
 ///
-/// Windows: a plain `rename`. Row "File locks".
+/// Where the file system has no no-replace flag (`EINVAL`, `ENOSYS` or
+/// `ENOTSUP`), this falls back to a plain `rename`, which can replace an
+/// existing target.
+///
+/// Windows: always a plain `rename`, which can replace an existing target.
+/// Row "File locks".
 pub fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
     os::rename_noreplace(from, to)
 }
@@ -92,8 +97,8 @@ pub fn current_uid() -> Result<u32, NotSupported> {
 
 /// Whether the file of `meta` is a regular file that a user can execute.
 ///
-/// Windows: a regular file that exists. The extension decides. Row "File
-/// permissions": executable = exists.
+/// Windows: every regular file is executable. Row "File permissions":
+/// executable = exists.
 pub fn is_executable(meta: &Metadata) -> bool {
     os::is_executable(meta)
 }
