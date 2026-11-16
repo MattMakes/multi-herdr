@@ -212,27 +212,15 @@ pub fn git_bin(o: &BinOverrides) -> PathBuf {
 
 /// Where the Blender app bundle keeps its executable: the last place a
 /// Blender lookup tries. Only macOS has one.
-pub const BLENDER_APP: Option<&str> = if cfg!(target_os = "macos") {
-    Some("/Applications/Blender.app/Contents/MacOS/Blender")
-} else {
-    None
-};
+pub const BLENDER_APP: Option<&str> = horch_platform::path::BLENDER_APP;
 
 /// Where the Godot app bundle keeps its executable: the last place a Godot
 /// lookup tries. Only macOS has one.
-pub const GODOT_APP: Option<&str> = if cfg!(target_os = "macos") {
-    Some("/Applications/Godot.app/Contents/MacOS/Godot")
-} else {
-    None
-};
+pub const GODOT_APP: Option<&str> = horch_platform::path::GODOT_APP;
 
 /// Where the Godot .NET app bundle keeps its executable: the last place the
 /// .NET engine lookup of a C# project tries. Only macOS has one.
-pub const GODOT_MONO_APP: Option<&str> = if cfg!(target_os = "macos") {
-    Some("/Applications/Godot_mono.app/Contents/MacOS/Godot")
-} else {
-    None
-};
+pub const GODOT_MONO_APP: Option<&str> = horch_platform::path::GODOT_MONO_APP;
 
 /// A host tool's executable, as `horch doctor` checks it and a launch passes
 /// it on: `var` (the operator's `BLENDER_PATH` or `GODOT_PATH`) when it is

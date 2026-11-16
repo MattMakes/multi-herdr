@@ -81,21 +81,7 @@ fn is_zero(n: &i64) -> bool {
 /// A file's identity: `(dev, ino)` on Unix. Stable Rust has no file index on
 /// Windows, so there the creation time stands in for the inode.
 pub(crate) fn file_identity(meta: &std::fs::Metadata) -> (u64, u64) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        (meta.dev(), meta.ino())
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        (0, meta.creation_time())
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        let _ = meta;
-        (0, 0)
-    }
+    horch_platform::fs::file_identity(meta)
 }
 
 impl Cursor {

@@ -158,13 +158,9 @@ fn replace_private_with(path: &Path, bytes: &[u8], sync: bool) -> std::io::Resul
 }
 
 fn private_options() -> std::fs::OpenOptions {
-    #[allow(unused_mut)]
     let mut o = std::fs::OpenOptions::new();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        o.mode(0o600);
-    }
+    // Where the OS has no modes, the file gets the default permissions.
+    let _ = horch_platform::fs::create_mode(&mut o, 0o600);
     o
 }
 

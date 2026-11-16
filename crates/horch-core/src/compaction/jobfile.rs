@@ -228,8 +228,8 @@ fn remove(dir: &Path, names: &[&str]) {
 fn create_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create_new(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut opts, fsx::PRIVATE_FILE);
+    // Where the OS has no modes, the file gets the default permissions.
+    let _ = horch_platform::fs::create_mode(&mut opts, fsx::PRIVATE_FILE);
     let mut file = opts.open(path)?;
     file.write_all(bytes)?;
     file.sync_all()

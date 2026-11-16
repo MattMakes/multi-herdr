@@ -18,6 +18,12 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
+// `rename_noreplace` fails when the target exists: a plain `rename` replaces
+// an empty lock dir, the lock of an older binary between its `create_dir`
+// and its owner write. `BreakerGuard` is the `flock` that 1 breaker of a
+// lock holds.
+use horch_platform::fs::{rename_noreplace, BreakerGuard};
+
 /// Mode for private files (owner read and write).
 pub const PRIVATE_FILE: u32 = 0o600;
 /// Mode for private directories (owner only).
@@ -97,20 +103,18 @@ fn parent_and_name(path: &Path) -> Result<(&Path, String)> {
     Ok((parent, name))
 }
 
+/// Set the permission bits of `path`. Where the OS has no modes, a no-op.
 fn set_mode(path: &Path, mode: u32) -> Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        io(
-            path,
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)),
-        )
+    match horch_platform::fs::set_mode(path, mode) {
+        Err(e) if is_not_supported(&e) => Ok(()),
+        r => io(path, r),
     }
-    #[cfg(not(unix))]
-    {
-        let _ = (path, mode);
-        Ok(())
-    }
+}
+
+/// Whether `e` is the [`horch_platform::NotSupported`] of a platform call.
+fn is_not_supported(e: &std::io::Error) -> bool {
+    e.get_ref()
+        .is_some_and(|inner| inner.is::<horch_platform::NotSupported>())
 }
 
 /// Create a new file that is private from its first moment: on unix the
@@ -118,28 +122,17 @@ fn set_mode(path: &Path, mode: u32) -> Result<()> {
 fn create_new_file(path: &Path, mode: u32) -> std::io::Result<std::fs::File> {
     let mut o = std::fs::OpenOptions::new();
     o.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        o.mode(mode);
-    }
-    #[cfg(not(unix))]
-    let _ = mode;
+    // Where the OS has no modes, the file gets the default permissions.
+    let _ = horch_platform::fs::create_mode(&mut o, mode);
     o.open(path)
 }
 
 /// Fsync a directory so a rename or create inside it is durable. Windows
 /// cannot open a directory for sync; there it is a no-op.
 fn sync_dir(dir: &Path) -> Result<()> {
-    #[cfg(unix)]
-    {
-        let f = io(dir, std::fs::File::open(dir))?;
-        io(dir, f.sync_all())
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = dir;
-        Ok(())
+    match horch_platform::fs::sync_dir(dir) {
+        Err(e) if is_not_supported(&e) => Ok(()),
+        r => io(dir, r),
     }
 }
 
@@ -183,12 +176,9 @@ pub(crate) fn read_regular_bounded(path: &Path) -> std::result::Result<Option<St
 fn open_regular(path: &Path) -> std::result::Result<Option<std::fs::File>, Refused> {
     let mut o = std::fs::OpenOptions::new();
     o.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        // A FIFO opens at once instead of waiting for a writer.
-        o.custom_flags(libc::O_NONBLOCK);
-    }
+    // A FIFO opens at once instead of waiting for a writer. Where the OS has
+    // no FIFO, nothing to do.
+    let _ = horch_platform::fs::open_no_block(&mut o);
     match o
         .open(path)
         .and_then(|file| file.metadata().map(|m| (file, m.is_file())))
@@ -317,48 +307,16 @@ pub fn ensure_private_dir(path: &Path) -> Result<()> {
 /// `DirLock` and the telemetry collector lock decide liveness with
 /// [`crate::procid::alive`], which also checks the start time.
 pub fn pid_alive(pid: u32) -> bool {
-    // 0 and values above `i32::MAX` name a group or every process, not one.
-    let Some(os) = crate::procid::os_pid(pid) else {
-        return false;
-    };
-    #[cfg(unix)]
-    {
-        // Signal 0 checks existence and permission without sending anything.
-        // SAFETY: `kill` with signal 0 sends nothing and touches no memory; `os` is a pid value.
-        let r = unsafe { libc::kill(os, 0) };
-        r == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
-    }
-    #[cfg(windows)]
-    {
-        // A process handle, not `tasklist`: no spawn, and no text match that
-        // could find the pid inside another number.
-        crate::procid::windows_running(os)
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        let _ = os;
-        true
-    }
+    horch_platform::process::alive(pid)
 }
 
-/// This machine's host name, from the OS rather than the environment.
+/// This machine's host name, from the OS rather than the environment. Empty
+/// when the OS call fails or the OS has none.
 fn host_name() -> String {
-    #[cfg(unix)]
-    {
-        let mut buf = [0u8; 256];
-        // SAFETY: `buf` is a live 256-byte buffer and the length passed is `buf.len()`;
-        // `gethostname` writes at most that many bytes.
-        let r = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
-        if r != 0 {
-            return String::new();
-        }
-        let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-        String::from_utf8_lossy(&buf[..end]).into_owned()
-    }
-    #[cfg(not(unix))]
-    {
-        String::new()
-    }
+    horch_platform::machine::host_name()
+        .ok()
+        .flatten()
+        .unwrap_or_default()
 }
 
 /// The holder of a [`DirLock`], as written to `<name>.lock/owner`.
@@ -605,44 +563,6 @@ fn write_owner(path: &Path, bytes: &[u8]) -> Result<()> {
     io(path, f.write_all(bytes))
 }
 
-/// Rename the directory `from` to `to`, and fail when `to` exists. A plain
-/// `rename` replaces an empty directory: the lock of an older binary
-/// between its `create_dir` and its owner write.
-fn rename_noreplace(from: &Path, to: &Path) -> std::io::Result<()> {
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    {
-        use std::os::unix::ffi::OsStrExt;
-        let from_c = std::ffi::CString::new(from.as_os_str().as_bytes())?;
-        let to_c = std::ffi::CString::new(to.as_os_str().as_bytes())?;
-        // SAFETY: both arguments are NUL-terminated paths that outlive the call.
-        #[cfg(target_os = "macos")]
-        let r = unsafe { libc::renamex_np(from_c.as_ptr(), to_c.as_ptr(), libc::RENAME_EXCL) };
-        // SAFETY: as above.
-        #[cfg(target_os = "linux")]
-        let r = unsafe {
-            libc::renameat2(
-                libc::AT_FDCWD,
-                from_c.as_ptr(),
-                libc::AT_FDCWD,
-                to_c.as_ptr(),
-                libc::RENAME_NOREPLACE,
-            )
-        };
-        if r == 0 {
-            return Ok(());
-        }
-        let e = std::io::Error::last_os_error();
-        // A filesystem without the flag: the plain rename below.
-        if !matches!(
-            e.raw_os_error(),
-            Some(libc::EINVAL | libc::ENOSYS | libc::ENOTSUP)
-        ) {
-            return Err(e);
-        }
-    }
-    std::fs::rename(from, to)
-}
-
 /// How long ago `path` was last modified. `None` when that is unknown.
 fn age(path: &Path) -> Option<Duration> {
     std::fs::metadata(path)
@@ -676,61 +596,6 @@ fn is_stale(path: &Path, stale_after: Duration) -> bool {
 /// How long a breaker directory may live. Breaking takes microseconds, so
 /// an older one was left by a killed process and is removed.
 const BREAKER_STALE_AFTER: Duration = Duration::from_secs(5);
-
-/// An exclusive `flock` on the directory of a lock, held while one process
-/// breaks that lock. The kernel drops it when the process dies, so unlike a
-/// breaker directory it is never left behind.
-struct BreakerGuard {
-    _dir: Option<std::fs::File>,
-}
-
-impl BreakerGuard {
-    /// Take the guard of the lock at `lock`. `None` while another process
-    /// holds it. Where `flock` is not available (not unix, or a filesystem
-    /// without it) the guard holds nothing and the breaker directory alone
-    /// excludes, as before the guard.
-    #[cfg(unix)]
-    fn take(lock: &Path) -> Option<BreakerGuard> {
-        use std::os::unix::io::AsRawFd;
-        match lock.parent().and_then(|d| std::fs::File::open(d).ok()) {
-            // SAFETY: `dir` is an open directory `File` that outlives the call, so its raw fd is valid;
-            // `flock` touches no memory.
-            Some(dir) => match unsafe {
-                libc::flock(dir.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB)
-            } {
-                0 => Some(BreakerGuard { _dir: Some(dir) }),
-                _ if std::io::Error::last_os_error().raw_os_error() == Some(libc::EWOULDBLOCK) => {
-                    None
-                }
-                _ => Some(BreakerGuard { _dir: None }),
-            },
-            None => Some(BreakerGuard { _dir: None }),
-        }
-    }
-
-    /// [`BreakerGuard::take`] where `flock` does not exist: the guard holds
-    /// nothing.
-    #[cfg(not(unix))]
-    fn take(lock: &Path) -> Option<BreakerGuard> {
-        let _ = lock;
-        Some(BreakerGuard { _dir: None })
-    }
-}
-
-impl Drop for BreakerGuard {
-    /// Unlock before the close. A child forked by another thread shares the
-    /// open file until it execs, and a close alone leaves the `flock` held
-    /// while any copy is open.
-    fn drop(&mut self) {
-        #[cfg(unix)]
-        if let Some(dir) = &self._dir {
-            use std::os::unix::io::AsRawFd;
-            // SAFETY: `dir` is the open directory `File` this guard owns, so its raw fd is valid until drop;
-            // `flock` touches no memory.
-            unsafe { libc::flock(dir.as_raw_fd(), libc::LOCK_UN) };
-        }
-    }
-}
 
 /// Remove a stale lock, and say so. Returns whether this call removed it.
 ///
@@ -1374,7 +1239,9 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let lock = tmp.path().join("missing").join("events.lock");
         let guard = BreakerGuard::take(&lock).expect("no directory to lock: free");
-        assert!(guard._dir.is_none());
+        // The guard keeps its dir private: its debug text shows the field.
+        let held = format!("{guard:?}");
+        assert!(held.contains("dir: None"), "{held}");
     }
 
     #[test]

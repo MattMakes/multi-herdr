@@ -73,64 +73,49 @@ pub(crate) fn judge_shared(path: &Path, facts: Facts, is_link: bool, me: u32) ->
     Ok(())
 }
 
-#[cfg(unix)]
-fn facts(meta: &std::fs::Metadata) -> Facts {
-    use std::os::unix::fs::MetadataExt;
-    Facts {
-        uid: meta.uid(),
-        mode: meta.mode(),
-    }
+fn facts(meta: &std::fs::Metadata) -> std::result::Result<Facts, horch_platform::NotSupported> {
+    let horch_platform::fs::OwnerAndMode { uid, mode } = horch_platform::fs::owner_and_mode(meta)?;
+    Ok(Facts { uid, mode })
 }
 
-#[cfg(unix)]
-fn me() -> u32 {
-    // SAFETY: getuid has no preconditions and cannot fail.
-    unsafe { libc::getuid() }
+/// This user's uid. `None` where the OS has no file owners (Windows): there
+/// horch skips each check of this file.
+fn me() -> Option<u32> {
+    horch_platform::fs::current_uid().ok()
 }
 
 /// [`judge`] the existing dir `path`, and make an own dir 0700. A missing
 /// dir passes.
 pub(crate) fn check(path: &Path) -> Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let meta = match std::fs::metadata(path) {
-            Ok(meta) => meta,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
-        };
-        if judge(path, facts(&meta), me())? == Verdict::Tighten {
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-                .with_context(|| format!("setting the mode of {}", path.display()))?;
-        }
-        Ok(())
+    let Some(me) = me() else {
+        return Ok(());
+    };
+    let meta = match std::fs::metadata(path) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    if judge(path, facts(&meta)?, me)? == Verdict::Tighten {
+        horch_platform::fs::set_mode(path, 0o700)
+            .with_context(|| format!("setting the mode of {}", path.display()))?;
     }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-        Ok(())
-    }
+    Ok(())
 }
 
 /// [`judge_shared`] the existing old temp dir `path`, without following a
 /// link.
 pub(crate) fn check_shared(path: &Path) -> Result<()> {
-    #[cfg(unix)]
-    {
-        let meta = std::fs::symlink_metadata(path)
-            .with_context(|| format!("reading {}", path.display()))?;
-        let is_link = meta.file_type().is_symlink();
-        judge_shared(path, facts(&meta), is_link, me())?;
-        if !meta.is_dir() {
-            bail!("{} is not a dir", path.display());
-        }
-        Ok(())
+    let Some(me) = me() else {
+        return Ok(());
+    };
+    let meta =
+        std::fs::symlink_metadata(path).with_context(|| format!("reading {}", path.display()))?;
+    let is_link = meta.file_type().is_symlink();
+    judge_shared(path, facts(&meta)?, is_link, me)?;
+    if !meta.is_dir() {
+        bail!("{} is not a dir", path.display());
     }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-        Ok(())
-    }
+    Ok(())
 }
 
 /// Create `path` and its missing parents mode 0700, or check the existing
@@ -138,11 +123,8 @@ pub(crate) fn check_shared(path: &Path) -> Result<()> {
 pub(crate) fn ensure_dir(path: &Path) -> Result<()> {
     let mut builder = std::fs::DirBuilder::new();
     builder.recursive(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
-    }
+    // Where the OS has no modes, the dir gets the default permissions.
+    let _ = horch_platform::fs::create_dir_mode(&mut builder, 0o700);
     builder
         .create(path)
         .with_context(|| format!("creating {}", path.display()))?;
@@ -159,11 +141,8 @@ pub(crate) fn write(path: &Path, bytes: &[u8]) -> Result<()> {
 pub(crate) fn create_new(path: &Path) -> std::io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
+    // Where the OS has no modes, the file gets the default permissions.
+    let _ = horch_platform::fs::create_mode(&mut options, 0o600);
     options.open(path)
 }
 

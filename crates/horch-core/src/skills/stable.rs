@@ -78,21 +78,19 @@ fn verify_bundled(entry: &CatalogEntry, dir: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(unix)]
+/// Refuse a file whose execute bit differs from the bundle. Where the OS has
+/// no modes, nothing to check.
 fn verify_executable(entry: &CatalogEntry, rel: &str, path: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt as _;
-    let executable = path.metadata()?.permissions().mode() & 0o111 != 0;
+    let Ok(mode) = horch_platform::fs::mode_of(&path.metadata()?) else {
+        return Ok(());
+    };
+    let executable = mode & 0o111 != 0;
     if executable != entry.executable.contains(&rel) {
         bail!(
             "stable skill file {} has the wrong execute mode",
             path.display()
         );
     }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn verify_executable(_entry: &CatalogEntry, _rel: &str, _path: &Path) -> Result<()> {
     Ok(())
 }
 
