@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+## v0.4.11 - 2026-11-16
+
 - New orchestrator skill `make-videos`: ask the orchestrator for devblog
   videos of a game and it turns the git history into a series, 1 milestone per
   episode. It shows you the episode plan, then the scripts, and renders only
