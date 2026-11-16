@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+## v0.4.10 - 2026-11-16
+
 - New teammate `game-design-incremental-specialist` for incremental, idle and
   upgrade-driven games. Run `horch spawn game-design-incremental-specialist` in
   a game project, or hand it a design document or a one-page idea. It reviews
