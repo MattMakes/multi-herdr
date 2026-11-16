@@ -115,6 +115,8 @@ fn nfr_05_no_new_runtime_crates() {
         "rusqlite",
         // Exact process identity on Windows (#29), as libc is on unix.
         "windows-sys",
+        // The workspace leaf crate of fleetd Phase P (docs/specs/fleetd/design.md).
+        "horch-platform",
     ];
     for d in deps(&repo().join("crates/horch-core/Cargo.toml")) {
         assert!(
@@ -143,6 +145,8 @@ fn nfr_05_no_new_runtime_crates() {
         // Same crate and version as horch-core (ADR 0001). The direct
         // dependency replaces a re-export that arc_25 forbids (ticket 36).
         "rusqlite",
+        // The workspace leaf crate of fleetd Phase P (docs/specs/fleetd/design.md).
+        "horch-platform",
     ];
     for d in deps(&repo().join("crates/horch/Cargo.toml")) {
         assert!(allowed.contains(&d.as_str()), "horch gained '{d}'");
@@ -215,6 +219,8 @@ fn nfr_06_dependency_allowlist() {
             "serde_yaml",
             "sha2",
             "thiserror",
+            // The workspace leaf crate of fleetd Phase P (docs/specs/fleetd/design.md).
+            "horch-platform",
         ];
         for d in deps(&manifest) {
             assert!(
