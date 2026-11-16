@@ -246,9 +246,7 @@ impl MatchPattern {
             .ok_or_else(|| invalid("it needs a path, for example /*"))?;
         let (authority, path) = (&rest[..slash], &rest[slash..]);
         let (host_text, port_text) = split_host_port(authority);
-        let host = if schemes == ["file"] && host_text.is_empty() {
-            HostPattern::Any
-        } else if host_text == "*" {
+        let host = if host_text == "*" || (schemes == ["file"] && host_text.is_empty()) {
             HostPattern::Any
         } else if let Some(domain) = host_text.strip_prefix("*.") {
             if domain.contains('*') {

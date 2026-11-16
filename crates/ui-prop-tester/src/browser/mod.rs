@@ -72,7 +72,11 @@ impl BrowserDriver {
         let origin_url = boundary::origin_url(&config.origin).map_err(DriverError::Setup)?;
         let boundary =
             Boundary::new(&origin_url, &config.allow_urls).map_err(DriverError::Setup)?;
-        if !(config.device_scale_factor > 0.0) || config.width == 0 || config.height == 0 {
+        if config.device_scale_factor.is_nan()
+            || config.device_scale_factor <= 0.0
+            || config.width == 0
+            || config.height == 0
+        {
             return Err(DriverError::Setup(
                 "the viewport needs a positive width, height and device scale factor".into(),
             ));

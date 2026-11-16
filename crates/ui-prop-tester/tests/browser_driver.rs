@@ -346,8 +346,7 @@ mod navigation {
         let slow = session.clickable_by_id("slow");
         let error = session
             .try_apply(crate::support::click_action(&slow))
-            .err()
-            .expect("the navigation stalls");
+            .expect_err("the navigation stalls");
         assert!(
             matches!(error, ui_prop_tester::DriverError::Stalled(_)),
             "{error}"
@@ -634,8 +633,7 @@ mod actions {
         assert_eq!(session.title(), "escaped");
         let error = session
             .try_apply(json!({"kind": "key", "key": "NoSuchKey"}))
-            .err()
-            .expect("unknown key");
+            .expect_err("unknown key");
         assert!(matches!(error, DriverError::Failed(_)), "{error}");
         session.shutdown();
     }
@@ -792,9 +790,7 @@ mod actions {
             session.wait_until("(s) => s.document.title.startsWith('1:') && s.document.title");
         assert_eq!(title, "1:upload.txt:hello upload");
         let error = session
-            .try_apply(json!({"kind": "set_files", "selector": "#absent", "paths": [upload.to_str().unwrap()]}))
-            .err()
-            .expect("no element");
+            .try_apply(json!({"kind": "set_files", "selector": "#absent", "paths": [upload.to_str().unwrap()]})).expect_err("no element");
         assert!(error.to_string().contains("no element matches"), "{error}");
         session.shutdown();
     }
@@ -824,18 +820,15 @@ mod actions {
         );
         let error = session
             .try_apply(json!({"kind": "custom", "name": "explode", "args": null, "cells": {}}))
-            .err()
-            .expect("throws");
+            .expect_err("throws");
         assert!(error.to_string().contains("custom failure"), "{error}");
         let missing = session
             .try_apply(json!({"kind": "custom", "name": "nothing", "args": null, "cells": {}}))
-            .err()
-            .expect("unknown");
+            .expect_err("unknown");
         assert!(matches!(missing, DriverError::Failed(_)));
         let unknown = session
             .try_apply(json!({"kind": "teleport"}))
-            .err()
-            .expect("unknown kind");
+            .expect_err("unknown kind");
         assert!(matches!(unknown, DriverError::Failed(_)), "{unknown}");
         session.shutdown();
     }
@@ -1205,7 +1198,7 @@ mod setup {
         drop(listener);
         let mut driver =
             ui_prop_tester::browser::open(&config(&format!("http://127.0.0.1:{port}/"))).unwrap();
-        let error = driver.start().err().expect("refused");
+        let error = driver.start().expect_err("refused");
         assert!(
             error.to_string().contains("ERR_CONNECTION_REFUSED"),
             "{error}"
@@ -1371,7 +1364,11 @@ mod extract {
             ])
             .expect("extract");
         assert_eq!(syntax[0], ExtractOutcome::Value(json!("fixture")));
-        assert!(matches!(&syntax[1], ExtractOutcome::Thrown { .. }));
+        assert!(
+            matches!(&syntax[1], ExtractOutcome::Thrown { message, .. } if message.contains("SyntaxError")),
+            "{:?}",
+            syntax[1]
+        );
         session.shutdown();
     }
 }

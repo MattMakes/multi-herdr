@@ -486,7 +486,17 @@ impl BrowserDriver {
             Err(error) if error.is_navigation_race() => return Ok(None),
             Err(error) => return Err(driver_error("running extractors", error)),
         };
-        if result.get("exceptionDetails").is_some() {
+        if let Some(details) = result.get("exceptionDetails") {
+            if sources.len() == 1 && !self.tracker.loading {
+                let described = super::tracker::describe_exception(details);
+                return Ok(Some(vec![ExtractOutcome::Thrown {
+                    message: described["message"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    stack: described["stack"].as_str().unwrap_or_default().to_string(),
+                }]));
+            }
             return Ok(None);
         }
         let values = result
