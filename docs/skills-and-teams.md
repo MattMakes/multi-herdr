@@ -354,6 +354,12 @@ Claude with no fallback, needs `blender` (`requires: [blender]`) and sets
 - The orchestrator then runs 6 waves. The recipe is in the `orchestrate` skill,
   in `references/video-pipeline.md`: the teammate, inputs, outputs, gate
   command and pass rule of each wave.
+- For devblog videos of a game, the orchestrator loads `make-videos` first.
+  It groups the git history into 4 to 8 milestone episodes, shows the operator
+  the plan table, has the scripts written under `devblog/`, and starts a
+  production only after the operator approves the scripts. 1 cut (social main,
+  social vertical or Steam) is 1 production. It also updates a series that
+  exists.
 - The plan gate (`check_timeline.py`), the audio gate (`check_audio.py`) and
   the render gate (`qa_video.py`) are scripts with numeric rules. 8 of the 10
   skills ship scripts, so `skills_catalog.rs` lists them in

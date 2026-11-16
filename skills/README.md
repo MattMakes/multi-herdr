@@ -19,6 +19,7 @@ A bundle is one of these kinds:
 - `code-analysis` uses project-native analyzers. It bundles no JavaScript engine, metric implementation, config generator, plugins, or dependency installation. Available measurements are reported honestly; an unavailable analyzer gets an explicitly qualitative review, not fabricated scores.
 - `security-review` is a direct audit workflow with trust-boundary mapping, deduplication, false-positive verification, and evidence reports. It ships no scanner scripts, language catalogs, report assembler, or hierarchical agent pipeline.
 - `orchestrate` is own text, reconciled from the retired external `herdr-orchestrator` and `herdr-worker` skills against the real `horch` CLI: every command, flag and lifecycle claim in those two files was checked against `horch --help` and either carried, corrected or dropped. It is attached to `orchestrator` and `orchestrator-codex` by name and belongs to no phase.
+- `make-videos` is own text, from the operator's brief for devblog videos of a game. It plans a series from the git history (milestones, a plan table, scripts and packaging under `devblog/`), holds 2 operator gates, and sends each approved cut through [`orchestrate/references/video-pipeline.md`](orchestrate/references/video-pipeline.md). It also updates a series that exists. It is attached to `orchestrator` and `orchestrator-codex` by name and belongs to no phase.
 - `skill-creator` is a verbatim copy of a whole skill directory. It is attached to the Claude `orchestrator` by name and belongs to no phase. `horch teammates --check` fails any other teammate that names it, and every Claude pane switches off the official plugin and the claude.ai-synced copy. The skill tells its user to spawn subagents and to run `claude -p`; the orchestrator's persona tells it to take the skill's no-subagent path instead.
 - 13 Godot skills are adapted copies of the `godot-incremental` plugin of `MattMakes/skill-marketplace`: `godot-balance-model-data`, `godot-bot-balance-loop`, `godot-feature-seams-and-saves`, `godot-fleet-game-dev`, `godot-game-audio`, `godot-headless-runs`, `godot-perf-measure`, `godot-pixel-art-pipeline`, `godot-release-and-store`, `godot-safe-refactor`, `godot-test-loop`, `godot-upgrade-tree-design` and `godot-visual-verification`. The adaptations: each name has the `godot-` prefix; each plugin script is a code block on a `references/script-*.md` page; each `SKILL.md` moves detail into `references/*.md` to stay within the 12 KB budget.
 - `tdd` retains red/green/refactor for meaningful behavior changes and removes unrelated skill-authoring machinery and destructive instructions to delete existing work. Structural checks are appropriate for low-impact prose/config changes.
@@ -46,6 +47,7 @@ To refresh a copied skill:
 | [document](document/SKILL.md) | adapted |
 | [execute](execute/SKILL.md) | adapted |
 | [handoff](handoff/SKILL.md) | adapted |
+| [make-videos](make-videos/SKILL.md) | own text |
 | [orchestrate](orchestrate/SKILL.md) | own text |
 | [pre-flight](pre-flight/SKILL.md) | adapted |
 | [research-codebase](research-codebase/SKILL.md) | adapted |

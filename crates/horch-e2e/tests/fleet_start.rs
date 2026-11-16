@@ -58,8 +58,8 @@ fn a_fleet_whose_orchestrator_skill_is_missing_creates_no_workspace() {
     let file = teammates.join("orchestrator.md");
     let text = std::fs::read_to_string(&file).unwrap();
     let broken = text.replace(
-        "skills: [orchestrate, skill-creator]",
-        "skills: [orchestrate, skill-creator, no-such-skill-217]",
+        "skills: [orchestrate, skill-creator, make-videos]",
+        "skills: [orchestrate, skill-creator, make-videos, no-such-skill-217]",
     );
     assert_ne!(text, broken, "the orchestrator's skills line changed");
     std::fs::write(&file, broken).unwrap();
