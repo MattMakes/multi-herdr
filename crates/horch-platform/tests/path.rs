@@ -111,7 +111,7 @@ fn set_junction_then_clear_link() {
 }
 
 #[test]
-fn junction_plan_refuses_real_content() {
+fn junction_plan_covers_every_state() {
     use path::{plan_junction, JunctionAction};
     assert_eq!(plan_junction(false, false, false), JunctionAction::Create);
     assert_eq!(plan_junction(true, true, false), JunctionAction::Replace);
