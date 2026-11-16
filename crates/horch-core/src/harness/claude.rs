@@ -884,9 +884,41 @@ fn overlay_horch_paths(
         changed |= overlay_bundle_paths(bundle, settings)?;
     }
     if teammate.horch_access == HorchAccess::Full {
+        if let Some((common, worktrees)) = repository_write_paths(env.workdir.as_deref()) {
+            changed |= add_entries(
+                settings,
+                [
+                    (FS, "allowWrite", common.to_string_lossy().into_owned()),
+                    (FS, "allowWrite", worktrees.to_string_lossy().into_owned()),
+                    (
+                        PERMS,
+                        "additionalDirectories",
+                        worktrees.to_string_lossy().into_owned(),
+                    ),
+                ],
+            )?;
+        }
         changed |= overlay_roster_dirs(env, settings)?;
     }
     Ok(changed)
+}
+
+fn repository_write_paths(workdir: Option<&Path>) -> Option<(PathBuf, PathBuf)> {
+    let workdir = workdir?;
+    let output = horch_marketplace::git::GitRunner::new("git")
+        .output(
+            workdir,
+            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        )
+        .ok()
+        .filter(|output| output.status == 0)?;
+    let common = PathBuf::from(output.stdout_text());
+    let root = common
+        .file_name()
+        .is_some_and(|name| name == ".git")
+        .then(|| common.parent().map(Path::to_path_buf))
+        .flatten()?;
+    Some((common, root.join(".worktrees")))
 }
 
 /// Open each roster folder `horch spawn` reads in the pane to read, and
@@ -1570,6 +1602,69 @@ mod tests {
                 Some(std::ffi::OsStr::new("/state/horch/report/r1.sock"))
             );
         }
+    }
+
+    #[test]
+    fn a_sandboxed_fleet_worker_can_write_git_and_worktree_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        let status = Command::new("git")
+            .args(["init", "-q"])
+            .arg(&repo)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let status = Command::new("git")
+            .current_dir(&repo)
+            .args([
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "init",
+            ])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let linked = tmp.path().join("linked");
+        let status = Command::new("git")
+            .current_dir(&repo)
+            .args(["worktree", "add", "-q", "-b", "worker"])
+            .arg(&linked)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let common = repo.join(".git");
+        let worktrees = repo.join(".worktrees");
+        let [env, _] = sandbox_envs(tmp.path());
+        if !host_can_sandbox(&env) {
+            return;
+        }
+        let env = LaunchEnv {
+            workdir: Some(linked),
+            ..env
+        };
+        let t = sandboxed(json!({"filesystem": {
+            "allowWrite": ["/state/skill-intake"]
+        }}));
+
+        let built =
+            super::super::launch::command_in(&env, &t, Session::Fresh("id"), "go", None).unwrap();
+        let settings = settings_arg(&built);
+        let writes = settings["sandbox"]["filesystem"]["allowWrite"]
+            .as_array()
+            .unwrap();
+
+        assert!(writes.contains(&json!(common.to_string_lossy())));
+        assert!(writes.contains(&json!(worktrees.to_string_lossy())));
+        assert!(settings["permissions"]["additionalDirectories"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(worktrees.to_string_lossy())));
     }
 
     /// T-27: a sandboxed launch with a skills bundle opens that bundle, and
