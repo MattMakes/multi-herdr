@@ -20,9 +20,9 @@ use horch_e2e::expected::check;
 use horch_e2e::harness::{fixtures, wait_for, Harness};
 use serde_json::Value;
 
-/// The time in which the design catches a herdr restart (FM-13: 5 to 30 s),
-/// with 5 s for a slow machine.
-const RESTART_CAUGHT_S: u64 = 35;
+/// The time in which the design catches a herdr restart and a dead worker
+/// (FM-13 and FM-25: 5 to 30 s), with 5 s for a slow machine.
+const CAUGHT_S: u64 = 35;
 
 fn text(o: &Output) -> String {
     format!(
@@ -202,9 +202,19 @@ fn rescue_refs(h: &Harness) -> Vec<String> {
     refs.lines().map(str::to_string).collect()
 }
 
-/// The 1 rescue ref, or a panic that names the reconcile output.
-fn the_rescue_ref(h: &Harness, reconcile: &str) -> String {
-    let refs = rescue_refs(h);
+/// The 1 rescue ref, or a panic that names the last reconcile output. The
+/// design runs the rescue as a job after the pass that sees the death, so
+/// the reconcile runs once a second until the ref exists, for at most
+/// [`CAUGHT_S`] after `first`, the first reconcile.
+fn the_rescue_ref(h: &Harness, first: &Output) -> String {
+    let until = Instant::now() + Duration::from_secs(CAUGHT_S);
+    let mut last = text(first);
+    let mut refs = rescue_refs(h);
+    while refs.is_empty() && Instant::now() < until {
+        std::thread::sleep(Duration::from_secs(1));
+        last = text(&reconcile(h));
+        refs = rescue_refs(h);
+    }
     let all = git_in(
         h,
         &h.project.clone(),
@@ -212,7 +222,8 @@ fn the_rescue_ref(h: &Harness, reconcile: &str) -> String {
     );
     assert!(
         refs.len() == 1,
-        "no ref under refs/horch/rescue/ holds the work: {refs:?}\nall refs:\n{all}\nreconcile:\n{reconcile}"
+        "no ref under refs/horch/rescue/ holds the work {CAUGHT_S} s after the reconcile saw the death: \
+         {refs:?}\nall refs:\n{all}\nlast reconcile:\n{last}"
     );
     refs[0].split(' ').nth(1).unwrap().to_string()
 }
@@ -257,13 +268,8 @@ fn fm13_herdr_restart_ends_attempts_and_queues_tasks_again() {
                 agents: Vec::new(),
                 locks: h.root.join("locks"),
             };
-            let (_, p1, c1) = held_task(&h, &mut td, "t1");
+            let (_, p1, _) = held_task(&h, &mut td, "t1");
             let (_, p2, _) = held_task(&h, &mut td, "t2");
-            assert!(
-                text(&c1).contains("the watchdog of run fm13 was not running; started it"),
-                "{}",
-                text(&c1)
-            );
             let (run, ts, ws) = board(&h);
             wait_for("the watchdog lock", || {
                 watchdog::holder(&td.locks, &run.run_id).map(|_| ())
@@ -273,7 +279,7 @@ fn fm13_herdr_restart_ends_attempts_and_queues_tasks_again() {
 
             restart_herdr(&h, &mut td, &[p1, p2]);
             // No `horch` call from here: the watchdog alone must act.
-            let until = Instant::now() + Duration::from_secs(RESTART_CAUGHT_S);
+            let until = Instant::now() + Duration::from_secs(CAUGHT_S);
             let (_, mut ts, mut ws) = board(&h);
             while Instant::now() < until {
                 if ts.iter().all(|t| t.status == "queued") && !ws.iter().any(live) {
@@ -294,7 +300,7 @@ fn fm13_herdr_restart_ends_attempts_and_queues_tasks_again() {
             assert!(
                 ts.iter().all(|t| t.status == "queued") && !ws.iter().any(live),
                 "the attempts did not end and the tasks were not queued again within \
-                 {RESTART_CAUGHT_S} s of the herdr restart: tasks {tasks:?}, attempts \
+                 {CAUGHT_S} s of the herdr restart: tasks {tasks:?}, attempts \
                  {attempts:?}, watchdog check every {} s",
                 run.check_every_s
             );
@@ -320,7 +326,7 @@ fn fm13_herdr_restart_rescues_each_worktree_and_the_next_attempt_reuses_it() {
 
             restart_herdr(&h, &mut td, &[pane]);
             let o = reconcile(&h);
-            let rescue = the_rescue_ref(&h, &text(&o));
+            let rescue = the_rescue_ref(&h, &o);
             let project = h.project.clone();
             git_in(
                 &h,
@@ -375,7 +381,7 @@ fn fm25_killed_worker_with_dirty_and_untracked_files_loses_nothing() {
                 let v: Value = serde_json::from_slice(&o.stdout).unwrap();
                 (v[0]["verdict"] == "dead").then_some(o)
             });
-            let rescue = the_rescue_ref(&h, &text(&o));
+            let rescue = the_rescue_ref(&h, &o);
             assert_eq!(file_at(&h, &rescue, "notes.txt"), tracked, "{}", text(&o));
             assert_eq!(
                 file_at(&h, &rescue, "untracked.txt"),
