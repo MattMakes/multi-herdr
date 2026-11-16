@@ -1,0 +1,1091 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="data:,">
+<title>Trace viewer</title>
+<style>
+:root {
+  --bg: #f4f5f7;
+  --panel: #ffffff;
+  --panel-2: #f8f9fb;
+  --ink: #1a1e23;
+  --muted: #5d6874;
+  --faint: #8a949f;
+  --line: #dfe3e8;
+  --line-strong: #c5ccd4;
+  --accent: #2b67d8;
+  --accent-soft: #e5edfc;
+  --bad: #c42b36;
+  --bad-soft: #fdecee;
+  --good: #1c8048;
+  --good-soft: #e3f4ea;
+  --warn: #a96300;
+  --warn-soft: #fcf0dc;
+  --code: #eef1f4;
+  --shadow: 0 1px 2px rgba(20, 30, 45, 0.06);
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #101317;
+    --panel: #171b20;
+    --panel-2: #1c2127;
+    --ink: #e5e8ec;
+    --muted: #9aa4af;
+    --faint: #6d7782;
+    --line: #2a3139;
+    --line-strong: #3a434d;
+    --accent: #6c9cff;
+    --accent-soft: #1b2944;
+    --bad: #ff6b72;
+    --bad-soft: #3a1c21;
+    --good: #4cc38a;
+    --good-soft: #15301f;
+    --warn: #f0b35a;
+    --warn-soft: #3a2b13;
+    --code: #20262d;
+    --shadow: none;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--ink);
+  font: 13px/1.45 var(--sans);
+}
+button { font: inherit; color: inherit; }
+.top {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 12px 20px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  min-width: 0;
+}
+.brand { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 0 1 auto; }
+.brand h1 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 650;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.brand .tool { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  background: var(--code);
+  color: var(--muted);
+}
+.badge.passed { background: var(--good-soft); color: var(--good); }
+.badge.violation { background: var(--bad-soft); color: var(--bad); }
+.badge.error { background: var(--warn-soft); color: var(--warn); }
+.facts {
+  display: flex;
+  gap: 22px;
+  margin: 0 0 0 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+.facts div { min-width: 0; }
+.facts dt {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--faint);
+}
+.facts dd {
+  margin: 0;
+  font-weight: 550;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 320px;
+}
+.timeline-bar {
+  padding: 10px 20px 8px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+.timeline-head {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  margin-bottom: 4px;
+}
+.timeline-head .position { font-weight: 650; font-size: 14px; }
+.timeline-head .stamp { color: var(--muted); font-variant-numeric: tabular-nums; }
+.timeline-head .legend { margin-left: auto; color: var(--faint); display: flex; gap: 14px; align-items: center; }
+.legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+.legend .l-violation { background: var(--bad); }
+.legend .l-current { background: var(--accent); border-radius: 50%; }
+kbd {
+  font: 11px var(--mono);
+  padding: 0 4px;
+  border: 1px solid var(--line-strong);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--panel-2);
+  color: var(--muted);
+}
+.stepper { display: inline-flex; gap: 4px; }
+.stepper button {
+  border: 1px solid var(--line-strong);
+  background: var(--panel-2);
+  border-radius: 6px;
+  padding: 1px 9px;
+  cursor: pointer;
+}
+.stepper button:hover { border-color: var(--accent); color: var(--accent); }
+.stepper button:disabled { opacity: 0.4; cursor: default; color: inherit; border-color: var(--line-strong); }
+#timeline {
+  display: block;
+  width: 100%;
+  height: 34px;
+  cursor: pointer;
+  touch-action: none;
+}
+.timeline-scale {
+  display: flex;
+  justify-content: space-between;
+  color: var(--faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  padding: 0 4px;
+}
+.layout { flex: 1; display: flex; min-height: 0; }
+.actions {
+  width: 300px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--line);
+  background: var(--panel);
+  min-height: 0;
+}
+.pane-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 10px 14px 8px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  font-weight: 650;
+  border-bottom: 1px solid var(--line);
+}
+#action-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+  overflow-y: auto;
+  flex: 1;
+}
+#action-list li {
+  display: grid;
+  grid-template-columns: 40px auto 1fr 10px;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px 4px 10px;
+  cursor: pointer;
+  border-left: 3px solid transparent;
+  white-space: nowrap;
+}
+#action-list li:hover { background: var(--panel-2); }
+#action-list li.selected { background: var(--accent-soft); border-left-color: var(--accent); }
+#action-list li.before { background: var(--panel-2); border-left-color: var(--line-strong); }
+#action-list .index { color: var(--faint); font: 11.5px var(--mono); text-align: right; }
+#action-list .detail { overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
+#action-list .mark { width: 8px; height: 8px; border-radius: 50%; }
+#action-list li.violation .mark { background: var(--bad); }
+.kind {
+  font: 600 11px var(--mono);
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--code);
+  color: var(--ink);
+}
+.kind.k-start { background: var(--good-soft); color: var(--good); }
+.kind.k-click, .kind.k-double_click { background: var(--accent-soft); color: var(--accent); }
+.kind.k-type, .kind.k-key, .kind.k-set_files { background: var(--warn-soft); color: var(--warn); }
+main {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 16px 20px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.transition {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+.shot {
+  margin: 0;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.shot figcaption {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.shot figcaption strong { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.shot figcaption .where { color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; text-align: right; font-size: 12px; }
+.frame {
+  position: relative;
+  background: repeating-conic-gradient(var(--panel-2) 0 25%, var(--panel) 0 50%) 0 0 / 16px 16px;
+  aspect-ratio: 4 / 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.frame a { display: block; position: relative; line-height: 0; width: 100%; height: 100%; }
+.frame img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.frame .empty { color: var(--faint); text-align: center; padding: 20px; line-height: 1.5; }
+.pointer {
+  position: absolute;
+  width: 26px;
+  height: 26px;
+  margin: -13px 0 0 -13px;
+  border-radius: 50%;
+  border: 3px solid #ff2d55;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85), 0 0 10px rgba(255, 45, 85, 0.6);
+  pointer-events: none;
+}
+.pointer::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 4px;
+  height: 4px;
+  margin: -2px 0 0 -2px;
+  border-radius: 50%;
+  background: #ff2d55;
+}
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  min-width: 0;
+}
+.card > h2 {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0;
+  padding: 9px 14px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+}
+.card > h2 .count { margin-left: auto; text-transform: none; letter-spacing: 0; color: var(--faint); font-weight: 500; }
+.card .body { padding: 10px 14px 12px; }
+.card.alert { border-color: var(--bad); }
+.card.alert > h2 { color: var(--bad); background: var(--bad-soft); border-bottom-color: var(--bad); border-radius: 10px 10px 0 0; }
+.none { color: var(--faint); }
+.headline { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+.headline .kind { font-size: 13px; padding: 2px 8px; }
+.chip { font-size: 11.5px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line-strong); color: var(--muted); }
+table.kv { width: 100%; border-collapse: collapse; table-layout: fixed; }
+table.kv th, table.kv td { text-align: left; vertical-align: top; padding: 3px 0; border-top: 1px solid var(--line); }
+table.kv tr:first-child th, table.kv tr:first-child td { border-top: 0; }
+table.kv th { width: 34%; font-weight: 500; color: var(--muted); padding-right: 10px; overflow-wrap: anywhere; }
+table.kv td { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; white-space: pre-wrap; }
+table.kv td.changed { background: linear-gradient(90deg, var(--accent-soft), transparent 80%); }
+table.kv th .new { color: var(--accent); font-size: 10px; margin-left: 4px; }
+.subhead { margin: 10px 0 4px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.violation-item { border-left: 3px solid var(--bad); padding: 4px 0 6px 10px; margin-bottom: 10px; }
+.violation-item:last-child { margin-bottom: 0; }
+.violation-item .property { font-weight: 650; color: var(--bad); font-size: 14px; }
+.violation-item .formula { font-family: var(--mono); font-size: 12px; color: var(--muted); margin: 2px 0 4px; }
+.violation-item .message { margin: 2px 0 6px; }
+.jumps { display: flex; flex-wrap: wrap; gap: 6px; }
+.jumps button {
+  border: 1px solid var(--line-strong);
+  background: var(--panel-2);
+  border-radius: 6px;
+  padding: 2px 8px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.jumps button.here { border-color: var(--bad); color: var(--bad); background: var(--bad-soft); }
+.jumps button:hover { border-color: var(--accent); }
+.charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 0; }
+.chart { padding: 10px 14px 10px; border-left: 1px solid var(--line); min-width: 0; cursor: pointer; }
+.chart:first-child { border-left: 0; }
+.chart .label { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chart .value { font-size: 17px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.chart .delta { font-size: 11.5px; margin-left: 6px; font-weight: 500; color: var(--faint); }
+.chart .delta.up { color: var(--warn); }
+.chart .delta.down { color: var(--good); }
+.chart .plot { position: relative; height: 54px; margin-top: 4px; }
+.chart svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.chart .line { fill: none; stroke: var(--accent); stroke-width: 1.6; }
+.chart .area { fill: var(--accent-soft); stroke: none; }
+.chart .now { stroke: var(--ink); stroke-width: 1; stroke-dasharray: 3 2; opacity: 0.55; }
+.chart .violation-line { stroke: var(--bad); stroke-width: 1; opacity: 0.35; }
+.chart .dot {
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  margin: -4.5px 0 0 -4.5px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--panel);
+}
+.chart .range { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--faint); font-variant-numeric: tabular-nums; margin-top: 2px; }
+.chart.empty .plot { display: flex; align-items: center; color: var(--faint); }
+.log { list-style: none; margin: 0; padding: 0; }
+.log li { padding: 6px 0; border-top: 1px solid var(--line); display: grid; grid-template-columns: 72px 1fr; gap: 10px; }
+.log li:first-child { border-top: 0; padding-top: 0; }
+.level { font: 600 10.5px var(--mono); text-transform: uppercase; padding: 1px 6px; border-radius: 4px; justify-self: start; align-self: start; }
+.level.error, .level.exception, .level.rejection { background: var(--bad-soft); color: var(--bad); }
+.level.warning, .level.warn { background: var(--warn-soft); color: var(--warn); }
+.log .text { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.log .source { color: var(--faint); font-size: 11.5px; overflow-wrap: anywhere; }
+details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+pre.stack, pre.json {
+  margin: 4px 0 0;
+  padding: 8px 10px;
+  background: var(--code);
+  border-radius: 6px;
+  font: 11.5px/1.5 var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 260px;
+  overflow: auto;
+}
+.status-line { color: var(--muted); }
+.status-line .ok { color: var(--good); font-weight: 600; }
+.status-line .bad { color: var(--bad); font-weight: 600; }
+.splash { margin: auto; color: var(--muted); font-size: 14px; text-align: center; max-width: 520px; padding: 40px; }
+.splash.failed { color: var(--bad); }
+@media (max-width: 1100px) {
+  .facts .optional { display: none; }
+  .pair { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <h1 id="title">Trace</h1>
+    <span class="badge" id="outcome">loading</span>
+  </div>
+  <dl class="facts" id="facts"></dl>
+</header>
+<section class="timeline-bar" aria-label="State timeline">
+  <div class="timeline-head">
+    <span class="position" id="position">State -</span>
+    <span class="stamp" id="stamp"></span>
+    <span class="stepper">
+      <button type="button" id="previous" title="Previous state (Left arrow)">&lsaquo; Prev</button>
+      <button type="button" id="next" title="Next state (Right arrow)">Next &rsaquo;</button>
+      <button type="button" id="next-violation" title="Next violation (V)">Next violation</button>
+    </span>
+    <span class="legend">
+      <span><i class="l-violation"></i>violation</span>
+      <span><i class="l-current"></i>selected</span>
+      <span><kbd>&larr;</kbd> <kbd>&rarr;</kbd> step &middot; <kbd>Shift</kbd> &times;10 &middot; <kbd>V</kbd> next violation</span>
+    </span>
+  </div>
+  <canvas id="timeline" role="slider" tabindex="0" aria-label="State timeline" aria-valuemin="0"></canvas>
+  <div class="timeline-scale"><span id="scale-start"></span><span id="scale-end"></span></div>
+</section>
+<div class="layout" id="layout">
+  <div class="splash" id="splash">Loading trace&hellip;</div>
+</div>
+<script>
+"use strict";
+const METRICS = [
+  ["js_heap_used", "JS heap used", "bytes"],
+  ["js_heap_total", "JS heap total", "bytes"],
+  ["dom_nodes", "DOM nodes", "count"],
+  ["event_listeners", "Event listeners", "count"],
+  ["layout_objects", "Layout objects", "count"],
+];
+const view = { info: null, states: [], index: 0, violationStates: [], listItems: [], charts: [], refs: {} };
+
+function el(tag, props, ...children) {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(props || {})) {
+    if (value === undefined || value === null || value === false) continue;
+    if (key === "class") node.className = value;
+    else if (key === "text") node.textContent = value;
+    else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+    else node.setAttribute(key, value === true ? "" : String(value));
+  }
+  for (const child of children.flat()) {
+    if (child === null || child === undefined || child === false) continue;
+    node.append(child instanceof Node ? child : String(child));
+  }
+  return node;
+}
+
+function svg(tag, attributes) {
+  const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const [key, value] of Object.entries(attributes || {})) node.setAttribute(key, String(value));
+  return node;
+}
+
+function isObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function compact(value) {
+  if (value === undefined) return "";
+  if (typeof value === "string") return JSON.stringify(value);
+  try { return JSON.stringify(value); } catch (error) { return String(value); }
+}
+
+function pretty(value) {
+  if (typeof value === "string") return JSON.stringify(value);
+  try { return JSON.stringify(value, null, 2); } catch (error) { return String(value); }
+}
+
+function clip(text, limit) {
+  return text.length > limit ? text.slice(0, limit - 1) + "…" : text;
+}
+
+function formatElapsed(ms) {
+  if (typeof ms !== "number") return "";
+  if (ms < 1000) return "+" + ms + " ms";
+  if (ms < 60000) return "+" + (ms / 1000).toFixed(ms < 10000 ? 2 : 1) + " s";
+  const minutes = Math.floor(ms / 60000);
+  const seconds = ((ms % 60000) / 1000).toFixed(0).padStart(2, "0");
+  return "+" + minutes + ":" + seconds + " min";
+}
+
+function formatMetric(value, unit) {
+  if (typeof value !== "number" || !isFinite(value)) return "—";
+  if (unit === "bytes") {
+    const abs = Math.abs(value);
+    if (abs >= 1048576) return (value / 1048576).toFixed(abs >= 104857600 ? 0 : 1) + " MB";
+    if (abs >= 1024) return (value / 1024).toFixed(abs >= 102400 ? 0 : 1) + " KB";
+    return value + " B";
+  }
+  return Math.round(value).toLocaleString("en-US");
+}
+
+function describeTarget(target) {
+  if (!isObject(target)) return target === undefined ? "" : compact(target);
+  const parts = [];
+  if (target.test_id) parts.push("[test_id=" + target.test_id + "]");
+  if (target.id) parts.push("#" + target.id);
+  const label = target.name || target.text;
+  if (label) parts.push("“" + clip(String(label), 48) + "”");
+  else if (target.role) parts.push(target.role);
+  if (!parts.length) {
+    for (const key of ["href", "form_name", "placeholder", "input_type", "path"]) {
+      if (target[key]) { parts.push(key + "=" + target[key]); break; }
+    }
+  }
+  return parts.join(" ") || compact(target);
+}
+
+function actionParts(action) {
+  if (!isObject(action)) return { kind: "start", detail: "initial page load" };
+  const kind = typeof action.kind === "string" ? action.kind : "?";
+  let detail = "";
+  switch (kind) {
+    case "click":
+    case "double_click": detail = describeTarget(action.target); break;
+    case "type": detail = compact(action.text); break;
+    case "key": detail = String(action.key ?? ""); break;
+    case "scroll": detail = (action.dy > 0 ? "+" : "") + action.dy + " px"; break;
+    case "wait": detail = action.ms + " ms"; break;
+    case "resize": detail = action.width + " × " + action.height; break;
+    case "custom": detail = String(action.name ?? ""); break;
+    case "set_files": detail = String(action.selector ?? ""); break;
+    case "drag": detail = describePoint(action.from) + " → " + describePoint(action.to); break;
+    default: {
+      const rest = Object.entries(action).filter(([key]) => key !== "kind" && key !== "category");
+      detail = rest.map(([key, value]) => key + "=" + compact(value)).join(" ");
+    }
+  }
+  return { kind, detail };
+}
+
+function describePoint(point) {
+  if (isObject(point) && typeof point.x === "number" && typeof point.y === "number") return "(" + point.x + ", " + point.y + ")";
+  if (isObject(point) && isObject(point.point)) return describePoint(point.point);
+  if (isObject(point) && point.target) return describeTarget(point.target);
+  return compact(point);
+}
+
+function kindChip(kind) {
+  return el("span", { class: "kind k-" + kind.replace(/[^a-z_]/gi, ""), text: kind.replace(/_/g, " ") });
+}
+
+function outcomeOf(info) {
+  const summary = info.summary;
+  if (!summary) return { label: "unfinished", css: "" };
+  const count = (summary.violations || []).length;
+  if (summary.outcome === "violation") return { label: count === 1 ? "1 violation" : count + " violations", css: "violation" };
+  if (summary.outcome === "passed") return { label: "passed", css: "passed" };
+  return { label: summary.outcome || "unknown", css: summary.outcome === "error" ? "error" : "" };
+}
+
+function renderHeader() {
+  const info = view.info;
+  const header = info.header || {};
+  const target = header.target || {};
+  document.title = (info.file || "trace") + " — trace viewer";
+  view.refs.title.textContent = info.file || "Trace";
+  const outcome = outcomeOf(info);
+  view.refs.outcome.textContent = outcome.label;
+  view.refs.outcome.className = "badge " + outcome.css;
+  if (info.summary && info.summary.message) view.refs.outcome.title = info.summary.message;
+  const facts = [
+    ["Target", target.origin || "unknown", false],
+    ["Viewport", target.width && target.height ? target.width + " × " + target.height : "—", true],
+    ["Seed", header.seed !== undefined ? String(header.seed) : "—", false],
+    ["Specification", header.specification ? header.specification.path : "driver defaults", false],
+    ["States", String(view.states.length), false],
+    ["Recorded", header.started_unix_ms ? new Date(header.started_unix_ms).toLocaleString() : "—", true],
+  ];
+  view.refs.facts.replaceChildren(...facts.map(([label, value, optional]) =>
+    el("div", { class: optional ? "optional" : null }, el("dt", { text: label }), el("dd", { text: value, title: value }))));
+}
+
+function buildLayout() {
+  const list = el("ol", { id: "action-list", onclick: (event) => {
+    const item = event.target.closest("li[data-index]");
+    if (item) select(Number(item.dataset.index));
+  } });
+  view.listItems = view.states.map((state, index) => {
+    const parts = actionParts(state.action);
+    const item = el("li", {
+      "data-index": index,
+      class: state.violations && state.violations.length ? "violation" : null,
+      title: parts.kind + " " + parts.detail,
+    }, el("span", { class: "index", text: String(state.index ?? index) }), kindChip(parts.kind),
+      el("span", { class: "detail", text: parts.detail }), el("span", { class: "mark" }));
+    return item;
+  });
+  list.append(...view.listItems);
+  const nav = el("nav", { class: "actions", "aria-label": "Actions" },
+    el("div", { class: "pane-title" }, el("span", { text: "Actions" }),
+      el("span", { text: Math.max(0, view.states.length - 1) + " actions · " + view.states.length + " states" })),
+    list);
+  const refs = view.refs;
+  refs.beforeCaption = el("span", { class: "where" });
+  refs.afterCaption = el("span", { class: "where" });
+  refs.beforeFrame = el("div", { class: "frame" });
+  refs.afterFrame = el("div", { class: "frame" });
+  refs.beforeLabel = el("strong", { text: "Before" });
+  refs.afterLabel = el("strong", { text: "After" });
+  const transition = el("section", { class: "transition", "aria-label": "Transition" },
+    el("figure", { class: "shot" }, el("figcaption", {}, refs.beforeLabel, refs.beforeCaption), refs.beforeFrame),
+    el("figure", { class: "shot" }, el("figcaption", {}, refs.afterLabel, refs.afterCaption), refs.afterFrame));
+  refs.actionBody = el("div", { class: "body" });
+  refs.violationCard = el("article", { class: "card" });
+  refs.cellsBody = el("div", { class: "body" });
+  refs.cellsCount = el("span", { class: "count" });
+  refs.pageBody = el("div", { class: "body" });
+  refs.consoleBody = el("div", { class: "body" });
+  refs.consoleCount = el("span", { class: "count" });
+  refs.chartsCard = el("section", { class: "card" }, el("h2", {}, "Resources", el("span", { class: "count", text: "click a chart to jump" })));
+  refs.charts = el("div", { class: "charts" });
+  refs.chartsCard.append(refs.charts);
+  const main = el("main", { id: "detail" },
+    transition,
+    el("div", { class: "pair" },
+      el("article", { class: "card" }, el("h2", { text: "Action" }), refs.actionBody),
+      refs.violationCard),
+    refs.chartsCard,
+    el("div", { class: "pair" },
+      el("article", { class: "card" }, el("h2", {}, "Extracted cells", refs.cellsCount), refs.cellsBody),
+      el("article", { class: "card" }, el("h2", { text: "Page" }), refs.pageBody)),
+    el("article", { class: "card" }, el("h2", {}, "Console and exceptions", refs.consoleCount), refs.consoleBody));
+  refs.main = main;
+  refs.layout.replaceChildren(nav, main);
+  refs.list = list;
+  buildCharts();
+}
+
+function metricValue(state, key) {
+  const resources = state && isObject(state.state) ? state.state.resources : null;
+  const value = isObject(resources) ? resources[key] : null;
+  return typeof value === "number" && isFinite(value) ? value : null;
+}
+
+function buildCharts() {
+  const count = view.states.length;
+  const xOf = (index) => count <= 1 ? 500 : (index / (count - 1)) * 1000;
+  view.charts = METRICS.map(([key, label, unit]) => {
+    const values = view.states.map((state) => metricValue(state, key));
+    const present = values.filter((value) => value !== null);
+    const chart = el("div", { class: "chart" + (present.length ? "" : " empty"), title: label });
+    const valueNode = el("span", { class: "value" });
+    const deltaNode = el("span", { class: "delta" });
+    chart.append(el("div", { class: "label", text: label }), el("div", {}, valueNode, deltaNode));
+    const plot = el("div", { class: "plot" });
+    chart.append(plot);
+    if (!present.length) {
+      plot.append("not recorded");
+      view.refs.charts.append(chart);
+      return { key, unit, values, valueNode, deltaNode };
+    }
+    const low = present.reduce((least, value) => Math.min(least, value), Infinity);
+    const high = present.reduce((most, value) => Math.max(most, value), -Infinity);
+    const span = high - low || 1;
+    const yOf = (value) => high === low ? 50 : 94 - ((value - low) / span) * 88;
+    const graphic = svg("svg", { viewBox: "0 0 1000 100", preserveAspectRatio: "none", "aria-hidden": "true" });
+    let line = "";
+    let area = "";
+    let runStart = null;
+    let previousX = null;
+    values.forEach((value, index) => {
+      if (value === null) {
+        if (runStart !== null) area += "L" + previousX + " 100 L" + runStart + " 100 Z ";
+        runStart = null;
+        return;
+      }
+      const x = xOf(index).toFixed(2);
+      const y = yOf(value).toFixed(2);
+      if (runStart === null) { line += "M" + x + " " + y + " "; area += "M" + x + " 100 L" + x + " " + y + " "; runStart = x; }
+      else { line += "L" + x + " " + y + " "; area += "L" + x + " " + y + " "; }
+      previousX = x;
+    });
+    if (runStart !== null) area += "L" + previousX + " 100 L" + runStart + " 100 Z";
+    graphic.append(svg("path", { class: "area", d: area }));
+    for (const index of view.violationStates) {
+      const x = xOf(index);
+      graphic.append(svg("line", { class: "violation-line", x1: x, x2: x, y1: 0, y2: 100, "vector-effect": "non-scaling-stroke" }));
+    }
+    graphic.append(svg("path", { class: "line", d: line, "vector-effect": "non-scaling-stroke" }));
+    if (present.length === 1) {
+      const only = values.findIndex((value) => value !== null);
+      graphic.append(svg("path", { class: "line", d: "M" + (xOf(only) - 4) + " " + yOf(present[0]) + " L" + (xOf(only) + 4) + " " + yOf(present[0]), "vector-effect": "non-scaling-stroke" }));
+    }
+    const marker = svg("line", { class: "now", x1: 0, x2: 0, y1: 0, y2: 100, "vector-effect": "non-scaling-stroke" });
+    graphic.append(marker);
+    const dot = el("span", { class: "dot" });
+    plot.append(graphic, dot);
+    chart.append(el("div", { class: "range" }, el("span", { text: "min " + formatMetric(low, unit) }), el("span", { text: "max " + formatMetric(high, unit) })));
+    chart.addEventListener("click", (event) => {
+      const box = plot.getBoundingClientRect();
+      if (count <= 1 || box.width <= 0) return;
+      const ratio = Math.min(1, Math.max(0, (event.clientX - box.left) / box.width));
+      select(Math.round(ratio * (count - 1)));
+    });
+    view.refs.charts.append(chart);
+    return { key, unit, values, valueNode, deltaNode, marker, dot, xOf, yOf };
+  });
+}
+
+function updateCharts(index) {
+  for (const chart of view.charts) {
+    const value = chart.values[index];
+    chart.valueNode.textContent = formatMetric(value, chart.unit);
+    const previous = index > 0 ? chart.values[index - 1] : null;
+    if (value !== null && previous !== null && value !== previous) {
+      const change = value - previous;
+      chart.deltaNode.textContent = (change > 0 ? "+" : "−") + formatMetric(Math.abs(change), chart.unit);
+      chart.deltaNode.className = "delta " + (change > 0 ? "up" : "down");
+    } else {
+      chart.deltaNode.textContent = index > 0 && value !== null ? "±0" : "";
+      chart.deltaNode.className = "delta";
+    }
+    if (!chart.marker) continue;
+    const x = chart.xOf(index);
+    chart.marker.setAttribute("x1", x);
+    chart.marker.setAttribute("x2", x);
+    if (value === null) { chart.dot.style.display = "none"; continue; }
+    chart.dot.style.display = "";
+    chart.dot.style.left = (x / 10) + "%";
+    chart.dot.style.top = chart.yOf(value) + "%";
+  }
+}
+
+function screenshotFrame(frame, caption, state, emptyText, pointSource) {
+  if (!state) {
+    frame.replaceChildren(el("div", { class: "empty", text: emptyText }));
+    caption.textContent = "";
+    return;
+  }
+  const page = isObject(state.state) ? state.state : {};
+  caption.textContent = page.url || "";
+  caption.title = page.url || "";
+  if (!state.has_screenshot) {
+    frame.replaceChildren(el("div", { class: "empty", text: "No screenshot was recorded for state " + state.index + "." }));
+    return;
+  }
+  const source = "/api/screenshots/" + state.index + ".png";
+  const image = el("img", { src: source, alt: "Screenshot of state " + state.index, decoding: "async" });
+  const link = el("a", { href: source, target: "_blank", rel: "noopener", title: "Open full size" }, image);
+  const point = pointSource && isObject(pointSource.point) ? pointSource.point : null;
+  const viewport = isObject(page.viewport) ? page.viewport : null;
+  if (point && viewport && viewport.width > 0 && viewport.height > 0) {
+    const marker = el("span", { class: "pointer" });
+    marker.style.left = Math.min(100, Math.max(0, (point.x / viewport.width) * 100)) + "%";
+    marker.style.top = Math.min(100, Math.max(0, (point.y / viewport.height) * 100)) + "%";
+    link.append(marker);
+  }
+  const ratio = viewport && viewport.width > 0 && viewport.height > 0 ? viewport.width + " / " + viewport.height : "4 / 3";
+  frame.style.aspectRatio = ratio;
+  frame.replaceChildren(link);
+}
+
+function kvTable(rows) {
+  return el("table", { class: "kv" }, el("tbody", {}, rows.map(([key, value, options]) =>
+    el("tr", {}, el("th", {}, key, options && options.isNew ? el("span", { class: "new", text: "new" }) : null),
+      el("td", { class: options && options.changed ? "changed" : null, text: value })))));
+}
+
+function valueCell(value) {
+  const text = pretty(value);
+  if (text.length <= 600) return text;
+  return text.slice(0, 600) + "… (" + text.length + " characters)";
+}
+
+function renderAction(state, previous) {
+  const body = view.refs.actionBody;
+  const action = state.action;
+  const parts = actionParts(action);
+  const headline = el("div", { class: "headline" }, kindChip(parts.kind));
+  if (isObject(action) && action.category) headline.append(el("span", { class: "chip", text: action.category }));
+  headline.append(el("span", { class: "status-line", text: formatElapsed(state.timestamp_ms) + (previous ? " (" + (state.timestamp_ms - previous.timestamp_ms) + " ms after state " + previous.index + ")" : "") }));
+  const nodes = [headline];
+  if (!isObject(action)) {
+    nodes.push(el("div", { class: "none", text: "The run started here; no action came before this state." }));
+    body.replaceChildren(...nodes);
+    return;
+  }
+  const rows = [];
+  if (isObject(action.point)) rows.push(["Point", "x " + action.point.x + ", y " + action.point.y]);
+  for (const [key, value] of Object.entries(action)) {
+    if (["kind", "category", "target", "point"].includes(key)) continue;
+    rows.push([key, valueCell(value)]);
+  }
+  if (rows.length) nodes.push(kvTable(rows));
+  if (isObject(action.target)) {
+    nodes.push(el("div", { class: "subhead", text: "Target fingerprint" }));
+    const fields = Object.entries(action.target);
+    nodes.push(fields.length ? kvTable(fields.map(([key, value]) => [key, typeof value === "string" ? value : compact(value)])) : el("div", { class: "none", text: "empty fingerprint" }));
+  }
+  body.replaceChildren(...nodes);
+}
+
+function renderViolations(state) {
+  const card = view.refs.violationCard;
+  const here = state.violations || [];
+  card.className = "card" + (here.length ? " alert" : "");
+  const total = view.violationStates.length;
+  const heading = el("h2", {}, here.length ? (here.length === 1 ? "Violation at this state" : here.length + " violations at this state") : "Violations",
+    el("span", { class: "count", text: total ? total + (total === 1 ? " state" : " states") + " with violations" : "none in trace" }));
+  const body = el("div", { class: "body" });
+  if (here.length) {
+    for (const violation of here) {
+      const item = el("div", { class: "violation-item" },
+        el("div", { class: "property", text: violation.property }),
+        el("div", { class: "formula", text: violation.path }));
+      if (violation.message) item.append(el("div", { class: "message", text: violation.message }));
+      if (isObject(violation.cells) && Object.keys(violation.cells).length) {
+        item.append(kvTable(Object.entries(violation.cells).map(([key, value]) => [key, valueCell(value)])));
+      }
+      body.append(item);
+    }
+  } else {
+    body.append(el("div", { class: "none", text: total ? "No property failed at this state." : "No property failed anywhere in this trace." }));
+  }
+  if (total) {
+    body.append(el("div", { class: "subhead", text: "Jump to" }));
+    const jumps = el("div", { class: "jumps" });
+    for (const index of view.violationStates.slice(0, 60)) {
+      const names = (view.states[index].violations || []).map((violation) => violation.property).join(", ");
+      jumps.append(el("button", { type: "button", class: index === view.index ? "here" : null, title: names, onclick: () => select(index) }, "state " + view.states[index].index));
+    }
+    if (total > 60) jumps.append(el("span", { class: "none", text: "and " + (total - 60) + " more" }));
+    body.append(jumps);
+  }
+  card.replaceChildren(heading, body);
+}
+
+function renderCells(state, previous) {
+  const cells = isObject(state.cells) ? state.cells : {};
+  const before = previous && isObject(previous.cells) ? previous.cells : null;
+  const entries = Object.entries(cells);
+  view.refs.cellsCount.textContent = entries.length ? entries.length + (entries.length === 1 ? " cell" : " cells") : "";
+  if (!entries.length) {
+    view.refs.cellsBody.replaceChildren(el("div", { class: "none", text: "The specification exports no cells, or none were extracted." }));
+    return;
+  }
+  view.refs.cellsBody.replaceChildren(kvTable(entries.map(([key, value]) => {
+    const isNew = before !== null && !(key in before);
+    const changed = before !== null && !isNew && compact(before[key]) !== compact(value);
+    return [key, valueCell(value), { changed, isNew }];
+  })));
+}
+
+function renderPage(state) {
+  const page = isObject(state.state) ? state.state : {};
+  const rows = [];
+  rows.push(["URL", page.url || "—"]);
+  rows.push(["Title", page.title || "—"]);
+  const navigation = isObject(page.navigation) ? page.navigation : {};
+  rows.push(["Navigation", (navigation.kind || "—") + (navigation.status !== undefined ? " · HTTP " + (navigation.status === null ? "none" : navigation.status) : "")]);
+  if (page.mime_type) rows.push(["MIME type", page.mime_type]);
+  if (isObject(page.viewport)) rows.push(["Viewport", page.viewport.width + " × " + page.viewport.height + " @" + (page.viewport.device_scale_factor ?? 1) + "x"]);
+  if (isObject(page.scroll)) rows.push(["Scroll", page.scroll.x + ", " + page.scroll.y + " of " + page.scroll.max_x + ", " + page.scroll.max_y]);
+  if (isObject(page.history)) rows.push(["History", "entry " + page.history.index + " of " + (Array.isArray(page.history.entries) ? page.history.entries.length : "?")]);
+  rows.push(["Focused", isObject(page.focused) ? [page.focused.tag, page.focused.input_type, isObject(page.focused.target) ? describeTarget(page.focused.target) : ""].filter(Boolean).join(" ") : "nothing"]);
+  if (Array.isArray(page.clickables)) rows.push(["Clickables", String(page.clickables.length)]);
+  if (isObject(page.coverage)) rows.push(["Coverage", page.coverage.branches_new + " new of " + page.coverage.branches_total + " branches"]);
+  if (Array.isArray(page.downloads) && page.downloads.length) rows.push(["Downloads", String(page.downloads.length)]);
+  view.refs.pageBody.replaceChildren(kvTable(rows));
+}
+
+function renderConsole(state) {
+  const page = isObject(state.state) ? state.state : {};
+  const consoleEntries = Array.isArray(page.console) ? page.console : [];
+  const exceptions = Array.isArray(page.exceptions) ? page.exceptions : [];
+  const total = consoleEntries.length + exceptions.length;
+  view.refs.consoleCount.textContent = total ? consoleEntries.length + " console · " + exceptions.length + " exceptions" : "";
+  if (!total) {
+    view.refs.consoleBody.replaceChildren(el("div", { class: "none", text: "No warnings, errors or exceptions on this page." }));
+    return;
+  }
+  const list = el("ul", { class: "log" });
+  for (const exception of exceptions) {
+    const where = [exception.url, exception.line !== undefined ? exception.line + ":" + (exception.column ?? 0) : ""].filter(Boolean).join(" ");
+    const content = el("div", {}, el("div", { class: "text", text: exception.message || "(no message)" }));
+    if (where) content.append(el("div", { class: "source", text: where }));
+    if (exception.stack) content.append(el("details", {}, el("summary", { text: "stack" }), el("pre", { class: "stack", text: exception.stack })));
+    list.append(el("li", {}, el("span", { class: "level " + (exception.kind || "exception"), text: exception.kind || "exception" }), content));
+  }
+  for (const entry of consoleEntries) {
+    const where = [entry.url, entry.line ? "line " + entry.line : ""].filter(Boolean).join(" ");
+    list.append(el("li", {}, el("span", { class: "level " + (entry.level || ""), text: entry.level || "log" }),
+      el("div", {}, el("div", { class: "text", text: entry.text || "" }), where ? el("div", { class: "source", text: where }) : null)));
+  }
+  view.refs.consoleBody.replaceChildren(list);
+}
+
+function drawTimeline() {
+  const canvas = view.refs.timeline;
+  const box = canvas.getBoundingClientRect();
+  if (box.width <= 0) return;
+  const ratio = window.devicePixelRatio || 1;
+  canvas.width = Math.round(box.width * ratio);
+  canvas.height = Math.round(box.height * ratio);
+  const g = canvas.getContext("2d");
+  g.setTransform(ratio, 0, 0, ratio, 0, 0);
+  const style = getComputedStyle(document.documentElement);
+  const color = (name) => style.getPropertyValue(name).trim();
+  const width = box.width;
+  const height = box.height;
+  const count = view.states.length;
+  const pad = 10;
+  const mid = height / 2;
+  const xOf = (index) => count <= 1 ? width / 2 : pad + ((width - 2 * pad) * index) / (count - 1);
+  g.clearRect(0, 0, width, height);
+  g.fillStyle = color("--line");
+  g.beginPath();
+  g.roundRect(pad - 4, mid - 3, width - 2 * pad + 8, 6, 3);
+  g.fill();
+  if (count > 1) {
+    g.fillStyle = color("--accent-soft");
+    g.beginPath();
+    g.roundRect(pad - 4, mid - 3, xOf(view.index) - pad + 4, 6, 3);
+    g.fill();
+  }
+  const spacing = count > 1 ? (width - 2 * pad) / (count - 1) : width;
+  if (spacing >= 5) {
+    g.fillStyle = color("--line-strong");
+    for (let index = 0; index < count; index += 1) g.fillRect(Math.round(xOf(index)) - 0.5, mid - 6, 1, 12);
+  }
+  g.fillStyle = color("--bad");
+  const barWidth = Math.max(2, Math.min(6, spacing * 0.6));
+  for (const index of view.violationStates) {
+    const x = xOf(index);
+    g.fillRect(x - barWidth / 2, 3, barWidth, height - 6);
+  }
+  const x = xOf(view.index);
+  g.fillStyle = color("--panel");
+  g.beginPath();
+  g.arc(x, mid, 9, 0, Math.PI * 2);
+  g.fill();
+  g.fillStyle = color("--accent");
+  g.beginPath();
+  g.arc(x, mid, 6.5, 0, Math.PI * 2);
+  g.fill();
+}
+
+function indexAt(clientX) {
+  const box = view.refs.timeline.getBoundingClientRect();
+  const count = view.states.length;
+  if (count <= 1) return 0;
+  const pad = 10;
+  const ratio = (clientX - box.left - pad) / Math.max(1, box.width - 2 * pad);
+  return Math.min(count - 1, Math.max(0, Math.round(ratio * (count - 1))));
+}
+
+function select(index) {
+  const count = view.states.length;
+  if (!count) return;
+  index = Math.min(count - 1, Math.max(0, Math.round(index)));
+  const previousIndex = view.index;
+  view.index = index;
+  const state = view.states[index];
+  const previous = index > 0 ? view.states[index - 1] : null;
+  for (const position of [previousIndex, previousIndex - 1]) {
+    const item = view.listItems[position];
+    if (item) item.classList.remove("selected", "before");
+  }
+  const item = view.listItems[index];
+  item.classList.add("selected");
+  if (previous) view.listItems[index - 1].classList.add("before");
+  const list = view.refs.list;
+  const top = item.offsetTop - list.offsetTop;
+  if (top < list.scrollTop + 20 || top + item.offsetHeight > list.scrollTop + list.clientHeight - 20) {
+    list.scrollTop = top - list.clientHeight / 2 + item.offsetHeight / 2;
+  }
+  view.refs.position.textContent = "State " + state.index;
+  view.refs.stamp.title = "position " + (index + 1) + " of " + count;
+  view.refs.stamp.textContent = formatElapsed(state.timestamp_ms) + " · " + (index + 1) + " of " + count + (count === 1 ? " state" : " states");
+  view.refs.timeline.setAttribute("aria-valuenow", String(index));
+  view.refs.previous.disabled = index === 0;
+  view.refs.next.disabled = index === count - 1;
+  view.refs.nextViolation.disabled = !view.violationStates.length;
+  view.refs.beforeLabel.textContent = previous ? "Before · state " + previous.index : "Before";
+  view.refs.afterLabel.textContent = "After · state " + state.index;
+  screenshotFrame(view.refs.beforeFrame, view.refs.beforeCaption, previous, "This is the first state; nothing came before it.", state.action);
+  screenshotFrame(view.refs.afterFrame, view.refs.afterCaption, state, "", null);
+  renderAction(state, previous);
+  renderViolations(state);
+  renderCells(state, previous);
+  renderPage(state);
+  renderConsole(state);
+  updateCharts(index);
+  drawTimeline();
+  history.replaceState(null, "", "#" + index);
+}
+
+function nextViolation(direction) {
+  const list = view.violationStates;
+  if (!list.length) return;
+  if (direction > 0) select(list.find((index) => index > view.index) ?? list[0]);
+  else select([...list].reverse().find((index) => index < view.index) ?? list[list.length - 1]);
+}
+
+function wireControls() {
+  const timeline = view.refs.timeline;
+  let dragging = false;
+  timeline.addEventListener("pointerdown", (event) => {
+    dragging = true;
+    timeline.setPointerCapture(event.pointerId);
+    select(indexAt(event.clientX));
+  });
+  timeline.addEventListener("pointermove", (event) => {
+    const index = indexAt(event.clientX);
+    const state = view.states[index];
+    if (state) timeline.title = "State " + state.index + " · " + actionParts(state.action).kind + (state.violations && state.violations.length ? " · violation" : "");
+    if (dragging && index !== view.index) select(index);
+  });
+  const release = () => { dragging = false; };
+  timeline.addEventListener("pointerup", release);
+  timeline.addEventListener("pointercancel", release);
+  view.refs.previous.addEventListener("click", () => select(view.index - 1));
+  view.refs.next.addEventListener("click", () => select(view.index + 1));
+  view.refs.nextViolation.addEventListener("click", () => nextViolation(1));
+  document.addEventListener("keydown", (event) => {
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    const step = event.shiftKey ? 10 : 1;
+    switch (event.key) {
+      case "ArrowLeft": case "ArrowUp": select(view.index - step); break;
+      case "ArrowRight": case "ArrowDown": select(view.index + step); break;
+      case "Home": select(0); break;
+      case "End": select(view.states.length - 1); break;
+      case "v": nextViolation(1); break;
+      case "V": nextViolation(-1); break;
+      default: return;
+    }
+    event.preventDefault();
+  });
+  let pending = 0;
+  window.addEventListener("resize", () => {
+    cancelAnimationFrame(pending);
+    pending = requestAnimationFrame(drawTimeline);
+  });
+  if (window.matchMedia) window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", drawTimeline);
+}
+
+async function fetchJson(path) {
+  const response = await fetch(path, { cache: "no-store" });
+  if (!response.ok) throw new Error(path + " answered " + response.status);
+  return response.json();
+}
+
+async function start() {
+  const byId = (id) => document.getElementById(id);
+  Object.assign(view.refs, {
+    title: byId("title"), outcome: byId("outcome"), facts: byId("facts"), layout: byId("layout"),
+    position: byId("position"), stamp: byId("stamp"), timeline: byId("timeline"),
+    previous: byId("previous"), next: byId("next"), nextViolation: byId("next-violation"),
+    scaleStart: byId("scale-start"), scaleEnd: byId("scale-end"),
+  });
+  try {
+    const [info, states] = await Promise.all([fetchJson("/api/header"), fetchJson("/api/states")]);
+    view.info = info;
+    view.states = Array.isArray(states) ? states : [];
+  } catch (error) {
+    view.refs.outcome.textContent = "unavailable";
+    byId("splash").textContent = "The trace could not be loaded: " + error.message + ". Is the viewer server still running?";
+    byId("splash").classList.add("failed");
+    return;
+  }
+  renderHeader();
+  if (!view.states.length) {
+    byId("splash").textContent = "This trace has no states.";
+    return;
+  }
+  view.violationStates = view.states.flatMap((state, index) => state.violations && state.violations.length ? [index] : []);
+  view.refs.timeline.setAttribute("aria-valuemax", String(view.states.length - 1));
+  const last = view.states[view.states.length - 1];
+  view.refs.scaleStart.textContent = "state " + view.states[0].index + " · " + formatElapsed(view.states[0].timestamp_ms);
+  view.refs.scaleEnd.textContent = "state " + last.index + " · " + formatElapsed(last.timestamp_ms);
+  buildLayout();
+  wireControls();
+  const fromHash = Number.parseInt(location.hash.slice(1), 10);
+  const initial = Number.isFinite(fromHash) ? fromHash : (view.violationStates.length ? view.violationStates[0] : 0);
+  view.index = Math.min(view.states.length - 1, Math.max(0, initial));
+  select(view.index);
+}
+
+start();
+</script>
+</body>
+</html>
