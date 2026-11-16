@@ -6,13 +6,13 @@ pub(crate) use crate::unix::signal::{
 };
 
 /// The pidfd route, else the check and `kill` of the shared unix code.
-pub(crate) fn signal_same(pid: u32, os: i32, started: u64, signal: i32) -> bool {
-    if let Some(sent) = pidfd_signal(os, signal, || {
+pub(crate) fn signal_same(pid: u32, os_pid: i32, started: u64, signal: i32) -> bool {
+    if let Some(sent) = pidfd_signal(os_pid, signal, || {
         crate::process::start_time(pid) == Some(started)
     }) {
         return sent;
     }
-    crate::unix::signal::check_and_kill(pid, os, started, signal)
+    crate::unix::signal::check_and_kill(pid, os_pid, started, signal)
 }
 
 /// Open a pidfd for `pid`, then send `signal` through it when `same` holds.

@@ -18,9 +18,9 @@ const NOT_SUPPORTED: NotSupported = NotSupported {
 /// Open one handle that may both read the creation time and terminate, and
 /// terminate through it with exit code 1 only when the creation time is
 /// `started`. `how` makes no difference.
-pub(crate) fn stop_same(_pid: u32, os: i32, started: u64, _how: Stop) -> bool {
+pub(crate) fn stop_same(_pid: u32, os_pid: i32, started: u64, _how: Stop) -> bool {
     let access = PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION;
-    let Some(p) = Process::open(os, access) else {
+    let Some(p) = Process::open(os_pid, access) else {
         return false;
     };
     // SAFETY: the handle is open with PROCESS_TERMINATE.

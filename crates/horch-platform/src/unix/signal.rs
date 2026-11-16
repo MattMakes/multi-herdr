@@ -6,19 +6,19 @@ use crate::NotSupported;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, Ordering};
 use std::sync::Once;
 
-/// Send `signal` to `os`, the OS form of `pid`, only when the start time
+/// Send `signal` to `os_pid`, the OS form of `pid`, only when the start time
 /// still matches: the check, then `kill`.
-pub(crate) fn check_and_kill(pid: u32, os: i32, started: u64, signal: i32) -> bool {
+pub(crate) fn check_and_kill(pid: u32, os_pid: i32, started: u64, signal: i32) -> bool {
     // SAFETY: plain syscall on a pid checked to be positive.
-    crate::process::start_time(pid) == Some(started) && unsafe { libc::kill(os, signal) } == 0
+    crate::process::start_time(pid) == Some(started) && unsafe { libc::kill(os_pid, signal) } == 0
 }
 
-pub(crate) fn stop_same(pid: u32, os: i32, started: u64, how: Stop) -> bool {
+pub(crate) fn stop_same(pid: u32, os_pid: i32, started: u64, how: Stop) -> bool {
     let signal = match how {
         Stop::Term => libc::SIGTERM,
         Stop::Kill => libc::SIGKILL,
     };
-    signal_same(pid, os, started, signal)
+    signal_same(pid, os_pid, started, signal)
 }
 
 pub(crate) fn terminate_politely(pid: u32, started: u64) -> Result<bool, NotSupported> {

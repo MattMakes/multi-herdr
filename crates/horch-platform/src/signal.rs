@@ -52,7 +52,7 @@ pub enum Termination {
 /// be given out again between the two calls.
 #[cfg(unix)]
 pub fn signal_same(pid: u32, started: u64, signal: i32) -> bool {
-    raw(pid).is_some_and(|os| os::signal_same(pid, os, started, signal))
+    raw(pid).is_some_and(|os_pid| os::signal_same(pid, os_pid, started, signal))
 }
 
 /// Stop `pid` only while it runs with start time `started`, and say whether
@@ -67,7 +67,7 @@ pub fn signal_same(pid: u32, started: u64, signal: i32) -> bool {
 /// between the check and the stop. Both kinds of stop end the process at
 /// once there, with exit code 1.
 pub fn stop_same(pid: u32, started: u64, how: Stop) -> bool {
-    raw(pid).is_some_and(|os| os::stop_same(pid, os, started, how))
+    raw(pid).is_some_and(|os_pid| os::stop_same(pid, os_pid, started, how))
 }
 
 /// Ask `pid` to end, only while it runs with start time `started`, and say
