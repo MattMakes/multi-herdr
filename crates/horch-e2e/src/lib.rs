@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
+pub mod expected;
 pub mod harness;
 pub mod process;
 
