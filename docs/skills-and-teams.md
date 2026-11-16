@@ -239,6 +239,7 @@ to no phase.
 | `fable-creative`, `astra-creative`, `opus-creative` | `creative-council`: diverge (1 design per seat, alone, under `ai_docs/designs/<slug>/`) or combine (`combined.md`, each part with its source letters) |
 | `game-design-juicer` | `game-juice`: audits each core action (input, hit-stop, deformation, direction, sound), balances by tier and frequency, writes a ranked idea report under `ai_docs/juice/` |
 | `game-design-incremental-specialist` | `incremental-game-design`: models an incremental or idle game (from a Godot project, a design document or an idea), simulates it under 3 reset habits, writes a pacing workbook with beats, lulls and their causes, and proves a proposed system against a numbers-only control; names `game-juice`, `godot-economy-system` and `godot-gameplay-loops`; a Godot project adds `godot-balance-model-data`, `godot-upgrade-tree-design` and `godot-bot-balance-loop` |
+| `addictive-game-design-reviewer` | `addictive-game-design-review`: reads a built incremental or idle game (a game directory or its src folders), maps the loop, builds the timeline of a new player, runs 18 checks from research on reward and progression, and writes a ranked finding report under `ai_docs/game-review/` (rebalance, redo, add, remove, automate, reveal), each finding with a file, a line and a test; names `incremental-game-design` and `game-juice` |
 | `frontend-developer`, `opus-domain`, `opus`, `codex-sol`, `codex-reviewer` | name `codebase-design` under `available_skills` |
 
 ### Blender and the Unreal team

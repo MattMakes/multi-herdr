@@ -58,6 +58,7 @@ To refresh a copied skill:
 
 | Skill | Kind |
 | --- | --- |
+| [addictive-game-design-review](addictive-game-design-review/SKILL.md) | own text |
 | [art-direction](art-direction/SKILL.md) | combined and rewritten |
 | [brand-identity](brand-identity/SKILL.md) | combined and rewritten |
 | [design-imagery](design-imagery/SKILL.md) | combined and rewritten |

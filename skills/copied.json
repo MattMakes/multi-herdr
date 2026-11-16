@@ -2,6 +2,11 @@
   "format": "One entry per bundled skill. copied_files lists the files, relative to the skill directory, that were copied into this repository from elsewhere; a check reports problems in them but does not fail on them. An empty list means the skill is own text. verbatim: true means the directory is an unchanged copy: copied_files lists every file and none was edited. A verbatim skill is exempt from the bundled size budget. budget_exempt: \"<reason>\" exempts a skill that is not verbatim (renamed, adapted or combined) from the size budget; set it only on a skill over the budget.",
   "skills": [
     {
+      "name": "addictive-game-design-review",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
       "name": "api-contracts",
       "copied_files": [],
       "verbatim": false

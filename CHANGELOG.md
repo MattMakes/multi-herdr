@@ -14,6 +14,16 @@
   proposed system is tested against a numbers-only control. On a Godot project
   the skill's scan finds the cost formulas, the unlock signals and the
   feedback each one fires. The scripts need Python 3 and `openpyxl`.
+- New teammate `addictive-game-design-reviewer` for a gameplay review of a
+  built incremental, idle or upgrade-driven game. Run
+  `horch spawn addictive-game-design-reviewer` in a game project and name the
+  game directory or its src folders. Its new `addictive-game-design-review`
+  skill maps the loop of the game, builds the timeline of a new player, and
+  runs 18 checks from research on reward and progression. The report ranks
+  what to rebalance, redo, add, remove, automate or reveal; each finding has
+  a file, a line, 1 change and a test. A system that holds a player by
+  pressure, loss or deceit is a finding to remove. The seat changes no game
+  file.
 
 ## v0.4.9 - 2026-11-11
 

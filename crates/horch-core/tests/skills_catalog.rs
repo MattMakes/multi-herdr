@@ -32,6 +32,7 @@ fn plan_for(t: &Teammate, base: &SkillCatalog) -> anyhow::Result<SkillActivation
 /// Skills written in this repository: their `copied.json` entry lists no
 /// copied files.
 const REPO_ORIGINAL: &[&str] = &[
+    "addictive-game-design-review",
     "api-contracts",
     "architecture-review",
     "audio-review",
@@ -104,6 +105,7 @@ fn oracles() -> PathBuf {
 /// oracle loop skips them; a missing file for any other teammate still
 /// fails. Never give one of these an oracle file.
 const SKIP_NEW_TEAMMATES: &[&str] = &[
+    "addictive-game-design-reviewer",
     "antigravity",
     "app-release-preparer",
     "apple-accessibility-auditor",

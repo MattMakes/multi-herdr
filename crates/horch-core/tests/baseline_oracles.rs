@@ -68,6 +68,7 @@ fn check_oracle(rel: &str, actual: &str) {
 /// oracle loops skip them; a missing file for any other teammate still
 /// fails. Never give one of these an oracle file.
 const SKIP_NEW_TEAMMATES: &[&str] = &[
+    "addictive-game-design-reviewer",
     "antigravity",
     "app-release-preparer",
     "apple-accessibility-auditor",

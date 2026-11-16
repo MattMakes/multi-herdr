@@ -338,6 +338,25 @@ folder the task names, or `ai_docs/progression/<game>/`, and changes no game
 file unless the task says so. For a full juice pass it points the
 orchestrator at `game-design-juicer`.
 
+## The incremental game reviewer
+
+| teammate | phase | agent, model, effort | fallback | use for |
+|---|---|---|---|---|
+| `addictive-game-design-reviewer` | plan | claude, opus, high | `codex-sol` | a gameplay review of a built incremental, idle or upgrade-driven game: what to rebalance, redo, add, remove, automate or reveal so that players want one more upgrade |
+
+It carries `addictive-game-design-review` and names `incremental-game-design`
+and `game-juice`. The skill is text only. It comes from research on reward
+and progression: 8 research findings with their limits, 6 patterns from 6
+known games, and 18 checks. "Addictive" means that the player continues by
+their own choice; a system that holds a player by pressure, loss or deceit
+is a finding to remove. The seat is offered in every project and `requires:`
+nothing, because it reads source and data files and runs no engine. It
+denies `Edit` and `NotebookEdit`: it writes only its report, to the file the
+task names, or `ai_docs/game-review/<game>/review.md`. Each finding has a
+file, a line, 1 change and a test. It does not prove new numbers: a
+rebalance finding goes to `game-design-incremental-specialist`, and a
+feedback finding goes to `game-design-juicer`.
+
 ## The skill intake team
 
 `skill-importer` imports a skill from a GitHub repo or a local folder with

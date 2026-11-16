@@ -2249,6 +2249,7 @@ w3-codex: sandbox is Claude only; agent codex cannot honour it";
                 | "opus-creative"
                 | "game-design-juicer"
                 | "game-design-incremental-specialist"
+                | "addictive-game-design-reviewer"
                 | "ue-tech-lead"
                 | "godot-tech-lead"
                 | "video-director"
@@ -2931,8 +2932,8 @@ w3-codex: sandbox is Claude only; agent codex cannot honour it";
             .collect();
         assert_eq!(
             covered.len(),
-            80,
-            "the rule should cover 80 claude teammates"
+            81,
+            "the rule should cover 81 claude teammates"
         );
         // sound-engineer runs on claude; audio-reviewer runs on agy.
         assert!(covered.contains(&"sound-engineer"), "{covered:?}");
