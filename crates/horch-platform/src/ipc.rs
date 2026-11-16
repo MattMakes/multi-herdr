@@ -46,9 +46,13 @@ impl LocalStream {
         os::ipc::write_by(&mut self.0, bytes, deadline)
     }
 
-    /// Read 1 line, up to and with its newline, or what came before EOF,
-    /// but wait only until `deadline`. The read stops after the newline or
-    /// at `limit` bytes. Bytes that are not UTF-8 give `InvalidData`.
+    /// Read 1 line, with its newline, or what came before EOF, but wait
+    /// only until `deadline`. The read takes chunks of up to 256 bytes and
+    /// stops after the first chunk that holds a newline, or once `limit`
+    /// bytes are in. So the result can hold bytes after the newline and
+    /// up to 255 bytes over `limit`. Those bytes are not kept for a next
+    /// call. Bytes that are not UTF-8 give `InvalidData`. This is the
+    /// behavior of `messaging/channel.rs` today, and PL-6 keeps it.
     pub fn read_line_by(&mut self, deadline: Instant, limit: usize) -> io::Result<String> {
         os::ipc::read_line_by(&mut self.0, deadline, limit)
     }
