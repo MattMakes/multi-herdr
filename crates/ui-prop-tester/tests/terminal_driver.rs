@@ -357,6 +357,33 @@ fn shutdown_terminates_the_child_and_its_process_group() {
 }
 
 #[test]
+fn shutdown_ends_a_background_process_left_by_an_exited_child() {
+    let mut session = Session::shell("trap '' HUP; sleep 600 & echo background:$!");
+    session.until_ended();
+    let background = pid_after(session.state(), "background:").expect("background pid");
+    session.shutdown();
+    assert!(wait_for_process_gone(background));
+}
+
+#[test]
+fn a_driver_cannot_start_twice_or_act_after_shutdown() {
+    let mut session = Session::shell("exec sleep 600");
+    assert!(matches!(
+        session.driver.start(),
+        Err(DriverError::Failed(_))
+    ));
+    session.driver.shutdown().expect("shutdown");
+    assert!(matches!(
+        session.try_apply(json!({"kind": "scroll_to_top"})),
+        Err(DriverError::Failed(_))
+    ));
+    assert!(matches!(
+        session.driver.start(),
+        Err(DriverError::Failed(_))
+    ));
+}
+
+#[test]
 fn dropping_the_driver_terminates_the_child() {
     let mut session = Session::shell("echo child:$$; exec sleep 600");
     session.until(|observation| pid_after(&observation.state, "child:").is_some());

@@ -101,7 +101,7 @@ impl TerminalDriver {
     fn pty(&self) -> Result<&Pty, DriverError> {
         self.pty
             .as_ref()
-            .ok_or_else(|| failed("the terminal driver has not started"))
+            .ok_or_else(|| failed("the terminal driver is not running"))
     }
 
     fn exit(&mut self) -> Option<ExitReport> {
@@ -119,7 +119,7 @@ impl TerminalDriver {
             let pty = self
                 .pty
                 .as_ref()
-                .ok_or_else(|| failed("the terminal driver has not started"))?;
+                .ok_or_else(|| failed("the terminal driver is not running"))?;
             let outcome = pty.read(&mut self.buffer)?;
             match outcome {
                 ReadOutcome::Data(count) => {
@@ -321,7 +321,7 @@ impl Driver for TerminalDriver {
     }
 
     fn start(&mut self) -> Result<Observation, DriverError> {
-        if self.pty.is_some() {
+        if self.started.is_some() {
             return Err(failed("the terminal driver has already started"));
         }
         self.started = Some(Instant::now());
@@ -344,7 +344,7 @@ impl Driver for TerminalDriver {
     }
 
     fn shutdown(&mut self) -> Result<(), DriverError> {
-        if let Some(pty) = self.pty.as_mut() {
+        if let Some(mut pty) = self.pty.take() {
             pty.terminate();
         }
         Ok(())

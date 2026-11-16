@@ -183,34 +183,52 @@ impl Pty {
         Ok(())
     }
 
-    fn signal(&self, signal: Signal) {
-        let pid = Pid::from_raw(self.child.id() as i32);
-        let _ = killpg(pid, signal);
-        let _ = kill(pid, signal);
+    fn group(&self) -> Pid {
+        Pid::from_raw(self.child.id() as i32)
+    }
+
+    fn group_alive(&self) -> bool {
+        killpg(self.group(), None).is_ok()
+    }
+
+    fn finished(&mut self) -> bool {
+        self.exit().is_some() && !self.group_alive()
+    }
+
+    fn signal(&mut self, signal: Signal) {
+        let _ = killpg(self.group(), signal);
+        if self.exit().is_none() {
+            let _ = kill(self.group(), signal);
+        }
     }
 
     pub fn terminate(&mut self) {
-        if self.exit().is_some() {
+        if self.finished() {
             return;
         }
         self.signal(Signal::SIGHUP);
         self.signal(Signal::SIGCONT);
         self.signal(Signal::SIGTERM);
-        if self.discard_output_until_exit(Some(Instant::now() + TERMINATE_GRACE)) {
+        if self.discard_output_until(Self::finished, Instant::now() + TERMINATE_GRACE) {
             return;
         }
         self.signal(Signal::SIGKILL);
-        self.discard_output_until_exit(None);
+        while !self.discard_output_until(Self::finished, Instant::now() + TERMINATE_GRACE) {
+            if self.exit().is_some() {
+                return;
+            }
+            self.signal(Signal::SIGKILL);
+        }
     }
 
-    fn discard_output_until_exit(&mut self, deadline: Option<Instant>) -> bool {
+    fn discard_output_until(&mut self, done: fn(&mut Pty) -> bool, deadline: Instant) -> bool {
         let mut buffer = [0u8; 4096];
         let mut open = true;
         loop {
-            if self.exit().is_some() {
+            if done(self) {
                 return true;
             }
-            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            if Instant::now() >= deadline {
                 return false;
             }
             while open {
