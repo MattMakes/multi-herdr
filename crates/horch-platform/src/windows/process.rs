@@ -20,10 +20,10 @@ const NOT_SUPPORTED: NotSupported = NotSupported {
 };
 
 /// A process handle, closed on drop.
-struct Process(HANDLE);
+pub(crate) struct Process(pub(crate) HANDLE);
 
 impl Process {
-    fn open(pid: i32, access: PROCESS_ACCESS_RIGHTS) -> Option<Self> {
+    pub(crate) fn open(pid: i32, access: PROCESS_ACCESS_RIGHTS) -> Option<Self> {
         // SAFETY: plain call; a failure answers a null handle.
         let h = unsafe { OpenProcess(access, 0, pid as u32) };
         (!h.is_null()).then_some(Self(h))
@@ -41,7 +41,7 @@ impl Process {
 
     /// The creation time as a u64 of `FILETIME` ticks, while the process has
     /// not exited.
-    fn start_time(&self) -> Option<u64> {
+    pub(crate) fn start_time(&self) -> Option<u64> {
         if !self.running() {
             return None;
         }
