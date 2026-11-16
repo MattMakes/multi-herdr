@@ -1,4 +1,5 @@
 {
   "text": "Retry sync with backoff and log each retry",
-  "idempotency_key": "add-idea-7f3a9c2e"
+  "request_id": "add-idea-7f3a9c2e",
+  "operator_token": "c2f81d9a4b7e"
 }

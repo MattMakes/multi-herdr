@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ddd/09-contracts/schemas/requeue-task.schema.json",
+  "title": "Requeue Task",
+  "description": "horch task requeue (request kind task_requeue). An escalated task goes to ready with its attempt count at 0 (attempt_floor). For a done task whose branch is at its repair limit, it sets repair_attempts to 0 and starts 1 more resolver or fix attempt (A27, D15).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "task_id",
+    "request_id",
+    "operator_token"
+  ],
+  "properties": {
+    "task_id": {
+      "type": "string",
+      "pattern": "^T-[0-9]{4,}-[0-9]{2,}$",
+      "description": "The task to requeue."
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "The idempotency key that the horch CLI makes once per command run. The channel request, its retry and the request file of the same run carry the same request_id. fleetd applies a request once per request_id and returns the stored result again; a known request_id with a different payload hash is refused (A24)."
+    },
+    "operator_token": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The operator token that horch reads from /fleet/run/operator.token (mode 0600). fleetd refuses an operator request with no valid token and records the refusal in its requests row. The sandbox of each worker denies reading the file (SR-8, A35)."
+    }
+  }
+}

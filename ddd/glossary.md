@@ -27,7 +27,7 @@
 ## Coined by ddd-code
 **Verified Verdict** - The value that only the verification module can create, and the only input that moves a task to done. (context: task-execution)
 **Stall Rung** - 1 step of the stall ladder: first doorbell, second doorbell, or end of the attempt. (context: task-execution)
-**Awake Instant** - A time reading that counts only awake machine time, used for leases and stall rungs. (context: task-execution)
+**Awake Instant** - A time reading of awake machine time from the platform layer, used only by the hang check of fleetd and max_minutes of the fleet-run wrapper (PL-4, A25). Each other timer is a deadline on the fleet clock. (context: fleet-runtime)
 **Path Claim** - The set of paths a running task owns; 2 running tasks of 1 feature never hold overlapping claims. (context: task-execution)
 **Judge Finding** - 1 miss that a judge task reports, with a rank of CRITICAL, HIGH, MEDIUM or LOW. (context: task-execution)
 **Judged Tree** - The tree hash that a check, a review or a gate judged; a pass stands only while the tree is the same. (context: integration)

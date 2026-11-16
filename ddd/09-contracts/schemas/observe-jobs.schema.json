@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ddd/09-contracts/schemas/observe-jobs.schema.json",
+  "title": "Observe Jobs",
+  "description": "Our view at the pass loop: the tick of part 1 of a pass that reads the ended jobs (A23, A24).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "pass"
+  ],
+  "properties": {
+    "pass": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "The number of the pass, 1 more for each pass of this fleetd generation."
+    }
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ddd/09-contracts/schemas/pull-request-closed.schema.json",
+  "title": "Pull Request Closed",
+  "description": "Our view at the github adapter of integration: the fetch job (pr = gh) read that the pull request of a feature is closed and not merged (A28).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "feature_id",
+    "pr_state"
+  ],
+  "properties": {
+    "feature_id": {
+      "type": "string",
+      "pattern": "^F-[0-9]{4,}$",
+      "description": "The feature of the pull request."
+    },
+    "pr_state": {
+      "type": "string",
+      "const": "closed",
+      "description": "features.pr_state; closed means closed and not merged (A28). The closed list of the ledger is none, open, closed; this fact carries only closed."
+    }
+  }
+}

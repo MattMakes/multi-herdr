@@ -12,7 +12,7 @@ We decided which parts of fleetd need the most careful design, and which parts s
 
 ---
 
-_Step 4 of 9 (`ddd-strategize`) · mode `auto` · depth `standard` · produced `2026-11-13T06:39:04Z`_
+_Step 4 of 9 (`ddd-strategize`) · mode `auto` · depth `standard` · produced `2026-11-16T21:49:38Z`_
 
 **Where to invest:** core → `task-execution`, `integration`; supporting → `ideas`, `worktree-custody`, `worker-profiles`, `fleet-runtime`; generic (buy/adopt) → —.
 

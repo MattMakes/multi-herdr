@@ -1,0 +1,24 @@
+[
+  {
+    "why": "a feature id has the form F-0003",
+    "payload": {
+      "feature_id": "feature-3",
+      "request_id": "abandon-feature-7f3a9c2e",
+      "operator_token": "c2f81d9a4b7e"
+    }
+  },
+  {
+    "why": "every operator request carries request_id, its idempotency key, so a retry or a re-read request file has no second effect (A24)",
+    "payload": {
+      "feature_id": "F-0003",
+      "operator_token": "c2f81d9a4b7e"
+    }
+  },
+  {
+    "why": "every operator request carries the operator token; fleetd refuses one without it (SR-8, A35)",
+    "payload": {
+      "feature_id": "F-0003",
+      "request_id": "abandon-feature-7f3a9c2e"
+    }
+  }
+]

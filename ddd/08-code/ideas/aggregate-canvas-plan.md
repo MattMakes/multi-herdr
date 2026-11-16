@@ -21,7 +21,7 @@ committed → committed                  (replan-task, once per task)
 | none | `submit-plan` | submitted | the idea is not approved (I7) |
 | submitted | `validate-plan` | committed or refused | a check fails: then refused, with every reason |
 | refused | `submit-plan` | submitted | the content hash is the same as the refused plan |
-| committed | `replan-task` | committed | the task was replanned once already, or the changed plan fails a check |
+| committed | `replan-task` | committed | the task was replanned once already, the changed plan fails a check, or it leaves a judgment task with no judge task (A34) |
 
 ## 4. Enforced invariants
 | # | Invariant (same wording as `code.json` and the test name) | Whose job is it - why transactional |
@@ -32,6 +32,7 @@ committed → committed                  (replan-task, once per task)
 | P4 | The task dependencies of a plan form a graph with no cycle (FR-3) | the validator's, at commit and at each replan |
 | P5 | A plan of a project with no declared fast gate is refused | the validator's, at commit |
 | P6 | A task is replanned at most once | the plan's, at replan-task |
+| P7 | A plan change that would leave a judgment task with no judge task is refused (A34) | the validator's, at each replan |
 
 ## 5. Corrective policies
 | Situation found late | Then | Within | Owner |

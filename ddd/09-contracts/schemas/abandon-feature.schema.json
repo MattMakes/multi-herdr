@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ddd/09-contracts/schemas/abandon-feature.schema.json",
+  "title": "Abandon Feature",
+  "description": "horch feature abandon (request kind feature_abandon). Only the operator sets abandoned. fleetd first writes a rescue ref for each branch of the feature that is not landed, then abandons each such branch, and cancels each idea of the feature that is not terminal (A28).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "feature_id",
+    "request_id",
+    "operator_token"
+  ],
+  "properties": {
+    "feature_id": {
+      "type": "string",
+      "pattern": "^F-[0-9]{4,}$",
+      "description": "The feature to abandon."
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "The idempotency key that the horch CLI makes once per command run. The channel request, its retry and the request file of the same run carry the same request_id. fleetd applies a request once per request_id and returns the stored result again; a known request_id with a different payload hash is refused (A24)."
+    },
+    "operator_token": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The operator token that horch reads from /fleet/run/operator.token (mode 0600). fleetd refuses an operator request with no valid token and records the refusal in its requests row. The sandbox of each worker denies reading the file (SR-8, A35)."
+    }
+  }
+}

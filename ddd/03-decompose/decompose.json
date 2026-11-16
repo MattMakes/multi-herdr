@@ -2,7 +2,7 @@
   "schema_version": 1,
   "step": "decompose",
   "produced_by": "ddd-decompose",
-  "produced_at": "2026-11-13T06:37:04Z",
+  "produced_at": "2026-11-16T21:49:18Z",
   "mode": "auto",
   "depth": "standard",
   "inputs": [
@@ -1119,7 +1119,8 @@
       ],
       "owns_aggregates": [
         "task-branch",
-        "feature"
+        "feature",
+        "bundle"
       ],
       "terms": [
         {

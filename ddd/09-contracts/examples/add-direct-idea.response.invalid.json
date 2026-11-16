@@ -2,13 +2,23 @@
   {
     "why": "a refused request returns its reason",
     "payload": {
-      "outcome": "refused"
+      "state": "refused"
     }
   },
   {
-    "why": "an accepted request returns the new idea and its feature",
+    "why": "an applied request returns its stored result",
     "payload": {
-      "outcome": "accepted"
+      "state": "applied"
+    }
+  },
+  {
+    "why": "state is the closed list applied or refused; the old outcome accepted is retired (A24)",
+    "payload": {
+      "state": "accepted",
+      "result": {
+        "idea_id": "I-0013",
+        "feature_id": "F-0003"
+      }
     }
   }
 ]

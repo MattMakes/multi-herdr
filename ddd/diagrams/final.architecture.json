@@ -9,12 +9,12 @@
   "layout": {
     "mode": "grid",
     "origin": [
-      220,
-      210
+      340,
+      140
     ],
     "cols": 7,
-    "gapX": 220,
-    "gapY": 210,
+    "gapX": 340,
+    "gapY": 140,
     "cellW": 200,
     "cellH": 64
   },
@@ -36,8 +36,8 @@
       "type": "backend",
       "label": "Ideas",
       "sublabel": "supporting domain",
-      "row": 3,
-      "col": 2,
+      "row": 5,
+      "col": 3,
       "size": [
         200,
         64
@@ -49,8 +49,8 @@
       "label": "Landing and integration",
       "sublabel": "core domain",
       "tag": "core",
-      "row": 2,
-      "col": 3,
+      "row": 8,
+      "col": 2,
       "size": [
         200,
         64
@@ -62,7 +62,7 @@
       "label": "Task execution",
       "sublabel": "core domain",
       "tag": "core",
-      "row": 5,
+      "row": 4,
       "col": 4,
       "size": [
         200,
@@ -74,8 +74,8 @@
       "type": "backend",
       "label": "Worker profiles and adapters",
       "sublabel": "supporting domain",
-      "row": 6,
-      "col": 1,
+      "row": 2,
+      "col": 2,
       "size": [
         200,
         64
@@ -86,7 +86,7 @@
       "type": "backend",
       "label": "Worktree custody",
       "sublabel": "supporting domain",
-      "row": 5,
+      "row": 4,
       "col": 5,
       "size": [
         200,
@@ -110,7 +110,7 @@
       "type": "external",
       "label": "Clock",
       "sublabel": "external system",
-      "row": 1,
+      "row": 2,
       "col": 0,
       "size": [
         200,
@@ -122,7 +122,7 @@
       "type": "external",
       "label": "git",
       "sublabel": "external system",
-      "row": 3,
+      "row": 7,
       "col": 0,
       "size": [
         200,
@@ -134,7 +134,7 @@
       "type": "external",
       "label": "GitHub",
       "sublabel": "external system",
-      "row": 2,
+      "row": 8,
       "col": 0,
       "size": [
         200,
@@ -146,7 +146,7 @@
       "type": "external",
       "label": "herdr",
       "sublabel": "external system",
-      "row": 7,
+      "row": 1,
       "col": 0,
       "size": [
         200,
@@ -158,7 +158,7 @@
       "type": "external",
       "label": "Operator",
       "sublabel": "actor",
-      "row": 4,
+      "row": 6,
       "col": 0,
       "size": [
         200,
@@ -170,7 +170,7 @@
       "type": "external",
       "label": "Provider pool",
       "sublabel": "actor",
-      "row": 8,
+      "row": 0,
       "col": 0,
       "size": [
         200,
@@ -182,7 +182,7 @@
       "type": "external",
       "label": "Sub-orchestrator",
       "sublabel": "actor",
-      "row": 6,
+      "row": 3,
       "col": 0,
       "size": [
         200,
@@ -194,7 +194,7 @@
       "type": "external",
       "label": "Worker",
       "sublabel": "actor",
-      "row": 0,
+      "row": 9,
       "col": 6,
       "size": [
         200,
@@ -219,26 +219,72 @@
   ],
   "connections": [
     {
+      "id": "abandon-feature",
+      "from": "operator",
+      "to": "integration",
+      "label": "Abandon feature",
+      "variant": "default",
+      "fromSide": "right",
+      "toSide": "left",
+      "via": [
+        [
+          584,
+          1396
+        ],
+        [
+          584,
+          1804
+        ]
+      ],
+      "labelAt": [
+        710,
+        1600
+      ]
+    },
+    {
       "id": "abandon-task-branch",
       "from": "operator",
       "to": "integration",
       "label": "Abandon task branch",
       "variant": "default",
-      "fromSide": "top",
-      "toSide": "bottom",
+      "fromSide": "right",
+      "toSide": "left",
       "via": [
         [
-          320,
-          1197
+          596,
+          1396
         ],
         [
-          1580,
-          1197
+          596,
+          1804
         ]
       ],
       "labelAt": [
-        950,
-        1187
+        710,
+        1616
+      ]
+    },
+    {
+      "id": "adapter-conformance-failed",
+      "from": "worker-profiles",
+      "to": "ideas",
+      "label": "Adapter conformance failed",
+      "variant": "dashed",
+      "fromSide": "right",
+      "toSide": "left",
+      "via": [
+        [
+          1676,
+          580
+        ],
+        [
+          1676,
+          1192
+        ]
+      ],
+      "labelAt": [
+        1790,
+        886
       ]
     },
     {
@@ -247,21 +293,21 @@
       "to": "ideas",
       "label": "Add direct idea",
       "variant": "default",
-      "fromSide": "top",
-      "toSide": "bottom",
+      "fromSide": "right",
+      "toSide": "left",
       "via": [
         [
-          320,
-          1209
+          608,
+          1396
         ],
         [
-          1160,
-          1209
+          608,
+          1192
         ]
       ],
       "labelAt": [
-        740,
-        1199
+        710,
+        1294
       ]
     },
     {
@@ -270,21 +316,21 @@
       "to": "ideas",
       "label": "Add idea",
       "variant": "default",
-      "fromSide": "top",
-      "toSide": "bottom",
+      "fromSide": "right",
+      "toSide": "left",
       "via": [
         [
-          320,
-          1221
+          620,
+          1396
         ],
         [
-          1160,
-          1221
+          620,
+          1192
         ]
       ],
       "labelAt": [
-        820,
-        1211
+        710,
+        1310
       ]
     },
     {
@@ -293,21 +339,21 @@
       "to": "ideas",
       "label": "Agent status changed",
       "variant": "dashed",
-      "fromSide": "top",
-      "toSide": "bottom",
+      "fromSide": "right",
+      "toSide": "left",
       "via": [
         [
-          320,
-          2037
+          632,
+          376
         ],
         [
-          1160,
-          2037
+          632,
+          1192
         ]
       ],
       "labelAt": [
-        740,
-        2027
+        710,
+        784
       ]
     },
     {
@@ -320,17 +366,17 @@
       "toSide": "left",
       "via": [
         [
-          518,
-          2160
+          644,
+          376
         ],
         [
-          518,
-          1612
+          644,
+          988
         ]
       ],
       "labelAt": [
-        530,
-        1886
+        710,
+        682
       ]
     },
     {
@@ -339,21 +385,21 @@
       "to": "ideas",
       "label": "Answer question",
       "variant": "default",
-      "fromSide": "top",
-      "toSide": "bottom",
+      "fromSide": "right",
+      "toSide": "left",
       "via": [
         [
-          320,
-          1715
+          656,
+          784
         ],
         [
-          1160,
-          1715
+          656,
+          1192
         ]
       ],
       "labelAt": [
-        740,
-        1705
+        710,
+        988
       ]
     },
     {
@@ -366,17 +412,17 @@
       "toSide": "left",
       "via": [
         [
-          530,
-          516
+          668,
+          580
         ],
         [
-          530,
-          1612
+          668,
+          988
         ]
       ],
       "labelAt": [
-        530,
-        1064
+        710,
+        800
       ]
     },
     {
@@ -389,17 +435,17 @@
       "toSide": "right",
       "via": [
         [
-          908,
-          1064
+          1688,
+          1192
         ],
         [
-          908,
-          1338
+          1688,
+          1396
         ]
       ],
       "labelAt": [
-        950,
-        1217
+        1790,
+        1294
       ]
     },
     {
@@ -408,21 +454,21 @@
       "to": "ideas",
       "label": "Approve assumptions",
       "variant": "default",
-      "fromSide": "top",
-      "toSide": "bottom",
+      "fromSide": "right",
+      "toSide": "left",
       "via": [
         [
-          320,
-          1233
+          680,
+          1396
         ],
         [
-          1160,
-          1233
+          680,
+          1192
         ]
       ],
       "labelAt": [
-        740,
-        1223
+        710,
+        1278
       ]
     },
     {
@@ -435,17 +481,17 @@
       "toSide": "right",
       "via": [
         [
-          2630,
-          242
+          3410,
+          2008
         ],
         [
-          2630,
-          1064
+          3410,
+          1192
         ]
       ],
       "labelAt": [
-        2630,
-        653
+        3410,
+        1600
       ]
     },
     {
@@ -458,17 +504,17 @@
       "toSide": "left",
       "via": [
         [
-          2204,
-          1612
+          2858,
+          988
         ],
         [
-          2204,
-          242
+          2858,
+          2008
         ]
       ],
       "labelAt": [
-        2210,
-        927
+        2870,
+        1498
       ]
     },
     {
@@ -477,25 +523,21 @@
       "to": "sub-orchestrator",
       "label": "Assumptions approved",
       "variant": "dashed",
-      "fromSide": "left",
-      "toSide": "top",
+      "fromSide": "top",
+      "toSide": "bottom",
       "via": [
         [
-          920,
-          1064
+          2060,
+          1092
         ],
         [
-          920,
-          1727
-        ],
-        [
-          320,
-          1727
+          440,
+          1092
         ]
       ],
       "labelAt": [
-        620,
-        1717
+        1250,
+        1082
       ]
     },
     {
@@ -504,21 +546,21 @@
       "to": "integration",
       "label": "Assumptions written",
       "variant": "dashed",
-      "fromSide": "right",
-      "toSide": "left",
+      "fromSide": "left",
+      "toSide": "right",
       "via": [
         [
-          1304,
-          1064
+          1700,
+          1192
         ],
         [
-          1304,
-          790
+          1700,
+          1804
         ]
       ],
       "labelAt": [
-        1370,
-        927
+        1790,
+        1498
       ]
     },
     {
@@ -531,21 +573,44 @@
       "toSide": "left",
       "via": [
         [
-          932,
-          1886
+          1712,
+          580
         ],
         [
-          932,
-          1612
+          1712,
+          988
         ]
       ],
       "labelAt": [
-        950,
-        1749
+        1790,
+        784
       ]
     },
     {
-      "id": "attempt-failed",
+      "id": "attempt-failed-to-integration",
+      "from": "task-execution",
+      "to": "integration",
+      "label": "Attempt failed",
+      "variant": "dashed",
+      "fromSide": "left",
+      "toSide": "right",
+      "via": [
+        [
+          2258,
+          988
+        ],
+        [
+          2258,
+          1804
+        ]
+      ],
+      "labelAt": [
+        2330,
+        1396
+      ]
+    },
+    {
+      "id": "attempt-failed-to-worktree-custody",
       "from": "task-execution",
       "to": "worktree-custody",
       "label": "Attempt failed",
@@ -555,26 +620,72 @@
       "labelDy": 58
     },
     {
+      "id": "cancel-idea",
+      "from": "operator",
+      "to": "ideas",
+      "label": "Cancel idea",
+      "variant": "default",
+      "fromSide": "right",
+      "toSide": "left",
+      "via": [
+        [
+          692,
+          1396
+        ],
+        [
+          692,
+          1192
+        ]
+      ],
+      "labelAt": [
+        710,
+        1326
+      ]
+    },
+    {
+      "id": "cancel-task",
+      "from": "operator",
+      "to": "task-execution",
+      "label": "Cancel task",
+      "variant": "default",
+      "fromSide": "right",
+      "toSide": "left",
+      "via": [
+        [
+          704,
+          1396
+        ],
+        [
+          704,
+          988
+        ]
+      ],
+      "labelAt": [
+        710,
+        1192
+      ]
+    },
+    {
       "id": "check-merged",
       "from": "clock",
       "to": "integration",
       "label": "Check merged",
       "variant": "default",
-      "fromSide": "bottom",
-      "toSide": "top",
+      "fromSide": "right",
+      "toSide": "left",
       "via": [
         [
-          320,
-          655
+          716,
+          580
         ],
         [
-          1580,
-          655
+          716,
+          1804
         ]
       ],
       "labelAt": [
-        950,
-        645
+        710,
+        1208
       ]
     },
     {
@@ -583,21 +694,67 @@
       "to": "integration",
       "label": "Direct idea accepted",
       "variant": "dashed",
+      "fromSide": "left",
+      "toSide": "right",
+      "via": [
+        [
+          1724,
+          1192
+        ],
+        [
+          1724,
+          1804
+        ]
+      ],
+      "labelAt": [
+        1790,
+        1514
+      ]
+    },
+    {
+      "id": "drop-rescue-ref",
+      "from": "operator",
+      "to": "worktree-custody",
+      "label": "Drop rescue ref",
+      "variant": "default",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "via": [
+        [
+          440,
+          1308
+        ],
+        [
+          3140,
+          1308
+        ]
+      ],
+      "labelAt": [
+        1886,
+        1298
+      ]
+    },
+    {
+      "id": "feature-abandoned",
+      "from": "integration",
+      "to": "ideas",
+      "label": "Feature abandoned",
+      "variant": "dashed",
       "fromSide": "right",
       "toSide": "left",
       "via": [
         [
-          1316,
-          1064
+          1736,
+          1804
         ],
         [
-          1316,
-          790
+          1736,
+          1192
         ]
       ],
       "labelAt": [
-        1370,
-        943
+        1790,
+        1482
       ]
     },
     {
@@ -606,21 +763,21 @@
       "to": "ideas",
       "label": "Feature merged",
       "variant": "dashed",
-      "fromSide": "left",
-      "toSide": "right",
+      "fromSide": "right",
+      "toSide": "left",
       "via": [
         [
-          1328,
-          790
+          1748,
+          1804
         ],
         [
-          1328,
-          1064
+          1748,
+          1192
         ]
       ],
       "labelAt": [
-        1370,
-        911
+        1790,
+        1530
       ]
     },
     {
@@ -629,21 +786,21 @@
       "to": "ideas",
       "label": "Feature opened",
       "variant": "dashed",
-      "fromSide": "left",
-      "toSide": "right",
+      "fromSide": "right",
+      "toSide": "left",
       "via": [
         [
-          1340,
-          790
+          1760,
+          1804
         ],
         [
-          1340,
-          1064
+          1760,
+          1192
         ]
       ],
       "labelAt": [
-        1370,
-        959
+        1790,
+        1466
       ]
     },
     {
@@ -656,17 +813,40 @@
       "toSide": "left",
       "via": [
         [
-          944,
-          1886
+          1772,
+          580
         ],
         [
-          944,
-          1612
+          1772,
+          988
         ]
       ],
       "labelAt": [
-        950,
-        1765
+        1790,
+        800
+      ]
+    },
+    {
+      "id": "idea-cancelled",
+      "from": "ideas",
+      "to": "task-execution",
+      "label": "Idea cancelled",
+      "variant": "dashed",
+      "fromSide": "right",
+      "toSide": "left",
+      "via": [
+        [
+          2270,
+          1192
+        ],
+        [
+          2270,
+          988
+        ]
+      ],
+      "labelAt": [
+        2330,
+        1090
       ]
     },
     {
@@ -675,21 +855,228 @@
       "to": "integration",
       "label": "Idea tasks landed",
       "variant": "dashed",
+      "fromSide": "left",
+      "toSide": "right",
+      "via": [
+        [
+          1784,
+          1192
+        ],
+        [
+          1784,
+          1804
+        ]
+      ],
+      "labelAt": [
+        1790,
+        1546
+      ]
+    },
+    {
+      "id": "job-abandoned-to-ideas",
+      "from": "fleet-runtime",
+      "to": "ideas",
+      "label": "Job abandoned",
+      "variant": "dashed",
       "fromSide": "right",
       "toSide": "left",
       "via": [
         [
-          1352,
-          1064
+          1202,
+          784
         ],
         [
-          1352,
-          790
+          1202,
+          1192
         ]
       ],
       "labelAt": [
-        1370,
-        895
+        1250,
+        988
+      ]
+    },
+    {
+      "id": "job-abandoned-to-integration",
+      "from": "fleet-runtime",
+      "to": "integration",
+      "label": "Job abandoned",
+      "variant": "dashed",
+      "fromSide": "right",
+      "toSide": "left",
+      "via": [
+        [
+          1214,
+          784
+        ],
+        [
+          1214,
+          1804
+        ]
+      ],
+      "labelAt": [
+        1250,
+        1294
+      ]
+    },
+    {
+      "id": "job-abandoned-to-task-execution",
+      "from": "fleet-runtime",
+      "to": "task-execution",
+      "label": "Job abandoned",
+      "variant": "dashed",
+      "fromSide": "right",
+      "toSide": "left",
+      "via": [
+        [
+          1226,
+          784
+        ],
+        [
+          1226,
+          988
+        ]
+      ],
+      "labelAt": [
+        1250,
+        886
+      ]
+    },
+    {
+      "id": "job-abandoned-to-worker-profiles",
+      "from": "fleet-runtime",
+      "to": "worker-profiles",
+      "label": "Job abandoned",
+      "variant": "dashed",
+      "fromSide": "right",
+      "toSide": "left",
+      "via": [
+        [
+          1238,
+          784
+        ],
+        [
+          1238,
+          580
+        ]
+      ],
+      "labelAt": [
+        1250,
+        682
+      ]
+    },
+    {
+      "id": "job-abandoned-to-worktree-custody",
+      "from": "fleet-runtime",
+      "to": "worktree-custody",
+      "label": "Job abandoned",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "via": [
+        [
+          980,
+          888
+        ],
+        [
+          3140,
+          888
+        ]
+      ],
+      "labelAt": [
+        2060,
+        878
+      ]
+    },
+    {
+      "id": "job-requeued-to-integration",
+      "from": "fleet-runtime",
+      "to": "integration",
+      "label": "Job requeued",
+      "variant": "dashed",
+      "fromSide": "right",
+      "toSide": "left",
+      "via": [
+        [
+          1250,
+          784
+        ],
+        [
+          1250,
+          1804
+        ]
+      ],
+      "labelAt": [
+        1250,
+        1310
+      ]
+    },
+    {
+      "id": "job-requeued-to-task-execution",
+      "from": "fleet-runtime",
+      "to": "task-execution",
+      "label": "Job requeued",
+      "variant": "dashed",
+      "fromSide": "right",
+      "toSide": "left",
+      "via": [
+        [
+          1262,
+          784
+        ],
+        [
+          1262,
+          988
+        ]
+      ],
+      "labelAt": [
+        1250,
+        902
+      ]
+    },
+    {
+      "id": "job-requeued-to-worker-profiles",
+      "from": "fleet-runtime",
+      "to": "worker-profiles",
+      "label": "Job requeued",
+      "variant": "dashed",
+      "fromSide": "right",
+      "toSide": "left",
+      "via": [
+        [
+          1274,
+          784
+        ],
+        [
+          1274,
+          580
+        ]
+      ],
+      "labelAt": [
+        1250,
+        698
+      ]
+    },
+    {
+      "id": "job-requeued-to-worktree-custody",
+      "from": "fleet-runtime",
+      "to": "worktree-custody",
+      "label": "Job requeued",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "via": [
+        [
+          980,
+          900
+        ],
+        [
+          3140,
+          900
+        ]
+      ],
+      "labelAt": [
+        2140,
+        890
       ]
     },
     {
@@ -702,17 +1089,17 @@
       "toSide": "left",
       "via": [
         [
-          956,
-          1886
+          1796,
+          580
         ],
         [
-          956,
-          1064
+          1796,
+          1192
         ]
       ],
       "labelAt": [
-        950,
-        1475
+        1790,
+        902
       ]
     },
     {
@@ -725,17 +1112,40 @@
       "toSide": "left",
       "via": [
         [
-          968,
-          1886
+          1808,
+          580
         ],
         [
-          968,
-          1612
+          1808,
+          988
         ]
       ],
       "labelAt": [
-        950,
-        1733
+        1790,
+        768
+      ]
+    },
+    {
+      "id": "observe-jobs",
+      "from": "clock",
+      "to": "fleet-runtime",
+      "label": "Observe jobs",
+      "variant": "default",
+      "fromSide": "right",
+      "toSide": "left",
+      "via": [
+        [
+          728,
+          580
+        ],
+        [
+          728,
+          784
+        ]
+      ],
+      "labelAt": [
+        710,
+        698
       ]
     },
     {
@@ -744,21 +1154,12 @@
       "to": "github",
       "label": "Open pull request",
       "variant": "default",
-      "fromSide": "top",
-      "toSide": "top",
-      "via": [
-        [
-          1580,
-          667
-        ],
-        [
-          320,
-          667
-        ]
-      ],
+      "fromSide": "left",
+      "toSide": "right",
+      "route": "straight",
       "labelAt": [
-        1046,
-        657
+        980,
+        1794
       ]
     },
     {
@@ -771,17 +1172,17 @@
       "toSide": "left",
       "via": [
         [
-          1364,
-          1064
+          2282,
+          1192
         ],
         [
-          1364,
-          1612
+          2282,
+          988
         ]
       ],
       "labelAt": [
-        1370,
-        1338
+        2330,
+        1106
       ]
     },
     {
@@ -794,17 +1195,17 @@
       "toSide": "left",
       "via": [
         [
-          1376,
-          1064
+          2294,
+          1192
         ],
         [
-          1376,
-          1612
+          2294,
+          988
         ]
       ],
       "labelAt": [
-        1370,
-        1354
+        2330,
+        1074
       ]
     },
     {
@@ -817,17 +1218,17 @@
       "toSide": "left",
       "via": [
         [
-          1388,
-          1064
+          2306,
+          1192
         ],
         [
-          1388,
-          1612
+          2306,
+          988
         ]
       ],
       "labelAt": [
-        1370,
-        1322
+        2330,
+        1122
       ]
     },
     {
@@ -836,25 +1237,21 @@
       "to": "sub-orchestrator",
       "label": "Plan verdict written",
       "variant": "dashed",
-      "fromSide": "left",
-      "toSide": "top",
+      "fromSide": "top",
+      "toSide": "bottom",
       "via": [
         [
-          980,
-          1064
+          2060,
+          1104
         ],
         [
-          980,
-          1739
-        ],
-        [
-          320,
-          1739
+          440,
+          1104
         ]
       ],
       "labelAt": [
-        730,
-        1729
+        1362,
+        1094
       ]
     },
     {
@@ -863,21 +1260,81 @@
       "to": "integration",
       "label": "Primary branch moved",
       "variant": "dashed",
-      "fromSide": "top",
-      "toSide": "bottom",
+      "fromSide": "right",
+      "toSide": "left",
       "via": [
         [
-          320,
-          929
+          740,
+          1600
         ],
         [
-          1580,
-          929
+          740,
+          1804
         ]
       ],
       "labelAt": [
-        950,
-        919
+        710,
+        1702
+      ]
+    },
+    {
+      "id": "profile-marked-healthy",
+      "from": "worker-profiles",
+      "to": "task-execution",
+      "label": "Profile marked healthy",
+      "variant": "dashed",
+      "fromSide": "right",
+      "toSide": "left",
+      "via": [
+        [
+          1820,
+          580
+        ],
+        [
+          1820,
+          988
+        ]
+      ],
+      "labelAt": [
+        1790,
+        816
+      ]
+    },
+    {
+      "id": "profile-marked-unhealthy",
+      "from": "worker-profiles",
+      "to": "task-execution",
+      "label": "Profile marked unhealthy",
+      "variant": "dashed",
+      "fromSide": "right",
+      "toSide": "left",
+      "via": [
+        [
+          1832,
+          580
+        ],
+        [
+          1832,
+          988
+        ]
+      ],
+      "labelAt": [
+        1790,
+        752
+      ]
+    },
+    {
+      "id": "pull-request-closed",
+      "from": "github",
+      "to": "integration",
+      "label": "Pull request closed",
+      "variant": "dashed",
+      "fromSide": "right",
+      "toSide": "left",
+      "route": "straight",
+      "labelAt": [
+        1092,
+        1794
       ]
     },
     {
@@ -886,21 +1343,12 @@
       "to": "integration",
       "label": "Pull request merged",
       "variant": "dashed",
-      "fromSide": "top",
-      "toSide": "top",
-      "via": [
-        [
-          320,
-          679
-        ],
-        [
-          1580,
-          679
-        ]
-      ],
+      "fromSide": "right",
+      "toSide": "left",
+      "route": "straight",
       "labelAt": [
-        934,
-        669
+        868,
+        1794
       ]
     },
     {
@@ -913,17 +1361,40 @@
       "toSide": "right",
       "via": [
         [
-          1400,
-          790
+          1286,
+          1804
         ],
         [
-          1400,
-          1338
+          1286,
+          1396
         ]
       ],
       "labelAt": [
-        1370,
-        1064
+        1250,
+        1600
+      ]
+    },
+    {
+      "id": "push-feature-branch",
+      "from": "integration",
+      "to": "git",
+      "label": "Push feature branch",
+      "variant": "default",
+      "fromSide": "left",
+      "toSide": "right",
+      "via": [
+        [
+          1298,
+          1804
+        ],
+        [
+          1298,
+          1600
+        ]
+      ],
+      "labelAt": [
+        1250,
+        1702
       ]
     },
     {
@@ -936,17 +1407,17 @@
       "toSide": "left",
       "via": [
         [
-          1412,
-          1064
+          2318,
+          1192
         ],
         [
-          1412,
-          1612
+          2318,
+          988
         ]
       ],
       "labelAt": [
-        1370,
-        1370
+        2330,
+        1058
       ]
     },
     {
@@ -959,17 +1430,17 @@
       "toSide": "right",
       "via": [
         [
-          1754,
-          1612
+          2330,
+          988
         ],
         [
-          1754,
-          1064
+          2330,
+          1192
         ]
       ],
       "labelAt": [
-        1790,
-        1338
+        2330,
+        1138
       ]
     },
     {
@@ -978,21 +1449,67 @@
       "to": "ideas",
       "label": "Replan task",
       "variant": "default",
-      "fromSide": "top",
-      "toSide": "bottom",
+      "fromSide": "right",
+      "toSide": "left",
       "via": [
         [
-          320,
-          1751
+          752,
+          784
         ],
         [
-          1160,
-          1751
+          752,
+          1192
         ]
       ],
       "labelAt": [
-        820,
-        1741
+        710,
+        1004
+      ]
+    },
+    {
+      "id": "requeue-job",
+      "from": "operator",
+      "to": "fleet-runtime",
+      "label": "Requeue job",
+      "variant": "default",
+      "fromSide": "right",
+      "toSide": "left",
+      "via": [
+        [
+          764,
+          1396
+        ],
+        [
+          764,
+          784
+        ]
+      ],
+      "labelAt": [
+        710,
+        1090
+      ]
+    },
+    {
+      "id": "requeue-task",
+      "from": "operator",
+      "to": "task-execution",
+      "label": "Requeue task",
+      "variant": "default",
+      "fromSide": "right",
+      "toSide": "left",
+      "via": [
+        [
+          776,
+          1396
+        ],
+        [
+          776,
+          988
+        ]
+      ],
+      "labelAt": [
+        710,
+        1176
       ]
     },
     {
@@ -1003,7 +1520,30 @@
       "variant": "dashed",
       "fromSide": "left",
       "toSide": "right",
-      "labelDy": 63.33333333333326
+      "labelDy": 63.33333333333337
+    },
+    {
+      "id": "rescue-worktree",
+      "from": "integration",
+      "to": "worktree-custody",
+      "label": "Rescue worktree",
+      "variant": "default",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "via": [
+        [
+          1520,
+          1710
+        ],
+        [
+          3140,
+          1710
+        ]
+      ],
+      "labelAt": [
+        2330,
+        1700
+      ]
     },
     {
       "id": "resolver-task-opened",
@@ -1015,17 +1555,40 @@
       "toSide": "left",
       "via": [
         [
-          1766,
-          790
+          1844,
+          1804
         ],
         [
-          1766,
-          1612
+          1844,
+          988
         ]
       ],
       "labelAt": [
         1790,
-        1201
+        1396
+      ]
+    },
+    {
+      "id": "run-conformance-tests",
+      "from": "clock",
+      "to": "worker-profiles",
+      "label": "Run conformance tests",
+      "variant": "default",
+      "fromSide": "top",
+      "toSide": "top",
+      "via": [
+        [
+          440,
+          492
+        ],
+        [
+          1520,
+          492
+        ]
+      ],
+      "labelAt": [
+        980,
+        482
       ]
     },
     {
@@ -1038,17 +1601,17 @@
       "toSide": "right",
       "via": [
         [
-          1778,
-          1612
+          2342,
+          988
         ],
         [
-          1778,
-          1886
+          2342,
+          580
         ]
       ],
       "labelAt": [
-        1790,
-        1749
+        2330,
+        784
       ]
     },
     {
@@ -1061,17 +1624,17 @@
       "toSide": "left",
       "via": [
         [
-          2216,
-          1612
+          2870,
+          988
         ],
         [
-          2216,
-          242
+          2870,
+          2008
         ]
       ],
       "labelAt": [
-        2210,
-        943
+        2870,
+        1514
       ]
     },
     {
@@ -1080,21 +1643,21 @@
       "to": "ideas",
       "label": "Submit plan",
       "variant": "default",
-      "fromSide": "top",
-      "toSide": "bottom",
+      "fromSide": "right",
+      "toSide": "left",
       "via": [
         [
-          320,
-          1763
+          788,
+          784
         ],
         [
-          1160,
-          1763
+          788,
+          1192
         ]
       ],
       "labelAt": [
-        740,
-        1753
+        710,
+        972
       ]
     },
     {
@@ -1107,17 +1670,40 @@
       "toSide": "left",
       "via": [
         [
-          1790,
-          790
+          1856,
+          1804
         ],
         [
-          1790,
-          1612
+          1856,
+          988
         ]
       ],
       "labelAt": [
         1790,
-        1217
+        1412
+      ]
+    },
+    {
+      "id": "task-branch-gate-failed",
+      "from": "integration",
+      "to": "task-execution",
+      "label": "Task branch gate failed",
+      "variant": "dashed",
+      "fromSide": "right",
+      "toSide": "left",
+      "via": [
+        [
+          1868,
+          1804
+        ],
+        [
+          1868,
+          988
+        ]
+      ],
+      "labelAt": [
+        1790,
+        1380
       ]
     },
     {
@@ -1126,21 +1712,21 @@
       "to": "ideas",
       "label": "Task branch landed",
       "variant": "dashed",
-      "fromSide": "left",
-      "toSide": "right",
+      "fromSide": "right",
+      "toSide": "left",
       "via": [
         [
-          1424,
-          790
+          1880,
+          1804
         ],
         [
-          1424,
-          1064
+          1880,
+          1192
         ]
       ],
       "labelAt": [
-        1370,
-        975
+        1790,
+        1450
       ]
     },
     {
@@ -1149,21 +1735,90 @@
       "to": "worktree-custody",
       "label": "Task branch landed",
       "variant": "dashed",
-      "fromSide": "bottom",
-      "toSide": "top",
+      "fromSide": "top",
+      "toSide": "bottom",
       "via": [
         [
-          1580,
-          941
+          1520,
+          1722
         ],
         [
-          2420,
-          941
+          3140,
+          1722
         ]
       ],
       "labelAt": [
-        2000,
-        931
+        2426,
+        1712
+      ]
+    },
+    {
+      "id": "task-branch-repair-escalated-to-ideas",
+      "from": "integration",
+      "to": "ideas",
+      "label": "Task branch repair escalated",
+      "variant": "dashed",
+      "fromSide": "right",
+      "toSide": "left",
+      "via": [
+        [
+          1892,
+          1804
+        ],
+        [
+          1892,
+          1192
+        ]
+      ],
+      "labelAt": [
+        1790,
+        1562
+      ]
+    },
+    {
+      "id": "task-branch-repair-escalated-to-task-execution",
+      "from": "integration",
+      "to": "task-execution",
+      "label": "Task branch repair escalated",
+      "variant": "dashed",
+      "fromSide": "right",
+      "toSide": "left",
+      "via": [
+        [
+          1904,
+          1804
+        ],
+        [
+          1904,
+          988
+        ]
+      ],
+      "labelAt": [
+        1790,
+        1428
+      ]
+    },
+    {
+      "id": "task-cancelled",
+      "from": "task-execution",
+      "to": "integration",
+      "label": "Task cancelled",
+      "variant": "dashed",
+      "fromSide": "left",
+      "toSide": "right",
+      "via": [
+        [
+          2354,
+          988
+        ],
+        [
+          2354,
+          1804
+        ]
+      ],
+      "labelAt": [
+        2330,
+        1412
       ]
     },
     {
@@ -1176,17 +1831,17 @@
       "toSide": "right",
       "via": [
         [
-          1802,
-          1612
+          2366,
+          988
         ],
         [
-          1802,
-          790
+          2366,
+          1804
         ]
       ],
       "labelAt": [
-        1790,
-        1185
+        2330,
+        1380
       ]
     },
     {
@@ -1199,17 +1854,17 @@
       "toSide": "right",
       "via": [
         [
-          1814,
-          1612
+          2378,
+          988
         ],
         [
-          1814,
-          1064
+          2378,
+          1192
         ]
       ],
       "labelAt": [
-        1790,
-        1354
+        2330,
+        1042
       ]
     },
     {
@@ -1222,17 +1877,17 @@
       "toSide": "right",
       "via": [
         [
-          1826,
-          1612
+          2390,
+          988
         ],
         [
-          1826,
-          790
+          2390,
+          1804
         ]
       ],
       "labelAt": [
-        1790,
-        1233
+        2330,
+        1428
       ]
     },
     {
@@ -1243,7 +1898,7 @@
       "variant": "dashed",
       "fromSide": "right",
       "toSide": "left",
-      "labelDy": 68.66666666666674
+      "labelDy": 68.66666666666663
     },
     {
       "id": "task-replanned",
@@ -1255,17 +1910,17 @@
       "toSide": "left",
       "via": [
         [
-          1436,
-          1064
+          2402,
+          1192
         ],
         [
-          1436,
-          1612
+          2402,
+          988
         ]
       ],
       "labelAt": [
-        1370,
-        1306
+        2330,
+        1154
       ]
     },
     {
@@ -1274,21 +1929,21 @@
       "to": "sub-orchestrator",
       "label": "Task verdict written",
       "variant": "dashed",
-      "fromSide": "bottom",
-      "toSide": "top",
+      "fromSide": "top",
+      "toSide": "bottom",
       "via": [
         [
-          2000,
-          1775
+          2600,
+          912
         ],
         [
-          320,
-          1775
+          440,
+          912
         ]
       ],
       "labelAt": [
-        1160,
-        1765
+        1520,
+        902
       ]
     },
     {
@@ -1297,21 +1952,21 @@
       "to": "integration",
       "label": "Trial merge result",
       "variant": "default",
-      "fromSide": "top",
-      "toSide": "bottom",
+      "fromSide": "right",
+      "toSide": "left",
       "via": [
         [
-          320,
-          953
+          800,
+          1600
         ],
         [
-          1580,
-          953
+          800,
+          1804
         ]
       ],
       "labelAt": [
-        950,
-        943
+        710,
+        1718
       ]
     },
     {
@@ -1324,17 +1979,17 @@
       "toSide": "left",
       "via": [
         [
-          542,
-          2434
+          812,
+          172
         ],
         [
-          542,
-          1612
+          812,
+          988
         ]
       ],
       "labelAt": [
-        530,
-        2023
+        710,
+        580
       ]
     },
     {
@@ -1343,25 +1998,21 @@
       "to": "sub-orchestrator",
       "label": "Worker question asked",
       "variant": "dashed",
-      "fromSide": "left",
-      "toSide": "top",
+      "fromSide": "top",
+      "toSide": "bottom",
       "via": [
         [
-          992,
-          1064
+          2060,
+          1116
         ],
         [
-          992,
-          1787
-        ],
-        [
-          320,
-          1787
+          440,
+          1116
         ]
       ],
       "labelAt": [
-        656,
-        1777
+        1250,
+        1106
       ]
     },
     {
@@ -1375,26 +2026,49 @@
       "labelDy": 74
     },
     {
+      "id": "worktree-rescued",
+      "from": "worktree-custody",
+      "to": "integration",
+      "label": "Worktree rescued",
+      "variant": "dashed",
+      "fromSide": "left",
+      "toSide": "right",
+      "via": [
+        [
+          2882,
+          988
+        ],
+        [
+          2882,
+          1804
+        ]
+      ],
+      "labelAt": [
+        2870,
+        1396
+      ]
+    },
+    {
       "id": "write-assumptions",
       "from": "sub-orchestrator",
       "to": "ideas",
       "label": "Write assumptions",
       "variant": "default",
-      "fromSide": "top",
-      "toSide": "bottom",
+      "fromSide": "right",
+      "toSide": "left",
       "via": [
         [
-          320,
-          1799
+          824,
+          784
         ],
         [
-          1160,
-          1799
+          824,
+          1192
         ]
       ],
       "labelAt": [
-        772,
-        1789
+        710,
+        1020
       ]
     },
     {
@@ -1403,21 +2077,21 @@
       "to": "task-execution",
       "label": "Write result",
       "variant": "default",
-      "fromSide": "bottom",
-      "toSide": "top",
+      "fromSide": "top",
+      "toSide": "bottom",
       "via": [
         [
-          2840,
-          393
+          3680,
+          1920
         ],
         [
-          2000,
-          393
+          2600,
+          1920
         ]
       ],
       "labelAt": [
-        2420,
-        383
+        3140,
+        1910
       ]
     },
     {
@@ -1426,21 +2100,21 @@
       "to": "ideas",
       "label": "Write spec",
       "variant": "default",
-      "fromSide": "top",
-      "toSide": "bottom",
+      "fromSide": "right",
+      "toSide": "left",
       "via": [
         [
-          320,
-          1811
+          836,
+          784
         ],
         [
-          1160,
-          1811
+          836,
+          1192
         ]
       ],
       "labelAt": [
-        692,
-        1801
+        710,
+        956
       ]
     }
   ]

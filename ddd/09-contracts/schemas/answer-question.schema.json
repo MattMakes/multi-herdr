@@ -2,13 +2,12 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "ddd/09-contracts/schemas/answer-question.schema.json",
   "title": "Answer Question",
-  "description": "The sub-orchestrator answers a worker question.",
+  "description": "The answer file that horch idea note of the sub-orchestrator writes in its idea folder (A35).",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "question_id",
-    "answer",
-    "idempotency_key"
+    "answer"
   ],
   "properties": {
     "question_id": {
@@ -46,12 +45,6 @@
       "type": "string",
       "minLength": 1,
       "description": "The approved line the answer cites, e.g. assumptions.md#2. Required when case is covered; fleetd checks that it exists."
-    },
-    "idempotency_key": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 128,
-      "description": "Opaque key that the horch CLI makes once per command run. The command channel request and the request file of the same run carry the same key. fleetd applies a request once per key and returns the first outcome again (orchestrator, D15)."
     }
   },
   "if": {

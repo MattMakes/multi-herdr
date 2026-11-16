@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ddd/09-contracts/schemas/drop-rescue-ref.schema.json",
+  "title": "Drop Rescue Ref",
+  "description": "horch rescue drop (request kind rescue_drop). Only the operator deletes a rescue ref of class unique (A27, I10).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "ref",
+    "request_id",
+    "operator_token"
+  ],
+  "properties": {
+    "ref": {
+      "type": "string",
+      "pattern": "^refs/horch/rescue/",
+      "description": "The rescue ref to delete, e.g. refs/horch/rescue/T-0007-03/1."
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "The idempotency key that the horch CLI makes once per command run. The channel request, its retry and the request file of the same run carry the same request_id. fleetd applies a request once per request_id and returns the stored result again; a known request_id with a different payload hash is refused (A24)."
+    },
+    "operator_token": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The operator token that horch reads from /fleet/run/operator.token (mode 0600). fleetd refuses an operator request with no valid token and records the refusal in its requests row. The sandbox of each worker denies reading the file (SR-8, A35)."
+    }
+  }
+}

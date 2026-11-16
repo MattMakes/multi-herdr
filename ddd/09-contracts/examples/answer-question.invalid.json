@@ -6,8 +6,7 @@
       "answer": {
         "case": "covered",
         "text": "Log at INFO."
-      },
-      "idempotency_key": "answer-question-7f3a9c2e"
+      }
     }
   },
   {
@@ -17,19 +16,19 @@
       "answer": {
         "case": "guess",
         "text": "Log at INFO."
-      },
-      "idempotency_key": "answer-question-7f3a9c2e"
+      }
     }
   },
   {
-    "why": "every command channel request and request file carries idempotency_key, so a retry or a re-read request file has no second effect",
+    "why": "a worker file carries no operator token; the operator path is denied to each worker (A35)",
     "payload": {
       "question_id": "T-0007-02/A1/Q1",
       "answer": {
         "case": "covered",
         "text": "Log the delay in milliseconds at INFO level."
       },
-      "citation": "assumptions.md#3"
+      "citation": "assumptions.md#3",
+      "operator_token": "c2f81d9a4b7e"
     }
   }
 ]

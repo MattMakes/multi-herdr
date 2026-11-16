@@ -1,4 +1,6 @@
 {
-  "outcome": "accepted",
-  "rescue_ref": "refs/horch/rescue/T-0007-03/1"
+  "state": "applied",
+  "result": {
+    "rescue_ref": "refs/horch/rescue/T-0007-03/1"
+  }
 }
