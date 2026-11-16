@@ -11,6 +11,8 @@ The skills in `skills/` are repo-owned. [skills/README.md](../skills/README.md) 
 
 `orchestrate` is attached to the two orchestrators by name and belongs to no phase. It is the fleet playbook — decomposition, the plan-file template, choosing a teammate, verifying a `DONE:`, wrapping up — so a plan-phase teammate such as `staff-engineer` must not receive it. Attaching by name is what keeps it out of the plan catalog.
 
+`make-videos` is attached to the two orchestrators the same way. It plans a game's devblog video series from the git history, holds the operator's plan and script approvals, and hands each approved cut to the video pipeline.
+
 A teammate's `phase` selects its default catalog; `skills` adds specific bundled names, deduplicated. Additional names are available, not an instruction to load them eagerly. Unknown names and conflicting settings fail before a pane or working ledger entry is created.
 
 ```sh

@@ -1476,6 +1476,11 @@
       "verbatim": false
     },
     {
+      "name": "make-videos",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
       "name": "motion-gsap",
       "copied_files": [
         "SKILL.md"

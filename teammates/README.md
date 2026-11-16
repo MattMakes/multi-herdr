@@ -719,7 +719,7 @@ each file is only the paragraph about writing for the workers below it. Change
 how orchestration works in the base; change how one agent's orchestrator talks
 in its file.
 
-Both also carry `skills: [orchestrate]`. That is the fleet playbook — how to
+Both also carry the `orchestrate` skill. That is the fleet playbook — how to
 decompose work, the plan-file template, how to choose a teammate, how to verify
 a `DONE:`, how to wrap up. It is attached **by name, not by phase**: adding it
 to the `plan` catalog in `crates/horch-core/src/skills.rs` would hand it to
@@ -729,6 +729,12 @@ spent to no effect, and an instruction a worker may act on. `orchestrate` is
 own text; it was reconciled from the retired external `herdr-orchestrator`
 and `herdr-worker` skills against the real CLI, and every command in it is one
 `horch --help` prints.
+
+Both also name `make-videos`, by name for the same reason. It turns a game's
+git history into a devblog video series: the episode plan, the scripts under
+`devblog/`, 2 operator approvals, then 1 run of the video pipeline per cut. It
+also adds episodes to a series that exists, or changes them. Only an
+orchestrator talks to the operator, so no worker carries it.
 
 The Codex one also needs `_base/codex-orchestrator-execpolicy.md`. Codex refuses
 any command outside its sandbox that its rules file does not name, and the
