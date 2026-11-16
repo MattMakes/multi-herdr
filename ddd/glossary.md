@@ -2,15 +2,15 @@
 
 ## Shared
 **Idea** - A rough request from the operator that 1 fixed state machine moves from captured to merged; only code advances it. _Avoid_: ticket (a ticket enters as a --direct idea), request
-**Feature** - 1 sub-orchestrator, 1 feature branch and 1 pull request to the primary branch, holding 1 main idea and its follow-on ideas. The task kind 'feature' is a different thing (H2). _Avoid_: project, epic
+**Feature** - 1 sub-orchestrator, 1 feature branch and 1 pull request to the primary branch, holding 1 main idea and its follow-on ideas. The task kind 'feature' is a different thing (H2). _Avoid_: project, epic _(meaning differs by context - see below)_
 **Sub-Orchestrator** - The interactive Opus 5.5 agent of 1 feature that clarifies, specifies and plans 1 idea at a time, with a fresh process per phase. _Avoid_: orchestrator, lead
 **Assumption** - 1 line in assumptions.md, [confirmed] or [assumed], that the operator approves or revises; the sub-orchestrator can also record its own reversible one. _Avoid_: requirement
 **Plan** - The validated plan.yaml of 1 idea: tasks, dependencies, checks, paired judges. No task exists outside a committed plan. _Avoid_: ticket list
 **Task** - A planned unit of work from plan.yaml with a kind, a check and an owner path set; it survives many attempts (H1). _Avoid_: job, claim
 **Attempt** - 1 run of 1 worker on 1 task (A1, A2, ...), launched through the wrapper and ended by fleetd. _Avoid_: run, session
-**Lease** - The time-limited hold of an attempt on its task that renews only on earned activity and pauses during sleep and waiting_quota. _Avoid_: claim, lock
+**Lease** - The time-limited hold of an attempt on its task that renews only on earned activity and pauses during sleep and waiting_quota. _Avoid_: claim, lock _(meaning differs by context - see below)_
 **Worktree** - The git working tree that fleetd leases to 1 task before it exists and never removes before its work is landed or rescued. _Avoid_: checkout, workspace
-**Rescue Ref** - A verified commit under refs/horch/rescue/ that saves the full state of a tree or an old branch tip before cleanup or rebase. _Avoid_: backup, archive ref (a different ref family)
+**Rescue Ref** - A verified commit under refs/horch/rescue/ that saves the full state of a tree or an old branch tip before cleanup or rebase. _Avoid_: backup, archive ref (a different ref family) _(meaning differs by context - see below)_
 **Task Branch** - The branch of 1 task that lands on its feature branch through the landing state machine. _Avoid_: worker branch
 **Feature Branch** - The branch of 1 feature that collects its landed task branches and reaches the primary branch through 1 pull request. _Avoid_: integration branch
 **Primary Branch** - The base branch of a project; main in this repository, not in every project. _Avoid_: main, master, trunk
@@ -42,6 +42,7 @@
 **Question** — A worker question to the sub-orchestrator of its feature. It ends as an answer, an own assumption, a revise request, or an escalation to the operator.
 **Orchestrator** — Not a role in fleetd. The word survives only in the preserved mail contract tag [orchestrator re #<id>] (discover N3).
 **Needs-you list** — The 1 place for everything that waits for the operator (design OR-3, /fleet/needs-you/): approvals, escalated worker questions and escalated tasks. ideas owns it (orchestrator, D15).
+**Needs-You Item** — 1 item of the needs-you list, with a stable key and a state open, resolved or superseded (A28). _Avoid_: notification, alert
 _Uses the shared meaning of_: **Idea**, **Sub-Orchestrator**, **Plan**
 
 ## Task execution context
@@ -67,9 +68,9 @@ _Uses the shared meaning of_: **Worktree**, **Rescue Ref**
 **Landed** — A task branch state: the branch is fast-forwarded onto its feature branch after the fast gate passed (understand N4).
 **Merged** — A feature fact read from git by content: the feature branch is in the primary branch (understand N4).
 **Trial merge result** — The answer of a git merge-tree trial merge between 2 features, or a feature and the primary branch: clean, or the conflicting paths. Coined in connect (assumption A6).
+**Rescue Ref** — A ref under refs/horch/rescue/ that keeps the old tip of a branch before a rebase, a forced update or an abandon; class unique or superseded (A27). _Avoid_: backup branch _(differs from the shared meaning — a boundary)_
+**Repair Attempt** — A resolver attempt or a fix attempt of a done task, counted in repair_attempts of the task branch, not in the attempts of the task (A27, A34). _Avoid_: retry
 _Uses the shared meaning of_: **Feature Branch**, **Task Branch**, **Primary Branch**, **Bundle**, **Fast Gate**, **Full Gate**, **Trial Merge**, **Resolver Task**
-
-**Bundle** — A bundles row: 1 candidate of ready task branches of 1 feature on 1 base tip, with the states building, gating, passed, landed, failed and dropped. A bisect part is a child bundle (A27, A34).
 
 ## Worker profiles and adapters context
 **Worker Profile** — The teammate file of 1 persona: agent CLI, model, effort, skills, MCP servers, sandbox, writable paths, network, liveness, retry and fallback. Profile is its short name.
@@ -89,5 +90,5 @@ _Uses the shared meaning of_: **Feature Branch**, **Task Branch**, **Primary Bra
 **Command Channel** — The local transport on which CLI commands and agents send requests to fleetd. fleetd validates each request and writes the result to the ledger.
 **Ledger** — The SQLite file ~/.horch/ledger.sqlite3 in WAL mode: an event log plus derived tables. Only fleetd writes it; each context owns its own tables (understand N17, organise N2).
 **Check** — horch fleetd check: the heartbeat check that restarts fleetd when its last full pass is older than 30 s of awake time. It is not a task check.
-**Job** — A jobs row and its process: work that can take more than 1 s and runs outside the reconcile pass. fleet-runtime runs and observes each job; the context that queues a job kind acts on its result (A23, A33).
-**Fleet clock** — The count of seconds in the fleetd row that each pass advances. Every operational deadline of every context is on it (A25).
+**Job** — A piece of work that can take more than 1 s and runs in its own process outside the reconcile pass, with a kind, a subject, an input key and a run number (A23, A33). _Avoid_: task, background task _(differs from the shared meaning — a boundary)_
+**Operator Token** — The random token in /fleet/run/operator.token that each request of class operator carries; the sandbox of each worker denies reading it (A35). _Avoid_: password, api key

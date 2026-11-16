@@ -2,7 +2,7 @@
   "schema_version": 1,
   "step": "define",
   "produced_by": "ddd-define",
-  "produced_at": "2026-11-12T21:59:18Z",
+  "produced_at": "2026-11-13T08:22:21Z",
   "mode": "auto",
   "depth": "standard",
   "inputs": [
@@ -38,7 +38,7 @@
     },
     {
       "id": "A5",
-      "text": "task-execution: 'anticorruption-layer' guessed for external system agent-cli (core contexts protect their model; others conform) - confirm",
+      "text": "task-execution has no agent-cli collaborator. attempt-exited comes from worker-profiles, the owner of the fleet-run wrapper that writes exit.json (connect A7, D2). The exit of the agent CLI process is a process fact that the wrapper reports.",
       "confidence": "low"
     },
     {
@@ -123,7 +123,7 @@
     },
     {
       "id": "A22",
-      "text": "The define step changes no upstream relationship. Every message id on a canvas comes from connect or discover. The GitHub, herdr and file protocol rows use the connect messages of revision round 2 (connect N7).",
+      "text": "The define step changes no upstream relationship. Every message id on a canvas comes from connect or discover. The GitHub, herdr and file protocol rows use the connect messages of revision rounds 2 and 3 (connect N7, N10).",
       "confidence": "high"
     },
     {
@@ -180,6 +180,16 @@
       "id": "A33",
       "text": "Preservation row 06 S14 (design A21: hang detection and restart on all 3 OSes, not only systemd or launchd) has no owner upstream. fleet-runtime owns it, because it owns the heartbeat check and the restart of fleetd.",
       "confidence": "medium"
+    },
+    {
+      "id": "A34",
+      "text": "The job runner of fleet-runtime is an open host service for task-execution, integration, worktree-custody and worker-profiles (decompose R12, R14 to R16; connect N11). Each canvas row with fleet-runtime carries the pattern open-host-service.",
+      "confidence": "high"
+    },
+    {
+      "id": "A35",
+      "text": "The sub-orchestrator answers a worker question with horch idea note, a file of class worker, not on the command channel (design A35; connect N9). The answer-question row of ideas has via file.",
+      "confidence": "high"
     }
   ],
   "open_questions": [],
@@ -210,7 +220,8 @@
               "payload": [
                 "text",
                 "feature_id?",
-                "idempotency_key"
+                "request_id",
+                "operator_token"
               ],
               "delivery": "sync",
               "via": "other",
@@ -219,9 +230,9 @@
                 "id": "add-idea",
                 "name": "Add Idea",
                 "payload": [
-                  "text",
-                  "feature_id?",
-                  "idempotency_key"
+                  "state (applied or refused)",
+                  "result (when applied)",
+                  "reason (when refused)"
                 ]
               }
             },
@@ -232,7 +243,8 @@
               "payload": [
                 "ticket_file",
                 "feature_id?",
-                "idempotency_key"
+                "request_id",
+                "operator_token"
               ],
               "delivery": "sync",
               "via": "other",
@@ -245,7 +257,8 @@
               "payload": [
                 "idea_id",
                 "assumptions_hash",
-                "idempotency_key"
+                "request_id",
+                "operator_token"
               ],
               "delivery": "sync",
               "via": "other",
@@ -264,7 +277,24 @@
             {
               "id": "cancel-idea",
               "kind": "command",
-              "name": "Cancel Idea"
+              "name": "Cancel Idea",
+              "payload": [
+                "idea_id",
+                "request_id",
+                "operator_token"
+              ],
+              "delivery": "sync",
+              "via": "other",
+              "sync": true,
+              "response": {
+                "id": "cancel-idea",
+                "name": "Cancel Idea",
+                "payload": [
+                  "state (applied or refused)",
+                  "result (when applied)",
+                  "reason (when refused)"
+                ]
+              }
             },
             {
               "id": "revise-assumptions",
@@ -321,12 +351,11 @@
               "payload": [
                 "question_id",
                 "answer|assumption",
-                "citation?",
-                "idempotency_key"
+                "citation?"
               ],
-              "delivery": "sync",
-              "via": "other",
-              "sync": true
+              "delivery": "at-least-once",
+              "via": "file",
+              "sync": false
             },
             {
               "id": "replan-task",
@@ -438,6 +467,30 @@
               "delivery": "at-least-once",
               "via": "in-process",
               "sync": false
+            },
+            {
+              "id": "feature-abandoned",
+              "kind": "event",
+              "name": "Feature Abandoned",
+              "payload": [
+                "feature_id"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "task-branch-repair-escalated",
+              "kind": "event",
+              "name": "Task Branch Repair Escalated",
+              "payload": [
+                "branch",
+                "task_id",
+                "repair_attempts"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
             }
           ]
         },
@@ -457,6 +510,19 @@
               "delivery": "sync",
               "via": "in-process",
               "sync": true
+            },
+            {
+              "id": "adapter-conformance-failed",
+              "kind": "event",
+              "name": "Adapter Conformance Failed",
+              "payload": [
+                "cli",
+                "version",
+                "failed_checks"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
             }
           ]
         },
@@ -484,6 +550,26 @@
               "id": "escalate-question",
               "kind": "command",
               "name": "Escalate Question"
+            }
+          ]
+        },
+        {
+          "collaborator": "fleet-runtime",
+          "relationship": "open-host-service",
+          "messages": [
+            {
+              "id": "job-abandoned",
+              "kind": "event",
+              "name": "Job Abandoned",
+              "payload": [
+                "job_id",
+                "kind",
+                "subject",
+                "abandoned_runs"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
             }
           ]
         }
@@ -658,6 +744,18 @@
               "delivery": "at-least-once",
               "via": "in-process",
               "sync": false
+            },
+            {
+              "id": "idea-cancelled",
+              "kind": "event",
+              "name": "Idea Cancelled",
+              "payload": [
+                "idea_id",
+                "cause"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
             }
           ]
         },
@@ -729,6 +827,14 @@
         {
           "term": "Needs-you list",
           "definition": "The 1 place for everything that waits for the operator (design OR-3, /fleet/needs-you/): approvals, escalated worker questions and escalated tasks. ideas owns it (orchestrator, D15)"
+        },
+        {
+          "term": "Needs-You Item",
+          "definition": "1 item of the needs-you list, with a stable key and a state open, resolved or superseded (A28)",
+          "avoid": [
+            "notification",
+            "alert"
+          ]
         }
       ],
       "business_decisions": [
@@ -744,7 +850,10 @@
         "When task-execution asks for a replan, the sub-orchestrator replans the task once; the replanned task goes back to task-execution as task-replanned.",
         "When every task of the idea is landed on its feature branch, the idea goes to integrating. When the feature is merged and every worktree of the idea is removed, the idea goes to merged (discover N4).",
         "Every feature that is not merged and not abandoned has exactly 1 live sub-orchestrator or waits on the operator (I7, I13). The dispatcher starts a missing one and stops an extra one on each pass, through worker-profiles start-agent-process (connect N3, [define A30]).",
-        "There is 1 needs-you list, and ideas owns it. Approvals, escalated worker questions and escalated tasks (task-escalated from task-execution) wait there for the operator; no other context shows the operator an item to decide (design OR-3, [define A25])."
+        "There is 1 needs-you list, and ideas owns it. Approvals, escalated worker questions and escalated tasks (task-escalated from task-execution) wait there for the operator; no other context shows the operator an item to decide (design OR-3, [define A25]).",
+        "The needs-you list has a life cycle: each item has a stable key (its kind and its row) and a state open, resolved or superseded. A producer writes by key, so 1 thing has 1 item (A28; design: The needs-you list has a life cycle).",
+        "1 live sub-orchestrator runs for each feature, and it plans the ideas of 1 feature in order (I7, A28).",
+        "Profile validation refuses a profile whose sandbox allows reading the operator token, connecting to the command channel or writing into the request folder, and a profile on an OS where its sandbox is not supported (A35, A37)."
       ],
       "assumptions": [
         "[understand A3] horch earns no revenue. Its value is operator throughput: approved ideas that reach the primary branch per unit of subscription usage. (confidence medium)",
@@ -951,6 +1060,18 @@
               "delivery": "at-least-once",
               "via": "in-process",
               "sync": false
+            },
+            {
+              "id": "idea-cancelled",
+              "kind": "event",
+              "name": "Idea Cancelled",
+              "payload": [
+                "idea_id",
+                "cause"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
             }
           ]
         },
@@ -1014,6 +1135,32 @@
               "delivery": "at-least-once",
               "via": "in-process",
               "sync": false
+            },
+            {
+              "id": "task-branch-gate-failed",
+              "kind": "event",
+              "name": "Task Branch Gate Failed",
+              "payload": [
+                "branch",
+                "task_id",
+                "gate_output"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "task-branch-repair-escalated",
+              "kind": "event",
+              "name": "Task Branch Repair Escalated",
+              "payload": [
+                "branch",
+                "task_id",
+                "repair_attempts"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
             }
           ]
         },
@@ -1068,6 +1215,29 @@
               "delivery": "at-least-once",
               "via": "file",
               "sync": false
+            },
+            {
+              "id": "profile-marked-unhealthy",
+              "kind": "event",
+              "name": "Profile Marked Unhealthy",
+              "payload": [
+                "profile_id",
+                "reason"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "profile-marked-healthy",
+              "kind": "event",
+              "name": "Profile Marked Healthy",
+              "payload": [
+                "profile_id"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
             }
           ]
         },
@@ -1107,7 +1277,79 @@
             {
               "id": "requeue-task",
               "kind": "command",
-              "name": "Requeue Task"
+              "name": "Requeue Task",
+              "payload": [
+                "task_id",
+                "request_id",
+                "operator_token"
+              ],
+              "delivery": "sync",
+              "via": "other",
+              "sync": true,
+              "response": {
+                "id": "requeue-task",
+                "name": "Requeue Task",
+                "payload": [
+                  "state (applied or refused)",
+                  "result (when applied)",
+                  "reason (when refused)"
+                ]
+              }
+            },
+            {
+              "id": "cancel-task",
+              "kind": "command",
+              "name": "Cancel Task",
+              "payload": [
+                "task_id",
+                "request_id",
+                "operator_token"
+              ],
+              "delivery": "sync",
+              "via": "other",
+              "sync": true,
+              "response": {
+                "id": "cancel-task",
+                "name": "Cancel Task",
+                "payload": [
+                  "state (applied or refused)",
+                  "result (when applied)",
+                  "reason (when refused)"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "collaborator": "fleet-runtime",
+          "relationship": "open-host-service",
+          "messages": [
+            {
+              "id": "job-abandoned",
+              "kind": "event",
+              "name": "Job Abandoned",
+              "payload": [
+                "job_id",
+                "kind",
+                "subject",
+                "abandoned_runs"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "job-requeued",
+              "kind": "event",
+              "name": "Job Requeued",
+              "payload": [
+                "job_id",
+                "kind",
+                "subject"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
             }
           ]
         }
@@ -1167,6 +1409,32 @@
                 "task_id",
                 "branch",
                 "verdict"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "task-cancelled",
+              "kind": "event",
+              "name": "Task Cancelled",
+              "payload": [
+                "task_id",
+                "branch",
+                "cause"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "attempt-failed",
+              "kind": "event",
+              "name": "Attempt Failed",
+              "payload": [
+                "attempt_id",
+                "task_id",
+                "outcome"
               ],
               "delivery": "at-least-once",
               "via": "in-process",
@@ -1242,9 +1510,11 @@
                 "id": "launch-environment",
                 "name": "launch-environment",
                 "payload": [
-                  "profile",
-                  "task_id|idea_id",
-                  "attempt_id?"
+                  "cli",
+                  "flags[]",
+                  "env (scrubbed: no ANTHROPIC_API_KEY)",
+                  "config_home_files[]",
+                  "sandbox_profile"
                 ]
               }
             },
@@ -1413,7 +1683,11 @@
         "A failed rescue of the task's worktree escalates the task; nothing is removed (RR-9). A task branch that conflicts on landing goes back to the same worker. Task branches rebase at landing: a rebase of the feature branch does not wait for running attempts, and an attempt on an old base meets its conflict at landing ([define A27]).",
         "No worker runs more than 1 attempt at a time (I4). Every live pane and process under the fleet belongs to a live attempt; anything else is stopped (I5).",
         "Every launch calls worker-profiles start-agent-process, which resolves the launch environment and starts the process; this context never builds an environment or starts a process itself (connect N3, decompose N8, [define A30]). No process start runs inside a ledger transaction (connect N4).",
-        "task-execution and integration are a partnership: task-done, task-escalated, task-branch-conflicted and resolver-task-opened change together as versioned in-memory events, and a change of 1 state machine is planned with the other (connect N6, [define A24])."
+        "task-execution and integration are a partnership: task-done, task-escalated, task-branch-conflicted and resolver-task-opened change together as versioned in-memory events, and a change of 1 state machine is planned with the other (connect N6, [define A24]).",
+        "The task state table has 12 states, each with 1 owner and 1 exit (A26). Each task state that is not terminal has an exit to cancelled; fleetd first stops the process group of a live attempt (A34). The cancel of a judged task also cancels its judge task.",
+        "The outcomes asked, quota and critical_open burn no attempt (A26). A dependency is met when the task is done and its task branch is landed.",
+        "The judge pair: the judged task stays in verifying until its judge task is done. A fix round is a new attempt of each, counted in fix_rounds of the judged task, at most 2; then both tasks go to escalated (A26, A34).",
+        "The task check runs as a task_check job outside the pass, through the launcher, with the check timeout as its time limit (A23)."
       ],
       "assumptions": [
         "[understand A4] The design gives no number for full use of the subscription usage. G4 uses a proxy: no pool ends its window with usage left while a task is ready, and a usage limit burns 0 attempts. (confidence low)",
@@ -1542,6 +1816,19 @@
               "delivery": "at-least-once",
               "via": "in-process",
               "sync": false
+            },
+            {
+              "id": "rescue-worktree",
+              "kind": "command",
+              "name": "Rescue Worktree",
+              "payload": [
+                "branch",
+                "task_id",
+                "worktree"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
             }
           ]
         },
@@ -1553,6 +1840,67 @@
               "id": "reconcile-worktrees",
               "kind": "command",
               "name": "Reconcile Worktrees"
+            }
+          ]
+        },
+        {
+          "collaborator": "operator",
+          "relationship": "user-interaction",
+          "messages": [
+            {
+              "id": "drop-rescue-ref",
+              "kind": "command",
+              "name": "Drop Rescue Ref",
+              "payload": [
+                "ref",
+                "request_id",
+                "operator_token"
+              ],
+              "delivery": "sync",
+              "via": "in-process",
+              "sync": false,
+              "response": {
+                "id": "drop-rescue-ref",
+                "name": "Drop Rescue Ref",
+                "payload": [
+                  "state (applied or refused)",
+                  "result (when applied)",
+                  "reason (when refused)"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "collaborator": "fleet-runtime",
+          "relationship": "open-host-service",
+          "messages": [
+            {
+              "id": "job-abandoned",
+              "kind": "event",
+              "name": "Job Abandoned",
+              "payload": [
+                "job_id",
+                "kind",
+                "subject",
+                "abandoned_runs"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "job-requeued",
+              "kind": "event",
+              "name": "Job Requeued",
+              "payload": [
+                "job_id",
+                "kind",
+                "subject"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
             }
           ]
         }
@@ -1583,6 +1931,26 @@
               "payload": [
                 "worktree_id",
                 "task_id"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            }
+          ]
+        },
+        {
+          "collaborator": "integration",
+          "relationship": "published-language",
+          "messages": [
+            {
+              "id": "worktree-rescued",
+              "kind": "event",
+              "name": "Worktree Rescued",
+              "payload": [
+                "branch",
+                "task_id",
+                "rescue_ref",
+                "rescue_class"
               ],
               "delivery": "at-least-once",
               "via": "in-process",
@@ -1637,7 +2005,9 @@
         "Archive and trash refs only move forward, each ref write is read back before a folder is removed, and trash refs expire after 30 days (04 W8). Triage commits modified and untracked files before ARCHIVE or DELETE (04 W9).",
         "A worktree survives attempts: a retry, a fallback restart or a resume reuses the same worktree (understand N1). The worktree goes to landing when its task branch is verified and to landed when the branch landed; only a landed or rescued worktree is removed (decompose N6).",
         "An abandoned task branch is dropped only after worktree-rescued is recorded (connect N4). No git call runs inside a ledger transaction.",
-        "worktree-custody is the only caller of git worktree add, remove and list, and the only writer of rescue refs under refs/horch/rescue/. It runs no rebase, merge or branch delete; integration does ([define A26])."
+        "worktree-custody is the only caller of git worktree add, remove and list, and the only writer of rescue refs under refs/horch/rescue/. It runs no rebase, merge or branch delete; integration does ([define A26]).",
+        "git worktree add, remove and list and each rescue run as jobs outside the pass (A32). The worktree row commits in reserved before the worktree_add job.",
+        "A rescue ref has 1 of 2 classes: unique (it holds work that is nowhere else) or superseded. Only the operator deletes a unique rescue ref, with horch rescue drop (A27, I10)."
       ],
       "assumptions": [
         "[discover A6] The event order follows understand N7 (idea states), N8 (task branch states building, verifying, ready, in_bundle, landed with side states conflicted, gate_failed, abandoned) and N9 (worktree states reserved, created, active, landing, landed, orphaned, rescued, removed). (confidence high)",
@@ -1698,7 +2068,8 @@
               "payload": [
                 "branch",
                 "task_id",
-                "idempotency_key"
+                "request_id",
+                "operator_token"
               ],
               "delivery": "sync",
               "via": "other",
@@ -1707,9 +2078,9 @@
                 "id": "abandon-task-branch",
                 "name": "Abandon Task Branch",
                 "payload": [
-                  "branch",
-                  "task_id",
-                  "idempotency_key"
+                  "state (applied or refused)",
+                  "result (when applied)",
+                  "reason (when refused)"
                 ]
               }
             },
@@ -1717,6 +2088,28 @@
               "id": "merge-pull-request",
               "kind": "command",
               "name": "Merge Pull Request"
+            },
+            {
+              "id": "abandon-feature",
+              "kind": "command",
+              "name": "Abandon Feature",
+              "payload": [
+                "feature_id",
+                "request_id",
+                "operator_token"
+              ],
+              "delivery": "sync",
+              "via": "other",
+              "sync": true,
+              "response": {
+                "id": "abandon-feature",
+                "name": "Abandon Feature",
+                "payload": [
+                  "state (applied or refused)",
+                  "result (when applied)",
+                  "reason (when refused)"
+                ]
+              }
             }
           ]
         },
@@ -1793,6 +2186,32 @@
               "delivery": "at-least-once",
               "via": "in-process",
               "sync": false
+            },
+            {
+              "id": "task-cancelled",
+              "kind": "event",
+              "name": "Task Cancelled",
+              "payload": [
+                "task_id",
+                "branch",
+                "cause"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "attempt-failed",
+              "kind": "event",
+              "name": "Attempt Failed",
+              "payload": [
+                "attempt_id",
+                "task_id",
+                "outcome"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
             }
           ]
         },
@@ -1854,6 +2273,71 @@
               ],
               "delivery": "at-least-once",
               "via": "other",
+              "sync": false
+            },
+            {
+              "id": "pull-request-closed",
+              "kind": "event",
+              "name": "Pull Request Closed",
+              "payload": [
+                "feature_id",
+                "pr_state"
+              ],
+              "delivery": "at-least-once",
+              "via": "other",
+              "sync": false
+            }
+          ]
+        },
+        {
+          "collaborator": "worktree-custody",
+          "relationship": "published-language",
+          "messages": [
+            {
+              "id": "worktree-rescued",
+              "kind": "event",
+              "name": "Worktree Rescued",
+              "payload": [
+                "branch",
+                "task_id",
+                "rescue_ref",
+                "rescue_class"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            }
+          ]
+        },
+        {
+          "collaborator": "fleet-runtime",
+          "relationship": "open-host-service",
+          "messages": [
+            {
+              "id": "job-abandoned",
+              "kind": "event",
+              "name": "Job Abandoned",
+              "payload": [
+                "job_id",
+                "kind",
+                "subject",
+                "abandoned_runs"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "job-requeued",
+              "kind": "event",
+              "name": "Job Requeued",
+              "payload": [
+                "job_id",
+                "kind",
+                "subject"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
               "sync": false
             }
           ]
@@ -1920,6 +2404,30 @@
               "delivery": "at-least-once",
               "via": "in-process",
               "sync": false
+            },
+            {
+              "id": "feature-abandoned",
+              "kind": "event",
+              "name": "Feature Abandoned",
+              "payload": [
+                "feature_id"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "task-branch-repair-escalated",
+              "kind": "event",
+              "name": "Task Branch Repair Escalated",
+              "payload": [
+                "branch",
+                "task_id",
+                "repair_attempts"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
             }
           ]
         },
@@ -1951,6 +2459,32 @@
               "delivery": "at-least-once",
               "via": "in-process",
               "sync": false
+            },
+            {
+              "id": "task-branch-gate-failed",
+              "kind": "event",
+              "name": "Task Branch Gate Failed",
+              "payload": [
+                "branch",
+                "task_id",
+                "gate_output"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "task-branch-repair-escalated",
+              "kind": "event",
+              "name": "Task Branch Repair Escalated",
+              "payload": [
+                "branch",
+                "task_id",
+                "repair_attempts"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
             }
           ]
         },
@@ -1967,6 +2501,19 @@
                 "task_id",
                 "feature_id",
                 "tip"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "rescue-worktree",
+              "kind": "command",
+              "name": "Rescue Worktree",
+              "payload": [
+                "branch",
+                "task_id",
+                "worktree"
               ],
               "delivery": "at-least-once",
               "via": "in-process",
@@ -1994,9 +2541,7 @@
                 "id": "open-pull-request",
                 "name": "Open Pull Request",
                 "payload": [
-                  "feature_id",
-                  "branch",
-                  "base_branch"
+                  "pr"
                 ]
               }
             }
@@ -2021,10 +2566,23 @@
                 "id": "trial-merge-result",
                 "name": "trial-merge-result",
                 "payload": [
-                  "feature_a",
-                  "feature_b|primary"
+                  "clean",
+                  "paths[]"
                 ]
               }
+            },
+            {
+              "id": "push-feature-branch",
+              "kind": "command",
+              "name": "Push Feature Branch",
+              "payload": [
+                "feature_id",
+                "branch",
+                "seen_remote_tip"
+              ],
+              "delivery": "at-least-once",
+              "via": "other",
+              "sync": false
             }
           ]
         }
@@ -2114,12 +2672,26 @@
         {
           "term": "Trial merge result",
           "definition": "The answer of a git merge-tree trial merge between 2 features, or a feature and the primary branch: clean, or the conflicting paths. Coined in connect (assumption A6)"
+        },
+        {
+          "term": "Rescue Ref",
+          "definition": "A ref under refs/horch/rescue/ that keeps the old tip of a branch before a rebase, a forced update or an abandon; class unique or superseded (A27)",
+          "avoid": [
+            "backup branch"
+          ]
+        },
+        {
+          "term": "Repair Attempt",
+          "definition": "A resolver attempt or a fix attempt of a done task, counted in repair_attempts of the task branch, not in the attempts of the task (A27, A34)",
+          "avoid": [
+            "retry"
+          ]
         }
       ],
       "business_decisions": [
         "A feature opens when its sub-orchestrator first writes assumptions, or when fleetd accepts a --direct idea; it gets 1 feature branch from the primary branch (understand N2, discover N2).",
         "A task branch becomes ready only when its task is done (verified). Several ready task branches of 1 feature form 1 bundle on the feature branch tip in queue order; the fast gate runs once on it. No human approves a landing on a feature branch.",
-        "On a fast gate pass, the feature branch moves forward to the bundle by fast-forward only (I9). On a failure, fleetd bisects the bundle; the failing task branch goes to gate_failed and its triage task goes to the sub-orchestrator.",
+        "On a fast gate pass, the bundle moves to passed, and the feature branch moves forward to the candidate by compare-and-set from the base tip (I9, A27). On a failure, fleetd bisects the bundle; the failing task branch goes to gate_failed, and fleetd starts a fix attempt of its task in its worktree with the gate output (A27). A failure of the full gate opens a triage task.",
         "Under the land lock (1 h, 5 tries), just before the fast-forward, fleetd checks that the task is still landing and held by its worker; a cancelled task lands nothing (04 F9).",
         "A red land after a rebase resets the branch to its tip from before the land (04 F7). A passed step stands only for the tree it judged; new commits reopen the land and every later step (04 F5).",
         "Every git network call has a wall-clock bound: push 10 min, others 3 min, and it never retries (04 F11).",
@@ -2132,7 +2704,12 @@
         "A task branch parked by done --unlanded keeps its worktree, and unlanded work stays listed for a decision; a finding is decided once (04 L5, L9).",
         "An escalated task branch is abandoned only by the operator; a rescue ref is kept, and the branch is dropped only after worktree-rescued (connect N4).",
         "integration is the only caller of the git branch and merge commands: rebase, merge-tree, fast-forward, push and branch delete. It runs no git worktree command and writes no rescue ref; worktree-custody does ([define A26]).",
-        "integration and task-execution are a partnership: their 4 messages change together as versioned in-memory events (connect N6, [define A24])."
+        "integration and task-execution are a partnership: their 4 messages change together as versioned in-memory events (connect N6, [define A24]).",
+        "A bundle is its own state machine: building, gating, passed, landed, failed, dropped (A27, A34). fleetd writes the bundles row and its bundle_members rows in 1 transaction before the build job. A member conflict, a moved feature tip or a failed compare-and-set drops the bundle, and its members go back to ready. fleetd deletes each candidate ref.",
+        "conflicted and gate_failed are owned by fleetd. A resolver attempt or a fix attempt of a done task is an attempt of the task branch; its failure adds 1 to repair_attempts of the branch, and the task stays done. At max_attempts the branch goes on the needs-you list: horch task requeue starts 1 more, or horch branch abandon writes a rescue ref and abandons it (A27, A34).",
+        "The feature state machine: open, ready, merged, abandoned (A28, A34). A moved tip or a new idea with --to sends a ready feature back to open, and its pull request becomes a draft. Only the operator sets abandoned, with horch feature abandon: each branch that is not landed gets a rescue ref first. A merge with ideas in flight moves those ideas to a new feature.",
+        "Push, fetch, rebase, trial merge, bundle build and both gates are jobs outside the pass (A23, A33). A failed push sets push_state failed and push_not_before; at 3 failures in a row, 1 item goes on the needs-you list. A periodic fetch job records each remote tip in remote_tips. With remote = none, fleetd does not fetch, push or open a pull request.",
+        "A cancelled task leaves its branch to integration: integration asks worktree-custody for a rescue ref, then moves the branch to abandoned (A34; connect F10)."
       ],
       "assumptions": [
         "[understand A3] horch earns no revenue. Its value is operator throughput: approved ideas that reach the primary branch per unit of subscription usage. (confidence medium)",
@@ -2238,9 +2815,11 @@
                 "id": "launch-environment",
                 "name": "launch-environment",
                 "payload": [
-                  "profile",
-                  "task_id|idea_id",
-                  "attempt_id?"
+                  "cli",
+                  "flags[]",
+                  "env (scrubbed: no ANTHROPIC_API_KEY)",
+                  "config_home_files[]",
+                  "sandbox_profile"
                 ]
               }
             },
@@ -2288,6 +2867,39 @@
               "id": "run-conformance-tests",
               "kind": "command",
               "name": "Run Conformance Tests"
+            }
+          ]
+        },
+        {
+          "collaborator": "fleet-runtime",
+          "relationship": "open-host-service",
+          "messages": [
+            {
+              "id": "job-abandoned",
+              "kind": "event",
+              "name": "Job Abandoned",
+              "payload": [
+                "job_id",
+                "kind",
+                "subject",
+                "abandoned_runs"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "job-requeued",
+              "kind": "event",
+              "name": "Job Requeued",
+              "payload": [
+                "job_id",
+                "kind",
+                "subject"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
             }
           ]
         }
@@ -2344,6 +2956,29 @@
               "delivery": "at-least-once",
               "via": "file",
               "sync": false
+            },
+            {
+              "id": "profile-marked-unhealthy",
+              "kind": "event",
+              "name": "Profile Marked Unhealthy",
+              "payload": [
+                "profile_id",
+                "reason"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "profile-marked-healthy",
+              "kind": "event",
+              "name": "Profile Marked Healthy",
+              "payload": [
+                "profile_id"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
             }
           ]
         },
@@ -2363,6 +2998,19 @@
               "delivery": "sync",
               "via": "in-process",
               "sync": true
+            },
+            {
+              "id": "adapter-conformance-failed",
+              "kind": "event",
+              "name": "Adapter Conformance Failed",
+              "payload": [
+                "cli",
+                "version",
+                "failed_checks"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
             }
           ]
         }
@@ -2415,7 +3063,10 @@
         "A new agent CLI release is used only after the update cooldown of more than 1 week; a CLI with unreadable release dates is held back. Pane auto-update stays off for claude and codex (06 S7, S8, C10).",
         "Each agent runs with a context limit of 256k tokens, set through the CLI's own setting where one exists; else the wrapper ends the attempt with a handoff at 256k (FR-9). The OpenCode, pi and Prime adapters carry over (06 S15).",
         "Every agent process starts through start-agent-process: worker-profiles resolves the launch environment, runs the fleet-run wrapper (private config home, environment scrub, adapter event mapping) in its own process group or job object through the platform layer, and never inside a ledger transaction (connect N3, N4, [define A30]).",
-        "The fleet-run wrapper writes heartbeat.json and exit.json of its attempt with atomic writes. fleetd reads heartbeat-written into task-execution as a file, idempotently (connect A7, RR-8)."
+        "The fleet-run wrapper writes heartbeat.json and exit.json of its attempt with atomic writes. fleetd reads heartbeat-written into task-execution as a file, idempotently (connect A7, RR-8).",
+        "Each process starts through the 1 launcher, which removes ANTHROPIC_API_KEY (SR-7, A29). No native herdr resume.",
+        "The sandbox of each worker denies reading the operator token, connecting to the command channel and writing into the request folder. A worker never runs without its sandbox (A35, A37).",
+        "worker-profiles marks a profile unhealthy when a conformance check fails and healthy again when the checks pass; a drift becomes an idea (design: Docs sync and adapter conformance)."
       ],
       "assumptions": [
         "[discover A3] Daemon supervision (stale heartbeat, restart, self-update) and adapter conformance are their own phase, operating, outside the idea flow (decision D2, option B, decided by the orchestrator, D15). The reconcile loop supervises each phase, not only executing. The operating phase has no pivotal event and no before and after on the idea timeline. (confidence high)",
@@ -2475,6 +3126,17 @@
               "id": "check-fleetd",
               "kind": "command",
               "name": "Check Fleetd"
+            },
+            {
+              "id": "observe-jobs",
+              "kind": "command",
+              "name": "Observe Jobs",
+              "payload": [
+                "pass"
+              ],
+              "delivery": "at-most-once",
+              "via": "in-process",
+              "sync": false
             }
           ]
         },
@@ -2499,9 +3161,190 @@
               "name": "Restart Fleetd"
             }
           ]
+        },
+        {
+          "collaborator": "operator",
+          "relationship": "user-interaction",
+          "messages": [
+            {
+              "id": "requeue-job",
+              "kind": "command",
+              "name": "Requeue Job",
+              "payload": [
+                "job_id",
+                "request_id",
+                "operator_token"
+              ],
+              "delivery": "sync",
+              "via": "other",
+              "sync": true,
+              "response": {
+                "id": "requeue-job",
+                "name": "Requeue Job",
+                "payload": [
+                  "state (applied or refused)",
+                  "result (when applied)",
+                  "reason (when refused)"
+                ]
+              }
+            }
+          ]
         }
       ],
-      "outbound": [],
+      "outbound": [
+        {
+          "collaborator": "ideas",
+          "relationship": "open-host-service",
+          "messages": [
+            {
+              "id": "job-abandoned",
+              "kind": "event",
+              "name": "Job Abandoned",
+              "payload": [
+                "job_id",
+                "kind",
+                "subject",
+                "abandoned_runs"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            }
+          ]
+        },
+        {
+          "collaborator": "task-execution",
+          "relationship": "open-host-service",
+          "messages": [
+            {
+              "id": "job-abandoned",
+              "kind": "event",
+              "name": "Job Abandoned",
+              "payload": [
+                "job_id",
+                "kind",
+                "subject",
+                "abandoned_runs"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "job-requeued",
+              "kind": "event",
+              "name": "Job Requeued",
+              "payload": [
+                "job_id",
+                "kind",
+                "subject"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            }
+          ]
+        },
+        {
+          "collaborator": "integration",
+          "relationship": "open-host-service",
+          "messages": [
+            {
+              "id": "job-abandoned",
+              "kind": "event",
+              "name": "Job Abandoned",
+              "payload": [
+                "job_id",
+                "kind",
+                "subject",
+                "abandoned_runs"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "job-requeued",
+              "kind": "event",
+              "name": "Job Requeued",
+              "payload": [
+                "job_id",
+                "kind",
+                "subject"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            }
+          ]
+        },
+        {
+          "collaborator": "worktree-custody",
+          "relationship": "open-host-service",
+          "messages": [
+            {
+              "id": "job-abandoned",
+              "kind": "event",
+              "name": "Job Abandoned",
+              "payload": [
+                "job_id",
+                "kind",
+                "subject",
+                "abandoned_runs"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "job-requeued",
+              "kind": "event",
+              "name": "Job Requeued",
+              "payload": [
+                "job_id",
+                "kind",
+                "subject"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            }
+          ]
+        },
+        {
+          "collaborator": "worker-profiles",
+          "relationship": "open-host-service",
+          "messages": [
+            {
+              "id": "job-abandoned",
+              "kind": "event",
+              "name": "Job Abandoned",
+              "payload": [
+                "job_id",
+                "kind",
+                "subject",
+                "abandoned_runs"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            },
+            {
+              "id": "job-requeued",
+              "kind": "event",
+              "name": "Job Requeued",
+              "payload": [
+                "job_id",
+                "kind",
+                "subject"
+              ],
+              "delivery": "at-least-once",
+              "via": "in-process",
+              "sync": false
+            }
+          ]
+        }
+      ],
       "ubiquitous_language": [
         {
           "term": "fleetd",
@@ -2526,6 +3369,22 @@
         {
           "term": "Check",
           "definition": "horch fleetd check: the heartbeat check that restarts fleetd when its last full pass is older than 30 s of awake time. It is not a task check"
+        },
+        {
+          "term": "Job",
+          "definition": "A piece of work that can take more than 1 s and runs in its own process outside the reconcile pass, with a kind, a subject, an input key and a run number (A23, A33)",
+          "avoid": [
+            "task",
+            "background task"
+          ]
+        },
+        {
+          "term": "Operator Token",
+          "definition": "The random token in /fleet/run/operator.token that each request of class operator carries; the sandbox of each worker denies reading it (A35)",
+          "avoid": [
+            "password",
+            "api key"
+          ]
         }
       ],
       "business_decisions": [
@@ -2538,7 +3397,12 @@
         "Mail and outbox directories are mode 0700 and files 0600; a directory that another user owns or can write is refused (04 M5). All protocol file writes are atomic (RR-8).",
         "The only bytes typed into a terminal are 1 fixed doorbell line from fleetd's code (FR-7, C11). horch warns when herdr resume_agents_on_restore is not false (06 S2).",
         "No git call or process start runs inside a ledger transaction (connect N4). After a herdr restart, fleetd rebuilds from the ledger and the files (C14). Agent processes start through worker-profiles (connect N3).",
-        "Worker reports reach fleetd as files, not through the Unix-socket channel relay or report socket, so Windows loses no report (06 S11)."
+        "Worker reports reach fleetd as files, not through the Unix-socket channel relay or report socket, so Windows loses no report (06 S11).",
+        "Long work is a job (A23, A32, A33). The jobs table has 2 classes of job, pure and effect, a run number, and a bound on runs that end abandoned (abandoned_run_limit 3); horch job requeue sets abandoned_runs to 0.",
+        "A pass has 3 parts: read facts, 1 transaction, then the effects. Each effect is a row in an intended state first. A pass has a work budget and cursors in pass_cursors (A24, A32).",
+        "Exactly 1 fleetd runs for 1 ledger: the fleetd lock and the generation number of the fleetd row (A24).",
+        "Each command request has a request_id, its idempotency key, and a row in requests with the stored result or the refusal reason. Requests of class operator need the operator token; requests of class worker are files and never use the channel. fleetd refuses an operator request from a process of a live attempt (A24, A35).",
+        "1 fleet clock serves each operational timer. The wrapper and the hang check use awake time from the platform layer (A25)."
       ],
       "assumptions": [
         "[understand A8] The /fleet paths in the design are a neutral layout. In horch, /fleet/ideas/<id>/ is ai_docs/plans/<run>/, /fleet/tasks/ is under the state root, and the ledger stays at ~/.horch/ledger.sqlite3. (confidence high)",
@@ -2581,7 +3445,7 @@
       "implementation_pattern": "active-record"
     }
   ],
-  "system_context_c4_mermaid": "C4Context\n  title System context - fleetd: the horch fleet control plane\n  Person(operator, \"Operator\", \"The developer who drops ideas into the queue, answers interviews, approves assumptions, receives escalations and merges each feature's pull request\")\n  System_Ext(sub_orchestrator, \"Sub-orchestrator\", \"An interactive Claude Code process, 1 per feature, a fresh process per phase, that plans 1 idea at a time and answers its workers' questions\")\n  System_Ext(worker, \"Worker\", \"Any agent CLI started with a named profile for 1 attempt of 1 task in a worktree that fleetd leased to it; also runs judge, resolver and triage tasks\")\n  Person(friend, \"Friend\", \"A person who installs horch and gets each release through horch self-update\")\n  System(fleetd, \"fleetd: the horch fleet control plane\", \"A supervised daemon inside horch that takes rough ideas from the operator, runs AI coding agents on them, and keeps every task, worktree and branch accounted for until the work reaches the primary branch.\")\n  System_Ext(clock, \"Clock\", \"The fleetd reconcile pass (every 5 s) and the fixed timers it reads. It fires every time-triggered command. Time counts only while the machine is awake.\")\n  System_Ext(agent_cli, \"Agent CLI process\", \"The Claude Code, Codex, Antigravity, OpenCode, pi or Prime process of 1 attempt. Its exit is a process fact that the wrapper and the platform layer report.\")\n  System_Ext(git, \"git\", \"Worktrees, branches, refs and merge-tree trial merges. The source of truth for 'in the primary branch by content'.\")\n  System_Ext(github, \"GitHub\", \"Hosts the pull request of a feature (pr setting gh) or the compare URL (pr setting manual).\")\n  System_Ext(os_service_manager, \"OS service manager\", \"launchd, systemd, or a Windows service and Task Scheduler. Keeps fleetd and herdr running and restarts them.\")\n  System_Ext(provider_pool, \"Provider pool\", \"A usage pool of 1 provider (understand actor provider-pool). It reports usage limits, outages and window resets.\")\n  System_Ext(herdr, \"herdr\", \"The pane runtime in session 'fleet'. Shows panes, agent status and notifications. Holds no state that fleetd depends on.\")\n  Rel(operator, fleetd, \"Add Idea, Add Direct Idea, Approve Assumptions, Answer Interview Question, Amend Idea, Cancel Idea, Revise Assumptions, Requeue Task, Abandon Task Branch, Merge Pull Request\")\n  Rel(sub_orchestrator, fleetd, \"Write Assumptions, Write Spec, Submit Plan, Answer Question, Replan Task, Ask Operator, Settle High Finding\")\n  Rel(worker, fleetd, \"Ask Question, Write Result, Write Judge Verdict\")\n  Rel(clock, fleetd, \"Escalate Question, Apply Stall Ladder, Renew Lease, Reconcile Worktrees, Check Merged, Run Conformance Tests, Check Fleetd\")\n  Rel(agent_cli, fleetd, \"Attempt Exited\")\n  Rel(provider_pool, fleetd, \"Usage Limit Reported\")\n  Rel(git, fleetd, \"Primary Branch Moved, trial-merge-result\")\n  Rel(friend, fleetd, \"Self Update\")\n  Rel(os_service_manager, fleetd, \"Restart Fleetd\")\n  Rel(fleetd, operator, \"Approval Requested, Pull Request Opened\")\n  Rel(fleetd, sub_orchestrator, \"Worker Question Asked\")\n  Rel(fleetd, git, \"trial-merge-result\")\n  Rel(github, fleetd, \"Pull Request Merged\")\n  Rel(fleetd, github, \"Open Pull Request\")\n  Rel(herdr, fleetd, \"agent-status-changed\")\n  Rel(fleetd, worker, \"assign-task, start-work\")",
+  "system_context_c4_mermaid": "C4Context\n  title System context - fleetd: the horch fleet control plane\n  Person(operator, \"Operator\", \"The developer who drops ideas into the queue, answers interviews, approves assumptions, receives escalations and merges each feature's pull request\")\n  System_Ext(sub_orchestrator, \"Sub-orchestrator\", \"An interactive Claude Code process, 1 per feature, a fresh process per phase, that plans 1 idea at a time and answers its workers' questions\")\n  System_Ext(worker, \"Worker\", \"Any agent CLI started with a named profile for 1 attempt of 1 task in a worktree that fleetd leased to it; also runs judge, resolver and triage tasks\")\n  Person(friend, \"Friend\", \"A person who installs horch and gets each release through horch self-update\")\n  System(fleetd, \"fleetd: the horch fleet control plane\", \"A supervised daemon inside horch that takes rough ideas from the operator, runs AI coding agents on them, and keeps every task, worktree and branch accounted for until the work reaches the primary branch.\")\n  System_Ext(clock, \"Clock\", \"The fleetd reconcile pass (every 5 s) and the fixed timers it reads. It fires every time-triggered command. Time counts only while the machine is awake.\")\n  System_Ext(agent_cli, \"Agent CLI process\", \"The Claude Code, Codex, Antigravity, OpenCode, pi or Prime process of 1 attempt. Its exit is a process fact that the wrapper and the platform layer report.\")\n  System_Ext(git, \"git\", \"Worktrees, branches, refs and merge-tree trial merges. The source of truth for 'in the primary branch by content'.\")\n  System_Ext(github, \"GitHub\", \"Hosts the pull request of a feature (pr setting gh) or the compare URL (pr setting manual).\")\n  System_Ext(os_service_manager, \"OS service manager\", \"launchd, systemd, or a Windows service and Task Scheduler. Keeps fleetd and herdr running and restarts them.\")\n  System_Ext(provider_pool, \"Provider pool\", \"A usage pool of 1 provider (understand actor provider-pool). It reports usage limits, outages and window resets.\")\n  System_Ext(herdr, \"herdr\", \"The pane runtime in session 'fleet'. Shows panes, agent status and notifications. Holds no state that fleetd depends on.\")\n  Rel(operator, fleetd, \"Add Idea, Add Direct Idea, Approve Assumptions, Answer Interview Question, Amend Idea, Cancel Idea, Revise Assumptions, Requeue Task, Cancel Task, Abandon Task Branch, Abandon Feature, Requeue Job, Drop Rescue Ref, Merge Pull Request\")\n  Rel(sub_orchestrator, fleetd, \"Write Assumptions, Write Spec, Submit Plan, Answer Question, Replan Task, Ask Operator, Settle High Finding\")\n  Rel(worker, fleetd, \"Ask Question, Write Result, Write Judge Verdict\")\n  Rel(clock, fleetd, \"Escalate Question, Apply Stall Ladder, Renew Lease, Reconcile Worktrees, Check Merged, Run Conformance Tests, Check Fleetd, Observe Jobs, Fetch Remote\")\n  Rel(agent_cli, fleetd, \"Process exit, reported by the fleet-run wrapper\")\n  Rel(provider_pool, fleetd, \"Usage Limit Reported\")\n  Rel(git, fleetd, \"Primary Branch Moved, trial-merge-result\")\n  Rel(friend, fleetd, \"Self Update\")\n  Rel(os_service_manager, fleetd, \"Restart Fleetd\")\n  Rel(fleetd, operator, \"Approval Requested, Pull Request Opened\")\n  Rel(fleetd, sub_orchestrator, \"Worker Question Asked\")\n  Rel(fleetd, git, \"trial-merge-result, Push Feature Branch\")\n  Rel(github, fleetd, \"Pull Request Merged, Pull Request Closed\")\n  Rel(fleetd, github, \"Open Pull Request\")\n  Rel(herdr, fleetd, \"agent-status-changed\")\n  Rel(fleetd, worker, \"assign-task, start-work\")",
   "quality_attributes": [
     {
       "context": "task-execution",
@@ -2732,6 +3596,23 @@
       ],
       "kind": "risk",
       "text": "Sharpens define N4: preservation row 06 S14 (hang detection and restart on macOS, Linux and Windows) is owned by fleet-runtime (A33). It needs 1 test per OS in the fleet-runtime module."
+    },
+    {
+      "id": "N9",
+      "kind": "boundary",
+      "for": [
+        "code",
+        "contracts"
+      ],
+      "text": "Round 3 canvas rows: each canvas now lists the round 3 messages of connect (F10 to F14). task-execution and integration share task-cancelled, attempt-failed, task-branch-gate-failed and task-branch-repair-escalated in their partnership. integration sends rescue-worktree to worktree-custody and waits for worktree-rescued before it abandons a branch."
+    },
+    {
+      "id": "N10",
+      "kind": "process",
+      "for": [
+        "code"
+      ],
+      "text": "Each context owns the job kinds that the decompose N11 list gives and reacts to job-abandoned and job-requeued of its own kinds only. fleet-runtime owns the jobs, pass_cursors, requests and fleetd tables (organise N6) and the operator token check."
     }
   ],
   "decisions": [
