@@ -417,40 +417,10 @@ fn runs_in(agent: Option<Agent>, procs: &Procs) -> bool {
     false
 }
 
-/// The parent of `pid`, from the OS.
-#[cfg(target_os = "macos")]
+/// The parent of `pid`, from the OS. Where no parent can be read
+/// (Windows), no caller passes as a controller.
 fn parent_pid(pid: u32) -> Option<u32> {
-    let os = horch_core::procid::os_pid(pid)?;
-    // SAFETY: `proc_bsdinfo` is plain data, and an all-zero value is valid.
-    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
-    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
-    // SAFETY: the buffer is a zeroed `proc_bsdinfo` of `size` bytes.
-    let n = unsafe {
-        libc::proc_pidinfo(
-            os,
-            libc::PROC_PIDTBSDINFO,
-            0,
-            (&mut info as *mut libc::proc_bsdinfo).cast(),
-            size,
-        )
-    };
-    (n == size).then_some(info.pbi_ppid)
-}
-
-/// The parent of `pid`: field 4 of `/proc/<pid>/stat`. Field 2, the
-/// command, is in parentheses and may hold spaces, so counting starts after
-/// the last `)`, at field 3.
-#[cfg(any(target_os = "linux", target_os = "android"))]
-fn parent_pid(pid: u32) -> Option<u32> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let (_, rest) = stat.rsplit_once(')')?;
-    rest.split_whitespace().nth(1)?.parse().ok()
-}
-
-/// No parent can be read here, so no caller passes as a controller.
-#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "android")))]
-fn parent_pid(_pid: u32) -> Option<u32> {
-    None
+    horch_platform::process::parent(pid).ok().flatten()
 }
 
 fn caller(ctx: &RuntimeContext) -> Option<Caller> {

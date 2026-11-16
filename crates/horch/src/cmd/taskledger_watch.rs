@@ -27,22 +27,15 @@ use crate::output;
 /// A SIGTERM came: the watchdog loop ends after the pass it runs.
 static TERM: AtomicBool = AtomicBool::new(false);
 
-#[cfg(unix)]
-extern "C" fn on_term(_: libc::c_int) {
-    TERM.store(true, Ordering::SeqCst);
-}
-
 /// SIGTERM ends the watchdog loop between passes, never inside one: a pass
 /// can be in a reap, which requeues the task before it stops the agent
 /// (#216 restart, review of T-3).
 fn exit_between_passes() {
-    #[cfg(unix)]
-    // SAFETY: the handler only stores to an atomic, which is
-    // async-signal-safe.
-    unsafe {
-        let handler = on_term as extern "C" fn(libc::c_int) as libc::sighandler_t;
-        libc::signal(libc::SIGTERM, handler);
-    }
+    // Windows has no signal handlers: the loop runs until the process ends.
+    let _ = horch_platform::signal::on_termination_set(
+        &TERM,
+        &[horch_platform::signal::Termination::Terminate],
+    );
 }
 
 /// Sleep `d`, or less when a SIGTERM comes.

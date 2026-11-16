@@ -165,8 +165,7 @@ fn spawn_run_steps(run: &Path, rereview: bool) -> Result<std::process::Child> {
         .stdout(log.try_clone()?)
         .stderr(log);
     // Its own group: the signal that ends the agent's command does not end it.
-    #[cfg(unix)]
-    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    horch_platform::group::new_group(&mut cmd);
     cmd.spawn().context("starting the detached finish")
 }
 

@@ -43,23 +43,19 @@ pub const VIEW_WINDOWS: [&str; 4] = ["live", "5h", "today", "7d"];
 
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
-#[cfg(unix)]
-extern "C" fn on_signal(_: libc::c_int) {
-    SHUTDOWN.store(true, Ordering::SeqCst);
-}
-
 /// SIGINT, SIGTERM and SIGHUP end the loop, so the terminal is restored and
 /// the lock is released on the way out.
 fn install_signal_handlers() {
-    #[cfg(unix)]
-    // SAFETY: `on_signal` is an `extern "C"` fn that is async-signal-safe;
-    // `signal` only registers it for valid signal numbers.
-    unsafe {
-        let handler = on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
-        libc::signal(libc::SIGTERM, handler);
-        libc::signal(libc::SIGINT, handler);
-        libc::signal(libc::SIGHUP, handler);
-    }
+    use horch_platform::signal::Termination;
+    // Windows has no signal handlers: the `q` key ends the loop there.
+    let _ = horch_platform::signal::on_termination_set(
+        &SHUTDOWN,
+        &[
+            Termination::Terminate,
+            Termination::Interrupt,
+            Termination::Hangup,
+        ],
+    );
 }
 
 // ─── text ───────────────────────────────────────────────────────────────────
@@ -1410,13 +1406,20 @@ mod tests {
     #[test]
     fn spc_04_sighup_ends_the_screen_like_sigterm() {
         install_signal_handlers();
-        let handler = on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
-        for sig in [libc::SIGHUP, libc::SIGTERM, libc::SIGINT] {
+        // The handler of the platform is private: the 3 signals must share
+        // 1 handler that is neither the default nor ignore.
+        let action = |sig: libc::c_int| {
             // SAFETY: reads the action; a null new action changes nothing.
             let mut old: libc::sigaction = unsafe { std::mem::zeroed() };
             // SAFETY: `old` is a zeroed `sigaction` the call may fill; `sig` is a valid signal number.
             unsafe { libc::sigaction(sig, std::ptr::null(), &mut old) };
-            assert_eq!(old.sa_sigaction, handler, "signal {sig}");
+            old.sa_sigaction
+        };
+        let handler = action(libc::SIGTERM);
+        assert_ne!(handler, libc::SIG_DFL);
+        assert_ne!(handler, libc::SIG_IGN);
+        for sig in [libc::SIGHUP, libc::SIGTERM, libc::SIGINT] {
+            assert_eq!(action(sig), handler, "signal {sig}");
         }
     }
 

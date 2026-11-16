@@ -242,8 +242,9 @@ fn install_windows(
     place::promote_release(&staging, &layout.release_dir)?;
     step(&format!("unpacked to {}", layout.release_dir.display()));
 
-    win::set_junction(&layout.current_dir, &layout.release_dir)
-        .and_then(|()| win::set_junction(&layout.visible_bin, &layout.release_dir))?;
+    horch_platform::path::set_junction(&layout.current_dir, &layout.release_dir).and_then(
+        |()| horch_platform::path::set_junction(&layout.visible_bin, &layout.release_dir),
+    )?;
     place::prune_old_releases(&layout.releases_dir, &layout.release_dir, retain);
 
     Ok(layout.visible_bin.join(place::exe_name()))
@@ -304,7 +305,7 @@ fn verify_installed(path: &Path) -> Result<()> {
 
 /// Make sure the install directory is reachable, and say what to do if not.
 fn report_path(dir: &Path) {
-    if cfg!(windows) {
+    if horch_platform::rest::USER_PATH_IN_REGISTRY {
         report_windows_path(dir);
     } else {
         report_unix_path(dir);
@@ -312,7 +313,11 @@ fn report_path(dir: &Path) {
 }
 
 fn report_windows_path(dir: &Path) {
-    match win::ensure_user_path(dir) {
+    // macOS and Linux have no user PATH in a registry: nothing changes.
+    let changed = horch_platform::rest::ensure_user_path(dir, &win::prepend_path_entry)
+        .unwrap_or(Ok(false))
+        .map_err(anyhow::Error::from);
+    match changed {
         Ok(true) => {
             step("PATH updated for future terminals.");
             println!("\n  Open a new terminal, then run: herdr");
@@ -351,7 +356,7 @@ fn in_path_list(dir: &Path, paths: &std::ffi::OsStr) -> bool {
 }
 
 fn home_dir() -> Result<PathBuf> {
-    let key = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    let key = horch_platform::path::HOME_VAR;
     std::env::var_os(key)
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
@@ -403,7 +408,7 @@ mod tests {
         let releases = tmp.path().join("releases");
         let release = releases.join("1.0-x86_64");
         std::fs::create_dir_all(&releases).unwrap();
-        let bytes = zip_of(place::exe_name(), b"binary");
+        let bytes = zip_of(&place::exe_name(), b"binary");
 
         let staging = stage_package(&bytes, &Format::Zip, &releases, &release).unwrap();
         assert_eq!(staging.parent(), Some(releases.as_path()));

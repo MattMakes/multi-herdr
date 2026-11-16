@@ -22,8 +22,8 @@ fn herdr_config_path(ctx: &RuntimeContext) -> PathBuf {
     if let Some(p) = std::env::var_os("HERDR_CONFIG_PATH").filter(|p| !p.is_empty()) {
         return PathBuf::from(p);
     }
-    if cfg!(windows) {
-        if let Some(app) = std::env::var_os("APPDATA").filter(|p| !p.is_empty()) {
+    if let Some(var) = horch_platform::path::CONFIG_BASE_VAR {
+        if let Some(app) = std::env::var_os(var).filter(|p| !p.is_empty()) {
             return Path::new(&app).join("herdr").join("config.toml");
         }
     }

@@ -373,18 +373,7 @@ fn restart(dir: &Path) -> std::io::Error {
     let mut cmd = Command::new(&exe);
     cmd.args(std::env::args_os().skip(1)).env(UPDATED_ENV, "1");
     let _ = std::io::stdout().flush();
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.exec()
-    }
-    #[cfg(not(unix))]
-    {
-        match cmd.status() {
-            Ok(status) => std::process::exit(status.code().unwrap_or(1)),
-            Err(error) => error,
-        }
-    }
+    horch_platform::rest::replace_process(cmd)
 }
 
 /// The directory a release installs into. `HORCH_SELF_UPDATE_DIR` is for
@@ -426,7 +415,7 @@ fn install_release(ctx: &RuntimeContext, release: &Release, dir: &Path) -> Resul
     let name = archive_name(&release.tag, TARGET);
     let archive = verified_archive(release, &name)?;
     let tmp = tempfile::tempdir().context("cannot make a temp dir")?;
-    extract(&archive, tmp.path())?;
+    horch_platform::rest::extract_release(&archive, tmp.path())?;
     let absent = missing_binaries(tmp.path());
     if !absent.is_empty() {
         bail!(
@@ -561,62 +550,6 @@ fn verify_digest(bytes: &[u8], expected: &str) -> Result<()> {
             "checksum mismatch: SHA256SUMS says {expected}, the download hashes to {actual}. \
              Nothing is installed."
         );
-    }
-    Ok(())
-}
-
-/// A release archive is flat: an entry name with a separator or `..` is
-/// refused.
-fn flat_name(name: &str) -> Result<&str> {
-    if name.is_empty() || name.contains(['/', '\\']) || name.contains("..") {
-        bail!("the release archive holds an unexpected entry {name:?}");
-    }
-    Ok(name)
-}
-
-#[cfg(unix)]
-fn extract(archive: &[u8], dir: &Path) -> Result<()> {
-    let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(archive));
-    tar.entries()
-        .context("the archive is not a .tar.gz")?
-        .try_for_each(|entry| extract_entry(entry, dir))
-}
-
-#[cfg(unix)]
-fn extract_entry(
-    entry: std::io::Result<tar::Entry<'_, impl std::io::Read>>,
-    dir: &Path,
-) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let mut entry = entry.context("reading the archive")?;
-    let raw = entry.path().context("reading the archive")?;
-    let name = flat_name(&raw.to_string_lossy())?.to_string();
-    if !entry.header().entry_type().is_file() {
-        bail!("the release archive entry {name:?} is not a file");
-    }
-    let dest = dir.join(&name);
-    let mut file =
-        std::fs::File::create(&dest).with_context(|| format!("cannot write {}", dest.display()))?;
-    std::io::copy(&mut entry, &mut file).context("reading the archive")?;
-    std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755))?;
-    Ok(())
-}
-
-#[cfg(windows)]
-fn extract(archive: &[u8], dir: &Path) -> Result<()> {
-    let mut zip =
-        zip::ZipArchive::new(std::io::Cursor::new(archive)).context("the archive is not a .zip")?;
-    for i in 0..zip.len() {
-        let mut entry = zip.by_index(i).context("reading the archive")?;
-        let name = flat_name(entry.name())?.to_string();
-        if !entry.is_file() {
-            bail!("the release archive entry {name:?} is not a file");
-        }
-        let dest = dir.join(&name);
-        let mut file = std::fs::File::create(&dest)
-            .with_context(|| format!("cannot write {}", dest.display()))?;
-        std::io::copy(&mut entry, &mut file).context("reading the archive")?;
     }
     Ok(())
 }
@@ -820,10 +753,42 @@ mod tests {
 
     #[test]
     fn flat_name_refuses_paths() {
-        assert!(flat_name("horch").is_ok());
+        let dir = tempfile::tempdir().unwrap();
+        let unpack = |name: &str| {
+            horch_platform::rest::extract_release(&one_entry_archive(name), dir.path())
+        };
+        assert!(unpack("horch").is_ok());
         for bad in ["", "a/b", "a\\b", "..", "../horch", "/horch"] {
-            assert!(flat_name(bad).is_err(), "{bad}");
+            assert!(unpack(bad).is_err(), "{bad}");
         }
+    }
+
+    /// A release archive of this OS with 1 file entry named `name`. The
+    /// name goes into the header as raw bytes, because the archive writers
+    /// refuse some of the bad names themselves.
+    #[cfg(unix)]
+    fn one_entry_archive(name: &str) -> Vec<u8> {
+        let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(
+            Vec::new(),
+            flate2::Compression::default(),
+        ));
+        let mut header = tar::Header::new_old();
+        header.as_old_mut().name[..name.len()].copy_from_slice(name.as_bytes());
+        header.set_size(1);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder.append(&header, &b"x"[..]).unwrap();
+        builder.into_inner().unwrap().finish().unwrap()
+    }
+
+    #[cfg(windows)]
+    fn one_entry_archive(name: &str) -> Vec<u8> {
+        use std::io::Write;
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        zip.start_file(name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(b"x").unwrap();
+        zip.finish().unwrap().into_inner()
     }
 
     #[test]

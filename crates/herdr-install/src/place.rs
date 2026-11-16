@@ -17,12 +17,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 
 /// The executable's name on this platform.
-pub fn exe_name() -> &'static str {
-    if cfg!(windows) {
-        "herdr.exe"
-    } else {
-        "herdr"
-    }
+pub fn exe_name() -> String {
+    horch_platform::rest::exe_name("herdr")
 }
 
 /// Where a Unix install puts the binary: `$HERDR_INSTALL_DIR`, else
@@ -96,17 +92,8 @@ pub fn place_binary(bytes: &[u8], target: &Path) -> Result<()> {
 }
 
 pub fn make_executable(path: &Path) -> Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(path)?.permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(path, perms)
-            .with_context(|| format!("marking {} executable", path.display()))?;
-    }
-    #[cfg(not(unix))]
-    let _ = path;
-    Ok(())
+    horch_platform::fs::make_executable(path)
+        .with_context(|| format!("marking {} executable", path.display()))
 }
 
 /// Extract a zip into `dest`, refusing entries that escape it.

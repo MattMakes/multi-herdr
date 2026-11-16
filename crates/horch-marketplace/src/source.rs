@@ -50,19 +50,13 @@ fn stage_file(tree: &Path, file: &BundledFile) -> Result<()> {
 
 /// The store renames the staged tree into place, so this mode is the store
 /// mode.
-#[cfg(unix)]
+/// Windows has no mode bits: the extension decides there.
 fn set_executable(path: &Path, file: &BundledFile) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
     if !file.executable {
         return Ok(());
     }
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755))
+    horch_platform::fs::make_executable(path)
         .map_err(|e| MarketplaceError::io(format!("chmod {}", file.path), e))
-}
-
-#[cfg(not(unix))]
-fn set_executable(_path: &Path, _file: &BundledFile) -> Result<()> {
-    Ok(())
 }
 
 fn fetch_git(

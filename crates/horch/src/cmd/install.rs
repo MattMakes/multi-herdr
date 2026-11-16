@@ -15,14 +15,15 @@ use horch_core::runtime::{process, RuntimeContext};
 
 /// Where to put the binary when the caller does not say.
 pub fn default_dir(ctx: &RuntimeContext) -> PathBuf {
-    if cfg!(windows) {
-        ctx.inherited
+    // The base variable is `LOCALAPPDATA` on Windows; the context reads it.
+    match horch_platform::path::INSTALL_BASE_VAR {
+        Some(_) => ctx
+            .inherited
             .local_app_data
             .as_ref()
             .map(|base| Path::new(base).join("Programs").join("horch"))
-            .unwrap_or_else(|| ctx.paths.home.join("horch"))
-    } else {
-        ctx.paths.home.join(".local").join("bin")
+            .unwrap_or_else(|| ctx.paths.home.join("horch")),
+        None => ctx.paths.home.join(".local").join("bin"),
     }
 }
 
@@ -88,7 +89,7 @@ fn remove_retired(dir: &Path) -> Result<()> {
 
 /// Removes the `.old` files a Windows replacement left; a no-op elsewhere.
 fn remove_stale_old(dir: &Path) {
-    if cfg!(windows) {
+    if horch_platform::rest::RUNNING_EXE_IS_LOCKED {
         // A process that still runs from a `.old` file keeps it; that is fine.
         for old in stale_old_paths(dir) {
             let _ = std::fs::remove_file(old);
@@ -104,21 +105,7 @@ fn path_help(dir: &Path, on_path: bool) -> String {
         format!(
             "\n{} is not on your PATH. Add it:\n\n{}\n\nThen open a new terminal, cd into a project, and run: horch fleet",
             dir.display(),
-            add_to_path_help(dir)
-        )
-    }
-}
-
-fn add_to_path_help(dir: &Path) -> String {
-    if cfg!(windows) {
-        format!(
-            "  PowerShell (current session):\n    $env:Path = \"{d};$env:Path\"\n\n  Permanently, for future sessions:\n    setx PATH \"{d};$($env:Path)\"",
-            d = dir.display()
-        )
-    } else {
-        format!(
-            "  Add to ~/.zshrc (or ~/.bashrc):\n    export PATH=\"{}:$PATH\"",
-            dir.display()
+            horch_platform::rest::path_help(dir)
         )
     }
 }
@@ -152,7 +139,7 @@ fn install_siblings(horch_source: &Path, dir: &Path) -> Result<()> {
 /// Writes the `herdr-fleet` and `herdr-run` launchers into `dir`. They are
 /// shell scripts, so Windows gets none: `horch fleet` is the entry point there.
 fn install_launchers(dir: &Path, teammates: Option<&Path>) -> Result<()> {
-    if !cfg!(unix) {
+    if !horch_platform::rest::SHELL_LAUNCHERS {
         println!(
             "the herdr-fleet and herdr-run launchers are unix-only; run `horch fleet` instead"
         );
@@ -283,7 +270,7 @@ fn replace_file(target: &Path, fill: impl FnOnce(&Path) -> Result<()>) -> Result
     fill(&staged)?;
     process::make_executable(&staged)?;
     // A running exe cannot be overwritten on Windows, but it can be renamed.
-    swap_in(&staged, target, cfg!(windows), |from, to| {
+    swap_in(&staged, target, horch_platform::rest::RUNNING_EXE_IS_LOCKED, |from, to| {
         std::fs::rename(from, to)
     })
 }

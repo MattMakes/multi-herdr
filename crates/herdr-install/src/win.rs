@@ -1,16 +1,8 @@
-//! Windows-only install steps: directory junctions and the user PATH entry.
+//! The user PATH entry of the Windows install: the order of the entries.
 //!
-//! The pure string and decision logic is compiled everywhere so it can be tested
-//! on any platform; only the two pieces that actually touch Windows APIs are
-//! `cfg`-gated.
-//!
-//! Off Windows the only callers are the tests, so the compiler sees these as dead.
-//! They are the real implementation on Windows.
-#![cfg_attr(not(windows), allow(dead_code))]
-
-use std::path::Path;
-
-use anyhow::Result;
+//! The registry write and the directory junctions are in the concerns `rest`
+//! and `path` of `horch_platform`. This string logic is compiled everywhere,
+//! so it is tested on each platform.
 
 /// Prepend `entry` to a PATH-style string, returning `None` when it is already
 /// first.
@@ -47,147 +39,10 @@ pub fn prepend_path_entry(current: &str, entry: &str) -> Option<String> {
     )
 }
 
-/// What to do about a path that should become a junction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum JunctionAction {
-    /// Nothing is there; create it.
-    Create,
-    /// A link or empty directory is there; replace it.
-    Replace,
-    /// Real content is there; refuse rather than delete the user's files.
-    Refuse,
-}
-
-/// Decide how to treat an existing link path.
-pub fn plan_junction(exists: bool, is_link: bool, is_empty_dir: bool) -> JunctionAction {
-    match (exists, is_link, is_empty_dir) {
-        (false, _, _) => JunctionAction::Create,
-        (true, true, _) => JunctionAction::Replace,
-        (true, false, true) => JunctionAction::Replace,
-        (true, false, false) => JunctionAction::Refuse,
-    }
-}
-
-/// Inspect `path` and decide what `set_junction` should do with it.
-pub fn inspect_junction_target(path: &Path) -> JunctionAction {
-    let Ok(meta) = std::fs::symlink_metadata(path) else {
-        return JunctionAction::Create;
-    };
-    let is_link = meta.file_type().is_symlink() || is_reparse_point(&meta);
-    let is_empty_dir = meta.is_dir()
-        && std::fs::read_dir(path)
-            .map(|mut d| d.next().is_none())
-            .unwrap_or(false);
-    plan_junction(true, is_link, is_empty_dir)
-}
-
-#[cfg(windows)]
-fn is_reparse_point(meta: &std::fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-    meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-}
-
-#[cfg(not(windows))]
-fn is_reparse_point(_meta: &std::fs::Metadata) -> bool {
-    false
-}
-
-/// Point `link` at `target` as a directory junction.
-///
-/// Junctions rather than symlinks: creating a directory symlink on Windows needs
-/// Developer Mode or elevation, while `mklink /J` does not. `mklink` is a cmd
-/// built-in, so no extra tooling is required.
-#[cfg(windows)]
-pub fn set_junction(link: &Path, target: &Path) -> Result<()> {
-    clear_link(link)?;
-    if let Some(parent) = link.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    mklink_junction(link, target)
-}
-
-/// Remove what is at `link` so a junction can take its place, refusing to delete
-/// real content.
-#[cfg(windows)]
-fn clear_link(link: &Path) -> Result<()> {
-    use anyhow::{bail, Context};
-
-    match inspect_junction_target(link) {
-        JunctionAction::Refuse => bail!(
-            "{} already exists and holds files this installer did not create. \
-             Move or delete it, then re-run.",
-            link.display()
-        ),
-        JunctionAction::Replace => {
-            // A junction is removed with remove_dir, not remove_dir_all, or the
-            // delete would follow the link and take the release with it.
-            if std::fs::remove_dir(link).is_err() {
-                std::fs::remove_dir_all(link)
-                    .with_context(|| format!("clearing {}", link.display()))?;
-            }
-            Ok(())
-        }
-        JunctionAction::Create => Ok(()),
-    }
-}
-
-#[cfg(windows)]
-fn mklink_junction(link: &Path, target: &Path) -> Result<()> {
-    use anyhow::{bail, Context};
-
-    let output = std::process::Command::new("cmd")
-        .args(["/C", "mklink", "/J"])
-        .arg(link)
-        .arg(target)
-        .output()
-        .context("running mklink to create a directory junction")?;
-    if !output.status.success() {
-        bail!(
-            "could not link {} -> {}: {}",
-            link.display(),
-            target.display(),
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    Ok(())
-}
-
-#[cfg(not(windows))]
-pub fn set_junction(_link: &Path, _target: &Path) -> Result<()> {
-    anyhow::bail!("directory junctions are a Windows-only concept")
-}
-
-/// Add `dir` to the current user's persistent PATH. Returns true when changed.
-///
-/// Writes `HKCU\Environment` directly rather than using `setx`, which truncates
-/// PATH at 1024 characters.
-#[cfg(windows)]
-pub fn ensure_user_path(dir: &Path) -> Result<bool> {
-    use anyhow::Context;
-    use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
-    use winreg::RegKey;
-
-    let env = RegKey::predef(HKEY_CURRENT_USER)
-        .open_subkey_with_flags("Environment", KEY_READ | KEY_WRITE)
-        .context("opening HKCU\\Environment")?;
-    let current: String = env.get_value("Path").unwrap_or_default();
-    let Some(next) = prepend_path_entry(&current, &dir.to_string_lossy()) else {
-        return Ok(false);
-    };
-    env.set_value("Path", &next)
-        .context("writing the user PATH")?;
-    Ok(true)
-}
-
-#[cfg(not(windows))]
-pub fn ensure_user_path(_dir: &Path) -> Result<bool> {
-    Ok(false)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use horch_platform::path::{inspect_junction_target, plan_junction, JunctionAction};
 
     #[test]
     fn prepend_adds_a_missing_entry_at_the_front() {

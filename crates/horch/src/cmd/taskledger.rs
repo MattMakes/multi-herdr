@@ -2515,7 +2515,7 @@ pub fn tools(ctx: &RuntimeContext) -> finish::Tools {
         code_sweep_dir: code_sweep_dir(&roots),
         evidence_root: evidence_root(ctx),
         // An absolute shell: a pane's PATH may not reach one.
-        shell: PathBuf::from(if cfg!(unix) { "/bin/sh" } else { "sh" }),
+        shell: PathBuf::from(horch_platform::shell::CHECK_SHELL),
         reviewers_down: Vec::new(),
         codex: finish::CodexSandbox {
             bin: ctx.bins.harness.codex.clone(),

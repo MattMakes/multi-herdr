@@ -646,8 +646,8 @@ fn spawn_child(env: &Env, args: &CompactArgs, dir: &Path) -> Result<Child> {
 fn open_log(path: &Path) -> Result<std::fs::File> {
     let mut opts = std::fs::OpenOptions::new();
     opts.create(true).append(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut opts, horch_core::fsx::PRIVATE_FILE);
+    // Windows has no file modes: the file gets the default permissions.
+    let _ = horch_platform::fs::create_mode(&mut opts, horch_core::fsx::PRIVATE_FILE);
     opts.open(path)
         .with_context(|| format!("opening {}", path.display()))
 }
