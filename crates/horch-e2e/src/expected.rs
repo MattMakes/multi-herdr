@@ -162,16 +162,19 @@ pub fn audit(lists: &Path, tests: &Path) -> Vec<String> {
                 continue;
             }
         };
-        let compact: String = source.chars().filter(|c| !c.is_whitespace()).collect();
+        let code = strip_comments(&source);
         for entry in entries {
             let test = &entry.test;
-            if !has_test_fn(&source, test) {
+            let Some(body) = test_body(&code, test) else {
                 faults.push(format!(
                     "{}: `{test}` has no `#[test] fn {test}(` in {}",
                     list.display(),
                     test_file.display()
                 ));
-            } else if !compact.contains(&format!("check(file!(),\"{test}\"")) {
+                continue;
+            };
+            let body: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+            if !body.contains(&format!("check(file!(),\"{test}\"")) {
                 faults.push(format!(
                     "{}: `{test}` does not call `check(file!(), \"{test}\", ...)` in {}",
                     list.display(),
@@ -183,20 +186,115 @@ pub fn audit(lists: &Path, tests: &Path) -> Vec<String> {
     faults
 }
 
-/// True when `source` has `fn <test>(` with `#[test]` in the attributes
-/// above it.
-fn has_test_fn(source: &str, test: &str) -> bool {
-    let lines: Vec<&str> = source.lines().collect();
+/// `source` with each comment replaced by spaces. Newlines stay, so the
+/// lines keep their numbers. String and char literals stay as they are.
+fn strip_comments(source: &str) -> String {
+    let chars: Vec<char> = source.chars().collect();
+    let mut out = String::with_capacity(source.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let next = chars.get(i + 1).copied();
+        if chars[i] == '/' && next == Some('/') {
+            while i < chars.len() && chars[i] != '\n' {
+                out.push(' ');
+                i += 1;
+            }
+        } else if chars[i] == '/' && next == Some('*') {
+            let mut depth = 0;
+            while i < chars.len() {
+                if chars[i] == '/' && chars.get(i + 1) == Some(&'*') {
+                    depth += 1;
+                    out.push_str("  ");
+                    i += 2;
+                } else if chars[i] == '*' && chars.get(i + 1) == Some(&'/') {
+                    depth -= 1;
+                    out.push_str("  ");
+                    i += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    out.push(if chars[i] == '\n' { '\n' } else { ' ' });
+                    i += 1;
+                }
+            }
+        } else {
+            let end = literal_end(&chars, i).unwrap_or(i + 1);
+            out.extend(&chars[i..end]);
+            i = end;
+        }
+    }
+    out
+}
+
+/// The index after the string or char literal that starts at `i`, or `None`
+/// when no literal starts there. A `'` that starts a lifetime is no literal.
+fn literal_end(chars: &[char], i: usize) -> Option<usize> {
+    match chars[i] {
+        '"' => {
+            let mut j = i + 1;
+            while j < chars.len() && chars[j] != '"' {
+                j += if chars[j] == '\\' { 2 } else { 1 };
+            }
+            Some((j + 1).min(chars.len()))
+        }
+        '\'' if chars.get(i + 1) == Some(&'\\') => {
+            let close = chars[i + 2..].iter().position(|&c| c == '\'')?;
+            Some(i + 2 + close + 1)
+        }
+        '\'' if chars.get(i + 2) == Some(&'\'') => Some(i + 3),
+        _ => None,
+    }
+}
+
+/// The body of the function `fn <test>(` in `code` that has `#[test]` in the
+/// attributes above it, from its `{` to its matching `}`. `code` has no
+/// comments (see [`strip_comments`]).
+fn test_body<'a>(code: &'a str, test: &str) -> Option<&'a str> {
     let needle = format!("fn {test}(");
-    lines.iter().enumerate().any(|(i, line)| {
-        line.contains(&needle)
-            && lines[..i]
-                .iter()
-                .rev()
-                .map(|l| l.trim())
-                .take_while(|l| l.is_empty() || l.starts_with("#[") || l.starts_with("//"))
-                .any(|l| l == "#[test]")
-    })
+    let lines: Vec<&str> = code.lines().collect();
+    let mut offset = 0;
+    for (i, line) in lines.iter().enumerate() {
+        let is_test = lines[..i]
+            .iter()
+            .rev()
+            .map(|l| l.trim())
+            .take_while(|l| l.is_empty() || l.starts_with("#["))
+            .any(|l| l == "#[test]");
+        if let (true, Some(at)) = (is_test, line.find(&needle)) {
+            return braced(code, offset + at);
+        }
+        offset += line.len() + 1;
+    }
+    None
+}
+
+/// The text from the first `{` at or after byte `from` to its matching `}`.
+/// Braces in string and char literals do not count.
+fn braced(code: &str, from: usize) -> Option<&str> {
+    let start = from + code[from..].find('{')?;
+    let chars: Vec<(usize, char)> = code[start..].char_indices().collect();
+    let plain: Vec<char> = chars.iter().map(|&(_, c)| c).collect();
+    let mut depth = 0;
+    let mut i = 0;
+    while i < plain.len() {
+        if let Some(end) = literal_end(&plain, i) {
+            i = end;
+            continue;
+        }
+        match plain[i] {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&code[start..=start + chars[i].0]);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
 }
 
 #[cfg(test)]
@@ -371,8 +469,22 @@ fn my_test() {
         assert!(faults[0].contains("my_test"), "{faults:?}");
         assert!(faults[0].contains("check(file!()"), "{faults:?}");
 
-        // A list file that does not parse is a fault too.
+        // A wrapper call in a comment or in another test does not count.
+        let commented = "#[test]\nfn my_test() {\n    // check(file!(), \"my_test\", || {});\n    /* check(file!(), \"my_test\", || {}); */\n    let _ = \"}\";\n}\n";
+        let other = "#[test]\nfn my_test() {\n    let _ = '}';\n}\n\n#[test]\nfn other() {\n    horch_e2e::expected::check(file!(), \"my_test\", || {});\n}\n";
+        for text in [commented, other] {
+            let (_root, lists, tests) = tree("my_test | 1 | no fleetd yet\n", Some(text));
+            let faults = audit(&lists, &tests);
+            assert_eq!(faults.len(), 1, "{text}\n{faults:?}");
+            assert!(faults[0].contains("check(file!()"), "{faults:?}");
+        }
+    }
+
+    #[test]
+    fn expected_audit_reports_a_list_file_that_does_not_parse() {
         let (_root, lists, tests) = tree("my_test | 9 | x\n", Some(GOOD));
-        assert_eq!(audit(&lists, &tests).len(), 1);
+        let faults = audit(&lists, &tests);
+        assert_eq!(faults.len(), 1, "{faults:?}");
+        assert!(faults[0].contains("demo.txt"), "{faults:?}");
     }
 }
