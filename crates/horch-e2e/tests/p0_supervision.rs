@@ -285,10 +285,21 @@ fn fm7_killed_watchdog_does_not_stop_the_reconcile() {
                     let o = h.run(&["fleetd", "check"]);
                     assert!(o.status.success(), "horch fleetd check: {}", text(&o));
                     checked = Some(Instant::now());
-                    let _ = fleetds.current();
                 }
+                let fleetd = fleetds.current();
                 let (status, _) = task_row(&db(&h));
                 if status == "queued" {
+                    // The requeue is the work of a live fleetd, not of a
+                    // restarted watchdog.
+                    assert!(
+                        fleetd.is_some_and(|(pid, started)| procid::alive(pid, started)),
+                        "task 1 is queued, but the fleetd row names no live fleetd: {fleetd:?}"
+                    );
+                    let watchdog = horch_core::taskledger::watchdog::holder(&locks, &run_id);
+                    assert!(
+                        watchdog.is_none(),
+                        "a watchdog of run zeta runs again: {watchdog:?}"
+                    );
                     break;
                 }
                 assert!(
