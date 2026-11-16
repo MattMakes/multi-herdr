@@ -691,11 +691,15 @@ fn join_readers(handles: Vec<JoinHandle<()>>) {
 /// Kill and reap `child`. A failure of either is a warning, not an error:
 /// the call has already failed and the caller goes on.
 ///
-/// The leader is still unreaped here, so its pid cannot belong to another
-/// process: the group signal reaches only this call's descendants.
+/// On macOS and Linux the child leads its own process group, so one signal
+/// also ends every descendant that holds a pipe. The leader is still
+/// unreaped here, so its pid cannot belong to another process: the group
+/// signal reaches only this call's descendants.
+///
+/// On Windows this kills the child only. The job of [`kill_tree_and_reap`]
+/// kills its descendants. When the job cannot be set up, the child is still
+/// suspended and has started no descendant, so the child alone is enough.
 fn kill_and_reap(child: &mut Child) -> std::io::Result<()> {
-    // The child leads its own process group, so one signal also ends every
-    // descendant that holds a pipe.
     if !horch_platform::group::kill_child_group(child) {
         eprintln!("horch: could not kill herdr");
     }
