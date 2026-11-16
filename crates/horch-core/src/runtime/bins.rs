@@ -132,7 +132,7 @@ impl HarnessBins {
             pi: pi_bin(o),
             prime: prime_bin(o),
             antigravity: antigravity_bin(o),
-            herdr: herdr_bin(o),
+            herdr: herdr_bin(o, path, pathext),
             sqlite3: sqlite3_bin(o),
             ollama: ollama_bin(o),
             git: git_bin(o),
@@ -189,8 +189,34 @@ pub(crate) fn antigravity_bin(o: &BinOverrides) -> PathBuf {
 
 /// Which herdr CLI to drive. `$HORCH_HERDR_BIN` overrides, which is how the
 /// end-to-end tests put a recording fake in its place.
-pub fn herdr_bin(o: &BinOverrides) -> PathBuf {
-    or_default(&o.herdr, "herdr")
+///
+/// A sandboxed Claude pane may run `herdr` but may not stat it. There the
+/// libc PATH search of a bare `herdr` runs it once for each matching PATH
+/// entry and then fails with "not found", so horch gets no answer from a
+/// herdr call that ran. When no `herdr` on `path` can be read, the first
+/// absolute PATH entry whose `herdr` is hidden by a permission error is the
+/// one to run, by its absolute path.
+pub fn herdr_bin(o: &BinOverrides, path: Option<&OsStr>, pathext: Option<&str>) -> PathBuf {
+    o.herdr.clone().unwrap_or_else(|| {
+        if process::which(path, pathext, "herdr").is_some() {
+            PathBuf::from("herdr")
+        } else {
+            path.and_then(|p| hidden_on_path(p, "herdr"))
+                .unwrap_or_else(|| PathBuf::from("herdr"))
+        }
+    })
+}
+
+/// The first `<dir>/<name>` on `path`, for an absolute `dir`, whose
+/// metadata a permission error hides.
+fn hidden_on_path(path: &OsStr, name: &str) -> Option<PathBuf> {
+    std::env::split_paths(path)
+        .filter(|dir| dir.is_absolute())
+        .map(|dir| dir.join(name))
+        .find(|candidate| {
+            std::fs::metadata(candidate)
+                .is_err_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied)
+        })
 }
 
 /// Which `sqlite3` CLI reads OpenCode's database. `$HORCH_SQLITE3_BIN`
@@ -296,6 +322,67 @@ mod tests {
         let path = std::env::join_paths([tmp.path()]).unwrap();
         let o = BinOverrides::default();
         assert_eq!(claude_bin(&o, Some(&path), None), PathBuf::from("cpx"));
+    }
+
+    /// A sandboxed pane that cannot stat `herdr` gets the absolute path of
+    /// the first PATH entry that hides it. A readable `herdr` on PATH keeps
+    /// the plain name, and no `herdr` at all keeps the plain name too.
+    #[cfg(unix)]
+    #[test]
+    fn a_herdr_hidden_from_stat_resolves_to_its_absolute_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let hidden = tmp.path().join("hidden");
+        let readable = tmp.path().join("readable");
+        let empty = tmp.path().join("empty");
+        for dir in [&hidden, &readable, &empty] {
+            std::fs::create_dir(dir).unwrap();
+        }
+        let herdr = readable.join("herdr");
+        std::fs::write(&herdr, "#!/bin/sh\n").unwrap();
+        process::make_executable(&herdr).unwrap();
+        std::fs::set_permissions(&hidden, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let o = BinOverrides::default();
+        let on = |dirs: &[&std::path::Path]| {
+            herdr_bin(&o, Some(&std::env::join_paths(dirs).unwrap()), None)
+        };
+
+        let resolved = (
+            on(&[&empty, &hidden]),
+            on(&[&hidden, &readable]),
+            on(&[&empty]),
+            on(&[std::path::Path::new("relative"), &empty]),
+        );
+        std::fs::set_permissions(&hidden, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            resolved.0,
+            hidden.join("herdr"),
+            "a hidden herdr runs by path"
+        );
+        assert_eq!(
+            resolved.1,
+            PathBuf::from("herdr"),
+            "a readable herdr keeps the name"
+        );
+        assert_eq!(
+            resolved.2,
+            PathBuf::from("herdr"),
+            "no herdr keeps the name"
+        );
+        assert_eq!(
+            resolved.3,
+            PathBuf::from("herdr"),
+            "a relative entry is skipped"
+        );
+        let overridden = BinOverrides {
+            herdr: Some("/fake/herdr".into()),
+            ..BinOverrides::default()
+        };
+        let path = std::env::join_paths([&hidden]).unwrap();
+        assert_eq!(
+            herdr_bin(&overridden, Some(&path), None),
+            PathBuf::from("/fake/herdr")
+        );
     }
 
     #[test]
