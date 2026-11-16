@@ -1393,6 +1393,80 @@ mod tests {
         assert!(passed);
     }
 
+    /// A probe for the real Claude Code sandbox: run it in the controller's
+    /// pane. It prints each step of [`caller`] and of the brief check for
+    /// the teammate in `HORCH_PROBE_TARGET`.
+    #[test]
+    #[ignore = "a probe run by hand inside a worker's sandbox"]
+    fn trf_43_probe_spawn_checks_from_env() {
+        let ctx = RuntimeContext::from_env(&horch_core::runtime::ProcessEnv).unwrap();
+        let target = std::env::var("HORCH_PROBE_TARGET").unwrap_or("intake-auditor".into());
+        println!(
+            "pane={:?} workspace={:?}",
+            ctx.herdr.pane, ctx.herdr.workspace
+        );
+        println!("herdr bin={:?}", ctx.bins.harness.herdr);
+        if let Some(pane) = ctx.herdr.pane.as_ref() {
+            match Herdr::with_bin(&ctx.bins.harness.herdr).pane_get(pane.as_str()) {
+                Ok(info) => {
+                    println!(
+                        "pane_get: pane_id={:?} workspace_id={:?}",
+                        info.pane_id, info.workspace_id
+                    );
+                    let workspace = info
+                        .workspace_id
+                        .clone()
+                        .or_else(|| ctx.herdr.workspace.as_ref().map(|w| w.to_string()));
+                    println!("workspace={workspace:?}");
+                    if let Some(workspace) = workspace {
+                        let mailbox = Mailbox::in_context(&ctx, &workspace);
+                        let roles = mailbox.roles();
+                        println!("roles={roles:?}");
+                        let role = roles.into_iter().find(|(_, p)| *p == info.pane_id);
+                        println!("role={role:?}");
+                        if let Some((role, _)) = role {
+                            match mailbox.read_brief(&role) {
+                                Ok(b) => println!(
+                                    "brief: worker_id={:?} resolved={:?} teammates_dir={:?}",
+                                    b.worker_id,
+                                    b.resolved.as_ref().map(|t| t.name.clone()),
+                                    b.teammates_dir
+                                ),
+                                Err(e) => println!("read_brief: {e:#}"),
+                            }
+                        }
+                    }
+                }
+                Err(e) => println!("pane_get: {e:#}"),
+            }
+        }
+        let caller = caller(&ctx);
+        println!(
+            "caller: role={:?} worker_id={:?} agent={:?}",
+            caller.as_ref().map(|c| c.role.clone()),
+            caller.as_ref().and_then(|c| c.worker_id.clone()),
+            caller.as_ref().and_then(|c| c.agent)
+        );
+        let roster_dir = crate::cmd::path_text(ctx.bins.roster_override.as_deref());
+        println!("roster_dir={roster_dir:?}");
+        let mut a = args(Some(&target), None);
+        a.task = "Read and follow /x/brief.md exactly.".into();
+        let controller = spawn_only_check(caller.as_ref(), &a, roster_dir.as_deref(), &Procs::os());
+        println!("spawn_only_check={controller:?}");
+        let roster = crate::cmd::load_roster(&ctx, roster_dir.as_deref());
+        let teammate = roster.as_ref().ok().and_then(|r| r.get(&target));
+        println!(
+            "roster ok={} target found={} horch_access={:?}",
+            roster.is_ok(),
+            teammate.is_some(),
+            teammate.map(|t| t.horch_access)
+        );
+        let controller = controller.unwrap();
+        let checked = check_task_text(&a, controller.as_deref(), teammate);
+        println!("check_task_text={checked:?}");
+        checked.unwrap();
+    }
+
     /// TRF-43: the real process tree. This test process descends from its
     /// parent, and it does not descend from a process that started after it.
     #[test]
