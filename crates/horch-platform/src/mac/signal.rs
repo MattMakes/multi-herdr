@@ -3,5 +3,6 @@
 
 pub(crate) use crate::unix::signal::check_and_kill as signal_same;
 pub(crate) use crate::unix::signal::{
-    kill_group_on_termination, on_termination_set, outlive_hangup, stop_same, terminate_politely,
+    kill_group_on_termination, on_termination_set, outlive_hangup, signal_if_same, stop_same,
+    terminate_politely,
 };

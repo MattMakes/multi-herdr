@@ -321,9 +321,10 @@ impl RunningMark {
     /// Whether its process group still runs. Without a start time, whether
     /// the pid exists.
     fn alive(&self) -> bool {
-        #[cfg(unix)]
         if let Some(started) = self.started {
-            return crate::procid::is_same_group(self.pid, started);
+            if let Ok(same) = horch_platform::group::is_same_group(self.pid, started) {
+                return same;
+            }
         }
         crate::procid::alive(self.pid, self.started)
     }
@@ -422,8 +423,8 @@ impl UpdateFiles {
         let mut options = std::fs::OpenOptions::new();
         // Read too: horch reads the tail through a clone of this handle.
         options.read(true).write(true).create_new(true);
-        #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::mode(&mut options, PRIVATE_FILE);
+        // Windows has no file modes: the file gets the default access there.
+        let _ = horch_platform::fs::create_mode(&mut options, PRIVATE_FILE);
         options.open(path)
     }
 }
@@ -522,8 +523,7 @@ fn start_updater(
 ) -> Result<(Child, LogPair), String> {
     let (logs, tails) = open_logs(files).map_err(|e| cut(&format!("{name} log: {e}")))?;
     cmd.stdin(Stdio::null()).stdout(logs.0).stderr(logs.1);
-    #[cfg(unix)]
-    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    horch_platform::group::new_group(&mut cmd);
     let mut child = cmd
         .spawn()
         .map_err(|e| cut(&format!("{name} did not start: {e}")))?;

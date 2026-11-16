@@ -669,8 +669,9 @@ impl LockHolder {
 
     /// Stop it with SIGTERM, then wait up to `wait` for it to end. The
     /// signal goes only to the PID that still has the recorded start time,
-    /// never to a process found by name.
-    #[cfg(unix)]
+    /// never to a process found by name. A platform without signals
+    /// (Windows) sends nothing: a watchdog of another binary is reported,
+    /// not stopped.
     pub fn stop(&self, wait: std::time::Duration) -> Result<()> {
         let Some(started) = self.started else {
             anyhow::bail!(
@@ -678,7 +679,13 @@ impl LockHolder {
                 self.pid
             );
         };
-        if !crate::procid::signal_same(self.pid, started, libc::SIGTERM) {
+        let Ok(sent) = horch_platform::signal::terminate_politely(self.pid, started) else {
+            anyhow::bail!(
+                "watchdog PID {} runs another binary; stop it by hand on this platform",
+                self.pid
+            )
+        };
+        if !sent {
             anyhow::bail!(
                 "watchdog PID {} no longer runs with its recorded start time; nothing was signalled",
                 self.pid
@@ -695,15 +702,6 @@ impl LockHolder {
             "watchdog PID {} did not stop within {}s of SIGTERM",
             self.pid,
             wait.as_secs()
-        )
-    }
-
-    /// No signals here: a watchdog of another binary is reported, not stopped.
-    #[cfg(not(unix))]
-    pub fn stop(&self, _wait: std::time::Duration) -> Result<()> {
-        anyhow::bail!(
-            "watchdog PID {} runs another binary; stop it by hand on this platform",
-            self.pid
         )
     }
 }

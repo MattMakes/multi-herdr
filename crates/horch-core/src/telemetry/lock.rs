@@ -60,9 +60,10 @@ pub fn runs_other_binary(info: &LockInfo, current: Option<&ExeIdentity>) -> bool
 
 /// Stop the live holder `info` with SIGTERM, then wait up to `wait` for it
 /// to give up the lock. The signal goes only to the pid that still has the
-/// recorded start time ([`procid::signal_same`]): never to a holder without
-/// a start time, and never to a process that got the pid later.
-#[cfg(unix)]
+/// recorded start time ([`horch_platform::signal::terminate_politely`]):
+/// never to a holder without a start time, and never to a process that got
+/// the pid later. A platform without signals (Windows) sends nothing: a
+/// stale collector is reported, not stopped.
 pub fn stop(state_root: &Path, info: &LockInfo, wait: std::time::Duration) -> Result<()> {
     let Some(started) = info.pid_start else {
         anyhow::bail!(
@@ -70,7 +71,13 @@ pub fn stop(state_root: &Path, info: &LockInfo, wait: std::time::Duration) -> Re
             info.pid
         );
     };
-    if !procid::signal_same(info.pid, started, libc::SIGTERM) {
+    let Ok(sent) = horch_platform::signal::terminate_politely(info.pid, started) else {
+        anyhow::bail!(
+            "collector pid {} runs an older binary; stop it by hand on this platform",
+            info.pid
+        )
+    };
+    if !sent {
         anyhow::bail!(
             "collector pid {} no longer runs with its recorded start time; nothing was signalled",
             info.pid
@@ -89,15 +96,6 @@ pub fn stop(state_root: &Path, info: &LockInfo, wait: std::time::Duration) -> Re
         "collector pid {} did not stop within {}s of SIGTERM",
         info.pid,
         wait.as_secs()
-    )
-}
-
-/// No signals here: a stale collector is reported, not stopped.
-#[cfg(not(unix))]
-pub fn stop(_state_root: &Path, info: &LockInfo, _wait: std::time::Duration) -> Result<()> {
-    anyhow::bail!(
-        "collector pid {} runs an older binary; stop it by hand on this platform",
-        info.pid
     )
 }
 

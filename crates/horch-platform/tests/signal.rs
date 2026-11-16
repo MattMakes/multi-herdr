@@ -27,16 +27,43 @@ fn identity(child: &Child) -> (u32, u64) {
 fn signal_same_signals_only_the_recorded_process() {
     let mut child = long_child();
     let (pid, started) = identity(&child);
-    assert!(
-        !signal::signal_same(pid, started + 1, libc::SIGKILL),
+    assert_eq!(
+        signal::signal_same(pid, started + 1, libc::SIGKILL),
+        Ok(false),
         "a reused pid"
     );
     assert_eq!(child.try_wait().unwrap(), None, "the child still runs");
-    assert!(!signal::signal_same(0, started, libc::SIGKILL));
-    assert!(!signal::signal_same(u32::MAX, started, libc::SIGKILL));
-    assert!(signal::signal_same(pid, started, libc::SIGKILL));
+    assert_eq!(signal::signal_same(0, started, libc::SIGKILL), Ok(false));
+    assert_eq!(
+        signal::signal_same(u32::MAX, started, libc::SIGKILL),
+        Ok(false)
+    );
+    assert_eq!(signal::signal_same(pid, started, libc::SIGKILL), Ok(true));
     assert!(!child.wait().unwrap().success(), "killed");
-    assert!(!signal::signal_same(pid, started, libc::SIGKILL), "gone");
+    assert_eq!(
+        signal::signal_same(pid, started, libc::SIGKILL),
+        Ok(false),
+        "gone"
+    );
+}
+
+/// Windows has no signals: `signal_same` sends nothing and says so.
+#[cfg(windows)]
+#[test]
+fn signal_same_is_not_supported_on_windows() {
+    let mut child = long_child();
+    let (pid, started) = identity(&child);
+    let got = signal::signal_same(pid, started, 9);
+    assert_eq!(child.try_wait().unwrap(), None, "nothing was sent");
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert_eq!(
+        got,
+        Err(horch_platform::NotSupported {
+            concern: "signal",
+            os: "windows"
+        })
+    );
 }
 
 /// A stop goes only to the process with the recorded start time.

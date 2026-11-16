@@ -27,6 +27,10 @@ pub(crate) fn stop_same(_pid: u32, os_pid: i32, started: u64, _how: Stop) -> boo
     p.start_time() == Some(started) && unsafe { TerminateProcess(p.handle(), 1) } != 0
 }
 
+pub(crate) fn signal_if_same(_pid: u32, _started: u64, _signal: i32) -> Result<bool, NotSupported> {
+    Err(NOT_SUPPORTED)
+}
+
 pub(crate) fn terminate_politely(_pid: u32, _started: u64) -> Result<bool, NotSupported> {
     Err(NOT_SUPPORTED)
 }

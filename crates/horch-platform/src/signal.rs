@@ -50,9 +50,12 @@ pub enum Termination {
 /// macOS there is no pidfd for a process that is not a child: the start
 /// time is checked just before `kill`, and the pid would have to end and
 /// be given out again between the two calls.
-#[cfg(unix)]
-pub fn signal_same(pid: u32, started: u64, signal: i32) -> bool {
-    raw(pid).is_some_and(|os_pid| os::signal_same(pid, os_pid, started, signal))
+///
+/// Windows gives [`NotSupported`]: it has no signals.
+/// `docs/specs/fleetd/preservation-06-wiring-and-platform.md`, section 6,
+/// row "Signals and stop" ("no signal handlers"), names the gap.
+pub fn signal_same(pid: u32, started: u64, signal: i32) -> Result<bool, NotSupported> {
+    os::signal_if_same(pid, started, signal)
 }
 
 /// Stop `pid` only while it runs with start time `started`, and say whether

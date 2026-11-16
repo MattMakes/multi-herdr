@@ -21,8 +21,15 @@ pub(crate) fn stop_same(pid: u32, os_pid: i32, started: u64, how: Stop) -> bool 
     signal_same(pid, os_pid, started, signal)
 }
 
+/// [`crate::signal::signal_same`]: the OS signal of `pid` when it names
+/// one process.
+pub(crate) fn signal_if_same(pid: u32, started: u64, signal: i32) -> Result<bool, NotSupported> {
+    let os_pid = i32::try_from(pid).ok().filter(|p| *p > 0);
+    Ok(os_pid.is_some_and(|os_pid| signal_same(pid, os_pid, started, signal)))
+}
+
 pub(crate) fn terminate_politely(pid: u32, started: u64) -> Result<bool, NotSupported> {
-    Ok(crate::signal::signal_same(pid, started, libc::SIGTERM))
+    crate::signal::signal_same(pid, started, libc::SIGTERM)
 }
 
 fn number(t: Termination) -> libc::c_int {

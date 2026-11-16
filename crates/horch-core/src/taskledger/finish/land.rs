@@ -96,8 +96,7 @@ fn run_check(
         .stdout(file.try_clone()?)
         .stderr(file.try_clone()?);
     crate::runtime::process::scrub_child_env(&mut cmd);
-    #[cfg(unix)]
-    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    horch_platform::group::new_group(&mut cmd);
     let child = cmd
         .spawn()
         .with_context(|| format!("running the check `{command}`"))?;
@@ -179,52 +178,22 @@ impl Drop for CheckGroup {
 
 /// SIGINT, SIGTERM and SIGHUP to horch while a check runs kill the check's
 /// group too: the check has its own group, so a terminal's signal does not
-/// reach it, and without this it ran on with no deadline.
-#[cfg(unix)]
+/// reach it, and without this it ran on with no deadline. A platform
+/// without signal handlers (Windows) installs nothing.
 mod signals {
     use std::sync::atomic::{AtomicI32, Ordering};
-    use std::sync::Once;
 
     /// The group of the running check, 0 when none runs.
     static GROUP: AtomicI32 = AtomicI32::new(0);
-    static INSTALL: Once = Once::new();
-
-    extern "C" fn on_signal(sig: libc::c_int) {
-        let pgid = GROUP.swap(0, Ordering::SeqCst);
-        // SAFETY: killpg, signal and raise are async-signal-safe. The
-        // default action is put back and the signal raised again, so horch
-        // ends as it would have without this handler.
-        unsafe {
-            if pgid > 0 {
-                libc::killpg(pgid, libc::SIGKILL);
-            }
-            libc::signal(sig, libc::SIG_DFL);
-            libc::raise(sig);
-        }
-    }
 
     pub(super) fn watch(pgid: u32) {
         GROUP.store(pgid as i32, Ordering::SeqCst);
-        INSTALL.call_once(|| {
-            // SAFETY: the handler only calls async-signal-safe functions.
-            unsafe {
-                let handler = on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
-                libc::signal(libc::SIGINT, handler);
-                libc::signal(libc::SIGTERM, handler);
-                libc::signal(libc::SIGHUP, handler);
-            }
-        });
+        let _ = horch_platform::signal::kill_group_on_termination(&GROUP);
     }
 
     pub(super) fn forget() {
         GROUP.store(0, Ordering::SeqCst);
     }
-}
-
-#[cfg(not(unix))]
-mod signals {
-    pub(super) fn watch(_pgid: u32) {}
-    pub(super) fn forget() {}
 }
 
 /// The check command of the task: its own, else the run's default

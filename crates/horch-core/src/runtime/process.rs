@@ -10,23 +10,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus};
 use std::time::{Duration, Instant};
 
-/// Executable extensions to try when a name has none: the `PATHEXT` entries
-/// on Windows (lowercased), and nothing anywhere else.
-pub(crate) fn path_extensions(pathext: Option<&str>) -> Vec<String> {
-    if !cfg!(windows) {
-        return Vec::new();
-    }
-    pathext
-        .unwrap_or(".EXE;.CMD;.BAT;.COM")
-        .split(';')
-        .filter(|e| !e.is_empty())
-        .map(|e| e.to_ascii_lowercase())
-        .collect()
-}
-
 /// Find `name` on a PATH value, honouring `PATHEXT` on Windows.
 pub fn which(path: Option<&OsStr>, pathext: Option<&str>, name: &str) -> Option<PathBuf> {
-    which_in(path?, name, &path_extensions(pathext))
+    which_in(path?, name, &horch_platform::rest::path_extensions(pathext))
 }
 
 /// Find `name` in an explicit PATH-formatted list. A directory is searched
@@ -59,28 +45,16 @@ pub fn resolve(ctx: &super::context::RuntimeContext, bin: &Path) -> Option<PathB
 
 /// SIGKILL the process group `pgid` (a child started with `process_group(0)`).
 /// Whether the signal was sent; a group that is already gone gives ESRCH.
-#[cfg(unix)]
+/// False on a platform without process groups (Windows).
 pub fn kill_pgid(pgid: u32) -> bool {
-    // SAFETY: killpg takes plain integers and touches no memory.
-    unsafe { libc::killpg(pgid as libc::pid_t, libc::SIGKILL) == 0 }
-}
-
-#[cfg(not(unix))]
-pub fn kill_pgid(_pgid: u32) -> bool {
-    false
+    horch_platform::group::kill_group_id(pgid).unwrap_or(false)
 }
 
 /// Kill the group of `child`, which was started with `process_group(0)`.
 /// The child must not be reaped yet, so its pid still names its group. Off
 /// unix there is no group, so only the child dies.
-#[cfg(unix)]
 pub fn kill_group(child: &mut Child) {
-    kill_pgid(child.id());
-}
-
-#[cfg(not(unix))]
-pub fn kill_group(child: &mut Child) {
-    let _ = child.kill();
+    horch_platform::group::kill_child_group(child);
 }
 
 /// Poll `child` every `poll` until it exits or `deadline` passes. `Ok(None)`
@@ -102,32 +76,14 @@ pub fn wait_until(
     }
 }
 
-#[cfg(unix)]
 fn is_executable(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path)
-        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
-}
-
-#[cfg(not(unix))]
-fn is_executable(path: &Path) -> bool {
-    path.is_file()
+    std::fs::metadata(path).is_ok_and(|m| horch_platform::fs::is_executable(&m))
 }
 
 /// Mark a freshly written file executable. No-op on Windows, where the
 /// extension decides.
 pub fn make_executable(path: &Path) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(path)?.permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(path, perms)?;
-    }
-    #[cfg(not(unix))]
-    let _ = path;
-    Ok(())
+    horch_platform::fs::make_executable(path)
 }
 
 /// A PATH with `dir` first, or `None` when it is already first.
@@ -172,11 +128,7 @@ fn normalize(p: &Path) -> OsString {
     } else {
         trimmed
     };
-    if cfg!(windows) {
-        OsString::from(trimmed.to_ascii_lowercase())
-    } else {
-        OsString::from(trimmed)
-    }
+    OsString::from(horch_platform::shell::fold_path_case(trimmed))
 }
 
 /// Remove every [`FORBIDDEN_ENV`](crate::harness::launch::FORBIDDEN_ENV) variable and
@@ -277,18 +229,8 @@ fn scrub_pane_identity(cmd: &mut Command, inherited: &dyn super::context::EnvSou
 fn detach(cmd: &mut Command) {
     scrub_child_env(cmd);
     scrub_pane_identity(cmd, &super::context::ProcessEnv);
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        // SAFETY: runs in the forked child between fork and exec. `setsid` is
-        // async-signal-safe and touches no state this process shares.
-        unsafe {
-            cmd.pre_exec(|| {
-                libc::setsid();
-                Ok(())
-            });
-        }
-    }
+    // Windows has no detach: the child dies with the pane there, as before.
+    let _ = horch_platform::group::detach(cmd);
 }
 
 #[cfg(test)]
@@ -585,6 +527,7 @@ mod tests {
 
     #[test]
     fn path_extensions_apply_only_on_windows() {
+        use horch_platform::rest::path_extensions;
         if cfg!(windows) {
             assert_eq!(path_extensions(Some(".EXE;;.Cmd")), vec![".exe", ".cmd"]);
             assert_eq!(path_extensions(None).len(), 4);

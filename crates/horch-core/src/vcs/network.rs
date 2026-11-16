@@ -152,8 +152,7 @@ pub fn output(bin: &Path, dir: &Path, args: &[&str]) -> anyhow::Result<GitOutput
     }
     scrub_repo_env(&mut cmd);
     // Its own group, so a kill also ends the ssh child that holds the pipes.
-    #[cfg(unix)]
-    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    horch_platform::group::new_group(&mut cmd);
     cmd.arg("-C")
         .arg(std::path::absolute(dir)?)
         .arg("-c")
