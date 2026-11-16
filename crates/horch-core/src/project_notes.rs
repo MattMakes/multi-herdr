@@ -96,16 +96,10 @@ pub fn display(state_root: &Path, project: &Path) -> Result<String> {
 }
 /// Host facts derive from the binary target, without ambient environment reads.
 pub fn host_line() -> String {
-    let tools = if cfg!(target_os = "macos") {
-        "BSD tools; no GNU timeout; sed -i requires a backup suffix"
-    } else if cfg!(target_os = "linux") {
-        "GNU tools; check availability before using timeout or sed -i"
-    } else {
-        "host tools vary; check command support before use"
-    };
     format!(
-        "{} / {}; {tools}",
+        "{} / {}; {}",
         std::env::consts::OS,
-        std::env::consts::ARCH
+        std::env::consts::ARCH,
+        horch_platform::rest::HOST_TOOLS
     )
 }

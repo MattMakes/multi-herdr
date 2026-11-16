@@ -30,10 +30,9 @@ pub enum PaneShell {
 impl PaneShell {
     /// The dialect herdr panes use on this platform.
     pub fn host() -> Self {
-        if cfg!(windows) {
-            PaneShell::PowerShell
-        } else {
-            PaneShell::Posix
+        match horch_platform::shell::PANE_SHELL {
+            horch_platform::shell::ShellDialect::PowerShell => PaneShell::PowerShell,
+            horch_platform::shell::ShellDialect::Posix => PaneShell::Posix,
         }
     }
 

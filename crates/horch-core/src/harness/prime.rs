@@ -69,15 +69,9 @@ pub fn scan_dir_name() -> String {
     format!("prime-agent-{}", real_uid())
 }
 
-#[cfg(unix)]
+/// The real uid, or 0 where the OS has no uid (Windows).
 fn real_uid() -> u32 {
-    // SAFETY: getuid has no preconditions and cannot fail.
-    unsafe { libc::getuid() }
-}
-
-#[cfg(not(unix))]
-fn real_uid() -> u32 {
-    0
+    horch_platform::fs::current_uid().unwrap_or(0)
 }
 
 /// The daemon socket of the launch dir `launch`, if it has one: the Rust
@@ -346,22 +340,21 @@ impl Daemon {
 /// Whether a process listens on the Unix socket at `socket`. No file, a
 /// refused connection or a file that is not a socket: no. Any other error
 /// counts as yes, so the stop rules decide.
-#[cfg(unix)]
+/// Where the OS has no Unix socket (Windows), any file at `socket` counts as
+/// yes.
 fn listening(socket: &Path) -> bool {
-    match std::os::unix::net::UnixStream::connect(socket) {
+    match horch_platform::ipc::LocalStream::connect(socket) {
         Ok(_) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::Unsupported => {
+            std::fs::symlink_metadata(socket).is_ok()
+        }
         Err(e) => {
             !(matches!(
                 e.kind(),
                 std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
-            ) || e.raw_os_error() == Some(libc::ENOTSOCK))
+            ) || horch_platform::ipc::is_not_a_socket(&e))
         }
     }
-}
-
-#[cfg(not(unix))]
-fn listening(socket: &Path) -> bool {
-    std::fs::symlink_metadata(socket).is_ok()
 }
 
 /// How the wait for a stop process ended.
@@ -448,7 +441,7 @@ pub(crate) fn may_stop(
 ) -> std::result::Result<(), &'static str> {
     let again = again.ok_or("a second status call does not name it")?;
     require(again.0 == first.0, "a second status call names another pid")?;
-    if cfg!(windows) {
+    if !horch_platform::rest::STATUS_HAS_START_TIMES {
         // No start times here: the pid is all there is (see `procid`).
         Ok(())
     } else {
@@ -492,18 +485,21 @@ pub(crate) fn pid_for_socket(json: &str, socket: &Path) -> Option<i32> {
 
 /// SIGTERM to `pid` while it still has start time `started` (see
 /// [`crate::procid::signal_same`]).
-#[cfg(unix)]
+/// Where the status gives no start times (Windows), `taskkill` stops it by
+/// its pid.
 fn terminate(pid: i32, started: Option<u64>) {
     // SIGTERM, not SIGKILL: the daemon flushes its sessions on the way out, and
     // a session file half-written is a resume that fails later in a pane nobody
     // is watching.
-    if let (Ok(pid), Some(started)) = (u32::try_from(pid), started) {
-        crate::procid::signal_same(pid, started, libc::SIGTERM);
+    match (u32::try_from(pid), started) {
+        (Ok(pid), Some(started)) => {
+            if horch_platform::signal::terminate_politely(pid, started).is_ok() {
+                return;
+            }
+        }
+        _ if horch_platform::rest::STATUS_HAS_START_TIMES => return,
+        _ => {}
     }
-}
-
-#[cfg(not(unix))]
-fn terminate(pid: i32, _started: Option<u64>) {
     let _ = Command::new("taskkill")
         .args(["/PID", &pid.to_string(), "/T"])
         .status();
@@ -639,18 +635,10 @@ fn ran_in_pane(launch: &Path, pane: &str) -> bool {
 /// [`Prepared::finish`], and the daemon ran on (a C5 daemon ran 6 h 44 min
 /// after `horch done`). A handler, not SIG_IGN: an exec resets it, so the
 /// Prime CLI still ends on the hangup, and then horch stops the daemon.
-#[cfg(unix)]
+/// Windows has no SIGHUP, so there it does nothing.
 fn outlive_hangup() {
-    extern "C" fn on_hangup(_: libc::c_int) {}
-    // SAFETY: the handler does nothing, so it is async-signal-safe.
-    unsafe {
-        let handler = on_hangup as extern "C" fn(libc::c_int) as libc::sighandler_t;
-        libc::signal(libc::SIGHUP, handler);
-    }
+    let _ = horch_platform::signal::outlive_hangup();
 }
-
-#[cfg(not(unix))]
-fn outlive_hangup() {}
 
 /// The `--source` and `--agent` of the pane reports of Prime's built-in
 /// herdr reporter (`pa-daemon/src/herdr.rs`), for the release on finish. A
@@ -851,20 +839,6 @@ fn insert_at(obj: &mut serde_json::Map<String, Value>, path: &str, value: Value)
     insert_at_path(obj, &parts, key, value)
 }
 
-#[cfg(unix)]
-fn link(target: &Path, at: &Path) -> std::io::Result<()> {
-    std::os::unix::fs::symlink(target, at)
-}
-
-#[cfg(windows)]
-fn link(target: &Path, at: &Path) -> std::io::Result<()> {
-    if target.is_dir() {
-        std::os::windows::fs::symlink_dir(target, at)
-    } else {
-        std::os::windows::fs::symlink_file(target, at)
-    }
-}
-
 /// Build this launch's agent dir at `dir` from the operator's `src`
 /// (design §6.9). Nothing is copied from `src` but a settings object with a
 /// fleet key added; nothing is written into the workdir. In `src`, only a
@@ -898,7 +872,8 @@ fn link_operator_entries(src: &Path, dir: &Path) -> Result<()> {
             .file_name();
         if !is_launch_private(&name) {
             let at = dir.join(&name);
-            link(&src.join(&name), &at).with_context(|| format!("linking {}", at.display()))?;
+            horch_platform::path::symlink(&src.join(&name), &at)
+                .with_context(|| format!("linking {}", at.display()))?;
         }
     }
     link_auth(src, dir)
@@ -911,7 +886,8 @@ fn link_auth(src: &Path, dir: &Path) -> Result<()> {
     if std::fs::symlink_metadata(&auth).is_err() {
         // Dangling when the operator has no `auth.json` yet: Prime then
         // creates nothing here and writes a login through the link.
-        link(&src.join(AUTH), &auth).with_context(|| format!("linking {}", auth.display()))?;
+        horch_platform::path::symlink(&src.join(AUTH), &auth)
+            .with_context(|| format!("linking {}", auth.display()))?;
     }
     Ok(())
 }
@@ -941,7 +917,8 @@ fn write_or_link(generated: Option<Value>, operator: &Path, at: &Path) -> Result
         crate::fsx::write_atomic(at, text.as_bytes(), 0o600)?;
         Ok(())
     } else if std::fs::symlink_metadata(operator).is_ok() {
-        link(operator, at).with_context(|| format!("linking {}", at.display()))
+        horch_platform::path::symlink(operator, at)
+            .with_context(|| format!("linking {}", at.display()))
     } else {
         Ok(())
     }

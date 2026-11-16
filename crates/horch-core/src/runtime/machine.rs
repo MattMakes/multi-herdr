@@ -97,7 +97,7 @@ pub fn probe(path: &Path, bins: &ProbeBins, fixture: Option<&Path>) -> MachineSn
             .unwrap_or_else(all_unknown);
     }
     let os = std::env::consts::OS;
-    let parts = sys::probe_parts(os, path, bins);
+    let parts = probe_parts(path, bins);
     MachineSnapshot {
         os: os.to_string(),
         arch: parts.arch,
@@ -105,7 +105,7 @@ pub fn probe(path: &Path, bins: &ProbeBins, fixture: Option<&Path>) -> MachineSn
             .ok()
             .map(|n| n.get() as u32)
             .into(),
-        load_average_1m: sys::load_average(),
+        load_average_1m: horch_platform::machine::load_average().ok().flatten(),
         mem_total_bytes: parts.mem_total.into(),
         mem_available_bytes: parts.mem_available.into(),
         disk_free_bytes: parts.disk_free.into(),
@@ -143,239 +143,86 @@ struct Parts {
     max_processes: Option<u64>,
 }
 
-#[cfg(unix)]
-mod sys {
-    pub(super) fn load_average() -> Option<f64> {
-        let mut value = 0.0;
-        // SAFETY: getloadavg writes one double to a valid out pointer.
-        (unsafe { libc::getloadavg(&mut value, 1) } == 1).then_some(value)
-    }
-    /// The OS host name (gethostname), if it has one.
-    pub(super) fn host_name() -> Option<String> {
-        let mut buf = [0u8; 256];
-        // SAFETY: the buffer is 256 bytes and gethostname writes at most that.
-        let rc = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
-        if rc != 0 {
-            return None;
-        }
-        let end = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
-        let name = String::from_utf8_lossy(&buf[..end]).trim().to_string();
-        (!name.is_empty()).then_some(name)
-    }
+use horch_platform::machine::{Gpu, Tool};
 
-    use std::ffi::CString;
-    use std::io::Read;
-    use std::os::unix::ffi::OsStrExt;
-    use std::path::Path;
-    use std::process::{Command, Stdio};
-    use std::time::{Duration, Instant};
+const COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
-    use super::{GpuClass, Parts, ProbeBins};
-
-    const COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
-
-    // `getrlimit` takes a platform-specific integer type for the resource, so a
-    // macro keeps each call site on its own `libc` constant.
-    macro_rules! rlimit {
-        ($resource:expr) => {{
-            // SAFETY: `limit` is a zeroed out-parameter that `getrlimit` fills in.
-            let limit = unsafe {
-                let mut limit: libc::rlimit = std::mem::zeroed();
-                if libc::getrlimit($resource, &mut limit) != 0 {
-                    None
-                } else {
-                    Some(limit)
-                }
-            };
-            limit
-                .filter(|l| l.rlim_cur != libc::RLIM_INFINITY)
-                .map(|l| l.rlim_cur as u64)
-        }};
-    }
-
-    pub(super) fn probe_parts(os: &str, path: &Path, bins: &ProbeBins) -> Parts {
-        let arch = run(&bins.uname, &["-m"])
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| std::env::consts::ARCH.to_string());
-        let (disk_free, disk_total) = disk(path);
-        let (mem_total, mem_available, gpu) = match os {
-            "macos" => macos(&arch, bins),
-            "linux" => linux(bins),
-            _ => (None, None, GpuClass::Unknown),
+fn probe_parts(path: &Path, bins: &ProbeBins) -> Parts {
+    let run_tool = |tool: Tool, args: &[&str]| {
+        let bin = match tool {
+            Tool::Uname => &bins.uname,
+            Tool::Sysctl => &bins.sysctl,
+            Tool::VmStat => &bins.vm_stat,
+            Tool::NvidiaSmi => &bins.nvidia_smi,
         };
-        Parts {
-            arch,
-            mem_total,
-            mem_available,
-            disk_free,
-            disk_total,
-            gpu,
-            max_open_files: rlimit!(libc::RLIMIT_NOFILE),
-            max_processes: max_processes(),
-        }
-    }
-
-    /// Run a command with a 2 s timeout and `ANTHROPIC_API_KEY` removed.
-    /// Return stdout on exit code 0. Any failure gives `None`.
-    fn run(bin: &Path, args: &[&str]) -> Option<String> {
-        let mut child = Command::new(bin)
-            .args(args)
-            .env_remove("ANTHROPIC_API_KEY")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .ok()?;
-        let mut stdout = child.stdout.take()?;
-        let reader = std::thread::spawn(move || {
-            let mut text = String::new();
-            let _ = stdout.read_to_string(&mut text);
-            text
-        });
-        let deadline = Instant::now() + COMMAND_TIMEOUT;
-        let status = match crate::runtime::process::wait_until(
-            &mut child,
-            deadline,
-            Duration::from_millis(10),
-        ) {
-            Ok(Some(status)) => Some(status),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                None
-            }
-        };
-        let text = reader.join().ok()?;
-        status.filter(|s| s.success()).map(|_| text)
-    }
-
-    fn macos(arch: &str, bins: &ProbeBins) -> (Option<u64>, Option<u64>, GpuClass) {
-        let total = run(&bins.sysctl, &["-n", "hw.memsize"]).and_then(|s| s.trim().parse().ok());
-        let available = run(&bins.vm_stat, &[]).and_then(|s| super::parse_vm_stat(&s));
-        let brand = run(&bins.sysctl, &["-n", "machdep.cpu.brand_string"]);
-        let gpu = match brand {
-            Some(b) if arch == "arm64" && b.trim_start().starts_with("Apple") => {
-                GpuClass::AppleSilicon
-            }
-            Some(_) => GpuClass::None,
-            None => GpuClass::Unknown,
-        };
-        (total, available, gpu)
-    }
-
-    fn linux(bins: &ProbeBins) -> (Option<u64>, Option<u64>, GpuClass) {
-        let meminfo = std::fs::read_to_string("/proc/meminfo").ok();
-        let total = meminfo
-            .as_deref()
-            .and_then(|t| super::parse_meminfo(t, "MemTotal"));
-        let available = meminfo
-            .as_deref()
-            .and_then(|t| super::parse_meminfo(t, "MemAvailable"));
-        let gpu = match run(&bins.nvidia_smi, &["-L"]) {
-            Some(list) => {
-                let count = list.lines().filter(|l| l.starts_with("GPU ")).count() as u32;
-                if count > 0 {
-                    GpuClass::Nvidia { count }
-                } else {
-                    GpuClass::None
-                }
-            }
-            None => GpuClass::None,
-        };
-        (total, available, gpu)
-    }
-
-    fn statvfs(path: &Path) -> Option<libc::statvfs> {
-        let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;
-        // SAFETY: `c_path` is a valid NUL-terminated string and `stat` is a
-        // zeroed out-parameter that `statvfs` fills in.
-        unsafe {
-            let mut stat: libc::statvfs = std::mem::zeroed();
-            (libc::statvfs(c_path.as_ptr(), &mut stat) == 0).then_some(stat)
-        }
-    }
-
-    // The statvfs fields are `u32` on some unix targets, so the casts stay.
-    #[allow(clippy::unnecessary_cast)]
-    fn disk(path: &Path) -> (Option<u64>, Option<u64>) {
-        statvfs(path).map_or((None, None), |stat| {
-            let unit = stat.f_frsize as u64;
-            (
-                Some((stat.f_bavail as u64).saturating_mul(unit)),
-                Some((stat.f_blocks as u64).saturating_mul(unit)),
-            )
-        })
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    fn max_processes() -> Option<u64> {
-        rlimit!(libc::RLIMIT_NPROC)
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    fn max_processes() -> Option<u64> {
-        None
-    }
-}
-
-#[cfg(not(unix))]
-mod sys {
-    pub(super) fn load_average() -> Option<f64> {
-        None
-    }
-    /// No gethostname here: the caller reads `COMPUTERNAME`.
-    pub(super) fn host_name() -> Option<String> {
-        None
-    }
-
-    use std::path::Path;
-
-    use super::{GpuClass, Parts, ProbeBins};
-
-    pub(super) fn probe_parts(_os: &str, _path: &Path, _bins: &ProbeBins) -> Parts {
-        Parts {
-            arch: std::env::consts::ARCH.to_string(),
-            mem_total: None,
-            mem_available: None,
-            disk_free: None,
-            disk_total: None,
-            gpu: GpuClass::Unknown,
-            max_open_files: None,
-            max_processes: None,
-        }
-    }
-}
-
-/// Parse `vm_stat` output: (free + inactive + speculative pages) x page size.
-#[cfg_attr(not(unix), allow(dead_code))]
-fn parse_vm_stat(text: &str) -> Option<u64> {
-    let header = text.lines().next()?;
-    let page_size: u64 = header
-        .split("page size of ")
-        .nth(1)?
-        .split_whitespace()
-        .next()?
-        .parse()
-        .ok()?;
-    let pages = |key: &str| -> u64 {
-        text.lines()
-            .find_map(|l| l.strip_prefix(key))
-            .and_then(|rest| rest.trim().trim_end_matches('.').parse().ok())
-            .unwrap_or(0)
+        run(bin, args)
     };
-    let total = pages("Pages free:") + pages("Pages inactive:") + pages("Pages speculative:");
-    Some(total * page_size)
+    let arch = horch_platform::machine::uname_arch(&run_tool)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| std::env::consts::ARCH.to_string());
+    let disk = horch_platform::machine::disk(path).ok().flatten();
+    let memory = horch_platform::machine::memory(&run_tool).ok();
+    let gpu = match horch_platform::machine::gpu(&run_tool, &arch) {
+        Ok(Gpu::AppleSilicon) => GpuClass::AppleSilicon,
+        Ok(Gpu::Nvidia { count }) => GpuClass::Nvidia { count },
+        Ok(Gpu::None) => GpuClass::None,
+        Ok(Gpu::Unknown) | Err(_) => GpuClass::Unknown,
+    };
+    Parts {
+        arch,
+        mem_total: memory.and_then(|m| m.total),
+        mem_available: memory.and_then(|m| m.available),
+        disk_free: disk.map(|d| d.free),
+        disk_total: disk.map(|d| d.total),
+        gpu,
+        max_open_files: horch_platform::machine::max_open_files().ok().flatten(),
+        max_processes: horch_platform::machine::max_processes().ok().flatten(),
+    }
 }
 
-/// Parse one `/proc/meminfo` key in kB and return bytes.
-#[cfg_attr(not(unix), allow(dead_code))]
-fn parse_meminfo(text: &str, key: &str) -> Option<u64> {
-    let rest = text
-        .lines()
-        .find_map(|l| l.strip_prefix(key)?.strip_prefix(':'))?;
-    let kb: u64 = rest.split_whitespace().next()?.parse().ok()?;
-    Some(kb * 1024)
+/// Run a command with a 2 s timeout and `ANTHROPIC_API_KEY` removed.
+/// Return stdout on exit code 0. Any failure gives `None`.
+fn run(bin: &Path, args: &[&str]) -> Option<String> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new(bin)
+        .args(args)
+        .env_remove("ANTHROPIC_API_KEY")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = stdout.read_to_string(&mut text);
+        text
+    });
+    let deadline = std::time::Instant::now() + COMMAND_TIMEOUT;
+    let status = match crate::runtime::process::wait_until(
+        &mut child,
+        deadline,
+        std::time::Duration::from_millis(10),
+    ) {
+        Ok(Some(status)) => Some(status),
+        _ => {
+            let _ = child.kill();
+            let _ = child.wait();
+            None
+        }
+    };
+    let text = reader.join().ok()?;
+    status.filter(|s| s.success()).map(|_| text)
+}
+
+/// The OS host name (gethostname), trimmed, if it has one.
+fn os_host_name() -> Option<String> {
+    let name = horch_platform::machine::host_name().ok().flatten()?;
+    let name = name.trim().to_string();
+    (!name.is_empty()).then_some(name)
 }
 
 /// This machine's name: `$HORCH_HOSTNAME` (tests), else the OS host name,
@@ -383,7 +230,7 @@ fn parse_meminfo(text: &str, key: &str) -> Option<u64> {
 /// records it beside every PID: a PID names a process only on its host.
 pub fn host_name() -> String {
     env_nonempty("HORCH_HOSTNAME")
-        .or_else(sys::host_name)
+        .or_else(os_host_name)
         .or_else(|| {
             ["COMPUTERNAME", "HOSTNAME"]
                 .into_iter()
@@ -411,19 +258,14 @@ mod tests {
     fn nfr_10_machine_probe_cfg_paths() {
         let source = include_str!("machine.rs");
         let code = source.split("#[cfg(test)]").next().unwrap();
-        let unix_start = code
-            .find("#[cfg(unix)]\nmod sys {")
-            .expect("unix sys module");
-        let other_start = code
-            .find("#[cfg(not(unix))]\nmod sys {")
-            .expect("non-unix sys module");
-        assert!(unix_start < other_start);
-        for (offset, line) in code.match_indices("libc::") {
-            assert!(
-                (unix_start..other_start).contains(&offset),
-                "libc:: use outside the cfg(unix) module at byte {offset} ({line})"
-            );
-        }
+        assert!(
+            !code.contains("libc::"),
+            "libc:: in the probe: the OS calls belong to horch_platform::machine"
+        );
+        let map_start = code
+            .find("let bin = match tool {")
+            .expect("the map from a probe tool to its command");
+        let map_end = map_start + code[map_start..].find("};").expect("end of the map");
         for command in [
             "bins.sysctl",
             "bins.vm_stat",
@@ -432,8 +274,8 @@ mod tests {
         ] {
             for (offset, _) in code.match_indices(command) {
                 assert!(
-                    (unix_start..other_start).contains(&offset),
-                    "{command} used outside the cfg(unix) module at byte {offset}"
+                    (map_start..map_end).contains(&offset),
+                    "{command} used outside the map of probe tools at byte {offset}"
                 );
             }
         }
@@ -502,11 +344,17 @@ mod tests {
                   Pages free:                               10.\n\
                   Pages inactive:                           20.\n\
                   Pages speculative:                         5.\n";
-        assert_eq!(parse_vm_stat(vm), Some(35 * 16384));
+        assert_eq!(horch_platform::machine::parse_vm_stat(vm), Some(35 * 16384));
         let mi = "MemTotal:       2048 kB\nMemAvailable:   1024 kB\n";
-        assert_eq!(parse_meminfo(mi, "MemTotal"), Some(2048 * 1024));
-        assert_eq!(parse_meminfo(mi, "MemAvailable"), Some(1024 * 1024));
-        assert_eq!(parse_meminfo(mi, "MemFree"), None);
+        assert_eq!(
+            horch_platform::machine::parse_meminfo(mi, "MemTotal"),
+            Some(2048 * 1024)
+        );
+        assert_eq!(
+            horch_platform::machine::parse_meminfo(mi, "MemAvailable"),
+            Some(1024 * 1024)
+        );
+        assert_eq!(horch_platform::machine::parse_meminfo(mi, "MemFree"), None);
     }
 
     #[cfg(unix)]

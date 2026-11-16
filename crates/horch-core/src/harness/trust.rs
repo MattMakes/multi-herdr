@@ -829,25 +829,20 @@ impl TempStore {
         let path = temp_path(store);
         let mut open = std::fs::OpenOptions::new();
         open.write(true).create_new(true);
-        #[cfg(unix)]
-        let mode = {
-            use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
-            let mode = std::fs::metadata(store)
-                .map(|m| m.permissions().mode() & 0o7777)
-                .unwrap_or(0o600);
-            open.mode(mode);
-            mode
-        };
+        let mode = std::fs::metadata(store)
+            .ok()
+            .and_then(|m| horch_platform::fs::mode_of(&m).ok())
+            .map_or(0o600, |mode| mode & 0o7777);
+        // Windows has no modes: the file gets none, as before.
+        let has_modes = horch_platform::fs::create_mode(&mut open, mode).is_ok();
         let mut f = open
             .open(&path)
             .with_context(|| format!("creating {}", path.display()))?;
         let temp = TempStore(Some(path.clone()));
         let mut fill = || -> anyhow::Result<()> {
             // The umask can narrow the mode `open` asked for.
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt as _;
-                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))
+            if has_modes {
+                horch_platform::fs::set_mode(&path, mode)
                     .with_context(|| format!("setting the mode of {}", path.display()))?;
             }
             write_synced(&mut f, &path, text)

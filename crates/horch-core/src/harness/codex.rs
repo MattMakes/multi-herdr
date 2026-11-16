@@ -153,7 +153,6 @@ fn wait_until(child: &mut Child, deadline: Instant, timeout: Duration) -> Result
 }
 
 /// Remove an existing skills symlink; refuse anything that is not one.
-#[cfg(not(windows))]
 fn clear_skills_link(target: &Path) -> Result<()> {
     match std::fs::symlink_metadata(target) {
         Ok(meta) if meta.file_type().is_symlink() => std::fs::remove_file(target)?,
@@ -209,20 +208,14 @@ impl Rules {
 
     /// Replace only the private home's skills link. Never follow it into the
     /// operator's skills directory. Codex discovers these files natively.
-    #[cfg(not(windows))]
     pub(crate) fn attach_skills(&self, skills_dir: &Path) -> Result<()> {
         let Rules::Private { dir } = self else {
             anyhow::bail!("Codex phase skills require a private CODEX_HOME; use WSL on Windows");
         };
         let target = dir.join("skills");
         clear_skills_link(&target)?;
-        std::os::unix::fs::symlink(skills_dir, &target)?;
+        horch_platform::path::symlink(skills_dir, &target)?;
         Ok(())
-    }
-
-    #[cfg(windows)]
-    pub(crate) fn attach_skills(&self, _skills_dir: &Path) -> Result<()> {
-        anyhow::bail!("Codex phase skills require a private CODEX_HOME; use WSL on Windows")
     }
 
     /// Clean up after the agent has exited.
@@ -298,14 +291,26 @@ fn render(rules: &[ExecRule]) -> String {
     rules.iter().map(prompts::codex_rule_block).collect()
 }
 
-#[cfg(not(windows))]
+/// Windows has no private home: symlinks there need Developer Mode or an
+/// elevated process, and a fleet that refused to start without one would be
+/// worse than a shared rules file. So the rules go where they always went, and
+/// the pane says so rather than implying an isolation it does not have.
 fn install_rules(
-    _home: &Path,
+    home: &Path,
     codex_home: &Path,
     root: &Path,
     role: &str,
     rules: &[ExecRule],
 ) -> Result<Rules> {
+    if !horch_platform::path::private_link_home_supported() {
+        ensure_rules(home, rules)?;
+        eprintln!(
+            "horch: codex execpolicy rules were added to the shared {} - on Windows they \
+             apply to every codex session, not just this pane.",
+            rules_path(home).display()
+        );
+        return Ok(Rules::Shared);
+    }
     let dir = build_private_home(codex_home, root, role)?;
     std::fs::write(dir.join("rules").join("horch.rules"), render(rules))
         .with_context(|| format!("writing this launch's rules under {}", dir.display()))?;
@@ -321,7 +326,6 @@ fn install_rules(
 /// directory behind. That is why `role` is in the name: the leftovers are
 /// symlinks and one rules file, harmless to delete, and legible about which
 /// pane they came from.
-#[cfg(not(windows))]
 fn build_private_home(source: &Path, root: &Path, role: &str) -> Result<PathBuf> {
     let slug: String = role
         .chars()
@@ -347,7 +351,7 @@ fn build_private_home(source: &Path, root: &Path, role: &str) -> Result<PathBuf>
                 continue;
             }
             let link = dir.join(entry.file_name());
-            std::os::unix::fs::symlink(entry.path(), &link).with_context(|| {
+            horch_platform::path::symlink(&entry.path(), &link).with_context(|| {
                 format!(
                     "linking {} into the private codex home",
                     entry.path().display()
@@ -356,27 +360,6 @@ fn build_private_home(source: &Path, root: &Path, role: &str) -> Result<PathBuf>
         }
     }
     Ok(dir)
-}
-
-/// Windows has no private home: symlinks there need Developer Mode or an
-/// elevated process, and a fleet that refused to start without one would be
-/// worse than a shared rules file. So the rules go where they always went, and
-/// the pane says so rather than implying an isolation it does not have.
-#[cfg(windows)]
-fn install_rules(
-    home: &Path,
-    _codex_home: &Path,
-    _root: &Path,
-    _role: &str,
-    rules: &[ExecRule],
-) -> Result<Rules> {
-    ensure_rules(home, rules)?;
-    eprintln!(
-        "horch: codex execpolicy rules were added to the shared {} - on Windows they \
-         apply to every codex session, not just this pane.",
-        rules_path(home).display()
-    );
-    Ok(Rules::Shared)
 }
 
 /// Append any missing fleet `prefix_rule`s to codex's SHARED rules file.
@@ -392,7 +375,6 @@ fn install_rules(
 /// forbidden worker rule would also refuse the command to the codex
 /// orchestrator and to the operator's own sessions. The 1 broad ledger rule
 /// that v0.4.0 appended is removed, so the narrowed worker rules apply (#181).
-#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn ensure_rules(home: &Path, rules: &[ExecRule]) -> Result<()> {
     let path = rules_path(home);
     if let Some(parent) = path.parent() {
@@ -719,7 +701,7 @@ impl Harness for Codex {
 
     /// Skills reach codex only through a private home, which needs symlinks.
     fn ensure_skills_supported(&self) -> Result<()> {
-        if cfg!(windows) {
+        if !horch_platform::path::private_link_home_supported() {
             anyhow::bail!("Codex phase skills require a private CODEX_HOME; use WSL on Windows, or explicitly set phase: null and skills: [] for the legacy shared-rules launcher");
         }
         Ok(())

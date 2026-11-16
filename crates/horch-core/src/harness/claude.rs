@@ -1113,8 +1113,7 @@ pub(crate) fn sandbox_tools_path(dir: &Path, tools: bool) -> std::ffi::OsString 
         for bin in ["bwrap", "socat"] {
             let path = dir.join(bin);
             std::fs::write(&path, "#!/bin/sh\n").unwrap();
-            #[cfg(unix)]
-            crate::runtime::process::make_executable(&path).unwrap();
+            horch_platform::fs::make_executable(&path).unwrap();
         }
     }
     std::env::join_paths([dir]).unwrap()

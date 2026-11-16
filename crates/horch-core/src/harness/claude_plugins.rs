@@ -530,16 +530,13 @@ fn copy_entry(from: &Path, to: &Path) -> Result<()> {
     }
 }
 
-#[cfg(unix)]
 fn copy_symlink(from: &Path, to: &Path) -> Result<()> {
-    let target = std::fs::read_link(from)?;
-    std::os::unix::fs::symlink(&target, to).with_context(|| format!("linking {}", to.display()))
-}
-
-#[cfg(not(unix))]
-fn copy_symlink(from: &Path, _to: &Path) -> Result<()> {
-    std::fs::read_link(from)?;
-    bail!("{} is a symlink", from.display())
+    match horch_platform::path::copy_symlink(from, to) {
+        Err(e) if e.kind() == std::io::ErrorKind::Unsupported => {
+            bail!("{} is a symlink", from.display())
+        }
+        result => result.with_context(|| format!("linking {}", to.display())),
+    }
 }
 
 fn copy_dir(from: &Path, to: &Path) -> Result<()> {

@@ -58,15 +58,9 @@ fn is_intact(path: &Path) -> bool {
         && std::fs::read(path).is_ok_and(|bytes| bytes == COMPACT_EXTENSION.as_bytes())
 }
 
-#[cfg(unix)]
+/// Windows has no modes, so every file counts as private there.
 fn private_mode(meta: &std::fs::Metadata) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    meta.permissions().mode() & 0o777 == 0o600
-}
-
-#[cfg(not(unix))]
-fn private_mode(_meta: &std::fs::Metadata) -> bool {
-    true
+    horch_platform::fs::mode_of(meta).map_or(true, |mode| mode & 0o777 == 0o600)
 }
 
 pub(crate) struct Pi;
