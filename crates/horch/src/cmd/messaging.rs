@@ -802,20 +802,14 @@ pub fn note_as(
         super::compact::worker_note_context(ctx, text)
     }));
     std::panic::set_hook(hook);
-    Ok(match result {
-        Ok(result) => context_followup_exit(result),
-        Err(_) => std::process::ExitCode::SUCCESS,
-    })
+    Ok(context_followup_exit(result))
 }
 
-fn context_followup_exit(result: Result<std::process::ExitCode>) -> std::process::ExitCode {
-    match result {
-        Ok(code) => code,
-        Err(error) => {
-            eprintln!("horch note: context follow-up: {error:#}");
-            std::process::ExitCode::SUCCESS
-        }
+fn context_followup_exit(result: std::thread::Result<Result<()>>) -> std::process::ExitCode {
+    if let Ok(Err(error)) = result {
+        eprintln!("horch note: context follow-up: {error:#}");
     }
+    std::process::ExitCode::SUCCESS
 }
 
 /// [`note_check`] with its own sources, inside `catch_unwind` and with the
@@ -1821,9 +1815,12 @@ mod tests {
         }
 
         #[test]
-        fn a_note_uses_the_compaction_outcome_exit_code() {
-            let refused = std::process::ExitCode::from(1);
-            assert_eq!(context_followup_exit(Ok(refused)), refused);
+        fn a_saved_note_with_a_refused_compaction_follow_up_exits_0() {
+            let success = std::process::ExitCode::SUCCESS;
+            let refused = Err(anyhow::anyhow!("handoff file is missing"));
+            assert_eq!(context_followup_exit(Ok(refused)), success);
+            assert_eq!(context_followup_exit(Ok(Ok(()))), success);
+            assert_eq!(context_followup_exit(Err(Box::new("panic"))), success);
         }
     }
 }

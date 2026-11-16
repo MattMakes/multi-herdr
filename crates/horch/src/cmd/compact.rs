@@ -206,9 +206,9 @@ pub fn compact(ctx: &RuntimeContext, args: &CompactArgs) -> Result<ExitCode> {
 
 /// Shared post-note hook for legacy notes and task-ledger note/progress.
 /// A warning never invalidates a saved note. Handoff refusals remain visible.
-pub fn worker_note_context(ctx: &RuntimeContext, text: &str) -> Result<ExitCode> {
+pub fn worker_note_context(ctx: &RuntimeContext, text: &str) -> Result<()> {
     let Some(record_id) = ctx.worker.as_ref().and_then(|w| w.record_id.as_deref()) else {
-        return Ok(ExitCode::SUCCESS);
+        return Ok(());
     };
     let ledger = SessionLedger::open_in(ctx)?;
     let record = ledger.get(record_id)?;
@@ -239,7 +239,7 @@ pub fn worker_note_context(ctx: &RuntimeContext, text: &str) -> Result<ExitCode>
         || row.tokens().is_none_or(|tokens| tokens < row.threshold)
         || row.job == JobLiveness::Live
     {
-        return Ok(ExitCode::SUCCESS);
+        return Ok(());
     }
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     let mailbox = Mailbox::resolve_in(&herdr, ctx)?;
@@ -267,7 +267,8 @@ pub fn worker_note_context(ctx: &RuntimeContext, text: &str) -> Result<ExitCode>
             eprintln!("horch: {line}; orchestrator notification failed: {error:#}");
         }
     }
-    Ok(print(outcome))
+    let _ = print(outcome);
+    Ok(())
 }
 
 fn print(o: Outcome) -> ExitCode {
