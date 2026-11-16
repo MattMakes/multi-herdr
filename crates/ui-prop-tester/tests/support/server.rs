@@ -214,7 +214,7 @@ fn serve(
                 body,
             } => {
                 let mut head = format!(
-                    "HTTP/1.1 {status} {}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\n",
+                    "HTTP/1.1 {status} {}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n",
                     reason(status),
                     body.len()
                 );

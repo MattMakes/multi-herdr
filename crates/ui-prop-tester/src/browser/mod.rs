@@ -31,6 +31,7 @@ use tracker::PageTracker;
 
 const NAVIGATION_TIMEOUT: Duration = Duration::from_secs(30);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+const DOWNLOAD_GRACE: Duration = Duration::from_millis(1500);
 const SOFT_NAVIGATION_GRACE: Duration = Duration::from_secs(2);
 const FRAME_TIMEOUT: Duration = Duration::from_secs(5);
 const CAPTURE_SCRIPT: &str = include_str!("capture.js");
@@ -58,6 +59,7 @@ pub struct BrowserDriver {
     last_state: Value,
     last_action: Value,
     coverage: Option<Coverage>,
+    blocked_seen: usize,
     shut_down: bool,
 }
 
@@ -112,6 +114,7 @@ impl BrowserDriver {
             last_state: Value::Null,
             last_action: Value::Null,
             coverage: None,
+            blocked_seen: 0,
             shut_down: false,
         };
         driver.attach(page_hint)?;
@@ -456,6 +459,11 @@ impl BrowserDriver {
                 return Ok(());
             }
             self.wait_for_navigation()?;
+            let blocked = self.cdp.reflexes.blocked.len();
+            if std::mem::take(&mut self.tracker.uncommitted_stop) && blocked == self.blocked_seen {
+                self.await_download();
+            }
+            self.blocked_seen = blocked;
             let before = self.tracker.activity;
             let stable = self.frame_barrier()?;
             self.pump();
@@ -463,6 +471,17 @@ impl BrowserDriver {
             let quiet = stable && self.tracker.activity == before && !self.tracker.loading;
             if quiet || (rounds >= 10 && !self.tracker.loading) {
                 return Ok(());
+            }
+        }
+    }
+
+    fn await_download(&mut self) {
+        let known = self.tracker.downloads.len();
+        let deadline = Instant::now() + DOWNLOAD_GRACE;
+        while self.tracker.downloads.len() == known && Instant::now() < deadline {
+            match self.cdp.next_event(deadline) {
+                Some(event) => self.tracker.handle(&event),
+                None => break,
             }
         }
     }

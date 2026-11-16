@@ -21,6 +21,8 @@ pub struct PageTracker {
     pub ended: bool,
     pub crashed: bool,
     pub soft_since: Option<Instant>,
+    pub uncommitted_stop: bool,
+    committed: bool,
     current_loader: String,
     statuses: HashMap<String, u16>,
 }
@@ -101,6 +103,7 @@ impl PageTracker {
                 if text("/frameId") == Some(self.main_frame.as_str()) {
                     self.loading = true;
                     self.soft_since = None;
+                    self.committed = false;
                     self.activity += 1;
                 }
             }
@@ -115,6 +118,10 @@ impl PageTracker {
             }
             "Page.frameStoppedLoading" => {
                 if text("/frameId") == Some(self.main_frame.as_str()) {
+                    if self.loading && !self.committed {
+                        self.uncommitted_stop = true;
+                    }
+                    self.committed = true;
                     self.finish_loading();
                     self.activity += 1;
                 }
@@ -127,6 +134,7 @@ impl PageTracker {
                 if let Some(id) = frame.get("id").and_then(Value::as_str) {
                     self.main_frame = id.to_string();
                 }
+                self.committed = true;
                 let loader = frame
                     .get("loaderId")
                     .and_then(Value::as_str)

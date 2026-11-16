@@ -335,14 +335,50 @@ mod navigation {
     }
 
     #[test]
-    fn back_and_forward_move_through_history_and_report_bfcache_restores() {
-        let site = history_site();
+    fn a_navigation_that_does_not_settle_in_thirty_seconds_is_a_stall() {
+        let site = Fixture::start(|request| match request.path.as_str() {
+            "/" => page("<a id=slow href=\"/slow\">slow</a>"),
+            _ => Reply::Hang,
+        });
         let Some(mut session) = Session::open(config(&site.url("/"))) else {
+            return;
+        };
+        let slow = session.clickable_by_id("slow");
+        let error = session
+            .try_apply(crate::support::click_action(&slow))
+            .err()
+            .expect("the navigation stalls");
+        assert!(
+            matches!(error, ui_prop_tester::DriverError::Stalled(_)),
+            "{error}"
+        );
+        session.shutdown();
+    }
+
+    #[test]
+    fn back_and_forward_move_through_history_and_report_bfcache_restores() {
+        let site = Fixture::start(|request| {
+            match request.path.as_str() {
+            "/" => page(
+                "<a id=second>second</a><script>document.getElementById('second').href = 'http://localhost:' + location.port + '/second';</script>",
+            ),
+            "/second" => page(
+                "<p>second</p><script>addEventListener('pageshow', (event) => { document.title = event.persisted ? 'second restored' : 'second'; });</script>",
+            ),
+            _ => Reply::not_found(),
+        }
+        });
+        let mut settings = config(&site.url("/"));
+        settings.allow_urls = vec!["http://127.0.0.1/*".into(), "http://localhost/*".into()];
+        let Some(mut session) = Session::open(settings) else {
             return;
         };
         assert_eq!(session.state["history"]["index"], 0);
         session.click_id("second");
-        assert!(session.url().ends_with("/second"));
+        assert_eq!(
+            session.url(),
+            format!("http://localhost:{}/second", site.port)
+        );
         assert_eq!(session.state["history"]["index"], 1);
         assert_eq!(
             session.state["history"]["entries"]
@@ -353,10 +389,13 @@ mod navigation {
         );
         session.apply(json!({"kind": "back"}));
         assert_eq!(session.state["history"]["index"], 0);
-        assert!(session.url().ends_with('/'));
+        assert_eq!(session.url(), site.url("/"));
         session.apply(json!({"kind": "forward"}));
         assert!(session.url().ends_with("/second"));
-        assert_eq!(session.state["navigation"]["kind"], "bfcache");
+        if session.state["navigation"]["kind"] != "bfcache" {
+            let reasons = session.eval("(s) => JSON.stringify(s.window.performance.getEntriesByType('navigation')[0].notRestoredReasons)");
+            panic!("not restored from the back/forward cache: {reasons}");
+        }
         assert_eq!(session.title(), "second restored");
         assert_eq!(session.state["navigation"]["status"], 200);
         session.apply(json!({"kind": "forward"}));
