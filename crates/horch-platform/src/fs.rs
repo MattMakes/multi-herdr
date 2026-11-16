@@ -1,3 +1,137 @@
-//! The concern fs: file locks, file permissions, symlinks and links.
+//! The concern fs: file locks, file permissions and file identity.
 //!
-//! Ticket 06 of `docs/tickets/fleetd-pp/` fills this interface.
+//! Each gap of 1 OS names its row of
+//! `docs/specs/fleetd/preservation-06-wiring-and-platform.md`, section 6.
+
+use std::fs::{DirBuilder, Metadata, OpenOptions};
+use std::io;
+use std::path::Path;
+
+use crate::os::fs as os;
+use crate::NotSupported;
+
+/// The owner and the mode of a file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OwnerAndMode {
+    /// The user id of the owner.
+    pub uid: u32,
+    /// `st_mode`: the file type bits and the permission bits.
+    pub mode: u32,
+}
+
+/// Set the permission bits of `path` to `mode`.
+///
+/// Windows: an `Unsupported` error that holds [`NotSupported`]. Row "File
+/// permissions": modes ignored.
+pub fn set_mode(path: &Path, mode: u32) -> io::Result<()> {
+    os::set_mode(path, mode)
+}
+
+/// Make `options` create its file with `mode`, so the file never exists
+/// with the permissions of the umask.
+///
+/// Windows: [`NotSupported`]. Row "File permissions": modes ignored.
+pub fn create_mode(options: &mut OpenOptions, mode: u32) -> Result<(), NotSupported> {
+    os::create_mode(options, mode)
+}
+
+/// Make `builder` create its dirs with `mode`.
+///
+/// Windows: [`NotSupported`]. Row "File permissions": modes ignored.
+pub fn create_dir_mode(builder: &mut DirBuilder, mode: u32) -> Result<(), NotSupported> {
+    os::create_dir_mode(builder, mode)
+}
+
+/// Fsync the dir `dir`, so a rename or a create inside it is durable.
+///
+/// Windows: an `Unsupported` error that holds [`NotSupported`]. Windows
+/// cannot open a dir for sync. Row "File permissions" (`fsx.rs:133`).
+pub fn sync_dir(dir: &Path) -> io::Result<()> {
+    os::sync_dir(dir)
+}
+
+/// Make `options` open a FIFO at once instead of waiting for a writer.
+///
+/// Windows: [`NotSupported`]. Windows has no FIFO in the file system. Row
+/// "Sockets and pipes" (`fsx.rs:186`).
+pub fn open_no_block(options: &mut OpenOptions) -> Result<(), NotSupported> {
+    os::open_no_block(options)
+}
+
+/// Rename `from` to `to`, and fail when `to` exists. A plain `rename`
+/// replaces an empty dir. Where the file system has no flag for this, a
+/// plain `rename`.
+///
+/// Windows: a plain `rename`. Row "File locks".
+pub fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
+    os::rename_noreplace(from, to)
+}
+
+/// The owner and the mode of the file of `meta`.
+///
+/// Windows: [`NotSupported`]. Row "File permissions": owner and mode
+/// checks skipped.
+pub fn owner_and_mode(meta: &Metadata) -> Result<OwnerAndMode, NotSupported> {
+    os::owner_and_mode(meta)
+}
+
+/// The mode of the file of `meta`: the file type bits and the permission
+/// bits.
+///
+/// Windows: [`NotSupported`]. Row "File permissions": modes ignored.
+pub fn mode_of(meta: &Metadata) -> Result<u32, NotSupported> {
+    os::mode_of(meta)
+}
+
+/// The real user id of this process.
+///
+/// Windows: [`NotSupported`]. Row "File permissions": owner checks skipped.
+pub fn current_uid() -> Result<u32, NotSupported> {
+    os::current_uid()
+}
+
+/// Whether the file of `meta` is a regular file that a user can execute.
+///
+/// Windows: a regular file that exists. The extension decides. Row "File
+/// permissions": executable = exists.
+pub fn is_executable(meta: &Metadata) -> bool {
+    os::is_executable(meta)
+}
+
+/// Make the file `path` executable: mode 0755.
+///
+/// Windows: does nothing. The extension decides. Row "File permissions":
+/// executable = exists.
+pub fn make_executable(path: &Path) -> io::Result<()> {
+    os::make_executable(path)
+}
+
+/// The identity of the file of `meta`: `(dev, ino)`.
+///
+/// Windows: `(0, creation time)`. Stable Rust has no file index on Windows,
+/// so the creation time stands in for the inode. Row "Other"
+/// (`telemetry/cursor.rs:84`).
+pub fn file_identity(meta: &Metadata) -> (u64, u64) {
+    os::file_identity(meta)
+}
+
+/// An exclusive `flock` on the dir of a lock, held while 1 process breaks
+/// that lock. The kernel drops it when the process dies, so it is never
+/// left behind. The drop unlocks before the close: a child that another
+/// thread forks shares the open file until it execs.
+///
+/// Windows: the guard holds nothing. Row "File locks": lock break race not
+/// guarded.
+#[derive(Debug)]
+pub struct BreakerGuard {
+    _held: os::BreakerGuard,
+}
+
+impl BreakerGuard {
+    /// Take the guard of the lock at `lock`. `None` while another holder
+    /// has it. Where `flock` is not available (a file system without it, or
+    /// Windows), the guard holds nothing.
+    pub fn take(lock: &Path) -> Option<BreakerGuard> {
+        os::BreakerGuard::take(lock).map(|held| BreakerGuard { _held: held })
+    }
+}
