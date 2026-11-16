@@ -85,7 +85,7 @@ fn git_in(h: &Harness, dir: &Path, args: &[&str]) -> String {
     out(&o).trim().to_string()
 }
 
-/// Queue 1 task for `persona` in a new run `name`.
+/// Run the run-creation command `run`, then queue 1 task for `persona`.
 fn queue_one(h: &Harness, run: &[&str], persona: &str) {
     ok(h, run);
     let p = ticket(h, "t0", "# T0\n");
