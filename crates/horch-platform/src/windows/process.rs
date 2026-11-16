@@ -20,9 +20,14 @@ const NOT_SUPPORTED: NotSupported = NotSupported {
 };
 
 /// A process handle, closed on drop.
-pub(crate) struct Process(pub(crate) HANDLE);
+pub(crate) struct Process(HANDLE);
 
 impl Process {
+    /// The open handle. It stays valid while `self` lives; only drop closes it.
+    pub(crate) fn handle(&self) -> HANDLE {
+        self.0
+    }
+
     pub(crate) fn open(pid: i32, access: PROCESS_ACCESS_RIGHTS) -> Option<Self> {
         // SAFETY: plain call; a failure answers a null handle.
         let h = unsafe { OpenProcess(access, 0, pid as u32) };

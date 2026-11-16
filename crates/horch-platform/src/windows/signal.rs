@@ -23,8 +23,8 @@ pub(crate) fn stop_same(_pid: u32, os_pid: i32, started: u64, _how: Stop) -> boo
     let Some(p) = Process::open(os_pid, access) else {
         return false;
     };
-    // SAFETY: the handle is open with PROCESS_TERMINATE.
-    p.start_time() == Some(started) && unsafe { TerminateProcess(p.0, 1) } != 0
+    // SAFETY: the handle is open with PROCESS_TERMINATE while `p` lives.
+    p.start_time() == Some(started) && unsafe { TerminateProcess(p.handle(), 1) } != 0
 }
 
 pub(crate) fn terminate_politely(_pid: u32, _started: u64) -> Result<bool, NotSupported> {
