@@ -1633,7 +1633,10 @@ mod tests {
     #[test]
     fn a_sandboxed_fleet_worker_can_write_git_and_worktree_paths() {
         let tmp = tempfile::tempdir().unwrap();
-        let repo = tmp.path().join("repo");
+        // git answers with the real path, and the macOS temp folder is a
+        // symlink (/var -> /private/var).
+        let root = tmp.path().canonicalize().unwrap();
+        let repo = root.join("repo");
         let status = Command::new("git")
             .args(["init", "-q"])
             .arg(&repo)
@@ -1656,7 +1659,7 @@ mod tests {
             .status()
             .unwrap();
         assert!(status.success());
-        let linked = tmp.path().join("linked");
+        let linked = root.join("linked");
         let status = Command::new("git")
             .current_dir(&repo)
             .args(["worktree", "add", "-q", "-b", "worker"])
