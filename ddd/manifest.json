@@ -4,7 +4,7 @@
   "title": "fleetd: the horch fleet control plane",
   "ddd_dir": "ddd",
   "created": "2026-11-12T16:45:13Z",
-  "updated": "2026-11-16T21:17:28Z",
+  "updated": "2026-11-16T21:38:48Z",
   "mode": "auto",
   "depth": "standard",
   "scale_target": {
@@ -105,10 +105,10 @@
       ]
     },
     "code": {
-      "status": "stale",
-      "updated": "2026-11-12T22:07:02Z",
+      "status": "done",
+      "updated": "2026-11-16T21:38:48Z",
       "mode": "auto",
-      "open_questions": 1,
+      "open_questions": 0,
       "artifacts": [
         "ddd/08-code/code.json",
         "ddd/08-code/decisions/D2-A.json",
@@ -121,6 +121,7 @@
         "ddd/08-code/ideas/aggregate-canvas-plan.md",
         "ddd/08-code/ideas/design.md",
         "ddd/08-code/implementation-plan.md",
+        "ddd/08-code/integration/aggregate-canvas-bundle.md",
         "ddd/08-code/integration/aggregate-canvas-feature.md",
         "ddd/08-code/integration/aggregate-canvas-task-branch.md",
         "ddd/08-code/integration/design.md",

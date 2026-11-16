@@ -38,14 +38,17 @@ No aggregates by design (pattern = active-record, strategize N2). The records an
 - Archive and trash refs only move forward, each ref write is read back before a folder is removed, and trash refs expire after 30 days (04 W8). Triage commits modified and untracked files before ARCHIVE or DELETE (04 W9).
 - A worktree survives attempts: a retry, a fallback restart or a resume reuses the same worktree (understand N1). The worktree goes to landing when its task branch is verified and to landed when the branch landed; only a landed or rescued worktree is removed (decompose N6).
 - An abandoned task branch is dropped only after worktree-rescued is recorded (connect N4). No git call runs inside a ledger transaction.
+- git worktree add, remove and list and each rescue run as jobs outside the pass: worktree_add, worktree_remove, worktree_list and rescue (A32, A33). The worktree row commits in reserved with its worktree_add job; the attempt launches only after the job passed; a failed job drops the row. The scan of the worktree folders keeps a cursor in pass_cursors and stops at its time budget (A32).
+- A rescue ref has 1 of 2 classes: unique (it holds work that is nowhere else) or superseded. Only the operator deletes a unique rescue ref, with horch rescue drop (A27, I10).
 
 ## 3. Application services (use cases)
 | Use case | Command (`discover` id) | Trigger and rule | Loads | Decides / enforces |
 |---|---|---|---|---|
-| `CreateWorktree` | `create-worktree` | git worktree add on the task branch. Only fleetd creates worktrees. | store rows | see §2 |
-| `ReconcileWorktrees` | `reconcile-worktrees` | Every pass reads rows and /fleet/work; every 60 s also git worktree list --porcelain. | store rows | see §2 |
-| `RescueWorktree` | `rescue-worktree` | Private index, commit-tree, update-ref, then verify. Reads the ref back and compares every file before any removal (RR-9). | store rows | see §2 |
-| `RemoveWorktree` | `remove-worktree` | Only after landed or a verified rescue. | store rows | see §2 |
+| `CreateWorktree` | `create-worktree` | The worktree row commits in reserved with 1 worktree_add job in queued, in the transaction that leases the task. The job adds the worktree on the task branch, outside the pass; a run first prunes a partial folder at its path. Only fleetd creates worktrees (A32). | store rows | see §2 |
+| `ReconcileWorktrees` | `reconcile-worktrees` | Each pass scans the worktree folders from its cursor in pass_cursors, within the time budget of the scan; a worktree_list job reads git worktree list --porcelain every 60 s (A32). | store rows | see §2 |
+| `RescueWorktree` | `rescue-worktree` | A rescue job outside the pass: private index, commit-tree, update-ref, then verify. Reads the ref back and compares every file before any removal (RR-9). The ref gets the class unique or superseded (A27). Issued by integration through rescue-worktree; answers worktree-rescued. | store rows | see §2 |
+| `RemoveWorktree` | `remove-worktree` | A worktree_remove job, only after landed or a verified rescue (A32). | store rows | see §2 |
+| `DropRescueRef` | `drop-rescue-ref` | horch rescue drop <ref>, an operator request with request_id and the operator token. The only way to delete a rescue ref of class unique (I10, A27). Publishes rescue-ref-dropped. | store rows | see §2 |
 
 Transaction: 1 aggregate (or 1 store call set) per use case through the one-door transition function; the event row is written in the same transaction; process starts, git calls and check runs happen after the commit (connect N4).
 
@@ -53,9 +56,9 @@ Transaction: 1 aggregate (or 1 store call set) per use case through the one-door
 ### Driving
 | Port | Operations | Called by |
 |---|---|---|
-| `WorktreeCustodyCommands` | create, reconcile, rescue, remove; called by the reconcile pass and horch worktree restore | ReconcilePassDriver and CommandChannelHandler |
+| `WorktreeCustodyCommands` | create, reconcile, rescue, remove, drop-rescue-ref; called by the reconcile pass, horch worktree restore and the command channel (horch rescue drop) | ReconcilePassDriver and CommandChannelHandler |
 | `WorktreeCustodyQueries` | read model WorktreeRows for horch worktrees |  |
-| `WorktreeCustodyEventHandlers` | policies on task-leased, attempt-failed, task-branch-landed | InProcessReconcileConsumer |
+| `WorktreeCustodyEventHandlers` | policies on task-leased, attempt-failed, task-branch-landed, rescue-worktree from integration, and job-abandoned and job-requeued of its own job kinds | InProcessReconcileConsumer |
 | `RescueRefs` | in-process call from integration: write and read back a rescue ref of a branch tip before a rebase or forced update (I10, define N6) | InProcessWorktreeCustody |
 
 ### Driven
@@ -63,8 +66,8 @@ Transaction: 1 aggregate (or 1 store call set) per use case through the one-door
 |---|---|---|
 | `WorktreeCustodyStore` | worktrees rows; the reserved row is written in the leasing transaction | persistence, collaborator or infrastructure need named in the operations |
 | `EventPublisher` | writes the event row in the same ledger transaction | persistence, collaborator or infrastructure need named in the operations |
-| `WorktreeGitGateway` | the only caller of git worktree add, list --porcelain and remove, and the only writer of refs under refs/horch/rescue/ (define N5); private-index rescue commit, update-ref, read back; stash list; never inside a ledger transaction | persistence, collaborator or infrastructure need named in the operations |
-| `WorkDirScanner` | lists the work directory and reads dirty and untracked state | persistence, collaborator or infrastructure need named in the operations |
+| `WorktreeGitGateway` | the only caller of git worktree add, list --porcelain and remove, and the only writer of refs under refs/horch/rescue/ (define N5); each of these runs as a job of kind worktree_add, worktree_remove, worktree_list or rescue through the JobQueue of fleet-runtime, never inside a pass (A32) | persistence, collaborator or infrastructure need named in the operations |
+| `WorkDirScanner` | lists the worktree folders and reads dirty and untracked state; continues at its cursor in pass_cursors and stops at the time budget of the scan (A32) | persistence, collaborator or infrastructure need named in the operations |
 | `Clock` | the 60 s git worktree list cadence and the 30 day trash ref expiry | persistence, collaborator or infrastructure need named in the operations |
 
 ## 5. Adapters
@@ -80,7 +83,7 @@ Transaction: 1 aggregate (or 1 store call set) per use case through the one-door
 | `WorktreeGitGateway` | `TempRepoWorktreeGit` | in-memory fake | - |
 | `WorkDirScanner` | `FsWorkDirScanner` | production | - |
 | `WorkDirScanner` | `FakeWorkDir` | in-memory fake | - |
-| `Clock` | `PlatformAwakeClock` | production | - |
+| `Clock` | `LedgerFleetClock` | production | - |
 | `Clock` | `FakeClock` | in-memory fake | - |
 | `RescueRefs` | `InProcessWorktreeCustody` | production | - |
 
@@ -90,13 +93,16 @@ Transaction: 1 aggregate (or 1 store call set) per use case through the one-door
 |---|---|---|---|---|---|
 | `worktree-created` | use case that emits it (§3) | task-execution | worktree_id, task_id, path, branch | at-least-once | `contract: worktree-created` |
 | `rescue-failed` | use case that emits it (§3) | task-execution | worktree_id, task_id | at-least-once | `contract: rescue-failed` |
+| `worktree-rescued` | use case that emits it (§3) | integration | branch, task_id, rescue_ref, rescue_class | at-least-once | `contract: worktree-rescued` |
 
 ### Consumed
 | Event | From | Policy (`discover` id) | Handled by | Handler → command | Delivery | Idempotency |
 |---|---|---|---|---|---|---|
 | `task-leased` | task-execution | policy (see canvas) | policy | reconcile pass handler | at-least-once | the reconcile pass is level-triggered, so a reaction can run again; create-worktree is a no-op when the worktree exists for the task - test `idempotent: task-leased` |
-| `attempt-failed` | task-execution | policy (see canvas) | policy | reconcile pass handler | at-least-once | the reconcile pass is level-triggered, so a reaction can run again; the worktree state moves once per attemptId - test `idempotent: attempt-failed` |
+| `attempt-failed` | task-execution | policy (see canvas) | policy | reconcile pass handler | at-least-once | the reconcile pass is level-triggered, so a reaction can run again; the worktree state moves once per attempt_id; repair_attempts of a branch goes up once per attempt_id - test `idempotent: attempt-failed` |
 | `task-branch-landed` | integration | policy (see canvas) | policy | reconcile pass handler | at-least-once | the reconcile pass is level-triggered, so a reaction can run again; remove-worktree and roll-up-idea are no-ops when already done - test `idempotent: task-branch-landed` |
+| `job-abandoned` | fleet-runtime | policy (see canvas) | policy | reconcile pass handler | at-least-once | the reconcile pass is level-triggered, so a reaction can run again; the owner context reads the job row; 1 needs-you item per job key - test `idempotent: job-abandoned` |
+| `job-requeued` | fleet-runtime | policy (see canvas) | policy | reconcile pass handler | at-least-once | the reconcile pass is level-triggered, so a reaction can run again; the next run starts once per job key - test `idempotent: job-requeued` |
 
 ## 7. Read models
 | Read model | Source events | Readers | Storage | Rebuild |
@@ -104,7 +110,7 @@ Transaction: 1 aggregate (or 1 store call set) per use case through the one-door
 | `WorktreeRows` | worktree-created, worktree-orphaned, worktree-rescued, rescue-failed, worktree-removed | operator and agents through horch CLI read-only commands | ledger tables and files of this context | derived again on each pass from the ledger |
 
 ## 8. Persistence
-Extends the existing worktrees table with state, owner_attempt, base_sha, head_sha, dirty, rescue_ref, disk_bytes and seen_at (Phase 3). The reserved row is written in the same transaction that leases the task. git worktree add, remove and the rescue commit run after the commit, never inside it.
+Extends the existing worktrees table with state, owner_attempt, base_sha, head_sha, dirty, rescue_ref, disk_bytes and seen_at (Phase 3). The reserved row is written in the same transaction that leases the task, with 1 worktree_add job in queued. git worktree add, remove, list and the rescue commit run as jobs after the commit, never inside it (A32). Each rescue ref records its class, unique or superseded (A27).
 
 ## 9. Tests
 | Kind | Name | Verifies |
@@ -124,11 +130,18 @@ Extends the existing worktrees table with state, owner_attempt, base_sha, head_s
 | idempotency | `handling attempt-failed twice (same message id) has the same effect as once` | idempotent: attempt-failed |
 | idempotency | `handling task-branch-landed twice (same message id) has the same effect as once` | idempotent: task-branch-landed |
 | invariant | `rescue_ref_for_integration_reads_back_before_return` | A rescue ref asked for by integration is written and read back before the call returns (I10, define N6) |
+| contract | `published worktree-rescued carries exactly branch, task_id, rescue_ref, rescue_class (connect.json payload) and nothing consumers did not ask for` | contract: worktree-rescued |
+| idempotency | `handling job-abandoned twice (same job key) has the same effect as once` | idempotent: job-abandoned |
+| idempotency | `handling job-requeued twice (same job key) has the same effect as once` | idempotent: job-requeued |
+| invariant | `unique_rescue_ref_is_deleted_only_by_drop_rescue_ref` | I10: a rescue ref of class unique is deleted only by the operator, with horch rescue drop (A27) |
+| invariant | `slow_worktree_add_job_keeps_the_pass_under_its_time_budget` | git worktree add, remove and list and each rescue run as jobs outside the pass (A32) |
+| invariant | `failed_worktree_add_drops_the_reserved_row_and_abandoned_runs_again` | A failed worktree_add job drops the reserved row; an abandoned one runs again (A32, A33) |
+| invariant | `worktree_scan_continues_at_its_cursor_after_a_restart` | The worktree scan continues at its cursor in pass_cursors after the time budget or a restart (A32) |
 | fitness | `fitness_domain_imports_nothing_outward` | §1 |
 
 ## 10. Integration & anti-corruption
-Wraps taskledger::worktree_ops and the triage ref code (04 W6, W8, W9) behind WorktreeGitGateway. It alone calls git worktree add, remove and list and writes refs under refs/horch/rescue/ (define N5); integration asks it for a rescue ref through RescueRefs before a rebase (A13). Reacts to task-leased, attempt-failed and task-branch-landed. Publishes worktree-created and rescue-failed to task-execution.
+Wraps taskledger::worktree_ops and the triage ref code (04 W6, W8, W9) behind WorktreeGitGateway. It alone calls git worktree add, remove and list and writes refs under refs/horch/rescue/ (define N5); integration asks it for a rescue ref through RescueRefs before a rebase (A13). Reacts to task-leased, attempt-failed and task-branch-landed. Publishes worktree-created and rescue-failed to task-execution. integration sends rescue-worktree and waits for worktree-rescued before it abandons a branch (connect F10). horch rescue drop arrives as an operator request with request_id and the operator token. Its jobs run through the JobQueue of fleet-runtime (A16).
 
 ## 11. Decisions, assumptions, open points
 - Decisions D1 (module root) and D4 (only the verifier sets done) apply to every context; D2 applies to task-execution; D3 (wrapper owner) is option B, worker-profiles (orchestrator, D15).
-- Assumptions: A1, A2, A5, A7, A9, A13 · Open question: Q3 in code.json where it names this context.
+- Assumptions: A1, A2, A5, A7, A9, A13, A16 · Open questions: none (Q3 is answered, see deprecated[] in code.json).

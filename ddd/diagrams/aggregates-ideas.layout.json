@@ -1,5 +1,5 @@
 {
-  "engine": "elk",
+  "engine": "elk+incremental",
   "width": 720,
   "height": 424,
   "nodes": {
@@ -214,6 +214,6 @@
       }
     }
   },
-  "fingerprint": "8c89f2d0-c8ce7044",
+  "fingerprint": "a8e8ed3-907c15b5",
   "optionsKey": "{\"direction\":\"RIGHT\",\"spacing\":\"comfortable\"}"
 }

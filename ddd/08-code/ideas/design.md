@@ -18,6 +18,7 @@ crates/horch-core/src/fleetd/ideas/
     question.rs        Question record
     plan.rs            Plan aggregate: the plan validation module
     plan_validator.rs  PlanValidator domain service (pure)
+    needs_you.rs       NeedsYou item: stable key (kind and row), state open, resolved or superseded
   application/
     commands.rs        1 use case per owned command
     handlers.rs        policies on consumed events
@@ -34,28 +35,14 @@ Composition root: `crates/horch/src/cmd/fleetd.rs` (daemon and `horch fleetd che
 ## 2. Domain model
 | Aggregate | Root | Invariants | Commands → events | Canvas |
 |---|---|---|---|---|
-| `plan` | `Plan` | 6 | 3 commands → 4 events | `aggregate-canvas-plan.md` |
+| `plan` | `Plan` | 7 | 3 commands → 4 events | `aggregate-canvas-plan.md` |
 
-Plan validation is the only domain-model module of ideas (strategize D1 option C, orchestrator D15). Idea intake and questions stay active-record records in IdeasStore; their use cases are transaction scripts (A12). ideas owns the 1 needs-you list: approvals, parked ideas, escalated questions and escalated tasks (A14). The rules:
-- Only code advances an idea. When an idea is captured, the dispatcher starts its sub-orchestrator on the next pass and the idea goes to clarifying; a --direct idea goes to ticketing with no research and no interview (FR-1, FR-2, FR-12).
-- An idea passes awaiting_approval only when approval.json, written by fleetd, holds the sha256 of the current assumptions.md, and the approve command ran outside every fleet attempt. An approval written by any other process is ignored (FR-10, I7, C5).
-- The assumptions validator refuses assumptions.md while any item is marked [open]. When the file validates, fleetd requests the operator approval and posts a herdr notification.
-- While an idea waits on the operator, its lease is paused. After 30 min idle the sub-orchestrator process stops; after 7 days with no answer the idea goes to parked with a note in needs-you/.
-- When the assumptions are approved, or revised and approved again, the dispatcher starts a fresh sub-orchestrator process for the next phase. No phase carries a context window into the next (understand N11 keeps the decision rule of the sub-orchestrator).
-- A plan is committed all-or-nothing, and only after it passes schema, DAG, coverage, profile and citation checks; a plan for a project with no declared fast gate and full gate is refused (FR-3, FR-4). A judgment-kind task without a paired judge task in another session refuses the plan (understand N12).
-- Every requirement of an idea in in_progress or later is covered by at least 1 task that is not cancelled (I3).
-- A worker question is a ledger row with an owner, the sub-orchestrator of the feature. On each pass fleetd starts the owner if it is not running, until an answer is recorded; past its time limit the question escalates to needs-you/ (RR-12, discover Q2 for the limit).
-- The sub-orchestrator answers a question in 1 of 4 ways: cite the approved line, send a revise to the operator, replan the task, or record its own reversible assumption. Only product direction, scope or a trade-off the operator must own goes to the operator (understand N11, design decision D13).
-- When task-execution asks for a replan, the sub-orchestrator replans the task once; the replanned task goes back to task-execution as task-replanned.
-- When every task of the idea is landed on its feature branch, the idea goes to integrating. When the feature is merged and every worktree of the idea is removed, the idea goes to merged (discover N4).
-- Every feature that is not merged and not abandoned has exactly 1 live sub-orchestrator or waits on the operator (I7, I13). The dispatcher starts a missing one and stops an extra one on each pass, through worker-profiles launch-environment and fleet-runtime start-agent-process (connect N3).
-
-Domain services: `PlanValidator`: Schema, DAG, coverage, profiles, model guide, paired judges, declared gates and citations to approved assumptions; pure over plan.yaml and the requirements.
+Value objects: DeclaredGates, JudgePairing, PlanContentHash, PlanId, RequirementCoverage, TaskDag · Entities: PlannedTask · Domain services: PlanValidator
 
 ## 3. Application services (use cases)
 | Use case | Command (`discover` id) | Trigger and rule | Loads | Decides / enforces |
 |---|---|---|---|---|
-| `AddIdea` | `add-idea` | horch idea add "..." or -f notes.md, optional --to <feature>. | store rows | see §2 |
+| `AddIdea` | `add-idea` | horch idea add "..." or -f notes.md, optional --to <feature>. A policy also issues it for an adapter drift that conformance finds. An idea of a feature waits in captured while another idea of its feature is in clarifying, specifying or ticketing (A28). | store rows | see §2 |
 | `StartSubOrchestrator` | `start-sub-orchestrator` | fleetd starts 1 fresh process per phase in the pane of the feature, and restarts a dead or missing one on the next pass. Asks LaunchEnvironmentGateway, then AgentProcessGateway, after commit (connect N3). | store rows | see §2 |
 | `AskOperator` | `ask-operator` | 1 question at a time: what done looks like, scope edges, constraints, affected areas, priority. | store rows | see §2 |
 | `AnswerInterviewQuestion` | `answer-interview-question` | The operator answers in the pane. horch idea note records it. | store rows | see §2 |
@@ -63,7 +50,7 @@ Domain services: `PlanValidator`: Schema, DAG, coverage, profiles, model guide, 
 | `WriteAssumptions` | `write-assumptions` | Writes assumptions.md: [confirmed] and [assumed] items, none [open]. | store rows | see §2 |
 | `RequestApproval` | `request-approval` | Moves the idea to awaiting_approval and notifies the operator. Reminds once an hour in working hours. | store rows | see §2 |
 | `ParkIdea` | `park-idea` | Issued by policy after 7 days of waiting or an escalation. The operator also runs horch idea park. | store rows | see §2 |
-| `CancelIdea` | `cancel-idea` | horch idea cancel. | store rows | see §2 |
+| `CancelIdea` | `cancel-idea` | horch idea cancel, an operator request with request_id and the operator token. A policy also issues it when the feature of the idea is abandoned. Publishes idea-cancelled, and task-execution cancels each task of the idea that is not terminal (A34). | store rows | see §2 |
 | `ReviseAssumptions` | `revise-assumptions` | horch idea revise <id> "...". | store rows | see §2 |
 | `ApproveAssumptions` | `approve-assumptions` | horch idea approve <id>. Refused inside any fleet attempt; profiles deny it. fleetd writes approval.json with the sha256 the operator saw; any other approval file is ignored (I7). | store rows | see §2 |
 | `AddDirectIdea` | `add-direct-idea` | horch idea add --direct <ticket file>, optional --to. Refused inside a fleet attempt. | store rows | see §2 |
@@ -71,7 +58,7 @@ Domain services: `PlanValidator`: Schema, DAG, coverage, profiles, model guide, 
 | `SubmitPlan` | `submit-plan` | Writes tickets and plan.yaml. | `Plan` by id | see §2 |
 | `ValidatePlan` | `validate-plan` | The plan validator: paired judges, declared gates, model guide, overlapping paths. Commits tasks in 1 transaction. | `Plan` by id | see §2 |
 | `AskQuestion` | `ask-question` | Writes 1 question file, commits work in progress, exits. | store rows | see §2 |
-| `AnswerQuestion` | `answer-question` | fleetd starts the owner on each pass until an answer is recorded. 4 cases (design, Ideas, How a worker's question is resolved). | store rows | see §2 |
+| `AnswerQuestion` | `answer-question` | fleetd starts the owner on each pass until an answer is recorded. 4 cases (design, Ideas, How a worker's question is resolved). The sub-orchestrator answers with horch idea note, a file of class worker in its idea folder; it never uses the command channel (A35). | store rows | see §2 |
 | `EscalateQuestion` | `escalate-question` | Fires when the time limit of the question row passes. | store rows | see §2 |
 | `ReplanTask` | `replan-task` | Once per task. | `Plan` by id | see §2 |
 | `RollUpIdea` | `roll-up-idea` | in_progress to integrating. | store rows | see §2 |
@@ -83,10 +70,10 @@ Transaction: 1 aggregate (or 1 store call set) per use case through the one-door
 ### Driving
 | Port | Operations | Called by |
 |---|---|---|
-| `IdeasCommands` | one operation per use case; called by the command channel (horch idea ..., and the answers of a sub-orchestrator to worker questions), the reconcile pass and the idea-folder ingester | CommandChannelHandler and ReconcilePassDriver |
+| `IdeasCommands` | one operation per use case; called by the command channel (operator requests of horch idea ..., each with request_id and the operator token), the reconcile pass and the idea folder ingester | CommandChannelHandler and ReconcilePassDriver |
 | `IdeasQueries` | read models IdeaBoard, InterviewRecord, InFlightDiffs, ApprovedAssumptionsAndSpec |  |
-| `IdeasEventHandlers` | policies on feature-opened, replan-requested, task-branch-landed, feature-merged, task-escalated (onto the needs-you list) and agent-status-changed (sub-orchestrator pane state) | InProcessReconcileConsumer |
-| `IdeaFolderIngest` | assumptions.md, spec.md, requirements.yaml, plan.yaml, question and answer files; 1 ingestion per (path, sha256) | IdeaFolderIngester |
+| `IdeasEventHandlers` | policies on feature-opened, replan-requested, task-branch-landed, feature-merged, task-escalated (onto the needs-you list) and agent-status-changed (sub-orchestrator pane state); also feature-abandoned (cancel its ideas), task-branch-repair-escalated, job-abandoned and adapter-conformance-failed (onto the needs-you list, or a new idea for a drift) | InProcessReconcileConsumer |
+| `IdeaFolderIngest` | assumptions.md, spec.md, requirements.yaml, plan.yaml, question files and the answer notes of horch idea note; 1 ingestion per (path, sha256); a file of class worker is read only as a regular file, not through a link, under its size limit (SR-6) | IdeaFolderIngester |
 
 ### Driven
 | Port | Operations | Why it exists |
@@ -95,9 +82,9 @@ Transaction: 1 aggregate (or 1 store call set) per use case through the one-door
 | `EventPublisher` | writes the event row in the same ledger transaction | persistence, collaborator or infrastructure need named in the operations |
 | `LaunchEnvironmentGateway` | asks worker-profiles for the idea-lead launch environment | persistence, collaborator or infrastructure need named in the operations |
 | `AgentProcessGateway` | sends start-agent-process to worker-profiles to start or stop the sub-orchestrator pane; never inside a ledger transaction | persistence, collaborator or infrastructure need named in the operations |
-| `NeedsYouInbox` | the 1 needs-you list (OR-3): approval requests, parked ideas, escalated questions and escalated tasks; herdr notification | persistence, collaborator or infrastructure need named in the operations |
+| `NeedsYouInbox` | the 1 needs-you list (OR-3): approval requests, parked ideas, escalated questions, escalated tasks, escalated task branches, abandoned jobs, illegal transitions; each item has a stable key (its kind and its row) and a state open, resolved or superseded, and a producer writes by key (A28); herdr notification | persistence, collaborator or infrastructure need named in the operations |
 | `AttemptContext` | tells whether the caller runs inside a fleet attempt, so approve and --direct refuse there | persistence, collaborator or infrastructure need named in the operations |
-| `Clock` | 30 min idle stop, 7 day park, question time limit, hourly reminder | persistence, collaborator or infrastructure need named in the operations |
+| `Clock` | deadlines on the fleet clock: the 30 min idle stop and the question time limit; calendar time: the 7 day park and the hourly reminder (PL-4, A25) | persistence, collaborator or infrastructure need named in the operations |
 | `PlanRepository` | load and save Plan with its PlannedTasks by idea id and content hash | persistence, collaborator or infrastructure need named in the operations |
 | `IdeaFolderWriter` | writes plan.verdict.json (plan-verdict-written) and approval.json (assumptions-approved) into the idea folder, atomic; fleetd is their only writer | persistence, collaborator or infrastructure need named in the operations |
 
@@ -119,7 +106,7 @@ Transaction: 1 aggregate (or 1 store call set) per use case through the one-door
 | `NeedsYouInbox` | `InMemoryNeedsYou` | in-memory fake | - |
 | `AttemptContext` | `EnvAttemptContext` | production | - |
 | `AttemptContext` | `FakeAttemptContext` | in-memory fake | - |
-| `Clock` | `PlatformAwakeClock` | production | - |
+| `Clock` | `LedgerFleetClock` | production | - |
 | `Clock` | `FakeClock` | in-memory fake | - |
 | `PlanRepository` | `SqlitePlanRepository` | production | - |
 | `PlanRepository` | `InMemoryPlanRepository` | in-memory fake | - |
@@ -140,18 +127,23 @@ Transaction: 1 aggregate (or 1 store call set) per use case through the one-door
 | `question-answered` | use case that emits it (§3) | task-execution | question_id, task_id | at-least-once | `contract: question-answered` |
 | `own-assumption-recorded` | use case that emits it (§3) | task-execution | question_id, task_id | at-least-once | `contract: own-assumption-recorded` |
 | `idea-tasks-landed` | use case that emits it (§3) | integration | idea_id, feature_id | at-least-once | `contract: idea-tasks-landed` |
-| `plan-verdict-written` | use case that emits it (§3) | sub-orchestrator | idea, decision (committed|refused), reasons[] | refused), reasons[] | `contract: plan-verdict-written` |
+| `plan-verdict-written` | use case that emits it (§3) | sub-orchestrator | idea, decision (committed\|refused), reasons[] | at-least-once | `contract: plan-verdict-written` |
 | `assumptions-approved` | use case that emits it (§3) | sub-orchestrator | idea, assumptions_hash | at-least-once | `contract: assumptions-approved` |
+| `idea-cancelled` | use case that emits it (§3) | task-execution | idea_id, cause | at-least-once | `contract: idea-cancelled` |
 
 ### Consumed
 | Event | From | Policy (`discover` id) | Handled by | Handler → command | Delivery | Idempotency |
 |---|---|---|---|---|---|---|
+| `task-escalated` | task-execution | policy (see canvas) | policy | reconcile pass handler | at-least-once | the reconcile pass is level-triggered, so a reaction can run again; 1 needs-you file per (taskId, reason); integration records it once per taskId - test `idempotent: task-escalated` |
 | `feature-opened` | integration | policy (see canvas) | policy | reconcile pass handler | at-least-once | the reconcile pass is level-triggered, so a reaction can run again; ideas requests approval once per (ideaId, assumptionsHash) - test `idempotent: feature-opened` |
 | `replan-requested` | task-execution | policy (see canvas) | policy | reconcile pass handler | at-least-once | the reconcile pass is level-triggered, so a reaction can run again; 1 replan per task - test `idempotent: replan-requested` |
 | `task-branch-landed` | integration | policy (see canvas) | policy | reconcile pass handler | at-least-once | the reconcile pass is level-triggered, so a reaction can run again; remove-worktree and roll-up-idea are no-ops when already done - test `idempotent: task-branch-landed` |
 | `feature-merged` | integration | policy (see canvas) | policy | reconcile pass handler | at-least-once | the reconcile pass is level-triggered, so a reaction can run again; close-idea is a no-op for a merged idea - test `idempotent: feature-merged` |
-| `task-escalated` | task-execution | policy (see canvas) | policy | reconcile pass handler | at-least-once | the reconcile pass is level-triggered, so a reaction can run again; 1 needs-you file per (taskId, reason); integration records it once per taskId - test `idempotent: task-escalated` |
-| `agent-status-changed` | herdr | policy (see canvas) | policy | reconcile pass handler | at-least-once | edge events can be lost by design; each pass re-reads session.snapshot, so a repeat or a loss changes nothing - test `idempotent: agent-status-changed` |
+| `agent-status-changed` | herdr | policy (see canvas) | policy | reconcile pass handler | at-most-once | edge events can be lost by design; each pass re-reads session.snapshot, so a repeat or a loss changes nothing - test `idempotent: agent-status-changed` |
+| `task-branch-repair-escalated` | integration | policy (see canvas) | policy | reconcile pass handler | at-least-once | 1 needs-you item per branch, written by key (design: The needs-you list has a life cycle) - test `idempotent: task-branch-repair-escalated` |
+| `feature-abandoned` | integration | policy (see canvas) | policy | reconcile pass handler | at-least-once | the reconcile pass is level-triggered, so a reaction can run again; cancel-idea is a no-op for an idea that is merged or cancelled - test `idempotent: feature-abandoned` |
+| `job-abandoned` | fleet-runtime | policy (see canvas) | policy | reconcile pass handler | at-least-once | the reconcile pass is level-triggered, so a reaction can run again; the owner context reads the job row; 1 needs-you item per job key - test `idempotent: job-abandoned` |
+| `adapter-conformance-failed` | worker-profiles | policy (see canvas) | policy | reconcile pass handler | at-least-once | the reconcile pass is level-triggered, so a reaction can run again; 1 idea per (cli, version) drift - test `idempotent: adapter-conformance-failed` |
 
 ## 7. Read models
 | Read model | Source events | Readers | Storage | Rebuild |
@@ -160,10 +152,10 @@ Transaction: 1 aggregate (or 1 store call set) per use case through the one-door
 | `InterviewRecord` | interview-question-asked, interview-answer-recorded, idea-amended | operator and agents through horch CLI read-only commands | ledger tables and files of this context | derived again on each pass from the ledger |
 | `InFlightDiffs` | plan-committed, idea-tasks-landed | operator and agents through horch CLI read-only commands | ledger tables and files of this context | derived again on each pass from the ledger |
 | `ApprovedAssumptionsAndSpec` | assumptions-approved, assumptions-revised, spec-written, own-assumption-recorded | operator and agents through horch CLI read-only commands | ledger tables and files of this context | derived again on each pass from the ledger |
-| `NeedsYouList` | approval-requested, idea-parked, question-escalated, task-escalated, task-requeued | operator and agents through horch CLI read-only commands | ledger tables and files of this context | derived again on each pass from the ledger |
+| `NeedsYouList` | approval-requested, idea-parked, question-escalated, task-escalated, task-requeued, task-branch-repair-escalated, job-abandoned | operator and agents through horch CLI read-only commands | ledger tables and files of this context | derived again on each pass from the ledger |
 
 ## 8. Persistence
-Tables ideas, requirements, questions and the sub-orchestrator rows of attempts (task_id null, assumption A6). Idea-folder files are ingested once per (path, sha256) through the ingested table. approval.json is written only by fleetd, after the approve request arrives on the command channel from a caller outside every fleet attempt (I7).
+Tables ideas, requirements, questions and the sub-orchestrator rows of attempts (task_id null, assumption A6). Idea-folder files are ingested once per (path, sha256) through the ingested table. approval.json is written only by fleetd, after the approve request arrives on the command channel with the operator token from a caller outside every fleet attempt (I7, SR-8). The needs_you table holds 1 row per key (kind and row) with its state open, resolved or superseded; a producer writes by key (A28).
 
 ## 9. Tests
 | Kind | Name | Verifies |
@@ -198,17 +190,27 @@ Tables ideas, requirements, questions and the sub-orchestrator rows of attempts 
 | invariant | `second_replan_of_a_task_is_refused` | A task is replanned at most once |
 | transition | `transition_refused_to_submitted_needs_a_new_content_hash` | transition: refused -> submitted |
 | invariant | `question_escalates_after_15_min_and_operator_wait_has_no_limit` | A worker question with no answer from a running sub-orchestrator escalates to the operator after 15 min; the wait for the operator has no limit (orchestrator, D15) |
-| invariant | `sub_orchestrator_answer_arrives_on_the_command_channel` | The sub-orchestrator answers a worker question through the command channel; fleetd stays the only ledger writer |
+| invariant | `sub_orchestrator_answer_arrives_as_an_idea_note_file` | The sub-orchestrator answers a worker question with horch idea note, a file of class worker; it never uses the command channel, and fleetd stays the only ledger writer (A35, connect N9) |
 | invariant | `escalated_task_appears_on_the_1_needs_you_list` | There is 1 needs-you list and ideas owns it (OR-3, decompose N9) |
-| contract | `published plan-verdict-written carries exactly idea, decision (committed|refused), reasons[] (connect.json payload) and nothing consumers did not ask for` | contract: plan-verdict-written |
+| contract | `published plan-verdict-written carries exactly idea, decision (committed\|refused), reasons[] (connect.json payload) and nothing consumers did not ask for` | contract: plan-verdict-written |
 | contract | `published assumptions-approved carries exactly idea, assumptions_hash (connect.json payload) and nothing consumers did not ask for` | contract: assumptions-approved |
 | idempotency | `handling task-escalated twice (same task_id, reason) has the same effect as once` | idempotent: task-escalated |
 | idempotency | `handling agent-status-changed twice (same pane, agent_status; each pass re-reads session.snapshot) has the same effect as once` | idempotent: agent-status-changed |
+| contract | `published idea-cancelled carries exactly idea_id, cause (connect.json payload) and nothing consumers did not ask for` | contract: idea-cancelled |
+| idempotency | `handling task-branch-repair-escalated twice (same branch; 1 needs-you item per branch by key) has the same effect as once` | idempotent: task-branch-repair-escalated |
+| idempotency | `handling feature-abandoned twice (same feature_id; cancel-idea is a no-op for a merged or cancelled idea) has the same effect as once` | idempotent: feature-abandoned |
+| idempotency | `handling job-abandoned twice (same job key; 1 needs-you item per job key) has the same effect as once` | idempotent: job-abandoned |
+| idempotency | `handling adapter-conformance-failed twice (same cli, version; 1 idea per drift) has the same effect as once` | idempotent: adapter-conformance-failed |
+| invariant | `replan_that_leaves_a_judgment_task_without_judge_is_refused` | A plan change that would leave a judgment task with no judge task is refused (A34) |
+| invariant | `needs_you_item_written_twice_by_key_is_1_item_and_resolves_with_its_row` | The needs-you list has a life cycle: 1 item per key, open, resolved or superseded (A28) |
+| invariant | `second_idea_of_a_feature_waits_in_captured_until_the_first_leaves_ticketing` | The ideas of 1 feature are planned in order: a captured idea waits while another idea of its feature is in clarifying, specifying or ticketing (A28) |
+| invariant | `i7_two_ideas_of_1_feature_share_1_live_sub_orchestrator` | I7: each feature that has an idea from clarifying to integrating has exactly 1 live sub-orchestrator attempt, or waits for the operator (A28) |
+| invariant | `abandoned_feature_cancels_each_idea_that_is_not_merged` | Whenever a feature is abandoned, each idea of the feature that is not merged goes to cancelled (A28) |
 | fitness | `fitness_domain_imports_nothing_outward` | §1 |
 
 ## 10. Integration & anti-corruption
-Talks to worker-profiles only through LaunchEnvironmentGateway and AgentProcessGateway to start the sub-orchestrator pane (connect N3, D3). A sub-orchestrator answers a worker question through the command channel, and fleetd stays the only ledger writer. The herdr agent status arrives as agent-status-changed. Sub-orchestrators reach this context only as files in the idea folder; the operator reaches it through horch idea commands on the command channel.
+Talks to worker-profiles only through LaunchEnvironmentGateway and AgentProcessGateway to start the sub-orchestrator pane (connect N3, D3). A sub-orchestrator answers a worker question with horch idea note, a file of class worker in its idea folder; it never uses the command channel, and fleetd stays the only ledger writer (A35, A18). 1 live sub-orchestrator runs for each feature, and the ideas of 1 feature are planned in order (I7, I13, A28). A cancelled idea sends idea-cancelled to task-execution; an abandoned feature cancels each idea that is not merged. An adapter drift (adapter-conformance-failed) becomes a new idea. task-branch-repair-escalated and job-abandoned put 1 item on the needs-you list. The herdr agent status arrives as agent-status-changed. Sub-orchestrators reach this context only as files in the idea folder; the operator reaches it through horch idea commands on the command channel, each with request_id and the operator token.
 
 ## 11. Decisions, assumptions, open points
 - Decisions D1 (module root) and D4 (only the verifier sets done) apply to every context; D2 applies to task-execution; D3 (wrapper owner) is option B, worker-profiles (orchestrator, D15).
-- Assumptions: A1, A2, A5, A7, A9, A6, A12, A14 · Open question: Q3 in code.json where it names this context.
+- Assumptions: A1, A2, A5, A7, A9, A6, A12, A14, A18 · Open questions: none (Q3 is answered, see deprecated[] in code.json).

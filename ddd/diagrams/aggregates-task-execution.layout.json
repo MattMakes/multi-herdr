@@ -1,11 +1,23 @@
 {
-  "engine": "elk",
+  "engine": "elk+incremental",
   "width": 776,
-  "height": 2152,
+  "height": 2176,
   "nodes": {
     "cmd:apply-stall-ladder": {
       "x": 40,
       "y": 736,
+      "w": 128,
+      "h": 56
+    },
+    "cmd:assign-task": {
+      "x": 88,
+      "y": 560,
+      "w": 128,
+      "h": 56
+    },
+    "cmd:cancel-task": {
+      "x": 88,
+      "y": 472,
       "w": 128,
       "h": 56
     },
@@ -90,6 +102,12 @@
     "cmd:settle-high-finding": {
       "x": 40,
       "y": 2056,
+      "w": 128,
+      "h": 56
+    },
+    "cmd:start-work": {
+      "x": 88,
+      "y": 384,
       "w": 128,
       "h": 56
     },
@@ -207,6 +225,12 @@
       "w": 128,
       "h": 56
     },
+    "evt:task-cancelled": {
+      "x": 600,
+      "y": 2080,
+      "w": 128,
+      "h": 56
+    },
     "evt:task-done": {
       "x": 608,
       "y": 1296,
@@ -255,7 +279,7 @@
       "x": 24,
       "y": 24,
       "w": 728,
-      "h": 2104
+      "h": 2128
     }
   },
   "edges": {
@@ -281,6 +305,54 @@
       "labelAt": {
         "x": 233,
         "y": 684.3
+      }
+    },
+    "assign-task->task": {
+      "points": [
+        {
+          "x": 216,
+          "y": 588
+        },
+        {
+          "x": 252,
+          "y": 588
+        },
+        {
+          "x": 252,
+          "y": 712
+        },
+        {
+          "x": 288,
+          "y": 712
+        }
+      ],
+      "labelAt": {
+        "x": 252,
+        "y": 657
+      }
+    },
+    "cancel-task->task": {
+      "points": [
+        {
+          "x": 216,
+          "y": 500
+        },
+        {
+          "x": 252,
+          "y": 500
+        },
+        {
+          "x": 252,
+          "y": 712
+        },
+        {
+          "x": 288,
+          "y": 712
+        }
+      ],
+      "labelAt": {
+        "x": 252,
+        "y": 613
       }
     },
     "dispatch-task->task": {
@@ -619,6 +691,30 @@
         "y": 1935.4
       }
     },
+    "start-work->task": {
+      "points": [
+        {
+          "x": 152,
+          "y": 440
+        },
+        {
+          "x": 280,
+          "y": 440
+        },
+        {
+          "x": 280,
+          "y": 672
+        },
+        {
+          "x": 408,
+          "y": 672
+        }
+      ],
+      "labelAt": {
+        "x": 216,
+        "y": 438
+      }
+    },
     "task->attempt-failed": {
       "points": [
         {
@@ -849,6 +945,30 @@
       "labelAt": {
         "x": 568,
         "y": 710
+      }
+    },
+    "task->task-cancelled": {
+      "points": [
+        {
+          "x": 408,
+          "y": 752
+        },
+        {
+          "x": 536,
+          "y": 752
+        },
+        {
+          "x": 536,
+          "y": 2080
+        },
+        {
+          "x": 664,
+          "y": 2080
+        }
+      ],
+      "labelAt": {
+        "x": 472,
+        "y": 750
       }
     },
     "task->task-done": {
@@ -1164,6 +1284,6 @@
       }
     }
   },
-  "fingerprint": "4be1d6ac-30d79b96",
+  "fingerprint": "7330fb48-d909d6b6",
   "optionsKey": "{\"direction\":\"RIGHT\",\"spacing\":\"comfortable\"}"
 }

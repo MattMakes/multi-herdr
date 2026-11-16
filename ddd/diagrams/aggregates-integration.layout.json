@@ -1,8 +1,20 @@
 {
-  "engine": "elk",
+  "engine": "elk+incremental",
   "width": 752,
-  "height": 2160,
+  "height": 2624,
   "nodes": {
+    "bundle": {
+      "x": 240,
+      "y": 1704,
+      "w": 240,
+      "h": 80
+    },
+    "cmd:abandon-feature": {
+      "x": 72,
+      "y": 472,
+      "w": 128,
+      "h": 56
+    },
     "cmd:abandon-task-branch": {
       "x": 40,
       "y": 1616,
@@ -27,9 +39,21 @@
       "w": 128,
       "h": 56
     },
+    "cmd:escalate-task-branch": {
+      "x": 72,
+      "y": 1440,
+      "w": 128,
+      "h": 56
+    },
     "cmd:fast-forward-feature-branch": {
       "x": 40,
       "y": 1880,
+      "w": 128,
+      "h": 56
+    },
+    "cmd:fetch-remote": {
+      "x": 72,
+      "y": 384,
       "w": 128,
       "h": 56
     },
@@ -48,6 +72,12 @@
     "cmd:merge-pull-request": {
       "x": 40,
       "y": 824,
+      "w": 128,
+      "h": 56
+    },
+    "cmd:move-ideas-to-new-feature": {
+      "x": 72,
+      "y": 296,
       "w": 128,
       "h": 56
     },
@@ -75,9 +105,21 @@
       "w": 128,
       "h": 56
     },
+    "cmd:push-feature-branch": {
+      "x": 72,
+      "y": 208,
+      "w": 128,
+      "h": 56
+    },
     "cmd:rebase-feature-branch": {
       "x": 40,
       "y": 1176,
+      "w": 128,
+      "h": 56
+    },
+    "cmd:reopen-feature": {
+      "x": 72,
+      "y": 120,
       "w": 128,
       "h": 56
     },
@@ -111,6 +153,12 @@
       "w": 128,
       "h": 56
     },
+    "evt:bundle-dropped": {
+      "x": 552,
+      "y": 2000,
+      "w": 128,
+      "h": 56
+    },
     "evt:fast-gate-failed": {
       "x": 584,
       "y": 1472,
@@ -120,6 +168,18 @@
     "evt:fast-gate-passed": {
       "x": 584,
       "y": 1560,
+      "w": 128,
+      "h": 56
+    },
+    "evt:feature-abandoned": {
+      "x": 584,
+      "y": 2088,
+      "w": 128,
+      "h": 56
+    },
+    "evt:feature-branch-pushed": {
+      "x": 584,
+      "y": 2176,
       "w": 128,
       "h": 56
     },
@@ -153,6 +213,12 @@
       "w": 128,
       "h": 56
     },
+    "evt:feature-reopened": {
+      "x": 24,
+      "y": 2264,
+      "w": 128,
+      "h": 56
+    },
     "evt:feature-stacked": {
       "x": 584,
       "y": 240,
@@ -171,6 +237,12 @@
       "w": 128,
       "h": 56
     },
+    "evt:ideas-moved-to-new-feature": {
+      "x": 24,
+      "y": 2352,
+      "w": 128,
+      "h": 56
+    },
     "evt:pull-request-merged": {
       "x": 584,
       "y": 1032,
@@ -180,6 +252,18 @@
     "evt:pull-request-opened": {
       "x": 584,
       "y": 680,
+      "w": 128,
+      "h": 56
+    },
+    "evt:push-failed": {
+      "x": 24,
+      "y": 2440,
+      "w": 128,
+      "h": 56
+    },
+    "evt:remote-tips-fetched": {
+      "x": 24,
+      "y": 2528,
       "w": 128,
       "h": 56
     },
@@ -210,6 +294,12 @@
     "evt:task-branch-landed": {
       "x": 584,
       "y": 1912,
+      "w": 128,
+      "h": 56
+    },
+    "evt:task-branch-repair-escalated": {
+      "x": 584,
+      "y": 2264,
       "w": 128,
       "h": 56
     },
@@ -252,13 +342,37 @@
   },
   "groups": {
     "integration": {
-      "x": 24,
+      "x": 8,
       "y": 24,
-      "w": 704,
-      "h": 2112
+      "w": 720,
+      "h": 2576
     }
   },
   "edges": {
+    "abandon-feature->feature": {
+      "points": [
+        {
+          "x": 200,
+          "y": 500
+        },
+        {
+          "x": 236,
+          "y": 500
+        },
+        {
+          "x": 236,
+          "y": 624
+        },
+        {
+          "x": 272,
+          "y": 624
+        }
+      ],
+      "labelAt": {
+        "x": 236,
+        "y": 569
+      }
+    },
     "abandon-task-branch->task-branch": {
       "points": [
         {
@@ -283,52 +397,148 @@
         "y": 1572
       }
     },
-    "bisect-bundle->task-branch": {
+    "bisect-bundle->bundle": {
       "points": [
         {
           "x": 168,
           "y": 1732
         },
         {
-          "x": 188,
+          "x": 204,
           "y": 1732
         },
         {
-          "x": 188,
-          "y": 1582
+          "x": 204,
+          "y": 1744
         },
         {
-          "x": 272,
-          "y": 1582
+          "x": 240,
+          "y": 1744
         }
       ],
       "labelAt": {
-        "x": 188,
-        "y": 1657
+        "x": 186,
+        "y": 1730
       }
     },
-    "build-bundle->task-branch": {
+    "build-bundle->bundle": {
       "points": [
         {
           "x": 168,
           "y": 1820
         },
         {
-          "x": 198,
+          "x": 204,
           "y": 1820
         },
         {
-          "x": 198,
-          "y": 1592
+          "x": 204,
+          "y": 1744
         },
         {
-          "x": 272,
-          "y": 1592
+          "x": 240,
+          "y": 1744
         }
       ],
       "labelAt": {
-        "x": 198,
-        "y": 1706
+        "x": 204,
+        "y": 1789
+      }
+    },
+    "bundle->bundle-built": {
+      "points": [
+        {
+          "x": 480,
+          "y": 1744
+        },
+        {
+          "x": 532,
+          "y": 1744
+        },
+        {
+          "x": 532,
+          "y": 1852
+        },
+        {
+          "x": 584,
+          "y": 1852
+        }
+      ],
+      "labelAt": {
+        "x": 506,
+        "y": 1742
+      }
+    },
+    "bundle->bundle-dropped": {
+      "points": [
+        {
+          "x": 360,
+          "y": 1784
+        },
+        {
+          "x": 488,
+          "y": 1784
+        },
+        {
+          "x": 488,
+          "y": 2000
+        },
+        {
+          "x": 616,
+          "y": 2000
+        }
+      ],
+      "labelAt": {
+        "x": 424,
+        "y": 1782
+      }
+    },
+    "bundle->fast-gate-failed": {
+      "points": [
+        {
+          "x": 480,
+          "y": 1744
+        },
+        {
+          "x": 532,
+          "y": 1744
+        },
+        {
+          "x": 532,
+          "y": 1500
+        },
+        {
+          "x": 584,
+          "y": 1500
+        }
+      ],
+      "labelAt": {
+        "x": 506,
+        "y": 1742
+      }
+    },
+    "bundle->fast-gate-passed": {
+      "points": [
+        {
+          "x": 480,
+          "y": 1744
+        },
+        {
+          "x": 532,
+          "y": 1744
+        },
+        {
+          "x": 532,
+          "y": 1588
+        },
+        {
+          "x": 584,
+          "y": 1588
+        }
+      ],
+      "labelAt": {
+        "x": 506,
+        "y": 1742
       }
     },
     "check-merged->feature": {
@@ -355,6 +565,30 @@
         "y": 598.5
       }
     },
+    "escalate-task-branch->task-branch": {
+      "points": [
+        {
+          "x": 200,
+          "y": 1468
+        },
+        {
+          "x": 236,
+          "y": 1468
+        },
+        {
+          "x": 236,
+          "y": 1592
+        },
+        {
+          "x": 272,
+          "y": 1592
+        }
+      ],
+      "labelAt": {
+        "x": 236,
+        "y": 1537
+      }
+    },
     "fast-forward-feature-branch->task-branch": {
       "points": [
         {
@@ -377,6 +611,54 @@
       "labelAt": {
         "x": 208,
         "y": 1755
+      }
+    },
+    "feature->feature-abandoned": {
+      "points": [
+        {
+          "x": 392,
+          "y": 664
+        },
+        {
+          "x": 520,
+          "y": 664
+        },
+        {
+          "x": 520,
+          "y": 2088
+        },
+        {
+          "x": 648,
+          "y": 2088
+        }
+      ],
+      "labelAt": {
+        "x": 456,
+        "y": 662
+      }
+    },
+    "feature->feature-branch-pushed": {
+      "points": [
+        {
+          "x": 392,
+          "y": 664
+        },
+        {
+          "x": 520,
+          "y": 664
+        },
+        {
+          "x": 520,
+          "y": 2176
+        },
+        {
+          "x": 648,
+          "y": 2176
+        }
+      ],
+      "labelAt": {
+        "x": 456,
+        "y": 662
       }
     },
     "feature->feature-branch-rebased": {
@@ -491,6 +773,30 @@
         "y": 809.5
       }
     },
+    "feature->feature-reopened": {
+      "points": [
+        {
+          "x": 392,
+          "y": 664
+        },
+        {
+          "x": 220,
+          "y": 664
+        },
+        {
+          "x": 220,
+          "y": 2264
+        },
+        {
+          "x": 88,
+          "y": 2264
+        }
+      ],
+      "labelAt": {
+        "x": 306,
+        "y": 662
+      }
+    },
     "feature->feature-stacked": {
       "points": [
         {
@@ -563,6 +869,30 @@
         "y": 715.7
       }
     },
+    "feature->ideas-moved-to-new-feature": {
+      "points": [
+        {
+          "x": 392,
+          "y": 664
+        },
+        {
+          "x": 220,
+          "y": 664
+        },
+        {
+          "x": 220,
+          "y": 2352
+        },
+        {
+          "x": 88,
+          "y": 2352
+        }
+      ],
+      "labelAt": {
+        "x": 306,
+        "y": 662
+      }
+    },
     "feature->pull-request-merged": {
       "points": [
         {
@@ -609,6 +939,54 @@
       "labelAt": {
         "x": 540,
         "y": 629.7
+      }
+    },
+    "feature->push-failed": {
+      "points": [
+        {
+          "x": 392,
+          "y": 664
+        },
+        {
+          "x": 220,
+          "y": 664
+        },
+        {
+          "x": 220,
+          "y": 2440
+        },
+        {
+          "x": 88,
+          "y": 2440
+        }
+      ],
+      "labelAt": {
+        "x": 306,
+        "y": 662
+      }
+    },
+    "feature->remote-tips-fetched": {
+      "points": [
+        {
+          "x": 392,
+          "y": 664
+        },
+        {
+          "x": 220,
+          "y": 664
+        },
+        {
+          "x": 220,
+          "y": 2528
+        },
+        {
+          "x": 88,
+          "y": 2528
+        }
+      ],
+      "labelAt": {
+        "x": 306,
+        "y": 662
       }
     },
     "feature->resolver-task-opened": {
@@ -683,6 +1061,30 @@
         "y": 575.2
       }
     },
+    "fetch-remote->feature": {
+      "points": [
+        {
+          "x": 200,
+          "y": 412
+        },
+        {
+          "x": 236,
+          "y": 412
+        },
+        {
+          "x": 236,
+          "y": 624
+        },
+        {
+          "x": 272,
+          "y": 624
+        }
+      ],
+      "labelAt": {
+        "x": 236,
+        "y": 525
+      }
+    },
     "mark-branch-ready->task-branch": {
       "points": [
         {
@@ -753,6 +1155,30 @@
       "labelAt": {
         "x": 198,
         "y": 732.6
+      }
+    },
+    "move-ideas-to-new-feature->feature": {
+      "points": [
+        {
+          "x": 136,
+          "y": 352
+        },
+        {
+          "x": 264,
+          "y": 352
+        },
+        {
+          "x": 264,
+          "y": 584
+        },
+        {
+          "x": 392,
+          "y": 584
+        }
+      ],
+      "labelAt": {
+        "x": 200,
+        "y": 350
       }
     },
     "open-feature->feature": {
@@ -851,6 +1277,30 @@
         "y": 1853
       }
     },
+    "push-feature-branch->feature": {
+      "points": [
+        {
+          "x": 136,
+          "y": 264
+        },
+        {
+          "x": 264,
+          "y": 264
+        },
+        {
+          "x": 264,
+          "y": 584
+        },
+        {
+          "x": 392,
+          "y": 584
+        }
+      ],
+      "labelAt": {
+        "x": 200,
+        "y": 262
+      }
+    },
     "rebase-feature-branch->feature": {
       "points": [
         {
@@ -875,20 +1325,52 @@
         "y": 923.1
       }
     },
-    "run-fast-gate->task-branch": {
+    "reopen-feature->feature": {
       "points": [
         {
-          "x": 168,
-          "y": 1559
+          "x": 136,
+          "y": 176
         },
         {
-          "x": 272,
-          "y": 1559
+          "x": 264,
+          "y": 176
+        },
+        {
+          "x": 264,
+          "y": 584
+        },
+        {
+          "x": 392,
+          "y": 584
         }
       ],
       "labelAt": {
-        "x": 220,
-        "y": 1559
+        "x": 200,
+        "y": 174
+      }
+    },
+    "run-fast-gate->bundle": {
+      "points": [
+        {
+          "x": 168,
+          "y": 1556
+        },
+        {
+          "x": 204,
+          "y": 1556
+        },
+        {
+          "x": 204,
+          "y": 1744
+        },
+        {
+          "x": 240,
+          "y": 1744
+        }
+      ],
+      "labelAt": {
+        "x": 204,
+        "y": 1657
       }
     },
     "run-full-gate->feature": {
@@ -953,70 +1435,6 @@
       "labelAt": {
         "x": 220,
         "y": 589.6
-      }
-    },
-    "task-branch->bundle-built": {
-      "points": [
-        {
-          "x": 512,
-          "y": 1616
-        },
-        {
-          "x": 528,
-          "y": 1616
-        },
-        {
-          "x": 528,
-          "y": 1852
-        },
-        {
-          "x": 584,
-          "y": 1852
-        }
-      ],
-      "labelAt": {
-        "x": 528,
-        "y": 1734
-      }
-    },
-    "task-branch->fast-gate-failed": {
-      "points": [
-        {
-          "x": 512,
-          "y": 1584
-        },
-        {
-          "x": 548,
-          "y": 1584
-        },
-        {
-          "x": 548,
-          "y": 1500
-        },
-        {
-          "x": 584,
-          "y": 1500
-        }
-      ],
-      "labelAt": {
-        "x": 548,
-        "y": 1542
-      }
-    },
-    "task-branch->fast-gate-passed": {
-      "points": [
-        {
-          "x": 512,
-          "y": 1590
-        },
-        {
-          "x": 584,
-          "y": 1590
-        }
-      ],
-      "labelAt": {
-        "x": 548,
-        "y": 1590
       }
     },
     "task-branch->task-branch-abandoned": {
@@ -1115,6 +1533,30 @@
         "y": 1782
       }
     },
+    "task-branch->task-branch-repair-escalated": {
+      "points": [
+        {
+          "x": 392,
+          "y": 1632
+        },
+        {
+          "x": 520,
+          "y": 1632
+        },
+        {
+          "x": 520,
+          "y": 2264
+        },
+        {
+          "x": 648,
+          "y": 2264
+        }
+      ],
+      "labelAt": {
+        "x": 456,
+        "y": 1630
+      }
+    },
     "task-branch->task-branch-verified": {
       "points": [
         {
@@ -1164,6 +1606,6 @@
       }
     }
   },
-  "fingerprint": "f971c3c4-c0ce4d00",
+  "fingerprint": "5dba8068-87e8f18c",
   "optionsKey": "{\"direction\":\"RIGHT\",\"spacing\":\"comfortable\"}"
 }

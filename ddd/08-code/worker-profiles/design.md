@@ -40,13 +40,17 @@ No aggregates by design (pattern = active-record, strategize N2). The records an
 - A new agent CLI release is used only after the update cooldown of more than 1 week; a CLI with unreadable release dates is held back. Pane auto-update stays off for claude and codex (06 S7, S8, C10).
 - worker-profiles owns start-agent-process and the fleet-run wrapper (D3 option B, A11). The wrapper builds the private config home, scrubs the environment, maps the CLI events of its adapter, writes heartbeat.json every 10 s and exit.json, and stops or kills its process group through the platform interface. 1 process per attempt_id; a start for a live recorded process is a no-op.
 - Each agent runs with a context limit of 256k tokens, set through the CLI's own setting where one exists; else the wrapper ends the attempt with a handoff at 256k (FR-9). The OpenCode, pi and Prime adapters carry over (06 S15).
+- Each process that fleetd, the fleet-run wrapper, a job, docs sync or the conformance suite starts goes through the 1 launcher, which applies the environment rule of the profile and always removes ANTHROPIC_API_KEY. fleetd does not use the native agent resume of herdr (SR-7, A29).
+- The sandbox of each worker denies reading the operator token, connecting to the command channel and writing into the request folder. Profile validation refuses a profile whose sandbox allows 1 of them, and a profile on an OS where its sandbox is not supported: a worker never runs without its sandbox (SR-8, A35, A37).
+- docs sync is a horch subcommand that fleetd schedules daily and on a new CLI version as a docs_sync job; a conformance job follows, with the check Operator boundary for each adapter. worker-profiles marks a profile unhealthy when a check fails and healthy again when the checks pass; a drift becomes an idea (A31, A33).
 
 ## 3. Application services (use cases)
 | Use case | Command (`discover` id) | Trigger and rule | Loads | Decides / enforces |
 |---|---|---|---|---|
-| `RunConformanceTests` | `run-conformance-tests` | Daily plus on any CLI version change. | store rows | see §2 |
-| `MarkProfileUnhealthy` | `mark-profile-unhealthy` | Blocks new dispatch on the profile. | store rows | see §2 |
-| `StartAgentProcess` | `start-agent-process` | Resolves the launch environment, writes the private config home and starts the fleet-run wrapper (or the sub-orchestrator pane) in its own process group through the platform interface. Runs after the ledger transaction commits. 1 process per attempt_id (A11). | store rows | see §2 |
+| `RunConformanceTests` | `run-conformance-tests` | A conformance job after each docs_sync job and on a new version of the CLI, keyed by the CLI, its version and the hash of its adapter (A33). docs sync is a horch subcommand that fleetd schedules daily as a docs_sync job. The suite has 1 check Operator boundary for each adapter (A35). A failure publishes adapter-conformance-failed, and a drift becomes an idea. | store rows | see §2 |
+| `MarkProfileUnhealthy` | `mark-profile-unhealthy` | Blocks new dispatch on the profile: a failed conformance check or a waiting_approval stall. | store rows | see §2 |
+| `StartAgentProcess` | `start-agent-process` | Resolves the launch environment, writes the private config home and starts the fleet-run wrapper (or the sub-orchestrator pane) in its own process group through the platform interface. Runs after the ledger transaction commits. 1 process per attempt_id (A11). Each process starts through the 1 launcher, which applies the environment rule of the profile and always removes ANTHROPIC_API_KEY; no native herdr resume (SR-7). A worker never runs without its sandbox (A37). | store rows | see §2 |
+| `MarkProfileHealthy` | `mark-profile-healthy` | Marks a profile healthy again when the conformance checks of its adapter pass; dispatch resumes (design: Docs sync and adapter conformance). | store rows | see §2 |
 
 Transaction: 1 aggregate (or 1 store call set) per use case through the one-door transition function; the event row is written in the same transaction; process starts, git calls and check runs happen after the commit (connect N4).
 
@@ -54,7 +58,7 @@ Transaction: 1 aggregate (or 1 store call set) per use case through the one-door
 ### Driving
 | Port | Operations | Called by |
 |---|---|---|
-| `WorkerProfilesCommands` | run-conformance-tests, mark-profile-unhealthy | ReconcilePassDriver |
+| `WorkerProfilesCommands` | run-conformance-tests, mark-profile-unhealthy, mark-profile-healthy; the docs_sync and conformance jobs and their job-abandoned and job-requeued events | ReconcilePassDriver |
 | `LaunchEnvironmentQuery` | launch-environment: the scrubbed env, private config home, CLI argv, sandbox profile, context limit of a profile; answered to task-execution and ideas (connect message launch-environment) | InProcessWorkerProfiles |
 | `AgentProcesses` | start-agent-process and stop for task-execution and ideas (connect message start-agent-process, in-process) | InProcessWorkerProfiles |
 
@@ -62,12 +66,12 @@ Transaction: 1 aggregate (or 1 store call set) per use case through the one-door
 | Port | Operations | Why it exists |
 |---|---|---|
 | `WorkerProfilesStore` | profile health rows | persistence, collaborator or infrastructure need named in the operations |
-| `RosterSource` | reads and validates teammate files (roster, harness defaults) | persistence, collaborator or infrastructure need named in the operations |
+| `RosterSource` | reads and validates teammate files (roster, harness defaults); refuses a profile whose sandbox allows reading the operator token, connecting to the command channel or writing into the request folder, and a profile on an OS where its sandbox is not supported (SR-8, A35, A37) | persistence, collaborator or infrastructure need named in the operations |
 | `HarnessAdapters` | per-CLI launch builders: claude, codex, antigravity, opencode, pi, prime | persistence, collaborator or infrastructure need named in the operations |
-| `ConformanceRunner` | runs the adapter conformance suite against an installed CLI | persistence, collaborator or infrastructure need named in the operations |
+| `ConformanceRunner` | runs the adapter conformance suite against an installed CLI as a conformance job, with the check Operator boundary for each adapter (A33, A35) | persistence, collaborator or infrastructure need named in the operations |
 | `ParentEnvironment` | the environment of the fleetd process, read only to build a scrubbed child env | persistence, collaborator or infrastructure need named in the operations |
-| `Clock` | update cooldown of more than 1 week (06 S7) | persistence, collaborator or infrastructure need named in the operations |
-| `ProcessHost` | starts, stops and kills a process group through the platform interface; opens a pane through the fleet-runtime HerdrGateway | persistence, collaborator or infrastructure need named in the operations |
+| `Clock` | calendar time: the update cooldown of more than 1 week (06 S7) and the daily docs sync; awake time from the platform layer for max_minutes of the wrapper (PL-4, A25) | persistence, collaborator or infrastructure need named in the operations |
+| `ProcessHost` | the 1 launcher (SR-7): each process that fleetd, the fleet-run wrapper, a job, docs sync or the conformance suite starts goes through it; it starts, stops and kills a process group through the platform interface and opens a pane through the fleet-runtime HerdrGateway | persistence, collaborator or infrastructure need named in the operations |
 | `HeartbeatPublisher` | the fleet-run wrapper writes heartbeat.json every 10 s (heartbeat-written) and exit.json, atomic, in the attempt outbox | persistence, collaborator or infrastructure need named in the operations |
 
 ## 5. Adapters
@@ -97,18 +101,26 @@ Transaction: 1 aggregate (or 1 store call set) per use case through the one-door
 ### Published
 | Event (`discover` id) | Produced by | Consumers | Contract payload (`connect.json`) | Delivery | Contract test |
 |---|---|---|---|---|---|
+| `attempt-exited` | use case that emits it (§3) | task-execution | attempt_id, exit_status, has_result | at-least-once | `contract: attempt-exited` |
+| `launch-environment` | use case that emits it (§3) | task-execution, ideas | profile, task_id\|idea_id, attempt_id? | sync | - |
 | `heartbeat-written` | use case that emits it (§3) | task-execution | task, attempt, pid, pgid, mux_pane, proc_state, agent_state, last_output_at, last_tool_event, tokens, seq, written_at | at-most-once | `contract: heartbeat-written` |
+| `adapter-conformance-failed` | use case that emits it (§3) | ideas | cli, version, failed_checks | at-least-once | `contract: adapter-conformance-failed` |
+| `profile-marked-unhealthy` | use case that emits it (§3) | task-execution | profile_id, reason | at-least-once | `contract: profile-marked-unhealthy` |
+| `profile-marked-healthy` | use case that emits it (§3) | task-execution | profile_id | at-least-once | `contract: profile-marked-healthy` |
 
 ### Consumed
-No event from another context is consumed. Requests arrive as calls on the driving ports.
+| Event | From | Policy (`discover` id) | Handled by | Handler → command | Delivery | Idempotency |
+|---|---|---|---|---|---|---|
+| `job-abandoned` | fleet-runtime | policy (see canvas) | policy | reconcile pass handler | at-least-once | the reconcile pass is level-triggered, so a reaction can run again; the owner context reads the job row; 1 needs-you item per job key - test `idempotent: job-abandoned` |
+| `job-requeued` | fleet-runtime | policy (see canvas) | policy | reconcile pass handler | at-least-once | the reconcile pass is level-triggered, so a reaction can run again; the next run starts once per job key - test `idempotent: job-requeued` |
 
 ## 7. Read models
 | Read model | Source events | Readers | Storage | Rebuild |
 |---|---|---|---|---|
-| `ProfileHealth` | adapter-conformance-failed, profile-marked-unhealthy | operator and agents through horch CLI read-only commands | ledger tables and files of this context | derived again on each pass from the ledger |
+| `ProfileHealth` | adapter-conformance-failed, profile-marked-unhealthy, adapter-conformance-passed, profile-marked-healthy | operator and agents through horch CLI read-only commands | ledger tables and files of this context | derived again on each pass from the ledger |
 
 ## 8. Persistence
-A profile_health table (new) holds the unhealthy mark and the last conformance result. Profiles themselves stay teammate files read through RosterSource.
+A profile_health table (new) holds the unhealthy mark and the last conformance result. Profiles themselves stay teammate files read through RosterSource. The docs_sync and conformance jobs are rows of the jobs table of fleet-runtime, with no repository; their subject is the CLI and its version (A33).
 
 ## 9. Tests
 | Kind | Name | Verifies |
@@ -130,11 +142,23 @@ A profile_health table (new) holds the unhealthy mark and the last conformance r
 | invariant | `start_agent_process_for_a_live_attempt_is_a_no_op` | 1 process per attempt_id; a start for a live recorded process is a no-op |
 | invariant | `wrapper_scrubs_env_and_builds_config_home_before_exec` | The fleet-run wrapper scrubs the environment and builds the private config home before the CLI starts (A11) |
 | contract | `published heartbeat-written carries exactly task, attempt, pid, pgid, mux_pane, proc_state, agent_state, last_output_at, last_tool_event, tokens, seq, written_at (connect.json payload) and nothing consumers did not ask for` | contract: heartbeat-written |
+| contract | `published attempt-exited carries exactly attempt_id, exit_status, has_result (connect.json payload) and nothing consumers did not ask for` | contract: attempt-exited |
+| contract | `published adapter-conformance-failed carries exactly cli, version, failed_checks (connect.json payload) and nothing consumers did not ask for` | contract: adapter-conformance-failed |
+| contract | `published profile-marked-unhealthy carries exactly profile_id, reason (connect.json payload) and nothing consumers did not ask for` | contract: profile-marked-unhealthy |
+| contract | `published profile-marked-healthy carries exactly profile_id (connect.json payload) and nothing consumers did not ask for` | contract: profile-marked-healthy |
+| idempotency | `handling job-abandoned twice (same job key) has the same effect as once` | idempotent: job-abandoned |
+| idempotency | `handling job-requeued twice (same job key) has the same effect as once` | idempotent: job-requeued |
+| invariant | `profile_whose_sandbox_allows_the_operator_path_is_refused` | Profile validation refuses a profile whose sandbox allows reading the operator token, connecting to the command channel or writing into the request folder (SR-8, A35) |
+| invariant | `profile_on_an_os_without_its_sandbox_is_refused` | A worker never runs without its sandbox: a profile on an OS where its sandbox is not supported is refused there (SR-8, A37) |
+| invariant | `conformance_operator_boundary_check_runs_for_each_adapter` | The conformance suite has 1 check Operator boundary for each adapter (A35) |
+| fitness | `fitness_no_process_start_outside_the_launcher` | Each process starts through the 1 launcher, which always removes ANTHROPIC_API_KEY; no native herdr resume (SR-7, A29) |
+| invariant | `no_child_of_a_worker_job_check_docs_sync_or_conformance_has_the_forbidden_key` | Each process starts through the 1 launcher, which always removes ANTHROPIC_API_KEY; no native herdr resume (SR-7, A29) |
+| invariant | `profile_is_marked_healthy_again_when_conformance_passes` | worker-profiles marks a profile unhealthy when a conformance check fails and healthy again when the checks pass (design: Docs sync and adapter conformance) |
 | fitness | `fitness_domain_imports_nothing_outward` | §1 |
 
 ## 10. Integration & anti-corruption
-Wraps roster:: and harness:: behind RosterSource and HarnessAdapters. The launch environment is built from ParentEnvironment with ANTHROPIC_API_KEY removed in 1 place, so every launch path (attempt, sub-orchestrator pane, probe, updater) gets the same scrub (decompose N2). The fleet-run wrapper is a process role of the horch binary with its composition root at crates/horch/src/cmd/fleet_run.rs; processes start and stop through ProcessHost over the platform interface.
+Wraps roster:: and harness:: behind RosterSource and HarnessAdapters. The launch environment is built from ParentEnvironment with ANTHROPIC_API_KEY removed in 1 place, so every launch path (attempt, sub-orchestrator pane, probe, updater) gets the same scrub (decompose N2). The fleet-run wrapper is a process role of the horch binary with its composition root at crates/horch/src/cmd/fleet_run.rs; processes start and stop through ProcessHost, the 1 launcher, over the platform interface. Publishes attempt-exited and heartbeat-written to task-execution as files, adapter-conformance-failed to ideas, and profile-marked-unhealthy and profile-marked-healthy to task-execution. Its jobs run through the JobQueue of fleet-runtime (A16).
 
 ## 11. Decisions, assumptions, open points
 - Decisions D1 (module root) and D4 (only the verifier sets done) apply to every context; D2 applies to task-execution; D3 (wrapper owner) is option B, worker-profiles (orchestrator, D15).
-- Assumptions: A1, A2, A5, A7, A9, A11 · Open question: Q3 in code.json where it names this context.
+- Assumptions: A1, A2, A5, A7, A9, A11, A16 · Open questions: none (Q3 is answered, see deprecated[] in code.json).
