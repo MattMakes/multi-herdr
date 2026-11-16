@@ -24,6 +24,21 @@
   a file, a line, 1 change and a test. A system that holds a player by
   pressure, loss or deceit is a finding to remove. The seat changes no game
   file.
+- Every task now loses the comments it added before it lands. The new finish
+  step `comment-sweep` runs right after the check in every verification
+  profile (`minimal`, `light` and `full`): horch queues 1 task for the new
+  teammate `comment-remover`, which deletes the comments on the lines the task
+  changed and commits in the author's work folder. A change with no code file
+  skips it. `comment-remover` carries the new clean-room skill
+  `comment-pruning`. The first horch with this step migrates the task ledger to
+  version 8 and keeps a backup.
+- New teammate `root-cause-auditor`: run `horch spawn root-cause-auditor` in
+  any project and it finds the places where code was patched around instead
+  of fixed: guards, special cases, flags and wrappers piled beside a comment,
+  test or core block that nobody changed. Its report lists each site with the
+  commits that patched it, the root cause, and the decisions it needs from
+  you first. Tell it which sites to fix and it rewrites each at the root,
+  1 commit per site. It runs on Opus at high effort.
 
 ## v0.4.9 - 2026-11-11
 

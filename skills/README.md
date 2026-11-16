@@ -123,7 +123,7 @@ The specs the clean writers worked from are in [docs/cleanroom/pixel-vfx/](../do
 
 ## Engineering and product skills
 
-These skills belong to no phase; each attaches by name to the specialist whose work it covers. 6 are own text: `product-requirements` is for `product-lead`, `system-design` for `staff-engineer`, `architecture-review` for `architect-reviewer`, `creative-council` is for the 3 council seats, and `api-contracts` and `data-migrations` are for `backend-developer` (`staff-engineer` names both under `available_skills`). 2 are adapted: `codebase-design` is the shared vocabulary for module design (deep modules, interfaces, seams) and is carried by `architect-reviewer`, `staff-engineer` and `opus-architect`; `backend-developer`, `frontend-developer`, `opus-domain`, `opus`, `codex-sol` and `codex-reviewer` name it under `available_skills`. `improve-codebase-architecture` is a review procedure that finds deepening candidates and writes an HTML report. `opus-architect` carries it because it has Write and no Edit: it writes the report and edits no code. `staff-engineer` names it under `available_skills`. `architect-reviewer` does not carry it, because that seat is read-only on purpose. The own-text skills are language- and framework-neutral: each tells the worker to follow the repository's own tools and to check library behaviour with a docs tool.
+These skills belong to no phase; each attaches by name to the specialist whose work it covers. 7 are own text: `product-requirements` is for `product-lead`, `system-design` for `staff-engineer`, `architecture-review` for `architect-reviewer`, `creative-council` is for the 3 council seats, `api-contracts` and `data-migrations` are for `backend-developer` (`staff-engineer` names both under `available_skills`), and `patch-around-audit` is for `root-cause-auditor`: it finds code that was patched around a stale comment, test or core flaw (guards, special cases, flags and wrappers beside an anchor that nobody changed), writes a report with the evidence and the decisions it needs, and fixes a site at its root when the task says so. 2 are adapted: `codebase-design` is the shared vocabulary for module design (deep modules, interfaces, seams) and is carried by `architect-reviewer`, `staff-engineer` and `opus-architect`; `backend-developer`, `frontend-developer`, `opus-domain`, `opus`, `codex-sol` and `codex-reviewer` name it under `available_skills`. `improve-codebase-architecture` is a review procedure that finds deepening candidates and writes an HTML report. `opus-architect` carries it because it has Write and no Edit: it writes the report and edits no code. `staff-engineer` names it under `available_skills`. `architect-reviewer` does not carry it, because that seat is read-only on purpose. The own-text skills are language- and framework-neutral: each tells the worker to follow the repository's own tools and to check library behaviour with a docs tool.
 
 | Skill | Kind |
 | --- | --- |
@@ -133,6 +133,7 @@ These skills belong to no phase; each attaches by name to the specialist whose w
 | [creative-council](creative-council/SKILL.md) | own text |
 | [data-migrations](data-migrations/SKILL.md) | own text |
 | [improve-codebase-architecture](improve-codebase-architecture/SKILL.md) | adapted |
+| [patch-around-audit](patch-around-audit/SKILL.md) | own text |
 | [product-requirements](product-requirements/SKILL.md) | own text |
 | [system-design](system-design/SKILL.md) | own text |
 
@@ -345,3 +346,14 @@ The notes are in own text. A copied file keeps its upstream text and has a note 
 | [godot-version-migration](godot-version-migration/SKILL.md) | own text |
 | [godot-visual-verification](godot-visual-verification/SKILL.md) | adapted |
 | [godot-xr-development](godot-xr-development/SKILL.md) | combined |
+## Clean-room intake: comment-pruning
+
+`comment-pruning` belongs to no phase. It is own text, written clean-room with `skill-intake`. A security sweep read a local source named `comment-removal` (licence class none, sha256 `6df588214ed1`) in a quarantine, one role worker wrote behaviour specs in its own words, and a second role worker that never saw the source wrote the skill from the specs alone. No text or code was copied, so the skill needs no notice file and no runtime download.
+
+The specs the writer worked from and the sweep result are in [docs/cleanroom/comment-pruning/](../docs/cleanroom/comment-pruning/).
+
+| Skill | Kind |
+| --- | --- |
+| [comment-pruning](comment-pruning/SKILL.md) | own text (clean-room) |
+
+

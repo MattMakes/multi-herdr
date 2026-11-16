@@ -231,7 +231,7 @@ sequenceDiagram
     D->>L: every 30 s: reconcile, drain the outbox to durable mail
     D->>L: every 10 min: 1 check row per working worker
     D->>W: dead: ledger stop by recorded PID, requeue
-    W->>L: ledger finish: check, code-sweep, complexity-sweep, recheck, land, pr, cleanup
+    W->>L: ledger finish: check, comment-sweep, code-sweep, complexity-sweep, recheck, land, pr, cleanup
     L->>W: code-sweep: horch spawns the reviewers, 1 NOTE to the orchestrator
     W->>L: ledger done (or ledger handoff <path>)
     L-->>O: wake: startable / reviews-in / held / settled

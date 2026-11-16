@@ -220,16 +220,20 @@ pub fn write_skills_report(fake: &str, dirs: &[PathBuf], extra: Value) {
 /// The directory the fake binaries were built into (next to `horch`).
 ///
 /// A test executable sits below that directory, and how far below depends on
-/// the cargo version: `target/<profile>/deps/<test>-<hash>` up to cargo 1.99,
-/// `target/<profile>/build/<package>/<hash>/out/<test>-<hash>` from cargo
-/// 1.100. So this walks up to the first directory that holds a fake. When no
-/// directory does (nothing is built yet), it answers with the older layout,
-/// so the "is not built" message of the caller names a useful path.
+/// the Cargo version: `target/<profile>/deps/<test>-<hash>` up to Cargo 1.99,
+/// `target/<profile>/build/<package>/<hash>/out/<test>-<hash>` from Cargo
+/// 1.100. Walk up to the first directory that contains a fake. If no such
+/// directory exists, use the older layout so a caller's error names a useful
+/// path.
 pub fn bin_dir() -> PathBuf {
     let exe = std::env::current_exe().expect("current exe");
+    bin_dir_from(&exe)
+}
+
+fn bin_dir_from(exe: &Path) -> PathBuf {
     let start = exe.parent().expect("exe dir").to_path_buf();
     let fake = format!("fake-herdr{}", std::env::consts::EXE_SUFFIX);
-    if let Some(dir) = start.ancestors().find(|d| d.join(&fake).is_file()) {
+    if let Some(dir) = start.ancestors().find(|dir| dir.join(&fake).is_file()) {
         return dir.to_path_buf();
     }
     // target/<profile>/deps/<test>-<hash> -> target/<profile>
@@ -238,4 +242,30 @@ pub fn bin_dir() -> PathBuf {
         dir.pop();
     }
     dir
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bin_dir_finds_binaries_above_the_cargo_1_100_out_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let profile = root.path().join("target/debug");
+        let out = profile.join("build/horch-e2e/hash/out");
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(
+            profile.join(format!("fake-herdr{}", std::env::consts::EXE_SUFFIX)),
+            "fake",
+        )
+        .unwrap();
+
+        assert_eq!(bin_dir_from(&out.join("horch-e2e-test")), profile);
+    }
+
+    #[test]
+    fn bin_dir_keeps_the_older_deps_fallback_before_binaries_exist() {
+        let profile = Path::new("target/debug");
+        assert_eq!(bin_dir_from(&profile.join("deps/horch-e2e-test")), profile);
+    }
 }

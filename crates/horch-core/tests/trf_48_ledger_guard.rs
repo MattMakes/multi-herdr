@@ -35,8 +35,8 @@ PRAGMA user_version = 6;";
 fn version_6_file(path: &Path) {
     assert_eq!(
         schema::VERSION,
-        7,
-        "update DOWNGRADE_V7_TO_V6 for the new version"
+        8,
+        "update DOWNGRADE_V7_TO_V6 for the new version (version 8 needs no undo: it builds task_steps again from its rows)"
     );
     drop(Store::open(path).unwrap());
     let conn = Connection::open(path).unwrap();

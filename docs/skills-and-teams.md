@@ -240,6 +240,7 @@ to no phase.
 | `game-design-juicer` | `game-juice`: audits each core action (input, hit-stop, deformation, direction, sound), balances by tier and frequency, writes a ranked idea report under `ai_docs/juice/` |
 | `game-design-incremental-specialist` | `incremental-game-design`: models an incremental or idle game (from a Godot project, a design document or an idea), simulates it under 3 reset habits, writes a pacing workbook with beats, lulls and their causes, and proves a proposed system against a numbers-only control; names `game-juice`, `godot-economy-system` and `godot-gameplay-loops`; a Godot project adds `godot-balance-model-data`, `godot-upgrade-tree-design` and `godot-bot-balance-loop` |
 | `addictive-game-design-reviewer` | `addictive-game-design-review`: reads a built incremental or idle game (a game directory or its src folders), maps the loop, builds the timeline of a new player, runs 18 checks from research on reward and progression, and writes a ranked finding report under `ai_docs/game-review/` (rebalance, redo, add, remove, automate, reveal), each finding with a file, a line and a test; names `incremental-game-design` and `game-juice` |
+| `root-cause-auditor` | `patch-around-audit`: finds sites where code was patched around a stale comment, test or core flaw; judges each (live invariant, stale comment, patched-around core, superseded intent); writes a report under `ai_docs/reviews/` with the decisions it needs first; fixes 1 site per commit when the task says so. Also `debug` and `tdd` for the fix |
 | `frontend-developer`, `opus-domain`, `opus`, `codex-sol`, `codex-reviewer` | name `codebase-design` under `available_skills` |
 
 ### Blender and the Unreal team
@@ -396,6 +397,10 @@ installs only what passes 2 gates.
   `plain`), the controller runs each role as a fresh subagent with the same
   brief file. No OS sandbox applies to the subagents unless the session has
   one, and the report says so.
+
+### Clean-room intake: comment-pruning
+
+`comment-remover` carries the clean-room skill `comment-pruning`. The skill was imported with `skill-intake` (see [skills/README.md](../skills/README.md)).
 
 ## `horch agent-list`: which harnesses can this machine run
 

@@ -1219,6 +1219,7 @@ mod tests {
         tempfile::Builder::new()
             .prefix("hp")
             .tempdir_in("/tmp")
+            .or_else(|_| tempfile::Builder::new().prefix("hp").tempdir())
             .unwrap()
     }
 

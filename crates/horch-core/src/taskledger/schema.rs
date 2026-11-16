@@ -12,7 +12,7 @@ use rusqlite::Connection;
 use super::model::*;
 
 /// The schema version this binary writes.
-pub const VERSION: i64 = 7;
+pub const VERSION: i64 = 8;
 
 /// A rule that applies to rows this ledger writes, not to imported ones
 /// (section 11.2): `CHECK (origin = 'import' OR <expr>)`.
@@ -310,8 +310,27 @@ fn task_steps() -> String {
     note TEXT,
     PRIMARY KEY (task_id, worker_id, seq)
 );"#,
-        step_name = StepName::check("name"),
+        step_name = V1_STEP_NAME,
         step_status = StepStatus::check("status"),
+    )
+}
+
+/// `task_steps.name` as version 1 wrote it. Version 1 runs as a migration,
+/// so its text keeps these words; version 8 adds `comment-sweep`.
+const V1_STEP_NAME: &str = "CHECK (name IN ('check', 'code-sweep', 'complexity-sweep', 'recheck', 'land', 'pr', 'cleanup'))";
+
+/// Version 8: the finish step `comment-sweep`. SQLite cannot change a
+/// `CHECK`, so `task_steps` is built again under its own name and its rows
+/// copied. No table points at it.
+fn v8() -> String {
+    let table = task_steps()
+        .replace("CREATE TABLE task_steps (", "CREATE TABLE task_steps_v8 (")
+        .replace(V1_STEP_NAME, &StepName::check("name"));
+    format!(
+        "{table}
+INSERT INTO task_steps_v8 SELECT * FROM task_steps;
+DROP TABLE task_steps;
+ALTER TABLE task_steps_v8 RENAME TO task_steps;"
     )
 }
 
@@ -640,6 +659,10 @@ fn migrate_unchecked(conn: &mut Connection, guard: &dyn Fn(i64) -> Result<()>) -
     if current < 7 {
         tx.execute_batch(&v7())
             .context("adding the trace-fixes columns and tables")?;
+    }
+    if current < 8 {
+        tx.execute_batch(&v8())
+            .context("adding the comment-sweep finish step")?;
     }
     tx.pragma_update(None, "user_version", VERSION)?;
     tx.commit()?;
@@ -1063,7 +1086,16 @@ mod v7_tests {
     /// 1 project row.
     fn file_at(path: &std::path::Path, version: i64) {
         let conn = Connection::open(path).unwrap();
-        let steps = [v1(), V2.into(), V3.into(), V4.into(), v5(), V6.into(), v7()];
+        let steps = [
+            v1(),
+            V2.into(),
+            V3.into(),
+            V4.into(),
+            v5(),
+            V6.into(),
+            v7(),
+            v8(),
+        ];
         assert_eq!(steps.len() as i64, VERSION, "add the new step here");
         for sql in &steps[..version as usize] {
             conn.execute_batch(sql).unwrap();
@@ -1081,6 +1113,34 @@ mod v7_tests {
             .unwrap()
             .collect::<rusqlite::Result<_>>()
             .unwrap()
+    }
+
+    #[test]
+    fn cms_07_migration_keeps_the_step_rows_and_takes_the_comment_sweep_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ledger.sqlite3");
+        version_6_file(&path);
+        let store = crate::taskledger::Store::open(&path).unwrap();
+        let conn = store.conn();
+        let old: (String, String) = conn
+            .query_row("SELECT name, status FROM task_steps", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(old, ("check".to_string(), "passed".to_string()));
+        conn.execute(
+            "INSERT INTO task_steps (task_id, worker_id, seq, name, status)
+             VALUES ('t1', 'w1', 2, 'comment-sweep', 'pending')",
+            [],
+        )
+        .unwrap();
+        assert!(conn
+            .execute(
+                "INSERT INTO task_steps (task_id, worker_id, seq, name, status)
+                 VALUES ('t1', 'w1', 3, 'no-such-step', 'pending')",
+                [],
+            )
+            .is_err());
     }
 
     #[test]

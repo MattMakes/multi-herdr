@@ -2269,7 +2269,8 @@ w3-codex: sandbox is Claude only; agent codex cannot honour it";
                 | "godot-qa-engineer"
                 | "godot-code-reviewer"
                 | "blender-qa"
-                | "video-critic" => Some(Phase::Validation),
+                | "video-critic"
+                | "root-cause-auditor" => Some(Phase::Validation),
                 _ => Some(Phase::Implementation),
             };
             assert_eq!(t.phase, expected, "{}", t.name);
@@ -2932,8 +2933,8 @@ w3-codex: sandbox is Claude only; agent codex cannot honour it";
             .collect();
         assert_eq!(
             covered.len(),
-            81,
-            "the rule should cover 81 claude teammates"
+            82,
+            "the rule should cover 82 claude teammates"
         );
         // sound-engineer runs on claude; audio-reviewer runs on agy.
         assert!(covered.contains(&"sound-engineer"), "{covered:?}");

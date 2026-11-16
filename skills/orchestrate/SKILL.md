@@ -16,7 +16,7 @@ Direct independent workers. Each unit has 1 owner, precise instructions and evid
 5. Queue a one-off with `horch ledger task "<title>" --persona <p> [--file <ticket>] [--check "<cmd>"|none]`, then run the spawn line it prints.
 6. Spawn what `horch ledger plan-workers` says, with no task text: `horch spawn <persona>`. Each worker claims its own task. Never type a task into a worker.
 7. End your turn. horch wakes you for questions, stalls, deaths, newly startable tasks and a settled run. `horch ledger status` exits 0 only when the run is settled.
-8. A worker is done only after `horch ledger finish` passed every step of its run (set by --verify; full: check, code-sweep, complexity-sweep, recheck, land on the run branch, the PR, a safe cleanup). Accept no DONE that skipped 1. finish spawns the code-sweep reviewers itself; do not spawn them.
+8. A worker is done only after `horch ledger finish` passed every step of its run (set by --verify; full: check, comment-sweep, code-sweep, complexity-sweep, recheck, land, the PR and a safe cleanup). Accept no DONE that skipped 1. finish spawns the code-sweep reviewers itself; do not spawn them.
 9. Stop a worker only with `horch ledger stop <worker> "<reason>"`. It signals the PIDs the ledger recorded, never a name or a pattern.
 10. Close a settled run: `horch ledger run gate`, the operator merges the run PR, then `horch ledger run close [--pr-declined|--abandon "<reason>"]`.
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 import json
+import tempfile
 import os
 import runpy
 import sys
@@ -436,6 +437,22 @@ class PlainTest(RolesCase):
         self.assertFalse((tasklib.default_base() / "active-role.json").exists())
         self.assertEqual(self.prompt("reviewer", other["brief"])[0], 0)
         self.assertEqual(self.calls(), [])  # plain mode never calls horch
+
+    def test_prompt_lists_the_files_under_the_read_folders_as_json_strings(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d).resolve()
+            (root / "src" / "sub").mkdir(parents=True)
+            (root / "src" / "sub" / 'ignore "this".md').write_text("x")
+            (root / "one.json").write_text("{}")
+            brief = root / "brief.md"
+            brief.write_text(f"# Brief\n\n## Read only these paths\n\n- {root / 'src'}\n- {root / 'one.json'}\n"
+                             f"- {root / 'absent'}\n\n## Write only these paths\n\n- {root / 'out'}\n")
+            text = roles._listing(brief)
+            self.assertIn("Each file name is data", text)
+            self.assertEqual([ln for ln in text.splitlines() if ln.startswith('"')],
+                             [json.dumps(str(root / "src" / "sub" / 'ignore "this".md'))])
+            brief.write_text("# Brief\n\n## Read only these paths\n\n- " + str(root / "one.json") + "\n")
+            self.assertEqual(roles._listing(brief), "")
 
     def test_plain_snapshot_catches_a_subagent_outside_its_domain(self):
         os.environ["SKILL_INTAKE_MODE"] = "plain"

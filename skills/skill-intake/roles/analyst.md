@@ -26,7 +26,9 @@ Write `D/drafts/spec-<neutral-name>.json`. `spec_id` matches
 - `test_scenarios`: `[{"id": "t1", "description", "input", "expected"}]`,
   with your own example data.
 - `public_contract`: only names that must match for compatibility
-  (`kind`, `name`, `description`).
+  (`kind`, `name`, `description`). `kind` is 1 of `function`, `type`,
+  `endpoint`, `cli-flag`, `config-key`, `file-format`, `event`, `error-code`
+  or `constant`. The skill's own name is not a contract entry.
 - `capabilities`: the access the skill legitimately needs, as lists under
   `network` (hosts), `reads`, `writes`, `runs` (programs). Leave out what it
   does not need.
