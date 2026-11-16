@@ -68,7 +68,12 @@ mod unix {
         let error = stream.read_line_by(start + wait, 64 * 1024).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::TimedOut);
         let elapsed = start.elapsed();
-        assert!(elapsed >= wait, "returned early: {elapsed:?}");
+        // `poll` waits in whole milliseconds, truncated, so it can wake
+        // up to 1 ms before the deadline. Allow 10 ms.
+        assert!(
+            elapsed + Duration::from_millis(10) >= wait,
+            "returned early: {elapsed:?}"
+        );
         assert!(
             elapsed < wait + Duration::from_secs(1),
             "too late: {elapsed:?}"
