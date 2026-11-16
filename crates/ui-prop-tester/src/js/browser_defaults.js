@@ -1,7 +1,7 @@
-import { actions, always, chars, email, from, integer, text, weighted } from "ui-prop-tester";
-import { back, click, forward, key, page, reload, scrollBy, scrollToTop, type, wait } from "ui-prop-tester/browser";
+import { actions, always, chars, email, extract, from, integer, text, weighted } from "ui-prop-tester";
+import { back, click, forward, key, page, reload, resources, scrollBy, scrollToTop, type, wait } from "ui-prop-tester/browser";
 
-export { page };
+export { page, resources };
 
 const editingKeys = ["Backspace", "Tab", "Enter", "Escape"];
 const textInputTypes = ["text", "search"];
@@ -15,19 +15,24 @@ function isRealEntry(entry) {
   return !!entry && typeof entry.url === "string" && entry.url !== "" && !entry.url.startsWith("about:") && !entry.url.startsWith("chrome-error:");
 }
 
-export const noHttpErrors = always(() => {
-  const status = page.current.navigation.status;
-  return status === null || status === undefined || status < 400;
-});
+export const httpStatus = extract((state) => state.navigation.status ?? null);
 
-export const noUncaughtExceptions = always(() =>
-  page.current.exceptions.every((exception) => exception.kind !== "exception"));
+export const uncaughtExceptions = extract((state) =>
+  state.exceptions.filter((exception) => exception.kind === "exception"));
 
-export const noUnhandledRejections = always(() =>
-  page.current.exceptions.every((exception) => exception.kind !== "rejection"));
+export const unhandledRejections = extract((state) =>
+  state.exceptions.filter((exception) => exception.kind === "rejection"));
 
-export const noConsoleErrors = always(() =>
-  page.current.console.every((entry) => entry.level !== "error"));
+export const consoleErrors = extract((state) =>
+  state.console.filter((entry) => entry.level === "error"));
+
+export const noHttpErrors = always(() => httpStatus.current === null || httpStatus.current < 400);
+
+export const noUncaughtExceptions = always(() => uncaughtExceptions.current.length === 0);
+
+export const noUnhandledRejections = always(() => unhandledRejections.current.length === 0);
+
+export const noConsoleErrors = always(() => consoleErrors.current.length === 0);
 
 export const clicks = actions(() =>
   page.current.clickables.map((candidate) => click(candidate))).weight(100);
@@ -54,7 +59,7 @@ export const inputs = actions(() => {
 
 export const scrolling = actions(() => {
   const state = page.current;
-  if (!state.document.is_html || !state.document.has_body) return null;
+  if (!state.content.is_html || !state.content.has_body) return null;
   if (state.scroll.y < state.scroll.max_y) {
     const most = Math.max(1, Math.floor(state.viewport.height / 2));
     return scrollBy(integer(1, most));

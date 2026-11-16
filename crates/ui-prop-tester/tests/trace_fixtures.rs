@@ -145,7 +145,7 @@ pub fn browser_page(url: &str, title: &str, heap: u64, nodes: u64, console: Valu
         },
         "coverage": null,
         "scroll": {"x": 0, "y": 0, "max_x": 0, "max_y": 0},
-        "document": {"is_html": true, "has_body": true},
+        "content": {"is_html": true, "has_body": true},
         "focused": null,
         "clickables": [],
         "downloads": [],

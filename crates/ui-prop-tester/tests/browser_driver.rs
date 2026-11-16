@@ -414,7 +414,7 @@ mod navigation {
         session.click_id("data");
         assert_eq!(session.state["navigation"]["kind"], "non_document");
         assert_eq!(session.state["mime_type"], "application/json");
-        assert_eq!(session.state["document"]["is_html"], false);
+        assert_eq!(session.state["content"]["is_html"], false);
         session.apply(json!({"kind": "back"}));
         assert!(session.url().ends_with("#section"));
         assert_eq!(session.state["mime_type"], "text/html");
@@ -1169,7 +1169,7 @@ mod setup {
             "resources",
             "coverage",
             "scroll",
-            "document",
+            "content",
             "focused",
             "clickables",
             "downloads",
@@ -1177,10 +1177,7 @@ mod setup {
         ] {
             assert!(state.get(key).is_some(), "{key} missing from {state}");
         }
-        assert_eq!(
-            state["document"],
-            json!({"is_html": true, "has_body": true})
-        );
+        assert_eq!(state["content"], json!({"is_html": true, "has_body": true}));
         assert_eq!(state["mime_type"], "text/html");
         assert_eq!(state["last_action"], json!(null));
         assert_eq!(state["focused"], json!(null));

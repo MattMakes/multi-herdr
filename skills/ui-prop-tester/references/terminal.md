@@ -40,15 +40,17 @@ The default never sends Ctrl+C, Ctrl+D, Ctrl+Z or Alt+Backspace.
 | `resize(columns, rows)` | Resize the emulator and the child's terminal |
 | `click(row, column)` | Primary-button press and release at zero-based cell coordinates (SGR mouse) |
 | `scrollToTop()`, `scrollToBottom()` | Move the view to the top or bottom of scrollback |
-| `safeText` | Printable ASCII, extended Latin, Greek, Cyrillic, CJK, Hangul, emoji |
+| `safeText` | Write 1 to 8 safe characters: printable ASCII, extended Latin, Greek, Cyrillic, CJK, Hangul, emoji |
+| `safeCharacters` | The same text as a value, for `write(...)` or `bracketedPaste(...)` |
 | `controlKeys` | Enter, Tab |
-| `editingKeys` | Backspace, Delete, Insert and similar |
+| `editingKeys` | Backspace, Delete, Insert |
 | `arrowKeys`, `modifiedArrowKeys` | Arrows, and arrows with Shift, Alt or Ctrl |
 | `navigationKeys` | Home, End, Page Up, Page Down |
 | `functionKeys` | F1 to F12 |
 | `bracketedPaste(textOrGenerator)` | Text wrapped in paste markers |
 
-The row and column arguments of `click` and `resize` may be generators.
+The key sets are action generators; use them directly or inside `oneOf`. The arguments of `click` and `resize`
+may be generators. `cell(row, column)` returns `null` for a position off the grid.
 
 ## State seen by extractors
 
@@ -70,7 +72,7 @@ A colour is `null` (default), `{ indexed: n }` or `{ rgb: [r, g, b] }`. `underli
 ## Example: a full-screen TUI
 
 ```js
-import { always, eventually, extract, from, integer, oneOf } from "ui-prop-tester";
+import { always, extract, from, integer, oneOf } from "ui-prop-tester";
 import { arrowKeys, controlKeys, resize, write } from "ui-prop-tester/terminal";
 export { exitsCleanly, noReplacementCharacters } from "ui-prop-tester/terminal/defaults";
 
@@ -80,7 +82,7 @@ const cursorOnScreen = extract((state) => state.cursor.row < state.rows && state
 const selectedRows = extract((state) => state.cells.filter((cell) => cell.inverse).map((cell) => cell.row));
 
 export const noPanicText = always(() => !/panicked at|Traceback/.test(screen.current));
-export const statusRowAlwaysDrawn = always(eventually(() => statusRow.current.length > 0).within(1, "seconds"));
+export const statusRowNeverBlank = always(() => statusRow.current.length > 0);
 export const cursorStaysOnScreen = always(() => cursorOnScreen.current);
 export const oneSelection = always(() => new Set(selectedRows.current).size <= 1);
 

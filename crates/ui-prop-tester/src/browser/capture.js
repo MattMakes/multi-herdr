@@ -340,7 +340,7 @@
       max_x: scroller ? Math.max(0, Math.round(scroller.scrollWidth - scroller.clientWidth)) : 0,
       max_y: scroller ? Math.max(0, Math.round(scroller.scrollHeight - scroller.clientHeight)) : 0,
     },
-    document: {
+    content: {
       is_html: contentType === "text/html" || contentType === "application/xhtml+xml",
       has_body: !!document.body,
     },

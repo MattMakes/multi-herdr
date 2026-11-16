@@ -586,7 +586,7 @@ impl BrowserDriver {
             "resources": resources,
             "coverage": coverage,
             "scroll": page["scroll"],
-            "document": page["document"],
+            "content": page["content"],
             "focused": page["focused"],
             "clickables": clickables,
             "downloads": self.tracker.downloads_json(),

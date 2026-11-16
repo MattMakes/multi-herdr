@@ -73,7 +73,10 @@ text field that already has text, anything outside the viewport, cross-origin if
 Typing matches the field: text for text inputs and text areas, an address for email inputs, 1 to 5 digits
 for number inputs.
 
-Console entries belong to the current page and are cleared on navigation.
+Console entries and exceptions belong to the current page and are cleared on navigation.
+
+The defaults module also exports the cells its properties read: `httpStatus`, `uncaughtExceptions`,
+`unhandledRejections`, `consoleErrors`, `resources` and `page`. A violation report shows the one that failed.
 
 ## Builders (`ui-prop-tester/browser`)
 
@@ -108,6 +111,7 @@ In the page, `state` has `document`, `window` and:
 | `resources` | `js_heap_used`, `js_heap_total`, `dom_nodes`, `event_listeners`, `layout_objects` |
 | `coverage` | `null`, or `branches_new`, `branches_total` with `--instrument-javascript` |
 | `scroll` | `x`, `y`, `max_x`, `max_y` |
+| `content` | `is_html`, `has_body` |
 | `focused` | `null`, or `tag`, `input_type`, `value_length`, `target` |
 | `clickables` | `kind`, `tag`, `target` (fingerprint), `point` |
 | `downloads`, `last_action` | Downloads so far; the action that led here |
@@ -147,7 +151,10 @@ export const toolbarClicks = actions(() => toolbar.current.map((candidate) => cl
 A custom action for a step that random clicks rarely reach:
 
 ```js
+import { extract } from "ui-prop-tester";
 import { custom, defineAction } from "ui-prop-tester/browser";
+
+const loggedIn = extract((state) => !!state.document.querySelector("[data-testid=account-menu]"));
 
 defineAction("login", async ({ document, args }) => {
   document.querySelector("#user").value = args.user;

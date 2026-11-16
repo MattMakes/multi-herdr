@@ -75,17 +75,16 @@ Exit 1 is never a finding about the product, and exit 0 is only as strong as the
 - `--time-limit <DURATION>` (`500ms`, `30s`, `5m`, `1h`), `--actions-max <COUNT>`.
 - `--exit-on-violation`: stop at the first violation. Without it the run goes on and reports all of them.
 - `--output-path <FILE>`: the trace. The folder must exist. An existing file is refused without
-  `--output-path-overwrite`.
+  `--output-path-overwrite`. With no path the trace goes to the temporary folder and the summary names it.
 
 ## A specification in 20 lines
 
 ```js
-import { always, eventually, extract, now, next, implies, actions, weighted } from "ui-prop-tester";
-import { click, type } from "ui-prop-tester/browser";
+import { always, eventually, extract, implies, next, now } from "ui-prop-tester";
 export * from "ui-prop-tester/browser/defaults";
 
-const count = extract((state) => Number(state.document.querySelector("#count")?.textContent ?? 0));
-const saving = extract((state) => !!state.document.querySelector(".saving"));
+export const count = extract((state) => Number(state.document.querySelector("#count")?.textContent ?? 0));
+export const saving = extract((state) => !!state.document.querySelector(".saving"));
 
 export const countNeverNegative = always(() => count.current >= 0);
 export const savingEnds = always(implies(() => saving.current, eventually(() => !saving.current).within(5, "seconds")));

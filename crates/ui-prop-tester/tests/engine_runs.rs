@@ -2,6 +2,7 @@ mod engine_harness;
 
 use engine_harness::{fake, names, plain, run, Workspace, MACHINE};
 use serde_json::json;
+use ui_prop_tester::fake::{FakeDrivers, FakeScript, FakeState};
 use ui_prop_tester::trace::read_trace_file;
 
 #[test]
@@ -329,7 +330,22 @@ fn bad_arguments_exit_1_and_help_exits_0() {
 
 #[test]
 fn the_driver_defaults_module_is_the_specification_when_none_is_given() {
-    let drivers = plain();
+    let mut script = FakeScript::default();
+    script.states.insert(
+        "start".into(),
+        FakeState {
+            value: json!({
+                "columns": 80,
+                "rows": 24,
+                "lines": [],
+                "cells": [],
+                "scrollback": {"lines": [], "cells": []},
+                "exit": null
+            }),
+            ended: false,
+        },
+    );
+    let drivers = FakeDrivers::new(script);
     let outcome = run(
         &drivers,
         &[

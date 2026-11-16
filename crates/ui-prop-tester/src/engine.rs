@@ -499,7 +499,7 @@ pub fn print_violations(io: &mut Io<'_>, violations: &[Violation], indent: &str)
         );
         let cells = serde_json::to_string(&violation.cells).unwrap_or_default();
         if cells != "{}" {
-            let _ = writeln!(io.out, "{indent}  cells: {cells}");
+            let _ = writeln!(io.out, "{indent}  cells: {}", shortened(&cells));
         }
     }
 }
@@ -607,4 +607,15 @@ fn print_summary(io: &mut Io<'_>, report: &RunReport) {
     } else {
         print_violations(io, &report.violations, "ui-prop-tester: ");
     }
+}
+
+const SUMMARY_CELLS_MAX: usize = 600;
+
+fn shortened(cells: &str) -> String {
+    let total = cells.chars().count();
+    if total <= SUMMARY_CELLS_MAX {
+        return cells.to_string();
+    }
+    let head: String = cells.chars().take(SUMMARY_CELLS_MAX).collect();
+    format!("{head}... ({total} characters; the trace holds the full values)")
 }

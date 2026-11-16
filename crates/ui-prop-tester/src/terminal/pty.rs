@@ -13,6 +13,23 @@ use nix::unistd::Pid;
 use crate::driver::DriverError;
 
 const TERMINATE_GRACE: Duration = Duration::from_millis(500);
+const OPEN_ATTEMPTS: usize = 5;
+
+static OPEN_ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn open_pair(columns: u16, rows: u16) -> nix::Result<nix::pty::OpenptyResult> {
+    let _guard = OPEN_ONE_AT_A_TIME
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut outcome = openpty(&winsize(columns, rows), None);
+    for _ in 1..OPEN_ATTEMPTS {
+        if outcome.is_ok() {
+            break;
+        }
+        outcome = openpty(&winsize(columns, rows), None);
+    }
+    outcome
+}
 
 pub enum ReadOutcome {
     Data(usize),
@@ -69,7 +86,7 @@ impl Pty {
         columns: u16,
         rows: u16,
     ) -> Result<Pty, DriverError> {
-        let pair = openpty(&winsize(columns, rows), None)
+        let pair = open_pair(columns, rows)
             .map_err(|error| setup_error("cannot open a pseudo-terminal", error))?;
         for fd in [&pair.master, &pair.slave] {
             fcntl(fd, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC))

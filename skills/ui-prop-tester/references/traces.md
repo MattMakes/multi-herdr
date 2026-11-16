@@ -1,6 +1,7 @@
 # Traces: read, replay, shrink
 
-Every run with `--output-path` writes 1 trace file: the target, the seed, the specification text, and for
+Every run writes 1 trace file (to `--output-path`, or to a file in the temporary folder that the summary
+names): the target, the seed, the specification text, and for
 each state its timestamp, the action that led to it, the cell values, the violations, and a screenshot
 (browser) or screen (terminal). The file is self-contained.
 
@@ -50,8 +51,8 @@ changes do not break a replay.
 | exit 0 | All actions ran and no property failed: the fix holds for this trace |
 | exit 1, `diverged` | A recorded action is no longer offered: the UI changed shape. Record a new trace |
 
-Pass `--specification` to replay with a changed specification; otherwise pass the same one as the recorded
-run.
+With no `--specification`, the replay reads the specification file the trace recorded, or the copy stored
+in the trace when that file is gone. Pass `--specification` to replay with another one.
 
 ## Shrink
 

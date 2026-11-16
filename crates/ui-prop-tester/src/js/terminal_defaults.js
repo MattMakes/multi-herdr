@@ -1,9 +1,9 @@
 import { always, extract, oneOf } from "ui-prop-tester";
 import { controlKeys, safeText } from "ui-prop-tester/terminal";
 
-const exitStatus = extract((state) => state.exit);
+export const exitStatus = extract((state) => state.exit);
 
-const replacementCharacterVisible = extract((state) =>
+export const replacementCharacterVisible = extract((state) =>
   state.cells.some((cell) => cell.text.includes("�")),
 );
 

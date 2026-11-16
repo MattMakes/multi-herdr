@@ -9,6 +9,8 @@ export const page = extract((state) => {
   return result;
 });
 
+export const resources = extract((state) => state.resources);
+
 export function click(candidate) {
   return action({ kind: "click", target: candidate.target, point: candidate.point });
 }
@@ -76,7 +78,7 @@ export function resourceGrowth({ metric, window: size, minimumGrowth }) {
   }
   const growth = minimumGrowth === undefined ? 1 : minimumGrowth;
   const read = () => {
-    const value = page.current.resources[metric];
+    const value = resources.current[metric];
     if (typeof value !== "number") {
       throw new Error("resourceGrowth: unknown resource metric " + metric);
     }

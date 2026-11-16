@@ -355,7 +355,7 @@ class NextObligation {
   }
 
   end(ctx) {
-    return fails(this.trail, ctx, "the trace ended before the next state");
+    return ctx.negated ? fails(this.trail, ctx, "the trace ended before the next state") : holds(this.trail);
   }
 }
 
@@ -562,7 +562,7 @@ class NotObligation {
   }
 
   end(ctx) {
-    return negate(this.residual.end(ctx), this.trail, ctx);
+    return negate(this.residual.end({ ...ctx, negated: !ctx.negated }), this.trail, ctx);
   }
 }
 
@@ -680,8 +680,9 @@ export function text(options) {
 }
 
 export function chars(characters, options) {
-  if (typeof characters !== "string" || characters.length === 0) {
-    throw new TypeError("chars() needs a nonempty string of characters");
+  const isList = Array.isArray(characters) && characters.every((entry) => typeof entry === "string");
+  if ((typeof characters !== "string" && !isList) || characters.length === 0) {
+    throw new TypeError("chars() needs a nonempty string or a nonempty array of strings");
   }
   const { min, max } = lengths(options, "chars()");
   return new Generator({ kind: "chars", characters: Array.from(characters), min, max });

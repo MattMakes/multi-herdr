@@ -34,7 +34,8 @@ that JSON can hold. `cell.current` is the value in the current state.
 - An extractor that throws ends the run with exit 1 and prints its JavaScript stack.
 - Terminal extractors run in the tool. Browser extractors run in the page: the function is sent as text, so
   it cannot use variables or imports from the module around it.
-- Export a cell to see it by name in traces and in the `cells` of custom actions.
+- Export a cell to see it by name in traces, reports and the `cells` of custom actions. A cell that is not
+  exported shows as `cell#N`.
 
 ## Formulas
 
@@ -43,7 +44,7 @@ that JSON can hold. `cell.current` is the value in the current state.
 | `now(fn)` | `fn()` is true in this state. `fn` may return a formula; it is then checked from this state on |
 | `always(f)` | `f` holds in this state and every later one. No counterexample by the end of the run means it held |
 | `eventually(f)` | `f` holds in this state or a later one. Still waiting at the end of the run means it failed |
-| `next(f)` | `f` holds in the next captured state |
+| `next(f)` | `f` holds in the next captured state. With no next state (the run ended) it is not a violation |
 | `always(f).within(n, unit)` | `f` holds in every state for the next `n` units |
 | `eventually(f).within(n, unit)` | `f` holds in some state before `n` units pass |
 | `and(...fs)`, `or(...fs)`, `not(f)`, `implies(a, b)` | the usual logic |
@@ -87,7 +88,8 @@ export const loginSticks = always(implies(() => loggedIn.current, always(() => l
 ```
 
 A violation report names the property, the state index, the path through the formula (for example
-`always > implies > eventually`) and the value of every cell the failing path read.
+`always > now > next > now`) and the value of every cell the failing path read. A value kept in a closure
+from an earlier state shows with its state index, for example `total@4`.
 
 ## Generators
 

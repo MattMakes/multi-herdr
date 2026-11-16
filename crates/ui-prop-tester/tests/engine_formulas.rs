@@ -80,22 +80,26 @@ fn next_checks_the_following_state() {
 }
 
 #[test]
-fn an_unmet_next_fails_at_the_end_only_when_its_obligation_was_active() {
-    let (code, violations, all) = verdict(
+fn a_next_with_no_following_state_is_not_a_violation() {
+    let (code, _, all) = verdict(
         "export const guarded = always(implies(() => count.current === 3, next(() => count.current === 4)));",
         "3",
     );
-    assert_eq!(code, 2, "{all}");
-    assert_eq!(violations[0].state_index, 3);
-    assert_eq!(
-        violations[0].message.as_deref(),
-        Some("the trace ended before the next state")
-    );
-    assert_eq!(violations[0].path, "always > implies > then > next");
-    assert_eq!(violations[0].cells, json!({"count": 3}));
+    assert_eq!(code, 0, "{all}");
     let (code, _, all) = verdict(
-        "export const guarded = always(implies(() => count.current === 7, next(() => count.current === 8)));",
-        "3",
+        "export const stepsByOne = always(now(() => { const before = count.current; return next(() => count.current === before + 1); }));",
+        "5",
+    );
+    assert_eq!(code, 0, "{all}");
+    let (code, violations, all) = verdict(
+        "export const stepsByTwo = always(now(() => { const before = count.current; return next(() => count.current === before + 2); }));",
+        "5",
+    );
+    assert_eq!(code, 2, "{all}");
+    assert_eq!(violations[0].state_index, 1);
+    let (code, _, all) = verdict(
+        "export const neverJumps = always(now(() => { const before = count.current; return not(next(() => count.current === before + 2)); }));",
+        "5",
     );
     assert_eq!(code, 0, "{all}");
 }
