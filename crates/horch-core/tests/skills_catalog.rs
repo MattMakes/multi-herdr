@@ -71,6 +71,7 @@ const REPO_ORIGINAL: &[&str] = &[
     "system-design",
     "ue-build-verify",
     "ue-editor-scripting",
+    "ui-prop-tester",
     "video-audio",
     "video-capture",
     "video-character",
@@ -484,7 +485,10 @@ const EXEMPT_FROM_TEXT_ONLY: &[&str] = &[
 /// Single files exempt from the text-only rule; the rest of their skill is
 /// still checked. `godot-run.sh` is the fleet wrapper for every Godot call,
 /// and SKL-11 keeps its execute bit in a bundle.
-const EXEMPT_FILES: &[&str] = &["godot-build-verify/scripts/godot-run.sh"];
+const EXEMPT_FILES: &[&str] = &[
+    "godot-build-verify/scripts/godot-run.sh",
+    "ui-prop-tester/scripts/ui-prop-tester",
+];
 
 /// Skill files are `.md` or `.txt`, except the skills in
 /// `EXEMPT_FROM_TEXT_ONLY` and the single files in `EXEMPT_FILES`. A verbatim

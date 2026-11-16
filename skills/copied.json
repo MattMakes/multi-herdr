@@ -2076,6 +2076,11 @@
       "verbatim": true
     },
     {
+      "name": "ui-prop-tester",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
       "name": "ui-redesign",
       "copied_files": [
         "SKILL.md"

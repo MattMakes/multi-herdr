@@ -4,6 +4,17 @@
 
 ## Unreleased
 
+- New tool and skill `ui-prop-tester`: it walks a web page (in Chromium) or a
+  terminal program (in a pseudo-terminal) with seeded random clicks, keys and
+  navigation, and checks rules you write (`always`, `eventually`, `next`,
+  deadlines) after every step. With no rules it still catches HTTP errors,
+  uncaught exceptions, console errors, nonzero exits and malformed terminal
+  output. Each run writes a trace you can read (`trace`), view (`browser
+  inspect`), replay after a fix (`--reproduce`) and cut down to its shortest
+  failing steps (`shrink`). `qa-engineer` and `frontend-developer` can load
+  the skill; its launcher builds the tool from your checkout on first use, or
+  run `cargo install --path crates/ui-prop-tester`.
+
 ## v0.4.10 - 2026-11-16
 
 - New teammate `game-design-incremental-specialist` for incremental, idle and

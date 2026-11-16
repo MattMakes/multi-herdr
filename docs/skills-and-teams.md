@@ -242,6 +242,7 @@ to no phase.
 | `addictive-game-design-reviewer` | `addictive-game-design-review`: reads a built incremental or idle game (a game directory or its src folders), maps the loop, builds the timeline of a new player, runs 18 checks from research on reward and progression, and writes a ranked finding report under `ai_docs/game-review/` (rebalance, redo, add, remove, automate, reveal), each finding with a file, a line and a test; names `incremental-game-design` and `game-juice` |
 | `root-cause-auditor` | `patch-around-audit`: finds sites where code was patched around a stale comment, test or core flaw; judges each (live invariant, stale comment, patched-around core, superseded intent); writes a report under `ai_docs/reviews/` with the decisions it needs first; fixes 1 site per commit when the task says so. Also `debug` and `tdd` for the fix |
 | `frontend-developer`, `opus-domain`, `opus`, `codex-sol`, `codex-reviewer` | name `codebase-design` under `available_skills` |
+| `qa-engineer`, `frontend-developer` | name `ui-prop-tester` under `available_skills`: seeded random walks over a web page (Chromium) or a terminal program (pseudo-terminal) with temporal properties checked after every step; each failure has a trace to read, replay and shrink. The skill's launcher finds or builds the `ui-prop-tester` binary (`crates/ui-prop-tester`) |
 
 ### Blender and the Unreal team
 
