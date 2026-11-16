@@ -2984,7 +2984,7 @@ pub fn slug(title: &str) -> String {
 /// ([`super::messaging::note_as`], TRF-45) with their event kind.
 fn progress(ctx: &RuntimeContext, kind: EventKind, text: &str) -> Result<ExitCode> {
     worker_id(ctx)?;
-    super::messaging::note_as(ctx, text, kind).map(|()| ExitCode::SUCCESS)
+    super::messaging::note_as(ctx, text, kind)
 }
 
 /// Record `kind` with `text` on this worker's task ledger row. True when it

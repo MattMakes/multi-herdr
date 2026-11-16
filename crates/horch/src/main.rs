@@ -974,7 +974,7 @@ impl MessagingCommand {
                 done(cmd::messaging::inbox(ctx, roles, peek))
             }
             MessagingCommand::Peek { role, lines } => done(cmd::messaging::peek(ctx, &role, lines)),
-            MessagingCommand::Note { text, fact } => done(note_command(ctx, &joined(&text), fact)),
+            MessagingCommand::Note { text, fact } => note_command(ctx, &joined(&text), fact),
         }
     }
 }
@@ -1227,7 +1227,7 @@ impl ToolCommand {
 }
 
 /// `horch note`: a note on the worker's record, or a project fact.
-fn note_command(ctx: &mut Ctx, text: &str, fact: bool) -> Result<()> {
+fn note_command(ctx: &mut Ctx, text: &str, fact: bool) -> Result<ExitCode> {
     if !fact {
         return cmd::messaging::note(ctx, text);
     }
@@ -1238,7 +1238,7 @@ fn note_command(ctx: &mut Ctx, text: &str, fact: bool) -> Result<()> {
     } else {
         "Project fact already recorded."
     });
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
 fn mode_command(ctx: &mut Ctx, role: String, mode: &str, timeout: Option<u64>) -> Result<ExitCode> {
