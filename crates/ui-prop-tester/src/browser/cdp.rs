@@ -186,7 +186,12 @@ impl Cdp {
         }
     }
 
-    fn send(&mut self, session: Option<&str>, method: &str, params: Value) -> Result<u64, CdpError> {
+    fn send(
+        &mut self,
+        session: Option<&str>,
+        method: &str,
+        params: Value,
+    ) -> Result<u64, CdpError> {
         if let Some(reason) = &self.closed {
             return Err(CdpError::Closed(reason.clone()));
         }

@@ -222,7 +222,12 @@ impl ExternalChrome {
             .arg("--headless")
             .arg("--remote-debugging-port=0")
             .arg(format!("--user-data-dir={}", profile.path().display()))
-            .args(["--no-first-run", "--no-default-browser-check", "--use-mock-keychain", "--password-store=basic"])
+            .args([
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--use-mock-keychain",
+                "--password-store=basic",
+            ])
             .arg("about:blank")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -269,11 +274,33 @@ impl ExternalChrome {
         let mut stream = std::net::TcpStream::connect(authority).expect("connect to the browser");
         use std::io::{Read, Write};
         stream
-            .write_all(format!("GET /json/list HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n").as_bytes())
+            .write_all(
+                format!(
+                    "GET /json/list HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n"
+                )
+                .as_bytes(),
+            )
             .expect("request the page list");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .expect("read timeout");
         let mut text = String::new();
-        stream.read_to_string(&mut text).expect("read the page list");
-        let body = text.split_once("\r\n\r\n").map(|(_, body)| body).unwrap_or_default();
+        let mut chunk = [0u8; 4096];
+        let body = loop {
+            let read = stream.read(&mut chunk).expect("read the page list");
+            text.push_str(&String::from_utf8_lossy(&chunk[..read]));
+            let Some((head, body)) = text.split_once("\r\n\r\n") else {
+                assert!(read > 0, "the browser closed before answering");
+                continue;
+            };
+            let length = head.to_ascii_lowercase().lines().find_map(|line| {
+                line.strip_prefix("content-length:")
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+            });
+            if read == 0 || length.is_some_and(|length| body.len() >= length) {
+                break body.to_string();
+            }
+        };
         let start = body.find('[').unwrap_or(0);
         let end = body.rfind(']').map_or(body.len(), |index| index + 1);
         let list: Value = serde_json::from_str(&body[start..end]).unwrap_or(json!([]));

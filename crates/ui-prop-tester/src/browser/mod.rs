@@ -143,7 +143,9 @@ impl BrowserDriver {
         timeout: Duration,
     ) -> Result<Value, CdpError> {
         let session = self.session.clone();
-        let result = self.cdp.call_within(Some(&session), method, params, timeout);
+        let result = self
+            .cdp
+            .call_within(Some(&session), method, params, timeout);
         self.pump();
         result
     }
@@ -180,7 +182,11 @@ impl BrowserDriver {
             let inside = pages
                 .iter()
                 .find(|(_, url)| self.boundary.allows(url))
-                .or_else(|| pages.iter().find(|(_, url)| !url.starts_with("devtools://")));
+                .or_else(|| {
+                    pages
+                        .iter()
+                        .find(|(_, url)| !url.starts_with("devtools://"))
+                });
             match inside {
                 Some((id, _)) => Some(id.clone()),
                 None => {
@@ -239,7 +245,10 @@ impl BrowserDriver {
         }
         self.page_call("Page.setLifecycleEventsEnabled", json!({"enabled": true}))
             .map_err(setup("enabling lifecycle events"))?;
-        let _ = self.page_call("Page.setInterceptFileChooserDialog", json!({"enabled": true}));
+        let _ = self.page_call(
+            "Page.setInterceptFileChooserDialog",
+            json!({"enabled": true}),
+        );
         if self.config.instrument_javascript {
             self.page_call("Profiler.enable", json!({}))
                 .map_err(setup("enabling the profiler"))?;
@@ -359,7 +368,6 @@ impl BrowserDriver {
                 "expression": expression,
                 "returnByValue": true,
                 "awaitPromise": true,
-                "userGesture": true,
             }),
             timeout,
         )?;
@@ -374,7 +382,10 @@ impl BrowserDriver {
                 ),
             });
         }
-        Ok(result.pointer("/result/value").cloned().unwrap_or(Value::Null))
+        Ok(result
+            .pointer("/result/value")
+            .cloned()
+            .unwrap_or(Value::Null))
     }
 
     fn check_alive(&mut self) -> Result<(), DriverError> {
@@ -585,17 +596,26 @@ impl BrowserDriver {
         let history = self
             .page_call("Page.getNavigationHistory", json!({}))
             .map_err(|error| DriverError::Failed(format!("reading history: {error}")))?;
-        let entries: Vec<Value> = history
+        let all: Vec<Value> = history
             .get("entries")
             .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
+            .cloned()
+            .unwrap_or_default();
+        let index = history
+            .get("currentIndex")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as usize;
+        let blank = all
+            .iter()
+            .take_while(|entry| entry["url"] == "about:blank")
+            .count()
+            .min(index);
+        let entries: Vec<Value> = all
+            .iter()
+            .skip(blank)
             .map(|entry| json!({"url": entry["url"], "title": entry["title"]}))
             .collect();
-        Ok(json!({
-            "index": history.get("currentIndex").cloned().unwrap_or(json!(0)),
-            "entries": entries,
-        }))
+        Ok(json!({"index": index - blank, "entries": entries}))
     }
 
     fn history_entry(&mut self, offset: i64) -> Result<Option<i64>, DriverError> {
@@ -718,7 +738,9 @@ impl BrowserDriver {
                     "Emulation.clearDeviceMetricsOverride",
                     "Debugger.disable",
                 ] {
-                    let _ = self.cdp.call_within(Some(&session), method, json!({}), short);
+                    let _ = self
+                        .cdp
+                        .call_within(Some(&session), method, json!({}), short);
                 }
                 let _ = self.cdp.call_within(
                     None,
@@ -780,7 +802,14 @@ impl Driver for BrowserDriver {
             .ok()
             .and_then(|history| {
                 let index = history.get("currentIndex")?.as_u64()? as usize;
-                Some(history.get("entries")?.get(index)?.get("url")?.as_str()?.to_string())
+                Some(
+                    history
+                        .get("entries")?
+                        .get(index)?
+                        .get("url")?
+                        .as_str()?
+                        .to_string(),
+                )
             })
             .unwrap_or_default();
         let attach_in_place = self.config.remote_debugger.is_some()
@@ -816,7 +845,10 @@ impl Driver for BrowserDriver {
         true
     }
 
-    fn extract(&mut self, extractors: &[RemoteExtractor]) -> Result<Vec<ExtractOutcome>, DriverError> {
+    fn extract(
+        &mut self,
+        extractors: &[RemoteExtractor],
+    ) -> Result<Vec<ExtractOutcome>, DriverError> {
         self.run_extractors(extractors)
     }
 

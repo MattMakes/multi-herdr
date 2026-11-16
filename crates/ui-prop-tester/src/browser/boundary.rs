@@ -48,7 +48,11 @@ impl Url {
             scheme,
             host: host.to_ascii_lowercase(),
             port,
-            path: if path.is_empty() { "/".into() } else { path.into() },
+            path: if path.is_empty() {
+                "/".into()
+            } else {
+                path.into()
+            },
             query,
         })
     }
@@ -107,8 +111,9 @@ pub fn origin_url(origin: &str) -> Result<String, String> {
         return Ok(origin.to_string());
     }
     let path = Path::new(origin);
-    let absolute = std::fs::canonicalize(path)
-        .map_err(|error| format!("{origin} is neither an http(s) URL nor a readable file: {error}"))?;
+    let absolute = std::fs::canonicalize(path).map_err(|error| {
+        format!("{origin} is neither an http(s) URL nor a readable file: {error}")
+    })?;
     if !absolute.is_file() {
         return Err(format!("{origin} is not a file"));
     }
@@ -210,7 +215,8 @@ enum PortPattern {
 
 impl MatchPattern {
     pub fn parse(text: &str) -> Result<MatchPattern, String> {
-        let invalid = |reason: &str| format!("--allow-url '{text}' is not a match pattern: {reason}");
+        let invalid =
+            |reason: &str| format!("--allow-url '{text}' is not a match pattern: {reason}");
         if text == "<all_urls>" {
             return Ok(MatchPattern {
                 schemes: ["http", "https", "ws", "wss", "ftp", "file"]
@@ -229,7 +235,11 @@ impl MatchPattern {
             known @ ("http" | "https" | "ws" | "wss" | "ftp" | "file" | "urn") => {
                 vec![known.to_string()]
             }
-            _ => return Err(invalid("the scheme must be *, http, https, ws, wss, ftp or file")),
+            _ => {
+                return Err(invalid(
+                    "the scheme must be *, http, https, ws, wss, ftp or file",
+                ))
+            }
         };
         let slash = rest
             .find('/')
@@ -335,7 +345,10 @@ mod tests {
     fn match_patterns_follow_the_extension_syntax() {
         let boundary = Boundary::new(
             "http://app.test:3000/",
-            &["*://*.app.test/*".into(), "http://other.test:9000/docs/*".into()],
+            &[
+                "*://*.app.test/*".into(),
+                "http://other.test:9000/docs/*".into(),
+            ],
         )
         .unwrap();
         assert!(boundary.allows("https://api.app.test/v1"));

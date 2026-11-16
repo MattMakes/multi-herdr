@@ -43,8 +43,7 @@ fn key_definition(name: &str) -> Option<KeyDefinition> {
             let mut characters = other.chars();
             let character = characters.next()?;
             if characters.next().is_some() {
-                if let Some(number) = other.strip_prefix('F').and_then(|n| n.parse::<i64>().ok())
-                {
+                if let Some(number) = other.strip_prefix('F').and_then(|n| n.parse::<i64>().ok()) {
                     if (1..=12).contains(&number) {
                         return Some(named(other, other, 111 + number, None));
                     }
@@ -278,15 +277,13 @@ impl BrowserDriver {
             .and_then(Value::as_u64)
             .unwrap_or(10)
             .max(1);
-        let delay = Duration::from_millis(
-            action
-                .get("delay_ms")
-                .and_then(Value::as_u64)
-                .unwrap_or(0),
-        );
+        let delay =
+            Duration::from_millis(action.get("delay_ms").and_then(Value::as_u64).unwrap_or(0));
         let _ = self.page_call("Input.setInterceptDrags", json!({"enabled": true}));
         self.tracker.drag_data = None;
-        self.mouse(json!({"type": "mouseMoved", "x": from_x, "y": from_y, "button": "none", "buttons": 0}))?;
+        self.mouse(
+            json!({"type": "mouseMoved", "x": from_x, "y": from_y, "button": "none", "buttons": 0}),
+        )?;
         self.mouse(json!({"type": "mousePressed", "x": from_x, "y": from_y, "button": "left", "buttons": 1, "clickCount": 1}))?;
         let mut entered = false;
         for step in 1..=steps {
@@ -302,7 +299,9 @@ impl BrowserDriver {
                         json!({"type": kind, "x": x, "y": y, "data": data}),
                     );
                 }
-                None => self.mouse(json!({"type": "mouseMoved", "x": x, "y": y, "button": "left", "buttons": 1}))?,
+                None => self.mouse(
+                    json!({"type": "mouseMoved", "x": x, "y": y, "button": "left", "buttons": 1}),
+                )?,
             }
             if !delay.is_zero() {
                 self.idle(delay);
@@ -337,9 +336,9 @@ impl BrowserDriver {
         let base = std::env::current_dir().unwrap_or_default();
         let mut files = Vec::new();
         for path in paths {
-            let text = path
-                .as_str()
-                .ok_or_else(|| DriverError::Failed(format!("{action} has a path that is not text")))?;
+            let text = path.as_str().ok_or_else(|| {
+                DriverError::Failed(format!("{action} has a path that is not text"))
+            })?;
             let path = PathBuf::from(text);
             let absolute = if path.is_absolute() {
                 path
@@ -369,10 +368,15 @@ impl BrowserDriver {
         let object = found
             .pointer("/result/objectId")
             .and_then(Value::as_str)
-            .ok_or_else(|| DriverError::Failed(format!("set_files: no element matches '{selector}'")))?
+            .ok_or_else(|| {
+                DriverError::Failed(format!("set_files: no element matches '{selector}'"))
+            })?
             .to_string();
         let params = json!({"files": files, "objectId": object});
-        if self.page_call("DOM.setFileInputFiles", params.clone()).is_err() {
+        if self
+            .page_call("DOM.setFileInputFiles", params.clone())
+            .is_err()
+        {
             let _ = self.page_call("DOM.enable", json!({}));
             self.page_call("DOM.setFileInputFiles", params)
                 .map_err(|error| driver_error("set_files", error))?;
@@ -441,7 +445,9 @@ impl BrowserDriver {
                     let mut outcomes = Vec::new();
                     for source in &all {
                         match self.evaluate_extractors(&[source])? {
-                            Some(mut single) if single.len() == 1 => outcomes.push(single.remove(0)),
+                            Some(mut single) if single.len() == 1 => {
+                                outcomes.push(single.remove(0))
+                            }
                             _ => outcomes.push(ExtractOutcome::Thrown {
                                 message: "the extractor is not a valid function".into(),
                                 stack: String::new(),

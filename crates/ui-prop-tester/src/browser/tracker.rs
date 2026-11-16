@@ -165,7 +165,9 @@ impl PageTracker {
                 {
                     return;
                 }
-                let url = text("/response/url").unwrap_or_default().to_ascii_lowercase();
+                let url = text("/response/url")
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
                 if !(url.starts_with("http://") || url.starts_with("https://")) {
                     return;
                 }
@@ -295,7 +297,11 @@ pub fn describe_exception(details: &Value) -> Value {
                             .unwrap_or("<anonymous>"),
                         frame.get("url").and_then(Value::as_str).unwrap_or_default(),
                         frame.get("lineNumber").and_then(Value::as_u64).unwrap_or(0) + 1,
-                        frame.get("columnNumber").and_then(Value::as_u64).unwrap_or(0) + 1,
+                        frame
+                            .get("columnNumber")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0)
+                            + 1,
                     )
                 })
                 .collect();
@@ -306,7 +312,11 @@ pub fn describe_exception(details: &Value) -> Value {
         .get("url")
         .and_then(Value::as_str)
         .filter(|url| !url.is_empty())
-        .or_else(|| first_frame.and_then(|frame| frame.get("url")).and_then(Value::as_str))
+        .or_else(|| {
+            first_frame
+                .and_then(|frame| frame.get("url"))
+                .and_then(Value::as_str)
+        })
         .unwrap_or_default();
     json!({
         "kind": kind,

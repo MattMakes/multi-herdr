@@ -222,8 +222,7 @@ fn serve(
                     head.push_str(&format!("{key}: {value}\r\n"));
                 }
                 head.push_str("\r\n");
-                if writer.write_all(head.as_bytes()).is_err() || writer.write_all(&body).is_err()
-                {
+                if writer.write_all(head.as_bytes()).is_err() || writer.write_all(&body).is_err() {
                     return;
                 }
                 let _ = writer.flush();
@@ -268,7 +267,9 @@ fn serve(
                         return;
                     }
                 }
-                let _ = socket.get_mut().set_read_timeout(Some(Duration::from_millis(200)));
+                let _ = socket
+                    .get_mut()
+                    .set_read_timeout(Some(Duration::from_millis(200)));
                 while !stop.load(Ordering::SeqCst) {
                     match socket.read() {
                         Ok(Message::Close(_)) => return,
@@ -287,9 +288,7 @@ fn serve(
                 return;
             }
             Reply::Socket { .. } => {
-                let _ = writer.write_all(
-                    b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n",
-                );
+                let _ = writer.write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n");
             }
             Reply::Hang => {
                 while !stop.load(Ordering::SeqCst) {

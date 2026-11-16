@@ -26,7 +26,10 @@ impl Coverage {
                 let mut first = true;
                 for range in ranges.into_iter().flatten() {
                     let count = range.get("count").and_then(Value::as_u64).unwrap_or(0);
-                    let start = range.get("startOffset").and_then(Value::as_u64).unwrap_or(0);
+                    let start = range
+                        .get("startOffset")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0);
                     let end = range.get("endOffset").and_then(Value::as_u64).unwrap_or(0);
                     if count > 0 {
                         if self.branches.insert((url.to_string(), start, end)) {

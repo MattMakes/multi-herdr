@@ -281,9 +281,7 @@ fn http_get(authority: &str, path: &str) -> Result<String, String> {
     stream
         .write_all(request.as_bytes())
         .map_err(|error| format!("cannot write to {address}: {error}"))?;
-    let mut response = Vec::new();
-    stream
-        .read_to_end(&mut response)
+    let response = read_response(&mut stream)
         .map_err(|error| format!("cannot read from {address}: {error}"))?;
     let text = String::from_utf8_lossy(&response);
     let (head, body) = text
@@ -302,4 +300,30 @@ fn http_get(authority: &str, path: &str) -> Result<String, String> {
     let start = body.find('{').unwrap_or(0);
     let end = body.rfind('}').map_or(body.len(), |index| index + 1);
     Ok(body[start..end].to_string())
+}
+
+pub fn read_response(stream: &mut impl Read) -> std::io::Result<Vec<u8>> {
+    let mut response = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        let read = stream.read(&mut chunk)?;
+        if read == 0 {
+            return Ok(response);
+        }
+        response.extend_from_slice(&chunk[..read]);
+        let Some(end) = response.windows(4).position(|window| window == b"\r\n\r\n") else {
+            continue;
+        };
+        let head = String::from_utf8_lossy(&response[..end]).to_ascii_lowercase();
+        let length = head.lines().find_map(|line| {
+            line.strip_prefix("content-length:")
+                .and_then(|value| value.trim().parse::<usize>().ok())
+        });
+        if let Some(length) = length {
+            if response.len() >= end + 4 + length {
+                response.truncate(end + 4 + length);
+                return Ok(response);
+            }
+        }
+    }
 }
