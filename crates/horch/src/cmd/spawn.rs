@@ -372,6 +372,8 @@ struct Procs<'a> {
     me: u32,
     /// The parent of a pid. `None` when it cannot be read.
     parent: &'a dyn Fn(u32) -> Option<u32>,
+    /// A sandbox-safe parent query, tried when `parent` is blocked.
+    parent_fallback: &'a dyn Fn(u32) -> Option<u32>,
     /// Whether a pid runs with the given start time.
     same: &'a dyn Fn(u32, u64) -> bool,
     /// A sandbox-safe identity query, tried when `same` is blocked.
@@ -383,6 +385,7 @@ impl Procs<'static> {
         Procs {
             me: std::process::id(),
             parent: &parent_pid,
+            parent_fallback: &horch_core::procid::parent_sandboxed,
             same: &horch_core::procid::is_same,
             same_fallback: &horch_core::procid::is_same_sandboxed,
         }
@@ -412,7 +415,7 @@ fn runs_in(agent: Option<Agent>, procs: &Procs) -> bool {
         if pid == agent {
             return true;
         }
-        match (procs.parent)(pid) {
+        match (procs.parent)(pid).or_else(|| (procs.parent_fallback)(pid)) {
             Some(p) if p != pid && p > 0 => pid = p,
             _ => return false,
         }
@@ -1033,6 +1036,7 @@ mod tests {
             &Procs {
                 me,
                 parent: &parent,
+                parent_fallback: &|_| None,
                 same: &same,
                 same_fallback: &|_, _| false,
             },
@@ -1044,6 +1048,7 @@ mod tests {
         Procs {
             me: AGENT.pid,
             parent: &|_| None,
+            parent_fallback: &|_| None,
             same: &|_, _| true,
             same_fallback: &|_, _| false,
         }
@@ -1054,6 +1059,7 @@ mod tests {
         Procs {
             me: 91,
             parent: &|pid| (pid == 91).then_some(90),
+            parent_fallback: &|_| None,
             same: &|_, _| true,
             same_fallback: &|_, _| false,
         }
@@ -1311,10 +1317,154 @@ mod tests {
         let procs = Procs {
             me: 42,
             parent: &parent,
+            parent_fallback: &|_| None,
             same: &|_, _| false,
             same_fallback: &|pid, started| (pid, started) == (40, 7),
         };
         assert!(runs_in(Some(AGENT), &procs));
+    }
+
+    /// The sandbox blocks the full process-info query for the caller's
+    /// ancestors, so the walk asks the sandbox-safe parent query. Before
+    /// that fallback, this walk stopped at 42 and refused the brief.
+    #[test]
+    fn trf_43_a_blocked_parent_query_uses_the_sandbox_safe_query() {
+        let fallback = |pid: u32| match pid {
+            40 | 90 => Some(1),
+            41 => Some(40),
+            42 => Some(41),
+            91 => Some(90),
+            _ => None,
+        };
+        let procs = |me| Procs {
+            me,
+            parent: &|_| None,
+            parent_fallback: &fallback,
+            same: &|pid, started| (pid, started) == (40, 7),
+            same_fallback: &|_, _| false,
+        };
+        assert!(runs_in(Some(AGENT), &procs(42)), "a descendant passes");
+        assert!(!runs_in(Some(AGENT), &procs(91)), "a stranger still fails");
+        let blocked = Procs {
+            parent_fallback: &|_| None,
+            ..procs(42)
+        };
+        assert!(!runs_in(Some(AGENT), &blocked), "no parent, no pass");
+    }
+
+    /// A probe for the real Claude Code sandbox: run it there with the
+    /// recorded agent of the caller's ledger row in
+    /// `HORCH_PROBE_AGENT_PID` and `HORCH_PROBE_AGENT_STARTED`.
+    #[test]
+    #[ignore = "a probe run by hand inside a worker's sandbox"]
+    fn trf_43_probe_runs_in_from_env() {
+        let read = |name: &str| {
+            std::env::var(name)
+                .unwrap_or_else(|_| panic!("set {name}"))
+                .parse::<u64>()
+                .unwrap_or_else(|e| panic!("{name}: {e}"))
+        };
+        let agent = u32::try_from(read("HORCH_PROBE_AGENT_PID")).unwrap();
+        let started = read("HORCH_PROBE_AGENT_STARTED");
+        let procs = Procs::os();
+        println!(
+            "agent {agent} started {started}: same={} same_fallback={}",
+            (procs.same)(agent, started),
+            (procs.same_fallback)(agent, started),
+        );
+        let mut pid = procs.me;
+        for _ in 0..MAX_TREE_DEPTH {
+            let primary = (procs.parent)(pid);
+            let fallback = (procs.parent_fallback)(pid);
+            println!("pid {pid}: parent={primary:?} parent_fallback={fallback:?}");
+            match primary.or(fallback) {
+                Some(p) if p != pid && p > 0 && pid != agent => pid = p,
+                _ => break,
+            }
+        }
+        let passed = runs_in(
+            Some(Agent {
+                pid: agent,
+                started: Some(started),
+            }),
+            &procs,
+        );
+        println!("runs_in={passed}");
+        assert!(passed);
+    }
+
+    /// A probe for the real Claude Code sandbox: run it in the controller's
+    /// pane. It prints each step of [`caller`] and of the brief check for
+    /// the teammate in `HORCH_PROBE_TARGET`.
+    #[test]
+    #[ignore = "a probe run by hand inside a worker's sandbox"]
+    fn trf_43_probe_spawn_checks_from_env() {
+        let ctx = RuntimeContext::from_env(&horch_core::runtime::ProcessEnv).unwrap();
+        let target = std::env::var("HORCH_PROBE_TARGET").unwrap_or("intake-auditor".into());
+        println!(
+            "pane={:?} workspace={:?}",
+            ctx.herdr.pane, ctx.herdr.workspace
+        );
+        println!("herdr bin={:?}", ctx.bins.harness.herdr);
+        if let Some(pane) = ctx.herdr.pane.as_ref() {
+            match Herdr::with_bin(&ctx.bins.harness.herdr).pane_get(pane.as_str()) {
+                Ok(info) => {
+                    println!(
+                        "pane_get: pane_id={:?} workspace_id={:?}",
+                        info.pane_id, info.workspace_id
+                    );
+                    let workspace = info
+                        .workspace_id
+                        .clone()
+                        .or_else(|| ctx.herdr.workspace.as_ref().map(|w| w.to_string()));
+                    println!("workspace={workspace:?}");
+                    if let Some(workspace) = workspace {
+                        let mailbox = Mailbox::in_context(&ctx, &workspace);
+                        let roles = mailbox.roles();
+                        println!("roles={roles:?}");
+                        let role = roles.into_iter().find(|(_, p)| *p == info.pane_id);
+                        println!("role={role:?}");
+                        if let Some((role, _)) = role {
+                            match mailbox.read_brief(&role) {
+                                Ok(b) => println!(
+                                    "brief: worker_id={:?} resolved={:?} teammates_dir={:?}",
+                                    b.worker_id,
+                                    b.resolved.as_ref().map(|t| t.name.clone()),
+                                    b.teammates_dir
+                                ),
+                                Err(e) => println!("read_brief: {e:#}"),
+                            }
+                        }
+                    }
+                }
+                Err(e) => println!("pane_get: {e:#}"),
+            }
+        }
+        let caller = caller(&ctx);
+        println!(
+            "caller: role={:?} worker_id={:?} agent={:?}",
+            caller.as_ref().map(|c| c.role.clone()),
+            caller.as_ref().and_then(|c| c.worker_id.clone()),
+            caller.as_ref().and_then(|c| c.agent)
+        );
+        let roster_dir = crate::cmd::path_text(ctx.bins.roster_override.as_deref());
+        println!("roster_dir={roster_dir:?}");
+        let mut a = args(Some(&target), None);
+        a.task = "Read and follow /x/brief.md exactly.".into();
+        let controller = spawn_only_check(caller.as_ref(), &a, roster_dir.as_deref(), &Procs::os());
+        println!("spawn_only_check={controller:?}");
+        let roster = crate::cmd::load_roster(&ctx, roster_dir.as_deref());
+        let teammate = roster.as_ref().ok().and_then(|r| r.get(&target));
+        println!(
+            "roster ok={} target found={} horch_access={:?}",
+            roster.is_ok(),
+            teammate.is_some(),
+            teammate.map(|t| t.horch_access)
+        );
+        let controller = controller.unwrap();
+        let checked = check_task_text(&a, controller.as_deref(), teammate);
+        println!("check_task_text={checked:?}");
+        checked.unwrap();
     }
 
     /// TRF-43: the real process tree. This test process descends from its
