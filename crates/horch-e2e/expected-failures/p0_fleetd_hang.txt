@@ -1,0 +1,2 @@
+# Red tests of crates/horch-e2e/tests/p0_fleetd_hang.rs (ticket fleetd-p0/04).
+fm12_hung_fleetd_is_restarted_on_each_os | 1 | unrecognized subcommand 'fleetd'
