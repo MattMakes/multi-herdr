@@ -58,6 +58,32 @@ pub fn is_same(pid: u32, started: u64) -> bool {
     start_time(pid) == Some(started)
 }
 
+/// Whether `pid` has `started`, using the macOS `KERN_PROC_PID` query that
+/// Claude's sandbox permits for an ancestor outside the sandbox.
+#[cfg(target_os = "macos")]
+pub fn is_same_sandboxed(pid: u32, started: u64) -> bool {
+    raw(pid).and_then(imp::sysctl_start_time) == Some(started)
+}
+
+/// Other platforms need no second process-identity query for this sandbox.
+#[cfg(not(target_os = "macos"))]
+pub fn is_same_sandboxed(_pid: u32, _started: u64) -> bool {
+    false
+}
+
+/// The parent of `pid`, from the macOS `KERN_PROC_PID` query that Claude's
+/// sandbox permits where it blocks `proc_pidinfo`.
+#[cfg(target_os = "macos")]
+pub fn parent_sandboxed(pid: u32) -> Option<u32> {
+    raw(pid).and_then(imp::sysctl_parent)
+}
+
+/// Other platforms need no second parent query for this sandbox.
+#[cfg(not(target_os = "macos"))]
+pub fn parent_sandboxed(_pid: u32) -> Option<u32> {
+    None
+}
+
 /// Whether process group `pgid` is still the one whose leader started at
 /// `started`: the leader runs with that start time and still leads the
 /// group; or the leader has ended and the group still has members, which
@@ -199,6 +225,54 @@ mod imp {
             )
         };
         (n == size).then(|| info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec)
+    }
+
+    /// The size of Darwin's `kinfo_proc` on 64-bit macOS.
+    const KINFO_PROC_SIZE: usize = 648;
+    /// The offset of `kp_eproc.e_ppid` in `kinfo_proc`.
+    const KINFO_PROC_PPID: usize = 560;
+
+    /// `kern.proc.pid.<pid>`: the `kinfo_proc` of `pid`. Claude's macOS
+    /// sandbox permits this query where it blocks `proc_pidinfo`.
+    fn kinfo_proc(pid: i32) -> Option<[u8; KINFO_PROC_SIZE]> {
+        let mut mib = [libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_PID, pid];
+        let mut bytes = [0_u8; KINFO_PROC_SIZE];
+        let mut len = KINFO_PROC_SIZE;
+        // SAFETY: `bytes` has `len` writable bytes, `mib` holds 4 valid
+        // integers, and the remaining input pointers are null.
+        let rc = unsafe {
+            libc::sysctl(
+                mib.as_mut_ptr(),
+                mib.len() as libc::c_uint,
+                bytes.as_mut_ptr().cast(),
+                &mut len,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        (rc == 0 && len == KINFO_PROC_SIZE).then_some(bytes)
+    }
+
+    /// The start time from `kinfo_proc`: `kp_proc.p_starttime`, a `timeval`
+    /// at offset 0.
+    pub(super) fn sysctl_start_time(pid: i32) -> Option<u64> {
+        let bytes = kinfo_proc(pid)?;
+        // SAFETY: `bytes` holds a whole `kinfo_proc`, which starts with a
+        // `timeval`; the buffer need not be aligned, so read it unaligned.
+        let started = unsafe { std::ptr::read_unaligned(bytes.as_ptr().cast::<libc::timeval>()) };
+        let seconds = u64::try_from(started.tv_sec).ok()?;
+        let micros = u64::try_from(started.tv_usec).ok()?;
+        (micros < 1_000_000)
+            .then_some(())
+            .and_then(|()| seconds.checked_mul(1_000_000)?.checked_add(micros))
+    }
+
+    /// The parent pid from `kinfo_proc`: `kp_eproc.e_ppid`.
+    pub(super) fn sysctl_parent(pid: i32) -> Option<u32> {
+        let bytes = kinfo_proc(pid)?;
+        let field = bytes.get(KINFO_PROC_PPID..KINFO_PROC_PPID + 4)?;
+        let ppid = i32::from_ne_bytes(field.try_into().ok()?);
+        u32::try_from(ppid).ok()
     }
 
     /// The start time is microseconds since the epoch.
@@ -493,6 +567,27 @@ mod tests {
         assert!(alive(me, None), "an old record: the pid exists");
         assert!(!is_same(me, started + 1));
         assert!(!alive(me, Some(started + 1)), "a reused pid is dead");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_sandbox_safe_sysctl_names_the_same_process_start() {
+        let me = std::process::id();
+        assert_eq!(
+            imp::sysctl_start_time(os_pid(me).unwrap()),
+            start_time(me),
+            "the sandbox fallback keeps the recorded identity"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_sandbox_safe_sysctl_names_the_parent() {
+        let me = os_pid(std::process::id()).unwrap();
+        // SAFETY: `getppid` has no preconditions.
+        let parent = unsafe { libc::getppid() };
+        assert_eq!(imp::sysctl_parent(me), u32::try_from(parent).ok());
+        assert_eq!(imp::sysctl_parent(i32::MAX), None, "no such process");
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]

@@ -1,0 +1,56 @@
+{
+ "game": {"name": "Tide Forge (example)", "session_minutes": 15, "target_hours": 12, "active_fraction": 0.5,
+          "progress_axis": "depth", "notes": "A small invented game. It shows the model format. It has a lull on purpose."},
+ "currencies": [
+  {"id": "coin", "name": "Coin", "system": "forge", "base_income": 1},
+  {"id": "power", "name": "Hammer power", "system": "forge", "base_income": 1, "stat": true},
+  {"id": "ember", "name": "Ember", "system": "rekindle"},
+  {"id": "pearl", "name": "Pearl", "system": "dive"}
+ ],
+ "systems": [
+  {"id": "forge", "name": "Forge", "loop": "core", "persists": false, "description": "Strike ore, sell ingots for coin."},
+  {"id": "crew", "name": "Apprentices", "loop": "automation", "persists": false, "description": "Apprentices strike while you are away."},
+  {"id": "depth", "name": "Tide depth", "loop": "core", "persists": false, "description": "Each depth needs more hammer power. Depths gate the other systems."},
+  {"id": "rekindle", "name": "Rekindle", "loop": "meta", "persists": true, "description": "Reset the forge for embers. Embers buy permanent multipliers."},
+  {"id": "dive", "name": "Pearl dive", "loop": "minigame", "persists": true, "clock": "real", "description": "A timed dive that pays pearls. Pearls buy hammer power that no other system gives."}
+ ],
+ "purchases": [
+  {"id": "hammer", "name": "Hammer", "system": "forge", "cost_currency": "coin", "base_cost": 10, "cost_growth": 1.15,
+   "effects": [{"target": "coin", "kind": "add", "value": 1, "active": true}, {"target": "power", "kind": "add", "value": 1}]},
+  {"id": "bellows", "name": "Bellows", "system": "forge", "cost_currency": "coin", "base_cost": 250, "cost_growth": 1.6, "max_level": 25,
+   "effects": [{"target": "coin", "kind": "mult", "value": 1.35}]},
+  {"id": "apprentice", "name": "Apprentice", "system": "crew", "cost_currency": "coin", "base_cost": 120, "cost_growth": 1.22,
+   "requires": [{"type": "milestone", "id": "open_crew"}],
+   "effects": [{"target": "coin", "kind": "add", "value": 6}]},
+  {"id": "whetstone", "name": "Whetstone", "system": "forge", "cost_currency": "coin", "base_cost": 5000, "cost_growth": 2.2, "max_level": 20,
+   "effects": [{"target": "power", "kind": "mult", "value": 1.5}]},
+  {"id": "ember_heart", "name": "Ember heart", "system": "rekindle", "cost_currency": "ember", "base_cost": 1, "cost_growth": 1.5,
+   "effects": [{"target": "coin", "kind": "pct", "value": 0.5}, {"target": "power", "kind": "pct", "value": 0.25}]},
+  {"id": "bellows_frame", "name": "Bellows frame", "system": "rekindle", "cost_currency": "ember", "base_cost": 20, "cost_growth": 3, "max_level": 5,
+   "effects": [{"target": "bellows", "kind": "cap", "value": 3}]},
+  {"id": "pearl_edge", "name": "Pearl edge", "system": "dive", "cost_currency": "pearl", "base_cost": 5, "cost_growth": 1.3,
+   "requires": [{"type": "milestone", "id": "open_dive"}],
+   "effects": [{"target": "power", "kind": "mult", "value": 1.2}]}
+ ],
+ "milestones": [
+  {"id": "open_crew", "name": "Apprentices arrive", "system": "crew", "kind": "system_unlock", "requires": [{"type": "ladder", "id": "depth", "step": 3}]},
+  {"id": "open_rekindle", "name": "The forge can be rekindled", "system": "rekindle", "kind": "system_unlock", "requires": [{"type": "ladder", "id": "depth", "step": 8}]},
+  {"id": "open_dive", "name": "Pearl dive opens", "system": "dive", "kind": "system_unlock", "requires": [{"type": "ladder", "id": "depth", "step": 14}],
+   "effects": [{"target": "pearl", "kind": "add", "value": 0.02}]},
+  {"id": "golden_anvil", "name": "Golden anvil", "system": "forge", "kind": "feature", "persists": false,
+   "requires": [{"type": "level", "id": "hammer", "level": 50}],
+   "effects": [{"target": "coin", "kind": "mult", "value": 2}]}
+ ],
+ "ladders": [
+  {"id": "depth", "name": "Depth {n}", "system": "depth", "count": 30, "excitement": 3,
+   "requires": {"type": "rate", "currency": "power", "base": 4, "growth": 1.9},
+   "grants": [{"currency": "coin", "base": 50, "growth": 2.0}]}
+ ],
+ "prestige": {"enabled": true, "system": "rekindle", "currency": "ember", "basis_currency": "coin", "base": 100000, "exponent": 0.5, "k": 1,
+              "requires": [{"type": "milestone", "id": "open_rekindle"}], "min_run_seconds": 300,
+              "resets": {"currencies": ["coin"], "purchase_systems": ["forge", "crew"], "ladders": ["depth"]}},
+ "interactions": [
+  {"from": "dive", "to": "depth", "type": "buff", "effect": "Pearl edge multiplies hammer power, the stat that depth needs."}
+ ],
+ "review": {"findings": [], "ideas": [], "lull_notes": []}
+}

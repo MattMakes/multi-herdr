@@ -707,6 +707,9 @@ fn a_task_finishes_through_review_land_pr_and_cleanup() {
         &["commit", "--quiet", "--no-gpg-sign", "-m", "feature"],
     );
 
+    // The comment sweep comes first.
+    comment_sweep(&h, &w);
+
     // Round 1: code-sweep queues reviewer tasks and the pipeline waits.
     let (code, r) = finish_json(&h, &w);
     assert_eq!(code, Some(1));
@@ -747,6 +750,7 @@ fn a_task_finishes_through_review_land_pr_and_cleanup() {
         names,
         vec![
             ("check", "passed"),
+            ("comment-sweep", "passed"),
             ("code-sweep", "passed"),
             ("complexity-sweep", "passed"),
             ("recheck", "passed"),
@@ -1662,6 +1666,22 @@ fn review_all_as(h: &Harness, persona: &str, n: usize, findings: &str) -> String
     last
 }
 
+/// The first finish of a committed task stops at comment-sweep with 1 task
+/// for `comment-remover` (CMS-01). A worker of that teammate claims it,
+/// writes its report and ends.
+fn comment_sweep(h: &Harness, w: &str) {
+    let (code, r) = finish_json(h, w);
+    assert_eq!(code, Some(1), "{r}");
+    assert_eq!(r["stopped_at"], "comment-sweep", "{r}");
+    assert_eq!(r["queued_reviews"].as_array().unwrap().len(), 1, "{r}");
+    review_all_as(
+        h,
+        "comment-remover",
+        1,
+        "Files changed: none\nDeletions: 0\nFlags:\nSkipped: none\n",
+    );
+}
+
 /// A claimed task's worktree, with 1 committed file, finished through every
 /// step. Returns the finish report.
 fn work_and_finish(h: &Harness, w: &str, name: &str) -> Value {
@@ -1678,6 +1698,7 @@ fn work_and_finish(h: &Harness, w: &str, name: &str) -> Value {
         &path,
         &["commit", "--quiet", "--no-gpg-sign", "-m", name],
     );
+    comment_sweep(h, w);
     let (code, r) = finish_json(h, w);
     assert_eq!(code, Some(1), "round 1 waits for reviews: {r}");
     let n = r["queued_reviews"].as_array().unwrap().len();

@@ -1579,7 +1579,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn the_parent_serves_the_report_socket_only_for_report() {
-        let tmp = tempfile::Builder::new().tempdir_in("/tmp").unwrap();
+        let tmp = tempfile::Builder::new()
+            .tempdir_in("/tmp")
+            .or_else(|_| tempfile::tempdir())
+            .unwrap();
         let mut ctx = RuntimeContext::from_env(&MapEnv::new("/")).unwrap();
         ctx.paths.state_root = tmp.path().to_path_buf();
         let brief = report_brief(ReportTarget::Orchestrator);

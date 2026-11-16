@@ -442,8 +442,8 @@ fn a_schema_2_ledger_migrates_forward_and_keeps_its_rows() {
     // and fails (`duplicate column name`).
     assert_eq!(
         horch_core::taskledger::schema::VERSION,
-        7,
-        "undo the new version here"
+        8,
+        "undo the new version here (version 8 needs no undo: it builds task_steps again from its rows)"
     );
     let path = dir.path().join("ledger.sqlite3");
     let conn = rusqlite::Connection::open(&path).unwrap();

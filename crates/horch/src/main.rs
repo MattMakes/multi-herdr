@@ -102,9 +102,11 @@ enum LaunchCommand {
         #[arg(long, value_name = "SESSION_ID")]
         resume: Option<String>,
         /// How much each task is verified before it lands; the default for
-        /// the run the orchestrator creates. `full`: check, AI code review
-        /// (code-sweep), complexity-sweep, recheck. `light` (the default):
-        /// check and complexity-sweep, no AI reviewers. `minimal`: check only.
+        /// the run the orchestrator creates. Every profile runs the check and
+        /// comment-sweep (a comment-remover worker deletes the comments the
+        /// task added). `full` adds AI code review (code-sweep),
+        /// complexity-sweep and recheck. `light` (the default) adds
+        /// complexity-sweep, no AI reviewers. `minimal` adds nothing.
         #[arg(long, value_name = "PROFILE", env = "HORCH_VERIFY")]
         verify: Option<horch_core::taskledger::model::VerifyProfile>,
     },
@@ -972,7 +974,7 @@ impl MessagingCommand {
                 done(cmd::messaging::inbox(ctx, roles, peek))
             }
             MessagingCommand::Peek { role, lines } => done(cmd::messaging::peek(ctx, &role, lines)),
-            MessagingCommand::Note { text, fact } => done(note_command(ctx, &joined(&text), fact)),
+            MessagingCommand::Note { text, fact } => note_command(ctx, &joined(&text), fact),
         }
     }
 }
@@ -1225,7 +1227,7 @@ impl ToolCommand {
 }
 
 /// `horch note`: a note on the worker's record, or a project fact.
-fn note_command(ctx: &mut Ctx, text: &str, fact: bool) -> Result<()> {
+fn note_command(ctx: &mut Ctx, text: &str, fact: bool) -> Result<ExitCode> {
     if !fact {
         return cmd::messaging::note(ctx, text);
     }
@@ -1236,7 +1238,7 @@ fn note_command(ctx: &mut Ctx, text: &str, fact: bool) -> Result<()> {
     } else {
         "Project fact already recorded."
     });
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
 fn mode_command(ctx: &mut Ctx, role: String, mode: &str, timeout: Option<u64>) -> Result<ExitCode> {
@@ -1349,7 +1351,10 @@ mod tests {
     fn report_mode_sends_3_commands_and_refuses_the_rest() {
         use horch_core::messaging::report::{self, Request};
         use std::sync::{Arc, Mutex};
-        let tmp = tempfile::Builder::new().tempdir_in("/tmp").unwrap();
+        let tmp = tempfile::Builder::new()
+            .tempdir_in("/tmp")
+            .or_else(|_| tempfile::tempdir())
+            .unwrap();
         let path = report::socket_path(tmp.path(), "r1");
         let seen = Arc::new(Mutex::new(Vec::new()));
         let log = seen.clone();

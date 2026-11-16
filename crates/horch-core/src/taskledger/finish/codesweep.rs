@@ -503,7 +503,7 @@ pub fn waive(
 /// The review folder inside the project: reviewers write there (a Codex
 /// sandbox may write its working tree, not the ledger's folder). It ignores
 /// itself in git.
-fn review_root(root: &Path) -> Result<PathBuf> {
+pub(super) fn review_root(root: &Path) -> Result<PathBuf> {
     let dir = root.join(".horch").join("reviews");
     std::fs::create_dir_all(&dir)?;
     let ignore = root.join(".horch").join(".gitignore");

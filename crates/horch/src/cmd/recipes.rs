@@ -1745,7 +1745,7 @@ mod tests {
         assert_eq!(FleetOptions::default().verify(), VerifyProfile::Light);
         let line = verify_line(FleetOptions::default().verify());
         assert!(
-            line.starts_with("Verification: light (check and complexity-sweep;"),
+            line.starts_with("Verification: light (check, comment-sweep and complexity-sweep;"),
             "{line}"
         );
         assert!(line.contains("--verify full|light|minimal"), "{line}");
@@ -1757,12 +1757,14 @@ mod tests {
         assert!(text.starts_with("== Verification ==\n"), "{text}");
         assert!(text.contains("profile `light`"), "{text}");
         assert!(
-            text.contains("(check, complexity-sweep, land, pr, cleanup)"),
+            text.contains("(check, comment-sweep, complexity-sweep, land, pr, cleanup)"),
             "{text}"
         );
         assert!(!text.contains("code-sweep,"), "{text}");
         let full = verify_briefing(VerifyProfile::Full);
-        assert!(full.contains("check, code-sweep, complexity-sweep, recheck, land, pr, cleanup"));
+        assert!(full.contains(
+            "check, comment-sweep, code-sweep, complexity-sweep, recheck, land, pr, cleanup"
+        ));
     }
 
     #[test]

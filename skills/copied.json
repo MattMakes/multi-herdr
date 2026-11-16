@@ -2,6 +2,11 @@
   "format": "One entry per bundled skill. copied_files lists the files, relative to the skill directory, that were copied into this repository from elsewhere; a check reports problems in them but does not fail on them. An empty list means the skill is own text. verbatim: true means the directory is an unchanged copy: copied_files lists every file and none was edited. A verbatim skill is exempt from the bundled size budget. budget_exempt: \"<reason>\" exempts a skill that is not verbatim (renamed, adapted or combined) from the size budget; set it only on a skill over the budget.",
   "skills": [
     {
+      "name": "addictive-game-design-review",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
       "name": "api-contracts",
       "copied_files": [],
       "verbatim": false
@@ -480,6 +485,11 @@
         "DESIGN-IT-TWICE.md",
         "SKILL.md"
       ],
+      "verbatim": false
+    },
+    {
+      "name": "comment-pruning",
+      "copied_files": [],
       "verbatim": false
     },
     {
@@ -982,6 +992,12 @@
       "verbatim": false
     },
     {
+      "name": "godot-library",
+      "copied_files": [],
+      "verbatim": false,
+      "budget_exempt": "a reference library of 35 shelves; a worker reads only the shelves its task needs"
+    },
+    {
       "name": "godot-limboai",
       "copied_files": [
         "SKILL.md",
@@ -1440,6 +1456,12 @@
       "verbatim": false
     },
     {
+      "name": "incremental-game-design",
+      "copied_files": [],
+      "verbatim": false,
+      "budget_exempt": "ships its tools: the progression simulator and workbook writer (5 Python modules) and the Godot project scan, plus the reference-game pattern and math references"
+    },
+    {
       "name": "ios-simulator-run",
       "copied_files": [
         "SKILL.md"
@@ -1487,6 +1509,11 @@
     },
     {
       "name": "orchestrate",
+      "copied_files": [],
+      "verbatim": false
+    },
+    {
+      "name": "patch-around-audit",
       "copied_files": [],
       "verbatim": false
     },

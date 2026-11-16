@@ -1387,6 +1387,52 @@ fn codex_capability_descriptions_are_sanctioned() {
 // respawn first instruction, `horch ledger handoff` and an instruction for
 // every `horch context --over` state id. Each block is literal: the old text it
 // replaces and the new text.
+/// The comment-sweep step (CMS-01): what the worker briefing says of it.
+const CMS_WORKER: &[(&str, &str)] = &[
+    (
+        r###"  runs the finish steps of your run in order, from check, code-sweep,
+  complexity-sweep, recheck, land, pr, cleanup. Its output names the
+"###,
+        r###"  runs the finish steps of your run in order, from check, comment-sweep,
+  code-sweep, complexity-sweep, recheck, land, pr, cleanup. Its output names the
+"###,
+    ),
+    (
+        r###"- When code-sweep queues reviewer tasks, end your turn. horch spawns the
+"###,
+        r###"- When comment-sweep queues its task, end your turn and do not edit your
+  work folder: a comment-remover commits there. horch tells you when it is
+  done. Then run horch ledger finish again.
+- When code-sweep queues reviewer tasks, end your turn. horch spawns the
+"###,
+    ),
+];
+
+/// The comment-sweep step (CMS-01): what the orchestrator briefing says of it.
+const CMS_ORCHESTRATOR: &[(&str, &str)] = &[(
+    r###"
+== Code review ==
+"###,
+    r###"
+== Comment sweep ==
+horch ledger finish runs comment-sweep in every profile: no task lands with
+the comments it added. horch spawns 1 comment-remover for the task itself
+and sends you 1 NOTE that names it. Do not spawn it. It commits in the
+author's work folder while the author waits. Cancel its task only to skip
+the sweep of that 1 task: the step then passes.
+
+== Code review ==
+"###,
+)];
+
+fn cms_blocks(mut expected: String, blocks: &[(&str, &str)]) -> String {
+    for (old, new) in blocks {
+        assert_eq!(expected.matches(old).count(), 1, "{old}");
+        expected = expected.replace(old, new);
+    }
+    expected
+}
+
 fn trf_46_worker_blocks(mut expected: String, idle: bool) -> String {
     let blocks: &[(&str, &str, &str)] = &[
         (
@@ -1610,7 +1656,7 @@ Then end your turn. Your first instruction arrives as your next message."###,
         assert_eq!(expected.matches(old).count(), 1, "{old}");
         expected = expected.replace(old, new);
     }
-    expected
+    cms_blocks(expected, CMS_WORKER)
 }
 
 fn trf_46_orchestrator_blocks(mut expected: String, idle: bool) -> String {
@@ -2135,7 +2181,7 @@ This briefing is complete. An ambient skill named herdr-orchestrator or
         assert_eq!(expected.matches(old).count(), 1, "{old}");
         expected = expected.replace(old, new);
     }
-    expected
+    cms_blocks(expected, CMS_ORCHESTRATOR)
 }
 
 /// T-22: the `report-worker` base, as an intake role renders it. This golden

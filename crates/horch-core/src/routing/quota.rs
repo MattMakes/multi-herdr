@@ -529,6 +529,7 @@ fn local_broken(pool: &str, r: &PoolReading, local_model: Option<&str>) -> Optio
 struct Rules<'a> {
     view: &'a QuotaView,
     pool: &'a str,
+    scope: Option<&'a str>,
     r: &'a PoolReading,
     windows: Vec<&'a Window>,
     worst: Option<&'a Window>,
@@ -537,7 +538,7 @@ struct Rules<'a> {
 
 impl<'a> Rules<'a> {
     /// The rules for `r`, over the windows that apply to `scope`.
-    fn new(view: &'a QuotaView, pool: &'a str, scope: Option<&str>, r: &'a PoolReading) -> Self {
+    fn new(view: &'a QuotaView, pool: &'a str, scope: Option<&'a str>, r: &'a PoolReading) -> Self {
         let now = view.now;
         let windows: Vec<&Window> = r
             .windows
@@ -556,6 +557,7 @@ impl<'a> Rules<'a> {
         Rules {
             view,
             pool,
+            scope,
             r,
             windows,
             worst,
@@ -600,6 +602,7 @@ impl<'a> Rules<'a> {
             .as_deref()
             .and_then(clock::parse)
             .filter(|_| self.pool != POOL_ZEN)
+            .filter(|_| refusal_covers(self.r, self.scope))
             .filter(|seen| refusal_in_force(self.r, &self.windows, *seen, self.view.now))?;
         Some(self.out(
             State::Exhausted,
@@ -732,15 +735,35 @@ fn refusal_in_force(
     }
 }
 
-/// The window the refusal named, else the shortest of `windows`.
+/// A refusal that named a scoped window blocks that scope only.
+fn refusal_covers(r: &PoolReading, scope: Option<&str>) -> bool {
+    match r.refusal_window.as_deref().and_then(|l| l.split_once(':')) {
+        Some((_, named)) => scope == Some(named),
+        None => true,
+    }
+}
+
+/// The window the refusal named, else the shortest of `windows` that is no
+/// longer than the named one.
 fn refused_window<'a>(r: &PoolReading, windows: &[&'a Window]) -> Option<&'a Window> {
-    let named = r
-        .refusal_window
-        .as_deref()
-        .and_then(|label| windows.iter().find(|w| w.label() == label));
+    let label = r.refusal_window.as_deref();
+    let named = label.and_then(|label| windows.iter().find(|w| w.label() == label));
+    let longest = label.map_or(u64::MAX, named_minutes);
     named
-        .or_else(|| windows.iter().min_by_key(|w| w.minutes))
+        .or_else(|| {
+            windows
+                .iter()
+                .filter(|w| w.minutes <= longest)
+                .min_by_key(|w| w.minutes)
+        })
         .copied()
+}
+
+fn named_minutes(label: &str) -> u64 {
+    match label.split(':').next() {
+        Some("5h") => 300,
+        _ => 10_080,
+    }
 }
 
 /// What a successful probe read.
@@ -1483,6 +1506,66 @@ mod tests {
             assert!(!refusal_holds("2026-09-28T12:00:00Z", None, windows()));
             assert!(refusal_holds("2026-09-28T17:59:00Z", Some("5h"), windows()));
         }
+    }
+
+    #[test]
+    fn a_5h_refusal_with_only_a_7d_reading_counts_for_5_hours() {
+        let windows = || vec![seven_d()];
+        assert!(refusal_holds("2026-09-28T13:00:01Z", Some("5h"), windows()));
+        assert!(!refusal_holds(
+            "2026-09-28T13:00:00Z",
+            Some("5h"),
+            windows()
+        ));
+        assert!(!refusal_holds(
+            "2026-09-27T12:00:00Z",
+            Some("5h"),
+            windows()
+        ));
+    }
+
+    #[test]
+    fn an_unnamed_refusal_with_no_reading_counts_for_5_hours() {
+        assert!(refusal_holds("2026-09-28T13:00:01Z", None, Vec::new()));
+        assert!(!refusal_holds("2026-09-28T13:00:00Z", None, Vec::new()));
+    }
+
+    #[test]
+    fn a_5h_refusal_with_a_5h_reading_counts_until_the_5h_reset() {
+        let resets_at = |at: &str| vec![Window::new(300, 0.1, Some(at.into()), None)];
+        let seen = "2026-09-28T14:30:00Z";
+        assert!(refusal_holds(
+            seen,
+            Some("5h"),
+            resets_at("2026-09-28T19:00:00Z")
+        ));
+        assert!(!refusal_holds(
+            seen,
+            Some("5h"),
+            resets_at("2026-09-28T18:00:00Z")
+        ));
+    }
+
+    #[test]
+    fn a_scoped_refusal_blocks_only_its_scope() {
+        let mut file = QuotaFile::default();
+        file.pools.insert(
+            POOL_CLAUDE.into(),
+            PoolReading {
+                observed_at: Some("2026-09-28T17:55:00Z".into()),
+                windows: vec![five_h(), seven_d()],
+                refusal_seen_at: Some("2026-09-28T17:00:00Z".into()),
+                refusal_window: Some("7d:fable".into()),
+                ..Default::default()
+            },
+        );
+        let v = QuotaView::new(file, now(), Policy::default(), false);
+        assert_eq!(
+            v.assess("claude", "claude-fable-5-2").state,
+            State::Exhausted
+        );
+        assert_ne!(v.assess("claude", "opus").state, State::Exhausted);
+        assert_ne!(v.assess_shown(POOL_CLAUDE).state, State::Exhausted);
     }
 
     /// Of 2 windows as short as each other, the first listed decides.

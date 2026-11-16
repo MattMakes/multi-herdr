@@ -58,11 +58,13 @@ To refresh a copied skill:
 
 | Skill | Kind |
 | --- | --- |
+| [addictive-game-design-review](addictive-game-design-review/SKILL.md) | own text |
 | [art-direction](art-direction/SKILL.md) | combined and rewritten |
 | [brand-identity](brand-identity/SKILL.md) | combined and rewritten |
 | [design-imagery](design-imagery/SKILL.md) | combined and rewritten |
 | [design-system](design-system/SKILL.md) | combined and rewritten |
 | [game-juice](game-juice/SKILL.md) | own text |
+| [incremental-game-design](incremental-game-design/SKILL.md) | own text |
 | [landing-page](landing-page/SKILL.md) | combined and rewritten |
 | [motion-gsap](motion-gsap/SKILL.md) | combined and rewritten |
 | [one-page-design](one-page-design/SKILL.md) | own text |
@@ -121,7 +123,7 @@ The specs the clean writers worked from are in [docs/cleanroom/pixel-vfx/](../do
 
 ## Engineering and product skills
 
-These skills belong to no phase; each attaches by name to the specialist whose work it covers. 6 are own text: `product-requirements` is for `product-lead`, `system-design` for `staff-engineer`, `architecture-review` for `architect-reviewer`, `creative-council` is for the 3 council seats, and `api-contracts` and `data-migrations` are for `backend-developer` (`staff-engineer` names both under `available_skills`). 2 are adapted: `codebase-design` is the shared vocabulary for module design (deep modules, interfaces, seams) and is carried by `architect-reviewer`, `staff-engineer` and `opus-architect`; `backend-developer`, `frontend-developer`, `opus-domain`, `opus`, `codex-sol` and `codex-reviewer` name it under `available_skills`. `improve-codebase-architecture` is a review procedure that finds deepening candidates and writes an HTML report. `opus-architect` carries it because it has Write and no Edit: it writes the report and edits no code. `staff-engineer` names it under `available_skills`. `architect-reviewer` does not carry it, because that seat is read-only on purpose. The own-text skills are language- and framework-neutral: each tells the worker to follow the repository's own tools and to check library behaviour with a docs tool.
+These skills belong to no phase; each attaches by name to the specialist whose work it covers. 7 are own text: `product-requirements` is for `product-lead`, `system-design` for `staff-engineer`, `architecture-review` for `architect-reviewer`, `creative-council` is for the 3 council seats, `api-contracts` and `data-migrations` are for `backend-developer` (`staff-engineer` names both under `available_skills`), and `patch-around-audit` is for `root-cause-auditor`: it finds code that was patched around a stale comment, test or core flaw (guards, special cases, flags and wrappers beside an anchor that nobody changed), writes a report with the evidence and the decisions it needs, and fixes a site at its root when the task says so. 2 are adapted: `codebase-design` is the shared vocabulary for module design (deep modules, interfaces, seams) and is carried by `architect-reviewer`, `staff-engineer` and `opus-architect`; `backend-developer`, `frontend-developer`, `opus-domain`, `opus`, `codex-sol` and `codex-reviewer` name it under `available_skills`. `improve-codebase-architecture` is a review procedure that finds deepening candidates and writes an HTML report. `opus-architect` carries it because it has Write and no Edit: it writes the report and edits no code. `staff-engineer` names it under `available_skills`. `architect-reviewer` does not carry it, because that seat is read-only on purpose. The own-text skills are language- and framework-neutral: each tells the worker to follow the repository's own tools and to check library behaviour with a docs tool.
 
 | Skill | Kind |
 | --- | --- |
@@ -131,6 +133,7 @@ These skills belong to no phase; each attaches by name to the specialist whose w
 | [creative-council](creative-council/SKILL.md) | own text |
 | [data-migrations](data-migrations/SKILL.md) | own text |
 | [improve-codebase-architecture](improve-codebase-architecture/SKILL.md) | adapted |
+| [patch-around-audit](patch-around-audit/SKILL.md) | own text |
 | [product-requirements](product-requirements/SKILL.md) | own text |
 | [system-design](system-design/SKILL.md) | own text |
 
@@ -251,7 +254,7 @@ These 10 skills are own text and belong to no phase; a `video-*` teammate attach
 
 ## Godot skills
 
-Skills for the 19 `godot-*` teammates (see [`teammates/README.md`](../teammates/README.md)). They belong to no phase; a Godot teammate attaches them by name. The 80 skills are of 4 kinds, named in the Kind column: 31 **renamed** or **adapted** skills; 36 **combined** skills, each a renamed skill with an extended description plus own-text `references/*.md`; and **own text**, which is 13 skills written in this repository (genres, gameplay loops, combat, economy, quests, dimension ports, version migration, `godot-project-context`, `godot-build-verify`, `godot-scene-files`, `godot-language-choice`, `godot-sound-design`, `godot-save-security`). Own-text references and code blocks are written in this repository's own words. `godot-grill` and `godot-brainstorming` are adapted: they ask the orchestrator one `QUESTION:` instead of asking a human. The 5 addon skills name their pinned addon version in the text. The skills target Godot 4.7 only (4.7.2 is the latest stable release): `scripts/godot/api_check.py` checks the engine calls in a skill against a `--doctool` dump of 4.7.2, and `scripts/godot/gdscript_blocks_check.py` parses its GDScript blocks on 4.7.2. Each command in the own-text skills was run on Godot 4.7.2. Failures in copied text do not fail these checks; they ratchet against `scripts/godot/copied-baseline.json` (a count can only go down). `scripts/godot/gameplay_scenarios.py` runs the gameplay, combat, economy and quest bundles headless in the gate.
+Skills for the 19 `godot-*` teammates (see [`teammates/README.md`](../teammates/README.md)). They belong to no phase; a Godot teammate attaches them by name. The 81 skills are of 4 kinds, named in the Kind column: 31 **renamed** or **adapted** skills; 36 **combined** skills, each a renamed skill with an extended description plus own-text `references/*.md`; and **own text**, which is 14 skills written in this repository (genres, gameplay loops, combat, economy, quests, dimension ports, version migration, `godot-project-context`, `godot-build-verify`, `godot-scene-files`, `godot-language-choice`, `godot-sound-design`, `godot-save-security`, `godot-library`). `godot-library` is a reference library, not a procedure: its `SKILL.md` is an index and each of its 35 `references/*.md` shelves holds the advanced and less-common techniques of one area, written from the stable manual, the class reference and the engine team's release notes and articles. Every Godot teammate expects it and names the shelves for its role in the 2nd paragraph of its briefing. Own-text references and code blocks are written in this repository's own words. `godot-grill` and `godot-brainstorming` are adapted: they ask the orchestrator one `QUESTION:` instead of asking a human. The 5 addon skills name their pinned addon version in the text. The skills target Godot 4.7 only (4.7.2 is the latest stable release): `scripts/godot/api_check.py` checks the engine calls in a skill against a `--doctool` dump of 4.7.2, and `scripts/godot/gdscript_blocks_check.py` parses its GDScript blocks on 4.7.2. Each command in the other own-text skills was run on Godot 4.7.2; the library's code blocks were checked against the 4.7.2 class reference and get their first engine parse in the gate. Failures in copied text do not fail these checks; they ratchet against `scripts/godot/copied-baseline.json` (a count can only go down). `scripts/godot/gameplay_scenarios.py` runs the gameplay, combat, economy and quest bundles headless in the gate.
 
 **Proof levels.** A note `proof: <level>` next to a claim says how far this repository proved it on Godot 4.7.2:
 
@@ -305,6 +308,7 @@ The notes are in own text. A copied file keeps its upstream text and has a note 
 | [godot-input-handling](godot-input-handling/SKILL.md) | combined |
 | [godot-inventory-system](godot-inventory-system/SKILL.md) | combined |
 | [godot-language-choice](godot-language-choice/SKILL.md) | own text |
+| [godot-library](godot-library/SKILL.md) | own text |
 | [godot-limboai](godot-limboai/SKILL.md) | renamed |
 | [godot-localization](godot-localization/SKILL.md) | renamed |
 | [godot-math-essentials](godot-math-essentials/SKILL.md) | renamed |
@@ -343,3 +347,14 @@ The notes are in own text. A copied file keeps its upstream text and has a note 
 | [godot-version-migration](godot-version-migration/SKILL.md) | own text |
 | [godot-visual-verification](godot-visual-verification/SKILL.md) | adapted |
 | [godot-xr-development](godot-xr-development/SKILL.md) | combined |
+## Clean-room intake: comment-pruning
+
+`comment-pruning` belongs to no phase. It is own text, written clean-room with `skill-intake`. A security sweep read a local source named `comment-removal` (licence class none, sha256 `6df588214ed1`) in a quarantine, one role worker wrote behaviour specs in its own words, and a second role worker that never saw the source wrote the skill from the specs alone. No text or code was copied, so the skill needs no notice file and no runtime download.
+
+The specs the writer worked from and the sweep result are in [docs/cleanroom/comment-pruning/](../docs/cleanroom/comment-pruning/).
+
+| Skill | Kind |
+| --- | --- |
+| [comment-pruning](comment-pruning/SKILL.md) | own text (clean-room) |
+
+

@@ -142,7 +142,8 @@ pub enum LedgerCommand {
         command: WorktreeCommand,
     },
     /// (worker) Run the run's finish steps in order (under `--verify full`:
-    /// check, code-sweep, complexity-sweep, recheck, land, pr, cleanup).
+    /// check, comment-sweep, code-sweep, complexity-sweep, recheck, land, pr,
+    /// cleanup).
     /// Stops at the first that does not pass; fix it and run finish again.
     Finish {
         #[arg(long)]
@@ -2983,7 +2984,7 @@ pub fn slug(title: &str) -> String {
 /// ([`super::messaging::note_as`], TRF-45) with their event kind.
 fn progress(ctx: &RuntimeContext, kind: EventKind, text: &str) -> Result<ExitCode> {
     worker_id(ctx)?;
-    super::messaging::note_as(ctx, text, kind).map(|()| ExitCode::SUCCESS)
+    super::messaging::note_as(ctx, text, kind)
 }
 
 /// Record `kind` with `text` on this worker's task ledger row. True when it

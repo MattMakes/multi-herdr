@@ -89,14 +89,17 @@ choose from** — there is no registry to update and nothing to recompile.
 ## The team
 
 `product-lead`, `researcher`, `staff-engineer`, `designer`,
-`architect-reviewer`, `frontend-developer`, `backend-developer` and
-`qa-engineer` are the specialists. Their `phase` selects a small portable
+`architect-reviewer`, `root-cause-auditor`, `frontend-developer`,
+`backend-developer` and `qa-engineer` are the specialists. Their `phase` selects a small portable
 skill catalog embedded in horch; `skills` adds named bundled skills for that
 role. Skills are discovered by each harness and read only when relevant.
 `product-lead` adds `product-requirements`, `staff-engineer` adds
 `system-design` (and names `api-contracts` and `data-migrations`),
 `architect-reviewer` adds `architecture-review`, and `backend-developer` adds
-`api-contracts` and `data-migrations`.
+`api-contracts` and `data-migrations`. `root-cause-auditor` adds
+`patch-around-audit`: it finds code that was patched around a stale comment,
+test or core flaw, reports each site with its evidence, and fixes the root
+cause when its task says so. It audits by default and keeps Edit for the fix.
 Claude specialists set `inherit_plugins: false` to switch off globally enabled
 plugins while preserving other operator settings and their declared MCP tools.
 
@@ -205,6 +208,13 @@ level down. Each also sets `requires: [godot]`, and `horch doctor` then looks
 for the engine (`GODOT_PATH`, then `godot` on PATH, then the macOS app
 bundle) and checks that `--version` is 4.3 or later. `horch spawn godot-<name>`
 still works in any project.
+
+Every Godot teammate expects the `godot-library` skill, a reference library
+of advanced and less-common techniques. The 2nd paragraph of each briefing
+names `references/version-ledger.md`, `references/principles-and-performance.md`
+and the shelves for that role
+(`docs/specs/godot.md`, GDW-13). When you add a shelf, name it in at least 1
+seat and link it in the skill's index.
 
 | teammate | wave | phase | agent, model, effort | use for |
 |---|---|---|---|---|
@@ -320,6 +330,43 @@ on the web. It needs only `node` and the Read tool, which shows PNG files, so
 it has no MCP servers and `requires:` nothing. Every effect goes through at
 least 3 rounds of render, look and fix before `DONE:`.
 
+## The incremental game designer
+
+| teammate | phase | agent, model, effort | fallback | use for |
+|---|---|---|---|---|
+| `game-design-incremental-specialist` | plan | claude, opus, high | `codex-sol` | progression of incremental, idle and upgrade-driven games: review a build, design the math of a new game, design core and meta loops, propose and prove new systems |
+
+It carries `incremental-game-design` and names `game-juice`,
+`godot-economy-system` and `godot-gameplay-loops`. A Godot project adds
+`godot-balance-model-data`, `godot-upgrade-tree-design` and
+`godot-bot-balance-loop` through `skills_when`. It is offered in every
+project, because it also works from a design document or an idea before any
+project file exists. It reads a Godot project and does not run the engine, so
+it `requires:` nothing; the skill's scripts need `python3` and `openpyxl`.
+It writes a report, model JSON files and pacing workbooks (.xlsx) to the
+folder the task names, or `ai_docs/progression/<game>/`, and changes no game
+file unless the task says so. For a full juice pass it points the
+orchestrator at `game-design-juicer`.
+
+## The incremental game reviewer
+
+| teammate | phase | agent, model, effort | fallback | use for |
+|---|---|---|---|---|
+| `addictive-game-design-reviewer` | plan | claude, opus, high | `codex-sol` | a gameplay review of a built incremental, idle or upgrade-driven game: what to rebalance, redo, add, remove, automate or reveal so that players want one more upgrade |
+
+It carries `addictive-game-design-review` and names `incremental-game-design`
+and `game-juice`. The skill is text only. It comes from research on reward
+and progression: 8 research findings with their limits, 6 patterns from 6
+known games, and 18 checks. "Addictive" means that the player continues by
+their own choice; a system that holds a player by pressure, loss or deceit
+is a finding to remove. The seat is offered in every project and `requires:`
+nothing, because it reads source and data files and runs no engine. It
+denies `Edit` and `NotebookEdit`: it writes only its report, to the file the
+task names, or `ai_docs/game-review/<game>/review.md`. Each finding has a
+file, a line, 1 change and a test. It does not prove new numbers: a
+rebalance finding goes to `game-design-incremental-specialist`, and a
+feedback finding goes to `game-design-juicer`.
+
 ## The skill intake team
 
 `skill-importer` imports a skill from a GitHub repo or a local folder with
@@ -403,6 +450,14 @@ installed on this host". A skill that changes or disappears between
 `horch spawn` and the worker's start fails the launch, because the worker
 must run the skill digests that the ledger recorded.
 
+## The comment-remover teammate
+
+| teammate | phase | agent, model, effort | fallback | use for |
+|---|---|---|---|---|
+| `comment-remover` | implementation | claude, opus, medium | none | Finish step comment-sweep only: deletes the comments a task added and commits in the author's work folder. |
+
+It carries `comment-pruning`, written clean-room with `skill-intake` (see [docs/cleanroom/comment-pruning/](../docs/cleanroom/comment-pruning/)). It is hidden: horch spawns it for the finish step `comment-sweep` (see [docs/specs/comment-sweep.md](../docs/specs/comment-sweep.md)), and the orchestrator never picks it.
+
 ## The effort-matrix personas
 
 Eight more Claude specialists split the work by model tier and effort level
@@ -468,7 +523,7 @@ Each teammate's `effort:` follows its role, not its model
 | role | teammates | effort |
 |---|---|---|
 | orchestrator | `orchestrator`, `orchestrator-codex` | medium |
-| reviewers and planners | `architect-reviewer`, `qa-engineer`, `codex-reviewer`, `staff-engineer`, `product-lead` | high |
+| reviewers and planners | `architect-reviewer`, `root-cause-auditor`, `qa-engineer`, `codex-reviewer`, `staff-engineer`, `product-lead` | high |
 | builders and research | `backend-developer`, `frontend-developer`, `designer`, `researcher`, `sonnet`, `opus`, `codex-sol`, `codex-network`, `prime`, `spec-writer`, `ticket-writer` | medium |
 | runners | `codex-terra`, `codex-luna`, `pi` | low |
 | effort-matrix personas | `sonnet-*`, `opus-*` (effort is the role; see above) | low to max |

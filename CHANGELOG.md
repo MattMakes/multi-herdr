@@ -4,6 +4,53 @@
 
 ## Unreleased
 
+- New teammate `game-design-incremental-specialist` for incremental, idle and
+  upgrade-driven games. Run `horch spawn game-design-incremental-specialist` in
+  a game project, or hand it a design document or a one-page idea. It reviews
+  a build, designs the math of a new game, designs core and meta loops, and
+  proposes new systems. Its new `incremental-game-design` skill turns the game
+  into a model, plays it under 3 reset habits, and writes a pacing workbook
+  (.xlsx) that shows the beats, the lulls and the cause of each lull. A
+  proposed system is tested against a numbers-only control. On a Godot project
+  the skill's scan finds the cost formulas, the unlock signals and the
+  feedback each one fires. The scripts need Python 3 and `openpyxl`.
+- New teammate `addictive-game-design-reviewer` for a gameplay review of a
+  built incremental, idle or upgrade-driven game. Run
+  `horch spawn addictive-game-design-reviewer` in a game project and name the
+  game directory or its src folders. Its new `addictive-game-design-review`
+  skill maps the loop of the game, builds the timeline of a new player, and
+  runs 18 checks from research on reward and progression. The report ranks
+  what to rebalance, redo, add, remove, automate or reveal; each finding has
+  a file, a line, 1 change and a test. A system that holds a player by
+  pressure, loss or deceit is a finding to remove. The seat changes no game
+  file.
+- Every task now loses the comments it added before it lands. The new finish
+  step `comment-sweep` runs right after the check in every verification
+  profile (`minimal`, `light` and `full`): horch queues 1 task for the new
+  teammate `comment-remover`, which deletes the comments on the lines the task
+  changed and commits in the author's work folder. A change with no code file
+  skips it. `comment-remover` carries the new clean-room skill
+  `comment-pruning`. The first horch with this step migrates the task ledger to
+  version 8 and keeps a backup.
+- New teammate `root-cause-auditor`: run `horch spawn root-cause-auditor` in
+  any project and it finds the places where code was patched around instead
+  of fixed: guards, special cases, flags and wrappers piled beside a comment,
+  test or core block that nobody changed. Its report lists each site with the
+  commits that patched it, the root cause, and the decisions it needs from
+  you first. Tell it which sites to fix and it rewrites each at the root,
+  1 commit per site. It runs on Opus at high effort.
+- Godot teammates now carry a reference library, the `godot-library` skill:
+  35 shelves of advanced and less-common Godot 4.7 techniques (engine
+  internals, GDScript and C# speed, threads, servers, rendering, physics,
+  navigation, networking, world streaming, deterministic simulation, design
+  iteration tools and more), written from the whole official manual, the class
+  reference and the engine team's release notes and articles. Each of the 19 `godot-*` teammates
+  names the shelves for its role at the top of its briefing and reads the
+  version ledger first, so old engine advice does not leak into new code.
+  One shelf, `principles-and-performance`, shows where a performance
+  technique also serves SRP, DRY, KISS or YAGNI, and every Godot teammate
+  reads it before it adds a class, a manager or an optimization.
+
 ## v0.4.9 - 2026-11-11
 
 - New teammate `game-design-juicer`: run `horch spawn game-design-juicer` in a

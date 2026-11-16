@@ -249,7 +249,11 @@ fn spawn_reviewers_of(
             ctx,
             store,
             &run,
-            &report.task,
+            &format!(
+                "{} of {}",
+                report.stopped_at.as_deref().unwrap_or("code-sweep"),
+                report.task
+            ),
             &report.queued_reviews,
             &super::taskledger_spawn::CliSpawn,
         )

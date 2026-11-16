@@ -407,7 +407,8 @@ pub fn spawn_outcome(code: Option<i32>, stdout: &str, stderr: &str) -> ReviewSpa
     }
 }
 
-/// Spawn 1 claiming worker for each queued review task of `of` through
+/// Spawn 1 claiming worker for each queued review task of `of` (the step
+/// and its task, as in "code-sweep of T-1") through
 /// `spawner`, then write 1 NOTE wake that names the reviewers. Each worker
 /// is reserved for its review task and claims it first. A refused or
 /// failed spawn leaves its task queued and says so in the NOTE. Returns
@@ -453,7 +454,7 @@ pub fn spawn_reviewers(
         shorts.push(short);
     }
     let text = format!(
-        "NOTE: horch spawned {spawned} of {} reviewers for the code-sweep of {of}. {}",
+        "NOTE: horch spawned {spawned} of {} reviewers for the {of}. {}",
         reviews.len(),
         items.join(" ")
     );
@@ -585,7 +586,8 @@ mod trf_24_tests {
             ),
             spawned("opus-reviewer-1", None),
         ]);
-        let note = spawn_reviewers(&ctx, &store, &run, "T-1", &reviews, &fake).unwrap();
+        let note =
+            spawn_reviewers(&ctx, &store, &run, "code-sweep of T-1", &reviews, &fake).unwrap();
         assert_eq!(
             *fake.personas.borrow(),
             ["codex-reviewer", "codex-reviewer", "opus-reviewer"]
@@ -633,7 +635,8 @@ mod trf_24_tests {
             ReviewSpawn::Refused(refused.into()),
             spawned("opus-reviewer-1", None),
         ]);
-        let note = spawn_reviewers(&ctx, &store, &run, "T-1", &reviews, &fake).unwrap();
+        let note =
+            spawn_reviewers(&ctx, &store, &run, "code-sweep of T-1", &reviews, &fake).unwrap();
         let t = tasks::get(store.conn(), &reviews[0]).unwrap();
         assert_eq!(t.status, "queued");
         assert!(t.current_worker_id.is_none());

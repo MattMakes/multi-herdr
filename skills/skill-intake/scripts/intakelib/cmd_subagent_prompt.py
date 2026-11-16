@@ -1,6 +1,7 @@
 """`intake subagent-prompt <role> --brief P`: the plain-mode subagent prompt (spec 6.8).
 
-Prints the text of roles/<role>.md and 1 brief line, nothing else. Before it
+Prints the text of roles/<role>.md, 1 brief line and the list of the files
+under the brief's read folders (a plain subagent can have no listing tool). Before it
 prints, it takes the domain snapshot, sets the guard role (`cr role set`) and
 records the start; `intake role-result` compares and clears. Exit codes: 0 ok,
 2 bad input, 8 the role stage aborted, 10 in fleet mode, 14 another role is active.
