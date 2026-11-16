@@ -790,6 +790,7 @@ dependencies = [
 name = "horch-platform"
 version = "0.4.8"
 dependencies = [
+ "flate2",
  "libc",
  "tar",
  "tempfile",
