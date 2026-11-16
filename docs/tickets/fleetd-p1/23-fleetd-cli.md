@@ -1,4 +1,4 @@
-# 23: horch fleetd, horch fleetd check, horch job requeue and horch job run; the CLI check replaces the lazy start
+# 23: horch fleetd, horch fleetd check, horch job requeue and horch job run; the fleetd check before each command
 
 <!-- horch-ticket: 1 -->
 **Persona:** primary `opus-hardening`, fallback `codex-sol` · **Parallel:** yes
@@ -11,7 +11,7 @@ Spec: `docs/specs/fleetd/design.md`, "Architecture and roles" (row fleetd; Super
 
 ## Goal
 
-`horch fleetd` runs the daemon: it takes the lock, starts its generation, and runs 1 pass every `pass_period_s`. `horch fleetd check` restarts a hung or older fleetd. `horch job requeue <job>` and the internal `horch job run <id>` exist. Each `horch` command makes the same check as `horch fleetd check` before it runs, instead of the lazy start of a watchdog. The red test of FM-12 turns green.
+`horch fleetd` runs the daemon: it takes the lock, starts its generation, and runs 1 pass every `pass_period_s`. `horch fleetd check` restarts a hung or older fleetd. `horch job requeue <job>` and the internal `horch job run <id>` exist. Each `horch` command makes the same check as `horch fleetd check` before it runs. The red test of FM-12 turns green. Ticket 25 removes the lazy start of the watchdog.
 
 ## Requirements
 
@@ -26,7 +26,7 @@ Spec: `docs/specs/fleetd/design.md`, "Architecture and roles" (row fleetd; Super
 - Phase P (`docs/tickets/fleetd-pp/`) builds `crates/horch-platform`. Its concern tickets propose function names. The module doc of each concern file in `crates/horch-platform/src/` gives the final name. Read that doc before you call a platform function. A name in this ticket is the proposed name.
 - The service mode (MAP.md, Q8): the service manager of the OS is used only when the ledger is the default ledger of the OS user (`<service::os_user_home()>/.horch/ledger.sqlite3` of ticket 06, never `$HOME`) and `FLEET_ROOT` is not set. Else the mode is stand-in: a restart stops the old fleetd by the PID and start time of the `fleetd` row (platform signal concern, `stop_grace_s`), waits until the lock is free (ticket 14), and starts `horch fleetd` detached through the launcher of ticket 16, with the env of the fleet (`HORCH_LEDGER_DB`, `HORCH_STATE_DIR`, `HORCH_DATA_DIR`, `FLEET_ROOT`). The red test runs in stand-in mode. No test registers a real service (build rule 1). Write the test `service_mode_is_stand_in_for_a_ledger_outside_the_os_user_home`.
 - `horch fleetd check` (exit 0 in each case that it handles, as the test needs): no `fleetd` row -> nothing ("Remove the lazy `ensure` start": the check does not start a fleetd that never ran; the service starts it); a row with a dead PID -> start; a hung heartbeat (`is_hung` of ticket 21) or an older binary (`is_older`) -> restart; else nothing. It prints what it did.
-- The CLI check: `crates/horch/src/main.rs:822` calls `cmd::taskledger_watch::ensure(&ctx)` after each watched command. Replace it with the check of `horch fleetd check`, run before the command. `HORCH_NO_WATCHDOG=1` keeps its meaning: no check and no start (MAP.md, Q17). The check is quiet unless it restarts. `ensure` and its helpers in `taskledger_watch.rs` become unused here; ticket 25 removes them (that file is not in `Own`).
+- The CLI check: `crates/horch/src/main.rs:822` calls `cmd::taskledger_watch::ensure(&ctx)` after each watched command. Add the check of `horch fleetd check` before the command. Keep the call of `ensure` in this ticket: tests that this ticket does not own pin it (`crates/horch/tests/w3_ledger_cli_pins.rs:549`, `crates/horch-e2e/tests/taskledger.rs:1370`, `crates/horch-e2e/tests/watchdog_liveness.rs:263`). Ticket 25 removes it with the old loop. `HORCH_NO_WATCHDOG=1` keeps its meaning: no check and no start (MAP.md, Q17). The check is quiet unless it restarts.
 - `horch fleetd`: the composition root. Wire each adapter of tickets 11 to 22 to its port, and the respawn function of `crates/horch/src/cmd/recipes.rs` to the port of ticket 22. The loop: 1 pass, then sleep until the next period; SIGTERM ends it between passes, never inside a pass (row S7). The changed-binary restart is ticket 24.
 - `horch job requeue <job>` calls `requeue` of ticket 17 and prints the new run. `horch job run <id>` calls `run_job` of ticket 17; hide it from help.
 - New CLI files need rows in `docs/architecture.md` (`every_cli_file_has_a_row_in_the_architecture_doc`): `fleetd.rs` and `jobcmd.rs`, and the 2 commands in the command list.
@@ -35,7 +35,7 @@ Spec: `docs/specs/fleetd/design.md`, "Architecture and roles" (row fleetd; Super
 ## Steps
 
 1. Run `cargo test -p horch-e2e --test p0_fleetd_hang` first: the test passes as an expected failure with the reason `unrecognized subcommand 'fleetd'`.
-2. Write the tests first, in `crates/horch/src/cmd/fleetd.rs`: `check_with_no_row_starts_nothing`, `check_restarts_a_hung_fleetd_by_pid_and_start_time`, `check_restarts_an_older_fleetd`, `check_leaves_a_fresh_fleetd`, `service_mode_is_stand_in_for_a_ledger_outside_the_os_user_home`. In `crates/horch/src/main.rs` tests: `a_horch_command_runs_the_fleetd_check_and_starts_no_watchdog`.
+2. Write the tests first, in `crates/horch/src/cmd/fleetd.rs`: `check_with_no_row_starts_nothing`, `check_restarts_a_hung_fleetd_by_pid_and_start_time`, `check_restarts_an_older_fleetd`, `check_leaves_a_fresh_fleetd`, `service_mode_is_stand_in_for_a_ledger_outside_the_os_user_home`. In `crates/horch/src/main.rs` tests: `a_horch_command_runs_the_fleetd_check_before_it_runs`.
 3. Write the code. Remove the line of `fm12_hung_fleetd_is_restarted_on_each_os` from `p0_fleetd_hang.txt`.
 4. Run the Check. The Windows and Linux results of `fm12` come from CI (the file has no `#![cfg(unix)]`).
 
@@ -76,4 +76,4 @@ Spec: `docs/specs/fleetd/design.md`, "Architecture and roles" (row fleetd; Super
 
 ## Done when
 
-The Check passes, `fm12_hung_fleetd_is_restarted_on_each_os` passes off the list, and no `horch` command starts a watchdog.
+The Check passes, `fm12_hung_fleetd_is_restarted_on_each_os` passes off the list, and each `horch` command runs the fleetd check.
