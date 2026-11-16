@@ -3,19 +3,21 @@
 
 use horch_platform::machine::{self, Tool};
 
-/// Runs a probe command as `runtime/machine.rs` does, without its timeout.
+/// A fixed probe command output, so the test does not depend on the
+/// commands of the host. A failed command is `None` in the `Run` contract.
 #[cfg(unix)]
 fn run(tool: Tool, args: &[&str]) -> Option<String> {
-    let bin = match tool {
-        Tool::Uname => "uname",
-        Tool::Sysctl => "sysctl",
-        Tool::VmStat => "vm_stat",
-        Tool::NvidiaSmi => "nvidia-smi",
+    let text = match (tool, args) {
+        (Tool::Uname, ["-m"]) => " arm64\n",
+        (Tool::Sysctl, ["-n", "hw.memsize"]) => "4096\n",
+        (Tool::Sysctl, ["-n", "machdep.cpu.brand_string"]) => "Apple M2\n",
+        (Tool::VmStat, []) => {
+            "Mach Virtual Memory Statistics: (page size of 4 bytes)\nPages free: 8.\n"
+        }
+        (Tool::NvidiaSmi, ["-L"]) => "GPU 0: A\nGPU 1: B\n",
+        _ => return None,
     };
-    let out = std::process::Command::new(bin).args(args).output().ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    Some(text.to_string())
 }
 
 #[cfg(unix)]
@@ -24,10 +26,14 @@ fn load_memory_disk_and_limit_are_known() {
     let load = machine::load_average().unwrap();
     assert!(load.is_some_and(|l| l >= 0.0), "{load:?}");
 
+    // macOS reads the fixed command output, and Linux reads /proc/meminfo.
     let memory = machine::memory(&run).unwrap();
     let total = memory.total.expect("total memory");
     let available = memory.available.expect("available memory");
     assert!(total > 0 && available > 0, "{memory:?}");
+    if cfg!(target_os = "macos") {
+        assert_eq!((total, available), (4096, 32));
+    }
 
     let dir = tempfile::tempdir().unwrap();
     let disk = machine::disk(dir.path()).unwrap().expect("disk");
@@ -40,9 +46,17 @@ fn load_memory_disk_and_limit_are_known() {
 
     assert!(machine::max_processes().is_ok());
     assert!(machine::max_open_files().is_ok());
-    let arch = machine::uname_arch(&run).unwrap().expect("uname -m");
-    assert!(!arch.is_empty() && arch == arch.trim(), "{arch:?}");
-    assert_ne!(machine::gpu(&run, &arch).unwrap(), machine::Gpu::Unknown);
+    let arch = machine::uname_arch(&run).unwrap();
+    assert_eq!(arch.as_deref(), Some("arm64"));
+    let gpu = machine::gpu(&run, "arm64").unwrap();
+    let expected = if cfg!(target_os = "macos") {
+        machine::Gpu::AppleSilicon
+    } else {
+        machine::Gpu::Nvidia { count: 2 }
+    };
+    assert_eq!(gpu, expected);
+    let failed = |_: Tool, _: &[&str]| -> Option<String> { None };
+    assert_eq!(machine::uname_arch(&failed).unwrap(), None);
     let host = machine::host_name().unwrap().expect("host name");
     assert!(!host.contains('\0'), "{host:?}");
 }

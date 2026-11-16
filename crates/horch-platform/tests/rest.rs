@@ -5,7 +5,7 @@ use std::path::Path;
 
 use horch_platform::rest;
 
-/// Builds a release archive of the host format with 1 file `horch`.
+/// Builds a release archive of the host format with 1 file, named `name`.
 #[cfg(unix)]
 fn archive(name: &str, body: &[u8]) -> Vec<u8> {
     let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(

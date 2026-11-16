@@ -54,9 +54,14 @@ pub struct Disk {
 /// The GPU class of the machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Gpu {
+    /// macOS: `uname -m` is `arm64` and the CPU brand starts with `Apple`.
     AppleSilicon,
+    /// Linux: `nvidia-smi -L` lists `count` GPUs.
     Nvidia { count: u32 },
+    /// No GPU that the probe knows. macOS: the CPU brand is another one.
+    /// Linux: `nvidia-smi -L` lists no GPU, or fails, as today.
     None,
+    /// macOS only: the `sysctl` of the CPU brand failed.
     Unknown,
 }
 
