@@ -218,10 +218,22 @@ pub fn write_skills_report(fake: &str, dirs: &[PathBuf], extra: Value) {
 }
 
 /// The directory the fake binaries were built into (next to `horch`).
+///
+/// A test executable sits below that directory, and how far below depends on
+/// the cargo version: `target/<profile>/deps/<test>-<hash>` up to cargo 1.99,
+/// `target/<profile>/build/<package>/<hash>/out/<test>-<hash>` from cargo
+/// 1.100. So this walks up to the first directory that holds a fake. When no
+/// directory does (nothing is built yet), it answers with the older layout,
+/// so the "is not built" message of the caller names a useful path.
 pub fn bin_dir() -> PathBuf {
     let exe = std::env::current_exe().expect("current exe");
+    let start = exe.parent().expect("exe dir").to_path_buf();
+    let fake = format!("fake-herdr{}", std::env::consts::EXE_SUFFIX);
+    if let Some(dir) = start.ancestors().find(|d| d.join(&fake).is_file()) {
+        return dir.to_path_buf();
+    }
     // target/<profile>/deps/<test>-<hash> -> target/<profile>
-    let mut dir = exe.parent().expect("exe dir").to_path_buf();
+    let mut dir = start;
     if dir.file_name().and_then(|n| n.to_str()) == Some("deps") {
         dir.pop();
     }

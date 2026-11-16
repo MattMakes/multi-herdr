@@ -267,7 +267,7 @@ pub fn worker_note_context(ctx: &RuntimeContext, text: &str) -> Result<()> {
             eprintln!("horch: {line}; orchestrator notification failed: {error:#}");
         }
     }
-    print(outcome);
+    let _ = print(outcome);
     Ok(())
 }
 
