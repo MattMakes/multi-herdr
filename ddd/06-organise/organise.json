@@ -2,7 +2,7 @@
   "schema_version": 1,
   "step": "organise",
   "produced_by": "ddd-organise",
-  "produced_at": "2026-11-12T21:59:01Z",
+  "produced_at": "2026-11-13T07:49:58Z",
   "mode": "auto",
   "depth": "standard",
   "inputs": [
@@ -28,17 +28,17 @@
     },
     {
       "id": "A3",
-      "text": "The fleet-run wrapper and horch fleetd check are process roles of the same horch binary, not deployables. The design maps the wrapper to today's horch worker subcommand (design: Where multi-herdr stands today) and names horch fleetd check as a horch command (design: Architecture and roles). worker-profiles owns the wrapper (orchestrator, D15; connect D2, connect N3): the wrapper is the profile made real, and the environment scrub has 1 owner. The deployable is the same.",
+      "text": "The fleet-run wrapper, horch fleetd check and each job process are process roles of the same horch binary, not deployables. The design maps the wrapper to today's horch worker subcommand (design: Where multi-herdr stands today) and names horch fleetd check as a horch command (design: Architecture and roles). worker-profiles owns the wrapper and the 1 launcher through which each process starts (orchestrator, D15; design: Module owners, SR-7, A29). A job runs in its own process outside the reconcile pass (A23). The deployable is the same.",
       "confidence": "high"
     },
     {
       "id": "A4",
-      "text": "The data store is 1 SQLite ledger (~/.horch/ledger.sqlite3, WAL) plus the workspace files, both owned by the 1 deployable. Inside the ledger each context owns its tables: ideas owns ideas, requirements, questions; task-execution owns tasks, task_deps, task_covers, attempts, leases; worktree-custody owns worktrees; integration owns features, branches, gate_runs, trial_merges; fleet-runtime owns events and ingested; worker-profiles owns no table (its profiles are teammate files). Source: design Ledger schema with the aggregates of discover and decompose.",
+      "text": "The data store is 1 SQLite ledger (WAL) plus the workspace files, both owned by the 1 deployable. Inside the ledger each context owns its tables: ideas owns ideas, requirements, questions and needs_you; task-execution owns tasks, task_deps, task_covers, attempts, leases; worktree-custody owns worktrees; integration owns features, branches, bundles, bundle_members, gate_runs, trial_merges and remote_tips; fleet-runtime owns events, ingested, jobs, pass_cursors, requests and the fleetd row; worker-profiles owns no table (its profiles are teammate files). Source: design Ledger schema (A23, A24, A27, A28) with the aggregates of discover and decompose.",
       "confidence": "medium"
     },
     {
       "id": "A5",
-      "text": "The questions table belongs to ideas. decompose D2 option A (orchestrator, D15): worker questions belong to ideas, because the sub-orchestrator of the feature answers them. ideas also owns the 1 needs-you list (design OR-3; decompose N9). The sub-orchestrator answers through the command channel, and fleetd stays the only ledger writer.",
+      "text": "The questions table belongs to ideas. decompose D2 option A (orchestrator, D15): worker questions belong to ideas, because the sub-orchestrator of the feature answers them. ideas also owns the 1 needs-you list and its needs_you table (design OR-3, Module owners; decompose N9). The sub-orchestrator answers with horch idea note, a file of class worker in its idea folder, not on the command channel (design A35; connect N9), and fleetd stays the only ledger writer from Phase 5.",
       "confidence": "high"
     },
     {
@@ -48,7 +48,7 @@
     },
     {
       "id": "A7",
-      "text": "The cognitive load of core-team is high: 6 contexts and 2 core contexts (task-execution, integration). No second team exists to take a context, so the mitigation is module boundaries that an arch_scan rule enforces (orchestrator, D15), 1 context per task where possible, and the 9 migration phases (Phase 0, Phase P, Phases 1 to 7) that add the contexts one at a time (understand C9, N19).",
+      "text": "The cognitive load of core-team is high: 6 contexts and 2 core contexts (task-execution, integration). No second team exists to take a context, so the mitigation is module boundaries that an arch_scan rule enforces (orchestrator, D15; design: Module owners), 1 context per task where possible, and the 9 migration phases (Phase 0, Phase P, Phases 1 to 7) that add the contexts one at a time (understand C9, N19). In Phases 4 and 5 a run is 1 feature (A30).",
       "confidence": "medium"
     },
     {
@@ -63,12 +63,17 @@
     },
     {
       "id": "A10",
-      "text": "Docs sync and adapter conformance run as a horch subcommand inside the 1 deployable, and fleetd schedules it daily and on a CLI version change (decision D2 option A, orchestrator, D15). Phase 7 widens crates/herdr-docs-sync into this subcommand. The subcommand reports a drift to ideas as a --direct idea, so ideas creates the task (decompose Q2, answered).",
+      "text": "Docs sync and adapter conformance run as a horch subcommand inside the 1 deployable. fleetd schedules a docs_sync job daily and on a CLI version change, then a conformance job; neither job has a repository (decision D2 option A, orchestrator, D15; design: Architecture and roles, A33). Phase 7 widens crates/herdr-docs-sync into this subcommand. A drift becomes an idea, and worker-profiles marks a profile unhealthy and healthy again (design: Docs sync and adapter conformance; discover idea-on-adapter-drift).",
       "confidence": "medium"
     },
     {
       "id": "A11",
-      "text": "An arch_scan rule enforces the context boundaries (orchestrator, D15): no context writes or reads the ledger tables or the workspace folders of another context. It sits beside the arch_scan rules of PL-2 (no OS cfg outside crates/horch-platform) and of Phase 5 (every process other than fleetd opens the ledger read-only).",
+      "text": "An arch_scan rule enforces the module boundaries (orchestrator, D15; design: Module owners): no context writes or reads the ledger tables or the workspace folders of another context. It sits beside the arch_scan rules of PL-2 (no OS cfg outside crates/horch-platform) and of Phase 5 (every process other than fleetd opens the ledger read-only).",
+      "confidence": "high"
+    },
+    {
+      "id": "A12",
+      "text": "Exactly 1 fleetd runs for 1 ledger: it holds the exclusive file lock /fleet/run/fleetd.lock through the platform layer for its whole life, and each write transaction checks the generation number of the fleetd row (design: One fleetd for each ledger, A24). So the 1 deployable never runs 2 daemon processes, and a restart waits until the lock is free.",
       "confidence": "high"
     }
   ],
@@ -76,7 +81,7 @@
   "notes_for_downstream": [
     {
       "id": "N1",
-      "text": "The 1 deployable runs in 4 process roles of the same horch binary: the fleetd daemon (horch fleetd, the only ledger writer, runs the reconcile pass of all 6 contexts), short-lived CLI commands (read the ledger read-only, send requests on the command channel), the fleet-run wrapper (1 per attempt), and horch fleetd check (the heartbeat check). The module of a context can run in more than 1 role; only the fleetd role writes the ledger.",
+      "text": "The 1 deployable runs in 5 process roles of the same horch binary: the fleetd daemon (horch fleetd, the only ledger writer from Phase 5, runs the reconcile pass of all 6 contexts, 1 for each ledger), short-lived CLI commands (read the ledger read-only, send operator requests on the command channel), the fleet-run wrapper (1 per attempt), job processes (1 per job run, outside the pass), and horch fleetd check (the heartbeat check). Each process starts through the 1 launcher of worker-profiles. The module of a context can run in more than 1 role; only the fleetd role writes the ledger.",
       "for": [
         "define",
         "code"
@@ -94,7 +99,7 @@
     },
     {
       "id": "N3",
-      "text": "Decision D2 option A (orchestrator, D15): docs sync and adapter conformance are a horch subcommand inside the 1 deployable, scheduled by fleetd daily and on a CLI version change. Phase 7 widens crates/herdr-docs-sync into it; no second binary ships. The subcommand reports a drift to ideas as a --direct idea, and worker-profiles marks a profile unhealthy and healthy again (decompose Q2, answered).",
+      "text": "Decision D2 option A (orchestrator, D15; design A31): docs sync and adapter conformance are a horch subcommand inside the 1 deployable. fleetd schedules a docs_sync job daily and on a CLI version change, then a conformance job. Phase 7 widens crates/herdr-docs-sync into it; no second binary ships. A drift becomes an idea, and worker-profiles marks a profile unhealthy and healthy again.",
       "for": [
         "define",
         "code"
@@ -117,6 +122,15 @@
         "code"
       ],
       "kind": "boundary"
+    },
+    {
+      "id": "N6",
+      "kind": "boundary",
+      "for": [
+        "define",
+        "code"
+      ],
+      "text": "Sharpens N2 for the round 3 tables (A4): ideas owns needs_you; integration owns bundles, bundle_members and remote_tips; fleet-runtime owns jobs, pass_cursors, requests and the fleetd row. A context reads the result of its own job kinds from the jobs row through the fleet-runtime facade."
     }
   ],
   "teams": [
@@ -153,7 +167,7 @@
       "team": "core-team",
       "data_store": "own",
       "independent_deploy": true,
-      "rationale": "fleetd is a subcommand of the single horch binary, so the CLI, the daemon and the wrapper always have the same version and horch self-update restarts the daemon on the new binary (design: Amendments D9, FM-34; understand C1). All 13 relationships are in-process calls and events (connect N1), task-execution reaches worker-profiles and fleet-runtime with synchronous calls (connect F2, F4), and 1 team owns every context. No split reason is in the inputs. Released through horch self-update and the GitHub release assets (understand C7). The platform layer is the leaf crate crates/horch-platform, linked into this binary (A9). Docs sync is a horch subcommand of this binary (D2, A10). worker-profiles owns the fleet-run wrapper role (A3)."
+      "rationale": "fleetd is a subcommand of the single horch binary, so the CLI, the daemon and the wrapper always have the same version and horch self-update restarts the daemon on the new binary (design: Amendments D9, FM-34; understand C1). All 16 relationships are in-process calls and events (connect N1), task-execution reaches worker-profiles and fleet-runtime with synchronous calls (connect F2, F4), and 1 team owns every context. No split reason is in the inputs. Released through horch self-update and the GitHub release assets (understand C7). The platform layer is the leaf crate crates/horch-platform, linked into this binary (A9). Docs sync is a horch subcommand of this binary (D2, A10). worker-profiles owns the fleet-run wrapper role and the 1 launcher (A3). Each job runs as a process of this binary (A3), and 1 fleetd runs for 1 ledger (A12)."
     }
   ],
   "topology_style": "modular-monolith",
@@ -221,7 +235,7 @@
       ],
       "chosen": "A",
       "confidence": "high",
-      "rationale": "The design settles it: fleetd is a subcommand of the single horch binary, so the CLI and the daemon cannot have different versions (design: Amendments D9, Migration plan, FM-34). The manifest target is 1 to 1.",
+      "rationale": "The design settles it: fleetd is a subcommand of the single horch binary, so the CLI and the daemon cannot have different versions (design: Amendments D9, Migration plan, FM-34). The manifest target is 1 to 1. Round 3 keeps A: the amendments A23 to A37 add process roles (the job processes) and 1 fleetd for each ledger, not a deployable.",
       "would_flip_if": [
         "The operator changes D9 and accepts a daemon that updates apart from the CLI",
         "fleetd must run on a different machine from the CLI",
@@ -250,7 +264,7 @@
             "The horch binary gets the docs fetch and mirror code"
           ],
           "risks": [
-            "A slow docs fetch runs inside the daemon and delays the reconcile pass, unless it runs as its own process role"
+            "A slow docs fetch delays the reconcile pass. Answered by the design: docs sync runs as a docs_sync job in its own process outside the pass (A23, A33)"
           ],
           "diagram": "ddd/06-organise/decisions/D2-A.json"
         },
@@ -286,7 +300,7 @@
         }
       ],
       "confidence": "high",
-      "rationale": "Decided by the orchestrator (D15). The operator can reverse it. Recommendation A: it keeps the fixed target of 1 deployable and lets fleetd react to a CLI version change. The strongest argument against A: the design says to generalise crates/herdr-docs-sync, which is its own binary today, and B follows that text. The design does not say whether the widened tool ships in the horch binary. The orchestrator chose A, the recommendation of this step.",
+      "rationale": "Decided by the orchestrator (D15). The operator can reverse it. Recommendation A: it keeps the fixed target of 1 deployable and lets fleetd react to a CLI version change. The strongest argument against A: the design says to generalise crates/herdr-docs-sync, which is its own binary today, and B follows that text. The design does not say whether the widened tool ships in the horch binary. The orchestrator chose A, the recommendation of this step. Round 3: the design now states it (design: Architecture and roles, Module owners; A31): docs sync is a horch subcommand that fleetd schedules as a docs_sync job, then a conformance job. The choice stays A.",
       "would_flip_if": [
         "The operator wants docs sync to run when fleetd is down",
         "The docs fetch needs network access that the daemon must not have"

@@ -79,8 +79,8 @@ flowchart LR
 - **Team:** `core-team`
 - **Data store:** own - 1 SQLite ledger (`~/.horch/ledger.sqlite3`, WAL) plus the workspace files. Each context owns its tables and folders (see below).
 - **Independent deploy:** yes, through horch self-update and the GitHub release assets (understand C7).
-- **Process roles (N1):** the same binary runs as the fleetd daemon (the only ledger writer), as short-lived CLI commands (read-only ledger, requests on the command channel), as the fleet-run wrapper (1 per attempt, owned by `worker-profiles`, A3) and as `horch fleetd check`. Docs sync and adapter conformance are a horch subcommand that fleetd schedules (D2, A10).
-- **Why these contexts live together:** fleetd is a subcommand of the single horch binary, so the CLI, the daemon and the wrapper always have the same version (design: Amendments D9, FM-34; understand C1). All 13 relationships are in-process (connect N1). task-execution calls worker-profiles and fleet-runtime synchronously at every launch (connect F2, F4). 1 team owns every context.
+- **Process roles (N1):** the same binary runs as the fleetd daemon (the only ledger writer from Phase 5, 1 for each ledger, A12), as short-lived CLI commands (read-only ledger, operator requests on the command channel), as the fleet-run wrapper (1 per attempt, owned by `worker-profiles`, A3), as job processes (1 per job run, outside the reconcile pass, A3) and as `horch fleetd check`. Each process starts through the 1 launcher of `worker-profiles`. Docs sync and adapter conformance are a horch subcommand that fleetd schedules as a `docs_sync` job, then a `conformance` job (D2, A10).
+- **Why these contexts live together:** fleetd is a subcommand of the single horch binary, so the CLI, the daemon and the wrapper always have the same version (design: Amendments D9, FM-34; understand C1). All 16 relationships are in-process (connect N1). task-execution calls worker-profiles and fleet-runtime synchronously at every launch (connect F2, F4). 1 team owns every context.
 - **Platform layer (A9, N5):** the leaf library crate `crates/horch-platform` (design A19, D16), linked into this binary. It is not a context and not a deployable. Each context calls it directly. Phase P creates it and moves the 178 production OS-specific sites behind it.
 - **Boundary rule (A11, N4):** an `arch_scan` rule fails a context that reads or writes the ledger tables or workspace folders of another context.
 
@@ -90,12 +90,12 @@ All rows go through the single ledger writer in `fleet-runtime` (decompose N5). 
 
 | Context | Store / schema | Owned by deployable | How others get at it |
 |---|---|---|---|
-| `ideas` | ledger tables `ideas`, `requirements`, `questions` (A5); idea folders | `horch` | events `plan-committed`, `idea-tasks-landed`, `question-answered` |
+| `ideas` | ledger tables `ideas`, `requirements`, `questions`, `needs_you` (A5); idea folders | `horch` | events `plan-committed`, `idea-tasks-landed`, `question-answered` |
 | `task-execution` | ledger tables `tasks`, `task_deps`, `task_covers`, `attempts`, `leases`; task and attempt folders | `horch` | events `task-leased`, `task-done`, `task-escalated`, `replan-requested` |
 | `worktree-custody` | ledger table `worktrees` | `horch` | events `worktree-created`, `rescue-failed` |
-| `integration` | ledger tables `features`, `branches`, `gate_runs`, `trial_merges` | `horch` | events `feature-opened`, `task-branch-landed`, `feature-merged`, `resolver-task-opened` |
+| `integration` | ledger tables `features`, `branches`, `bundles`, `bundle_members`, `gate_runs`, `trial_merges`, `remote_tips` | `horch` | events `feature-opened`, `task-branch-landed`, `feature-merged`, `resolver-task-opened` |
 | `worker-profiles` | teammate profile files, no ledger table | `horch` | query `launch-environment` through the module contract |
-| `fleet-runtime` | ledger tables `events`, `ingested`; the command channel | `horch` | command `start-agent-process`; the single ledger writer |
+| `fleet-runtime` | ledger tables `events`, `ingested`, `jobs`, `pass_cursors`, `requests` and the `fleetd` row; the command channel | `horch` | command `start-agent-process`; the single ledger writer |
 
 ## Decisions
 
@@ -119,14 +119,14 @@ All rows go through the single ledger writer in `fleet-runtime` (decompose N5). 
 
 - **A1** (high) 1 stream-aligned team, core-team, owns all 6 contexts. The size is not fixed because the agent count has no cap (understand C13).
 - **A2** (high) 1 deployable, the horch binary, holds all 6 contexts (design D9, FM-34; understand C1, N6; decompose N1).
-- **A3** (high) The fleet-run wrapper and `horch fleetd check` are process roles of the horch binary. `worker-profiles` owns the wrapper (orchestrator, D15; connect D2, N3).
+- **A3** (high) The fleet-run wrapper, `horch fleetd check` and each job process are process roles of the horch binary. `worker-profiles` owns the wrapper and the 1 launcher (orchestrator, D15; connect D2, N3; design SR-7).
 - **A4** (medium) 1 SQLite ledger plus the workspace files; each context owns its tables (table above).
 - **A5** (high) The `questions` table belongs to `ideas` (decompose D2 option A, orchestrator D15). `ideas` also owns the 1 needs-you list (decompose N9).
 - **A6** (high) herdr, the agent CLIs, git, GitHub and the OS service managers are external systems behind adapters, not deployables (strategize N1).
 - **A7** (medium) Cognitive load of core-team is high; mitigation as above.
 - **A8** (medium) Each context owns its workspace folders: idea folders to `ideas`, task and attempt folders to `task-execution`, profile files to `worker-profiles` (understand N17).
 - **A9** (high) The platform layer is the leaf crate `crates/horch-platform` inside the 1 deployable, not a context and not a deployable (design A19, D16).
-- **A10** (medium) Docs sync and adapter conformance run as a horch subcommand that fleetd schedules (D2 option A). The subcommand reports a drift to ideas as a --direct idea, so ideas creates the task (decompose Q2, answered).
+- **A10** (medium) Docs sync and adapter conformance run as a horch subcommand that fleetd schedules as a `docs_sync` job, then a `conformance` job (D2 option A). A drift becomes an idea, and `worker-profiles` marks a profile unhealthy and healthy again (design: Docs sync and adapter conformance).
 - **A11** (high) An `arch_scan` rule enforces the context boundaries (orchestrator, D15).
 
 ## Open questions
