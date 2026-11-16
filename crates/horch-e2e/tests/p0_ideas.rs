@@ -130,6 +130,7 @@ fn fm8_two_ideas_sent_back_to_back_stay_2_ideas() {
                 .unwrap_or_else(|| panic!("horch ideas --json has no ideas list: {board}"));
             assert_eq!(ideas.len(), 2, "horch ideas --json: {board}");
             let mut folders = Vec::new();
+            let mut found_texts = Vec::new();
             for idea in ideas {
                 let folder = PathBuf::from(
                     idea["folder"]
@@ -138,11 +139,20 @@ fn fm8_two_ideas_sent_back_to_back_stay_2_ideas() {
                 );
                 let body = std::fs::read_to_string(folder.join("idea.md"))
                     .unwrap_or_else(|e| panic!("{}: {e}", folder.display()));
-                let own: Vec<_> = texts.iter().filter(|t| body.contains(*t)).collect();
-                assert_eq!(own.len(), 1, "idea.md holds not exactly 1 idea: {body}");
+                let matching_texts: Vec<_> = texts.iter().filter(|t| body.contains(*t)).collect();
+                assert_eq!(
+                    matching_texts.len(),
+                    1,
+                    "idea.md holds not exactly 1 idea: {body}"
+                );
+                found_texts.push(*matching_texts[0]);
                 folders.push(folder);
             }
             assert_ne!(folders[0], folders[1], "2 ideas share 1 folder: {board}");
+            found_texts.sort_unstable();
+            let mut sent_texts = texts.to_vec();
+            sent_texts.sort_unstable();
+            assert_eq!(found_texts, sent_texts, "an idea is lost: {board}");
         },
     );
 }
