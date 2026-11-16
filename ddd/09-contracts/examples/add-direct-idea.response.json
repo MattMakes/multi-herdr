@@ -1,5 +1,7 @@
 {
-  "outcome": "accepted",
-  "idea_id": "I-0013",
-  "feature_id": "F-0003"
+  "state": "applied",
+  "result": {
+    "idea_id": "I-0013",
+    "feature_id": "F-0003"
+  }
 }

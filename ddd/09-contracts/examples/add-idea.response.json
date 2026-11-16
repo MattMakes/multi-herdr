@@ -1,4 +1,6 @@
 {
-  "outcome": "accepted",
-  "idea_id": "I-0012"
+  "state": "applied",
+  "result": {
+    "idea_id": "I-0012"
+  }
 }

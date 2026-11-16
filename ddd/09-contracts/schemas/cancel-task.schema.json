@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ddd/09-contracts/schemas/cancel-task.schema.json",
+  "title": "Cancel Task",
+  "description": "horch task cancel (request kind task_cancel). A policy also issues it inside fleetd for a replan that replaces the task and for the cancel or abandon of its idea or feature (A34).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "task_id",
+    "request_id",
+    "operator_token"
+  ],
+  "properties": {
+    "task_id": {
+      "type": "string",
+      "pattern": "^T-[0-9]{4,}-[0-9]{2,}$",
+      "description": "The task to cancel."
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "The idempotency key that the horch CLI makes once per command run. The channel request, its retry and the request file of the same run carry the same request_id. fleetd applies a request once per request_id and returns the stored result again; a known request_id with a different payload hash is refused (A24)."
+    },
+    "operator_token": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The operator token that horch reads from /fleet/run/operator.token (mode 0600). fleetd refuses an operator request with no valid token and records the refusal in its requests row. The sandbox of each worker denies reading the file (SR-8, A35)."
+    }
+  }
+}

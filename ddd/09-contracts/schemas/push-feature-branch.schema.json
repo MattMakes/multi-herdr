@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ddd/09-contracts/schemas/push-feature-branch.schema.json",
+  "title": "Push Feature Branch",
+  "description": "Our view at the git adapter of integration: the input of 1 push job of a feature branch, outside the pass (A28, A33).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "feature_id",
+    "branch"
+  ],
+  "properties": {
+    "feature_id": {
+      "type": "string",
+      "pattern": "^F-[0-9]{4,}$",
+      "description": "The feature whose branch is pushed; the subject of the push job."
+    },
+    "branch": {
+      "type": "string",
+      "pattern": "^fleet/F-[0-9]{4,}$",
+      "description": "The feature branch, e.g. fleet/F-0003."
+    },
+    "seen_remote_tip": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$",
+      "description": "Optional. features.seen_remote_tip, the remote tip that fleetd last saw. A push that rewrites uses --force-with-lease on it; absent for the first push of the branch."
+    }
+  }
+}

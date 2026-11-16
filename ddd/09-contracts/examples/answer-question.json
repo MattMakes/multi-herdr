@@ -4,6 +4,5 @@
     "case": "covered",
     "text": "Log the delay in milliseconds at INFO level."
   },
-  "citation": "assumptions.md#3",
-  "idempotency_key": "answer-question-7f3a9c2e"
+  "citation": "assumptions.md#3"
 }

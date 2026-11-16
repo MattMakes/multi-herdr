@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ddd/09-contracts/schemas/run-conformance-tests.schema.json",
+  "title": "Run Conformance Tests",
+  "description": "Our view at the pass loop: fleetd schedules the docs_sync job and then the conformance job of 1 agent CLI and its version (A31, A33).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "cli",
+    "version"
+  ],
+  "properties": {
+    "cli": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The agent CLI, e.g. claude, codex, agy, opencode. An open string: the roster names the CLIs."
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The CLI version that the conformance job checks, as the CLI reports it."
+    }
+  }
+}

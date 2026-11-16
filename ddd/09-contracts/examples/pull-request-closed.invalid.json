@@ -1,0 +1,16 @@
+[
+  {
+    "why": "this fact reports only a pull request closed without a merge; a merge is pull-request-merged",
+    "payload": {
+      "feature_id": "F-0003",
+      "pr_state": "merged"
+    }
+  },
+  {
+    "why": "a feature id has the form F-0003",
+    "payload": {
+      "feature_id": "3",
+      "pr_state": "closed"
+    }
+  }
+]

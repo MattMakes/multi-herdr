@@ -4,14 +4,24 @@
     "payload": {
       "branch": "main",
       "task_id": "T-0007-03",
-      "idempotency_key": "abandon-task-branch-7f3a9c2e"
+      "request_id": "abandon-task-branch-7f3a9c2e",
+      "operator_token": "c2f81d9a4b7e"
     }
   },
   {
-    "why": "every command channel request and request file carries idempotency_key, so a retry or a re-read request file has no second effect",
+    "why": "every operator request carries request_id, its idempotency key, so a retry or a re-read request file has no second effect (A24)",
     "payload": {
       "branch": "fleet/I-0007/T-0007-03",
-      "task_id": "T-0007-03"
+      "task_id": "T-0007-03",
+      "operator_token": "c2f81d9a4b7e"
+    }
+  },
+  {
+    "why": "every operator request carries the operator token; fleetd refuses one without it (SR-8, A35)",
+    "payload": {
+      "branch": "fleet/I-0007/T-0007-03",
+      "task_id": "T-0007-03",
+      "request_id": "abandon-task-branch-7f3a9c2e"
     }
   }
 ]

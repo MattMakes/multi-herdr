@@ -1,8 +1,0 @@
-[
-  {
-    "why": "a refused request returns its reason",
-    "payload": {
-      "outcome": "refused"
-    }
-  }
-]

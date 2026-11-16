@@ -8,7 +8,8 @@
   "required": [
     "branch",
     "task_id",
-    "idempotency_key"
+    "request_id",
+    "operator_token"
   ],
   "properties": {
     "branch": {
@@ -21,11 +22,16 @@
       "pattern": "^T-[0-9]{4,}-[0-9]{2,}$",
       "description": "The escalated task that owns the branch."
     },
-    "idempotency_key": {
+    "request_id": {
       "type": "string",
       "minLength": 1,
       "maxLength": 128,
-      "description": "Opaque key that the horch CLI makes once per command run. The command channel request and the request file of the same run carry the same key. fleetd applies a request once per key and returns the first outcome again (orchestrator, D15)."
+      "description": "The idempotency key that the horch CLI makes once per command run. The channel request, its retry and the request file of the same run carry the same request_id. fleetd applies a request once per request_id and returns the stored result again; a known request_id with a different payload hash is refused (A24)."
+    },
+    "operator_token": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The operator token that horch reads from /fleet/run/operator.token (mode 0600). fleetd refuses an operator request with no valid token and records the refusal in its requests row. The sandbox of each worker denies reading the file (SR-8, A35)."
     }
   }
 }

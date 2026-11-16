@@ -1,0 +1,23 @@
+[
+  {
+    "why": "a refused request returns its reason",
+    "payload": {
+      "state": "refused"
+    }
+  },
+  {
+    "why": "an applied request returns its stored result",
+    "payload": {
+      "state": "applied"
+    }
+  },
+  {
+    "why": "state is the closed list applied or refused; the old outcome accepted is retired (A24)",
+    "payload": {
+      "state": "accepted",
+      "result": {
+        "task_id": "T-0007-02"
+      }
+    }
+  }
+]

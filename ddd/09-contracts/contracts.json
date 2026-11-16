@@ -2,7 +2,7 @@
   "schema_version": 1,
   "step": "contracts",
   "produced_by": "ddd-contracts",
-  "produced_at": "2026-11-12T21:59:26Z",
+  "produced_at": "2026-11-16T21:44:20Z",
   "mode": "auto",
   "depth": "standard",
   "inputs": [
@@ -69,7 +69,7 @@
     },
     {
       "id": "A11",
-      "text": "Each command channel reply carries outcome (accepted or refused). A refused reply carries reason; an accepted reply carries the ids it creates and no reason. approve-assumptions replies outcome and reason only; the boolean approved is retired (orchestrator, D15).",
+      "text": "Each command channel reply is the requests row of its request_id: state (applied or refused), result when applied, reason when refused (A24, connect response_payload). The result carries the ids the request created or changed. The former outcome accepted or refused is retired.",
       "confidence": "high"
     },
     {
@@ -84,7 +84,7 @@
     },
     {
       "id": "A14",
-      "text": "idempotency_key is an opaque string of 1 to 128 characters that the horch CLI makes once per command run. The design and connect give no format, so the schema fixes only its type and length.",
+      "text": "request_id is an opaque string of 1 to 128 characters that the horch CLI makes once per command run; it is the idempotency key (A24). The operator token is an opaque non-empty string from /fleet/run/operator.token (SR-8). The design gives no format for either, so the schemas fix only type and length.",
       "confidence": "medium"
     },
     {
@@ -100,6 +100,26 @@
     {
       "id": "A17",
       "text": "start-work carries START.md as 3 fields (task_yaml, rescue_commit, progress_notes) from connect; fleetd renders them as Markdown. A retry has both rescue_commit and progress_notes (design: Reuse, don't redo).",
+      "confidence": "medium"
+    },
+    {
+      "id": "A18",
+      "text": "answer-question is a worker-class file that horch idea note of the sub-orchestrator writes in its idea folder: no request_id, no operator token and no reply. fleetd ingests it once by path and hash (A35, code N8).",
+      "confidence": "high"
+    },
+    {
+      "id": "A19",
+      "text": "heartbeat-written has domain worker-profiles: the fleet-run wrapper of worker-profiles writes heartbeat.json, as attempt-exited writes exit.json; task-execution is the consumer (connect producer, define A5).",
+      "confidence": "high"
+    },
+    {
+      "id": "A20",
+      "text": "The result of an operator request carries only the id of the row it created or changed: idea_id, feature_id, task_id, job_id, ref or rescue_ref. The design stores result_json but gives no field list.",
+      "confidence": "medium"
+    },
+    {
+      "id": "A21",
+      "text": "requeue-job names the job by jobs.id of its last run, which horch shows on the needs-you list; fleetd resets abandoned_runs of the key of that run (kind, subject, input_key).",
       "confidence": "medium"
     }
   ],
@@ -130,8 +150,9 @@
       "semantics": [
         "Each accepted request creates exactly 1 immutable idea.md and 1 ledger row in state captured, and the reply carries its new idea_id.",
         "Only fleetd writes the ledger. When fleetd is down, horch writes a request file and fleetd reads it at start, so the reply arrives only on the sync channel.",
-        "fleetd applies a request once per idempotency_key and returns the first outcome again; the request file of the same command run carries the same key (orchestrator, D15).",
-        "A refused request returns outcome refused with its reason (orchestrator, D15)."
+        "fleetd applies a request once per request_id and returns the stored result again; a known request_id with a different payload hash is refused. The request file of the same command run carries the same request_id (A24).",
+        "The request is of class operator: it needs the operator token, and fleetd refuses one from a process of a live attempt or a descendant of its wrapper (SR-8, A35).",
+        "A refused request returns state refused with its reason, stored in its requests row; horch request <request_id> prints the state and the result at any time (A24)."
       ],
       "termsOfUse": "Additive changes only within version 1.x; a removed, renamed or retyped field is 2.0. The horch CLI and fleetd ship in 1 binary, so the operator never meets a version skew, but a request file written by an older horch and read at start must still validate.",
       "glossary": "ddd/glossary.md#ideas-context",
@@ -147,7 +168,7 @@
           "via": "file",
           "sync": false,
           "delivery": "at-least-once",
-          "note": "request file under the state root when fleetd is down; fleetd reads it at start"
+          "note": "request file in /fleet/run/requests/ when fleetd is down; fleetd reads it at start; the file carries the same request_id and the operator token (A24, A35)"
         }
       ],
       "client": "operator"
@@ -178,8 +199,9 @@
         "The command is refused when the caller's process tree contains a recorded fleet attempt, like horch idea approve.",
         "Without feature_id, fleetd creates a new feature whose branch name is the kebab-case ticket title with a number suffix when the name exists, and returns its feature_id.",
         "fleetd writes the ledger row before it creates the branch. A plan that plan validation refuses sends the idea to needs-you/ with the reason.",
-        "fleetd applies a request once per idempotency_key and returns the first outcome again; the request file of the same command run carries the same key (orchestrator, D15).",
-        "A refused request returns outcome refused with its reason (orchestrator, D15)."
+        "fleetd applies a request once per request_id and returns the stored result again; a known request_id with a different payload hash is refused. The request file of the same command run carries the same request_id (A24).",
+        "The request is of class operator: it needs the operator token, and fleetd refuses one from a process of a live attempt or a descendant of its wrapper (SR-8, A35).",
+        "A refused request returns state refused with its reason, stored in its requests row; horch request <request_id> prints the state and the result at any time (A24)."
       ],
       "termsOfUse": "Additive changes only within version 1.x; a removed, renamed or retyped field is 2.0. The horch CLI and fleetd ship in 1 binary, so the operator never meets a version skew, but a request file written by an older horch and read at start must still validate.",
       "glossary": "ddd/glossary.md#ideas-context",
@@ -195,7 +217,7 @@
           "via": "file",
           "sync": false,
           "delivery": "at-least-once",
-          "note": "request file under the state root when fleetd is down; fleetd reads it at start"
+          "note": "request file in /fleet/run/requests/ when fleetd is down; fleetd reads it at start; the file carries the same request_id and the operator token (A24, A35)"
         }
       ],
       "client": "operator"
@@ -226,8 +248,9 @@
         "An approval of the same assumptions_hash is a no-op that answers accepted again; a stale hash is refused with its reason.",
         "fleetd writes approval.json itself with the hash the operator saw and ignores an approval.json written by any other process (FR-10, I7).",
         "The command is refused when the caller's process tree contains a recorded fleet attempt, and agent profiles deny it.",
-        "fleetd applies a request once per idempotency_key and returns the first outcome again; the request file of the same command run carries the same key (orchestrator, D15).",
-        "A refused request returns outcome refused with its reason (orchestrator, D15)."
+        "fleetd applies a request once per request_id and returns the stored result again; a known request_id with a different payload hash is refused. The request file of the same command run carries the same request_id (A24).",
+        "The request is of class operator: it needs the operator token, and fleetd refuses one from a process of a live attempt or a descendant of its wrapper (SR-8, A35).",
+        "A refused request returns state refused with its reason, stored in its requests row; horch request <request_id> prints the state and the result at any time (A24)."
       ],
       "termsOfUse": "Additive changes only within version 1.x; a removed, renamed or retyped field is 2.0. The horch CLI and fleetd ship in 1 binary, so the operator never meets a version skew, but a request file written by an older horch and read at start must still validate.",
       "glossary": "ddd/glossary.md#ideas-context",
@@ -243,7 +266,7 @@
           "via": "file",
           "sync": false,
           "delivery": "at-least-once",
-          "note": "request file under the state root when fleetd is down; fleetd reads it at start"
+          "note": "request file in /fleet/run/requests/ when fleetd is down; fleetd reads it at start; the file carries the same request_id and the operator token (A24, A35)"
         }
       ],
       "client": "operator"
@@ -274,8 +297,9 @@
         "Only the operator abandons a task branch; abandoned is terminal.",
         "The branch is dropped only after its rescue ref exists and is verified (I10, CC7); the reply always names that ref.",
         "An abandoned branch is not abandoned twice: a repeat returns the same rescue_ref and changes nothing.",
-        "fleetd applies a request once per idempotency_key and returns the first outcome again; the request file of the same command run carries the same key (orchestrator, D15).",
-        "A refused request returns outcome refused with its reason (orchestrator, D15)."
+        "fleetd applies a request once per request_id and returns the stored result again; a known request_id with a different payload hash is refused. The request file of the same command run carries the same request_id (A24).",
+        "The request is of class operator: it needs the operator token, and fleetd refuses one from a process of a live attempt or a descendant of its wrapper (SR-8, A35).",
+        "A refused request returns state refused with its reason, stored in its requests row; horch request <request_id> prints the state and the result at any time (A24)."
       ],
       "termsOfUse": "Additive changes only within version 1.x; a removed, renamed or retyped field is 2.0. The horch CLI and fleetd ship in 1 binary, so the operator never meets a version skew, but a request file written by an older horch and read at start must still validate.",
       "glossary": "ddd/glossary.md#landing-and-integration-context",
@@ -283,7 +307,8 @@
         "connect": "abandon-task-branch",
         "relationship": null,
         "flows": [
-          "F6"
+          "F6",
+          "F11"
         ]
       },
       "channels": [
@@ -291,7 +316,7 @@
           "via": "file",
           "sync": false,
           "delivery": "at-least-once",
-          "note": "request file under the state root when fleetd is down; fleetd reads it at start"
+          "note": "request file in /fleet/run/requests/ when fleetd is down; fleetd reads it at start; the file carries the same request_id and the operator token (A24, A35)"
         }
       ],
       "client": "operator"
@@ -415,7 +440,7 @@
       "id": "answer-question",
       "kind": "command",
       "name": "Answer Question",
-      "description": "The sub-orchestrator answers a worker question through the fleetd command channel; fleetd records the answer as the only ledger writer and resumes the parked task with it.",
+      "description": "The sub-orchestrator answers a worker question with horch idea note, which writes a file in its idea folder. fleetd ingests the file, records the answer as the only ledger writer, and resumes the parked task with it.",
       "entityStatus": "Draft",
       "version": "1.0",
       "domain": "ideas",
@@ -429,8 +454,8 @@
         "core-team"
       ],
       "pattern": "open-host-service",
-      "delivery": "sync",
-      "via": "other",
+      "delivery": "at-least-once",
+      "via": "file",
       "schema": "ddd/09-contracts/schemas/answer-question.schema.json",
       "example": "ddd/09-contracts/examples/answer-question.json",
       "semantics": [
@@ -438,8 +463,8 @@
         "A covered answer must carry a citation, and fleetd checks that the cited line exists.",
         "A revise answer goes to the operator and pauses only the affected tasks; an own_decision answer is recorded as an assumption the operator can reverse.",
         "The answer goes to the decision log of the feature and to every later task of the feature.",
-        "fleetd applies a request once per idempotency_key and returns the first outcome again; the request file of the same command run carries the same key (orchestrator, D15).",
-        "A refused request returns outcome refused with its reason (orchestrator, D15)."
+        "fleetd ingests the file 1 time, by path and hash; the question row moves to answered once per question_id.",
+        "The request is of class worker: a file in the idea folder of the sub-orchestrator, with no operator token. It never uses the command channel or the request folder (A35)."
       ],
       "termsOfUse": "Additive changes only within version 1.x; a removed, renamed or retyped field is 2.0. fleetd rejects a file or request that fails this schema (design protocol rule 4), so a 2.0 ships together with the matching horch, fleet helper and prompt changes.",
       "glossary": "ddd/glossary.md#ideas-context",
@@ -450,15 +475,7 @@
           "F5"
         ]
       },
-      "client": "sub-orchestrator",
-      "channels": [
-        {
-          "via": "file",
-          "sync": false,
-          "delivery": "at-least-once",
-          "note": "request file under the state root when fleetd is down; fleetd reads it at start; the file carries the same idempotency_key"
-        }
-      ]
+      "client": "sub-orchestrator"
     },
     {
       "id": "replan-task",
@@ -1077,7 +1094,7 @@
       "description": "heartbeat.json, rewritten every 10 s by the fleet-run wrapper (worker-profiles), not the model; an outside signal that renews the lease.",
       "entityStatus": "Draft",
       "version": "1.0",
-      "domain": "task-execution",
+      "domain": "worker-profiles",
       "owners": [
         "core-team"
       ],
@@ -1098,7 +1115,7 @@
         "The wrapper reports facts and decides nothing; fleetd renews the lease."
       ],
       "termsOfUse": "Additive changes only within version 1.x; a removed, renamed or retyped field is 2.0. fleetd, the fleet-run wrapper and the horch helper commands ship in 1 binary; a worker prompt that names a field follows the same version.",
-      "glossary": "ddd/glossary.md#task-execution-context",
+      "glossary": "ddd/glossary.md#worker-profiles-and-adapters-context",
       "provenance": {
         "connect": "heartbeat-written",
         "relationship": null,
@@ -1293,6 +1310,448 @@
           "F6"
         ]
       }
+    },
+    {
+      "id": "cancel-idea",
+      "kind": "command",
+      "name": "Cancel Idea",
+      "description": "horch idea cancel (request kind idea_cancel). The idea moves to cancelled, and fleetd cancels each of its tasks that is not terminal (A34).",
+      "entityStatus": "Draft",
+      "version": "1.0",
+      "domain": "ideas",
+      "owners": [
+        "core-team"
+      ],
+      "consumers": [
+        "ideas"
+      ],
+      "reviewers": [
+        "core-team"
+      ],
+      "pattern": "open-host-service",
+      "delivery": "sync",
+      "via": "other",
+      "schema": "ddd/09-contracts/schemas/cancel-idea.schema.json",
+      "example": "ddd/09-contracts/examples/cancel-idea.json",
+      "semantics": [
+        "A cancelled idea is not cancelled twice: a repeat with a new request_id is refused with its reason, because cancelled is terminal.",
+        "Each task of the idea that is not terminal goes to cancelled through cancel-task; a live attempt has its process group stopped first (A34).",
+        "fleetd applies a request once per request_id and returns the stored result again; a known request_id with a different payload hash is refused. The request file of the same command run carries the same request_id (A24).",
+        "The request is of class operator: it needs the operator token, and fleetd refuses one from a process of a live attempt or a descendant of its wrapper (SR-8, A35).",
+        "A refused request returns state refused with its reason, stored in its requests row; horch request <request_id> prints the state and the result at any time (A24)."
+      ],
+      "termsOfUse": "Additive changes only within version 1.x; a removed, renamed or retyped field is 2.0. The horch CLI and fleetd ship in 1 binary, so the operator never meets a version skew, but a request file written by an older horch and read at start must still validate.",
+      "glossary": "ddd/glossary.md#ideas-context",
+      "provenance": {
+        "connect": "cancel-idea",
+        "relationship": null,
+        "flows": [
+          "F10"
+        ]
+      },
+      "channels": [
+        {
+          "via": "file",
+          "sync": false,
+          "delivery": "at-least-once",
+          "note": "request file in /fleet/run/requests/ when fleetd is down; fleetd reads it at start; the file carries the same request_id and the operator token (A24, A35)"
+        }
+      ],
+      "client": "operator"
+    },
+    {
+      "id": "cancel-task",
+      "kind": "command",
+      "name": "Cancel Task",
+      "description": "horch task cancel (request kind task_cancel). A policy also issues it inside fleetd for a replan that replaces the task and for the cancel or abandon of its idea or feature (A34).",
+      "entityStatus": "Draft",
+      "version": "1.0",
+      "domain": "task-execution",
+      "owners": [
+        "core-team"
+      ],
+      "consumers": [
+        "task-execution"
+      ],
+      "reviewers": [
+        "core-team"
+      ],
+      "pattern": "open-host-service",
+      "delivery": "sync",
+      "via": "other",
+      "schema": "ddd/09-contracts/schemas/cancel-task.schema.json",
+      "example": "ddd/09-contracts/examples/cancel-task.json",
+      "semantics": [
+        "Each task state that is not terminal has an exit to cancelled; a cancel of a terminal task is refused with its reason (A34).",
+        "fleetd first stops the process group of a live attempt; the cancel of a judged task also cancels its judge task; the task branch goes to integration, which abandons it after worktree-rescued (A34).",
+        "fleetd applies a request once per request_id and returns the stored result again; a known request_id with a different payload hash is refused. The request file of the same command run carries the same request_id (A24).",
+        "The request is of class operator: it needs the operator token, and fleetd refuses one from a process of a live attempt or a descendant of its wrapper (SR-8, A35).",
+        "A refused request returns state refused with its reason, stored in its requests row; horch request <request_id> prints the state and the result at any time (A24)."
+      ],
+      "termsOfUse": "Additive changes only within version 1.x; a removed, renamed or retyped field is 2.0. The horch CLI and fleetd ship in 1 binary, so the operator never meets a version skew, but a request file written by an older horch and read at start must still validate.",
+      "glossary": "ddd/glossary.md#task-execution-context",
+      "provenance": {
+        "connect": "cancel-task",
+        "relationship": null,
+        "flows": [
+          "F10"
+        ]
+      },
+      "channels": [
+        {
+          "via": "file",
+          "sync": false,
+          "delivery": "at-least-once",
+          "note": "request file in /fleet/run/requests/ when fleetd is down; fleetd reads it at start; the file carries the same request_id and the operator token (A24, A35)"
+        }
+      ],
+      "client": "operator"
+    },
+    {
+      "id": "requeue-task",
+      "kind": "command",
+      "name": "Requeue Task",
+      "description": "horch task requeue (request kind task_requeue). An escalated task goes to ready with its attempt count at 0 (attempt_floor). For a done task whose branch is at its repair limit, it sets repair_attempts to 0 and starts 1 more resolver or fix attempt (A27, D15).",
+      "entityStatus": "Draft",
+      "version": "1.0",
+      "domain": "task-execution",
+      "owners": [
+        "core-team"
+      ],
+      "consumers": [
+        "task-execution"
+      ],
+      "reviewers": [
+        "core-team"
+      ],
+      "pattern": "open-host-service",
+      "delivery": "sync",
+      "via": "other",
+      "schema": "ddd/09-contracts/schemas/requeue-task.schema.json",
+      "example": "ddd/09-contracts/examples/requeue-task.json",
+      "semantics": [
+        "A requeue of an escalated task resets the attempt count through attempt_floor (04 L8); a requeue of a done task never moves the task (A34).",
+        "A requeue of a task that is neither escalated nor done with a conflicted or gate_failed branch is refused with its reason.",
+        "fleetd applies a request once per request_id and returns the stored result again; a known request_id with a different payload hash is refused. The request file of the same command run carries the same request_id (A24).",
+        "The request is of class operator: it needs the operator token, and fleetd refuses one from a process of a live attempt or a descendant of its wrapper (SR-8, A35).",
+        "A refused request returns state refused with its reason, stored in its requests row; horch request <request_id> prints the state and the result at any time (A24)."
+      ],
+      "termsOfUse": "Additive changes only within version 1.x; a removed, renamed or retyped field is 2.0. The horch CLI and fleetd ship in 1 binary, so the operator never meets a version skew, but a request file written by an older horch and read at start must still validate.",
+      "glossary": "ddd/glossary.md#task-execution-context",
+      "provenance": {
+        "connect": "requeue-task",
+        "relationship": null,
+        "flows": [
+          "F11"
+        ]
+      },
+      "channels": [
+        {
+          "via": "file",
+          "sync": false,
+          "delivery": "at-least-once",
+          "note": "request file in /fleet/run/requests/ when fleetd is down; fleetd reads it at start; the file carries the same request_id and the operator token (A24, A35)"
+        }
+      ],
+      "client": "operator"
+    },
+    {
+      "id": "abandon-feature",
+      "kind": "command",
+      "name": "Abandon Feature",
+      "description": "horch feature abandon (request kind feature_abandon). Only the operator sets abandoned. fleetd first writes a rescue ref for each branch of the feature that is not landed, then abandons each such branch, and cancels each idea of the feature that is not terminal (A28).",
+      "entityStatus": "Draft",
+      "version": "1.0",
+      "domain": "integration",
+      "owners": [
+        "core-team"
+      ],
+      "consumers": [
+        "integration"
+      ],
+      "reviewers": [
+        "core-team"
+      ],
+      "pattern": "open-host-service",
+      "delivery": "sync",
+      "via": "other",
+      "schema": "ddd/09-contracts/schemas/abandon-feature.schema.json",
+      "example": "ddd/09-contracts/examples/abandon-feature.json",
+      "semantics": [
+        "An abandoned feature is not abandoned twice: abandoned is terminal, and a repeat with a new request_id is refused with its reason.",
+        "No branch of the feature is dropped before its rescue ref exists (I10).",
+        "fleetd applies a request once per request_id and returns the stored result again; a known request_id with a different payload hash is refused. The request file of the same command run carries the same request_id (A24).",
+        "The request is of class operator: it needs the operator token, and fleetd refuses one from a process of a live attempt or a descendant of its wrapper (SR-8, A35).",
+        "A refused request returns state refused with its reason, stored in its requests row; horch request <request_id> prints the state and the result at any time (A24)."
+      ],
+      "termsOfUse": "Additive changes only within version 1.x; a removed, renamed or retyped field is 2.0. The horch CLI and fleetd ship in 1 binary, so the operator never meets a version skew, but a request file written by an older horch and read at start must still validate.",
+      "glossary": "ddd/glossary.md#landing-and-integration-context",
+      "provenance": {
+        "connect": "abandon-feature",
+        "relationship": null,
+        "flows": [
+          "F12"
+        ]
+      },
+      "channels": [
+        {
+          "via": "file",
+          "sync": false,
+          "delivery": "at-least-once",
+          "note": "request file in /fleet/run/requests/ when fleetd is down; fleetd reads it at start; the file carries the same request_id and the operator token (A24, A35)"
+        }
+      ],
+      "client": "operator"
+    },
+    {
+      "id": "requeue-job",
+      "kind": "command",
+      "name": "Requeue Job",
+      "description": "horch job requeue (request kind job_requeue). It sets abandoned_runs of the job key to 0, and the next run starts (A33).",
+      "entityStatus": "Draft",
+      "version": "1.0",
+      "domain": "fleet-runtime",
+      "owners": [
+        "core-team"
+      ],
+      "consumers": [
+        "fleet-runtime"
+      ],
+      "reviewers": [
+        "core-team"
+      ],
+      "pattern": "open-host-service",
+      "delivery": "sync",
+      "via": "other",
+      "schema": "ddd/09-contracts/schemas/requeue-job.schema.json",
+      "example": "ddd/09-contracts/examples/requeue-job.json",
+      "semantics": [
+        "A job key at abandoned_run_limit (3) starts no new run until this request; the request sets abandoned_runs to 0 and the next pass queues 1 new run (A33).",
+        "A requeue of a job that is queued or running is refused with its reason.",
+        "fleetd applies a request once per request_id and returns the stored result again; a known request_id with a different payload hash is refused. The request file of the same command run carries the same request_id (A24).",
+        "The request is of class operator: it needs the operator token, and fleetd refuses one from a process of a live attempt or a descendant of its wrapper (SR-8, A35).",
+        "A refused request returns state refused with its reason, stored in its requests row; horch request <request_id> prints the state and the result at any time (A24)."
+      ],
+      "termsOfUse": "Additive changes only within version 1.x; a removed, renamed or retyped field is 2.0. The horch CLI and fleetd ship in 1 binary, so the operator never meets a version skew, but a request file written by an older horch and read at start must still validate.",
+      "glossary": "ddd/glossary.md#fleet-runtime-context",
+      "provenance": {
+        "connect": "requeue-job",
+        "relationship": null,
+        "flows": [
+          "F13"
+        ]
+      },
+      "channels": [
+        {
+          "via": "file",
+          "sync": false,
+          "delivery": "at-least-once",
+          "note": "request file in /fleet/run/requests/ when fleetd is down; fleetd reads it at start; the file carries the same request_id and the operator token (A24, A35)"
+        }
+      ],
+      "client": "operator"
+    },
+    {
+      "id": "drop-rescue-ref",
+      "kind": "command",
+      "name": "Drop Rescue Ref",
+      "description": "horch rescue drop (request kind rescue_drop). Only the operator deletes a rescue ref of class unique (A27, I10).",
+      "entityStatus": "Draft",
+      "version": "1.0",
+      "domain": "worktree-custody",
+      "owners": [
+        "core-team"
+      ],
+      "consumers": [
+        "worktree-custody"
+      ],
+      "reviewers": [
+        "core-team"
+      ],
+      "pattern": "open-host-service",
+      "delivery": "sync",
+      "via": "other",
+      "schema": "ddd/09-contracts/schemas/drop-rescue-ref.schema.json",
+      "example": "ddd/09-contracts/examples/drop-rescue-ref.json",
+      "semantics": [
+        "A deleted ref is not deleted twice: a repeat with a new request_id for a ref that is gone is refused with its reason.",
+        "fleetd deletes a superseded rescue ref by itself; a unique rescue ref is deleted only by this request (A27).",
+        "fleetd applies a request once per request_id and returns the stored result again; a known request_id with a different payload hash is refused. The request file of the same command run carries the same request_id (A24).",
+        "The request is of class operator: it needs the operator token, and fleetd refuses one from a process of a live attempt or a descendant of its wrapper (SR-8, A35).",
+        "A refused request returns state refused with its reason, stored in its requests row; horch request <request_id> prints the state and the result at any time (A24)."
+      ],
+      "termsOfUse": "Additive changes only within version 1.x; a removed, renamed or retyped field is 2.0. The horch CLI and fleetd ship in 1 binary, so the operator never meets a version skew, but a request file written by an older horch and read at start must still validate.",
+      "glossary": "ddd/glossary.md#worktree-custody-context",
+      "provenance": {
+        "connect": "drop-rescue-ref",
+        "relationship": null,
+        "flows": []
+      },
+      "channels": [
+        {
+          "via": "file",
+          "sync": false,
+          "delivery": "at-least-once",
+          "note": "request file in /fleet/run/requests/ when fleetd is down; fleetd reads it at start; the file carries the same request_id and the operator token (A24, A35)"
+        }
+      ],
+      "client": "operator"
+    },
+    {
+      "id": "pull-request-closed",
+      "kind": "event",
+      "name": "Pull Request Closed",
+      "description": "Read by the fetch job (pr = gh): the pull request of a feature is closed and not merged. integration sets pr_state closed and puts 1 item on the needs-you list; the decision is the operator's (A28).",
+      "entityStatus": "Draft",
+      "version": "1.0",
+      "domain": "integration",
+      "owners": [
+        "github"
+      ],
+      "consumers": [
+        "integration"
+      ],
+      "reviewers": [
+        "core-team"
+      ],
+      "pattern": "anticorruption-layer",
+      "delivery": "at-least-once",
+      "via": "other",
+      "schema": "ddd/09-contracts/schemas/pull-request-closed.schema.json",
+      "example": "ddd/09-contracts/examples/pull-request-closed.json",
+      "semantics": [
+        "Once per (feature_id, pr_state); a second report of closed is a no-op.",
+        "fleetd decides nothing for the operator: the feature stays as it is until the operator reopens the pull request or abandons the feature (A28, FM-43)."
+      ],
+      "termsOfUse": "GitHub owns the wire contract. The schema is our view at the github adapter of integration; a GitHub change lands in that adapter only. Additive changes only within version 1.x.",
+      "glossary": "ddd/glossary.md#landing-and-integration-context",
+      "provenance": {
+        "connect": "pull-request-closed",
+        "relationship": null,
+        "flows": [
+          "F12"
+        ]
+      },
+      "inherited": true,
+      "direction": "inbound"
+    },
+    {
+      "id": "push-feature-branch",
+      "kind": "command",
+      "name": "Push Feature Branch",
+      "description": "A push job of the feature branch, outside the pass. A push that rewrites uses --force-with-lease on seen_remote_tip. A passed push sets push_state ok; a failed push sets push_state failed and push_not_before (A28).",
+      "entityStatus": "Draft",
+      "version": "1.0",
+      "domain": "integration",
+      "owners": [
+        "git"
+      ],
+      "consumers": [
+        "git"
+      ],
+      "reviewers": [
+        "core-team"
+      ],
+      "pattern": "anticorruption-layer",
+      "delivery": "at-least-once",
+      "via": "other",
+      "schema": "ddd/09-contracts/schemas/push-feature-branch.schema.json",
+      "example": "ddd/09-contracts/examples/push-feature-branch.json",
+      "semantics": [
+        "An effect job, keyed by the feature tip and seen_remote_tip: a failed run is never used again, and each retry is a new run after push_not_before (A33).",
+        "A push that rewrites never overwrites a remote tip that fleetd did not see: --force-with-lease on seen_remote_tip (I9, FM-37).",
+        "At 3 failed pushes in a row, 1 item goes on the needs-you list. With remote = none, no push runs (A28).",
+        "The push has the wall-clock bound of 10 min as the time limit of its job (04 F11)."
+      ],
+      "termsOfUse": "git owns the wire fact; this schema is our view of it at the ACL boundary. Changes in git land in the integration git adapter; nothing else runs git push. Additive changes only within version 1.x.",
+      "glossary": "ddd/glossary.md#landing-and-integration-context",
+      "provenance": {
+        "connect": "push-feature-branch",
+        "relationship": null,
+        "flows": [
+          "F9"
+        ]
+      },
+      "inherited": true,
+      "direction": "outbound"
+    },
+    {
+      "id": "observe-jobs",
+      "kind": "command",
+      "name": "Observe Jobs",
+      "description": "Part 1 of each pass reads the ended jobs and their results. A running job whose process is gone ends abandoned (A23).",
+      "entityStatus": "Draft",
+      "version": "1.0",
+      "domain": "fleet-runtime",
+      "owners": [
+        "clock"
+      ],
+      "consumers": [
+        "fleet-runtime"
+      ],
+      "reviewers": [
+        "core-team"
+      ],
+      "pattern": "conformist",
+      "delivery": "at-most-once",
+      "via": "in-process",
+      "schema": "ddd/09-contracts/schemas/observe-jobs.schema.json",
+      "example": "ddd/09-contracts/examples/observe-jobs.json",
+      "semantics": [
+        "Each pass reads the ended jobs again; a job row ends once, so a lost tick is repaired by the next pass 5 s later.",
+        "A running job whose process is gone, by PID and start time, ends abandoned; at abandoned_run_limit (3) the job key starts no new run (A23, A33).",
+        "The read is in part 1 of the pass, within its scan budget; the job results are written in the 1 transaction of part 2 (A24, A32)."
+      ],
+      "termsOfUse": "The clock owns the wire fact; this schema is our view of it at the boundary. Changes in the clock land in the fleetd pass loop; nothing else reads the clock directly. Additive changes only within version 1.x.",
+      "glossary": "ddd/glossary.md#fleet-runtime-context",
+      "provenance": {
+        "connect": "observe-jobs",
+        "relationship": null,
+        "flows": [
+          "F13"
+        ]
+      },
+      "inherited": true,
+      "direction": "inbound"
+    },
+    {
+      "id": "run-conformance-tests",
+      "kind": "command",
+      "name": "Run Conformance Tests",
+      "description": "fleetd schedules the docs_sync job daily and on each CLI version change, then the conformance job. Neither job has a repository (design: Docs sync and adapter conformance).",
+      "entityStatus": "Draft",
+      "version": "1.0",
+      "domain": "worker-profiles",
+      "owners": [
+        "clock"
+      ],
+      "consumers": [
+        "worker-profiles"
+      ],
+      "reviewers": [
+        "core-team"
+      ],
+      "pattern": "conformist",
+      "delivery": "at-least-once",
+      "via": "in-process",
+      "schema": "ddd/09-contracts/schemas/run-conformance-tests.schema.json",
+      "example": "ddd/09-contracts/examples/run-conformance-tests.json",
+      "semantics": [
+        "A conformance job is keyed by the CLI and its version: a repeat for the same key starts no second run (A33).",
+        "A failed check marks the profile unhealthy and emits adapter-conformance-failed; dispatch does not choose an unhealthy profile until the checks pass again. Each adapter has the check Operator boundary (A31, A35).",
+        "Both jobs start through the 1 launcher, which removes ANTHROPIC_API_KEY (SR-7, A29)."
+      ],
+      "termsOfUse": "The clock owns the wire fact; this schema is our view of it at the boundary. Changes in the clock land in the fleetd pass loop; nothing else reads the clock directly. Additive changes only within version 1.x.",
+      "glossary": "ddd/glossary.md#worker-profiles-and-adapters-context",
+      "provenance": {
+        "connect": "run-conformance-tests",
+        "relationship": null,
+        "flows": [
+          "F14"
+        ]
+      },
+      "inherited": true,
+      "direction": "inbound"
     }
   ],
   "decisions": [
@@ -1359,9 +1818,9 @@
     }
   ],
   "plain_words": {
-    "what": "This step wrote 30 contracts: the exact shape of each file or request that crosses a process line in fleetd. These are operator commands, files the sub-orchestrators, workers and the wrapper write, files fleetd writes for them, and facts from git, GitHub, herdr, the agent CLI, the provider and the clock. Each contract has a schema, a good example and bad examples it must reject.",
-    "decided": "Every field name is snake_case, as in the design (D1, option B). Each operator command carries an idempotency_key and gets back accepted, or refused with a reason. result.json status is completed, blocked or failed. reset_at is optional.",
-    "assumed": "The idempotency_key is an opaque string of 1 to 128 characters, because no source gives its format. verdict.json decision is done or ready, from the Verifier row of the design.",
+    "what": "This step wrote 40 contracts: the exact shape of each file or request that crosses a process line in fleetd. These are operator commands, files the sub-orchestrators, workers and the wrapper write, files fleetd writes for them, and facts from git, GitHub, herdr, the agent CLI, the provider and the clock. Each contract has a schema, a good example and bad examples it must reject.",
+    "decided": "Every field name is snake_case, as in the design (D1, option B). Each operator command carries a request_id and the operator token, and gets back state applied with its result, or refused with a reason. A sub-orchestrator answer is a file, not a command. result.json status is completed, blocked or failed. reset_at is optional.",
+    "assumed": "request_id and the operator token are opaque strings, because no source gives their format. The result of an operator request names only the row it changed. verdict.json decision is done or ready, from the Verifier row of the design.",
     "riskiest": "heartbeat-written and task-escalated sit inside 1 deployable, so the checker warns about them. If the wrapper later runs in fleetd itself, heartbeat-written stops being a wire contract."
   },
   "deprecated": [

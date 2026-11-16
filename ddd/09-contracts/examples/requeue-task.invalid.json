@@ -1,0 +1,24 @@
+[
+  {
+    "why": "a task id has the form T-0007-02",
+    "payload": {
+      "task_id": "T-7-2",
+      "request_id": "requeue-task-7f3a9c2e",
+      "operator_token": "c2f81d9a4b7e"
+    }
+  },
+  {
+    "why": "every operator request carries request_id, its idempotency key, so a retry or a re-read request file has no second effect (A24)",
+    "payload": {
+      "task_id": "T-0007-02",
+      "operator_token": "c2f81d9a4b7e"
+    }
+  },
+  {
+    "why": "every operator request carries the operator token; fleetd refuses one without it (SR-8, A35)",
+    "payload": {
+      "task_id": "T-0007-02",
+      "request_id": "requeue-task-7f3a9c2e"
+    }
+  }
+]

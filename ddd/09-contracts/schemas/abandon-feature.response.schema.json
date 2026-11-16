@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ddd/09-contracts/schemas/abandon-feature.response.schema.json",
+  "title": "Abandon Feature response",
+  "description": "The reply of fleetd, from the requests row of the request_id: state applied with its result, or refused with its reason (A24). The result names the abandoned feature. A retry with the same request_id returns this reply again.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "state"
+  ],
+  "properties": {
+    "state": {
+      "type": "string",
+      "enum": [
+        "applied",
+        "refused"
+      ],
+      "description": "Closed list from requests.state without pending: applied or refused (A24)."
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "feature_id"
+      ],
+      "properties": {
+        "feature_id": {
+          "type": "string",
+          "pattern": "^F-[0-9]{4,}$",
+          "description": "The abandoned feature."
+        }
+      },
+      "description": "The stored result, requests.result_json. Present only when state is applied."
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Why fleetd refused the request, requests.reason: e.g. no valid operator token, a caller inside a live attempt, a known request_id with another payload hash, a wrong state. Present only when state is refused."
+    }
+  },
+  "if": {
+    "properties": {
+      "state": {
+        "const": "refused"
+      }
+    },
+    "required": [
+      "state"
+    ]
+  },
+  "then": {
+    "required": [
+      "reason"
+    ],
+    "not": {
+      "required": [
+        "result"
+      ]
+    }
+  },
+  "else": {
+    "required": [
+      "result"
+    ],
+    "not": {
+      "required": [
+        "reason"
+      ]
+    }
+  }
+}

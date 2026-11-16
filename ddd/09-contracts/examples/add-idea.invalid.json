@@ -3,13 +3,22 @@
     "why": "an idea with empty text has nothing to clarify",
     "payload": {
       "text": "",
-      "idempotency_key": "add-idea-7f3a9c2e"
+      "request_id": "add-idea-7f3a9c2e",
+      "operator_token": "c2f81d9a4b7e"
     }
   },
   {
-    "why": "every command channel request and request file carries idempotency_key, so a retry or a re-read request file has no second effect",
+    "why": "every operator request carries request_id, its idempotency key, so a retry or a re-read request file has no second effect (A24)",
     "payload": {
-      "text": "Retry sync with backoff and log each retry"
+      "text": "Retry sync with backoff and log each retry",
+      "operator_token": "c2f81d9a4b7e"
+    }
+  },
+  {
+    "why": "every operator request carries the operator token; fleetd refuses one without it (SR-8, A35)",
+    "payload": {
+      "text": "Retry sync with backoff and log each retry",
+      "request_id": "add-idea-7f3a9c2e"
     }
   }
 ]

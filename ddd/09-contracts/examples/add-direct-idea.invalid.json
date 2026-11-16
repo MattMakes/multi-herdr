@@ -3,14 +3,24 @@
     "why": "a ticket is a Markdown file in format C1",
     "payload": {
       "ticket_file": "ticket.txt",
-      "idempotency_key": "add-direct-idea-7f3a9c2e"
+      "request_id": "add-direct-idea-7f3a9c2e",
+      "operator_token": "c2f81d9a4b7e"
     }
   },
   {
-    "why": "every command channel request and request file carries idempotency_key, so a retry or a re-read request file has no second effect",
+    "why": "every operator request carries request_id, its idempotency key, so a retry or a re-read request file has no second effect (A24)",
     "payload": {
       "ticket_file": "docs/tickets/sync/01-backoff.md",
-      "feature_id": "F-0003"
+      "feature_id": "F-0003",
+      "operator_token": "c2f81d9a4b7e"
+    }
+  },
+  {
+    "why": "every operator request carries the operator token; fleetd refuses one without it (SR-8, A35)",
+    "payload": {
+      "ticket_file": "docs/tickets/sync/01-backoff.md",
+      "feature_id": "F-0003",
+      "request_id": "add-direct-idea-7f3a9c2e"
     }
   }
 ]

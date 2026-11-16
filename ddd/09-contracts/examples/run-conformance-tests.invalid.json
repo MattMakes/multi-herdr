@@ -1,0 +1,15 @@
+[
+  {
+    "why": "the conformance job is keyed by the CLI and its version; a job with no version has no key",
+    "payload": {
+      "cli": "codex"
+    }
+  },
+  {
+    "why": "a CLI name is not empty",
+    "payload": {
+      "cli": "",
+      "version": "0.52.0"
+    }
+  }
+]
