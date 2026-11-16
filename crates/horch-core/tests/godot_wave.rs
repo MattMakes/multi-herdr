@@ -584,7 +584,11 @@ fn gdw_13_every_godot_seat_names_its_library_shelves_high_in_its_briefing() {
         let rules = body
             .find("Standing rules for Godot work")
             .unwrap_or_else(|| panic!("{}: no standing rules", t.name));
-        assert!(block < rules, "{}: the library block is below the rules", t.name);
+        assert!(
+            block < rules,
+            "{}: the library block is below the rules",
+            t.name
+        );
         assert_eq!(
             body[..block].trim_end().matches("\n\n").count(),
             0,
