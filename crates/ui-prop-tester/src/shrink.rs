@@ -21,7 +21,7 @@ struct Search<'a> {
 }
 
 enum Attempt {
-    Reproduced(Trace),
+    Reproduced(Box<Trace>),
     Missed(String),
     Invalid(String),
 }
@@ -35,7 +35,7 @@ impl Search<'_> {
         match &report.failure {
             Some(Failure::Divergence(message)) => Attempt::Invalid(message.clone()),
             Some(failure) => Attempt::Missed(failure.message()),
-            None if report.violated(self.property) => Attempt::Reproduced(report.trace),
+            None if report.violated(self.property) => Attempt::Reproduced(Box::new(report.trace)),
             None => Attempt::Missed(format!("{} held", self.property)),
         }
     }
@@ -43,7 +43,7 @@ impl Search<'_> {
     fn confirm(&self, actions: &[Action]) -> Option<Trace> {
         for _ in 0..self.confirmation_runs_max.max(1) {
             match self.replay(actions) {
-                Attempt::Reproduced(trace) => return Some(trace),
+                Attempt::Reproduced(trace) => return Some(*trace),
                 Attempt::Invalid(_) => return None,
                 Attempt::Missed(_) => {}
             }
@@ -142,7 +142,7 @@ pub fn run(
         match search.replay(&original) {
             Attempt::Reproduced(trace) => {
                 if best.is_none() {
-                    best = Some(trace);
+                    best = Some(*trace);
                 }
             }
             Attempt::Missed(why) | Attempt::Invalid(why) => {
@@ -208,7 +208,7 @@ pub fn run(
     let best = match best {
         Some(trace) => trace,
         None => match search.replay(&current) {
-            Attempt::Reproduced(trace) => trace,
+            Attempt::Reproduced(trace) => *trace,
             Attempt::Missed(why) | Attempt::Invalid(why) => {
                 return fail(
                     io,

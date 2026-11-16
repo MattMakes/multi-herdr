@@ -129,11 +129,11 @@ fn lex(source: &str) -> Result<Vec<Token>, String> {
             position += rest.find('\n').unwrap_or(rest.len());
             continue;
         }
-        if rest.starts_with("/*") {
-            let end = rest[2..]
+        if let Some(body) = rest.strip_prefix("/*") {
+            let end = body
                 .find("*/")
                 .ok_or_else(|| "a block comment is not closed".to_string())?;
-            if rest[..end + 2].contains('\n') {
+            if body[..end].contains('\n') {
                 newline_before = true;
             }
             position += end + 4;

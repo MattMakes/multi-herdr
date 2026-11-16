@@ -1,6 +1,6 @@
 mod engine_harness;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use engine_harness::{fake, names, run, Workspace, MACHINE};
 use ui_prop_tester::fake::FakeDrivers;
@@ -20,7 +20,13 @@ fn failing_trace(
         let mut args = vec!["--actions-max", "60", "--seed", seed_text.as_str()];
         args.extend_from_slice(extra);
         let (outcome, trace) = workspace.test(drivers, &spec, &args);
-        if outcome.code == 2 && trace.actions().len() > 4 {
+        let every_property_failed = trace.violated_properties().len()
+            == trace
+                .header
+                .specification
+                .as_ref()
+                .map_or(0, |spec| spec.source.matches("always(").count());
+        if outcome.code == 2 && trace.actions().len() > 4 && every_property_failed {
             let path = workspace.path("failing.trace");
             std::fs::rename(workspace.path("run.trace"), &path).unwrap();
             return path;
@@ -31,8 +37,8 @@ fn failing_trace(
 
 fn shrink(
     drivers: &FakeDrivers,
-    input: &PathBuf,
-    output: &PathBuf,
+    input: &Path,
+    output: &Path,
     extra: &[&str],
 ) -> engine_harness::Outcome {
     let input = input.to_string_lossy().into_owned();
