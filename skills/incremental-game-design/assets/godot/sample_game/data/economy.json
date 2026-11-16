@@ -1,0 +1,23 @@
+{
+  "base_income": 0.5,
+  "click": {
+    "power": 1.0,
+    "rate_seconds": 0.05,
+    "hold_power": 0.5
+  },
+  "reset": {
+    "unlock_at": 700000,
+    "need_light": 3000000,
+    "gain_div": 1000000,
+    "gain_exp": 0.25,
+    "bonus_per_ember": 0.5
+  },
+  "auto_buy": {
+    "target": "candle",
+    "unlock_at": 30000000
+  },
+  "offline": {
+    "rate": 0.5,
+    "cap_minutes": 20
+  }
+}

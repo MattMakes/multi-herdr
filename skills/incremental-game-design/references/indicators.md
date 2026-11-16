@@ -34,9 +34,10 @@ minute keeps rising, `eager` and `patient` never reset. The script warns about t
 `--profile doubler` for such a game. A game with no reset, or with a fixed run length, runs
 one profile.
 
-The simulation does not model: skill, luck (model a drop as its mean rate), an offline cap,
-a second reset layer, or boredom. It models time away only when the model sets
-`away_minutes`.
+The simulation does not model: skill, luck (model a drop as its mean rate), a second reset
+layer, or boredom. The version 1 run models time away only when the model sets
+`away_minutes`, and it ignores an offline cap. The players (see "Player indicators") model
+visits, the open and closed states, an offline cap, a bank, and active-only income.
 
 ## Pacing indicators
 
@@ -186,6 +187,91 @@ curve that is flat at the start means a slow first hour. A curve that reaches it
 20% of the game means nothing new for the remaining 80%: check that chains, tiers, or cap
 raisers fill that time.
 
+## Player indicators
+
+These indicators come from the players of `--players` (model-schema.md, "Players"). The
+workbook shows them on the Players sheet and the Presence sheet, and the Dashboard shows a
+block of band rows under the pacing chart. A model with no `game.presence` and no
+`game.targets` runs no player by default.
+
+The **progress axis** is the ladder of `game.progress_axis`. A player **finishes** when it
+reaches the last step of the axis. **Wall time** is real time, with the time away. **Active
+time** is the time that the player is present.
+
+**Players sheet.** 1 row for each player: its rules, the wall hours and the active
+minutes to 25%, 50%, 75%, and the end of the axis, its visits, its resets, and its last axis
+step. For a player who is present all the time, "Visits" counts the moments with a purchase
+or a reset. "n/a" means that the player did not reach that point.
+
+**Idle value (rho, law L4).** The axis rate of the player who visits each T hours, divided by
+the axis rate of active_greedy. The axis rate is axis steps for each wall hour, to the end of
+the axis or to the end of the run. A value near 1 means that idle play is as fast as active
+play. A value near 0 means that the game is an active game. The idle value needs the player
+of that wait: `fast` runs only open 8 h and closed 24 h.
+
+**Idle gain.** The script stops active_greedy when the axis first reaches 25% of its count.
+From that state, 1 wait of T hours and 1 visit with no reset give a rise of the current axis
+step. The gain is that rise, for each T of 1, 8, 24, and 168 hours, open and closed. The sheet
+also gives the gain of active_greedy in the same time. **Gain for each doubling** is
+(gain at 8 h - gain at 1 h) / 3. A healthy idle game gains about 1 step for each doubling of
+the wait (Moss Works: 1.00).
+
+**Growth slope.** For each hour of active_greedy: log10 of the main income, the axis step, and
+the change of each from the hour before. 3 values come from it:
+
+1. **Unlocks in the first hour**: axis steps in hour 1.
+2. **Unlocks for each later hour**: the median of the steps in each later full hour.
+3. **Length**: hours of active_greedy to the end of the axis.
+
+**Policy gap (law L6).** The time of early_reset (G >= 1 x L) to the highest axis step that both
+reset players reach, divided by the time of patient_reset (G >= 10 x L). A value above 1 means
+that patience pays. A value near 1 means that the reset rule does not matter. A large value
+means that a player who resets early loses a lot of time with no warning from the game.
+
+**Speed test (law L9).** A play-test build runs the game clock k times faster. A human still
+needs about 2 real seconds for each decision, so each decision waits 2k game seconds. The
+slow-down is the game time of that player to the common axis step, divided by the time of
+active_greedy (1 decision each game second). The **largest speed** is the largest tested speed
+with a slow-down under 1.1 at each lower speed. Above it, a play test at speed k gives times
+that are too long. The reset choices can make the slow-down not monotone in k.
+
+**Lines that no player buys.** The purchase lines that no player bought, and the lines that
+only 1 player bought, with its name. Such a line is dead content for most play styles.
+
+**Unbounded lines and currencies.** A line with an exponential cost, no `max_level`, and
+r >= 1 is unbounded. r = ln(best mult of the line) / ln(cost growth). When r >= 1, each level
+pays for the next one at the same rate or faster, and the line can grow without end. An
+unbounded currency is a currency whose sinks all have no cap.
+
+**Default bands.**
+
+| Indicator | Default band | Out of band means |
+| --- | --- | --- |
+| Idle value, each state and wait | 0 to 1 | A value above 1: idle play is faster than active play |
+| Idle gain, open and closed | above 0 and rising with the wait | A longer wait gives no more progress: the time away has no value |
+| Policy gap | 0 to 2 | The early reset player is more than 2 times slower |
+| Slow-down at the play-test speed | 0 to 1.1 | A play test at that speed gives times that are too long |
+| Unlocks in the first hour, unlocks for each later hour, length | no default | Set a target |
+
+A model with `game.play_pattern` `continuous` has no closed state: the players, the idle curve
+and the bands leave out each closed-game player and each closed-idle band, and the output states
+it in 1 line (`LEFT OUT:`). A missing closed row is not a failure.
+
+A target in `game.targets` replaces the default band. Each band row has a status: "in band",
+"out of band", "not run" (the player of the indicator did not run), or "no target" (no target
+and no default band). The Dashboard shows the rows that are in band or out of band, with the
+status LOW, HIGH, or OK.
+
+**Presence sheet.** The tables, in order:
+
+1. Bands: each indicator, its value, its band, the source of the band, and its status.
+2. Idle curve: the idle value, the idle gain, the gain of active_greedy, and the ratio of the 2
+   gains, for each state and wait.
+3. Growth slope of active_greedy for each hour.
+4. Policy gap: the 2 times and the axis step.
+5. Speed test: each speed, the decision gap in game seconds, and the slow-down.
+6. Lines and currencies: the lines that no player buys, and the unbounded lines and currencies.
+
 ## From indicators to a verdict
 
 Give a verdict for each of the four review areas. Name the evidence for each one.
@@ -195,7 +281,7 @@ Give a verdict for each of the four review areas. Name the evidence for each one
 | Balance | Walls, Curves, Purchases (payback, share of spending), Prestige, Ledger, Sensitivity |
 | Scope | Systems count, Swimlane, purchases never bought, stall or end of content against the target length |
 | Juice | Beats without feedback in the code (see godot-extraction.md), beat weights against what the game shows |
-| Feel | Robust lulls, dead zones, stacked beats, sessions with no beat, options within 5 minutes, the Target curve |
+| Feel | Robust lulls, dead zones, stacked beats, sessions with no beat, options within 5 minutes, the Target curve, the idle value, the policy gap |
 
 Success targets for a build: write them as indicator values, for example "first new system
 before minute 10, no lull before hour 3, each session in the first 5 hours has a beat, each

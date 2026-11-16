@@ -1,0 +1,27 @@
+{
+ "designer_answered": true,
+ "starter_set": "K9",
+ "selected": [],
+ "refused": [
+  "S08",
+  "S10",
+  "S11",
+  "S12",
+  "S13",
+  "S18",
+  "S19",
+  "S20",
+  "S21",
+  "S22",
+  "S23",
+  "S25",
+  "S26",
+  "S27",
+  "S29",
+  "S30"
+ ],
+ "notes": [
+  "Starter set K9: 1 long run with no reset layer and a hard end. The designer confirmed each answer of the set in 1 question (interview section 3).",
+  "S24 does not run while the game is closed (decision D5)."
+ ]
+}

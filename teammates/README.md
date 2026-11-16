@@ -337,18 +337,24 @@ least 3 rounds of render, look and fix before `DONE:`.
 
 | teammate | phase | agent, model, effort | fallback | use for |
 |---|---|---|---|---|
-| `game-design-incremental-specialist` | plan | claude, opus, high | `codex-sol` | progression of incremental, idle and upgrade-driven games: review a build, design the math of a new game, design core and meta loops, propose and prove new systems |
+| `game-design-incremental-specialist` | plan | claude, opus, high | `codex-sol` | the math of incremental, idle and upgrade-driven games: design and prove a new game, rebalance a built game with the smallest change, add a system, install the tuning bench; says "not ready" when the proof fails |
 
 It carries `incremental-game-design` and names `game-juice`,
 `godot-economy-system` and `godot-gameplay-loops`. A Godot project adds
 `godot-balance-model-data`, `godot-upgrade-tree-design` and
 `godot-bot-balance-loop` through `skills_when`. It is offered in every
 project, because it also works from a design document or an idea before any
-project file exists. It reads a Godot project and does not run the engine, so
-it `requires:` nothing; the skill's scripts need `python3` and `openpyxl`.
-It writes a report, model JSON files and pacing workbooks (.xlsx) to the
-folder the task names, or `ai_docs/progression/<game>/`, and changes no game
-file unless the task says so. For a full juice pass it points the
+project file exists. The design, the proof and the scan of a Godot project
+need no engine, so it `requires:` nothing; the skill's scripts need `python3`,
+and the workbook needs `openpyxl`. Only the tuning bench runs Godot, and only
+when the task asks for it. It has no question tool: it sends the interview
+(play pattern, targets, systems, content) to the orchestrator in groups of 4
+questions or fewer, and the orchestrator asks the operator. It writes a
+report, a model, a proof file and pacing workbooks (.xlsx) to the folder the
+task names, or `ai_docs/progression/<game>/`, and changes no game file unless
+the task says so. A game build needs a design task for this seat before the
+specification, and a balance task for it after the build. Do not build from a
+design whose verdict is "not ready". For a full juice pass it points the
 orchestrator at `game-design-juicer`.
 
 ## The incremental game reviewer
