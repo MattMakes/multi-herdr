@@ -15,12 +15,15 @@ fn raw(pid: u32) -> Option<i32> {
     i32::try_from(pid).ok().filter(|p| *p > 0)
 }
 
-/// The start time of process `pid`. `None` when no process has the pid.
+/// The start time of process `pid`. `None` when no process has the pid,
+/// and also when the process exists but the OS query fails. `None` does
+/// not prove that the process is dead: use [`alive`] for that.
 pub fn start_time(pid: u32) -> Option<u64> {
     os::start_time(raw(pid)?)
 }
 
-/// The start of process `pid` as a wall-clock time.
+/// The start of process `pid` as a wall-clock time. `None` in the same
+/// cases as [`start_time`].
 pub fn started_at(pid: u32) -> Option<SystemTime> {
     os::started_at(raw(pid)?)
 }
