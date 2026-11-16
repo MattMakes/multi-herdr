@@ -1024,8 +1024,8 @@ fn report_args(request: &report::Request) -> Vec<&str> {
 /// Serve the report socket of a `horch_access: report` pane for the life
 /// of its agent (`messaging::report`). This process is outside the
 /// agent's sandbox, so the request runs as `horch` with the brief's
-/// identity in `env`, never the pane's.
-#[cfg(unix)]
+/// identity in `env`, never the pane's. A host without local sockets
+/// refuses a `report` teammate.
 fn start_report_server(
     ctx: &RuntimeContext,
     brief: &Brief,
@@ -1039,20 +1039,19 @@ fn start_report_server(
     let env = env.to_vec();
     let exec: Box<report::Executor> =
         Box::new(move |request: &report::Request| run_horch_quiet(&env, &report_args(request)));
-    report::Server::start(path, report_target(brief), exec).map(Some)
+    match report::Server::start(path, report_target(brief), exec) {
+        Ok(server) => Ok(Some(server)),
+        Err(error) if not_supported(&error) => bail!("horch_access: report needs a Unix host"),
+        Err(error) => Err(error),
+    }
 }
 
-#[cfg(not(unix))]
-fn start_report_server(
-    _ctx: &RuntimeContext,
-    _brief: &Brief,
-    teammate: &Teammate,
-    _env: &[(String, String)],
-) -> Result<Option<()>> {
-    if teammate.horch_access == HorchAccess::Report {
-        bail!("horch_access: report needs a Unix host");
-    }
-    Ok(None)
+/// Whether `error` comes from a host without local sockets.
+fn not_supported(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
+        .any(report::is_not_supported)
 }
 
 /// Read the session id the launch recorded in the session ledger, and find

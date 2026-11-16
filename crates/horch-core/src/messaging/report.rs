@@ -19,25 +19,15 @@
 //! Every other verb or key, a line over the limit and an empty text are
 //! refused. The role and record come from the parent, never from the pane.
 
-#[cfg(unix)]
 use std::io::{BufRead, BufReader, Read, Write};
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
-#[cfg(unix)]
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-#[cfg(unix)]
 use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(unix)]
 use std::sync::Arc;
-#[cfg(unix)]
 use std::thread::JoinHandle;
-#[cfg(unix)]
 use std::time::Duration;
 
-#[cfg(unix)]
-use anyhow::Context;
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
+use horch_platform::ipc::{LocalListener, LocalStream};
 use serde::{Deserialize, Serialize};
 
 use super::brief::Brief;
@@ -53,7 +43,6 @@ pub const ENV: &str = "HORCH_REPORT_SOCKET";
 pub const MAX_REQUEST: usize = 16 * 1024;
 
 /// How long the server waits for 1 request line.
-#[cfg(unix)]
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The socket of the pane whose ledger record is `record_id`.
@@ -149,10 +138,9 @@ pub fn handle(line: &[u8], report_to: Option<&str>, exec: &Executor) -> Reply {
     }
 }
 
-#[cfg(unix)]
 /// Read 1 request line of at most [`MAX_REQUEST`] bytes plus its newline.
 /// A longer line comes back longer than the limit, so [`handle`] refuses it.
-fn read_request(stream: &UnixStream) -> std::io::Result<Vec<u8>> {
+fn read_request(stream: &LocalStream) -> std::io::Result<Vec<u8>> {
     let mut line = Vec::new();
     BufReader::new(stream.take(MAX_REQUEST as u64 + 2)).read_until(b'\n', &mut line)?;
     if line.last() == Some(&b'\n') {
@@ -161,9 +149,8 @@ fn read_request(stream: &UnixStream) -> std::io::Result<Vec<u8>> {
     Ok(line)
 }
 
-#[cfg(unix)]
-fn serve_one(stream: UnixStream, report_to: Option<&str>, exec: &Executor) {
-    let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
+fn serve_one(stream: LocalStream, report_to: Option<&str>, exec: &Executor) {
+    let _ = stream.set_read_timeout(READ_TIMEOUT);
     let reply = match read_request(&stream) {
         Ok(line) => handle(&line, report_to, exec),
         Err(e) => Reply::refused(format!("reading the request: {e}")),
@@ -174,14 +161,12 @@ fn serve_one(stream: UnixStream, report_to: Option<&str>, exec: &Executor) {
 }
 
 /// The parent's socket server. It stops and removes the socket on drop.
-#[cfg(unix)]
 pub struct Server {
     path: PathBuf,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
 
-#[cfg(unix)]
 impl Server {
     /// Bind `path` (mode 0600, in a 0700 folder) and serve it on a thread,
     /// 1 connection at a time.
@@ -192,13 +177,14 @@ impl Server {
             std::fs::remove_file(&path)
                 .with_context(|| format!("removing the old socket {}", path.display()))?;
         }
-        let listener = UnixListener::bind(&path)
+        let listener = LocalListener::bind(&path)
             .with_context(|| format!("binding the report socket {}", path.display()))?;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        horch_platform::fs::set_mode(&path, 0o600)?;
         let stop = Arc::new(AtomicBool::new(false));
         let flag = stop.clone();
         let thread = std::thread::spawn(move || {
-            for stream in listener.incoming() {
+            loop {
+                let stream = listener.accept();
                 if flag.load(Ordering::SeqCst) {
                     break;
                 }
@@ -219,12 +205,11 @@ impl Server {
     }
 }
 
-#[cfg(unix)]
 impl Drop for Server {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
         // Wake the blocked accept, so the thread sees the flag.
-        let _ = UnixStream::connect(&self.path);
+        let _ = LocalStream::connect(&self.path);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -232,19 +217,16 @@ impl Drop for Server {
     }
 }
 
-/// Send 1 request to the socket at `path` and return the server's answer
-/// as a result.
-#[cfg(not(unix))]
-pub fn send(_path: &Path, _request: &Request) -> Result<()> {
-    bail!("the report socket needs a Unix host")
-}
-
-/// Send 1 request to the socket at `path` and return the server's answer
-/// as a result.
-#[cfg(unix)]
+/// On a host without local sockets it refuses with the error of today.
 pub fn send(path: &Path, request: &Request) -> Result<()> {
-    let mut stream = UnixStream::connect(path)
-        .with_context(|| format!("connecting to the report socket {}", path.display()))?;
+    let mut stream = match LocalStream::connect(path) {
+        Ok(stream) => stream,
+        Err(error) if is_not_supported(&error) => bail!("the report socket needs a Unix host"),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("connecting to the report socket {}", path.display()))
+        }
+    };
     let mut line = serde_json::to_vec(request)?;
     if line.len() > MAX_REQUEST {
         bail!("the text is over {MAX_REQUEST} bytes; send a shorter text");
@@ -267,6 +249,14 @@ pub fn send(path: &Path, request: &Request) -> Result<()> {
         None if reply.ok => Ok(()),
         error => bail!("{}", error.unwrap_or_else(|| "refused".into())),
     }
+}
+
+/// Whether `error` is the [`horch_platform::NotSupported`] of a host
+/// without local sockets.
+pub(crate) fn is_not_supported(error: &std::io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|inner| inner.is::<horch_platform::NotSupported>())
 }
 
 #[cfg(test)]
