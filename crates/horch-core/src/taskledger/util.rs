@@ -92,6 +92,8 @@ pub fn record_refusal_after_rollback(conn: &Connection, err: &anyhow::Error) {
         let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
         if ledger::record_refused(&tx, refused, &NeedsYouList)? {
             tx.commit()?;
+        } else if matches!(refused, DoorError::Refused { .. }) {
+            anyhow::bail!("the row changed after the rollback");
         }
         Ok(())
     };

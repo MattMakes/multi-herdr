@@ -209,8 +209,9 @@ fn state_of(tx: &Connection, entity: Entity, id: &str) -> Result<String, DoorErr
 }
 
 /// Record the refused move of `err` in `tx`, as [`transition`] does: for a
-/// caller whose transaction rolled back. `false` when `err` is not
-/// [`DoorError::Refused`].
+/// caller whose transaction rolled back. `false`, with no write, when `err`
+/// is not [`DoorError::Refused`] or the row is no longer in its `from`
+/// state.
 pub fn record_refused(
     tx: &Connection,
     err: &DoorError,
@@ -227,6 +228,12 @@ pub fn record_refused(
     else {
         return Ok(false);
     };
+    // Another writer can move the row between the rollback and `tx`. The
+    // event then names a state that the row no longer has, so it is not
+    // written (review F4).
+    if door::state_of(tx, *entity, id)?.as_deref() != Some(from.as_str()) {
+        return Ok(false);
+    }
     let cause = Cause {
         actor: *actor,
         text: cause,

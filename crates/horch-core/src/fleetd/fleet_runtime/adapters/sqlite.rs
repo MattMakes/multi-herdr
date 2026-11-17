@@ -158,7 +158,9 @@ pub fn append_event(tx: &Connection, e: &Event<'_>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fleetd::fleet_runtime::application::ledger::{transition, Cause, DoorError, Moved};
+    use crate::fleetd::fleet_runtime::application::ledger::{
+        record_refused, transition, Cause, DoorError, Moved,
+    };
     use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
     use crate::fleetd::ideas::application::needs_you::NeedsYouList;
     use crate::taskledger::model::Actor;
@@ -429,6 +431,50 @@ mod tests {
             Moved::Unchanged
         );
         assert!(events(l.conn(), Entity::Task, &task).is_empty());
+    }
+
+    /// The refused move queued -> landing of `task`, from a transaction
+    /// that rolls back.
+    fn rolled_back_refusal(l: &Ledger, task: &str) -> DoorError {
+        let tx =
+            Transaction::new_unchecked(l.conn(), rusqlite::TransactionBehavior::Immediate).unwrap();
+        let err = move_row(&tx, None, Entity::Task, task, "landing", cause("test")).unwrap_err();
+        drop(tx);
+        err
+    }
+
+    /// `record_refused` in its own transaction.
+    fn record(l: &Ledger, err: &DoorError) -> bool {
+        let tx =
+            Transaction::new_unchecked(l.conn(), rusqlite::TransactionBehavior::Immediate).unwrap();
+        let wrote = record_refused(&tx, err, &NeedsYouList).unwrap();
+        tx.commit().unwrap();
+        wrote
+    }
+
+    #[test]
+    fn a_refusal_is_recorded_after_its_rollback() {
+        let mut l = ledger();
+        let task = l.task(1);
+        let err = rolled_back_refusal(&l, &task);
+        assert!(open_items(l.conn()).is_empty(), "the rollback removed it");
+        assert!(record(&l, &err));
+        assert_eq!(open_items(l.conn()).len(), 1);
+        assert_eq!(events(l.conn(), Entity::Task, &task).len(), 1);
+    }
+
+    /// Review F4: the row moved after the rollback, so the refusal names a
+    /// state that the row no longer has. Nothing is written.
+    #[test]
+    fn a_refusal_of_a_row_that_moved_on_is_not_recorded() {
+        let mut l = ledger();
+        let task = l.task(1);
+        let err = rolled_back_refusal(&l, &task);
+        l.moved(Entity::Task, &task, "running").unwrap();
+        assert!(!record(&l, &err));
+        assert!(open_items(l.conn()).is_empty());
+        let events = events(l.conn(), Entity::Task, &task);
+        assert!(events.iter().all(|e| e.1 != "landing"), "{events:?}");
     }
 
     #[test]
