@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+## v0.5.0 - 2026-11-17
+
 - New tool and skill `ui-prop-tester`: it walks a web page (in Chromium) or a
   terminal program (in a pseudo-terminal) with seeded random clicks, keys and
   navigation, and checks rules you write (`always`, `eventually`, `next`,
