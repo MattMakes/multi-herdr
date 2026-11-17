@@ -240,6 +240,7 @@ impl ExecutionService<'_> {
             report_to: plan.report_to,
             worker_id: None,
             ledger_db: None,
+            fleet_root: Some(ctx.paths.fleet_root.to_string_lossy().into_owned()),
             controller: plan.controller.clone(),
         };
         brief.set_overrides(ctx.bins.overrides.clone());

@@ -875,6 +875,16 @@ impl WorkerSteps for PaneWorker<'_> {
                 .unwrap_or(Path::new(""))
                 .join("fleet");
         }
+        // The fleet root the spawner resolved wins: it can have an explicit
+        // `FLEET_ROOT` that is not beside its ledger. The brief is a file a
+        // worker can read, so only an absolute path is a path the spawner
+        // wrote.
+        if let Some(root) = &brief.fleet_root {
+            if !Path::new(root).is_absolute() {
+                bail!("the brief fleet root '{root}' is not absolute");
+            }
+            self.ctx.paths.fleet_root = PathBuf::from(root);
+        }
         if let Some(id) = &brief.worker_id {
             self.ledger = Some((self.ctx.paths.ledger_db.clone(), id.clone()));
         }
@@ -1539,6 +1549,7 @@ mod tests {
             report_to,
             worker_id: None,
             ledger_db: None,
+            fleet_root: None,
             controller: None,
         }
     }
@@ -1639,6 +1650,7 @@ mod tests {
             report_to: crate::execution::ReportTarget::Orchestrator,
             worker_id: None,
             ledger_db: None,
+            fleet_root: None,
             controller: None,
         };
         let mut env = MapEnv::new("/");
@@ -2062,6 +2074,7 @@ mod tests {
                     report_to: ReportTarget::Orchestrator,
                     worker_id: None,
                     ledger_db: None,
+                    fleet_root: None,
                     controller: None,
                 }
             }
@@ -2533,6 +2546,48 @@ mod tests {
             assert_eq!(
                 ctx.paths.fleet_root,
                 tmp.path().join("isolated").join("fleet")
+            );
+        }
+
+        /// A spawner with an explicit `FLEET_ROOT` that is not beside its
+        /// ledger: the worker uses the fleet root of the spawner.
+        #[test]
+        fn a_brief_fleet_root_wins_over_the_folder_beside_the_ledger() {
+            let tmp = tempfile::tempdir().unwrap();
+            let ledger = tmp.path().join("isolated").join("ledger.sqlite3");
+            let root = tmp.path().join("elsewhere").join("my-fleet");
+            let spawner = RuntimeContext::from_env(
+                &MapEnv::new(tmp.path().join("home"))
+                    .with("HORCH_LEDGER_DB", &ledger.to_string_lossy())
+                    .with("FLEET_ROOT", &root.to_string_lossy()),
+            )
+            .unwrap();
+            let mut ctx = RuntimeContext::from_env(&MapEnv::new(tmp.path().join("home"))).unwrap();
+            let enter_dir = |_: &Path| -> Result<()> { Ok(()) };
+            let mut worker = PaneWorker::new(&mut ctx, "sonnet-1", &enter_dir);
+            let mut brief = Steps::brief();
+            brief.project_dir = tmp.path().to_string_lossy().into_owned();
+            brief.ledger_db = Some(ledger.to_string_lossy().into_owned());
+            brief.fleet_root = Some(spawner.paths.fleet_root.to_string_lossy().into_owned());
+            worker.enter_context(&brief).unwrap();
+            assert_eq!(ctx.paths.fleet_root, root);
+        }
+
+        /// The brief is a file a worker can read: a relative fleet root is
+        /// not a path the spawner wrote, so the worker refuses it.
+        #[test]
+        fn a_relative_brief_fleet_root_is_refused() {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut ctx = RuntimeContext::from_env(&MapEnv::new(tmp.path().join("home"))).unwrap();
+            let enter_dir = |_: &Path| -> Result<()> { Ok(()) };
+            let mut worker = PaneWorker::new(&mut ctx, "sonnet-1", &enter_dir);
+            let mut brief = Steps::brief();
+            brief.project_dir = tmp.path().to_string_lossy().into_owned();
+            brief.fleet_root = Some("fleet".into());
+            let e = worker.enter_context(&brief).unwrap_err();
+            assert_eq!(
+                e.to_string(),
+                "the brief fleet root 'fleet' is not absolute"
             );
         }
 

@@ -86,6 +86,11 @@ pub struct Brief {
     /// (`HORCH_LEDGER_DB`). A pane does not inherit the variable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ledger_db: Option<String>,
+    /// The fleet root the spawner resolved, an absolute path. A pane does
+    /// not inherit `FLEET_ROOT`. A brief without the key uses the folder
+    /// `fleet` beside its ledger.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fleet_root: Option<String>,
     /// The role that spawned this worker under its `spawn_only` (the
     /// skill-importer controller). A `report` pane may `tell` only this role.
     /// `horch done` still reports as `report_to` says.
@@ -247,6 +252,7 @@ mod tests {
             report_to: crate::execution::ReportTarget::Orchestrator,
             worker_id: None,
             ledger_db: None,
+            fleet_root: None,
             controller: None,
         }
     }
