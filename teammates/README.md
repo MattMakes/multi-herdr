@@ -100,6 +100,9 @@ role. Skills are discovered by each harness and read only when relevant.
 `patch-around-audit`: it finds code that was patched around a stale comment,
 test or core flaw, reports each site with its evidence, and fixes the root
 cause when its task says so. It audits by default and keeps Edit for the fix.
+`qa-engineer` and `frontend-developer` name `ui-prop-tester` under
+`available_skills`: property-based random walks over a web page or a terminal
+program, with replay and shrinking of each failure.
 Claude specialists set `inherit_plugins: false` to switch off globally enabled
 plugins while preserving other operator settings and their declared MCP tools.
 

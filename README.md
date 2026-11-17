@@ -1125,6 +1125,28 @@ team, how to refresh a copied skill and what `horch agent-list` shows. [docs/REA
 contributor handbook, including the gate rules: never run the gate under
 `git rebase -x`, and run it through the slot wrapper when other gates run.
 
+## ui-prop-tester: property testing for web and terminal UIs
+
+`ui-prop-tester` is a second binary in this workspace (`crates/ui-prop-tester`).
+It walks a web page in Chromium or a program in a pseudo-terminal with seeded
+random actions and checks temporal properties after every step. It is not
+part of a horch release archive; build it from a checkout:
+
+```bash
+cargo install --path crates/ui-prop-tester
+ui-prop-tester browser test --headless --time-limit 60s --output-path run.trace http://localhost:3000
+ui-prop-tester terminal test --actions-max 200 --output-path repl.trace python3 -q
+ui-prop-tester trace run.trace
+ui-prop-tester browser shrink --trace run.trace --output-path min.trace
+```
+
+Exit 0 means no violation within the limits, 1 an operational error, 2 a
+property violation. The bundled `ui-prop-tester` skill
+([skills/ui-prop-tester/SKILL.md](skills/ui-prop-tester/SKILL.md)) teaches
+agents the workflow and the specification API; `qa-engineer` and
+`frontend-developer` can load it. The behaviour spec is
+[docs/specs/ui-prop-tester.md](docs/specs/ui-prop-tester.md).
+
 ## Keeping the docs current
 
 `herdr-docs/` is a mirror of <https://herdr.dev/docs/>. Refresh it any time:

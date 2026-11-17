@@ -19,7 +19,7 @@ compact_at: 300000
 permission_mode: auto
 inherit_plugins: false
 skills: [tdd, ui-taste, design-system]
-available_skills: [codebase-design]
+available_skills: [codebase-design, ui-prop-tester]
 
 # Playwright drives the page; chrome-devtools inspects what the page actually
 # did - DOM, network, console, performance traces. context7 pulls current

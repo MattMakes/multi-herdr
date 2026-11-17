@@ -7,6 +7,7 @@ members = [
     "crates/horch-e2e",
     "crates/herdr-install",
     "crates/herdr-docs-sync",
+    "crates/ui-prop-tester",
 ]
 
 [workspace.package]
