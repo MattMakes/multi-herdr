@@ -42,7 +42,7 @@ use crate::fleetd::fleet_runtime::application::holds::record_hold_changes;
 use crate::fleetd::fleet_runtime::application::jobs::{
     self, JobCtx, JobRunner, NeedsYouItems, NewItem,
 };
-use crate::fleetd::fleet_runtime::application::ledger::{transition, Cause, DoorError};
+use crate::fleetd::fleet_runtime::application::ledger::DoorError;
 use crate::fleetd::fleet_runtime::domain::budget::{Cursor, Deadline, PassBudget, ScanKind};
 use crate::fleetd::fleet_runtime::domain::clock::{AwakeReading, FleetSeconds};
 use crate::fleetd::fleet_runtime::domain::config::FleetConfig;
@@ -58,9 +58,8 @@ use crate::fleetd::task_execution::application::commands;
 use crate::fleetd::task_execution::domain::task::{
     AttemptRow, AttemptState, Facts, Reap, Recorded, RowRef, Rows, Seen, Stop, Target,
 };
-use crate::fleetd::worker_profiles::application::ports::ProcessHost;
+use crate::fleetd::worker_profiles::application::ports::{LaunchSpec, ProcessHost};
 use crate::runtime::fault::Faults;
-use crate::taskledger::model::Actor;
 use crate::taskledger::util;
 
 /// After the first full pass, the next pass sleeps for ever before its
@@ -95,11 +94,8 @@ pub trait Outside {
     /// worktree folders. The rows are not rows of fleet runtime.
     fn worktree_folders(&self, conn: &Connection) -> Result<Vec<FolderItem>>;
 
-    /// The process of the attempt `attempt` in `launching`.
-    fn attempt_spec(
-        &self,
-        attempt: &AttemptRow,
-    ) -> Result<crate::fleetd::worker_profiles::application::ports::LaunchSpec>;
+    /// The launch spec of the attempt `attempt` in `launching`.
+    fn attempt_spec(&self, attempt: &AttemptRow) -> Result<LaunchSpec>;
 }
 
 /// What the run duties see in part 2.
@@ -229,11 +225,28 @@ struct Read {
     task: Facts,
     /// The process of each `running` job, keyed by its id.
     jobs: Vec<ProcessFact>,
-    /// Each attempt in `launching`, with what part 1 saw of its row process
-    /// and of its launch.
-    launching: Vec<(AttemptRow, Proc, Option<Launch>)>,
+    /// Each attempt in `launching`, with what part 1 saw of it.
+    launching: Vec<Launching>,
     holds: Vec<Hold>,
     awake: AwakeReading,
+}
+
+/// 1 attempt in `launching`, as part 1 saw it.
+struct Launching {
+    row: AttemptRow,
+    /// The process that its row names.
+    row_process: Proc,
+    /// Its launch, with what part 1 saw of the launched process.
+    launch: Option<Launch>,
+    /// The process of its launch record.
+    launched: Option<Recorded>,
+}
+
+/// The items of the process scan, and which of them are job processes.
+struct ProcessItems {
+    items: Vec<ProcessItem>,
+    /// The keys of the job processes: the ids of their rows.
+    jobs: BTreeSet<String>,
 }
 
 /// The decisions of part 2.
@@ -254,8 +267,6 @@ pub struct Pass<'a> {
     launched: Vec<Child>,
     /// The global holds of the last pass.
     holds: Vec<Hold>,
-    /// The time of the polite stop of each process, on the fleet clock.
-    polite: BTreeMap<(u32, u64), FleetSeconds>,
     /// The needs-you keys of the breaches of the last pass.
     breaches: BTreeSet<String>,
     watch: Watch,
@@ -275,7 +286,6 @@ impl<'a> Pass<'a> {
             jobs: JobRunner::new(host),
             launched: Vec::new(),
             holds: Vec::new(),
-            polite: BTreeMap::new(),
             breaches: BTreeSet::new(),
             watch: Watch::new(),
             exe: effects::this_exe(),
@@ -339,31 +349,20 @@ impl<'a> Pass<'a> {
         let processes = process_items(&rows, &records, jobs::processes(conn)?);
         let outboxes = outbox_items(&root, &rows);
         let trees = self.ports.outside.worktree_folders(conn)?;
-        let watched: Vec<PathBuf> = outboxes
-            .iter()
-            .chain(&trees)
-            .map(|i| i.path.clone())
-            .collect();
-        self.watch.follow(&watched);
-        let mut changed = self.watch.changed();
-        if self.settings.faults.has(DROP_WATCH_EVENTS) {
-            changed.clear();
-        }
-
-        let budget_ms = self.settings.config.scan_budget_ms;
+        let changed = self.changed_folders(&outboxes, &trees);
         let mut cursors = Vec::new();
         let mut liveness = BTreeMap::new();
         for kind in ScanKind::ALL {
             let mut cursor = cursors_store::load(conn, kind.as_str(), &stamp)?;
             let start = (self.now)();
             let mut clock = ScanClock {
-                deadline: deadline.scan(start, budget_ms),
+                deadline: deadline.scan(start, self.settings.config.scan_budget_ms),
                 now: &mut *self.now,
                 stamp: &stamp,
             };
             match kind {
                 ScanKind::Processes => {
-                    let scan = scans::scan_processes(&processes, &mut cursor, &mut clock);
+                    let scan = scans::scan_processes(&processes.items, &mut cursor, &mut clock);
                     liveness.extend(scan.facts.into_iter().map(|f| (f.key, f.liveness)));
                 }
                 ScanKind::Outboxes => {
@@ -380,52 +379,34 @@ impl<'a> Pass<'a> {
             }
             cursors.push((kind, cursor));
         }
-
-        let seen = |r: Option<Recorded>| match r {
-            None => Proc::Absent,
-            Some(r) => match liveness.get(&process_key(r)) {
-                Some(Liveness::Alive) => Proc::Alive,
-                Some(Liveness::Dead) => Proc::Dead,
-                Some(Liveness::Unknown) | None => Proc::Unknown,
-            },
-        };
-        let task = Facts {
-            processes: rows
-                .named_processes()
-                .into_iter()
-                .map(|r| (r, to_seen(seen(Some(r)))))
-                .collect(),
-            panes: self.ports.outside.panes(),
-        };
-        let jobs = liveness
-            .iter()
-            .filter(|(k, _)| !k.starts_with(PROCESS_PREFIX))
-            .map(|(k, l)| ProcessFact {
-                key: k.clone(),
-                liveness: *l,
-            })
-            .collect();
-        let launching = rows
-            .attempts
-            .iter()
-            .filter(|a| a.state == AttemptState::Launching)
-            .map(|a| {
-                let launch = records.get(&a.id).map(|r| Launch {
-                    at: r.launched_at,
-                    process: seen(r.process),
-                });
-                (a.clone(), seen(a.process), launch)
-            })
-            .collect();
         Ok(Read {
             stamp,
             cursors,
-            task,
-            jobs,
-            launching,
+            task: Facts {
+                processes: task_processes(&rows, &liveness),
+                panes: self.ports.outside.panes(),
+            },
+            jobs: job_facts(&processes.jobs, &liveness),
+            launching: launching(&rows, &records, &liveness),
             holds: self.ports.outside.holds(),
             awake: clock_store::awake_now()?,
         })
+    }
+
+    /// Watch the outboxes and the worktree folders, and give the folders
+    /// that changed: the scans read them first.
+    fn changed_folders(&mut self, outboxes: &[FolderItem], trees: &[FolderItem]) -> Vec<PathBuf> {
+        let watched: Vec<PathBuf> = outboxes
+            .iter()
+            .chain(trees)
+            .map(|i| i.path.clone())
+            .collect();
+        self.watch.follow(&watched);
+        let changed = self.watch.changed();
+        if self.settings.faults.has(DROP_WATCH_EVENTS) {
+            return Vec::new();
+        }
+        changed
     }
 
     // ─── part 2 ─────────────────────────────────────────────────────────
@@ -479,38 +460,28 @@ impl<'a> Pass<'a> {
     }
 
     /// Each attempt in `launching`: a live process of its attempt id ->
-    /// `live`; no process past the start timeout -> `ended` with
-    /// `timed_out`; no launch yet -> an intended launch, returned.
+    /// `live`, with the process of its launch on its row; no process past
+    /// the start timeout -> `ended` with `timed_out`; no launch yet -> an
+    /// intended launch, returned.
     fn observe_intents(
         &self,
         tx: &Transaction<'_>,
-        launching: &[(AttemptRow, Proc, Option<Launch>)],
+        launching: &[Launching],
         clock: FleetSeconds,
     ) -> Result<Vec<AttemptRow>> {
         let mut launches = Vec::new();
-        for (a, row, launch) in launching {
+        for l in launching {
+            let a = &l.row;
             let state = door::state_of(tx, Entity::Attempt, &a.id)?;
             if state.as_deref() != Some(AttemptState::Launching.as_str()) {
                 continue;
             }
-            match observe_launch(*row, *launch, clock) {
+            match observe_launch(l.row_process, l.launch, clock) {
                 LaunchStep::Launch => launches.push(a.clone()),
                 LaunchStep::Wait => {}
                 LaunchStep::Live => {
-                    let cause = Cause {
-                        actor: Actor::Horch,
-                        text: "a live process has the attempt id",
-                    };
                     let guard = Some(self.settings.generation);
-                    transition(
-                        tx,
-                        guard,
-                        Entity::Attempt,
-                        &a.id,
-                        AttemptState::Live.as_str(),
-                        cause,
-                        self.ports.needs_you,
-                    )?;
+                    commands::attempt_live(tx, guard, &a.id, l.launched)?;
                 }
                 LaunchStep::TimedOut => {
                     let reap = Reap {
@@ -605,13 +576,13 @@ impl<'a> Pass<'a> {
             effects.push(Effect::Launch(a.clone()));
         }
         let due = jobs::due_to_start(tx, clock)?;
-        let ids: Vec<String> = due.iter().map(|j| format!("{:020}", j.id)).collect();
+        let ids: Vec<String> = due.iter().map(|j| job_cursor_key(j.id)).collect();
         for id in take(tx, JOB_STARTS, &ids, budget, stamp)? {
-            let job = due
+            let i = ids
                 .iter()
-                .find(|j| format!("{:020}", j.id) == id)
-                .expect("an id of the list");
-            effects.push(Effect::StartJob(job.clone()));
+                .position(|k| *k == id)
+                .expect("a key of the list");
+            effects.push(Effect::StartJob(due[i].clone()));
         }
         effects.sort_by_key(Effect::kind);
         Ok(effects)
@@ -647,14 +618,18 @@ impl<'a> Pass<'a> {
                 break;
             }
             let done = match e {
-                Effect::Stop(s) => self.stop(&s, clock, &mut in_grace),
+                Effect::Stop(s) => self.stop(&s, clock, &mut in_grace, &mut report),
                 Effect::StopJob(s) => jobs::stop(&s).then_some(Done::StopJob(s.job_id)),
                 Effect::Launch(a) => self.launch(&a, clock, &mut report),
                 Effect::StartJob(job) => self.start_job(conn, &job, clock, &mut report),
             };
             report.done.extend(done);
         }
-        self.polite.retain(|k, _| named.contains(k));
+        if let Err(e) = effects::forget_polite(&self.settings.fleet_root, &named) {
+            report
+                .failed
+                .push(format!("the records of polite stops: {e}"));
+        }
         report
     }
 
@@ -663,19 +638,37 @@ impl<'a> Pass<'a> {
         s: &Stop,
         clock: FleetSeconds,
         in_grace: &mut BTreeSet<RowRef>,
+        report: &mut PassReport,
     ) -> Option<Done> {
+        let root = &self.settings.fleet_root;
         match &s.target {
             Target::Process {
                 pid,
                 pid_start,
                 pgid,
             } => {
-                let key = (*pid, *pid_start);
+                let polite_at = match effects::read_polite(root, *pid, *pid_start) {
+                    Ok(at) => at,
+                    Err(e) => {
+                        in_grace.insert(s.row.clone());
+                        report
+                            .failed
+                            .push(format!("the stop of process {pid}: {e}"));
+                        return None;
+                    }
+                };
                 let grace = self.settings.config.stop_grace_s;
-                match stop_step(self.polite.get(&key).copied(), clock, grace) {
+                match stop_step(polite_at, clock, grace) {
                     StopStep::Polite => {
                         in_grace.insert(s.row.clone());
-                        self.polite.insert(key, clock);
+                        // The record comes first: a restart after the
+                        // signal still counts its grace.
+                        if let Err(e) = effects::write_polite(root, *pid, *pid_start, clock) {
+                            report
+                                .failed
+                                .push(format!("the stop of process {pid}: {e:#}"));
+                            return None;
+                        }
                         effects::stop_process(*pid, *pid_start, *pgid, false)
                             .then(|| Done::Stop(format!("process {pid}")))
                     }
@@ -690,7 +683,10 @@ impl<'a> Pass<'a> {
             Target::Pane(pane) if !in_grace.contains(&s.row) => {
                 match self.ports.outside.close_pane(pane) {
                     Ok(()) => Some(Done::Stop(format!("pane {pane}"))),
-                    Err(_) => None,
+                    Err(e) => {
+                        report.failed.push(format!("closing pane {pane}: {e:#}"));
+                        None
+                    }
                 }
             }
             Target::Pane(_) => None,
@@ -762,15 +758,75 @@ impl<'a> Pass<'a> {
     }
 }
 
-/// The key prefix of a recorded process in the process scan. A job process
-/// has the id of its row as its key.
-const PROCESS_PREFIX: &str = "p:";
-
+/// The key of a recorded process in the process scan. A job process has
+/// the id of its row as its key, so the 2 kinds of key never meet.
 fn process_key(r: Recorded) -> String {
     match r.pid_start {
-        Some(start) => format!("{PROCESS_PREFIX}{}:{start}", r.pid),
-        None => format!("{PROCESS_PREFIX}{}:-", r.pid),
+        Some(start) => format!("p:{}:{start}", r.pid),
+        None => format!("p:{}:-", r.pid),
     }
+}
+
+/// The key of a job in the cursor of the job starts: its id with 20 digits,
+/// so the order of the keys is the order of the ids.
+fn job_cursor_key(id: i64) -> String {
+    format!("{id:020}")
+}
+
+/// What the process scan saw of `r`.
+fn seen(liveness: &BTreeMap<String, Liveness>, r: Option<Recorded>) -> Proc {
+    let Some(r) = r else {
+        return Proc::Absent;
+    };
+    match liveness.get(&process_key(r)) {
+        Some(Liveness::Alive) => Proc::Alive,
+        Some(Liveness::Dead) => Proc::Dead,
+        Some(Liveness::Unknown) | None => Proc::Unknown,
+    }
+}
+
+/// The processes of the reap path: each process that a row names.
+fn task_processes(rows: &Rows, liveness: &BTreeMap<String, Liveness>) -> BTreeMap<Recorded, Seen> {
+    rows.named_processes()
+        .into_iter()
+        .map(|r| (r, to_seen(seen(liveness, Some(r)))))
+        .collect()
+}
+
+/// The facts of the job processes that the scan read.
+fn job_facts(jobs: &BTreeSet<String>, liveness: &BTreeMap<String, Liveness>) -> Vec<ProcessFact> {
+    jobs.iter()
+        .filter_map(|k| {
+            Some(ProcessFact {
+                key: k.clone(),
+                liveness: *liveness.get(k)?,
+            })
+        })
+        .collect()
+}
+
+/// Each attempt in `launching`, with what the scan saw of its processes.
+fn launching(
+    rows: &Rows,
+    records: &BTreeMap<String, LaunchRecord>,
+    liveness: &BTreeMap<String, Liveness>,
+) -> Vec<Launching> {
+    rows.attempts
+        .iter()
+        .filter(|a| a.state == AttemptState::Launching)
+        .map(|a| {
+            let record = records.get(&a.id);
+            Launching {
+                row: a.clone(),
+                row_process: seen(liveness, a.process),
+                launch: record.map(|r| Launch {
+                    at: r.launched_at,
+                    process: seen(liveness, r.process),
+                }),
+                launched: record.and_then(|r| r.process),
+            }
+        })
+        .collect()
 }
 
 fn to_seen(p: Proc) -> Seen {
@@ -803,7 +859,7 @@ fn process_items(
     rows: &Rows,
     records: &BTreeMap<String, LaunchRecord>,
     jobs: Vec<ProcessItem>,
-) -> Vec<ProcessItem> {
+) -> ProcessItems {
     let launching = rows
         .attempts
         .iter()
@@ -824,8 +880,12 @@ fn process_items(
             pid_start: r.pid_start,
         })
         .collect();
+    let job_keys = jobs.iter().map(|j| j.key.clone()).collect();
     items.extend(jobs);
-    items
+    ProcessItems {
+        items,
+        jobs: job_keys,
+    }
 }
 
 /// The outbox of each attempt of a task that is not `ended`.

@@ -18,7 +18,7 @@ use horch_core::fleetd::fleet_runtime::adapters::jobs_store;
 use horch_core::fleetd::fleet_runtime::adapters::scans::FolderItem;
 use horch_core::fleetd::fleet_runtime::application::jobs::{self, JobCtx, JobKey, Queued};
 use horch_core::fleetd::fleet_runtime::application::pass::{
-    Done, NoDuties, Outside, Pass, PassReport, Ports, Settings,
+    Done, NoDuties, Outside, Pass, PassReport, Ports, Settings, ABORT_AFTER_COMMIT, HANG_PASS,
 };
 use horch_core::fleetd::fleet_runtime::domain::clock::{AwakeReading, FleetSeconds};
 use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
@@ -470,7 +470,7 @@ fn fleetd_killed_between_commit_and_effect_does_the_effect_once_on_restart() {
     w.launching_attempt();
 
     // The child commits part 2 and dies before part 3.
-    let status = w.child("abort", "abort-after-commit").wait().unwrap();
+    let status = w.child("abort", ABORT_AFTER_COMMIT).wait().unwrap();
     assert_eq!(status.code(), Some(ABORT_EXIT_CODE));
     assert_eq!(w.lines("stops.txt"), 0, "no stop before the restart");
     assert_eq!(w.lines("launches.txt"), 0, "no launch before the restart");
@@ -497,6 +497,18 @@ fn fleetd_killed_between_commit_and_effect_does_the_effect_once_on_restart() {
     assert_eq!(w.lines("launches.txt"), 1, "1 launch");
     assert_eq!(w.attempt_state(LAUNCHING).0, "live");
     assert_eq!(fake.asked.get(), 1);
+    let record = effects::read_launch(&w.root(), LAUNCHING).unwrap().unwrap();
+    let launched = record.process.expect("the launch recorded its process");
+    let (pid, start): (Option<u32>, Option<i64>) = w
+        .conn
+        .query_row(
+            "SELECT pid, pid_start FROM attempts WHERE id = ?1",
+            [LAUNCHING],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(pid, Some(launched.pid), "the live attempt owns its process");
+    assert_eq!(start, launched.pid_start.map(|s| s as i64));
     kill_launched(&w, LAUNCHING);
 }
 
@@ -505,7 +517,7 @@ fn fm_fleetd_killed_mid_reap_requeues_exactly_once() {
     let mut w = world();
     let task = w.claimed_task(Proc::dead());
 
-    let status = w.child("abort", "abort-after-commit").wait().unwrap();
+    let status = w.child("abort", ABORT_AFTER_COMMIT).wait().unwrap();
     assert_eq!(status.code(), Some(ABORT_EXIT_CODE));
 
     let fake = Fake::new(&w);
@@ -697,7 +709,7 @@ fn heartbeat_is_written_after_each_full_pass_and_not_by_a_hung_pass() {
     // A child fleetd: its first pass writes the heartbeat, its next pass
     // hangs before it.
     std::fs::remove_file(effects::heartbeat_path(&w.root())).unwrap();
-    let mut child = w.child("hang", "hang-pass");
+    let mut child = w.child("hang", HANG_PASS);
     let pid = child.id();
     assert!(wait_for(|| effects::read_heartbeat(&w.root())
         .ok()
@@ -753,7 +765,11 @@ fn is_hung_after_30_s_of_awake_time_and_not_after_a_sleep() {
         is_hung(&hb, &at("b2", 1_000), 30),
         "a reading of another boot"
     );
+}
 
+#[test]
+fn rebuilt_binary_is_older() {
+    let hb = heartbeat("b1", 0);
     let same = hb.exe.clone();
     assert!(!is_older(&hb, &same));
     let rebuilt = Exe {
@@ -769,4 +785,47 @@ fn heartbeat_file_round_trips() {
     let hb = heartbeat("b1", 5);
     effects::write_heartbeat(&w.root(), &hb).unwrap();
     assert_eq!(effects::read_heartbeat(&w.root()).unwrap(), Some(hb));
+}
+
+#[test]
+fn a_restart_keeps_the_grace_of_a_polite_stop() {
+    let mut w = world();
+    // A process that ignores the polite stop.
+    let mut stubborn = Proc(
+        Command::new("/bin/sh")
+            .arg("-c")
+            .arg("trap '' TERM; while :; do sleep 0.1; done")
+            .spawn()
+            .unwrap(),
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    w.orphan(&stubborn);
+    let recorded = stubborn.recorded();
+    let pid = recorded.pid;
+
+    let fake = Fake::new(&w);
+    let mut pass = Pass::new(w.settings(Faults::default()), ports(&fake, &Launcher));
+    assert_eq!(
+        run(&mut pass, &mut w).done,
+        vec![Done::Stop(format!("process {pid}"))]
+    );
+    assert_eq!(run(&mut pass, &mut w).done, Vec::new(), "within its grace");
+
+    // A new fleetd keeps the time of the polite stop: past the grace of
+    // 20 s, the kill comes.
+    drop(pass);
+    let clock: i64 = w
+        .conn
+        .query_row("SELECT fleet_clock_s FROM fleetd", [], |r| r.get(0))
+        .unwrap();
+    w.set_clock(clock + 25);
+    let mut pass = Pass::new(w.settings(Faults::default()), ports(&fake, &Launcher));
+    assert_eq!(
+        run(&mut pass, &mut w).done,
+        vec![Done::Stop(format!("kill process {pid}"))]
+    );
+    assert!(stubborn.wait_exit(), "the kill ended it");
+    run(&mut pass, &mut w);
+    let record = effects::polite_path(&w.root(), pid, recorded.pid_start.unwrap());
+    assert!(!record.exists(), "the record of a gone process is removed");
 }

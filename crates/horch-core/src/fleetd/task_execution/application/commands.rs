@@ -15,7 +15,7 @@ use anyhow::{bail, Result};
 use rusqlite::Connection;
 
 use crate::fleetd::fleet_runtime::application::ledger::{created, transition, Cause};
-use crate::fleetd::fleet_runtime::domain::ledger::Entity;
+use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
 use crate::fleetd::ideas::application::needs_you::{self, NeedsYouList};
 use crate::fleetd::ideas::domain::needs_you::Write;
 use crate::fleetd::task_execution::adapters::sqlite as store;
@@ -111,6 +111,31 @@ pub fn end_attempt(tx: &Connection, reap: &Reap) -> Result<Vec<Stop>> {
     }
     keep_panes(tx, &reap.cleanup.kept)?;
     Ok(reap.cleanup.stops.clone())
+}
+
+/// The launch of the attempt `attempt` in `launching` is seen: its process
+/// `launched`, when fleetd launched it, goes on the row, and the attempt
+/// moves to `live` in `tx`. The fleetd of generation `guard` writes it.
+pub fn attempt_live(
+    tx: &Connection,
+    guard: Option<Generation>,
+    attempt: &str,
+    launched: Option<Recorded>,
+) -> Result<()> {
+    check_open(tx)?;
+    if let Some(p) = launched {
+        store::set_process(tx, attempt, p)?;
+    }
+    transition(
+        tx,
+        guard,
+        Entity::Attempt,
+        attempt,
+        AttemptState::Live.as_str(),
+        cause("a live process has the attempt id"),
+        &NeedsYouList,
+    )?;
+    Ok(())
 }
 
 /// `ScheduleRetry`: task `task_id` is queued again, first in line.

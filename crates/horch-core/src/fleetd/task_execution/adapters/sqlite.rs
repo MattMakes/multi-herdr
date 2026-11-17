@@ -153,6 +153,20 @@ pub fn insert_attempt(conn: &Connection, a: &AttemptRow, now: &str) -> Result<()
     Ok(())
 }
 
+/// Record the process `p` of the attempt `id`: the launch of fleetd started
+/// it. `transition()` writes the state.
+pub fn set_process(conn: &Connection, id: &str, p: Recorded) -> Result<()> {
+    conn.execute(
+        "UPDATE attempts SET pid = ?2, pid_start = ?3 WHERE id = ?1",
+        params![
+            id,
+            i64::from(p.pid),
+            p.pid_start.and_then(|s| i64::try_from(s).ok())
+        ],
+    )?;
+    Ok(())
+}
+
 /// Write the outcome and the end time of the attempt `id`, which
 /// `transition()` moves to `ended`.
 pub fn set_ended(conn: &Connection, id: &str, outcome: &str, now: &str) -> Result<()> {

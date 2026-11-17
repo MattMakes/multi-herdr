@@ -12,6 +12,8 @@
 //!   time of the launch on the fleet clock and the process. The record is
 //!   written before the process starts, so a fleetd that dies within a
 //!   launch leaves a record, and no later pass launches the attempt again.
+//! - [`write_polite`]: the time of a polite stop, so that the kill comes
+//!   when its grace ends, also after a restart of fleetd.
 //! - [`write_heartbeat`]: `<fleet root>/run/heartbeat.json`, written
 //!   atomically after each full pass. [`read_heartbeat`] reads it for
 //!   `horch fleetd check`.
@@ -188,15 +190,88 @@ pub fn launch_attempt(
     };
     write_launch(fleet_root, &record)?;
     let spec = spec().with_context(|| format!("the launch of attempt {attempt}"))?;
-    let launched = host
+    let mut launched = host
         .launch(&spec)
         .with_context(|| format!("launching attempt {attempt}"))?;
     record.process = Some(Recorded {
         pid: launched.pid,
         pid_start: launched.pid_start,
     });
-    write_launch(fleet_root, &record)?;
+    if let Err(e) = write_launch(fleet_root, &record) {
+        // No record names the process, so no later pass can find or stop
+        // it: stop it now. The start timeout ends the attempt.
+        horch_platform::group::kill_child_group(&mut launched.child);
+        let _ = launched.child.wait();
+        return Err(e.context(format!("recording the process of attempt {attempt}")));
+    }
     Ok(Some(launched))
+}
+
+// ─── polite stops ───────────────────────────────────────────────────────
+
+/// The record of the polite stop of the process `pid` with the start time
+/// `pid_start`: `<fleet root>/run/stops/<pid>-<start>.json`. It keeps the
+/// time of the polite stop over a restart of fleetd, so the kill comes when
+/// the grace ends.
+pub fn polite_path(fleet_root: &Path, pid: u32, pid_start: u64) -> PathBuf {
+    stops_dir(fleet_root).join(format!("{pid}-{pid_start}.json"))
+}
+
+fn stops_dir(fleet_root: &Path) -> PathBuf {
+    run_dir(fleet_root).join("stops")
+}
+
+#[derive(Serialize, Deserialize)]
+struct PoliteFile {
+    polite_at: i64,
+}
+
+/// The time of the polite stop of the process, on the fleet clock; `None`
+/// when it got none. A record that does not parse counts as none.
+pub fn read_polite(
+    fleet_root: &Path,
+    pid: u32,
+    pid_start: u64,
+) -> io::Result<Option<FleetSeconds>> {
+    match std::fs::read(polite_path(fleet_root, pid, pid_start)) {
+        Ok(b) => Ok(serde_json::from_slice::<PoliteFile>(&b)
+            .ok()
+            .map(|f| FleetSeconds(f.polite_at))),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// Record the polite stop of the process at `at`.
+pub fn write_polite(fleet_root: &Path, pid: u32, pid_start: u64, at: FleetSeconds) -> Result<()> {
+    write_json(
+        &polite_path(fleet_root, pid, pid_start),
+        &PoliteFile { polite_at: at.0 },
+    )
+}
+
+/// Remove the record of each polite stop of a process that is not in
+/// `stopping`: the process is gone, or no row asks for its stop.
+pub fn forget_polite(fleet_root: &Path, stopping: &BTreeSet<(u32, u64)>) -> io::Result<()> {
+    let kept: BTreeSet<PathBuf> = stopping
+        .iter()
+        .map(|(pid, start)| polite_path(fleet_root, *pid, *start))
+        .collect();
+    let entries = match std::fs::read_dir(stops_dir(fleet_root)) {
+        Ok(e) => e,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    for entry in entries {
+        let path = entry?.path();
+        if !kept.contains(&path) {
+            match std::fs::remove_file(&path) {
+                Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+                _ => {}
+            }
+        }
+    }
+    Ok(())
 }
 
 // ─── the heartbeat ──────────────────────────────────────────────────────
