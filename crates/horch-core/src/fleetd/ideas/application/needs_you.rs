@@ -7,8 +7,11 @@ use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use rusqlite::{Connection, Transaction};
 
+use crate::fleetd::fleet_runtime::application::ledger::{created, transition, Cause};
+use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 use crate::fleetd::ideas::adapters::sqlite as store;
 use crate::fleetd::ideas::domain::needs_you::{Item, State, Write};
+use crate::taskledger::model::Actor;
 use crate::taskledger::util;
 
 /// Write the open item of `w.key`. An open item gets the new text; a
@@ -18,7 +21,7 @@ pub fn open_item(tx: &Transaction<'_>, w: &Write<'_>) -> Result<()> {
     let Some(new) = Item::written(old.as_ref(), w, &util::now()) else {
         return Ok(());
     };
-    store::write(tx, old.as_ref(), &new, w.kind)
+    save(tx, old.as_ref(), &new, w.kind)
 }
 
 /// End the open item of `key` as `resolved`. `false` when no open item has
@@ -40,8 +43,35 @@ fn end(tx: &Transaction<'_>, key: &str, to: State, cause: &str) -> Result<bool> 
     let Some(new) = old.ended(to, &util::now()) else {
         return Ok(false);
     };
-    store::write(tx, Some(&old), &new, cause)?;
+    save(tx, Some(&old), &new, cause)?;
     Ok(true)
+}
+
+/// Write `new` as the 1 row of its key; `old` is the row before. A new row
+/// gets its event from `created()`. A change of state goes through
+/// `transition()` before the other columns, so a refused move changes
+/// nothing.
+fn save(tx: &Transaction<'_>, old: Option<&Item>, new: &Item, cause: &str) -> Result<()> {
+    let cause = Cause {
+        actor: Actor::Horch,
+        text: cause,
+    };
+    let Some(old) = old else {
+        store::insert(tx, new)?;
+        created(tx, None, Entity::NeedsYou, &new.key, cause)?;
+        return Ok(());
+    };
+    if old.state != new.state {
+        transition(
+            tx,
+            None,
+            Entity::NeedsYou,
+            &new.key,
+            new.state.as_str(),
+            cause,
+        )?;
+    }
+    store::update(tx, new)
 }
 
 /// Remove each item that ended `retention_days` or more before `now`.

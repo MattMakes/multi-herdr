@@ -15,19 +15,21 @@ use crate::taskledger::util;
 
 thread_local! {
     /// The connections of this thread, by address, that have an open
-    /// transaction that called `transition()`.
+    /// transaction with a door write.
     static OPEN: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Whether this thread has an open transaction that called `transition()`.
-/// No effect outside the ledger starts while it is true.
+/// Whether this thread has an open transaction in which the door wrote a
+/// state or an event. No effect outside the ledger starts while it is true.
 pub fn in_door_transaction() -> bool {
     OPEN.with(|o| !o.borrow().is_empty())
 }
 
 /// Mark the transaction of `tx` open for [`in_door_transaction`] until it
 /// commits or rolls back. The hooks of its connection clear the mark.
-pub fn enter(tx: &Transaction<'_>) {
+/// Call it only after a write: SQLite calls the commit hook only for a
+/// transaction that wrote (review F1).
+fn mark(tx: &Transaction<'_>) {
     let conn: &Connection = tx;
     let key = conn as *const Connection as usize;
     let new = OPEN.with(|o| {
@@ -124,12 +126,14 @@ pub struct Event<'a> {
 }
 
 /// Append the `transition` event `e`, with the columns of today filled as
-/// `taskledger::util::event` fills them.
-pub fn append_event(conn: &Connection, e: &Event<'_>) -> Result<()> {
-    let (run, task, worker) = about(conn, e.entity, e.id)?;
+/// `taskledger::util::event` fills them. Each state change and each new row
+/// of an entity has 1 event, so this marks the transaction for
+/// [`in_door_transaction`].
+pub fn append_event(tx: &Transaction<'_>, e: &Event<'_>) -> Result<()> {
+    let (run, task, worker) = about(tx, e.entity, e.id)?;
     let from = e.from.unwrap_or("none");
     let text = format!("{}; {} {}: {from} -> {}", e.cause, e.entity, e.id, e.to);
-    conn.execute(
+    tx.execute(
         "INSERT INTO events (at, run_id, task_id, worker_id, actor, kind, text,
             entity, entity_id, from_state, to_state, cause)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
@@ -148,6 +152,7 @@ pub fn append_event(conn: &Connection, e: &Event<'_>) -> Result<()> {
             e.cause
         ],
     )?;
+    mark(tx);
     Ok(())
 }
 
@@ -381,16 +386,17 @@ mod tests {
             .query_row("SELECT state FROM jobs WHERE id = 7", [], |r| r.get(0))
             .unwrap();
         assert_eq!(state, "running");
+    }
 
+    #[test]
+    fn a_move_to_the_same_state_writes_no_event() {
+        let mut l = ledger();
+        let task = l.task(1);
         assert_eq!(
-            l.moved(Entity::Task, &task, "running").unwrap(),
+            l.moved(Entity::Task, &task, "queued").unwrap(),
             Moved::Unchanged
         );
-        assert_eq!(
-            events(l.conn(), Entity::Task, &task).len(),
-            1,
-            "no event for no change"
-        );
+        assert!(events(l.conn(), Entity::Task, &task).is_empty());
     }
 
     #[test]
@@ -459,5 +465,52 @@ mod tests {
         assert!(rolled_back.is_err());
         assert!(!in_door_transaction(), "after the rollback");
         assert_eq!(status(l.conn(), &b), "queued");
+    }
+
+    /// SQLite calls no commit hook for a transaction with no write (review
+    /// F1).
+    #[test]
+    fn in_door_transaction_is_false_after_a_deferred_transaction_with_no_write() {
+        let mut l = ledger();
+        let task = l.task(1);
+        let mut conn = Connection::open(l._dir.path().join("ledger.sqlite3")).unwrap();
+        let tx = conn.transaction().unwrap();
+        let unchanged = transition(&tx, None, Entity::Task, &task, "queued", cause("t"));
+        assert_eq!(unchanged.unwrap(), Moved::Unchanged);
+        let missing = transition(&tx, None, Entity::Task, "T-none", "running", cause("t"));
+        assert!(
+            matches!(missing, Err(DoorError::NoRow { .. })),
+            "{missing:?}"
+        );
+        tx.commit().unwrap();
+        assert!(!in_door_transaction());
+    }
+
+    /// A transaction whose only door write makes a needs-you item is a door
+    /// transaction (review F2).
+    #[test]
+    fn in_door_transaction_is_true_while_a_new_needs_you_item_is_not_committed() {
+        use crate::fleetd::ideas::application::needs_you::open_item;
+        use crate::fleetd::ideas::domain::needs_you::Write;
+        let mut l = ledger();
+        let w = Write {
+            key: "job_abandoned:J-1",
+            kind: "job_abandoned",
+            entity: "job",
+            entity_id: "J-1",
+            text: "3 runs ended abandoned",
+        };
+        l.store
+            .immediate(|tx| {
+                open_item(tx, &w)?;
+                assert!(in_door_transaction());
+                Ok(())
+            })
+            .unwrap();
+        assert!(!in_door_transaction(), "after the commit");
+        assert_eq!(
+            events(l.conn(), Entity::NeedsYou, w.key),
+            [(None, "open".to_string(), "job_abandoned".to_string())]
+        );
     }
 }

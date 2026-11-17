@@ -92,19 +92,8 @@ pub fn transition(
     to: &str,
     cause: Cause<'_>,
 ) -> Result<Moved, DoorError> {
-    door::enter(tx);
-    if let Some(held) = guard {
-        let found = door::generation(tx)?;
-        if found != Some(held) {
-            return Err(DoorError::GenerationLost { held, found });
-        }
-    }
-    let Some(from) = door::state_of(tx, entity, id)? else {
-        return Err(DoorError::NoRow {
-            entity,
-            id: id.to_string(),
-        });
-    };
+    check_generation(tx, guard)?;
+    let from = state_of(tx, entity, id)?;
     match decide(entity, &from, to) {
         Decision::Unchanged => Ok(Moved::Unchanged),
         Decision::Allowed => {
@@ -132,6 +121,53 @@ pub fn transition(
             })
         }
     }
+}
+
+/// Record the new row `id` of `entity`, which the caller inserted in `tx`:
+/// 1 event from no state to the state of the row. `guard` is as in
+/// [`transition`].
+pub fn created(
+    tx: &Transaction<'_>,
+    guard: Option<Generation>,
+    entity: Entity,
+    id: &str,
+    cause: Cause<'_>,
+) -> Result<(), DoorError> {
+    check_generation(tx, guard)?;
+    let state = state_of(tx, entity, id)?;
+    door::append_event(
+        tx,
+        &Event {
+            entity,
+            id,
+            from: None,
+            to: &state,
+            cause: cause.text,
+            actor: cause.actor,
+        },
+    )?;
+    Ok(())
+}
+
+/// [`DoorError::GenerationLost`] when `guard` is not the generation of the
+/// `fleetd` row.
+fn check_generation(tx: &Transaction<'_>, guard: Option<Generation>) -> Result<(), DoorError> {
+    let Some(held) = guard else {
+        return Ok(());
+    };
+    let found = door::generation(tx)?;
+    if found != Some(held) {
+        return Err(DoorError::GenerationLost { held, found });
+    }
+    Ok(())
+}
+
+/// The state of the row `id` of `entity`, or [`DoorError::NoRow`].
+fn state_of(tx: &Transaction<'_>, entity: Entity, id: &str) -> Result<String, DoorError> {
+    door::state_of(tx, entity, id)?.ok_or_else(|| DoorError::NoRow {
+        entity,
+        id: id.to_string(),
+    })
 }
 
 /// Record a refused move: 1 event with the refused state, and the open
