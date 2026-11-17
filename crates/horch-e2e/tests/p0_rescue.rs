@@ -95,29 +95,56 @@ fn git_in(h: &Harness, dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&o.stdout).trim().to_string()
 }
 
-/// Kills the stand-in agents and each watchdog that holds a lock in `locks`
-/// when dropped, so a failed assertion leaks none.
+/// Kills the stand-in agents, each fleetd of the test and the fleetd that
+/// the `fleetd` row of `ledger` names when dropped, so a failed assertion
+/// leaks none.
 struct Teardown {
     agents: Vec<Child>,
-    locks: PathBuf,
+    ledger: PathBuf,
+    fleetds: Vec<Child>,
+}
+
+impl Teardown {
+    /// The PID and start time of the fleetd that the `fleetd` row names.
+    fn fleetd(&self) -> Option<(u32, u64)> {
+        let store = Store::open(&self.ledger).ok()?;
+        let (pid, started): (i64, i64) = store
+            .conn()
+            .query_row("SELECT pid, pid_start FROM fleetd WHERE id = 1", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .ok()?;
+        Some((u32::try_from(pid).ok()?, u64::try_from(started).ok()?))
+    }
+
+    /// Start `horch fleetd` in the sealed environment of `h`, and wait
+    /// until the `fleetd` row names it.
+    fn start_fleetd(&mut self, h: &Harness) {
+        let mut cmd = std::process::Command::new(Harness::horch_bin());
+        h.seal(&mut cmd);
+        let child = cmd
+            .arg("fleetd")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        self.fleetds.push(child);
+        wait_for("the fleetd row to name the new fleetd", || {
+            self.fleetd().filter(|&(p, _)| p == pid)
+        });
+    }
 }
 
 impl Drop for Teardown {
     fn drop(&mut self) {
-        for lock in std::fs::read_dir(&self.locks)
-            .into_iter()
-            .flatten()
-            .flatten()
-        {
-            let owner = std::fs::read(lock.path().join("owner")).unwrap_or_default();
-            let v: Value = serde_json::from_slice(&owner).unwrap_or_default();
-            if let (Some(pid), Some(started)) = (v["pid"].as_u64(), v["started"].as_u64()) {
-                horch_core::procid::signal_same(pid as u32, started, 9);
-            }
+        if let Some((pid, started)) = self.fleetd() {
+            horch_core::procid::signal_same(pid, started, 9);
         }
-        for agent in &mut self.agents {
-            let _ = agent.kill();
-            let _ = agent.wait();
+        for child in self.agents.iter_mut().chain(&mut self.fleetds) {
+            let _ = child.kill();
+            let _ = child.wait();
         }
     }
 }
@@ -260,25 +287,24 @@ fn fm13_herdr_restart_ends_attempts_and_queues_tasks_again() {
         file!(),
         "fm13_herdr_restart_ends_attempts_and_queues_tasks_again",
         || {
-            let mut h = fleet("p0-fm13-p1");
-            h.unset("HORCH_NO_WATCHDOG");
+            let h = fleet("p0-fm13-p1");
             // The default timers of the run: the design's numbers apply.
             ok(&h, &["ledger", "run", "new", "fm13"]);
             let mut td = Teardown {
                 agents: Vec::new(),
-                locks: h.root.join("locks"),
+                ledger: ledger(&h),
+                fleetds: Vec::new(),
             };
             let (_, p1, _) = held_task(&h, &mut td, "t1");
             let (_, p2, _) = held_task(&h, &mut td, "t2");
             let (run, ts, ws) = board(&h);
-            wait_for("the watchdog lock", || {
-                watchdog::holder(&td.locks, &run.run_id).map(|_| ())
-            });
+            // fleetd supervises the run.
+            td.start_fleetd(&h);
             assert!(ts.iter().all(|t| t.status == "running"), "{ts:?}");
             assert_eq!(ws.iter().filter(|w| live(w)).count(), 2, "{ws:?}");
 
             restart_herdr(&h, &mut td, &[p1, p2]);
-            // No `horch` call from here: the watchdog alone must act.
+            // No `horch` call from here: fleetd alone must act.
             let until = Instant::now() + Duration::from_secs(CAUGHT_S);
             let (_, mut ts, mut ws) = board(&h);
             while Instant::now() < until {
@@ -289,8 +315,9 @@ fn fm13_herdr_restart_ends_attempts_and_queues_tasks_again() {
                 (_, ts, ws) = board(&h);
             }
             assert!(
-                watchdog::holder(&td.locks, &run.run_id).is_some(),
-                "the watchdog stopped during the wait"
+                td.fleetd()
+                    .is_some_and(|(pid, started)| horch_core::procid::alive(pid, Some(started))),
+                "fleetd stopped during the wait"
             );
             let tasks: Vec<_> = ts.iter().map(|t| (&t.task_id, &t.status)).collect();
             let attempts: Vec<_> = ws
@@ -318,7 +345,8 @@ fn fm13_herdr_restart_rescues_each_worktree_and_the_next_attempt_reuses_it() {
             ok(&h, &["ledger", "run", "new", "fm13"]);
             let mut td = Teardown {
                 agents: Vec::new(),
-                locks: h.root.join("locks"),
+                ledger: ledger(&h),
+                fleetds: Vec::new(),
             };
             let (w, pane, _) = held_task(&h, &mut td, "t1");
             let (path, head) = worktree_with_commit(&h, &w);
@@ -363,7 +391,8 @@ fn fm25_killed_worker_with_dirty_and_untracked_files_loses_nothing() {
             ok(&h, &["ledger", "run", "new", "fm25", "--stall-rounds", "1"]);
             let mut td = Teardown {
                 agents: Vec::new(),
-                locks: h.root.join("locks"),
+                ledger: ledger(&h),
+                fleetds: Vec::new(),
             };
             let (w, _, _) = held_task(&h, &mut td, "t1");
             let wt = ok_as(&h, &w, &["ledger", "worktree", "new", "feat"]);
@@ -376,10 +405,12 @@ fn fm25_killed_worker_with_dirty_and_untracked_files_loses_nothing() {
             let agent = &mut td.agents[0];
             agent.kill().unwrap();
             agent.wait().unwrap();
+            // The pass ends the attempt of the dead agent (I4) before the
+            // duty check, so the reap shows in the ledger, not as a verdict.
             let o = wait_for("the reap", || {
                 let o = reconcile(&h);
-                let v: Value = serde_json::from_slice(&o.stdout).unwrap();
-                (v[0]["verdict"] == "dead").then_some(o)
+                let (_, _, ws) = board(&h);
+                (!ws.iter().any(live)).then_some(o)
             });
             let rescue = the_rescue_ref(&h, &o);
             assert_eq!(file_at(&h, &rescue, "notes.txt"), tracked, "{}", text(&o));

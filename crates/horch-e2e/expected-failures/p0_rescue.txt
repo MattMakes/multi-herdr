@@ -1,6 +1,4 @@
 # The red tests of crates/horch-e2e/tests/p0_rescue.rs (FM-13, FM-25).
-# Today the watchdog checks a worker only every check_every_s (600 s), and a
-# reap writes no rescue ref.
-fm13_herdr_restart_ends_attempts_and_queues_tasks_again | 1 | the attempts did not end and the tasks were not queued again within 35 s of the herdr restart
+# Today a reap writes no rescue ref.
 fm13_herdr_restart_rescues_each_worktree_and_the_next_attempt_reuses_it | 3 | no ref under refs/horch/rescue/ holds the work
 fm25_killed_worker_with_dirty_and_untracked_files_loses_nothing | 3 | no ref under refs/horch/rescue/ holds the work
