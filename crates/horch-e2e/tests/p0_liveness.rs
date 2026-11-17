@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use horch_core::taskledger::{runs, Store};
 use horch_e2e::expected::check;
+use horch_e2e::fleetd::Fleetds;
 use horch_e2e::harness::{fixtures, Harness};
 use serde_json::Value;
 
@@ -104,57 +105,6 @@ impl Drop for Agent {
     }
 }
 
-/// A `horch fleetd` of the test. Drop kills it, and the fleetd that the
-/// `fleetd` row names.
-struct Fleetd {
-    db: PathBuf,
-    child: Child,
-}
-
-impl Fleetd {
-    /// Start `horch fleetd` in the sealed environment of `h`, and wait
-    /// until the `fleetd` row names it.
-    fn start(h: &Harness) -> Fleetd {
-        let mut cmd = std::process::Command::new(Harness::horch_bin());
-        h.seal(&mut cmd);
-        let child = cmd
-            .arg("fleetd")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .unwrap();
-        let fleetd = Fleetd { db: db(h), child };
-        let pid = fleetd.child.id();
-        horch_e2e::harness::wait_for("the fleetd row to name the new fleetd", || {
-            fleetd.row().filter(|&(p, _)| p == pid)
-        });
-        fleetd
-    }
-
-    /// The PID and start time of the fleetd that the `fleetd` row names.
-    fn row(&self) -> Option<(u32, u64)> {
-        let store = Store::open(&self.db).ok()?;
-        let (pid, started): (i64, i64) = store
-            .conn()
-            .query_row("SELECT pid, pid_start FROM fleetd WHERE id = 1", [], |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })
-            .ok()?;
-        Some((u32::try_from(pid).ok()?, u64::try_from(started).ok()?))
-    }
-}
-
-impl Drop for Fleetd {
-    fn drop(&mut self) {
-        if let Some((pid, started)) = self.row() {
-            horch_core::procid::signal_same(pid, started, 9);
-        }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
 /// 1 task of `persona` (with `fallback`, if any) in a new run, and 1 worker
 /// of `persona` whose agent is a live `sleep` process. Returns the worker id.
 fn worker_with_agent(
@@ -228,7 +178,8 @@ fn fm4_dead_agent_ends_its_attempt_within_30_s() {
             let claim = as_worker(&h, &w, &[], &["ledger", "claim"]);
             assert!(claim.status.success(), "{}", text(&claim));
             // fleetd supervises the run, with the default policy.
-            let _fleetd = Fleetd::start(&h);
+            let mut fleetds = Fleetds::new(&h);
+            fleetds.start(&h, "fleetd");
             agent.kill();
             // No other `horch` call: only fleetd can see the death.
             let killed = Instant::now();

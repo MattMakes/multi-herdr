@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::time::{Duration, Instant};
 
+use horch_e2e::fleetd::Fleetds;
 use horch_e2e::harness::{fixtures, Harness};
 use serde_json::Value;
 
@@ -1149,7 +1150,6 @@ fn stopping_one_of_three_workers_leaves_the_others_running() {
     assert!(horch_core::procid::alive(pids[2].0, Some(pids[2].1)));
     let shown = json_of(&h, &["ledger", "show", &ids[0], "--json"]);
     assert_eq!(shown["worker"]["status"], "stopped");
-    eprintln!("SHOWN {shown}");
     let stops = shown["stops"].as_array().unwrap();
     let agent = stops.iter().find(|s| s["target"] == "agent").unwrap();
     assert_eq!(agent["pid"].as_i64().unwrap() as u32, pids[0].0);
@@ -1282,95 +1282,11 @@ fn three_checks_without_progress_reap_the_worker_by_its_pid() {
     assert_eq!(claim["attempt"], 2);
 }
 
-/// The fleetd processes of a test and a stand-in agent. Drop stops each
-/// one, and the fleetd that the `fleetd` row names, so a failed assertion
-/// leaks none.
-struct Fleetds {
-    db: PathBuf,
-    children: Vec<std::process::Child>,
-    agent: Option<std::process::Child>,
-}
-
-impl Fleetds {
-    fn new(h: &Harness) -> Fleetds {
-        Fleetds {
-            db: h.root.join("ledger.sqlite3"),
-            children: Vec::new(),
-            agent: None,
-        }
-    }
-
-    /// The PID and start time of the fleetd that the `fleetd` row names.
-    fn row(&self) -> Option<(u32, u64)> {
-        let store = horch_core::taskledger::Store::open(&self.db).ok()?;
-        let (pid, started): (i64, i64) = store
-            .conn()
-            .query_row("SELECT pid, pid_start FROM fleetd WHERE id = 1", [], |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })
-            .ok()?;
-        Some((u32::try_from(pid).ok()?, u64::try_from(started).ok()?))
-    }
-
-    /// Start `horch fleetd` in the sealed environment of `h`, with its
-    /// stdout in `<root>/<name>.stdout`. Gives its PID.
-    fn spawn(&mut self, h: &Harness, name: &str) -> u32 {
-        let out = std::fs::File::create(h.root.join(format!("{name}.stdout"))).unwrap();
-        let err = std::fs::File::create(h.root.join(format!("{name}.stderr"))).unwrap();
-        let mut cmd = std::process::Command::new(Harness::horch_bin());
-        h.seal(&mut cmd);
-        let child = cmd
-            .arg("fleetd")
-            .stdin(std::process::Stdio::null())
-            .stdout(out)
-            .stderr(err)
-            .spawn()
-            .unwrap();
-        let pid = child.id();
-        self.children.push(child);
-        pid
-    }
-
-    /// [`Fleetds::spawn`], then wait until the `fleetd` row names it.
-    fn start(&mut self, h: &Harness, name: &str) -> u32 {
-        let pid = self.spawn(h, name);
-        wait_for("the fleetd row to name the new fleetd", || {
-            self.row().filter(|&(p, _)| p == pid).map(|_| ())
-        });
-        pid
-    }
-
-    /// Kill the fleetd that the row names, and wait until it is gone.
-    fn kill_current(&mut self) -> (u32, u64) {
-        let (pid, started) = self.row().expect("the fleetd row");
-        assert!(horch_core::procid::signal_same(pid, started, 9));
-        for child in self.children.iter_mut().filter(|c| c.id() == pid) {
-            let _ = child.wait();
-        }
-        wait_for("fleetd to end", || {
-            (!horch_core::procid::alive(pid, Some(started))).then_some(())
-        });
-        (pid, started)
-    }
-}
-
-impl Drop for Fleetds {
-    fn drop(&mut self) {
-        if let Some((pid, started)) = self.row() {
-            horch_core::procid::signal_same(pid, started, 9);
-        }
-        for child in self.children.iter_mut().chain(self.agent.as_mut()) {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-    }
-}
-
 /// In `h`, run `zeta` with 1 running task of a worker whose agent is a
 /// live child of the test, and the fleetd check before each command on.
-/// Many stall rounds keep a pass from reaping the worker. Gives the output
-/// of the worker's `claim`.
-fn claimed_run(mut h: Harness) -> (Harness, Fleetds, Output) {
+/// Many stall rounds keep a pass from reaping the worker. Gives the
+/// fleetds of the test, the agent and the output of the worker's `claim`.
+fn claimed_run(mut h: Harness) -> (Harness, Fleetds, Stand, Output) {
     h.unset("HORCH_NO_WATCHDOG");
     ok(
         &h,
@@ -1398,18 +1314,14 @@ fn claimed_run(mut h: Harness) -> (Harness, Fleetds, Output) {
         ],
     );
     let w = worker_new(&h, "opus");
-    let mut fleetds = Fleetds::new(&h);
-    let agent = std::process::Command::new("/bin/sleep")
-        .arg("600")
-        .spawn()
-        .unwrap();
-    horch_core::taskledger::supervisor::agent_started(&fleetds.db, &w, agent.id()).unwrap();
-    fleetds.agent = Some(agent);
+    let fleetds = Fleetds::new(&h);
+    let agent = Stand::new();
+    horch_core::taskledger::supervisor::agent_started(&ledger_db(&h), &w, agent.0.id()).unwrap();
     let mut cmd = h.horch(&["ledger", "claim"]);
     cmd.env("HORCH_WORKER_ID", &w);
     let o = cmd.output().unwrap();
     assert!(o.status.success(), "{}", text(&o));
-    (h, fleetds, o)
+    (h, fleetds, agent, o)
 }
 
 /// Phase 1: no command starts a watchdog. With no fleetd row, the check
@@ -1417,7 +1329,7 @@ fn claimed_run(mut h: Harness) -> (Harness, Fleetds, Output) {
 /// no recorded watchdog.
 #[test]
 fn a_claim_starts_no_watchdog() {
-    let (h, fleetds, o) = claimed_run(world("tl-no-wdog"));
+    let (h, fleetds, _agent, o) = claimed_run(world("tl-no-wdog"));
     assert!(!text(&o).contains("started it"), "{}", text(&o));
     let locks: Vec<_> = std::fs::read_dir(h.root.join("locks"))
         .into_iter()
@@ -1426,7 +1338,7 @@ fn a_claim_starts_no_watchdog() {
         .map(|e| e.path())
         .collect();
     assert!(locks.is_empty(), "{locks:?}");
-    let store = horch_core::taskledger::Store::open(&fleetds.db).unwrap();
+    let store = horch_core::taskledger::Store::open(&ledger_db(&h)).unwrap();
     let recorded: i64 = store
         .conn()
         .query_row(
@@ -1443,7 +1355,7 @@ fn a_claim_starts_no_watchdog() {
 /// mode on this temporary ledger.
 #[test]
 fn a_dead_fleetd_is_restarted_by_the_next_command() {
-    let (h, mut fleetds, _) = claimed_run(world("tl-fleetd-dead"));
+    let (h, mut fleetds, _agent, _) = claimed_run(world("tl-fleetd-dead"));
     fleetds.start(&h, "fleetd-1");
     let (pid, _) = fleetds.kill_current();
     // `status` exits 1 while the run is not complete.
@@ -1482,20 +1394,18 @@ fn the_no_watchdog_setting_turns_off_the_fleetd_check() {
 /// second, which exits 0 and says so, and the row keeps the first.
 #[test]
 fn two_fleetds_started_at_once_leave_1() {
-    let (h, mut fleetds, _) = claimed_run(world("tl-fleetd-twice"));
+    let (h, mut fleetds, _agent, _) = claimed_run(world("tl-fleetd-twice"));
     let pids = [fleetds.spawn(&h, "fleetd-a"), fleetds.spawn(&h, "fleetd-b")];
     let (first, started) = wait_for("the fleetd row", || {
         fleetds.row().filter(|(p, _)| pids.contains(p))
     });
     let (second, name) = if first == pids[0] {
-        (1, "fleetd-b")
+        (pids[1], "fleetd-b")
     } else {
-        (0, "fleetd-a")
+        (pids[0], "fleetd-a")
     };
-    let status = wait_for("the second fleetd to exit", || {
-        fleetds.children[second].try_wait().unwrap()
-    });
-    let said = std::fs::read_to_string(h.root.join(format!("{name}.stdout"))).unwrap();
+    let status = fleetds.wait_exit(second);
+    let said = fleetds.output(name, "stdout");
     assert!(status.success(), "{status}: {said}");
     assert!(said.contains("Another fleetd holds"), "{said}");
     assert_eq!(
@@ -4083,4 +3993,9 @@ fn a_killed_detached_finish_is_reported_by_the_next_finish() {
     assert_ne!(detached_pid(&o), pid, "a new run starts");
     let mail = wait_for("the finish mail", || finish_mail(&h));
     assert!(mail.contains("every finish step passed"), "{mail}");
+}
+
+/// The ledger file of the harness `h`.
+fn ledger_db(h: &Harness) -> PathBuf {
+    h.root.join("ledger.sqlite3")
 }

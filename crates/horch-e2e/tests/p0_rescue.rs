@@ -17,6 +17,7 @@ use horch_core::taskledger::runs::Run;
 use horch_core::taskledger::sql_words::WORKERS_LIVE;
 use horch_core::taskledger::{tasks, watchdog, workers, Store};
 use horch_e2e::expected::check;
+use horch_e2e::fleetd::Fleetds;
 use horch_e2e::harness::{fixtures, wait_for, Harness};
 use serde_json::Value;
 
@@ -95,56 +96,18 @@ fn git_in(h: &Harness, dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&o.stdout).trim().to_string()
 }
 
-/// Kills the stand-in agents, each fleetd of the test and the fleetd that
-/// the `fleetd` row of `ledger` names when dropped, so a failed assertion
-/// leaks none.
+/// Kills the stand-in agents and the fleetds of the test when dropped, so a
+/// failed assertion leaks none.
 struct Teardown {
     agents: Vec<Child>,
-    ledger: PathBuf,
-    fleetds: Vec<Child>,
-}
-
-impl Teardown {
-    /// The PID and start time of the fleetd that the `fleetd` row names.
-    fn fleetd(&self) -> Option<(u32, u64)> {
-        let store = Store::open(&self.ledger).ok()?;
-        let (pid, started): (i64, i64) = store
-            .conn()
-            .query_row("SELECT pid, pid_start FROM fleetd WHERE id = 1", [], |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })
-            .ok()?;
-        Some((u32::try_from(pid).ok()?, u64::try_from(started).ok()?))
-    }
-
-    /// Start `horch fleetd` in the sealed environment of `h`, and wait
-    /// until the `fleetd` row names it.
-    fn start_fleetd(&mut self, h: &Harness) {
-        let mut cmd = std::process::Command::new(Harness::horch_bin());
-        h.seal(&mut cmd);
-        let child = cmd
-            .arg("fleetd")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .unwrap();
-        let pid = child.id();
-        self.fleetds.push(child);
-        wait_for("the fleetd row to name the new fleetd", || {
-            self.fleetd().filter(|&(p, _)| p == pid)
-        });
-    }
+    fleetds: Fleetds,
 }
 
 impl Drop for Teardown {
     fn drop(&mut self) {
-        if let Some((pid, started)) = self.fleetd() {
-            horch_core::procid::signal_same(pid, started, 9);
-        }
-        for child in self.agents.iter_mut().chain(&mut self.fleetds) {
-            let _ = child.kill();
-            let _ = child.wait();
+        for agent in &mut self.agents {
+            let _ = agent.kill();
+            let _ = agent.wait();
         }
     }
 }
@@ -292,14 +255,13 @@ fn fm13_herdr_restart_ends_attempts_and_queues_tasks_again() {
             ok(&h, &["ledger", "run", "new", "fm13"]);
             let mut td = Teardown {
                 agents: Vec::new(),
-                ledger: ledger(&h),
-                fleetds: Vec::new(),
+                fleetds: Fleetds::new(&h),
             };
             let (_, p1, _) = held_task(&h, &mut td, "t1");
             let (_, p2, _) = held_task(&h, &mut td, "t2");
             let (run, ts, ws) = board(&h);
             // fleetd supervises the run.
-            td.start_fleetd(&h);
+            td.fleetds.start(&h, "fleetd");
             assert!(ts.iter().all(|t| t.status == "running"), "{ts:?}");
             assert_eq!(ws.iter().filter(|w| live(w)).count(), 2, "{ws:?}");
 
@@ -315,7 +277,8 @@ fn fm13_herdr_restart_ends_attempts_and_queues_tasks_again() {
                 (_, ts, ws) = board(&h);
             }
             assert!(
-                td.fleetd()
+                td.fleetds
+                    .row()
                     .is_some_and(|(pid, started)| horch_core::procid::alive(pid, Some(started))),
                 "fleetd stopped during the wait"
             );
@@ -345,8 +308,7 @@ fn fm13_herdr_restart_rescues_each_worktree_and_the_next_attempt_reuses_it() {
             ok(&h, &["ledger", "run", "new", "fm13"]);
             let mut td = Teardown {
                 agents: Vec::new(),
-                ledger: ledger(&h),
-                fleetds: Vec::new(),
+                fleetds: Fleetds::new(&h),
             };
             let (w, pane, _) = held_task(&h, &mut td, "t1");
             let (path, head) = worktree_with_commit(&h, &w);
@@ -391,8 +353,7 @@ fn fm25_killed_worker_with_dirty_and_untracked_files_loses_nothing() {
             ok(&h, &["ledger", "run", "new", "fm25", "--stall-rounds", "1"]);
             let mut td = Teardown {
                 agents: Vec::new(),
-                ledger: ledger(&h),
-                fleetds: Vec::new(),
+                fleetds: Fleetds::new(&h),
             };
             let (w, _, _) = held_task(&h, &mut td, "t1");
             let wt = ok_as(&h, &w, &["ledger", "worktree", "new", "feat"]);

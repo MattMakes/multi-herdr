@@ -11,9 +11,9 @@ use horch_core::taskledger::{
     workers::{self, NewWorker},
     Store,
 };
+use horch_e2e::fleetd::Fleetds;
 use horch_e2e::harness::Harness;
 
-const SIGKILL: i32 = 9;
 const SIGTERM: i32 = 15;
 
 /// A fake agent process; killed on drop.
@@ -212,85 +212,6 @@ fn fleet_toml(h: &Harness, config: &str) {
     std::fs::write(root.join("fleet.toml"), config).unwrap();
 }
 
-/// The fleetd processes of a test. Drop stops each one, and the fleetd that
-/// the `fleetd` row names, so a failed assertion leaks none.
-struct Fleetds {
-    db: std::path::PathBuf,
-    children: Vec<std::process::Child>,
-}
-
-impl Fleetds {
-    fn new(h: &Harness) -> Fleetds {
-        Fleetds {
-            db: h.root.join("ledger.sqlite3"),
-            children: Vec::new(),
-        }
-    }
-
-    /// The PID and start time of the fleetd that the `fleetd` row names.
-    fn row(&self) -> Option<(u32, u64)> {
-        let store = Store::open(&self.db).ok()?;
-        let (pid, started): (i64, i64) = store
-            .conn()
-            .query_row("SELECT pid, pid_start FROM fleetd WHERE id = 1", [], |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })
-            .ok()?;
-        Some((u32::try_from(pid).ok()?, u64::try_from(started).ok()?))
-    }
-
-    /// Start `horch fleetd` in the sealed environment of `h`, and wait
-    /// until the `fleetd` row names it. Gives its index in `children`.
-    fn start(&mut self, h: &Harness) -> usize {
-        let mut cmd = std::process::Command::new(Harness::horch_bin());
-        h.seal(&mut cmd);
-        let child = cmd
-            .arg("fleetd")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(
-                std::fs::File::create(
-                    h.root
-                        .join(format!("fleetd-{}.stderr", self.children.len())),
-                )
-                .unwrap(),
-            )
-            .spawn()
-            .unwrap();
-        let pid = child.id();
-        self.children.push(child);
-        horch_e2e::harness::wait_for("the fleetd row to name the new fleetd", || {
-            self.row().filter(|&(p, _)| p == pid).map(|_| ())
-        });
-        self.children.len() - 1
-    }
-
-    /// Kill the fleetd that the row names, and wait until it is gone.
-    fn kill_current(&mut self) -> u32 {
-        let (pid, started) = self.row().expect("the fleetd row");
-        assert!(horch_core::procid::signal_same(pid, started, SIGKILL));
-        for child in self.children.iter_mut().filter(|c| c.id() == pid) {
-            let _ = child.wait();
-        }
-        horch_e2e::harness::wait_for("fleetd to end", || {
-            (!horch_core::procid::alive(pid, Some(started))).then_some(())
-        });
-        pid
-    }
-}
-
-impl Drop for Fleetds {
-    fn drop(&mut self) {
-        if let Some((pid, started)) = self.row() {
-            horch_core::procid::signal_same(pid, started, SIGKILL);
-        }
-        for child in &mut self.children {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-    }
-}
-
 /// A SIGTERM to fleetd while it reaps a worker does not lose the reap. The
 /// pass sent TERM to the agent, which ignores it, and the stop grace runs.
 /// fleetd ends between 2 passes, and the next fleetd kills the agent after
@@ -357,7 +278,7 @@ fn a_sigterm_to_fleetd_during_a_reap_leaves_the_reap_to_the_next_fleetd() {
         )
         .unwrap();
     let mut fleetds = Fleetds::new(&h);
-    let first = fleetds.start(&h);
+    let first = fleetds.start(&h, "fleetd-1");
     let (pid, started) = fleetds.row().expect("the fleetd row");
     // The reap sent TERM to the agent, and the stop grace runs.
     horch_e2e::harness::wait_for("the reap's TERM to the agent", || {
@@ -368,15 +289,13 @@ fn a_sigterm_to_fleetd_during_a_reap_leaves_the_reap_to_the_next_fleetd() {
         agent_ended.try_recv().is_err(),
         "the SIGTERM came inside the stop grace"
     );
-    let status = horch_e2e::harness::wait_for("fleetd to end after its pass", || {
-        fleetds.children[first].try_wait().unwrap()
-    });
+    let status = fleetds.wait_exit(first);
     assert!(status.success(), "fleetd ended with {status}");
     assert_eq!(
         workers::get(store.conn(), &worker).unwrap().status,
         "incomplete"
     );
-    fleetds.start(&h);
+    fleetds.start(&h, "fleetd-2");
     agent_ended
         .recv_timeout(std::time::Duration::from_secs(30))
         .expect("the next fleetd killed the agent after the grace");
@@ -477,8 +396,8 @@ fn a_fleetd_started_from_another_workspace_wakes_the_runs_workspace() {
     // A fleetd ran and died. The check before the next command starts
     // fleetd again, from the w2 pane that runs that command.
     let mut fleetds = Fleetds::new(&h);
-    fleetds.start(&h);
-    let dead = fleetds.kill_current();
+    fleetds.start(&h, "fleetd");
+    let (dead, _) = fleetds.kill_current();
     h.unset("HORCH_NO_WAKE");
     h.unset("HORCH_NO_WATCHDOG");
     fake(&h, &["workspace", "create", "--label", "w1"]);
@@ -553,8 +472,8 @@ fn a_detached_fleetd_does_not_inherit_the_starting_panes_workspace() {
     // A fleetd ran and died. The check before the next command starts
     // fleetd again, from the w2 pane that runs that command.
     let mut fleetds = Fleetds::new(&h);
-    fleetds.start(&h);
-    let dead = fleetds.kill_current();
+    fleetds.start(&h, "fleetd");
+    let (dead, _) = fleetds.kill_current();
     h.unset("HORCH_NO_WAKE");
     h.unset("HORCH_NO_WATCHDOG");
     h.unset("HORCH_WORKSPACE_ID");
