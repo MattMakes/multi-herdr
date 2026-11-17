@@ -1408,4 +1408,255 @@ mod tests {
         pass(&mut w, &duties, Faults::default());
         assert_eq!(effects.respawns().len(), 1, "1 respawn for 1 attempt");
     }
+
+    // ─── the tests of the old `horch ledger watch` pass (ticket 25) ─────
+
+    /// The effects of a respawn that reads the harness and the model of
+    /// the new orchestrator row, and fails while `fail` is set.
+    struct Launch {
+        dir: PathBuf,
+        fail: RefCell<bool>,
+        /// Each respawn: its number and the harness and model of its row.
+        tries: RefCell<Vec<(i64, Option<String>, Option<String>)>>,
+    }
+
+    impl Launch {
+        fn new(w: &World, fail: bool) -> Launch {
+            Launch {
+                dir: w.dir.clone(),
+                fail: RefCell::new(fail),
+                tries: RefCell::new(Vec::new()),
+            }
+        }
+
+        fn numbers(&self) -> Vec<i64> {
+            self.tries.borrow().iter().map(|t| t.0).collect()
+        }
+    }
+
+    impl DutyEffects for Launch {
+        fn respawn(&self, r: &Respawn) -> Result<()> {
+            let other = open(&self.dir.join("ledger.sqlite3"));
+            let row = workers::get(&other, &r.new_worker_id)?;
+            self.tries
+                .borrow_mut()
+                .push((r.number, row.harness, row.model));
+            if *self.fail.borrow() {
+                anyhow::bail!("herdr is down");
+            }
+            Ok(())
+        }
+
+        fn deliver(&self, _run: &Run) {}
+
+        fn retry_cleanups(&self) -> Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+    }
+
+    /// The orchestrator facts: the live process `holder` holds the lock of
+    /// the workspace.
+    struct Held(Recorded);
+
+    impl Probe for Held {
+        fn holder(&self, _workspace: &str) -> Option<Holder> {
+            Some(Holder {
+                pid: self.0.pid,
+                started: self.0.pid_start,
+            })
+        }
+
+        fn alive(&self, pid: u32, started: Option<u64>) -> bool {
+            NoHolder.alive(pid, started)
+        }
+
+        fn workspace_open(&self, _workspace: &str) -> Option<bool> {
+            Some(true)
+        }
+    }
+
+    impl World {
+        /// The current orchestrator row of the run.
+        fn orchestrator(&self) -> Worker {
+            let id = runs::get(&self.conn, &self.run.run_id)
+                .unwrap()
+                .orchestrator_worker_id
+                .unwrap();
+            workers::get(&self.conn, &id).unwrap()
+        }
+
+        /// Move the last respawn 10 min and 1 s back: the next respawn is
+        /// due (TRF-40).
+        fn respawn_due(&self) {
+            self.conn
+                .execute(
+                    "UPDATE runs SET last_respawn_at = ?2 WHERE run_id = ?1",
+                    params![self.run.run_id, ago(601)],
+                )
+                .unwrap();
+        }
+
+        fn respawns(&self) -> i64 {
+            orchestrator::guard(&self.conn, &self.run.run_id)
+                .unwrap()
+                .respawns
+        }
+
+        /// The texts of the outbox rows of `event`.
+        fn rows(&self, event: OutboxEvent) -> Vec<String> {
+            let mut st = self
+                .conn
+                .prepare("SELECT text FROM outbox WHERE event = ?1 ORDER BY rowid")
+                .unwrap();
+            st.query_map([event.as_str()], |r| r.get(0))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect()
+        }
+    }
+
+    /// Report 28 D-c (TRF-45): the respawned orchestrator row records the
+    /// harness and the model of the row that it replaces before its launch
+    /// runs.
+    #[test]
+    fn pass_respawn_keeps_the_harness_and_the_model_of_the_old_orchestrator() {
+        let mut w = world();
+        let old = w.gone_orchestrator();
+        w.conn
+            .execute(
+                "UPDATE workers SET harness = 'codex', model = 'gpt-5.6-sol' WHERE worker_id = ?1",
+                [&old],
+            )
+            .unwrap();
+        let launch = Launch::new(&w, false);
+        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &launch, w.dir.clone());
+
+        pass(&mut w, &duties, Faults::default());
+
+        let new = w.orchestrator();
+        assert_ne!(new.worker_id, old);
+        assert_eq!(new.harness.as_deref(), Some("codex"));
+        assert_eq!(new.model.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(
+            *launch.tries.borrow(),
+            vec![(1, Some("codex".into()), Some("gpt-5.6-sol".into()))],
+            "the launch sees the harness and the model"
+        );
+    }
+
+    /// TRF-38: each failed launch is recorded and counts 1 respawn, so a
+    /// launch that always fails cannot loop.
+    #[test]
+    fn pass_records_a_failed_respawn_launch_and_counts_it() {
+        let mut w = world();
+        w.gone_orchestrator();
+        let launch = Launch::new(&w, true);
+        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &launch, w.dir.clone());
+
+        for _ in 0..4 {
+            pass(&mut w, &duties, Faults::default());
+            // Within 10 min no respawn follows.
+            pass(&mut w, &duties, Faults::default());
+            w.respawn_due();
+        }
+
+        assert_eq!(launch.numbers(), vec![1, 2, 3]);
+        let last = w.orchestrator();
+        assert_eq!(last.status, "launch_failed");
+        assert!(
+            last.end_reason.unwrap().contains("used its 3 respawns"),
+            "the last respawn ends the pending row"
+        );
+        let failed = w.count(
+            "SELECT count(*) FROM events
+             WHERE text LIKE 'Orchestrator respawn % did not start: herdr is down'",
+        );
+        assert_eq!(failed, 3);
+        assert_eq!(w.respawns(), 3);
+    }
+
+    /// TRF-38: a failed launch keeps the pending row and the remaining
+    /// respawns; the next respawn launches it.
+    #[test]
+    fn pass_keeps_the_remaining_respawns_after_a_failed_launch() {
+        let mut w = world();
+        w.gone_orchestrator();
+        let launch = Launch::new(&w, true);
+        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &launch, w.dir.clone());
+
+        pass(&mut w, &duties, Faults::default());
+        let pending = w.orchestrator();
+        assert_eq!(pending.status, "spawning", "a failed launch stays pending");
+        assert_eq!(w.respawns(), 1);
+
+        *launch.fail.borrow_mut() = false;
+        pass(&mut w, &duties, Faults::default());
+        assert_eq!(launch.numbers(), vec![1], "no respawn within 10 min");
+        w.respawn_due();
+        pass(&mut w, &duties, Faults::default());
+        assert_eq!(launch.numbers(), vec![1, 2]);
+
+        // The launched orchestrator takes the lock of the workspace.
+        let agent = Proc::sleep();
+        let held = Held(agent.recorded());
+        let duties = WatchdogDuties::new(&Quiet, &held, &launch, w.dir.clone());
+        pass(&mut w, &duties, Faults::default());
+        let live = w.orchestrator();
+        assert_eq!(live.worker_id, pending.worker_id);
+        assert_eq!(live.status, "working");
+        assert_eq!(w.respawns(), 2, "1 respawn of 3 remains");
+    }
+
+    /// TRF-51, I-06: T-1 was parked unlanded, and the wake to the tasks
+    /// that wait for it was lost. The pass writes it once, and the direct
+    /// path after it writes no second row.
+    #[test]
+    fn pass_writes_a_lost_parked_blocker_wake_once() {
+        let mut w = world();
+        let a = tasks::add(
+            &w.conn,
+            &w.run,
+            &NewTask::work("a", "a.md", "dev"),
+            Actor::Orchestrator,
+        )
+        .unwrap();
+        let mut b = NewTask::work("b", "b.md", "dev");
+        b.blocked_by = vec!["T-1".into()];
+        tasks::add(&w.conn, &w.run, &b, Actor::Orchestrator).unwrap();
+        w.conn
+            .execute(
+                "UPDATE tasks SET status = 'queued', held_reason = 'unlanded', attempts = 1
+                 WHERE task_id = ?1",
+                [&a.task_id],
+            )
+            .unwrap();
+        let effects = Record::new(&w);
+        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &effects, w.dir.clone());
+
+        // No worker is live, so the run is stuck too: that wake is apart.
+        let parked = |w: &World| -> Vec<String> {
+            let rows = w.rows(OutboxEvent::Held);
+            rows.into_iter()
+                .filter(|r| r.contains("T-2 waits:"))
+                .collect()
+        };
+        pass(&mut w, &duties, Faults::default());
+        let rows = parked(&w);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert!(
+            rows[0].contains("T-2 waits: T-1 is parked unlanded"),
+            "{rows:?}"
+        );
+
+        pass(&mut w, &duties, Faults::default());
+        // The direct path (`taskledger_wake::stalled_dependents`) writes
+        // the same keyed row.
+        let t = tasks::get(&w.conn, &a.task_id).unwrap();
+        let waiting = tasks::dependents(&w.conn, &a.task_id).unwrap();
+        let wake = wakes::dependents_wake(&t, &waiting).expect("the wake");
+        let tx = w.conn.transaction().unwrap();
+        outbox::write(&tx, &w.run.run_id, &wake).unwrap();
+        tx.commit().unwrap();
+        assert_eq!(parked(&w).len(), 1);
+    }
 }
