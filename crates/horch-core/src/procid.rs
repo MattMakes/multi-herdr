@@ -126,15 +126,6 @@ pub fn stop_same(pid: u32, started: u64, how: Stop) -> bool {
     platform_signal::stop_same(pid, started, how)
 }
 
-/// Whether `pid` names a process that has not exited, for
-/// [`crate::fsx::pid_alive`] on Windows. A process this user may not open
-/// exists all the same. Only the Windows build of `fsx` calls it, until
-/// `fsx::pid_alive` calls [`horch_platform::process::alive`] itself.
-#[allow(dead_code)]
-pub(crate) fn windows_running(pid: i32) -> bool {
-    u32::try_from(pid).is_ok_and(horch_platform::process::alive)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
