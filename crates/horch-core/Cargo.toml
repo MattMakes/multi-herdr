@@ -19,19 +19,6 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 uuid = { version = "1", features = ["v4"] }
 rusqlite.workspace = true
 
-# Only for SIGTERM to a Prime Agent daemon this process started. Spawning
-# `kill(1)` would work too, but a process spawn to stop a process - on a path
-# that runs every time a worker pane exits - is worse than one already-compiled
-# crate.
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
-
-# Process identity on Windows: the creation time, and a terminate on the
-# handle that read it (`procid`). Job Objects end the whole herdr process
-# tree on a timeout (`workspace::herdr`).
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Threading"] }
-
 # `build.rs` digests the bundled skill catalog once at build time, so no
 # process digests the 8 MB of compiled-in files at run time.
 [build-dependencies]
@@ -39,3 +26,8 @@ sha2 = "0.10"
 
 [dev-dependencies]
 tempfile = "3"
+
+# The Unix tests read and signal processes directly, to check the code under
+# test against the OS.
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"

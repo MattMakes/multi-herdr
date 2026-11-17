@@ -739,3 +739,324 @@ fn arc_88_children_are_scrubbed_in_one_place() {
         found.join("\n")
     );
 }
+
+/// PL-2: the 1 site that cannot call the platform layer, with its reason.
+const OS_CFG_EXEMPT: &[(&str, &str)] = &[(
+    "horch-core/build.rs",
+    "a build script runs on the build host before the crate compiles, so it cannot call the platform layer of the target",
+)];
+
+/// The predicate words that make a `cfg` an OS `cfg`.
+const OS_WORDS: [&str; 4] = ["target_os", "unix", "windows", "target_family"];
+
+/// The production lines of `text`, numbered from 1, and the names of the
+/// child modules that a `cfg` naming `test` declares (`mod x;`). Unlike
+/// `code_lines`, a group of attributes, also over more than 1 line, that
+/// holds a `cfg` naming `test` is not code. When the group is over an inline
+/// `mod`, the rest of the file is not code.
+fn production_lines(text: &str) -> (Vec<(usize, String)>, Vec<String>) {
+    let lines: Vec<&str> = text.lines().collect();
+    let is_attr = |l: &str| l.trim_start().starts_with("#[") || l.trim_start().starts_with("#![");
+    let mut out = Vec::new();
+    let mut test_mods = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if lines[i].trim_start().starts_with("//") {
+            i += 1;
+            continue;
+        }
+        if !is_attr(lines[i]) {
+            out.push((i + 1, lines[i].to_string()));
+            i += 1;
+            continue;
+        }
+        let mut group = Vec::new();
+        while i < lines.len() && (is_attr(lines[i]) || lines[i].trim_start().starts_with("//")) {
+            if lines[i].trim_start().starts_with("//") {
+                i += 1;
+                continue;
+            }
+            let mut depth = 0;
+            while i < lines.len() {
+                depth +=
+                    lines[i].matches('[').count() as i32 - lines[i].matches(']').count() as i32;
+                group.push((i + 1, lines[i].to_string()));
+                i += 1;
+                if depth <= 0 {
+                    break;
+                }
+            }
+        }
+        let attrs: String = group.iter().map(|(_, l)| format!("{l}\n")).collect();
+        let gated = cfg_predicates(&attrs)
+            .iter()
+            .any(|(_, gate, pred)| *gate && names_test(pred));
+        if !gated {
+            out.extend(group);
+            continue;
+        }
+        let item = lines.get(i).map_or("", |l| l.trim_start());
+        let item = item
+            .strip_prefix("pub(crate) ")
+            .or_else(|| item.strip_prefix("pub "))
+            .unwrap_or(item);
+        if let Some(rest) = item.strip_prefix("mod ") {
+            match rest.split_once(';') {
+                Some((name, _)) => {
+                    test_mods.push(name.trim().to_string());
+                    i += 1;
+                }
+                None => break,
+            }
+        }
+    }
+    (out, test_mods)
+}
+
+/// The text inside the parenthesis that opens at byte `open` of `text`.
+fn balanced(text: &str, open: usize) -> Option<&str> {
+    let mut depth = 0;
+    for (i, c) in text[open..].char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&text[open + 1..open + i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Each `cfg(..)`, `cfg_attr(..)` and `cfg!(..)` of `text`: its byte
+/// position, whether it gates an item (`cfg(..)` only), and its predicate
+/// (the first argument of `cfg_attr`).
+fn cfg_predicates(text: &str) -> Vec<(usize, bool, String)> {
+    let mut out = Vec::new();
+    for (at, _) in text.match_indices("cfg") {
+        if text[..at]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_')
+        {
+            continue;
+        }
+        let rest = &text[at + 3..];
+        let (open, gate, attr) = if rest.starts_with("_attr(") {
+            (at + 8, false, true)
+        } else if rest.starts_with("!(") {
+            (at + 4, false, false)
+        } else if rest.starts_with('(') {
+            (at + 3, true, false)
+        } else {
+            continue;
+        };
+        let Some(body) = balanced(text, open) else {
+            continue;
+        };
+        let pred = if attr { first_argument(body) } else { body };
+        out.push((at, gate, pred.to_string()));
+    }
+    out
+}
+
+/// The text of `body` before its first comma outside parentheses.
+fn first_argument(body: &str) -> &str {
+    let mut depth = 0;
+    for (i, c) in body.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            ',' if depth == 0 => return &body[..i],
+            _ => {}
+        }
+    }
+    body
+}
+
+/// The identifiers of a predicate, without the text of its string literals.
+fn predicate_words(pred: &str) -> Vec<&str> {
+    pred.split('"')
+        .step_by(2)
+        .flat_map(|part| part.split(|c: char| !(c.is_alphanumeric() || c == '_')))
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
+fn names_os(pred: &str) -> bool {
+    predicate_words(pred).iter().any(|w| OS_WORDS.contains(w))
+}
+
+fn names_test(pred: &str) -> bool {
+    predicate_words(pred).contains(&"test") && !pred.replace(' ', "").contains("not(test)")
+}
+
+/// The OS `cfg` sites of `text`: `cfg(..)`, `cfg_attr(..)` and `cfg!(..)`
+/// whose predicate names an OS word, each as its first line and its text.
+fn os_cfg_sites(text: &str) -> (Vec<(usize, String)>, Vec<String>) {
+    let (lines, test_mods) = production_lines(text);
+    let mut joined = String::new();
+    let mut starts = Vec::new();
+    for (_, line) in &lines {
+        starts.push(joined.len());
+        joined.push_str(line);
+        joined.push('\n');
+    }
+    let mut sites: Vec<(usize, String)> = Vec::new();
+    for (at, _, pred) in cfg_predicates(&joined) {
+        if !names_os(&pred) || names_test(&pred) {
+            continue;
+        }
+        let k = starts.partition_point(|s| *s <= at) - 1;
+        if sites.last().is_none_or(|(n, _)| *n != lines[k].0) {
+            sites.push((lines[k].0, lines[k].1.trim().to_string()));
+        }
+    }
+    (sites, test_mods)
+}
+
+#[test]
+fn pl2_scan_finds_each_os_cfg_form_and_skips_test_code() {
+    let text = "\
+// #[cfg(unix)] in a comment
+#[cfg(unix)]
+fn a() {}
+#[cfg(target_os = \"linux\")]
+fn b() {}
+#[cfg(any(windows, target_os = \"macos\"))]
+fn c() {}
+#[cfg_attr(target_family = \"unix\", allow(dead_code))]
+fn d() {}
+fn e() -> bool { cfg!(windows) }
+#[cfg(not(any(
+    target_os = \"macos\",
+    target_os = \"linux\"
+)))]
+fn f() {}
+#[cfg(feature = \"x\")]
+fn g() {}
+#[cfg(all(test, unix))]
+mod test_support;
+#[cfg(all(test, unix))]
+fn h() {}
+#[cfg(unix)]
+#[cfg(test)]
+mod tests {
+    #[cfg(windows)]
+    fn i() {}
+}
+";
+    let (sites, test_mods) = os_cfg_sites(text);
+    let lines: Vec<usize> = sites.iter().map(|(n, _)| *n).collect();
+    assert_eq!(lines, vec![2, 4, 6, 8, 10, 11], "{sites:?}");
+    assert_eq!(sites[5].1, "#[cfg(not(any(");
+    assert_eq!(test_mods, vec!["test_support".to_string()]);
+
+    let gated =
+        "fn a() {}\n#[cfg(all(test, unix))]\nmod tests {\n    #[cfg(unix)]\n    fn b() {}\n}\n";
+    assert_eq!(os_cfg_sites(gated).0, Vec::new());
+    assert_eq!(
+        production_lines(gated).0,
+        vec![(1, "fn a() {}".to_string())]
+    );
+}
+
+/// The production files of the workspace outside the platform layer: each
+/// member crate of the root `Cargo.toml`, its `src/` and its `build.rs`.
+/// `crates/horch-platform` is the layer; `crates/horch-e2e` is test code.
+fn production_files() -> (PathBuf, Vec<PathBuf>) {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let manifest = std::fs::read_to_string(root.join("Cargo.toml")).unwrap();
+    let start = manifest.find("members = [").unwrap();
+    let end = start + manifest[start..].find(']').unwrap();
+    let mut files = Vec::new();
+    for member in manifest[start..end].split('"').skip(1).step_by(2) {
+        if member == "crates/horch-platform" || member == "crates/horch-e2e" {
+            continue;
+        }
+        let dir = root.join(member);
+        rust_files(&dir.join("src"), &mut files);
+        if dir.join("build.rs").is_file() {
+            files.push(dir.join("build.rs"));
+        }
+    }
+    (root.join("crates"), files)
+}
+
+/// The path of each file of a child module that a `cfg` naming `test`
+/// declares in `parent`, as a file or a folder prefix.
+fn test_module_paths(parent: &Path, names: &[String]) -> Vec<PathBuf> {
+    let stem = parent.file_stem().unwrap();
+    let dir = if ["lib", "main", "mod"].iter().any(|s| stem == *s) {
+        parent.parent().unwrap().to_path_buf()
+    } else {
+        parent.with_extension("")
+    };
+    names
+        .iter()
+        .flat_map(|n| [dir.join(format!("{n}.rs")), dir.join(n)])
+        .collect()
+}
+
+/// Each OS `cfg` site of the workspace production code outside the platform
+/// layer, as `<crate>/<path>:<line>: <text>`.
+fn workspace_os_cfg_sites() -> Vec<String> {
+    let (root, files) = production_files();
+    let mut scanned = Vec::new();
+    let mut test_only: Vec<PathBuf> = Vec::new();
+    for file in &files {
+        let (sites, test_mods) = os_cfg_sites(&std::fs::read_to_string(file).unwrap());
+        test_only.extend(test_module_paths(file, &test_mods));
+        scanned.push((file, sites));
+    }
+    let mut found = Vec::new();
+    for (file, sites) in scanned {
+        if file.file_name().is_some_and(|n| n == "tests.rs")
+            || test_only.iter().any(|t| file.starts_with(t))
+        {
+            continue;
+        }
+        let rel = relative(file, &root);
+        if OS_CFG_EXEMPT.iter().any(|(path, _)| *path == rel) {
+            continue;
+        }
+        for (line, text) in sites {
+            found.push(format!("{rel}:{line}: {}", text.trim()));
+        }
+    }
+    found
+}
+
+/// PL-2: no OS `cfg` in production code outside the platform layer, except
+/// the sites of `OS_CFG_EXEMPT`.
+#[test]
+fn fitness_workspace_production_code_has_no_os_cfg_outside_horch_platform() {
+    let found = workspace_os_cfg_sites();
+    let exempt: Vec<String> = OS_CFG_EXEMPT
+        .iter()
+        .map(|(path, why)| format!("{path}: {why}"))
+        .collect();
+    assert!(
+        found.is_empty(),
+        "{} OS cfg sites outside crates/horch-platform:\n{}\nexempt:\n{}",
+        found.len(),
+        found.join("\n"),
+        exempt.join("\n")
+    );
+}
+
+/// Each exempt file still has an OS `cfg`, so the exemption list stays true.
+#[test]
+fn pl2_exempt_build_script_still_needs_its_exemption() {
+    let (root, _) = production_files();
+    for (path, why) in OS_CFG_EXEMPT {
+        let text = std::fs::read_to_string(root.join(path)).unwrap();
+        assert!(
+            !os_cfg_sites(&text).0.is_empty(),
+            "{path} has no OS cfg any more; remove its exemption ({why})"
+        );
+    }
+}

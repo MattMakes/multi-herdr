@@ -39,12 +39,13 @@ flate2 = { version = "1", default-features = false, features = ["rust_backend"] 
 horch-marketplace.workspace = true
 serde_yaml.workspace = true
 
-# `setsid`, so the grid tidy a departing worker leaves behind outlives the pane.
-[target.'cfg(unix)'.dependencies]
+# The Unix tests signal processes directly, and build the `.tar.gz` release
+# archive that `horch self-update` unpacks there.
+[target.'cfg(unix)'.dev-dependencies]
 libc = "0.2"
-# `horch self-update` unpacks the unix release archive, a `.tar.gz`.
 tar = { version = "0.4", default-features = false }
 
-# `horch self-update` unpacks the windows release archive, a `.zip`.
-[target.'cfg(windows)'.dependencies]
+# The Windows tests build the `.zip` release archive that `horch self-update`
+# unpacks there.
+[target.'cfg(windows)'.dev-dependencies]
 zip = { version = "2", default-features = false, features = ["deflate"] }

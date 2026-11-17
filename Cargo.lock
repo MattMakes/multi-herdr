@@ -713,7 +713,6 @@ dependencies = [
  "sha2",
  "tempfile",
  "ureq",
- "winreg",
  "zip",
 ]
 
@@ -758,7 +757,6 @@ dependencies = [
  "sha2",
  "tempfile",
  "uuid",
- "windows-sys 0.61.2",
 ]
 
 [[package]]
