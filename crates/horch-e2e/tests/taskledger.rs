@@ -217,7 +217,11 @@ fn queue_claim_and_status_through_the_cli() {
         .iter()
         .map(|e| e["kind"].as_str().unwrap())
         .collect();
-    assert_eq!(kinds, vec!["added", "claimed", "progress"]);
+    // The claim also starts the live attempt of the task.
+    assert_eq!(
+        kinds,
+        vec!["added", "claimed", "attempt_started", "progress"]
+    );
 
     ok(&h, &["ledger", "cancel", "T-2", "not needed"]);
     let st = json_of(&h, &["ledger", "status", "--json"]);

@@ -19,6 +19,8 @@ use super::store::optional;
 use super::util::{self, About};
 use super::workers::{self, Worker};
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
+use crate::fleetd::task_execution::application::commands as attempts;
+use crate::fleetd::task_execution::domain::task::{after_failure, AfterFailure};
 
 /// How much a retried task moves ahead of the queue (section 5.4).
 pub const RETRY_PRIORITY_BOOST: i64 = 1000;
@@ -953,6 +955,7 @@ fn held_task(conn: &Connection, w: &Worker) -> Result<Option<Task>> {
 
 /// Take the next task for `w`, or end `w` when the queue has none for it.
 fn claim_next(conn: &Connection, w: &Worker, run_id: &str, persona: &str) -> Result<ClaimOutcome> {
+    attempts::refuse_second_attempt(conn, &w.worker_id)?;
     let Some(task) = pick_task(conn, w, run_id, persona)? else {
         return no_task(conn, w, persona, run_id);
     };
@@ -1160,6 +1163,7 @@ fn take_task(conn: &Connection, w: &Worker, task: &Task) -> Result<()> {
          WHERE worker_id = ?1",
         params![worker_id, task.task_id, attempt, now],
     )?;
+    attempts::start_attempt(conn, &task.task_id, attempt, w)?;
     // An open worktree from an earlier attempt becomes this worker's.
     conn.execute(
         &format!(
@@ -1437,22 +1441,35 @@ pub fn requeue(conn: &Connection, task_id: &str, why: &str) -> Result<Requeue> {
 /// The writes of [`requeue`] for the running or landing `task`, in the open
 /// transaction of `conn`.
 fn requeue_in(conn: &Connection, task: &Task, why: &str) -> Result<Requeue> {
+    let max = super::runs::get(conn, &task.run_id)?.max_attempts;
+    match after_failure(task.attempts - task.attempt_floor, max) {
+        AfterFailure::Escalate => {
+            hold_in(conn, task)?;
+            Ok(Requeue::Held)
+        }
+        AfterFailure::Retry => {
+            retry_in(conn, task, why)?;
+            Ok(Requeue::Queued)
+        }
+    }
+}
+
+/// `ScheduleRetry` of fleetd: queue the running or landing task `task_id`
+/// again, first in line, in the open transaction of `conn`.
+pub fn schedule_retry(conn: &Connection, task_id: &str, why: &str) -> Result<()> {
+    retry_in(conn, &get(conn, task_id)?, why)
+}
+
+/// `EscalateTask` of fleetd: hold the running or landing task `task_id`
+/// for the operator, in the open transaction of `conn` (L4).
+pub fn escalate(conn: &Connection, task_id: &str) -> Result<()> {
+    hold_in(conn, &get(conn, task_id)?)
+}
+
+/// Queue `task` again, first in line.
+fn retry_in(conn: &Connection, task: &Task, why: &str) -> Result<()> {
     let task_id = task.task_id.as_str();
     let queued = TaskStatus::Queued.as_str();
-    let max = super::runs::get(conn, &task.run_id)?.max_attempts;
-    let used = task.attempts - task.attempt_floor;
-    if used >= max {
-        let held = format!("{used} attempts failed");
-        let text = format!("{} is held for the operator: {held} ({}). Release it with horch ledger requeue {} \"<reason>\".", task.short(), attempt_ends(conn, task)?.join("; "), task.short());
-        let cause = util::Why::Event(EventKind::Blocked, &text);
-        util::transition(conn, Entity::Task, task_id, queued, Actor::Horch, cause)?;
-        conn.execute(
-            "UPDATE tasks SET current_worker_id = NULL, held_reason = ?2, updated_at = ?3
-             WHERE task_id = ?1",
-            params![task_id, held, util::now()],
-        )?;
-        return Ok(Requeue::Held);
-    }
     let text = format!("{} is queued again, first in line: {why}", task.short());
     let cause = util::Why::Event(EventKind::Requeued, &text);
     util::transition(conn, Entity::Task, task_id, queued, Actor::Horch, cause)?;
@@ -1461,7 +1478,24 @@ fn requeue_in(conn: &Connection, task: &Task, why: &str) -> Result<Requeue> {
          WHERE task_id = ?1",
         params![task_id, RETRY_PRIORITY_BOOST, util::now()],
     )?;
-    Ok(Requeue::Queued)
+    Ok(())
+}
+
+/// Hold `task` for the operator: `queued` with `held_reason` (#168).
+fn hold_in(conn: &Connection, task: &Task) -> Result<()> {
+    let task_id = task.task_id.as_str();
+    let queued = TaskStatus::Queued.as_str();
+    let used = task.attempts - task.attempt_floor;
+    let held = format!("{used} attempts failed");
+    let text = format!("{} is held for the operator: {held} ({}). Release it with horch ledger requeue {} \"<reason>\".", task.short(), attempt_ends(conn, task)?.join("; "), task.short());
+    let cause = util::Why::Event(EventKind::Blocked, &text);
+    util::transition(conn, Entity::Task, task_id, queued, Actor::Horch, cause)?;
+    conn.execute(
+        "UPDATE tasks SET current_worker_id = NULL, held_reason = ?2, updated_at = ?3
+         WHERE task_id = ?1",
+        params![task_id, held, util::now()],
+    )?;
+    Ok(())
 }
 
 /// How each attempt at `task` since the last operator requeue ended, oldest
@@ -2273,17 +2307,143 @@ mod tests {
             .map(|e| e.kind)
             .collect();
         // The end of a worker had no event before; now it is a transition.
+        // Each claim also starts its live attempt.
         assert_eq!(
             kinds,
             [
                 "added",
                 "claimed",
+                "attempt_started",
                 "transition",
                 "requeued",
                 "claimed",
+                "attempt_started",
                 "cancelled",
                 "transition"
             ]
+        );
+    }
+}
+
+#[cfg(test)]
+mod attempt_tests {
+    use super::*;
+    use crate::fleetd::task_execution::adapters::sqlite as attempts;
+    use crate::fleetd::task_execution::domain::task::{AttemptRow, AttemptState, Recorded};
+    use crate::taskledger::runs::{self, NewRun};
+    use crate::taskledger::workers::NewWorker;
+    use crate::taskledger::Store;
+
+    fn ledger(dir: &std::path::Path) -> (Store, Run) {
+        let mut store = Store::open(&dir.join("ledger.sqlite3")).unwrap();
+        let new_run = NewRun {
+            slug: "r1".into(),
+            ..Default::default()
+        };
+        let run = store
+            .immediate(|tx| runs::create(tx, dir, &new_run))
+            .unwrap();
+        (store, run)
+    }
+
+    fn add_task(store: &mut Store, run: &Run, title: &str) -> String {
+        let new = NewTask::work(title, &format!("tickets/{title}.md"), "dev");
+        store
+            .immediate(|tx| add(tx, run, &new, Actor::Orchestrator))
+            .unwrap()
+            .task_id
+    }
+
+    /// A worker of `dev` in pane `w0:p1` whose agent is pid 4000, started
+    /// at 7.
+    fn worker(store: &mut Store, run: &Run) -> String {
+        let new = NewWorker {
+            run_id: run.run_id.clone(),
+            persona: "dev".into(),
+            pane_id: Some("w0:p1".into()),
+            ..Default::default()
+        };
+        store
+            .immediate(|tx| {
+                let id = workers::insert(tx, &new)?;
+                workers::supervisor_started(tx, &id, 3999, Some(6))?;
+                workers::agent_started(tx, &id, 4000, Some(7))?;
+                Ok(id)
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn claim_writes_1_live_attempt() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, run) = ledger(dir.path());
+        let task = add_task(&mut store, &run, "a");
+        let w = worker(&mut store, &run);
+
+        store.immediate(|tx| claim(tx, &w)).unwrap();
+        // A second claim by the same worker gives its own task back.
+        store.immediate(|tx| claim(tx, &w)).unwrap();
+
+        let rows = attempts::attempts_of_worker(store.conn(), &w).unwrap();
+        assert_eq!(
+            rows,
+            [AttemptRow {
+                id: format!("{task}/A1"),
+                task_id: Some(task.clone()),
+                worker_id: w.clone(),
+                state: AttemptState::Live,
+                process: Some(Recorded {
+                    pid: 4000,
+                    pid_start: Some(7),
+                }),
+                pane: Some("w0:p1".into()),
+            }]
+        );
+        let created: i64 = store
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM events WHERE entity = 'attempt' AND entity_id = ?1
+                     AND from_state IS NULL AND to_state = 'live'",
+                [format!("{task}/A1")],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(created, 1);
+    }
+
+    #[test]
+    fn i4_dispatch_refuses_a_worker_with_a_live_attempt() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, run) = ledger(dir.path());
+        let held = add_task(&mut store, &run, "held");
+        let next = add_task(&mut store, &run, "next");
+        let w = worker(&mut store, &run);
+        // The worker is not working, and an attempt of another task holds it.
+        store
+            .immediate(|tx| {
+                let a = AttemptRow {
+                    id: format!("{held}/A1"),
+                    task_id: Some(held.clone()),
+                    worker_id: w.clone(),
+                    state: AttemptState::Live,
+                    process: None,
+                    pane: None,
+                };
+                attempts::insert_attempt(tx, &a, &util::now())
+            })
+            .unwrap();
+
+        let err = store.immediate(|tx| claim(tx, &w)).unwrap_err();
+
+        assert!(format!("{err:#}").contains("I4"), "{err:#}");
+        for t in [&held, &next] {
+            assert_eq!(get(store.conn(), t).unwrap().status, "queued");
+        }
+        assert_eq!(
+            attempts::attempts_of_worker(store.conn(), &w)
+                .unwrap()
+                .len(),
+            1
         );
     }
 }

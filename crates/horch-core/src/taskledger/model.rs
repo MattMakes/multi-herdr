@@ -299,6 +299,9 @@ ledger_enum!(
         Imported = "imported",
         Reopened = "reopened",
         Dismissed = "dismissed",
+        // A claim creates the live attempt of its task. Only the cause of
+        // a `transition` event names it.
+        AttemptStarted = "attempt_started",
         // A state change through `transition()`, with its entity, its
         // states and its cause in the columns of version 8.
         Transition = "transition",
