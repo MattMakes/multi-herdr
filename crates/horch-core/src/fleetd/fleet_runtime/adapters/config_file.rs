@@ -69,40 +69,48 @@ struct FileJobLimits {
 
 impl FileKeys {
     fn into_config(self) -> FleetConfig {
-        let d = FleetConfig::default();
-        let j = self.job_limit_s;
-        let dj = d.job_limit_s;
+        let defaults = FleetConfig::default();
+        let file_jobs = self.job_limit_s;
+        let default_jobs = defaults.job_limit_s;
         FleetConfig {
-            pass_period_s: self.pass_period_s.unwrap_or(d.pass_period_s),
-            pass_time_budget_s: self.pass_time_budget_s.unwrap_or(d.pass_time_budget_s),
-            scan_budget_ms: self.scan_budget_ms.unwrap_or(d.scan_budget_ms),
-            pass_budget: self.pass_budget.unwrap_or(d.pass_budget),
-            stop_grace_s: self.stop_grace_s.unwrap_or(d.stop_grace_s),
-            retention_days: self.retention_days.unwrap_or(d.retention_days),
-            abandoned_run_limit: self.abandoned_run_limit.unwrap_or(d.abandoned_run_limit),
-            job_backoff_s: self.job_backoff_s.unwrap_or(d.job_backoff_s),
+            pass_period_s: self.pass_period_s.unwrap_or(defaults.pass_period_s),
+            pass_time_budget_s: self
+                .pass_time_budget_s
+                .unwrap_or(defaults.pass_time_budget_s),
+            scan_budget_ms: self.scan_budget_ms.unwrap_or(defaults.scan_budget_ms),
+            pass_budget: self.pass_budget.unwrap_or(defaults.pass_budget),
+            stop_grace_s: self.stop_grace_s.unwrap_or(defaults.stop_grace_s),
+            retention_days: self.retention_days.unwrap_or(defaults.retention_days),
+            abandoned_run_limit: self
+                .abandoned_run_limit
+                .unwrap_or(defaults.abandoned_run_limit),
+            job_backoff_s: self.job_backoff_s.unwrap_or(defaults.job_backoff_s),
             job_limit_s: JobLimits {
-                worktree_add: j.worktree_add.unwrap_or(dj.worktree_add),
-                worktree_remove: j.worktree_remove.unwrap_or(dj.worktree_remove),
-                worktree_list: j.worktree_list.unwrap_or(dj.worktree_list),
-                docs_sync: j.docs_sync.unwrap_or(dj.docs_sync),
-                conformance: j.conformance.unwrap_or(dj.conformance),
+                worktree_add: file_jobs.worktree_add.unwrap_or(default_jobs.worktree_add),
+                worktree_remove: file_jobs
+                    .worktree_remove
+                    .unwrap_or(default_jobs.worktree_remove),
+                worktree_list: file_jobs
+                    .worktree_list
+                    .unwrap_or(default_jobs.worktree_list),
+                docs_sync: file_jobs.docs_sync.unwrap_or(default_jobs.docs_sync),
+                conformance: file_jobs.conformance.unwrap_or(default_jobs.conformance),
             },
             health_min_free_disk_gb: self
                 .health_min_free_disk_gb
-                .unwrap_or(d.health_min_free_disk_gb),
+                .unwrap_or(defaults.health_min_free_disk_gb),
             health_max_load_per_cpu: self
                 .health_max_load_per_cpu
-                .unwrap_or(d.health_max_load_per_cpu),
+                .unwrap_or(defaults.health_max_load_per_cpu),
             health_min_free_memory_mb: self
                 .health_min_free_memory_mb
-                .unwrap_or(d.health_min_free_memory_mb),
+                .unwrap_or(defaults.health_min_free_memory_mb),
             health_max_process_share: self
                 .health_max_process_share
-                .unwrap_or(d.health_max_process_share),
+                .unwrap_or(defaults.health_max_process_share),
             health_max_open_file_share: self
                 .health_max_open_file_share
-                .unwrap_or(d.health_max_open_file_share),
+                .unwrap_or(defaults.health_max_open_file_share),
         }
     }
 }

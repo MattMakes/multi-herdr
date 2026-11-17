@@ -37,7 +37,7 @@ pub struct FleetConfig {
     pub job_limit_s: JobLimits,
     /// The free disk floor. Starting value 10 GB.
     pub health_min_free_disk_gb: u64,
-    /// The load floor for each CPU. Starting value 1.0, the `load >= cpus`
+    /// The maximum load for each CPU. Starting value 1.0, the `load >= cpus`
     /// note of `horch spawn` (`crates/horch/src/cmd/spawn.rs`).
     pub health_max_load_per_cpu: f64,
     /// The free memory floor. Starting value 1024 MB.
@@ -93,7 +93,7 @@ impl Default for FleetConfig {
 
 /// A value of `fleet.toml` out of its range. The text names the key.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ConfigError(pub String);
+pub struct ConfigError(String);
 
 impl std::fmt::Display for ConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -115,6 +115,8 @@ impl FleetConfig {
             ("stop_grace_s", self.stop_grace_s),
             ("retention_days", self.retention_days),
             ("abandoned_run_limit", self.abandoned_run_limit),
+            ("health_min_free_disk_gb", self.health_min_free_disk_gb),
+            ("health_min_free_memory_mb", self.health_min_free_memory_mb),
             ("job_limit_s.worktree_add", jobs.worktree_add),
             ("job_limit_s.worktree_remove", jobs.worktree_remove),
             ("job_limit_s.worktree_list", jobs.worktree_list),
@@ -211,7 +213,7 @@ mod tests {
                 ..FleetConfig::default()
             };
             let err = c.validate().unwrap_err();
-            assert!(err.0.contains("pass_time_budget_s"), "{err}");
+            assert!(err.to_string().contains("pass_time_budget_s"), "{err}");
         }
         let c = FleetConfig {
             pass_time_budget_s: HANG_LIMIT_S - 1,
@@ -222,7 +224,7 @@ mod tests {
 
     #[test]
     fn a_value_out_of_range_is_refused_with_its_key() {
-        let cases: [(&str, FleetConfig); 6] = [
+        let cases: [(&str, FleetConfig); 8] = [
             (
                 "pass_period_s",
                 FleetConfig {
@@ -241,6 +243,20 @@ mod tests {
                 "job_backoff_s",
                 FleetConfig {
                     job_backoff_s: vec![],
+                    ..Default::default()
+                },
+            ),
+            (
+                "health_min_free_disk_gb",
+                FleetConfig {
+                    health_min_free_disk_gb: 0,
+                    ..Default::default()
+                },
+            ),
+            (
+                "health_min_free_memory_mb",
+                FleetConfig {
+                    health_min_free_memory_mb: 0,
                     ..Default::default()
                 },
             ),
@@ -271,7 +287,7 @@ mod tests {
         ];
         for (key, c) in cases {
             let err = c.validate().unwrap_err();
-            assert!(err.0.contains(key), "{key}: {err}");
+            assert!(err.to_string().contains(key), "{key}: {err}");
         }
     }
 }
