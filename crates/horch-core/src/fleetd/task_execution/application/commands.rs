@@ -214,7 +214,7 @@ mod tests {
     use crate::fleetd::ideas::application::needs_you;
     use crate::fleetd::task_execution::adapters::sqlite;
     use crate::fleetd::task_execution::domain::task::{
-        ProcessScope, Recorded, RowRef, Seen, Target,
+        InPane, ProcessScope, Recorded, RowRef, Seen, Target,
     };
     use crate::taskledger::model::{Actor, TaskStatus, WorkerStatus};
     use crate::taskledger::runs::{self, NewRun, Run};
@@ -350,7 +350,7 @@ mod tests {
 
         /// The facts of the OS for each process that a row names, and the
         /// panes `panes`.
-        fn facts(&self, panes: &[(&str, Option<Recorded>)]) -> Facts {
+        fn facts(&self, panes: &[(&str, InPane)]) -> Facts {
             let rows = sqlite::rows(self.store.conn(), &util::host_name()).unwrap();
             let processes = rows
                 .named_processes()
@@ -385,6 +385,14 @@ mod tests {
                 .into_iter()
                 .map(|i| i.key)
                 .collect()
+        }
+    }
+
+    /// `p` runs in a pane.
+    fn runs(p: Recorded) -> InPane {
+        InPane::Runs {
+            pid: p.pid,
+            pid_start: p.pid_start.unwrap(),
         }
     }
 
@@ -490,7 +498,7 @@ mod tests {
         for a in agents {
             a.end();
         }
-        let facts = l.facts(&[("w0:p1", Some(stranger.recorded()))]);
+        let facts = l.facts(&[("w0:p1", runs(stranger.recorded()))]);
 
         let stops = l.finish_exited(&facts);
 
@@ -519,7 +527,7 @@ mod tests {
         );
 
         // A pane whose process is the recorded agent is the pane of the row.
-        let stops = l.mark_orphans(&l.facts(&[("w0:p1", Some(agent.recorded()))]));
+        let stops = l.mark_orphans(&l.facts(&[("w0:p1", runs(agent.recorded()))]));
         assert_eq!(
             stops,
             [
@@ -544,12 +552,12 @@ mod tests {
         l.end_worker(&w, WorkerStatus::Stopped, None);
         let stranger = Sleep::start();
 
-        let stops = l.mark_orphans(&l.facts(&[("w0:p1", Some(stranger.recorded()))]));
+        let stops = l.mark_orphans(&l.facts(&[("w0:p1", runs(stranger.recorded()))]));
 
         assert_eq!(stops, [process_stop(RowRef::Worker(w), agent.recorded())]);
         assert_eq!(l.open_items(), ["pane_kept:w0:p1"]);
         // No process of the snapshot either: the pane is kept too.
-        let stops = l.mark_orphans(&l.facts(&[("w0:p1", None)]));
+        let stops = l.mark_orphans(&l.facts(&[("w0:p1", InPane::Unknown)]));
         assert!(!stops
             .iter()
             .any(|s| matches!(s.target, Target::Pane { .. })));

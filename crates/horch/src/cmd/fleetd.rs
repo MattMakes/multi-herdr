@@ -53,7 +53,7 @@ use horch_core::fleetd::fleet_runtime::domain::health::{Finding, Hold};
 use horch_core::fleetd::fleet_runtime::domain::heartbeat::{is_hung, is_older, Exe, Heartbeat};
 use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
 use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
-use horch_core::fleetd::task_execution::domain::task::{AttemptRow, Recorded};
+use horch_core::fleetd::task_execution::domain::task::{AttemptRow, InPane};
 use horch_core::fleetd::worker_profiles::adapters::launcher::Launcher;
 use horch_core::fleetd::worker_profiles::application::ports::{EnvRule, LaunchSpec, ProcessHost};
 use horch_core::procid;
@@ -780,24 +780,24 @@ struct Live<'a> {
 impl Outside for Live<'_> {
     /// Each pane of each herdr workspace, with the process that herdr
     /// started in it (`shell_pid`) and its start time: the fact that proves
-    /// a pane is the pane of a row (FM-22). A pane whose process-info fails
-    /// has no process. A pane whose process has gone has its pid with no
-    /// start time: only the record of a polite stop of that pid can prove
-    /// the pane then. A list that fails gives no snapshot, so no pane counts
-    /// as gone.
-    fn panes(&self) -> Option<BTreeMap<String, Option<Recorded>>> {
+    /// a pane is the pane of a row (FM-22). A pane whose process-info fails,
+    /// or whose process cannot be read, is [`InPane::Unknown`], so it is
+    /// never closed. A pane whose pid no process has is [`InPane::Gone`]:
+    /// only the record of a polite stop of that pid can prove the pane then.
+    /// A list that fails gives no snapshot, so no pane counts as gone.
+    fn panes(&self) -> Option<BTreeMap<String, InPane>> {
         let mut panes = BTreeMap::new();
         for ws in self.herdr.workspace_list().ok()? {
             for pane in self.herdr.pane_list(&ws.workspace_id).ok()? {
-                let process = self
-                    .herdr
-                    .pane_shell_pid(&pane.pane_id)
-                    .ok()
-                    .map(|pid| Recorded {
-                        pid,
-                        pid_start: horch_core::procid::start_time(pid),
-                    });
-                panes.insert(pane.pane_id, process);
+                let in_pane = match self.herdr.pane_shell_pid(&pane.pane_id) {
+                    Err(_) => InPane::Unknown,
+                    Ok(pid) => match procid::start_time(pid) {
+                        Some(pid_start) => InPane::Runs { pid, pid_start },
+                        None if !procid::alive(pid, None) => InPane::Gone(pid),
+                        None => InPane::Unknown,
+                    },
+                };
+                panes.insert(pane.pane_id, in_pane);
             }
         }
         Some(panes)

@@ -282,7 +282,9 @@ impl Fake {
 }
 
 impl Outside for Fake {
-    fn panes(&self) -> Option<BTreeMap<String, Option<Recorded>>> {
+    fn panes(
+        &self,
+    ) -> Option<BTreeMap<String, horch_core::fleetd::task_execution::domain::task::InPane>> {
         None
     }
 

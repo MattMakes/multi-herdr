@@ -1058,7 +1058,9 @@ mod tests {
     struct NoOutside;
 
     impl Outside for NoOutside {
-        fn panes(&self) -> Option<BTreeMap<String, Option<Recorded>>> {
+        fn panes(
+            &self,
+        ) -> Option<BTreeMap<String, crate::fleetd::task_execution::domain::task::InPane>> {
             None
         }
 

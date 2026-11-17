@@ -177,13 +177,23 @@ pub struct Facts {
     /// The recorded processes that the pass read. A process that is not in
     /// the map is [`Seen::Unknown`].
     pub processes: BTreeMap<Recorded, Seen>,
-    /// The panes of the herdr snapshot, each with the process in it when
-    /// herdr reports one. `None` when the pass has no snapshot. A process
-    /// with no start time is a pid that herdr names and that no process
-    /// has now.
-    pub panes: Option<BTreeMap<String, Option<Recorded>>>,
+    /// The panes of the herdr snapshot, each with what herdr reports of the
+    /// process in it. `None` when the pass has no snapshot.
+    pub panes: Option<BTreeMap<String, InPane>>,
     /// The records of the polite stops whose processes are gone.
     pub stopped: Vec<Stopped>,
+}
+
+/// What herdr reports of the process in a pane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InPane {
+    /// herdr names no process, or the pass cannot tell whether it runs. It
+    /// never proves a pane.
+    Unknown,
+    /// herdr names this process, and it runs with this start time.
+    Runs { pid: u32, pid_start: u64 },
+    /// herdr names this pid, and no process has it now.
+    Gone(u32),
 }
 
 /// The record of the polite stop of a process that is gone.
@@ -215,24 +225,28 @@ impl Facts {
         self.panes.as_ref().map(|p| p.contains_key(pane))
     }
 
+    /// What the snapshot reports of the process in `pane`.
+    fn in_pane(&self, pane: &str) -> Option<InPane> {
+        self.panes.as_ref().and_then(|p| p.get(pane)).copied()
+    }
+
     /// The process in `pane` when it is 1 of `recorded`, by pid and start
     /// time: the second fact that proves the pane is the pane of the row.
     fn pane_runs(&self, pane: &str, recorded: &[Recorded]) -> Option<Recorded> {
-        let inside = self.panes.as_ref().and_then(|p| p.get(pane)).copied();
-        inside
-            .flatten()
-            .filter(|p| p.pid_start.is_some() && recorded.contains(p))
+        let Some(InPane::Runs { pid, pid_start }) = self.in_pane(pane) else {
+            return None;
+        };
+        let p = Recorded {
+            pid,
+            pid_start: Some(pid_start),
+        };
+        recorded.contains(&p).then_some(p)
     }
 
     /// Whether herdr still names the pid of `shell`, and no process has it:
     /// the pane is the pane that `shell` ran in, and `shell` ended.
     fn pane_names_gone(&self, pane: &str, shell: Recorded) -> bool {
-        let inside = self.panes.as_ref().and_then(|p| p.get(pane)).copied();
-        let gone = Recorded {
-            pid: shell.pid,
-            pid_start: None,
-        };
-        inside == Some(Some(gone)) && self.process(shell) == Seen::Dead
+        self.in_pane(pane) == Some(InPane::Gone(shell.pid)) && self.process(shell) == Seen::Dead
     }
 }
 
@@ -458,16 +472,9 @@ pub fn orphans(rows: &Rows, facts: &Facts) -> Cleanup {
     out
 }
 
-/// The pane of a row whose process `s` ended on its polite stop. The pane
-/// is closed only when the record proves it: the process was in the pane
-/// at the polite stop, and herdr still names its pid in the pane, which no
-/// process has now. herdr gives no identity of its server, so a pane that
-/// names another process, or none, can be a foreign pane with an old id:
-/// it is kept. A record that does not parse keeps the pane of each row
-/// that names the process.
-fn after_polite_stop(rows: &Rows, facts: &Facts, owned: &Owned, s: &Stopped) -> Cleanup {
-    let named: Vec<Named> = rows
-        .workers
+/// The rows of this host that name the process `p`.
+fn naming(rows: &Rows, p: Recorded) -> Vec<Named> {
+    rows.workers
         .values()
         .filter(|w| w.judged())
         .map(named_by_worker)
@@ -477,18 +484,36 @@ fn after_polite_stop(rows: &Rows, facts: &Facts, owned: &Owned, s: &Stopped) -> 
                 .filter(|a| rows.judged(a))
                 .map(named_by_attempt),
         )
-        .filter(|n| n.processes.contains(&s.process))
-        .collect();
+        .filter(|n| n.processes.contains(&p))
+        .collect()
+}
+
+/// Whether the record `s` waits for a pass with a herdr snapshot: a row
+/// names its process and a pane, and no pane can be judged without one.
+pub fn needs_snapshot(rows: &Rows, s: &Stopped) -> bool {
+    naming(rows, s.process).iter().any(|n| n.pane.is_some())
+}
+
+/// The pane of a row whose process `s` ended on its polite stop. The pane
+/// is closed only when the record proves it: the process was in the pane
+/// at the polite stop, and herdr still names its pid in the pane, which no
+/// process has now. herdr gives no identity of its server, so a pane that
+/// names another process, or none, can be a foreign pane with an old id:
+/// it is kept. A record that does not parse keeps the pane of each row
+/// that names the process. A record with no pane keeps the pane of a row
+/// whose processes are all gone: no pane stop waits for that pane.
+fn after_polite_stop(rows: &Rows, facts: &Facts, owned: &Owned, s: &Stopped) -> Cleanup {
     let mut out = Cleanup::default();
-    for n in &named {
+    for n in naming(rows, s.process) {
         let Some(pane) = &n.pane else {
             continue;
         };
+        let all_gone = || n.processes.iter().all(|p| facts.process(*p) == Seen::Dead);
         let proven = match &s.proof {
-            PaneProof::None => continue,
+            PaneProof::None if !all_gone() => continue,
             PaneProof::Pane(p) if p != pane => continue,
             PaneProof::Pane(_) => true,
-            PaneProof::Unreadable => false,
+            PaneProof::None | PaneProof::Unreadable => false,
         };
         if owned.panes.contains(pane) || facts.has_pane(pane) != Some(true) {
             continue;
@@ -713,7 +738,15 @@ mod tests {
         }
     }
 
-    fn facts(seen: &[(Recorded, Seen)], panes: &[(&str, Option<Recorded>)]) -> Facts {
+    /// `p` runs in a pane.
+    fn runs(p: Recorded) -> InPane {
+        InPane::Runs {
+            pid: p.pid,
+            pid_start: p.pid_start.unwrap(),
+        }
+    }
+
+    fn facts(seen: &[(Recorded, Seen)], panes: &[(&str, InPane)]) -> Facts {
         Facts {
             processes: seen.iter().copied().collect(),
             panes: Some(panes.iter().map(|(p, r)| (p.to_string(), *r)).collect()),
@@ -748,7 +781,7 @@ mod tests {
         );
         let f = facts(
             &[(AGENT, Seen::Dead), (SUPERVISOR, Seen::Alive)],
-            &[("w0:p1", None)],
+            &[("w0:p1", InPane::Unknown)],
         );
         let reaps = dead_attempts(&r, &f);
         assert_eq!(reaps.len(), 1);
@@ -787,7 +820,10 @@ mod tests {
         let mut a = attempt(AttemptState::Live);
         a.process = None;
         let r = rows(worker("W", "working", true), Some(a), Some(task(1)));
-        assert_eq!(dead_attempts(&r, &facts(&[], &[("w0:p1", None)])), vec![]);
+        assert_eq!(
+            dead_attempts(&r, &facts(&[], &[("w0:p1", InPane::Unknown)])),
+            vec![]
+        );
         let no_snapshot = Facts::default();
         assert_eq!(dead_attempts(&r, &no_snapshot), vec![]);
         assert_eq!(dead_attempts(&r, &facts(&[], &[])).len(), 1);
@@ -857,7 +893,7 @@ mod tests {
         );
         let f = facts(
             &[(AGENT, Seen::Alive), (SUPERVISOR, Seen::Alive)],
-            &[("w0:p1", Some(AGENT))],
+            &[("w0:p1", runs(AGENT))],
         );
         let out = orphans(&r, &f);
         assert_eq!(
@@ -888,7 +924,7 @@ mod tests {
         // attempt row, which names only the agent, does not.
         let f = facts(
             &[(AGENT, Seen::Alive), (SUPERVISOR, Seen::Alive)],
-            &[("w0:p1", Some(SUPERVISOR))],
+            &[("w0:p1", runs(SUPERVISOR))],
         );
         let out = orphans(&r, &f);
         assert_eq!(out.kept, vec![]);
@@ -934,10 +970,10 @@ mod tests {
             &[(AGENT, Seen::Dead), (SUPERVISOR, Seen::Dead)],
             &[(
                 "w0:p1",
-                Some(Recorded {
+                InPane::Runs {
                     pid: 7,
-                    pid_start: Some(7),
-                }),
+                    pid_start: 7,
+                },
             )],
         );
         assert_eq!(orphans(&r, &f), Cleanup::default());
@@ -976,7 +1012,7 @@ mod tests {
     /// A worker row that ended, whose supervisor ended on its polite stop,
     /// and the facts of a later pass with the record `proof` and the pane
     /// `w0:p1` with the process `inside`.
-    fn after_stop(proof: PaneProof, inside: Option<Recorded>) -> (Rows, Facts) {
+    fn after_stop(proof: PaneProof, inside: InPane) -> (Rows, Facts) {
         let r = rows(worker("W", "stopped", false), None, None);
         let mut f = facts(
             &[(AGENT, Seen::Dead), (SUPERVISOR, Seen::Dead)],
@@ -991,10 +1027,7 @@ mod tests {
 
     /// herdr names the pid of the supervisor in the pane, and no process
     /// has that pid.
-    const GONE: Recorded = Recorded {
-        pid: 101,
-        pid_start: None,
-    };
+    const GONE: InPane = InPane::Gone(101);
 
     fn kept_pane() -> Cleanup {
         Cleanup {
@@ -1008,7 +1041,7 @@ mod tests {
 
     #[test]
     fn a_pane_proven_at_the_polite_stop_closes_after_the_process_ends() {
-        let (r, f) = after_stop(PaneProof::Pane("w0:p1".into()), Some(GONE));
+        let (r, f) = after_stop(PaneProof::Pane("w0:p1".into()), GONE);
         assert_eq!(
             orphans(&r, &f).stops,
             vec![Stop {
@@ -1031,7 +1064,7 @@ mod tests {
             pid: 101,
             pid_start: Some(9),
         };
-        for inside in [Some(other), Some(reused), None] {
+        for inside in [runs(other), runs(reused), InPane::Unknown] {
             let (r, f) = after_stop(PaneProof::Pane("w0:p1".into()), inside);
             assert_eq!(orphans(&r, &f), kept_pane(), "{inside:?}");
         }
@@ -1039,28 +1072,44 @@ mod tests {
 
     #[test]
     fn an_unreadable_record_keeps_the_pane_of_the_row() {
-        let (r, f) = after_stop(PaneProof::Unreadable, Some(GONE));
+        let (r, f) = after_stop(PaneProof::Unreadable, GONE);
         assert_eq!(orphans(&r, &f), kept_pane());
     }
 
     #[test]
-    fn a_record_with_no_pane_or_another_pane_does_nothing() {
-        for proof in [PaneProof::None, PaneProof::Pane("w0:p9".into())] {
-            let (r, f) = after_stop(proof, Some(GONE));
-            assert_eq!(orphans(&r, &f), Cleanup::default());
-        }
+    fn a_record_of_another_pane_does_nothing() {
+        let (r, f) = after_stop(PaneProof::Pane("w0:p9".into()), GONE);
+        assert_eq!(orphans(&r, &f), Cleanup::default());
+    }
+
+    #[test]
+    fn a_record_with_no_pane_keeps_the_pane_once_each_process_of_the_row_is_gone() {
+        let (r, f) = after_stop(PaneProof::None, GONE);
+        assert_eq!(orphans(&r, &f), kept_pane());
+        // The scan did not reach the agent: the pane waits for its end.
+        let (r, mut f) = after_stop(PaneProof::None, GONE);
+        f.processes.insert(AGENT, Seen::Unknown);
+        assert_eq!(orphans(&r, &f), Cleanup::default());
+    }
+
+    #[test]
+    fn a_record_waits_for_a_snapshot_only_when_a_row_names_its_process_and_a_pane() {
+        let (mut r, f) = after_stop(PaneProof::None, GONE);
+        assert!(needs_snapshot(&r, &f.stopped[0]));
+        r.workers.get_mut("W").unwrap().pane = None;
+        assert!(!needs_snapshot(&r, &f.stopped[0]));
     }
 
     #[test]
     fn a_gone_pane_no_snapshot_or_a_live_owner_does_nothing_after_the_polite_stop() {
         let proof = || PaneProof::Pane("w0:p1".into());
-        let (r, mut f) = after_stop(proof(), Some(GONE));
+        let (r, mut f) = after_stop(proof(), GONE);
         f.panes = Some(BTreeMap::new());
         assert_eq!(orphans(&r, &f), Cleanup::default());
         f.panes = None;
         assert_eq!(orphans(&r, &f), Cleanup::default());
         // A live worker row now has the pane.
-        let (mut r, f) = after_stop(proof(), Some(GONE));
+        let (mut r, f) = after_stop(proof(), GONE);
         let mut other = worker("V", "working", true);
         other.agent = None;
         other.supervisor = None;
