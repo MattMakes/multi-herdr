@@ -868,6 +868,12 @@ impl WorkerSteps for PaneWorker<'_> {
         if let Some(db) = &brief.ledger_db {
             self.ctx.paths.ledger_db = PathBuf::from(db);
             self.ctx.paths.ledger_override = Some(PathBuf::from(db));
+            // 1 ledger has 1 fleet root: the folder `fleet` beside it, as
+            // `Paths::from_env` derives it. The checkin period is read there.
+            self.ctx.paths.fleet_root = Path::new(db)
+                .parent()
+                .unwrap_or(Path::new(""))
+                .join("fleet");
         }
         if let Some(id) = &brief.worker_id {
             self.ledger = Some((self.ctx.paths.ledger_db.clone(), id.clone()));
@@ -2508,6 +2514,25 @@ mod tests {
                 !r.execution_status().is_live(),
                 "{:?}",
                 r.execution_status()
+            );
+        }
+
+        /// The checkin period comes from `fleet.toml` of the fleet root, so
+        /// the fleet root moves with the ledger of the brief.
+        #[test]
+        fn a_brief_ledger_moves_the_fleet_root_beside_it() {
+            let tmp = tempfile::tempdir().unwrap();
+            let ledger = tmp.path().join("isolated").join("ledger.sqlite3");
+            let mut ctx = RuntimeContext::from_env(&MapEnv::new(tmp.path().join("home"))).unwrap();
+            let enter_dir = |_: &Path| -> Result<()> { Ok(()) };
+            let mut worker = PaneWorker::new(&mut ctx, "sonnet-1", &enter_dir);
+            let mut brief = Steps::brief();
+            brief.project_dir = tmp.path().to_string_lossy().into_owned();
+            brief.ledger_db = Some(ledger.to_string_lossy().into_owned());
+            worker.enter_context(&brief).unwrap();
+            assert_eq!(
+                ctx.paths.fleet_root,
+                tmp.path().join("isolated").join("fleet")
             );
         }
 
