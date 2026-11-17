@@ -12,6 +12,11 @@ const MASK: u32 =
 
 const HEADER: usize = std::mem::size_of::<libc::inotify_event>();
 
+/// The most reads of the queue in 1 call of `changed`. A busy folder
+/// cannot hold the call: the events after the last read wait for the next
+/// call.
+const MAX_READS: usize = 16;
+
 #[derive(Debug)]
 pub(crate) struct Watcher {
     fd: OwnedFd,
@@ -61,7 +66,7 @@ impl Watcher {
         let mut overflow = false;
         let mut gone = Vec::new();
         let mut buf = [0u8; 4096];
-        loop {
+        for _ in 0..MAX_READS {
             // SAFETY: `buf` is writable for its full length, and the fd is
             // non-blocking, so the read returns at once.
             let n = unsafe { libc::read(self.fd.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };

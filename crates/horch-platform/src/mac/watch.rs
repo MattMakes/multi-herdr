@@ -11,6 +11,11 @@ use crate::unix::watch::c_path;
 /// The events of 1 read of the queue. A full read reads again.
 const BATCH: usize = 64;
 
+/// The most reads of the queue in 1 call of `changed`. A busy folder
+/// cannot hold the call: the events after the last read wait for the next
+/// call.
+const MAX_READS: usize = 16;
+
 #[derive(Debug)]
 pub(crate) struct Watcher {
     queue: OwnedFd,
@@ -89,7 +94,7 @@ impl Watcher {
             tv_sec: 0,
             tv_nsec: 0,
         };
-        loop {
+        for _ in 0..MAX_READS {
             // SAFETY: `kevent` is plain data, and an all-zero value is valid.
             let mut events: [libc::kevent; BATCH] = unsafe { std::mem::zeroed() };
             // SAFETY: the change list is empty, `events` holds `BATCH`

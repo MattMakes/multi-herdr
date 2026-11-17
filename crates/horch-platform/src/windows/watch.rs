@@ -48,7 +48,14 @@ unsafe impl Send for Dir {}
 
 impl Dir {
     fn open(dir: &Path) -> io::Result<Dir> {
-        let wide: Vec<u16> = dir.as_os_str().encode_wide().chain(Some(0)).collect();
+        let mut wide: Vec<u16> = dir.as_os_str().encode_wide().collect();
+        if wide.contains(&0) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a path with a NUL character",
+            ));
+        }
+        wide.push(0);
         // SAFETY: `wide` is a NUL-terminated wide string that lives for the
         // call. Null security attributes and template are allowed.
         let handle = unsafe {
@@ -65,7 +72,7 @@ impl Dir {
         if handle == INVALID_HANDLE_VALUE {
             return Err(io::Error::last_os_error());
         }
-        let mut dir = Dir {
+        let mut watch = Dir {
             handle,
             // SAFETY: `OVERLAPPED` is plain data, and an all-zero value is
             // the documented start value.
@@ -73,8 +80,8 @@ impl Dir {
             buffer: Box::new(Buffer([0; 1024])),
             armed: false,
         };
-        dir.arm()?;
-        Ok(dir)
+        watch.arm()?;
+        Ok(watch)
     }
 
     /// Start the next read.
@@ -113,7 +120,7 @@ impl Dir {
         }
         let mut bytes = 0u32;
         // SAFETY: the `OVERLAPPED` is of the read in flight on this handle,
-        // and `bwait` 0 makes the call return at once.
+        // and the last argument `FALSE` makes the call return at once.
         let ok = unsafe { GetOverlappedResult(self.handle, &*self.overlapped, &mut bytes, 0) };
         // SAFETY: `GetLastError` reads the error of this thread.
         if ok == 0 && unsafe { GetLastError() } == ERROR_IO_INCOMPLETE {
