@@ -246,10 +246,12 @@ fn fm22_orphan_process_and_pane_after_a_reap_are_stopped() {
     let mut fleetds = Fleetds::new(&h);
     fleetds.start(&h, "fleetd");
     let started = Instant::now();
-    // The polite stop goes to each process of the group of the leader.
-    wait_for("the polite stop of the child", || {
-        got_term(&h, "w", "child").then_some(())
+    // The polite stop goes to each process of the group of the leader. Each
+    // process writes its mark when it handles the signal, in any order.
+    wait_for("the polite stop of the child and the leader", || {
+        (got_term(&h, "w", "child") && got_term(&h, "w", "leader")).then_some(())
     });
+    assert!(got_term(&h, "w", "child"));
     assert!(got_term(&h, "w", "leader"));
     wait_for_or(
         "the kill of the group and the close of the pane",
