@@ -19,8 +19,11 @@ pub const PHASE_1_VERSION: i64 = 8;
 /// The version of the Phase 2 tables and columns of fleetd (`phase_2`).
 pub const PHASE_2_VERSION: i64 = PHASE_1_VERSION + 1;
 
+/// The version of the Phase 3 columns of `worktrees` (`phase_3`).
+pub const PHASE_3_VERSION: i64 = PHASE_2_VERSION + 1;
+
 /// The schema version this binary writes.
-pub const VERSION: i64 = PHASE_2_VERSION;
+pub const VERSION: i64 = PHASE_3_VERSION;
 
 /// A rule that applies to rows this ledger writes, not to imported ones
 /// (section 11.2): `CHECK (origin = 'import' OR <expr>)`.
@@ -868,6 +871,63 @@ fn phase_2_backfill(conn: &Connection, now: &str) -> Result<()> {
     Ok(())
 }
 
+/// The state of a worktree in the design ("Worktrees: leased, reconciled,
+/// never lost"), beside `status`, which keeps today's words (MAP.md of
+/// fleetd-p3, Q3).
+const WORKTREE_STATE: &str = "CHECK (state IN ('reserved', 'created', 'active', 'landing', 'landed', 'removed', 'orphaned', 'rescued'))";
+
+/// Version [`PHASE_3_VERSION`]: the state, owner and rescue columns of
+/// `worktrees` (docs/specs/fleetd/design.md, "Ledger" and "Migration plan"
+/// item 5; MAP.md of fleetd-p3, Q2). `base_commit` is the design's
+/// `base_sha` and `bytes_on_disk` its `disk_bytes`.
+///
+/// The default `orphaned` of `state` is a bridge for the writers that do
+/// not give a state yet, and is never the state of a row at the update
+/// ([`phase_3_backfill`] sets each one). The ticket that makes each of
+/// them write the state:
+/// - `worktree_ops::create`: ticket 08.
+/// - `finish::insert_worktree`: ticket 08.
+/// - `runs.rs`, the run gate folder: ticket 12.
+/// - `triage::apply::adopt`: ticket 13.
+/// - `import.rs`, `insert_worktree` of an imported tree: no ticket.
+///
+/// An orphaned tree is rescued, and a rescue never removes a tree.
+fn phase_3() -> String {
+    format!(
+        "ALTER TABLE worktrees ADD COLUMN state TEXT NOT NULL DEFAULT 'orphaned' {WORKTREE_STATE};
+ALTER TABLE worktrees ADD COLUMN owner_attempt TEXT REFERENCES attempts(id);
+ALTER TABLE worktrees ADD COLUMN head_sha TEXT;
+ALTER TABLE worktrees ADD COLUMN dirty INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE worktrees ADD COLUMN rescue_ref TEXT;
+ALTER TABLE worktrees ADD COLUMN seen_at TEXT;"
+    )
+}
+
+/// The release backfill of Phase 3 (MAP.md of fleetd-p3, Q19), from the
+/// rows alone: it reads no process and no folder, and the first pass of
+/// fleetd checks each fact again.
+/// - a `cleaned` tree is `removed`.
+/// - a tree whose task has a `live` attempt of the worker of the row is
+///   `active`, with that attempt as owner. A scratch tree has no task: the
+///   `live` attempt of its worker holds it. With 2, the newest holds it.
+/// - each other tree is `orphaned`, with no owner.
+fn phase_3_backfill() -> String {
+    format!(
+        "UPDATE worktrees SET owner_attempt = (
+        SELECT a.id FROM attempts a
+        WHERE a.state = 'live' AND a.worker_id = worktrees.worker_id
+            AND (a.task_id = worktrees.task_id OR EXISTS (SELECT 1 FROM worktree_modes m
+                WHERE m.worktree_id = worktrees.worktree_id AND m.scratch = 1))
+        ORDER BY a.started_at DESC, a.rowid DESC LIMIT 1)
+    WHERE status <> '{cleaned}';
+UPDATE worktrees SET state = CASE
+        WHEN status = '{cleaned}' THEN 'removed'
+        WHEN owner_attempt IS NOT NULL THEN 'active'
+        ELSE 'orphaned' END;",
+        cleaned = WorktreeStatus::Cleaned,
+    )
+}
+
 /// Bring the database to [`VERSION`]. A file from a newer binary is refused:
 /// this one would not know its columns.
 ///
@@ -1047,6 +1107,13 @@ fn migrate_unchecked(
         phase_2_backfill(&tx, &super::util::now())
             .context("backfilling the leases and the wait limits of a run in flight")?;
         no_broken_reference(&tx, PHASE_2_VERSION)?;
+    }
+    if due(PHASE_3_VERSION) {
+        tx.execute_batch(&phase_3())
+            .context("adding the state, owner and rescue columns of worktrees")?;
+        tx.execute_batch(&phase_3_backfill())
+            .context("backfilling the state and the owner of each worktree")?;
+        no_broken_reference(&tx, PHASE_3_VERSION)?;
     }
     tx.pragma_update(None, "user_version", target)?;
     tx.commit()?;
@@ -1503,12 +1570,15 @@ mod v7_tests {
         ];
         // The Phase 2 step reads the stored text of `tasks`, so it runs on
         // the connection.
-        assert_eq!(steps.len() as i64 + 1, VERSION, "add the new step here");
+        assert_eq!(steps.len() as i64 + 2, VERSION, "add the new step here");
         for sql in steps.iter().take(version as usize) {
             conn.execute_batch(sql).unwrap();
         }
         if version >= PHASE_2_VERSION {
             phase_2(&conn).unwrap();
+        }
+        if version >= PHASE_3_VERSION {
+            conn.execute_batch(&phase_3()).unwrap();
         }
         conn.execute("INSERT INTO projects VALUES ('p', '/r', 'now')", [])
             .unwrap();
