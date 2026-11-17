@@ -1,6 +1,7 @@
-//! The keys of Phase 1 of `fleet.toml`, their default or starting values
-//! (`docs/specs/fleetd/design.md`, "The numbers of the design", and
-//! `docs/tickets/fleetd-p1/MAP.md`, Q1 and Q2), and the range of each.
+//! The keys of Phase 1 and Phase 2 of `fleet.toml`, their default or
+//! starting values (`docs/specs/fleetd/design.md`, "The numbers of the
+//! design", and `docs/tickets/fleetd-p1/MAP.md`, Q1 and Q2), and the range
+//! of each.
 //!
 //! This module does no I/O and parses no text: `adapters/config_file.rs`
 //! reads and parses `<fleet root>/fleet.toml` into a [`FleetConfig`], then
@@ -10,7 +11,7 @@
 /// (PL-5), not a key: the time budget of a pass stays below it.
 pub const HANG_LIMIT_S: u64 = 30;
 
-/// The Phase 1 keys of `fleet.toml`.
+/// The Phase 1 and Phase 2 keys of `fleet.toml`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FleetConfig {
     /// The period of the reconcile pass. Default 5 s.
@@ -50,6 +51,26 @@ pub struct FleetConfig {
     /// The share of the open file limit of the system that the open files
     /// of the user may use. Starting value 0.9.
     pub health_max_open_file_share: f64,
+    /// The period of the wrapper heartbeat. Starting value 10 s, 1 to 60
+    /// (design, "The numbers of the design", "Wrapper heartbeat").
+    pub heartbeat_every_s: u64,
+    /// The age under which a heartbeat renews a lease. Starting value 30 s,
+    /// above `heartbeat_every_s` and at most 300 (design, "Heartbeat age for
+    /// a lease renewal").
+    pub heartbeat_max_age_s: u64,
+    /// The time limit of a question. Starting value 900 s (15 min), 60 to
+    /// 86400 (design, "Time limit of a question").
+    pub question_limit_s: u64,
+    /// The replan limit of a `failed` task. Starting value 1800 s (30 min),
+    /// 60 to 86400. The design names it `replan_limit`; the key has the unit
+    /// in its name (`docs/tickets/fleetd-p2/MAP.md`, Q1).
+    pub replan_limit_s: u64,
+    /// The used share of the binding window of a pool at which the pool
+    /// counts as limited (RR-11), and below which the pool probe reports ok.
+    /// Starting value 0.98, above 0.5 and at most 1.0. Source: today's
+    /// `exhausted_used` in `crates/horch-core/src/routing/policy.rs`
+    /// (`docs/tickets/fleetd-p2/MAP.md`, Q1).
+    pub pool_full_use: f64,
 }
 
 /// The `job_limit_s` table: the time limit of each job kind, in seconds.
@@ -91,6 +112,11 @@ impl Default for FleetConfig {
             health_min_free_memory_mb: 1024,
             health_max_process_share: 0.9,
             health_max_open_file_share: 0.9,
+            heartbeat_every_s: 10,
+            heartbeat_max_age_s: 30,
+            question_limit_s: 900,
+            replan_limit_s: 1800,
+            pool_full_use: 0.98,
         }
     }
 }
@@ -166,6 +192,27 @@ impl FleetConfig {
             if !(v > 0.0 && v <= 1.0) {
                 return refuse(format!("{key} must be above 0 and at most 1, got {v}"));
             }
+        }
+        for (key, v, min, max) in [
+            ("heartbeat_every_s", self.heartbeat_every_s, 1, 60),
+            ("question_limit_s", self.question_limit_s, 60, 86_400),
+            ("replan_limit_s", self.replan_limit_s, 60, 86_400),
+        ] {
+            if !(min..=max).contains(&v) {
+                return refuse(format!("{key} must be {min} to {max}, got {v}"));
+            }
+        }
+        if self.heartbeat_max_age_s <= self.heartbeat_every_s || self.heartbeat_max_age_s > 300 {
+            return refuse(format!(
+                "heartbeat_max_age_s must be above heartbeat_every_s ({} s) and at most 300, got {}",
+                self.heartbeat_every_s, self.heartbeat_max_age_s
+            ));
+        }
+        if !(self.pool_full_use > 0.5 && self.pool_full_use <= 1.0) {
+            return refuse(format!(
+                "pool_full_use must be above 0.5 and at most 1, got {}",
+                self.pool_full_use
+            ));
         }
         Ok(())
     }
@@ -292,6 +339,140 @@ mod tests {
         for (key, c) in cases {
             let err = c.validate().unwrap_err();
             assert!(err.to_string().contains(key), "{key}: {err}");
+        }
+    }
+
+    #[test]
+    fn phase2_keys_have_their_defaults() {
+        let c = FleetConfig::default();
+        assert_eq!(c.heartbeat_every_s, 10);
+        assert_eq!(c.heartbeat_max_age_s, 30);
+        assert_eq!(c.question_limit_s, 900);
+        assert_eq!(c.replan_limit_s, 1800);
+        assert_eq!(c.pool_full_use, 0.98);
+    }
+
+    #[test]
+    fn heartbeat_max_age_must_be_above_heartbeat_every() {
+        for age in [10, 9] {
+            let c = FleetConfig {
+                heartbeat_every_s: 10,
+                heartbeat_max_age_s: age,
+                ..FleetConfig::default()
+            };
+            let err = c.validate().unwrap_err().to_string();
+            assert!(err.contains("heartbeat_max_age_s"), "{err}");
+            assert!(err.contains("heartbeat_every_s"), "{err}");
+        }
+        let c = FleetConfig {
+            heartbeat_every_s: 10,
+            heartbeat_max_age_s: 11,
+            ..FleetConfig::default()
+        };
+        assert_eq!(c.validate(), Ok(()));
+    }
+
+    #[test]
+    fn pool_full_use_out_of_range_is_refused() {
+        for v in [0.5, 0.0, 1.01, f64::NAN] {
+            let c = FleetConfig {
+                pool_full_use: v,
+                ..FleetConfig::default()
+            };
+            let err = c.validate().unwrap_err().to_string();
+            assert!(err.contains("pool_full_use"), "{v}: {err}");
+        }
+        for v in [0.51, 1.0] {
+            let c = FleetConfig {
+                pool_full_use: v,
+                ..FleetConfig::default()
+            };
+            assert_eq!(c.validate(), Ok(()), "{v}");
+        }
+    }
+
+    #[test]
+    fn a_phase2_value_out_of_range_is_refused_with_its_key() {
+        let d = FleetConfig::default;
+        let cases = [
+            (
+                "heartbeat_every_s",
+                FleetConfig {
+                    heartbeat_every_s: 0,
+                    ..d()
+                },
+            ),
+            (
+                "heartbeat_every_s",
+                FleetConfig {
+                    heartbeat_every_s: 61,
+                    heartbeat_max_age_s: 300,
+                    ..d()
+                },
+            ),
+            (
+                "heartbeat_max_age_s",
+                FleetConfig {
+                    heartbeat_max_age_s: 301,
+                    ..d()
+                },
+            ),
+            (
+                "question_limit_s",
+                FleetConfig {
+                    question_limit_s: 59,
+                    ..d()
+                },
+            ),
+            (
+                "question_limit_s",
+                FleetConfig {
+                    question_limit_s: 86_401,
+                    ..d()
+                },
+            ),
+            (
+                "replan_limit_s",
+                FleetConfig {
+                    replan_limit_s: 59,
+                    ..d()
+                },
+            ),
+            (
+                "replan_limit_s",
+                FleetConfig {
+                    replan_limit_s: 86_401,
+                    ..d()
+                },
+            ),
+        ];
+        for (key, c) in cases {
+            let err = c.validate().unwrap_err().to_string();
+            assert!(err.contains(key), "{key}: {err}");
+        }
+        let edges = [
+            FleetConfig {
+                heartbeat_every_s: 1,
+                ..d()
+            },
+            FleetConfig {
+                heartbeat_every_s: 60,
+                heartbeat_max_age_s: 300,
+                ..d()
+            },
+            FleetConfig {
+                question_limit_s: 60,
+                replan_limit_s: 86_400,
+                ..d()
+            },
+            FleetConfig {
+                question_limit_s: 86_400,
+                replan_limit_s: 60,
+                ..d()
+            },
+        ];
+        for c in edges {
+            assert_eq!(c.validate(), Ok(()), "{c:?}");
         }
     }
 }

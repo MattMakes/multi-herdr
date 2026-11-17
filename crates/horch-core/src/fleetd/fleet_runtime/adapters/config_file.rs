@@ -55,6 +55,11 @@ struct FileKeys {
     health_min_free_memory_mb: Option<u64>,
     health_max_process_share: Option<f64>,
     health_max_open_file_share: Option<f64>,
+    heartbeat_every_s: Option<u64>,
+    heartbeat_max_age_s: Option<u64>,
+    question_limit_s: Option<u64>,
+    replan_limit_s: Option<u64>,
+    pool_full_use: Option<f64>,
 }
 
 #[derive(Deserialize, Default)]
@@ -111,6 +116,13 @@ impl FileKeys {
             health_max_open_file_share: self
                 .health_max_open_file_share
                 .unwrap_or(defaults.health_max_open_file_share),
+            heartbeat_every_s: self.heartbeat_every_s.unwrap_or(defaults.heartbeat_every_s),
+            heartbeat_max_age_s: self
+                .heartbeat_max_age_s
+                .unwrap_or(defaults.heartbeat_max_age_s),
+            question_limit_s: self.question_limit_s.unwrap_or(defaults.question_limit_s),
+            replan_limit_s: self.replan_limit_s.unwrap_or(defaults.replan_limit_s),
+            pool_full_use: self.pool_full_use.unwrap_or(defaults.pool_full_use),
         }
     }
 }
@@ -160,6 +172,51 @@ mod tests {
     fn a_file_value_out_of_range_is_refused() {
         let err = parse("pass_time_budget_s = 30\n").unwrap_err();
         assert!(format!("{err:#}").contains("pass_time_budget_s"), "{err:#}");
+    }
+
+    #[test]
+    fn phase2_keys_have_their_defaults() {
+        let root = tempfile::tempdir().unwrap();
+        let c = load(root.path()).unwrap();
+        assert_eq!(c.heartbeat_every_s, 10);
+        assert_eq!(c.heartbeat_max_age_s, 30);
+        assert_eq!(c.question_limit_s, 900);
+        assert_eq!(c.replan_limit_s, 1800);
+        assert_eq!(c.pool_full_use, 0.98);
+    }
+
+    #[test]
+    fn a_file_sets_each_phase2_key() {
+        let c = parse(
+            "heartbeat_every_s = 5\nheartbeat_max_age_s = 20\nquestion_limit_s = 600\n\
+             replan_limit_s = 3600\npool_full_use = 0.95\n",
+        )
+        .unwrap();
+        let want = FleetConfig {
+            heartbeat_every_s: 5,
+            heartbeat_max_age_s: 20,
+            question_limit_s: 600,
+            replan_limit_s: 3600,
+            pool_full_use: 0.95,
+            ..FleetConfig::default()
+        };
+        assert_eq!(c, want);
+    }
+
+    #[test]
+    fn heartbeat_max_age_must_be_above_heartbeat_every() {
+        let err = parse("heartbeat_every_s = 30\nheartbeat_max_age_s = 30\n").unwrap_err();
+        let err = format!("{err:#}");
+        assert!(err.contains("heartbeat_max_age_s"), "{err}");
+        assert!(err.contains("heartbeat_every_s"), "{err}");
+    }
+
+    #[test]
+    fn pool_full_use_out_of_range_is_refused() {
+        for text in ["pool_full_use = 0.5\n", "pool_full_use = 1.5\n"] {
+            let err = format!("{:#}", parse(text).unwrap_err());
+            assert!(err.contains("pool_full_use"), "{text}: {err}");
+        }
     }
 
     #[test]
