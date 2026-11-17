@@ -392,13 +392,7 @@ fn job_of_5_min_runs_while_fleetd_stays_healthy_and_is_not_restarted() {
 #[test]
 fn job_past_its_limit_runs_again_after_its_backoff_and_after_3_abandoned_runs_goes_to_you() {
     let h = world("p1-job-backoff");
-    let backoff: [u64; 3] = [1, 2, 4];
-    std::fs::create_dir_all(fleet_root(&h)).unwrap();
-    std::fs::write(
-        fleet_root(&h).join("fleet.toml"),
-        "pass_period_s = 1\nstop_grace_s = 1\nabandoned_run_limit = 3\njob_backoff_s = [1, 2, 4]\n",
-    )
-    .unwrap();
+    write_short_job_config(&h);
     let mut fleetds = Fleetds::new(&h);
     let task = checked_task(&h, &mut fleetds, "/bin/sleep 600");
     start_fleetd(&h, &mut fleetds);
@@ -417,8 +411,35 @@ fn job_past_its_limit_runs_again_after_its_backoff_and_after_3_abandoned_runs_go
             (abandoned == 3 && needs_you(&db(&h), "open") == 1).then_some(rows)
         },
     );
-    assert_eq!(ended.len(), 3, "{ended:#?}");
     assert_eq!(ended[0].id, first);
+    assert_3_abandoned_runs(&ended, limit);
+    assert_each_run_waited_for_its_backoff(&ended);
+    assert_no_4th_run_starts(&h);
+    assert_requeue_starts_run_4(&h, ended[2].id);
+}
+
+/// The backoff before run 2, 3 and 4, in seconds.
+const BACKOFF_S: [u64; 3] = [1, 2, 4];
+
+/// A `fleet.toml` with short numbers, so the test ends in less than 1 min.
+/// The rule is the same with the starting values.
+fn write_short_job_config(h: &Harness) {
+    let backoff: Vec<String> = BACKOFF_S.iter().map(u64::to_string).collect();
+    std::fs::create_dir_all(fleet_root(h)).unwrap();
+    std::fs::write(
+        fleet_root(h).join("fleet.toml"),
+        format!(
+            "pass_period_s = 1\nstop_grace_s = 1\nabandoned_run_limit = 3\njob_backoff_s = [{}]\n",
+            backoff.join(", ")
+        ),
+    )
+    .unwrap();
+}
+
+/// Runs 1 to 3 ended `abandoned` with no result, each with the count of
+/// abandoned runs so far and the limit of run 1.
+fn assert_3_abandoned_runs(ended: &[jobs_store::JobRow], limit: u64) {
+    assert_eq!(ended.len(), 3, "{ended:#?}");
     for (i, row) in ended.iter().enumerate() {
         let run = i as i64 + 1;
         assert_eq!(row.run, run, "{ended:#?}");
@@ -430,12 +451,15 @@ fn job_past_its_limit_runs_again_after_its_backoff_and_after_3_abandoned_runs_go
         );
         assert!(row.result_json.is_none(), "run {run}: {row:#?}");
     }
-    // Each next run starts only after its backoff on the fleet clock: its
-    // run before it ended at its deadline or later, and its start on the
-    // fleet clock is its deadline minus its time limit.
+}
+
+/// Each next run starts only after its backoff on the fleet clock: its run
+/// before it ended at its deadline or later, and its start on the fleet
+/// clock is its deadline minus its time limit.
+fn assert_each_run_waited_for_its_backoff(ended: &[jobs_store::JobRow]) {
     for pair in ended.windows(2) {
         let (before, next) = (&pair[0], &pair[1]);
-        let wait = backoff[before.abandoned_runs as usize - 1] as i64;
+        let wait = BACKOFF_S[before.abandoned_runs as usize - 1] as i64;
         let not_before = next.not_before.expect("the backoff of the next run").0;
         let before_deadline = before.deadline.expect("the deadline of the run").0;
         let start = next.deadline.expect("the deadline of the run").0 - next.time_limit_s as i64;
@@ -451,24 +475,30 @@ fn job_past_its_limit_runs_again_after_its_backoff_and_after_3_abandoned_runs_go
             next.run
         );
     }
-    // No 4th run starts: wait longer than the longest backoff and some passes.
-    std::thread::sleep(Duration::from_secs(backoff[2] + 4));
-    let rows = job_rows(&db(&h));
+}
+
+/// No 4th run starts: wait longer than the longest backoff and some passes.
+fn assert_no_4th_run_starts(h: &Harness) {
+    std::thread::sleep(Duration::from_secs(BACKOFF_S[2] + 4));
+    let rows = job_rows(&db(h));
     assert_eq!(
         rows.len(),
         3,
         "a 4th run started with no requeue: {rows:#?}"
     );
-    assert_eq!(needs_you(&db(&h), "open"), 1);
-    // The exit of the needs-you list: `horch job requeue` starts run 4.
-    let last = ended[2].id.to_string();
-    ok(&h, &["job", "requeue", &last]);
-    let fourth = wait_for(&h, "run 4 to run", Duration::from_secs(30), || {
-        job_rows(&db(&h))
+    assert_eq!(needs_you(&db(h), "open"), 1);
+}
+
+/// The exit of the needs-you list: `horch job requeue <job>` starts run 4
+/// with the count at 0, and resolves the item.
+fn assert_requeue_starts_run_4(h: &Harness, last: i64) {
+    ok(h, &["job", "requeue", &last.to_string()]);
+    let fourth = wait_for(h, "run 4 to run", Duration::from_secs(30), || {
+        job_rows(&db(h))
             .into_iter()
             .find(|r| r.run == 4 && r.state == State::Running)
     });
     assert_eq!(fourth.abandoned_runs, 0, "{fourth:#?}");
-    assert_eq!(needs_you(&db(&h), "open"), 0);
-    assert_eq!(needs_you(&db(&h), "resolved"), 1);
+    assert_eq!(needs_you(&db(h), "open"), 0);
+    assert_eq!(needs_you(&db(h), "resolved"), 1);
 }
