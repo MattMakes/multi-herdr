@@ -769,7 +769,7 @@ All under `horch ledger`. `--json` on every read command.
 | `run gate [--check "<cmd>"]` | orchestrator | run the whole-run check on the run-branch tip (added by trace-fixes) |
 | `run close [--pr-declined "<reason>"\|--abandon "<reason>"]`, `run list` | orchestrator | close a settled, gated run with a merged or declined PR; list the project's runs (added after v0.3.0) |
 | `unblock <task> --from <task>` | orchestrator | drop 1 dependency (added after v0.3.0) |
-| `requeue <task>` | orchestrator | queue a held task again; a cancelled task is refused, because `cancelled` is terminal (added after v0.3.0) |
+| `requeue <task> "<reason>"` | orchestrator | queue a held task again; a cancelled task is refused, because `cancelled` is terminal (added after v0.3.0) |
 | `waive <task> <finding> "<reason>"` | orchestrator | rule that 1 code-sweep finding does not block (added after v0.3.0) |
 | `events` | anyone | the run's history, oldest first |
 | `path` | anyone | print the ledger file path |
