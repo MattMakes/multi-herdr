@@ -555,13 +555,12 @@ fn watch_once_reports_in_text_and_json() {
         "No worker was due for a check.\n"
     );
     assert_eq!(w.ok(&["ledger", "watch", "--once", "--json"]), "[]\n");
-    // Forced: the worker has no agent process, so it is dead and reaped.
+    // Forced: the worker has no agent process. The fleetd pass ends its
+    // attempt before the duty check (I4), so no worker is left to check,
+    // and the task is queued again.
     let forced = w.run(&["ledger", "watch", "--once", "--force"]);
     assert_eq!(forced.code, 0, "{}", forced.err);
-    assert_eq!(
-        forced.out,
-        "dev1 T-1: dead (round 0): the agent process is gone\n"
-    );
+    assert_eq!(forced.out, "No worker was due for a check.\n");
     let status = w.ok(&["ledger", "show", "T-1"]);
     assert!(status.starts_with("T-1 queued: Ticket One\n"), "{status}");
     assert!(status.contains("Attempt 1: dev1"), "{status}");
@@ -569,7 +568,35 @@ fn watch_once_reports_in_text_and_json() {
 
 #[test]
 fn watch_once_json_lists_each_checked_worker() {
-    let (w, id) = world_with_a_claimed_task();
+    let w = World::new();
+    // Many stall rounds: the forced check does not reap the worker, whose
+    // agent is this test.
+    w.ok(&[
+        "ledger",
+        "run",
+        "new",
+        "r1",
+        "--check-every",
+        "10",
+        "--stall-rounds",
+        "1000",
+    ]);
+    w.ok(&["ledger", "add", "--file", "t1.md", "--primary", "dev"]);
+    let id = w
+        .ok(&[
+            "ledger",
+            "worker",
+            "new",
+            "--persona",
+            "dev",
+            "--role",
+            "dev1",
+        ])
+        .trim()
+        .to_string();
+    let db = w.tmp.path().join("home/.horch/ledger.sqlite3");
+    horch_core::taskledger::supervisor::agent_started(&db, &id, std::process::id()).unwrap();
+    assert_eq!(w.run_as(Some(&id), &["ledger", "claim"]).code, 0);
     let forced = w.run(&["ledger", "watch", "--once", "--force", "--json"]);
     assert_eq!(forced.code, 0, "{}", forced.err);
     let checked = json(&forced.out);
@@ -578,28 +605,32 @@ fn watch_once_json_lists_each_checked_worker() {
     assert_eq!(list[0]["worker_id"], id.as_str());
     assert_eq!(list[0]["role"], "dev1");
     assert_eq!(list[0]["task"], "T-1");
-    assert_eq!(list[0]["verdict"], "dead");
-    assert_eq!(list[0]["note"], "the agent process is gone");
+    assert_eq!(list[0]["verdict"], "no_progress", "{checked}");
+    assert_eq!(list[0]["round"], 1, "{checked}");
+    // The note gives the seconds since the claim, which the test cannot fix.
+    let note = list[0]["note"].as_str().unwrap();
+    assert!(
+        note.starts_with("no ledger call, no transcript growth, no state change"),
+        "{note}"
+    );
 }
 
 #[test]
-fn ensure_starts_a_quiet_watchdog_once() {
+fn a_command_with_no_fleetd_row_starts_no_watchdog() {
     let (w, _) = world_with_a_claimed_task();
-    // The first command that runs with the watchdog on starts one.
-    let started = w.run_env(None, false, &["ledger", "status"]);
-    assert_eq!(started.code, 1, "{}", started.err);
-    assert!(
-        started.err.starts_with(
-            "horch: warning: the watchdog of run r1 was not running; started it (PID "
-        ),
-        "{}",
-        started.err
-    );
-    // A second command finds a live watchdog and starts none.
-    let again = w.run_env(None, false, &["ledger", "status"]);
-    assert!(!again.err.contains("started it"), "{}", again.err);
-    // Closing the run ends the watchdog loop at its next tick.
-    w.ok(&["ledger", "run", "close", "--abandon", "test over"]);
+    // The check before the command is on. No fleetd ran on this ledger, so
+    // it starts nothing and says nothing.
+    let status = w.run_env(None, false, &["ledger", "status"]);
+    assert_eq!(status.code, 1, "{}", status.err);
+    assert_eq!(status.err, "", "{}", status.err);
+    let locks = w.tmp.path().join("home/.horch/locks");
+    let held: Vec<_> = std::fs::read_dir(&locks)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+    assert!(held.is_empty(), "{held:?}");
 }
 
 #[test]
