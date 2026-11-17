@@ -104,43 +104,34 @@ pub fn definitions(spec: &Spec) -> io::Result<Vec<(PathBuf, String)>> {
 ///   `launchctl bootout gui/<uid>/<label>`, then
 ///   `launchctl bootstrap gui/<uid> <plist>` for `<label>` and then for
 ///   `<label>.check`. launchd refuses a `bootstrap` of a loaded label, so
-///   each label is unloaded first. A failed `bootout` is not a failure: the
+///   each label is unloaded first. A `bootout` that exits with 3 (no such
+///   process) or 113 (could not find the service) is not a failure: the
 ///   label was not loaded. The check agent goes out first and in last, so it
 ///   never acts on a fleetd that is between `bootout` and `bootstrap`.
 /// - Windows: `schtasks /Create /XML <file> /TN <name> /F` for each task,
 ///   which replaces a task that exists, then `schtasks /Run /TN <label>`.
 ///
 /// It stops at the first manager command that fails, and its error names
-/// the command, the exit status and the error output, and each failed
-/// `bootout` before it.
+/// the command, the exit status and the error output.
 pub fn ensure(spec: &Spec, manager: &Path) -> io::Result<()> {
     let defs = definitions(spec)?;
     std::fs::create_dir_all(&spec.folder)?;
     for (path, text) in &defs {
         os::write_definition(path, text)?;
     }
-    let mut tolerated = Vec::new();
     for step in os::ensure_steps(spec) {
-        match run(manager, &step.args) {
-            Ok(()) => {}
-            Err(e) if step.may_fail => tolerated.push(e.to_string()),
-            Err(e) if tolerated.is_empty() => return Err(e),
-            Err(e) => {
-                return Err(io::Error::new(
-                    e.kind(),
-                    format!("{e} (before it: {})", tolerated.join("; ")),
-                ))
-            }
-        }
+        run(manager, &step.args, step.nothing_to_do)?;
     }
     Ok(())
 }
 
-/// 1 manager command of [`ensure`]. A failure of a command that `may_fail`
-/// does not stop [`ensure`].
+/// 1 manager command of [`ensure`].
 pub(crate) struct Step {
     pub(crate) args: Vec<OsString>,
-    pub(crate) may_fail: bool,
+    /// The exit statuses other than 0 that mean that the command had
+    /// nothing to do, for example a `bootout` of a label that is not loaded.
+    /// [`ensure`] goes on after them. Each other exit status stops it.
+    pub(crate) nothing_to_do: &'static [i32],
 }
 
 /// Restarts the service of `spec` with 1 `manager` command:
@@ -151,7 +142,7 @@ pub(crate) struct Step {
 ///   task stops the old instance first.
 pub fn restart(spec: &Spec, manager: &Path) -> io::Result<()> {
     for args in os::restart_commands(spec) {
-        run(manager, &args)?;
+        run(manager, &args, &[])?;
     }
     Ok(())
 }
@@ -175,9 +166,10 @@ pub fn os_user_home() -> io::Result<PathBuf> {
     os::os_user_home()
 }
 
-/// Runs `manager` with `args` and waits. A start failure or an exit status
-/// other than 0 is an error that names the command.
-fn run(manager: &Path, args: &[OsString]) -> io::Result<()> {
+/// Runs `manager` with `args` and waits. A start failure, or an exit status
+/// other than 0 and not in `nothing_to_do`, is an error that names the
+/// command.
+fn run(manager: &Path, args: &[OsString], nothing_to_do: &[i32]) -> io::Result<()> {
     let command = || {
         let mut text = manager.display().to_string();
         for arg in args {
@@ -191,7 +183,12 @@ fn run(manager: &Path, args: &[OsString]) -> io::Result<()> {
         .stdin(Stdio::null())
         .output()
         .map_err(|e| io::Error::new(e.kind(), format!("cannot run {}: {e}", command())))?;
-    if out.status.success() {
+    if out.status.success()
+        || out
+            .status
+            .code()
+            .is_some_and(|c| nothing_to_do.contains(&c))
+    {
         return Ok(());
     }
     Err(io::Error::other(format!(

@@ -61,7 +61,7 @@ pub fn ensure_steps(spec: &Spec) -> Vec<Step> {
     .into_iter()
     .map(|args| Step {
         args,
-        may_fail: false,
+        nothing_to_do: &[],
     })
     .collect()
 }

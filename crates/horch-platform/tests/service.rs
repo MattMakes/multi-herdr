@@ -565,18 +565,24 @@ fn ensure_reloads_a_changed_definition() {
     assert_loaded(dir.path(), &new);
 }
 
-/// A failed `bootout` before a failed `bootstrap`: the error names both.
+/// A `bootout` that fails for a reason other than "not loaded" stops
+/// `ensure` before the next command: the check agent never stays loaded
+/// while fleetd is unloaded.
 #[cfg(target_os = "macos")]
 #[test]
-fn ensure_error_names_a_failed_bootout_too() {
+fn ensure_stops_at_a_bootout_that_fails_for_another_reason() {
     let dir = tempfile::tempdir().unwrap();
     let folder = dir.path().join("defs");
+    let spec = spec(&folder);
     let manager = model_manager(dir.path(), &folder);
-    std::fs::write(dir.path().join("fail-on"), "bootstrap").unwrap();
-    let err = service::ensure(&spec(&folder), &manager).expect_err("the stand-in failed");
+    service::ensure(&spec, &manager).expect("ensure 1");
+
+    std::fs::write(dir.path().join("fail-on"), "bootout").unwrap();
+    let err = service::ensure(&spec, &manager).expect_err("the stand-in failed");
     let text = err.to_string();
-    assert!(text.contains("stand-in failure: bootstrap"), "{text}");
-    assert!(text.contains("Boot-out failed: 3"), "{text}");
+    assert!(text.contains("stand-in failure: bootout"), "{text}");
+    assert!(!text.contains("bootstrap"), "ensure went on: {text}");
+    assert_loaded(dir.path(), &spec);
 }
 
 /// On Windows, `/Run` alone restarts the task: its policy `StopExisting`

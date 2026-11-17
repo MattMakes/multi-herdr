@@ -13,6 +13,11 @@ pub use crate::unix::service::{os_user_home, write_definition};
 
 pub const MANAGER: &str = "launchctl";
 
+/// The exit statuses of a `launchctl bootout` of a label that is not
+/// loaded: 3 (`ESRCH`, "No such process") and 113 ("Could not find
+/// specified service").
+const NOT_LOADED: &[i32] = &[3, 113];
+
 pub fn default_folder(home: &Path) -> PathBuf {
     home.join("Library").join("LaunchAgents")
 }
@@ -43,12 +48,13 @@ pub fn definitions(spec: &Spec) -> io::Result<Vec<(PathBuf, String)>> {
 }
 
 /// Unloads the check agent, then fleetd, then loads fleetd, then the check
-/// agent. A `bootout` of a label that is not loaded fails, and may fail.
+/// agent. A `bootout` of a label that is not loaded exits with
+/// [`NOT_LOADED`].
 pub fn ensure_steps(spec: &Spec) -> Vec<Step> {
     let labels = [spec.label.clone(), check_label(spec)];
     let bootout = labels.iter().rev().map(|label| Step {
         args: vec!["bootout".into(), format!("{}/{label}", domain()).into()],
-        may_fail: true,
+        nothing_to_do: NOT_LOADED,
     });
     let bootstrap = labels.iter().map(|label| Step {
         args: vec![
@@ -56,7 +62,7 @@ pub fn ensure_steps(spec: &Spec) -> Vec<Step> {
             domain().into(),
             plist_path(spec, label).into_os_string(),
         ],
-        may_fail: false,
+        nothing_to_do: &[],
     });
     bootout.chain(bootstrap).collect()
 }
