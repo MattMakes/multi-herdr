@@ -140,24 +140,23 @@ fn lex(source: &str) -> Result<Vec<Token>, String> {
             continue;
         }
         let start = position;
-        let kind;
-        if is_ident_start(c) {
+        let kind = if is_ident_start(c) {
             position += ident_length(rest);
-            kind = Kind::Ident;
+            Kind::Ident
         } else if c.is_ascii_digit()
             || (c == '.' && rest[1..].starts_with(|n: char| n.is_ascii_digit()))
         {
             position += number_length(rest);
-            kind = Kind::Number;
+            Kind::Number
         } else if c == '"' || c == '\'' {
             position += string_length(rest, c)?;
-            kind = Kind::Str;
+            Kind::Str
         } else if c == '`' {
             position += template_length(rest)?;
-            kind = Kind::Template;
+            Kind::Template
         } else if c == '/' && regex_allowed(source, tokens.last()) {
             position += regex_length(rest)?;
-            kind = Kind::Regex;
+            Kind::Regex
         } else {
             let length = MULTI_PUNCT
                 .iter()
@@ -165,8 +164,8 @@ fn lex(source: &str) -> Result<Vec<Token>, String> {
                 .map(|punct| punct.len())
                 .unwrap_or(c.len_utf8());
             position += length;
-            kind = Kind::Punct;
-        }
+            Kind::Punct
+        };
         tokens.push(Token {
             kind,
             start,
