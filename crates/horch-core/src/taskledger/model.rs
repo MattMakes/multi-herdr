@@ -299,6 +299,9 @@ ledger_enum!(
         Imported = "imported",
         Reopened = "reopened",
         Dismissed = "dismissed",
+        // A state change through `transition()`, with its entity, its
+        // states and its cause in the columns of version 8.
+        Transition = "transition",
     }
 );
 

@@ -12,7 +12,7 @@ use rusqlite::Connection;
 use super::model::*;
 
 /// The schema version this binary writes.
-pub const VERSION: i64 = 7;
+pub const VERSION: i64 = 8;
 
 /// A rule that applies to rows this ledger writes, not to imported ones
 /// (section 11.2): `CHECK (origin = 'import' OR <expr>)`.
@@ -270,6 +270,10 @@ fn worktrees_table() -> String {
     )
 }
 
+/// `events.kind` as versions 1 to 7 wrote it. Version 1 runs as a
+/// migration, so its text keeps these words; version 8 adds the later ones.
+const V1_EVENT_KIND: &str = "CHECK (kind IN ('run_created', 'added', 'claimed', 'no_task', 'progress', 'note', 'question', 'blocked', 'answered', 'fallback', 'step_started', 'step_passed', 'step_failed', 'land_started', 'land_red', 'landed', 'pr_updated', 'cleaned', 'cleanup_failed', 'done', 'unlanded', 'reaped', 'requeued', 'stopped', 'session', 'exited', 'cancelled', 'verdict', 'woke', 'imported', 'reopened', 'dismissed'))";
+
 /// The `events_table` statements.
 fn events_table() -> String {
     format!(
@@ -287,7 +291,7 @@ fn events_table() -> String {
 CREATE INDEX events_by_task ON events(task_id, event_id);
 CREATE INDEX events_by_worker ON events(worker_id, event_id);"#,
         actor = Actor::check("actor"),
-        event_kind = EventKind::check("kind"),
+        event_kind = V1_EVENT_KIND,
     )
 }
 
@@ -490,6 +494,114 @@ CREATE INDEX session_records_by_slug ON session_records(slug);",
     )
 }
 
+/// Version 8: the Phase 1 tables of fleetd (docs/specs/fleetd/design.md,
+/// "Ledger"; docs/tickets/fleetd-p1/MAP.md, Q5 to Q7). `events` is built
+/// again, as in `v5`, so its kind list has `transition`, with the columns of
+/// a transition, null in each old row. Each live worker with a task gets 1
+/// live attempt, `<task id>/A<attempt>`. The `fleetd` row is written at
+/// the first start of fleetd.
+fn v8() -> String {
+    let old = "event_id, at, run_id, task_id, worker_id, actor, kind, text";
+    let events = events_table()
+        .replace("CREATE TABLE events (", "CREATE TABLE events_v8 (")
+        .replace(V1_EVENT_KIND, &EventKind::check("kind"))
+        .replace(
+            "\n    text TEXT NOT NULL DEFAULT ''\n);",
+            "\n    text TEXT NOT NULL DEFAULT '',
+    entity TEXT,
+    entity_id TEXT,
+    from_state TEXT,
+    to_state TEXT,
+    cause TEXT,
+    data_json TEXT\n);",
+        );
+    // The indexes go with the old table and are made again after the rename.
+    let (events, indexes) = events.split_once("\n\n").expect("events has indexes");
+    let live: Vec<String> = WorkerStatus::ALL
+        .iter()
+        .filter(|s| s.is_live())
+        .map(|s| format!("'{s}'"))
+        .collect();
+    format!(
+        "CREATE TABLE fleetd (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    generation INTEGER NOT NULL,
+    pid INTEGER NOT NULL,
+    -- the design text says TEXT; INTEGER matches workers.agent_started and horch_platform::process::start_time
+    pid_start INTEGER NOT NULL CHECK (typeof(pid_start) = 'integer'),
+    started_at TEXT NOT NULL,
+    fleet_clock_s INTEGER NOT NULL,
+    clock_ticked_at TEXT NOT NULL
+);
+CREATE TABLE attempts (
+    id TEXT PRIMARY KEY,
+    task_id TEXT REFERENCES tasks(task_id),
+    worker_id TEXT NOT NULL REFERENCES workers(worker_id),
+    mux_handle TEXT,
+    pid INTEGER,
+    -- the design text says TEXT; INTEGER matches workers.agent_started and horch_platform::process::start_time
+    pid_start INTEGER CHECK (pid_start IS NULL OR typeof(pid_start) = 'integer'),
+    state TEXT NOT NULL CHECK (state IN ('launching', 'live', 'ended')),
+    heartbeat_seq INTEGER,
+    started_at TEXT,
+    ended_at TEXT,
+    exit_code INTEGER,
+    outcome TEXT
+);
+CREATE TABLE jobs (
+    id INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ('task_check', 'fast_gate', 'full_gate', 'trial_merge',
+        'bundle_build', 'rebase', 'rescue', 'fetch', 'push',
+        'worktree_add', 'worktree_remove', 'worktree_list', 'docs_sync', 'conformance')),
+    subject TEXT NOT NULL,
+    repo TEXT,
+    input_key TEXT NOT NULL,
+    run INTEGER NOT NULL DEFAULT 1,
+    abandoned_runs INTEGER NOT NULL DEFAULT 0,
+    not_before INTEGER,
+    state TEXT NOT NULL CHECK (state IN ('queued', 'running', 'passed', 'failed', 'abandoned')),
+    pid INTEGER,
+    -- the design text says TEXT; INTEGER matches workers.agent_started and horch_platform::process::start_time
+    pid_start INTEGER CHECK (pid_start IS NULL OR typeof(pid_start) = 'integer'),
+    time_limit_s INTEGER NOT NULL,
+    deadline INTEGER,
+    result_json TEXT,
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    ended_at TEXT,
+    UNIQUE (kind, subject, input_key, run)
+);
+CREATE UNIQUE INDEX jobs_one_active ON jobs (kind, subject) WHERE state IN ('queued', 'running');
+CREATE TABLE pass_cursors (
+    kind TEXT PRIMARY KEY,
+    after_key TEXT,
+    lap_started_at TEXT NOT NULL,
+    prev_lap_started_at TEXT
+);
+CREATE TABLE needs_you (
+    key TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    entity TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('open', 'resolved', 'superseded')),
+    text TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    ended_at TEXT
+);
+{events}
+INSERT INTO events_v8 ({old}) SELECT {old} FROM events;
+DROP TABLE events;
+ALTER TABLE events_v8 RENAME TO events;
+{indexes}
+INSERT INTO attempts (id, task_id, worker_id, pid, pid_start, state, started_at)
+    SELECT task_id || '/A' || attempt, task_id, worker_id, agent_pid, agent_started, 'live',
+        COALESCE(claimed_at, started_at, spawned_at)
+    FROM workers
+    WHERE status IN ({live}) AND task_id IS NOT NULL AND attempt IS NOT NULL;",
+        live = live.join(", "),
+    )
+}
+
 /// Bring the database to [`VERSION`]. A file from a newer binary is refused:
 /// this one would not know its columns.
 ///
@@ -503,10 +615,27 @@ pub fn migrate(conn: &mut Connection) -> Result<()> {
 /// [`migrate`], but an existing file (version 1 or more) is migrated only
 /// when `guard(version)` is `Ok`, and only after a backup (`backup`).
 pub fn migrate_guarded(conn: &mut Connection, guard: &dyn Fn(i64) -> Result<()>) -> Result<()> {
+    migrate_guarded_to(conn, guard, VERSION)
+}
+
+/// [`migrate`], but only up to `target`: a test builds an older file with
+/// the real steps, then migrates it.
+pub fn migrate_to(conn: &mut Connection, target: i64) -> Result<()> {
+    if !(1..=VERSION).contains(&target) {
+        bail!("the task ledger has no schema version {target}");
+    }
+    migrate_guarded_to(conn, &|_| Ok(()), target)
+}
+
+fn migrate_guarded_to(
+    conn: &mut Connection,
+    guard: &dyn Fn(i64) -> Result<()>,
+    target: i64,
+) -> Result<()> {
     // The pragma is a no-op inside a transaction, so it is set before one.
     let keys: bool = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0))?;
     conn.pragma_update(None, "foreign_keys", false)?;
-    let migrated = migrate_unchecked(conn, guard);
+    let migrated = migrate_unchecked(conn, guard, target);
     conn.pragma_update(None, "foreign_keys", keys)?;
     migrated
 }
@@ -596,7 +725,11 @@ fn newer_schema(file: Option<&Path>, current: i64) -> anyhow::Error {
     )
 }
 
-fn migrate_unchecked(conn: &mut Connection, guard: &dyn Fn(i64) -> Result<()>) -> Result<()> {
+fn migrate_unchecked(
+    conn: &mut Connection,
+    guard: &dyn Fn(i64) -> Result<()>,
+    target: i64,
+) -> Result<()> {
     // The write lock first, then the version: 2 processes that open a fresh
     // file at once must not both create the tables.
     let file = file_of(conn);
@@ -605,7 +738,7 @@ fn migrate_unchecked(conn: &mut Connection, guard: &dyn Fn(i64) -> Result<()>) -
     if current > VERSION {
         return Err(newer_schema(file.as_deref(), current));
     }
-    if current == VERSION {
+    if current >= target {
         return Ok(());
     }
     if current > 0 {
@@ -614,16 +747,18 @@ fn migrate_unchecked(conn: &mut Connection, guard: &dyn Fn(i64) -> Result<()>) -
             backup(file, current)?;
         }
     }
-    if current < 1 {
+    // A step runs when the file is below its version and `target` is not.
+    let due = |version: i64| current < version && version <= target;
+    if due(1) {
         tx.execute_batch(&v1())
             .context("creating the task ledger tables")?;
     }
     for (version, sql) in [(2, V2), (3, V3), (4, V4)] {
-        if current < version {
+        if due(version) {
             tx.execute_batch(sql)?;
         }
     }
-    if current < 5 {
+    if due(5) {
         tx.execute_batch(&v5())
             .context("adding the worktree triage columns")?;
         let broken: i64 =
@@ -634,14 +769,25 @@ fn migrate_unchecked(conn: &mut Connection, guard: &dyn Fn(i64) -> Result<()>) -
             bail!("the version 5 migration left {broken} rows with a broken reference");
         }
     }
-    if current < 6 {
+    if due(6) {
         tx.execute_batch(V6)?;
     }
-    if current < 7 {
+    if due(7) {
         tx.execute_batch(&v7())
             .context("adding the trace-fixes columns and tables")?;
     }
-    tx.pragma_update(None, "user_version", VERSION)?;
+    if due(8) {
+        tx.execute_batch(&v8())
+            .context("adding the fleetd tables and the attempts of live workers")?;
+        let broken: i64 =
+            tx.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
+                r.get(0)
+            })?;
+        if broken > 0 {
+            bail!("the version 8 migration left {broken} rows with a broken reference");
+        }
+    }
+    tx.pragma_update(None, "user_version", target)?;
     tx.commit()?;
     Ok(())
 }
@@ -679,7 +825,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(tables, 18);
+        assert_eq!(tables, 23);
     }
 
     /// A ledger file as version 3 left it, with 1 run.
@@ -1063,7 +1209,16 @@ mod v7_tests {
     /// 1 project row.
     fn file_at(path: &std::path::Path, version: i64) {
         let conn = Connection::open(path).unwrap();
-        let steps = [v1(), V2.into(), V3.into(), V4.into(), v5(), V6.into(), v7()];
+        let steps = [
+            v1(),
+            V2.into(),
+            V3.into(),
+            V4.into(),
+            v5(),
+            V6.into(),
+            v7(),
+            v8(),
+        ];
         assert_eq!(steps.len() as i64, VERSION, "add the new step here");
         for sql in &steps[..version as usize] {
             conn.execute_batch(sql).unwrap();

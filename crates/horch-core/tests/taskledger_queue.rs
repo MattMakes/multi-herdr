@@ -442,13 +442,25 @@ fn a_schema_2_ledger_migrates_forward_and_keeps_its_rows() {
     // and fails (`duplicate column name`).
     assert_eq!(
         horch_core::taskledger::schema::VERSION,
-        7,
+        8,
         "undo the new version here"
     );
     let path = dir.path().join("ledger.sqlite3");
     let conn = rusqlite::Connection::open(&path).unwrap();
     conn.execute_batch(
-        "DROP INDEX session_records_by_slug;
+        "DROP INDEX jobs_one_active;
+         DROP TABLE jobs;
+         DROP TABLE needs_you;
+         DROP TABLE pass_cursors;
+         DROP TABLE attempts;
+         DROP TABLE fleetd;
+         ALTER TABLE events DROP COLUMN entity;
+         ALTER TABLE events DROP COLUMN entity_id;
+         ALTER TABLE events DROP COLUMN from_state;
+         ALTER TABLE events DROP COLUMN to_state;
+         ALTER TABLE events DROP COLUMN cause;
+         ALTER TABLE events DROP COLUMN data_json;
+         DROP INDEX session_records_by_slug;
          DROP TABLE session_records;
          DROP INDEX outbox_undelivered;
          DROP TABLE outbox;
