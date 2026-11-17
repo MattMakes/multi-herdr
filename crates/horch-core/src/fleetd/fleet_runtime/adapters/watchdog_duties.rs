@@ -599,7 +599,7 @@ mod tests {
         LaunchError, LaunchSpec, Launched, ProcessHost,
     };
     use crate::runtime::fault::Faults;
-    use crate::taskledger::model::{OutboxEvent, WorkerKind};
+    use crate::taskledger::model::{OutboxEvent, TaskKind, WorkerKind};
     use crate::taskledger::runs::NewRun;
     use crate::taskledger::tasks::{self, ClaimOutcome, NewTask};
     use crate::taskledger::workers::NewWorker;
@@ -1211,6 +1211,70 @@ mod tests {
         pass(&mut w, &duties, Faults::default());
 
         assert_eq!(w.outbox(OutboxEvent::Cancelled), 1);
+    }
+
+    #[test]
+    fn pass_asks_a_worker_on_its_first_stall_for_an_update_once() {
+        let mut w = world();
+        let agent = Proc::sleep();
+        let (task, worker) = w.stalled_task(agent.recorded());
+        w.conn
+            .execute(
+                "UPDATE runs SET stall_rounds = 3 WHERE run_id = ?1",
+                [&w.run.run_id],
+            )
+            .unwrap();
+        let effects = Record::new(&w);
+        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &effects, w.dir.clone());
+
+        pass(&mut w, &duties, Faults::default());
+        pass(&mut w, &duties, Faults::default());
+
+        assert_eq!(
+            wakes_with(&w, "shows no progress"),
+            1,
+            "1 wake on the first stall, none on the second"
+        );
+        assert_eq!(w.status("workers", "worker_id", &worker), "working");
+        assert_eq!(w.status("tasks", "task_id", &task), "running");
+    }
+
+    #[test]
+    fn pass_writes_the_reviews_in_wake_once() {
+        let mut w = world();
+        let author = w.worker(WorkerKind::Worker, "working", None);
+        let new = NewTask::work("a", "tickets/a.md", "dev");
+        let parent = tasks::add(&w.conn, &w.run, &new, Actor::Orchestrator).unwrap();
+        w.conn
+            .execute(
+                "UPDATE tasks SET status = 'running', current_worker_id = ?2 WHERE task_id = ?1",
+                [&parent.task_id, &author],
+            )
+            .unwrap();
+        w.conn
+            .execute(
+                "INSERT INTO task_steps (task_id, worker_id, seq, name, status)
+                 VALUES (?1, ?2, 2, 'code-sweep', 'running')",
+                [&parent.task_id, &author],
+            )
+            .unwrap();
+        let mut review = NewTask::work("review", "review.md", "rev");
+        review.kind = TaskKind::Review;
+        review.parent_task_id = Some(parent.task_id.clone());
+        let review = tasks::add(&w.conn, &w.run, &review, Actor::Orchestrator).unwrap();
+        w.conn
+            .execute(
+                "UPDATE tasks SET status = 'done', finished_at = ?2 WHERE task_id = ?1",
+                params![review.task_id, ago(3600)],
+            )
+            .unwrap();
+        let effects = Record::new(&w);
+        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &effects, w.dir.clone());
+
+        pass(&mut w, &duties, Faults::default());
+        pass(&mut w, &duties, Faults::default());
+
+        assert_eq!(w.outbox(OutboxEvent::ReviewsIn), 1);
     }
 
     #[test]
