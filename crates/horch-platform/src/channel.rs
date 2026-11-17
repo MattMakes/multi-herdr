@@ -3,8 +3,9 @@
 //!
 //! [`Listener::bind`] makes the channel and [`Listener::accept`] gives each
 //! connection as a [`Stream`] with its [`Peer`]. A client connects with
-//! [`Stream::connect`]. [`User::current`] is the user to compare with
-//! [`Peer::user`].
+//! [`Stream::connect`], and [`Stream::server_pid`] gives the server process,
+//! to compare with the `fleetd` row. [`User::current`] is the user to
+//! compare with [`Peer::user`].
 //!
 //! The transport of each OS:
 //! - macOS and Linux: a Unix socket at the path `name`, with mode 0600, in a
@@ -13,14 +14,22 @@
 //!   `/`. Its access rule allows only this user, and it refuses remote
 //!   clients.
 //!
-//! The OS gives the facts of the peer:
+//! The OS gives the facts of the peer of an accepted connection:
 //! - macOS: `getpeereid` for the user and `LOCAL_PEERPID` for the process.
 //! - Linux: `SO_PEERCRED` for both.
 //! - Windows: `GetNamedPipeClientProcessId` for the process, and the user
 //!   of the token of that process.
 //!
+//! The OS gives the server process of a client connection:
+//! - macOS: `LOCAL_PEERPID` on the client socket. It is the process that
+//!   made the listener.
+//! - Linux: the pid of `SO_PEERCRED` on the client socket. It is the
+//!   process that made the listener.
+//! - Windows: `GetNamedPipeServerProcessId` on the client handle.
+//!
 //! A fact that an OS cannot give is [`NotSupported`] (PL-3), never a guess.
-//! Each OS of today gives both facts.
+//! Each OS of today gives each fact. Linux cannot give a process that has
+//! no pid in the pid namespace of this process.
 
 use std::fmt;
 use std::io::{self, Read, Write};
@@ -81,6 +90,15 @@ impl Stream {
     /// each read and write.
     pub fn connect(name: &Path, deadline: Instant) -> io::Result<Stream> {
         os::channel::connect(name, deadline).map(Stream)
+    }
+
+    /// The id of the server process of this client connection, from the
+    /// OS (SR-8). The fact is for a stream of [`Stream::connect`]: on a
+    /// stream of [`Listener::accept`], use [`Peer::pid`]. A process id that
+    /// the OS does not give is [`NotSupported`], so a guard that needs it
+    /// does not hold.
+    pub fn server_pid(&self) -> Result<u32, NotSupported> {
+        os::channel::server_pid(&self.0)
     }
 }
 

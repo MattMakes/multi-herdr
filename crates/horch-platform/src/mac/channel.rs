@@ -1,5 +1,6 @@
 //! The concern channel for macOS: a Unix socket. `getpeereid` gives the
-//! peer user and `LOCAL_PEERPID` gives the peer process.
+//! peer user and `LOCAL_PEERPID` gives the peer process. On a client
+//! socket, `LOCAL_PEERPID` gives the process that made the listener.
 
 use std::io;
 use std::os::unix::io::AsRawFd;
@@ -8,6 +9,7 @@ use std::time::Instant;
 
 use crate::channel::{Peer, User};
 use crate::unix::channel as unix;
+use crate::NotSupported;
 
 pub(crate) use crate::unix::channel::{bind, current_user, Listener, Stream};
 
@@ -22,6 +24,18 @@ pub(crate) fn accept(listener: &Listener) -> io::Result<(Stream, Peer)> {
         pid: Ok(peer_pid(&stream)?),
     };
     Ok((stream, peer))
+}
+
+/// An error of the OS leaves the server process unknown: the fact is not
+/// given, never a guess.
+pub(crate) fn server_pid(stream: &Stream) -> Result<u32, NotSupported> {
+    match peer_pid(stream) {
+        Ok(pid) if pid != 0 => Ok(pid),
+        _ => Err(NotSupported {
+            concern: "channel",
+            os: "macos",
+        }),
+    }
 }
 
 fn peer_uid(stream: &Stream) -> io::Result<u32> {

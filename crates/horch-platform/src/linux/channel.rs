@@ -1,5 +1,6 @@
 //! The concern channel for Linux: a Unix socket. `SO_PEERCRED` gives the
-//! peer user and the peer process.
+//! peer user and the peer process. On a client socket, it gives the
+//! process that made the listener.
 
 use std::io;
 use std::os::unix::io::AsRawFd;
@@ -16,23 +17,38 @@ pub(crate) fn connect(name: &Path, deadline: Instant) -> io::Result<Stream> {
     unix::connect(name, deadline)
 }
 
-/// The kernel writes the pid 0 when the peer process has no pid in the pid
-/// namespace of this process. Then Linux cannot give the peer process.
 pub(crate) fn accept(listener: &Listener) -> io::Result<(Stream, Peer)> {
     let stream = unix::accept(listener)?;
     let credentials = peer_credentials(&stream)?;
-    let pid = match credentials.pid {
-        0 => Err(NotSupported {
-            concern: "channel",
-            os: "linux",
-        }),
-        pid => Ok(pid as u32),
-    };
     let peer = Peer {
         user: Ok(User::Uid(credentials.uid)),
-        pid,
+        pid: known_pid(credentials.pid),
     };
     Ok((stream, peer))
+}
+
+/// An error of the OS leaves the server process unknown: the fact is not
+/// given, never a guess.
+pub(crate) fn server_pid(stream: &Stream) -> Result<u32, NotSupported> {
+    peer_credentials(stream)
+        .map_err(|_| not_supported())
+        .and_then(|credentials| known_pid(credentials.pid))
+}
+
+/// The kernel writes the pid 0 when the peer process has no pid in the pid
+/// namespace of this process. Then Linux cannot give the peer process.
+fn known_pid(pid: libc::pid_t) -> Result<u32, NotSupported> {
+    match pid {
+        0 => Err(not_supported()),
+        pid => Ok(pid as u32),
+    }
+}
+
+fn not_supported() -> NotSupported {
+    NotSupported {
+        concern: "channel",
+        os: "linux",
+    }
 }
 
 fn peer_credentials(stream: &Stream) -> io::Result<libc::ucred> {

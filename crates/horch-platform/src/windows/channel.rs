@@ -1,6 +1,7 @@
 //! The concern channel for Windows: a named pipe that only this user can
 //! open. `GetNamedPipeClientProcessId` gives the peer process, and the
-//! token of that process gives the peer user.
+//! token of that process gives the peer user. On a client handle,
+//! `GetNamedPipeServerProcessId` gives the server process.
 
 use std::fs::File;
 use std::io::{self, Read, Write};
@@ -31,7 +32,8 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 use windows_sys::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeClientProcessId,
-    WaitNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
+    GetNamedPipeServerProcessId, WaitNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
+    PIPE_TYPE_BYTE, PIPE_WAIT,
 };
 use windows_sys::Win32::System::Threading::{
     GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -39,6 +41,7 @@ use windows_sys::Win32::System::Threading::{
 use windows_sys::Win32::System::IO::CancelSynchronousIo;
 
 use crate::channel::{Peer, User};
+use crate::NotSupported;
 
 /// A named pipe server with 1 instance only. The listener holds that
 /// instance for its whole life and reuses it for each client, so no other
@@ -264,7 +267,7 @@ impl Stream {
     fn file(&self) -> &File {
         match self {
             Stream::Client(file) => file,
-            Stream::Server { view, .. } => &**view,
+            Stream::Server { view, .. } => view,
         }
     }
 }
@@ -328,6 +331,22 @@ fn peer(pipe: HANDLE) -> io::Result<Peer> {
         user: Ok(User::Sid(sid)),
         pid: Ok(pid),
     })
+}
+
+/// An error of the OS leaves the server process unknown: the fact is not
+/// given, never a guess.
+pub(crate) fn server_pid(stream: &Stream) -> Result<u32, NotSupported> {
+    let mut pid = 0u32;
+    // SAFETY: `stream` keeps its pipe handle open, and `pid` is valid for 1
+    // write.
+    let read = unsafe { GetNamedPipeServerProcessId(stream.file().as_raw_handle(), &mut pid) };
+    if read == 0 || pid == 0 {
+        return Err(NotSupported {
+            concern: "channel",
+            os: "windows",
+        });
+    }
+    Ok(pid)
 }
 
 /// `SECURITY_IDENTIFICATION` lets the server read who the client is, but

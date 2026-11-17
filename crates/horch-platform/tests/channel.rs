@@ -3,13 +3,20 @@
 
 use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use horch_platform::channel::{Listener, Stream, User};
 
 /// The env var that makes this test binary run [`child_client_helper`].
 const HELPER: &str = "HORCH_PLATFORM_CHANNEL_HELPER";
+
+/// The env var that makes this test binary run [`child_server_helper`].
+const SERVER_HELPER: &str = "HORCH_PLATFORM_CHANNEL_SERVER_HELPER";
+
+/// The line that [`child_server_helper`] writes to stderr when its
+/// listener is bound.
+const SERVER_READY: &str = "horch-channel-server-ready";
 
 /// The name of a new channel. On unix it is a socket path in a new folder,
 /// short because `sun_path` holds about 104 bytes on macOS. On Windows it
@@ -122,6 +129,68 @@ fn child_client_helper() {
     let mut stream = Stream::connect(&PathBuf::from(name), deadline()).unwrap();
     stream.write_all(b"child\n").unwrap();
     // Stay connected until the server closes the stream.
+    let mut rest = Vec::new();
+    stream.read_to_end(&mut rest).unwrap();
+}
+
+#[test]
+fn client_gets_the_pid_of_the_server() {
+    let place = place();
+    let listener = Listener::bind(&place.name).unwrap();
+    let client = Stream::connect(&place.name, deadline()).unwrap();
+    let (_stream, _) = listener.accept().unwrap();
+
+    assert_eq!(client.server_pid(), Ok(std::process::id()));
+}
+
+#[test]
+fn client_gets_the_pid_of_a_server_in_a_child_process() {
+    let place = place();
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "child_server_helper",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(SERVER_HELPER, &place.name)
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start the child server");
+    // Wait for the event "the listener is bound", not for a time.
+    let mut lines = BufReader::new(child.stderr.take().unwrap()).lines();
+    let ready = lines.any(|line| line.is_ok_and(|line| line == SERVER_READY));
+    assert!(ready, "the child server binds its listener");
+
+    let client = Stream::connect(&place.name, deadline()).unwrap();
+    let server_pid = client.server_pid();
+    // Stay connected until the server accepts the connection.
+    let mut line = String::new();
+    BufReader::new(&client).read_line(&mut line).unwrap();
+    drop(client);
+    let status = child.wait().unwrap();
+    let rest: Vec<String> = lines.map_while(Result::ok).collect();
+
+    assert_eq!(line, "server\n");
+    assert_eq!(server_pid, Ok(child.id()));
+    assert_ne!(child.id(), std::process::id());
+    assert!(
+        status.success(),
+        "the child server ends well: {status:?} {rest:?}"
+    );
+}
+
+/// The server of the test above. It does nothing in a normal test run.
+#[test]
+fn child_server_helper() {
+    let Some(name) = std::env::var_os(SERVER_HELPER) else {
+        return;
+    };
+    let listener = Listener::bind(&PathBuf::from(name)).unwrap();
+    eprintln!("{SERVER_READY}");
+    let (mut stream, _) = listener.accept().unwrap();
+    stream.write_all(b"server\n").unwrap();
+    // Stay connected until the client closes the stream.
     let mut rest = Vec::new();
     stream.read_to_end(&mut rest).unwrap();
 }
