@@ -3,14 +3,14 @@ name: opus-creative
 brief_description: Creative council seat on Opus 5.5. Spawn with fable-creative and astra-creative.
 base: fleet-worker
 agent: claude
+fallbacks: []
+no_fallback_reason: "A substitute model would give the council 2 designs from 1 model. The orchestrator runs with the seats that start (orchestrate §10)."
 # Sanctioned #58: subscription auto-mode read-only pre-approval; see live-check results.
 allowed_tools: ["Read", "Grep", "Glob", "Bash(git status)", "Bash(git status *)", "Bash(git log)", "Bash(git log --oneline -10)", "Bash(git diff)", "Bash(git diff --stat)", "Bash(git diff --cached)", "Bash(git show)", "Bash(git ls-files)", "Bash(horch ledger status)", "Bash(horch ledger status *)", "Bash(horch ledger show *)", "Bash(horch ledger steps *)", "Bash(horch ledger events)", "Bash(horch ledger events *)", "Bash(aws sts get-caller-identity)", "Bash(aws s3 ls)", "Bash(gcloud projects list)", "Bash(az account show)", "Bash(kubectl get pods)", "Bash(docker ps)"]
 phase: plan
 # Opus 5.5 today; the alias follows the latest Opus.
 model: opus
 system_prompt: sr_eng_system_prompt
-# No fallbacks: a substitute model would give the council 2 designs from 1
-# model. The orchestrator runs with the seats that start (orchestrate §10).
 # high: open design is where reasoning depth pays. Raise one spawn with
 # --effort.
 effort: high

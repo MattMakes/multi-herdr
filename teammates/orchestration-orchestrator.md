@@ -3,6 +3,8 @@ name: orchestration-orchestrator
 brief_description: Orchestrator for the fixed 5-pane `horch orchestration` recipe. No ledger, no spawning.
 hidden: true
 agent: claude
+fallbacks: []
+no_fallback_reason: The fixed 5-pane horch orchestration recipe starts this pane. It runs no ledger task, so fleetd never dispatches it.
 phase: plan
 model: fable
 effort: medium

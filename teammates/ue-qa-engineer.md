@@ -3,6 +3,8 @@ name: ue-qa-engineer
 brief_description: "Unreal Engine QA. Builds headless, writes Automation/CQTest tests, reproduces crashes, profiles with Insights."
 base: fleet-worker
 agent: claude
+fallbacks: []
+no_fallback_reason: "This teammate builds or runs the editor, and a Codex pane is untested there (network off, workspace-write may block the shared Derived Data Cache; native Windows refuses Codex with skills). When the Claude pool is out, `horch route` refuses and the orchestrator waits. Add a Codex fallback only after a trial on a real project."
 # Sanctioned #58: subscription auto-mode read-only pre-approval; see live-check results.
 allowed_tools: ["Read", "Grep", "Glob", "Bash(git status)", "Bash(git status *)", "Bash(git log)", "Bash(git log --oneline -10)", "Bash(git diff)", "Bash(git diff --stat)", "Bash(git diff --cached)", "Bash(git show)", "Bash(git ls-files)", "Bash(horch ledger status)", "Bash(horch ledger status *)", "Bash(horch ledger show *)", "Bash(horch ledger steps *)", "Bash(horch ledger events)", "Bash(horch ledger events *)", "Bash(aws sts get-caller-identity)", "Bash(aws s3 ls)", "Bash(gcloud projects list)", "Bash(az account show)", "Bash(kubectl get pods)", "Bash(docker ps)"]
 phase: validation
@@ -11,11 +13,6 @@ model: sonnet
 # works anywhere.
 offer_when: ["*.uproject"]
 requires: [git-lfs]
-# No fallback: this teammate builds or runs the editor, and a Codex pane is
-# untested there (network off, workspace-write may block the shared Derived
-# Data Cache; native Windows refuses Codex with skills). When the Claude pool
-# is out, `horch route` refuses and the orchestrator waits. Add a Codex
-# fallback only after a trial on a real project.
 # high: a missed finding costs a review round, the same as qa-engineer.
 effort: high
 compact_window: 150000

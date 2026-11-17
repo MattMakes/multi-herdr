@@ -3,6 +3,8 @@ name: swift-qa-engineer
 brief_description: Swift Testing suites, XCTest migration, simulator runs and bug repros for Apple apps. Needs macOS + Xcode.
 base: fleet-worker
 agent: claude
+fallbacks: []
+no_fallback_reason: "This teammate builds, tests and drives a simulator, and a Codex pane is untested there (its workspace-write sandbox may block DerivedData and CoreSimulator). A fallback also takes the fallback's MCP servers. When the Claude pool is out, `horch route` refuses and the orchestrator waits."
 # Sanctioned #58: subscription auto-mode read-only pre-approval; see live-check results.
 allowed_tools: ["Read", "Grep", "Glob", "Bash(git status)", "Bash(git status *)", "Bash(git log)", "Bash(git log --oneline -10)", "Bash(git diff)", "Bash(git diff --stat)", "Bash(git diff --cached)", "Bash(git show)", "Bash(git ls-files)", "Bash(horch ledger status)", "Bash(horch ledger status *)", "Bash(horch ledger show *)", "Bash(horch ledger steps *)", "Bash(horch ledger events)", "Bash(horch ledger events *)", "Bash(aws sts get-caller-identity)", "Bash(aws s3 ls)", "Bash(gcloud projects list)", "Bash(az account show)", "Bash(kubectl get pods)", "Bash(docker ps)"]
 phase: validation
@@ -12,11 +14,6 @@ model: sonnet
 offer_when: ["*.xcodeproj", "*.xcworkspace", "Package.swift"]
 # `horch doctor` checks for xcodebuild when this teammate is offered.
 requires: [xcode]
-# No fallback: this teammate builds, tests and drives a simulator, and a
-# Codex pane is untested there (its workspace-write sandbox may block
-# DerivedData and CoreSimulator). A fallback also takes the fallback's MCP
-# servers. When the Claude pool is out, `horch route` refuses and the
-# orchestrator waits.
 # high: a missed finding costs a review round, the same as qa-engineer.
 effort: high
 compact_window: 150000

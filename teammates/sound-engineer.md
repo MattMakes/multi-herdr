@@ -3,6 +3,8 @@ name: sound-engineer
 brief_description: "Sound design for video and game SFX: forge, fit, source, mix and verify by listening with hark."
 base: fleet-worker
 agent: claude
+fallbacks: []
+no_fallback_reason: "The hark venv, ffmpeg and the optional ML models are not live-checked in the Codex sandbox. When the Claude pool is out, `horch route` refuses and the orchestrator waits."
 # Sanctioned #58: subscription auto-mode read-only pre-approval; see live-check results.
 allowed_tools: ["Read", "Grep", "Glob", "Bash(git status)", "Bash(git status *)", "Bash(git log)", "Bash(git log --oneline -10)", "Bash(git diff)", "Bash(git diff --stat)", "Bash(git diff --cached)", "Bash(git show)", "Bash(git ls-files)", "Bash(horch ledger status)", "Bash(horch ledger status *)", "Bash(horch ledger show *)", "Bash(horch ledger steps *)", "Bash(horch ledger events)", "Bash(horch ledger events *)", "Bash(aws sts get-caller-identity)", "Bash(aws s3 ls)", "Bash(gcloud projects list)", "Bash(az account show)", "Bash(kubectl get pods)", "Bash(docker ps)"]
 phase: implementation
@@ -10,9 +12,6 @@ phase: implementation
 # costs a full re-mix round.
 model: opus
 system_prompt: sr_eng_system_prompt
-# No fallback: the hark venv, ffmpeg and the optional ML models are not
-# live-checked in the Codex sandbox. When the Claude pool is out,
-# `horch route` refuses and the orchestrator waits.
 # high: each sound is a search over candidates, aimed and checked by ear.
 effort: high
 compact_window: 200000

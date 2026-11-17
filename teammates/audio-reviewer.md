@@ -3,15 +3,14 @@ name: audio-reviewer
 brief_description: Argon/high on agy. Listens to WAV files, measures with hark, writes a blind 7-axis SFX or mix review.
 base: fleet-worker
 agent: antigravity
+fallbacks: []
+no_fallback_reason: "No Claude or Codex model hears audio, so a fallback could not do this work. When the Argon pool is out, `horch route` refuses and the orchestrator waits."
 # Gemini 4 Argon hears audio through agy's file-reading tool. The probe
 # (docs/specs/hark/agy-audio-probe.md) found gemini-4-argon-high the best
 # model. agy takes the bare id plus --effort.
 model: gemini-4-argon
 # high: the probe ran at high, and a missed defect costs a fix round.
 effort: high
-# No fallback: no Claude or Codex model hears audio, so a fallback could not
-# do this work. When the Argon pool is out, `horch route` refuses and the
-# orchestrator waits.
 # auto = --sandbox --dangerously-skip-permissions: no approval prompt in a pane
 # nobody watches, and terminal commands stay in agy's OS sandbox. agy has no
 # tool lists, so the read-only rule is in the prompt: the review needs hark

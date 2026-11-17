@@ -3,6 +3,8 @@ name: blender-qa
 brief_description: "Blender asset QA: checks topology, UVs, scale, materials, budgets, exports; reports numbers and renders, fixes nothing."
 base: fleet-worker
 agent: claude
+fallbacks: []
+no_fallback_reason: "This teammate drives Blender through an MCP server, and the Codex panes have no MCP parity here. A fallback also takes the fallback's MCP servers, so the Blender server would be gone. When the Claude pool is out, `horch route` refuses and the orchestrator waits."
 # Sanctioned #58: subscription auto-mode read-only pre-approval; see live-check results.
 allowed_tools: ["Read", "Grep", "Glob", "Bash(git status)", "Bash(git status *)", "Bash(git log)", "Bash(git log --oneline -10)", "Bash(git diff)", "Bash(git diff --stat)", "Bash(git diff --cached)", "Bash(git show)", "Bash(git ls-files)", "Bash(horch ledger status)", "Bash(horch ledger status *)", "Bash(horch ledger show *)", "Bash(horch ledger steps *)", "Bash(horch ledger events)", "Bash(horch ledger events *)", "Bash(aws sts get-caller-identity)", "Bash(aws s3 ls)", "Bash(gcloud projects list)", "Bash(az account show)", "Bash(kubectl get pods)", "Bash(docker ps)"]
 phase: validation
@@ -14,10 +16,6 @@ offer_when: ["*.blend"]
 # `horch doctor` checks `blender --version` (or BLENDER_PATH) when this
 # teammate is offered.
 requires: [blender]
-# No fallback: this teammate drives Blender through an MCP server, and the
-# Codex panes have no MCP parity here. A fallback also takes the fallback's
-# MCP servers, so the Blender server would be gone. When the Claude pool is
-# out, `horch route` refuses and the orchestrator waits.
 # high: a missed finding costs a review round, the same as qa-engineer.
 effort: high
 compact_window: 200000

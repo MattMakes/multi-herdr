@@ -3,6 +3,8 @@ name: swift-developer
 brief_description: Swift/SwiftUI app features on Apple platforms - views, SwiftData, Swift 6 concurrency. Needs macOS + Xcode.
 base: fleet-worker
 agent: claude
+fallbacks: []
+no_fallback_reason: "This teammate builds with Xcode and drives a simulator, and a Codex pane is untested there (its workspace-write sandbox may block DerivedData and CoreSimulator). A fallback also takes the fallback's MCP servers, so the build server would be gone. When the Claude pool is out, `horch route` refuses and the orchestrator waits."
 # Sanctioned #58: subscription auto-mode read-only pre-approval; see live-check results.
 allowed_tools: ["Read", "Grep", "Glob", "Bash(git status)", "Bash(git status *)", "Bash(git log)", "Bash(git log --oneline -10)", "Bash(git diff)", "Bash(git diff --stat)", "Bash(git diff --cached)", "Bash(git show)", "Bash(git ls-files)", "Bash(horch ledger status)", "Bash(horch ledger status *)", "Bash(horch ledger show *)", "Bash(horch ledger steps *)", "Bash(horch ledger events)", "Bash(horch ledger events *)", "Bash(aws sts get-caller-identity)", "Bash(aws s3 ls)", "Bash(gcloud projects list)", "Bash(az account show)", "Bash(kubectl get pods)", "Bash(docker ps)"]
 phase: implementation
@@ -13,11 +15,6 @@ system_prompt: sr_eng_system_prompt
 offer_when: ["*.xcodeproj", "*.xcworkspace", "Package.swift"]
 # `horch doctor` checks for xcodebuild when this teammate is offered.
 requires: [xcode]
-# No fallback: this teammate builds with Xcode and drives a simulator, and a
-# Codex pane is untested there (its workspace-write sandbox may block
-# DerivedData and CoreSimulator). A fallback also takes the fallback's MCP
-# servers, so the build server would be gone. When the Claude pool is out,
-# `horch route` refuses and the orchestrator waits.
 # medium: builders work from a written brief, so depth belongs to whoever
 # wrote it. Raise one spawn with --effort.
 effort: medium

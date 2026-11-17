@@ -4,6 +4,8 @@ brief_description: Local worker. Runs on your own hardware via Ollama; nothing l
 generic: true
 base: fleet-worker
 agent: pi
+fallbacks: []
+no_fallback_reason: Work must stay on this machine; a cloud fallback sends it out.
 phase: implementation
 model: ollama/qwen3.8
 # low, not high: on Qwen3.8 the long-context benchmark scores xhigh below

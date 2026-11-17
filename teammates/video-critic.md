@@ -3,15 +3,14 @@ name: video-critic
 brief_description: Numeric render QA and a blind 8-axis video review. Use after a video render, a fresh session each round.
 base: fleet-worker
 agent: claude
+fallbacks: []
+no_fallback_reason: "Chrome, ffmpeg and macOS `say` are not live-checked in the Codex sandbox, so a Codex fallback could not run this work. When the Claude pool is out, `horch route` refuses and the orchestrator waits."
 # Sanctioned #58: subscription auto-mode read-only pre-approval; see live-check results.
 allowed_tools: ["Read", "Grep", "Glob", "Bash(git status)", "Bash(git status *)", "Bash(git log)", "Bash(git log --oneline -10)", "Bash(git diff)", "Bash(git diff --stat)", "Bash(git diff --cached)", "Bash(git show)", "Bash(git ls-files)", "Bash(horch ledger status)", "Bash(horch ledger status *)", "Bash(horch ledger show *)", "Bash(horch ledger steps *)", "Bash(horch ledger events)", "Bash(horch ledger events *)", "Bash(aws sts get-caller-identity)", "Bash(aws s3 ls)", "Bash(gcloud projects list)", "Bash(az account show)", "Bash(kubectl get pods)", "Bash(docker ps)"]
 phase: validation
 # opus: the blind review is the last judgement before a video ships.
 model: opus
 system_prompt: sr_eng_system_prompt
-# No fallback: Chrome, ffmpeg and macOS `say` are not live-checked in the
-# Codex sandbox, so a Codex fallback could not run this work. When the
-# Claude pool is out, `horch route` refuses and the orchestrator waits.
 # high, like the other reviewers: a missed finding costs a fix round.
 effort: high
 compact_window: 200000

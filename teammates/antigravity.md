@@ -4,6 +4,8 @@ brief_description: Gemini 3.8 Flash on agy, general implementation work.
 generic: true
 base: fleet-worker
 agent: antigravity
+# codex-sol, not opus: the fallback keeps an OS sandbox, as agy's auto mode has.
+fallbacks: [codex-sol]
 # `agy models` lists each model once per thinking level
 # (gemini-3.8-flash-low|medium|high). The bare id plus --effort selects the
 # same model; agy 1.2.17 refuses --effort for an id it does not know.

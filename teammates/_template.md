@@ -81,7 +81,27 @@ model: opus
 # fallbacks are never followed. Each must run on a different pool, and never
 # on a trains-on-input (opencode) teammate. `horch route <name>` shows what a
 # spawn would do right now.
+# REQUIRED on a worker persona (`horch teammates --check`): name 1 fallback on
+# another provider. agent claude -> codex-sol; agent codex -> opus; any other
+# agent -> opus. The first entry is the fallback fleetd uses (RR-11). Exempt:
+# the top-tier seats, the fleet orchestrators and `agent: none`.
 fallbacks: []
+
+# Only for a worker persona that a fallback on another harness would break
+# (a trust wall, a sandbox it needs): 1 line that says why. With it,
+# `fallbacks` stays empty and on a usage limit the task waits in
+# waiting_quota. An empty reason, or a reason beside a fallback, fails --check.
+#   no_fallback_reason: The Blender MCP server has no Codex parity.
+
+# ─── fleetd profile ──────────────────────────────────────────────────────────
+# mode: exec | interactive. Left out: interactive until Phase 7.
+#   mode: interactive
+# liveness and retry: each field left out has the design default, in seconds
+# of the fleet clock. Each number is above 0, lease_s is below stall_after_s,
+# and backoff_s is not empty.
+#   liveness: {start_timeout_s: 90, stall_after_s: 300, lease_s: 120, max_wait_s: 3600}
+#   retry: {max_attempts: 3, backoff_s: [30, 120, 480]}
+# retry.max_attempts left out: the max_attempts of the run.
 
 # claude   -> `--effort <level>`   (low | medium | high | xhigh | max)
 #             Not on haiku: Haiku 4.5 has no effort setting.

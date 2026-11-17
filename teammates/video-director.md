@@ -3,15 +3,14 @@ name: video-director
 brief_description: Video brief, art direction, storyboard and timeline.json with the plan gate. Use first on any video task.
 base: fleet-worker
 agent: claude
+fallbacks: []
+no_fallback_reason: "Chrome, ffmpeg and macOS `say` are not live-checked in the Codex sandbox, so a Codex fallback could not run this work. When the Claude pool is out, `horch route` refuses and the orchestrator waits."
 # Sanctioned #58: subscription auto-mode read-only pre-approval; see live-check results.
 allowed_tools: ["Read", "Grep", "Glob", "Bash(git status)", "Bash(git status *)", "Bash(git log)", "Bash(git log --oneline -10)", "Bash(git diff)", "Bash(git diff --stat)", "Bash(git diff --cached)", "Bash(git show)", "Bash(git ls-files)", "Bash(horch ledger status)", "Bash(horch ledger status *)", "Bash(horch ledger show *)", "Bash(horch ledger steps *)", "Bash(horch ledger events)", "Bash(horch ledger events *)", "Bash(aws sts get-caller-identity)", "Bash(aws s3 ls)", "Bash(gcloud projects list)", "Bash(az account show)", "Bash(kubectl get pods)", "Bash(docker ps)"]
 phase: plan
 # opus: direction and the beat-timed plan decide every later wave.
 model: opus
 system_prompt: sr_eng_system_prompt
-# No fallback: Chrome, ffmpeg and macOS `say` are not live-checked in the
-# Codex sandbox, so a Codex fallback could not run this work. When the
-# Claude pool is out, `horch route` refuses and the orchestrator waits.
 # high, like the other planners: every builder works from this plan.
 effort: high
 compact_window: 200000

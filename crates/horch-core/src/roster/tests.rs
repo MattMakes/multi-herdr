@@ -333,3 +333,195 @@ fn check_refuses_an_unknown_or_non_claude_system_prompt() {
         "{problems:#?}"
     );
 }
+
+// Ticket fleetd-p2/06: the profile of a persona and the required fallback.
+
+use crate::fleetd::worker_profiles::domain::profile::{Liveness, Mode, OnUsageLimit, Profile};
+
+/// The built-in roster with `probe`: a copy of `opus.md` whose `fallbacks`
+/// line is replaced by `lines`.
+fn roster_with_probe(lines: &str) -> Roster {
+    let text = std::fs::read_to_string(repo_teammates().join("opus.md")).unwrap();
+    let text = text
+        .replace("name: opus", "name: probe")
+        .replace("fallbacks: [codex-sol]", lines);
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("probe.md"), text).unwrap();
+    let mut roster = Roster::builtin().unwrap();
+    roster.overlay(dir.path()).unwrap();
+    roster
+}
+
+/// The lines of `check` about the file `probe.md`.
+fn probe_problems(roster: &Roster) -> Vec<String> {
+    roster
+        .check()
+        .into_iter()
+        .filter(|p| p.starts_with("probe.md: "))
+        .collect()
+}
+
+#[test]
+fn profile_without_fallback_is_refused() {
+    for lines in [
+        "fallbacks: []",
+        "",
+        "fallbacks: []\nno_fallback_reason: \"  \"",
+    ] {
+        let problems = probe_problems(&roster_with_probe(lines));
+        assert!(
+            problems.iter().any(|p| p.contains("names no fallback")),
+            "{lines:?}: {problems:?}"
+        );
+    }
+}
+
+#[test]
+fn a_written_reason_for_no_fallback_is_accepted_and_the_task_waits() {
+    let roster =
+        roster_with_probe("fallbacks: []\nno_fallback_reason: the trust wall needs claude");
+    assert_eq!(probe_problems(&roster), Vec::<String>::new());
+    let profile = roster.require("probe").unwrap().profile();
+    assert_eq!(profile.fallback(), None);
+    assert_eq!(profile.on_usage_limit(), OnUsageLimit::WaitQuota);
+}
+
+#[test]
+fn a_reason_beside_a_fallback_is_refused() {
+    let roster = roster_with_probe("fallbacks: [codex-sol]\nno_fallback_reason: stale");
+    let problems = probe_problems(&roster);
+    assert!(
+        problems.iter().any(|p| p.contains("no_fallback_reason")),
+        "{problems:?}"
+    );
+}
+
+#[test]
+fn top_tier_seat_orchestrator_and_agent_none_need_no_fallback() {
+    let roster = Roster::builtin().unwrap();
+    for name in [
+        "fable-creative",
+        "astra-creative",
+        "orchestrator",
+        "orchestrator-codex",
+        "smoke",
+    ] {
+        let t = roster.require(name).unwrap();
+        assert!(t.fallbacks.is_empty(), "{name}");
+        assert!(t.no_fallback_reason.is_none(), "{name}");
+        let file = format!("{name}.md: ");
+        let problems: Vec<String> = roster
+            .check()
+            .into_iter()
+            .filter(|p| p.starts_with(&file))
+            .collect();
+        assert!(problems.is_empty(), "{problems:?}");
+    }
+}
+
+#[test]
+fn liveness_and_retry_absent_give_the_design_defaults() {
+    let roster = Roster::builtin().unwrap();
+    let profile = roster.require("opus").unwrap().profile();
+    assert_eq!(
+        profile,
+        Profile {
+            fallback: Some("codex-sol".to_string()),
+            ..Profile::default()
+        }
+    );
+    assert_eq!(profile.liveness.lease_s, 120);
+    assert_eq!(profile.liveness.max_wait_s, 3600);
+    assert_eq!(profile.retry.max_attempts, None);
+    assert_eq!(profile.retry.backoff_s, [30, 120, 480]);
+
+    // A partial block keeps the default of each field it leaves out.
+    let roster = roster_with_probe(
+        "fallbacks: [codex-sol]\nliveness: {max_wait_s: 600}\nretry: {max_attempts: 5}",
+    );
+    let profile = roster.require("probe").unwrap().profile();
+    assert_eq!(
+        profile.liveness,
+        Liveness {
+            max_wait_s: 600,
+            ..Liveness::default()
+        }
+    );
+    assert_eq!(profile.retry.max_attempts, Some(5));
+    assert_eq!(profile.retry.backoff_s, [30, 120, 480]);
+    assert_eq!(probe_problems(&roster), Vec::<String>::new());
+}
+
+#[test]
+fn mode_absent_is_interactive_in_phase_2() {
+    let roster = Roster::builtin().unwrap();
+    assert_eq!(
+        roster.require("opus").unwrap().profile().mode,
+        Mode::Interactive
+    );
+    let roster = roster_with_probe("fallbacks: [codex-sol]\nmode: exec");
+    assert_eq!(roster.require("probe").unwrap().profile().mode, Mode::Exec);
+}
+
+#[test]
+fn lease_not_below_stall_is_refused_with_the_field() {
+    let roster = roster_with_probe("fallbacks: [codex-sol]\nliveness: {lease_s: 300}");
+    assert_eq!(
+        probe_problems(&roster),
+        ["probe.md: liveness.lease_s (300) must be below liveness.stall_after_s (300)"]
+    );
+    let roster = roster_with_probe("fallbacks: [codex-sol]\nretry: {backoff_s: []}");
+    assert_eq!(
+        probe_problems(&roster),
+        ["probe.md: retry.backoff_s must not be empty"]
+    );
+}
+
+#[test]
+fn fallback_is_the_first_entry_of_fallbacks() {
+    let roster = roster_with_probe("fallbacks: [codex-sol, codex-terra]");
+    let t = roster.require("probe").unwrap();
+    assert_eq!(t.profile().fallback(), Some("codex-sol"));
+    assert_eq!(
+        t.profile().on_usage_limit(),
+        OnUsageLimit::RestartOn("codex-sol")
+    );
+}
+
+/// No fallback lowers confidentiality, for the parts of the ladder a teammate
+/// file states: a local persona never falls back to a cloud pool, a persona
+/// that does not train on its input never falls back to one that does, and a
+/// persona with a Claude `sandbox:` block or `horch_access: report` names no
+/// fallback, because a fallback launches without that block. The sandbox of
+/// codex and agy comes from the harness, not from the file, so this test
+/// cannot read it.
+#[test]
+fn no_fallback_lowers_confidentiality() {
+    use crate::routing::quota::{pool_for, POOL_LOCAL};
+    let roster = Roster::builtin().unwrap();
+    let pool =
+        |t: &super::Teammate| pool_for(t.agent.as_str(), t.model.as_deref().unwrap_or_default());
+    for t in roster.teammates.values() {
+        let walled = t.sandbox.is_some() || t.horch_access == super::HorchAccess::Report;
+        assert!(
+            !walled || t.fallbacks.is_empty(),
+            "{}: a sandboxed persona names fallback {:?}",
+            t.name,
+            t.fallbacks
+        );
+        for name in &t.fallbacks {
+            let f = roster.require(name).unwrap();
+            assert!(
+                pool(t) != POOL_LOCAL || pool(f) == POOL_LOCAL,
+                "{}: the local persona falls back to {name} on pool {}",
+                t.name,
+                pool(f)
+            );
+            assert!(
+                t.trains_on_input || !f.trains_on_input,
+                "{}: falls back to {name}, which trains on its input",
+                t.name
+            );
+        }
+    }
+}

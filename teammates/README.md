@@ -46,6 +46,17 @@ choose from** — there is no registry to update and nothing to recompile.
   are a list in the code (`TOP_TIER_SEATS`), so a file cannot add one. The
   rule is matched on the tier name, so a version bump stays reserved.
   `horch teammates --check` fails any other offered teammate that asks for one.
+- **Every worker persona names a fallback.** The first entry of `fallbacks`
+  is the persona fleetd uses on a usage limit or an outage: `codex-sol` for
+  `agent: claude`, `opus` for every other agent. A persona that a fallback on
+  another harness would break states why in `no_fallback_reason` and waits in
+  `waiting_quota` instead. The top-tier seats, the 2 orchestrators and
+  `smoke.md` are exempt. `horch teammates --check` fails any other file.
+- **The fleetd profile fields are optional.** Each field left out has the
+  design default; `_template.md` shows them.
+  - `mode`: `exec` or `interactive`; `interactive` until Phase 7.
+  - `liveness`: `start_timeout_s` 90, `stall_after_s` 300, `lease_s` 120 (below `stall_after_s`), `max_wait_s` 3600.
+  - `retry`: `max_attempts` (left out: the run's `max_attempts`), `backoff_s` [30, 120, 480].
 - **`brief_description` is the only field the orchestrator reads** to decide
   between a specialist and a generic. One line, ≤120 characters, enforced at
   load. Everything else — persona, model, effort, skills — is applied when the

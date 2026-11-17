@@ -3,6 +3,8 @@ name: apple-platform-developer
 brief_description: Apple system surfaces - App Intents/Siri, widgets, Live Activities, background tasks, tvOS/visionOS focus.
 base: fleet-worker
 agent: claude
+fallbacks: []
+no_fallback_reason: "For the same reason as swift-developer: a Codex pane is untested with Xcode and the simulator, and would lose the build server."
 # Sanctioned #58: subscription auto-mode read-only pre-approval; see live-check results.
 allowed_tools: ["Read", "Grep", "Glob", "Bash(git status)", "Bash(git status *)", "Bash(git log)", "Bash(git log --oneline -10)", "Bash(git diff)", "Bash(git diff --stat)", "Bash(git diff --cached)", "Bash(git show)", "Bash(git ls-files)", "Bash(horch ledger status)", "Bash(horch ledger status *)", "Bash(horch ledger show *)", "Bash(horch ledger steps *)", "Bash(horch ledger events)", "Bash(horch ledger events *)", "Bash(aws sts get-caller-identity)", "Bash(aws s3 ls)", "Bash(gcloud projects list)", "Bash(az account show)", "Bash(kubectl get pods)", "Bash(docker ps)"]
 phase: implementation
@@ -13,8 +15,6 @@ system_prompt: sr_eng_system_prompt
 offer_when: ["*.xcodeproj", "*.xcworkspace", "Package.swift"]
 # `horch doctor` checks for xcodebuild when this teammate is offered.
 requires: [xcode]
-# No fallback, for the same reason as swift-developer: a Codex pane is
-# untested with Xcode and the simulator, and would lose the build server.
 # medium: builders work from a written brief, so depth belongs to whoever
 # wrote it. Raise one spawn with --effort.
 effort: medium

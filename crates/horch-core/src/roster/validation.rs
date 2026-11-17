@@ -869,6 +869,7 @@ impl Roster {
             problems.extend(self.check_teammate(t));
         }
         problems.extend(fallback_problems(self));
+        problems.extend(profile_problems(self));
         problems.extend(self.harness_default_problems());
         problems.extend(self.context_policy_problems());
         // Every command an agent is told to run must be allowed for codex, and
@@ -1783,6 +1784,43 @@ pub fn fallback_problems(roster: &Roster) -> Vec<String> {
                 None => out.push(format!("{who}: fallback '{fb}' does not exist")),
             }
         }
+    }
+    out
+}
+
+/// The profile rules of each teammate, as lines that start with its file
+/// name: the numbers of `liveness` and `retry`, and the required fallback
+/// (RR-11). A worker persona names a fallback, or gives a written
+/// `no_fallback_reason` when a fallback on another harness would break it.
+/// Exempt: the top-tier seats, which wait in `waiting_quota`; the fleet
+/// orchestrators, which are no worker; and `agent: none`, which runs no agent.
+pub fn profile_problems(roster: &Roster) -> Vec<String> {
+    let mut out = Vec::new();
+    for t in roster.teammates.values() {
+        let file = format!("{}.md", t.name);
+        let exempt = TOP_TIER_SEATS.iter().any(|(seat, _)| *seat == t.name)
+            || FLEET_ORCHESTRATORS.contains(&t.name.as_str())
+            || t.agent == HarnessKind::None;
+        let reason = t.no_fallback_reason.as_deref().map(str::trim);
+        match (t.fallbacks.is_empty(), reason) {
+            (true, None) if !exempt => out.push(format!(
+                "{file}: a worker persona names no fallback; add 1 to fallbacks (agent \
+                 claude: codex-sol, any other agent: opus), or give no_fallback_reason"
+            )),
+            (true, Some("")) if !exempt => out.push(format!(
+                "{file}: a worker persona names no fallback, and no_fallback_reason is empty"
+            )),
+            (false, Some(_)) => out.push(format!(
+                "{file}: no_fallback_reason is set, but fallbacks names a fallback"
+            )),
+            _ => {}
+        }
+        out.extend(
+            t.profile()
+                .problems()
+                .into_iter()
+                .map(|p| format!("{file}: {p}")),
+        );
     }
     out
 }

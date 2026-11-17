@@ -11,9 +11,8 @@ allowed_tools: ["Read", "Grep", "Glob", "Bash(git status)", "Bash(git status *)"
 phase: null
 model: opus
 system_prompt: sr_eng_system_prompt
-# No fallback: a fallback launches with another harness and other rules, so
-# the trust wall below would be gone. skill-importer spawns with --exact.
 fallbacks: []
+no_fallback_reason: A fallback launches with another harness and other rules, so the trust wall below would be gone. skill-importer spawns with --exact.
 # medium: it checks the new skill against the behavior spec.
 effort: medium
 compact_window: 200000

@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use super::{PermissionMode, Phase, Requirement};
+use crate::fleetd::worker_profiles::domain::profile::{Liveness, Mode, Profile, Retry};
 use crate::harness::HarnessKind;
 
 // `TEMPLATE` comes from the generated file above: the annotated `_template.md`,
@@ -248,6 +249,21 @@ pub struct Teammate {
     /// phase and skills stay this teammate's. See `balance_policy.rs`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fallbacks: Vec<String>,
+    /// Why this worker persona has no fallback, for a persona that a
+    /// fallback on another harness would break. With it, `check` accepts an
+    /// empty `fallbacks`, and on a usage limit a task waits in
+    /// `waiting_quota`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_fallback_reason: Option<String>,
+    /// How fleetd runs a worker. `None`: interactive until Phase 7.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<ModeSetting>,
+    /// The liveness numbers. Each field left out has the design default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub liveness: Option<LivenessSetting>,
+    /// The retry numbers. Each field left out has the design default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry: Option<RetrySetting>,
     /// Name globs (`*.uproject`). When set, the orchestrator is offered this
     /// teammate only in a project with a matching file or directory at the
     /// top level or one level down. `horch spawn <name>` works anywhere.
@@ -330,6 +346,10 @@ impl Default for Teammate {
             system_prompt: None,
             system_prompt_text: None,
             fallbacks: Vec::new(),
+            no_fallback_reason: None,
+            mode: None,
+            liveness: None,
+            retry: None,
             offer_when: Vec::new(),
             skills_when: BTreeMap::new(),
             requires: Vec::new(),
@@ -342,6 +362,43 @@ impl Default for Teammate {
 }
 
 impl Teammate {
+    /// The profile fleetd reads: the fields of the file, with the design
+    /// default for each one left out. The fallback is the first entry of
+    /// `fallbacks`.
+    pub fn profile(&self) -> Profile {
+        let mut liveness = Liveness::default();
+        if let Some(l) = &self.liveness {
+            let fields = [
+                (&mut liveness.start_timeout_s, l.start_timeout_s),
+                (&mut liveness.stall_after_s, l.stall_after_s),
+                (&mut liveness.lease_s, l.lease_s),
+                (&mut liveness.max_wait_s, l.max_wait_s),
+            ];
+            for (field, value) in fields {
+                if let Some(v) = value {
+                    *field = v;
+                }
+            }
+        }
+        let mut retry = Retry::default();
+        if let Some(r) = &self.retry {
+            retry.max_attempts = r.max_attempts;
+            if let Some(b) = &r.backoff_s {
+                retry.backoff_s = b.clone();
+            }
+        }
+        Profile {
+            mode: match self.mode {
+                Some(ModeSetting::Exec) => Mode::Exec,
+                Some(ModeSetting::Interactive) => Mode::Interactive,
+                None => Mode::default(),
+            },
+            liveness,
+            retry,
+            fallback: self.fallbacks.first().cloned(),
+        }
+    }
+
     /// Whether a pane of this teammate may spawn `name`: always without
     /// `spawn_only`, else only when `name` matches 1 of its globs.
     pub fn may_spawn(&self, name: &str) -> bool {
@@ -362,6 +419,38 @@ impl Teammate {
 pub struct OperatorSkills {
     pub dir: String,
     pub names: Vec<String>,
+}
+
+/// `mode:` of a teammate file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ModeSetting {
+    Exec,
+    Interactive,
+}
+
+/// `liveness:` of a teammate file, in seconds. See [`Liveness`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LivenessSetting {
+    #[serde(default)]
+    pub start_timeout_s: Option<u64>,
+    #[serde(default)]
+    pub stall_after_s: Option<u64>,
+    #[serde(default)]
+    pub lease_s: Option<u64>,
+    #[serde(default)]
+    pub max_wait_s: Option<u64>,
+}
+
+/// `retry:` of a teammate file. See [`Retry`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetrySetting {
+    #[serde(default)]
+    pub max_attempts: Option<u32>,
+    #[serde(default)]
+    pub backoff_s: Option<Vec<u64>>,
 }
 
 /// `horch_access:`: what a sandboxed pane may reach of horch itself.
