@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 use super::model::*;
 use super::sql_words::word;
@@ -22,8 +22,12 @@ pub const PHASE_2_VERSION: i64 = PHASE_1_VERSION + 1;
 /// The version of the Phase 3 columns of `worktrees` (`phase_3`).
 pub const PHASE_3_VERSION: i64 = PHASE_2_VERSION + 1;
 
+/// The version of the step that builds `events` again with the event
+/// kinds of this binary (`events_kinds`).
+pub const EVENT_KINDS_VERSION: i64 = PHASE_3_VERSION + 1;
+
 /// The schema version this binary writes.
-pub const VERSION: i64 = PHASE_3_VERSION;
+pub const VERSION: i64 = EVENT_KINDS_VERSION;
 
 /// A rule that applies to rows this ledger writes, not to imported ones
 /// (section 11.2): `CHECK (origin = 'import' OR <expr>)`.
@@ -612,8 +616,21 @@ fn needs_you_table() -> String {
 /// with the old table and are made again after the rename.
 fn events_v8() -> String {
     let old = "event_id, at, run_id, task_id, worker_id, actor, kind, text";
+    let (table, indexes) = events_v8_ddl("events_v8");
+    format!(
+        "{table}
+INSERT INTO events_v8 ({old}) SELECT {old} FROM events;
+DROP TABLE events;
+ALTER TABLE events_v8 RENAME TO events;
+{indexes}"
+    )
+}
+
+/// `events` as version 8 builds it, with the name `name` and the event
+/// kinds of this binary: the table, then its indexes, which name `events`.
+fn events_v8_ddl(name: &str) -> (String, String) {
     let table = events_table()
-        .replace("CREATE TABLE events (", "CREATE TABLE events_v8 (")
+        .replace("CREATE TABLE events (", &format!("CREATE TABLE {name} ("))
         .replace(V1_EVENT_KIND, &EventKind::check("kind"))
         .replace(
             "\n    text TEXT NOT NULL DEFAULT ''\n);",
@@ -626,13 +643,51 @@ fn events_v8() -> String {
     data_json TEXT\n);",
         );
     let (table, indexes) = table.split_once("\n\n").expect("events has indexes");
-    format!(
-        "{table}
-INSERT INTO events_v8 ({old}) SELECT {old} FROM events;
+    (table.to_string(), indexes.to_string())
+}
+
+/// Version [`EVENT_KINDS_VERSION`]: `events` built again, so its kind
+/// `CHECK` is the list of this binary. A ledger keeps the kind list of the
+/// binary that built its `events` table, and no later step built it again,
+/// so a ledger at version 8 or more from an older binary refuses each
+/// newer kind (`doorbell`, `hold_started`, `hold_ended`).
+///
+/// The new table comes from the text of the code ([`events_v8_ddl`]),
+/// never from the stored text. Each row keeps its `event_id`, and the
+/// `AUTOINCREMENT` counter keeps its value, so no id is used again. The
+/// indexes go with the old table and are made again after the rename;
+/// `events` has no trigger.
+fn events_kinds(conn: &Connection) -> Result<()> {
+    let (table, indexes) = events_v8_ddl("events_kinds");
+    conn.execute_batch(&table)?;
+    let columns = column_names(conn, "events_kinds")?;
+    if column_names(conn, "events")? != columns {
+        bail!(
+            "the events table does not have the columns of version {}",
+            EVENT_KINDS_VERSION - 1
+        );
+    }
+    let seq: Option<i64> = conn
+        .query_row(
+            "SELECT seq FROM sqlite_sequence WHERE name = 'events'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    conn.execute_batch(&format!(
+        "INSERT INTO events_kinds ({columns}) SELECT {columns} FROM events;
 DROP TABLE events;
-ALTER TABLE events_v8 RENAME TO events;
-{indexes}"
-    )
+ALTER TABLE events_kinds RENAME TO events;
+{indexes}",
+        columns = columns.join(", "),
+    ))?;
+    if let Some(seq) = seq {
+        conn.execute_batch(&format!(
+            "DELETE FROM sqlite_sequence WHERE name = 'events';
+INSERT INTO sqlite_sequence (name, seq) VALUES ('events', {seq});"
+        ))?;
+    }
+    Ok(())
 }
 
 /// 1 live attempt, `<task id>/A<attempt>`, for each live worker with a task.
@@ -1115,6 +1170,9 @@ fn migrate_unchecked(
             .context("backfilling the state and the owner of each worktree")?;
         no_broken_reference(&tx, PHASE_3_VERSION)?;
     }
+    if due(EVENT_KINDS_VERSION) {
+        events_kinds(&tx).context("building events again with the event kinds of this binary")?;
+    }
     tx.pragma_update(None, "user_version", target)?;
     tx.commit()?;
     Ok(())
@@ -1570,7 +1628,7 @@ mod v7_tests {
         ];
         // The Phase 2 step reads the stored text of `tasks`, so it runs on
         // the connection.
-        assert_eq!(steps.len() as i64 + 2, VERSION, "add the new step here");
+        assert_eq!(steps.len() as i64 + 3, VERSION, "add the new step here");
         for sql in steps.iter().take(version as usize) {
             conn.execute_batch(sql).unwrap();
         }
@@ -1579,6 +1637,9 @@ mod v7_tests {
         }
         if version >= PHASE_3_VERSION {
             conn.execute_batch(&phase_3()).unwrap();
+        }
+        if version >= EVENT_KINDS_VERSION {
+            events_kinds(&conn).unwrap();
         }
         conn.execute("INSERT INTO projects VALUES ('p', '/r', 'now')", [])
             .unwrap();
@@ -1683,5 +1744,168 @@ mod v7_tests {
             .replacen("CREATE TABLE tasks (", "CREATE TABLE \"tasks\" (", 1)
             .replace(V1_TASK_STATUS, &TaskStatus::check("status"));
         assert_eq!(tasks_sql(&conn), want);
+    }
+
+    /// The event kinds that the `events` step of [`EVENT_KINDS_VERSION`]
+    /// writes in its `CHECK`. A new kind needs a new step: a ledger keeps
+    /// the `CHECK` of the binary that built its `events` table.
+    #[test]
+    fn event_kinds_are_pinned_to_the_schema_version() {
+        let words: Vec<&str> = EventKind::ALL.iter().map(|k| k.as_str()).collect();
+        let pinned = [
+            "run_created",
+            "added",
+            "claimed",
+            "no_task",
+            "progress",
+            "note",
+            "question",
+            "blocked",
+            "answered",
+            "fallback",
+            "step_started",
+            "step_passed",
+            "step_failed",
+            "land_started",
+            "land_red",
+            "landed",
+            "pr_updated",
+            "cleaned",
+            "cleanup_failed",
+            "done",
+            "unlanded",
+            "reaped",
+            "requeued",
+            "stopped",
+            "session",
+            "exited",
+            "cancelled",
+            "verdict",
+            "woke",
+            "imported",
+            "reopened",
+            "dismissed",
+            "attempt_started",
+            "transition",
+            "hold_started",
+            "hold_ended",
+            "doorbell",
+        ];
+        assert_eq!(
+            (EVENT_KINDS_VERSION, words.as_slice()),
+            (PHASE_3_VERSION + 1, pinned.as_slice()),
+            "the event kinds changed: add a schema step that rebuilds the events CHECK, \
+             then pin the new kinds to the version of that step"
+        );
+    }
+
+    /// A ledger at the version before [`EVENT_KINDS_VERSION`] whose
+    /// `events` table an older binary built: its `CHECK` has no `doorbell`.
+    /// It holds `events` events.
+    fn older_events_ledger(dir: &Path, events: i64) -> Connection {
+        let mut conn = Connection::open(dir.join("ledger.sqlite3")).unwrap();
+        migrate_to(&mut conn, EVENT_KINDS_VERSION - 1).unwrap();
+        let (table, indexes) = events_v8_ddl("events_old");
+        let older = table.replace(", 'doorbell'", "");
+        assert!(!older.contains("doorbell"));
+        conn.execute_batch(&format!(
+            "{older}
+DROP TABLE events;
+ALTER TABLE events_old RENAME TO events;
+{indexes}"
+        ))
+        .unwrap();
+        let tx = conn.transaction().unwrap();
+        for n in 0..events {
+            tx.execute(
+                "INSERT INTO events (at, task_id, worker_id, actor, kind, text, cause, data_json)
+                 VALUES ('now', ?1, ?2, 'horch', 'note', ?3, 'c', '{}')",
+                rusqlite::params![format!("t{}", n % 7), format!("w{}", n % 5), n.to_string()],
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+        conn
+    }
+
+    /// Every event row, in id order.
+    fn all_events(conn: &Connection) -> Vec<Vec<rusqlite::types::Value>> {
+        let mut stmt = conn
+            .prepare("SELECT * FROM events ORDER BY event_id")
+            .unwrap();
+        let n = stmt.column_count();
+        stmt.query_map([], |r| (0..n).map(|i| r.get(i)).collect())
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    fn insert_doorbell(conn: &Connection) -> rusqlite::Result<i64> {
+        conn.execute(
+            "INSERT INTO events (at, actor, kind, text) VALUES ('now', 'horch', 'doorbell', 'x')",
+            [],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    #[test]
+    fn events_kinds_step_takes_the_new_kinds_and_keeps_each_row_and_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = older_events_ledger(dir.path(), 10_000);
+        assert!(
+            insert_doorbell(&conn).is_err(),
+            "the older CHECK refuses doorbell"
+        );
+        // The newest event is deleted: its id is never used again.
+        conn.execute("DELETE FROM events WHERE event_id = 10000", [])
+            .unwrap();
+        let before = all_events(&conn);
+        assert_eq!(before.len(), 9_999);
+        migrate(&mut conn).unwrap();
+        assert_eq!(all_events(&conn), before);
+        assert_eq!(insert_doorbell(&conn).unwrap(), 10_001);
+        let indexes: Vec<String> = conn
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'events'
+                 ORDER BY name",
+            )
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(indexes, ["events_by_task", "events_by_worker"]);
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, EVENT_KINDS_VERSION);
+    }
+
+    #[test]
+    fn events_kinds_step_does_not_run_the_stored_table_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = older_events_ledger(dir.path(), 0);
+        conn.execute_batch(
+            "PRAGMA writable_schema = ON;
+UPDATE sqlite_master SET sql = replace(sql, 'data_json TEXT', 'data_json TEXT DEFAULT 1')
+    WHERE name = 'events';
+PRAGMA writable_schema = OFF;",
+        )
+        .unwrap();
+        drop(conn);
+        let mut conn = Connection::open(dir.path().join("ledger.sqlite3")).unwrap();
+        let stored = |conn: &Connection| -> String {
+            conn.query_row(
+                "SELECT sql FROM sqlite_master WHERE name = 'events'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert!(stored(&conn).contains("DEFAULT 1"));
+        migrate(&mut conn).unwrap();
+        let sql = stored(&conn);
+        assert!(!sql.contains("DEFAULT 1"), "{sql}");
+        assert!(sql.contains("'doorbell'"), "{sql}");
     }
 }
