@@ -79,12 +79,17 @@ pub fn holds(ctx: &RuntimeContext) -> Result<Vec<Finding>> {
     );
     let mut r = readings(&snapshot, &Counts::read());
     if ctx.settings.machine_file.is_none() && snapshot.os == "macos" {
-        r.free_memory_bytes = horch_platform::machine::kernel_free_memory()
-            .ok()
-            .flatten()
-            .map_or(Reading::Unknown(MACOS_MEMORY), Reading::Known);
+        r.free_memory_bytes =
+            macos_free_memory(horch_platform::machine::kernel_free_memory().ok().flatten());
     }
     Ok(health::health(&r, &Floors::from(&config)))
+}
+
+/// The free memory of macOS for the guard: the free memory of the kernel,
+/// which counts the file cache as free. With no reading (a sandbox can deny
+/// the sysctl) the guard does not hold, and says why ([`MACOS_MEMORY`]).
+pub fn macos_free_memory(kernel_free: Option<u64>) -> Reading<u64> {
+    kernel_free.map_or(Reading::Unknown(MACOS_MEMORY), Reading::Known)
 }
 
 /// The pacing hold of the pool of `agent` and `model` in `view`. Only a
@@ -232,10 +237,11 @@ mod tests {
     }
 
     /// On a live Mac the memory guard reads the free memory of the kernel,
-    /// which counts the file cache as free, so it has a reading.
+    /// which counts the file cache as free. When a sandbox denies the
+    /// sysctl, the guard says why and does not hold.
     #[cfg(target_os = "macos")]
     #[test]
-    fn a_live_mac_reads_the_free_memory_of_the_kernel() {
+    fn a_live_mac_reads_the_kernel_free_memory_or_says_why() {
         let dir = tempfile::tempdir().unwrap();
         let ctx = RuntimeContext::from_env(
             &crate::runtime::MapEnv::new("/")
@@ -248,15 +254,72 @@ mod tests {
         )
         .unwrap();
         let found = holds(&ctx).unwrap();
+        let memory: Vec<&Finding> = found
+            .iter()
+            .filter(|f| {
+                matches!(
+                    f,
+                    Finding::Hold(Hold::Floor {
+                        fact: Fact::FreeMemory,
+                        ..
+                    }) | Finding::Unknown {
+                        fact: Fact::FreeMemory,
+                        ..
+                    }
+                )
+            })
+            .collect();
+        // A sandbox can deny the sysctl: then the guard says why and does
+        // not hold.
+        let expected: Vec<Finding> = match horch_platform::machine::kernel_free_memory() {
+            Ok(Some(_)) => vec![],
+            _ => vec![Finding::Unknown {
+                fact: Fact::FreeMemory,
+                why: MACOS_MEMORY,
+            }],
+        };
+        assert_eq!(memory, expected.iter().collect::<Vec<_>>());
+    }
+
+    /// The guards with injected readings: a reading holds past its floor,
+    /// and no reading (a denied sysctl) is unknown with its reason.
+    #[test]
+    fn injected_readings_hold_past_the_floor_and_none_is_unknown_with_a_reason() {
+        let floors = Floors::from(&FleetConfig::default());
+        assert_eq!(macos_free_memory(Some(8 << 30)), Reading::Known(8 << 30));
+        assert_eq!(macos_free_memory(None), Reading::Unknown(MACOS_MEMORY));
+        let mac = healthy();
+        let counts = |limit: Option<u64>| Counts {
+            user_processes: Some(500),
+            user_open_files: Some(901),
+            open_file_limit: limit,
+        };
+        // 901 open files of the user against a system limit of 1000.
+        let found = health::health(&readings(&mac, &counts(Some(1000))), &floors);
         assert!(
-            !found.iter().any(|f| matches!(
-                f,
+            matches!(
+                found.as_slice(),
+                [Finding::Hold(Hold::Floor {
+                    fact: Fact::OpenFiles,
+                    ..
+                })]
+            ),
+            "{found:?}"
+        );
+        let mut r = readings(&mac, &counts(None));
+        r.free_memory_bytes = macos_free_memory(None);
+        assert_eq!(
+            health::health(&r, &floors),
+            vec![
                 Finding::Unknown {
                     fact: Fact::FreeMemory,
-                    ..
-                }
-            )),
-            "{found:?}"
+                    why: MACOS_MEMORY
+                },
+                Finding::Unknown {
+                    fact: Fact::OpenFiles,
+                    why: health::NO_READING
+                },
+            ]
         );
     }
 
@@ -319,16 +382,12 @@ mod tests {
                 Finding::Hold(Hold::Floor {
                     fact: Fact::OpenFiles,
                     ..
-                }) | Finding::Unknown {
-                    fact: Fact::OpenFiles,
-                    ..
-                }
+                })
             )),
             "{found:?} with {counts:?}"
         );
     }
 
-    #[cfg(unix)]
     fn healthy() -> MachineSnapshot {
         MachineSnapshot {
             os: "macos".into(),

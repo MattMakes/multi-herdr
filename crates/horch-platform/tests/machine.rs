@@ -135,9 +135,10 @@ fn user_open_file_count_grows_when_this_process_opens_files() {
 #[cfg(unix)]
 #[test]
 fn the_system_open_file_limit_is_at_least_the_count_of_the_user() {
-    let limit = machine::system_open_file_limit()
-        .unwrap()
-        .expect("system open file limit");
+    // A sandbox can deny the sysctl: `None` is a valid result.
+    let Some(limit) = machine::system_open_file_limit().unwrap() else {
+        return;
+    };
     let count = machine::user_open_file_count()
         .unwrap()
         .expect("open file count");
@@ -147,9 +148,10 @@ fn the_system_open_file_limit_is_at_least_the_count_of_the_user() {
 #[cfg(target_os = "macos")]
 #[test]
 fn the_kernel_free_memory_of_macos_is_at_most_the_memory_size() {
-    let free = machine::kernel_free_memory()
-        .unwrap()
-        .expect("kern.memorystatus_level and hw.memsize");
+    // A sandbox can deny the sysctl: `None` is a valid result.
+    let Some(free) = machine::kernel_free_memory().unwrap() else {
+        return;
+    };
     let out = std::process::Command::new("/usr/sbin/sysctl")
         .args(["-n", "hw.memsize"])
         .output()
