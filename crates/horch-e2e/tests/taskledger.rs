@@ -1149,6 +1149,7 @@ fn stopping_one_of_three_workers_leaves_the_others_running() {
     assert!(horch_core::procid::alive(pids[2].0, Some(pids[2].1)));
     let shown = json_of(&h, &["ledger", "show", &ids[0], "--json"]);
     assert_eq!(shown["worker"]["status"], "stopped");
+    eprintln!("SHOWN {shown}");
     let stops = shown["stops"].as_array().unwrap();
     let agent = stops.iter().find(|s| s["target"] == "agent").unwrap();
     assert_eq!(agent["pid"].as_i64().unwrap() as u32, pids[0].0);
@@ -1243,14 +1244,19 @@ fn three_checks_without_progress_reap_the_worker_by_its_pid() {
     );
     let shown = json_of(&h, &["ledger", "show", &id, "--json"]);
     assert_eq!(shown["worker"]["status"], "incomplete");
-    let stops = shown["stops"].as_array().unwrap();
-    assert!(
-        stops.iter().all(|s| s["requested_by"] == "watchdog"),
-        "{shown}"
-    );
-    assert!(stops
+    // The fleetd pass stops the agent that the row names by its PID, and
+    // records the stop and the reap as the watchdog.
+    assert_eq!(shown["worker"]["agent_pid"].as_i64(), Some(pid as i64));
+    let by_watchdog: Vec<&str> = shown["events"]
+        .as_array()
+        .unwrap()
         .iter()
-        .any(|s| s["target"] == "agent" && s["pid"].as_i64() == Some(pid as i64)));
+        .filter(|e| e["actor"] == "watchdog")
+        .filter_map(|e| e["kind"].as_str())
+        .collect();
+    for kind in ["stopped", "reaped"] {
+        assert!(by_watchdog.contains(&kind), "{kind}: {shown}");
+    }
     let t = json_of(&h, &["ledger", "show", "T-1", "--json"]);
     assert_eq!(t["task"]["status"], "queued");
     // The replacement claims the same task and gets the old transcript path.
@@ -1276,55 +1282,95 @@ fn three_checks_without_progress_reap_the_worker_by_its_pid() {
     assert_eq!(claim["attempt"], 2);
 }
 
-/// Kills the stand-in agent, the watchdog that holds a lock in `locks`, and
-/// each process in `also`, when dropped, so a failed assertion leaks none.
-struct WatchdogTeardown {
-    agent: std::process::Child,
-    locks: PathBuf,
-    /// Watchdogs as `(pid, start time)` that may hold no lock.
-    also: Vec<(u32, u64)>,
+/// The fleetd processes of a test and a stand-in agent. Drop stops each
+/// one, and the fleetd that the `fleetd` row names, so a failed assertion
+/// leaks none.
+struct Fleetds {
+    db: PathBuf,
+    children: Vec<std::process::Child>,
+    agent: Option<std::process::Child>,
 }
 
-impl WatchdogTeardown {
-    /// Kill at teardown each watchdog that a warning of `o` says it started.
-    fn kill_started(&mut self, o: &Output) {
-        for pid in started_pids(o) {
-            if let Some(started) = horch_core::procid::start_time(pid) {
-                self.also.push((pid, started));
-            }
+impl Fleetds {
+    fn new(h: &Harness) -> Fleetds {
+        Fleetds {
+            db: h.root.join("ledger.sqlite3"),
+            children: Vec::new(),
+            agent: None,
         }
+    }
+
+    /// The PID and start time of the fleetd that the `fleetd` row names.
+    fn row(&self) -> Option<(u32, u64)> {
+        let store = horch_core::taskledger::Store::open(&self.db).ok()?;
+        let (pid, started): (i64, i64) = store
+            .conn()
+            .query_row("SELECT pid, pid_start FROM fleetd WHERE id = 1", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .ok()?;
+        Some((u32::try_from(pid).ok()?, u64::try_from(started).ok()?))
+    }
+
+    /// Start `horch fleetd` in the sealed environment of `h`, with its
+    /// stdout in `<root>/<name>.stdout`. Gives its PID.
+    fn spawn(&mut self, h: &Harness, name: &str) -> u32 {
+        let out = std::fs::File::create(h.root.join(format!("{name}.stdout"))).unwrap();
+        let err = std::fs::File::create(h.root.join(format!("{name}.stderr"))).unwrap();
+        let mut cmd = std::process::Command::new(Harness::horch_bin());
+        h.seal(&mut cmd);
+        let child = cmd
+            .arg("fleetd")
+            .stdin(std::process::Stdio::null())
+            .stdout(out)
+            .stderr(err)
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        self.children.push(child);
+        pid
+    }
+
+    /// [`Fleetds::spawn`], then wait until the `fleetd` row names it.
+    fn start(&mut self, h: &Harness, name: &str) -> u32 {
+        let pid = self.spawn(h, name);
+        wait_for("the fleetd row to name the new fleetd", || {
+            self.row().filter(|&(p, _)| p == pid).map(|_| ())
+        });
+        pid
+    }
+
+    /// Kill the fleetd that the row names, and wait until it is gone.
+    fn kill_current(&mut self) -> (u32, u64) {
+        let (pid, started) = self.row().expect("the fleetd row");
+        assert!(horch_core::procid::signal_same(pid, started, 9));
+        for child in self.children.iter_mut().filter(|c| c.id() == pid) {
+            let _ = child.wait();
+        }
+        wait_for("fleetd to end", || {
+            (!horch_core::procid::alive(pid, Some(started))).then_some(())
+        });
+        (pid, started)
     }
 }
 
-impl Drop for WatchdogTeardown {
+impl Drop for Fleetds {
     fn drop(&mut self) {
-        let locks = std::fs::read_dir(&self.locks).into_iter().flatten();
-        locks
-            .flatten()
-            .for_each(|lock| kill_lock_owner(&lock.path()));
-        for &(pid, started) in &self.also {
+        if let Some((pid, started)) = self.row() {
             horch_core::procid::signal_same(pid, started, 9);
         }
-        let _ = self.agent.kill();
-        let _ = self.agent.wait();
+        for child in self.children.iter_mut().chain(self.agent.as_mut()) {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
 
-/// Kill the process that the `owner` file of `lock` names, if it still runs.
-fn kill_lock_owner(lock: &Path) {
-    let owner = std::fs::read(lock.join("owner")).unwrap_or_default();
-    let v: Value = serde_json::from_slice(&owner).unwrap_or_default();
-    if let (Some(pid), Some(started)) = (v["pid"].as_u64(), v["started"].as_u64()) {
-        horch_core::procid::signal_same(pid as u32, started, 9);
-    }
-}
-
-/// In `h`, run `zeta` with 1 running task of a worker whose agent is a live child of
-/// the test, and the watchdog restart on. The watchdog checks the worker
-/// every second; many stall rounds keep it from reaping the worker, which
-/// would end the running task. Returns the output of the worker's `claim`,
-/// the first command after the task runs, which starts the watchdog.
-fn watched_run(mut h: Harness) -> (Harness, WatchdogTeardown, Output) {
+/// In `h`, run `zeta` with 1 running task of a worker whose agent is a
+/// live child of the test, and the fleetd check before each command on.
+/// Many stall rounds keep a pass from reaping the worker. Gives the output
+/// of the worker's `claim`.
+fn claimed_run(mut h: Harness) -> (Harness, Fleetds, Output) {
     h.unset("HORCH_NO_WATCHDOG");
     ok(
         &h,
@@ -1352,101 +1398,98 @@ fn watched_run(mut h: Harness) -> (Harness, WatchdogTeardown, Output) {
         ],
     );
     let w = worker_new(&h, "opus");
-    // A reap would stop only the child.
-    let teardown = WatchdogTeardown {
-        agent: std::process::Command::new("/bin/sleep")
-            .arg("600")
-            .spawn()
-            .unwrap(),
-        locks: h.root.join("locks"),
-        also: Vec::new(),
-    };
-    horch_core::taskledger::supervisor::agent_started(
-        &h.root.join("ledger.sqlite3"),
-        &w,
-        teardown.agent.id(),
-    )
-    .unwrap();
+    let mut fleetds = Fleetds::new(&h);
+    let agent = std::process::Command::new("/bin/sleep")
+        .arg("600")
+        .spawn()
+        .unwrap();
+    horch_core::taskledger::supervisor::agent_started(&fleetds.db, &w, agent.id()).unwrap();
+    fleetds.agent = Some(agent);
     let mut cmd = h.horch(&["ledger", "claim"]);
     cmd.env("HORCH_WORKER_ID", &w);
     let o = cmd.output().unwrap();
-    assert!(
-        text(&o).contains("the watchdog of run zeta was not running; started it"),
-        "{}",
-        text(&o)
-    );
-    (h, teardown, o)
+    assert!(o.status.success(), "{}", text(&o));
+    (h, fleetds, o)
 }
 
-/// Every PID in the "started it (PID n)" warnings of `o`.
-fn started_pids(o: &Output) -> Vec<u32> {
-    text(o)
-        .split("started it (PID ")
-        .skip(1)
-        .filter_map(|rest| rest.split(')').next()?.parse().ok())
-        .collect()
-}
-
-/// The live holder of the watchdog lock of the run in `status`.
-fn lock_holder(
-    h: &Harness,
-    status: &Value,
-) -> Option<horch_core::taskledger::watchdog::LockHolder> {
-    let run_id = status["run_id"].as_str().expect("the run id");
-    horch_core::taskledger::watchdog::holder(&h.root.join("locks"), run_id)
-}
-
-/// A watchdog that was just started and has not taken its lock yet is not
-/// "not running": the next command does not start a second one. On a
-/// loaded machine a second one could take over when the test below killed
-/// the first, so the restart that test waits for never came.
+/// Phase 1: no command starts a watchdog. With no fleetd row, the check
+/// before the claim starts nothing, and the run has no watchdog lock and
+/// no recorded watchdog.
 #[test]
-fn a_watchdog_that_is_still_starting_is_not_started_twice() {
-    let mut h = world("tl-wdog-starting");
-    // The new watchdog waits 60 s before it takes its lock.
-    h.set("HORCH_FAULT", "watchdog-start-ms:60000");
-    let (h, mut teardown, o) = watched_run(h);
-    teardown.kill_started(&o);
-    assert_eq!(teardown.also.len(), 1, "{}", text(&o));
+fn a_claim_starts_no_watchdog() {
+    let (h, fleetds, o) = claimed_run(world("tl-no-wdog"));
+    assert!(!text(&o).contains("started it"), "{}", text(&o));
+    let locks: Vec<_> = std::fs::read_dir(h.root.join("locks"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+    assert!(locks.is_empty(), "{locks:?}");
+    let store = horch_core::taskledger::Store::open(&fleetds.db).unwrap();
+    let recorded: i64 = store
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM runs WHERE watchdog_pid IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(recorded, 0, "no run records a watchdog");
+    assert!(fleetds.row().is_none(), "the check starts no fleetd");
+}
+
+/// A dead fleetd is started again by the next horch command, in stand-in
+/// mode on this temporary ledger.
+#[test]
+fn a_dead_fleetd_is_restarted_by_the_next_command() {
+    let (h, mut fleetds, _) = claimed_run(world("tl-fleetd-dead"));
+    fleetds.start(&h, "fleetd-1");
+    let (pid, _) = fleetds.kill_current();
     // `status` exits 1 while the run is not complete.
     let o = h.run(&["ledger", "status"]);
-    teardown.kill_started(&o);
-    assert!(out(&o).contains("Run zeta (active)"), "{}", text(&o));
-    assert!(!text(&o).contains("started it"), "{}", text(&o));
-}
-
-#[test]
-fn a_dead_watchdog_is_restarted_and_a_second_one_is_refused() {
-    let (h, _teardown, _) = watched_run(world("tl-wdog"));
-    let run = || json_of(&h, &["ledger", "status", "--json"])["run"].clone();
-    // The lock, not the checkin: the starter records the PID it started
-    // before that process takes the lock.
-    let holder = wait_for("the watchdog's lock", || lock_holder(&h, &run()));
-    let (pid, started) = (holder.pid, holder.started.unwrap());
-    // A second watchdog for the run is refused.
-    let o = h.run(&["ledger", "watch"]);
     assert!(
-        !o.status.success() && text(&o).contains("already runs"),
+        text(&o).contains(&format!("fleetd PID {pid} is gone.")),
         "{}",
         text(&o)
     );
-    // Stop it by its recorded PID; the next command restarts it.
-    assert!(horch_core::procid::signal_same(pid, started, 9));
-    wait_for("the watchdog to end", || {
-        (!horch_core::procid::alive(pid, Some(started))).then_some(())
-    });
-    // Checkin stamps are whole seconds, so the 2-interval staleness can take
-    // up to 3 s to show; poll instead of guessing a sleep.
-    wait_for("the restart", || {
-        let o = h.run(&["ledger", "status"]);
-        text(&o).contains("started it").then_some(())
-    });
-    let h2 = wait_for("the new watchdog's lock", || {
-        lock_holder(&h, &run()).filter(|l| l.pid != pid)
+    let (new, started) = wait_for("a new fleetd in the row", || {
+        fleetds.row().filter(|&(p, _)| p != pid)
     });
     assert!(
-        horch_core::procid::signal_same(h2.pid, h2.started.unwrap(), 9),
-        "teardown"
+        horch_core::procid::alive(new, Some(started)),
+        "the new fleetd runs"
+    );
+}
+
+/// 2 fleetds that start at once leave 1: the fleetd lock refuses the
+/// second, which exits 0 and says so, and the row keeps the first.
+#[test]
+fn two_fleetds_started_at_once_leave_1() {
+    let (h, mut fleetds, _) = claimed_run(world("tl-fleetd-twice"));
+    let pids = [fleetds.spawn(&h, "fleetd-a"), fleetds.spawn(&h, "fleetd-b")];
+    let (first, started) = wait_for("the fleetd row", || {
+        fleetds.row().filter(|(p, _)| pids.contains(p))
+    });
+    let (second, name) = if first == pids[0] {
+        (1, "fleetd-b")
+    } else {
+        (0, "fleetd-a")
+    };
+    let status = wait_for("the second fleetd to exit", || {
+        fleetds.children[second].try_wait().unwrap()
+    });
+    let said = std::fs::read_to_string(h.root.join(format!("{name}.stdout"))).unwrap();
+    assert!(status.success(), "{status}: {said}");
+    assert!(said.contains("Another fleetd holds"), "{said}");
+    assert_eq!(
+        fleetds.row(),
+        Some((first, started)),
+        "the row keeps the first"
+    );
+    assert!(
+        horch_core::procid::alive(first, Some(started)),
+        "the first runs"
     );
 }
 
@@ -3141,34 +3184,14 @@ fn run_new_refuses_an_old_run_branch_behind_the_main_branch() {
     assert!(text(&o).contains("branch fleet/a exists"), "{}", text(&o));
 }
 
+/// Phase 1: `horch ledger watch` starts no loop. It says that fleetd does
+/// the watch of each run, and exits.
 #[test]
-fn the_watchdog_of_a_closed_run_exits() {
-    let h = world("tl-close-watch");
+fn ledger_watch_points_at_fleetd() {
+    let h = world("tl-watch-fleetd");
     ok(&h, &["ledger", "run", "new", "a", "--check-every", "10"]);
-    let mut child = h
-        .horch(&["ledger", "watch", "--run", "a"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
-    // It runs while the run is active.
-    std::thread::sleep(Duration::from_millis(1500));
-    assert!(child.try_wait().unwrap().is_none(), "the watchdog runs");
-    ok(&h, &["ledger", "run", "gate", "--check", "true"]);
-    ok(&h, &["ledger", "run", "close"]);
-    // 1 tick is 1 s at a 10 s check interval.
-    let until = Instant::now() + Duration::from_secs(5);
-    let status = loop {
-        if let Some(s) = child.try_wait().unwrap() {
-            break s;
-        }
-        if Instant::now() > until {
-            let _ = child.kill();
-            panic!("the watchdog of a closed run still runs");
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    };
-    assert!(status.success());
+    let said = ok(&h, &["ledger", "watch", "--run", "a"]);
+    assert!(said.contains("fleetd does the watch of each run"), "{said}");
 }
 
 /// The run a ledger worker row of `persona` belongs to.
