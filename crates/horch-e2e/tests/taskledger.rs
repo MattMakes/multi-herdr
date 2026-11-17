@@ -1462,6 +1462,22 @@ fn a_dead_fleetd_is_restarted_by_the_next_command() {
     );
 }
 
+/// `HORCH_NO_WATCHDOG=1` turns off the fleetd check before each command
+/// (MAP.md, Q17): a command does not start a dead fleetd again.
+#[test]
+fn the_no_watchdog_setting_turns_off_the_fleetd_check() {
+    let h = world("tl-fleetd-off");
+    ok(&h, &["ledger", "run", "new", "zeta"]);
+    let mut fleetds = Fleetds::new(&h);
+    fleetds.start(&h, "fleetd-1");
+    let (pid, started) = fleetds.kill_current();
+    // `status` exits 1 while the run is not complete.
+    let o = h.run(&["ledger", "status"]);
+    assert!(!text(&o).contains("fleetd"), "{}", text(&o));
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(fleetds.row(), Some((pid, started)), "no fleetd was started");
+}
+
 /// 2 fleetds that start at once leave 1: the fleetd lock refuses the
 /// second, which exits 0 and says so, and the row keeps the first.
 #[test]
