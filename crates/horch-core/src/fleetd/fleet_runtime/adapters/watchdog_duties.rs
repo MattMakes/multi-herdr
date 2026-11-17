@@ -50,7 +50,7 @@ use crate::fleetd::task_execution::domain::task::{
 use crate::taskledger::model::Actor;
 use crate::taskledger::orchestrator::{self, Holder, Outcome, Probe, Respawn};
 use crate::taskledger::runs::{self, Run};
-use crate::taskledger::watchdog::{self, Observation, Observer, Sighting};
+use crate::taskledger::watchdog::{self, Checked, Observation, Observer, Sighting};
 use crate::taskledger::workers::{self, Worker};
 use crate::taskledger::{outbox, util, wakes};
 
@@ -122,6 +122,11 @@ pub struct WatchdogDuties<'a> {
     /// The state folder of the mail, for the open questions of each worker.
     state_root: PathBuf,
     state: RefCell<State>,
+    /// Check each working worker, due or not (`horch ledger watch --once
+    /// --force`).
+    force: bool,
+    /// The checks of the last pass, with the run of each.
+    checked: RefCell<Vec<(String, Checked)>>,
 }
 
 impl<'a> WatchdogDuties<'a> {
@@ -137,7 +142,20 @@ impl<'a> WatchdogDuties<'a> {
             effects,
             state_root,
             state: RefCell::new(State::default()),
+            force: false,
+            checked: RefCell::new(Vec::new()),
         }
+    }
+
+    /// Check each working worker in each pass, due or not.
+    pub fn forced(mut self) -> Self {
+        self.force = true;
+        self
+    }
+
+    /// The checks of the last pass, with the run id of each.
+    pub fn take_checked(&self) -> Vec<(String, Checked)> {
+        self.checked.take()
     }
 }
 
@@ -177,7 +195,7 @@ impl RunDuties for WatchdogDuties<'_> {
         for run in &runs {
             let now = util::now();
             let waiting = waiting_preclaim(conn, run, &now)?;
-            let due = watchdog::due_workers(conn, run, false, &now)?;
+            let due = watchdog::due_workers(conn, run, self.force, &now)?;
             for w in due.iter().chain(&waiting) {
                 let o = self.observer.observe(w);
                 state.observed.insert(w.worker_id.clone(), o);
@@ -196,12 +214,16 @@ impl RunDuties for WatchdogDuties<'_> {
     fn run(&self, tx: &Transaction<'_>, ctx: &DutyCtx<'_>) -> Result<Vec<Stop>> {
         let mut state = self.state.borrow_mut();
         let mut reaped = BTreeSet::new();
+        let mut checked = self.checked.borrow_mut();
+        checked.clear();
         for run in watchdog::active_runs(tx)? {
             let now = util::now();
             if let Some(workspace) = run.workspace_id.as_deref() {
                 workers::sync_questions(tx, &self.state_root, workspace)?;
             }
-            reaped.extend(check_workers(tx, &run, &state.observed, &now)?);
+            let (r, c) = check_workers(tx, &run, &state.observed, &now, self.force)?;
+            reaped.extend(r);
+            checked.extend(c.into_iter().map(|c| (run.run_id.clone(), c)));
             reaped.extend(sweep_preclaim(tx, &run, &state.observed)?);
             write(tx, &run, wakes::stuck_wake(tx, &run)?)?;
             flag_unclaimed(tx, &run, &state.observed, &now)?;
@@ -324,9 +346,11 @@ fn check_workers(
     run: &Run,
     observed: &BTreeMap<String, Observation>,
     now: &str,
-) -> Result<Vec<String>> {
+    force: bool,
+) -> Result<(Vec<String>, Vec<Checked>)> {
     let mut reaped = Vec::new();
-    for w in watchdog::due_workers(tx, run, false, now)? {
+    let mut checked = Vec::new();
+    for w in watchdog::due_workers(tx, run, force, now)? {
         let Some(o) = observed.get(&w.worker_id) else {
             continue;
         };
@@ -340,8 +364,9 @@ fn check_workers(
             wakes::verdict_wake(&c)
         };
         write(tx, run, wake)?;
+        checked.push(c);
     }
-    Ok(reaped)
+    Ok((reaped, checked))
 }
 
 /// End each attempt of `worker` that holds it, with `outcome`.

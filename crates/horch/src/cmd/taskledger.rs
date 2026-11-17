@@ -202,9 +202,11 @@ pub enum LedgerCommand {
         #[arg(long)]
         json: bool,
     },
-    /// The watchdog: check every working worker every check interval, reap
-    /// the dead, wake the orchestrator on a verdict change. `--once` runs 1
-    /// pass (every worker, due or not, with `--force`).
+    /// fleetd does the watch: it checks every working worker every check
+    /// interval, reaps the dead and wakes the orchestrator. With no `--once`
+    /// this runs the check of `horch fleetd check`. `--once` runs 1 pass of
+    /// fleetd when no fleetd runs (every worker, due or not, with
+    /// `--force`), and prints the checks of the run.
     Watch {
         #[command(flatten)]
         run: RunArg,
@@ -856,10 +858,10 @@ fn admin_cmd(ctx: &RuntimeContext, mut store: Store, command: LedgerCommand) -> 
         json: as_json,
     } = command
     {
-        return {
-            let r = resolve_run(ctx, &store, &run)?;
-            super::taskledger_watch::watch(ctx, store, &r, once, force, as_json)
-        };
+        let r = resolve_run(ctx, &store, &run)?;
+        // The pass of fleetd opens the ledger itself.
+        drop(store);
+        return super::taskledger_watch::watch(ctx, &r, once, force, as_json);
     }
     unreachable!("not a admin command")
 }

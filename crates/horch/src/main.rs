@@ -825,14 +825,9 @@ fn run() -> Result<std::process::ExitCode> {
         cmd::restore::adopt_restored_identity(&mut ctx);
     }
     let remind = cli.command.reminds();
-    let watched = cli.command.watched();
     let result = dispatch_checked(cli.command, &mut ctx, cmd::fleetd::check_before_command);
     if remind {
         cmd::messaging::remind_pending(&ctx);
-    }
-    // No dead watchdog hides dead workers: any horch command restarts it.
-    if watched {
-        cmd::taskledger_watch::ensure(&ctx);
     }
     result
 }
@@ -928,23 +923,10 @@ impl Command {
         )
     }
 
-    /// Whether the command restarts a quiet task-ledger watchdog after it
-    /// runs (`taskledger_watch::ensure`). `install` restarts a watchdog on
-    /// the binary it installed; `ensure` would move it back onto the binary
-    /// that ran `install` (#216).
-    fn watched(&self) -> bool {
-        !matches!(
-            self,
-            Command::Tool(ToolCommand::Worker { .. } | ToolCommand::Install { .. })
-                | Command::Grid(GridCommand::Ledger {
-                    command: cmd::taskledger::LedgerCommand::Watch { .. }
-                })
-        )
-    }
-
     /// Whether the command runs the check of `horch fleetd check` before it
     /// runs (PL-5). fleetd, its check, its job processes, a worker pane and
-    /// the old watchdog loop run none.
+    /// `horch ledger watch`, which runs a pass of fleetd or the check
+    /// itself, run none.
     fn checks_fleetd(&self) -> bool {
         !matches!(
             self,
@@ -1837,7 +1819,7 @@ mod tests {
         assert!(parse(&["horch", "install"]).checks_fleetd());
     }
 
-    /// The commands whose reminders, watchdog and identity handling differ.
+    /// The commands whose reminders and identity handling differ.
     #[test]
     fn command_policies_follow_the_command() {
         let parse = |argv: &[&str]| Cli::try_parse_from(argv).unwrap().command;
@@ -1845,10 +1827,6 @@ mod tests {
         let inbox_mail = parse(&["horch", "inbox"]);
         assert!(inbox_roles.reminds() && !inbox_mail.reminds());
         assert!(!parse(&["horch", "tile"]).reminds());
-        assert!(!parse(&["horch", "worker", "r"]).watched());
-        assert!(!parse(&["horch", "install"]).watched());
-        assert!(!parse(&["horch", "ledger", "watch"]).watched());
-        assert!(parse(&["horch", "ledger", "path"]).watched());
         assert!(parse(&["horch", "done", "x"]).adopts_identity());
         assert!(parse(&["horch", "ledger", "path"]).adopts_identity());
         assert!(!parse(&["horch", "peek", "r"]).adopts_identity());

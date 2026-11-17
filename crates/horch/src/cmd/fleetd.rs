@@ -41,6 +41,7 @@ use horch_core::fleetd::fleet_runtime::adapters::effects::{
     exe_of, read_heartbeat, this_exe, write_heartbeat,
 };
 use horch_core::fleetd::fleet_runtime::adapters::fleetd_row::{self, lock_path, wait_until_free};
+use horch_core::fleetd::fleet_runtime::adapters::old_watchdog;
 use horch_core::fleetd::fleet_runtime::adapters::scans::FolderItem;
 use horch_core::fleetd::fleet_runtime::adapters::watchdog_duties::{HerdrObserver, WatchdogDuties};
 use horch_core::fleetd::fleet_runtime::application::holds;
@@ -60,7 +61,7 @@ use horch_core::runtime::{Paths, RuntimeContext};
 use horch_core::taskledger::orchestrator;
 use horch_core::taskledger::sql_words::{list, WORKTREES_HELD};
 use horch_core::taskledger::store::{default_path, BUSY_TIMEOUT};
-use horch_core::taskledger::Store;
+use horch_core::taskledger::{watchdog, Store};
 use horch_core::workspace::herdr::Herdr;
 use horch_platform::lock::FleetdLock;
 use horch_platform::service;
@@ -381,7 +382,7 @@ fn wait_for_new(ledger: &Path, old: Fleetd) -> Option<Fleetd> {
 }
 
 /// The check of the fleet of `ctx`, with the start of this machine.
-fn run_check(ctx: &RuntimeContext) -> Result<Checked> {
+pub(crate) fn run_check(ctx: &RuntimeContext) -> Result<Checked> {
     with_fleet(ctx, check_with)
 }
 
@@ -549,17 +550,71 @@ fn daemon(ctx: &RuntimeContext) -> Result<ExitCode> {
         ));
         return Ok(ExitCode::SUCCESS);
     };
-    drop(store);
     write_start_heartbeat(root, started.generation, &own_exe)?;
-    let config = config_file::load(root)?;
-    let period = Duration::from_secs(config.pass_period_s);
-    let settings = Settings {
-        fleet_root: root.clone(),
-        generation: started.generation,
-        config,
-        horch: horch.clone(),
-        faults: ctx.settings.faults.clone(),
+    let settings = settings(ctx, started.generation, &horch)?;
+    take_over(ctx, &mut store, &settings);
+    drop(store);
+    let period = Duration::from_secs(settings.config.pass_period_s);
+    let mut conn = ledger_conn(&ctx.paths.ledger_db)?;
+    output::println(&format!(
+        "fleetd PID {} runs generation {} on {}.",
+        std::process::id(),
+        started.generation.0,
+        ctx.paths.ledger_db.display()
+    ));
+    let self_restart = SelfRestart {
+        ctx,
+        exe: own_exe,
+        horch,
+        lock: RefCell::new(Some(started.lock)),
     };
+    with_pass(ctx, settings, false, |pass, _| {
+        run_loop(
+            period,
+            &mut || one_pass(pass, &mut conn),
+            &|| self_restart.changed(),
+            &mut || self_restart.restart(),
+        )
+    });
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The settings of the fleetd of `generation` that runs `horch`.
+fn settings(ctx: &RuntimeContext, generation: Generation, horch: &Path) -> Result<Settings> {
+    let root = &ctx.paths.fleet_root;
+    Ok(Settings {
+        fleet_root: root.clone(),
+        generation,
+        config: config_file::load(root)?,
+        horch: horch.to_path_buf(),
+        faults: ctx.settings.faults.clone(),
+    })
+}
+
+/// Stop each old watchdog of the active runs and take its runs, before the
+/// first pass ([`old_watchdog::take_over`]). Prints 1 line for each
+/// recorded watchdog. A failure is printed, and the pass goes on.
+fn take_over(ctx: &RuntimeContext, store: &mut Store, settings: &Settings) {
+    let locks = orchestrator::lock_dir(&ctx.paths.ledger_db);
+    let grace = Duration::from_secs(settings.config.stop_grace_s);
+    match old_watchdog::take_over(store, settings.generation, &locks, grace, &old_watchdog::Os) {
+        Ok(taken) => taken
+            .iter()
+            .for_each(|t| eprintln!("horch fleetd: {}", t.describe())),
+        Err(e) => eprintln!("horch fleetd: the takeover of the old watchdogs failed: {e:#}"),
+    }
+}
+
+/// Build the pass of fleetd on this machine with `settings`, and give it
+/// with its run duties to `f`. `force` checks each working worker in each
+/// pass, due or not. The daemon and `horch ledger watch --once` use it, so
+/// both run the same pass.
+fn with_pass<T>(
+    ctx: &RuntimeContext,
+    settings: Settings,
+    force: bool,
+    f: impl FnOnce(&mut Pass<'_>, &WatchdogDuties<'_>) -> T,
+) -> T {
     let herdr = || Herdr::with_bin(&ctx.bins.harness.herdr);
     let outside = Live {
         ctx,
@@ -580,6 +635,7 @@ fn daemon(ctx: &RuntimeContext) -> Result<ExitCode> {
     };
     let effects = LiveEffects { ctx };
     let duties = WatchdogDuties::new(&observer, &probe, &effects, ctx.paths.state_root.clone());
+    let duties = if force { duties.forced() } else { duties };
     let ports = Ports {
         outside: &outside,
         duties: &duties,
@@ -587,26 +643,39 @@ fn daemon(ctx: &RuntimeContext) -> Result<ExitCode> {
         host: &Launcher,
     };
     let mut pass = Pass::new(settings, ports);
-    let mut conn = ledger_conn(&ctx.paths.ledger_db)?;
-    output::println(&format!(
-        "fleetd PID {} runs generation {} on {}.",
-        std::process::id(),
-        started.generation.0,
-        ctx.paths.ledger_db.display()
-    ));
-    let self_restart = SelfRestart {
-        ctx,
-        exe: own_exe,
-        horch,
-        lock: RefCell::new(Some(started.lock)),
+    f(&mut pass, &duties)
+}
+
+/// What `horch ledger watch --once` did.
+pub(crate) enum Once {
+    /// It ran 1 pass: the checks of the pass, with the run id of each.
+    Ran(Vec<(String, watchdog::Checked)>),
+    /// The fleetd of the row holds the fleetd lock: it does the checks.
+    Held(Option<Fleetd>),
+}
+
+/// `horch ledger watch --once`: 1 pass of fleetd in the foreground, when no
+/// fleetd holds the fleetd lock (`docs/tickets/fleetd-p1/MAP.md`, Q11). It
+/// starts as the daemon starts: it takes the lock and the next generation,
+/// and takes over the old watchdogs. When a fleetd holds the lock, it runs
+/// no pass and stops nothing.
+pub(crate) fn watch_once(ctx: &RuntimeContext, force: bool) -> Result<Once> {
+    let horch = std::env::current_exe().context("finding the horch binary")?;
+    let mut store = Store::open(&ctx.paths.ledger_db)?;
+    let Some(started) = fleetd_row::start(&ctx.paths.fleet_root, &mut store)? else {
+        return Ok(Once::Held(read_row(&ctx.paths.ledger_db)?));
     };
-    run_loop(
-        period,
-        &mut || one_pass(&mut pass, &mut conn),
-        &|| self_restart.changed(),
-        &mut || self_restart.restart(),
-    );
-    Ok(ExitCode::SUCCESS)
+    let settings = settings(ctx, started.generation, &horch)?;
+    take_over(ctx, &mut store, &settings);
+    drop(store);
+    let mut conn = ledger_conn(&ctx.paths.ledger_db)?;
+    with_pass(ctx, settings, force, |pass, duties| {
+        let report = pass.run(&mut conn).map_err(|e| anyhow::anyhow!("{e}"))?;
+        for f in &report.failed {
+            eprintln!("horch ledger watch: {f}");
+        }
+        Ok(Once::Ran(duties.take_checked()))
+    })
 }
 
 /// Run 1 pass, and print its failures.

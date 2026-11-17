@@ -11,15 +11,12 @@ use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger::model::{Actor, EventKind, OutboxEvent};
 use horch_core::taskledger::outbox::{self, Row, Scope, Wake, Written};
 use horch_core::taskledger::runs::{self, Run};
-use horch_core::taskledger::stop::Panes;
 use horch_core::taskledger::tasks;
 use horch_core::taskledger::util::{self, About};
 use horch_core::taskledger::wakes::{
     self, dependents_wake, reviews_in_wake, settled_wake, startable_wake, tagged,
 };
-use horch_core::taskledger::workers;
 use horch_core::taskledger::Store;
-use horch_core::workspace::herdr::Herdr;
 use rusqlite::Transaction;
 
 /// `HORCH_NO_WAKE=1` turns wakes off (tests that run no herdr). A wake is
@@ -261,72 +258,10 @@ pub fn nudge_stuck(ctx: &RuntimeContext, store: &Store, run: &Run) {
     wake_as(ctx, store, run, |tx| wakes::stuck_wake(tx, run));
 }
 
-/// The watchdog's ledger work after its checks: the pre-claim sweep, then
-/// the stuck-run wake.
-pub fn after_watch(ctx: &RuntimeContext, store: &mut Store, run: &Run) {
-    sweep_preclaim(ctx, store, run);
-    nudge_stuck(ctx, store, run);
-}
-
-/// The reconcile pass at `now` for the wakes that a crash between a ledger
-/// commit and its wake loses (TRF-51, review 31 I-03 to I-07). Each wake
-/// comes from the board, with the key and the text of its direct path, so
-/// a wake that exists writes no new row. No live worker holds these wakes
-/// back: each event needs the orchestrator, whoever else works.
-pub fn reconcile_lost(ctx: &RuntimeContext, store: &Store, run: &Run, now: &str) {
-    if let Err(e) = try_reconcile_lost(ctx, store, run, now) {
-        eprintln!("horch ledger watch: the lost-wake read failed: {e:#}");
-    }
-}
-
-fn try_reconcile_lost(
-    ctx: &RuntimeContext,
-    store: &Store,
-    run: &Run,
-    now: &str,
-) -> anyhow::Result<()> {
-    for wake in wakes::lost_wakes(store.conn(), run, now)? {
-        wake_as(ctx, store, run, |_| Ok(Some(wake)));
-    }
-    Ok(())
-}
-
 /// Wake the orchestrator when workers should be spawned now: 1 row per
 /// board state, so a repeat in the same state writes no new row.
 pub fn nudge_startable(ctx: &RuntimeContext, store: &Store, run: &Run) {
     wake_as(ctx, store, run, |tx| startable_wake(tx, run));
-}
-
-/// The watchdog's pre-claim sweep (#190): end the rows no process stands
-/// for and close their panes, ask about a worker that does not claim, and
-/// wake once with the spawns the freed slots allow.
-pub fn sweep_preclaim(ctx: &RuntimeContext, store: &mut Store, run: &Run) {
-    let swept =
-        match store.immediate(|tx| workers::sweep_preclaim(tx, run, &workers::supervisor_alive)) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("horch ledger watch: the pre-claim sweep failed: {e:#}");
-                return;
-            }
-        };
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
-    let panes = super::taskledger::HerdrPanes::new(ctx);
-    for p in swept.iter().filter(|p| p.ended.is_some()) {
-        if let Some(pane) = p.worker.pane_id.as_deref().filter(|id| panes.exists(id)) {
-            if let Err(e) = panes.close(pane) {
-                eprintln!("horch ledger watch: closing pane {pane} failed: {e:#}");
-            }
-        }
-    }
-    let status = |w: &workers::Worker| {
-        w.pane_id
-            .as_deref()
-            .and_then(|id| herdr.pane_get(id).ok())
-            .and_then(|p| p.agent_status)
-    };
-    for wake in wakes::preclaim_wakes(store.conn(), run, &swept, &status) {
-        wake_as(ctx, store, run, |_| Ok(Some(wake)));
-    }
 }
 
 /// After a reap: tell the orchestrator which persona to spawn, and how.

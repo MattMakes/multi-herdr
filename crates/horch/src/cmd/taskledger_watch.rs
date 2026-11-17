@@ -1,124 +1,32 @@
-//! `horch ledger watch`: the watchdog process of a run (#42), and the
-//! restart every `horch` command makes when it has gone quiet.
+//! `horch ledger watch`: fleetd does the watch of each run
+//! (`docs/specs/fleetd/design.md`, "Migration plan" item 3;
+//! `docs/tickets/fleetd-p1/MAP.md`, Q11).
+//!
+//! - `horch ledger watch --once [--force] [--json]` runs 1 pass of fleetd
+//!   in the foreground when no fleetd holds the fleetd lock, and prints the
+//!   checks of the run as before Phase 1. When a fleetd holds the lock, it
+//!   runs no pass, stops nothing, and says so in 1 line.
+//! - `horch ledger watch` with no `--once` says that fleetd does the watch,
+//!   and runs the check of `horch fleetd check`.
 
-use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 
-use anyhow::{bail, ensure, Result};
-use horch_core::exeid::exe_identity;
-use horch_core::fleetd::fleet_runtime::adapters::watchdog_duties::{DutyEffects, HerdrObserver};
+use anyhow::Result;
+use horch_core::fleetd::fleet_runtime::adapters::watchdog_duties::DutyEffects;
 use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger::finish::land;
 use horch_core::taskledger::git::Git;
-use horch_core::taskledger::model::StopRequester;
 use horch_core::taskledger::orchestrator;
-use horch_core::taskledger::runs::{self, Run};
-use horch_core::taskledger::stop;
-use horch_core::taskledger::watchdog::{self, Sighting};
-use horch_core::taskledger::{self, Store};
-use horch_core::workspace::herdr::Herdr;
+use horch_core::taskledger::runs::Run;
+use horch_core::taskledger::watchdog;
+use horch_core::taskledger::Store;
 
-use super::taskledger::{stop_grace, HerdrPanes};
+use super::fleetd::{self, Once};
 use super::taskledger_wake;
 use crate::output;
 
-/// A SIGTERM came: the watchdog loop ends after the pass it runs.
-static TERM: AtomicBool = AtomicBool::new(false);
-
-/// SIGTERM ends the watchdog loop between passes, never inside one: a pass
-/// can be in a reap, which requeues the task before it stops the agent
-/// (#216 restart, review of T-3).
-fn exit_between_passes() {
-    // Windows has no signal handlers: the loop runs until the process ends.
-    let _ = horch_platform::signal::on_termination_set(
-        &TERM,
-        &[horch_platform::signal::Termination::Terminate],
-    );
-}
-
-/// Sleep `d`, or less when a SIGTERM comes.
-fn sleep_unless_term(d: Duration) {
-    let until = std::time::Instant::now() + d;
-    while !TERM.load(Ordering::SeqCst) && std::time::Instant::now() < until {
-        std::thread::sleep(Duration::from_millis(100));
-    }
-}
-
-/// The single-instance lock of a run's watchdog.
-fn lock_dir(ctx: &RuntimeContext) -> PathBuf {
-    ctx.paths
-        .ledger_db
-        .parent()
-        .map(|p| p.join("locks"))
-        .unwrap_or_else(|| PathBuf::from("locks"))
-}
-
-fn lock_held(ctx: &RuntimeContext, run: &Run) -> Option<u32> {
-    watchdog::holder(&lock_dir(ctx), &run.run_id).map(|h| h.pid)
-}
-
-/// 1 pass: drain the outbox, check, reap the dead, wake on changes, read
-/// the board for a re-wake, retry cleanups. `seen` is the board sighting of
-/// the last pass.
-fn pass(
-    ctx: &RuntimeContext,
-    store: &mut Store,
-    run: &Run,
-    force: bool,
-    seen: &mut Option<Sighting>,
-) -> Result<Vec<watchdog::Checked>> {
-    // A row that a send or a busy drain left goes out first (trace-fixes D7).
-    taskledger_wake::drain_run(ctx, store, run, None);
-    let me = std::process::id();
-    watchdog::checkin(
-        store.conn(),
-        &run.run_id,
-        me,
-        horch_core::procid::start_time(me),
-    )?;
-    let live = HerdrObserver {
-        herdr: Herdr::with_bin(&ctx.bins.harness.herdr),
-    };
-    if let Some(workspace) = run.workspace_id.as_deref() {
-        horch_core::taskledger::workers::sync_questions(
-            store.conn(),
-            &ctx.paths.state_root,
-            workspace,
-        )?;
-    }
-    let checked = watchdog::check_run(store, run, &live, force)?;
-    // 1 push budget for every wake of this pass (#67, #177): an orchestrator
-    // pane that is not ready holds the pass no longer, and the courier
-    // delivers the queued wakes.
-    let _budget = horch_core::messaging::delivery::start_push_budget(
-        horch_core::messaging::delivery::done_push_budget(&ctx.settings.faults),
-    );
-    for c in &checked {
-        act_on(ctx, store, run, c);
-    }
-    taskledger_wake::after_watch(ctx, store, run);
-    let now = horch_core::taskledger::util::now();
-    reconcile_at(ctx, store, run, &now, seen);
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
-    let open = |ws: &str| {
-        herdr
-            .workspace_list()
-            .ok()
-            .map(|l| l.iter().any(|w| w.workspace_id == ws))
-    };
-    let probe = orchestrator::Os {
-        lock_dir: &orchestrator::lock_dir(&ctx.paths.ledger_db),
-        herdr_open: &open,
-    };
-    let effects = LiveEffects { ctx };
-    orchestrator_at(ctx, store, run, &now, &probe, &|r| effects.respawn(r));
-    for note in effects.retry_cleanups()? {
-        eprintln!("horch ledger watch: {note}");
-    }
-    Ok(checked)
-}
+/// The line of `horch ledger watch` with no `--once`.
+const FLEETD_WATCHES: &str = "fleetd does the watch of each run: it checks the workers, reaps the dead and wakes the orchestrator.";
 
 /// The effects of the watchdog duties of the pass of fleetd on this machine
 /// (ticket 22): the respawn of an orchestrator, the delivery of the wakes
@@ -161,395 +69,71 @@ impl DutyEffects for LiveEffects<'_> {
     }
 }
 
-/// The board read of a pass at `now` (TRF-22, TRF-23, TRF-51): 1 re-wake
-/// for tasks that can start with no worker on its way for 2 min, 1 flag for
-/// each spawned worker with no claim after 3 min, and each wake that a crash
-/// after its ledger commit lost. A failure is printed.
-fn reconcile_at(
-    ctx: &RuntimeContext,
-    store: &Store,
-    run: &Run,
-    now: &str,
-    seen: &mut Option<Sighting>,
-) {
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
-    match watchdog::unclaimed_spawns(store.conn(), run, now) {
-        Ok(late) => {
-            for u in &late {
-                let status = u
-                    .worker
-                    .pane_id
-                    .as_deref()
-                    .and_then(|id| herdr.pane_get(id).ok())
-                    .and_then(|p| p.agent_status);
-                taskledger_wake::wake_as(ctx, store, run, |tx| {
-                    watchdog::flag_unclaimed(tx, run, u, status.as_deref())
-                });
-            }
-        }
-        Err(e) => eprintln!("horch ledger watch: the unclaimed-spawn read failed: {e:#}"),
-    }
-    taskledger_wake::wake_as(ctx, store, run, |tx| {
-        watchdog::startable_rewake(tx, run, now, seen)
-    });
-    taskledger_wake::reconcile_lost(ctx, store, run, now);
-}
-
-/// The orchestrator check of a pass at `now` (trace-fixes C7): record a
-/// live orchestrator's PID, and start a respawn the guards allow with
-/// `launch`. A failure is printed; a failed launch is recorded.
-fn orchestrator_at(
-    ctx: &RuntimeContext,
-    store: &mut Store,
-    run: &Run,
-    now: &str,
-    probe: &dyn orchestrator::Probe,
-    launch: &dyn Fn(&orchestrator::Respawn) -> Result<()>,
-) {
-    let checked = match store.immediate(|tx| orchestrator::check(tx, &run.run_id, now, probe)) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("horch ledger watch: the orchestrator check failed: {e:#}");
-            return;
-        }
-    };
-    match &checked.outcome {
-        orchestrator::Outcome::Respawned(r) => {
-            if let Err(e) = orchestrator::inherit_harness(store.conn(), r) {
-                eprintln!("horch ledger watch: recording the respawn's harness failed: {e:#}");
-            }
-            if let Err(e) = launch(r) {
-                eprintln!("horch ledger watch: the orchestrator respawn did not start: {e:#}");
-                if let Err(e) = orchestrator::launch_failed(store.conn(), r, &format!("{e:#}")) {
-                    eprintln!("horch ledger watch: recording the failed respawn failed: {e:#}");
-                }
-            }
-        }
-        orchestrator::Outcome::NotRespawned(why) => {
-            eprintln!(
-                "horch ledger watch: the orchestrator of run {} is gone; no respawn: {why}",
-                run.slug
-            );
-        }
-        _ => {}
-    }
-    // The wake goes out after the launch, so the new orchestrator's mailbox
-    // can take it; durable mail keeps it either way.
-    taskledger_wake::drain_run(ctx, store, run, checked.wake_id.as_deref());
-}
-
-/// What the watchdog does about 1 verdict: reap the dead, wake the
-/// orchestrator on a first stall or a suspect.
-fn act_on(ctx: &RuntimeContext, store: &mut Store, run: &Run, c: &watchdog::Checked) {
-    if c.verdict == "dead" {
-        return reap_dead(ctx, store, run, c);
-    }
-    // A worker back to normal after a stall needs no wake.
-    if let Some(wake) = horch_core::taskledger::wakes::verdict_wake(c) {
-        taskledger_wake::wake_as(ctx, store, run, |_| Ok(Some(wake)));
-    }
-}
-
-/// Reap a worker the check found dead, and wake on the result.
-fn reap_dead(ctx: &RuntimeContext, store: &mut Store, run: &Run, c: &watchdog::Checked) {
-    let who = c.role.as_deref().unwrap_or(&c.worker_id);
-    let panes = HerdrPanes::new(ctx);
-    let reaped = stop::reap(
-        store,
-        &c.worker_id,
-        StopRequester::Watchdog,
-        &c.note,
-        &panes,
-        &stop::Os,
-        stop_grace(),
-    );
-    match reaped {
-        Ok(report) => taskledger_wake::after_reap(ctx, store, run, &report),
-        Err(e) => eprintln!("horch ledger watch: reaping {who} failed: {e:#}"),
-    }
-}
-
 /// `horch ledger watch`.
 pub fn watch(
     ctx: &RuntimeContext,
-    mut store: Store,
     run: &Run,
     once: bool,
     force: bool,
     as_json: bool,
 ) -> Result<ExitCode> {
-    let _guard = take_lock(ctx, run)?;
     if once {
-        let checked = pass(ctx, &mut store, run, force, &mut None)?;
-        print_checked(&checked, as_json)?;
+        output::println(&once_report(ctx, run, force, as_json)?);
         return Ok(ExitCode::SUCCESS);
     }
-    watch_loop(ctx, &mut store, run)
+    output::println(FLEETD_WATCHES);
+    // `HORCH_NO_WATCHDOG=1`: no check and no start (MAP.md, Q17).
+    if !ctx.settings.no_watchdog {
+        output::println(&fleetd::describe(&fleetd::run_check(ctx)?));
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
-/// Wait out the start fault, refuse a second watchdog, and take the lock of
-/// the run. The starter compares the recorded binary with the one it would
-/// start (#216).
-fn take_lock(ctx: &RuntimeContext, run: &Run) -> Result<horch_core::fsx::DirLockGuard> {
-    // A slow start, as on a loaded machine: the e2e tests of `ensure` hold
-    // a new watchdog before its lock with `HORCH_FAULT=watchdog-start-ms:<n>`.
-    if let Some(ms) = ctx
-        .settings
-        .faults
-        .indexed("watchdog-start-ms")
-        .and_then(|s| s.parse::<u64>().ok())
-    {
-        std::thread::sleep(Duration::from_millis(ms.min(120_000)));
-    }
-    if let Some(pid) = lock_held(ctx, run) {
-        ensure!(
-            pid == std::process::id(),
-            "the watchdog of run {} already runs (PID {pid})",
-            run.slug
-        );
-    }
-    let Some(guard) = watchdog::lock(&lock_dir(ctx), &run.run_id)? else {
-        bail!("the watchdog of run {} already runs", run.slug);
+/// The report of `watch --once` for `run`: the checks of 1 pass of fleetd,
+/// or the line that a fleetd holds the lock.
+fn once_report(ctx: &RuntimeContext, run: &Run, force: bool, as_json: bool) -> Result<String> {
+    let checked = match fleetd::watch_once(ctx, force)? {
+        Once::Ran(checked) => checked,
+        Once::Held(row) => {
+            let who = row.map_or("A fleetd".to_string(), |f| format!("fleetd PID {}", f.pid));
+            return Ok(format!(
+                "{who} holds the fleetd lock and does the checks: horch ledger watch --once runs no pass."
+            ));
+        }
     };
-    let exe = std::env::current_exe().ok().and_then(|p| exe_identity(&p));
-    watchdog::record_exe(&guard, exe.as_ref())?;
-    Ok(guard)
+    let checked: Vec<watchdog::Checked> = checked
+        .into_iter()
+        .filter(|(r, _)| *r == run.run_id)
+        .map(|(_, c)| c)
+        .collect();
+    report(&checked, as_json)
 }
 
-/// The report of `watch --once`: JSON, or 1 line per checked worker.
-fn print_checked(checked: &[watchdog::Checked], as_json: bool) -> Result<()> {
+/// The checks of a pass: JSON, or 1 line per checked worker.
+fn report(checked: &[watchdog::Checked], as_json: bool) -> Result<String> {
     if as_json {
-        output::println(&serde_json::to_string_pretty(checked)?);
-        return Ok(());
+        return Ok(serde_json::to_string_pretty(checked)?);
     }
     if checked.is_empty() {
-        output::println("No worker was due for a check.");
+        return Ok("No worker was due for a check.".to_string());
     }
-    for c in checked {
-        output::println(&format!(
-            "{} {}: {} (round {}): {}",
-            c.role.as_deref().unwrap_or(&c.worker_id),
-            c.task.as_deref().unwrap_or("-"),
-            c.verdict,
-            c.round,
-            c.note
-        ));
-    }
-    Ok(())
+    let lines: Vec<String> = checked
+        .iter()
+        .map(|c| {
+            format!(
+                "{} {}: {} (round {}): {}",
+                c.role.as_deref().unwrap_or(&c.worker_id),
+                c.task.as_deref().unwrap_or("-"),
+                c.verdict,
+                c.round,
+                c.note
+            )
+        })
+        .collect();
+    Ok(lines.join("\n"))
 }
 
-/// The loop: a pass on every tick; each worker is checked when it is due.
-/// It ends when the run is no longer active or on SIGTERM.
-fn watch_loop(ctx: &RuntimeContext, store: &mut Store, run: &Run) -> Result<ExitCode> {
-    exit_between_passes();
-    let mut seen = None;
-    loop {
-        let run_now = runs::get(store.conn(), &run.run_id)?;
-        if run_now.status != "active" || TERM.load(Ordering::SeqCst) {
-            return Ok(ExitCode::SUCCESS);
-        }
-        if let Err(e) = pass(ctx, store, &run_now, false, &mut seen) {
-            eprintln!("horch ledger watch: {e:#}");
-        }
-        // At most RECONCILE_S apart: each pass drains and reads the board.
-        let tick = (run_now.check_every_s / 10).clamp(1, watchdog::RECONCILE_S as i64) as u64;
-        sleep_unless_term(Duration::from_secs(tick));
-    }
-}
-
-/// Restart the watchdog of each active run of this project that has gone
-/// quiet while a task runs. Best effort, silent unless it restarts one.
-pub fn ensure(ctx: &RuntimeContext) {
-    let Some((root, store, runs)) = quiet_runs(ctx) else {
-        return;
-    };
-    let Ok(exe) = std::env::current_exe() else {
-        return;
-    };
-    for run in runs {
-        match watchdog::holder(&lock_dir(ctx), &run.run_id) {
-            Some(h) => keep_or_replace(ctx, &store, &run, &root, &h, &exe),
-            None => restart(ctx, &store, &run, &root, &exe),
-        }
-    }
-}
-
-/// The active runs of this project, with its root and the ledger. None when
-/// the watchdog is off, the ledger file is missing (it is never created
-/// just to look) or unreadable.
-fn quiet_runs(ctx: &RuntimeContext) -> Option<(PathBuf, Store, Vec<Run>)> {
-    if ctx.settings.no_watchdog || !ctx.paths.ledger_db.exists() {
-        return None;
-    }
-    let Ok(root) = super::taskledger::project_root(ctx) else {
-        return None;
-    };
-    let Ok(store) = taskledger::open(ctx) else {
-        return None;
-    };
-    let Ok(all) = runs::of_project(store.conn(), &root) else {
-        return None;
-    };
-    let active = all.into_iter().filter(|r| r.status == "active").collect();
-    Some((root, store, active))
-}
-
-/// A live watchdog stays, unless its own binary file changed: it then moves
-/// onto that file. A horch at another path does not take it over.
-fn keep_or_replace(
-    ctx: &RuntimeContext,
-    store: &Store,
-    run: &Run,
-    root: &Path,
-    h: &watchdog::LockHolder,
-    exe: &Path,
-) {
-    if !h.binary_replaced() {
-        return;
-    }
-    let target = h
-        .exe
-        .as_ref()
-        .map(|e| PathBuf::from(&e.path))
-        .filter(|p| p.is_file())
-        .unwrap_or_else(|| exe.to_path_buf());
-    replace(ctx, store, run, root, h, &target, true);
-}
-
-/// Start a watchdog for a run that has none and needs one, and say so.
-fn restart(ctx: &RuntimeContext, store: &Store, run: &Run, root: &Path, exe: &Path) {
-    if !watchdog::needs_restart(store.conn(), run).unwrap_or(false) {
-        return;
-    }
-    match start_detached(ctx, store, run, root, exe) {
-        Ok(pid) => eprintln!(
-            "horch: warning: the watchdog of run {} was not running; started it (PID {pid})",
-            run.slug
-        ),
-        Err(e) => eprintln!(
-            "horch: warning: could not start the watchdog of run {}: {e:#}",
-            run.slug
-        ),
-    }
-}
-
-/// After `horch install`: restart the watchdog of every active run that
-/// runs another binary than the one just installed at `installed` (#216).
-/// Prints 1 line per restarted watchdog. Starts none that is not live.
-pub fn restart_if_stale(ctx: &RuntimeContext, installed: &Path) {
-    if !ctx.paths.ledger_db.exists() {
-        return;
-    }
-    let Ok(store) = taskledger::open(ctx) else {
-        return;
-    };
-    let Ok(all) = watchdog::active_runs(store.conn()) else {
-        return;
-    };
-    let want = exe_identity(installed);
-    for run in all {
-        if let Some(h) = watchdog::holder(&lock_dir(ctx), &run.run_id) {
-            if h.runs_other_binary(want.as_ref()) {
-                let root = PathBuf::from(&run.project_root);
-                replace(ctx, &store, &run, &root, &h, installed, false);
-            }
-        }
-    }
-}
-
-/// Stop the live watchdog `h` of `run`, which runs another binary, by its
-/// exact PID and start time, then start one on `exe`. A watchdog keeps no
-/// state between passes, so the restart loses nothing. It ends after its
-/// current pass, and a reap in that pass waits up to the stop grace.
-fn replace(
-    ctx: &RuntimeContext,
-    store: &Store,
-    run: &Run,
-    root: &Path,
-    h: &watchdog::LockHolder,
-    exe: &Path,
-    as_warning: bool,
-) {
-    if let Err(e) = h.stop(stop_grace() + Duration::from_secs(5)) {
-        eprintln!(
-            "horch: warning: the watchdog of run {} (PID {}) runs another build of horch, but horch did not stop it: {e:#}",
-            run.slug, h.pid
-        );
-        return;
-    }
-    let line = match start_detached(ctx, store, run, root, exe) {
-        Ok(pid) => format!(
-            "restarted the watchdog of run {} on {}: PID {} ran another build of horch, PID {pid} runs the new one",
-            run.slug,
-            exe.display(),
-            h.pid
-        ),
-        Err(e) => {
-            eprintln!(
-                "horch: warning: stopped the old watchdog of run {}, but could not start a new one: {e:#}",
-                run.slug
-            );
-            return;
-        }
-    };
-    if as_warning {
-        eprintln!("horch: warning: {line}");
-    } else {
-        output::println(&line);
-    }
-}
-
-/// `horch ledger watch --run <id>` of `exe`, detached in its own session so
-/// a pane close does not end it. Its output goes to
-/// `<ledger dir>/watchdog-<run>.log`. The run records the new process at
-/// once, so a command before its first checkin does not start another.
-fn start_detached(
-    ctx: &RuntimeContext,
-    store: &Store,
-    run: &Run,
-    root: &Path,
-    exe: &Path,
-) -> Result<u32> {
-    let log_path = ctx
-        .paths
-        .ledger_db
-        .parent()
-        .map(|p| p.join(format!("watchdog-{}.log", run.run_id)))
-        .unwrap_or_else(|| PathBuf::from("watchdog.log"));
-    let log = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)?;
-    let mut cmd = std::process::Command::new(exe);
-    cmd.args(["ledger", "watch", "--run", &run.run_id])
-        .current_dir(root)
-        .env("HORCH_PROJECT_DIR", root)
-        .env("HORCH_LEDGER_DB", &ctx.paths.ledger_db)
-        .stdin(std::process::Stdio::null())
-        .stdout(log.try_clone()?)
-        .stderr(log);
-    if let Some(ws) = &run.workspace_id {
-        cmd.env("HORCH_WORKSPACE_ID", ws);
-    }
-    let child = horch_core::runtime::process::spawn_detached(&mut cmd)?;
-    let pid = child.id();
-    // It runs either way; without the record, the next command can start a
-    // second one, which finds the lock taken and ends.
-    if let Err(e) = watchdog::record_start(
-        store.conn(),
-        &run.run_id,
-        pid,
-        horch_core::procid::start_time(pid),
-    ) {
-        eprintln!(
-            "horch: warning: the run {} did not record its new watchdog (PID {pid}): {e:#}",
-            run.slug
-        );
-    }
-    Ok(pid)
-}
-
-#[cfg(unix)]
+#[cfg(test)]
 #[cfg(test)]
 mod tests {
     use horch_core::fleetd::fleet_runtime::adapters::watchdog_duties::HerdrObserver as Live;
@@ -604,43 +188,6 @@ mod tests {
         );
         assert!(warm.status.success());
         Herdr::with_bin(bin)
-    }
-
-    /// `HORCH_NO_WATCHDOG=1` in the context hides each active run from
-    /// `ensure`, so no watchdog starts. Without the setting the same run is
-    /// found.
-    #[test]
-    fn no_watchdog_setting_gives_no_quiet_runs() {
-        use horch_core::runtime::{MapEnv, RuntimeContext};
-
-        let dir = tempfile::tempdir().unwrap();
-        let project = dir.path().canonicalize().unwrap();
-        let db = project.join("ledger.sqlite3");
-        Store::open(&db)
-            .unwrap()
-            .immediate(|tx| {
-                runs::create(
-                    tx,
-                    &project,
-                    &NewRun {
-                        slug: "r1".into(),
-                        ..Default::default()
-                    },
-                )
-            })
-            .unwrap();
-        let ctx = |no_watchdog: Option<&str>| {
-            let mut env = MapEnv::new(&project)
-                .with("HORCH_STATE_DIR", project.join("state").to_str().unwrap())
-                .with("HORCH_LEDGER_DB", db.to_str().unwrap());
-            if let Some(v) = no_watchdog {
-                env = env.with("HORCH_NO_WATCHDOG", v);
-            }
-            RuntimeContext::from_env(&env).unwrap()
-        };
-        let (_, _, active) = super::quiet_runs(&ctx(None)).expect("the run is found");
-        assert_eq!(active.len(), 1);
-        assert!(super::quiet_runs(&ctx(Some("1"))).is_none());
     }
 
     #[test]
@@ -747,845 +294,113 @@ mod tests {
         w.transcript_path = None;
         assert_eq!(live.observe(&w), Observation::default());
     }
-}
 
-#[cfg(test)]
-mod reconcile_tests {
-    use std::path::Path;
+    /// A fleet in `dir` for `horch ledger watch --once`: a ledger with 1 run
+    /// and 1 working worker, and a herdr that is not there. Returns the context and the run.
+    fn once_fleet(dir: &Path) -> (horch_core::runtime::RuntimeContext, runs::Run, String) {
+        use horch_core::runtime::{MapEnv, RuntimeContext};
+        use horch_core::taskledger::model::Actor;
+        use horch_core::taskledger::runs::Thresholds;
+        use horch_core::taskledger::tasks::{self, NewTask};
 
-    use horch_core::runtime::MapEnv;
-    use horch_core::taskledger::model::Actor;
-    use horch_core::taskledger::runs::NewRun;
-    use horch_core::taskledger::tasks::{self, NewTask};
-    use horch_core::taskledger::workers::{self, NewWorker};
-
-    use super::*;
-
-    /// A ledger with a run of 1 queued task for `dev`, and a context with no
-    /// workspace: each send fails, so every row stays in the outbox.
-    fn world() -> (tempfile::TempDir, RuntimeContext, Store, Run) {
-        let dir = tempfile::tempdir().unwrap();
-        let db = dir.path().join("ledger.sqlite3");
-        let ctx = RuntimeContext::from_env(
-            &MapEnv::new("/")
-                .with(
-                    "HORCH_STATE_DIR",
-                    dir.path().join("state").to_str().unwrap(),
-                )
-                .with("HORCH_LEDGER_DB", db.to_str().unwrap()),
-        )
-        .unwrap();
+        let db = dir.join("ledger.sqlite3");
+        let env = MapEnv::new(dir)
+            .with("HORCH_STATE_DIR", dir.join("state").to_str().unwrap())
+            .with("HORCH_DATA_DIR", dir.join("data").to_str().unwrap())
+            .with("HORCH_LEDGER_DB", db.to_str().unwrap())
+            .with("HORCH_HERDR_BIN", dir.join("no-herdr").to_str().unwrap());
+        let ctx = RuntimeContext::from_env(&env).unwrap();
         let mut store = Store::open(&db).unwrap();
-        let run = store
+        let new_run = NewRun {
+            slug: "r1".into(),
+            thresholds: Thresholds {
+                stall_rounds: Some(1000),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let (run, worker) = store
             .immediate(|tx| {
-                let run = runs::create(
-                    tx,
-                    Path::new("/repo"),
-                    &NewRun {
-                        slug: "r1".into(),
-                        ..Default::default()
-                    },
-                )?;
+                let run = runs::create(tx, dir, &new_run)?;
                 tasks::add(
                     tx,
                     &run,
                     &NewTask::work("a", "a.md", "dev"),
                     Actor::Orchestrator,
                 )?;
-                Ok(run)
+                let new_worker = NewWorker {
+                    run_id: run.run_id.clone(),
+                    persona: "dev".into(),
+                    ..Default::default()
+                };
+                let w = workers::insert(tx, &new_worker)?;
+                // This test is the live agent of the worker. A live attempt
+                // owns it, and 1000 stall rounds keep a check from reaping
+                // it, so no pass stops it.
+                let me = std::process::id();
+                let started = horch_core::procid::start_time(me);
+                workers::supervisor_started(tx, &w, me, started)?;
+                workers::agent_started(tx, &w, me, started)?;
+                tasks::claim(tx, &w)?;
+                Ok((run, w))
             })
             .unwrap();
-        (dir, ctx, store, run)
-    }
-
-    /// The fake clock: the ledger stamp `secs` after `t0`.
-    fn at(t0: &chrono::DateTime<chrono::Utc>, secs: i64) -> String {
-        horch_core::clock::stamp(*t0 + chrono::Duration::seconds(secs))
-    }
-
-    fn rows(store: &Store, run: &Run, event: &str) -> Vec<String> {
-        let mut stmt = store
-            .conn()
-            .prepare("SELECT text FROM outbox WHERE run_id = ?1 AND event = ?2 ORDER BY rowid")
-            .unwrap();
-        stmt.query_map([&run.run_id, event], |r| r.get(0))
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap()
+        (ctx, run, worker)
     }
 
     #[test]
-    fn trf_22_passes_every_30_s_write_1_rewake_per_board_state() {
-        let (_dir, ctx, mut store, run) = world();
-        let t0 = horch_core::clock::now();
-        let mut seen = None;
-        for secs in (0..=600).step_by(watchdog::RECONCILE_S as usize) {
-            reconcile_at(&ctx, &store, &run, &at(&t0, secs as i64), &mut seen);
-        }
-        let r = rows(&store, &run, "startable");
-        assert_eq!(r.len(), 1, "{r:?}");
-        assert!(r[0].contains("no worker is on its way to them"), "{r:?}");
-        assert!(r[0].contains("Spawn: dev x1."), "{r:?}");
-
-        // A new board state gets its own re-wake after its own 2 min.
-        store
-            .immediate(|tx| {
-                tasks::add(
-                    tx,
-                    &run,
-                    &NewTask::work("b", "b.md", "dev"),
-                    Actor::Orchestrator,
-                )
-            })
-            .unwrap();
-        for secs in [630, 660, 690, 720] {
-            reconcile_at(&ctx, &store, &run, &at(&t0, secs), &mut seen);
-        }
-        assert_eq!(rows(&store, &run, "startable").len(), 1, "under 2 min");
-        reconcile_at(&ctx, &store, &run, &at(&t0, 750), &mut seen);
-        assert_eq!(rows(&store, &run, "startable").len(), 2);
-    }
-
-    #[test]
-    fn trf_23_passes_flag_a_spawned_worker_with_no_claim_once() {
-        let (_dir, ctx, mut store, run) = world();
-        let t0 = horch_core::clock::now();
-        let id = store
-            .immediate(|tx| {
-                workers::insert(
-                    tx,
-                    &NewWorker {
-                        run_id: run.run_id.clone(),
-                        persona: "dev".into(),
-                        ..Default::default()
-                    },
-                )
-            })
-            .unwrap();
-        let mut seen = None;
-        for secs in (0..=600).step_by(watchdog::RECONCILE_S as usize) {
-            // The worker checks in, but it does not claim.
-            store
-                .conn()
-                .execute(
-                    "UPDATE workers SET status = 'claiming', spawned_at = ?2, last_checkin_at = ?3 WHERE worker_id = ?1",
-                    [&id, &at(&t0, 0), &at(&t0, secs as i64)],
-                )
-                .unwrap();
-            reconcile_at(&ctx, &store, &run, &at(&t0, secs as i64), &mut seen);
-            let flags = rows(&store, &run, "unclaimed-spawn");
-            assert_eq!(
-                flags.len(),
-                usize::from(secs >= 180),
-                "at {secs} s: {flags:?}"
-            );
-        }
-        let flags = rows(&store, &run, "unclaimed-spawn");
-        assert!(
-            flags[0].contains("has not claimed a task in 180s"),
-            "{flags:?}"
-        );
-        assert!(flags[0].contains("herdr status unknown"), "{flags:?}");
-        assert!(
-            rows(&store, &run, "startable").is_empty(),
-            "a claiming worker is on its way to the task"
-        );
-    }
-}
-
-/// TRF-51: each test commits a ledger change and skips its direct wake, as
-/// a crash after the commit does. An unrelated worker stays live. 1 pass
-/// writes exactly 1 row; a 2nd pass, and the direct path, write none.
-#[cfg(test)]
-mod trf_51_tests {
-    use std::path::Path;
-
-    use horch_core::runtime::MapEnv;
-    use horch_core::taskledger::model::{Actor, TaskKind};
-    use horch_core::taskledger::runs::NewRun;
-    use horch_core::taskledger::tasks::{self, NewTask, Task};
-    use horch_core::taskledger::workers::{self, NewWorker};
-
-    use super::*;
-
-    /// A run with task `a` (T-1) for `dev`, task `b` (T-2) that waits for
-    /// it, and 1 live worker on neither. Each send fails: rows stay.
-    fn world() -> (tempfile::TempDir, RuntimeContext, Store, Run) {
+    fn watch_once_runs_1_fleetd_pass_with_the_json_of_today() {
         let dir = tempfile::tempdir().unwrap();
-        let db = dir.path().join("ledger.sqlite3");
-        let ctx = RuntimeContext::from_env(
-            &MapEnv::new("/")
-                .with(
-                    "HORCH_STATE_DIR",
-                    dir.path().join("state").to_str().unwrap(),
-                )
-                .with("HORCH_LEDGER_DB", db.to_str().unwrap()),
-        )
-        .unwrap();
-        let mut store = Store::open(&db).unwrap();
-        let run = store
-            .immediate(|tx| {
-                let run = runs::create(
-                    tx,
-                    Path::new("/repo"),
-                    &NewRun {
-                        slug: "r1".into(),
-                        ..Default::default()
-                    },
-                )?;
-                tasks::add(
-                    tx,
-                    &run,
-                    &NewTask::work("a", "a.md", "dev"),
-                    Actor::Orchestrator,
-                )?;
-                let mut b = NewTask::work("b", "b.md", "dev");
-                b.blocked_by = vec!["T-1".into()];
-                tasks::add(tx, &run, &b, Actor::Orchestrator)?;
-                Ok(run)
-            })
-            .unwrap();
-        worker(&mut store, &run, "other", "other-1");
-        (dir, ctx, store, run)
-    }
-
-    /// A working worker of `persona` with `role`, checked in now.
-    fn worker(store: &mut Store, run: &Run, persona: &str, role: &str) -> String {
-        let id = store
-            .immediate(|tx| {
-                workers::insert(
-                    tx,
-                    &NewWorker {
-                        run_id: run.run_id.clone(),
-                        persona: persona.into(),
-                        role: Some(role.into()),
-                        ..Default::default()
-                    },
-                )
-            })
-            .unwrap();
-        store
-            .conn()
-            .execute(
-                "UPDATE workers SET status = 'working', claimed_at = ?2, last_checkin_at = ?2
-                 WHERE worker_id = ?1",
-                [&id, &horch_core::taskledger::util::now()],
-            )
-            .unwrap();
-        id
-    }
-
-    fn at(t0: &chrono::DateTime<chrono::Utc>, secs: i64) -> String {
-        horch_core::clock::stamp(*t0 + chrono::Duration::seconds(secs))
-    }
-
-    /// 1 watchdog pass at `now`, with no sighting kept.
-    fn pass(ctx: &RuntimeContext, store: &Store, run: &Run, now: &str) {
-        reconcile_at(ctx, store, run, now, &mut None);
-    }
-
-    fn rows(store: &Store, run: &Run, event: &str) -> Vec<String> {
-        let mut stmt = store
-            .conn()
-            .prepare("SELECT text FROM outbox WHERE run_id = ?1 AND event = ?2 ORDER BY rowid")
-            .unwrap();
-        stmt.query_map([&run.run_id, event], |r| r.get(0))
+        let (ctx, run, worker) = once_fleet(dir.path());
+        let json = super::once_report(&ctx, &run, true, true).unwrap();
+        let checked: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let checked = checked.as_array().expect("a JSON list of checks");
+        assert_eq!(checked.len(), 1, "{json}");
+        assert_eq!(checked[0]["worker_id"], worker.as_str());
+        for field in ["verdict", "note"] {
+            assert!(checked[0][field].is_string(), "{field}: {json}");
+        }
+        assert!(checked[0]["round"].is_i64(), "{json}");
+        // It was a pass of fleetd: it took a generation and wrote the
+        // heartbeat of the pass.
+        let generation: i64 = Store::open(&ctx.paths.ledger_db)
             .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap()
-    }
-
-    fn task(store: &Store, run: &Run, short: &str) -> Task {
-        tasks::resolve(store.conn(), &run.run_id, short).unwrap()
-    }
-
-    fn set(store: &Store, sql: &str, id: &str) {
-        store.conn().execute(sql, [id]).unwrap();
-    }
-
-    /// A board change that no wake of these tests answers.
-    fn unrelated_change(store: &mut Store, run: &Run) {
-        store
-            .immediate(|tx| {
-                tasks::add(
-                    tx,
-                    run,
-                    &NewTask::work("z", "z.md", "dev"),
-                    Actor::Orchestrator,
-                )
-            })
-            .unwrap();
-    }
-
-    /// I-03: the last task is done, and `wake_after_done` never ran.
-    #[test]
-    fn trf_51_a_lost_settled_wake_is_written_once() {
-        let (_dir, ctx, store, run) = world();
-        let t0 = horch_core::clock::now();
-        pass(&ctx, &store, &run, &at(&t0, 0));
-        assert!(rows(&store, &run, "settled").is_empty(), "not settled");
-        for t in ["T-1", "T-2"] {
-            let id = task(&store, &run, t).task_id;
-            set(
-                &store,
-                "UPDATE tasks SET status = 'done', finished_at = updated_at WHERE task_id = ?1",
-                &id,
-            );
-        }
-
-        pass(&ctx, &store, &run, &at(&t0, 30));
-        let r = rows(&store, &run, "settled");
-        assert_eq!(r.len(), 1, "{r:?}");
-        assert!(r[0].contains("All tasks are done"), "{r:?}");
-        pass(&ctx, &store, &run, &at(&t0, 60));
-        taskledger_wake::after_done(&ctx, &store, &run);
-        assert_eq!(rows(&store, &run, "settled").len(), 1, "1 row per settle");
-    }
-
-    /// I-04: the last review of T-1 is done, and its author was never told.
-    #[test]
-    fn trf_51_a_lost_reviews_in_wake_is_written_once() {
-        let (_dir, ctx, mut store, run) = world();
-        let t0 = horch_core::clock::now();
-        let author = worker(&mut store, &run, "dev", "dev-1");
-        let parent = task(&store, &run, "T-1");
-        store
             .conn()
-            .execute(
-                "UPDATE tasks SET status = 'running', current_worker_id = ?2 WHERE task_id = ?1",
-                [&parent.task_id, &author],
-            )
+            .query_row("SELECT generation FROM fleetd", [], |r| r.get(0))
             .unwrap();
-        store
-            .conn()
-            .execute(
-                "INSERT INTO task_steps (task_id, worker_id, seq, name, status)
-                 VALUES (?1, ?2, 2, 'code-sweep', 'running')",
-                [&parent.task_id, &author],
-            )
-            .unwrap();
-        let mut review = NewTask::work("review", "review.md", "rev");
-        review.kind = TaskKind::Review;
-        review.parent_task_id = Some(parent.task_id.clone());
-        let review = store
-            .immediate(|tx| tasks::add(tx, &run, &review, Actor::Orchestrator))
-            .unwrap();
-        pass(&ctx, &store, &run, &at(&t0, 0));
-        assert!(
-            rows(&store, &run, "reviews-in").is_empty(),
-            "a review is open"
-        );
-        store
-            .conn()
-            .execute(
-                "UPDATE tasks SET status = 'done', finished_at = ?2 WHERE task_id = ?1",
-                [&review.task_id, &at(&t0, 10)],
-            )
-            .unwrap();
-
-        pass(&ctx, &store, &run, &at(&t0, 40));
-        assert!(
-            rows(&store, &run, "reviews-in").is_empty(),
-            "the direct path has {} s",
-            watchdog::REVIEWS_IN_AFTER_S
-        );
-        pass(&ctx, &store, &run, &at(&t0, 70));
-        let r = rows(&store, &run, "reviews-in");
-        assert_eq!(r.len(), 1, "{r:?}");
-        assert!(r[0].contains("The reviews of T-1 are in"), "{r:?}");
-        assert!(r[0].contains("horch tell dev-1"), "{r:?}");
-
-        unrelated_change(&mut store, &run);
-        pass(&ctx, &store, &run, &at(&t0, 100));
-        taskledger_wake::reviews_in(&ctx, &store, &run, "T-1", "dev-1");
-        assert_eq!(rows(&store, &run, "reviews-in").len(), 1);
+        assert_eq!(generation, 1);
+        assert!(ctx.paths.fleet_root.join("run/heartbeat.json").is_file());
     }
 
-    /// I-05: T-1 is cancelled while T-2 waits, and `wake_dependents` never
-    /// ran.
     #[test]
-    fn trf_51_a_lost_cancelled_wake_is_written_once() {
-        let (_dir, ctx, mut store, run) = world();
-        let t0 = horch_core::clock::now();
-        let a = task(&store, &run, "T-1");
-        store
-            .immediate(|tx| tasks::cancel(tx, &a, "not needed"))
-            .unwrap();
+    fn watch_once_defers_to_a_fleetd_that_holds_the_lock() {
+        use horch_core::fleetd::fleet_runtime::adapters::fleetd_row;
 
-        pass(&ctx, &store, &run, &at(&t0, 0));
-        let r = rows(&store, &run, "cancelled");
-        assert_eq!(r.len(), 1, "{r:?}");
-        assert!(r[0].contains("T-1 was cancelled. T-2 wait for it"), "{r:?}");
-
-        unrelated_change(&mut store, &run);
-        pass(&ctx, &store, &run, &at(&t0, 30));
-        let waiting = tasks::dependents(store.conn(), &a.task_id).unwrap();
-        taskledger_wake::stalled_dependents(&ctx, &store, &run, "T-1", &waiting);
-        assert_eq!(rows(&store, &run, "cancelled").len(), 1);
-    }
-
-    /// I-06: T-1 is parked unlanded while T-2 waits, and `wake_unlanded`
-    /// never ran.
-    #[test]
-    fn trf_51_a_lost_parked_blocker_wake_is_written_once() {
-        let (_dir, ctx, mut store, run) = world();
-        let t0 = horch_core::clock::now();
-        let a = task(&store, &run, "T-1");
-        set(
-            &store,
-            "UPDATE tasks SET status = 'queued', held_reason = 'unlanded', attempts = 1
-             WHERE task_id = ?1",
-            &a.task_id,
-        );
-
-        pass(&ctx, &store, &run, &at(&t0, 0));
-        let r = rows(&store, &run, "held");
-        assert_eq!(r.len(), 1, "{r:?}");
-        assert!(r[0].contains("T-2 waits: T-1 is parked unlanded"), "{r:?}");
-
-        unrelated_change(&mut store, &run);
-        pass(&ctx, &store, &run, &at(&t0, 30));
-        let waiting = tasks::dependents(store.conn(), &a.task_id).unwrap();
-        taskledger_wake::stalled_dependents(&ctx, &store, &run, "T-1", &waiting);
-        assert_eq!(rows(&store, &run, "held").len(), 1);
-    }
-
-    /// I-07: the reap that held T-1 at the attempt limit committed, and
-    /// `after_reap` never ran.
-    #[test]
-    fn trf_51_a_lost_held_attempt_question_is_written_once() {
-        let (_dir, ctx, mut store, run) = world();
-        let t0 = horch_core::clock::now();
-        let a = task(&store, &run, "T-1");
-        set(
-            &store,
-            "UPDATE tasks SET status = 'queued', held_reason = '3 attempts failed', attempts = 3
-             WHERE task_id = ?1",
-            &a.task_id,
-        );
-
-        pass(&ctx, &store, &run, &at(&t0, 0));
-        let r = rows(&store, &run, "held");
-        assert_eq!(r.len(), 1, "{r:?}");
-        assert!(
-            r[0].contains("QUESTION: T-1 is held: 3 attempts failed"),
-            "{r:?}"
-        );
-
-        unrelated_change(&mut store, &run);
-        pass(&ctx, &store, &run, &at(&t0, 30));
-        assert_eq!(rows(&store, &run, "held").len(), 1);
-    }
-}
-
-#[cfg(test)]
-mod orchestrator_tests {
-    use std::cell::{Cell, RefCell};
-    use std::path::Path;
-
-    use horch_core::runtime::MapEnv;
-    use horch_core::taskledger::model::WorkerKind;
-    use horch_core::taskledger::orchestrator::{Holder, Probe, Respawn};
-    use horch_core::taskledger::runs::NewRun;
-    use horch_core::taskledger::workers::{self, NewWorker};
-
-    use super::*;
-
-    /// No lock holder, no live PID, and the workspace is open.
-    struct Dead;
-
-    impl Probe for Dead {
-        fn holder(&self, _: &str) -> Option<Holder> {
-            None
-        }
-        fn alive(&self, _: u32, _: Option<u64>) -> bool {
-            false
-        }
-        fn workspace_open(&self, _: &str) -> Option<bool> {
-            Some(true)
-        }
-    }
-
-    /// A live lock holder, PID 31.
-    struct Held;
-
-    impl Probe for Held {
-        fn holder(&self, _: &str) -> Option<Holder> {
-            Some(Holder {
-                pid: 31,
-                started: Some(3),
-            })
-        }
-        fn alive(&self, _: u32, _: Option<u64>) -> bool {
-            true
-        }
-        fn workspace_open(&self, _: &str) -> Option<bool> {
-            Some(true)
-        }
-    }
-
-    /// A run in workspace `w1` whose orchestrator's agent PID is recorded,
-    /// and a context with no workspace: each send fails, so wakes stay.
-    fn world() -> (tempfile::TempDir, RuntimeContext, Store, Run) {
         let dir = tempfile::tempdir().unwrap();
-        let db = dir.path().join("ledger.sqlite3");
-        let ctx = RuntimeContext::from_env(
-            &MapEnv::new("/")
-                .with(
-                    "HORCH_STATE_DIR",
-                    dir.path().join("state").to_str().unwrap(),
-                )
-                .with("HORCH_LEDGER_DB", db.to_str().unwrap()),
-        )
-        .unwrap();
-        let mut store = Store::open(&db).unwrap();
-        let run = store
-            .immediate(|tx| {
-                let run = runs::create(
-                    tx,
-                    Path::new("/repo"),
-                    &NewRun {
-                        slug: "r1".into(),
-                        workspace_id: Some("w1".into()),
-                        ..Default::default()
-                    },
-                )?;
-                let id = workers::insert(
-                    tx,
-                    &NewWorker {
-                        run_id: run.run_id.clone(),
-                        kind: Some(WorkerKind::Orchestrator),
-                        persona: "orchestrator".into(),
-                        role: Some("orchestrator".into()),
-                        workspace_id: Some("w1".into()),
-                        ..Default::default()
-                    },
-                )?;
-                tx.execute(
-                    "UPDATE workers SET status = 'working', agent_pid = 4242, agent_started = 1
-                     WHERE worker_id = ?1",
-                    [&id],
-                )?;
-                runs::set_orchestrator(tx, &run.run_id, &id)?;
-                Ok(run)
-            })
-            .unwrap();
-        (dir, ctx, store, run)
-    }
-
-    fn at(t0: &chrono::DateTime<chrono::Utc>, secs: i64) -> String {
-        horch_core::clock::stamp(*t0 + chrono::Duration::seconds(secs))
-    }
-
-    /// Give the current orchestrator row a recorded agent PID, as the
-    /// pass after a launch does from the lock holder.
-    fn registered(store: &Store, run: &Run) {
-        let id = runs::get(store.conn(), &run.run_id)
+        let (ctx, run, worker) = once_fleet(dir.path());
+        let mut store = Store::open(&ctx.paths.ledger_db).unwrap();
+        // This test is the fleetd that holds the lock.
+        let held = fleetd_row::start(&ctx.paths.fleet_root, &mut store)
             .unwrap()
-            .orchestrator_worker_id
-            .unwrap();
-        store
+            .expect("the fleetd lock");
+        let before = workers::find(store.conn(), &worker).unwrap().unwrap();
+        let line = super::once_report(&ctx, &run, true, true).unwrap();
+        assert_eq!(
+            line,
+            format!(
+                "fleetd PID {} holds the fleetd lock and does the checks: horch ledger watch --once runs no pass.",
+                std::process::id()
+            )
+        );
+        // No second pass: the generation of the holder stays, no heartbeat
+        // is written, and the worker is not checked or reaped.
+        let generation: i64 = store
             .conn()
-            .execute(
-                "UPDATE workers SET status = 'working', agent_pid = 5000, agent_started = 2
-                 WHERE worker_id = ?1",
-                [&id],
-            )
+            .query_row("SELECT generation FROM fleetd", [], |r| r.get(0))
             .unwrap();
-    }
-
-    /// The run's current orchestrator row.
-    fn current(store: &Store, run: &Run) -> workers::Worker {
-        let id = runs::get(store.conn(), &run.run_id)
-            .unwrap()
-            .orchestrator_worker_id
-            .unwrap();
-        workers::get(store.conn(), &id).unwrap()
-    }
-
-    /// Report 28 D-c: the respawned orchestrator row records the harness
-    /// and model of the row it replaces before its launch runs.
-    #[test]
-    fn trf_45_a_respawned_orchestrator_row_keeps_the_harness() {
-        let (_dir, ctx, store, run) = world();
-        let old = current(&store, &run).worker_id;
-        store
-            .conn()
-            .execute(
-                "UPDATE workers SET harness = 'codex', model = 'gpt-5.6-sol' WHERE worker_id = ?1",
-                [&old],
-            )
-            .unwrap();
-        let seen = RefCell::new(None);
-        let launch = |r: &Respawn| {
-            let w = workers::get(store.conn(), &r.new_worker_id).unwrap();
-            *seen.borrow_mut() = Some((w.harness, w.model));
-            Ok(())
-        };
-        // The launch reads through `store`; the pass writes through a 2nd
-        // connection to the same file.
-        orchestrator_at(
-            &ctx,
-            &mut Store::open(store.path()).unwrap(),
-            &run,
-            &at(&horch_core::clock::now(), 0),
-            &Dead,
-            &launch,
-        );
-        let new = current(&store, &run);
-        assert_ne!(new.worker_id, old);
-        assert_eq!(new.harness.as_deref(), Some("codex"));
-        assert_eq!(new.model.as_deref(), Some("gpt-5.6-sol"));
-        assert_eq!(
-            seen.into_inner(),
-            Some((Some("codex".to_string()), Some("gpt-5.6-sol".to_string())))
-        );
-    }
-
-    #[test]
-    fn trf_38_a_pass_starts_the_respawn_of_a_dead_orchestrator() {
-        let (_dir, ctx, mut store, run) = world();
-        let launched = RefCell::new(Vec::<Respawn>::new());
-        let launch = |r: &Respawn| {
-            launched.borrow_mut().push(r.clone());
-            Ok(())
-        };
-        orchestrator_at(
-            &ctx,
-            &mut store,
-            &run,
-            &at(&horch_core::clock::now(), 0),
-            &Dead,
-            &launch,
-        );
-        let launched = launched.into_inner();
-        assert_eq!(launched.len(), 1);
-        let r = &launched[0];
-        assert_eq!(
-            (r.slug.as_str(), r.workspace_id.as_str(), r.number),
-            ("r1", "w1", 1)
-        );
-        let wake: String = store
-            .conn()
-            .query_row(
-                "SELECT text FROM outbox WHERE run_id = ?1 AND event = 'orchestrator-respawned'",
-                [&run.run_id],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert!(
-            wake.contains("ai_docs/handoffs/orchestrator-whats-next.md"),
-            "{wake}"
-        );
-        assert!(wake.contains("ai_docs/plans/r1/decisions.md"), "{wake}");
-        assert!(wake.contains("horch ledger status"), "{wake}");
-    }
-
-    #[test]
-    fn trf_38_a_failed_respawn_launch_is_recorded_and_still_counts() {
-        let (_dir, ctx, mut store, run) = world();
-        let tries = RefCell::new(Vec::new());
-        let t0 = horch_core::clock::now();
-        for secs in (0..=1800).step_by(watchdog::RECONCILE_S as usize) {
-            let launch = |r: &Respawn| {
-                tries.borrow_mut().push((secs, r.number));
-                anyhow::bail!("herdr is down")
-            };
-            orchestrator_at(
-                &ctx,
-                &mut store,
-                &run,
-                &at(&t0, secs as i64),
-                &Dead,
-                &launch,
-            );
-        }
-        // Each failed launch counts 1 respawn, so it cannot loop.
-        assert_eq!(tries.into_inner(), vec![(0, 1), (600, 2), (1200, 3)]);
-        let new = current(&store, &run);
-        assert_eq!(new.status, "launch_failed");
-        assert!(
-            new.end_reason.unwrap().contains("used its 3 respawns"),
-            "the last respawn ends the pending row"
-        );
-        let failed: i64 = store
-            .conn()
-            .query_row(
-                "SELECT count(*) FROM events WHERE run_id = ?1
-                 AND text LIKE 'Orchestrator respawn % did not start: herdr is down'",
-                [&run.run_id],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(failed, 3);
-        assert_eq!(
-            orchestrator::guard(store.conn(), &run.run_id)
-                .unwrap()
-                .respawns,
-            3
-        );
-    }
-
-    #[test]
-    fn trf_38_crash_before_launch_is_retried_on_the_next_pass() {
-        let (_dir, ctx, mut store, run) = world();
-        let t0 = horch_core::clock::now();
-        // A pass commits the respawn, and the watchdog exits before the launch.
-        let checked = store
-            .immediate(|tx| orchestrator::check(tx, &run.run_id, &at(&t0, 0), &Dead))
-            .unwrap();
-        let orchestrator::Outcome::Respawned(first) = checked.outcome else {
-            panic!("{:?}", checked.outcome)
-        };
-        let pending = current(&store, &run);
-        assert_eq!(
-            (pending.status.as_str(), pending.agent_pid),
-            ("spawning", None),
-            "no lock holder seen: the row is launch-pending"
-        );
-
-        // The restarted watchdog passes every 30 s. The next pass that the
-        // 10 min guard allows launches the same row again.
-        let launched = RefCell::new(Vec::<(u64, Respawn)>::new());
-        for secs in (30..=900).step_by(watchdog::RECONCILE_S as usize) {
-            let launch = |r: &Respawn| {
-                launched.borrow_mut().push((secs, r.clone()));
-                Ok(())
-            };
-            orchestrator_at(
-                &ctx,
-                &mut store,
-                &run,
-                &at(&t0, secs as i64),
-                &Dead,
-                &launch,
-            );
-            if !launched.borrow().is_empty() {
-                break;
-            }
-        }
-        let launched = launched.into_inner();
-        assert_eq!(launched.len(), 1);
-        let (secs, r) = &launched[0];
-        assert_eq!(*secs, orchestrator::RESPAWN_EVERY_S as u64);
-        assert_eq!(r.number, 2);
-        assert_eq!(r.new_worker_id, first.new_worker_id);
-        assert_eq!(r.old_worker_id, first.old_worker_id);
-        assert_eq!(r.slug, "r1");
-
-        // A pass that observes the lock holder marks the row live.
-        let none = |_: &Respawn| anyhow::bail!("no launch while the holder lives");
-        orchestrator_at(&ctx, &mut store, &run, &at(&t0, 930), &Held, &none);
-        let live = current(&store, &run);
-        assert_eq!(live.worker_id, first.new_worker_id);
-        assert_eq!(
-            (live.status.as_str(), live.agent_pid),
-            ("working", Some(31))
-        );
-        assert!(live.started_at.is_some());
-    }
-
-    #[test]
-    fn trf_38_failed_launch_keeps_the_remaining_budget() {
-        let (_dir, ctx, mut store, run) = world();
-        let t0 = horch_core::clock::now();
-        let fail = |_: &Respawn| anyhow::bail!("herdr is down");
-        orchestrator_at(&ctx, &mut store, &run, &at(&t0, 0), &Dead, &fail);
-        let pending = current(&store, &run);
-        assert_eq!(pending.status, "spawning", "a failed launch stays pending");
-        assert_eq!(
-            orchestrator::guard(store.conn(), &run.run_id)
-                .unwrap()
-                .respawns,
-            1
-        );
-
-        let launched = RefCell::new(Vec::new());
-        for secs in (30..=1200).step_by(watchdog::RECONCILE_S as usize) {
-            let launch = |r: &Respawn| {
-                launched.borrow_mut().push((secs, r.number));
-                Ok(())
-            };
-            orchestrator_at(
-                &ctx,
-                &mut store,
-                &run,
-                &at(&t0, secs as i64),
-                &Dead,
-                &launch,
-            );
-            if !launched.borrow().is_empty() {
-                orchestrator_at(
-                    &ctx,
-                    &mut store,
-                    &run,
-                    &at(&t0, secs as i64 + 30),
-                    &Held,
-                    &fail,
-                );
-                break;
-            }
-        }
-        assert_eq!(launched.into_inner(), vec![(600, 2)]);
-        let live = current(&store, &run);
-        assert_eq!(live.worker_id, pending.worker_id);
-        assert_eq!(live.status, "working");
-        let g = orchestrator::guard(store.conn(), &run.run_id).unwrap();
-        assert_eq!(g.respawns, 2, "1 respawn of 3 remains");
-    }
-
-    #[test]
-    fn trf_39_a_pass_after_fleet_stop_launches_nothing() {
-        let (_dir, ctx, mut store, run) = world();
-        orchestrator::record_stop(store.conn(), &run.run_id).unwrap();
-        let count = Cell::new(0);
-        let launch = |_: &Respawn| {
-            count.set(count.get() + 1);
-            Ok(())
-        };
-        let t0 = horch_core::clock::now();
-        for secs in (0..=1200).step_by(watchdog::RECONCILE_S as usize) {
-            orchestrator_at(
-                &ctx,
-                &mut store,
-                &run,
-                &at(&t0, secs as i64),
-                &Dead,
-                &launch,
-            );
-        }
-        assert_eq!(count.get(), 0);
-    }
-
-    #[test]
-    fn trf_40_passes_every_30_s_respawn_at_most_once_per_10_min_and_3_times() {
-        let (_dir, ctx, mut store, run) = world();
-        let times = RefCell::new(Vec::new());
-        let t0 = horch_core::clock::now();
-        for secs in (0..=3600).step_by(watchdog::RECONCILE_S as usize) {
-            let launch = |_: &Respawn| {
-                times.borrow_mut().push(secs);
-                Ok(())
-            };
-            orchestrator_at(
-                &ctx,
-                &mut store,
-                &run,
-                &at(&t0, secs as i64),
-                &Dead,
-                &launch,
-            );
-            // Each new orchestrator registers, then dies at once.
-            registered(&store, &run);
-        }
-        assert_eq!(times.into_inner(), vec![0, 600, 1200]);
-        let board = horch_core::taskledger::status::render(
-            &horch_core::taskledger::status::report(
-                store.conn(),
-                &runs::get(store.conn(), &run.run_id).unwrap(),
-            )
-            .unwrap(),
-        );
-        assert!(board.contains("Orchestrator: respawned 3 of 3"), "{board}");
+        assert_eq!(generation, held.generation.0);
+        assert!(!ctx.paths.fleet_root.join("run/heartbeat.json").exists());
+        let after = workers::find(store.conn(), &worker).unwrap().unwrap();
+        assert_eq!(after.status, before.status);
     }
 }

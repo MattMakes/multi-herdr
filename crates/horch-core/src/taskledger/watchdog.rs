@@ -775,6 +775,16 @@ pub fn record_start(conn: &Connection, run_id: &str, pid: u32, started: Option<u
     Ok(())
 }
 
+/// Clear the watchdog process recorded on the run: fleetd stopped it and
+/// takes the run (`fleetd::fleet_runtime::adapters::old_watchdog`).
+pub fn clear_record(conn: &Connection, run_id: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE runs SET watchdog_pid = NULL, watchdog_started = NULL WHERE run_id = ?1",
+        [run_id],
+    )?;
+    Ok(())
+}
+
 /// Every active run of the ledger, of any project: `horch install` checks
 /// the watchdog of each (#216).
 pub fn active_runs(conn: &Connection) -> Result<Vec<Run>> {

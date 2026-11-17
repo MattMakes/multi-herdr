@@ -49,8 +49,6 @@ pub fn install(ctx: &RuntimeContext, dir: Option<&str>) -> Result<()> {
     if let Err(e) = super::telemetry::restart_if_stale(ctx, &herdr, &target) {
         println!("warning: telemetry collector not restarted: {e:#}; run `horch telemetry ensure`");
     }
-    // A task-ledger watchdog too (#216).
-    super::taskledger_watch::restart_if_stale(ctx, &target);
     // And fleetd (OR-6).
     let install_fleetd_service = || install_service(&target);
     for line in fleetd::with_fleet(ctx, |fleet| {
