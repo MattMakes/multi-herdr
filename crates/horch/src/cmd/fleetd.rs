@@ -411,7 +411,7 @@ fn describe(c: &Checked) -> String {
 /// prints to stderr only when it starts fleetd or fails, so the output of
 /// the command stays as it is. `HORCH_NO_WATCHDOG=1` turns it off.
 pub fn check_before_command(ctx: &RuntimeContext) {
-    if std::env::var("HORCH_NO_WATCHDOG").is_ok_and(|v| v == "1") {
+    if ctx.settings.no_watchdog {
         return;
     }
     match run_check(ctx) {

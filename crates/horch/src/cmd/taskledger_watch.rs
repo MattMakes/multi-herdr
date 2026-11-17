@@ -378,7 +378,7 @@ pub fn ensure(ctx: &RuntimeContext) {
 /// the watchdog is off, the ledger file is missing (it is never created
 /// just to look) or unreadable.
 fn quiet_runs(ctx: &RuntimeContext) -> Option<(PathBuf, Store, Vec<Run>)> {
-    if std::env::var("HORCH_NO_WATCHDOG").is_ok_and(|v| v == "1") || !ctx.paths.ledger_db.exists() {
+    if ctx.settings.no_watchdog || !ctx.paths.ledger_db.exists() {
         return None;
     }
     let Ok(root) = super::taskledger::project_root(ctx) else {

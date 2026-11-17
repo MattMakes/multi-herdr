@@ -181,6 +181,9 @@ pub struct Settings {
     /// `HORCH_NO_SELF_CHECK`: `1` skips the boot check for a newer horch
     /// release.
     pub no_self_check: bool,
+    /// `HORCH_NO_WATCHDOG`: `1` turns off the fleetd check before a command
+    /// and the restart of a quiet task-ledger watchdog after it.
+    pub no_watchdog: bool,
     /// `HORCH_UPDATE_TIMEOUT_MS`: the time limit of 1 agent CLI updater.
     /// `DEFAULT_UPDATE_TIMEOUT` when unset or not a number.
     pub update_timeout: Duration,
@@ -419,6 +422,7 @@ impl RuntimeContext {
                 .map(Duration::from_millis),
             no_update: env.var("HORCH_NO_UPDATE").as_deref() == Some("1"),
             no_self_check: env.var("HORCH_NO_SELF_CHECK").as_deref() == Some("1"),
+            no_watchdog: env.var("HORCH_NO_WATCHDOG").as_deref() == Some("1"),
             update_timeout: nonempty("HORCH_UPDATE_TIMEOUT_MS")
                 .and_then(|ms| ms.parse::<u64>().ok())
                 .map_or(DEFAULT_UPDATE_TIMEOUT, Duration::from_millis),
@@ -729,6 +733,22 @@ mod tests {
                 .unwrap()
                 .settings
                 .no_self_check
+        };
+        assert!(read(Some("1")));
+        assert!(!read(Some("0")));
+        assert!(!read(None));
+    }
+
+    /// `HORCH_NO_WATCHDOG=1` turns off the fleetd check before a command
+    /// and the restart of a quiet watchdog; any other value does not.
+    #[test]
+    fn no_watchdog_setting_reads_only_1() {
+        let read = |value: Option<&str>| {
+            let env = match value {
+                Some(v) => MapEnv::new("/").with("HORCH_NO_WATCHDOG", v),
+                None => MapEnv::new("/"),
+            };
+            RuntimeContext::from_env(&env).unwrap().settings.no_watchdog
         };
         assert!(read(Some("1")));
         assert!(!read(Some("0")));
