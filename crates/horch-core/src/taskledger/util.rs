@@ -4,7 +4,7 @@ use anyhow::Result;
 use rusqlite::{Connection, Transaction, TransactionBehavior};
 
 use super::model::{Actor, EventKind};
-use crate::fleetd::fleet_runtime::application::ledger::{self, Cause};
+use crate::fleetd::fleet_runtime::application::ledger::{self, Cause, DoorError};
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 use crate::fleetd::ideas::application::needs_you::NeedsYouList;
 
@@ -60,14 +60,44 @@ pub fn event(
 
 /// Run `f` in 1 transaction of `conn`: the open transaction of the
 /// caller, else a new `BEGIN IMMEDIATE` that commits when `f` succeeds.
+/// When `f` fails, this transaction rolls back, and a refused move of the
+/// error is recorded after it ([`record_refusal_after_rollback`]).
 pub fn atomic<T>(conn: &Connection, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
     if !conn.is_autocommit() {
         return f(conn);
     }
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    let out = f(&tx)?;
-    tx.commit()?;
-    Ok(out)
+    match f(&tx) {
+        Ok(out) => {
+            tx.commit()?;
+            Ok(out)
+        }
+        Err(e) => {
+            drop(tx);
+            record_refusal_after_rollback(conn, &e);
+            Err(e)
+        }
+    }
+}
+
+/// After the opener of a transaction rolled it back for `err`: when `err`
+/// is a refused move, write its event and its needs-you item in a second
+/// transaction, so that the refusal is on record (OR-2). A failure of that
+/// write is logged, and the caller returns `err`.
+pub fn record_refusal_after_rollback(conn: &Connection, err: &anyhow::Error) {
+    let Some(refused) = err.downcast_ref::<DoorError>() else {
+        return;
+    };
+    let write = || -> Result<()> {
+        let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+        if ledger::record_refused(&tx, refused, &NeedsYouList)? {
+            tx.commit()?;
+        }
+        Ok(())
+    };
+    if let Err(e) = write() {
+        eprintln!("horch: the ledger did not record the refusal ({refused}): {e:#}");
+    }
 }
 
 /// Why a task or a worker changes its status: the cause of its

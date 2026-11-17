@@ -43,12 +43,16 @@ pub enum Moved {
 pub enum DoorError {
     /// The table does not allow the move. The row did not change. 1 event
     /// and 1 needs-you item record the refusal in the caller's transaction,
-    /// so the caller goes on and commits.
+    /// so the caller goes on and commits. A caller that rolls back records
+    /// it again with [`record_refused`]: `cause` and `actor` are the cause
+    /// of the refused move.
     Refused {
         entity: Entity,
         id: String,
         from: String,
         to: String,
+        cause: String,
+        actor: Actor,
     },
     /// The `fleetd` row has another generation. Nothing is written.
     GenerationLost {
@@ -72,6 +76,7 @@ impl std::fmt::Display for DoorError {
                 id,
                 from,
                 to,
+                ..
             } => write!(f, "illegal transition of {entity} {id}: {from} -> {to}"),
             DoorError::GenerationLost { held, found } => write!(
                 f,
@@ -140,6 +145,8 @@ pub fn transition(
                 id: id.to_string(),
                 from,
                 to: to.to_string(),
+                cause: cause.text.to_string(),
+                actor: cause.actor,
             })
         }
     }
@@ -199,6 +206,33 @@ fn state_of(tx: &Connection, entity: Entity, id: &str) -> Result<String, DoorErr
         entity,
         id: id.to_string(),
     })
+}
+
+/// Record the refused move of `err` in `tx`, as [`transition`] does: for a
+/// caller whose transaction rolled back. `false` when `err` is not
+/// [`DoorError::Refused`].
+pub fn record_refused(
+    tx: &Connection,
+    err: &DoorError,
+    refusals: &dyn RecordRefusal,
+) -> anyhow::Result<bool> {
+    let DoorError::Refused {
+        entity,
+        id,
+        from,
+        to,
+        cause,
+        actor,
+    } = err
+    else {
+        return Ok(false);
+    };
+    let cause = Cause {
+        actor: *actor,
+        text: cause,
+    };
+    refuse(tx, *entity, id, from, to, cause, refusals)?;
+    Ok(true)
 }
 
 /// Record a refused move: 1 event with the refused state, and the open

@@ -1156,6 +1156,62 @@ mod tests {
         assert_eq!(w.status().unwrap(), WorkerStatus::Claiming);
     }
 
+    /// The refusal events and the open needs-you items of worker `id`.
+    fn refusals(conn: &Connection, id: &str) -> (i64, i64) {
+        let count = |sql: &str| -> i64 { conn.query_row(sql, [id], |r| r.get(0)).unwrap() };
+        (
+            count(
+                "SELECT count(*) FROM events WHERE kind = 'transition' AND entity = 'worker'
+                 AND entity_id = ?1 AND to_state = 'starting' AND cause LIKE 'illegal_transition:%'",
+            ),
+            count(
+                "SELECT count(*) FROM needs_you WHERE entity = 'worker' AND entity_id = ?1
+                 AND state = 'open'",
+            ),
+        )
+    }
+
+    /// Review F1: a refused move rolls back the whole command, and the
+    /// opener of the transaction then records the refusal event and the
+    /// needs-you item.
+    #[test]
+    fn a_refused_move_rolls_back_the_command_and_stays_on_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(&dir.path().join("l.sqlite3")).unwrap();
+        let id = author(&mut s);
+        supervisor_started(s.conn(), &id, 4242, Some(1)).unwrap();
+        agent_started(s.conn(), &id, 4243, Some(2)).unwrap();
+        let before = get(s.conn(), &id).unwrap().last_checkin_at;
+
+        // Store::immediate opens the transaction: claiming -> starting is
+        // refused after an earlier write of the same command.
+        let err = s
+            .immediate(|tx| {
+                tx.execute(
+                    "UPDATE workers SET last_checkin_at = '2000-01-01T00:00:00Z'
+                     WHERE worker_id = ?1",
+                    [&id],
+                )?;
+                supervisor_started(tx, &id, 5000, Some(3))
+            })
+            .unwrap_err();
+        assert!(err.to_string().contains("claiming -> starting"), "{err:#}");
+        let w = get(s.conn(), &id).unwrap();
+        assert_eq!(w.status().unwrap(), WorkerStatus::Claiming);
+        assert_eq!(w.last_checkin_at, before, "the command rolled back");
+        assert_eq!(w.supervisor_pid, Some(4242));
+        assert_eq!(refusals(s.conn(), &id), (1, 1));
+
+        // util::atomic opens the transaction for a caller in autocommit mode.
+        assert!(supervisor_started(s.conn(), &id, 5000, Some(3)).is_err());
+        assert_eq!(get(s.conn(), &id).unwrap().supervisor_pid, Some(4242));
+        assert_eq!(
+            refusals(s.conn(), &id),
+            (2, 1),
+            "1 needs-you item for each row"
+        );
+    }
+
     fn seconds_left(wait: &Wait) -> i64 {
         (crate::clock::parse(&wait.deadline).unwrap() - crate::clock::now()).num_seconds()
     }

@@ -185,15 +185,26 @@ impl Store {
 
     /// Run `f` in a `BEGIN IMMEDIATE` transaction: the write lock is taken
     /// before the first read, so a read-then-write (claim, reap, land) cannot
-    /// interleave with another writer. Commits when `f` returns `Ok`.
+    /// interleave with another writer. Commits when `f` returns `Ok`. When
+    /// `f` fails, the transaction rolls back, and a refused move of the
+    /// error is recorded after it
+    /// ([`super::util::record_refusal_after_rollback`]).
     pub fn immediate<T>(&mut self, f: impl FnOnce(&Transaction) -> Result<T>) -> Result<T> {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .context("taking the task ledger's write lock")?;
-        let out = f(&tx)?;
-        tx.commit().context("committing to the task ledger")?;
-        Ok(out)
+        match f(&tx) {
+            Ok(out) => {
+                tx.commit().context("committing to the task ledger")?;
+                Ok(out)
+            }
+            Err(e) => {
+                drop(tx);
+                super::util::record_refusal_after_rollback(&self.conn, &e);
+                Err(e)
+            }
+        }
     }
 }
 
