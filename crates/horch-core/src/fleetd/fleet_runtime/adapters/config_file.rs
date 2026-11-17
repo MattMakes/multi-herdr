@@ -60,6 +60,8 @@ struct FileKeys {
     question_limit_s: Option<u64>,
     replan_limit_s: Option<u64>,
     pool_full_use: Option<f64>,
+    worktree_list_period_s: Option<u64>,
+    worktree_disk_budget_gb: Option<u64>,
 }
 
 #[derive(Deserialize, Default)]
@@ -70,6 +72,7 @@ struct FileJobLimits {
     worktree_list: Option<u64>,
     docs_sync: Option<u64>,
     conformance: Option<u64>,
+    rescue: Option<u64>,
 }
 
 impl FileKeys {
@@ -100,6 +103,7 @@ impl FileKeys {
                     .unwrap_or(default_jobs.worktree_list),
                 docs_sync: file_jobs.docs_sync.unwrap_or(default_jobs.docs_sync),
                 conformance: file_jobs.conformance.unwrap_or(default_jobs.conformance),
+                rescue: file_jobs.rescue.unwrap_or(default_jobs.rescue),
             },
             health_min_free_disk_gb: self
                 .health_min_free_disk_gb
@@ -123,6 +127,12 @@ impl FileKeys {
             question_limit_s: self.question_limit_s.unwrap_or(defaults.question_limit_s),
             replan_limit_s: self.replan_limit_s.unwrap_or(defaults.replan_limit_s),
             pool_full_use: self.pool_full_use.unwrap_or(defaults.pool_full_use),
+            worktree_list_period_s: self
+                .worktree_list_period_s
+                .unwrap_or(defaults.worktree_list_period_s),
+            worktree_disk_budget_gb: self
+                .worktree_disk_budget_gb
+                .unwrap_or(defaults.worktree_disk_budget_gb),
         }
     }
 }
@@ -201,6 +211,27 @@ mod tests {
             ..FleetConfig::default()
         };
         assert_eq!(c, want);
+    }
+
+    #[test]
+    fn fleet_toml_sets_the_phase_3_keys() {
+        let c = parse(
+            "worktree_list_period_s = 30\nworktree_disk_budget_gb = 50\n\
+             [job_limit_s]\nrescue = 900\n",
+        )
+        .unwrap();
+        let want = FleetConfig {
+            worktree_list_period_s: 30,
+            worktree_disk_budget_gb: 50,
+            job_limit_s: JobLimits {
+                rescue: 900,
+                ..JobLimits::default()
+            },
+            ..FleetConfig::default()
+        };
+        assert_eq!(c, want);
+        let err = format!("{:#}", parse("worktree_disk_budget_gb = 0\n").unwrap_err());
+        assert!(err.contains("worktree_disk_budget_gb"), "{err}");
     }
 
     #[test]

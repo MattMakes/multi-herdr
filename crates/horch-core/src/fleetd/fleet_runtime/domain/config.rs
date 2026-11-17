@@ -1,4 +1,4 @@
-//! The keys of Phase 1 and Phase 2 of `fleet.toml`, their default or
+//! The keys of Phases 1 to 3 of `fleet.toml`, their default or
 //! starting values (`docs/specs/fleetd/design.md`, "The numbers of the
 //! design", and `docs/tickets/fleetd-p1/MAP.md`, Q1 and Q2), and the range
 //! of each.
@@ -11,7 +11,7 @@
 /// (PL-5), not a key: the time budget of a pass stays below it.
 pub const HANG_LIMIT_S: u64 = 30;
 
-/// The Phase 1 and Phase 2 keys of `fleet.toml`.
+/// The Phase 1 to Phase 3 keys of `fleet.toml`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FleetConfig {
     /// The period of the reconcile pass. Default 5 s.
@@ -71,6 +71,13 @@ pub struct FleetConfig {
     /// `exhausted_used` in `crates/horch-core/src/routing/policy.rs`
     /// (`docs/tickets/fleetd-p2/MAP.md`, Q1).
     pub pool_full_use: f64,
+    /// The period of the `worktree_list` job. Default 60 s (design, "Period
+    /// of the `worktree_list` job"; RR-10).
+    pub worktree_list_period_s: u64,
+    /// The worktree disk budget. Default 20 GB (design, "Worktree disk
+    /// budget"; FM-28). The design names it `worktree_disk_budget`; the key
+    /// has the unit in its name (`docs/tickets/fleetd-p3/MAP.md`, Q20).
+    pub worktree_disk_budget_gb: u64,
 }
 
 /// The `job_limit_s` table: the time limit of each job kind, in seconds.
@@ -81,6 +88,8 @@ pub struct JobLimits {
     pub worktree_list: u64,
     pub docs_sync: u64,
     pub conformance: u64,
+    /// Starting value 600 s (`docs/tickets/fleetd-p3/MAP.md`, Q25).
+    pub rescue: u64,
 }
 
 impl Default for JobLimits {
@@ -91,6 +100,7 @@ impl Default for JobLimits {
             worktree_list: 600,
             docs_sync: 3600,
             conformance: 3600,
+            rescue: 600,
         }
     }
 }
@@ -117,6 +127,8 @@ impl Default for FleetConfig {
             question_limit_s: 900,
             replan_limit_s: 1800,
             pool_full_use: 0.98,
+            worktree_list_period_s: 60,
+            worktree_disk_budget_gb: 20,
         }
     }
 }
@@ -152,6 +164,9 @@ impl FleetConfig {
             ("job_limit_s.worktree_list", jobs.worktree_list),
             ("job_limit_s.docs_sync", jobs.docs_sync),
             ("job_limit_s.conformance", jobs.conformance),
+            ("job_limit_s.rescue", jobs.rescue),
+            ("worktree_list_period_s", self.worktree_list_period_s),
+            ("worktree_disk_budget_gb", self.worktree_disk_budget_gb),
         ];
         for (key, v) in positive {
             if v == 0 {
@@ -245,6 +260,7 @@ mod tests {
                 worktree_list: 600,
                 docs_sync: 3600,
                 conformance: 3600,
+                rescue: 600,
             }
         );
         assert_eq!(c.health_min_free_disk_gb, 10);
@@ -474,5 +490,35 @@ mod tests {
         for c in edges {
             assert_eq!(c.validate(), Ok(()), "{c:?}");
         }
+    }
+
+    #[test]
+    fn worktree_list_period_s_defaults_to_60() {
+        assert_eq!(FleetConfig::default().worktree_list_period_s, 60);
+    }
+
+    #[test]
+    fn worktree_disk_budget_gb_defaults_to_20() {
+        assert_eq!(FleetConfig::default().worktree_disk_budget_gb, 20);
+    }
+
+    #[test]
+    fn worktree_disk_budget_gb_of_0_is_refused() {
+        let c = FleetConfig {
+            worktree_disk_budget_gb: 0,
+            ..FleetConfig::default()
+        };
+        let err = c.validate().unwrap_err().to_string();
+        assert!(err.contains("worktree_disk_budget_gb"), "{err}");
+        let c = FleetConfig {
+            worktree_disk_budget_gb: 1,
+            ..FleetConfig::default()
+        };
+        assert_eq!(c.validate(), Ok(()));
+    }
+
+    #[test]
+    fn job_limit_s_rescue_defaults_to_600() {
+        assert_eq!(FleetConfig::default().job_limit_s.rescue, 600);
     }
 }
