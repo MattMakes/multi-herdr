@@ -4,6 +4,23 @@
 
 ## Unreleased
 
+- The `incremental-game-design` skill of `game-design-incremental-specialist`
+  is replaced by its design-first version. The first version reviewed and
+  simulated a game, and it had no gate: it could present a design that failed
+  its own targets. The skill now asks the play pattern and the targets, lets
+  the designer select systems from a catalog, solves the costs, unlocks and
+  resets from proven ranges, and proves them with a proof sheet and a
+  simulation of several player types. The verdict is "ready", "ready
+  (simulated)" or "not ready" with the fix: do not build from a "not ready"
+  design. For a built Godot game it reads the math out of the code and
+  proposes the smallest change. On request it installs a tuning bench in a
+  Godot game: a panel with controls and meters (game length, time between
+  upgrades, effect of an upgrade) that a simulation of the real game code
+  fills. The teammate sends the interview to the orchestrator, and a game
+  build needs a design task for it before the specification and a balance
+  task after the build. The scripts need Python 3; the pacing workbook
+  (.xlsx) needs `openpyxl`; the tuning bench needs Godot 4.
+
 ## v0.5.0 - 2026-11-17
 
 - New tool and skill `ui-prop-tester`: it walks a web page (in Chromium) or a

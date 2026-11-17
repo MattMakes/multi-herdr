@@ -1,6 +1,10 @@
 {
  "game": {"name": "Tide Forge (example)", "session_minutes": 15, "target_hours": 12, "active_fraction": 0.5,
-          "progress_axis": "depth", "notes": "A small invented game. It shows the model format. It has a lull on purpose."},
+          "progress_axis": "depth", "notes": "A small invented game. It shows the model format. It has a lull on purpose.",
+          "offline_rate": 0.5,
+          "presence": {"open_rate": 1.0, "offline_cap_minutes": 480, "visit_minutes": 2},
+          "targets": {"idle": {"open": {"8": [0.3, 0.5]}, "closed": {"24": [0.1, 0.25]}},
+                      "policy_gap": [0, 2.5], "unlocks_first_hour": [3, 8], "length_hours": [10, 14]}},
  "currencies": [
   {"id": "coin", "name": "Coin", "system": "forge", "base_income": 1},
   {"id": "power", "name": "Hammer power", "system": "forge", "base_income": 1, "stat": true},

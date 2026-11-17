@@ -1,0 +1,75 @@
+{
+  "reward_spread": 0.2,
+  "stages": [
+    {
+      "id": "stage_1",
+      "name": "Mile 1",
+      "need": 8000,
+      "reward": 1600,
+      "unlock_at": 1800
+    },
+    {
+      "id": "stage_2",
+      "name": "Mile 2",
+      "need": 120000,
+      "reward": 24000,
+      "unlock_at": 15000
+    },
+    {
+      "id": "stage_3",
+      "name": "Mile 3",
+      "need": 800000,
+      "reward": 160000,
+      "unlock_at": 100000
+    },
+    {
+      "id": "stage_4",
+      "name": "Mile 4",
+      "need": 5000000,
+      "reward": 1000000,
+      "unlock_at": 600000
+    },
+    {
+      "id": "stage_5",
+      "name": "Mile 5",
+      "need": 40000000,
+      "reward": 8000000,
+      "unlock_at": 5000000
+    },
+    {
+      "id": "stage_6",
+      "name": "Mile 6",
+      "need": 300000000,
+      "reward": 60000000,
+      "unlock_at": 40000000
+    },
+    {
+      "id": "stage_7",
+      "name": "Mile 7",
+      "need": 2500000000,
+      "reward": 500000000,
+      "unlock_at": 300000000
+    },
+    {
+      "id": "stage_8",
+      "name": "Mile 8",
+      "need": 15000000000,
+      "reward": 3000000000,
+      "unlock_at": 2000000000
+    },
+    {
+      "id": "stage_9",
+      "name": "Mile 9",
+      "need": 40000000000,
+      "reward": 8000000000,
+      "unlock_at": 5000000000
+    },
+    {
+      "id": "stage_10",
+      "name": "Mile 10",
+      "need": 70000000000,
+      "reward": 14000000000,
+      "unlock_at": 9000000000
+    }
+  ]
+}
