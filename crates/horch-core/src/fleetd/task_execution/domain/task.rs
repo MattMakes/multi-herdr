@@ -232,8 +232,10 @@ pub enum RowRef {
 /// What a stop ends.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Target {
-    /// Stop the process only while it has its pid and start time. No row
-    /// of Phase 1 records a process group, so `pgid` is `None` for them.
+    /// Stop the process only while it has its pid and start time. With
+    /// `pgid`, the stop goes to each process of its group, but only while
+    /// `pid` leads that group with `pid_start` at the time of the stop
+    /// (FM-22). Else it goes to `pid` alone.
     Process {
         pid: u32,
         pid_start: u64,
@@ -526,7 +528,7 @@ fn clean_row(facts: &Facts, owned: &Owned, n: &Named, check: PaneCheck) -> Clean
                 target: Target::Process {
                     pid: p.pid,
                     pid_start,
-                    pgid: None,
+                    pgid: Some(p.pid),
                 },
             });
         }
@@ -619,7 +621,7 @@ mod tests {
             target: Target::Process {
                 pid: p.pid,
                 pid_start: p.pid_start.unwrap(),
-                pgid: None,
+                pgid: Some(p.pid),
             },
         }
     }

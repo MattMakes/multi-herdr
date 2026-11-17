@@ -778,13 +778,24 @@ struct Live<'a> {
 }
 
 impl Outside for Live<'_> {
-    /// Each pane of each herdr workspace. herdr gives no process of a pane.
-    /// A list that fails gives no snapshot, so no pane counts as gone.
+    /// Each pane of each herdr workspace, with the process that herdr
+    /// started in it (`shell_pid`) and its start time: the fact that proves
+    /// a pane is the pane of a row (FM-22). A pane whose process-info fails,
+    /// or whose process has gone, has no process, so it is never closed. A
+    /// list that fails gives no snapshot, so no pane counts as gone.
     fn panes(&self) -> Option<BTreeMap<String, Option<Recorded>>> {
         let mut panes = BTreeMap::new();
         for ws in self.herdr.workspace_list().ok()? {
             for pane in self.herdr.pane_list(&ws.workspace_id).ok()? {
-                panes.insert(pane.pane_id, None);
+                let process = self
+                    .herdr
+                    .pane_shell_pid(&pane.pane_id)
+                    .ok()
+                    .and_then(|pid| {
+                        let pid_start = Some(horch_core::procid::start_time(pid)?);
+                        Some(Recorded { pid, pid_start })
+                    });
+                panes.insert(pane.pane_id, process);
             }
         }
         Some(panes)

@@ -391,7 +391,7 @@ mod tests {
             target: Target::Process {
                 pid: p.pid,
                 pid_start: p.pid_start.unwrap(),
-                pgid: None,
+                pgid: Some(p.pid),
             },
         }
     }

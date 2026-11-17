@@ -25,7 +25,9 @@
 //! - `exec`: `pane run` also executes the command, detached, with
 //!   `HERDR_PANE_ID` set, the way a real pane would. Output goes to
 //!   `$HORCH_FAKE_LOG.pane-<id>.out`. The process group id is stored in the
-//!   state, and `pane close` kills that group.
+//!   state, and `pane close` kills that group. `pane process-info` gives
+//!   that pid as `shell_pid`, with the field names of real herdr 0.9.4. A
+//!   pane that runs no command has no `process-info`: the call exits 1.
 //! - `shell`: each pane is a plain shell with no agent in it. `agent prompt`
 //!   exits 1, as real herdr does for a pane without an agent. `pane
 //!   send-text` types text into the pane; `pane send-keys <pane> enter` runs
@@ -352,6 +354,20 @@ fn run(call: &mut Call) -> i32 {
             Some(p) => ok(json!({"type": "pane", "pane": p})),
             None => {
                 eprintln!("fake-herdr: no pane {id}");
+                1
+            }
+        },
+        ["pane", "process-info", "--pane", id] => match state["pids"][*id].as_u64() {
+            Some(pid) if find_pane(&state, id).is_some() => ok(json!({
+                "process_info": {
+                    "pane_id": id,
+                    "shell_pid": pid,
+                    "foreground_process_group_id": pid,
+                    "foreground_processes": [],
+                },
+            })),
+            _ => {
+                eprintln!("fake-herdr: no process in pane {id}");
                 1
             }
         },

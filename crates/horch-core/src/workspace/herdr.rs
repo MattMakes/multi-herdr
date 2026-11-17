@@ -40,6 +40,16 @@ struct PaneListResult {
 }
 
 #[derive(Debug, Deserialize)]
+struct ProcessInfoResult {
+    process_info: ProcessInfo,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProcessInfo {
+    shell_pid: u32,
+}
+
+#[derive(Debug, Deserialize)]
 struct LayoutResult {
     layout: Layout,
 }
@@ -201,6 +211,13 @@ impl Herdr {
     pub fn pane_list(&self, workspace_id: &str) -> Result<Vec<Pane>> {
         let r: PaneListResult = self.json(&["pane", "list", "--workspace", workspace_id])?;
         Ok(r.panes)
+    }
+
+    /// The pid of the process that herdr started in `pane`: `shell_pid` of
+    /// `herdr pane process-info`. A herdr that has no `process-info` fails.
+    pub fn pane_shell_pid(&self, pane: &str) -> Result<u32> {
+        let r: ProcessInfoResult = self.json(&["pane", "process-info", "--pane", pane])?;
+        Ok(r.process_info.shell_pid)
     }
 
     pub fn pane_split(&self, from: &str, direction: Direction) -> Result<String> {
@@ -873,6 +890,20 @@ mod tests {
         assert_eq!(error.to_string(), "could not resume herdr");
         let other = name_herdr(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
         assert_eq!(other.kind(), std::io::ErrorKind::PermissionDenied);
+    }
+
+    /// The answer of real herdr 0.9.4 to `pane process-info`, cut to 1
+    /// foreground process.
+    #[cfg(unix)]
+    #[test]
+    fn pane_shell_pid_reads_the_shell_pid_of_process_info() {
+        let real = r#"{"id":"cli:pane:process_info","result":{"process_info":{"foreground_process_group_id":50111,"foreground_processes":[{"argv0":"horch","cwd":"/tmp","name":"horch","pid":50111}],"pane_id":"wG1:p9S","shell_pid":50111}}}"#;
+        let (_dir, script) = script_in(&format!(
+            "[ \"$1 $2 $3 $4\" = \"pane process-info --pane wG1:p9S\" ] || exit 1\necho '{real}'"
+        ));
+        let herdr = Herdr::with_bin(&script);
+        assert_eq!(herdr.pane_shell_pid("wG1:p9S").unwrap(), 50111);
+        assert!(herdr.pane_shell_pid("wG1:p1").is_err());
     }
 
     #[cfg(unix)]
