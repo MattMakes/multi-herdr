@@ -10,8 +10,7 @@
 //!   files of each process of the user. The count of open files is per
 //!   process of the user, not the system count `kern.num_files`. The read
 //!   of the uid fails for a zombie, so the count of processes does not
-//!   include zombies, but `RLIMIT_NPROC` does. On 2026-11-16 this Mac had
-//!   40 zombies of about 600 processes of the user.
+//!   include zombies.
 //! - Linux: `getloadavg`, `gethostname`, `statvfs`, `getrlimit`,
 //!   `/proc/meminfo`, and the commands `uname -m` and `nvidia-smi -L`. The
 //!   counts read the `Uid:` line of `/proc/<pid>/status` and the entries
@@ -116,8 +115,10 @@ pub fn max_open_files() -> Result<Option<u64>, NotSupported> {
 }
 
 /// The count of processes of the user: the processes with the real uid of
-/// this process, as `RLIMIT_NPROC` counts them. A process that exits during
-/// the read is not counted. `None` when the process list cannot be read.
+/// this process whose uid the probe can read. A process that exits during
+/// the read is not counted. On macOS a zombie is not counted, but
+/// `RLIMIT_NPROC` ([`max_processes`]) counts it, so the count can be lower
+/// than the count of the limit. `None` when the process list cannot be read.
 pub fn user_process_count() -> Result<Option<u64>, NotSupported> {
     os::user_process_count()
 }
