@@ -7,6 +7,7 @@ use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use rusqlite::Connection;
 
+use crate::fleetd::fleet_runtime::application::jobs::NeedsYouItems;
 use crate::fleetd::fleet_runtime::application::ledger::{
     created, transition, Cause, RecordRefusal,
 };
@@ -92,6 +93,31 @@ impl RecordRefusal for NeedsYouList {
             text,
         };
         open_item(tx, &w)
+    }
+}
+
+impl NeedsYouItems for NeedsYouList {
+    fn open_item(
+        &self,
+        tx: &Connection,
+        key: &str,
+        kind: &str,
+        entity: Entity,
+        entity_id: &str,
+        text: &str,
+    ) -> Result<()> {
+        let w = Write {
+            key,
+            kind,
+            entity: entity.as_str(),
+            entity_id,
+            text,
+        };
+        open_item(tx, &w)
+    }
+
+    fn resolve_item(&self, tx: &Connection, key: &str) -> Result<bool> {
+        resolve(tx, key)
     }
 }
 
