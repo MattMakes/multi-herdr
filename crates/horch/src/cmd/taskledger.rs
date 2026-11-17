@@ -116,7 +116,8 @@ pub enum LedgerCommand {
     },
     /// Queue a held task again (orchestrator). It keeps its attempt
     /// history and gets the run's attempt limit anew. A cancelled task is
-    /// terminal: add its ticket again, or drop the dependency on it.
+    /// terminal: drop each dependency on it (unblock), or cancel the
+    /// dependents. Add its ticket again for a replacement task.
     Requeue {
         task: String,
         reason: String,

@@ -765,7 +765,7 @@ impl std::fmt::Display for Wait {
             Wait::BlockerCancelled { task } => {
                 write!(
                     f,
-                    "{task} was cancelled: add its ticket again, or drop the dependency"
+                    "{task} was cancelled and cannot run again: drop the dependency, or cancel this task. A new task from its ticket does not end this wait"
                 )
             }
             Wait::BlockerParked { task } => write!(
