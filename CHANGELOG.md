@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+## v0.5.1 - 2026-11-17
+
 - The `incremental-game-design` skill of `game-design-incremental-specialist`
   is replaced by its design-first version. The first version reviewed and
   simulated a game, and it had no gate: it could present a design that failed
