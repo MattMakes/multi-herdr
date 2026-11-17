@@ -8,11 +8,11 @@
 //! - Windows: [`NotSupported`]. A check never runs there without its
 //!   sandbox: the caller decides what to do (PL-3).
 //!
-//! The OS module gives the sandbox host and its arguments. This file puts
+//! The OS module gives the sandbox host program and its arguments. This file puts
 //! the command after them, so each OS keeps the program, arguments,
 //! environment and folder of the command in the same way.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -32,19 +32,19 @@ use crate::NotSupported;
 /// on Windows, on Linux when `bwrap` is not on the `PATH` of `cmd`, and on
 /// macOS when `/usr/bin/sandbox-exec` is missing.
 pub fn sandboxed(cmd: Command, writable: &[PathBuf]) -> Result<Command, NotSupported> {
+    let program = os::program(path_of(&cmd).as_deref())?;
     let writable: Vec<PathBuf> = writable.iter().map(|path| resolved(path)).collect();
-    let temp = resolved(&std::env::temp_dir());
-    let host = os::host(&writable, &temp, path_of(&cmd).as_deref())?;
-    Ok(wrap(host, &cmd))
+    let args = os::args(&writable, &resolved(&std::env::temp_dir()));
+    Ok(wrap(&program, &args, &cmd))
 }
 
-/// The sandbox host of an OS: the program and the arguments that come
-/// before the program of the sandboxed command. Windows has none, so it
-/// never builds one.
-#[cfg_attr(windows, allow(dead_code))]
-pub(crate) struct Host {
-    pub(crate) program: PathBuf,
-    pub(crate) args: Vec<OsString>,
+/// Why this host has no sandbox for a command that runs with `path` as its
+/// `PATH`, or `None` when it has one. [`sandboxed`] gives the same
+/// [`NotSupported`] value. Each caller that needs the sandbox host asks
+/// here: macOS needs `/usr/bin/sandbox-exec`, and Linux needs `bwrap` in an
+/// absolute folder of `path`.
+pub fn host_problem(path: Option<&OsStr>) -> Option<NotSupported> {
+    os::program(path).err()
 }
 
 /// The `PATH` that `cmd` runs with: its own when it sets or removes one,
@@ -56,10 +56,11 @@ fn path_of(cmd: &Command) -> Option<OsString> {
     }
 }
 
-fn wrap(host: Host, cmd: &Command) -> Command {
-    let mut sandboxed = Command::new(&host.program);
+/// A command that runs `program` with `args`, then the program of `cmd`.
+fn wrap(program: &Path, args: &[OsString], cmd: &Command) -> Command {
+    let mut sandboxed = Command::new(program);
     sandboxed
-        .args(&host.args)
+        .args(args)
         .arg(cmd.get_program())
         .args(cmd.get_args());
     for (key, value) in cmd.get_envs() {

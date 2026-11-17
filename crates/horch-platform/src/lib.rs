@@ -49,7 +49,10 @@ use mac as os;
 #[allow(unused_imports)]
 use windows as os;
 
-/// A concern that the OS of the build target has no equivalent for.
+/// A concern that this host cannot give. With no [`reason`](Self::reason),
+/// the OS of the build target has no equivalent for the concern at all.
+/// With a reason, the gap belongs to this host, for example a tool that is
+/// not installed.
 ///
 /// Build it with [`NotSupported::new`], and add a reason with
 /// [`NotSupported::because`]. The type is `non_exhaustive`, so a new field
@@ -61,8 +64,8 @@ pub struct NotSupported {
     pub concern: &'static str,
     /// The OS, for example `"windows"`.
     pub os: &'static str,
-    /// Why this host does not support the concern, for example `"bwrap is
-    /// not on PATH"`. `None` when the OS has no equivalent at all.
+    /// Why this host does not give the concern, for example `"bwrap is not
+    /// on PATH"`. `None` when the OS has no equivalent at all.
     pub reason: Option<&'static str>,
 }
 

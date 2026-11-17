@@ -7,22 +7,23 @@
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
-use crate::sandbox::Host;
 use crate::NotSupported;
 
 /// Where macOS keeps the Seatbelt launcher.
 const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 
-pub(crate) fn host(
-    writable: &[PathBuf],
-    temp: &Path,
-    _path: Option<&OsStr>,
-) -> Result<Host, NotSupported> {
+/// `/usr/bin/sandbox-exec`. Its place is fixed, so `PATH` plays no part.
+pub(crate) fn program(_path: Option<&OsStr>) -> Result<PathBuf, NotSupported> {
     if !Path::new(SANDBOX_EXEC).is_file() {
         return Err(
             NotSupported::new("sandbox", "macos").because("/usr/bin/sandbox-exec is missing")
         );
     }
+    Ok(PathBuf::from(SANDBOX_EXEC))
+}
+
+/// The `-D` parameters and the `-p` profile of `sandbox-exec`.
+pub(crate) fn args(writable: &[PathBuf], temp: &Path) -> Vec<OsString> {
     let mut profile = String::from(
         "(version 1)(allow default)(deny file-write*)(allow file-write* (literal \"/dev/null\")",
     );
@@ -40,8 +41,5 @@ pub(crate) fn host(
     }
     profile.push(')');
     args.extend([OsString::from("-p"), OsString::from(profile)]);
-    Ok(Host {
-        program: PathBuf::from(SANDBOX_EXEC),
-        args,
-    })
+    args
 }

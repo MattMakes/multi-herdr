@@ -10,7 +10,7 @@
 //! a Linux host without `bwrap`, the write tests assert `NotSupported`
 //! instead.
 
-use horch_platform::sandbox::sandboxed;
+use horch_platform::sandbox::{host_problem, sandboxed};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -25,16 +25,12 @@ fn write_command(file: &Path) -> Command {
     cmd
 }
 
-/// True when the host has no sandbox for this test: Windows, or Linux
-/// without `bwrap` on `PATH`. The result of `sandboxed` must then be
-/// `NotSupported`.
+/// True when this host has no sandbox for a command with the `PATH` of
+/// this process: Windows, or Linux without `bwrap`. The result of
+/// `sandboxed` must then be `NotSupported`.
+/// `linux_finds_an_executable_bwrap_on_the_path` tests the lookup itself.
 fn host_has_no_sandbox() -> bool {
-    cfg!(windows) || (cfg!(target_os = "linux") && !bwrap_on_path())
-}
-
-fn bwrap_on_path() -> bool {
-    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-        .any(|dir| dir.join("bwrap").is_file())
+    host_problem(std::env::var_os("PATH").as_deref()).is_some()
 }
 
 /// Run `cmd` in the sandbox with `writable`. `None` when the host has no
@@ -117,4 +113,27 @@ fn windows_and_linux_without_bwrap_are_not_supported_with_a_reason() {
         assert!(reason.contains("bwrap"), "{reason}");
     }
     assert!(gap.to_string().ends_with(reason), "{gap}");
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn linux_finds_an_executable_bwrap_on_the_path() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = test_dir();
+    let bwrap = dir.path().join("bwrap");
+    std::fs::write(&bwrap, "#!/bin/sh\n").unwrap();
+    let path = std::env::join_paths([Path::new("relative"), dir.path()]).unwrap();
+    std::fs::set_permissions(&bwrap, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(
+        host_problem(Some(&path)).is_some(),
+        "a bwrap that is not executable"
+    );
+    std::fs::set_permissions(&bwrap, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(host_problem(Some(&path)), None);
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn macos_has_a_sandbox_on_any_path() {
+    assert_eq!(host_problem(None), None);
 }

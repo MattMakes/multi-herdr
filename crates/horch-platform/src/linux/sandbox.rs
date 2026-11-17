@@ -10,17 +10,17 @@ use std::ffi::{OsStr, OsString};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use crate::sandbox::Host;
 use crate::NotSupported;
 
-pub(crate) fn host(
-    writable: &[PathBuf],
-    temp: &Path,
-    path: Option<&OsStr>,
-) -> Result<Host, NotSupported> {
-    let program = find_bwrap(path).ok_or(
+/// The first executable `bwrap` in the absolute folders of `path`.
+pub(crate) fn program(path: Option<&OsStr>) -> Result<PathBuf, NotSupported> {
+    find_bwrap(path).ok_or(
         NotSupported::new("sandbox", "linux").because("bwrap is not on PATH; install bubblewrap"),
-    )?;
+    )
+}
+
+/// The mounts of `bwrap`: the disk read-only, then each writable path.
+pub(crate) fn args(writable: &[PathBuf], temp: &Path) -> Vec<OsString> {
     let mut args: Vec<OsString> = [
         "--ro-bind",
         "/",
@@ -40,12 +40,11 @@ pub(crate) fn host(
     for path in writable.iter().map(PathBuf::as_path).chain(temp) {
         args.extend([OsString::from("--bind"), path.into(), path.into()]);
     }
-    Ok(Host { program, args })
+    args
 }
 
-/// The first executable `bwrap` in the absolute folders of `path`. A
-/// relative folder is skipped: it names a folder of the caller, not of the
-/// system.
+/// A relative folder of `path` is skipped: it names a folder of the
+/// caller, not of the system.
 fn find_bwrap(path: Option<&OsStr>) -> Option<PathBuf> {
     std::env::split_paths(path?)
         .filter(|dir| dir.is_absolute())
