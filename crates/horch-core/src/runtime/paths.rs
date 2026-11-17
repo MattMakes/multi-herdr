@@ -36,6 +36,10 @@ pub struct Paths {
     /// The explicit `$HORCH_LEDGER_DB`, if any. A pane does not inherit this
     /// process's environment, so it travels in the brief.
     pub ledger_override: Option<PathBuf>,
+    /// The fleet root of fleetd: `$FLEET_ROOT`, else the folder `fleet` next
+    /// to [`Paths::ledger_db`]. So 1 ledger has 1 fleet root
+    /// (docs/tickets/fleetd-p1/MAP.md, Q4).
+    pub fleet_root: PathBuf,
     /// The system temp dir; the workspace mailboxes live under it.
     pub temp_root: PathBuf,
     /// `$HOME` (`%USERPROFILE%` on Windows), else `.`.
@@ -49,6 +53,8 @@ pub struct Paths {
 impl Paths {
     pub fn from_env(env: &dyn EnvSource) -> Paths {
         let home = home_dir(env);
+        let ledger_db = nonempty_path(env, "HORCH_LEDGER_DB")
+            .unwrap_or_else(|| crate::taskledger::store::default_path(&home));
         Paths {
             cwd: env.current_dir(),
             project_dir: project_dir(env).ok(),
@@ -56,8 +62,9 @@ impl Paths {
             state_override: nonempty_path(env, "HORCH_STATE_DIR"),
             default_state_root: default_state_root(env, &home),
             data_root: data_root(env, &home),
-            ledger_db: nonempty_path(env, "HORCH_LEDGER_DB")
-                .unwrap_or_else(|| crate::taskledger::store::default_path(&home)),
+            fleet_root: nonempty_path(env, "FLEET_ROOT")
+                .unwrap_or_else(|| ledger_db.parent().unwrap_or(Path::new("")).join("fleet")),
+            ledger_db,
             ledger_override: nonempty_path(env, "HORCH_LEDGER_DB"),
             temp_root: env.temp_dir(),
             home,
@@ -257,6 +264,37 @@ mod tests {
         assert_eq!(
             home_dir(&MapEnv::new("/cwd").with(key, "/h")),
             PathBuf::from("/h")
+        );
+    }
+
+    #[test]
+    fn fleet_root_is_next_to_the_ledger_by_default() {
+        let home = MapEnv::new("/cwd").with(horch_platform::path::HOME_VAR, "/home/a");
+        assert_eq!(
+            Paths::from_env(&home).fleet_root,
+            PathBuf::from("/home/a/.horch/fleet")
+        );
+        let test = home.with("HORCH_LEDGER_DB", "/tmp/t/ledger.sqlite3");
+        assert_eq!(
+            Paths::from_env(&test).fleet_root,
+            PathBuf::from("/tmp/t/fleet")
+        );
+        // Empty counts as unset.
+        let empty = test.with("FLEET_ROOT", "");
+        assert_eq!(
+            Paths::from_env(&empty).fleet_root,
+            PathBuf::from("/tmp/t/fleet")
+        );
+    }
+
+    #[test]
+    fn fleet_root_env_wins() {
+        let env = MapEnv::new("/cwd")
+            .with("HORCH_LEDGER_DB", "/tmp/t/ledger.sqlite3")
+            .with("FLEET_ROOT", "/srv/fleet");
+        assert_eq!(
+            Paths::from_env(&env).fleet_root,
+            PathBuf::from("/srv/fleet")
         );
     }
 }
