@@ -134,7 +134,6 @@ fn report(checked: &[watchdog::Checked], as_json: bool) -> Result<String> {
 }
 
 #[cfg(test)]
-#[cfg(test)]
 mod tests {
     use horch_core::fleetd::fleet_runtime::adapters::watchdog_duties::HerdrObserver as Live;
     use horch_core::taskledger::runs::{self, NewRun};

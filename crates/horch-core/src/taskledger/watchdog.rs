@@ -787,8 +787,8 @@ pub fn clear_record(conn: &Connection, run_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Every active run of the ledger, of any project: `horch install` checks
-/// the watchdog of each (#216).
+/// Every active run of the ledger, of any project: fleetd takes over the
+/// old watchdog of each and does the duties of each.
 pub fn active_runs(conn: &Connection) -> Result<Vec<Run>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT run_id FROM runs WHERE status = {active}",
