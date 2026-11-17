@@ -267,7 +267,14 @@ pub struct Cleanup {
 }
 
 impl Cleanup {
-    fn extend(&mut self, other: Cleanup) {
+    /// Add the stops and kept panes of 1 more row, with these rules:
+    /// - 1 stop for each target: the first row that names a process or a
+    ///   pane keeps its stop, and a later row adds none.
+    /// - 1 kept pane for each pane id, and none for a pane that a stop of
+    ///   any row closes: a row that proves the pane wins.
+    /// - Each process stop comes before each pane stop (S8), and each kind
+    ///   keeps its order.
+    fn merge_row(&mut self, other: Cleanup) {
         for s in other.stops {
             if !self.stops.iter().any(|m| m.target == s.target) {
                 self.stops.push(s);
@@ -278,15 +285,12 @@ impl Cleanup {
                 self.kept.push(k);
             }
         }
-        // A pane that 1 row proves is closed, not kept.
         let stops = &self.stops;
         self.kept.retain(|k| {
             !stops
                 .iter()
                 .any(|s| s.target == Target::Pane(k.pane.clone()))
         });
-        // Processes first, then panes: a stable sort keeps the order of
-        // each kind.
         self.stops
             .sort_by_key(|s| matches!(s.target, Target::Pane(_)));
     }
@@ -335,8 +339,13 @@ fn reap(rows: &Rows, facts: &Facts, owned: &Owned, a: &AttemptRow) -> Reap {
         .and_then(|t| rows.tasks.get(t))
         .filter(|t| t.held_by.as_deref() == Some(w.id.as_str()))
         .map(|t| (t.id.clone(), after_failure(t.used, t.max_attempts)));
-    let mut cleanup = clean_row(facts, owned, &named_by_attempt(a), true);
-    cleanup.extend(clean_row(facts, owned, &named_by_worker(w), true));
+    let mut cleanup = clean_row(facts, owned, &named_by_attempt(a), PaneCheck::Always);
+    cleanup.merge_row(clean_row(
+        facts,
+        owned,
+        &named_by_worker(w),
+        PaneCheck::Always,
+    ));
     Reap {
         attempt: a.id.clone(),
         worker: w.id.clone(),
@@ -374,14 +383,26 @@ pub fn orphans(rows: &Rows, facts: &Facts) -> Cleanup {
     let owned = Owned::of(rows);
     let mut out = Cleanup::default();
     for w in rows.workers.values().filter(|w| w.judged() && !w.live) {
-        out.extend(clean_row(facts, &owned, &named_by_worker(w), false));
+        let named = named_by_worker(w);
+        out.merge_row(clean_row(
+            facts,
+            &owned,
+            &named,
+            PaneCheck::AfterProcessStop,
+        ));
     }
     let ended = rows
         .attempts
         .iter()
         .filter(|a| a.state == AttemptState::Ended && rows.judged(a));
     for a in ended {
-        out.extend(clean_row(facts, &owned, &named_by_attempt(a), false));
+        let named = named_by_attempt(a);
+        out.merge_row(clean_row(
+            facts,
+            &owned,
+            &named,
+            PaneCheck::AfterProcessStop,
+        ));
     }
     out
 }
@@ -430,7 +451,7 @@ fn named_by_attempt(a: &AttemptRow) -> Named {
     }
 }
 
-/// The processes and panes that live rows own.
+/// The processes and panes that live rows of this host own.
 struct Owned {
     pids: BTreeSet<u32>,
     processes: BTreeSet<Recorded>,
@@ -438,8 +459,10 @@ struct Owned {
 }
 
 impl Owned {
-    /// What each attempt that holds and each live worker row owns. The
-    /// worker of an attempt that holds owns its processes and pane too.
+    /// What each attempt that holds and each live worker row of this host
+    /// owns, the orchestrator row too. The worker of an attempt that holds
+    /// owns its processes and pane too. A row of another host owns nothing
+    /// here: its PIDs and pane ids name nothing on this machine.
     fn of(rows: &Rows) -> Owned {
         let mut owned = Owned {
             pids: BTreeSet::new(),
@@ -447,12 +470,12 @@ impl Owned {
             panes: BTreeSet::new(),
         };
         for a in rows.attempts.iter().filter(|a| a.state.holds()) {
-            owned.add(&named_by_attempt(a));
-            if let Some(w) = rows.workers.get(&a.worker_id) {
+            if let Some(w) = rows.workers.get(&a.worker_id).filter(|w| w.here) {
+                owned.add(&named_by_attempt(a));
                 owned.add(&named_by_worker(w));
             }
         }
-        for w in rows.workers.values().filter(|w| w.live) {
+        for w in rows.workers.values().filter(|w| w.live && w.here) {
             owned.add(&named_by_worker(w));
         }
         owned
@@ -475,12 +498,23 @@ impl Owned {
     }
 }
 
+/// When [`clean_row`] looks at the pane of a row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PaneCheck {
+    /// Always: the pass ends this row now (I1).
+    Always,
+    /// Only when a process of the row is stopped (I5). An ended row whose
+    /// processes are gone names a pane id that herdr can have given to
+    /// another pane.
+    AfterProcessStop,
+}
+
 /// The stops and kept pane of the row `n`. A process is stopped when it is
-/// alive with its recorded start time and no live row owns it. The pane is
-/// looked at when `acting`, or when a process of the row is stopped: it is
-/// closed when the process in it is a recorded process of the row, else
-/// it is kept.
-fn clean_row(facts: &Facts, owned: &Owned, n: &Named, acting: bool) -> Cleanup {
+/// alive with its recorded start time and no live row owns it. `check`
+/// says when the pane is looked at. A pane that is looked at is closed
+/// when the process in it is a recorded process of the row, else it is
+/// kept.
+fn clean_row(facts: &Facts, owned: &Owned, n: &Named, check: PaneCheck) -> Cleanup {
     let mut out = Cleanup::default();
     for p in &n.processes {
         let Some(pid_start) = p.pid_start else {
@@ -500,7 +534,7 @@ fn clean_row(facts: &Facts, owned: &Owned, n: &Named, acting: bool) -> Cleanup {
     let Some(pane) = &n.pane else {
         return out;
     };
-    let looked_at = acting || !out.stops.is_empty();
+    let looked_at = check == PaneCheck::Always || !out.stops.is_empty();
     if !looked_at || owned.panes.contains(pane) || facts.has_pane(pane) != Some(true) {
         return out;
     }
@@ -750,6 +784,19 @@ mod tests {
         assert_eq!(
             out.stops.last().map(|s| &s.target),
             Some(&Target::Pane("w0:p1".into()))
+        );
+    }
+
+    #[test]
+    fn a_live_row_of_another_host_does_not_own_a_local_orphan() {
+        let mut r = rows(worker("W", "stopped", false), None, None);
+        let mut remote = worker("R", "working", true);
+        remote.here = false;
+        r.workers.insert("R".into(), remote);
+        let f = facts(&[(AGENT, Seen::Alive), (SUPERVISOR, Seen::Dead)], &[]);
+        assert_eq!(
+            orphans(&r, &f).stops,
+            vec![process_stop(RowRef::Worker("W".into()), AGENT)]
         );
     }
 

@@ -19,7 +19,7 @@ use super::store::optional;
 use super::util::{self, About};
 use super::workers::{self, Worker};
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
-use crate::fleetd::task_execution::application::commands as attempts;
+use crate::fleetd::task_execution::application::commands as attempt_commands;
 use crate::fleetd::task_execution::domain::task::{after_failure, AfterFailure};
 
 /// How much a retried task moves ahead of the queue (section 5.4).
@@ -955,7 +955,7 @@ fn held_task(conn: &Connection, w: &Worker) -> Result<Option<Task>> {
 
 /// Take the next task for `w`, or end `w` when the queue has none for it.
 fn claim_next(conn: &Connection, w: &Worker, run_id: &str, persona: &str) -> Result<ClaimOutcome> {
-    attempts::refuse_second_attempt(conn, &w.worker_id)?;
+    attempt_commands::refuse_second_attempt(conn, &w.worker_id)?;
     let Some(task) = pick_task(conn, w, run_id, persona)? else {
         return no_task(conn, w, persona, run_id);
     };
@@ -1163,7 +1163,7 @@ fn take_task(conn: &Connection, w: &Worker, task: &Task) -> Result<()> {
          WHERE worker_id = ?1",
         params![worker_id, task.task_id, attempt, now],
     )?;
-    attempts::start_attempt(conn, &task.task_id, attempt, w)?;
+    attempt_commands::start_attempt(conn, &task.task_id, attempt, w)?;
     // An open worktree from an earlier attempt becomes this worker's.
     conn.execute(
         &format!(
@@ -2328,7 +2328,7 @@ mod tests {
 #[cfg(test)]
 mod attempt_tests {
     use super::*;
-    use crate::fleetd::task_execution::adapters::sqlite as attempts;
+    use crate::fleetd::task_execution::adapters::sqlite as attempt_store;
     use crate::fleetd::task_execution::domain::task::{AttemptRow, AttemptState, Recorded};
     use crate::taskledger::runs::{self, NewRun};
     use crate::taskledger::workers::NewWorker;
@@ -2384,7 +2384,7 @@ mod attempt_tests {
         // A second claim by the same worker gives its own task back.
         store.immediate(|tx| claim(tx, &w)).unwrap();
 
-        let rows = attempts::attempts_of_worker(store.conn(), &w).unwrap();
+        let rows = attempt_store::attempts_of_worker(store.conn(), &w).unwrap();
         assert_eq!(
             rows,
             [AttemptRow {
@@ -2429,7 +2429,7 @@ mod attempt_tests {
                     process: None,
                     pane: None,
                 };
-                attempts::insert_attempt(tx, &a, &util::now())
+                attempt_store::insert_attempt(tx, &a, &util::now())
             })
             .unwrap();
 
@@ -2440,7 +2440,7 @@ mod attempt_tests {
             assert_eq!(get(store.conn(), t).unwrap().status, "queued");
         }
         assert_eq!(
-            attempts::attempts_of_worker(store.conn(), &w)
+            attempt_store::attempts_of_worker(store.conn(), &w)
                 .unwrap()
                 .len(),
             1
