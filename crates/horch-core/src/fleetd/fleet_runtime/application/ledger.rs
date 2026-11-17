@@ -1,4 +1,5 @@
 //! The use of `transition()`: 1 state change and its event in 1 transaction.
+//! `record()` writes 1 event of a row that does not change.
 
 use rusqlite::Connection;
 
@@ -61,8 +62,8 @@ pub enum DoorError {
     },
     /// No row of the entity has the id.
     NoRow { entity: Entity, id: String },
-    /// The connection has no open transaction, so the row and its event
-    /// cannot be written together. Nothing is written.
+    /// The connection has no open transaction, so a write of the door
+    /// cannot go with the other writes of its caller. Nothing is written.
     NoTransaction,
     /// The ledger failed.
     Ledger(anyhow::Error),
@@ -86,7 +87,10 @@ impl std::fmt::Display for DoorError {
             ),
             DoorError::NoRow { entity, id } => write!(f, "no {entity} {id} in the ledger"),
             DoorError::NoTransaction => {
-                write!(f, "a state change needs an open transaction of the ledger")
+                write!(
+                    f,
+                    "a write of the door needs an open transaction of the ledger"
+                )
             }
             DoorError::Ledger(e) => write!(f, "{e:#}"),
         }
@@ -183,9 +187,12 @@ pub fn created(
 /// `data` in `data_json`, in the caller's transaction `tx`. The row does
 /// not change. A connection with no open transaction gives
 /// [`DoorError::NoTransaction`], and a missing row gives
-/// [`DoorError::NoRow`]: nothing is written.
+/// [`DoorError::NoRow`]. With `Some(guard)`, a `fleetd` row of another
+/// generation gives [`DoorError::GenerationLost`]. Each error writes
+/// nothing.
 pub fn record(
     tx: &Connection,
+    guard: Option<Generation>,
     kind: EventKind,
     entity: Entity,
     id: &str,
@@ -193,7 +200,9 @@ pub fn record(
     data: &serde_json::Value,
 ) -> Result<(), DoorError> {
     check_open(tx)?;
+    check_generation(tx, guard)?;
     state_of(tx, entity, id)?;
+    let data_json = data.to_string();
     door::append_fact(
         tx,
         &Fact {
@@ -202,7 +211,7 @@ pub fn record(
             id,
             cause: cause.text,
             actor: cause.actor,
-            data_json: &data.to_string(),
+            data_json: &data_json,
         },
     )?;
     Ok(())

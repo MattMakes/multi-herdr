@@ -523,6 +523,7 @@ mod tests {
         let fact = |tx: &Connection| {
             record_fact(
                 tx,
+                None,
                 EventKind::Doorbell,
                 Entity::Task,
                 &task,
@@ -565,6 +566,7 @@ mod tests {
         let missing = l.store.immediate(|tx| {
             Ok(record_fact(
                 tx,
+                None,
                 EventKind::Doorbell,
                 Entity::Task,
                 "nope",
@@ -764,6 +766,49 @@ mod tests {
             })
             .unwrap();
         assert_eq!(status(l.conn(), &task), "running");
+    }
+
+    #[test]
+    fn record_with_a_lost_generation_writes_nothing() {
+        let mut l = ledger();
+        let task = l.task(1);
+        l.conn()
+            .execute(
+                "INSERT INTO fleetd (id, generation, pid, pid_start, started_at, fleet_clock_s, clock_ticked_at)
+                 VALUES (1, 2, 1, 1, 'now', 0, 'now')",
+                [],
+            )
+            .unwrap();
+        let data = serde_json::json!({});
+        let count = |conn: &Connection| -> i64 {
+            conn.query_row(
+                "SELECT COUNT(*) FROM events WHERE kind = 'doorbell'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        for (held, written) in [(1, 0), (2, 1)] {
+            l.store
+                .immediate(|tx| {
+                    let out = record_fact(
+                        tx,
+                        Some(Generation(held)),
+                        EventKind::Doorbell,
+                        Entity::Task,
+                        &task,
+                        cause("fleetd"),
+                        &data,
+                    );
+                    assert_eq!(out.is_ok(), written == 1, "{out:?}");
+                    if written == 0 {
+                        assert!(matches!(out, Err(DoorError::GenerationLost { .. })));
+                    }
+                    Ok(())
+                })
+                .unwrap();
+            assert_eq!(count(l.conn()), written, "generation {held}");
+        }
     }
 
     #[test]

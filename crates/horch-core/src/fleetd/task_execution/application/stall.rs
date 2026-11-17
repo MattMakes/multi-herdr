@@ -69,6 +69,7 @@ pub fn apply(
             let data = serde_json::json!({ "fleet_clock": clock, "rung": rung });
             record(
                 tx,
+                guard,
                 EventKind::Doorbell,
                 Entity::Attempt,
                 &a.id,
@@ -352,6 +353,27 @@ mod tests {
             .filter(|e| e.kind == "doorbell")
             .collect();
         assert_eq!(rung_events.len(), 1, "{rung_events:?}");
+    }
+
+    #[test]
+    fn doorbell_of_a_lost_generation_writes_no_event_and_returns_no_effect() {
+        let mut f = fixture();
+        let a = f.attempt();
+        let decision = Decision::Doorbell {
+            pane: "w0:p1".into(),
+            rung: 1,
+        };
+        let out = f
+            .store
+            .immediate(|tx| Ok(apply(tx, Some(Generation(7)), &a, 1_300, &decision)));
+        let err = out.unwrap().unwrap_err();
+        assert!(err.to_string().contains("generation"), "{err:#}");
+        let rung_events = status::events(f.store.conn(), "worker_id", &f.worker)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.kind == "doorbell")
+            .count();
+        assert_eq!(rung_events, 0);
     }
 
     #[test]
