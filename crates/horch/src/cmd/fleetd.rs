@@ -48,7 +48,7 @@ use horch_core::fleetd::fleet_runtime::application::pass::{
 };
 use horch_core::fleetd::fleet_runtime::domain::config::HANG_LIMIT_S;
 use horch_core::fleetd::fleet_runtime::domain::health::{Finding, Hold};
-use horch_core::fleetd::fleet_runtime::domain::heartbeat::{is_hung, is_older, Heartbeat};
+use horch_core::fleetd::fleet_runtime::domain::heartbeat::{is_hung, is_older, Exe, Heartbeat};
 use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
 use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
 use horch_core::fleetd::task_execution::domain::task::{AttemptRow, Recorded};
@@ -227,8 +227,21 @@ fn judge_live(root: &Path, f: Fleetd) -> Result<(Found, Option<Heartbeat>)> {
 }
 
 /// The binary file at the path of the binary of `hb`, as it is now.
-fn binary_now(hb: &Heartbeat) -> horch_core::fleetd::fleet_runtime::domain::heartbeat::Exe {
-    exe_of(exe_identity(Path::new(&hb.exe.path)).unwrap_or_default())
+fn binary_now(hb: &Heartbeat) -> Exe {
+    exe_at(Path::new(&hb.exe.path))
+}
+
+/// The binary file at `path` as it is now. A file that cannot be read has
+/// an empty identity.
+fn exe_at(path: &Path) -> Exe {
+    exe_of(exe_identity(path).unwrap_or_default())
+}
+
+/// Whether the binary file that this fleetd started from was replaced: a
+/// file at its path is there, and it is another file. A missing file is no
+/// new binary: an install can be between its 2 renames.
+fn binary_changed(started: &Exe) -> bool {
+    exe_identity(Path::new(&started.path)).is_some_and(|now| exe_of(now) != *started)
 }
 
 /// `horch fleetd check` on `fleet`.
@@ -255,9 +268,6 @@ pub(crate) fn check_with(fleet: &Fleet<'_>) -> Result<Checked> {
     if !checked.started() {
         return Ok(checked);
     }
-    if fleet.mode == Mode::StandIn {
-        stop(fleet, old, found)?;
-    }
     // The new fleetd runs the binary file of the old one, when it has one:
     // an install replaced that file. Else the binary of this command.
     let exe = hb
@@ -265,9 +275,47 @@ pub(crate) fn check_with(fleet: &Fleet<'_>) -> Result<Checked> {
         .filter(|p| p.is_file())
         .map_or_else(std::env::current_exe, Ok)
         .context("finding the horch binary")?;
-    (fleet.start)(&exe)?;
-    checked.new = wait_for_new(fleet.ledger, old);
+    checked.new = restart(fleet, old, found, &exe)?;
     Ok(checked)
+}
+
+/// Restart the live fleetd of `fleet` on `installed` when it runs another
+/// binary (OR-6, preservation 04 S10). `horch install` and
+/// `horch self-update` call it after the new binary is in place. `None`
+/// when it restarted nothing: no live fleetd, a fleetd that wrote no
+/// heartbeat yet, or a fleetd of `installed`. It never starts a fleetd that
+/// does not run.
+pub(crate) fn restart_older(fleet: &Fleet<'_>, installed: &Path) -> Result<Option<Checked>> {
+    let Some(old) = read_row(fleet.ledger)? else {
+        return Ok(None);
+    };
+    if !procid::alive(old.pid, Some(old.pid_start)) {
+        return Ok(None);
+    }
+    let Some(hb) = own_heartbeat(fleet.root, old) else {
+        return Ok(None);
+    };
+    if !is_older(&hb, &exe_at(installed)) {
+        return Ok(None);
+    }
+    let new = restart(fleet, old, Found::Older, installed)?;
+    Ok(Some(Checked {
+        found: Found::Older,
+        old: Some(old),
+        new,
+        mode: fleet.mode,
+    }))
+}
+
+/// Stop the fleetd `old`, which the check found as `found` (stand-in mode
+/// only: the service manager stops it in service mode), start fleetd from
+/// `exe`, and wait for the new fleetd in the row.
+fn restart(fleet: &Fleet<'_>, old: Fleetd, found: Found, exe: &Path) -> Result<Option<Fleetd>> {
+    if fleet.mode == Mode::StandIn {
+        stop(fleet, old, found)?;
+    }
+    (fleet.start)(exe)?;
+    Ok(wait_for_new(fleet.ledger, old))
 }
 
 /// Stop the old fleetd `old` by its PID and start time, then wait until
@@ -332,11 +380,15 @@ fn wait_for_new(ledger: &Path, old: Fleetd) -> Option<Fleetd> {
 
 /// The check of the fleet of `ctx`, with the start of this machine.
 fn run_check(ctx: &RuntimeContext) -> Result<Checked> {
+    with_fleet(ctx, check_with)
+}
+
+/// Run `f` on the fleet of `ctx`, with the start of this machine.
+pub(crate) fn with_fleet<T>(ctx: &RuntimeContext, f: impl FnOnce(&Fleet<'_>) -> T) -> T {
     let paths = &ctx.paths;
-    let os_home = service::os_user_home().ok();
-    let mode = mode(paths, os_home.as_deref());
+    let mode = this_mode(ctx);
     let start = |exe: &Path| start_fleetd(ctx, mode, exe);
-    check_with(&Fleet {
+    f(&Fleet {
         ledger: &paths.ledger_db,
         root: &paths.fleet_root,
         mode,
@@ -344,18 +396,29 @@ fn run_check(ctx: &RuntimeContext) -> Result<Checked> {
     })
 }
 
+/// The mode of the ledger of `ctx` on this machine.
+fn this_mode(ctx: &RuntimeContext) -> Mode {
+    mode(&ctx.paths, service::os_user_home().ok().as_deref())
+}
+
+/// The service of fleetd on the binary `exe`, for the default ledger of the
+/// OS user.
+pub(crate) fn service_spec(exe: &Path) -> Result<service::Spec> {
+    Ok(service::Spec {
+        label: service::LABEL.into(),
+        exe: exe.to_path_buf(),
+        // The default ledger with no FLEET_ROOT needs no env, and a Windows
+        // task refuses one.
+        env: Vec::new(),
+        folder: service::default_folder().context("finding the folder of the fleetd service")?,
+    })
+}
+
 /// Start fleetd from `exe` in `mode`.
 fn start_fleetd(ctx: &RuntimeContext, mode: Mode, exe: &Path) -> Result<()> {
     match mode {
         Mode::Service => {
-            let spec = service::Spec {
-                label: service::LABEL.into(),
-                exe: exe.to_path_buf(),
-                // The default ledger with no FLEET_ROOT needs no env, and a
-                // Windows task refuses one.
-                env: Vec::new(),
-                folder: service::default_folder()?,
-            };
+            let spec = service_spec(exe)?;
             service::restart(&spec, Path::new(service::MANAGER))
                 .with_context(|| format!("restarting the service {}", service::LABEL))
         }
@@ -385,7 +448,7 @@ fn start_fleetd(ctx: &RuntimeContext, mode: Mode, exe: &Path) -> Result<()> {
 }
 
 /// The line that says what the check did.
-fn describe(c: &Checked) -> String {
+pub(crate) fn describe(c: &Checked) -> String {
     let old = c.old.map_or(0, |f| f.pid);
     let new = match (c.new, c.mode) {
         (Some(f), _) => format!("fleetd PID {} runs now", f.pid),
@@ -462,7 +525,8 @@ pub(crate) fn ledger_conn(ledger: &Path) -> Result<Connection> {
 }
 
 /// `horch fleetd`: take the lock and the generation, then 1 pass every
-/// `pass_period_s` until a SIGTERM.
+/// `pass_period_s` until a SIGTERM. When its binary file changed, it
+/// starts the new binary after a pass and exits.
 fn daemon(ctx: &RuntimeContext) -> Result<ExitCode> {
     // Windows has no signal handlers: there the loop runs until the
     // process ends.
@@ -480,6 +544,10 @@ fn daemon(ctx: &RuntimeContext) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     };
     drop(store);
+    // The binary file that this fleetd runs, and the path that started it:
+    // a restart on a new binary starts that path again.
+    let own_exe = this_exe();
+    let horch = std::env::current_exe().context("finding the horch binary")?;
     write_start_heartbeat(root, started.generation)?;
     let config = config_file::load(root)?;
     let period = Duration::from_secs(config.pass_period_s);
@@ -487,7 +555,7 @@ fn daemon(ctx: &RuntimeContext) -> Result<ExitCode> {
         fleet_root: root.clone(),
         generation: started.generation,
         config,
-        horch: std::env::current_exe().context("finding the horch binary")?,
+        horch: horch.clone(),
         faults: ctx.settings.faults.clone(),
     };
     let herdr = || Herdr::with_bin(&ctx.bins.harness.herdr);
@@ -524,23 +592,73 @@ fn daemon(ctx: &RuntimeContext) -> Result<ExitCode> {
         started.generation.0,
         ctx.paths.ledger_db.display()
     ));
+    let mut run_pass = || match pass.run(&mut conn) {
+        Ok(report) => {
+            for f in &report.failed {
+                eprintln!("horch fleetd: {f}");
+            }
+            Passed::Ran
+        }
+        Err(PassError::GenerationLost(e)) => {
+            eprintln!("horch fleetd: {e}: this fleetd exits");
+            Passed::GenerationLost
+        }
+        Err(e @ PassError::Failed(_)) => {
+            eprintln!("horch fleetd: {e}");
+            Passed::Ran
+        }
+    };
+    let changed = || binary_changed(&own_exe);
+    let mut lock = Some(started.lock);
+    let mut restart = || {
+        // A new fleetd exits at once while this one holds the lock, so this
+        // fleetd frees it first. It runs no pass after that.
+        drop(lock.take());
+        match start_fleetd(ctx, this_mode(ctx), &horch) {
+            Ok(()) => output::println(&format!(
+                "The binary {} changed: fleetd PID {} started it, and exits.",
+                horch.display(),
+                std::process::id()
+            )),
+            Err(e) => eprintln!(
+                "horch fleetd: the binary {} changed, but the new fleetd did not start: {e:#}. `horch fleetd check` starts it.",
+                horch.display()
+            ),
+        }
+    };
+    run_loop(period, &mut run_pass, &changed, &mut restart);
+    Ok(ExitCode::SUCCESS)
+}
+
+/// What 1 pass of the loop gave.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Passed {
+    Ran,
+    /// Another fleetd took the generation: this fleetd exits.
+    GenerationLost,
+}
+
+/// The loop of the daemon: 1 `pass` every `period`, until a SIGTERM or a
+/// lost generation. When the binary file of fleetd `changed`, the loop
+/// calls `restart` once after the pass, and so after its heartbeat, and
+/// ends. A restart never stops a pass (preservation 04 S10, FM-34).
+fn run_loop(
+    period: Duration,
+    pass: &mut dyn FnMut() -> Passed,
+    changed: &dyn Fn() -> bool,
+    restart: &mut dyn FnMut(),
+) {
     while !TERM.load(Ordering::SeqCst) {
         let began = Instant::now();
-        match pass.run(&mut conn) {
-            Ok(report) => {
-                for f in &report.failed {
-                    eprintln!("horch fleetd: {f}");
-                }
-            }
-            Err(PassError::GenerationLost(e)) => {
-                eprintln!("horch fleetd: {e}: this fleetd exits");
-                return Ok(ExitCode::SUCCESS);
-            }
-            Err(e @ PassError::Failed(_)) => eprintln!("horch fleetd: {e}"),
+        if pass() == Passed::GenerationLost {
+            return;
+        }
+        if !TERM.load(Ordering::SeqCst) && changed() {
+            restart();
+            return;
         }
         sleep_unless_term(period.saturating_sub(began.elapsed()));
     }
-    Ok(ExitCode::SUCCESS)
 }
 
 /// What a pass reads and does outside the ledger on this machine.
@@ -610,35 +728,39 @@ impl Outside for Live<'_> {
     }
 }
 
+/// A ledger, a fleet root and stand-in fleetds in a temp folder: the
+/// fixture of the tests of the fleetd restart here, in `install.rs` and in
+/// `selfupdate.rs`.
 #[cfg(test)]
-mod tests {
+pub(crate) mod test_fleet {
     use std::cell::RefCell;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
+    use anyhow::Result;
     use horch_core::exeid::exe_identity;
     use horch_core::fleetd::fleet_runtime::adapters::clock_store::awake_now;
     use horch_core::fleetd::fleet_runtime::adapters::effects::{exe_of, write_heartbeat};
     use horch_core::fleetd::fleet_runtime::domain::clock::AwakeReading;
     use horch_core::fleetd::fleet_runtime::domain::heartbeat::Heartbeat;
-    use horch_core::runtime::MapEnv;
+    use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
     use horch_core::taskledger::Store;
 
-    use super::*;
+    use super::{check_with, Checked, Fleet, Fleetd, Mode};
 
     /// A ledger and a fleet root in a temp folder.
-    struct World {
-        _dir: tempfile::TempDir,
-        ledger: PathBuf,
-        root: PathBuf,
+    pub(crate) struct World {
+        pub(crate) dir: tempfile::TempDir,
+        pub(crate) ledger: PathBuf,
+        pub(crate) root: PathBuf,
         /// The binary of the fleetds of the test: a file that a test can
         /// change.
-        exe: PathBuf,
+        pub(crate) exe: PathBuf,
         /// Each process that the test started, stopped at the end.
-        started: RefCell<Vec<Fleetd>>,
+        pub(crate) started: RefCell<Vec<Fleetd>>,
     }
 
     impl World {
-        fn new() -> World {
+        pub(crate) fn new() -> World {
             let dir = tempfile::tempdir().unwrap();
             let ledger = dir.path().join("ledger.sqlite3");
             let root = dir.path().join("fleet");
@@ -649,7 +771,7 @@ mod tests {
             let exe = exe.canonicalize().unwrap();
             drop(Store::open(&ledger).unwrap());
             World {
-                _dir: dir,
+                dir,
                 ledger,
                 root,
                 exe,
@@ -659,7 +781,7 @@ mod tests {
 
         /// A process that stands in for a fleetd: a `sleep` that is not a
         /// child of this test, so that its end is not a zombie.
-        fn process(&self) -> Fleetd {
+        pub(crate) fn process(&self) -> Fleetd {
             let out = std::process::Command::new("/bin/sh")
                 .args(["-c", "sleep 120 >/dev/null 2>&1 & echo $!"])
                 .output()
@@ -672,7 +794,7 @@ mod tests {
         }
 
         /// Write `p` to the `fleetd` row.
-        fn record(&self, p: Fleetd) {
+        pub(crate) fn record(&self, p: Fleetd) {
             let store = Store::open(&self.ledger).unwrap();
             store
                 .conn()
@@ -688,7 +810,7 @@ mod tests {
 
         /// The heartbeat of `p`, `age_s` seconds of awake time old, with the
         /// binary of the world as it is now.
-        fn heartbeat(&self, p: Fleetd, age_s: u64) {
+        pub(crate) fn heartbeat(&self, p: Fleetd, age_s: u64) {
             let now = awake_now().unwrap();
             let hb = Heartbeat {
                 pid: p.pid,
@@ -705,10 +827,20 @@ mod tests {
             write_heartbeat(&self.root, &hb).unwrap();
         }
 
-        /// Run the check. Each start starts a new stand-in fleetd and
-        /// records it in the row, as `horch fleetd` does. Gives the result
-        /// and the binary of each start.
-        fn check(&self) -> (Checked, Vec<PathBuf>) {
+        /// Run the check in stand-in mode. Gives the result and the binary
+        /// of each start.
+        pub(crate) fn check(&self) -> (Checked, Vec<PathBuf>) {
+            self.run(Mode::StandIn, |fleet| check_with(fleet).unwrap())
+        }
+
+        /// Run `f` on the fleet of the world in `mode`. Each start starts a
+        /// new stand-in fleetd and records it in the row, as `horch fleetd`
+        /// does. Gives the result of `f` and the binary of each start.
+        pub(crate) fn run<T>(
+            &self,
+            mode: Mode,
+            f: impl FnOnce(&Fleet<'_>) -> T,
+        ) -> (T, Vec<PathBuf>) {
             let starts = RefCell::new(Vec::new());
             let start = |exe: &Path| -> Result<()> {
                 starts.borrow_mut().push(exe.to_path_buf());
@@ -718,11 +850,25 @@ mod tests {
             let fleet = Fleet {
                 ledger: &self.ledger,
                 root: &self.root,
-                mode: Mode::StandIn,
+                mode,
                 start: &start,
             };
-            let checked = check_with(&fleet).unwrap();
-            (checked, starts.into_inner())
+            let out = f(&fleet);
+            (out, starts.into_inner())
+        }
+
+        /// The fleetd that the `fleetd` row names.
+        pub(crate) fn row(&self) -> Option<Fleetd> {
+            super::read_row(&self.ledger).unwrap()
+        }
+
+        /// A new binary file in a folder of its own: `<folder>/horch`.
+        pub(crate) fn new_binary(&self, folder: &str) -> PathBuf {
+            let dir = self.dir.path().join(folder);
+            std::fs::create_dir_all(&dir).unwrap();
+            let exe = dir.join(format!("horch{}", std::env::consts::EXE_SUFFIX));
+            std::fs::write(&exe, "new").unwrap();
+            exe.canonicalize().unwrap()
         }
     }
 
@@ -734,12 +880,12 @@ mod tests {
         }
     }
 
-    fn alive(p: Fleetd) -> bool {
+    pub(crate) fn alive(p: Fleetd) -> bool {
         horch_core::procid::alive(p.pid, Some(p.pid_start))
     }
 
     /// Wait up to 5 s for `p` to end.
-    fn ended(p: Fleetd) -> bool {
+    pub(crate) fn ended(p: Fleetd) -> bool {
         let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while alive(p) {
             if std::time::Instant::now() > until {
@@ -749,6 +895,14 @@ mod tests {
         }
         true
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use horch_core::runtime::MapEnv;
+
+    use super::test_fleet::{alive, ended, World};
+    use super::*;
 
     #[test]
     fn check_with_no_row_starts_nothing() {
@@ -892,5 +1046,40 @@ mod tests {
         // No home of the OS user.
         let p = paths(&[("HORCH_LEDGER_DB", &default)]);
         assert_eq!(mode(&p, None), Mode::StandIn);
+    }
+
+    /// Preservation 04 S10: a fleetd whose binary file changed starts the
+    /// new binary once, after the heartbeat of its pass, and ends its loop.
+    /// It never stops a pass.
+    #[test]
+    fn pres_04_s10_changed_binary_restarts_between_passes() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("horch");
+        std::fs::write(&exe, "1").unwrap();
+        let started = exe_at(&exe);
+        assert!(!binary_changed(&started), "an unchanged binary");
+        let events = std::cell::RefCell::new(Vec::new());
+        let passes = std::cell::Cell::new(0);
+        let mut pass = || {
+            passes.set(passes.get() + 1);
+            events.borrow_mut().push("pass");
+            // An install replaces the binary inside the 2nd pass.
+            if passes.get() == 2 {
+                std::fs::write(&exe, "22").unwrap();
+            }
+            events.borrow_mut().push("heartbeat");
+            Passed::Ran
+        };
+        let changed = || binary_changed(&started);
+        let mut restart = || events.borrow_mut().push("restart");
+        run_loop(Duration::ZERO, &mut pass, &changed, &mut restart);
+        assert_eq!(
+            *events.borrow(),
+            ["pass", "heartbeat", "pass", "heartbeat", "restart"]
+        );
+        // A binary file that is gone (an install between its 2 renames) is
+        // not a new binary.
+        std::fs::remove_file(&exe).unwrap();
+        assert!(!binary_changed(&started), "a missing binary");
     }
 }

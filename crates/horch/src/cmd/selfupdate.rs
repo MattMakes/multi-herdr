@@ -18,6 +18,8 @@ use horch_core::runtime::RuntimeContext;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use super::fleetd::{self, Fleet};
+
 /// The installed version.
 pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
 
@@ -353,7 +355,7 @@ fn install_and_restart(ctx: &RuntimeContext, notice: &str) {
     match installed {
         Ok(release) => {
             eprintln!("horch: updated v{CURRENT} -> {}; restarting", release.tag);
-            let error = restart(&dir);
+            let error = restart(ctx, &dir);
             eprintln!(
                 "horch: NOTE: cannot start the new horch ({error}); continuing on v{CURRENT}"
             );
@@ -364,16 +366,48 @@ fn install_and_restart(ctx: &RuntimeContext, notice: &str) {
     }
 }
 
-/// Run `<dir>/horch` with this process's arguments and [`UPDATED_ENV`]. On
-/// unix it replaces this process; elsewhere it waits and exits with the
-/// child's code. Returns only the error of a start that failed.
-fn restart(dir: &Path) -> std::io::Error {
+/// Restart the running fleetd on `<dir>/horch`, then run `<dir>/horch` with
+/// this process's arguments and [`UPDATED_ENV`]. On unix it replaces this
+/// process; elsewhere it waits and exits with the child's code. Returns
+/// only the error of a start that failed.
+fn restart(ctx: &RuntimeContext, dir: &Path) -> std::io::Error {
+    fleetd::with_fleet(ctx, |fleet| {
+        restart_with(fleet, dir, horch_platform::rest::replace_process)
+    })
+}
+
+/// [`restart`] on `fleet`: the restart of the running fleetd comes before
+/// `replace` replaces this process (OR-6).
+fn restart_with(
+    fleet: &Fleet<'_>,
+    dir: &Path,
+    replace: impl FnOnce(Command) -> std::io::Error,
+) -> std::io::Error {
     use std::io::Write;
-    let exe = dir.join(format!("horch{}", std::env::consts::EXE_SUFFIX));
-    let mut cmd = Command::new(&exe);
+    restart_fleetd(fleet, dir);
+    let mut cmd = Command::new(new_horch(dir));
     cmd.args(std::env::args_os().skip(1)).env(UPDATED_ENV, "1");
     let _ = std::io::stdout().flush();
-    horch_platform::rest::replace_process(cmd)
+    replace(cmd)
+}
+
+/// The `horch` of a release installed into `dir`.
+fn new_horch(dir: &Path) -> PathBuf {
+    dir.join(format!("horch{}", std::env::consts::EXE_SUFFIX))
+}
+
+/// Restart the running fleetd of `fleet` on the new `horch` in `dir` when it
+/// runs another binary (OR-6). The `horch install` of the release restarts
+/// it already, so this acts only on a fleetd that the install left. No live
+/// fleetd: nothing. A failure is a note: the update stands.
+fn restart_fleetd(fleet: &Fleet<'_>, dir: &Path) {
+    match fleetd::restart_older(fleet, &new_horch(dir)) {
+        Ok(Some(checked)) => eprintln!("horch: {}", fleetd::describe(&checked)),
+        Ok(None) => {}
+        Err(e) => eprintln!(
+            "horch: NOTE: fleetd was not restarted on the new horch ({e:#}); `horch fleetd check` restarts it"
+        ),
+    }
 }
 
 /// The directory a release installs into. `HORCH_SELF_UPDATE_DIR` is for
@@ -403,7 +437,9 @@ pub fn self_update(ctx: &RuntimeContext, check: bool) -> Result<ExitCode> {
             release.tag, release.html_url
         );
     } else {
-        install_release(ctx, &release, &target_dir(ctx)?)?;
+        let dir = target_dir(ctx)?;
+        install_release(ctx, &release, &dir)?;
+        fleetd::with_fleet(ctx, |fleet| restart_fleetd(fleet, &dir));
         println!("updated horch v{CURRENT} -> {}", release.tag);
     }
     Ok(ExitCode::SUCCESS)
@@ -879,5 +915,62 @@ mod tests {
             boot_notice(tmp.path(), now, "0.3.0", || Ok(Some(release("v0.2.0")))),
             None
         );
+    }
+
+    /// The update restarts the running fleetd on the new binary before it
+    /// replaces this process with the new `horch` (OR-6, FM-34).
+    #[cfg(unix)]
+    #[test]
+    fn self_update_restarts_the_running_fleetd_before_it_replaces_itself() {
+        use crate::cmd::fleetd::test_fleet::{ended, World};
+        use crate::cmd::fleetd::Mode;
+        let w = World::new();
+        let old = w.process();
+        w.record(old);
+        w.heartbeat(old, 1);
+        let new_horch = w.new_binary("release");
+        let dir = new_horch.parent().unwrap();
+        let (seen, starts) = w.run(Mode::StandIn, |fleet| {
+            let mut seen = None;
+            let error = restart_with(fleet, dir, |cmd| {
+                seen = Some((w.row(), cmd.get_program().to_owned()));
+                std::io::Error::other("the test replaces nothing")
+            });
+            assert_eq!(error.to_string(), "the test replaces nothing");
+            seen.expect("the update replaced this process")
+        });
+        let (row, program) = seen;
+        assert_eq!(program, new_horch.as_os_str());
+        assert_eq!(starts, [new_horch], "the new fleetd runs the new binary");
+        let row = row.expect("a fleetd row");
+        assert_ne!(
+            row, old,
+            "the update replaced itself before it restarted fleetd"
+        );
+        assert!(ended(old), "the old fleetd still runs");
+    }
+
+    /// With no live fleetd, the update starts no fleetd: it never starts a
+    /// fleetd that does not run.
+    #[test]
+    fn self_update_with_no_live_fleetd_restarts_nothing() {
+        use crate::cmd::fleetd::test_fleet::World;
+        use crate::cmd::fleetd::{Fleetd, Mode};
+        let w = World::new();
+        let new_horch = w.new_binary("release");
+        let dir = new_horch.parent().unwrap();
+        let (_, starts) = w.run(Mode::StandIn, |fleet| restart_fleetd(fleet, dir));
+        assert!(starts.is_empty(), "no fleetd row: {starts:?}");
+        // A row whose process ended: this test process with another start
+        // time.
+        let pid = std::process::id();
+        let gone = Fleetd {
+            pid,
+            pid_start: horch_core::procid::start_time(pid).unwrap() + 1,
+        };
+        w.record(gone);
+        let (_, starts) = w.run(Mode::StandIn, |fleet| restart_fleetd(fleet, dir));
+        assert!(starts.is_empty(), "a gone fleetd: {starts:?}");
+        assert_eq!(w.row(), Some(gone));
     }
 }

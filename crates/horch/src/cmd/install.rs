@@ -12,6 +12,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use horch_core::runtime::{process, RuntimeContext};
+use horch_platform::service;
+
+use super::fleetd::{self, Fleet, Mode};
 
 /// Where to put the binary when the caller does not say.
 pub fn default_dir(ctx: &RuntimeContext) -> PathBuf {
@@ -48,6 +51,13 @@ pub fn install(ctx: &RuntimeContext, dir: Option<&str>) -> Result<()> {
     }
     // A task-ledger watchdog too (#216).
     super::taskledger_watch::restart_if_stale(ctx, &target);
+    // And fleetd (OR-6).
+    let install_service = || install_service(&target);
+    for line in fleetd::with_fleet(ctx, |fleet| {
+        install_fleetd(fleet, &install_service, &target)
+    }) {
+        println!("{line}");
+    }
 
     // The sibling binary is built next to horch (`cargo build --bin
     // herdr-install`), and is installed next to it too.
@@ -69,6 +79,51 @@ pub fn install(ctx: &RuntimeContext, dir: Option<&str>) -> Result<()> {
 
     println!("\nInstalled version: {}", installed_version(&target)?);
     Ok(())
+}
+
+/// The fleetd part of `horch install` (OR-6, preservation 04 S10). In
+/// service mode it installs the fleetd service with `install_service`, and
+/// stand-in mode writes no service (`docs/tickets/fleetd-p1/MAP.md`, Q8).
+/// Then it restarts a live fleetd that runs another binary on `target`.
+/// Gives the lines to print. A failure is a warning: the install stands.
+fn install_fleetd(
+    fleet: &Fleet<'_>,
+    install_service: &dyn Fn() -> Result<()>,
+    target: &Path,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    if fleet.mode == Mode::Service {
+        if let Err(e) = install_service() {
+            lines.push(format!(
+                "warning: the fleetd service is not installed: {e:#}"
+            ));
+        }
+    }
+    match fleetd::restart_older(fleet, target) {
+        Ok(Some(checked)) => lines.push(fleetd::describe(&checked)),
+        Ok(None) => {}
+        Err(e) => lines.push(format!(
+            "warning: fleetd was not restarted on {}: {e:#}; run `horch fleetd check`",
+            target.display()
+        )),
+    }
+    lines
+}
+
+/// Install the fleetd service on `target` with the service manager of this
+/// OS. Definition files that hold this text already are an installed
+/// service: launchd refuses a 2nd bootstrap of a loaded label.
+fn install_service(target: &Path) -> Result<()> {
+    let spec = fleetd::service_spec(target)?;
+    let defs = service::definitions(&spec)?;
+    let installed = defs
+        .iter()
+        .all(|(path, text)| std::fs::read_to_string(path).is_ok_and(|t| t == *text));
+    if installed {
+        return Ok(());
+    }
+    service::install(&spec, Path::new(service::MANAGER))
+        .with_context(|| format!("installing the service {}", service::LABEL))
 }
 
 /// Clears `dir` of leftovers and installs `source` as `target`.
@@ -811,5 +866,63 @@ mod tests {
         } else {
             assert!(help.contains("export PATH=\"/x/bin:$PATH\""));
         }
+    }
+
+    /// `horch install` writes no service definition in stand-in mode, and
+    /// installs the fleetd service in service mode (MAP.md, Q8).
+    #[test]
+    fn install_writes_no_service_in_stand_in_mode() {
+        use crate::cmd::fleetd::{test_fleet::World, Mode};
+        let w = World::new();
+        let target = w.new_binary("bin");
+        let installs = std::cell::Cell::new(0);
+        let service = || -> Result<()> {
+            installs.set(installs.get() + 1);
+            Ok(())
+        };
+        let (lines, starts) = w.run(Mode::StandIn, |f| install_fleetd(f, &service, &target));
+        assert_eq!(installs.get(), 0, "stand-in mode installed a service");
+        assert!(lines.is_empty(), "{lines:?}");
+        assert!(starts.is_empty(), "{starts:?}");
+        let (lines, starts) = w.run(Mode::Service, |f| install_fleetd(f, &service, &target));
+        assert_eq!(installs.get(), 1, "service mode installs the service");
+        assert!(lines.is_empty(), "{lines:?}");
+        assert!(
+            starts.is_empty(),
+            "no fleetd ran, so none restarts: {starts:?}"
+        );
+    }
+
+    /// `horch install` restarts a live fleetd that runs another binary on
+    /// the installed binary (OR-6, preservation 04 S10). A fleetd of the
+    /// installed binary stays.
+    #[cfg(unix)]
+    #[test]
+    fn install_restarts_a_fleetd_of_another_binary() {
+        use crate::cmd::fleetd::test_fleet::{alive, ended, World};
+        use crate::cmd::fleetd::Mode;
+        let w = World::new();
+        let old = w.process();
+        w.record(old);
+        w.heartbeat(old, 1);
+        let no_service = || -> Result<()> { panic!("stand-in mode installs no service") };
+        let (lines, starts) = w.run(Mode::StandIn, |f| install_fleetd(f, &no_service, &w.exe));
+        assert!(lines.is_empty(), "{lines:?}");
+        assert!(starts.is_empty(), "{starts:?}");
+        assert!(alive(old), "a fleetd of the installed binary was stopped");
+        let target = w.new_binary("bin");
+        let (lines, starts) = w.run(Mode::StandIn, |f| install_fleetd(f, &no_service, &target));
+        assert!(ended(old), "the fleetd of the other binary still runs");
+        assert_eq!(starts, [target], "the new fleetd runs the installed binary");
+        let new = w.row().expect("a fleetd row");
+        assert_ne!(new, old);
+        assert!(alive(new));
+        assert_eq!(
+            lines,
+            [format!(
+                "fleetd PID {} runs an older binary. It was stopped, and fleetd PID {} runs now.",
+                old.pid, new.pid
+            )]
+        );
     }
 }
