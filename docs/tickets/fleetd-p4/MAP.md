@@ -146,7 +146,7 @@ Phase 3.
 
 Q-A, Q-B and Q-C are answers of the orchestrator. Q1 to Q22 are choices of the planner where the
 design and the code of today do not agree, or where the design leaves a point open. Each ticket
-follows them, and the orchestrator can change each one. Q2 and Q23 have no question. Q24 to Q26 are open points of T-607 for the orchestrator.
+follows them, and the orchestrator can change each one. Q2 and Q23 have no question. Q24 to Q26 come from T-607 and its review.
 
 - **Q1. Module files.** Ticket 01 makes each new file of the 3 contexts (1 file for each concern
   under `domain/`, `application/` and `adapters/`), so that tickets of 1 wave own different files.
@@ -207,26 +207,22 @@ follows them, and the orchestrator can change each one. Q2 and Q23 have no quest
   fleetd owns 1 gate cache for each feature at `<fleet root>/gate-cache/<feature id>/`, and sets
   `CARGO_HOME` and `XDG_CACHE_HOME` to folders in it. It starts empty, so it has no configuration and
   no credential of the user. The gate never writes `~/.cargo`. Ticket 04 gets no new key. Ticket 28.
-- **Q25. Ticket 28 needs ticket 17 (open, for the orchestrator).** The gate sandbox calls the
-  function of ticket 17. Ticket 28 is not blocked by 17 in the table, but 17 is in wave 1 and 28 in
-  wave 3. T-607 did not change a `Blocked by` cell. The orchestrator can add the dependency in the
-  ledger. Tickets 17, 28.
-- **Q26. The other Phase 4 jobs that run git in a tree (open, for the orchestrator).** T-607 did
-  not own these tickets. Each one must run no command and no hook of the project outside a sandbox:
-  - Ticket 41, the `rebase` job: `git rebase` in the gate tree runs the hooks of the project
-    (`pre-rebase`, `post-checkout`, `post-rewrite`). Ticket 41 does not say `core.hooksPath=/dev/null`.
-    Choice: add `-c core.hooksPath=/dev/null` to each git call of the job.
-  - Ticket 27, the `bundle_build` job: `git merge-tree --write-tree` and `git commit-tree` run no
-    hook and need no tree. Ticket 27 does not say it. Choice: 1 line in ticket 27 that
-    its git calls run with hooks off.
-  - Ticket 38, the `push` job: `git push` runs the `pre-push` hook. Q13 says that the
-    `-c core.hooksPath=/dev/null` of horch's own git calls wins. Ticket 38 does not repeat it.
-  - Ticket 37, the `fetch` job: F11 says no hooks. Nothing to add.
-  - Tickets 33 and 42, resolver and fix attempts: they are worker attempts, launched by ticket 10 in
-    the worker sandbox. They are not fleetd commands. Nothing to add.
-  - The `trial_merge` job: no executor in Phase 4 (ticket 03). Phase 6 must give it hooks off.
-  - The `worktree_add` job of Phase 3 makes the gate tree with `git worktree add`, which runs the
-    `post-checkout` hook. That ticket is in Phase 3. Choice: hooks off for that call.
+- **Q25. Ticket 28 needs ticket 17 (answer of the orchestrator).** The gate sandbox calls the
+  function of ticket 17. Ticket 28 is not blocked by 17 in the table. Ticket 17 (T-360) runs now,
+  and it lands long before ticket 28 can start (wave 3, after 03, 04 and 23). So no ledger edge is
+  necessary. Tickets 17, 28.
+- **Q26. The fleetd git rule (review F4 of T-607).** A job that runs git with the rights of fleetd
+  starts no hook and no program of the project: hooks off, `core.fsmonitor` off, no signing, no
+  editor, no prompt, and a program key in the repository or worktree config stops the job with the
+  key in its reason. Each ticket below has the rule and 1 attack test:
+  - Tickets 05, 06 and 07 of `docs/tickets/fleetd-p3/` (`worktree_add`, `worktree_list`, `rescue`,
+    `worktree_remove`). Ticket 08 of Phase 3 runs no git command: it queues the job of ticket 05.
+  - Ticket 41, the `rebase` job, and ticket 38, the `push` job (Q13 stays).
+  - Ticket 28, the checkout of the gate.
+  Open, for the orchestrator: ticket 27, the `bundle_build` job. `git merge-tree` runs no hook, but
+  it runs a `merge.<name>.driver` of the repository config. Ticket 27 needs the same rule. The
+  fetch job of ticket 37 has no hooks (F11). Resolver and fix attempts (tickets 33, 42) are worker
+  attempts in the worker sandbox. The `trial_merge` job has no executor in Phase 4.
 - **Q-A. The check sandbox (answer of the orchestrator, option 1).** The `task_check` job runs only
   in the sandbox of the worker (SR-4). Reuse the sandbox concern of Phase P and do not build a
   second one: extend it with a list of writable paths. The sandbox host is in

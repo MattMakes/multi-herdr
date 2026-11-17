@@ -19,6 +19,10 @@ A `rescue` job saves the full state of 1 worktree (its commits, its modified fil
 - **RR-16** (rescue refs): a rescue ref only moves forward; a second rescue of 1 tree does not overwrite the first ref; each ref write is read back.
 - **FM-25** (the save): a worker killed with dirty and untracked files loses nothing.
 - The rule of the orchestrator for the time limit (Q25): a rescue job that reaches its limit is never read as `rescued`. The tree stays, the job runs again by the rule of `abandoned` runs (`job_backoff_s`), and at `abandoned_run_limit` a needs-you item opens. No tree is removed without a verified rescue.
+- The fleetd git rule (review F4 of T-607). This job runs git with the rights of fleetd and with no sandbox. So git must start no hook and no program of the project. Each git command of the job:
+  - runs with `-c core.hooksPath=/dev/null`, `-c core.fsmonitor=false`, `-c commit.gpgSign=false` and `-c tag.gpgSign=false`, and with `GIT_TERMINAL_PROMPT=0`, `GIT_EDITOR=true` and `GIT_SEQUENCE_EDITOR=true` in its environment;
+  - first reads `git config --list --show-origin`. A key that starts a program and comes from the repository or the worktree config (not from the global or system config of the user) stops the job: it ends `failed` with the key in its reason, and changes nothing. The keys are `core.fsmonitor`, `core.sshCommand`, `core.askPass`, `core.editor`, `sequence.editor`, `credential.helper`, `gpg.program`, `diff.external`, and each `filter.<name>.clean`, `filter.<name>.smudge`, `filter.<name>.process`, `merge.<name>.driver` and `diff.<name>.textconv`.
+  - For this ticket: `git add -A` and `git status` run a `clean` filter and `core.fsmonitor`. Use the gateway function of ticket 05. A rescue that the rule stops keeps the tree and opens the needs-you item of a failed rescue.
 
 ## Context
 
@@ -47,6 +51,7 @@ A `rescue` job saves the full state of 1 worktree (its commits, its modified fil
    - `rescue_job_at_its_limit_is_not_rescued_and_runs_again_after_its_backoff`, and `rescue_job_abandoned_3_times_opens_1_needs_you_item`.
    - `rescue_writes_its_manifest_with_ref_head_count_size_and_attempt`.
    - `ignored_files_are_not_in_the_rescue_ref`.
+   - `rescue_runs_no_hook_or_program_of_the_project`: a repository with a `filter.x.clean` in its config and a `.gitattributes` line `* filter=x`, where the filter writes a marker file. The rescue ends `failed` with the key in its reason, the tree stays, 1 needs-you item is open, and the marker does not exist.
 2. Write the code. Run the Check. Commit.
 
 ## Constraints

@@ -21,7 +21,7 @@ A `fast_gate` job runs the project's fast gate on the candidate tip of a bundle;
 - The writable paths of a gate are: the gate tree of the feature, the temporary folder of the job, and the gate cache of the feature (Q24 of MAP.md). Nothing in the project adds a path: the list comes only from fleetd. The gate cannot write the rest of the fleet root, the ledger, another worktree, `~/.cargo`, or the repository of the user outside the gate tree.
 - NotSupported: the gate does not run, and no `gate_runs` row gets a result. The job ends with the cause `no gate sandbox: <reason>`. The feature gets a hold: fleetd queues no gate of the feature, and no bundle of the feature gates or lands. fleetd opens 1 needs-you item with the key `no_gate_sandbox:<feature id>`. A later pass that finds a sandbox ends the hold and closes the item. Never a run with the rights of fleetd.
 - The gate cache (Q24): 1 folder for each feature at `<fleet root>/gate-cache/<feature id>/`, made by fleetd before the first gate and removed with the gate tree. fleetd sets `CARGO_HOME=<gate cache>/cargo` and `XDG_CACHE_HOME=<gate cache>/xdg` in the environment of the gate command. The gate cache starts empty, so it holds no configuration and no credential of the user.
-- The `git checkout --detach <tip>` of the gate runs with `-c core.hooksPath=/dev/null`, so no hook of the project runs outside the sandbox.
+- The `git checkout --detach <tip>` of the gate runs outside the sandbox, so it follows the fleetd git rule of ticket 41 (hooks off, no `core.fsmonitor`, and a program key of the repository config stops the job), and no hook or filter of the project runs.
 - Pure jobs: a `passed` verdict of 1 input key is used again; a fail is used again only when the gate ran to its end.
 
 ## Context

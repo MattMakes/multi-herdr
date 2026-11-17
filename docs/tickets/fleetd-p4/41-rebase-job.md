@@ -18,6 +18,10 @@ When the fetched primary tip moves and the feature does not contain it, fleetd w
 - I10: the rescue ref of the old tip exists before the rebase; a crash before and after the rescue of a forced update loses no tip (a test of the gate).
 - FM-37: no rebase is queued while a bundle is in `gating` or `passed`.
 - A conflict ends the job with the conflict files and leaves the branch as it was (ticket 42 opens the resolver task).
+- The fleetd git rule (review F4 of T-607). This job runs git with the rights of fleetd and with no sandbox. So git must start no hook and no program of the project. Each git command of the job:
+  - runs with `-c core.hooksPath=/dev/null`, `-c core.fsmonitor=false`, `-c commit.gpgSign=false` and `-c tag.gpgSign=false`, and with `GIT_TERMINAL_PROMPT=0`, `GIT_EDITOR=true` and `GIT_SEQUENCE_EDITOR=true` in its environment;
+  - first reads `git config --list --show-origin`. A key that starts a program and comes from the repository or the worktree config (not from the global or system config of the user) stops the job: it ends `failed` with the key in its reason, and changes nothing. The keys are `core.fsmonitor`, `core.sshCommand`, `core.askPass`, `core.editor`, `sequence.editor`, `credential.helper`, `gpg.program`, `diff.external`, and each `filter.<name>.clean`, `filter.<name>.smudge`, `filter.<name>.process`, `merge.<name>.driver` and `diff.<name>.textconv`.
+  - For this ticket: `git rebase` runs the `pre-rebase`, `post-checkout` and `post-rewrite` hooks, a checkout filter, a merge driver, and the gpg program when a commit is signed.
 
 ## Context
 
@@ -29,7 +33,7 @@ When the fetched primary tip moves and the feature does not contain it, fleetd w
 
 ## Steps
 
-1. Write the tests first: `moved_primary_tip_queues_1_rebase_after_a_rescue_ref`, `no_rebase_while_a_bundle_is_gating_or_passed`, `clean_rebase_moves_the_ref_by_compare_and_set_and_drops_a_building_bundle`, `crash_before_and_after_the_rescue_loses_no_tip`, `conflict_leaves_the_branch_at_its_old_tip`.
+1. Write the tests first: `moved_primary_tip_queues_1_rebase_after_a_rescue_ref`, `no_rebase_while_a_bundle_is_gating_or_passed`, `clean_rebase_moves_the_ref_by_compare_and_set_and_drops_a_building_bundle`, `crash_before_and_after_the_rescue_loses_no_tip`, `conflict_leaves_the_branch_at_its_old_tip`, `rebase_runs_no_hook_or_program_of_the_project` (a repository with a `pre-rebase` and a `post-rewrite` hook that each write a marker file, and a test with `merge.x.driver` in the repository config; after the rebase no marker exists; the config key ends the job `failed` with the key in its reason).
 2. Write the rule and the executor.
 3. This ticket moves a ref, lands, pushes, deletes a branch or a ref, or changes who runs the finish steps. It has a crash test: a fault point before the commit of the intended row, and after the commit and before the effect. In each case the next pass completes or fails the effect 1 time, and no tip and no work is lost.
 4. Run the Check. Commit the exact files.

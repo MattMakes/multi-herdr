@@ -18,6 +18,10 @@ A `push` job pushes the feature branch to its remote with `--force-with-lease=<b
 - FM-43: a transient push failure is followed by a new run of the push job (a test of the gate); a result of an old run is never used again.
 - Choice Q21: fleetd queues a push when the feature tip differs from `seen_remote_tip` and the feature is `ready` or has an open pull request, and after each rebase (ticket 41).
 - F11: push bound 10 min.
+- The fleetd git rule (review F4 of T-607). This job runs git with the rights of fleetd and with no sandbox. So git must start no hook and no program of the project. Each git command of the job:
+  - runs with `-c core.hooksPath=/dev/null`, `-c core.fsmonitor=false`, `-c commit.gpgSign=false` and `-c tag.gpgSign=false`, and with `GIT_TERMINAL_PROMPT=0`, `GIT_EDITOR=true` and `GIT_SEQUENCE_EDITOR=true` in its environment;
+  - first reads `git config --list --show-origin`. A key that starts a program and comes from the repository or the worktree config (not from the global or system config of the user) stops the job: it ends `failed` with the key in its reason, and changes nothing. The keys are `core.fsmonitor`, `core.sshCommand`, `core.askPass`, `core.editor`, `sequence.editor`, `credential.helper`, `gpg.program`, `diff.external`, and each `filter.<name>.clean`, `filter.<name>.smudge`, `filter.<name>.process`, `merge.<name>.driver` and `diff.<name>.textconv`.
+  - For this ticket: `git push` runs the `pre-push` hook, and it reads `core.sshCommand` and `credential.helper`. The push uses only the values of these 2 keys from the global config of the user. Q13 of MAP.md stays.
 
 ## Context
 
@@ -29,7 +33,7 @@ A `push` job pushes the feature branch to its remote with `--force-with-lease=<b
 
 ## Steps
 
-1. Write the tests first: `push_sets_ok_and_the_seen_remote_tip`, `rewrite_uses_force_with_lease_on_the_seen_remote_tip`, `remote_moved_by_someone_else_is_not_overwritten`, `transient_failure_is_followed_by_a_new_run_after_the_backoff`, `3_failures_open_1_needs_you_item`.
+1. Write the tests first: `push_sets_ok_and_the_seen_remote_tip`, `rewrite_uses_force_with_lease_on_the_seen_remote_tip`, `remote_moved_by_someone_else_is_not_overwritten`, `transient_failure_is_followed_by_a_new_run_after_the_backoff`, `3_failures_open_1_needs_you_item`, `push_runs_no_hook_or_program_of_the_project` (a repository with a `pre-push` hook that writes a marker file, and a test with `core.sshCommand` in the repository config; the push runs no hook and the marker does not exist; the config key ends the job `failed` with the key in its reason).
 2. Write the executor.
 3. This ticket moves a ref, lands, pushes, deletes a branch or a ref, or changes who runs the finish steps. It has a crash test: a fault point before the commit of the intended row, and after the commit and before the effect. In each case the next pass completes or fails the effect 1 time, and no tip and no work is lost.
 4. Run the Check. Commit the exact files.

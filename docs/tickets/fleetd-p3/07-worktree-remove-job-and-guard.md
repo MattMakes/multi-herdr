@@ -18,6 +18,10 @@ A `worktree_remove` job is the only code that removes a worktree folder. Just be
 - **RR-9** (the guard): no worktree is removed until its work is on a verified ref.
 - **RR-13** (the refusals at the removal): a dirty tree, a branch with a `git stash` entry, unpublished unique commits and a HEAD that moved during the checks are refused, and the tree stays.
 - **FM-27** (prevented inside the fleet): fleetd removes only `landed` trees or trees with a verified ref.
+- The fleetd git rule (review F4 of T-607). This job runs git with the rights of fleetd and with no sandbox. So git must start no hook and no program of the project. Each git command of the job:
+  - runs with `-c core.hooksPath=/dev/null`, `-c core.fsmonitor=false`, `-c commit.gpgSign=false` and `-c tag.gpgSign=false`, and with `GIT_TERMINAL_PROMPT=0`, `GIT_EDITOR=true` and `GIT_SEQUENCE_EDITOR=true` in its environment;
+  - first reads `git config --list --show-origin`. A key that starts a program and comes from the repository or the worktree config (not from the global or system config of the user) stops the job: it ends `failed` with the key in its reason, and changes nothing. The keys are `core.fsmonitor`, `core.sshCommand`, `core.askPass`, `core.editor`, `sequence.editor`, `credential.helper`, `gpg.program`, `diff.external`, and each `filter.<name>.clean`, `filter.<name>.smudge`, `filter.<name>.process`, `merge.<name>.driver` and `diff.<name>.textconv`.
+  - For this ticket: the facts of the guard run `git status` (`core.fsmonitor`), and `git worktree remove` can run a hook. Use the gateway function of ticket 05.
 
 ## Context
 
@@ -43,6 +47,7 @@ A `worktree_remove` job is the only code that removes a worktree folder. Just be
    - `remove_keeps_a_branch_that_is_not_merged`.
    - `queue_remove_refuses_an_active_orphaned_or_reserved_row`.
    - `failed_remove_keeps_the_row_and_opens_1_needs_you_item`.
+   - `remove_runs_no_hook_or_program_of_the_project`: a repository with `core.fsmonitor` set in its config to a script that writes a marker file. The remove ends `failed` with the key in its reason, the tree stays, and the marker does not exist.
 2. Write the code. Run the Check. Commit.
 
 ## Constraints

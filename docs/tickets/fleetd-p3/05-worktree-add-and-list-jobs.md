@@ -19,6 +19,10 @@ A `worktree_add` job makes 1 worktree outside each pass and each transaction. A 
 - **RR-10** (the third view): the `worktree_list` job, with prunable and locked entries.
 - **FM-12** (kept): `git worktree add` and `list` are jobs, never work inside a pass.
 - The time limit of a `rescue` job (Q25).
+- The fleetd git rule (review F4 of T-607). This job runs git with the rights of fleetd and with no sandbox. So git must start no hook and no program of the project. Each git command of the job:
+  - runs with `-c core.hooksPath=/dev/null`, `-c core.fsmonitor=false`, `-c commit.gpgSign=false` and `-c tag.gpgSign=false`, and with `GIT_TERMINAL_PROMPT=0`, `GIT_EDITOR=true` and `GIT_SEQUENCE_EDITOR=true` in its environment;
+  - first reads `git config --list --show-origin`. A key that starts a program and comes from the repository or the worktree config (not from the global or system config of the user) stops the job: it ends `failed` with the key in its reason, and changes nothing. The keys are `core.fsmonitor`, `core.sshCommand`, `core.askPass`, `core.editor`, `sequence.editor`, `credential.helper`, `gpg.program`, `diff.external`, and each `filter.<name>.clean`, `filter.<name>.smudge`, `filter.<name>.process`, `merge.<name>.driver` and `diff.<name>.textconv`.
+  - For this ticket: `git worktree add` runs the `post-checkout` hook and a checkout filter, and `git status` of `worktree_list` runs `core.fsmonitor`. Write the rule in `adapters/git.rs` (`CliWorktreeGit`) as 1 function that each git call of the gateway uses, so tickets 06 and 07 get it with no new code.
 
 ## Context
 
@@ -52,6 +56,7 @@ A `worktree_add` job makes 1 worktree outside each pass and each transaction. A 
    - `run_now_ends_a_job_whose_process_is_gone_as_abandoned`.
    - `second_git_writing_job_of_1_repo_waits_for_the_first`.
    - `rescue_job_has_the_time_limit_of_job_limit_s_rescue`.
+   - `worktree_jobs_run_no_hook_or_program_of_the_project`: a repository with a `post-checkout` hook that writes a marker file, and a test with `core.fsmonitor` set in the repository config to a script that writes a second marker. The `worktree_add` job ends `failed` with `core.fsmonitor` in its reason; with the key removed it passes. The `worktree_list` job runs. No marker exists after each job.
 2. Write the code. Run the Check. Commit.
 
 ## Constraints
