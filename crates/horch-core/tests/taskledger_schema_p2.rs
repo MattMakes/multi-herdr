@@ -92,11 +92,13 @@ fn columns(conn: &Connection, table: &str) -> Vec<String> {
         .unwrap()
 }
 
-/// `migrate` on the file at `path`, as `Store::open` runs it.
+/// The migration of the file at `path` up to the Phase 2 step, with foreign
+/// keys on as `Store::open` sets them. A later step does not change what
+/// these tests see.
 fn migrate(path: &Path) -> Connection {
     let mut conn = Connection::open(path).unwrap();
     conn.pragma_update(None, "foreign_keys", true).unwrap();
-    schema::migrate(&mut conn).unwrap();
+    schema::migrate_to(&mut conn, schema::PHASE_2_VERSION).unwrap();
     conn
 }
 
@@ -145,7 +147,7 @@ fn wait_due_at(conn: &Connection) -> BTreeMap<(String, String), Option<i64>> {
 #[test]
 fn phase2_migration_adds_leases_and_questions() {
     let (_dir, conn) = migrated();
-    assert_eq!(user_version(&conn), schema::VERSION);
+    assert_eq!(user_version(&conn), schema::PHASE_2_VERSION);
 
     assert_eq!(
         columns(&conn, "leases"),
@@ -324,7 +326,7 @@ fn newer_schema_is_refused_and_backup_precedes_migration() {
 
     // The backup holds the Phase 1 file as it was before the step.
     let conn = migrate(&path);
-    assert_eq!(user_version(&conn), schema::VERSION);
+    assert_eq!(user_version(&conn), schema::PHASE_2_VERSION);
     let backups = schema::backups_in(dir.path());
     assert_eq!(backups.len(), 1);
     let name = backups[0]
