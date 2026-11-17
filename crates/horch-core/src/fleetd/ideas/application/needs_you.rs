@@ -11,25 +11,11 @@ use crate::fleetd::ideas::adapters::sqlite as store;
 use crate::fleetd::ideas::domain::needs_you::{Item, State, Write};
 use crate::taskledger::util;
 
-/// Write the open item of `key`. An open item gets the new text; a
+/// Write the open item of `w.key`. An open item gets the new text; a
 /// `resolved` or `superseded` item opens again.
-pub fn open_item(
-    tx: &Transaction<'_>,
-    key: &str,
-    kind: &str,
-    entity: &str,
-    entity_id: &str,
-    text: &str,
-) -> Result<()> {
-    let w = Write {
-        key,
-        kind,
-        entity,
-        entity_id,
-        text,
-    };
-    let old = store::get(tx, key)?;
-    let Some(new) = Item::written(old.as_ref(), &w, &util::now()) else {
+pub fn open_item(tx: &Transaction<'_>, w: &Write<'_>) -> Result<()> {
+    let old = store::get(tx, w.key)?;
+    let Some(new) = Item::written(old.as_ref(), w, &util::now()) else {
         return Ok(());
     };
     store::put(tx, &new)?;
@@ -93,7 +79,16 @@ mod tests {
     fn write(store: &mut Store, key: &str, text: &str) {
         let (kind, id) = key.split_once(':').unwrap();
         store
-            .immediate(|tx| open_item(tx, key, kind, "task", id, text))
+            .immediate(|tx| {
+                let w = Write {
+                    key,
+                    kind,
+                    entity: "task",
+                    entity_id: id,
+                    text,
+                };
+                open_item(tx, &w)
+            })
             .unwrap();
     }
 

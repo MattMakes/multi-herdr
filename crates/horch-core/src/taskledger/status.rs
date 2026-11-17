@@ -1061,6 +1061,7 @@ mod needs_you_tests {
 
     use super::*;
     use crate::fleetd::ideas::application::needs_you;
+    use crate::fleetd::ideas::domain::needs_you::Write;
     use crate::taskledger::runs::{self, NewRun};
     use crate::taskledger::Store;
 
@@ -1084,19 +1085,23 @@ mod needs_you_tests {
             .immediate(|tx| {
                 needs_you::open_item(
                     tx,
-                    "illegal_transition:T-3",
-                    "illegal_transition",
-                    "task",
-                    "T-3",
-                    "T-3 asked done -> running",
+                    &Write {
+                        key: "illegal_transition:T-3",
+                        kind: "illegal_transition",
+                        entity: "task",
+                        entity_id: "T-3",
+                        text: "T-3 asked done -> running",
+                    },
                 )?;
                 needs_you::open_item(
                     tx,
-                    "job_abandoned:J-1",
-                    "job_abandoned",
-                    "job",
-                    "J-1",
-                    "J-1 ended abandoned 3 times",
+                    &Write {
+                        key: "job_abandoned:J-1",
+                        kind: "job_abandoned",
+                        entity: "job",
+                        entity_id: "J-1",
+                        text: "J-1 ended abandoned 3 times",
+                    },
                 )?;
                 needs_you::resolve(tx, "job_abandoned:J-1")
             })
