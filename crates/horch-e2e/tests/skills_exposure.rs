@@ -482,11 +482,18 @@ fn operator_world(test: &str, name: &str, agent: &str, model: &str) -> Harness {
     } else {
         ""
     };
+    // `--check` requires a worker persona to name a fallback in another pool.
+    let fallback = if agent == "claude" {
+        "codex-sol"
+    } else {
+        "opus"
+    };
     std::fs::write(
         h.home.join(format!(".config/horch/teammates/{name}.md")),
         format!(
             "---\nname: {name}\nbrief_description: Operator skills probe.\nbase: fleet-worker\n\
-             agent: {agent}\nmodel: {model}\ncompact_at: 300000\nskills: [tdd]\n{deny}\
+             agent: {agent}\nmodel: {model}\nfallbacks: [{fallback}]\ncompact_at: 300000\n\
+             skills: [tdd]\n{deny}\
              operator_skills:\n  dir: ~/.agents/skills\n  names: [test-modernizer]\n---\nProbe.\n"
         ),
     )
