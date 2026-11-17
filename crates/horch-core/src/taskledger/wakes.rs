@@ -10,9 +10,10 @@
 use anyhow::Result;
 use rusqlite::Connection;
 
-use super::model::OutboxEvent;
+use super::model::{OutboxEvent, TaskStatus, WorkerKind, WorkerStatus};
 use super::outbox::{self, Wake};
 use super::runs::Run;
+use super::sql_words;
 use super::status;
 use super::tasks;
 use super::util;
@@ -22,7 +23,17 @@ use super::workers::{self, Preclaim, Worker};
 /// The settled wake line of `run`, or `None` while the run is not settled
 /// (C6: [`status::unsettled`], the rule `run close` uses).
 pub fn settled_line(conn: &Connection, run: &Run) -> Result<Option<String>> {
-    if !status::unsettled(conn, &run.run_id)?.is_empty() {
+    // 1 count query first: a run with an open task is not settled, and the
+    // pass reads no row of it (PL-5).
+    let open: i64 = conn.query_row(
+        &format!(
+            "SELECT count(*) FROM tasks WHERE run_id = ?1 AND status NOT IN ({ended})",
+            ended = sql_words::list(sql_words::TASKS_ENDED)
+        ),
+        [&run.run_id],
+        |r| r.get(0),
+    )?;
+    if open > 0 || !status::unsettled(conn, &run.run_id)?.is_empty() {
         return Ok(None);
     }
     Ok(Some(format!(
@@ -70,6 +81,29 @@ pub fn dependents_wake(t: &tasks::Task, dependents: &[tasks::Task]) -> Option<Wa
 }
 
 fn stuck_line(conn: &Connection, run: &Run) -> Option<String> {
+    // 1 count query first: a run with no open task or with a working
+    // worker is not stuck, and the pass reads no row of it (PL-5).
+    let may_be_stuck: bool = conn
+        .query_row(
+            &format!(
+                "SELECT EXISTS (SELECT 1 FROM tasks WHERE run_id = ?1 AND status IN ({open}))
+                    AND NOT EXISTS (SELECT 1 FROM workers
+                        WHERE run_id = ?1 AND kind = {worker} AND status = {working})",
+                open = sql_words::list(&[
+                    TaskStatus::Queued,
+                    TaskStatus::Running,
+                    TaskStatus::Landing
+                ]),
+                worker = sql_words::word(WorkerKind::Worker),
+                working = sql_words::word(WorkerStatus::Working),
+            ),
+            [&run.run_id],
+            |r| r.get(0),
+        )
+        .ok()?;
+    if !may_be_stuck {
+        return None;
+    }
     let open: Vec<tasks::Task> = tasks::of_run(conn, &run.run_id)
         .ok()?
         .into_iter()
@@ -264,6 +298,21 @@ pub fn lost_wakes(conn: &Connection, run: &Run, now: &str) -> Result<Vec<Wake>> 
     // I-03: the settled wake, 1 row per settled board state.
     let mut out: Vec<Wake> = settled_wake(conn, run)?.into_iter().collect();
     // I-04: a review round in while its author still waits.
+    out.extend(reviews_in_wakes(conn, run, now)?);
+    // I-05, I-06: a cancelled or parked task that open tasks wait for.
+    for t in watchdog::stalled_blockers(conn, run)? {
+        out.extend(blocker_wake(conn, &t.task_id)?);
+    }
+    // I-07: a task the attempt limit holds for the operator.
+    for t in watchdog::attempt_held(conn, run)? {
+        out.extend(held_wake(conn, &tasks::get(conn, &t.task_id)?));
+    }
+    Ok(out)
+}
+
+/// The lost wakes I-04 of `run` at `now` ([`lost_wakes`]).
+pub fn reviews_in_wakes(conn: &Connection, run: &Run, now: &str) -> Result<Vec<Wake>> {
+    let mut out = Vec::new();
     for r in watchdog::reviews_waiting(conn, run, now)? {
         let role = r
             .author
@@ -272,16 +321,14 @@ pub fn lost_wakes(conn: &Connection, run: &Run, now: &str) -> Result<Vec<Wake>> 
             .unwrap_or_else(|| r.author.label().to_string());
         out.push(reviews_in_wake(conn, &r.parent, &role)?);
     }
-    // I-05, I-06: a cancelled or parked task that open tasks wait for.
-    for t in watchdog::stalled_blockers(conn, run)? {
-        let t = tasks::get(conn, &t.task_id)?;
-        out.extend(dependents_wake(&t, &tasks::dependents(conn, &t.task_id)?));
-    }
-    // I-07: a task the attempt limit holds for the operator.
-    for t in watchdog::attempt_held(conn, run)? {
-        out.extend(held_wake(conn, &tasks::get(conn, &t.task_id)?));
-    }
     Ok(out)
+}
+
+/// The lost wake I-05 or I-06 of the stalled blocker `task_id`
+/// ([`lost_wakes`]).
+pub fn blocker_wake(conn: &Connection, task_id: &str) -> Result<Option<Wake>> {
+    let t = tasks::get(conn, task_id)?;
+    Ok(dependents_wake(&t, &tasks::dependents(conn, task_id)?))
 }
 
 /// The wakes of the pre-claim sweep `swept` of `run` (#190): 1 question

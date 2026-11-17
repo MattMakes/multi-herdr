@@ -32,7 +32,8 @@ use rusqlite::{params, Connection};
 use serde::Serialize;
 
 use super::model::{
-    Actor, EventKind, OutboxEvent, ProgressSource, RunStatus, Verdict, WorkerStatus,
+    Actor, EventKind, HeldReason, OutboxEvent, ProgressSource, RunStatus, TaskStatus, Verdict,
+    WorkerKind, WorkerStatus,
 };
 use super::outbox::{self, Wake};
 use super::runs::Run;
@@ -232,16 +233,59 @@ fn check_run_at(
 pub fn due_workers(conn: &Connection, run: &Run, force: bool, now: &str) -> Result<Vec<Worker>> {
     let mut due = Vec::new();
     for w in workers::of_run(conn, &run.run_id)? {
-        if w.kind != "worker" || w.status != "working" {
-            continue;
-        }
-        let p = prev(conn, &w.worker_id)?;
-        let elapsed = util::seconds_between(&since(&w, p.as_ref(), now), now).unwrap_or(0);
-        if force || elapsed >= run.check_every_s {
+        if is_due(conn, run, &w, force, now)? {
             due.push(w);
         }
     }
     Ok(due)
+}
+
+/// Whether `w` is a working worker of `run` whose check is due at `now`.
+/// `force` makes each working worker due.
+pub fn is_due(conn: &Connection, run: &Run, w: &Worker, force: bool, now: &str) -> Result<bool> {
+    if w.kind != "worker" || w.status != "working" {
+        return Ok(false);
+    }
+    let p = prev(conn, &w.worker_id)?;
+    let elapsed = util::seconds_between(&since(w, p.as_ref(), now), now).unwrap_or(0);
+    Ok(force || elapsed >= run.check_every_s)
+}
+
+/// 1 page of a run duty of the fleetd pass (PL-5): at most `limit` rows of
+/// `select`, in key order, from the first key after `after`; past the last
+/// key it wraps to the first key, and stops at `after`. `select` has `?1`
+/// for the key bound, `?2` for the limit, and `{cmp}`, which the page makes
+/// `>` or `<=`.
+pub fn page<T>(
+    conn: &Connection,
+    select: &str,
+    after: Option<&str>,
+    limit: usize,
+    row: fn(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+) -> Result<Vec<T>> {
+    let query = |cmp: &str, bound: &str, n: usize| -> Result<Vec<T>> {
+        let n = i64::try_from(n).unwrap_or(i64::MAX);
+        let mut stmt = conn.prepare(&select.replace("{cmp}", cmp))?;
+        let rows = stmt
+            .query_map(params![bound, n], row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    };
+    let mut rows = query(">", after.unwrap_or(""), limit)?;
+    if let Some(after) = after {
+        if rows.len() < limit {
+            rows.extend(query("<=", after, limit - rows.len())?);
+        }
+    }
+    Ok(rows)
+}
+
+/// The SQL test of a row of a run that is active.
+fn in_active_run(column: &str) -> String {
+    format!(
+        "{column} IN (SELECT run_id FROM runs WHERE status = {active})",
+        active = word(RunStatus::Active)
+    )
 }
 
 /// What 1 check of 1 worker knows, for the judge and the record.
@@ -833,6 +877,21 @@ pub fn startable_rewake(
     now: &str,
     seen: &mut Option<Sighting>,
 ) -> Result<Option<Wake>> {
+    // 1 count query first: only a queued task with no hold can start, so a
+    // run without one reads no row (PL-5).
+    let queued: i64 = conn.query_row(
+        &format!(
+            "SELECT count(*) FROM tasks
+              WHERE run_id = ?1 AND status = {queued} AND held_reason IS NULL",
+            queued = word(TaskStatus::Queued)
+        ),
+        [&run.run_id],
+        |r| r.get(0),
+    )?;
+    if queued == 0 {
+        *seen = None;
+        return Ok(None);
+    }
     let plan: Vec<tasks::PersonaPlan> = tasks::plan_workers(conn, &run.run_id)?
         .into_iter()
         .filter(|p| p.spawn > 0)
@@ -914,27 +973,33 @@ const NO_CLAIM: &str = "No claim:";
 pub fn unclaimed_spawns(conn: &Connection, run: &Run, now: &str) -> Result<Vec<Unclaimed>> {
     let mut out = Vec::new();
     for w in workers::of_run(conn, &run.run_id)? {
-        if w.kind != "worker"
-            || !matches!(w.status.as_str(), "spawning" | "starting" | "claiming")
-            || workers::is_stale(&w, run.heartbeat_stale_s, now)
-        {
-            continue;
-        }
-        let waited_s = w
-            .spawned_at
-            .as_deref()
-            .or(w.started_at.as_deref())
-            .and_then(|t| util::seconds_between(t, now))
-            .unwrap_or(0);
-        if waited_s < UNCLAIMED_AFTER_S || flagged(conn, &w.worker_id)? {
-            continue;
-        }
-        out.push(Unclaimed {
-            worker: w,
-            waited_s,
-        });
+        out.extend(unclaimed(conn, run, w, now)?);
     }
     Ok(out)
+}
+
+/// `w` when it is a spawn of `run` with no claim that [`unclaimed_spawns`]
+/// gives at `now`.
+pub fn unclaimed(conn: &Connection, run: &Run, w: Worker, now: &str) -> Result<Option<Unclaimed>> {
+    if w.kind != "worker"
+        || !matches!(w.status.as_str(), "spawning" | "starting" | "claiming")
+        || workers::is_stale(&w, run.heartbeat_stale_s, now)
+    {
+        return Ok(None);
+    }
+    let waited_s = w
+        .spawned_at
+        .as_deref()
+        .or(w.started_at.as_deref())
+        .and_then(|t| util::seconds_between(t, now))
+        .unwrap_or(0);
+    if waited_s < UNCLAIMED_AFTER_S || flagged(conn, &w.worker_id)? {
+        return Ok(None);
+    }
+    Ok(Some(Unclaimed {
+        worker: w,
+        waited_s,
+    }))
 }
 
 /// Whether the watchdog flagged worker `worker_id` for no claim before.
@@ -1001,12 +1066,36 @@ pub const REVIEWS_IN_AFTER_S: i64 = 60;
 pub fn stalled_blockers(conn: &Connection, run: &Run) -> Result<Vec<tasks::Task>> {
     let mut out = Vec::new();
     for t in tasks::of_run(conn, &run.run_id)? {
-        let blocker = t.status == super::model::TaskStatus::Cancelled.as_str() || t.is_parked();
-        if blocker && !tasks::dependents(conn, &t.task_id)?.is_empty() {
+        if is_stalled_blocker(conn, &t)? {
             out.push(t);
         }
     }
     Ok(out)
+}
+
+/// Whether `t` is a task that [`stalled_blockers`] gives.
+pub fn is_stalled_blocker(conn: &Connection, t: &tasks::Task) -> Result<bool> {
+    let blocker = t.status == TaskStatus::Cancelled.as_str() || t.is_parked();
+    Ok(blocker && !tasks::dependents(conn, &t.task_id)?.is_empty())
+}
+
+/// 1 [`page`] of the tasks of the active runs that may be stalled
+/// blockers: cancelled or parked unlanded. [`is_stalled_blocker`] tells.
+pub fn blocker_page(
+    conn: &Connection,
+    after: Option<&str>,
+    limit: usize,
+) -> Result<Vec<tasks::Task>> {
+    let select = format!(
+        "SELECT * FROM tasks WHERE (status = {cancelled}
+             OR (status = {queued} AND held_reason = {unlanded}))
+           AND {active} AND task_id {{cmp}} ?1 ORDER BY task_id LIMIT ?2",
+        cancelled = word(TaskStatus::Cancelled),
+        queued = word(TaskStatus::Queued),
+        unlanded = word(HeldReason::Unlanded),
+        active = in_active_run("run_id"),
+    );
+    page(conn, &select, after, limit, tasks::Task::from_row)
 }
 
 /// The state of 1 blocker that its wake answers, hashed into the wake key:
@@ -1029,11 +1118,40 @@ pub fn attempt_held(conn: &Connection, run: &Run) -> Result<Vec<tasks::Task>> {
     Ok(tasks::of_run(conn, &run.run_id)?
         .into_iter()
         .filter(|t| {
-            t.status == super::model::TaskStatus::Queued.as_str()
-                && t.held_reason.is_some()
-                && !t.is_parked()
+            t.status == TaskStatus::Queued.as_str() && t.held_reason.is_some() && !t.is_parked()
         })
         .collect())
+}
+
+/// 1 [`page`] of the tasks of the active runs that [`attempt_held`] gives.
+pub fn held_page(conn: &Connection, after: Option<&str>, limit: usize) -> Result<Vec<tasks::Task>> {
+    let select = format!(
+        "SELECT * FROM tasks WHERE status = {queued} AND held_reason IS NOT NULL
+           AND held_reason != {unlanded}
+           AND {active} AND task_id {{cmp}} ?1 ORDER BY task_id LIMIT ?2",
+        queued = word(TaskStatus::Queued),
+        unlanded = word(HeldReason::Unlanded),
+        active = in_active_run("run_id"),
+    );
+    page(conn, &select, after, limit, tasks::Task::from_row)
+}
+
+/// 1 [`page`] of the workers (kind `worker`) of the active runs with a
+/// status in `statuses`.
+pub fn worker_page(
+    conn: &Connection,
+    statuses: &[WorkerStatus],
+    after: Option<&str>,
+    limit: usize,
+) -> Result<Vec<Worker>> {
+    let select = format!(
+        "SELECT * FROM workers WHERE kind = {worker} AND status IN ({statuses})
+           AND {active} AND worker_id {{cmp}} ?1 ORDER BY worker_id LIMIT ?2",
+        worker = word(WorkerKind::Worker),
+        statuses = sql_words::list(statuses),
+        active = in_active_run("run_id"),
+    );
+    page(conn, &select, after, limit, Worker::from_row)
 }
 
 /// The state of an attempt-held task that its question answers: an

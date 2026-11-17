@@ -27,6 +27,15 @@
 //! effect: the respawn from the attempt in `launching`, the stop of a
 //! reaped worker from `mark_orphans`, and the wake from the outbox.
 //!
+//! Each duty that reads rows has a work budget (PL-5, A32): it reads 1
+//! page of at most `pass_budget` rows from its cursor in `pass_cursors`
+//! ([`WORKER_CHECKS`], [`PRECLAIM`], [`BLOCKER_TASKS`], [`HELD_TASKS`]),
+//! and the next pass goes on after the page. The cursor is saved in the
+//! transaction of part 2. A duty that needs the whole run (the stuck, the
+//! startable and the settled wake) asks 1 count query first, and reads the
+//! rows only when the count says that the wake may be due. No duty starts
+//! after the time budget of the pass.
+//!
 //! The stall reap keeps the numbers of today (`check_every_s` and
 //! `stall_rounds` of the run) until Phase 2 replaces it with leases.
 
@@ -37,9 +46,13 @@ use std::path::PathBuf;
 use anyhow::Result;
 use rusqlite::{Connection, Transaction};
 
+use crate::fleetd::fleet_runtime::adapters::cursors_store;
 use crate::fleetd::fleet_runtime::adapters::effects::{self, LaunchRecord};
 use crate::fleetd::fleet_runtime::application::ledger::{created, transition, Cause};
-use crate::fleetd::fleet_runtime::application::pass::{ActCtx, DutyCtx, DutyReport, RunDuties};
+use crate::fleetd::fleet_runtime::application::pass::{
+    ActCtx, DutyBudget, DutyCtx, DutyReport, RunDuties,
+};
+use crate::fleetd::fleet_runtime::domain::budget::{Cursor, PassBudget};
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 use crate::fleetd::ideas::application::needs_you::NeedsYouList;
 use crate::fleetd::task_execution::adapters::sqlite as attempts_store;
@@ -47,18 +60,54 @@ use crate::fleetd::task_execution::application::commands;
 use crate::fleetd::task_execution::domain::task::{
     AttemptRow, AttemptState, Recorded, RowRef, Stop,
 };
-use crate::taskledger::model::Actor;
+use crate::taskledger::model::{Actor, WorkerStatus};
 use crate::taskledger::orchestrator::{self, Holder, Outcome, Probe, Respawn};
 use crate::taskledger::runs::{self, Run};
 use crate::taskledger::watchdog::{self, Checked, Observation, Observer, Sighting};
 use crate::taskledger::workers::{self, Worker};
-use crate::taskledger::{outbox, util, wakes};
+use crate::taskledger::{outbox, tasks, util, wakes};
 
 /// The outcome of the attempt of a worker that the stall reap ends.
 pub const STALLED: &str = "stalled";
 
 /// The outcome of an orchestrator attempt whose agent is gone.
 const GONE: &str = "gone";
+
+/// The cursor of the checks of the working workers in `pass_cursors`.
+pub const WORKER_CHECKS: &str = "duty_worker_checks";
+/// The cursor of the pre-claim sweep and the flag of an unclaimed spawn.
+pub const PRECLAIM: &str = "duty_preclaim";
+/// The cursor of the wakes of cancelled or parked blockers (I-05, I-06).
+pub const BLOCKER_TASKS: &str = "duty_blocker_tasks";
+/// The cursor of the questions of attempt-held tasks (I-07).
+pub const HELD_TASKS: &str = "duty_held_tasks";
+
+/// The statuses of a worker before its claim.
+const BEFORE_CLAIM: [WorkerStatus; 3] = [
+    WorkerStatus::Spawning,
+    WorkerStatus::Starting,
+    WorkerStatus::Claiming,
+];
+
+/// 1 page of worker rows that part 1 read, and the cursor after it.
+struct Page {
+    workers: Vec<Worker>,
+    cursor: Cursor,
+}
+
+impl Page {
+    /// The ids of the workers of the page in `run`.
+    fn of_run<'p>(&'p self, run: &'p Run) -> impl Iterator<Item = &'p str> + 'p {
+        self.workers
+            .iter()
+            .filter(move |w| w.run_id.as_deref() == Some(run.run_id.as_str()))
+            .map(|w| w.worker_id.as_str())
+    }
+
+    fn keys(&self) -> Vec<String> {
+        self.workers.iter().map(|w| w.worker_id.clone()).collect()
+    }
+}
 
 /// The effects of the duties outside the ledger. The composition root of
 /// `horch fleetd` gives them; a test gives fakes.
@@ -92,6 +141,8 @@ struct State {
     workspaces: BTreeMap<String, Seen>,
     /// The board that each run showed with startable tasks, and since when.
     sightings: BTreeMap<String, Option<Sighting>>,
+    /// The page of [`WORKER_CHECKS`] and of [`PRECLAIM`] that part 1 read.
+    pages: BTreeMap<&'static str, Page>,
 }
 
 /// The orchestrator probe of part 2: the facts of part 1.
@@ -127,6 +178,8 @@ pub struct WatchdogDuties<'a> {
     force: bool,
     /// The checks of the last pass, with the run of each.
     checked: RefCell<Vec<(String, Checked)>>,
+    /// The keys of the rows that each paged duty read in the last pass.
+    rows: RefCell<BTreeMap<&'static str, Vec<String>>>,
 }
 
 impl<'a> WatchdogDuties<'a> {
@@ -144,6 +197,7 @@ impl<'a> WatchdogDuties<'a> {
             state: RefCell::new(State::default()),
             force: false,
             checked: RefCell::new(Vec::new()),
+            rows: RefCell::new(BTreeMap::new()),
         }
     }
 
@@ -156,6 +210,42 @@ impl<'a> WatchdogDuties<'a> {
     /// The checks of the last pass, with the run id of each.
     pub fn take_checked(&self) -> Vec<(String, Checked)> {
         self.checked.take()
+    }
+
+    /// The keys of the rows that each paged duty read in the last pass,
+    /// by the kind of its cursor.
+    pub fn take_rows(&self) -> BTreeMap<&'static str, Vec<String>> {
+        self.rows.take()
+    }
+
+    /// Read the page of the worker duty `kind` from its cursor, and
+    /// observe each worker of it that `observe` names.
+    fn read_page(
+        &self,
+        conn: &Connection,
+        kind: &'static str,
+        rows: PassBudget,
+        observe: &dyn Fn(&Worker) -> Result<bool>,
+        state: &mut State,
+    ) -> Result<()> {
+        let now = util::now();
+        let mut cursor = cursors_store::load(conn, kind, &now)?;
+        let statuses: &[WorkerStatus] = if kind == WORKER_CHECKS {
+            &[WorkerStatus::Working]
+        } else {
+            &BEFORE_CLAIM
+        };
+        let workers =
+            watchdog::worker_page(conn, statuses, cursor.after_key.as_deref(), rows.rows())?;
+        for w in &workers {
+            cursor.step(&w.worker_id, &now);
+            if observe(w)? {
+                let o = self.observer.observe(w);
+                state.observed.insert(w.worker_id.clone(), o);
+            }
+        }
+        state.pages.insert(kind, Page { workers, cursor });
+        Ok(())
     }
 }
 
@@ -185,21 +275,38 @@ fn orchestrator_workspace(conn: &Connection, run: &Run) -> Result<Option<String>
 }
 
 impl RunDuties for WatchdogDuties<'_> {
-    fn observe(&self, conn: &Connection) -> Result<()> {
+    fn observe(&self, conn: &Connection, budget: DutyBudget<'_>) -> Result<()> {
         let mut state = self.state.borrow_mut();
+        let state = &mut *state;
         state.observed.clear();
         state.workspaces.clear();
+        state.pages.clear();
         let runs = watchdog::active_runs(conn)?;
         let active: BTreeSet<String> = runs.iter().map(|r| r.run_id.clone()).collect();
         state.sightings.retain(|run, _| active.contains(run));
+        let run_of = |w: &Worker| {
+            runs.iter()
+                .find(|r| w.run_id.as_deref() == Some(r.run_id.as_str()))
+        };
+        let now = util::now();
+        if !(budget.time_up)() {
+            // `horch ledger watch --once --force` checks each working worker.
+            let rows = if self.force {
+                PassBudget::new(u64::MAX)
+            } else {
+                budget.rows
+            };
+            let due = |w: &Worker| match run_of(w) {
+                Some(run) => watchdog::is_due(conn, run, w, self.force, &now),
+                None => Ok(false),
+            };
+            self.read_page(conn, WORKER_CHECKS, rows, &due, state)?;
+        }
+        if !(budget.time_up)() {
+            let waits = |w: &Worker| Ok(waits_for_claim(w, &now));
+            self.read_page(conn, PRECLAIM, budget.rows, &waits, state)?;
+        }
         for run in &runs {
-            let now = util::now();
-            let waiting = waiting_preclaim(conn, run, &now)?;
-            let due = watchdog::due_workers(conn, run, self.force, &now)?;
-            for w in due.iter().chain(&waiting) {
-                let o = self.observer.observe(w);
-                state.observed.insert(w.worker_id.clone(), o);
-            }
             if let Some(ws) = orchestrator_workspace(conn, run)? {
                 let seen = Seen {
                     holder: self.probe.holder(&ws),
@@ -213,28 +320,86 @@ impl RunDuties for WatchdogDuties<'_> {
 
     fn run(&self, tx: &Transaction<'_>, ctx: &DutyCtx<'_>) -> Result<Vec<Stop>> {
         let mut state = self.state.borrow_mut();
+        let state = &mut *state;
         let mut reaped = BTreeSet::new();
         let mut checked = self.checked.borrow_mut();
         checked.clear();
-        for run in watchdog::active_runs(tx)? {
-            let now = util::now();
+        let mut rows = self.rows.borrow_mut();
+        rows.clear();
+        let time_up = ctx.budget.time_up;
+        let runs = watchdog::active_runs(tx)?;
+        let now = util::now();
+        for run in &runs {
+            if time_up() {
+                break;
+            }
             if let Some(workspace) = run.workspace_id.as_deref() {
                 workers::sync_questions(tx, &self.state_root, workspace)?;
             }
-            let (r, c) = check_workers(tx, &run, &state.observed, &now, self.force)?;
-            reaped.extend(r);
-            checked.extend(c.into_iter().map(|c| (run.run_id.clone(), c)));
-            reaped.extend(sweep_preclaim(tx, &run, &state.observed)?);
-            write(tx, &run, wakes::stuck_wake(tx, &run)?)?;
-            flag_unclaimed(tx, &run, &state.observed, &now)?;
+        }
+        // A page that part 1 read is done whole, or not at all: its cursor
+        // moves only with it.
+        if let Some(page) = state.pages.remove(WORKER_CHECKS).filter(|_| !time_up()) {
+            for run in &runs {
+                let ids = page.of_run(run);
+                let (r, c) = check_workers(tx, run, ids, &state.observed, &now, self.force)?;
+                reaped.extend(r);
+                checked.extend(c.into_iter().map(|c| (run.run_id.clone(), c)));
+            }
+            cursors_store::save(tx, WORKER_CHECKS, &page.cursor)?;
+            rows.insert(WORKER_CHECKS, page.keys());
+        }
+        if let Some(page) = state.pages.remove(PRECLAIM).filter(|_| !time_up()) {
+            for run in &runs {
+                let ids: Vec<&str> = page.of_run(run).collect();
+                reaped.extend(sweep_preclaim(tx, run, &ids, &state.observed)?);
+                flag_unclaimed(tx, run, &ids, &state.observed, &now)?;
+            }
+            cursors_store::save(tx, PRECLAIM, &page.cursor)?;
+            rows.insert(PRECLAIM, page.keys());
+        }
+        for run in &runs {
+            if time_up() {
+                break;
+            }
+            write(tx, run, wakes::stuck_wake(tx, run)?)?;
             let seen = state.sightings.entry(run.run_id.clone()).or_default();
-            write(tx, &run, watchdog::startable_rewake(tx, &run, &now, seen)?)?;
-            write(tx, &run, wakes::lost_wakes(tx, &run, &now)?)?;
+            write(tx, run, watchdog::startable_rewake(tx, run, &now, seen)?)?;
+            // The lost wakes (TRF-51): I-03 and I-04 here, I-05 to I-07
+            // from their pages.
+            write(tx, run, wakes::settled_wake(tx, run)?)?;
+            write(tx, run, wakes::reviews_in_wakes(tx, run, &now)?)?;
+        }
+        if !time_up() {
+            let page = task_page(tx, BLOCKER_TASKS, ctx.budget.rows, watchdog::blocker_page)?;
+            for t in &page {
+                let Some(run) = runs.iter().find(|r| r.run_id == t.run_id) else {
+                    continue;
+                };
+                if watchdog::is_stalled_blocker(tx, t)? {
+                    write(tx, run, wakes::blocker_wake(tx, &t.task_id)?)?;
+                }
+            }
+            rows.insert(BLOCKER_TASKS, task_keys(&page));
+        }
+        if !time_up() {
+            let page = task_page(tx, HELD_TASKS, ctx.budget.rows, watchdog::held_page)?;
+            for t in &page {
+                if let Some(run) = runs.iter().find(|r| r.run_id == t.run_id) {
+                    write(tx, run, wakes::held_wake(tx, t))?;
+                }
+            }
+            rows.insert(HELD_TASKS, task_keys(&page));
+        }
+        for run in &runs {
+            if time_up() {
+                break;
+            }
             let facts = Facts {
                 seen: &state.workspaces,
                 live: self.probe,
             };
-            check_orchestrator(tx, ctx, &run, &now, &facts)?;
+            check_orchestrator(tx, ctx, run, &now, &facts)?;
         }
         reaped_stops(tx, &reaped, ctx)
     }
@@ -338,22 +503,26 @@ fn respawn_of(conn: &Connection, run: &Run, worker: &str, number: i64) -> Result
     })
 }
 
-/// Check each due worker of `run` that part 1 observed. A worker past its
-/// stall rounds is reaped; a first stall or a suspect gets its wake.
-/// Returns the reaped workers.
-fn check_workers(
+/// Check each worker `ids` of the page of `run` that is due and that part
+/// 1 observed. A worker past its stall rounds is reaped; a first stall or a
+/// suspect gets its wake. Returns the reaped workers.
+fn check_workers<'i>(
     tx: &Transaction<'_>,
     run: &Run,
+    ids: impl Iterator<Item = &'i str>,
     observed: &BTreeMap<String, Observation>,
     now: &str,
     force: bool,
 ) -> Result<(Vec<String>, Vec<Checked>)> {
     let mut reaped = Vec::new();
     let mut checked = Vec::new();
-    for w in watchdog::due_workers(tx, run, force, now)? {
+    for w in fresh(tx, ids)? {
         let Some(o) = observed.get(&w.worker_id) else {
             continue;
         };
+        if !watchdog::is_due(tx, run, &w, force, now)? {
+            continue;
+        }
         let c = watchdog::check_observed(tx, run, &w, o, now)?;
         let wake = if c.verdict == "dead" {
             let wake = watchdog::reap_stalled(tx, &c.worker_id, &c.note)?;
@@ -412,14 +581,51 @@ fn reaped_stops(
         .collect())
 }
 
-/// Flag each spawned worker of `run` with no claim, once.
+/// The rows of the workers `ids` in `tx` now, in order. A row that is gone
+/// is left out.
+fn fresh<'i>(tx: &Connection, ids: impl IntoIterator<Item = &'i str>) -> Result<Vec<Worker>> {
+    let mut out = Vec::new();
+    for id in ids {
+        out.extend(workers::find(tx, id)?);
+    }
+    Ok(out)
+}
+
+/// The rows of the page of 1 task duty from its cursor in `pass_cursors`.
+/// The cursor moves past the page in `tx`.
+fn task_page(
+    tx: &Transaction<'_>,
+    kind: &str,
+    rows: PassBudget,
+    read: fn(&Connection, Option<&str>, usize) -> Result<Vec<tasks::Task>>,
+) -> Result<Vec<tasks::Task>> {
+    let now = util::now();
+    let mut cursor = cursors_store::load(tx, kind, &now)?;
+    let page = read(tx, cursor.after_key.as_deref(), rows.rows())?;
+    for t in &page {
+        cursor.step(&t.task_id, &now);
+    }
+    cursors_store::save(tx, kind, &cursor)?;
+    Ok(page)
+}
+
+fn task_keys(page: &[tasks::Task]) -> Vec<String> {
+    page.iter().map(|t| t.task_id.clone()).collect()
+}
+
+/// Flag each spawned worker `ids` of the page of `run` with no claim, once.
 fn flag_unclaimed(
     tx: &Transaction<'_>,
     run: &Run,
+    ids: &[&str],
     observed: &BTreeMap<String, Observation>,
     now: &str,
 ) -> Result<()> {
-    for u in watchdog::unclaimed_spawns(tx, run, now)? {
+    let mut spawns = Vec::new();
+    for w in fresh(tx, ids.iter().copied())? {
+        spawns.extend(watchdog::unclaimed(tx, run, w, now)?);
+    }
+    for u in spawns {
         let status = observed
             .get(&u.worker.worker_id)
             .and_then(|o| o.herdr_status.clone());
@@ -445,35 +651,30 @@ fn write(
     Ok(())
 }
 
-/// The pre-claim workers of `run` that wait at `now` for
+/// Whether the pre-claim worker `w` waits at `now` for
 /// [`watchdog::UNCLAIMED_AFTER_S`] or more: the flag of an unclaimed spawn
-/// and the question of the pre-claim sweep name the herdr status of their
-/// panes.
-fn waiting_preclaim(conn: &Connection, run: &Run, now: &str) -> Result<Vec<Worker>> {
-    Ok(workers::of_run(conn, &run.run_id)?
-        .into_iter()
-        .filter(|w| {
-            w.kind == "worker" && matches!(w.status.as_str(), "spawning" | "starting" | "claiming")
-        })
-        .filter(|w| {
-            w.spawned_at
-                .as_deref()
-                .or(w.started_at.as_deref())
-                .and_then(|t| util::seconds_between(t, now))
-                .is_some_and(|s| s >= watchdog::UNCLAIMED_AFTER_S)
-        })
-        .collect())
+/// and the question of the pre-claim sweep name the herdr status of its
+/// pane.
+fn waits_for_claim(w: &Worker, now: &str) -> bool {
+    w.spawned_at
+        .as_deref()
+        .or(w.started_at.as_deref())
+        .and_then(|t| util::seconds_between(t, now))
+        .is_some_and(|s| s >= watchdog::UNCLAIMED_AFTER_S)
 }
 
-/// The pre-claim sweep of `run` (#190): a row that no process stands for
+/// The pre-claim sweep of the workers `ids` of the page of `run` (#190): a
+/// row that no process stands for
 /// ends, and a worker that does not claim gets 1 question. Returns the
 /// workers that ended: their processes and panes are stopped in part 3.
 fn sweep_preclaim(
     tx: &Transaction<'_>,
     run: &Run,
+    ids: &[&str],
     observed: &BTreeMap<String, Observation>,
 ) -> Result<Vec<String>> {
-    let swept = workers::sweep_preclaim(tx, run, &workers::supervisor_alive)?;
+    let rows = fresh(tx, ids.iter().copied())?;
+    let swept = workers::sweep_preclaim_of(tx, run, rows, &workers::supervisor_alive)?;
     let status = |w: &Worker| {
         observed
             .get(&w.worker_id)
@@ -1661,5 +1862,197 @@ mod tests {
         outbox::write(&tx, &w.run.run_id, &wake).unwrap();
         tx.commit().unwrap();
         assert_eq!(parked(&w).len(), 1);
+    }
+
+    /// herdr and the transcript as [`Quiet`]; it counts each worker it
+    /// observes.
+    #[derive(Default)]
+    struct Counting(RefCell<BTreeMap<String, usize>>);
+
+    impl Observer for Counting {
+        fn observe(&self, w: &workers::Worker) -> Observation {
+            *self.0.borrow_mut().entry(w.worker_id.clone()).or_default() += 1;
+            Quiet.observe(w)
+        }
+    }
+
+    /// A big run: `working` tasks, each `running` with 1 worker that claimed
+    /// it an hour ago and 1 live attempt of this test process; `claiming`
+    /// workers that wait for a claim and are not stale; and `held` tasks
+    /// that the attempt limit holds.
+    fn seed_big_run(w: &World, working: usize, claiming: usize, held: usize) {
+        let pid = std::process::id();
+        let start = crate::procid::start_time(pid).expect("the start time of this process") as i64;
+        let now = util::now();
+        let hour = ago(3600);
+        let host = util::host_name();
+        let run = &w.run.run_id;
+        let tx = w.conn.unchecked_transaction().unwrap();
+        {
+            let mut task = tx
+                .prepare(
+                    "INSERT INTO tasks (task_id, run_id, seq, title, task_file, primary_persona,
+                         claimable_by, status, attempts, current_worker_id, held_reason,
+                         created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?1, 'tickets/big.md', 'dev', 'dev', ?4, 1, ?5, ?6, ?7, ?7)",
+                )
+                .unwrap();
+            let mut worker = tx
+                .prepare(
+                    "INSERT INTO workers (worker_id, run_id, kind, persona, host, workspace_id,
+                         agent_pid, agent_started, task_id, attempt, status, spawned_at,
+                         started_at, claimed_at, last_checkin_at, last_progress_at)
+                     VALUES (?1, ?2, 'worker', 'dev', ?3, 'w1', ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?10,
+                         ?11, ?10)",
+                )
+                .unwrap();
+            let mut attempt = tx
+                .prepare(
+                    "INSERT INTO attempts (id, task_id, worker_id, pid, pid_start, state, started_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, 'live', ?6)",
+                )
+                .unwrap();
+            for n in 1..=working {
+                let (t, wk) = (format!("B-{n:05}"), format!("BW-{n:05}"));
+                let worker_of = Some(wk.as_str());
+                let held: Option<&str> = None;
+                task.execute(params![t, run, n as i64, "running", worker_of, held, hour])
+                    .unwrap();
+                let claimed = Some(hour.as_str());
+                worker
+                    .execute(params![
+                        wk, run, host, pid, start, t, 1, "working", hour, claimed, hour
+                    ])
+                    .unwrap();
+                attempt
+                    .execute(params![format!("{t}/A1"), t, wk, pid, start, hour])
+                    .unwrap();
+            }
+            for n in 1..=claiming {
+                let wk = format!("BC-{n:05}");
+                let none: Option<&str> = None;
+                let no_attempt: Option<i64> = None;
+                worker
+                    .execute(params![
+                        wk, run, host, pid, start, none, no_attempt, "claiming", now, none, now
+                    ])
+                    .unwrap();
+            }
+            for n in 1..=held {
+                let t = format!("BH-{n:05}");
+                let seq = (working + n) as i64;
+                let none: Option<&str> = None;
+                task.execute(params![t, run, seq, "queued", none, Some("attempts"), hour])
+                    .unwrap();
+            }
+        }
+        tx.commit().unwrap();
+    }
+
+    /// PL-5, A32: each paged duty of part 2 reads at most `pass_budget` rows
+    /// in 1 pass, and the passes of 1 lap reach each row exactly 1 time, in
+    /// the order of the cursor of the duty.
+    #[test]
+    fn each_paged_duty_reads_at_most_the_pass_budget_and_a_lap_reaches_each_row_once() {
+        const WORKING: usize = 10_000;
+        const CLAIMING: usize = 3_000;
+        const HELD: usize = 3_000;
+        const BUDGET: usize = 2_500;
+        const PASSES: usize = WORKING / BUDGET;
+        let mut w = world();
+        seed_big_run(&w, WORKING, CLAIMING, HELD);
+        let observer = Counting::default();
+        let effects = Record::new(&w);
+        let duties = WatchdogDuties::new(&observer, &NoHolder, &effects, w.dir.clone());
+        let mut settings = w.settings(Faults::default());
+        settings.config.pass_budget = BUDGET as u64;
+        let ports = Ports {
+            outside: &NoOutside,
+            duties: &duties,
+            needs_you: &NeedsYouList,
+            host: &NoHost,
+        };
+        let mut pass = Pass::new(settings, ports);
+
+        let mut reached: BTreeMap<&'static str, BTreeMap<String, usize>> = BTreeMap::new();
+        for n in 1..=PASSES {
+            let report = pass.run(&mut w.conn).unwrap();
+            assert!(report.heartbeat, "pass {n}: {report:?}");
+            let rows = duties.take_rows();
+            for (duty, keys) in &rows {
+                assert!(
+                    keys.len() <= BUDGET,
+                    "pass {n}: the duty {duty} read {} rows",
+                    keys.len()
+                );
+                for k in keys {
+                    *reached
+                        .entry(duty)
+                        .or_default()
+                        .entry(k.clone())
+                        .or_default() += 1;
+                }
+            }
+            assert_eq!(rows[WORKER_CHECKS].len(), BUDGET, "pass {n}");
+            let observed: usize = observer.0.borrow().values().sum();
+            assert_eq!(observed, n * BUDGET, "pass {n}: herdr observes 1 page");
+        }
+
+        // 1 lap of the checks: each working worker once.
+        let checks = &reached[WORKER_CHECKS];
+        assert_eq!(checks.len(), WORKING);
+        assert!(
+            checks.values().all(|&c| c == 1),
+            "a check row is read twice"
+        );
+        assert!(observer.0.borrow().values().all(|&c| c == 1));
+        let (rows, workers): (i64, i64) = w
+            .conn
+            .query_row(
+                "SELECT count(*), count(DISTINCT worker_id) FROM checks",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((rows, workers), (WORKING as i64, WORKING as i64));
+        // 10,000 reads of 3,000 claiming workers and of 3,000 held tasks:
+        // the cursor wraps, and each row is reached 3 or 4 times, so no row
+        // is starved.
+        for (duty, n) in [(PRECLAIM, CLAIMING), (HELD_TASKS, HELD)] {
+            let keys = &reached[duty];
+            assert_eq!(keys.len(), n, "{duty}");
+            let fair = (PASSES * BUDGET / n)..=(PASSES * BUDGET).div_ceil(n);
+            assert!(keys.values().all(|c| fair.contains(c)), "{duty}: {keys:?}");
+        }
+        // Each held task has its 1 question, once.
+        assert_eq!(wakes_with(&w, "is held: attempts"), HELD as i64);
+    }
+
+    /// PL-5: when the time budget of the pass is used, part 2 starts no
+    /// new duty row, and the pass still writes its heartbeat. The next pass
+    /// does the rows.
+    #[test]
+    fn a_pass_past_its_time_budget_starts_no_duty_row_and_writes_its_heartbeat() {
+        let mut w = world();
+        seed_big_run(&w, 50, 0, 0);
+        let observer = Counting::default();
+        let effects = Record::new(&w);
+        let duties = WatchdogDuties::new(&observer, &NoHolder, &effects, w.dir.clone());
+        let mut settings = w.settings(Faults::default());
+        settings.config.pass_time_budget_s = 0;
+        let ports = Ports {
+            outside: &NoOutside,
+            duties: &duties,
+            needs_you: &NeedsYouList,
+            host: &NoHost,
+        };
+        let report = Pass::new(settings, ports).run(&mut w.conn).unwrap();
+
+        assert!(report.heartbeat, "{report:?}");
+        assert!(duties.take_rows().values().all(Vec::is_empty));
+        assert_eq!(w.count("SELECT count(*) FROM checks"), 0);
+
+        pass(&mut w, &duties, Faults::default());
+        assert_eq!(w.count("SELECT count(*) FROM checks"), 50);
     }
 }

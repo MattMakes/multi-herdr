@@ -12,7 +12,9 @@
 //!    `mark_orphans`, `finish_exited`, the run duties ([`RunDuties`]),
 //!    `observe_jobs`, `check_invariants`, `record_hold_changes` and
 //!    `intended_effects`. Each effect is a row in an intended state when
-//!    the transaction commits. No effect occurs inside it.
+//!    the transaction commits. No effect occurs inside it. The run duties
+//!    have a [`DutyBudget`]: at most `pass_budget` rows of each paged duty,
+//!    and no new duty work after the time budget of the pass.
 //! 3. After the commit it does the effects, stops before launches, until
 //!    the time budget of the pass ends. The rest stay intended rows for the
 //!    next pass. When time is left, the run duties do their effects. Then
@@ -23,6 +25,7 @@
 //! keyed by its attempt id, a stop by the pid and start time of its
 //! process, and a job start by the id of its row.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::process::Child;
@@ -99,6 +102,16 @@ pub trait Outside {
     fn attempt_spec(&self, attempt: &AttemptRow) -> Result<LaunchSpec>;
 }
 
+/// The work budget of the run duties in 1 pass (PL-5, A32).
+#[derive(Clone, Copy)]
+pub struct DutyBudget<'a> {
+    /// The rows of each paged duty (`pass_budget`).
+    pub rows: PassBudget,
+    /// Whether the time budget of the pass is used: the duties start no
+    /// new work then.
+    pub time_up: &'a dyn Fn() -> bool,
+}
+
 /// What the run duties see in part 2.
 pub struct DutyCtx<'a> {
     /// The generation of this fleetd.
@@ -107,6 +120,7 @@ pub struct DutyCtx<'a> {
     pub clock: FleetSeconds,
     /// The process and pane facts of part 1.
     pub facts: &'a Facts,
+    pub budget: DutyBudget<'a>,
 }
 
 /// What the run duties see in part 3.
@@ -121,8 +135,9 @@ pub struct ActCtx<'a> {
 /// committed, so the next pass repeats an effect that a crash after the
 /// commit lost.
 pub trait RunDuties {
-    /// Part 1: read the facts of the duties, with no transaction.
-    fn observe(&self, _conn: &Connection) -> Result<()> {
+    /// Part 1: read the facts of the duties, with no transaction, within
+    /// `budget`.
+    fn observe(&self, _conn: &Connection, _budget: DutyBudget<'_>) -> Result<()> {
         Ok(())
     }
 
@@ -346,8 +361,16 @@ impl<'a> Pass<'a> {
         let deadline = Deadline::pass((self.now)(), self.settings.config.pass_time_budget_s);
         self.reap();
         let read = self.read_facts(conn, deadline)?;
-        self.ports.duties.observe(conn)?;
-        let decided = match self.decide(conn, read) {
+        {
+            let now = RefCell::new(&mut self.now);
+            let time_up = || deadline.reached((now.borrow_mut())());
+            let budget = DutyBudget {
+                rows: PassBudget::new(self.settings.config.pass_budget),
+                time_up: &time_up,
+            };
+            self.ports.duties.observe(conn, budget)?;
+        }
+        let decided = match self.decide(conn, read, deadline) {
             Ok(d) => d,
             Err(PassError::Failed(e)) => {
                 util::record_refusal_after_rollback(conn, &e);
@@ -470,7 +493,12 @@ impl<'a> Pass<'a> {
 
     // ─── part 2 ─────────────────────────────────────────────────────────
 
-    fn decide(&mut self, conn: &mut Connection, read: Read) -> Result<Decided, PassError> {
+    fn decide(
+        &mut self,
+        conn: &mut Connection,
+        read: Read,
+        deadline: Deadline,
+    ) -> Result<Decided, PassError> {
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(anyhow::Error::from)?;
@@ -488,12 +516,20 @@ impl<'a> Pass<'a> {
         let launches = self.observe_intents(&tx, &read.launching, clock)?;
         let mut stops = commands::mark_orphans(&tx, &read.task)?;
         stops.extend(commands::finish_exited(&tx, &read.task)?);
-        let duty = DutyCtx {
-            guard: self.settings.generation,
-            clock,
-            facts: &read.task,
-        };
-        stops.extend(self.ports.duties.run(&tx, &duty)?);
+        {
+            let now = RefCell::new(&mut self.now);
+            let time_up = || deadline.reached((now.borrow_mut())());
+            let duty = DutyCtx {
+                guard: self.settings.generation,
+                clock,
+                facts: &read.task,
+                budget: DutyBudget {
+                    rows: PassBudget::new(self.settings.config.pass_budget),
+                    time_up: &time_up,
+                },
+            };
+            stops.extend(self.ports.duties.run(&tx, &duty)?);
+        }
         let ctx = self.job_ctx();
         let observed = jobs::observe(&ctx, &tx, &read.jobs, clock)?;
         let breaches = self.check_invariants(&tx)?;

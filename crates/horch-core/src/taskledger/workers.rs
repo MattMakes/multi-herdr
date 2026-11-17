@@ -570,9 +570,20 @@ pub fn sweep_preclaim(
     run: &super::runs::Run,
     alive: &dyn Fn(&Worker) -> bool,
 ) -> Result<Vec<Preclaim>> {
+    sweep_preclaim_of(conn, run, of_run(conn, &run.run_id)?, alive)
+}
+
+/// [`sweep_preclaim`] of the rows `rows` of `run` only: the fleetd pass
+/// sweeps 1 page of rows in each pass (PL-5).
+pub fn sweep_preclaim_of(
+    conn: &Connection,
+    run: &super::runs::Run,
+    rows: Vec<Worker>,
+    alive: &dyn Fn(&Worker) -> bool,
+) -> Result<Vec<Preclaim>> {
     let now = util::now();
     let mut out = Vec::new();
-    for w in of_run(conn, &run.run_id)? {
+    for w in rows {
         if w.kind != WorkerKind::Worker.as_str() {
             continue;
         }
@@ -883,27 +894,42 @@ pub fn sync_questions(conn: &Connection, state: &std::path::Path, workspace: &st
     let mail = crate::messaging::mail::Mail::under(state, workspace);
     close_acted_questions(conn, &mail, workspace)?;
     let questions = mail.open_questions()?;
-    let mut stmt = conn.prepare(&format!(
-        "SELECT * FROM workers WHERE workspace_id=?1 AND status={working}",
-        working = word(WorkerStatus::Working)
+    // The oldest open question of a role fixes the deadline; polling must never extend it.
+    let mut oldest = std::collections::BTreeMap::new();
+    for q in &questions {
+        oldest.entry(q.from.as_str()).or_insert(q);
+    }
+    let working = word(WorkerStatus::Working);
+    // The pass reads only the workers that a question or a question wait
+    // names, not each worker of the workspace (PL-5).
+    let mut asked = conn.prepare(&format!(
+        "SELECT worker_id FROM workers WHERE workspace_id=?1 AND status={working} AND role=?2"
     ))?;
-    let roster = stmt
-        .query_map([workspace], Worker::from_row)?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    for w in roster {
-        // The oldest open question fixes the deadline; polling must never extend it.
-        let question = questions
-            .iter()
-            .find(|q| w.role.as_deref() == Some(q.from.as_str()));
-        if let Some(q) = question {
-            let started: chrono::DateTime<chrono::Utc> = q.created_at.into();
-            let deadline = crate::clock::stamp(started + chrono::Duration::days(7));
-            let reason = format!("#{} {}", q.id.short(), q.text);
+    for (role, q) in &oldest {
+        let ids = asked
+            .query_map(params![workspace, role], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let started: chrono::DateTime<chrono::Utc> = q.created_at.into();
+        let deadline = crate::clock::stamp(started + chrono::Duration::days(7));
+        let reason = format!("#{} {}", q.id.short(), q.text);
+        for id in ids {
             conn.execute("INSERT INTO worker_waits(worker_id,kind,reason,started_at,deadline) VALUES(?1,'question',?2,?3,?4)
                 ON CONFLICT(worker_id,kind) DO UPDATE SET reason=excluded.reason,started_at=excluded.started_at,deadline=excluded.deadline",
-                params![w.worker_id,reason,crate::clock::stamp(started),deadline])?;
-        } else {
-            clear_wait(conn, &w.worker_id, "question")?;
+                params![id,reason,crate::clock::stamp(started),deadline])?;
+        }
+    }
+    let mut waits = conn.prepare(&format!(
+        "SELECT w.worker_id, w.role FROM worker_waits q JOIN workers w ON w.worker_id = q.worker_id
+         WHERE q.kind='question' AND w.workspace_id=?1 AND w.status={working}"
+    ))?;
+    let waiting = waits
+        .query_map([workspace], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (id, role) in waiting {
+        if !role.is_some_and(|r| oldest.contains_key(r.as_str())) {
+            clear_wait(conn, &id, "question")?;
         }
     }
     Ok(())
