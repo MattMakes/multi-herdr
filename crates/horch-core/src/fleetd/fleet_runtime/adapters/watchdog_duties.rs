@@ -1411,13 +1411,16 @@ mod tests {
 
     // ─── the tests of the old `horch ledger watch` pass (ticket 25) ─────
 
+    /// 1 respawn: its number and the harness and model of its row.
+    type Try = (i64, Option<String>, Option<String>);
+
     /// The effects of a respawn that reads the harness and the model of
     /// the new orchestrator row, and fails while `fail` is set.
     struct Launch {
         dir: PathBuf,
         fail: RefCell<bool>,
-        /// Each respawn: its number and the harness and model of its row.
-        tries: RefCell<Vec<(i64, Option<String>, Option<String>)>>,
+        /// Each respawn.
+        tries: RefCell<Vec<Try>>,
     }
 
     impl Launch {
