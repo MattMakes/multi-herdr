@@ -1792,10 +1792,10 @@ fn set_clause_of_status_table(words: &[String], at: usize) -> Option<usize> {
         return None;
     }
     next += 1;
+    // The alias: `AS t` or a bare `t`.
     if word(next) == Some("as") {
-        next += 1;
-    }
-    if word(next) != Some("set") {
+        next += 2;
+    } else if word(next) != Some("set") {
         next += 1;
     }
     (word(next) == Some("set")).then_some(next + 1)
