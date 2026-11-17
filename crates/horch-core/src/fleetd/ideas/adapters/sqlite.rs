@@ -1,13 +1,15 @@
 //! The `needs_you` table.
 //!
-//! Tickets 10 and 11 of `docs/tickets/fleetd-p1/MAP.md` fill this file.
+//! Each change of state goes through `transition()`.
 
 use anyhow::{anyhow, Result};
-use rusqlite::{params, Connection, OptionalExtension, Row};
+use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
 
+use crate::fleetd::fleet_runtime::adapters::sqlite::{self as door, Event};
+use crate::fleetd::fleet_runtime::application::ledger::{transition, Cause};
+use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 use crate::fleetd::ideas::domain::needs_you::{Item, State};
-use crate::taskledger::model::{Actor, EventKind};
-use crate::taskledger::util::{self, About};
+use crate::taskledger::model::Actor;
 
 const COLUMNS: &str = "key, kind, entity, entity_id, state, text, created_at, ended_at";
 
@@ -38,45 +40,62 @@ pub fn get(conn: &Connection, key: &str) -> Result<Option<Item>> {
     Ok(conn.query_row(&sql, [key], item).optional()?)
 }
 
-/// Write `i` as the 1 row of its key.
-pub fn put(conn: &Connection, i: &Item) -> Result<()> {
-    let sql = format!(
-        "INSERT OR REPLACE INTO needs_you ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"
-    );
-    conn.execute(
-        &sql,
+/// Write `new` as the 1 row of its key; `old` is the row before. A new
+/// row gets its creation event. A change of state goes through
+/// `transition()`, before the other columns, so a refused move changes
+/// nothing.
+pub fn write(tx: &Transaction<'_>, old: Option<&Item>, new: &Item, cause: &str) -> Result<()> {
+    let Some(old) = old else {
+        let sql =
+            format!("INSERT INTO needs_you ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)");
+        tx.execute(
+            &sql,
+            params![
+                new.key,
+                new.kind,
+                new.entity,
+                new.entity_id,
+                new.state.as_str(),
+                new.text,
+                new.created_at,
+                new.ended_at
+            ],
+        )?;
+        return door::append_event(
+            tx,
+            &Event {
+                entity: Entity::NeedsYou,
+                id: &new.key,
+                from: None,
+                to: new.state.as_str(),
+                cause,
+                actor: Actor::Horch,
+            },
+        );
+    };
+    if old.state != new.state {
+        let cause = Cause {
+            actor: Actor::Horch,
+            text: cause,
+        };
+        let to = new.state.as_str();
+        transition(tx, None, Entity::NeedsYou, &new.key, to, cause)?;
+    }
+    tx.execute(
+        "UPDATE needs_you SET kind = ?2, entity = ?3, entity_id = ?4, text = ?5,
+            created_at = ?6, ended_at = ?7
+         WHERE key = ?1",
         params![
-            i.key,
-            i.kind,
-            i.entity,
-            i.entity_id,
-            i.state.as_str(),
-            i.text,
-            i.created_at,
-            i.ended_at
+            new.key,
+            new.kind,
+            new.entity,
+            new.entity_id,
+            new.text,
+            new.created_at,
+            new.ended_at
         ],
     )?;
     Ok(())
-}
-
-/// The event of a state change of the item `i`.
-pub fn state_event(conn: &Connection, from: Option<State>, i: &Item) -> Result<()> {
-    let from = from.map_or("none", State::as_str);
-    let text = format!(
-        "needs_you {} ({} {}): {} -> {}",
-        i.key,
-        i.entity,
-        i.entity_id,
-        from,
-        i.state.as_str()
-    );
-    util::event(
-        conn,
-        &About::default(),
-        Actor::Horch,
-        EventKind::Transition,
-        &text,
-    )
 }
 
 /// The open items, oldest first.

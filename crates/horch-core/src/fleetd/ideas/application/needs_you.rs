@@ -1,7 +1,7 @@
 //! The needs-you list: add, read and clear an item.
 //!
 //! Each use case that changes a state writes the row and 1 event in the
-//! transaction it is given. Ticket 11 moves these writes to `transition()`.
+//! transaction it is given, through `transition()`.
 
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
@@ -18,35 +18,29 @@ pub fn open_item(tx: &Transaction<'_>, w: &Write<'_>) -> Result<()> {
     let Some(new) = Item::written(old.as_ref(), w, &util::now()) else {
         return Ok(());
     };
-    store::put(tx, &new)?;
-    let from = old.map(|o| o.state);
-    if from != Some(new.state) {
-        store::state_event(tx, from, &new)?;
-    }
-    Ok(())
+    store::write(tx, old.as_ref(), &new, w.kind)
 }
 
 /// End the open item of `key` as `resolved`. `false` when no open item has
 /// that key.
 pub fn resolve(tx: &Transaction<'_>, key: &str) -> Result<bool> {
-    end(tx, key, State::Resolved)
+    end(tx, key, State::Resolved, "its cause ended")
 }
 
 /// End the open item of `key` as `superseded`. `false` when no open item
 /// has that key.
 pub fn supersede(tx: &Transaction<'_>, key: &str) -> Result<bool> {
-    end(tx, key, State::Superseded)
+    end(tx, key, State::Superseded, "a newer item replaced it")
 }
 
-fn end(tx: &Transaction<'_>, key: &str, to: State) -> Result<bool> {
+fn end(tx: &Transaction<'_>, key: &str, to: State, cause: &str) -> Result<bool> {
     let Some(old) = store::get(tx, key)? else {
         return Ok(false);
     };
     let Some(new) = old.ended(to, &util::now()) else {
         return Ok(false);
     };
-    store::put(tx, &new)?;
-    store::state_event(tx, Some(old.state), &new)?;
+    store::write(tx, Some(&old), &new, cause)?;
     Ok(true)
 }
 
