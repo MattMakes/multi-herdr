@@ -20,7 +20,7 @@ use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
 };
 use windows_sys::Win32::Security::{
-    GetTokenInformation, TokenUser, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, TOKEN_QUERY,
+    GetTokenInformation, TokenUser, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES, TOKEN_QUERY,
     TOKEN_USER,
 };
 use windows_sys::Win32::Storage::FileSystem::{
@@ -130,6 +130,9 @@ struct OwnerOnly(PSECURITY_DESCRIPTOR);
 impl OwnerOnly {
     fn new() -> io::Result<OwnerOnly> {
         let sid = current_sid()?;
+        // The SDDL text of the access rule. `D:P` is a protected DACL, so
+        // the pipe takes no rule from a parent. `(A;;GA;;;<sid>)` is 1 rule
+        // that allows all access to this user. No other user has a rule.
         let text: Vec<u16> = format!("D:P(A;;GA;;;{sid})")
             .encode_utf16()
             .chain([0])
@@ -265,6 +268,17 @@ fn current_sid() -> io::Result<String> {
 
 /// The user SID of the token of `process`, as text.
 fn process_sid(process: HANDLE) -> io::Result<String> {
+    let token = open_token(process)?;
+    let user = token_user(&token)?;
+    // SAFETY: `token_user` wrote a TOKEN_USER at the start of `user`, and
+    // its SID points into `user`, which lives to the end of this function.
+    let sid = unsafe { (*user.as_ptr().cast::<TOKEN_USER>()).User.Sid };
+    // SAFETY: `sid` is valid while `user` lives.
+    unsafe { sid_text(sid) }
+}
+
+/// The token of `process`, open for queries and closed on drop.
+fn open_token(process: HANDLE) -> io::Result<OwnedHandle> {
     let mut token: HANDLE = ptr::null_mut();
     // SAFETY: `process` is open for the call, and `token` is valid for 1
     // write.
@@ -272,15 +286,19 @@ fn process_sid(process: HANDLE) -> io::Result<String> {
         return Err(io::Error::last_os_error());
     }
     // SAFETY: `token` is a new open handle that nothing else owns.
-    let owned = unsafe { OwnedHandle::from_raw_handle(token) };
-    let token = owned.as_raw_handle();
+    Ok(unsafe { OwnedHandle::from_raw_handle(token) })
+}
+
+/// The `TOKEN_USER` of `token` and the SID that it points to. The buffer
+/// has u64 units, so that it has the alignment of `TOKEN_USER`.
+fn token_user(token: &OwnedHandle) -> io::Result<Vec<u64>> {
+    let token = token.as_raw_handle();
     let mut length = 0u32;
     // SAFETY: a null buffer of length 0 asks only for the length.
     unsafe { GetTokenInformation(token, TokenUser, ptr::null_mut(), 0, &mut length) };
     if length == 0 {
         return Err(io::Error::last_os_error());
     }
-    // u64 units, so that the buffer has the alignment of TOKEN_USER.
     let mut buffer = vec![0u64; (length as usize).div_ceil(8)];
     // SAFETY: `buffer` has room for `length` bytes.
     let read = unsafe {
@@ -295,13 +313,18 @@ fn process_sid(process: HANDLE) -> io::Result<String> {
     if read == 0 {
         return Err(io::Error::last_os_error());
     }
-    // SAFETY: the call above wrote a TOKEN_USER at the start of `buffer`,
-    // and its SID points into `buffer`, which lives to the end of this
-    // function.
-    let sid = unsafe { (*buffer.as_ptr().cast::<TOKEN_USER>()).User.Sid };
+    Ok(buffer)
+}
+
+/// The text of `sid`, for example `S-1-5-21-...`.
+///
+/// # Safety
+///
+/// `sid` points to a valid SID for the length of the call.
+unsafe fn sid_text(sid: PSID) -> io::Result<String> {
     let mut text: PWSTR = ptr::null_mut();
-    // SAFETY: `sid` is valid while `buffer` lives, and `text` is valid for
-    // 1 write.
+    // SAFETY: the caller keeps `sid` valid, and `text` is valid for 1
+    // write.
     if unsafe { ConvertSidToStringSidW(sid, &mut text) } == 0 {
         return Err(io::Error::last_os_error());
     }
