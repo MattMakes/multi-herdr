@@ -9,6 +9,7 @@
 use anyhow::{bail, Result};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 
+use crate::fleetd::fleet_runtime::adapters::sqlite::check_writable;
 use crate::fleetd::fleet_runtime::application::ledger::{created, Cause};
 use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
 use crate::taskledger::model::WorktreeStatus;
@@ -226,6 +227,9 @@ fn insert(
     state: WorktreeState,
     cause: Cause<'_>,
 ) -> Result<()> {
+    // `created()` checks this too, but after the insert: a refused call
+    // would leave a row with no event (review F1).
+    check_writable(tx, guard)?;
     tx.execute(
         "INSERT INTO worktrees (worktree_id, task_id, worker_id, repo_root, path, branch, base,
             base_commit, status, state, created_at)
@@ -530,6 +534,36 @@ mod tests {
             .unwrap();
         let found = of_task(l.store.conn(), &l.task_id).unwrap().unwrap();
         assert_eq!(found.worktree_id, "wt2");
+    }
+
+    fn count(l: &TestLedger, sql: &str) -> i64 {
+        l.store.conn().query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn a_refused_insert_writes_no_row_and_no_event() {
+        let mut l = ledger();
+        let new = new_row(&l, "wt1");
+        assert!(insert_reserved(l.store.conn(), None, &new, cause("claim")).is_err());
+        assert!(insert_orphan(l.store.conn(), None, &new, cause("adopt")).is_err());
+        let lost = l
+            .store
+            .immediate(|tx| {
+                Ok(insert_reserved(
+                    tx,
+                    Some(Generation(7)),
+                    &new,
+                    cause("claim"),
+                ))
+            })
+            .unwrap();
+        assert!(lost.is_err());
+        assert_eq!(count(&l, "SELECT count(*) FROM worktrees"), 0);
+        assert_eq!(count(&l, "SELECT count(*) FROM worktree_modes"), 0);
+        assert_eq!(
+            count(&l, "SELECT count(*) FROM events WHERE entity = 'worktree'"),
+            0
+        );
     }
 
     #[test]

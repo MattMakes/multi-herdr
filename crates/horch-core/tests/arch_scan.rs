@@ -1762,12 +1762,12 @@ fn fitness_table_rule_finds_foreign_tables() {
     }
 }
 
-// ─── OR-2: the status writes go through the 1 door ──────────────────────────
+// ─── OR-2: the state writes go through the 1 door ───────────────────────────
 
 /// Whether the SQL string `literal` writes the state column of a table in
 /// [`STATE_COLUMNS`]: an `UPDATE` of that table whose `SET` clause names
 /// that column. Keywords and names match in any case, as SQLite reads them.
-fn writes_status(literal: &str) -> bool {
+fn writes_state_column(literal: &str) -> bool {
     let words: Vec<String> = tokens(&[literal.to_string()])
         .into_iter()
         .map(|(_, t)| match t {
@@ -1869,7 +1869,7 @@ fn exempt(found: &str) -> bool {
 /// Each direct write of a state column of [`STATE_COLUMNS`] in the
 /// production code of `horch-core` and `horch`, as `<path>:<line>: <sql>`,
 /// outside the 1 door.
-fn direct_status_writes() -> Vec<String> {
+fn direct_state_writes() -> Vec<String> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let door = format!("horch-core/src/{FLEETD_DOOR}");
     let mut files = Vec::new();
@@ -1894,7 +1894,7 @@ fn direct_status_writes() -> Vec<String> {
         }
         let texts: Vec<&str> = lines.iter().map(|(_, l)| l.as_str()).collect();
         for (i, literal) in lex(&texts).strings {
-            if writes_status(&literal) {
+            if writes_state_column(&literal) {
                 let sql = literal.split_whitespace().collect::<Vec<_>>().join(" ");
                 found.push(format!("{rel}:{}: {sql}", lines[i].0));
             }
@@ -1908,11 +1908,11 @@ fn direct_status_writes() -> Vec<String> {
 /// its event and cause.
 #[test]
 fn fitness_status_writes_go_through_transition() {
-    let mut found = direct_status_writes();
+    let mut found = direct_state_writes();
     found.retain(|f| !exempt(f));
     assert!(
         found.is_empty(),
-        "a status write does not go through transition():\n{}",
+        "a state write does not go through transition():\n{}",
         found.join("\n")
     );
 }
@@ -1920,7 +1920,7 @@ fn fitness_status_writes_go_through_transition() {
 /// Each exemption of [`STATE_WRITES_EXEMPT`] still exempts a write.
 #[test]
 fn each_state_write_exemption_is_still_needed() {
-    let found = direct_status_writes();
+    let found = direct_state_writes();
     for (path, sql, why) in STATE_WRITES_EXEMPT {
         assert!(
             found
@@ -1931,7 +1931,7 @@ fn each_state_write_exemption_is_still_needed() {
     }
 }
 
-/// The status write matcher's own cases.
+/// The state write matcher's own cases.
 #[test]
 fn status_write_matcher_finds_a_direct_update() {
     let writes = |src: &str| -> Vec<bool> {
@@ -1939,7 +1939,7 @@ fn status_write_matcher_finds_a_direct_update() {
         lex(&lines)
             .strings
             .iter()
-            .map(|(_, s)| writes_status(s))
+            .map(|(_, s)| writes_state_column(s))
             .collect()
     };
     for hit in [

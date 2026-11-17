@@ -138,12 +138,31 @@ pub struct Event<'a> {
 /// of an entity has 1 event, so this marks the transaction for
 /// [`in_door_transaction`].
 pub fn append_event(tx: &Connection, e: &Event<'_>) -> Result<()> {
-    insert_event(tx, e, Some(e.to))
+    insert_event(
+        tx,
+        &Record {
+            entity: e.entity,
+            id: e.id,
+            from: e.from,
+            to: Some(e.to),
+            cause: e.cause,
+            actor: e.actor,
+        },
+    )
 }
 
-/// Append the event `e` with `to` as its new state: `None` when the row
-/// is gone ([`drop_reserved`]).
-fn insert_event(tx: &Connection, e: &Event<'_>, to: Option<&str>) -> Result<()> {
+/// The fields of 1 event row. `to` is `None` when the row is gone
+/// ([`drop_reserved`]).
+struct Record<'a> {
+    entity: Entity,
+    id: &'a str,
+    from: Option<&'a str>,
+    to: Option<&'a str>,
+    cause: &'a str,
+    actor: Actor,
+}
+
+fn insert_event(tx: &Connection, e: &Record<'_>) -> Result<()> {
     let (run, task, worker) = about(tx, e.entity, e.id)?;
     // The text keeps the task words of today (MAP.md, Q3); `from_state` and
     // `to_state` hold the stored words.
@@ -152,7 +171,7 @@ fn insert_event(tx: &Connection, e: &Event<'_>, to: Option<&str>) -> Result<()> 
         _ => word,
     };
     let from = e.from.map_or("none", shown);
-    let shown_to = to.map_or("none", shown);
+    let shown_to = e.to.map_or("none", shown);
     let text = format!("{}; {} {}: {from} -> {shown_to}", e.cause, e.entity, e.id);
     tx.execute(
         "INSERT INTO events (at, run_id, task_id, worker_id, actor, kind, text,
@@ -169,11 +188,31 @@ fn insert_event(tx: &Connection, e: &Event<'_>, to: Option<&str>) -> Result<()> 
             e.entity.as_str(),
             e.id,
             e.from,
-            to,
+            e.to,
             e.cause
         ],
     )?;
     mark(tx);
+    Ok(())
+}
+
+/// An error when `tx` has no open transaction, or when `guard` is not the
+/// generation of the `fleetd` row. A writer that inserts a row before it
+/// calls `created()` checks this first, so a refused call writes nothing.
+pub fn check_writable(tx: &Connection, guard: Option<Generation>) -> Result<()> {
+    if tx.is_autocommit() {
+        bail!("a write of the ledger state needs an open transaction of the ledger");
+    }
+    if let Some(held) = guard {
+        let found = generation(tx)?;
+        if found != Some(held) {
+            bail!(
+                "the fleetd generation is {:?}, not {}: another fleetd holds the ledger",
+                found.map(|g| g.0),
+                held.0
+            );
+        }
+    }
     Ok(())
 }
 
@@ -190,19 +229,7 @@ pub fn drop_reserved(
     cause: &str,
     actor: Actor,
 ) -> Result<()> {
-    if tx.is_autocommit() {
-        bail!("the drop of worktree {id} needs an open transaction of the ledger");
-    }
-    if let Some(held) = guard {
-        let found = generation(tx)?;
-        if found != Some(held) {
-            bail!(
-                "the fleetd generation is {:?}, not {}: another fleetd holds the ledger",
-                found.map(|g| g.0),
-                held.0
-            );
-        }
-    }
+    check_writable(tx, guard)?;
     let reserved = "reserved";
     match state_of(tx, Entity::Worktree, id)? {
         None => bail!("no worktree {id} in the ledger"),
@@ -212,15 +239,15 @@ pub fn drop_reserved(
         Some(_) => {}
     }
     // The event reads the run and the task of the row, so it goes first.
-    let event = Event {
+    let event = Record {
         entity: Entity::Worktree,
         id,
         from: Some(reserved),
-        to: reserved,
+        to: None,
         cause,
         actor,
     };
-    insert_event(tx, &event, None)?;
+    insert_event(tx, &event)?;
     tx.execute("DELETE FROM worktree_modes WHERE worktree_id = ?1", [id])?;
     tx.execute("DELETE FROM worktrees WHERE worktree_id = ?1", [id])?;
     Ok(())
