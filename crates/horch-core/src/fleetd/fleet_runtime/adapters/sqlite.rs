@@ -161,6 +161,7 @@ mod tests {
     use super::*;
     use crate::fleetd::fleet_runtime::application::ledger::{transition, Cause, DoorError, Moved};
     use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
+    use crate::fleetd::ideas::application::needs_you::NeedsYouList;
     use crate::taskledger::model::Actor;
     use crate::taskledger::runs::{self, NewRun};
     use crate::taskledger::tasks::{self, NewTask};
@@ -219,9 +220,21 @@ mod tests {
         /// `to` for `entity` `id` in its own transaction.
         fn moved(&mut self, entity: Entity, id: &str, to: &str) -> Result<Moved, DoorError> {
             self.store
-                .immediate(|tx| Ok(transition(tx, None, entity, id, to, cause("test"))))
+                .immediate(|tx| Ok(move_row(tx, None, entity, id, to, cause("test"))))
                 .unwrap()
         }
+    }
+
+    /// `transition()` with the needs-you list of ideas as its refusals.
+    fn move_row(
+        tx: &Transaction<'_>,
+        guard: Option<Generation>,
+        entity: Entity,
+        id: &str,
+        to: &str,
+        cause: Cause<'_>,
+    ) -> Result<Moved, DoorError> {
+        transition(tx, guard, entity, id, to, cause, &NeedsYouList)
     }
 
     fn cause(text: &str) -> Cause<'_> {
@@ -287,9 +300,9 @@ mod tests {
         let (a, b) = (l.task(1), l.task(2));
         l.store
             .immediate(|tx| {
-                let refused = transition(tx, None, Entity::Task, &a, "done", cause("pass"));
+                let refused = move_row(tx, None, Entity::Task, &a, "done", cause("pass"));
                 assert!(matches!(refused, Err(DoorError::Refused { .. })));
-                let legal = transition(tx, None, Entity::Task, &b, "running", cause("pass"));
+                let legal = move_row(tx, None, Entity::Task, &b, "running", cause("pass"));
                 assert_eq!(legal.unwrap(), Moved::Changed);
                 Ok(())
             })
@@ -326,47 +339,71 @@ mod tests {
         );
     }
 
+    /// The attempt `A1` of `task` and `worker`, in `launching`.
+    fn attempt(l: &Ledger, task: &str, worker: &str) -> &'static str {
+        l.conn()
+            .execute(
+                "INSERT INTO attempts (id, task_id, worker_id, state)
+                 VALUES ('A1', ?1, ?2, 'launching')",
+                [task, worker],
+            )
+            .unwrap();
+        "A1"
+    }
+
+    /// Move `id` of `entity` to `to`, then assert its row state and its 1
+    /// event, from `from` with the cause `test`.
+    fn assert_moved(l: &mut Ledger, entity: Entity, id: &str, from: &str, to: &str) {
+        assert_eq!(l.moved(entity, id, to).unwrap(), Moved::Changed);
+        assert_eq!(state_of(l.conn(), entity, id).unwrap().as_deref(), Some(to));
+        assert_eq!(
+            events(l.conn(), entity, id),
+            [(Some(from.to_string()), to.to_string(), "test".to_string())]
+        );
+    }
+
     #[test]
     fn each_transition_writes_1_event_with_its_cause_and_entity() {
         let mut l = ledger();
         let task = l.task(1);
+        assert_moved(&mut l, Entity::Task, &task, "queued", "running");
+    }
+
+    #[test]
+    fn a_worker_move_writes_the_worker_row_and_its_event() {
+        let mut l = ledger();
         let worker = l.worker();
-        l.conn()
-            .execute(
-                "INSERT INTO attempts (id, task_id, worker_id, state) VALUES ('A1', ?1, ?2, 'launching')",
-                [&task, &worker],
-            )
-            .unwrap();
+        assert_moved(&mut l, Entity::Worker, &worker, "spawning", "starting");
+    }
+
+    #[test]
+    fn an_attempt_move_writes_the_attempt_row_and_its_event() {
+        let mut l = ledger();
+        let (task, worker) = (l.task(1), l.worker());
+        let a1 = attempt(&l, &task, &worker);
+        assert_moved(&mut l, Entity::Attempt, a1, "launching", "live");
+    }
+
+    #[test]
+    fn a_job_move_finds_the_job_by_its_integer_id() {
+        let mut l = ledger();
         l.conn()
             .execute(
                 "INSERT INTO jobs (id, kind, subject, input_key, state, time_limit_s, created_at)
-                 VALUES (7, 'task_check', ?1, 'k', 'queued', 60, 'now')",
-                [&task],
+                 VALUES (7, 'task_check', 'T-1', 'k', 'queued', 60, 'now')",
+                [],
             )
             .unwrap();
-        let moves = [
-            (Entity::Task, task.as_str(), "running"),
-            (Entity::Worker, worker.as_str(), "starting"),
-            (Entity::Attempt, "A1", "live"),
-            (Entity::Job, "7", "running"),
-        ];
-        for (entity, id, to) in moves {
-            assert_eq!(l.moved(entity, id, to).unwrap(), Moved::Changed, "{entity}");
-        }
-        let expected = [
-            (Entity::Task, task.as_str(), "queued", "running"),
-            (Entity::Worker, worker.as_str(), "spawning", "starting"),
-            (Entity::Attempt, "A1", "launching", "live"),
-            (Entity::Job, "7", "queued", "running"),
-        ];
-        for (entity, id, from, to) in expected {
-            assert_eq!(
-                events(l.conn(), entity, id),
-                [(Some(from.to_string()), to.to_string(), "test".to_string())],
-                "{entity}"
-            );
-        }
-        let (run, task_col, worker_col, actor, text): (String, String, String, String, String) = l
+        assert_moved(&mut l, Entity::Job, "7", "queued", "running");
+    }
+
+    #[test]
+    fn an_event_fills_the_columns_of_today_from_its_row() {
+        let mut l = ledger();
+        let (task, worker) = (l.task(1), l.worker());
+        let a1 = attempt(&l, &task, &worker);
+        l.moved(Entity::Attempt, a1, "live").unwrap();
+        let row: (String, String, String, String, String) = l
             .conn()
             .query_row(
                 "SELECT run_id, task_id, worker_id, actor, text FROM events
@@ -375,17 +412,13 @@ mod tests {
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
             )
             .unwrap();
+        let (run, task_col, worker_col, actor, text) = row;
         assert_eq!(
             (run, task_col, worker_col),
-            (l.run_id.clone(), task.clone(), worker)
+            (l.run_id.clone(), task, worker)
         );
         assert_eq!(actor, "horch");
-        assert!(text.contains("attempt A1: launching -> live"), "{text}");
-        let state: String = l
-            .conn()
-            .query_row("SELECT state FROM jobs WHERE id = 7", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(state, "running");
+        assert_eq!(text, "test; attempt A1: launching -> live");
     }
 
     #[test]
@@ -412,7 +445,7 @@ mod tests {
             .unwrap();
         l.store
             .immediate(|tx| {
-                let lost = transition(
+                let lost = move_row(
                     tx,
                     Some(Generation(1)),
                     Entity::Task,
@@ -434,7 +467,7 @@ mod tests {
         l.store
             .immediate(|tx| {
                 let own = Some(Generation(2));
-                let moved = transition(tx, own, Entity::Task, &task, "running", cause("fleetd"));
+                let moved = move_row(tx, own, Entity::Task, &task, "running", cause("fleetd"));
                 assert_eq!(moved.unwrap(), Moved::Changed);
                 Ok(())
             })
@@ -450,7 +483,7 @@ mod tests {
         l.store
             .immediate(|tx| {
                 assert!(!in_door_transaction(), "no transition() yet");
-                transition(tx, None, Entity::Task, &a, "running", cause("t")).unwrap();
+                move_row(tx, None, Entity::Task, &a, "running", cause("t")).unwrap();
                 assert!(in_door_transaction());
                 Ok(())
             })
@@ -458,7 +491,7 @@ mod tests {
         assert!(!in_door_transaction(), "after the commit");
 
         let rolled_back: anyhow::Result<()> = l.store.immediate(|tx| {
-            transition(tx, None, Entity::Task, &b, "running", cause("t")).unwrap();
+            move_row(tx, None, Entity::Task, &b, "running", cause("t")).unwrap();
             assert!(in_door_transaction());
             anyhow::bail!("roll back")
         });
@@ -475,9 +508,9 @@ mod tests {
         let task = l.task(1);
         let mut conn = Connection::open(l._dir.path().join("ledger.sqlite3")).unwrap();
         let tx = conn.transaction().unwrap();
-        let unchanged = transition(&tx, None, Entity::Task, &task, "queued", cause("t"));
+        let unchanged = move_row(&tx, None, Entity::Task, &task, "queued", cause("t"));
         assert_eq!(unchanged.unwrap(), Moved::Unchanged);
-        let missing = transition(&tx, None, Entity::Task, "T-none", "running", cause("t"));
+        let missing = move_row(&tx, None, Entity::Task, "T-none", "running", cause("t"));
         assert!(
             matches!(missing, Err(DoorError::NoRow { .. })),
             "{missing:?}"

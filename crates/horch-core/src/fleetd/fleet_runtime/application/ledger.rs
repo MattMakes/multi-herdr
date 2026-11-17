@@ -4,11 +4,23 @@ use rusqlite::Transaction;
 
 use crate::fleetd::fleet_runtime::adapters::sqlite::{self as door, Event};
 use crate::fleetd::fleet_runtime::domain::ledger::{
-    decide, refused_cause, refused_key, Decision, Entity, Generation, REFUSED_KIND,
+    decide, refused_cause, Decision, Entity, Generation,
 };
-use crate::fleetd::ideas::application::needs_you;
-use crate::fleetd::ideas::domain::needs_you::Write;
 use crate::taskledger::model::Actor;
+
+/// Where [`transition`] puts a refused row: the needs-you list. The ideas
+/// context implements it, so this context does not depend on ideas.
+pub trait RecordRefusal {
+    /// Open the needs-you item of the refused row `id` of `entity`, with
+    /// `text`, in `tx`.
+    fn record_refusal(
+        &self,
+        tx: &Transaction<'_>,
+        entity: Entity,
+        id: &str,
+        text: &str,
+    ) -> anyhow::Result<()>;
+}
 
 /// Why a row moves, and who moves it.
 #[derive(Debug, Clone, Copy)]
@@ -83,7 +95,8 @@ impl From<anyhow::Error> for DoorError {
 /// no row change, 1 event and 1 needs-you item, and returns
 /// [`DoorError::Refused`]. With `Some(guard)`, a `fleetd` row of another
 /// generation gives [`DoorError::GenerationLost`] and writes nothing. Only
-/// fleetd passes a guard.
+/// fleetd passes a guard. `refusals` opens the needs-you item of a refused
+/// move.
 pub fn transition(
     tx: &Transaction<'_>,
     guard: Option<Generation>,
@@ -91,6 +104,7 @@ pub fn transition(
     id: &str,
     to: &str,
     cause: Cause<'_>,
+    refusals: &dyn RecordRefusal,
 ) -> Result<Moved, DoorError> {
     check_generation(tx, guard)?;
     let from = state_of(tx, entity, id)?;
@@ -112,7 +126,7 @@ pub fn transition(
             Ok(Moved::Changed)
         }
         Decision::Refused => {
-            refuse(tx, entity, id, &from, to, cause)?;
+            refuse(tx, entity, id, &from, to, cause, refusals)?;
             Err(DoorError::Refused {
                 entity,
                 id: id.to_string(),
@@ -179,6 +193,7 @@ fn refuse(
     from: &str,
     to: &str,
     cause: Cause<'_>,
+    refusals: &dyn RecordRefusal,
 ) -> anyhow::Result<()> {
     let why = refused_cause(cause.text);
     door::append_event(
@@ -192,19 +207,9 @@ fn refuse(
             actor: cause.actor,
         },
     )?;
-    let key = refused_key(entity, id);
     let text = format!(
         "The ledger refused {entity} {id}: {from} -> {to} ({}). Read the events of the row.",
         cause.text
     );
-    needs_you::open_item(
-        tx,
-        &Write {
-            key: &key,
-            kind: REFUSED_KIND,
-            entity: entity.as_str(),
-            entity_id: id,
-            text: &text,
-        },
-    )
+    refusals.record_refusal(tx, entity, id, &text)
 }

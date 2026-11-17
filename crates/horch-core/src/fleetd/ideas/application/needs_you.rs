@@ -7,8 +7,10 @@ use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use rusqlite::{Connection, Transaction};
 
-use crate::fleetd::fleet_runtime::application::ledger::{created, transition, Cause};
-use crate::fleetd::fleet_runtime::domain::ledger::Entity;
+use crate::fleetd::fleet_runtime::application::ledger::{
+    created, transition, Cause, RecordRefusal,
+};
+use crate::fleetd::fleet_runtime::domain::ledger::{refused_key, Entity, REFUSED_KIND};
 use crate::fleetd::ideas::adapters::sqlite as store;
 use crate::fleetd::ideas::domain::needs_you::{Item, State, Write};
 use crate::taskledger::model::Actor;
@@ -69,9 +71,34 @@ fn save(tx: &Transaction<'_>, old: Option<&Item>, new: &Item, cause: &str) -> Re
             &new.key,
             new.state.as_str(),
             cause,
+            &NeedsYouList,
         )?;
     }
     store::update(tx, new)
+}
+
+/// The needs-you list, as the place where `transition()` puts a refused
+/// row.
+pub struct NeedsYouList;
+
+impl RecordRefusal for NeedsYouList {
+    fn record_refusal(
+        &self,
+        tx: &Transaction<'_>,
+        entity: Entity,
+        id: &str,
+        text: &str,
+    ) -> Result<()> {
+        let key = refused_key(entity, id);
+        let w = Write {
+            key: &key,
+            kind: REFUSED_KIND,
+            entity: entity.as_str(),
+            entity_id: id,
+            text,
+        };
+        open_item(tx, &w)
+    }
 }
 
 /// Remove each item that ended `retention_days` or more before `now`.
