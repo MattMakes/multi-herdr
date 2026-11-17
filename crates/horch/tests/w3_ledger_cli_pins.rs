@@ -144,13 +144,7 @@ fn run_new_creates_the_branch_and_reports_it() {
 #[test]
 fn the_board_commands_print_their_pinned_text() {
     let w = World::new();
-    assert_eq!(w.ok(&["ledger", "status"]), "No runs.\n");
-    assert_eq!(
-        json(&w.ok(&["ledger", "status", "--json"])),
-        serde_json::json!({ "runs": [] })
-    );
-    assert_eq!(w.ok(&["ledger", "run", "list"]), "No runs.\n");
-    assert_eq!(w.ok(&["ledger", "run", "list", "--json"]), "[]\n");
+    assert_no_runs(&w);
     w.ok(&["ledger", "run", "new", "r1", "--steps", "check,land"]);
     assert_eq!(
         w.ok(&["ledger", "status"]),
@@ -238,6 +232,44 @@ fn the_board_commands_print_their_pinned_text() {
         refused.err,
         "horch: T-1 is queued; only a held or cancelled task is requeued\n"
     );
+    assert_show_of_t2(&w);
+    assert_board_events(&untimed(&w.ok(&["ledger", "events"])));
+    let close = w.run(&["ledger", "run", "close"]);
+    assert_eq!(close.code, 1);
+    assert!(
+        close
+            .err
+            .starts_with("horch: run r1 still has open work: T-1 (queued), T-2 (queued)."),
+        "{}",
+        close.err
+    );
+    assert_eq!(
+        w.ok(&["ledger", "run", "close", "--abandon", "gone"]),
+        "T-1 cancelled.\nT-2 cancelled.\nRun r1 closed as abandoned.\n"
+    );
+    let line = w.ok(&["ledger", "run", "list"]);
+    assert!(
+        line.starts_with("r1 abandoned fleet/r1 -> main ("),
+        "{line}"
+    );
+    assert!(w
+        .ok(&["ledger", "status", "--run", "r1"])
+        .ends_with("2 tasks: 0 done, 0 running, 0 landing, 0 queued, 2 cancelled. Complete.\n"));
+}
+
+/// The board of a ledger with no run.
+fn assert_no_runs(w: &World) {
+    assert_eq!(w.ok(&["ledger", "status"]), "No runs.\n");
+    assert_eq!(
+        json(&w.ok(&["ledger", "status", "--json"])),
+        serde_json::json!({ "runs": [] })
+    );
+    assert_eq!(w.ok(&["ledger", "run", "list"]), "No runs.\n");
+    assert_eq!(w.ok(&["ledger", "run", "list", "--json"]), "[]\n");
+}
+
+/// `horch ledger show` of T-2, as text and as JSON, and of an unknown task.
+fn assert_show_of_t2(w: &World) {
     assert_eq!(
         w.ok(&["ledger", "show", "T-2"])
             .lines()
@@ -265,7 +297,11 @@ fn the_board_commands_print_their_pinned_text() {
         unknown.err,
         "horch: 'T-9' is neither a task nor a worker of run r1: no worker 'T-9' in this run\n"
     );
-    let events = untimed(&w.ok(&["ledger", "events"]));
+}
+
+/// The events of the board test, in order: `horch ledger events` without
+/// its times.
+fn assert_board_events(events: &[String]) {
     assert_eq!(
         events[0],
         "orchestrator run_created   Run r1 created. Run branch: fleet/r1."
@@ -304,27 +340,6 @@ fn the_board_commands_print_their_pinned_text() {
         "orchestrator requeued      T-2 is queued again by the operator: again"
     );
     assert_eq!(events.len(), 9, "{events:?}");
-    let close = w.run(&["ledger", "run", "close"]);
-    assert_eq!(close.code, 1);
-    assert!(
-        close
-            .err
-            .starts_with("horch: run r1 still has open work: T-1 (queued), T-2 (queued)."),
-        "{}",
-        close.err
-    );
-    assert_eq!(
-        w.ok(&["ledger", "run", "close", "--abandon", "gone"]),
-        "T-1 cancelled.\nT-2 cancelled.\nRun r1 closed as abandoned.\n"
-    );
-    let line = w.ok(&["ledger", "run", "list"]);
-    assert!(
-        line.starts_with("r1 abandoned fleet/r1 -> main ("),
-        "{line}"
-    );
-    assert!(w
-        .ok(&["ledger", "status", "--run", "r1"])
-        .ends_with("2 tasks: 0 done, 0 running, 0 landing, 0 queued, 2 cancelled. Complete.\n"));
 }
 
 #[test]
