@@ -615,9 +615,11 @@ const EXE_FILE: &str = "exe";
 /// lock. Until then a missing record is not a sign of an old watchdog.
 const EXE_RECORD_GRACE_S: i64 = 10;
 
-/// Record in the held lock the binary this watchdog runs. The write is
-/// atomic, so a reader sees the whole record or none.
-pub fn record_exe(guard: &crate::fsx::DirLockGuard, exe: Option<&ExeIdentity>) -> Result<()> {
+/// Record in the held lock the binary this watchdog runs, as a watchdog
+/// before Phase 1 did. The write is atomic, so a reader sees the whole
+/// record or none. The tests of [`holder`] use it.
+#[cfg(test)]
+fn record_exe(guard: &crate::fsx::DirLockGuard, exe: Option<&ExeIdentity>) -> Result<()> {
     if let Some(exe) = exe {
         crate::fsx::write_atomic(
             &guard.path().join(EXE_FILE),
@@ -765,8 +767,8 @@ pub fn checkin(conn: &Connection, run_id: &str, pid: u32, started: Option<u64>) 
 }
 
 /// Record on the run the watchdog process that a starter just started, but
-/// no checkin. Until it takes its lock and checks in, the next command
-/// sees it alive in [`needs_restart`] and does not start a second one.
+/// no checkin. Before Phase 1 a starter wrote it; fleetd reads it to stop
+/// that watchdog (`fleetd::fleet_runtime::adapters::old_watchdog`).
 pub fn record_start(conn: &Connection, run_id: &str, pid: u32, started: Option<u64>) -> Result<()> {
     conn.execute(
         "UPDATE runs SET watchdog_pid = ?2, watchdog_started = ?3 WHERE run_id = ?1",
@@ -796,32 +798,6 @@ pub fn active_runs(conn: &Connection) -> Result<Vec<Run>> {
         .query_map([], |r| r.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     ids.iter().map(|id| super::runs::get(conn, id)).collect()
-}
-
-/// Whether the run's watchdog has gone quiet while a task runs: no checkin
-/// in 2 check intervals (or never), and its recorded process is not alive.
-pub fn needs_restart(conn: &Connection, run: &Run) -> Result<bool> {
-    let running: i64 = conn.query_row(
-        &format!(
-            "SELECT count(*) FROM tasks WHERE run_id = ?1 AND status IN ({in_flight})",
-            in_flight = sql_words::list(sql_words::TASKS_IN_FLIGHT)
-        ),
-        [&run.run_id],
-        |r| r.get(0),
-    )?;
-    if running == 0 {
-        return Ok(false);
-    }
-    let alive = run
-        .watchdog_pid
-        .is_some_and(|p| crate::procid::alive(p as u32, run.watchdog_started.map(|s| s as u64)));
-    let stale = match &run.watchdog_checkin_at {
-        None => true,
-        Some(t) => {
-            util::seconds_between(t, &util::now()).is_none_or(|age| age > 2 * run.check_every_s)
-        }
-    };
-    Ok(stale && !alive)
 }
 
 /// How often the watchdog drains the outbox and reads the board
@@ -1590,25 +1566,6 @@ mod tests {
             None,
             "a released lock has no holder"
         );
-    }
-
-    /// A watchdog that its starter recorded, but that has not checked in
-    /// yet, is not restarted while it runs; once it is gone, it is.
-    #[test]
-    fn a_recorded_start_holds_off_a_restart_while_that_process_runs() {
-        let (_d, s, run, _w) = setup();
-        let get = || runs::get(s.conn(), &run.run_id).unwrap();
-        assert!(needs_restart(s.conn(), &get()).unwrap(), "never checked in");
-        let me = std::process::id();
-        record_start(s.conn(), &run.run_id, me, crate::procid::start_time(me)).unwrap();
-        assert!(!needs_restart(s.conn(), &get()).unwrap(), "it is starting");
-        assert_eq!(get().watchdog_checkin_at, None, "a start is no checkin");
-        let Some(started) = crate::procid::start_time(me) else {
-            return; // No start times on this platform: a pid alone is alive.
-        };
-        // The same PID with another start time: the started process ended.
-        record_start(s.conn(), &run.run_id, me, Some(started + 1)).unwrap();
-        assert!(needs_restart(s.conn(), &get()).unwrap(), "it has gone");
     }
 
     #[cfg(unix)]
