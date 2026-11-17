@@ -3,10 +3,11 @@
 //! `application::ledger::transition()` is the only caller of
 //! [`set_state`]. Each state change and its event go through it
 //! (`docs/specs/fleetd/design.md`, "Ledger", rule 1 "One door").
+//! [`drop_reserved`] is the only delete of the door.
 
 use std::cell::RefCell;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
@@ -71,6 +72,7 @@ fn table(entity: Entity) -> (&'static str, &'static str, &'static str) {
         Entity::Attempt => ("attempts", "id", "state"),
         Entity::Job => ("jobs", "id", "state"),
         Entity::NeedsYou => ("needs_you", "key", "state"),
+        Entity::Worktree => ("worktrees", "worktree_id", "state"),
     }
 }
 
@@ -104,6 +106,13 @@ fn about(
             "SELECT w.run_id, a.task_id, a.worker_id FROM attempts a
              JOIN workers w ON w.worker_id = a.worker_id WHERE a.id = ?1"
         }
+        // A scratch row has no task: its run is the run of its mode row.
+        Entity::Worktree => {
+            "SELECT COALESCE(t.run_id, m.run_id), w.task_id, w.worker_id FROM worktrees w
+             LEFT JOIN tasks t ON t.task_id = w.task_id
+             LEFT JOIN worktree_modes m ON m.worktree_id = w.worktree_id
+             WHERE w.worktree_id = ?1"
+        }
         Entity::Job | Entity::NeedsYou => return Ok((None, None, None)),
     };
     let row = conn
@@ -129,6 +138,12 @@ pub struct Event<'a> {
 /// of an entity has 1 event, so this marks the transaction for
 /// [`in_door_transaction`].
 pub fn append_event(tx: &Connection, e: &Event<'_>) -> Result<()> {
+    insert_event(tx, e, Some(e.to))
+}
+
+/// Append the event `e` with `to` as its new state: `None` when the row
+/// is gone ([`drop_reserved`]).
+fn insert_event(tx: &Connection, e: &Event<'_>, to: Option<&str>) -> Result<()> {
     let (run, task, worker) = about(tx, e.entity, e.id)?;
     // The text keeps the task words of today (MAP.md, Q3); `from_state` and
     // `to_state` hold the stored words.
@@ -137,8 +152,8 @@ pub fn append_event(tx: &Connection, e: &Event<'_>) -> Result<()> {
         _ => word,
     };
     let from = e.from.map_or("none", shown);
-    let to = shown(e.to);
-    let text = format!("{}; {} {}: {from} -> {to}", e.cause, e.entity, e.id);
+    let shown_to = to.map_or("none", shown);
+    let text = format!("{}; {} {}: {from} -> {shown_to}", e.cause, e.entity, e.id);
     tx.execute(
         "INSERT INTO events (at, run_id, task_id, worker_id, actor, kind, text,
             entity, entity_id, from_state, to_state, cause)
@@ -154,11 +169,60 @@ pub fn append_event(tx: &Connection, e: &Event<'_>) -> Result<()> {
             e.entity.as_str(),
             e.id,
             e.from,
-            e.to,
+            to,
             e.cause
         ],
     )?;
     mark(tx);
+    Ok(())
+}
+
+/// Drop the `reserved` worktree row `id`, with its mode row, in the
+/// caller's transaction `tx`: the exit of a `reserved` row whose
+/// `worktree_add` job failed (MAP.md of fleetd-p3, Q18). 1 event from
+/// `reserved` to no state records `cause`. A row in another state, a
+/// missing row, a connection with no open transaction or a `fleetd` row of
+/// another generation than `guard` gives an error, and nothing is written.
+pub fn drop_reserved(
+    tx: &Connection,
+    guard: Option<Generation>,
+    id: &str,
+    cause: &str,
+    actor: Actor,
+) -> Result<()> {
+    if tx.is_autocommit() {
+        bail!("the drop of worktree {id} needs an open transaction of the ledger");
+    }
+    if let Some(held) = guard {
+        let found = generation(tx)?;
+        if found != Some(held) {
+            bail!(
+                "the fleetd generation is {:?}, not {}: another fleetd holds the ledger",
+                found.map(|g| g.0),
+                held.0
+            );
+        }
+    }
+    let reserved = "reserved";
+    match state_of(tx, Entity::Worktree, id)? {
+        None => bail!("no worktree {id} in the ledger"),
+        Some(state) if state != reserved => {
+            bail!("worktree {id} is {state}: only a {reserved} row is dropped")
+        }
+        Some(_) => {}
+    }
+    // The event reads the run and the task of the row, so it goes first.
+    let event = Event {
+        entity: Entity::Worktree,
+        id,
+        from: Some(reserved),
+        to: reserved,
+        cause,
+        actor,
+    };
+    insert_event(tx, &event, None)?;
+    tx.execute("DELETE FROM worktree_modes WHERE worktree_id = ?1", [id])?;
+    tx.execute("DELETE FROM worktrees WHERE worktree_id = ?1", [id])?;
     Ok(())
 }
 
@@ -617,5 +681,256 @@ mod tests {
             events(l.conn(), Entity::NeedsYou, w.key),
             [(None, "open".to_string(), "job_abandoned".to_string())]
         );
+    }
+
+    /// The worktree row `id` of `task` in `state`, inserted as the test
+    /// wants it: a state change of a test row needs no event.
+    fn worktree(l: &TestLedger, id: &str, task: Option<&str>, state: &str) {
+        l.conn()
+            .execute(
+                "INSERT INTO worktrees (worktree_id, task_id, repo_root, path, branch, base,
+                    status, created_at, state)
+                 VALUES (?1, ?2, '/r', '/r/.worktrees/' || ?1, ?1, 'main', 'open', 'then', ?3)",
+                params![id, task, state],
+            )
+            .unwrap();
+    }
+
+    fn worktree_events(l: &TestLedger, id: &str) -> Vec<(Option<String>, Option<String>, String)> {
+        let mut stmt = l
+            .conn()
+            .prepare(
+                "SELECT from_state, to_state, cause FROM events
+                 WHERE kind = 'transition' AND entity = 'worktree' AND entity_id = ?1
+                 ORDER BY event_id",
+            )
+            .unwrap();
+        stmt.query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    /// The design's exits of a worktree (MAP.md of fleetd-p3, Q10).
+    const WORKTREE_EXITS: [(&str, &str); 11] = [
+        ("reserved", "created"),
+        ("created", "active"),
+        ("active", "created"),
+        ("active", "landing"),
+        ("active", "orphaned"),
+        ("landing", "landed"),
+        ("landing", "rescued"),
+        ("landed", "removed"),
+        ("orphaned", "rescued"),
+        ("rescued", "active"),
+        ("rescued", "removed"),
+    ];
+
+    #[test]
+    fn worktree_moves_along_each_exit_of_the_design() {
+        let mut l = ledger();
+        let task = l.task(1);
+        for (n, (from, to)) in WORKTREE_EXITS.into_iter().enumerate() {
+            let id = format!("wt{n}");
+            worktree(&l, &id, Some(&task), from);
+            assert_moved(&mut l, Entity::Worktree, &id, from, to);
+        }
+        let (run, task_col, text): (String, String, String) = l
+            .conn()
+            .query_row(
+                "SELECT run_id, task_id, text FROM events WHERE entity_id = 'wt0'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!((run, task_col), (l.run_id.clone(), task));
+        assert_eq!(text, "test; worktree wt0: reserved -> created");
+    }
+
+    #[test]
+    fn a_scratch_worktree_event_gets_its_run_from_its_mode_row() {
+        let mut l = ledger();
+        worktree(&l, "wt1", None, "created");
+        l.conn()
+            .execute(
+                "INSERT INTO worktree_modes (worktree_id, run_id, name, scratch)
+                 VALUES ('wt1', ?1, 'wt1', 1)",
+                [&l.run_id],
+            )
+            .unwrap();
+        l.moved(Entity::Worktree, "wt1", "active").unwrap();
+        let run: String = l
+            .conn()
+            .query_row(
+                "SELECT run_id FROM events WHERE entity_id = 'wt1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(run, l.run_id);
+    }
+
+    #[test]
+    fn worktree_move_outside_the_table_is_refused_and_recorded() {
+        let mut l = ledger();
+        worktree(&l, "wt1", None, "reserved");
+        let out = l.moved(Entity::Worktree, "wt1", "active");
+        assert!(matches!(out, Err(DoorError::Refused { .. })), "{out:?}");
+        assert_eq!(
+            state_of(l.conn(), Entity::Worktree, "wt1")
+                .unwrap()
+                .as_deref(),
+            Some("reserved")
+        );
+        assert_eq!(
+            worktree_events(&l, "wt1"),
+            [(
+                Some("reserved".to_string()),
+                Some("active".to_string()),
+                "illegal_transition: test".to_string()
+            )]
+        );
+        assert_eq!(
+            open_items(l.conn()),
+            [(
+                "illegal_transition:worktree:wt1".to_string(),
+                "illegal_transition".to_string(),
+                "worktree".to_string(),
+                "wt1".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn removed_worktree_is_terminal() {
+        let mut l = ledger();
+        worktree(&l, "wt1", None, "removed");
+        for to in [
+            "reserved", "created", "active", "landing", "landed", "orphaned", "rescued",
+        ] {
+            let out = l.moved(Entity::Worktree, "wt1", to);
+            assert!(
+                matches!(out, Err(DoorError::Refused { .. })),
+                "{to}: {out:?}"
+            );
+        }
+        assert_eq!(
+            state_of(l.conn(), Entity::Worktree, "wt1")
+                .unwrap()
+                .as_deref(),
+            Some("removed")
+        );
+    }
+
+    fn drop_in_tx(l: &mut TestLedger, id: &str) -> anyhow::Result<()> {
+        l.store
+            .immediate(|tx| {
+                Ok(drop_reserved(
+                    tx,
+                    None,
+                    id,
+                    "worktree_add_failed",
+                    Actor::Horch,
+                ))
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn drop_reserved_deletes_only_a_reserved_row_and_writes_its_event() {
+        let mut l = ledger();
+        let task = l.task(1);
+        worktree(&l, "wt1", Some(&task), "reserved");
+        l.conn()
+            .execute(
+                "INSERT INTO worktree_modes (worktree_id, run_id, name) VALUES ('wt1', ?1, 'a')",
+                [&l.run_id],
+            )
+            .unwrap();
+        drop_in_tx(&mut l, "wt1").unwrap();
+        assert_eq!(state_of(l.conn(), Entity::Worktree, "wt1").unwrap(), None);
+        let modes: i64 = l
+            .conn()
+            .query_row("SELECT count(*) FROM worktree_modes", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(modes, 0, "the mode row goes with its row");
+        assert_eq!(
+            worktree_events(&l, "wt1"),
+            [(
+                Some("reserved".to_string()),
+                None,
+                "worktree_add_failed".to_string()
+            )]
+        );
+        let (run, task_col, text): (String, String, String) = l
+            .conn()
+            .query_row(
+                "SELECT run_id, task_id, text FROM events WHERE entity_id = 'wt1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!((run, task_col), (l.run_id.clone(), task));
+        assert_eq!(text, "worktree_add_failed; worktree wt1: reserved -> none");
+
+        for (n, state) in [
+            "created", "active", "landing", "landed", "removed", "orphaned", "rescued",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let id = format!("other{n}");
+            worktree(&l, &id, None, state);
+            let err = drop_in_tx(&mut l, &id).unwrap_err();
+            assert!(err.to_string().contains(state), "{state}: {err:#}");
+            assert_eq!(
+                state_of(l.conn(), Entity::Worktree, &id)
+                    .unwrap()
+                    .as_deref(),
+                Some(state)
+            );
+            assert_eq!(worktree_events(&l, &id), []);
+        }
+        assert!(drop_in_tx(&mut l, "nope").is_err(), "no row");
+    }
+
+    #[test]
+    fn drop_reserved_outside_a_transaction_writes_nothing() {
+        let l = ledger();
+        worktree(&l, "wt1", None, "reserved");
+        let out = drop_reserved(l.conn(), None, "wt1", "worktree_add_failed", Actor::Horch);
+        assert!(out.is_err());
+        assert_eq!(
+            state_of(l.conn(), Entity::Worktree, "wt1")
+                .unwrap()
+                .as_deref(),
+            Some("reserved")
+        );
+    }
+
+    #[test]
+    fn drop_reserved_with_a_lost_generation_writes_nothing() {
+        let mut l = ledger();
+        worktree(&l, "wt1", None, "reserved");
+        let out = l
+            .store
+            .immediate(|tx| {
+                Ok(drop_reserved(
+                    tx,
+                    Some(Generation(7)),
+                    "wt1",
+                    "worktree_add_failed",
+                    Actor::Horch,
+                ))
+            })
+            .unwrap();
+        assert!(out.is_err());
+        assert_eq!(
+            state_of(l.conn(), Entity::Worktree, "wt1")
+                .unwrap()
+                .as_deref(),
+            Some("reserved")
+        );
+        assert_eq!(worktree_events(&l, "wt1"), []);
     }
 }

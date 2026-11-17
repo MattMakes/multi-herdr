@@ -4,9 +4,10 @@
 //! table of allowed moves. A move that is not in it is refused
 //! (`docs/specs/fleetd/design.md`, "Ledger", rule 1 "One door").
 
-/// The kinds of row that `transition()` moves in Phase 1
-/// (`docs/tickets/fleetd-p1/MAP.md`, Q5). Runs and worktrees keep their
-/// writes until Phases 4 and 3.
+/// The kinds of row that `transition()` moves: the entities of Phase 1
+/// (`docs/tickets/fleetd-p1/MAP.md`, Q5) and the worktree of Phase 3
+/// (`docs/tickets/fleetd-p3/MAP.md`, Q3). Runs keep their writes until
+/// Phase 4.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Entity {
     /// `tasks.status`.
@@ -19,16 +20,20 @@ pub enum Entity {
     Job,
     /// `needs_you.state`.
     NeedsYou,
+    /// `worktrees.state`. `worktrees.status` keeps the words and the writes
+    /// of today (`docs/tickets/fleetd-p3/MAP.md`, Q3).
+    Worktree,
 }
 
 impl Entity {
     /// Every entity.
-    pub const ALL: [Entity; 5] = [
+    pub const ALL: [Entity; 6] = [
         Entity::Task,
         Entity::Worker,
         Entity::Attempt,
         Entity::Job,
         Entity::NeedsYou,
+        Entity::Worktree,
     ];
 
     /// The word of `events.entity`. Each event and each message that gives
@@ -40,6 +45,7 @@ impl Entity {
             Entity::Attempt => "attempt",
             Entity::Job => "job",
             Entity::NeedsYou => "needs_you",
+            Entity::Worktree => "worktree",
         }
     }
 }
@@ -109,7 +115,9 @@ pub const TASK_EXITS_OF_TODAY: [(Entity, &str, &str); 3] = [
 /// when") and [`TASK_EXITS_OF_TODAY`]. The moves of worker are the moves
 /// that the code of today makes; each comment names its site. The moves of
 /// attempt, job and needs-you item are the exits of their state tables in
-/// the design and in ticket 10.
+/// the design and in ticket 10. The moves of worktree are the column
+/// "Leaves when" of the worktree table of the design, with the choices of
+/// `docs/tickets/fleetd-p3/MAP.md`, Q10.
 pub const EXITS: &[(Entity, &str, &str)] = &[
     // The task table of the design. `done` and `cancelled` are terminal;
     // each other state has an exit to `cancelled` (A cancel).
@@ -211,6 +219,24 @@ pub const EXITS: &[(Entity, &str, &str)] = &[
     (Entity::NeedsYou, "open", "superseded"),
     (Entity::NeedsYou, "resolved", "open"),
     (Entity::NeedsYou, "superseded", "open"),
+    // The worktree table of the design. A row starts in `reserved` (a tree
+    // that fleetd makes) or `orphaned` (a folder that the reconciler
+    // adopts). The drop of a `reserved` row is not a move: the door deletes
+    // the row (MAP.md of fleetd-p3, Q18). `removed` is terminal.
+    (Entity::Worktree, "reserved", "created"),
+    (Entity::Worktree, "created", "active"),
+    // `created` is `done --unlanded`; `orphaned` is a dead owner.
+    (Entity::Worktree, "active", "created"),
+    (Entity::Worktree, "active", "landing"),
+    (Entity::Worktree, "active", "orphaned"),
+    // `rescued` is the rescue of an abandoned branch (Phase 4).
+    (Entity::Worktree, "landing", "landed"),
+    (Entity::Worktree, "landing", "rescued"),
+    (Entity::Worktree, "landed", "removed"),
+    (Entity::Worktree, "orphaned", "rescued"),
+    // `active` is the next claim.
+    (Entity::Worktree, "rescued", "active"),
+    (Entity::Worktree, "rescued", "removed"),
 ];
 
 #[cfg(test)]
@@ -415,6 +441,39 @@ mod tests {
         assert_eq!(exits_of(Entity::Worker), sorted(today));
     }
 
+    /// The 8 states of the worktree table of the design, as the CHECK of
+    /// `worktrees.state` lists them.
+    const WORKTREE_STATES: [&str; 8] = [
+        "reserved", "created", "active", "landing", "landed", "removed", "orphaned", "rescued",
+    ];
+
+    #[test]
+    fn allowed_transitions_of_worktree_equal_the_design_table() {
+        // The column "Leaves when", with the choices of MAP.md of
+        // fleetd-p3, Q10. The drop of a `reserved` row is not a move.
+        let design = vec![
+            ("reserved", "created"),
+            ("created", "active"),
+            ("active", "created"),
+            ("active", "landing"),
+            ("active", "orphaned"),
+            ("landing", "landed"),
+            ("landing", "rescued"),
+            ("landed", "removed"),
+            ("orphaned", "rescued"),
+            ("rescued", "active"),
+            ("rescued", "removed"),
+        ];
+        assert_eq!(exits_of(Entity::Worktree), sorted(design));
+        for to in WORKTREE_STATES {
+            assert_ne!(
+                decide(Entity::Worktree, "removed", to),
+                Decision::Allowed,
+                "removed -> {to}"
+            );
+        }
+    }
+
     #[test]
     fn each_state_of_the_table_is_a_word_of_its_column() {
         for (entity, from, to) in EXITS {
@@ -427,6 +486,7 @@ mod tests {
                         ["queued", "running", "passed", "failed", "abandoned"].contains(word)
                     }
                     Entity::NeedsYou => ["open", "resolved", "superseded"].contains(word),
+                    Entity::Worktree => WORKTREE_STATES.contains(word),
                 };
                 assert!(known, "{entity} {word}");
             }

@@ -1764,9 +1764,9 @@ fn fitness_table_rule_finds_foreign_tables() {
 
 // ─── OR-2: the status writes go through the 1 door ──────────────────────────
 
-/// Whether the SQL string `literal` writes the column `status` of `tasks`
-/// or `workers`: an `UPDATE` of 1 of these tables whose `SET` clause names
-/// `status`. Keywords and names match in any case, as SQLite reads them.
+/// Whether the SQL string `literal` writes the state column of a table in
+/// [`STATE_COLUMNS`]: an `UPDATE` of that table whose `SET` clause names
+/// that column. Keywords and names match in any case, as SQLite reads them.
 fn writes_status(literal: &str) -> bool {
     let words: Vec<String> = tokens(&[literal.to_string()])
         .into_iter()
@@ -1777,14 +1777,25 @@ fn writes_status(literal: &str) -> bool {
         })
         .collect();
     (0..words.len()).any(|at| {
-        set_clause_of_status_table(&words, at).is_some_and(|set| assigns_status(&words[set..]))
+        set_clause_of_state_table(&words, at)
+            .is_some_and(|(set, column)| assigns(&words[set..], column))
     })
 }
 
-/// When the words from `at` start `UPDATE [OR <conflict>] [main.]tasks` or
-/// `... workers`, with an optional alias (`[AS] t`), and then `SET`: the
-/// index of the first word after `SET`.
-fn set_clause_of_status_table(words: &[String], at: usize) -> Option<usize> {
+/// The tables whose state column only the 1 door writes, with that
+/// column. `worktrees.status` keeps the writes of today
+/// (`docs/tickets/fleetd-p3/MAP.md`, Q3): only its `state` is here.
+const STATE_COLUMNS: &[(&str, &str)] = &[
+    ("tasks", "status"),
+    ("workers", "status"),
+    ("worktrees", "state"),
+];
+
+/// When the words from `at` start `UPDATE [OR <conflict>] [main.]<table>`
+/// for a table of [`STATE_COLUMNS`], with an optional alias (`[AS] t`), and
+/// then `SET`: the index of the first word after `SET`, and the state
+/// column of the table.
+fn set_clause_of_state_table(words: &[String], at: usize) -> Option<(usize, &'static str)> {
     let word = |i: usize| words.get(i).map(String::as_str);
     if word(at) != Some("update") {
         return None;
@@ -1796,9 +1807,10 @@ fn set_clause_of_status_table(words: &[String], at: usize) -> Option<usize> {
     if word(next) == Some("main") && word(next + 1) == Some(".") {
         next += 2;
     }
-    if !matches!(word(next), Some("tasks" | "workers")) {
-        return None;
-    }
+    let column = STATE_COLUMNS
+        .iter()
+        .find(|(table, _)| word(next) == Some(*table))
+        .map(|(_, column)| *column)?;
     next += 1;
     // The alias: `AS t` or a bare `t`.
     if word(next) == Some("as") {
@@ -1806,24 +1818,24 @@ fn set_clause_of_status_table(words: &[String], at: usize) -> Option<usize> {
     } else if word(next) != Some("set") {
         next += 1;
     }
-    (word(next) == Some("set")).then_some(next + 1)
+    (word(next) == Some("set")).then_some((next + 1, column))
 }
 
 /// Whether the assignments of a `SET` clause, from its first word to its
-/// end, assign `status` (also as `t.status`). The clause ends at a `WHERE`,
-/// `FROM`, `RETURNING` or `;` outside parentheses.
-fn assigns_status(clause: &[String]) -> bool {
+/// end, assign `column` (also as `t.<column>`). The clause ends at a
+/// `WHERE`, `FROM`, `RETURNING` or `;` outside parentheses.
+fn assigns(clause: &[String], column: &str) -> bool {
     let mut depth = 0;
     let mut starts_assignment = true;
     for (i, word) in clause.iter().enumerate() {
-        let (column, after_column) = if clause.get(i + 1).is_some_and(|w| w == ".") {
+        let (name, after_column) = if clause.get(i + 1).is_some_and(|w| w == ".") {
             (clause.get(i + 2), i + 3)
         } else {
             (Some(word), i + 1)
         };
         if depth == 0
             && starts_assignment
-            && column.is_some_and(|c| c == "status")
+            && name.is_some_and(|c| c == column)
             && clause.get(after_column).is_some_and(|w| w == "=")
         {
             return true;
@@ -1839,7 +1851,22 @@ fn assigns_status(clause: &[String]) -> bool {
     false
 }
 
-/// Each direct write of `tasks.status` or `workers.status` in the
+/// The direct state writes that are not a state change of a row in flight:
+/// the path, a part of the SQL text, and why it is exempt.
+const STATE_WRITES_EXEMPT: &[(&str, &str, &str)] = &[(
+    "horch-core/src/taskledger/schema.rs",
+    "UPDATE worktrees SET state = CASE",
+    "the release backfill of Phase 3 gives each row its first state \
+     (docs/tickets/fleetd-p3/MAP.md, Q19)",
+)];
+
+fn exempt(found: &str) -> bool {
+    STATE_WRITES_EXEMPT
+        .iter()
+        .any(|(path, sql, _)| found.starts_with(&format!("{path}:")) && found.contains(sql))
+}
+
+/// Each direct write of a state column of [`STATE_COLUMNS`] in the
 /// production code of `horch-core` and `horch`, as `<path>:<line>: <sql>`,
 /// outside the 1 door.
 fn direct_status_writes() -> Vec<String> {
@@ -1876,16 +1903,32 @@ fn direct_status_writes() -> Vec<String> {
     found
 }
 
-/// OR-2: each production write of `tasks.status` and `workers.status` goes
-/// through `transition()`, so each state change has its event and cause.
+/// OR-2: each production write of `tasks.status`, `workers.status` and
+/// `worktrees.state` goes through `transition()`, so each state change has
+/// its event and cause.
 #[test]
 fn fitness_status_writes_go_through_transition() {
-    let found = direct_status_writes();
+    let mut found = direct_status_writes();
+    found.retain(|f| !exempt(f));
     assert!(
         found.is_empty(),
         "a status write does not go through transition():\n{}",
         found.join("\n")
     );
+}
+
+/// Each exemption of [`STATE_WRITES_EXEMPT`] still exempts a write.
+#[test]
+fn each_state_write_exemption_is_still_needed() {
+    let found = direct_status_writes();
+    for (path, sql, why) in STATE_WRITES_EXEMPT {
+        assert!(
+            found
+                .iter()
+                .any(|f| f.starts_with(&format!("{path}:")) && f.contains(sql)),
+            "{path} has no `{sql}` any more; remove its exemption ({why})"
+        );
+    }
 }
 
 /// The status write matcher's own cases.
@@ -1910,6 +1953,8 @@ fn status_write_matcher_finds_a_direct_update() {
         "c.execute(\"UPDATE tasks AS t SET status = 'done'\", p)",
         "c.execute(\"UPDATE workers w SET status = 'done'\", p)",
         "c.execute(\"UPDATE main.tasks SET t.status = 'done'\", p)",
+        "c.execute(\"UPDATE worktrees SET head_sha = ?2, state = 'removed'\", p)",
+        "c.execute(\"UPDATE worktrees w SET w.state = ?2 WHERE worktree_id = ?1\", p)",
     ] {
         assert_eq!(writes(hit), vec![true], "{hit}");
     }
@@ -1917,6 +1962,8 @@ fn status_write_matcher_finds_a_direct_update() {
         "c.execute(\"UPDATE tasks SET summary = ?2 WHERE status = 'running'\", p)",
         "c.execute(\"UPDATE workers SET last_status = ?2\", p)",
         "c.execute(\"UPDATE worktrees SET status = ?2\", p)",
+        "c.execute(\"UPDATE worktrees SET head_sha = ?2 WHERE state = 'active'\", p)",
+        "c.execute(\"UPDATE tasks SET state = ?2\", p)",
         "c.execute(\"UPDATE task_steps SET status = ?2\", p)",
         "c.execute(\"UPDATE workers SET x = (SELECT status = 'a' FROM tasks)\", p)",
         "c.execute(\"SELECT status FROM tasks\", p)",
