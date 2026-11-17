@@ -67,23 +67,48 @@ impl Drop for Checkins {
     }
 }
 
-/// The checkin interval of the worker's run.
-pub fn interval(db: &Path, worker_id: &str) -> Duration {
-    let secs = Store::open(db)
-        .ok()
-        .and_then(|s| {
-            s.conn()
-                .query_row(
-                    "SELECT r.heartbeat_every_s FROM workers w JOIN runs r ON r.run_id = w.run_id
-                     WHERE w.worker_id = ?1",
-                    [worker_id],
-                    |r| r.get::<_, i64>(0),
-                )
-                .ok()
-        })
-        .unwrap_or(30)
-        .max(1);
-    Duration::from_secs(secs as u64)
+/// The wrapper heartbeat period in seconds: `heartbeat_every_s` of
+/// `fleet.toml` in `fleet_root`. A file that cannot be read gives the
+/// default, with 1 line that names the file: a heartbeat never stops for a
+/// config error.
+pub fn fleet_period(fleet_root: &Path) -> (u64, Option<String>) {
+    use crate::fleetd::fleet_runtime::adapters::config_file;
+    use crate::fleetd::fleet_runtime::domain::config::FleetConfig;
+    match config_file::load(fleet_root) {
+        Ok(config) => (config.heartbeat_every_s, None),
+        Err(e) => {
+            let secs = FleetConfig::default().heartbeat_every_s;
+            let text = format!("{e:#}").replace('\n', " ");
+            (
+                secs,
+                Some(format!(
+                    "horch worker: {text}; the heartbeat runs every {secs} s"
+                )),
+            )
+        }
+    }
+}
+
+/// The checkin interval of the worker: the [`fleet_period`], or the run's
+/// `heartbeat_every_s` when it is shorter, so no run beats more slowly than
+/// before.
+pub fn interval(db: &Path, worker_id: &str, fleet_root: &Path) -> Duration {
+    let (fleet, warning) = fleet_period(fleet_root);
+    if let Some(line) = warning {
+        eprintln!("{line}");
+    }
+    let run = Store::open(db).ok().and_then(|s| {
+        s.conn()
+            .query_row(
+                "SELECT r.heartbeat_every_s FROM workers w JOIN runs r ON r.run_id = w.run_id
+                 WHERE w.worker_id = ?1",
+                [worker_id],
+                |r| r.get::<_, i64>(0),
+            )
+            .ok()
+    });
+    let secs = run.map_or(fleet, |run| fleet.min(run.max(1) as u64)).max(1);
+    Duration::from_secs(secs)
 }
 
 /// Write `last_checkin_at = now` every `every` until stopped, and fill the
@@ -441,6 +466,73 @@ mod tests {
         let reason = "agent exited with code 0 before it claimed a task";
         assert_eq!(row(&f), ("no_task".into(), Some(reason.into()), Some(0)));
         assert_eq!(exited_text(&f), [reason]);
+    }
+
+    /// Set the run's `heartbeat_every_s` of the fixture's worker.
+    fn set_run_period(f: &Fixture, secs: i64) {
+        f.store
+            .conn()
+            .execute(
+                "UPDATE runs SET heartbeat_every_s = ?1
+                 WHERE run_id = (SELECT run_id FROM workers WHERE worker_id = ?2)",
+                params![secs, f.worker],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn interval_is_heartbeat_every_s_of_fleet_toml() {
+        let f = fixture("working");
+        let fleet = tempfile::tempdir().unwrap();
+        assert_eq!(
+            interval(&f.db, &f.worker, fleet.path()),
+            Duration::from_secs(10),
+            "no fleet.toml gives the design's 10 s"
+        );
+        std::fs::write(fleet.path().join("fleet.toml"), "heartbeat_every_s = 7\n").unwrap();
+        assert_eq!(
+            interval(&f.db, &f.worker, fleet.path()),
+            Duration::from_secs(7)
+        );
+    }
+
+    #[test]
+    fn interval_keeps_the_shorter_run_period() {
+        let f = fixture("working");
+        let fleet = tempfile::tempdir().unwrap();
+        set_run_period(&f, 4);
+        assert_eq!(
+            interval(&f.db, &f.worker, fleet.path()),
+            Duration::from_secs(4)
+        );
+        set_run_period(&f, 30);
+        assert_eq!(
+            interval(&f.db, &f.worker, fleet.path()),
+            Duration::from_secs(10)
+        );
+    }
+
+    #[test]
+    fn unreadable_fleet_toml_gives_the_default_period() {
+        let f = fixture("working");
+        let fleet = tempfile::tempdir().unwrap();
+        let file = fleet.path().join("fleet.toml");
+        // A value out of range, then a file that is a folder.
+        std::fs::write(&file, "heartbeat_every_s = 0\n").unwrap();
+        let (secs, warning) = fleet_period(fleet.path());
+        assert_eq!(secs, 10);
+        let warning = warning.expect("an unreadable fleet.toml prints 1 line");
+        assert!(warning.contains(&file.display().to_string()), "{warning}");
+        assert!(!warning.contains('\n'), "{warning}");
+        assert_eq!(
+            interval(&f.db, &f.worker, fleet.path()),
+            Duration::from_secs(10)
+        );
+        std::fs::remove_file(&file).unwrap();
+        std::fs::create_dir(&file).unwrap();
+        let (secs, warning) = fleet_period(fleet.path());
+        assert_eq!(secs, 10);
+        assert!(warning.unwrap().contains(&file.display().to_string()));
     }
 
     #[test]

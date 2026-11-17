@@ -810,7 +810,8 @@ impl<'a> PaneWorker<'a> {
                     crate::taskledger::supervisor::agent_started(&obs_db, &obs_id, pid),
                 );
             });
-            let every = crate::taskledger::supervisor::interval(&db, &id);
+            let every =
+                crate::taskledger::supervisor::interval(&db, &id, &self.ctx.paths.fleet_root);
             let lookup = session_lookup(
                 self.ctx.clone(),
                 brief.record_id.clone(),
