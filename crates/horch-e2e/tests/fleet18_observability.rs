@@ -456,7 +456,7 @@ fn g54_doctor_missing_mcp_and_hanging_docker_are_warnings() {
     let mut h = fleet("g54-services", "");
     let roster = h.root.join("roster");
     std::fs::create_dir_all(&roster).unwrap();
-    std::fs::write(roster.join("service-test.md"),"---\nname: service-test\nbrief_description: Service check\nagent: claude\nmodel: sonnet\ndisallowed_tools: [Agent]\nrequires: [docker]\nmcp_servers:\n  absent-service:\n    command: definitely-not-installed\n  remote-http:\n    type: http\n    url: https://example.invalid/mcp\n    command: remote-command-must-not-be-checked\n---\nservice worker\n").unwrap();
+    std::fs::write(roster.join("service-test.md"),"---\nname: service-test\nbrief_description: Service check\nagent: claude\nmodel: sonnet\nfallbacks: [codex-sol]\ndisallowed_tools: [Agent]\nrequires: [docker]\nmcp_servers:\n  absent-service:\n    command: definitely-not-installed\n  remote-http:\n    type: http\n    url: https://example.invalid/mcp\n    command: remote-command-must-not-be-checked\n---\nservice worker\n").unwrap();
     h.set("HORCH_TEAMMATES_DIR", roster.to_string_lossy());
     let marker = h.root.join("docker-started");
     h.write_bin(
