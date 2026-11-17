@@ -927,7 +927,7 @@ fn fm11_fleetd_aborted_after_the_commit_does_each_effect_once_on_restart() {
             task_status(&h, 1),
             transitions(&h, "attempt", &attempt, "live", "ended")
         ),
-        ("queued".to_string(), 1),
+        ("ready".to_string(), 1),
         "the pass committed the end of the attempt and the requeue before it died"
     );
     let respawn = orchestrator_attempts(&h);
@@ -967,13 +967,13 @@ fn fm11_fleetd_aborted_after_the_commit_does_each_effect_once_on_restart() {
         "the attempt ended once"
     );
     assert_eq!(
-        transitions(&h, "task", &task, "running", "queued"),
+        transitions(&h, "task", &task, "running", "ready"),
         1,
         "the task was queued again once"
     );
     assert_eq!(
         (task_status(&h, 1), outcomes(&h)[0].attempts),
-        ("queued".to_string(), 1),
+        ("ready".to_string(), 1),
         "the task waits for its next attempt"
     );
 }

@@ -116,7 +116,7 @@ fn trf_35_done_unlanded_parks_the_task_and_requeue_resumes_it_on_the_same_worktr
     // Parked: queued and held, no worker, not finished; the worktree stays.
     let t = t1(&w, &run);
     assert!(t.is_parked(), "{t:?}");
-    assert_eq!(t.status, "queued");
+    assert_eq!(t.status, "escalated");
     assert_eq!(t.held_reason.as_deref(), Some("unlanded"));
     assert_eq!(t.current_worker_id, None);
     assert_eq!(t.finished_at, None);
@@ -149,7 +149,7 @@ fn trf_35_done_unlanded_parks_the_task_and_requeue_resumes_it_on_the_same_worktr
         .unwrap();
     assert_eq!(
         (back.status.as_str(), back.held_reason.as_deref()),
-        ("queued", None)
+        ("ready", None)
     );
     assert_eq!(worktree(&w, &path).0, "open");
     assert!(matches!(
@@ -205,7 +205,7 @@ fn trf_35_triage_finish_resumes_the_parked_task_instead_of_queuing_a_new_one() {
     assert_eq!(task_count(&w), 2, "FINISH queued a new task");
     assert_eq!(
         (t.status.as_str(), t.held_reason.as_deref()),
-        ("queued", None)
+        ("ready", None)
     );
     assert_eq!(
         worktree(&w, &path),

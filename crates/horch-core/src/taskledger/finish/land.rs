@@ -9,7 +9,7 @@ use rusqlite::params;
 
 use super::{set_worktree, worktree_of, Ctx, Outcome, WorktreeRow};
 use crate::taskledger::git::{dir_bytes, Git};
-use crate::taskledger::model::{Actor, EventKind, StepName, WorktreeStatus};
+use crate::taskledger::model::{Actor, EventKind, StepName, TaskStatus, WorktreeStatus};
 use crate::taskledger::sql_words::word;
 use crate::taskledger::store::Store;
 use crate::taskledger::util::{self, About};
@@ -581,13 +581,14 @@ fn reset_to(git: &Git, dir: &Path, tip: &str) -> Result<()> {
 fn still_mine(store: &Store, cx: &Ctx<'_>) -> Result<(), Stop> {
     let t = super::tasks::get(store.conn(), &cx.task.task_id)?;
     let mine = Some(cx.worker.worker_id.as_str());
-    if (t.status.as_str(), t.current_worker_id.as_deref()) == ("landing", mine) {
+    let verifying = TaskStatus::Verifying.as_str();
+    if (t.status.as_str(), t.current_worker_id.as_deref()) == (verifying, mine) {
         Ok(())
     } else {
         let why = format!(
             "{} is {}: nothing landed. Stop work, then run horch done",
             t.short(),
-            t.status
+            t.shown_status()
         );
         Err(Stop::NotMine(Box::new(Outcome::fail(
             "not landed",

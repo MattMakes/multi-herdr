@@ -420,7 +420,7 @@ mod tests {
 
         assert_eq!(l.attempt_states(), [(format!("{task}/A1"), "ended".into())]);
         assert_eq!(l.worker_status(&w), "incomplete");
-        assert_eq!(l.task_status(&task), "queued");
+        assert_eq!(l.task_status(&task), "ready");
         assert_eq!(
             stops,
             [process_stop(
@@ -454,7 +454,7 @@ mod tests {
         agent.end();
         l.finish_exited(&l.facts(&[]));
 
-        assert_eq!(l.task_status(&task), "queued");
+        assert_eq!(l.task_status(&task), "ready");
     }
 
     #[test]
@@ -475,7 +475,7 @@ mod tests {
         l.finish_exited(&l.facts(&[]));
 
         let t = tasks::get(l.store.conn(), &task).unwrap();
-        assert_eq!(t.status, TaskStatus::Queued.as_str());
+        assert_eq!(t.status, TaskStatus::Escalated.as_str());
         assert!(t.held_reason.is_some(), "held at max_attempts (L4)");
     }
 
@@ -504,7 +504,7 @@ mod tests {
 
         assert_eq!(stops, []);
         for t in [&t1, &t2] {
-            assert_eq!(l.task_status(t), "queued");
+            assert_eq!(l.task_status(t), "ready");
         }
         for w in &workers {
             assert_eq!(l.worker_status(w), "incomplete");
@@ -582,7 +582,7 @@ mod tests {
             let tx = l.store.conn().unchecked_transaction().unwrap();
             let stops = finish_exited(&tx, &facts).unwrap();
             assert_eq!(stops.len(), 1);
-            assert_eq!(tasks::get(&tx, &task).unwrap().status, "queued");
+            assert_eq!(tasks::get(&tx, &task).unwrap().status, "ready");
             assert!(supervisor.alive(), "no signal inside the transaction");
         }
         assert_eq!(l.task_status(&task), "running");
@@ -593,7 +593,7 @@ mod tests {
         let stops = l.finish_exited(&facts);
         assert_eq!(
             (l.task_status(&task), l.worker_status(&w)),
-            ("queued".into(), "incomplete".into())
+            ("ready".into(), "incomplete".into())
         );
         assert_eq!(l.attempt_states(), [(format!("{task}/A1"), "ended".into())]);
         assert_eq!(
@@ -653,6 +653,6 @@ mod tests {
             .collect();
         assert!(!pids.contains(&unnamed.recorded().pid), "{stops:?}");
         assert!(unnamed.alive());
-        assert_eq!(l.task_status(&task), "queued");
+        assert_eq!(l.task_status(&task), "ready");
     }
 }

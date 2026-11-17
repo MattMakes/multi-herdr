@@ -1281,7 +1281,7 @@ mod tests {
         let report = pass(&mut w, &duties, Faults::default());
 
         assert_eq!(w.status("workers", "worker_id", &worker), "incomplete");
-        assert_eq!(w.status("tasks", "task_id", &task), "queued");
+        assert_eq!(w.status("tasks", "task_id", &task), "ready");
         let outcome: String = w
             .conn
             .query_row(
@@ -1440,7 +1440,8 @@ mod tests {
         let task = tasks::add(&w.conn, &w.run, &new, Actor::Orchestrator).unwrap();
         w.conn
             .execute(
-                "UPDATE tasks SET held_reason = '3 attempts failed' WHERE task_id = ?1",
+                "UPDATE tasks SET status = 'escalated', held_reason = '3 attempts failed'
+                 WHERE task_id = ?1",
                 [&task.task_id],
             )
             .unwrap();
@@ -1631,7 +1632,7 @@ mod tests {
         crash_after_commit(&w);
 
         assert_eq!(w.status("workers", "worker_id", &worker), "incomplete");
-        assert_eq!(w.status("tasks", "task_id", &task), "queued");
+        assert_eq!(w.status("tasks", "task_id", &task), "ready");
         let attempts = w.respawn_attempts();
         assert_eq!(attempts.len(), 1, "{attempts:?}");
         assert_eq!(attempts[0].1, "launching");
@@ -1878,7 +1879,7 @@ mod tests {
         tasks::add(&w.conn, &w.run, &b, Actor::Orchestrator).unwrap();
         w.conn
             .execute(
-                "UPDATE tasks SET status = 'queued', held_reason = 'unlanded', attempts = 1
+                "UPDATE tasks SET status = 'escalated', held_reason = 'unlanded', attempts = 1
                  WHERE task_id = ?1",
                 [&a.task_id],
             )
@@ -1991,8 +1992,16 @@ mod tests {
                 let t = format!("BH-{n:05}");
                 let seq = (working + n) as i64;
                 let none: Option<&str> = None;
-                task.execute(params![t, run, seq, "queued", none, Some("attempts"), hour])
-                    .unwrap();
+                task.execute(params![
+                    t,
+                    run,
+                    seq,
+                    "escalated",
+                    none,
+                    Some("attempts"),
+                    hour
+                ])
+                .unwrap();
             }
         }
         tx.commit().unwrap();

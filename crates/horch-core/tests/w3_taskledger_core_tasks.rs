@@ -495,7 +495,10 @@ fn unblock_refuses_a_blocker_the_task_does_not_wait_for() {
     // T-2 waits for T-1, not the other way round.
     let err = tasks::unblock(s.conn(), &a, &b).unwrap_err().to_string();
     assert_eq!(err, "T-1 does not wait for T-2");
+    assert_eq!(b.status, "pending");
     tasks::unblock(s.conn(), &b, &a).unwrap();
+    let b = tasks::get(s.conn(), &b.task_id).unwrap();
+    assert_eq!(b.status, "ready", "T-2 waits for nothing now");
     let err = tasks::unblock(s.conn(), &b, &a).unwrap_err().to_string();
     assert_eq!(err, "T-2 does not wait for T-1", "the wait is gone");
 }
@@ -555,6 +558,6 @@ fn cancel_and_requeue_take_only_the_states_they_are_for() {
     let back = s
         .immediate(|tx| tasks::requeue_by_operator(tx, &cancelled, "again"))
         .unwrap();
-    assert_eq!(back.status, "queued");
+    assert_eq!(back.status, "ready");
     assert_eq!(back.finished_at, None);
 }

@@ -171,12 +171,18 @@ fn held_by_live_worker(conn: &Connection, row: &LedgerRow) -> Result<bool> {
 }
 
 /// Whether the row waits for a step that will take it on: a task that is
-/// queued, running or landing has a worker coming.
+/// queued (shown), running or landing has a worker coming.
 fn task_pending(row: &LedgerRow) -> bool {
     row.task.as_ref().is_some_and(|(_, _, status, _)| {
-        [TaskStatus::Queued, TaskStatus::Running, TaskStatus::Landing]
-            .iter()
-            .any(|s| s.as_str() == status)
+        [
+            TaskStatus::Pending,
+            TaskStatus::Ready,
+            TaskStatus::Escalated,
+            TaskStatus::Running,
+            TaskStatus::Verifying,
+        ]
+        .iter()
+        .any(|s| s.as_str() == status)
     })
 }
 

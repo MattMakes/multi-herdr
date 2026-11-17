@@ -81,7 +81,13 @@ pub fn dependents_wake(t: &tasks::Task, dependents: &[tasks::Task]) -> Option<Wa
 }
 
 /// The statuses of an open task of a stuck run.
-const OPEN: [TaskStatus; 3] = [TaskStatus::Queued, TaskStatus::Running, TaskStatus::Landing];
+const OPEN: [TaskStatus; 5] = [
+    TaskStatus::Pending,
+    TaskStatus::Ready,
+    TaskStatus::Escalated,
+    TaskStatus::Running,
+    TaskStatus::Verifying,
+];
 
 fn stuck_line(conn: &Connection, run: &Run) -> Option<String> {
     // 1 count query first: a run with no open task or with a working
@@ -130,7 +136,7 @@ fn stuck_line(conn: &Connection, run: &Run) -> Option<String> {
             ) {
                 (Some(r), _) => format!("{} is held ({r})", t.short()),
                 (None, Some((_, w))) => format!("{}: {w}", t.short()),
-                (None, None) => format!("{} is {}", t.short(), t.status),
+                (None, None) => format!("{} is {}", t.short(), t.shown_status()),
             }
         })
         .collect();

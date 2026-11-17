@@ -1607,7 +1607,7 @@ fn print_task(
     attempts: &[workers::Worker],
     events: &[status::EventLine],
 ) {
-    output::println(&format!("{} {}: {}", t.short(), t.status, t.title));
+    output::println(&format!("{} {}: {}", t.short(), t.shown_status(), t.title));
     output::println(&format!(
         "Ticket: {}",
         t.task_file.as_deref().unwrap_or("-")
@@ -1623,7 +1623,7 @@ fn print_task(
             "Blocked by: {}",
             blockers
                 .iter()
-                .map(|b| format!("{} ({})", b.short(), b.status))
+                .map(|b| format!("{} ({})", b.short(), b.shown_status()))
                 .collect::<Vec<_>>()
                 .join(", ")
         ));

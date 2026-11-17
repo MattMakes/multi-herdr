@@ -113,6 +113,9 @@ fn trf_37_handoff_requeues_the_task_and_the_next_claim_reads_the_handoff_first()
         .as_str()
         .or_else(|| show["status"].as_str());
     assert_eq!(status, Some("queued"), "{show}");
+    // The JSON keeps the word of today in `status`, and gives the stored
+    // word in `state` (fleetd-p2 MAP.md, Q3).
+    assert_eq!(show["task"]["state"].as_str(), Some("ready"), "{show}");
 
     let next = w.hire();
     let out = w.ok(Some(&next), &["ledger", "claim"]);

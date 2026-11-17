@@ -347,20 +347,28 @@ fn assert_board_events(events: &[String]) {
         events[5],
         "orchestrator note          T-2 no longer waits for T-1."
     );
+    // T-2 waits for nothing now: it moves from pending to ready, both
+    // shown as queued.
+    assert!(
+        events[6].starts_with(
+            "horch        transition    dependencies_met: each task that T-2 waits for is done; task "
+        ) && events[6].ends_with(": queued -> queued"),
+        "{events:?}"
+    );
     // 1 undelivered wake stays in the outbox. The requeue brings the board
     // back to the same state, so it writes no second wake (TRF-21).
     assert!(
-        events[6].ends_with(
+        events[7].ends_with(
             "; it stays in the outbox: [horch] NOTE: Tasks can start: T-1, T-2. Spawn: dev x1, dev2 x1."
         ),
         "{events:?}"
     );
-    assert_eq!(events[7], "orchestrator cancelled     T-2 cancelled: nope");
+    assert_eq!(events[8], "orchestrator cancelled     T-2 cancelled: nope");
     assert_eq!(
-        events[8],
+        events[9],
         "orchestrator requeued      T-2 is queued again by the operator: again"
     );
-    assert_eq!(events.len(), 9, "{events:?}");
+    assert_eq!(events.len(), 10, "{events:?}");
 }
 
 #[test]

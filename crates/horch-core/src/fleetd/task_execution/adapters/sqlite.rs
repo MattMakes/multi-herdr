@@ -101,7 +101,7 @@ fn workers(conn: &Connection, host: &str) -> Result<BTreeMap<String, WorkerRow>>
 fn task(conn: &Connection, task_id: &str) -> Result<TaskRow> {
     let t = tasks::get(conn, task_id)?;
     let max_attempts = runs::get(conn, &t.run_id)?.max_attempts;
-    let holds = [TaskStatus::Running, TaskStatus::Landing]
+    let holds = [TaskStatus::Running, TaskStatus::Verifying]
         .iter()
         .any(|s| s.as_str() == t.status);
     Ok(TaskRow {

@@ -954,7 +954,7 @@ fn sync_tasks(conn: &Connection) -> Result<()> {
                  VALUES (?1, ?2, 'reaped_never_finished', ?3, ?4, {open}, ?5)",
                 open = word(FindingStatus::Open)
             ),
-            params![project, run, task, format!("T-{seq} ({status}): a worker died on it and the run ended before another finished it"), util::now()],
+            params![project, run, task, format!("T-{seq} ({}): a worker died on it and the run ended before another finished it", TaskStatus::shown_word(&status)), util::now()],
         )?;
     }
     Ok(())

@@ -62,15 +62,47 @@ ledger_enum!(
 );
 
 ledger_enum!(
-    /// `tasks.status`. "Blocked" is not stored: it is derived from `task_deps`.
+    /// `tasks.status`: the 12 states of the task state machine
+    /// (docs/specs/fleetd/design.md, "Ledger"). A `pending` task waits for a
+    /// dependency that is not done; "blocked" is shown from `task_deps`.
     TaskStatus {
-        Queued = "queued",
+        Pending = "pending",
+        Ready = "ready",
+        Leased = "leased",
         Running = "running",
-        Landing = "landing",
+        Stalled = "stalled",
+        Verifying = "verifying",
+        BlockedOnUser = "blocked_on_user",
+        WaitingQuota = "waiting_quota",
         Done = "done",
+        Failed = "failed",
+        Escalated = "escalated",
         Cancelled = "cancelled",
     }
 );
+
+impl TaskStatus {
+    /// The word that a reader sees: the word of today for each state of
+    /// today (docs/tickets/fleetd-p2/MAP.md, Q3). An `escalated` task shows
+    /// as `queued` with its held reason, as a held task did.
+    pub fn shown(self) -> &'static str {
+        match self {
+            TaskStatus::Pending | TaskStatus::Ready | TaskStatus::Escalated => "queued",
+            TaskStatus::Leased | TaskStatus::Running => "running",
+            TaskStatus::Verifying => "landing",
+            other => other.as_str(),
+        }
+    }
+
+    /// [`TaskStatus::shown`] of the stored word `word`. A word that is not a
+    /// state shows as it is.
+    pub fn shown_word(word: &str) -> &str {
+        match TaskStatus::parse(word) {
+            Ok(s) => s.shown(),
+            Err(_) => word,
+        }
+    }
+}
 
 ledger_enum!(
     /// `tasks.kind`: ordinary work, or a code-sweep reviewer task that changes
@@ -440,6 +472,53 @@ impl std::str::FromStr for VerifyProfile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn task_status_has_the_12_states_of_the_design() {
+        let words: Vec<&str> = TaskStatus::ALL.iter().map(|s| s.as_str()).collect();
+        assert_eq!(
+            words,
+            [
+                "pending",
+                "ready",
+                "leased",
+                "running",
+                "stalled",
+                "verifying",
+                "blocked_on_user",
+                "waiting_quota",
+                "done",
+                "failed",
+                "escalated",
+                "cancelled",
+            ]
+        );
+    }
+
+    #[test]
+    fn shown_word_of_each_state_is_the_word_of_today() {
+        let shown: Vec<(&str, &str)> = TaskStatus::ALL
+            .iter()
+            .map(|s| (s.as_str(), s.shown()))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("pending", "queued"),
+                ("ready", "queued"),
+                ("leased", "running"),
+                ("running", "running"),
+                ("stalled", "stalled"),
+                ("verifying", "landing"),
+                ("blocked_on_user", "blocked_on_user"),
+                ("waiting_quota", "waiting_quota"),
+                ("done", "done"),
+                ("failed", "failed"),
+                ("escalated", "queued"),
+                ("cancelled", "cancelled"),
+            ]
+        );
+    }
 
     #[test]
     fn words_round_trip() {

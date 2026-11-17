@@ -63,7 +63,7 @@ fn busy_board() -> (tempfile::TempDir, Store, Run) {
         add(&mut store, &run, title);
     }
     for (title, status) in [
-        ("gamma", "landing"),
+        ("gamma", "verifying"),
         ("delta", "done"),
         ("eps", "cancelled"),
     ] {

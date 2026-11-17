@@ -375,7 +375,7 @@ fn finish_queues_a_task_that_inherits_the_worktree() {
         .unwrap();
     assert_eq!(
         (file.as_str(), status.as_str()),
-        ("ai_docs/triage/feat.md", "queued")
+        ("ai_docs/triage/feat.md", "ready")
     );
     let brief = std::fs::read_to_string(w.root.join(&file)).unwrap();
     assert!(brief.contains("Fix the flaky test, then land"), "{brief}");

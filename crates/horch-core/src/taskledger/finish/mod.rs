@@ -386,7 +386,7 @@ fn held_task(conn: &Connection, worker_id: &str) -> Result<(Worker, Task)> {
         bail!(
             "{} is no longer this worker's ({}); stop work and end your turn",
             task.short(),
-            task.status
+            task.shown_status()
         );
     }
     Ok((w, task))
@@ -716,7 +716,7 @@ impl<'a> Attempt<'a> {
                     tx,
                     Entity::Task,
                     task_id,
-                    TaskStatus::Landing.as_str(),
+                    TaskStatus::Verifying.as_str(),
                     Actor::Worker,
                     util::Why::Rule(
                         util::Rule::Finish,
@@ -1102,7 +1102,7 @@ fn require_through(conn: &Connection, run: &Run, task: &Task, worker_id: &str) -
 }
 
 /// The task's final status, summary and event. An unlanded task is parked
-/// `queued` and its worktree `unlanded`, still attached to the task.
+/// `escalated` and its worktree `unlanded`, still attached to the task.
 fn final_state(
     tx: &Connection,
     task: &Task,
@@ -1110,13 +1110,17 @@ fn final_state(
     unlanded: Option<&str>,
 ) -> Result<(&'static str, String, EventKind)> {
     let Some(reason) = unlanded else {
-        return Ok(("done", summary.to_string(), EventKind::Done));
+        return Ok((
+            TaskStatus::Done.as_str(),
+            summary.to_string(),
+            EventKind::Done,
+        ));
     };
     if let Some(wt) = worktree_of(tx, &task.task_id)? {
         set_worktree(tx, &wt.worktree_id, WorktreeStatus::Unlanded, Some(reason))?;
     }
     Ok((
-        "queued",
+        TaskStatus::Escalated.as_str(),
         format!("UNLANDED: {reason} | {summary}"),
         EventKind::Unlanded,
     ))
@@ -1156,6 +1160,9 @@ fn mark_done(
         Actor::Worker,
         util::Why::Event(kind, &shown),
     )?;
+    if !unlanded {
+        tasks::ready_dependents(tx, &task.task_id)?;
+    }
     tx.execute(
         "UPDATE tasks SET summary = ?2, updated_at = ?3,
             finished_at = CASE WHEN ?4 IS NULL THEN ?3 END,
@@ -1342,9 +1349,9 @@ mod tests {
         assert_eq!(
             moves("task", &task_id),
             vec![
-                expected_move(Some("queued"), "running"),
-                expected_move(Some("running"), "landing"),
-                expected_move(Some("landing"), "done"),
+                expected_move(Some("ready"), "running"),
+                expected_move(Some("running"), "verifying"),
+                expected_move(Some("verifying"), "done"),
             ]
         );
         assert_eq!(

@@ -325,7 +325,7 @@ mod tests {
             tx.execute(
                 "INSERT INTO tasks (task_id, run_id, seq, title, status, created_at, updated_at,
                    primary_persona, claimable_by)
-                 VALUES ('t1', 'r', 1, 'x', 'queued', 'now', 'now', 'opus', 'opus')",
+                 VALUES ('t1', 'r', 1, 'x', 'ready', 'now', 'now', 'opus', 'opus')",
                 [],
             )?;
             Ok(())
@@ -337,7 +337,7 @@ mod tests {
         s.immediate(|tx| {
             tx.execute(
                 "INSERT INTO tasks (task_id, run_id, seq, title, status, created_at, updated_at, origin)
-                 VALUES ('t1', 'r', 1, 'x', 'queued', 'now', 'now', 'import')",
+                 VALUES ('t1', 'r', 1, 'x', 'ready', 'now', 'now', 'import')",
                 [],
             )?;
             Ok(())

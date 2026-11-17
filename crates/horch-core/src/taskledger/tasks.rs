@@ -51,6 +51,9 @@ pub struct Task {
     pub land_check: Option<String>,
     pub kind: String,
     pub parent_task_id: Option<String>,
+    /// The stored word. Its JSON is the shown word `status` and the stored
+    /// word `state` ([`status_json`]).
+    #[serde(flatten, serialize_with = "status_json")]
     pub status: String,
     pub attempts: i64,
     /// Set while a `queued` task is held for the operator after too many
@@ -88,6 +91,21 @@ impl Task {
         TaskStatus::parse(&self.status)
     }
 
+    /// The status word that a reader sees ([`TaskStatus::shown`]).
+    pub fn shown_status(&self) -> &str {
+        TaskStatus::shown_word(&self.status)
+    }
+
+    /// Shown as `queued`: it waits for a claim, or it is held.
+    pub fn is_queued(&self) -> bool {
+        is_in(sql_words::TASKS_QUEUED, &self.status)
+    }
+
+    /// A worker is on it: running, or landing.
+    pub fn in_flight(&self) -> bool {
+        is_in(sql_words::TASKS_IN_FLIGHT, &self.status)
+    }
+
     pub fn is_review(&self) -> bool {
         self.kind == TaskKind::Review.as_str()
     }
@@ -102,10 +120,10 @@ impl Task {
         self.check_none && self.task_file.as_deref() == Some(ONE_OFF_TICKET)
     }
 
-    /// Parked by `done --unlanded`: queued, held, with its worktree kept
+    /// Parked by `done --unlanded`: escalated, held, with its worktree kept
     /// (trace-fixes D16). `requeue` resumes it on that worktree.
     pub fn is_parked(&self) -> bool {
-        self.status == TaskStatus::Queued.as_str()
+        self.status == TaskStatus::Escalated.as_str()
             && self.held_reason.as_deref() == Some(HeldReason::Unlanded.as_str())
     }
 
@@ -209,6 +227,31 @@ impl NewTask {
     }
 }
 
+/// The JSON of a task status: `status` with the word of today
+/// ([`TaskStatus::shown`]) and `state` with the stored word (MAP.md, Q3).
+fn status_json<S: serde::Serializer>(status: &str, s: S) -> Result<S::Ok, S::Error> {
+    use serde::ser::SerializeMap;
+    let mut map = s.serialize_map(Some(2))?;
+    map.serialize_entry("status", TaskStatus::shown_word(status))?;
+    map.serialize_entry("state", status)?;
+    map.end()
+}
+
+/// Whether the stored word `status` is 1 of `states`.
+fn is_in(states: &[TaskStatus], status: &str) -> bool {
+    states.iter().any(|s| s.as_str() == status)
+}
+
+/// The state of a new task: `pending` while a task that it waits for is not
+/// done, else `ready`.
+fn first_state(all_done: bool) -> TaskStatus {
+    if all_done {
+        TaskStatus::Ready
+    } else {
+        TaskStatus::Pending
+    }
+}
+
 /// The sha256 of `text`, in lowercase hex.
 pub fn ticket_sha(text: &str) -> String {
     use sha2::{Digest, Sha256};
@@ -243,7 +286,7 @@ pub fn refuse_queued(conn: &Connection, run_id: &str, items: &[(String, NewTask)
                 "{} is already {} ({}) in this run.",
                 t.task_file.as_deref().unwrap_or("-"),
                 t.short(),
-                t.status
+                t.shown_status()
             )
         })
         .collect();
@@ -323,8 +366,14 @@ pub fn dependents(conn: &Connection, task_id: &str) -> Result<Vec<Task>> {
     Ok(rows)
 }
 
-/// `horch ledger unblock`: `task` no longer waits for `blocker`.
+/// `horch ledger unblock`: `task` no longer waits for `blocker`. A pending
+/// task that then waits for nothing that is not done is ready.
 pub fn unblock(conn: &Connection, task: &Task, blocker: &Task) -> Result<()> {
+    util::atomic(conn, |conn| unblock_in(conn, task, blocker))
+}
+
+/// The writes of [`unblock`], in the open transaction of `conn`.
+fn unblock_in(conn: &Connection, task: &Task, blocker: &Task) -> Result<()> {
     let n = conn.execute(
         "DELETE FROM task_deps WHERE task_id = ?1 AND blocked_by = ?2",
         params![task.task_id, blocker.task_id],
@@ -343,7 +392,42 @@ pub fn unblock(conn: &Connection, task: &Task, blocker: &Task) -> Result<()> {
         EventKind::Note,
         &format!("{} no longer waits for {}.", task.short(), blocker.short()),
     )?;
+    ready_when_met(conn, &task.task_id)
+}
+
+/// When `task_id` is done: each `pending` task that waits for it, with each
+/// of its dependencies done, moves to `ready` (I2), in the caller's
+/// transaction.
+pub fn ready_dependents(conn: &Connection, task_id: &str) -> Result<()> {
+    let waiting: Vec<String> = conn
+        .prepare("SELECT task_id FROM task_deps WHERE blocked_by = ?1 ORDER BY task_id")?
+        .query_map([task_id], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    for id in waiting {
+        ready_when_met(conn, &id)?;
+    }
     Ok(())
+}
+
+/// Move the `pending` task `task_id` to `ready` when each task that it
+/// waits for is done.
+fn ready_when_met(conn: &Connection, task_id: &str) -> Result<()> {
+    let task = get(conn, task_id)?;
+    let met = blockers(conn, task_id)?
+        .iter()
+        .all(|b| b.status == TaskStatus::Done.as_str());
+    if task.status != TaskStatus::Pending.as_str() || !met {
+        return Ok(());
+    }
+    let text = format!("each task that {} waits for is done", task.short());
+    util::transition(
+        conn,
+        Entity::Task,
+        task_id,
+        TaskStatus::Ready.as_str(),
+        Actor::Horch,
+        util::Why::Rule(util::Rule::DependenciesMet, &text),
+    )
 }
 
 /// The files a task owns or must not touch.
@@ -365,7 +449,12 @@ pub fn add(conn: &Connection, run: &Run, new: &NewTask, actor: Actor) -> Result<
         .iter()
         .map(|b| resolve(conn, &run.run_id, b))
         .collect::<Result<_>>()?;
-    let id = insert(conn, run, new)?;
+    let state = first_state(
+        blockers
+            .iter()
+            .all(|b| b.status == TaskStatus::Done.as_str()),
+    );
+    let id = insert(conn, run, new, state)?;
     for b in &blockers {
         conn.execute(
             "INSERT INTO task_deps (task_id, blocked_by) VALUES (?1, ?2)",
@@ -457,12 +546,23 @@ fn insert_in_order(
     let mut ids: Vec<Option<String>> = vec![None; items.len()];
     for &i in order {
         let (_, new) = &items[i];
-        let id = insert(conn, run, new)?;
-        for b in &new.blocked_by {
-            let blocker = match keys.get(b.as_str()) {
-                Some(&j) => ids[j].clone().expect("blockers insert first"),
-                None => resolve(conn, &run.run_id, b)?.task_id,
-            };
+        // A blocker of the map is new, so it is not done.
+        let blockers: Vec<(String, bool)> = new
+            .blocked_by
+            .iter()
+            .map(|b| match keys.get(b.as_str()) {
+                Some(&j) => Ok((ids[j].clone().expect("blockers insert first"), false)),
+                None => resolve(conn, &run.run_id, b)
+                    .map(|t| (t.task_id, t.status == TaskStatus::Done.as_str())),
+            })
+            .collect::<Result<_>>()?;
+        let id = insert(
+            conn,
+            run,
+            new,
+            first_state(blockers.iter().all(|(_, done)| *done)),
+        )?;
+        for (blocker, _) in blockers {
             conn.execute(
                 "INSERT INTO task_deps (task_id, blocked_by) VALUES (?1, ?2)",
                 params![id, blocker],
@@ -522,7 +622,7 @@ fn validate(new: &NewTask) -> Result<()> {
     Ok(())
 }
 
-fn insert(conn: &Connection, run: &Run, new: &NewTask) -> Result<String> {
+fn insert(conn: &Connection, run: &Run, new: &NewTask, state: TaskStatus) -> Result<String> {
     let seq: i64 = conn.query_row(
         "SELECT COALESCE(MAX(seq), 0) + 1 FROM tasks WHERE run_id = ?1",
         [&run.run_id],
@@ -555,7 +655,7 @@ fn insert(conn: &Connection, run: &Run, new: &NewTask) -> Result<String> {
             new.land_check,
             new.kind.as_str(),
             new.parent_task_id,
-            TaskStatus::Queued.as_str(),
+            state.as_str(),
             Origin::Native.as_str(),
             now,
             new.work_kind.map(WorkKind::as_str),
@@ -763,7 +863,7 @@ impl Board {
     }
 
     fn is_active(t: &Task) -> bool {
-        matches!(t.status.as_str(), "running" | "landing")
+        t.in_flight()
     }
 
     /// Why `t` cannot start beside the `active` tasks, or `None`. Review
@@ -797,7 +897,7 @@ impl Board {
                 } else if bt.status != TaskStatus::Done.as_str() {
                     Some(Wait::BlockedBy {
                         task: bt.short(),
-                        status: bt.status.clone(),
+                        status: bt.shown_status().to_string(),
                     })
                 } else {
                     None
@@ -830,7 +930,7 @@ impl Board {
         let mut q: Vec<&Task> = self
             .tasks
             .iter()
-            .filter(|t| t.status == TaskStatus::Queued.as_str() && t.held_reason.is_none())
+            .filter(|t| is_in(sql_words::TASKS_WAITING, &t.status) && t.held_reason.is_none())
             .collect();
         q.sort_by_key(|t| (t.priority, t.seq));
         q
@@ -1121,7 +1221,7 @@ fn take_task(conn: &Connection, w: &Worker, task: &Task) -> Result<()> {
     let worker_id = w.worker_id.as_str();
     let now = util::now();
     let attempt = task.attempts + 1;
-    if get(conn, &task.task_id)?.status != TaskStatus::Queued.as_str() {
+    if get(conn, &task.task_id)?.status != TaskStatus::Ready.as_str() {
         bail!("{} was claimed by another worker", task.short());
     }
     let text = format!(
@@ -1257,7 +1357,7 @@ pub fn handoff(tx: &Transaction, worker_id: &str, path: &str) -> Result<HandedOf
         tx,
         Entity::Task,
         &task.task_id,
-        TaskStatus::Queued.as_str(),
+        TaskStatus::Ready.as_str(),
         Actor::Worker,
         util::Why::Event(EventKind::Requeued, &format!("{} handed off {}: it is queued again, first in line, with its worktree. Handoff: {path}", w.label(), task.short())),
     )?;
@@ -1265,11 +1365,11 @@ pub fn handoff(tx: &Transaction, worker_id: &str, path: &str) -> Result<HandedOf
         &format!(
             "UPDATE tasks SET current_worker_id = NULL, held_reason = NULL,
                 priority = MIN(priority, (SELECT COALESCE(MIN(o.priority), tasks.priority)
-                    FROM tasks o WHERE o.run_id = tasks.run_id AND o.status = {queued}
+                    FROM tasks o WHERE o.run_id = tasks.run_id AND o.status IN ({queued})
                     AND o.task_id != tasks.task_id) - 1),
                 updated_at = ?2
              WHERE task_id = ?1",
-            queued = word(TaskStatus::Queued)
+            queued = sql_words::list(sql_words::TASKS_QUEUED)
         ),
         params![task.task_id, util::now()],
     )?;
@@ -1305,7 +1405,7 @@ fn handoff_task(conn: &Connection, w: &Worker) -> Result<Task> {
         bail!(
             "{} is {} and worker {} is {}; only a worker with a running task hands off",
             task.short(),
-            task.status,
+            task.shown_status(),
             w.label(),
             w.status
         );
@@ -1335,11 +1435,11 @@ pub fn fallback(conn: &Connection, task: &Task, reason: &str) -> Result<Task> {
     let Some(fb) = &task.fallback_persona else {
         bail!("{} has no fallback persona", task.short());
     };
-    if task.status != TaskStatus::Queued.as_str() {
+    if !task.is_queued() {
         bail!(
             "{} is {}; only a queued task moves to its fallback",
             task.short(),
-            task.status
+            task.shown_status()
         );
     }
     conn.execute(
@@ -1366,8 +1466,8 @@ pub fn fallback(conn: &Connection, task: &Task, reason: &str) -> Result<Task> {
 /// can reopen it). The worker's process is not signalled here: after the
 /// commit, the caller stops it with [`super::stop::stop_cancelled`] (TRF-36).
 pub fn cancel(conn: &Connection, task: &Task, reason: &str) -> Result<Task> {
-    if matches!(task.status.as_str(), "done" | "cancelled") {
-        bail!("{} is already {}", task.short(), task.status);
+    if is_in(sql_words::TASKS_ENDED, &task.status) {
+        bail!("{} is already {}", task.short(), task.shown_status());
     }
     util::atomic(conn, |conn| cancel_in(conn, task, reason))
 }
@@ -1432,7 +1532,7 @@ pub enum Requeue {
 /// hold it when it used up the run's `max_attempts`.
 pub fn requeue(conn: &Connection, task_id: &str, why: &str) -> Result<Requeue> {
     let task = get(conn, task_id)?;
-    if !matches!(task.status.as_str(), "running" | "landing") {
+    if !task.in_flight() {
         return Ok(Requeue::Skipped);
     }
     util::atomic(conn, |conn| requeue_in(conn, &task, why))
@@ -1469,10 +1569,10 @@ pub fn escalate(conn: &Connection, task_id: &str) -> Result<()> {
 /// Queue `task` again, first in line.
 fn retry_in(conn: &Connection, task: &Task, why: &str) -> Result<()> {
     let task_id = task.task_id.as_str();
-    let queued = TaskStatus::Queued.as_str();
+    let ready = TaskStatus::Ready.as_str();
     let text = format!("{} is queued again, first in line: {why}", task.short());
     let cause = util::Why::Event(EventKind::Requeued, &text);
-    util::transition(conn, Entity::Task, task_id, queued, Actor::Horch, cause)?;
+    util::transition(conn, Entity::Task, task_id, ready, Actor::Horch, cause)?;
     conn.execute(
         "UPDATE tasks SET current_worker_id = NULL, priority = priority - ?2, updated_at = ?3
          WHERE task_id = ?1",
@@ -1481,15 +1581,15 @@ fn retry_in(conn: &Connection, task: &Task, why: &str) -> Result<()> {
     Ok(())
 }
 
-/// Hold `task` for the operator: `queued` with `held_reason` (#168).
+/// Hold `task` for the operator: `escalated` with `held_reason` (#168).
 fn hold_in(conn: &Connection, task: &Task) -> Result<()> {
     let task_id = task.task_id.as_str();
-    let queued = TaskStatus::Queued.as_str();
+    let escalated = TaskStatus::Escalated.as_str();
     let used = task.attempts - task.attempt_floor;
     let held = format!("{used} attempts failed");
     let text = format!("{} is held for the operator: {held} ({}). Release it with horch ledger requeue {} \"<reason>\".", task.short(), attempt_ends(conn, task)?.join("; "), task.short());
     let cause = util::Why::Event(EventKind::Blocked, &text);
-    util::transition(conn, Entity::Task, task_id, queued, Actor::Horch, cause)?;
+    util::transition(conn, Entity::Task, task_id, escalated, Actor::Horch, cause)?;
     conn.execute(
         "UPDATE tasks SET current_worker_id = NULL, held_reason = ?2, updated_at = ?3
          WHERE task_id = ?1",
@@ -1513,19 +1613,19 @@ pub fn attempt_ends(conn: &Connection, task: &Task) -> Result<Vec<String>> {
 /// `max_attempts` anew. A cancelled task gets back the worktree its cancel
 /// abandoned; a parked task resumes on the worktree it parked with.
 pub fn requeue_by_operator(conn: &Connection, task: &Task, reason: &str) -> Result<Task> {
-    let held = task.status == TaskStatus::Queued.as_str() && task.held_reason.is_some();
+    let held = task.status == TaskStatus::Escalated.as_str();
     if !held && task.status != TaskStatus::Cancelled.as_str() {
         bail!(
             "{} is {}; only a held or cancelled task is requeued",
             task.short(),
-            task.status
+            task.shown_status()
         );
     }
     util::atomic(conn, |conn| requeue_by_operator_in(conn, task, reason))
 }
 
 /// The writes of [`requeue_by_operator`], in the open transaction of
-/// `conn`. A held task stays `queued`, so its event is not a state change.
+/// `conn`. A held (`escalated`) or cancelled task moves to `ready`.
 fn requeue_by_operator_in(conn: &Connection, task: &Task, reason: &str) -> Result<Task> {
     let now = util::now();
     if task.is_parked() {
@@ -1533,28 +1633,14 @@ fn requeue_by_operator_in(conn: &Connection, task: &Task, reason: &str) -> Resul
     }
     let text = format!("{} is queued again by the operator: {reason}", task.short());
     let was_cancelled = get(conn, &task.task_id)?.status == TaskStatus::Cancelled.as_str();
-    if was_cancelled {
-        util::transition(
-            conn,
-            Entity::Task,
-            &task.task_id,
-            TaskStatus::Queued.as_str(),
-            Actor::Orchestrator,
-            util::Why::Event(EventKind::Requeued, &text),
-        )?;
-    } else {
-        util::event(
-            conn,
-            &About {
-                run: Some(&task.run_id),
-                task: Some(&task.task_id),
-                worker: None,
-            },
-            Actor::Orchestrator,
-            EventKind::Requeued,
-            &text,
-        )?;
-    }
+    util::transition(
+        conn,
+        Entity::Task,
+        &task.task_id,
+        TaskStatus::Ready.as_str(),
+        Actor::Orchestrator,
+        util::Why::Event(EventKind::Requeued, &text),
+    )?;
     conn.execute(
         "UPDATE tasks SET held_reason = NULL, attempt_floor = attempts,
             current_worker_id = NULL, summary = CASE WHEN ?3 THEN NULL ELSE summary END,
@@ -1732,7 +1818,12 @@ mod tests {
     const TEXT: &str = "# 01: A\n\n<!-- horch-ticket: 1 -->\n**Persona:** primary `dev`\n";
 
     /// A new worker of `persona` in `run`, spawned for `target`.
-    fn spawn_for(store: &mut Store, run: &Run, persona: &str, target: Option<&str>) -> String {
+    pub(super) fn spawn_for(
+        store: &mut Store,
+        run: &Run,
+        persona: &str,
+        target: Option<&str>,
+    ) -> String {
         let new = NewWorker {
             run_id: run.run_id.clone(),
             persona: persona.into(),
@@ -1743,7 +1834,7 @@ mod tests {
     }
 
     /// The task id `worker` claims, or `None` for no task.
-    fn claim_id(store: &mut Store, worker: &str) -> Option<String> {
+    pub(super) fn claim_id(store: &mut Store, worker: &str) -> Option<String> {
         match store.immediate(|tx| claim(tx, worker)).unwrap() {
             ClaimOutcome::Claimed(c) => Some(c.task.task_id),
             ClaimOutcome::NoTask { .. } => None,
@@ -2119,8 +2210,8 @@ mod tests {
         assert_eq!(out.worker.end_reason.as_deref(), Some("handed_off"));
         assert_eq!(out.worker.handoff_path.as_deref(), Some(path.as_str()));
         assert!(out.worker.ended_at.is_some());
-        // The task is queued, in front of a, and its worktree is open.
-        assert_eq!(out.task.status, TaskStatus::Queued.as_str());
+        // The task is ready, in front of a, and its worktree is open.
+        assert_eq!(out.task.status, TaskStatus::Ready.as_str());
         assert_eq!(out.task.current_worker_id, None);
         let a = resolve(store.conn(), &run.run_id, "T-1").unwrap();
         assert!(
@@ -2272,14 +2363,14 @@ mod tests {
         };
         let claim_of = |w: &str| {
             vec![
-                ("task", t.clone(), "queued", "running"),
+                ("task", t.clone(), "ready", "running"),
                 ("worker", w.to_string(), "claiming", "working"),
             ]
         };
         let mut want = start(&w1);
         want.extend(claim_of(&w1));
         want.push(("worker", w1.clone(), "working", "incomplete"));
-        want.push(("task", t.clone(), "running", "queued"));
+        want.push(("task", t.clone(), "running", "ready"));
         want.extend(start(&w2));
         want.extend(claim_of(&w2));
         want.push(("task", t.clone(), "running", "cancelled"));
@@ -2437,7 +2528,7 @@ mod attempt_tests {
 
         assert!(format!("{err:#}").contains("I4"), "{err:#}");
         for t in [&held, &next] {
-            assert_eq!(get(store.conn(), t).unwrap().status, "queued");
+            assert_eq!(get(store.conn(), t).unwrap().status, "ready");
         }
         assert_eq!(
             attempt_store::attempts_of_worker(store.conn(), &w)
@@ -2445,5 +2536,106 @@ mod attempt_tests {
                 .len(),
             1
         );
+    }
+
+    use super::tests::{claim_id, spawn_for};
+
+    /// A task `title` of `run` that waits for `blocked_by`.
+    fn add_after(store: &mut Store, run: &Run, title: &str, blocked_by: &[&str]) -> Task {
+        let mut new = NewTask::work(title, &format!("tickets/{title}.md"), "dev");
+        new.blocked_by = blocked_by.iter().map(|b| b.to_string()).collect();
+        store
+            .immediate(|tx| add(tx, run, &new, Actor::Orchestrator))
+            .unwrap()
+    }
+
+    fn status_of(store: &Store, task_id: &str) -> String {
+        get(store.conn(), task_id).unwrap().status
+    }
+
+    #[test]
+    fn new_task_with_an_unmet_dependency_is_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, run) = ledger(dir.path());
+        let a = add_task(&mut store, &run, "a");
+        let b = add_after(&mut store, &run, "b", &["T-1"]);
+        assert_eq!(status_of(&store, &a), "ready");
+        assert_eq!(b.status, "pending");
+        // A dependency that is done is met.
+        store
+            .conn()
+            .execute("UPDATE tasks SET status = 'done' WHERE task_id = ?1", [&a])
+            .unwrap();
+        let c = add_after(&mut store, &run, "c", &["T-1"]);
+        assert_eq!(c.status, "ready");
+        // In a map, a task that waits for a new task of the map is pending.
+        let mut first = NewTask::work("d", "tickets/d.md", "dev");
+        first.blocked_by = vec!["T-2".into()];
+        let mut second = NewTask::work("e", "tickets/e.md", "dev");
+        second.blocked_by = vec!["d".into()];
+        let third = NewTask::work("f", "tickets/f.md", "dev");
+        let items = vec![
+            ("d".to_string(), first),
+            ("e".to_string(), second),
+            ("f".to_string(), third),
+        ];
+        let added = store
+            .immediate(|tx| add_many(tx, &run, &items, Actor::Orchestrator))
+            .unwrap();
+        let words: Vec<&str> = added.iter().map(|t| t.status.as_str()).collect();
+        assert_eq!(words, ["pending", "pending", "ready"]);
+    }
+
+    #[test]
+    fn done_moves_each_pending_dependent_with_all_dependencies_met_to_ready() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, run) = ledger(dir.path());
+        let a = add_task(&mut store, &run, "a");
+        let other = add_task(&mut store, &run, "other");
+        let b = add_after(&mut store, &run, "b", &["T-1"]).task_id;
+        let c = add_after(&mut store, &run, "c", &["T-1", "T-2"]).task_id;
+        let w = worker(&mut store, &run);
+        assert_eq!(claim_id(&mut store, &w), Some(a.clone()));
+        store
+            .immediate(|tx| {
+                let why = util::Why::Event(EventKind::Done, "a is done");
+                util::transition(tx, Entity::Task, &a, "done", Actor::Worker, why)?;
+                ready_dependents(tx, &a)
+            })
+            .unwrap();
+        assert_eq!(status_of(&store, &b), "ready");
+        assert_eq!(status_of(&store, &c), "pending", "c waits for {other}");
+        let moved: i64 = store
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM events WHERE kind = 'transition' AND entity = 'task'
+                     AND entity_id = ?1 AND from_state = 'pending' AND to_state = 'ready'",
+                [&b],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(moved, 1, "the move goes through the 1 door");
+    }
+
+    #[test]
+    fn claim_takes_only_a_ready_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, run) = ledger(dir.path());
+        let held = add_task(&mut store, &run, "held");
+        add_after(&mut store, &run, "waits", &["T-1"]);
+        store
+            .conn()
+            .execute(
+                "UPDATE tasks SET status = 'escalated', held_reason = '2 attempts failed'
+                 WHERE task_id = ?1",
+                [&held],
+            )
+            .unwrap();
+        let w = spawn_for(&mut store, &run, "dev", None);
+        assert_eq!(claim_id(&mut store, &w), None, "no task is ready");
+        let free = add_task(&mut store, &run, "free");
+        let w = spawn_for(&mut store, &run, "dev", None);
+        assert_eq!(claim_id(&mut store, &w), Some(free.clone()));
+        assert_eq!(status_of(&store, &free), "running");
     }
 }

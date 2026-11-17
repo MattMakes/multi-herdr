@@ -287,12 +287,12 @@ fn fm7_killed_watchdog_does_not_stop_the_reconcile() {
                 }
                 let fleetd = fleetds.current();
                 let (status, _) = task_row(&db(&h));
-                if status == "queued" {
+                if status == "ready" {
                     // The requeue is the work of a live fleetd, not of a
                     // restarted watchdog.
                     assert!(
                         fleetd.is_some_and(|(pid, started)| procid::alive(pid, started)),
-                        "task 1 is queued, but the fleetd row names no live fleetd: {fleetd:?}"
+                        "task 1 is ready, but the fleetd row names no live fleetd: {fleetd:?}"
                     );
                     let watchdog = horch_core::taskledger::watchdog::holder(&locks, &run_id);
                     assert!(
@@ -303,7 +303,7 @@ fn fm7_killed_watchdog_does_not_stop_the_reconcile() {
                 }
                 assert!(
                     died.elapsed() < Duration::from_secs(35),
-                    "task 1 is {status}, not queued, 35 s after its agent died"
+                    "task 1 is {status}, not ready, 35 s after its agent died"
                 );
                 std::thread::sleep(Duration::from_millis(250));
             }

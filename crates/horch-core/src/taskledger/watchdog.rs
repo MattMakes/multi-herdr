@@ -877,13 +877,13 @@ pub fn startable_rewake(
     now: &str,
     seen: &mut Option<Sighting>,
 ) -> Result<Option<Wake>> {
-    // 1 count query first: only a queued task with no hold can start, so a
+    // 1 count query first: only a pending or ready task can start, so a
     // run without one reads no row (PL-5).
     let queued: i64 = conn.query_row(
         &format!(
             "SELECT count(*) FROM tasks
-              WHERE run_id = ?1 AND status = {queued} AND held_reason IS NULL",
-            queued = word(TaskStatus::Queued)
+              WHERE run_id = ?1 AND status IN ({waiting}) AND held_reason IS NULL",
+            waiting = sql_words::list(sql_words::TASKS_WAITING)
         ),
         [&run.run_id],
         |r| r.get(0),
@@ -1088,10 +1088,10 @@ pub fn blocker_page(
 ) -> Result<Vec<tasks::Task>> {
     let select = format!(
         "SELECT * FROM tasks WHERE (status = {cancelled}
-             OR (status = {queued} AND held_reason = {unlanded}))
+             OR (status = {escalated} AND held_reason = {unlanded}))
            AND {active} AND task_id {{cmp}} ?1 ORDER BY task_id LIMIT ?2",
         cancelled = word(TaskStatus::Cancelled),
-        queued = word(TaskStatus::Queued),
+        escalated = word(TaskStatus::Escalated),
         unlanded = word(HeldReason::Unlanded),
         active = in_active_run("run_id"),
     );
@@ -1113,12 +1113,12 @@ pub fn blocker_state(t: &tasks::Task) -> String {
 }
 
 /// The tasks of `run` that the attempt limit holds for the operator (#168):
-/// queued with a hold that is not a park. Each needs 1 `held` question.
+/// escalated with a hold that is not a park. Each needs 1 `held` question.
 pub fn attempt_held(conn: &Connection, run: &Run) -> Result<Vec<tasks::Task>> {
     Ok(tasks::of_run(conn, &run.run_id)?
         .into_iter()
         .filter(|t| {
-            t.status == TaskStatus::Queued.as_str() && t.held_reason.is_some() && !t.is_parked()
+            t.status == TaskStatus::Escalated.as_str() && t.held_reason.is_some() && !t.is_parked()
         })
         .collect())
 }
@@ -1126,10 +1126,10 @@ pub fn attempt_held(conn: &Connection, run: &Run) -> Result<Vec<tasks::Task>> {
 /// 1 [`page`] of the tasks of the active runs that [`attempt_held`] gives.
 pub fn held_page(conn: &Connection, after: Option<&str>, limit: usize) -> Result<Vec<tasks::Task>> {
     let select = format!(
-        "SELECT * FROM tasks WHERE status = {queued} AND held_reason IS NOT NULL
+        "SELECT * FROM tasks WHERE status = {escalated} AND held_reason IS NOT NULL
            AND held_reason != {unlanded}
            AND {active} AND task_id {{cmp}} ?1 ORDER BY task_id LIMIT ?2",
-        queued = word(TaskStatus::Queued),
+        escalated = word(TaskStatus::Escalated),
         unlanded = word(HeldReason::Unlanded),
         active = in_active_run("run_id"),
     );
@@ -1251,8 +1251,7 @@ pub fn reap_stalled(tx: &Connection, worker_id: &str, note: &str) -> Result<Opti
     let persona = match &w.task_id {
         Some(t) => {
             let task = tasks::get(tx, t)?;
-            let held = matches!(task.status.as_str(), "running" | "landing")
-                && task.current_worker_id.as_deref() == Some(worker_id);
+            let held = task.in_flight() && task.current_worker_id.as_deref() == Some(worker_id);
             if held {
                 tasks::requeue(tx, t, &format!("{} was stopped: {reason}", w.label()))?;
             }

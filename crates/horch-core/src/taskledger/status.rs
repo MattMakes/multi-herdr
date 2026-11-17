@@ -274,7 +274,7 @@ fn last_check_at(conn: &Connection, worker_id: &str) -> Result<Option<String>> {
 impl Counts {
     /// Count 1 task by its status; a status with no counter is not counted.
     fn add(&mut self, status: &str) {
-        match status {
+        match TaskStatus::shown_word(status) {
             "queued" => self.queued += 1,
             "running" => self.running += 1,
             "landing" => self.landing += 1,
@@ -462,7 +462,7 @@ pub fn unsettled(conn: &Connection, run_id: &str) -> Result<Vec<Unsettled>> {
         })
         .map(|t| Unsettled::Task {
             task: t.short(),
-            status: t.status.clone(),
+            status: t.shown_status().to_string(),
             held: t.held_reason.clone(),
         })
         .collect();
@@ -622,7 +622,7 @@ fn render_tasks(out: &mut String, lines: &[TaskLine]) {
             out,
             "{:<5} {:<9} {:<18} {:<20} {}",
             t.short(),
-            t.status,
+            t.shown_status(),
             t.claimable_by.as_deref().unwrap_or("-"),
             l.worker.as_deref().unwrap_or("-"),
             t.title
@@ -956,7 +956,7 @@ mod trf_15_tests {
         store
             .conn()
             .execute(
-                "UPDATE tasks SET status = 'queued', held_reason = 'two failures'",
+                "UPDATE tasks SET status = 'escalated', held_reason = 'two failures'",
                 [],
             )
             .unwrap();

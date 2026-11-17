@@ -7,6 +7,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use horch_core::taskledger::model::TaskStatus;
 use horch_core::taskledger::schema;
 use horch_core::taskledger::store::{self, migrate_refusal};
 use rusqlite::types::Value;
@@ -440,7 +441,7 @@ fn migration_from_the_phase1_version_keeps_each_row() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("ledger.sqlite3");
     phase_1_file(&path, Some(CLOCK));
-    let before = dump(&Connection::open(&path).unwrap(), None);
+    let mut before = dump(&Connection::open(&path).unwrap(), None);
     assert!(before["tasks"].1.len() == 6 && before["attempts"].1.len() == 7);
 
     let conn = migrate(&path);
@@ -449,6 +450,17 @@ fn migration_from_the_phase1_version_keeps_each_row() {
         "the migration runs the Phase 2 step"
     );
     let after = dump(&conn, Some(&before));
+    // Each task word of today moves to its design state (MAP.md, Q4): the
+    // held `t3` is escalated, and the landing `t6` is verifying.
+    let (cols, rows) = before.get_mut("tasks").unwrap();
+    let status = cols.iter().position(|c| c == "status").unwrap();
+    for row in rows {
+        row[status] = match row[status].as_str() {
+            r#"Text("queued")"# => r#"Text("escalated")"#.to_string(),
+            r#"Text("landing")"# => r#"Text("verifying")"#.to_string(),
+            other => other.to_string(),
+        };
+    }
     assert_eq!(after, before);
 }
 
@@ -512,4 +524,177 @@ fn per_row_queries_of_the_watchdog_duties_use_an_index_and_no_sort() {
     );
     assert!(attempts.contains("workers_by_task"), "{attempts}");
     assert!(!attempts.contains("TEMP B-TREE"), "{attempts}");
+}
+
+/// A Phase 1 ledger at `path` with 1 task for each case of the map of the
+/// task words (MAP.md, Q4). Its key is its title. `blocked_by` names the
+/// tasks that a task waits for.
+fn words_file(path: &Path) {
+    let mut conn = Connection::open(path).unwrap();
+    schema::migrate_to(&mut conn, schema::PHASE_1_VERSION).unwrap();
+    conn.execute_batch(
+        "INSERT INTO projects VALUES ('p', '/r', 'now');
+         INSERT INTO runs (run_id, project_id, slug, status, started_at) VALUES ('r1', 'p', 's', 'active', 'now');",
+    )
+    .unwrap();
+    let rows: [(&str, &str, Option<&str>, &[&str]); 11] = [
+        ("running", "running", None, &[]),
+        ("landing", "landing", None, &[]),
+        ("done", "done", None, &[]),
+        ("cancelled", "cancelled", None, &[]),
+        ("held", "queued", Some("2 attempts failed"), &[]),
+        ("parked", "queued", Some("unlanded"), &[]),
+        ("free", "queued", None, &[]),
+        ("after_done", "queued", None, &["done"]),
+        ("after_running", "queued", None, &["done", "running"]),
+        ("after_cancelled", "queued", None, &["cancelled"]),
+        ("after_parked", "queued", None, &["parked"]),
+    ];
+    for (seq, (key, status, held, _)) in rows.iter().enumerate() {
+        conn.execute(
+            "INSERT INTO tasks (task_id, run_id, seq, title, task_file, primary_persona, claimable_by,
+                status, held_reason, created_at, updated_at)
+                VALUES (?1, 'r1', ?2, ?1, ?1, 'opus', 'opus', ?3, ?4, 'now', 'now')",
+            rusqlite::params![key, seq as i64 + 1, status, held],
+        )
+        .unwrap();
+    }
+    for (key, _, _, blockers) in rows {
+        for b in blockers {
+            conn.execute(
+                "INSERT INTO task_deps (task_id, blocked_by) VALUES (?1, ?2)",
+                [key, b],
+            )
+            .unwrap();
+        }
+    }
+}
+
+/// Each task: `title -> (status, held_reason)`.
+fn task_words(conn: &Connection) -> BTreeMap<String, (String, Option<String>)> {
+    conn.prepare("SELECT title, status, held_reason FROM tasks")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?))))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+}
+
+#[test]
+fn migration_maps_each_task_word_of_today_to_its_design_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ledger.sqlite3");
+    words_file(&path);
+    let conn = migrate(&path);
+    let status: BTreeMap<String, String> = task_words(&conn)
+        .into_iter()
+        .map(|(k, (s, _))| (k, s))
+        .collect();
+    let want: BTreeMap<String, String> = [
+        ("running", "running"),
+        ("landing", "verifying"),
+        ("done", "done"),
+        ("cancelled", "cancelled"),
+        ("held", "escalated"),
+        ("parked", "escalated"),
+        ("free", "ready"),
+        ("after_done", "ready"),
+        ("after_running", "pending"),
+        ("after_cancelled", "pending"),
+        ("after_parked", "pending"),
+    ]
+    .into_iter()
+    .map(|(k, s)| (k.to_string(), s.to_string()))
+    .collect();
+    assert_eq!(status, want);
+
+    // The `CHECK` of `tasks.status` is the list of the 12 states.
+    let sql: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tasks'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(sql.contains(&TaskStatus::check("status")), "{sql}");
+    let set =
+        |word: &str| conn.execute("UPDATE tasks SET status = ?1 WHERE title = 'free'", [word]);
+    assert!(set("queued").is_err(), "a word of today is refused");
+    assert!(set("landing").is_err(), "a word of today is refused");
+    for s in TaskStatus::ALL {
+        set(s.as_str()).unwrap();
+    }
+}
+
+#[test]
+fn migration_keeps_held_reason_and_each_foreign_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ledger.sqlite3");
+    words_file(&path);
+    let keys = |conn: &Connection| -> Vec<Vec<String>> {
+        conn.prepare(
+            "SELECT m.name, k.\"table\", k.\"from\", k.\"to\" FROM sqlite_master m,
+                pragma_foreign_key_list(m.name) k
+             WHERE m.type = 'table' ORDER BY m.name, k.id, k.seq",
+        )
+        .unwrap()
+        .query_map([], |r| (0..4).map(|i| r.get(i)).collect())
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+    };
+    let before = Connection::open(&path).unwrap();
+    let keys_before = keys(&before);
+    assert!(
+        keys_before.iter().any(|k| k[1] == "tasks"),
+        "{keys_before:?}"
+    );
+    drop(before);
+
+    let conn = migrate(&path);
+    // Each held task keeps its reason, so a hold and a park stay apart.
+    let words = task_words(&conn);
+    assert_eq!(
+        (&words["held"].1, &words["parked"].1, &words["free"].1),
+        (
+            &Some("2 attempts failed".to_string()),
+            &Some("unlanded".to_string()),
+            &None
+        )
+    );
+    // Each foreign key of each old table is there after the rebuild. The
+    // step adds `leases` and `questions`, with their keys.
+    let kept: Vec<Vec<String>> = keys(&conn)
+        .into_iter()
+        .filter(|k| k[0] != "leases" && k[0] != "questions")
+        .collect();
+    assert_eq!(kept, keys_before);
+    let broken: i64 = conn
+        .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(broken, 0);
+    assert!(
+        conn.execute(
+            "INSERT INTO task_deps (task_id, blocked_by) VALUES ('free', 'nope')",
+            [],
+        )
+        .is_err(),
+        "blocked_by must name a task"
+    );
+    conn.execute(
+        "INSERT INTO task_deps (task_id, blocked_by) VALUES ('free', 'done')",
+        [],
+    )
+    .unwrap();
+    // The index of the watchdog duties is on the rebuilt table.
+    let indexes: Vec<String> = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'tasks' AND sql IS NOT NULL")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(indexes, ["tasks_by_run_status"]);
 }

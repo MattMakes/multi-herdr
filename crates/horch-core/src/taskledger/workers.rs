@@ -1102,7 +1102,8 @@ mod tests {
 
     fn hold(conn: &Connection, run: &str) -> crate::taskledger::tasks::Task {
         conn.execute(
-            "UPDATE tasks SET held_reason = '3 attempts failed' WHERE run_id = ?1",
+            "UPDATE tasks SET status = 'escalated', held_reason = '3 attempts failed'
+             WHERE run_id = ?1",
             [run],
         )
         .unwrap();

@@ -130,6 +130,8 @@ pub enum Rule {
     AgentStarted,
     /// `horch ledger finish` starts to land a running task.
     Finish,
+    /// Each task that a `pending` task waits for is done.
+    DependenciesMet,
 }
 
 impl Rule {
@@ -141,6 +143,7 @@ impl Rule {
             Rule::SupervisorStarted => "supervisor_started",
             Rule::AgentStarted => "agent_started",
             Rule::Finish => "finish",
+            Rule::DependenciesMet => "dependencies_met",
         }
     }
 }
@@ -321,6 +324,7 @@ mod tests {
             SupervisorStarted,
             AgentStarted,
             Finish,
+            DependenciesMet,
         ] {
             assert!(EventKind::parse(rule.as_str()).is_err(), "{rule:?}");
         }

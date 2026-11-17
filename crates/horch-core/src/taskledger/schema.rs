@@ -10,6 +10,7 @@ use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 
 use super::model::*;
+use super::sql_words::word;
 
 /// The version of the Phase 1 tables of fleetd (`v8`). A test that
 /// tests that step builds or migrates to this version, not to [`VERSION`].
@@ -77,6 +78,11 @@ fn runs_table() -> String {
     )
 }
 
+/// The status `CHECK` of version 1 (the words of today), frozen: the Phase
+/// 2 step builds `tasks` again with the 12 states of [`TaskStatus`].
+const V1_TASK_STATUS: &str =
+    "CHECK (status IN ('queued', 'running', 'landing', 'done', 'cancelled'))";
+
 /// The `tasks_table` statements.
 fn tasks_table() -> String {
     let origin = origin_columns();
@@ -116,7 +122,7 @@ fn tasks_table() -> String {
 );"#,
         worktree_mode = WorktreeMode::check("worktree_mode"),
         task_kind = TaskKind::check("kind"),
-        task_status = TaskStatus::check("status"),
+        task_status = V1_TASK_STATUS,
         task_file_rule = native("task_file IS NOT NULL"),
         persona_rule = native("primary_persona IS NOT NULL"),
         claimable_rule = native("claimable_by IS NOT NULL"),
@@ -713,17 +719,81 @@ CREATE INDEX workers_by_run_status ON workers(run_id, status);
 CREATE INDEX checks_by_worker ON checks(worker_id, check_id);
 CREATE INDEX workers_by_task ON workers(task_id, attempt, claimed_at);";
 
+/// The design state of each task row of today, in SQL (MAP.md, Q4). The
+/// words of today are the frozen words of [`V1_TASK_STATUS`]. A dependency
+/// is met when its task is done, as in `tasks::blockers`.
+fn task_state_of_today() -> String {
+    format!(
+        "CASE
+        WHEN status = 'queued' AND held_reason IS NOT NULL THEN {escalated}
+        WHEN status = 'queued' AND EXISTS (SELECT 1 FROM task_deps d
+            JOIN tasks b ON b.task_id = d.blocked_by
+            WHERE d.task_id = tasks.task_id AND b.status <> 'done') THEN {pending}
+        WHEN status = 'queued' THEN {ready}
+        WHEN status = 'landing' THEN {verifying}
+        ELSE status END",
+        escalated = word(TaskStatus::Escalated),
+        pending = word(TaskStatus::Pending),
+        ready = word(TaskStatus::Ready),
+        verifying = word(TaskStatus::Verifying),
+    )
+}
+
+/// `tasks` built again, as `events` in [`v8`], so its status `CHECK` is
+/// the list of the 12 states, and each row moves to its design state. The
+/// table text is the stored text, with each column that a step added since
+/// version 1. [`migrate`] turns the foreign keys off around it and checks
+/// them before the commit.
+fn tasks_12_states(conn: &Connection) -> Result<()> {
+    let table: String = conn.query_row(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tasks'",
+        [],
+        |r| r.get(0),
+    )?;
+    if !table.contains(V1_TASK_STATUS) || !table.starts_with("CREATE TABLE tasks (") {
+        bail!("the tasks table does not have the status CHECK of version 1");
+    }
+    let table = table
+        .replacen("CREATE TABLE tasks (", "CREATE TABLE tasks_p2 (", 1)
+        .replace(V1_TASK_STATUS, &TaskStatus::check("status"));
+    let columns: Vec<String> = conn
+        .prepare("SELECT name FROM pragma_table_info('tasks') ORDER BY cid")?
+        .query_map([], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let values: Vec<String> = columns
+        .iter()
+        .map(|c| match c.as_str() {
+            "status" => task_state_of_today(),
+            other => other.to_string(),
+        })
+        .collect();
+    conn.execute_batch(&format!(
+        "{table};
+INSERT INTO tasks_p2 (rowid, {columns}) SELECT rowid, {values} FROM tasks;
+DROP TABLE tasks;
+ALTER TABLE tasks_p2 RENAME TO tasks;",
+        columns = columns.join(", "),
+        values = values.join(", "),
+    ))?;
+    Ok(())
+}
+
 /// Version [`PHASE_2_VERSION`]: the Phase 2 tables and columns of fleetd
 /// (docs/specs/fleetd/design.md, "Ledger" and "Migration plan" item 4).
-/// [`phase_2_backfill`] fills them for a run in flight.
-fn phase_2() -> String {
-    [
-        leases_table(),
-        questions_table(),
-        PHASE_2_COLUMNS.to_string(),
-        PHASE_2_INDEXES.to_string(),
-    ]
-    .join("\n")
+/// [`phase_2_backfill`] fills them for a run in flight. `tasks` is built
+/// again by [`tasks_12_states`] between the columns and the indexes.
+fn phase_2(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        &[
+            leases_table(),
+            questions_table(),
+            PHASE_2_COLUMNS.to_string(),
+        ]
+        .join("\n"),
+    )?;
+    tasks_12_states(conn)?;
+    conn.execute_batch(PHASE_2_INDEXES)?;
+    Ok(())
 }
 
 /// The default `liveness.lease_s` of the design: the lease of each held
@@ -945,7 +1015,7 @@ fn migrate_unchecked(
         no_broken_reference(&tx, PHASE_1_VERSION)?;
     }
     if due(PHASE_2_VERSION) {
-        tx.execute_batch(&phase_2())
+        phase_2(&tx)
             .context("adding the leases, the questions and the Phase 2 columns of fleetd")?;
         phase_2_backfill(&tx, &super::util::now())
             .context("backfilling the leases and the wait limits of a run in flight")?;
@@ -1294,7 +1364,16 @@ mod v7_tests {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(v, VERSION);
-        assert_eq!(dump(conn, Some(&before)), before, "no row changed");
+        // The Phase 2 step moves the held `t1` from `queued` to `escalated`.
+        let mut before = before;
+        let (_, columns, rows) = before.iter_mut().find(|(t, _, _)| t == "tasks").unwrap();
+        let status = columns.iter().position(|c| c == "status").unwrap();
+        for row in rows.iter_mut() {
+            if row[status] == Value::Text("queued".into()) {
+                row[status] = Value::Text(TaskStatus::Escalated.as_str().into());
+            }
+        }
+        assert_eq!(dump(conn, Some(&before)), before, "no other row changed");
 
         type TaskRow = (
             Option<String>,
@@ -1394,11 +1473,15 @@ mod v7_tests {
             V6.into(),
             v7(),
             v8(),
-            phase_2(),
         ];
-        assert_eq!(steps.len() as i64, VERSION, "add the new step here");
-        for sql in &steps[..version as usize] {
+        // The Phase 2 step reads the stored text of `tasks`, so it runs on
+        // the connection.
+        assert_eq!(steps.len() as i64 + 1, VERSION, "add the new step here");
+        for sql in steps.iter().take(version as usize) {
             conn.execute_batch(sql).unwrap();
+        }
+        if version >= PHASE_2_VERSION {
+            phase_2(&conn).unwrap();
         }
         conn.execute("INSERT INTO projects VALUES ('p', '/r', 'now')", [])
             .unwrap();

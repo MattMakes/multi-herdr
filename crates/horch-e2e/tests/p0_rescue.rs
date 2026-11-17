@@ -270,7 +270,7 @@ fn fm13_herdr_restart_ends_attempts_and_queues_tasks_again() {
             let until = Instant::now() + Duration::from_secs(CAUGHT_S);
             let (_, mut ts, mut ws) = board(&h);
             while Instant::now() < until {
-                if ts.iter().all(|t| t.status == "queued") && !ws.iter().any(live) {
+                if ts.iter().all(|t| t.status == "ready") && !ws.iter().any(live) {
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(500));
@@ -288,7 +288,7 @@ fn fm13_herdr_restart_ends_attempts_and_queues_tasks_again() {
                 .map(|w| (&w.worker_id, &w.status, &w.end_reason))
                 .collect();
             assert!(
-                ts.iter().all(|t| t.status == "queued") && !ws.iter().any(live),
+                ts.iter().all(|t| t.status == "ready") && !ws.iter().any(live),
                 "the attempts did not end and the tasks were not queued again within \
                  {CAUGHT_S} s of the herdr restart: tasks {tasks:?}, attempts \
                  {attempts:?}, watchdog check every {} s",

@@ -1494,7 +1494,7 @@ mod tests {
         assert_eq!(queued.len(), 1);
         assert_eq!(queued[0].title, "parked worktrees: 3");
         assert_eq!(queued[0].claimable_by.as_deref(), Some(WORKTREE_STEWARD));
-        assert_eq!(queued[0].status, "queued");
+        assert_eq!(queued[0].status, "ready");
         assert_eq!(run.run_id, all[0].run_id);
 
         let args = steward_spawn_args("w7:p1", &run.slug);

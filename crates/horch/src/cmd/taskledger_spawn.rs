@@ -662,7 +662,7 @@ mod trf_24_tests {
         ]);
         let note = spawn_reviewers(&ctx, &store, &run, "T-1", &reviews, &fake).unwrap();
         let t = tasks::get(store.conn(), &reviews[0]).unwrap();
-        assert_eq!(t.status, "queued");
+        assert_eq!(t.status, "ready");
         assert!(t.current_worker_id.is_none());
         assert!(
             note.starts_with("NOTE: horch spawned 1 of 2 reviewers"),
@@ -992,7 +992,7 @@ mod trf_33_34_tests {
         )
         .unwrap();
         let t = &tasks::of_run(store.conn(), &run.run_id).unwrap()[0];
-        assert_eq!(t.status, "queued", "the reap requeues the task");
+        assert_eq!(t.status, "ready", "the reap requeues the task");
 
         let mut replace = args(Some("opus"));
         replace.replaces = Some(first.clone());

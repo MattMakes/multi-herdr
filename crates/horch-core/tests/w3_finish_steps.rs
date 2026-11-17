@@ -1282,7 +1282,7 @@ fn a_failed_step_stops_finish_and_names_the_step() {
     );
     assert_eq!(step(&r, "land").status, "pending");
     let task = tasks::get(w.store.conn(), &w.worktree().task_id.unwrap()).unwrap();
-    assert_eq!(task.status, "landing");
+    assert_eq!(task.status, "verifying");
 }
 
 #[test]
@@ -1336,7 +1336,7 @@ fn done_unlanded_parks_the_task_and_its_worktree() {
     let c = finish::complete(&mut w.store, &id, "tried", Some("no way")).unwrap();
     assert!(c.unlanded);
     let task = tasks::get(w.store.conn(), &c.task_id).unwrap();
-    assert_eq!(task.status, "queued");
+    assert_eq!(task.status, "escalated");
     assert_eq!(task.held_reason.as_deref(), Some("unlanded"));
     assert_eq!(task.summary.as_deref(), Some("UNLANDED: no way | tried"));
     let wt: (String, Option<String>) = w
@@ -1418,7 +1418,7 @@ fn worktree_new_refuses_a_shared_task_and_returns_an_existing_worktree() {
     w.store
         .immediate(|tx| {
             tx.execute(
-                "UPDATE tasks SET status = 'queued', current_worker_id = NULL WHERE seq = 2",
+                "UPDATE tasks SET status = 'ready', current_worker_id = NULL WHERE seq = 2",
                 [],
             )?;
             tx.execute(

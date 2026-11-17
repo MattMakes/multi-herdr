@@ -10,7 +10,17 @@ use std::fmt::Display;
 use super::model::{TaskStatus, WorkerStatus, WorktreeStatus};
 
 /// Tasks a worker is on: running, or past its last step into the land.
-pub const TASKS_IN_FLIGHT: &[TaskStatus] = &[TaskStatus::Running, TaskStatus::Landing];
+pub const TASKS_IN_FLIGHT: &[TaskStatus] = &[TaskStatus::Running, TaskStatus::Verifying];
+
+/// Tasks that wait for a claim: `queued` with no hold, as shown.
+pub const TASKS_WAITING: &[TaskStatus] = &[TaskStatus::Pending, TaskStatus::Ready];
+
+/// Tasks shown as `queued`: waiting for a claim, or held for the operator.
+pub const TASKS_QUEUED: &[TaskStatus] = &[
+    TaskStatus::Pending,
+    TaskStatus::Ready,
+    TaskStatus::Escalated,
+];
 
 /// Tasks that are over.
 pub const TASKS_ENDED: &[TaskStatus] = &[TaskStatus::Done, TaskStatus::Cancelled];
@@ -61,7 +71,7 @@ mod tests {
     #[test]
     fn list_quotes_each_word_in_order() {
         assert_eq!(list(WORKTREES_OPEN), "'open', 'landing'");
-        assert_eq!(word(TaskStatus::Queued), "'queued'");
+        assert_eq!(word(TaskStatus::Ready), "'ready'");
     }
 
     #[test]

@@ -534,7 +534,7 @@ fn close_inner(
     let mut cancelled = Vec::new();
     if let Some(reason) = abandon {
         for t in super::tasks::of_run(conn, &run.run_id)? {
-            if matches!(t.status.as_str(), "queued" | "running" | "landing") {
+            if t.is_queued() || t.in_flight() {
                 let holder = t.current_worker_id.clone();
                 super::tasks::cancel(conn, &t, &format!("run abandoned: {reason}"))?;
                 cancelled.push((t.short(), holder));

@@ -417,7 +417,7 @@ mod tests {
             .conn()
             .query_row("SELECT status FROM tasks WHERE seq = 1", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(status, "queued");
+        assert_eq!(status, "ready");
     }
 
     #[test]

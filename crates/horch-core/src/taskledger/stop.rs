@@ -262,8 +262,7 @@ fn requeue_if_held(
     why: &str,
 ) -> Result<(tasks::Task, bool)> {
     let task = tasks::get(conn, task_id)?;
-    let held = matches!(task.status.as_str(), "running" | "landing")
-        && task.current_worker_id.as_deref() == Some(worker_id);
+    let held = task.in_flight() && task.current_worker_id.as_deref() == Some(worker_id);
     if held {
         tasks::requeue(conn, task_id, why)?;
     }
@@ -870,7 +869,7 @@ mod tests {
         let procs = Scripted::new(true, true, true);
         let r = stop_with(&mut s, &id, &NoPanes, &procs).unwrap();
         let t = tasks::get(s.conn(), &task).unwrap();
-        assert_eq!(t.status, "queued");
+        assert_eq!(t.status, "ready");
         assert_eq!(r.requeued, Some(t.short()));
     }
 
@@ -939,7 +938,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(workers::get(s.conn(), &id).unwrap().status, "incomplete");
-        assert_eq!(tasks::get(s.conn(), &task).unwrap().status, "queued");
+        assert_eq!(tasks::get(s.conn(), &task).unwrap().status, "ready");
         assert_eq!(r.persona.as_deref(), Some("opus"));
         assert_eq!(event_actors(&s, "reaped"), vec!["watchdog"]);
     }

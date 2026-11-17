@@ -95,23 +95,33 @@ pub fn refused_key(entity: Entity, id: &str) -> String {
 /// The moves of attempt, job and needs-you item are the exits of their
 /// state tables in the design and in ticket 10.
 pub const EXITS: &[(Entity, &str, &str)] = &[
-    // taskledger/tasks.rs take_task: the claim.
-    (Entity::Task, "queued", "running"),
+    // taskledger/tasks.rs take_task: the claim (MAP.md, Q5).
+    (Entity::Task, "ready", "running"),
+    // taskledger/tasks.rs ready_dependents and unblock: each dependency of
+    // a pending task is met (I2).
+    (Entity::Task, "pending", "ready"),
     // taskledger/finish/mod.rs: the finish of a running task starts to land.
-    (Entity::Task, "running", "landing"),
+    (Entity::Task, "running", "verifying"),
     // taskledger/finish/mod.rs mark_done: the finish ends the task.
     (Entity::Task, "running", "done"),
-    (Entity::Task, "landing", "done"),
-    // taskledger/tasks.rs requeue (the worker ended), tasks.rs handoff
-    // (running only), finish/mod.rs mark_done (the task parks unlanded).
-    (Entity::Task, "running", "queued"),
-    (Entity::Task, "landing", "queued"),
+    (Entity::Task, "verifying", "done"),
+    // taskledger/tasks.rs requeue (the worker ended) and tasks.rs handoff
+    // (running only).
+    (Entity::Task, "running", "ready"),
+    (Entity::Task, "verifying", "ready"),
+    // taskledger/tasks.rs requeue (the hold at `max_attempts`) and
+    // finish/mod.rs mark_done (the task parks unlanded).
+    (Entity::Task, "running", "escalated"),
+    (Entity::Task, "verifying", "escalated"),
     // taskledger/tasks.rs cancel: each state that is not done or cancelled.
-    (Entity::Task, "queued", "cancelled"),
+    (Entity::Task, "pending", "cancelled"),
+    (Entity::Task, "ready", "cancelled"),
+    (Entity::Task, "escalated", "cancelled"),
     (Entity::Task, "running", "cancelled"),
-    (Entity::Task, "landing", "cancelled"),
+    (Entity::Task, "verifying", "cancelled"),
     // taskledger/tasks.rs requeue_by_operator: `horch ledger requeue`.
-    (Entity::Task, "cancelled", "queued"),
+    (Entity::Task, "escalated", "ready"),
+    (Entity::Task, "cancelled", "ready"),
     // taskledger/workers.rs supervisor_started: `horch worker` runs.
     (Entity::Worker, "spawning", "starting"),
     // taskledger/workers.rs agent_started: the agent child runs.
@@ -190,17 +200,25 @@ mod tests {
 
     #[test]
     fn allowed_transitions_of_task_equal_the_exits_of_today() {
+        // The exits of today in the design words: `queued` is `pending`,
+        // `ready` or `escalated` (a hold), and `landing` is `verifying`.
         let today = vec![
-            ("queued", "running"),
-            ("queued", "cancelled"),
-            ("running", "landing"),
+            ("pending", "ready"),
+            ("pending", "cancelled"),
+            ("ready", "running"),
+            ("ready", "cancelled"),
+            ("escalated", "ready"),
+            ("escalated", "cancelled"),
+            ("running", "verifying"),
             ("running", "done"),
-            ("running", "queued"),
+            ("running", "ready"),
+            ("running", "escalated"),
             ("running", "cancelled"),
-            ("landing", "done"),
-            ("landing", "queued"),
-            ("landing", "cancelled"),
-            ("cancelled", "queued"),
+            ("verifying", "done"),
+            ("verifying", "ready"),
+            ("verifying", "escalated"),
+            ("verifying", "cancelled"),
+            ("cancelled", "ready"),
         ];
         assert_eq!(exits_of(Entity::Task), sorted(today));
     }
@@ -247,16 +265,13 @@ mod tests {
 
     #[test]
     fn a_move_is_allowed_refused_or_unchanged() {
-        assert_eq!(decide(Entity::Task, "queued", "running"), Decision::Allowed);
+        assert_eq!(decide(Entity::Task, "ready", "running"), Decision::Allowed);
         assert_eq!(decide(Entity::Task, "done", "running"), Decision::Refused);
         assert_eq!(
             decide(Entity::Worker, "queued", "running"),
             Decision::Refused
         );
-        assert_eq!(
-            decide(Entity::Task, "queued", "queued"),
-            Decision::Unchanged
-        );
+        assert_eq!(decide(Entity::Task, "ready", "ready"), Decision::Unchanged);
     }
 
     #[test]

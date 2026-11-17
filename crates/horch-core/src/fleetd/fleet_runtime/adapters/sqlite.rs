@@ -10,7 +10,7 @@ use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
-use crate::taskledger::model::{Actor, EventKind};
+use crate::taskledger::model::{Actor, EventKind, TaskStatus};
 use crate::taskledger::util;
 
 thread_local! {
@@ -130,8 +130,15 @@ pub struct Event<'a> {
 /// [`in_door_transaction`].
 pub fn append_event(tx: &Connection, e: &Event<'_>) -> Result<()> {
     let (run, task, worker) = about(tx, e.entity, e.id)?;
-    let from = e.from.unwrap_or("none");
-    let text = format!("{}; {} {}: {from} -> {}", e.cause, e.entity, e.id, e.to);
+    // The text keeps the task words of today (MAP.md, Q3); `from_state` and
+    // `to_state` hold the stored words.
+    let shown = |word| match e.entity {
+        Entity::Task => TaskStatus::shown_word(word),
+        _ => word,
+    };
+    let from = e.from.map_or("none", shown);
+    let to = shown(e.to);
+    let text = format!("{}; {} {}: {from} -> {to}", e.cause, e.entity, e.id);
     tx.execute(
         "INSERT INTO events (at, run_id, task_id, worker_id, actor, kind, text,
             entity, entity_id, from_state, to_state, cause)
@@ -292,7 +299,7 @@ mod tests {
         let task = l.task(1);
         let out = l.moved(Entity::Task, &task, "done");
         assert!(matches!(out, Err(DoorError::Refused { .. })), "{out:?}");
-        assert_eq!(status(l.conn(), &task), "queued");
+        assert_eq!(status(l.conn(), &task), "ready");
     }
 
     #[test]
@@ -308,7 +315,7 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        assert_eq!(status(l.conn(), &a), "queued");
+        assert_eq!(status(l.conn(), &a), "ready");
         assert_eq!(status(l.conn(), &b), "running");
     }
 
@@ -319,7 +326,7 @@ mod tests {
         let _ = l.moved(Entity::Task, &task, "done");
         let _ = l.moved(Entity::Task, &task, "done");
         let refused = (
-            Some("queued".to_string()),
+            Some("ready".to_string()),
             "done".to_string(),
             "illegal_transition: test".to_string(),
         );
@@ -367,7 +374,7 @@ mod tests {
     fn each_transition_writes_1_event_with_its_cause_and_entity() {
         let mut l = ledger();
         let task = l.task(1);
-        assert_moved(&mut l, Entity::Task, &task, "queued", "running");
+        assert_moved(&mut l, Entity::Task, &task, "ready", "running");
     }
 
     #[test]
@@ -427,18 +434,18 @@ mod tests {
         let mut l = ledger();
         let task = l.task(1);
         assert_eq!(
-            l.moved(Entity::Task, &task, "queued").unwrap(),
+            l.moved(Entity::Task, &task, "ready").unwrap(),
             Moved::Unchanged
         );
         assert!(events(l.conn(), Entity::Task, &task).is_empty());
     }
 
-    /// The refused move queued -> landing of `task`, from a transaction
+    /// The refused move ready -> verifying of `task`, from a transaction
     /// that rolls back.
     fn rolled_back_refusal(l: &TestLedger, task: &str) -> DoorError {
         let tx =
             Transaction::new_unchecked(l.conn(), rusqlite::TransactionBehavior::Immediate).unwrap();
-        let err = move_row(&tx, None, Entity::Task, task, "landing", cause("test")).unwrap_err();
+        let err = move_row(&tx, None, Entity::Task, task, "verifying", cause("test")).unwrap_err();
         drop(tx);
         err
     }
@@ -474,7 +481,7 @@ mod tests {
         assert!(!record(&l, &err));
         assert!(open_items(l.conn()).is_empty());
         let events = events(l.conn(), Entity::Task, &task);
-        assert!(events.iter().all(|e| e.1 != "landing"), "{events:?}");
+        assert!(events.iter().all(|e| e.1 != "verifying"), "{events:?}");
     }
 
     #[test]
@@ -491,7 +498,7 @@ mod tests {
             &NeedsYouList,
         );
         assert!(matches!(out, Err(DoorError::NoTransaction)), "{out:?}");
-        assert_eq!(status(l.conn(), &task), "queued");
+        assert_eq!(status(l.conn(), &task), "ready");
         assert!(events(l.conn(), Entity::Task, &task)
             .iter()
             .all(|e| e.1 != "running"));
@@ -525,7 +532,7 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        assert_eq!(status(l.conn(), &task), "queued");
+        assert_eq!(status(l.conn(), &task), "ready");
         assert!(events(l.conn(), Entity::Task, &task).is_empty());
         assert!(open_items(l.conn()).is_empty());
 
@@ -562,7 +569,7 @@ mod tests {
         });
         assert!(rolled_back.is_err());
         assert!(!in_door_transaction(), "after the rollback");
-        assert_eq!(status(l.conn(), &b), "queued");
+        assert_eq!(status(l.conn(), &b), "ready");
     }
 
     /// SQLite calls no commit hook for a transaction with no write (review
@@ -573,7 +580,7 @@ mod tests {
         let task = l.task(1);
         let mut conn = Connection::open(l._dir.path().join("ledger.sqlite3")).unwrap();
         let tx = conn.transaction().unwrap();
-        let unchanged = move_row(&tx, None, Entity::Task, &task, "queued", cause("t"));
+        let unchanged = move_row(&tx, None, Entity::Task, &task, "ready", cause("t"));
         assert_eq!(unchanged.unwrap(), Moved::Unchanged);
         let missing = move_row(&tx, None, Entity::Task, "T-none", "running", cause("t"));
         assert!(

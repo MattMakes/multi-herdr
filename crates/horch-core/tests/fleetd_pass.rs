@@ -535,7 +535,7 @@ fn fm_fleetd_killed_mid_reap_requeues_exactly_once() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(status, "queued");
+    assert_eq!(status, "ready");
     let ended: Vec<(String, Option<String>)> = {
         let mut stmt = w
             .conn
@@ -551,7 +551,7 @@ fn fm_fleetd_killed_mid_reap_requeues_exactly_once() {
         .conn
         .query_row(
             "SELECT count(*) FROM events WHERE entity = 'task' AND entity_id = ?1
-             AND from_state = 'running' AND to_state = 'queued'",
+             AND from_state = 'running' AND to_state = 'ready'",
             [&task],
             |r| r.get(0),
         )

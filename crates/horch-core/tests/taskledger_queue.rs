@@ -79,7 +79,9 @@ fn finish(store: &mut Store, task_id: &str) {
                 "UPDATE tasks SET status = 'done' WHERE task_id = ?1",
                 [task_id],
             )?;
-            Ok(())
+            // As `horch ledger done` does: each dependent that waits for
+            // nothing else is ready.
+            tasks::ready_dependents(tx, task_id)
         })
         .unwrap();
 }
@@ -421,7 +423,7 @@ fn an_agent_that_exits_on_its_last_attempt_holds_the_task() {
         Ended::Held { task: "T-1".into() }
     );
     let held = tasks::get(store.conn(), &t.task_id).unwrap();
-    assert_eq!(held.status, "queued");
+    assert_eq!(held.status, "escalated");
     assert_eq!(held.held_reason.as_deref(), Some("2 attempts failed"));
     assert!(tasks::startable(store.conn(), &run.run_id)
         .unwrap()
