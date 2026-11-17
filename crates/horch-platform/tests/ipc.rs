@@ -96,6 +96,11 @@ mod unix {
         let path = socket_in(&dir);
         std::fs::write(&path, b"").unwrap();
         let error = LocalStream::connect(&path).unwrap_err();
+        // Linux refuses a connect to a plain file (`ECONNREFUSED`); macOS
+        // answers `ENOTSOCK`.
+        #[cfg(target_os = "linux")]
+        assert_eq!(error.kind(), ErrorKind::ConnectionRefused, "{error:?}");
+        #[cfg(not(target_os = "linux"))]
         assert!(horch_platform::ipc::is_not_a_socket(&error), "{error:?}");
     }
 }
