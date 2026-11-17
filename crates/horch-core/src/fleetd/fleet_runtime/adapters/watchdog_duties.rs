@@ -64,7 +64,7 @@ use crate::taskledger::model::{Actor, WorkerStatus};
 use crate::taskledger::orchestrator::{self, Holder, Outcome, Probe, Respawn};
 use crate::taskledger::runs::{self, Run};
 use crate::taskledger::watchdog::{self, Checked, Observation, Observer, Sighting};
-use crate::taskledger::workers::{self, Worker};
+use crate::taskledger::workers::{self, Preclaim, Worker};
 use crate::taskledger::{outbox, tasks, util, wakes};
 
 /// The outcome of the attempt of a worker that the stall reap ends.
@@ -89,24 +89,11 @@ const BEFORE_CLAIM: [WorkerStatus; 3] = [
     WorkerStatus::Claiming,
 ];
 
-/// 1 page of worker rows that part 1 read, and the cursor after it.
+/// The rows of 1 page of a worker duty that part 1 read before the time
+/// budget of the pass ended, and the cursor before them.
 struct Page {
     workers: Vec<Worker>,
-    cursor: Cursor,
-}
-
-impl Page {
-    /// The ids of the workers of the page in `run`.
-    fn of_run<'p>(&'p self, run: &'p Run) -> impl Iterator<Item = &'p str> + 'p {
-        self.workers
-            .iter()
-            .filter(move |w| w.run_id.as_deref() == Some(run.run_id.as_str()))
-            .map(|w| w.worker_id.as_str())
-    }
-
-    fn keys(&self) -> Vec<String> {
-        self.workers.iter().map(|w| w.worker_id.clone()).collect()
-    }
+    start: Cursor,
 }
 
 /// The effects of the duties outside the ledger. The composition root of
@@ -143,6 +130,8 @@ struct State {
     sightings: BTreeMap<String, Option<Sighting>>,
     /// The page of [`WORKER_CHECKS`] and of [`PRECLAIM`] that part 1 read.
     pages: BTreeMap<&'static str, Page>,
+    /// The runs whose orchestrator part 1 probed: part 2 checks only them.
+    probed: BTreeSet<String>,
 }
 
 /// The orchestrator probe of part 2: the facts of part 1.
@@ -218,34 +207,131 @@ impl<'a> WatchdogDuties<'a> {
         self.rows.take()
     }
 
-    /// Read the page of the worker duty `kind` from its cursor, and
-    /// observe each worker of it that `observe` names.
+    /// Read the page of the worker duty `kind`, the workers with a status
+    /// in `statuses`, from its cursor. Each worker that `observe` names is
+    /// observed. The page ends at the rows of `budget` or when its time is
+    /// up.
     fn read_page(
         &self,
         conn: &Connection,
         kind: &'static str,
-        rows: PassBudget,
+        statuses: &[WorkerStatus],
+        budget: DutyBudget<'_>,
         observe: &dyn Fn(&Worker) -> Result<bool>,
         state: &mut State,
     ) -> Result<()> {
-        let now = util::now();
-        let mut cursor = cursors_store::load(conn, kind, &now)?;
-        let statuses: &[WorkerStatus] = if kind == WORKER_CHECKS {
-            &[WorkerStatus::Working]
-        } else {
-            &BEFORE_CLAIM
-        };
-        let workers =
-            watchdog::worker_page(conn, statuses, cursor.after_key.as_deref(), rows.rows())?;
-        for w in &workers {
-            cursor.step(&w.worker_id, &now);
-            if observe(w)? {
-                let o = self.observer.observe(w);
+        let start = cursors_store::load(conn, kind, &util::now())?;
+        let mut workers = Vec::new();
+        let after = start.after_key.as_deref();
+        for w in watchdog::worker_page(conn, statuses, after, budget.rows.rows())? {
+            if (budget.time_up)() {
+                break;
+            }
+            if observe(&w)? {
+                let o = self.observer.observe(&w);
                 state.observed.insert(w.worker_id.clone(), o);
             }
+            workers.push(w);
         }
-        state.pages.insert(kind, Page { workers, cursor });
+        state.pages.insert(kind, Page { workers, start });
         Ok(())
+    }
+
+    /// Check each due worker of the [`WORKER_CHECKS`] `page` that part 1
+    /// observed, in the order of the cursor, until the time budget ends. A
+    /// worker past its stall rounds is reaped; a first stall or a suspect
+    /// gets its wake. The cursor moves through the last worker done.
+    /// Returns the reaped workers.
+    fn check_page(
+        &self,
+        tx: &Transaction<'_>,
+        ctx: &DutyCtx<'_>,
+        runs: &[Run],
+        page: Page,
+        observed: &BTreeMap<String, Observation>,
+        now: &str,
+    ) -> Result<Vec<String>> {
+        let mut cursor = page.start;
+        let mut keys = Vec::new();
+        let mut reaped = Vec::new();
+        let mut checked = self.checked.borrow_mut();
+        for w in &page.workers {
+            if (ctx.budget.time_up)() {
+                break;
+            }
+            cursor.step(&w.worker_id, now);
+            keys.push(w.worker_id.clone());
+            let Some(run) = run_of(runs, w) else {
+                continue;
+            };
+            let Some((c, dead)) = check_worker(tx, run, &w.worker_id, observed, now, self.force)?
+            else {
+                continue;
+            };
+            if dead {
+                reaped.push(c.worker_id.clone());
+            }
+            checked.push((run.run_id.clone(), c));
+        }
+        cursors_store::save(tx, WORKER_CHECKS, &cursor)?;
+        self.rows.borrow_mut().insert(WORKER_CHECKS, keys);
+        Ok(reaped)
+    }
+
+    /// The pre-claim sweep (#190) and the flag of an unclaimed spawn
+    /// (TRF-23) of each worker of the [`PRECLAIM`] `page`, in the order of
+    /// the cursor, until the time budget ends. A row that no process stands
+    /// for ends, and a worker that does not claim gets 1 question. The
+    /// workers of 1 run that ended get 1 wake after the page. The cursor
+    /// moves through the last worker done. Returns the workers that ended:
+    /// their processes and panes are stopped in part 3.
+    fn preclaim_page(
+        &self,
+        tx: &Transaction<'_>,
+        ctx: &DutyCtx<'_>,
+        runs: &[Run],
+        page: Page,
+        observed: &BTreeMap<String, Observation>,
+        now: &str,
+    ) -> Result<Vec<String>> {
+        let status = |w: &Worker| {
+            observed
+                .get(&w.worker_id)
+                .and_then(|o| o.herdr_status.clone())
+        };
+        let mut cursor = page.start;
+        let mut keys = Vec::new();
+        let mut ended: BTreeMap<String, Vec<Preclaim>> = BTreeMap::new();
+        for w in &page.workers {
+            if (ctx.budget.time_up)() {
+                break;
+            }
+            cursor.step(&w.worker_id, now);
+            keys.push(w.worker_id.clone());
+            let Some(run) = run_of(runs, w) else {
+                continue;
+            };
+            let rows: Vec<Worker> = workers::find(tx, &w.worker_id)?.into_iter().collect();
+            for p in workers::sweep_preclaim_of(tx, run, rows, &workers::supervisor_alive)? {
+                if p.ended.is_some() {
+                    ended.entry(run.run_id.clone()).or_default().push(p);
+                } else {
+                    write(tx, run, wakes::preclaim_wakes(tx, run, &[p], &status))?;
+                }
+            }
+            flag_unclaimed(tx, run, &w.worker_id, observed, now)?;
+        }
+        let mut out = Vec::new();
+        for run in runs {
+            let Some(swept) = ended.remove(&run.run_id) else {
+                continue;
+            };
+            write(tx, run, wakes::preclaim_wakes(tx, run, &swept, &status))?;
+            out.extend(swept.into_iter().map(|p| p.worker.worker_id));
+        }
+        cursors_store::save(tx, PRECLAIM, &cursor)?;
+        self.rows.borrow_mut().insert(PRECLAIM, keys);
+        Ok(out)
     }
 }
 
@@ -281,32 +367,29 @@ impl RunDuties for WatchdogDuties<'_> {
         state.observed.clear();
         state.workspaces.clear();
         state.pages.clear();
+        state.probed.clear();
         let runs = watchdog::active_runs(conn)?;
         let active: BTreeSet<String> = runs.iter().map(|r| r.run_id.clone()).collect();
         state.sightings.retain(|run, _| active.contains(run));
-        let run_of = |w: &Worker| {
-            runs.iter()
-                .find(|r| w.run_id.as_deref() == Some(r.run_id.as_str()))
-        };
         let now = util::now();
-        if !(budget.time_up)() {
-            // `horch ledger watch --once --force` checks each working worker.
-            let rows = if self.force {
+        // `horch ledger watch --once --force` checks each working worker.
+        let checks = DutyBudget {
+            rows: if self.force {
                 PassBudget::new(u64::MAX)
             } else {
                 budget.rows
-            };
-            let due = |w: &Worker| match run_of(w) {
-                Some(run) => watchdog::is_due(conn, run, w, self.force, &now),
-                None => Ok(false),
-            };
-            self.read_page(conn, WORKER_CHECKS, rows, &due, state)?;
-        }
-        if !(budget.time_up)() {
-            let waits = |w: &Worker| Ok(waits_for_claim(w, &now));
-            self.read_page(conn, PRECLAIM, budget.rows, &waits, state)?;
-        }
-        for run in &runs {
+            },
+            ..budget
+        };
+        let due = |w: &Worker| match run_of(&runs, w) {
+            Some(run) => watchdog::is_due(conn, run, w, self.force, &now),
+            None => Ok(false),
+        };
+        let working = [WorkerStatus::Working];
+        self.read_page(conn, WORKER_CHECKS, &working, checks, &due, state)?;
+        let waits = |w: &Worker| Ok(waits_for_claim(w, &now));
+        self.read_page(conn, PRECLAIM, &BEFORE_CLAIM, budget, &waits, state)?;
+        for run in runs.iter().take_while(|_| !(budget.time_up)()) {
             if let Some(ws) = orchestrator_workspace(conn, run)? {
                 let seen = Seen {
                     holder: self.probe.holder(&ws),
@@ -314,6 +397,7 @@ impl RunDuties for WatchdogDuties<'_> {
                 };
                 state.workspaces.insert(ws, seen);
             }
+            state.probed.insert(run.run_id.clone());
         }
         Ok(())
     }
@@ -321,85 +405,60 @@ impl RunDuties for WatchdogDuties<'_> {
     fn run(&self, tx: &Transaction<'_>, ctx: &DutyCtx<'_>) -> Result<Vec<Stop>> {
         let mut state = self.state.borrow_mut();
         let state = &mut *state;
-        let mut reaped = BTreeSet::new();
-        let mut checked = self.checked.borrow_mut();
-        checked.clear();
-        let mut rows = self.rows.borrow_mut();
-        rows.clear();
+        self.checked.borrow_mut().clear();
+        self.rows.borrow_mut().clear();
         let time_up = ctx.budget.time_up;
         let runs = watchdog::active_runs(tx)?;
         let now = util::now();
-        for run in &runs {
-            if time_up() {
-                break;
-            }
+        for run in runs.iter().take_while(|_| !time_up()) {
             if let Some(workspace) = run.workspace_id.as_deref() {
                 workers::sync_questions(tx, &self.state_root, workspace)?;
             }
         }
-        // A page that part 1 read is done whole, or not at all: its cursor
-        // moves only with it.
-        if let Some(page) = state.pages.remove(WORKER_CHECKS).filter(|_| !time_up()) {
-            for run in &runs {
-                let ids = page.of_run(run);
-                let (r, c) = check_workers(tx, run, ids, &state.observed, &now, self.force)?;
-                reaped.extend(r);
-                checked.extend(c.into_iter().map(|c| (run.run_id.clone(), c)));
-            }
-            cursors_store::save(tx, WORKER_CHECKS, &page.cursor)?;
-            rows.insert(WORKER_CHECKS, page.keys());
+        let mut reaped = BTreeSet::new();
+        if let Some(page) = state.pages.remove(WORKER_CHECKS) {
+            reaped.extend(self.check_page(tx, ctx, &runs, page, &state.observed, &now)?);
         }
-        if let Some(page) = state.pages.remove(PRECLAIM).filter(|_| !time_up()) {
-            for run in &runs {
-                let ids: Vec<&str> = page.of_run(run).collect();
-                reaped.extend(sweep_preclaim(tx, run, &ids, &state.observed)?);
-                flag_unclaimed(tx, run, &ids, &state.observed, &now)?;
-            }
-            cursors_store::save(tx, PRECLAIM, &page.cursor)?;
-            rows.insert(PRECLAIM, page.keys());
+        if let Some(page) = state.pages.remove(PRECLAIM) {
+            reaped.extend(self.preclaim_page(tx, ctx, &runs, page, &state.observed, &now)?);
         }
-        for run in &runs {
-            if time_up() {
-                break;
-            }
-            write(tx, run, wakes::stuck_wake(tx, run)?)?;
+        for run in runs.iter().take_while(|_| !time_up()) {
             let seen = state.sightings.entry(run.run_id.clone()).or_default();
-            write(tx, run, watchdog::startable_rewake(tx, run, &now, seen)?)?;
-            // The lost wakes (TRF-51): I-03 and I-04 here, I-05 to I-07
-            // from their pages.
-            write(tx, run, wakes::settled_wake(tx, run)?)?;
-            write(tx, run, wakes::reviews_in_wakes(tx, run, &now)?)?;
+            run_wakes(tx, run, &now, seen)?;
         }
-        if !time_up() {
-            let page = task_page(tx, BLOCKER_TASKS, ctx.budget.rows, watchdog::blocker_page)?;
-            for t in &page {
-                let Some(run) = runs.iter().find(|r| r.run_id == t.run_id) else {
-                    continue;
-                };
+        // The lost wakes I-05 to I-07 (TRF-51), each from its page.
+        let blockers = task_duty(
+            tx,
+            ctx,
+            &runs,
+            BLOCKER_TASKS,
+            watchdog::blocker_page,
+            &|run, t| {
                 if watchdog::is_stalled_blocker(tx, t)? {
                     write(tx, run, wakes::blocker_wake(tx, &t.task_id)?)?;
                 }
+                Ok(())
+            },
+        )?;
+        let held = task_duty(
+            tx,
+            ctx,
+            &runs,
+            HELD_TASKS,
+            watchdog::held_page,
+            &|run, t| write(tx, run, wakes::held_wake(tx, t)),
+        )?;
+        let mut rows = self.rows.borrow_mut();
+        rows.insert(BLOCKER_TASKS, blockers);
+        rows.insert(HELD_TASKS, held);
+        let facts = Facts {
+            seen: &state.workspaces,
+            live: self.probe,
+        };
+        for run in runs.iter().take_while(|_| !time_up()) {
+            if state.probed.contains(&run.run_id) {
+                check_orchestrator(tx, ctx, run, &now, &facts)?;
             }
-            rows.insert(BLOCKER_TASKS, task_keys(&page));
-        }
-        if !time_up() {
-            let page = task_page(tx, HELD_TASKS, ctx.budget.rows, watchdog::held_page)?;
-            for t in &page {
-                if let Some(run) = runs.iter().find(|r| r.run_id == t.run_id) {
-                    write(tx, run, wakes::held_wake(tx, t))?;
-                }
-            }
-            rows.insert(HELD_TASKS, task_keys(&page));
-        }
-        for run in &runs {
-            if time_up() {
-                break;
-            }
-            let facts = Facts {
-                seen: &state.workspaces,
-                live: self.probe,
-            };
-            check_orchestrator(tx, ctx, run, &now, &facts)?;
         }
         reaped_stops(tx, &reaped, ctx)
     }
@@ -503,39 +562,33 @@ fn respawn_of(conn: &Connection, run: &Run, worker: &str, number: i64) -> Result
     })
 }
 
-/// Check each worker `ids` of the page of `run` that is due and that part
-/// 1 observed. A worker past its stall rounds is reaped; a first stall or a
-/// suspect gets its wake. Returns the reaped workers.
-fn check_workers<'i>(
+/// Check the worker `id` of `run` when it is due and part 1 observed it.
+/// Returns the check, and whether the stall reap ended the worker.
+fn check_worker(
     tx: &Transaction<'_>,
     run: &Run,
-    ids: impl Iterator<Item = &'i str>,
+    id: &str,
     observed: &BTreeMap<String, Observation>,
     now: &str,
     force: bool,
-) -> Result<(Vec<String>, Vec<Checked>)> {
-    let mut reaped = Vec::new();
-    let mut checked = Vec::new();
-    for w in fresh(tx, ids)? {
-        let Some(o) = observed.get(&w.worker_id) else {
-            continue;
-        };
-        if !watchdog::is_due(tx, run, &w, force, now)? {
-            continue;
-        }
-        let c = watchdog::check_observed(tx, run, &w, o, now)?;
-        let wake = if c.verdict == "dead" {
-            let wake = watchdog::reap_stalled(tx, &c.worker_id, &c.note)?;
-            end_attempts(tx, &c.worker_id, STALLED, &format!("stalled: {}", c.note))?;
-            reaped.push(c.worker_id.clone());
-            wake
-        } else {
-            wakes::verdict_wake(&c)
-        };
-        write(tx, run, wake)?;
-        checked.push(c);
+) -> Result<Option<(Checked, bool)>> {
+    let (Some(w), Some(o)) = (workers::find(tx, id)?, observed.get(id)) else {
+        return Ok(None);
+    };
+    if !watchdog::is_due(tx, run, &w, force, now)? {
+        return Ok(None);
     }
-    Ok((reaped, checked))
+    let c = watchdog::check_observed(tx, run, &w, o, now)?;
+    let dead = c.verdict == "dead";
+    let wake = if dead {
+        let wake = watchdog::reap_stalled(tx, &c.worker_id, &c.note)?;
+        end_attempts(tx, &c.worker_id, STALLED, &format!("stalled: {}", c.note))?;
+        wake
+    } else {
+        wakes::verdict_wake(&c)
+    };
+    write(tx, run, wake)?;
+    Ok(Some((c, dead)))
 }
 
 /// End each attempt of `worker` that holds it, with `outcome`.
@@ -581,61 +634,80 @@ fn reaped_stops(
         .collect())
 }
 
-/// The rows of the workers `ids` in `tx` now, in order. A row that is gone
-/// is left out.
-fn fresh<'i>(tx: &Connection, ids: impl IntoIterator<Item = &'i str>) -> Result<Vec<Worker>> {
-    let mut out = Vec::new();
-    for id in ids {
-        out.extend(workers::find(tx, id)?);
-    }
-    Ok(out)
+/// The active run of `w` in `runs`.
+fn run_of<'r>(runs: &'r [Run], w: &Worker) -> Option<&'r Run> {
+    runs.iter()
+        .find(|r| w.run_id.as_deref() == Some(r.run_id.as_str()))
 }
 
-/// The rows of the page of 1 task duty from its cursor in `pass_cursors`.
-/// The cursor moves past the page in `tx`.
-fn task_page(
+/// The task duty `kind` on the page that `read` gives from its cursor, in
+/// the order of the cursor, until the time budget ends: `each` writes the
+/// wakes of 1 task of its active run. The cursor moves through the last
+/// task done. Returns the keys of the tasks done.
+fn task_duty(
     tx: &Transaction<'_>,
+    ctx: &DutyCtx<'_>,
+    runs: &[Run],
     kind: &str,
-    rows: PassBudget,
     read: fn(&Connection, Option<&str>, usize) -> Result<Vec<tasks::Task>>,
-) -> Result<Vec<tasks::Task>> {
+    each: &dyn Fn(&Run, &tasks::Task) -> Result<()>,
+) -> Result<Vec<String>> {
+    let mut keys = Vec::new();
+    if (ctx.budget.time_up)() {
+        return Ok(keys);
+    }
     let now = util::now();
     let mut cursor = cursors_store::load(tx, kind, &now)?;
-    let page = read(tx, cursor.after_key.as_deref(), rows.rows())?;
-    for t in &page {
+    for t in read(tx, cursor.after_key.as_deref(), ctx.budget.rows.rows())? {
+        if (ctx.budget.time_up)() {
+            break;
+        }
         cursor.step(&t.task_id, &now);
+        if let Some(run) = runs.iter().find(|r| r.run_id == t.run_id) {
+            each(run, &t)?;
+        }
+        keys.push(t.task_id);
     }
     cursors_store::save(tx, kind, &cursor)?;
-    Ok(page)
+    Ok(keys)
 }
 
-fn task_keys(page: &[tasks::Task]) -> Vec<String> {
-    page.iter().map(|t| t.task_id.clone()).collect()
+/// The wakes of `run` that need the whole run: the stuck wake, the
+/// startable re-wake (TRF-22) and the lost wakes I-03 and I-04 (TRF-51).
+/// The stuck, startable and settled wakes ask 1 count query before they
+/// read rows; the reviews-in wake is 1 query.
+fn run_wakes(
+    tx: &Transaction<'_>,
+    run: &Run,
+    now: &str,
+    seen: &mut Option<Sighting>,
+) -> Result<()> {
+    write(tx, run, wakes::stuck_wake(tx, run)?)?;
+    write(tx, run, watchdog::startable_rewake(tx, run, now, seen)?)?;
+    write(tx, run, wakes::settled_wake(tx, run)?)?;
+    write(tx, run, wakes::reviews_in_wakes(tx, run, now)?)
 }
 
-/// Flag each spawned worker `ids` of the page of `run` with no claim, once.
+/// Flag the spawned worker `id` of `run` when it has no claim, once.
 fn flag_unclaimed(
     tx: &Transaction<'_>,
     run: &Run,
-    ids: &[&str],
+    id: &str,
     observed: &BTreeMap<String, Observation>,
     now: &str,
 ) -> Result<()> {
-    let mut spawns = Vec::new();
-    for w in fresh(tx, ids.iter().copied())? {
-        spawns.extend(watchdog::unclaimed(tx, run, w, now)?);
-    }
-    for u in spawns {
-        let status = observed
-            .get(&u.worker.worker_id)
-            .and_then(|o| o.herdr_status.clone());
-        write(
-            tx,
-            run,
-            watchdog::flag_unclaimed(tx, run, &u, status.as_deref())?,
-        )?;
-    }
-    Ok(())
+    let Some(w) = workers::find(tx, id)? else {
+        return Ok(());
+    };
+    let Some(u) = watchdog::unclaimed(tx, run, w, now)? else {
+        return Ok(());
+    };
+    let status = observed.get(id).and_then(|o| o.herdr_status.clone());
+    write(
+        tx,
+        run,
+        watchdog::flag_unclaimed(tx, run, &u, status.as_deref())?,
+    )
 }
 
 /// Write each wake of `wakes` in the outbox of `run`. A wake whose key
@@ -661,31 +733,6 @@ fn waits_for_claim(w: &Worker, now: &str) -> bool {
         .or(w.started_at.as_deref())
         .and_then(|t| util::seconds_between(t, now))
         .is_some_and(|s| s >= watchdog::UNCLAIMED_AFTER_S)
-}
-
-/// The pre-claim sweep of the workers `ids` of the page of `run` (#190): a
-/// row that no process stands for
-/// ends, and a worker that does not claim gets 1 question. Returns the
-/// workers that ended: their processes and panes are stopped in part 3.
-fn sweep_preclaim(
-    tx: &Transaction<'_>,
-    run: &Run,
-    ids: &[&str],
-    observed: &BTreeMap<String, Observation>,
-) -> Result<Vec<String>> {
-    let rows = fresh(tx, ids.iter().copied())?;
-    let swept = workers::sweep_preclaim_of(tx, run, rows, &workers::supervisor_alive)?;
-    let status = |w: &Worker| {
-        observed
-            .get(&w.worker_id)
-            .and_then(|o| o.herdr_status.clone())
-    };
-    write(tx, run, wakes::preclaim_wakes(tx, run, &swept, &status))?;
-    Ok(swept
-        .into_iter()
-        .filter(|p| p.ended.is_some())
-        .map(|p| p.worker.worker_id)
-        .collect())
 }
 
 /// The check of the orchestrator of `run`. A registered agent makes its
@@ -2026,6 +2073,72 @@ mod tests {
         }
         // Each held task has its 1 question, once.
         assert_eq!(wakes_with(&w, "is held: attempts"), HELD as i64);
+    }
+
+    /// herdr and the transcript as [`Quiet`]; the observation number `at`
+    /// moves the clock of the pass 1 hour on, past its time budget.
+    struct SlowAt {
+        at: usize,
+        seen: RefCell<usize>,
+        clock: std::rc::Rc<std::cell::Cell<Instant>>,
+    }
+
+    impl Observer for SlowAt {
+        fn observe(&self, w: &workers::Worker) -> Observation {
+            *self.seen.borrow_mut() += 1;
+            if *self.seen.borrow() == self.at {
+                self.clock.set(self.clock.get() + Duration::from_secs(3600));
+            }
+            Quiet.observe(w)
+        }
+    }
+
+    /// PL-5: the time budget ends in the middle of a page. Part 1 observes
+    /// no more workers, part 2 checks none, and the cursor stays before the
+    /// first worker not done, so the next pass checks each worker once.
+    #[test]
+    fn a_page_cut_by_the_time_budget_keeps_its_cursor_before_the_first_row_not_done() {
+        let mut w = world();
+        seed_big_run(&w, 50, 0, 0);
+        let clock = std::rc::Rc::new(std::cell::Cell::new(Instant::now()));
+        let observer = SlowAt {
+            at: 10,
+            seen: RefCell::new(0),
+            clock: clock.clone(),
+        };
+        let effects = Record::new(&w);
+        let duties = WatchdogDuties::new(&observer, &NoHolder, &effects, w.dir.clone());
+        let ports = Ports {
+            outside: &NoOutside,
+            duties: &duties,
+            needs_you: &NeedsYouList,
+            host: &NoHost,
+        };
+        let now = clock.clone();
+        let mut pass =
+            Pass::new(w.settings(Faults::default()), ports).with_clock(Box::new(move || now.get()));
+
+        let report = pass.run(&mut w.conn).unwrap();
+        assert!(report.heartbeat, "{report:?}");
+        assert_eq!(
+            *observer.seen.borrow(),
+            10,
+            "part 1 stops at the time budget"
+        );
+        assert!(duties.take_rows()[WORKER_CHECKS].is_empty());
+        assert_eq!(w.count("SELECT count(*) FROM checks"), 0);
+
+        pass.run(&mut w.conn).unwrap();
+        assert_eq!(duties.take_rows()[WORKER_CHECKS].len(), 50);
+        let (rows, workers): (i64, i64) = w
+            .conn
+            .query_row(
+                "SELECT count(*), count(DISTINCT worker_id) FROM checks",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((rows, workers), (50, 50));
     }
 
     /// PL-5: when the time budget of the pass is used, part 2 starts no

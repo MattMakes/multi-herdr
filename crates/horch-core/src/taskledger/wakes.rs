@@ -80,6 +80,9 @@ pub fn dependents_wake(t: &tasks::Task, dependents: &[tasks::Task]) -> Option<Wa
     Some(Wake::new(event, task, tagged(&text)).on_board(watchdog::blocker_state(t)))
 }
 
+/// The statuses of an open task of a stuck run.
+const OPEN: [TaskStatus; 3] = [TaskStatus::Queued, TaskStatus::Running, TaskStatus::Landing];
+
 fn stuck_line(conn: &Connection, run: &Run) -> Option<String> {
     // 1 count query first: a run with no open task or with a working
     // worker is not stuck, and the pass reads no row of it (PL-5).
@@ -89,11 +92,7 @@ fn stuck_line(conn: &Connection, run: &Run) -> Option<String> {
                 "SELECT EXISTS (SELECT 1 FROM tasks WHERE run_id = ?1 AND status IN ({open}))
                     AND NOT EXISTS (SELECT 1 FROM workers
                         WHERE run_id = ?1 AND kind = {worker} AND status = {working})",
-                open = sql_words::list(&[
-                    TaskStatus::Queued,
-                    TaskStatus::Running,
-                    TaskStatus::Landing
-                ]),
+                open = sql_words::list(&OPEN),
                 worker = sql_words::word(WorkerKind::Worker),
                 working = sql_words::word(WorkerStatus::Working),
             ),
@@ -107,7 +106,7 @@ fn stuck_line(conn: &Connection, run: &Run) -> Option<String> {
     let open: Vec<tasks::Task> = tasks::of_run(conn, &run.run_id)
         .ok()?
         .into_iter()
-        .filter(|t| matches!(t.status.as_str(), "queued" | "running" | "landing"))
+        .filter(|t| OPEN.iter().any(|s| s.as_str() == t.status))
         .collect();
     if open.is_empty() || !tasks::startable(conn, &run.run_id).ok()?.is_empty() {
         return None;

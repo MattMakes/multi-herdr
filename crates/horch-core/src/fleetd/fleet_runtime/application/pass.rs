@@ -120,6 +120,7 @@ pub struct DutyCtx<'a> {
     pub clock: FleetSeconds,
     /// The process and pane facts of part 1.
     pub facts: &'a Facts,
+    /// The row and time budget of the run duties in this pass.
     pub budget: DutyBudget<'a>,
 }
 
