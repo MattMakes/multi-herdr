@@ -8,6 +8,7 @@ use rusqlite::{params, Connection, Row};
 use serde::Serialize;
 
 use crate::exeid::{exe_identity, ExeIdentity};
+use crate::fleetd::ideas::application::needs_you;
 
 use super::model::{TaskStatus, WorktreeStatus};
 use super::runs::Run;
@@ -80,6 +81,47 @@ pub struct Report {
     pub parked: Parked,
     /// The orchestrator's respawns and stop (trace-fixes C7).
     pub orchestrator: Option<String>,
+    /// The open items of the needs-you list (FM-44).
+    pub needs_you: NeedsYou,
+}
+
+/// The open items of the needs-you list. It has no run: each board shows
+/// every open item.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct NeedsYou {
+    pub open: usize,
+    pub items: Vec<NeedsYouLine>,
+}
+
+/// 1 open needs-you item.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NeedsYouLine {
+    pub key: String,
+    pub kind: String,
+    pub entity: String,
+    pub entity_id: String,
+    pub text: String,
+    pub created_at: String,
+}
+
+impl NeedsYou {
+    fn of(conn: &Connection) -> Result<NeedsYou> {
+        let items: Vec<NeedsYouLine> = needs_you::open_items(conn)?
+            .into_iter()
+            .map(|i| NeedsYouLine {
+                key: i.key,
+                kind: i.kind,
+                entity: i.entity,
+                entity_id: i.entity_id,
+                text: i.text,
+                created_at: i.created_at,
+            })
+            .collect();
+        Ok(NeedsYou {
+            open: items.len(),
+            items,
+        })
+    }
 }
 
 /// The parked worktrees of a run: on disk, and no step takes them to an
@@ -481,6 +523,7 @@ pub fn report_for(conn: &Connection, run: &Run, current: Option<&ExeIdentity>) -
         watchdog: WatchdogLine::of(run, current),
         parked: Parked::of(conn, &run.run_id, &now)?,
         orchestrator: super::orchestrator::status_line(conn, &run.run_id)?,
+        needs_you: NeedsYou::of(conn)?,
     })
 }
 
@@ -517,6 +560,7 @@ pub fn render(r: &Report) -> String {
     render_live(&mut out, &r.workers);
     render_open_worktrees(&mut out, &r.worktrees);
     render_parked(&mut out, &r.parked);
+    render_needs_you(&mut out, &r.needs_you);
     if !r.unsettled.is_empty() {
         let items: Vec<String> = r.unsettled.iter().map(|u| u.to_string()).collect();
         let _ = writeln!(out, "Unsettled: {}.", items.join(", "));
@@ -538,6 +582,17 @@ pub fn render(r: &Report) -> String {
         }
     );
     out
+}
+
+/// The open needs-you items; nothing when there are none.
+fn render_needs_you(out: &mut String, n: &NeedsYou) {
+    if n.items.is_empty() {
+        return;
+    }
+    let _ = writeln!(out, "Needs you ({}):", n.open);
+    for i in &n.items {
+        let _ = writeln!(out, "  {}: {}", i.key, i.text);
+    }
 }
 
 /// The watchdog line; nothing before its first checkin.
@@ -997,5 +1052,78 @@ mod trf_39_tests {
         );
         assert!(text.contains("dev-1"), "{text}");
         assert_eq!(text.matches("STALE").count(), 1, "{text}");
+    }
+}
+
+#[cfg(test)]
+mod needs_you_tests {
+    use std::path::Path;
+
+    use super::*;
+    use crate::fleetd::ideas::application::needs_you;
+    use crate::taskledger::runs::{self, NewRun};
+    use crate::taskledger::Store;
+
+    #[test]
+    fn status_shows_each_open_needs_you_item() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
+        let run = store
+            .immediate(|tx| {
+                runs::create(
+                    tx,
+                    Path::new("/repo"),
+                    &NewRun {
+                        slug: "r1".into(),
+                        ..Default::default()
+                    },
+                )
+            })
+            .unwrap();
+        store
+            .immediate(|tx| {
+                needs_you::open_item(
+                    tx,
+                    "illegal_transition:T-3",
+                    "illegal_transition",
+                    "task",
+                    "T-3",
+                    "T-3 asked done -> running",
+                )?;
+                needs_you::open_item(
+                    tx,
+                    "job_abandoned:J-1",
+                    "job_abandoned",
+                    "job",
+                    "J-1",
+                    "J-1 ended abandoned 3 times",
+                )?;
+                needs_you::resolve(tx, "job_abandoned:J-1")
+            })
+            .unwrap();
+        let report = report(store.conn(), &run).unwrap();
+        assert_eq!(report.needs_you.open, 1);
+        let keys: Vec<&str> = report
+            .needs_you
+            .items
+            .iter()
+            .map(|i| i.key.as_str())
+            .collect();
+        assert_eq!(keys, ["illegal_transition:T-3"]);
+
+        let text = render(&report);
+        assert!(text.contains("Needs you (1):"), "{text}");
+        assert!(
+            text.contains("illegal_transition:T-3: T-3 asked done -> running"),
+            "{text}"
+        );
+        assert!(!text.contains("J-1"), "{text}");
+
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["needs_you"]["open"], 1, "{json}");
+        assert_eq!(
+            json["needs_you"]["items"][0]["key"],
+            "illegal_transition:T-3"
+        );
     }
 }
