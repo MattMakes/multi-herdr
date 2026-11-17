@@ -7,16 +7,20 @@
 **Check:** `cargo test -p horch-core --lib fleetd::integration::adapters::exec_gate fleetd::worktree_custody::application::gate_tree && cargo test -p horch-core --test gate_jobs && cargo test -p horch-core --test nfr --test arch_scan --test architecture_doc`
 **Own:** `crates/horch-core/src/fleetd/integration/adapters/exec_gate.rs`, `crates/horch-core/src/fleetd/worktree_custody/application/gate_tree.rs`, `crates/horch-core/tests/gate_jobs.rs`
 
-Spec: `docs/specs/fleetd/design.md`, "Between features" (Two declared gates; The full gate), "The kinds of job" (`fast_gate`, `full_gate`: pure), FR-11, PL-5 (a pass never waits for a gate).
+Spec: `docs/specs/fleetd/design.md`, "Between features" (Two declared gates; The full gate), "The kinds of job" (`fast_gate`, `full_gate`: pure), FR-11, PL-5 (a pass never waits for a gate), SR-4 and SR-8 (code that a worker wrote never runs with the rights of fleetd).
 
 ## Goal
 
-A `fast_gate` job runs the project's fast gate on the candidate tip of a bundle; a `full_gate` job runs the full gate on the feature tip over the fetched primary tip. Each runs in the gate tree of its feature, through the launcher, with its time limit, and its exit code is the verdict, written in `gate_runs`.
+A `fast_gate` job runs the project's fast gate on the candidate tip of a bundle; a `full_gate` job runs the full gate on the feature tip over the fetched primary tip. Each runs in the gate tree of its feature, through the launcher, inside the gate sandbox (never with the rights of fleetd), with its time limit, and its exit code is the verdict, written in `gate_runs`.
 
 ## Requirements
 
 - The gate tree (Q18): 1 worktree for each feature at `<project>/.worktrees/gate-<feature id>`, a `worktrees` row with no task and the owner `fleetd`, made by the `worktree_add` job of Phase 3 (row first, FR-11) and removed when its feature is `merged` or `abandoned`. The gate job runs `git checkout --detach <tip>` in it (not `git worktree add`), then the gate command, so the build cache stays.
-- A gate is a project command, not a worker's command: it runs through the launcher with no worker sandbox, in the gate tree (Q19).
+- The gate sandbox (Q19). A gate runs code of the project, and workers write that code. So a gate command never runs with the rights of fleetd. It runs through the launcher, in the gate tree, inside the check sandbox of the platform layer.
+- The sandbox is a call of `sandboxed(cmd, writable)` in `crates/horch-platform/src/sandbox.rs` (ticket 17). Do not write a second sandbox. Ticket 18 gives no function that a gate can use: it is in wave 4, and its adapter takes a worker persona.
+- The writable paths of a gate are: the gate tree of the feature, the temporary folder of the job, and the build cache paths that the project declares (Q24 of MAP.md; until ticket 04 gives that key, the list is empty). The gate cannot write the fleet root, the ledger, another worktree, or the repository of the user outside the gate tree.
+- NotSupported: the gate does not run, and no `gate_runs` row gets a result. The job ends with the cause `no gate sandbox: <reason>`. The feature gets a hold: fleetd queues no gate of the feature, and no bundle of the feature gates or lands. fleetd opens 1 needs-you item with the key `no_gate_sandbox:<feature id>`. A later pass that finds a sandbox ends the hold and closes the item. Never a run with the rights of fleetd.
+- The `git checkout --detach <tip>` of the gate runs with `-c core.hooksPath=/dev/null`, so no hook of the project runs outside the sandbox.
 - Pure jobs: a `passed` verdict of 1 input key is used again; a fail is used again only when the gate ran to its end.
 
 ## Context
@@ -29,7 +33,7 @@ A `fast_gate` job runs the project's fast gate on the candidate tip of a bundle;
 
 ## Steps
 
-1. Write the tests first: `fast_gate_runs_the_declared_command_on_the_candidate_tip`, `full_gate_runs_on_the_feature_tip`, `passed_gate_of_1_key_is_used_again`, `gate_with_no_declared_command_fails_with_the_cause`, `gate_tree_is_a_custody_row_with_no_task`, `gate_at_its_limit_is_abandoned_and_its_group_killed`.
+1. Write the tests first: `fast_gate_runs_the_declared_command_on_the_candidate_tip`, `full_gate_runs_on_the_feature_tip`, `passed_gate_of_1_key_is_used_again`, `gate_with_no_declared_command_fails_with_the_cause`, `gate_tree_is_a_custody_row_with_no_task`, `gate_at_its_limit_is_abandoned_and_its_group_killed`, `gate_command_that_writes_outside_its_paths_is_refused` (the gate writes 1 file in the fleet root and 1 file in another worktree; the gate fails, and the 2 files do not exist), `gate_with_no_sandbox_does_not_run_and_holds_the_feature_with_1_item` (the sandbox gives NotSupported through a test seam; the gate command does not run, the feature holds, and 1 needs-you item is open).
 2. Write the executor and the gate tree.
 3. Run the Check. Commit the exact files.
 
@@ -72,4 +76,4 @@ Self-hosting: this phase changes `horch spawn`, the claim and the finish steps. 
 
 ## Done when
 
-The Check passes. Each gate runs as a job in the gate tree of its feature and records its result in `gate_runs`.
+The Check passes. Each gate runs as a job in the gate tree of its feature, inside the gate sandbox, and records its result in `gate_runs`. No gate command runs with the rights of fleetd.

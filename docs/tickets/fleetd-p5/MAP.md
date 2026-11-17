@@ -238,6 +238,14 @@ orchestrator can change each one.
   The gate ticket checks it again.
 - **Q20. The read deadline of the channel.** 5 s, the connect time of today
   (`preservation-05-contracts-and-values.md`, row V-18). Ticket 13.
+- **Q21. The gate sandbox and the check sandbox (T-607).** A gate (`fast_gate`, `full_gate`) and
+  a check (`task_check`) run code that a worker wrote. They never run with the rights of fleetd
+  (SR-4). From Phase 5 those rights include the token, the channel and the request folder. So the
+  sandbox of a gate and of a check denies the 3 operator acts, as the worker sandbox does. The
+  denials are a required argument of the platform sandbox call (ticket 06), and ticket 06 changes
+  its 2 callers of Phase 4: `check_sandbox.rs` and `exec_gate.rs`. NotSupported keeps the Phase 4
+  path: no run, and 1 needs-you item. Ticket 43 has the attack test from a test that runs in a gate.
+  Tickets 06, 43.
 
 Risks of the phase:
 
@@ -266,6 +274,7 @@ ticket that gives it.
 | The Windows transport: 1 pipe instance (REQUIRED item 1) | 04 |
 | The server process for a client of the channel | 05 |
 | The 3 operator denials of the platform sandbox | 06 |
+| The gate sandbox and the check sandbox deny the 3 operator acts (Q21) | 06 |
 | The protected file reader (owner, mode, link, real path, size) | 07 |
 | The class of each request kind, the request contract | 08 |
 | The authorization decision, the orchestrator seat (Q2) | 09 |
@@ -304,7 +313,7 @@ ticket that gives it.
 | FR-7: only fixed lines are typed | 40 |
 | The wiring in fleetd | 41 |
 | The read-only ledger outside fleetd and its `arch_scan` rule (RR-5, FM-24, the arch test) | 42 |
-| The SR-8 gate test from inside a worker sandbox; REQUIRED item 3 tests | 43 |
+| The SR-8 gate test from inside a worker sandbox and from a test that runs in a gate; REQUIRED item 3 tests | 43 |
 | SR-5, SR-6 and FM-23 e2e | 44 |
 | RR-8 and FM-15 e2e | 45 |
 | FM-17 e2e and the read-only worker e2e (REQUIRED item 5) | 46 |

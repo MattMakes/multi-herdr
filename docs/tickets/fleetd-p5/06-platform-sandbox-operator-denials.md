@@ -4,19 +4,20 @@
 **Persona:** primary `opus-hardening`, fallback `codex-sol` · **Parallel:** yes
 **Kind:** security
 **Review:** full
-**Check:** `cargo test -p horch-platform --test sandbox && cargo test -p horch-platform && cargo test -p horch-core --test nfr --test arch_scan --test architecture_doc`
-**Own:** `crates/horch-platform/src/sandbox.rs`, `crates/horch-platform/src/mac/sandbox.rs`, `crates/horch-platform/src/linux/sandbox.rs`, `crates/horch-platform/src/windows/sandbox.rs`, `crates/horch-platform/tests/sandbox.rs`
+**Check:** `cargo test -p horch-platform --test sandbox && cargo test -p horch-platform && cargo test -p horch-core --test check_sandbox --test gate_jobs && cargo test -p horch-core --test nfr --test arch_scan --test architecture_doc`
+**Own:** `crates/horch-platform/src/sandbox.rs`, `crates/horch-platform/src/mac/sandbox.rs`, `crates/horch-platform/src/linux/sandbox.rs`, `crates/horch-platform/src/windows/sandbox.rs`, `crates/horch-platform/tests/sandbox.rs`, `crates/horch-core/src/fleetd/worker_profiles/adapters/check_sandbox.rs`, `crates/horch-core/src/fleetd/integration/adapters/exec_gate.rs`, `crates/horch-core/tests/check_sandbox.rs`, `crates/horch-core/tests/gate_jobs.rs`
 
 Spec: `docs/specs/fleetd/design.md` (Migration plan, item 7 "Phase 5: one ledger writer"; Architecture and roles, "The command channel"; Workspace layout and file protocol, Protocol rules).
 
 ## Goal
 
-The sandbox of the platform layer can run 1 command so that it cannot read 1 file, cannot connect to 1 socket, and cannot write under 1 folder. The attack test of Phase 5 uses it as the worker sandbox.
+The sandbox of the platform layer can run 1 command so that it cannot read 1 file, cannot connect to 1 socket, and cannot write under 1 folder. The attack test of Phase 5 uses it as the worker sandbox. The 3 denials apply to the gate sandbox (`fast_gate`, `full_gate`, ticket 28 of fleetd-p4) and to the check sandbox (`task_check`, ticket 18 of fleetd-p4) as they apply to a worker sandbox, because a gate and a check run code that a worker wrote.
 
 ## Requirements
 
 - SR-8 (the 3 denials of the worker sandbox)
 - FM-32 (the operator path from a sandbox)
+- SR-4: a check and a gate never run with the rights of fleetd. From Phase 5 those rights include the token, the channel and the request folder, so the check sandbox and the gate sandbox deny the 3 acts too.
 
 ## Context
 
@@ -26,15 +27,18 @@ The sandbox of the platform layer can run 1 command so that it cannot read 1 fil
 - macOS: the Seatbelt profile of `sandbox-exec` gets `(deny file-read* (literal <token>))`, `(deny network-outbound (literal <socket>))` and a write rule that does not include the request folder. Linux: bubblewrap mounts an empty file over the token path, and does not bind the socket and the request folder. Windows: `NotSupported`.
 - The tests run the real `sandbox-exec` on this Mac. On Linux, CI runs them when `bwrap` is installed, else the tests assert `NotSupported` and the gate file names them as pending.
 - Each denied act must fail with a refusal of the OS, not with a missing file.
+- The denials are a required argument of the sandbox call, not an option. Then no caller can forget them, and the compiler finds each caller. The 2 callers of Phase 4 are `check_sandbox.rs` (ticket 18 of fleetd-p4) and `exec_gate.rs` (ticket 28 of fleetd-p4). This ticket changes each of them to pass the 3 paths of Q17 of MAP.md: the token `<fleet root>/run/operator.token`, the channel `<fleet root>/run/fleetd.sock` and the request folder `<fleet root>/run/requests/`. No ticket of wave 1 owns those 2 files. Ticket 38 changes `check_sandbox.rs` later, after this ticket.
+- A caller whose OS gives NotSupported for the denials keeps the NotSupported path of its Phase 4 ticket: no run, and 1 needs-you item. Never a run without the denials.
 - A file that a ticket of fleetd-p2, fleetd-p3 or fleetd-p4 names and that does not exist yet comes from that ticket. It is not a fault. Read the ticket that makes it.
 - No test reads the real load, the real limits or the real clock of the machine, and no test depends on the speed of the host. Give these facts through `HORCH_MACHINE_FILE`, a test `fleet.toml` and the fleet clock, and wait for an event, not for a time.
 - The guard tests run in the Check. A new crate, type name or module needs its list entry in the guard tests; add it in this ticket (the orchestrator permits that file outside `Own`).
 
 ## Steps
 
-1. Write the tests first in `crates/horch-platform/tests/sandbox.rs` (attack tests): `sandboxed_child_cannot_read_the_denied_file`, `sandboxed_child_cannot_connect_to_the_denied_socket` (a real listener of `horch_platform::channel` at that path), `sandboxed_child_cannot_write_into_the_denied_folder`, and `sandboxed_child_still_writes_its_allowed_paths`. Each child is `/bin/sh -c` with 1 act; the test asserts its exit code and that the file of the act did not change. They fail because the interface has no denials.
+1. Write the tests first in `crates/horch-platform/tests/sandbox.rs` (attack tests): `sandboxed_child_cannot_read_the_denied_file`, `sandboxed_child_cannot_connect_to_the_denied_socket` (a real listener of `horch_platform::channel` at that path), `sandboxed_child_cannot_write_into_the_denied_folder`, and `sandboxed_child_still_writes_its_allowed_paths`. In `crates/horch-core/tests/check_sandbox.rs` and `crates/horch-core/tests/gate_jobs.rs` (the test files of tickets 18 and 28 of fleetd-p4): `check_sandbox_denies_the_3_operator_acts` and `gate_sandbox_denies_the_3_operator_acts`. Each child is `/bin/sh -c` with 1 act; the test asserts its exit code and that the file of the act did not change. They fail because the interface has no denials.
 2. Add the 3 denials to the input of the sandbox call (for example `Denials { read: Vec<PathBuf>, connect: Vec<PathBuf>, write: Vec<PathBuf> }`), and the code of each OS.
 3. Windows returns `NotSupported`.
+4. Change `check_sandbox.rs` and `exec_gate.rs` to pass the 3 denials. Run the Check. Commit the exact files.
 
 ## Constraints
 
@@ -75,4 +79,5 @@ The sandbox of the platform layer can run 1 command so that it cannot read 1 fil
 
 - The Check passes, with the guard tests.
 - The 4 attack tests pass on this Mac with the real `sandbox-exec`.
+- The check sandbox and the gate sandbox deny the 3 operator acts, and their 2 tests pass on this Mac.
 - The doc of `sandbox.rs` names what each OS denies.

@@ -146,7 +146,7 @@ Phase 3.
 
 Q-A, Q-B and Q-C are answers of the orchestrator. Q1 to Q22 are choices of the planner where the
 design and the code of today do not agree, or where the design leaves a point open. Each ticket
-follows them, and the orchestrator can change each one. Q2 and Q23 have no question.
+follows them, and the orchestrator can change each one. Q2 and Q23 have no question. Q24 to Q26 are open points of T-607 for the orchestrator.
 
 - **Q1. Module files.** Ticket 01 makes each new file of the 3 contexts (1 file for each concern
   under `domain/`, `application/` and `adapters/`), so that tickets of 1 wave own different files.
@@ -186,13 +186,47 @@ follows them, and the orchestrator can change each one. Q2 and Q23 have no quest
   stash names are read in the `worktree_list` job, not in the pass. Tickets 24, 44.
 - **Q18. The gate tree.** 1 tree for each feature at `<project>/.worktrees/gate-<feature id>`, a
   custody row with no task and owner fleetd. The rebase also runs there. Tickets 28, 41.
-- **Q19. How the gates run.** Through the launcher, with no worker sandbox. Ticket 28.
+- **Q19. How the gates run (corrected by T-607).** A gate runs code of the project, and workers
+  write that code. So a gate never runs with the rights of fleetd. It runs through the launcher, in
+  the gate tree, inside the check sandbox of ticket 17 (`sandboxed(cmd, writable)` of
+  `crates/horch-platform`). It can write only the gate tree, the temporary folder of its job and the
+  build cache paths that the project declares (Q24). It cannot write the fleet root, the ledger,
+  another worktree or the repository of the user outside the gate tree. NotSupported: the gate does
+  not run, the feature holds, and 1 needs-you item opens (key `no_gate_sandbox:<feature id>`). The
+  `git checkout` of the gate runs with hooks off. From Phase 5 the gate sandbox also denies the 3
+  operator acts (ticket 06 of `docs/tickets/fleetd-p5/`). Ticket 28.
 - **Q20. Ideas before Phase 6.** The stand-in for an idea: each task of the run is done or
   cancelled. Ticket 36.
 - **Q21. When fleetd pushes.** When the feature tip is not `seen_remote_tip` and the feature is
   ready or its PR is open, and after a rebase. Ticket 38.
 - **Q22. `gh` calls.** They run in the push job. Ticket 39.
 - **Q23.** None.
+- **Q24. The build cache paths of a gate (open, for the orchestrator).** A gate of this repository
+  runs `cargo test`, and cargo writes `~/.cargo` (the registry and its lock file). Ticket 28 needs a
+  list of these paths from the project. Choice: a key `writable_paths` in `[gates]` of the project
+  `fleet.toml`, a list of paths, with `["~/.cargo"]` for this repository. Ticket 04 owns the parse of
+  `[gates]` and refuses an unknown key, so ticket 04 must add the key. T-607 did not change ticket
+  04. Tickets 04, 28.
+- **Q25. Ticket 28 needs ticket 17 (open, for the orchestrator).** The gate sandbox calls the
+  function of ticket 17. Ticket 28 is not blocked by 17 in the table, but 17 is in wave 1 and 28 in
+  wave 3. T-607 did not change a `Blocked by` cell. The orchestrator can add the dependency in the
+  ledger. Tickets 17, 28.
+- **Q26. The other Phase 4 jobs that run git in a tree (open, for the orchestrator).** T-607 did
+  not own these tickets. Each one must run no command and no hook of the project outside a sandbox:
+  - Ticket 41, the `rebase` job: `git rebase` in the gate tree runs the hooks of the project
+    (`pre-rebase`, `post-checkout`, `post-rewrite`). Ticket 41 does not say `core.hooksPath=/dev/null`.
+    Choice: add `-c core.hooksPath=/dev/null` to each git call of the job.
+  - Ticket 27, the `bundle_build` job: `git merge-tree --write-tree` and `git commit-tree` run no
+    hook and need no tree. Ticket 27 does not say it. Choice: 1 line in ticket 27 that
+    its git calls run with hooks off.
+  - Ticket 38, the `push` job: `git push` runs the `pre-push` hook. Q13 says that the
+    `-c core.hooksPath=/dev/null` of horch's own git calls wins. Ticket 38 does not repeat it.
+  - Ticket 37, the `fetch` job: F11 says no hooks. Nothing to add.
+  - Tickets 33 and 42, resolver and fix attempts: they are worker attempts, launched by ticket 10 in
+    the worker sandbox. They are not fleetd commands. Nothing to add.
+  - The `trial_merge` job: no executor in Phase 4 (ticket 03). Phase 6 must give it hooks off.
+  - The `worktree_add` job of Phase 3 makes the gate tree with `git worktree add`, which runs the
+    `post-checkout` hook. That ticket is in Phase 3. Choice: hooks off for that call.
 - **Q-A. The check sandbox (answer of the orchestrator, option 1).** The `task_check` job runs only
   in the sandbox of the worker (SR-4). Reuse the sandbox concern of Phase P and do not build a
   second one: extend it with a list of writable paths. The sandbox host is in
@@ -247,6 +281,7 @@ required item of the phase, with the ticket that gives it.
 | I2 | 26 |
 | The bundle build job | 27 |
 | The gate tree and the gate jobs | 28 |
+| The gate sandbox: a gate never runs with the rights of fleetd; NotSupported holds the feature with 1 needs-you item (SR-4, SR-8) | 17, 28 |
 | The landing state machine | 25 |
 | Bundles | 29 |
 | The bisect of a bundle | 30 |
