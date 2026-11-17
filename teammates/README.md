@@ -47,8 +47,8 @@ choose from** — there is no registry to update and nothing to recompile.
   rule is matched on the tier name, so a version bump stays reserved.
   `horch teammates --check` fails any other offered teammate that asks for one.
 - **Every worker persona names a fallback.** The first entry of `fallbacks`
-  is the persona fleetd uses on a usage limit or an outage: `codex-sol` for
-  `agent: claude`, `opus` for every other agent. A persona that a fallback on
+  is the persona fleetd uses on a usage limit or an outage. The fallback rule
+  is in the `fallbacks` block of `_template.md`. A persona that a fallback on
   another harness would break states why in `no_fallback_reason` and waits in
   `waiting_quota` instead. The top-tier seats, the 2 orchestrators and
   `smoke.md` are exempt. `horch teammates --check` fails any other file.

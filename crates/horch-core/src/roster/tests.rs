@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use super::parser::{md_files, parse_base, parse_teammate};
 use super::Roster;
+use crate::fleetd::worker_profiles::domain::profile::{Liveness, Mode, OnUsageLimit, Profile};
 
 fn manifest_dir() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -335,8 +336,6 @@ fn check_refuses_an_unknown_or_non_claude_system_prompt() {
 }
 
 // Ticket fleetd-p2/06: the profile of a persona and the required fallback.
-
-use crate::fleetd::worker_profiles::domain::profile::{Liveness, Mode, OnUsageLimit, Profile};
 
 /// The built-in roster with `probe`: a copy of `opus.md` whose `fallbacks`
 /// line is replaced by `lines`.

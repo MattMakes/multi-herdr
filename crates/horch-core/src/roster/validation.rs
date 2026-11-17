@@ -1804,8 +1804,8 @@ pub fn profile_problems(roster: &Roster) -> Vec<String> {
         let reason = t.no_fallback_reason.as_deref().map(str::trim);
         match (t.fallbacks.is_empty(), reason) {
             (true, None) if !exempt => out.push(format!(
-                "{file}: a worker persona names no fallback; add 1 to fallbacks (agent \
-                 claude: codex-sol, any other agent: opus), or give no_fallback_reason"
+                "{file}: a worker persona names no fallback; add 1 to fallbacks by the \
+                 rule in teammates/_template.md, or give no_fallback_reason"
             )),
             (true, Some("")) if !exempt => out.push(format!(
                 "{file}: a worker persona names no fallback, and no_fallback_reason is empty"

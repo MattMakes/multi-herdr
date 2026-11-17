@@ -82,9 +82,14 @@ model: opus
 # on a trains-on-input (opencode) teammate. `horch route <name>` shows what a
 # spawn would do right now.
 # REQUIRED on a worker persona (`horch teammates --check`): name 1 fallback on
-# another provider. agent claude -> codex-sol; agent codex -> opus; any other
-# agent -> opus. The first entry is the fallback fleetd uses (RR-11). Exempt:
-# the top-tier seats, the fleet orchestrators and `agent: none`.
+# another provider. The first entry is the fallback fleetd uses (RR-11).
+# Exempt: the top-tier seats, the fleet orchestrators and `agent: none`.
+# The fallback rule, the 1 source of truth for README.md and --check:
+# - A fallback never lowers confidentiality. A local persona never falls back
+#   to a cloud persona. A paid persona never falls back to one that trains on
+#   its input. A persona in a sandbox never falls back to one without one.
+# - Within that: agent claude -> codex-sol; any other agent -> opus. An agy
+#   persona falls back to codex-sol, because opus has no OS sandbox.
 fallbacks: []
 
 # Only for a worker persona that a fallback on another harness would break
