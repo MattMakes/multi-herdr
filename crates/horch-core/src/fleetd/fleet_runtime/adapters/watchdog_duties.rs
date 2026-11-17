@@ -2021,7 +2021,10 @@ mod tests {
             needs_you: &NeedsYouList,
             host: &NoHost,
         };
-        let mut pass = Pass::new(settings, ports);
+        // The clock of the pass stands still: the row budget alone ends
+        // each page, on a slow host too. The time budget has its own tests.
+        let start = Instant::now();
+        let mut pass = Pass::new(settings, ports).with_clock(Box::new(move || start));
 
         let mut reached: BTreeMap<&'static str, BTreeMap<String, usize>> = BTreeMap::new();
         for n in 1..=PASSES {
@@ -2169,5 +2172,64 @@ mod tests {
 
         pass(&mut w, &duties, Faults::default());
         assert_eq!(w.count("SELECT count(*) FROM checks"), 50);
+    }
+
+    /// PL-5: the time budget ends the held-task duty after 4 rows of a page
+    /// of 6. The next pass starts at row 5, so 1 lap reaches each held task
+    /// once, and each held task has its 1 question, once.
+    #[test]
+    fn a_held_page_cut_by_the_time_budget_goes_on_at_the_first_task_not_done() {
+        const HELD: usize = 10;
+        let w = world();
+        seed_big_run(&w, 0, 0, HELD);
+        let guard = w.settings(Faults::default()).generation;
+        let facts = crate::fleetd::task_execution::domain::task::Facts::default();
+        let duty = |rows: u64, cut_after: usize| -> Vec<String> {
+            let up = std::cell::Cell::new(false);
+            let done = std::cell::Cell::new(0);
+            let time_up = || up.get();
+            let ctx = DutyCtx {
+                guard,
+                clock: crate::fleetd::fleet_runtime::domain::clock::FleetSeconds(0),
+                facts: &facts,
+                budget: DutyBudget {
+                    rows: PassBudget::new(rows),
+                    time_up: &time_up,
+                },
+            };
+            let tx = w.conn.unchecked_transaction().unwrap();
+            let runs = watchdog::active_runs(&tx).unwrap();
+            let keys = task_duty(
+                &tx,
+                &ctx,
+                &runs,
+                HELD_TASKS,
+                watchdog::held_page,
+                &|run, t| {
+                    done.set(done.get() + 1);
+                    up.set(done.get() == cut_after);
+                    write(&tx, run, wakes::held_wake(&tx, t))
+                },
+            )
+            .unwrap();
+            tx.commit().unwrap();
+            keys
+        };
+        let all: Vec<String> = watchdog::held_page(&w.conn, None, HELD)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.task_id)
+            .collect();
+        assert_eq!(all.len(), HELD);
+
+        assert_eq!(
+            duty(6, 4),
+            all[..4],
+            "the budget ends the page after 4 rows"
+        );
+        assert_eq!(duty(6, 0), all[4..], "the next pass starts at row 5");
+        assert_eq!(wakes_with(&w, "is held: attempts"), HELD as i64);
+        assert_eq!(duty(6, 0), all[..6], "the next lap starts at row 1");
+        assert_eq!(wakes_with(&w, "is held: attempts"), HELD as i64);
     }
 }
