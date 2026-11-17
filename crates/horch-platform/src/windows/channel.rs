@@ -339,3 +339,116 @@ unsafe fn sid_text(sid: PSID) -> io::Result<String> {
     unsafe { LocalFree(text.cast()) };
     Ok(sid)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::{BufRead, BufReader, Write};
+    use std::path::PathBuf;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    use super::*;
+
+    /// A pipe name that no other test and no other run uses.
+    fn unique_name(test: &str) -> PathBuf {
+        PathBuf::from(format!("horch-test-{}-{test}", std::process::id()))
+    }
+
+    /// The upper limit of a connect in a test. No test waits for it: a
+    /// connect returns as soon as an instance is free.
+    fn far_deadline() -> Instant {
+        Instant::now() + Duration::from_secs(60)
+    }
+
+    /// A second instance of the pipe `name`, as another process of this
+    /// user can try to make it. `None` when the system refuses it.
+    fn other_instance(name: &Path, max_instances: u32) -> Option<OwnedHandle> {
+        let name = pipe_name(name).unwrap();
+        // SAFETY: `name` ends with a NUL. The security attributes may be
+        // null.
+        let handle = unsafe {
+            CreateNamedPipeW(
+                name.as_ptr(),
+                PIPE_ACCESS_DUPLEX,
+                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+                max_instances,
+                BUFFER,
+                BUFFER,
+                0,
+                ptr::null(),
+            )
+        };
+        // SAFETY: a valid `handle` is a new open handle that nothing else
+        // owns.
+        (handle != INVALID_HANDLE_VALUE).then(|| unsafe { OwnedHandle::from_raw_handle(handle) })
+    }
+
+    /// Accept `count` clients. Each sends 1 line and gets the same line
+    /// back. The result is the lines in the order of the clients.
+    fn echo(listener: &Listener, count: usize) -> Vec<String> {
+        (0..count)
+            .map(|_| {
+                let (stream, _peer) = accept(listener).unwrap();
+                let mut line = String::new();
+                BufReader::new(&stream).read_line(&mut line).unwrap();
+                (&stream).write_all(line.as_bytes()).unwrap();
+                line
+            })
+            .collect()
+    }
+
+    fn ask(stream: &Stream, line: &str) -> String {
+        let mut writer = stream;
+        writer.write_all(line.as_bytes()).unwrap();
+        let mut reply = String::new();
+        BufReader::new(stream).read_line(&mut reply).unwrap();
+        reply
+    }
+
+    #[test]
+    fn second_instance_of_the_channel_name_is_refused() {
+        let name = unique_name("second-instance");
+        let listener = bind(&name).unwrap();
+        let refused = |when: &str| {
+            for max_instances in [1, PIPE_UNLIMITED_INSTANCES] {
+                assert!(
+                    other_instance(&name, max_instances).is_none(),
+                    "a second instance with nMaxInstances {max_instances} is refused {when}"
+                );
+            }
+        };
+        refused("before a client");
+
+        // After a client ends, the listener still holds the only instance.
+        thread::scope(|scope| {
+            let server = scope.spawn(|| echo(&listener, 1));
+            let client = connect(&name, far_deadline()).unwrap();
+            assert_eq!(ask(&client, "ping\n"), "ping\n");
+            drop(client);
+            assert_eq!(server.join().unwrap(), ["ping\n"]);
+        });
+        refused("after a client");
+    }
+
+    #[test]
+    fn client_waits_on_pipe_busy_and_connects_after_the_first_client_ends() {
+        let name = unique_name("pipe-busy");
+        let listener = bind(&name).unwrap();
+        thread::scope(|scope| {
+            let server = scope.spawn(|| echo(&listener, 2));
+            let first = connect(&name, far_deadline()).unwrap();
+
+            // The first client holds the only instance: a connect whose
+            // deadline is over gets PIPE_BUSY and stops at once.
+            let busy = connect(&name, Instant::now()).unwrap_err();
+            assert_eq!(busy.kind(), io::ErrorKind::TimedOut);
+
+            let second = scope.spawn(|| ask(&connect(&name, far_deadline()).unwrap(), "second\n"));
+            assert_eq!(ask(&first, "first\n"), "first\n");
+            drop(first);
+
+            assert_eq!(second.join().unwrap(), "second\n");
+            assert_eq!(server.join().unwrap(), ["first\n", "second\n"]);
+        });
+    }
+}
