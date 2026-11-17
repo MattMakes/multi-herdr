@@ -13,13 +13,13 @@
 
 #![cfg(unix)]
 
-use std::fs::File;
 use std::path::PathBuf;
-use std::process::{Child, Command, Output, Stdio};
-use std::time::{Duration, Instant};
+use std::process::{Command, Output};
+use std::time::Duration;
 
 use horch_core::procid;
 use horch_core::taskledger::{watchdog, Store};
+use horch_e2e::fleetd::Fleetds;
 use horch_e2e::harness::{wait_for, Harness};
 use serde_json::Value;
 
@@ -94,73 +94,11 @@ impl Drop for Proc {
     }
 }
 
-/// The fleetd processes of the test. Drop stops each one, and the fleetd
-/// that the `fleetd` row names.
-struct Fleetds {
-    db: PathBuf,
-    children: Vec<Child>,
-}
-
-impl Fleetds {
-    /// The PID and start time of the fleetd that the `fleetd` row names.
-    fn row(&self) -> Option<(u32, u64)> {
-        let store = Store::open(&self.db).ok()?;
-        let (pid, started): (i64, i64) = store
-            .conn()
-            .query_row("SELECT pid, pid_start FROM fleetd WHERE id = 1", [], |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })
-            .ok()?;
-        Some((u32::try_from(pid).ok()?, u64::try_from(started).ok()?))
-    }
-
-    /// Start `horch fleetd` in the sealed environment of `h`, and wait
-    /// until the `fleetd` row names it.
-    fn start(&mut self, h: &Harness) -> u32 {
-        let out = h.root.join("fleetd.stdout");
-        let err = h.root.join("fleetd.stderr");
-        let mut cmd = Command::new(Harness::horch_bin());
-        h.seal(&mut cmd);
-        let child = cmd
-            .arg("fleetd")
-            .stdin(Stdio::null())
-            .stdout(File::create(&out).unwrap())
-            .stderr(File::create(&err).unwrap())
-            .spawn()
-            .unwrap();
-        let pid = child.id();
-        self.children.push(child);
-        let until = Instant::now() + Duration::from_secs(30);
-        loop {
-            if self.row().is_some_and(|(p, _)| p == pid) {
-                return pid;
-            }
-            assert!(
-                Instant::now() < until,
-                "horch fleetd (PID {pid}) does not own the fleetd row after 30 s\nstderr: {}",
-                std::fs::read_to_string(&err).unwrap_or_default()
-            );
-            std::thread::sleep(Duration::from_millis(100));
-        }
-    }
-}
-
-impl Drop for Fleetds {
-    fn drop(&mut self) {
-        if let Some((pid, started)) = self.row() {
-            procid::signal_same(pid, started, SIGKILL);
-        }
-        for child in &mut self.children {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-    }
-}
-
 /// Record `p` as the old watchdog of `run_id`: the owner of its lock, as
 /// `watchdog::lock` writes it, and the columns of the run, as
-/// `watchdog::record_start` writes them.
-fn record_old_watchdog(h: &Harness, run_id: &str, p: &Proc) -> PathBuf {
+/// `watchdog::record_start` writes them. With `started` `None`, the record
+/// has no start time.
+fn record_old_watchdog(h: &Harness, run_id: &str, p: &Proc, started: Option<u64>) -> PathBuf {
     let locks = h.root.join("locks");
     let guard = watchdog::lock(&locks, run_id)
         .unwrap()
@@ -168,25 +106,22 @@ fn record_old_watchdog(h: &Harness, run_id: &str, p: &Proc) -> PathBuf {
     let owner_file = guard.path().join("owner");
     let mut owner: Value = serde_json::from_slice(&std::fs::read(&owner_file).unwrap()).unwrap();
     owner["pid"] = p.pid.into();
-    owner["started"] = p.started.into();
+    owner["started"] = started.into();
     std::fs::write(&owner_file, owner.to_string()).unwrap();
     let lock = guard.path().to_path_buf();
     // The lock stays: its owner is the stand-in, not this test.
     std::mem::forget(guard);
     let store = Store::open(&db(h)).unwrap();
-    watchdog::record_start(store.conn(), run_id, p.pid, Some(p.started)).unwrap();
-    let holder = watchdog::holder(&locks, run_id).expect("the stand-in holds the lock");
-    assert_eq!((holder.pid, holder.started), (p.pid, Some(p.started)));
+    watchdog::record_start(store.conn(), run_id, p.pid, started).unwrap();
     lock
 }
 
-#[test]
-fn update_with_a_live_worker_and_a_live_old_watchdog_leaves_1_control_path() {
-    let h = world("p1-release");
-    // Phase P: a run with 1 claimed task and a live fake worker. Many stall
-    // rounds keep a check from reaping the live worker.
+/// Phase P in `h`: run `zeta` with 1 claimed task and a live fake worker.
+/// Many stall rounds keep a check from reaping the live worker. Gives the
+/// worker id, its agent and the run id.
+fn phase_p_run(h: &Harness) -> (String, Proc, String) {
     ok(
-        &h,
+        h,
         &[
             "ledger",
             "run",
@@ -203,7 +138,7 @@ fn update_with_a_live_worker_and_a_live_old_watchdog_leaves_1_control_path() {
     let ticket = dir.join("t0.md");
     std::fs::write(&ticket, "# T0\n").unwrap();
     ok(
-        &h,
+        h,
         &[
             "ledger",
             "add",
@@ -213,26 +148,33 @@ fn update_with_a_live_worker_and_a_live_old_watchdog_leaves_1_control_path() {
             "opus",
         ],
     );
-    let w = ok(&h, &["ledger", "worker", "new", "--persona", "opus"])
+    let w = ok(h, &["ledger", "worker", "new", "--persona", "opus"])
         .trim()
         .to_string();
     let agent = Proc::sleep();
-    horch_core::taskledger::supervisor::agent_started(&db(&h), &w, agent.pid).unwrap();
+    horch_core::taskledger::supervisor::agent_started(&db(h), &w, agent.pid).unwrap();
     let mut claim = h.horch(&["ledger", "claim"]);
     claim.env("HORCH_WORKER_ID", &w);
     let o = claim.output().unwrap();
     assert!(o.status.success(), "horch ledger claim: {}", text(&o));
-    let run_id = texts(&h, "SELECT run_id FROM runs").remove(0);
+    let run_id = texts(h, "SELECT run_id FROM runs").remove(0);
+    (w, agent, run_id)
+}
+
+#[test]
+fn update_with_a_live_worker_and_a_live_old_watchdog_leaves_1_control_path() {
+    let h = world("p1-release");
+    let (w, agent, run_id) = phase_p_run(&h);
     // The old watchdog of the run is live.
     let old = Proc::sleep();
-    let lock = record_old_watchdog(&h, &run_id, &old);
+    let lock = record_old_watchdog(&h, &run_id, &old, Some(old.started));
+    let holder =
+        watchdog::holder(&h.root.join("locks"), &run_id).expect("the stand-in holds the lock");
+    assert_eq!((holder.pid, holder.started), (old.pid, Some(old.started)));
 
     // The update to Phase 1: fleetd starts.
-    let mut fleetds = Fleetds {
-        db: db(&h),
-        children: Vec::new(),
-    };
-    let fleetd = fleetds.start(&h);
+    let mut fleetds = Fleetds::new(&h);
+    let fleetd = fleetds.start(&h, "fleetd");
 
     // fleetd stops the old watchdog by its PID and start time.
     wait_for("the stop of the old watchdog", || {
@@ -279,4 +221,39 @@ fn update_with_a_live_worker_and_a_live_old_watchdog_leaves_1_control_path() {
     assert_eq!(task, ["running 1"], "the task has 1 attempt");
     let attempts = texts(&h, "SELECT id FROM attempts WHERE task_id IS NOT NULL");
     assert_eq!(attempts.len(), 1, "{attempts:?}");
+}
+
+/// 1 control path: while an old watchdog may still run, fleetd runs no
+/// pass. The record names a live process but has no start time, so fleetd
+/// cannot tell the watchdog from another program with a reused PID.
+#[test]
+fn fleetd_runs_no_pass_while_an_old_watchdog_may_still_run() {
+    let h = world("p1-release-gate");
+    let (_, agent, run_id) = phase_p_run(&h);
+    let old = Proc::sleep();
+    let lock = record_old_watchdog(&h, &run_id, &old, None);
+    // A pass would end the attempt of the dead agent and queue its task.
+    drop(agent);
+    let mut fleetds = Fleetds::new(&h);
+    let pid = fleetds.spawn(&h, "fleetd");
+    let status = fleetds.wait_exit(pid);
+    let err = fleetds.output("fleetd", "stderr");
+    assert!(!status.success(), "{err}");
+    assert!(err.contains("an old watchdog may still run"), "{err}");
+    assert!(old.alive(), "fleetd sends no signal");
+    let recorded = texts(&h, "SELECT CAST(watchdog_pid AS TEXT) FROM runs");
+    assert_eq!(recorded, [old.pid.to_string()], "the record stays");
+    assert!(lock.exists(), "the lock of the old watchdog stays");
+    let task = texts(&h, "SELECT status FROM tasks WHERE seq = 1");
+    assert_eq!(task, ["running"], "no pass ran");
+    // horch ledger watch --once runs no pass either.
+    let o = h.run(&["ledger", "watch", "--once"]);
+    assert!(!o.status.success(), "{}", text(&o));
+    assert!(
+        text(&o).contains("an old watchdog may still run"),
+        "{}",
+        text(&o)
+    );
+    let task = texts(&h, "SELECT status FROM tasks WHERE seq = 1");
+    assert_eq!(task, ["running"], "no pass ran");
 }

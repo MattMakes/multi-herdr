@@ -552,7 +552,7 @@ fn daemon(ctx: &RuntimeContext) -> Result<ExitCode> {
     };
     write_start_heartbeat(root, started.generation, &own_exe)?;
     let settings = settings(ctx, started.generation, &horch)?;
-    take_over(ctx, &mut store, &settings);
+    take_over(ctx, &mut store, &settings)?;
     drop(store);
     let period = Duration::from_secs(settings.config.pass_period_s);
     let mut conn = ledger_conn(&ctx.paths.ledger_db)?;
@@ -593,16 +593,22 @@ fn settings(ctx: &RuntimeContext, generation: Generation, horch: &Path) -> Resul
 
 /// Stop each old watchdog of the active runs and take its runs, before the
 /// first pass ([`old_watchdog::take_over`]). Prints 1 line for each
-/// recorded watchdog. A failure is printed, and the pass goes on.
-fn take_over(ctx: &RuntimeContext, store: &mut Store, settings: &Settings) {
+/// recorded watchdog. An error, or a recorded watchdog that may still run,
+/// is an error: fleetd runs no pass, so 1 control path acts on each run.
+/// The next start of fleetd tries again.
+fn take_over(ctx: &RuntimeContext, store: &mut Store, settings: &Settings) -> Result<()> {
     let locks = orchestrator::lock_dir(&ctx.paths.ledger_db);
     let grace = Duration::from_secs(settings.config.stop_grace_s);
-    match old_watchdog::take_over(store, settings.generation, &locks, grace, &old_watchdog::Os) {
-        Ok(taken) => taken
-            .iter()
-            .for_each(|t| eprintln!("horch fleetd: {}", t.describe())),
-        Err(e) => eprintln!("horch fleetd: the takeover of the old watchdogs failed: {e:#}"),
+    let taken =
+        old_watchdog::take_over(store, settings.generation, &locks, grace, &old_watchdog::Os)
+            .context("taking over the old watchdogs")?;
+    for t in &taken {
+        eprintln!("horch fleetd: {}", t.describe());
     }
+    if !old_watchdog::all_gone(&taken) {
+        bail!("an old watchdog may still run: fleetd runs no pass, and its next start tries again");
+    }
+    Ok(())
 }
 
 /// Build the pass of fleetd on this machine with `settings`, and give it
@@ -666,7 +672,7 @@ pub(crate) fn watch_once(ctx: &RuntimeContext, force: bool) -> Result<Once> {
         return Ok(Once::Held(read_row(&ctx.paths.ledger_db)?));
     };
     let settings = settings(ctx, started.generation, &horch)?;
-    take_over(ctx, &mut store, &settings);
+    take_over(ctx, &mut store, &settings)?;
     drop(store);
     let mut conn = ledger_conn(&ctx.paths.ledger_db)?;
     with_pass(ctx, settings, force, |pass, duties| {

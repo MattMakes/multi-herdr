@@ -15,15 +15,21 @@
 //!
 //! - when the process with the recorded PID has the recorded start time,
 //!   fleetd stops it: a polite stop, then a kill after `stop_grace_s`;
+//! - when a process has the recorded PID but the record has no start time,
+//!   fleetd cannot tell the watchdog from another program with a reused
+//!   PID. It sends no signal, and the record stays;
 //! - else the recorded watchdog is gone, and fleetd sends no signal. A PID
 //!   with another start time names another program.
 //!
 //! Then 1 transaction checks the generation of this fleetd, clears the
-//! record on the run, and writes 1 event with the cause
-//! [`CAUSE`] for each recorded watchdog. Last, the lock folder of each
-//! watchdog that no longer runs is removed. The pass then does the duties
-//! of the watchdog for the run. A live worker goes on: the takeover touches
-//! only the watchdog.
+//! record of each run whose watchdogs are gone, and writes 1 event with
+//! the cause [`CAUSE`] for each recorded watchdog that is gone. Last, the
+//! lock folder of each watchdog that no longer runs is removed.
+//!
+//! 1 control path: fleetd runs a pass only when [`all_gone`] holds for the
+//! result. Else it runs no pass, and its next start tries again. The pass
+//! then does the duties of the watchdog for the run. A live worker goes
+//! on: the takeover touches only the watchdog.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -52,8 +58,13 @@ const KILL_WAIT: Duration = Duration::from_secs(5);
 /// The processes of this machine, as the takeover reads and stops them.
 pub trait Processes {
     /// The start time of the process `pid`, or `None` when no process has
-    /// the pid.
+    /// the pid or its start time cannot be read.
     fn start_time(&self, pid: u32) -> Option<u64>;
+
+    /// Whether a process has the pid `pid`.
+    fn exists(&self, pid: u32) -> bool {
+        self.start_time(pid).is_some()
+    }
 
     /// Stop `pid` while it runs with start time `started`: a polite stop,
     /// then a kill after `grace`. True when the process ended.
@@ -69,6 +80,10 @@ impl Processes for Os {
         procid::alive(pid, None)
             .then(|| procid::start_time(pid))
             .flatten()
+    }
+
+    fn exists(&self, pid: u32) -> bool {
+        procid::alive(pid, None)
     }
 
     fn stop(&self, pid: u32, started: u64, grace: Duration) -> bool {
@@ -106,6 +121,23 @@ pub enum Outcome {
     /// It still runs after its kill. Its record stays, and the next start
     /// of fleetd tries again.
     StillRuns,
+    /// A process has its PID, but the record has no start time: fleetd
+    /// cannot tell it from another program with a reused PID. It sends no
+    /// signal, the record stays, and the next start of fleetd tries again.
+    Unconfirmed,
+}
+
+impl Outcome {
+    /// Whether the recorded watchdog no longer runs.
+    pub fn gone(self) -> bool {
+        matches!(self, Outcome::Stopped | Outcome::NotRunning)
+    }
+}
+
+/// Whether each recorded watchdog of `taken` no longer runs: fleetd may run
+/// its passes with 1 control path.
+pub fn all_gone(taken: &[TakenOver]) -> bool {
+    taken.iter().all(|t| t.outcome.gone())
 }
 
 /// 1 recorded watchdog of an active run, and what fleetd did about it.
@@ -136,6 +168,10 @@ impl TakenOver {
             Outcome::StillRuns => format!(
                 "The old watchdog of run {} (PID {}) still runs after its kill: its record stays.",
                 self.slug, self.pid
+            ),
+            Outcome::Unconfirmed => format!(
+                "A process has the PID {} of the old watchdog of run {}, but the record has no start time: fleetd sends no signal, and its record stays. Stop that watchdog if it runs.",
+                self.pid, self.slug
             ),
         }
     }
@@ -182,6 +218,15 @@ fn runs(procs: &dyn Processes, pid: u32, started: Option<u64>) -> bool {
     started.is_some_and(|s| procs.start_time(pid) == Some(s))
 }
 
+/// Whether the process `pid` with the recorded start time `started` can
+/// still run. With no start time, any process with the pid can be it.
+fn may_run(procs: &dyn Processes, pid: u32, started: Option<u64>) -> bool {
+    match started {
+        Some(_) => runs(procs, pid, started),
+        None => procs.exists(pid),
+    }
+}
+
 /// Stop the recorded watchdog `pid` when it runs with its recorded start
 /// time `started`.
 fn stop_one(procs: &dyn Processes, pid: u32, started: Option<u64>, grace: Duration) -> Outcome {
@@ -193,6 +238,7 @@ fn stop_one(procs: &dyn Processes, pid: u32, started: Option<u64>, grace: Durati
                 Outcome::StillRuns
             }
         }
+        None if procs.exists(pid) => Outcome::Unconfirmed,
         _ => Outcome::NotRunning,
     }
 }
@@ -222,15 +268,15 @@ pub fn take_over(
     if taken.is_empty() {
         return Ok(taken);
     }
-    // A run with a watchdog that still runs keeps its record.
+    // A run with a watchdog that may still run keeps its record.
     let kept: BTreeSet<&str> = taken
         .iter()
-        .filter(|t| t.outcome == Outcome::StillRuns)
+        .filter(|t| !t.outcome.gone())
         .map(|t| t.run_id.as_str())
         .collect();
     store.immediate(|tx| {
         check_generation(tx, generation)?;
-        for t in taken.iter().filter(|t| t.outcome != Outcome::StillRuns) {
+        for t in taken.iter().filter(|t| t.outcome.gone()) {
             if !kept.contains(t.run_id.as_str()) {
                 watchdog::clear_record(tx, &t.run_id)?;
             }
@@ -240,7 +286,7 @@ pub fn take_over(
     })?;
     for t in &taken {
         let lock = lock_folder(locks, &t.run_id);
-        let free = lock_owner(&lock).is_some_and(|(pid, started)| !runs(procs, pid, started));
+        let free = lock_owner(&lock).is_some_and(|(pid, started)| !may_run(procs, pid, started));
         if free {
             remove_lock(&lock)?;
         }
@@ -297,6 +343,8 @@ mod tests {
     struct Fake {
         live: RefCell<Vec<(u32, u64)>>,
         stops: RefCell<Vec<(u32, u64, Duration)>>,
+        /// Each process survives its stop.
+        unkillable: bool,
     }
 
     impl Processes for Fake {
@@ -307,6 +355,9 @@ mod tests {
 
         fn stop(&self, pid: u32, started: u64, grace: Duration) -> bool {
             self.stops.borrow_mut().push((pid, started, grace));
+            if self.unkillable {
+                return false;
+            }
             self.live.borrow_mut().retain(|p| *p != (pid, started));
             true
         }
@@ -355,6 +406,16 @@ mod tests {
             watchdog::record_start(self.store.conn(), &self.run_id, pid, Some(started)).unwrap();
         }
 
+        /// Record `pid` as the watchdog of the run with no start time, as a
+        /// starter that could not read it wrote it.
+        fn record_no_start(&self, pid: u32) {
+            let lock = lock_folder(&self.locks(), &self.run_id);
+            std::fs::create_dir_all(&lock).unwrap();
+            let owner = serde_json::json!({ "pid": pid });
+            std::fs::write(lock.join("owner"), owner.to_string()).unwrap();
+            watchdog::record_start(self.store.conn(), &self.run_id, pid, None).unwrap();
+        }
+
         fn take_over(&mut self, procs: &Fake) -> Vec<TakenOver> {
             let locks = self.locks();
             take_over(
@@ -401,6 +462,7 @@ mod tests {
         );
         assert_eq!(taken.len(), 1, "{taken:?}");
         assert_eq!(taken[0].outcome, Outcome::Stopped);
+        assert!(all_gone(&taken), "fleetd may run its passes");
         assert_eq!(w.columns(), (None, None), "the record is cleared");
         assert!(!lock_folder(&w.locks(), &w.run_id).exists());
         let events = w.events();
@@ -448,5 +510,50 @@ mod tests {
         assert_eq!(events[0]["signalled"], false);
         // A second start finds nothing to take over.
         assert!(w.take_over(&procs).is_empty());
+    }
+
+    #[test]
+    fn a_watchdog_that_survives_its_kill_keeps_its_record_and_blocks_the_passes() {
+        let mut w = World::new();
+        w.record(4242, 77);
+        let procs = Fake {
+            unkillable: true,
+            ..Fake::default()
+        };
+        procs.live.borrow_mut().push((4242, 77));
+        let taken = w.take_over(&procs);
+        assert_eq!(procs.stops.borrow().len(), 1, "1 stop");
+        assert_eq!(taken[0].outcome, Outcome::StillRuns);
+        assert!(!all_gone(&taken), "1 control path: fleetd runs no pass");
+        assert_eq!(w.columns(), (Some(4242), Some(77)), "the record stays");
+        assert!(lock_folder(&w.locks(), &w.run_id).exists());
+        assert!(w.events().is_empty(), "no takeover event");
+    }
+
+    #[test]
+    fn a_live_pid_with_no_recorded_start_time_is_not_signalled_and_blocks_the_passes() {
+        let mut w = World::new();
+        w.record_no_start(4242);
+        let procs = Fake::default();
+        // A process has the PID: the watchdog, or a program with a reused PID.
+        procs.live.borrow_mut().push((4242, 78));
+        let taken = w.take_over(&procs);
+        assert!(
+            procs.stops.borrow().is_empty(),
+            "{:?}",
+            procs.stops.borrow()
+        );
+        assert_eq!(taken.len(), 1, "{taken:?}");
+        assert_eq!(taken[0].outcome, Outcome::Unconfirmed);
+        assert!(!all_gone(&taken), "1 control path: fleetd runs no pass");
+        assert_eq!(w.columns(), (Some(4242), None), "the record stays");
+        assert!(lock_folder(&w.locks(), &w.run_id).exists());
+        assert!(w.events().is_empty(), "no takeover event");
+        // Once no process has the PID, the next start clears the record.
+        procs.live.borrow_mut().clear();
+        let taken = w.take_over(&procs);
+        assert_eq!(taken[0].outcome, Outcome::NotRunning);
+        assert!(all_gone(&taken));
+        assert_eq!(w.columns(), (None, None));
     }
 }
