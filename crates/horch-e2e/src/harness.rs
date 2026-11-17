@@ -70,6 +70,10 @@ pub const GIT_DATE: &str = "2026-09-28T12:00:00+00:00";
 /// probe budget.
 pub const DELIVERY_PROBE_FAULT: &str = "delivery-probe-ms:100";
 
+/// The default machine fixture: each reading of the health guards is known
+/// and far from its floor.
+const HEALTHY_MACHINE: &str = r#"{"os":"linux","arch":"x86_64","cpus":8,"load_average_1m":1.0,"mem_total_bytes":17179869184,"mem_available_bytes":8589934592,"disk_free_bytes":214748364800,"disk_total_bytes":536870912000,"gpu":"none","max_open_files":1048576,"max_processes":100000}"#;
+
 fn exe(name: &str) -> String {
     format!("{name}{}", std::env::consts::EXE_SUFFIX)
 }
@@ -126,6 +130,12 @@ impl Harness {
             "HORCH_LOCAL_PROBE_TIMEOUT_MS",
             DEADLINE.as_millis().to_string(),
         );
+        // The health guards of `horch spawn` read a healthy machine, so a
+        // test does not depend on the load of the machine that runs it. A
+        // test of a guard sets its own `HORCH_MACHINE_FILE`.
+        let machine = h.root.join("healthy-machine.json");
+        std::fs::write(&machine, HEALTHY_MACHINE).expect("writing the machine fixture");
+        h.set("HORCH_MACHINE_FILE", machine.to_string_lossy());
         let built = bin_dir();
         for (name, fake) in FAKES {
             let from = built.join(exe(fake));

@@ -555,7 +555,27 @@ fn plan_request(
     if let Some(line) = &plan.gate_line {
         crate::output::println(line);
     }
+    if let Some((view, _)) = &gated {
+        refuse_on_pacing(view, &plan)?;
+    }
     Ok(plan)
+}
+
+/// Refuse a spawn whose pool runs ahead of its usage window (OR-4): the pool
+/// that routing chose is paced until its window catches up.
+fn refuse_on_pacing(view: &QuotaView, plan: &ExecutionPlan) -> Result<()> {
+    let launch = &plan.launch;
+    match horch_core::fleetd::fleet_runtime::application::holds::pacing(
+        view,
+        launch.teammate.agent.as_str(),
+        &launch.model,
+    ) {
+        Some(hold) => bail!(
+            "horch spawn refused: new dispatch to this pool is paced: {}",
+            hold.cause()
+        ),
+        None => Ok(()),
+    }
 }
 
 /// Start the planned worker, then wait for it and report it.

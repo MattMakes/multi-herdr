@@ -302,6 +302,10 @@ ledger_enum!(
         // A state change through `transition()`, with its entity, its
         // states and its cause in the columns of version 8.
         Transition = "transition",
+        // A global hold on dispatch (a health floor) starts or ends, with
+        // its cause.
+        HoldStarted = "hold_started",
+        HoldEnded = "hold_ended",
     }
 );
 

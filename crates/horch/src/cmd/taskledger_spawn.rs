@@ -6,6 +6,8 @@ use std::path::Path;
 
 use anyhow::{bail, ensure, Result};
 use horch_core::execution::store::ExecutionStore;
+use horch_core::fleetd::fleet_runtime::application::holds;
+use horch_core::fleetd::fleet_runtime::domain::health::Finding;
 use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger::model::{Actor, EventKind, RunStatus, WorkerKind};
 use horch_core::taskledger::runs::{self, Run};
@@ -44,6 +46,7 @@ pub fn prepare(
     args: &SpawnArgs,
     controller: Option<&str>,
 ) -> Result<Option<LedgerSpawn>> {
+    refuse_on_hold(ctx)?;
     let mut store = taskledger::open(ctx)?;
     let role_run = controller_run(&store, args, controller)?;
     let run = match &role_run {
@@ -68,6 +71,30 @@ pub fn prepare(
         run,
         worker_id: id,
     }))
+}
+
+/// Refuse a spawn while a health guard holds new dispatch (OR-5), before
+/// any row is written. The refusal names each hold with its floor and its
+/// reading. A guard with no reading prints 1 note and does not hold
+/// (`preservation-06`, row S12).
+fn refuse_on_hold(ctx: &RuntimeContext) -> Result<()> {
+    let mut held = Vec::new();
+    for finding in holds::holds(ctx)? {
+        match finding {
+            Finding::Hold(h) => held.push(h.cause().to_string()),
+            Finding::Unknown { fact, why } => eprintln!(
+                "horch: NOTE: the health guard {} does not hold dispatch: {why}",
+                fact.as_str()
+            ),
+        }
+    }
+    if held.is_empty() {
+        return Ok(());
+    }
+    bail!(
+        "horch spawn refused: new dispatch is on hold until the machine recovers:\n  - {}",
+        held.join("\n  - ")
+    )
 }
 
 /// Whether this spawn joins a task-ledger run. `None`: it does not. `Some`
@@ -742,6 +769,73 @@ mod trf_33_34_tests {
             })
             .collect();
         (dir, store, made)
+    }
+
+    /// A machine fixture with `free_gb` GB of free disk; each other
+    /// reading is healthy.
+    fn machine_file(dir: &Path, free_gb: u64) -> std::path::PathBuf {
+        let path = dir.join(format!("machine-{free_gb}.json"));
+        let gb: u64 = 1 << 30;
+        let snapshot = serde_json::json!({
+            "os": "macos",
+            "arch": "arm64",
+            "cpus": 8,
+            "load_average_1m": 1.0,
+            "mem_total_bytes": 16 * gb,
+            "mem_available_bytes": 8 * gb,
+            "disk_free_bytes": free_gb * gb,
+            "disk_total_bytes": 500 * gb,
+            "gpu": "none",
+            "max_open_files": 256,
+            "max_processes": 100_000,
+        });
+        std::fs::write(&path, snapshot.to_string()).unwrap();
+        path
+    }
+
+    #[test]
+    fn ledger_spawn_refuses_with_the_hold_and_its_cause() {
+        let (dir, store, made) = world(&[("r1", None)]);
+        let ctx_with = |free_gb: u64| {
+            let machine = machine_file(dir.path(), free_gb);
+            RuntimeContext::from_env(
+                &horch_core::runtime::MapEnv::new("/")
+                    .with(
+                        "HORCH_STATE_DIR",
+                        dir.path().join("state").to_str().unwrap(),
+                    )
+                    .with(
+                        "HORCH_LEDGER_DB",
+                        dir.path().join("ledger.sqlite3").to_str().unwrap(),
+                    )
+                    .with("FLEET_ROOT", dir.path().join("fleet").to_str().unwrap())
+                    .with("HORCH_PROJECT_DIR", dir.path().to_str().unwrap())
+                    .with("HORCH_MACHINE_FILE", machine.to_str().unwrap()),
+            )
+            .unwrap()
+        };
+        let mut spawn = args(Some("opus"));
+        spawn.run = Some(made[0].slug.clone());
+        let workers = || -> i64 {
+            store
+                .conn()
+                .query_row("SELECT COUNT(*) FROM workers", [], |r| r.get(0))
+                .unwrap()
+        };
+
+        let err = prepare(&ctx_with(2), &spawn, None)
+            .err()
+            .expect("a refusal");
+        assert_eq!(
+            err.to_string(),
+            "horch spawn refused: new dispatch is on hold until the machine recovers:\n  \
+             - free disk 2.0 GB is below the floor of 10 GB (health_min_free_disk_gb)"
+        );
+        assert_eq!(workers(), 0, "a refused spawn writes no row");
+
+        let joined = prepare(&ctx_with(200), &spawn, None).unwrap();
+        assert!(joined.is_some(), "a normal probe resumes dispatch");
+        assert_eq!(workers(), 1);
     }
 
     #[test]

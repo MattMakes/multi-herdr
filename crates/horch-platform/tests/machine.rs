@@ -132,10 +132,44 @@ fn user_open_file_count_grows_when_this_process_opens_files() {
     panic!("no sample grew by 20 files: {samples:?}");
 }
 
+#[cfg(unix)]
+#[test]
+fn the_system_open_file_limit_is_at_least_the_count_of_the_user() {
+    let limit = machine::system_open_file_limit()
+        .unwrap()
+        .expect("system open file limit");
+    let count = machine::user_open_file_count()
+        .unwrap()
+        .expect("open file count");
+    assert!(limit >= count, "limit {limit}, count {count}");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn the_kernel_free_memory_of_macos_is_at_most_the_memory_size() {
+    let free = machine::kernel_free_memory()
+        .unwrap()
+        .expect("kern.memorystatus_level and hw.memsize");
+    let out = std::process::Command::new("/usr/sbin/sysctl")
+        .args(["-n", "hw.memsize"])
+        .output()
+        .unwrap();
+    let total: u64 = String::from_utf8_lossy(&out.stdout).trim().parse().unwrap();
+    assert!(free > 0 && free <= total, "{free} of {total}");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_needs_no_kernel_free_memory() {
+    assert!(machine::kernel_free_memory().is_err());
+}
+
 #[cfg(windows)]
 #[test]
 fn counts_are_not_supported_on_windows() {
     assert!(machine::user_process_count().is_err());
     assert!(machine::user_open_file_count().is_err());
     assert!(machine::max_open_files().is_err());
+    assert!(machine::system_open_file_limit().is_err());
+    assert!(machine::kernel_free_memory().is_err());
 }

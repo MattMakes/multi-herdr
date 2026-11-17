@@ -23,9 +23,13 @@
 //! command paths, the timeout and the environment of the child stay in core
 //! code. A reading that fails is `None`, as today.
 //!
-//! The health guards read 4 functions: [`user_process_count`] with the
-//! limit [`max_processes`], and [`user_open_file_count`] with the limit
-//! [`max_open_files`]. A count is fast: on an Apple M-series Mac with
+//! The health guards read 4 functions, each count with a limit of the same
+//! scope: [`user_process_count`] with the limit of the user
+//! [`max_processes`] (`RLIMIT_NPROC`, a limit for each user), and
+//! [`user_open_file_count`] with the limit of the system
+//! [`system_open_file_limit`] (macOS `kern.maxfiles`, Linux
+//! `/proc/sys/fs/file-max`). [`max_open_files`] is a limit for 1 process,
+//! so it is not the limit of the count of the user. A count is fast: on an Apple M-series Mac with
 //! about 700 processes, 1 count takes less than 100 ms.
 
 use std::path::Path;
@@ -112,6 +116,23 @@ pub fn max_processes() -> Result<Option<u64>, NotSupported> {
 /// infinite or unknown.
 pub fn max_open_files() -> Result<Option<u64>, NotSupported> {
     os::max_open_files()
+}
+
+/// macOS only: the memory, in bytes, that the kernel counts as free with
+/// the file cache that it can free: `kern.memorystatus_level` percent of
+/// `hw.memsize`, read with `sysctlbyname`, so it runs no command. The
+/// available memory of [`memory`] on macOS counts the active file cache as
+/// used. Linux gives [`NotSupported`]: its `MemAvailable` already counts that
+/// cache as available. `None` when the read fails.
+pub fn kernel_free_memory() -> Result<Option<u64>, NotSupported> {
+    os::kernel_free_memory()
+}
+
+/// The open file limit of the system, for all processes: macOS
+/// `kern.maxfiles`, Linux `/proc/sys/fs/file-max`. `None` when the read
+/// fails.
+pub fn system_open_file_limit() -> Result<Option<u64>, NotSupported> {
+    os::system_open_file_limit()
 }
 
 /// The count of processes of the user: the processes with the real uid of

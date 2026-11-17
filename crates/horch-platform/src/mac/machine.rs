@@ -32,6 +32,41 @@ pub(crate) fn max_open_files() -> Result<Option<u64>, NotSupported> {
     Ok(unix::max_open_files())
 }
 
+/// `kern.memorystatus_level` percent of `hw.memsize`: the memory that the
+/// kernel counts as free, with the file cache that it can free.
+pub(crate) fn kernel_free_memory() -> Result<Option<u64>, NotSupported> {
+    let percent =
+        sysctl::<libc::c_int>(c"kern.memorystatus_level").filter(|p| (0..=100).contains(p));
+    let total = sysctl::<u64>(c"hw.memsize");
+    Ok(percent.zip(total).map(|(p, total)| total / 100 * p as u64))
+}
+
+/// `kern.maxfiles`: the open file limit of the system.
+pub(crate) fn system_open_file_limit() -> Result<Option<u64>, NotSupported> {
+    Ok(sysctl::<libc::c_int>(c"kern.maxfiles")
+        .filter(|v| *v > 0)
+        .map(|v| v as u64))
+}
+
+/// The value of the sysctl `name` of type `T` (`c_int` or `u64`), or
+/// `None` when the read fails or the size differs.
+fn sysctl<T: Copy + Default>(name: &std::ffi::CStr) -> Option<T> {
+    let mut value = T::default();
+    let mut size = size_of::<T>();
+    // SAFETY: the name is a NUL-terminated string, and `value` is an
+    // out-parameter of `size` bytes that the call writes at most.
+    let status = unsafe {
+        libc::sysctlbyname(
+            name.as_ptr(),
+            (&mut value as *mut T).cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    (status == 0 && size == size_of::<T>()).then_some(value)
+}
+
 pub(crate) fn uname_arch(run: Run<'_>) -> Result<Option<String>, NotSupported> {
     Ok(unix::uname_arch(run))
 }

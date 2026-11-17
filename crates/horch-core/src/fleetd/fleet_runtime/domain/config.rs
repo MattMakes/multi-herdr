@@ -37,14 +37,18 @@ pub struct FleetConfig {
     pub job_limit_s: JobLimits,
     /// The free disk floor. Starting value 10 GB.
     pub health_min_free_disk_gb: u64,
-    /// The maximum load for each CPU. Starting value 1.0, the `load >= cpus`
-    /// note of `horch spawn` (`crates/horch/src/cmd/spawn.rs`).
+    /// The load for each CPU at which new dispatch holds. Starting value
+    /// 4.0, a value to tune: a busy fleet keeps a load of 10 to 60 on a Mac
+    /// with 14 CPUs. The `load >= cpus` note of `horch spawn`
+    /// (`crates/horch/src/cmd/spawn.rs`) stays at 1.0 for each CPU and only
+    /// prints.
     pub health_max_load_per_cpu: f64,
     /// The free memory floor. Starting value 1024 MB.
     pub health_min_free_memory_mb: u64,
     /// The share of the process limit of the user. Starting value 0.9.
     pub health_max_process_share: f64,
-    /// The share of the open file limit. Starting value 0.9.
+    /// The share of the open file limit of the system that the open files
+    /// of the user may use. Starting value 0.9.
     pub health_max_open_file_share: f64,
 }
 
@@ -83,7 +87,7 @@ impl Default for FleetConfig {
             job_backoff_s: vec![30, 120, 480],
             job_limit_s: JobLimits::default(),
             health_min_free_disk_gb: 10,
-            health_max_load_per_cpu: 1.0,
+            health_max_load_per_cpu: 4.0,
             health_min_free_memory_mb: 1024,
             health_max_process_share: 0.9,
             health_max_open_file_share: 0.9,
@@ -197,7 +201,7 @@ mod tests {
             }
         );
         assert_eq!(c.health_min_free_disk_gb, 10);
-        assert_eq!(c.health_max_load_per_cpu, 1.0);
+        assert_eq!(c.health_max_load_per_cpu, 4.0);
         assert_eq!(c.health_min_free_memory_mb, 1024);
         assert_eq!(c.health_max_process_share, 0.9);
         assert_eq!(c.health_max_open_file_share, 0.9);
