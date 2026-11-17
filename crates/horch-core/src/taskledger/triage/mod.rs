@@ -170,8 +170,9 @@ fn held_by_live_worker(conn: &Connection, row: &LedgerRow) -> Result<bool> {
     Ok(false)
 }
 
-/// Whether the row waits for a step that will take it on: a task that is
-/// queued (shown), running or landing has a worker coming.
+/// Whether the row's task stays open for a later ledger action: a task
+/// that is pending, ready or escalated (each shown as queued), running or
+/// verifying (shown as landing).
 fn task_pending(row: &LedgerRow) -> bool {
     row.task.as_ref().is_some_and(|(_, _, status, _)| {
         [

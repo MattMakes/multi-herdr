@@ -12,7 +12,8 @@ use super::model::{TaskStatus, WorkerStatus, WorktreeStatus};
 /// Tasks a worker is on: running, or past its last step into the land.
 pub const TASKS_IN_FLIGHT: &[TaskStatus] = &[TaskStatus::Running, TaskStatus::Verifying];
 
-/// Tasks that wait for a claim: `queued` with no hold, as shown.
+/// Tasks shown as `queued` with no hold: `pending` waits for its
+/// dependencies, and `ready` waits for a claim.
 pub const TASKS_WAITING: &[TaskStatus] = &[TaskStatus::Pending, TaskStatus::Ready];
 
 /// Tasks shown as `queued`: waiting for a claim, or held for the operator.

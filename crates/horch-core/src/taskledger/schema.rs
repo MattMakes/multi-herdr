@@ -739,27 +739,55 @@ fn task_state_of_today() -> String {
     )
 }
 
+/// The columns that the steps after version 1 add to `tasks`, as their
+/// `ALTER TABLE` statements write them: [`V3`], [`v7`] and
+/// [`PHASE_2_COLUMNS`].
+fn tasks_added_columns() -> Vec<String> {
+    vec![
+        "held_reason TEXT".into(),
+        "attempt_floor INTEGER NOT NULL DEFAULT 0".into(),
+        format!("work_kind TEXT {}", WorkKind::check("work_kind")),
+        format!("review_mode TEXT {}", ReviewMode::check("review_mode")),
+        "ticket_snapshot TEXT".into(),
+        "ticket_sha TEXT".into(),
+        "check_none INTEGER NOT NULL DEFAULT 0 CHECK (check_none IN (0, 1))".into(),
+        "not_before INTEGER".into(),
+        "due_at INTEGER".into(),
+        "replans INTEGER NOT NULL DEFAULT 0".into(),
+        "cancel_requested TEXT".into(),
+    ]
+}
+
+/// The column names of `table`, in order.
+fn column_names(conn: &Connection, table: &str) -> Result<Vec<String>> {
+    Ok(conn
+        .prepare("SELECT name FROM pragma_table_info(?1) ORDER BY cid")?
+        .query_map([table], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?)
+}
+
 /// `tasks` built again, as `events` in [`v8`], so its status `CHECK` is
 /// the list of the 12 states, and each row moves to its design state. The
-/// table text is the stored text, with each column that a step added since
-/// version 1. [`migrate`] turns the foreign keys off around it and checks
-/// them before the commit.
+/// new table comes from the text of the code: [`tasks_table`] and
+/// [`tasks_added_columns`], never from the stored text. [`migrate`] turns
+/// the foreign keys off around it and checks them before the commit.
 fn tasks_12_states(conn: &Connection) -> Result<()> {
-    let table: String = conn.query_row(
-        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tasks'",
-        [],
-        |r| r.get(0),
-    )?;
-    if !table.contains(V1_TASK_STATUS) || !table.starts_with("CREATE TABLE tasks (") {
-        bail!("the tasks table does not have the status CHECK of version 1");
-    }
-    let table = table
+    let mut sql = vec![tasks_table()
         .replacen("CREATE TABLE tasks (", "CREATE TABLE tasks_p2 (", 1)
-        .replace(V1_TASK_STATUS, &TaskStatus::check("status"));
-    let columns: Vec<String> = conn
-        .prepare("SELECT name FROM pragma_table_info('tasks') ORDER BY cid")?
-        .query_map([], |r| r.get(0))?
-        .collect::<rusqlite::Result<_>>()?;
+        .replace(V1_TASK_STATUS, &TaskStatus::check("status"))];
+    sql.extend(
+        tasks_added_columns()
+            .iter()
+            .map(|c| format!("ALTER TABLE tasks_p2 ADD COLUMN {c};")),
+    );
+    conn.execute_batch(&sql.join("\n"))?;
+    let columns = column_names(conn, "tasks_p2")?;
+    if column_names(conn, "tasks")? != columns {
+        bail!(
+            "the tasks table does not have the columns of version {}",
+            PHASE_2_VERSION - 1
+        );
+    }
     let values: Vec<String> = columns
         .iter()
         .map(|c| match c.as_str() {
@@ -768,8 +796,7 @@ fn tasks_12_states(conn: &Connection) -> Result<()> {
         })
         .collect();
     conn.execute_batch(&format!(
-        "{table};
-INSERT INTO tasks_p2 (rowid, {columns}) SELECT rowid, {values} FROM tasks;
+        "INSERT INTO tasks_p2 (rowid, {columns}) SELECT rowid, {values} FROM tasks;
 DROP TABLE tasks;
 ALTER TABLE tasks_p2 RENAME TO tasks;",
         columns = columns.join(", "),
@@ -1532,5 +1559,59 @@ mod v7_tests {
                 "{name}"
             );
         }
+    }
+
+    fn tasks_sql(conn: &Connection) -> String {
+        conn.query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tasks'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    /// The Phase 2 step builds `tasks` with the same text as the steps
+    /// before it, with only the status CHECK of the 12 states.
+    #[test]
+    fn tasks_12_states_builds_the_table_of_the_steps_with_the_12_states() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("l.sqlite3");
+        file_at(&path, PHASE_2_VERSION - 1);
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(PHASE_2_COLUMNS).unwrap();
+        let before = tasks_sql(&conn);
+        tasks_12_states(&conn).unwrap();
+        let want = before
+            .replacen("CREATE TABLE tasks (", "CREATE TABLE \"tasks\" (", 1)
+            .replace(V1_TASK_STATUS, &TaskStatus::check("status"));
+        assert_eq!(tasks_sql(&conn), want);
+    }
+
+    /// The Phase 2 step never runs the stored text of `tasks`: a ledger
+    /// whose stored text was changed gets the table of the code.
+    #[test]
+    fn tasks_12_states_does_not_run_the_stored_table_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("l.sqlite3");
+        file_at(&path, PHASE_2_VERSION - 1);
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(PHASE_2_COLUMNS).unwrap();
+        let clean = tasks_sql(&conn);
+        conn.pragma_update(None, "writable_schema", true).unwrap();
+        conn.execute(
+            "UPDATE sqlite_master SET sql = replace(sql, 'summary TEXT,', 'summary TEXT DEFAULT ''x'',')
+             WHERE type = 'table' AND name = 'tasks'",
+            [],
+        )
+        .unwrap();
+        conn.pragma_update(None, "writable_schema", false).unwrap();
+        drop(conn);
+        let conn = Connection::open(&path).unwrap();
+        assert!(tasks_sql(&conn).contains("DEFAULT 'x'"));
+        tasks_12_states(&conn).unwrap();
+        let want = clean
+            .replacen("CREATE TABLE tasks (", "CREATE TABLE \"tasks\" (", 1)
+            .replace(V1_TASK_STATUS, &TaskStatus::check("status"));
+        assert_eq!(tasks_sql(&conn), want);
     }
 }

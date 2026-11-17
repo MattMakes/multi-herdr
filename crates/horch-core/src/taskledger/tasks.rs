@@ -56,8 +56,8 @@ pub struct Task {
     #[serde(flatten, serialize_with = "status_json")]
     pub status: String,
     pub attempts: i64,
-    /// Set while a `queued` task is held for the operator after too many
-    /// attempts (#168).
+    /// Set while an `escalated` task (shown as `queued`) is held for the
+    /// operator after too many attempts (#168).
     pub held_reason: Option<String>,
     /// `attempts` at the last operator requeue.
     pub attempt_floor: i64,
@@ -96,12 +96,14 @@ impl Task {
         TaskStatus::shown_word(&self.status)
     }
 
-    /// Shown as `queued`: it waits for a claim, or it is held.
+    /// Stored as `pending`, `ready` or `escalated`, all shown as `queued`:
+    /// it waits for its dependencies or a claim, or it is held.
     pub fn is_queued(&self) -> bool {
         is_in(sql_words::TASKS_QUEUED, &self.status)
     }
 
-    /// A worker is on it: running, or landing.
+    /// A worker is on it: stored as `running` or `verifying` (shown as
+    /// `landing`).
     pub fn in_flight(&self) -> bool {
         is_in(sql_words::TASKS_IN_FLIGHT, &self.status)
     }
@@ -738,7 +740,7 @@ fn topo_order(edges: &[Vec<usize>]) -> Vec<usize> {
     out
 }
 
-/// Why a queued task cannot be claimed now.
+/// Why a pending or ready task cannot be claimed now.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "reason", rename_all = "snake_case")]
 pub enum Wait {
@@ -1538,7 +1540,7 @@ pub fn requeue(conn: &Connection, task_id: &str, why: &str) -> Result<Requeue> {
     util::atomic(conn, |conn| requeue_in(conn, &task, why))
 }
 
-/// The writes of [`requeue`] for the running or landing `task`, in the open
+/// The writes of [`requeue`] for the running or verifying `task`, in the open
 /// transaction of `conn`.
 fn requeue_in(conn: &Connection, task: &Task, why: &str) -> Result<Requeue> {
     let max = super::runs::get(conn, &task.run_id)?.max_attempts;
@@ -1554,13 +1556,13 @@ fn requeue_in(conn: &Connection, task: &Task, why: &str) -> Result<Requeue> {
     }
 }
 
-/// `ScheduleRetry` of fleetd: queue the running or landing task `task_id`
+/// `ScheduleRetry` of fleetd: queue the running or verifying task `task_id`
 /// again, first in line, in the open transaction of `conn`.
 pub fn schedule_retry(conn: &Connection, task_id: &str, why: &str) -> Result<()> {
     retry_in(conn, &get(conn, task_id)?, why)
 }
 
-/// `EscalateTask` of fleetd: hold the running or landing task `task_id`
+/// `EscalateTask` of fleetd: hold the running or verifying task `task_id`
 /// for the operator, in the open transaction of `conn` (L4).
 pub fn escalate(conn: &Connection, task_id: &str) -> Result<()> {
     hold_in(conn, &get(conn, task_id)?)
