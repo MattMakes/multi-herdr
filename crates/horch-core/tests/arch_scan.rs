@@ -842,12 +842,111 @@ fn declared_module(line: &str) -> Option<String> {
     Some(name.trim().to_string())
 }
 
-/// The lexer state of `item_end` between characters.
+/// The lexer state of `lex` between characters.
 #[derive(Clone, Copy)]
 enum Lex {
     Code,
     Str,
     RawStr(usize),
+    Block(usize),
+}
+
+/// Rust source after `lex`: the code of each line without comments and
+/// without the content of string and char literals (a string stays as
+/// `""`), and each string literal with the index of its first line.
+struct Lexed {
+    code: Vec<String>,
+    strings: Vec<(usize, String)>,
+}
+
+/// Split `lines` into code and string literals. Line comments, nested block
+/// comments, string, raw string and char literals are lexed.
+fn lex(lines: &[&str]) -> Lexed {
+    let mut out = Lexed {
+        code: Vec::new(),
+        strings: Vec::new(),
+    };
+    let mut state = Lex::Code;
+    let (mut literal, mut first) = (String::new(), 0);
+    for (i, line) in lines.iter().enumerate() {
+        let chars: Vec<char> = line.chars().collect();
+        let mut code = String::new();
+        let mut k = 0;
+        while k < chars.len() {
+            let c = chars[k];
+            let next = chars.get(k + 1).copied();
+            let mut close = false;
+            match state {
+                Lex::Str if c == '\\' => {
+                    literal.push(c);
+                    literal.extend(next);
+                    k += 1;
+                }
+                Lex::Str if c == '"' => close = true,
+                Lex::RawStr(hashes)
+                    if c == '"'
+                        && chars[k + 1..].iter().take_while(|h| **h == '#').count() >= hashes =>
+                {
+                    k += hashes;
+                    close = true;
+                }
+                Lex::Str | Lex::RawStr(_) => literal.push(c),
+                Lex::Block(depth) if c == '*' && next == Some('/') => {
+                    k += 1;
+                    state = if depth == 1 {
+                        Lex::Code
+                    } else {
+                        Lex::Block(depth - 1)
+                    };
+                }
+                Lex::Block(depth) if c == '/' && next == Some('*') => {
+                    k += 1;
+                    state = Lex::Block(depth + 1);
+                }
+                Lex::Block(_) => {}
+                Lex::Code => match c {
+                    '/' if next == Some('/') => break,
+                    '/' if next == Some('*') => {
+                        k += 1;
+                        code.push(' ');
+                        state = Lex::Block(1);
+                    }
+                    '"' => {
+                        code.push('"');
+                        first = i;
+                        state = Lex::Str;
+                    }
+                    'r' if raw_string_hashes(&chars, k).is_some() => {
+                        let hashes = raw_string_hashes(&chars, k).unwrap_or(0);
+                        k += hashes + 1;
+                        code.push('"');
+                        first = i;
+                        state = Lex::RawStr(hashes);
+                    }
+                    '\'' if chars.get(k + 2) == Some(&'\'') => {
+                        k += 2;
+                        code.push_str("''");
+                    }
+                    '\'' if next == Some('\\') => {
+                        k += 2 + chars[k + 2..].iter().take_while(|c| **c != '\'').count();
+                        code.push_str("''");
+                    }
+                    _ => code.push(c),
+                },
+            }
+            if close {
+                code.push('"');
+                out.strings.push((first, std::mem::take(&mut literal)));
+                state = Lex::Code;
+            }
+            k += 1;
+        }
+        if matches!(state, Lex::Str | Lex::RawStr(_)) {
+            literal.push('\n');
+        }
+        out.code.push(code);
+    }
+    out
 }
 
 /// The index of the line after the item that starts on line `start`: the
@@ -856,48 +955,19 @@ enum Lex {
 /// count.
 fn item_end(lines: &[&str], start: usize) -> usize {
     let mut depth = 0;
-    let mut state = Lex::Code;
-    for (i, line) in lines.iter().enumerate().skip(start) {
-        let chars: Vec<char> = line.chars().collect();
-        let mut k = 0;
-        while k < chars.len() {
-            let c = chars[k];
-            match state {
-                Lex::Str if c == '\\' => k += 1,
-                Lex::Str if c == '"' => state = Lex::Code,
-                Lex::Str => {}
-                Lex::RawStr(hashes) => {
-                    if c == '"'
-                        && chars[k + 1..].iter().take_while(|h| **h == '#').count() >= hashes
-                    {
-                        k += hashes;
-                        state = Lex::Code;
+    for (i, line) in lex(&lines[start..]).code.iter().enumerate() {
+        for c in line.chars() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return start + i + 1;
                     }
                 }
-                Lex::Code => match c {
-                    '/' if chars.get(k + 1) == Some(&'/') => break,
-                    '"' => state = Lex::Str,
-                    'r' if raw_string_hashes(&chars, k).is_some() => {
-                        let hashes = raw_string_hashes(&chars, k).unwrap_or(0);
-                        k += hashes + 1;
-                        state = Lex::RawStr(hashes);
-                    }
-                    '\'' if chars.get(k + 2) == Some(&'\'') => k += 2,
-                    '\'' if chars.get(k + 1) == Some(&'\\') => {
-                        k += 2 + chars[k + 2..].iter().take_while(|c| **c != '\'').count();
-                    }
-                    '{' => depth += 1,
-                    '}' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            return i + 1;
-                        }
-                    }
-                    ';' if depth == 0 => return i + 1,
-                    _ => {}
-                },
+                ';' if depth == 0 => return start + i + 1,
+                _ => {}
             }
-            k += 1;
         }
     }
     lines.len()
@@ -1301,140 +1371,150 @@ const PRIMITIVES: &[&str] = &[
     "i128", "isize", "f32", "f64",
 ];
 
-/// The code outside tests and comments of `path`, as 1 text.
-fn code_text(path: &Path) -> String {
-    code_lines(path)
-        .into_iter()
-        .map(|(_, l)| l)
-        .collect::<Vec<_>>()
-        .join("\n")
+/// The code of `path` outside tests, after `lex`, with the line number of
+/// each lexed line.
+fn lexed_file(path: &Path) -> (Vec<usize>, Lexed) {
+    let lines = code_lines(path);
+    let texts: Vec<&str> = lines.iter().map(|(_, l)| l.as_str()).collect();
+    (lines.iter().map(|(n, _)| *n).collect(), lex(&texts))
 }
 
-/// `text` with the content of each string literal removed, and the string
-/// literals. A raw string (`r"..."`, `r#"..."#`) counts too.
-fn split_strings(text: &str) -> (String, Vec<String>) {
-    let c: Vec<char> = text.chars().collect();
-    let (mut code, mut strings) = (String::new(), Vec::new());
-    let mut i = 0;
-    while i < c.len() {
-        if c[i] == '\'' && c.get(i + 1) == Some(&'"') && c.get(i + 2) == Some(&'\'') {
-            i += 3;
-            continue;
-        }
-        let raw = c[i] == 'r' && matches!(c.get(i + 1), Some('"' | '#'));
-        let hashes = if raw {
-            c[i + 1..].iter().take_while(|&&h| h == '#').count()
-        } else {
-            0
-        };
-        let open = if raw { i + 1 + hashes } else { i };
-        if c.get(open) != Some(&'"') || (raw && i > 0 && is_ident(c[i - 1])) {
-            code.push(c[i]);
-            i += 1;
-            continue;
-        }
-        let mut j = open + 1;
-        let mut s = String::new();
-        while j < c.len() {
-            if !raw && c[j] == '\\' {
-                s.push(c[j]);
-                s.extend(c.get(j + 1));
-                j += 2;
+/// A token of lexed code for `code_paths`.
+#[derive(Clone, PartialEq)]
+enum Tok {
+    Ident(String),
+    Sep,
+    Punct(char),
+}
+
+/// The tokens of `code`, each with the index of its line.
+fn tokens(code: &[String]) -> Vec<(usize, Tok)> {
+    let mut out = Vec::new();
+    for (i, line) in code.iter().enumerate() {
+        let c: Vec<char> = line.chars().collect();
+        let mut k = 0;
+        while k < c.len() {
+            let start = k;
+            if c[k].is_alphanumeric() || c[k] == '_' {
+                while k < c.len() && (c[k].is_alphanumeric() || c[k] == '_') {
+                    k += 1;
+                }
+                if !c[start].is_ascii_digit() {
+                    out.push((i, Tok::Ident(c[start..k].iter().collect())));
+                }
                 continue;
             }
-            if c[j] == '"'
-                && c[j + 1..]
-                    .iter()
-                    .take(hashes)
-                    .filter(|&&h| h == '#')
-                    .count()
-                    == hashes
-            {
-                break;
+            if c[k] == ':' && c.get(k + 1) == Some(&':') {
+                out.push((i, Tok::Sep));
+                k += 2;
+                continue;
             }
-            s.push(c[j]);
-            j += 1;
+            if !c[k].is_whitespace() {
+                out.push((i, Tok::Punct(c[k])));
+            }
+            k += 1;
         }
-        strings.push(s);
-        code.push_str("\"\"");
-        i = j + 1 + hashes;
     }
-    (code, strings)
+    out
 }
 
-fn is_ident(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
-}
-
-/// Each path in `code` with at least 1 `::`, as its segments. A leading
-/// `::` gives an empty first segment; a trailing `::{` or `::*` gives a
-/// last segment `{`.
-fn code_paths(code: &str) -> Vec<Vec<String>> {
-    let c: Vec<char> = code.chars().collect();
-    let sep = |i: usize| c.get(i) == Some(&':') && c.get(i + 1) == Some(&':');
+/// Each path in `code`, as its segments with the index of its first line.
+/// A path has a `::`, or it follows `use` or `extern crate`. A leading `::`
+/// gives an empty first segment, and a path in a `use` group (`a::{b, c}`)
+/// starts with the prefix of the group.
+fn code_paths(code: &[String]) -> Vec<(usize, Vec<String>)> {
+    let toks = tokens(code);
+    let tok = |i: usize| toks.get(i).map(|(_, t)| t);
+    let ident = |i: usize| match tok(i) {
+        Some(Tok::Ident(name)) => Some(name.clone()),
+        _ => None,
+    };
     let mut out = Vec::new();
+    let mut groups: Vec<(usize, Vec<String>)> = Vec::new();
+    let mut depth = 0;
     let mut i = 0;
-    while i < c.len() {
-        let prev = c[..i].iter().rev().find(|ch| !ch.is_whitespace());
-        let leading = sep(i) && !prev.is_some_and(|&p| is_ident(p) || ">)]:".contains(p));
-        let start = if leading { i + 2 } else { i };
-        let starts_ident = c
-            .get(start)
-            .is_some_and(|&ch| ch.is_alphabetic() || ch == '_');
-        if !starts_ident || (!leading && i > 0 && is_ident(c[i - 1])) {
+    while i < toks.len() {
+        let prev = i.checked_sub(1).and_then(tok);
+        match &toks[i].1 {
+            Tok::Punct('{') => depth += 1,
+            Tok::Punct('}') => {
+                if groups.last().is_some_and(|(d, _)| *d == depth) {
+                    groups.pop();
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+        let leading = toks[i].1 == Tok::Sep
+            && ident(i + 1).is_some()
+            && !matches!(prev, Some(Tok::Ident(_) | Tok::Punct('>' | ')' | ']')));
+        let starts = ident(i).is_some() && prev != Some(&Tok::Sep);
+        if !leading && !starts {
             i += 1;
             continue;
         }
-        let mut segs = if leading {
-            vec![String::new()]
-        } else {
-            Vec::new()
+        let line = toks[i].0;
+        let declares = matches!(prev, Some(Tok::Ident(w)) if w == "use")
+            || (matches!(prev, Some(Tok::Ident(w)) if w == "crate")
+                && matches!(i.checked_sub(2).and_then(tok), Some(Tok::Ident(w)) if w == "extern"));
+        let mut segs = match groups.last() {
+            Some((d, prefix)) if *d == depth => prefix.clone(),
+            _ => Vec::new(),
         };
-        i = start;
-        loop {
-            let s = i;
-            while i < c.len() && is_ident(c[i]) {
-                i += 1;
-            }
-            segs.push(c[s..i].iter().collect());
-            if sep(i)
-                && c.get(i + 2)
-                    .is_some_and(|&ch| ch.is_alphabetic() || ch == '_')
-            {
-                i += 2;
-            } else {
-                if sep(i) && matches!(c.get(i + 2), Some('{' | '*')) {
-                    segs.push("{".to_string());
-                }
+        let in_group = !segs.is_empty();
+        let mut opens_group = false;
+        if leading {
+            segs.push(String::new());
+            i += 1;
+        }
+        while let Some(name) = ident(i) {
+            segs.push(name);
+            i += 1;
+            if tok(i) != Some(&Tok::Sep) {
                 break;
             }
+            match tok(i + 1) {
+                Some(Tok::Ident(_)) => i += 1,
+                Some(Tok::Punct('{')) => {
+                    groups.push((depth + 1, segs.clone()));
+                    opens_group = true;
+                    i += 1;
+                    break;
+                }
+                Some(Tok::Punct('*')) => {
+                    segs.push("*".to_string());
+                    break;
+                }
+                _ => break,
+            }
         }
-        if segs.len() > 1 {
-            out.push(segs);
+        if !opens_group && (segs.len() > 1 || in_group || declares || leading) {
+            out.push((line, segs));
         }
     }
     out
 }
 
 /// The paths of `code` that leave the domain module `module` (its path
-/// below `crate`, as `["fleetd", ctx, "domain", ...]`). `siblings` are the
-/// modules of that `domain/` folder.
-fn outward_paths(code: &str, module: &[&str], siblings: &[String]) -> Vec<String> {
-    let domain = &module[..3];
-    let inside = |abs: &[String]| abs.len() >= 3 && abs.iter().zip(domain).all(|(a, d)| a == d);
+/// below `crate`, as `["fleetd", ctx, "domain", ...]`), each with the index
+/// of its line. `siblings` are the modules of that `domain/` folder.
+fn outward_paths(code: &[String], module: &[&str], siblings: &[String]) -> Vec<(usize, String)> {
+    let inside =
+        |abs: &[String]| abs.len() >= 3 && abs.iter().zip(&module[..3]).all(|(a, d)| a == d);
     code_paths(code)
         .into_iter()
-        .filter(|segs| {
+        .filter(|(_, segs)| {
             let first = segs[0].as_str();
             let ok = match first {
-                "" => segs[1] == "std",
+                "" => segs.get(1).is_some_and(|s| s == "std"),
                 "std" | "self" | "Self" => true,
                 "crate" => inside(&segs[1..]),
                 "super" => {
                     let ups = segs.iter().take_while(|s| *s == "super").count();
-                    let base = module.len().saturating_sub(ups);
-                    let mut abs: Vec<String> =
-                        module[..base].iter().map(|s| s.to_string()).collect();
+                    let mut abs: Vec<String> = module[..module.len().saturating_sub(ups)]
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect();
                     abs.extend(segs[ups..].iter().cloned());
                     module.len() >= ups && inside(&abs)
                 }
@@ -1443,36 +1523,47 @@ fn outward_paths(code: &str, module: &[&str], siblings: &[String]) -> Vec<String
             };
             !ok
         })
-        .map(|segs| segs.join("::"))
+        .map(|(line, segs)| (line, segs.join("::")))
         .collect()
 }
 
-/// The SQL tables that the string literals of `code` name and that are not
-/// in `owned`. A table follows `FROM`, `JOIN`, `INTO`, `UPDATE`, `TABLE`
-/// (and `IF [NOT] EXISTS`) or `REFERENCES`.
-fn foreign_tables(code: &str, owned: &[&str]) -> Vec<String> {
+/// The SQL tables that the string `literal` names and that are not in
+/// `owned`, in lower case. A string is SQL when its first word is a
+/// statement keyword or it holds an upper-case `BEFORE_TABLE` keyword.
+/// Keywords and tables match in any case, as SQLite reads them.
+fn foreign_tables(literal: &str, owned: &[&str]) -> Vec<String> {
+    const STATEMENTS: &[&str] = &[
+        "SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "DROP", "WITH", "REPLACE",
+    ];
     const BEFORE_TABLE: &[&str] = &["FROM", "JOIN", "INTO", "UPDATE", "TABLE", "REFERENCES"];
+    let words: Vec<&str> = literal
+        .split(|ch: char| !(ch.is_alphanumeric() || ch == '_'))
+        .filter(|w| !w.is_empty())
+        .collect();
+    let sql = words
+        .first()
+        .is_some_and(|w| STATEMENTS.contains(&w.to_ascii_uppercase().as_str()))
+        || words.iter().any(|w| BEFORE_TABLE.contains(w));
+    if !sql {
+        return Vec::new();
+    }
+    let upper: Vec<String> = words.iter().map(|w| w.to_ascii_uppercase()).collect();
     let mut found = Vec::new();
-    for s in split_strings(code).1 {
-        let words: Vec<&str> = s
-            .split(|ch: char| !is_ident(ch))
-            .filter(|w| !w.is_empty())
-            .collect();
-        for (n, w) in words.iter().enumerate() {
-            if !BEFORE_TABLE.contains(w) {
-                continue;
-            }
-            let rest = &words[n + 1..];
-            let skip = match rest {
-                ["IF", "NOT", "EXISTS", ..] => 3,
-                ["IF", "EXISTS", ..] => 2,
-                _ => 0,
-            };
-            if let Some(table) = rest.get(skip) {
-                if !owned.contains(table) && !found.iter().any(|f| f == table) {
-                    found.push(table.to_string());
-                }
-            }
+    for (n, w) in upper.iter().enumerate() {
+        if !BEFORE_TABLE.contains(&w.as_str()) {
+            continue;
+        }
+        let rest: Vec<&str> = upper[n + 1..].iter().map(String::as_str).collect();
+        let skip = match rest.as_slice() {
+            ["IF", "NOT", "EXISTS", ..] => 3,
+            ["IF", "EXISTS", ..] => 2,
+            _ => 0,
+        };
+        let Some(table) = words.get(n + 1 + skip).map(|t| t.to_ascii_lowercase()) else {
+            continue;
+        };
+        if !owned.contains(&table.as_str()) && !found.contains(&table) {
+            found.push(table);
         }
     }
     found
@@ -1503,6 +1594,7 @@ fn fleetd_root() -> PathBuf {
 #[test]
 fn fitness_domain_imports_nothing_outward() {
     let fleetd = fleetd_root();
+    let root = crate_src("horch-core");
     let mut found = Vec::new();
     for (ctx, _) in FLEETD_TABLE_OWNERS {
         let dir = fleetd.join(ctx).join("domain");
@@ -1515,13 +1607,17 @@ fn fitness_domain_imports_nothing_outward() {
             .filter(|n| n != "mod")
             .collect();
         for path in &files {
-            let rel = relative(path, &dir);
+            let below = relative(path, &dir);
             let mut module = vec!["fleetd", ctx, "domain"];
-            let below: Vec<&str> = rel.trim_end_matches(".rs").split('/').collect();
-            module.extend(below.iter().filter(|s| **s != "mod"));
-            let (code, _) = split_strings(&code_text(path));
-            for p in outward_paths(&code, &module, &siblings) {
-                found.push(format!("fleetd/{ctx}/domain/{rel}: {p}"));
+            module.extend(
+                below
+                    .trim_end_matches(".rs")
+                    .split('/')
+                    .filter(|s| *s != "mod"),
+            );
+            let (numbers, lexed) = lexed_file(path);
+            for (line, p) in outward_paths(&lexed.code, &module, &siblings) {
+                found.push(format!("{}:{}: {p}", relative(path, &root), numbers[line]));
             }
         }
     }
@@ -1537,42 +1633,49 @@ fn fitness_domain_imports_nothing_outward() {
 fn fitness_domain_rule_finds_outward_paths() {
     let module = ["fleetd", "ideas", "domain", "needs_you"];
     let siblings = vec!["needs_you".to_string(), "other".to_string()];
+    let outward = |src: &str, module: &[&str]| {
+        let lines: Vec<&str> = src.lines().collect();
+        outward_paths(&lex(&lines).code, module, &siblings)
+    };
     for hit in [
         "use serde::Serialize;",
+        "use serde;",
+        "extern crate serde;",
         "use rusqlite::Connection;",
         "let x = horch_platform::probe();",
         "use crate::taskledger::Store;",
         "use crate::fleetd::task_execution::domain::Task;",
         "use crate::fleetd::ideas::application::X;",
-        "use crate::{fleetd::ideas::domain::X};",
+        "use crate::{taskledger::Store};",
+        "use std::{fmt, io};\nuse crate::{\n    fleetd::ideas::domain::other::Y,\n    taskledger,\n};",
         "use super::super::adapters::sqlite;",
         "use ::anyhow::Result;",
         "#[derive(serde::Deserialize)]",
+        "let s = '\"'; // \"\nlet c = rusqlite::Connection::open(p);",
+        "/* \" */ use rusqlite::Connection;",
     ] {
-        assert!(
-            !outward_paths(hit, &module, &siblings).is_empty(),
-            "missed: {hit}"
-        );
+        assert!(!outward(hit, &module).is_empty(), "missed: {hit}");
     }
     for miss in [
         "use std::collections::BTreeMap;",
+        "use std::{collections::BTreeMap, fmt};",
         "use crate::fleetd::ideas::domain::other::Y;",
+        "use crate::{fleetd::ideas::domain::other::Y};",
         "use super::other::Y;",
         "use self::inner::Z;",
         "let n = u64::MAX; let v = Vec::<u8>::new();",
         "match s { State::Open => {} }",
         "let s = \"rusqlite::Connection\";",
         "fn f<T: std::fmt::Debug>(t: T) -> Self::Out {}",
+        "let x = 1; // rusqlite::Connection",
+        "/* rusqlite::Connection\n   serde::Serialize */ let x = 1;",
     ] {
-        let (code, _) = split_strings(miss);
-        assert_eq!(
-            outward_paths(&code, &module, &siblings),
-            Vec::<String>::new(),
-            "false hit: {miss}"
-        );
+        assert_eq!(outward(miss, &module), Vec::new(), "false hit: {miss}");
     }
+    let lines = outward("let a = 1;\nuse serde::Serialize;", &module);
+    assert_eq!(lines, vec![(1, "serde::Serialize".to_string())]);
     let mod_rs = ["fleetd", "ideas", "domain"];
-    assert!(!outward_paths("use super::application::X;", &mod_rs, &siblings).is_empty());
+    assert!(!outward("use super::application::X;", &mod_rs).is_empty());
 }
 
 /// Each SQL table that a file under `fleetd/<context>/` names is a table of
@@ -1590,8 +1693,14 @@ fn fitness_no_context_touches_foreign_tables() {
             if rel == FLEETD_DOOR {
                 continue;
             }
-            for table in foreign_tables(&code_text(path), owned) {
-                found.push(format!("{rel}: table `{table}` is not a table of {ctx}"));
+            let (numbers, lexed) = lexed_file(path);
+            for (line, literal) in &lexed.strings {
+                for table in foreign_tables(literal, owned) {
+                    found.push(format!(
+                        "{rel}:{}: table `{table}` is not a table of {ctx}",
+                        numbers[*line]
+                    ));
+                }
             }
         }
     }
@@ -1606,6 +1715,14 @@ fn fitness_no_context_touches_foreign_tables() {
 #[test]
 fn fitness_table_rule_finds_foreign_tables() {
     let owned = ["needs_you"];
+    let tables = |src: &str| -> Vec<String> {
+        let lines: Vec<&str> = src.lines().collect();
+        lex(&lines)
+            .strings
+            .iter()
+            .flat_map(|(_, s)| foreign_tables(s, &owned))
+            .collect()
+    };
     for (hit, table) in [
         (
             "conn.execute(\"UPDATE tasks SET status = ?1\", [])",
@@ -1619,15 +1736,20 @@ fn fitness_table_rule_finds_foreign_tables() {
         ("q(\"CREATE TABLE IF NOT EXISTS jobs (id)\")", "jobs"),
         ("q(\"DELETE FROM attempts\")", "attempts"),
         ("q(\"x INTEGER REFERENCES runs(id)\")", "runs"),
+        ("q(\"select * from tasks\")", "tasks"),
+        ("q(\"SELECT * FROM Tasks\")", "tasks"),
+        ("// \"\nq(\"DELETE FROM attempts\")", "attempts"),
     ] {
-        assert_eq!(foreign_tables(hit, &owned), vec![table], "{hit}");
+        assert_eq!(tables(hit), vec![table], "{hit}");
     }
     for miss in [
         "q(\"SELECT id FROM needs_you WHERE id = ?1\")",
-        "q(\"INSERT INTO needs_you (id) VALUES (?1)\")",
+        "q(\"INSERT INTO NEEDS_YOU (id) VALUES (?1)\")",
         "let s = \"a message from the user\";",
         "let from_tasks = tasks.len();",
+        "// q(\"DELETE FROM tasks\")",
+        "/* q(\"DELETE FROM tasks\") */",
     ] {
-        assert_eq!(foreign_tables(miss, &owned), Vec::<String>::new(), "{miss}");
+        assert_eq!(tables(miss), Vec::<String>::new(), "{miss}");
     }
 }

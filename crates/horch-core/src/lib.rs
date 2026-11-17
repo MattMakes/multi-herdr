@@ -23,6 +23,7 @@
 //! | [`messaging`]   | the worker brief, the mailbox and message delivery          |
 //! | [`project_notes`] | durable project facts and the host line of every brief    |
 //! | [`taskledger`]  | the SQLite task ledger: runs, tasks, claims, finish, stop   |
+//! | [`fleetd`]      | the fleet daemon: 1 folder for each context of `ddd/08-code` |
 //! | [`workspace`]   | the herdr client, layout, tiling and balancing              |
 //! | [`compaction`]  | context windows, thresholds, row states, the compaction job |
 //! | [`telemetry`]   | live per-pane token telemetry and the collector             |
