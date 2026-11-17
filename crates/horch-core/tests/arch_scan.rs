@@ -1274,3 +1274,360 @@ fn pl2_exempt_build_script_still_needs_its_exemption() {
         );
     }
 }
+
+// ─── fleetd module rules (docs/tickets/fleetd-p1/MAP.md, Q13) ───────────────
+
+/// The contexts under `fleetd/`, each with the ledger tables it owns.
+const FLEETD_TABLE_OWNERS: &[(&str, &[&str])] = &[
+    (
+        "fleet_runtime",
+        &["fleetd", "jobs", "pass_cursors", "events"],
+    ),
+    (
+        "task_execution",
+        &["tasks", "task_deps", "workers", "attempts"],
+    ),
+    ("worker_profiles", &[]),
+    ("ideas", &["needs_you"]),
+];
+
+/// The 1 door: it writes the state of each entity, so it names the tables
+/// of every context.
+const FLEETD_DOOR: &str = "fleetd/fleet_runtime/adapters/sqlite.rs";
+
+/// Primitive types, which a path such as `u64::MAX` can start with.
+const PRIMITIVES: &[&str] = &[
+    "bool", "char", "str", "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64",
+    "i128", "isize", "f32", "f64",
+];
+
+/// The code outside tests and comments of `path`, as 1 text.
+fn code_text(path: &Path) -> String {
+    code_lines(path)
+        .into_iter()
+        .map(|(_, l)| l)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// `text` with the content of each string literal removed, and the string
+/// literals. A raw string (`r"..."`, `r#"..."#`) counts too.
+fn split_strings(text: &str) -> (String, Vec<String>) {
+    let c: Vec<char> = text.chars().collect();
+    let (mut code, mut strings) = (String::new(), Vec::new());
+    let mut i = 0;
+    while i < c.len() {
+        if c[i] == '\'' && c.get(i + 1) == Some(&'"') && c.get(i + 2) == Some(&'\'') {
+            i += 3;
+            continue;
+        }
+        let raw = c[i] == 'r' && matches!(c.get(i + 1), Some('"' | '#'));
+        let hashes = if raw {
+            c[i + 1..].iter().take_while(|&&h| h == '#').count()
+        } else {
+            0
+        };
+        let open = if raw { i + 1 + hashes } else { i };
+        if c.get(open) != Some(&'"') || (raw && i > 0 && is_ident(c[i - 1])) {
+            code.push(c[i]);
+            i += 1;
+            continue;
+        }
+        let mut j = open + 1;
+        let mut s = String::new();
+        while j < c.len() {
+            if !raw && c[j] == '\\' {
+                s.push(c[j]);
+                s.extend(c.get(j + 1));
+                j += 2;
+                continue;
+            }
+            if c[j] == '"'
+                && c[j + 1..]
+                    .iter()
+                    .take(hashes)
+                    .filter(|&&h| h == '#')
+                    .count()
+                    == hashes
+            {
+                break;
+            }
+            s.push(c[j]);
+            j += 1;
+        }
+        strings.push(s);
+        code.push_str("\"\"");
+        i = j + 1 + hashes;
+    }
+    (code, strings)
+}
+
+fn is_ident(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// Each path in `code` with at least 1 `::`, as its segments. A leading
+/// `::` gives an empty first segment; a trailing `::{` or `::*` gives a
+/// last segment `{`.
+fn code_paths(code: &str) -> Vec<Vec<String>> {
+    let c: Vec<char> = code.chars().collect();
+    let sep = |i: usize| c.get(i) == Some(&':') && c.get(i + 1) == Some(&':');
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < c.len() {
+        let prev = c[..i].iter().rev().find(|ch| !ch.is_whitespace());
+        let leading = sep(i) && !prev.is_some_and(|&p| is_ident(p) || ">)]:".contains(p));
+        let start = if leading { i + 2 } else { i };
+        let starts_ident = c
+            .get(start)
+            .is_some_and(|&ch| ch.is_alphabetic() || ch == '_');
+        if !starts_ident || (!leading && i > 0 && is_ident(c[i - 1])) {
+            i += 1;
+            continue;
+        }
+        let mut segs = if leading {
+            vec![String::new()]
+        } else {
+            Vec::new()
+        };
+        i = start;
+        loop {
+            let s = i;
+            while i < c.len() && is_ident(c[i]) {
+                i += 1;
+            }
+            segs.push(c[s..i].iter().collect());
+            if sep(i)
+                && c.get(i + 2)
+                    .is_some_and(|&ch| ch.is_alphabetic() || ch == '_')
+            {
+                i += 2;
+            } else {
+                if sep(i) && matches!(c.get(i + 2), Some('{' | '*')) {
+                    segs.push("{".to_string());
+                }
+                break;
+            }
+        }
+        if segs.len() > 1 {
+            out.push(segs);
+        }
+    }
+    out
+}
+
+/// The paths of `code` that leave the domain module `module` (its path
+/// below `crate`, as `["fleetd", ctx, "domain", ...]`). `siblings` are the
+/// modules of that `domain/` folder.
+fn outward_paths(code: &str, module: &[&str], siblings: &[String]) -> Vec<String> {
+    let domain = &module[..3];
+    let inside = |abs: &[String]| abs.len() >= 3 && abs.iter().zip(domain).all(|(a, d)| a == d);
+    code_paths(code)
+        .into_iter()
+        .filter(|segs| {
+            let first = segs[0].as_str();
+            let ok = match first {
+                "" => segs[1] == "std",
+                "std" | "self" | "Self" => true,
+                "crate" => inside(&segs[1..]),
+                "super" => {
+                    let ups = segs.iter().take_while(|s| *s == "super").count();
+                    let base = module.len().saturating_sub(ups);
+                    let mut abs: Vec<String> =
+                        module[..base].iter().map(|s| s.to_string()).collect();
+                    abs.extend(segs[ups..].iter().cloned());
+                    module.len() >= ups && inside(&abs)
+                }
+                _ if first.starts_with(char::is_uppercase) => true,
+                _ => PRIMITIVES.contains(&first) || siblings.iter().any(|s| s == first),
+            };
+            !ok
+        })
+        .map(|segs| segs.join("::"))
+        .collect()
+}
+
+/// The SQL tables that the string literals of `code` name and that are not
+/// in `owned`. A table follows `FROM`, `JOIN`, `INTO`, `UPDATE`, `TABLE`
+/// (and `IF [NOT] EXISTS`) or `REFERENCES`.
+fn foreign_tables(code: &str, owned: &[&str]) -> Vec<String> {
+    const BEFORE_TABLE: &[&str] = &["FROM", "JOIN", "INTO", "UPDATE", "TABLE", "REFERENCES"];
+    let mut found = Vec::new();
+    for s in split_strings(code).1 {
+        let words: Vec<&str> = s
+            .split(|ch: char| !is_ident(ch))
+            .filter(|w| !w.is_empty())
+            .collect();
+        for (n, w) in words.iter().enumerate() {
+            if !BEFORE_TABLE.contains(w) {
+                continue;
+            }
+            let rest = &words[n + 1..];
+            let skip = match rest {
+                ["IF", "NOT", "EXISTS", ..] => 3,
+                ["IF", "EXISTS", ..] => 2,
+                _ => 0,
+            };
+            if let Some(table) = rest.get(skip) {
+                if !owned.contains(table) && !found.iter().any(|f| f == table) {
+                    found.push(table.to_string());
+                }
+            }
+        }
+    }
+    found
+}
+
+/// The `fleetd/` folder, after it asserts that each context of
+/// `FLEETD_TABLE_OWNERS` has a `domain/` folder and that no other context
+/// folder exists.
+fn fleetd_root() -> PathBuf {
+    let fleetd = crate_src("horch-core").join("fleetd");
+    for (ctx, _) in FLEETD_TABLE_OWNERS {
+        let domain = fleetd.join(ctx).join("domain");
+        assert!(domain.is_dir(), "{} is missing", domain.display());
+    }
+    for entry in std::fs::read_dir(&fleetd).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        assert!(
+            !path.is_dir() || FLEETD_TABLE_OWNERS.iter().any(|(c, _)| *c == name),
+            "fleetd/{name} is a context with no row in FLEETD_TABLE_OWNERS"
+        );
+    }
+    fleetd
+}
+
+/// A domain module names only `std` and its own context's `domain` module:
+/// no other crate, and no other module of `crate`.
+#[test]
+fn fitness_domain_imports_nothing_outward() {
+    let fleetd = fleetd_root();
+    let mut found = Vec::new();
+    for (ctx, _) in FLEETD_TABLE_OWNERS {
+        let dir = fleetd.join(ctx).join("domain");
+        let mut files = Vec::new();
+        rust_files(&dir, &mut files);
+        let siblings: Vec<String> = files
+            .iter()
+            .map(|f| f.strip_prefix(&dir).unwrap().iter().next().unwrap())
+            .map(|n| n.to_string_lossy().trim_end_matches(".rs").to_string())
+            .filter(|n| n != "mod")
+            .collect();
+        for path in &files {
+            let rel = relative(path, &dir);
+            let mut module = vec!["fleetd", ctx, "domain"];
+            let below: Vec<&str> = rel.trim_end_matches(".rs").split('/').collect();
+            module.extend(below.iter().filter(|s| **s != "mod"));
+            let (code, _) = split_strings(&code_text(path));
+            for p in outward_paths(&code, &module, &siblings) {
+                found.push(format!("fleetd/{ctx}/domain/{rel}: {p}"));
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "domain code names a path outside its domain module:\n{}",
+        found.join("\n")
+    );
+}
+
+/// The domain rule's own cases.
+#[test]
+fn fitness_domain_rule_finds_outward_paths() {
+    let module = ["fleetd", "ideas", "domain", "needs_you"];
+    let siblings = vec!["needs_you".to_string(), "other".to_string()];
+    for hit in [
+        "use serde::Serialize;",
+        "use rusqlite::Connection;",
+        "let x = horch_platform::probe();",
+        "use crate::taskledger::Store;",
+        "use crate::fleetd::task_execution::domain::Task;",
+        "use crate::fleetd::ideas::application::X;",
+        "use crate::{fleetd::ideas::domain::X};",
+        "use super::super::adapters::sqlite;",
+        "use ::anyhow::Result;",
+        "#[derive(serde::Deserialize)]",
+    ] {
+        assert!(
+            !outward_paths(hit, &module, &siblings).is_empty(),
+            "missed: {hit}"
+        );
+    }
+    for miss in [
+        "use std::collections::BTreeMap;",
+        "use crate::fleetd::ideas::domain::other::Y;",
+        "use super::other::Y;",
+        "use self::inner::Z;",
+        "let n = u64::MAX; let v = Vec::<u8>::new();",
+        "match s { State::Open => {} }",
+        "let s = \"rusqlite::Connection\";",
+        "fn f<T: std::fmt::Debug>(t: T) -> Self::Out {}",
+    ] {
+        let (code, _) = split_strings(miss);
+        assert_eq!(
+            outward_paths(&code, &module, &siblings),
+            Vec::<String>::new(),
+            "false hit: {miss}"
+        );
+    }
+    let mod_rs = ["fleetd", "ideas", "domain"];
+    assert!(!outward_paths("use super::application::X;", &mod_rs, &siblings).is_empty());
+}
+
+/// Each SQL table that a file under `fleetd/<context>/` names is a table of
+/// that context. The 1 door is exempt.
+#[test]
+fn fitness_no_context_touches_foreign_tables() {
+    let fleetd = fleetd_root();
+    let root = crate_src("horch-core");
+    let mut found = Vec::new();
+    for (ctx, owned) in FLEETD_TABLE_OWNERS {
+        let mut files = Vec::new();
+        rust_files(&fleetd.join(ctx), &mut files);
+        for path in &files {
+            let rel = relative(path, &root);
+            if rel == FLEETD_DOOR {
+                continue;
+            }
+            for table in foreign_tables(&code_text(path), owned) {
+                found.push(format!("{rel}: table `{table}` is not a table of {ctx}"));
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "a context names a table of another context:\n{}",
+        found.join("\n")
+    );
+}
+
+/// The table rule's own cases.
+#[test]
+fn fitness_table_rule_finds_foreign_tables() {
+    let owned = ["needs_you"];
+    for (hit, table) in [
+        (
+            "conn.execute(\"UPDATE tasks SET status = ?1\", [])",
+            "tasks",
+        ),
+        (
+            "q(\"SELECT id FROM needs_you JOIN workers ON 1\")",
+            "workers",
+        ),
+        ("q(r#\"INSERT INTO\n  events (at) VALUES (?1)\"#)", "events"),
+        ("q(\"CREATE TABLE IF NOT EXISTS jobs (id)\")", "jobs"),
+        ("q(\"DELETE FROM attempts\")", "attempts"),
+        ("q(\"x INTEGER REFERENCES runs(id)\")", "runs"),
+    ] {
+        assert_eq!(foreign_tables(hit, &owned), vec![table], "{hit}");
+    }
+    for miss in [
+        "q(\"SELECT id FROM needs_you WHERE id = ?1\")",
+        "q(\"INSERT INTO needs_you (id) VALUES (?1)\")",
+        "let s = \"a message from the user\";",
+        "let from_tasks = tasks.len();",
+    ] {
+        assert_eq!(foreign_tables(miss, &owned), Vec::<String>::new(), "{miss}");
+    }
+}

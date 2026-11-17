@@ -42,6 +42,7 @@ pub mod compaction;
 pub mod digest;
 pub mod execution;
 pub mod exeid;
+pub mod fleetd;
 pub mod fsx;
 pub mod harness;
 pub mod heartbeat;
