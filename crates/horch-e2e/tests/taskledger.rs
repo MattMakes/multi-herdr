@@ -3331,6 +3331,19 @@ fn wakes(h: &Harness) -> Vec<String> {
         .collect()
 }
 
+/// The text of each outbox row, oldest first. The pass of fleetd writes
+/// its wakes to the outbox and delivers them from there, so a wake that
+/// `HORCH_NO_WAKE=1` keeps is a row, with no `woke` event.
+fn outbox(h: &Harness) -> Vec<String> {
+    let store = horch_core::taskledger::Store::open(&h.root.join("ledger.sqlite3")).unwrap();
+    let mut stmt = store
+        .conn()
+        .prepare("SELECT text FROM outbox ORDER BY rowid")
+        .unwrap();
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0)).unwrap();
+    rows.map(|r| r.unwrap()).collect()
+}
+
 fn later(seconds: u64) -> String {
     horch_core::clock::stamp(horch_core::clock::now() + Duration::from_secs(seconds))
 }
@@ -3464,7 +3477,7 @@ fn the_watchdog_ends_pre_claim_rows_whose_process_is_gone() {
         .unwrap_or_default()
         .to_string();
     assert!(line.ends_with("STALE"), "{}", text(&o));
-    let before = wakes(&h).len();
+    let before = outbox(&h).len();
     let o = run_env(
         &h,
         &[("HORCH_NOW", &later(200))],
@@ -3472,7 +3485,7 @@ fn the_watchdog_ends_pre_claim_rows_whose_process_is_gone() {
     );
     assert!(o.status.success(), "{}", text(&o));
     assert_eq!(worker_status(&h, &ghost).0, "launch_failed");
-    let new: Vec<String> = wakes(&h).split_off(before);
+    let new: Vec<String> = outbox(&h).split_off(before);
     assert_eq!(new.len(), 1, "{new:?}");
     assert!(
         new[0].contains("ended before they claimed a task"),
@@ -3519,12 +3532,12 @@ fn a_live_worker_that_does_not_claim_is_reported_once() {
     // Within the 3 min claim grace (TRF-23) the worker is never touched.
     watch(Some(later(150)));
     assert_eq!(worker_status(&h, &id).0, "claiming");
-    assert!(wakes(&h).is_empty(), "{:?}", wakes(&h));
+    assert!(outbox(&h).is_empty(), "{:?}", outbox(&h));
     // Past it: 1 wake that names the pane, and only 1.
     watch(Some(later(200)));
-    assert_eq!(wakes(&h).len(), 1, "{:?}", wakes(&h));
+    assert_eq!(outbox(&h).len(), 1, "{:?}", outbox(&h));
     watch(Some(later(300)));
-    let w = wakes(&h);
+    let w = outbox(&h);
     assert_eq!(w.len(), 1, "{w:?}");
     assert!(w[0].contains("has not claimed a task"), "{w:?}");
     assert!(w[0].contains("pane w1:p7"), "{w:?}");
@@ -3717,19 +3730,19 @@ fn a_stuck_run_wakes_from_the_watchdog_when_no_task_finishes() {
     ok_as(&h, &w, &["ledger", "claim"]);
     ok(&h, &["ledger", "watch", "--once", "--force"]);
     assert!(
-        !wakes(&h).iter().any(|w| w.contains("stuck")),
+        !outbox(&h).iter().any(|w| w.contains("stuck")),
         "{:?}",
-        wakes(&h)
+        outbox(&h)
     );
     // Its worker is stopped and T-1 cancelled: nothing will start.
     ok(&h, &["ledger", "cancel", "T-1", "dropped"]);
     ok(&h, &["ledger", "watch", "--once", "--force"]);
     ok(&h, &["ledger", "watch", "--once", "--force"]);
-    let stuck: Vec<String> = wakes(&h)
+    let stuck: Vec<String> = outbox(&h)
         .into_iter()
         .filter(|w| w.contains("the run is stuck:"))
         .collect();
-    assert_eq!(stuck.len(), 1, "{:?}", wakes(&h));
+    assert_eq!(stuck.len(), 1, "{:?}", outbox(&h));
 }
 
 // ─── #136: a cancelled task never lands or turns done ───────────────────────
