@@ -5,7 +5,7 @@
 
 #![cfg(unix)]
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Child, Output};
 use std::time::{Duration, Instant};
 
@@ -104,26 +104,54 @@ impl Drop for Agent {
     }
 }
 
-/// Kills each watchdog that holds a lock in `locks` on drop.
-struct Watchdogs {
-    locks: PathBuf,
+/// A `horch fleetd` of the test. Drop kills it, and the fleetd that the
+/// `fleetd` row names.
+struct Fleetd {
+    db: PathBuf,
+    child: Child,
 }
 
-impl Drop for Watchdogs {
-    fn drop(&mut self) {
-        let locks = std::fs::read_dir(&self.locks).into_iter().flatten();
-        locks
-            .flatten()
-            .for_each(|lock| kill_lock_owner(&lock.path()));
+impl Fleetd {
+    /// Start `horch fleetd` in the sealed environment of `h`, and wait
+    /// until the `fleetd` row names it.
+    fn start(h: &Harness) -> Fleetd {
+        let mut cmd = std::process::Command::new(Harness::horch_bin());
+        h.seal(&mut cmd);
+        let child = cmd
+            .arg("fleetd")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let fleetd = Fleetd { db: db(h), child };
+        let pid = fleetd.child.id();
+        horch_e2e::harness::wait_for("the fleetd row to name the new fleetd", || {
+            fleetd.row().filter(|&(p, _)| p == pid)
+        });
+        fleetd
+    }
+
+    /// The PID and start time of the fleetd that the `fleetd` row names.
+    fn row(&self) -> Option<(u32, u64)> {
+        let store = Store::open(&self.db).ok()?;
+        let (pid, started): (i64, i64) = store
+            .conn()
+            .query_row("SELECT pid, pid_start FROM fleetd WHERE id = 1", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .ok()?;
+        Some((u32::try_from(pid).ok()?, u64::try_from(started).ok()?))
     }
 }
 
-/// Kill the process that the `owner` file of `lock` names, if it still runs.
-fn kill_lock_owner(lock: &Path) {
-    let owner = std::fs::read(lock.join("owner")).unwrap_or_default();
-    let v: Value = serde_json::from_slice(&owner).unwrap_or_default();
-    if let (Some(pid), Some(started)) = (v["pid"].as_u64(), v["started"].as_u64()) {
-        horch_core::procid::signal_same(pid as u32, started, 9);
+impl Drop for Fleetd {
+    fn drop(&mut self) {
+        if let Some((pid, started)) = self.row() {
+            horch_core::procid::signal_same(pid, started, 9);
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 
@@ -194,22 +222,15 @@ fn fm4_dead_agent_ends_its_attempt_within_30_s() {
         file!(),
         "fm4_dead_agent_ends_its_attempt_within_30_s",
         || {
-            let mut h = fleet("p0-fm4");
-            h.unset("HORCH_NO_WATCHDOG");
-            let _watchdogs = Watchdogs {
-                locks: h.root.join("locks"),
-            };
+            let h = fleet("p0-fm4");
             let mut agent = Agent::start();
             let w = worker_with_agent(&h, &[], "opus", None, &agent);
-            // The claim starts the watchdog of the run, with the default policy.
             let claim = as_worker(&h, &w, &[], &["ledger", "claim"]);
-            assert!(
-                text(&claim).contains("started it"),
-                "the claim started no watchdog: {}",
-                text(&claim)
-            );
+            assert!(claim.status.success(), "{}", text(&claim));
+            // fleetd supervises the run, with the default policy.
+            let _fleetd = Fleetd::start(&h);
             agent.kill();
-            // No other `horch` call: only the watchdog can see the death.
+            // No other `horch` call: only fleetd can see the death.
             let killed = Instant::now();
             let mut status = task_row(&h).0;
             while killed.elapsed() < Duration::from_secs(35) {
