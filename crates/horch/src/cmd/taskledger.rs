@@ -3718,8 +3718,11 @@ mod tests {
         store
             .conn()
             .query_row(
-                "SELECT count(*) FROM events WHERE kind = 'requeued'",
-                [],
+                &format!(
+                    "SELECT count(*) FROM events WHERE {}",
+                    horch_core::taskledger::util::kind_is("?1")
+                ),
+                ["requeued"],
                 |r| r.get(0),
             )
             .unwrap()

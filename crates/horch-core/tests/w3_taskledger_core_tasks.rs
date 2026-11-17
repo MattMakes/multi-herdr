@@ -164,12 +164,13 @@ fn no_task_ends_the_worker_and_records_why() {
     let note: String = s
         .conn()
         .query_row(
-            "SELECT text FROM events WHERE kind = 'no_task' AND worker_id = ?1",
+            "SELECT cause FROM events WHERE kind = 'transition' AND entity = 'worker'
+             AND entity_id = ?1 AND to_state = 'no_task'",
             [&w],
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(note, "No task for persona dev.");
+    assert_eq!(note, "no_task: No task for persona dev.");
 }
 
 #[test]

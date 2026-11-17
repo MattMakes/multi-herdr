@@ -18,6 +18,7 @@ use super::sql_words::{self, word};
 use super::store::optional;
 use super::util::{self, About};
 use super::workers::{self, Worker};
+use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 
 /// How much a retried task moves ahead of the queue (section 5.4).
 pub const RETRY_PRIORITY_BOOST: i64 = 1000;
@@ -932,12 +933,14 @@ pub enum ClaimOutcome {
 /// transaction: the read of the board and the write of the claim must not
 /// interleave with another claim.
 pub fn claim(conn: &Connection, worker_id: &str) -> Result<ClaimOutcome> {
-    let w = workers::get(conn, worker_id)?;
-    let (run_id, persona) = check_claimer(&w)?;
-    match held_task(conn, &w)? {
-        Some(task) => claimed_outcome(conn, &w, task),
-        None => claim_next(conn, &w, &run_id, &persona),
-    }
+    util::atomic(conn, |conn| {
+        let w = workers::get(conn, worker_id)?;
+        let (run_id, persona) = check_claimer(&w)?;
+        match held_task(conn, &w)? {
+            Some(task) => claimed_outcome(conn, &w, task),
+            None => claim_next(conn, &w, &run_id, &persona),
+        }
+    })
 }
 
 /// A second claim by a working worker gives back its own task.
@@ -953,7 +956,7 @@ fn claim_next(conn: &Connection, w: &Worker, run_id: &str, persona: &str) -> Res
     let Some(task) = pick_task(conn, w, run_id, persona)? else {
         return no_task(conn, w, persona, run_id);
     };
-    take_task(conn, w, run_id, &task)?;
+    take_task(conn, w, &task)?;
     let task = get(conn, &task.task_id)?;
     let w = workers::get(conn, &w.worker_id)?;
     claimed_outcome(conn, &w, task)
@@ -1055,28 +1058,23 @@ fn no_task(conn: &Connection, w: &Worker, persona: &str, run_id: &str) -> Result
             .unwrap_or_else(|| "unknown".into())
     );
     let now = util::now();
+    util::transition(
+        conn,
+        Entity::Worker,
+        &w.worker_id,
+        WorkerStatus::NoTask.as_str(),
+        Actor::Worker,
+        &format!(
+            "{}: No task for persona {persona}.",
+            EventKind::NoTask.as_str()
+        ),
+    )?;
     conn.execute(
-        "UPDATE workers SET status = ?2, end_reason = ?3, ended_at = COALESCE(ended_at, ?4)
+        "UPDATE workers SET end_reason = ?2, ended_at = COALESCE(ended_at, ?3)
          WHERE worker_id = ?1",
-        params![
-            w.worker_id,
-            WorkerStatus::NoTask.as_str(),
-            format!("no task for persona {persona}"),
-            now
-        ],
+        params![w.worker_id, format!("no task for persona {persona}"), now],
     )?;
     no_task_wake(conn, w, persona, run_id, &now)?;
-    util::event(
-        conn,
-        &About {
-            run: Some(run_id),
-            task: None,
-            worker: Some(&w.worker_id),
-        },
-        Actor::Worker,
-        EventKind::NoTask,
-        &format!("No task for persona {persona}."),
-    )?;
     Ok(ClaimOutcome::NoTask {
         persona: persona.to_string(),
         role: w.role.clone(),
@@ -1116,29 +1114,50 @@ fn no_task_wake(
 
 /// Write the claim: the task, the worker, an open worktree from an earlier
 /// attempt, and the event.
-fn take_task(conn: &Connection, w: &Worker, run_id: &str, task: &Task) -> Result<()> {
+fn take_task(conn: &Connection, w: &Worker, task: &Task) -> Result<()> {
     let worker_id = w.worker_id.as_str();
     let now = util::now();
     let attempt = task.attempts + 1;
+    if get(conn, &task.task_id)?.status != TaskStatus::Queued.as_str() {
+        bail!("{} was claimed by another worker", task.short());
+    }
+    let cause = format!(
+        "{}: {} claimed {} (attempt {attempt}).",
+        EventKind::Claimed.as_str(),
+        w.label(),
+        task.short()
+    );
+    util::transition(
+        conn,
+        Entity::Task,
+        &task.task_id,
+        TaskStatus::Running.as_str(),
+        Actor::Worker,
+        &cause,
+    )?;
     let n = conn.execute(
         &format!(
-            "UPDATE tasks SET status = {running}, current_worker_id = ?2, attempts = ?3, updated_at = ?4
-             WHERE task_id = ?1 AND status = {queued}",
-            running = word(TaskStatus::Running),
-            queued = word(TaskStatus::Queued)
+            "UPDATE tasks SET current_worker_id = ?2, attempts = ?3, updated_at = ?4
+             WHERE task_id = ?1 AND status = {running}",
+            running = word(TaskStatus::Running)
         ),
         params![task.task_id, worker_id, attempt, now],
     )?;
     if n != 1 {
         bail!("{} was claimed by another worker", task.short());
     }
+    util::transition(
+        conn,
+        Entity::Worker,
+        worker_id,
+        WorkerStatus::Working.as_str(),
+        Actor::Worker,
+        &cause,
+    )?;
     conn.execute(
-        &format!(
-            "UPDATE workers SET task_id = ?2, attempt = ?3, status = {working}, claimed_at = ?4,
-                last_progress_at = ?4, last_progress_source = 'agent', stall_rounds = 0
-             WHERE worker_id = ?1",
-            working = word(WorkerStatus::Working)
-        ),
+        "UPDATE workers SET task_id = ?2, attempt = ?3, claimed_at = ?4,
+            last_progress_at = ?4, last_progress_source = 'agent', stall_rounds = 0
+         WHERE worker_id = ?1",
         params![worker_id, task.task_id, attempt, now],
     )?;
     // An open worktree from an earlier attempt becomes this worker's.
@@ -1149,21 +1168,7 @@ fn take_task(conn: &Connection, w: &Worker, run_id: &str, task: &Task) -> Result
         ),
         params![task.task_id, worker_id],
     )?;
-    util::event(
-        conn,
-        &About {
-            run: Some(run_id),
-            task: Some(&task.task_id),
-            worker: Some(worker_id),
-        },
-        Actor::Worker,
-        EventKind::Claimed,
-        &format!(
-            "{} claimed {} (attempt {attempt}).",
-            w.label(),
-            task.short()
-        ),
-    )
+    Ok(())
 }
 
 fn claimed(conn: &Connection, w: &Worker, task: Task) -> Result<Claimed> {
@@ -1244,9 +1249,22 @@ pub fn handoff(tx: &Transaction, worker_id: &str, path: &str) -> Result<HandedOf
         bail!("the handoff file {path} does not exist; write it first");
     }
     workers::hand_off(tx, worker_id, path)?;
+    util::transition(
+        tx,
+        Entity::Task,
+        &task.task_id,
+        TaskStatus::Queued.as_str(),
+        Actor::Worker,
+        &format!(
+            "{}: {} handed off {}: it is queued again, first in line, with its worktree. Handoff: {path}",
+            EventKind::Requeued.as_str(),
+            w.label(),
+            task.short()
+        ),
+    )?;
     tx.execute(
         &format!(
-            "UPDATE tasks SET status = {queued}, current_worker_id = NULL, held_reason = NULL,
+            "UPDATE tasks SET current_worker_id = NULL, held_reason = NULL,
                 priority = MIN(priority, (SELECT COALESCE(MIN(o.priority), tasks.priority)
                     FROM tasks o WHERE o.run_id = tasks.run_id AND o.status = {queued}
                     AND o.task_id != tasks.task_id) - 1),
@@ -1263,21 +1281,6 @@ pub fn handoff(tx: &Transaction, worker_id: &str, path: &str) -> Result<HandedOf
             held = sql_words::list(sql_words::WORKTREES_HELD)
         ),
         [&task.task_id],
-    )?;
-    util::event(
-        tx,
-        &About {
-            run: Some(&task.run_id),
-            task: Some(&task.task_id),
-            worker: Some(worker_id),
-        },
-        Actor::Worker,
-        EventKind::Requeued,
-        &format!(
-            "{} handed off {}: it is queued again, first in line, with its worktree. Handoff: {path}",
-            w.label(),
-            task.short()
-        ),
     )?;
     let wake_id = outbox::write(tx, &task.run_id, &handoff_wake(&w, &task, path))?;
     Ok(HandedOff {
@@ -1367,14 +1370,28 @@ pub fn cancel(conn: &Connection, task: &Task, reason: &str) -> Result<Task> {
     if matches!(task.status.as_str(), "done" | "cancelled") {
         bail!("{} is already {}", task.short(), task.status);
     }
+    util::atomic(conn, |conn| cancel_in(conn, task, reason))
+}
+
+/// The writes of [`cancel`], in the open transaction of `conn`.
+fn cancel_in(conn: &Connection, task: &Task, reason: &str) -> Result<Task> {
     let why = format!("task cancelled: {reason}");
-    conn.execute(
+    util::transition(
+        conn,
+        Entity::Task,
+        &task.task_id,
+        TaskStatus::Cancelled.as_str(),
+        Actor::Orchestrator,
         &format!(
-            "UPDATE tasks SET status = {cancelled}, summary = COALESCE(summary, ?2), updated_at = ?3,
-                finished_at = ?3, current_worker_id = NULL, held_reason = NULL
-             WHERE task_id = ?1",
-            cancelled = word(TaskStatus::Cancelled)
+            "{}: {} cancelled: {reason}",
+            EventKind::Cancelled.as_str(),
+            task.short()
         ),
+    )?;
+    conn.execute(
+        "UPDATE tasks SET summary = COALESCE(summary, ?2), updated_at = ?3,
+            finished_at = ?3, current_worker_id = NULL, held_reason = NULL
+         WHERE task_id = ?1",
         params![task.task_id, format!("cancelled: {reason}"), util::now()],
     )?;
     if let Some(w) = &task.current_worker_id {
@@ -1398,17 +1415,6 @@ pub fn cancel(conn: &Connection, task: &Task, reason: &str) -> Result<Task> {
             Some(&why),
         )?;
     }
-    util::event(
-        conn,
-        &About {
-            run: Some(&task.run_id),
-            task: Some(&task.task_id),
-            worker: task.current_worker_id.as_deref(),
-        },
-        Actor::Orchestrator,
-        EventKind::Cancelled,
-        &format!("{} cancelled: {reason}", task.short()),
-    )?;
     get(conn, &task.task_id)
 }
 
@@ -1431,53 +1437,43 @@ pub fn requeue(conn: &Connection, task_id: &str, why: &str) -> Result<Requeue> {
     if !matches!(task.status.as_str(), "running" | "landing") {
         return Ok(Requeue::Skipped);
     }
-    let about = About {
-        run: Some(&task.run_id),
-        task: Some(task_id),
-        worker: task.current_worker_id.as_deref(),
-    };
+    util::atomic(conn, |conn| requeue_in(conn, &task, why))
+}
+
+/// The writes of [`requeue`] for the running or landing `task`, in the open
+/// transaction of `conn`.
+fn requeue_in(conn: &Connection, task: &Task, why: &str) -> Result<Requeue> {
+    let task_id = task.task_id.as_str();
+    let queued = TaskStatus::Queued.as_str();
     let max = super::runs::get(conn, &task.run_id)?.max_attempts;
     let used = task.attempts - task.attempt_floor;
     if used >= max {
         let held = format!("{used} attempts failed");
+        let cause = format!(
+            "{}: {} is held for the operator: {held} ({}). Release it with horch ledger requeue {} \"<reason>\".",
+            EventKind::Blocked.as_str(),
+            task.short(),
+            attempt_ends(conn, task)?.join("; "),
+            task.short()
+        );
+        util::transition(conn, Entity::Task, task_id, queued, Actor::Horch, &cause)?;
         conn.execute(
-            &format!(
-                "UPDATE tasks SET status = {queued}, current_worker_id = NULL, held_reason = ?2,
-                    updated_at = ?3
-                 WHERE task_id = ?1",
-                queued = word(TaskStatus::Queued)
-            ),
+            "UPDATE tasks SET current_worker_id = NULL, held_reason = ?2, updated_at = ?3
+             WHERE task_id = ?1",
             params![task_id, held, util::now()],
-        )?;
-        util::event(
-            conn,
-            &about,
-            Actor::Horch,
-            EventKind::Blocked,
-            &format!(
-                "{} is held for the operator: {held} ({}). Release it with horch ledger requeue {} \"<reason>\".",
-                task.short(),
-                attempt_ends(conn, &get(conn, task_id)?)?.join("; "),
-                task.short()
-            ),
         )?;
         return Ok(Requeue::Held);
     }
+    let cause = format!(
+        "{}: {} is queued again, first in line: {why}",
+        EventKind::Requeued.as_str(),
+        task.short()
+    );
+    util::transition(conn, Entity::Task, task_id, queued, Actor::Horch, &cause)?;
     conn.execute(
-        &format!(
-            "UPDATE tasks SET status = {queued}, current_worker_id = NULL,
-                priority = priority - ?2, updated_at = ?3
-             WHERE task_id = ?1",
-            queued = word(TaskStatus::Queued)
-        ),
+        "UPDATE tasks SET current_worker_id = NULL, priority = priority - ?2, updated_at = ?3
+         WHERE task_id = ?1",
         params![task_id, RETRY_PRIORITY_BOOST, util::now()],
-    )?;
-    util::event(
-        conn,
-        &about,
-        Actor::Horch,
-        EventKind::Requeued,
-        &format!("{} is queued again, first in line: {why}", task.short()),
     )?;
     Ok(Requeue::Queued)
 }
@@ -1505,20 +1501,46 @@ pub fn requeue_by_operator(conn: &Connection, task: &Task, reason: &str) -> Resu
             task.status
         );
     }
+    util::atomic(conn, |conn| requeue_by_operator_in(conn, task, reason))
+}
+
+/// The writes of [`requeue_by_operator`], in the open transaction of
+/// `conn`. A held task stays `queued`, so its event is not a state change.
+fn requeue_by_operator_in(conn: &Connection, task: &Task, reason: &str) -> Result<Task> {
     let now = util::now();
     if task.is_parked() {
         resume_parked_worktree(conn, task)?;
     }
+    let text = format!("{} is queued again by the operator: {reason}", task.short());
+    let was_cancelled = get(conn, &task.task_id)?.status == TaskStatus::Cancelled.as_str();
+    if was_cancelled {
+        util::transition(
+            conn,
+            Entity::Task,
+            &task.task_id,
+            TaskStatus::Queued.as_str(),
+            Actor::Orchestrator,
+            &format!("{}: {text}", EventKind::Requeued.as_str()),
+        )?;
+    } else {
+        util::event(
+            conn,
+            &About {
+                run: Some(&task.run_id),
+                task: Some(&task.task_id),
+                worker: None,
+            },
+            Actor::Orchestrator,
+            EventKind::Requeued,
+            &text,
+        )?;
+    }
     conn.execute(
-        &format!(
-            "UPDATE tasks SET status = {queued}, held_reason = NULL, attempt_floor = attempts,
-                current_worker_id = NULL, summary = CASE WHEN status = {cancelled} THEN NULL ELSE summary END,
-                finished_at = NULL, updated_at = ?2
-             WHERE task_id = ?1",
-            queued = word(TaskStatus::Queued),
-            cancelled = word(TaskStatus::Cancelled)
-        ),
-        params![task.task_id, now],
+        "UPDATE tasks SET held_reason = NULL, attempt_floor = attempts,
+            current_worker_id = NULL, summary = CASE WHEN ?3 THEN NULL ELSE summary END,
+            finished_at = NULL, updated_at = ?2
+         WHERE task_id = ?1",
+        params![task.task_id, now, was_cancelled],
     )?;
     // The newest abandoned worktree whose folder is still there.
     let kept: Option<(String, String)> = optional(conn.query_row(
@@ -1549,17 +1571,6 @@ pub fn requeue_by_operator(conn: &Connection, task: &Task, reason: &str) -> Resu
             params![task.task_id, now, reason],
         )?;
     }
-    util::event(
-        conn,
-        &About {
-            run: Some(&task.run_id),
-            task: Some(&task.task_id),
-            worker: None,
-        },
-        Actor::Orchestrator,
-        EventKind::Requeued,
-        &format!("{} is queued again by the operator: {reason}", task.short()),
-    )?;
     get(conn, &task.task_id)
 }
 
@@ -2181,5 +2192,112 @@ mod tests {
         // A second handoff of the same worker is refused.
         store.immediate(|tx| handoff(tx, &w, &path)).unwrap();
         assert!(store.immediate(|tx| handoff(tx, &w, &path)).is_err());
+    }
+
+    /// A started worker of `persona`: its supervisor and agent run, so it
+    /// is `claiming`.
+    fn started(store: &mut Store, run: &Run, persona: &str) -> String {
+        let w = hire(store, run, persona);
+        store
+            .immediate(|tx| {
+                workers::supervisor_started(tx, &w, 4242, Some(1))?;
+                workers::agent_started(tx, &w, 4243, Some(2))
+            })
+            .unwrap();
+        w
+    }
+
+    /// OR-2: each status change of a task or a worker is 1 `transition`
+    /// event with its entity, its states and a cause, and the views show
+    /// the event by the word of today.
+    #[test]
+    fn each_status_change_of_claim_requeue_and_cancel_has_1_transition_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, run) = store_with_run(dir.path());
+        let t = queue(&mut store, &run, "a", "dev", |_| {}).task_id;
+        let w1 = started(&mut store, &run, "dev");
+        assert_eq!(claim_id(&mut store, &w1), Some(t.clone()));
+        store
+            .immediate(|tx| {
+                workers::end(tx, &w1, WorkerStatus::Incomplete, "reaped", None)?;
+                requeue(tx, &t, "worker ended")
+            })
+            .unwrap();
+        let w2 = started(&mut store, &run, "dev");
+        assert_eq!(claim_id(&mut store, &w2), Some(t.clone()));
+        let task = get(store.conn(), &t).unwrap();
+        store
+            .immediate(|tx| cancel(tx, &task, "not needed"))
+            .unwrap();
+
+        let mut stmt = store
+            .conn()
+            .prepare(
+                "SELECT entity, entity_id, from_state, to_state, cause FROM events
+                 WHERE kind = 'transition' AND from_state IS NOT NULL ORDER BY event_id",
+            )
+            .unwrap();
+        let moves: Vec<(String, String, String, String, String)> = stmt
+            .query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        let start = |w: &str| {
+            vec![
+                ("worker", w.to_string(), "spawning", "starting"),
+                ("worker", w.to_string(), "starting", "claiming"),
+            ]
+        };
+        let claim_of = |w: &str| {
+            vec![
+                ("task", t.clone(), "queued", "running"),
+                ("worker", w.to_string(), "claiming", "working"),
+            ]
+        };
+        let mut want = start(&w1);
+        want.extend(claim_of(&w1));
+        want.push(("worker", w1.clone(), "working", "incomplete"));
+        want.push(("task", t.clone(), "running", "queued"));
+        want.extend(start(&w2));
+        want.extend(claim_of(&w2));
+        want.push(("task", t.clone(), "running", "cancelled"));
+        want.push(("worker", w2.clone(), "working", "stopped"));
+        let got: Vec<(&str, String, &str, &str)> = moves
+            .iter()
+            .map(|m| (m.0.as_str(), m.1.clone(), m.2.as_str(), m.3.as_str()))
+            .collect();
+        assert_eq!(got, want);
+        assert!(moves.iter().all(|m| !m.4.is_empty()), "{moves:?}");
+
+        // 1 event for 1 change: no event of today's kinds is left.
+        let old: i64 = store
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM events WHERE kind IN ('claimed', 'requeued', 'cancelled')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(old, 0);
+        let kinds: Vec<String> = crate::taskledger::status::events(store.conn(), "task_id", &t)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.kind)
+            .collect();
+        // The end of a worker had no event before; now it is a transition.
+        assert_eq!(
+            kinds,
+            [
+                "added",
+                "claimed",
+                "transition",
+                "requeued",
+                "claimed",
+                "cancelled",
+                "transition"
+            ]
+        );
     }
 }

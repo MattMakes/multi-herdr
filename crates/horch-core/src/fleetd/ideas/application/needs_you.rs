@@ -5,7 +5,7 @@
 
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
-use rusqlite::{Connection, Transaction};
+use rusqlite::Connection;
 
 use crate::fleetd::fleet_runtime::application::ledger::{
     created, transition, Cause, RecordRefusal,
@@ -18,7 +18,7 @@ use crate::taskledger::util;
 
 /// Write the open item of `w.key`. An open item gets the new text; a
 /// `resolved` or `superseded` item opens again.
-pub fn open_item(tx: &Transaction<'_>, w: &Write<'_>) -> Result<()> {
+pub fn open_item(tx: &Connection, w: &Write<'_>) -> Result<()> {
     let old = store::get(tx, w.key)?;
     let Some(new) = Item::written(old.as_ref(), w, &util::now()) else {
         return Ok(());
@@ -28,17 +28,17 @@ pub fn open_item(tx: &Transaction<'_>, w: &Write<'_>) -> Result<()> {
 
 /// End the open item of `key` as `resolved`. `false` when no open item has
 /// that key.
-pub fn resolve(tx: &Transaction<'_>, key: &str) -> Result<bool> {
+pub fn resolve(tx: &Connection, key: &str) -> Result<bool> {
     end(tx, key, State::Resolved, "its cause ended")
 }
 
 /// End the open item of `key` as `superseded`. `false` when no open item
 /// has that key.
-pub fn supersede(tx: &Transaction<'_>, key: &str) -> Result<bool> {
+pub fn supersede(tx: &Connection, key: &str) -> Result<bool> {
     end(tx, key, State::Superseded, "a newer item replaced it")
 }
 
-fn end(tx: &Transaction<'_>, key: &str, to: State, cause: &str) -> Result<bool> {
+fn end(tx: &Connection, key: &str, to: State, cause: &str) -> Result<bool> {
     let Some(old) = store::get(tx, key)? else {
         return Ok(false);
     };
@@ -53,7 +53,7 @@ fn end(tx: &Transaction<'_>, key: &str, to: State, cause: &str) -> Result<bool> 
 /// gets its event from `created()`. A change of state goes through
 /// `transition()` before the other columns, so a refused move changes
 /// nothing.
-fn save(tx: &Transaction<'_>, old: Option<&Item>, new: &Item, cause: &str) -> Result<()> {
+fn save(tx: &Connection, old: Option<&Item>, new: &Item, cause: &str) -> Result<()> {
     let cause = Cause {
         actor: Actor::Horch,
         text: cause,
@@ -82,13 +82,7 @@ fn save(tx: &Transaction<'_>, old: Option<&Item>, new: &Item, cause: &str) -> Re
 pub struct NeedsYouList;
 
 impl RecordRefusal for NeedsYouList {
-    fn record_refusal(
-        &self,
-        tx: &Transaction<'_>,
-        entity: Entity,
-        id: &str,
-        text: &str,
-    ) -> Result<()> {
+    fn record_refusal(&self, tx: &Connection, entity: Entity, id: &str, text: &str) -> Result<()> {
         let key = refused_key(entity, id);
         let w = Write {
             key: &key,

@@ -1,6 +1,6 @@
 //! The use of `transition()`: 1 state change and its event in 1 transaction.
 
-use rusqlite::Transaction;
+use rusqlite::Connection;
 
 use crate::fleetd::fleet_runtime::adapters::sqlite::{self as door, Event};
 use crate::fleetd::fleet_runtime::domain::ledger::{
@@ -15,7 +15,7 @@ pub trait RecordRefusal {
     /// `text`, in `tx`.
     fn record_refusal(
         &self,
-        tx: &Transaction<'_>,
+        tx: &Connection,
         entity: Entity,
         id: &str,
         text: &str,
@@ -57,6 +57,9 @@ pub enum DoorError {
     },
     /// No row of the entity has the id.
     NoRow { entity: Entity, id: String },
+    /// The connection has no open transaction, so the row and its event
+    /// cannot be written together. Nothing is written.
+    NoTransaction,
     /// The ledger failed.
     Ledger(anyhow::Error),
 }
@@ -77,6 +80,9 @@ impl std::fmt::Display for DoorError {
                 held.0
             ),
             DoorError::NoRow { entity, id } => write!(f, "no {entity} {id} in the ledger"),
+            DoorError::NoTransaction => {
+                write!(f, "a state change needs an open transaction of the ledger")
+            }
             DoorError::Ledger(e) => write!(f, "{e:#}"),
         }
     }
@@ -91,14 +97,15 @@ impl From<anyhow::Error> for DoorError {
 }
 
 /// Move the row `id` of `entity` to `to`, in the caller's transaction
-/// `tx`. An allowed move writes the row and 1 event. A refused move writes
+/// `tx`. A connection with no open transaction gives
+/// [`DoorError::NoTransaction`]. An allowed move writes the row and 1 event. A refused move writes
 /// no row change, 1 event and 1 needs-you item, and returns
 /// [`DoorError::Refused`]. With `Some(guard)`, a `fleetd` row of another
 /// generation gives [`DoorError::GenerationLost`] and writes nothing. Only
 /// fleetd passes a guard. `refusals` opens the needs-you item of a refused
 /// move.
 pub fn transition(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     guard: Option<Generation>,
     entity: Entity,
     id: &str,
@@ -106,6 +113,7 @@ pub fn transition(
     cause: Cause<'_>,
     refusals: &dyn RecordRefusal,
 ) -> Result<Moved, DoorError> {
+    check_open(tx)?;
     check_generation(tx, guard)?;
     let from = state_of(tx, entity, id)?;
     match decide(entity, &from, to) {
@@ -141,12 +149,13 @@ pub fn transition(
 /// 1 event from no state to the state of the row. `guard` is as in
 /// [`transition`].
 pub fn created(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     guard: Option<Generation>,
     entity: Entity,
     id: &str,
     cause: Cause<'_>,
 ) -> Result<(), DoorError> {
+    check_open(tx)?;
     check_generation(tx, guard)?;
     let state = state_of(tx, entity, id)?;
     door::append_event(
@@ -163,9 +172,17 @@ pub fn created(
     Ok(())
 }
 
+/// [`DoorError::NoTransaction`] when `tx` is in autocommit mode.
+fn check_open(tx: &Connection) -> Result<(), DoorError> {
+    if tx.is_autocommit() {
+        return Err(DoorError::NoTransaction);
+    }
+    Ok(())
+}
+
 /// [`DoorError::GenerationLost`] when `guard` is not the generation of the
 /// `fleetd` row.
-fn check_generation(tx: &Transaction<'_>, guard: Option<Generation>) -> Result<(), DoorError> {
+fn check_generation(tx: &Connection, guard: Option<Generation>) -> Result<(), DoorError> {
     let Some(held) = guard else {
         return Ok(());
     };
@@ -177,7 +194,7 @@ fn check_generation(tx: &Transaction<'_>, guard: Option<Generation>) -> Result<(
 }
 
 /// The state of the row `id` of `entity`, or [`DoorError::NoRow`].
-fn state_of(tx: &Transaction<'_>, entity: Entity, id: &str) -> Result<String, DoorError> {
+fn state_of(tx: &Connection, entity: Entity, id: &str) -> Result<String, DoorError> {
     door::state_of(tx, entity, id)?.ok_or_else(|| DoorError::NoRow {
         entity,
         id: id.to_string(),
@@ -187,7 +204,7 @@ fn state_of(tx: &Transaction<'_>, entity: Entity, id: &str) -> Result<String, Do
 /// Record a refused move: 1 event with the refused state, and the open
 /// needs-you item of the row.
 fn refuse(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     entity: Entity,
     id: &str,
     from: &str,

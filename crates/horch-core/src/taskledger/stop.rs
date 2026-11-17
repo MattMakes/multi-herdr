@@ -1042,8 +1042,11 @@ mod tests {
         let requeues: i64 = s
             .conn()
             .query_row(
-                "SELECT count(*) FROM events WHERE kind = 'requeued'",
-                [],
+                &format!(
+                    "SELECT count(*) FROM events WHERE {}",
+                    crate::taskledger::util::kind_is("?1")
+                ),
+                ["requeued"],
                 |r| r.get(0),
             )
             .unwrap();

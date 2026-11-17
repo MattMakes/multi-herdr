@@ -8,6 +8,7 @@ use super::model::{Actor, EndReason, EventKind, Origin, ProgressSource, WorkerKi
 use super::sql_words::{self, word};
 use super::store::optional;
 use super::util::{self, About};
+use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 
 /// 1 worker row.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -250,20 +251,28 @@ pub fn set_launch(
 
 /// The spawn failed before `horch worker` ran.
 pub fn launch_failed(conn: &Connection, worker_id: &str, reason: &str) -> Result<()> {
-    conn.execute(
-        &format!(
-            "UPDATE workers SET status = ?2, end_reason = ?3, ended_at = ?4
-             WHERE worker_id = ?1 AND status IN ({unclaimed})",
-            unclaimed = sql_words::list(sql_words::WORKERS_UNCLAIMED)
-        ),
-        params![
+    util::atomic(conn, |conn| {
+        let unclaimed = find(conn, worker_id)?
+            .map(|w| w.status())
+            .transpose()?
+            .is_some_and(|s| sql_words::WORKERS_UNCLAIMED.contains(&s));
+        if !unclaimed {
+            return Ok(());
+        }
+        util::transition(
+            conn,
+            Entity::Worker,
             worker_id,
             WorkerStatus::LaunchFailed.as_str(),
-            reason,
-            util::now()
-        ],
-    )?;
-    Ok(())
+            Actor::Horch,
+            &format!("launch_failed: {reason}"),
+        )?;
+        conn.execute(
+            "UPDATE workers SET end_reason = ?2, ended_at = ?3 WHERE worker_id = ?1",
+            params![worker_id, reason, util::now()],
+        )?;
+        Ok(())
+    })
 }
 
 /// `horch worker` runs: its own PID and start time.
@@ -273,23 +282,31 @@ pub fn supervisor_started(
     pid: u32,
     started: Option<u64>,
 ) -> Result<()> {
-    let now = util::now();
-    let n = conn.execute(
-        "UPDATE workers SET supervisor_pid = ?2, supervisor_started = ?3, status = ?4,
-            started_at = ?5, last_checkin_at = ?5
-         WHERE worker_id = ?1",
-        params![
+    util::atomic(conn, |conn| {
+        if find(conn, worker_id)?.is_none() {
+            bail!("no worker {worker_id} in the task ledger");
+        }
+        util::transition(
+            conn,
+            Entity::Worker,
             worker_id,
-            pid as i64,
-            started.map(|s| s as i64),
             WorkerStatus::Starting.as_str(),
-            now
-        ],
-    )?;
-    if n == 0 {
-        bail!("no worker {worker_id} in the task ledger");
-    }
-    Ok(())
+            Actor::Supervisor,
+            &format!("supervisor_started: horch worker runs as PID {pid}"),
+        )?;
+        conn.execute(
+            "UPDATE workers SET supervisor_pid = ?2, supervisor_started = ?3,
+                started_at = ?4, last_checkin_at = ?4
+             WHERE worker_id = ?1",
+            params![
+                worker_id,
+                pid as i64,
+                started.map(|s| s as i64),
+                util::now()
+            ],
+        )?;
+        Ok(())
+    })
 }
 
 /// The agent child started: its PID and start time. The worker now looks
@@ -300,26 +317,32 @@ pub fn agent_started(
     pid: u32,
     started: Option<u64>,
 ) -> Result<()> {
-    let n = conn.execute(
-        &format!(
-            "UPDATE workers SET agent_pid = ?2, agent_started = ?3,
-                status = CASE WHEN status = {starting} THEN {claiming} ELSE status END,
-                last_checkin_at = ?4
+    util::atomic(conn, |conn| {
+        let Some(w) = find(conn, worker_id)? else {
+            bail!("no worker {worker_id} in the task ledger");
+        };
+        if w.status()? == WorkerStatus::Starting {
+            util::transition(
+                conn,
+                Entity::Worker,
+                worker_id,
+                WorkerStatus::Claiming.as_str(),
+                Actor::Supervisor,
+                &format!("agent_started: the agent runs as PID {pid}"),
+            )?;
+        }
+        conn.execute(
+            "UPDATE workers SET agent_pid = ?2, agent_started = ?3, last_checkin_at = ?4
              WHERE worker_id = ?1",
-            starting = word(WorkerStatus::Starting),
-            claiming = word(WorkerStatus::Claiming)
-        ),
-        params![
-            worker_id,
-            pid as i64,
-            started.map(|s| s as i64),
-            util::now()
-        ],
-    )?;
-    if n == 0 {
-        bail!("no worker {worker_id} in the task ledger");
-    }
-    Ok(())
+            params![
+                worker_id,
+                pid as i64,
+                started.map(|s| s as i64),
+                util::now()
+            ],
+        )?;
+        Ok(())
+    })
 }
 
 /// The heartbeat: the supervisor is alive now.
@@ -409,7 +432,8 @@ pub fn progress(
     Ok(())
 }
 
-/// Set a worker's final state, unless it already ended.
+/// Set a worker's final state, unless it already ended. The cause of the
+/// change is `end: <reason>`.
 pub fn end(
     conn: &Connection,
     worker_id: &str,
@@ -417,36 +441,82 @@ pub fn end(
     reason: &str,
     exit_code: Option<i32>,
 ) -> Result<bool> {
-    let n = conn.execute(
-        &format!(
-            "UPDATE workers SET status = ?2, end_reason = COALESCE(end_reason, ?3),
-                exit_code = COALESCE(?4, exit_code), ended_at = COALESCE(ended_at, ?5)
-             WHERE worker_id = ?1 AND status IN ({live})",
-            live = sql_words::list(sql_words::WORKERS_LIVE)
-        ),
-        params![worker_id, status.as_str(), reason, exit_code, util::now()],
-    )?;
-    Ok(n > 0)
+    let cause = format!("end: {reason}");
+    end_by(
+        conn,
+        worker_id,
+        status,
+        reason,
+        exit_code,
+        Actor::Horch,
+        &cause,
+    )
+}
+
+/// [`end`] with the actor and the cause of the change.
+fn end_by(
+    conn: &Connection,
+    worker_id: &str,
+    status: WorkerStatus,
+    reason: &str,
+    exit_code: Option<i32>,
+    actor: Actor,
+    cause: &str,
+) -> Result<bool> {
+    util::atomic(conn, |conn| {
+        if !is_live(conn, worker_id)? {
+            return Ok(false);
+        }
+        util::transition(
+            conn,
+            Entity::Worker,
+            worker_id,
+            status.as_str(),
+            actor,
+            cause,
+        )?;
+        conn.execute(
+            "UPDATE workers SET end_reason = COALESCE(end_reason, ?2),
+                exit_code = COALESCE(?3, exit_code), ended_at = COALESCE(ended_at, ?4)
+             WHERE worker_id = ?1",
+            params![worker_id, reason, exit_code, util::now()],
+        )?;
+        Ok(true)
+    })
+}
+
+/// Whether the worker `worker_id` exists and is live.
+fn is_live(conn: &Connection, worker_id: &str) -> Result<bool> {
+    Ok(find(conn, worker_id)?
+        .map(|w| w.status())
+        .transpose()?
+        .is_some_and(|s| sql_words::WORKERS_LIVE.contains(&s)))
 }
 
 /// End a live worker `handed_off` with its handoff file (trace-fixes C4).
 /// The attempt did not finish, so the row ends `incomplete`, as a reaped
 /// one does: `plan-workers` then names it for `--replaces`.
 pub fn hand_off(conn: &Connection, worker_id: &str, path: &str) -> Result<()> {
-    let n = conn.execute(
-        &format!(
-            "UPDATE workers SET status = {incomplete}, end_reason = ?2, handoff_path = ?3,
+    util::atomic(conn, |conn| {
+        if !is_live(conn, worker_id)? {
+            bail!("worker {worker_id} already ended; an ended worker cannot hand off");
+        }
+        util::transition(
+            conn,
+            Entity::Worker,
+            worker_id,
+            WorkerStatus::Incomplete.as_str(),
+            Actor::Worker,
+            &format!("handoff: {path}"),
+        )?;
+        conn.execute(
+            "UPDATE workers SET end_reason = ?2, handoff_path = ?3,
                 ended_at = COALESCE(ended_at, ?4)
-             WHERE worker_id = ?1 AND status IN ({live})",
-            incomplete = word(WorkerStatus::Incomplete),
-            live = sql_words::list(sql_words::WORKERS_LIVE)
-        ),
-        params![worker_id, EndReason::HandedOff.as_str(), path, util::now()],
-    )?;
-    if n != 1 {
-        bail!("worker {worker_id} already ended; an ended worker cannot hand off");
-    }
-    Ok(())
+             WHERE worker_id = ?1",
+            params![worker_id, EndReason::HandedOff.as_str(), path, util::now()],
+        )?;
+        Ok(())
+    })
 }
 
 /// How long a `spawning` row may wait for its supervisor: longer than the
@@ -538,14 +608,20 @@ pub fn sweep_preclaim(
                     "no horch worker checked in after the spawn",
                 ),
             };
-            if end(conn, &w.worker_id, end_as, why, None)? {
-                util::event(
-                    conn,
-                    &about,
-                    Actor::Watchdog,
-                    EventKind::Exited,
-                    &format!("{} ended {end_as}: {why}.", w.label()),
-                )?;
+            let cause = format!(
+                "{}: {} ended {end_as}: {why}.",
+                EventKind::Exited.as_str(),
+                w.label()
+            );
+            if end_by(
+                conn,
+                &w.worker_id,
+                end_as,
+                why,
+                None,
+                Actor::Watchdog,
+                &cause,
+            )? {
                 out.push(Preclaim {
                     worker: w,
                     ended: Some(end_as.as_str().to_string()),
@@ -788,7 +864,10 @@ fn acted_since(
                 continue;
             };
             let seen: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM events WHERE task_id = ?1 AND kind = ?2 AND at >= ?3",
+                &format!(
+                    "SELECT COUNT(*) FROM events WHERE task_id = ?1 AND {} AND at >= ?3",
+                    util::kind_is("?2")
+                ),
                 params![task.task_id, kind.as_str(), since],
                 |r| r.get(0),
             )?;

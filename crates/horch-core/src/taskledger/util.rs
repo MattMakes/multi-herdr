@@ -1,9 +1,12 @@
 //! Small helpers every task ledger module uses.
 
 use anyhow::Result;
-use rusqlite::Connection;
+use rusqlite::{Connection, Transaction, TransactionBehavior};
 
 use super::model::{Actor, EventKind};
+use crate::fleetd::fleet_runtime::application::ledger::{self, Cause};
+use crate::fleetd::fleet_runtime::domain::ledger::Entity;
+use crate::fleetd::ideas::application::needs_you::NeedsYouList;
 
 /// A fresh row id.
 pub fn new_id() -> String {
@@ -55,6 +58,63 @@ pub fn event(
     Ok(())
 }
 
+/// Run `f` in 1 transaction of `conn`: the open transaction of the
+/// caller, else a new `BEGIN IMMEDIATE` that commits when `f` succeeds.
+pub fn atomic<T>(conn: &Connection, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+    if !conn.is_autocommit() {
+        return f(conn);
+    }
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let out = f(&tx)?;
+    tx.commit()?;
+    Ok(out)
+}
+
+/// Move the row `id` of `entity` to `to` through `transition()`, the 1
+/// door, in the open transaction of `conn`. `cause` is `"<word>: <text>"`
+/// with the event word and the text of today when the change had an event,
+/// so that [`event_view`] shows the event as before. A refused move is an
+/// error.
+pub fn transition(
+    conn: &Connection,
+    entity: Entity,
+    id: &str,
+    to: &str,
+    actor: Actor,
+    cause: &str,
+) -> Result<()> {
+    let cause = Cause { actor, text: cause };
+    ledger::transition(conn, None, entity, id, to, cause, &NeedsYouList)?;
+    Ok(())
+}
+
+/// The kind and the text that a view shows for an event. A `transition`
+/// event whose cause is `"<word>: <text>"`, with an event word of today
+/// (`claimed`, `requeued`), shows as that word and that text, as before.
+/// Each other event shows its own kind and text.
+pub fn event_view(kind: String, text: String, cause: Option<&str>) -> (String, String) {
+    let parts = cause.and_then(|c| c.split_once(": "));
+    match parts {
+        Some((word, said))
+            if kind == EventKind::Transition.as_str()
+                && word != kind
+                && EventKind::parse(word).is_ok() =>
+        {
+            (word.to_string(), said.to_string())
+        }
+        _ => (kind, text),
+    }
+}
+
+/// The SQL condition that an event shows the kind of the parameter `p`
+/// (for example `?2`), as [`event_view`] gives it.
+pub fn kind_is(p: &str) -> String {
+    format!(
+        "(kind = {p} OR (kind = 'transition'
+            AND substr(cause, 1, length({p}) + 2) = {p} || ': '))"
+    )
+}
+
 /// This machine's name, for `workers.host`. A PID names a process only on
 /// the host that recorded it.
 pub fn host_name() -> String {
@@ -92,6 +152,54 @@ mod tests {
         assert!(paths_overlap("src/a/b.rs", "src/a/"));
         assert!(!paths_overlap("src/a", "src/ab"));
         assert!(!paths_overlap("src/a.rs", "src/b.rs"));
+    }
+
+    #[test]
+    fn a_transition_event_shows_the_word_and_the_text_of_its_cause() {
+        let view = |kind: &str, cause: Option<&str>| {
+            let (k, t) = event_view(kind.into(), "raw".into(), cause);
+            (k, t)
+        };
+        let pair = |k: &str, t: &str| (k.to_string(), t.to_string());
+        assert_eq!(
+            view("transition", Some("claimed: w1 claimed T-1.")),
+            pair("claimed", "w1 claimed T-1.")
+        );
+        assert_eq!(
+            view("transition", Some("end: done")),
+            pair("transition", "raw")
+        );
+        assert_eq!(
+            view("transition", Some("requeued")),
+            pair("transition", "raw")
+        );
+        assert_eq!(view("transition", None), pair("transition", "raw"));
+        assert_eq!(
+            view("progress", Some("claimed: x")),
+            pair("progress", "raw")
+        );
+    }
+
+    #[test]
+    fn kind_is_matches_the_kind_or_the_word_of_the_cause() {
+        let conn = Connection::open_in_memory().unwrap();
+        let shows = |kind: &str, cause: Option<&str>| -> bool {
+            conn.query_row(
+                &format!(
+                    "SELECT {} FROM (SELECT ?1 AS kind, ?2 AS cause)",
+                    kind_is("?3")
+                ),
+                rusqlite::params![kind, cause, "no_task"],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert!(shows("no_task", None));
+        assert!(shows("transition", Some("no_task: no task for dev")));
+        assert!(!shows("transition", Some("no_task")));
+        assert!(!shows("transition", Some("no_tasks: x")));
+        assert!(!shows("transition", Some("noXtask: x")));
+        assert!(!shows("claimed", None));
     }
 
     #[test]

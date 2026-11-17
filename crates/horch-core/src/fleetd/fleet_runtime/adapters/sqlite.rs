@@ -7,7 +7,7 @@
 use std::cell::RefCell;
 
 use anyhow::Result;
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
 use crate::taskledger::model::{Actor, EventKind};
@@ -29,9 +29,8 @@ pub fn in_door_transaction() -> bool {
 /// commits or rolls back. The hooks of its connection clear the mark.
 /// Call it only after a write: SQLite calls the commit hook only for a
 /// transaction that wrote (review F1).
-fn mark(tx: &Transaction<'_>) {
-    let conn: &Connection = tx;
-    let key = conn as *const Connection as usize;
+fn mark(tx: &Connection) {
+    let key = tx as *const Connection as usize;
     let new = OPEN.with(|o| {
         let mut o = o.borrow_mut();
         let new = !o.contains(&key);
@@ -129,7 +128,7 @@ pub struct Event<'a> {
 /// `taskledger::util::event` fills them. Each state change and each new row
 /// of an entity has 1 event, so this marks the transaction for
 /// [`in_door_transaction`].
-pub fn append_event(tx: &Transaction<'_>, e: &Event<'_>) -> Result<()> {
+pub fn append_event(tx: &Connection, e: &Event<'_>) -> Result<()> {
     let (run, task, worker) = about(tx, e.entity, e.id)?;
     let from = e.from.unwrap_or("none");
     let text = format!("{}; {} {}: {from} -> {}", e.cause, e.entity, e.id, e.to);
@@ -167,7 +166,7 @@ mod tests {
     use crate::taskledger::tasks::{self, NewTask};
     use crate::taskledger::workers::{self, NewWorker};
     use crate::taskledger::Store;
-    use rusqlite::Connection;
+    use rusqlite::{Connection, Transaction};
 
     struct Ledger {
         _dir: tempfile::TempDir,
@@ -430,6 +429,26 @@ mod tests {
             Moved::Unchanged
         );
         assert!(events(l.conn(), Entity::Task, &task).is_empty());
+    }
+
+    #[test]
+    fn transition_outside_a_transaction_writes_nothing() {
+        let mut l = ledger();
+        let task = l.task(1);
+        let out = transition(
+            l.conn(),
+            None,
+            Entity::Task,
+            &task,
+            "running",
+            cause("test"),
+            &NeedsYouList,
+        );
+        assert!(matches!(out, Err(DoorError::NoTransaction)), "{out:?}");
+        assert_eq!(status(l.conn(), &task), "queued");
+        assert!(events(l.conn(), Entity::Task, &task)
+            .iter()
+            .all(|e| e.1 != "running"));
     }
 
     #[test]
