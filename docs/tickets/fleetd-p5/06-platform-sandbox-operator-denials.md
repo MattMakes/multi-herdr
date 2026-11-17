@@ -28,6 +28,7 @@ The sandbox of the platform layer can run 1 command so that it cannot read 1 fil
 - The tests run the real `sandbox-exec` on this Mac. On Linux, CI runs them when `bwrap` is installed, else the tests assert `NotSupported` and the gate file names them as pending.
 - Each denied act must fail with a refusal of the OS, not with a missing file.
 - The denials are a required argument of the sandbox call, not an option. Then no caller can forget them, and the compiler finds each caller. The 2 callers of Phase 4 are `check_sandbox.rs` (ticket 18 of fleetd-p4) and `exec_gate.rs` (ticket 28 of fleetd-p4). This ticket changes each of them to pass the 3 paths of Q17 of MAP.md: the token `<fleet root>/run/operator.token`, the channel `<fleet root>/run/fleetd.sock` and the request folder `<fleet root>/run/requests/`. No ticket of wave 1 owns those 2 files. Ticket 38 changes `check_sandbox.rs` later, after this ticket.
+- The Codex branch of `check_sandbox.rs` does not call the platform primitive: it runs `codex sandbox` with the `fleet_write` profile (F10). A second Seatbelt sandbox cannot run inside the Codex sandbox on macOS. So this ticket does not change the Codex branch. Ticket 36 gives the Codex profile the 3 denials or NotSupported, and Q21 of MAP.md names the ticket that applies it to the Codex check.
 - A caller whose OS gives NotSupported for the denials keeps the NotSupported path of its Phase 4 ticket: no run, and 1 needs-you item. Never a run without the denials.
 - A file that a ticket of fleetd-p2, fleetd-p3 or fleetd-p4 names and that does not exist yet comes from that ticket. It is not a fault. Read the ticket that makes it.
 - No test reads the real load, the real limits or the real clock of the machine, and no test depends on the speed of the host. Give these facts through `HORCH_MACHINE_FILE`, a test `fleet.toml` and the fleet clock, and wait for an event, not for a time.
@@ -35,10 +36,11 @@ The sandbox of the platform layer can run 1 command so that it cannot read 1 fil
 
 ## Steps
 
-1. Write the tests first in `crates/horch-platform/tests/sandbox.rs` (attack tests): `sandboxed_child_cannot_read_the_denied_file`, `sandboxed_child_cannot_connect_to_the_denied_socket` (a real listener of `horch_platform::channel` at that path), `sandboxed_child_cannot_write_into_the_denied_folder`, and `sandboxed_child_still_writes_its_allowed_paths`. In `crates/horch-core/tests/check_sandbox.rs` and `crates/horch-core/tests/gate_jobs.rs` (the test files of tickets 18 and 28 of fleetd-p4): `check_sandbox_denies_the_3_operator_acts` and `gate_sandbox_denies_the_3_operator_acts`. Each child is `/bin/sh -c` with 1 act; the test asserts its exit code and that the file of the act did not change. They fail because the interface has no denials.
-2. Add the 3 denials to the input of the sandbox call (for example `Denials { read: Vec<PathBuf>, connect: Vec<PathBuf>, write: Vec<PathBuf> }`), and the code of each OS.
-3. Windows returns `NotSupported`.
-4. Change `check_sandbox.rs` and `exec_gate.rs` to pass the 3 denials. Run the Check. Commit the exact files.
+1. Write the tests first in `crates/horch-platform/tests/sandbox.rs` (attack tests): `sandboxed_child_cannot_read_the_denied_file`, `sandboxed_child_cannot_connect_to_the_denied_socket` (a real listener of `horch_platform::channel` at that path), `sandboxed_child_cannot_write_into_the_denied_folder`, and `sandboxed_child_still_writes_its_allowed_paths`. Each child is `/bin/sh -c` with 1 act; the test asserts its exit code and that the file of the act did not change. They fail because the interface has no denials.
+2. Write the 2 caller tests: `check_sandbox_denies_the_3_operator_acts` in `crates/horch-core/tests/check_sandbox.rs` (a check of a non-Codex persona) and `gate_sandbox_denies_the_3_operator_acts` in `crates/horch-core/tests/gate_jobs.rs`. Each runs a check or a gate whose command tries the 3 acts against a test fleet root. The test asserts that each act is refused by the OS and that the token was not read, no request line arrived and no request file exists.
+3. Add the 3 denials to the input of the sandbox call (for example `Denials { read: Vec<PathBuf>, connect: Vec<PathBuf>, write: Vec<PathBuf> }`), and the code of each OS.
+4. Windows returns `NotSupported`.
+5. Change `check_sandbox.rs` and `exec_gate.rs` to pass the 3 denials. Run the Check. Commit the exact files.
 
 ## Constraints
 

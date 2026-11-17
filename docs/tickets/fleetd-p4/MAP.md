@@ -188,9 +188,9 @@ follows them, and the orchestrator can change each one. Q2 and Q23 have no quest
   custody row with no task and owner fleetd. The rebase also runs there. Tickets 28, 41.
 - **Q19. How the gates run (corrected by T-607).** A gate runs code of the project, and workers
   write that code. So a gate never runs with the rights of fleetd. It runs through the launcher, in
-  the gate tree, inside the check sandbox of ticket 17 (`sandboxed(cmd, writable)` of
-  `crates/horch-platform`). It can write only the gate tree, the temporary folder of its job and the
-  build cache paths that the project declares (Q24). It cannot write the fleet root, the ledger,
+  the gate tree, inside the gate sandbox. The gate sandbox calls the platform sandbox primitive of
+  ticket 17 (`sandboxed(cmd, writable)` of `crates/horch-platform`). It can write only the gate
+  tree, the temporary folder of its job and the gate cache of its feature (Q24). It cannot write the rest of the fleet root, the ledger,
   another worktree or the repository of the user outside the gate tree. NotSupported: the gate does
   not run, the feature holds, and 1 needs-you item opens (key `no_gate_sandbox:<feature id>`). The
   `git checkout` of the gate runs with hooks off. From Phase 5 the gate sandbox also denies the 3
@@ -201,12 +201,12 @@ follows them, and the orchestrator can change each one. Q2 and Q23 have no quest
   ready or its PR is open, and after a rebase. Ticket 38.
 - **Q22. `gh` calls.** They run in the push job. Ticket 39.
 - **Q23.** None.
-- **Q24. The build cache paths of a gate (open, for the orchestrator).** A gate of this repository
-  runs `cargo test`, and cargo writes `~/.cargo` (the registry and its lock file). Ticket 28 needs a
-  list of these paths from the project. Choice: a key `writable_paths` in `[gates]` of the project
-  `fleet.toml`, a list of paths, with `["~/.cargo"]` for this repository. Ticket 04 owns the parse of
-  `[gates]` and refuses an unknown key, so ticket 04 must add the key. T-607 did not change ticket
-  04. Tickets 04, 28.
+- **Q24. The gate cache (corrected after review F1 of T-607).** A gate of this repository runs
+  `cargo test`, and cargo writes a cache. The writable paths of a gate never come from the project:
+  the project `fleet.toml` is read at the tip that the gate judges, and a worker writes that tip. So
+  fleetd owns 1 gate cache for each feature at `<fleet root>/gate-cache/<feature id>/`, and sets
+  `CARGO_HOME` and `XDG_CACHE_HOME` to folders in it. It starts empty, so it has no configuration and
+  no credential of the user. The gate never writes `~/.cargo`. Ticket 04 gets no new key. Ticket 28.
 - **Q25. Ticket 28 needs ticket 17 (open, for the orchestrator).** The gate sandbox calls the
   function of ticket 17. Ticket 28 is not blocked by 17 in the table, but 17 is in wave 1 and 28 in
   wave 3. T-607 did not change a `Blocked by` cell. The orchestrator can add the dependency in the

@@ -244,7 +244,11 @@ orchestrator can change each one.
   sandbox of a gate and of a check denies the 3 operator acts, as the worker sandbox does. The
   denials are a required argument of the platform sandbox call (ticket 06), and ticket 06 changes
   its 2 callers of Phase 4: `check_sandbox.rs` and `exec_gate.rs`. NotSupported keeps the Phase 4
-  path: no run, and 1 needs-you item. Ticket 43 has the attack test from a test that runs in a gate.
+  path: no run, and 1 needs-you item. The Codex check runs `codex sandbox`, not the platform
+  primitive, so ticket 06 does not cover it. Choice (open, for the orchestrator): ticket 38, which
+  owns `check_sandbox.rs` after ticket 36, makes the Codex check use the profile of ticket 36 with
+  the 3 denials, refuses a Codex check whose profile does not deny them, and tests it. T-607 did
+  not change ticket 38. Ticket 43 has the attack test from a test that runs in a gate.
   Tickets 06, 43.
 
 Risks of the phase:
