@@ -9,10 +9,11 @@ tests passes and is off the list of expected failures.
 
 - Pre-fix: `97236dda15a5ca2a899cd2e9b43706f5edae50dd`, the tip of `fleet/fleetd-build` on
   2026-11-17 before this ticket. The 2 full runs below ran at this commit.
-- Gate: `34f2a88c`, the child of `97236dda` with the fix of the 10,000 folders test below. The
-  fix changes only the test `scans_of_10000_folders_...` and 1 helper of it in
-  `crates/horch-e2e/tests/p1_pass.rs`. Each row names the commit of its runs: `97236dda` for the
-  full runs, `34f2a88c` for the runs of the 10,000 folders test.
+- Gate: `3709bb4d`, 2 commits after `97236dda` with the fix of the 10,000 folders test below
+  (`34f2a88c`, and `3709bb4d` for review finding F1). The fix changes only the test
+  `scans_of_10000_folders_...` and 1 helper of it in `crates/horch-e2e/tests/p1_pass.rs`. Each
+  row names the commit of its runs: `97236dda` for the full runs, `3709bb4d` for the runs of the
+  10,000 folders test.
 
 ## No CI run exists
 
@@ -33,8 +34,8 @@ row is green yet, and the gate of Phase 1 is not complete until CI gives both.
 | --- | --- | --- | --- | --- |
 | macOS aarch64, this Mac, `97236dda` | `cargo test --workspace --locked --no-fail-fast` | 3206 | 0 | 12 |
 | Linux aarch64, Docker `rust:1.96.1`, `97236dda` | `cargo test --workspace --locked --no-fail-fast` | 3198 | 11 | 12 |
-| macOS aarch64, this Mac, `34f2a88c` | the 10,000 folders test, 5 runs alone | 5 | 0 | 0 |
-| Linux aarch64, Docker `rust:1.96.1`, `34f2a88c` | the 10,000 folders test, 5 runs alone | 5 | 0 | 0 |
+| macOS aarch64, this Mac, `3709bb4d` | the 10,000 folders test, 5 runs alone | 5 | 0 | 0 |
+| Linux aarch64, Docker `rust:1.96.1`, `3709bb4d` | the 10,000 folders test, 5 runs alone | 5 | 0 | 0 |
 
 Both runs use a temporary `HOME` (Linux only) and temporary folders for `HORCH_DATA_DIR`,
 `HORCH_STATE_DIR` and `HORCH_LEDGER_DB`. The Linux run uses the source of the gate commit from
@@ -59,7 +60,7 @@ the part of FM-13 of a later phase, and it stays.
 | OR-4 | `pacing_holds_a_pool_ahead_of_its_window_and_frees_one_on_pace` (`crates/horch-core/src/fleetd/fleet_runtime/domain/health.rs`) | `97236dda` | pass | pass; pending CI | pending CI |
 | OR-5 | `low_disk_probe_pauses_dispatch_and_normal_probe_resumes`, `pres_06_s12_unknown_probe_neither_pauses_nor_passes` (`health.rs`) | `97236dda` | pass | pass; pending CI | pending CI |
 | OR-6 | `self_update_restarts_the_running_fleetd_before_it_replaces_itself` (`crates/horch/src/cmd/selfupdate.rs`), `check_restarts_an_older_fleetd` (`crates/horch/src/cmd/fleetd.rs`), `newer_schema_9_is_refused` (`crates/horch-core/tests/taskledger_schema_v8.rs`) | `97236dda` | pass | pass; pending CI | pending CI |
-| PL-1 | `cargo test --workspace --locked` | `97236dda` and `34f2a88c` | pass: 3206 ok, 0 failed | 11 failed in Docker: 10 by the container, 1 fixed in `34f2a88c`, see Linux below; pending CI | pending CI |
+| PL-1 | `cargo test --workspace --locked` | `97236dda` and `3709bb4d` | pass: 3206 ok, 0 failed | 11 failed in Docker: 10 by the container, 1 fixed in `3709bb4d`, see Linux below; pending CI | pending CI |
 | PL-3 | the `NotSupported` tests of `crates/horch-platform/tests/`: `watchdog_ping_is_not_supported_off_linux` (macOS, Windows), `junctions_are_not_supported_off_windows`, `ensure_user_path_is_not_supported_off_windows` (unix), `not_supported_names_its_concern_and_os`, `not_supported_converts_to_io_unsupported` (each OS), and the `*_not_supported_on_windows` tests, for example `counts_are_not_supported_on_windows` (Windows) | `97236dda` | pass | pass; pending CI | pending CI |
 | FM-4 | `fm4_dead_agent_ends_its_attempt_within_30_s` (`crates/horch-e2e/tests/p0_liveness.rs`) | `97236dda` | pass | pass; pending CI | pending CI; unix only |
 | FM-7 | `fm7_killed_watchdog_does_not_stop_the_reconcile` (`crates/horch-e2e/tests/p0_supervision.rs`) | `97236dda` | pass | pass; pending CI | pending CI; unix only |
@@ -71,7 +72,7 @@ the part of FM-13 of a later phase, and it stays.
 | FM-44 | `needs_you_item_written_twice_by_key_is_1_item_and_resolves_with_its_row`, `item_not_open_is_removed_30_days_after_it_ended` (`crates/horch-core/src/fleetd/ideas/application/needs_you.rs`) | `97236dda` | pass | pass; pending CI | pending CI |
 | Old watchdog (release row of Phase 1) | `update_with_a_live_worker_and_a_live_old_watchdog_leaves_1_control_path` (`crates/horch-e2e/tests/p1_release.rs`) | `97236dda` | pass | pass; pending CI | pending CI; unix only |
 | Test: 5 min job | `job_of_5_min_runs_while_fleetd_stays_healthy_and_is_not_restarted` (`p1_jobs.rs`) | `97236dda` | pass | pass; pending CI | pending CI; unix only |
-| Test: 10,000 folders | `scans_of_10000_folders_keep_the_heartbeat_under_30_s_and_go_on_at_their_cursors_after_a_restart` (`p1_pass.rs`) | `34f2a88c` | pass: 5 of 5 | pass: 5 of 5; pending CI | pending CI; unix only |
+| Test: 10,000 folders | `scans_of_10000_folders_keep_the_heartbeat_under_30_s_and_go_on_at_their_cursors_after_a_restart` (`p1_pass.rs`) | `3709bb4d` | pass: 5 of 5 | pass: 5 of 5; pending CI | pending CI; unix only |
 | Test: job backoff and requeue | `job_past_its_limit_runs_again_after_its_backoff_and_after_3_abandoned_runs_goes_to_you` (`p1_jobs.rs`) | `97236dda` | pass | pass; pending CI | pending CI; unix only |
 
 ## Linux
@@ -104,15 +105,20 @@ the part of FM-13 of a later phase, and it stays.
   folders ended in the 4 heartbeats before the kill. The test depended on the speed of the host.
   The scan stops at its budget, so the product was correct.
 
-  The fix (`34f2a88c`, on the instruction of the orchestrator, which added `p1_pass.rs` to the
-  Own of this ticket): the test kills fleetd after 3 passes that each moved each folder cursor,
-  not after a fixed number of heartbeats, and uses `scan_budget_ms = 1`. The first pass after the
-  restart must move each cursor past its stored key, in the same lap. The 4 heartbeats and
-  `horch fleetd check` now run on the second fleetd. A deliberate break (each new process starts
-  each scan at the first folder, in `cursors_store::load`) makes the test fail: "the scan of
-  outboxes is at Some("S-00005/A1"), not after its cursor Some("S-00017/A1")". The break is
-  not committed. After the fix the test passes 5 of 5 runs on macOS and 5 of 5 runs on Linux in
-  Docker.
+  The fix (`34f2a88c` and `3709bb4d`, on the instruction of the orchestrator, which added
+  `p1_pass.rs` to the Own of this ticket): the test kills fleetd after 3 passes that each moved
+  each folder cursor, not after a fixed number of heartbeats, and uses `scan_budget_ms = 1`.
+  While fleetd is down, the test writes the key of folder 5,000 into the `after_key` of each
+  folder cursor in `pass_cursors`, and keeps the lap. The first cursor that the new fleetd stores
+  must be after that key, with the same `lap_started_at` and no `prev_lap_started_at`. A 1 ms
+  scan reads far fewer than 5,000 keys, so a scan that starts again at the first folder fails on
+  a fast host and on a slow host (review finding F1 of round 1). The 4 heartbeats and
+  `horch fleetd check` now run on the second fleetd.
+
+  A deliberate break of the product (each new process starts each scan at the first folder, in
+  `cursors_store::load`) makes the test fail: "the scan of outboxes is at Some("S-00007/A1"), not
+  after its cursor Some("S-05000/A1")". The break is not committed. At `3709bb4d` the test passes
+  5 of 5 runs on macOS and 5 of 5 runs on Linux in Docker.
 
 A CI run on `ubuntu-latest` (x86_64, not root, with clippy) replaces the Linux column when the
 pull request exists.
@@ -158,4 +164,4 @@ These tasks landed on `fleet/fleetd-build` after the map of Phase 1. They belong
 
 None seen. The macOS run had 0 failures. Each Linux failure repeats with the same cause. The
 10,000 folders test failed on each Linux run at `97236dda`, so it was not flaky but dependent on
-the speed of the host; `34f2a88c` fixes it.
+the speed of the host; `34f2a88c` and `3709bb4d` fix it.
