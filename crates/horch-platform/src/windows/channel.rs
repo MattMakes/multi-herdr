@@ -3,13 +3,15 @@
 //! token of that process gives the peer user.
 
 use std::fs::File;
-use std::io;
+use std::io::{self, Read, Write};
+use std::mem::ManuallyDrop;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::Path;
 use std::ptr;
-use std::sync::{Mutex, PoisonError};
-use std::time::Instant;
+use std::sync::{mpsc, Arc, Condvar, Mutex, PoisonError};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use windows_sys::core::PWSTR;
 use windows_sys::Win32::Foundation::{
@@ -24,31 +26,56 @@ use windows_sys::Win32::Security::{
     TOKEN_USER,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_FLAG_FIRST_PIPE_INSTANCE, OPEN_EXISTING,
+    CreateFileW, FlushFileBuffers, FILE_FLAG_FIRST_PIPE_INSTANCE, OPEN_EXISTING,
     PIPE_ACCESS_DUPLEX, SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT,
 };
 use windows_sys::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeClientProcessId,
-    WaitNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE,
-    PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+    WaitNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
 };
 use windows_sys::Win32::System::Threading::{
     GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
 };
+use windows_sys::Win32::System::IO::CancelSynchronousIo;
 
 use crate::channel::{Peer, User};
 
-pub(crate) type Stream = File;
-
-/// A named pipe server. Each client takes 1 instance of the pipe, so the
-/// listener always holds the instance that waits for the next client.
+/// A named pipe server with 1 instance only. The listener holds that
+/// instance for its whole life and reuses it for each client, so no other
+/// process can make an instance of the name and catch a client (SR-8). A
+/// client that finds the instance busy waits for it (`connect`).
 #[derive(Debug)]
-pub(crate) struct Listener {
-    /// The full pipe name, `\\.\pipe\...`, as UTF-16 with a NUL at the end.
-    name: Vec<u16>,
-    /// The instance that waits for the next client.
-    next: Mutex<OwnedHandle>,
+pub(crate) struct Listener(Arc<Instance>);
+
+/// The only instance of the pipe.
+#[derive(Debug)]
+pub(crate) struct Instance {
+    pipe: OwnedHandle,
+    /// True while an accepted [`Stream`] holds the instance.
+    busy: Mutex<bool>,
+    /// Signals that `busy` became false.
+    free: Condvar,
 }
+
+/// 1 connection of the channel.
+#[derive(Debug)]
+pub(crate) enum Stream {
+    /// The client side owns its handle.
+    Client(File),
+    /// The server side uses the handle of the instance and never closes
+    /// it. The drop ends the connection, and the listener can accept the
+    /// next client.
+    Server {
+        view: ManuallyDrop<File>,
+        instance: Arc<Instance>,
+    },
+}
+
+/// The longest time that the end of a server connection waits for the
+/// client to read the rest of the reply. It is below the 5 s request
+/// deadline of the channel, so a client that never reads holds the only
+/// instance for a short time only.
+const DRAIN_LIMIT: Duration = Duration::from_secs(2);
 
 /// The longest full pipe name, in UTF-16 units.
 const MAX_PIPE_NAME: usize = 256;
@@ -56,15 +83,13 @@ const MAX_PIPE_NAME: usize = 256;
 /// The size of the in and out buffer of each instance, in bytes.
 const BUFFER: u32 = 4096;
 
-/// `FILE_FLAG_FIRST_PIPE_INSTANCE` refuses a pipe that exists, so no other
-/// process can own the name before fleetd.
 pub(crate) fn bind(name: &Path) -> io::Result<Listener> {
-    let name = pipe_name(name)?;
-    let first = create_instance(&name, FILE_FLAG_FIRST_PIPE_INSTANCE)?;
-    Ok(Listener {
-        name,
-        next: Mutex::new(first),
-    })
+    let pipe = create_instance(&pipe_name(name)?)?;
+    Ok(Listener(Arc::new(Instance {
+        pipe,
+        busy: Mutex::new(false),
+        free: Condvar::new(),
+    })))
 }
 
 /// `\\.\pipe\<name>`, with each `\` of `name` as `/`: a pipe name holds no
@@ -93,9 +118,12 @@ fn pipe_name(name: &Path) -> io::Result<Vec<u16>> {
     Ok(full)
 }
 
-/// A new instance of the pipe `name`, with the access rule of this user
+/// The only instance of the pipe `name`, with the access rule of this user
 /// only. It refuses clients of other computers.
-fn create_instance(name: &[u16], flags: FILE_FLAGS_AND_ATTRIBUTES) -> io::Result<OwnedHandle> {
+/// `FILE_FLAG_FIRST_PIPE_INSTANCE` refuses a pipe that exists, so no other
+/// process can own the name before fleetd. `nMaxInstances` 1 refuses each
+/// instance after it.
+fn create_instance(name: &[u16]) -> io::Result<OwnedHandle> {
     let descriptor = OwnerOnly::new()?;
     let attributes = SECURITY_ATTRIBUTES {
         nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
@@ -107,9 +135,9 @@ fn create_instance(name: &[u16], flags: FILE_FLAGS_AND_ATTRIBUTES) -> io::Result
     let handle = unsafe {
         CreateNamedPipeW(
             name.as_ptr(),
-            PIPE_ACCESS_DUPLEX | flags,
+            PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-            PIPE_UNLIMITED_INSTANCES,
+            1,
             BUFFER,
             BUFFER,
             0,
@@ -163,40 +191,129 @@ impl Drop for OwnerOnly {
     }
 }
 
-/// An error ends only this connection: the instance is disconnected, so
-/// it waits for the next client again.
+/// Wait until the previous [`Stream`] of the server ends, then connect the
+/// instance to the next client. An error ends only this connection: the
+/// instance is disconnected, so it waits for the next client again.
 pub(crate) fn accept(listener: &Listener) -> io::Result<(Stream, Peer)> {
-    let mut next = listener.next.lock().unwrap_or_else(PoisonError::into_inner);
-    let pipe = next.as_raw_handle();
-    // SAFETY: `pipe` is open while `next` holds it. A null OVERLAPPED is
-    // valid for a pipe that was not opened for overlapped I/O.
+    let instance = &listener.0;
+    let mut busy = instance.busy.lock().unwrap_or_else(PoisonError::into_inner);
+    while *busy {
+        busy = instance
+            .free
+            .wait(busy)
+            .unwrap_or_else(PoisonError::into_inner);
+    }
+    let pipe = instance.pipe.as_raw_handle();
+    // SAFETY: `pipe` is open while `instance` holds it. A null OVERLAPPED
+    // is valid for a pipe that was not opened for overlapped I/O.
     if unsafe { ConnectNamedPipe(pipe, ptr::null_mut()) } == 0 {
         let error = io::Error::last_os_error();
         if error.raw_os_error() != Some(ERROR_PIPE_CONNECTED as i32) {
-            // SAFETY: `pipe` is open while `next` holds it.
+            // SAFETY: `pipe` is open while `instance` holds it.
             unsafe { DisconnectNamedPipe(pipe) };
             return Err(error);
         }
     }
-    let waiting = match create_instance(&listener.name, 0) {
-        Ok(waiting) => waiting,
-        Err(error) => {
-            // SAFETY: `pipe` is open while `next` holds it.
-            unsafe { DisconnectNamedPipe(pipe) };
-            return Err(error);
-        }
+    *busy = true;
+    drop(busy);
+    let stream = Stream::Server {
+        // SAFETY: `pipe` is open while `instance` lives, and the stream
+        // holds `instance`. `ManuallyDrop` never closes the handle.
+        view: ManuallyDrop::new(unsafe { File::from_raw_handle(pipe) }),
+        instance: Arc::clone(instance),
     };
-    let connected = std::mem::replace(&mut *next, waiting);
-    drop(next);
-    let peer = peer(&connected)?;
-    Ok((File::from(connected), peer))
+    // On an error, the drop of `stream` ends the connection.
+    let peer = peer(pipe)?;
+    Ok((stream, peer))
 }
 
-fn peer(pipe: &OwnedHandle) -> io::Result<Peer> {
+/// End the connection of the server side, and free the instance for the
+/// next client. `DisconnectNamedPipe` discards the bytes that the client did
+/// not read, so a helper thread first waits with `FlushFileBuffers` until
+/// the client reads them, for at most [`DRAIN_LIMIT`].
+fn end_connection(instance: &Arc<Instance>) {
+    let (flushed, drained) = mpsc::channel();
+    let pipe = instance.pipe.as_raw_handle();
+    let flush = {
+        let instance = Arc::clone(instance);
+        thread::Builder::new()
+            .name("horch-pipe-drain".into())
+            .spawn(move || {
+                // SAFETY: the pipe is open while `instance` holds it.
+                unsafe { FlushFileBuffers(instance.pipe.as_raw_handle()) };
+                let _ = flushed.send(());
+            })
+            .ok()
+    };
+    // Without a thread, the sender is gone and this returns at once.
+    let _ = drained.recv_timeout(DRAIN_LIMIT);
+    // SAFETY: `pipe` is open while `instance` holds it.
+    unsafe { DisconnectNamedPipe(pipe) };
+    if let Some(flush) = flush {
+        // A flush that starts after the disconnect fails at once. A flush
+        // that started before it and still waits stops here.
+        // SAFETY: the thread handle is open until the join.
+        unsafe { CancelSynchronousIo(flush.as_raw_handle()) };
+        let _ = flush.join();
+    }
+    *instance.busy.lock().unwrap_or_else(PoisonError::into_inner) = false;
+    instance.free.notify_one();
+}
+
+impl Stream {
+    fn file(&self) -> &File {
+        match self {
+            Stream::Client(file) => file,
+            Stream::Server { view, .. } => &**view,
+        }
+    }
+}
+
+impl Drop for Stream {
+    fn drop(&mut self) {
+        if let Stream::Server { instance, .. } = self {
+            end_connection(instance);
+        }
+    }
+}
+
+impl Read for &Stream {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.file().read(buf)
+    }
+}
+
+impl Read for Stream {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.file().read(buf)
+    }
+}
+
+impl Write for &Stream {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.file().write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.file().flush()
+    }
+}
+
+impl Write for Stream {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.file().write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.file().flush()
+    }
+}
+
+fn peer(pipe: HANDLE) -> io::Result<Peer> {
     let mut pid = 0u32;
-    // SAFETY: the pipe is open while `pipe` lives, and `pid` is valid for 1
+    // SAFETY: the caller keeps `pipe` open, and `pid` is valid for 1
     // write.
-    if unsafe { GetNamedPipeClientProcessId(pipe.as_raw_handle(), &mut pid) } == 0 {
+    if unsafe { GetNamedPipeClientProcessId(pipe, &mut pid) } == 0 {
         return Err(io::Error::last_os_error());
     }
     // SAFETY: plain call; a failure answers a null handle.
@@ -233,7 +350,7 @@ pub(crate) fn connect(name: &Path, deadline: Instant) -> io::Result<Stream> {
         };
         if handle != INVALID_HANDLE_VALUE {
             // SAFETY: `handle` is a new open handle that nothing else owns.
-            return Ok(unsafe { File::from_raw_handle(handle) });
+            return Ok(Stream::Client(unsafe { File::from_raw_handle(handle) }));
         }
         let error = io::Error::last_os_error();
         if error.raw_os_error() != Some(ERROR_PIPE_BUSY as i32) {
@@ -347,6 +464,8 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
+    use windows_sys::Win32::System::Pipes::PIPE_UNLIMITED_INSTANCES;
+
     use super::*;
 
     /// A pipe name that no other test and no other run uses.
@@ -449,6 +568,27 @@ mod tests {
 
             assert_eq!(second.join().unwrap(), "second\n");
             assert_eq!(server.join().unwrap(), ["first\n", "second\n"]);
+        });
+    }
+
+    #[test]
+    fn client_that_never_reads_the_reply_does_not_block_the_next_client() {
+        let name = unique_name("never-reads");
+        let listener = bind(&name).unwrap();
+        thread::scope(|scope| {
+            let server = scope.spawn(|| echo(&listener, 2));
+            // This client sends 1 line, never reads the reply and keeps its
+            // handle open.
+            let silent = connect(&name, far_deadline()).unwrap();
+            (&silent).write_all(b"silent\n").unwrap();
+
+            // The server ends that connection after DRAIN_LIMIT. Without
+            // that limit, this connect stops at its deadline with TimedOut.
+            // The next client gets all of its reply.
+            let next = connect(&name, far_deadline()).unwrap();
+            assert_eq!(ask(&next, "next\n"), "next\n");
+            assert_eq!(server.join().unwrap(), ["silent\n", "next\n"]);
+            drop(silent);
         });
     }
 }
