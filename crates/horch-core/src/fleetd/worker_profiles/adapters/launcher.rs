@@ -13,7 +13,7 @@
 //! "Process groups".
 
 use std::fs::{File, OpenOptions};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 
 use horch_platform::group;
 
@@ -31,7 +31,7 @@ impl ProcessHost for Launcher {
     /// A detached process also loses the pane identity of its starter, as
     /// [`spawn_detached`] does today. A live process whose start time the
     /// OS does not give is killed, and the launch fails: fleetd cannot
-    /// supervise it.
+    /// supervise it. A failed check of whether it exited does the same.
     fn launch(&self, spec: &LaunchSpec) -> Result<Launched, LaunchError> {
         let inside = in_door_transaction();
         debug_assert!(!inside, "a process start inside a ledger transaction");
@@ -49,18 +49,33 @@ impl ProcessHost for Launcher {
         };
         let pid = child.id();
         let pid_start = horch_platform::process::start_time(pid);
-        if pid_start.is_none() && !group::exited_without_reap(&mut child)? {
-            group::kill_child_group(&mut child);
-            let _ = child.wait();
-            return Err(LaunchError::Io(std::io::Error::other(format!(
-                "the start time of process {pid} is unreadable"
-            ))));
+        if pid_start.is_none() {
+            let unreadable = match group::exited_without_reap(&mut child) {
+                Ok(true) => None,
+                Ok(false) => Some(std::io::Error::other(format!(
+                    "the start time of process {pid} is unreadable"
+                ))),
+                Err(e) => Some(e),
+            };
+            if let Some(e) = unreadable {
+                discard(child);
+                return Err(LaunchError::Io(e));
+            }
         }
         Ok(Launched {
             pid,
             pid_start,
             child,
         })
+    }
+}
+
+/// Kill `child` and its group, then reap it. When no kill is sent, the
+/// child is not reaped, so that the launcher never waits for a live
+/// process.
+fn discard(mut child: Child) {
+    if group::kill_child_group(&mut child) || child.kill().is_ok() {
+        let _ = child.wait();
     }
 }
 

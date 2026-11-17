@@ -50,7 +50,9 @@ pub enum LaunchError {
     /// A transaction of the ledger door is open on this thread. No effect
     /// outside the ledger starts inside a transaction.
     InsideTransaction,
-    /// The OS did not start the process, or its output file did not open.
+    /// The output file did not open, the OS did not start the process, or
+    /// the launcher could not check the started process. In the last case
+    /// the launcher killed the process.
     Io(std::io::Error),
 }
 
@@ -60,7 +62,7 @@ impl std::fmt::Display for LaunchError {
             LaunchError::InsideTransaction => {
                 write!(f, "a process start inside a ledger transaction is refused")
             }
-            LaunchError::Io(e) => write!(f, "the process did not start: {e}"),
+            LaunchError::Io(e) => write!(f, "the launch failed: {e}"),
         }
     }
 }
@@ -76,7 +78,8 @@ impl From<std::io::Error> for LaunchError {
 /// The 1 way to start a process of fleetd: an attempt, a job, the restart
 /// of fleetd.
 pub trait ProcessHost {
-    /// Start `spec` in its own process group, with no `ANTHROPIC_API_KEY`
-    /// in its environment.
+    /// Start `spec` in its own process group. Its environment has no
+    /// forbidden key and no git repository variable
+    /// ([`scrub_child_env`](crate::runtime::process::scrub_child_env)).
     fn launch(&self, spec: &LaunchSpec) -> Result<Launched, LaunchError>;
 }
