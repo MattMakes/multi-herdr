@@ -225,11 +225,31 @@ fn arc_26_e2e_lifecycle_matrix_prime() {
 }
 
 /// `fake-antigravity` as `agy` (the harness installs it in `bin/`), named by
-/// `HORCH_ANTIGRAVITY_BIN`.
+/// `HORCH_ANTIGRAVITY_BIN`, and an ok google pool reading as `agy /usage`
+/// gives it. `all-ok.json` has no google pool, and an unknown pool runs the
+/// teammate on its fallback.
 fn with_agy(h: &mut Harness) {
     let name = format!("agy{}", std::env::consts::EXE_SUFFIX);
     let bin = h.bin.join(name).to_string_lossy().into_owned();
     h.set("HORCH_ANTIGRAVITY_BIN", bin);
+    let all_ok = std::fs::read_to_string(fixtures().join("quota/all-ok.json")).unwrap();
+    let mut quota: Value = serde_json::from_str(&all_ok).unwrap();
+    quota["pools"]["google"] = serde_json::json!({
+        "state": "ok",
+        "observed_at": "2026-09-28T17:55:00Z",
+        "source": "usage",
+        "windows": [{
+            "name": "7d",
+            "minutes": 10080,
+            "scope_model": "gemini",
+            "used": 0.1,
+            "resets_at": "2026-10-02T13:59:59Z"
+        }],
+        "error": null
+    });
+    let path = h.root.join("quota-google-ok.json");
+    std::fs::write(&path, quota.to_string()).unwrap();
+    h.set("HORCH_QUOTA_FILE", path.to_string_lossy());
 }
 
 /// agy mints its own conversation id; horch reads it back from the session
