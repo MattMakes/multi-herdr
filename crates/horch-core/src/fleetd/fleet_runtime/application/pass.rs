@@ -136,11 +136,19 @@ pub trait RunDuties {
         false
     }
 
-    /// Part 3: do the effects of the committed rows. Returns the effects
-    /// done and the effects that failed.
-    fn act(&self, _conn: &Connection, _ctx: &ActCtx<'_>) -> (Vec<String>, Vec<String>) {
-        (Vec::new(), Vec::new())
+    /// Part 3: do the effects of the committed rows.
+    fn act(&self, _conn: &Connection, _ctx: &ActCtx<'_>) -> DutyReport {
+        DutyReport::default()
     }
+}
+
+/// What part 3 of the run duties did.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct DutyReport {
+    /// The effects done, in order.
+    pub done: Vec<String>,
+    /// The effects that failed; the next pass tries them again.
+    pub failed: Vec<String>,
 }
 
 /// No run duties.
@@ -354,9 +362,9 @@ impl<'a> Pass<'a> {
                 fleet_root: &self.settings.fleet_root,
                 clock: decided.clock,
             };
-            let (done, failed) = self.ports.duties.act(conn, &ctx);
-            report.done.extend(done.into_iter().map(Done::Duty));
-            report.failed.extend(failed);
+            let duty = self.ports.duties.act(conn, &ctx);
+            report.done.extend(duty.done.into_iter().map(Done::Duty));
+            report.failed.extend(duty.failed);
         }
         let kept = |pid, start| decided.may_stop.contains(&(pid, start));
         if let Err(e) = effects::forget_polite(&self.settings.fleet_root, kept) {

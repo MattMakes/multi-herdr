@@ -38,7 +38,7 @@ use rusqlite::{Connection, Transaction};
 
 use crate::fleetd::fleet_runtime::adapters::effects::{self, LaunchRecord};
 use crate::fleetd::fleet_runtime::application::ledger::{created, transition, Cause};
-use crate::fleetd::fleet_runtime::application::pass::{ActCtx, DutyCtx, RunDuties};
+use crate::fleetd::fleet_runtime::application::pass::{ActCtx, DutyCtx, DutyReport, RunDuties};
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 use crate::fleetd::ideas::application::needs_you::NeedsYouList;
 use crate::fleetd::task_execution::adapters::sqlite as attempts_store;
@@ -207,23 +207,27 @@ impl RunDuties for WatchdogDuties<'_> {
         respawn_number(a).is_some()
     }
 
-    fn act(&self, conn: &Connection, ctx: &ActCtx<'_>) -> (Vec<String>, Vec<String>) {
-        let mut done = Vec::new();
-        let mut failed = Vec::new();
+    fn act(&self, conn: &Connection, ctx: &ActCtx<'_>) -> DutyReport {
+        let mut report = DutyReport::default();
         let runs = match watchdog::active_runs(conn) {
             Ok(r) => r,
-            Err(e) => return (done, vec![format!("the active runs: {e:#}")]),
+            Err(e) => {
+                report.failed.push(format!("the active runs: {e:#}"));
+                return report;
+            }
         };
         for run in &runs {
             match self.respawn_run(conn, ctx, run) {
-                Ok(d) => done.extend(d),
-                Err(e) => failed.push(format!("the respawn of run {}: {e:#}", run.slug)),
+                Ok(d) => report.done.extend(d),
+                Err(e) => report
+                    .failed
+                    .push(format!("the respawn of run {}: {e:#}", run.slug)),
             }
             // The wake goes out after the respawn, so the mailbox of the
             // new orchestrator can take it; durable mail keeps it either way.
             self.effects.deliver(run);
         }
-        (done, failed)
+        report
     }
 }
 
