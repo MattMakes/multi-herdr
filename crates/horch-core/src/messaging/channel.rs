@@ -17,8 +17,6 @@ use anyhow::{anyhow, bail, Context, Result};
 use horch_platform::ipc::{LocalListener, LocalStream};
 use serde_json::{json, Value};
 
-use super::report::is_not_supported;
-
 const MAX_LINE_BYTES: usize = 64 * 1024;
 const DEFAULT_PROTOCOL_VERSION: &str = "2025-06-18";
 
@@ -137,6 +135,14 @@ fn request(socket: &Path, value: &Value, timeout: Duration) -> std::result::Resu
     } else {
         Err(SendError::NotDelivered(anyhow!(answer.to_owned())))
     }
+}
+
+/// Whether `error` is the [`horch_platform::NotSupported`] of a host
+/// without local sockets.
+fn is_not_supported(error: &std::io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|inner| inner.is::<horch_platform::NotSupported>())
 }
 
 /// The refusal of a host without Unix sockets.

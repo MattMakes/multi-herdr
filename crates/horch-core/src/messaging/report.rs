@@ -217,7 +217,8 @@ impl Drop for Server {
     }
 }
 
-/// On a host without local sockets it refuses with the error of today.
+/// On a host without local sockets it refuses with
+/// "the report socket needs a Unix host".
 pub fn send(path: &Path, request: &Request) -> Result<()> {
     let mut stream = match LocalStream::connect(path) {
         Ok(stream) => stream,
