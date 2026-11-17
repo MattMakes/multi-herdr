@@ -4,10 +4,17 @@
 //! on at their cursors after a restart").
 //!
 //! Each test runs the `horch` binary with a real fleetd in stand-in mode
-//! (`docs/tickets/fleetd-p1/MAP.md`, Q8) on the ledger of its harness. The
-//! test is each worker: it runs `horch ledger claim`, `finish` and `done`
-//! as the worker, and a `sleep` child of the test is the agent of the
-//! worker. Only fleetd sees that an agent died.
+//! (`docs/tickets/fleetd-p1/MAP.md`, Q8) on the ledger of its harness. A
+//! `sleep` child of the test is the agent of each worker, and only fleetd
+//! sees that an agent died. The tests make their ledger rows in 2 ways:
+//!
+//! - The RR-4 and RR-7 tests run a plan of 3 tasks. The test is each
+//!   worker: it runs `horch ledger claim`, `finish` and `done` as the
+//!   worker.
+//! - The FM-11 test claims 1 task with `horch ledger claim`, then writes the
+//!   supervisor process of the worker and the agent of the orchestrator in
+//!   the ledger. The scan test writes its 10,000 rows of each kind in the
+//!   ledger directly, with no `horch` command.
 
 #![cfg(unix)]
 
@@ -421,9 +428,16 @@ fn live_attempts(h: &Harness) -> i64 {
         .unwrap()
 }
 
-/// The end state of 1 task: its seq, status and count of attempts, and the
-/// state and outcome of each of its attempt rows, in order.
-type TaskOutcome = (i64, String, i64, Vec<(String, Option<String>)>);
+/// The end state of 1 task.
+#[derive(Debug, PartialEq, Eq)]
+struct TaskOutcome {
+    seq: i64,
+    status: String,
+    /// The `attempts` count of the task row.
+    attempts: i64,
+    /// The state and the outcome of each attempt row of the task, in order.
+    ends: Vec<(String, Option<String>)>,
+}
 
 fn outcomes(h: &Harness) -> Vec<TaskOutcome> {
     let store = Store::open(&db(h)).unwrap();
@@ -446,7 +460,12 @@ fn outcomes(h: &Harness) -> Vec<TaskOutcome> {
                 .unwrap()
                 .collect::<Result<_, _>>()
                 .unwrap();
-            (seq, status, attempts, ends)
+            TaskOutcome {
+                seq,
+                status,
+                attempts,
+                ends,
+            }
         })
         .collect()
 }
@@ -512,7 +531,12 @@ fn plan_done() -> Vec<TaskOutcome> {
             .iter()
             .map(|o| ("ended".to_string(), Some((*o).to_string())))
             .collect();
-        (seq, "done".to_string(), ends.len() as i64, attempts)
+        TaskOutcome {
+            seq,
+            status: "done".to_string(),
+            attempts: ends.len() as i64,
+            ends: attempts,
+        }
     };
     vec![
         done(1, &["done"]),
@@ -714,16 +738,26 @@ fn rr7_fleetd_killed_mid_run_ends_as_a_clean_run() {
 struct Polite(Child);
 
 impl Polite {
+    /// Start it, and wait until its shell has set the trap of the polite
+    /// stop: a stop before the trap would end it with no line.
     fn start(file: &Path) -> Polite {
-        Polite(
+        let ready = file.with_extension("ready");
+        let polite = Polite(
             Command::new("/bin/sh")
                 .arg("-c")
-                .arg(r#"trap 'echo stop >> "$STOPS"; exit 0' TERM; while :; do sleep 0.1; done"#)
+                .arg(
+                    r#"trap 'echo stop >> "$STOPS"; exit 0' TERM; : > "$READY"; while :; do sleep 0.1; done"#,
+                )
                 .env("STOPS", file)
+                .env("READY", &ready)
                 .process_group(0)
                 .spawn()
                 .unwrap(),
-        )
+        );
+        wait_until("the polite process set its trap", 30, || {
+            ready.exists().then_some(())
+        });
+        polite
     }
 
     fn exited(&mut self) -> bool {
@@ -756,14 +790,64 @@ fn transitions(h: &Harness, entity: &str, id: &str, from: &str, to: &str) -> i64
         .unwrap()
 }
 
+/// The attempts of orchestrators: the respawns, which have no task
+/// (MAP.md, Q6).
+fn orchestrator_attempts(h: &Harness) -> Vec<String> {
+    let store = Store::open(&db(h)).unwrap();
+    let mut stmt = store
+        .conn()
+        .prepare("SELECT id FROM attempts WHERE task_id IS NULL ORDER BY id")
+        .unwrap();
+    let ids = stmt
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    ids
+}
+
+/// The launches of an orchestrator respawn: each `pane run` in the fake
+/// herdr of a command with `HORCH_ORCHESTRATOR_RESPAWN`.
+fn respawn_launches(h: &Harness) -> usize {
+    h.calls_of("herdr")
+        .iter()
+        .filter(|c| c["argv"][0] == "pane" && c["argv"][1] == "run")
+        .filter(|c| {
+            c["argv"][3]
+                .as_str()
+                .is_some_and(|cmd| cmd.contains("HORCH_ORCHESTRATOR_RESPAWN"))
+        })
+        .count()
+}
+
+/// The harness of the FM-11 test: the fake herdr has the workspace `w1`,
+/// and each `horch` command runs in it, so the run records `w1` as the
+/// workspace of its orchestrator.
+fn fleet_world(name: &str) -> Harness {
+    let mut h = world(name, FAST_PASSES);
+    let quota = horch_e2e::harness::fixtures().join("quota/all-ok.json");
+    h.set("HORCH_QUOTA_FILE", quota.to_string_lossy());
+    h.set("HORCH_WORKSPACE_ID", "w1");
+    let mut create = Command::new(h.bin.join("herdr"));
+    h.seal(&mut create);
+    let o = create
+        .args(["workspace", "create", "--label", name])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", text(&o));
+    h
+}
+
 /// FM-11: fleetd dies after the commit of part 2 and before its effects.
 /// The pass ended the attempt of a dead agent and queued its task again,
-/// but did not stop the supervisor process of the worker. The next fleetd
-/// stops that process once, and does not end the attempt or queue the task
-/// a second time.
+/// and wrote the respawn of a dead orchestrator as an attempt in
+/// `launching`. It did not stop the supervisor process of the worker and
+/// did not launch the orchestrator. The next fleetd does each effect once:
+/// 1 stop of the supervisor and 1 launch of the orchestrator. It does not
+/// end the attempt, queue the task or write a respawn a second time.
 #[test]
 fn fm11_fleetd_aborted_after_the_commit_does_each_effect_once_on_restart() {
-    let h = world("p1-fm11", FAST_PASSES);
+    let h = fleet_world("p1-fm11");
     plan(&h, 1);
     let mut w = worker(&h);
     assert_eq!(claim(&h, &w), 1);
@@ -771,21 +855,36 @@ fn fm11_fleetd_aborted_after_the_commit_does_each_effect_once_on_restart() {
     let mut supervisor = Polite::start(&stops);
     let pid = supervisor.0.id();
     let start = procid::start_time(pid).expect("the start time of the supervisor") as i64;
-    Store::open(&db(&h))
-        .unwrap()
+    let mut gone = Agent::start();
+    let orch_pid = gone.pid();
+    let orch_start = procid::start_time(orch_pid).expect("the start time of the agent") as i64;
+    gone.kill();
+    let store = Store::open(&db(&h)).unwrap();
+    store
         .conn()
         .execute(
             "UPDATE workers SET supervisor_pid = ?2, supervisor_started = ?3 WHERE worker_id = ?1",
-            (w.id, pid, start),
+            (&w.id, pid, start),
         )
         .unwrap();
-    let (task, attempt): (String, String) = Store::open(&db(&h))
-        .unwrap()
+    // The orchestrator of the run registered, and its agent is gone.
+    store
         .conn()
-        .query_row("SELECT task_id, id FROM attempts", [], |r| {
-            Ok((r.get(0)?, r.get(1)?))
-        })
+        .execute(
+            "UPDATE workers SET agent_pid = ?1, agent_started = ?2
+             WHERE worker_id = (SELECT orchestrator_worker_id FROM runs)",
+            (orch_pid, orch_start),
+        )
         .unwrap();
+    let (task, attempt): (String, String) = store
+        .conn()
+        .query_row(
+            "SELECT task_id, id FROM attempts WHERE task_id IS NOT NULL",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    drop(store);
     w.agent.kill();
 
     let mut fleetds = Fleetds::new(&h);
@@ -808,21 +907,37 @@ fn fm11_fleetd_aborted_after_the_commit_does_each_effect_once_on_restart() {
         ("queued".to_string(), 1),
         "the pass committed the end of the attempt and the requeue before it died"
     );
+    let respawn = orchestrator_attempts(&h);
+    assert_eq!(
+        respawn.len(),
+        1,
+        "the pass committed 1 respawn before it died"
+    );
     std::thread::sleep(Duration::from_millis(500));
     assert_eq!(lines(&stops), 0, "no stop before the restart");
     assert!(
         !supervisor.exited(),
         "the supervisor runs until the restart"
     );
+    assert_eq!(respawn_launches(&h), 0, "no launch before the restart");
 
     let fleetd = start_fleetd(&h, &mut fleetds, None);
     wait_until("the restarted fleetd stops the supervisor", 30, || {
         supervisor.exited().then_some(())
     });
+    wait_until("the restarted fleetd launches the respawn", 30, || {
+        (respawn_launches(&h) > 0).then_some(())
+    });
     for _ in 0..3 {
         after_a_whole_pass(&h, fleetd);
     }
     assert_eq!(lines(&stops), 1, "1 stop of the supervisor");
+    assert_eq!(respawn_launches(&h), 1, "1 launch of the respawn");
+    assert_eq!(
+        orchestrator_attempts(&h),
+        respawn,
+        "the respawn has 1 attempt"
+    );
     assert_eq!(
         transitions(&h, "attempt", &attempt, "live", "ended"),
         1,
@@ -834,7 +949,7 @@ fn fm11_fleetd_aborted_after_the_commit_does_each_effect_once_on_restart() {
         "the task was queued again once"
     );
     assert_eq!(
-        (task_status(&h, 1), outcomes(&h)[0].2),
+        (task_status(&h, 1), outcomes(&h)[0].attempts),
         ("queued".to_string(), 1),
         "the task waits for its next attempt"
     );
