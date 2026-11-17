@@ -2,9 +2,11 @@
 //! and while fleetd is down (`docs/specs/fleetd/design.md`, "Supervision,
 //! liveness and reconciliation", "One fleet clock for each timer").
 //!
-//! Each pass adds the awake time since the last pass, at most 2 pass
-//! periods. A sleep adds nothing, because the awake clock stops in it. A
-//! downtime of fleetd adds at most 2 pass periods. Each deadline of the
+//! Each pass adds the awake time since the last pass of the same process,
+//! at most 2 pass periods. So a late pass of a live fleetd adds at most 2
+//! pass periods. A sleep adds nothing, because the awake clock stops in
+//! it. A downtime of fleetd adds nothing: the new process has no reading,
+//! so its first tick adds 0. Each deadline of the
 //! fleet (a job time limit, a backoff, a start timeout) is a value on this
 //! clock.
 

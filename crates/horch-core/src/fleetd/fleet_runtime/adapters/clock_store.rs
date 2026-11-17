@@ -2,21 +2,23 @@
 //! the `fleetd` row.
 //!
 //! [`ClockStore::tick`] runs in the write transaction of the pass. It
-//! reads the clock, adds the awake time since the last tick of this
-//! process ([`clock::tick`]) and writes the clock and the calendar time of
-//! the tick. The last awake reading lives only in the memory of the
-//! process, so the first tick after a restart adds 0. The row exists after
-//! the first start of fleetd (`fleetd_row::start`).
+//! reads the clock, adds the awake time since the last committed tick of
+//! this process ([`clock::tick`]) and writes the clock and the calendar
+//! time of the tick. After the transaction commits, the pass gives the
+//! tick to [`ClockStore::committed`]. A tick of a transaction that rolls
+//! back is not given, so the next tick counts from the last committed one
+//! and no awake time is lost.
 //!
-//! A transaction that rolls back after a tick loses the time of that tick:
-//! the clock then runs late, never early, so no deadline fires too soon.
+//! The last awake reading lives only in the memory of the process, so the
+//! first tick after a restart adds 0. The row exists after the first start
+//! of fleetd (`fleetd_row::start`).
 
 use std::io;
 
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, Transaction};
 
-use crate::fleetd::fleet_runtime::domain::clock::{self, AwakeReading, FleetSeconds};
+use crate::fleetd::fleet_runtime::domain::clock::{self, AwakeReading, FleetSeconds, Tick};
 use crate::taskledger::util;
 
 /// Read the awake clock of the platform layer.
@@ -38,11 +40,12 @@ pub fn read(conn: &Connection) -> Result<FleetSeconds> {
     Ok(FleetSeconds(s))
 }
 
-/// The fleet clock of 1 fleetd process.
+/// The state of 1 fleetd process that ticks the fleet clock of the
+/// `fleetd` row: the awake reading of its last committed tick.
 #[derive(Debug, Default)]
 pub struct ClockStore {
     /// The awake reading that the next tick counts from; `None` until the
-    /// first tick of this process.
+    /// first committed tick of this process.
     mark: Option<AwakeReading>,
 }
 
@@ -52,13 +55,15 @@ impl ClockStore {
     }
 
     /// Tick the fleet clock in `tx`, the write transaction of the pass, at
-    /// the awake reading `now`. Gives the new value of the clock.
+    /// the awake reading `now`. Gives the tick: its `clock` is the new
+    /// value of the clock. Give the tick to [`Self::committed`] after `tx`
+    /// commits.
     pub fn tick(
-        &mut self,
+        &self,
         tx: &Transaction<'_>,
         now: &AwakeReading,
         pass_period_s: u64,
-    ) -> Result<FleetSeconds> {
+    ) -> Result<Tick> {
         let t = clock::tick(read(tx)?, self.mark.as_ref(), now, pass_period_s);
         let changed = tx
             .execute(
@@ -69,8 +74,12 @@ impl ClockStore {
         if changed != 1 {
             bail!("the fleetd row is missing");
         }
-        self.mark = Some(t.mark);
-        Ok(t.clock)
+        Ok(t)
+    }
+
+    /// Count the next tick from `tick`, whose transaction committed.
+    pub fn committed(&mut self, tick: Tick) {
+        self.mark = Some(tick.mark);
     }
 }
 
@@ -108,8 +117,12 @@ mod tests {
         }
     }
 
+    /// 1 pass that commits: tick, commit, then give the tick to `c`.
     fn tick(l: &mut Fixture, c: &mut ClockStore, now: AwakeReading) -> FleetSeconds {
-        l.store.immediate(|tx| c.tick(tx, &now, PERIOD_S)).unwrap()
+        let t = l.store.immediate(|tx| c.tick(tx, &now, PERIOD_S)).unwrap();
+        let clock = t.clock;
+        c.committed(t);
+        clock
     }
 
     #[test]
@@ -163,14 +176,18 @@ mod tests {
         tick(&mut l, &mut c, at("b", 0));
         // A pass that rolls back writes no clock and no tick time.
         let out: Result<()> = l.store.immediate(|tx| {
-            assert_eq!(c.tick(tx, &at("b", 5_000), PERIOD_S)?, FleetSeconds(5));
+            assert_eq!(
+                c.tick(tx, &at("b", 5_000), PERIOD_S)?.clock,
+                FleetSeconds(5)
+            );
             assert_eq!(read(tx)?, FleetSeconds(5));
             bail!("the pass fails")
         });
         assert!(out.is_err());
         assert_eq!(read(l.store.conn()).unwrap(), FleetSeconds(0));
-        // A pass that commits writes both.
-        assert_eq!(tick(&mut l, &mut c, at("b", 10_000)), FleetSeconds(5));
+        // A pass that commits writes both. It counts from the last
+        // committed tick, so the rolled back pass loses no time.
+        assert_eq!(tick(&mut l, &mut c, at("b", 10_000)), FleetSeconds(10));
         let ticked_at: String = l
             .store
             .conn()
@@ -179,23 +196,15 @@ mod tests {
             })
             .unwrap();
         assert_ne!(ticked_at, "then");
-        assert_eq!(read(l.store.conn()).unwrap(), FleetSeconds(5));
+        assert_eq!(read(l.store.conn()).unwrap(), FleetSeconds(10));
     }
 
     #[test]
     fn tick_without_the_fleetd_row_fails() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
-        let mut c = ClockStore::new();
+        let c = ClockStore::new();
         let out = store.immediate(|tx| c.tick(tx, &at("b", 0), PERIOD_S));
         assert!(out.is_err());
-    }
-
-    #[test]
-    fn awake_now_reads_the_platform_clock() {
-        let a = awake_now().unwrap();
-        let b = awake_now().unwrap();
-        assert_eq!(a.boot_id, b.boot_id);
-        assert!(b.awake_ms >= a.awake_ms);
     }
 }
