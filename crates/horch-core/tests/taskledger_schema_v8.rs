@@ -62,6 +62,16 @@ fn migrate(path: &Path) -> Connection {
     conn
 }
 
+/// A version 7 ledger, migrated: its folder (kept alive) and a connection
+/// with foreign keys on.
+fn migrated_version_7() -> (tempfile::TempDir, Connection) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ledger.sqlite3");
+    version_7_file(&path);
+    let conn = migrate(&path);
+    (dir, conn)
+}
+
 #[test]
 fn migrate_from_version_7_adds_the_phase_1_tables_and_keeps_rows() {
     let dir = tempfile::tempdir().unwrap();
@@ -188,7 +198,18 @@ fn migrate_from_version_7_adds_the_phase_1_tables_and_keeps_rows() {
             .unwrap();
         assert_eq!(got, n, "{table}");
     }
+    drop(conn);
 
+    // A second migration changes nothing and writes no backup.
+    let before = schema::backups_in(dir.path()).len();
+    let conn = migrate(&path);
+    assert_eq!(user_version(&conn), 8);
+    assert_eq!(schema::backups_in(dir.path()).len(), before);
+}
+
+#[test]
+fn events_v8_takes_a_transition_event_and_keeps_its_indexes() {
+    let (_dir, conn) = migrated_version_7();
     // A transition event: the kind `transition` is in the CHECK list, and a
     // new event takes the next id.
     conn.execute(
@@ -213,7 +234,11 @@ fn migrate_from_version_7_adds_the_phase_1_tables_and_keeps_rows() {
         )
         .unwrap();
     assert_eq!(indexes, 2);
+}
 
+#[test]
+fn fleetd_starts_empty_and_its_pid_start_fits_i64() {
+    let (_dir, conn) = migrated_version_7();
     // `fleetd` has no row: ticket 14 writes generation 1 at the first start.
     let rows: i64 = conn
         .query_row("SELECT count(*) FROM fleetd", [], |r| r.get(0))
@@ -238,7 +263,11 @@ fn migrate_from_version_7_adds_the_phase_1_tables_and_keeps_rows() {
         .is_err());
     conn.execute(fleetd, rusqlite::params![1, i64::MAX])
         .unwrap();
+}
 
+#[test]
+fn phase_1_check_lists_and_references_hold() {
+    let (_dir, conn) = migrated_version_7();
     // The other CHECK lists hold.
     let state = |s: &str| {
         conn.execute(
@@ -285,13 +314,6 @@ fn migrate_from_version_7_adds_the_phase_1_tables_and_keeps_rows() {
         [],
     )
     .unwrap();
-    drop(conn);
-
-    // A second migration changes nothing and writes no backup.
-    let before = schema::backups_in(dir.path()).len();
-    let conn = migrate(&path);
-    assert_eq!(user_version(&conn), 8);
-    assert_eq!(schema::backups_in(dir.path()).len(), before);
 }
 
 #[test]
@@ -377,10 +399,7 @@ fn development_build_does_not_migrate_the_shared_ledger() {
 
 #[test]
 fn live_worker_gets_1_live_attempt_and_an_ended_worker_gets_none() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("ledger.sqlite3");
-    version_7_file(&path);
-    let conn = migrate(&path);
+    let (_dir, conn) = migrated_version_7();
     type Row = (
         String,
         Option<String>,
@@ -436,10 +455,7 @@ fn live_worker_gets_1_live_attempt_and_an_ended_worker_gets_none() {
 
 #[test]
 fn jobs_one_active_refuses_a_second_queued_run_of_1_kind_and_subject() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("ledger.sqlite3");
-    version_7_file(&path);
-    let conn = migrate(&path);
+    let (_dir, conn) = migrated_version_7();
     let job = |run: i64, input: &str, state: &str, subject: &str| {
         conn.execute(
             "INSERT INTO jobs (kind, subject, input_key, run, state, time_limit_s, created_at)

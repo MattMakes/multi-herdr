@@ -494,52 +494,35 @@ CREATE INDEX session_records_by_slug ON session_records(slug);",
     )
 }
 
-/// Version 8: the Phase 1 tables of fleetd (docs/specs/fleetd/design.md,
-/// "Ledger"; docs/tickets/fleetd-p1/MAP.md, Q5 to Q7). `events` is built
-/// again, as in `v5`, so its kind list has `transition`, with the columns of
-/// a transition, null in each old row. Each live worker with a task gets 1
-/// live attempt, `<task id>/A<attempt>`. The `fleetd` row is written at
-/// the first start of fleetd.
-fn v8() -> String {
-    let old = "event_id, at, run_id, task_id, worker_id, actor, kind, text";
-    let events = events_table()
-        .replace("CREATE TABLE events (", "CREATE TABLE events_v8 (")
-        .replace(V1_EVENT_KIND, &EventKind::check("kind"))
-        .replace(
-            "\n    text TEXT NOT NULL DEFAULT ''\n);",
-            "\n    text TEXT NOT NULL DEFAULT '',
-    entity TEXT,
-    entity_id TEXT,
-    from_state TEXT,
-    to_state TEXT,
-    cause TEXT,
-    data_json TEXT\n);",
-        );
-    // The indexes go with the old table and are made again after the rename.
-    let (events, indexes) = events.split_once("\n\n").expect("events has indexes");
-    let live: Vec<String> = WorkerStatus::ALL
-        .iter()
-        .filter(|s| s.is_live())
-        .map(|s| format!("'{s}'"))
-        .collect();
+/// The comment at each `pid_start` column of version 8.
+const PID_START_TYPE: &str = "-- the design text says TEXT; INTEGER matches workers.agent_started and horch_platform::process::start_time";
+
+/// The `fleetd` table: 1 row, written at the first start of fleetd.
+fn fleetd_table() -> String {
     format!(
         "CREATE TABLE fleetd (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     generation INTEGER NOT NULL,
     pid INTEGER NOT NULL,
-    -- the design text says TEXT; INTEGER matches workers.agent_started and horch_platform::process::start_time
+    {PID_START_TYPE}
     pid_start INTEGER NOT NULL CHECK (typeof(pid_start) = 'integer'),
     started_at TEXT NOT NULL,
     fleet_clock_s INTEGER NOT NULL,
     clock_ticked_at TEXT NOT NULL
-);
-CREATE TABLE attempts (
+);"
+    )
+}
+
+/// The `attempts` table. `task_id` is null for an orchestrator attempt.
+fn attempts_table() -> String {
+    format!(
+        "CREATE TABLE attempts (
     id TEXT PRIMARY KEY,
     task_id TEXT REFERENCES tasks(task_id),
     worker_id TEXT NOT NULL REFERENCES workers(worker_id),
     mux_handle TEXT,
     pid INTEGER,
-    -- the design text says TEXT; INTEGER matches workers.agent_started and horch_platform::process::start_time
+    {PID_START_TYPE}
     pid_start INTEGER CHECK (pid_start IS NULL OR typeof(pid_start) = 'integer'),
     state TEXT NOT NULL CHECK (state IN ('launching', 'live', 'ended')),
     heartbeat_seq INTEGER,
@@ -547,8 +530,15 @@ CREATE TABLE attempts (
     ended_at TEXT,
     exit_code INTEGER,
     outcome TEXT
-);
-CREATE TABLE jobs (
+);"
+    )
+}
+
+/// The `jobs` table and its index: at most 1 run of 1 kind and 1 subject
+/// is queued or running.
+fn jobs_table() -> String {
+    format!(
+        "CREATE TABLE jobs (
     id INTEGER PRIMARY KEY,
     kind TEXT NOT NULL CHECK (kind IN ('task_check', 'fast_gate', 'full_gate', 'trial_merge',
         'bundle_build', 'rebase', 'rescue', 'fetch', 'push',
@@ -561,7 +551,7 @@ CREATE TABLE jobs (
     not_before INTEGER,
     state TEXT NOT NULL CHECK (state IN ('queued', 'running', 'passed', 'failed', 'abandoned')),
     pid INTEGER,
-    -- the design text says TEXT; INTEGER matches workers.agent_started and horch_platform::process::start_time
+    {PID_START_TYPE}
     pid_start INTEGER CHECK (pid_start IS NULL OR typeof(pid_start) = 'integer'),
     time_limit_s INTEGER NOT NULL,
     deadline INTEGER,
@@ -571,14 +561,24 @@ CREATE TABLE jobs (
     ended_at TEXT,
     UNIQUE (kind, subject, input_key, run)
 );
-CREATE UNIQUE INDEX jobs_one_active ON jobs (kind, subject) WHERE state IN ('queued', 'running');
-CREATE TABLE pass_cursors (
+CREATE UNIQUE INDEX jobs_one_active ON jobs (kind, subject) WHERE state IN ('queued', 'running');"
+    )
+}
+
+/// The `pass_cursors` table.
+fn pass_cursors_table() -> String {
+    "CREATE TABLE pass_cursors (
     kind TEXT PRIMARY KEY,
     after_key TEXT,
     lap_started_at TEXT NOT NULL,
     prev_lap_started_at TEXT
-);
-CREATE TABLE needs_you (
+);"
+    .to_string()
+}
+
+/// The `needs_you` table.
+fn needs_you_table() -> String {
+    "CREATE TABLE needs_you (
     key TEXT PRIMARY KEY,
     kind TEXT NOT NULL,
     entity TEXT NOT NULL,
@@ -587,19 +587,69 @@ CREATE TABLE needs_you (
     text TEXT NOT NULL,
     created_at TEXT NOT NULL,
     ended_at TEXT
-);
-{events}
+);"
+    .to_string()
+}
+
+/// `events` built again, as in `v5`, so its kind list has `transition`,
+/// with the columns of a transition, null in each old row. The indexes go
+/// with the old table and are made again after the rename.
+fn events_v8() -> String {
+    let old = "event_id, at, run_id, task_id, worker_id, actor, kind, text";
+    let table = events_table()
+        .replace("CREATE TABLE events (", "CREATE TABLE events_v8 (")
+        .replace(V1_EVENT_KIND, &EventKind::check("kind"))
+        .replace(
+            "\n    text TEXT NOT NULL DEFAULT ''\n);",
+            "\n    text TEXT NOT NULL DEFAULT '',
+    entity TEXT,
+    entity_id TEXT,
+    from_state TEXT,
+    to_state TEXT,
+    cause TEXT,
+    data_json TEXT\n);",
+        );
+    let (table, indexes) = table.split_once("\n\n").expect("events has indexes");
+    format!(
+        "{table}
 INSERT INTO events_v8 ({old}) SELECT {old} FROM events;
 DROP TABLE events;
 ALTER TABLE events_v8 RENAME TO events;
-{indexes}
-INSERT INTO attempts (id, task_id, worker_id, pid, pid_start, state, started_at)
+{indexes}"
+    )
+}
+
+/// 1 live attempt, `<task id>/A<attempt>`, for each live worker with a task.
+fn attempts_backfill() -> String {
+    let live: Vec<String> = WorkerStatus::ALL
+        .iter()
+        .filter(|s| s.is_live())
+        .map(|s| format!("'{s}'"))
+        .collect();
+    format!(
+        "INSERT INTO attempts (id, task_id, worker_id, pid, pid_start, state, started_at)
     SELECT task_id || '/A' || attempt, task_id, worker_id, agent_pid, agent_started, 'live',
         COALESCE(claimed_at, started_at, spawned_at)
     FROM workers
     WHERE status IN ({live}) AND task_id IS NOT NULL AND attempt IS NOT NULL;",
         live = live.join(", "),
     )
+}
+
+/// Version 8: the Phase 1 tables of fleetd (docs/specs/fleetd/design.md,
+/// "Ledger"; docs/tickets/fleetd-p1/MAP.md, Q5 to Q7), `events` with the
+/// columns of a transition, and the attempts of the live workers.
+fn v8() -> String {
+    [
+        fleetd_table(),
+        attempts_table(),
+        jobs_table(),
+        pass_cursors_table(),
+        needs_you_table(),
+        events_v8(),
+        attempts_backfill(),
+    ]
+    .join("\n")
 }
 
 /// Bring the database to [`VERSION`]. A file from a newer binary is refused:
