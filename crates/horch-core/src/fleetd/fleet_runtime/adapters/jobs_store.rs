@@ -4,6 +4,7 @@
 //! (`application::ledger`). Each other column is written here.
 
 use anyhow::{Context, Result};
+use rusqlite::types::Type;
 use rusqlite::{params, Connection, OptionalExtension, Row};
 
 use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
@@ -32,42 +33,36 @@ pub struct JobRow {
     pub ended_at: Option<String>,
 }
 
-const COLUMNS: &str = "id, kind, subject, repo, input_key, run, abandoned_runs, not_before,
-    state, pid, pid_start, time_limit_s, deadline, result_json, created_at, started_at, ended_at";
-
+/// The row `r`, read by column name.
 fn from_row(r: &Row<'_>) -> rusqlite::Result<JobRow> {
-    let word = |i: usize, w: String| {
-        rusqlite::Error::FromSqlConversionFailure(
-            i,
-            rusqlite::types::Type::Text,
-            format!("unknown word {w}").into(),
-        )
+    let word = |column: &str, w: String| {
+        rusqlite::Error::InvalidColumnType(0, format!("{column} = {w}"), Type::Text)
     };
-    let kind: String = r.get(1)?;
-    let state: String = r.get(8)?;
+    let kind: String = r.get("kind")?;
+    let state: String = r.get("state")?;
     Ok(JobRow {
-        id: r.get(0)?,
-        kind: Kind::parse(&kind).ok_or_else(|| word(1, kind))?,
-        subject: r.get(2)?,
-        repo: r.get(3)?,
-        input_key: r.get(4)?,
-        run: r.get(5)?,
-        abandoned_runs: r.get(6)?,
-        not_before: r.get::<_, Option<i64>>(7)?.map(FleetSeconds),
-        state: State::parse(&state).ok_or_else(|| word(8, state))?,
-        pid: r.get(9)?,
-        pid_start: r.get(10)?,
-        time_limit_s: r.get(11)?,
-        deadline: r.get::<_, Option<i64>>(12)?.map(FleetSeconds),
-        result_json: r.get(13)?,
-        created_at: r.get(14)?,
-        started_at: r.get(15)?,
-        ended_at: r.get(16)?,
+        id: r.get("id")?,
+        kind: Kind::parse(&kind).ok_or_else(|| word("kind", kind))?,
+        subject: r.get("subject")?,
+        repo: r.get("repo")?,
+        input_key: r.get("input_key")?,
+        run: r.get("run")?,
+        abandoned_runs: r.get("abandoned_runs")?,
+        not_before: r.get::<_, Option<i64>>("not_before")?.map(FleetSeconds),
+        state: State::parse(&state).ok_or_else(|| word("state", state))?,
+        pid: r.get("pid")?,
+        pid_start: r.get("pid_start")?,
+        time_limit_s: r.get("time_limit_s")?,
+        deadline: r.get::<_, Option<i64>>("deadline")?.map(FleetSeconds),
+        result_json: r.get("result_json")?,
+        created_at: r.get("created_at")?,
+        started_at: r.get("started_at")?,
+        ended_at: r.get("ended_at")?,
     })
 }
 
 fn rows(conn: &Connection, filter: &str, p: impl rusqlite::Params) -> Result<Vec<JobRow>> {
-    let sql = format!("SELECT {COLUMNS} FROM jobs {filter}");
+    let sql = format!("SELECT * FROM jobs {filter}");
     let mut stmt = conn.prepare(&sql)?;
     let out = stmt
         .query_map(p, from_row)?
@@ -76,7 +71,7 @@ fn rows(conn: &Connection, filter: &str, p: impl rusqlite::Params) -> Result<Vec
 }
 
 fn one(conn: &Connection, filter: &str, p: impl rusqlite::Params) -> Result<Option<JobRow>> {
-    let sql = format!("SELECT {COLUMNS} FROM jobs {filter}");
+    let sql = format!("SELECT * FROM jobs {filter}");
     let row = conn.query_row(&sql, p, from_row).optional();
     row.context("reading a jobs row")
 }
@@ -190,4 +185,48 @@ pub fn set_ended(conn: &Connection, id: i64, abandoned_runs: u64) -> Result<()> 
         params![id, util::now(), abandoned_runs],
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::taskledger::schema;
+
+    /// Each column gets a distinct value, so a column read into the wrong
+    /// field fails.
+    #[test]
+    fn each_column_goes_to_its_field() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        schema::migrate_to(&mut conn, schema::VERSION).unwrap();
+        conn.execute(
+            "INSERT INTO jobs (id, kind, subject, repo, input_key, run, abandoned_runs,
+                not_before, state, pid, pid_start, time_limit_s, deadline, result_json,
+                created_at, started_at, ended_at)
+             VALUES (7, 'push', 'F-1', '/repo', 'tips', 2, 3, 40, 'running', 5, 6, 600, 90,
+                '{}', 'c', 's', 'e')",
+            [],
+        )
+        .unwrap();
+        let row = get(&conn, 7).unwrap().unwrap();
+        let want = JobRow {
+            id: 7,
+            kind: Kind::Push,
+            subject: "F-1".into(),
+            repo: Some("/repo".into()),
+            input_key: "tips".into(),
+            run: 2,
+            abandoned_runs: 3,
+            not_before: Some(FleetSeconds(40)),
+            state: State::Running,
+            pid: Some(5),
+            pid_start: Some(6),
+            time_limit_s: 600,
+            deadline: Some(FleetSeconds(90)),
+            result_json: Some("{}".into()),
+            created_at: "c".into(),
+            started_at: Some("s".into()),
+            ended_at: Some("e".into()),
+        };
+        assert_eq!(row, want);
+    }
 }

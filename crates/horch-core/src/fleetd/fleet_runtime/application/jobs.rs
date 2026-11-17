@@ -42,29 +42,32 @@ use crate::fleetd::fleet_runtime::domain::jobs::{
 };
 use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
 use crate::fleetd::worker_profiles::application::ports::{LaunchSpec, ProcessHost};
-use crate::taskledger::finish::{self, land::CHECK_TIMEOUT};
+use crate::taskledger::finish::{self, land::CHECK_TIMEOUT, CodexSandbox};
 use crate::taskledger::model::Actor;
 use crate::taskledger::tasks;
+use crate::taskledger::workers::{self, Worker};
 use crate::vcs::network::{OTHER_BOUND, PUSH_BOUND};
 
 /// The needs-you list, as jobs use it. The ideas context implements it, so
 /// this context does not depend on ideas.
 pub trait NeedsYouItems: RecordRefusal {
-    /// Open the item `key` of `kind` about the row `entity_id` of `entity`,
-    /// with `text`, in `tx`.
-    fn open_item(
-        &self,
-        tx: &Connection,
-        key: &str,
-        kind: &str,
-        entity: Entity,
-        entity_id: &str,
-        text: &str,
-    ) -> Result<()>;
+    /// Open the item `item`, in `tx`.
+    fn open_item(&self, tx: &Connection, item: &NewItem<'_>) -> Result<()>;
 
     /// End the open item `key` as resolved, in `tx`. `false` when no open
     /// item has that key.
     fn resolve_item(&self, tx: &Connection, key: &str) -> Result<bool>;
+}
+
+/// A needs-you item to open: its key and kind, the row it is about, and
+/// its text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NewItem<'a> {
+    pub key: &'a str,
+    pub kind: &'a str,
+    pub entity: Entity,
+    pub entity_id: &'a str,
+    pub text: &'a str,
 }
 
 /// What each use case of jobs needs.
@@ -339,8 +342,14 @@ fn abandon(ctx: &JobCtx<'_>, tx: &Connection, row: &JobRow, clock: FleetSeconds)
                 input = row.input_key,
             );
             let id = row.id.to_string();
-            ctx.needs_you
-                .open_item(tx, &key, jobs::NEEDS_YOU_KIND, Entity::Job, &id, &text)
+            let item = NewItem {
+                key: &key,
+                kind: jobs::NEEDS_YOU_KIND,
+                entity: Entity::Job,
+                entity_id: &id,
+                text: &text,
+            };
+            ctx.needs_you.open_item(tx, &item)
         }
     }
 }
@@ -550,18 +559,20 @@ const RECORD_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 /// Phase 1 has an executor for `task_check` only. Each other kind ends
 /// `failed`, with no verdict, and the result "no executor before phase
 /// <n>". The time limit is the deadline of the row: the pass stops this
-/// process at it.
+/// process at it. `codex` gives the sandbox of the check of a Codex
+/// worker.
 pub fn run_job(
     ctx: &JobCtx<'_>,
     conn: &mut Connection,
     job_id: i64,
     me: u32,
+    codex: &CodexSandbox,
 ) -> Result<Option<Outcome>> {
     let Some(row) = wait_for_record(conn, job_id, me)? else {
         return Ok(None);
     };
     let outcome = match row.kind {
-        Kind::TaskCheck => task_check(conn, &row)?,
+        Kind::TaskCheck => task_check(conn, &row, codex)?,
         kind => jobs::no_executor(kind),
     };
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -599,9 +610,9 @@ fn wait_for_record(conn: &Connection, job_id: i64, me: u32) -> Result<Option<Job
 }
 
 /// The executor of `task_check`: the check command of the task, as
-/// `finish` reads it, in the worktree of the task. Its exit code is the
-/// verdict.
-fn task_check(conn: &Connection, row: &JobRow) -> Result<Outcome> {
+/// `finish` reads it, in the worktree of the task, with the rights of the
+/// worker of the task ([`check_command`]). Its exit code is the verdict.
+fn task_check(conn: &Connection, row: &JobRow, codex: &CodexSandbox) -> Result<Outcome> {
     let no_verdict = |text: String| Outcome {
         passed: false,
         verdict: false,
@@ -631,13 +642,17 @@ fn task_check(conn: &Connection, row: &JobRow) -> Result<Outcome> {
     if !dir.is_dir() {
         return Ok(no_verdict(format!("the worktree {} is missing", wt.path)));
     }
+    let Some(worker_id) = task.current_worker_id.as_deref() else {
+        return Ok(no_verdict(format!(
+            "{} has no worker, so the rights of its check are unknown",
+            task.short()
+        )));
+    };
+    let worker = workers::get(conn, worker_id)?;
+    let mut cmd = check_command(codex, &worker, dir, &check)?;
     // The check stays in the process group of this job process, so the
     // stop of the job at its deadline also stops the check.
-    let mut cmd = Command::new(horch_platform::shell::CHECK_SHELL);
-    cmd.arg("-c")
-        .arg(&check)
-        .current_dir(dir)
-        .stdin(Stdio::null());
+    cmd.current_dir(dir).stdin(Stdio::null());
     crate::runtime::process::scrub_child_env(&mut cmd);
     let status = match cmd.status() {
         Ok(s) => s,
@@ -648,4 +663,38 @@ fn task_check(conn: &Connection, row: &JobRow) -> Result<Outcome> {
         verdict: true,
         text: format!("`{check}` in {}: exit {:?}", wt.path, status.code()),
     })
+}
+
+/// The process that runs the check `check` in `dir`: the shell, or for a
+/// worker of a Codex pane the shell inside the sandbox of that pane, so the
+/// check runs with the rights of the worker that wrote the code, not with
+/// the rights of this job process (#181). It is the rule of
+/// `check_process` in `taskledger/finish/land.rs`: only the shell gets the
+/// TMPDIR of the pane, as `/tmp` is read-only in the sandbox.
+fn check_command(
+    codex: &CodexSandbox,
+    worker: &Worker,
+    dir: &Path,
+    check: &str,
+) -> Result<Command> {
+    let shell = horch_platform::shell::CHECK_SHELL;
+    let mut cmd = if codex.runs(worker) {
+        let role = worker.role.as_deref().unwrap_or(&worker.worker_id);
+        let tmpdir = crate::harness::codex::pane_tmpdir(&codex.state_root, role);
+        std::fs::create_dir_all(&tmpdir)
+            .with_context(|| format!("creating {}", tmpdir.display()))?;
+        let mut tmp_pair = std::ffi::OsString::from("TMPDIR=");
+        tmp_pair.push(&tmpdir);
+        let mut cmd = Command::new(&codex.bin);
+        cmd.args(crate::harness::codex::sandbox_args(&codex.state_root, dir))
+            .arg("/usr/bin/env")
+            .arg(tmp_pair)
+            .arg(shell)
+            .env_remove("TMPDIR");
+        cmd
+    } else {
+        Command::new(shell)
+    };
+    cmd.arg("-c").arg(check);
+    Ok(cmd)
 }

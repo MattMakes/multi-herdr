@@ -21,9 +21,11 @@ use horch_core::fleetd::fleet_runtime::domain::jobs::{Kind, State};
 use horch_core::fleetd::ideas::application::needs_you::{open_items, NeedsYouList};
 use horch_core::fleetd::worker_profiles::adapters::launcher::Launcher;
 use horch_core::fleetd::worker_profiles::application::ports::LaunchSpec;
+use horch_core::taskledger::finish::CodexSandbox;
 use horch_core::taskledger::model::Actor;
 use horch_core::taskledger::runs::{self, NewRun};
 use horch_core::taskledger::tasks::{self, NewTask};
+use horch_core::taskledger::workers::{self, NewWorker};
 use horch_core::taskledger::{schema, util};
 use rusqlite::{params, Connection, Transaction, TransactionBehavior};
 
@@ -173,8 +175,15 @@ impl World {
         jobs_store::active(&self.conn, kind, subject).unwrap()
     }
 
-    /// A task with the check `check` and a worktree folder.
+    /// A task with the check `check` and a worktree folder, held by a
+    /// worker of the Claude harness.
     fn task(&mut self, check: &str) -> String {
+        self.task_of(check, Some("claude"))
+    }
+
+    /// A task with the check `check` and a worktree folder, held by a
+    /// worker of `harness`, or by no worker.
+    fn task_of(&mut self, check: &str, harness: Option<&str>) -> String {
         let run = runs::create(
             &self.conn,
             Path::new("/repo"),
@@ -187,6 +196,21 @@ impl World {
         let mut new = NewTask::work("check", "check.md", "dev");
         new.land_check = Some(check.into());
         let task = tasks::add(&self.conn, &run, &new, Actor::Orchestrator).unwrap();
+        if let Some(harness) = harness {
+            let worker = NewWorker {
+                run_id: run.run_id.clone(),
+                persona: "dev".into(),
+                harness: Some(harness.into()),
+                ..Default::default()
+            };
+            let worker = workers::insert(&self.conn, &worker).unwrap();
+            self.conn
+                .execute(
+                    "UPDATE tasks SET current_worker_id = ?2 WHERE task_id = ?1",
+                    params![task.task_id, worker],
+                )
+                .unwrap();
+        }
         let wt = self.dir.path().join(format!("wt-{}", task.task_id));
         std::fs::create_dir_all(&wt).unwrap();
         self.conn
@@ -203,6 +227,17 @@ impl World {
     /// The job process of the run `id`: started as `true` through the
     /// launcher, then `run_job` in this process with the recorded pid.
     fn run_job(&mut self, runner: &mut JobRunner<'_>, id: i64, clock: i64) -> State {
+        self.run_job_in(runner, id, clock, &CodexSandbox::default())
+    }
+
+    /// [`World::run_job`] with the Codex sandbox `codex`.
+    fn run_job_in(
+        &mut self,
+        runner: &mut JobRunner<'_>,
+        id: i64,
+        clock: i64,
+        codex: &CodexSandbox,
+    ) -> State {
         self.start_due(runner, clock, "true", &[]);
         let me = self.row(id).pid.unwrap();
         let ctx = JobCtx {
@@ -210,7 +245,7 @@ impl World {
             config: &self.config,
             needs_you: &NeedsYouList,
         };
-        let written = jobs::run_job(&ctx, &mut self.conn, id, me).unwrap();
+        let written = jobs::run_job(&ctx, &mut self.conn, id, me, codex).unwrap();
         assert!(written.is_some(), "run_job wrote the result of job {id}");
         self.row(id).state
     }
@@ -459,4 +494,52 @@ fn kind_with_no_time_limit_is_not_queued() {
         "a fast_gate job has no time limit before phase 4"
     );
     assert_eq!(w.rows(), 0);
+}
+
+/// A Codex worker wrote the code that its check runs, so the check runs in
+/// the sandbox of its pane, as `finish` runs it (#181). A task with no
+/// worker gets no check.
+#[cfg(unix)]
+#[test]
+fn check_of_a_codex_worker_runs_in_its_sandbox() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut w = world();
+    let launcher = Launcher;
+    let mut runner = JobRunner::new(&launcher);
+    // A stand-in for `codex`: it records its args and runs nothing.
+    let args = w.dir.path().join("codex-args");
+    let bin = w.dir.path().join("codex");
+    let script = format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n", args.display());
+    std::fs::write(&bin, script).unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let codex = CodexSandbox {
+        bin,
+        state_root: w.dir.path().join("state"),
+        personas: Vec::new(),
+    };
+
+    let task = w.task_of("touch ran-outside", Some("codex"));
+    let id = new_id(w.queue(Kind::TaskCheck, &task, "tip1", 0));
+    assert_eq!(w.run_job_in(&mut runner, id, 0, &codex), State::Passed);
+    let wt = w.dir.path().join(format!("wt-{task}"));
+    let seen = std::fs::read_to_string(&args).expect("the check ran through codex");
+    let seen: Vec<&str> = seen.lines().collect();
+    assert_eq!(seen[0], "sandbox");
+    let dir = seen
+        .iter()
+        .position(|a| *a == "-C")
+        .expect("a project root");
+    assert_eq!(seen[dir + 1], wt.to_string_lossy());
+    assert_eq!(seen[seen.len() - 2..], ["-c", "touch ran-outside"]);
+    assert!(
+        !wt.join("ran-outside").exists(),
+        "no check ran outside the sandbox"
+    );
+
+    let orphan = w.task_of("true", None);
+    let id = new_id(w.queue(Kind::TaskCheck, &orphan, "tip1", 0));
+    assert_eq!(w.run_job_in(&mut runner, id, 0, &codex), State::Failed);
+    let o = outcome(&w.row(id)).unwrap();
+    assert!(!o.verdict);
+    assert!(o.text.contains("has no worker"), "{}", o.text);
 }

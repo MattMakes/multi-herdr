@@ -173,12 +173,26 @@ pub const KINDS: [KindRow; 14] = [
 ];
 
 impl Kind {
-    /// The row of the kind in [`KINDS`].
+    /// The row of the kind in [`KINDS`]. The match names each kind, so a
+    /// new kind does not compile without its row.
     pub fn row(self) -> &'static KindRow {
-        KINDS
-            .iter()
-            .find(|r| r.kind == self)
-            .expect("each kind has 1 row in KINDS")
+        let i = match self {
+            Kind::TaskCheck => 0,
+            Kind::FastGate => 1,
+            Kind::FullGate => 2,
+            Kind::TrialMerge => 3,
+            Kind::BundleBuild => 4,
+            Kind::Rebase => 5,
+            Kind::Rescue => 6,
+            Kind::Fetch => 7,
+            Kind::Push => 8,
+            Kind::WorktreeAdd => 9,
+            Kind::WorktreeRemove => 10,
+            Kind::WorktreeList => 11,
+            Kind::DocsSync => 12,
+            Kind::Conformance => 13,
+        };
+        &KINDS[i]
     }
 
     /// The word of the `kind` column.
@@ -420,6 +434,7 @@ mod tests {
         ];
         assert_eq!(KINDS.map(|r| r.word), words);
         for row in &KINDS {
+            assert_eq!(row.kind.row(), row, "the row of each kind is its own");
             assert_eq!(Kind::parse(row.word), Some(row.kind));
             assert_eq!(row.kind.as_str(), row.word);
             assert!(!row.subject.is_empty() && !row.input_key.is_empty());
