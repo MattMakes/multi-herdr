@@ -270,32 +270,40 @@ fn the_board_commands_print_their_pinned_text() {
         events[0],
         "orchestrator run_created   Run r1 created. Run branch: fleet/r1."
     );
+    // OR-2: the orchestrator row of the new run moves to working, with its
+    // event and its cause.
+    assert!(
+        events[1].starts_with(
+            "orchestrator transition    agent_started: the orchestrator of run r1 runs in its pane; worker "
+        ) && events[1].ends_with(": spawning -> working"),
+        "{events:?}"
+    );
     assert_eq!(
-        events[1],
+        events[2],
         "orchestrator added         T-1 queued for dev: Ticket One."
     );
     assert_eq!(
-        events[3],
+        events[4],
         "orchestrator fallback      T-1 moves to fallback dev2: because"
     );
     assert_eq!(
-        events[4],
+        events[5],
         "orchestrator note          T-2 no longer waits for T-1."
     );
     // 1 undelivered wake stays in the outbox. The requeue brings the board
     // back to the same state, so it writes no second wake (TRF-21).
     assert!(
-        events[5].ends_with(
+        events[6].ends_with(
             "; it stays in the outbox: [horch] NOTE: Tasks can start: T-1, T-2. Spawn: dev x1, dev2 x1."
         ),
         "{events:?}"
     );
-    assert_eq!(events[6], "orchestrator cancelled     T-2 cancelled: nope");
+    assert_eq!(events[7], "orchestrator cancelled     T-2 cancelled: nope");
     assert_eq!(
-        events[7],
+        events[8],
         "orchestrator requeued      T-2 is queued again by the operator: again"
     );
-    assert_eq!(events.len(), 8, "{events:?}");
+    assert_eq!(events.len(), 9, "{events:?}");
     let close = w.run(&["ledger", "run", "close"]);
     assert_eq!(close.code, 1);
     assert!(
