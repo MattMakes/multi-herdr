@@ -265,7 +265,7 @@ pub fn launch_failed(conn: &Connection, worker_id: &str, reason: &str) -> Result
             worker_id,
             WorkerStatus::LaunchFailed.as_str(),
             Actor::Horch,
-            &format!("launch_failed: {reason}"),
+            util::Why::Rule(util::Rule::LaunchFailed, reason),
         )?;
         conn.execute(
             "UPDATE workers SET end_reason = ?2, ended_at = ?3 WHERE worker_id = ?1",
@@ -292,7 +292,10 @@ pub fn supervisor_started(
             worker_id,
             WorkerStatus::Starting.as_str(),
             Actor::Supervisor,
-            &format!("supervisor_started: horch worker runs as PID {pid}"),
+            util::Why::Rule(
+                util::Rule::SupervisorStarted,
+                &format!("horch worker runs as PID {pid}"),
+            ),
         )?;
         conn.execute(
             "UPDATE workers SET supervisor_pid = ?2, supervisor_started = ?3,
@@ -328,7 +331,10 @@ pub fn agent_started(
                 worker_id,
                 WorkerStatus::Claiming.as_str(),
                 Actor::Supervisor,
-                &format!("agent_started: the agent runs as PID {pid}"),
+                util::Why::Rule(
+                    util::Rule::AgentStarted,
+                    &format!("the agent runs as PID {pid}"),
+                ),
             )?;
         }
         conn.execute(
@@ -441,7 +447,7 @@ pub fn end(
     reason: &str,
     exit_code: Option<i32>,
 ) -> Result<bool> {
-    let cause = format!("end: {reason}");
+    let why = util::Why::Rule(util::Rule::End, reason);
     end_by(
         conn,
         worker_id,
@@ -449,7 +455,7 @@ pub fn end(
         reason,
         exit_code,
         Actor::Horch,
-        &cause,
+        why,
     )
 }
 
@@ -461,20 +467,13 @@ fn end_by(
     reason: &str,
     exit_code: Option<i32>,
     actor: Actor,
-    cause: &str,
+    why: util::Why<'_>,
 ) -> Result<bool> {
     util::atomic(conn, |conn| {
         if !is_live(conn, worker_id)? {
             return Ok(false);
         }
-        util::transition(
-            conn,
-            Entity::Worker,
-            worker_id,
-            status.as_str(),
-            actor,
-            cause,
-        )?;
+        util::transition(conn, Entity::Worker, worker_id, status.as_str(), actor, why)?;
         conn.execute(
             "UPDATE workers SET end_reason = COALESCE(end_reason, ?2),
                 exit_code = COALESCE(?3, exit_code), ended_at = COALESCE(ended_at, ?4)
@@ -507,7 +506,7 @@ pub fn hand_off(conn: &Connection, worker_id: &str, path: &str) -> Result<()> {
             worker_id,
             WorkerStatus::Incomplete.as_str(),
             Actor::Worker,
-            &format!("handoff: {path}"),
+            util::Why::Rule(util::Rule::Handoff, path),
         )?;
         conn.execute(
             "UPDATE workers SET end_reason = ?2, handoff_path = ?3,
@@ -608,11 +607,8 @@ pub fn sweep_preclaim(
                     "no horch worker checked in after the spawn",
                 ),
             };
-            let cause = format!(
-                "{}: {} ended {end_as}: {why}.",
-                EventKind::Exited.as_str(),
-                w.label()
-            );
+            let text = format!("{} ended {end_as}: {why}.", w.label());
+            let cause = util::Why::Event(EventKind::Exited, &text);
             if end_by(
                 conn,
                 &w.worker_id,
@@ -620,7 +616,7 @@ pub fn sweep_preclaim(
                 why,
                 None,
                 Actor::Watchdog,
-                &cause,
+                cause,
             )? {
                 out.push(Preclaim {
                     worker: w,

@@ -768,13 +768,13 @@ pub fn events(conn: &Connection, column: &str, id: &str) -> Result<Vec<EventLine
         _ => "worker_id",
     };
     let mut stmt = conn.prepare(&format!(
-        "SELECT at, actor, kind, text, cause FROM events WHERE {column} = ?1 ORDER BY event_id"
+        "SELECT at, actor, {kind}, {text} FROM events WHERE {column} = ?1 ORDER BY event_id",
+        kind = super::util::shown_kind_sql(),
+        text = super::util::shown_text_sql()
     ))?;
     let rows = stmt
         .query_map([id], |r| {
-            let (at, actor, kind, text, cause): (_, _, _, _, Option<String>) = r.try_into()?;
-            let (kind, text) = super::util::event_view(kind, text, cause.as_deref());
-            Ok(EventLine {
+            r.try_into().map(|(at, actor, kind, text)| EventLine {
                 at,
                 actor,
                 kind,

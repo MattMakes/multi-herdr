@@ -1064,9 +1064,9 @@ fn no_task(conn: &Connection, w: &Worker, persona: &str, run_id: &str) -> Result
         &w.worker_id,
         WorkerStatus::NoTask.as_str(),
         Actor::Worker,
-        &format!(
-            "{}: No task for persona {persona}.",
-            EventKind::NoTask.as_str()
+        util::Why::Event(
+            EventKind::NoTask,
+            &format!("No task for persona {persona}."),
         ),
     )?;
     conn.execute(
@@ -1121,19 +1121,19 @@ fn take_task(conn: &Connection, w: &Worker, task: &Task) -> Result<()> {
     if get(conn, &task.task_id)?.status != TaskStatus::Queued.as_str() {
         bail!("{} was claimed by another worker", task.short());
     }
-    let cause = format!(
-        "{}: {} claimed {} (attempt {attempt}).",
-        EventKind::Claimed.as_str(),
+    let text = format!(
+        "{} claimed {} (attempt {attempt}).",
         w.label(),
         task.short()
     );
+    let cause = util::Why::Event(EventKind::Claimed, &text);
     util::transition(
         conn,
         Entity::Task,
         &task.task_id,
         TaskStatus::Running.as_str(),
         Actor::Worker,
-        &cause,
+        cause,
     )?;
     let n = conn.execute(
         &format!(
@@ -1152,7 +1152,7 @@ fn take_task(conn: &Connection, w: &Worker, task: &Task) -> Result<()> {
         worker_id,
         WorkerStatus::Working.as_str(),
         Actor::Worker,
-        &cause,
+        cause,
     )?;
     conn.execute(
         "UPDATE workers SET task_id = ?2, attempt = ?3, claimed_at = ?4,
@@ -1255,12 +1255,7 @@ pub fn handoff(tx: &Transaction, worker_id: &str, path: &str) -> Result<HandedOf
         &task.task_id,
         TaskStatus::Queued.as_str(),
         Actor::Worker,
-        &format!(
-            "{}: {} handed off {}: it is queued again, first in line, with its worktree. Handoff: {path}",
-            EventKind::Requeued.as_str(),
-            w.label(),
-            task.short()
-        ),
+        util::Why::Event(EventKind::Requeued, &format!("{} handed off {}: it is queued again, first in line, with its worktree. Handoff: {path}", w.label(), task.short())),
     )?;
     tx.execute(
         &format!(
@@ -1382,10 +1377,9 @@ fn cancel_in(conn: &Connection, task: &Task, reason: &str) -> Result<Task> {
         &task.task_id,
         TaskStatus::Cancelled.as_str(),
         Actor::Orchestrator,
-        &format!(
-            "{}: {} cancelled: {reason}",
-            EventKind::Cancelled.as_str(),
-            task.short()
+        util::Why::Event(
+            EventKind::Cancelled,
+            &format!("{} cancelled: {reason}", task.short()),
         ),
     )?;
     conn.execute(
@@ -1449,14 +1443,9 @@ fn requeue_in(conn: &Connection, task: &Task, why: &str) -> Result<Requeue> {
     let used = task.attempts - task.attempt_floor;
     if used >= max {
         let held = format!("{used} attempts failed");
-        let cause = format!(
-            "{}: {} is held for the operator: {held} ({}). Release it with horch ledger requeue {} \"<reason>\".",
-            EventKind::Blocked.as_str(),
-            task.short(),
-            attempt_ends(conn, task)?.join("; "),
-            task.short()
-        );
-        util::transition(conn, Entity::Task, task_id, queued, Actor::Horch, &cause)?;
+        let text = format!("{} is held for the operator: {held} ({}). Release it with horch ledger requeue {} \"<reason>\".", task.short(), attempt_ends(conn, task)?.join("; "), task.short());
+        let cause = util::Why::Event(EventKind::Blocked, &text);
+        util::transition(conn, Entity::Task, task_id, queued, Actor::Horch, cause)?;
         conn.execute(
             "UPDATE tasks SET current_worker_id = NULL, held_reason = ?2, updated_at = ?3
              WHERE task_id = ?1",
@@ -1464,12 +1453,9 @@ fn requeue_in(conn: &Connection, task: &Task, why: &str) -> Result<Requeue> {
         )?;
         return Ok(Requeue::Held);
     }
-    let cause = format!(
-        "{}: {} is queued again, first in line: {why}",
-        EventKind::Requeued.as_str(),
-        task.short()
-    );
-    util::transition(conn, Entity::Task, task_id, queued, Actor::Horch, &cause)?;
+    let text = format!("{} is queued again, first in line: {why}", task.short());
+    let cause = util::Why::Event(EventKind::Requeued, &text);
+    util::transition(conn, Entity::Task, task_id, queued, Actor::Horch, cause)?;
     conn.execute(
         "UPDATE tasks SET current_worker_id = NULL, priority = priority - ?2, updated_at = ?3
          WHERE task_id = ?1",
@@ -1520,7 +1506,7 @@ fn requeue_by_operator_in(conn: &Connection, task: &Task, reason: &str) -> Resul
             &task.task_id,
             TaskStatus::Queued.as_str(),
             Actor::Orchestrator,
-            &format!("{}: {text}", EventKind::Requeued.as_str()),
+            util::Why::Event(EventKind::Requeued, &text),
         )?;
     } else {
         util::event(
