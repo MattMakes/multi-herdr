@@ -71,7 +71,7 @@ pub fn dependents_wake(t: &tasks::Task, dependents: &[tasks::Task]) -> Option<Wa
         (OutboxEvent::Held, text)
     } else {
         let text = format!(
-            "NOTE: {task} was cancelled. {} wait for it. Run horch ledger unblock {} --from {task}, or cancel them, or requeue {task}.",
+            "NOTE: {task} was cancelled. {} wait for it. Run horch ledger unblock {} --from {task}, or cancel them. {task} cannot run again: add its ticket again with horch ledger add.",
             names.join(", "),
             first.short()
         );

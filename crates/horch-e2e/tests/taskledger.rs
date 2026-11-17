@@ -3583,7 +3583,7 @@ fn requeue_refuses_a_task_that_is_neither_held_nor_cancelled() {
     let o = h.run(&["ledger", "requeue", "T-1", "why"]);
     assert!(!o.status.success());
     assert!(
-        text(&o).contains("only a held or cancelled task is requeued"),
+        text(&o).contains("only a held task is requeued"),
         "{}",
         text(&o)
     );

@@ -541,10 +541,7 @@ fn cancel_and_requeue_take_only_the_states_they_are_for() {
     let err = tasks::requeue_by_operator(s.conn(), &t, "again")
         .unwrap_err()
         .to_string();
-    assert_eq!(
-        err,
-        "T-1 is queued; only a held or cancelled task is requeued"
-    );
+    assert_eq!(err, "T-1 is queued; only a held task is requeued");
 
     let cancelled = s
         .immediate(|tx| tasks::cancel(tx, &t, "no longer needed"))

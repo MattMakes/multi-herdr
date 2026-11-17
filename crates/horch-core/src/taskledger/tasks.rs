@@ -1610,15 +1610,16 @@ pub fn attempt_ends(conn: &Connection, task: &Task) -> Result<Vec<String>> {
         .collect())
 }
 
-/// `horch ledger requeue`: the operator wants a held or cancelled task
+/// `horch ledger requeue`: the operator wants a held (`escalated`) task
 /// worked on again. Its attempt history stays, and it gets the run's
-/// `max_attempts` anew. A cancelled task gets back the worktree its cancel
-/// abandoned; a parked task resumes on the worktree it parked with.
+/// `max_attempts` anew. A parked task resumes on the worktree it parked
+/// with. `cancelled` is terminal: the door of [`util::transition`] refuses
+/// the requeue of a cancelled task and records the refusal.
 pub fn requeue_by_operator(conn: &Connection, task: &Task, reason: &str) -> Result<Task> {
     let held = task.status == TaskStatus::Escalated.as_str();
     if !held && task.status != TaskStatus::Cancelled.as_str() {
         bail!(
-            "{} is {}; only a held or cancelled task is requeued",
+            "{} is {}; only a held task is requeued",
             task.short(),
             task.shown_status()
         );

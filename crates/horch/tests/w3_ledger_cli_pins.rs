@@ -258,7 +258,7 @@ fn the_board_commands_print_their_pinned_text() {
     assert_eq!(refused.code, 1);
     assert_eq!(
         refused.err,
-        "horch: T-1 is queued; only a held or cancelled task is requeued\n"
+        "horch: T-1 is queued; only a held task is requeued\n"
     );
     assert_show_of_t2(&w);
     assert_board_events(&untimed(&w.ok(&["ledger", "events"])));
