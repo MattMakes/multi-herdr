@@ -51,10 +51,7 @@ pub(crate) fn ensure_user_path(
     _dir: &Path,
     _prepend: &dyn Fn(&str, &str) -> Option<String>,
 ) -> Result<io::Result<bool>, NotSupported> {
-    Err(NotSupported {
-        concern: "rest",
-        os: std::env::consts::OS,
-    })
+    Err(NotSupported::new("rest", std::env::consts::OS))
 }
 
 pub(crate) fn path_help(dir: &Path) -> String {

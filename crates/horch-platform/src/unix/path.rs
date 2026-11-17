@@ -49,10 +49,7 @@ pub fn private_link_home_supported() -> bool {
 }
 
 fn no_junctions() -> NotSupported {
-    NotSupported {
-        concern: "path",
-        os: std::env::consts::OS,
-    }
+    NotSupported::new("path", std::env::consts::OS)
 }
 
 pub fn is_reparse_point(_meta: &Metadata) -> Result<bool, NotSupported> {

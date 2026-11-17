@@ -40,10 +40,7 @@ pub(crate) fn max_open_files() -> Result<Option<u64>, NotSupported> {
 /// Linux needs no such reading: `MemAvailable` of [`memory`] already counts the
 /// file cache that the kernel can free as available.
 pub(crate) fn kernel_free_memory() -> Result<Option<u64>, NotSupported> {
-    Err(NotSupported {
-        concern: "machine",
-        os: "linux",
-    })
+    Err(NotSupported::new("machine", "linux"))
 }
 
 /// `/proc/sys/fs/file-max`: the open file limit of the system.

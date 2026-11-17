@@ -8,10 +8,7 @@ use std::path::Path;
 use crate::machine::{Disk, Gpu, Memory, Run};
 use crate::NotSupported;
 
-const GAP: NotSupported = NotSupported {
-    concern: "machine",
-    os: "windows",
-};
+const GAP: NotSupported = NotSupported::new("machine", "windows");
 
 pub(crate) fn load_average() -> Result<Option<f64>, NotSupported> {
     Err(GAP)

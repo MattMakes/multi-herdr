@@ -18,10 +18,7 @@ use windows_sys::Win32::System::Threading::{
     OpenThread, ResumeThread, CREATE_SUSPENDED, THREAD_SUSPEND_RESUME,
 };
 
-const NOT_SUPPORTED: NotSupported = NotSupported {
-    concern: "group",
-    os: "windows",
-};
+const NOT_SUPPORTED: NotSupported = NotSupported::new("group", "windows");
 
 /// No process groups: the command is unchanged.
 pub(crate) fn new_group(_cmd: &mut Command) {}

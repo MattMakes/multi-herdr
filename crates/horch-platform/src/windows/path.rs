@@ -18,10 +18,7 @@ pub const GODOT_APP: Option<&str> = None;
 pub const GODOT_MONO_APP: Option<&str> = None;
 
 pub fn passwd_home() -> Result<Option<PathBuf>, NotSupported> {
-    Err(NotSupported {
-        concern: "path",
-        os: OS,
-    })
+    Err(NotSupported::new("path", OS))
 }
 
 pub fn symlink(target: &Path, at: &Path) -> io::Result<()> {
@@ -34,11 +31,7 @@ pub fn symlink(target: &Path, at: &Path) -> io::Result<()> {
 
 pub fn copy_symlink(from: &Path, _to: &Path) -> io::Result<()> {
     std::fs::read_link(from)?;
-    Err(NotSupported {
-        concern: "path",
-        os: OS,
-    }
-    .into())
+    Err(NotSupported::new("path", OS).into())
 }
 
 pub fn private_link_home_supported() -> bool {

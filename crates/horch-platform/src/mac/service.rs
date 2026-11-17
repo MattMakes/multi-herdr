@@ -76,10 +76,7 @@ pub fn restart_commands(spec: &Spec) -> Vec<Vec<OsString>> {
 }
 
 pub fn watchdog_ping() -> Result<io::Result<()>, NotSupported> {
-    Err(NotSupported {
-        concern: "service",
-        os: "macos",
-    })
+    Err(NotSupported::new("service", "macos"))
 }
 
 fn check_label(spec: &Spec) -> String {

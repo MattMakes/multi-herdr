@@ -10,6 +10,7 @@ pub(crate) mod machine;
 pub(crate) mod path;
 pub(crate) mod process;
 pub(crate) mod rest;
+pub(crate) mod sandbox;
 pub(crate) mod service;
 pub(crate) mod shell;
 pub(crate) mod signal;

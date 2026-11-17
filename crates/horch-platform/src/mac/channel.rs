@@ -31,10 +31,7 @@ pub(crate) fn accept(listener: &Listener) -> io::Result<(Stream, Peer)> {
 pub(crate) fn server_pid(stream: &Stream) -> Result<u32, NotSupported> {
     match peer_pid(stream) {
         Ok(pid) if pid != 0 => Ok(pid),
-        _ => Err(NotSupported {
-            concern: "channel",
-            os: "macos",
-        }),
+        _ => Err(NotSupported::new("channel", "macos")),
     }
 }
 

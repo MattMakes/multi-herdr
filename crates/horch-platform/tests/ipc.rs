@@ -200,13 +200,7 @@ fn local_sockets_are_not_supported_on_windows() {
         let gap = error
             .get_ref()
             .and_then(|e| e.downcast_ref::<NotSupported>());
-        assert_eq!(
-            gap,
-            Some(&NotSupported {
-                concern: "ipc",
-                os: "windows"
-            })
-        );
+        assert_eq!(gap, Some(&NotSupported::new("ipc", "windows")));
     }
 }
 

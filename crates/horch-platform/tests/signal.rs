@@ -59,10 +59,7 @@ fn signal_same_is_not_supported_on_windows() {
     child.wait().unwrap();
     assert_eq!(
         got,
-        Err(horch_platform::NotSupported {
-            concern: "signal",
-            os: "windows"
-        })
+        Err(horch_platform::NotSupported::new("signal", "windows"))
     );
 }
 
@@ -127,10 +124,7 @@ fn terminate_politely_is_not_supported_on_windows() {
     child.wait().unwrap();
     assert_eq!(
         got,
-        Err(horch_platform::NotSupported {
-            concern: "signal",
-            os: "windows"
-        })
+        Err(horch_platform::NotSupported::new("signal", "windows"))
     );
 }
 
@@ -216,10 +210,7 @@ fn handlers_are_not_supported_on_windows() {
     use std::sync::atomic::{AtomicBool, AtomicI32};
     static FLAG: AtomicBool = AtomicBool::new(false);
     static GROUP: AtomicI32 = AtomicI32::new(0);
-    let gap = horch_platform::NotSupported {
-        concern: "signal",
-        os: "windows",
-    };
+    let gap = horch_platform::NotSupported::new("signal", "windows");
     assert_eq!(
         signal::on_termination_set(&FLAG, &[signal::Termination::Terminate]),
         Err(gap)

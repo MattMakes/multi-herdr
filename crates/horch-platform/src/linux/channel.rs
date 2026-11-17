@@ -45,10 +45,7 @@ fn known_pid(pid: libc::pid_t) -> Result<u32, NotSupported> {
 }
 
 fn not_supported() -> NotSupported {
-    NotSupported {
-        concern: "channel",
-        os: "linux",
-    }
+    NotSupported::new("channel", "linux")
 }
 
 fn peer_credentials(stream: &Stream) -> io::Result<libc::ucred> {

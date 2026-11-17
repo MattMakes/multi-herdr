@@ -157,10 +157,7 @@ pub fn restart_commands(spec: &Spec) -> Vec<Vec<OsString>> {
 }
 
 pub fn watchdog_ping() -> Result<io::Result<()>, NotSupported> {
-    Err(NotSupported {
-        concern: "service",
-        os: "windows",
-    })
+    Err(NotSupported::new("service", "windows"))
 }
 
 pub fn os_user_home() -> io::Result<PathBuf> {

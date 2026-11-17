@@ -18,11 +18,7 @@ pub(crate) enum Stream {}
 pub(crate) enum Listener {}
 
 fn not_supported() -> io::Error {
-    NotSupported {
-        concern: "ipc",
-        os: "windows",
-    }
-    .into()
+    NotSupported::new("ipc", "windows").into()
 }
 
 pub(crate) fn connect(_: &Path) -> io::Result<Stream> {

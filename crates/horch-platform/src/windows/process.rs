@@ -14,10 +14,7 @@ use windows_sys::Win32::System::Threading::{
 const UNIX_EPOCH_TICKS: u64 = 116_444_736_000_000_000;
 const TICKS_PER_SEC: u64 = 10_000_000;
 
-const NOT_SUPPORTED: NotSupported = NotSupported {
-    concern: "process",
-    os: "windows",
-};
+const NOT_SUPPORTED: NotSupported = NotSupported::new("process", "windows");
 
 /// A process handle, closed on drop.
 pub(crate) struct Process(HANDLE);

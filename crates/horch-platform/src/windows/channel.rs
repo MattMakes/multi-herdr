@@ -341,10 +341,7 @@ pub(crate) fn server_pid(stream: &Stream) -> Result<u32, NotSupported> {
     // write.
     let read = unsafe { GetNamedPipeServerProcessId(stream.file().as_raw_handle(), &mut pid) };
     if read == 0 || pid == 0 {
-        return Err(NotSupported {
-            concern: "channel",
-            os: "windows",
-        });
+        return Err(NotSupported::new("channel", "windows"));
     }
     Ok(pid)
 }

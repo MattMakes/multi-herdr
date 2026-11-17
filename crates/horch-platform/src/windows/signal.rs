@@ -10,10 +10,7 @@ use windows_sys::Win32::System::Threading::{
     TerminateProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
 };
 
-const NOT_SUPPORTED: NotSupported = NotSupported {
-    concern: "signal",
-    os: "windows",
-};
+const NOT_SUPPORTED: NotSupported = NotSupported::new("signal", "windows");
 
 /// Open one handle that may both read the creation time and terminate, and
 /// terminate through it with exit code 1 only when the creation time is

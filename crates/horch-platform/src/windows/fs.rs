@@ -8,10 +8,7 @@ use std::path::Path;
 use crate::fs::OwnerAndMode;
 use crate::NotSupported;
 
-const NOT_SUPPORTED: NotSupported = NotSupported {
-    concern: "fs",
-    os: "windows",
-};
+const NOT_SUPPORTED: NotSupported = NotSupported::new("fs", "windows");
 
 pub(crate) fn set_mode(_path: &Path, _mode: u32) -> io::Result<()> {
     Err(NOT_SUPPORTED.into())
