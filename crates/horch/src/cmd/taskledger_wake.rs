@@ -11,15 +11,16 @@ use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger::model::{Actor, EventKind, OutboxEvent};
 use horch_core::taskledger::outbox::{self, Row, Scope, Wake, Written};
 use horch_core::taskledger::runs::{self, Run};
-use horch_core::taskledger::status;
 use horch_core::taskledger::stop::Panes;
 use horch_core::taskledger::tasks;
 use horch_core::taskledger::util::{self, About};
-use horch_core::taskledger::watchdog::{self, held_wake, reviews_in_wake, tagged};
+use horch_core::taskledger::wakes::{
+    self, dependents_wake, reviews_in_wake, settled_wake, startable_wake, tagged,
+};
 use horch_core::taskledger::workers;
 use horch_core::taskledger::Store;
 use horch_core::workspace::herdr::Herdr;
-use rusqlite::{Connection, Transaction};
+use rusqlite::Transaction;
 
 /// `HORCH_NO_WAKE=1` turns wakes off (tests that run no herdr). A wake is
 /// still written; its send fails, so the row stays undelivered.
@@ -168,32 +169,10 @@ fn send_row(
 }
 
 /// The settled wake line of `run`, or `None` while the run is not settled
-/// (C6: [`status::unsettled`], the rule `run close` uses).
+/// (C6: `status::unsettled`, the rule `run close` uses).
 #[cfg(test)]
 pub(crate) fn settled_note(store: &Store, run: &Run) -> anyhow::Result<Option<String>> {
-    settled_line(store.conn(), run)
-}
-
-fn settled_line(conn: &Connection, run: &Run) -> anyhow::Result<Option<String>> {
-    if !status::unsettled(conn, &run.run_id)?.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(format!(
-        "NOTE: All tasks are done. Run horch ledger status, verify the run, then close it with horch ledger run close --run {} and report to the operator.",
-        run.slug
-    )))
-}
-
-/// The settled wake of `run`: 1 row per settled board state. A repeat of
-/// the same settled state writes no new row.
-fn settled_wake(conn: &Connection, run: &Run) -> anyhow::Result<Option<Wake>> {
-    let Some(line) = settled_line(conn, run)? else {
-        return Ok(None);
-    };
-    let board = outbox::board(conn, &run.run_id, false)?;
-    Ok(Some(
-        Wake::new(OutboxEvent::Settled, "run", tagged(&line)).on_board(board),
-    ))
+    wakes::settled_line(store.conn(), run)
 }
 
 /// After a task finishes: wake the orchestrator when tasks can start that
@@ -223,32 +202,6 @@ pub fn stalled_dependents(
         let t = tasks::resolve(tx, &run.run_id, task)?;
         Ok(dependents_wake(&t, dependents))
     });
-}
-
-/// The wake of blocker `t` that `dependents` wait for, else `None`. The
-/// key holds the blocker's state ([`watchdog::blocker_state`]), not the
-/// board: the direct wake and the reconciled wake (TRF-51) are 1 row.
-fn dependents_wake(t: &tasks::Task, dependents: &[tasks::Task]) -> Option<Wake> {
-    let first = dependents.first()?;
-    let task = t.short();
-    let names: Vec<String> = dependents.iter().map(|t| t.short()).collect();
-    // A parked task is not cancelled: it resumes on a requeue (D16).
-    let (event, text) = if t.is_parked() {
-        let text = format!(
-            "NOTE: {} {}: {task} is parked unlanded. Run horch ledger requeue {task} to resume it.",
-            names.join(", "),
-            if names.len() == 1 { "waits" } else { "wait" }
-        );
-        (OutboxEvent::Held, text)
-    } else {
-        let text = format!(
-            "NOTE: {task} was cancelled. {} wait for it. Run horch ledger unblock {} --from {task}, or cancel them, or requeue {task}.",
-            names.join(", "),
-            first.short()
-        );
-        (OutboxEvent::Cancelled, text)
-    };
-    Some(Wake::new(event, task, tagged(&text)).on_board(watchdog::blocker_state(t)))
 }
 
 /// The last review of `parent` is in (C3): write its keyed `reviews-in`
@@ -305,59 +258,7 @@ fn tell_author(ctx: &RuntimeContext, role: &str, line: &str) -> anyhow::Result<(
 /// Wake the orchestrator once when the run has open tasks, none can start
 /// and no worker is live: nothing else would ever wake it (#119).
 pub fn nudge_stuck(ctx: &RuntimeContext, store: &Store, run: &Run) {
-    wake_as(ctx, store, run, |tx| {
-        let Some(text) = stuck_line(tx, run) else {
-            return Ok(None);
-        };
-        let line = tagged(&text);
-        // Once per stuck state: the same line is not sent twice in a row.
-        let prefix = format!("{}:{}:stuck", run.run_id, OutboxEvent::Held.as_str());
-        if outbox::last_text(tx, &run.run_id, &prefix)?.as_deref() == Some(line.as_str()) {
-            return Ok(None);
-        }
-        let board = outbox::board(tx, &run.run_id, true)?;
-        Ok(Some(
-            Wake::new(OutboxEvent::Held, "stuck", line).on_board(board),
-        ))
-    });
-}
-
-fn stuck_line(conn: &Connection, run: &Run) -> Option<String> {
-    let open: Vec<tasks::Task> = tasks::of_run(conn, &run.run_id)
-        .ok()?
-        .into_iter()
-        .filter(|t| matches!(t.status.as_str(), "queued" | "running" | "landing"))
-        .collect();
-    if open.is_empty() || !tasks::startable(conn, &run.run_id).ok()?.is_empty() {
-        return None;
-    }
-    let now = util::now();
-    let live = workers::of_run(conn, &run.run_id).ok()?.iter().any(|w| {
-        w.kind == "worker"
-            && w.status().is_ok_and(|s| s.is_live())
-            && !workers::is_stale(w, run.heartbeat_stale_s, &now)
-    });
-    if live {
-        return None;
-    }
-    let waits = tasks::waits(conn, &run.run_id).ok()?;
-    let parts: Vec<String> = open
-        .iter()
-        .map(|t| {
-            match (
-                &t.held_reason,
-                waits.iter().find(|(w, _)| w.task_id == t.task_id),
-            ) {
-                (Some(r), _) => format!("{} is held ({r})", t.short()),
-                (None, Some((_, w))) => format!("{}: {w}", t.short()),
-                (None, None) => format!("{} is {}", t.short(), t.status),
-            }
-        })
-        .collect();
-    Some(format!(
-        "NOTE: the run is stuck: {}. No worker is live and no task can start.",
-        parts.join("; ")
-    ))
+    wake_as(ctx, store, run, |tx| wakes::stuck_wake(tx, run));
 }
 
 /// The watchdog's ledger work after its checks: the pre-claim sweep, then
@@ -384,31 +285,8 @@ fn try_reconcile_lost(
     run: &Run,
     now: &str,
 ) -> anyhow::Result<()> {
-    // I-03: the settled wake, 1 row per settled board state.
-    wake_as(ctx, store, run, |tx| settled_wake(tx, run));
-    // I-04: a review round in while its author still waits.
-    for r in watchdog::reviews_waiting(store.conn(), run, now)? {
-        let role = r
-            .author
-            .role
-            .clone()
-            .unwrap_or_else(|| r.author.label().to_string());
-        wake_as(ctx, store, run, |tx| {
-            reviews_in_wake(tx, &r.parent, &role).map(Some)
-        });
-    }
-    // I-05, I-06: a cancelled or parked task that open tasks wait for.
-    for t in watchdog::stalled_blockers(store.conn(), run)? {
-        wake_as(ctx, store, run, |tx| {
-            let t = tasks::get(tx, &t.task_id)?;
-            Ok(dependents_wake(&t, &tasks::dependents(tx, &t.task_id)?))
-        });
-    }
-    // I-07: a task the attempt limit holds for the operator.
-    for t in watchdog::attempt_held(store.conn(), run)? {
-        wake_as(ctx, store, run, |tx| {
-            Ok(held_wake(tx, &tasks::get(tx, &t.task_id)?))
-        });
+    for wake in wakes::lost_wakes(store.conn(), run, now)? {
+        wake_as(ctx, store, run, |_| Ok(Some(wake)));
     }
     Ok(())
 }
@@ -417,57 +295,6 @@ fn try_reconcile_lost(
 /// board state, so a repeat in the same state writes no new row.
 pub fn nudge_startable(ctx: &RuntimeContext, store: &Store, run: &Run) {
     wake_as(ctx, store, run, |tx| startable_wake(tx, run));
-}
-
-fn startable_wake(conn: &Connection, run: &Run) -> anyhow::Result<Option<Wake>> {
-    let Some((ready, advice)) = spawn_advice(conn, run) else {
-        return Ok(None);
-    };
-    let board = outbox::board(conn, &run.run_id, true)?;
-    Ok(Some(
-        Wake::new(
-            OutboxEvent::Startable,
-            ready,
-            tagged(&format!("NOTE: {advice}")),
-        )
-        .on_board(board),
-    ))
-}
-
-/// The startable tasks ("T-1,T-2") and "Tasks can start: T-1. Spawn: opus
-/// x1." when workers should be spawned now, else `None`.
-fn spawn_advice(conn: &Connection, run: &Run) -> Option<(String, String)> {
-    let plan = tasks::plan_workers(conn, &run.run_id).ok()?;
-    let spawn: Vec<String> = plan
-        .iter()
-        .filter(|p| p.spawn > 0)
-        .map(|p| {
-            if p.replaces.is_empty() {
-                format!("{} x{}", p.persona, p.spawn)
-            } else {
-                format!(
-                    "{} x{} (--replaces {})",
-                    p.persona,
-                    p.spawn,
-                    p.replaces.join(", ")
-                )
-            }
-        })
-        .collect();
-    if spawn.is_empty() {
-        return None;
-    }
-    let ready: Vec<String> = tasks::startable(conn, &run.run_id)
-        .map(|v| v.iter().map(|t| t.short()).collect())
-        .unwrap_or_default();
-    Some((
-        ready.join(","),
-        format!(
-            "Tasks can start: {}. Spawn: {}.",
-            ready.join(", "),
-            spawn.join(", ")
-        ),
-    ))
 }
 
 /// The watchdog's pre-claim sweep (#190): end the rows no process stands
@@ -484,54 +311,21 @@ pub fn sweep_preclaim(ctx: &RuntimeContext, store: &mut Store, run: &Run) {
         };
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr);
     let panes = super::taskledger::HerdrPanes::new(ctx);
-    let mut ended = Vec::new();
-    let mut ended_ids = Vec::new();
-    for p in &swept {
-        let pane = p.worker.pane_id.as_deref();
-        match &p.ended {
-            Some(status) => {
-                if let Some(pane) = pane.filter(|id| panes.exists(id)) {
-                    if let Err(e) = panes.close(pane) {
-                        eprintln!("horch ledger watch: closing pane {pane} failed: {e:#}");
-                    }
-                }
-                ended.push(format!("{} ({status}: {})", p.worker.label(), p.note));
-                ended_ids.push(p.worker.worker_id.clone());
-            }
-            None => {
-                let state = pane
-                    .and_then(|id| herdr.pane_get(id).ok())
-                    .and_then(|p| p.agent_status)
-                    .unwrap_or_else(|| "unknown".into());
-                let text = format!(
-                    "NOTE: {}. Look at its pane {} (herdr status {state}): it may wait at a login, trust or quota prompt.",
-                    p.note,
-                    pane.unwrap_or("(none)")
-                );
-                let subject = format!("asked:{}", p.worker.worker_id);
-                wake_as(ctx, store, run, |_| {
-                    Ok(Some(Wake::new(
-                        OutboxEvent::UnclaimedSpawn,
-                        subject,
-                        tagged(&text),
-                    )))
-                });
+    for p in swept.iter().filter(|p| p.ended.is_some()) {
+        if let Some(pane) = p.worker.pane_id.as_deref().filter(|id| panes.exists(id)) {
+            if let Err(e) = panes.close(pane) {
+                eprintln!("horch ledger watch: closing pane {pane} failed: {e:#}");
             }
         }
     }
-    if !ended.is_empty() {
-        let names = ended.join(", ");
-        let subject = format!("ended:{}", ended_ids.join(","));
-        wake_as(ctx, store, run, |tx| {
-            let advice = spawn_advice(tx, run).map(|(_, a)| a).unwrap_or_default();
-            let text =
-                format!("NOTE: These workers ended before they claimed a task: {names}. {advice}");
-            Ok(Some(Wake::new(
-                OutboxEvent::UnclaimedSpawn,
-                subject,
-                tagged(text.trim_end()),
-            )))
-        });
+    let status = |w: &workers::Worker| {
+        w.pane_id
+            .as_deref()
+            .and_then(|id| herdr.pane_get(id).ok())
+            .and_then(|p| p.agent_status)
+    };
+    for wake in wakes::preclaim_wakes(store.conn(), run, &swept, &status) {
+        wake_as(ctx, store, run, |_| Ok(Some(wake)));
     }
 }
 
@@ -546,12 +340,13 @@ pub fn after_reap(
     let who = report.stop.role.as_deref().unwrap_or(worker_id);
     let persona = report.persona.as_deref();
     wake_as(ctx, store, run, |tx| {
-        Ok(Some(watchdog::reaped_wake(tx, who, worker_id, persona)))
+        Ok(Some(wakes::reaped_wake(tx, who, worker_id, persona)))
     });
 }
 
 #[cfg(test)]
 mod trf_15_tests {
+    use horch_core::taskledger::status;
     use std::path::Path;
 
     use horch_core::taskledger::runs::{self, NewRun};

@@ -22,9 +22,9 @@
 //! A note names the signals the watchdog could not read ("no timer format
 //! for harness pi; no transcript"), so `ledger show` explains a reap.
 //!
-//! This module decides and records: the checks, the rows of a reap and the
-//! wakes. The caller stops the processes and delivers the wakes. Both
-//! `horch ledger watch` and the pass of fleetd
+//! This module decides and records: the checks and the rows of a reap.
+//! The caller stops the processes and writes the wakes
+//! ([`super::wakes`]). Both `horch ledger watch` and the pass of fleetd
 //! (`fleetd/fleet_runtime/adapters/watchdog_duties.rs`) use these rules.
 
 use anyhow::Result;
@@ -1125,86 +1125,6 @@ pub fn review_round(conn: &Connection, parent_id: &str) -> Result<String> {
 
 // ─── the duties that the old loop and the pass of fleetd share ──────────
 
-/// The observer of a real machine: herdr for the pane, the disk for the
-/// transcript.
-pub struct HerdrObserver {
-    pub herdr: crate::workspace::herdr::Herdr,
-}
-
-impl Observer for HerdrObserver {
-    fn observe(&self, w: &Worker) -> Observation {
-        let pane = w
-            .pane_id
-            .as_deref()
-            .and_then(|p| self.herdr.pane_get(p).ok());
-        let screen = w
-            .pane_id
-            .as_deref()
-            .and_then(|p| self.herdr.pane_read(p, "visible").ok());
-        let (transcript_bytes, transcript_mtime) = transcript_facts(w);
-        Observation {
-            agent_alive: agent_alive(w),
-            herdr_status: pane.as_ref().and_then(|p| p.agent_status.clone()),
-            herdr_seq: pane.as_ref().and_then(|p| p.state_change_seq),
-            transcript_bytes,
-            transcript_mtime,
-            screen,
-        }
-    }
-}
-
-/// Whether the agent PID of `w` runs with its recorded start time. An old
-/// record has no start time: the PID alone counts.
-fn agent_alive(w: &Worker) -> bool {
-    match (w.agent_pid, w.agent_started) {
-        (Some(p), Some(s)) => crate::procid::is_same(p as u32, s as u64),
-        (Some(p), None) => crate::procid::alive(p as u32, None),
-        _ => false,
-    }
-}
-
-/// The size and the write time of the transcript of `w`, when it can be read.
-fn transcript_facts(w: &Worker) -> (Option<i64>, Option<String>) {
-    let meta = w
-        .transcript_path
-        .as_deref()
-        .and_then(|t| std::fs::metadata(t).ok());
-    (
-        meta.as_ref().map(|m| m.len() as i64),
-        meta.and_then(|m| m.modified().ok())
-            .map(|t| crate::clock::stamp(chrono::DateTime::<chrono::Utc>::from(t))),
-    )
-}
-
-/// The `[horch]` tag in front of a wake line, once.
-pub fn tagged(text: &str) -> String {
-    if text.starts_with("[horch]") {
-        text.to_string()
-    } else {
-        format!("[horch] {text}")
-    }
-}
-
-/// The wake of a verdict: ask a worker on its first stall for an update,
-/// and name the pane of a suspect. `None` for each other verdict.
-pub fn verdict_wake(c: &Checked) -> Option<Wake> {
-    let who = c.role.as_deref().unwrap_or(&c.worker_id);
-    let on = c.task.as_deref().unwrap_or("its task");
-    let text = match c.verdict.as_str() {
-        "no_progress" if c.first_stall => format!(
-            "NOTE: {who} on {on} shows no progress ({}). Ask it for an update: horch tell {who} \"[orchestrator] QUESTION: What is your status?\"",
-            c.note
-        ),
-        "suspect" => format!(
-            "NOTE: {who} on {on} may be stuck in pane {}: {}. The watchdog reaps it at the next check unless something else moves.",
-            c.pane_id.as_deref().unwrap_or("unknown"),
-            c.note
-        ),
-        _ => return None,
-    };
-    Some(Wake::new(OutboxEvent::Held, util::new_id(), tagged(&text)))
-}
-
 /// The rows of the reap of the stalled worker `worker_id` (section 5.4),
 /// in the caller's transaction: the worker ends `incomplete`, its task is
 /// queued again, first in line, and the reap wake is returned. The caller
@@ -1239,70 +1159,12 @@ pub fn reap_stalled(tx: &Connection, worker_id: &str, note: &str) -> Result<Opti
     let reaped = format!("{} reaped: {note}", w.label());
     util::event(tx, &about, Actor::Watchdog, EventKind::Reaped, &reaped)?;
     let who = w.role.as_deref().unwrap_or(worker_id);
-    Ok(Some(reaped_wake(tx, who, worker_id, persona.as_deref())))
-}
-
-/// The wake after the reap of `worker_id`: the held QUESTION of its task,
-/// else which persona to spawn, and how.
-pub fn reaped_wake(conn: &Connection, who: &str, worker_id: &str, persona: Option<&str>) -> Wake {
-    if let Some(wake) = held_question(conn, worker_id) {
-        return wake;
-    }
-    let persona = persona.unwrap_or("the same persona");
-    let reaped = format!(
-        "NOTE: {who} was reaped and its task is queued again. Spawn: horch spawn {persona} --replaces {worker_id}"
-    );
-    Wake::new(OutboxEvent::Reaped, worker_id, tagged(&reaped))
-}
-
-/// The `held` QUESTION wake of the task of `worker_id`, when the attempt
-/// limit holds it.
-pub fn held_question(conn: &Connection, worker_id: &str) -> Option<Wake> {
-    let w = workers::get(conn, worker_id).ok()?;
-    held_wake(conn, &tasks::get(conn, w.task_id.as_deref()?).ok()?)
-}
-
-/// The `held` QUESTION wake of `task`, held after too many attempts, else
-/// `None`. The key holds its attempts ([`held_state`]), not the board: the
-/// reap's wake and the reconciled wake (TRF-51) are 1 row.
-pub fn held_wake(conn: &Connection, task: &tasks::Task) -> Option<Wake> {
-    let held = task.held_reason.as_deref()?;
-    if task.is_parked() {
-        return None;
-    }
-    let ends = tasks::attempt_ends(conn, task).unwrap_or_default();
-    let question = format!(
-        "QUESTION: {t} is held: {held} ({}). Ask the operator: requeue it (horch ledger requeue {t} \"<reason>\"), change the ticket, or cancel it (horch ledger cancel {t} \"<reason>\"). Spawn no replacement.",
-        ends.join("; "),
-        t = task.short()
-    );
-    Some(
-        Wake::new(OutboxEvent::Held, task.task_id.clone(), tagged(&question))
-            .on_board(held_state(task)),
-    )
-}
-
-/// The `reviews_in` wake of `parent`, whose author `role` still waits.
-pub fn reviews_in_wake(conn: &Connection, parent: &tasks::Task, role: &str) -> Result<Wake> {
-    let p = parent.short();
-    let text = format!(
-        "NOTE: The reviews of {p} are in. Make sure {role} runs horch ledger finish: horch tell {role} \"[orchestrator] NOTE: The reviews of {p} are in. Run horch ledger finish.\""
-    );
-    Ok(Wake::new(OutboxEvent::ReviewsIn, p, tagged(&text))
-        .on_board(review_round(conn, &parent.task_id)?))
-}
-
-/// Give the respawned orchestrator row the harness and model of the row it
-/// replaces, when it has none (report 28 D-c): the respawn runs the same
-/// flavor. Returns the rows changed.
-pub fn inherit_harness(conn: &Connection, r: &super::orchestrator::Respawn) -> Result<usize> {
-    Ok(conn.execute(
-        "UPDATE workers SET
-             harness = coalesce(harness, (SELECT harness FROM workers WHERE worker_id = ?2)),
-             model = coalesce(model, (SELECT model FROM workers WHERE worker_id = ?2))
-         WHERE worker_id = ?1",
-        [&r.new_worker_id, &r.old_worker_id],
-    )?)
+    Ok(Some(super::wakes::reaped_wake(
+        tx,
+        who,
+        worker_id,
+        persona.as_deref(),
+    )))
 }
 
 #[cfg(test)]

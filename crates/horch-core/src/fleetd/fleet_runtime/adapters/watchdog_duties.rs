@@ -32,6 +32,7 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 
 use anyhow::Result;
 use rusqlite::{Connection, Transaction};
@@ -50,7 +51,8 @@ use crate::taskledger::model::Actor;
 use crate::taskledger::orchestrator::{self, Holder, Outcome, Probe, Respawn};
 use crate::taskledger::runs::{self, Run};
 use crate::taskledger::watchdog::{self, Observation, Observer, Sighting};
-use crate::taskledger::{outbox, util, workers};
+use crate::taskledger::workers::{self, Worker};
+use crate::taskledger::{outbox, util, wakes};
 
 /// The outcome of the attempt of a worker that the stall reap ends.
 pub const STALLED: &str = "stalled";
@@ -67,6 +69,11 @@ pub trait DutyEffects {
 
     /// Deliver the outbox rows of `run` that are not delivered.
     fn deliver(&self, run: &Run);
+
+    /// Retry the removal of each worktree whose cleanup failed
+    /// (`taskledger::finish::land::retry_cleanup`). Returns 1 note for each
+    /// worktree that it tried.
+    fn retry_cleanups(&self) -> Result<Vec<String>>;
 }
 
 /// What part 1 read about the orchestrator of 1 workspace.
@@ -112,6 +119,8 @@ pub struct WatchdogDuties<'a> {
     observer: &'a dyn Observer,
     probe: &'a dyn Probe,
     effects: &'a dyn DutyEffects,
+    /// The state folder of the mail, for the open questions of each worker.
+    state_root: PathBuf,
     state: RefCell<State>,
 }
 
@@ -120,11 +129,13 @@ impl<'a> WatchdogDuties<'a> {
         observer: &'a dyn Observer,
         probe: &'a dyn Probe,
         effects: &'a dyn DutyEffects,
+        state_root: PathBuf,
     ) -> WatchdogDuties<'a> {
         WatchdogDuties {
             observer,
             probe,
             effects,
+            state_root,
             state: RefCell::new(State::default()),
         }
     }
@@ -165,9 +176,9 @@ impl RunDuties for WatchdogDuties<'_> {
         state.sightings.retain(|run, _| active.contains(run));
         for run in &runs {
             let now = util::now();
-            let unclaimed = watchdog::unclaimed_spawns(conn, run, &now)?;
+            let waiting = waiting_preclaim(conn, run, &now)?;
             let due = watchdog::due_workers(conn, run, false, &now)?;
-            for w in due.iter().chain(unclaimed.iter().map(|u| &u.worker)) {
+            for w in due.iter().chain(&waiting) {
                 let o = self.observer.observe(w);
                 state.observed.insert(w.worker_id.clone(), o);
             }
@@ -187,13 +198,16 @@ impl RunDuties for WatchdogDuties<'_> {
         let mut reaped = BTreeSet::new();
         for run in watchdog::active_runs(tx)? {
             let now = util::now();
+            if let Some(workspace) = run.workspace_id.as_deref() {
+                workers::sync_questions(tx, &self.state_root, workspace)?;
+            }
             reaped.extend(check_workers(tx, &run, &state.observed, &now)?);
+            reaped.extend(sweep_preclaim(tx, &run, &state.observed)?);
+            write(tx, &run, wakes::stuck_wake(tx, &run)?)?;
             flag_unclaimed(tx, &run, &state.observed, &now)?;
             let seen = state.sightings.entry(run.run_id.clone()).or_default();
-            if let Some(wake) = watchdog::startable_rewake(tx, &run, &now, seen)? {
-                outbox::write(tx, &run.run_id, &wake)?;
-            }
-            wake_reviews_in(tx, &run, &now)?;
+            write(tx, &run, watchdog::startable_rewake(tx, &run, &now, seen)?)?;
+            write(tx, &run, wakes::lost_wakes(tx, &run, &now)?)?;
             let facts = Facts {
                 seen: &state.workspaces,
                 live: self.probe,
@@ -216,6 +230,10 @@ impl RunDuties for WatchdogDuties<'_> {
                 return report;
             }
         };
+        match self.effects.retry_cleanups() {
+            Ok(notes) => report.done.extend(notes),
+            Err(e) => report.failed.push(format!("the cleanup retry: {e:#}")),
+        }
         for run in &runs {
             match self.respawn_run(conn, ctx, run) {
                 Ok(d) => report.done.extend(d),
@@ -319,11 +337,9 @@ fn check_workers(
             reaped.push(c.worker_id.clone());
             wake
         } else {
-            watchdog::verdict_wake(&c)
+            wakes::verdict_wake(&c)
         };
-        if let Some(wake) = wake {
-            outbox::write(tx, &run.run_id, &wake)?;
-        }
+        write(tx, run, wake)?;
     }
     Ok(reaped)
 }
@@ -382,26 +398,68 @@ fn flag_unclaimed(
         let status = observed
             .get(&u.worker.worker_id)
             .and_then(|o| o.herdr_status.clone());
-        if let Some(wake) = watchdog::flag_unclaimed(tx, run, &u, status.as_deref())? {
-            outbox::write(tx, &run.run_id, &wake)?;
-        }
+        write(
+            tx,
+            run,
+            watchdog::flag_unclaimed(tx, run, &u, status.as_deref())?,
+        )?;
     }
     Ok(())
 }
 
-/// The wake of each review round of `run` that is in while its author
-/// waits.
-fn wake_reviews_in(tx: &Transaction<'_>, run: &Run, now: &str) -> Result<()> {
-    for r in watchdog::reviews_waiting(tx, run, now)? {
-        let role = r
-            .author
-            .role
-            .clone()
-            .unwrap_or_else(|| r.author.label().to_string());
-        let wake = watchdog::reviews_in_wake(tx, &r.parent, &role)?;
+/// Write each wake of `wakes` in the outbox of `run`. A wake whose key
+/// exists writes no row.
+fn write(
+    tx: &Transaction<'_>,
+    run: &Run,
+    wakes: impl IntoIterator<Item = outbox::Wake>,
+) -> Result<()> {
+    for wake in wakes {
         outbox::write(tx, &run.run_id, &wake)?;
     }
     Ok(())
+}
+
+/// The pre-claim workers of `run` that wait at `now` for
+/// [`watchdog::UNCLAIMED_AFTER_S`] or more: the flag of an unclaimed spawn
+/// and the question of the pre-claim sweep name the herdr status of their
+/// panes.
+fn waiting_preclaim(conn: &Connection, run: &Run, now: &str) -> Result<Vec<Worker>> {
+    Ok(workers::of_run(conn, &run.run_id)?
+        .into_iter()
+        .filter(|w| {
+            w.kind == "worker" && matches!(w.status.as_str(), "spawning" | "starting" | "claiming")
+        })
+        .filter(|w| {
+            w.spawned_at
+                .as_deref()
+                .or(w.started_at.as_deref())
+                .and_then(|t| util::seconds_between(t, now))
+                .is_some_and(|s| s >= watchdog::UNCLAIMED_AFTER_S)
+        })
+        .collect())
+}
+
+/// The pre-claim sweep of `run` (#190): a row that no process stands for
+/// ends, and a worker that does not claim gets 1 question. Returns the
+/// workers that ended: their processes and panes are stopped in part 3.
+fn sweep_preclaim(
+    tx: &Transaction<'_>,
+    run: &Run,
+    observed: &BTreeMap<String, Observation>,
+) -> Result<Vec<String>> {
+    let swept = workers::sweep_preclaim(tx, run, &workers::supervisor_alive)?;
+    let status = |w: &Worker| {
+        observed
+            .get(&w.worker_id)
+            .and_then(|o| o.herdr_status.clone())
+    };
+    write(tx, run, wakes::preclaim_wakes(tx, run, &swept, &status))?;
+    Ok(swept
+        .into_iter()
+        .filter(|p| p.ended.is_some())
+        .map(|p| p.worker.worker_id)
+        .collect())
 }
 
 /// The check of the orchestrator of `run`. A registered agent makes its
@@ -433,7 +491,7 @@ fn check_orchestrator(
             }
         }
         Outcome::Respawned(r) => {
-            watchdog::inherit_harness(tx, &r)?;
+            orchestrator::inherit_harness(tx, &r)?;
             let gone = format!("the orchestrator respawn {} replaces it", r.number);
             end_attempts(tx, &r.old_worker_id, GONE, &gone)?;
             end_attempts(tx, &r.new_worker_id, GONE, &gone)?;
@@ -461,6 +519,57 @@ fn check_orchestrator(
         Outcome::Nothing | Outcome::Waiting(_) => {}
     }
     Ok(())
+}
+
+/// The observer of a real machine: herdr for the pane, the disk for the
+/// transcript.
+pub struct HerdrObserver {
+    pub herdr: crate::workspace::herdr::Herdr,
+}
+
+impl Observer for HerdrObserver {
+    fn observe(&self, w: &Worker) -> Observation {
+        let pane = w
+            .pane_id
+            .as_deref()
+            .and_then(|p| self.herdr.pane_get(p).ok());
+        let screen = w
+            .pane_id
+            .as_deref()
+            .and_then(|p| self.herdr.pane_read(p, "visible").ok());
+        let (transcript_bytes, transcript_mtime) = transcript_facts(w);
+        Observation {
+            agent_alive: agent_alive(w),
+            herdr_status: pane.as_ref().and_then(|p| p.agent_status.clone()),
+            herdr_seq: pane.as_ref().and_then(|p| p.state_change_seq),
+            transcript_bytes,
+            transcript_mtime,
+            screen,
+        }
+    }
+}
+
+/// Whether the agent PID of `w` runs with its recorded start time. An old
+/// record has no start time: the PID alone counts.
+fn agent_alive(w: &Worker) -> bool {
+    match (w.agent_pid, w.agent_started) {
+        (Some(p), Some(s)) => crate::procid::is_same(p as u32, s as u64),
+        (Some(p), None) => crate::procid::alive(p as u32, None),
+        _ => false,
+    }
+}
+
+/// The size and the write time of the transcript of `w`, when it can be read.
+fn transcript_facts(w: &Worker) -> (Option<i64>, Option<String>) {
+    let meta = w
+        .transcript_path
+        .as_deref()
+        .and_then(|t| std::fs::metadata(t).ok());
+    (
+        meta.as_ref().map(|m| m.len() as i64),
+        meta.and_then(|m| m.modified().ok())
+            .map(|t| crate::clock::stamp(chrono::DateTime::<chrono::Utc>::from(t))),
+    )
 }
 
 #[cfg(unix)]
@@ -746,6 +855,7 @@ mod tests {
     struct Record {
         dir: PathBuf,
         delivered: RefCell<usize>,
+        cleanups: RefCell<usize>,
     }
 
     impl Record {
@@ -753,6 +863,7 @@ mod tests {
             Record {
                 dir: w.dir.clone(),
                 delivered: RefCell::new(0),
+                cleanups: RefCell::new(0),
             }
         }
 
@@ -786,6 +897,11 @@ mod tests {
 
         fn deliver(&self, _run: &Run) {
             *self.delivered.borrow_mut() += 1;
+        }
+
+        fn retry_cleanups(&self) -> Result<Vec<String>> {
+            *self.cleanups.borrow_mut() += 1;
+            Ok(Vec::new())
         }
     }
 
@@ -859,7 +975,7 @@ mod tests {
             )
             .unwrap();
         let effects = Record::new(&w);
-        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &effects);
+        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &effects, w.dir.clone());
 
         pass(&mut w, &duties, Faults::default());
         pass(&mut w, &duties, Faults::default());
@@ -885,7 +1001,7 @@ mod tests {
         let mut agent = Proc::sleep();
         let (task, worker) = w.stalled_task(agent.recorded());
         let effects = Record::new(&w);
-        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &effects);
+        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &effects, w.dir.clone());
 
         let report = pass(&mut w, &duties, Faults::default());
 
@@ -916,7 +1032,7 @@ mod tests {
         let mut w = world();
         let old = w.gone_orchestrator();
         let effects = Record::new(&w);
-        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &effects);
+        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &effects, w.dir.clone());
 
         let report = pass(&mut w, &duties, Faults::default());
 
@@ -943,7 +1059,7 @@ mod tests {
     fn pass_rewakes_startable_tasks_once_for_each_board_state() {
         let mut w = world();
         let effects = Record::new(&w);
-        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &effects);
+        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &effects, w.dir.clone());
         let startable = |w: &World, title: &str| {
             let new = NewTask::work(title, &format!("tickets/{title}.md"), "dev");
             tasks::add(&w.conn, &w.run, &new, Actor::Orchestrator).unwrap();
@@ -980,6 +1096,159 @@ mod tests {
         assert_eq!(rewakes(&w), 2, "a new board state: 1 more re-wake");
     }
 
+    /// The number of outbox rows whose text has `part`.
+    fn wakes_with(w: &World, part: &str) -> i64 {
+        w.conn
+            .query_row(
+                "SELECT count(*) FROM outbox WHERE instr(text, ?1) > 0",
+                [part],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn pass_ends_a_preclaim_worker_whose_supervisor_is_gone_and_stops_it() {
+        let mut w = world();
+        let mut agent = Proc::sleep();
+        let worker = w.worker(WorkerKind::Worker, "claiming", Some(agent.recorded()));
+        let gone = Proc::dead();
+        w.conn
+            .execute(
+                "UPDATE workers SET supervisor_pid = ?2, supervisor_started = ?3,
+                     last_checkin_at = ?4 WHERE worker_id = ?1",
+                params![
+                    worker,
+                    gone.pid,
+                    gone.pid_start.map(|s| s as i64),
+                    util::now()
+                ],
+            )
+            .unwrap();
+        let effects = Record::new(&w);
+        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &effects, w.dir.clone());
+
+        pass(&mut w, &duties, Faults::default());
+        pass(&mut w, &duties, Faults::default());
+
+        assert_eq!(w.status("workers", "worker_id", &worker), "no_task");
+        assert_eq!(wakes_with(&w, "ended before they claimed a task"), 1);
+        assert!(agent.wait_exit(), "part 3 stops the agent of the ended row");
+    }
+
+    #[test]
+    fn pass_asks_once_about_a_claiming_worker_that_the_sweep_and_the_flag_both_see() {
+        let mut w = world();
+        let worker = w.worker(WorkerKind::Worker, "claiming", None);
+        w.conn
+            .execute(
+                "UPDATE workers SET spawned_at = ?2, started_at = ?2, last_checkin_at = ?3
+                 WHERE worker_id = ?1",
+                params![worker, ago(900), util::now()],
+            )
+            .unwrap();
+        let effects = Record::new(&w);
+        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &effects, w.dir.clone());
+
+        pass(&mut w, &duties, Faults::default());
+        pass(&mut w, &duties, Faults::default());
+
+        assert_eq!(w.status("workers", "worker_id", &worker), "claiming");
+        assert_eq!(w.outbox(OutboxEvent::UnclaimedSpawn), 1, "1 question");
+        assert_eq!(wakes_with(&w, "herdr status idle"), 1);
+    }
+
+    #[test]
+    fn pass_wakes_a_stuck_run_once_and_asks_about_a_held_task() {
+        let mut w = world();
+        let new = NewTask::work("a", "tickets/a.md", "dev");
+        let task = tasks::add(&w.conn, &w.run, &new, Actor::Orchestrator).unwrap();
+        w.conn
+            .execute(
+                "UPDATE tasks SET held_reason = '3 attempts failed' WHERE task_id = ?1",
+                [&task.task_id],
+            )
+            .unwrap();
+        let effects = Record::new(&w);
+        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &effects, w.dir.clone());
+
+        pass(&mut w, &duties, Faults::default());
+        pass(&mut w, &duties, Faults::default());
+
+        assert_eq!(wakes_with(&w, "the run is stuck"), 1, "1 stuck wake");
+        assert_eq!(
+            wakes_with(&w, "is held: 3 attempts failed"),
+            1,
+            "1 held question"
+        );
+    }
+
+    #[test]
+    fn pass_writes_the_settled_wake_once() {
+        let mut w = world();
+        let effects = Record::new(&w);
+        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &effects, w.dir.clone());
+
+        pass(&mut w, &duties, Faults::default());
+        pass(&mut w, &duties, Faults::default());
+
+        assert_eq!(w.outbox(OutboxEvent::Settled), 1);
+    }
+
+    #[test]
+    fn pass_wakes_once_about_a_cancelled_task_that_open_tasks_wait_for() {
+        let mut w = world();
+        let first = NewTask::work("a", "tickets/a.md", "dev");
+        let first = tasks::add(&w.conn, &w.run, &first, Actor::Orchestrator).unwrap();
+        let mut second = NewTask::work("b", "tickets/b.md", "dev");
+        second.blocked_by = vec![first.task_id.clone()];
+        tasks::add(&w.conn, &w.run, &second, Actor::Orchestrator).unwrap();
+        tasks::cancel(&w.conn, &first, "drop").unwrap();
+        let effects = Record::new(&w);
+        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &effects, w.dir.clone());
+
+        pass(&mut w, &duties, Faults::default());
+        pass(&mut w, &duties, Faults::default());
+
+        assert_eq!(w.outbox(OutboxEvent::Cancelled), 1);
+    }
+
+    #[test]
+    fn pass_syncs_open_questions_so_a_waiting_worker_is_not_reaped() {
+        let mut w = world();
+        let agent = Proc::sleep();
+        let (_, worker) = w.stalled_task(agent.recorded());
+        w.conn
+            .execute(
+                "UPDATE workers SET role = 'worker-1' WHERE worker_id = ?1",
+                [&worker],
+            )
+            .unwrap();
+        let mail = crate::messaging::mail::Mail::under(&w.dir, "w1");
+        let id = mail.enqueue("worker-1", "QUESTION: choose?").unwrap();
+        mail.ack(&id).unwrap();
+        let effects = Record::new(&w);
+        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &effects, w.dir.clone());
+
+        pass(&mut w, &duties, Faults::default());
+
+        assert_eq!(w.status("workers", "worker_id", &worker), "working");
+        let waits = w.count("SELECT count(*) FROM worker_waits WHERE kind = 'question'");
+        assert_eq!(waits, 1);
+    }
+
+    #[test]
+    fn pass_retries_the_worktree_cleanups_once_each_pass() {
+        let mut w = world();
+        let effects = Record::new(&w);
+        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &effects, w.dir.clone());
+
+        pass(&mut w, &duties, Faults::default());
+        pass(&mut w, &duties, Faults::default());
+
+        assert_eq!(*effects.cleanups.borrow(), 2);
+    }
+
     /// Not a test of its own: the pass of a child process of a test. It
     /// runs only with [`CHILD`], and the fault ends it after the commit.
     #[test]
@@ -990,7 +1259,7 @@ mod tests {
         let mut w = reopen(Path::new(&dir));
         let faults = Faults::parse(std::env::var("HORCH_FAULT").ok().as_deref());
         let effects = Record::new(&w);
-        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &effects);
+        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &effects, w.dir.clone());
         pass(&mut w, &duties, faults);
     }
 
@@ -1037,7 +1306,7 @@ mod tests {
             "the crash came before the stop"
         );
 
-        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &effects);
+        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &effects, w.dir.clone());
         pass(&mut w, &duties, Faults::default());
 
         assert!(agent.wait_exit(), "the next pass stops the reaped agent");

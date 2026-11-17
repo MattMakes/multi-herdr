@@ -808,6 +808,19 @@ pub fn launch_failed(conn: &Connection, respawn: &Respawn, error: &str) -> Resul
     )
 }
 
+/// Give the respawned orchestrator row the harness and model of the row it
+/// replaces, when it has none (report 28 D-c): the respawn runs the same
+/// flavor. Returns the rows changed.
+pub fn inherit_harness(conn: &Connection, r: &Respawn) -> Result<usize> {
+    Ok(conn.execute(
+        "UPDATE workers SET
+             harness = coalesce(harness, (SELECT harness FROM workers WHERE worker_id = ?2)),
+             model = coalesce(model, (SELECT model FROM workers WHERE worker_id = ?2))
+         WHERE worker_id = ?1",
+        [&r.new_worker_id, &r.old_worker_id],
+    )?)
+}
+
 /// The status line of the respawns of `run_id`; `None` before the first
 /// respawn and before a stop.
 pub fn status_line(conn: &Connection, run_id: &str) -> Result<Option<String>> {

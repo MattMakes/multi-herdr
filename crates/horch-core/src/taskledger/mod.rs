@@ -22,6 +22,7 @@ pub mod tasks;
 pub mod timer;
 pub mod triage;
 pub mod util;
+pub mod wakes;
 pub mod watchdog;
 pub mod workers;
 pub mod worktree_ops;

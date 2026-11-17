@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use anyhow::{bail, ensure, Result};
 use horch_core::exeid::exe_identity;
+use horch_core::fleetd::fleet_runtime::adapters::watchdog_duties::{DutyEffects, HerdrObserver};
 use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger::finish::land;
 use horch_core::taskledger::git::Git;
@@ -77,7 +78,7 @@ fn pass(
         me,
         horch_core::procid::start_time(me),
     )?;
-    let live = watchdog::HerdrObserver {
+    let live = HerdrObserver {
         herdr: Herdr::with_bin(&ctx.bins.harness.herdr),
     };
     if let Some(workspace) = run.workspace_id.as_deref() {
@@ -111,14 +112,53 @@ fn pass(
         lock_dir: &orchestrator::lock_dir(&ctx.paths.ledger_db),
         herdr_open: &open,
     };
-    orchestrator_at(ctx, store, run, &now, &probe, &|r| {
-        super::recipes::respawn_orchestrator(ctx, r)
-    });
-    let git = Git::new(&ctx.bins.harness.git);
-    for (path, o) in land::retry_cleanup(store, &git)? {
-        eprintln!("horch ledger watch: cleanup of {path}: {}", o.note);
+    let effects = LiveEffects { ctx };
+    orchestrator_at(ctx, store, run, &now, &probe, &|r| effects.respawn(r));
+    for note in effects.retry_cleanups()? {
+        eprintln!("horch ledger watch: {note}");
     }
     Ok(checked)
+}
+
+/// The effects of the watchdog duties of the pass of fleetd on this machine
+/// (ticket 22): the respawn of an orchestrator, the delivery of the wakes
+/// and the cleanup retry. `horch fleetd` (ticket 23) gives them to
+/// `WatchdogDuties`, with `HerdrObserver` and `orchestrator::Os`.
+pub struct LiveEffects<'a> {
+    pub ctx: &'a RuntimeContext,
+}
+
+impl LiveEffects<'_> {
+    fn store(&self) -> Result<Store> {
+        horch_core::taskledger::open_existing(self.ctx)?
+            .ok_or_else(|| anyhow::anyhow!("the task ledger is gone"))
+    }
+}
+
+impl DutyEffects for LiveEffects<'_> {
+    fn respawn(&self, r: &orchestrator::Respawn) -> Result<()> {
+        super::recipes::respawn_orchestrator(self.ctx, r)
+    }
+
+    fn deliver(&self, run: &Run) {
+        let store = match self.store() {
+            Ok(s) => s,
+            Err(e) => return eprintln!("horch fleetd: the wake delivery failed: {e:#}"),
+        };
+        // 1 push budget for the wakes of this pass (#67, #177).
+        let _budget = horch_core::messaging::delivery::start_push_budget(
+            horch_core::messaging::delivery::done_push_budget(&self.ctx.settings.faults),
+        );
+        taskledger_wake::drain_run(self.ctx, &store, run, None);
+    }
+
+    fn retry_cleanups(&self) -> Result<Vec<String>> {
+        let git = Git::new(&self.ctx.bins.harness.git);
+        Ok(land::retry_cleanup(&mut self.store()?, &git)?
+            .into_iter()
+            .map(|(path, o)| format!("cleanup of {path}: {}", o.note))
+            .collect())
+    }
 }
 
 /// The board read of a pass at `now` (TRF-22, TRF-23, TRF-51): 1 re-wake
@@ -175,7 +215,7 @@ fn orchestrator_at(
     };
     match &checked.outcome {
         orchestrator::Outcome::Respawned(r) => {
-            if let Err(e) = watchdog::inherit_harness(store.conn(), r) {
+            if let Err(e) = orchestrator::inherit_harness(store.conn(), r) {
                 eprintln!("horch ledger watch: recording the respawn's harness failed: {e:#}");
             }
             if let Err(e) = launch(r) {
@@ -205,7 +245,7 @@ fn act_on(ctx: &RuntimeContext, store: &mut Store, run: &Run, c: &watchdog::Chec
         return reap_dead(ctx, store, run, c);
     }
     // A worker back to normal after a stall needs no wake.
-    if let Some(wake) = watchdog::verdict_wake(c) {
+    if let Some(wake) = horch_core::taskledger::wakes::verdict_wake(c) {
         taskledger_wake::wake_as(ctx, store, run, |_| Ok(Some(wake)));
     }
 }
@@ -512,8 +552,8 @@ fn start_detached(
 #[cfg(unix)]
 #[cfg(test)]
 mod tests {
+    use horch_core::fleetd::fleet_runtime::adapters::watchdog_duties::HerdrObserver as Live;
     use horch_core::taskledger::runs::{self, NewRun};
-    use horch_core::taskledger::watchdog::HerdrObserver as Live;
     use horch_core::taskledger::watchdog::{Observation, Observer};
     use horch_core::taskledger::workers::{self, NewWorker, Worker};
     use horch_core::taskledger::Store;
