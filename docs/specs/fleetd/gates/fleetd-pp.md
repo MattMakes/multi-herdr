@@ -6,17 +6,22 @@ of Phase P in "What a release does to a run in flight" is the test of PL-6.
 ## The commits
 
 - Before the move: `e4017980ff396e3a659762d4c34decfe2bf2a376` (`scripts/pl6/BASE`).
-- After the move: `7e2430e0` on `fleet/fleetd-build-T32-gate-of-phase-p-pl-2-and-pl-6-green-on-m`
-  (tip of `fleet/fleetd-build` `893159c0` plus the fix of the ipc test below).
+- Pre-fix: `893159c0`, the tip of `fleet/fleetd-build` before this ticket.
+- Gate: `7e2430e0`, the child of `893159c0` with the fix of the ipc test below. Each row of
+  this gate names the gate commit.
 
 ## No CI run exists
 
-No pull request exists for `fleet/fleetd-build`, so CI has no run of `BASE` or of the tip
-(`gh run list --branch fleet/fleetd-build` is empty on 2026-11-16). On the instruction of the
+No pull request exists for `fleet/fleetd-build`, so CI has no run of `BASE`, of the
+pre-fix commit or of the gate commit (`gh run list --branch fleet/fleetd-build` is empty on
+2026-11-16). On the instruction of the
 orchestrator:
 
 - Linux runs in Docker on this Mac (Linux aarch64), not in CI.
 - Windows is pending CI. A separate task gives the Windows proof when the pull request exists.
+
+A Linux or Windows row is green only with a CI run id of its OS. So the Linux row and the Windows
+row are not green yet, and the gate of Phase P is not complete until CI gives both.
 
 ## The rows
 
@@ -24,9 +29,9 @@ orchestrator:
 | --- | --- | --- | --- | --- |
 | PL-2 | `cargo test -p horch-core --test arch_scan` | `7e2430e0` | macOS, this Mac | green: 18 of 18 pass |
 | PL-6 on macOS | `scripts/pl6/check.sh` against `baseline-macos.txt` | `7e2430e0` | macOS aarch64, this Mac | green: 2937 tests, no difference |
-| PL-6 on Linux | `pl6.py compare` of `BASE` and the tip | `e4017980` and `7e2430e0` | Docker `rust:1.96.1`, Linux aarch64, this Mac; no CI run id | green: 2938 tests, no difference |
-| PL-6 on Windows | job `test-windows`, `pl6.py compare --gaps scripts/pl6/windows-gaps.txt` | `7e2430e0` | none | pending CI; read check below |
-| Run in flight (Phase P) | the test of PL-6 | as the 3 rows above | as the 3 rows above | green on macOS and Linux; Windows pending CI |
+| PL-6 on Linux | `pl6.py compare` of `BASE` and the gate commit | `e4017980` and `7e2430e0` | Docker `rust:1.96.1`, Linux aarch64, this Mac; no CI run id | not green: pass in Docker (2938 tests, no difference); pending CI |
+| PL-6 on Windows | job `test-windows`, `pl6.py compare --gaps scripts/pl6/windows-gaps.txt` | `7e2430e0` | none | not green: pending CI; static source comparison below |
+| Run in flight (Phase P) | the test of PL-6 | as the 3 rows above | as the 3 rows above | green on macOS; Linux passes in Docker, pending CI; Windows pending CI |
 
 The list of expected failures of Phase 0: `cargo test -p horch-e2e --test expected_failures`
 passes on macOS at `893159c0` (1 of 1).
@@ -40,16 +45,16 @@ commit has its own named volume for `/src/target`.
 | Record | ok | failed | ignored |
 | --- | --- | --- | --- |
 | `BASE` `e4017980` | 2857 | 9 | 11 |
-| tip `893159c0` | 2917 | 10 | 11 |
-| fix `7e2430e0` | 2918 | 9 | 11 |
+| pre-fix `893159c0` | 2917 | 10 | 11 |
+| gate `7e2430e0` | 2918 | 9 | 11 |
 
-The first compare (`BASE` against `893159c0`) found 1 fault:
+The first compare (`BASE` against pre-fix `893159c0`) found 1 fault:
 `crates/horch-platform/tests/ipc.rs` `unix::a_plain_file_is_not_a_socket` failed. On Linux a
 connect to a plain file gives `ECONNREFUSED`, not `ENOTSOCK`. The production caller
 (`harness/prime.rs`, `listening`) accepts both, as at `BASE`, so behavior did not change. Commit
 `7e2430e0` makes the test expect `ConnectionRefused` on Linux and `ENOTSOCK` elsewhere.
 
-The 9 tests below fail at `BASE` and at the tip, with the same reasons. The cause is the
+The 9 tests below fail at `BASE`, at pre-fix and at gate, with the same reasons. The cause is the
 container, not the move. The compare accepts a failure in both records.
 
 - `horch_core::taskledger::finish::complexity::tests::trf_07_clippy_fails_an_over_complex_changed_function_and_passes_a_clean_change`: the image has no `cargo-clippy`.
@@ -70,7 +75,7 @@ request exists.
 This Mac cannot run the Windows tests. The job `test-windows` in `.github/workflows/ci.yml`
 keeps `continue-on-error: true` until the Windows proof task records its result.
 
-The read compared each module of `crates/horch-platform/src/windows/` with the code at `BASE` that
+The static source comparison compared each module of `crates/horch-platform/src/windows/` with the code at `BASE` that
 it replaced:
 
 - `process.rs`: `alive`, `start_time`, `started_at`, `started_by` and `filetime_to_system` are
@@ -94,7 +99,7 @@ it replaced:
 - `machine.rs`: each reading gives `NotSupported`. The host name comes from `COMPUTERNAME`, as at
   `BASE`.
 
-The read found no change of behavior. The read is not a test result.
+The static source comparison found no change of behavior. It is not a test result.
 
 ## Windows gaps
 
@@ -103,5 +108,5 @@ The read found no change of behavior. The read is not a test result.
 
 ## Flaky tests
 
-None seen. The 2 Linux runs of the tip (`893159c0` and `7e2430e0`) have the same 9 failures,
-apart from the fixed ipc test. The 2 macOS runs (`893159c0` and `7e2430e0`) give no difference.
+None seen. The 2 Linux runs (pre-fix `893159c0` and gate `7e2430e0`) have the same 9 failures,
+apart from the fixed ipc test. The 2 macOS runs (pre-fix `893159c0` and gate `7e2430e0`) give no difference.
