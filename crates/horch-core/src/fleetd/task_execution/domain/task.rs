@@ -137,6 +137,20 @@ pub struct TaskRow {
     pub max_attempts: i64,
 }
 
+/// I2: the `pending` tasks whose dependencies are all met, in id order.
+/// `statuses` maps each task id to its status. `deps` holds
+/// (task, dependency) pairs. In Phase 2 a dependency is met when its task
+/// is `done`; a dependency with no row is not met.
+pub fn promotable(statuses: &BTreeMap<String, String>, deps: &[(String, String)]) -> Vec<String> {
+    let met = |dep: &String| statuses.get(dep).is_some_and(|s| s == "done");
+    statuses
+        .iter()
+        .filter(|(_, status)| *status == "pending")
+        .filter(|(id, _)| deps.iter().filter(|(t, _)| t == *id).all(|(_, d)| met(d)))
+        .map(|(id, _)| id.clone())
+        .collect()
+}
+
 /// The rows of the reap path.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Rows {
@@ -779,6 +793,51 @@ mod tests {
                 scope: ProcessScope::LeaderGroup,
             },
         }
+    }
+
+    fn statuses(rows: &[(&str, &str)]) -> BTreeMap<String, String> {
+        rows.iter()
+            .map(|(id, s)| (id.to_string(), s.to_string()))
+            .collect()
+    }
+
+    fn deps(rows: &[(&str, &str)]) -> Vec<(String, String)> {
+        rows.iter()
+            .map(|(t, d)| (t.to_string(), d.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn pending_task_with_each_dependency_done_is_promotable() {
+        let tasks = statuses(&[
+            ("T-1", "done"),
+            ("T-2", "done"),
+            ("T-3", "pending"),
+            ("T-4", "pending"),
+            ("T-5", "ready"),
+        ]);
+        let deps = deps(&[("T-3", "T-1"), ("T-3", "T-2"), ("T-5", "T-1")]);
+        // T-4 has no dependency: each of its 0 dependencies is met.
+        assert_eq!(promotable(&tasks, &deps), vec!["T-3", "T-4"]);
+    }
+
+    #[test]
+    fn pending_task_with_a_dependency_not_done_is_not_promotable() {
+        let tasks = statuses(&[
+            ("T-1", "done"),
+            ("T-2", "verifying"),
+            ("T-3", "pending"),
+            ("T-4", "pending"),
+            ("T-5", "cancelled"),
+            ("T-6", "pending"),
+        ]);
+        let deps = deps(&[
+            ("T-3", "T-1"),
+            ("T-3", "T-2"),
+            ("T-4", "T-5"),
+            ("T-6", "T-9"),
+        ]);
+        assert_eq!(promotable(&tasks, &deps), Vec::<String>::new());
     }
 
     #[test]

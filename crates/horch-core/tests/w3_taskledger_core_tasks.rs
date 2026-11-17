@@ -555,9 +555,17 @@ fn cancel_and_requeue_take_only_the_states_they_are_for() {
         .to_string();
     assert_eq!(err, "T-1 is already cancelled");
 
-    let back = s
+    // `cancelled` is terminal (MAP.md, Q22): the door refuses the requeue.
+    let err = s
         .immediate(|tx| tasks::requeue_by_operator(tx, &cancelled, "again"))
-        .unwrap();
-    assert_eq!(back.status, "ready");
-    assert_eq!(back.finished_at, None);
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.starts_with("illegal transition of task ") && err.ends_with(": cancelled -> ready"),
+        "{err}"
+    );
+    assert_eq!(
+        tasks::get(s.conn(), &t.task_id).unwrap().status,
+        "cancelled"
+    );
 }

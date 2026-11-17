@@ -90,38 +90,73 @@ pub fn refused_key(entity: Entity, id: &str) -> String {
     format!("{REFUSED_KIND}:{entity}:{id}")
 }
 
-/// The allowed moves: entity, from, to. The moves of task and worker are
-/// the moves that the code of today makes; each comment names its site.
-/// The moves of attempt, job and needs-you item are the exits of their
-/// state tables in the design and in ticket 10.
-pub const EXITS: &[(Entity, &str, &str)] = &[
-    // taskledger/tasks.rs take_task: the claim (MAP.md, Q5).
-    (Entity::Task, "ready", "running"),
-    // taskledger/tasks.rs ready_dependents and unblock: each dependency of
-    // a pending task is met (I2).
-    (Entity::Task, "pending", "ready"),
-    // taskledger/finish/mod.rs: the finish of a running task starts to land.
-    (Entity::Task, "running", "verifying"),
-    // taskledger/finish/mod.rs mark_done: the finish ends the task.
+/// The task exits that the code of today writes and the 12-state table of
+/// the design does not have. Each stays until its phase removes its writer.
+pub const TASK_EXITS_OF_TODAY: [(Entity, &str, &str); 3] = [
+    // taskledger/finish/mod.rs mark_done: `horch ledger done` of a running
+    // task. Phase 4 moves `done` to the verifier, from `verifying` only.
     (Entity::Task, "running", "done"),
-    (Entity::Task, "verifying", "done"),
-    // taskledger/tasks.rs requeue (the worker ended) and tasks.rs handoff
-    // (running only).
-    (Entity::Task, "running", "ready"),
-    (Entity::Task, "verifying", "ready"),
     // taskledger/tasks.rs requeue (the hold at `max_attempts`) and
-    // finish/mod.rs mark_done (the task parks unlanded).
+    // finish/mod.rs mark_done (`done --unlanded`). Phase 2 rung 6
+    // (ticket 10) goes through `failed`; Phase 4 moves the unlanded park
+    // to the verifier.
     (Entity::Task, "running", "escalated"),
     (Entity::Task, "verifying", "escalated"),
-    // taskledger/tasks.rs cancel: each state that is not done or cancelled.
+];
+
+/// The allowed moves: entity, from, to. The task moves are the 12-state
+/// task table of the design ("The task state machine", the column "Leaves
+/// when") and [`TASK_EXITS_OF_TODAY`]. The moves of worker are the moves
+/// that the code of today makes; each comment names its site. The moves of
+/// attempt, job and needs-you item are the exits of their state tables in
+/// the design and in ticket 10.
+pub const EXITS: &[(Entity, &str, &str)] = &[
+    // The task table of the design. `done` and `cancelled` are terminal;
+    // each other state has an exit to `cancelled` (A cancel).
+    (Entity::Task, "pending", "ready"),
     (Entity::Task, "pending", "cancelled"),
+    // `ready -> running` is the claim of Phase 2 (MAP.md, Q5).
+    (Entity::Task, "ready", "leased"),
+    (Entity::Task, "ready", "running"),
     (Entity::Task, "ready", "cancelled"),
-    (Entity::Task, "escalated", "cancelled"),
+    // `ready` and `failed` are rung 6 after `timed_out` or `crashed`.
+    (Entity::Task, "leased", "running"),
+    (Entity::Task, "leased", "ready"),
+    (Entity::Task, "leased", "failed"),
+    (Entity::Task, "leased", "cancelled"),
+    // `ready` is rung 6 and the restart on a fallback; `failed` is rung 6
+    // with no attempt left.
+    (Entity::Task, "running", "verifying"),
+    (Entity::Task, "running", "blocked_on_user"),
+    (Entity::Task, "running", "ready"),
+    (Entity::Task, "running", "waiting_quota"),
+    (Entity::Task, "running", "stalled"),
+    (Entity::Task, "running", "failed"),
     (Entity::Task, "running", "cancelled"),
+    (Entity::Task, "stalled", "ready"),
+    (Entity::Task, "stalled", "failed"),
+    (Entity::Task, "stalled", "verifying"),
+    (Entity::Task, "stalled", "cancelled"),
+    // `ready` is the outcome `rejected`, rung 6 and a fix round.
+    (Entity::Task, "verifying", "done"),
+    (Entity::Task, "verifying", "ready"),
+    (Entity::Task, "verifying", "failed"),
     (Entity::Task, "verifying", "cancelled"),
-    // taskledger/tasks.rs requeue_by_operator: `horch ledger requeue`.
+    (Entity::Task, "blocked_on_user", "ready"),
+    (Entity::Task, "blocked_on_user", "cancelled"),
+    (Entity::Task, "waiting_quota", "ready"),
+    (Entity::Task, "waiting_quota", "cancelled"),
+    // `failed -> ready` is the 1 replan (MAP.md, Q12).
+    (Entity::Task, "failed", "ready"),
+    (Entity::Task, "failed", "escalated"),
+    (Entity::Task, "failed", "cancelled"),
+    // `horch ledger requeue` of an escalated task.
     (Entity::Task, "escalated", "ready"),
-    (Entity::Task, "cancelled", "ready"),
+    (Entity::Task, "escalated", "cancelled"),
+    // The task exits of today that the design does not have.
+    TASK_EXITS_OF_TODAY[0],
+    TASK_EXITS_OF_TODAY[1],
+    TASK_EXITS_OF_TODAY[2],
     // taskledger/workers.rs supervisor_started: `horch worker` runs.
     (Entity::Worker, "spawning", "starting"),
     // taskledger/workers.rs agent_started: the agent child runs.
@@ -198,29 +233,164 @@ mod tests {
         moves
     }
 
-    #[test]
-    fn allowed_transitions_of_task_equal_the_exits_of_today() {
-        // The exits of today in the design words: `queued` is `pending`,
-        // `ready` or `escalated` (a hold), and `landing` is `verifying`.
-        let today = vec![
+    /// The 12 states of the design table.
+    const TASK_STATES: [&str; 12] = [
+        "pending",
+        "ready",
+        "leased",
+        "running",
+        "stalled",
+        "verifying",
+        "blocked_on_user",
+        "waiting_quota",
+        "done",
+        "failed",
+        "escalated",
+        "cancelled",
+    ];
+
+    /// The column "Leaves when" of the 12-state task table of the design.
+    fn design_task_exits() -> Vec<(&'static str, &'static str)> {
+        vec![
             ("pending", "ready"),
             ("pending", "cancelled"),
+            ("ready", "leased"),
             ("ready", "running"),
             ("ready", "cancelled"),
-            ("escalated", "ready"),
-            ("escalated", "cancelled"),
+            ("leased", "running"),
+            ("leased", "ready"),
+            ("leased", "failed"),
+            ("leased", "cancelled"),
             ("running", "verifying"),
-            ("running", "done"),
+            ("running", "blocked_on_user"),
             ("running", "ready"),
-            ("running", "escalated"),
+            ("running", "waiting_quota"),
+            ("running", "stalled"),
+            ("running", "failed"),
             ("running", "cancelled"),
+            ("stalled", "ready"),
+            ("stalled", "failed"),
+            ("stalled", "verifying"),
+            ("stalled", "cancelled"),
             ("verifying", "done"),
             ("verifying", "ready"),
-            ("verifying", "escalated"),
+            ("verifying", "failed"),
             ("verifying", "cancelled"),
-            ("cancelled", "ready"),
-        ];
-        assert_eq!(exits_of(Entity::Task), sorted(today));
+            ("blocked_on_user", "ready"),
+            ("blocked_on_user", "cancelled"),
+            ("waiting_quota", "ready"),
+            ("waiting_quota", "cancelled"),
+            ("failed", "ready"),
+            ("failed", "escalated"),
+            ("failed", "cancelled"),
+            ("escalated", "ready"),
+            ("escalated", "cancelled"),
+        ]
+    }
+
+    fn task_exits_of(from: &str) -> Vec<&'static str> {
+        EXITS
+            .iter()
+            .filter(|(e, f, _)| *e == Entity::Task && *f == from)
+            .map(|(_, _, to)| *to)
+            .collect()
+    }
+
+    #[test]
+    fn allowed_transitions_of_task_equal_the_12_state_table() {
+        let mut expected = design_task_exits();
+        expected.extend(TASK_EXITS_OF_TODAY.iter().map(|(_, f, t)| (*f, *t)));
+        assert_eq!(exits_of(Entity::Task), sorted(expected));
+    }
+
+    #[test]
+    fn task_exits_of_today_are_exactly_the_3_that_the_design_does_not_have() {
+        let today: Vec<_> = TASK_EXITS_OF_TODAY
+            .iter()
+            .map(|(_, f, t)| (*f, *t))
+            .collect();
+        assert_eq!(
+            sorted(today.clone()),
+            sorted(vec![
+                ("running", "done"),
+                ("running", "escalated"),
+                ("verifying", "escalated"),
+            ])
+        );
+        for exit in today {
+            assert!(
+                !design_task_exits().contains(&exit),
+                "{exit:?} is in the design"
+            );
+        }
+    }
+
+    #[test]
+    fn each_state_that_is_not_terminal_has_an_exit_to_cancelled() {
+        for state in TASK_STATES {
+            if state == "done" || state == "cancelled" {
+                continue;
+            }
+            assert_eq!(
+                decide(Entity::Task, state, "cancelled"),
+                Decision::Allowed,
+                "{state} has no exit to cancelled"
+            );
+        }
+    }
+
+    #[test]
+    fn done_and_cancelled_have_no_exit() {
+        for terminal in ["done", "cancelled"] {
+            assert_eq!(task_exits_of(terminal), Vec::<&str>::new(), "{terminal}");
+            for to in TASK_STATES {
+                assert_ne!(decide(Entity::Task, terminal, to), Decision::Allowed);
+            }
+        }
+    }
+
+    #[test]
+    fn every_held_state_has_an_exit_that_frees_the_task() {
+        // RR-2: no path leaves a task held with no exit.
+        for held in [
+            "leased",
+            "running",
+            "stalled",
+            "blocked_on_user",
+            "waiting_quota",
+        ] {
+            let mut seen = vec![held];
+            let mut next = vec![held];
+            while let Some(state) = next.pop() {
+                for to in task_exits_of(state) {
+                    if !seen.contains(&to) {
+                        seen.push(to);
+                        next.push(to);
+                    }
+                }
+            }
+            assert!(
+                seen.contains(&"ready") && seen.contains(&"cancelled"),
+                "{held} reaches only {seen:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_retry_exits_of_rr6_exist() {
+        for (from, to) in [
+            ("running", "stalled"),
+            ("stalled", "ready"),
+            ("stalled", "failed"),
+            ("failed", "escalated"),
+            ("escalated", "ready"),
+        ] {
+            assert_eq!(
+                decide(Entity::Task, from, to),
+                Decision::Allowed,
+                "{from} -> {to}"
+            );
+        }
     }
 
     #[test]

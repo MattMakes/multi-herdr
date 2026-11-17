@@ -242,10 +242,17 @@ fn the_board_commands_print_their_pinned_text() {
         w.ok(&["ledger", "cancel", "T-2", "nope"]),
         "T-2 cancelled.\n"
     );
+    // `cancelled` is terminal (fleetd-p2 MAP.md, Q22): the door refuses
+    // the requeue.
     let requeue = w.run(&["ledger", "requeue", "T-2", "again"]);
-    assert_eq!(
-        (requeue.code, requeue.out.as_str()),
-        (0, "T-2 is queued again.\n")
+    assert_eq!((requeue.code, requeue.out.as_str()), (1, ""));
+    assert!(
+        requeue
+            .err
+            .starts_with("horch: illegal transition of task ")
+            && requeue.err.ends_with(": cancelled -> ready\n"),
+        "{}",
+        requeue.err
     );
     let refused = w.run(&["ledger", "requeue", "T-1", "again"]);
     assert_eq!(refused.code, 1);
@@ -260,13 +267,13 @@ fn the_board_commands_print_their_pinned_text() {
     assert!(
         close
             .err
-            .starts_with("horch: run r1 still has open work: T-1 (queued), T-2 (queued)."),
+            .starts_with("horch: run r1 still has open work: T-1 (queued)."),
         "{}",
         close.err
     );
     assert_eq!(
         w.ok(&["ledger", "run", "close", "--abandon", "gone"]),
-        "T-1 cancelled.\nT-2 cancelled.\nRun r1 closed as abandoned.\n"
+        "T-1 cancelled.\nRun r1 closed as abandoned.\n"
     );
     let line = w.ok(&["ledger", "run", "list"]);
     assert!(
@@ -297,7 +304,7 @@ fn assert_show_of_t2(w: &World) {
             .take(3)
             .collect::<Vec<_>>(),
         [
-            "T-2 queued: Ticket Two",
+            "T-2 cancelled: Ticket Two",
             "Ticket: t2.md",
             "Persona: dev (primary dev, fallback -)."
         ]
@@ -364,9 +371,12 @@ fn assert_board_events(events: &[String]) {
         "{events:?}"
     );
     assert_eq!(events[8], "orchestrator cancelled     T-2 cancelled: nope");
-    assert_eq!(
-        events[9],
-        "orchestrator requeued      T-2 is queued again by the operator: again"
+    // `cancelled` is terminal: the door refuses the requeue and records it.
+    assert!(
+        events[9].starts_with(
+            "orchestrator transition    illegal_transition: requeued: T-2 is queued again by the operator: again; task "
+        ) && events[9].ends_with(": cancelled -> queued"),
+        "{events:?}"
     );
     assert_eq!(events.len(), 10, "{events:?}");
 }
