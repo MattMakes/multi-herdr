@@ -749,68 +749,168 @@ const OS_CFG_EXEMPT: &[(&str, &str)] = &[(
 /// The predicate words that make a `cfg` an OS `cfg`.
 const OS_WORDS: [&str; 4] = ["target_os", "unix", "windows", "target_family"];
 
-/// The production lines of `text`, numbered from 1, and the names of the
-/// child modules that a `cfg` naming `test` declares (`mod x;`). Unlike
-/// `code_lines`, a group of attributes, also over more than 1 line, that
-/// holds a `cfg` naming `test` is not code. When the group is over an inline
-/// `mod`, the rest of the file is not code.
-fn production_lines(text: &str) -> (Vec<(usize, String)>, Vec<String>) {
+/// The production code of a file text.
+struct Production {
+    /// The production lines, numbered from 1.
+    lines: Vec<(usize, String)>,
+    /// The child modules that a test-only `cfg` declares (`mod x;`).
+    test_mods: Vec<String>,
+}
+
+/// The production code of `text`. Unlike `code_lines`, it skips each item
+/// under a group of attributes, also over more than 1 line, that holds a
+/// test-only `cfg(..)`: the item to its `;` or to the `}` that closes its
+/// body. The lines after the item are code again.
+fn production_lines(text: &str) -> Production {
     let lines: Vec<&str> = text.lines().collect();
-    let is_attr = |l: &str| l.trim_start().starts_with("#[") || l.trim_start().starts_with("#![");
-    let mut out = Vec::new();
-    let mut test_mods = Vec::new();
+    let mut out = Production {
+        lines: Vec::new(),
+        test_mods: Vec::new(),
+    };
     let mut i = 0;
     while i < lines.len() {
-        if lines[i].trim_start().starts_with("//") {
+        if is_comment(lines[i]) {
             i += 1;
-            continue;
-        }
-        if !is_attr(lines[i]) {
-            out.push((i + 1, lines[i].to_string()));
+        } else if !is_attribute(lines[i]) {
+            out.lines.push((i + 1, lines[i].to_string()));
             i += 1;
-            continue;
-        }
-        let mut group = Vec::new();
-        while i < lines.len() && (is_attr(lines[i]) || lines[i].trim_start().starts_with("//")) {
-            if lines[i].trim_start().starts_with("//") {
-                i += 1;
+        } else {
+            let (group, next) = attribute_group(&lines, i);
+            i = next;
+            if !gates_test_only(&group) {
+                out.lines.extend(group);
                 continue;
             }
-            let mut depth = 0;
-            while i < lines.len() {
-                depth +=
-                    lines[i].matches('[').count() as i32 - lines[i].matches(']').count() as i32;
-                group.push((i + 1, lines[i].to_string()));
-                i += 1;
-                if depth <= 0 {
-                    break;
-                }
+            if let Some(name) = lines.get(i).and_then(|l| declared_module(l)) {
+                out.test_mods.push(name);
             }
+            i = item_end(&lines, i);
         }
-        let attrs: String = group.iter().map(|(_, l)| format!("{l}\n")).collect();
-        let gated = cfg_predicates(&attrs)
-            .iter()
-            .any(|(_, gate, pred)| *gate && names_test(pred));
-        if !gated {
-            out.extend(group);
+    }
+    out
+}
+
+fn is_comment(line: &str) -> bool {
+    line.trim_start().starts_with("//")
+}
+
+fn is_attribute(line: &str) -> bool {
+    let t = line.trim_start();
+    t.starts_with("#[") || t.starts_with("#![")
+}
+
+/// The attributes from line `start`, each to the line of its closing `]`,
+/// with the comment lines between them skipped, and the index of the line
+/// after the group.
+fn attribute_group(lines: &[&str], start: usize) -> (Vec<(usize, String)>, usize) {
+    let mut group = Vec::new();
+    let mut i = start;
+    while i < lines.len() && (is_attribute(lines[i]) || is_comment(lines[i])) {
+        if is_comment(lines[i]) {
+            i += 1;
             continue;
         }
-        let item = lines.get(i).map_or("", |l| l.trim_start());
-        let item = item
-            .strip_prefix("pub(crate) ")
-            .or_else(|| item.strip_prefix("pub "))
-            .unwrap_or(item);
-        if let Some(rest) = item.strip_prefix("mod ") {
-            match rest.split_once(';') {
-                Some((name, _)) => {
-                    test_mods.push(name.trim().to_string());
-                    i += 1;
-                }
-                None => break,
+        let mut depth = 0;
+        while i < lines.len() {
+            depth += lines[i].matches('[').count() as i32 - lines[i].matches(']').count() as i32;
+            group.push((i + 1, lines[i].to_string()));
+            i += 1;
+            if depth <= 0 {
+                break;
             }
         }
     }
-    (out, test_mods)
+    (group, i)
+}
+
+/// Whether a group of attributes holds a `cfg(..)` that is test-only.
+fn gates_test_only(group: &[(usize, String)]) -> bool {
+    let text: String = group.iter().map(|(_, l)| format!("{l}\n")).collect();
+    cfgs(&text)
+        .iter()
+        .any(|c| c.form == CfgForm::Gate && test_only(&c.pred))
+}
+
+/// The name of the module that `line` declares without a body (`mod x;`).
+fn declared_module(line: &str) -> Option<String> {
+    let item = line.trim_start();
+    let item = item
+        .strip_prefix("pub(crate) ")
+        .or_else(|| item.strip_prefix("pub "))
+        .unwrap_or(item);
+    let (name, _) = item.strip_prefix("mod ")?.split_once(';')?;
+    Some(name.trim().to_string())
+}
+
+/// The lexer state of `item_end` between characters.
+#[derive(Clone, Copy)]
+enum Lex {
+    Code,
+    Str,
+    RawStr(usize),
+}
+
+/// The index of the line after the item that starts on line `start`: the
+/// line of its `;` outside a body, or of the `}` that closes its body.
+/// Braces in string, raw string and char literals and in comments do not
+/// count.
+fn item_end(lines: &[&str], start: usize) -> usize {
+    let mut depth = 0;
+    let mut state = Lex::Code;
+    for (i, line) in lines.iter().enumerate().skip(start) {
+        let chars: Vec<char> = line.chars().collect();
+        let mut k = 0;
+        while k < chars.len() {
+            let c = chars[k];
+            match state {
+                Lex::Str if c == '\\' => k += 1,
+                Lex::Str if c == '"' => state = Lex::Code,
+                Lex::Str => {}
+                Lex::RawStr(hashes) => {
+                    if c == '"'
+                        && chars[k + 1..].iter().take_while(|h| **h == '#').count() >= hashes
+                    {
+                        k += hashes;
+                        state = Lex::Code;
+                    }
+                }
+                Lex::Code => match c {
+                    '/' if chars.get(k + 1) == Some(&'/') => break,
+                    '"' => state = Lex::Str,
+                    'r' if raw_string_hashes(&chars, k).is_some() => {
+                        let hashes = raw_string_hashes(&chars, k).unwrap_or(0);
+                        k += hashes + 1;
+                        state = Lex::RawStr(hashes);
+                    }
+                    '\'' if chars.get(k + 2) == Some(&'\'') => k += 2,
+                    '\'' if chars.get(k + 1) == Some(&'\\') => {
+                        k += 2 + chars[k + 2..].iter().take_while(|c| **c != '\'').count();
+                    }
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return i + 1;
+                        }
+                    }
+                    ';' if depth == 0 => return i + 1,
+                    _ => {}
+                },
+            }
+            k += 1;
+        }
+    }
+    lines.len()
+}
+
+/// The count of `#` of the raw string literal that starts at `chars[k]`
+/// (`r"`, `r#"`, ...), or `None` when no raw string starts there.
+fn raw_string_hashes(chars: &[char], k: usize) -> Option<usize> {
+    if k > 0 && (chars[k - 1].is_alphanumeric() || chars[k - 1] == '_') && chars[k - 1] != 'b' {
+        return None;
+    }
+    let hashes = chars[k + 1..].iter().take_while(|c| **c == '#').count();
+    (chars.get(k + 1 + hashes) == Some(&'"')).then_some(hashes)
 }
 
 /// The text inside the parenthesis that opens at byte `open` of `text`.
@@ -831,10 +931,27 @@ fn balanced(text: &str, open: usize) -> Option<&str> {
     None
 }
 
-/// Each `cfg(..)`, `cfg_attr(..)` and `cfg!(..)` of `text`: its byte
-/// position, whether it gates an item (`cfg(..)` only), and its predicate
-/// (the first argument of `cfg_attr`).
-fn cfg_predicates(text: &str) -> Vec<(usize, bool, String)> {
+/// The form of a `cfg`.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum CfgForm {
+    /// `#[cfg(..)]`: it gates the item under it.
+    Gate,
+    /// `#[cfg_attr(..)]`: it gates only an attribute.
+    Attr,
+    /// `cfg!(..)`: an expression.
+    Macro,
+}
+
+/// A `cfg` in a text: its byte position, its form and its predicate.
+struct Cfg {
+    at: usize,
+    form: CfgForm,
+    pred: String,
+}
+
+/// Each `cfg(..)`, `cfg_attr(..)` and `cfg!(..)` of `text`. The predicate
+/// of `cfg_attr` is its first argument.
+fn cfgs(text: &str) -> Vec<Cfg> {
     let mut out = Vec::new();
     for (at, _) in text.match_indices("cfg") {
         if text[..at]
@@ -845,36 +962,50 @@ fn cfg_predicates(text: &str) -> Vec<(usize, bool, String)> {
             continue;
         }
         let rest = &text[at + 3..];
-        let (open, gate, attr) = if rest.starts_with("_attr(") {
-            (at + 8, false, true)
+        let (open, form) = if rest.starts_with("_attr(") {
+            (at + 8, CfgForm::Attr)
         } else if rest.starts_with("!(") {
-            (at + 4, false, false)
+            (at + 4, CfgForm::Macro)
         } else if rest.starts_with('(') {
-            (at + 3, true, false)
+            (at + 3, CfgForm::Gate)
         } else {
             continue;
         };
         let Some(body) = balanced(text, open) else {
             continue;
         };
-        let pred = if attr { first_argument(body) } else { body };
-        out.push((at, gate, pred.to_string()));
+        let pred = match form {
+            CfgForm::Attr => arguments(body).first().copied().unwrap_or(""),
+            _ => body,
+        };
+        out.push(Cfg {
+            at,
+            form,
+            pred: pred.to_string(),
+        });
     }
     out
 }
 
-/// The text of `body` before its first comma outside parentheses.
-fn first_argument(body: &str) -> &str {
+/// The arguments of `body`, split at each comma outside parentheses.
+fn arguments(body: &str) -> Vec<&str> {
+    let mut out = Vec::new();
     let mut depth = 0;
+    let mut from = 0;
     for (i, c) in body.char_indices() {
         match c {
             '(' => depth += 1,
             ')' => depth -= 1,
-            ',' if depth == 0 => return &body[..i],
+            ',' if depth == 0 => {
+                out.push(body[from..i].trim());
+                from = i + 1;
+            }
             _ => {}
         }
     }
-    body
+    out.push(body[from..].trim());
+    out.retain(|a| !a.is_empty());
+    out
 }
 
 /// The identifiers of a predicate, without the text of its string literals.
@@ -890,32 +1021,83 @@ fn names_os(pred: &str) -> bool {
     predicate_words(pred).iter().any(|w| OS_WORDS.contains(w))
 }
 
-fn names_test(pred: &str) -> bool {
-    predicate_words(pred).contains(&"test") && !pred.replace(' ', "").contains("not(test)")
+/// Whether `pred` is false in each build without `test`.
+fn test_only(pred: &str) -> bool {
+    without_test(pred) == Some(false)
+}
+
+/// The value of `pred` in a build without `test`: `test` is false, and each
+/// other option is unknown (`None`).
+fn without_test(pred: &str) -> Option<bool> {
+    let pred = pred.trim();
+    let call = |name: &str| {
+        pred.strip_prefix(name)
+            .map(str::trim_start)
+            .and_then(|r| r.strip_prefix('('))
+            .and_then(|r| r.strip_suffix(')'))
+            .map(arguments)
+    };
+    if let Some(args) = call("any") {
+        let values: Vec<Option<bool>> = args.iter().map(|a| without_test(a)).collect();
+        if values.contains(&Some(true)) {
+            Some(true)
+        } else if values.iter().all(|v| *v == Some(false)) {
+            Some(false)
+        } else {
+            None
+        }
+    } else if let Some(args) = call("all") {
+        let values: Vec<Option<bool>> = args.iter().map(|a| without_test(a)).collect();
+        if values.contains(&Some(false)) {
+            Some(false)
+        } else if values.iter().all(|v| *v == Some(true)) {
+            Some(true)
+        } else {
+            None
+        }
+    } else if let Some(args) = call("not") {
+        without_test(args.first().copied().unwrap_or("")).map(|v| !v)
+    } else if pred == "test" {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// The OS `cfg` sites of a file text, and its test-only child modules.
+struct Scan {
+    /// Each site as its first line number and its text.
+    sites: Vec<(usize, String)>,
+    test_mods: Vec<String>,
 }
 
 /// The OS `cfg` sites of `text`: `cfg(..)`, `cfg_attr(..)` and `cfg!(..)`
-/// whose predicate names an OS word, each as its first line and its text.
-fn os_cfg_sites(text: &str) -> (Vec<(usize, String)>, Vec<String>) {
-    let (lines, test_mods) = production_lines(text);
+/// in production code whose predicate names an OS word and is not
+/// test-only.
+fn os_cfg_sites(text: &str) -> Scan {
+    let production = production_lines(text);
+    let lines = &production.lines;
     let mut joined = String::new();
     let mut starts = Vec::new();
-    for (_, line) in &lines {
+    for (_, line) in lines {
         starts.push(joined.len());
         joined.push_str(line);
         joined.push('\n');
     }
     let mut sites: Vec<(usize, String)> = Vec::new();
-    for (at, _, pred) in cfg_predicates(&joined) {
-        if !names_os(&pred) || names_test(&pred) {
+    for cfg in cfgs(&joined) {
+        if !names_os(&cfg.pred) || test_only(&cfg.pred) {
             continue;
         }
-        let k = starts.partition_point(|s| *s <= at) - 1;
+        let k = starts.partition_point(|s| *s <= cfg.at) - 1;
         if sites.last().is_none_or(|(n, _)| *n != lines[k].0) {
             sites.push((lines[k].0, lines[k].1.trim().to_string()));
         }
     }
-    (sites, test_mods)
+    Scan {
+        sites,
+        test_mods: production.test_mods,
+    }
 }
 
 #[test]
@@ -942,26 +1124,58 @@ fn g() {}
 mod test_support;
 #[cfg(all(test, unix))]
 fn h() {}
+#[cfg(test)]
+fn helper() -> &'static str {
+    let _ = cfg!(unix);
+    \"}\"
+}
+#[cfg(any(test, unix))]
+fn j() {}
+#[cfg(all(not(test), windows))]
+fn k() {}
 #[cfg(unix)]
 #[cfg(test)]
 mod tests {
     #[cfg(windows)]
-    fn i() {}
+    fn i() { let _ = '{'; }
 }
+#[cfg(windows)]
+fn l() {}
 ";
-    let (sites, test_mods) = os_cfg_sites(text);
+    let Scan { sites, test_mods } = os_cfg_sites(text);
     let lines: Vec<usize> = sites.iter().map(|(n, _)| *n).collect();
-    assert_eq!(lines, vec![2, 4, 6, 8, 10, 11], "{sites:?}");
+    assert_eq!(lines, vec![2, 4, 6, 8, 10, 11, 27, 29, 37], "{sites:?}");
     assert_eq!(sites[5].1, "#[cfg(not(any(");
     assert_eq!(test_mods, vec!["test_support".to_string()]);
 
     let gated =
-        "fn a() {}\n#[cfg(all(test, unix))]\nmod tests {\n    #[cfg(unix)]\n    fn b() {}\n}\n";
-    assert_eq!(os_cfg_sites(gated).0, Vec::new());
+        "fn a() {}\n#[cfg(all(test, unix))]\nmod tests {\n    #[cfg(unix)]\n    fn b() {}\n}\nfn c() {}\n";
+    assert_eq!(os_cfg_sites(gated).sites, Vec::new());
     assert_eq!(
-        production_lines(gated).0,
-        vec![(1, "fn a() {}".to_string())]
+        production_lines(gated).lines,
+        vec![(1, "fn a() {}".to_string()), (7, "fn c() {}".to_string())]
     );
+}
+
+/// A predicate is test-only when it cannot hold in a build without `test`.
+#[test]
+fn pl2_test_only_predicates_are_the_ones_false_without_test() {
+    for pred in [
+        "test",
+        "all(test, unix)",
+        "all(unix, any(test, all(test, windows)))",
+    ] {
+        assert!(test_only(pred), "{pred}");
+    }
+    for pred in [
+        "unix",
+        "any(test, unix)",
+        "not(test)",
+        "all(not(test), unix)",
+        "not(all(test, unix))",
+    ] {
+        assert!(!test_only(pred), "{pred}");
+    }
 }
 
 /// The production files of the workspace outside the platform layer: each
@@ -1006,16 +1220,16 @@ fn test_module_paths(parent: &Path, names: &[String]) -> Vec<PathBuf> {
 fn workspace_os_cfg_sites() -> Vec<String> {
     let (root, files) = production_files();
     let mut scanned = Vec::new();
-    let mut test_only: Vec<PathBuf> = Vec::new();
+    let mut test_paths: Vec<PathBuf> = Vec::new();
     for file in &files {
-        let (sites, test_mods) = os_cfg_sites(&std::fs::read_to_string(file).unwrap());
-        test_only.extend(test_module_paths(file, &test_mods));
-        scanned.push((file, sites));
+        let scan = os_cfg_sites(&std::fs::read_to_string(file).unwrap());
+        test_paths.extend(test_module_paths(file, &scan.test_mods));
+        scanned.push((file, scan.sites));
     }
     let mut found = Vec::new();
     for (file, sites) in scanned {
         if file.file_name().is_some_and(|n| n == "tests.rs")
-            || test_only.iter().any(|t| file.starts_with(t))
+            || test_paths.iter().any(|t| file.starts_with(t))
         {
             continue;
         }
@@ -1055,7 +1269,7 @@ fn pl2_exempt_build_script_still_needs_its_exemption() {
     for (path, why) in OS_CFG_EXEMPT {
         let text = std::fs::read_to_string(root.join(path)).unwrap();
         assert!(
-            !os_cfg_sites(&text).0.is_empty(),
+            !os_cfg_sites(&text).sites.is_empty(),
             "{path} has no OS cfg any more; remove its exemption ({why})"
         );
     }
