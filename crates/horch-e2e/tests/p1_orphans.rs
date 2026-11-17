@@ -119,17 +119,25 @@ fn panes(h: &Harness) -> Vec<String> {
 /// writes `<tag>.leader`, starts 1 child that writes `<tag>.child`, and
 /// each touches `<tag>.<leader|child>.term` on SIGTERM and lives on.
 fn worker_script(dir: &Path, tag: &str) -> String {
-    let f = |s: &str| dir.join(format!("{tag}.{s}")).display().to_string();
+    let file = |name: &str| dir.join(format!("{tag}.{name}")).display().to_string();
+    let leader_pid = file("leader");
+    let child_pid = file("child");
+    let leader_term = file("leader.term");
+    let child_term = file("child.term");
+    // Each pid file is written to a temp file and renamed, so a reader never
+    // sees half a pid. The inner `sh` prints its parent: the child.
     format!(
-        "trap '/usr/bin/touch {lt}' TERM; \
-         (trap '/usr/bin/touch {ct}' TERM; /bin/sh -c 'echo $PPID' > {c}.tmp; /bin/mv {c}.tmp {c}; \
-          while :; do /bin/sleep 1; done) & \
-         echo $$ > {l}.tmp; /bin/mv {l}.tmp {l}; \
-         while :; do /bin/sleep 1; done",
-        lt = f("leader.term"),
-        ct = f("child.term"),
-        l = f("leader"),
-        c = f("child"),
+        "trap '/usr/bin/touch {leader_term}' TERM
+(
+  trap '/usr/bin/touch {child_term}' TERM
+  /bin/sh -c 'echo $PPID' > {child_pid}.tmp
+  /bin/mv {child_pid}.tmp {child_pid}
+  while :; do /bin/sleep 1; done
+) &
+echo $$ > {leader_pid}.tmp
+/bin/mv {leader_pid}.tmp {leader_pid}
+while :; do /bin/sleep 1; done
+"
     )
 }
 
