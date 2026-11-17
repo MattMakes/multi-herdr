@@ -1337,18 +1337,22 @@ mod tests {
             })
             .collect()
         };
-        let m = |from: Option<&str>, to: &str| (from.map(str::to_string), to.to_string());
+        let expected_move =
+            |from: Option<&str>, to: &str| (from.map(str::to_string), to.to_string());
         assert_eq!(
             moves("task", &task_id),
             vec![
-                m(Some("queued"), "running"),
-                m(Some("running"), "landing"),
-                m(Some("landing"), "done"),
+                expected_move(Some("queued"), "running"),
+                expected_move(Some("running"), "landing"),
+                expected_move(Some("landing"), "done"),
             ]
         );
         assert_eq!(
             moves("worker", &worker_id),
-            vec![m(Some("spawning"), "working"), m(Some("working"), "done"),]
+            vec![
+                expected_move(Some("spawning"), "working"),
+                expected_move(Some("working"), "done"),
+            ]
         );
     }
 }

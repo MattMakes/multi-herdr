@@ -1760,56 +1760,73 @@ fn fitness_table_rule_finds_foreign_tables() {
 /// or `workers`: an `UPDATE` of 1 of these tables whose `SET` clause names
 /// `status`. Keywords and names match in any case, as SQLite reads them.
 fn writes_status(literal: &str) -> bool {
-    let mut toks: Vec<String> = Vec::new();
-    let chars: Vec<char> = literal.chars().collect();
-    let mut k = 0;
-    while k < chars.len() {
-        let start = k;
-        if chars[k].is_alphanumeric() || chars[k] == '_' {
-            while k < chars.len() && (chars[k].is_alphanumeric() || chars[k] == '_') {
-                k += 1;
-            }
-            toks.push(
-                chars[start..k]
-                    .iter()
-                    .collect::<String>()
-                    .to_ascii_lowercase(),
-            );
-            continue;
-        }
-        if !chars[k].is_whitespace() {
-            toks.push(chars[k].to_string());
-        }
-        k += 1;
+    let words: Vec<String> = tokens(&[literal.to_string()])
+        .into_iter()
+        .map(|(_, t)| match t {
+            Tok::Ident(name) => name.to_ascii_lowercase(),
+            Tok::Sep => "::".to_string(),
+            Tok::Punct(c) => c.to_string(),
+        })
+        .collect();
+    (0..words.len()).any(|at| {
+        set_clause_of_status_table(&words, at).is_some_and(|set| assigns_status(&words[set..]))
+    })
+}
+
+/// When the words from `at` start `UPDATE [OR <conflict>] [main.]tasks` or
+/// `... workers`, with an optional alias (`[AS] t`), and then `SET`: the
+/// index of the first word after `SET`.
+fn set_clause_of_status_table(words: &[String], at: usize) -> Option<usize> {
+    let word = |i: usize| words.get(i).map(String::as_str);
+    if word(at) != Some("update") {
+        return None;
     }
-    let tok = |i: usize| toks.get(i).map(String::as_str);
-    for (n, t) in toks.iter().enumerate() {
-        if t != "update" {
-            continue;
+    let mut next = at + 1;
+    if word(next) == Some("or") {
+        next += 2;
+    }
+    if word(next) == Some("main") && word(next + 1) == Some(".") {
+        next += 2;
+    }
+    if !matches!(word(next), Some("tasks" | "workers")) {
+        return None;
+    }
+    next += 1;
+    if word(next) == Some("as") {
+        next += 1;
+    }
+    if word(next) != Some("set") {
+        next += 1;
+    }
+    (word(next) == Some("set")).then_some(next + 1)
+}
+
+/// Whether the assignments of a `SET` clause, from its first word to its
+/// end, assign `status` (also as `t.status`). The clause ends at a `WHERE`,
+/// `FROM`, `RETURNING` or `;` outside parentheses.
+fn assigns_status(clause: &[String]) -> bool {
+    let mut depth = 0;
+    let mut starts_assignment = true;
+    for (i, word) in clause.iter().enumerate() {
+        let (column, after_column) = if clause.get(i + 1).is_some_and(|w| w == ".") {
+            (clause.get(i + 2), i + 3)
+        } else {
+            (Some(word), i + 1)
+        };
+        if depth == 0
+            && starts_assignment
+            && column.is_some_and(|c| c == "status")
+            && clause.get(after_column).is_some_and(|w| w == "=")
+        {
+            return true;
         }
-        // `UPDATE OR <conflict> <table>`.
-        let mut i = n + 1;
-        if tok(i) == Some("or") {
-            i += 2;
+        match word.as_str() {
+            "(" => depth += 1,
+            ")" => depth -= 1,
+            "where" | "from" | "returning" | ";" if depth == 0 => return false,
+            _ => {}
         }
-        if !matches!(tok(i), Some("tasks" | "workers")) || tok(i + 1) != Some("set") {
-            continue;
-        }
-        i += 2;
-        let mut depth = 0;
-        let mut first = true;
-        while let Some(t) = tok(i) {
-            match t {
-                "(" => depth += 1,
-                ")" => depth -= 1,
-                ";" if depth == 0 => break,
-                "where" | "from" | "returning" if depth == 0 => break,
-                "status" if depth == 0 && first && tok(i + 1) == Some("=") => return true,
-                _ => {}
-            }
-            first = depth == 0 && t == ",";
-            i += 1;
-        }
+        starts_assignment = depth == 0 && word == ",";
     }
     false
 }
@@ -1882,6 +1899,9 @@ fn status_write_matcher_finds_a_direct_update() {
         "c.execute(r#\"UPDATE tasks\n SET summary = ?2, status = ?3\"#, p)",
         "c.execute(\"UPDATE OR IGNORE tasks SET status = 'x'\", p)",
         "c.execute(\"UPDATE runs SET x = 1; UPDATE tasks SET status = 'x'\", p)",
+        "c.execute(\"UPDATE tasks AS t SET status = 'done'\", p)",
+        "c.execute(\"UPDATE workers w SET status = 'done'\", p)",
+        "c.execute(\"UPDATE main.tasks SET t.status = 'done'\", p)",
     ] {
         assert_eq!(writes(hit), vec![true], "{hit}");
     }
