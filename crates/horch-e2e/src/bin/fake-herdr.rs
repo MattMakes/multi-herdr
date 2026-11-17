@@ -332,23 +332,7 @@ fn run(call: &mut Call) -> i32 {
                 "root_pane": {"pane_id": pane, "workspace_id": ws, "tab_id": tab},
             }))
         }
-        ["pane", "test-state", id, rest @ ..] => {
-            let Some(pane) = find_pane_mut(&mut state, id) else {
-                eprintln!("fake-herdr: no pane {id}");
-                return 1;
-            };
-            if let Some(status) = flag(rest, "--status") {
-                pane["agent_status"] = json!(status);
-            }
-            if let Some(agent) = flag(rest, "--agent") {
-                pane["agent"] = json!(agent);
-            }
-            if let Some(text) = flag(rest, "--text") {
-                pane["test_screen"] = json!(text);
-            }
-            save(&state);
-            ok(json!({"type": "ok"}))
-        }
+        ["pane", "test-state", id, rest @ ..] => test_state(&mut state, id, rest),
         ["notification", "show", _, ..] => ok(json!({"type": "ok"})),
         ["pane", "get", id] => match find_pane(&state, id) {
             Some(p) => ok(json!({"type": "pane", "pane": p})),
@@ -357,20 +341,7 @@ fn run(call: &mut Call) -> i32 {
                 1
             }
         },
-        ["pane", "process-info", "--pane", id] => match state["pids"][*id].as_u64() {
-            Some(pid) if find_pane(&state, id).is_some() => ok(json!({
-                "process_info": {
-                    "pane_id": id,
-                    "shell_pid": pid,
-                    "foreground_process_group_id": pid,
-                    "foreground_processes": [],
-                },
-            })),
-            _ => {
-                eprintln!("fake-herdr: no process in pane {id}");
-                1
-            }
-        },
+        ["pane", "process-info", "--pane", id] => process_info(&state, id),
         ["pane", "list", rest @ ..] => {
             let ws = flag(rest, "--workspace");
             let panes: Vec<Value> = state["workspaces"]
@@ -382,32 +353,7 @@ fn run(call: &mut Call) -> i32 {
                 .collect();
             ok(json!({"type": "pane_list", "panes": panes}))
         }
-        ["pane", "run", pane, command] => {
-            if scenario_has("fail_run") {
-                eprintln!("fake-herdr: pane run refused (scenario fail_run)");
-                return 1;
-            }
-            call.extra.insert("ran".into(), json!(command));
-            if scenario_has("fleet_probe_ack") {
-                if let Some(target) = find_pane_mut(&mut state, pane) {
-                    target["agent"] = json!("claude");
-                    target["agent_status"] = json!("idle");
-                    save(&state);
-                }
-            }
-            if scenario_has("exec") {
-                if let Some(pid) = exec_detached(pane, command) {
-                    state["pids"][*pane] = json!(pid);
-                    // With the pid, the start time: `pane close` kills the
-                    // group only while its leader is this process.
-                    if let Some(started) = horch_core::procid::start_time(pid) {
-                        state["started"][*pane] = json!(started);
-                    }
-                    save(&state);
-                }
-            }
-            ok(json!({"type": "ok"}))
-        }
+        ["pane", "run", pane, command] => pane_run(call, &mut state, pane, command),
         ["pane", "read", pane, ..] => {
             say(&pane_text(&state, pane));
             0
@@ -565,6 +511,73 @@ fn flag<'a>(args: &[&'a str], name: &str) -> Option<&'a str> {
     args.iter()
         .position(|a| *a == name)
         .and_then(|i| args.get(i + 1).copied())
+}
+
+/// `pane test-state`: set the agent, its status and the screen text of
+/// pane `id`, for a test.
+fn test_state(state: &mut Value, id: &str, rest: &[&str]) -> i32 {
+    let Some(pane) = find_pane_mut(state, id) else {
+        eprintln!("fake-herdr: no pane {id}");
+        return 1;
+    };
+    if let Some(status) = flag(rest, "--status") {
+        pane["agent_status"] = json!(status);
+    }
+    if let Some(agent) = flag(rest, "--agent") {
+        pane["agent"] = json!(agent);
+    }
+    if let Some(text) = flag(rest, "--text") {
+        pane["test_screen"] = json!(text);
+    }
+    save(state);
+    ok(json!({"type": "ok"}))
+}
+
+/// `pane run`: log the command, and run it with the `exec` scenario.
+fn pane_run(call: &mut Call, state: &mut Value, pane: &str, command: &str) -> i32 {
+    if scenario_has("fail_run") {
+        eprintln!("fake-herdr: pane run refused (scenario fail_run)");
+        return 1;
+    }
+    call.extra.insert("ran".into(), json!(command));
+    if scenario_has("fleet_probe_ack") {
+        if let Some(target) = find_pane_mut(state, pane) {
+            target["agent"] = json!("claude");
+            target["agent_status"] = json!("idle");
+            save(state);
+        }
+    }
+    if scenario_has("exec") {
+        if let Some(pid) = exec_detached(pane, command) {
+            state["pids"][pane] = json!(pid);
+            // With the pid, the start time: `pane close` kills the
+            // group only while its leader is this process.
+            if let Some(started) = horch_core::procid::start_time(pid) {
+                state["started"][pane] = json!(started);
+            }
+            save(state);
+        }
+    }
+    ok(json!({"type": "ok"}))
+}
+
+/// `pane process-info`: the pid of the command that `pane run` started in
+/// pane `id`, as `shell_pid`. A pane that runs no command exits 1.
+fn process_info(state: &Value, id: &str) -> i32 {
+    match state["pids"][id].as_u64() {
+        Some(pid) if find_pane(state, id).is_some() => ok(json!({
+            "process_info": {
+                "pane_id": id,
+                "shell_pid": pid,
+                "foreground_process_group_id": pid,
+                "foreground_processes": [],
+            },
+        })),
+        _ => {
+            eprintln!("fake-herdr: no process in pane {id}");
+            1
+        }
+    }
 }
 
 fn find_pane(state: &Value, id: &str) -> Option<Value> {
