@@ -29,14 +29,16 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use clap::Subcommand;
 use horch_core::exeid::exe_identity;
 use horch_core::fleetd::fleet_runtime::adapters::clock_store::awake_now;
 use horch_core::fleetd::fleet_runtime::adapters::config_file;
-use horch_core::fleetd::fleet_runtime::adapters::effects::{exe_of, read_heartbeat};
+use horch_core::fleetd::fleet_runtime::adapters::effects::{
+    exe_of, read_heartbeat, this_exe, write_heartbeat,
+};
 use horch_core::fleetd::fleet_runtime::adapters::fleetd_row::{self, lock_path, wait_until_free};
 use horch_core::fleetd::fleet_runtime::adapters::scans::FolderItem;
 use horch_core::fleetd::fleet_runtime::adapters::watchdog_duties::{HerdrObserver, WatchdogDuties};
@@ -47,6 +49,7 @@ use horch_core::fleetd::fleet_runtime::application::pass::{
 use horch_core::fleetd::fleet_runtime::domain::config::HANG_LIMIT_S;
 use horch_core::fleetd::fleet_runtime::domain::health::{Finding, Hold};
 use horch_core::fleetd::fleet_runtime::domain::heartbeat::{is_hung, is_older, Heartbeat};
+use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
 use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
 use horch_core::fleetd::task_execution::domain::task::{AttemptRow, Recorded};
 use horch_core::fleetd::worker_profiles::adapters::launcher::Launcher;
@@ -158,8 +161,6 @@ pub(crate) struct Fleet<'a> {
     pub ledger: &'a Path,
     pub root: &'a Path,
     pub mode: Mode,
-    /// The time that a polite stop of an older fleetd may take.
-    pub stop_grace: Duration,
     /// Start the new fleetd from the binary `exe`: through the service
     /// manager, or detached through the launcher.
     pub start: &'a dyn Fn(&Path) -> Result<()>,
@@ -209,13 +210,10 @@ fn own_heartbeat(root: &Path, f: Fleetd) -> Option<Heartbeat> {
 
 /// What the check finds for the live fleetd `f`.
 fn judge_live(root: &Path, f: Fleetd) -> Result<(Found, Option<Heartbeat>)> {
+    // fleetd writes its start heartbeat right after it writes the row, so
+    // a live fleetd with no heartbeat of its own is in its start.
     let Some(hb) = own_heartbeat(root, f) else {
-        // No full pass yet: hung when it started more than the hang limit
-        // ago. The start time is on the wall clock.
-        let age = horch_platform::process::started_at(f.pid)
-            .and_then(|t| SystemTime::now().duration_since(t).ok());
-        let hung = age.is_some_and(|a| a > Duration::from_secs(HANG_LIMIT_S));
-        return Ok((if hung { Found::Hung } else { Found::Fresh }, None));
+        return Ok((Found::Fresh, None));
     };
     let now = awake_now().context("reading the awake clock")?;
     let found = if is_hung(&hb, &now, HANG_LIMIT_S) {
@@ -275,7 +273,8 @@ pub(crate) fn check_with(fleet: &Fleet<'_>) -> Result<Checked> {
 /// Stop the old fleetd `old` by its PID and start time, then wait until
 /// the fleetd lock is free. A gone fleetd gets no signal. A hung fleetd
 /// gets the kill at once: it ends a polite stop only between 2 passes. An
-/// older fleetd gets a polite stop, and the kill when `stop_grace` ends.
+/// older fleetd gets a polite stop, and the kill when `stop_grace_s` of
+/// `fleet.toml` ends. Only that case reads `fleet.toml`.
 fn stop(fleet: &Fleet<'_>, old: Fleetd, found: Found) -> Result<()> {
     let lock = lock_path(fleet.root);
     if found == Found::Dead {
@@ -290,7 +289,8 @@ fn stop(fleet: &Fleet<'_>, old: Fleetd, found: Found) -> Result<()> {
     }
     if found == Found::Older {
         procid::stop_same(old.pid, old.pid_start, procid::Stop::Term);
-        if lock_free(&lock, Instant::now() + fleet.stop_grace)? {
+        let grace = Duration::from_secs(config_file::load(fleet.root)?.stop_grace_s);
+        if lock_free(&lock, Instant::now() + grace)? {
             return Ok(());
         }
     }
@@ -335,13 +335,11 @@ fn run_check(ctx: &RuntimeContext) -> Result<Checked> {
     let paths = &ctx.paths;
     let os_home = service::os_user_home().ok();
     let mode = mode(paths, os_home.as_deref());
-    let config = config_file::load(&paths.fleet_root)?;
     let start = |exe: &Path| start_fleetd(ctx, mode, exe);
     check_with(&Fleet {
         ledger: &paths.ledger_db,
         root: &paths.fleet_root,
         mode,
-        stop_grace: Duration::from_secs(config.stop_grace_s),
         start: &start,
     })
 }
@@ -425,6 +423,22 @@ pub fn check_before_command(ctx: &RuntimeContext) {
 
 // ─── the daemon ─────────────────────────────────────────────────────────
 
+/// Write the heartbeat of this fleetd at its start, so that the hang limit
+/// counts awake time from the start until the first full pass ends.
+fn write_start_heartbeat(root: &Path, generation: Generation) -> Result<()> {
+    let pid = std::process::id();
+    let hb = Heartbeat {
+        pid,
+        pid_start: procid::start_time(pid).context("reading the start time of fleetd")?,
+        generation,
+        awake: awake_now().context("reading the awake clock")?,
+        at: horch_core::taskledger::util::now(),
+        exe: this_exe(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+    };
+    write_heartbeat(root, &hb)
+}
+
 /// A SIGTERM came: the loop ends after the pass that runs.
 static TERM: AtomicBool = AtomicBool::new(false);
 
@@ -466,6 +480,7 @@ fn daemon(ctx: &RuntimeContext) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     };
     drop(store);
+    write_start_heartbeat(root, started.generation)?;
     let config = config_file::load(root)?;
     let period = Duration::from_secs(config.pass_period_s);
     let settings = Settings {
@@ -605,7 +620,6 @@ mod tests {
     use horch_core::fleetd::fleet_runtime::adapters::effects::{exe_of, write_heartbeat};
     use horch_core::fleetd::fleet_runtime::domain::clock::AwakeReading;
     use horch_core::fleetd::fleet_runtime::domain::heartbeat::Heartbeat;
-    use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
     use horch_core::runtime::MapEnv;
     use horch_core::taskledger::Store;
 
@@ -705,7 +719,6 @@ mod tests {
                 ledger: &self.ledger,
                 root: &self.root,
                 mode: Mode::StandIn,
-                stop_grace: std::time::Duration::from_secs(5),
                 start: &start,
             };
             let checked = check_with(&fleet).unwrap();
@@ -815,6 +828,35 @@ mod tests {
         assert!(starts.is_empty(), "{starts:?}");
         assert!(alive(fresh));
         assert_eq!(checked.new, None);
+    }
+
+    /// fleetd writes a heartbeat at its start, so the hang limit counts
+    /// awake time from the start until the first full pass.
+    #[test]
+    fn a_started_fleetd_has_a_heartbeat_before_its_first_pass() {
+        let w = World::new();
+        write_start_heartbeat(&w.root, Generation(3)).unwrap();
+        let me = Fleetd {
+            pid: std::process::id(),
+            pid_start: horch_core::procid::start_time(std::process::id()).unwrap(),
+        };
+        let hb = own_heartbeat(&w.root, me).expect("the start heartbeat");
+        assert_eq!(hb.generation, Generation(3));
+        assert_eq!(judge_live(&w.root, me).unwrap().0, Found::Fresh);
+    }
+
+    /// The check of a ledger with no fleetd row reads no `fleet.toml`: a
+    /// file that does not parse does not fail it.
+    #[test]
+    fn check_with_no_row_reads_no_fleet_toml() {
+        let w = World::new();
+        std::fs::write(w.root.join("fleet.toml"), "pass_period_s = \"x\"").unwrap();
+        let env = MapEnv::new(w.root.parent().unwrap())
+            .with("HOME", &w.root.to_string_lossy())
+            .with("HORCH_LEDGER_DB", &w.ledger.to_string_lossy())
+            .with("FLEET_ROOT", &w.root.to_string_lossy());
+        let ctx = RuntimeContext::from_env(&env).unwrap();
+        assert_eq!(run_check(&ctx).unwrap().found, Found::NoRow);
     }
 
     #[test]

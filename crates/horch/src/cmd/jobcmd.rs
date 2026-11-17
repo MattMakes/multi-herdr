@@ -45,8 +45,16 @@ pub fn job(ctx: &RuntimeContext, command: JobCommand) -> Result<ExitCode> {
     }
 }
 
-/// `horch job requeue <job>`: print the new run.
+/// `horch job requeue <job>`: print the new run. The exit is the
+/// operator's, so a worker pane is refused before the ledger opens. Until
+/// the operator request of the command channel exists, the role of the
+/// pane is the guard (`docs/specs/fleetd/design.md`, "The command
+/// channel").
 fn requeue(ctx: &RuntimeContext, job: i64) -> Result<ExitCode> {
+    let role = ctx.worker.as_ref().and_then(|w| w.role.as_deref());
+    if let Some(role) = role.filter(|r| *r != "orchestrator") {
+        bail!("horch job requeue is the operator's: worker {role} cannot run it");
+    }
     let Some(mut store) = open_existing(ctx)? else {
         bail!(
             "no job {job}: the task ledger {} does not exist",
@@ -113,4 +121,27 @@ fn run(ctx: &RuntimeContext, id: i64) -> Result<ExitCode> {
         )),
     }
     Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod tests {
+    use horch_core::runtime::MapEnv;
+
+    use super::*;
+
+    /// A worker pane cannot requeue a job: the exit is the operator's. The
+    /// refusal comes before the ledger opens.
+    #[test]
+    fn a_worker_cannot_requeue_a_job() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = dir.path().join("ledger.sqlite3");
+        let env = MapEnv::new(dir.path())
+            .with("HOME", &dir.path().to_string_lossy())
+            .with("HORCH_LEDGER_DB", &ledger.to_string_lossy())
+            .with("HORCH_ROLE", "sonnet-1");
+        let ctx = RuntimeContext::from_env(&env).unwrap();
+        let err = job(&ctx, JobCommand::Requeue { job: 1 }).unwrap_err();
+        assert!(err.to_string().contains("worker sonnet-1"), "{err:#}");
+        assert!(!ledger.exists());
+    }
 }

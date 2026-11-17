@@ -840,10 +840,10 @@ fn run() -> Result<std::process::ExitCode> {
 type Ctx = horch_core::runtime::RuntimeContext;
 
 /// Run `command` after the check of `horch fleetd check`, when the command
-/// is watched: a hung or older fleetd is restarted before the command runs
+/// makes it: a hung or older fleetd is restarted before the command runs
 /// (PL-5, FM-12, OR-6).
 fn dispatch_checked(command: Command, ctx: &mut Ctx, check: fn(&Ctx)) -> Result<ExitCode> {
-    if command.watched() {
+    if command.checks_fleetd() {
         check(ctx);
     }
     command.dispatch(ctx)
@@ -928,15 +928,28 @@ impl Command {
         )
     }
 
-    /// `install` restarts a watchdog on the binary it installed; `ensure`
-    /// would move it back onto the binary that ran `install` (#216). fleetd,
-    /// its check and its job processes make no fleetd check of their own.
+    /// Whether the command restarts a quiet task-ledger watchdog after it
+    /// runs (`taskledger_watch::ensure`). `install` restarts a watchdog on
+    /// the binary it installed; `ensure` would move it back onto the binary
+    /// that ran `install` (#216).
     fn watched(&self) -> bool {
+        !matches!(
+            self,
+            Command::Tool(ToolCommand::Worker { .. } | ToolCommand::Install { .. })
+                | Command::Grid(GridCommand::Ledger {
+                    command: cmd::taskledger::LedgerCommand::Watch { .. }
+                })
+        )
+    }
+
+    /// Whether the command runs the check of `horch fleetd check` before it
+    /// runs (PL-5). fleetd, its check, its job processes, a worker pane and
+    /// the old watchdog loop run none.
+    fn checks_fleetd(&self) -> bool {
         !matches!(
             self,
             Command::Tool(
                 ToolCommand::Worker { .. }
-                    | ToolCommand::Install { .. }
                     | ToolCommand::Fleetd { .. }
                     | ToolCommand::Job {
                         command: cmd::jobcmd::JobCommand::Run { .. }
@@ -1815,10 +1828,13 @@ mod tests {
             &["horch", "fleetd"][..],
             &["horch", "fleetd", "check"],
             &["horch", "job", "run", "7"],
+            &["horch", "worker", "r"],
+            &["horch", "ledger", "watch"],
         ] {
-            assert!(!parse(argv).watched(), "{argv:?} runs a fleetd check");
+            assert!(!parse(argv).checks_fleetd(), "{argv:?} runs a fleetd check");
         }
-        assert!(parse(&["horch", "job", "requeue", "7"]).watched());
+        assert!(parse(&["horch", "job", "requeue", "7"]).checks_fleetd());
+        assert!(parse(&["horch", "install"]).checks_fleetd());
     }
 
     /// The commands whose reminders, watchdog and identity handling differ.
