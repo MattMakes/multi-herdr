@@ -2,7 +2,7 @@
 //! (PL-2, PL-3, PL-5, FM-12).
 //!
 //! - The service definitions of fleetd: [`Spec`] and [`definitions`].
-//! - Install and restart through the service manager: [`install`] and
+//! - Install and restart through the service manager: [`ensure`] and
 //!   [`restart`].
 //! - The systemd watchdog: [`watchdog_ping`].
 //! - The home of the OS user: [`os_user_home`].
@@ -17,7 +17,7 @@
 //! task that runs `horch fleetd` at logon, and a task that runs
 //! `horch fleetd check` every 30 s.
 //!
-//! [`install`] and [`restart`] take the service manager command as an input
+//! [`ensure`] and [`restart`] take the service manager command as an input
 //! (`launchctl`, `systemctl` or `schtasks`), so a test passes a stand-in.
 //! Core uses the service manager only for the default ledger of the OS user
 //! and with no `FLEET_ROOT` (`docs/tickets/fleetd-p1/MAP.md`, Q8). The
@@ -38,7 +38,7 @@ pub(crate) const HANG_LIMIT_S: u32 = 30;
 /// The label of the fleetd service of the default ledger of the OS user.
 pub const LABEL: &str = "horch-fleetd";
 
-/// The service manager command of this OS, for [`install`] and
+/// The service manager command of this OS, for [`ensure`] and
 /// [`restart`]: `launchctl` on macOS, `systemctl` on Linux and `schtasks`
 /// on Windows.
 pub const MANAGER: &str = os::MANAGER;
@@ -92,29 +92,55 @@ pub fn definitions(spec: &Spec) -> io::Result<Vec<(PathBuf, String)>> {
     os::definitions(spec)
 }
 
-/// Writes the [`definitions`] of `spec`, then registers and starts the
-/// service with `manager`:
+/// Writes the [`definitions`] of `spec`, then makes `manager` run each
+/// label with its current definition. It is safe to run again: after a
+/// first run, a 2nd run, a run that failed in the middle, or a changed
+/// definition. Each run restarts fleetd:
 ///
 /// - Linux: `systemctl --user daemon-reload`, then
-///   `systemctl --user enable --now <label>.service`.
-/// - macOS: `launchctl bootstrap gui/<uid> <plist>` for each plist. A label
-///   that launchd has loaded already makes `bootstrap` fail: then use
-///   [`restart`].
+///   `systemctl --user enable <label>.service`, then
+///   `systemctl --user restart <label>.service`.
+/// - macOS: `launchctl bootout gui/<uid>/<label>.check`, then
+///   `launchctl bootout gui/<uid>/<label>`, then
+///   `launchctl bootstrap gui/<uid> <plist>` for `<label>` and then for
+///   `<label>.check`. launchd refuses a `bootstrap` of a loaded label, so
+///   each label is unloaded first. A failed `bootout` is not a failure: the
+///   label was not loaded. The check agent goes out first and in last, so it
+///   never acts on a fleetd that is between `bootout` and `bootstrap`.
 /// - Windows: `schtasks /Create /XML <file> /TN <name> /F` for each task,
-///   then `schtasks /Run /TN <label>`.
+///   which replaces a task that exists, then `schtasks /Run /TN <label>`.
 ///
 /// It stops at the first manager command that fails, and its error names
-/// the command, the exit status and the error output.
-pub fn install(spec: &Spec, manager: &Path) -> io::Result<()> {
+/// the command, the exit status and the error output, and each failed
+/// `bootout` before it.
+pub fn ensure(spec: &Spec, manager: &Path) -> io::Result<()> {
     let defs = definitions(spec)?;
     std::fs::create_dir_all(&spec.folder)?;
     for (path, text) in &defs {
         os::write_definition(path, text)?;
     }
-    for args in os::install_commands(spec) {
-        run(manager, &args)?;
+    let mut tolerated = Vec::new();
+    for step in os::ensure_steps(spec) {
+        match run(manager, &step.args) {
+            Ok(()) => {}
+            Err(e) if step.may_fail => tolerated.push(e.to_string()),
+            Err(e) if tolerated.is_empty() => return Err(e),
+            Err(e) => {
+                return Err(io::Error::new(
+                    e.kind(),
+                    format!("{e} (before it: {})", tolerated.join("; ")),
+                ))
+            }
+        }
     }
     Ok(())
+}
+
+/// 1 manager command of [`ensure`]. A failure of a command that `may_fail`
+/// does not stop [`ensure`].
+pub(crate) struct Step {
+    pub(crate) args: Vec<OsString>,
+    pub(crate) may_fail: bool,
 }
 
 /// Restarts the service of `spec` with 1 `manager` command:

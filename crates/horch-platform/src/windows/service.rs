@@ -12,7 +12,7 @@ use windows_sys::Win32::Security::TOKEN_QUERY;
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use windows_sys::Win32::UI::Shell::GetUserProfileDirectoryW;
 
-use crate::service::{invalid, utf8, xml_escape, Spec};
+use crate::service::{invalid, utf8, xml_escape, Spec, Step};
 use crate::NotSupported;
 
 pub const MANAGER: &str = "schtasks";
@@ -126,7 +126,9 @@ pub fn write_definition(path: &Path, text: &str) -> io::Result<()> {
     std::fs::write(path, bytes)
 }
 
-pub fn install_commands(spec: &Spec) -> Vec<Vec<OsString>> {
+/// Creates each task with `/F`, which replaces a task that exists, then
+/// runs the fleetd task.
+pub fn ensure_steps(spec: &Spec) -> Vec<Step> {
     let mut commands: Vec<Vec<OsString>> = [spec.label.clone(), check_name(spec)]
         .into_iter()
         .map(|name| {
@@ -142,6 +144,12 @@ pub fn install_commands(spec: &Spec) -> Vec<Vec<OsString>> {
         .collect();
     commands.extend(restart_commands(spec));
     commands
+        .into_iter()
+        .map(|args| Step {
+            args,
+            may_fail: false,
+        })
+        .collect()
 }
 
 pub fn restart_commands(spec: &Spec) -> Vec<Vec<OsString>> {

@@ -6,7 +6,7 @@ use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::service::{utf8, xml_escape, Spec, HANG_LIMIT_S};
+use crate::service::{utf8, xml_escape, Spec, Step, HANG_LIMIT_S};
 use crate::NotSupported;
 
 pub use crate::unix::service::{os_user_home, write_definition};
@@ -42,17 +42,23 @@ pub fn definitions(spec: &Spec) -> io::Result<Vec<(PathBuf, String)>> {
     ])
 }
 
-pub fn install_commands(spec: &Spec) -> Vec<Vec<OsString>> {
-    [spec.label.clone(), check_label(spec)]
-        .iter()
-        .map(|label| {
-            vec![
-                "bootstrap".into(),
-                domain().into(),
-                plist_path(spec, label).into_os_string(),
-            ]
-        })
-        .collect()
+/// Unloads the check agent, then fleetd, then loads fleetd, then the check
+/// agent. A `bootout` of a label that is not loaded fails, and may fail.
+pub fn ensure_steps(spec: &Spec) -> Vec<Step> {
+    let labels = [spec.label.clone(), check_label(spec)];
+    let bootout = labels.iter().rev().map(|label| Step {
+        args: vec!["bootout".into(), format!("{}/{label}", domain()).into()],
+        may_fail: true,
+    });
+    let bootstrap = labels.iter().map(|label| Step {
+        args: vec![
+            "bootstrap".into(),
+            domain().into(),
+            plist_path(spec, label).into_os_string(),
+        ],
+        may_fail: false,
+    });
+    bootout.chain(bootstrap).collect()
 }
 
 pub fn restart_commands(spec: &Spec) -> Vec<Vec<OsString>> {

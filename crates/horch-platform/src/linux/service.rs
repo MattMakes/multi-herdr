@@ -8,7 +8,7 @@ use std::os::unix::net::{SocketAddr, UnixDatagram};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::service::{utf8, Spec, HANG_LIMIT_S};
+use crate::service::{utf8, Spec, Step, HANG_LIMIT_S};
 use crate::NotSupported;
 
 pub use crate::unix::service::{os_user_home, write_definition};
@@ -48,11 +48,22 @@ pub fn definitions(spec: &Spec) -> io::Result<Vec<(PathBuf, String)>> {
     Ok(vec![(spec.folder.join(unit_name(spec)), unit)])
 }
 
-pub fn install_commands(spec: &Spec) -> Vec<Vec<OsString>> {
-    vec![
+/// Reads the unit files again, enables the unit, and restarts it. The
+/// restart runs each time: a failed run can leave a unit that runs a stale
+/// definition next to a unit file that is current.
+pub fn ensure_steps(spec: &Spec) -> Vec<Step> {
+    let unit = unit_name(spec);
+    [
         args(&["--user", "daemon-reload"]),
-        args(&["--user", "enable", "--now", &unit_name(spec)]),
+        args(&["--user", "enable", &unit]),
+        args(&["--user", "restart", &unit]),
     ]
+    .into_iter()
+    .map(|args| Step {
+        args,
+        may_fail: false,
+    })
+    .collect()
 }
 
 pub fn restart_commands(spec: &Spec) -> Vec<Vec<OsString>> {

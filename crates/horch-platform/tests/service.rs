@@ -336,26 +336,31 @@ fn read_definition(path: &Path) -> String {
     String::from_utf8(bytes).unwrap()
 }
 
-/// The manager calls of `install` on this OS, for the definitions in
+/// The manager calls of `ensure` on this OS, for the definitions in
 /// `folder`.
 #[cfg(target_os = "macos")]
-fn expected_install_calls(folder: &Path) -> Vec<String> {
-    ["horch-fleetd.plist", "horch-fleetd.check.plist"]
-        .iter()
-        .map(|name| format!("bootstrap gui/{} {}", uid(), folder.join(name).display()))
-        .collect()
+fn expected_ensure_calls(folder: &Path) -> Vec<String> {
+    let uid = uid();
+    let bootstrap = |name: &str| format!("bootstrap gui/{uid} {}", folder.join(name).display());
+    vec![
+        format!("bootout gui/{uid}/horch-fleetd.check"),
+        format!("bootout gui/{uid}/horch-fleetd"),
+        bootstrap("horch-fleetd.plist"),
+        bootstrap("horch-fleetd.check.plist"),
+    ]
 }
 
 #[cfg(target_os = "linux")]
-fn expected_install_calls(_folder: &Path) -> Vec<String> {
+fn expected_ensure_calls(_folder: &Path) -> Vec<String> {
     vec![
         "--user daemon-reload".to_string(),
-        "--user enable --now horch-fleetd.service".to_string(),
+        "--user enable horch-fleetd.service".to_string(),
+        "--user restart horch-fleetd.service".to_string(),
     ]
 }
 
 #[cfg(windows)]
-fn expected_install_calls(folder: &Path) -> Vec<String> {
+fn expected_ensure_calls(folder: &Path) -> Vec<String> {
     let mut calls: Vec<String> = ["horch-fleetd", "horch-fleetd.check"]
         .iter()
         .map(|name| {
@@ -368,13 +373,13 @@ fn expected_install_calls(folder: &Path) -> Vec<String> {
 }
 
 #[test]
-fn install_writes_the_files_then_calls_the_manager() {
+fn ensure_writes_the_files_then_calls_the_manager() {
     let dir = tempfile::tempdir().unwrap();
     let folder = dir.path().join("defs");
     let spec = spec(&folder);
     let (manager, log) = stand_in(dir.path(), &folder, 0);
 
-    service::install(&spec, &manager).expect("install");
+    service::ensure(&spec, &manager).expect("ensure");
 
     let defs = service::definitions(&spec).unwrap();
     for (path, text) in &defs {
@@ -391,18 +396,187 @@ fn install_writes_the_files_then_calls_the_manager() {
                 .replace('"', "")
         })
         .collect();
-    assert_eq!(args, expected_install_calls(&folder));
+    assert_eq!(args, expected_ensure_calls(&folder));
 }
 
+/// `ensure` stops at the first failure. A failed macOS `bootout` is not a
+/// failure: the label was not loaded.
 #[test]
-fn install_fails_when_the_manager_fails() {
+fn ensure_fails_when_the_manager_fails() {
     let dir = tempfile::tempdir().unwrap();
     let folder = dir.path().join("defs");
     let (manager, log) = stand_in(dir.path(), &folder, 3);
-    let err = service::install(&spec(&folder), &manager).expect_err("the manager failed");
+    let err = service::ensure(&spec(&folder), &manager).expect_err("the manager failed");
     let text = err.to_string();
     assert!(text.contains(&manager.display().to_string()), "{text}");
-    assert_eq!(calls(&log).len(), 1, "install stops at the first failure");
+    let expected = expected_ensure_calls(&folder);
+    let first_failure = expected
+        .iter()
+        .position(|call| !call.starts_with("bootout"))
+        .unwrap();
+    assert_eq!(
+        calls(&log).len(),
+        first_failure + 1,
+        "ensure stops at the first failure"
+    );
+}
+
+/// `ensure` calls each manager command again on the 2nd run: each task is
+/// created again with `/F`, then the fleetd task runs.
+#[cfg(windows)]
+#[test]
+fn ensure_twice_calls_each_command_twice() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().join("defs");
+    let spec = spec(&folder);
+    let (manager, log) = stand_in(dir.path(), &folder, 0);
+    service::ensure(&spec, &manager).expect("ensure 1");
+    service::ensure(&spec, &manager).expect("ensure 2");
+    let args: Vec<String> = calls(&log)
+        .iter()
+        .map(|c| c.rsplit_once(" | ").unwrap().0.replace('"', ""))
+        .collect();
+    let once = expected_ensure_calls(&folder);
+    assert_eq!(args, [once.clone(), once].concat());
+}
+
+/// A stand-in manager with state, in `dir`. It acts as launchd or as
+/// systemd does for the commands of `ensure`, and keeps the definition
+/// that each label runs in `dir/loaded/<label>`:
+///
+/// - `bootstrap gui/<uid> <plist>` fails with 5 for a loaded label, as
+///   launchd does. Else it loads the plist.
+/// - `bootout gui/<uid>/<label>` fails with 3 for a label that is not
+///   loaded. Else it unloads the label.
+/// - `--user daemon-reload` reads the unit files of `folder`.
+/// - `--user enable --now <unit>` starts a unit that does not run, with
+///   the unit file of the last reload. `enable` without `--now` starts
+///   nothing.
+/// - `--user restart <unit>` runs the unit file of the last reload.
+///
+/// A call whose arguments contain the text of `dir/fail-on` fails with 9.
+#[cfg(unix)]
+fn model_manager(dir: &Path, folder: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let script = dir.join("model-manager");
+    for sub in ["loaded", "reloaded"] {
+        std::fs::create_dir_all(dir.join(sub)).unwrap();
+    }
+    let text = r#"#!/bin/sh
+state='STATE'
+folder='FOLDER'
+if [ -s "$state/fail-on" ]; then
+  case "$*" in *"$(cat "$state/fail-on")"*) echo "stand-in failure: $*" >&2; exit 9;; esac
+fi
+eval last=\${$#}
+case "$1" in
+bootstrap)
+  label=$(basename "$3" .plist)
+  if [ -e "$state/loaded/$label" ]; then echo "Bootstrap failed: 5: Input/output error" >&2; exit 5; fi
+  cp "$3" "$state/loaded/$label";;
+bootout)
+  label=${2##*/}
+  if [ ! -e "$state/loaded/$label" ]; then echo "Boot-out failed: 3: No such process" >&2; exit 3; fi
+  rm "$state/loaded/$label";;
+--user)
+  case "$2" in
+  daemon-reload) cp "$folder"/* "$state/reloaded/";;
+  enable) if [ "$3" = --now ] && [ ! -e "$state/loaded/$last" ]; then cp "$state/reloaded/$last" "$state/loaded/$last"; fi;;
+  restart) cp "$state/reloaded/$last" "$state/loaded/$last";;
+  *) exit 64;;
+  esac;;
+*) exit 64;;
+esac
+"#
+    .replace("STATE", &dir.display().to_string())
+    .replace("FOLDER", &folder.display().to_string());
+    std::fs::write(&script, text).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    script
+}
+
+/// Each label of `spec` runs its current definition in the state of the
+/// [`model_manager`] in `dir`. The label of a plist is its file stem, the
+/// label of a systemd unit is its file name.
+#[cfg(unix)]
+fn assert_loaded(dir: &Path, spec: &Spec) {
+    for (path, text) in service::definitions(spec).unwrap() {
+        let name = path.file_name().unwrap().to_str().unwrap();
+        let label = name.strip_suffix(".plist").unwrap_or(name);
+        let loaded = std::fs::read_to_string(dir.join("loaded").join(label))
+            .unwrap_or_else(|e| panic!("the label {label} is not loaded: {e}"));
+        assert_eq!(loaded, text, "the label {label} runs a stale definition");
+    }
+}
+
+/// Install, then install again: each label is loaded and the 2nd run
+/// gives no error. launchd refuses a 2nd `bootstrap` of a loaded label.
+#[cfg(unix)]
+#[test]
+fn ensure_twice_keeps_each_label_loaded() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().join("defs");
+    let spec = spec(&folder);
+    let manager = model_manager(dir.path(), &folder);
+    service::ensure(&spec, &manager).expect("ensure 1");
+    assert_loaded(dir.path(), &spec);
+    service::ensure(&spec, &manager).expect("ensure 2");
+    assert_loaded(dir.path(), &spec);
+}
+
+/// The 1st install fails at its last manager command, after the files are
+/// written: the macOS check agent, or the Linux restart. The next install
+/// loads each label.
+#[cfg(unix)]
+#[test]
+fn ensure_after_a_failed_ensure_loads_each_label() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().join("defs");
+    let spec = spec(&folder);
+    let manager = model_manager(dir.path(), &folder);
+    let fail_on = dir.path().join("fail-on");
+    #[cfg(target_os = "macos")]
+    std::fs::write(&fail_on, "horch-fleetd.check.plist").unwrap();
+    #[cfg(target_os = "linux")]
+    std::fs::write(&fail_on, "restart").unwrap();
+    let err = service::ensure(&spec, &manager).expect_err("the stand-in failed");
+    assert!(err.to_string().contains("stand-in failure"), "{err}");
+
+    std::fs::remove_file(&fail_on).unwrap();
+    service::ensure(&spec, &manager).expect("ensure 2");
+    assert_loaded(dir.path(), &spec);
+}
+
+/// A changed definition: the next install loads the label with it.
+#[cfg(unix)]
+#[test]
+fn ensure_reloads_a_changed_definition() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().join("defs");
+    let old = spec(&folder);
+    let manager = model_manager(dir.path(), &folder);
+    service::ensure(&old, &manager).expect("ensure 1");
+
+    let new = Spec {
+        exe: PathBuf::from("/opt/horch 2/horch"),
+        ..old
+    };
+    service::ensure(&new, &manager).expect("ensure 2");
+    assert_loaded(dir.path(), &new);
+}
+
+/// A failed `bootout` before a failed `bootstrap`: the error names both.
+#[cfg(target_os = "macos")]
+#[test]
+fn ensure_error_names_a_failed_bootout_too() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().join("defs");
+    let manager = model_manager(dir.path(), &folder);
+    std::fs::write(dir.path().join("fail-on"), "bootstrap").unwrap();
+    let err = service::ensure(&spec(&folder), &manager).expect_err("the stand-in failed");
+    let text = err.to_string();
+    assert!(text.contains("stand-in failure: bootstrap"), "{text}");
+    assert!(text.contains("Boot-out failed: 3"), "{text}");
 }
 
 /// On Windows, `/Run` alone restarts the task: its policy `StopExisting`
@@ -525,7 +699,7 @@ fn os_user_home_ignores_home_env() {
     assert_ne!(Path::new(child_home), fake.path());
 }
 
-/// The manager command of this OS is the 1 that [`service::install`] and
+/// The manager command of this OS is the 1 that [`service::ensure`] and
 /// [`service::restart`] expect.
 #[test]
 fn manager_is_the_service_manager_of_this_os() {

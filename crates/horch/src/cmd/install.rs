@@ -111,18 +111,12 @@ fn install_fleetd(
 }
 
 /// Install the fleetd service on `target` with the service manager of this
-/// OS. Definition files that hold this text already are an installed
-/// service: launchd refuses a 2nd bootstrap of a loaded label.
+/// OS. Each install loads each label with its current definition, also
+/// when the definition files hold this text already: a failed install
+/// can leave a current file next to a label that is not loaded.
 fn install_service(target: &Path) -> Result<()> {
     let spec = fleetd::service_spec(target)?;
-    let defs = service::definitions(&spec)?;
-    let installed = defs
-        .iter()
-        .all(|(path, text)| std::fs::read_to_string(path).is_ok_and(|t| t == *text));
-    if installed {
-        return Ok(());
-    }
-    service::install(&spec, Path::new(service::MANAGER))
+    service::ensure(&spec, Path::new(service::MANAGER))
         .with_context(|| format!("installing the service {}", service::LABEL))
 }
 
