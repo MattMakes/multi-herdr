@@ -7,6 +7,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+const HEALTHY_MACHINE: &str = r#"{"os":"linux","arch":"x86_64","cpus":8,"load_average_1m":1.0,"mem_total_bytes":17179869184,"mem_available_bytes":8589934592,"disk_free_bytes":214748364800,"disk_total_bytes":536870912000,"gpu":"none","max_open_files":1048576,"max_processes":100000}"#;
+
 struct Out {
     code: i32,
     out: String,
@@ -42,6 +44,9 @@ impl World {
         for (n, title) in [("t1", "One"), ("t2", "Two")] {
             std::fs::write(proj.join(format!("{n}.md")), format!("# Ticket {title}\n")).unwrap();
         }
+        // A fixed, healthy machine, so the health guard of `horch spawn`
+        // never reads the real load of the host.
+        std::fs::write(tmp.path().join("machine.json"), HEALTHY_MACHINE).unwrap();
         World { tmp }
     }
 
@@ -64,7 +69,8 @@ impl World {
             .env("HOME", root.join("home"))
             .env("XDG_DATA_HOME", root.join("data"))
             .env("HORCH_STATE_DIR", root.join("state"))
-            .env("HORCH_PROJECT_DIR", self.proj());
+            .env("HORCH_PROJECT_DIR", self.proj())
+            .env("HORCH_MACHINE_FILE", root.join("machine.json"));
         if watchdog_off {
             cmd.env("HORCH_NO_WATCHDOG", "1");
         }
