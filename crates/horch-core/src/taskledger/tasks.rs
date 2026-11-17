@@ -765,7 +765,7 @@ impl std::fmt::Display for Wait {
             Wait::BlockerCancelled { task } => {
                 write!(
                     f,
-                    "{task} was cancelled: requeue it, or drop the dependency"
+                    "{task} was cancelled: add its ticket again, or drop the dependency"
                 )
             }
             Wait::BlockerParked { task } => write!(
@@ -1464,9 +1464,9 @@ pub fn fallback(conn: &Connection, task: &Task, reason: &str) -> Result<Task> {
 
 /// Drop a task: the 1 cancel path (#136). In the caller's transaction the
 /// task lets go of its worker, the worker row ends `stopped`, and an open
-/// worktree becomes `abandoned` (its branch and folder stay, so a requeue
-/// can reopen it). The worker's process is not signalled here: after the
-/// commit, the caller stops it with [`super::stop::stop_cancelled`] (TRF-36).
+/// worktree becomes `abandoned` (its branch and folder stay). `cancelled`
+/// is terminal: no requeue reopens the task. The worker's process is not
+/// signalled here: after the commit, the caller stops it with [`super::stop::stop_cancelled`] (TRF-36).
 pub fn cancel(conn: &Connection, task: &Task, reason: &str) -> Result<Task> {
     if is_in(sql_words::TASKS_ENDED, &task.status) {
         bail!("{} is already {}", task.short(), task.shown_status());
@@ -1628,7 +1628,8 @@ pub fn requeue_by_operator(conn: &Connection, task: &Task, reason: &str) -> Resu
 }
 
 /// The writes of [`requeue_by_operator`], in the open transaction of
-/// `conn`. A held (`escalated`) or cancelled task moves to `ready`.
+/// `conn`. A held (`escalated`) task moves to `ready`. The door of
+/// [`util::transition`] refuses a cancelled task.
 fn requeue_by_operator_in(conn: &Connection, task: &Task, reason: &str) -> Result<Task> {
     let now = util::now();
     if task.is_parked() {

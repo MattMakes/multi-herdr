@@ -3602,7 +3602,7 @@ fn a_cancel_names_the_tasks_that_wait_for_it() {
     assert!(o.contains("Waiting for T-1: T-2, T-3."), "{o}");
     let st = out(&h.run(&["ledger", "status"]));
     assert!(
-        st.contains("[T-1 was cancelled: requeue it, or drop the dependency]"),
+        st.contains("[T-1 was cancelled: add its ticket again, or drop the dependency]"),
         "{st}"
     );
     let w = wakes(&h);
