@@ -45,8 +45,9 @@ pub enum Termination {
 /// On Linux a pidfd is opened first and the start time checked after: the
 /// pidfd names the process that had the pid when it was opened, and a match
 /// after that proves it is the one recorded. The signal then goes to that
-/// process even if it ends and its pid is given out in between. A kernel
-/// without pidfds (before 5.3) falls back to the check and `kill`. On
+/// process even if it ends and its pid is given out in between. A pidfd
+/// that does not open for a reason other than `ESRCH`, as on a kernel
+/// before 5.3, falls back to the check and `kill`. On
 /// macOS there is no pidfd for a process that is not a child: the start
 /// time is checked just before `kill`, and the pid would have to end and
 /// be given out again between the two calls.

@@ -35,7 +35,8 @@ impl LocalStream {
 
     /// Connect to the socket at `path`, but wait only until `deadline`.
     /// The stream is nonblocking and close-on-exec. A path that does not
-    /// fit the socket address gives `InvalidInput`.
+    /// fit the socket address gives `InvalidInput`. While the backlog of
+    /// the listener is full, the connect waits for room until `deadline`.
     pub fn connect_by(path: &Path, deadline: Instant) -> io::Result<LocalStream> {
         os::ipc::connect_by(path, deadline).map(LocalStream)
     }
@@ -47,12 +48,9 @@ impl LocalStream {
     }
 
     /// Read 1 line, with its newline, or what came before EOF, but wait
-    /// only until `deadline`. The read takes chunks of up to 256 bytes and
-    /// stops after the first chunk that holds a newline, or once `limit`
-    /// bytes are in. So the result can hold bytes after the newline and
-    /// up to 255 bytes over `limit`. Those bytes are not kept for a next
-    /// call. Bytes that are not UTF-8 give `InvalidData`. This is the
-    /// behavior of `messaging/channel.rs` today, and PL-6 keeps it.
+    /// only until `deadline`. The result holds at most `limit` bytes and
+    /// ends at the first newline. The bytes after it stay for the next
+    /// call. Bytes that are not UTF-8 give `InvalidData`.
     pub fn read_line_by(&mut self, deadline: Instant, limit: usize) -> io::Result<String> {
         os::ipc::read_line_by(&mut self.0, deadline, limit)
     }

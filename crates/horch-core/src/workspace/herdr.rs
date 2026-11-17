@@ -19,7 +19,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
-use horch_platform::group::Contained;
+use horch_platform::group::{Contained, NotResumed};
 use serde::Deserialize;
 
 use crate::workspace::model::*;
@@ -739,6 +739,19 @@ fn reap_within(child: &mut Child, grace: Duration) -> std::io::Result<()> {
     }
 }
 
+/// An error of [`Contained::start`], with herdr named where the platform
+/// names only the child process.
+fn name_herdr(error: std::io::Error) -> std::io::Error {
+    if error
+        .get_ref()
+        .is_some_and(|inner| inner.is::<NotResumed>())
+    {
+        std::io::Error::other("could not resume herdr")
+    } else {
+        error
+    }
+}
+
 /// Run `command` with one `timeout` for the exit and for both pipes. The
 /// call stops at the earlier of `timeout` and the absolute `deadline`. On
 /// that stop, or when either pipe passes the cap, the child is killed and the
@@ -769,7 +782,7 @@ fn output_within(
         Ok(job) => job,
         Err(error) => {
             let _ = kill_and_reap(&mut child);
-            return Err(error);
+            return Err(name_herdr(error));
         }
     };
     let ((stdout_rx, stdout_thread), (stderr_rx, stderr_thread)) = match (
@@ -852,6 +865,14 @@ mod tests {
         );
         assert!(warm.status.success(), "warming {}", script.display());
         (dir, script)
+    }
+
+    #[test]
+    fn a_child_that_does_not_resume_is_named_herdr() {
+        let error = name_herdr(std::io::Error::other(NotResumed));
+        assert_eq!(error.to_string(), "could not resume herdr");
+        let other = name_herdr(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        assert_eq!(other.kind(), std::io::ErrorKind::PermissionDenied);
     }
 
     #[cfg(unix)]

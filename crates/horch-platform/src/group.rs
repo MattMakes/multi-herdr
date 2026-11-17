@@ -23,10 +23,9 @@ pub fn new_group(cmd: &mut Command) {
 /// Send `SIGKILL` to process group `pgid`. Whether the signal was sent. A
 /// group that has gone gives `false` (`ESRCH`).
 ///
-/// The id goes to the OS unchecked, as it does today: 0 names the group of
-/// this process, and a value above `i32::MAX` names no group (`EINVAL`).
-/// The caller passes the pid of a group leader that it started with
-/// [`new_group`].
+/// 0 names the group of this process, and a value above `i32::MAX` names
+/// no single group: both give `false` and send no signal. The caller passes
+/// the pid of a group leader that it started with [`new_group`].
 ///
 /// Windows gives [`NotSupported`]: it has no process groups. Section 6, row
 /// "Process groups".
@@ -98,8 +97,9 @@ impl Contained {
 
     /// Contain `child`, spawned from a command of [`Contained::prepare`],
     /// and let it run. Windows: a new job with kill-on-close holds the child,
-    /// then its main thread resumes. macOS and Linux: the process group holds
-    /// it already, and this does nothing.
+    /// then its main thread resumes. When no thread resumes, the error holds
+    /// a [`NotResumed`]. macOS and Linux: the process group holds it already,
+    /// and this does nothing.
     pub fn start(child: &Child) -> std::io::Result<Self> {
         os::Contained::start(child).map(Self)
     }
@@ -113,3 +113,17 @@ impl Contained {
         self.0.terminate()
     }
 }
+
+/// The error of [`Contained::start`] on Windows when the main thread of the
+/// child does not resume. The `std::io::Error` holds it, so the caller finds
+/// it with `get_ref` and can name the child in its own message.
+#[derive(Debug)]
+pub struct NotResumed;
+
+impl std::fmt::Display for NotResumed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("could not resume the child process")
+    }
+}
+
+impl std::error::Error for NotResumed {}

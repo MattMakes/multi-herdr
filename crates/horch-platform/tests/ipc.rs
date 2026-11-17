@@ -68,16 +68,91 @@ mod unix {
         let error = stream.read_line_by(start + wait, 64 * 1024).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::TimedOut);
         let elapsed = start.elapsed();
-        // `poll` waits in whole milliseconds, truncated, so it can wake
-        // up to 1 ms before the deadline. Allow 10 ms.
-        assert!(
-            elapsed + Duration::from_millis(10) >= wait,
-            "returned early: {elapsed:?}"
-        );
+        assert!(elapsed >= wait, "returned early: {elapsed:?}");
         assert!(
             elapsed < wait + Duration::from_secs(1),
             "too late: {elapsed:?}"
         );
+        // Deadlines between 2 whole milliseconds: a wait that truncates the
+        // time left wakes before them.
+        for _ in 0..20 {
+            let deadline = Instant::now() + Duration::from_micros(1_950);
+            let error = stream.read_line_by(deadline, 64 * 1024).unwrap_err();
+            let end = Instant::now();
+            assert_eq!(error.kind(), ErrorKind::TimedOut);
+            assert!(
+                end >= deadline,
+                "returned {:?} early",
+                deadline.duration_since(end)
+            );
+        }
+    }
+
+    /// A listener whose peer writes `bytes` at once, then stays open.
+    fn peer_that_writes(bytes: &'static [u8]) -> (tempfile::TempDir, PathBuf) {
+        let dir = short_dir();
+        let path = socket_in(&dir);
+        let listener = LocalListener::bind(&path).unwrap();
+        std::thread::spawn(move || {
+            let mut stream = listener.accept().unwrap();
+            stream.write_all(bytes).unwrap();
+            // Keep the stream open until the reader is done.
+            std::thread::sleep(Duration::from_secs(5));
+        });
+        (dir, path)
+    }
+
+    #[test]
+    fn read_line_by_stops_at_the_first_newline() {
+        let (_dir, path) = peer_that_writes(b"one\ntwo\n");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut stream = LocalStream::connect_by(&path, deadline).unwrap();
+        assert_eq!(stream.read_line_by(deadline, 1024).unwrap(), "one\n");
+        assert_eq!(stream.read_line_by(deadline, 1024).unwrap(), "two\n");
+    }
+
+    #[test]
+    fn read_line_by_returns_at_most_limit_bytes() {
+        let (_dir, path) = peer_that_writes(b"abcdefghij\n");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut stream = LocalStream::connect_by(&path, deadline).unwrap();
+        assert_eq!(stream.read_line_by(deadline, 4).unwrap(), "abcd");
+        assert_eq!(stream.read_line_by(deadline, 4).unwrap(), "efgh");
+        assert_eq!(stream.read_line_by(deadline, 1024).unwrap(), "ij\n");
+    }
+
+    /// Linux answers a nonblocking connect to a full backlog with `EAGAIN`.
+    /// `connect_by` waits for room until the deadline.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn connect_by_waits_while_the_backlog_is_full() {
+        use std::os::unix::io::AsRawFd;
+        use std::os::unix::net::UnixListener;
+
+        let dir = short_dir();
+        let path = socket_in(&dir);
+        let listener = UnixListener::bind(&path).unwrap();
+        // SAFETY: plain syscall on the socket that `listener` owns. A
+        // backlog of 0 holds 1 connection that is not accepted.
+        assert_eq!(unsafe { libc::listen(listener.as_raw_fd(), 0) }, 0);
+        let long = Instant::now() + Duration::from_secs(5);
+        let _first = LocalStream::connect_by(&path, long).unwrap();
+
+        let deadline = Instant::now() + Duration::from_millis(200);
+        let error = LocalStream::connect_by(&path, deadline).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::TimedOut, "{error:?}");
+        assert!(Instant::now() >= deadline, "returned before the deadline");
+
+        // Accept the first connection later, and keep the listener open.
+        let accept = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            let accepted = listener.accept().unwrap();
+            (listener, accepted)
+        });
+        let long = Instant::now() + Duration::from_secs(5);
+        let second = LocalStream::connect_by(&path, long);
+        let _open = accept.join().unwrap();
+        second.unwrap();
     }
 
     #[test]

@@ -136,6 +136,6 @@ fn resume_main_thread(child: &Child) -> std::io::Result<()> {
     if resumed {
         Ok(())
     } else {
-        Err(std::io::Error::other("could not resume herdr"))
+        Err(std::io::Error::other(crate::group::NotResumed))
     }
 }

@@ -1,7 +1,7 @@
 //! The concern ipc for the code of macOS and Linux: a Unix stream socket.
 //!
-//! A copy of `horch-core/src/messaging/channel.rs` (`connect_by` to
-//! `wait_ready`), with the same system calls in the same order.
+//! `connect_by` to `wait_ready` began as a copy of
+//! `horch-core/src/messaging/channel.rs`.
 
 use std::io::{self, Read, Write};
 use std::os::unix::io::{AsRawFd, FromRawFd};
@@ -19,30 +19,42 @@ pub(crate) fn connect(path: &Path) -> io::Result<Stream> {
 /// `UnixStream::connect` has no timeout, and it can block while the
 /// listener's backlog is full. Connect a nonblocking socket instead, and
 /// wait for it only until `deadline`. No helper thread outlives the call.
+///
+/// Linux answers a full backlog with `EAGAIN` and leaves the socket
+/// unconnected, and `poll` cannot tell when room comes. So the connect is
+/// tried again each [`BACKLOG_RETRY`] until the deadline.
 pub(crate) fn connect_by(path: &Path, deadline: Instant) -> io::Result<Stream> {
     let address = unix_address(path)?;
     let stream = new_nonblocking_socket()?;
     let length = std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
-    // SAFETY: `address` is a valid sockaddr_un of `length` bytes.
-    let connected = unsafe {
-        libc::connect(
-            stream.as_raw_fd(),
-            (&address as *const libc::sockaddr_un).cast(),
-            length,
-        )
-    };
-    if connected != 0 {
+    loop {
+        // SAFETY: `address` is a valid sockaddr_un of `length` bytes.
+        let connected = unsafe {
+            libc::connect(
+                stream.as_raw_fd(),
+                (&address as *const libc::sockaddr_un).cast(),
+                length,
+            )
+        };
+        if connected == 0 {
+            return Ok(stream);
+        }
         let error = io::Error::last_os_error();
-        if error.raw_os_error() != Some(libc::EINPROGRESS) {
-            return Err(error);
+        match error.raw_os_error() {
+            Some(libc::EINPROGRESS) => break,
+            Some(libc::EAGAIN) => std::thread::sleep(time_left(deadline)?.min(BACKLOG_RETRY)),
+            _ => return Err(error),
         }
-        wait_ready(&stream, libc::POLLOUT, deadline)?;
-        if let Some(error) = stream.take_error()? {
-            return Err(error);
-        }
+    }
+    wait_ready(&stream, libc::POLLOUT, deadline)?;
+    if let Some(error) = stream.take_error()? {
+        return Err(error);
     }
     Ok(stream)
 }
+
+/// The pause before a connect to a full backlog is tried again.
+const BACKLOG_RETRY: Duration = Duration::from_millis(5);
 
 /// The socket address of `path`, or an error when the path does not fit.
 fn unix_address(path: &Path) -> io::Result<libc::sockaddr_un> {
@@ -95,18 +107,20 @@ pub(crate) fn write_by(stream: &mut Stream, mut bytes: &[u8], deadline: Instant)
     Ok(())
 }
 
-/// One line, up to and with its newline, or what came before EOF.
+/// One line, up to and with its newline, or what came before EOF, and at
+/// most `limit` bytes. The read takes 1 byte at a time, so the bytes after
+/// the line stay in the socket for the next call.
 pub(crate) fn read_line_by(
     stream: &mut Stream,
     deadline: Instant,
     limit: usize,
 ) -> io::Result<String> {
     let mut answer = Vec::new();
-    let mut buffer = [0; 256];
-    while !answer.contains(&b'\n') && answer.len() < limit {
-        match stream.read(&mut buffer) {
+    let mut byte = [0; 1];
+    while answer.len() < limit && answer.last() != Some(&b'\n') {
+        match stream.read(&mut byte) {
             Ok(0) => break,
-            Ok(read) => answer.extend_from_slice(&buffer[..read]),
+            Ok(_) => answer.push(byte[0]),
             Err(error) => retry_after(error, stream, libc::POLLIN, deadline)?,
         }
     }
@@ -130,8 +144,9 @@ fn retry_after(
 }
 
 /// Wait until `stream` is ready for `events`, but not past `deadline`.
-/// `Ok(())` means ready: `wait_ready` retries an interrupted poll itself,
-/// with the time left.
+/// `Ok(())` means ready. `poll` takes whole milliseconds, so the wait
+/// rounds the time left up. A poll that ends early or is interrupted
+/// waits again for the time left.
 fn wait_ready(stream: &Stream, events: libc::c_short, deadline: Instant) -> io::Result<()> {
     let mut poll = libc::pollfd {
         fd: stream.as_raw_fd(),
@@ -139,18 +154,18 @@ fn wait_ready(stream: &Stream, events: libc::c_short, deadline: Instant) -> io::
         revents: 0,
     };
     loop {
-        let millis = time_left(deadline)?.as_millis().clamp(1, i32::MAX as u128) as libc::c_int;
+        let left = time_left(deadline)?;
+        let millis = left.as_nanos().div_ceil(1_000_000).min(i32::MAX as u128) as libc::c_int;
         // SAFETY: `poll` points to 1 valid pollfd for the length of the call.
         let ready = unsafe { libc::poll(&mut poll, 1, millis) };
         if ready > 0 {
             return Ok(());
         }
-        if ready == 0 {
-            return Err(io::ErrorKind::TimedOut.into());
-        }
-        let error = io::Error::last_os_error();
-        if error.kind() != io::ErrorKind::Interrupted {
-            return Err(error);
+        if ready < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() != io::ErrorKind::Interrupted {
+                return Err(error);
+            }
         }
     }
 }

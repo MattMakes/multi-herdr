@@ -89,6 +89,35 @@ fn is_same_group_is_false_for_a_wrong_start_time() {
     assert_eq!(wrong, Ok(false));
 }
 
+/// Set in the child process of
+/// `kill_group_id_refuses_an_id_that_names_no_group_it_started`.
+#[cfg(unix)]
+const REFUSE_CHILD: &str = "HORCH_PLATFORM_TEST_REFUSE_CHILD";
+
+/// 0 names the group of the caller, and an id above `i32::MAX` becomes a
+/// negative `pid_t`. `kill_group_id` refuses both and sends no signal. The
+/// check runs in a child process that leads a new group, so a wrong kill
+/// ends only that child.
+#[cfg(unix)]
+#[test]
+fn kill_group_id_refuses_an_id_that_names_no_group_it_started() {
+    if std::env::var_os(REFUSE_CHILD).is_some() {
+        for pgid in [0, i32::MAX as u32 + 1, u32::MAX] {
+            assert_eq!(group::kill_group_id(pgid), Ok(false), "pgid {pgid}");
+        }
+        return;
+    }
+    let mut cmd = Command::new(std::env::current_exe().expect("test binary"));
+    cmd.args([
+        "--exact",
+        "kill_group_id_refuses_an_id_that_names_no_group_it_started",
+    ])
+    .env(REFUSE_CHILD, "1");
+    group::new_group(&mut cmd);
+    let status = cmd.status().expect("run the test binary");
+    assert!(status.success(), "the child ended with {status:?}");
+}
+
 /// A `cmd` child whose `ping` grandchild holds stdout for about 60 s.
 #[cfg(windows)]
 fn cmd_with_a_grandchild() -> Command {

@@ -8,9 +8,14 @@ pub(crate) fn new_group(cmd: &mut Command) {
     cmd.process_group(0);
 }
 
+/// `SIGKILL` to group `pgid`. 0 names the group of the caller, and a value
+/// above `i32::MAX` becomes a negative `pid_t`, so both send nothing.
 fn kill_pgid(pgid: u32) -> bool {
+    let Some(group) = i32::try_from(pgid).ok().filter(|p| *p > 0) else {
+        return false;
+    };
     // SAFETY: killpg takes plain integers and touches no memory.
-    unsafe { libc::killpg(pgid as libc::pid_t, libc::SIGKILL) == 0 }
+    unsafe { libc::killpg(group, libc::SIGKILL) == 0 }
 }
 
 pub(crate) fn kill_group_id(pgid: u32) -> Result<bool, NotSupported> {
