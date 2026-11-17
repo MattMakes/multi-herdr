@@ -3755,18 +3755,14 @@ fn a_cancelled_task_does_not_land_or_turn_done() {
     let unf = ok(&h, &["ledger", "unfinished"]);
     assert!(unf.contains("T-1 was cancelled with its worktree"), "{unf}");
 
-    // A requeue reopens the kept worktree for the next claim.
-    ok(&h, &["ledger", "requeue", "T-1", "wanted after all"]);
-    let w2 = worker_new(&h, "opus");
-    let claim = ok_as(&h, &w2, &["ledger", "claim"]);
-    assert!(
-        claim.contains(&path.to_string_lossy().into_owned()),
-        "{claim}"
-    );
-    assert_eq!(
-        ok(&h, &["ledger", "unfinished"]).trim(),
-        "No unfinished work."
-    );
+    // `cancelled` is terminal (fleetd-p2 MAP.md, Q22): the door refuses a
+    // requeue, and the kept worktree stays unfinished.
+    let o = h.run(&["ledger", "requeue", "T-1", "wanted after all"]);
+    assert!(!o.status.success(), "{}", text(&o));
+    assert!(text(&o).contains(": cancelled -> ready"), "{}", text(&o));
+    assert!(path.join("c.txt").exists());
+    let unf = ok(&h, &["ledger", "unfinished"]);
+    assert!(unf.contains("T-1 was cancelled with its worktree"), "{unf}");
 }
 
 #[test]
