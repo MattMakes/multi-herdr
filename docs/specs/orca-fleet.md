@@ -1,6 +1,9 @@
 # Design: a horch fleet in Orca (capability map and adapter)
 
-Status: design proposal. Nothing in this document is built.
+Status: withdrawn as a plan. The operator chose to build the fleet natively in the Orca fork.
+That design is `docs/horch-native-design.md` in `MattMakes/orca`, on branch
+`claude/practical-ride-mcsllc`. The capability map of section 3 here still holds. Sections
+1 and 4 to 9, on where the engine lives, do not. Nothing in this document is built.
 
 This spec lives in multi-herdr for 2 reasons: tickets 01 to 11 of section 8 are multi-herdr
 work, and Orca's repository keeps planning docs out of git (`docs/**` in its `.gitignore`).
