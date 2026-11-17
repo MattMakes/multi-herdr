@@ -1,2 +1,1 @@
 # Red tests of crates/horch-e2e/tests/p0_supervision.rs (ticket fleetd-p0/04).
-fm7_killed_watchdog_does_not_stop_the_reconcile | 1 | the fleetd row names no live fleetd

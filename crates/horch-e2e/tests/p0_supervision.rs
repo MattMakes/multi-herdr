@@ -253,27 +253,26 @@ fn fm7_killed_watchdog_does_not_stop_the_reconcile() {
         || {
             let mut h = world("p0-fm7");
             h.unset("HORCH_NO_WATCHDOG");
-            let (mut teardown, o) = claimed_run(&h);
-            assert!(
-                text(&o).contains("the watchdog of run zeta was not running; started it"),
-                "{}",
-                text(&o)
-            );
             let mut fleetds = Fleetds::new(&h);
+            let (mut teardown, _) = claimed_run(&h);
             let st = json_of(&h, &["ledger", "status", "--json"]);
             let run_id = st["run"]["run_id"]
                 .as_str()
                 .expect("the run id")
                 .to_string();
             let locks = h.root.join("locks");
-            let holder = horch_e2e::harness::wait_for("the watchdog's lock", || {
-                horch_core::taskledger::watchdog::holder(&locks, &run_id)
-            });
-            let started = holder.started.expect("the watchdog's start time");
+            // Phase 1: no command starts a watchdog. fleetd supervises the
+            // run, and the test kills the fleetd that the row names.
+            start_fleetd(&h, &mut fleetds, &Harness::horch_bin());
+            let (pid, started) = fleetds.current().expect("the fleetd row");
+            let started = started.expect("the start time of fleetd");
             // From here on, no `horch` call runs other than `horch fleetd check`.
-            assert!(procid::signal_same(holder.pid, started, SIGKILL));
-            horch_e2e::harness::wait_for("the watchdog to end", || {
-                (!procid::alive(holder.pid, Some(started))).then_some(())
+            assert!(procid::signal_same(pid, started, SIGKILL));
+            for child in &mut fleetds.children {
+                let _ = child.wait();
+            }
+            horch_e2e::harness::wait_for("fleetd to end", || {
+                (!procid::alive(pid, Some(started))).then_some(())
             });
             teardown.agent.kill().unwrap();
             teardown.agent.wait().unwrap();
