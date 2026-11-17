@@ -142,11 +142,14 @@ pub struct TaskRow {
 /// (task, dependency) pairs. In Phase 2 a dependency is met when its task
 /// is `done`; a dependency with no row is not met.
 pub fn promotable(statuses: &BTreeMap<String, String>, deps: &[(String, String)]) -> Vec<String> {
-    let met = |dep: &String| statuses.get(dep).is_some_and(|s| s == "done");
+    let unmet: BTreeSet<&String> = deps
+        .iter()
+        .filter(|(_, d)| statuses.get(d).is_none_or(|s| s != "done"))
+        .map(|(t, _)| t)
+        .collect();
     statuses
         .iter()
-        .filter(|(_, status)| *status == "pending")
-        .filter(|(id, _)| deps.iter().filter(|(t, _)| t == *id).all(|(_, d)| met(d)))
+        .filter(|(id, status)| *status == "pending" && !unmet.contains(id))
         .map(|(id, _)| id.clone())
         .collect()
 }
