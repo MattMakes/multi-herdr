@@ -802,6 +802,18 @@ fn arc_16_service_apply_order() {
     );
 }
 
+/// A relative `FLEET_ROOT` is relative to the spawner's cwd. The brief
+/// carries it absolute, so the worker accepts it.
+#[test]
+fn the_brief_carries_a_relative_fleet_root_as_absolute() {
+    let mut w = world(None);
+    w.ctx.paths.fleet_root = std::path::PathBuf::from("rel-fleet");
+    w.spawn(req("sonnet", "build")).0.unwrap();
+    let brief = w.mailbox.read_brief("sonnet-1").unwrap();
+    let want = std::env::current_dir().unwrap().join("rel-fleet");
+    assert_eq!(brief.fleet_root.as_deref(), Some(&*want.to_string_lossy()));
+}
+
 #[test]
 fn arc_16_split_failure_launch_failed() {
     for (faults, inject) in [(None, true), (Some("fail-pane-split"), false)] {

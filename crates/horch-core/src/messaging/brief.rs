@@ -176,6 +176,9 @@ impl Brief {
         if let Some(db) = &self.ledger_db {
             out.push(("HORCH_LEDGER_DB".into(), db.clone()));
         }
+        if let Some(root) = &self.fleet_root {
+            out.push(("FLEET_ROOT".into(), root.clone()));
+        }
         // The agent runs `horch spawn` and `horch done` from inside this pane;
         // they must resolve the same roster this worker was briefed from.
         if let Some(dir) = &self.teammates_dir {
@@ -339,6 +342,7 @@ mod tests {
             all.merge(&one);
         }
         b.set_overrides(all);
+        b.fleet_root = Some("/srv/fleet".into());
         let env: std::collections::BTreeMap<String, String> =
             b.transport_env().into_iter().collect();
         for (key, want) in [
@@ -353,6 +357,7 @@ mod tests {
             ("HORCH_PROJECT_DIR", "/tmp/proj"),
             ("HORCH_STATE_DIR", "/state"),
             ("HORCH_TEAMMATES_DIR", "/roster"),
+            ("FLEET_ROOT", "/srv/fleet"),
         ] {
             assert_eq!(env.get(key).map(String::as_str), Some(want), "{key}");
         }

@@ -868,8 +868,9 @@ impl WorkerSteps for PaneWorker<'_> {
         if let Some(db) = &brief.ledger_db {
             self.ctx.paths.ledger_db = PathBuf::from(db);
             self.ctx.paths.ledger_override = Some(PathBuf::from(db));
-            // 1 ledger has 1 fleet root: the folder `fleet` beside it, as
-            // `Paths::from_env` derives it. The checkin period is read there.
+            // The fallback fleet root is the folder `fleet` beside the
+            // ledger, as `Paths::from_env` derives it. `brief.fleet_root`
+            // below overrides it. The checkin period is read there.
             self.ctx.paths.fleet_root = Path::new(db)
                 .parent()
                 .unwrap_or(Path::new(""))
