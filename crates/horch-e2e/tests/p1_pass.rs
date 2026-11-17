@@ -634,35 +634,43 @@ fn seed_folders(h: &Harness, agent: &Agent) {
 
 // ─── the tests ──────────────────────────────────────────────────────────
 
+/// Wait until the `pass_cursors` row of each kind of [`FOLDER_SCANS`]
+/// differs from its row in `before`: a pass stored each folder cursor again.
+/// Returns the new rows.
+fn cursors_moved(h: &Harness, before: &[Option<CursorRow>]) -> Vec<CursorRow> {
+    wait_until("a pass moves the cursor of each folder scan", 120, || {
+        let now: Vec<Option<CursorRow>> = FOLDER_SCANS.iter().map(|k| cursor(h, k)).collect();
+        let moved = now.iter().zip(before).all(|(n, b)| n.is_some() && n != b);
+        moved.then(|| now.into_iter().flatten().collect())
+    })
+}
+
 /// The gate test of PL-5 and FM-12 for the fact scans: with 10,000 outboxes
 /// and 10,000 worktree folders, each heartbeat comes less than 30 s of
 /// awake time after the one before, and `horch fleetd check` finds the
-/// heartbeat fresh. A scan budget of 5 ms makes 1 lap of each scan take many
-/// passes, so after a `SIGKILL` and a new start each scan goes on after the
-/// key at its stored cursor, in the same lap.
+/// heartbeat fresh. Each folder scan goes on after the key at its stored
+/// cursor after a `SIGKILL` and a new start, in the same lap.
+///
+/// The kill comes after 3 passes that each moved each cursor, not after a
+/// fixed time, so the test does not depend on the speed of the host. A scan
+/// budget of 1 ms keeps 1 lap at many passes. The first pass after the new
+/// start must move each cursor past its stored key, which is 3 passes of
+/// keys from the first folder. A scan that starts again at the first folder
+/// reads about 1 pass of keys, so it does not get past the stored key.
 #[test]
 fn scans_of_10000_folders_keep_the_heartbeat_under_30_s_and_go_on_at_their_cursors_after_a_restart()
 {
-    let h = world("p1-scan", &format!("{FAST_PASSES}scan_budget_ms = 5\n"));
+    let h = world("p1-scan", &format!("{FAST_PASSES}scan_budget_ms = 1\n"));
     plan(&h, 0);
     let agent = Agent::start();
     seed_folders(&h, &agent);
     let mut fleetds = Fleetds::new(&h);
-    let first = start_fleetd(&h, &mut fleetds, None);
+    start_fleetd(&h, &mut fleetds, None);
 
-    let gap = watch_heartbeats(&h, first, 4);
-    assert!(
-        gap < HANG_LIMIT_MS,
-        "2 heartbeats are {gap} ms of awake time apart with {FOLDERS} folders of each kind"
-    );
-    let check = ok(&h, &["fleetd", "check"]);
-    assert!(
-        check.contains(&format!(
-            "fleetd PID {first} runs, and its heartbeat is fresh"
-        )),
-        "{check}"
-    );
-
+    let mut before = vec![None; FOLDER_SCANS.len()];
+    for _ in 0..3 {
+        before = cursors_moved(&h, &before).into_iter().map(Some).collect();
+    }
     fleetds.kill_last();
     let stored: Vec<CursorRow> = FOLDER_SCANS
         .iter()
@@ -672,19 +680,15 @@ fn scans_of_10000_folders_keep_the_heartbeat_under_30_s_and_go_on_at_their_curso
         assert!(after.is_some(), "the scan of {kind} read no folder");
         assert!(
             prev.is_none(),
-            "the scan of {kind} ended a lap of {FOLDERS} folders before the kill: \
-             the test needs a smaller scan budget"
+            "the scan of {kind} ended a lap of {FOLDERS} folders in 3 passes"
         );
     }
 
     let second = start_fleetd(&h, &mut fleetds, None);
-    let gap = watch_heartbeats(&h, second, 2);
-    assert!(
-        gap < HANG_LIMIT_MS,
-        "after the restart, 2 heartbeats are {gap} ms of awake time apart"
-    );
-    for (kind, (after, lap, _)) in FOLDER_SCANS.iter().zip(&stored) {
-        let (now_after, now_lap, now_prev) = cursor(&h, kind).unwrap();
+    let first_pass = cursors_moved(&h, &stored.iter().cloned().map(Some).collect::<Vec<_>>());
+    for ((kind, (after, lap, _)), (now_after, now_lap, now_prev)) in
+        FOLDER_SCANS.iter().zip(&stored).zip(first_pass)
+    {
         assert_eq!(
             (&now_lap, &now_prev),
             (lap, &None),
@@ -695,6 +699,12 @@ fn scans_of_10000_folders_keep_the_heartbeat_under_30_s_and_go_on_at_their_curso
             "the scan of {kind} is at {now_after:?}, not after its cursor {after:?}"
         );
     }
+
+    let gap = watch_heartbeats(&h, second, 4);
+    assert!(
+        gap < HANG_LIMIT_MS,
+        "2 heartbeats are {gap} ms of awake time apart with {FOLDERS} folders of each kind"
+    );
     let check = ok(&h, &["fleetd", "check"]);
     assert!(
         check.contains(&format!(
