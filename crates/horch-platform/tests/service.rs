@@ -283,7 +283,7 @@ fn calls(log: &Path) -> Vec<String> {
         .collect()
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 fn uid() -> String {
     let out = Command::new("id").arg("-u").output().unwrap();
     String::from_utf8(out.stdout).unwrap().trim().to_string()
