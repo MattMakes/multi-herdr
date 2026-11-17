@@ -227,6 +227,9 @@ struct Read {
     jobs: Vec<ProcessFact>,
     /// Each attempt in `launching`, with what part 1 saw of it.
     launching: Vec<Launching>,
+    /// The processes whose record of a polite stop stays: a row names
+    /// each, and the scan did not see it gone.
+    may_stop: BTreeSet<(u32, u64)>,
     holds: Vec<Hold>,
     awake: AwakeReading,
 }
@@ -254,6 +257,7 @@ struct Decided {
     clock: FleetSeconds,
     effects: Vec<Effect>,
     breaches: BTreeSet<String>,
+    may_stop: BTreeSet<(u32, u64)>,
 }
 
 /// 1 fleetd, from pass to pass: what a pass keeps in memory.
@@ -314,6 +318,12 @@ impl<'a> Pass<'a> {
         };
         self.settings.faults.abort_if(ABORT_AFTER_COMMIT);
         let mut report = self.do_effects(conn, decided.effects, decided.clock, deadline);
+        let kept = |pid, start| decided.may_stop.contains(&(pid, start));
+        if let Err(e) = effects::forget_polite(&self.settings.fleet_root, kept) {
+            report
+                .failed
+                .push(format!("the records of polite stops: {e}"));
+        }
         self.breaches = decided.breaches;
         if self.settings.faults.has(HANG_PASS) && self.full_passes > 0 {
             loop {
@@ -388,6 +398,7 @@ impl<'a> Pass<'a> {
             },
             jobs: job_facts(&processes.jobs, &liveness),
             launching: launching(&rows, &records, &liveness),
+            may_stop: may_stop(&rows, &liveness),
             holds: self.ports.outside.holds(),
             awake: clock_store::awake_now()?,
         })
@@ -448,6 +459,7 @@ impl<'a> Pass<'a> {
             clock,
             effects,
             breaches,
+            may_stop: read.may_stop,
         })
     }
 
@@ -598,16 +610,6 @@ impl<'a> Pass<'a> {
         deadline: Deadline,
     ) -> PassReport {
         let mut report = PassReport::default();
-        let named: BTreeSet<(u32, u64)> = effects
-            .iter()
-            .filter_map(|e| match e {
-                Effect::Stop(Stop {
-                    target: Target::Process { pid, pid_start, .. },
-                    ..
-                }) => Some((*pid, *pid_start)),
-                _ => None,
-            })
-            .collect();
         // The rows with a process that is still in its grace: their panes
         // close on a later pass, when the process is gone.
         let mut in_grace: BTreeSet<RowRef> = BTreeSet::new();
@@ -624,11 +626,6 @@ impl<'a> Pass<'a> {
                 Effect::StartJob(job) => self.start_job(conn, &job, clock, &mut report),
             };
             report.done.extend(done);
-        }
-        if let Err(e) = effects::forget_polite(&self.settings.fleet_root, &named) {
-            report
-                .failed
-                .push(format!("the records of polite stops: {e}"));
         }
         report
     }
@@ -802,6 +799,17 @@ fn job_facts(jobs: &BTreeSet<String>, liveness: &BTreeMap<String, Liveness>) -> 
                 liveness: *liveness.get(k)?,
             })
         })
+        .collect()
+}
+
+/// The processes that a row names, with a start time, that the scan did
+/// not see gone: the record of a polite stop of each stays. A process that
+/// the scan did not reach keeps its record, so its grace goes on.
+fn may_stop(rows: &Rows, liveness: &BTreeMap<String, Liveness>) -> BTreeSet<(u32, u64)> {
+    rows.named_processes()
+        .into_iter()
+        .filter(|r| seen(liveness, Some(*r)) != Proc::Dead)
+        .filter_map(|r| Some((r.pid, r.pid_start?)))
         .collect()
 }
 

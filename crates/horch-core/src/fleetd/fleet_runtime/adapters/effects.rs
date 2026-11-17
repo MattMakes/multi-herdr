@@ -250,13 +250,10 @@ pub fn write_polite(fleet_root: &Path, pid: u32, pid_start: u64, at: FleetSecond
     )
 }
 
-/// Remove the record of each polite stop of a process that is not in
-/// `stopping`: the process is gone, or no row asks for its stop.
-pub fn forget_polite(fleet_root: &Path, stopping: &BTreeSet<(u32, u64)>) -> io::Result<()> {
-    let kept: BTreeSet<PathBuf> = stopping
-        .iter()
-        .map(|(pid, start)| polite_path(fleet_root, *pid, *start))
-        .collect();
+/// Remove the record of each polite stop for which `kept(pid, start)` is
+/// false: the process is gone, or no row names it. A file whose name is not
+/// a record of this module stays.
+pub fn forget_polite(fleet_root: &Path, kept: impl Fn(u32, u64) -> bool) -> io::Result<()> {
     let entries = match std::fs::read_dir(stops_dir(fleet_root)) {
         Ok(e) => e,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -264,7 +261,10 @@ pub fn forget_polite(fleet_root: &Path, stopping: &BTreeSet<(u32, u64)>) -> io::
     };
     for entry in entries {
         let path = entry?.path();
-        if !kept.contains(&path) {
+        let Some((pid, start)) = polite_key(&path) else {
+            continue;
+        };
+        if !kept(pid, start) {
             match std::fs::remove_file(&path) {
                 Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
                 _ => {}
@@ -272,6 +272,14 @@ pub fn forget_polite(fleet_root: &Path, stopping: &BTreeSet<(u32, u64)>) -> io::
         }
     }
     Ok(())
+}
+
+/// The pid and start time of the record at `path`, from its name
+/// `<pid>-<start>.json`.
+fn polite_key(path: &Path) -> Option<(u32, u64)> {
+    let name = path.file_name()?.to_str()?.strip_suffix(".json")?;
+    let (pid, start) = name.split_once('-')?;
+    Some((pid.parse().ok()?, start.parse().ok()?))
 }
 
 // ─── the heartbeat ──────────────────────────────────────────────────────

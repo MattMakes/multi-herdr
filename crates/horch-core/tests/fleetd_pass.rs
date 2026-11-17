@@ -810,6 +810,17 @@ fn a_restart_keeps_the_grace_of_a_polite_stop() {
         vec![Done::Stop(format!("process {pid}"))]
     );
     assert_eq!(run(&mut pass, &mut w).done, Vec::new(), "within its grace");
+    let record = effects::polite_path(&w.root(), pid, recorded.pid_start.unwrap());
+
+    // A pass whose process scan reaches nothing keeps the record.
+    let mut blind = w.settings(Faults::default());
+    blind.config.scan_budget_ms = 0;
+    let mut pass = Pass::new(blind, ports(&fake, &Launcher));
+    assert_eq!(run(&mut pass, &mut w).done, Vec::new());
+    assert!(
+        record.exists(),
+        "a process that the scan did not reach keeps its grace"
+    );
 
     // A new fleetd keeps the time of the polite stop: past the grace of
     // 20 s, the kill comes.
@@ -826,6 +837,5 @@ fn a_restart_keeps_the_grace_of_a_polite_stop() {
     );
     assert!(stubborn.wait_exit(), "the kill ended it");
     run(&mut pass, &mut w);
-    let record = effects::polite_path(&w.root(), pid, recorded.pid_start.unwrap());
     assert!(!record.exists(), "the record of a gone process is removed");
 }
