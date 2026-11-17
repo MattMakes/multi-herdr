@@ -29,6 +29,7 @@ use super::store::{optional, Store};
 use super::tasks::{self, Task};
 use super::util::{self, About};
 use super::workers::{self, Worker};
+use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 
 /// The programs and places the steps use.
 #[derive(Debug, Clone)]
@@ -709,15 +710,22 @@ impl<'a> Attempt<'a> {
                     ],
                 )?;
             }
-            if self.task.status == TaskStatus::Running.as_str() {
-                tx.execute(
-                    &format!(
-                        "UPDATE tasks SET status = {landing}, updated_at = ?2
-                         WHERE task_id = ?1 AND status = {running}",
-                        landing = word(TaskStatus::Landing),
-                        running = word(TaskStatus::Running)
+            let task_id = &self.task.task_id;
+            if tasks::get(tx, task_id)?.status == TaskStatus::Running.as_str() {
+                util::transition(
+                    tx,
+                    Entity::Task,
+                    task_id,
+                    TaskStatus::Landing.as_str(),
+                    Actor::Worker,
+                    util::Why::Rule(
+                        util::Rule::Finish,
+                        &format!("{} starts to land", self.task.short()),
                     ),
-                    params![self.task.task_id, util::now()],
+                )?;
+                tx.execute(
+                    "UPDATE tasks SET updated_at = ?2 WHERE task_id = ?1",
+                    params![task_id, util::now()],
                 )?;
             }
             Ok(())
@@ -1125,58 +1133,58 @@ fn mark_done(
     let now = util::now();
     // Never turn a task cancelled meanwhile into done (#136). A parked task
     // lets go of its worker and is not finished.
-    let n = tx.execute(
-        &format!(
-            "UPDATE tasks SET status = ?2, summary = ?3, updated_at = ?4,
-                finished_at = CASE WHEN ?5 IS NULL THEN ?4 END,
-                held_reason = ?5,
-                current_worker_id = CASE WHEN ?5 IS NULL THEN current_worker_id END
-             WHERE task_id = ?1 AND status IN ({in_flight})",
-            in_flight = sql_words::list(sql_words::TASKS_IN_FLIGHT)
-        ),
-        params![
-            task.task_id,
-            status,
-            text,
-            now,
-            unlanded.then_some(HeldReason::Unlanded.as_str())
-        ],
-    )?;
-    if n == 0 {
+    let current = tasks::get(tx, &task.task_id)?.status;
+    if !sql_words::TASKS_IN_FLIGHT
+        .iter()
+        .any(|s| s.as_str() == current)
+    {
         bail!(
             "{} is no longer running: stop work, then run horch done",
             task.short()
         );
     }
+    let shown = format!(
+        "{} {}: {text}",
+        task.short(),
+        if unlanded { "parked unlanded" } else { status }
+    );
+    util::transition(
+        tx,
+        Entity::Task,
+        &task.task_id,
+        status,
+        Actor::Worker,
+        util::Why::Event(kind, &shown),
+    )?;
     tx.execute(
-        &format!(
-            "UPDATE workers SET status = {done}, summary = ?2, end_reason = ?3, ended_at = ?4,
-                last_progress_at = ?4
-             WHERE worker_id = ?1",
-            done = word(WorkerStatus::Done)
-        ),
+        "UPDATE tasks SET summary = ?2, updated_at = ?3,
+            finished_at = CASE WHEN ?4 IS NULL THEN ?3 END,
+            held_reason = ?4,
+            current_worker_id = CASE WHEN ?4 IS NULL THEN current_worker_id END
+         WHERE task_id = ?1",
         params![
-            worker_id,
+            task.task_id,
             text,
-            if unlanded { "unlanded" } else { "done" },
-            now
+            now,
+            unlanded.then_some(HeldReason::Unlanded.as_str())
         ],
     )?;
-    util::event(
+    let end_reason = if unlanded { "unlanded" } else { "done" };
+    util::transition(
         tx,
-        &About {
-            run: Some(&task.run_id),
-            task: Some(&task.task_id),
-            worker: Some(worker_id),
-        },
+        Entity::Worker,
+        worker_id,
+        WorkerStatus::Done.as_str(),
         Actor::Worker,
-        kind,
-        &format!(
-            "{} {}: {text}",
-            task.short(),
-            if unlanded { "parked unlanded" } else { status }
-        ),
-    )
+        util::Why::Rule(util::Rule::End, &format!("horch ledger done: {end_reason}")),
+    )?;
+    tx.execute(
+        "UPDATE workers SET summary = ?2, end_reason = ?3, ended_at = ?4,
+            last_progress_at = ?4
+         WHERE worker_id = ?1",
+        params![worker_id, text, end_reason, now],
+    )?;
+    Ok(())
 }
 
 /// For a review task whose parent's reviews are now all in: the parent,
@@ -1252,5 +1260,95 @@ mod tests {
         assert!(codex.runs(&worker(&mut store, "custom", Some("codex"))));
         assert!(!codex.runs(&worker(&mut store, "opus", Some("claude"))));
         assert!(!codex.runs(&worker(&mut store, "opus", None)));
+    }
+
+    /// OR-2: a task through claim, finish and done. Each status change of
+    /// the task and of its worker has 1 event with its entity, its from
+    /// state, its to state and a cause.
+    #[test]
+    fn every_status_change_has_an_event_with_a_cause() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
+        let (task_id, worker_id) = store
+            .immediate(|tx| {
+                let run = runs::create(
+                    tx,
+                    dir.path(),
+                    &NewRun {
+                        slug: "or-2".into(),
+                        finish_steps: vec![StepName::Check],
+                        ..Default::default()
+                    },
+                )?;
+                let task = tasks::add(
+                    tx,
+                    &run,
+                    &tasks::NewTask {
+                        check_none: true,
+                        ..tasks::NewTask::work("One-off", tasks::ONE_OFF_TICKET, "opus")
+                    },
+                    Actor::Orchestrator,
+                )?;
+                let w = workers::insert(
+                    tx,
+                    &NewWorker {
+                        run_id: run.run_id,
+                        persona: "opus".into(),
+                        ..Default::default()
+                    },
+                )?;
+                Ok((task.task_id, w))
+            })
+            .unwrap();
+        tasks::claim(store.conn(), &worker_id).unwrap();
+        let tools = Tools {
+            git: Git::new("git"),
+            gh: dir.path().join("gh"),
+            node: "/bin/sh".into(),
+            complexity_cli: None,
+            code_sweep_dir: None,
+            evidence_root: dir.path().join("evidence"),
+            shell: "/bin/sh".into(),
+            reviewers_down: Vec::new(),
+            codex: CodexSandbox::default(),
+        };
+        finish(&mut store, &tools, &worker_id).unwrap();
+        complete(&mut store, &worker_id, "all done", None).unwrap();
+
+        let moves = |entity: &str, id: &str| -> Vec<(Option<String>, String)> {
+            let mut stmt = store
+                .conn()
+                .prepare(
+                    "SELECT from_state, to_state, cause FROM events
+                     WHERE entity = ?1 AND entity_id = ?2 ORDER BY rowid",
+                )
+                .unwrap();
+            stmt.query_map([entity, id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get::<_, Option<String>>(2)?))
+            })
+            .unwrap()
+            .map(|r| {
+                let (from, to, cause): (Option<String>, String, Option<String>) = r.unwrap();
+                assert!(
+                    cause.is_some_and(|c| !c.trim().is_empty()),
+                    "{entity} {id}: {from:?} -> {to} has no cause"
+                );
+                (from, to)
+            })
+            .collect()
+        };
+        let m = |from: Option<&str>, to: &str| (from.map(str::to_string), to.to_string());
+        assert_eq!(
+            moves("task", &task_id),
+            vec![
+                m(Some("queued"), "running"),
+                m(Some("running"), "landing"),
+                m(Some("landing"), "done"),
+            ]
+        );
+        assert_eq!(
+            moves("worker", &worker_id),
+            vec![m(Some("spawning"), "working"), m(Some("working"), "done"),]
+        );
     }
 }

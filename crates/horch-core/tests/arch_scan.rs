@@ -1753,3 +1753,149 @@ fn fitness_table_rule_finds_foreign_tables() {
         assert_eq!(tables(miss), Vec::<String>::new(), "{miss}");
     }
 }
+
+// ─── OR-2: the status writes go through the 1 door ──────────────────────────
+
+/// Whether the SQL string `literal` writes the column `status` of `tasks`
+/// or `workers`: an `UPDATE` of 1 of these tables whose `SET` clause names
+/// `status`. Keywords and names match in any case, as SQLite reads them.
+fn writes_status(literal: &str) -> bool {
+    let mut toks: Vec<String> = Vec::new();
+    let chars: Vec<char> = literal.chars().collect();
+    let mut k = 0;
+    while k < chars.len() {
+        let start = k;
+        if chars[k].is_alphanumeric() || chars[k] == '_' {
+            while k < chars.len() && (chars[k].is_alphanumeric() || chars[k] == '_') {
+                k += 1;
+            }
+            toks.push(
+                chars[start..k]
+                    .iter()
+                    .collect::<String>()
+                    .to_ascii_lowercase(),
+            );
+            continue;
+        }
+        if !chars[k].is_whitespace() {
+            toks.push(chars[k].to_string());
+        }
+        k += 1;
+    }
+    let tok = |i: usize| toks.get(i).map(String::as_str);
+    for (n, t) in toks.iter().enumerate() {
+        if t != "update" {
+            continue;
+        }
+        // `UPDATE OR <conflict> <table>`.
+        let mut i = n + 1;
+        if tok(i) == Some("or") {
+            i += 2;
+        }
+        if !matches!(tok(i), Some("tasks" | "workers")) || tok(i + 1) != Some("set") {
+            continue;
+        }
+        i += 2;
+        let mut depth = 0;
+        let mut first = true;
+        while let Some(t) = tok(i) {
+            match t {
+                "(" => depth += 1,
+                ")" => depth -= 1,
+                ";" if depth == 0 => break,
+                "where" | "from" | "returning" if depth == 0 => break,
+                "status" if depth == 0 && first && tok(i + 1) == Some("=") => return true,
+                _ => {}
+            }
+            first = depth == 0 && t == ",";
+            i += 1;
+        }
+    }
+    false
+}
+
+/// Each direct write of `tasks.status` or `workers.status` in the
+/// production code of `horch-core` and `horch`, as `<path>:<line>: <sql>`,
+/// outside the 1 door.
+fn direct_status_writes() -> Vec<String> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let door = format!("horch-core/src/{FLEETD_DOOR}");
+    let mut files = Vec::new();
+    for name in ["horch-core", "horch"] {
+        rust_files(&crate_src(name), &mut files);
+    }
+    let mut scanned = Vec::new();
+    let mut test_paths: Vec<PathBuf> = Vec::new();
+    for file in &files {
+        let prod = production_lines(&std::fs::read_to_string(file).unwrap());
+        test_paths.extend(test_module_paths(file, &prod.test_mods));
+        scanned.push((file, prod.lines));
+    }
+    let mut found = Vec::new();
+    for (file, lines) in scanned {
+        let rel = relative(file, &root);
+        if file.file_name().is_some_and(|n| n == "tests.rs")
+            || test_paths.iter().any(|t| file.starts_with(t))
+            || rel == door
+        {
+            continue;
+        }
+        let texts: Vec<&str> = lines.iter().map(|(_, l)| l.as_str()).collect();
+        for (i, literal) in lex(&texts).strings {
+            if writes_status(&literal) {
+                let sql = literal.split_whitespace().collect::<Vec<_>>().join(" ");
+                found.push(format!("{rel}:{}: {sql}", lines[i].0));
+            }
+        }
+    }
+    found
+}
+
+/// OR-2: each production write of `tasks.status` and `workers.status` goes
+/// through `transition()`, so each state change has its event and cause.
+#[test]
+fn fitness_status_writes_go_through_transition() {
+    let found = direct_status_writes();
+    assert!(
+        found.is_empty(),
+        "a status write does not go through transition():\n{}",
+        found.join("\n")
+    );
+}
+
+/// The status write matcher's own cases.
+#[test]
+fn status_write_matcher_finds_a_direct_update() {
+    let writes = |src: &str| -> Vec<bool> {
+        let lines: Vec<&str> = src.lines().collect();
+        lex(&lines)
+            .strings
+            .iter()
+            .map(|(_, s)| writes_status(s))
+            .collect()
+    };
+    for hit in [
+        "c.execute(\"UPDATE tasks SET status = ?2 WHERE task_id = ?1\", p)",
+        "c.execute(\"UPDATE workers SET status = 'done'\", [])",
+        "c.execute(\"update Workers set status=?2\", p)",
+        "c.execute(&format!(\"UPDATE workers SET agent_pid = ?2,\n    status = {working} WHERE worker_id = ?1\"), p)",
+        "c.execute(r#\"UPDATE tasks\n SET summary = ?2, status = ?3\"#, p)",
+        "c.execute(\"UPDATE OR IGNORE tasks SET status = 'x'\", p)",
+        "c.execute(\"UPDATE runs SET x = 1; UPDATE tasks SET status = 'x'\", p)",
+    ] {
+        assert_eq!(writes(hit), vec![true], "{hit}");
+    }
+    for miss in [
+        "c.execute(\"UPDATE tasks SET summary = ?2 WHERE status = 'running'\", p)",
+        "c.execute(\"UPDATE workers SET last_status = ?2\", p)",
+        "c.execute(\"UPDATE worktrees SET status = ?2\", p)",
+        "c.execute(\"UPDATE task_steps SET status = ?2\", p)",
+        "c.execute(\"UPDATE workers SET x = (SELECT status = 'a' FROM tasks)\", p)",
+        "c.execute(\"SELECT status FROM tasks\", p)",
+        "let s = \"the update of tasks set the status\";",
+    ] {
+        assert_eq!(writes(miss), vec![false], "{miss}");
+    }
+    let src = "fn a() {}\n// c.execute(\"UPDATE tasks SET status = 'x'\", p)\n";
+    assert_eq!(writes(src), Vec::<bool>::new());
+}

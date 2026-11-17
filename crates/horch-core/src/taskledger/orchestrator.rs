@@ -28,9 +28,9 @@ use serde::Serialize;
 use super::model::{Actor, EventKind, OutboxEvent, RunStatus, WorkerKind, WorkerStatus};
 use super::outbox::{self, Wake};
 use super::runs;
-use super::sql_words::word;
 use super::util::{self, About};
 use super::workers::{self, NewWorker, Worker};
+use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 
 /// At most 1 respawn in this many seconds (spec section 5).
 pub const RESPAWN_EVERY_S: i64 = 600;
@@ -287,11 +287,19 @@ fn live_orchestrator(
             ..Default::default()
         },
     )?;
-    tx.execute(
-        &format!(
-            "UPDATE workers SET status = {working}, started_at = spawned_at WHERE worker_id = ?1",
-            working = word(WorkerStatus::Working)
+    util::transition(
+        tx,
+        Entity::Worker,
+        &id,
+        WorkerStatus::Working.as_str(),
+        Actor::Orchestrator,
+        util::Why::Rule(
+            util::Rule::AgentStarted,
+            &format!("an orchestrator took the pane-launch lock of workspace {workspace}"),
         ),
+    )?;
+    tx.execute(
+        "UPDATE workers SET started_at = spawned_at WHERE worker_id = ?1",
         [&id],
     )?;
     runs::set_orchestrator(tx, &run.run_id, &id)?;
@@ -501,13 +509,21 @@ fn register(tx: &Transaction, orch: &Worker, h: Holder, now: &str) -> Result<Che
             wake_id: None,
         });
     }
-    tx.execute(
-        &format!(
-            "UPDATE workers SET agent_pid = ?2, agent_started = ?3, status = {working},
-                started_at = coalesce(started_at, ?4)
-             WHERE worker_id = ?1",
-            working = word(WorkerStatus::Working)
+    util::transition(
+        tx,
+        Entity::Worker,
+        &orch.worker_id,
+        WorkerStatus::Working.as_str(),
+        Actor::Horch,
+        util::Why::Rule(
+            util::Rule::AgentStarted,
+            &format!("the orchestrator lock holder PID {} is its agent", h.pid),
         ),
+    )?;
+    tx.execute(
+        "UPDATE workers SET agent_pid = ?2, agent_started = ?3,
+            started_at = coalesce(started_at, ?4)
+         WHERE worker_id = ?1",
         params![
             orch.worker_id,
             h.pid as i64,
@@ -563,15 +579,8 @@ fn dead(
             ..Default::default()
         },
     )?;
-    // `spawning` is launch-pending: it is `working` after a pass observes
-    // the lock holder ([`register`]).
-    tx.execute(
-        &format!(
-            "UPDATE workers SET status = {spawning} WHERE worker_id = ?1",
-            spawning = word(WorkerStatus::Spawning)
-        ),
-        [&new_id],
-    )?;
+    // The new row is `spawning`, launch-pending: it is `working` after a
+    // pass observes the lock holder ([`register`]).
     runs::set_orchestrator(tx, &run.run_id, &new_id)?;
     count_respawn(tx, &run.run_id, number, now)?;
     let text = format!(

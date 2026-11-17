@@ -128,6 +128,8 @@ pub enum Rule {
     SupervisorStarted,
     /// The agent of a worker runs.
     AgentStarted,
+    /// `horch ledger finish` starts to land a running task.
+    Finish,
 }
 
 impl Rule {
@@ -138,6 +140,7 @@ impl Rule {
             Rule::LaunchFailed => "launch_failed",
             Rule::SupervisorStarted => "supervisor_started",
             Rule::AgentStarted => "agent_started",
+            Rule::Finish => "finish",
         }
     }
 }
@@ -311,7 +314,14 @@ mod tests {
     #[test]
     fn no_rule_is_named_as_an_event_kind() {
         use Rule::*;
-        for rule in [End, Handoff, LaunchFailed, SupervisorStarted, AgentStarted] {
+        for rule in [
+            End,
+            Handoff,
+            LaunchFailed,
+            SupervisorStarted,
+            AgentStarted,
+            Finish,
+        ] {
             assert!(EventKind::parse(rule.as_str()).is_err(), "{rule:?}");
         }
     }

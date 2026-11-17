@@ -11,6 +11,7 @@ use std::process::ExitCode;
 
 use anyhow::{bail, Context, Result};
 use clap::{Args, Subcommand};
+use horch_core::fleetd::fleet_runtime::domain::ledger::Entity;
 use horch_core::messaging::delivery;
 use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger::finish::{self, land};
@@ -2063,11 +2064,19 @@ fn insert_run(
                 ..Default::default()
             },
         )?;
-        tx.execute(
-            &format!(
-                "UPDATE workers SET status = {working}, started_at = spawned_at WHERE worker_id = ?1",
-                working = word(WorkerStatus::Working)
+        taskledger::util::transition(
+            tx,
+            Entity::Worker,
+            &id,
+            WorkerStatus::Working.as_str(),
+            Actor::Orchestrator,
+            taskledger::util::Why::Rule(
+                taskledger::util::Rule::AgentStarted,
+                &format!("the orchestrator of run {} runs in its pane", r.slug),
             ),
+        )?;
+        tx.execute(
+            "UPDATE workers SET started_at = spawned_at WHERE worker_id = ?1",
             [&id],
         )?;
         runs::set_orchestrator(tx, &r.run_id, &id)?;
