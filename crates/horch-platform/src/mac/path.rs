@@ -9,5 +9,4 @@ pub const CLAUDE_MANAGED_SETTINGS: &str =
     "/Library/Application Support/ClaudeCode/managed-settings.json";
 pub const BLENDER_APP: Option<&str> = Some("/Applications/Blender.app/Contents/MacOS/Blender");
 pub const GODOT_APP: Option<&str> = Some("/Applications/Godot.app/Contents/MacOS/Godot");
-pub const GODOT_MONO_APP: Option<&str> =
-    Some("/Applications/Godot_mono.app/Contents/MacOS/Godot");
+pub const GODOT_MONO_APP: Option<&str> = Some("/Applications/Godot_mono.app/Contents/MacOS/Godot");

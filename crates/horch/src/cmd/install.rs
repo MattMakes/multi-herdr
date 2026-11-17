@@ -270,9 +270,12 @@ fn replace_file(target: &Path, fill: impl FnOnce(&Path) -> Result<()>) -> Result
     fill(&staged)?;
     process::make_executable(&staged)?;
     // A running exe cannot be overwritten on Windows, but it can be renamed.
-    swap_in(&staged, target, horch_platform::rest::RUNNING_EXE_IS_LOCKED, |from, to| {
-        std::fs::rename(from, to)
-    })
+    swap_in(
+        &staged,
+        target,
+        horch_platform::rest::RUNNING_EXE_IS_LOCKED,
+        |from, to| std::fs::rename(from, to),
+    )
 }
 
 /// Moves `staged` to `target`. With `move_aside`, an existing `target` goes to

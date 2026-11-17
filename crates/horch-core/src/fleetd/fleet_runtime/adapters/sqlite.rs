@@ -170,13 +170,13 @@ mod tests {
     use crate::taskledger::Store;
     use rusqlite::{Connection, Transaction};
 
-    struct Ledger {
+    struct TestLedger {
         _dir: tempfile::TempDir,
         store: Store,
         run_id: String,
     }
 
-    fn ledger() -> Ledger {
+    fn ledger() -> TestLedger {
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
         let new = NewRun {
@@ -186,14 +186,14 @@ mod tests {
         let run = store
             .immediate(|tx| runs::create(tx, dir.path(), &new))
             .unwrap();
-        Ledger {
+        TestLedger {
             _dir: dir,
             store,
             run_id: run.run_id,
         }
     }
 
-    impl Ledger {
+    impl TestLedger {
         fn task(&mut self, n: u32) -> String {
             let run = runs::get(self.store.conn(), &self.run_id).unwrap();
             let new = NewTask::work(&format!("t{n}"), &format!("t{n}.md"), "dev");
@@ -341,7 +341,7 @@ mod tests {
     }
 
     /// The attempt `A1` of `task` and `worker`, in `launching`.
-    fn attempt(l: &Ledger, task: &str, worker: &str) -> &'static str {
+    fn attempt(l: &TestLedger, task: &str, worker: &str) -> &'static str {
         l.conn()
             .execute(
                 "INSERT INTO attempts (id, task_id, worker_id, state)
@@ -354,7 +354,7 @@ mod tests {
 
     /// Move `id` of `entity` to `to`, then assert its row state and its 1
     /// event, from `from` with the cause `test`.
-    fn assert_moved(l: &mut Ledger, entity: Entity, id: &str, from: &str, to: &str) {
+    fn assert_moved(l: &mut TestLedger, entity: Entity, id: &str, from: &str, to: &str) {
         assert_eq!(l.moved(entity, id, to).unwrap(), Moved::Changed);
         assert_eq!(state_of(l.conn(), entity, id).unwrap().as_deref(), Some(to));
         assert_eq!(
@@ -435,7 +435,7 @@ mod tests {
 
     /// The refused move queued -> landing of `task`, from a transaction
     /// that rolls back.
-    fn rolled_back_refusal(l: &Ledger, task: &str) -> DoorError {
+    fn rolled_back_refusal(l: &TestLedger, task: &str) -> DoorError {
         let tx =
             Transaction::new_unchecked(l.conn(), rusqlite::TransactionBehavior::Immediate).unwrap();
         let err = move_row(&tx, None, Entity::Task, task, "landing", cause("test")).unwrap_err();
@@ -444,7 +444,7 @@ mod tests {
     }
 
     /// `record_refused` in its own transaction.
-    fn record(l: &Ledger, err: &DoorError) -> bool {
+    fn record(l: &TestLedger, err: &DoorError) -> bool {
         let tx =
             Transaction::new_unchecked(l.conn(), rusqlite::TransactionBehavior::Immediate).unwrap();
         let wrote = record_refused(&tx, err, &NeedsYouList).unwrap();

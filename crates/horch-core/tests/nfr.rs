@@ -117,6 +117,8 @@ fn nfr_05_no_new_runtime_crates() {
         "windows-sys",
         // The workspace leaf crate of fleetd Phase P (docs/specs/fleetd/design.md).
         "horch-platform",
+        // The fleet config file fleet.toml of fleetd (docs/specs/fleetd/design.md).
+        "toml",
     ];
     for d in deps(&repo().join("crates/horch-core/Cargo.toml")) {
         assert!(

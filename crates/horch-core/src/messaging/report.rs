@@ -186,15 +186,13 @@ impl Server {
         horch_platform::fs::set_mode(&path, 0o600)?;
         let stop = Arc::new(AtomicBool::new(false));
         let flag = stop.clone();
-        let thread = std::thread::spawn(move || {
-            loop {
-                let stream = listener.accept();
-                if flag.load(Ordering::SeqCst) {
-                    break;
-                }
-                if let Ok(stream) = stream {
-                    serve_one(stream, report_to.as_deref(), exec.as_ref());
-                }
+        let thread = std::thread::spawn(move || loop {
+            let stream = listener.accept();
+            if flag.load(Ordering::SeqCst) {
+                break;
+            }
+            if let Ok(stream) = stream {
+                serve_one(stream, report_to.as_deref(), exec.as_ref());
             }
         });
         Ok(Server {
