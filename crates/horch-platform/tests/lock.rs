@@ -178,7 +178,13 @@ fn lock_is_free_after_drop() {
     let first = FleetdLock::try_take(&path).unwrap().expect("free");
     drop(first);
 
-    assert!(FleetdLock::try_take(&path).unwrap().is_some());
+    // Other tests of this binary start children on parallel threads. A
+    // child that starts while the lock is held gets a copy of the open lock
+    // file, and the copy holds the lock until the exec of the child closes
+    // it (close-on-exec). So the second take retries for a bounded time.
+    // Measured: 4 of 300 runs failed without the retry, 0 of 1000 runs
+    // failed with this test alone.
+    assert!(take_within(&path, Duration::from_secs(5)).is_some());
 }
 
 #[test]
