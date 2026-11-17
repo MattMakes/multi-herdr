@@ -176,14 +176,25 @@ fn update_with_a_live_worker_and_a_live_old_watchdog_leaves_1_control_path() {
     let mut fleetds = Fleetds::new(&h);
     let fleetd = fleetds.start(&h, "fleetd");
 
-    // fleetd stops the old watchdog by its PID and start time.
+    // fleetd stops the old watchdog by its PID and start time. It clears the
+    // record in a later transaction, so the wait is for both.
+    let recorded = || {
+        texts(
+            &h,
+            "SELECT run_id FROM runs WHERE watchdog_pid IS NOT NULL OR watchdog_started IS NOT NULL",
+        )
+    };
     wait_for("the stop of the old watchdog", || {
         (!old.alive()).then_some(())
     });
-    let recorded = texts(
-        &h,
-        "SELECT run_id FROM runs WHERE watchdog_pid IS NOT NULL OR watchdog_started IS NOT NULL",
-    );
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let recorded = loop {
+        let rows = recorded();
+        if rows.is_empty() || std::time::Instant::now() >= until {
+            break rows;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
     assert!(
         recorded.is_empty(),
         "the record of the old watchdog is cleared"
