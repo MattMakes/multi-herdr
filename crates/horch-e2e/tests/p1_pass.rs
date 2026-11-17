@@ -652,11 +652,11 @@ fn cursors_moved(h: &Harness, before: &[Option<CursorRow>]) -> Vec<CursorRow> {
 /// cursor after a `SIGKILL` and a new start, in the same lap.
 ///
 /// The kill comes after 3 passes that each moved each cursor, not after a
-/// fixed time, so the test does not depend on the speed of the host. A scan
-/// budget of 1 ms keeps 1 lap at many passes. The first pass after the new
-/// start must move each cursor past its stored key, which is 3 passes of
-/// keys from the first folder. A scan that starts again at the first folder
-/// reads about 1 pass of keys, so it does not get past the stored key.
+/// fixed time, so the test does not depend on the speed of the host. Then
+/// the test moves each stored cursor to the key of the middle folder, in the
+/// same lap. The first pass after the new start must move each cursor past
+/// that key. A scan budget of 1 ms reads far fewer than the 5,000 keys before
+/// the middle, so a scan that starts again at the first folder cannot pass.
 #[test]
 fn scans_of_10000_folders_keep_the_heartbeat_under_30_s_and_go_on_at_their_cursors_after_a_restart()
 {
@@ -672,16 +672,29 @@ fn scans_of_10000_folders_keep_the_heartbeat_under_30_s_and_go_on_at_their_curso
         before = cursors_moved(&h, &before).into_iter().map(Some).collect();
     }
     fleetds.kill_last();
-    let stored: Vec<CursorRow> = FOLDER_SCANS
-        .iter()
-        .map(|kind| cursor(&h, kind).unwrap_or_else(|| panic!("no cursor {kind}")))
-        .collect();
-    for (kind, (after, _, prev)) in FOLDER_SCANS.iter().zip(&stored) {
-        assert!(after.is_some(), "the scan of {kind} read no folder");
+    let middle = FOLDERS / 2;
+    let middle_keys = [format!("S-{middle:05}/A1"), format!("WT-{middle:05}")];
+    let mut stored = Vec::new();
+    for (kind, key) in FOLDER_SCANS.iter().zip(middle_keys) {
+        let (after, lap, prev) = cursor(&h, kind).unwrap_or_else(|| panic!("no cursor {kind}"));
+        let after = after.unwrap_or_else(|| panic!("the scan of {kind} read no folder"));
         assert!(
             prev.is_none(),
             "the scan of {kind} ended a lap of {FOLDERS} folders in 3 passes"
         );
+        assert!(
+            after < key,
+            "the scan of {kind} is at {after} after 3 passes, past the middle key {key}"
+        );
+        Store::open(&db(&h))
+            .unwrap()
+            .conn()
+            .execute(
+                "UPDATE pass_cursors SET after_key = ?1 WHERE kind = ?2",
+                [&key, *kind],
+            )
+            .unwrap();
+        stored.push((Some(key), lap, prev));
     }
 
     let second = start_fleetd(&h, &mut fleetds, None);
