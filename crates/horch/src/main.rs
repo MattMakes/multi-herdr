@@ -574,6 +574,19 @@ enum ToolCommand {
         check: bool,
     },
 
+    /// Run the fleet daemon on this ledger: 1 reconcile pass every
+    /// `pass_period_s`. `horch fleetd check` restarts a hung or older one.
+    Fleetd {
+        #[command(subcommand)]
+        command: Option<cmd::fleetd::FleetdCommand>,
+    },
+
+    /// The jobs of fleetd: `horch job requeue <job>`.
+    Job {
+        #[command(subcommand)]
+        command: cmd::jobcmd::JobCommand,
+    },
+
     /// Self-verifying checks of the machinery. Run these after installing.
     Smoke {
         #[command(subcommand)]
@@ -813,7 +826,7 @@ fn run() -> Result<std::process::ExitCode> {
     }
     let remind = cli.command.reminds();
     let watched = cli.command.watched();
-    let result = cli.command.dispatch(&mut ctx);
+    let result = dispatch_checked(cli.command, &mut ctx, cmd::fleetd::check_before_command);
     if remind {
         cmd::messaging::remind_pending(&ctx);
     }
@@ -825,6 +838,16 @@ fn run() -> Result<std::process::ExitCode> {
 }
 
 type Ctx = horch_core::runtime::RuntimeContext;
+
+/// Run `command` after the check of `horch fleetd check`, when the command
+/// is watched: a hung or older fleetd is restarted before the command runs
+/// (PL-5, FM-12, OR-6).
+fn dispatch_checked(command: Command, ctx: &mut Ctx, check: fn(&Ctx)) -> Result<ExitCode> {
+    if command.watched() {
+        check(ctx);
+    }
+    command.dispatch(ctx)
+}
 
 /// A handler that returns no exit code succeeds when it returns.
 fn done(r: Result<()>) -> Result<ExitCode> {
@@ -906,14 +929,21 @@ impl Command {
     }
 
     /// `install` restarts a watchdog on the binary it installed; `ensure`
-    /// would move it back onto the binary that ran `install` (#216).
+    /// would move it back onto the binary that ran `install` (#216). fleetd,
+    /// its check and its job processes make no fleetd check of their own.
     fn watched(&self) -> bool {
         !matches!(
             self,
-            Command::Tool(ToolCommand::Worker { .. } | ToolCommand::Install { .. })
-                | Command::Grid(GridCommand::Ledger {
-                    command: cmd::taskledger::LedgerCommand::Watch { .. }
-                })
+            Command::Tool(
+                ToolCommand::Worker { .. }
+                    | ToolCommand::Install { .. }
+                    | ToolCommand::Fleetd { .. }
+                    | ToolCommand::Job {
+                        command: cmd::jobcmd::JobCommand::Run { .. }
+                    }
+            ) | Command::Grid(GridCommand::Ledger {
+                command: cmd::taskledger::LedgerCommand::Watch { .. }
+            })
         )
     }
 }
@@ -1195,6 +1225,8 @@ impl ToolCommand {
             ToolCommand::Doctor { clean } => done(cmd::doctor::doctor(ctx, clean)),
             ToolCommand::Install { dir } => done(cmd::install::install(ctx, dir.as_deref())),
             ToolCommand::SelfUpdate { check } => cmd::selfupdate::self_update(ctx, check),
+            ToolCommand::Fleetd { command } => cmd::fleetd::fleetd(ctx, command),
+            ToolCommand::Job { command } => cmd::jobcmd::job(ctx, command),
             ToolCommand::Smoke { command } => cmd::smoke::run(ctx, command),
             ToolCommand::Worker { role } => cmd::worker::worker(ctx, &role),
             ToolCommand::PaneLaunch {
@@ -1739,12 +1771,54 @@ mod tests {
             ("doctor", false),
             ("install", false),
             ("self-update", false),
+            ("fleetd", false),
+            ("job", false),
             ("smoke", false),
             ("worker", true),
             ("pane-launch", true),
             ("register", true),
         ];
         assert_eq!(listed, expected);
+    }
+
+    /// Each watched `horch` command runs the check of `horch fleetd check`
+    /// before it runs (PL-5, FM-12): a check that stops the command proves
+    /// the order. fleetd, its check and its job processes run no check.
+    #[test]
+    fn a_horch_command_runs_the_fleetd_check_before_it_runs() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static CHECKS: AtomicUsize = AtomicUsize::new(0);
+        fn stop_here(_: &Ctx) {
+            CHECKS.fetch_add(1, Ordering::SeqCst);
+            panic!("the fleetd check ran");
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = dir.path().join("ledger.sqlite3");
+        let env = horch_core::runtime::MapEnv::new(dir.path())
+            .with("HOME", &dir.path().to_string_lossy())
+            .with(
+                "HORCH_STATE_DIR",
+                &dir.path().join("state").to_string_lossy(),
+            )
+            .with("HORCH_LEDGER_DB", &ledger.to_string_lossy());
+        let mut ctx = Ctx::from_env(&env).unwrap();
+        let parse = |argv: &[&str]| Cli::try_parse_from(argv).unwrap().command;
+        // `horch ledger status` creates the ledger; the check comes first.
+        let command = parse(&["horch", "ledger", "status"]);
+        let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            dispatch_checked(command, &mut ctx, stop_here)
+        }));
+        assert!(ran.is_err(), "the command ran with no fleetd check");
+        assert_eq!(CHECKS.load(Ordering::SeqCst), 1);
+        assert!(!ledger.exists(), "the command ran before the fleetd check");
+        for argv in [
+            &["horch", "fleetd"][..],
+            &["horch", "fleetd", "check"],
+            &["horch", "job", "run", "7"],
+        ] {
+            assert!(!parse(argv).watched(), "{argv:?} runs a fleetd check");
+        }
+        assert!(parse(&["horch", "job", "requeue", "7"]).watched());
     }
 
     /// The commands whose reminders, watchdog and identity handling differ.

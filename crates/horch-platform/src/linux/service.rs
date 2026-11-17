@@ -13,6 +13,12 @@ use crate::NotSupported;
 
 pub use crate::unix::service::{os_user_home, write_definition};
 
+pub const MANAGER: &str = "systemctl";
+
+pub fn default_folder(home: &Path) -> PathBuf {
+    home.join(".config").join("systemd").join("user")
+}
+
 /// Whether a ping sent `READY=1`.
 static READY_SENT: AtomicBool = AtomicBool::new(false);
 

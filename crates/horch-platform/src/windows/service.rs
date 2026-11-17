@@ -15,6 +15,15 @@ use windows_sys::Win32::UI::Shell::GetUserProfileDirectoryW;
 use crate::service::{invalid, utf8, xml_escape, Spec};
 use crate::NotSupported;
 
+pub const MANAGER: &str = "schtasks";
+
+pub fn default_folder(home: &Path) -> PathBuf {
+    home.join("AppData")
+        .join("Local")
+        .join("horch")
+        .join("service")
+}
+
 const HEAD: &str = "<?xml version=\"1.0\" encoding=\"UTF-16\"?>\n\
 <Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\n";
 

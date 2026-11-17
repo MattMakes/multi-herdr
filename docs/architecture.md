@@ -94,7 +94,9 @@ in `harness/capabilities.rs`.
 | `cost/` | the report tables and rendering of `horch cost` |
 | `delivery_probe.rs` | the delivery checks of `horch fleet` and `horch doctor` |
 | `doctor.rs` | `horch doctor` |
+| `fleetd.rs` | `horch fleetd` (the fleet daemon: the composition root of its pass) and `horch fleetd check` (restarts a gone, hung or older fleetd; each `horch` command makes the same check first) |
 | `install.rs` | `horch install` (copies `horch`, and deletes a retired `multi-herdr-dataset`) |
+| `jobcmd.rs` | `horch job requeue`, and `horch job run` (hidden; the job process that fleetd starts) |
 | `layoutcmd.rs` | `horch layout` |
 | `sessionscmd.rs` | `horch sessions`, `horch ledger legacy` (the old session-ledger plumbing) |
 | `mail.rs` | `horch mail courier` (hidden; delivers durable worker mail) |

@@ -4,12 +4,18 @@
 
 use std::ffi::OsString;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::service::{utf8, xml_escape, Spec, HANG_LIMIT_S};
 use crate::NotSupported;
 
 pub use crate::unix::service::{os_user_home, write_definition};
+
+pub const MANAGER: &str = "launchctl";
+
+pub fn default_folder(home: &Path) -> PathBuf {
+    home.join("Library").join("LaunchAgents")
+}
 
 pub fn definitions(spec: &Spec) -> io::Result<Vec<(PathBuf, String)>> {
     let exe = utf8(&spec.exe)?;

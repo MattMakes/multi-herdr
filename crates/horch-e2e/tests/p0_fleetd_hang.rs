@@ -37,13 +37,13 @@ fn fleetd_row(db: &Path) -> Option<(u32, Option<u64>)> {
         return None;
     }
     let store = Store::open(db).ok()?;
-    let (pid, started): (i64, String) = store
+    let (pid, started): (i64, i64) = store
         .conn()
         .query_row("SELECT pid, pid_start FROM fleetd WHERE id = 1", [], |r| {
             Ok((r.get(0)?, r.get(1)?))
         })
         .ok()?;
-    Some((u32::try_from(pid).ok()?, started.parse().ok()))
+    Some((u32::try_from(pid).ok()?, u64::try_from(started).ok()))
 }
 
 /// The hung fleetd that the test started, and each fleetd that the `fleetd`

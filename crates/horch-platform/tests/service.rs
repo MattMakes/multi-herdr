@@ -524,3 +524,51 @@ fn os_user_home_ignores_home_env() {
     assert_eq!(Path::new(child_home), home);
     assert_ne!(Path::new(child_home), fake.path());
 }
+
+/// The manager command of this OS is the 1 that [`service::install`] and
+/// [`service::restart`] expect.
+#[test]
+fn manager_is_the_service_manager_of_this_os() {
+    #[cfg(target_os = "macos")]
+    let want = "launchctl";
+    #[cfg(target_os = "linux")]
+    let want = "systemctl";
+    #[cfg(windows)]
+    let want = "schtasks";
+    assert_eq!(service::MANAGER, want);
+}
+
+/// The definition folder is in the home of the OS user, never in `HOME`.
+#[test]
+fn default_folder_is_in_the_os_user_home() {
+    let home = service::os_user_home().expect("the home of the OS user");
+    #[cfg(target_os = "macos")]
+    let want = home.join("Library").join("LaunchAgents");
+    #[cfg(target_os = "linux")]
+    let want = home.join(".config").join("systemd").join("user");
+    #[cfg(windows)]
+    let want = home
+        .join("AppData")
+        .join("Local")
+        .join("horch")
+        .join("service");
+    assert_eq!(service::default_folder().expect("the folder"), want);
+}
+
+/// The restart of the service of [`service::LABEL`] in
+/// [`service::default_folder`] is 1 call of the manager, here a stand-in.
+#[test]
+fn restart_of_the_fleetd_label_calls_the_manager() {
+    let dir = tempfile::tempdir().unwrap();
+    let (manager, log) = stand_in(dir.path(), dir.path(), 0);
+    let spec = Spec {
+        label: service::LABEL.into(),
+        exe: PathBuf::from(EXE),
+        env: Vec::new(),
+        folder: service::default_folder().expect("the folder"),
+    };
+    service::restart(&spec, &manager).expect("restart");
+    let calls = calls(&log);
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert!(calls[0].contains(service::LABEL), "{calls:?}");
+}

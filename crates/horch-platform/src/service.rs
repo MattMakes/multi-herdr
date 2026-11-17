@@ -6,6 +6,9 @@
 //!   [`restart`].
 //! - The systemd watchdog: [`watchdog_ping`].
 //! - The home of the OS user: [`os_user_home`].
+//! - The service of the default ledger: its label [`LABEL`], the service
+//!   manager command of this OS [`MANAGER`], and the folder of its
+//!   definition files [`default_folder`].
 //!
 //! Each OS restarts a hung fleetd within 30 s of awake time. Linux: the
 //! systemd unit has `Restart=always` and `WatchdogSec=30`, and fleetd calls
@@ -31,6 +34,22 @@ use crate::NotSupported;
 /// The hang limit of fleetd and the period of `horch fleetd check`, in
 /// seconds (PL-5).
 pub(crate) const HANG_LIMIT_S: u32 = 30;
+
+/// The label of the fleetd service of the default ledger of the OS user.
+pub const LABEL: &str = "horch-fleetd";
+
+/// The service manager command of this OS, for [`install`] and
+/// [`restart`]: `launchctl` on macOS, `systemctl` on Linux and `schtasks`
+/// on Windows.
+pub const MANAGER: &str = os::MANAGER;
+
+/// The folder of the definition files in the home of the OS user
+/// ([`os_user_home`]): `~/Library/LaunchAgents` on macOS,
+/// `~/.config/systemd/user` on Linux and `~\AppData\Local\horch\service` on
+/// Windows.
+pub fn default_folder() -> io::Result<PathBuf> {
+    Ok(os::default_folder(&os_user_home()?))
+}
 
 /// What the service definitions of fleetd need.
 #[derive(Debug, Clone, PartialEq, Eq)]
