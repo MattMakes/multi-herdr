@@ -119,6 +119,13 @@ impl LocalListener {
     }
 }
 
+/// Whether this host has local stream sockets: true on macOS and Linux,
+/// false on Windows. The check has no side effect, so a caller can refuse
+/// before it makes a folder or removes a file for a socket.
+pub fn is_supported() -> bool {
+    os::ipc::is_supported()
+}
+
 /// Whether `error` of a connect means that the file at the path is not a
 /// socket (`ENOTSOCK`). Always false on Windows.
 pub fn is_not_a_socket(error: &io::Error) -> bool {

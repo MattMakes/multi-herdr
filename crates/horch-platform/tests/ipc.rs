@@ -129,3 +129,9 @@ fn local_sockets_are_not_supported_on_windows() {
         );
     }
 }
+
+/// macOS and Linux have local sockets, and Windows has none.
+#[test]
+fn local_sockets_are_supported_only_on_unix() {
+    assert_eq!(horch_platform::ipc::is_supported(), cfg!(unix));
+}

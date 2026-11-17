@@ -61,6 +61,10 @@ pub(crate) fn set_nonblocking(listener: &Listener, _: bool) -> io::Result<()> {
     match *listener {}
 }
 
+pub(crate) fn is_supported() -> bool {
+    false
+}
+
 pub(crate) fn is_not_a_socket(_: &io::Error) -> bool {
     false
 }

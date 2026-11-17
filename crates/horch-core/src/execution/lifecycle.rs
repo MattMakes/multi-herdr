@@ -1035,23 +1035,14 @@ fn start_report_server(
     if teammate.horch_access != HorchAccess::Report {
         return Ok(None);
     }
+    if !horch_platform::ipc::is_supported() {
+        bail!("horch_access: report needs a Unix host");
+    }
     let path = report::socket_path(&ctx.paths.state_root, &brief.record_id);
     let env = env.to_vec();
     let exec: Box<report::Executor> =
         Box::new(move |request: &report::Request| run_horch_quiet(&env, &report_args(request)));
-    match report::Server::start(path, report_target(brief), exec) {
-        Ok(server) => Ok(Some(server)),
-        Err(error) if not_supported(&error) => bail!("horch_access: report needs a Unix host"),
-        Err(error) => Err(error),
-    }
-}
-
-/// Whether `error` comes from a host without local sockets.
-fn not_supported(error: &anyhow::Error) -> bool {
-    error
-        .chain()
-        .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
-        .any(report::is_not_supported)
+    report::Server::start(path, report_target(brief), exec).map(Some)
 }
 
 /// Read the session id the launch recorded in the session ledger, and find

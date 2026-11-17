@@ -100,18 +100,13 @@ pub fn is_live(socket: &Path) -> bool {
 /// and the read of the answer each get only the time that is left.
 /// The relay needs Unix sockets, so off Unix no relay is ever reachable.
 fn request(socket: &Path, value: &Value, timeout: Duration) -> std::result::Result<(), SendError> {
+    if !horch_platform::ipc::is_supported() {
+        return Err(SendError::NotDelivered(no_sockets(socket)));
+    }
     let deadline = Instant::now() + timeout;
-    let mut stream = match LocalStream::connect_by(socket, deadline) {
-        Ok(stream) => stream,
-        Err(error) if is_not_supported(&error) => {
-            return Err(SendError::NotDelivered(no_sockets(socket)))
-        }
-        Err(error) => {
-            return Err(SendError::NotDelivered(anyhow::Error::new(error).context(
-                format!("connect to channel relay {}", socket.display()),
-            )))
-        }
-    };
+    let mut stream = LocalStream::connect_by(socket, deadline)
+        .with_context(|| format!("connect to channel relay {}", socket.display()))
+        .map_err(SendError::NotDelivered)?;
     let mut line = serde_json::to_vec(value)
         .context("encode channel request")
         .map_err(SendError::NotDelivered)?;
@@ -135,14 +130,6 @@ fn request(socket: &Path, value: &Value, timeout: Duration) -> std::result::Resu
     } else {
         Err(SendError::NotDelivered(anyhow!(answer.to_owned())))
     }
-}
-
-/// Whether `error` is the [`horch_platform::NotSupported`] of a host
-/// without local sockets.
-fn is_not_supported(error: &std::io::Error) -> bool {
-    error
-        .get_ref()
-        .is_some_and(|inner| inner.is::<horch_platform::NotSupported>())
 }
 
 /// The refusal of a host without Unix sockets.
@@ -331,7 +318,7 @@ fn start_relay<W: Write + Send + 'static>(
     start_relay_after_bind(socket, delivery, output, connection_timeout, || Ok(()))
 }
 
-/// Off Unix the bind refuses, and no relay starts.
+/// Off Unix no relay starts, and no folder or file changes.
 fn start_relay_after_bind<W, F>(
     socket: &Path,
     delivery: Arc<Output>,
@@ -343,15 +330,13 @@ where
     W: Write + Send + 'static,
     F: FnOnce() -> Result<()>,
 {
+    if !horch_platform::ipc::is_supported() {
+        return Err(no_sockets(socket));
+    }
     prepare_socket_path(socket)?;
 
-    let listener = match LocalListener::bind(socket) {
-        Ok(listener) => listener,
-        Err(error) if is_not_supported(&error) => return Err(no_sockets(socket)),
-        Err(error) => {
-            return Err(error).with_context(|| format!("bind channel socket {}", socket.display()))
-        }
-    };
+    let listener = LocalListener::bind(socket)
+        .with_context(|| format!("bind channel socket {}", socket.display()))?;
     let socket_guard = SocketPathGuard::new(socket);
     after_bind()?;
     horch_platform::fs::set_mode(socket, 0o600)
@@ -382,8 +367,7 @@ where
 }
 
 /// Make the socket directory, and clear a stale socket file. Fails when the
-/// path is too long or a live relay already serves it. A host without
-/// file modes leaves the mode of the directory as it is.
+/// path is too long or a live relay already serves it.
 fn prepare_socket_path(socket: &Path) -> Result<()> {
     if socket.as_os_str().as_encoded_bytes().len() >= 104 {
         bail!("channel socket path is too long: {}", socket.display());
@@ -393,13 +377,8 @@ fn prepare_socket_path(socket: &Path) -> Result<()> {
         .ok_or_else(|| anyhow!("channel socket has no parent: {}", socket.display()))?;
     fs::create_dir_all(parent)
         .with_context(|| format!("create channel directory {}", parent.display()))?;
-    match horch_platform::fs::set_mode(parent, 0o700) {
-        Err(error) if !is_not_supported(&error) => {
-            return Err(error)
-                .with_context(|| format!("set channel directory mode on {}", parent.display()))
-        }
-        _ => {}
-    }
+    horch_platform::fs::set_mode(parent, 0o700)
+        .with_context(|| format!("set channel directory mode on {}", parent.display()))?;
     clear_stale_socket(socket)
 }
 

@@ -169,8 +169,12 @@ pub struct Server {
 
 impl Server {
     /// Bind `path` (mode 0600, in a 0700 folder) and serve it on a thread,
-    /// 1 connection at a time.
+    /// 1 connection at a time. A host without local sockets refuses
+    /// before it makes the folder.
     pub fn start(path: PathBuf, report_to: Option<String>, exec: Box<Executor>) -> Result<Server> {
+        if !horch_platform::ipc::is_supported() {
+            bail!("the report socket needs a Unix host");
+        }
         let dir = path.parent().context("the report socket has no folder")?;
         crate::fsx::ensure_private_dir(dir)?;
         if path.exists() {
@@ -220,14 +224,11 @@ impl Drop for Server {
 /// On a host without local sockets it refuses with
 /// "the report socket needs a Unix host".
 pub fn send(path: &Path, request: &Request) -> Result<()> {
-    let mut stream = match LocalStream::connect(path) {
-        Ok(stream) => stream,
-        Err(error) if is_not_supported(&error) => bail!("the report socket needs a Unix host"),
-        Err(error) => {
-            return Err(error)
-                .with_context(|| format!("connecting to the report socket {}", path.display()))
-        }
-    };
+    if !horch_platform::ipc::is_supported() {
+        bail!("the report socket needs a Unix host");
+    }
+    let mut stream = LocalStream::connect(path)
+        .with_context(|| format!("connecting to the report socket {}", path.display()))?;
     let mut line = serde_json::to_vec(request)?;
     if line.len() > MAX_REQUEST {
         bail!("the text is over {MAX_REQUEST} bytes; send a shorter text");
@@ -250,14 +251,6 @@ pub fn send(path: &Path, request: &Request) -> Result<()> {
         None if reply.ok => Ok(()),
         error => bail!("{}", error.unwrap_or_else(|| "refused".into())),
     }
-}
-
-/// Whether `error` is the [`horch_platform::NotSupported`] of a host
-/// without local sockets.
-pub(crate) fn is_not_supported(error: &std::io::Error) -> bool {
-    error
-        .get_ref()
-        .is_some_and(|inner| inner.is::<horch_platform::NotSupported>())
 }
 
 #[cfg(test)]

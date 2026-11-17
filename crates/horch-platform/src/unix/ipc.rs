@@ -185,6 +185,10 @@ pub(crate) fn set_nonblocking(listener: &Listener, nonblocking: bool) -> io::Res
     listener.set_nonblocking(nonblocking)
 }
 
+pub(crate) fn is_supported() -> bool {
+    true
+}
+
 pub(crate) fn is_not_a_socket(error: &io::Error) -> bool {
     error.raw_os_error() == Some(libc::ENOTSOCK)
 }
