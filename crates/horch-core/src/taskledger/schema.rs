@@ -11,8 +11,15 @@ use rusqlite::Connection;
 
 use super::model::*;
 
+/// The version of the Phase 1 tables of fleetd (`v8`). A test that
+/// tests that step builds or migrates to this version, not to [`VERSION`].
+pub const PHASE_1_VERSION: i64 = 8;
+
+/// The version of the Phase 2 tables and columns of fleetd (`phase_2`).
+pub const PHASE_2_VERSION: i64 = PHASE_1_VERSION + 1;
+
 /// The schema version this binary writes.
-pub const VERSION: i64 = 8;
+pub const VERSION: i64 = PHASE_2_VERSION;
 
 /// A rule that applies to rows this ledger writes, not to imported ones
 /// (section 11.2): `CHECK (origin = 'import' OR <expr>)`.
@@ -652,6 +659,114 @@ fn v8() -> String {
     .join("\n")
 }
 
+/// The `leases` table: at most 1 lease for each task (RR-2, FM-14).
+/// `expires_at` is a deadline on the fleet clock (seconds).
+fn leases_table() -> String {
+    "CREATE TABLE leases (
+    task_id TEXT PRIMARY KEY REFERENCES tasks(task_id),
+    attempt_id TEXT NOT NULL REFERENCES attempts(id),
+    expires_at INTEGER NOT NULL,
+    renewed_at TEXT NOT NULL,
+    renew_basis TEXT NOT NULL
+);"
+    .to_string()
+}
+
+/// The `questions` table. `feature_id` has no reference: the `features`
+/// table is Phase 4, and before then it holds the run id (MAP.md, Q13).
+fn questions_table() -> String {
+    "CREATE TABLE questions (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(task_id),
+    feature_id TEXT NOT NULL,
+    owner TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('open', 'answered', 'escalated')),
+    answer_case TEXT CHECK (answer_case IN ('covered', 'revise', 'replan', 'own_decision')),
+    citation TEXT,
+    due_at INTEGER NOT NULL,
+    asked_at TEXT NOT NULL,
+    answered_at TEXT
+);"
+    .to_string()
+}
+
+/// The new columns of Phase 2. Each `INTEGER` time is on the fleet clock:
+/// the end of a retry backoff (`not_before`), the time limit of the current
+/// state (`tasks.due_at`), the last activity of an attempt (`active_at`,
+/// MAP.md Q7) and the cap `max_wait_s` of a wait (`worker_waits.due_at`).
+/// `cancel_requested` holds a cancel that waits for the stop of a live
+/// attempt (MAP.md, Q11).
+const PHASE_2_COLUMNS: &str = "ALTER TABLE tasks ADD COLUMN not_before INTEGER;
+ALTER TABLE tasks ADD COLUMN due_at INTEGER;
+ALTER TABLE tasks ADD COLUMN replans INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tasks ADD COLUMN cancel_requested TEXT;
+ALTER TABLE attempts ADD COLUMN active_at INTEGER;
+ALTER TABLE worker_waits ADD COLUMN due_at INTEGER;
+ALTER TABLE worker_waits ADD COLUMN question_id TEXT;";
+
+/// The indexes of the count queries of the whole-run watchdog duties
+/// (T-322): the tasks and the workers of 1 run in 1 status.
+const PHASE_2_INDEXES: &str = "CREATE INDEX tasks_by_run_status ON tasks(run_id, status);
+CREATE INDEX workers_by_run_status ON workers(run_id, status);";
+
+/// Version [`PHASE_2_VERSION`]: the Phase 2 tables and columns of fleetd
+/// (docs/specs/fleetd/design.md, "Ledger" and "Migration plan" item 4).
+/// [`phase_2_backfill`] fills them for a run in flight.
+fn phase_2() -> String {
+    [
+        leases_table(),
+        questions_table(),
+        PHASE_2_COLUMNS.to_string(),
+        PHASE_2_INDEXES.to_string(),
+    ]
+    .join("\n")
+}
+
+/// The default `liveness.lease_s` of the design: the lease of each held
+/// task at the release.
+const BACKFILL_LEASE_S: i64 = 120;
+
+/// The default `liveness.max_wait_s` of the design: the cap of each open
+/// wait at the release. Each persona of Phase 2 is interactive (MAP.md, Q10).
+const BACKFILL_MAX_WAIT_S: i64 = 3600;
+
+/// The fleet clock of the `fleetd` row. With no row it is 0: fleetd starts
+/// the clock at 0 when it writes its first row.
+const FLEET_CLOCK: &str = "COALESCE((SELECT fleet_clock_s FROM fleetd WHERE id = 1), 0)";
+
+/// The release backfill of Phase 2 (MAP.md, Q21), with `now` as
+/// `renewed_at`:
+/// - each running task with a live attempt gets 1 lease of
+///   [`BACKFILL_LEASE_S`]. With 2 live attempts, the lease goes to the
+///   attempt of the task's current worker, else to the newest.
+/// - each live attempt is active now, so no attempt is judged idle for the
+///   time before the update.
+/// - each wait gets the cap [`BACKFILL_MAX_WAIT_S`].
+fn phase_2_backfill(conn: &Connection, now: &str) -> Result<()> {
+    conn.execute(
+        &format!(
+            "INSERT INTO leases (task_id, attempt_id, expires_at, renewed_at, renew_basis)
+    SELECT task_id, id, {FLEET_CLOCK} + ?1, ?2, 'backfill'
+    FROM (SELECT a.task_id, a.id, row_number() OVER (PARTITION BY a.task_id
+                ORDER BY a.worker_id IS t.current_worker_id DESC, a.started_at DESC, a.rowid DESC) AS n
+            FROM attempts a JOIN tasks t ON t.task_id = a.task_id
+            WHERE a.state = 'live' AND t.status = '{running}')
+    WHERE n = 1",
+            running = TaskStatus::Running,
+        ),
+        rusqlite::params![BACKFILL_LEASE_S, now],
+    )?;
+    conn.execute(
+        &format!("UPDATE attempts SET active_at = {FLEET_CLOCK} WHERE state = 'live'"),
+        [],
+    )?;
+    conn.execute(
+        &format!("UPDATE worker_waits SET due_at = {FLEET_CLOCK} + ?1"),
+        [BACKFILL_MAX_WAIT_S],
+    )?;
+    Ok(())
+}
+
 /// Bring the database to [`VERSION`]. A file from a newer binary is refused:
 /// this one would not know its columns.
 ///
@@ -811,13 +926,7 @@ fn migrate_unchecked(
     if due(5) {
         tx.execute_batch(&v5())
             .context("adding the worktree triage columns")?;
-        let broken: i64 =
-            tx.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
-                r.get(0)
-            })?;
-        if broken > 0 {
-            bail!("the version 5 migration left {broken} rows with a broken reference");
-        }
+        no_broken_reference(&tx, 5)?;
     }
     if due(6) {
         tx.execute_batch(V6)?;
@@ -826,19 +935,32 @@ fn migrate_unchecked(
         tx.execute_batch(&v7())
             .context("adding the trace-fixes columns and tables")?;
     }
-    if due(8) {
+    if due(PHASE_1_VERSION) {
         tx.execute_batch(&v8())
             .context("adding the fleetd tables and the attempts of live workers")?;
-        let broken: i64 =
-            tx.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
-                r.get(0)
-            })?;
-        if broken > 0 {
-            bail!("the version 8 migration left {broken} rows with a broken reference");
-        }
+        no_broken_reference(&tx, PHASE_1_VERSION)?;
+    }
+    if due(PHASE_2_VERSION) {
+        tx.execute_batch(&phase_2())
+            .context("adding the leases, the questions and the Phase 2 columns of fleetd")?;
+        phase_2_backfill(&tx, &super::util::now())
+            .context("backfilling the leases and the wait limits of a run in flight")?;
+        no_broken_reference(&tx, PHASE_2_VERSION)?;
     }
     tx.pragma_update(None, "user_version", target)?;
     tx.commit()?;
+    Ok(())
+}
+
+/// Fail when the migration step `version` left a row whose reference
+/// names no row. Foreign keys are off while a migration runs.
+fn no_broken_reference(conn: &Connection, version: i64) -> Result<()> {
+    let broken: i64 = conn.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
+        r.get(0)
+    })?;
+    if broken > 0 {
+        bail!("the version {version} migration left {broken} rows with a broken reference");
+    }
     Ok(())
 }
 
@@ -875,7 +997,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(tables, 23);
+        assert_eq!(tables, 25);
     }
 
     /// A ledger file as version 3 left it, with 1 run.
@@ -1268,6 +1390,7 @@ mod v7_tests {
             V6.into(),
             v7(),
             v8(),
+            phase_2(),
         ];
         assert_eq!(steps.len() as i64, VERSION, "add the new step here");
         for sql in &steps[..version as usize] {

@@ -437,18 +437,28 @@ fn a_schema_2_ledger_migrates_forward_and_keeps_its_rows() {
     let w = worker(&mut store, &run, "opus");
     assert_eq!(claimed_seq(&claim(&mut store, &w)), Some(1));
     drop(store);
-    // Take the file back to schema 2: undo v7, v6 and the v5 columns, then
-    // the 3 columns of v3 and the 2 of v4. A step left in place runs again
-    // and fails (`duplicate column name`).
+    // Take the file back to schema 2: undo the fleetd steps, v7, v6 and the
+    // v5 columns, then the 3 columns of v3 and the 2 of v4. A step left in
+    // place runs again and fails (`duplicate column name`).
     assert_eq!(
         horch_core::taskledger::schema::VERSION,
-        8,
+        horch_core::taskledger::schema::PHASE_2_VERSION,
         "undo the new version here"
     );
     let path = dir.path().join("ledger.sqlite3");
     let conn = rusqlite::Connection::open(&path).unwrap();
     conn.execute_batch(
-        "DROP INDEX jobs_one_active;
+        "DROP INDEX tasks_by_run_status;
+         DROP INDEX workers_by_run_status;
+         DROP TABLE leases;
+         DROP TABLE questions;
+         ALTER TABLE tasks DROP COLUMN not_before;
+         ALTER TABLE tasks DROP COLUMN due_at;
+         ALTER TABLE tasks DROP COLUMN replans;
+         ALTER TABLE tasks DROP COLUMN cancel_requested;
+         ALTER TABLE worker_waits DROP COLUMN due_at;
+         ALTER TABLE worker_waits DROP COLUMN question_id;
+         DROP INDEX jobs_one_active;
          DROP TABLE jobs;
          DROP TABLE needs_you;
          DROP TABLE pass_cursors;

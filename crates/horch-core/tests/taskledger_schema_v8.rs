@@ -10,15 +10,20 @@ use horch_core::taskledger::schema;
 use horch_core::taskledger::store::{self, migrate_refusal};
 use rusqlite::Connection;
 
-/// A version 7 ledger at `path`, built by the migration of today, with rows
+/// The version before the Phase 1 step, which the tests of this file
+/// migrate from. Each test of the step migrates to
+/// [`schema::PHASE_1_VERSION`], not to the newest version.
+const BEFORE_PHASE_1: i64 = schema::PHASE_1_VERSION - 1;
+
+/// A ledger at [`BEFORE_PHASE_1`] at `path`, built by the migration of today, with rows
 /// in `tasks`, `workers` and `events`:
 /// - `w1` works on `t1` (attempt 2), so it is live.
 /// - `w2` starts on `t2` (attempt 1), so it is live.
 /// - `w3` stopped on `t3`, so it is not live.
 /// - `w4` spawns with no task yet.
-fn version_7_file(path: &Path) {
+fn before_phase_1_file(path: &Path) {
     let mut conn = Connection::open(path).unwrap();
-    schema::migrate_to(&mut conn, 7).unwrap();
+    schema::migrate_to(&mut conn, BEFORE_PHASE_1).unwrap();
     conn.execute_batch(
         "INSERT INTO projects VALUES ('p', '/r', 'now');
          INSERT INTO runs (run_id, project_id, slug, status, started_at) VALUES ('r1', 'p', 's', 'active', 'now');
@@ -37,7 +42,7 @@ fn version_7_file(path: &Path) {
                    ('now', 'r1', 't1', 'w1', 'worker', 'claimed', 'y');",
     )
     .unwrap();
-    assert_eq!(user_version(&conn), 7);
+    assert_eq!(user_version(&conn), BEFORE_PHASE_1);
 }
 
 fn user_version(conn: &Connection) -> i64 {
@@ -54,32 +59,32 @@ fn columns(conn: &Connection, table: &str) -> Vec<String> {
         .unwrap()
 }
 
-/// `migrate` on the file at `path`, as `Store::open` runs it.
+/// The migration of the file at `path` up to the Phase 1 step, with foreign
+/// keys on as `Store::open` sets them.
 fn migrate(path: &Path) -> Connection {
     let mut conn = Connection::open(path).unwrap();
     conn.pragma_update(None, "foreign_keys", true).unwrap();
-    schema::migrate(&mut conn).unwrap();
+    schema::migrate_to(&mut conn, schema::PHASE_1_VERSION).unwrap();
     conn
 }
 
-/// A version 7 ledger, migrated: its folder (kept alive) and a connection
+/// A ledger at [`BEFORE_PHASE_1`], migrated to the Phase 1 step: its folder (kept alive) and a connection
 /// with foreign keys on.
-fn migrated_version_7() -> (tempfile::TempDir, Connection) {
+fn migrated_to_phase_1() -> (tempfile::TempDir, Connection) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("ledger.sqlite3");
-    version_7_file(&path);
+    before_phase_1_file(&path);
     let conn = migrate(&path);
     (dir, conn)
 }
 
 #[test]
-fn migrate_from_version_7_adds_the_phase_1_tables_and_keeps_rows() {
+fn phase_1_migration_adds_the_phase_1_tables_and_keeps_rows() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("ledger.sqlite3");
-    version_7_file(&path);
+    before_phase_1_file(&path);
     let conn = migrate(&path);
-    assert_eq!(user_version(&conn), 8);
-    assert_eq!(schema::VERSION, 8);
+    assert_eq!(user_version(&conn), schema::PHASE_1_VERSION);
 
     let want: [(&str, &[&str]); 5] = [
         (
@@ -203,13 +208,13 @@ fn migrate_from_version_7_adds_the_phase_1_tables_and_keeps_rows() {
     // A second migration changes nothing and writes no backup.
     let before = schema::backups_in(dir.path()).len();
     let conn = migrate(&path);
-    assert_eq!(user_version(&conn), 8);
+    assert_eq!(user_version(&conn), schema::PHASE_1_VERSION);
     assert_eq!(schema::backups_in(dir.path()).len(), before);
 }
 
 #[test]
 fn events_v8_takes_a_transition_event_and_keeps_its_indexes() {
-    let (_dir, conn) = migrated_version_7();
+    let (_dir, conn) = migrated_to_phase_1();
     // A transition event: the kind `transition` is in the CHECK list, and a
     // new event takes the next id.
     conn.execute(
@@ -238,7 +243,7 @@ fn events_v8_takes_a_transition_event_and_keeps_its_indexes() {
 
 #[test]
 fn fleetd_starts_empty_and_its_pid_start_fits_i64() {
-    let (_dir, conn) = migrated_version_7();
+    let (_dir, conn) = migrated_to_phase_1();
     // `fleetd` has no row: ticket 14 writes generation 1 at the first start.
     let rows: i64 = conn
         .query_row("SELECT count(*) FROM fleetd", [], |r| r.get(0))
@@ -267,7 +272,7 @@ fn fleetd_starts_empty_and_its_pid_start_fits_i64() {
 
 #[test]
 fn phase_1_check_lists_and_references_hold() {
-    let (_dir, conn) = migrated_version_7();
+    let (_dir, conn) = migrated_to_phase_1();
     // The other CHECK lists hold.
     let state = |s: &str| {
         conn.execute(
@@ -317,10 +322,10 @@ fn phase_1_check_lists_and_references_hold() {
 }
 
 #[test]
-fn migrate_7_to_8_writes_a_backup_first() {
+fn phase_1_migration_writes_a_backup_first() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("ledger.sqlite3");
-    version_7_file(&path);
+    before_phase_1_file(&path);
     assert!(schema::backups_in(dir.path()).is_empty());
     drop(migrate(&path));
 
@@ -331,9 +336,12 @@ fn migrate_7_to_8_writes_a_backup_first() {
         .unwrap()
         .to_string_lossy()
         .into_owned();
-    assert!(name.starts_with("ledger.v7-backup-"), "{name}");
+    assert!(
+        name.starts_with(&format!("ledger.v{BEFORE_PHASE_1}-backup-")),
+        "{name}"
+    );
     let copy = Connection::open(&copies[0]).unwrap();
-    assert_eq!(user_version(&copy), 7);
+    assert_eq!(user_version(&copy), BEFORE_PHASE_1);
     // The backup is the state before the migration: no attempts table.
     assert!(copy.prepare("SELECT * FROM attempts").is_err());
     let workers: i64 = copy
@@ -343,18 +351,23 @@ fn migrate_7_to_8_writes_a_backup_first() {
 }
 
 #[test]
-fn newer_schema_9_is_refused() {
+fn newer_schema_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("ledger.sqlite3");
     {
         let mut conn = Connection::open(&path).unwrap();
         schema::migrate(&mut conn).unwrap();
-        conn.pragma_update(None, "user_version", 9).unwrap();
+        conn.pragma_update(None, "user_version", schema::VERSION + 1)
+            .unwrap();
     }
     let mut conn = Connection::open(&path).unwrap();
     let text = format!("{:#}", schema::migrate(&mut conn).err().unwrap());
     assert!(
-        text.contains("is schema version 9 and this horch knows only up to 8"),
+        text.contains(&format!(
+            "is schema version {} and this horch knows only up to {}",
+            schema::VERSION + 1,
+            schema::VERSION
+        )),
         "{text}"
     );
     assert!(
@@ -363,7 +376,7 @@ fn newer_schema_9_is_refused() {
     );
     assert!(text.contains("Run horch self-update"), "{text}");
     assert_eq!(text.lines().count(), 2, "{text}");
-    assert_eq!(user_version(&conn), 9);
+    assert_eq!(user_version(&conn), schema::VERSION + 1);
     assert!(schema::backups_in(dir.path()).is_empty());
 }
 
@@ -372,7 +385,7 @@ fn development_build_does_not_migrate_the_shared_ledger() {
     let home = tempfile::tempdir().unwrap();
     let path = store::default_path(home.path());
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    version_7_file(&path);
+    before_phase_1_file(&path);
     // The guard that `Store::open` passes, for a development build and a
     // ledger at `<passwd home>/.horch/ledger.sqlite3`.
     let dev = Path::new("/Users/op/src/horch/target/debug/horch");
@@ -390,8 +403,14 @@ fn development_build_does_not_migrate_the_shared_ledger() {
         text.contains("refuses to migrate the shared task ledger"),
         "{text}"
     );
-    assert!(text.contains("from schema version 7 to 8"), "{text}");
-    assert_eq!(user_version(&conn), 7);
+    assert!(
+        text.contains(&format!(
+            "from schema version {BEFORE_PHASE_1} to {}",
+            schema::VERSION
+        )),
+        "{text}"
+    );
+    assert_eq!(user_version(&conn), BEFORE_PHASE_1);
     assert!(conn.prepare("SELECT * FROM attempts").is_err());
     // The guard runs before the backup.
     assert!(schema::backups_in(path.parent().unwrap()).is_empty());
@@ -399,7 +418,7 @@ fn development_build_does_not_migrate_the_shared_ledger() {
 
 #[test]
 fn live_worker_gets_1_live_attempt_and_an_ended_worker_gets_none() {
-    let (_dir, conn) = migrated_version_7();
+    let (_dir, conn) = migrated_to_phase_1();
     type Row = (
         String,
         Option<String>,
@@ -455,7 +474,7 @@ fn live_worker_gets_1_live_attempt_and_an_ended_worker_gets_none() {
 
 #[test]
 fn jobs_one_active_refuses_a_second_queued_run_of_1_kind_and_subject() {
-    let (_dir, conn) = migrated_version_7();
+    let (_dir, conn) = migrated_to_phase_1();
     let job = |run: i64, input: &str, state: &str, subject: &str| {
         conn.execute(
             "INSERT INTO jobs (kind, subject, input_key, run, state, time_limit_s, created_at)
