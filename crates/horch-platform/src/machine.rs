@@ -1,11 +1,21 @@
 //! The concern machine: the machine probe. It reads load, memory, disk, the
 //! process limits, the host name, the architecture and the GPU class, with
-//! the sources of `horch-core/src/runtime/machine.rs`:
+//! the sources of `horch-core/src/runtime/machine.rs`, and the count of
+//! processes and of open files of the user (OR-5):
 //!
 //! - macOS: `getloadavg`, `gethostname`, `statvfs`, `getrlimit`, and the
-//!   commands `uname -m`, `sysctl` and `vm_stat`.
+//!   commands `uname -m`, `sysctl` and `vm_stat`. The counts read
+//!   `proc_listallpids`, `proc_pidinfo(PROC_PIDTBSDINFO)` for the real uid
+//!   of each process, and `proc_pidinfo(PROC_PIDLISTFDS)` for the open
+//!   files of each process of the user. The count of open files is per
+//!   process of the user, not the system count `kern.num_files`. The read
+//!   of the uid fails for a zombie, so the count of processes does not
+//!   include zombies, but `RLIMIT_NPROC` does. On 2026-11-16 this Mac had
+//!   40 zombies of about 600 processes of the user.
 //! - Linux: `getloadavg`, `gethostname`, `statvfs`, `getrlimit`,
-//!   `/proc/meminfo`, and the commands `uname -m` and `nvidia-smi -L`.
+//!   `/proc/meminfo`, and the commands `uname -m` and `nvidia-smi -L`. The
+//!   counts read the `Uid:` line of `/proc/<pid>/status` and the entries
+//!   of `/proc/<pid>/fd`.
 //! - Windows: no reading. Each function gives [`NotSupported`]
 //!   (`docs/specs/fleetd/preservation-06-wiring-and-platform.md`, section 6,
 //!   row "Other", and row S12). Core code reports it as unknown (OR-5).
@@ -13,6 +23,11 @@
 //! The caller runs the probe commands through a [`Run`] function, so the
 //! command paths, the timeout and the environment of the child stay in core
 //! code. A reading that fails is `None`, as today.
+//!
+//! The health guards read 4 functions: [`user_process_count`] with the
+//! limit [`max_processes`], and [`user_open_file_count`] with the limit
+//! [`max_open_files`]. A count is fast: on an Apple M-series Mac with
+//! about 700 processes, 1 count takes less than 100 ms.
 
 use std::path::Path;
 
@@ -98,6 +113,20 @@ pub fn max_processes() -> Result<Option<u64>, NotSupported> {
 /// infinite or unknown.
 pub fn max_open_files() -> Result<Option<u64>, NotSupported> {
     os::max_open_files()
+}
+
+/// The count of processes of the user: the processes with the real uid of
+/// this process, as `RLIMIT_NPROC` counts them. A process that exits during
+/// the read is not counted. `None` when the process list cannot be read.
+pub fn user_process_count() -> Result<Option<u64>, NotSupported> {
+    os::user_process_count()
+}
+
+/// The count of open files of all the processes of the user (see
+/// [`user_process_count`]). A process whose files cannot be read adds 0.
+/// `None` when the process list cannot be read.
+pub fn user_open_file_count() -> Result<Option<u64>, NotSupported> {
+    os::user_open_file_count()
 }
 
 /// The output of `uname -m`, trimmed, or `None` when it fails or is empty.

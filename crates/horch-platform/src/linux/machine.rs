@@ -54,3 +54,44 @@ pub(crate) fn gpu(run: Run<'_>, _arch: &str) -> Result<Gpu, NotSupported> {
         None => Gpu::None,
     })
 }
+
+pub(crate) fn user_process_count() -> Result<Option<u64>, NotSupported> {
+    Ok(user_pids().map(|pids| pids.len() as u64))
+}
+
+pub(crate) fn user_open_file_count() -> Result<Option<u64>, NotSupported> {
+    Ok(user_pids().map(|pids| pids.iter().map(String::as_str).map(open_file_count).sum()))
+}
+
+/// The pids of the processes with the real uid of this process, as the
+/// names of their `/proc` folders.
+fn user_pids() -> Option<Vec<String>> {
+    // SAFETY: getuid has no precondition and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    let entries = std::fs::read_dir("/proc").ok()?;
+    Some(
+        entries
+            .filter_map(|e| e.ok()?.file_name().into_string().ok())
+            .filter(|name| name.bytes().all(|b| b.is_ascii_digit()))
+            .filter(|pid| real_uid(pid) == Some(uid))
+            .collect(),
+    )
+}
+
+/// The real uid of a process: the first field of the `Uid:` line of
+/// `/proc/<pid>/status`. `None` when the process exited.
+fn real_uid(pid: &str) -> Option<libc::uid_t> {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    status
+        .lines()
+        .find_map(|l| l.strip_prefix("Uid:"))?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// The count of entries of `/proc/<pid>/fd`, or 0 when the read fails.
+fn open_file_count(pid: &str) -> u64 {
+    std::fs::read_dir(format!("/proc/{pid}/fd")).map_or(0, |fds| fds.count() as u64)
+}

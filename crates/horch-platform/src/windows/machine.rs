@@ -46,3 +46,11 @@ pub(crate) fn uname_arch(_run: Run<'_>) -> Result<Option<String>, NotSupported> 
 pub(crate) fn gpu(_run: Run<'_>, _arch: &str) -> Result<Gpu, NotSupported> {
     Err(GAP)
 }
+
+pub(crate) fn user_process_count() -> Result<Option<u64>, NotSupported> {
+    Err(GAP)
+}
+
+pub(crate) fn user_open_file_count() -> Result<Option<u64>, NotSupported> {
+    Err(GAP)
+}

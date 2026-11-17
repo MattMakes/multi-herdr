@@ -97,3 +97,36 @@ fn parse_vm_stat_and_parse_meminfo_read_a_sample() {
     assert_eq!(machine::parse_meminfo(mi, "MemFree"), None);
     assert_eq!(machine::parse_meminfo(mi, "Mem"), None);
 }
+
+#[cfg(unix)]
+#[test]
+fn user_process_count_is_at_least_1() {
+    let count = machine::user_process_count()
+        .unwrap()
+        .expect("process count");
+    assert!(count >= 1, "{count}");
+}
+
+#[cfg(unix)]
+#[test]
+fn user_open_file_count_grows_when_this_process_opens_files() {
+    let before = machine::user_open_file_count()
+        .unwrap()
+        .expect("open file count");
+    let files: Vec<_> = (0..20).map(|_| tempfile::tempfile().unwrap()).collect();
+    let after = machine::user_open_file_count()
+        .unwrap()
+        .expect("open file count");
+    drop(files);
+    // Other processes of the user open and close files at the same time,
+    // so the test asks for most of the 20 files and not for an exact count.
+    assert!(after >= before + 10, "before {before}, after {after}");
+}
+
+#[cfg(windows)]
+#[test]
+fn counts_are_not_supported_on_windows() {
+    assert!(machine::user_process_count().is_err());
+    assert!(machine::user_open_file_count().is_err());
+    assert!(machine::max_open_files().is_err());
+}

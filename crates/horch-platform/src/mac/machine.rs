@@ -45,3 +45,80 @@ pub(crate) fn gpu(run: Run<'_>, arch: &str) -> Result<Gpu, NotSupported> {
         },
     )
 }
+
+pub(crate) fn user_process_count() -> Result<Option<u64>, NotSupported> {
+    Ok(user_pids().map(|pids| pids.len() as u64))
+}
+
+pub(crate) fn user_open_file_count() -> Result<Option<u64>, NotSupported> {
+    Ok(user_pids().map(|pids| pids.into_iter().map(open_file_count).sum()))
+}
+
+/// The pids of the processes with the real uid of this process.
+fn user_pids() -> Option<Vec<libc::pid_t>> {
+    // SAFETY: a null buffer of size 0 asks only for the count of pids.
+    let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+    if count <= 0 {
+        return None;
+    }
+    // Room for the processes that start between the 2 calls.
+    let mut pids: Vec<libc::pid_t> = vec![0; count as usize + 64];
+    let bytes = (pids.len() * size_of::<libc::pid_t>()) as libc::c_int;
+    // SAFETY: `pids` holds `bytes` bytes, and the call writes at most that.
+    let count = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
+    if count <= 0 {
+        return None;
+    }
+    pids.truncate(count as usize);
+    // SAFETY: getuid has no precondition and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    pids.retain(|&pid| real_uid(pid) == Some(uid));
+    Some(pids)
+}
+
+/// The real uid of a process, or `None` when it exited or the read fails.
+fn real_uid(pid: libc::pid_t) -> Option<libc::uid_t> {
+    let size = size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    // SAFETY: `info` is a zeroed out-parameter of `size` bytes that
+    // `proc_pidinfo` fills in, and the call writes at most `size` bytes.
+    let (written, info) = unsafe {
+        let mut info: libc::proc_bsdinfo = std::mem::zeroed();
+        let written = libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            (&mut info as *mut libc::proc_bsdinfo).cast(),
+            size,
+        );
+        (written, info)
+    };
+    (written == size).then_some(info.pbi_ruid)
+}
+
+/// The count of open files of a process, or 0 when the read fails.
+fn open_file_count(pid: libc::pid_t) -> u64 {
+    // SAFETY: a null buffer of size 0 asks only for the size of the list.
+    let bytes =
+        unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDLISTFDS, 0, std::ptr::null_mut(), 0) };
+    if bytes <= 0 {
+        return 0;
+    }
+    let mut fds: Vec<libc::proc_fdinfo> =
+        Vec::with_capacity(bytes as usize / libc::PROC_PIDLISTFD_SIZE as usize);
+    let bytes = (fds.capacity() * libc::PROC_PIDLISTFD_SIZE as usize) as libc::c_int;
+    // SAFETY: `fds` has room for `bytes` bytes, and the call writes at most
+    // that. The entries stay unread, so they need no initialization.
+    let written = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDLISTFDS,
+            0,
+            fds.as_mut_ptr().cast(),
+            bytes,
+        )
+    };
+    if written <= 0 {
+        return 0;
+    }
+    (written / libc::PROC_PIDLISTFD_SIZE) as u64
+}
