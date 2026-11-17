@@ -490,3 +490,26 @@ fn count_queries_of_the_watchdog_duties_use_the_run_status_indexes() {
     assert!(stuck.contains("tasks_by_run_status"), "{stuck}");
     assert!(stuck.contains("workers_by_run_status"), "{stuck}");
 }
+
+/// The 2 per-row queries of the watchdog duties (T-443) read 1 worker's
+/// checks and 1 task's workers through an index, in index order, with no
+/// scan and no sort.
+#[test]
+fn per_row_queries_of_the_watchdog_duties_use_an_index_and_no_sort() {
+    let (_dir, conn) = migrated();
+    // `watchdog::prev`.
+    let prev = plan(
+        &conn,
+        "SELECT at, herdr_seq, transcript_bytes, transcript_mtime, screen_timer_s, verdict
+            FROM checks WHERE worker_id = 'w1' ORDER BY check_id DESC LIMIT 1",
+    );
+    assert!(prev.contains("checks_by_worker"), "{prev}");
+    assert!(!prev.contains("TEMP B-TREE"), "{prev}");
+    // `workers::attempts_at`.
+    let attempts = plan(
+        &conn,
+        "SELECT * FROM workers WHERE task_id = 't1' ORDER BY attempt, claimed_at, rowid",
+    );
+    assert!(attempts.contains("workers_by_task"), "{attempts}");
+    assert!(!attempts.contains("TEMP B-TREE"), "{attempts}");
+}

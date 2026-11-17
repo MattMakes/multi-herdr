@@ -704,10 +704,14 @@ ALTER TABLE attempts ADD COLUMN active_at INTEGER;
 ALTER TABLE worker_waits ADD COLUMN due_at INTEGER;
 ALTER TABLE worker_waits ADD COLUMN question_id TEXT;";
 
-/// The indexes of the count queries of the whole-run watchdog duties
-/// (T-322): the tasks and the workers of 1 run in 1 status.
+/// The indexes of the watchdog duties: the tasks and the workers of 1 run
+/// in 1 status, for the whole-run counts (T-322); the newest check of 1
+/// worker (`watchdog::prev`) and the workers of 1 task in attempt order
+/// (`workers::attempts_at`), for the per-row reads (T-443).
 const PHASE_2_INDEXES: &str = "CREATE INDEX tasks_by_run_status ON tasks(run_id, status);
-CREATE INDEX workers_by_run_status ON workers(run_id, status);";
+CREATE INDEX workers_by_run_status ON workers(run_id, status);
+CREATE INDEX checks_by_worker ON checks(worker_id, check_id);
+CREATE INDEX workers_by_task ON workers(task_id, attempt, claimed_at);";
 
 /// Version [`PHASE_2_VERSION`]: the Phase 2 tables and columns of fleetd
 /// (docs/specs/fleetd/design.md, "Ledger" and "Migration plan" item 4).
