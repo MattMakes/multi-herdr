@@ -466,32 +466,47 @@ pub fn orphans(rows: &Rows, facts: &Facts) -> Cleanup {
             PaneCheck::AfterProcessStop,
         ));
     }
+    let naming = naming(rows, &facts.stopped);
     for s in &facts.stopped {
-        out.merge_row(after_polite_stop(rows, facts, &owned, s));
+        out.merge_row(after_polite_stop(&naming[&s.process], facts, &owned, s));
     }
     out
 }
 
-/// The rows of this host that name the process `p`.
-fn naming(rows: &Rows, p: Recorded) -> Vec<Named> {
-    rows.workers
+/// The rows of this host that name each process of `stopped`, in 1 scan
+/// of the rows.
+fn naming(rows: &Rows, stopped: &[Stopped]) -> BTreeMap<Recorded, Vec<Named>> {
+    let mut by: BTreeMap<Recorded, Vec<Named>> =
+        stopped.iter().map(|s| (s.process, Vec::new())).collect();
+    let workers = rows
+        .workers
         .values()
         .filter(|w| w.judged())
-        .map(named_by_worker)
-        .chain(
-            rows.attempts
-                .iter()
-                .filter(|a| rows.judged(a))
-                .map(named_by_attempt),
-        )
-        .filter(|n| n.processes.contains(&p))
-        .collect()
+        .map(named_by_worker);
+    let attempts = rows
+        .attempts
+        .iter()
+        .filter(|a| rows.judged(a))
+        .map(named_by_attempt);
+    for n in workers.chain(attempts) {
+        for p in &n.processes {
+            if let Some(list) = by.get_mut(p) {
+                list.push(n.clone());
+            }
+        }
+    }
+    by
 }
 
-/// Whether the record `s` waits for a pass with a herdr snapshot: a row
-/// names its process and a pane, and no pane can be judged without one.
-pub fn needs_snapshot(rows: &Rows, s: &Stopped) -> bool {
-    naming(rows, s.process).iter().any(|n| n.pane.is_some())
+/// The processes of `stopped` whose records wait for a pass with a herdr
+/// snapshot: a row names the process and a pane, and no pane can be judged
+/// without one.
+pub fn needs_snapshot(rows: &Rows, stopped: &[Stopped]) -> BTreeSet<Recorded> {
+    naming(rows, stopped)
+        .into_iter()
+        .filter(|(_, named)| named.iter().any(|n| n.pane.is_some()))
+        .map(|(p, _)| p)
+        .collect()
 }
 
 /// The pane of a row whose process `s` ended on its polite stop. The pane
@@ -502,9 +517,9 @@ pub fn needs_snapshot(rows: &Rows, s: &Stopped) -> bool {
 /// it is kept. A record that does not parse keeps the pane of each row
 /// that names the process. A record with no pane keeps the pane of a row
 /// whose processes are all gone: no pane stop waits for that pane.
-fn after_polite_stop(rows: &Rows, facts: &Facts, owned: &Owned, s: &Stopped) -> Cleanup {
+fn after_polite_stop(named: &[Named], facts: &Facts, owned: &Owned, s: &Stopped) -> Cleanup {
     let mut out = Cleanup::default();
-    for n in naming(rows, s.process) {
+    for n in named {
         let Some(pane) = &n.pane else {
             continue;
         };
@@ -558,6 +573,7 @@ fn attempt_seen(a: &AttemptRow, facts: &Facts) -> Seen {
 }
 
 /// What 1 row names.
+#[derive(Clone)]
 struct Named {
     row: RowRef,
     processes: Vec<Recorded>,
@@ -1095,9 +1111,9 @@ mod tests {
     #[test]
     fn a_record_waits_for_a_snapshot_only_when_a_row_names_its_process_and_a_pane() {
         let (mut r, f) = after_stop(PaneProof::None, GONE);
-        assert!(needs_snapshot(&r, &f.stopped[0]));
+        assert_eq!(needs_snapshot(&r, &f.stopped), BTreeSet::from([SUPERVISOR]));
         r.workers.get_mut("W").unwrap().pane = None;
-        assert!(!needs_snapshot(&r, &f.stopped[0]));
+        assert_eq!(needs_snapshot(&r, &f.stopped), BTreeSet::new());
     }
 
     #[test]

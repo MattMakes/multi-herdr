@@ -544,10 +544,9 @@ impl<'a> Pass<'a> {
         // row with a pane names waits for a pass with one.
         if panes.is_none() {
             may_stop.extend(
-                stopped
-                    .iter()
-                    .filter(|s| task::needs_snapshot(&rows, s))
-                    .filter_map(|s| Some((s.process.pid, s.process.pid_start?))),
+                task::needs_snapshot(&rows, &stopped)
+                    .into_iter()
+                    .filter_map(|p| Some((p.pid, p.pid_start?))),
             );
         }
         Ok(Read {
