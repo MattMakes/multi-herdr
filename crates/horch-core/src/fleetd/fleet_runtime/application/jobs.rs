@@ -43,6 +43,7 @@ use crate::fleetd::fleet_runtime::domain::jobs::{
 };
 use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
 use crate::fleetd::worker_profiles::application::ports::{LaunchSpec, ProcessHost};
+use crate::fleetd::worktree_custody::adapters::executors;
 use crate::taskledger::finish::{self, land::CHECK_TIMEOUT, CodexSandbox};
 use crate::taskledger::model::Actor;
 use crate::taskledger::tasks;
@@ -116,14 +117,12 @@ pub fn time_limit_s(kind: Kind, config: &FleetConfig) -> Option<u64> {
         Kind::WorktreeAdd => Some(limits.worktree_add),
         Kind::WorktreeRemove => Some(limits.worktree_remove),
         Kind::WorktreeList => Some(limits.worktree_list),
+        Kind::Rescue => Some(limits.rescue),
         Kind::DocsSync => Some(limits.docs_sync),
         Kind::Conformance => Some(limits.conformance),
-        Kind::FastGate
-        | Kind::FullGate
-        | Kind::TrialMerge
-        | Kind::BundleBuild
-        | Kind::Rebase
-        | Kind::Rescue => None,
+        Kind::FastGate | Kind::FullGate | Kind::TrialMerge | Kind::BundleBuild | Kind::Rebase => {
+            None
+        }
     }
 }
 
@@ -417,16 +416,74 @@ pub fn outcome(row: &JobRow) -> Option<Outcome> {
     })
 }
 
+/// The facts that the run `row` wrote beside its outcome, when its
+/// executor gives facts: for example the path, the branch and the HEAD of
+/// a `worktree_add` run.
+pub fn result_data(row: &JobRow) -> Option<serde_json::Value> {
+    let r: ResultJson = serde_json::from_str(row.result_json.as_deref()?).ok()?;
+    r.data
+}
+
+/// What an executor gives: the outcome of the run, and the facts of its
+/// result for the reader of the run.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Ran {
+    pub outcome: Outcome,
+    pub data: Option<serde_json::Value>,
+}
+
+impl From<Outcome> for Ran {
+    fn from(outcome: Outcome) -> Ran {
+        Ran {
+            outcome,
+            data: None,
+        }
+    }
+}
+
 /// The form of `result_json`.
 #[derive(Serialize, Deserialize)]
 struct ResultJson {
     passed: bool,
     verdict: bool,
     text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    data: Option<serde_json::Value>,
 }
 
-fn result_json(o: &Outcome) -> String {
-    serde_json::json!({ "passed": o.passed, "verdict": o.verdict, "text": o.text }).to_string()
+fn result_json(ran: &Ran) -> String {
+    let o = &ran.outcome;
+    let r = ResultJson {
+        passed: o.passed,
+        verdict: o.verdict,
+        text: o.text.clone(),
+        data: ran.data.clone(),
+    };
+    serde_json::to_string(&r).expect("a result serializes")
+}
+
+/// The kinds that change the git state of their repository. At most 1 run
+/// of them runs for 1 repository at a time (MAP.md of fleetd-p3, Q12).
+const GIT_WRITERS: [Kind; 3] = [Kind::WorktreeAdd, Kind::WorktreeRemove, Kind::Rescue];
+
+/// Whether a run of `kind` changes the git state of its repository.
+pub fn is_git_writer(kind: Kind) -> bool {
+    GIT_WRITERS.contains(&kind)
+}
+
+/// The `running` runs of `worktree_add`, `worktree_remove` and `rescue` of
+/// the repository `repo`.
+pub fn git_writers_running(conn: &Connection, repo: &str) -> Result<Vec<JobRow>> {
+    Ok(store::running(conn)?
+        .into_iter()
+        .filter(|r| is_git_writer(r.kind) && r.repo.as_deref() == Some(repo))
+        .collect())
+}
+
+/// Whether a run of `worktree_add`, `worktree_remove` or `rescue` of the
+/// repository `repo` is `running` ("1 git writer for each repository").
+pub fn git_writer_busy(conn: &Connection, repo: &str) -> Result<bool> {
+    Ok(!git_writers_running(conn, repo)?.is_empty())
 }
 
 /// The launch of the job process of the run `job_id`: `<horch> job run
@@ -461,7 +518,8 @@ impl<'a> JobRunner<'a> {
     /// Start the `queued` run `job` as `spec`, after the commit of the
     /// pass, at `clock`. Then record its process and its deadline, and
     /// move it to `running`, in 1 transaction of `conn`. `false` when the
-    /// row is no longer `queued`: the process is killed. A failed record
+    /// row is no longer `queued`, or when it is a git writer and another git
+    /// writer of its repository runs: the process is killed. A failed record
     /// also kills the process.
     pub fn start(
         &mut self,
@@ -504,7 +562,7 @@ fn record_start(
 ) -> Result<bool> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let queued = store::get(&tx, job.id)?.is_some_and(|r| r.state == State::Queued);
-    if !queued {
+    if !queued || writer_waits(&tx, job)? {
         return Ok(false);
     }
     let deadline = jobs::deadline(clock, job.time_limit_s);
@@ -512,6 +570,16 @@ fn record_start(
     move_row(ctx, &tx, job.id, State::Running, "its process started")?;
     tx.commit()?;
     Ok(true)
+}
+
+/// Whether the git-writing run `job` must wait: another git writer of its
+/// repository runs. The check is in the transaction of the move to
+/// `running`, so 2 starters never run 2 writers of 1 repository.
+fn writer_waits(tx: &Connection, job: &JobRow) -> Result<bool> {
+    match &job.repo {
+        Some(repo) if is_git_writer(job.kind) => git_writer_busy(tx, repo),
+        _ => Ok(false),
+    }
 }
 
 /// Stop the process group of a run past its deadline (part 3 of a pass),
@@ -557,7 +625,8 @@ const RECORD_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 /// transaction. A row that another process runs, or that the pass ended,
 /// gets no write. Gives the outcome that it wrote, or `None`.
 ///
-/// Phase 1 has an executor for `task_check` only. Each other kind ends
+/// `task_check` has its executor here, and the 4 worktree kinds have theirs
+/// in worktree custody (MAP.md of fleetd-p3, Q22). Each other kind ends
 /// `failed`, with no verdict, and the result "no executor before phase
 /// <n>". The time limit is the deadline of the row: the pass stops this
 /// process at it. `checks` starts a check (SR-4).
@@ -571,9 +640,12 @@ pub fn run_job(
     let Some(row) = wait_for_record(conn, job_id, me)? else {
         return Ok(None);
     };
-    let outcome = match row.kind {
-        Kind::TaskCheck => task_check(conn, &row, checks)?,
-        kind => jobs::no_executor(kind),
+    let ran = match row.kind {
+        Kind::TaskCheck => task_check(conn, &row, checks)?.into(),
+        Kind::WorktreeAdd | Kind::WorktreeList | Kind::Rescue | Kind::WorktreeRemove => {
+            executors::run(conn, &row)?
+        }
+        kind => jobs::no_executor(kind).into(),
     };
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let Some(now) = store::get(&tx, job_id)? else {
@@ -582,16 +654,16 @@ pub fn run_job(
     if now.state != State::Running || now.pid != Some(me) {
         return Ok(None);
     }
-    store::set_result(&tx, job_id, &result_json(&outcome))?;
+    store::set_result(&tx, job_id, &result_json(&ran))?;
     end(
         ctx,
         &tx,
         &now,
-        outcome.state(),
+        ran.outcome.state(),
         "the job process wrote its result",
     )?;
     tx.commit()?;
-    Ok(Some(outcome))
+    Ok(Some(ran.outcome))
 }
 
 /// The row `job_id` once it is `running` with the pid `me`, or `None` when
