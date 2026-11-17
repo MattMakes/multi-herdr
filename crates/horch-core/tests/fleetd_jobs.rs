@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use horch_core::fleetd::fleet_runtime::adapters::jobs_store::{self, JobRow};
 use horch_core::fleetd::fleet_runtime::adapters::scans::{self, ProcessFact, ScanClock};
 use horch_core::fleetd::fleet_runtime::application::jobs::{
-    self, outcome, JobCtx, JobKey, JobRunner, Queued, Stop,
+    self, outcome, CheckRunner, JobCtx, JobKey, JobRunner, Queued, SandboxProfiles, Stop,
 };
 use horch_core::fleetd::fleet_runtime::domain::budget::{Cursor, Deadline};
 use horch_core::fleetd::fleet_runtime::domain::clock::FleetSeconds;
@@ -25,7 +25,7 @@ use horch_core::taskledger::finish::CodexSandbox;
 use horch_core::taskledger::model::Actor;
 use horch_core::taskledger::runs::{self, NewRun};
 use horch_core::taskledger::tasks::{self, NewTask};
-use horch_core::taskledger::workers::{self, NewWorker};
+use horch_core::taskledger::workers::{self, NewWorker, Worker};
 use horch_core::taskledger::{schema, util};
 use rusqlite::{params, Connection, Transaction, TransactionBehavior};
 
@@ -184,11 +184,15 @@ impl World {
     /// A task with the check `check` and a worktree folder, held by a
     /// worker of `harness`, or by no worker.
     fn task_of(&mut self, check: &str, harness: Option<&str>) -> String {
+        let n: i64 = self
+            .conn
+            .query_row("SELECT count(*) FROM runs", [], |r| r.get(0))
+            .unwrap();
         let run = runs::create(
             &self.conn,
             Path::new("/repo"),
             &NewRun {
-                slug: format!("r-{check}"),
+                slug: format!("r{n}"),
                 ..Default::default()
             },
         )
@@ -227,16 +231,16 @@ impl World {
     /// The job process of the run `id`: started as `true` through the
     /// launcher, then `run_job` in this process with the recorded pid.
     fn run_job(&mut self, runner: &mut JobRunner<'_>, id: i64, clock: i64) -> State {
-        self.run_job_in(runner, id, clock, &CodexSandbox::default())
+        self.run_job_in(runner, id, clock, &TestProfile)
     }
 
-    /// [`World::run_job`] with the Codex sandbox `codex`.
+    /// [`World::run_job`] with the sandbox profiles `profiles`.
     fn run_job_in(
         &mut self,
         runner: &mut JobRunner<'_>,
         id: i64,
         clock: i64,
-        codex: &CodexSandbox,
+        profiles: &dyn SandboxProfiles,
     ) -> State {
         self.start_due(runner, clock, "true", &[]);
         let me = self.row(id).pid.unwrap();
@@ -245,9 +249,41 @@ impl World {
             config: &self.config,
             needs_you: &NeedsYouList,
         };
-        let written = jobs::run_job(&ctx, &mut self.conn, id, me, codex).unwrap();
+        let written = jobs::run_job(
+            &ctx,
+            &mut self.conn,
+            id,
+            me,
+            &CheckRunner {
+                host: &Launcher,
+                profiles,
+            },
+        )
+        .unwrap();
         assert!(written.is_some(), "run_job wrote the result of job {id}");
         self.row(id).state
+    }
+}
+
+/// The sandbox profile of a test: each worker gets the plain shell in the
+/// worktree. Only a test uses it.
+struct TestProfile;
+
+impl SandboxProfiles for TestProfile {
+    fn check_launch(
+        &self,
+        _worker: &Worker,
+        dir: &Path,
+        check: &str,
+    ) -> anyhow::Result<Option<LaunchSpec>> {
+        Ok(Some(LaunchSpec {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), check.into()],
+            cwd: Some(dir.to_path_buf()),
+            env_rule: Default::default(),
+            detach: false,
+            output: None,
+        }))
     }
 }
 
@@ -496,12 +532,13 @@ fn kind_with_no_time_limit_is_not_queued() {
     assert_eq!(w.rows(), 0);
 }
 
-/// A Codex worker wrote the code that its check runs, so the check runs in
-/// the sandbox of its pane, as `finish` runs it (#181). A task with no
-/// worker gets no check.
+/// A check runs in the sandbox profile of the worker of its task, never
+/// with the rights of fleetd (SR-4). In Phase 1 only a Codex worker has a
+/// profile: the sandbox of its pane, as `finish` runs it (#181). A task
+/// with no worker, or with a worker with no profile, gets no check.
 #[cfg(unix)]
 #[test]
-fn check_of_a_codex_worker_runs_in_its_sandbox() {
+fn check_runs_only_in_the_sandbox_profile_of_its_worker() {
     use std::os::unix::fs::PermissionsExt;
     let mut w = world();
     let launcher = Launcher;
@@ -536,10 +573,21 @@ fn check_of_a_codex_worker_runs_in_its_sandbox() {
         "no check ran outside the sandbox"
     );
 
-    let orphan = w.task_of("true", None);
-    let id = new_id(w.queue(Kind::TaskCheck, &orphan, "tip1", 0));
-    assert_eq!(w.run_job_in(&mut runner, id, 0, &codex), State::Failed);
-    let o = outcome(&w.row(id)).unwrap();
-    assert!(!o.verdict);
-    assert!(o.text.contains("has no worker"), "{}", o.text);
+    for (harness, why) in [
+        (None, "has no worker"),
+        (Some("claude"), "has no sandbox profile"),
+    ] {
+        let task = w.task_of("touch ran-outside", harness);
+        let id = new_id(w.queue(Kind::TaskCheck, &task, "tip1", 0));
+        assert_eq!(w.run_job_in(&mut runner, id, 0, &codex), State::Failed);
+        let o = outcome(&w.row(id)).unwrap();
+        assert!(!o.verdict);
+        assert!(
+            o.text.starts_with("SR-4: ") && o.text.contains(why),
+            "{}",
+            o.text
+        );
+        let wt = w.dir.path().join(format!("wt-{task}"));
+        assert!(!wt.join("ran-outside").exists(), "no check ran");
+    }
 }

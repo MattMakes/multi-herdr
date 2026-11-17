@@ -24,7 +24,8 @@
 //! Each state change goes through `transition()`.
 
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::Child;
+use std::sync::atomic::{AtomicI32, Ordering};
 
 use anyhow::{bail, Context, Result};
 use rusqlite::{Connection, TransactionBehavior};
@@ -559,20 +560,19 @@ const RECORD_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 /// Phase 1 has an executor for `task_check` only. Each other kind ends
 /// `failed`, with no verdict, and the result "no executor before phase
 /// <n>". The time limit is the deadline of the row: the pass stops this
-/// process at it. `codex` gives the sandbox of the check of a Codex
-/// worker.
+/// process at it. `checks` starts a check (SR-4).
 pub fn run_job(
     ctx: &JobCtx<'_>,
     conn: &mut Connection,
     job_id: i64,
     me: u32,
-    codex: &CodexSandbox,
+    checks: &CheckRunner<'_>,
 ) -> Result<Option<Outcome>> {
     let Some(row) = wait_for_record(conn, job_id, me)? else {
         return Ok(None);
     };
     let outcome = match row.kind {
-        Kind::TaskCheck => task_check(conn, &row, codex)?,
+        Kind::TaskCheck => task_check(conn, &row, checks)?,
         kind => jobs::no_executor(kind),
     };
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -610,9 +610,10 @@ fn wait_for_record(conn: &Connection, job_id: i64, me: u32) -> Result<Option<Job
 }
 
 /// The executor of `task_check`: the check command of the task, as
-/// `finish` reads it, in the worktree of the task, with the rights of the
-/// worker of the task ([`check_command`]). Its exit code is the verdict.
-fn task_check(conn: &Connection, row: &JobRow, codex: &CodexSandbox) -> Result<Outcome> {
+/// `finish` reads it, in the worktree of the task, in the sandbox profile
+/// of the worker of the task (SR-4). Its exit code is the verdict. A task
+/// with no worker, or a worker with no sandbox profile, gets no check.
+fn task_check(conn: &Connection, row: &JobRow, checks: &CheckRunner<'_>) -> Result<Outcome> {
     let no_verdict = |text: String| Outcome {
         passed: false,
         verdict: false,
@@ -644,19 +645,22 @@ fn task_check(conn: &Connection, row: &JobRow, codex: &CodexSandbox) -> Result<O
     }
     let Some(worker_id) = task.current_worker_id.as_deref() else {
         return Ok(no_verdict(format!(
-            "{} has no worker, so the rights of its check are unknown",
+            "SR-4: {} has no worker, so its check has no sandbox profile; \
+             a check never runs with the rights of fleetd",
             task.short()
         )));
     };
     let worker = workers::get(conn, worker_id)?;
-    let mut cmd = check_command(codex, &worker, dir, &check)?;
-    // The check stays in the process group of this job process, so the
-    // stop of the job at its deadline also stops the check.
-    cmd.current_dir(dir).stdin(Stdio::null());
-    crate::runtime::process::scrub_child_env(&mut cmd);
-    let status = match cmd.status() {
+    let Some(spec) = checks.profiles.check_launch(&worker, dir, &check)? else {
+        return Ok(no_verdict(format!(
+            "SR-4: worker {worker_id} of {} has no sandbox profile; \
+             a check never runs with the rights of fleetd",
+            task.short()
+        )));
+    };
+    let status = match run_check(checks.host, &spec) {
         Ok(s) => s,
-        Err(e) => return Ok(no_verdict(format!("`{check}` did not start: {e}"))),
+        Err(e) => return Ok(no_verdict(format!("`{check}` did not start: {e:#}"))),
     };
     Ok(Outcome {
         passed: status.success(),
@@ -665,36 +669,73 @@ fn task_check(conn: &Connection, row: &JobRow, codex: &CodexSandbox) -> Result<O
     })
 }
 
-/// The process that runs the check `check` in `dir`: the shell, or for a
-/// worker of a Codex pane the shell inside the sandbox of that pane, so the
-/// check runs with the rights of the worker that wrote the code, not with
-/// the rights of this job process (#181). It is the rule of
-/// `check_process` in `taskledger/finish/land.rs`: only the shell gets the
-/// TMPDIR of the pane, as `/tmp` is read-only in the sandbox.
-fn check_command(
-    codex: &CodexSandbox,
-    worker: &Worker,
-    dir: &Path,
-    check: &str,
-) -> Result<Command> {
-    let shell = horch_platform::shell::CHECK_SHELL;
-    let mut cmd = if codex.runs(worker) {
+/// The sandbox profiles of workers, as the check of a task needs them
+/// (SR-4).
+pub trait SandboxProfiles {
+    /// The launch of `check` in `dir` in the sandbox profile of `worker`,
+    /// or `None` when the worker has no sandbox profile.
+    fn check_launch(&self, worker: &Worker, dir: &Path, check: &str) -> Result<Option<LaunchSpec>>;
+}
+
+/// What starts a check: the launcher and the sandbox profiles.
+pub struct CheckRunner<'a> {
+    pub host: &'a dyn ProcessHost,
+    pub profiles: &'a dyn SandboxProfiles,
+}
+
+/// In Phase 1 only a worker of a Codex pane has a sandbox profile: the
+/// sandbox of its pane, by the rule of `check_process` in
+/// `taskledger/finish/land.rs` (#181). Only the shell gets the TMPDIR of
+/// the pane, as `/tmp` is read-only in the sandbox.
+impl SandboxProfiles for CodexSandbox {
+    fn check_launch(&self, worker: &Worker, dir: &Path, check: &str) -> Result<Option<LaunchSpec>> {
+        if !self.runs(worker) {
+            return Ok(None);
+        }
         let role = worker.role.as_deref().unwrap_or(&worker.worker_id);
-        let tmpdir = crate::harness::codex::pane_tmpdir(&codex.state_root, role);
+        let tmpdir = crate::harness::codex::pane_tmpdir(&self.state_root, role);
         std::fs::create_dir_all(&tmpdir)
             .with_context(|| format!("creating {}", tmpdir.display()))?;
         let mut tmp_pair = std::ffi::OsString::from("TMPDIR=");
         tmp_pair.push(&tmpdir);
-        let mut cmd = Command::new(&codex.bin);
-        cmd.args(crate::harness::codex::sandbox_args(&codex.state_root, dir))
-            .arg("/usr/bin/env")
-            .arg(tmp_pair)
-            .arg(shell)
-            .env_remove("TMPDIR");
-        cmd
-    } else {
-        Command::new(shell)
-    };
-    cmd.arg("-c").arg(check);
-    Ok(cmd)
+        let mut args: Vec<std::ffi::OsString> =
+            crate::harness::codex::sandbox_args(&self.state_root, dir)
+                .into_iter()
+                .map(Into::into)
+                .collect();
+        args.extend([
+            "/usr/bin/env".into(),
+            tmp_pair,
+            horch_platform::shell::CHECK_SHELL.into(),
+            "-c".into(),
+            check.into(),
+        ]);
+        Ok(Some(LaunchSpec {
+            program: self.bin.clone(),
+            args,
+            cwd: Some(dir.to_path_buf()),
+            env_rule: Default::default(),
+            detach: false,
+            output: None,
+        }))
+    }
+}
+
+/// The group of the running check, 0 when none runs.
+static CHECK_GROUP: AtomicI32 = AtomicI32::new(0);
+
+/// Start `spec` through `host` and wait for it. The check leads its own
+/// group. A stop of this job process at its deadline (`SIGTERM`) kills
+/// that group first, so no check outlives its job. Windows has no signal
+/// handlers: there the check lives on after the stop
+/// (`docs/specs/fleetd/preservation-06-wiring-and-platform.md`, section 6,
+/// row "Signals and stop").
+fn run_check(host: &dyn ProcessHost, spec: &LaunchSpec) -> Result<std::process::ExitStatus> {
+    let mut launched = host.launch(spec)?;
+    let group = i32::try_from(launched.pid).unwrap_or(0);
+    CHECK_GROUP.store(group, Ordering::SeqCst);
+    let _ = horch_platform::signal::kill_group_on_termination(&CHECK_GROUP);
+    let status = launched.child.wait();
+    CHECK_GROUP.store(0, Ordering::SeqCst);
+    Ok(status?)
 }
