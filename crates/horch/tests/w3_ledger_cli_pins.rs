@@ -47,6 +47,14 @@ impl World {
         // A fixed, healthy machine, so the health guard of `horch spawn`
         // never reads the real load of the host.
         std::fs::write(tmp.path().join("machine.json"), HEALTHY_MACHINE).unwrap();
+        // The process and open-file counts have no fixture: a share of 1.0
+        // holds only above the limit, which the host does not allow.
+        std::fs::create_dir_all(tmp.path().join("fleet")).unwrap();
+        std::fs::write(
+            tmp.path().join("fleet/fleet.toml"),
+            "health_max_process_share = 1.0\nhealth_max_open_file_share = 1.0\n",
+        )
+        .unwrap();
         World { tmp }
     }
 
@@ -70,7 +78,8 @@ impl World {
             .env("XDG_DATA_HOME", root.join("data"))
             .env("HORCH_STATE_DIR", root.join("state"))
             .env("HORCH_PROJECT_DIR", self.proj())
-            .env("HORCH_MACHINE_FILE", root.join("machine.json"));
+            .env("HORCH_MACHINE_FILE", root.join("machine.json"))
+            .env("FLEET_ROOT", root.join("fleet"));
         if watchdog_off {
             cmd.env("HORCH_NO_WATCHDOG", "1");
         }
@@ -81,7 +90,13 @@ impl World {
         Out {
             code: o.status.code().unwrap(),
             out: String::from_utf8(o.stdout).unwrap(),
-            err: String::from_utf8(o.stderr).unwrap(),
+            // A host that cannot read a count (a sandbox) gets a guard note.
+            err: String::from_utf8(o.stderr)
+                .unwrap()
+                .lines()
+                .filter(|l| !l.starts_with("horch: NOTE: the health guard "))
+                .map(|l| format!("{l}\n"))
+                .collect(),
         }
     }
 
