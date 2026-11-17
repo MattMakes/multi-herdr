@@ -69,7 +69,7 @@ pub fn dependents_wake(t: &tasks::Task, dependents: &[tasks::Task]) -> Option<Wa
     Some(Wake::new(event, task, tagged(&text)).on_board(watchdog::blocker_state(t)))
 }
 
-pub fn stuck_line(conn: &Connection, run: &Run) -> Option<String> {
+fn stuck_line(conn: &Connection, run: &Run) -> Option<String> {
     let open: Vec<tasks::Task> = tasks::of_run(conn, &run.run_id)
         .ok()?
         .into_iter()
