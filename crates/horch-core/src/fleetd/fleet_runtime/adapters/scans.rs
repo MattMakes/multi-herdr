@@ -52,8 +52,20 @@ pub struct ProcessItem {
 pub struct ProcessFact {
     /// The key of the row.
     pub key: String,
-    /// True when a process has the pid and the recorded start time.
-    pub alive: bool,
+    /// What the scan knows of the process.
+    pub liveness: Liveness,
+}
+
+/// What a scan knows of a recorded process.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Liveness {
+    /// A process has the pid and, when one is recorded, the start time.
+    Alive,
+    /// No process has the pid, or a process with another start time has it.
+    Dead,
+    /// A process has the pid, and its start time cannot be read. The scan
+    /// does not know whether it is the recorded process, so it is not dead.
+    Unknown,
 }
 
 /// A folder that a row names: an outbox or a worktree folder.
@@ -90,8 +102,20 @@ pub struct OutboxFact {
 pub struct FolderFact {
     /// The key of the row.
     pub key: String,
-    /// True when the folder exists.
-    pub exists: bool,
+    /// Whether the folder exists.
+    pub presence: Presence,
+}
+
+/// Whether a folder exists.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Presence {
+    /// The folder exists.
+    Present,
+    /// Nothing exists at the path.
+    Missing,
+    /// The path cannot be read, or it is not a folder; the text of the
+    /// error. The folder is not known to be missing.
+    Unreadable(String),
 }
 
 /// The outbox folder of attempt `attempt` of task `task_id`:
@@ -124,7 +148,7 @@ pub fn scan_processes(
         clock,
         |i| ProcessFact {
             key: i.key.clone(),
-            alive: process_alive(i.pid, i.pid_start),
+            liveness: process_liveness(i.pid, i.pid_start),
         },
     )
 }
@@ -166,7 +190,7 @@ pub fn scan_worktree_folders(
         clock,
         |i| FolderFact {
             key: i.key.clone(),
-            exists: i.path.is_dir(),
+            presence: presence(&i.path),
         },
     )
 }
@@ -187,11 +211,40 @@ pub fn scan_requests(
     Ok(walk(&names, |n| n, &[], cursor, clock, Clone::clone))
 }
 
-/// True when process `pid` exists and, with a recorded start time, has
-/// that start time.
-fn process_alive(pid: u32, pid_start: Option<u64>) -> bool {
-    horch_platform::process::alive(pid)
-        && pid_start.is_none_or(|s| horch_platform::process::start_time(pid) == Some(s))
+/// The liveness of process `pid` with the recorded start time `pid_start`.
+fn process_liveness(pid: u32, pid_start: Option<u64>) -> Liveness {
+    let alive = horch_platform::process::alive(pid);
+    // The start time is read only when it is compared.
+    let read = || horch_platform::process::start_time(pid);
+    liveness(alive, pid_start, read)
+}
+
+/// The liveness from the facts of the OS: whether the pid exists, the
+/// recorded start time, and the start time that the OS gives (`None` when
+/// the query fails).
+fn liveness(alive: bool, recorded: Option<u64>, read: impl FnOnce() -> Option<u64>) -> Liveness {
+    if !alive {
+        return Liveness::Dead;
+    }
+    let Some(recorded) = recorded else {
+        return Liveness::Alive;
+    };
+    match read() {
+        Some(start) if start == recorded => Liveness::Alive,
+        Some(_) => Liveness::Dead,
+        None => Liveness::Unknown,
+    }
+}
+
+/// Whether folder `path` exists. An error other than "not found" is not a
+/// missing folder.
+fn presence(path: &Path) -> Presence {
+    match std::fs::metadata(path) {
+        Ok(m) if m.is_dir() => Presence::Present,
+        Ok(_) => Presence::Unreadable("not a folder".to_string()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Presence::Missing,
+        Err(e) => Presence::Unreadable(e.to_string()),
+    }
 }
 
 /// The indexes of the items in or under a watched path, in the order
@@ -265,5 +318,33 @@ fn walk<T, F>(
     Scan {
         facts,
         stopped_at_budget: false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_start_time_that_cannot_be_read_is_not_a_dead_process() {
+        assert_eq!(liveness(true, Some(7), || None), Liveness::Unknown);
+    }
+
+    #[test]
+    fn liveness_compares_the_recorded_start_time() {
+        assert_eq!(liveness(false, Some(7), || Some(7)), Liveness::Dead);
+        assert_eq!(liveness(true, Some(7), || Some(7)), Liveness::Alive);
+        assert_eq!(liveness(true, Some(7), || Some(8)), Liveness::Dead);
+        assert_eq!(liveness(true, None, || None), Liveness::Alive);
+    }
+
+    #[test]
+    fn presence_tells_a_missing_folder_from_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(presence(dir.path()), Presence::Present);
+        assert_eq!(presence(&dir.path().join("gone")), Presence::Missing);
+        let file = dir.path().join("f");
+        std::fs::write(&file, "").unwrap();
+        assert!(matches!(presence(&file), Presence::Unreadable(_)));
     }
 }

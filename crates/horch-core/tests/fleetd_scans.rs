@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use horch_core::fleetd::fleet_runtime::adapters::cursors_store;
 use horch_core::fleetd::fleet_runtime::adapters::scans::{
-    self, FolderItem, Listing, ProcessItem, Scan, ScanClock,
+    self, FolderItem, Listing, Liveness, Presence, ProcessItem, Scan, ScanClock,
 };
 use horch_core::fleetd::fleet_runtime::domain::budget::{Cursor, Deadline, PassBudget, ScanKind};
 use horch_core::taskledger::schema;
@@ -82,54 +82,57 @@ fn assert_continues(all: &[String], first: &[String], second: &[String]) {
     assert_eq!(second, &all[first.len()..first.len() + second.len()]);
 }
 
+/// 2 passes of a scan of `kind`, each with a budget of 50 ms on a clock of
+/// 1 ms for each read and a cursor through a new connection to `db`. `run`
+/// scans and gives the keys read. Pass 2 continues where pass 1 stopped.
+fn assert_two_passes_continue(
+    db: &Path,
+    kind: ScanKind,
+    all: &[String],
+    mut run: impl FnMut(&mut Cursor, &mut ScanClock<'_>) -> Vec<String>,
+) {
+    let mut seen = Vec::new();
+    for stamp in ["t1", "t2"] {
+        let base = Instant::now();
+        let mut now = ticking(base);
+        let read = pass(db, kind, stamp, |cursor| {
+            let mut clock = ScanClock {
+                deadline: scan_deadline(base, 50),
+                now: &mut now,
+                stamp,
+            };
+            let facts = run(cursor, &mut clock);
+            Scan {
+                facts,
+                stopped_at_budget: true,
+            }
+        });
+        seen.push(read.facts);
+    }
+    assert_continues(all, &seen[0], &seen[1]);
+}
+
 #[test]
 fn each_scan_continues_at_its_cursor_after_a_restart() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("fleet");
     let db = dir.path().join("ledger.sqlite3");
-    let budget_ms = 50;
 
-    // Outboxes: 10,000 folders.
+    // Outboxes, and the same folders as worktrees: 10,000 folders.
     let items = outboxes(&root, 10_000);
     let all: Vec<String> = items.iter().map(|i| i.key.clone()).collect();
-    let mut seen = Vec::new();
-    for stamp in ["t1", "t2"] {
-        let base = Instant::now();
-        let mut now = ticking(base);
-        let scan = pass(&db, ScanKind::Outboxes, stamp, |cursor| {
-            let mut clock = ScanClock {
-                deadline: scan_deadline(base, budget_ms),
-                now: &mut now,
-                stamp,
-            };
-            scans::scan_outboxes(&items, &[], cursor, &mut clock)
-        });
+    let listed = Listing::Names(vec!["progress.jsonl".into()]);
+    assert_two_passes_continue(&db, ScanKind::Outboxes, &all, |cursor, clock| {
+        let scan = scans::scan_outboxes(&items, &[], cursor, clock);
         assert!(scan.stopped_at_budget);
-        assert!(scan
-            .facts
-            .iter()
-            .all(|f| f.listing == Listing::Names(vec!["progress.jsonl".into()])));
-        seen.push(keys(&scan.facts, |f| &f.key));
-    }
-    assert_continues(&all, &seen[0], &seen[1]);
-
-    // Worktree folders: the same folders as worktrees.
-    let mut seen = Vec::new();
-    for stamp in ["t1", "t2"] {
-        let base = Instant::now();
-        let mut now = ticking(base);
-        let scan = pass(&db, ScanKind::WorktreeFolders, stamp, |cursor| {
-            let mut clock = ScanClock {
-                deadline: scan_deadline(base, budget_ms),
-                now: &mut now,
-                stamp,
-            };
-            scans::scan_worktree_folders(&items, &[], cursor, &mut clock)
-        });
-        assert!(scan.facts.iter().all(|f| f.exists));
-        seen.push(keys(&scan.facts, |f| &f.key));
-    }
-    assert_continues(&all, &seen[0], &seen[1]);
+        assert!(scan.facts.iter().all(|f| f.listing == listed));
+        keys(&scan.facts, |f| &f.key)
+    });
+    assert_two_passes_continue(&db, ScanKind::WorktreeFolders, &all, |cursor, clock| {
+        let scan = scans::scan_worktree_folders(&items, &[], cursor, clock);
+        assert!(scan.facts.iter().all(|f| f.presence == Presence::Present));
+        keys(&scan.facts, |f| &f.key)
+    });
 
     // Processes: this test process, named by 200 rows.
     let me = std::process::id();
@@ -142,22 +145,11 @@ fn each_scan_continues_at_its_cursor_after_a_restart() {
         })
         .collect();
     let all: Vec<String> = procs.iter().map(|p| p.key.clone()).collect();
-    let mut seen = Vec::new();
-    for stamp in ["t1", "t2"] {
-        let base = Instant::now();
-        let mut now = ticking(base);
-        let scan = pass(&db, ScanKind::Processes, stamp, |cursor| {
-            let mut clock = ScanClock {
-                deadline: scan_deadline(base, budget_ms),
-                now: &mut now,
-                stamp,
-            };
-            scans::scan_processes(&procs, cursor, &mut clock)
-        });
-        assert!(scan.facts.iter().all(|f| f.alive));
-        seen.push(keys(&scan.facts, |f| &f.key));
-    }
-    assert_continues(&all, &seen[0], &seen[1]);
+    assert_two_passes_continue(&db, ScanKind::Processes, &all, |cursor, clock| {
+        let scan = scans::scan_processes(&procs, cursor, clock);
+        assert!(scan.facts.iter().all(|f| f.liveness == Liveness::Alive));
+        keys(&scan.facts, |f| &f.key)
+    });
 
     // Requests: 200 request files.
     let requests = scans::requests_dir(&root);
@@ -166,21 +158,9 @@ fn each_scan_continues_at_its_cursor_after_a_restart() {
     for name in &all {
         std::fs::write(requests.join(name), "{}").unwrap();
     }
-    let mut seen = Vec::new();
-    for stamp in ["t1", "t2"] {
-        let base = Instant::now();
-        let mut now = ticking(base);
-        let scan = pass(&db, ScanKind::Requests, stamp, |cursor| {
-            let mut clock = ScanClock {
-                deadline: scan_deadline(base, budget_ms),
-                now: &mut now,
-                stamp,
-            };
-            scans::scan_requests(&root, cursor, &mut clock).unwrap()
-        });
-        seen.push(scan.facts);
-    }
-    assert_continues(&all, &seen[0], &seen[1]);
+    assert_two_passes_continue(&db, ScanKind::Requests, &all, |cursor, clock| {
+        scans::scan_requests(&root, cursor, clock).unwrap().facts
+    });
 
     // Each scan has its own row.
     let conn = ledger(&db);
@@ -188,6 +168,44 @@ fn each_scan_continues_at_its_cursor_after_a_restart() {
         .query_row("SELECT count(*) FROM pass_cursors", [], |r| r.get(0))
         .unwrap();
     assert_eq!(rows, 4);
+}
+
+/// A worktree folder that cannot be read is not reported missing (review F1).
+#[cfg(unix)]
+#[test]
+fn an_unreadable_worktree_folder_is_not_missing() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let parent = dir.path().join("locked");
+    let path = parent.join("wt");
+    std::fs::create_dir_all(&path).unwrap();
+    let items = [
+        FolderItem {
+            key: "a".into(),
+            path: path.clone(),
+        },
+        FolderItem {
+            key: "b".into(),
+            path: dir.path().join("gone"),
+        },
+    ];
+    std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let base = Instant::now();
+    let mut now = ticking(base);
+    let mut cursor = Cursor::new("t1");
+    let mut clock = ScanClock {
+        deadline: scan_deadline(base, 100),
+        now: &mut now,
+        stamp: "t1",
+    };
+    let scan = scans::scan_worktree_folders(&items, &[], &mut cursor, &mut clock);
+    std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(
+        matches!(scan.facts[0].presence, Presence::Unreadable(_)),
+        "{scan:?}"
+    );
+    assert_eq!(scan.facts[1].presence, Presence::Missing);
 }
 
 #[test]
