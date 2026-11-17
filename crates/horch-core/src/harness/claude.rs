@@ -22,6 +22,7 @@ use crate::roster::{expand_home, operator_enabled_plugins, operator_status_line}
 use crate::roster::{HarnessDefault, HorchAccess, Teammate};
 use crate::runtime::RuntimeContext;
 use crate::skills::Bundle;
+use horch_platform::sandbox::SANDBOX_EXEC;
 
 /// The plugin the skills bundle loads as. Its skills show as `horch:<id>`.
 pub(crate) const SKILLS_PLUGIN: &str = "horch";
@@ -282,13 +283,11 @@ fn push_plugin_args(cmd: &mut Command, env: &LaunchEnv, teammate: &Teammate) -> 
 
 /// A sandboxed teammate never starts on a host that cannot sandbox it.
 fn check_sandbox_host(env: &LaunchEnv, teammate: &Teammate) -> Result<()> {
-    let Some(problem) = teammate.sandbox.as_ref().and_then(|_| {
-        sandbox_host_problem(
-            std::env::consts::OS,
-            env.path.as_deref(),
-            Path::new(SANDBOX_EXEC).exists(),
-        )
-    }) else {
+    let Some(problem) = teammate
+        .sandbox
+        .as_ref()
+        .and_then(|_| sandbox_host_problem(env.path.as_deref()))
+    else {
         return Ok(());
     };
     anyhow::bail!(
@@ -752,9 +751,6 @@ pub(super) fn insert_at_path(
         .is_some()
 }
 
-/// Where macOS keeps the Seatbelt launcher Claude Code's sandbox runs under.
-const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
-
 /// The `sandbox` keys horch sets on every sandboxed launch, whatever the
 /// teammate file says, as (path, value). `check` rejects a file that sets
 /// one to anything else.
@@ -1076,21 +1072,20 @@ fn forced_value_problem(
 }
 
 /// Why this host cannot run Claude Code's sandbox, or `None` when it can.
-/// macOS needs Seatbelt's `sandbox-exec`; Linux needs `bwrap` and `socat`
+/// `path` is the `PATH` of the launch. The platform layer answers for the
+/// sandbox host: Seatbelt's `sandbox-exec` on macOS, `bwrap` on Linux.
+/// Claude Code also needs `socat` on Linux
 /// (code.claude.com/docs/en/sandboxing, "Set up Linux and WSL2"). The
 /// sandbox runs nowhere else.
-pub(crate) fn sandbox_host_problem(
-    os: &str,
-    path: Option<&std::ffi::OsStr>,
-    sandbox_exec: bool,
-) -> Option<String> {
-    match os {
-        "macos" if sandbox_exec => None,
-        "macos" => Some(format!("{SANDBOX_EXEC} is missing")),
+pub(crate) fn sandbox_host_problem(path: Option<&std::ffi::OsStr>) -> Option<String> {
+    let host = horch_platform::sandbox::host_problem(path);
+    match std::env::consts::OS {
+        "macos" => host.map(|_| format!("{SANDBOX_EXEC} is missing")),
         "linux" => {
-            let missing: Vec<&str> = ["bwrap", "socat"]
+            let socat = crate::runtime::process::which(path, None, "socat");
+            let missing: Vec<&str> = [("bwrap", host.is_some()), ("socat", socat.is_none())]
                 .into_iter()
-                .filter(|bin| crate::runtime::process::which(path, None, bin).is_none())
+                .filter_map(|(bin, missing)| missing.then_some(bin))
                 .collect();
             (!missing.is_empty()).then(|| {
                 format!(
@@ -1099,7 +1094,7 @@ pub(crate) fn sandbox_host_problem(
                 )
             })
         }
-        other => Some(format!("Claude Code has no sandbox on {other}")),
+        other => host.map(|_| format!("Claude Code has no sandbox on {other}")),
     }
 }
 
@@ -1449,12 +1444,7 @@ mod tests {
 
     /// Whether a launch in `env` passes the host sandbox check.
     fn host_can_sandbox(env: &LaunchEnv) -> bool {
-        sandbox_host_problem(
-            std::env::consts::OS,
-            env.path.as_deref(),
-            Path::new(SANDBOX_EXEC).exists(),
-        )
-        .is_none()
+        sandbox_host_problem(env.path.as_deref()).is_none()
     }
 
     /// 2 launch environments: PATH with the Linux sandbox tools, and PATH
@@ -2090,22 +2080,6 @@ mod tests {
         assert!(plain.get("permissions").is_none());
     }
 
-    /// The Linux check finds `bwrap` and `socat` on the launch's PATH, and
-    /// names what is missing. Run on every host, macOS included.
-    #[cfg(unix)]
-    #[test]
-    fn the_linux_sandbox_check_reads_the_launch_path() {
-        let tmp = tempfile::tempdir().unwrap();
-        let [with, without] = sandbox_envs(tmp.path());
-        assert_eq!(
-            sandbox_host_problem("linux", with.path.as_deref(), false),
-            None
-        );
-        let problem = sandbox_host_problem("linux", without.path.as_deref(), false).unwrap();
-        assert!(problem.contains("bwrap and socat not on PATH"), "{problem}");
-        assert!(sandbox_host_problem("linux", None, false).is_some());
-    }
-
     /// A settings file replaces the overlay, so it would drop the sandbox.
     #[test]
     fn a_sandbox_with_a_settings_file_is_refused() {
@@ -2184,32 +2158,43 @@ mod tests {
         assert!(problems(json!({"filesystem": 5})).is_empty());
     }
 
+    /// The check reads the `PATH` of the launch, and each line names what
+    /// is missing. The platform answers for the OS of this host only, so
+    /// each OS tests its own lines.
     #[test]
     fn the_host_check_names_what_is_missing() {
-        assert_eq!(sandbox_host_problem("macos", None, true), None);
-        assert!(sandbox_host_problem("macos", None, false)
-            .unwrap()
-            .contains("sandbox-exec"));
-        assert!(sandbox_host_problem("windows", None, true)
-            .unwrap()
-            .contains("no sandbox on windows"));
-        let dir = tempfile::tempdir().unwrap();
-        let bwrap = dir.path().join("bwrap");
-        std::fs::write(&bwrap, "#!/bin/sh\n").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&bwrap, std::fs::Permissions::from_mode(0o755)).unwrap();
-            let problem = sandbox_host_problem("linux", Some(dir.path().as_os_str()), false);
-            assert_eq!(
-                problem.as_deref(),
-                Some("socat not on PATH; install bubblewrap and socat")
-            );
-            std::fs::copy(&bwrap, dir.path().join("socat")).unwrap();
-            assert_eq!(
-                sandbox_host_problem("linux", Some(dir.path().as_os_str()), false),
-                None
-            );
+        let tmp = tempfile::tempdir().unwrap();
+        let with = sandbox_tools_path(&tmp.path().join("with"), true);
+        let without = sandbox_tools_path(&tmp.path().join("without"), false);
+        match std::env::consts::OS {
+            "macos" => {
+                assert_eq!(sandbox_host_problem(Some(&without)), None);
+                assert_eq!(SANDBOX_EXEC, "/usr/bin/sandbox-exec");
+            }
+            "linux" => {
+                assert_eq!(sandbox_host_problem(Some(&with)), None);
+                assert_eq!(
+                    sandbox_host_problem(Some(&without)).as_deref(),
+                    Some("bwrap and socat not on PATH; install bubblewrap and socat")
+                );
+                assert!(sandbox_host_problem(None).is_some());
+                for (bin, line) in [
+                    ("bwrap", "socat not on PATH; install bubblewrap and socat"),
+                    ("socat", "bwrap not on PATH; install bubblewrap and socat"),
+                ] {
+                    let dir = tmp.path().join(bin);
+                    std::fs::create_dir_all(&dir).unwrap();
+                    std::fs::copy(tmp.path().join("with").join(bin), dir.join(bin)).unwrap();
+                    assert_eq!(
+                        sandbox_host_problem(Some(dir.as_os_str())).as_deref(),
+                        Some(line)
+                    );
+                }
+            }
+            other => assert_eq!(
+                sandbox_host_problem(Some(&with)),
+                Some(format!("Claude Code has no sandbox on {other}"))
+            ),
         }
     }
     // ---- Pins for the claude_command split (#191) ----

@@ -19,6 +19,10 @@ use std::process::Command;
 use crate::os::sandbox as os;
 use crate::NotSupported;
 
+/// Where macOS keeps `sandbox-exec`, the Seatbelt launcher of the sandbox.
+/// Only macOS uses it.
+pub const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
+
 /// `cmd` in the check sandbox: it can write only in the paths of
 /// `writable`, in its temp folder ([`std::env::temp_dir`]) and in
 /// `/dev/null`, and it can read the rest of the disk.
@@ -30,7 +34,7 @@ use crate::NotSupported;
 ///
 /// It gives [`NotSupported`] with a reason when this host has no sandbox:
 /// on Windows, on Linux when `bwrap` is not on the `PATH` of `cmd`, and on
-/// macOS when `/usr/bin/sandbox-exec` is missing.
+/// macOS when [`SANDBOX_EXEC`] is missing.
 pub fn sandboxed(cmd: Command, writable: &[PathBuf]) -> Result<Command, NotSupported> {
     let program = os::program(path_of(&cmd).as_deref())?;
     let writable: Vec<PathBuf> = writable.iter().map(|path| resolved(path)).collect();
@@ -41,7 +45,7 @@ pub fn sandboxed(cmd: Command, writable: &[PathBuf]) -> Result<Command, NotSuppo
 /// Why this host has no sandbox for a command that runs with `path` as its
 /// `PATH`, or `None` when it has one. [`sandboxed`] gives the same
 /// [`NotSupported`] value. Each caller that needs the sandbox host asks
-/// here: macOS needs `/usr/bin/sandbox-exec`, and Linux needs `bwrap` in an
+/// here: macOS needs [`SANDBOX_EXEC`], and Linux needs `bwrap` in an
 /// absolute folder of `path`.
 pub fn host_problem(path: Option<&OsStr>) -> Option<NotSupported> {
     os::program(path).err()

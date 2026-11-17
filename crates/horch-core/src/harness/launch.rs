@@ -1296,11 +1296,7 @@ fn run_agent_code(mut cmd: Command, name: &str) -> Result<Option<i32>> {
 
 /// The same host sandbox check used when preparing a Claude launch.
 pub fn sandbox_host_problem(ctx: &RuntimeContext) -> Option<String> {
-    super::claude::sandbox_host_problem(
-        std::env::consts::OS,
-        ctx.inherited.path.as_deref(),
-        Path::new("/usr/bin/sandbox-exec").is_file(),
-    )
+    super::claude::sandbox_host_problem(ctx.inherited.path.as_deref())
 }
 
 #[cfg(test)]

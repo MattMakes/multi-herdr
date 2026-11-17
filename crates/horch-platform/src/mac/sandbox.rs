@@ -7,12 +7,10 @@
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
+use crate::sandbox::SANDBOX_EXEC;
 use crate::NotSupported;
 
-/// Where macOS keeps the Seatbelt launcher.
-const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
-
-/// `/usr/bin/sandbox-exec`. Its place is fixed, so `PATH` plays no part.
+/// [`SANDBOX_EXEC`]. Its place is fixed, so `PATH` plays no part.
 pub(crate) fn program(_path: Option<&OsStr>) -> Result<PathBuf, NotSupported> {
     if !Path::new(SANDBOX_EXEC).is_file() {
         return Err(
