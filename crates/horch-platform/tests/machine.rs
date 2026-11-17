@@ -110,17 +110,26 @@ fn user_process_count_is_at_least_1() {
 #[cfg(unix)]
 #[test]
 fn user_open_file_count_grows_when_this_process_opens_files() {
-    let before = machine::user_open_file_count()
-        .unwrap()
-        .expect("open file count");
-    let files: Vec<_> = (0..20).map(|_| tempfile::tempfile().unwrap()).collect();
-    let after = machine::user_open_file_count()
-        .unwrap()
-        .expect("open file count");
-    drop(files);
     // Other processes of the user open and close files at the same time,
-    // so the test asks for most of the 20 files and not for an exact count.
-    assert!(after >= before + 10, "before {before}, after {after}");
+    // so 1 sample can hide the 20 files. The test passes when 1 of 20
+    // samples shows all 20 files.
+    let count = || {
+        machine::user_open_file_count()
+            .unwrap()
+            .expect("open file count")
+    };
+    let mut samples = Vec::new();
+    for _ in 0..20 {
+        let before = count();
+        let files: Vec<_> = (0..20).map(|_| tempfile::tempfile().unwrap()).collect();
+        let after = count();
+        drop(files);
+        if after >= before + 20 {
+            return;
+        }
+        samples.push((before, after));
+    }
+    panic!("no sample grew by 20 files: {samples:?}");
 }
 
 #[cfg(windows)]
