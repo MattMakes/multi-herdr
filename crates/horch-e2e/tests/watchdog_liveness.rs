@@ -1,9 +1,9 @@
-//! The task-ledger watchdog through the CLI: liveness from herdr's status
-//! (#203), its binary after an update (#216), and the identity of the
-//! process that starts it (#218).
+//! The watchdog duties of the fleetd pass through the CLI: liveness from
+//! herdr's status (#203), a SIGTERM to fleetd during a reap (#216), and the
+//! workspace of the wakes of a fleetd that a pane of another workspace
+//! starts (#218).
 #![cfg(unix)]
 
-use horch_core::taskledger::watchdog;
 use horch_core::taskledger::{
     model::Actor,
     runs::{self, NewRun, Run},
@@ -131,6 +131,19 @@ fn wakes(store: &Store, run: &Run) -> Vec<String> {
         .unwrap()
 }
 
+/// The wakes that the fleetd pass wrote to the outbox of `run`. The
+/// outbox keeps them with `HORCH_NO_WAKE`, which writes no `woke` event.
+fn outbox(store: &Store, run: &Run) -> Vec<String> {
+    let mut stmt = store
+        .conn()
+        .prepare("SELECT text FROM outbox WHERE run_id = ?1 ORDER BY rowid")
+        .unwrap();
+    stmt.query_map([&run.run_id], |r| r.get::<_, String>(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+}
+
 #[test]
 fn a_busy_pi_worker_with_no_timer_is_kept_until_the_cap_then_one_suspect_wake_then_reaped() {
     let (h, store, run, worker, _agent) = pinned_worker("wd203-busy-pi");
@@ -163,10 +176,14 @@ fn a_busy_pi_worker_with_no_timer_is_kept_until_the_cap_then_one_suspect_wake_th
             "{note}"
         );
     }
-    assert!(wakes(&store, &run).is_empty(), "{:?}", wakes(&store, &run));
+    assert!(
+        outbox(&store, &run).is_empty(),
+        "{:?}",
+        outbox(&store, &run)
+    );
     let c = pinned_check(&h, &run, "2030-01-01T01:10:00Z");
     assert_eq!(c["verdict"], "suspect", "{c}");
-    let w = wakes(&store, &run);
+    let w = outbox(&store, &run);
     assert_eq!(w.len(), 1, "{w:?}");
     assert!(
         w[0].contains("worker-1") && w[0].contains("pane w1:p1"),
@@ -179,7 +196,7 @@ fn a_busy_pi_worker_with_no_timer_is_kept_until_the_cap_then_one_suspect_wake_th
         workers::get(store.conn(), &worker).unwrap().status,
         "incomplete"
     );
-    let w = wakes(&store, &run);
+    let w = outbox(&store, &run);
     assert_eq!(
         w.iter().filter(|b| b.contains("may be stuck")).count(),
         1,
@@ -187,207 +204,102 @@ fn a_busy_pi_worker_with_no_timer_is_kept_until_the_cap_then_one_suspect_wake_th
     );
 }
 
-/// A project with 1 active run `zeta`, its own ledger, and the watchdog
-/// restart on. Returns the run id.
-fn watchdog_world(name: &str) -> (Harness, String) {
-    let mut h = Harness::new(name).with_git();
-    let db = h.root.join("ledger.sqlite3");
-    h.set("HORCH_LEDGER_DB", db.to_string_lossy());
-    h.set("HORCH_NO_WAKE", "1");
-    h.unset("HORCH_NO_WATCHDOG");
-    let o = h.run(&["ledger", "run", "new", "zeta"]);
-    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    let store = Store::open(&db).unwrap();
-    let id: String = store
-        .conn()
-        .query_row("SELECT run_id FROM runs WHERE slug = 'zeta'", [], |r| {
-            r.get(0)
-        })
-        .unwrap();
-    (h, id)
+/// Write `config` as the `fleet.toml` of the fleet root of `h`: the folder
+/// `fleet` next to its ledger (`docs/tickets/fleetd-p1/MAP.md`, Q4).
+fn fleet_toml(h: &Harness, config: &str) {
+    let root = h.root.join("fleet");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("fleet.toml"), config).unwrap();
 }
 
-fn locks(h: &Harness) -> std::path::PathBuf {
-    h.root.join("locks")
+/// The fleetd processes of a test. Drop stops each one, and the fleetd that
+/// the `fleetd` row names, so a failed assertion leaks none.
+struct Fleetds {
+    db: std::path::PathBuf,
+    children: Vec<std::process::Child>,
 }
 
-/// A running `horch ledger watch` of the run; ends when the receiver hears.
-struct Watchdog {
-    pid: u32,
-    started: u64,
-    ended: std::sync::mpsc::Receiver<()>,
-}
+impl Fleetds {
+    fn new(h: &Harness) -> Fleetds {
+        Fleetds {
+            db: h.root.join("ledger.sqlite3"),
+            children: Vec::new(),
+        }
+    }
 
-fn start_watchdog(h: &Harness, run_id: &str) -> Watchdog {
-    start_watchdog_of(h, run_id, &Harness::horch_bin())
-}
+    /// The PID and start time of the fleetd that the `fleetd` row names.
+    fn row(&self) -> Option<(u32, u64)> {
+        let store = Store::open(&self.db).ok()?;
+        let (pid, started): (i64, i64) = store
+            .conn()
+            .query_row("SELECT pid, pid_start FROM fleetd WHERE id = 1", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .ok()?;
+        Some((u32::try_from(pid).ok()?, u64::try_from(started).ok()?))
+    }
 
-/// [`start_watchdog`] of the horch binary at `bin`.
-fn start_watchdog_of(h: &Harness, run_id: &str, bin: &std::path::Path) -> Watchdog {
-    let mut cmd = std::process::Command::new(bin);
-    h.seal(&mut cmd);
-    let mut child = cmd
-        .args(["ledger", "watch", "--run", run_id])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
-    let pid = child.id();
-    let (tx, ended) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = child.wait();
-        let _ = tx.send(());
-    });
-    let started = horch_e2e::harness::wait_for("the watchdog's identity", || {
-        horch_core::procid::start_time(pid)
-    });
-    horch_e2e::harness::wait_for("the watchdog's lock and binary record", || {
-        watchdog::holder(&locks(h), run_id).filter(|w| w.pid == pid && w.exe.is_some())
-    });
-    Watchdog {
-        pid,
-        started,
-        ended,
+    /// Start `horch fleetd` in the sealed environment of `h`, and wait
+    /// until the `fleetd` row names it. Gives its index in `children`.
+    fn start(&mut self, h: &Harness) -> usize {
+        let mut cmd = std::process::Command::new(Harness::horch_bin());
+        h.seal(&mut cmd);
+        let child = cmd
+            .arg("fleetd")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(
+                std::fs::File::create(
+                    h.root
+                        .join(format!("fleetd-{}.stderr", self.children.len())),
+                )
+                .unwrap(),
+            )
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        self.children.push(child);
+        horch_e2e::harness::wait_for("the fleetd row to name the new fleetd", || {
+            self.row().filter(|&(p, _)| p == pid).map(|_| ())
+        });
+        self.children.len() - 1
+    }
+
+    /// Kill the fleetd that the row names, and wait until it is gone.
+    fn kill_current(&mut self) -> u32 {
+        let (pid, started) = self.row().expect("the fleetd row");
+        assert!(horch_core::procid::signal_same(pid, started, SIGKILL));
+        for child in self.children.iter_mut().filter(|c| c.id() == pid) {
+            let _ = child.wait();
+        }
+        horch_e2e::harness::wait_for("fleetd to end", || {
+            (!horch_core::procid::alive(pid, Some(started))).then_some(())
+        });
+        pid
     }
 }
 
-/// End the live watchdog of the run, whoever started it.
-fn stop_watchdog(h: &Harness, run_id: &str) {
-    if let Some(w) = watchdog::holder(&locks(h), run_id) {
-        horch_core::procid::signal_same(w.pid, w.started.unwrap(), SIGKILL);
+impl Drop for Fleetds {
+    fn drop(&mut self) {
+        if let Some((pid, started)) = self.row() {
+            horch_core::procid::signal_same(pid, started, SIGKILL);
+        }
+        for child in &mut self.children {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
 
+/// A SIGTERM to fleetd while it reaps a worker does not lose the reap. The
+/// pass sent TERM to the agent, which ignores it, and the stop grace runs.
+/// fleetd ends between 2 passes, and the next fleetd kills the agent after
+/// the grace. A reap that a SIGTERM lost would leave the agent, with the
+/// task already queued again.
 #[test]
-fn a_watchdog_of_another_build_is_stopped_by_pid_and_replaced() {
-    let (h, run_id) = watchdog_world("wd216-other-build");
-    let old = start_watchdog(&h, &run_id);
-    // Simulate an older build: the lock names another binary.
-    let other = horch_core::exeid::ExeIdentity {
-        path: "/old/bin/horch".into(),
-        len: 1,
-        mtime_ns: 1,
-    };
-    std::fs::write(
-        locks(&h).join(format!("watchdog-{run_id}.lock/exe")),
-        serde_json::to_vec(&other).unwrap(),
-    )
-    .unwrap();
-    let o = h.run(&["ledger", "status"]);
-    let err = String::from_utf8_lossy(&o.stderr);
-    assert!(
-        err.contains("restarted the watchdog of run zeta")
-            && err.contains(&format!("PID {} ran another build", old.pid)),
-        "{err}"
-    );
-    old.ended
-        .recv_timeout(std::time::Duration::from_secs(10))
-        .expect("the old watchdog was stopped");
-    let new = horch_e2e::harness::wait_for("the new watchdog", || {
-        watchdog::holder(&locks(&h), &run_id).filter(|w| w.pid != old.pid && w.exe.is_some())
-    });
-    assert_eq!(
-        new.exe,
-        horch_core::exeid::exe_identity(&Harness::horch_bin()),
-        "the new watchdog runs this build"
-    );
-    stop_watchdog(&h, &run_id);
-}
-
-#[test]
-fn a_watchdog_of_this_build_is_left_alone() {
-    let (h, run_id) = watchdog_world("wd216-same-build");
-    let w = start_watchdog(&h, &run_id);
-    let o = h.run(&["ledger", "status"]);
-    let err = String::from_utf8_lossy(&o.stderr);
-    assert!(!err.contains("restarted the watchdog"), "{err}");
-    assert!(w
-        .ended
-        .recv_timeout(std::time::Duration::from_millis(500))
-        .is_err());
-    assert!(horch_core::procid::alive(w.pid, Some(w.started)));
-    assert_eq!(watchdog::holder(&locks(&h), &run_id).unwrap().pid, w.pid);
-    stop_watchdog(&h, &run_id);
-}
-
-/// A copy of this build's horch at `path`, put in place by a rename, as
-/// `horch self-update` replaces its binary. Its modification time is
-/// `mtime`, as a release archive of another build gives it; `fs::copy`
-/// can keep the source's.
-fn install_copy(h: &Harness, path: &std::path::Path, mtime: std::time::SystemTime) {
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    let tmp = h.root.join("horch.download");
-    std::fs::copy(Harness::horch_bin(), &tmp).unwrap();
-    std::fs::File::options()
-        .write(true)
-        .open(&tmp)
-        .unwrap()
-        .set_modified(mtime)
-        .unwrap();
-    // `--version` exits before any command runs.
-    let warmed =
-        horch_e2e::harness::warm(std::process::Command::new(&tmp).arg("--version")).unwrap();
-    assert!(warmed.status.success(), "warming {} failed", tmp.display());
-    std::fs::rename(&tmp, path).unwrap();
-}
-
-/// 2 horch binaries on 1 ledger do not replace each other's watchdog on
-/// every command. Only a change of the watchdog's own binary file (a
-/// self-update) moves it, onto that file.
-#[test]
-fn a_watchdog_of_another_path_stays_until_its_own_binary_is_replaced() {
-    let (h, run_id) = watchdog_world("wd216-other-path");
-    let other = h.root.join("other-bin").join("horch");
-    let day = std::time::Duration::from_secs(24 * 3600);
-    install_copy(&h, &other, std::time::SystemTime::now() - day);
-    let old = start_watchdog_of(&h, &run_id, &other);
-    let other_id = horch_core::exeid::exe_identity(&other).unwrap();
-    assert_eq!(
-        watchdog::holder(&locks(&h), &run_id).unwrap().exe.as_ref(),
-        Some(&other_id)
-    );
-    // Commands of the test's own horch leave it alone.
-    for _ in 0..2 {
-        let o = h.run(&["ledger", "status"]);
-        let err = String::from_utf8_lossy(&o.stderr);
-        assert!(!err.contains("restarted the watchdog"), "{err}");
-    }
-    assert!(old
-        .ended
-        .recv_timeout(std::time::Duration::from_millis(500))
-        .is_err());
-    assert_eq!(watchdog::holder(&locks(&h), &run_id).unwrap().pid, old.pid);
-    // A self-update replaces that binary: the next command moves the
-    // watchdog onto the new file at the same path.
-    install_copy(&h, &other, std::time::SystemTime::now());
-    let o = h.run(&["ledger", "status"]);
-    let err = String::from_utf8_lossy(&o.stderr);
-    assert!(
-        err.contains(&format!(
-            "restarted the watchdog of run zeta on {}: PID {} ran another build of horch",
-            other_id.path, old.pid
-        )),
-        "{err}"
-    );
-    old.ended
-        .recv_timeout(std::time::Duration::from_secs(30))
-        .expect("the old watchdog was stopped");
-    let new = horch_e2e::harness::wait_for("the new watchdog", || {
-        watchdog::holder(&locks(&h), &run_id).filter(|w| w.pid != old.pid && w.exe.is_some())
-    });
-    assert_eq!(new.exe, horch_core::exeid::exe_identity(&other));
-    stop_watchdog(&h, &run_id);
-}
-
-/// A SIGTERM while the watchdog reaps a worker ends it only after the reap:
-/// the agent that ignores TERM still gets KILL after the stop grace, and
-/// its pane is closed. A watchdog that died at once would leave both, with
-/// the task already requeued.
-#[test]
-fn a_sigterm_during_a_reap_lets_the_reap_finish() {
-    let (mut h, store, run, worker, _fake) = pinned_worker("wd216-term-mid-reap");
-    h.set("HORCH_STOP_GRACE_MS", "8000");
+fn a_sigterm_to_fleetd_during_a_reap_leaves_the_reap_to_the_next_fleetd() {
+    let (h, store, run, worker, _fake) = pinned_worker("wd216-term-mid-reap");
+    fleet_toml(&h, "pass_period_s = 1\nstop_grace_s = 8\n");
     fake(&h, &["workspace", "create", "--label", "w1"]);
     fake(
         &h,
@@ -444,66 +356,55 @@ fn a_sigterm_during_a_reap_lets_the_reap_finish() {
             [&worker],
         )
         .unwrap();
-    let w = start_watchdog(&h, &run.run_id);
-    // The reap sent TERM to the agent and now waits out the stop grace.
+    let mut fleetds = Fleetds::new(&h);
+    let first = fleetds.start(&h);
+    let (pid, started) = fleetds.row().expect("the fleetd row");
+    // The reap sent TERM to the agent, and the stop grace runs.
     horch_e2e::harness::wait_for("the reap's TERM to the agent", || {
         got_term.exists().then_some(())
     });
-    assert!(horch_core::procid::signal_same(w.pid, w.started, SIGTERM));
+    assert!(horch_core::procid::signal_same(pid, started, SIGTERM));
     assert!(
         agent_ended.try_recv().is_err(),
         "the SIGTERM came inside the stop grace"
     );
+    let status = horch_e2e::harness::wait_for("fleetd to end after its pass", || {
+        fleetds.children[first].try_wait().unwrap()
+    });
+    assert!(status.success(), "fleetd ended with {status}");
+    assert_eq!(
+        workers::get(store.conn(), &worker).unwrap().status,
+        "incomplete"
+    );
+    fleetds.start(&h);
     agent_ended
         .recv_timeout(std::time::Duration::from_secs(30))
-        .expect("the reap went on and killed the agent");
-    w.ended
-        .recv_timeout(std::time::Duration::from_secs(30))
-        .expect("the watchdog ended after its pass");
-    let mut stmt = store
+        .expect("the next fleetd killed the agent after the grace");
+    // The pass has no process of the pane, so it keeps the pane and asks
+    // the operator (ticket 26 closes the pane of a reap, FM-22).
+    let kept: String = store
         .conn()
-        .prepare("SELECT target, result FROM stops WHERE worker_id = ?1 ORDER BY rowid")
+        .query_row(
+            "SELECT state FROM needs_you WHERE key = 'pane_kept:w1:p1'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
-    let steps: Vec<(String, String)> = stmt
-        .query_map([&worker], |r| Ok((r.get(0)?, r.get(1)?)))
-        .unwrap()
-        .collect::<Result<_, _>>()
-        .unwrap();
-    assert!(
-        steps.contains(&("pane".to_string(), "pane_closed".to_string())),
-        "the reap closed the pane: {steps:?}"
-    );
+    assert_eq!(kept, "open");
 }
 
-#[test]
-fn install_restarts_the_watchdog_of_an_active_run_on_the_installed_binary() {
-    let (h, run_id) = watchdog_world("wd216-install");
-    let old = start_watchdog(&h, &run_id);
-    let dir = h.root.join("installed-bin");
-    let o = h.run(&["install", "--dir", &dir.to_string_lossy()]);
-    let out = String::from_utf8_lossy(&o.stdout);
-    assert!(
-        o.status.success(),
-        "{out}\n{}",
-        String::from_utf8_lossy(&o.stderr)
-    );
-    let installed = dir.join(Harness::horch_bin().file_name().unwrap());
-    assert!(
-        out.contains(&format!(
-            "restarted the watchdog of run zeta on {}: PID {} ran another build of horch",
-            installed.display(),
-            old.pid
-        )),
-        "{out}"
-    );
-    old.ended
-        .recv_timeout(std::time::Duration::from_secs(10))
-        .expect("the old watchdog was stopped");
-    let new = horch_e2e::harness::wait_for("the new watchdog", || {
-        watchdog::holder(&locks(&h), &run_id).filter(|w| w.pid != old.pid && w.exe.is_some())
-    });
-    assert_eq!(new.exe, horch_core::exeid::exe_identity(&installed));
-    stop_watchdog(&h, &run_id);
+/// The wakes of `run` in the outbox that no delivery took.
+fn undelivered(store: &Store, run: &Run) -> Vec<String> {
+    let mut stmt = store
+        .conn()
+        .prepare(
+            "SELECT text FROM outbox WHERE run_id = ?1 AND delivered_at IS NULL ORDER BY rowid",
+        )
+        .unwrap();
+    stmt.query_map([&run.run_id], |r| r.get::<_, String>(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
 }
 
 fn mail_in(h: &Harness, workspace: &str) -> Vec<String> {
@@ -567,11 +468,17 @@ fn a_wake_from_another_workspace_goes_to_the_runs_workspace() {
     assert!(mail_in(&h, "w2").is_empty(), "{:?}", mail_in(&h, "w2"));
 }
 
-/// A watchdog that a w2 worker pane starts (with that pane's role, worker
-/// id and private TMPDIR) for a run that w1 owns sends its wakes to w1.
+/// A fleetd that the check of a w2 worker pane starts (with that pane's
+/// role, worker id and private TMPDIR) for a run that w1 owns sends its
+/// wakes to w1.
 #[test]
-fn a_watchdog_started_from_another_workspace_wakes_the_runs_workspace() {
+fn a_fleetd_started_from_another_workspace_wakes_the_runs_workspace() {
     let (mut h, store, run, worker, _agent) = pinned_worker("wd218-detached");
+    // A fleetd ran and died. The check before the next command starts
+    // fleetd again, from the w2 pane that runs that command.
+    let mut fleetds = Fleetds::new(&h);
+    fleetds.start(&h);
+    let dead = fleetds.kill_current();
     h.unset("HORCH_NO_WAKE");
     h.unset("HORCH_NO_WATCHDOG");
     fake(&h, &["workspace", "create", "--label", "w1"]);
@@ -618,10 +525,10 @@ fn a_watchdog_started_from_another_workspace_wakes_the_runs_workspace() {
         .unwrap();
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(
-        err.contains("the watchdog of run pinned was not running; started it"),
+        err.contains(&format!("fleetd PID {dead} is gone.")),
         "{err}"
     );
-    // The pane ends and removes its private TMPDIR; the watchdog goes on.
+    // The pane ends and removes its private TMPDIR; fleetd goes on.
     std::fs::remove_dir_all(&pane_tmp).unwrap();
     horch_e2e::harness::wait_for("the stall wake in w1", || {
         mail_in(&h, "w1")
@@ -635,15 +542,19 @@ fn a_watchdog_started_from_another_workspace_wakes_the_runs_workspace() {
         w.iter().all(|b| b.contains("the run's workspace w1")),
         "{w:?}"
     );
-    stop_watchdog(&h, &run.run_id);
 }
 
-/// A watchdog that a w2 worker pane starts for a run with no workspace
-/// does not take the pane's workspace: `spawn_detached` drops the pane
-/// identity, so its wakes go to no workspace, never to w2.
+/// A fleetd that the check of a w2 worker pane starts, for a run with no
+/// workspace, does not take the pane's workspace: the detached launch drops
+/// the pane identity, so its wakes go to no workspace, never to w2.
 #[test]
-fn a_detached_watchdog_does_not_inherit_the_starting_panes_workspace() {
+fn a_detached_fleetd_does_not_inherit_the_starting_panes_workspace() {
     let (mut h, store, run, worker, _agent) = pinned_worker("wd218-no-workspace");
+    // A fleetd ran and died. The check before the next command starts
+    // fleetd again, from the w2 pane that runs that command.
+    let mut fleetds = Fleetds::new(&h);
+    fleetds.start(&h);
+    let dead = fleetds.kill_current();
     h.unset("HORCH_NO_WAKE");
     h.unset("HORCH_NO_WATCHDOG");
     h.unset("HORCH_WORKSPACE_ID");
@@ -687,19 +598,19 @@ fn a_detached_watchdog_does_not_inherit_the_starting_panes_workspace() {
         .unwrap();
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(
-        err.contains("the watchdog of run pinned was not running; started it"),
+        err.contains(&format!("fleetd PID {dead} is gone.")),
         "{err}"
     );
+    // With no workspace, the wake has no target: it stays in the outbox,
+    // and no workspace gets mail.
     let w = horch_e2e::harness::wait_for("the stall wake", || {
-        let w = wakes(&store, &run);
+        let w = undelivered(&store, &run);
         (!w.is_empty()).then_some(w)
     });
-    stop_watchdog(&h, &run.run_id);
-    assert!(
-        w[0].contains("for no workspace") && w[0].contains("worker-1"),
-        "{w:?}"
-    );
-    assert!(mail_in(&h, "w2").is_empty(), "{:?}", mail_in(&h, "w2"));
+    assert!(w[0].contains("worker-1"), "{w:?}");
+    for ws in ["w1", "w2"] {
+        assert!(mail_in(&h, ws).is_empty(), "{ws}: {:?}", mail_in(&h, ws));
+    }
 }
 
 #[test]
