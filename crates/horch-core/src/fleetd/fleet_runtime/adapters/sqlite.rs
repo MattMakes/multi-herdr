@@ -253,11 +253,51 @@ pub fn drop_reserved(
     Ok(())
 }
 
+/// 1 event of 1 row that is not a state change.
+#[derive(Debug, Clone, Copy)]
+pub struct Fact<'a> {
+    pub kind: EventKind,
+    pub entity: Entity,
+    pub id: &'a str,
+    pub cause: &'a str,
+    pub actor: Actor,
+    /// The `data_json` column: 1 JSON value.
+    pub data_json: &'a str,
+}
+
+/// Append the event `f` of kind `f.kind`, with the run, task and worker of
+/// its row filled as [`append_event`] fills them. `from_state` and
+/// `to_state` stay null: the row does not change.
+pub fn append_fact(tx: &Connection, f: &Fact<'_>) -> Result<()> {
+    let (run, task, worker) = about(tx, f.entity, f.id)?;
+    let text = format!("{}: {}; {} {}", f.kind, f.cause, f.entity, f.id);
+    tx.execute(
+        "INSERT INTO events (at, run_id, task_id, worker_id, actor, kind, text,
+            entity, entity_id, cause, data_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![
+            util::now(),
+            run,
+            task,
+            worker,
+            f.actor.as_str(),
+            f.kind.as_str(),
+            text,
+            f.entity.as_str(),
+            f.id,
+            f.cause,
+            f.data_json
+        ],
+    )?;
+    mark(tx);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::fleetd::fleet_runtime::application::ledger::{
-        record_refused, transition, Cause, DoorError, Moved,
+        record as record_fact, record_refused, transition, Cause, DoorError, Moved,
     };
     use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
     use crate::fleetd::ideas::application::needs_you::NeedsYouList;
@@ -473,6 +513,94 @@ mod tests {
         let mut l = ledger();
         let worker = l.worker();
         assert_moved(&mut l, Entity::Worker, &worker, "spawning", "starting");
+    }
+
+    #[test]
+    fn record_writes_1_event_of_its_kind_with_its_data_and_no_state_change() {
+        let mut l = ledger();
+        let task = l.task(1);
+        let data = serde_json::json!({ "fleet_clock": 42 });
+        let fact = |tx: &Connection| {
+            record_fact(
+                tx,
+                EventKind::Doorbell,
+                Entity::Task,
+                &task,
+                cause("rung 1"),
+                &data,
+            )
+        };
+        assert!(matches!(fact(l.conn()), Err(DoorError::NoTransaction)));
+        l.store.immediate(|tx| Ok(fact(tx)?)).unwrap();
+        let row: (String, String, String, String, Option<String>, String) = l
+            .conn()
+            .query_row(
+                "SELECT kind, entity, entity_id, cause, to_state, data_json FROM events
+                 WHERE kind = 'doorbell'",
+                [],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            row,
+            (
+                "doorbell".into(),
+                "task".into(),
+                task.clone(),
+                "rung 1".into(),
+                None,
+                r#"{"fleet_clock":42}"#.into()
+            )
+        );
+        assert_eq!(status(l.conn(), &task), "ready");
+        let missing = l.store.immediate(|tx| {
+            Ok(record_fact(
+                tx,
+                EventKind::Doorbell,
+                Entity::Task,
+                "nope",
+                cause("x"),
+                &data,
+            ))
+        });
+        assert!(matches!(missing.unwrap(), Err(DoorError::NoRow { .. })));
+    }
+
+    /// A ledger built at version `from` and migrated to the newest version
+    /// accepts the event kinds that came after the step that built
+    /// `events`: `doorbell` of the stall ladder, and `hold_started` and
+    /// `hold_ended` of Phase 1. Each step runs with the code of this
+    /// binary, so this does not cover a ledger whose `events` step ran
+    /// under an older binary: its `CHECK` keeps the older list.
+    #[test]
+    fn migrated_ledger_accepts_the_new_event_kinds() {
+        use crate::taskledger::schema;
+        for from in [7, schema::PHASE_2_VERSION] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut conn = Connection::open(dir.path().join("ledger.sqlite3")).unwrap();
+            schema::migrate_to(&mut conn, from).unwrap();
+            schema::migrate(&mut conn).unwrap();
+            for kind in [
+                EventKind::Doorbell,
+                EventKind::HoldStarted,
+                EventKind::HoldEnded,
+            ] {
+                conn.execute(
+                    "INSERT INTO events (at, actor, kind, text) VALUES ('now', 'horch', ?1, 'x')",
+                    [kind.as_str()],
+                )
+                .unwrap_or_else(|e| panic!("from version {from}: {kind}: {e}"));
+            }
+        }
     }
 
     #[test]

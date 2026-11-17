@@ -2,11 +2,11 @@
 
 use rusqlite::Connection;
 
-use crate::fleetd::fleet_runtime::adapters::sqlite::{self as door, Event};
+use crate::fleetd::fleet_runtime::adapters::sqlite::{self as door, Event, Fact};
 use crate::fleetd::fleet_runtime::domain::ledger::{
     decide, refused_cause, Decision, Entity, Generation,
 };
-use crate::taskledger::model::Actor;
+use crate::taskledger::model::{Actor, EventKind};
 
 /// Where [`transition`] puts a refused row: the needs-you list. The ideas
 /// context implements it, so this context does not depend on ideas.
@@ -174,6 +174,35 @@ pub fn created(
             to: &state,
             cause: cause.text,
             actor: cause.actor,
+        },
+    )?;
+    Ok(())
+}
+
+/// Record 1 event of kind `kind` about the row `id` of `entity`, with
+/// `data` in `data_json`, in the caller's transaction `tx`. The row does
+/// not change. A connection with no open transaction gives
+/// [`DoorError::NoTransaction`], and a missing row gives
+/// [`DoorError::NoRow`]: nothing is written.
+pub fn record(
+    tx: &Connection,
+    kind: EventKind,
+    entity: Entity,
+    id: &str,
+    cause: Cause<'_>,
+    data: &serde_json::Value,
+) -> Result<(), DoorError> {
+    check_open(tx)?;
+    state_of(tx, entity, id)?;
+    door::append_fact(
+        tx,
+        &Fact {
+            kind,
+            entity,
+            id,
+            cause: cause.text,
+            actor: cause.actor,
+            data_json: &data.to_string(),
         },
     )?;
     Ok(())

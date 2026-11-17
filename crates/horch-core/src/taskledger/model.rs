@@ -341,6 +341,9 @@ ledger_enum!(
         // its cause.
         HoldStarted = "hold_started",
         HoldEnded = "hold_ended",
+        // Rung 1 or 2 of the stall ladder rings the doorbell of an
+        // attempt; `data_json` holds the fleet clock.
+        Doorbell = "doorbell",
     }
 );
 
