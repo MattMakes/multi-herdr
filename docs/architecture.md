@@ -65,7 +65,7 @@ open first.
 | `messaging` | the worker brief, the mailbox and message delivery | `crates/horch-core/src/messaging/brief.rs`, `crates/horch-core/src/messaging/mailbox.rs` |
 | `project_notes` | durable project facts (`horch note --fact`) and the host line of every brief | `crates/horch-core/src/project_notes.rs` |
 | `taskledger` | the SQLite task ledger (`horch ledger`): runs, tasks, claims, workers, the watchdog, the finish steps, deterministic stop, the import of old JSON ledgers, the worktree triage of parked worktrees (`taskledger/triage/`) | `crates/horch-core/src/taskledger/mod.rs`, `crates/horch-core/src/taskledger/finish/mod.rs` |
-| `fleetd` | the fleet daemon, 1 folder for each context (`fleet_runtime`, `task_execution`, `worker_profiles`, `ideas`), each with `domain/`, `application/` and `adapters/` | `crates/horch-core/src/fleetd/mod.rs` |
+| `fleetd` | the fleet daemon, 1 folder for each context (`fleet_runtime`, `task_execution`, `worker_profiles`, `ideas`, `worktree_custody`), each with `domain/`, `application/` and `adapters/` | `crates/horch-core/src/fleetd/mod.rs` |
 | `compaction` | context windows, thresholds, row states and the compaction job | `crates/horch-core/src/compaction/policy.rs`, `crates/horch-core/src/compaction/job.rs` |
 | `workspace` | the herdr client, layout, tiling and balancing | `crates/horch-core/src/workspace/herdr.rs`, `crates/horch-core/src/workspace/tile.rs` |
 | `telemetry` | live per-pane token telemetry and the collector | `crates/horch-core/src/telemetry/collect.rs`, `crates/horch-core/src/telemetry/readers.rs` |
