@@ -127,7 +127,10 @@ fn plist_value(path: &Path, key: &str) -> String {
         "plutil -extract {key}: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    String::from_utf8(out.stdout).unwrap().trim_end().to_string()
+    String::from_utf8(out.stdout)
+        .unwrap()
+        .trim_end()
+        .to_string()
 }
 
 #[cfg(target_os = "macos")]
@@ -154,15 +157,24 @@ fn mac_plists_have_keepalive_and_a_30_s_check() {
         .unwrap());
     assert_eq!(plist_value(&agent, "KeepAlive"), "true");
     assert_eq!(plist_value(&agent, "RunAtLoad"), "true");
-    assert_eq!(plist_value(&agent, "EnvironmentVariables.HORCH_LEDGER_DB"), LEDGER);
-    assert_eq!(plist_value(&agent, "EnvironmentVariables.FLEET_ROOT"), "fleet-root");
+    assert_eq!(
+        plist_value(&agent, "EnvironmentVariables.HORCH_LEDGER_DB"),
+        LEDGER
+    );
+    assert_eq!(
+        plist_value(&agent, "EnvironmentVariables.FLEET_ROOT"),
+        "fleet-root"
+    );
 
     assert_eq!(plist_value(&check, "Label"), "horch-fleetd.check");
     assert_eq!(plist_value(&check, "ProgramArguments.0"), EXE);
     assert_eq!(plist_value(&check, "ProgramArguments.1"), "fleetd");
     assert_eq!(plist_value(&check, "ProgramArguments.2"), "check");
     assert_eq!(plist_value(&check, "StartInterval"), "30");
-    assert_eq!(plist_value(&check, "EnvironmentVariables.HORCH_LEDGER_DB"), LEDGER);
+    assert_eq!(
+        plist_value(&check, "EnvironmentVariables.HORCH_LEDGER_DB"),
+        LEDGER
+    );
 }
 
 /// `xml` with the whitespace between tags removed.
@@ -181,9 +193,14 @@ fn windows_tasks_run_fleetd_and_its_check() {
     let agent = compact(&definition(&spec, "horch-fleetd.xml"));
     let check = compact(&definition(&spec, "horch-fleetd.check.xml"));
 
-    assert!(agent.contains("<LogonTrigger><Enabled>true</Enabled></LogonTrigger>"), "{agent}");
     assert!(
-        agent.contains(r"<Exec><Command>C:\horch dir\horch.exe</Command><Arguments>fleetd</Arguments></Exec>"),
+        agent.contains("<LogonTrigger><Enabled>true</Enabled></LogonTrigger>"),
+        "{agent}"
+    );
+    assert!(
+        agent.contains(
+            r"<Exec><Command>C:\horch dir\horch.exe</Command><Arguments>fleetd</Arguments></Exec>"
+        ),
         "{agent}"
     );
     assert!(agent.contains("<RestartOnFailure>"), "{agent}");
@@ -191,7 +208,10 @@ fn windows_tasks_run_fleetd_and_its_check() {
         agent.contains("<MultipleInstancesPolicy>StopExisting</MultipleInstancesPolicy>"),
         "{agent}"
     );
-    assert!(agent.contains("<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>"), "{agent}");
+    assert!(
+        agent.contains("<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>"),
+        "{agent}"
+    );
     assert!(
         agent.contains("<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>"),
         "{agent}"
@@ -229,11 +249,16 @@ fn windows_check_task_has_2_triggers_of_pt1m_30_s_apart() {
         .collect();
     assert_eq!(triggers.len(), 2, "{check}");
     let starts: Vec<&str> = triggers
-        .iter()
+        .into_iter()
         .map(|t| {
-            assert!(t.contains("<Repetition><Interval>PT1M</Interval>"), "{t}");
-            assert!(!t.contains("<Duration>"), "the repetition is indefinite: {t}");
-            t.split("<StartBoundary>").nth(1).unwrap().split('<').next().unwrap()
+            // The schema order of a trigger (`triggerBaseType`, an
+            // `xs:sequence`): `Enabled`, `StartBoundary`, `Repetition`.
+            let rest = t
+                .strip_prefix("<Enabled>true</Enabled><StartBoundary>")
+                .unwrap_or_else(|| panic!("Enabled, then StartBoundary: {t}"));
+            let (start, rest) = rest.split_once("</StartBoundary>").unwrap();
+            assert_eq!(rest, "<Repetition><Interval>PT1M</Interval></Repetition>");
+            start
         })
         .collect();
     assert_eq!(starts, ["2000-01-01T00:00:00", "2000-01-01T00:00:30"]);
@@ -289,6 +314,59 @@ fn uid() -> String {
     String::from_utf8(out.stdout).unwrap().trim().to_string()
 }
 
+/// The text of a written definition file: UTF-8, or UTF-16LE with a byte
+/// order mark for a Windows task XML.
+fn read_definition(path: &Path) -> String {
+    let bytes = std::fs::read(path).unwrap();
+    #[cfg(windows)]
+    {
+        assert_eq!(
+            &bytes[..2],
+            [0xFF, 0xFE],
+            "a UTF-16LE BOM: {}",
+            path.display()
+        );
+        let units: Vec<u16> = bytes[2..]
+            .chunks(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        String::from_utf16(&units).unwrap()
+    }
+    #[cfg(unix)]
+    String::from_utf8(bytes).unwrap()
+}
+
+/// The manager calls of `install` on this OS, for the definitions in
+/// `folder`.
+#[cfg(target_os = "macos")]
+fn expected_install_calls(folder: &Path) -> Vec<String> {
+    ["horch-fleetd.plist", "horch-fleetd.check.plist"]
+        .iter()
+        .map(|name| format!("bootstrap gui/{} {}", uid(), folder.join(name).display()))
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn expected_install_calls(_folder: &Path) -> Vec<String> {
+    vec![
+        "--user daemon-reload".to_string(),
+        "--user enable --now horch-fleetd.service".to_string(),
+    ]
+}
+
+#[cfg(windows)]
+fn expected_install_calls(folder: &Path) -> Vec<String> {
+    let mut calls: Vec<String> = ["horch-fleetd", "horch-fleetd.check"]
+        .iter()
+        .map(|name| {
+            let xml = folder.join(format!("{name}.xml"));
+            format!("/Create /XML {} /TN {name} /F", xml.display())
+        })
+        .collect();
+    calls.push("/Run /TN horch-fleetd".to_string());
+    calls
+}
+
 #[test]
 fn install_writes_the_files_then_calls_the_manager() {
     let dir = tempfile::tempdir().unwrap();
@@ -300,59 +378,20 @@ fn install_writes_the_files_then_calls_the_manager() {
 
     let defs = service::definitions(&spec).unwrap();
     for (path, text) in &defs {
-        let written = std::fs::read(path).unwrap();
-        #[cfg(windows)]
-        let written = if path.extension().is_some_and(|e| e == "xml") {
-            let units: Vec<u16> = written[2..]
-                .chunks(2)
-                .map(|c| u16::from_le_bytes([c[0], c[1]]))
-                .collect();
-            assert_eq!(&written[..2], [0xFF, 0xFE], "a UTF-16LE BOM");
-            String::from_utf16(&units).unwrap().into_bytes()
-        } else {
-            written
-        };
-        assert_eq!(String::from_utf8(written).unwrap(), *text, "{}", path.display());
+        assert_eq!(read_definition(path), *text, "{}", path.display());
     }
-    let calls = calls(&log);
-    let n = defs.len();
-    let suffix = format!(" | {n}");
-    assert!(
-        calls.iter().all(|c| c.ends_with(&suffix)),
-        "each call comes after all {n} files exist: {calls:?}"
-    );
-    let args: Vec<&str> = calls.iter().map(|c| c.strip_suffix(&suffix).unwrap()).collect();
-
-    #[cfg(target_os = "macos")]
-    assert_eq!(
-        args,
-        [
-            format!("bootstrap gui/{} {}", uid(), folder.join("horch-fleetd.plist").display()),
-            format!(
-                "bootstrap gui/{} {}",
-                uid(),
-                folder.join("horch-fleetd.check.plist").display()
-            ),
-        ]
-    );
-    #[cfg(target_os = "linux")]
-    assert_eq!(
-        args,
-        ["--user daemon-reload", "--user enable --now horch-fleetd.service"]
-    );
-    // `%*` of the stand-in shows the quotes of a path with a space.
-    #[cfg(windows)]
-    assert_eq!(
-        args.iter().map(|a| a.replace('"', "")).collect::<Vec<_>>(),
-        [
-            format!("/Create /XML {} /TN horch-fleetd /F", folder.join("horch-fleetd.xml").display()),
-            format!(
-                "/Create /XML {} /TN horch-fleetd.check /F",
-                folder.join("horch-fleetd.check.xml").display()
-            ),
-            "/Run /TN horch-fleetd".to_string(),
-        ]
-    );
+    // Each call logs the count of files in the folder: all of them exist.
+    let suffix = format!(" | {}", defs.len());
+    let args: Vec<String> = calls(&log)
+        .iter()
+        .map(|c| {
+            let args = c.strip_suffix(&suffix);
+            // `%*` of the Windows stand-in shows the quotes of a path.
+            args.unwrap_or_else(|| panic!("a call before the files: {c}"))
+                .replace('"', "")
+        })
+        .collect();
+    assert_eq!(args, expected_install_calls(&folder));
 }
 
 #[test]
@@ -377,7 +416,10 @@ fn restart_calls_the_manager_once() {
     service::restart(&spec(&folder), &manager).expect("restart");
     let calls = calls(&log);
     #[cfg(target_os = "macos")]
-    assert_eq!(calls, [format!("kickstart -k gui/{}/horch-fleetd | 0", uid())]);
+    assert_eq!(
+        calls,
+        [format!("kickstart -k gui/{}/horch-fleetd | 0", uid())]
+    );
     #[cfg(target_os = "linux")]
     assert_eq!(calls, ["--user restart horch-fleetd.service | 0"]);
     #[cfg(windows)]

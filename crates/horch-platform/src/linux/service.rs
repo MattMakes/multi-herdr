@@ -33,7 +33,10 @@ pub fn definitions(spec: &Spec) -> io::Result<Vec<(PathBuf, String)>> {
          WatchdogSec={HANG_LIMIT_S}\n"
     );
     for (name, value) in &spec.env {
-        unit.push_str(&format!("Environment={}\n", quote(&format!("{name}={value}"))));
+        unit.push_str(&format!(
+            "Environment={}\n",
+            quote(&format!("{name}={value}"))
+        ));
     }
     unit.push_str("\n[Install]\nWantedBy=default.target\n");
     Ok(vec![(spec.folder.join(unit_name(spec)), unit)])

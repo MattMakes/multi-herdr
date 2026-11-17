@@ -55,20 +55,23 @@ const AGENT_SETTINGS: &str = "  <Settings>
 /// (https://learn.microsoft.com/en-us/windows/win32/taskschd/taskschedulerschema-interval-repetitiontype-element).
 /// So 2 triggers repeat every `PT1M`, and the start of the 2nd is 30 s
 /// after the start of the 1st. No `Duration`: each repeats for ever.
+/// The children of a trigger are an `xs:sequence` in the schema
+/// (`triggerBaseType`): `Enabled`, `StartBoundary`, then `Repetition`
+/// (https://learn.microsoft.com/en-us/windows/win32/taskschd/taskschedulerschema-triggerbasetype-complextype).
 const CHECK_TRIGGERS: &str = "  <Triggers>
     <TimeTrigger>
+      <Enabled>true</Enabled>
+      <StartBoundary>2000-01-01T00:00:00</StartBoundary>
       <Repetition>
         <Interval>PT1M</Interval>
       </Repetition>
-      <StartBoundary>2000-01-01T00:00:00</StartBoundary>
-      <Enabled>true</Enabled>
     </TimeTrigger>
     <TimeTrigger>
+      <Enabled>true</Enabled>
+      <StartBoundary>2000-01-01T00:00:30</StartBoundary>
       <Repetition>
         <Interval>PT1M</Interval>
       </Repetition>
-      <StartBoundary>2000-01-01T00:00:30</StartBoundary>
-      <Enabled>true</Enabled>
     </TimeTrigger>
   </Triggers>
 ";
