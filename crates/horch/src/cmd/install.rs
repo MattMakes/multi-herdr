@@ -52,9 +52,9 @@ pub fn install(ctx: &RuntimeContext, dir: Option<&str>) -> Result<()> {
     // A task-ledger watchdog too (#216).
     super::taskledger_watch::restart_if_stale(ctx, &target);
     // And fleetd (OR-6).
-    let install_service = || install_service(&target);
+    let install_fleetd_service = || install_service(&target);
     for line in fleetd::with_fleet(ctx, |fleet| {
-        install_fleetd(fleet, &install_service, &target)
+        install_fleetd(fleet, &install_fleetd_service, &target)
     }) {
         println!("{line}");
     }

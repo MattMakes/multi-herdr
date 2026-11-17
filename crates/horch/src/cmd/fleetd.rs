@@ -25,6 +25,7 @@
 //! the fleetd lock is free, and starts `horch fleetd` detached through the
 //! launcher.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -61,6 +62,7 @@ use horch_core::taskledger::sql_words::{list, WORKTREES_HELD};
 use horch_core::taskledger::store::{default_path, BUSY_TIMEOUT};
 use horch_core::taskledger::Store;
 use horch_core::workspace::herdr::Herdr;
+use horch_platform::lock::FleetdLock;
 use horch_platform::service;
 use rusqlite::Connection;
 
@@ -488,7 +490,7 @@ pub fn check_before_command(ctx: &RuntimeContext) {
 
 /// Write the heartbeat of this fleetd at its start, so that the hang limit
 /// counts awake time from the start until the first full pass ends.
-fn write_start_heartbeat(root: &Path, generation: Generation) -> Result<()> {
+fn write_start_heartbeat(root: &Path, generation: Generation, exe: &Exe) -> Result<()> {
     let pid = std::process::id();
     let hb = Heartbeat {
         pid,
@@ -496,7 +498,7 @@ fn write_start_heartbeat(root: &Path, generation: Generation) -> Result<()> {
         generation,
         awake: awake_now().context("reading the awake clock")?,
         at: horch_core::taskledger::util::now(),
-        exe: this_exe(),
+        exe: exe.clone(),
         version: env!("CARGO_PKG_VERSION").to_string(),
     };
     write_heartbeat(root, &hb)
@@ -534,6 +536,10 @@ fn daemon(ctx: &RuntimeContext) -> Result<ExitCode> {
         &TERM,
         &[horch_platform::signal::Termination::Terminate],
     );
+    // The binary file that this fleetd runs, read before it writes the
+    // fleetd row: an install after the row is then a new binary.
+    let own_exe = this_exe();
+    let horch = std::env::current_exe().context("finding the horch binary")?;
     let root = &ctx.paths.fleet_root;
     let mut store = Store::open(&ctx.paths.ledger_db)?;
     let Some(started) = fleetd_row::start(root, &mut store)? else {
@@ -544,11 +550,7 @@ fn daemon(ctx: &RuntimeContext) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     };
     drop(store);
-    // The binary file that this fleetd runs, and the path that started it:
-    // a restart on a new binary starts that path again.
-    let own_exe = this_exe();
-    let horch = std::env::current_exe().context("finding the horch binary")?;
-    write_start_heartbeat(root, started.generation)?;
+    write_start_heartbeat(root, started.generation, &own_exe)?;
     let config = config_file::load(root)?;
     let period = Duration::from_secs(config.pass_period_s);
     let settings = Settings {
@@ -592,7 +594,24 @@ fn daemon(ctx: &RuntimeContext) -> Result<ExitCode> {
         started.generation.0,
         ctx.paths.ledger_db.display()
     ));
-    let mut run_pass = || match pass.run(&mut conn) {
+    let self_restart = SelfRestart {
+        ctx,
+        exe: own_exe,
+        horch,
+        lock: RefCell::new(Some(started.lock)),
+    };
+    run_loop(
+        period,
+        &mut || one_pass(&mut pass, &mut conn),
+        &|| self_restart.changed(),
+        &mut || self_restart.restart(),
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Run 1 pass, and print its failures.
+fn one_pass(pass: &mut Pass<'_>, conn: &mut Connection) -> Passed {
+    match pass.run(conn) {
         Ok(report) => {
             for f in &report.failed {
                 eprintln!("horch fleetd: {f}");
@@ -607,27 +626,43 @@ fn daemon(ctx: &RuntimeContext) -> Result<ExitCode> {
             eprintln!("horch fleetd: {e}");
             Passed::Ran
         }
-    };
-    let changed = || binary_changed(&own_exe);
-    let mut lock = Some(started.lock);
-    let mut restart = || {
-        // A new fleetd exits at once while this one holds the lock, so this
-        // fleetd frees it first. It runs no pass after that.
-        drop(lock.take());
-        match start_fleetd(ctx, this_mode(ctx), &horch) {
+    }
+}
+
+/// The restart of this fleetd on its changed binary file (preservation 04
+/// S10). It holds the fleetd lock until the restart.
+struct SelfRestart<'a> {
+    ctx: &'a RuntimeContext,
+    /// The binary file that this fleetd started from.
+    exe: Exe,
+    /// The path that started this fleetd: the restart starts it again.
+    horch: PathBuf,
+    lock: RefCell<Option<FleetdLock>>,
+}
+
+impl SelfRestart<'_> {
+    fn changed(&self) -> bool {
+        binary_changed(&self.exe)
+    }
+
+    /// Free the lock, because a new fleetd exits at once while this one
+    /// holds it, then start the new binary. This fleetd runs no pass after
+    /// it.
+    fn restart(&self) {
+        drop(self.lock.borrow_mut().take());
+        let ctx = self.ctx;
+        match start_fleetd(ctx, this_mode(ctx), &self.horch) {
             Ok(()) => output::println(&format!(
                 "The binary {} changed: fleetd PID {} started it, and exits.",
-                horch.display(),
+                self.horch.display(),
                 std::process::id()
             )),
             Err(e) => eprintln!(
                 "horch fleetd: the binary {} changed, but the new fleetd did not start: {e:#}. `horch fleetd check` starts it.",
-                horch.display()
+                self.horch.display()
             ),
         }
-    };
-    run_loop(period, &mut run_pass, &changed, &mut restart);
-    Ok(ExitCode::SUCCESS)
+    }
 }
 
 /// What 1 pass of the loop gave.
@@ -989,7 +1024,7 @@ mod tests {
     #[test]
     fn a_started_fleetd_has_a_heartbeat_before_its_first_pass() {
         let w = World::new();
-        write_start_heartbeat(&w.root, Generation(3)).unwrap();
+        write_start_heartbeat(&w.root, Generation(3), &this_exe()).unwrap();
         let me = Fleetd {
             pid: std::process::id(),
             pid_start: horch_core::procid::start_time(std::process::id()).unwrap(),
