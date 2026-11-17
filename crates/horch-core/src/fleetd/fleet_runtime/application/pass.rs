@@ -31,7 +31,7 @@ use std::path::PathBuf;
 use std::process::Child;
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use rusqlite::{Connection, Transaction, TransactionBehavior};
 
 use crate::fleetd::fleet_runtime::adapters::clock_store::{self, ClockStore};
@@ -60,7 +60,7 @@ use crate::fleetd::fleet_runtime::domain::pass::{
 use crate::fleetd::task_execution::adapters::sqlite as attempts_store;
 use crate::fleetd::task_execution::application::commands;
 use crate::fleetd::task_execution::domain::task::{
-    AttemptRow, AttemptState, Facts, Reap, Recorded, RowRef, Rows, Seen, Stop, Target,
+    AttemptRow, AttemptState, Facts, PaneProof, Reap, Recorded, RowRef, Rows, Seen, Stop, Target,
 };
 use crate::fleetd::worker_profiles::application::ports::{LaunchSpec, ProcessHost};
 use crate::runtime::fault::Faults;
@@ -282,7 +282,8 @@ struct Read {
     /// Each attempt in `launching`, with what part 1 saw of it.
     launching: Vec<Launching>,
     /// The processes whose record of a polite stop stays: a row names
-    /// each, and the scan did not see it gone.
+    /// each, and the scan did not see it gone, or the pass has no herdr
+    /// snapshot to judge the pane of a gone one.
     may_stop: BTreeSet<(u32, u64)>,
     holds: Vec<Hold>,
     awake: AwakeReading,
@@ -312,6 +313,38 @@ struct Decided {
     effects: Vec<Effect>,
     breaches: BTreeSet<String>,
     may_stop: BTreeSet<(u32, u64)>,
+}
+
+/// The pane stops of the effects of 1 pass, as part 3 does them.
+struct PaneStops {
+    /// The rows with a process that is still in its grace: their panes
+    /// close on a later pass, when the process is gone.
+    in_grace: BTreeSet<RowRef>,
+    /// The pane of each pane stop, by the process that proves it. The polite
+    /// stop of that process records the pane.
+    proofs: BTreeMap<(u32, u64), String>,
+    /// The processes whose pane this pass closed.
+    closed: BTreeSet<(u32, u64)>,
+}
+
+impl PaneStops {
+    fn of(effects: &[Effect]) -> PaneStops {
+        let proofs = effects
+            .iter()
+            .filter_map(|e| match e {
+                Effect::Stop(Stop {
+                    target: Target::Pane { pane, shell },
+                    ..
+                }) => Some(((shell.pid, shell.pid_start?), pane.clone())),
+                _ => None,
+            })
+            .collect();
+        PaneStops {
+            in_grace: BTreeSet::new(),
+            proofs,
+            closed: BTreeSet::new(),
+        }
+    }
 }
 
 /// 1 fleetd, from pass to pass: what a pass keeps in memory.
@@ -380,7 +413,7 @@ impl<'a> Pass<'a> {
             Err(e) => return Err(e),
         };
         self.settings.faults.abort_if(ABORT_AFTER_COMMIT);
-        let mut report = self.do_effects(conn, decided.effects, decided.clock, deadline);
+        let (mut report, pending) = self.do_effects(conn, decided.effects, decided.clock, deadline);
         if report.left == 0 && !deadline.reached((self.now)()) {
             let ctx = ActCtx {
                 fleet_root: &self.settings.fleet_root,
@@ -390,11 +423,21 @@ impl<'a> Pass<'a> {
             report.done.extend(duty.done.into_iter().map(Done::Duty));
             report.failed.extend(duty.failed);
         }
-        let kept = |pid, start| decided.may_stop.contains(&(pid, start));
-        if let Err(e) = effects::forget_polite(&self.settings.fleet_root, kept) {
-            report
+        let kept = |pid, start| {
+            decided.may_stop.contains(&(pid, start)) || pending.contains(&(pid, start))
+        };
+        match effects::forget_polite(&self.settings.fleet_root, kept) {
+            Ok(unreadable) => report.failed.extend(unreadable.iter().map(|path| {
+                format!(
+                    "the record of a polite stop {} does not parse: it proves no pane, so \
+                     fleetd kept the pane of each row that names its process, and removed \
+                     the record",
+                    path.display()
+                )
+            })),
+            Err(e) => report
                 .failed
-                .push(format!("the records of polite stops: {e}"));
+                .push(format!("the records of polite stops: {e}")),
         }
         self.breaches = decided.breaches;
         if self.settings.faults.has(HANG_PASS) && self.full_passes > 0 {
@@ -461,16 +504,31 @@ impl<'a> Pass<'a> {
             }
             cursors.push((kind, cursor));
         }
+        let mut may_stop = may_stop(&rows, &liveness);
+        let panes = self.ports.outside.panes();
+        let stopped = effects::read_stopped(&root, |pid, start| !may_stop.contains(&(pid, start)))
+            .context("reading the records of polite stops")?;
+        // With no snapshot, no pane can be judged: a record that names a
+        // pane, or that does not parse, waits for a pass with one.
+        if panes.is_none() {
+            may_stop.extend(
+                stopped
+                    .iter()
+                    .filter(|s| s.proof != PaneProof::None)
+                    .filter_map(|s| Some((s.process.pid, s.process.pid_start?))),
+            );
+        }
         Ok(Read {
             stamp,
             cursors,
             task: Facts {
                 processes: task_processes(&rows, &liveness),
-                panes: self.ports.outside.panes(),
+                panes,
+                stopped,
             },
             jobs: job_facts(&processes.jobs, &liveness),
             launching: launching(&rows, &records, &liveness),
-            may_stop: may_stop(&rows, &liveness),
+            may_stop,
             holds: self.ports.outside.holds(),
             awake: clock_store::awake_now()?,
         })
@@ -694,11 +752,9 @@ impl<'a> Pass<'a> {
         effects: Vec<Effect>,
         clock: FleetSeconds,
         deadline: Deadline,
-    ) -> PassReport {
+    ) -> (PassReport, BTreeSet<(u32, u64)>) {
         let mut report = PassReport::default();
-        // The rows with a process that is still in its grace: their panes
-        // close on a later pass, when the process is gone.
-        let mut in_grace: BTreeSet<RowRef> = BTreeSet::new();
+        let mut stops = PaneStops::of(&effects);
         let total = effects.len();
         for (i, e) in effects.into_iter().enumerate() {
             if deadline.reached((self.now)()) {
@@ -706,21 +762,25 @@ impl<'a> Pass<'a> {
                 break;
             }
             let done = match e {
-                Effect::Stop(s) => self.stop(&s, clock, &mut in_grace, &mut report),
+                Effect::Stop(s) => self.stop(&s, clock, &mut stops, &mut report),
                 Effect::StopJob(s) => jobs::stop(&s).then_some(Done::StopJob(s.job_id)),
                 Effect::Launch(a) => self.launch(&a, clock, &mut report),
                 Effect::StartJob(job) => self.start_job(conn, &job, clock, &mut report),
             };
             report.done.extend(done);
         }
-        report
+        let pending = stops
+            .proofs
+            .into_keys()
+            .filter(|k| !stops.closed.contains(k));
+        (report, pending.collect())
     }
 
     fn stop(
         &mut self,
         s: &Stop,
         clock: FleetSeconds,
-        in_grace: &mut BTreeSet<RowRef>,
+        stops: &mut PaneStops,
         report: &mut PassReport,
     ) -> Option<Done> {
         let root = &self.settings.fleet_root;
@@ -728,12 +788,12 @@ impl<'a> Pass<'a> {
             Target::Process {
                 pid,
                 pid_start,
-                pgid,
+                scope,
             } => {
-                let polite_at = match effects::read_polite(root, *pid, *pid_start) {
-                    Ok(at) => at,
+                let polite = match effects::read_polite(root, *pid, *pid_start) {
+                    Ok(p) => p,
                     Err(e) => {
-                        in_grace.insert(s.row.clone());
+                        stops.in_grace.insert(s.row.clone());
                         report
                             .failed
                             .push(format!("the stop of process {pid}: {e}"));
@@ -741,38 +801,56 @@ impl<'a> Pass<'a> {
                     }
                 };
                 let grace = self.settings.config.stop_grace_s;
-                match stop_step(polite_at, clock, grace) {
+                let pane = stops.proofs.get(&(*pid, *pid_start)).cloned();
+                match stop_step(polite.as_ref().map(|p| p.at), clock, grace) {
                     StopStep::Polite => {
-                        in_grace.insert(s.row.clone());
+                        stops.in_grace.insert(s.row.clone());
                         // The record comes first: a restart after the
-                        // signal still counts its grace.
-                        if let Err(e) = effects::write_polite(root, *pid, *pid_start, clock) {
+                        // signal still counts its grace and still has the
+                        // proof of the pane.
+                        let record = effects::Polite { at: clock, pane };
+                        if let Err(e) = effects::write_polite(root, *pid, *pid_start, &record) {
                             report
                                 .failed
                                 .push(format!("the stop of process {pid}: {e:#}"));
                             return None;
                         }
-                        effects::stop_process(*pid, *pid_start, *pgid, false)
+                        effects::stop_process(*pid, *pid_start, *scope, false)
                             .then(|| Done::Stop(format!("process {pid}")))
                     }
                     StopStep::Wait => {
-                        in_grace.insert(s.row.clone());
+                        stops.in_grace.insert(s.row.clone());
+                        // A pane proven after the polite stop goes on its
+                        // record, so the pane closes when the process ends.
+                        if let Some(p) = polite.filter(|p| pane.is_some() && pane != p.pane) {
+                            let record = effects::Polite { pane, ..p };
+                            if let Err(e) = effects::write_polite(root, *pid, *pid_start, &record) {
+                                report
+                                    .failed
+                                    .push(format!("the stop of process {pid}: {e:#}"));
+                            }
+                        }
                         None
                     }
-                    StopStep::Kill => effects::stop_process(*pid, *pid_start, *pgid, true)
+                    StopStep::Kill => effects::stop_process(*pid, *pid_start, *scope, true)
                         .then(|| Done::Stop(format!("kill process {pid}"))),
                 }
             }
-            Target::Pane(pane) if !in_grace.contains(&s.row) => {
+            Target::Pane { pane, shell } if !stops.in_grace.contains(&s.row) => {
                 match self.ports.outside.close_pane(pane) {
-                    Ok(()) => Some(Done::Stop(format!("pane {pane}"))),
+                    Ok(()) => {
+                        stops
+                            .closed
+                            .extend(shell.pid_start.map(|start| (shell.pid, start)));
+                        Some(Done::Stop(format!("pane {pane}")))
+                    }
                     Err(e) => {
                         report.failed.push(format!("closing pane {pane}: {e:#}"));
                         None
                     }
                 }
             }
-            Target::Pane(_) => None,
+            Target::Pane { .. } => None,
         }
     }
 

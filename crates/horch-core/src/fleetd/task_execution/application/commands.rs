@@ -213,7 +213,9 @@ mod tests {
     use super::*;
     use crate::fleetd::ideas::application::needs_you;
     use crate::fleetd::task_execution::adapters::sqlite;
-    use crate::fleetd::task_execution::domain::task::{Recorded, RowRef, Seen, Target};
+    use crate::fleetd::task_execution::domain::task::{
+        ProcessScope, Recorded, RowRef, Seen, Target,
+    };
     use crate::taskledger::model::{Actor, TaskStatus, WorkerStatus};
     use crate::taskledger::runs::{self, NewRun, Run};
     use crate::taskledger::tasks::{self, ClaimOutcome, NewTask};
@@ -365,6 +367,7 @@ mod tests {
             Facts {
                 processes,
                 panes: Some(panes.iter().map(|(p, r)| (p.to_string(), *r)).collect()),
+                stopped: Vec::new(),
             }
         }
 
@@ -391,7 +394,7 @@ mod tests {
             target: Target::Process {
                 pid: p.pid,
                 pid_start: p.pid_start.unwrap(),
-                pgid: Some(p.pid),
+                scope: ProcessScope::LeaderGroup,
             },
         }
     }
@@ -523,7 +526,10 @@ mod tests {
                 process_stop(RowRef::Worker(w.clone()), agent.recorded()),
                 Stop {
                     row: RowRef::Worker(w),
-                    target: Target::Pane("w0:p1".into()),
+                    target: Target::Pane {
+                        pane: "w0:p1".into(),
+                        shell: agent.recorded(),
+                    },
                 },
             ]
         );
@@ -544,7 +550,9 @@ mod tests {
         assert_eq!(l.open_items(), ["pane_kept:w0:p1"]);
         // No process of the snapshot either: the pane is kept too.
         let stops = l.mark_orphans(&l.facts(&[("w0:p1", None)]));
-        assert!(!stops.iter().any(|s| matches!(s.target, Target::Pane(_))));
+        assert!(!stops
+            .iter()
+            .any(|s| matches!(s.target, Target::Pane { .. })));
     }
 
     #[test]
@@ -632,7 +640,7 @@ mod tests {
             .iter()
             .filter_map(|s| match s.target {
                 Target::Process { pid, .. } => Some(pid),
-                Target::Pane(_) => None,
+                Target::Pane { .. } => None,
             })
             .collect();
         assert!(!pids.contains(&unnamed.recorded().pid), "{stops:?}");

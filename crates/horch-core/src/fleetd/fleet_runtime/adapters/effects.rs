@@ -13,7 +13,11 @@
 //!   written before the process starts, so a fleetd that dies within a
 //!   launch leaves a record, and no later pass launches the attempt again.
 //! - [`write_polite`]: the time of a polite stop, so that the kill comes
-//!   when its grace ends, also after a restart of fleetd.
+//!   when its grace ends, also after a restart of fleetd. When the process
+//!   is the process in the pane of its row, the record also holds the pane:
+//!   the proof with which a later pass closes the pane after the process
+//!   ended on the polite stop ([`read_stopped`]). The proof is this file,
+//!   not a ledger row.
 //! - [`write_heartbeat`]: `<fleet root>/run/heartbeat.json`, written
 //!   atomically after each full pass. [`read_heartbeat`] reads it for
 //!   `horch fleetd check`.
@@ -35,7 +39,7 @@ use crate::exeid::{exe_identity, ExeIdentity};
 use crate::fleetd::fleet_runtime::domain::clock::{AwakeReading, FleetSeconds};
 use crate::fleetd::fleet_runtime::domain::heartbeat::{Exe, Heartbeat};
 use crate::fleetd::fleet_runtime::domain::ledger::Generation;
-use crate::fleetd::task_execution::domain::task::Recorded;
+use crate::fleetd::task_execution::domain::task::{PaneProof, ProcessScope, Recorded, Stopped};
 use crate::fleetd::worker_profiles::application::ports::{LaunchSpec, Launched, ProcessHost};
 use crate::fsx;
 
@@ -55,17 +59,18 @@ fn run_dir(fleet_root: &Path) -> PathBuf {
 // ─── stops ──────────────────────────────────────────────────────────────
 
 /// Stop the process `pid` with the start time `pid_start`: the polite stop
-/// that it can catch, or with `kill` the kill. With `pgid`, the pid of the
-/// leader of its group, the stop goes to each process of the group while
-/// the leader holds that start. Whether a stop was sent.
+/// that it can catch, or with `kill` the kill. With
+/// [`ProcessScope::LeaderGroup`], the stop goes to each process of the group
+/// of `pid` while `pid` leads it with that start. Whether a stop was sent.
 ///
 /// Windows has no polite stop and no process groups: there each stop ends
 /// the process at once, and the processes that it started live on
 /// (`docs/specs/fleetd/preservation-06-wiring-and-platform.md`, section 6).
-pub fn stop_process(pid: u32, pid_start: u64, pgid: Option<u32>, kill: bool) -> bool {
+pub fn stop_process(pid: u32, pid_start: u64, scope: ProcessScope, kill: bool) -> bool {
     use horch_platform::group;
     let how = if kill { How::Kill } else { How::Term };
-    let leads = pgid == Some(pid) && matches!(group::is_same_group(pid, pid_start), Ok(true));
+    let leads = scope == ProcessScope::LeaderGroup
+        && matches!(group::is_same_group(pid, pid_start), Ok(true));
     if !leads {
         return stop_same(pid, pid_start, how);
     }
@@ -221,57 +226,146 @@ fn stops_dir(fleet_root: &Path) -> PathBuf {
     run_dir(fleet_root).join("stops")
 }
 
+/// The record of 1 polite stop.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Polite {
+    /// The time of the polite stop, on the fleet clock.
+    pub at: FleetSeconds,
+    /// The pane that the process was in at the polite stop, by the pid and
+    /// start time of the process in the pane.
+    pub pane: Option<String>,
+}
+
 #[derive(Serialize, Deserialize)]
 struct PoliteFile {
     polite_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pane: Option<PaneFile>,
 }
 
-/// The time of the polite stop of the process, on the fleet clock; `None`
-/// when it got none. A record that does not parse counts as none.
-pub fn read_polite(
-    fleet_root: &Path,
-    pid: u32,
-    pid_start: u64,
-) -> io::Result<Option<FleetSeconds>> {
+/// The proof of a pane: herdr named the process `shell_pid` with the start
+/// time `shell_start` as the process in the pane `pane_id`. herdr 0.9.4
+/// gives no identity of its server, so the record holds none.
+#[derive(Serialize, Deserialize)]
+struct PaneFile {
+    pane_id: String,
+    shell_pid: u32,
+    shell_start: u64,
+}
+
+/// The record `bytes` of the polite stop of the process `pid` with the
+/// start time `pid_start`. `Err` when it does not parse, or when its pane
+/// names another process.
+fn parse_polite(bytes: &[u8], pid: u32, pid_start: u64) -> std::result::Result<Polite, ()> {
+    let f = serde_json::from_slice::<PoliteFile>(bytes).map_err(|_| ())?;
+    let pane = match f.pane {
+        None => None,
+        Some(p) if p.shell_pid == pid && p.shell_start == pid_start => Some(p.pane_id),
+        Some(_) => return Err(()),
+    };
+    Ok(Polite {
+        at: FleetSeconds(f.polite_at),
+        pane,
+    })
+}
+
+/// The record of the polite stop of the process; `None` when it got none.
+/// A record that does not parse counts as none.
+pub fn read_polite(fleet_root: &Path, pid: u32, pid_start: u64) -> io::Result<Option<Polite>> {
     match std::fs::read(polite_path(fleet_root, pid, pid_start)) {
-        Ok(b) => Ok(serde_json::from_slice::<PoliteFile>(&b)
-            .ok()
-            .map(|f| FleetSeconds(f.polite_at))),
+        Ok(b) => Ok(parse_polite(&b, pid, pid_start).ok()),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e),
     }
 }
 
-/// Record the polite stop of the process at `at`.
-pub fn write_polite(fleet_root: &Path, pid: u32, pid_start: u64, at: FleetSeconds) -> Result<()> {
+/// Record the polite stop `p` of the process. The record is written to a
+/// temp file, synced and renamed, before the stop is sent.
+pub fn write_polite(fleet_root: &Path, pid: u32, pid_start: u64, p: &Polite) -> Result<()> {
+    let pane = p.pane.as_ref().map(|pane_id| PaneFile {
+        pane_id: pane_id.clone(),
+        shell_pid: pid,
+        shell_start: pid_start,
+    });
     write_json(
         &polite_path(fleet_root, pid, pid_start),
-        &PoliteFile { polite_at: at.0 },
+        &PoliteFile {
+            polite_at: p.at.0,
+            pane,
+        },
     )
+}
+
+/// The record of each polite stop whose process is `gone(pid, start)`. A
+/// record that cannot be read or does not parse proves no pane.
+pub fn read_stopped(
+    fleet_root: &Path,
+    gone: impl Fn(u32, u64) -> bool,
+) -> io::Result<Vec<Stopped>> {
+    let entries = match std::fs::read_dir(stops_dir(fleet_root)) {
+        Ok(e) => e,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+    let mut out = Vec::new();
+    for entry in entries {
+        let path = entry?.path();
+        let Some((pid, start)) = polite_key(&path).filter(|&(p, s)| gone(p, s)) else {
+            continue;
+        };
+        let parsed = std::fs::read(&path)
+            .map_err(|_| ())
+            .and_then(|b| parse_polite(&b, pid, start));
+        let proof = match parsed {
+            Ok(Polite { pane: Some(p), .. }) => PaneProof::Pane(p),
+            Ok(Polite { pane: None, .. }) => PaneProof::None,
+            Err(()) => PaneProof::Unreadable,
+        };
+        out.push(Stopped {
+            process: Recorded {
+                pid,
+                pid_start: Some(start),
+            },
+            proof,
+        });
+    }
+    out.sort_by_key(|s| s.process);
+    Ok(out)
 }
 
 /// Remove the record of each polite stop for which `kept(pid, start)` is
 /// false: the process is gone, or no row names it. A file whose name is not
-/// a record of this module stays.
-pub fn forget_polite(fleet_root: &Path, kept: impl Fn(u32, u64) -> bool) -> io::Result<()> {
+/// a record of this module stays. Gives the path of each removed record
+/// that did not parse, for the fleetd log.
+pub fn forget_polite(
+    fleet_root: &Path,
+    kept: impl Fn(u32, u64) -> bool,
+) -> io::Result<Vec<PathBuf>> {
     let entries = match std::fs::read_dir(stops_dir(fleet_root)) {
         Ok(e) => e,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(e),
     };
+    let mut unreadable = Vec::new();
     for entry in entries {
         let path = entry?.path();
         let Some((pid, start)) = polite_key(&path) else {
             continue;
         };
-        if !kept(pid, start) {
-            match std::fs::remove_file(&path) {
-                Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
-                _ => {}
-            }
+        if kept(pid, start) {
+            continue;
+        }
+        let parses = std::fs::read(&path)
+            .ok()
+            .is_some_and(|b| parse_polite(&b, pid, start).is_ok());
+        match std::fs::remove_file(&path) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+            Err(_) => {}
+            Ok(()) if !parses => unreadable.push(path),
+            Ok(()) => {}
         }
     }
-    Ok(())
+    Ok(unreadable)
 }
 
 /// The pid and start time of the record at `path`, from its name
