@@ -1112,9 +1112,26 @@ fn g70_pinned_cli_wait_expires_and_dead_agent_is_immediate() {
     pin_wait(&store, &worker, "background", "2030-01-02T00:00:00Z");
     agent.0.kill().unwrap();
     agent.0.wait().unwrap();
+    // 1 pass ends the attempt of the dead agent at once, before the duty
+    // check and before the pinned wait expires (I4).
+    pinned_check(&h, &run, "2030-01-01T00:50:00Z");
+    let attempt: (String, Option<String>) = store
+        .conn()
+        .query_row(
+            "SELECT state, outcome FROM attempts WHERE worker_id = ?1",
+            [&worker],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
     assert_eq!(
-        pinned_check(&h, &run, "2030-01-01T00:50:00Z")["verdict"],
-        "dead"
+        attempt,
+        ("ended".to_string(), Some("no_result".to_string()))
+    );
+    let reason = workers::get(store.conn(), &worker).unwrap().end_reason;
+    let reason = reason.unwrap_or_default();
+    assert!(
+        reason.starts_with("dead: the process of attempt") && reason.ends_with("is gone"),
+        "{reason}"
     );
     assert_eq!(
         workers::get(store.conn(), &worker).unwrap().status,
