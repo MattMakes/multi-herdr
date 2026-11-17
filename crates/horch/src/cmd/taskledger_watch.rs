@@ -606,6 +606,43 @@ mod tests {
         Herdr::with_bin(bin)
     }
 
+    /// `HORCH_NO_WATCHDOG=1` in the context hides each active run from
+    /// `ensure`, so no watchdog starts. Without the setting the same run is
+    /// found.
+    #[test]
+    fn no_watchdog_setting_gives_no_quiet_runs() {
+        use horch_core::runtime::{MapEnv, RuntimeContext};
+
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().canonicalize().unwrap();
+        let db = project.join("ledger.sqlite3");
+        Store::open(&db)
+            .unwrap()
+            .immediate(|tx| {
+                runs::create(
+                    tx,
+                    &project,
+                    &NewRun {
+                        slug: "r1".into(),
+                        ..Default::default()
+                    },
+                )
+            })
+            .unwrap();
+        let ctx = |no_watchdog: Option<&str>| {
+            let mut env = MapEnv::new(&project)
+                .with("HORCH_STATE_DIR", project.join("state").to_str().unwrap())
+                .with("HORCH_LEDGER_DB", db.to_str().unwrap());
+            if let Some(v) = no_watchdog {
+                env = env.with("HORCH_NO_WATCHDOG", v);
+            }
+            RuntimeContext::from_env(&env).unwrap()
+        };
+        let (_, _, active) = super::quiet_runs(&ctx(None)).expect("the run is found");
+        assert_eq!(active.len(), 1);
+        assert!(super::quiet_runs(&ctx(Some("1"))).is_none());
+    }
+
     #[test]
     fn the_agent_is_alive_when_its_pid_runs_with_the_recorded_start_time() {
         let dir = tempfile::tempdir().unwrap();
