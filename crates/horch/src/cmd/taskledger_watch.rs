@@ -15,8 +15,7 @@ use horch_core::taskledger::model::StopRequester;
 use horch_core::taskledger::orchestrator;
 use horch_core::taskledger::runs::{self, Run};
 use horch_core::taskledger::stop;
-use horch_core::taskledger::watchdog::{self, Observation, Observer, Sighting};
-use horch_core::taskledger::workers::Worker;
+use horch_core::taskledger::watchdog::{self, Sighting};
 use horch_core::taskledger::{self, Store};
 use horch_core::workspace::herdr::Herdr;
 
@@ -44,57 +43,6 @@ fn sleep_unless_term(d: Duration) {
     while !TERM.load(Ordering::SeqCst) && std::time::Instant::now() < until {
         std::thread::sleep(Duration::from_millis(100));
     }
-}
-
-/// What the watchdog reads: herdr for the pane, the disk for the transcript.
-struct Live {
-    herdr: Herdr,
-}
-
-impl Observer for Live {
-    fn observe(&self, w: &Worker) -> Observation {
-        let agent_alive = agent_alive(w);
-        let pane = w
-            .pane_id
-            .as_deref()
-            .and_then(|p| self.herdr.pane_get(p).ok());
-        let screen = w
-            .pane_id
-            .as_deref()
-            .and_then(|p| self.herdr.pane_read(p, "visible").ok());
-        let (transcript_bytes, transcript_mtime) = transcript_facts(w);
-        Observation {
-            agent_alive,
-            herdr_status: pane.as_ref().and_then(|p| p.agent_status.clone()),
-            herdr_seq: pane.as_ref().and_then(|p| p.state_change_seq),
-            transcript_bytes,
-            transcript_mtime,
-            screen,
-        }
-    }
-}
-
-/// Whether the agent PID of `w` runs with its recorded start time. An old
-/// record has no start time: the PID alone counts.
-fn agent_alive(w: &Worker) -> bool {
-    match (w.agent_pid, w.agent_started) {
-        (Some(p), Some(s)) => horch_core::procid::is_same(p as u32, s as u64),
-        (Some(p), None) => horch_core::procid::alive(p as u32, None),
-        _ => false,
-    }
-}
-
-/// The size and the write time of the transcript of `w`, when it can be read.
-fn transcript_facts(w: &Worker) -> (Option<i64>, Option<String>) {
-    let meta = w
-        .transcript_path
-        .as_deref()
-        .and_then(|t| std::fs::metadata(t).ok());
-    (
-        meta.as_ref().map(|m| m.len() as i64),
-        meta.and_then(|m| m.modified().ok())
-            .map(|t| horch_core::clock::stamp(chrono::DateTime::<chrono::Utc>::from(t))),
-    )
 }
 
 /// The single-instance lock of a run's watchdog.
@@ -129,7 +77,7 @@ fn pass(
         me,
         horch_core::procid::start_time(me),
     )?;
-    let live = Live {
+    let live = watchdog::HerdrObserver {
         herdr: Herdr::with_bin(&ctx.bins.harness.herdr),
     };
     if let Some(workspace) = run.workspace_id.as_deref() {
@@ -227,7 +175,7 @@ fn orchestrator_at(
     };
     match &checked.outcome {
         orchestrator::Outcome::Respawned(r) => {
-            if let Err(e) = inherit_harness(store, r) {
+            if let Err(e) = watchdog::inherit_harness(store.conn(), r) {
                 eprintln!("horch ledger watch: recording the respawn's harness failed: {e:#}");
             }
             if let Err(e) = launch(r) {
@@ -250,47 +198,15 @@ fn orchestrator_at(
     taskledger_wake::drain_run(ctx, store, run, checked.wake_id.as_deref());
 }
 
-/// Give the respawned orchestrator row the harness and model of the row it
-/// replaces, when it has none (report 28 D-c): the respawn runs the same
-/// flavor. Returns the rows changed.
-fn inherit_harness(store: &Store, r: &orchestrator::Respawn) -> Result<usize> {
-    Ok(store.conn().execute(
-        "UPDATE workers SET
-             harness = coalesce(harness, (SELECT harness FROM workers WHERE worker_id = ?2)),
-             model = coalesce(model, (SELECT model FROM workers WHERE worker_id = ?2))
-         WHERE worker_id = ?1",
-        [&r.new_worker_id, &r.old_worker_id],
-    )?)
-}
-
 /// What the watchdog does about 1 verdict: reap the dead, wake the
 /// orchestrator on a first stall or a suspect.
 fn act_on(ctx: &RuntimeContext, store: &mut Store, run: &Run, c: &watchdog::Checked) {
-    let who = c.role.as_deref().unwrap_or(&c.worker_id);
-    let on = c.task.as_deref().unwrap_or("its task");
-    match c.verdict.as_str() {
-        "dead" => reap_dead(ctx, store, run, c),
-        "no_progress" if c.first_stall => taskledger_wake::wake(
-            ctx,
-            store,
-            run,
-            &format!(
-                "NOTE: {who} on {on} shows no progress ({}). Ask it for an update: horch tell {who} \"[orchestrator] QUESTION: What is your status?\"",
-                c.note
-            ),
-        ),
-        "suspect" => taskledger_wake::wake(
-            ctx,
-            store,
-            run,
-            &format!(
-                "NOTE: {who} on {on} may be stuck in pane {}: {}. The watchdog reaps it at the next check unless something else moves.",
-                c.pane_id.as_deref().unwrap_or("unknown"),
-                c.note
-            ),
-        ),
-        // A worker back to normal after a stall needs no wake.
-        _ => {}
+    if c.verdict == "dead" {
+        return reap_dead(ctx, store, run, c);
+    }
+    // A worker back to normal after a stall needs no wake.
+    if let Some(wake) = watchdog::verdict_wake(c) {
+        taskledger_wake::wake_as(ctx, store, run, |_| Ok(Some(wake)));
     }
 }
 
@@ -596,8 +512,8 @@ fn start_detached(
 #[cfg(unix)]
 #[cfg(test)]
 mod tests {
-    use super::Live;
     use horch_core::taskledger::runs::{self, NewRun};
+    use horch_core::taskledger::watchdog::HerdrObserver as Live;
     use horch_core::taskledger::watchdog::{Observation, Observer};
     use horch_core::taskledger::workers::{self, NewWorker, Worker};
     use horch_core::taskledger::Store;

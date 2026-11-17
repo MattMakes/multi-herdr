@@ -15,7 +15,8 @@
 //!    the transaction commits. No effect occurs inside it.
 //! 3. After the commit it does the effects, stops before launches, until
 //!    the time budget of the pass ends. The rest stay intended rows for the
-//!    next pass. Then it writes the heartbeat and pings the watchdog.
+//!    next pass. When time is left, the run duties do their effects. Then
+//!    it writes the heartbeat and pings the watchdog.
 //!
 //! A crash before the commit leaves no effect. A crash after it leaves
 //! intended rows, and the next pass does each effect once: a launch is
@@ -108,11 +109,38 @@ pub struct DutyCtx<'a> {
     pub facts: &'a Facts,
 }
 
-/// The duties of the watchdog of today, in part 2 of the pass. Ticket 22
-/// implements it.
+/// What the run duties see in part 3.
+pub struct ActCtx<'a> {
+    pub fleet_root: &'a std::path::Path,
+    /// The fleet clock of this pass.
+    pub clock: FleetSeconds,
+}
+
+/// The duties of the watchdog of today (FM-7), in the 3 parts of the pass.
+/// Each effect of [`RunDuties::act`] is a row that [`RunDuties::run`]
+/// committed, so the next pass repeats an effect that a crash after the
+/// commit lost.
 pub trait RunDuties {
-    /// Write the rows of the duties in `tx`.
-    fn run(&self, tx: &Connection, ctx: &DutyCtx<'_>) -> Result<()>;
+    /// Part 1: read the facts of the duties, with no transaction.
+    fn observe(&self, _conn: &Connection) -> Result<()> {
+        Ok(())
+    }
+
+    /// Part 2: write the rows of the duties in `tx`. Returns the stops to
+    /// do in part 3 with the other stops of the pass.
+    fn run(&self, tx: &Transaction<'_>, ctx: &DutyCtx<'_>) -> Result<Vec<Stop>>;
+
+    /// Whether the duties launch the attempt `a` in `launching` in part 3,
+    /// in place of the launch of the pass.
+    fn launches(&self, _a: &AttemptRow) -> bool {
+        false
+    }
+
+    /// Part 3: do the effects of the committed rows. Returns the effects
+    /// done and the effects that failed.
+    fn act(&self, _conn: &Connection, _ctx: &ActCtx<'_>) -> (Vec<String>, Vec<String>) {
+        (Vec::new(), Vec::new())
+    }
 }
 
 /// No run duties.
@@ -120,8 +148,8 @@ pub trait RunDuties {
 pub struct NoDuties;
 
 impl RunDuties for NoDuties {
-    fn run(&self, _tx: &Connection, _ctx: &DutyCtx<'_>) -> Result<()> {
-        Ok(())
+    fn run(&self, _tx: &Transaction<'_>, _ctx: &DutyCtx<'_>) -> Result<Vec<Stop>> {
+        Ok(Vec::new())
     }
 }
 
@@ -157,6 +185,8 @@ pub enum Done {
     Launch(String),
     /// The start of the process of the job.
     StartJob(i64),
+    /// An effect of the run duties.
+    Duty(String),
 }
 
 /// What 1 pass did.
@@ -308,6 +338,7 @@ impl<'a> Pass<'a> {
         let deadline = Deadline::pass((self.now)(), self.settings.config.pass_time_budget_s);
         self.reap();
         let read = self.read_facts(conn, deadline)?;
+        self.ports.duties.observe(conn)?;
         let decided = match self.decide(conn, read) {
             Ok(d) => d,
             Err(PassError::Failed(e)) => {
@@ -318,6 +349,15 @@ impl<'a> Pass<'a> {
         };
         self.settings.faults.abort_if(ABORT_AFTER_COMMIT);
         let mut report = self.do_effects(conn, decided.effects, decided.clock, deadline);
+        if report.left == 0 && !deadline.reached((self.now)()) {
+            let ctx = ActCtx {
+                fleet_root: &self.settings.fleet_root,
+                clock: decided.clock,
+            };
+            let (done, failed) = self.ports.duties.act(conn, &ctx);
+            report.done.extend(done.into_iter().map(Done::Duty));
+            report.failed.extend(failed);
+        }
         let kept = |pid, start| decided.may_stop.contains(&(pid, start));
         if let Err(e) = effects::forget_polite(&self.settings.fleet_root, kept) {
             report
@@ -445,7 +485,7 @@ impl<'a> Pass<'a> {
             clock,
             facts: &read.task,
         };
-        self.ports.duties.run(&tx, &duty)?;
+        stops.extend(self.ports.duties.run(&tx, &duty)?);
         let ctx = self.job_ctx();
         let observed = jobs::observe(&ctx, &tx, &read.jobs, clock)?;
         let breaches = self.check_invariants(&tx)?;
@@ -489,6 +529,7 @@ impl<'a> Pass<'a> {
                 continue;
             }
             match observe_launch(l.row_process, l.launch, clock) {
+                LaunchStep::Launch if self.ports.duties.launches(a) => {}
                 LaunchStep::Launch => launches.push(a.clone()),
                 LaunchStep::Wait => {}
                 LaunchStep::Live => {

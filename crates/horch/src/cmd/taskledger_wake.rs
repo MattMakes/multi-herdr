@@ -15,7 +15,7 @@ use horch_core::taskledger::status;
 use horch_core::taskledger::stop::Panes;
 use horch_core::taskledger::tasks;
 use horch_core::taskledger::util::{self, About};
-use horch_core::taskledger::watchdog;
+use horch_core::taskledger::watchdog::{self, held_wake, reviews_in_wake, tagged};
 use horch_core::taskledger::workers;
 use horch_core::taskledger::Store;
 use horch_core::workspace::herdr::Herdr;
@@ -167,15 +167,6 @@ fn send_row(
     sent.map(|_| ())
 }
 
-/// The line of a wake: tagged `[horch]`.
-fn tagged(text: &str) -> String {
-    if text.starts_with("[horch]") {
-        text.to_string()
-    } else {
-        format!("[horch] {text}")
-    }
-}
-
 /// The settled wake line of `run`, or `None` while the run is not settled
 /// (C6: [`status::unsettled`], the rule `run close` uses).
 #[cfg(test)]
@@ -309,17 +300,6 @@ fn tell_author(ctx: &RuntimeContext, role: &str, line: &str) -> anyhow::Result<(
             "{cause}; the courier types it when the pane is idle"
         )),
     }
-}
-
-/// The `reviews-in` wake of the review round of `parent` ([`watchdog::review_round`]),
-/// for the orchestrator: the direct path and the reconcile pass build it alike.
-fn reviews_in_wake(conn: &Connection, parent: &tasks::Task, role: &str) -> anyhow::Result<Wake> {
-    let p = parent.short();
-    let text = format!(
-        "NOTE: The reviews of {p} are in. Make sure {role} runs horch ledger finish: horch tell {role} \"[orchestrator] NOTE: The reviews of {p} are in. Run horch ledger finish.\""
-    );
-    Ok(Wake::new(OutboxEvent::ReviewsIn, p, tagged(&text))
-        .on_board(watchdog::review_round(conn, &parent.task_id)?))
 }
 
 /// Wake the orchestrator once when the run has open tasks, none can start
@@ -555,33 +535,6 @@ pub fn sweep_preclaim(ctx: &RuntimeContext, store: &mut Store, run: &Run) {
     }
 }
 
-/// The `held` QUESTION wake for the operator when the task of `worker_id`
-/// is held after too many attempts (#168), else `None`.
-fn held_question(conn: &Connection, worker_id: &str) -> Option<Wake> {
-    let w = workers::get(conn, worker_id).ok()?;
-    held_wake(conn, &tasks::get(conn, w.task_id.as_deref()?).ok()?)
-}
-
-/// The `held` QUESTION wake of `task`, held after too many attempts, else
-/// `None`. The key holds its attempts ([`watchdog::held_state`]), not the
-/// board: the reap's wake and the reconciled wake (TRF-51) are 1 row.
-fn held_wake(conn: &Connection, task: &tasks::Task) -> Option<Wake> {
-    let held = task.held_reason.as_deref()?;
-    if task.is_parked() {
-        return None;
-    }
-    let ends = tasks::attempt_ends(conn, task).unwrap_or_default();
-    let question = format!(
-        "QUESTION: {t} is held: {held} ({}). Ask the operator: requeue it (horch ledger requeue {t} \"<reason>\"), change the ticket, or cancel it (horch ledger cancel {t} \"<reason>\"). Spawn no replacement.",
-        ends.join("; "),
-        t = task.short()
-    );
-    Some(
-        Wake::new(OutboxEvent::Held, task.task_id.clone(), tagged(&question))
-            .on_board(watchdog::held_state(task)),
-    )
-}
-
 /// After a reap: tell the orchestrator which persona to spawn, and how.
 pub fn after_reap(
     ctx: &RuntimeContext,
@@ -589,25 +542,11 @@ pub fn after_reap(
     run: &Run,
     report: &horch_core::taskledger::stop::ReapReport,
 ) {
-    let who = report
-        .stop
-        .role
-        .as_deref()
-        .unwrap_or(&report.stop.worker_id);
     let worker_id = report.stop.worker_id.as_str();
-    let persona = report.persona.as_deref().unwrap_or("the same persona");
-    let reaped = format!(
-        "NOTE: {who} was reaped and its task is queued again. Spawn: horch spawn {persona} --replaces {worker_id}"
-    );
+    let who = report.stop.role.as_deref().unwrap_or(worker_id);
+    let persona = report.persona.as_deref();
     wake_as(ctx, store, run, |tx| {
-        if let Some(wake) = held_question(tx, worker_id) {
-            return Ok(Some(wake));
-        }
-        Ok(Some(Wake::new(
-            OutboxEvent::Reaped,
-            worker_id,
-            tagged(&reaped),
-        )))
+        Ok(Some(watchdog::reaped_wake(tx, who, worker_id, persona)))
     });
 }
 

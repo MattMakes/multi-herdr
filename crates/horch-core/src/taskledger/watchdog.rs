@@ -22,13 +22,18 @@
 //! A note names the signals the watchdog could not read ("no timer format
 //! for harness pi; no transcript"), so `ledger show` explains a reap.
 //!
-//! This module decides and records; the caller reaps and wakes.
+//! This module decides and records: the checks, the rows of a reap and the
+//! wakes. The caller stops the processes and delivers the wakes. Both
+//! `horch ledger watch` and the pass of fleetd
+//! (`fleetd/fleet_runtime/adapters/watchdog_duties.rs`) use these rules.
 
 use anyhow::Result;
 use rusqlite::{params, Connection};
 use serde::Serialize;
 
-use super::model::{EventKind, OutboxEvent, ProgressSource, RunStatus, Verdict};
+use super::model::{
+    Actor, EventKind, OutboxEvent, ProgressSource, RunStatus, Verdict, WorkerStatus,
+};
 use super::outbox::{self, Wake};
 use super::runs::Run;
 use super::sql_words::{self, word};
@@ -205,7 +210,8 @@ pub fn check_run(
     check_run_at(store, run, observer, force, util::now())
 }
 
-/// [`check_run`] at the ledger stamp `now`.
+/// [`check_run`] at the ledger stamp `now`: observe each due worker with
+/// no transaction, then judge and record it in 1 transaction.
 fn check_run_at(
     store: &mut Store,
     run: &Run,
@@ -213,11 +219,29 @@ fn check_run_at(
     force: bool,
     now: String,
 ) -> Result<Vec<Checked>> {
-    workers::of_run(store.conn(), &run.run_id)?
-        .iter()
-        .filter(|w| w.kind == "worker" && w.status == "working")
-        .filter_map(|w| check_worker(store, run, observer, w, force, &now).transpose())
-        .collect()
+    let mut out = Vec::new();
+    for w in due_workers(store.conn(), run, force, &now)? {
+        let o = observer.observe(&w);
+        out.push(store.immediate(|tx| check_observed(tx, run, &w, &o, &now))?);
+    }
+    Ok(out)
+}
+
+/// The working workers of `run` whose check is due at `now`. `force`
+/// gives each working worker.
+pub fn due_workers(conn: &Connection, run: &Run, force: bool, now: &str) -> Result<Vec<Worker>> {
+    let mut due = Vec::new();
+    for w in workers::of_run(conn, &run.run_id)? {
+        if w.kind != "worker" || w.status != "working" {
+            continue;
+        }
+        let p = prev(conn, &w.worker_id)?;
+        let elapsed = util::seconds_between(&since(&w, p.as_ref(), now), now).unwrap_or(0);
+        if force || elapsed >= run.check_every_s {
+            due.push(w);
+        }
+    }
+    Ok(due)
 }
 
 /// What 1 check of 1 worker knows, for the judge and the record.
@@ -234,27 +258,23 @@ struct Look<'a> {
     timer_delta: Option<i64>,
 }
 
-/// Check `w` when it is due (or `force`): observe, judge and record.
-fn check_worker(
-    store: &mut Store,
+/// Judge the observation `o` of the due worker `w` and record the check in
+/// `tx`.
+pub fn check_observed(
+    tx: &Connection,
     run: &Run,
-    observer: &dyn Observer,
     w: &Worker,
-    force: bool,
+    o: &Observation,
     now: &str,
-) -> Result<Option<Checked>> {
-    let p = prev(store.conn(), &w.worker_id)?;
+) -> Result<Checked> {
+    let p = prev(tx, &w.worker_id)?;
     let since = since(w, p.as_ref(), now);
     let elapsed = util::seconds_between(&since, now).unwrap_or(0);
-    if !force && elapsed < run.check_every_s {
-        return Ok(None);
-    }
-    let o = observer.observe(w);
-    let waits = workers::waiting(store.conn(), &w.worker_id)?;
-    let timer_s = timer_seconds(w, &o);
+    let waits = workers::waiting(tx, &w.worker_id)?;
+    let timer_s = timer_seconds(w, o);
     let s = signals(
         w,
-        &o,
+        o,
         p.as_ref(),
         &since,
         elapsed,
@@ -264,7 +284,7 @@ fn check_worker(
     let look = Look {
         w,
         run,
-        o: &o,
+        o,
         now,
         prev_verdict: p.as_ref().map(|p| p.verdict.as_str()),
         waits: &waits,
@@ -272,11 +292,12 @@ fn check_worker(
         timer_s,
         timer_delta: s.timer_delta,
     };
-    let (verdict, note, source) = judge(store.conn(), &look, &s)?;
-    let (verdict, note, round) = stall_round(store.conn(), verdict, note, w, run)?;
-    let task = task_short(store.conn(), w);
-    record_check(store, &look, verdict, &note, source, round)?;
-    Ok(Some(checked(w, p.as_ref(), task, verdict, note, round)))
+    let (verdict, note, source) = judge(tx, &look, &s)?;
+    let (verdict, note, round) = stall_round(tx, verdict, note, w, run)?;
+    let task = task_short(tx, w);
+    insert_check(tx, &look, verdict, &note, round)?;
+    update_worker(tx, &w.worker_id, verdict, &note, source, round)?;
+    Ok(checked(w, p.as_ref(), task, verdict, note, round))
 }
 
 /// The result of a check, for the caller to wake or reap on.
@@ -501,21 +522,6 @@ fn stall_round(
 fn task_short(conn: &Connection, w: &Worker) -> Option<String> {
     let task = w.task_id.as_ref()?;
     super::tasks::get(conn, task).ok().map(|t| t.short())
-}
-
-/// Write the `checks` row, the stall count and the proxy checkin.
-fn record_check(
-    store: &mut Store,
-    look: &Look,
-    verdict: Verdict,
-    note: &str,
-    source: Option<ProgressSource>,
-    round: i64,
-) -> Result<()> {
-    store.immediate(|tx| {
-        insert_check(tx, look, verdict, note, round)?;
-        update_worker(tx, &look.w.worker_id, verdict, note, source, round)
-    })
 }
 
 fn insert_check(
@@ -1114,6 +1120,188 @@ pub fn review_round(conn: &Connection, parent_id: &str) -> Result<String> {
             ORDER BY task_id)",
         [parent_id],
         |r| r.get(0),
+    )?)
+}
+
+// ─── the duties that the old loop and the pass of fleetd share ──────────
+
+/// The observer of a real machine: herdr for the pane, the disk for the
+/// transcript.
+pub struct HerdrObserver {
+    pub herdr: crate::workspace::herdr::Herdr,
+}
+
+impl Observer for HerdrObserver {
+    fn observe(&self, w: &Worker) -> Observation {
+        let pane = w
+            .pane_id
+            .as_deref()
+            .and_then(|p| self.herdr.pane_get(p).ok());
+        let screen = w
+            .pane_id
+            .as_deref()
+            .and_then(|p| self.herdr.pane_read(p, "visible").ok());
+        let (transcript_bytes, transcript_mtime) = transcript_facts(w);
+        Observation {
+            agent_alive: agent_alive(w),
+            herdr_status: pane.as_ref().and_then(|p| p.agent_status.clone()),
+            herdr_seq: pane.as_ref().and_then(|p| p.state_change_seq),
+            transcript_bytes,
+            transcript_mtime,
+            screen,
+        }
+    }
+}
+
+/// Whether the agent PID of `w` runs with its recorded start time. An old
+/// record has no start time: the PID alone counts.
+fn agent_alive(w: &Worker) -> bool {
+    match (w.agent_pid, w.agent_started) {
+        (Some(p), Some(s)) => crate::procid::is_same(p as u32, s as u64),
+        (Some(p), None) => crate::procid::alive(p as u32, None),
+        _ => false,
+    }
+}
+
+/// The size and the write time of the transcript of `w`, when it can be read.
+fn transcript_facts(w: &Worker) -> (Option<i64>, Option<String>) {
+    let meta = w
+        .transcript_path
+        .as_deref()
+        .and_then(|t| std::fs::metadata(t).ok());
+    (
+        meta.as_ref().map(|m| m.len() as i64),
+        meta.and_then(|m| m.modified().ok())
+            .map(|t| crate::clock::stamp(chrono::DateTime::<chrono::Utc>::from(t))),
+    )
+}
+
+/// The `[horch]` tag in front of a wake line, once.
+pub fn tagged(text: &str) -> String {
+    if text.starts_with("[horch]") {
+        text.to_string()
+    } else {
+        format!("[horch] {text}")
+    }
+}
+
+/// The wake of a verdict: ask a worker on its first stall for an update,
+/// and name the pane of a suspect. `None` for each other verdict.
+pub fn verdict_wake(c: &Checked) -> Option<Wake> {
+    let who = c.role.as_deref().unwrap_or(&c.worker_id);
+    let on = c.task.as_deref().unwrap_or("its task");
+    let text = match c.verdict.as_str() {
+        "no_progress" if c.first_stall => format!(
+            "NOTE: {who} on {on} shows no progress ({}). Ask it for an update: horch tell {who} \"[orchestrator] QUESTION: What is your status?\"",
+            c.note
+        ),
+        "suspect" => format!(
+            "NOTE: {who} on {on} may be stuck in pane {}: {}. The watchdog reaps it at the next check unless something else moves.",
+            c.pane_id.as_deref().unwrap_or("unknown"),
+            c.note
+        ),
+        _ => return None,
+    };
+    Some(Wake::new(OutboxEvent::Held, util::new_id(), tagged(&text)))
+}
+
+/// The rows of the reap of the stalled worker `worker_id` (section 5.4),
+/// in the caller's transaction: the worker ends `incomplete`, its task is
+/// queued again, first in line, and the reap wake is returned. The caller
+/// stops its processes and its pane after the commit. `None` when the
+/// worker is not live: a stop or an exit settled it first.
+pub fn reap_stalled(tx: &Connection, worker_id: &str, note: &str) -> Result<Option<Wake>> {
+    let w = workers::get(tx, worker_id)?;
+    if !w.status()?.is_live() {
+        return Ok(None);
+    }
+    let reason = format!("dead: {note}");
+    let about = util::About {
+        run: w.run_id.as_deref(),
+        task: w.task_id.as_deref(),
+        worker: Some(worker_id),
+    };
+    workers::end(tx, worker_id, WorkerStatus::Incomplete, &reason, None)?;
+    let stopping = format!("Stopping {}: {reason}", w.label());
+    util::event(tx, &about, Actor::Watchdog, EventKind::Stopped, &stopping)?;
+    let persona = match &w.task_id {
+        Some(t) => {
+            let task = tasks::get(tx, t)?;
+            let held = matches!(task.status.as_str(), "running" | "landing")
+                && task.current_worker_id.as_deref() == Some(worker_id);
+            if held {
+                tasks::requeue(tx, t, &format!("{} was stopped: {reason}", w.label()))?;
+            }
+            task.claimable_by
+        }
+        None => w.persona.clone(),
+    };
+    let reaped = format!("{} reaped: {note}", w.label());
+    util::event(tx, &about, Actor::Watchdog, EventKind::Reaped, &reaped)?;
+    let who = w.role.as_deref().unwrap_or(worker_id);
+    Ok(Some(reaped_wake(tx, who, worker_id, persona.as_deref())))
+}
+
+/// The wake after the reap of `worker_id`: the held QUESTION of its task,
+/// else which persona to spawn, and how.
+pub fn reaped_wake(conn: &Connection, who: &str, worker_id: &str, persona: Option<&str>) -> Wake {
+    if let Some(wake) = held_question(conn, worker_id) {
+        return wake;
+    }
+    let persona = persona.unwrap_or("the same persona");
+    let reaped = format!(
+        "NOTE: {who} was reaped and its task is queued again. Spawn: horch spawn {persona} --replaces {worker_id}"
+    );
+    Wake::new(OutboxEvent::Reaped, worker_id, tagged(&reaped))
+}
+
+/// The `held` QUESTION wake of the task of `worker_id`, when the attempt
+/// limit holds it.
+pub fn held_question(conn: &Connection, worker_id: &str) -> Option<Wake> {
+    let w = workers::get(conn, worker_id).ok()?;
+    held_wake(conn, &tasks::get(conn, w.task_id.as_deref()?).ok()?)
+}
+
+/// The `held` QUESTION wake of `task`, held after too many attempts, else
+/// `None`. The key holds its attempts ([`held_state`]), not the board: the
+/// reap's wake and the reconciled wake (TRF-51) are 1 row.
+pub fn held_wake(conn: &Connection, task: &tasks::Task) -> Option<Wake> {
+    let held = task.held_reason.as_deref()?;
+    if task.is_parked() {
+        return None;
+    }
+    let ends = tasks::attempt_ends(conn, task).unwrap_or_default();
+    let question = format!(
+        "QUESTION: {t} is held: {held} ({}). Ask the operator: requeue it (horch ledger requeue {t} \"<reason>\"), change the ticket, or cancel it (horch ledger cancel {t} \"<reason>\"). Spawn no replacement.",
+        ends.join("; "),
+        t = task.short()
+    );
+    Some(
+        Wake::new(OutboxEvent::Held, task.task_id.clone(), tagged(&question))
+            .on_board(held_state(task)),
+    )
+}
+
+/// The `reviews_in` wake of `parent`, whose author `role` still waits.
+pub fn reviews_in_wake(conn: &Connection, parent: &tasks::Task, role: &str) -> Result<Wake> {
+    let p = parent.short();
+    let text = format!(
+        "NOTE: The reviews of {p} are in. Make sure {role} runs horch ledger finish: horch tell {role} \"[orchestrator] NOTE: The reviews of {p} are in. Run horch ledger finish.\""
+    );
+    Ok(Wake::new(OutboxEvent::ReviewsIn, p, tagged(&text))
+        .on_board(review_round(conn, &parent.task_id)?))
+}
+
+/// Give the respawned orchestrator row the harness and model of the row it
+/// replaces, when it has none (report 28 D-c): the respawn runs the same
+/// flavor. Returns the rows changed.
+pub fn inherit_harness(conn: &Connection, r: &super::orchestrator::Respawn) -> Result<usize> {
+    Ok(conn.execute(
+        "UPDATE workers SET
+             harness = coalesce(harness, (SELECT harness FROM workers WHERE worker_id = ?2)),
+             model = coalesce(model, (SELECT model FROM workers WHERE worker_id = ?2))
+         WHERE worker_id = ?1",
+        [&r.new_worker_id, &r.old_worker_id],
     )?)
 }
 
