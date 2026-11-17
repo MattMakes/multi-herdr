@@ -396,13 +396,15 @@ fn a_reason_beside_a_fallback_is_refused() {
 }
 
 #[test]
-fn top_tier_seat_orchestrator_and_agent_none_need_no_fallback() {
+fn top_tier_seat_orchestrator_recipe_pane_and_agent_none_need_no_fallback() {
     let roster = Roster::builtin().unwrap();
     for name in [
         "fable-creative",
         "astra-creative",
         "orchestrator",
         "orchestrator-codex",
+        "orchestration-orchestrator",
+        "orchestration-worker",
         "smoke",
     ] {
         let t = roster.require(name).unwrap();
@@ -523,4 +525,58 @@ fn no_fallback_lowers_confidentiality() {
             );
         }
     }
+}
+
+/// The escape from D2 cannot grow in silence: the exact list of shipped
+/// personas whose file gave a written reason for no fallback before ticket
+/// fleetd-p2/06 (confidentiality, trust, safety or capability).
+#[test]
+fn the_shipped_personas_with_no_fallback_reason_are_pinned() {
+    let roster = Roster::builtin().unwrap();
+    let with_reason: Vec<&str> = roster
+        .teammates
+        .values()
+        .filter(|t| t.no_fallback_reason.is_some())
+        .map(|t| t.name.as_str())
+        .collect();
+    assert_eq!(
+        with_reason,
+        [
+            "app-release-preparer",
+            "apple-platform-developer",
+            "audio-reviewer",
+            "blender-3d-printer",
+            "blender-artist",
+            "blender-builder",
+            "blender-qa",
+            "intake-analyst",
+            "intake-auditor",
+            "intake-reviewer",
+            "intake-sanitizer",
+            "intake-writer",
+            "opus-creative",
+            "pi",
+            "skill-importer",
+            "sound-engineer",
+            "swift-developer",
+            "swift-qa-engineer",
+            "ue-ai-engineer",
+            "ue-character-engineer",
+            "ue-gameplay-engineer",
+            "ue-network-engineer",
+            "ue-qa-engineer",
+            "ue-technical-artist",
+            "ue-tools-engineer",
+            "ue-ui-engineer",
+            "ue-world-engineer",
+            "video-animator",
+            "video-audio",
+            "video-capture",
+            "video-critic",
+            "video-director",
+            "video-editor",
+            "video-producer",
+            "worktree-steward",
+        ]
+    );
 }

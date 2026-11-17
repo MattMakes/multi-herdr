@@ -4,8 +4,7 @@ brief_description: Free tier, deepest. TRAINS ON YOUR INPUT - public/OSS work on
 generic: true
 base: fleet-worker
 agent: opencode
-fallbacks: []
-no_fallback_reason: The orchestrator picks a free tier on purpose. On a cooling pool the task waits, so it never spends a paid pool by itself.
+fallbacks: [opus]
 phase: implementation
 model: opencode/nemotron-3-ultra-free
 compact_at: 300000

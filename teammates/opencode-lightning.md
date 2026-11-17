@@ -4,8 +4,7 @@ brief_description: Free tier, fastest, huge output. TRAINS ON YOUR INPUT - publi
 generic: true
 base: fleet-worker
 agent: opencode
-fallbacks: []
-no_fallback_reason: The orchestrator picks a free tier on purpose. On a cooling pool the task waits, so it never spends a paid pool by itself.
+fallbacks: [opus]
 phase: implementation
 model: opencode/nemotron-3.5-lightning-free
 compact_at: 184115

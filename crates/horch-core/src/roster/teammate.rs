@@ -38,6 +38,11 @@ pub(crate) const TOP_TIER_SEATS: [(&str, &str); 2] =
 /// The teammate files `horch fleet` launches as the orchestrator.
 pub(crate) const FLEET_ORCHESTRATORS: [&str; 2] = ["orchestrator", "orchestrator-codex"];
 
+/// The teammate files of the fixed 5-pane `horch orchestration` recipe. They
+/// have no base and take no ledger task, so fleetd never dispatches them, and
+/// they need no fallback.
+pub(crate) const RECIPE_PANES: [&str; 2] = ["orchestration-orchestrator", "orchestration-worker"];
+
 /// Bundled skills only a fleet orchestrator may carry. `check` fails any other
 /// teammate that names one in `skills:`, and none is in a phase catalog.
 pub(crate) const ORCHESTRATOR_ONLY_SKILLS: [&str; 2] = ["orchestrate", "skill-creator"];

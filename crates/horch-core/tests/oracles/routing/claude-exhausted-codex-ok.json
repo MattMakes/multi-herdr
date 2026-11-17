@@ -2777,6 +2777,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "7d 100%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "exhausted"
           }
         ],
         "reason": null,
@@ -2805,6 +2810,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "7d 100%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "exhausted"
           }
         ],
         "reason": null,
@@ -2833,6 +2843,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "7d 100%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "exhausted"
           }
         ],
         "reason": null,
@@ -2861,6 +2876,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "7d 100%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "exhausted"
           }
         ],
         "reason": null,
@@ -2889,6 +2909,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "7d 100%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "exhausted"
           }
         ],
         "reason": null,
@@ -2917,6 +2942,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "7d 100%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "exhausted"
           }
         ],
         "reason": null,
@@ -2945,6 +2975,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "7d 100%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "exhausted"
           }
         ],
         "reason": null,
@@ -2973,6 +3008,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "7d 100%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "exhausted"
           }
         ],
         "reason": null,
@@ -3001,6 +3041,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "7d 100%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "exhausted"
           }
         ],
         "reason": null,
@@ -3029,6 +3074,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "7d 100%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "exhausted"
           }
         ],
         "reason": null,
@@ -3057,6 +3107,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "7d 100%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "exhausted"
           }
         ],
         "reason": null,
@@ -3085,6 +3140,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "7d 100%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "exhausted"
           }
         ],
         "reason": null,
@@ -3113,6 +3173,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "7d 100%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "exhausted"
           }
         ],
         "reason": null,
@@ -3141,6 +3206,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "7d 100%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "exhausted"
           }
         ],
         "reason": null,
@@ -3169,6 +3239,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "7d 100%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "exhausted"
           }
         ],
         "reason": null,
@@ -3197,6 +3272,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "7d 100%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "exhausted"
           }
         ],
         "reason": null,
@@ -3225,6 +3305,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "7d 100%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "exhausted"
           }
         ],
         "reason": null,
@@ -3253,6 +3338,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "7d 100%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "exhausted"
           }
         ],
         "reason": null,
@@ -3281,6 +3371,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "7d 100%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "exhausted"
           }
         ],
         "reason": null,
@@ -3309,6 +3404,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "7d 100%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "exhausted"
           }
         ],
         "reason": null,
@@ -3337,6 +3437,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "7d 100%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "exhausted"
           }
         ],
         "reason": null,
@@ -3365,6 +3470,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "7d 100%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "exhausted"
           }
         ],
         "reason": null,
@@ -3393,6 +3503,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "7d 100%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "exhausted"
           }
         ],
         "reason": null,
@@ -3421,6 +3536,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "7d 100%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "exhausted"
           }
         ],
         "reason": null,
@@ -3449,6 +3569,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "7d 100%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "exhausted"
           }
         ],
         "reason": null,
@@ -3477,6 +3602,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "7d 100%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "exhausted"
           }
         ],
         "reason": null,
@@ -3505,6 +3635,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "7d 100%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "exhausted"
           }
         ],
         "reason": null,

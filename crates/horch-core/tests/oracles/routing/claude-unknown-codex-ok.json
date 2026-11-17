@@ -2749,6 +2749,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "probe timed out after 10s",
+            "pool": "claude",
+            "state": "unknown"
           }
         ],
         "reason": null,
@@ -2777,6 +2782,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "probe timed out after 10s",
+            "pool": "claude",
+            "state": "unknown"
           }
         ],
         "reason": null,
@@ -2805,6 +2815,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "probe timed out after 10s",
+            "pool": "claude",
+            "state": "unknown"
           }
         ],
         "reason": null,
@@ -2833,6 +2848,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "probe timed out after 10s",
+            "pool": "claude",
+            "state": "unknown"
           }
         ],
         "reason": null,
@@ -2861,6 +2881,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "probe timed out after 10s",
+            "pool": "claude",
+            "state": "unknown"
           }
         ],
         "reason": null,
@@ -2889,6 +2914,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "probe timed out after 10s",
+            "pool": "claude",
+            "state": "unknown"
           }
         ],
         "reason": null,
@@ -2917,6 +2947,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "probe timed out after 10s",
+            "pool": "claude",
+            "state": "unknown"
           }
         ],
         "reason": null,
@@ -2945,6 +2980,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "probe timed out after 10s",
+            "pool": "claude",
+            "state": "unknown"
           }
         ],
         "reason": null,
@@ -2973,6 +3013,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "probe timed out after 10s",
+            "pool": "claude",
+            "state": "unknown"
           }
         ],
         "reason": null,
@@ -3001,6 +3046,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "probe timed out after 10s",
+            "pool": "claude",
+            "state": "unknown"
           }
         ],
         "reason": null,
@@ -3029,6 +3079,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "probe timed out after 10s",
+            "pool": "claude",
+            "state": "unknown"
           }
         ],
         "reason": null,
@@ -3057,6 +3112,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "probe timed out after 10s",
+            "pool": "claude",
+            "state": "unknown"
           }
         ],
         "reason": null,
@@ -3085,6 +3145,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "probe timed out after 10s",
+            "pool": "claude",
+            "state": "unknown"
           }
         ],
         "reason": null,
@@ -3113,6 +3178,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "probe timed out after 10s",
+            "pool": "claude",
+            "state": "unknown"
           }
         ],
         "reason": null,
@@ -3141,6 +3211,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "probe timed out after 10s",
+            "pool": "claude",
+            "state": "unknown"
           }
         ],
         "reason": null,
@@ -3169,6 +3244,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "probe timed out after 10s",
+            "pool": "claude",
+            "state": "unknown"
           }
         ],
         "reason": null,
@@ -3197,6 +3277,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "probe timed out after 10s",
+            "pool": "claude",
+            "state": "unknown"
           }
         ],
         "reason": null,
@@ -3225,6 +3310,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "probe timed out after 10s",
+            "pool": "claude",
+            "state": "unknown"
           }
         ],
         "reason": null,
@@ -3253,6 +3343,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "probe timed out after 10s",
+            "pool": "claude",
+            "state": "unknown"
           }
         ],
         "reason": null,
@@ -3281,6 +3376,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "probe timed out after 10s",
+            "pool": "claude",
+            "state": "unknown"
           }
         ],
         "reason": null,
@@ -3309,6 +3409,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "probe timed out after 10s",
+            "pool": "claude",
+            "state": "unknown"
           }
         ],
         "reason": null,
@@ -3337,6 +3442,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "probe timed out after 10s",
+            "pool": "claude",
+            "state": "unknown"
           }
         ],
         "reason": null,
@@ -3365,6 +3475,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "probe timed out after 10s",
+            "pool": "claude",
+            "state": "unknown"
           }
         ],
         "reason": null,
@@ -3393,6 +3508,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "probe timed out after 10s",
+            "pool": "claude",
+            "state": "unknown"
           }
         ],
         "reason": null,
@@ -3421,6 +3541,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "probe timed out after 10s",
+            "pool": "claude",
+            "state": "unknown"
           }
         ],
         "reason": null,
@@ -3449,6 +3574,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "probe timed out after 10s",
+            "pool": "claude",
+            "state": "unknown"
           }
         ],
         "reason": null,
@@ -3477,6 +3607,11 @@
             "detail": "no signal (no quota endpoint exists)",
             "pool": "opencode-zen",
             "state": "ok"
+          },
+          {
+            "detail": "probe timed out after 10s",
+            "pool": "claude",
+            "state": "unknown"
           }
         ],
         "reason": null,

@@ -11,7 +11,7 @@ use super::parser::{parse_base, parse_teammate};
 use super::repository::{BUILTIN_BASES, BUILTIN_TEAMMATES};
 use super::teammate::{
     HarnessDefault, HorchAccess, CONTEXT_MESSAGES_BASE, CONTEXT_MESSAGE_KEYS,
-    CONTEXT_MESSAGE_PLACEHOLDERS, CONTEXT_WINDOWS_BASE, HARNESS_DEFAULTS_BASE,
+    CONTEXT_MESSAGE_PLACEHOLDERS, CONTEXT_WINDOWS_BASE, HARNESS_DEFAULTS_BASE, RECIPE_PANES,
 };
 use super::{
     effort_problem, reserved_tier, Base, ExecDecision, ExecRule, ModelSource, PermissionMode,
@@ -1793,19 +1793,23 @@ pub fn fallback_problems(roster: &Roster) -> Vec<String> {
 /// (RR-11). A worker persona names a fallback, or gives a written
 /// `no_fallback_reason` when a fallback on another harness would break it.
 /// Exempt: the top-tier seats, which wait in `waiting_quota`; the fleet
-/// orchestrators, which are no worker; and `agent: none`, which runs no agent.
+/// orchestrators and the recipe panes, which take no ledger task; and
+/// `agent: none`, which runs no agent.
 pub fn profile_problems(roster: &Roster) -> Vec<String> {
     let mut out = Vec::new();
     for t in roster.teammates.values() {
         let file = format!("{}.md", t.name);
         let exempt = TOP_TIER_SEATS.iter().any(|(seat, _)| *seat == t.name)
             || FLEET_ORCHESTRATORS.contains(&t.name.as_str())
+            || RECIPE_PANES.contains(&t.name.as_str())
             || t.agent == HarnessKind::None;
         let reason = t.no_fallback_reason.as_deref().map(str::trim);
         match (t.fallbacks.is_empty(), reason) {
             (true, None) if !exempt => out.push(format!(
-                "{file}: a worker persona names no fallback; add 1 to fallbacks by the \
-                 rule in teammates/_template.md, or give no_fallback_reason"
+                "{file}: a worker persona names no fallback; add 1 to fallbacks (agent \
+                 claude: codex-sol, any other agent: opus). no_fallback_reason is \
+                 only for a persona whose confidentiality, trust wall or sandbox the \
+                 fallback would break, or whose work the fallback harness cannot do"
             )),
             (true, Some("")) if !exempt => out.push(format!(
                 "{file}: a worker persona names no fallback, and no_fallback_reason is empty"

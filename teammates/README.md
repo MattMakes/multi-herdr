@@ -46,12 +46,17 @@ choose from** — there is no registry to update and nothing to recompile.
   are a list in the code (`TOP_TIER_SEATS`), so a file cannot add one. The
   rule is matched on the tier name, so a version bump stays reserved.
   `horch teammates --check` fails any other offered teammate that asks for one.
-- **Every worker persona names a fallback.** The first entry of `fallbacks`
-  is the persona fleetd uses on a usage limit or an outage. The fallback rule
-  is in the `fallbacks` block of `_template.md`. A persona that a fallback on
-  another harness would break states why in `no_fallback_reason` and waits in
-  `waiting_quota` instead. The top-tier seats, the 2 orchestrators and
-  `smoke.md` are exempt. `horch teammates --check` fails any other file.
+- **Every worker persona names a fallback (design D2).** The first entry of
+  `fallbacks` is the persona fleetd uses on a usage limit or an outage:
+  `codex-sol` for `agent: claude`, `opus` for every other agent. Exempt: the
+  top-tier seats, the 2 orchestrators, the `horch orchestration` recipe panes
+  and `smoke.md`. The only exception: when a fallback would break the
+  persona's confidentiality, trust wall or sandbox, or the fallback harness
+  cannot do the work, the persona keeps `fallbacks: []`, states why in
+  `no_fallback_reason`, and waits in `waiting_quota`. Today: `pi`, the intake
+  personas, `skill-importer`, `worktree-steward`, and the Blender, Unreal,
+  Swift, video, sound and creative seats whose files say so. `horch teammates
+  --check` fails any other file.
 - **The fleetd profile fields are optional.** Each field left out has the
   design default; `_template.md` shows them.
   - `mode`: `exec` or `interactive`; `interactive` until Phase 7.

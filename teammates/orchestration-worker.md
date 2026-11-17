@@ -3,8 +3,6 @@ name: orchestration-worker
 brief_description: Worker for the fixed 5-pane `horch orchestration` recipe. Model comes from the pane, not here.
 hidden: true
 agent: claude
-fallbacks: []
-no_fallback_reason: The fixed 5-pane horch orchestration recipe starts this pane. It runs no ledger task, so fleetd never dispatches it.
 phase: implementation
 permission_mode: auto
 effort: medium

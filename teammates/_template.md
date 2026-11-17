@@ -81,22 +81,19 @@ model: opus
 # fallbacks are never followed. Each must run on a different pool, and never
 # on a trains-on-input (opencode) teammate. `horch route <name>` shows what a
 # spawn would do right now.
-# REQUIRED on a worker persona (`horch teammates --check`): name 1 fallback on
-# another provider. The first entry is the fallback fleetd uses (RR-11).
-# Exempt: the top-tier seats, the fleet orchestrators and `agent: none`.
-# The fallback rule, the 1 source of truth for README.md and --check:
-# - A fallback never lowers confidentiality. A local persona never falls back
-#   to a cloud persona. A paid persona never falls back to one that trains on
-#   its input. A persona in a sandbox never falls back to one without one.
-# - Within that: agent claude -> codex-sol; any other agent -> opus. An agy
-#   persona falls back to codex-sol, because opus has no OS sandbox.
+# REQUIRED on a worker persona (`horch teammates --check`, design D2): name 1
+# fallback. agent claude -> codex-sol; any other agent -> opus. The first
+# entry is the fallback fleetd uses (RR-11). Exempt: the top-tier seats, the
+# fleet orchestrators, the `horch orchestration` recipe panes, `agent: none`.
 fallbacks: []
 
-# Only for a worker persona that a fallback on another harness would break
-# (a trust wall, a sandbox it needs): 1 line that says why. With it,
-# `fallbacks` stays empty and on a usage limit the task waits in
-# waiting_quota. An empty reason, or a reason beside a fallback, fails --check.
-#   no_fallback_reason: The Blender MCP server has no Codex parity.
+# The only exception to the rule above: a fallback that would break the
+# persona's confidentiality, trust wall or sandbox, or a fallback harness that
+# cannot do the work. Such a persona keeps `fallbacks: []` and says why in 1
+# line; on a usage limit its task waits in waiting_quota. Cost or habit is no
+# reason. An empty reason, or a reason beside a fallback, fails --check, and a
+# roster test pins the list of shipped personas that have one.
+#   no_fallback_reason: Work must stay on this machine.
 
 # ─── fleetd profile ──────────────────────────────────────────────────────────
 # mode: exec | interactive. Left out: interactive until Phase 7.

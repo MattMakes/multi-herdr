@@ -2723,7 +2723,7 @@
     "opencode-lightning|exact|advise": {
       "decision": {
         "decision": "spawn",
-        "note": "opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z).",
+        "note": "opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). Fallback opus is ok.",
         "teammate": "opencode-lightning"
       },
       "resolved": {
@@ -2734,16 +2734,21 @@
       },
       "route_json": {
         "decision": "spawn",
-        "line": "NOTE: opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z).",
+        "line": "NOTE: opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). Fallback opus is ok.",
         "mode": "advise",
         "pools": [
           {
             "detail": "free limit hit; cooling until 2026-09-28T18:30:00Z",
             "pool": "opencode-zen",
             "state": "cooling"
+          },
+          {
+            "detail": "7d 40%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "ok"
           }
         ],
-        "reason": "opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z).",
+        "reason": "opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). Fallback opus is ok.",
         "teammate": "opencode-lightning",
         "via": null
       }
@@ -2756,6 +2761,11 @@
             "detail": "free limit hit; cooling until 2026-09-28T18:30:00Z",
             "pool": "opencode-zen",
             "state": "cooling"
+          },
+          {
+            "detail": "7d 40%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "ok"
           }
         ],
         "reason": "opencode-zen cooling: free limit hit; cooling until 2026-09-28T18:30:00Z",
@@ -2764,13 +2774,18 @@
       "resolved": null,
       "route_json": {
         "decision": "refuse",
-        "line": "REFUSED: opencode-lightning cannot start. opencode-zen cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). Options: wait, --force, or choose a teammate yourself.",
+        "line": "REFUSED: opencode-lightning cannot start. opencode-zen cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). claude ok (7d 40%, resets Fri 14:00Z). Options: wait, --force, or choose a teammate yourself.",
         "mode": "auto",
         "pools": [
           {
             "detail": "free limit hit; cooling until 2026-09-28T18:30:00Z",
             "pool": "opencode-zen",
             "state": "cooling"
+          },
+          {
+            "detail": "7d 40%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "ok"
           }
         ],
         "reason": "opencode-zen cooling: free limit hit; cooling until 2026-09-28T18:30:00Z",
@@ -2799,6 +2814,11 @@
             "detail": "free limit hit; cooling until 2026-09-28T18:30:00Z",
             "pool": "opencode-zen",
             "state": "cooling"
+          },
+          {
+            "detail": "7d 40%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "ok"
           }
         ],
         "reason": null,
@@ -2809,7 +2829,7 @@
     "opencode-lightning|force|advise": {
       "decision": {
         "decision": "spawn",
-        "note": "opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z).",
+        "note": "opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). Fallback opus is ok.",
         "teammate": "opencode-lightning"
       },
       "resolved": {
@@ -2820,46 +2840,57 @@
       },
       "route_json": {
         "decision": "spawn",
-        "line": "NOTE: opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z).",
+        "line": "NOTE: opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). Fallback opus is ok.",
         "mode": "advise",
         "pools": [
           {
             "detail": "free limit hit; cooling until 2026-09-28T18:30:00Z",
             "pool": "opencode-zen",
             "state": "cooling"
+          },
+          {
+            "detail": "7d 40%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "ok"
           }
         ],
-        "reason": "opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z).",
+        "reason": "opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). Fallback opus is ok.",
         "teammate": "opencode-lightning",
         "via": null
       }
     },
     "opencode-lightning|force|auto": {
       "decision": {
-        "decision": "spawn",
-        "note": "opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). Spawned anyway (--force).",
-        "teammate": "opencode-lightning"
+        "decision": "substitute",
+        "original": "opencode-lightning",
+        "reason": "opencode-zen cooling: free limit hit; cooling until 2026-09-28T18:30:00Z",
+        "via": "opus"
       },
       "resolved": {
-        "agent": "opencode",
-        "effort": null,
-        "model": "opencode/nemotron-3.5-lightning-free",
+        "agent": "claude",
+        "effort": "medium",
+        "model": "opus",
         "name": "opencode-lightning"
       },
       "route_json": {
-        "decision": "spawn",
-        "line": "NOTE: opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). Spawned anyway (--force).",
+        "decision": "substitute",
+        "line": "SUBSTITUTED: opencode-lightning runs on opus. Reason: opencode-zen cooling: free limit hit; cooling until 2026-09-28T18:30:00Z.",
         "mode": "auto",
         "pools": [
           {
             "detail": "free limit hit; cooling until 2026-09-28T18:30:00Z",
             "pool": "opencode-zen",
             "state": "cooling"
+          },
+          {
+            "detail": "7d 40%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "ok"
           }
         ],
-        "reason": "opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). Spawned anyway (--force).",
+        "reason": "opencode-zen cooling: free limit hit; cooling until 2026-09-28T18:30:00Z",
         "teammate": "opencode-lightning",
-        "via": null
+        "via": "opus"
       }
     },
     "opencode-lightning|force|off": {
@@ -2883,6 +2914,11 @@
             "detail": "free limit hit; cooling until 2026-09-28T18:30:00Z",
             "pool": "opencode-zen",
             "state": "cooling"
+          },
+          {
+            "detail": "7d 40%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "ok"
           }
         ],
         "reason": null,
@@ -2893,7 +2929,7 @@
     "opencode-lightning|none|advise": {
       "decision": {
         "decision": "spawn",
-        "note": "opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z).",
+        "note": "opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). Fallback opus is ok.",
         "teammate": "opencode-lightning"
       },
       "resolved": {
@@ -2904,48 +2940,57 @@
       },
       "route_json": {
         "decision": "spawn",
-        "line": "NOTE: opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z).",
+        "line": "NOTE: opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). Fallback opus is ok.",
         "mode": "advise",
         "pools": [
           {
             "detail": "free limit hit; cooling until 2026-09-28T18:30:00Z",
             "pool": "opencode-zen",
             "state": "cooling"
+          },
+          {
+            "detail": "7d 40%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "ok"
           }
         ],
-        "reason": "opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z).",
+        "reason": "opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). Fallback opus is ok.",
         "teammate": "opencode-lightning",
         "via": null
       }
     },
     "opencode-lightning|none|auto": {
       "decision": {
-        "decision": "refuse",
-        "pools": [
-          {
-            "detail": "free limit hit; cooling until 2026-09-28T18:30:00Z",
-            "pool": "opencode-zen",
-            "state": "cooling"
-          }
-        ],
+        "decision": "substitute",
+        "original": "opencode-lightning",
         "reason": "opencode-zen cooling: free limit hit; cooling until 2026-09-28T18:30:00Z",
-        "teammate": "opencode-lightning"
+        "via": "opus"
       },
-      "resolved": null,
+      "resolved": {
+        "agent": "claude",
+        "effort": "medium",
+        "model": "opus",
+        "name": "opencode-lightning"
+      },
       "route_json": {
-        "decision": "refuse",
-        "line": "REFUSED: opencode-lightning cannot start. opencode-zen cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). Options: wait, --force, or choose a teammate yourself.",
+        "decision": "substitute",
+        "line": "SUBSTITUTED: opencode-lightning runs on opus. Reason: opencode-zen cooling: free limit hit; cooling until 2026-09-28T18:30:00Z.",
         "mode": "auto",
         "pools": [
           {
             "detail": "free limit hit; cooling until 2026-09-28T18:30:00Z",
             "pool": "opencode-zen",
             "state": "cooling"
+          },
+          {
+            "detail": "7d 40%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "ok"
           }
         ],
         "reason": "opencode-zen cooling: free limit hit; cooling until 2026-09-28T18:30:00Z",
         "teammate": "opencode-lightning",
-        "via": null
+        "via": "opus"
       }
     },
     "opencode-lightning|none|off": {
@@ -2969,6 +3014,11 @@
             "detail": "free limit hit; cooling until 2026-09-28T18:30:00Z",
             "pool": "opencode-zen",
             "state": "cooling"
+          },
+          {
+            "detail": "7d 40%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "ok"
           }
         ],
         "reason": null,
@@ -2979,7 +3029,7 @@
     "opencode-pickle|exact|advise": {
       "decision": {
         "decision": "spawn",
-        "note": "opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z).",
+        "note": "opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). Fallback opus is ok.",
         "teammate": "opencode-pickle"
       },
       "resolved": {
@@ -2990,16 +3040,21 @@
       },
       "route_json": {
         "decision": "spawn",
-        "line": "NOTE: opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z).",
+        "line": "NOTE: opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). Fallback opus is ok.",
         "mode": "advise",
         "pools": [
           {
             "detail": "free limit hit; cooling until 2026-09-28T18:30:00Z",
             "pool": "opencode-zen",
             "state": "cooling"
+          },
+          {
+            "detail": "7d 40%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "ok"
           }
         ],
-        "reason": "opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z).",
+        "reason": "opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). Fallback opus is ok.",
         "teammate": "opencode-pickle",
         "via": null
       }
@@ -3012,6 +3067,11 @@
             "detail": "free limit hit; cooling until 2026-09-28T18:30:00Z",
             "pool": "opencode-zen",
             "state": "cooling"
+          },
+          {
+            "detail": "7d 40%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "ok"
           }
         ],
         "reason": "opencode-zen cooling: free limit hit; cooling until 2026-09-28T18:30:00Z",
@@ -3020,13 +3080,18 @@
       "resolved": null,
       "route_json": {
         "decision": "refuse",
-        "line": "REFUSED: opencode-pickle cannot start. opencode-zen cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). Options: wait, --force, or choose a teammate yourself.",
+        "line": "REFUSED: opencode-pickle cannot start. opencode-zen cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). claude ok (7d 40%, resets Fri 14:00Z). Options: wait, --force, or choose a teammate yourself.",
         "mode": "auto",
         "pools": [
           {
             "detail": "free limit hit; cooling until 2026-09-28T18:30:00Z",
             "pool": "opencode-zen",
             "state": "cooling"
+          },
+          {
+            "detail": "7d 40%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "ok"
           }
         ],
         "reason": "opencode-zen cooling: free limit hit; cooling until 2026-09-28T18:30:00Z",
@@ -3055,6 +3120,11 @@
             "detail": "free limit hit; cooling until 2026-09-28T18:30:00Z",
             "pool": "opencode-zen",
             "state": "cooling"
+          },
+          {
+            "detail": "7d 40%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "ok"
           }
         ],
         "reason": null,
@@ -3065,7 +3135,7 @@
     "opencode-pickle|force|advise": {
       "decision": {
         "decision": "spawn",
-        "note": "opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z).",
+        "note": "opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). Fallback opus is ok.",
         "teammate": "opencode-pickle"
       },
       "resolved": {
@@ -3076,46 +3146,57 @@
       },
       "route_json": {
         "decision": "spawn",
-        "line": "NOTE: opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z).",
+        "line": "NOTE: opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). Fallback opus is ok.",
         "mode": "advise",
         "pools": [
           {
             "detail": "free limit hit; cooling until 2026-09-28T18:30:00Z",
             "pool": "opencode-zen",
             "state": "cooling"
+          },
+          {
+            "detail": "7d 40%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "ok"
           }
         ],
-        "reason": "opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z).",
+        "reason": "opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). Fallback opus is ok.",
         "teammate": "opencode-pickle",
         "via": null
       }
     },
     "opencode-pickle|force|auto": {
       "decision": {
-        "decision": "spawn",
-        "note": "opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). Spawned anyway (--force).",
-        "teammate": "opencode-pickle"
+        "decision": "substitute",
+        "original": "opencode-pickle",
+        "reason": "opencode-zen cooling: free limit hit; cooling until 2026-09-28T18:30:00Z",
+        "via": "opus"
       },
       "resolved": {
-        "agent": "opencode",
-        "effort": null,
-        "model": "opencode/big-pickle",
+        "agent": "claude",
+        "effort": "medium",
+        "model": "opus",
         "name": "opencode-pickle"
       },
       "route_json": {
-        "decision": "spawn",
-        "line": "NOTE: opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). Spawned anyway (--force).",
+        "decision": "substitute",
+        "line": "SUBSTITUTED: opencode-pickle runs on opus. Reason: opencode-zen cooling: free limit hit; cooling until 2026-09-28T18:30:00Z.",
         "mode": "auto",
         "pools": [
           {
             "detail": "free limit hit; cooling until 2026-09-28T18:30:00Z",
             "pool": "opencode-zen",
             "state": "cooling"
+          },
+          {
+            "detail": "7d 40%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "ok"
           }
         ],
-        "reason": "opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). Spawned anyway (--force).",
+        "reason": "opencode-zen cooling: free limit hit; cooling until 2026-09-28T18:30:00Z",
         "teammate": "opencode-pickle",
-        "via": null
+        "via": "opus"
       }
     },
     "opencode-pickle|force|off": {
@@ -3139,6 +3220,11 @@
             "detail": "free limit hit; cooling until 2026-09-28T18:30:00Z",
             "pool": "opencode-zen",
             "state": "cooling"
+          },
+          {
+            "detail": "7d 40%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "ok"
           }
         ],
         "reason": null,
@@ -3149,7 +3235,7 @@
     "opencode-pickle|none|advise": {
       "decision": {
         "decision": "spawn",
-        "note": "opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z).",
+        "note": "opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). Fallback opus is ok.",
         "teammate": "opencode-pickle"
       },
       "resolved": {
@@ -3160,48 +3246,57 @@
       },
       "route_json": {
         "decision": "spawn",
-        "line": "NOTE: opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z).",
+        "line": "NOTE: opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). Fallback opus is ok.",
         "mode": "advise",
         "pools": [
           {
             "detail": "free limit hit; cooling until 2026-09-28T18:30:00Z",
             "pool": "opencode-zen",
             "state": "cooling"
+          },
+          {
+            "detail": "7d 40%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "ok"
           }
         ],
-        "reason": "opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z).",
+        "reason": "opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). Fallback opus is ok.",
         "teammate": "opencode-pickle",
         "via": null
       }
     },
     "opencode-pickle|none|auto": {
       "decision": {
-        "decision": "refuse",
-        "pools": [
-          {
-            "detail": "free limit hit; cooling until 2026-09-28T18:30:00Z",
-            "pool": "opencode-zen",
-            "state": "cooling"
-          }
-        ],
+        "decision": "substitute",
+        "original": "opencode-pickle",
         "reason": "opencode-zen cooling: free limit hit; cooling until 2026-09-28T18:30:00Z",
-        "teammate": "opencode-pickle"
+        "via": "opus"
       },
-      "resolved": null,
+      "resolved": {
+        "agent": "claude",
+        "effort": "medium",
+        "model": "opus",
+        "name": "opencode-pickle"
+      },
       "route_json": {
-        "decision": "refuse",
-        "line": "REFUSED: opencode-pickle cannot start. opencode-zen cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). Options: wait, --force, or choose a teammate yourself.",
+        "decision": "substitute",
+        "line": "SUBSTITUTED: opencode-pickle runs on opus. Reason: opencode-zen cooling: free limit hit; cooling until 2026-09-28T18:30:00Z.",
         "mode": "auto",
         "pools": [
           {
             "detail": "free limit hit; cooling until 2026-09-28T18:30:00Z",
             "pool": "opencode-zen",
             "state": "cooling"
+          },
+          {
+            "detail": "7d 40%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "ok"
           }
         ],
         "reason": "opencode-zen cooling: free limit hit; cooling until 2026-09-28T18:30:00Z",
         "teammate": "opencode-pickle",
-        "via": null
+        "via": "opus"
       }
     },
     "opencode-pickle|none|off": {
@@ -3225,6 +3320,11 @@
             "detail": "free limit hit; cooling until 2026-09-28T18:30:00Z",
             "pool": "opencode-zen",
             "state": "cooling"
+          },
+          {
+            "detail": "7d 40%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "ok"
           }
         ],
         "reason": null,
@@ -3235,7 +3335,7 @@
     "opencode-ultra|exact|advise": {
       "decision": {
         "decision": "spawn",
-        "note": "opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z).",
+        "note": "opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). Fallback opus is ok.",
         "teammate": "opencode-ultra"
       },
       "resolved": {
@@ -3246,16 +3346,21 @@
       },
       "route_json": {
         "decision": "spawn",
-        "line": "NOTE: opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z).",
+        "line": "NOTE: opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). Fallback opus is ok.",
         "mode": "advise",
         "pools": [
           {
             "detail": "free limit hit; cooling until 2026-09-28T18:30:00Z",
             "pool": "opencode-zen",
             "state": "cooling"
+          },
+          {
+            "detail": "7d 40%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "ok"
           }
         ],
-        "reason": "opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z).",
+        "reason": "opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). Fallback opus is ok.",
         "teammate": "opencode-ultra",
         "via": null
       }
@@ -3268,6 +3373,11 @@
             "detail": "free limit hit; cooling until 2026-09-28T18:30:00Z",
             "pool": "opencode-zen",
             "state": "cooling"
+          },
+          {
+            "detail": "7d 40%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "ok"
           }
         ],
         "reason": "opencode-zen cooling: free limit hit; cooling until 2026-09-28T18:30:00Z",
@@ -3276,13 +3386,18 @@
       "resolved": null,
       "route_json": {
         "decision": "refuse",
-        "line": "REFUSED: opencode-ultra cannot start. opencode-zen cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). Options: wait, --force, or choose a teammate yourself.",
+        "line": "REFUSED: opencode-ultra cannot start. opencode-zen cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). claude ok (7d 40%, resets Fri 14:00Z). Options: wait, --force, or choose a teammate yourself.",
         "mode": "auto",
         "pools": [
           {
             "detail": "free limit hit; cooling until 2026-09-28T18:30:00Z",
             "pool": "opencode-zen",
             "state": "cooling"
+          },
+          {
+            "detail": "7d 40%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "ok"
           }
         ],
         "reason": "opencode-zen cooling: free limit hit; cooling until 2026-09-28T18:30:00Z",
@@ -3311,6 +3426,11 @@
             "detail": "free limit hit; cooling until 2026-09-28T18:30:00Z",
             "pool": "opencode-zen",
             "state": "cooling"
+          },
+          {
+            "detail": "7d 40%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "ok"
           }
         ],
         "reason": null,
@@ -3321,7 +3441,7 @@
     "opencode-ultra|force|advise": {
       "decision": {
         "decision": "spawn",
-        "note": "opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z).",
+        "note": "opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). Fallback opus is ok.",
         "teammate": "opencode-ultra"
       },
       "resolved": {
@@ -3332,46 +3452,57 @@
       },
       "route_json": {
         "decision": "spawn",
-        "line": "NOTE: opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z).",
+        "line": "NOTE: opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). Fallback opus is ok.",
         "mode": "advise",
         "pools": [
           {
             "detail": "free limit hit; cooling until 2026-09-28T18:30:00Z",
             "pool": "opencode-zen",
             "state": "cooling"
+          },
+          {
+            "detail": "7d 40%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "ok"
           }
         ],
-        "reason": "opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z).",
+        "reason": "opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). Fallback opus is ok.",
         "teammate": "opencode-ultra",
         "via": null
       }
     },
     "opencode-ultra|force|auto": {
       "decision": {
-        "decision": "spawn",
-        "note": "opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). Spawned anyway (--force).",
-        "teammate": "opencode-ultra"
+        "decision": "substitute",
+        "original": "opencode-ultra",
+        "reason": "opencode-zen cooling: free limit hit; cooling until 2026-09-28T18:30:00Z",
+        "via": "opus"
       },
       "resolved": {
-        "agent": "opencode",
-        "effort": null,
-        "model": "opencode/nemotron-3-ultra-free",
+        "agent": "claude",
+        "effort": "medium",
+        "model": "opus",
         "name": "opencode-ultra"
       },
       "route_json": {
-        "decision": "spawn",
-        "line": "NOTE: opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). Spawned anyway (--force).",
+        "decision": "substitute",
+        "line": "SUBSTITUTED: opencode-ultra runs on opus. Reason: opencode-zen cooling: free limit hit; cooling until 2026-09-28T18:30:00Z.",
         "mode": "auto",
         "pools": [
           {
             "detail": "free limit hit; cooling until 2026-09-28T18:30:00Z",
             "pool": "opencode-zen",
             "state": "cooling"
+          },
+          {
+            "detail": "7d 40%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "ok"
           }
         ],
-        "reason": "opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). Spawned anyway (--force).",
+        "reason": "opencode-zen cooling: free limit hit; cooling until 2026-09-28T18:30:00Z",
         "teammate": "opencode-ultra",
-        "via": null
+        "via": "opus"
       }
     },
     "opencode-ultra|force|off": {
@@ -3395,6 +3526,11 @@
             "detail": "free limit hit; cooling until 2026-09-28T18:30:00Z",
             "pool": "opencode-zen",
             "state": "cooling"
+          },
+          {
+            "detail": "7d 40%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "ok"
           }
         ],
         "reason": null,
@@ -3405,7 +3541,7 @@
     "opencode-ultra|none|advise": {
       "decision": {
         "decision": "spawn",
-        "note": "opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z).",
+        "note": "opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). Fallback opus is ok.",
         "teammate": "opencode-ultra"
       },
       "resolved": {
@@ -3416,48 +3552,57 @@
       },
       "route_json": {
         "decision": "spawn",
-        "line": "NOTE: opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z).",
+        "line": "NOTE: opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). Fallback opus is ok.",
         "mode": "advise",
         "pools": [
           {
             "detail": "free limit hit; cooling until 2026-09-28T18:30:00Z",
             "pool": "opencode-zen",
             "state": "cooling"
+          },
+          {
+            "detail": "7d 40%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "ok"
           }
         ],
-        "reason": "opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z).",
+        "reason": "opencode-zen pool cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). Fallback opus is ok.",
         "teammate": "opencode-ultra",
         "via": null
       }
     },
     "opencode-ultra|none|auto": {
       "decision": {
-        "decision": "refuse",
-        "pools": [
-          {
-            "detail": "free limit hit; cooling until 2026-09-28T18:30:00Z",
-            "pool": "opencode-zen",
-            "state": "cooling"
-          }
-        ],
+        "decision": "substitute",
+        "original": "opencode-ultra",
         "reason": "opencode-zen cooling: free limit hit; cooling until 2026-09-28T18:30:00Z",
-        "teammate": "opencode-ultra"
+        "via": "opus"
       },
-      "resolved": null,
+      "resolved": {
+        "agent": "claude",
+        "effort": "medium",
+        "model": "opus",
+        "name": "opencode-ultra"
+      },
       "route_json": {
-        "decision": "refuse",
-        "line": "REFUSED: opencode-ultra cannot start. opencode-zen cooling (free limit hit; cooling until 2026-09-28T18:30:00Z). Options: wait, --force, or choose a teammate yourself.",
+        "decision": "substitute",
+        "line": "SUBSTITUTED: opencode-ultra runs on opus. Reason: opencode-zen cooling: free limit hit; cooling until 2026-09-28T18:30:00Z.",
         "mode": "auto",
         "pools": [
           {
             "detail": "free limit hit; cooling until 2026-09-28T18:30:00Z",
             "pool": "opencode-zen",
             "state": "cooling"
+          },
+          {
+            "detail": "7d 40%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "ok"
           }
         ],
         "reason": "opencode-zen cooling: free limit hit; cooling until 2026-09-28T18:30:00Z",
         "teammate": "opencode-ultra",
-        "via": null
+        "via": "opus"
       }
     },
     "opencode-ultra|none|off": {
@@ -3481,6 +3626,11 @@
             "detail": "free limit hit; cooling until 2026-09-28T18:30:00Z",
             "pool": "opencode-zen",
             "state": "cooling"
+          },
+          {
+            "detail": "7d 40%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "ok"
           }
         ],
         "reason": null,
