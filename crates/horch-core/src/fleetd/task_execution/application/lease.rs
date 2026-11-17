@@ -185,19 +185,24 @@ pub fn check_i1(
     limits: &dyn Fn(&str) -> Limits,
 ) -> Result<()> {
     let (rows, live) = store::i1_rows(tx)?;
-    let mut by_task: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    let mut by_task: BTreeMap<&str, (Vec<String>, Vec<String>)> = BTreeMap::new();
     let mut worker_of: BTreeMap<&str, &str> = BTreeMap::new();
     for a in &live {
-        by_task.entry(&a.task_id).or_default().push(a.id.clone());
+        let (live, ending) = by_task.entry(&a.task_id).or_default();
+        if a.worker_live { live } else { ending }.push(a.id.clone());
         worker_of.insert(&a.id, &a.worker_id);
     }
     let tasks: Vec<TaskLeases> = rows
         .into_iter()
-        .map(|t| TaskLeases {
-            live_attempts: by_task.get(t.task_id.as_str()).cloned().unwrap_or_default(),
-            holder: Holder::of(&t.status),
-            lease_attempt: t.lease_attempt,
-            task_id: t.task_id,
+        .map(|t| {
+            let (live, ending) = by_task.remove(t.task_id.as_str()).unwrap_or_default();
+            TaskLeases {
+                live_attempts: live,
+                ending_attempts: ending,
+                holder: Holder::of(&t.status),
+                lease_attempt: t.lease_attempt,
+                task_id: t.task_id,
+            }
         })
         .collect();
     for repair in i1_repairs(&tasks) {
@@ -254,7 +259,7 @@ mod tests {
     use crate::fleetd::task_execution::application::commands;
     use crate::fleetd::task_execution::domain::lease::{Limits, CLAIM_BASIS, EARNED_BASIS};
     use crate::fleetd::task_execution::domain::task::Seen;
-    use crate::taskledger::model::{Actor, TaskStatus};
+    use crate::taskledger::model::{Actor, TaskStatus, WorkerStatus};
     use crate::taskledger::runs::{self, NewRun, Run};
     use crate::taskledger::tasks::{self, ClaimOutcome, NewTask};
     use crate::taskledger::util::{self, Rule, Why};
@@ -648,6 +653,56 @@ mod tests {
         assert_eq!(l.leases(), vec![]);
     }
 
+    /// The open needs-you items of kind [`I1_BREACH`].
+    fn breaches(l: &Fixture) -> Vec<String> {
+        needs_you::open_items(l.store.conn())
+            .unwrap()
+            .into_iter()
+            .filter(|i| i.kind == I1_BREACH)
+            .map(|i| i.entity_id)
+            .collect()
+    }
+
+    #[test]
+    fn a_handoff_then_a_claim_gives_no_i1_breach_item() {
+        let mut l = fixture(0);
+        l.add_task("a");
+        let (task, worker) = l.claimed();
+        let path = l._dir.path().join("handoff.md");
+        std::fs::write(&path, "next steps").unwrap();
+        l.store
+            .immediate(|tx| tasks::handoff(tx, &worker, path.to_str().unwrap()))
+            .unwrap();
+        assert_eq!(l.status(&task), "ready");
+        assert_eq!(l.leases(), vec![], "a ready task holds no lease");
+        let (again, _) = l.claimed();
+        assert_eq!(again, task);
+        l.check_i1(10);
+        assert_eq!(breaches(&l), Vec::<String>::new());
+        let leases = l.leases();
+        assert_eq!(leases.len(), 1);
+        assert_eq!(leases[0].attempt_id, format!("{task}/A2"));
+    }
+
+    #[test]
+    fn a_requeue_then_a_claim_gives_no_i1_breach_item() {
+        let mut l = fixture(0);
+        l.add_task("a");
+        let (task, worker) = l.claimed();
+        l.store
+            .immediate(|tx| {
+                workers::end(tx, &worker, WorkerStatus::Incomplete, "reaped", None)?;
+                tasks::requeue(tx, &task, "worker ended")
+            })
+            .unwrap();
+        assert_eq!(l.leases(), vec![], "a ready task holds no lease");
+        let (again, _) = l.claimed();
+        assert_eq!(again, task);
+        l.check_i1(10);
+        assert_eq!(breaches(&l), Vec::<String>::new());
+        assert_eq!(l.leases()[0].attempt_id, format!("{task}/A2"));
+    }
+
     #[test]
     fn i1_two_live_attempts_of_1_task_open_1_needs_you_item() {
         let mut l = fixture(0);
@@ -665,10 +720,7 @@ mod tests {
         let before = l.leases();
         l.check_i1(10);
         l.check_i1(15);
-        let items = needs_you::open_items(l.store.conn()).unwrap();
-        let breaches: Vec<_> = items.iter().filter(|i| i.kind == I1_BREACH).collect();
-        assert_eq!(breaches.len(), 1, "{items:?}");
-        assert_eq!(breaches[0].entity_id, task);
+        assert_eq!(breaches(&l), vec![task]);
         assert_eq!(l.leases(), before, "no repair is safe");
     }
 }

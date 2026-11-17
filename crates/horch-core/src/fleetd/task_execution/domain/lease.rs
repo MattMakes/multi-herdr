@@ -14,7 +14,9 @@
 //! - Pause: a task in `waiting_quota` keeps its lease, and the lease does
 //!   not expire.
 //! - I1 ([`i1_repairs`]): each live attempt of a held task has exactly 1
-//!   lease, and each lease belongs to a live attempt of a held task.
+//!   lease, and each lease belongs to a live attempt of a held task. An
+//!   attempt whose worker row ended (a handoff, a reap) is ending: the
+//!   pass reaps it, and I1 does not count it as a second live attempt.
 
 use super::task::Seen;
 
@@ -148,8 +150,11 @@ pub struct TaskLeases {
     pub holder: Option<Holder>,
     /// The attempt of its lease row, when it has one.
     pub lease_attempt: Option<String>,
-    /// Its attempts that are not ended, oldest first.
+    /// Its attempts that are not ended and whose worker row is live,
+    /// oldest first.
     pub live_attempts: Vec<String>,
+    /// Its attempts that are not ended and whose worker row ended.
+    pub ending_attempts: Vec<String>,
 }
 
 /// 1 breach of the lease part of I1, and its repair.
@@ -171,7 +176,8 @@ pub enum Repair {
 
 /// The repairs of the lease part of I1. A task in `waiting_quota` keeps its
 /// lease with no live attempt: the usage limit ended the attempt, and the
-/// lease is paused.
+/// lease is paused. The lease of an ending attempt stays until the pass
+/// reaps the attempt, so the lease can still expire.
 pub fn i1_repairs(tasks: &[TaskLeases]) -> Vec<Repair> {
     let mut out = Vec::new();
     for t in tasks {
@@ -189,12 +195,18 @@ pub fn i1_repairs(tasks: &[TaskLeases]) -> Vec<Repair> {
                 task_id,
                 attempt_id: live.clone(),
             }),
-            (None, _, Some(stale))
-            | (Some(Holder::Leased | Holder::Running | Holder::Stalled), [], Some(stale)) => out
-                .push(Repair::Delete {
+            (None, _, Some(stale)) => out.push(Repair::Delete {
+                task_id,
+                attempt_id: stale.to_string(),
+            }),
+            (Some(Holder::Leased | Holder::Running | Holder::Stalled), [], Some(stale))
+                if !t.ending_attempts.iter().any(|a| a == stale) =>
+            {
+                out.push(Repair::Delete {
                     task_id,
                     attempt_id: stale.to_string(),
-                }),
+                })
+            }
             _ => {}
         }
     }
@@ -331,6 +343,7 @@ mod tests {
             holder: Some(Holder::WaitingQuota),
             lease_attempt: Some("t/A1".into()),
             live_attempts: vec![],
+            ending_attempts: vec![],
         };
         assert_eq!(i1_repairs(&[t]), vec![]);
     }
@@ -455,6 +468,7 @@ mod tests {
             holder: Some(Holder::Running),
             lease_attempt: lease.map(String::from),
             live_attempts: live.iter().map(|a| a.to_string()).collect(),
+            ending_attempts: vec![],
         };
         assert_eq!(i1_repairs(&[held(Some("t/A1"), &["t/A1"])]), vec![]);
         assert_eq!(
@@ -496,6 +510,29 @@ mod tests {
                 attempt_id: "t/A1".into()
             }]
         );
+    }
+
+    #[test]
+    fn i1_does_not_count_an_ending_attempt() {
+        // A handoff ended the worker of t/A1, and a new worker claimed t/A2.
+        let claimed = TaskLeases {
+            task_id: "t".into(),
+            holder: Some(Holder::Running),
+            lease_attempt: Some("t/A2".into()),
+            live_attempts: vec!["t/A2".into()],
+            ending_attempts: vec!["t/A1".into()],
+        };
+        assert_eq!(i1_repairs(&[claimed]), vec![]);
+        // The worker of the lease ended, and the pass did not reap the
+        // attempt yet: the lease stays, so it can still expire.
+        let reaping = TaskLeases {
+            task_id: "t".into(),
+            holder: Some(Holder::Running),
+            lease_attempt: Some("t/A1".into()),
+            live_attempts: vec![],
+            ending_attempts: vec!["t/A1".into()],
+        };
+        assert_eq!(i1_repairs(&[reaping]), vec![]);
     }
 
     #[test]

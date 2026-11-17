@@ -20,6 +20,7 @@ use super::util::{self, About};
 use super::workers::{self, Worker};
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 use crate::fleetd::task_execution::application::commands as attempt_commands;
+use crate::fleetd::task_execution::application::lease;
 use crate::fleetd::task_execution::domain::task::{after_failure, AfterFailure};
 
 /// How much a retried task moves ahead of the queue (section 5.4).
@@ -1363,6 +1364,9 @@ pub fn handoff(tx: &Transaction, worker_id: &str, path: &str) -> Result<HandedOf
         Actor::Worker,
         util::Why::Event(EventKind::Requeued, &format!("{} handed off {}: it is queued again, first in line, with its worktree. Handoff: {path}", w.label(), task.short())),
     )?;
+    // A ready task holds no lease. The ended worker row marks the old
+    // attempt as ending, and the pass reaps it.
+    lease::release(tx, &task.task_id)?;
     tx.execute(
         &format!(
             "UPDATE tasks SET current_worker_id = NULL, held_reason = NULL,
@@ -1543,6 +1547,9 @@ pub fn requeue(conn: &Connection, task_id: &str, why: &str) -> Result<Requeue> {
 /// The writes of [`requeue`] for the running or verifying `task`, in the open
 /// transaction of `conn`.
 fn requeue_in(conn: &Connection, task: &Task, why: &str) -> Result<Requeue> {
+    // A ready or escalated task holds no lease. The caller ended the
+    // worker row, which marks the old attempt as ending.
+    lease::release(conn, &task.task_id)?;
     let max = super::runs::get(conn, &task.run_id)?.max_attempts;
     match after_failure(task.attempts - task.attempt_floor, max) {
         AfterFailure::Escalate => {

@@ -10,6 +10,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::fleetd::task_execution::domain::lease::Holder;
 use crate::fleetd::task_execution::domain::task::AttemptState;
+use crate::taskledger::model::WorkerStatus;
 
 /// 1 row of `leases`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -41,6 +42,9 @@ pub struct LiveAttempt {
     pub id: String,
     pub task_id: String,
     pub worker_id: String,
+    /// The worker row has a live status. A handoff or a reap ends the
+    /// worker row before the pass ends the attempt.
+    pub worker_live: bool,
 }
 
 /// The `IN (...)` list of the task words that hold a lease.
@@ -74,11 +78,8 @@ pub fn get(conn: &Connection, task_id: &str) -> Result<Option<LeaseRow>> {
 /// of the task, when it has one.
 pub fn put(conn: &Connection, l: &LeaseRow, now: &str) -> Result<()> {
     conn.execute(
-        "INSERT INTO leases (task_id, attempt_id, expires_at, renewed_at, renew_basis)
-         VALUES (?1, ?2, ?3, ?4, ?5)
-         ON CONFLICT (task_id) DO UPDATE SET attempt_id = excluded.attempt_id,
-            expires_at = excluded.expires_at, renewed_at = excluded.renewed_at,
-            renew_basis = excluded.renew_basis",
+        "INSERT OR REPLACE INTO leases (task_id, attempt_id, expires_at, renewed_at, renew_basis)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
         params![l.task_id, l.attempt_id, l.expires_at, now, l.renew_basis],
     )?;
     Ok(())
@@ -181,7 +182,8 @@ pub fn i1_rows(conn: &Connection) -> Result<(Vec<LeasedTask>, Vec<LiveAttempt>)>
         })?
         .collect::<rusqlite::Result<_>>()?;
     let live = format!(
-        "SELECT a.id, a.task_id, a.worker_id FROM attempts a JOIN tasks t ON t.task_id = a.task_id
+        "SELECT a.id, a.task_id, a.worker_id, w.status FROM attempts a
+         JOIN tasks t ON t.task_id = a.task_id JOIN workers w ON w.worker_id = a.worker_id
          WHERE a.state <> '{ended}' AND (t.status IN ({held})
             OR t.task_id IN (SELECT task_id FROM leases))
          ORDER BY a.rowid",
@@ -191,10 +193,12 @@ pub fn i1_rows(conn: &Connection) -> Result<(Vec<LeasedTask>, Vec<LiveAttempt>)>
     let live = conn
         .prepare(&live)?
         .query_map([], |r| {
+            let status: String = r.get(3)?;
             Ok(LiveAttempt {
                 id: r.get(0)?,
                 task_id: r.get(1)?,
                 worker_id: r.get(2)?,
+                worker_live: WorkerStatus::parse(&status).is_ok_and(WorkerStatus::is_live),
             })
         })?
         .collect::<rusqlite::Result<_>>()?;
