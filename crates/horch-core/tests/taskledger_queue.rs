@@ -432,74 +432,21 @@ fn an_agent_that_exits_on_its_last_attempt_holds_the_task() {
 
 #[test]
 fn a_schema_2_ledger_migrates_forward_and_keeps_its_rows() {
-    let (dir, mut store, run) = ledger();
-    let t = add(&mut store, &run, "a", "opus", |_| {});
-    let w = worker(&mut store, &run, "opus");
-    assert_eq!(claimed_seq(&claim(&mut store, &w)), Some(1));
-    drop(store);
-    // Take the file back to schema 2: undo the fleetd steps, v7, v6 and the
-    // v5 columns, then the 3 columns of v3 and the 2 of v4. A step left in
-    // place runs again and fails (`duplicate column name`).
-    assert_eq!(
-        horch_core::taskledger::schema::VERSION,
-        horch_core::taskledger::schema::PHASE_2_VERSION,
-        "undo the new version here"
-    );
+    // A schema 2 file, built by the real steps, with 1 run, 1 claimed task
+    // and its worker.
+    let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("ledger.sqlite3");
-    let conn = rusqlite::Connection::open(&path).unwrap();
+    let mut conn = rusqlite::Connection::open(&path).unwrap();
+    horch_core::taskledger::schema::migrate_to(&mut conn, 2).unwrap();
     conn.execute_batch(
-        "DROP INDEX tasks_by_run_status;
-         DROP INDEX workers_by_run_status;
-         DROP TABLE leases;
-         DROP TABLE questions;
-         ALTER TABLE tasks DROP COLUMN not_before;
-         ALTER TABLE tasks DROP COLUMN due_at;
-         ALTER TABLE tasks DROP COLUMN replans;
-         ALTER TABLE tasks DROP COLUMN cancel_requested;
-         ALTER TABLE worker_waits DROP COLUMN due_at;
-         ALTER TABLE worker_waits DROP COLUMN question_id;
-         DROP INDEX jobs_one_active;
-         DROP TABLE jobs;
-         DROP TABLE needs_you;
-         DROP TABLE pass_cursors;
-         DROP TABLE attempts;
-         DROP TABLE fleetd;
-         ALTER TABLE events DROP COLUMN entity;
-         ALTER TABLE events DROP COLUMN entity_id;
-         ALTER TABLE events DROP COLUMN from_state;
-         ALTER TABLE events DROP COLUMN to_state;
-         ALTER TABLE events DROP COLUMN cause;
-         ALTER TABLE events DROP COLUMN data_json;
-         DROP INDEX session_records_by_slug;
-         DROP TABLE session_records;
-         DROP INDEX outbox_undelivered;
-         DROP TABLE outbox;
-         DROP INDEX run_gates_by_tip;
-         DROP TABLE run_gates;
-         ALTER TABLE tasks DROP COLUMN work_kind;
-         ALTER TABLE tasks DROP COLUMN review_mode;
-         ALTER TABLE tasks DROP COLUMN ticket_snapshot;
-         ALTER TABLE tasks DROP COLUMN ticket_sha;
-         ALTER TABLE tasks DROP COLUMN check_none;
-         ALTER TABLE runs DROP COLUMN default_check;
-         ALTER TABLE runs DROP COLUMN pr_declined_reason;
-         ALTER TABLE runs DROP COLUMN orchestrator_stopped_at;
-         ALTER TABLE runs DROP COLUMN orchestrator_respawns;
-         ALTER TABLE runs DROP COLUMN last_respawn_at;
-         ALTER TABLE workers DROP COLUMN handoff_path;
-         ALTER TABLE workers DROP COLUMN target_task_id;
-         ALTER TABLE worktrees DROP COLUMN bytes;
-         ALTER TABLE worktrees DROP COLUMN bytes_measured_at;
-         ALTER TABLE worktrees DROP COLUMN archive_ref;
-         ALTER TABLE worktrees DROP COLUMN decision;
-         ALTER TABLE worktrees DROP COLUMN decided_at;
-         ALTER TABLE worktrees DROP COLUMN bytes_freed;
-         ALTER TABLE runs DROP COLUMN max_attempts;
-         ALTER TABLE tasks DROP COLUMN held_reason;
-         ALTER TABLE tasks DROP COLUMN attempt_floor;
-         ALTER TABLE runs DROP COLUMN watchdog_version;
-         ALTER TABLE runs DROP COLUMN watchdog_exe;
-         PRAGMA user_version = 2;",
+        "INSERT INTO projects VALUES ('p', '/repo', 'now');
+         INSERT INTO runs (run_id, project_id, slug, status, started_at)
+            VALUES ('r', 'p', 'r1', 'active', 'now');
+         INSERT INTO tasks (task_id, run_id, seq, title, task_file, primary_persona, claimable_by,
+                status, attempts, current_worker_id, created_at, updated_at)
+            VALUES ('T-1', 'r', 1, 'a', 'tickets/a.md', 'opus', 'opus', 'running', 1, 'w', 'now', 'now');
+         INSERT INTO workers (worker_id, run_id, persona, host, task_id, attempt, status)
+            VALUES ('w', 'r', 'opus', 'h', 'T-1', 1, 'working');",
     )
     .unwrap();
     drop(conn);
@@ -510,13 +457,13 @@ fn a_schema_2_ledger_migrates_forward_and_keeps_its_rows() {
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
     assert_eq!(v, horch_core::taskledger::schema::VERSION);
-    let migrated = runs::get(store.conn(), &run.run_id).unwrap();
+    let migrated = runs::get(store.conn(), "r").unwrap();
     assert_eq!(migrated.slug, "r1");
     assert_eq!(migrated.max_attempts, 3);
-    let task = tasks::get(store.conn(), &t.task_id).unwrap();
+    let task = tasks::get(store.conn(), "T-1").unwrap();
     assert_eq!(task.status, "running");
     assert_eq!(task.attempts, 1);
-    assert_eq!(task.current_worker_id.as_deref(), Some(w.as_str()));
+    assert_eq!(task.current_worker_id.as_deref(), Some("w"));
     assert_eq!(task.held_reason, None);
     assert_eq!(task.attempt_floor, 0);
 }

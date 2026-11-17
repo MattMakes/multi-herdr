@@ -8,61 +8,11 @@ use horch_core::taskledger::schema;
 use horch_core::taskledger::store::{self, migrate_refusal, Store};
 use rusqlite::Connection;
 
-/// Undo what `schema::v7()` adds: the incident's downgrade, so the test has
-/// a real version 6 file.
-const DOWNGRADE_V7_TO_V6: &str = "
-DROP INDEX tasks_by_run_status;
-DROP INDEX workers_by_run_status;
-DROP TABLE leases;
-DROP TABLE questions;
-ALTER TABLE tasks DROP COLUMN not_before;
-ALTER TABLE tasks DROP COLUMN due_at;
-ALTER TABLE tasks DROP COLUMN replans;
-ALTER TABLE tasks DROP COLUMN cancel_requested;
-ALTER TABLE worker_waits DROP COLUMN due_at;
-ALTER TABLE worker_waits DROP COLUMN question_id;
-DROP INDEX jobs_one_active;
-DROP TABLE jobs;
-DROP TABLE needs_you;
-DROP TABLE pass_cursors;
-DROP TABLE attempts;
-DROP TABLE fleetd;
-ALTER TABLE events DROP COLUMN entity;
-ALTER TABLE events DROP COLUMN entity_id;
-ALTER TABLE events DROP COLUMN from_state;
-ALTER TABLE events DROP COLUMN to_state;
-ALTER TABLE events DROP COLUMN cause;
-ALTER TABLE events DROP COLUMN data_json;
-DROP INDEX session_records_by_slug;
-DROP TABLE session_records;
-DROP INDEX outbox_undelivered;
-DROP TABLE outbox;
-DROP INDEX run_gates_by_tip;
-DROP TABLE run_gates;
-ALTER TABLE tasks DROP COLUMN work_kind;
-ALTER TABLE tasks DROP COLUMN review_mode;
-ALTER TABLE tasks DROP COLUMN ticket_snapshot;
-ALTER TABLE tasks DROP COLUMN ticket_sha;
-ALTER TABLE tasks DROP COLUMN check_none;
-ALTER TABLE runs DROP COLUMN default_check;
-ALTER TABLE runs DROP COLUMN pr_declined_reason;
-ALTER TABLE runs DROP COLUMN orchestrator_stopped_at;
-ALTER TABLE runs DROP COLUMN orchestrator_respawns;
-ALTER TABLE runs DROP COLUMN last_respawn_at;
-ALTER TABLE workers DROP COLUMN handoff_path;
-ALTER TABLE workers DROP COLUMN target_task_id;
-PRAGMA user_version = 6;";
-
-/// A version 6 ledger at `path` with 1 project row.
+/// A version 6 ledger at `path`, built by the real steps, with 1 project
+/// row.
 fn version_6_file(path: &Path) {
-    assert_eq!(
-        schema::VERSION,
-        schema::PHASE_2_VERSION,
-        "update DOWNGRADE_V7_TO_V6 for the new version"
-    );
-    drop(Store::open(path).unwrap());
-    let conn = Connection::open(path).unwrap();
-    conn.execute_batch(DOWNGRADE_V7_TO_V6).unwrap();
+    let mut conn = Connection::open(path).unwrap();
+    schema::migrate_to(&mut conn, 6).unwrap();
     conn.execute("INSERT INTO projects VALUES ('p', '/r', 'now')", [])
         .unwrap();
 }
