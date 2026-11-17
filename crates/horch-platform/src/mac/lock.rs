@@ -1,2 +1,2 @@
-//! The concern lock for macOS. Ticket 05 of
-//! `docs/tickets/fleetd-p1/` fills it.
+//! The concern lock for macOS. It has no code: the fleetd lock is
+//! `std`'s `File::try_lock`. See [`crate::lock`].
