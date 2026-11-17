@@ -5,7 +5,9 @@
 //! closes a pane: a reap ends the rows and queues the task in 1
 //! transaction before any signal (`preservation-04-behavior.md`, S7).
 //!
-//! - The claim writes 1 live attempt with [`start_attempt`].
+//! - The claim writes 1 live attempt and its lease with [`start_attempt`].
+//! - A command that moves a task out of the states that hold a lease
+//!   deletes the lease: [`schedule_retry`] and [`escalate_task`].
 //! - I4 at the claim: [`refuse_second_attempt`].
 //! - I1, process part: [`finish_exited`]. Each dead attempt goes through
 //!   [`end_attempt`], then [`schedule_retry`] or [`escalate_task`].
@@ -19,6 +21,7 @@ use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
 use crate::fleetd::ideas::application::needs_you::{self, NeedsYouList};
 use crate::fleetd::ideas::domain::needs_you::Write;
 use crate::fleetd::task_execution::adapters::sqlite as store;
+use crate::fleetd::task_execution::application::lease;
 use crate::fleetd::task_execution::domain::task::{
     attempt_id, dead_attempts, held_attempt, orphans, AfterFailure, AttemptRow, AttemptState,
     Facts, KeptPane, Reap, Recorded, RowRef, Stop,
@@ -47,7 +50,8 @@ fn cause(text: &str) -> Cause<'_> {
 }
 
 /// The claim: write attempt `n` of task `task_id`, `live`, for `w`, with
-/// its agent process and pane when the row has them. Returns its id.
+/// its agent process and pane when the row has them, and its lease on the
+/// fleet clock. Returns its id.
 pub fn start_attempt(tx: &Connection, task_id: &str, n: i64, w: &Worker) -> Result<String> {
     check_open(tx)?;
     let process = w
@@ -73,6 +77,8 @@ pub fn start_attempt(tx: &Connection, task_id: &str, n: i64, w: &Worker) -> Resu
         text: &why,
     };
     created(tx, None, Entity::Attempt, &a.id, by)?;
+    let clock = lease::fleet_clock(tx)?;
+    lease::take(tx, clock, task_id, &a.id, lease::claim_lease_s())?;
     Ok(a.id)
 }
 
@@ -141,13 +147,15 @@ pub fn attempt_live(
 /// `ScheduleRetry`: task `task_id` is queued again, first in line.
 pub fn schedule_retry(tx: &Connection, task_id: &str, why: &str) -> Result<()> {
     check_open(tx)?;
-    tasks::schedule_retry(tx, task_id, why)
+    tasks::schedule_retry(tx, task_id, why)?;
+    lease::release(tx, task_id)
 }
 
 /// `EscalateTask`: task `task_id` is held for the operator.
 pub fn escalate_task(tx: &Connection, task_id: &str) -> Result<()> {
     check_open(tx)?;
-    tasks::escalate(tx, task_id)
+    tasks::escalate(tx, task_id)?;
+    lease::release(tx, task_id)
 }
 
 /// I1, process part: each live attempt of this host whose process is dead
