@@ -9,15 +9,20 @@
 
 use std::fmt;
 
+pub mod awake;
+pub mod channel;
 pub mod fs;
 pub mod group;
 pub mod ipc;
+pub mod lock;
 pub mod machine;
 pub mod path;
 pub mod process;
 pub mod rest;
+pub mod service;
 pub mod shell;
 pub mod signal;
+pub mod watch;
 
 #[cfg(target_os = "linux")]
 mod linux;

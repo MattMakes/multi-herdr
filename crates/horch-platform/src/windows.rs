@@ -1,11 +1,16 @@
 //! The Windows module of the platform layer.
 
+pub(crate) mod awake;
+pub(crate) mod channel;
 pub(crate) mod fs;
 pub(crate) mod group;
 pub(crate) mod ipc;
+pub(crate) mod lock;
 pub(crate) mod machine;
 pub(crate) mod path;
 pub(crate) mod process;
 pub(crate) mod rest;
+pub(crate) mod service;
 pub(crate) mod shell;
 pub(crate) mod signal;
+pub(crate) mod watch;
