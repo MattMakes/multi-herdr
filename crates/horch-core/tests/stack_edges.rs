@@ -59,8 +59,9 @@ use horch_core::taskledger::runs;
 use horch_core::taskledger::schema;
 use horch_core::taskledger::tasks::{self, NewTask};
 use horch_core::taskledger::workers::Worker;
+use horch_core::taskledger::Store;
 use horch_marketplace::git::scrub_repo_env;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, TransactionBehavior};
 
 /// The web address of the remote, as `remote.origin.url` names it. A push
 /// goes to the local bare repository through `url.<bare>.pushInsteadOf`.
@@ -674,9 +675,16 @@ impl World {
     /// Run the push run `id`, and end it passed.
     fn run_push(&mut self, id: i64) {
         let row = self.job(id);
-        let out =
-            exec_push::run_with(&self.conn, &row, &self.tools, &Launcher, &self.config).unwrap();
-        assert!(out.passed, "{}", out.text);
+        let job = Store::open_read_only(Path::new(self.conn.path().unwrap())).unwrap();
+        let ran = exec_push::run_with(job.conn(), &row, &self.tools, &Launcher).unwrap();
+        assert!(ran.outcome.passed, "{}", ran.outcome.text);
+        let config = self.config.clone();
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+        exec_push::record(&ctx(&config), &tx, &row, &ran).unwrap();
+        tx.commit().unwrap();
         self.conn
             .execute(
                 "UPDATE jobs SET state = 'passed', ended_at = 'now' WHERE id = ?1",

@@ -18,6 +18,7 @@ use horch_core::fleetd::fleet_runtime::application::jobs::{JobCtx, Queued};
 use horch_core::fleetd::fleet_runtime::application::ledger::Cause;
 use horch_core::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
+use horch_core::fleetd::ideas::adapters::ideas_store::{self, NewIdea};
 use horch_core::fleetd::ideas::application::needs_you::{self, NeedsYouList};
 use horch_core::fleetd::integration::adapters::exec_fetch::Tools;
 use horch_core::fleetd::integration::adapters::exec_push;
@@ -32,6 +33,7 @@ use horch_core::taskledger::model::Actor;
 use horch_core::taskledger::runs::{self, NewRun};
 use horch_core::taskledger::schema;
 use horch_core::taskledger::tasks::{self, NewTask};
+use horch_core::taskledger::Store;
 use rusqlite::{params, Connection, TransactionBehavior};
 
 const FEATURE: &str = "F-0001";
@@ -169,6 +171,13 @@ fn world(pr: Option<&str>, tasks: &[&str]) -> World {
             primary_branch: "main",
         };
         rows::insert_feature(tx, None, &new, cause("feature accepted"))?;
+        // FR-12: a task of the run needs an idea in flight of the feature.
+        let idea = NewIdea {
+            id: "I-1",
+            feature_id: FEATURE,
+            priority: 0,
+        };
+        ideas_store::insert_idea(tx, None, &idea, cause("idea added"))?;
         let branch = NewBranch {
             name: BRANCH,
             feature_id: FEATURE,
@@ -307,9 +316,16 @@ impl World {
             other => panic!("no new push run at {clock} s: {other:?}"),
         };
         let row = jobs_store::get(&self.conn, id).unwrap().unwrap();
-        let outcome =
-            exec_push::run_with(&self.conn, &row, &self.tools, &Launcher, &self.config).unwrap();
-        assert!(outcome.passed, "{}", outcome.text);
+        let job = Store::open_read_only(Path::new(self.conn.path().unwrap())).unwrap();
+        let ran = exec_push::run_with(job.conn(), &row, &self.tools, &Launcher).unwrap();
+        assert!(ran.outcome.passed, "{}", ran.outcome.text);
+        let config = self.config.clone();
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+        exec_push::record(&ctx(&config), &tx, &row, &ran).unwrap();
+        tx.commit().unwrap();
         self.conn
             .execute(
                 "UPDATE jobs SET state = 'passed', ended_at = 'now' WHERE id = ?1",

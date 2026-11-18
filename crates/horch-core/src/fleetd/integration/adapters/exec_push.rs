@@ -1,9 +1,10 @@
 //! The executor of the `push` job (ticket 38).
 //!
 //! The subject of a run is the feature, and its input key names the tip,
-//! the lease and the remote (`application::remote::push_key`). The run
-//! pushes outside each transaction, then records the result in 1 short
-//! transaction at the fleet clock of the ledger:
+//! the lease and the remote (`application::remote::push_key`). The job
+//! process reads the ledger only (RR-5): [`run`] pushes and gives the facts
+//! of the run in its result file, and [`record`] in fleetd writes them in
+//! the transaction of the end of the run, at the fleet clock of the ledger:
 //!
 //! 1. The fleetd git rule (Q26 of MAP.md of fleetd-p4): this job runs git
 //!    with the rights of fleetd and with no sandbox, so git starts no hook
@@ -40,18 +41,18 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use horch_marketplace::git::{GitOutput, REPO_ENV};
-use rusqlite::{Connection, Transaction, TransactionBehavior};
+use rusqlite::Connection;
+use serde::{Deserialize, Serialize};
 
 use crate::fleetd::fleet_runtime::adapters::jobs_store::JobRow;
-use crate::fleetd::fleet_runtime::application::jobs::{NeedsYouItems, NewItem};
+use crate::fleetd::fleet_runtime::application::jobs::{JobCtx, NewItem, Ran};
 use crate::fleetd::fleet_runtime::application::ledger::Cause;
-use crate::fleetd::fleet_runtime::domain::config::FleetConfig;
 use crate::fleetd::fleet_runtime::domain::jobs::Outcome;
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
-use crate::fleetd::ideas::application::needs_you::NeedsYouList;
 use crate::fleetd::integration::adapters::exec_fetch::Tools;
+use crate::fleetd::integration::adapters::executors::{check_text, clip, facts_of, FACT_TEXT_MAX};
 use crate::fleetd::integration::adapters::project_file;
 use crate::fleetd::integration::adapters::sqlite::{self as rows, FeatureFact, FeatureRow};
 use crate::fleetd::integration::application::remote::{self, PushInput};
@@ -59,7 +60,7 @@ use crate::fleetd::integration::domain::project::{Pr, ProjectFileReader, FILE_NA
 use crate::fleetd::worker_profiles::adapters::launcher::Launcher;
 use crate::fleetd::worker_profiles::application::ports::{LaunchSpec, ProcessHost};
 use crate::fleetd::worktree_custody::adapters::git::project_program;
-use crate::fleetd::worktree_custody::application::create::{fleet_clock, fleet_config};
+use crate::fleetd::worktree_custody::application::create::fleet_clock;
 use crate::runtime::context::ProcessEnv;
 use crate::runtime::process;
 use crate::taskledger::finish::pr::with_new_sections;
@@ -96,60 +97,47 @@ const SAFE_ENV: [(&str, &str); 5] = [
 /// bytes/s for 60 s ends.
 const HTTP_STALL: [&str; 2] = ["http.lowSpeedLimit=1000", "http.lowSpeedTime=60"];
 
-/// Runs the job `row` with the programs of this process, the launcher, the
-/// `fleet.toml` of the fleet of the ledger, and the fleet clock of the
-/// ledger.
-pub fn run(conn: &Connection, row: &JobRow) -> Result<Outcome> {
-    let config = match conn.path().filter(|p| !p.is_empty()) {
-        Some(ledger) => fleet_config(Path::new(ledger))?,
-        None => FleetConfig::default(),
-    };
-    run_with(conn, row, &Tools::from_env(&ProcessEnv), &Launcher, &config)
+/// Runs the job `row` with the programs of this process and the launcher.
+pub fn run(conn: &Connection, row: &JobRow) -> Result<Ran> {
+    run_with(conn, row, &Tools::from_env(&ProcessEnv), &Launcher)
 }
 
-/// [`run`] with the programs `tools`, the launcher `host` of each `gh`
-/// call, and the fleet config `config`.
+/// [`run`] with the programs `tools` and the launcher `host` of each `gh`
+/// call. It writes no row: the facts of the push and of the pull request
+/// step are in its result.
 pub fn run_with(
     conn: &Connection,
     row: &JobRow,
     tools: &Tools,
     host: &dyn ProcessHost,
-    config: &FleetConfig,
-) -> Result<Outcome> {
-    let feature = row.subject.as_str();
+) -> Result<Ran> {
     let pushed = push(conn, row, &tools.git);
     let followed = match &pushed {
         Ok(input) => Some(follow_pr(conn, row, tools, host, &input.remote)),
         Err(_) => None,
     };
-    in_transaction(conn, |tx| match (&pushed, &followed) {
-        (Ok(input), followed) => {
-            remote::record_push_passed(tx, None, &NeedsYouList, feature, &input.tip)?;
-            match followed {
-                Some(Err(why)) => {
-                    let clock = fleet_clock(tx)?;
-                    let why = format!("the pull request step failed: {why:#}");
-                    remote::record_push_failed(
-                        tx,
-                        None,
-                        &NeedsYouList,
-                        config,
-                        feature,
-                        clock,
-                        &why,
-                    )
-                }
-                Some(Ok(facts)) => record_pr(tx, feature, facts),
-                None => Ok(()),
-            }
-        }
-        (Err(why), _) => {
-            let clock = fleet_clock(tx)?;
-            let why = format!("{why:#}");
-            remote::record_push_failed(tx, None, &NeedsYouList, config, feature, clock, &why)
-        }
-    })?;
-    Ok(match (pushed, followed) {
+    let facts = match (&pushed, &followed) {
+        (Ok(_), Some(Err(why))) => PushFacts {
+            pushed: true,
+            failure: Some(clip(format!("the pull request step failed: {why:#}"))),
+            ..PushFacts::default()
+        },
+        (Ok(_), Some(Ok(pr))) => PushFacts {
+            pushed: true,
+            pr: pr.pr.clone(),
+            manual: pr.manual,
+            ..PushFacts::default()
+        },
+        (Ok(_), None) => PushFacts {
+            pushed: true,
+            ..PushFacts::default()
+        },
+        (Err(why), _) => PushFacts {
+            failure: Some(clip(format!("{why:#}"))),
+            ..PushFacts::default()
+        },
+    };
+    let outcome = match (pushed, followed) {
         (Ok(input), Some(Err(why))) => Outcome {
             passed: false,
             verdict: true,
@@ -168,7 +156,87 @@ pub fn run_with(
             verdict: true,
             text: format!("the push failed: {why:#}"),
         },
+    };
+    Ok(Ran {
+        outcome,
+        data: Some(serde_json::to_value(&facts)?),
     })
+}
+
+/// The longest pull request or compare URL of a result file, in bytes.
+const PR_MAX: usize = 2048;
+
+/// The facts of a push run in its result file.
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PushFacts {
+    /// Whether `git push` passed.
+    pushed: bool,
+    /// The cause of the failure of the push, or of the pull request step
+    /// after a passed push.
+    failure: Option<String>,
+    /// The pull request or the compare URL of the feature.
+    pr: Option<String>,
+    /// `Some(ready)`: `pr` is a compare URL for the needs-you list, of a
+    /// feature that was `ready`.
+    manual: Option<bool>,
+}
+
+impl PushFacts {
+    /// Refuse facts that no run gives: the form of each fact, and the
+    /// facts that go together.
+    fn check(&self) -> Result<()> {
+        if !self.pushed && (self.failure.is_none() || self.pr.is_some() || self.manual.is_some()) {
+            bail!("a failed push has its cause and no pull request");
+        }
+        if self.manual.is_some() && self.pr.is_none() {
+            bail!("a compare URL fact has no URL");
+        }
+        if let Some(why) = &self.failure {
+            check_text("failure", why, FACT_TEXT_MAX)?;
+        }
+        if let Some(pr) = &self.pr {
+            check_text("pr", pr, PR_MAX)?;
+            if pr.trim().is_empty() || pr.contains(['\n', '\t']) {
+                bail!("the fact pr is not 1 line");
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Record the result `ran` of the push run `row`, in `tx` of fleetd: a
+/// passed push and its pull request facts, or a failed run. The feature
+/// and the tip come from the row, so a file changes only the feature of
+/// its own job.
+pub fn record(ctx: &JobCtx<'_>, tx: &Connection, row: &JobRow, ran: &Ran) -> Result<()> {
+    let facts: PushFacts =
+        facts_of(ran.data.as_ref())?.context("the result file of a push has no facts")?;
+    facts.check()?;
+    let feature = row.subject.as_str();
+    rows::feature(tx, feature)?.with_context(|| format!("no feature {feature} in the ledger"))?;
+    let failed = |why: &str| -> Result<()> {
+        let clock = fleet_clock(tx)?;
+        remote::record_push_failed(
+            tx,
+            ctx.guard,
+            ctx.needs_you,
+            ctx.config,
+            feature,
+            clock,
+            why,
+        )
+    };
+    if !facts.pushed {
+        return failed(facts.failure.as_deref().unwrap_or_default());
+    }
+    let input = PushInput::parse(&row.input_key)
+        .with_context(|| format!("the input key {:?} is not a push key", row.input_key))?;
+    remote::record_push_passed(tx, ctx.guard, ctx.needs_you, feature, &input.tip)?;
+    match facts.failure.as_deref() {
+        Some(why) => failed(why),
+        None => record_pr(ctx, tx, feature, &facts),
+    }
 }
 
 /// The push of the run `row`: its input, or the cause of its failure.
@@ -342,13 +410,12 @@ pub fn pr_manual_key(feature: &str) -> String {
     format!("{PR_MANUAL_KIND}:{feature}")
 }
 
-/// What the pull request step found, recorded after it in 1 transaction:
-/// the pull request or compare URL of the feature, and the text of the
-/// needs-you item of a compare URL.
+/// What the pull request step found: the pull request or compare URL of
+/// the feature, and for a compare URL whether the feature was `ready`.
 #[derive(Debug, Default)]
 struct PrFacts {
     pr: Option<String>,
-    manual_item: Option<String>,
+    manual: Option<bool>,
 }
 
 /// The pull request step after a passed push of the feature of `row` to
@@ -378,7 +445,7 @@ fn follow_pr(
     let base = pr_base(conn, &f)?;
     let settings = project_file::load(&reader, &format!("refs/heads/{branch}"))?;
     match settings.pr {
-        Pr::Manual => manual(&tools.git, repo, remote, &f, branch, &base, ready),
+        Pr::Manual => manual(&tools.git, repo, remote, branch, &base, ready),
         Pr::Gh => {
             let gh = Gh {
                 bin: tools
@@ -499,7 +566,7 @@ fn gh_ready(
     };
     Ok(PrFacts {
         pr: Some(url),
-        manual_item: None,
+        manual: None,
     })
 }
 
@@ -519,14 +586,13 @@ fn gh_draft(gh: &Gh<'_>, f: &FeatureRow, base: &str) -> Result<PrFacts> {
     Ok(PrFacts::default())
 }
 
-/// `pr = manual`: the compare URL of the feature branch over `base`, with
-/// the text of its needs-you item. A remote with no web address gets the
-/// branch names.
+/// `pr = manual`: the compare URL of the feature branch over `base`, and
+/// whether the feature is `ready`, for the text of its needs-you item. A
+/// remote with no web address gets the branch names.
 fn manual(
     git: &Path,
     repo: &Path,
     remote: &str,
-    f: &FeatureRow,
     branch: &str,
     base: &str,
     ready: bool,
@@ -536,21 +602,21 @@ fn manual(
     let link = web_base(&out.stdout_text())
         .map(|web| format!("{web}/compare/{base}...{branch}"))
         .unwrap_or_else(|| format!("{base}...{branch} of the remote {remote}"));
-    let text = if ready {
-        format!(
-            "Feature {} is ready. Open its pull request, then merge it: {link}",
-            f.id
-        )
-    } else {
-        format!(
-            "Feature {} is open again: do not merge {link} yet. fleetd tells you when it is ready.",
-            f.id
-        )
-    };
     Ok(PrFacts {
         pr: Some(link),
-        manual_item: Some(text),
+        manual: Some(ready),
     })
+}
+
+/// The text of the needs-you item of the compare URL `link` of `feature`.
+fn manual_text(feature: &str, link: &str, ready: bool) -> String {
+    if ready {
+        format!("Feature {feature} is ready. Open its pull request, then merge it: {link}")
+    } else {
+        format!(
+            "Feature {feature} is open again: do not merge {link} yet. fleetd tells you when it is ready."
+        )
+    }
 }
 
 /// The web address of the remote URL `url`: `https://<host>/<path>` with
@@ -600,7 +666,7 @@ fn task_sections(conn: &Connection, feature: &str, branch: &str) -> Result<Vec<(
 
 /// Record the facts of the pull request step of `feature`, in `tx`: `pr`,
 /// `pr_state` `open`, and the needs-you item of a compare URL.
-fn record_pr(tx: &Connection, feature: &str, facts: &PrFacts) -> Result<()> {
+fn record_pr(ctx: &JobCtx<'_>, tx: &Connection, feature: &str, facts: &PushFacts) -> Result<()> {
     let Some(pr) = facts.pr.as_deref() else {
         return Ok(());
     };
@@ -611,21 +677,22 @@ fn record_pr(tx: &Connection, feature: &str, facts: &PrFacts) -> Result<()> {
         text: "the push job followed the pull request",
     };
     if f.pr.as_deref() != Some(pr) {
-        rows::set_feature_fact(tx, None, feature, FeatureFact::Pr(pr), cause)?;
+        rows::set_feature_fact(tx, ctx.guard, feature, FeatureFact::Pr(pr), cause)?;
     }
     if f.pr_state != "open" {
-        rows::set_feature_fact(tx, None, feature, FeatureFact::PrState("open"), cause)?;
+        rows::set_feature_fact(tx, ctx.guard, feature, FeatureFact::PrState("open"), cause)?;
     }
-    if let Some(text) = facts.manual_item.as_deref() {
+    if let Some(ready) = facts.manual {
         let key = pr_manual_key(feature);
+        let text = manual_text(feature, pr, ready);
         let item = NewItem {
             key: &key,
             kind: PR_MANUAL_KIND,
             entity: Entity::Feature,
             entity_id: feature,
-            text,
+            text: &text,
         };
-        NeedsYouList.open_item(tx, &item)?;
+        ctx.needs_you.open_item(tx, &item)?;
     }
     Ok(())
 }
@@ -719,14 +786,6 @@ impl ProjectFileReader for BlobReader<'_> {
         // The commit has no project file: git exits 128.
         Ok((out.status == 0).then(|| String::from_utf8_lossy(&out.stdout).into_owned()))
     }
-}
-
-/// Run `f` in 1 immediate transaction of `conn`.
-fn in_transaction(conn: &Connection, f: impl FnOnce(&Transaction<'_>) -> Result<()>) -> Result<()> {
-    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    f(&tx)?;
-    tx.commit()?;
-    Ok(())
 }
 
 #[cfg(test)]

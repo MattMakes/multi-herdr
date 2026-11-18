@@ -33,6 +33,7 @@ use horch_core::fleetd::worker_profiles::application::ports::LaunchSpec;
 use horch_core::taskledger::model::Actor;
 use horch_core::taskledger::schema;
 use horch_core::taskledger::workers::Worker;
+use horch_core::taskledger::Store;
 use rusqlite::{Connection, TransactionBehavior};
 
 const FEATURE: &str = "F-0001";
@@ -299,15 +300,28 @@ impl World {
     fn run(&mut self, id: i64, clock: i64) -> JobRow {
         self.clock(clock);
         let pid = self.start(id, clock);
+        self.run_job(id, pid);
+        self.ingest();
+        jobs_store::get(&self.conn, id).unwrap().unwrap()
+    }
+
+    /// The executor of the run `id` with the pid `pid`, as `horch job run`
+    /// runs it: on a read-only connection to the ledger.
+    fn run_job(&self, id: i64, pid: u32) {
         let config = self.config.clone();
         let checks = CheckRunner {
             host: &Launcher,
             profiles: &NoProfiles,
             sweep: None,
         };
-        jobs::run_job(&ctx(&config), &mut self.conn, id, pid, &checks).unwrap();
-        jobs::end_from_files(&ctx(&config), &mut self.conn).unwrap();
-        jobs_store::get(&self.conn, id).unwrap().unwrap()
+        let job = Store::open_read_only(&self.dir.path().join("ledger.sqlite3")).unwrap();
+        jobs::run_job(&ctx(&config), job.conn(), id, pid, &checks).unwrap();
+    }
+
+    /// End each run from its result file, as a pass of fleetd ends it.
+    fn ingest(&mut self) -> Vec<(i64, State)> {
+        let config = self.config.clone();
+        jobs::end_from_files(&ctx(&config), &mut self.conn).unwrap()
     }
 
     /// Queue a push at `clock` and run it to its end.
@@ -432,6 +446,57 @@ fn push_sets_ok_and_the_seen_remote_tip() {
     assert_eq!(w.branch().seen_remote_tip.as_deref(), Some(tip.as_str()));
     // The remote has the tip that fleetd saw: nothing more to push.
     assert_eq!(w.queue(20), None);
+}
+
+/// The job process of a push writes no row: it runs on a read-only
+/// connection, and the feature has no push fact until the ingest of its
+/// result file. A second ingest of the same file changes nothing.
+#[test]
+fn push_job_process_writes_no_row_and_a_second_ingest_changes_nothing() {
+    let mut w = world();
+    let tip = w.local_tip();
+    w.clock(10);
+    let id = w.queue_new(10);
+    let pid = w.start(id, 10);
+
+    w.run_job(id, pid);
+
+    assert_eq!(w.remote_tip(BRANCH).as_deref(), Some(tip.as_str()));
+    assert_eq!(w.feature().push_state, None, "the job process wrote a fact");
+    assert_eq!(w.branch().seen_remote_tip, None);
+    let row = jobs_store::get(&w.conn, id).unwrap().unwrap();
+    assert_eq!(row.state, State::Running);
+
+    assert_eq!(w.ingest(), vec![(id, State::Passed)]);
+    assert_eq!(w.feature().push_state.as_deref(), Some("ok"));
+    assert_eq!(w.branch().seen_remote_tip.as_deref(), Some(tip.as_str()));
+    let after = (
+        format!("{:?}", w.feature()),
+        format!("{:?}", w.branch()),
+        counts(&w.conn),
+    );
+
+    let name = format!("{id}-{}.json", row.run);
+    let jobs = w.dir.path().join("fleet/run/jobs");
+    std::fs::copy(jobs.join("archive").join(&name), jobs.join(&name)).unwrap();
+    assert_eq!(w.ingest(), Vec::new());
+    let again = (
+        format!("{:?}", w.feature()),
+        format!("{:?}", w.branch()),
+        counts(&w.conn),
+    );
+    assert_eq!(again, after);
+}
+
+/// The count of the rows of each table that an ingest can add to.
+fn counts(conn: &Connection) -> Vec<i64> {
+    ["events", "ingested", "needs_you"]
+        .iter()
+        .map(|t| {
+            conn.query_row(&format!("SELECT COUNT(*) FROM {t}"), [], |r| r.get(0))
+                .unwrap()
+        })
+        .collect()
 }
 
 #[test]

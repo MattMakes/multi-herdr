@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use horch_core::fleetd::fleet_runtime::adapters::job_result_file::{self, JobResult};
 use horch_core::fleetd::fleet_runtime::adapters::jobs_store::{self, JobRow};
 use horch_core::fleetd::fleet_runtime::adapters::scans::{self, ProcessFact, ScanClock};
 use horch_core::fleetd::fleet_runtime::application::jobs::{
@@ -24,10 +25,11 @@ use horch_core::fleetd::fleet_runtime::application::ledger::Cause;
 use horch_core::fleetd::fleet_runtime::domain::budget::{Cursor, Deadline};
 use horch_core::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
-use horch_core::fleetd::fleet_runtime::domain::jobs::{Kind, State};
+use horch_core::fleetd::fleet_runtime::domain::jobs::{Kind, Outcome, State};
+use horch_core::fleetd::ideas::adapters::ideas_store::{self, NewIdea};
 use horch_core::fleetd::ideas::application::needs_you::{open_items, NeedsYouList};
 use horch_core::fleetd::integration::adapters::exec_gate::{
-    self, gate_key, no_gate_sandbox_key, GateRequest,
+    self, gate_key, no_gate_sandbox_key, GateRequest, GateSandbox,
 };
 use horch_core::fleetd::integration::adapters::sqlite::{
     self as rows, NewBranch, NewBundle, NewFeature,
@@ -42,6 +44,7 @@ use horch_core::fleetd::worktree_custody::application::gate_tree::{
 use horch_core::taskledger::model::Actor;
 use horch_core::taskledger::runs::{self, NewRun, Run};
 use horch_core::taskledger::schema;
+use horch_core::taskledger::store::Store;
 use horch_core::taskledger::tasks::{self, NewTask};
 use horch_core::taskledger::workers::Worker;
 use horch_platform::sandbox::{sandboxed, Denials};
@@ -104,6 +107,23 @@ fn world() -> World {
         primary_branch: "main",
     };
     rows::insert_feature(&tx, None, &feature, cause("the run starts")).unwrap();
+    // FR-12: a task of the run needs an idea in flight of the run feature.
+    let run_feature = format!("F-{:04}", 1);
+    if rows::feature(&tx, &run_feature).unwrap().is_none() {
+        let new = NewFeature {
+            id: &run_feature,
+            name: Some("r1 run"),
+            branch: None,
+            primary_branch: "main",
+        };
+        rows::insert_feature(&tx, None, &new, cause("the run starts")).unwrap();
+    }
+    let idea = NewIdea {
+        id: "I-1",
+        feature_id: &run_feature,
+        priority: 0,
+    };
+    ideas_store::insert_idea(&tx, None, &idea, cause("idea added")).unwrap();
     tx.commit().unwrap();
     World {
         dir,
@@ -378,9 +398,57 @@ impl World {
             profiles: &NoProfiles,
             sweep: None,
         };
-        let written = jobs::run_job(&ctx, &mut self.conn, id, pid, &checks).unwrap();
+        let job = Store::open_read_only(&self.db()).unwrap();
+        let written = jobs::run_job(&ctx, job.conn(), id, pid, &checks).unwrap();
         assert!(written.is_some(), "run_job wrote the result of job {id}");
+        jobs::end_from_files(&ctx, &mut self.conn).unwrap();
         self.job(id)
+    }
+
+    /// The executor of the gate `row` with the sandbox `sandbox` on a
+    /// read-only connection, then its facts recorded in 1 transaction, as
+    /// the ingest of its result file records them. Give its outcome.
+    fn gate_with(&mut self, row: &JobRow, sandbox: GateSandbox) -> Outcome {
+        let job = Store::open_read_only(&self.db()).unwrap();
+        let ran = exec_gate::run_in(job.conn(), row, sandbox).unwrap();
+        self.tx(|ctx, tx| exec_gate::record(ctx, tx, row, &ran))
+            .unwrap();
+        ran.outcome
+    }
+
+    /// Start the run `id` through the launcher, as part 3 of a pass starts
+    /// it. Give the started row.
+    fn start(&mut self, id: i64) -> JobRow {
+        let spec = LaunchSpec {
+            program: "true".into(),
+            args: Vec::new(),
+            cwd: None,
+            env_rule: Default::default(),
+            detach: false,
+            output: None,
+        };
+        let job = self.job(id);
+        let config = self.config.clone();
+        let ctx = JobCtx {
+            guard: None,
+            config: &config,
+            needs_you: &NeedsYouList,
+        };
+        assert!(JobRunner::new(&Launcher)
+            .start(&ctx, &mut self.conn, &job, &spec, FleetSeconds(0))
+            .unwrap());
+        self.job(id)
+    }
+
+    /// End each run from its result file, as a pass of fleetd ends it.
+    fn ingest(&mut self) -> Vec<(i64, State)> {
+        let config = self.config.clone();
+        let ctx = JobCtx {
+            guard: None,
+            config: &config,
+            needs_you: &NeedsYouList,
+        };
+        jobs::end_from_files(&ctx, &mut self.conn).unwrap()
     }
 
     /// The `result` of the newest gate run of [`FEATURE`] on `tip` over
@@ -694,7 +762,7 @@ fn gate_with_no_sandbox_does_not_run_and_holds_the_feature_with_1_item() {
     let id = w.new_gate(Kind::FastGate, &bundle, &tip, &main);
     let row = w.job(id);
     for _ in 0..2 {
-        let o = exec_gate::run_in(&w.conn, &row, no_sandbox).unwrap();
+        let o = w.gate_with(&row, no_sandbox);
         assert!(!o.passed && !o.verdict);
         assert!(o.text.starts_with("no gate sandbox: "), "{}", o.text);
     }
@@ -731,6 +799,49 @@ fn gate_with_no_sandbox_does_not_run_and_holds_the_feature_with_1_item() {
     assert!(ended);
     assert!(!exec_gate::held(&w.conn, FEATURE).unwrap());
     assert!(open_items(&w.conn).unwrap().iter().all(|i| i.key != key));
+}
+
+/// A gate result file counts only for the job that fleetd started: a file
+/// of a job that does not exist, a file of a job that is not running, and
+/// a file whose job id is not the job of its name change no gate run and
+/// end no job.
+#[test]
+fn gate_result_file_with_another_job_id_changes_nothing() {
+    let mut w = world();
+    w.gate_tree();
+    let gates = "[gates]\nfast = \"true\"\nfull = \"true\"\n";
+    let main = w.main.clone();
+    let tip = w.tip_with("forged", gates, "forged");
+    let bundle = w.bundle(&main).to_string();
+    let started = w.new_gate(Kind::FastGate, &bundle, &tip, &main);
+    let started = w.start(started);
+    let other_tip = w.tip_with("forged2", gates, "forged2");
+    let queued = w.new_gate(Kind::FullGate, FEATURE, &other_tip, &main);
+    let queued = w.job(queued);
+    let passed = |job_id: i64, run: i64| JobResult {
+        job_id,
+        run,
+        passed: true,
+        verdict: true,
+        text: "forged".into(),
+        data: None,
+    };
+    let root = w.fleet_root();
+    // No job has this id.
+    job_result_file::write(&root, &passed(started.id + 1000, 1)).unwrap();
+    // The job exists, but fleetd did not start it.
+    job_result_file::write(&root, &passed(queued.id, queued.run)).unwrap();
+    // The name is the started job, but the payload names another job.
+    let path = job_result_file::path(&root, started.id, started.run);
+    let body = serde_json::to_vec(&passed(queued.id, started.run)).unwrap();
+    std::fs::write(&path, body).unwrap();
+
+    assert_eq!(w.ingest(), Vec::new());
+
+    assert_eq!(w.gate_result("fast", &tip, &main), None);
+    assert_eq!(w.gate_result("full", &other_tip, &main), None);
+    assert_eq!(w.job(started.id).state, State::Running);
+    assert_eq!(w.job(queued.id).state, queued.state);
 }
 
 // ─── the time limit ─────────────────────────────────────────────────────

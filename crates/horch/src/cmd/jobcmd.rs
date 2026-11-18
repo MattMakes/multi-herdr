@@ -30,6 +30,7 @@ use horch_core::fleetd::worker_profiles::domain::conformance::{
 };
 use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger::finish::CodexSandbox;
+use horch_core::taskledger::Store;
 use serde_json::json;
 
 use super::operator_request;
@@ -74,8 +75,10 @@ fn requeue(ctx: &RuntimeContext, job: i64) -> Result<ExitCode> {
 }
 
 /// `horch job run <id>`: run the executor of the job and write its result.
+/// The job process opens the ledger read-only: fleetd writes each fact of
+/// the result file (RR-5).
 fn run(ctx: &RuntimeContext, id: i64) -> Result<ExitCode> {
-    let mut conn = super::fleetd::ledger_conn(&ctx.paths.ledger_db)?;
+    let ledger = Store::open_read_only(&ctx.paths.ledger_db)?;
     let config = config_file::load(&ctx.paths.fleet_root)?;
     let jctx = JobCtx {
         guard: None,
@@ -102,7 +105,7 @@ fn run(ctx: &RuntimeContext, id: i64) -> Result<ExitCode> {
         docs: Some(&docs),
         conformance: Some(&suite),
     };
-    match jobs::run_job_with(&jctx, &mut conn, id, std::process::id(), &runners)? {
+    match jobs::run_job_with(&jctx, ledger.conn(), id, std::process::id(), &runners)? {
         Some(o) => output::println(&format!("job {id}: {}: {}", o.state().as_str(), o.text)),
         None => output::println(&format!(
             "job {id}: this process does not run it: no result is written"

@@ -237,6 +237,12 @@ impl Store {
         &self.conn
     }
 
+    /// The connection, for a call that takes `&mut Connection`: a custody
+    /// call that runs a job between its transactions.
+    pub fn conn_mut(&mut self) -> &mut Connection {
+        &mut self.conn
+    }
+
     /// Run `f` in a `BEGIN IMMEDIATE` transaction: the write lock is taken
     /// before the first read, so a read-then-write (claim, reap, land) cannot
     /// interleave with another writer. Commits when `f` returns `Ok`. When

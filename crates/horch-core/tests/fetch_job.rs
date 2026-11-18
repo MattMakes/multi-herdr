@@ -20,7 +20,7 @@ use horch_core::fleetd::fleet_runtime::application::jobs::{
 use horch_core::fleetd::fleet_runtime::application::ledger::Cause;
 use horch_core::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
-use horch_core::fleetd::fleet_runtime::domain::jobs::State;
+use horch_core::fleetd::fleet_runtime::domain::jobs::{Outcome, State};
 use horch_core::fleetd::ideas::application::needs_you::{self, NeedsYouList};
 use horch_core::fleetd::integration::adapters::exec_fetch::{self, Tools};
 use horch_core::fleetd::integration::adapters::project_file;
@@ -33,6 +33,7 @@ use horch_core::runtime::MapEnv;
 use horch_core::taskledger::model::Actor;
 use horch_core::taskledger::schema;
 use horch_core::taskledger::workers::Worker;
+use horch_core::taskledger::Store;
 use rusqlite::{Connection, TransactionBehavior};
 
 const FEATURE: &str = "F-0001";
@@ -163,6 +164,14 @@ impl World {
     }
 
     fn run(&mut self, id: i64, clock: i64) -> JobRow {
+        let pid = self.start(id, clock);
+        self.run_job(id, pid);
+        self.ingest();
+        jobs_store::get(&self.conn, id).unwrap().unwrap()
+    }
+
+    /// Start the run `id` at `clock` through the launcher. Give its pid.
+    fn start(&mut self, id: i64, clock: i64) -> u32 {
         let config = self.config.clone();
         let ctx = ctx(&config);
         let job = jobs_store::get(&self.conn, id).unwrap().unwrap();
@@ -177,19 +186,55 @@ impl World {
         assert!(JobRunner::new(&Launcher)
             .start(&ctx, &mut self.conn, &job, &spec, FleetSeconds(clock))
             .unwrap());
-        let pid = jobs_store::get(&self.conn, id)
+        jobs_store::get(&self.conn, id)
             .unwrap()
             .unwrap()
             .pid
-            .unwrap();
+            .unwrap()
+    }
+
+    /// The executor of the run `id` with the pid `pid`, as `horch job run`
+    /// runs it: on a read-only connection to the ledger.
+    fn run_job(&self, id: i64, pid: u32) {
+        let config = self.config.clone();
         let checks = CheckRunner {
             host: &Launcher,
             profiles: &NoProfiles,
             sweep: None,
         };
-        jobs::run_job(&ctx, &mut self.conn, id, pid, &checks).unwrap();
-        jobs::end_from_files(&ctx, &mut self.conn).unwrap();
-        jobs_store::get(&self.conn, id).unwrap().unwrap()
+        let job = self.job_store();
+        jobs::run_job(&ctx(&config), job.conn(), id, pid, &checks).unwrap();
+    }
+
+    /// The executor of the fetch `row` with the programs `tools` on a
+    /// read-only connection, then its facts recorded in 1 transaction, as
+    /// the ingest of its result file records them. Give its outcome.
+    fn fetch_with(&mut self, row: &JobRow, tools: &Tools) -> Outcome {
+        let ran = exec_fetch::run_with(self.job_store().conn(), row, tools, &Launcher).unwrap();
+        let config = self.config.clone();
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+        exec_fetch::record(&ctx(&config), &tx, row, &ran).unwrap();
+        tx.commit().unwrap();
+        ran.outcome
+    }
+
+    /// The ledger as the job process opens it: read-only.
+    fn job_store(&self) -> Store {
+        Store::open_read_only(&self.dir.path().join("ledger.sqlite3")).unwrap()
+    }
+
+    /// End each run from its result file, as a pass of fleetd ends it.
+    fn ingest(&mut self) -> Vec<(i64, State)> {
+        let config = self.config.clone();
+        jobs::end_from_files(&ctx(&config), &mut self.conn).unwrap()
+    }
+
+    /// The result files of the archive of the fleet root.
+    fn archived(&self) -> PathBuf {
+        self.dir.path().join("fleet/run/jobs/archive")
     }
 
     fn fetch_runs(&self) -> Vec<JobRow> {
@@ -407,7 +452,7 @@ fn closed_unmerged_pull_request_opens_1_item() {
             other => panic!("no new fetch run: {other:?}"),
         };
         let row = jobs_store::get(&w.conn, id).unwrap().unwrap();
-        let outcome = exec_fetch::run_with(&w.conn, &row, &tools, &Launcher).unwrap();
+        let outcome = w.fetch_with(&row, &tools);
         assert!(outcome.passed, "{}", outcome.text);
         w.conn
             .execute("UPDATE jobs SET state = 'passed' WHERE id = ?1", [id])
@@ -449,10 +494,68 @@ fn missing_gh_gives_the_cause_in_the_job_result() {
     };
     let row = jobs_store::get(&w.conn, id).unwrap().unwrap();
 
-    let outcome = exec_fetch::run_with(&w.conn, &row, &tools, &Launcher).unwrap();
+    let outcome = w.fetch_with(&row, &tools);
 
     assert!(outcome.text.contains("gh"), "{}", outcome.text);
     assert_eq!(w.tip_row("main").tip, w.remote_tip("main"));
     let feature = rows::feature(&w.conn, FEATURE).unwrap().unwrap();
     assert_eq!(feature.pr_state, "none");
+}
+
+/// The job process of a fetch writes no row: it runs on a read-only
+/// connection, and the ledger has no tip until the ingest of its result
+/// file. A second ingest of the same file changes nothing.
+#[test]
+fn fetch_job_process_writes_no_row_and_a_second_ingest_changes_nothing() {
+    let mut w = world();
+    let id = match w.queue(&Remote::default(), 0) {
+        Some(Queued::New(id)) => id,
+        other => panic!("no new fetch run: {other:?}"),
+    };
+    let pid = w.start(id, 0);
+
+    w.run_job(id, pid);
+
+    let tips = |w: &World| -> i64 {
+        w.conn
+            .query_row("SELECT COUNT(*) FROM remote_tips", [], |r| r.get(0))
+            .unwrap()
+    };
+    assert_eq!(tips(&w), 0, "the job process wrote a tip");
+    let row = jobs_store::get(&w.conn, id).unwrap().unwrap();
+    assert_eq!(row.state, State::Running);
+
+    assert_eq!(w.ingest(), vec![(id, State::Passed)]);
+    assert_eq!(w.tip_row("main").tip, w.remote_tip("main"));
+    let after = snapshot(&w.conn);
+
+    let name = format!("{id}-{}.json", row.run);
+    std::fs::copy(
+        w.archived().join(&name),
+        w.dir.path().join("fleet/run/jobs").join(&name),
+    )
+    .unwrap();
+    assert_eq!(w.ingest(), Vec::new());
+    assert_eq!(snapshot(&w.conn), after);
+}
+
+/// The rows that an ingest can change: each job, remote tip, event,
+/// ingested file and needs-you item.
+fn snapshot(conn: &Connection) -> Vec<String> {
+    let mut out = Vec::new();
+    for sql in [
+        "SELECT id || ' ' || state || ' ' || COALESCE(result_json, '') FROM jobs",
+        "SELECT branch || ' ' || tip || ' ' || COALESCE(stale_since, '') FROM remote_tips",
+        "SELECT COUNT(*) FROM events",
+        "SELECT COUNT(*) FROM ingested",
+        "SELECT COUNT(*) FROM needs_you",
+        "SELECT id || ' ' || pr_state FROM features",
+    ] {
+        let mut stmt = conn.prepare(sql).unwrap();
+        let rows = stmt
+            .query_map([], |r| r.get::<_, rusqlite::types::Value>(0))
+            .unwrap();
+        out.extend(rows.map(|v| format!("{:?}", v.unwrap())));
+    }
+    out
 }

@@ -2520,17 +2520,7 @@ const LEDGER_WRITERS_EXEMPT: &[(&str, &str, &str)] = &[
     (
         "horch-core/src/taskledger/mod.rs",
         "Store::open(&ctx.paths.ledger_db)",
-        "taskledger::open, the writable open of the T-883, T-884 and T-885 entries below",
-    ),
-    (
-        "horch/src/cmd/jobcmd.rs",
-        "fleetd::ledger_conn(",
-        "T-883: a job process (horch job run) writes rows of its job",
-    ),
-    (
-        "horch-core/src/taskledger/triage/apply.rs",
-        "Connection::open(store.path())",
-        "T-883: the worktree jobs of a triage apply write custody rows",
+        "taskledger::open, the writable open of the T-884 and T-885 entries below",
     ),
     (
         "horch-core/src/execution/lifecycle.rs",

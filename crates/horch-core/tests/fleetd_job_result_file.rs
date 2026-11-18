@@ -431,7 +431,7 @@ fn crash_after_the_commit_only_archives_the_file() {
     let mut w = world();
     let launcher = Launcher;
     let mut runner = JobRunner::new(&launcher);
-    let id = w.running(&mut runner, Kind::Push);
+    let id = w.running(&mut runner, Kind::DocsSync);
     let path = files::write(&w.root(), &passed(id, 1, "pushed")).unwrap();
 
     // The pass commits, then fleetd stops before the archive.

@@ -27,21 +27,21 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 use std::sync::atomic::{AtomicI32, Ordering};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use horch_platform::sandbox::{sandboxed, Denials};
 use horch_platform::shell::CHECK_SHELL;
 use horch_platform::NotSupported;
 use rusqlite::Connection;
+use serde::{Deserialize, Serialize};
 
 use crate::fleetd::fleet_runtime::adapters::jobs_store::JobRow;
-use crate::fleetd::fleet_runtime::application::jobs::{
-    self, JobCtx, JobKey, NeedsYouItems, NewItem, Queued,
-};
+use crate::fleetd::fleet_runtime::application::jobs::{self, JobCtx, JobKey, NewItem, Queued, Ran};
 use crate::fleetd::fleet_runtime::application::ledger::Cause;
 use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use crate::fleetd::fleet_runtime::domain::jobs::{Kind, Outcome};
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
-use crate::fleetd::ideas::application::needs_you::{open_keys, NeedsYouList};
+use crate::fleetd::ideas::application::needs_you::open_keys;
+use crate::fleetd::integration::adapters::executors::{check_text, clip, facts_of, FACT_TEXT_MAX};
 use crate::fleetd::integration::adapters::git::CliGitGateway;
 use crate::fleetd::integration::adapters::project_file;
 use crate::fleetd::integration::adapters::sqlite::{self as rows, NewGateRun};
@@ -163,30 +163,30 @@ pub fn end_hold(ctx: &JobCtx<'_>, tx: &Connection, feature_id: &str) -> Result<b
 }
 
 /// Runs the job `row` in the gate sandbox of this host.
-pub fn run(conn: &Connection, row: &JobRow) -> Result<Outcome> {
+pub fn run(conn: &Connection, row: &JobRow) -> Result<Ran> {
     run_in(conn, row, sandboxed)
 }
 
-/// [`run`] with the gate sandbox `sandbox`.
-pub fn run_in(conn: &Connection, row: &JobRow, sandbox: GateSandbox) -> Result<Outcome> {
+/// [`run`] with the gate sandbox `sandbox`. It writes no row: the
+/// verdict, or the hold of a host with no gate sandbox, is in its result,
+/// and [`record`] in fleetd writes it.
+pub fn run_in(conn: &Connection, row: &JobRow, sandbox: GateSandbox) -> Result<Ran> {
     let Some(gate) = gate_word(row.kind) else {
-        return Ok(no_verdict(format!("{} is not a gate kind", row.kind)));
+        return Ok(no_verdict(format!("{} is not a gate kind", row.kind)).into());
     };
     let Some((tip, base_tip)) = read_key(&row.input_key) else {
         return Ok(no_verdict(format!(
             "the {} job {} has no input key of 2 tips: {}",
             row.kind, row.id, row.input_key
-        )));
+        ))
+        .into());
     };
     let Some(repo) = row.repo.as_deref().map(PathBuf::from) else {
-        return Ok(no_verdict(format!(
-            "the {} job {} has no repository",
-            row.kind, row.id
-        )));
+        return Ok(no_verdict(format!("the {} job {} has no repository", row.kind, row.id)).into());
     };
     let feature = match feature_of(conn, row)? {
         Ok(feature) => feature,
-        Err(why) => return Ok(no_verdict(why)),
+        Err(why) => return Ok(no_verdict(why).into()),
     };
     let run = GateRun {
         gate,
@@ -197,6 +197,66 @@ pub fn run_in(conn: &Connection, row: &JobRow, sandbox: GateSandbox) -> Result<O
         root: fleet_root(conn)?,
     };
     run.go(conn, row, sandbox)
+}
+
+/// The facts of a gate run in its result file: the cause of the hold of a
+/// host with no gate sandbox. A run with a verdict has no facts.
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GateFacts {
+    held: Option<String>,
+}
+
+/// Record the result `ran` of the gate run `row`, in `tx` of fleetd: the
+/// verdict in its `gate_runs` row, or the needs-you item that holds the
+/// feature. The gate, the tips and the feature come from the row, so a
+/// file changes only the gate run of its own job.
+pub fn record(ctx: &JobCtx<'_>, tx: &Connection, row: &JobRow, ran: &Ran) -> Result<()> {
+    let facts: GateFacts = facts_of(ran.data.as_ref())?.unwrap_or_default();
+    if facts.held.is_none() && !ran.outcome.verdict {
+        return Ok(());
+    }
+    let gate = gate_word(row.kind).with_context(|| format!("{} is not a gate kind", row.kind))?;
+    let feature = feature_of(tx, row)?.map_err(|why| anyhow!(why))?;
+    if let Some(gap) = facts.held {
+        if ran.outcome.verdict {
+            bail!("a held gate has no verdict");
+        }
+        check_text("held", &gap, FACT_TEXT_MAX)?;
+        return hold(ctx, tx, &feature, &gap);
+    }
+    let (tip, base_tip) = read_key(&row.input_key)
+        .with_context(|| format!("the input key {} has no 2 tips", row.input_key))?;
+    if let Some(run) = rows::gate_run_of(tx, &feature, gate, &tip, &base_tip)? {
+        let result = if ran.outcome.passed { "pass" } else { "fail" };
+        rows::set_gate_result(
+            tx,
+            ctx.guard,
+            run.id,
+            row.id,
+            result,
+            by_fleetd("the gate ran"),
+        )?;
+    }
+    Ok(())
+}
+
+/// The gate of `feature` does not run for the cause `cause`: 1 needs-you
+/// item holds the feature.
+fn hold(ctx: &JobCtx<'_>, tx: &Connection, feature: &str, cause: &str) -> Result<()> {
+    let key = no_gate_sandbox_key(feature);
+    let text = format!(
+        "{cause}. The gates of feature {feature} do not run, and none of its bundles gates \
+         or lands, until this host has a sandbox."
+    );
+    let item = NewItem {
+        key: &key,
+        kind: NO_GATE_SANDBOX_KIND,
+        entity: Entity::Feature,
+        entity_id: feature,
+        text: &text,
+    };
+    ctx.needs_you.open_item(tx, &item)
 }
 
 /// The feature of the gate run `row`: of its bundle for a fast gate, its
@@ -228,16 +288,15 @@ struct GateRun {
 }
 
 impl GateRun {
-    fn go(&self, conn: &Connection, row: &JobRow, sandbox: GateSandbox) -> Result<Outcome> {
+    fn go(&self, conn: &Connection, row: &JobRow, sandbox: GateSandbox) -> Result<Ran> {
         let tree = match gate_tree::of_feature(conn, &self.repo, &self.feature)? {
             Some(t) if t.state == WorktreeState::Created && Path::new(&t.path).is_dir() => {
                 PathBuf::from(t.path)
             }
             _ => {
-                return Ok(no_verdict(format!(
-                    "the gate tree of {} is not made yet",
-                    self.feature
-                )))
+                return Ok(
+                    no_verdict(format!("the gate tree of {} is not made yet", self.feature)).into(),
+                )
             }
         };
         let cache = gate_tree::cache_dir(&self.root, &self.feature);
@@ -245,21 +304,22 @@ impl GateRun {
         let denied = operator_denials(&self.root);
         let git_dir = match repo_git_dir(&self.repo) {
             Ok(dir) => dir,
-            Err(e) => return Ok(no_verdict(format!("{e:#}"))),
+            Err(e) => return Ok(no_verdict(format!("{e:#}")).into()),
         };
         let git = CliWorktreeGit::new(git_bin(&BinOverrides::from_env(&ProcessEnv)), &self.root)
             .reading(std::slice::from_ref(&self.repo))
             .writing(&[git_dir, tree.clone()]);
         let probe = sandbox(Command::new(CHECK_SHELL), &writable, &denied);
         if let Some(gap) = probe.err().or_else(|| git.sandbox_gap()) {
-            return self.hold(conn, &gap);
+            return Ok(no_sandbox(&gap));
         }
         if self.gate == "full" && !self.contains_base(&git)? {
             return Ok(no_verdict(format!(
                 "the feature tip {} does not contain the fetched primary tip {}; \
                  the full gate waits for the rebase",
                 self.tip, self.base_tip
-            )));
+            ))
+            .into());
         }
         let command = match self.command(&git) {
             Ok(Some(command)) => command,
@@ -268,26 +328,26 @@ impl GateRun {
                     "no {gate} gate: add [gates] {gate} to {FILE_NAME} at {tip}",
                     gate = self.gate,
                     tip = self.tip
-                )))
+                ))
+                .into())
             }
-            Err(e) => return Ok(no_verdict(format!("{e:#}"))),
+            Err(e) => return Ok(no_verdict(format!("{e:#}")).into()),
         };
         if let Err(e) = git.git(&tree, &["checkout", "--force", "--detach", &self.tip]) {
-            return Ok(no_verdict(format!("{e:#}")));
+            return Ok(no_verdict(format!("{e:#}")).into());
         }
         let spec = match self.spec(row, &command, &tree, &cache, sandbox, &denied)? {
             Ok(spec) => spec,
-            Err(gap) => return self.hold(conn, &gap),
+            Err(gap) => return Ok(no_sandbox(&gap)),
         };
         let status = match run_gate(&Launcher, &spec) {
             Ok(status) => status,
-            Err(e) => return Ok(no_verdict(format!("`{command}` did not start: {e:#}"))),
+            Err(e) => return Ok(no_verdict(format!("`{command}` did not start: {e:#}")).into()),
         };
-        self.record(conn, row.id, status.success())?;
         let code = status
             .code()
             .map_or_else(|| "a signal".to_string(), |c| c.to_string());
-        Ok(Outcome {
+        Ok(Ran::from(Outcome {
             passed: status.success(),
             verdict: true,
             text: format!(
@@ -296,7 +356,7 @@ impl GateRun {
                 tree.display(),
                 spec.output.as_deref().unwrap_or(Path::new("")).display()
             ),
-        })
+        }))
     }
 
     /// Whether the feature tip contains the fetched primary tip.
@@ -376,39 +436,18 @@ impl GateRun {
             output: Some(output),
         }))
     }
+}
 
-    /// The gate does not run: 1 needs-you item holds the feature.
-    fn hold(&self, conn: &Connection, gap: &NotSupported) -> Result<Outcome> {
-        let cause = format!("{NO_GATE_SANDBOX}: {gap}");
-        let key = no_gate_sandbox_key(&self.feature);
-        let text = format!(
-            "{cause}. The gates of feature {} do not run, and none of its bundles gates \
-             or lands, until this host has a sandbox.",
-            self.feature
-        );
-        let item = NewItem {
-            key: &key,
-            kind: NO_GATE_SANDBOX_KIND,
-            entity: Entity::Feature,
-            entity_id: &self.feature,
-            text: &text,
-        };
-        let tx = conn.unchecked_transaction()?;
-        NeedsYouList.open_item(&tx, &item)?;
-        tx.commit()?;
-        Ok(no_verdict(cause))
-    }
-
-    /// Write the verdict of the gate in its `gate_runs` row.
-    fn record(&self, conn: &Connection, job_id: i64, passed: bool) -> Result<()> {
-        let tx = conn.unchecked_transaction()?;
-        let found = rows::gate_run_of(&tx, &self.feature, self.gate, &self.tip, &self.base_tip)?;
-        if let Some(run) = found {
-            let result = if passed { "pass" } else { "fail" };
-            rows::set_gate_result(&tx, None, run.id, job_id, result, by_fleetd("the gate ran"))?;
-        }
-        tx.commit()?;
-        Ok(())
+/// The result of a gate that does not run, because this host has no gate
+/// sandbox for the cause `gap`: no verdict, and the hold in its facts.
+fn no_sandbox(gap: &NotSupported) -> Ran {
+    let cause = clip(format!("{NO_GATE_SANDBOX}: {gap}"));
+    let facts = GateFacts {
+        held: Some(cause.clone()),
+    };
+    Ran {
+        outcome: no_verdict(cause),
+        data: Some(serde_json::to_value(facts).expect("the facts serialize")),
     }
 }
 

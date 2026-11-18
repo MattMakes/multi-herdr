@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use horch_platform::start;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, Transaction, TransactionBehavior};
 
 use super::reply::Decided;
 use super::{human_bytes, listed_worktrees, refs, Row};
@@ -37,7 +37,7 @@ use crate::taskledger::finish::{self, land, WorktreeRow};
 use crate::taskledger::git::{dir_bytes, Git};
 use crate::taskledger::model::{Actor, EventKind, FindingStatus, TriageDecision, WorktreeStatus};
 use crate::taskledger::sql_words::word;
-use crate::taskledger::store::{optional, Store, BUSY_TIMEOUT};
+use crate::taskledger::store::{optional, Store};
 use crate::taskledger::tasks::{self, NewTask};
 use crate::taskledger::util::{self, About};
 use crate::taskledger::{import, runs};
@@ -426,7 +426,7 @@ fn must_be_safe(git: &Git, root: &Path, wt: &WorktreeRow, holder: &str, tip: &st
 /// move, a failed rescue or a refused removal keeps the folder. The bytes
 /// it held. A folder that is gone already is settled by [`settle_gone`]
 /// with `holder`, the ref that the decision `f` wrote.
-fn remove_folder(store: &Store, env: &Env<'_>, f: &Freeing<'_>, holder: &str) -> Result<u64> {
+fn remove_folder(store: &mut Store, env: &Env<'_>, f: &Freeing<'_>, holder: &str) -> Result<u64> {
     let wt = f.wt;
     let dir = PathBuf::from(&wt.path);
     if !dir.exists() {
@@ -440,24 +440,14 @@ fn remove_folder(store: &Store, env: &Env<'_>, f: &Freeing<'_>, holder: &str) ->
         config: &config,
         needs_you: &NeedsYouList,
     };
-    let mut conn = open(store)?;
-    let row = orphan(&ctx, &mut conn, &wt.worktree_id)?;
-    create::rescue_now(&mut conn, &ctx, env.jobs, &row)?;
-    remove_now(&ctx, &mut conn, env.jobs, &wt.worktree_id)?;
+    let conn = store.conn_mut();
+    let row = orphan(&ctx, conn, &wt.worktree_id)?;
+    create::rescue_now(conn, &ctx, env.jobs, &row)?;
+    remove_now(&ctx, conn, env.jobs, &wt.worktree_id)?;
     if dir.exists() {
         bail!("{} still exists after its worktree_remove job", wt.path);
     }
     Ok(bytes)
-}
-
-/// A connection of its own to the ledger of `store`: a job runs with no
-/// transaction open, and the custody calls take `&mut Connection`.
-fn open(store: &Store) -> Result<Connection> {
-    let conn = Connection::open(store.path())
-        .with_context(|| format!("opening the task ledger {}", store.path().display()))?;
-    conn.busy_timeout(BUSY_TIMEOUT)?;
-    conn.pragma_update(None, "foreign_keys", "ON")?;
-    Ok(conn)
 }
 
 fn immediate(conn: &mut Connection) -> Result<rusqlite::Transaction<'_>> {
@@ -472,7 +462,7 @@ fn immediate(conn: &mut Connection) -> Result<rusqlite::Transaction<'_>> {
 /// holds the tip of its branch (or the row has no branch). This is the
 /// only caller of the door move `orphaned` to `removed`. A refusal keeps
 /// the row.
-fn settle_gone(store: &Store, env: &Env<'_>, f: &Freeing<'_>, holder: &str) -> Result<()> {
+fn settle_gone(store: &mut Store, env: &Env<'_>, f: &Freeing<'_>, holder: &str) -> Result<()> {
     let wt = f.wt;
     let folder = if Path::new(&wt.path).exists() {
         Folder::Present
@@ -495,9 +485,9 @@ fn settle_gone(store: &Store, env: &Env<'_>, f: &Freeing<'_>, holder: &str) -> R
         config: &config,
         needs_you: &NeedsYouList,
     };
-    let mut conn = open(store)?;
-    let row = orphan(&ctx, &mut conn, &wt.worktree_id)?;
-    let tx = immediate(&mut conn)?;
+    let conn = store.conn_mut();
+    let row = orphan(&ctx, conn, &wt.worktree_id)?;
+    let tx = immediate(conn)?;
     let text = format!(
         "triage {}: the folder is gone and {holder} holds its work",
         f.decision
@@ -655,12 +645,12 @@ impl<'a> Freeing<'a> {
 
 /// `ARCHIVE`: the work stays at `refs/horch/archive/<name>` and on its
 /// branch; the folder goes.
-fn archive(store: &Store, env: &Env<'_>, row: &Row, wt: &WorktreeRow) -> Result<Done> {
+fn archive(store: &mut Store, env: &Env<'_>, row: &Row, wt: &WorktreeRow) -> Result<Done> {
     let f = Freeing::prepare(env, row, wt, TriageDecision::Archive)?;
     archive_at(store, env, &f, "")
 }
 
-fn archive_at(store: &Store, env: &Env<'_>, f: &Freeing<'_>, before: &str) -> Result<Done> {
+fn archive_at(store: &mut Store, env: &Env<'_>, f: &Freeing<'_>, before: &str) -> Result<Done> {
     let (row, wt) = (f.row, f.wt);
     let r = refs::archive_ref(&row.name);
     refs::write(env.git, env.root, &r, &f.tip)?;
@@ -740,7 +730,7 @@ fn delete_branch(
 
 /// `DELETE`: the work goes to a dated trash ref, then the folder and the
 /// branch go. `horch ledger gc` deletes the trash ref 30 days on.
-fn delete(store: &Store, env: &Env<'_>, row: &Row, wt: &WorktreeRow) -> Result<Done> {
+fn delete(store: &mut Store, env: &Env<'_>, row: &Row, wt: &WorktreeRow) -> Result<Done> {
     let f = Freeing::prepare(env, row, wt, TriageDecision::Delete)?;
     let trash = refs::trash_ref(&row.name, crate::clock::now());
     refs::write(env.git, env.root, &trash, &f.tip)?;
@@ -1134,7 +1124,13 @@ fn resume_parked(
 
 /// `PR`: push the branch, open a pull request with the direction as its
 /// title and body, then archive the folder.
-fn pr(store: &Store, env: &Env<'_>, row: &Row, wt: &WorktreeRow, direction: &str) -> Result<Done> {
+fn pr(
+    store: &mut Store,
+    env: &Env<'_>,
+    row: &Row,
+    wt: &WorktreeRow,
+    direction: &str,
+) -> Result<Done> {
     let (Some(gh), Some(remote)) = (env.gh, env.remote) else {
         bail!("PR is not offered here: gh or a git remote is missing");
     };
@@ -1250,8 +1246,8 @@ pub fn restore(
         new: Some(&new),
     };
     let id = finish::lease_tree(store, jobs, &lease)?;
-    let mut conn = open(store)?;
-    let tx = immediate(&mut conn)?;
+    let tx = Transaction::new_unchecked(store.conn(), TransactionBehavior::Immediate)
+        .context("taking the task ledger's write lock")?;
     create::give_to_operator(&tx, &id)?;
     note_restored(&tx, &id, &r)?;
     tx.commit()?;

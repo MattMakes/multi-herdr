@@ -670,7 +670,7 @@ const RECORD_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 /// [`run_job_with`].
 pub fn run_job(
     ctx: &JobCtx<'_>,
-    conn: &mut Connection,
+    conn: &Connection,
     job_id: i64,
     me: u32,
     checks: &CheckRunner<'_>,
@@ -714,7 +714,7 @@ pub trait ConformanceSuite {
 /// [`run_job`] with each runner of `runners`.
 pub fn run_job_with(
     _ctx: &JobCtx<'_>,
-    conn: &mut Connection,
+    conn: &Connection,
     job_id: i64,
     me: u32,
     runners: &Runners<'_>,
@@ -856,10 +856,34 @@ fn end_from(
         },
         data: result.data.clone(),
     };
+    let ran = record_facts(ctx, tx, row, ran)?;
     let state = ran.outcome.state();
     store::set_result(tx, row.id, &result_json(&ran))?;
     end(ctx, tx, row, state, WROTE_ITS_RESULT)?;
     Ok(Some(state))
+}
+
+/// Write the facts of the result `ran` of the run `row`, in `tx`, before
+/// its end (RR-5: the job process writes no row). A refused fact rolls back
+/// each write of the facts, and the run ends `failed` with the reason and
+/// no facts.
+fn record_facts(ctx: &JobCtx<'_>, tx: &Connection, row: &JobRow, ran: Ran) -> Result<Ran> {
+    tx.execute_batch("SAVEPOINT job_facts")?;
+    match integration::record(ctx, tx, row, &ran) {
+        Ok(()) => {
+            tx.execute_batch("RELEASE job_facts")?;
+            Ok(ran)
+        }
+        Err(why) => {
+            tx.execute_batch("ROLLBACK TO job_facts; RELEASE job_facts")?;
+            Ok(Outcome {
+                passed: false,
+                verdict: false,
+                text: format!("fleetd refused the facts of the result file: {why:#}"),
+            }
+            .into())
+        }
+    }
 }
 
 /// Part 3 of a pass, after the commit: move each file of `reads` to
