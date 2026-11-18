@@ -107,6 +107,10 @@ impl World {
             ticket_snapshot: "# Ticket One\n".into(),
             extra: None,
             handoff: None,
+            idea: None,
+            feature: None,
+            covers: Vec::new(),
+            verdict: None,
         };
         w.files = write_attempt_files(&w.root.join("fleet"), &facts, &[]).unwrap();
         w

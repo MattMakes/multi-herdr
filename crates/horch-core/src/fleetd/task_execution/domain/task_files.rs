@@ -39,25 +39,39 @@ pub struct TaskFacts {
     /// The real path of the handoff file of the last attempt, when it ended
     /// with a handoff and fleetd kept the path (ticket 29 of fleetd-p5, Q4).
     pub handoff: Option<String>,
+    /// The idea of the task, `I-NNNN` (FR-12). `None` for a task with no
+    /// idea.
+    pub idea: Option<String>,
+    /// The feature of the idea, `F-NNNN`, whose decisions file the worker
+    /// reads (MAP.md, Q15).
+    pub feature: Option<String>,
+    /// The requirement ids of `task_covers` of the task.
+    pub covers: Vec<String>,
+    /// The verdict file of the judge, for a fix attempt of a judged task
+    /// (ticket 41 of fleetd-p6).
+    pub verdict: Option<String>,
 }
 
 /// The lease renewal period that `task.yaml` names.
 pub const RENEW_EVERY_S: u64 = 10;
 
 /// `task.yaml` of `f`, whose outbox is `report_to`. 1 key on each line.
-/// `attempt` and `worktree` stay unquoted when they are plain.
-pub fn render_task_yaml(f: &TaskFacts, report_to: &str) -> String {
+/// `attempt` and `worktree` stay unquoted when they are plain. `read_first`
+/// is the list of files that the worker reads first (RR-12).
+pub fn render_task_yaml(f: &TaskFacts, report_to: &str, read_first: &[String]) -> String {
     let optional = |v: &Option<String>| v.as_deref().map_or("null".to_string(), scalar);
     [
         ("task", scalar(&f.task)),
+        ("idea", optional(&f.idea)),
         ("task_id", scalar(&f.task_id)),
         ("run", scalar(&f.run)),
         ("attempt", scalar(&f.attempt)),
         ("profile", scalar(&f.profile)),
         ("worktree", scalar(&f.worktree)),
         ("branch", scalar(&f.branch)),
-        ("read_first", scalar(&f.read_first)),
+        ("read_first", list(read_first)),
         ("goal", scalar(&f.goal)),
+        ("covers", list(&f.covers)),
         ("check", optional(&f.check)),
         ("kind", optional(&f.kind)),
         ("lease", format!("{{renew_every_s: {RENEW_EVERY_S}}}")),
@@ -69,9 +83,9 @@ pub fn render_task_yaml(f: &TaskFacts, report_to: &str) -> String {
 }
 
 /// `START.md` of `f`, whose outbox is `report_to`: the ticket snapshot,
-/// then the fixed part with the handoff file, if any, then the extra
-/// section, if any.
-pub fn render_start_md(f: &TaskFacts, report_to: &str) -> String {
+/// then the fixed part with the `read_first` files and the handoff file,
+/// if any, then the extra section, if any.
+pub fn render_start_md(f: &TaskFacts, report_to: &str, read_first: &[String]) -> String {
     let mut out = f.ticket_snapshot.clone();
     if !out.ends_with('\n') {
         out.push('\n');
@@ -86,6 +100,12 @@ pub fn render_start_md(f: &TaskFacts, report_to: &str) -> String {
          To ask a question, send `QUESTION:`.\n",
         f.worktree, f.branch
     ));
+    if !read_first.is_empty() {
+        out.push_str("\nRead these files first:\n\n");
+        for path in read_first {
+            out.push_str(&format!("- `{path}`\n"));
+        }
+    }
     if let Some(handoff) = &f.handoff {
         out.push_str(&format!(
             "\nThe last attempt handed off. Read its handoff file first: `{handoff}`\n"
@@ -108,6 +128,12 @@ fn scalar(value: &str) -> String {
     } else {
         quoted(value)
     }
+}
+
+/// `items` as a YAML flow list of scalars.
+fn list(items: &[String]) -> String {
+    let items: Vec<String> = items.iter().map(|i| scalar(i)).collect();
+    format!("[{}]", items.join(", "))
 }
 
 /// Words that YAML reads as a bool or a null when plain.
@@ -327,10 +353,14 @@ mod tests {
             ticket_snapshot: "# t\n".into(),
             extra: None,
             handoff: None,
+            idea: None,
+            feature: None,
+            covers: Vec::new(),
+            verdict: None,
         };
-        assert!(!render_start_md(&f, "/o/").contains("handoff"));
+        assert!(!render_start_md(&f, "/o/", &[]).contains("handoff"));
         f.handoff = Some("/fleet/tasks/t-1/handoff.md".into());
-        assert!(render_start_md(&f, "/o/")
+        assert!(render_start_md(&f, "/o/", &[])
             .contains("Read its handoff file first: `/fleet/tasks/t-1/handoff.md`"));
     }
 

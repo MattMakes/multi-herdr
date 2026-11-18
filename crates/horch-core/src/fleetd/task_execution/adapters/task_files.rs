@@ -13,10 +13,15 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use crate::fleetd::ideas::domain::answer::{DECISIONS_MD, FEATURES};
+use crate::fleetd::ideas::domain::idea_folder::REQUIREMENTS_YAML;
 use crate::fleetd::task_execution::domain::task_files::{
     lint, render_start_md, render_task_yaml, Secret, Sr2Refusal, TaskFacts,
 };
 use crate::fsx::{self, FsxError};
+
+/// The folder of the ideas in the fleet root.
+const IDEAS: &str = "ideas";
 
 /// The file mode of both files: only the user of fleetd and its workers.
 const MODE: u32 = 0o600;
@@ -73,6 +78,33 @@ pub fn attempt_dir(fleet_root: &Path, task_id: &str, attempt: &str) -> PathBuf {
         .join(attempt)
 }
 
+/// The files the worker of `facts` reads before it starts, in order: the
+/// ticket, the `requirements.yaml` of its idea and the decisions file of
+/// its feature when they exist (RR-12; MAP.md, Q15), and the verdict file
+/// of a fix attempt. A task of a run in flight with no idea folder lists
+/// only its ticket.
+fn read_first(fleet_root: &Path, facts: &TaskFacts) -> Vec<String> {
+    let idea = facts
+        .idea
+        .as_ref()
+        .map(|i| fleet_root.join(IDEAS).join(i).join(REQUIREMENTS_YAML));
+    let feature = facts
+        .feature
+        .as_ref()
+        .map(|f| fleet_root.join(FEATURES).join(f).join(DECISIONS_MD));
+    let ticket = Some(facts.read_first.clone()).filter(|t| !t.is_empty());
+    let found = [idea, feature]
+        .into_iter()
+        .flatten()
+        .filter(|p| p.is_file())
+        .map(|p| p.display().to_string());
+    ticket
+        .into_iter()
+        .chain(found)
+        .chain(facts.verdict.clone())
+        .collect()
+}
+
 /// Render, lint and write the 2 files of the attempt of `facts`. `secrets`
 /// are the env values of the profile and of `FORBIDDEN_ENV`.
 pub fn write_attempt_files(
@@ -82,8 +114,9 @@ pub fn write_attempt_files(
 ) -> Result<AttemptFiles, TaskFilesError> {
     let dir = attempt_dir(fleet_root, &facts.task_id, &facts.attempt);
     let report_to = format!("{}/", dir.join("outbox").display());
-    let yaml = render_task_yaml(facts, &report_to);
-    let start = render_start_md(facts, &report_to);
+    let read_first = read_first(fleet_root, facts);
+    let yaml = render_task_yaml(facts, &report_to, &read_first);
+    let start = render_start_md(facts, &report_to, &read_first);
     lint("task.yaml", &yaml, secrets).map_err(TaskFilesError::Secret)?;
     lint("inbox/START.md", &start, secrets).map_err(TaskFilesError::Secret)?;
 

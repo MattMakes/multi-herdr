@@ -199,3 +199,14 @@ pub fn requirements(conn: &Connection, idea_id: &str) -> Result<Vec<(String, Str
         .collect::<rusqlite::Result<_>>()?;
     Ok(rows)
 }
+
+/// The requirement ids of `task_covers` of the task `task_id`, in the
+/// order of their rows.
+pub fn covers(conn: &Connection, task_id: &str) -> Result<Vec<String>> {
+    let mut stmt =
+        conn.prepare("SELECT req_id FROM task_covers WHERE task_id = ?1 ORDER BY rowid")?;
+    let ids = stmt
+        .query_map([task_id], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(ids)
+}

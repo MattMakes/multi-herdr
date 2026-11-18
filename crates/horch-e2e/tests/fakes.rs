@@ -1078,6 +1078,10 @@ mod phase4 {
             ticket_snapshot: "# T1\n".into(),
             extra: None,
             handoff: None,
+            idea: None,
+            feature: None,
+            covers: Vec::new(),
+            verdict: None,
         };
         let files = write_attempt_files(&fleet, &facts, &[]).unwrap();
         h.set("HORCH_WORKER_ID", worker.as_str());

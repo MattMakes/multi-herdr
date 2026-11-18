@@ -30,6 +30,10 @@ fn facts(root: &Path) -> TaskFacts {
         ticket_snapshot: SNAPSHOT.into(),
         extra: None,
         handoff: None,
+        idea: None,
+        feature: None,
+        covers: Vec::new(),
+        verdict: None,
     }
 }
 
@@ -69,6 +73,7 @@ fn task_yaml_has_each_key_and_1_value_per_line() {
         keys,
         [
             "task",
+            "idea",
             "task_id",
             "run",
             "attempt",
@@ -77,6 +82,7 @@ fn task_yaml_has_each_key_and_1_value_per_line() {
             "branch",
             "read_first",
             "goal",
+            "covers",
             "check",
             "kind",
             "lease",
@@ -93,7 +99,7 @@ fn task_yaml_has_each_key_and_1_value_per_line() {
     assert_eq!(y["profile"], "opus");
     assert_eq!(y["worktree"], f.worktree.as_str());
     assert_eq!(y["branch"], f.branch.as_str());
-    assert_eq!(y["read_first"], f.read_first.as_str());
+    assert_eq!(y["read_first"][0], f.read_first.as_str());
     assert_eq!(y["goal"], f.goal.as_str(), "a colon in the goal is quoted");
     assert_eq!(
         y["check"],

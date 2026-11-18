@@ -572,6 +572,8 @@ fn facts(conn: &Connection, fleet_root: &Path, attempt_id: &str) -> Result<TaskF
         None => (run.project_root.clone(), base_branch(&run)?),
     };
     let handoff = outbox_ingest::handoff_of(conn, &task_id)?;
+    let (idea, feature) = idea_of(conn, &task_id)?;
+    let covers = ideas_store::covers(conn, &task_id)?;
     Ok(TaskFacts {
         task: format!("T{}", task.seq),
         task_id,
@@ -587,7 +589,26 @@ fn facts(conn: &Connection, fleet_root: &Path, attempt_id: &str) -> Result<TaskF
         ticket_snapshot: task.ticket_snapshot.unwrap_or_default(),
         extra,
         handoff,
+        idea,
+        feature,
+        covers,
+        // The fix attempt of a judged task gives its verdict file (ticket 41).
+        verdict: None,
     })
+}
+
+/// The idea of task `task_id` and the feature of that idea (RR-12).
+fn idea_of(conn: &Connection, task_id: &str) -> Result<(Option<String>, Option<String>)> {
+    let idea: Option<String> = conn.query_row(
+        "SELECT idea_id FROM tasks WHERE task_id = ?1",
+        [task_id],
+        |r| r.get(0),
+    )?;
+    let Some(idea) = idea else {
+        return Ok((None, None));
+    };
+    let feature = ideas_store::idea(conn, &idea)?.map(|row| row.feature_id);
+    Ok((Some(idea), feature))
 }
 
 /// Write `task.yaml` and `START.md` of the attempt `attempt_id` under
