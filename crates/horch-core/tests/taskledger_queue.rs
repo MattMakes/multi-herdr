@@ -423,8 +423,10 @@ fn an_agent_that_exits_on_its_last_attempt_holds_the_task() {
         Ended::Held { task: "T-1".into() }
     );
     let held = tasks::get(store.conn(), &t.task_id).unwrap();
-    assert_eq!(held.status, "escalated");
-    assert_eq!(held.held_reason.as_deref(), Some("2 attempts failed"));
+    // Rung 6: no attempt left, so the task is failed and waits for its 1
+    // replan by the orchestrator. It is escalated after that.
+    assert_eq!(held.status, "failed");
+    assert_eq!(held.held_reason, None);
     assert!(tasks::startable(store.conn(), &run.run_id)
         .unwrap()
         .is_empty());

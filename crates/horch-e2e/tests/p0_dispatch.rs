@@ -241,6 +241,9 @@ fn fm6_agent_that_exits_without_done_leaves_its_work_to_the_next_attempt() {
             assert!(watch.status.success(), "{}", text(&watch));
             let t = json_of(&h, &["ledger", "show", "T-1", "--json"]);
             assert_eq!(t["task"]["status"], "queued", "{t}: {}", text(&watch));
+            // The retry waits for its backoff of 30 s on the fleet clock
+            // (rung 6).
+            h.advance_fleet_clock(30);
 
             // The next attempt starts by push dispatch (Phase 4: no claim).
             // Its task.yaml names the same worktree, with the commit in it.

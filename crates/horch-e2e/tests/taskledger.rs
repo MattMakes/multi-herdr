@@ -1259,6 +1259,8 @@ fn three_checks_without_progress_reap_the_worker_by_its_pid() {
     }
     let t = json_of(&h, &["ledger", "show", "T-1", "--json"]);
     assert_eq!(t["task"]["status"], "queued");
+    // The retry waits for its backoff of 30 s on the fleet clock (rung 6).
+    h.advance_fleet_clock(30);
     // The replacement claims the same task and gets the old transcript path.
     let plan = json_of(&h, &["ledger", "plan-workers", "--json"]);
     assert_eq!(plan[0]["replaces"][0], id.as_str(), "{plan}");
@@ -1786,6 +1788,8 @@ fn the_whole_flow_on_the_fake_herdr() {
     }
     assert_eq!(last, "dead");
     assert!(!horch_core::procid::alive(bpid, Some(bstart)));
+    // B waits for its retry backoff of 30 s on the fleet clock (rung 6).
+    h.advance_fleet_clock(30);
     // C is claimed now (a worker row without a live process would be judged
     // dead by the checks above).
     let wc = worker_new(&h, "opus");
@@ -3518,7 +3522,7 @@ fn claim_and_reap(h: &Harness, persona: &str, why: &str) -> String {
 }
 
 #[test]
-fn a_task_reaped_max_attempts_times_is_held_for_the_operator() {
+fn a_task_reaped_max_attempts_times_fails_and_its_replan_requeues_it() {
     let h = world("tl-held");
     ok(&h, &["ledger", "run", "new", "a", "--max-attempts", "2"]);
     queue(&h, "01-a", "sonnet-x", &[]);
@@ -3534,37 +3538,49 @@ fn a_task_reaped_max_attempts_times_is_held_for_the_operator() {
         plan_line(&h)
     );
     let before = wakes(&h).len();
+    let rows_before = outbox(&h).len();
 
-    // Reaped twice: held. No worker is asked for, and 1 QUESTION names both ends.
+    // Reaped twice: failed (rung 6). No worker is asked for, and 1
+    // QUESTION asks the orchestrator for the replan and names both ends.
     claim_and_reap(&h, "sonnet-x", "overflowed at claim");
     let t = json_of(&h, &["ledger", "show", "T-1", "--json"]);
-    assert_eq!(t["task"]["held_reason"], "2 attempts failed", "{t}");
+    assert_eq!(t["task"]["status"], "failed", "{t}");
+    assert!(t["task"]["held_reason"].is_null(), "{t}");
     assert_eq!(plan_line(&h), "No task can start now. Spawn no worker.");
-    let new = wakes(&h).split_off(before);
+    let mut new = wakes(&h).split_off(before);
+    // The replan QUESTION is an outbox row; the pass of fleetd delivers it.
+    new.extend(outbox(&h).split_off(rows_before));
     let questions: Vec<&String> = new.iter().filter(|w| w.contains("QUESTION:")).collect();
     assert_eq!(questions.len(), 1, "{new:?}");
-    assert!(questions[0].contains("dead: hung in check"), "{new:?}");
-    assert!(
-        questions[0].contains("dead: overflowed at claim"),
-        "{new:?}"
-    );
+    for part in [
+        "replan T-1: requeue it 1 time, or cancel it",
+        "horch ledger requeue T-1",
+        "horch ledger cancel T-1",
+        "dead: hung in check",
+        "dead: overflowed at claim",
+    ] {
+        assert!(questions[0].contains(part), "{part}: {new:?}");
+    }
     assert!(!new.iter().any(|w| w.contains("--replaces")), "{new:?}");
+    assert!(
+        !new.iter().any(|w| w.contains("Spawn:")),
+        "a failed task asks for no worker: {new:?}"
+    );
     let st = out(&h.run(&["ledger", "status"]));
-    assert!(st.contains("held: 2 attempts failed"), "{st}");
+    assert!(st.contains("failed"), "{st}");
     assert!(
         st.contains("[2 attempts; ends: dead: hung in check; dead: overflowed at claim]"),
         "{st}"
     );
-    // A held task is open work: the run does not close.
+    // A failed task is open work: the run does not close.
     let o = h.run(&["ledger", "run", "close"]);
-    assert!(
-        text(&o).contains("T-1 (held: 2 attempts failed)"),
-        "{}",
-        text(&o)
-    );
+    assert!(text(&o).contains("T-1 (failed)"), "{}", text(&o));
 
-    // The operator requeues it: claimable again, its history kept.
+    // The orchestrator requeues it, its 1 replan: claimable again, its
+    // history kept.
     ok(&h, &["ledger", "requeue", "T-1", "ticket fixed"]);
+    let t = json_of(&h, &["ledger", "show", "T-1", "--json"]);
+    assert_eq!(t["task"]["replans"], 1, "{t}");
     let w = worker_new(&h, "sonnet-x");
     let claim = ok_as(&h, &w, &["ledger", "claim"]);
     assert!(claim.contains("Claimed T-1 (attempt 3)"), "{claim}");

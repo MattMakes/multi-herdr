@@ -489,6 +489,22 @@ impl Harness {
         crate::violations(&self.log)
     }
 
+    /// Move the fleet clock of the ledger `<root>/ledger.sqlite3` forward
+    /// by `seconds`, in place of a wait for it. A fleetd pass adds its
+    /// awake time to the stored value, so the move stays.
+    pub fn advance_fleet_clock(&self, seconds: i64) {
+        let db = self.root.join("ledger.sqlite3");
+        let store = horch_core::taskledger::Store::open(&db).unwrap();
+        let moved = store
+            .conn()
+            .execute(
+                "UPDATE fleetd SET fleet_clock_s = fleet_clock_s + ?1 WHERE id = 1",
+                [seconds],
+            )
+            .unwrap();
+        assert_eq!(moved, 1, "the ledger has a fleetd row");
+    }
+
     /// Copy a fixture file or directory tree into the harness.
     pub fn copy_in(&self, from: &Path, to: &Path) {
         copy_tree(from, to);

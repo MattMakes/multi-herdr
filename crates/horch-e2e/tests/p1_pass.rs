@@ -507,6 +507,8 @@ fn run_plan(h: &Harness, fault: Option<&str>, kill_fleetd: bool) -> Vec<TaskOutc
         30,
         || matches!(task_status(h, 2).as_str(), "queued" | "ready").then_some(()),
     );
+    // The retry waits for its backoff of 30 s on the fleet clock (rung 6).
+    h.advance_fleet_clock(30);
     let mut w4 = worker(h);
     assert_eq!(claim(h, &w4), 2, "the new worker claims task 2");
     complete(h, &mut w4, 2);

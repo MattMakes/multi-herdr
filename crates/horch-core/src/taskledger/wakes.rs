@@ -226,11 +226,19 @@ pub fn verdict_wake(c: &Checked) -> Option<Wake> {
     Some(Wake::new(OutboxEvent::Held, util::new_id(), tagged(&text)))
 }
 
-/// The wake after the reap of `worker_id`: the held QUESTION of its task,
+/// The wake after the reap of `worker_id`: the held QUESTION of its task;
+/// for a `failed` task, no spawn (its replan wake asks for the decision);
 /// else which persona to spawn, and how.
 pub fn reaped_wake(conn: &Connection, who: &str, worker_id: &str, persona: Option<&str>) -> Wake {
     if let Some(wake) = held_question(conn, worker_id) {
         return wake;
+    }
+    if let Some(t) = task_of(conn, worker_id).filter(|t| t.status == TaskStatus::Failed.as_str()) {
+        let reaped = format!(
+            "NOTE: {who} was reaped. Its task {} failed and waits for its replan. Spawn no worker.",
+            t.short()
+        );
+        return Wake::new(OutboxEvent::Reaped, worker_id, tagged(&reaped));
     }
     let persona = persona.unwrap_or("the same persona");
     let reaped = format!(
@@ -242,8 +250,13 @@ pub fn reaped_wake(conn: &Connection, who: &str, worker_id: &str, persona: Optio
 /// The `held` QUESTION wake of the task of `worker_id`, when the attempt
 /// limit holds it.
 pub fn held_question(conn: &Connection, worker_id: &str) -> Option<Wake> {
+    held_wake(conn, &task_of(conn, worker_id)?)
+}
+
+/// The task of worker `worker_id`, if it has one.
+fn task_of(conn: &Connection, worker_id: &str) -> Option<tasks::Task> {
     let w = workers::get(conn, worker_id).ok()?;
-    held_wake(conn, &tasks::get(conn, w.task_id.as_deref()?).ok()?)
+    tasks::get(conn, w.task_id.as_deref()?).ok()
 }
 
 /// The `held` QUESTION wake of `task`, held after too many attempts, else
