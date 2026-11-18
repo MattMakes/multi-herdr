@@ -1914,6 +1914,7 @@ mod tests {
             ("install", false),
             ("self-update", false),
             ("fleetd", false),
+            ("docs", false),
             ("job", false),
             ("task", false),
             ("result", false),
