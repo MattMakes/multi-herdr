@@ -1,9 +1,11 @@
 # How the commands fit together
 
-`horch` runs a fleet: one orchestrator that queues work in the task ledger
-and spawns the workers that claim it. Every worker starts through the spawn
-service, and its session record goes to the `session_records` table of the
-task ledger.
+`horch` runs a fleet. You add ideas with `horch idea add`. fleetd, 1
+supervised daemon (`horch fleetd`), is the only writer of the task ledger. It
+starts 1 sub-orchestrator for each feature, dispatches each ready task to a
+worker, runs the finish steps and lands each task branch on its feature
+branch. Every worker starts through the spawn service, and its session record
+goes to the `session_records` table of the task ledger.
 
 A worker runs one of 6 agent CLIs: `claude`, `codex`,
 `opencode`, `pi`, `prime` (binary `prime-agent`) or `antigravity` (binary
@@ -14,7 +16,7 @@ A worker runs one of 6 agent CLIs: `claude`, `codex`,
 ```mermaid
 flowchart TB
     subgraph setup["Setup (once)"]
-        I["just install"] --> HI["horch install<br/>(horch and herdr-install on PATH)"]
+        I["just install"] --> HI["horch install<br/>(horch and herdr-install on PATH,<br/>the horch fleetd service)"]
         I --> HF["writes ~/.local/bin/herdr-fleet"]
         HI --> DOC["horch doctor<br/>(herdr reachable? roster, tools, effort overrides)"]
         DOC --> SM["horch smoke messaging / fleet / tile<br/>(self-checks)"]
@@ -23,17 +25,18 @@ flowchart TB
     end
 
     subgraph fleet["horch: the fleet"]
-        HF2["herdr-fleet [flavor]"] --> FL["horch fleet"]
-        FL --> ORCH["orchestrator pane<br/>(Claude or Codex)"]
+        HF2["herdr-fleet"] --> FL["horch fleet"]
         FL --> TEL["telemetry space<br/>(horch telemetry collector)"]
-        ORCH -->|"horch spawn &lt;teammate&gt;"| SVC
+        YOU["you: horch idea add / approve,<br/>horch ideas, horch ledger status"] --> FD
+        FD["fleetd<br/>(horch fleetd, under the OS service manager)"] --> SUB["sub-orchestrator pane<br/>(idea-lead, 1 for each feature)"]
+        FD -->|"dispatch: START.md"| SVC
         SVC --> WK["worker pane<br/>(horch worker → claude, codex, opencode,<br/>pi, prime or antigravity)"]
     end
 
     SVC{{"spawn service<br/>plan → record → brief → pane → launch"}}
-    SVC --> LEDGER[("task ledger<br/>~/.horch/ledger.sqlite3<br/>(tasks, workers, session_records)")]
-    ORCH -->|"horch ledger add-map / task"| LEDGER
-    WK -->|"horch ledger claim / finish / done"| LEDGER
+    FD -->|"the only writer"| LEDGER[("task ledger<br/>~/.horch/ledger.sqlite3<br/>(ideas, tasks, attempts, session_records)")]
+    SUB -->|"idea folder: assumptions, spec, plan.yaml"| FD
+    WK -->|"outbox: horch ledger progress / ask / result"| FD
     MK -.->|"skills exposed at launch"| SVC
 
     LEDGER --> SESS["horch sessions"]
@@ -48,47 +51,40 @@ The data root (the skill store: marketplace skills and their lock) is
 `$HORCH_DATA_DIR`, else `${XDG_DATA_HOME:-~/.local/share}/horch`.
 `HORCH_DATA_DIR` names the store itself: horch does not append `horch`.
 
-## 2. The fleet: orchestrator and workers
+## 2. The fleet: ideas, fleetd and workers
 
 ```mermaid
 sequenceDiagram
     actor You
-    participant O as Orchestrator pane
     participant H as horch (CLI)
-    participant M as Pending mail
+    participant F as fleetd
+    participant S as Sub-orchestrator pane
     participant L as Ledger
     participant W as Worker pane
 
-    You->>H: herdr-fleet (horch fleet)
-    H->>L: insert orchestrator record
-    H->>O: open pane, start Claude/Codex
-
-    O->>H: horch sessions
-    H-->>O: past workers, summaries, gotchas
-    O->>L: horch ledger add-map MAP.md (or horch ledger task)
-    O->>H: horch route <teammate> (optional dry run)
-    H-->>O: spawn, substitute a fallback, or refuse (exit 3)
-    O->>H: horch spawn <teammate> (no task text)
-    H->>H: plan: roster + quota/routing + skills (no I/O)
-    H->>L: insert record (Planned)
-    H->>W: write brief, split pane, run `horch worker`
-    H->>L: Starting, pane id recorded
-    W->>L: Running; session id recorded (minted or discovered)
-    W->>L: horch ledger claim (prints the ticket snapshot)
-    W->>W: agent works
-
-    W->>H: horch ledger progress "milestone"
-    H->>L: append progress
-    W->>H: horch tell orchestrator "QUESTION: ..."
-    H->>O: [<role> #<id>] QUESTION: ... arrives in the orchestrator pane
-    O->>H: horch tell <role> --answers <id> "..."
-    H->>W: [orchestrator re #<id>] ... arrives in the worker pane
-
-    W->>H: horch ledger finish, then horch ledger done "summary"
-    H->>M: write pending worker report, start the courier
-    H->>L: Done + summary
-    H->>O: DONE message (all pushes share 1 20 s budget)
-    H->>W: start a detached re-tile, close the pane
+    You->>H: horch fleet (herdr-fleet)
+    H->>H: horch fleetd check (restart a gone, hung or older fleetd)
+    You->>H: horch idea add "<idea>" (or --direct <ticket file>)
+    H->>F: write ideas/I-NNNN/idea.md
+    F->>L: idea row: captured
+    F->>S: start the sub-orchestrator of the feature (1 process per phase)
+    S->>You: the interview in its pane
+    S->>F: assumptions.md (awaiting approval)
+    You->>H: horch idea show <id>, then horch idea approve <id>
+    S->>F: spec.md, requirements.yaml, tickets, plan.yaml
+    F->>L: plan validated: tasks ready
+    F->>F: a hold on dispatch? (horch ledger status names it)
+    F->>W: worktree, inbox/START.md, a worker in exec mode
+    W->>W: agent works, commits in its worktree
+    W->>F: horch ledger progress "milestone" (outbox/progress.jsonl)
+    W->>F: horch ask "<question>" (outbox/questions/)
+    F->>S: the doorbell: a question of the feature
+    S->>F: horch idea note <id> --question <qid> "<answer>"
+    W->>F: horch result --status completed --summary "..." (outbox/result.json)
+    F->>L: verifier: check, code-sweep, complexity-sweep, recheck
+    F->>L: landing: the task branch lands on the feature branch
+    F->>F: full gate, push of the feature branch for 1 pull request
+    You->>You: merge the pull request; fleetd sees the merge
 ```
 
 ### When the DONE message does not arrive
@@ -216,44 +212,42 @@ writes no local usage file.
 
 ```mermaid
 sequenceDiagram
-    participant O as Orchestrator
+    participant F as fleetd (the only writer)
     participant L as Task ledger (~/.horch/ledger.sqlite3)
     participant W as Worker (horch worker + agent)
-    participant D as Watchdog
+    participant J as Jobs (launcher)
 
-    O->>L: ledger add-map --dry-run (checks, writes nothing)
-    O->>L: ledger run new [--check] / add-map
-    O->>L: ledger plan-workers
-    O->>W: horch spawn <persona> (no task)
-    W->>L: supervisor + agent PIDs, checkin every 30 s
-    W->>L: ledger claim (BEGIN IMMEDIATE; prints the ticket snapshot)
-    W->>L: ledger progress
-    D->>L: every 30 s: reconcile, drain the outbox to durable mail
-    D->>L: every 10 min: 1 check row per working worker
-    D->>W: dead: ledger stop by recorded PID, requeue
-    W->>L: ledger finish: check, code-sweep, complexity-sweep, recheck, land, pr, cleanup
-    L->>W: code-sweep: horch spawns the reviewers, 1 NOTE to the orchestrator
-    W->>L: ledger done (or ledger handoff <path>)
-    L-->>O: wake: startable / reviews-in / held / settled
-    O->>L: ledger run gate, then ledger run close
+    F->>L: each pass: 1 transaction, then the effects
+    F->>L: dispatch: lease a ready task, unless a hold applies
+    F->>W: start the attempt: task.yaml, inbox/START.md
+    W->>F: outbox/progress.jsonl, questions/, result.json
+    F->>L: ingest the outbox files
+    F->>J: queue the finish steps of the verifier as jobs
+    J->>F: each job result
+    F->>L: done, then the landing state machine lands the branch
+    F->>W: a dead or stalled worker: stop by recorded PID, attempt ended
 ```
 
-Each wake is an outbox row, written in the same transaction as the ledger
-change that causes it. The watchdog pass drains undelivered rows into durable
-mail every 30 s. A task that stays startable for 2 min with no starting or
-claiming worker gets 1 re-wake per board state. A spawned worker that has not
-claimed within 3 min is flagged once. When the orchestrator's agent exits in
-an active run, the watchdog respawns it (at most 1 time in 10 min and 3 times
-in a run), unless `horch fleet stop` or `run close` recorded a stop.
+fleetd runs 1 reconcile pass every `pass_period_s`. A pass never waits for a
+job. Each effect is a committed row first. A missed event is caught on the
+next pass. `horch ledger status` shows each hold on dispatch with its cause:
+a health floor, pacing, an unhealthy profile, a git job that holds the
+repository, a missing fast gate or a `not_before` time. Anything that needs
+you lands in `~/.horch/fleet/needs-you/`, in `horch ideas`, and as a herdr
+notification. The retired commands (`horch ledger run new`, `add-map`,
+`add`, `task`, `plan-workers`, `run gate`, `run close`, `claim` and
+`finish`) print the command that replaces each one.
 
 ## Together or apart
 
 | Command | Needs a herdr server | Needs a fleet | Spends model money |
 |---|---|---|---|
-| `horch fleet` / `herdr-fleet` | yes | no (it creates one) | yes, the orchestrator |
+| `horch fleet` / `herdr-fleet` | yes | no (it creates one) | no |
+| `horch idea add`, `idea approve`, `ideas` | no | no | no (fleetd then starts the sub-orchestrator) |
 | `horch spawn`, `tell`, `inbox`, `tile` | yes | run inside a fleet pane | `spawn` does |
 | `horch ledger done` / `horch done` | yes | run by a worker | no |
 | `horch ledger progress` / `horch note` | no (it writes the ledger only) | run by a worker | no |
-| `horch ledger` board, queue, gate and close commands | no | no | no (`run gate` runs the run check) |
+| `horch ledger status`, `show`, `events` | no | no | no |
+| `horch result`, `horch ask` | no | run by a worker | no |
 | `horch sessions`, `cost`, `usage`, `quota`, `route` | no | no | no (`quota --refresh` probes) |
 | `horch agent-list` | no | no | no (it runs each agent CLI's `--version` unless `--no-probe`) |

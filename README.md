@@ -13,69 +13,95 @@ herdr-fleet`, but it's optional sugar over `horch`, not a dependency.
 | `horch`           | Build and drive multi-agent herdr workspaces              |
 | `herdr-install`   | Install the latest Herdr CLI                              |
 
+## Start
+
+1. **Install.** On macOS and Linux run
+   `curl -fsSL https://raw.githubusercontent.com/MattMakes/multi-herdr/main/scripts/install.sh | sh`.
+   On Windows run
+   `irm https://raw.githubusercontent.com/MattMakes/multi-herdr/main/scripts/install.ps1 | iex`.
+   It installs `horch`, installs herdr when it is not on your PATH, and
+   registers the `horch fleetd` service with the service manager of your OS
+   (launchd, a systemd user unit, or a Windows service). `horch doctor`
+   checks the install.
+2. **Start fleetd.** The install starts fleetd as that service. Run
+   `horch fleetd check`: it prints whether fleetd runs, and restarts a
+   fleetd that is gone, hung or older than the installed `horch`. Each
+   other `horch` command makes the same check. Then run `horch fleet` in
+   your project folder. It opens the herdr fleet workspace, where fleetd
+   opens the panes of the fleet.
+3. **Add an idea.** Run `horch idea add "Retry sync with backoff"`, or
+   `horch idea add -f notes.md`. fleetd starts 1 sub-orchestrator for the
+   feature of the idea. It interviews you in its pane and writes its
+   assumptions. Read them with `horch idea show I-0001`, then run
+   `horch idea approve I-0001`, or `horch idea revise I-0001 "<what to
+   change>"`. For a ticket
+   that you wrote, run `horch idea add --direct ticket.md`: it skips the
+   interview.
+4. **Read the status.** `horch ideas` shows each idea, its state, and what
+   waits on you. `horch ledger status` shows each task, and each hold on
+   dispatch with its cause.
+
+When each task of the feature has landed on its feature branch, fleetd runs
+the full gate and pushes the feature branch for 1 pull request to `main`.
+You merge it, and fleetd sees the merge.
+
 ## How it works
 
 ### How work is done
 
-You give 1 orchestrator pane a brief. It queues the work on the task ledger,
-spawns the workers the work needs, and each worker lands its own branch. The
-run ends in 1 pull request to `main`; a merge with a changelog line becomes a
+You add an idea. fleetd, 1 supervised daemon, gives each feature 1
+sub-orchestrator, dispatches each ready task to a worker, runs the finish
+steps and lands each task branch on the feature branch. Each feature ends
+in 1 pull request to `main`; a merge with a changelog line becomes a
 release.
 
 ```text
-operator: a brief, or a rough idea
+you: horch idea add "<idea>"   (or --direct <ticket file>, --to <feature>)
   |
   v
-+-----------------------------+  rough idea  +-----------------------------+
-| orchestrator pane           |------------->| spec-writer   -> spec.md    |
-|   horch fleet               |<-------------| ticket-writer -> MAP.md     |
-+-----------------------------+   tickets    +-----------------------------+
-  | horch ledger add-map --dry-run MAP.md   check every ticket, queue nothing
-  | horch ledger run new <slug> [--check "<cmd>"]   run branch fleet/<slug>
-  | horch ledger add-map MAP.md   (or horch ledger add --file <ticket> ...)
-  | horch ledger plan-workers           how many workers of each persona
-  | horch spawn <persona>               1 pane per worker, no task text
++--------------------------------------------------------------------------+
+| fleetd  (horch fleetd, under launchd, systemd or a Windows service)      |
+|   the only ledger writer: ~/.horch/ledger.sqlite3                        |
+|   the fleet root: ~/.horch/fleet/ (ideas/, tasks/, needs-you/, docs/)    |
++--------------------------------------------------------------------------+
+  | 1 sub-orchestrator pane for each feature (idea-lead)
   v
 +--------------------------------------------------------------------------+
-| task ledger  ~/.horch/ledger.sqlite3: tasks, workers, steps, events      |
+| sub-orchestrator   research, the interview in its pane, assumptions.md   |
+|   you: horch idea show <id>, then horch idea approve | revise <id>       |
+|   then the spec and the tickets; fleetd validates the plan               |
 +--------------------------------------------------------------------------+
-  | horch ledger claim                        ^ horch ledger progress
-  v                                           |
+  | fleetd dispatches each ready task: a worktree on the branch of the
+  | task, <task folder>/inbox/START.md, a worker in exec mode
+  v
 +-------------------------+  +-------------------------+
 | worker                  |  | worker                  |  ...
-| horch ledger worktree   |  | its own worktree under  |
-|   new | scratch | drop  |  | .worktrees/             |
+| reads START.md, commits |  | its own worktree under  |
+| in its worktree         |  | .worktrees/             |
 +-------------------------+  +-------------------------+
-  | horch tell orchestrator "..." --> channel relay, else a typed line
-  |                               --> horch inbox in the orchestrator pane
-  | the run's watchdog wakes the orchestrator: a question, a stall,
-  | a dead worker, tasks that can start, reviews in, the run settled
-  v
-  horch ledger finish   check, code-sweep (horch spawns the reviewers),
-                        complexity-sweep, recheck,
-                        land (onto fleet/<slug>), pr, cleanup
-  horch ledger done "<summary>"         closes the worker's pane
-  (or horch ledger handoff <path>: the task goes back to the queue first)
+  | horch ledger progress "<milestone>"   outbox/progress.jsonl
+  | horch ask "<question>"                outbox/questions/ -> the
+  |                                       sub-orchestrator, else you
+  | horch result --status completed --summary "<paragraph>"
+  v                                       outbox/result.json
+  fleetd runs the finish steps as jobs: check, code-sweep, complexity-sweep,
+  recheck, then lands the task branch on the feature branch
   |
   v
-  fleet/<slug> -- 1 pull request to main; each task writes its section
-  | horch ledger run gate               the run check on the run-branch tip
+  feature/<name> -- the full gate, then a push for 1 pull request to main
   v
-  you merge --> CI --> auto-release, only when CHANGELOG.md has
-                       entries under ## Unreleased --> release
-  | horch ledger run close   needs a settled run, a passing gate on the
-                             tip, and a merged PR (or --pr-declined)
+  you merge --> fleetd sees the merge --> CI --> auto-release, only when
+                CHANGELOG.md has entries under ## Unreleased --> release
 
-  parked worktrees (not landed, cancelled, cleanup failed, unknown):
-  horch fleet starts worktree-steward --> horch worktree triage
-  --> you fill in each Decision --> horch worktree triage apply
-  (horch ledger run close refuses while 1 has no decision)
+  needs you: ~/.horch/fleet/needs-you/, horch ideas, a herdr notification
 ```
 
-Pull is the only dispatch model: `horch spawn` takes no task text, and every
-worker claims its task. A one-off goes through `horch ledger task "<title>"
---persona <p>`, which queues it in the solo run `solo-<workspace>` and prints
-the spawn line. The deep sections: [The task ledger](#the-task-ledger),
+Dispatch is in code: no agent queues, claims or lands a task. The old
+orchestrator commands (`horch ledger run new`, `add-map`, `add`, `task`,
+`plan-workers`, `run gate`, `run close`, and the worker commands
+`horch ledger claim` and `horch ledger finish`) are retired: each one
+prints the command that replaces it. The deep sections:
+[The task ledger](#the-task-ledger),
 [How the panes talk](#how-the-panes-talk),
 [From a rough idea to tickets](#from-a-rough-idea-to-tickets),
 [Releases](#releases), [docs/fleet-workflow.md](docs/fleet-workflow.md) and
@@ -93,30 +119,28 @@ on your machine; layers 5 and 6 run on GitHub.
 +--------------------------------------------------------------------------+
   v
 +--------------------------------------------------------------------------+
-| 2 horch ledger finish  horch, in the worker's worktree                   |
-|   check             the task's check, else the run's (run new --check);  |
-|                     no check means no land, unless **Check:** none       |
-|   code-sweep        horch spawns the reviewers; Review none 0, light 1,  |
+| 2 finish steps         fleetd jobs, after the worker's horch result      |
+|   check             the check of the task; no check means no land,       |
+|                     unless **Check:** none                               |
+|   code-sweep        fleetd starts the reviewers; Review none 0, light 1, |
 |                     full at most 3 rounds; Critical fails, Important     |
 |                     fails until fixed, answered (F<n>) or waived         |
 |   complexity-sweep  the analyser on the changed files; no changed        |
 |                     function may have a violation                        |
 |   recheck           the check again                                      |
-|   land              rebase onto the run branch, the check, fast-forward  |
-|                     under the land lock, push                            |
-|   pr / cleanup      the task's PR section; remove the worktree safely    |
+|   land              land the task branch on the feature branch behind    |
+|                     the fast gate; fleetd removes the worktree safely    |
 +--------------------------------------------------------------------------+
   v
 +--------------------------------------------------------------------------+
-| 3 done guards          horch, when the worker runs done                  |
-|   horch ledger done refuses until every finish step passed               |
-|   horch done refuses an open worktree claim (--unlanded is the last      |
-|   resort) and reports unregistered worktrees that hold commits           |
-|   a landed claim whose folder still holds work reopens                   |
+| 3 the verifier         fleetd, after the finish steps                    |
+|   result.json is only the claim of the worker; only the verifier moves   |
+|   a task to done, and no branch is lost: fleetd keeps a rescue ref of    |
+|   each branch that does not land                                         |
 +--------------------------------------------------------------------------+
   v
 +--------------------------------------------------------------------------+
-| 4 full gate            horch ledger run gate, before the merge           |
+| 4 full gate            fleetd, on the feature branch, before the PR      |
 |   HORCH_REQUIRE_GIT=1 HORCH_REQUIRE_SQLITE=1 just gate                   |
 |   scripts/phase-gate.sh, 13 steps: the spec-marker scan, fmt, build,     |
 |   clippy (debug and --release), rustdoc, every test, teammates --check,  |
@@ -153,7 +177,7 @@ on your machine; layers 5 and 6 run on GitHub.
   finish it. The work counts as landed.
 - `scripts/check-req-coverage.sh` runs only locally, in `just gate` and
   `just verify`. CI does not run it, so run the gate before the PR.
-- Run the full gate on the run branch tip in its own checkout, not in the
+- Run the full gate on the feature branch tip in its own checkout, not in the
   shared main checkout, where other workers have uncommitted edits. Never run
   it under `git rebase -x`.
 
@@ -187,8 +211,6 @@ See [docs/testing-and-gates.md](docs/testing-and-gates.md) and
 | "Trains on your input" warning | off | `trains_on_input: true` | default | teammate file |
 | Offer a teammate only in matching projects | offered everywhere | `offer_when: [<glob>]` | no `offer_when` | teammate file |
 | Your own or changed teammates | the compiled-in roster | a file in `~/.config/horch/teammates/` or `$HORCH_TEAMMATES_DIR` (same name wins) | remove the file | directory |
-| Finish steps of a run | all 7 | `horch ledger run new <slug> --steps <list>` | leave a step out of `--steps` | flag |
-| Shared checkout instead of a worktree | worktree | `horch ledger add --shared` | default | flag |
 | A release on merge | only with `## Unreleased` entries | a `CHANGELOG.md` line | an empty `## Unreleased` | `CHANGELOG.md` |
 | Release size | patch | PR label `release:minor` or `release:major` | no label | GitHub label |
 
@@ -296,31 +318,19 @@ file. The changelog section becomes the release notes.
 
 ```bash
 cd ~/your-project
-horch fleet            # Claude Code on Opus orchestrates (the default)
-horch fleet fable      # Claude Code on Fable, for work that needs the top tier
-horch fleet astra      # Codex on Astra (`codex` says the same)
-horch fleet sol        # Codex on Sol
+horch fleet                          # fleetd and the herdr fleet workspace
+horch idea add "<idea>"              # capture an idea; no AI runs
+horch idea add --direct ticket.md    # a ticket you wrote: no interview
+horch ideas                          # each idea, its state, what waits on you
+horch idea show I-0001               # 1 idea: its state and its folder
+horch idea approve I-0001            # approve the assumptions of an idea
+horch ledger status                  # each task and each hold on dispatch
 ```
 
-`cc` and `claude` still work and mean `opus`. The launcher takes the same words:
-`herdr-fleet sol`.
-
-To pick up an earlier orchestrator session in a new workspace, pass its session
-id: `horch fleet --resume <session-id>` (or `herdr-fleet --resume <session-id>`).
-Give the flavor it ran as when it wasn't Opus: `herdr-fleet sol --resume <id>`.
-The resumed orchestrator gets no briefing, since it already has one. Every fleet
-orchestrator can load it on demand: type `/orchestrator` (`$orchestrator` in
-Codex) to re-brief it, for example after it lands in a new workspace.
-
-You get one orchestrator pane and nothing else. It reads the roster, breaks the
-work down, and spawns exactly the workers each piece needs - then shuts them down
-as they finish. No worker is started before there is a job for it.
-
-The flavor picks who orchestrates and nothing else. All four read the same
-roster and spawn the same workers, so a Codex orchestrator still reaches for
-`opus` when a task wants Claude, and a Claude one still reaches for `codex-sol`.
-Opus is the default because it orchestrates well at half Fable's price
-(Opus 5.5 is $4/$20 per MTok against Fable 5.2's $8/$40).
+`horch fleet` opens no orchestrator pane. fleetd starts 1 sub-orchestrator
+pane for each feature, and 1 worker for each ready task. The long-lived
+orchestrator conversation is retired: a flavor word (`opus`, `fable`,
+`astra`, `sol`) changes nothing, and `--resume` is refused.
 
 ### Top-tier sessions: the orchestrator and the creative council
 
@@ -369,7 +379,7 @@ redelivery repeats the id. A tell without `--answers` closes no question.
 | `horch tell <role> --answers <id> "<text>"` | orchestrator | Answer 1 open question `#<id>`; the worker sees `[orchestrator re #<id>] <text>` |
 | `horch inbox`                      | anyone       | List roles; the orchestrator's pane prints and acknowledges pending worker messages, a worker its own mail |
 | `horch peek <role> --lines 20`      | anyone       | Read the recent output of a registered worker |
-| `horch ledger task "<title>" --persona <p>` | orchestrator | Queue a one-off task; prints the spawn line |
+| `horch idea add --direct <ticket file>` | you | Add a ticket that you wrote as an idea with 1 work task |
 | `horch spawn <teammate> [--run <slug>]` | orchestrator | New pane, new agent session; it claims its task |
 | `horch spawn --resume <id>`        | orchestrator | New pane, resuming an old session     |
 | `horch sessions`                   | orchestrator | Read the session records              |
@@ -442,23 +452,29 @@ below.
 
 ### From a rough idea to tickets
 
-Give the orchestrator a rough idea and it runs 2 Argon workers before any
-build work:
+`horch idea add "<idea>"` captures a rough idea; no AI runs to capture it.
+fleetd then starts the sub-orchestrator of its feature (the `idea-lead`
+persona), 1 fresh process for each phase:
 
-1. `spec-writer` reads the brief (a `horch ledger task`) and writes
-   `docs/specs/<slug>.md`: user stories, test seams, implementation and
-   testing decisions, and open questions with a recommendation each.
-2. The orchestrator answers the open questions it can, and asks you only the
-   ones that are yours.
-3. A new `ticket-writer` writes 1 file per ticket into
-   `docs/tickets/<slug>/`, plus `MAP.md`: every ticket's blockers, the
-   waves that can run in parallel, and the critical path. Each ticket starts
-   with the field block of `docs/specs/ticket-format.md`.
-4. The orchestrator checks the map with `horch ledger add-map --dry-run`,
-   then makes the run and queues it with `horch ledger add-map`. The ledger
-   starts each ticket when its blockers are done.
+1. Clarifying: it reads the code, interviews you in its pane, records each
+   answer with `horch idea note`, and writes `assumptions.md`. fleetd posts
+   a herdr notification, and `horch ideas` shows the idea under Needs you.
+   You run `horch idea approve <id>`, or `horch idea revise <id> "<text>"`.
+2. Specifying: it writes `spec.md` and `requirements.yaml`. Each
+   requirement cites an approved assumption or an answer.
+3. Ticketing: it writes 1 ticket per slice, in the format of
+   `docs/specs/ticket-format.md`, and `plan.yaml`. fleetd validates the plan
+   and makes its tasks. `horch ledger add-map --dry-run <MAP.md>` still
+   checks a map of tickets and writes nothing.
+4. Supervising: it answers the questions of the workers of the feature and
+   replans a failed task 1 time.
 
-Both writers report only file paths, and only once the file is complete. They
+`horch idea add --direct <ticket file>` skips the interview and the spec: a
+ticket that you wrote becomes a plan with 1 work task. `--to <feature>` adds
+an idea to an open feature.
+
+The `spec-writer` and `ticket-writer` teammates hold the same steps as
+standalone personas. Both writers report only file paths, and only once the file is complete. They
 run on the `google` pool, which horch reads with `agy -p /usage` (no model
 turn). When Argon's bucket is empty, or `agy` is not installed, `horch spawn`
 runs the same persona on Opus and prints `SUBSTITUTED:`. Install `agy` with
@@ -1037,39 +1053,29 @@ workspace they show the project. Both support `--all-workspaces`, `--live` and
 
 ## The task ledger
 
-`horch ledger` is the queue an orchestrator and its workers share: 1 SQLite
-file per machine at `~/.horch/ledger.sqlite3` (`HORCH_LEDGER_DB` overrides
-it). The orchestrator queues tickets (`horch ledger run new`, `add-map`,
-`plan-workers`, or `horch ledger task` for a one-off) and spawns workers with
-no task; each worker claims its own
-(`horch ledger claim`), reports (`progress`), and cannot finish until
-`horch ledger finish` has run every step of the run: check, code-sweep,
-complexity-sweep, recheck, land on the run branch, the run's PR, and a
-cleanup that refuses to lose work. The verification profile picks which of
-the checking steps a run uses (see below). Workers check in every 30 s, a watchdog
-reaps a worker that stops making progress, and workers are stopped only by
-the PIDs the ledger recorded (`horch ledger stop`; `horch ledger cancel` and
-`run close --abandon` stop the worker of each task they cancel). The run ends
-with `horch ledger run gate` and `horch ledger run close`, which needs a
-settled run, a passing gate on the run-branch tip, and a merged PR (or
-`--pr-declined "<reason>"`). A workspace holds at most 1 active run that is
-not a solo run, and a spawn with no `--run` joins only its own workspace's
-run. horch respawns a dead orchestrator (at most 1 time in 10 min and 3
-times in a run); `horch fleet stop` records a deliberate stop. See
-[docs/specs/task-ledger.md](docs/specs/task-ledger.md).
-
-Workers may create a worktree with `horch ledger worktree new <name> --from
-<ref>`, or a disposable one with `horch ledger worktree scratch <name>`.
-`horch ledger worktree drop <name> --reason "<why>"` abandons a clean tree and
-refuses unique commits; `--keep-branch` keeps the branch when removing the
-folder. Scratch and abandoned trees do not block task completion.
+The task ledger is 1 SQLite file per machine at `~/.horch/ledger.sqlite3`
+(`HORCH_LEDGER_DB` overrides it). fleetd is its only writer. Every other
+process, `horch ledger status` and `horch ideas` included, reads it. Each
+task belongs to an idea: `horch idea add` is the only way in, and
+`horch idea add --direct <ticket file>` takes a ticket that you wrote.
+fleetd dispatches each ready task: it makes the worktree, writes
+`START.md` into the inbox of the task folder, and starts a worker in exec
+mode. The worker reports through files of its outbox
+(`horch ledger progress`, `horch ask`, `horch result`). fleetd then runs the
+finish steps as jobs (check, code-sweep, complexity-sweep, recheck), and the
+landing state machine lands the task branch on the feature branch. A worker
+that stops making progress is reaped, and workers are stopped only by the
+PIDs the ledger recorded (`horch ledger stop`; `horch ledger cancel` and
+`horch task cancel` stop the worker of each task they cancel). A feature
+ends in 1 pull request; fleetd sees its merge, and
+`horch feature abandon <feature>` drops it. `horch ledger status` shows each
+hold on dispatch with its cause. See
+[docs/specs/fleetd/design.md](docs/specs/fleetd/design.md).
 
 ### Verification profiles
 
-`horch fleet --verify <profile>` picks how much each task is checked before
-it lands. The orchestrator's `horch ledger run new` takes the run's finish
-steps from it, and `horch fleet` prints it at startup. Every profile ends
-with land, pr and cleanup.
+A verification profile picks how much each task is checked before it
+lands: the verifier of fleetd runs its steps, and landing follows.
 
 | profile | steps before land | token cost |
 |---|---|---|
@@ -1077,20 +1083,8 @@ with land, pr and cleanup.
 | `light` (default) | check, complexity-sweep | low: the check is the task's own command; complexity-sweep is a local analyser for TS/JS/Python and clippy for Rust |
 | `minimal` | check | lowest |
 
-```sh
-horch fleet --verify full       # AI code review for risky work
-horch fleet --verify minimal    # only the task's check gates landing
-export HORCH_VERIFY=full        # your own default for every fleet
-```
-
-A run keeps the steps it was created with; `horch ledger run new --verify
-<profile>` or `--steps` sets them for 1 run.
-
-In the worker's own pane, `horch ledger finish` runs its steps detached and
-returns at once; the result arrives as horch mail. `--wait` (or `--json`)
-runs them in the foreground. Worktrees that no step takes to an outcome are
-*parked*: `horch worktree triage` lists them with the facts for a decision,
-and `horch worktree triage apply` runs the operator's decisions. See
+Worktrees that no step takes to an outcome are *parked*:
+`horch worktree triage` lists them with the facts for a decision, and `horch worktree triage apply` runs the operator's decisions. See
 [docs/fleet-workflow.md](docs/fleet-workflow.md#worktree-triage).
 
 `horch ledger progress "waiting: <command>"` records a bounded background wait.
@@ -1242,7 +1236,7 @@ less often: only when their newest release has been out for a week.
 | `HORCH_NOW`          | Pin the clock (RFC 3339), for tests; announced on stderr       |
 | `HORCH_QUOTA_FILE`   | Read pool states from this file and never probe (tests, drills) |
 | `HORCH_NO_UPDATE`    | `1` skips the agent CLI update step of `horch fleet`, like `--no-update` |
-| `HORCH_VERIFY`       | The verification profile of `horch fleet` and `horch ledger run new`: `full`, `light` (default) or `minimal`, like `--verify` |
+| `HORCH_VERIFY`       | The verification profile of `horch fleet`: `full`, `light` (default) or `minimal`, like `--verify` |
 | `HORCH_UPDATE_TIMEOUT_MS` | The time limit of 1 agent CLI updater. Defaults to 180000 |
 | `HORCH_UPDATE_COOLDOWN_DAYS` | How old an agent CLI release must be before the update step installs it. Defaults to 7; `0` turns the cooldown off |
 | `HORCH_HERDR_BIN`    | Which herdr CLI to drive. Defaults to `herdr`                  |

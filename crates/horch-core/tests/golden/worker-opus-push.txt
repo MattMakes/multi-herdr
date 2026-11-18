@@ -87,7 +87,7 @@ task is bound to you before your pane opens. Do not search for work.
   horch ledger handoff or horch ask. A Stop hook can hold your turn until
   1 of them exists.
 - fleetd binds each task and makes its worktree. horch ledger claim, the
-  horch ledger worktree commands and horch ledger finish are not for a
+  horch ledger worktree commands and horch ledger finish are retired for a
   worker.
 - Never stop a process by a name or a pattern. Never run pkill or killall.
 
