@@ -33,6 +33,7 @@ use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 use crate::fleetd::ideas::adapters::ideas_store;
 use crate::fleetd::ideas::application::needs_you::NeedsYouList;
 use crate::fleetd::ideas::application::park_cancel::PARKED;
+use crate::fleetd::integration::application::landing;
 use crate::fleetd::task_execution::adapters::sqlite as store;
 use crate::fleetd::task_execution::adapters::task_files::{
     attempt_dir, write_attempt_files, AttemptFiles,
@@ -215,6 +216,10 @@ pub fn bind(
     } else {
         None
     };
+    // Every branch is a ledger row before it exists (ticket 25).
+    if let Some(tree) = &worktree {
+        landing::bind_branch(&ctx.jobs, tx, task_id, &tree.branch, ctx.clock)?;
+    }
     Ok(Bound {
         task_id: task_id.to_string(),
         attempt_id: attempt,

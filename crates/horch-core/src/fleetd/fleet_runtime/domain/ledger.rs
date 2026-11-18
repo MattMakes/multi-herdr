@@ -290,6 +290,11 @@ pub const EXITS: &[(Entity, &str, &str)] = &[
     // `horch branch abandon` moves a `conflicted` or `gate_failed` branch.
     (Entity::TaskBranch, "building", "verifying"),
     (Entity::TaskBranch, "building", "abandoned"),
+    // Interim: the old finish of a claim attempt landed the task (release
+    // row of Phase 4). Only the claim path of
+    // `integration::domain::task_branch::next` takes it. Remove it when the
+    // claim path of `horch ledger finish` is removed.
+    (Entity::TaskBranch, "building", "landed"),
     // `building` is a failed check with a new attempt.
     (Entity::TaskBranch, "verifying", "ready"),
     (Entity::TaskBranch, "verifying", "building"),

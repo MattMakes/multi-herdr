@@ -154,6 +154,8 @@ pub enum BranchFact<'a> {
     DueAt(i64),
     /// The last rescue ref of the branch (ticket 24).
     RescueRef(&'a str),
+    /// The owner of its landing state (ticket 25).
+    Owner(&'a str),
 }
 
 impl BranchFact<'_> {
@@ -165,6 +167,7 @@ impl BranchFact<'_> {
             BranchFact::RepairAttempts(n) => ("repair_attempts", int(Some(n))),
             BranchFact::DueAt(n) => ("due_at", int(Some(n))),
             BranchFact::RescueRef(r) => ("rescue_ref", text(Some(r))),
+            BranchFact::Owner(o) => ("owner", text(Some(o))),
         }
     }
 }

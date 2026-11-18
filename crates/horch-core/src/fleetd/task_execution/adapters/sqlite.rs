@@ -64,6 +64,15 @@ pub fn attempts_of_worker(conn: &Connection, worker_id: &str) -> Result<Vec<Atte
     attempts_where(conn, "WHERE a.worker_id = ?1", &[worker_id])
 }
 
+/// The worker and the `via` (`claim` or `push`) of each attempt of task
+/// `task_id`, oldest first.
+pub fn attempt_vias(conn: &Connection, task_id: &str) -> Result<Vec<(String, String)>> {
+    let mut stmt =
+        conn.prepare("SELECT worker_id, via FROM attempts WHERE task_id = ?1 ORDER BY rowid")?;
+    let rows = stmt.query_map([task_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 /// Each attempt that is not ended and that has a pid, with the persona of
 /// its worker, oldest first: the facts of the peer process check of the
 /// command channel (SR-8).
