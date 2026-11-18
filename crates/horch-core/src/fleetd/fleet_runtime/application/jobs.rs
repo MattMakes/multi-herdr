@@ -635,7 +635,7 @@ const RECORD_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 /// gets no write. Gives the outcome that it wrote, or `None`.
 ///
 /// `task_check` has its executor here, and the 4 worktree kinds have theirs
-/// in worktree custody (MAP.md of fleetd-p3, Q22), and the 6 integration
+/// in worktree custody (MAP.md of fleetd-p3, Q22), and the 7 integration
 /// kinds have their router in the integration context. Each other kind ends
 /// `failed`, with no verdict, and the result "no executor before phase
 /// <n>". The time limit is the deadline of the row: the pass stops this
@@ -660,7 +660,8 @@ pub fn run_job(
         | Kind::FullGate
         | Kind::Fetch
         | Kind::Push
-        | Kind::Rebase => integration::run(conn, &row)?,
+        | Kind::Rebase
+        | Kind::TrialMerge => integration::run(conn, &row)?,
         kind => jobs::no_executor(kind).into(),
     };
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;

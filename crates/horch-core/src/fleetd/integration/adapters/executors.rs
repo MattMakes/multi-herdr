@@ -1,5 +1,6 @@
 //! The router of the integration job kinds: `bundle_build`, `fast_gate`,
-//! `full_gate`, `fetch`, `push` and `rebase`. Ticket 03 routes `run_job` here.
+//! `full_gate`, `fetch`, `push`, `rebase` and `trial_merge`. Ticket 03
+//! routes `run_job` here.
 
 use anyhow::Result;
 use rusqlite::Connection;
@@ -8,7 +9,7 @@ use crate::fleetd::fleet_runtime::adapters::jobs_store::JobRow;
 use crate::fleetd::fleet_runtime::application::jobs::Ran;
 use crate::fleetd::fleet_runtime::domain::jobs::{no_executor, Kind};
 use crate::fleetd::integration::adapters::{
-    exec_bundle, exec_fetch, exec_gate, exec_push, exec_rebase,
+    exec_bundle, exec_fetch, exec_gate, exec_push, exec_rebase, exec_trial_merge,
 };
 
 /// Runs the job `row` of an integration kind. Another kind gets the
@@ -21,6 +22,7 @@ pub fn run(conn: &Connection, row: &JobRow) -> Result<Ran> {
         Kind::Fetch => exec_fetch::run(conn, row).map(Ran::from),
         Kind::Push => exec_push::run(conn, row).map(Ran::from),
         Kind::Rebase => exec_rebase::run(conn, row).map(Ran::from),
+        Kind::TrialMerge => exec_trial_merge::run(conn, row),
         kind => Ok(no_executor(kind).into()),
     }
 }

@@ -559,9 +559,9 @@ fn each_job_kind_has_a_time_limit() {
     assert_eq!(got, vec![11, 12, 13, 14, 15]);
 }
 
-/// `run_job` sends `bundle_build`, `fast_gate`, `full_gate`, `fetch`, `push`
-/// and `rebase` to the router of the integration context. `trial_merge`
-/// keeps "no executor" until Phase 6.
+/// `run_job` sends `bundle_build`, `fast_gate`, `full_gate`, `fetch`,
+/// `push`, `rebase` and `trial_merge` to the router of the integration
+/// context. A `trial_merge` whose input key is not 2 tips has no verdict.
 #[test]
 fn integration_kinds_route_to_the_integration_router() {
     let mut w = world();
@@ -584,10 +584,9 @@ fn integration_kinds_route_to_the_integration_router() {
     }
     let id = new_id(w.queue(Kind::TrialMerge, "B-1", "tips", 0));
     assert_eq!(w.run_job(&mut runner, id, 0), State::Failed);
-    assert_eq!(
-        outcome(&w.row(id)).unwrap().text,
-        "no executor before phase 6 for trial_merge"
-    );
+    let got = outcome(&w.row(id)).unwrap();
+    assert!(!got.verdict);
+    assert_eq!(got.text, "the input key \"tips\" is not 2 tips");
 }
 
 /// A check runs in the sandbox profile of the worker of its task, never
