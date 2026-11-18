@@ -1,4 +1,4 @@
-//! The keys of Phases 1 to 3 of `fleet.toml`, their default or
+//! The keys of Phases 1 to 5 of `fleet.toml`, their default or
 //! starting values (`docs/specs/fleetd/design.md`, "The numbers of the
 //! design", and `docs/tickets/fleetd-p1/MAP.md`, Q1 and Q2), and the range
 //! of each.
@@ -11,7 +11,10 @@
 /// (PL-5), not a key: the time budget of a pass stays below it.
 pub const HANG_LIMIT_S: u64 = 30;
 
-/// The Phase 1 to Phase 3 keys of `fleet.toml`.
+const KIB: u64 = 1024;
+const MIB: u64 = 1024 * KIB;
+
+/// The Phase 1 to Phase 5 keys of `fleet.toml`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FleetConfig {
     /// The period of the reconcile pass. Default 5 s.
@@ -78,6 +81,38 @@ pub struct FleetConfig {
     /// budget"; FM-28). The design names it `worktree_disk_budget`; the key
     /// has the unit in its name (`docs/tickets/fleetd-p3/MAP.md`, Q20).
     pub worktree_disk_budget_gb: u64,
+    /// The size limit of a question file. Starting value 64 KiB (design,
+    /// Protocol rules, rule 7; SR-6).
+    pub question_max_bytes: u64,
+    /// The size limit of a request file and of a request line. Starting
+    /// value 64 KiB (rule 7; `docs/tickets/fleetd-p5/MAP.md`, Q15).
+    pub request_max_bytes: u64,
+    /// The size limit of `heartbeat.json`. Starting value 4 KiB (rule 7).
+    pub heartbeat_max_bytes: u64,
+    /// The size limit of `outbox/progress.jsonl`. Starting value 8 MiB
+    /// (rule 7).
+    pub progress_max_bytes: u64,
+    /// The line limit of `outbox/progress.jsonl`. Starting value 10000
+    /// (rule 7).
+    pub progress_max_lines: u64,
+    /// The size limit of 1 line of `outbox/progress.jsonl`. Starting value
+    /// 4 KiB (rule 7).
+    pub progress_line_max_bytes: u64,
+    /// The tail of `transcript.jsonl` that fleetd reads. Starting value
+    /// 256 KiB (rule 7).
+    pub transcript_tail_bytes: u64,
+    /// The size limit of 1 line of `transcript.jsonl`. Starting value 1 MiB
+    /// (rule 7).
+    pub transcript_line_max_bytes: u64,
+    /// The size limit of a job result file. Starting value 64 KiB
+    /// (`docs/tickets/fleetd-p5/MAP.md`, Q14).
+    pub job_result_max_bytes: u64,
+    /// The personas whose attempt with a null task is an orchestrator seat.
+    /// fleetd knows a seat only from the ledger and this key, never from an
+    /// environment variable (`docs/tickets/fleetd-p5/MAP.md`, Q2). Default: the
+    /// list `FLEET_ORCHESTRATORS` of `roster`. A domain module imports no
+    /// other module, so a test of `adapters/config_file.rs` pins the copy.
+    pub orchestrator_seats: Vec<String>,
 }
 
 /// The `job_limit_s` table: the time limit of each job kind, in seconds.
@@ -129,6 +164,16 @@ impl Default for FleetConfig {
             pool_full_use: 0.98,
             worktree_list_period_s: 60,
             worktree_disk_budget_gb: 20,
+            question_max_bytes: 64 * KIB,
+            request_max_bytes: 64 * KIB,
+            heartbeat_max_bytes: 4 * KIB,
+            progress_max_bytes: 8 * MIB,
+            progress_max_lines: 10_000,
+            progress_line_max_bytes: 4 * KIB,
+            transcript_tail_bytes: 256 * KIB,
+            transcript_line_max_bytes: MIB,
+            job_result_max_bytes: 64 * KIB,
+            orchestrator_seats: vec!["orchestrator".to_string(), "orchestrator-codex".to_string()],
         }
     }
 }
@@ -167,6 +212,15 @@ impl FleetConfig {
             ("job_limit_s.rescue", jobs.rescue),
             ("worktree_list_period_s", self.worktree_list_period_s),
             ("worktree_disk_budget_gb", self.worktree_disk_budget_gb),
+            ("question_max_bytes", self.question_max_bytes),
+            ("request_max_bytes", self.request_max_bytes),
+            ("heartbeat_max_bytes", self.heartbeat_max_bytes),
+            ("progress_max_bytes", self.progress_max_bytes),
+            ("progress_max_lines", self.progress_max_lines),
+            ("progress_line_max_bytes", self.progress_line_max_bytes),
+            ("transcript_tail_bytes", self.transcript_tail_bytes),
+            ("transcript_line_max_bytes", self.transcript_line_max_bytes),
+            ("job_result_max_bytes", self.job_result_max_bytes),
         ];
         for (key, v) in positive {
             if v == 0 {

@@ -62,6 +62,16 @@ struct FileKeys {
     pool_full_use: Option<f64>,
     worktree_list_period_s: Option<u64>,
     worktree_disk_budget_gb: Option<u64>,
+    question_max_bytes: Option<u64>,
+    request_max_bytes: Option<u64>,
+    heartbeat_max_bytes: Option<u64>,
+    progress_max_bytes: Option<u64>,
+    progress_max_lines: Option<u64>,
+    progress_line_max_bytes: Option<u64>,
+    transcript_tail_bytes: Option<u64>,
+    transcript_line_max_bytes: Option<u64>,
+    job_result_max_bytes: Option<u64>,
+    orchestrator_seats: Option<Vec<String>>,
 }
 
 #[derive(Deserialize, Default)]
@@ -133,6 +143,34 @@ impl FileKeys {
             worktree_disk_budget_gb: self
                 .worktree_disk_budget_gb
                 .unwrap_or(defaults.worktree_disk_budget_gb),
+            question_max_bytes: self
+                .question_max_bytes
+                .unwrap_or(defaults.question_max_bytes),
+            request_max_bytes: self.request_max_bytes.unwrap_or(defaults.request_max_bytes),
+            heartbeat_max_bytes: self
+                .heartbeat_max_bytes
+                .unwrap_or(defaults.heartbeat_max_bytes),
+            progress_max_bytes: self
+                .progress_max_bytes
+                .unwrap_or(defaults.progress_max_bytes),
+            progress_max_lines: self
+                .progress_max_lines
+                .unwrap_or(defaults.progress_max_lines),
+            progress_line_max_bytes: self
+                .progress_line_max_bytes
+                .unwrap_or(defaults.progress_line_max_bytes),
+            transcript_tail_bytes: self
+                .transcript_tail_bytes
+                .unwrap_or(defaults.transcript_tail_bytes),
+            transcript_line_max_bytes: self
+                .transcript_line_max_bytes
+                .unwrap_or(defaults.transcript_line_max_bytes),
+            job_result_max_bytes: self
+                .job_result_max_bytes
+                .unwrap_or(defaults.job_result_max_bytes),
+            orchestrator_seats: self
+                .orchestrator_seats
+                .unwrap_or(defaults.orchestrator_seats),
         }
     }
 }
@@ -140,6 +178,12 @@ impl FileKeys {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn orchestrator_seats_default_equals_fleet_orchestrators() {
+        let seats = FleetConfig::default().orchestrator_seats;
+        assert_eq!(seats, crate::roster::FLEET_ORCHESTRATORS);
+    }
 
     #[test]
     fn missing_file_gives_the_defaults() {
