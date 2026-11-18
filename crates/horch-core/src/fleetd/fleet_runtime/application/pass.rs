@@ -59,7 +59,7 @@ use crate::fleetd::fleet_runtime::application::jobs::{
     self, JobCtx, JobKey, JobRunner, NeedsYouItems, NewItem,
 };
 use crate::fleetd::fleet_runtime::application::ledger::DoorError;
-use crate::fleetd::fleet_runtime::application::ledger::{transition, Cause};
+use crate::fleetd::fleet_runtime::application::ledger::{record, transition, Cause};
 use crate::fleetd::fleet_runtime::domain::budget::{Cursor, Deadline, PassBudget, ScanKind};
 use crate::fleetd::fleet_runtime::domain::clock::{AwakeReading, FleetSeconds};
 use crate::fleetd::fleet_runtime::domain::config::FleetConfig;
@@ -1267,7 +1267,7 @@ impl<'a> Pass<'a> {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(anyhow::Error::from)
             .and_then(|tx| {
-                ladder::stop_sent(&tx, guard, row, process, kill, clock.0)?;
+                stop_sent(&tx, guard, row, process, kill, clock.0)?;
                 tx.commit()?;
                 Ok(())
             });
@@ -1537,8 +1537,9 @@ impl Rules<'_> {
     /// claim starts a new attempt beside it.
     fn settle_stalled(&self, facts: &Facts) -> Result<()> {
         let bound = rungs::stop_bound_s(self.config.stop_grace_s, self.config.pass_period_s);
-        let grace = self.config.stop_grace_s;
-        for s in ladder::settle_stalled(self.tx, self.clock.0, facts, bound, grace)? {
+        let bounds = (bound, self.config.stop_grace_s);
+        let killed_at = |p: (u32, u64)| stop_sent_at(self.tx, p, true);
+        for s in ladder::settle_stalled(self.tx, self.clock.0, facts, bounds, &killed_at)? {
             let persona = self.persona_of(&s.worker)?;
             let why = format!("the process of attempt {} is gone", s.attempt);
             let policy = self.policy(persona.as_deref());
@@ -1933,6 +1934,70 @@ fn cause(text: &str) -> Cause<'_> {
 /// A number of seconds of a profile as a value of the fleet clock.
 fn seconds(s: u64) -> i64 {
     i64::try_from(s).unwrap_or(i64::MAX)
+}
+
+/// Record the sent mark of 1 stop of the process `process` (its pid and
+/// its start time) of the row `row`: part 3 sent it at the fleet clock
+/// `clock`. `kill`: the hard stop, else the polite stop. The row of the
+/// stop came first, in the transaction of the decision. The mark comes
+/// after the signal, so it is the proof that the stop ran (A24). The first
+/// mark of each step stays: a second one is not written.
+fn stop_sent(
+    tx: &Connection,
+    guard: Option<Generation>,
+    row: &RowRef,
+    process: (u32, u64),
+    kill: bool,
+    clock: i64,
+) -> Result<()> {
+    if stop_sent_at(tx, process, kill)?.is_some() {
+        return Ok(());
+    }
+    let (entity, id) = match row {
+        RowRef::Worker(id) => (Entity::Worker, id),
+        RowRef::Attempt(id) => (Entity::Attempt, id),
+    };
+    let step = if kill { "hard" } else { "polite" };
+    let text = format!("fleetd sent the {step} stop of process {}", process.0);
+    let data = serde_json::json!({
+        "fleet_clock": clock,
+        "pid": process.0,
+        "pid_start": process.1,
+        "kill": kill,
+    });
+    record(
+        tx,
+        guard,
+        EventKind::Stopped,
+        entity,
+        id,
+        cause(&text),
+        &data,
+    )?;
+    Ok(())
+}
+
+/// The fleet clock of the sent mark of the stop of `process` (its pid and
+/// its start time). `kill`: the mark of the hard stop, else of the polite
+/// stop. `None`: no mark.
+fn stop_sent_at(tx: &Connection, (pid, start): (u32, u64), kill: bool) -> Result<Option<i64>> {
+    let start = i64::try_from(start).unwrap_or(i64::MAX);
+    Ok(tx.query_row(
+        "SELECT min(json_extract(data_json, '$.fleet_clock')) FROM events
+         WHERE kind = ?1 AND entity IN (?2, ?3)
+           AND json_extract(data_json, '$.pid') = ?4
+           AND json_extract(data_json, '$.pid_start') = ?5
+           AND json_extract(data_json, '$.kill') = ?6",
+        rusqlite::params![
+            EventKind::Stopped.as_str(),
+            Entity::Worker.as_str(),
+            Entity::Attempt.as_str(),
+            pid,
+            start,
+            kill
+        ],
+        |r| r.get(0),
+    )?)
 }
 
 /// The event id and the fleet clock of each doorbell of the attempt

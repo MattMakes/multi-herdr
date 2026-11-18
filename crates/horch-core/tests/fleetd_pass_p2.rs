@@ -537,6 +537,9 @@ fn stalled_task_stays_stalled_while_the_old_process_lives() {
         stops(&report),
         ["kill process ".to_string() + &agent.recorded().pid.to_string()]
     );
+    // A pass before the test reaps the agent can send the hard stop again,
+    // but it writes no second mark.
+    w.pass_at(1_605, &worker, &fake);
     assert!(agent.exits(), "the hard stop ended it");
 
     let marks: i64 = w

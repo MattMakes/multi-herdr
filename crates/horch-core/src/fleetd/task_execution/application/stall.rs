@@ -128,9 +128,10 @@ pub struct Stopped {
 
 /// The rule of each `stalled` task at the fleet clock `clock`, in `tx`
 /// ([`settle`]). `facts` holds what the pass saw of each process.
-/// `bound_s` is the stop bound in seconds. `stop_grace_s` is the grace of
-/// a hard stop whose sent mark ([`stop_sent`]) is the proof for a process
-/// that the pass cannot tell.
+/// `bounds` holds the stop bound and `stop_grace_s`, in seconds.
+/// `killed_at` gives the fleet clock of the sent mark of the hard stop of
+/// a process (its pid and its start time): the proof for a process that
+/// the pass cannot tell.
 ///
 /// - The first pass of a stall writes `tasks.due_at`: the end of the stop
 ///   bound.
@@ -144,9 +145,10 @@ pub fn settle_stalled(
     tx: &Connection,
     clock: i64,
     facts: &Facts,
-    bound_s: u64,
-    stop_grace_s: u64,
+    bounds: (u64, u64),
+    killed_at: &dyn Fn((u32, u64)) -> Result<Option<i64>>,
 ) -> Result<Vec<Stopped>> {
+    let (bound_s, stop_grace_s) = bounds;
     resolve_left(tx)?;
     let bound = i64::try_from(bound_s).unwrap_or(i64::MAX);
     let mut out = Vec::new();
@@ -167,7 +169,7 @@ pub fn settle_stalled(
             let seen = facts.processes.get(&p).copied().unwrap_or(Seen::Unknown);
             // Only a process that the pass cannot tell needs the proof.
             let killed_at = match (seen, p.pid_start) {
-                (Seen::Unknown, Some(start)) => sent_at(tx, (p.pid, start), true)?,
+                (Seen::Unknown, Some(start)) => killed_at((p.pid, start))?,
                 _ => None,
             };
             old.push(OldProcess { seen, killed_at });
@@ -188,70 +190,6 @@ pub fn settle_stalled(
         }
     }
     Ok(out)
-}
-
-/// Record the sent mark of 1 stop of the process `process` (its pid and
-/// its start time) of the row `row`: part 3 sent it at the fleet clock
-/// `clock`. `kill`: the hard stop, else the polite stop. The row of the
-/// stop came first, in the transaction of the decision. The mark comes
-/// after the signal, so it is the proof that the stop ran (A24). The first
-/// mark of each step stays: a second one is not written.
-pub fn stop_sent(
-    tx: &Connection,
-    guard: Option<Generation>,
-    row: &RowRef,
-    process: (u32, u64),
-    kill: bool,
-    clock: i64,
-) -> Result<()> {
-    if sent_at(tx, process, kill)?.is_some() {
-        return Ok(());
-    }
-    let (entity, id) = match row {
-        RowRef::Worker(id) => (Entity::Worker, id),
-        RowRef::Attempt(id) => (Entity::Attempt, id),
-    };
-    let step = if kill { "hard" } else { "polite" };
-    let text = format!("fleetd sent the {step} stop of process {}", process.0);
-    let data = serde_json::json!({
-        "fleet_clock": clock,
-        "pid": process.0,
-        "pid_start": process.1,
-        "kill": kill,
-    });
-    record(
-        tx,
-        guard,
-        EventKind::Stopped,
-        entity,
-        id,
-        cause(&text),
-        &data,
-    )?;
-    Ok(())
-}
-
-/// The fleet clock of the sent mark of the stop of `process` (its pid and
-/// its start time). `kill`: the mark of the hard stop, else of the polite
-/// stop. `None`: no mark.
-fn sent_at(tx: &Connection, (pid, start): (u32, u64), kill: bool) -> Result<Option<i64>> {
-    let start = i64::try_from(start).unwrap_or(i64::MAX);
-    Ok(tx.query_row(
-        "SELECT min(json_extract(data_json, '$.fleet_clock')) FROM events
-         WHERE kind = ?1 AND entity IN (?2, ?3)
-           AND json_extract(data_json, '$.pid') = ?4
-           AND json_extract(data_json, '$.pid_start') = ?5
-           AND json_extract(data_json, '$.kill') = ?6",
-        rusqlite::params![
-            EventKind::Stopped.as_str(),
-            Entity::Worker.as_str(),
-            Entity::Attempt.as_str(),
-            pid,
-            start,
-            kill
-        ],
-        |r| r.get(0),
-    )?)
 }
 
 /// Resolve the `stop_failed` item of each task that is not `stalled` now,
@@ -531,28 +469,28 @@ mod tests {
     /// [`settle_stalled`] at `clock` with a bound of 50 s, in a pass that
     /// saw the agent as `seen`.
     fn settle_at(f: &mut Fixture, clock: i64, seen: Seen) -> Vec<Stopped> {
+        settle_marked(f, clock, seen, None)
+    }
+
+    /// [`settle_at`], with the sent mark of the hard stop of the agent at
+    /// `killed`.
+    fn settle_marked(f: &mut Fixture, clock: i64, seen: Seen, killed: Option<i64>) -> Vec<Stopped> {
         let facts = Facts {
             processes: [(AGENT, seen)].into(),
             ..Facts::default()
         };
+        let marks = |p: (u32, u64)| {
+            assert_eq!(p, (AGENT.pid, AGENT.pid_start.unwrap()));
+            Ok(killed)
+        };
         f.store
-            .immediate(|tx| settle_stalled(tx, clock, &facts, 50, 20))
+            .immediate(|tx| settle_stalled(tx, clock, &facts, (50, 20), &marks))
             .unwrap()
     }
 
     /// The `stop_failed` items that are open.
     fn stop_items(f: &Fixture) -> Vec<String> {
         needs_you::open_keys(f.store.conn(), STOP_FAILED).unwrap()
-    }
-
-    /// The sent mark of the stop of the agent at `clock`, as part 3 writes
-    /// it after the signal.
-    fn sent(f: &mut Fixture, kill: bool, clock: i64) {
-        let row = RowRef::Attempt(f.attempt().id);
-        let agent = (AGENT.pid, AGENT.pid_start.unwrap());
-        f.store
-            .immediate(|tx| stop_sent(tx, None, &row, agent, kill, clock))
-            .unwrap();
     }
 
     /// Step 4 of FM-14: the agent lives past the stop bound. The task stays
@@ -605,25 +543,14 @@ mod tests {
         assert_eq!(f.task().status, "stalled");
         assert_eq!(stop_items(&f), [format!("stop_failed:{}", f.task)]);
 
-        // The polite stop is no proof.
-        sent(&mut f, false, 1_300);
-        assert_eq!(settle_at(&mut f, 1_500, Seen::Unknown), Vec::new());
         // The hard stop ran at 1_510: its grace ends at 1_530.
-        sent(&mut f, true, 1_510);
-        sent(&mut f, true, 1_520);
-        assert_eq!(settle_at(&mut f, 1_529, Seen::Unknown), Vec::new());
-        assert_eq!(settle_at(&mut f, 1_530, Seen::Unknown).len(), 1);
+        let marked = Some(1_510);
+        assert_eq!(
+            settle_marked(&mut f, 1_529, Seen::Unknown, marked),
+            Vec::new()
+        );
+        assert_eq!(settle_marked(&mut f, 1_530, Seen::Unknown, marked).len(), 1);
         assert!(stop_items(&f).is_empty());
-        let marks: i64 = f
-            .store
-            .conn()
-            .query_row(
-                "SELECT count(*) FROM events WHERE kind = 'stopped'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(marks, 2, "1 mark for each step");
     }
 
     /// F2 of review round 1: a cancel moves a stuck task out of `stalled`;
