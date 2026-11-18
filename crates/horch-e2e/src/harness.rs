@@ -851,7 +851,7 @@ fn process_list_or_sandbox<T>(
 fn build_once() {
     static BUILT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     BUILT.get_or_init(|| {
-        let mut cmd = build_command(&bin_dir());
+        let mut cmd = build_command(&bin_dir(), env!("HORCH_E2E_TARGET"));
         let out = cmd
             .output()
             .unwrap_or_else(|e| panic!("cannot start {cmd:?}: {e}"));
@@ -876,8 +876,11 @@ const CARGO_RUN_VARS: &[&str] = &[
 ];
 
 /// The cargo command that builds `horch` and the fakes into `built`, with
-/// the profile and the target folder of this test process.
-fn build_command(built: &Path) -> Command {
+/// the profile, the target triple and the target folder of this test
+/// process. `built` is `<root>/<profile>` for a host build, and
+/// `<root>/<triple>/<profile>` for a build with `--target <triple>` or
+/// `CARGO_BUILD_TARGET`. `triple` is the target of this test process.
+fn build_command(built: &Path, triple: &str) -> Command {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut cmd = Command::new(cargo);
@@ -907,8 +910,13 @@ fn build_command(built: &Path) -> Command {
             cmd.args(["--profile", profile]);
         }
     }
-    if let Some(target) = built.parent() {
-        cmd.arg("--target-dir").arg(target);
+    let mut root = built.parent();
+    if root.and_then(Path::file_name).and_then(|n| n.to_str()) == Some(triple) {
+        cmd.args(["--target", triple]);
+        root = root.and_then(Path::parent);
+    }
+    if let Some(root) = root {
+        cmd.arg("--target-dir").arg(root);
     }
     cmd
 }
@@ -1121,7 +1129,7 @@ mod tests {
     #[test]
     fn the_build_uses_the_profile_and_target_folder_of_the_test() {
         let args = |built: &str| -> Vec<String> {
-            build_command(Path::new(built))
+            build_command(Path::new(built), "aarch64-apple-darwin")
                 .get_args()
                 .map(|a| a.to_string_lossy().into_owned())
                 .collect()
@@ -1150,6 +1158,31 @@ mod tests {
             args("/w/target/ci"),
             with(&["--profile", "ci", "--target-dir", "/w/target"])
         );
+    }
+
+    /// T-842 F1: a test built with `--target <triple>` or with
+    /// `CARGO_BUILD_TARGET` runs from `<root>/<triple>/<profile>`. The
+    /// nested build uses the same triple and the true target root.
+    #[test]
+    fn the_build_uses_the_target_triple_of_the_test() {
+        let triple = "x86_64-unknown-linux-gnu";
+        let args = |built: &str| -> Vec<String> {
+            build_command(Path::new(built), triple)
+                .get_args()
+                .skip(7)
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect()
+        };
+        assert_eq!(
+            args("/w/target/x86_64-unknown-linux-gnu/debug"),
+            ["--target", triple, "--target-dir", "/w/target"]
+        );
+        assert_eq!(
+            args("/w/target/x86_64-unknown-linux-gnu/release"),
+            ["--release", "--target", triple, "--target-dir", "/w/target"]
+        );
+        // A host build of the same triple keeps the host layout.
+        assert_eq!(args("/w/target/debug"), ["--target-dir", "/w/target"]);
     }
 
     #[test]
