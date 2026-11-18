@@ -207,6 +207,8 @@ pub enum FeatureFact<'a> {
     PushFailures(i64),
     /// Fleet clock seconds.
     PushNotBefore(Option<i64>),
+    /// The pull request or the compare URL (ticket 39).
+    Pr(&'a str),
     /// `none`, `open` or `closed`.
     PrState(&'a str),
     /// The kebab-case name, checked by fleetd (ticket 15 of fleetd-p6).
@@ -221,6 +223,7 @@ impl FeatureFact<'_> {
             FeatureFact::PushState(s) => ("push_state", text(Some(s))),
             FeatureFact::PushFailures(n) => ("push_failures", int(Some(n))),
             FeatureFact::PushNotBefore(n) => ("push_not_before", int(n)),
+            FeatureFact::Pr(s) => ("pr", text(Some(s))),
             FeatureFact::PrState(s) => ("pr_state", text(Some(s))),
             FeatureFact::Name(s) => ("name", text(Some(s))),
             FeatureFact::Branch(s) => ("branch", text(Some(s))),

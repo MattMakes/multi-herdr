@@ -70,6 +70,19 @@ pub fn with_section(body: &str, short: &str, section: &str) -> String {
     }
 }
 
+/// `body` with the section of each `(short, section)` whose task has no
+/// section yet, appended in order. A section that exists keeps its text, so
+/// the push job of fleetd never overwrites the section of a claim attempt.
+pub fn with_new_sections(body: &str, sections: &[(String, String)]) -> String {
+    let mut body = body.to_string();
+    for (short, section) in sections {
+        if !body.contains(&markers(short).0) {
+            body = with_section(&body, short, section);
+        }
+    }
+    body
+}
+
 #[derive(Deserialize)]
 struct PrView {
     body: String,
@@ -613,6 +626,19 @@ mod tests {
         assert!(b2.ends_with("<!-- horch:task T-2 -->\ntwo\n<!-- /horch:task T-2 -->"));
         assert!(b2.contains("Operator note."));
         assert_eq!(with_section(&b2, "T-2", "two"), b2, "idempotent");
+    }
+
+    #[test]
+    fn new_sections_keep_each_existing_section() {
+        let body = "Intro.\n\n<!-- horch:task T-1 -->\nclaim\n<!-- /horch:task T-1 -->";
+        let sections = [
+            ("T-1".to_string(), "push".to_string()),
+            ("T-2".to_string(), "two".to_string()),
+        ];
+        let b = with_new_sections(body, &sections);
+        assert!(b.starts_with(body), "{b}");
+        assert!(b.ends_with("<!-- horch:task T-2 -->\ntwo\n<!-- /horch:task T-2 -->"));
+        assert_eq!(with_new_sections(&b, &sections), b, "idempotent");
     }
 
     const FAKE_GH: &str = r#"#!/bin/sh

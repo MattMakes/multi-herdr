@@ -261,7 +261,9 @@ pub fn push_key(remote: &str, tip: &str, seen: Option<&str>) -> String {
 /// The tip to push of the feature `feature` with the branch row `branch`
 /// at `clock`, or `None`. The local tip (`seen_tip`) is pushed when it is
 /// not `seen_remote_tip`, the feature is `ready`, has an open pull request
-/// or was just rebased (Q21), and its push backoff has ended.
+/// or was just rebased (Q21), and its push backoff has ended. A `ready`
+/// feature with no `pr` is also due when the remote has its tip, so that
+/// the push job opens its pull request (ticket 39).
 pub fn push_due<'a>(
     feature: &FeatureRow,
     branch: &'a BranchRow,
@@ -269,7 +271,8 @@ pub fn push_due<'a>(
     clock: FleetSeconds,
 ) -> Option<&'a str> {
     let tip = branch.seen_tip.as_deref()?;
-    if branch.seen_remote_tip.as_deref() == Some(tip) {
+    let pr_missing = feature.state == "ready" && feature.pr.is_none();
+    if branch.seen_remote_tip.as_deref() == Some(tip) && !pr_missing {
         return None;
     }
     let wanted = rebased || feature.state == "ready" || feature.pr_state == "open";
@@ -500,9 +503,19 @@ mod tests {
         );
         // The remote has the tip, or fleetd saw no local tip.
         let same = branch(Some("b1"), Some("b1"));
+        let with_pr = FeatureRow {
+            pr: Some("https://example.com/pull/1".into()),
+            ..feature("ready", "open", None)
+        };
+        assert_eq!(push_due(&with_pr, &same, true, at), None);
         assert_eq!(
-            push_due(&feature("ready", "open", None), &same, true, at),
+            push_due(&feature("open", "open", None), &same, true, at),
             None
+        );
+        // A ready feature with no pull request: the push job opens it.
+        assert_eq!(
+            push_due(&feature("ready", "none", None), &same, false, at),
+            Some("b1")
         );
         let none = branch(None, None);
         assert_eq!(

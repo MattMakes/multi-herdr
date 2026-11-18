@@ -18,6 +18,16 @@
 //!    the global config of the user, so no value of the project is used.
 //!    The push never retries: a failed run backs off, and the next run is a
 //!    new run of the job (FM-43).
+//! 3. The pull request follows the state of the feature (ticket 39, Q22):
+//!    after a passed push, the job reads `pr` of the project file at the
+//!    tip of the feature branch. With `pr = gh`, a `ready` feature gets its
+//!    pull request: the open pull request of the branch, else a new one,
+//!    marked ready for review, with 1 section for each landed task between
+//!    its markers (F17). An `open` feature with a pull request marks it as a
+//!    draft. Each `gh` call runs through the launcher, bound by F11. With
+//!    `pr = manual`, the compare URL goes on the needs-you list, and on an
+//!    `open` feature the item says "do not merge yet". A failed pull request
+//!    step records a failed push run, so the job backs off.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -29,16 +39,26 @@ use horch_marketplace::git::{GitOutput, REPO_ENV};
 use rusqlite::{Connection, Transaction, TransactionBehavior};
 
 use crate::fleetd::fleet_runtime::adapters::jobs_store::JobRow;
+use crate::fleetd::fleet_runtime::application::jobs::{NeedsYouItems, NewItem};
+use crate::fleetd::fleet_runtime::application::ledger::Cause;
 use crate::fleetd::fleet_runtime::domain::config::FleetConfig;
 use crate::fleetd::fleet_runtime::domain::jobs::Outcome;
+use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 use crate::fleetd::ideas::application::needs_you::NeedsYouList;
-use crate::fleetd::integration::adapters::sqlite as rows;
+use crate::fleetd::integration::adapters::exec_fetch::Tools;
+use crate::fleetd::integration::adapters::project_file;
+use crate::fleetd::integration::adapters::sqlite::{self as rows, FeatureFact, FeatureRow};
 use crate::fleetd::integration::application::remote::{self, PushInput};
+use crate::fleetd::integration::domain::project::{Pr, ProjectFileReader, FILE_NAME};
+use crate::fleetd::worker_profiles::adapters::launcher::Launcher;
+use crate::fleetd::worker_profiles::application::ports::{LaunchSpec, ProcessHost};
 use crate::fleetd::worktree_custody::adapters::git::project_program;
 use crate::fleetd::worktree_custody::application::create::{fleet_clock, fleet_config};
-use crate::runtime::bins::{git_bin, BinOverrides};
 use crate::runtime::context::ProcessEnv;
 use crate::runtime::process;
+use crate::taskledger::finish::pr::with_new_sections;
+use crate::taskledger::model::Actor;
+use crate::taskledger::tasks;
 use crate::vcs::network;
 
 /// The `-c` keys of each git call of the job, before its subcommand. The
@@ -70,45 +90,74 @@ const SAFE_ENV: [(&str, &str); 5] = [
 /// bytes/s for 60 s ends.
 const HTTP_STALL: [&str; 2] = ["http.lowSpeedLimit=1000", "http.lowSpeedTime=60"];
 
-/// Runs the job `row` with the git of this process, the `fleet.toml` of
-/// the fleet of the ledger, and the fleet clock of the ledger.
+/// Runs the job `row` with the programs of this process, the launcher, the
+/// `fleet.toml` of the fleet of the ledger, and the fleet clock of the
+/// ledger.
 pub fn run(conn: &Connection, row: &JobRow) -> Result<Outcome> {
     let config = match conn.path().filter(|p| !p.is_empty()) {
         Some(ledger) => fleet_config(Path::new(ledger))?,
         None => FleetConfig::default(),
     };
-    run_with(
-        conn,
-        row,
-        &git_bin(&BinOverrides::from_env(&ProcessEnv)),
-        &config,
-    )
+    run_with(conn, row, &Tools::from_env(&ProcessEnv), &Launcher, &config)
 }
 
-/// [`run`] with the git binary `git` and the fleet config `config`.
+/// [`run`] with the programs `tools`, the launcher `host` of each `gh`
+/// call, and the fleet config `config`.
 pub fn run_with(
     conn: &Connection,
     row: &JobRow,
-    git: &Path,
+    tools: &Tools,
+    host: &dyn ProcessHost,
     config: &FleetConfig,
 ) -> Result<Outcome> {
     let feature = row.subject.as_str();
-    let pushed = push(conn, row, git);
-    in_transaction(conn, |tx| match &pushed {
-        Ok(input) => remote::record_push_passed(tx, None, &NeedsYouList, feature, &input.tip),
-        Err(why) => {
+    let pushed = push(conn, row, &tools.git);
+    let followed = match &pushed {
+        Ok(input) => Some(follow_pr(conn, row, tools, host, &input.remote)),
+        Err(_) => None,
+    };
+    in_transaction(conn, |tx| match (&pushed, &followed) {
+        (Ok(input), followed) => {
+            remote::record_push_passed(tx, None, &NeedsYouList, feature, &input.tip)?;
+            match followed {
+                Some(Err(why)) => {
+                    let clock = fleet_clock(tx)?;
+                    let why = format!("the pull request step failed: {why:#}");
+                    remote::record_push_failed(
+                        tx,
+                        None,
+                        &NeedsYouList,
+                        config,
+                        feature,
+                        clock,
+                        &why,
+                    )
+                }
+                Some(Ok(facts)) => record_pr(tx, feature, facts),
+                None => Ok(()),
+            }
+        }
+        (Err(why), _) => {
             let clock = fleet_clock(tx)?;
             let why = format!("{why:#}");
             remote::record_push_failed(tx, None, &NeedsYouList, config, feature, clock, &why)
         }
     })?;
-    Ok(match pushed {
-        Ok(input) => Outcome {
+    Ok(match (pushed, followed) {
+        (Ok(input), Some(Err(why))) => Outcome {
+            passed: false,
+            verdict: true,
+            text: format!(
+                "pushed {} to {}, but the pull request step failed: {why:#}",
+                input.tip, input.remote
+            ),
+        },
+        (Ok(input), _) => Outcome {
             passed: true,
             verdict: true,
             text: format!("pushed {} to {}", input.tip, input.remote),
         },
-        Err(why) => Outcome {
+        (Err(why), _) => Outcome {
             passed: false,
             verdict: true,
             text: format!("the push failed: {why:#}"),
@@ -274,6 +323,353 @@ fn failure_text(out: &GitOutput) -> String {
         String::from_utf8_lossy(&out.stdout).trim()
     );
     text.trim().to_string()
+}
+
+// ─── the pull request ───────────────────────────────────────────────────
+
+/// The kind of the needs-you item of the compare URL of a feature with
+/// `pr = manual`.
+pub const PR_MANUAL_KIND: &str = "pr_manual";
+
+/// The key of the needs-you item of the compare URL of `feature`.
+pub fn pr_manual_key(feature: &str) -> String {
+    format!("{PR_MANUAL_KIND}:{feature}")
+}
+
+/// What the pull request step found, recorded after it in 1 transaction:
+/// the pull request or compare URL of the feature, and the text of the
+/// needs-you item of a compare URL.
+#[derive(Debug, Default)]
+struct PrFacts {
+    pr: Option<String>,
+    manual_item: Option<String>,
+}
+
+/// The pull request step after a passed push of the feature of `row` to
+/// `remote` (Q22). It changes nothing in the ledger.
+fn follow_pr(
+    conn: &Connection,
+    row: &JobRow,
+    tools: &Tools,
+    host: &dyn ProcessHost,
+    remote: &str,
+) -> Result<PrFacts> {
+    let f = rows::feature(conn, &row.subject)?
+        .ok_or_else(|| anyhow!("no feature {} in the ledger", row.subject))?;
+    let (Some(branch), Some(repo)) = (f.branch.as_deref(), row.repo.as_deref()) else {
+        return Ok(PrFacts::default());
+    };
+    let repo = Path::new(repo);
+    let reader = BlobReader {
+        git: &tools.git,
+        repo,
+    };
+    let ready = f.state == "ready";
+    let draft = f.state == "open" && f.pr.is_some();
+    if !ready && !draft {
+        return Ok(PrFacts::default());
+    }
+    let settings = project_file::load(&reader, &format!("refs/heads/{branch}"))?;
+    match settings.pr {
+        Pr::Manual => manual(&tools.git, repo, remote, &f, branch, ready),
+        Pr::Gh => {
+            let gh = Gh {
+                bin: tools
+                    .gh
+                    .as_deref()
+                    .ok_or_else(|| anyhow!("gh is not on PATH"))?,
+                host,
+                repo,
+                temp: &tools.temp,
+                tag: format!("{}-{}", row.id, f.id),
+            };
+            if ready {
+                gh_ready(conn, &gh, &f, branch)
+            } else {
+                gh_draft(&gh, &f)
+            }
+        }
+    }
+}
+
+/// The pull request as `gh pr view --json url,state,isDraft,body` reads it.
+#[derive(serde::Deserialize)]
+struct PrView {
+    url: String,
+    state: String,
+    #[serde(rename = "isDraft")]
+    draft: bool,
+    body: String,
+}
+
+/// A `ready` feature with `pr = gh`: its recorded pull request, else the
+/// open pull request of its branch (a claim attempt opened it), else a new
+/// one. The body gets the section of each landed task that it lacks, and
+/// a draft becomes ready for review. A recorded pull request that is not
+/// open is left alone: the fetch job puts it on the needs-you list.
+fn gh_ready(conn: &Connection, gh: &Gh<'_>, f: &FeatureRow, branch: &str) -> Result<PrFacts> {
+    let found = match f.pr.as_deref() {
+        Some(pr) => Some(gh.view(pr)?),
+        // gh exits non-zero when the branch has no pull request.
+        None => gh.view(branch).ok(),
+    };
+    let sections = task_sections(conn, &f.id, branch)?;
+    let url = match found {
+        Some(v) if v.state.eq_ignore_ascii_case("OPEN") => {
+            let body = with_new_sections(&v.body, &sections);
+            if body != v.body {
+                let file = gh.body_file(&body)?;
+                gh.call(&["pr", "edit", &v.url, "--body-file", &file])?;
+            }
+            if v.draft {
+                gh.call(&["pr", "ready", &v.url])?;
+            }
+            v.url
+        }
+        Some(_) if f.pr.is_some() => return Ok(PrFacts::default()),
+        _ => {
+            let intro = format!(
+                "Feature `{}`: its tasks land on `{branch}`; this pull request brings them to `{}`.",
+                f.id, f.primary_branch
+            );
+            let file = gh.body_file(&with_new_sections(&intro, &sections))?;
+            let title = format!("{}: feature {}", f.name.as_deref().unwrap_or(branch), f.id);
+            let out = gh.call(&[
+                "pr",
+                "create",
+                "--base",
+                &f.primary_branch,
+                "--head",
+                branch,
+                "--title",
+                &title,
+                "--body-file",
+                &file,
+            ])?;
+            out.lines()
+                .map(str::trim)
+                .rfind(|l| l.starts_with("https://") || l.starts_with("http://"))
+                .map(str::to_string)
+                .ok_or_else(|| anyhow!("gh pr create printed no URL: {}", out.trim()))?
+        }
+    };
+    Ok(PrFacts {
+        pr: Some(url),
+        manual_item: None,
+    })
+}
+
+/// An `open` feature with a pull request and `pr = gh`: an open pull
+/// request that is not a draft becomes a draft.
+fn gh_draft(gh: &Gh<'_>, f: &FeatureRow) -> Result<PrFacts> {
+    let Some(pr) = f.pr.as_deref() else {
+        return Ok(PrFacts::default());
+    };
+    let v = gh.view(pr)?;
+    if v.state.eq_ignore_ascii_case("OPEN") && !v.draft {
+        gh.call(&["pr", "ready", &v.url, "--undo"])?;
+    }
+    Ok(PrFacts::default())
+}
+
+/// `pr = manual`: the compare URL of the feature branch, with the text of
+/// its needs-you item. A remote with no web address gets the branch names.
+fn manual(
+    git: &Path,
+    repo: &Path,
+    remote: &str,
+    f: &FeatureRow,
+    branch: &str,
+    ready: bool,
+) -> Result<PrFacts> {
+    let key = format!("remote.{remote}.url");
+    let out = run_git(git, repo, &[], &["config", "--get", &key])?;
+    let primary = &f.primary_branch;
+    let link = web_base(&out.stdout_text())
+        .map(|base| format!("{base}/compare/{primary}...{branch}"))
+        .unwrap_or_else(|| format!("{primary}...{branch} of the remote {remote}"));
+    let text = if ready {
+        format!(
+            "Feature {} is ready. Open its pull request, then merge it: {link}",
+            f.id
+        )
+    } else {
+        format!(
+            "Feature {} is open again: do not merge {link} yet. fleetd tells you when it is ready.",
+            f.id
+        )
+    };
+    Ok(PrFacts {
+        pr: Some(link),
+        manual_item: Some(text),
+    })
+}
+
+/// The web address of the remote URL `url`: `https://<host>/<path>` with
+/// no user, port or `.git`. `None` for a local path.
+fn web_base(url: &str) -> Option<String> {
+    let url = url.trim().trim_end_matches('/');
+    let url = url.strip_suffix(".git").unwrap_or(url);
+    let schemed = ["https://", "http://", "ssh://", "git://"]
+        .iter()
+        .find_map(|s| url.strip_prefix(s));
+    let (host, path) = match schemed {
+        Some(rest) => rest.split_once('/')?,
+        None => {
+            // The scp form `user@host:path`. A drive letter is a local path.
+            let (host, path) = url.split_once(':')?;
+            if host.contains('/') || host.len() < 2 {
+                return None;
+            }
+            (host, path)
+        }
+    };
+    let host = host.rsplit('@').next()?.split(':').next()?;
+    let path = path.trim_start_matches('/');
+    (!host.is_empty() && !path.is_empty()).then(|| format!("https://{host}/{path}"))
+}
+
+/// The section of each landed task of `feature` (F17), oldest first, as
+/// `(short id, text)`.
+fn task_sections(conn: &Connection, feature: &str, branch: &str) -> Result<Vec<(String, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT task_id FROM branches
+         WHERE feature_id = ?1 AND task_id IS NOT NULL AND landing_state = 'landed'
+         ORDER BY rowid",
+    )?;
+    let ids = stmt
+        .query_map([feature], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    ids.iter()
+        .map(|id| {
+            let t = tasks::get(conn, id)?;
+            let short = t.short();
+            let text = format!("### {short} {}\n\nLanded on `{branch}`.", t.title);
+            Ok((short, text))
+        })
+        .collect()
+}
+
+/// Record the facts of the pull request step of `feature`, in `tx`: `pr`,
+/// `pr_state` `open`, and the needs-you item of a compare URL.
+fn record_pr(tx: &Connection, feature: &str, facts: &PrFacts) -> Result<()> {
+    let Some(pr) = facts.pr.as_deref() else {
+        return Ok(());
+    };
+    let f =
+        rows::feature(tx, feature)?.ok_or_else(|| anyhow!("no feature {feature} in the ledger"))?;
+    let cause = Cause {
+        actor: Actor::Horch,
+        text: "the push job followed the pull request",
+    };
+    if f.pr.as_deref() != Some(pr) {
+        rows::set_feature_fact(tx, None, feature, FeatureFact::Pr(pr), cause)?;
+    }
+    if f.pr_state != "open" {
+        rows::set_feature_fact(tx, None, feature, FeatureFact::PrState("open"), cause)?;
+    }
+    if let Some(text) = facts.manual_item.as_deref() {
+        let key = pr_manual_key(feature);
+        let item = NewItem {
+            key: &key,
+            kind: PR_MANUAL_KIND,
+            entity: Entity::Feature,
+            entity_id: feature,
+            text,
+        };
+        NeedsYouList.open_item(tx, &item)?;
+    }
+    Ok(())
+}
+
+/// The `gh` of 1 run: each call runs through the launcher in the
+/// repository, bound by the bound of a git network call (F11).
+struct Gh<'a> {
+    bin: &'a Path,
+    host: &'a dyn ProcessHost,
+    repo: &'a Path,
+    temp: &'a Path,
+    /// The run and the feature, in the names of the files of the calls.
+    tag: String,
+}
+
+impl Gh<'_> {
+    /// The pull request `pr` (a URL, a number or a branch).
+    fn view(&self, pr: &str) -> Result<PrView> {
+        let text = self.call(&["pr", "view", pr, "--json", "url,state,isDraft,body"])?;
+        // The output file has stdout and stderr: take the line with the JSON.
+        text.lines()
+            .find_map(|l| serde_json::from_str::<PrView>(l).ok())
+            .ok_or_else(|| anyhow!("gh gave no pull request: {}", text.trim()))
+    }
+
+    /// `body` in a file for `--body-file`. Its path.
+    fn body_file(&self, body: &str) -> Result<String> {
+        let file = self
+            .temp
+            .join(format!("horch-push-gh-{}.body.md", self.tag));
+        std::fs::write(&file, body)?;
+        Ok(file.to_string_lossy().into_owned())
+    }
+
+    /// `gh <args>`: its output, or an error with its output when it exits
+    /// non-zero or runs past its bound.
+    fn call(&self, args: &[&str]) -> Result<String> {
+        let output = self.temp.join(format!("horch-push-gh-{}.out", self.tag));
+        let _ = std::fs::remove_file(&output);
+        let spec = LaunchSpec {
+            program: self.bin.to_path_buf(),
+            args: args.iter().map(Into::into).collect(),
+            cwd: Some(self.repo.to_path_buf()),
+            env_rule: Default::default(),
+            detach: false,
+            output: Some(output.clone()),
+        };
+        let mut child = self.host.launch(&spec).map_err(|e| anyhow!("{e}"))?.child;
+        let until = Instant::now() + network::OTHER_BOUND;
+        let status = loop {
+            if let Some(status) = child.try_wait()? {
+                break status;
+            }
+            if Instant::now() >= until {
+                horch_platform::group::kill_child_group(&mut child);
+                let _ = child.wait();
+                let _ = std::fs::remove_file(&output);
+                return Err(anyhow!(
+                    "gh {} ran past its bound and horch killed it",
+                    args[..2.min(args.len())].join(" ")
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        let text = std::fs::read_to_string(&output).unwrap_or_default();
+        let _ = std::fs::remove_file(&output);
+        if !status.success() {
+            return Err(anyhow!(
+                "gh {} failed ({status}): {}",
+                args[..2.min(args.len())].join(" "),
+                text.trim()
+            ));
+        }
+        Ok(text)
+    }
+}
+
+/// The project file at a commit, read with `git cat-file` under the fleetd
+/// git rule, which starts no program of the project.
+struct BlobReader<'a> {
+    git: &'a Path,
+    repo: &'a Path,
+}
+
+impl ProjectFileReader for BlobReader<'_> {
+    fn read(&self, tip: &str) -> std::io::Result<Option<String>> {
+        let spec = format!("{tip}:{FILE_NAME}");
+        let out = run_git(self.git, self.repo, &[], &["cat-file", "blob", &spec])
+            .map_err(std::io::Error::other)?;
+        // The commit has no project file: git exits 128.
+        Ok((out.status == 0).then(|| String::from_utf8_lossy(&out.stdout).into_owned()))
+    }
 }
 
 /// Run `f` in 1 immediate transaction of `conn`.
