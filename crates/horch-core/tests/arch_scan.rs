@@ -1771,18 +1771,24 @@ fn fitness_table_rule_finds_foreign_tables() {
 /// [`STATE_COLUMNS`]: an `UPDATE` of that table whose `SET` clause names
 /// that column. Keywords and names match in any case, as SQLite reads them.
 fn writes_state_column(literal: &str) -> bool {
-    let words: Vec<String> = tokens(&[literal.to_string()])
+    let words = sql_words(literal);
+    (0..words.len()).any(|at| {
+        set_clause_of_state_table(&words, at)
+            .is_some_and(|(set, column)| assigns(&words[set..], column))
+    })
+}
+
+/// The words of the SQL string `literal`: names and keywords in lower case,
+/// and each other sign as 1 word.
+fn sql_words(literal: &str) -> Vec<String> {
+    tokens(&[literal.to_string()])
         .into_iter()
         .map(|(_, t)| match t {
             Tok::Ident(name) => name.to_ascii_lowercase(),
             Tok::Sep => "::".to_string(),
             Tok::Punct(c) => c.to_string(),
         })
-        .collect();
-    (0..words.len()).any(|at| {
-        set_clause_of_state_table(&words, at)
-            .is_some_and(|(set, column)| assigns(&words[set..], column))
-    })
+        .collect()
 }
 
 /// The tables whose state column only the 1 door writes, with that
@@ -1881,8 +1887,16 @@ fn exempt(found: &str) -> bool {
 /// production code of `horch-core` and `horch`, as `<path>:<line>: <sql>`,
 /// outside the 1 door.
 fn direct_state_writes() -> Vec<String> {
+    let door = format!("horch-core/src/{FLEETD_DOOR}:");
+    let mut found = production_sql(writes_state_column);
+    found.retain(|f| !f.starts_with(&door));
+    found
+}
+
+/// Each SQL string of the production code of `horch-core` and `horch`
+/// that `matches`, as `<path>:<line>: <sql>`.
+fn production_sql(matches: fn(&str) -> bool) -> Vec<String> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-    let door = format!("horch-core/src/{FLEETD_DOOR}");
     let mut files = Vec::new();
     for name in ["horch-core", "horch"] {
         rust_files(&crate_src(name), &mut files);
@@ -1899,13 +1913,12 @@ fn direct_state_writes() -> Vec<String> {
         let rel = relative(file, &root);
         if file.file_name().is_some_and(|n| n == "tests.rs")
             || test_paths.iter().any(|t| file.starts_with(t))
-            || rel == door
         {
             continue;
         }
         let texts: Vec<&str> = lines.iter().map(|(_, l)| l.as_str()).collect();
         for (i, literal) in lex(&texts).strings {
-            if writes_state_column(&literal) {
+            if matches(&literal) {
                 let sql = literal.split_whitespace().collect::<Vec<_>>().join(" ");
                 found.push(format!("{rel}:{}: {sql}", lines[i].0));
             }
@@ -2236,5 +2249,75 @@ fn git_worktree_matcher_finds_add_remove_and_prune() {
         "git(repo, &[\"branch\", \"-D\", \"add\"])",
     ] {
         assert!(!runs_git_worktree_change(miss), "{miss}");
+    }
+}
+
+// ─── The state of a new worktree row is written, not defaulted ──────────────
+
+/// Whether the SQL string `literal` inserts into `worktrees` without the
+/// `state` column in its column list. A row that takes the default state
+/// `orphaned` would list a live tree as orphaned (fleetd-p3, Q19).
+fn inserts_worktree_without_state(literal: &str) -> bool {
+    let words = sql_words(literal);
+    let word = |i: usize| words.get(i).map(String::as_str);
+    (0..words.len()).any(|at| {
+        if !matches!(word(at), Some("insert" | "replace")) {
+            return false;
+        }
+        let mut next = at + 1;
+        if word(next) == Some("or") {
+            next += 2;
+        }
+        if word(next) != Some("into") {
+            return false;
+        }
+        next += 1;
+        if word(next) == Some("main") && word(next + 1) == Some(".") {
+            next += 2;
+        }
+        if word(next) != Some("worktrees") {
+            return false;
+        }
+        if word(next + 1) != Some("(") {
+            return true;
+        }
+        !words[next + 2..]
+            .iter()
+            .take_while(|w| *w != ")")
+            .any(|w| w == "state")
+    })
+}
+
+/// Each production `INSERT INTO worktrees` names the `state` column, so no
+/// new row relies on the default `orphaned` of the Phase 3 migration.
+#[test]
+fn fitness_each_worktree_insert_writes_its_state() {
+    let found = production_sql(inserts_worktree_without_state);
+    assert!(
+        found.is_empty(),
+        "an INSERT INTO worktrees does not write the state column:\n{}",
+        found.join("\n")
+    );
+}
+
+/// The matcher of the rule above.
+#[test]
+fn worktree_insert_matcher_finds_an_insert_without_state() {
+    for hit in [
+        "INSERT INTO worktrees (worktree_id, path, status) VALUES (?1, ?2, ?3)",
+        "insert or ignore into main.worktrees (worktree_id, path) values (?1, ?2)",
+        "INSERT INTO worktrees SELECT * FROM other",
+        "REPLACE INTO worktrees (worktree_id, state_text) VALUES (?1, ?2)",
+    ] {
+        assert!(inserts_worktree_without_state(hit), "{hit}");
+    }
+    for miss in [
+        "INSERT INTO worktrees (worktree_id, path, status, state) VALUES (?1, ?2, ?3, ?4)",
+        "INSERT INTO worktrees (worktree_id,\n state, path) VALUES (?1, ?2, ?3)",
+        "INSERT INTO worktrees_v5 (worktree_id) SELECT worktree_id FROM worktrees",
+        "INSERT INTO worktree_modes (worktree_id, run_id) VALUES (?1, ?2)",
+        "UPDATE worktrees SET status = ?1",
+    ] {
+        assert!(!inserts_worktree_without_state(miss), "{miss}");
     }
 }

@@ -588,7 +588,9 @@ fn claim_findings(conn: &Connection, report: &mut ImportReport, f: &ClaimFacts<'
 
 /// Insert the worktree row of a claim. Only the path of a live row is
 /// unique (a `removed` row stays as history), so a claim seen twice keeps
-/// its first live row.
+/// its first live row. The state is the one of the release backfill
+/// (`docs/tickets/fleetd-p3/MAP.md`, Q19): a `cleaned` tree is `removed`,
+/// and each other tree is `orphaned`, as no attempt of it is live.
 fn insert_worktree(
     conn: &Connection,
     c: &Value,
@@ -597,10 +599,16 @@ fn insert_worktree(
     (repo, path): (&Path, &str),
     (status, bytes): (&str, Option<u64>),
 ) -> Result<()> {
+    let state = if status == WorktreeStatus::Cleaned.as_str() {
+        WorktreeState::Removed
+    } else {
+        WorktreeState::Orphaned
+    };
     conn.execute(
         "INSERT INTO worktrees (worktree_id, task_id, worker_id, repo_root, path, branch, base,
-            base_commit, status, landed_commit, bytes_on_disk, origin, import_raw_id, created_at, reason)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'import', ?12, ?13, ?14)
+            base_commit, status, state, landed_commit, bytes_on_disk, origin, import_raw_id,
+            created_at, reason)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'import', ?13, ?14, ?15)
          ON CONFLICT(path) WHERE state <> 'removed' DO NOTHING",
         params![
             id,
@@ -612,10 +620,13 @@ fn insert_worktree(
             str_of(c, "base").unwrap_or(""),
             str_of(c, "base_commit"),
             status,
+            state.as_str(),
             str_of(c, "landed_commit"),
             bytes.map(|b| b as i64),
             raw_id,
-            str_of(c, "created_at").map(str::to_string).unwrap_or_else(util::now),
+            str_of(c, "created_at")
+                .map(str::to_string)
+                .unwrap_or_else(util::now),
             str_of(c, "reason")
         ],
     )?;

@@ -4,9 +4,11 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use horch_core::fleetd::fleet_runtime::application::ledger::Cause;
+use horch_core::fleetd::worktree_custody::adapters::sqlite::{self as trees, NewWorktree};
 use horch_core::taskledger::git::Git;
 use horch_core::taskledger::import::{self, ImportReport};
-use horch_core::taskledger::model::FindingStatus;
+use horch_core::taskledger::model::{Actor, FindingStatus, WorktreeStatus};
 use horch_core::taskledger::Store;
 use serde_json::{json, Value};
 
@@ -194,6 +196,52 @@ fn each_session_status_maps_to_worker_task_and_findings() {
     );
     assert_eq!(report.findings.get("ended_without_done"), Some(&2));
     assert_eq!(report.findings.get("done_not_landed"), Some(&1));
+}
+
+/// An imported tree has the state of the release backfill (fleetd-p3 Q19):
+/// a `cleaned` tree is `removed`, each other tree is `orphaned`. A `removed`
+/// row leaves its path free, so fleetd can make a new tree there.
+#[test]
+fn an_imported_cleaned_tree_is_removed_and_a_new_tree_takes_its_path() {
+    let mut f = fixture();
+    let open_here = f.worktree_add("open-here");
+    let gone = f.repo.join(".worktrees").join("landed-gone");
+    let claim = |id: &str, path: &Path, state: &str| json!({"id": id, "path": path.to_str().unwrap(), "branch": id, "base": "main", "state": state});
+    f.write(
+        "worktrees/claims.json",
+        json!([
+            claim("c1", &gone, "landed"),
+            claim("c2", &open_here, "open")
+        ]),
+    );
+    f.import(false);
+    let states = f.rows("SELECT status, state FROM worktrees ORDER BY status");
+    assert_eq!(
+        states,
+        vec![
+            vec!["cleaned".to_string(), "removed".into()],
+            vec!["open".to_string(), "orphaned".into()],
+        ]
+    );
+    let new = NewWorktree {
+        worktree_id: "new".to_string(),
+        task_id: None,
+        worker_id: None,
+        repo_root: f.repo.to_string_lossy().into_owned(),
+        path: gone.to_string_lossy().into_owned(),
+        branch: "landed-gone".to_string(),
+        base: "main".to_string(),
+        base_commit: None,
+        status: WorktreeStatus::Open,
+        mode: None,
+    };
+    let cause = Cause {
+        actor: Actor::Horch,
+        text: "test",
+    };
+    f.store
+        .immediate(|tx| trees::insert_reserved(tx, None, &new, cause))
+        .unwrap();
 }
 
 #[test]

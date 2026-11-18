@@ -42,6 +42,7 @@ these rules by accident:
 | `fitness_no_context_touches_foreign_tables` | A SQL string under `fleetd/<context>/` names only the tables of that context (`FLEETD_TABLE_OWNERS`); the 1 door `fleetd/fleet_runtime/adapters/sqlite.rs` is exempt | Call the context that owns the table, or write the state through the door |
 | `fitness_only_custody_and_triage_move_a_worktree_to_removed` | Only the `worktree_remove` job (`worktree_custody/application/remove.rs`) and the triage settle of a gone folder (`taskledger/triage/apply.rs`, behind `settle_refusal`) call the door with the target `removed` | Queue a `worktree_remove` job; never move a worktree to `removed` by hand |
 | `fitness_only_worktree_custody_runs_git_worktree_add_remove_or_prune` | Outside tests, only `fleetd/worktree_custody/adapters/` runs `git worktree add`, `remove` or `prune`; `vcs/landing.rs` (the claims of `horch worktree new` and `land`) is the 1 exemption (`WORKTREE_CALL_EXEMPT`). `git worktree list` is a read and is allowed | Queue a `worktree_add` or `worktree_remove` job of worktree custody |
+| `fitness_each_worktree_insert_writes_its_state` | Each production `INSERT INTO worktrees` in `horch-core` and `horch` names the `state` column; no new row takes the default `orphaned` of the Phase 3 migration | Write the state of the new row: `reserved` through worktree custody, or the state of the release backfill for a row of an old record |
 
 ## horch-core modules
 
