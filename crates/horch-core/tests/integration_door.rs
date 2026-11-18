@@ -212,6 +212,7 @@ impl World {
             base_tip: "base0",
             parent_id: None,
             members: &[member],
+            due_at: 0,
         };
         let id = self
             .store
@@ -473,6 +474,7 @@ fn bundle_with_its_members_is_1_transaction() {
         base_tip: "base0",
         parent_id: None,
         members: &[&b, &a],
+        due_at: 0,
     };
     let id = w
         .store
@@ -506,6 +508,7 @@ fn bundle_with_its_members_is_1_transaction() {
             base_tip: "base1",
             parent_id: Some(id),
             members: &bad,
+            due_at: 0,
         };
         let (insert, other) = w
             .store
@@ -543,6 +546,7 @@ fn bundle_with_its_members_is_1_transaction() {
         base_tip: "base1",
         parent_id: None,
         members: &[],
+        due_at: 0,
     };
     let out = w
         .store

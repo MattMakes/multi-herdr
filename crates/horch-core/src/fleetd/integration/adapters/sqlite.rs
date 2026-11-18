@@ -74,6 +74,8 @@ pub struct BundleRow {
     pub parent_id: Option<i64>,
     pub state: String,
     pub job_id: Option<i64>,
+    /// Fleet clock seconds.
+    pub due_at: i64,
     pub result: Option<String>,
     pub at: String,
     pub members: Vec<String>,
@@ -131,6 +133,8 @@ pub struct NewBundle<'a> {
     pub base_tip: &'a str,
     pub parent_id: Option<i64>,
     pub members: &'a [&'a str],
+    /// Fleet clock seconds.
+    pub due_at: i64,
 }
 
 /// A new run of a gate: `fast` or `full`.
@@ -178,6 +182,10 @@ pub enum BundleFact<'a> {
     /// `None` when the deletion of the ref is verified.
     CandidateRef(Option<&'a str>),
     CandidateTip(&'a str),
+    /// The build job, then the fast gate job.
+    JobId(i64),
+    /// Fleet clock seconds.
+    DueAt(i64),
 }
 
 impl BundleFact<'_> {
@@ -185,6 +193,8 @@ impl BundleFact<'_> {
         match self {
             BundleFact::CandidateRef(r) => ("candidate_ref", text(r)),
             BundleFact::CandidateTip(t) => ("candidate_tip", text(Some(t))),
+            BundleFact::JobId(n) => ("job_id", int(Some(n))),
+            BundleFact::DueAt(n) => ("due_at", int(Some(n))),
         }
     }
 }
@@ -344,13 +354,14 @@ fn bundle_rows(
     cause: Cause<'_>,
 ) -> Result<i64> {
     tx.execute(
-        "INSERT INTO bundles (feature_id, base_tip, parent_id, state, at)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
+        "INSERT INTO bundles (feature_id, base_tip, parent_id, state, due_at, at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![
             new.feature_id,
             new.base_tip,
             new.parent_id,
             BUNDLE_FIRST,
+            new.due_at,
             util::now()
         ],
     )?;
@@ -673,15 +684,16 @@ pub fn bundle(conn: &Connection, id: i64) -> Result<Option<BundleRow>> {
             parent_id: r.get(5)?,
             state: r.get(6)?,
             job_id: r.get(7)?,
-            result: r.get(8)?,
-            at: r.get(9)?,
+            due_at: r.get(8)?,
+            result: r.get(9)?,
+            at: r.get(10)?,
             members: Vec::new(),
         })
     };
     let Some(mut found) = conn
         .query_row(
             "SELECT id, feature_id, base_tip, candidate_ref, candidate_tip, parent_id, state,
-                job_id, result, at
+                job_id, due_at, result, at
              FROM bundles WHERE id = ?1",
             [id],
             row,

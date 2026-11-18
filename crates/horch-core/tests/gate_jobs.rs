@@ -314,6 +314,7 @@ impl World {
             base_tip,
             parent_id: None,
             members: &["fleet/r1/t1"],
+            due_at: 0,
         };
         let id = rows::insert_bundle(&tx, None, &bundle, cause("bundle built")).unwrap();
         tx.commit().unwrap();

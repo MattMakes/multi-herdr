@@ -461,7 +461,7 @@ fn attempt_backfill_is_via_claim() {
 /// A bundle `id` of feature `F-0001` in `state`.
 fn bundle(conn: &Connection, id: i64, state: &str) {
     conn.execute(
-        "INSERT INTO bundles (id, feature_id, base_tip, state, at) VALUES (?1, 'F-0001', 'c0', ?2, 'now')",
+        "INSERT INTO bundles (id, feature_id, base_tip, state, due_at, at) VALUES (?1, 'F-0001', 'c0', ?2, 0, 'now')",
         rusqlite::params![id, state],
     )
     .unwrap();
@@ -577,9 +577,9 @@ fn new_tables_take_the_design_words_and_refuse_others() {
     refused("UPDATE branches SET landing_state = 'merged' WHERE name = 'fleet/a/t2'");
     ok("UPDATE branches SET queue_seq = 1, repair_attempts = 1, rescue_ref = 'r', seen_tip = 'a', seen_remote_tip = 'b', orphan = 1 WHERE name = 'fleet/a/t2'");
     ok("INSERT INTO jobs (id, kind, subject, input_key, state, time_limit_s, created_at) VALUES (1, 'fast_gate', 'F-0001', 'k', 'running', 60, 'now')");
-    ok("INSERT INTO bundles (id, feature_id, base_tip, candidate_ref, candidate_tip, state, job_id, at) VALUES (1, 'F-0001', 'c0', 'refs/horch/bundle/1', 'c9', 'gating', 1, 'now')");
-    ok("INSERT INTO bundles (id, feature_id, base_tip, parent_id, state, at) VALUES (2, 'F-0001', 'c0', 1, 'building', 'now')");
-    refused("INSERT INTO bundles (id, feature_id, base_tip, state, at) VALUES (3, 'F-0001', 'c0', 'open', 'now')");
+    ok("INSERT INTO bundles (id, feature_id, base_tip, candidate_ref, candidate_tip, state, job_id, due_at, at) VALUES (1, 'F-0001', 'c0', 'refs/horch/bundle/1', 'c9', 'gating', 1, 0, 'now')");
+    ok("INSERT INTO bundles (id, feature_id, base_tip, parent_id, state, due_at, at) VALUES (2, 'F-0001', 'c0', 1, 'building', 0, 'now')");
+    refused("INSERT INTO bundles (id, feature_id, base_tip, state, due_at, at) VALUES (3, 'F-0001', 'c0', 'open', 0, 'now')");
     ok("INSERT INTO gate_runs (feature_id, gate, tip, base_tip, job_id, at) VALUES ('F-0001', 'fast', 'c9', 'c0', 1, 'now')");
     refused("INSERT INTO gate_runs (feature_id, gate, tip, base_tip, job_id, at) VALUES ('F-0001', 'slow', 'c9', 'c0', 1, 'now')");
     refused("UPDATE gate_runs SET result = 'skip'");

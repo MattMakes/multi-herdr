@@ -158,6 +158,7 @@ impl World {
             base_tip: &self.base,
             parent_id: None,
             members,
+            due_at: 0,
         };
         self.store
             .immediate(|tx| rows::insert_bundle(tx, None, &new, cause("bundle queued")))

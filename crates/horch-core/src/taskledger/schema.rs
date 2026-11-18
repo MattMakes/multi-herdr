@@ -1131,6 +1131,7 @@ CREATE TABLE bundles (
     parent_id INTEGER REFERENCES bundles(id),
     state TEXT NOT NULL CHECK (state IN ('building', 'gating', 'passed', 'landed', 'failed', 'dropped')),
     job_id INTEGER REFERENCES jobs(id),
+    due_at INTEGER NOT NULL,
     result TEXT CHECK (result IN ('pass', 'fail')),
     at TEXT NOT NULL
 );
