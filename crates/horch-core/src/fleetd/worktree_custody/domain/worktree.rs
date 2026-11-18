@@ -234,7 +234,8 @@ pub enum TreeJob {
 /// `orphaned` row, a removal of a `landed` row (FM-25, FM-27, Q8). A
 /// verified rescue moves an orphan to `rescued`, so an `orphaned` row has no
 /// verified rescue of its state now, even with the ref of an earlier
-/// rescue of a reused tree. A `rescued` row is removed only for space.
+/// rescue of a reused tree. A `rescued` row is removed for space, or when
+/// its idea is `merged` (the reconciler reads the idea).
 pub fn to_queue(state: &str) -> Option<TreeJob> {
     match state {
         "orphaned" => Some(TreeJob::Rescue),

@@ -595,8 +595,9 @@ fn landed_tree_gets_1_remove_job_and_becomes_removed() {
     assert_eq!(w.all_jobs(), 1);
 }
 
-/// Q8: a rescued tree whose run is not finished stays, also over the disk
-/// budget; a rescued tree of a done run is removed for space.
+/// Q8: a rescued tree whose idea is in flight stays, also over the disk
+/// budget; a rescued tree of a cancelled idea is removed for space, by the
+/// budget and not by the reconciler (ticket 33 of fleetd-p6).
 #[test]
 fn rescued_tree_of_an_active_run_is_not_removed() {
     let mut w = world();
@@ -623,11 +624,20 @@ fn rescued_tree_of_an_active_run_is_not_removed() {
         "untracked\n"
     );
 
-    // The same tree once its run is done: the budget queues its removal.
+    // The same tree once its run is done: its idea is still in flight.
     w.conn
         .execute("UPDATE runs SET status = 'done'", [])
         .unwrap();
     w.pass();
+    assert!(w.jobs_of(Kind::WorktreeRemove, "kept").is_empty());
+
+    // The same tree once its idea is cancelled: the budget queues its
+    // removal.
+    w.conn
+        .execute("UPDATE ideas SET state = 'cancelled'", [])
+        .unwrap();
+    let report = w.pass();
+    assert!(report.removals.is_empty(), "{report:?}");
     assert_eq!(w.jobs_of(Kind::WorktreeRemove, "kept").len(), 1);
 }
 

@@ -2,6 +2,8 @@
 //!
 //! `docs/specs/fleetd/design.md`, "Worktrees: leased, reconciled, never
 //! lost" ("Disk"), FM-28, OR-1; MAP.md of fleetd-p3, Q8, Q9 and Q20.
+//! A tree is spare when the idea of its task is `merged` or `cancelled`
+//! (ticket 33 of fleetd-p6): a row has no idea, so its task names it.
 //! [`disk_budget`] runs in part 2 of a pass, after `reconcile_worktrees`.
 //! It reads the sizes that the `worktree_list` job stored and runs no git.
 //!
@@ -20,12 +22,12 @@ use rusqlite::Connection;
 use crate::fleetd::fleet_runtime::application::jobs::{JobCtx, NewItem};
 use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
+use crate::fleetd::ideas::application::rollup::idea_state_of_task;
 use crate::fleetd::worktree_custody::adapters::sqlite as store;
 use crate::fleetd::worktree_custody::application::remove::{queue_auto_remove, removal_failed};
 use crate::fleetd::worktree_custody::domain::disk::{
     self as rules, Decision, Tree, BUDGET_KEY, GB, NEEDS_YOU_KEY, NEEDS_YOU_KIND,
 };
-use crate::taskledger::{runs, tasks};
 
 /// What 1 call of [`disk_budget`] found.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -42,13 +44,13 @@ pub struct Report {
     pub hold: Option<String>,
 }
 
-/// 1 row that is not `removed`, with the status of its run and whether its
-/// automatic removal failed.
+/// 1 row that is not `removed`, with the state of the idea of its task and
+/// whether its automatic removal failed.
 struct Measured {
     id: String,
     state: String,
     has_task: bool,
-    run_status: Option<String>,
+    idea_state: Option<String>,
     created_at: String,
     bytes: Option<u64>,
     removal_failed: bool,
@@ -63,7 +65,7 @@ pub fn decision(conn: &Connection, budget_gb: u64) -> Result<Decision> {
             id: &r.id,
             state: &r.state,
             has_task: r.has_task,
-            run_status: r.run_status.as_deref(),
+            idea_state: r.idea_state.as_deref(),
             created_at: &r.created_at,
             bytes: r.bytes,
             removal_failed: r.removal_failed,
@@ -118,7 +120,7 @@ fn sync_hold_item(ctx: &JobCtx<'_>, tx: &Connection, d: &Decision) -> Result<()>
     }
     let text = format!(
         "The worktrees use {:.1} GB, above the budget of {} GB ({BUDGET_KEY}). fleetd holds \
-         new dispatch: no landed or rescued tree of a done or abandoned run is left to \
+         new dispatch: no landed or rescued tree of a merged or cancelled idea is left to \
          remove, and fleetd never removes an active tree for space. Land, drop or clean up \
          trees, or raise {BUDGET_KEY}.",
         d.total as f64 / GB as f64,
@@ -134,14 +136,11 @@ fn sync_hold_item(ctx: &JobCtx<'_>, tx: &Connection, d: &Decision) -> Result<()>
     ctx.needs_you.open_item(tx, &item)
 }
 
-/// Each row that is not `removed`, with the status of the run of its task
-/// or of its mode row.
+/// Each row that is not `removed`, with the state of the idea of its task.
 fn measured(conn: &Connection) -> Result<Vec<Measured>> {
     let mut stmt = conn.prepare(
-        "SELECT w.worktree_id, w.state, w.task_id, w.created_at, w.bytes_on_disk, m.run_id,
-                w.path
-           FROM worktrees w LEFT JOIN worktree_modes m ON m.worktree_id = w.worktree_id
-          WHERE w.state <> 'removed'",
+        "SELECT worktree_id, state, task_id, created_at, bytes_on_disk, path
+           FROM worktrees WHERE state <> 'removed'",
     )?;
     let rows = stmt
         .query_map([], |r| {
@@ -151,19 +150,14 @@ fn measured(conn: &Connection) -> Result<Vec<Measured>> {
                 r.get::<_, Option<String>>(2)?,
                 r.get::<_, String>(3)?,
                 r.get::<_, Option<i64>>(4)?,
-                r.get::<_, Option<String>>(5)?,
-                r.get::<_, String>(6)?,
+                r.get::<_, String>(5)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut out = Vec::with_capacity(rows.len());
-    for (id, state, task_id, created_at, bytes, mode_run, path) in rows {
-        let run_id = match task_id.as_deref() {
-            Some(task) => Some(tasks::get(conn, task)?.run_id),
-            None => mode_run,
-        };
-        let run_status = match run_id {
-            Some(run) => Some(runs::get(conn, &run)?.status),
+    for (id, state, task_id, created_at, bytes, path) in rows {
+        let idea_state = match task_id.as_deref() {
+            Some(task) => idea_state_of_task(conn, task)?,
             None => None,
         };
         let removal_failed = removal_failed(conn, &id, &path)?;
@@ -171,7 +165,7 @@ fn measured(conn: &Connection) -> Result<Vec<Measured>> {
             id,
             state,
             has_task: task_id.is_some(),
-            run_status,
+            idea_state,
             created_at,
             bytes: bytes.and_then(|b| u64::try_from(b).ok()),
             removal_failed,

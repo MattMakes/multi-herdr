@@ -643,6 +643,14 @@ pub fn branch(conn: &Connection, name: &str) -> Result<Option<BranchRow>> {
         .optional()?)
 }
 
+/// The landing state of each branch row of the task `task_id`.
+pub fn landing_states_of_task(conn: &Connection, task_id: &str) -> Result<Vec<Option<String>>> {
+    let mut stmt =
+        conn.prepare("SELECT landing_state FROM branches WHERE task_id = ?1 ORDER BY name")?;
+    let states = stmt.query_map([task_id], |r| r.get(0))?;
+    Ok(states.collect::<rusqlite::Result<_>>()?)
+}
+
 /// The name of each branch row, sorted.
 pub fn branch_names(conn: &Connection) -> Result<Vec<String>> {
     let mut stmt = conn.prepare("SELECT name FROM branches ORDER BY name")?;

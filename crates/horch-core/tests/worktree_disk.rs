@@ -1,6 +1,7 @@
 //! The worktree disk budget: over it, fleetd takes the `landed` and
-//! `rescued` trees of finished runs, oldest first, never an `active` tree,
-//! and holds new dispatch with 1 needs-you item when that is not enough
+//! `rescued` trees of merged or cancelled ideas, oldest first, never an
+//! `active` tree, and holds new dispatch with 1 needs-you item when that is
+//! not enough
 //! (docs/specs/fleetd/design.md, "Worktrees: leased, reconciled, never
 //! lost" ("Disk"), FM-28, OR-1; docs/tickets/fleetd-p3/16-worktree-disk-budget.md).
 //!
@@ -60,6 +61,8 @@ struct World {
     conn: Connection,
     config: FleetConfig,
     runs: u32,
+    /// The idea state of the tasks of each run, by run id.
+    ideas: BTreeMap<String, String>,
 }
 
 fn world() -> World {
@@ -89,6 +92,7 @@ fn world() -> World {
         conn,
         config: FleetConfig::default(),
         runs: 0,
+        ideas: BTreeMap::new(),
     }
 }
 
@@ -146,9 +150,11 @@ impl World {
             .unwrap();
     }
 
-    /// A run of the repository in `status`. A run is made `active` and
-    /// then moved, so the runs of 1 test do not refuse each other.
-    fn run(&mut self, status: &str) -> Run {
+    /// A run of the repository whose idea is in `idea`: the first task of
+    /// the run makes the idea, and [`World::task`] moves it. A run is made
+    /// `active` and then moved to the status that matches, so the runs of
+    /// 1 test do not refuse each other.
+    fn run(&mut self, idea: &str) -> Run {
         self.runs += 1;
         let new = NewRun {
             slug: format!("r{}", self.runs),
@@ -157,19 +163,31 @@ impl World {
             ..Default::default()
         };
         let run = runs::create(&self.conn, &self.repo, &new).unwrap();
+        let status = match idea {
+            "merged" => "done",
+            "cancelled" => "abandoned",
+            _ => "active",
+        };
         self.sql(
             "UPDATE runs SET status = ?2 WHERE run_id = ?1",
             &[&run.run_id, status],
         );
+        self.ideas.insert(run.run_id.clone(), idea.to_string());
         run
     }
 
-    /// A task of `run`.
+    /// A task of `run`, whose idea is in the state of [`World::run`].
     fn task(&self, run: &Run, name: &str) -> String {
         let t = NewTask::work(name, &format!("{name}.md"), "opus");
-        tasks::add(&self.conn, run, &t, Actor::Orchestrator)
+        let task = tasks::add(&self.conn, run, &t, Actor::Orchestrator)
             .unwrap()
-            .task_id
+            .task_id;
+        self.sql(
+            "UPDATE ideas SET state = ?2
+              WHERE id = (SELECT idea_id FROM tasks WHERE task_id = ?1)",
+            &[&task, &self.ideas[&run.run_id]],
+        );
+        task
     }
 
     /// A row `id` in `state`, of the task `task`, made at `created_at`,
@@ -392,13 +410,13 @@ impl ProcessHost for NoLaunch {
 #[test]
 fn over_budget_removes_landed_and_rescued_trees_of_finished_runs_oldest_first() {
     let mut w = world();
-    let done = w.run("done");
-    let abandoned = w.run("abandoned");
-    let active = w.run("active");
-    let t1 = w.task(&done, "t1");
-    let t2 = w.task(&abandoned, "t2");
-    let t3 = w.task(&done, "t3");
-    let t4 = w.task(&active, "t4");
+    let merged = w.run("merged");
+    let cancelled = w.run("cancelled");
+    let in_flight = w.run("in_progress");
+    let t1 = w.task(&merged, "t1");
+    let t2 = w.task(&cancelled, "t2");
+    let t3 = w.task(&merged, "t3");
+    let t4 = w.task(&in_flight, "t4");
     // 45 GB against the budget of 20 GB.
     w.row("newest", Some(&t3), "landed", "2026-01-05T00:00:00Z", 5);
     w.row("oldest", Some(&t2), "rescued", "2026-01-01T00:00:00Z", 5);
@@ -430,11 +448,11 @@ fn over_budget_removes_landed_and_rescued_trees_of_finished_runs_oldest_first() 
 #[test]
 fn over_budget_never_removes_an_active_tree_and_holds_dispatch() {
     let mut w = world();
-    let done = w.run("done");
-    let t1 = w.task(&done, "t1");
-    let t2 = w.task(&done, "t2");
+    let merged = w.run("merged");
+    let t1 = w.task(&merged, "t1");
+    let t2 = w.task(&merged, "t2");
     // An active tree with a commit, a modified tracked file and an
-    // untracked file. Its run is done: only its state keeps it.
+    // untracked file. Its idea is merged: only its state keeps it.
     let path = w.repo.join(".worktrees").join("live");
     let path_s = path.display().to_string();
     git(
@@ -482,9 +500,9 @@ fn over_budget_never_removes_an_active_tree_and_holds_dispatch() {
 #[test]
 fn over_budget_never_removes_a_tree_of_an_active_run() {
     let mut w = world();
-    let active = w.run("active");
-    let t1 = w.task(&active, "t1");
-    let t2 = w.task(&active, "t2");
+    let in_flight = w.run("in_progress");
+    let t1 = w.task(&in_flight, "t1");
+    let t2 = w.task(&in_flight, "t2");
     w.row("landed", Some(&t1), "landed", "2026-01-01T00:00:00Z", 15);
     w.row("rescued", Some(&t2), "rescued", "2026-01-02T00:00:00Z", 15);
     let report = w.budget();
@@ -497,9 +515,9 @@ fn over_budget_never_removes_a_tree_of_an_active_run() {
 #[test]
 fn hold_opens_1_needs_you_item_and_resolves_under_the_budget() {
     let mut w = world();
-    let active = w.run("active");
-    let t1 = w.task(&active, "t1");
-    // A rescued tree of an active run: no removal takes it (Q8).
+    let in_flight = w.run("in_progress");
+    let t1 = w.task(&in_flight, "t1");
+    // A rescued tree of an idea in flight: no removal takes it.
     w.row("big", Some(&t1), "rescued", "2026-01-01T00:00:00Z", 25);
     let mut pass = w.pass(&Nothing, &NoLaunch);
 
@@ -542,9 +560,9 @@ fn hold_opens_1_needs_you_item_and_resolves_under_the_budget() {
 #[test]
 fn a_tree_whose_removal_failed_frees_no_space() {
     let mut w = world();
-    let done = w.run("done");
-    let t1 = w.task(&done, "t1");
-    let t2 = w.task(&done, "t2");
+    let merged = w.run("merged");
+    let t1 = w.task(&merged, "t1");
+    let t2 = w.task(&merged, "t2");
     // 30 GB against the budget of 20 GB: 1 of the 2 trees is enough.
     w.row("stuck", Some(&t1), "landed", "2026-01-01T00:00:00Z", 15);
     w.row("next", Some(&t2), "landed", "2026-01-02T00:00:00Z", 15);
@@ -573,8 +591,8 @@ fn a_tree_whose_removal_failed_frees_no_space() {
 #[test]
 fn over_budget_queues_1_removal_for_space() {
     let mut w = world();
-    let done = w.run("done");
-    let t1 = w.task(&done, "t1");
+    let merged = w.run("merged");
+    let t1 = w.task(&merged, "t1");
     w.row("spare", Some(&t1), "landed", "2026-01-01T00:00:00Z", 25);
     let first = w.budget();
     let second = w.budget();
@@ -601,8 +619,8 @@ fn over_budget_queues_1_removal_for_space() {
 #[test]
 fn a_removal_observed_in_the_pass_starts_no_hold() {
     let mut w = world();
-    let active = w.run("active");
-    let t1 = w.task(&active, "t1");
+    let in_flight = w.run("in_progress");
+    let t1 = w.task(&in_flight, "t1");
     w.row("big", Some(&t1), "landed", "2026-01-01T00:00:00Z", 25);
     w.removal_passed("big");
     let mut pass = w.pass(&Nothing, &NoLaunch);

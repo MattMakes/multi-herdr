@@ -16,8 +16,11 @@
 //! It acts (MAP.md of fleetd-p3, Q9): it queues 1 `rescue` job for each
 //! `orphaned` tree, which has no verified rescue of its state now: a
 //! verified rescue moves it to `rescued`. It queues 1 `worktree_remove` job
-//! for each `landed` tree. The jobs run outside the pass, and the guard of
-//! the remove job checks each tree again at its removal.
+//! for each `landed` tree, and for each `rescued` tree whose idea is
+//! `merged` ("Ideas finish clean", ticket 33 of fleetd-p6); the rescue ref
+//! stays. A `rescued` tree with no task is never removed. The jobs run
+//! outside the pass, and the guard of the remove job checks each tree
+//! again at its removal.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -38,6 +41,7 @@ use crate::fleetd::fleet_runtime::application::ledger::{
 use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use crate::fleetd::fleet_runtime::domain::jobs::{Kind, State};
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
+use crate::fleetd::ideas::application::rollup::idea_state_of_task;
 use crate::fleetd::worktree_custody::adapters::git::{worktree_add_key, ListResult};
 use crate::fleetd::worktree_custody::adapters::rescue_git::{rescue_key, Rescue};
 use crate::fleetd::worktree_custody::adapters::sqlite::{
@@ -646,7 +650,8 @@ fn escalate_vanished(
 }
 
 /// Queue 1 `rescue` run of each `orphaned` row with no rescue ref, and 1
-/// `worktree_remove` run of each `landed` row (FM-25, FM-27, Q8, Q9). A row
+/// `worktree_remove` run of each `landed` row (FM-25, FM-27, Q8, Q9) and of
+/// each `rescued` row whose idea is `merged` ("Ideas finish clean"). A row
 /// whose folder vanished is escalated, not queued. A row with an active run
 /// of that kind is not queued again.
 fn act(ctx: &JobCtx<'_>, tx: &Connection, clock: FleetSeconds, report: &mut Report) -> Result<()> {
@@ -666,10 +671,26 @@ fn act(ctx: &JobCtx<'_>, tx: &Connection, clock: FleetSeconds, report: &mut Repo
                     report.removals.push(id.to_string());
                 }
             }
-            Some(TreeJob::Add) | None => {}
+            Some(TreeJob::Add) | None => {
+                if row.state == WorktreeState::Rescued
+                    && idea_merged(tx, &row)?
+                    && remove::queue_auto_remove(ctx, tx, &row, "its idea is merged", clock)?
+                {
+                    report.removals.push(id.to_string());
+                }
+            }
         }
     }
     Ok(())
+}
+
+/// Whether the idea of the task of `row` is `merged`. A row with no task
+/// has no idea.
+fn idea_merged(tx: &Connection, row: &WorktreeRow) -> Result<bool> {
+    let Some(task) = row.task_id.as_deref() else {
+        return Ok(false);
+    };
+    Ok(idea_state_of_task(tx, task)?.as_deref() == Some("merged"))
 }
 
 /// Queue the `rescue` run of the orphan `row` at the HEAD that the last
