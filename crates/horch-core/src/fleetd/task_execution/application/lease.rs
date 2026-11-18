@@ -18,9 +18,9 @@ use rusqlite::Connection;
 
 use crate::fleetd::fleet_runtime::adapters::clock_store;
 use crate::fleetd::fleet_runtime::adapters::sqlite as door;
-use crate::fleetd::fleet_runtime::application::ledger::{transition, Cause};
+use crate::fleetd::fleet_runtime::application::ledger::{record, transition, Cause};
 use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
-use crate::fleetd::fleet_runtime::domain::ledger::Entity;
+use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
 use crate::fleetd::ideas::application::needs_you::{self, NeedsYouList};
 use crate::fleetd::ideas::domain::needs_you::Write;
 use crate::fleetd::task_execution::adapters::leases_store::{self as store, LeaseRow};
@@ -30,11 +30,15 @@ use crate::fleetd::task_execution::domain::lease::{
 };
 use crate::fleetd::task_execution::domain::task::Seen;
 use crate::fleetd::worker_profiles::domain::profile::Liveness;
-use crate::taskledger::model::{Actor, TaskStatus};
+use crate::taskledger::model::{Actor, EventKind, TaskStatus};
 use crate::taskledger::util;
 
 /// The cause of the move of a task to `stalled` when its lease expires.
 pub const LEASE_EXPIRED: &str = "lease_expired";
+
+/// The cause of the event of each repair of the I1 check: a `note` about
+/// the task, with the repair, the attempt and the fleet clock in its data.
+pub const I1_REPAIRED: &str = "i1_repaired";
 
 /// The kind of the needs-you item of a breach of I1 that no repair can
 /// fix: 2 live attempts of 1 task.
@@ -116,6 +120,7 @@ pub fn release(tx: &Connection, task_id: &str) -> Result<()> {
 /// cause [`LEASE_EXPIRED`]. Gives each expired lease.
 pub fn renew_or_expire_leases(
     tx: &Connection,
+    guard: Option<Generation>,
     clock: FleetSeconds,
     facts: &BTreeMap<String, Observed>,
     limits: &dyn Fn(&str) -> Limits,
@@ -158,7 +163,7 @@ pub fn renew_or_expire_leases(
                 let stalled = TaskStatus::Stalled.as_str();
                 transition(
                     tx,
-                    None,
+                    guard,
                     Entity::Task,
                     &h.task_id,
                     stalled,
@@ -178,9 +183,11 @@ pub fn renew_or_expire_leases(
 /// The lease part of I1 at fleet clock `clock`: write the missing lease of
 /// a live attempt with a full `lease_s` of its worker, delete a lease of an
 /// ended attempt or of a task that is not held, and open 1 needs-you item
-/// for a task with 2 live attempts.
+/// for a task with 2 live attempts. Each write or delete has 1 event with
+/// the cause [`I1_REPAIRED`]. The fleetd of generation `guard` writes them.
 pub fn check_i1(
     tx: &Connection,
+    guard: Option<Generation>,
     clock: FleetSeconds,
     limits: &dyn Fn(&str) -> Limits,
 ) -> Result<()> {
@@ -211,6 +218,7 @@ pub fn check_i1(
                 task_id,
                 attempt_id,
             } => {
+                repaired(tx, guard, clock, &task_id, "write", &attempt_id)?;
                 let lease_s = limits(worker_of[attempt_id.as_str()]).lease_s;
                 let lease = LeaseRow {
                     expires_at: Lease::claimed(clock.0, lease_s).expires_at,
@@ -220,7 +228,13 @@ pub fn check_i1(
                 };
                 store::put(tx, &lease, &util::now())?;
             }
-            Repair::Delete { task_id, .. } => release(tx, &task_id)?,
+            Repair::Delete {
+                task_id,
+                attempt_id,
+            } => {
+                repaired(tx, guard, clock, &task_id, "delete", &attempt_id)?;
+                release(tx, &task_id)?;
+            }
             Repair::TwoLive { task_id, attempts } => {
                 let key = format!("{I1_BREACH}:{task_id}");
                 let text = format!(
@@ -245,6 +259,34 @@ pub fn check_i1(
     Ok(())
 }
 
+/// Record the event of 1 repair of I1: `repair` of the lease of task
+/// `task_id` for attempt `attempt_id` at fleet clock `clock`.
+fn repaired(
+    tx: &Connection,
+    guard: Option<Generation>,
+    clock: FleetSeconds,
+    task_id: &str,
+    repair: &str,
+    attempt_id: &str,
+) -> Result<()> {
+    let cause = Cause {
+        actor: Actor::Horch,
+        text: I1_REPAIRED,
+    };
+    let data =
+        serde_json::json!({ "repair": repair, "attempt": attempt_id, "fleet_clock": clock.0 });
+    record(
+        tx,
+        guard,
+        EventKind::Note,
+        Entity::Task,
+        task_id,
+        cause,
+        &data,
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -253,7 +295,7 @@ mod tests {
 
     use super::*;
     use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
-    use crate::fleetd::fleet_runtime::domain::ledger::Entity;
+    use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
     use crate::fleetd::ideas::application::needs_you;
     use crate::fleetd::task_execution::adapters::leases_store::{self as store, LeaseRow};
     use crate::fleetd::task_execution::application::commands;
@@ -265,6 +307,9 @@ mod tests {
     use crate::taskledger::util::{self, Rule, Why};
     use crate::taskledger::workers::{self, NewWorker};
     use crate::taskledger::Store;
+
+    /// The generation of the `fleetd` row of the fixture.
+    const GEN: Generation = Generation(1);
 
     const LIMITS: Limits = Limits {
         lease_s: 60,
@@ -377,14 +422,37 @@ mod tests {
 
         fn pass(&mut self, clock: i64, facts: &BTreeMap<String, Observed>) -> Vec<Expired> {
             self.store
-                .immediate(|tx| renew_or_expire_leases(tx, FleetSeconds(clock), facts, &limits))
+                .immediate(|tx| {
+                    renew_or_expire_leases(tx, Some(GEN), FleetSeconds(clock), facts, &limits)
+                })
                 .unwrap()
         }
 
         fn check_i1(&mut self, clock: i64) {
             self.store
-                .immediate(|tx| check_i1(tx, FleetSeconds(clock), &limits))
+                .immediate(|tx| check_i1(tx, Some(GEN), FleetSeconds(clock), &limits))
                 .unwrap();
+        }
+
+        /// The `data_json` of each `i1_repaired` event of `task`, oldest
+        /// first. Each is a `note` about the task row, by horch.
+        fn i1_events(&self, task: &str) -> Vec<serde_json::Value> {
+            self.store
+                .conn()
+                .prepare(
+                    "SELECT kind, entity, actor, data_json FROM events
+                     WHERE cause = ?1 AND entity_id = ?2 ORDER BY event_id",
+                )
+                .unwrap()
+                .query_map(params![I1_REPAIRED, task], |r| {
+                    let head: (String, String, String) = (r.get(0)?, r.get(1)?, r.get(2)?);
+                    assert_eq!(head, ("note".into(), "task".into(), "horch".into()));
+                    let data: String = r.get(3)?;
+                    Ok(serde_json::from_str(&data).unwrap())
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
         }
 
         /// `horch ledger finish`, another writer, moves `task` to `verifying`.
@@ -627,6 +695,11 @@ mod tests {
                 renew_basis: I1_BASIS.into(),
             }]
         );
+        let attempt = format!("{task}/A1");
+        assert_eq!(
+            l.i1_events(&task),
+            vec![serde_json::json!({ "repair": "write", "attempt": attempt, "fleet_clock": 50 })]
+        );
     }
 
     #[test]
@@ -638,6 +711,38 @@ mod tests {
         assert_eq!(l.leases().len(), 1, "another writer leaves a stale row");
         l.check_i1(10);
         assert_eq!(l.leases(), vec![]);
+        let attempt = format!("{task}/A1");
+        assert_eq!(
+            l.i1_events(&task),
+            vec![serde_json::json!({ "repair": "delete", "attempt": attempt, "fleet_clock": 10 })]
+        );
+        l.check_i1(15);
+        assert_eq!(
+            l.i1_events(&task).len(),
+            1,
+            "a repaired task records no more"
+        );
+    }
+
+    #[test]
+    fn a_pass_of_another_generation_writes_nothing() {
+        let mut l = fixture(0);
+        l.add_task("a");
+        let (task, _) = l.claimed();
+        let other = Some(Generation(GEN.0 + 1));
+        let facts = BTreeMap::new();
+        let expired = l
+            .store
+            .immediate(|tx| renew_or_expire_leases(tx, other, FleetSeconds(500), &facts, &limits));
+        assert!(expired.is_err(), "{expired:?}");
+        assert_eq!(l.status(&task), "running");
+        store::delete(l.store.conn(), &task).unwrap();
+        let repaired = l
+            .store
+            .immediate(|tx| check_i1(tx, other, FleetSeconds(5), &limits));
+        assert!(repaired.is_err());
+        assert_eq!(l.leases(), vec![]);
+        assert_eq!(l.i1_events(&task), Vec::<serde_json::Value>::new());
     }
 
     #[test]
