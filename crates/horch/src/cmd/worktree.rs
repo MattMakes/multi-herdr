@@ -3,11 +3,8 @@
 use std::path::PathBuf;
 
 use anyhow::{anyhow, bail, Result};
-use horch_core::fleetd::fleet_runtime::application::ledger::{transition, Cause};
-use horch_core::fleetd::fleet_runtime::domain::ledger::Entity;
-use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
 use horch_core::fleetd::worktree_custody::adapters::sqlite::NewWorktree;
-use horch_core::fleetd::worktree_custody::application::create::{JobProcess, Lease};
+use horch_core::fleetd::worktree_custody::application::create::{self, JobProcess, Lease};
 use horch_core::fleetd::worktree_custody::application::queries::{
     self, DiskTotal, RescueSource, WorktreeView,
 };
@@ -15,7 +12,7 @@ use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger;
 use horch_core::taskledger::finish::lease_and_wait;
 use horch_core::taskledger::git::Git;
-use horch_core::taskledger::model::{Actor, WorktreeStatus};
+use horch_core::taskledger::model::WorktreeStatus;
 use horch_core::taskledger::triage::{self, human_bytes, Measure};
 use horch_core::taskledger::util;
 use horch_core::vcs::landing::{ClaimState, Landing, Skipped, Unregistered};
@@ -347,35 +344,12 @@ fn restore_rescue(
         new: Some(&new),
     };
     let id = lease_and_wait(store.path(), jobs, &lease)?;
-    unowned(store, &id)?;
+    store.immediate(|tx| create::give_to_operator(tx, &id))?;
     Ok(format!(
         "restored {} on {branch} at {}",
         source.rescue_ref,
         path.display()
     ))
-}
-
-/// Move the restored tree `id` from `active` to `created` with no owner.
-/// The tree is for the operator, not for an attempt: the reconciler leaves
-/// a `created` tree as it is, but it orphans an `active` tree with no
-/// owner (MAP.md of fleetd-p3, Q10 and Q23).
-fn unowned(store: &mut taskledger::Store, id: &str) -> Result<()> {
-    store.immediate(|tx| {
-        let cause = Cause {
-            actor: Actor::Operator,
-            text: "horch worktree restore gives it to the operator, with no owner",
-        };
-        transition(
-            tx,
-            None,
-            Entity::Worktree,
-            id,
-            "created",
-            cause,
-            &NeedsYouList,
-        )?;
-        Ok(())
-    })
 }
 
 /// `horch worktrees [--json]`: 1 line for each tree that is not `removed`,

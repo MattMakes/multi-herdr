@@ -1985,3 +1985,123 @@ fn status_write_matcher_finds_a_direct_update() {
     let src = "fn a() {}\n// c.execute(\"UPDATE tasks SET status = 'x'\", p)\n";
     assert_eq!(writes(src), Vec::<bool>::new());
 }
+
+/// The production files that may move a worktree to `removed` through the
+/// door, and why.
+const REMOVED_MOVERS: &[(&str, &str)] = &[
+    (
+        "horch-core/src/fleetd/worktree_custody/application/remove.rs",
+        "the worktree_remove job: a landed or rescued tree, behind the remove guard",
+    ),
+    (
+        "horch-core/src/taskledger/triage/apply.rs",
+        "settle_gone: the operator decision on a tree whose folder is gone, behind \
+         settle_refusal (fleetd-p3 ticket 13, review F1)",
+    ),
+];
+
+/// The arguments of `body`, split at each comma outside (), [] and {}.
+fn call_arguments(body: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut depth = 0;
+    let mut from = 0;
+    for (i, c) in body.char_indices() {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            ',' if depth == 0 => {
+                out.push(body[from..i].trim());
+                from = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(body[from..].trim());
+    out.retain(|a| !a.is_empty());
+    out
+}
+
+/// Whether `text` holds a call of `transition(` whose target is
+/// `"removed"`: the 5th argument of the door.
+fn moves_to_removed(text: &str) -> bool {
+    text.match_indices("transition(").any(|(at, _)| {
+        let ident = text[..at]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_');
+        let open = at + "transition".len();
+        !ident
+            && balanced(text, open)
+                .is_some_and(|body| call_arguments(body).get(4) == Some(&"\"removed\""))
+    })
+}
+
+/// Each production file of `horch-core` and `horch` that moves a worktree
+/// to `removed` through the door.
+fn removed_movers() -> Vec<String> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut files = Vec::new();
+    for name in ["horch-core", "horch"] {
+        rust_files(&crate_src(name), &mut files);
+    }
+    let mut scanned = Vec::new();
+    let mut test_paths: Vec<PathBuf> = Vec::new();
+    for file in &files {
+        let prod = production_lines(&std::fs::read_to_string(file).unwrap());
+        test_paths.extend(test_module_paths(file, &prod.test_mods));
+        scanned.push((file, prod.lines));
+    }
+    let mut found = Vec::new();
+    for (file, lines) in scanned {
+        if file.file_name().is_some_and(|n| n == "tests.rs")
+            || test_paths.iter().any(|t| file.starts_with(t))
+        {
+            continue;
+        }
+        let text: Vec<&str> = lines.iter().map(|(_, l)| l.as_str()).collect();
+        if moves_to_removed(&text.join("\n")) {
+            found.push(relative(file, &root));
+        }
+    }
+    found
+}
+
+/// RR-9 and FM-27: only the worktree_remove job and the triage settle of a
+/// gone folder move a worktree to `removed`; no other caller uses the door
+/// move `orphaned` to `removed`.
+#[test]
+fn fitness_only_custody_and_triage_move_a_worktree_to_removed() {
+    let found = removed_movers();
+    let extra: Vec<&String> = found
+        .iter()
+        .filter(|f| !REMOVED_MOVERS.iter().any(|(p, _)| p == f))
+        .collect();
+    assert!(
+        extra.is_empty(),
+        "a worktree moves to removed outside custody and triage: {extra:?}"
+    );
+    for (path, why) in REMOVED_MOVERS {
+        assert!(
+            found.iter().any(|f| f == path),
+            "{path} no longer moves a worktree to removed; drop its entry ({why})"
+        );
+    }
+}
+
+/// The matcher of the rule above finds a door call to `removed` and no
+/// other call.
+#[test]
+fn removed_matcher_finds_a_door_call_to_removed() {
+    assert!(moves_to_removed(
+        "transition(\n    tx,\n    None,\n    Entity::Worktree,\n    id,\n    \"removed\",\n    Cause { actor: a, text: t },\n    r,\n)"
+    ));
+    assert!(moves_to_removed(
+        "transition(&tx, None, Entity::Worktree, &id, \"removed\", cause, &NeedsYouList)"
+    ));
+    assert!(!moves_to_removed(
+        "transition(tx, None, Entity::Worktree, id, \"created\", cause, r)"
+    ));
+    assert!(!moves_to_removed(
+        "my_transition(tx, None, Entity::Worktree, id, \"removed\", cause, r)"
+    ));
+}

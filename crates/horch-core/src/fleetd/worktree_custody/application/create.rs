@@ -576,6 +576,28 @@ pub fn create_and_wait(
     }
 }
 
+/// Give the tree `id` that a restore made to the operator: `active` to
+/// `created`, with no owner. The reconciler leaves a `created` tree as it
+/// is, but it orphans an `active` tree with no owner (MAP.md of fleetd-p3,
+/// Q10 and Q23). `horch worktree restore` calls it for a rescue ref and for
+/// a triage ref.
+pub fn give_to_operator(tx: &Connection, id: &str) -> Result<()> {
+    let cause = Cause {
+        actor: Actor::Operator,
+        text: "horch worktree restore gives it to the operator, with no owner",
+    };
+    transition(
+        tx,
+        None,
+        Entity::Worktree,
+        id,
+        "created",
+        cause,
+        &NeedsYouList,
+    )?;
+    Ok(())
+}
+
 /// The verified rescue of the `orphaned` tree `row`: its `rescue` job runs
 /// through `jobs`, then 1 transaction observes it. Triage calls it too
 /// before the removal of a tree (fleetd-p3 ticket 13).

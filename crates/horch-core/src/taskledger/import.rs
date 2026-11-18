@@ -583,8 +583,9 @@ fn claim_findings(conn: &Connection, report: &mut ImportReport, f: &ClaimFacts<'
     Ok(())
 }
 
-/// Insert the worktree row of a claim; the path is unique, so a claim seen
-/// twice keeps its first row.
+/// Insert the worktree row of a claim. Only the path of a live row is
+/// unique (a `removed` row stays as history), so a claim seen twice keeps
+/// its first live row.
 fn insert_worktree(
     conn: &Connection,
     c: &Value,

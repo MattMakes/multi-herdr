@@ -183,6 +183,29 @@ pub fn vanished(state: &str, folder: Folder, in_git: bool, set_aside: bool) -> b
     !matches!(state, "reserved" | "removed") && folder == Folder::Missing && !in_git && !set_aside
 }
 
+/// Why the door move `orphaned` to `removed` of a row with no folder is
+/// refused, or `None`. Only the operator decision ARCHIVE or DELETE of
+/// triage makes this move; it is the answer to the FM-27 escalation. The
+/// folder must be missing, `git worktree list` must not name its path, and
+/// the archive or trash ref, read back, must hold the tip of its branch
+/// (`holds_tip`; `None` for a row with no branch).
+pub fn settle_refusal(
+    folder: Folder,
+    in_git: bool,
+    holds_tip: Option<bool>,
+) -> Option<&'static str> {
+    if folder != Folder::Missing {
+        return Some("its folder is not known to be gone");
+    }
+    if in_git {
+        return Some("git worktree list still names its path; run git worktree prune");
+    }
+    if holds_tip == Some(false) {
+        return Some("the archive or trash ref does not hold the tip of its branch");
+    }
+    None
+}
+
 /// The `kind` and the event cause of a vanished folder.
 pub const VANISHED_KIND: &str = "worktree_vanished";
 
@@ -385,6 +408,28 @@ mod tests {
             ..owner(Some(Attempt::Holds), true)
         };
         assert_eq!(gone(cancelled), Some(OwnerGone::Orphaned(CANCELLED)));
+    }
+
+    #[test]
+    fn settle_refuses_a_folder_that_exists_or_is_unknown() {
+        assert!(settle_refusal(Folder::Present, false, Some(true)).is_some());
+        assert!(settle_refusal(Folder::Unknown, false, Some(true)).is_some());
+    }
+
+    #[test]
+    fn settle_refuses_a_path_that_git_still_lists() {
+        assert!(settle_refusal(Folder::Missing, true, Some(true)).is_some());
+    }
+
+    #[test]
+    fn settle_refuses_a_ref_that_does_not_hold_the_tip() {
+        assert!(settle_refusal(Folder::Missing, false, Some(false)).is_some());
+    }
+
+    #[test]
+    fn settle_permits_a_gone_folder_whose_work_a_ref_holds_or_that_has_no_branch() {
+        assert_eq!(settle_refusal(Folder::Missing, false, Some(true)), None);
+        assert_eq!(settle_refusal(Folder::Missing, false, None), None);
     }
 
     #[test]

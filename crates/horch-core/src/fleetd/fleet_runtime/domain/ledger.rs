@@ -239,6 +239,12 @@ pub const EXITS: &[(Entity, &str, &str)] = &[
     // An operator triage of a landed tree that the cleanup did not remove.
     (Entity::Worktree, "landed", "orphaned"),
     (Entity::Worktree, "orphaned", "rescued"),
+    // An operator triage ARCHIVE or DELETE of a tree whose folder is gone:
+    // the answer to the FM-27 escalation. Only triage makes it, behind the
+    // guard `worktree_custody::domain::worktree::settle_refusal`; the scan
+    // `fitness_only_custody_and_triage_move_a_worktree_to_removed` keeps
+    // other callers out (fleetd-p3 ticket 13, review F1).
+    (Entity::Worktree, "orphaned", "removed"),
     // `active` is the next claim.
     (Entity::Worktree, "rescued", "active"),
     (Entity::Worktree, "rescued", "removed"),
@@ -456,7 +462,8 @@ mod tests {
     fn allowed_transitions_of_worktree_equal_the_design_table() {
         // The column "Leaves when", with the choices of MAP.md of
         // fleetd-p3, Q10. The drop of a `reserved` row is not a move. Triage
-        // orphans a `created` or `landed` tree before its rescue (ticket 13).
+        // orphans a `created` or `landed` tree before its rescue, and
+        // settles a tree whose folder is gone (ticket 13).
         let design = vec![
             ("reserved", "created"),
             ("created", "active"),
@@ -469,6 +476,7 @@ mod tests {
             ("landed", "removed"),
             ("landed", "orphaned"),
             ("orphaned", "rescued"),
+            ("orphaned", "removed"),
             ("rescued", "active"),
             ("rescued", "removed"),
         ];

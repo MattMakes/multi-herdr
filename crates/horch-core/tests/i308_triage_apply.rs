@@ -231,6 +231,62 @@ fn archive_keeps_the_branch_and_an_untracked_file_and_restore_brings_it_back() {
 }
 
 #[test]
+fn archive_of_a_row_whose_folder_is_gone_removes_the_row_and_restore_works() {
+    let mut w = World::new();
+    let path = feat(&w);
+    let g = w.git.clone();
+    // KEEP gives the folder its ledger row; then the folder goes by hand.
+    assert!(decide(&mut w, &g, "feat", "KEEP", "").ok);
+    std::fs::remove_dir_all(&path).unwrap();
+    git(&w.root, &["worktree", "prune"]);
+    let a = decide(&mut w, &g, "feat", "ARCHIVE", "");
+    assert!(a.ok, "{}", a.line());
+    assert_eq!(column(&w, &path, "state").as_deref(), Some("removed"));
+    assert_eq!(column(&w, &path, "status").as_deref(), Some("archived"));
+    apply::restore(&w.store, &g, &TestJobs, &w.root, "feat").unwrap();
+    assert_eq!(git(&path, &["branch", "--show-current"]), "feat");
+    assert_eq!(column(&w, &path, "state").as_deref(), Some("created"));
+}
+
+#[test]
+fn archive_keeps_the_row_when_git_still_lists_its_gone_folder() {
+    let mut w = World::new();
+    let path = feat(&w);
+    let g = w.git.clone();
+    // KEEP gives the folder its ledger row; then the folder goes by hand.
+    assert!(decide(&mut w, &g, "feat", "KEEP", "").ok);
+    std::fs::remove_dir_all(&path).unwrap();
+    let a = decide(&mut w, &g, "feat", "ARCHIVE", "");
+    assert!(!a.ok, "{}", a.line());
+    assert!(a.line().contains("git worktree prune"), "{}", a.line());
+    assert_ne!(column(&w, &path, "state").as_deref(), Some("removed"));
+}
+
+#[test]
+fn restore_reads_the_archived_row_of_its_own_project_only() {
+    let mut w = World::new();
+    let path = feat(&w);
+    let g = w.git.clone();
+    assert!(decide(&mut w, &g, "feat", "ARCHIVE", "").ok);
+    // Another project archived its own `feat` later, on another branch.
+    w.store
+        .conn()
+        .execute_batch(
+            "CREATE TEMP TABLE other AS
+                 SELECT * FROM worktrees WHERE archive_ref = 'refs/horch/archive/feat';
+             UPDATE other SET worktree_id = 'other-project-feat',
+                 repo_root = '/elsewhere/project',
+                 path = '/elsewhere/project/.worktrees/feat',
+                 branch = 'other-feat', decided_at = '9999-01-01T00:00:00Z';
+             INSERT INTO worktrees SELECT * FROM other;",
+        )
+        .unwrap();
+    apply::restore(&w.store, &g, &TestJobs, &w.root, "feat").unwrap();
+    assert_eq!(git(&path, &["branch", "--show-current"]), "feat");
+    assert!(!w.has_ref("refs/heads/other-feat"));
+}
+
+#[test]
 fn delete_writes_a_trash_ref_removes_folder_and_branch_and_restore_works() {
     let mut w = World::new();
     let path = feat(&w);

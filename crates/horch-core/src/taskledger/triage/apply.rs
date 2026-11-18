@@ -31,6 +31,7 @@ use crate::fleetd::worktree_custody::adapters::sqlite::{
 };
 use crate::fleetd::worktree_custody::application::create::{self, Lease, RunJob};
 use crate::fleetd::worktree_custody::application::remove;
+use crate::fleetd::worktree_custody::domain::worktree::{settle_refusal, Folder};
 use crate::runtime::process::scrub_child_env;
 use crate::taskledger::finish::{self, land, WorktreeRow};
 use crate::taskledger::git::{dir_bytes, Git};
@@ -423,10 +424,18 @@ fn must_be_safe(git: &Git, root: &Path, wt: &WorktreeRow, holder: &str, tip: &st
 /// row is `orphaned` (cause `triage`), a `rescue` job puts the folder on a
 /// verified rescue ref, then a `worktree_remove` job removes it. A refused
 /// move, a failed rescue or a refused removal keeps the folder. The bytes
-/// it held.
-fn remove_folder(store: &Store, env: &Env<'_>, wt: &WorktreeRow) -> Result<u64> {
+/// it held. A folder that is gone already is settled by [`settle_gone`]
+/// with `holder`, the ref that the operator decision `decision` wrote.
+fn remove_folder(
+    store: &Store,
+    env: &Env<'_>,
+    wt: &WorktreeRow,
+    holder: &str,
+    decision: &str,
+) -> Result<u64> {
     let dir = PathBuf::from(&wt.path);
     if !dir.exists() {
+        settle_gone(store, env, wt, holder, decision)?;
         return Ok(0);
     }
     let bytes = dir_bytes(&dir);
@@ -459,6 +468,94 @@ fn open(store: &Store) -> Result<Connection> {
 fn immediate(conn: &mut Connection) -> Result<rusqlite::Transaction<'_>> {
     conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .context("taking the task ledger's write lock")
+}
+
+/// The operator decision `decision` on a row whose folder is gone: the
+/// answer to the FM-27 escalation. The row goes through `orphaned` to
+/// `removed` only when [`settle_refusal`] permits it: the folder is gone,
+/// `git worktree list` does not name its path, and `holder`, read back,
+/// holds the tip of its branch (or the row has no branch). This is the
+/// only caller of the door move `orphaned` to `removed`. A refusal keeps
+/// the row.
+fn settle_gone(
+    store: &Store,
+    env: &Env<'_>,
+    wt: &WorktreeRow,
+    holder: &str,
+    decision: &str,
+) -> Result<()> {
+    let folder = if Path::new(&wt.path).exists() {
+        Folder::Present
+    } else {
+        Folder::Missing
+    };
+    let holds_tip = if wt.branch.is_empty() {
+        None
+    } else {
+        let tip = env.git.rev(env.root, &wt.branch).ok();
+        Some(tip.is_some() && refs::read(env.git, env.root, holder) == tip)
+    };
+    let listed = git_lists(env.git, env.root, &wt.path)?;
+    if let Some(why) = settle_refusal(folder, listed, holds_tip) {
+        bail!("the row stays: {why}");
+    }
+    let config = create::fleet_config(store.path())?;
+    let ctx = JobCtx {
+        guard: None,
+        config: &config,
+        needs_you: &NeedsYouList,
+    };
+    let mut conn = open(store)?;
+    let row = orphan(&ctx, &mut conn, &wt.worktree_id)?;
+    let tx = immediate(&mut conn)?;
+    let text = format!("triage {decision}: the folder is gone and {holder} holds its work");
+    let cause = Cause {
+        actor: Actor::Operator,
+        text: &text,
+    };
+    match transition(
+        &tx,
+        None,
+        Entity::Worktree,
+        &wt.worktree_id,
+        "removed",
+        cause,
+        &NeedsYouList,
+    ) {
+        Ok(_) => Ok(tx.commit()?),
+        Err(DoorError::Refused { .. }) => {
+            tx.commit()?;
+            bail!(
+                "the row stays: it is {}, and triage cannot move it to removed",
+                row.state
+            )
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Whether `git worktree list` names `path`. A list that git does not give
+/// is an error: the fact is unknown.
+fn git_lists(git: &Git, root: &Path, path: &str) -> Result<bool> {
+    let out = git.try_run(root, &["worktree", "list", "--porcelain"])?;
+    if !out.ok {
+        bail!("git worktree list failed; the row stays");
+    }
+    let want = path_key(path);
+    Ok(out
+        .stdout
+        .lines()
+        .filter_map(|l| l.strip_prefix("worktree "))
+        .any(|p| path_key(p) == want))
+}
+
+/// `path` with its folder canonical: the path itself may be gone.
+fn path_key(path: &str) -> PathBuf {
+    let p = Path::new(path);
+    match (p.parent(), p.file_name()) {
+        (Some(dir), Some(name)) => super::canonical(&dir.to_string_lossy()).join(name),
+        _ => p.to_path_buf(),
+    }
 }
 
 /// The row `id`, moved to `orphaned` unless it is `orphaned` or `rescued`.
@@ -538,7 +635,7 @@ fn remove_now(ctx: &JobCtx<'_>, conn: &mut Connection, jobs: &dyn RunJob, id: &s
 /// branch; the folder goes.
 fn archive(store: &Store, env: &Env<'_>, row: &Row, wt: &WorktreeRow) -> Result<Done> {
     let tip = prepare(env.git, env.root, row, wt)?;
-    archive_at(store, env, row, wt, &tip, "")
+    archive_at(store, env, row, wt, &tip, "", "ARCHIVE")
 }
 
 fn archive_at(
@@ -548,11 +645,12 @@ fn archive_at(
     wt: &WorktreeRow,
     tip: &str,
     before: &str,
+    decision: &str,
 ) -> Result<Done> {
     let r = refs::archive_ref(&row.name);
     refs::write(env.git, env.root, &r, tip)?;
     must_be_safe(env.git, env.root, wt, &r, tip)?;
-    let bytes = remove_folder(store, env, wt)?;
+    let bytes = remove_folder(store, env, wt, &r, decision)?;
     let branch = if wt.branch.is_empty() {
         String::new()
     } else {
@@ -632,7 +730,7 @@ fn delete(store: &Store, env: &Env<'_>, row: &Row, wt: &WorktreeRow) -> Result<D
     let trash = refs::trash_ref(&row.name, crate::clock::now());
     refs::write(env.git, env.root, &trash, &tip)?;
     must_be_safe(env.git, env.root, wt, &trash, &tip)?;
-    let bytes = remove_folder(store, env, wt)?;
+    let bytes = remove_folder(store, env, wt, &trash, "DELETE")?;
     let branch = delete_branch(env.git, env.root, wt, &trash, &tip)?;
     Ok(Done {
         status: Some(WorktreeStatus::Trashed),
@@ -952,7 +1050,29 @@ fn pr(store: &Store, env: &Env<'_>, row: &Row, wt: &WorktreeRow, direction: &str
         wt,
         &tip,
         &format!("pushed {b} to {remote}; opened {url}; "),
+        "PR",
     )
+}
+
+/// The newest row of the project at `root` that triage settled on the ref
+/// `r`. Another project can archive the same name, so the row must be of
+/// this project.
+fn archived_row(conn: &Connection, root: &Path, r: &str) -> Result<Option<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT worktree_id, repo_root FROM worktrees WHERE archive_ref = ?1
+         ORDER BY decided_at DESC, rowid DESC",
+    )?;
+    let rows = stmt.query_map([r], |x| {
+        Ok((x.get::<_, String>(0)?, x.get::<_, String>(1)?))
+    })?;
+    let root = super::canonical(&root.to_string_lossy());
+    for row in rows {
+        let (id, repo_root) = row?;
+        if super::canonical(&repo_root) == root {
+            return Ok(Some(id));
+        }
+    }
+    Ok(None)
 }
 
 /// `horch worktree restore <name>`: make the folder again from the
@@ -973,12 +1093,7 @@ pub fn restore(
     if path.exists() {
         bail!("{} exists already", path.display());
     }
-    let row: Option<String> = optional(store.conn().query_row(
-        "SELECT worktree_id FROM worktrees WHERE archive_ref = ?1
-         ORDER BY decided_at DESC LIMIT 1",
-        [&r],
-        |x| x.get(0),
-    ))?;
+    let row = archived_row(store.conn(), root, &r)?;
     let old = match &row {
         Some(id) => trees::get(store.conn(), id)?,
         None => None,
@@ -1017,23 +1132,9 @@ pub fn restore(
         new: Some(&new),
     };
     let id = finish::lease_tree(store, jobs, &lease)?;
-    // The tree is for the operator, not for an attempt: the reconciler
-    // leaves a `created` tree as it is, but it orphans an `active` tree with
-    // no owner (MAP.md of fleetd-p3, Q10 and Q23).
     let mut conn = open(store)?;
     let tx = immediate(&mut conn)?;
-    transition(
-        &tx,
-        None,
-        Entity::Worktree,
-        &id,
-        "created",
-        Cause {
-            actor: Actor::Operator,
-            text: "horch worktree restore gives it to the operator, with no owner",
-        },
-        &NeedsYouList,
-    )?;
+    create::give_to_operator(&tx, &id)?;
     tx.execute(
         "UPDATE worktrees SET reason = ?2 WHERE worktree_id = ?1",
         params![id, format!("restored from {r}")],

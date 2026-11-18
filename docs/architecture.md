@@ -40,6 +40,7 @@ these rules by accident:
 | `arc_25_no_shim_modules` | No file that only re-exports; each `pub use` names one of the file's own child modules | Import an item from the module that owns it; make an item `pub(crate)` when nothing outside the crate uses it |
 | `fitness_domain_imports_nothing_outward` | A file under `fleetd/<context>/domain/` names only `std` and `crate::fleetd::<the same context>::domain`: no other crate, no other module of `crate` | Put the I/O in `adapters/` and the use case in `application/`; pass the data into the domain as values |
 | `fitness_no_context_touches_foreign_tables` | A SQL string under `fleetd/<context>/` names only the tables of that context (`FLEETD_TABLE_OWNERS`); the 1 door `fleetd/fleet_runtime/adapters/sqlite.rs` is exempt | Call the context that owns the table, or write the state through the door |
+| `fitness_only_custody_and_triage_move_a_worktree_to_removed` | Only the `worktree_remove` job (`worktree_custody/application/remove.rs`) and the triage settle of a gone folder (`taskledger/triage/apply.rs`, behind `settle_refusal`) call the door with the target `removed` | Queue a `worktree_remove` job; never move a worktree to `removed` by hand |
 
 ## horch-core modules
 

@@ -968,7 +968,7 @@ mod tests {
     }
 
     /// The design's exits of a worktree (MAP.md of fleetd-p3, Q10).
-    const WORKTREE_EXITS: [(&str, &str); 11] = [
+    const WORKTREE_EXITS: [(&str, &str); 12] = [
         ("reserved", "created"),
         ("created", "active"),
         ("active", "created"),
@@ -978,6 +978,7 @@ mod tests {
         ("landing", "rescued"),
         ("landed", "removed"),
         ("orphaned", "rescued"),
+        ("orphaned", "removed"),
         ("rescued", "active"),
         ("rescued", "removed"),
     ];
