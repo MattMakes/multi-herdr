@@ -18,17 +18,19 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use horch_core::fleetd::fleet_runtime::adapters::scans::FolderItem;
+use horch_core::fleetd::fleet_runtime::adapters::jobs_store;
+use horch_core::fleetd::fleet_runtime::adapters::scans::{FolderItem, Liveness, ProcessFact};
 use horch_core::fleetd::fleet_runtime::application::holds::worktree_disk;
-use horch_core::fleetd::fleet_runtime::application::jobs::JobCtx;
-use horch_core::fleetd::fleet_runtime::application::ledger::Cause;
+use horch_core::fleetd::fleet_runtime::application::jobs::{self, JobCtx, Queued};
+use horch_core::fleetd::fleet_runtime::application::ledger::{transition, Cause};
 use horch_core::fleetd::fleet_runtime::application::pass::{
     NoDuties, Outside, Pass, Ports, Settings,
 };
 use horch_core::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
 use horch_core::fleetd::fleet_runtime::domain::health::Hold;
-use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
+use horch_core::fleetd::fleet_runtime::domain::jobs::State;
+use horch_core::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
 use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
 use horch_core::fleetd::task_execution::domain::task::{AttemptRow, InPane};
 use horch_core::fleetd::worker_profiles::application::ports::{
@@ -36,6 +38,7 @@ use horch_core::fleetd::worker_profiles::application::ports::{
 };
 use horch_core::fleetd::worktree_custody::adapters::sqlite::{self as trees, NewWorktree};
 use horch_core::fleetd::worktree_custody::application::disk::{disk_budget, Report};
+use horch_core::fleetd::worktree_custody::application::remove::queue_remove;
 use horch_core::fleetd::worktree_custody::domain::disk::GB;
 use horch_core::runtime::fault::Faults;
 use horch_core::taskledger::model::{Actor, WorktreeStatus};
@@ -248,6 +251,78 @@ impl World {
         self.count("SELECT COUNT(*) FROM jobs WHERE kind = 'worktree_remove'")
     }
 
+    /// A passed `worktree_remove` run of the tree `id`, ended before the
+    /// next pass: the reconciler of that pass observes it.
+    fn removal_passed(&mut self, id: &str) {
+        let config = self.config.clone();
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+        let row = trees::get(&tx, id).unwrap().unwrap();
+        let Ok(Queued::New(job)) = queue_remove(&ctx(&config), &tx, &row, "a test", CLOCK).unwrap()
+        else {
+            panic!("no new worktree_remove run of {id}");
+        };
+        let key = job.to_string();
+        transition(
+            &tx,
+            None,
+            Entity::Job,
+            &key,
+            "running",
+            cause(),
+            &NeedsYouList,
+        )
+        .unwrap();
+        jobs_store::set_started(&tx, job, 4_000_000, None, FleetSeconds(1_000_000)).unwrap();
+        let result = serde_json::json!({
+            "passed": true,
+            "verdict": true,
+            "text": "removed",
+            "data": {
+                "path": row.path,
+                "branch": row.branch,
+                "forced": false,
+                "ignored_files": 0,
+                "branch_deleted": false,
+            },
+        });
+        jobs_store::set_result(&tx, job, &result.to_string()).unwrap();
+        let gone = ProcessFact {
+            key,
+            liveness: Liveness::Dead,
+        };
+        let seen = jobs::observe(&ctx(&config), &tx, &[gone], CLOCK).unwrap();
+        assert_eq!(seen.ended, vec![(job, State::Passed)]);
+        tx.commit().unwrap();
+    }
+
+    fn pass<'a>(&self, outside: &'a dyn Outside, host: &'a dyn ProcessHost) -> Pass<'a> {
+        let ports = Ports {
+            outside,
+            duties: &NoDuties,
+            needs_you: &NeedsYouList,
+            host,
+        };
+        Pass::new(self.settings(), ports)
+    }
+
+    /// The `hold_started` and `hold_ended` events: (kind, data).
+    fn hold_events(&self) -> Vec<(String, String)> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT kind, data_json FROM events
+                  WHERE kind IN ('hold_started', 'hold_ended') ORDER BY event_id",
+            )
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
     fn settings(&self) -> Settings {
         Settings {
             fleet_root: self.top.join("fleet"),
@@ -318,7 +393,7 @@ fn over_budget_removes_landed_and_rescued_trees_of_finished_runs_oldest_first() 
     assert_eq!(report.total, 45 * GB);
     assert_eq!(report.budget, 20 * GB);
     assert_eq!(report.would_remove, ["oldest", "middle", "newest"]);
-    assert!(report.held, "30 GB stays after the 3 spare trees");
+    assert!(report.hold.is_some(), "30 GB stays after the 3 spare trees");
     for id in ["oldest", "middle", "newest"] {
         assert_eq!(
             w.count(&format!(
@@ -333,7 +408,7 @@ fn over_budget_removes_landed_and_rescued_trees_of_finished_runs_oldest_first() 
     w.config.worktree_disk_budget_gb = 40;
     let report = w.budget();
     assert_eq!(report.would_remove, ["oldest"]);
-    assert!(!report.held);
+    assert!(report.hold.is_none());
 }
 
 #[test]
@@ -361,7 +436,7 @@ fn over_budget_never_removes_an_active_tree_and_holds_dispatch() {
 
     let report = w.budget();
     assert_eq!(report.would_remove, ["spare"]);
-    assert!(report.held, "{report:?}");
+    assert!(report.hold.is_some(), "{report:?}");
     let hold = worktree_disk(&w.conn, w.config.worktree_disk_budget_gb).unwrap();
     assert!(
         matches!(&hold, Some(Hold::WorktreeDisk { cause }) if cause.contains("35.0 GB")),
@@ -395,7 +470,7 @@ fn over_budget_never_removes_a_tree_of_an_active_run() {
     w.row("rescued", Some(&t2), "rescued", "2026-01-02T00:00:00Z", 15);
     let report = w.budget();
     assert!(report.would_remove.is_empty(), "{report:?}");
-    assert!(report.held);
+    assert!(report.hold.is_some());
     assert_eq!(w.state("landed"), "landed");
     assert_eq!(w.state("rescued"), "rescued");
 }
@@ -406,28 +481,7 @@ fn hold_opens_1_needs_you_item_and_resolves_under_the_budget() {
     let active = w.run("active");
     let t1 = w.task(&active, "t1");
     w.row("big", Some(&t1), "landed", "2026-01-01T00:00:00Z", 25);
-    let outside = Nothing;
-    let host = NoLaunch;
-    let ports = Ports {
-        outside: &outside,
-        duties: &NoDuties,
-        needs_you: &NeedsYouList,
-        host: &host,
-    };
-    let mut pass = Pass::new(w.settings(), ports);
-    let hold_events = |w: &World| -> Vec<(String, String)> {
-        let mut stmt = w
-            .conn
-            .prepare(
-                "SELECT kind, data_json FROM events
-                  WHERE kind IN ('hold_started', 'hold_ended') ORDER BY event_id",
-            )
-            .unwrap();
-        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-            .unwrap()
-            .map(Result::unwrap)
-            .collect()
-    };
+    let mut pass = w.pass(&Nothing, &NoLaunch);
 
     pass.run(&mut w.conn).unwrap();
     pass.run(&mut w.conn).unwrap();
@@ -441,7 +495,7 @@ fn hold_opens_1_needs_you_item_and_resolves_under_the_budget() {
     );
     let fact = r#"{"fact":"worktree_disk"}"#.to_string();
     assert_eq!(
-        hold_events(&w),
+        w.hold_events(),
         [("hold_started".to_string(), fact.clone())]
     );
 
@@ -455,7 +509,7 @@ fn hold_opens_1_needs_you_item_and_resolves_under_the_budget() {
         1
     );
     assert_eq!(
-        hold_events(&w),
+        w.hold_events(),
         [
             ("hold_started".to_string(), fact.clone()),
             ("hold_ended".to_string(), fact)
@@ -472,7 +526,7 @@ fn report_only_mode_queues_no_removal_for_space() {
     for _ in 0..2 {
         let report = w.budget();
         assert_eq!(report.would_remove, ["spare"]);
-        assert!(!report.held, "the spare tree is enough: no hold");
+        assert!(report.hold.is_none(), "the spare tree is enough: no hold");
     }
     assert_eq!(w.removal_jobs(), 0);
     assert_eq!(w.state("spare"), "landed");
@@ -485,4 +539,23 @@ fn report_only_mode_queues_no_removal_for_space() {
         1,
         "1 event for each row"
     );
+}
+
+/// The hold comes from the rows that the reconciler of the same pass
+/// wrote: a removal that the pass observes ends the excess before any
+/// hold starts.
+#[test]
+fn a_removal_observed_in_the_pass_starts_no_hold() {
+    let mut w = world();
+    let active = w.run("active");
+    let t1 = w.task(&active, "t1");
+    w.row("big", Some(&t1), "landed", "2026-01-01T00:00:00Z", 25);
+    w.removal_passed("big");
+    let mut pass = w.pass(&Nothing, &NoLaunch);
+
+    pass.run(&mut w.conn).unwrap();
+
+    assert_eq!(w.state("big"), "removed");
+    assert!(w.hold_events().is_empty(), "{:?}", w.hold_events());
+    assert!(w.disk_items().is_empty());
 }

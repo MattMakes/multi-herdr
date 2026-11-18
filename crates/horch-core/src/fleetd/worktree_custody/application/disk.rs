@@ -41,9 +41,9 @@ pub struct Report {
     /// The trees of the decision with no active `worktree_remove` run,
     /// oldest first: what report-only mode does not queue.
     pub would_remove: Vec<String>,
-    /// The total stays above the budget: new dispatch holds, and the
-    /// needs-you item is open.
-    pub held: bool,
+    /// The cause of the hold when the total stays above the budget: new
+    /// dispatch holds, and the needs-you item is open.
+    pub hold: Option<String>,
 }
 
 /// 1 row that is not `removed`, with the status of its run.
@@ -78,17 +78,30 @@ pub fn decision(conn: &Connection, budget_gb: u64) -> Result<Decision> {
 /// needs-you item of the hold.
 pub fn disk_budget(ctx: &JobCtx<'_>, tx: &Connection, clock: FleetSeconds) -> Result<Report> {
     let d = decision(tx, ctx.config.worktree_disk_budget_gb)?;
-    let mut report = Report {
+    let would_remove = report_removals(ctx, tx, &d, clock)?;
+    sync_hold_item(ctx, tx, &d)?;
+    Ok(Report {
         total: d.total,
         budget: d.budget,
-        held: d.hold,
-        ..Report::default()
-    };
+        would_remove,
+        hold: d.hold.then(|| rules::hold_cause(&d)),
+    })
+}
+
+/// The trees of `d` with no active `worktree_remove` run, each with 1
+/// event the first time it is reported (report-only mode, Q9).
+fn report_removals(
+    ctx: &JobCtx<'_>,
+    tx: &Connection,
+    d: &Decision,
+    clock: FleetSeconds,
+) -> Result<Vec<String>> {
+    let mut would_remove = Vec::new();
     for id in &d.remove {
         if jobs_store::active(tx, Kind::WorktreeRemove, id)?.is_some() {
             continue;
         }
-        report.would_remove.push(id.clone());
+        would_remove.push(id.clone());
         if has_fact(tx, Entity::Worktree, id, EventKind::Note, WOULD_REMOVE)? {
             continue;
         }
@@ -111,27 +124,32 @@ pub fn disk_budget(ctx: &JobCtx<'_>, tx: &Connection, clock: FleetSeconds) -> Re
             &data,
         )?;
     }
-    if d.hold {
-        let text = format!(
-            "The worktrees use {:.1} GB, above the budget of {} GB ({BUDGET_KEY}). fleetd holds \
-             new dispatch: no landed or rescued tree of a done or abandoned run is left to \
-             remove, and fleetd never removes an active tree for space. Land, drop or clean up \
-             trees, or raise {BUDGET_KEY}.",
-            d.total as f64 / GB as f64,
-            d.budget / GB
-        );
-        let item = NewItem {
-            key: NEEDS_YOU_KEY,
-            kind: NEEDS_YOU_KIND,
-            entity: Entity::Worktree,
-            entity_id: BUDGET_KEY,
-            text: &text,
-        };
-        ctx.needs_you.open_item(tx, &item)?;
-    } else {
+    Ok(would_remove)
+}
+
+/// Open the needs-you item of the hold of `d` with the total and the
+/// budget, or resolve it when `d` does not hold.
+fn sync_hold_item(ctx: &JobCtx<'_>, tx: &Connection, d: &Decision) -> Result<()> {
+    if !d.hold {
         ctx.needs_you.resolve_item(tx, NEEDS_YOU_KEY)?;
+        return Ok(());
     }
-    Ok(report)
+    let text = format!(
+        "The worktrees use {:.1} GB, above the budget of {} GB ({BUDGET_KEY}). fleetd holds \
+         new dispatch: no landed or rescued tree of a done or abandoned run is left to \
+         remove, and fleetd never removes an active tree for space. Land, drop or clean up \
+         trees, or raise {BUDGET_KEY}.",
+        d.total as f64 / GB as f64,
+        d.budget / GB
+    );
+    let item = NewItem {
+        key: NEEDS_YOU_KEY,
+        kind: NEEDS_YOU_KIND,
+        entity: Entity::Worktree,
+        entity_id: BUDGET_KEY,
+        text: &text,
+    };
+    ctx.needs_you.open_item(tx, &item)
 }
 
 /// Each row that is not `removed`, with the status of the run of its task

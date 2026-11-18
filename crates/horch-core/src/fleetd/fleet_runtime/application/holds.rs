@@ -172,8 +172,10 @@ pub fn record_hold_changes(tx: &Connection, before: &[Hold], now: &[Hold]) -> Re
     Ok(())
 }
 
-fn append(tx: &Connection, kind: EventKind, fact: &str, cause: &str) -> Result<()> {
-    let data = serde_json::json!({ "fact": fact }).to_string();
+/// The event of the global hold `name`; its data names it as `fact`, as
+/// the events of the health floors do.
+fn append(tx: &Connection, kind: EventKind, name: &str, cause: &str) -> Result<()> {
+    let data = serde_json::json!({ "fact": name }).to_string();
     tx.execute(
         "INSERT INTO events (at, actor, kind, text, cause, data_json)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -186,7 +188,7 @@ fn append(tx: &Connection, kind: EventKind, fact: &str, cause: &str) -> Result<(
             data
         ],
     )
-    .with_context(|| format!("recording the {} event of {fact}", kind.as_str()))?;
+    .with_context(|| format!("recording the {} event of {name}", kind.as_str()))?;
     Ok(())
 }
 
