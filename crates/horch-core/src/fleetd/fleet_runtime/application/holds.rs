@@ -11,9 +11,12 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 
 use crate::fleetd::fleet_runtime::adapters::config_file;
+use crate::fleetd::fleet_runtime::application::jobs::{NeedsYouItems, NewItem};
 use crate::fleetd::fleet_runtime::domain::health::{
     self, Finding, Floors, Hold, PaceRule, PoolWindow, Reading, Readings,
 };
+use crate::fleetd::fleet_runtime::domain::ledger::Entity;
+use crate::fleetd::integration::domain::project::{self, ProjectSettings};
 use crate::fleetd::worktree_custody::application::disk;
 use crate::fleetd::worktree_custody::domain::disk::hold_cause;
 use crate::routing::quota::{model_family, pool_for, QuotaView, State};
@@ -143,6 +146,57 @@ pub fn pacing(view: &QuotaView, agent: &str, model: &str) -> Option<Hold> {
     health::pacing(pool, &windows, &rule)
 }
 
+/// The hold of 1 project: it holds only the new dispatch of the tasks of
+/// that project. A task in flight goes on, and no task is lost or
+/// cancelled (OR-1, "Two declared gates").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectHold {
+    pub project: String,
+    pub cause: String,
+}
+
+/// The hold of the project `project` when `settings` has no fast gate.
+pub fn missing_fast_gate(project: &str, settings: &ProjectSettings) -> Option<ProjectHold> {
+    settings.fast_gate().is_none().then(|| ProjectHold {
+        project: project.to_string(),
+        cause: project::missing_fast_gate_cause(project),
+    })
+}
+
+/// The hold of the project `project` with no fast gate in `settings`, and
+/// its needs-you item `missing_fast_gate:<project>`: open while the hold
+/// holds, resolved when the project declares the gate. It writes only that
+/// item, in `tx`.
+pub fn sync_missing_fast_gate(
+    tx: &Connection,
+    needs_you: &dyn NeedsYouItems,
+    project: &str,
+    settings: &ProjectSettings,
+) -> Result<Option<ProjectHold>> {
+    let key = project::missing_fast_gate_key(project);
+    let hold = missing_fast_gate(project, settings);
+    match &hold {
+        None => {
+            needs_you.resolve_item(tx, &key)?;
+        }
+        Some(h) => {
+            let text = format!(
+                "fleetd holds new dispatch of the tasks of {project}: {}. Tasks in flight go on.",
+                h.cause
+            );
+            let item = NewItem {
+                key: &key,
+                kind: project::MISSING_FAST_GATE_KIND,
+                entity: Entity::Task,
+                entity_id: project,
+                text: &text,
+            };
+            needs_you.open_item(tx, &item)?;
+        }
+    }
+    Ok(hold)
+}
+
 /// The global holds (the health floors and the worktree disk) of `holds`,
 /// each with its name and its cause.
 fn globals(holds: &[Hold]) -> Vec<(&'static str, &str)> {
@@ -218,6 +272,81 @@ mod tests {
             .unwrap()
             .collect::<rusqlite::Result<_>>()
             .unwrap()
+    }
+
+    /// The rows of the needs-you list: key, kind, entity id, state, text.
+    fn needs_you_rows(store: &Store) -> Vec<(String, String, String, String, String)> {
+        let mut stmt = store
+            .conn()
+            .prepare("SELECT key, kind, entity_id, state, text FROM needs_you ORDER BY key")
+            .unwrap();
+        stmt.query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+    }
+
+    fn gates(fast: Option<&str>) -> ProjectSettings {
+        let mut s = ProjectSettings::default();
+        s.gates.fast = fast.map(str::to_string);
+        s.gates.full = Some("cargo test".into());
+        s
+    }
+
+    #[test]
+    fn project_with_no_fast_gate_holds_its_dispatch_with_its_cause() {
+        use crate::fleetd::ideas::application::needs_you::NeedsYouList;
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
+        let hold = store
+            .immediate(|tx| sync_missing_fast_gate(tx, &NeedsYouList, "P1", &gates(None)))
+            .unwrap();
+        let cause = "missing fast gate: add [gates] fast to fleet.toml in P1";
+        assert_eq!(
+            hold,
+            Some(ProjectHold {
+                project: "P1".into(),
+                cause: cause.into(),
+            })
+        );
+        // A second pass keeps 1 item.
+        store
+            .immediate(|tx| sync_missing_fast_gate(tx, &NeedsYouList, "P1", &gates(None)))
+            .unwrap();
+        let rows = needs_you_rows(&store);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        let (key, kind, id, state, text) = &rows[0];
+        assert_eq!(
+            (key.as_str(), kind.as_str(), id.as_str(), state.as_str()),
+            ("missing_fast_gate:P1", "missing_fast_gate", "P1", "open")
+        );
+        assert!(text.contains(cause), "{text}");
+        // Another project with its gate has no hold.
+        assert_eq!(
+            missing_fast_gate("P2", &gates(Some("cargo test --lib"))),
+            None
+        );
+    }
+
+    #[test]
+    fn the_hold_ends_when_the_gate_is_declared() {
+        use crate::fleetd::ideas::application::needs_you::NeedsYouList;
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
+        store
+            .immediate(|tx| sync_missing_fast_gate(tx, &NeedsYouList, "P1", &gates(None)))
+            .unwrap();
+        let hold = store
+            .immediate(|tx| {
+                sync_missing_fast_gate(tx, &NeedsYouList, "P1", &gates(Some("cargo test --lib")))
+            })
+            .unwrap();
+        assert_eq!(hold, None);
+        let rows = needs_you_rows(&store);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].3, "resolved");
     }
 
     #[test]
