@@ -795,11 +795,19 @@ fn w2_agent_exit_before_done_tells_the_orchestrator() {
                     .collect();
                 (argv.len() == 4 && argv[..3] == ["agent", "prompt", "w1:p1"])
                     .then(|| argv[3].clone())
-                    .filter(|line| line.contains("BLOCKED:"))
+                    .filter(|line| line == horch_core::messaging::delivery::MAIL_LINE)
             })
         },
         || pane_context(&h, &pane, &id),
     );
+    // FR-7: the pane gets the mail line, and the BLOCKED line waits in mail.
+    let blocked = horch_core::messaging::mail::Mail::under(&h.state, "w1")
+        .pending()
+        .unwrap()
+        .into_iter()
+        .map(|m| m.text)
+        .find(|t| t.contains("BLOCKED:"))
+        .unwrap_or(blocked);
     assert!(
         blocked.ends_with(&format!(
             "BLOCKED: My agent exited with code 0 before horch done. The work can be \
@@ -867,12 +875,20 @@ fn r1_long_tell_spools_under_its_own_workspace() {
             (argv.len() == 4 && argv[..3] == ["agent", "prompt", "w1:p1"]).then(|| argv[3].clone())
         })
         .collect::<Vec<_>>();
-    assert_eq!(typed.len(), 1, "{typed:?}");
+    // FR-7: the pane gets the mail line, and the mail names the spool file.
+    assert_eq!(
+        typed,
+        [horch_core::messaging::delivery::MAIL_LINE],
+        "{typed:?}"
+    );
+    let mailed = horch_core::messaging::mail::Mail::under(&h.state, "w1")
+        .pending()
+        .unwrap();
     assert!(
-        typed[0].contains(&spooled[0].display().to_string()),
-        "the typed line does not name {}: {}",
+        mailed[0].text.contains(&spooled[0].display().to_string()),
+        "the mail does not name {}: {}",
         spooled[0].display(),
-        typed[0]
+        mailed[0].text
     );
 }
 

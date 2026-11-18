@@ -67,7 +67,8 @@ fn mail_u1_courier_digests_unread_mail_to_an_idle_orchestrator_until_inbox_acks(
         || courier_holds(&lock_path)?.then_some(()),
         || format!("calls: {:?}", harness.calls_of("herdr")),
     );
-    let digest = "[horch] NOTE: 1 unread message (sonnet-1 DONE). Run horch inbox.";
+    // FR-7: the digest of unread notes reaches the pane as the mail line.
+    let digest = horch_core::messaging::delivery::MAIL_LINE;
     wait_for_or(
         "the digest line",
         || {
