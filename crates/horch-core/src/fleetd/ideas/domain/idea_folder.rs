@@ -85,8 +85,14 @@ pub fn check_idea_id(file: &str, found: &str, folder: &str) -> Result<(), Invali
 pub enum Mark {
     Confirmed,
     Assumed,
+    /// An assumption that the sub-orchestrator decided for a worker
+    /// question (D13): it needs no new approval, and you can reverse it.
+    OwnDecision,
     Open,
 }
+
+/// The mark word of an own decision of the sub-orchestrator (D13).
+pub const OWN_DECISION_MARK: &str = "assumed, own decision";
 
 /// 1 numbered item of assumptions.md.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,6 +183,7 @@ fn parse_item(line: &str) -> Option<Assumption> {
     let mark = match mark {
         "confirmed" => Mark::Confirmed,
         "assumed" => Mark::Assumed,
+        OWN_DECISION_MARK => Mark::OwnDecision,
         "open" => Mark::Open,
         _ => return None,
     };

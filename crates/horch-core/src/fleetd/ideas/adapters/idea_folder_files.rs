@@ -321,7 +321,7 @@ impl IdeaFolder {
     }
 
     /// Read the file `name` with the checks of SR-6, as UTF-8 text.
-    fn read_text(&self, name: &str) -> Result<String, FolderError> {
+    pub fn read_text(&self, name: &str) -> Result<String, FolderError> {
         let path = self.dir.join(name);
         if let Err(e) = std::fs::symlink_metadata(&path) {
             if e.kind() == ErrorKind::NotFound {

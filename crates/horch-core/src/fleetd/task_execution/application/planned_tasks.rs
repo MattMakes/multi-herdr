@@ -126,7 +126,8 @@ pub struct Replaced<'a> {
     pub live: &'a BTreeMap<String, String>,
 }
 
-/// The replace path: the replan of the `failed` task `replaced.old` of the
+/// The replace path: the replan of the `failed` task `replaced.old` (or of
+/// the task in `blocked_on_user` with a `replan` answer) of the
 /// idea `idea_id` by `tasks`, in the caller's transaction `tx`. The old
 /// task follows A cancel, and its `replans` goes up by 1. Each task of
 /// `tasks` goes in as `add_planned_tasks` adds it, with the replan of the
@@ -153,7 +154,16 @@ pub fn replace_planned_task(
         live,
     } = *replaced;
     let now = tasks::get(tx, &old.task_id)?;
-    if now.status != TaskStatus::Failed.as_str() || now.replans != old.replans {
+    // A task in `blocked_on_user` has a replan when its question has a
+    // `replan` answer (ticket 32 of fleetd-p6); it leaves to `cancelled`.
+    let replannable = [
+        TaskStatus::Failed.as_str(),
+        TaskStatus::BlockedOnUser.as_str(),
+    ];
+    if now.status != old.status
+        || !replannable.contains(&now.status.as_str())
+        || now.replans != old.replans
+    {
         bail!(
             "{} is {} with {} replans: it changed before its replan",
             now.short(),
@@ -198,6 +208,19 @@ pub fn replace_planned_task(
         )?;
     }
     Ok(ids)
+}
+
+/// The retry of a replan of the task `task_id` in `blocked_on_user` uses
+/// its 1 replan: `replans` goes up by 1, in the caller's transaction `tx`.
+/// The answer of its question then moves it to `ready` (ticket 32 of
+/// fleetd-p6).
+pub fn use_replan(tx: &Connection, guard: Option<Generation>, task_id: &str) -> Result<()> {
+    check_writable(tx, guard)?;
+    tx.execute(
+        "UPDATE tasks SET replans = replans + 1 WHERE task_id = ?1",
+        params![task_id],
+    )?;
+    Ok(())
 }
 
 /// Insert `tasks` as `add_planned_tasks` does; a key that names no task of

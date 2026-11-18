@@ -22,6 +22,14 @@
 //! fleetd writes `replan-<task key>.verdict.json` after each decision on a
 //! replan file, so the sub-orchestrator sees each problem of a refused
 //! replan and writes its file again within the limit.
+//!
+//! A task in `blocked_on_user` whose question has a `replan` answer
+//! (ticket 32, [`answers::replan_question`]) has its replan too, with the
+//! exits of `blocked_on_user` only: `retry` answers the question with the
+//! text of the answer, so the task goes to `ready`; `replace` cancels the
+//! task (A cancel) and answers its question. The time limit of the
+//! question bounds the wait for the file, so the replan limit does not
+//! apply.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -36,14 +44,18 @@ use crate::digest::sha256_bytes;
 use crate::fleetd::fleet_runtime::application::jobs::JobCtx;
 use crate::fleetd::fleet_runtime::application::ledger::Cause;
 use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
+use crate::fleetd::fleet_runtime::domain::ledger::Generation;
 use crate::fleetd::ideas::adapters::idea_folder_files::IdeaFolder;
 use crate::fleetd::ideas::adapters::ideas_store::{self, IdeaRow};
 use crate::fleetd::ideas::adapters::plan_yaml;
+use crate::fleetd::ideas::application::answers;
 use crate::fleetd::ideas::application::plan_commit::{
     plan_facts, planned_task, read_file, read_ticket, PlanCommit, PLAN_YAML,
 };
+use crate::fleetd::ideas::application::questions;
 use crate::fleetd::ideas::domain::plan::Plan;
 use crate::fleetd::ideas::domain::plan_validator::{PlanValidator, Problem};
+use crate::fleetd::ideas::domain::questions::Question;
 use crate::fleetd::task_execution::application::cancel;
 use crate::fleetd::task_execution::application::planned_tasks::{
     self, replace_planned_task, Replaced,
@@ -114,6 +126,9 @@ struct Failed {
     task: Task,
     key: String,
     idea: IdeaRow,
+    /// For a task in `blocked_on_user`: its question with a `replan`
+    /// answer, and the text of that answer.
+    question: Option<(Question, String)>,
 }
 
 /// The plan of the idea after a replace, with what the commit needs.
@@ -127,8 +142,9 @@ struct Combined {
     live: BTreeMap<String, String>,
 }
 
-/// The replan of the `failed` task `task_id` at fleet clock `clock`. A
-/// task in another state is an error that writes nothing.
+/// The replan of the `failed` task `task_id` at fleet clock `clock`, or of
+/// the task `task_id` in `blocked_on_user` whose question has a `replan`
+/// answer. A task in another state is an error that writes nothing.
 pub fn replan_task(
     store: &mut Store,
     ctx: &Replan<'_>,
@@ -136,7 +152,7 @@ pub fn replan_task(
     clock: FleetSeconds,
 ) -> Result<Replanned> {
     let failed = failed_task(store.conn(), task_id)?;
-    if replan_overdue(failed.task.due_at, clock.0) {
+    if failed.question.is_none() && replan_overdue(failed.task.due_at, clock.0) {
         store.immediate(|tx| {
             let now = tasks::get(tx, task_id)?;
             if now.status != TaskStatus::Failed.as_str() {
@@ -171,10 +187,13 @@ pub fn replan_task(
             let reason = format!("replan: {reason}");
             store.immediate(|tx| {
                 let now = tasks::get(tx, task_id)?;
-                if now.status != TaskStatus::Failed.as_str() || now.replans != failed.task.replans {
+                if now.status != failed.task.status || now.replans != failed.task.replans {
                     bail!("{} changed before its replan", now.short());
                 }
-                cancel::requeue(tx, &ctx.jobs, &now, &reason)
+                match &failed.question {
+                    Some((q, answer)) => retry_blocked(tx, ctx.plan.guard, &now, q, answer),
+                    None => cancel::requeue(tx, &ctx.jobs, &now, &reason).map(drop),
+                }
             })?;
             write_verdict(dir, &failed.key, true, &[], &[])?;
             Ok(Replanned::Retried)
@@ -199,12 +218,18 @@ pub fn replan_task(
     }
 }
 
-/// The `failed` task `task_id`, its key in the plan and its idea.
+/// The `failed` task `task_id`, or the task in `blocked_on_user` with a
+/// `replan` answer, with its key in the plan and its idea.
 fn failed_task(conn: &Connection, task_id: &str) -> Result<Failed> {
     let task = tasks::get(conn, task_id)?;
-    if task.status != TaskStatus::Failed.as_str() {
+    let question = if task.status == TaskStatus::BlockedOnUser.as_str() {
+        answers::replan_question(conn, task_id)?
+    } else {
+        None
+    };
+    if task.status != TaskStatus::Failed.as_str() && question.is_none() {
         bail!(
-            "{} is {}, not failed: it has no replan",
+            "{} is {}, not failed and with no replan answer: it has no replan",
             task.short(),
             task.status
         );
@@ -219,7 +244,26 @@ fn failed_task(conn: &Connection, task_id: &str) -> Result<Failed> {
     };
     let idea = ideas_store::idea(conn, &idea_id)?
         .with_context(|| format!("the ledger has no idea {idea_id}"))?;
-    Ok(Failed { task, key, idea })
+    Ok(Failed {
+        task,
+        key,
+        idea,
+        question,
+    })
+}
+
+/// The retry of the task `task` in `blocked_on_user`: its replan is used,
+/// and its question `q` is answered with the text `answer` of the
+/// sub-orchestrator, so the task goes to `ready` and its worker resumes.
+fn retry_blocked(
+    tx: &Connection,
+    guard: Option<Generation>,
+    task: &Task,
+    q: &Question,
+    answer: &str,
+) -> Result<()> {
+    planned_tasks::use_replan(tx, guard, &task.task_id)?;
+    questions::answered(tx, q, Some(answer))
 }
 
 /// Read the replan file `name` with the checks of SR-6, and its decision.
@@ -395,6 +439,9 @@ fn commit(
                 params![id, failed.idea.id, req],
             )?;
         }
+    }
+    if let Some((q, answer)) = &failed.question {
+        questions::answered(tx, q, Some(answer))?;
     }
     Ok(ids)
 }
