@@ -35,6 +35,7 @@ use crate::fleetd::fleet_runtime::application::ledger::DoorError;
 use crate::fleetd::fleet_runtime::domain::authorize::Decision;
 use crate::fleetd::fleet_runtime::domain::ledger::Generation;
 use crate::fleetd::fleet_runtime::domain::requests::Kind;
+use crate::runtime::fault::Faults;
 
 /// The reason of the refusal of a kind with no handler.
 pub const NOT_HANDLED: &str = "not handled in this version";
@@ -43,18 +44,37 @@ pub const NOT_HANDLED: &str = "not handled in this version";
 /// its rows and keeps the transaction of the decision.
 const HANDLER_SAVEPOINT: &str = "request_handler";
 
+/// The fault point after the rows of the decision of a request, before
+/// their commit: the `pending` row stays (`p5_requests.rs`).
+pub const ABORT_BEFORE_REQUEST_COMMIT: &str = "abort-before-request-commit";
+
 /// 1 handler: it writes the rows of 1 request in `tx` from its payload and
 /// returns the result of the request.
 pub type Handler = Box<dyn Fn(&Transaction<'_>, &Value) -> Result<Value> + Send + Sync>;
 
-/// The handler of each kind that this version handles.
+/// The handler of each kind that this version handles, and the armed
+/// fault points of the request path.
 #[derive(Default)]
-pub struct Handlers(HashMap<Kind, Handler>);
+pub struct Handlers {
+    kinds: HashMap<Kind, Handler>,
+    faults: Faults,
+}
 
 impl Handlers {
     /// No handler.
     pub fn new() -> Handlers {
         Handlers::default()
+    }
+
+    /// Arm the fault points `faults` of the request path (`HORCH_FAULT`).
+    pub fn with_faults(mut self, faults: Faults) -> Handlers {
+        self.faults = faults;
+        self
+    }
+
+    /// The armed fault points of the request path.
+    pub fn faults(&self) -> &Faults {
+        &self.faults
     }
 
     /// Set the handler of `kind` to `handler`.
@@ -63,7 +83,7 @@ impl Handlers {
         kind: Kind,
         handler: impl Fn(&Transaction<'_>, &Value) -> Result<Value> + Send + Sync + 'static,
     ) {
-        self.0.insert(kind, Box::new(handler));
+        self.kinds.insert(kind, Box::new(handler));
     }
 }
 
@@ -90,7 +110,11 @@ pub fn handle(
     if let Some(outcome) = recorded {
         return Ok(reply(outcome));
     }
-    let outcome = in_transaction(conn, guard, |tx| decide(tx, request, decision, handlers))?;
+    let outcome = in_transaction(conn, guard, |tx| {
+        let outcome = decide(tx, request, decision, handlers)?;
+        handlers.faults.abort_if(ABORT_BEFORE_REQUEST_COMMIT);
+        Ok(outcome)
+    })?;
     Ok(reply(outcome))
 }
 
@@ -179,7 +203,7 @@ fn apply(
     request: &Request,
     handlers: &Handlers,
 ) -> Result<Result<Value, String>> {
-    let Some(handler) = handlers.0.get(&request.kind) else {
+    let Some(handler) = handlers.kinds.get(&request.kind) else {
         return Ok(Err(NOT_HANDLED.to_string()));
     };
     tx.execute_batch(&format!("SAVEPOINT {HANDLER_SAVEPOINT}"))?;

@@ -57,6 +57,10 @@ pub const FOLDER_REFUSED: &str = "request_folder_refused";
 /// request folder.
 const ARCHIVE: &str = "archive";
 
+/// The fault point after the commit of the `requests` row of a request
+/// file, before its archive (`p5_requests.rs`).
+pub const ABORT_BEFORE_REQUEST_ARCHIVE: &str = "abort-before-request-archive";
+
 /// The end of the name of a request file that its writer has not renamed.
 const TMP: &str = ".tmp";
 
@@ -222,6 +226,7 @@ fn read_file(
         &decision,
         handlers,
     )?;
+    handlers.faults().abort_if(ABORT_BEFORE_REQUEST_ARCHIVE);
     archive(&path, &dir.join(ARCHIVE).join(name))
         .map_err(|e| anyhow!(e).context(format!("archiving {path_text}")))?;
     Ok(Some(Handled::Archived(reply.outcome)))

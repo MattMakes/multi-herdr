@@ -643,7 +643,7 @@ fn start_channel(
 fn request_handlers(ctx: &RuntimeContext, settings: &Settings) -> Handlers {
     let config = Arc::new(settings.config.clone());
     let guard = settings.generation;
-    let mut handlers = Handlers::new();
+    let mut handlers = Handlers::new().with_faults(settings.faults.clone());
     handlers_run::register(&mut handlers);
     handlers_task::register(
         &mut handlers,
