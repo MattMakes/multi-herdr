@@ -183,7 +183,7 @@ fn ctx_05_prime_agent_dir_links_and_fleet_models() {
     assert_eq!(
         decision,
         WindowDecision {
-            tokens: Some(200_000),
+            tokens: Some(256_000),
             source: WindowSource::Fleet,
             detail: "teammate prime compact_window".into(),
             applied: true,
@@ -250,7 +250,7 @@ fn ctx_05_prime_agent_dir_links_and_fleet_models() {
     );
     assert_eq!(
         read_json(&models),
-        json!({"providers":{"anthropic":{"modelOverrides":{"claude-opus-5-5":{"contextWindow":200000}}}}})
+        json!({"providers":{"anthropic":{"modelOverrides":{"claude-opus-5-5":{"contextWindow":256000}}}}})
     );
     #[cfg(unix)]
     {
@@ -278,7 +278,7 @@ fn ctx_05_prime_agent_dir_links_and_fleet_models() {
     for (k, v) in &prepared.env {
         cmd.env(k, v);
     }
-    assert_eq!(adapter.window_in_command(&cmd), Some(200_000));
+    assert_eq!(adapter.window_in_command(&cmd), Some(256_000));
     assert!(window_in_effect(decision, &built, &cmd).applied);
     // Dropped, not finished: no daemon runs.
     drop(prepared);
@@ -526,7 +526,7 @@ fn ctx_05_prime_launch_records_the_applied_window() {
     )
     .unwrap();
     let recorded = store.get("rec-1").unwrap().compact_window.unwrap();
-    assert_eq!(recorded.tokens, Some(200_000));
+    assert_eq!(recorded.tokens, Some(256_000));
     assert!(recorded.applied, "{recorded:?}");
 }
 

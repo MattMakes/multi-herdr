@@ -13,7 +13,7 @@ fallbacks: [codex-sol]
 # medium, as for designer: the page follows a written design, and the skill
 # carries the method. Raise one spawn with --effort.
 effort: medium
-compact_window: 200000
+compact_window: 256000
 compact_at: 300000
 permission_mode: auto
 skills: [one-page-design]

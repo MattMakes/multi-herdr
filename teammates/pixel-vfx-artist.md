@@ -15,7 +15,7 @@ fallbacks: [codex-sol]
 # medium: builders work from a written brief, so depth belongs to whoever
 # wrote it. The skill's render, look and refine rounds supply the rest.
 effort: medium
-compact_window: 200000
+compact_window: 256000
 compact_at: 300000
 permission_mode: auto
 inherit_plugins: false

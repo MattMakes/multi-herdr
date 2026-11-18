@@ -11,7 +11,7 @@ fallbacks: [sonnet]
 # low: Terra executes exactly what it is told, so the thinking is in the brief
 # (cezaar#40: builders on complete specs run low).
 effort: low
-compact_window: 150000
+compact_window: 256000
 compact_at: 120000
 permission_mode: auto
 # Fleet rule: no subagents. Ask the orchestrator for more workers.

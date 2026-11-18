@@ -257,22 +257,22 @@ fn ctx_05_claude_overlay_gets_fleet_window_only_without_operator_value() {
     let ctx = w.ctx(&[]);
     // X1: the built-in file's own compact_window gives the same launch.
     let (d, args) = launch_with(&ctx, &roster, &builtin_opus, Session::Fresh("sid"), None);
-    assert_eq!(window_in_settings(&args), Some(json!("200000")), "{args:?}");
+    assert_eq!(window_in_settings(&args), Some(json!("256000")), "{args:?}");
     assert_eq!(
         d,
         WindowDecision {
-            tokens: Some(200_000),
+            tokens: Some(256_000),
             source: WindowSource::Fleet,
             detail: "teammate opus compact_window".into(),
             applied: true,
         }
     );
     let (d, args) = launch_with(&ctx, &roster, &opus, Session::Fresh("sid"), None);
-    assert_eq!(window_in_settings(&args), Some(json!("200000")), "{args:?}");
+    assert_eq!(window_in_settings(&args), Some(json!("256000")), "{args:?}");
     assert_eq!(
         d,
         WindowDecision {
-            tokens: Some(200_000),
+            tokens: Some(256_000),
             source: WindowSource::Fleet,
             detail: "context-policy windows claude/opus".into(),
             applied: true,
@@ -289,7 +289,7 @@ fn ctx_05_claude_overlay_gets_fleet_window_only_without_operator_value() {
         Some(&bundle),
     );
     assert!(args.contains(&"--plugin-dir".to_string()), "{args:?}");
-    assert_eq!(window_in_settings(&args), Some(json!("200000")), "{args:?}");
+    assert_eq!(window_in_settings(&args), Some(json!("256000")), "{args:?}");
     assert!(d.applied);
 
     // An operator value: no key, and the decision names the user file.
@@ -322,7 +322,7 @@ fn ctx_05_claude_overlay_gets_fleet_window_only_without_operator_value() {
     let (d, args) = launch_with(&ctx, &roster, &with_default, Session::Fresh("sid"), None);
     let overlay = settings_arg(&args).unwrap();
     assert_eq!(overlay["env"]["OTHER_KEY"], json!("1"), "{overlay}");
-    assert_eq!(overlay["env"][WINDOW_KEY], json!("200000"), "{overlay}");
+    assert_eq!(overlay["env"][WINDOW_KEY], json!("256000"), "{overlay}");
     assert!(d.applied);
 }
 
@@ -414,12 +414,12 @@ fn ctx_05_codex_fleet_limit_flag_only_without_operator_value() {
         let (d, args) = launch_with(&ctx, &roster, &sol, session, None);
         assert_eq!(
             codex_limit_flag(&args).as_deref(),
-            Some("200000"),
+            Some("256000"),
             "{args:?}"
         );
         let flag = args
             .iter()
-            .position(|a| a == &format!("{CODEX_KEY}=200000"))
+            .position(|a| a == &format!("{CODEX_KEY}=256000"))
             .unwrap();
         assert!(flag < args.len() - 1, "the flag goes before the prompt");
         assert_eq!(args.last().unwrap(), "PROMPT");
@@ -445,9 +445,13 @@ fn ctx_05_codex_fleet_limit_flag_only_without_operator_value() {
     let w = World::new();
     let ctx = w.ctx(&[]);
     let (d, args) = launch_with(&ctx, &roster, &luna, Session::Unmanaged, None);
-    assert_eq!(codex_limit_flag(&args), None, "{args:?}");
-    assert_eq!(d.source, WindowSource::Harness);
-    assert!(!d.applied);
+    assert_eq!(
+        codex_limit_flag(&args).as_deref(),
+        Some("256000"),
+        "{args:?}"
+    );
+    assert_eq!(d.source, WindowSource::Fleet);
+    assert!(d.applied);
 }
 
 /// The wire shape of design §6.5.
@@ -570,7 +574,7 @@ fn ctx_05_recorded_applied_matches_the_command() {
     // Without `settings:`: applied, and the key is in the argv.
     let (d, args) = launch_with(&ctx, &roster, &opus, Session::Fresh("sid"), None);
     assert!(d.applied);
-    assert_eq!(window_in_settings(&args), Some(json!("200000")));
+    assert_eq!(window_in_settings(&args), Some(json!("256000")));
 
     // A settings file: never applied. A settings file cannot be combined
     // with the worker sandbox (fleetd-p5 39), so this teammate has none.

@@ -12,7 +12,7 @@ system_prompt: sr_eng_system_prompt
 fallbacks: [codex-sol]
 # high: plans and product calls are where a wrong turn is expensive.
 effort: high
-compact_window: 200000
+compact_window: 256000
 compact_at: 300000
 permission_mode: auto
 inherit_plugins: false

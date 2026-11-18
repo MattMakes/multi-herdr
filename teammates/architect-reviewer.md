@@ -14,7 +14,7 @@ fallbacks: [codex-sol]
 # review itself in cezaar#40's baseline (reviewers+judges were 71% of worker
 # spend at xhigh). high, not xhigh: diminishing returns above it.
 effort: high
-compact_window: 200000
+compact_window: 256000
 compact_at: 300000
 
 # Review is read-only, enforced by denying the editing tools. Not plan mode:

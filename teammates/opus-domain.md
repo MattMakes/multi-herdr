@@ -13,7 +13,7 @@ fallbacks: [codex-sol]
 # medium: complex feature engineering. The difficulty is in the domain, which
 # Opus's baseline reasoning handles; medium buys care, not exhaustive search.
 effort: medium
-compact_window: 200000
+compact_window: 256000
 compact_at: 300000
 permission_mode: auto
 inherit_plugins: false

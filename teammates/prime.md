@@ -35,7 +35,7 @@ inherit_plugins: false
 # The native window (plans_to_improve §2.3; applies only when ~/.prime/agent
 # sets no window). horch writes it into this pane's own agent dir as a
 # models.json contextWindow override; ~/.prime/agent is never written.
-compact_window: 200000
+compact_window: 256000
 ---
 Your tier: PRIME - a persistent Python kernel is your only tool, and your
 harness state is yours to modify. Use that for work that benefits from it:

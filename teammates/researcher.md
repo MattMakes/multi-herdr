@@ -13,7 +13,7 @@ fallbacks: [codex-sol]
 # medium: exploration without maximum rigor; long reads multiply every
 # thinking token (cezaar#40 researchers).
 effort: medium
-compact_window: 200000
+compact_window: 256000
 compact_at: 300000
 permission_mode: auto
 subagent_model: haiku

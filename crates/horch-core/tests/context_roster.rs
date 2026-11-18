@@ -81,7 +81,7 @@ fn messages_base(keys: &[&str], extra: &str) -> String {
 fn ctx_08_roster_check_fails_headroom_below_floor() {
     let dir = roster_dir(&[(
         "sonnet.md",
-        shipped("sonnet.md").replace("compact_window: 150000\n", "compact_window: 100000\n"),
+        shipped("sonnet.md").replace("compact_window: 256000\n", "compact_window: 100000\n"),
     )]);
     let roster = load(dir.path());
     let errors = problems_with(&roster, &["headroom"]);
@@ -156,19 +156,19 @@ fn fleet_window_takes_teammate_then_model_key() {
     };
     assert_eq!(
         window("orchestrator", "opus"),
-        Some((300_000, "context-policy windows claude/orchestrator".into()))
+        Some((256_000, "context-policy windows claude/orchestrator".into()))
     );
     assert_eq!(
         window("opus", "opus"),
-        Some((200_000, "context-policy windows claude/opus".into()))
+        Some((256_000, "context-policy windows claude/opus".into()))
     );
     assert_eq!(
         window("sonnet-bugfix", "sonnet"),
-        Some((150_000, "context-policy windows claude/sonnet".into()))
+        Some((256_000, "context-policy windows claude/sonnet".into()))
     );
     assert_eq!(
         window("codex-sol", "gpt-5.6-sol"),
-        Some((200_000, "context-policy windows codex/gpt-5.6-sol".into()))
+        Some((256_000, "context-policy windows codex/gpt-5.6-sol".into()))
     );
     assert_eq!(window("codex-luna", "gpt-5.6-luna"), None);
 
@@ -204,7 +204,7 @@ fn compact_window_parses_and_defaults_to_none() {
     assert_eq!(load(dir.path()).get("plain").unwrap().compact_window, None);
     assert_eq!(
         builtin().get("sonnet").unwrap().compact_window,
-        Some(150_000)
+        Some(256_000)
     );
 }
 
@@ -727,11 +727,11 @@ fn check_refuses_every_window_key_in_env_and_a_settings_file() {
 /// Nit 9 (R14): after a substitution the detail names the fallback's file.
 #[test]
 fn fleet_window_names_the_fallback_after_a_substitution() {
-    let opus = shipped("opus.md").replace("compact_window: 200000\n", "compact_window: 180000\n");
+    let opus = shipped("opus.md").replace("compact_window: 256000\n", "compact_window: 180000\n");
     let dir = roster_dir(&[("opus.md", opus)]);
     let roster = load(dir.path());
     let original = roster.get("codex-sol").unwrap();
-    assert_eq!(original.compact_window, Some(200_000));
+    assert_eq!(original.compact_window, Some(256_000));
     let merged = horch_core::routing::decision::merge(original, roster.get("opus").unwrap());
     assert_eq!(
         roster.fleet_window(&merged, "opus"),
@@ -804,7 +804,7 @@ fn sol_orchestrator_takes_its_model_window() {
     orchestrator.model = Some("gpt-5.6-sol".into());
     assert_eq!(
         roster.fleet_window(&orchestrator, "gpt-5.6-sol"),
-        Some((200_000, "context-policy windows codex/gpt-5.6-sol".into()))
+        Some((256_000, "context-policy windows codex/gpt-5.6-sol".into()))
     );
 }
 

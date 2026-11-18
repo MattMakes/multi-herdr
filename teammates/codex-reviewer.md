@@ -10,7 +10,7 @@ fallbacks: [opus]
 # high, like the claude reviewers: a missed finding costs a review round
 # (cezaar#40). Not xhigh or max: diminishing returns above high.
 effort: high
-compact_window: 200000
+compact_window: 256000
 compact_at: 160000
 skills: [code-review, security-review]
 available_skills: [codebase-design]

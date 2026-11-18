@@ -12,7 +12,7 @@ system_prompt: sr_eng_system_prompt
 fallbacks: [codex-sol]
 # high, like the other reviewers: a missed finding costs a fix round.
 effort: high
-compact_window: 200000
+compact_window: 256000
 compact_at: 300000
 
 # Review is read-only, enforced by denying the editing tools, as on

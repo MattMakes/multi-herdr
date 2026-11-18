@@ -11,7 +11,7 @@ fallbacks: [opus]
 # Set explicitly: unset, the pane inherits ~/.codex/config.toml. medium, the
 # same builder level as codex-sol.
 effort: medium
-compact_window: 200000
+compact_window: 256000
 compact_at: 160000
 # Every codex write pane now runs the fleet_write profile, which has the
 # network on and keeps writes inside the pane's folder, so this teammate no

@@ -20,7 +20,7 @@ fallbacks: [codex-sol]
 # high: a planner, like staff-engineer. A wrong scene split or a missed
 # autoload costs every builder after it.
 effort: high
-compact_window: 200000
+compact_window: 256000
 compact_at: 300000
 permission_mode: auto
 inherit_plugins: false

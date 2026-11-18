@@ -13,7 +13,7 @@ model: opus
 system_prompt: sr_eng_system_prompt
 # high, like the other planners: every wave works from this production plan.
 effort: high
-compact_window: 200000
+compact_window: 256000
 compact_at: 300000
 permission_mode: auto
 inherit_plugins: false

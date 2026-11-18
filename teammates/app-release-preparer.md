@@ -17,7 +17,7 @@ requires: [xcode]
 # medium: the skills carry the procedure, and every outward-facing step ends
 # at the orchestrator.
 effort: medium
-compact_window: 150000
+compact_window: 256000
 compact_at: 300000
 permission_mode: auto
 inherit_plugins: false

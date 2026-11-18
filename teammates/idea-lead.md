@@ -12,7 +12,7 @@ no_fallback_reason: "A fallback launches without the sandbox block of this file,
 # interactive": sub-orchestrators are interactive).
 mode: interactive
 system_prompt: sr_eng_system_prompt
-compact_window: 200000
+compact_window: 256000
 compact_at: 300000
 permission_mode: auto
 # Fleet rule: no subagents. FM-32: the profile denies the approve command and

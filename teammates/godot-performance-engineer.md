@@ -23,7 +23,7 @@ fallbacks: [codex-sol]
 # high: a profiler reads numbers and must not guess at causes; a wrong
 # hot-spot costs a second capture. Same as ue-qa-engineer.
 effort: high
-compact_window: 200000
+compact_window: 256000
 compact_at: 300000
 permission_mode: auto
 inherit_plugins: false

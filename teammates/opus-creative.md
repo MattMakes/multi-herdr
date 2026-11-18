@@ -14,7 +14,7 @@ system_prompt: sr_eng_system_prompt
 # high: open design is where reasoning depth pays. Raise one spawn with
 # --effort.
 effort: high
-compact_window: 200000
+compact_window: 256000
 compact_at: 300000
 permission_mode: auto
 inherit_plugins: false

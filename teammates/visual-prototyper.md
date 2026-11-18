@@ -10,7 +10,7 @@ fallbacks: [opus]
 # Set explicitly: unset, the pane inherits ~/.codex/config.toml. medium is the
 # builder level; raise it per spawn with --effort.
 effort: medium
-compact_window: 200000
+compact_window: 256000
 compact_at: 160000
 # auto keeps the sandbox network off. Image generation is a Codex model tool
 # (feature image_generation, stable and on in codex-cli 0.160.0), so it does

@@ -16,7 +16,7 @@ no_fallback_reason: A fallback launches with another harness and other rules, so
 # opus, medium: it edits wording against a scan report. Workers run on
 # Opus, not Sonnet (trace-fixes T-58).
 effort: medium
-compact_window: 200000
+compact_window: 256000
 compact_at: 300000
 permission_mode: auto
 inherit_plugins: false

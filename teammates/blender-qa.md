@@ -18,7 +18,7 @@ offer_when: ["*.blend"]
 requires: [blender]
 # high: a missed finding costs a review round, the same as qa-engineer.
 effort: high
-compact_window: 200000
+compact_window: 256000
 compact_at: 300000
 permission_mode: auto
 inherit_plugins: false

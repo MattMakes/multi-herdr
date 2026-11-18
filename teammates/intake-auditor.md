@@ -15,7 +15,7 @@ fallbacks: []
 no_fallback_reason: A fallback launches with another harness and other rules, so the trust wall below would be gone. skill-importer spawns with --exact.
 # high: it judges hostile input.
 effort: high
-compact_window: 200000
+compact_window: 256000
 compact_at: 300000
 permission_mode: auto
 inherit_plugins: false

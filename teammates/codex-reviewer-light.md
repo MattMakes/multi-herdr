@@ -10,7 +10,7 @@ fallbacks: [opus]
 # medium: rounds 2 and 3 review only the change since the last round, and
 # round 1 at high already reviewed the whole change (trace-fixes TRF-30).
 effort: medium
-compact_window: 200000
+compact_window: 256000
 compact_at: 160000
 skills: [code-review, security-review]
 available_skills: [codebase-design]

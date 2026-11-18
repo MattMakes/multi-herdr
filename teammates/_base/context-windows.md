@@ -8,11 +8,13 @@ description: >
 # Fleet default native auto-compact settings (docs/specs/context-policy.md).
 # Key: <harness>/<teammate name> first, then <harness>/<model>.
 windows:
-  claude/orchestrator: 300000
-  claude/opus: 200000
-  claude/sonnet: 150000
-  codex/gpt-5.6-sol: 200000
-  codex/gpt-5.6-terra: 150000
+  claude/fable: 256000
+  claude/orchestrator: 256000
+  claude/opus: 256000
+  claude/sonnet: 256000
+  codex/gpt-5.6-sol: 256000
+  codex/gpt-5.6-terra: 256000
+  codex/gpt-6-astra: 256000
 # Harnesses whose compaction live check passed (CTX-17). Others use the
 # fresh-session route.
 in_place: [claude, codex, opencode]

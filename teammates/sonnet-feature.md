@@ -12,7 +12,7 @@ fallbacks: [codex-terra]
 # medium: everyday feature delivery against a written spec, the same level as
 # the other builders. The spec carries the design; this seat carries it out.
 effort: medium
-compact_window: 150000
+compact_window: 256000
 compact_at: 300000
 permission_mode: auto
 inherit_plugins: false
