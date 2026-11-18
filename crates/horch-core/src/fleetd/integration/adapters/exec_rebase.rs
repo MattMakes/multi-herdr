@@ -1,11 +1,15 @@
-//! The executor of the `rebase` job (ticket 41).
+//! The executor of the `rebase` job (ticket 41 of fleetd-p4, ticket 38 of
+//! fleetd-p6).
 //!
-//! `docs/specs/fleetd/design.md`, "Between features" (Continuous rebase),
-//! "The kinds of job" (`rebase`), I9 and I10; `docs/tickets/fleetd-p4/MAP.md`,
-//! Q18 and Q26.
+//! `docs/specs/fleetd/design.md`, "Between features" (Continuous rebase; A
+//! stack edge ends with its lower feature), "The kinds of job" (`rebase`),
+//! I9 and I10; `docs/tickets/fleetd-p4/MAP.md`, Q18 and Q26.
 //!
 //! The subject of a run is the branch, and its input key is the tip of the
-//! branch and the tip that it moves onto (`application::rebase::rebase_key`).
+//! branch, the tip that it moves onto and, for an abandoned lower feature,
+//! the tip whose commits the rebase takes out (`application::rebase::read_key`).
+//! "On" below is `application::rebase::is_on`: the branch contains the tip
+//! to move onto, and no commit of the cut that the tip to move onto lacks.
 //! The run writes no ledger row: a later pass reads its result.
 //!
 //! 1. The fleetd git rule (Q26): each git call goes through
@@ -17,11 +21,12 @@
 //!    `post-checkout` and `post-rewrite` hooks, a checkout filter, a merge
 //!    driver and the gpg program.
 //! 2. When the branch is not at the tip of the key, the run moves nothing.
-//!    A branch that contains the tip to move onto is a passed run: a run
+//!    A branch that is on the tip to move onto is a passed run: a run
 //!    before it moved the branch and then lost its result.
 //! 3. The rescue ref of the tip exists before the rebase (I10).
 //! 4. In the gate tree of the feature (Q18), never a tree of a worker:
-//!    `git checkout --detach <tip>` and `git rebase <onto>`. The branch is
+//!    `git checkout --detach <tip>` and `git rebase <onto>`, or
+//!    `git rebase --onto <onto> <cut>` with a cut. The branch is
 //!    not checked out, so a conflict leaves it at its tip; the run aborts the
 //!    rebase and gives the conflict files.
 //! 5. `git update-ref refs/heads/<branch> <new> <tip>`: a compare-and-set
@@ -41,7 +46,7 @@ use crate::fleetd::fleet_runtime::application::jobs::Ran;
 use crate::fleetd::fleet_runtime::domain::jobs::Outcome;
 use crate::fleetd::integration::adapters::sqlite as rows;
 use crate::fleetd::integration::application::rebase::{
-    gate_tree_busy, read_key, RebaseRefs, Rebased,
+    gate_tree_busy, is_on, read_key, RebaseRefs, Rebased,
 };
 use crate::fleetd::worktree_custody::adapters::executors::fleet_root;
 use crate::fleetd::worktree_custody::adapters::git::{repo_git_dir, CliWorktreeGit, NO_SANDBOX};
@@ -87,6 +92,20 @@ impl RebaseRefs for GitRebaseRefs {
     fn rescue(&self, repo: &Path, branch: &str, tip: &str) -> Result<String> {
         write_branch_rescue(&self.git, repo, branch, tip)
     }
+
+    fn merge_base(&self, repo: &Path, a: &str, b: &str) -> Result<Option<String>> {
+        let out = self.git.checked(repo, &["merge-base", a, b])?;
+        match out.status {
+            0 => Ok(Some(
+                String::from_utf8_lossy(&out.stdout).trim().to_string(),
+            )),
+            1 => Ok(None),
+            s => bail!(
+                "git merge-base {a} {b} failed ({s}): {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ),
+        }
+    }
 }
 
 /// Whether `ancestor` is an ancestor of `tip`, or is `tip`.
@@ -122,12 +141,13 @@ fn ended(passed: bool, text: String, data: Option<Rebased>) -> Ran {
     }
 }
 
-/// What 1 run rebases: the branch, its tip, the tip to move onto, the
-/// repository and the gate tree.
+/// What 1 run rebases: the branch, its tip, the tip to move onto, the cut,
+/// the repository and the gate tree.
 struct Job {
     branch: String,
     tip: String,
     onto: String,
+    cut: Option<String>,
     repo: PathBuf,
     tree: PathBuf,
 }
@@ -158,10 +178,11 @@ pub fn run(conn: &Connection, row: &JobRow) -> Result<Ran> {
 /// The job of the run `row`. The inner `Err` is a result: the row names no
 /// rebase. An error is a state that a later run can find changed.
 fn read_job(conn: &Connection, row: &JobRow) -> Result<Result<Job, String>> {
-    let Some((tip, onto)) = read_key(&row.input_key) else {
+    let Some(key) = read_key(&row.input_key) else {
         return Ok(Err(format!("'{}' is not a rebase key", row.input_key)));
     };
-    if let Err(e) = object_id(tip).and_then(|()| object_id(onto)) {
+    let ids = [Some(key.tip), Some(key.onto), key.cut];
+    if let Err(e) = ids.into_iter().flatten().try_for_each(object_id) {
         return Ok(Err(format!("{e:#}")));
     }
     let branch = row.subject.clone();
@@ -186,8 +207,9 @@ fn read_job(conn: &Connection, row: &JobRow) -> Result<Result<Job, String>> {
     };
     Ok(Ok(Job {
         branch,
-        tip: tip.to_string(),
-        onto: onto.to_string(),
+        tip: key.tip.to_string(),
+        onto: key.onto.to_string(),
+        cut: key.cut.map(str::to_string),
         repo,
         tree,
     }))
@@ -195,6 +217,8 @@ fn read_job(conn: &Connection, row: &JobRow) -> Result<Result<Job, String>> {
 
 /// Steps 2 to 5 of the module documentation.
 fn rebase(git: &CliWorktreeGit, job: &Job) -> Result<Ran> {
+    let refs = GitRebaseRefs::new(git.clone());
+    let on = |tip: &str| is_on(&refs, &job.repo, tip, &job.onto, job.cut.as_deref());
     let full = format!("refs/heads/{}", job.branch);
     let Some(now) = branch_tip(git, &job.repo, &full)? else {
         return Ok(ended(
@@ -204,8 +228,8 @@ fn rebase(git: &CliWorktreeGit, job: &Job) -> Result<Ran> {
         ));
     };
     if now != job.tip {
-        if contains(git, &job.repo, &now, &job.onto)? {
-            let text = format!("{} is at {now}, which contains {}", job.branch, job.onto);
+        if on(&now)? {
+            let text = format!("{} is at {now}, which is on {}", job.branch, job.onto);
             return Ok(ended(true, text, Some(Rebased::Moved { tip: now })));
         }
         let text = format!(
@@ -215,8 +239,8 @@ fn rebase(git: &CliWorktreeGit, job: &Job) -> Result<Ran> {
         return Ok(ended(false, text, None));
     }
     let rescue = write_branch_rescue(git, &job.repo, &job.branch, &job.tip)?;
-    if contains(git, &job.repo, &job.tip, &job.onto)? {
-        let text = format!("{} at {} contains {}", job.branch, job.tip, job.onto);
+    if on(&job.tip)? {
+        let text = format!("{} at {} is on {}", job.branch, job.tip, job.onto);
         let tip = job.tip.clone();
         return Ok(ended(true, text, Some(Rebased::Moved { tip })));
     }
@@ -224,16 +248,20 @@ fn rebase(git: &CliWorktreeGit, job: &Job) -> Result<Ran> {
     git.checked(&job.tree, &["rebase", "--quit"])?;
     git.git(&job.tree, &["checkout", "--force", "--detach", &job.tip])?;
     let mut args: Vec<&str> = REBASE_CONFIG.iter().flat_map(|c| ["-c", c]).collect();
-    args.extend(["rebase", "--no-verify", "--no-rerere-autoupdate", &job.onto]);
+    args.extend(["rebase", "--no-verify", "--no-rerere-autoupdate"]);
+    match job.cut.as_deref() {
+        Some(cut) => args.extend(["--onto", &job.onto, cut]),
+        None => args.push(&job.onto),
+    }
     let out = git.checked(&job.tree, &args)?;
     if out.status != 0 {
         return conflict(git, job, &String::from_utf8_lossy(&out.stderr));
     }
     let new = git.git(&job.tree, &["rev-parse", "--verify", "HEAD"])?;
     let new = new.trim();
-    if !contains(git, &job.repo, new, &job.onto)? {
+    if !on(new)? {
         bail!(
-            "the gate tree is at {new} after the rebase, which does not contain {}",
+            "the gate tree is at {new} after the rebase, which is not on {}",
             job.onto
         );
     }
@@ -256,8 +284,13 @@ fn rebase(git: &CliWorktreeGit, job: &Job) -> Result<Ran> {
         );
         return Ok(ended(false, text, None));
     }
+    let cut = job
+        .cut
+        .as_deref()
+        .map(|c| format!(" without the commits of {c}"))
+        .unwrap_or_default();
     let text = format!(
-        "rebased {} from {} onto {} at {new}; the old tip is in {rescue}",
+        "rebased {} from {} onto {}{cut} at {new}; the old tip is in {rescue}",
         job.branch, job.tip, job.onto
     );
     let tip = new.to_string();

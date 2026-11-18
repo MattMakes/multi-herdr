@@ -28,6 +28,12 @@
 //!    `pr = manual`, the compare URL goes on the needs-you list, and on an
 //!    `open` feature the item says "do not merge yet". A failed pull request
 //!    step records a failed push run, so the job backs off.
+//! 4. The base of the pull request (ticket 38 of fleetd-p6): the branch of
+//!    the lower feature while the feature is on a lower feature in flight,
+//!    else the primary branch. An open pull request with another base gets
+//!    `gh pr edit --base`, and the compare URL of `pr = manual` names the
+//!    base. So when a stack edge ends, the push after the rebase moves the
+//!    base to the primary branch, or changes the needs-you item.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -369,9 +375,10 @@ fn follow_pr(
     if !ready && !draft {
         return Ok(PrFacts::default());
     }
+    let base = pr_base(conn, &f)?;
     let settings = project_file::load(&reader, &format!("refs/heads/{branch}"))?;
     match settings.pr {
-        Pr::Manual => manual(&tools.git, repo, remote, &f, branch, ready),
+        Pr::Manual => manual(&tools.git, repo, remote, &f, branch, &base, ready),
         Pr::Gh => {
             let gh = Gh {
                 bin: tools
@@ -384,15 +391,32 @@ fn follow_pr(
                 tag: format!("{}-{}", row.id, f.id),
             };
             if ready {
-                gh_ready(conn, &gh, &f, branch)
+                gh_ready(conn, &gh, &f, branch, &base)
             } else {
-                gh_draft(&gh, &f)
+                gh_draft(&gh, &f, &base)
             }
         }
     }
 }
 
-/// The pull request as `gh pr view --json url,state,isDraft,body` reads it.
+/// The base branch of the pull request of `f`: the branch of its lower
+/// feature while that feature is in flight, else the primary branch.
+fn pr_base(conn: &Connection, f: &FeatureRow) -> Result<String> {
+    if let Some(lower) = f.stacked_on.as_deref() {
+        if let Some(l) = rows::feature(conn, lower)? {
+            if let Some(branch) = l
+                .branch
+                .filter(|_| matches!(l.state.as_str(), "open" | "ready"))
+            {
+                return Ok(branch);
+            }
+        }
+    }
+    Ok(f.primary_branch.clone())
+}
+
+/// The pull request as `gh pr view --json url,state,isDraft,body,baseRefName`
+/// reads it.
 #[derive(serde::Deserialize)]
 struct PrView {
     url: String,
@@ -400,6 +424,19 @@ struct PrView {
     #[serde(rename = "isDraft")]
     draft: bool,
     body: String,
+    /// `None` when `gh` did not give it: the base is not known, so it does
+    /// not move.
+    #[serde(rename = "baseRefName", default)]
+    base: Option<String>,
+}
+
+/// Set the base of the open pull request `v` to `base` when `gh` gives
+/// another base.
+fn move_base(gh: &Gh<'_>, v: &PrView, base: &str) -> Result<()> {
+    if v.base.as_deref().is_some_and(|now| now != base) {
+        gh.call(&["pr", "edit", &v.url, "--base", base])?;
+    }
+    Ok(())
 }
 
 /// A `ready` feature with `pr = gh`: its recorded pull request, else the
@@ -407,7 +444,13 @@ struct PrView {
 /// one. The body gets the section of each landed task that it lacks, and
 /// a draft becomes ready for review. A recorded pull request that is not
 /// open is left alone: the fetch job puts it on the needs-you list.
-fn gh_ready(conn: &Connection, gh: &Gh<'_>, f: &FeatureRow, branch: &str) -> Result<PrFacts> {
+fn gh_ready(
+    conn: &Connection,
+    gh: &Gh<'_>,
+    f: &FeatureRow,
+    branch: &str,
+    base: &str,
+) -> Result<PrFacts> {
     let found = match f.pr.as_deref() {
         Some(pr) => Some(gh.view(pr)?),
         // gh exits non-zero when the branch has no pull request.
@@ -416,6 +459,7 @@ fn gh_ready(conn: &Connection, gh: &Gh<'_>, f: &FeatureRow, branch: &str) -> Res
     let sections = task_sections(conn, &f.id, branch)?;
     let url = match found {
         Some(v) if v.state.eq_ignore_ascii_case("OPEN") => {
+            move_base(gh, &v, base)?;
             let body = with_new_sections(&v.body, &sections);
             if body != v.body {
                 let file = gh.body_file(&body)?;
@@ -429,8 +473,8 @@ fn gh_ready(conn: &Connection, gh: &Gh<'_>, f: &FeatureRow, branch: &str) -> Res
         Some(_) if f.pr.is_some() => return Ok(PrFacts::default()),
         _ => {
             let intro = format!(
-                "Feature `{}`: its tasks land on `{branch}`; this pull request brings them to `{}`.",
-                f.id, f.primary_branch
+                "Feature `{}`: its tasks land on `{branch}`; this pull request brings them to `{base}`.",
+                f.id
             );
             let file = gh.body_file(&with_new_sections(&intro, &sections))?;
             let title = format!("{}: feature {}", f.name.as_deref().unwrap_or(branch), f.id);
@@ -438,7 +482,7 @@ fn gh_ready(conn: &Connection, gh: &Gh<'_>, f: &FeatureRow, branch: &str) -> Res
                 "pr",
                 "create",
                 "--base",
-                &f.primary_branch,
+                base,
                 "--head",
                 branch,
                 "--title",
@@ -461,33 +505,37 @@ fn gh_ready(conn: &Connection, gh: &Gh<'_>, f: &FeatureRow, branch: &str) -> Res
 
 /// An `open` feature with a pull request and `pr = gh`: an open pull
 /// request that is not a draft becomes a draft.
-fn gh_draft(gh: &Gh<'_>, f: &FeatureRow) -> Result<PrFacts> {
+fn gh_draft(gh: &Gh<'_>, f: &FeatureRow, base: &str) -> Result<PrFacts> {
     let Some(pr) = f.pr.as_deref() else {
         return Ok(PrFacts::default());
     };
     let v = gh.view(pr)?;
-    if v.state.eq_ignore_ascii_case("OPEN") && !v.draft {
-        gh.call(&["pr", "ready", &v.url, "--undo"])?;
+    if v.state.eq_ignore_ascii_case("OPEN") {
+        move_base(gh, &v, base)?;
+        if !v.draft {
+            gh.call(&["pr", "ready", &v.url, "--undo"])?;
+        }
     }
     Ok(PrFacts::default())
 }
 
-/// `pr = manual`: the compare URL of the feature branch, with the text of
-/// its needs-you item. A remote with no web address gets the branch names.
+/// `pr = manual`: the compare URL of the feature branch over `base`, with
+/// the text of its needs-you item. A remote with no web address gets the
+/// branch names.
 fn manual(
     git: &Path,
     repo: &Path,
     remote: &str,
     f: &FeatureRow,
     branch: &str,
+    base: &str,
     ready: bool,
 ) -> Result<PrFacts> {
     let key = format!("remote.{remote}.url");
     let out = run_git(git, repo, &[], &["config", "--get", &key])?;
-    let primary = &f.primary_branch;
     let link = web_base(&out.stdout_text())
-        .map(|base| format!("{base}/compare/{primary}...{branch}"))
-        .unwrap_or_else(|| format!("{primary}...{branch} of the remote {remote}"));
+        .map(|web| format!("{web}/compare/{base}...{branch}"))
+        .unwrap_or_else(|| format!("{base}...{branch} of the remote {remote}"));
     let text = if ready {
         format!(
             "Feature {} is ready. Open its pull request, then merge it: {link}",
@@ -596,7 +644,8 @@ struct Gh<'a> {
 impl Gh<'_> {
     /// The pull request `pr` (a URL, a number or a branch).
     fn view(&self, pr: &str) -> Result<PrView> {
-        let text = self.call(&["pr", "view", pr, "--json", "url,state,isDraft,body"])?;
+        let fields = "url,state,isDraft,body,baseRefName";
+        let text = self.call(&["pr", "view", pr, "--json", fields])?;
         // The output file has stdout and stderr: take the line with the JSON.
         text.lines()
             .find_map(|l| serde_json::from_str::<PrView>(l).ok())

@@ -244,7 +244,7 @@ fn side(tx: &Connection, ref_name: &str) -> Result<Option<Side>> {
 const NOT_IN_FLIGHT: [&str; 4] = ["integrating", "merged", "parked", "cancelled"];
 
 /// The youngest idea in flight of `feature`, or `None`.
-fn youngest_idea_in_flight(tx: &Connection, feature: &str) -> Result<Option<String>> {
+pub(crate) fn youngest_idea_in_flight(tx: &Connection, feature: &str) -> Result<Option<String>> {
     Ok(ideas_store::of_feature(tx, feature)?
         .into_iter()
         .filter(|i| !NOT_IN_FLIGHT.contains(&i.state.as_str()))

@@ -1,8 +1,10 @@
-//! The use case of the rebase job (ticket 41).
+//! The use case of the rebase job (ticket 41 of fleetd-p4, ticket 38 of
+//! fleetd-p6).
 //!
-//! `docs/specs/fleetd/design.md`, "Between features" (Continuous rebase),
-//! "A moved tip drops a bundle", "The kinds of job" (`rebase`), I9, I10,
-//! FM-37; `docs/tickets/fleetd-p4/MAP.md`, Q18 and Q21.
+//! `docs/specs/fleetd/design.md`, "Between features" (Continuous rebase; A
+//! stack edge ends with its lower feature), "A moved tip drops a bundle",
+//! "The kinds of job" (`rebase`), I9, I10, FM-37; `docs/tickets/fleetd-p4/MAP.md`,
+//! Q18 and Q21.
 //!
 //! [`follow`] is the pass part. For each `open` or `ready` feature it reads
 //! the feature tip and the fetched primary tip (the tips of the feature
@@ -16,6 +18,11 @@
 //!    its input key. A run of the same tips that ended `passed` or `failed`
 //!    is not run again: only the tips that move or an `abandoned` run make
 //!    a new run.
+//!
+//! The bottom of a stack first: a feature on a lower feature that is in
+//! flight waits until the branch of the lower feature contains the primary
+//! tip. A feature on a lower feature that is `merged` or `abandoned` is the
+//! work of `stack_edges.rs`, until it clears `stacked_on`.
 //!
 //! Each step reads the rows again, so a crash at any point repeats the
 //! step, and the create-only rescue ref is written 1 time. The job
@@ -52,6 +59,10 @@ pub trait RebaseRefs {
     /// and give its name. When the newest rescue ref of the branch already
     /// names `tip`, give that ref.
     fn rescue(&self, repo: &Path, branch: &str, tip: &str) -> Result<String>;
+
+    /// The best common ancestor of `a` and `b`, or `None` when they have
+    /// none.
+    fn merge_base(&self, repo: &Path, a: &str, b: &str) -> Result<Option<String>>;
 }
 
 /// What [`follow`] works with: the job context of the pass and the git of
@@ -91,15 +102,70 @@ pub enum Rebased {
     Conflict { files: Vec<String> },
 }
 
+/// The parts of the input key of a rebase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RebaseKey<'a> {
+    /// The tip of the branch.
+    pub tip: &'a str,
+    /// The tip to move onto.
+    pub onto: &'a str,
+    /// The tip of an abandoned lower feature: the rebase takes out each
+    /// commit that it reaches (`git rebase --onto <onto> <cut>`).
+    pub cut: Option<&'a str>,
+}
+
 /// The input key of the rebase of the branch at `tip` onto `onto`.
 pub fn rebase_key(tip: &str, onto: &str) -> String {
     format!("{tip} {onto}")
 }
 
-/// The tip and the tip to move onto of the input key `key`.
-pub fn read_key(key: &str) -> Option<(&str, &str)> {
-    key.split_once(' ')
-        .filter(|(tip, onto)| !tip.is_empty() && !onto.is_empty())
+/// The input key of the rebase of the branch at `tip` onto `onto` without
+/// the commits that `cut` reaches.
+pub fn rebase_key_cut(tip: &str, onto: &str, cut: &str) -> String {
+    format!("{tip} {onto} {cut}")
+}
+
+/// The parts of the input key `key`, as [`rebase_key`] or
+/// [`rebase_key_cut`] writes it.
+pub fn read_key(key: &str) -> Option<RebaseKey<'_>> {
+    let parts: Vec<&str> = key.split(' ').collect();
+    if parts.iter().any(|p| p.is_empty()) {
+        return None;
+    }
+    match parts[..] {
+        [tip, onto] => Some(RebaseKey {
+            tip,
+            onto,
+            cut: None,
+        }),
+        [tip, onto, cut] => Some(RebaseKey {
+            tip,
+            onto,
+            cut: Some(cut),
+        }),
+        _ => None,
+    }
+}
+
+/// Whether `tip` is on `onto`: it contains `onto`, and with a `cut`, each
+/// commit that `tip` shares with `cut` is in `onto` too.
+pub fn is_on(
+    refs: &dyn RebaseRefs,
+    repo: &Path,
+    tip: &str,
+    onto: &str,
+    cut: Option<&str>,
+) -> Result<bool> {
+    if !refs.contains(repo, tip, onto)? {
+        return Ok(false);
+    }
+    let Some(cut) = cut else {
+        return Ok(true);
+    };
+    match refs.merge_base(repo, tip, cut)? {
+        Some(base) => refs.contains(repo, onto, &base),
+        None => Ok(true),
+    }
 }
 
 fn by_fleetd(text: &str) -> Cause<'_> {
@@ -150,13 +216,18 @@ fn follow_one(
     };
     let last = jobs_store::last(tx, Kind::Rebase, branch)?;
     record_moved(r, tx, clock, feature_id, branch, &tips, last.as_ref())?;
+    if let Some(lower) = row.stacked_on.as_deref() {
+        if !lower_on_primary(r, tx, &tips, lower)? {
+            return Ok(None);
+        }
+    }
     if gate_tree_busy(tx, feature_id)? {
         return Ok(None);
     }
     // An abandoned run onto this primary tip runs again: its effect may be
     // done, and only its run records it.
     if let Some(last) = last.as_ref().filter(|l| l.state == State::Abandoned) {
-        if read_key(&last.input_key).is_some_and(|(_, onto)| onto == tips.primary) {
+        if read_key(&last.input_key).is_some_and(|k| k.onto == tips.primary) {
             if gate_tree_ready(r, tx, clock, &run, feature_id, branch, &tips)? {
                 queue(r, tx, clock, branch, &tips.repo, &last.input_key)?;
             }
@@ -186,8 +257,28 @@ fn follow_one(
     Ok(None)
 }
 
+/// Whether the stacked feature may rebase: its lower feature `lower` is in
+/// flight, and its branch contains the primary tip (the bottom of a stack
+/// first). A lower feature that is not in flight ends the stack edge, which
+/// is the work of `stack_edges.rs`.
+fn lower_on_primary(r: &Rebases<'_>, tx: &Connection, tips: &Tips, lower: &str) -> Result<bool> {
+    let Some(row) = rows::feature(tx, lower)? else {
+        return Ok(false);
+    };
+    let Some(branch) = row
+        .branch
+        .filter(|_| matches!(row.state.as_str(), "open" | "ready"))
+    else {
+        return Ok(false);
+    };
+    match r.git.tip(&tips.repo, &format!("refs/heads/{branch}"))? {
+        Some(tip) => r.refs.contains(&tips.repo, &tip, &tips.primary),
+        None => Ok(false),
+    }
+}
+
 /// Whether the rescue ref that the branch row names is at the feature tip.
-fn rescued(r: &Rebases<'_>, tx: &Connection, branch: &str, tips: &Tips) -> Result<bool> {
+pub(crate) fn rescued(r: &Rebases<'_>, tx: &Connection, branch: &str, tips: &Tips) -> Result<bool> {
     let Some(name) = rows::branch(tx, branch)?.and_then(|b| b.rescue_ref) else {
         return Ok(false);
     };
@@ -196,7 +287,7 @@ fn rescued(r: &Rebases<'_>, tx: &Connection, branch: &str, tips: &Tips) -> Resul
 
 /// Whether the gate tree of the feature can hold the rebase (Q18). A
 /// feature with no gate tree gets its row and its `worktree_add` run.
-fn gate_tree_ready(
+pub(crate) fn gate_tree_ready(
     r: &Rebases<'_>,
     tx: &Connection,
     clock: FleetSeconds,
@@ -223,7 +314,7 @@ fn gate_tree_ready(
 
 /// Queue a run of the rebase of `branch` with the input key `key`. A run
 /// that is active, or a key at the limit of abandoned runs, adds nothing.
-fn queue(
+pub(crate) fn queue(
     r: &Rebases<'_>,
     tx: &Connection,
     clock: FleetSeconds,
@@ -319,9 +410,15 @@ mod tests {
     #[test]
     fn the_key_holds_the_tip_and_the_tip_to_move_onto() {
         let key = rebase_key("a1", "b2");
-        assert_eq!(read_key(&key), Some(("a1", "b2")));
+        let read = read_key(&key).unwrap();
+        assert_eq!((read.tip, read.onto, read.cut), ("a1", "b2", None));
+        let key = rebase_key_cut("a1", "b2", "c3");
+        let read = read_key(&key).unwrap();
+        assert_eq!((read.tip, read.onto, read.cut), ("a1", "b2", Some("c3")));
         assert_eq!(read_key("a1"), None);
         assert_eq!(read_key(" b2"), None);
+        assert_eq!(read_key("a1 b2 "), None);
+        assert_eq!(read_key("a1 b2 c3 d4"), None);
     }
 
     #[test]
