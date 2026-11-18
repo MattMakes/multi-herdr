@@ -7,7 +7,7 @@ use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result};
 use horch_core::messaging::channel;
-use horch_core::messaging::delivery;
+use horch_core::messaging::delivery::{self, TypedLine};
 use horch_core::messaging::mail::{
     digest_line, is_note, redelivery_due, Id, Mail, Message, DIGEST_FIRST, DIGEST_GAP,
 };
@@ -75,10 +75,11 @@ fn acquire_lock(mail: &Mail) -> Result<Option<File>> {
     }
 }
 
-/// Send `line` to the pane `id` when it is idle. Returns whether it tried.
-fn send_if_idle(herdr: &Herdr, id: &str, idle: bool, line: &str) -> bool {
+/// Type the mail line into the pane `id` when it is idle (FR-7): the text
+/// stays in the mail file. Returns whether it tried.
+fn send_if_idle(herdr: &Herdr, id: &str, idle: bool) -> bool {
     if idle {
-        let _ = delivery::send_line(herdr, id, line);
+        let _ = delivery::send_line(herdr, id, TypedLine::Mail);
     }
     idle
 }
@@ -212,8 +213,8 @@ impl<'a> Courier<'a> {
             return false;
         };
         let idle = state.at_prompt();
-        redeliver_due(self.ctx, &mut self.attempts, messages, |_, line| {
-            send_if_idle(&self.herdr, id, idle, line)
+        redeliver_due(self.ctx, &mut self.attempts, messages, |_, _| {
+            send_if_idle(&self.herdr, id, idle)
         });
         true
     }
@@ -222,7 +223,7 @@ impl<'a> Courier<'a> {
         let now = mail_now(self.ctx);
         self.orchestrator
             .push(pending, now, |from, line| match &pane {
-                Some((id, idle)) => send_if_idle(&self.herdr, id, *idle, line),
+                Some((id, idle)) => send_if_idle(&self.herdr, id, *idle),
                 None if relay_live => {
                     let _ = channel::send(&self.socket, from, line, channel::SEND_TIMEOUT);
                     true

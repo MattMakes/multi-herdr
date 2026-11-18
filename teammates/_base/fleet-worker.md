@@ -219,6 +219,7 @@ When this conversation is summarized, keep these facts in the summary:
 - every file you touched, and whether it is committed;
 - the decisions you made, and why;
 - every open question you sent to the orchestrator, and its answer.
+The full state is in ai_docs/handoffs/{role}-whats-next.md.
 
 == Message style: Simplified Technical English ==
 Write every `horch tell` message, every `horch done` message, and every

@@ -14,6 +14,7 @@ use horch_core::execution::legacy::Record;
 use horch_core::execution::records::SessionLedger;
 use horch_core::execution::store::ExecutionStore;
 use horch_core::execution::TilingMode;
+use horch_core::messaging::delivery::TypedLine;
 use horch_core::messaging::mailbox::Mailbox;
 use horch_core::runtime::RuntimeContext;
 use horch_core::workspace::herdr::Herdr;
@@ -60,11 +61,8 @@ fn poll(attempts: u32, interval: Duration, mut check: impl FnMut() -> bool) -> b
 /// Matching the arithmetic *result* rather than the sent text is the point:
 /// matching the text alone would false-pass on an input line that was pasted but
 /// never submitted, which is exactly the failure `horch tell` works around.
-fn arithmetic_echo(shell: PaneShell) -> &'static str {
-    match shell {
-        PaneShell::Posix => "echo SMOKE_TEST_$((40+2))",
-        PaneShell::PowerShell => "Write-Output \"SMOKE_TEST_$(40+2)\"",
-    }
+fn arithmetic_echo(shell: PaneShell) -> TypedLine {
+    TypedLine::smoke_echo(shell)
 }
 
 /// `horch <args>` for a smoke pane, with this process's skill store as
@@ -986,15 +984,19 @@ mod tests {
     #[test]
     fn arithmetic_echo_is_unevaluated_and_shell_appropriate() {
         for shell in [PaneShell::Posix, PaneShell::PowerShell] {
-            let cmd = arithmetic_echo(shell);
+            let cmd = arithmetic_echo(shell).text();
             assert!(
                 !cmd.contains("SMOKE_TEST_42"),
                 "{cmd} must not be pre-evaluated"
             );
             assert!(cmd.contains("40+2"), "{cmd}");
         }
-        assert!(arithmetic_echo(PaneShell::Posix).starts_with("echo "));
-        assert!(arithmetic_echo(PaneShell::PowerShell).starts_with("Write-Output "));
+        assert!(arithmetic_echo(PaneShell::Posix)
+            .text()
+            .starts_with("echo "));
+        assert!(arithmetic_echo(PaneShell::PowerShell)
+            .text()
+            .starts_with("Write-Output "));
     }
 
     #[test]

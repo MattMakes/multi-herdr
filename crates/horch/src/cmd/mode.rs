@@ -29,7 +29,7 @@ use horch_core::harness::codex::{
     parse_permissions_menu, status_permissions, status_shows, PaneMode,
 };
 use horch_core::harness::HarnessKind;
-use horch_core::messaging::delivery;
+use horch_core::messaging::delivery::{self, TypedLine};
 use horch_core::messaging::mailbox::Mailbox;
 use horch_core::roster::{PermissionMode, Roster};
 use horch_core::runtime::RuntimeContext;
@@ -180,7 +180,7 @@ fn open_menu(
     label: &str,
     timing: &Timing,
 ) -> Result<usize, String> {
-    type_line(ws, pane, "/permissions")?;
+    type_line(ws, pane, TypedLine::Permissions)?;
     let menu = poll_screen(ws, pane, "visible", timing, parse_permissions_menu)
         .ok_or_else(|| "the /permissions menu did not open".to_string())?;
     menu.downs_to(label).ok_or_else(|| {
@@ -215,7 +215,7 @@ fn confirm_status(
         .pane_read(pane, "recent")
         .map(|s| s.matches("Permissions:").count())
         .unwrap_or(0);
-    type_line(ws, pane, "/status")?;
+    type_line(ws, pane, TypedLine::Status)?;
     let value = poll_screen(ws, pane, "recent", timing, |s| {
         (s.matches("Permissions:").count() > seen)
             .then(|| status_permissions(s))
@@ -229,8 +229,8 @@ fn confirm_status(
     }
 }
 
-fn type_line(ws: &dyn WorkspaceClient, pane: &str, line: &str) -> Result<(), String> {
-    delivery::send_line(ws, pane, line).map_err(|e| format!("typing {line}: {e:#}"))
+fn type_line(ws: &dyn WorkspaceClient, pane: &str, line: TypedLine) -> Result<(), String> {
+    delivery::send_line(ws, pane, line).map_err(|e| format!("typing {}: {e:#}", line.text()))
 }
 
 fn key(ws: &dyn WorkspaceClient, pane: &str, key: &str) -> Result<(), String> {

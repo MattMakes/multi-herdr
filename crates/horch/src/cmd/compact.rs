@@ -36,7 +36,8 @@ use horch_core::execution::legacy::Record;
 use horch_core::execution::records::SessionLedger;
 use horch_core::harness::codex::PaneMode;
 use horch_core::harness::HarnessKind;
-use horch_core::messaging::delivery::{self, Readiness, Timing};
+use horch_core::messaging::delivery::{self, Readiness, Timing, TypedLine};
+use horch_core::messaging::mail::Mail;
 use horch_core::messaging::mailbox::Mailbox;
 use horch_core::prompts;
 use horch_core::runtime::process::spawn_detached;
@@ -498,15 +499,10 @@ fn send_request(env: &Env, t: &Target, role: &str) -> Result<String, String> {
         )
         .map_err(|e| format!("switching {role} to write: {e}"))?;
     }
-    delivery::send_line_when_ready(
-        env.ws,
-        &t.pane,
-        &line,
-        Duration::ZERO,
-        &Readiness::DEFAULT,
-        &Timing::DEFAULT,
-    )
-    .map_err(why)?;
+    // FR-7: the request waits in the mail of the role; the pane gets the
+    // mail line.
+    let mail = Mail::for_role(&env.src.ctx.paths.state_root, env.workspace(), role);
+    delivery::post(env.ws, &t.pane, &mail, "horch", &line).map_err(why)?;
     env.src
         .ledger
         .record_event(
@@ -914,19 +910,14 @@ fn refuse_child(
 ///
 /// Queue `line` as durable orchestrator mail first (#177): the courier
 /// delivers it when no orchestrator pane is registered yet or the push
-/// fails. A queue that fails is printed, and the line is still typed.
+/// fails. The pane gets only the mail line (FR-7), so a queue that fails
+/// is the error, and nothing is typed.
 fn report(env: &Env, line: &str) -> Result<()> {
     // A BLOCKED that names no horch command goes as a NOTE (C2), in the
     // mail and in the pane alike.
     let line = &horch_core::messaging::mail::horch_line(line);
-    if let Err(error) = horch_core::messaging::mail::queue_notice(
-        env.src.ctx,
-        env.workspace(),
-        "orchestrator",
-        line,
-    ) {
-        eprintln!("horch: queueing the line as mail failed: {error:#}");
-    }
+    horch_core::messaging::mail::queue_notice(env.src.ctx, env.workspace(), "orchestrator", line)
+        .context("queueing the line as mail failed")?;
     let pane = env
         .mailbox
         .pane_for("orchestrator")
@@ -934,7 +925,7 @@ fn report(env: &Env, line: &str) -> Result<()> {
     delivery::send_line_when_ready(
         env.ws,
         &pane,
-        line,
+        TypedLine::Mail,
         Duration::ZERO,
         &Readiness::DEFAULT,
         &Timing::DEFAULT,
@@ -947,22 +938,18 @@ fn append_log(log: &Path, step: Step, text: &str) {
     }
 }
 
-/// The job plan of a target: its compact line (with `instructions`, or
-/// `instructions-orchestrator` for an orchestrator record), the resume line
+/// The job plan of a target: its compact line (`/compact` with no
+/// argument, FR-7), the resume line
 /// and the 2 report templates.
 fn plan_for(env: &Env, t: &Target, timeout: Option<u64>) -> Result<JobPlan> {
     let record = &t.row.record;
     let role = record.role.as_str();
     let handoff = policy::handoff_path(role);
     let log = env.job_dir(role).join(LOG_FILE).display().to_string();
-    let key = if record.is_orchestrator() {
-        "instructions-orchestrator"
-    } else {
-        "instructions"
-    };
     let caps = t.row.kind.capabilities().compaction;
-    let instructions = env.message(key, &[("role", role), ("handoff", &handoff)])?;
-    let compact_line = policy::compact_line(caps, &instructions)
+    // FR-7: `/compact` takes no argument. The == Compact instructions ==
+    // section of the brief holds what the summary keeps.
+    let compact_line = policy::compact_line(caps, "")
         .with_context(|| format!("harness {} has no compact line", t.row.kind.as_str()))?;
     Ok(JobPlan {
         compact_line,
@@ -1024,8 +1011,18 @@ impl JobPorts for Ports<'_> {
         Ok(self.env.ws.pane_get(self.pane)?.agent_status)
     }
 
+    /// `/compact` is typed. Each other line waits in the mail of the role,
+    /// and the pane gets the mail line (FR-7).
     fn send(&self, line: &str) -> Result<()> {
-        delivery::send_line(self.env.ws, self.pane, line)
+        if let Some(typed) = TypedLine::find(line) {
+            return delivery::send_line(self.env.ws, self.pane, typed);
+        }
+        let mail = Mail::for_role(
+            &self.env.src.ctx.paths.state_root,
+            self.env.workspace(),
+            &self.record.role,
+        );
+        delivery::post(self.env.ws, self.pane, &mail, "horch", line).map(|_| ())
     }
 
     /// Unwrapped, so a long failure line stays on 1 line.
@@ -1237,6 +1234,16 @@ mod tests {
             run(&self.env(), &args)
         }
 
+        /// The texts that wait in the mail of `role` (FR-7).
+        fn mailed(&self, role: &str) -> Vec<String> {
+            Mail::for_role(&self.w.ctx.paths.state_root, "w1", role)
+                .pending()
+                .unwrap()
+                .into_iter()
+                .map(|m| m.text)
+                .collect()
+        }
+
         /// The lines typed into `pane`.
         fn typed(&self, pane: &str) -> Vec<String> {
             self.ws
@@ -1286,7 +1293,8 @@ mod tests {
             ]
         );
         assert_eq!(typed.len(), 5);
-        assert!(typed[4].starts_with("prompt ") && typed[4].contains("codex-plan-1-whats-next.md"));
+        assert_eq!(typed[4], format!("prompt {}", delivery::MAIL_LINE));
+        assert!(f.mailed("codex-plan-1")[0].contains("codex-plan-1-whats-next.md"));
         assert_eq!(f.mode_events("r-1"), ["mode-changed", EVENT_REQUESTED]);
     }
 
@@ -1336,7 +1344,8 @@ mod tests {
         assert_eq!(o.code, 0, "{o:?}");
         let typed = sim.typed();
         assert_eq!(typed.len(), 1);
-        assert!(typed[0].contains("codex-plan-1-whats-next.md"));
+        assert!(typed[0].contains(delivery::MAIL_LINE));
+        assert!(f.mailed("codex-plan-1")[0].contains("codex-plan-1-whats-next.md"));
     }
 
     /// The job's port of a plan pane, on `ws`.
@@ -1420,7 +1429,8 @@ mod tests {
                 ("handoff", handoff),
             ],
         );
-        assert_eq!(f.typed(&pane), [want]);
+        assert_eq!(f.typed(&pane), [delivery::MAIL_LINE]);
+        assert_eq!(f.mailed("sonnet-1"), [want]);
         assert_eq!(
             f.w.events("r-1", EVENT_REQUESTED),
             ["tokens 311225 threshold 300000"]
@@ -1836,7 +1846,8 @@ mod tests {
             "{failed:?}"
         );
         let dir = f.env().job_dir("sonnet-1");
-        let reported = f.typed(&orch);
+        assert_eq!(f.typed(&orch), [delivery::MAIL_LINE]);
+        let reported = f.mailed("orchestrator");
         assert_eq!(reported.len(), 1, "{reported:?}");
         assert!(reported[0].starts_with(
             "[horch] BLOCKED: Compaction of sonnet-1 failed at step start: refused: handoff "
@@ -1887,11 +1898,11 @@ mod tests {
         );
     }
 
-    /// A mail dir that the trust check refuses does not stop the report:
-    /// the line is still typed into the orchestrator pane.
+    /// FR-7: the report reaches the pane only as the mail line. A mail dir
+    /// that the trust check refuses holds no report, so nothing is typed.
     #[cfg(unix)]
     #[test]
-    fn a_refused_mail_dir_does_not_stop_the_typed_report() {
+    fn a_refused_mail_dir_types_nothing() {
         use std::os::unix::fs::PermissionsExt;
         let f = Fleet::new();
         let orch = f.pane("orchestrator");
@@ -1906,9 +1917,7 @@ mod tests {
         let o = f.run("sonnet-1", |a| a.foreground = true);
 
         assert_eq!(o.code, EXIT_REPORTED, "{o:?}");
-        let reported = f.typed(&orch);
-        assert_eq!(reported.len(), 1, "{reported:?}");
-        assert!(reported[0].starts_with("[horch] BLOCKED: Compaction of sonnet-1 failed"));
+        assert!(f.typed(&orch).is_empty(), "{:?}", f.typed(&orch));
         assert!(!mail.dir().join("pending").exists(), "nothing was queued");
     }
 
@@ -1953,7 +1962,8 @@ mod tests {
     }
 
     /// CTX-18: the orchestrator compacts in its own pane, on its own
-    /// record, with its own keep-list; it is never asked.
+    /// record; it is never asked. Its keep-list is in its brief, so
+    /// `/compact` takes no argument (FR-7).
     #[test]
     fn ctx_18_compact_targets_the_orchestrator_pane_and_record() {
         let f = Fleet::new();
@@ -1965,12 +1975,7 @@ mod tests {
         assert_eq!(t.pane, orch);
         assert_eq!(t.row.record.record_id, "r-o");
         let plan = plan_for(&f.env(), &t, None).unwrap();
-        let handoff = "ai_docs/handoffs/orchestrator-whats-next.md";
-        let keep = f.message(
-            "instructions-orchestrator",
-            &[("role", "orchestrator"), ("handoff", handoff)],
-        );
-        assert_eq!(plan.compact_line, format!("/compact {keep}"));
+        assert_eq!(plan.compact_line, "/compact");
         assert_eq!(plan.idle_timeout, Duration::from_secs(1800));
 
         let o = f.run("orchestrator", |a| a.request = true);

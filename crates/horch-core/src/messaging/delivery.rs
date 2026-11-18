@@ -8,9 +8,129 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
 
+use crate::fleetd::task_execution::domain::stall::DOORBELL;
+use crate::messaging::mail::{Id, Mail};
 use crate::runtime::Faults;
 use crate::workspace::client::WorkspaceClient;
 use crate::workspace::model::Pane;
+use crate::workspace::paneshell::PaneShell;
+
+/// The line typed into a pane that is not a task attempt when mail waits
+/// for it (Q9). The text of the message stays in its mail file.
+pub const MAIL_LINE: &str = "You have new mail. Run horch inbox.";
+
+/// The echo of `horch doctor`'s delivery test in a POSIX shell.
+pub const DELIVERY_ECHO_POSIX: &str = "echo HORCH_DELIVERY_$((70+3))";
+/// The echo of `horch doctor`'s delivery test in PowerShell.
+pub const DELIVERY_ECHO_POWERSHELL: &str = "Write-Output \"HORCH_DELIVERY_$(70+3)\"";
+/// The echo of `horch smoke` in a POSIX shell.
+pub const SMOKE_ECHO_POSIX: &str = "echo SMOKE_TEST_$((40+2))";
+/// The echo of `horch smoke` in PowerShell.
+pub const SMOKE_ECHO_POWERSHELL: &str = "Write-Output \"SMOKE_TEST_$(40+2)\"";
+
+/// Each line that horch types into a pane (FR-7). No other text reaches a
+/// terminal: a message goes to a mail file, and the pane gets [`MAIL_LINE`].
+pub const TYPED_LINES: [&str; 9] = [
+    DOORBELL,
+    MAIL_LINE,
+    "/permissions",
+    "/status",
+    "/compact",
+    DELIVERY_ECHO_POSIX,
+    DELIVERY_ECHO_POWERSHELL,
+    SMOKE_ECHO_POSIX,
+    SMOKE_ECHO_POWERSHELL,
+];
+
+/// 1 line of [`TYPED_LINES`]. The typing functions take only this type, so
+/// a free string cannot be typed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypedLine {
+    /// [`DOORBELL`]: the stall ladder of a task attempt.
+    Doorbell,
+    /// [`MAIL_LINE`].
+    Mail,
+    /// `/permissions` of `horch mode`.
+    Permissions,
+    /// `/status` of `horch mode`.
+    Status,
+    /// `/compact` of the compaction job.
+    Compact,
+    DeliveryEchoPosix,
+    DeliveryEchoPowerShell,
+    SmokeEchoPosix,
+    SmokeEchoPowerShell,
+}
+
+impl TypedLine {
+    pub const ALL: [TypedLine; 9] = [
+        TypedLine::Doorbell,
+        TypedLine::Mail,
+        TypedLine::Permissions,
+        TypedLine::Status,
+        TypedLine::Compact,
+        TypedLine::DeliveryEchoPosix,
+        TypedLine::DeliveryEchoPowerShell,
+        TypedLine::SmokeEchoPosix,
+        TypedLine::SmokeEchoPowerShell,
+    ];
+
+    /// The text of the line: its entry in [`TYPED_LINES`].
+    pub const fn text(self) -> &'static str {
+        TYPED_LINES[self as usize]
+    }
+
+    /// The echo of `horch doctor`'s delivery test for `shell`.
+    pub const fn delivery_echo(shell: PaneShell) -> Self {
+        match shell {
+            PaneShell::Posix => TypedLine::DeliveryEchoPosix,
+            PaneShell::PowerShell => TypedLine::DeliveryEchoPowerShell,
+        }
+    }
+
+    /// The echo of `horch smoke` for `shell`.
+    pub const fn smoke_echo(shell: PaneShell) -> Self {
+        match shell {
+            PaneShell::Posix => TypedLine::SmokeEchoPosix,
+            PaneShell::PowerShell => TypedLine::SmokeEchoPowerShell,
+        }
+    }
+
+    /// The line whose text is `text`, if one is.
+    pub fn find(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|l| l.text() == text)
+    }
+}
+
+/// Write `text` from `from` to `mail` first, then type [`MAIL_LINE`] into
+/// `pane` ([`send_line_when_ready`] with no grace). The mail file holds the
+/// text before the line is typed, and a typed line marks the mail pushed.
+/// When the typing fails, the mail stays queued.
+pub fn post(
+    ws: &dyn WorkspaceClient,
+    pane: &str,
+    mail: &Mail,
+    from: &str,
+    text: &str,
+) -> Result<Id> {
+    let id = mail.enqueue(from, text)?;
+    send_line_when_ready(
+        ws,
+        pane,
+        TypedLine::Mail,
+        Duration::ZERO,
+        &Readiness::DEFAULT,
+        &Timing::DEFAULT,
+    )?;
+    mail.mark_pushed(&id)?;
+    Ok(id)
+}
+
+/// Type `line` with `herdr agent prompt` only: text and Enter in 1 atomic
+/// write, with no fallback to separate writes.
+pub fn prompt(ws: &dyn WorkspaceClient, pane: &str, line: TypedLine) -> Result<()> {
+    ws.agent_prompt(pane, line.text())
+}
 
 /// The waits [`send_line`] makes. [`Timing::DEFAULT`] is the real one; a test
 /// shortens it so a pane that never shows the text does not cost 15 seconds.
@@ -52,18 +172,19 @@ impl Timing {
 /// but press Enter only once the end of the message shows in the pane, not
 /// after a fixed sleep. The second Enter is a retry that is safe only
 /// because the whole text has landed (Enter on an empty input does nothing).
-pub fn send_line(ws: &dyn WorkspaceClient, pane: &str, message: &str) -> Result<()> {
-    send_line_with(ws, pane, message, &Timing::DEFAULT)
+pub fn send_line(ws: &dyn WorkspaceClient, pane: &str, line: TypedLine) -> Result<()> {
+    send_line_with(ws, pane, line, &Timing::DEFAULT)
 }
 
 /// [`send_line`] with explicit waits.
 pub fn send_line_with(
     ws: &dyn WorkspaceClient,
     pane: &str,
-    message: &str,
+    line: TypedLine,
     timing: &Timing,
 ) -> Result<()> {
-    if ws.agent_prompt(pane, message).is_ok() {
+    let message = line.text();
+    if ws.agent_prompt(pane, line.text()).is_ok() {
         return Ok(());
     }
     let settle = if message.len() > 1500 {
@@ -79,7 +200,7 @@ pub fn send_line_with(
     if push_time_left().is_some_and(|left| left < reserve) {
         bail!("the push budget is spent, so the line was not typed");
     }
-    ws.pane_send_text(pane, message)?;
+    ws.pane_send_text(pane, line.text())?;
     // Typing takes time too, so the tail poll gets only what is left now.
     let mut timing = *timing;
     if let Some(left) = push_time_left() {
@@ -180,7 +301,7 @@ fn poll_until(
 pub fn deliver_when_idle(
     ws: &dyn WorkspaceClient,
     pane: &str,
-    text: &str,
+    line: TypedLine,
     wait: &Readiness,
     timing: &Timing,
 ) -> Result<()> {
@@ -192,7 +313,7 @@ pub fn deliver_when_idle(
             waited.as_secs()
         );
     }
-    send_line_with(ws, pane, text, timing)
+    send_line_with(ws, pane, line, timing)
 }
 
 /// How long after a role registers `horch tell` treats a pane with no agent
@@ -213,7 +334,7 @@ pub const TELL_GRACE: Duration = Duration::from_secs(30);
 pub fn send_line_when_ready(
     ws: &dyn WorkspaceClient,
     pane: &str,
-    message: &str,
+    line: TypedLine,
     grace: Duration,
     wait: &Readiness,
     timing: &Timing,
@@ -235,7 +356,7 @@ pub fn send_line_when_ready(
             waited.as_secs()
         );
     }
-    send_line_with(ws, pane, message, timing)
+    send_line_with(ws, pane, line, timing)
 }
 
 /// The total time `horch done` lets all its pushes take: the report and the
@@ -422,7 +543,7 @@ mod tests {
         );
         let grace = Duration::from_secs(30);
         let result =
-            send_line_when_ready(&ws, &pane, "[r] DONE: x", grace, &wait, &Timing::DEFAULT);
+            send_line_when_ready(&ws, &pane, TypedLine::Mail, grace, &wait, &Timing::DEFAULT);
         let error = format!("{:#}", result.unwrap_err());
         assert!(
             error.contains("still starting after 0 s"),
@@ -438,7 +559,7 @@ mod tests {
         // since a typed line needs its full settle.
         ws.fail_next("agent_prompt", "no agent");
         let spent = Instant::now();
-        let typed = send_line_with(&ws, &pane, "[r] DONE: x", &Timing::DEFAULT);
+        let typed = send_line_with(&ws, &pane, TypedLine::Mail, &Timing::DEFAULT);
         assert!(typed.is_err(), "nothing is typed");
         assert!(!ws.calls().iter().any(|c| c.method == "pane_send_text"));
         assert!(
@@ -468,7 +589,7 @@ mod tests {
         let started = Instant::now();
         let guard = start_push_budget(budget).expect("no budget runs yet");
         ws.fail_next("agent_prompt", "no agent");
-        send_line_with(&ws, &pane, "[r] DONE: x", &timing).unwrap();
+        send_line_with(&ws, &pane, TypedLine::Mail, &timing).unwrap();
         let took = started.elapsed();
         assert!(
             took >= Duration::from_millis(250),
@@ -480,7 +601,7 @@ mod tests {
         let short = start_push_budget(Duration::from_millis(50)).expect("the guard ended");
         ws.fail_next("agent_prompt", "no agent");
         let before = ws.calls().len();
-        assert!(send_line_with(&ws, &pane, "[r] DONE: y", &timing).is_err());
+        assert!(send_line_with(&ws, &pane, TypedLine::Mail, &timing).is_err());
         let after = ws.calls();
         assert!(
             !after[before..].iter().any(|c| c.method == "pane_send_text"),
@@ -562,7 +683,7 @@ mod tests {
         let budget = Duration::from_millis(300) + ENTER_CALLS;
         let guard = start_push_budget(budget).expect("no budget runs yet");
         let deadline = push_deadline().expect("the budget runs");
-        send_line_with(&ws, &pane, "[r] DONE: x", &timing).unwrap();
+        send_line_with(&ws, &pane, TypedLine::Mail, &timing).unwrap();
         drop(guard);
         let enters = ws.enters.borrow();
         assert!(!enters.is_empty(), "the typed line is submitted");

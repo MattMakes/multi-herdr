@@ -402,6 +402,8 @@ When this conversation is summarized, keep these facts in the summary:
 - every open question from a worker, and its answer;
 - every COMPACT-READY line you did not yet act on;
 - the decisions you made, and why.
+Use the actual slug and path from your run, not placeholder text.
+The full state is in ai_docs/handoffs/orchestrator-whats-next.md.
 
 == Protect your context ==
 Protect your context like a precious resource. You are the orchestrator -

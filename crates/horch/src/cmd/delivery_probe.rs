@@ -3,7 +3,8 @@
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
-use horch_core::messaging::{channel, delivery, mail::Mail};
+use horch_core::messaging::delivery::{self, TypedLine};
+use horch_core::messaging::{channel, mail::Mail};
 use horch_core::runtime::RuntimeContext;
 use horch_core::workspace::{herdr::Herdr, model::Direction, paneshell::PaneShell};
 
@@ -50,10 +51,7 @@ fn doctor_check(ctx: &RuntimeContext) -> Result<()> {
     let ws = herdr.workspace_create("horch delivery test", None, false)?;
     let checked: Result<()> = (|| {
         let pane = herdr.pane_split(&ws.root_pane_id, Direction::Right)?;
-        let command = match PaneShell::host() {
-            PaneShell::Posix => "echo HORCH_DELIVERY_$((70+3))",
-            PaneShell::PowerShell => "Write-Output \"HORCH_DELIVERY_$(70+3)\"",
-        };
+        let command = TypedLine::delivery_echo(PaneShell::host());
         let _guard =
             delivery::start_push_budget(deadline.saturating_duration_since(Instant::now()));
         let timing = delivery::Timing {
@@ -141,7 +139,9 @@ fn fleet_check(ctx: &RuntimeContext, workspace: &str, pane: &str) -> Result<&'st
                     // separate writes in a live TUI: a deadline between
                     // them could leave text attached to the next prompt.
                     attempted = true;
-                    if herdr.agent_prompt(pane, PROBE).is_ok() {
+                    // FR-7: PROBE waits in the mail; the pane gets the
+                    // mail line.
+                    if delivery::prompt(&herdr, pane, TypedLine::Mail).is_ok() {
                         reason = "not acknowledged";
                     } else {
                         reason = "push failed; not acknowledged";

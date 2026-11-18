@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use horch_core::execution::lifecycle::{self, DoneRequest, DoneSteps, ReportTarget};
-use horch_core::messaging::delivery::{self, Timing};
+use horch_core::messaging::delivery::{self, Timing, TypedLine, MAIL_LINE};
 use horch_core::workspace::client::WorkspaceClient;
 use horch_core::workspace::testing::{FakeCall, FakeWorkspace};
 
@@ -39,26 +39,26 @@ const FAST: Timing = Timing {
 #[test]
 fn arc_20_send_line_prompt_first() {
     let (ws, pane) = one_pane();
-    delivery::send_line_with(&ws, &pane, "[sonnet-1] DONE: x", &FAST).unwrap();
+    delivery::send_line_with(&ws, &pane, TypedLine::Mail, &FAST).unwrap();
     assert_eq!(
         trace(&ws),
-        vec![format!("agent_prompt {pane} [sonnet-1] DONE: x")],
+        vec![format!("agent_prompt {pane} {MAIL_LINE}")],
         "an accepted agent prompt is the whole delivery"
     );
 }
 
 #[test]
 fn arc_20_fallback_waits_tail() {
-    let message = "[sonnet-1] DONE: No file was unclassifiable.";
+    let message = MAIL_LINE;
 
     // The tail shows, soft-wrapped inside a box: text, poll, Enter, retry Enter.
     let (ws, pane) = one_pane();
     ws.fail_next("agent_prompt", "no agent detected");
     ws.set_screen(
         &pane,
-        "\u{2502} > [sonnet-1] DONE: No file was uncl \u{2502}\n\u{2502}   assifiable.      \u{2502}\n",
+        "\u{2502} > You have new mail. Run hor \u{2502}\n\u{2502}   ch inbox.      \u{2502}\n",
     );
-    delivery::send_line_with(&ws, &pane, message, &FAST).unwrap();
+    delivery::send_line_with(&ws, &pane, TypedLine::Mail, &FAST).unwrap();
     assert_eq!(
         trace(&ws),
         vec![
@@ -75,7 +75,7 @@ fn arc_20_fallback_waits_tail() {
     let (ws, pane) = one_pane();
     ws.fail_next("agent_prompt", "no agent detected");
     ws.set_screen(&pane, "something else entirely");
-    delivery::send_line_with(&ws, &pane, message, &FAST).unwrap();
+    delivery::send_line_with(&ws, &pane, TypedLine::Mail, &FAST).unwrap();
     let calls = trace(&ws);
     assert_eq!(calls[0], format!("agent_prompt {pane} {message}"));
     assert_eq!(calls[1], format!("pane_send_text {pane} {message}"));
@@ -93,7 +93,7 @@ fn arc_20_fallback_waits_tail() {
     let (ws, pane) = one_pane();
     ws.fail_next("agent_prompt", "no agent detected");
     ws.fail_next("pane_send_text", "herdr pane send-text failed");
-    let err = delivery::send_line_with(&ws, &pane, message, &FAST).unwrap_err();
+    let err = delivery::send_line_with(&ws, &pane, TypedLine::Mail, &FAST).unwrap_err();
     assert_eq!(err.to_string(), "herdr pane send-text failed");
     assert_eq!(trace(&ws).len(), 2);
 }
@@ -260,14 +260,14 @@ fn deliver_when_idle_waits_for_idle() {
             (Some("opencode"), Some("idle")),
         ],
     );
-    delivery::deliver_when_idle(&ws, &pane, "task", &READY_FAST, &FAST).unwrap();
+    delivery::deliver_when_idle(&ws, &pane, TypedLine::Mail, &READY_FAST, &FAST).unwrap();
     assert_eq!(
         trace(&ws),
         vec![
             format!("pane_get {pane}"),
             format!("pane_get {pane}"),
             format!("pane_get {pane}"),
-            format!("agent_prompt {pane} task"),
+            format!("agent_prompt {pane} {MAIL_LINE}"),
         ]
     );
 }
@@ -287,9 +287,12 @@ fn deliver_when_idle_types_into_an_agent_that_reads_done() {
             (Some("opencode"), Some("done")),
         ],
     );
-    delivery::deliver_when_idle(&ws, &pane, "task", &READY_FAST, &FAST).unwrap();
+    delivery::deliver_when_idle(&ws, &pane, TypedLine::Mail, &READY_FAST, &FAST).unwrap();
     let calls = trace(&ws);
-    assert_eq!(calls.last().unwrap(), &format!("agent_prompt {pane} task"));
+    assert_eq!(
+        calls.last().unwrap(),
+        &format!("agent_prompt {pane} {MAIL_LINE}")
+    );
     let gets = calls.iter().filter(|c| c.starts_with("pane_get ")).count();
     assert_eq!(gets, 4, "typed only at `done`: {calls:?}");
 }
@@ -298,7 +301,8 @@ fn deliver_when_idle_types_into_an_agent_that_reads_done() {
 fn deliver_when_idle_times_out_without_typing() {
     let (ws, pane) = one_pane();
     ws.set_agent_states(&pane, &[(Some("opencode"), Some("unknown"))]);
-    let err = delivery::deliver_when_idle(&ws, &pane, "task", &READY_FAST, &FAST).unwrap_err();
+    let err =
+        delivery::deliver_when_idle(&ws, &pane, TypedLine::Mail, &READY_FAST, &FAST).unwrap_err();
     assert!(err.to_string().contains("was not idle"), "{err}");
     assert!(
         trace(&ws).iter().all(|c| c.starts_with("pane_get ")),
@@ -320,27 +324,42 @@ fn send_line_when_ready_waits_only_for_a_starting_agent() {
             (Some("opencode"), Some("idle")),
         ],
     );
-    delivery::send_line_when_ready(&ws, &pane, "msg", Duration::ZERO, &READY_FAST, &FAST).unwrap();
+    delivery::send_line_when_ready(
+        &ws,
+        &pane,
+        TypedLine::Mail,
+        Duration::ZERO,
+        &READY_FAST,
+        &FAST,
+    )
+    .unwrap();
     assert_eq!(
         trace(&ws),
         vec![
             format!("pane_get {pane}"),
             format!("pane_get {pane}"),
             format!("pane_get {pane}"),
-            format!("agent_prompt {pane} msg"),
+            format!("agent_prompt {pane} {MAIL_LINE}"),
         ]
     );
 
     for (agent, status) in [(None, None), (Some("claude"), Some("working"))] {
         let (ws, pane) = one_pane();
         ws.set_agent_states(&pane, &[(agent, status)]);
-        delivery::send_line_when_ready(&ws, &pane, "msg", Duration::ZERO, &READY_FAST, &FAST)
-            .unwrap();
+        delivery::send_line_when_ready(
+            &ws,
+            &pane,
+            TypedLine::Mail,
+            Duration::ZERO,
+            &READY_FAST,
+            &FAST,
+        )
+        .unwrap();
         assert_eq!(
             trace(&ws),
             vec![
                 format!("pane_get {pane}"),
-                format!("agent_prompt {pane} msg")
+                format!("agent_prompt {pane} {MAIL_LINE}")
             ],
             "{agent:?} {status:?}"
         );
@@ -348,8 +367,15 @@ fn send_line_when_ready_waits_only_for_a_starting_agent() {
 
     let (ws, pane) = one_pane();
     ws.set_agent_states(&pane, &[(Some("opencode"), Some("unknown"))]);
-    let err = delivery::send_line_when_ready(&ws, &pane, "msg", Duration::ZERO, &READY_FAST, &FAST)
-        .unwrap_err();
+    let err = delivery::send_line_when_ready(
+        &ws,
+        &pane,
+        TypedLine::Mail,
+        Duration::ZERO,
+        &READY_FAST,
+        &FAST,
+    )
+    .unwrap_err();
     assert!(err.to_string().contains("still starting"), "{err}");
     assert!(trace(&ws).iter().all(|c| c.starts_with("pane_get ")));
 }
@@ -370,9 +396,12 @@ fn send_line_when_ready_gives_a_fresh_role_time_to_show_its_agent() {
             (Some("opencode"), Some("idle")),
         ],
     );
-    delivery::send_line_when_ready(&ws, &pane, "msg", grace, &READY_FAST, &FAST).unwrap();
+    delivery::send_line_when_ready(&ws, &pane, TypedLine::Mail, grace, &READY_FAST, &FAST).unwrap();
     let calls = trace(&ws);
-    assert_eq!(calls.last().unwrap(), &format!("agent_prompt {pane} msg"));
+    assert_eq!(
+        calls.last().unwrap(),
+        &format!("agent_prompt {pane} {MAIL_LINE}")
+    );
     let gets = calls.iter().filter(|c| c.starts_with("pane_get ")).count();
     assert_eq!(gets, 4, "{calls:?}");
     assert_eq!(calls.len(), 5, "only the gets, then the prompt: {calls:?}");
@@ -382,11 +411,14 @@ fn send_line_when_ready_gives_a_fresh_role_time_to_show_its_agent() {
     let (ws, pane) = one_pane();
     ws.set_agent_states(&pane, &[(None, None)]);
     let started = std::time::Instant::now();
-    delivery::send_line_when_ready(&ws, &pane, "msg", grace, &READY_FAST, &FAST).unwrap();
+    delivery::send_line_when_ready(&ws, &pane, TypedLine::Mail, grace, &READY_FAST, &FAST).unwrap();
     assert!(started.elapsed() >= grace, "it waited out the grace");
     let calls = trace(&ws);
     assert!(calls.len() > 3, "it polled during the grace: {calls:?}");
-    assert_eq!(calls.last().unwrap(), &format!("agent_prompt {pane} msg"));
+    assert_eq!(
+        calls.last().unwrap(),
+        &format!("agent_prompt {pane} {MAIL_LINE}")
+    );
 }
 
 /// G5: `horch inbox` reads which registered panes herdr still has. A role

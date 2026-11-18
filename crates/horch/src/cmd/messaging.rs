@@ -17,7 +17,7 @@ use horch_core::execution::lifecycle::{
 use horch_core::execution::records::{SessionLedger, EVENT_REPORT_FAILED, EVENT_REPORT_QUEUED};
 use horch_core::harness::launch;
 use horch_core::messaging::channel;
-use horch_core::messaging::delivery;
+use horch_core::messaging::delivery::{self, TypedLine};
 use horch_core::messaging::mail::{Enqueued, Id, Mail};
 use horch_core::messaging::mailbox::{Mailbox, PaneState, RoleEntry};
 use horch_core::messaging::message;
@@ -218,6 +218,13 @@ fn queue_as<'a>(
             );
         }
     }
+    if !durable {
+        // FR-7: the pane gets only the mail line, so this line waits in the
+        // mail of `role` too. A push marks it pushed.
+        let from = sender.as_deref().unwrap_or("operator");
+        let mail = Mail::for_role(&ctx.paths.state_root, mailbox.workspace_id(), role);
+        queued = Some(mail.enqueue(from, &line)?);
+    }
     Ok(Some(Outgoing {
         ctx,
         herdr,
@@ -409,13 +416,11 @@ struct Tell<'a> {
 }
 
 fn push_line(tell: &Tell, target: Option<String>, line: String, relay: bool) -> Result<()> {
-    let Some(line) = (if relay {
-        try_relay(tell, line)?
-    } else {
-        Some(line)
-    }) else {
+    // The relay takes the text itself. When it does not, the text waits in
+    // the mail and only the mail line is typed.
+    if relay && try_relay(tell, line)?.is_none() {
         return Ok(());
-    };
+    }
     let Some(target) = target else {
         return Err(not_registered(tell));
     };
@@ -426,10 +431,11 @@ fn push_line(tell: &Tell, target: Option<String>, line: String, relay: bool) -> 
         .mailbox
         .registered_at(tell.role)
         .and_then(|at| at.elapsed().ok());
+    // FR-7: the line waits in the mail; the pane gets the mail line.
     delivery::send_line_when_ready(
         tell.herdr,
         &target,
-        &line,
+        TypedLine::Mail,
         grace_left(age, grace),
         &delivery::Readiness::DEFAULT,
         &delivery::Timing::DEFAULT,

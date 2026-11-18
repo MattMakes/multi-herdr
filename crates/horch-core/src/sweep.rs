@@ -598,11 +598,12 @@ impl WorkspaceClient for Answered<'_> {
     fn pane_close(&self, pane: &str) -> anyhow::Result<()> {
         self.0.pane_close(pane)
     }
-    fn agent_prompt(&self, pane: &str, text: &str) -> anyhow::Result<()> {
-        self.0.agent_prompt(pane, text)
+    /// The sweep only ends records: it types nothing into a pane (FR-7).
+    fn agent_prompt(&self, pane: &str, _: &str) -> anyhow::Result<()> {
+        anyhow::bail!("the sweep types nothing into pane {pane}")
     }
-    fn pane_send_text(&self, pane: &str, text: &str) -> anyhow::Result<()> {
-        self.0.pane_send_text(pane, text)
+    fn pane_send_text(&self, pane: &str, _: &str) -> anyhow::Result<()> {
+        anyhow::bail!("the sweep types nothing into pane {pane}")
     }
     fn pane_send_keys(&self, pane: &str, keys: &str) -> anyhow::Result<()> {
         self.0.pane_send_keys(pane, keys)

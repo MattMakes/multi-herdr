@@ -1224,6 +1224,19 @@ Communication and lifecycle (the `horch` command is on your PATH; these are
         "sanctioned block preimage missing"
     );
     expected = expected.replace(was, now);
+    // Sanctioned FR-7 keep-list block: `/compact` takes no argument, so the
+    // brief says what the template `instructions` said.
+    let was = r####"- every open question you sent to the orchestrator, and its answer.
+"####;
+    let now = r####"- every open question you sent to the orchestrator, and its answer.
+The full state is in ai_docs/handoffs/r-1-whats-next.md.
+"####;
+    assert_eq!(
+        expected.matches(was).count(),
+        1,
+        "sanctioned block preimage missing"
+    );
+    expected = expected.replace(was, now);
     expected
         .replace("{host}", &horch_core::project_notes::host_line())
         .replace("{project_facts}", "(No project facts recorded.)")
@@ -1347,6 +1360,22 @@ scratch, or drop --reason instead.
   horch worktree triage yourself. A parked worktree with no decision keeps
   horch ledger run close from closing the run.
 "####;
+    assert_eq!(
+        expected.matches(was).count(),
+        1,
+        "sanctioned block preimage missing"
+    );
+    expected = expected.replace(was, now);
+    // Sanctioned FR-7 keep-list block: `/compact` takes no argument, so the
+    // brief says what the template `instructions-orchestrator` said.
+    let was = r####"- the decisions you made, and why.
+
+== Protect your context =="####;
+    let now = r####"- the decisions you made, and why.
+Use the actual slug and path from your run, not placeholder text.
+The full state is in ai_docs/handoffs/orchestrator-whats-next.md.
+
+== Protect your context =="####;
     assert_eq!(
         expected.matches(was).count(),
         1,

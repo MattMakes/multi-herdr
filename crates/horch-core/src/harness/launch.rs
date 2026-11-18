@@ -20,7 +20,7 @@ use crate::compaction::window::{self, WindowDecision, WindowSource};
 use crate::execution::legacy::LedgerWindow;
 use crate::execution::records::SessionLedger;
 use crate::execution::SessionMode;
-use crate::messaging::delivery::{self, Readiness, Timing};
+use crate::messaging::delivery::{self, Readiness, Timing, TypedLine};
 use crate::messaging::mail;
 use crate::messaging::mailbox::Mailbox;
 use crate::roster::{ExecRule, HarnessDefault, Teammate};
@@ -1099,11 +1099,11 @@ fn start_typed_prompt(
     let ctx = ctx.clone();
     std::thread::spawn(move || {
         let ledger = ledger.as_ref().map(|(l, id)| (l, id.as_str()));
-        let queue = |line: &str| -> Result<()> {
+        let queue = |to: &str, line: &str| -> Result<()> {
             let workspace = workspace
                 .as_deref()
                 .context("the workspace of this worker is unknown")?;
-            mail::queue_notice(&ctx, workspace, "orchestrator", line).map(|_| ())
+            mail::queue_notice(&ctx, workspace, to, line).map(|_| ())
         };
         type_resumed_prompt(
             &herdr,
@@ -1112,22 +1112,22 @@ fn start_typed_prompt(
             &role,
             ledger,
             orchestrator.as_deref(),
-            Some(&queue),
+            &queue,
             &Readiness::DEFAULT,
             &Timing::DEFAULT,
         );
     });
 }
 
-/// Queues 1 line as durable orchestrator mail.
-pub(crate) type QueueLine<'a> = &'a dyn Fn(&str) -> Result<()>;
+/// Queues 1 line as durable mail to a role: `queue(role, line)`.
+pub(crate) type QueueLine<'a> = &'a dyn Fn(&str, &str) -> Result<()>;
 
-/// Type `prompt` into `pane` once its agent is idle. When that fails, the
-/// worker's record gets a note that says why, and the orchestrator pane, if
-/// one is registered, gets a `BLOCKED` line: a resumed pane never sits idle
-/// with no task and no word. `queue` first queues that line as durable
-/// orchestrator mail (#177), so a failed push still reaches it. True when
-/// the prompt was typed.
+/// Queue `prompt` as mail to `role`, then type the mail line into `pane`
+/// once its agent is idle (FR-7). When that fails, the worker's record gets
+/// a note that says why, and the orchestrator gets a `BLOCKED` line as
+/// durable mail (#177) and, if its pane is registered, the mail line: a
+/// resumed pane never sits idle with no task and no word. True when the
+/// mail line was typed.
 #[allow(clippy::too_many_arguments)] // each argument is a separate delivery input; grouping would only hide them
 pub(crate) fn type_resumed_prompt(
     ws: &dyn WorkspaceClient,
@@ -1136,12 +1136,15 @@ pub(crate) fn type_resumed_prompt(
     role: &str,
     ledger: Option<(&SessionLedger, &str)>,
     orchestrator: Option<&str>,
-    queue: Option<QueueLine<'_>>,
+    queue: QueueLine<'_>,
     wait: &Readiness,
     timing: &Timing,
 ) -> bool {
     let result = match pane {
-        Some(pane) => delivery::deliver_when_idle(ws, pane, prompt, wait, timing),
+        // FR-7: the prompt waits in the worker's mail, and the pane gets
+        // only the mail line.
+        Some(pane) => queue(role, prompt)
+            .and_then(|()| delivery::deliver_when_idle(ws, pane, TypedLine::Mail, wait, timing)),
         None => Err(anyhow::anyhow!(
             "HERDR_PANE_ID is not set, so the resumed task cannot be typed"
         )),
@@ -1160,13 +1163,12 @@ pub(crate) fn type_resumed_prompt(
         "[{role}] BLOCKED: My resumed task did not reach my pane. Reason: {e:#}. \
          Tell me to claim it again with horch tell {role} \"Run horch ledger claim.\"."
     );
-    if let Some(queue) = queue {
-        if let Err(e) = queue(&line) {
-            eprintln!("horch worker[{role}]: queueing the BLOCKED line failed: {e:#}");
-        }
+    if let Err(e) = queue("orchestrator", &line) {
+        eprintln!("horch worker[{role}]: queueing the BLOCKED line failed: {e:#}");
+        return false;
     }
     if let Some(orchestrator) = orchestrator {
-        if let Err(e) = delivery::send_line_with(ws, orchestrator, &line, timing) {
+        if let Err(e) = delivery::send_line_with(ws, orchestrator, TypedLine::Mail, timing) {
             eprintln!("horch worker[{role}]: telling the orchestrator failed: {e:#}");
         }
     }
@@ -2260,6 +2262,12 @@ mod tests {
             .pane_split(&worker, crate::workspace::model::Direction::Right)
             .unwrap();
         ws.set_agent_states(&worker, &[(Some("opencode"), Some("unknown"))]);
+        let state = tempfile::tempdir().unwrap();
+        let queue = |to: &str, line: &str| {
+            mail::Mail::for_role(state.path(), "w1", to)
+                .enqueue("horch", line)
+                .map(|_| ())
+        };
 
         let typed = type_resumed_prompt(
             &ws,
@@ -2268,7 +2276,7 @@ mod tests {
             "pickle-1",
             Some((&ledger, "rec-1")),
             Some(&orchestrator),
-            None,
+            &queue,
             &wait,
             &fast,
         );
@@ -2284,13 +2292,24 @@ mod tests {
             .collect();
         assert_eq!(prompts.len(), 1, "{prompts:?}");
         assert_eq!(prompts[0].args[0], orchestrator);
-        assert!(prompts[0].args[1].starts_with("[pickle-1] BLOCKED: "));
+        assert_eq!(prompts[0].args[1], delivery::MAIL_LINE);
+        let blocked = mail::Mail::for_role(state.path(), "w1", "orchestrator")
+            .pending()
+            .unwrap();
+        assert!(
+            blocked[0].text.starts_with("[pickle-1] BLOCKED: "),
+            "{blocked:?}"
+        );
 
         // #177: with no orchestrator pane to type into, the BLOCKED line
         // still waits as orchestrator mail.
         let state = tempfile::tempdir().unwrap();
         let mail = mail::Mail::under(state.path(), "w1");
-        let queue = |line: &str| mail.enqueue("horch", line).map(|_| ());
+        let queue = |to: &str, line: &str| {
+            mail::Mail::for_role(state.path(), "w1", to)
+                .enqueue("horch", line)
+                .map(|_| ())
+        };
         let ws = FakeWorkspace::new();
         let worker = ws
             .workspace_create("fleet", None, false)
@@ -2304,7 +2323,7 @@ mod tests {
             "pickle-1",
             None,
             None,
-            Some(&queue),
+            &queue,
             &wait,
             &fast,
         ));
@@ -2317,7 +2336,13 @@ mod tests {
             "{pending:?}"
         );
 
-        // An idle agent gets the prompt and nothing is recorded.
+        // An idle agent gets the mail line, and its mail holds the prompt.
+        let state = tempfile::tempdir().unwrap();
+        let queue = |to: &str, line: &str| {
+            mail::Mail::for_role(state.path(), "w1", to)
+                .enqueue("horch", line)
+                .map(|_| ())
+        };
         let ws = FakeWorkspace::new();
         let worker = ws
             .workspace_create("fleet", None, false)
@@ -2331,14 +2356,17 @@ mod tests {
             "pickle-1",
             None,
             None,
-            None,
+            &queue,
             &wait,
             &fast
         ));
-        assert!(ws
-            .calls()
-            .iter()
-            .any(|c| c.method == "agent_prompt" && c.args == [worker.clone(), "TASK".to_string()]));
+        assert!(ws.calls().iter().any(|c| c.method == "agent_prompt"
+            && c.args == [worker.clone(), delivery::MAIL_LINE.to_string()]));
+        let task = mail::Mail::for_role(state.path(), "w1", "pickle-1")
+            .pending()
+            .unwrap();
+        assert_eq!(task.len(), 1, "{task:?}");
+        assert_eq!(task[0].text, "TASK");
     }
 
     /// pi CAN be told its session id, so the ledger knows the resume handle
