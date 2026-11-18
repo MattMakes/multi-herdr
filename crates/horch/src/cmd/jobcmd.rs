@@ -9,19 +9,19 @@
 
 use std::process::ExitCode;
 
-use anyhow::{bail, Context, Result};
+use anyhow::Result;
 use clap::Subcommand;
-use horch_core::fleetd::fleet_runtime::adapters::{config_file, jobs_store};
-use horch_core::fleetd::fleet_runtime::application::jobs::{
-    self, CheckRunner, JobCtx, JobKey, Queued, Runners,
-};
+use horch_core::fleetd::fleet_runtime::adapters::config_file;
+use horch_core::fleetd::fleet_runtime::application::jobs::{self, CheckRunner, JobCtx, Runners};
+use horch_core::fleetd::fleet_runtime::domain::requests::Kind;
 use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
 use horch_core::fleetd::worker_profiles::adapters::check_sandbox::WorkerSandboxes;
 use horch_core::fleetd::worker_profiles::adapters::launcher::Launcher;
 use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger::finish::CodexSandbox;
-use horch_core::taskledger::open_existing;
+use serde_json::json;
 
+use super::operator_request;
 use crate::output;
 
 #[derive(Subcommand)]
@@ -46,55 +46,20 @@ pub fn job(ctx: &RuntimeContext, command: JobCommand) -> Result<ExitCode> {
     }
 }
 
-/// `horch job requeue <job>`: print the new run. The exit is the
-/// operator's, so a worker pane is refused before the ledger opens. Until
-/// the operator request of the command channel exists, the role of the
-/// pane is the guard (`docs/specs/fleetd/design.md`, "The command
-/// channel").
+/// `horch job requeue <job>`: 1 `job_requeue` request to fleetd, then the
+/// new run. fleetd decides who may send it (`docs/specs/fleetd/design.md`,
+/// "The command channel"): the command reads no role.
 fn requeue(ctx: &RuntimeContext, job: i64) -> Result<ExitCode> {
-    let role = ctx.worker.as_ref().and_then(|w| w.role.as_deref());
-    if let Some(role) = role.filter(|r| *r != "orchestrator") {
-        bail!("horch job requeue is the operator's: worker {role} cannot run it");
-    }
-    let Some(mut store) = open_existing(ctx)? else {
-        bail!(
-            "no job {job}: the task ledger {} does not exist",
-            ctx.paths.ledger_db.display()
-        );
-    };
-    let config = config_file::load(&ctx.paths.fleet_root)?;
-    let jctx = JobCtx {
-        guard: None,
-        config: &config,
-        needs_you: &NeedsYouList,
-    };
-    let queued = store.immediate(|tx| {
-        let row = jobs_store::get(tx, job)?.with_context(|| format!("no job {job}"))?;
-        let key = JobKey {
-            kind: row.kind,
-            subject: &row.subject,
-            input_key: &row.input_key,
-        };
-        jobs::requeue(&jctx, tx, &key)
-    })?;
-    match queued {
-        Queued::New(id) => {
-            let row = jobs_store::get(store.conn(), id)?.with_context(|| format!("no job {id}"))?;
-            output::println(&format!(
-                "Queued run {} of the {} job of {} as job {id}.",
-                row.run, row.kind, row.subject
-            ));
-            Ok(ExitCode::SUCCESS)
-        }
-        Queued::Active(row) => bail!(
-            "job {} of the same kind and subject is {}: no new run",
-            row.id,
-            row.state.as_str()
-        ),
-        Queued::Reused(row) | Queued::Held(row) => {
-            bail!("job {}: no new run", row.id)
-        }
-    }
+    operator_request::run(ctx, Kind::JobRequeue, json!({ "job": job }), |r| {
+        output::println(&format!(
+            "Queued run {} of the {} job of {} as job {}.",
+            r["run"],
+            r["kind"].as_str().unwrap_or("?"),
+            r["subject"].as_str().unwrap_or("?"),
+            r["job"]
+        ));
+        Ok(())
+    })
 }
 
 /// `horch job run <id>`: run the executor of the job and write its result.
@@ -131,27 +96,4 @@ fn run(ctx: &RuntimeContext, id: i64) -> Result<ExitCode> {
         )),
     }
     Ok(ExitCode::SUCCESS)
-}
-
-#[cfg(test)]
-mod tests {
-    use horch_core::runtime::MapEnv;
-
-    use super::*;
-
-    /// A worker pane cannot requeue a job: the exit is the operator's. The
-    /// refusal comes before the ledger opens.
-    #[test]
-    fn a_worker_cannot_requeue_a_job() {
-        let dir = tempfile::tempdir().unwrap();
-        let ledger = dir.path().join("ledger.sqlite3");
-        let env = MapEnv::new(dir.path())
-            .with("HOME", &dir.path().to_string_lossy())
-            .with("HORCH_LEDGER_DB", &ledger.to_string_lossy())
-            .with("HORCH_ROLE", "sonnet-1");
-        let ctx = RuntimeContext::from_env(&env).unwrap();
-        let err = job(&ctx, JobCommand::Requeue { job: 1 }).unwrap_err();
-        assert!(err.to_string().contains("worker sonnet-1"), "{err:#}");
-        assert!(!ledger.exists());
-    }
 }

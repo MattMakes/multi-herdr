@@ -1,23 +1,27 @@
 //! Worker worktree creation, landing, and inspection.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
-use anyhow::{anyhow, bail, Result};
-use horch_core::fleetd::worktree_custody::adapters::sqlite::NewWorktree;
-use horch_core::fleetd::worktree_custody::application::create::{self, JobProcess, Lease};
+use anyhow::{anyhow, Context, Result};
+use horch_core::digest::sha256_bytes;
+use horch_core::fleetd::fleet_runtime::application::handlers_custody::TRIAGE_NOT_HANDLED;
+use horch_core::fleetd::fleet_runtime::domain::requests::Kind;
+use horch_core::fleetd::worktree_custody::adapters::sqlite as trees;
+use horch_core::fleetd::worktree_custody::application::create::JobProcess;
 use horch_core::fleetd::worktree_custody::application::queries::{
     self, DiskTotal, RescueSource, WorktreeView,
 };
 use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger;
-use horch_core::taskledger::finish::lease_and_wait;
 use horch_core::taskledger::git::Git;
-use horch_core::taskledger::model::WorktreeStatus;
+use horch_core::taskledger::model::TriageDecision;
 use horch_core::taskledger::triage::{self, human_bytes, Measure};
-use horch_core::taskledger::util;
 use horch_core::vcs::landing::{ClaimState, Landing, Skipped, Unregistered};
+use serde_json::{json, Value};
 
 use super::messaging;
+use super::operator_request;
 use super::taskledger::{resolve_run, RunArg};
 
 fn landing(ctx: &RuntimeContext) -> Landing {
@@ -216,16 +220,82 @@ fn gh_bin() -> PathBuf {
 }
 
 /// `horch worktree triage apply <file|->`: parse the operator's reply and
-/// run each decision. A bad reply runs nothing.
-pub fn triage_apply(ctx: &RuntimeContext, file: &str, primary: &str) -> Result<()> {
+/// run each decision. A bad reply runs nothing. A reply of `KEEP` and
+/// `FINISH` decisions only is 1 `worktree_triage` request to fleetd.
+pub fn triage_apply(ctx: &RuntimeContext, file: &str, primary: &str) -> Result<ExitCode> {
     let text = read_reply(file)?;
     let git = Git::new(&ctx.bins.harness.git);
     let root = triage_root(ctx, &git)?;
-    let mut store = taskledger::open(ctx)?;
+    let store = read_only(ctx)?;
     let rows = triage::collect(store.conn(), &git, &root, Measure::Ids)?;
     let gh = gh_bin();
     let remote = triage::apply::pr_remote(&git, &root, &gh);
     let decided = triage::reply::parse(&text, &rows, remote.is_some())?;
+    if decided
+        .iter()
+        .any(|d| TRIAGE_NOT_HANDLED.contains(&d.decision))
+    {
+        drop(store);
+        return triage_apply_direct(ctx, &git, &root, &rows, &decided, primary, remote);
+    }
+    let mut decisions = Vec::new();
+    for d in &decided {
+        let row = rows
+            .iter()
+            .find(|r| r.id == d.id)
+            .with_context(|| format!("{} is not a row of this triage", d.id))?;
+        let ticket = match d.decision {
+            TriageDecision::Finish => {
+                let direction = d.direction.as_deref().unwrap_or("");
+                match triage::apply::finish_brief(store.conn(), &root, row, direction)? {
+                    Some(path) => Some(json!({
+                        "sha256": sha256_bytes(&std::fs::read(root.join(&path))?).to_string(),
+                        "path": path,
+                    })),
+                    None => None,
+                }
+            }
+            _ => None,
+        };
+        decisions.push(json!({
+            "row": row,
+            "decision": d.decision.as_str(),
+            "direction": d.direction,
+            "line": d.line,
+            "ticket": ticket,
+        }));
+    }
+    let payload = json!({ "root": root, "primary": primary, "decisions": decisions });
+    operator_request::run(ctx, Kind::WorktreeTriage, payload, |r| {
+        for a in r["applied"].as_array().into_iter().flatten() {
+            println!("{}", a["line"].as_str().unwrap_or_default());
+        }
+        let failed = r["failed"].as_u64().unwrap_or(0);
+        if failed > 0 {
+            return Err(anyhow!(
+                "{failed} of {} decisions failed; nothing of theirs was deleted. Run horch worktree triage again",
+                decided.len()
+            ));
+        }
+        Ok(())
+    })
+}
+
+/// A reply with an `ARCHIVE`, `DELETE`, `LAND` or `PR` decision keeps the
+/// direct path of today: fleetd has no handler for them yet, because no
+/// job kind does their git or gh writes
+/// (`handlers_custody::TRIAGE_NOT_HANDLED`).
+fn triage_apply_direct(
+    ctx: &RuntimeContext,
+    git: &Git,
+    root: &Path,
+    rows: &[triage::Row],
+    decided: &[triage::reply::Decided],
+    primary: &str,
+    remote: Option<String>,
+) -> Result<ExitCode> {
+    let mut store = taskledger::open(ctx)?;
+    let gh = gh_bin();
     let evidence = ctx
         .paths
         .ledger_db
@@ -234,15 +304,15 @@ pub fn triage_apply(ctx: &RuntimeContext, file: &str, primary: &str) -> Result<(
         .unwrap_or_else(|| PathBuf::from("evidence"));
     let jobs = JobProcess::of_this_process()?;
     let env = triage::apply::Env {
-        git: &git,
-        root: &root,
+        git,
+        root,
         evidence_root: &evidence,
         gh: remote.is_some().then_some(gh.as_path()),
         remote: remote.as_deref(),
         primary,
         jobs: &jobs,
     };
-    let applied = triage::apply::apply(&mut store, &env, &rows, &decided)?;
+    let applied = triage::apply::apply(&mut store, &env, rows, decided)?;
     for a in &applied {
         println!("{}", a.line());
     }
@@ -254,7 +324,7 @@ pub fn triage_apply(ctx: &RuntimeContext, file: &str, primary: &str) -> Result<(
             applied.len()
         ));
     }
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Wake each run's orchestrator for the tasks that `FINISH` queued.
@@ -283,73 +353,95 @@ fn wake_for_finish(
 /// a worktree id whose row has a rescue ref gives its newest rescue ref
 /// back as a branch and a tree (MAP.md of fleetd-p3, Q14). Each other name
 /// gets the folder again from its archive or trash ref.
-pub fn restore(ctx: &RuntimeContext, name: &str) -> Result<()> {
+pub fn restore(ctx: &RuntimeContext, name: &str) -> Result<ExitCode> {
     let git = Git::new(&ctx.bins.harness.git);
     let root = triage_root(ctx, &git)?;
-    let mut store = taskledger::open(ctx)?;
-    let jobs = JobProcess::of_this_process()?;
+    let store = read_only(ctx)?;
     // A project with no single active run has no `T<seq>` to look up; a
     // worktree id needs no run.
-    let run = resolve_run(ctx, &store, &RunArg::default()).ok();
-    let source =
-        queries::rescue_source(store.conn(), run.as_ref().map(|r| r.run_id.as_str()), name)?;
-    let line = match source {
-        Some(source) => restore_rescue(&mut store, &git, &jobs, &source)?,
-        None => triage::apply::restore(&store, &git, &jobs, &root, name)?,
+    let run = resolve_run(ctx, &store, &RunArg::default())
+        .ok()
+        .map(|r| r.run_id);
+    let source = queries::rescue_source(store.conn(), run.as_deref(), name)?;
+    let facts = match &source {
+        Some(source) => rescue_facts(&git, source)?,
+        None => archive_facts(&store, &git, &root, name)?,
     };
-    println!("{line}");
-    Ok(())
+    let payload = json!({
+        "name": name,
+        "run_id": run,
+        "root": root,
+        "facts": facts,
+    });
+    operator_request::run(ctx, Kind::WorktreeRestore, payload, |r| {
+        println!("{}", r["line"].as_str().unwrap_or_default());
+        Ok(())
+    })
 }
 
-/// Make the branch `rescue/T<seq>-<n>` at the rescue commit of `source` and
-/// its tree `<project>/.worktrees/rescue-T<seq>-<n>`, through the
-/// `worktree_add` job of custody. It refuses, and changes nothing, when the
-/// branch or the folder exists.
-fn restore_rescue(
-    store: &mut taskledger::Store,
-    git: &Git,
-    jobs: &JobProcess,
-    source: &RescueSource,
-) -> Result<String> {
+/// The git facts of the restore of `source` as the branch
+/// `rescue/T<seq>-<n>` in its tree `<project>/.worktrees/rescue-T<seq>-<n>`.
+/// fleetd refuses the restore when the branch or the folder exists.
+fn rescue_facts(git: &Git, source: &RescueSource) -> Result<Value> {
     let repo = PathBuf::from(&source.row.repo_root);
     let slug = format!("T{}-{}", source.seq, source.n);
     let branch = format!("rescue/{slug}");
     let path = repo.join(".worktrees").join(format!("rescue-{slug}"));
-    if git.branch_exists(&repo, &branch) {
-        bail!("the branch {branch} exists; restore changed nothing");
-    }
-    if path.exists() {
-        bail!("{} exists; restore changed nothing", path.display());
-    }
-    let commit = git.rev(&repo, &format!("{}^{{commit}}", source.rescue_ref))?;
-    let new = NewWorktree {
-        worktree_id: util::new_id(),
-        task_id: None,
-        worker_id: None,
-        repo_root: source.row.repo_root.clone(),
-        path: path.to_string_lossy().into_owned(),
-        branch: branch.clone(),
-        base: source.rescue_ref.clone(),
-        base_commit: Some(commit),
-        status: WorktreeStatus::Open,
-        mode: None,
+    Ok(json!({
+        "path_exists": path.exists(),
+        "branch_exists": git.branch_exists(&repo, &branch),
+        "branch_commit": null,
+        "rescue_commit": git.rev(&repo, &format!("{}^{{commit}}", source.rescue_ref))?,
+        "archive": null,
+    }))
+}
+
+/// The git facts of the restore of the folder `<root>/.worktrees/<name>`
+/// from its archive ref, else its newest trash ref, on the branch of the
+/// archived row, else `restored/<name>`.
+fn archive_facts(store: &taskledger::Store, git: &Git, root: &Path, name: &str) -> Result<Value> {
+    let archive = match triage::refs::restorable(git, root, name)? {
+        Some(r) => Some(json!({ "commit": git.rev(root, &r)?, "name": r })),
+        None => None,
     };
-    let lease = Lease {
-        task_id: None,
-        // Only the attach of an existing task tree reads the worker; a
-        // new row takes `new.worker_id`.
-        worker_id: "",
-        attempt: None,
-        from: None,
-        new: Some(&new),
+    let old = match &archive {
+        Some(at) => match triage::apply::archived_row(
+            store.conn(),
+            root,
+            at["name"].as_str().unwrap_or_default(),
+        )? {
+            Some(id) => trees::get(store.conn(), &id)?,
+            None => None,
+        },
+        None => None,
     };
-    let id = lease_and_wait(store.path(), jobs, &lease)?;
-    store.immediate(|tx| create::give_to_operator(tx, &id))?;
-    Ok(format!(
-        "restored {} on {branch} at {}",
-        source.rescue_ref,
-        path.display()
-    ))
+    let branch = old
+        .map(|o| o.branch)
+        .filter(|b| !b.is_empty())
+        .unwrap_or_else(|| format!("restored/{name}"));
+    let branch_exists = git.branch_exists(root, &branch);
+    let branch_commit = if branch_exists {
+        Some(git.rev(root, &branch)?)
+    } else {
+        None
+    };
+    Ok(json!({
+        "path_exists": root.join(".worktrees").join(name).exists(),
+        "branch_exists": branch_exists,
+        "branch_commit": branch_commit,
+        "rescue_commit": null,
+        "archive": archive,
+    }))
+}
+
+/// The ledger, opened read-only. fleetd creates it at its start.
+fn read_only(ctx: &RuntimeContext) -> Result<taskledger::Store> {
+    taskledger::open_existing_read_only(ctx)?.with_context(|| {
+        format!(
+            "the task ledger {} does not exist. fleetd creates it at its start: run horch fleetd check",
+            ctx.paths.ledger_db.display()
+        )
+    })
 }
 
 /// `horch worktrees [--json]`: 1 line for each tree that is not `removed`,

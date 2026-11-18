@@ -52,6 +52,8 @@ pub fn run(ctx: &RuntimeContext, command: RescueCommand) -> Result<ExitCode> {
 /// Drop the rescue ref `name` of the repository `repo`, and give the last
 /// line.
 fn drop_ref(ctx: &RuntimeContext, repo: &Path, name: &str) -> Result<String> {
+    // The direct path of today: fleetd has no `rescue_drop` handler yet
+    // (`handlers_custody::NOT_YET_HANDLED`, T-386), so no request is sent.
     let mut store = taskledger::open(ctx)?;
     refuse_worker(ctx, &store)?;
     let git = CliWorktreeGit::new(&ctx.bins.harness.git, &ctx.paths.fleet_root)

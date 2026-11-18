@@ -205,6 +205,7 @@ in `harness/capabilities.rs`.
 | `messaging.rs` | `horch tell`, `inbox`, `peek`, `note`, `done` |
 | `mod.rs` | the module list and `load_roster` |
 | `mode.rs` | `horch mode` (switches a Codex pane between write and plan) |
+| `operator_request.rs` | 1 operator request of a command to fleetd: the send, and the exit of an applied, refused or queued request (RR-5) |
 | `quotacmd.rs` | `horch quota` |
 | `recipes.rs` | `horch fleet`, `horch orchestration`, `horch pane-launch` (hidden) |
 | `rescuecmd.rs` | `horch rescue drop` (not built yet) |

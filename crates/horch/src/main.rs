@@ -869,7 +869,7 @@ fn plain_command(argv: &[String]) -> String {
         .join(" ")
 }
 
-fn run() -> Result<std::process::ExitCode> {
+fn run() -> Result<ExitCode> {
     let cli = Cli::parse();
     // The one read of the process environment. Every command takes its
     // values from this context.
@@ -1119,7 +1119,7 @@ impl SessionCommand {
 impl ProjectCommand {
     fn dispatch(self, ctx: &mut Ctx) -> Result<ExitCode> {
         match self {
-            ProjectCommand::Worktree { command } => done(worktree_command(ctx, command)),
+            ProjectCommand::Worktree { command } => worktree_command(ctx, command),
             ProjectCommand::Worktrees { json } => done(cmd::worktree::worktrees(ctx, json)),
             ProjectCommand::Sessions {
                 json,
@@ -1363,14 +1363,14 @@ fn done_command(ctx: &mut Ctx, summary: &str, unlanded: Option<&str>) -> Result<
     cmd::messaging::done(ctx, summary, unlanded)
 }
 
-fn worktree_command(ctx: &mut Ctx, command: WorktreeSubcommand) -> Result<()> {
+fn worktree_command(ctx: &mut Ctx, command: WorktreeSubcommand) -> Result<ExitCode> {
     match command {
-        WorktreeSubcommand::New { name } => cmd::worktree::new(ctx, &name),
+        WorktreeSubcommand::New { name } => done(cmd::worktree::new(ctx, &name)),
         WorktreeSubcommand::Land { name, check } => {
-            cmd::worktree::land(ctx, name.as_deref(), check.as_deref())
+            done(cmd::worktree::land(ctx, name.as_deref(), check.as_deref()))
         }
-        WorktreeSubcommand::List => cmd::worktree::list(ctx),
-        WorktreeSubcommand::Triage { json, action: None } => cmd::worktree::triage(ctx, json),
+        WorktreeSubcommand::List => done(cmd::worktree::list(ctx)),
+        WorktreeSubcommand::Triage { json, action: None } => done(cmd::worktree::triage(ctx, json)),
         WorktreeSubcommand::Triage {
             action: Some(TriageAction::Apply { file, primary }),
             ..

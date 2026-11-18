@@ -18,6 +18,7 @@ pub mod mail;
 pub mod marketplacecmd;
 pub mod messaging;
 pub mod mode;
+pub mod operator_request;
 pub mod quotacmd;
 pub mod recipes;
 pub mod requestcmd;

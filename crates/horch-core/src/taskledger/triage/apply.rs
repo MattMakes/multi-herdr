@@ -919,7 +919,8 @@ fn first_line(text: &str, max: usize) -> String {
 
 /// Write the brief of a `FINISH` task to `ai_docs/triage/<name>.md` (a free
 /// name), and return its path from the root.
-fn write_ticket(root: &Path, row: &Row, wt: &WorktreeRow, direction: &str) -> Result<String> {
+fn write_ticket(root: &Path, row: &Row, wt: (&str, &str), direction: &str) -> Result<String> {
+    let (path, branch) = wt;
     let dir = root.join("ai_docs").join("triage");
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let stem = row.name.replace('/', "-");
@@ -933,8 +934,6 @@ fn write_ticket(root: &Path, row: &Row, wt: &WorktreeRow, direction: &str) -> Re
     let body = format!(
         "# Finish {name}\n\n{direction}\n\n## Worktree\n\n- Path: {path}\n- Branch: {branch}\n- Base: {base}\n- Ahead {ahead}, behind {behind}\n- Why parked: {why}\n",
         name = row.name,
-        path = wt.path,
-        branch = wt.branch,
         base = row.base,
         ahead = row.ahead,
         behind = row.behind,
@@ -942,6 +941,32 @@ fn write_ticket(root: &Path, row: &Row, wt: &WorktreeRow, direction: &str) -> Re
     );
     std::fs::write(dir.join(&file), body)?;
     Ok(format!("ai_docs/triage/{file}"))
+}
+
+/// The brief of a `FINISH` decision on `row`, written before the request
+/// of `horch worktree triage apply` (RR-5): `None` when the worktree of
+/// the row holds a parked task, which resumes with its own ticket. It
+/// reads the ledger and writes no row; an unregistered folder holds no
+/// task.
+pub fn finish_brief(
+    conn: &Connection,
+    root: &Path,
+    row: &Row,
+    direction: &str,
+) -> Result<Option<String>> {
+    let (path, branch) = match &row.worktree_id {
+        Some(id) => {
+            let wt = finish::worktree(conn, id)?;
+            if parked_task(conn, &wt)?.is_some() {
+                return Ok(None);
+            }
+            (wt.path, wt.branch)
+        }
+        None => (row.path.clone(), row.branch.clone().unwrap_or_default()),
+    };
+    runs::resolve(conn, root, None, None)
+        .context("FINISH needs an active run; start one with horch fleet")?;
+    write_ticket(root, row, (&path, &branch), direction).map(Some)
 }
 
 /// `FINISH`: queue a task with the direction as its brief; it inherits the
@@ -959,7 +984,12 @@ fn finish_decision(
         None => {
             runs::resolve(store.conn(), env.root, None, None)
                 .context("FINISH needs an active run; start one with horch fleet")?;
-            Some(write_ticket(env.root, row, wt, direction)?)
+            Some(write_ticket(
+                env.root,
+                row,
+                (&wt.path, &wt.branch),
+                direction,
+            )?)
         }
     };
     store.immediate(|tx| {
@@ -1145,7 +1175,7 @@ fn pr(store: &Store, env: &Env<'_>, row: &Row, wt: &WorktreeRow, direction: &str
 /// The newest row of the project at `root` that triage settled on the ref
 /// `r`. Another project can archive the same name, so the row must be of
 /// this project.
-pub(crate) fn archived_row(conn: &Connection, root: &Path, r: &str) -> Result<Option<String>> {
+pub fn archived_row(conn: &Connection, root: &Path, r: &str) -> Result<Option<String>> {
     let mut stmt = conn.prepare(
         "SELECT worktree_id, repo_root FROM worktrees WHERE archive_ref = ?1
          ORDER BY decided_at DESC, rowid DESC",
