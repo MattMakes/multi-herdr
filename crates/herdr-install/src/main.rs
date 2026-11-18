@@ -19,8 +19,8 @@ mod net;
 mod place;
 mod win;
 
+use horch_platform::start;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
@@ -287,7 +287,7 @@ fn stage_package(
 /// Run the freshly installed binary. A release that cannot report its own version
 /// is broken, and it is better to say so now than at first use.
 fn verify_installed(path: &Path) -> Result<()> {
-    match Command::new(path).arg("--version").output() {
+    match start::command(path).arg("--version").output() {
         Ok(out) if out.status.success() => {
             let reported = String::from_utf8_lossy(&out.stdout).trim().to_string();
             step(&format!("verified: {reported}"));
@@ -489,5 +489,40 @@ mod tests {
             resolve_channel(&preview, target(Os::MacOs)).unwrap(),
             Channel::Preview
         );
+    }
+
+    /// SR-7: the version check of the installed binary never gives it a
+    /// forbidden name of this process. The fake binary writes its
+    /// environment to a file, and the control name proves that it does.
+    #[cfg(unix)]
+    #[test]
+    fn the_version_check_never_gives_a_forbidden_name() {
+        use std::os::unix::fs::PermissionsExt;
+        const CONTROL: &str = "HERDR_INSTALL_START_TEST_CONTROL";
+        let dir = tempfile::tempdir().unwrap();
+        let env_file = dir.path().join("env.txt");
+        let bin = dir.path().join("herdr");
+        std::fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\nenv > '{}'\necho herdr 0.0.0\n",
+                env_file.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::env::set_var(CONTROL, "kept");
+        for key in horch_platform::start::FORBIDDEN_ENV {
+            std::env::set_var(key, "forbidden-in-test");
+        }
+        verify_installed(&bin).unwrap();
+        let vars = std::fs::read_to_string(&env_file).unwrap();
+        assert!(vars.contains(&format!("{CONTROL}=kept")), "{vars}");
+        for key in horch_platform::start::FORBIDDEN_ENV {
+            assert!(
+                !vars.lines().any(|l| l.starts_with(&format!("{key}="))),
+                "{key} reached the installed binary"
+            );
+        }
     }
 }

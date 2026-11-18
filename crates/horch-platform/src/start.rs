@@ -67,6 +67,11 @@ impl Command {
         self
     }
 
+    pub fn env_clear(&mut self) -> &mut Self {
+        self.0.env_clear();
+        self
+    }
+
     /// The variables that the command sets (`Some`) or removes (`None`).
     pub fn get_envs(&self) -> std::process::CommandEnvs<'_> {
         self.0.get_envs()
