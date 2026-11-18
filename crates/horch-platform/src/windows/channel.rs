@@ -16,8 +16,8 @@ use std::time::{Duration, Instant};
 
 use windows_sys::core::PWSTR;
 use windows_sys::Win32::Foundation::{
-    LocalFree, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, ERROR_SEM_TIMEOUT, GENERIC_READ,
-    GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
+    LocalFree, ERROR_BROKEN_PIPE, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, ERROR_SEM_TIMEOUT,
+    GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -32,15 +32,15 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 use windows_sys::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeClientProcessId,
-    GetNamedPipeServerProcessId, WaitNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
-    PIPE_TYPE_BYTE, PIPE_WAIT,
+    GetNamedPipeServerProcessId, PeekNamedPipe, WaitNamedPipeW, PIPE_READMODE_BYTE,
+    PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
 };
 use windows_sys::Win32::System::Threading::{
     GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows_sys::Win32::System::IO::CancelSynchronousIo;
 
-use crate::channel::{Peer, User};
+use crate::channel::{AtName, Peer, User};
 use crate::NotSupported;
 
 /// A named pipe server with 1 instance only. The listener holds that
@@ -62,7 +62,17 @@ pub(crate) struct Instance {
 
 /// 1 connection of the channel.
 #[derive(Debug)]
-pub(crate) enum Stream {
+pub(crate) struct Stream {
+    end: End,
+    /// The longest wait of each read, or `None` for no limit. A pipe that
+    /// is not overlapped has no read timeout, so a read with a limit first
+    /// polls [`PeekNamedPipe`] until bytes wait or the limit passes.
+    read_timeout: Mutex<Option<Duration>>,
+}
+
+/// The side of 1 connection.
+#[derive(Debug)]
+enum End {
     /// The client side owns its handle.
     Client(File),
     /// The server side uses the handle of the instance and never closes
@@ -79,6 +89,9 @@ pub(crate) enum Stream {
 /// deadline of the channel, so a client that never reads holds the only
 /// instance for a short time only.
 const DRAIN_LIMIT: Duration = Duration::from_secs(2);
+
+/// The time between 2 polls of a read with a timeout.
+const READ_POLL: Duration = Duration::from_millis(10);
 
 /// The longest full pipe name, in UTF-16 units.
 const MAX_PIPE_NAME: usize = 256;
@@ -219,12 +232,12 @@ pub(crate) fn accept(listener: &Listener) -> io::Result<(Stream, Peer)> {
     }
     *busy = true;
     drop(busy);
-    let stream = Stream::Server {
+    let stream = Stream::new(End::Server {
         // SAFETY: `pipe` is open while `instance` lives, and the stream
         // holds `instance`. `ManuallyDrop` never closes the handle.
         view: ManuallyDrop::new(unsafe { File::from_raw_handle(pipe) }),
         instance: Arc::clone(instance),
-    };
+    });
     // On an error, the drop of `stream` ends the connection.
     let peer = peer(pipe)?;
     Ok((stream, peer))
@@ -264,17 +277,78 @@ fn end_connection(instance: &Arc<Instance>) {
 }
 
 impl Stream {
+    fn new(end: End) -> Stream {
+        Stream {
+            end,
+            read_timeout: Mutex::new(None),
+        }
+    }
+
     fn file(&self) -> &File {
-        match self {
-            Stream::Client(file) => file,
-            Stream::Server { view, .. } => view,
+        match &self.end {
+            End::Client(file) => file,
+            End::Server { view, .. } => view,
+        }
+    }
+
+    /// Read into `buf`. With a read timeout, wait first until bytes wait
+    /// in the pipe, and read only those, so the read never blocks.
+    fn read_by(&self, buf: &mut [u8]) -> io::Result<usize> {
+        let timeout = *self
+            .read_timeout
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let Some(timeout) = timeout else {
+            return self.file().read(buf);
+        };
+        match self.wait_for_bytes(Instant::now() + timeout)? {
+            // The other side closed: the read reports the end.
+            None => self.file().read(buf),
+            Some(0) => Err(io::ErrorKind::TimedOut.into()),
+            Some(waiting) => {
+                let n = buf
+                    .len()
+                    .min(usize::try_from(waiting).unwrap_or(usize::MAX));
+                self.file().read(&mut buf[..n])
+            }
+        }
+    }
+
+    /// The count of bytes that wait in the pipe, polled until it is not 0
+    /// or until `deadline`. `None` when the other side closed the pipe.
+    fn wait_for_bytes(&self, deadline: Instant) -> io::Result<Option<u32>> {
+        loop {
+            let mut waiting = 0u32;
+            // SAFETY: the stream keeps its pipe handle open. A null buffer
+            // with size 0 reads no byte, and `waiting` is valid for 1 write.
+            let peeked = unsafe {
+                PeekNamedPipe(
+                    self.file().as_raw_handle(),
+                    ptr::null_mut(),
+                    0,
+                    ptr::null_mut(),
+                    &mut waiting,
+                    ptr::null_mut(),
+                )
+            };
+            if peeked == 0 {
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() == Some(ERROR_BROKEN_PIPE as i32) {
+                    return Ok(None);
+                }
+                return Err(error);
+            }
+            if waiting > 0 || Instant::now() >= deadline {
+                return Ok(Some(waiting));
+            }
+            thread::sleep(READ_POLL);
         }
     }
 }
 
 impl Drop for Stream {
     fn drop(&mut self) {
-        if let Stream::Server { instance, .. } = self {
+        if let End::Server { instance, .. } = &self.end {
             end_connection(instance);
         }
     }
@@ -282,13 +356,13 @@ impl Drop for Stream {
 
 impl Read for &Stream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.file().read(buf)
+        self.read_by(buf)
     }
 }
 
 impl Read for Stream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.file().read(buf)
+        self.read_by(buf)
     }
 }
 
@@ -366,7 +440,9 @@ pub(crate) fn connect(name: &Path, deadline: Instant) -> io::Result<Stream> {
         };
         if handle != INVALID_HANDLE_VALUE {
             // SAFETY: `handle` is a new open handle that nothing else owns.
-            return Ok(Stream::Client(unsafe { File::from_raw_handle(handle) }));
+            return Ok(Stream::new(End::Client(unsafe {
+                File::from_raw_handle(handle)
+            })));
         }
         let error = io::Error::last_os_error();
         if error.raw_os_error() != Some(ERROR_PIPE_BUSY as i32) {
@@ -388,6 +464,34 @@ pub(crate) fn connect(name: &Path, deadline: Instant) -> io::Result<Stream> {
             // CreateFileW reports it.
         }
     }
+}
+
+/// The pipe name is not a file, and the pipe of an old listener ends with
+/// its process.
+pub(crate) fn at_name(_: &Path) -> io::Result<AtName> {
+    Ok(AtName::Free)
+}
+
+pub(crate) fn set_read_timeout(stream: &Stream, timeout: Duration) -> io::Result<()> {
+    if timeout.is_zero() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "a read timeout of 0 is not valid",
+        ));
+    }
+    *stream
+        .read_timeout
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = Some(timeout);
+    Ok(())
+}
+
+/// A pipe that is not overlapped has no write timeout.
+pub(crate) fn set_write_timeout(_: &Stream, _: Duration) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "a named pipe has no write timeout",
+    ))
 }
 
 pub(crate) fn current_user() -> io::Result<User> {

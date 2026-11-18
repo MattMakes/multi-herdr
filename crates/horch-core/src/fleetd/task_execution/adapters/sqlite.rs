@@ -64,6 +64,19 @@ pub fn attempts_of_worker(conn: &Connection, worker_id: &str) -> Result<Vec<Atte
     attempts_where(conn, "WHERE a.worker_id = ?1", &[worker_id])
 }
 
+/// Each attempt that is not ended and that has a pid, with the persona of
+/// its worker, oldest first: the facts of the peer process check of the
+/// command channel (SR-8).
+pub fn open_attempts_with_persona(conn: &Connection) -> Result<Vec<(AttemptRow, Option<String>)>> {
+    let sql = format!(
+        "SELECT {ATTEMPT_COLUMNS}, w.persona FROM attempts a JOIN workers w ON w.worker_id = a.worker_id
+         WHERE a.state != 'ended' AND COALESCE(a.pid, w.agent_pid) IS NOT NULL ORDER BY a.rowid"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], |r| Ok((attempt(r)?, r.get(7)?)))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 /// The worker row of `r`; `host` is the host of this machine.
 fn worker(r: &Row<'_>, host: &str) -> rusqlite::Result<WorkerRow> {
     let status: String = r.get(2)?;

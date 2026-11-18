@@ -34,7 +34,7 @@
 use std::fmt;
 use std::io::{self, Read, Write};
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::{os, NotSupported};
 
@@ -63,6 +63,26 @@ pub struct Peer {
     pub user: Result<User, NotSupported>,
     /// The id of the peer process.
     pub pid: Result<u32, NotSupported>,
+}
+
+/// What is at the name of a channel before its bind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AtName {
+    /// Nothing: [`Listener::bind`] can make the channel.
+    Free,
+    /// The socket file of an old listener. The caller, which holds the
+    /// fleetd lock, removes it before [`Listener::bind`].
+    OldSocket,
+    /// A file that is not a socket, a folder or a link. The caller never
+    /// removes it.
+    Other,
+}
+
+/// What is at the channel `name`. It never follows a link. On Windows the
+/// pipe name is not a file, and the pipe of an old listener ends with its
+/// process, so the answer is always [`AtName::Free`].
+pub fn at_name(name: &Path) -> io::Result<AtName> {
+    os::channel::at_name(name)
 }
 
 impl Listener {
@@ -99,6 +119,22 @@ impl Stream {
     /// does not hold.
     pub fn server_pid(&self) -> Result<u32, NotSupported> {
         os::channel::server_pid(&self.0)
+    }
+
+    /// Make each later read of this stream wait at most `timeout`. A read
+    /// that waits longer fails with `WouldBlock` or `TimedOut`, and the
+    /// stream stays usable. A zero `timeout` is `InvalidInput`.
+    pub fn set_read_timeout(&self, timeout: Duration) -> io::Result<()> {
+        os::channel::set_read_timeout(&self.0, timeout)
+    }
+
+    /// Make each later write of this stream wait at most `timeout`. A write
+    /// that waits longer fails with `WouldBlock` or `TimedOut`. A zero
+    /// `timeout` is `InvalidInput`. Windows gives `Unsupported`: a write on
+    /// a pipe waits until the other side reads the bytes that do not fit in
+    /// the buffer of the pipe.
+    pub fn set_write_timeout(&self, timeout: Duration) -> io::Result<()> {
+        os::channel::set_write_timeout(&self.0, timeout)
     }
 }
 

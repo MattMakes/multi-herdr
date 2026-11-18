@@ -11,7 +11,9 @@ use crate::channel::{Peer, User};
 use crate::unix::channel as unix;
 use crate::NotSupported;
 
-pub(crate) use crate::unix::channel::{bind, current_user, Listener, Stream};
+pub(crate) use crate::unix::channel::{
+    at_name, bind, current_user, set_read_timeout, set_write_timeout, Listener, Stream,
+};
 
 pub(crate) fn connect(name: &Path, deadline: Instant) -> io::Result<Stream> {
     unix::connect(name, deadline)
