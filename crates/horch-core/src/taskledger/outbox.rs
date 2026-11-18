@@ -60,10 +60,17 @@ fn short_hash(text: &str) -> String {
     digest.iter().take(8).map(|b| format!("{b:02x}")).collect()
 }
 
-/// Write `wake` in `tx`, the transaction of the ledger change that causes
-/// it. Do not send inside the transaction: [`drain`] sends after the commit.
-/// `Some(id)`: a new row. `None`: a row with the same key exists already.
-pub fn write(tx: &Transaction, run_id: &str, wake: &Wake) -> Result<Option<String>> {
+/// Write `wake` in `tx`, the open transaction of the ledger change that
+/// causes it. A connection with no open transaction is refused, so a wake
+/// is never written apart from its row. Do not send inside the transaction:
+/// [`drain`] sends after the commit. `Some(id)`: a new row. `None`: a row
+/// with the same key exists already.
+pub fn write(tx: &Connection, run_id: &str, wake: &Wake) -> Result<Option<String>> {
+    if tx.is_autocommit() {
+        anyhow::bail!(
+            "a wake is written in the open transaction of the ledger change that causes it"
+        );
+    }
     let id = util::new_id();
     let n = tx.execute(
         "INSERT INTO outbox (id, run_id, event, key, text, created_at)
@@ -312,6 +319,22 @@ mod tests {
 
     fn wake(subject: &str, text: &str) -> Wake {
         Wake::new(OutboxEvent::Startable, subject, text)
+    }
+
+    #[test]
+    fn write_refuses_a_connection_with_no_open_transaction() {
+        let (_dir, mut store, run) = ledger();
+        let err = write(store.conn(), &run.run_id, &wake("T-1", "x")).unwrap_err();
+        assert!(err.to_string().contains("open transaction"), "{err:#}");
+        assert_eq!(count(&store), 0);
+        let id = store
+            .immediate(|tx| {
+                let conn: &Connection = tx;
+                write(conn, &run.run_id, &wake("T-1", "x"))
+            })
+            .unwrap();
+        assert!(id.is_some());
+        assert_eq!(count(&store), 1);
     }
 
     fn count(store: &Store) -> i64 {

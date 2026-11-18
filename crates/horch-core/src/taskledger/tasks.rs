@@ -18,10 +18,16 @@ use super::sql_words::{self, word};
 use super::store::optional;
 use super::util::{self, About};
 use super::workers::{self, Worker};
+use crate::fleetd::fleet_runtime::adapters::clock_store;
+use crate::fleetd::fleet_runtime::adapters::sqlite as door;
+use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
+use crate::fleetd::ideas::application::needs_you;
+use crate::fleetd::ideas::domain::needs_you::Write;
 use crate::fleetd::task_execution::application::commands as attempt_commands;
 use crate::fleetd::task_execution::application::lease;
-use crate::fleetd::task_execution::domain::task::{after_failure, AfterFailure};
+use crate::fleetd::task_execution::application::retry::Policy;
+use crate::fleetd::task_execution::domain::retry::{self, claimable_at, rung6, Numbers, Rung6};
 
 /// How much a retried task moves ahead of the queue (section 5.4).
 pub const RETRY_PRIORITY_BOOST: i64 = 1000;
@@ -62,6 +68,13 @@ pub struct Task {
     pub held_reason: Option<String>,
     /// `attempts` at the last operator requeue.
     pub attempt_floor: i64,
+    /// Fleet clock: a `ready` task in a retry backoff is not claimed before
+    /// it (rung 6).
+    pub not_before: Option<i64>,
+    /// Fleet clock: the replan limit of a `failed` task.
+    pub due_at: Option<i64>,
+    /// The replans of the task: 0, or 1 after its 1 replan.
+    pub replans: i64,
     pub current_worker_id: Option<String>,
     pub summary: Option<String>,
     pub origin: String,
@@ -155,6 +168,9 @@ impl Task {
             attempts: r.get("attempts")?,
             held_reason: r.get("held_reason")?,
             attempt_floor: r.get("attempt_floor")?,
+            not_before: r.get("not_before")?,
+            due_at: r.get("due_at")?,
+            replans: r.get("replans")?,
             current_worker_id: r.get("current_worker_id")?,
             summary: r.get("summary")?,
             origin: r.get("origin")?,
@@ -757,6 +773,8 @@ pub enum Wait {
     FileHeld { path: String, by: String },
     /// Another shared-checkout task works in the 1 shared checkout.
     SharedCheckout { running: String },
+    /// A retry waits for the end of its backoff on the fleet clock (rung 6).
+    Backoff { seconds: i64 },
 }
 
 impl std::fmt::Display for Wait {
@@ -778,6 +796,7 @@ impl std::fmt::Display for Wait {
             Wait::SharedCheckout { running } => {
                 write!(f, "exclusive: shared checkout, waits for {running}")
             }
+            Wait::Backoff { seconds } => write!(f, "retry after {seconds} s"),
         }
     }
 }
@@ -817,6 +836,8 @@ struct Board {
     own: BTreeMap<String, Vec<String>>,
     deps: BTreeMap<String, Vec<String>>,
     staffed: BTreeSet<String>,
+    /// The fleet clock, or `None` when fleetd never ran.
+    clock: Option<FleetSeconds>,
 }
 
 impl Board {
@@ -851,6 +872,7 @@ impl Board {
             own,
             deps,
             staffed,
+            clock: fleet_clock_now(conn)?,
         })
     }
 
@@ -873,7 +895,7 @@ impl Board {
     /// tasks change no code: they never conflict on files and never wait for
     /// an exclusive task (that task waits for them).
     fn wait(&self, t: &Task, active: &[&Task]) -> Option<Wait> {
-        self.blocked_by(t).or_else(|| {
+        self.backoff(t).or_else(|| self.blocked_by(t)).or_else(|| {
             let work: Vec<&&Task> = active.iter().filter(|a| !a.is_review()).collect();
             (!t.is_review())
                 .then(|| {
@@ -882,6 +904,15 @@ impl Board {
                         .or_else(|| self.file_held(t, &work))
                 })
                 .flatten()
+        })
+    }
+
+    /// The rest of the retry backoff of `t` on the fleet clock.
+    fn backoff(&self, t: &Task) -> Option<Wait> {
+        let clock = self.clock?;
+        let not_before = t.not_before?;
+        (!claimable_at(Some(not_before), clock.0)).then(|| Wait::Backoff {
+            seconds: not_before - clock.0,
         })
     }
 
@@ -1527,70 +1558,210 @@ fn cancel_in(conn: &Connection, task: &Task, reason: &str) -> Result<Task> {
 pub enum Requeue {
     /// The task was not running: nothing changed.
     Skipped,
-    /// Queued again, first in line.
+    /// Queued again, first in line, after its backoff (rung 6).
     Queued,
-    /// Its attempts since the last operator requeue reached the run's
-    /// `max_attempts`: held for the operator (#168).
+    /// Not claimable: `failed`, waiting for its 1 replan by the
+    /// orchestrator, or `escalated`, held for the operator (rung 6, #168).
     Held,
 }
 
-/// Put a task back in the queue after its worker died, first in line, or
-/// hold it when it used up the run's `max_attempts`.
+/// The kind of the needs-you item of an escalated task.
+pub const TASK_ESCALATED: &str = "task_escalated";
+
+/// The key of the needs-you item of the escalated task `task_id`.
+pub fn escalated_key(task_id: &str) -> String {
+    format!("{TASK_ESCALATED}:{task_id}")
+}
+
+/// Rung 6 for a task whose worker died, with the design numbers: queued
+/// again first in line after its backoff, or `failed`, or `escalated`.
+/// The old callers have no profile, so they use [`Policy::default`].
 pub fn requeue(conn: &Connection, task_id: &str, why: &str) -> Result<Requeue> {
     let task = get(conn, task_id)?;
     if !task.in_flight() {
         return Ok(Requeue::Skipped);
     }
-    util::atomic(conn, |conn| requeue_in(conn, &task, why))
+    util::atomic(conn, |conn| rung6_in(conn, &task, why, &Policy::default()))
 }
 
-/// The writes of [`requeue`] for the running or verifying `task`, in the open
-/// transaction of `conn`.
-fn requeue_in(conn: &Connection, task: &Task, why: &str) -> Result<Requeue> {
-    // A ready or escalated task holds no lease. The caller ended the
-    // worker row, which marks the old attempt as ending.
+/// Rung 6 for task `task_id`, whose attempt burned 1, in the open
+/// transaction of `conn`. Refuses a task with no attempt to end.
+pub fn burn_attempt(
+    conn: &Connection,
+    task_id: &str,
+    why: &str,
+    policy: &Policy,
+) -> Result<Requeue> {
+    let task = get(conn, task_id)?;
+    let ending = [
+        TaskStatus::Leased,
+        TaskStatus::Running,
+        TaskStatus::Stalled,
+        TaskStatus::Verifying,
+    ];
+    if !is_in(&ending, &task.status) {
+        bail!(
+            "{} is {}; rung 6 applies only to a task whose attempt ended",
+            task.short(),
+            task.status
+        );
+    }
+    rung6_in(conn, &task, why, policy)
+}
+
+/// The writes of rung 6 for `task`, in the open transaction of `conn`.
+fn rung6_in(conn: &Connection, task: &Task, why: &str, policy: &Policy) -> Result<Requeue> {
+    // A ready, failed or escalated task holds no lease. The caller ended
+    // the worker row, which marks the old attempt as ending.
     lease::release(conn, &task.task_id)?;
-    let max = super::runs::get(conn, &task.run_id)?.max_attempts;
-    match after_failure(task.attempts - task.attempt_floor, max) {
-        AfterFailure::Escalate => {
-            hold_in(conn, task)?;
+    let run_max = super::runs::get(conn, &task.run_id)?.max_attempts;
+    let n = Numbers {
+        used: task.attempts - task.attempt_floor,
+        limit: retry::limit(policy.retry.max_attempts, run_max),
+        replans: task.replans,
+    };
+    // With no fleetd row there is no fleet clock to wait on: no backoff
+    // and no replan limit (the pass sets it, see `escalate_overdue`).
+    let clock = fleet_clock_now(conn)?;
+    let at = clock.map_or(0, |c| c.0);
+    match rung6(&n, &policy.retry.backoff_s, policy.replan_limit_s, at) {
+        Rung6::Retry { not_before } => {
+            retry_in(conn, task, why, clock.map(|_| FleetSeconds(not_before)))?;
+            Ok(Requeue::Queued)
+        }
+        Rung6::Fail { due_at } => {
+            fail_in(conn, task, why, clock.map(|_| FleetSeconds(due_at)))?;
+            outbox::write(conn, &task.run_id, &replan_wake(conn, task, policy)?)?;
             Ok(Requeue::Held)
         }
-        AfterFailure::Retry => {
-            retry_in(conn, task, why)?;
-            Ok(Requeue::Queued)
+        Rung6::Escalate => {
+            fail_in(conn, task, why, None)?;
+            hold_in(conn, task)?;
+            Ok(Requeue::Held)
         }
     }
 }
 
-/// `ScheduleRetry` of fleetd: queue the running or verifying task `task_id`
-/// again, first in line, in the open transaction of `conn`.
-pub fn schedule_retry(conn: &Connection, task_id: &str, why: &str) -> Result<()> {
-    retry_in(conn, &get(conn, task_id)?, why)
+/// The fleet clock of the `fleetd` row, or `None` when fleetd never ran.
+fn fleet_clock_now(conn: &Connection) -> Result<Option<FleetSeconds>> {
+    if door::generation(conn)?.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(clock_store::read(conn)?))
 }
 
-/// `EscalateTask` of fleetd: hold the running or verifying task `task_id`
-/// for the operator, in the open transaction of `conn` (L4).
-pub fn escalate(conn: &Connection, task_id: &str) -> Result<()> {
-    hold_in(conn, &get(conn, task_id)?)
+/// The 1 wake of a `failed` task to the orchestrator of its run, which
+/// owns its replan before Phase 6 (`docs/tickets/fleetd-p2/MAP.md`, Q12).
+fn replan_wake(conn: &Connection, task: &Task, policy: &Policy) -> Result<Wake> {
+    let t = task.short();
+    let used = task.attempts - task.attempt_floor;
+    let text = format!(
+        "QUESTION: replan {t}: requeue it 1 time, or cancel it. {used} attempts failed ({}). \
+         Requeue: horch ledger requeue {t} \"<reason>\". Cancel: horch ledger cancel {t} \"<reason>\". \
+         After {} s of the fleet clock with neither, {t} goes to the operator.",
+        attempt_ends(conn, task)?.join("; "),
+        policy.replan_limit_s
+    );
+    Ok(Wake::new(
+        OutboxEvent::Held,
+        format!("replan:{}:{}", task.task_id, task.attempts),
+        super::wakes::tagged(&text),
+    ))
 }
 
-/// Queue `task` again, first in line.
-fn retry_in(conn: &Connection, task: &Task, why: &str) -> Result<()> {
-    let task_id = task.task_id.as_str();
-    let ready = TaskStatus::Ready.as_str();
-    let text = format!("{} is queued again, first in line: {why}", task.short());
-    let cause = util::Why::Event(EventKind::Requeued, &text);
-    util::transition(conn, Entity::Task, task_id, ready, Actor::Horch, cause)?;
+/// Each `failed` task of the ledger.
+pub fn failed(conn: &Connection) -> Result<Vec<Task>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT * FROM tasks WHERE status = {failed} ORDER BY task_id",
+        failed = word(TaskStatus::Failed)
+    ))?;
+    let rows = stmt
+        .query_map([], Task::from_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// The replan limit of the `failed` task `task_id` ends `limit_s` after
+/// fleet clock `clock`.
+pub fn set_replan_due(
+    conn: &Connection,
+    task_id: &str,
+    clock: FleetSeconds,
+    limit_s: u64,
+) -> Result<()> {
+    let limit = i64::try_from(limit_s).unwrap_or(i64::MAX);
     conn.execute(
-        "UPDATE tasks SET current_worker_id = NULL, priority = priority - ?2, updated_at = ?3
-         WHERE task_id = ?1",
-        params![task_id, RETRY_PRIORITY_BOOST, util::now()],
+        "UPDATE tasks SET due_at = ?2, updated_at = ?3 WHERE task_id = ?1",
+        params![task_id, clock.0.saturating_add(limit), util::now()],
     )?;
     Ok(())
 }
 
-/// Hold `task` for the operator: `escalated` with `held_reason` (#168).
+/// `EscalateTask` of fleetd: hold task `task_id` for the operator, in the
+/// open transaction of `conn`. A task with an attempt to end goes through
+/// `failed`.
+pub fn escalate(conn: &Connection, task_id: &str) -> Result<()> {
+    let task = get(conn, task_id)?;
+    if task.status != TaskStatus::Failed.as_str() {
+        fail_in(conn, &task, "escalated by fleetd", None)?;
+    }
+    hold_in(conn, &task)
+}
+
+/// Queue `task` again, first in line, not claimed before `not_before`.
+fn retry_in(
+    conn: &Connection,
+    task: &Task,
+    why: &str,
+    not_before: Option<FleetSeconds>,
+) -> Result<()> {
+    let task_id = task.task_id.as_str();
+    let ready = TaskStatus::Ready.as_str();
+    let after = match not_before {
+        Some(t) => format!(", not before fleet clock {} s", t.0),
+        None => String::new(),
+    };
+    let text = format!(
+        "{} is queued again, first in line{after}: {why}",
+        task.short()
+    );
+    let cause = util::Why::Event(EventKind::Requeued, &text);
+    util::transition(conn, Entity::Task, task_id, ready, Actor::Horch, cause)?;
+    conn.execute(
+        "UPDATE tasks SET current_worker_id = NULL, priority = priority - ?2, not_before = ?4,
+            due_at = NULL, updated_at = ?3
+         WHERE task_id = ?1",
+        params![
+            task_id,
+            RETRY_PRIORITY_BOOST,
+            util::now(),
+            not_before.map(|t| t.0)
+        ],
+    )?;
+    Ok(())
+}
+
+/// Move `task` to `failed`, with its replan limit `due_at`.
+fn fail_in(conn: &Connection, task: &Task, why: &str, due_at: Option<FleetSeconds>) -> Result<()> {
+    let task_id = task.task_id.as_str();
+    let used = task.attempts - task.attempt_floor;
+    let text = format!(
+        "{} failed: {used} attempts failed, the last: {why}",
+        task.short()
+    );
+    let cause = util::Why::Event(EventKind::Blocked, &text);
+    let failed = TaskStatus::Failed.as_str();
+    util::transition(conn, Entity::Task, task_id, failed, Actor::Horch, cause)?;
+    conn.execute(
+        "UPDATE tasks SET current_worker_id = NULL, not_before = NULL, due_at = ?2, updated_at = ?3
+         WHERE task_id = ?1",
+        params![task_id, due_at.map(|t| t.0), util::now()],
+    )?;
+    Ok(())
+}
+
+/// Hold the `failed` `task` for the operator: `escalated` with
+/// `held_reason` (#168) and 1 needs-you item.
 fn hold_in(conn: &Connection, task: &Task) -> Result<()> {
     let task_id = task.task_id.as_str();
     let escalated = TaskStatus::Escalated.as_str();
@@ -1600,11 +1771,22 @@ fn hold_in(conn: &Connection, task: &Task) -> Result<()> {
     let cause = util::Why::Event(EventKind::Blocked, &text);
     util::transition(conn, Entity::Task, task_id, escalated, Actor::Horch, cause)?;
     conn.execute(
-        "UPDATE tasks SET current_worker_id = NULL, held_reason = ?2, updated_at = ?3
+        "UPDATE tasks SET current_worker_id = NULL, held_reason = ?2, not_before = NULL,
+            due_at = NULL, updated_at = ?3
          WHERE task_id = ?1",
         params![task_id, held, util::now()],
     )?;
-    Ok(())
+    let key = escalated_key(task_id);
+    needs_you::open_item(
+        conn,
+        &Write {
+            key: &key,
+            kind: TASK_ESCALATED,
+            entity: Entity::Task.as_str(),
+            entity_id: task_id,
+            text: &text,
+        },
+    )
 }
 
 /// How each attempt at `task` since the last operator requeue ended, oldest
@@ -1623,8 +1805,8 @@ pub fn attempt_ends(conn: &Connection, task: &Task) -> Result<Vec<String>> {
 /// with. `cancelled` is terminal: the door of [`util::transition`] refuses
 /// the requeue of a cancelled task and records the refusal.
 pub fn requeue_by_operator(conn: &Connection, task: &Task, reason: &str) -> Result<Task> {
-    let held = task.status == TaskStatus::Escalated.as_str();
-    if !held && task.status != TaskStatus::Cancelled.as_str() {
+    let held = [TaskStatus::Escalated, TaskStatus::Failed];
+    if !is_in(&held, &task.status) && task.status != TaskStatus::Cancelled.as_str() {
         bail!(
             "{} is {}; only a held task is requeued",
             task.short(),
@@ -1642,8 +1824,18 @@ fn requeue_by_operator_in(conn: &Connection, task: &Task, reason: &str) -> Resul
     if task.is_parked() {
         resume_parked_worktree(conn, task)?;
     }
-    let text = format!("{} is queued again by the operator: {reason}", task.short());
-    let was_cancelled = get(conn, &task.task_id)?.status == TaskStatus::Cancelled.as_str();
+    let now_row = get(conn, &task.task_id)?;
+    let was_cancelled = now_row.status == TaskStatus::Cancelled.as_str();
+    // The requeue of a `failed` task is its 1 replan (MAP.md, Q12).
+    let replan = now_row.status == TaskStatus::Failed.as_str();
+    let text = if replan {
+        format!(
+            "{} is queued again for its 1 replan: {reason}",
+            task.short()
+        )
+    } else {
+        format!("{} is queued again by the operator: {reason}", task.short())
+    };
     util::transition(
         conn,
         Entity::Task,
@@ -1655,10 +1847,12 @@ fn requeue_by_operator_in(conn: &Connection, task: &Task, reason: &str) -> Resul
     conn.execute(
         "UPDATE tasks SET held_reason = NULL, attempt_floor = attempts,
             current_worker_id = NULL, summary = CASE WHEN ?3 THEN NULL ELSE summary END,
-            finished_at = NULL, updated_at = ?2
+            finished_at = NULL, not_before = NULL, due_at = NULL,
+            replans = replans + CASE WHEN ?4 THEN 1 ELSE 0 END, updated_at = ?2
          WHERE task_id = ?1",
-        params![task.task_id, now, was_cancelled],
+        params![task.task_id, now, was_cancelled, replan],
     )?;
+    needs_you::resolve(conn, &escalated_key(&task.task_id))?;
     // The newest abandoned worktree whose folder is still there.
     let kept: Option<(String, String)> = optional(conn.query_row(
         &format!(

@@ -10,7 +10,7 @@
 //!   deletes the lease: [`schedule_retry`] and [`escalate_task`].
 //! - I4 at the claim: [`refuse_second_attempt`].
 //! - I1, process part: [`finish_exited`]. Each dead attempt goes through
-//!   [`end_attempt`], then [`schedule_retry`] or [`escalate_task`].
+//!   [`end_attempt`], then rung 6 ([`schedule_retry`]).
 //! - I5: [`mark_orphans`].
 
 use anyhow::{bail, Result};
@@ -22,9 +22,11 @@ use crate::fleetd::ideas::application::needs_you::{self, NeedsYouList};
 use crate::fleetd::ideas::domain::needs_you::Write;
 use crate::fleetd::task_execution::adapters::sqlite as store;
 use crate::fleetd::task_execution::application::lease;
+use crate::fleetd::task_execution::application::retry::{self, Policy};
+use crate::fleetd::task_execution::domain::retry::Outcome;
 use crate::fleetd::task_execution::domain::task::{
-    attempt_id, dead_attempts, held_attempt, orphans, AfterFailure, AttemptRow, AttemptState,
-    Facts, KeptPane, Reap, Recorded, RowRef, Stop,
+    attempt_id, dead_attempts, held_attempt, orphans, AttemptRow, AttemptState, Facts, KeptPane,
+    Reap, Recorded, RowRef, Stop,
 };
 use crate::taskledger::model::{Actor, EventKind, WorkerStatus};
 use crate::taskledger::workers::{self, Worker};
@@ -144,14 +146,18 @@ pub fn attempt_live(
     Ok(())
 }
 
-/// `ScheduleRetry`: task `task_id` is queued again, first in line.
+/// `ScheduleRetry`, rung 6 with the design numbers: the attempt of task
+/// `task_id` crashed. The task waits for its backoff in `ready`, first in
+/// line, or goes to `failed` or `escalated`
+/// ([`retry::burn_attempt`]).
 pub fn schedule_retry(tx: &Connection, task_id: &str, why: &str) -> Result<()> {
     check_open(tx)?;
-    tasks::schedule_retry(tx, task_id, why)?;
+    retry::burn_attempt(tx, task_id, Outcome::Crashed, &Policy::default(), why)?;
     lease::release(tx, task_id)
 }
 
-/// `EscalateTask`: task `task_id` is held for the operator.
+/// `EscalateTask`: task `task_id` is held for the operator, through
+/// `failed`.
 pub fn escalate_task(tx: &Connection, task_id: &str) -> Result<()> {
     check_open(tx)?;
     tasks::escalate(tx, task_id)?;
@@ -167,10 +173,8 @@ pub fn finish_exited(tx: &Connection, facts: &Facts) -> Result<Vec<Stop>> {
     for reap in dead_attempts(&rows, facts) {
         stops.extend(end_attempt(tx, &reap)?);
         let why = format!("the process of attempt {} is gone", reap.attempt);
-        match &reap.task {
-            Some((task, AfterFailure::Retry)) => schedule_retry(tx, task, &why)?,
-            Some((task, AfterFailure::Escalate)) => escalate_task(tx, task)?,
-            None => {}
+        if let Some((task, _)) = &reap.task {
+            schedule_retry(tx, task, &why)?;
         }
     }
     Ok(stops)
@@ -466,7 +470,7 @@ mod tests {
     }
 
     #[test]
-    fn dead_process_at_max_attempts_holds_the_task() {
+    fn dead_process_at_max_attempts_fails_the_task_for_its_replan() {
         let mut l = fixture();
         let task = l.add_task();
         l.store
@@ -482,9 +486,10 @@ mod tests {
 
         l.finish_exited(&l.facts(&[]));
 
+        // L4: no attempt left. Rung 6: failed, for its 1 replan.
         let t = tasks::get(l.store.conn(), &task).unwrap();
-        assert_eq!(t.status, TaskStatus::Escalated.as_str());
-        assert!(t.held_reason.is_some(), "held at max_attempts (L4)");
+        assert_eq!(t.status, TaskStatus::Failed.as_str());
+        assert_eq!(t.held_reason, None);
     }
 
     #[test]

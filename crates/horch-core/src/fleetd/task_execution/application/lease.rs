@@ -920,9 +920,14 @@ mod tests {
             })
             .unwrap();
         assert_eq!(l.leases(), vec![], "a ready task holds no lease");
+        // Past the retry backoff of 30 s on the fleet clock (rung 6).
+        l.store
+            .conn()
+            .execute("UPDATE fleetd SET fleet_clock_s = 30 WHERE id = 1", [])
+            .unwrap();
         let (again, _) = l.claimed();
         assert_eq!(again, task);
-        l.check_i1(10);
+        l.check_i1(40);
         assert_eq!(breaches(&l), Vec::<String>::new());
         assert_eq!(l.leases()[0].attempt_id, format!("{task}/A2"));
     }
