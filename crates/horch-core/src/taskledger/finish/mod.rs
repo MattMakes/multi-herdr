@@ -522,14 +522,22 @@ pub(crate) fn live_attempt(conn: &Connection, worker_id: &str) -> Result<Option<
 /// Run [`create_and_wait`] for `lease` on the ledger of `store`, with the
 /// config of its fleet. It gives the id of the tree.
 pub(crate) fn lease_tree(store: &Store, jobs: &dyn RunJob, lease: &Lease<'_>) -> Result<String> {
-    let config = create::fleet_config(store.path())?;
+    lease_and_wait(store.path(), jobs, lease)
+}
+
+/// The custody setup of a command that needs a tree: the config of the
+/// fleet of the ledger `ledger`, the job context of a command, its own
+/// connection, then [`create_and_wait`] for `lease`. It gives the id of the
+/// tree. `horch ledger worktree new` and `horch worktree restore` call it.
+pub fn lease_and_wait(ledger: &Path, jobs: &dyn RunJob, lease: &Lease<'_>) -> Result<String> {
+    let config = create::fleet_config(ledger)?;
     let ctx = JobCtx {
         guard: None,
         config: &config,
         needs_you: &NeedsYouList,
     };
-    let mut conn = Connection::open(store.path())
-        .with_context(|| format!("opening the task ledger {}", store.path().display()))?;
+    let mut conn = Connection::open(ledger)
+        .with_context(|| format!("opening the task ledger {}", ledger.display()))?;
     conn.busy_timeout(BUSY_TIMEOUT)?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     create::create_and_wait(&mut conn, &ctx, jobs, lease)

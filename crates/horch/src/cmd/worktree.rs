@@ -2,27 +2,23 @@
 
 use std::path::PathBuf;
 
-use anyhow::{anyhow, bail, Context, Result};
-use horch_core::fleetd::fleet_runtime::application::jobs::JobCtx;
+use anyhow::{anyhow, bail, Result};
 use horch_core::fleetd::fleet_runtime::application::ledger::{transition, Cause};
 use horch_core::fleetd::fleet_runtime::domain::ledger::Entity;
 use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
 use horch_core::fleetd::worktree_custody::adapters::sqlite::NewWorktree;
-use horch_core::fleetd::worktree_custody::application::create::{
-    self, create_and_wait, JobProcess, Lease,
-};
+use horch_core::fleetd::worktree_custody::application::create::{JobProcess, Lease};
 use horch_core::fleetd::worktree_custody::application::queries::{
     self, DiskTotal, RescueSource, WorktreeView,
 };
 use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger;
+use horch_core::taskledger::finish::lease_and_wait;
 use horch_core::taskledger::git::Git;
 use horch_core::taskledger::model::{Actor, WorktreeStatus};
-use horch_core::taskledger::store::BUSY_TIMEOUT;
 use horch_core::taskledger::triage::{self, human_bytes, Measure};
 use horch_core::taskledger::util;
 use horch_core::vcs::landing::{ClaimState, Landing, Skipped, Unregistered};
-use rusqlite::{Connection, TransactionBehavior};
 
 use super::messaging;
 use super::taskledger::{resolve_run, RunArg};
@@ -291,14 +287,14 @@ fn wake_for_finish(
 pub fn restore(ctx: &RuntimeContext, name: &str) -> Result<()> {
     let git = Git::new(&ctx.bins.harness.git);
     let root = triage_root(ctx, &git)?;
-    let store = taskledger::open(ctx)?;
+    let mut store = taskledger::open(ctx)?;
     // A project with no single active run has no `T<seq>` to look up; a
     // worktree id needs no run.
     let run = resolve_run(ctx, &store, &RunArg::default()).ok();
     let source =
         queries::rescue_source(store.conn(), run.as_ref().map(|r| r.run_id.as_str()), name)?;
     let line = match source {
-        Some(source) => restore_rescue(&store, &git, &source)?,
+        Some(source) => restore_rescue(&mut store, &git, &source)?,
         None => triage::apply::restore(&store, &git, &root, name)?,
     };
     println!("{line}");
@@ -309,7 +305,11 @@ pub fn restore(ctx: &RuntimeContext, name: &str) -> Result<()> {
 /// its tree `<project>/.worktrees/rescue-T<seq>-<n>`, through the
 /// `worktree_add` job of custody. It refuses, and changes nothing, when the
 /// branch or the folder exists.
-fn restore_rescue(store: &taskledger::Store, git: &Git, source: &RescueSource) -> Result<String> {
+fn restore_rescue(
+    store: &mut taskledger::Store,
+    git: &Git,
+    source: &RescueSource,
+) -> Result<String> {
     let repo = PathBuf::from(&source.row.repo_root);
     let slug = format!("T{}-{}", source.seq, source.n);
     let branch = format!("rescue/{slug}");
@@ -342,18 +342,8 @@ fn restore_rescue(store: &taskledger::Store, git: &Git, source: &RescueSource) -
         from: None,
         new: Some(&new),
     };
-    let config = create::fleet_config(store.path())?;
-    let ctx = JobCtx {
-        guard: None,
-        config: &config,
-        needs_you: &NeedsYouList,
-    };
-    let mut conn = Connection::open(store.path())
-        .with_context(|| format!("opening the task ledger {}", store.path().display()))?;
-    conn.busy_timeout(BUSY_TIMEOUT)?;
-    conn.pragma_update(None, "foreign_keys", "ON")?;
-    let id = create_and_wait(&mut conn, &ctx, &JobProcess::of_this_process()?, &lease)?;
-    unowned(&mut conn, &id)?;
+    let id = lease_and_wait(store.path(), &JobProcess::of_this_process()?, &lease)?;
+    unowned(store, &id)?;
     Ok(format!(
         "restored {} on {branch} at {}",
         source.rescue_ref,
@@ -365,23 +355,23 @@ fn restore_rescue(store: &taskledger::Store, git: &Git, source: &RescueSource) -
 /// The tree is for the operator, not for an attempt: the reconciler leaves
 /// a `created` tree as it is, but it orphans an `active` tree with no
 /// owner (MAP.md of fleetd-p3, Q10 and Q23).
-fn unowned(conn: &mut Connection, id: &str) -> Result<()> {
-    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let cause = Cause {
-        actor: Actor::Operator,
-        text: "horch worktree restore gives it to the operator, with no owner",
-    };
-    transition(
-        &tx,
-        None,
-        Entity::Worktree,
-        id,
-        "created",
-        cause,
-        &NeedsYouList,
-    )?;
-    tx.commit()?;
-    Ok(())
+fn unowned(store: &mut taskledger::Store, id: &str) -> Result<()> {
+    store.immediate(|tx| {
+        let cause = Cause {
+            actor: Actor::Operator,
+            text: "horch worktree restore gives it to the operator, with no owner",
+        };
+        transition(
+            tx,
+            None,
+            Entity::Worktree,
+            id,
+            "created",
+            cause,
+            &NeedsYouList,
+        )?;
+        Ok(())
+    })
 }
 
 /// `horch worktrees [--json]`: 1 line for each tree that is not `removed`,
