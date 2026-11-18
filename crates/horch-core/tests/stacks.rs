@@ -303,6 +303,7 @@ impl World {
         };
         let written = jobs::run_job(&ctx, &mut self.conn, id, me, &checks).unwrap();
         assert!(written.is_some(), "the job process wrote its result");
+        jobs::end_from_files(&ctx, &mut self.conn).unwrap();
     }
 
     /// 1 pass of the stacks.
