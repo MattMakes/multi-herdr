@@ -7,7 +7,7 @@
 //! [`CliWorktreeGit`] runs git with the rights of fleetd and with no
 //! sandbox, so git starts no hook and no program of the project (the fleetd
 //! git rule, review F4 of T-607). Each of its calls goes through
-//! [`CliWorktreeGit::git`].
+//! `CliWorktreeGit::checked`.
 
 use std::path::{Path, PathBuf};
 
@@ -62,7 +62,9 @@ pub struct TreeFacts {
     /// The size of the folder in bytes. The main tree of the repository
     /// has no size: it is not a tree of custody.
     pub bytes: Option<u64>,
-    /// Why git gave no fact of the tree.
+    /// The error of git when it could not read the tree. A path that is
+    /// absent, or that is not the top of a work tree, has no git fact and no
+    /// error.
     pub error: Option<String>,
 }
 
@@ -71,7 +73,8 @@ pub struct TreeFacts {
 pub struct ListResult {
     /// Each entry of `git worktree list --porcelain`, in its order.
     pub entries: Vec<ListEntry>,
-    /// The facts of each entry, then of each row with no entry.
+    /// The facts of each entry that is not bare, then of each row with no
+    /// entry.
     pub trees: Vec<TreeFacts>,
 }
 
@@ -360,13 +363,18 @@ impl CliWorktreeGit {
         CliWorktreeGit { runner }
     }
 
-    /// The 1 way this adapter runs git: first refuse a key of the project
-    /// config that starts a program, then run `git <args>` in `dir` with the
-    /// keys of [`SAFE_CONFIG`]. A non-zero exit is an error with the message
-    /// of git.
-    fn git(&self, dir: &Path, args: &[&str]) -> Result<String> {
+    /// The 1 way this adapter runs a git command: first refuse a key of the
+    /// project config that starts a program, then run `git <args>` in `dir`
+    /// with the keys of [`SAFE_CONFIG`], whatever its exit code.
+    fn checked(&self, dir: &Path, args: &[&str]) -> Result<GitOutput> {
         self.refuse_project_programs(dir)?;
-        let out = self.safe(dir, args)?;
+        self.safe(dir, args)
+    }
+
+    /// [`CliWorktreeGit::checked`], where a non-zero exit is an error with
+    /// the message of git.
+    fn git(&self, dir: &Path, args: &[&str]) -> Result<String> {
+        let out = self.checked(dir, args)?;
         if out.status != 0 {
             bail!(
                 "git {} failed in {}: {}",
@@ -472,8 +480,7 @@ impl WorktreeGitGateway for CliWorktreeGit {
 
     fn branch_exists(&self, repo: &Path, branch: &str) -> Result<bool> {
         let full = format!("refs/heads/{branch}");
-        self.refuse_project_programs(repo)?;
-        let out = self.safe(repo, &["show-ref", "--verify", "--quiet", &full])?;
+        let out = self.checked(repo, &["show-ref", "--verify", "--quiet", &full])?;
         match out.status {
             0 => Ok(true),
             1 => Ok(false),
