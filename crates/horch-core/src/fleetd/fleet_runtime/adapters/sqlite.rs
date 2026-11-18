@@ -383,6 +383,60 @@ pub fn fact_data(
         .flatten())
 }
 
+/// 1 fact event, as [`facts_of`] and [`facts_after`] read it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FactRow {
+    pub event_id: i64,
+    pub entity_id: String,
+    pub cause: String,
+    pub data_json: String,
+}
+
+const FACT_COLUMNS: &str = "event_id, entity_id, cause, data_json";
+
+fn fact_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<FactRow> {
+    Ok(FactRow {
+        event_id: r.get(0)?,
+        entity_id: r.get(1)?,
+        cause: r.get(2)?,
+        data_json: r.get(3)?,
+    })
+}
+
+/// The events of kind `kind` with no state change about the row `id` of
+/// `entity`, oldest first.
+pub fn facts_of(
+    conn: &Connection,
+    entity: Entity,
+    id: &str,
+    kind: EventKind,
+) -> Result<Vec<FactRow>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {FACT_COLUMNS} FROM events
+         WHERE entity = ?1 AND entity_id = ?2 AND kind = ?3 AND to_state IS NULL
+         ORDER BY event_id"
+    ))?;
+    let rows = stmt.query_map(params![entity.as_str(), id, kind.as_str()], fact_row)?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// The events of kind `kind` with no state change about rows of `entity`
+/// after the event `after`, oldest first.
+pub fn facts_after(
+    conn: &Connection,
+    entity: Entity,
+    kind: EventKind,
+    after: i64,
+) -> Result<Vec<FactRow>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {FACT_COLUMNS} FROM events
+         WHERE event_id > ?1 AND entity = ?2 AND kind = ?3 AND to_state IS NULL
+         ORDER BY event_id"
+    ))?;
+    let rows = stmt.query_map(params![after, entity.as_str(), kind.as_str()], fact_row)?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 /// The stamp of the last `transition` event that moved the row `id` of
 /// `entity` to 1 of `states`, or `None` when no event did.
 pub fn entered_at(
