@@ -90,6 +90,7 @@ in `harness/capabilities.rs`.
 |---|---|
 | `agentlist.rs` | `horch agent-list` |
 | `balancecmd.rs` | `horch balance` |
+| `branchcmd.rs` | `horch branch abandon` (not built yet) |
 | `channel.rs` | `horch channel serve` (hidden; the worker-report channel relay, an MCP stdio server) |
 | `compact.rs` | `horch compact` |
 | `context.rs` | `horch context` |
@@ -97,6 +98,7 @@ in `harness/capabilities.rs`.
 | `cost/` | the report tables and rendering of `horch cost` |
 | `delivery_probe.rs` | the delivery checks of `horch fleet` and `horch doctor` |
 | `doctor.rs` | `horch doctor` |
+| `featurecmd.rs` | `horch feature abandon` (not built yet) |
 | `fleetd.rs` | `horch fleetd` (the fleet daemon: the composition root of its pass) and `horch fleetd check` (restarts a gone, hung or older fleetd; each `horch` command makes the same check first) |
 | `install.rs` | `horch install` (copies `horch`, and deletes a retired `multi-herdr-dataset`) |
 | `jobcmd.rs` | `horch job requeue`, and `horch job run` (hidden; the job process that fleetd starts) |
@@ -109,7 +111,9 @@ in `harness/capabilities.rs`.
 | `mode.rs` | `horch mode` (switches a Codex pane between write and plan) |
 | `quotacmd.rs` | `horch quota` |
 | `recipes.rs` | `horch fleet`, `horch orchestration`, `horch pane-launch` (hidden) |
+| `rescuecmd.rs` | `horch rescue drop` (not built yet) |
 | `restore.rs` | herdr's agent session restore: the restored pane's identity, and the warning in `fleet` and `doctor` |
+| `resultcmd.rs` | `horch result`: writes `result.json` of an attempt; `--check` tests the Stop hooks (not built yet) |
 | `route.rs` | `horch route` |
 | `selfupdate.rs` | `horch self-update`, and the stale-version warning at boot |
 | `skillscmd.rs` | `horch skills` |

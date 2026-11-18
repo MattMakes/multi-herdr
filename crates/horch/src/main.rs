@@ -602,6 +602,27 @@ enum ToolCommand {
         command: cmd::taskcmd::TaskCommand,
     },
 
+    /// Write `result.json` of this attempt. `--check` tests the Stop hooks.
+    Result(cmd::resultcmd::ResultArgs),
+
+    /// The commands of the operator on 1 feature: `horch feature abandon`.
+    Feature {
+        #[command(subcommand)]
+        command: cmd::featurecmd::FeatureCommand,
+    },
+
+    /// The commands of the operator on 1 task branch: `horch branch abandon`.
+    Branch {
+        #[command(subcommand)]
+        command: cmd::branchcmd::BranchCommand,
+    },
+
+    /// The commands of the operator on 1 rescue ref: `horch rescue drop`.
+    Rescue {
+        #[command(subcommand)]
+        command: cmd::rescuecmd::RescueCommand,
+    },
+
     /// Self-verifying checks of the machinery. Run these after installing.
     Smoke {
         #[command(subcommand)]
@@ -1242,6 +1263,10 @@ impl ToolCommand {
             ToolCommand::Fleetd { command } => cmd::fleetd::fleetd(ctx, command),
             ToolCommand::Job { command } => cmd::jobcmd::job(ctx, command),
             ToolCommand::Task { command } => cmd::taskcmd::run(ctx, command),
+            ToolCommand::Result(args) => cmd::resultcmd::run(ctx, args),
+            ToolCommand::Feature { command } => cmd::featurecmd::run(ctx, command),
+            ToolCommand::Branch { command } => cmd::branchcmd::run(ctx, command),
+            ToolCommand::Rescue { command } => cmd::rescuecmd::run(ctx, command),
             ToolCommand::Smoke { command } => cmd::smoke::run(ctx, command),
             ToolCommand::Worker { role } => cmd::worker::worker(ctx, &role),
             ToolCommand::PaneLaunch {
@@ -1682,6 +1707,74 @@ mod tests {
         }
     }
 
+    #[test]
+    fn cli_has_result_feature_branch_and_rescue_commands() {
+        let parse = |argv: &[&str]| Cli::try_parse_from(argv).unwrap().command;
+        let result = parse(&[
+            "horch",
+            "result",
+            "--summary",
+            "s",
+            "--status",
+            "blocked",
+            "--commit",
+            "abc",
+            "--commit",
+            "def",
+            "--file",
+            "a.rs",
+            "--file",
+            "b.rs",
+            "--notes",
+            "n",
+            "--check",
+        ]);
+        match result {
+            Command::Tool(ToolCommand::Result(args)) => {
+                assert_eq!(args.summary.as_deref(), Some("s"));
+                assert_eq!(args.status, Some(cmd::resultcmd::ResultStatus::Blocked));
+                assert_eq!(args.commit, ["abc", "def"]);
+                assert_eq!(args.file, ["a.rs", "b.rs"]);
+                assert_eq!(args.notes.as_deref(), Some("n"));
+                assert!(args.check);
+            }
+            _ => panic!("wrong subcommand"),
+        }
+        match parse(&["horch", "result"]) {
+            Command::Tool(ToolCommand::Result(args)) => {
+                assert!(args.summary.is_none() && args.status.is_none() && !args.check);
+                assert!(args.commit.is_empty() && args.file.is_empty());
+            }
+            _ => panic!("wrong subcommand"),
+        }
+        assert!(Cli::try_parse_from(["horch", "result", "--status", "done"]).is_err());
+        match parse(&["horch", "feature", "abandon", "F-3"]) {
+            Command::Tool(ToolCommand::Feature {
+                command: cmd::featurecmd::FeatureCommand::Abandon { feature },
+            }) => assert_eq!(feature, "F-3"),
+            _ => panic!("wrong subcommand"),
+        }
+        match parse(&["horch", "branch", "abandon", "fleet/r1-T7"]) {
+            Command::Tool(ToolCommand::Branch {
+                command: cmd::branchcmd::BranchCommand::Abandon { branch },
+            }) => assert_eq!(branch, "fleet/r1-T7"),
+            _ => panic!("wrong subcommand"),
+        }
+        match parse(&["horch", "rescue", "drop", "refs/horch/rescue/T7/1"]) {
+            Command::Tool(ToolCommand::Rescue {
+                command: cmd::rescuecmd::RescueCommand::Drop { rescue_ref },
+            }) => assert_eq!(rescue_ref, "refs/horch/rescue/T7/1"),
+            _ => panic!("wrong subcommand"),
+        }
+        for argv in [
+            &["horch", "feature", "abandon"][..],
+            &["horch", "branch", "abandon"],
+            &["horch", "rescue", "drop"],
+        ] {
+            assert!(Cli::try_parse_from(argv).is_err(), "{argv:?}");
+        }
+    }
+
     /// Which flattened group a parsed command landed in.
     fn group_of(command: &Command) -> &'static str {
         match command {
@@ -1790,6 +1883,10 @@ mod tests {
             ("fleetd", false),
             ("job", false),
             ("task", false),
+            ("result", false),
+            ("feature", false),
+            ("branch", false),
+            ("rescue", false),
             ("smoke", false),
             ("worker", true),
             ("pane-launch", true),

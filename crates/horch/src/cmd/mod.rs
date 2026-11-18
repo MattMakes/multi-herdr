@@ -1,11 +1,13 @@
 pub mod agentlist;
 pub mod balancecmd;
+pub mod branchcmd;
 pub mod channel;
 pub mod compact;
 pub mod context;
 pub mod cost;
 pub mod delivery_probe;
 pub mod doctor;
+pub mod featurecmd;
 pub mod fleetd;
 pub mod install;
 pub mod jobcmd;
@@ -16,7 +18,9 @@ pub mod messaging;
 pub mod mode;
 pub mod quotacmd;
 pub mod recipes;
+pub mod rescuecmd;
 pub mod restore;
+pub mod resultcmd;
 pub mod route;
 pub mod selfupdate;
 pub mod sessionscmd;
@@ -38,6 +42,7 @@ pub mod worker;
 pub mod worktree;
 
 use std::path::Path;
+use std::process::ExitCode;
 
 use anyhow::Result;
 use horch_core::roster::Roster;
@@ -80,4 +85,11 @@ pub fn load_roster_unwarned(ctx: &RuntimeContext, explicit: Option<&str>) -> Res
 pub fn path_text(path: Option<&Path>) -> Option<String> {
     path.map(|p| p.to_string_lossy().into_owned())
         .filter(|s| !s.is_empty())
+}
+
+/// The exit of a command that is registered but not built: "not built
+/// yet" on stderr, and exit 2.
+pub fn not_built_yet(command: &str) -> ExitCode {
+    eprintln!("{command}: not built yet");
+    ExitCode::from(2)
 }
