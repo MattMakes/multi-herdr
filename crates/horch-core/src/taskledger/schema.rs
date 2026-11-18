@@ -34,8 +34,12 @@ pub const WORKTREE_PATHS_VERSION: i64 = EVENT_KINDS_VERSION + 1;
 /// (`phase_4`).
 pub const PHASE_4_VERSION: i64 = WORKTREE_PATHS_VERSION + 1;
 
+/// The version of the Phase 5 tables of fleetd, `requests` and
+/// `polite_stops` (`phase_5`).
+pub const PHASE_5_VERSION: i64 = PHASE_4_VERSION + 1;
+
 /// The schema version this binary writes.
-pub const VERSION: i64 = PHASE_4_VERSION;
+pub const VERSION: i64 = PHASE_5_VERSION;
 
 /// A rule that applies to rows this ledger writes, not to imported ones
 /// (section 11.2): `CHECK (origin = 'import' OR <expr>)`.
@@ -1279,6 +1283,39 @@ INSERT INTO features (id, name, branch, primary_branch, state, created_at, updat
     Ok(())
 }
 
+/// Version [`PHASE_5_VERSION`]: the Phase 5 tables of fleetd
+/// (docs/specs/fleetd/design.md, "Ledger"). `requests` has 1 row for each
+/// command request (RR-8), with the class of its kind and how fleetd
+/// authorized it (SR-8). `polite_stops` has 1 row for each process that got
+/// a polite stop, at the fleet clock (MAP.md of fleetd-p5, Q12). The release
+/// backfill of Phase 5 is empty: both tables start empty.
+fn phase_5() -> String {
+    format!(
+        "CREATE TABLE requests (
+    request_id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    payload_sha256 TEXT NOT NULL,
+    caller TEXT NOT NULL,
+    class TEXT NOT NULL CHECK (class IN ('operator','worker')),
+    auth TEXT,
+    state TEXT NOT NULL CHECK (state IN ('pending','applied','refused')),
+    result_json TEXT,
+    reason TEXT,
+    received_at TEXT NOT NULL,
+    decided_at TEXT
+);
+CREATE TABLE polite_stops (
+    pid INTEGER NOT NULL,
+    {PID_START_TYPE}
+    pid_start INTEGER NOT NULL CHECK (typeof(pid_start) = 'integer'),
+    at_s INTEGER NOT NULL,
+    pane TEXT,
+    PRIMARY KEY (pid, pid_start)
+);"
+    )
+}
+
 /// Bring the database to [`VERSION`]. A file from a newer binary is refused:
 /// this one would not know its columns.
 ///
@@ -1480,6 +1517,10 @@ fn migrate_unchecked(
             .context("backfilling the feature and the branches of each run in flight")?;
         no_broken_reference(&tx, PHASE_4_VERSION)?;
     }
+    if due(PHASE_5_VERSION) {
+        tx.execute_batch(&phase_5())
+            .context("adding the requests and polite_stops tables of fleetd")?;
+    }
     tx.pragma_update(None, "user_version", target)?;
     tx.commit()?;
     Ok(())
@@ -1530,7 +1571,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(tables, 32);
+        assert_eq!(tables, 34);
     }
 
     /// A ledger file as version 3 left it, with 1 run.
@@ -1935,7 +1976,7 @@ mod v7_tests {
         ];
         // The Phase 2 step reads the stored text of `tasks`, so it runs on
         // the connection.
-        assert_eq!(steps.len() as i64 + 5, VERSION, "add the new step here");
+        assert_eq!(steps.len() as i64 + 6, VERSION, "add the new step here");
         for sql in steps.iter().take(version as usize) {
             conn.execute_batch(sql).unwrap();
         }
@@ -1953,6 +1994,9 @@ mod v7_tests {
         }
         if version >= PHASE_4_VERSION {
             conn.execute_batch(&phase_4()).unwrap();
+        }
+        if version >= PHASE_5_VERSION {
+            conn.execute_batch(&phase_5()).unwrap();
         }
         conn.execute("INSERT INTO projects VALUES ('p', '/r', 'now')", [])
             .unwrap();
