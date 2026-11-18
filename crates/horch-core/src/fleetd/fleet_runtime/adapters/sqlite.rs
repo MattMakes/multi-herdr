@@ -361,6 +361,28 @@ pub fn has_fact(
     )?)
 }
 
+/// The `data_json` of the first event of kind `kind` with the cause `cause`
+/// about the row `id` of `entity`, or `None` when no event is. The read
+/// scans the table, as [`has_fact`] does.
+pub fn fact_data(
+    conn: &Connection,
+    entity: Entity,
+    id: &str,
+    kind: EventKind,
+    cause: &str,
+) -> Result<Option<String>> {
+    Ok(conn
+        .query_row(
+            "SELECT data_json FROM events
+            WHERE entity = ?1 AND entity_id = ?2 AND kind = ?3 AND cause = ?4
+            ORDER BY event_id LIMIT 1",
+            params![entity.as_str(), id, kind.as_str(), cause],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten())
+}
+
 /// The stamp of the last `transition` event that moved the row `id` of
 /// `entity` to 1 of `states`, or `None` when no event did.
 pub fn entered_at(
