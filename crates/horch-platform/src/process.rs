@@ -7,6 +7,8 @@
 
 use crate::os::process as os;
 use crate::NotSupported;
+use std::io;
+use std::path::Path;
 use std::time::SystemTime;
 
 /// The pid as the OS takes it. 0 and values above `i32::MAX` name a group
@@ -61,6 +63,18 @@ pub fn group_members(pgid: u32) -> Result<Vec<u32>, NotSupported> {
     }
 }
 
+/// The pids of the processes that this user can see whose working folder
+/// is `dir` or a folder in it. Give `dir` as a canonical path: the OS gives
+/// canonical working folders. A process whose working folder cannot be read
+/// is not in the list. `Ok(Err(_))` when the list of processes cannot be
+/// read.
+///
+/// Windows gives [`NotSupported`]: no public API gives the working folder of
+/// another process.
+pub fn cwd_pids_under(dir: &Path) -> Result<io::Result<Vec<u32>>, NotSupported> {
+    os::cwd_pids_under(dir)
+}
+
 /// Field 22, the start time, of a `/proc/<pid>/stat` line.
 #[cfg(target_os = "linux")]
 pub fn parse_stat(stat: &str) -> Option<u64> {
@@ -77,4 +91,35 @@ pub fn stat_field<T: std::str::FromStr>(stat: &str, n: usize) -> Option<T> {
 #[cfg(windows)]
 pub fn filetime_to_system(ticks: u64) -> SystemTime {
     os::filetime_to_system(ticks)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cwd_pids_under_finds_a_child_in_the_folder_and_not_outside_it() {
+        let dir = std::env::temp_dir().join(format!("cwd-pids-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .current_dir(dir.join("sub"))
+            .spawn()
+            .unwrap();
+        let mut seen = Vec::new();
+        for _ in 0..50 {
+            seen = cwd_pids_under(&dir).unwrap().unwrap();
+            if seen.contains(&child.id()) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let other = cwd_pids_under(&dir.join("other")).unwrap().unwrap();
+        child.kill().unwrap();
+        child.wait().unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(seen.contains(&child.id()), "{seen:?}");
+        assert!(!other.contains(&child.id()), "{other:?}");
+    }
 }

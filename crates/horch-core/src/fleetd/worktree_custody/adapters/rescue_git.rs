@@ -133,7 +133,7 @@ fn save(git: &CliWorktreeGit, fleet_root: &Path, row: &WorktreeRow) -> Result<Re
 /// made, so a refused fleet root makes nothing, and the made folder is
 /// checked again: when it is not `<fleet root>/run` or it is in the
 /// project, it is removed and the rescue is refused.
-fn run_folder(fleet_root: &Path, row: &WorktreeRow) -> Result<PathBuf> {
+pub(crate) fn run_folder(fleet_root: &Path, row: &WorktreeRow) -> Result<PathBuf> {
     if fleet_root.components().any(|c| c == Component::ParentDir) {
         bail!("the fleet root {} has a `..`", fleet_root.display());
     }
@@ -207,14 +207,14 @@ fn resolved(path: &Path) -> Result<PathBuf> {
 }
 
 /// A private index file. Its drop deletes it and its lock file.
-struct PrivateIndex {
-    path: PathBuf,
+pub(crate) struct PrivateIndex {
+    pub(crate) path: PathBuf,
 }
 
 impl PrivateIndex {
     /// A new private index at `path`: a file that an earlier run left is
     /// deleted first.
-    fn new(path: PathBuf) -> Result<PrivateIndex> {
+    pub(crate) fn new(path: PathBuf) -> Result<PrivateIndex> {
         let index = PrivateIndex { path };
         for file in index.files() {
             match std::fs::remove_file(&file) {
@@ -242,7 +242,7 @@ impl Drop for PrivateIndex {
 }
 
 /// The commit or object that `rev` names in the repository of `dir`.
-fn rev(git: &CliWorktreeGit, dir: &Path, rev: &str) -> Result<String> {
+pub(crate) fn rev(git: &CliWorktreeGit, dir: &Path, rev: &str) -> Result<String> {
     Ok(git
         .git(dir, &["rev-parse", "--verify", "--end-of-options", rev])?
         .trim()
@@ -251,7 +251,7 @@ fn rev(git: &CliWorktreeGit, dir: &Path, rev: &str) -> Result<String> {
 
 /// The tree of the folder `dir` on `head`, through the private index of
 /// `git`: `read-tree`, `add -A`, `write-tree`. `.gitignore` applies.
-fn snapshot(git: &CliWorktreeGit, dir: &Path, head: &str) -> Result<String> {
+pub(crate) fn snapshot(git: &CliWorktreeGit, dir: &Path, head: &str) -> Result<String> {
     git.git(dir, &["read-tree", head])?;
     git.git(dir, &["add", "-A"])?;
     Ok(git.git(dir, &["write-tree"])?.trim().to_string())

@@ -1,6 +1,8 @@
 //! The concern process for Linux.
 
 use crate::NotSupported;
+use std::io;
+use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub(crate) use crate::unix::process::alive;
@@ -92,4 +94,28 @@ pub(crate) fn group_members(pgid: i32) -> Result<Vec<u32>, NotSupported> {
                 == Some(pgid)
         })
         .collect())
+}
+
+/// Every pid in `/proc` whose link `cwd` is in `dir`. A link that this user
+/// cannot read is not seen.
+pub(crate) fn cwd_pids_under(dir: &Path) -> Result<io::Result<Vec<u32>>, NotSupported> {
+    Ok(cwd_pids(dir))
+}
+
+fn cwd_pids(dir: &Path) -> io::Result<Vec<u32>> {
+    let mut pids = Vec::new();
+    for entry in std::fs::read_dir("/proc")? {
+        let entry = entry?;
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|s| s.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if std::fs::read_link(entry.path().join("cwd")).is_ok_and(|c| c.starts_with(dir)) {
+            pids.push(pid);
+        }
+    }
+    Ok(pids)
 }

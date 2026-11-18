@@ -1,6 +1,10 @@
 //! The concern process for macOS.
 
 use crate::NotSupported;
+use std::ffi::OsStr;
+use std::io;
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub(crate) use crate::unix::process::alive;
@@ -62,4 +66,68 @@ pub(crate) fn group_members(pgid: i32) -> Result<Vec<u32>, NotSupported> {
         .into_iter()
         .filter_map(|p| u32::try_from(p).ok().filter(|p| *p > 0))
         .collect())
+}
+
+pub(crate) fn cwd_pids_under(dir: &Path) -> Result<io::Result<Vec<u32>>, NotSupported> {
+    Ok(all_pids().map(|pids| {
+        pids.into_iter()
+            .filter(|pid| cwd(*pid).is_some_and(|c| c.starts_with(dir)))
+            .filter_map(|pid| u32::try_from(pid).ok())
+            .collect()
+    }))
+}
+
+/// Each pid of the machine, from `proc_listallpids`. The buffer grows
+/// until the list fits, so a list is never cut.
+fn all_pids() -> io::Result<Vec<libc::pid_t>> {
+    // SAFETY: a null buffer of 0 bytes asks for the count only.
+    let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+    if count <= 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut cap = count as usize + 64;
+    loop {
+        let mut pids = vec![0 as libc::pid_t; cap];
+        let bytes = libc::c_int::try_from(std::mem::size_of_val(pids.as_slice()))
+            .map_err(|_| io::Error::other("too many processes"))?;
+        // SAFETY: the buffer holds `bytes` bytes of zeroed pids.
+        let n = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
+        if n <= 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // `n` counts pids. A full buffer can be a cut list: try a larger one.
+        if (n as usize) < cap {
+            pids.truncate(n as usize);
+            pids.retain(|p| *p > 0);
+            return Ok(pids);
+        }
+        cap *= 2;
+    }
+}
+
+/// The working folder of `pid`, or `None` when this user cannot read it.
+fn cwd(pid: libc::pid_t) -> Option<PathBuf> {
+    // SAFETY: `proc_vnodepathinfo` is plain data, and an all-zero value is
+    // valid.
+    let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_vnodepathinfo>() as libc::c_int;
+    // SAFETY: the buffer is a zeroed `proc_vnodepathinfo` of `size` bytes.
+    let n = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDVNODEPATHINFO,
+            0,
+            (&mut info as *mut libc::proc_vnodepathinfo).cast(),
+            size,
+        )
+    };
+    if n != size {
+        return None;
+    }
+    let path = &info.pvi_cdir.vip_path;
+    // SAFETY: `vip_path` is `MAXPATHLEN` contiguous bytes inside `info`.
+    let bytes: &[u8] =
+        unsafe { std::slice::from_raw_parts(path.as_ptr().cast(), std::mem::size_of_val(path)) };
+    let end = bytes.iter().position(|b| *b == 0)?;
+    (end > 0).then(|| PathBuf::from(OsStr::from_bytes(&bytes[..end])))
 }

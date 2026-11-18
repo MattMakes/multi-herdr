@@ -109,3 +109,10 @@ pub(crate) fn parent(_pid: u32) -> Result<Option<u32>, NotSupported> {
 pub(crate) fn group_members(_pgid: i32) -> Result<Vec<u32>, NotSupported> {
     Err(NOT_SUPPORTED)
 }
+
+/// No public Windows API gives the working folder of another process.
+pub(crate) fn cwd_pids_under(
+    _dir: &std::path::Path,
+) -> Result<std::io::Result<Vec<u32>>, NotSupported> {
+    Err(NOT_SUPPORTED)
+}
