@@ -253,7 +253,9 @@ fn seen(conn: &Connection, rows: &[WorktreeRow], facts: &Facts) -> Result<Vec<Se
     for l in &facts.lists {
         for (n, e) in l.result.entries.iter().enumerate() {
             let main = n == 0 || e.bare;
-            if !main && (!scanned(facts, l, &e.path) || removed_after(conn, rows, l, &e.path)?) {
+            if !main
+                && (!scanned(facts, rows, l, &e.path) || removed_after(conn, rows, l, &e.path)?)
+            {
                 continue;
             }
             out.push(Seen {
@@ -268,13 +270,27 @@ fn seen(conn: &Connection, rows: &[WorktreeRow], facts: &Facts) -> Result<Vec<Se
     Ok(out)
 }
 
-/// Whether the folder scan of this pass shows the folder `path` in a work
-/// directory of the repository of `list`.
-fn scanned(facts: &Facts, list: &Listed, path: &str) -> bool {
-    facts
+/// Whether the folder scan of this pass shows the folder `path` of an
+/// entry of `list`. A folder that a row names is scanned by the row; any
+/// other folder of the work directory `<repo>/.worktrees/` is scanned as an
+/// entry. A folder that no row names outside the work directory is not
+/// scanned: the list alone shows it, as the removal rule permits.
+fn scanned(facts: &Facts, rows: &[WorktreeRow], list: &Listed, path: &str) -> bool {
+    let by_row: Vec<Folder> = rows
+        .iter()
+        .filter(|r| r.path == path)
+        .map(|r| folder(facts, &r.worktree_id))
+        .filter(|f| *f != Folder::Unknown)
+        .collect();
+    if !by_row.is_empty() {
+        return by_row.contains(&Folder::Present);
+    }
+    let in_work_dir = Path::new(path).parent() == Some(&Path::new(&list.repo).join(".worktrees"));
+    let in_scan = facts
         .work_dirs
         .iter()
-        .any(|d| d.repo == list.repo && d.folders.iter().any(|f| f == path))
+        .any(|d| d.repo == list.repo && d.folders.iter().any(|f| f == path));
+    in_scan || !in_work_dir
 }
 
 /// Whether a removal of the folder `path` ended after `list` read its
