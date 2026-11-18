@@ -8,6 +8,8 @@ use super::{
     store::{optional, Store},
     tasks, util, workers,
 };
+use crate::fleetd::worktree_custody::adapters::sqlite::{NewWorktree, WorktreeMode};
+use crate::fleetd::worktree_custody::application::create::{JobProcess, Lease, RunJob};
 use anyhow::{bail, Context, Result};
 use rusqlite::params;
 use std::path::{Path, PathBuf};
@@ -32,8 +34,22 @@ pub fn create(
     from: Option<&str>,
     scratch: bool,
 ) -> Result<WorktreeRow> {
+    let jobs = JobProcess::of_this_process()?;
+    create_with(store, git, worker_id, name, from, scratch, &jobs)
+}
+
+/// [`create`], with `jobs` to run the `worktree_add` job.
+pub fn create_with(
+    store: &mut Store,
+    git: &Git,
+    worker_id: &str,
+    name: &str,
+    from: Option<&str>,
+    scratch: bool,
+    jobs: &dyn RunJob,
+) -> Result<WorktreeRow> {
     if !scratch && from.is_none() {
-        return finish::worktree_new(store, git, worker_id, name);
+        return finish::worktree_new_with(store, git, worker_id, name, jobs);
     }
     valid_name(name)?;
     let worker = workers::get(store.conn(), worker_id)?;
@@ -46,6 +62,8 @@ pub fn create(
         .as_deref()
         .map(|id| tasks::get(store.conn(), id))
         .transpose()?;
+    let mut task_id = None;
+    let mut existing = None;
     if !scratch {
         let t = task.as_ref().context("run horch ledger claim first")?;
         if t.current_worker_id.as_deref() != Some(worker_id) {
@@ -54,23 +72,38 @@ pub fn create(
         if !t.uses_worktree() {
             bail!("this task works in the shared checkout");
         }
-        if let Some(wt) = finish::worktree_of(store.conn(), &t.task_id)? {
-            if from.is_some_and(|f| f != wt.base) {
-                bail!(
-                    "existing worktree base is {}; drop it before changing base",
-                    wt.base
-                );
-            }
-            store.immediate(|tx| {
-                tx.execute(
-                    "UPDATE worktrees SET worker_id=?2 WHERE worktree_id=?1",
-                    params![wt.worktree_id, worker_id],
-                )?;
-                Ok(())
-            })?;
-            return finish::worktree(store.conn(), &wt.worktree_id);
-        }
+        task_id = Some(t.task_id.as_str());
+        existing = finish::worktree_of(store.conn(), &t.task_id)?;
     }
+    let new = match &existing {
+        Some(_) => None,
+        None => {
+            let task = if scratch { None } else { task.as_ref() };
+            Some(new_tree(git, &run, task, worker_id, name, from)?)
+        }
+    };
+    let attempt = finish::live_attempt(store.conn(), worker_id)?;
+    let lease = Lease {
+        task_id,
+        worker_id,
+        attempt: attempt.as_deref(),
+        from,
+        new: new.as_ref(),
+    };
+    let id = finish::lease_tree(store, jobs, &lease)?;
+    finish::worktree(store.conn(), &id)
+}
+
+/// The row of a new tree: a task tree on `from`, or a scratch tree when
+/// `task` is `None`. No folder is made here.
+fn new_tree(
+    git: &Git,
+    run: &runs::Run,
+    task: Option<&tasks::Task>,
+    worker_id: &str,
+    name: &str,
+    from: Option<&str>,
+) -> Result<NewWorktree> {
     let root = Path::new(&run.project_root);
     let base = from
         .or(run.run_branch.as_deref())
@@ -80,42 +113,40 @@ pub fn create(
         bail!("invalid base ref");
     }
     let commit = git.rev(root, base)?;
-    let slug = if scratch {
-        format!("_scratch/{name}")
-    } else {
-        format!("T{}-{name}", task.as_ref().unwrap().seq)
+    let (slug, branch) = match task {
+        None => (
+            format!("_scratch/{name}"),
+            format!("fleet-scratch-{}-{name}", run.slug),
+        ),
+        Some(t) => (
+            format!("T{}-{name}", t.seq),
+            format!(
+                "{}-T{}-{name}",
+                run.run_branch.as_deref().unwrap_or("fleet"),
+                t.seq
+            ),
+        ),
     };
     let path = root.join(".worktrees").join(slug);
-    let branch = if scratch {
-        format!("fleet-scratch-{}-{name}", run.slug)
-    } else {
-        format!(
-            "{}-T{}-{name}",
-            run.run_branch.as_deref().unwrap_or("fleet"),
-            task.as_ref().unwrap().seq
-        )
-    };
     if path.exists() || git.branch_exists(root, &branch) {
         bail!("worktree path or branch already exists; pick another name");
     }
-    let id = util::new_id();
-    let path_text = path.to_string_lossy().into_owned();
-    // The SQLite writer lock serializes concurrent creations of the same name.
-    store.immediate(|tx| {
-        git.run(root,&["worktree","add","-b",&branch,&path_text,&commit])?;
-        let persisted=(|| -> Result<()> {
-            tx.execute(&format!("INSERT INTO worktrees (worktree_id,task_id,worker_id,repo_root,path,branch,base,base_commit,status,origin,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,{open},'native',?9)",open=word(WorktreeStatus::Open)),params![id,if scratch {None}else{task.as_ref().map(|t|t.task_id.as_str())},worker_id,run.project_root,path_text,branch,base,commit,util::now()])?;
-            tx.execute("INSERT INTO worktree_modes(worktree_id,run_id,name,scratch) VALUES (?1,?2,?3,?4)",params![id,run.run_id,name,scratch])?;
-            Ok(())
-        })();
-        if let Err(err)=persisted {
-            let _=git.try_run(root,&["worktree","remove",&path_text]);
-            let _=git.try_run(root,&["branch","-d",&branch]);
-            return Err(err);
-        }
-        Ok(())
-    })?;
-    finish::worktree(store.conn(), &id)
+    Ok(NewWorktree {
+        worktree_id: util::new_id(),
+        task_id: task.map(|t| t.task_id.clone()),
+        worker_id: Some(worker_id.to_string()),
+        repo_root: run.project_root.clone(),
+        path: path.to_string_lossy().into_owned(),
+        branch,
+        base: base.to_string(),
+        base_commit: Some(commit),
+        status: WorktreeStatus::Open,
+        mode: Some(WorktreeMode {
+            run_id: run.run_id.clone(),
+            name: name.to_string(),
+            scratch: task.is_none(),
+        }),
+    })
 }
 
 /// Resolve one registered tree by id, exact mode name or final directory component in this run.

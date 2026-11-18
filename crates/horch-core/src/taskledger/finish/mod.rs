@@ -25,11 +25,15 @@ use super::model::{
 };
 use super::runs::{self, Run};
 use super::sql_words::{self, word};
-use super::store::{optional, Store};
+use super::store::{optional, Store, BUSY_TIMEOUT};
 use super::tasks::{self, Task};
 use super::util::{self, About};
 use super::workers::{self, Worker};
+use crate::fleetd::fleet_runtime::application::jobs::JobCtx;
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
+use crate::fleetd::ideas::application::needs_you::NeedsYouList;
+use crate::fleetd::worktree_custody::adapters::sqlite::NewWorktree;
+use crate::fleetd::worktree_custody::application::create::{self, JobProcess, Lease, RunJob};
 
 /// The programs and places the steps use.
 #[derive(Debug, Clone)]
@@ -416,43 +420,55 @@ pub fn worktree_new(
     worker_id: &str,
     name: &str,
 ) -> Result<WorktreeRow> {
-    let (w, task) = held_task(store.conn(), worker_id)?;
+    let jobs = JobProcess::of_this_process()?;
+    worktree_new_with(store, git, worker_id, name, &jobs)
+}
+
+/// [`worktree_new`], with `jobs` to run the `worktree_add` job. The row
+/// commits in `reserved` first, then `git worktree add` runs as a job with
+/// no transaction open (FR-11). It returns after the job passed.
+pub fn worktree_new_with(
+    store: &mut Store,
+    git: &Git,
+    worker_id: &str,
+    name: &str,
+    jobs: &dyn RunJob,
+) -> Result<WorktreeRow> {
+    let (_, task) = held_task(store.conn(), worker_id)?;
     if !task.uses_worktree() {
         bail!(
             "{} works in the shared checkout; it has no worktree",
             task.short()
         );
     }
-    match worktree_of(store.conn(), &task.task_id)? {
-        Some(existing) => reuse_worktree(store, &existing, worker_id),
-        None => create_worktree(store, git, &w, &task, name),
+    let new = match worktree_of(store.conn(), &task.task_id)? {
+        Some(_) => None,
+        None => Some(new_worktree(store, git, worker_id, &task, name)?),
+    };
+    let attempt = live_attempt(store.conn(), worker_id)?;
+    let lease = Lease {
+        task_id: Some(&task.task_id),
+        worker_id,
+        attempt: attempt.as_deref(),
+        from: None,
+        new: new.as_ref(),
+    };
+    let id = lease_tree(store, jobs, &lease)?;
+    if let Some(new) = new.filter(|n| n.worktree_id == id) {
+        made_event(store, &new, &task.run_id)?;
     }
+    worktree(store.conn(), &id)
 }
 
-/// The task's open worktree, now the worker's.
-fn reuse_worktree(
-    store: &mut Store,
-    existing: &WorktreeRow,
-    worker_id: &str,
-) -> Result<WorktreeRow> {
-    store.immediate(|tx| {
-        tx.execute(
-            "UPDATE worktrees SET worker_id = ?2 WHERE worktree_id = ?1",
-            params![existing.worktree_id, worker_id],
-        )?;
-        Ok(())
-    })?;
-    worktree(store.conn(), &existing.worktree_id)
-}
-
-/// A new worktree for the task, on a new branch from the run branch.
-fn create_worktree(
-    store: &mut Store,
+/// The row of a new worktree for the task, on a new branch from the run
+/// branch. No folder is made here.
+fn new_worktree(
+    store: &Store,
     git: &Git,
-    w: &Worker,
+    worker_id: &str,
     task: &Task,
     name: &str,
-) -> Result<WorktreeRow> {
+) -> Result<NewWorktree> {
     let run = runs::get(store.conn(), &task.run_id)?;
     let root = PathBuf::from(&run.project_root);
     let base = run
@@ -477,67 +493,66 @@ fn create_worktree(
         );
     }
     let base_commit = git.rev(&root, &base)?;
-    let path_text = path.to_string_lossy().into_owned();
-    git.run(
-        &root,
-        &["worktree", "add", "-b", &branch, &path_text, &base_commit],
-    )?;
-    let row = WorktreeRow {
+    Ok(NewWorktree {
         worktree_id: util::new_id(),
         task_id: Some(task.task_id.clone()),
-        worker_id: Some(w.worker_id.clone()),
+        worker_id: Some(worker_id.to_string()),
         repo_root: root.to_string_lossy().into_owned(),
-        path: path_text,
+        path: path.to_string_lossy().into_owned(),
         branch,
         base,
         base_commit: Some(base_commit),
-        status: WorktreeStatus::Open.as_str().to_string(),
-        landed_commit: None,
-        bytes_on_disk: None,
-        reason: None,
-    };
-    insert_worktree(store, &row, &task.run_id)
+        status: WorktreeStatus::Open,
+        mode: None,
+    })
 }
 
-/// Record a new worktree of the task in `row.task_id`.
-fn insert_worktree(store: &mut Store, row: &WorktreeRow, run_id: &str) -> Result<WorktreeRow> {
+/// The `live` attempt of `worker_id`, the owner of its tree; `None` for a
+/// worker with no attempt (MAP.md of fleetd-p3, Q23).
+pub(crate) fn live_attempt(conn: &Connection, worker_id: &str) -> Result<Option<String>> {
+    optional(conn.query_row(
+        "SELECT id FROM attempts WHERE worker_id = ?1 AND state = 'live'
+         ORDER BY rowid DESC LIMIT 1",
+        [worker_id],
+        |r| r.get(0),
+    ))
+}
+
+/// Run [`create_and_wait`] for `lease` on the ledger of `store`, with the
+/// config of its fleet. It gives the id of the tree.
+pub(crate) fn lease_tree(store: &Store, jobs: &dyn RunJob, lease: &Lease<'_>) -> Result<String> {
+    let config = create::fleet_config(store.path())?;
+    let ctx = JobCtx {
+        guard: None,
+        config: &config,
+        needs_you: &NeedsYouList,
+    };
+    let mut conn = Connection::open(store.path())
+        .with_context(|| format!("opening the task ledger {}", store.path().display()))?;
+    conn.busy_timeout(BUSY_TIMEOUT)?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    create::create_and_wait(&mut conn, &ctx, jobs, lease)
+}
+
+/// The event of today for a new worktree of the task.
+fn made_event(store: &mut Store, new: &NewWorktree, run_id: &str) -> Result<()> {
     store.immediate(|tx| {
-        tx.execute(
-            &format!(
-                "INSERT INTO worktrees (worktree_id, task_id, worker_id, repo_root, path, branch, base,
-                    base_commit, status, origin, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, {open}, 'native', ?9)",
-                open = word(WorktreeStatus::Open)
-            ),
-            params![
-                row.worktree_id,
-                row.task_id,
-                row.worker_id,
-                row.repo_root,
-                row.path,
-                row.branch,
-                row.base,
-                row.base_commit,
-                util::now()
-            ],
-        )?;
         util::event(
             tx,
             &About {
                 run: Some(run_id),
-                task: row.task_id.as_deref(),
-                worker: row.worker_id.as_deref(),
+                task: new.task_id.as_deref(),
+                worker: new.worker_id.as_deref(),
             },
             Actor::Worker,
             EventKind::Progress,
             &format!(
                 "Worktree {} on branch {} from {}.",
-                row.path, row.branch, row.base
+                new.path, new.branch, new.base
             ),
         )?;
         Ok(())
-    })?;
-    worktree(store.conn(), &row.worktree_id)
+    })
 }
 
 impl Step {

@@ -3,8 +3,11 @@
 //! worktree (trace-fixes D16, ticket 21).
 
 mod i308_support;
+#[path = "common/test_jobs.rs"]
+mod test_jobs;
 
 use std::path::{Path, PathBuf};
+use test_jobs::TestJobs;
 
 use horch_core::taskledger::finish;
 use horch_core::taskledger::model::Actor;
@@ -51,7 +54,7 @@ fn parked_world() -> (World, Run, String, PathBuf) {
         panic!("T-1 is not claimed");
     };
     assert_eq!(c.task.short(), "T-1");
-    let wt = finish::worktree_new(&mut w.store, &w.git, &worker, "feat").unwrap();
+    let wt = finish::worktree_new_with(&mut w.store, &w.git, &worker, "feat", &TestJobs).unwrap();
     let path = PathBuf::from(&wt.path);
     commit(&path, "f.txt", "work\n");
     (w, run, worker, path)

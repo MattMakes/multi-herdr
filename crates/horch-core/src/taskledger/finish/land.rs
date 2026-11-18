@@ -1147,6 +1147,7 @@ pub fn retry_cleanup(store: &mut Store, git: &Git) -> Result<Vec<(String, Outcom
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fleetd::worktree_custody::application::create::TestJobs;
     use crate::taskledger::finish::{self, CodexSandbox, FinishReport, Tools};
     use crate::taskledger::model::Actor;
     use crate::taskledger::runs::{self, NewRun, Run};
@@ -1265,7 +1266,8 @@ mod tests {
                     Ok(id)
                 })
                 .unwrap();
-            let row = finish::worktree_new(&mut store, &tools.git, &worker, "feat").unwrap();
+            let row = finish::worktree_new_with(&mut store, &tools.git, &worker, "feat", &TestJobs)
+                .unwrap();
             let wt = PathBuf::from(&row.path);
             commit(&wt, "feature.txt");
             World {

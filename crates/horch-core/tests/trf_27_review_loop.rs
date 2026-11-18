@@ -3,8 +3,12 @@
 //! and its QUESTION, the diff since the last reviewed tree, stable finding
 //! ids with carried answers and waivers, and the `Review` modes.
 
+#[path = "common/test_jobs.rs"]
+mod test_jobs;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use test_jobs::TestJobs;
 
 use horch_core::taskledger::finish::{self, codesweep, CodexSandbox, FinishReport, Step, Tools};
 use horch_core::taskledger::git::Git;
@@ -136,7 +140,8 @@ impl World {
                 Ok(id)
             })
             .unwrap();
-        let wt = finish::worktree_new(&mut store, &tools.git, &worker, "feat").unwrap();
+        let wt =
+            finish::worktree_new_with(&mut store, &tools.git, &worker, "feat", &TestJobs).unwrap();
         let wt = PathBuf::from(&wt.path);
         commit(&wt, "feature.txt", "work\n");
         World {

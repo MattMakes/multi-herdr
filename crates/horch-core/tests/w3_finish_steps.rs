@@ -3,11 +3,14 @@
 //! #144, #146). Each test pins the outcome text of 1 path, so a refactor
 //! that changes a path fails here.
 
+#[path = "common/test_jobs.rs"]
+mod test_jobs;
 #[path = "common/warm.rs"]
 mod warm;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use test_jobs::TestJobs;
 
 use horch_core::taskledger::finish::{
     self, codesweep, land, CodexSandbox, Ctx, FinishReport, Step, Tools, WorktreeRow,
@@ -154,7 +157,8 @@ impl World {
             t.land_check = check.map(Into::into);
             t.check_none = check.is_none();
         });
-        let wt = finish::worktree_new(&mut self.store, &self.tools.git, &w, "feat").unwrap();
+        let wt = finish::worktree_new_with(&mut self.store, &self.tools.git, &w, "feat", &TestJobs)
+            .unwrap();
         let path = PathBuf::from(&wt.path);
         commit(&path, file, "work\n");
         (w, path)
@@ -724,7 +728,7 @@ fn trf_07_complexity_sweep_runs_clippy_on_a_changed_rust_function() {
     git(&w.root, &["commit", "--quiet", "-m", "crate"]);
     git(&w.root, &["branch", "-f", RUN_BRANCH, "main"]);
     let id = w.claimed("opus", |_| {});
-    let wt = finish::worktree_new(&mut w.store, &w.tools.git, &id, "feat").unwrap();
+    let wt = finish::worktree_new_with(&mut w.store, &w.tools.git, &id, "feat", &TestJobs).unwrap();
     let path = PathBuf::from(&wt.path);
     commit(&path, "src/lib.rs", &RUST_LIB.replace("n += 1", "n += 2"));
     let r = w.finish(&id);
@@ -874,7 +878,7 @@ fn pr_is_not_applicable_when_the_worktree_has_no_commit() {
     // A research task: its worktree holds no commit since the claim, so
     // nothing lands and the PR needs nothing from it (video-lessons T-15).
     let id = w.claimed("opus", |t| t.check_none = true);
-    finish::worktree_new(&mut w.store, &w.tools.git, &id, "feat").unwrap();
+    finish::worktree_new_with(&mut w.store, &w.tools.git, &id, "feat", &TestJobs).unwrap();
     let r = w.finish(&id);
     assert!(r.complete, "{r:?}");
     // A task with 0 commits skips land and pr with the note "no commits".
@@ -1030,7 +1034,7 @@ const NONE: &str = "## Critical\n- none\n## Important\n- none\n## Minor\n- none\
 fn code_sweep_without_a_change_or_a_skill() {
     let mut w = sweep_world();
     let id = w.claimed("opus", |_| {});
-    finish::worktree_new(&mut w.store, &w.tools.git, &id, "feat").unwrap();
+    finish::worktree_new_with(&mut w.store, &w.tools.git, &id, "feat", &TestJobs).unwrap();
     let r = w.finish(&id);
     assert_eq!(step(&r, "code-sweep").status, "not_applicable");
     assert_eq!(note(&r, "code-sweep"), "the branch changes no file");
@@ -1201,7 +1205,7 @@ fn finish_refuses_a_review_task_and_a_task_without_its_worktree() {
         e.to_string(),
         "T-1 has no worktree. Make it with horch ledger worktree new <name>, work and commit there, then run finish"
     );
-    finish::worktree_new(&mut w.store, &w.tools.git, &id, "feat").unwrap();
+    finish::worktree_new_with(&mut w.store, &w.tools.git, &id, "feat", &TestJobs).unwrap();
     commit(&PathBuf::from(w.worktree().path), "feature.txt", "x\n");
     w.finish(&id);
     let run = w.run.clone();
@@ -1392,14 +1396,16 @@ fn the_last_review_in_names_the_author_to_wake() {
 fn worktree_new_refuses_a_shared_task_and_returns_an_existing_worktree() {
     let mut w = World::new(&[StepName::Land], false);
     let shared = w.claimed("opus", |t| t.worktree_mode = WorktreeMode::Shared);
-    let e = finish::worktree_new(&mut w.store, &w.tools.git, &shared, "x").unwrap_err();
+    let e =
+        finish::worktree_new_with(&mut w.store, &w.tools.git, &shared, "x", &TestJobs).unwrap_err();
     assert_eq!(
         e.to_string(),
         "T-1 works in the shared checkout; it has no worktree"
     );
     let id = w.claimed("opus", |_| {});
     std::fs::create_dir_all(w.root.join(".worktrees/T2-taken")).unwrap();
-    let e = finish::worktree_new(&mut w.store, &w.tools.git, &id, "taken").unwrap_err();
+    let e =
+        finish::worktree_new_with(&mut w.store, &w.tools.git, &id, "taken", &TestJobs).unwrap_err();
     assert_eq!(
         e.to_string(),
         format!(
@@ -1407,7 +1413,8 @@ fn worktree_new_refuses_a_shared_task_and_returns_an_existing_worktree() {
             w.root.join(".worktrees/T2-taken").display()
         )
     );
-    let first = finish::worktree_new(&mut w.store, &w.tools.git, &id, "Feat B!").unwrap();
+    let first =
+        finish::worktree_new_with(&mut w.store, &w.tools.git, &id, "Feat B!", &TestJobs).unwrap();
     assert_eq!(first.branch, "fleet/r1-T2-feat-b");
     assert_eq!(first.base, RUN_BRANCH);
     assert_eq!(first.base_commit.as_deref(), Some(w.base.as_str()));
@@ -1429,7 +1436,8 @@ fn worktree_new_refuses_a_shared_task_and_returns_an_existing_worktree() {
         })
         .unwrap();
     let next = w.store.immediate(|tx| worker(tx, &run, "opus")).unwrap();
-    let again = finish::worktree_new(&mut w.store, &w.tools.git, &next, "other").unwrap();
+    let again =
+        finish::worktree_new_with(&mut w.store, &w.tools.git, &next, "other", &TestJobs).unwrap();
     assert_eq!(again.worktree_id, first.worktree_id);
     assert_eq!(again.worker_id.as_deref(), Some(next.as_str()));
 }
