@@ -77,18 +77,27 @@ fn watch_once(h: &Harness, env: &[(&str, &str)]) -> (Output, Value) {
     (o, v)
 }
 
-/// The stand-in agent: a `sleep` process, killed and waited on drop, so a
+/// The stand-in agent: a `sleep` process in its own process group, so a
+/// stop of its group reaches only it. Killed and waited on drop, so a
 /// failed assertion leaks no process.
 struct Agent(Child);
 
 impl Agent {
     fn start() -> Agent {
+        use std::os::unix::process::CommandExt;
         Agent(
             std::process::Command::new("/bin/sleep")
                 .arg("600")
+                .process_group(0)
                 .spawn()
                 .unwrap(),
         )
+    }
+
+    /// Whether the process ended. It reaps an ended process, so that no
+    /// zombie looks alive.
+    fn ended(&mut self) -> bool {
+        matches!(self.0.try_wait(), Ok(Some(_)))
     }
 
     fn pid(&self) -> u32 {
@@ -145,27 +154,81 @@ fn task_row(h: &Harness) -> (String, i64) {
         .unwrap()
 }
 
+/// The fleet clock of the `fleetd` row.
+fn fleet_clock(h: &Harness) -> i64 {
+    let store = Store::open(&db(h)).unwrap();
+    store
+        .conn()
+        .query_row("SELECT fleet_clock_s FROM fleetd WHERE id = 1", [], |r| {
+            r.get(0)
+        })
+        .unwrap()
+}
+
+/// The causes of the moves of the only task to `to`, oldest first.
+fn causes_to(h: &Harness, to: &str) -> Vec<String> {
+    let store = Store::open(&db(h)).unwrap();
+    let mut stmt = store
+        .conn()
+        .prepare("SELECT cause FROM events WHERE entity = 'task' AND to_state = ?1 ORDER BY rowid")
+        .unwrap();
+    stmt.query_map([to], |r| r.get::<_, String>(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+}
+
+/// The time on the fleet clock in which the design catches an idle claim:
+/// stall 300 s, then lease 120 s, under 10 min (FM-3).
+const CATCH_S: i64 = 600;
+
+/// The fleet time between 2 passes of the idle claim test: 6 pass
+/// periods of the default 5 s.
+const STEP_S: i64 = 30;
+
 #[test]
 fn fm3_idle_claim_is_caught_in_under_10_min() {
     check(file!(), "fm3_idle_claim_is_caught_in_under_10_min", || {
         let h = fleet("p0-fm3");
-        let o = ok(&h, &["ledger", "run", "new", "eps"]);
-        let store = Store::open(&db(&h)).unwrap();
-        let run = runs::of_project(store.conn(), &h.project)
-            .unwrap()
-            .pop()
-            .expect("the run");
-        // Today a worker with no progress is reaped after `stall_rounds`
-        // checks of `check_every_s` each.
-        let reap_s = run.check_every_s * run.stall_rounds;
-        assert!(
-            reap_s < 600,
-            "an idle claim is reaped {reap_s} s after its last activity \
-             (check_every_s {} x stall_rounds {}); the design catches it in \
-             under 600 s (stall 300 s, lease 120 s)\n{o}",
-            run.check_every_s,
-            run.stall_rounds
-        );
+        let agent = Agent::start();
+        let w = worker_with_agent(&h, &[], "opus", None, &agent);
+        // The first pass writes the fleetd row and starts the fleet clock.
+        watch_once(&h, &[]);
+        let claim = as_worker(&h, &w, &[], &["ledger", "claim"]);
+        assert!(claim.status.success(), "{}", text(&claim));
+        let claimed = fleet_clock(&h);
+        // The agent stays alive and gives no heartbeat and no output. Each
+        // `watch --once` is a new process, whose tick adds 0, so the test
+        // moves the fleet clock between the passes.
+        let mut seen = Vec::new();
+        loop {
+            h.advance_fleet_clock(STEP_S);
+            let (o, _) = watch_once(&h, &[]);
+            seen.push(text(&o));
+            let waited = fleet_clock(&h) - claimed;
+            let (status, _) = task_row(&h);
+            assert!(
+                waited < CATCH_S || status != "running",
+                "the idle claim is still running {waited} s after its claim on \
+                 the fleet clock; the design catches it in under {CATCH_S} s \
+                 (stall 300 s, lease 120 s)\n{}",
+                seen.join("\n")
+            );
+            if status == "running" {
+                continue;
+            }
+            assert!(
+                ["stalled", "ready", "escalated"].contains(&status.as_str()),
+                "the idle claim left running to {status}\n{}",
+                seen.join("\n")
+            );
+            assert!(
+                !causes_to(&h, "stalled").is_empty(),
+                "the task left running with no move to stalled\n{}",
+                seen.join("\n")
+            );
+            return;
+        }
     });
 }
 
@@ -213,16 +276,16 @@ fn fm5_usage_limited_worker_is_not_reaped_and_burns_no_attempt() {
             let mut h = fleet("p0-fm5");
             let quota = fixtures().join("quota/claude-exhausted-codex-ok.json");
             h.set("HORCH_QUOTA_FILE", quota.to_string_lossy());
-            let agent = Agent::start();
-            let run = ["--check-every", "1", "--stall-rounds", "1"];
-            let w = worker_with_agent(&h, &run, "opus", Some("codex-sol"), &agent);
+            // The wall clock of the fixture, before its 7 d window resets, so
+            // that the claude pool reads as limited on each day of a run.
+            h.set("HORCH_NOW", "2026-09-28T18:00:00Z");
+            let mut agent = Agent::start();
+            let w = worker_with_agent(&h, &[], "opus", Some("codex-sol"), &agent);
             let claim = as_worker(&h, &w, &[], &["ledger", "claim"]);
             assert!(claim.status.success(), "{}", text(&claim));
             let (_, attempts) = task_row(&h);
-            // Run today's checks until a reap is due.
             let mut seen = Vec::new();
             for _ in 0..3 {
-                std::thread::sleep(Duration::from_millis(1100));
                 let (o, v) = watch_once(&h, &[]);
                 let verdict = v[0]["verdict"].as_str().unwrap_or_default().to_string();
                 assert!(
@@ -233,8 +296,27 @@ fn fm5_usage_limited_worker_is_not_reaped_and_burns_no_attempt() {
                 );
                 seen.push(text(&o));
             }
-            let alive = horch_core::procid::alive(agent.pid(), None);
-            assert!(alive, "the agent was stopped\n{}", seen.join("\n"));
+            // The outcome `quota` ends the attempt and stops its process
+            // (MAP.md of fleetd-p2, Q15).
+            let store = Store::open(&db(&h)).unwrap();
+            let outcome: Option<String> = store
+                .conn()
+                .query_row(
+                    "SELECT outcome FROM attempts WHERE worker_id = ?1",
+                    [&w],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                outcome.as_deref(),
+                Some("quota"),
+                "the attempt of the usage-limited agent did not end on the \
+                 usage limit\n{}",
+                seen.join("\n")
+            );
+            wait_for("the stop of the usage-limited agent", || {
+                agent.ended().then_some(())
+            });
             let shown = json_of(&h, &["ledger", "show", "T-1", "--json"]);
             let (status, now) = task_row(&h);
             assert_eq!(now, attempts, "the usage limit burned an attempt\n{shown}");
@@ -248,32 +330,78 @@ fn fm5_usage_limited_worker_is_not_reaped_and_burns_no_attempt() {
     );
 }
 
+/// The wall clock of the claim, and the wall clock after a sleep of 2 h.
+const CLAIMED_AT: &str = "2030-01-01T00:00:00Z";
+const WOKE_AT: &str = "2030-01-01T02:00:00Z";
+
+/// The lease of the only task, minus the fleet clock: the fleet time left.
+fn lease_left(h: &Harness) -> i64 {
+    let store = Store::open(&db(h)).unwrap();
+    store
+        .conn()
+        .query_row(
+            "SELECT l.expires_at - f.fleet_clock_s FROM leases l, fleetd f",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or_else(|e| panic!("the task has no lease on the fleet clock: {e}"))
+}
+
+/// A wall clock 2 h after the claim does not expire the lease: a live
+/// fleetd ticks the fleet clock on the awake clock, not on the wall clock.
+/// That the awake clock stops while the machine sleeps is the unit test
+/// `fleet_clock_does_not_advance_during_sleep_or_downtime` of
+/// `clock_store.rs`. The control at the end proves that the pass expires a
+/// lease once the fleet clock passes it.
 #[test]
 fn sleep_does_not_expire_a_lease() {
     check(file!(), "sleep_does_not_expire_a_lease", || {
-        let h = fleet("p0-sleep");
-        let agent = Agent::start();
+        let mut h = fleet("p0-sleep");
+        let mut agent = Agent::start();
         let w = worker_with_agent(&h, &[], "opus", None, &agent);
-        let claimed = [("HORCH_NOW", "2030-01-01T00:00:00Z")];
+        let claimed = [("HORCH_NOW", CLAIMED_AT)];
         let claim = as_worker(&h, &w, &claimed, &["ledger", "claim"]);
         assert!(claim.status.success(), "{}", text(&claim));
-        // The wall clock after a sleep of 2 h. The agent stays alive.
-        let (o, _) = watch_once(&h, &[("HORCH_NOW", "2030-01-01T02:00:00Z")]);
-        let store = Store::open(&db(&h)).unwrap();
-        let left = store.conn().query_row(
-            "SELECT l.expires_at - f.fleet_clock_s FROM leases l, fleetd f",
-            [],
-            |r| r.get::<_, i64>(0),
+        // No fleetd ran yet: the claim takes its lease at fleet clock 0,
+        // and the first fleetd starts the clock at 0.
+        let before = 0;
+
+        // A fleetd on the wall clock after the sleep runs 3 passes.
+        let root = h.root.join("fleet");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("fleet.toml"), "pass_period_s = 1\n").unwrap();
+        h.set("HORCH_NOW", WOKE_AT);
+        let awake = Instant::now();
+        let mut fleetds = Fleetds::new(&h);
+        fleetds.start(&h, "fleetd");
+        wait_passes(&h, 3);
+        fleetds.kill_current();
+        let awake_s = i64::try_from(awake.elapsed().as_secs()).unwrap() + 1;
+        let log = fleetds.output("fleetd", "stderr");
+
+        let grew = fleet_clock(&h) - before;
+        assert!(
+            grew <= awake_s,
+            "the fleet clock grew {grew} s in {awake_s} s of awake time: it \
+             follows the wall clock\n{log}"
         );
-        let left = left.unwrap_or_else(|e| {
-            panic!(
-                "the task has no lease on the fleet clock: {e}\n{}",
-                text(&o)
-            )
-        });
-        assert!(left > 0, "a sleep of 2 h expired the lease\n{}", text(&o));
-        let (status, _) = task_row(&h);
-        assert_eq!(status, "running", "{}", text(&o));
+        let left = lease_left(&h);
+        assert!(left > 0, "a sleep of 2 h expired the lease\n{log}");
+        assert_eq!(task_row(&h).0, "running", "{log}");
+        assert!(causes_to(&h, "stalled").is_empty(), "{log}");
+        assert!(!agent.ended(), "the agent was stopped\n{log}");
+
+        // The control: the same pass expires the lease once the fleet
+        // clock passes it.
+        h.advance_fleet_clock(left + 1);
+        let (o, _) = watch_once(&h, &[]);
+        assert_eq!(
+            causes_to(&h, "stalled"),
+            [horch_core::fleetd::task_execution::application::lease::LEASE_EXPIRED],
+            "{}",
+            text(&o)
+        );
+        assert_ne!(task_row(&h).0, "running", "{}", text(&o));
     });
 }
 
