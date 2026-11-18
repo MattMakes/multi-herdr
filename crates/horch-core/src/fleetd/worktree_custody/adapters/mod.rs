@@ -5,5 +5,6 @@ pub mod git;
 pub mod memory;
 pub mod remove_git;
 pub mod rescue_git;
+pub mod rescue_refs_git;
 pub mod run_now;
 pub mod sqlite;

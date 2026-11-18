@@ -1362,11 +1362,23 @@ const FLEETD_TABLE_OWNERS: &[(&str, &[&str])] = &[
             "attempts",
             "leases",
             "worker_waits",
+            "ingested",
         ],
     ),
     ("worker_profiles", &[]),
     ("ideas", &["needs_you", "questions"]),
     ("worktree_custody", &["worktrees", "worktree_modes"]),
+    (
+        "integration",
+        &[
+            "features",
+            "branches",
+            "bundles",
+            "bundle_members",
+            "gate_runs",
+            "remote_tips",
+        ],
+    ),
 ];
 
 /// The 1 door: it writes the state of each entity, so it names the tables
