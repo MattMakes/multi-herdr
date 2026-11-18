@@ -13,14 +13,18 @@
 //!   <ref> <old>`. The next `worktree_list` run shows it; a ref that is still
 //!   there is planned again by the next pass.
 //!
-//! No use case deletes a `unique` ref (I10). Over the budget, fleetd
-//! deletes nothing (FM-40).
+//! - [`plan_drop`], [`record_drop`] and [`drop_ref`]: `horch rescue drop
+//!   <ref>` (ticket 43). You plan the drop of 1 ref, its event commits, and
+//!   then the ref is deleted and read back.
+//!
+//! No use case of fleetd deletes a `unique` ref: only your drop does (I10).
+//! Over the budget, fleetd deletes nothing (FM-40).
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::Connection;
 
-use crate::fleetd::fleet_runtime::adapters::sqlite::entered_at;
+use crate::fleetd::fleet_runtime::adapters::sqlite::{self as door, entered_at, Fact};
 use crate::fleetd::fleet_runtime::application::jobs::{JobCtx, NewItem};
 use crate::fleetd::fleet_runtime::application::ledger::Cause;
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
@@ -28,10 +32,11 @@ use crate::fleetd::integration::adapters::sqlite::{self as rows, BranchFact};
 use crate::fleetd::integration::application::ports::{IntegrationGitGateway, RefMove};
 use crate::fleetd::worktree_custody::adapters::rescue_refs_git::RefFacts;
 use crate::fleetd::worktree_custody::adapters::sqlite as store;
+use crate::fleetd::worktree_custody::domain::rescue::REF_PREFIX;
 use crate::fleetd::worktree_custody::domain::rescue_class::{
     self as rules, Class, Content, FeatureRefs, Owner, RefOwner, BUDGET_KEY, ENDED, NEEDS_YOU_KEY,
 };
-use crate::taskledger::model::Actor;
+use crate::taskledger::model::{Actor, EventKind};
 
 /// The rescue ref facts of 1 repository, from its last passed
 /// `worktree_list` run. `refs` is `None` when the run could not list them.
@@ -227,4 +232,89 @@ pub fn delete(git: &dyn IntegrationGitGateway, d: &Deletion) -> Result<Deleted> 
         RefMove::Mismatch { actual: None } => Deleted::Gone,
         RefMove::Mismatch { actual: Some(tip) } => Deleted::Moved(tip),
     })
+}
+
+/// The plan of `horch rescue drop <ref>`: the ref, its tip, its class and
+/// the bytes that only it keeps.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DropPlan {
+    pub deletion: Deletion,
+    pub class: Class,
+    pub bytes: Option<u64>,
+}
+
+/// Plan the drop of the rescue ref `name` of `repo` from `refs`, the facts
+/// of its rescue refs. A name outside `refs/horch/rescue/`, or a ref that
+/// `refs` does not have, is an error.
+pub fn plan_drop(repo: &str, name: &str, refs: &[RefFacts]) -> Result<DropPlan> {
+    if rules::parse(name).is_none() {
+        bail!("{name} is not a rescue ref: horch rescue drop deletes only a ref {REF_PREFIX}<owner>/<n>");
+    }
+    let Some(facts) = refs.iter().find(|r| r.name == name) else {
+        bail!("the rescue ref {name} does not exist in {repo}");
+    };
+    Ok(DropPlan {
+        deletion: Deletion {
+            repo: repo.to_string(),
+            name: name.to_string(),
+            tip: facts.tip.clone(),
+        },
+        class: class(facts),
+        bytes: facts.bytes,
+    })
+}
+
+/// The cause of the event of your drop of a ref at `tip`.
+fn drop_cause(tip: &str) -> String {
+    format!("the operator drops the rescue ref at {tip}")
+}
+
+/// Record your drop of `plan` with 1 event about the ref, in `tx`, before
+/// the effect. `false`, with no write, when that event of the ref at that
+/// tip exists: an earlier drop committed it and died before its effect.
+pub fn record_drop(tx: &Connection, plan: &DropPlan) -> Result<bool> {
+    let d = &plan.deletion;
+    let cause = drop_cause(&d.tip);
+    if door::has_fact(tx, Entity::Worktree, &d.name, EventKind::Note, &cause)? {
+        return Ok(false);
+    }
+    let data = serde_json::json!({
+        "ref": d.name,
+        "tip": d.tip,
+        "class": plan.class.as_str(),
+        "bytes": plan.bytes,
+    });
+    door::append_fact(
+        tx,
+        &Fact {
+            kind: EventKind::Note,
+            entity: Entity::Worktree,
+            id: &d.name,
+            cause: &cause,
+            actor: Actor::Operator,
+            data_json: &data.to_string(),
+        },
+    )?;
+    Ok(true)
+}
+
+/// The effect after the commit of [`record_drop`]: [`delete`], then read
+/// the ref back. A ref at another tip stays, and is an error. So is a ref
+/// that git still reads back.
+pub fn drop_ref(git: &dyn IntegrationGitGateway, d: &Deletion) -> Result<Deleted> {
+    let done = delete(git, d)?;
+    if let Deleted::Moved(tip) = &done {
+        bail!(
+            "the rescue ref {} is now at {tip}, not {}; nothing is deleted",
+            d.name,
+            d.tip
+        );
+    }
+    if let Some(tip) = git.tip(std::path::Path::new(&d.repo), &d.name)? {
+        bail!(
+            "the rescue ref {} still reads back {tip} after its deletion",
+            d.name
+        );
+    }
+    Ok(done)
 }
