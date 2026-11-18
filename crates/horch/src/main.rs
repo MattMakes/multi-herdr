@@ -623,6 +623,15 @@ enum ToolCommand {
         command: cmd::rescuecmd::RescueCommand,
     },
 
+    /// The ideas of the fleet: capture, steer, approve and note.
+    Idea {
+        #[command(subcommand)]
+        command: cmd::idea::IdeaCommand,
+    },
+
+    /// The board of every idea, its state and what it waits on.
+    Ideas(cmd::idea::board::BoardArgs),
+
     /// Print the state and the result of 1 request that a command sent to
     /// fleetd: applied, refused or pending, or "waits for fleetd" for a
     /// request file that fleetd did not read yet. An unknown id exits 1.
@@ -1272,6 +1281,8 @@ impl ToolCommand {
             ToolCommand::Feature { command } => cmd::featurecmd::run(ctx, command),
             ToolCommand::Branch { command } => cmd::branchcmd::run(ctx, command),
             ToolCommand::Rescue { command } => cmd::rescuecmd::run(ctx, command),
+            ToolCommand::Idea { command } => cmd::idea::run(ctx, command),
+            ToolCommand::Ideas(args) => cmd::idea::board::run(ctx, args),
             ToolCommand::Request(args) => cmd::requestcmd::run(ctx, args),
             ToolCommand::Smoke { command } => cmd::smoke::run(ctx, command),
             ToolCommand::Worker { role } => cmd::worker::worker(ctx, &role),
@@ -1893,6 +1904,8 @@ mod tests {
             ("feature", false),
             ("branch", false),
             ("rescue", false),
+            ("idea", false),
+            ("ideas", false),
             ("request", false),
             ("smoke", false),
             ("worker", true),

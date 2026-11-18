@@ -9,6 +9,7 @@ pub mod delivery_probe;
 pub mod doctor;
 pub mod featurecmd;
 pub mod fleetd;
+pub mod idea;
 pub mod install;
 pub mod jobcmd;
 pub mod layoutcmd;

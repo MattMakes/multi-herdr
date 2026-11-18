@@ -174,6 +174,16 @@ in `harness/capabilities.rs`.
 | `doctor.rs` | `horch doctor` |
 | `featurecmd.rs` | `horch feature abandon` (not built yet) |
 | `fleetd.rs` | `horch fleetd` (the fleet daemon: the composition root of its pass) and `horch fleetd check` (restarts a gone, hung or older fleetd; each `horch` command makes the same check first) |
+| `idea/` | `horch idea` and `horch ideas`: 1 file for each subcommand; `mod.rs` holds the subcommand tree |
+| `idea/add.rs` | `horch idea add <text> \| -f <file> \| --direct <ticket file>` (not built yet) |
+| `idea/amend.rs` | `horch idea amend` (not built yet) |
+| `idea/approve.rs` | `horch idea approve` (not built yet) |
+| `idea/board.rs` | `horch ideas` (not built yet) |
+| `idea/cancel.rs` | `horch idea cancel` (not built yet) |
+| `idea/note.rs` | `horch idea note` (not built yet) |
+| `idea/park.rs` | `horch idea park` (not built yet) |
+| `idea/revise.rs` | `horch idea revise` (not built yet) |
+| `idea/show.rs` | `horch idea show` (not built yet) |
 | `install.rs` | `horch install` (copies `horch`, and deletes a retired `multi-herdr-dataset`) |
 | `jobcmd.rs` | `horch job requeue`, and `horch job run` (hidden; the job process that fleetd starts) |
 | `layoutcmd.rs` | `horch layout` |
