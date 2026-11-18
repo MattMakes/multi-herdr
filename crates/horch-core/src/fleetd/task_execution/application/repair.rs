@@ -11,8 +11,10 @@
 //!
 //! - [`start_due`]: part 2 of a pass. Each `conflicted` or `gate_failed`
 //!   branch of a `done` task with no attempt that is not ended, and with no
-//!   repair attempt since it entered its state, gets 1 attempt, at most
-//!   `budget` of them. The bind writes 1 worker row, 1 attempt in
+//!   repair attempt since it entered its state or a counted failure of its
+//!   last one, gets 1 attempt after the backoff, at most `budget` of them.
+//!   At `max_attempts` of the task it gets no attempt, and 1 needs-you item
+//!   opens (ticket 34). The bind writes 1 worker row, 1 attempt in
 //!   `launching` with `via = push`, the fact of its kind (an event with
 //!   `repair` and `branch` in its data) and the lease of its task, in the
 //!   transaction of the pass, before any pane exists. The attempt takes the
@@ -25,14 +27,18 @@
 //!   attempt queues the check of the task as 1 `task_check` job on the tip
 //!   of the branch, and the pass never waits for it. A passed check moves a
 //!   `conflicted` branch to `ready`, and a `gate_failed` branch to
-//!   `verifying`, then `ready`. A failed check moves nothing: ticket 34
-//!   counts it in `repair_attempts` and starts the next attempt.
+//!   `verifying`, then `ready`. A failed check, and an attempt that ended
+//!   with no result (a stall, a crash, a lease expiry), move nothing: each
+//!   adds 1 to `repair_attempts` of the branch, 1 time (ticket 34).
+//! - [`requeue`]: `horch task requeue` of the `done` task sets
+//!   `repair_attempts` of its branch to 0, so the next pass starts 1 more
+//!   attempt with no backoff.
 //!
 //! Each step reads the rows again, so a crash before the commit leaves no
 //! row and the next pass binds 1 attempt, and a crash after the commit
 //! leaves an attempt that the next pass gives its files and its launch.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
@@ -45,9 +51,11 @@ use crate::fleetd::fleet_runtime::application::jobs::{self, JobCtx, JobKey};
 use crate::fleetd::fleet_runtime::application::ledger::{created, record, Cause};
 use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use crate::fleetd::fleet_runtime::domain::jobs::{Kind, State};
-use crate::fleetd::fleet_runtime::domain::ledger::Entity;
+use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
+use crate::fleetd::ideas::application::needs_you;
+use crate::fleetd::ideas::domain::needs_you::Write;
 use crate::fleetd::integration::adapters::exec_bundle::Build;
-use crate::fleetd::integration::adapters::sqlite as rows;
+use crate::fleetd::integration::adapters::sqlite::{self as rows, BranchFact};
 use crate::fleetd::integration::application::bundles::failed_gate;
 use crate::fleetd::integration::application::landing;
 use crate::fleetd::integration::domain::bundle::BundleState;
@@ -58,8 +66,12 @@ use crate::fleetd::task_execution::adapters::sqlite as store;
 use crate::fleetd::task_execution::application::dispatch::{Bound, BoundTree, DispatchCtx};
 use crate::fleetd::task_execution::application::lease;
 use crate::fleetd::task_execution::application::verifier::check_hash;
+use crate::fleetd::task_execution::domain::repair::{
+    next_repair, NextRepair, RepairCount, REPAIR_LIMIT_KIND,
+};
 use crate::fleetd::task_execution::domain::task::{attempt_id, AttemptRow, AttemptState};
 use crate::fleetd::task_execution::domain::verification::input_key;
+use crate::fleetd::worker_profiles::domain::profile::Retry;
 use crate::fleetd::worktree_custody::adapters::sqlite as trees;
 use crate::fleetd::worktree_custody::application::create::{create_worktree, CreateOutcome, Lease};
 use crate::taskledger::finish;
@@ -74,6 +86,13 @@ const REPAIR_KEY: &str = "repair";
 
 /// The cause of the event that records the kind of a repair attempt.
 const REPAIR_CAUSE: &str = "a resolver or fix attempt of a task branch";
+
+/// The cause of the event on a repair attempt that records its counted
+/// failure, with the fleet clock of the count in its data.
+const FAILED_CAUSE: &str = "a resolver or fix attempt failed";
+
+/// The key of the fleet clock of a counted failure in the data of its event.
+const FAILED_AT_KEY: &str = "failed_at";
 
 /// The most lines of the gate output that `START.md` of a fix attempt
 /// shows: its end, where the failure is.
@@ -266,11 +285,31 @@ pub fn start_due(tx: &Connection, ctx: &DispatchCtx<'_>, budget: usize) -> Resul
         bail!("the repair start writes its rows in 1 open transaction of the ledger");
     }
     let mut out = Vec::new();
+    let mut at_limit = BTreeSet::new();
     for r in repairing(tx)? {
-        if out.len() >= budget {
-            break;
+        let failed_at = match newest_repair(tx, &r)? {
+            // The attempt runs, or its result waits for its check.
+            Some(attempt) => match failed_at(tx, &attempt)? {
+                Some(at) => Some(at),
+                None => continue,
+            },
+            None => None,
+        };
+        let count = RepairCount {
+            failed: repair_attempts(tx, &r.branch)?,
+            max_attempts: runs::get(tx, &tasks::get(tx, &r.task_id)?.run_id)?.max_attempts,
+            failed_at,
+        };
+        match next_repair(&count, &Retry::default().backoff_s, ctx.clock.0) {
+            NextRepair::Wait { .. } => continue,
+            NextRepair::Limit => {
+                open_limit_item(tx, &r, &count)?;
+                at_limit.insert(limit_key(&r.branch));
+                continue;
+            }
+            NextRepair::Start => {}
         }
-        if has_open_attempt(tx, &r.task_id)? || newest_repair(tx, &r)?.is_some() {
+        if out.len() >= budget || has_open_attempt(tx, &r.task_id)? {
             continue;
         }
         tx.execute_batch("SAVEPOINT repair_bind")?;
@@ -285,7 +324,152 @@ pub fn start_due(tx: &Connection, ctx: &DispatchCtx<'_>, budget: usize) -> Resul
             }
         }
     }
+    for key in needs_you::open_keys(tx, REPAIR_LIMIT_KIND)? {
+        if !at_limit.contains(&key) {
+            needs_you::resolve(tx, &key)?;
+        }
+    }
     Ok(out)
+}
+
+// ─── the limit ──────────────────────────────────────────────────────────
+
+/// `repair_attempts` of the branch `branch`.
+fn repair_attempts(conn: &Connection, branch: &str) -> Result<i64> {
+    Ok(rows::branch(conn, branch)?.map_or(0, |b| b.repair_attempts))
+}
+
+/// The key of the needs-you item of `branch` at its repair limit.
+fn limit_key(branch: &str) -> String {
+    format!("{REPAIR_LIMIT_KIND}:{branch}")
+}
+
+/// Open the 1 needs-you item of the branch of `r` at its repair limit. A
+/// second open of the same item writes nothing.
+fn open_limit_item(tx: &Connection, r: &Repairing, count: &RepairCount) -> Result<()> {
+    let task = tasks::get(tx, &r.task_id)?;
+    let text = format!(
+        "The task branch {} of {} is {}. {} of {} {} attempts failed, and {} is the \
+         max_attempts of the task. Run `horch task requeue {}` for 1 more attempt, or run \
+         `horch branch abandon {}`.",
+        r.branch,
+        task.short(),
+        r.kind.state().as_str(),
+        count.failed,
+        count.max_attempts,
+        r.kind.as_str(),
+        count.max_attempts,
+        task.short(),
+        r.branch
+    );
+    needs_you::open_item(
+        tx,
+        &Write {
+            key: &limit_key(&r.branch),
+            kind: REPAIR_LIMIT_KIND,
+            entity: Entity::TaskBranch.as_str(),
+            entity_id: &r.branch,
+            text: &text,
+        },
+    )
+}
+
+/// The fleet clock of the counted failure of the repair attempt
+/// `attempt_id`; `None` when no failure of it is counted.
+fn failed_at(conn: &Connection, attempt_id: &str) -> Result<Option<i64>> {
+    let data = door::fact_data(
+        conn,
+        Entity::Attempt,
+        attempt_id,
+        EventKind::Note,
+        FAILED_CAUSE,
+    )?;
+    let Some(data) = data else {
+        return Ok(None);
+    };
+    let v: serde_json::Value = serde_json::from_str(&data)?;
+    v[FAILED_AT_KEY]
+        .as_i64()
+        .map(Some)
+        .with_context(|| format!("the failure event of {attempt_id} has no {FAILED_AT_KEY}"))
+}
+
+/// Count 1 failure of the repair attempt `attempt` of the branch of `b` at
+/// fleet clock `clock`: 1 more `repair_attempts` of the branch, and 1 event
+/// on the attempt. An attempt whose failure is counted counts no more.
+fn count_failure(
+    tx: &Connection,
+    guard: Option<Generation>,
+    clock: FleetSeconds,
+    b: &Repairing,
+    attempt: &str,
+) -> Result<()> {
+    if failed_at(tx, attempt)?.is_some() {
+        return Ok(());
+    }
+    let n = repair_attempts(tx, &b.branch)? + 1;
+    let text = format!("the {} attempt {attempt} failed", b.kind.as_str());
+    rows::set_branch_fact(
+        tx,
+        guard,
+        &b.branch,
+        BranchFact::RepairAttempts(n),
+        by_fleetd(&text),
+    )?;
+    let data = json!({ FAILED_AT_KEY: clock.0, "repair_attempts": n, "branch": b.branch });
+    record(
+        tx,
+        guard,
+        EventKind::Note,
+        Entity::Attempt,
+        attempt,
+        by_fleetd(FAILED_CAUSE),
+        &data,
+    )?;
+    Ok(())
+}
+
+/// Whether the attempt `attempt_id` ended.
+fn attempt_ended(conn: &Connection, attempt_id: &str) -> Result<bool> {
+    let state: String = conn.query_row(
+        "SELECT state FROM attempts WHERE id = ?1",
+        [attempt_id],
+        |r| r.get(0),
+    )?;
+    Ok(state == AttemptState::Ended.as_str())
+}
+
+/// `horch task requeue` of the `done` task `task` for `reason`, in the open
+/// transaction `tx`: each branch of the task that waits for a repair gets
+/// `repair_attempts` at 0, so the next pass starts 1 more attempt with no
+/// backoff, and its needs-you item resolves. The task stays `done`. A
+/// `done` task with no such branch is not held, and the requeue refuses.
+pub fn requeue(
+    tx: &Connection,
+    guard: Option<Generation>,
+    task: &Task,
+    reason: &str,
+) -> Result<Task> {
+    let mine: Vec<Repairing> = repairing(tx)?
+        .into_iter()
+        .filter(|r| r.task_id == task.task_id)
+        .collect();
+    if mine.is_empty() {
+        bail!(
+            "{} is done, and no branch of it waits for a resolver or fix attempt; only a held \
+             task is requeued",
+            task.short()
+        );
+    }
+    let text = format!("horch task requeue: {reason}");
+    for r in &mine {
+        let cause = Cause {
+            actor: Actor::Operator,
+            text: &text,
+        };
+        rows::set_branch_fact(tx, guard, &r.branch, BranchFact::RepairAttempts(0), cause)?;
+    }
+    tasks::get(tx, &task.task_id)
 }
 
 /// The persona of a repair attempt: the persona of its task.
@@ -612,8 +796,9 @@ pub struct Report {
     pub queued: Vec<String>,
     /// The branches that a passed check moved to `ready`.
     pub ready: Vec<String>,
-    /// The branches whose repair result failed its check. Ticket 34 counts
-    /// them.
+    /// The branches whose newest repair attempt failed: its result failed
+    /// its check, or it ended with no result. Each failure adds 1 to
+    /// `repair_attempts` of its branch, 1 time.
     pub failed: Vec<String>,
 }
 
@@ -636,6 +821,12 @@ pub fn observe(r: &Results<'_>, tx: &Connection) -> Result<Report> {
             continue;
         };
         if !has_result(tx, r.fleet_root, &b.task_id, &attempt)? {
+            // An attempt that ended with no result failed: a stall, a
+            // crash, no result or the expiry of its lease.
+            if attempt_ended(tx, &attempt)? {
+                count_failure(tx, r.jobs.guard, r.clock, &b, &attempt)?;
+                report.failed.push(b.branch);
+            }
             continue;
         }
         let Some(tip) = r.tips.get(&b.task_id) else {
@@ -643,7 +834,10 @@ pub fn observe(r: &Results<'_>, tx: &Connection) -> Result<Report> {
         };
         match check(r, tx, &b.task_id, tip)? {
             Checked::Waits => report.queued.push(b.branch),
-            Checked::Failed => report.failed.push(b.branch),
+            Checked::Failed => {
+                count_failure(tx, r.jobs.guard, r.clock, &b, &attempt)?;
+                report.failed.push(b.branch);
+            }
             Checked::Passed => {
                 ready(r, tx, &b, &attempt)?;
                 report.ready.push(b.branch);

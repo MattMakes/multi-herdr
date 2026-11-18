@@ -6,6 +6,15 @@
 //! short resume of the same session with [`REPAIR_LINE`], then exits. The
 //! repair is 1 event on the attempt, written before the resume, so 1
 //! attempt never gets a second repair. The repair burns no attempt.
+//!
+//! The failure limit is the rule of a resolver or fix attempt of a `done`
+//! task (`docs/specs/fleetd/design.md`, "Landing a task branch on its
+//! feature branch", RR-6): each failed attempt adds 1 to `repair_attempts`
+//! of its task branch, and [`next_repair`] says when the next attempt
+//! starts. At `max_attempts` of the task, no attempt starts, and the branch
+//! has 1 item on the needs-you list.
+
+use super::retry;
 
 /// The fixed line of the repair resume.
 pub const REPAIR_LINE: &str = "Write the result of your task now: run `horch result`.";
@@ -66,9 +75,104 @@ pub fn repair_pass<P: RepairPort>(port: &mut P) -> Result<Repaired, P::Error> {
     Ok(Repaired::Resumed(port.resume(REPAIR_LINE)?))
 }
 
+/// The kind of the needs-you item of a task branch at its repair limit.
+/// Its key is `<kind>:<branch>`.
+pub const REPAIR_LIMIT_KIND: &str = "repair_limit";
+
+/// The repair count of 1 task branch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RepairCount {
+    /// `repair_attempts` of the branch.
+    pub failed: i64,
+    /// `max_attempts` of the task.
+    pub max_attempts: i64,
+    /// The fleet clock of the last counted failure of the current need of
+    /// repair; `None` when no attempt of it failed.
+    pub failed_at: Option<i64>,
+}
+
+/// What the repair pass does for 1 branch that waits for a repair.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NextRepair {
+    /// Start the next attempt now.
+    Start,
+    /// The backoff holds the next attempt until this fleet clock.
+    Wait { not_before: i64 },
+    /// The branch is at the limit: no attempt, 1 needs-you item.
+    Limit,
+}
+
+/// The next repair of a branch at fleet clock `clock`. After `failed`
+/// failures, the next attempt waits `backoff_s[failed - 1]` seconds from
+/// the last failure (the backoff of rung 6). A count of 0, after
+/// `horch task requeue`, waits for nothing.
+pub fn next_repair(n: &RepairCount, backoff_s: &[u64], clock: i64) -> NextRepair {
+    if n.failed >= n.max_attempts {
+        return NextRepair::Limit;
+    }
+    let wait = if n.failed > 0 {
+        retry::backoff_s(backoff_s, n.failed)
+    } else {
+        0
+    };
+    let wait = i64::try_from(wait).unwrap_or(i64::MAX);
+    match n.failed_at.map(|at| at.saturating_add(wait)) {
+        Some(not_before) if clock < not_before => NextRepair::Wait { not_before },
+        _ => NextRepair::Start,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const BACKOFF_S: [u64; 3] = [30, 120, 480];
+
+    fn count(failed: i64, failed_at: Option<i64>) -> RepairCount {
+        RepairCount {
+            failed,
+            max_attempts: 4,
+            failed_at,
+        }
+    }
+
+    #[test]
+    fn first_need_of_repair_starts_at_once() {
+        assert_eq!(
+            next_repair(&count(0, None), &BACKOFF_S, 0),
+            NextRepair::Start
+        );
+    }
+
+    #[test]
+    fn each_failure_waits_its_backoff_from_the_failure() {
+        let at = |failed, clock| next_repair(&count(failed, Some(100)), &BACKOFF_S, clock);
+        assert_eq!(at(1, 129), NextRepair::Wait { not_before: 130 });
+        assert_eq!(at(1, 130), NextRepair::Start);
+        assert_eq!(at(2, 219), NextRepair::Wait { not_before: 220 });
+        assert_eq!(at(3, 580), NextRepair::Start);
+    }
+
+    #[test]
+    fn at_max_attempts_no_attempt_starts() {
+        assert_eq!(
+            next_repair(&count(4, Some(0)), &BACKOFF_S, 1_000_000),
+            NextRepair::Limit
+        );
+        let past = RepairCount {
+            max_attempts: 2,
+            ..count(3, None)
+        };
+        assert_eq!(next_repair(&past, &BACKOFF_S, 0), NextRepair::Limit);
+    }
+
+    #[test]
+    fn count_at_0_after_a_requeue_waits_for_nothing() {
+        assert_eq!(
+            next_repair(&count(0, Some(100)), &BACKOFF_S, 100),
+            NextRepair::Start
+        );
+    }
 
     fn due() -> RepairFacts {
         RepairFacts {

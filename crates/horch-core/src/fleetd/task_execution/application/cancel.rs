@@ -42,7 +42,7 @@ use crate::fleetd::fleet_runtime::domain::jobs::{Kind, State};
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 use crate::fleetd::ideas::application::needs_you::NeedsYouList;
 use crate::fleetd::task_execution::adapters::sqlite as store;
-use crate::fleetd::task_execution::application::lease;
+use crate::fleetd::task_execution::application::{lease, repair};
 use crate::fleetd::task_execution::domain::cancel::{
     cancel_path, judge_cancel_allowed, requeue_path, stop_seen, terminal, CancelPath, RequeuePath,
     TASK_CANCELLED,
@@ -370,8 +370,13 @@ pub fn complete_cancels(tx: &Connection, facts: &Facts) -> Result<Vec<String>> {
 /// `horch task requeue` of `task` for `reason`, in the open transaction
 /// `tx`: `escalated` -> `ready` with the attempt count at 0, or the 1
 /// replan of a `failed` task. A parked task resumes on its worktree (row
-/// L5). Each other state refuses.
+/// L5). A `done` task whose branch waits for a resolver or fix attempt
+/// gets `repair_attempts` at 0 and 1 more attempt (ticket 34). Each other
+/// state refuses.
 pub fn requeue(tx: &Connection, jobs: &JobCtx<'_>, task: &Task, reason: &str) -> Result<Task> {
+    if task.status == TaskStatus::Done.as_str() {
+        return repair::requeue(tx, jobs.guard, task, reason);
+    }
     match requeue_path(&task.status, task.replans) {
         RequeuePath::Escalated | RequeuePath::Replan => {
             let t = tasks::requeue_by_operator(tx, task, reason)?;

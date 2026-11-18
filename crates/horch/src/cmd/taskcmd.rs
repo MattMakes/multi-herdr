@@ -22,7 +22,9 @@ use super::taskledger::{project_root, RunArg};
 #[derive(Subcommand)]
 pub enum TaskCommand {
     /// Queue a held task again. An escalated task gets its attempt count
-    /// at 0; a failed task gets its 1 replan. A cancelled task is terminal.
+    /// at 0; a failed task gets its 1 replan. A done task whose branch
+    /// waits for a resolver or fix attempt gets its repair_attempts at 0
+    /// and 1 more attempt. A cancelled task is terminal.
     Requeue {
         task: String,
         reason: String,
@@ -91,4 +93,29 @@ fn task_payload(ctx: &RuntimeContext, task: &str, reason: &str, run: &RunArg) ->
         "task": task,
         "reason": reason,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::{CommandFactory, Parser};
+
+    use super::TaskCommand;
+
+    #[derive(Parser)]
+    struct Cli {
+        #[command(subcommand)]
+        command: TaskCommand,
+    }
+
+    #[test]
+    fn requeue_help_names_the_repair_attempts_of_a_done_task() {
+        let mut cmd = Cli::command();
+        let help = cmd
+            .find_subcommand_mut("requeue")
+            .expect("the requeue subcommand")
+            .render_long_help()
+            .to_string();
+        assert!(help.contains("A done task whose branch"), "{help}");
+        assert!(help.contains("repair_attempts at 0"), "{help}");
+    }
 }
