@@ -208,9 +208,9 @@ fn fm3_idle_claim_is_caught_in_under_10_min() {
             let waited = fleet_clock(&h) - claimed;
             let (status, _) = task_row(&h);
             assert!(
-                waited < CATCH_S || status != "running",
-                "the idle claim is still running {waited} s after its claim on \
-                 the fleet clock; the design catches it in under {CATCH_S} s \
+                waited < CATCH_S,
+                "the idle claim is {status} {waited} s after its claim on the \
+                 fleet clock; the design catches it in under {CATCH_S} s \
                  (stall 300 s, lease 120 s)\n{}",
                 seen.join("\n")
             );
@@ -321,10 +321,27 @@ fn fm5_usage_limited_worker_is_not_reaped_and_burns_no_attempt() {
             let (status, now) = task_row(&h);
             assert_eq!(now, attempts, "the usage limit burned an attempt\n{shown}");
             let persona = shown["task"]["claimable_by"].as_str().unwrap_or_default();
+            // The codex pool of the fixture is not limited, so the task
+            // restarts on the fallback, with 1 new worker and 1 attempt.
+            assert_eq!(
+                (status.as_str(), persona),
+                ("ready", "codex-sol"),
+                "the design moves the task to its fallback codex-sol\n{shown}"
+            );
+            let restart: Vec<String> = store
+                .conn()
+                .prepare(
+                    "SELECT a.state FROM attempts a JOIN workers w ON w.worker_id = a.worker_id
+                     WHERE w.persona = 'codex-sol'",
+                )
+                .unwrap()
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
             assert!(
-                status == "waiting_quota" || persona == "codex-sol",
-                "the task is {status} for {persona}; the design moves it to \
-                 the fallback codex-sol or to waiting_quota\n{shown}"
+                matches!(restart.as_slice(), [s] if s == "launching" || s == "live"),
+                "the fallback has no restart attempt: {restart:?}\n{shown}"
             );
         },
     );
