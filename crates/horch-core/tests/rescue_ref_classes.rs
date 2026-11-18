@@ -94,7 +94,7 @@ fn world() -> World {
         .immediate(|tx| {
             let feature = NewFeature {
                 id: FEATURE,
-                name: Some("r1"),
+                name: Some("rescue-test"),
                 branch: Some(FEATURE_BRANCH),
                 primary_branch: "main",
             };
