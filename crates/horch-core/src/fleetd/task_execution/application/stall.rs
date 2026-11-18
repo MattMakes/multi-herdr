@@ -27,12 +27,12 @@ use crate::fleetd::ideas::domain::needs_you::Write;
 use crate::fleetd::task_execution::adapters::sqlite as store;
 use crate::fleetd::task_execution::application::cancel;
 use crate::fleetd::task_execution::domain::retry::Outcome;
-use crate::fleetd::task_execution::domain::stall::{settle, Decision, Settle};
+use crate::fleetd::task_execution::domain::stall::{settle, Decision, OldProcess, Settle};
 use crate::fleetd::task_execution::domain::task::{
     AttemptRow, AttemptState, Facts, ProcessScope, RowRef, Seen, Stop, Target,
 };
 use crate::taskledger::model::{Actor, EventKind, TaskStatus, WorkerStatus};
-use crate::taskledger::{util, workers};
+use crate::taskledger::{tasks, util, workers};
 
 /// The kind of the needs-you item of an attempt that waits on a dialog.
 const DIALOG: &str = "dialog";
@@ -114,7 +114,9 @@ pub fn apply(
     }
 }
 
-/// A `stalled` task whose old attempt is stopped: rung 6 applies to it.
+/// A `stalled` task whose old processes are each stopped: the pass saw it
+/// dead, or it has the proof of its hard stop ([`settle`]). Rung 6
+/// applies to it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Stopped {
     pub task: String,
@@ -126,20 +128,26 @@ pub struct Stopped {
 
 /// The rule of each `stalled` task at the fleet clock `clock`, in `tx`
 /// ([`settle`]). `facts` holds what the pass saw of each process.
-/// `bound_s` is the stop bound in seconds.
+/// `bound_s` is the stop bound in seconds. `stop_grace_s` is the grace of
+/// a hard stop whose sent mark ([`stop_sent`]) is the proof for a process
+/// that the pass cannot tell.
 ///
 /// - The first pass of a stall writes `tasks.due_at`: the end of the stop
 ///   bound.
 /// - The tasks that rung 6 can move are returned. The caller does rung 6.
-/// - A task whose old process lives past the bound gets 1 needs-you item
-///   and stays `stalled`.
+/// - A task with an old process that is not stopped past the bound gets 1
+///   needs-you item and stays `stalled`.
 /// - A task with a cancel that waits has its own path: `complete_cancels`.
+/// - The item of each task that left `stalled` by another path is
+///   resolved.
 pub fn settle_stalled(
     tx: &Connection,
     clock: i64,
     facts: &Facts,
     bound_s: u64,
+    stop_grace_s: u64,
 ) -> Result<Vec<Stopped>> {
+    resolve_left(tx)?;
     let bound = i64::try_from(bound_s).unwrap_or(i64::MAX);
     let mut out = Vec::new();
     for (task, due_at) in stalled_tasks(tx)? {
@@ -154,12 +162,18 @@ pub fn settle_stalled(
                 t
             }
         };
-        let seen: Vec<Seen> = cancel::watched(tx, &task)?
-            .iter()
-            .map(|p| facts.processes.get(p).copied().unwrap_or(Seen::Unknown))
-            .collect();
+        let mut old = Vec::new();
+        for p in cancel::watched(tx, &task)? {
+            let seen = facts.processes.get(&p).copied().unwrap_or(Seen::Unknown);
+            // Only a process that the pass cannot tell needs the proof.
+            let killed_at = match (seen, p.pid_start) {
+                (Seen::Unknown, Some(start)) => sent_at(tx, (p.pid, start), true)?,
+                _ => None,
+            };
+            old.push(OldProcess { seen, killed_at });
+        }
         let key = format!("{STOP_FAILED}:{task}");
-        match settle(&seen, clock, bound_at) {
+        match settle(&old, clock, bound_at, stop_grace_s) {
             Settle::Wait => {}
             Settle::Stuck => stop_failed(tx, &task, &key, bound_s)?,
             Settle::Rung6 => {
@@ -174,6 +188,85 @@ pub fn settle_stalled(
         }
     }
     Ok(out)
+}
+
+/// Record the sent mark of 1 stop of the process `process` (its pid and
+/// its start time) of the row `row`: part 3 sent it at the fleet clock
+/// `clock`. `kill`: the hard stop, else the polite stop. The row of the
+/// stop came first, in the transaction of the decision. The mark comes
+/// after the signal, so it is the proof that the stop ran (A24). The first
+/// mark of each step stays: a second one is not written.
+pub fn stop_sent(
+    tx: &Connection,
+    guard: Option<Generation>,
+    row: &RowRef,
+    process: (u32, u64),
+    kill: bool,
+    clock: i64,
+) -> Result<()> {
+    if sent_at(tx, process, kill)?.is_some() {
+        return Ok(());
+    }
+    let (entity, id) = match row {
+        RowRef::Worker(id) => (Entity::Worker, id),
+        RowRef::Attempt(id) => (Entity::Attempt, id),
+    };
+    let step = if kill { "hard" } else { "polite" };
+    let text = format!("fleetd sent the {step} stop of process {}", process.0);
+    let data = serde_json::json!({
+        "fleet_clock": clock,
+        "pid": process.0,
+        "pid_start": process.1,
+        "kill": kill,
+    });
+    record(
+        tx,
+        guard,
+        EventKind::Stopped,
+        entity,
+        id,
+        cause(&text),
+        &data,
+    )?;
+    Ok(())
+}
+
+/// The fleet clock of the sent mark of the stop of `process` (its pid and
+/// its start time). `kill`: the mark of the hard stop, else of the polite
+/// stop. `None`: no mark.
+fn sent_at(tx: &Connection, (pid, start): (u32, u64), kill: bool) -> Result<Option<i64>> {
+    let start = i64::try_from(start).unwrap_or(i64::MAX);
+    Ok(tx.query_row(
+        "SELECT min(json_extract(data_json, '$.fleet_clock')) FROM events
+         WHERE kind = ?1 AND entity IN (?2, ?3)
+           AND json_extract(data_json, '$.pid') = ?4
+           AND json_extract(data_json, '$.pid_start') = ?5
+           AND json_extract(data_json, '$.kill') = ?6",
+        rusqlite::params![
+            EventKind::Stopped.as_str(),
+            Entity::Worker.as_str(),
+            Entity::Attempt.as_str(),
+            pid,
+            start,
+            kill
+        ],
+        |r| r.get(0),
+    )?)
+}
+
+/// Resolve the `stop_failed` item of each task that is not `stalled` now,
+/// for example after a cancel moved it to `cancelled`.
+fn resolve_left(tx: &Connection) -> Result<()> {
+    let prefix = format!("{STOP_FAILED}:");
+    for key in needs_you::open_keys(tx, STOP_FAILED)? {
+        let Some(task) = key.strip_prefix(&prefix) else {
+            continue;
+        };
+        if tasks::get(tx, task)?.status != TaskStatus::Stalled.as_str() {
+            needs_you::resolve(tx, &key)?;
+        }
+    }
+    Ok(())
 }
 
 /// Each `stalled` task with no cancel that waits, with its `due_at`.
@@ -200,10 +293,10 @@ fn last_attempt(tx: &Connection, task: &str) -> Result<(String, String)> {
 /// Open the needs-you item `key` of the `stalled` task `task`.
 fn stop_failed(tx: &Connection, task: &str, key: &str, bound_s: u64) -> Result<()> {
     let text = format!(
-        "Task {task} is stalled, and a process of its old attempt is alive {bound_s} s after the \
-         stall. fleetd sent the polite stop and the hard stop. The task stays stalled, so no \
-         new attempt starts beside the old process. Stop the process yourself. The next pass \
-         then moves the task on."
+        "Task {task} is stalled. {bound_s} s after the stall, a process of its old attempt is \
+         alive, or fleetd cannot see it and has no proof of its hard stop. The task stays \
+         stalled, so no new attempt starts beside the old process. Stop the process yourself. \
+         The next pass that sees it gone moves the task on."
     );
     needs_you::open_item(
         tx,
@@ -443,8 +536,23 @@ mod tests {
             ..Facts::default()
         };
         f.store
-            .immediate(|tx| settle_stalled(tx, clock, &facts, 50))
+            .immediate(|tx| settle_stalled(tx, clock, &facts, 50, 20))
             .unwrap()
+    }
+
+    /// The `stop_failed` items that are open.
+    fn stop_items(f: &Fixture) -> Vec<String> {
+        needs_you::open_keys(f.store.conn(), STOP_FAILED).unwrap()
+    }
+
+    /// The sent mark of the stop of the agent at `clock`, as part 3 writes
+    /// it after the signal.
+    fn sent(f: &mut Fixture, kill: bool, clock: i64) {
+        let row = RowRef::Attempt(f.attempt().id);
+        let agent = (AGENT.pid, AGENT.pid_start.unwrap());
+        f.store
+            .immediate(|tx| stop_sent(tx, None, &row, agent, kill, clock))
+            .unwrap();
     }
 
     /// Step 4 of FM-14: the agent lives past the stop bound. The task stays
@@ -481,18 +589,62 @@ mod tests {
         assert!(needs_you::open_items(f.store.conn()).unwrap().is_empty());
     }
 
-    /// The pass cannot tell (`Unknown`, as on a platform that cannot see
-    /// the process): the task waits until the bound, then goes to rung 6.
+    /// F1 of review round 1: the decision of rung 3 is committed, but no
+    /// effect ran, and the pass cannot tell the process. Past the bound the
+    /// task is still `stalled`, with 1 item. Only the sent mark of the hard
+    /// stop and its grace (20 s) release it.
     #[test]
-    fn stalled_task_with_an_unknown_process_moves_at_the_bound() {
+    fn unknown_process_with_no_proof_of_the_hard_stop_stays_stalled() {
         let mut f = fixture();
         f.apply(&Decision::End {
             outcome: Outcome::Stalled,
             stop: true,
         });
         assert_eq!(settle_at(&mut f, 1_300, Seen::Unknown), Vec::new());
-        assert_eq!(settle_at(&mut f, 1_349, Seen::Unknown), Vec::new());
-        assert_eq!(settle_at(&mut f, 1_350, Seen::Unknown).len(), 1);
+        assert_eq!(settle_at(&mut f, 1_400, Seen::Unknown), Vec::new());
+        assert_eq!(f.task().status, "stalled");
+        assert_eq!(stop_items(&f), [format!("stop_failed:{}", f.task)]);
+
+        // The polite stop is no proof.
+        sent(&mut f, false, 1_300);
+        assert_eq!(settle_at(&mut f, 1_500, Seen::Unknown), Vec::new());
+        // The hard stop ran at 1_510: its grace ends at 1_530.
+        sent(&mut f, true, 1_510);
+        sent(&mut f, true, 1_520);
+        assert_eq!(settle_at(&mut f, 1_529, Seen::Unknown), Vec::new());
+        assert_eq!(settle_at(&mut f, 1_530, Seen::Unknown).len(), 1);
+        assert!(stop_items(&f).is_empty());
+        let marks: i64 = f
+            .store
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM events WHERE kind = 'stopped'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(marks, 2, "1 mark for each step");
+    }
+
+    /// F2 of review round 1: a cancel moves a stuck task out of `stalled`;
+    /// the next pass resolves its item.
+    #[test]
+    fn stop_failed_item_is_resolved_when_a_cancel_ends_the_stall() {
+        let mut f = fixture();
+        f.apply(&Decision::End {
+            outcome: Outcome::Stalled,
+            stop: true,
+        });
+        settle_at(&mut f, 1_300, Seen::Alive);
+        settle_at(&mut f, 1_400, Seen::Alive);
+        assert_eq!(stop_items(&f).len(), 1);
+
+        let task = f.task();
+        f.store
+            .immediate(|tx| tasks::cancel(tx, &task, "the operator cancelled it"))
+            .unwrap();
+        assert_eq!(settle_at(&mut f, 1_410, Seen::Alive), Vec::new());
+        assert!(stop_items(&f).is_empty());
     }
 
     #[test]

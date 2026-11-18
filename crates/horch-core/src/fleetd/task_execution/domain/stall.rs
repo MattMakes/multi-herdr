@@ -247,10 +247,11 @@ fn excerpt(screen: Option<&str>) -> String {
 pub enum Settle {
     /// A process of the old attempt can be alive: the task stays `stalled`.
     Wait,
-    /// No process of the old attempt is alive: rung 6.
+    /// The pass saw each process of the old attempts dead: rung 6.
     Rung6,
-    /// A process of the old attempt is alive past the stop bound: the task
-    /// stays `stalled`, and the operator gets 1 needs-you item.
+    /// Past the stop bound, a process of the old attempt is alive, or the
+    /// pass cannot tell: the task stays `stalled`, and the operator gets 1
+    /// needs-you item.
     Stuck,
 }
 
@@ -262,28 +263,37 @@ pub fn stop_bound_s(stop_grace_s: u64, pass_period_s: u64) -> u64 {
     stop_grace_s.saturating_add(pass_period_s).saturating_mul(2)
 }
 
-/// The decision for a `stalled` task at the fleet clock `clock`.
-/// `processes` holds what the pass saw of each process of the attempts of
-/// the task. `bound_at` is the end of the stop bound on the fleet clock.
-/// - Each process is dead, or there is no process: rung 6 at once.
-/// - A process is alive: wait. Past `bound_at` the hard stop did not end
-///   it: [`Settle::Stuck`].
-/// - The pass cannot tell (a process that it did not read, or a platform
-///   that cannot see it): wait until `bound_at`, then rung 6. At
-///   `bound_at` the hard stop was sent and its grace passed, so the old
-///   process is stopped as far as fleetd can stop it.
-pub fn settle(processes: &[Seen], clock: i64, bound_at: i64) -> Settle {
-    let past = clock >= bound_at;
-    if processes.iter().all(|p| *p == Seen::Dead) {
+/// What the pass knows of 1 process of the attempts of a `stalled` task.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OldProcess {
+    /// What the pass saw of the process.
+    pub seen: Seen,
+    /// The fleet clock of the sent mark of its hard stop: part 3 sent the
+    /// hard stop at this time. `None`: no proof of a hard stop.
+    pub killed_at: Option<i64>,
+}
+
+/// The decision for a `stalled` task at the fleet clock `clock`. `old`
+/// holds each process of the attempts of the task. `bound_at` is the end
+/// of the stop bound on the fleet clock.
+/// - Each process is stopped, or there is no process: rung 6 at once.
+/// - Else wait. Past `bound_at`: [`Settle::Stuck`].
+///
+/// A process is stopped when the pass saw it dead. A process that the pass
+/// cannot tell (`Unknown`: the platform cannot read its start time, or the
+/// pass did not read it) is stopped only with proof: the sent mark of its
+/// hard stop, and its grace `stop_grace_s` after that mark. A stop that
+/// was decided but did not run is no proof (A24).
+pub fn settle(old: &[OldProcess], clock: i64, bound_at: i64, stop_grace_s: u64) -> Settle {
+    let stopped = |p: &OldProcess| match p.seen {
+        Seen::Dead => true,
+        Seen::Unknown => p.killed_at.is_some_and(|k| reached(clock, k, stop_grace_s)),
+        Seen::Alive => false,
+    };
+    if old.iter().all(stopped) {
         Settle::Rung6
-    } else if processes.contains(&Seen::Alive) {
-        if past {
-            Settle::Stuck
-        } else {
-            Settle::Wait
-        }
-    } else if past {
-        Settle::Rung6
+    } else if clock >= bound_at {
+        Settle::Stuck
     } else {
         Settle::Wait
     }
@@ -629,15 +639,25 @@ mod tests {
     }
 
     #[test]
-    fn stalled_task_moves_on_only_when_no_old_process_can_be_alive() {
-        let (dead, alive, unknown) = (Seen::Dead, Seen::Alive, Seen::Unknown);
-        assert_eq!(settle(&[], 10, 100), Settle::Rung6);
-        assert_eq!(settle(&[dead, dead], 10, 100), Settle::Rung6);
-        assert_eq!(settle(&[dead, alive], 10, 100), Settle::Wait);
-        assert_eq!(settle(&[dead, alive], 100, 100), Settle::Stuck);
-        assert_eq!(settle(&[dead, unknown], 99, 100), Settle::Wait);
-        assert_eq!(settle(&[dead, unknown], 100, 100), Settle::Rung6);
-        assert_eq!(settle(&[alive, unknown], 100, 100), Settle::Stuck);
+    fn stalled_task_moves_on_only_when_each_old_process_is_stopped() {
+        let p = |seen: Seen, killed_at: Option<i64>| OldProcess { seen, killed_at };
+        let dead = p(Seen::Dead, None);
+        let alive = p(Seen::Alive, Some(10));
+        let unknown = p(Seen::Unknown, None);
+        // The hard stop was sent at 10, and its grace is 20 s.
+        let unknown_killed = p(Seen::Unknown, Some(10));
+        let at = |old: &[OldProcess], clock: i64| settle(old, clock, 100, 20);
+        assert_eq!(at(&[], 10), Settle::Rung6);
+        assert_eq!(at(&[dead, dead], 10), Settle::Rung6);
+        assert_eq!(at(&[dead, alive], 10), Settle::Wait);
+        assert_eq!(at(&[dead, alive], 100), Settle::Stuck);
+        // No proof of a hard stop: never stopped, also past the bound.
+        assert_eq!(at(&[dead, unknown], 99), Settle::Wait);
+        assert_eq!(at(&[dead, unknown], 100), Settle::Stuck);
+        // The proof of the hard stop, and its grace passed.
+        assert_eq!(at(&[dead, unknown_killed], 29), Settle::Wait);
+        assert_eq!(at(&[dead, unknown_killed], 30), Settle::Rung6);
+        assert_eq!(at(&[alive, unknown_killed], 100), Settle::Stuck);
     }
 
     #[test]

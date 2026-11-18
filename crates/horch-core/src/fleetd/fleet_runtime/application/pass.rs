@@ -1155,7 +1155,7 @@ impl<'a> Pass<'a> {
                 break;
             }
             let done = match e {
-                Effect::Stop(s) => self.stop(&s, clock, &mut stops, &mut report),
+                Effect::Stop(s) => self.stop(conn, &s, clock, &mut stops, &mut report),
                 Effect::StopJob(s) => jobs::stop(&s).then_some(Done::StopJob(s.job_id)),
                 Effect::Doorbell(bell) => self.doorbell(bell, &mut sent, &mut report),
                 Effect::Launch(a) if quota::is_restart(&a) => {
@@ -1171,6 +1171,7 @@ impl<'a> Pass<'a> {
 
     fn stop(
         &mut self,
+        conn: &mut Connection,
         s: &Stop,
         clock: FleetSeconds,
         stops: &mut PaneStops,
@@ -1183,7 +1184,10 @@ impl<'a> Pass<'a> {
                 scope,
             } => {
                 let process = (*pid, *pid_start);
-                self.stop_process(&s.row, process, *scope, clock, stops, report)
+                let (done, kill) =
+                    self.stop_process(&s.row, process, *scope, clock, stops, report)?;
+                self.mark_stop(conn, &s.row, process, kill, clock, report);
+                Some(done)
             }
             Target::Pane { pane, shell } if stops.may_close(&s.row) => {
                 self.close_pane(pane, *shell, stops, report)
@@ -1203,7 +1207,7 @@ impl<'a> Pass<'a> {
         clock: FleetSeconds,
         stops: &mut PaneStops,
         report: &mut PassReport,
-    ) -> Option<Done> {
+    ) -> Option<(Done, bool)> {
         let root = &self.settings.fleet_root;
         let failed = |e: String| format!("the stop of process {pid}: {e}");
         let polite = match effects::read_polite(root, pid, pid_start) {
@@ -1227,7 +1231,7 @@ impl<'a> Pass<'a> {
                     return None;
                 }
                 effects::stop_process(pid, pid_start, scope, false)
-                    .then(|| Done::Stop(format!("process {pid}")))
+                    .then(|| (Done::Stop(format!("process {pid}")), false))
             }
             StopStep::Wait => {
                 stops.hold(row);
@@ -1242,7 +1246,36 @@ impl<'a> Pass<'a> {
                 None
             }
             StopStep::Kill => effects::stop_process(pid, pid_start, scope, true)
-                .then(|| Done::Stop(format!("kill process {pid}"))),
+                .then(|| (Done::Stop(format!("kill process {pid}")), true)),
+        }
+    }
+
+    /// The sent mark of 1 stop that part 3 sent (A24): its own transaction
+    /// after the signal. `kill`: the hard stop. A failed mark is no proof,
+    /// so a `stalled` task that needs it stays `stalled`.
+    fn mark_stop(
+        &self,
+        conn: &mut Connection,
+        row: &RowRef,
+        process: (u32, u64),
+        kill: bool,
+        clock: FleetSeconds,
+        report: &mut PassReport,
+    ) {
+        let guard = Some(self.settings.generation);
+        let marked = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(anyhow::Error::from)
+            .and_then(|tx| {
+                ladder::stop_sent(&tx, guard, row, process, kill, clock.0)?;
+                tx.commit()?;
+                Ok(())
+            });
+        if let Err(e) = marked {
+            let pid = process.0;
+            report
+                .failed
+                .push(format!("the sent mark of the stop of process {pid}: {e:#}"));
         }
     }
 
@@ -1464,7 +1497,9 @@ impl Rules<'_> {
 
     /// After the attempt `attempt` of task `task` ended with `outcome`:
     /// the quota rule for `quota`, rung 6 for an outcome that burns an
-    /// attempt. `asked` and `killed` have their own paths.
+    /// attempt. `asked` and `killed` have their own paths. `stalled` waits:
+    /// `settle_stalled` does its rung 6 after the old process is stopped
+    /// (FM-14).
     fn after_end(
         &self,
         attempt: &str,
@@ -1479,8 +1514,6 @@ impl Rules<'_> {
             }
             return Ok(());
         }
-        // A `stalled` task waits for the stop of its old process:
-        // `settle_stalled` does its rung 6 (FM-14).
         if !outcome.burns_attempt()
             || outcome == Outcome::Stalled
             || tasks::cancel_requested(self.tx, task)?.is_some()
@@ -1504,7 +1537,8 @@ impl Rules<'_> {
     /// claim starts a new attempt beside it.
     fn settle_stalled(&self, facts: &Facts) -> Result<()> {
         let bound = rungs::stop_bound_s(self.config.stop_grace_s, self.config.pass_period_s);
-        for s in ladder::settle_stalled(self.tx, self.clock.0, facts, bound)? {
+        let grace = self.config.stop_grace_s;
+        for s in ladder::settle_stalled(self.tx, self.clock.0, facts, bound, grace)? {
             let persona = self.persona_of(&s.worker)?;
             let why = format!("the process of attempt {} is gone", s.attempt);
             let policy = self.policy(persona.as_deref());

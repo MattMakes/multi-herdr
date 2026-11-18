@@ -539,6 +539,19 @@ fn stalled_task_stays_stalled_while_the_old_process_lives() {
     );
     assert!(agent.exits(), "the hard stop ended it");
 
+    let marks: i64 = w
+        .conn
+        .query_row(
+            "SELECT count(*) FROM events WHERE kind = 'stopped'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        marks, 2,
+        "1 sent mark for the polite stop and 1 for the hard stop"
+    );
+
     w.pass_at(1_610, &worker, &fake);
     let t = w.task(&task);
     assert_eq!(t.status, "ready", "rung 6 after the process is gone");
