@@ -8,6 +8,9 @@
 //!   [`stop_seen`]).
 //! - A requeue: `escalated` -> `ready` with the attempt count at 0, and
 //!   `failed` -> `ready` for its 1 replan ([`requeue_path`]).
+//! - A cancel never leaves a judgment task with no judge task: the cancel
+//!   of a judge task alone waits for the cancel of the task it judges
+//!   ([`judge_cancel_allowed`]).
 
 use super::task::{Facts, Recorded, Seen};
 
@@ -16,6 +19,11 @@ pub const TASK_CANCELLED: &str = "task_cancelled";
 
 /// The terminal task states: no exit, also not to `cancelled`.
 const TERMINAL: [&str; 2] = ["done", "cancelled"];
+
+/// Whether `status` is a terminal task state, with no exit to `cancelled`.
+pub fn terminal(status: &str) -> bool {
+    TERMINAL.contains(&status)
+}
 
 /// The task state whose old attempt can still have a live process.
 const STALLED: &str = "stalled";
@@ -37,13 +45,20 @@ pub enum CancelPath {
 /// for the stop of its attempt. A `stalled` task waits for the stop of its
 /// old attempt (FM-14), so its cancel also waits for that stop.
 pub fn cancel_path(status: &str, live_attempt: bool, requested: bool) -> CancelPath {
-    if TERMINAL.contains(&status) {
+    if terminal(status) {
         CancelPath::Refused
     } else if live_attempt || requested || status == STALLED {
         CancelPath::StopFirst
     } else {
         CancelPath::Now
     }
+}
+
+/// Whether a judge task alone may be cancelled while the task it judges is
+/// in the state `judged_status`. Only a `cancelled` judged task lets its
+/// judge go: the cancel of the judged task cancels its judge task.
+pub fn judge_cancel_allowed(judged_status: &str) -> bool {
+    judged_status == "cancelled"
 }
 
 /// How the requeue of 1 task by the operator goes.
@@ -101,6 +116,23 @@ mod tests {
         }
         // A stalled task has no live attempt, but its old process can live.
         assert_eq!(cancel_path("stalled", false, false), CancelPath::StopFirst);
+    }
+
+    #[test]
+    fn a_judge_task_alone_is_cancelled_only_after_its_judged_task() {
+        assert!(judge_cancel_allowed("cancelled"));
+        for s in [
+            "pending",
+            "ready",
+            "running",
+            "stalled",
+            "verifying",
+            "escalated",
+            "failed",
+            "done",
+        ] {
+            assert!(!judge_cancel_allowed(s), "{s}");
+        }
     }
 
     #[test]

@@ -16,12 +16,21 @@
 //! - When the caller does not see the processes gone (a timeout, or the
 //!   caller dies), the pass calls [`complete_cancels`].
 //!
+//! A cancel never leaves a judgment task with no judge task (A cancel;
+//! `docs/tickets/fleetd-p6/43-judge-cancel.md`): the cancel of a judged
+//! task cancels its judge task in the same transaction, and [`request`]
+//! refuses the cancel of a judge task while the task it judges is not
+//! `cancelled`. [`request_each`] cancels a set of tasks, for the cancel of
+//! an idea, a feature or a replan.
+//!
 //! [`requeue`]: `escalated` -> `ready` with the attempt count at 0, and
 //! `failed` -> `ready` for its 1 replan. Both also requeue the abandoned
 //! `task_check` job of the task.
 //!
 //! Before Phase 5 the commands write the ledger directly through
 //! `transition()`.
+
+use std::collections::BTreeSet;
 
 use anyhow::{bail, Result};
 use rusqlite::{params, Connection};
@@ -35,23 +44,70 @@ use crate::fleetd::ideas::application::needs_you::NeedsYouList;
 use crate::fleetd::task_execution::adapters::sqlite as store;
 use crate::fleetd::task_execution::application::lease;
 use crate::fleetd::task_execution::domain::cancel::{
-    cancel_path, requeue_path, stop_seen, CancelPath, RequeuePath, TASK_CANCELLED,
+    cancel_path, judge_cancel_allowed, requeue_path, stop_seen, terminal, CancelPath, RequeuePath,
+    TASK_CANCELLED,
 };
 use crate::fleetd::task_execution::domain::retry::Outcome;
-use crate::fleetd::task_execution::domain::task::{AttemptState, Facts, Recorded};
+use crate::fleetd::task_execution::domain::task::{judged_task, AttemptState, Facts, Recorded};
 use crate::taskledger::model::{Actor, TaskStatus, WorkerStatus};
 use crate::taskledger::tasks::{self, Task};
 use crate::taskledger::{util, workers};
 
-/// What [`request`] did.
+/// What [`request`] did. `judges` is the cancel of each judge task of the
+/// task, in the same transaction: the caller stops their workers too.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cancel {
     /// The task is `cancelled`. `holder` is the worker that held it with
     /// no attempt row: the caller stops it after the commit, as today.
-    Cancelled { task: Task, holder: Option<String> },
+    Cancelled {
+        task: Task,
+        holder: Option<String>,
+        judges: Vec<Cancel>,
+    },
     /// The task waits for the stop of the workers `held`, with
     /// `cancel_requested` set.
-    Stopping { task: Task, held: Vec<String> },
+    Stopping {
+        task: Task,
+        held: Vec<String>,
+        judges: Vec<Cancel>,
+    },
+}
+
+impl Cancel {
+    /// The task of this cancel.
+    pub fn task(&self) -> &Task {
+        match self {
+            Cancel::Cancelled { task, .. } | Cancel::Stopping { task, .. } => task,
+        }
+    }
+
+    /// The cancel of each judge task of the task.
+    pub fn judges(&self) -> &[Cancel] {
+        match self {
+            Cancel::Cancelled { judges, .. } | Cancel::Stopping { judges, .. } => judges,
+        }
+    }
+
+    /// The workers that the caller stops after the commit: those of the
+    /// task and those of each of its judge tasks, sorted and once each.
+    pub fn to_stop(&self) -> Vec<String> {
+        let mut out: Vec<String> = match self {
+            Cancel::Cancelled { holder, .. } => holder.iter().cloned().collect(),
+            Cancel::Stopping { held, .. } => held.clone(),
+        };
+        for j in self.judges() {
+            out.extend(j.to_stop());
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    fn judges_mut(&mut self) -> &mut Vec<Cancel> {
+        match self {
+            Cancel::Cancelled { judges, .. } | Cancel::Stopping { judges, .. } => judges,
+        }
+    }
 }
 
 /// 1 attempt of a task, with its process.
@@ -108,8 +164,71 @@ pub fn watched(conn: &Connection, task_id: &str) -> Result<Vec<Recorded>> {
 }
 
 /// `horch task cancel` of `task` for `reason`, in the open transaction
-/// `tx`. `done` and `cancelled` refuse with the reason of the door.
+/// `tx`. `done` and `cancelled` refuse with the reason of the door. A judge
+/// task whose judged task is not `cancelled` is refused: the cancel of the
+/// judged task cancels its judge task.
 pub fn request(tx: &Connection, task: &Task, reason: &str) -> Result<Cancel> {
+    if let Some(judged) = judged_task(&task.kind, task.parent_task_id.as_deref()) {
+        let judged = tasks::get(tx, judged)?;
+        if !judge_cancel_allowed(&judged.status) {
+            bail!(
+                "{} is a judge task: cancel the judged task {}; its judge follows",
+                task.short(),
+                judged.short()
+            );
+        }
+    }
+    let mut out = cancel_one(tx, task, reason)?;
+    let why = format!("its judged task {} is cancelled: {reason}", task.short());
+    for judge in judges_of(tx, &task.task_id)? {
+        let cancel = cancel_one(tx, &judge, &why)?;
+        out.judges_mut().push(cancel);
+    }
+    Ok(out)
+}
+
+/// The cancel of each task of `each` that is not terminal, in the open
+/// transaction `tx`: the cancel of an idea, a feature or a replan. A judge
+/// task whose judged task is in `each` follows the cancel of its judged
+/// task, so its place in `each` does not matter. Gives the outcome of each
+/// task that it cancelled; a judge task is in the outcome of its judged
+/// task.
+pub fn request_each(tx: &Connection, each: &[Task], reason: &str) -> Result<Vec<Cancel>> {
+    let ids: BTreeSet<&str> = each.iter().map(|t| t.task_id.as_str()).collect();
+    let mut out = Vec::new();
+    for t in each {
+        let judged = judged_task(&t.kind, t.parent_task_id.as_deref());
+        if judged.is_some_and(|j| ids.contains(j)) {
+            continue;
+        }
+        let t = tasks::get(tx, &t.task_id)?;
+        if !terminal(&t.status) {
+            out.push(request(tx, &t, reason)?);
+        }
+    }
+    Ok(out)
+}
+
+/// The judge tasks of task `task_id` that are not terminal, in id order.
+fn judges_of(tx: &Connection, task_id: &str) -> Result<Vec<Task>> {
+    let ids: Vec<String> = {
+        let mut stmt =
+            tx.prepare("SELECT task_id FROM tasks WHERE parent_task_id = ?1 ORDER BY task_id")?;
+        let rows = stmt.query_map([task_id], |r| r.get(0))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    let mut out = Vec::new();
+    for id in ids {
+        let t = tasks::get(tx, &id)?;
+        if judged_task(&t.kind, t.parent_task_id.as_deref()).is_some() && !terminal(&t.status) {
+            out.push(t);
+        }
+    }
+    Ok(out)
+}
+
+/// The cancel of 1 task, with no judge rule.
+fn cancel_one(tx: &Connection, task: &Task, reason: &str) -> Result<Cancel> {
     let attempts = attempts_of(tx, &task.task_id)?;
     let requested = tasks::cancel_requested(tx, &task.task_id)?;
     let live = attempts.iter().any(|a| a.holds);
@@ -118,7 +237,11 @@ pub fn request(tx: &Connection, task: &Task, reason: &str) -> Result<Cancel> {
         CancelPath::Now => {
             let t = tasks::cancel(tx, task, reason)?;
             let holder = task.current_worker_id.clone();
-            Ok(Cancel::Cancelled { task: t, holder })
+            Ok(Cancel::Cancelled {
+                task: t,
+                holder,
+                judges: Vec::new(),
+            })
         }
         CancelPath::StopFirst if requested.is_some() => {
             // A cancel that waits already: stop each attempt that it ended
@@ -129,7 +252,11 @@ pub fn request(tx: &Connection, task: &Task, reason: &str) -> Result<Cancel> {
                 .map(|a| a.worker_id)
                 .collect();
             let task = tasks::get(tx, &task.task_id)?;
-            Ok(Cancel::Stopping { task, held })
+            Ok(Cancel::Stopping {
+                task,
+                held,
+                judges: Vec::new(),
+            })
         }
         CancelPath::StopFirst => stop_first(tx, task, reason, attempts),
     }
@@ -194,7 +321,11 @@ fn stop_first(
     )?;
     lease::release(tx, &task.task_id)?;
     let task = tasks::get(tx, &task.task_id)?;
-    Ok(Cancel::Stopping { task, held })
+    Ok(Cancel::Stopping {
+        task,
+        held,
+        judges: Vec::new(),
+    })
 }
 
 /// The second transaction of the cancel of task `task_id`: when each
@@ -487,7 +618,7 @@ mod tests {
             let w = f.claimed(p);
             f.set_status(state);
 
-            let Cancel::Stopping { task, held } = f.request("dropped").unwrap() else {
+            let Cancel::Stopping { task, held, .. } = f.request("dropped").unwrap() else {
                 panic!("{state}: a live attempt is stopped first");
             };
             assert_eq!(task.status, state, "{state}: no move before the stop");
@@ -518,7 +649,7 @@ mod tests {
     #[test]
     fn cancel_with_no_live_attempt_is_immediate() {
         let mut f = fixture();
-        let Cancel::Cancelled { task, holder } = f.request("not needed").unwrap() else {
+        let Cancel::Cancelled { task, holder, .. } = f.request("not needed").unwrap() else {
             panic!("no live attempt: the cancel is immediate");
         };
         assert_eq!(task.status, "cancelled");
@@ -633,7 +764,7 @@ mod tests {
         };
         let w = f.claimed(p);
         f.request("dropped").unwrap();
-        let Cancel::Stopping { task, held } = f.request("again").unwrap() else {
+        let Cancel::Stopping { task, held, .. } = f.request("again").unwrap() else {
             panic!("the cancel still waits for its stop");
         };
         assert_eq!(task.status, "running");

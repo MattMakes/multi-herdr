@@ -959,19 +959,25 @@ fn cancel_and_stop(
         cancel::request(tx, &t, reason)
     })?;
     let why = format!("task cancelled: {reason}");
-    let (t, mut held) = match asked {
-        Cancel::Cancelled { task: t, holder } => {
+    for j in asked.judges() {
+        output::println(&format!(
+            "{} is the judge task of {}: its cancel follows.",
+            j.task().short(),
+            asked.task().short()
+        ));
+    }
+    // Each held worker is stopped, those of its judge tasks too: its agent
+    // can be gone while its supervisor or its pane is not. The pass
+    // completes the cancel of a judge task that waits for its stop.
+    let held = asked.to_stop();
+    let t = match asked {
+        Cancel::Cancelled { task: t, .. } => {
             output::println(&format!("{} cancelled.", t.short()));
-            let holders: Vec<String> = holder.into_iter().collect();
-            stop_holders(store, &holders, &why, s)?;
+            stop_holders(store, &held, &why, s)?;
             return Ok(Some(t));
         }
-        Cancel::Stopping { task: t, held } => (t, held),
+        Cancel::Stopping { task: t, .. } => t,
     };
-    // Each held worker is stopped: its agent can be gone while its
-    // supervisor or its pane is not.
-    held.sort();
-    held.dedup();
     stop_holders(store, &held, &why, s)?;
     let facts = seen(&cancel::watched(store.conn(), &t.task_id)?, s.procs);
     match store.immediate(|tx| cancel::complete(tx, &t.task_id, &facts))? {
