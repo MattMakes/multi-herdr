@@ -9,7 +9,9 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-use crate::fleetd::fleet_runtime::domain::config::{FleetConfig, JobLimits};
+use crate::fleetd::fleet_runtime::domain::config::{
+    ConfigError, FleetConfig, JobLimits, WorkingHours,
+};
 
 /// The name of the config file in the fleet root.
 pub const FILE_NAME: &str = "fleet.toml";
@@ -29,7 +31,9 @@ pub fn load(fleet_root: &Path) -> Result<FleetConfig> {
 pub fn parse(text: &str) -> Result<FleetConfig> {
     // serde names an unknown key and a value of the wrong type.
     let file: FileKeys = toml::from_str(text).map_err(|e| anyhow::anyhow!("fleet.toml: {e}"))?;
-    let config = file.into_config();
+    let config = file
+        .into_config()
+        .map_err(|e| anyhow::anyhow!("fleet.toml: {e}"))?;
     config
         .validate()
         .map_err(|e| anyhow::anyhow!("fleet.toml: {e}"))?;
@@ -90,6 +94,11 @@ struct FileKeys {
     resolver_max_lines: Option<u64>,
     /// A starting value, to tune from real runs.
     resolver_max_files: Option<u64>,
+    idle_stop_s: Option<u64>,
+    park_after_days: Option<u64>,
+    reminder_every_s: Option<u64>,
+    /// A starting value: `Mon-Fri 09:00-18:00`.
+    working_hours: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -114,11 +123,15 @@ struct FileJobLimits {
 }
 
 impl FileKeys {
-    fn into_config(self) -> FleetConfig {
+    fn into_config(self) -> Result<FleetConfig, ConfigError> {
         let defaults = FleetConfig::default();
+        let working_hours = match &self.working_hours {
+            Some(text) => WorkingHours::parse(text)?,
+            None => defaults.working_hours,
+        };
         let file_jobs = self.job_limit_s;
         let default_jobs = defaults.job_limit_s;
-        FleetConfig {
+        Ok(FleetConfig {
             pass_period_s: self.pass_period_s.unwrap_or(defaults.pass_period_s),
             pass_time_budget_s: self
                 .pass_time_budget_s
@@ -230,7 +243,11 @@ impl FileKeys {
             resolver_max_files: self
                 .resolver_max_files
                 .unwrap_or(defaults.resolver_max_files),
-        }
+            idle_stop_s: self.idle_stop_s.unwrap_or(defaults.idle_stop_s),
+            park_after_days: self.park_after_days.unwrap_or(defaults.park_after_days),
+            reminder_every_s: self.reminder_every_s.unwrap_or(defaults.reminder_every_s),
+            working_hours,
+        })
     }
 }
 

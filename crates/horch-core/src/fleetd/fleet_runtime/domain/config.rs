@@ -1,11 +1,12 @@
-//! The keys of Phases 1 to 5 of `fleet.toml`, their default or
+//! The keys of Phases 1 to 6 of `fleet.toml`, their default or
 //! starting values (`docs/specs/fleetd/design.md`, "The numbers of the
 //! design", and `docs/tickets/fleetd-p1/MAP.md`, Q1 and Q2), and the range
 //! of each.
 //!
-//! This module does no I/O and parses no text: `adapters/config_file.rs`
+//! This module does no I/O and parses no TOML: `adapters/config_file.rs`
 //! reads and parses `<fleet root>/fleet.toml` into a [`FleetConfig`], then
-//! calls [`FleetConfig::validate`].
+//! calls [`FleetConfig::validate`]. It parses only the value of the key
+//! `working_hours` ([`WorkingHours::parse`]).
 
 /// The hang limit of fleetd, in seconds of awake time. A fixed contract
 /// (PL-5), not a key: the time budget of a pass stays below it.
@@ -14,7 +15,7 @@ pub const HANG_LIMIT_S: u64 = 30;
 const KIB: u64 = 1024;
 const MIB: u64 = 1024 * KIB;
 
-/// The Phase 1 to Phase 5 keys of `fleet.toml`.
+/// The Phase 1 to Phase 6 keys of `fleet.toml`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FleetConfig {
     /// The period of the reconcile pass. Default 5 s.
@@ -146,6 +147,110 @@ pub struct FleetConfig {
     /// The files of a resolver task at most. Starting value 2 (Q7): a
     /// starting value, to tune from real runs.
     pub resolver_max_files: u64,
+    /// The time after which fleetd stops an idle sub-orchestrator process
+    /// of an idea that waits on you. Default 1800 s, 60 to 86400, on the
+    /// fleet clock (design, "Stop of an idle sub-orchestrator"; FM-29, PL-4).
+    pub idle_stop_s: u64,
+    /// The days of calendar time with no answer after which an idea that
+    /// waits on you moves to `parked`. Default 7, 1 to 365 (design, "Park of
+    /// an idea that waits on you"; FM-29, PL-4).
+    pub park_after_days: u64,
+    /// The period of the reminder of an idea that waits on you, in seconds
+    /// of calendar time. Default 3600, 600 to 86400 (FM-29, PL-4).
+    pub reminder_every_s: u64,
+    /// The hours in which fleetd sends a reminder, in the local time zone
+    /// of the machine. Starting value `Mon-Fri 09:00-18:00`
+    /// (`docs/tickets/fleetd-p6/MAP.md`, Q3).
+    pub working_hours: WorkingHours,
+}
+
+/// A day of the week.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Weekday {
+    Mon,
+    Tue,
+    Wed,
+    Thu,
+    Fri,
+    Sat,
+    Sun,
+}
+
+const WEEKDAYS: [(&str, Weekday); 7] = [
+    ("Mon", Weekday::Mon),
+    ("Tue", Weekday::Tue),
+    ("Wed", Weekday::Wed),
+    ("Thu", Weekday::Thu),
+    ("Fri", Weekday::Fri),
+    ("Sat", Weekday::Sat),
+    ("Sun", Weekday::Sun),
+];
+
+/// The value of `working_hours`: a day range and an hour range, as
+/// `Mon-Fri 09:00-18:00`. The day range includes both days and can pass the
+/// end of the week (`Fri-Mon`). The hour range includes its start and not
+/// its end, and its start is before its end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkingHours {
+    first_day: Weekday,
+    last_day: Weekday,
+    start_minute: u16,
+    end_minute: u16,
+}
+
+impl WorkingHours {
+    /// Parse the form `Ddd-Ddd HH:MM-HH:MM`. The text of an error names the
+    /// key and the form.
+    pub fn parse(text: &str) -> Result<Self, ConfigError> {
+        let bad = || {
+            ConfigError(format!(
+                "working_hours must have the form \"Mon-Fri 09:00-18:00\", got {text:?}"
+            ))
+        };
+        let (days, hours) = text.split_once(' ').ok_or_else(bad)?;
+        let (first, last) = days.split_once('-').ok_or_else(bad)?;
+        let (start, end) = hours.split_once('-').ok_or_else(bad)?;
+        let hours = WorkingHours {
+            first_day: weekday(first).ok_or_else(bad)?,
+            last_day: weekday(last).ok_or_else(bad)?,
+            start_minute: minute_of_day(start).ok_or_else(bad)?,
+            end_minute: minute_of_day(end).ok_or_else(bad)?,
+        };
+        if hours.start_minute >= hours.end_minute {
+            return Err(bad());
+        }
+        Ok(hours)
+    }
+
+    /// Whether the local `day` at the local `minute` of the day (0 to 1439)
+    /// is inside the working hours.
+    pub fn contains(&self, day: Weekday, minute: u16) -> bool {
+        let (first, last, d) = (self.first_day as u8, self.last_day as u8, day as u8);
+        let in_days = if first <= last {
+            (first..=last).contains(&d)
+        } else {
+            d >= first || d <= last
+        };
+        in_days && (self.start_minute..self.end_minute).contains(&minute)
+    }
+}
+
+fn weekday(text: &str) -> Option<Weekday> {
+    WEEKDAYS
+        .iter()
+        .find(|(name, _)| *name == text)
+        .map(|(_, d)| *d)
+}
+
+/// `HH:MM` with 2 digits each, from `00:00` to `23:59`.
+fn minute_of_day(text: &str) -> Option<u16> {
+    let (h, m) = text.split_once(':')?;
+    let two_digits = |s: &str| s.len() == 2 && s.bytes().all(|b| b.is_ascii_digit());
+    if !(two_digits(h) && two_digits(m)) {
+        return None;
+    }
+    let (h, m): (u16, u16) = (h.parse().ok()?, m.parse().ok()?);
+    (h < 24 && m < 60).then_some(h * 60 + m)
 }
 
 /// The `job_limit_s` table: the time limit of each job kind, in seconds.
@@ -233,6 +338,15 @@ impl Default for FleetConfig {
             result_max_bytes: 64 * KIB,
             resolver_max_lines: 100,
             resolver_max_files: 2,
+            idle_stop_s: 1800,
+            park_after_days: 7,
+            reminder_every_s: 3600,
+            working_hours: WorkingHours {
+                first_day: Weekday::Mon,
+                last_day: Weekday::Fri,
+                start_minute: 9 * 60,
+                end_minute: 18 * 60,
+            },
         }
     }
 }
@@ -340,6 +454,9 @@ impl FleetConfig {
             ("heartbeat_every_s", self.heartbeat_every_s, 1, 60),
             ("question_limit_s", self.question_limit_s, 60, 86_400),
             ("replan_limit_s", self.replan_limit_s, 60, 86_400),
+            ("idle_stop_s", self.idle_stop_s, 60, 86_400),
+            ("park_after_days", self.park_after_days, 1, 365),
+            ("reminder_every_s", self.reminder_every_s, 600, 86_400),
         ] {
             if !(min..=max).contains(&v) {
                 return refuse(format!("{key} must be {min} to {max}, got {v}"));
