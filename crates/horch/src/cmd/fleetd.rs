@@ -79,7 +79,7 @@ use horch_core::taskledger::sql_words::list;
 use horch_core::taskledger::store::{default_path, BUSY_TIMEOUT};
 use horch_core::taskledger::watchdog::{Observation, Observer};
 use horch_core::taskledger::workers::Worker;
-use horch_core::taskledger::{watchdog, Store};
+use horch_core::taskledger::{watchdog, LedgerWriter, Store};
 use horch_core::workspace::herdr::Herdr;
 use horch_platform::lock::FleetdLock;
 use horch_platform::service;
@@ -560,7 +560,8 @@ fn daemon(ctx: &RuntimeContext) -> Result<ExitCode> {
     let own_exe = this_exe();
     let horch = std::env::current_exe().context("finding the horch binary")?;
     let root = &ctx.paths.fleet_root;
-    let mut store = Store::open(&ctx.paths.ledger_db)?;
+    let writer = LedgerWriter::fleetd();
+    let mut store = writer.open(&ctx.paths.ledger_db)?;
     let Some(started) = fleetd_row::start(root, &mut store)? else {
         output::println(&format!(
             "Another fleetd holds {}: this fleetd exits.",
@@ -587,7 +588,7 @@ fn daemon(ctx: &RuntimeContext) -> Result<ExitCode> {
         lock: RefCell::new(Some(started.lock)),
     };
     let handlers = request_handlers(ctx, &settings);
-    with_pass(ctx, settings, false, |pass, _| {
+    with_pass(ctx, &writer, settings, false, |pass, _| {
         let Some(_channel) = start_channel(ctx, pass, &mut conn, handlers) else {
             return;
         };
@@ -724,6 +725,7 @@ fn take_over(ctx: &RuntimeContext, store: &mut Store, settings: &Settings) -> Re
 /// both run the same pass.
 fn with_pass<T>(
     ctx: &RuntimeContext,
+    writer: &LedgerWriter,
     settings: Settings,
     force: bool,
     f: impl FnOnce(&mut Pass<'_>, &WatchdogDuties<'_>) -> T,
@@ -747,7 +749,7 @@ fn with_pass<T>(
         lock_dir: &lock_dir,
         herdr_open: &open,
     };
-    let effects = LiveEffects { ctx };
+    let effects = LiveEffects { ctx, writer };
     let duties = WatchdogDuties::new(&observer, &probe, &effects, ctx.paths.state_root.clone());
     let duties = if force { duties.forced() } else { duties };
     let ports = Ports {
@@ -776,7 +778,8 @@ pub(crate) enum Once {
 /// no pass and stops nothing.
 pub(crate) fn watch_once(ctx: &RuntimeContext, force: bool) -> Result<Once> {
     let horch = std::env::current_exe().context("finding the horch binary")?;
-    let mut store = Store::open(&ctx.paths.ledger_db)?;
+    let writer = LedgerWriter::fleetd();
+    let mut store = writer.open(&ctx.paths.ledger_db)?;
     let Some(started) = fleetd_row::start(&ctx.paths.fleet_root, &mut store)? else {
         return Ok(Once::Held(read_row(&ctx.paths.ledger_db)?));
     };
@@ -784,7 +787,7 @@ pub(crate) fn watch_once(ctx: &RuntimeContext, force: bool) -> Result<Once> {
     take_over(ctx, &mut store, &settings)?;
     drop(store);
     let mut conn = ledger_conn(&ctx.paths.ledger_db)?;
-    with_pass(ctx, settings, force, |pass, duties| {
+    with_pass(ctx, &writer, settings, force, |pass, duties| {
         for f in pass.start(&mut conn).map_err(|e| anyhow::anyhow!("{e}"))? {
             eprintln!("horch ledger watch: {f}");
         }

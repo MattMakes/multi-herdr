@@ -1363,7 +1363,7 @@ fn ledger_role_state(ctx: &RuntimeContext, workspace: &str, role: &str) -> Strin
     if !ctx.paths.ledger_db.exists() {
         return String::new();
     }
-    let Ok(store) = horch_core::taskledger::open(ctx) else {
+    let Ok(Some(store)) = horch_core::taskledger::open_existing_read_only(ctx) else {
         return String::new();
     };
     horch_core::taskledger::workers::role_state(store.conn(), workspace, role).unwrap_or_default()

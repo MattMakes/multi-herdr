@@ -2489,3 +2489,344 @@ fn worktree_insert_matcher_finds_an_insert_without_state() {
         assert!(!inserts_worktree_without_state(miss), "{miss}");
     }
 }
+
+/// The files of fleetd, the 1 writer of the ledger from Phase 5 (RR-5,
+/// FM-24): its folder in `horch-core` and its composition root.
+const FLEETD_FILES: &[&str] = &["horch-core/src/fleetd/", "horch/src/cmd/fleetd.rs"];
+
+/// The 1 file that makes the writer of fleetd: `horch fleetd` and
+/// `horch ledger watch --once`, which takes the fleetd lock.
+const FLEETD_ROOT: &str = "horch/src/cmd/fleetd.rs";
+
+/// The writable opens of the ledger outside [`FLEETD_FILES`]: the path, a
+/// part of the line, and why. An entry with a ticket goes when that ticket
+/// lands, and gate T-498 does not pass while 1 of them stays.
+const LEDGER_WRITERS_EXEMPT: &[(&str, &str, &str)] = &[
+    (
+        "horch-core/src/taskledger/store.rs",
+        "Connection::open(path)",
+        "Store::open itself: it creates and migrates the ledger, and checks the seam first",
+    ),
+    (
+        "horch-core/src/taskledger/store.rs",
+        "Store::open(path)",
+        "LedgerWriter::open: the writable open of fleetd, which only cmd/fleetd.rs makes",
+    ),
+    (
+        "horch-core/src/taskledger/schema.rs",
+        "Connection::open(file)",
+        "the migration copies the ledger to its backup; only Store::open runs it",
+    ),
+    (
+        "horch-core/src/taskledger/mod.rs",
+        "Store::open(&ctx.paths.ledger_db)",
+        "taskledger::open, the writable open of the T-883, T-884 and T-885 entries below",
+    ),
+    (
+        "horch/src/cmd/jobcmd.rs",
+        "fleetd::ledger_conn(",
+        "T-883: a job process (horch job run) writes rows of its job",
+    ),
+    (
+        "horch-core/src/taskledger/triage/apply.rs",
+        "Connection::open(store.path())",
+        "T-883: the worktree jobs of a triage apply write custody rows",
+    ),
+    (
+        "horch-core/src/execution/lifecycle.rs",
+        "Store::open(db)",
+        "T-884: W6, W7 and W8 of a worker with no attempt",
+    ),
+    (
+        "horch-core/src/execution/store.rs",
+        "taskledger::Store::open(&self.db)",
+        "T-884: ExecutionStore::update writes the session records",
+    ),
+    (
+        "horch/src/cmd/taskledger.rs",
+        "taskledger::open(ctx)?",
+        "T-885: run close, run gate, status (it adopts a workspace), watch, \
+         import --dry-run and the worktree commands that reads_only does not list",
+    ),
+    (
+        "horch/src/cmd/taskledger.rs",
+        "let mut s = taskledger::open(ctx)?",
+        "T-885: progress_from_worker writes the progress of a worker",
+    ),
+    (
+        "horch/src/cmd/rescuecmd.rs",
+        "taskledger::open(ctx)?",
+        "T-885: horch rescue drop writes directly; fleetd has no rescue_drop handler",
+    ),
+    (
+        "horch/src/cmd/messaging.rs",
+        "taskledger::open(ctx)?",
+        "T-885: record_answer writes the questions row of a mail answer",
+    ),
+    (
+        "horch/src/cmd/messaging.rs",
+        "horch_core::taskledger::open(ctx).and_then(",
+        "T-885: end_taskless_row of horch done ends the row of a report pane",
+    ),
+    (
+        "horch-core/src/taskledger/finish/mod.rs",
+        "Connection::open(ledger)",
+        "T-885: with_custody, the custody of worktree new, worktree restore, \
+         run gate and the finish cleanup",
+    ),
+    (
+        "horch/src/cmd/worktree.rs",
+        "taskledger::open_existing(ctx)",
+        "T-885: triage_rows writes the bytes cache of the worktree listing",
+    ),
+    (
+        "horch/src/cmd/worktree.rs",
+        "let mut store = taskledger::open(ctx)?",
+        "T-885: triage_apply_direct writes the ARCHIVE, DELETE, LAND and PR decisions",
+    ),
+    (
+        "horch/src/cmd/compact.rs",
+        "taskledger::open(ctx)?",
+        "T-885: the compact job writes the progress of a compacted worker",
+    ),
+    (
+        "horch/src/cmd/taskledger_wake.rs",
+        "taskledger::open_existing(ctx)",
+        "T-885: the drain of the mail courier marks the outbox rows",
+    ),
+];
+
+/// True when `line` holds `needle` as the start of a path or a name: the
+/// character before it is not part of a name.
+fn starts_name(line: &str, at: usize) -> bool {
+    !line[..at]
+        .chars()
+        .next_back()
+        .is_some_and(|c| c.is_alphanumeric() || c == '_')
+}
+
+/// The calls of `line` that open the ledger for a write, or make the writer
+/// of fleetd. `ledger_store` says whether a bare `Store` of the file is the
+/// ledger store (and not, for example, the telemetry store).
+fn ledger_write_calls(line: &str, ledger_store: bool) -> Vec<&'static str> {
+    let mut found = Vec::new();
+    let calls = |needle: &str| -> Vec<usize> {
+        line.match_indices(needle)
+            .map(|(at, _)| at)
+            .filter(|at| starts_name(line, *at) && !line[..*at].trim_end().ends_with("fn"))
+            .collect()
+    };
+    for at in calls("Store::open(") {
+        let before = &line[..at];
+        let qualified = before.ends_with("taskledger::") || before.ends_with("taskledger::store::");
+        if qualified || (ledger_store && !before.ends_with("::")) {
+            found.push("Store::open(");
+        }
+    }
+    for needle in [
+        "taskledger::open(",
+        "open_existing(",
+        "Connection::open(",
+        "ledger_conn(",
+        "LedgerWriter::fleetd(",
+    ] {
+        if !calls(needle).is_empty() {
+            found.push(needle);
+        }
+    }
+    found
+}
+
+/// Whether a bare `Store` in the file at `rel` (relative to `crates/`)
+/// with the production `lines` is the ledger store: a file of the ledger
+/// module, or a file whose `use` of `taskledger` names `Store`.
+fn names_ledger_store(rel: &str, lines: &[(usize, String)]) -> bool {
+    if rel.starts_with("horch-core/src/taskledger/") {
+        return true;
+    }
+    let text: String = lines.iter().map(|(_, l)| format!("{l}\n")).collect();
+    text.split(';').any(|stmt| {
+        let stmt = stmt.trim_start();
+        let Some(path) = stmt
+            .strip_prefix("pub use ")
+            .or_else(|| stmt.strip_prefix("pub(crate) use "))
+            .or_else(|| stmt.strip_prefix("use "))
+        else {
+            return false;
+        };
+        let words: Vec<&str> = path
+            .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .filter(|w| !w.is_empty())
+            .collect();
+        words.contains(&"taskledger") && words.contains(&"Store")
+    })
+}
+
+/// Each writable open of the ledger, and each writer of fleetd that is
+/// made, in the production code outside [`FLEETD_FILES`], as
+/// `<path>:<line>: <call>: <text>`.
+fn ledger_writers() -> Vec<String> {
+    let (root, files) = production_files();
+    let mut scanned = Vec::new();
+    let mut test_paths: Vec<PathBuf> = Vec::new();
+    for file in &files {
+        let prod = production_lines(&std::fs::read_to_string(file).unwrap());
+        test_paths.extend(test_module_paths(file, &prod.test_mods));
+        scanned.push((file, prod.lines));
+    }
+    let mut found = Vec::new();
+    for (file, lines) in scanned {
+        if file.file_name().is_some_and(|n| n == "tests.rs")
+            || test_paths.iter().any(|t| file.starts_with(t))
+        {
+            continue;
+        }
+        let rel = relative(file, &root);
+        let in_fleetd = FLEETD_FILES.iter().any(|f| rel.starts_with(f));
+        let ledger_store = names_ledger_store(&rel, &lines);
+        for (n, line) in &lines {
+            for call in ledger_write_calls(line, ledger_store) {
+                let allowed = if call == "LedgerWriter::fleetd(" {
+                    rel == FLEETD_ROOT
+                } else {
+                    in_fleetd
+                };
+                if !allowed {
+                    found.push(format!("{rel}:{n}: {call}: {}", line.trim()));
+                }
+            }
+        }
+    }
+    found
+}
+
+fn ledger_writer_exempt(found: &str) -> bool {
+    LEDGER_WRITERS_EXEMPT
+        .iter()
+        .any(|(path, part, _)| found.starts_with(&format!("{path}:")) && found.contains(part))
+}
+
+/// RR-5, FM-24 (Phase 1 Q13): no production file outside fleetd opens the
+/// ledger for a write, and only the composition root of fleetd makes the
+/// writer of fleetd. Each other process opens the ledger with
+/// `open_existing_read_only`.
+#[test]
+fn fitness_only_fleet_runtime_opens_the_ledger_writable() {
+    let mut found = ledger_writers();
+    found.retain(|f| !ledger_writer_exempt(f));
+    assert!(
+        found.is_empty(),
+        "a process other than fleetd opens the ledger for a write; open it with \
+         taskledger::open_existing_read_only, or send a request to fleetd:\n{}",
+        found.join("\n")
+    );
+}
+
+/// Each exemption of [`LEDGER_WRITERS_EXEMPT`] still exempts a writer.
+#[test]
+fn each_ledger_writer_exemption_is_still_needed() {
+    let found = ledger_writers();
+    for (path, part, why) in LEDGER_WRITERS_EXEMPT {
+        assert!(
+            found
+                .iter()
+                .any(|f| f.starts_with(&format!("{path}:")) && f.contains(part)),
+            "{path} has no `{part}` any more; remove its exemption ({why})"
+        );
+    }
+}
+
+/// The matchers of the rule above.
+#[test]
+fn ledger_writer_matcher_finds_each_writable_open() {
+    for (line, store, call) in [
+        ("let s = Store::open(&db)?;", true, "Store::open("),
+        ("crate::taskledger::Store::open(&db)", false, "Store::open("),
+        (
+            "horch_core::taskledger::store::Store::open(p)",
+            false,
+            "Store::open(",
+        ),
+        (
+            "let s = taskledger::open(ctx)?;",
+            false,
+            "taskledger::open(",
+        ),
+        (
+            "horch_core::taskledger::open_existing(ctx)",
+            false,
+            "open_existing(",
+        ),
+        (
+            "let c = Connection::open(path)?;",
+            false,
+            "Connection::open(",
+        ),
+        (
+            "rusqlite::Connection::open(&db)",
+            false,
+            "Connection::open(",
+        ),
+        (
+            "let c = super::fleetd::ledger_conn(&db)?;",
+            false,
+            "ledger_conn(",
+        ),
+        (
+            "let w = LedgerWriter::fleetd();",
+            false,
+            "LedgerWriter::fleetd(",
+        ),
+    ] {
+        assert_eq!(ledger_write_calls(line, store), [call], "{line}");
+    }
+    for (line, store) in [
+        ("let s = Store::open(&dir, now, days)?;", false),
+        ("ExecutionStore::open(&ctx.paths, &root)", true),
+        ("store::Store::open(&dir)", true),
+        ("taskledger::open_existing_read_only(ctx)?", false),
+        ("Store::open_read_only(&db)", true),
+        ("Connection::open_in_memory()", false),
+        (
+            "Connection::open_with_flags(p, OpenFlags::SQLITE_OPEN_READ_ONLY)",
+            false,
+        ),
+        (
+            "pub fn open_existing(ctx: &RuntimeContext) -> Result<Option<Store>> {",
+            false,
+        ),
+        (
+            "pub(crate) fn ledger_conn(ledger: &Path) -> Result<Connection> {",
+            false,
+        ),
+        ("let w = writer.open(&db)?;", true),
+    ] {
+        assert!(ledger_write_calls(line, store).is_empty(), "{line}");
+    }
+    let lines = |src: &str| -> Vec<(usize, String)> {
+        src.lines()
+            .enumerate()
+            .map(|(i, l)| (i + 1, l.to_string()))
+            .collect()
+    };
+    for src in [
+        "use horch_core::taskledger::{self, Store};",
+        "use horch_core::taskledger::{\n    self,\n    Store,\n};",
+        "use crate::taskledger::store::Store;",
+    ] {
+        assert!(
+            names_ledger_store("horch/src/cmd/x.rs", &lines(src)),
+            "{src}"
+        );
+    }
+    for src in [
+        "use super::store::{self, Store};",
+        "use horch_core::taskledger::{self, runs};",
+    ] {
+        assert!(
+            !names_ledger_store("horch-core/src/telemetry/x.rs", &lines(src)),
+            "{src}"
+        );
+    }
+    assert!(names_ledger_store("horch-core/src/taskledger/x.rs", &[]));
+}

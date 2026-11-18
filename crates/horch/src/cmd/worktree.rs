@@ -35,8 +35,11 @@ pub fn recorded_worktrees(ctx: &RuntimeContext) -> Vec<PathBuf> {
     if !ctx.paths.ledger_db.exists() {
         return Vec::new();
     }
-    let paths = horch_core::taskledger::open(ctx)
-        .and_then(|store| horch_core::taskledger::status::worktree_paths(store.conn()));
+    let paths = horch_core::taskledger::open_existing_read_only(ctx).and_then(|store| {
+        store.map_or(Ok(Vec::new()), |store| {
+            horch_core::taskledger::status::worktree_paths(store.conn())
+        })
+    });
     match paths {
         Ok(paths) => paths,
         Err(error) => {

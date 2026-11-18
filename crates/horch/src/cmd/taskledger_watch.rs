@@ -19,7 +19,7 @@ use horch_core::taskledger::git::Git;
 use horch_core::taskledger::orchestrator;
 use horch_core::taskledger::runs::Run;
 use horch_core::taskledger::watchdog;
-use horch_core::taskledger::Store;
+use horch_core::taskledger::{LedgerWriter, Store};
 
 use super::fleetd::{self, Once};
 use super::taskledger_wake;
@@ -34,12 +34,15 @@ const FLEETD_WATCHES: &str = "fleetd does the watch of each run: it checks the w
 /// `WatchdogDuties`, with `HerdrObserver` and `orchestrator::Os`.
 pub struct LiveEffects<'a> {
     pub ctx: &'a RuntimeContext,
+    /// The writer of fleetd: these effects run in the fleetd process.
+    pub writer: &'a LedgerWriter,
 }
 
 impl LiveEffects<'_> {
     fn store(&self) -> Result<Store> {
-        horch_core::taskledger::open_existing(self.ctx)?
-            .ok_or_else(|| anyhow::anyhow!("the task ledger is gone"))
+        let ledger = &self.ctx.paths.ledger_db;
+        anyhow::ensure!(ledger.is_file(), "the task ledger is gone");
+        self.writer.open(ledger)
     }
 }
 

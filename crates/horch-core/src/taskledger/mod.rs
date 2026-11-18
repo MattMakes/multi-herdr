@@ -27,20 +27,24 @@ pub mod watchdog;
 pub mod workers;
 pub mod worktree_ops;
 
-pub use store::Store;
+pub use store::{LedgerWriter, Store};
 
 use anyhow::Result;
 
 use crate::runtime::RuntimeContext;
 
-/// Open the ledger this context names. It creates the file when it does not
-/// exist; a caller that only reads uses [`open_existing`].
+/// Open the ledger this context names for a write. It creates the file
+/// when it does not exist. From Phase 5 only fleetd writes (RR-5): fleetd
+/// opens it through [`LedgerWriter`], and a caller that only reads uses
+/// [`open_existing_read_only`]. The callers left are the exemptions of the
+/// arch rule `fitness_only_fleet_runtime_opens_the_ledger_writable`.
 pub fn open(ctx: &RuntimeContext) -> Result<Store> {
     Store::open(&ctx.paths.ledger_db)
 }
 
-/// Open the ledger this context names only when its file exists. A ledger
-/// that does not exist has no runs, and a read must not create it (#199).
+/// Open the ledger this context names for a write, only when its file
+/// exists (#199). The callers left are exemptions of the arch rule, as for
+/// [`open`].
 pub fn open_existing(ctx: &RuntimeContext) -> Result<Option<Store>> {
     if !ctx.paths.ledger_db.is_file() {
         return Ok(None);

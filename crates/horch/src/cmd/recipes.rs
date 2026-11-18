@@ -348,7 +348,7 @@ fn warn_about_other_run_steps(ctx: &RuntimeContext, cwd: &str, profile: VerifyPr
     if !ctx.paths.ledger_db.is_file() {
         return;
     }
-    let Ok(store) = horch_core::taskledger::Store::open(&ctx.paths.ledger_db) else {
+    let Ok(Some(store)) = horch_core::taskledger::open_existing_read_only(ctx) else {
         return;
     };
     let Ok(all) = horch_core::taskledger::runs::of_project(store.conn(), Path::new(cwd)) else {

@@ -600,8 +600,8 @@ fn run_command(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode>
     dispatch[group_of(&command) as usize](ctx, store, command)
 }
 
-/// Whether `command` changes the ledger only through requests to fleetd,
-/// so that it opens the ledger read-only (RR-5). `run close` and
+/// Whether `command` only reads the ledger, or changes it only through
+/// requests to fleetd, so that it opens the ledger read-only (RR-5). `run close` and
 /// `run gate` still open it to write: the custody of the gate folder and
 /// the stop of a worker are not their requests.
 fn reads_only(command: &LedgerCommand) -> bool {
@@ -609,6 +609,7 @@ fn reads_only(command: &LedgerCommand) -> bool {
     match command {
         C::Run { command } => matches!(command, RunCommand::List { .. }),
         C::Import { dry_run, .. } => !dry_run,
+        C::Show { .. } | C::Events { .. } | C::Steps { .. } => true,
         C::Fallback { .. }
         | C::Cancel { .. }
         | C::Unblock { .. }
@@ -2132,8 +2133,9 @@ pub fn is_ledger_worker(ctx: &RuntimeContext) -> bool {
     let Some(wid) = worker_id_opt(ctx) else {
         return false;
     };
-    taskledger::open(ctx)
+    taskledger::open_existing_read_only(ctx)
         .ok()
+        .flatten()
         .and_then(|s| workers::find(s.conn(), &wid).ok().flatten())
         .is_some_and(|w| {
             w.task_id.is_some() && (w.status == "done" || w.status().is_ok_and(|s| s.is_live()))

@@ -1,6 +1,7 @@
 //! Opening the task ledger: 1 SQLite file per machine (ADR 0001).
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -120,6 +121,54 @@ fn open_lock(path: &Path) -> Result<crate::fsx::DirLockGuard> {
         .with_context(|| format!("locking task ledger initialization for {}", path.display()))
 }
 
+/// The test seam of RR-5: with this variable set to `1`, a writable open of
+/// the ledger in a process that made no [`LedgerWriter`] panics. The e2e
+/// tests set it for each CLI process.
+pub const ASSERT_READ_ONLY_ENV: &str = "HORCH_TEST_ASSERT_READ_ONLY";
+
+/// True after this process made the [`LedgerWriter`] of fleetd.
+static FLEETD_WRITER: AtomicBool = AtomicBool::new(false);
+
+/// Panic under the seam ([`ASSERT_READ_ONLY_ENV`]) when this process is not
+/// fleetd.
+fn assert_fleetd_writer(path: &Path) {
+    use crate::runtime::{EnvSource, ProcessEnv};
+    if FLEETD_WRITER.load(Ordering::SeqCst) {
+        return;
+    }
+    if ProcessEnv.var(ASSERT_READ_ONLY_ENV).as_deref() == Some("1") {
+        panic!(
+            "{ASSERT_READ_ONLY_ENV}=1: a process other than fleetd opens the task ledger {} for a write",
+            path.display()
+        );
+    }
+}
+
+/// The right of this process to write the ledger (RR-5, FM-24). From
+/// Phase 5 fleetd is the 1 writer: each other process opens the ledger with
+/// [`Store::open_read_only`] and sends a request or writes a file.
+///
+/// Only the composition root of fleetd (`crates/horch/src/cmd/fleetd.rs`)
+/// makes it, for `horch fleetd` and for `horch ledger watch --once`, which
+/// takes the fleetd lock. The arch rule
+/// `fitness_only_fleet_runtime_opens_the_ledger_writable` holds that.
+#[derive(Debug)]
+pub struct LedgerWriter(());
+
+impl LedgerWriter {
+    /// The writer of fleetd. After this call, the seam lets this process
+    /// open the ledger for a write.
+    pub fn fleetd() -> LedgerWriter {
+        FLEETD_WRITER.store(true, Ordering::SeqCst);
+        LedgerWriter(())
+    }
+
+    /// Open (and create, and migrate) the ledger at `path` for a write.
+    pub fn open(&self, path: &Path) -> Result<Store> {
+        Store::open(path)
+    }
+}
+
 /// An open task ledger.
 pub struct Store {
     conn: Connection,
@@ -129,7 +178,12 @@ pub struct Store {
 impl Store {
     /// Open (and create, and migrate) the ledger at `path`. A development
     /// build does not migrate the shared ledger ([`migrate_refusal`]).
+    ///
+    /// A writable open: production code calls it through [`LedgerWriter`],
+    /// and under [`ASSERT_READ_ONLY_ENV`] a process that is not fleetd
+    /// panics here, before it touches the file.
     pub fn open(path: &Path) -> Result<Store> {
+        assert_fleetd_writer(path);
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         }
