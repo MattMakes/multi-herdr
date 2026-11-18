@@ -1,6 +1,7 @@
 //! The domain layer of task execution: rules with no I/O.
 
 pub mod cancel;
+pub mod context_limit;
 pub mod dispatch;
 pub mod judge_pair;
 pub mod lease;

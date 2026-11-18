@@ -1499,6 +1499,22 @@ const FLEETD_PHASE6_FILES: &[&str] = &[
 
 /// The 1 door: it writes the state of each entity, so it names the tables
 /// of every context.
+/// The module files of Phase 7 (docs/tickets/fleetd-p7/MAP.md, Q17), under
+/// `fleetd/`. Each exists and is a `pub mod` of the `mod.rs` of its folder.
+const FLEETD_PHASE7_FILES: &[&str] = &[
+    "worker_profiles/domain/conformance.rs",
+    "worker_profiles/domain/health.rs",
+    "worker_profiles/domain/docs_jobs.rs",
+    "worker_profiles/application/conformance.rs",
+    "worker_profiles/application/health.rs",
+    "worker_profiles/application/docs_jobs.rs",
+    "worker_profiles/application/docs_sync.rs",
+    "worker_profiles/application/drift_idea.rs",
+    "worker_profiles/adapters/conformance_runner.rs",
+    "worker_profiles/adapters/docs_dir.rs",
+    "task_execution/domain/context_limit.rs",
+];
+
 const FLEETD_DOOR: &str = "fleetd/fleet_runtime/adapters/sqlite.rs";
 
 /// Primitive types, which a path such as `u64::MAX` can start with.
@@ -1709,15 +1725,19 @@ fn foreign_tables(literal: &str, owned: &[&str]) -> Vec<String> {
 
 /// The `fleetd/` folder, after it asserts that each context of
 /// `FLEETD_TABLE_OWNERS` has a `domain/` folder, that no other context
-/// folder exists, and that each file of `FLEETD_PHASE5_FILES` and
-/// `FLEETD_PHASE6_FILES` is a module.
+/// folder exists, and that each file of `FLEETD_PHASE5_FILES`,
+/// `FLEETD_PHASE6_FILES` and `FLEETD_PHASE7_FILES` is a module.
 fn fleetd_root() -> PathBuf {
     let fleetd = crate_src("horch-core").join("fleetd");
     for (ctx, _) in FLEETD_TABLE_OWNERS {
         let domain = fleetd.join(ctx).join("domain");
         assert!(domain.is_dir(), "{} is missing", domain.display());
     }
-    for file in FLEETD_PHASE5_FILES.iter().chain(FLEETD_PHASE6_FILES) {
+    for file in FLEETD_PHASE5_FILES
+        .iter()
+        .chain(FLEETD_PHASE6_FILES)
+        .chain(FLEETD_PHASE7_FILES)
+    {
         let path = fleetd.join(file);
         assert!(path.is_file(), "fleetd/{file} is missing");
         let name = path.file_stem().unwrap().to_string_lossy();
