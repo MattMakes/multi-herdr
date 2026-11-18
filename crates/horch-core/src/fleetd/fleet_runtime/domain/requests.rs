@@ -236,12 +236,28 @@ pub fn check_size(bytes: usize, max_bytes: u64) -> Result<(), RequestError> {
     Ok(())
 }
 
-/// The payload of `idea_add`: the idea, and with `--to` the feature that it
-/// joins. Each field is 1 text: `text`, or `direct` and `sha256`, and `to`.
+/// The payload of `idea_add`: the idea, and the feature that it joins with
+/// `--to`, else the project of its new feature. Each field is 1 text:
+/// `text`, or `direct` and `sha256`; then `to`, or `project` and
+/// `primary_branch`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IdeaAdd {
     pub idea: IdeaInput,
-    pub to: Option<String>,
+    pub target: AddTarget,
+}
+
+/// The feature of a new idea.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AddTarget {
+    /// No `--to`: a new feature of the project at the absolute root
+    /// `project`, from its primary branch `primary_branch`. The command
+    /// reads both from the repository of the caller.
+    New {
+        project: String,
+        primary_branch: String,
+    },
+    /// `--to <feature>`: the id or the name of a feature.
+    Join(String),
 }
 
 /// What `horch idea add` captures.
@@ -296,12 +312,19 @@ impl DirectTicket {
 impl IdeaAdd {
     /// The payload `fields`, each a key and its text. It refuses an unknown
     /// key, both `text` and `direct` or neither, `direct` without `sha256`
-    /// or `sha256` without `direct`, and an empty `to`.
+    /// or `sha256` without `direct`, an empty `to`, `to` with `project` or
+    /// `primary_branch`, and with no `to` a missing or relative `project` or
+    /// a missing or empty `primary_branch`.
     pub fn from_fields(fields: &[(&str, &str)]) -> Result<IdeaAdd, RequestError> {
-        if let Some((key, _)) = fields
-            .iter()
-            .find(|(k, _)| !["text", "direct", "sha256", "to"].contains(k))
-        {
+        const KEYS: [&str; 6] = [
+            "text",
+            "direct",
+            "sha256",
+            "to",
+            "project",
+            "primary_branch",
+        ];
+        if let Some((key, _)) = fields.iter().find(|(k, _)| !KEYS.contains(k)) {
             return Err(RequestError::malformed(&format!(
                 "idea_add has the unknown payload field `{key}`"
             )));
@@ -321,11 +344,37 @@ impl IdeaAdd {
                 ))
             }
         };
-        let to = match field("to") {
-            Some("") => return Err(RequestError::malformed("idea_add --to names no feature")),
-            to => to.map(str::to_string),
+        let target = match (field("to"), field("project"), field("primary_branch")) {
+            (Some(""), _, _) => {
+                return Err(RequestError::malformed("idea_add --to names no feature"))
+            }
+            (Some(to), None, None) => AddTarget::Join(to.to_string()),
+            (Some(_), _, _) => {
+                return Err(RequestError::malformed(
+                    "idea_add --to joins a feature: it takes no project and no primary_branch",
+                ))
+            }
+            (None, Some(project), Some(branch)) => {
+                if !Path::new(project).is_absolute() {
+                    return Err(RequestError::malformed(
+                        "the project of idea_add is not an absolute path",
+                    ));
+                }
+                if branch.is_empty() {
+                    return Err(RequestError::malformed(
+                        "idea_add names no primary_branch of its project",
+                    ));
+                }
+                AddTarget::New {
+                    project: project.to_string(),
+                    primary_branch: branch.to_string(),
+                }
+            }
+            (None, _, _) => return Err(RequestError::malformed(
+                "idea_add with no --to needs the project and the primary_branch of its new feature",
+            )),
         };
-        Ok(IdeaAdd { idea, to })
+        Ok(IdeaAdd { idea, target })
     }
 
     /// The payload fields of this request, each a key and its text.
@@ -336,8 +385,15 @@ impl IdeaAdd {
                 vec![("direct", ticket.path()), ("sha256", ticket.sha256())]
             }
         };
-        if let Some(to) = &self.to {
-            fields.push(("to", to.as_str()));
+        match &self.target {
+            AddTarget::New {
+                project,
+                primary_branch,
+            } => {
+                fields.push(("project", project.as_str()));
+                fields.push(("primary_branch", primary_branch.as_str()));
+            }
+            AddTarget::Join(to) => fields.push(("to", to.as_str())),
         }
         fields
     }

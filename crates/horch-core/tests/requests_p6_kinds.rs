@@ -7,7 +7,7 @@ use horch_core::fleetd::fleet_runtime::domain::authorize::{
     authorize, Decision, PeerProcess, RequestFacts, Source,
 };
 use horch_core::fleetd::fleet_runtime::domain::requests::{
-    Class, DirectTicket, IdeaAdd, IdeaInput, Kind, RequestError, RequestId,
+    AddTarget, Class, DirectTicket, IdeaAdd, IdeaInput, Kind, RequestError, RequestId,
 };
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -56,6 +56,14 @@ fn sha256_hex(bytes: &[u8]) -> String {
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()
+}
+
+/// The target of an idea with no `--to`: a new feature of the project.
+fn new_feature() -> AddTarget {
+    AddTarget::New {
+        project: absolute("project"),
+        primary_branch: "main".into(),
+    }
 }
 
 fn absolute(name: &str) -> String {
@@ -125,7 +133,7 @@ fn idea_add_payload_has_direct_and_to() {
     let sha = sha256_hex(b"# 01: A ticket\n");
     let add = IdeaAdd {
         idea: IdeaInput::Direct(DirectTicket::new(&path, &sha).unwrap()),
-        to: Some("F-0002".into()),
+        target: AddTarget::Join("F-0002".into()),
     };
     let mut keys: Vec<&str> = add.fields().into_iter().map(|(k, _)| k).collect();
     keys.sort_unstable();
@@ -134,15 +142,16 @@ fn idea_add_payload_has_direct_and_to() {
 
     let text = IdeaAdd {
         idea: IdeaInput::Text("make the board faster".into()),
-        to: None,
+        target: new_feature(),
     };
     let keys: Vec<&str> = text.fields().into_iter().map(|(k, _)| k).collect();
-    assert_eq!(keys, ["text"]);
+    assert_eq!(keys, ["text", "project", "primary_branch"]);
     assert_eq!(through_the_wire(&text), text);
 
+    let project = absolute("project");
     let joined = IdeaAdd {
         idea: IdeaInput::Text("a second idea".into()),
-        to: Some("F-0002".into()),
+        target: AddTarget::Join("F-0002".into()),
     };
     assert_eq!(through_the_wire(&joined), joined);
 
@@ -152,6 +161,24 @@ fn idea_add_payload_has_direct_and_to() {
         vec![("text", "x"), ("direct", path.as_str()), ("sha256", &sha)],
         vec![("text", "x"), ("to", "")],
         vec![("text", "x"), ("from", "y")],
+        vec![("text", "x")],
+        vec![("text", "x"), ("project", project.as_str())],
+        vec![
+            ("text", "x"),
+            ("project", "project"),
+            ("primary_branch", "main"),
+        ],
+        vec![
+            ("text", "x"),
+            ("project", project.as_str()),
+            ("primary_branch", ""),
+        ],
+        vec![
+            ("text", "x"),
+            ("to", "F-0002"),
+            ("project", project.as_str()),
+        ],
+        vec![("text", "x"), ("to", "F-0002"), ("primary_branch", "main")],
     ] {
         assert!(
             matches!(IdeaAdd::from_fields(&bad), Err(RequestError::Malformed(_))),
@@ -170,7 +197,7 @@ fn idea_add_direct_payload_has_the_sha256_of_the_ticket() {
     assert_eq!(direct.sha256(), sha);
     let add = IdeaAdd {
         idea: IdeaInput::Direct(direct),
-        to: None,
+        target: new_feature(),
     };
     let fields = add.fields();
     assert!(fields.contains(&("direct", path.as_str())), "{fields:?}");
