@@ -336,7 +336,7 @@ work. These commands are on your PATH:
                 "worker-{name}-{label} should end its horch note bullet exactly once"
             );
             assert_eq!(
-                trf_46_worker_blocks(fleet18_worker_blocks(was.replace(old_agent, new_agent)
+                push_attempt_worker_blocks(trf_46_worker_blocks(fleet18_worker_blocks(was.replace(old_agent, new_agent)
                     .replace(note_end, &format!("{note_end}{skills_read}"))
                     .replace(
                         lifecycle_end,
@@ -346,7 +346,7 @@ work. These commands are on your PATH:
                     )
                     .replace(old_wait_words, new_wait_words)
                     .replace(old_wait_reply, new_wait_reply)
-                    .replace(old_scope_wait, new_scope_wait)), label == "idle"),
+                    .replace(old_scope_wait, new_scope_wait)), label == "idle")),
                 got,
                 "worker-{name}-{label} drifted outside the named sanctioned blocks"
             );
@@ -756,6 +756,10 @@ fn bal_07_usage_limits_block_sanctioned() {
 /// Third sanctioned change (FM-26): only fleetd makes or removes a worktree,
 /// so 3 forbidden rules refuse `git worktree add`, `remove` and `prune` to a
 /// worker. They are pinned here.
+///
+/// Fourth sanctioned change (fleetd-p5 ticket 36): the allow rules of the
+/// worker subcommands are gone, so no `horch ledger` command escapes the
+/// Codex sandbox. The 3 forbidden rules stay.
 #[test]
 fn execpolicy_blocks_are_unchanged() {
     const SKILLS_READ: &str = "read a catalog skill that the bundle does not hold";
@@ -767,15 +771,6 @@ fn execpolicy_blocks_are_unchanged() {
         .map(|rule| (rule.pattern.clone(), rule.decision.as_str()))
         .collect();
     let want: Vec<(String, &str)> = [
-        ("claim", "allow"),
-        ("worktree", "allow"),
-        ("progress", "allow"),
-        ("status", "allow"),
-        ("show", "allow"),
-        ("steps", "allow"),
-        ("finish", "allow"),
-        ("done", "allow"),
-        ("handoff", "allow"),
         ("add", "forbidden"),
         ("add-map", "forbidden"),
         ("reopen", "forbidden"),
@@ -2220,4 +2215,99 @@ fn the_report_worker_briefing_matches_its_golden() {
     )
     .unwrap();
     assert_eq!(golden("worker-intake-writer-task"), got);
+}
+
+// Push dispatch sanctioned blocks (fleetd-p4 ticket 11, FR-5 and FM-6): a
+// push attempt has its task bound before its pane opens. Its briefing tells
+// it to read START.md, to work and commit in the worktree that START.md
+// names, and to end with `horch result` or a QUESTION: line. fleetd runs the
+// finish steps. The claim section stays for an attempt that began with a
+// claim, marked as such, until Phase 5. Each block is literal: the old text
+// it replaces and the new text.
+fn push_attempt_worker_blocks(mut expected: String) -> String {
+    let blocks: &[(&str, &str)] = &[
+        (
+            r###"- Before horch ledger finish, check every ticket step and every Own: file.
+  Name anything not done in the summary.
+"###,
+            r###"- Before horch result or horch ledger finish, check every ticket step and
+  every Own: file. Name anything not done in the summary.
+"###,
+        ),
+        (
+            r###"  Do not start the summary with "[r-1] DONE:". horch done adds it.
+
+== Task ledger ==
+When your task is "Run horch ledger claim.", the task ledger holds your
+work. These commands are on your PATH:
+"###,
+            r###"  Do not start the summary with "[r-1] DONE:". horch done adds it.
+  A push attempt ends with horch result, not with horch done.
+
+== Your task: a push attempt ==
+When your first line is "Read <path>/inbox/START.md and continue.", your
+task is bound to you before your pane opens. Do not search for work.
+- Read START.md in full. It holds your ticket snapshot, your worktree and
+  your branch. Follow the ticket exactly.
+- If START.md names a handoff file, read that file first. Continue from its
+  next step.
+- Work and commit in the worktree that START.md names. Commit exact files,
+  not directories.
+- horch ledger progress "<milestone>" - record each milestone.
+- When the work is committed, run:
+  horch result --status completed --summary "<one paragraph>"
+  If the work cannot be completed, use --status blocked or --status failed.
+  fleetd then runs the finish steps: the check, the sweeps and the land.
+  Then end your turn.
+- If you cannot continue without an answer, send QUESTION: with
+  horch tell orchestrator, then end your turn.
+- End your turn only after horch result or a QUESTION: line. A Stop hook
+  can hold your turn until 1 of them exists.
+- The claim, the worktree commands, horch ledger finish and
+  horch ledger done are not for a push attempt.
+
+== Task ledger: an attempt that began with a claim ==
+This section is only for an attempt that began with a claim: your task is
+"Run horch ledger claim.". The task ledger holds your work. These commands
+are on your PATH:
+"###,
+        ),
+        (
+            r###"- In a ledger run, follow the claim. Use only horch ledger worktree new.
+  horch ledger finish lands that worktree. The rest of this section applies
+  only outside a ledger run.
+"###,
+            r###"- In a push attempt, START.md names your worktree. Work there, and make no
+  other worktree. fleetd lands it.
+- In an attempt that began with a claim, follow the claim. Use only
+  horch ledger worktree new. horch ledger finish lands that worktree.
+- The rest of this section applies only outside a ledger run.
+"###,
+        ),
+    ];
+    for (old, new) in blocks {
+        assert_eq!(expected.matches(old).count(), 1, "{old}");
+        expected = expected.replace(old, new);
+    }
+    expected
+}
+
+/// The briefing of a push attempt, as `horch spawn` launches it: the first
+/// line names `START.md` of the attempt. A capture of new text, pinned byte
+/// for byte; the host and project facts are fixed.
+#[test]
+fn the_push_attempt_briefing_matches_its_golden() {
+    let r = roster();
+    let t = r.require("opus").unwrap();
+    let got = prompts::worker_prompt_with_context(
+        &r,
+        t,
+        "opus-1",
+        "Read /fleet/tasks/T-0001-01/attempts/A1/inbox/START.md and continue.",
+        &SessionMode::Fresh(None),
+        "(No project facts recorded.)",
+        "test-host",
+    )
+    .unwrap();
+    assert_eq!(golden("worker-opus-push"), got);
 }

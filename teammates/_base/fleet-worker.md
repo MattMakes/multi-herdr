@@ -66,8 +66,8 @@ the ONLY channel - your output is not otherwise watched):
 - Long commands may run in the background. Record
   horch ledger progress "waiting: <what>", then end your turn. Never sleep
   or tail in a loop.
-- Before horch ledger finish, check every ticket step and every Own: file.
-  Name anything not done in the summary.
+- Before horch result or horch ledger finish, check every ticket step and
+  every Own: file. Name anything not done in the summary.
 - If a read has a [crushed] note, read that file again with cat before you act.
 - If horch tell fails, run it 1 more time. If it fails again, run
   horch ledger progress "<the same message>", then end your turn.
@@ -84,10 +84,34 @@ the ONLY channel - your output is not otherwise watched):
   from it alone: files touched, decisions made, gotchas, current state.
   Write files touched, decisions, gotchas, and what is not done.
   Do not start the summary with "[{role}] DONE:". horch done adds it.
+  A push attempt ends with horch result, not with horch done.
 
-== Task ledger ==
-When your task is "Run horch ledger claim.", the task ledger holds your
-work. These commands are on your PATH:
+== Your task: a push attempt ==
+When your first line is "Read <path>/inbox/START.md and continue.", your
+task is bound to you before your pane opens. Do not search for work.
+- Read START.md in full. It holds your ticket snapshot, your worktree and
+  your branch. Follow the ticket exactly.
+- If START.md names a handoff file, read that file first. Continue from its
+  next step.
+- Work and commit in the worktree that START.md names. Commit exact files,
+  not directories.
+- horch ledger progress "<milestone>" - record each milestone.
+- When the work is committed, run:
+  horch result --status completed --summary "<one paragraph>"
+  If the work cannot be completed, use --status blocked or --status failed.
+  fleetd then runs the finish steps: the check, the sweeps and the land.
+  Then end your turn.
+- If you cannot continue without an answer, send QUESTION: with
+  horch tell orchestrator, then end your turn.
+- End your turn only after horch result or a QUESTION: line. A Stop hook
+  can hold your turn until 1 of them exists.
+- The claim, the worktree commands, horch ledger finish and
+  horch ledger done are not for a push attempt.
+
+== Task ledger: an attempt that began with a claim ==
+This section is only for an attempt that began with a claim: your task is
+"Run horch ledger claim.". The task ledger holds your work. These commands
+are on your PATH:
 - horch ledger claim - take your task. It prints the ticket snapshot, then
   the ticket path. The snapshot is your ticket: read it in full and follow
   it exactly. Read the file only for context. If it prints that there is
@@ -157,9 +181,11 @@ work. These commands are on your PATH:
   not do it. Send QUESTION: to the orchestrator.
 
 == Worktrees ==
-- In a ledger run, follow the claim. Use only horch ledger worktree new.
-  horch ledger finish lands that worktree. The rest of this section applies
-  only outside a ledger run.
+- In a push attempt, START.md names your worktree. Work there, and make no
+  other worktree. fleetd lands it.
+- In an attempt that began with a claim, follow the claim. Use only
+  horch ledger worktree new. horch ledger finish lands that worktree.
+- The rest of this section applies only outside a ledger run.
 - Work in the shared checkout unless your ticket tells you to use a worktree.
 - Never put git worktree add in a plan. Use the horch worktree commands.
 - To make a worktree, run: horch worktree new <name>. Work in the path that

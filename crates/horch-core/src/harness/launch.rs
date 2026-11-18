@@ -1179,10 +1179,14 @@ pub(crate) fn type_resumed_prompt(
             eprintln!("horch worker[{role}]: recording the failure failed: {e:#}");
         }
     }
-    let line = format!(
-        "[{role}] BLOCKED: My resumed task did not reach my pane. Reason: {e:#}. \
-         Tell me to claim it again with horch tell {role} \"Run horch ledger claim.\"."
-    );
+    let again = match push_start_line(prompt) {
+        Some(start) => format!("Tell me to read it again with horch tell {role} \"{start}\"."),
+        None => {
+            format!("Tell me to claim it again with horch tell {role} \"Run horch ledger claim.\".")
+        }
+    };
+    let line =
+        format!("[{role}] BLOCKED: My resumed task did not reach my pane. Reason: {e:#}. {again}");
     if let Err(e) = queue("orchestrator", &line) {
         eprintln!("horch worker[{role}]: queueing the BLOCKED line failed: {e:#}");
         return false;
@@ -1193,6 +1197,16 @@ pub(crate) fn type_resumed_prompt(
         }
     }
     false
+}
+
+/// The first line of the pane of a push attempt in `prompt`:
+/// `Read <path>/inbox/START.md and continue.` (Q8 of
+/// `docs/tickets/fleetd-p4/MAP.md`). A push attempt is never told to claim.
+fn push_start_line(prompt: &str) -> Option<&str> {
+    prompt
+        .lines()
+        .map(str::trim)
+        .find(|l| l.starts_with("Read ") && l.ends_with("/inbox/START.md and continue."))
 }
 
 fn start_discovery(
@@ -2391,6 +2405,61 @@ mod tests {
             .unwrap();
         assert_eq!(task.len(), 1, "{task:?}");
         assert_eq!(task[0].text, "TASK");
+    }
+
+    /// A resumed push attempt is not told to claim (FR-5): its BLOCKED line
+    /// names the first line of its pane, which names `START.md`.
+    #[test]
+    fn an_undelivered_push_resume_asks_for_its_start_line_again() {
+        use crate::messaging::delivery::{Readiness, Timing};
+        use crate::workspace::testing::FakeWorkspace;
+        let fast = Timing {
+            tail_timeout: Duration::from_millis(5),
+            poll_start: Duration::from_millis(1),
+            poll_max: Duration::from_millis(1),
+            settle_short: Duration::from_millis(1),
+            settle_long: Duration::from_millis(1),
+            second_enter: Duration::from_millis(1),
+        };
+        let wait = Readiness {
+            timeout: Duration::from_millis(20),
+            poll: Duration::from_millis(1),
+        };
+        let state = tempfile::tempdir().unwrap();
+        let mail = mail::Mail::under(state.path(), "w1");
+        let queue = |to: &str, line: &str| {
+            mail::Mail::for_role(state.path(), "w1", to)
+                .enqueue("horch", line)
+                .map(|_| ())
+        };
+        let ws = FakeWorkspace::new();
+        let worker = ws
+            .workspace_create("fleet", None, false)
+            .unwrap()
+            .root_pane_id;
+        ws.set_agent_states(&worker, &[(Some("opencode"), Some("unknown"))]);
+        let start = "Read /fleet/tasks/T-1/attempts/A2/inbox/START.md and continue.";
+        let prompt = format!("You are RESUMING one of your earlier sessions.\n\n{start}");
+        assert!(!type_resumed_prompt(
+            &ws,
+            Some(&worker),
+            &prompt,
+            "pickle-1",
+            None,
+            None,
+            &queue,
+            &wait,
+            &fast,
+        ));
+        let pending = mail.pending().unwrap();
+        let line = &pending[0].text;
+        assert!(
+            line.ends_with(&format!(
+                "Tell me to read it again with horch tell pickle-1 \"{start}\"."
+            )),
+            "{line}"
+        );
+        assert!(!line.contains("claim"), "{line}");
     }
 
     /// pi CAN be told its session id, so the ledger knows the resume handle
