@@ -3,6 +3,7 @@
 pub mod cancel;
 pub mod dispatch;
 pub mod lease;
+pub mod outbox;
 pub mod quota;
 pub mod repair;
 pub mod result;

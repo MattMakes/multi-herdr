@@ -2,3 +2,4 @@
 
 pub mod check_sandbox;
 pub mod launcher;
+pub mod sandbox_rules;

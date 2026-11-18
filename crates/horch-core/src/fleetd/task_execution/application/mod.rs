@@ -6,6 +6,7 @@ pub mod dispatch;
 pub mod ingest;
 pub mod launch;
 pub mod lease;
+pub mod outbox_ingest;
 pub mod quota;
 pub mod repair;
 pub mod retry;

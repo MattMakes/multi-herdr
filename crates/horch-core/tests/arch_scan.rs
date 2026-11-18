@@ -1351,7 +1351,14 @@ fn pl2_exempt_build_script_still_needs_its_exemption() {
 const FLEETD_TABLE_OWNERS: &[(&str, &[&str])] = &[
     (
         "fleet_runtime",
-        &["fleetd", "jobs", "pass_cursors", "events"],
+        &[
+            "fleetd",
+            "jobs",
+            "pass_cursors",
+            "events",
+            "requests",
+            "polite_stops",
+        ],
     ),
     (
         "task_execution",
@@ -1379,6 +1386,35 @@ const FLEETD_TABLE_OWNERS: &[(&str, &[&str])] = &[
             "remote_tips",
         ],
     ),
+];
+
+/// The module files of Phase 5 (docs/tickets/fleetd-p5/MAP.md, Q16), under
+/// `fleetd/`. Each exists and is a `pub mod` of the `mod.rs` of its folder.
+const FLEETD_PHASE5_FILES: &[&str] = &[
+    "fleet_runtime/domain/requests.rs",
+    "fleet_runtime/domain/authorize.rs",
+    "fleet_runtime/domain/operator.rs",
+    "fleet_runtime/application/requests.rs",
+    "fleet_runtime/application/handlers_run.rs",
+    "fleet_runtime/application/handlers_task.rs",
+    "fleet_runtime/application/handlers_worker.rs",
+    "fleet_runtime/application/handlers_custody.rs",
+    "fleet_runtime/adapters/requests_store.rs",
+    "fleet_runtime/adapters/channel_server.rs",
+    "fleet_runtime/adapters/request_spool.rs",
+    "fleet_runtime/adapters/protected_files.rs",
+    "fleet_runtime/adapters/token_file.rs",
+    "fleet_runtime/adapters/peer_process.rs",
+    "fleet_runtime/adapters/channel_client.rs",
+    "fleet_runtime/adapters/job_result_file.rs",
+    "fleet_runtime/adapters/polite_stops_store.rs",
+    "task_execution/domain/outbox.rs",
+    "task_execution/application/outbox_ingest.rs",
+    "task_execution/adapters/outbox_reader.rs",
+    "task_execution/adapters/outbox_writer.rs",
+    "task_execution/adapters/attempt_files.rs",
+    "worker_profiles/domain/operator_boundary.rs",
+    "worker_profiles/adapters/sandbox_rules.rs",
 ];
 
 /// The 1 door: it writes the state of each entity, so it names the tables
@@ -1592,13 +1628,25 @@ fn foreign_tables(literal: &str, owned: &[&str]) -> Vec<String> {
 }
 
 /// The `fleetd/` folder, after it asserts that each context of
-/// `FLEETD_TABLE_OWNERS` has a `domain/` folder and that no other context
-/// folder exists.
+/// `FLEETD_TABLE_OWNERS` has a `domain/` folder, that no other context
+/// folder exists, and that each file of `FLEETD_PHASE5_FILES` is a module.
 fn fleetd_root() -> PathBuf {
     let fleetd = crate_src("horch-core").join("fleetd");
     for (ctx, _) in FLEETD_TABLE_OWNERS {
         let domain = fleetd.join(ctx).join("domain");
         assert!(domain.is_dir(), "{} is missing", domain.display());
+    }
+    for file in FLEETD_PHASE5_FILES {
+        let path = fleetd.join(file);
+        assert!(path.is_file(), "fleetd/{file} is missing");
+        let name = path.file_stem().unwrap().to_string_lossy();
+        let mod_rs = std::fs::read_to_string(path.with_file_name("mod.rs")).unwrap();
+        assert!(
+            mod_rs
+                .lines()
+                .any(|l| l.trim() == format!("pub mod {name};")),
+            "fleetd/{file} has no `pub mod {name};` line in its mod.rs"
+        );
     }
     for entry in std::fs::read_dir(&fleetd).unwrap() {
         let path = entry.unwrap().path();
