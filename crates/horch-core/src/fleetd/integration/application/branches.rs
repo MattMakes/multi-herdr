@@ -13,6 +13,8 @@
 //! tips and the tests of both sides). A task of the run lands on the
 //! feature branch as any task. Each ticket starts with the line of its pair
 //! of tips, so the same pair never opens a second set, also after a cancel.
+//! The rebase of a stack edge (a feature with `stacked_on`, or a key with a
+//! cut) is not read here: `stack_edges.rs` opens its resolver task.
 
 use std::path::Path;
 
@@ -28,7 +30,7 @@ use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
 use crate::fleetd::integration::adapters::sqlite as rows;
 use crate::fleetd::integration::application::features;
 use crate::fleetd::integration::application::ports::IntegrationGitGateway;
-use crate::fleetd::integration::application::rebase::{read_key, Rebased};
+use crate::fleetd::integration::application::rebase::{read_key, RebaseKey, Rebased};
 use crate::fleetd::integration::application::stacks::StackGit;
 use crate::fleetd::integration::domain::stack::{Conflict, StackPlanner};
 use crate::taskledger::model::{Actor, EventKind, TaskStatus, WorkKind};
@@ -99,9 +101,19 @@ fn open_one(
     let Some(Rebased::Conflict { files }) = result else {
         return Ok(None);
     };
-    let Some((tip, onto)) = read_key(&last.input_key) else {
+    // A rebase with a cut, or of a feature with a lower feature, is the
+    // rebase of a stack edge: `stack_edges.rs` opens its resolver task.
+    let Some(RebaseKey {
+        tip,
+        onto,
+        cut: None,
+    }) = read_key(&last.input_key)
+    else {
         return Ok(None);
     };
+    if rows::feature(tx, feature_id)?.is_none_or(|f| f.stacked_on.is_some()) {
+        return Ok(None);
+    }
     let Some(run) = runs::feature_run(tx, feature_id)? else {
         return Ok(None);
     };

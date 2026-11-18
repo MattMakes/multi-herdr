@@ -382,3 +382,26 @@ fn conflict_of_a_tip_that_moved_opens_nothing() {
     assert!(w.pass().is_empty(), "the conflict is of an old tip");
     assert!(w.resolvers().is_empty());
 }
+
+#[test]
+fn conflict_of_a_stacked_feature_is_left_to_its_stack_edge() {
+    let mut w = world(&["f.txt"]);
+    let tx = w.conn.unchecked_transaction().unwrap();
+    let lower = NewFeature {
+        id: "F-0",
+        name: Some("r0"),
+        branch: Some("fleet/r0"),
+        primary_branch: "main",
+    };
+    rows::insert_feature(&tx, None, &lower, cause("the lower run starts")).unwrap();
+    tx.execute(
+        "UPDATE features SET stacked_on = 'F-0' WHERE id = ?1",
+        params![FEATURE],
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    w.conflicted(&["f.txt"]);
+
+    assert!(w.pass().is_empty(), "stack_edges opens this resolver task");
+    assert!(w.resolvers().is_empty());
+}
