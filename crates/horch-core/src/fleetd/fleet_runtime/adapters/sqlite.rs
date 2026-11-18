@@ -437,6 +437,83 @@ pub fn facts_after(
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// 1 event about a named thing that is not a row of the ledger, for
+/// example a worker profile (`docs/tickets/fleetd-p7/MAP.md`, Q10). Its
+/// `entity` column holds `about`, and its run, task and worker stay null.
+#[derive(Debug, Clone, Copy)]
+pub struct NamedFact<'a> {
+    pub kind: EventKind,
+    pub about: &'a str,
+    pub id: &'a str,
+    pub cause: &'a str,
+    pub actor: Actor,
+    /// The `data_json` column: 1 JSON value.
+    pub data_json: &'a str,
+}
+
+/// Append the event `f`, in the open transaction `tx` of the fleetd of
+/// generation `guard`.
+pub fn append_named_fact(
+    tx: &Connection,
+    guard: Option<Generation>,
+    f: &NamedFact<'_>,
+) -> Result<()> {
+    check_writable(tx, guard)?;
+    let text = format!("{}: {}; {} {}", f.kind, f.cause, f.about, f.id);
+    tx.execute(
+        "INSERT INTO events (at, actor, kind, text, entity, entity_id, cause, data_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            util::now(),
+            f.actor.as_str(),
+            f.kind.as_str(),
+            text,
+            f.about,
+            f.id,
+            f.cause,
+            f.data_json
+        ],
+    )?;
+    mark(tx);
+    Ok(())
+}
+
+/// The last event of 1 of `kinds` about each named thing of `about`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LastNamedFact {
+    pub id: String,
+    pub kind: String,
+    pub cause: String,
+}
+
+/// The last event of 1 of `kinds` about each thing of `about`, by id. No
+/// index of `events` covers the entity, so the read scans the table 1 time.
+pub fn last_named_facts(
+    conn: &Connection,
+    about: &str,
+    kinds: &[EventKind],
+) -> Result<Vec<LastNamedFact>> {
+    let marks: Vec<String> = (0..kinds.len()).map(|i| format!("?{}", i + 2)).collect();
+    let sql = format!(
+        "SELECT entity_id, kind, cause FROM events WHERE event_id IN (
+            SELECT max(event_id) FROM events
+            WHERE entity = ?1 AND kind IN ({}) GROUP BY entity_id)
+         ORDER BY entity_id",
+        marks.join(", ")
+    );
+    let mut values: Vec<&str> = vec![about];
+    values.extend(kinds.iter().map(|k| k.as_str()));
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(values), |r| {
+        Ok(LastNamedFact {
+            id: r.get(0)?,
+            kind: r.get(1)?,
+            cause: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 /// The stamp of the last `transition` event that moved the row `id` of
 /// `entity` to 1 of `states`, or `None` when no event did.
 pub fn entered_at(

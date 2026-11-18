@@ -10,11 +10,13 @@
 //! - L6: no 2 tasks of 1 run that run together own overlapping paths, an
 //!   exclusive task runs alone, shared-checkout tasks run 1 at a time, and
 //!   a review task never waits on these rules.
-//! - Each hold has a cause: a global hold, a hold of the persona, a hold of
-//!   the project, `not_before`, an open attempt, or a tree that waits for
-//!   its rescue.
+//! - Each hold has a cause: a global hold, an unhealthy profile, a hold of
+//!   the persona, a hold of the project, `not_before`, an open attempt, or
+//!   a tree that waits for its rescue.
+//! - An unhealthy profile has no fallback: its task waits (fleetd-p7
+//!   MAP.md, Q15).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::retry::claimable_at;
 
@@ -70,6 +72,9 @@ pub struct Holds {
     pub personas: BTreeMap<String, String>,
     /// The holds of 1 project, by project id: a missing fast gate.
     pub projects: BTreeMap<String, String>,
+    /// The unhealthy profiles: a failed conformance run or a dialog marked
+    /// each one (fleetd-p7 ticket 26).
+    pub unhealthy: BTreeSet<String>,
 }
 
 /// Why a ready task is not bound now.
@@ -77,6 +82,8 @@ pub struct Holds {
 pub enum Hold {
     /// A global hold.
     Global(String),
+    /// The profile of the task is unhealthy.
+    UnhealthyProfile { profile: String },
     /// A hold of the persona of the task.
     Persona { persona: String, cause: String },
     /// A hold of the project of the task.
@@ -102,6 +109,7 @@ impl std::fmt::Display for Hold {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Hold::Global(cause) => write!(f, "{cause}"),
+            Hold::UnhealthyProfile { profile } => write!(f, "unhealthy profile {profile}"),
             Hold::Persona { persona, cause } => write!(f, "persona {persona}: {cause}"),
             Hold::Project { project, cause } => write!(f, "project {project}: {cause}"),
             Hold::NotBefore { seconds } => write!(f, "retry after {seconds} s"),
@@ -163,6 +171,11 @@ pub fn choose(ready: &[ReadyTask], running: &[RunningTask], holds: &Holds) -> Ve
 fn hold(t: &ReadyTask, active: &[RunningTask], holds: &Holds) -> Option<Hold> {
     if let Some(cause) = holds.global.first() {
         return Some(Hold::Global(cause.clone()));
+    }
+    if holds.unhealthy.contains(&t.persona) {
+        return Some(Hold::UnhealthyProfile {
+            profile: t.persona.clone(),
+        });
     }
     if let Some(cause) = holds.personas.get(&t.persona) {
         return Some(Hold::Persona {
@@ -323,5 +336,26 @@ mod tests {
                 hold: Hold::Global("free disk 1 GB is below 10 GB".into()),
             }]
         );
+    }
+
+    #[test]
+    fn unhealthy_profile_holds_its_task_before_a_persona_hold() {
+        let holds = Holds {
+            unhealthy: ["opus".to_string()].into(),
+            personas: [("opus".to_string(), "pacing".to_string())].into(),
+            ..Holds::default()
+        };
+        let mut other = ready(2, &[]);
+        other.persona = "sonnet".into();
+        let c = choose(&[ready(1, &[]), other], &[], &holds);
+        assert_eq!(bound(&c), vec!["t2"]);
+        let hold = Hold::UnhealthyProfile {
+            profile: "opus".into(),
+        };
+        assert_eq!(hold.to_string(), "unhealthy profile opus");
+        assert!(c.contains(&Choice::Held {
+            task_id: "t1".into(),
+            hold,
+        }));
     }
 }

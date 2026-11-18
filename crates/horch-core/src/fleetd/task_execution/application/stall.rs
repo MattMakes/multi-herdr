@@ -12,8 +12,8 @@
 //!   moves it to `blocked_on_user`. No end burns an attempt here: rung 6
 //!   (ticket 10) acts on `stalled` and `no_result`, and the quota rule
 //!   (ticket 11) acts on `quota`.
-//! - Rung 4: the end `stalled`, and 1 needs-you item `dialog:<attempt>`
-//!   with the screen excerpt.
+//! - Rung 4: the end `stalled`, 1 needs-you item `dialog:<attempt>` with
+//!   the screen excerpt, and the profile of the worker marked unhealthy.
 //! - [`settle_stalled`]: a `stalled` task goes to rung 6 only after the
 //!   pass sees no process of its old attempt alive (FM-14).
 
@@ -31,6 +31,8 @@ use crate::fleetd::task_execution::domain::stall::{settle, Decision, OldProcess,
 use crate::fleetd::task_execution::domain::task::{
     AttemptRow, AttemptState, Facts, ProcessScope, RowRef, Seen, Stop, Target,
 };
+use crate::fleetd::worker_profiles::application::health;
+use crate::fleetd::worker_profiles::domain::health::dialog_reason;
 use crate::taskledger::model::{Actor, EventKind, TaskStatus, WorkerStatus};
 use crate::taskledger::{tasks, util, workers};
 
@@ -109,6 +111,11 @@ pub fn apply(
                     text: &text,
                 },
             )?;
+            // A dialog is a defect of the profile: it stays unhealthy until
+            // a conformance run passes (fleetd-p2 Q18).
+            if let Some(profile) = workers::get(tx, &a.worker_id)?.persona {
+                health::mark_unhealthy(tx, guard, &profile, &dialog_reason(&a.id))?;
+            }
             Ok(stop_of(a))
         }
     }

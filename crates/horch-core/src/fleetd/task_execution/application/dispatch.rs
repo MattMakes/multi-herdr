@@ -46,6 +46,7 @@ use crate::fleetd::task_execution::domain::task::{
     attempt_id, judged_task, AttemptRow, AttemptState,
 };
 use crate::fleetd::task_execution::domain::task_files::{Secret, TaskFacts};
+use crate::fleetd::worker_profiles::application::health;
 use crate::fleetd::worktree_custody::adapters::sqlite::{
     self as trees, NewWorktree, WorktreeRow, WorktreeState,
 };
@@ -436,10 +437,10 @@ fn running_task(conn: &Connection, t: Task) -> Result<RunningTask> {
 }
 
 /// The choice for each ready task now, in dispatch order. `holds` are the
-/// holds of the caller; each persona of a ready task whose check sandbox
-/// `sandboxes` does not support is held too. `target` names the task that
-/// goes first: the target of a spawn, or the task of the worker that a
-/// replacement replaces (L2).
+/// holds of the caller; each unhealthy profile, and each persona of a
+/// ready task whose check sandbox `sandboxes` does not support, is held
+/// too. `target` names the task that goes first: the target of a spawn,
+/// or the task of the worker that a replacement replaces (L2).
 pub fn choices(
     conn: &Connection,
     holds: &Holds,
@@ -472,6 +473,11 @@ pub fn choices(
         running.push(running_task(conn, tasks::get(conn, &id)?)?);
     }
     let mut holds = holds.clone();
+    // A task of an unhealthy profile waits: no fallback applies (MAP.md
+    // of fleetd-p7, Q15).
+    holds
+        .unhealthy
+        .extend(health::unhealthy_profiles(conn)?.into_keys());
     for t in &ready {
         if !holds.personas.contains_key(&t.persona) && !sandboxes.supported(&t.persona) {
             holds
