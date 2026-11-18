@@ -1,7 +1,8 @@
 //! The launcher: it starts a worker or a job process.
 //!
-//! Each process of fleetd starts here (`docs/specs/fleetd/design.md`, SR-7).
-//! The launcher removes the forbidden keys with
+//! Each process of fleetd starts here (`docs/specs/fleetd/design.md`, SR-7),
+//! through [`horch_platform::start::Command`]. The launcher removes the
+//! forbidden keys with
 //! [`scrub_child_env`](crate::runtime::process::scrub_child_env) and starts
 //! the process as the leader of its own process group.
 //!
@@ -13,9 +14,10 @@
 //! "Process groups".
 
 use std::fs::{File, OpenOptions};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 
 use horch_platform::group;
+use horch_platform::start::{self, Command};
 
 use crate::fleetd::fleet_runtime::adapters::sqlite::in_door_transaction;
 use crate::fleetd::worker_profiles::application::ports::{
@@ -82,7 +84,7 @@ fn discard(mut child: Child) {
 /// The command of `spec`, with the variables of its environment rule and
 /// its output. The caller scrubs the environment after this.
 fn command(spec: &LaunchSpec) -> Result<Command, LaunchError> {
-    let mut cmd = Command::new(&spec.program);
+    let mut cmd = start::command(&spec.program);
     cmd.args(&spec.args)
         .envs(spec.env_rule.vars.iter().map(|(k, v)| (k, v)))
         .stdin(Stdio::null());
@@ -162,6 +164,65 @@ mod tests {
                     "detach {detach}: {key} reached the child"
                 );
             }
+        }
+    }
+
+    /// SR-7 through a real launch: this test binary runs again with each
+    /// forbidden name in its environment, as fleetd can have it, and its
+    /// launched children print their env.
+    #[test]
+    #[cfg(unix)]
+    fn launcher_removes_a_forbidden_name_of_the_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("env.txt");
+        let mut parent = std::process::Command::new(std::env::current_exe().unwrap());
+        parent
+            .args([
+                "--exact",
+                "fleetd::worker_profiles::adapters::launcher::tests::launch_in_a_parent_with_a_forbidden_name",
+                "--ignored",
+                "--test-threads=1",
+            ])
+            .env("HORCH_TEST_LAUNCH_ENV", &out);
+        for key in FORBIDDEN_ENV {
+            parent.env(key, "from-the-parent");
+        }
+        let run = parent.output().unwrap();
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("1 passed"),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        for detach in [false, true] {
+            let seen = std::fs::read_to_string(out.with_extension(detach.to_string())).unwrap();
+            assert!(
+                seen.lines()
+                    .any(|l| l.starts_with("HORCH_TEST_LAUNCH_ENV=")),
+                "detach {detach}: the rest of the env is missing:\n{seen}"
+            );
+            for key in FORBIDDEN_ENV {
+                assert!(
+                    !seen.lines().any(|l| l.starts_with(&format!("{key}="))),
+                    "detach {detach}: {key} reached the child"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[ignore = "run by launcher_removes_a_forbidden_name_of_the_parent"]
+    fn launch_in_a_parent_with_a_forbidden_name() {
+        let out = PathBuf::from(
+            std::env::var_os("HORCH_TEST_LAUNCH_ENV").expect("run by its parent test"),
+        );
+        for detach in [false, true] {
+            let mut s = spec("/usr/bin/env", &[]);
+            s.detach = detach;
+            s.output = Some(out.with_extension(detach.to_string()));
+            let mut launched = Launcher.launch(&s).unwrap();
+            assert!(launched.child.wait().unwrap().success());
         }
     }
 

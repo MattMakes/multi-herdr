@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus};
 use std::time::{Duration, Instant};
 
+use horch_platform::start;
+
 /// Find `name` on a PATH value, honouring `PATHEXT` on Windows.
 pub fn which(path: Option<&OsStr>, pathext: Option<&str>, name: &str) -> Option<PathBuf> {
     which_in(path?, name, &horch_platform::rest::path_extensions(pathext))
@@ -131,6 +133,44 @@ fn normalize(p: &Path) -> OsString {
     OsString::from(horch_platform::shell::fold_path_case(trimmed))
 }
 
+/// A command that the helpers of this file prepare and start: a
+/// [`start::Command`], or a `std` command of a caller that has not moved to
+/// [`start::Command`] yet (SR-7).
+pub trait ChildCommand: start::Start {
+    /// Each variable that the command sets (`Some`) or removes (`None`).
+    fn env_changes(&self) -> Vec<(OsString, Option<OsString>)>;
+    fn remove_env(&mut self, key: &OsStr);
+    fn start(&mut self) -> std::io::Result<Child>;
+}
+
+impl ChildCommand for start::Command {
+    fn env_changes(&self) -> Vec<(OsString, Option<OsString>)> {
+        self.get_envs()
+            .map(|(k, v)| (k.to_os_string(), v.map(OsStr::to_os_string)))
+            .collect()
+    }
+    fn remove_env(&mut self, key: &OsStr) {
+        self.env_remove(key);
+    }
+    fn start(&mut self) -> std::io::Result<Child> {
+        self.spawn()
+    }
+}
+
+impl ChildCommand for Command {
+    fn env_changes(&self) -> Vec<(OsString, Option<OsString>)> {
+        self.get_envs()
+            .map(|(k, v)| (k.to_os_string(), v.map(OsStr::to_os_string)))
+            .collect()
+    }
+    fn remove_env(&mut self, key: &OsStr) {
+        self.env_remove(key);
+    }
+    fn start(&mut self) -> std::io::Result<Child> {
+        self.spawn()
+    }
+}
+
 /// Remove every [`FORBIDDEN_ENV`](crate::harness::launch::FORBIDDEN_ENV) variable and
 /// every git repository variable
 /// ([`REPO_ENV`](horch_marketplace::git::REPO_ENV) and the numbered
@@ -139,11 +179,32 @@ fn normalize(p: &Path) -> OsString {
 /// A horch started under `git rebase -x` or a git hook has `GIT_DIR` set; an
 /// agent or judge that inherited it would run its git in that repository.
 /// Call it after any `env` call.
-pub fn scrub_child_env(cmd: &mut Command) {
+pub fn scrub_child_env(cmd: &mut impl ChildCommand) {
     for key in crate::harness::launch::FORBIDDEN_ENV {
-        cmd.env_remove(key);
+        cmd.remove_env(OsStr::new(key));
     }
-    horch_marketplace::git::scrub_repo_env(cmd);
+    scrub_repo_env(cmd);
+}
+
+/// [`horch_marketplace::git::scrub_repo_env`] for each [`ChildCommand`]:
+/// remove each [`REPO_ENV`](horch_marketplace::git::REPO_ENV) variable, and
+/// each numbered one that this process has or that `cmd` sets.
+fn scrub_repo_env(cmd: &mut impl ChildCommand) {
+    use horch_marketplace::git::{REPO_ENV, REPO_ENV_NUMBERED};
+    for key in REPO_ENV {
+        cmd.remove_env(OsStr::new(key));
+    }
+    let numbered: Vec<OsString> = std::env::vars_os()
+        .map(|(k, _)| k)
+        .chain(cmd.env_changes().into_iter().map(|(k, _)| k))
+        .filter(|k| {
+            k.to_str()
+                .is_some_and(|k| REPO_ENV_NUMBERED.iter().any(|p| k.starts_with(p)))
+        })
+        .collect();
+    for key in numbered {
+        cmd.remove_env(&key);
+    }
 }
 
 /// Give a child `vars`, except a key the command already sets or removes.
@@ -180,9 +241,9 @@ where
 /// The child's environment is scrubbed here (`scrub_child_env`), right
 /// before the spawn: no detached child (the judge job, the compaction job,
 /// the grid tidy) can carry a forbidden key, whatever its caller set.
-pub fn spawn_detached(cmd: &mut Command) -> std::io::Result<Child> {
+pub fn spawn_detached(cmd: &mut impl ChildCommand) -> std::io::Result<Child> {
     detach(cmd);
-    cmd.spawn()
+    cmd.start()
 }
 
 /// The pane identity of the process that starts a detached child (#218).
@@ -200,12 +261,12 @@ pub const PANE_IDENTITY_ENV: &[&str] = &[
 /// `inherited`, and a `TMPDIR` under `<state_root>/tmp/`: a pane's private
 /// temp dir, which the pane removes when it ends. A key the caller set or
 /// removed on `cmd` itself is left as the caller wants it.
-fn scrub_pane_identity(cmd: &mut Command, inherited: &dyn super::context::EnvSource) {
-    let taken: Vec<OsString> = cmd.get_envs().map(|(k, _)| k.to_os_string()).collect();
-    let is_taken = |key: &str| taken.iter().any(|t| t == key);
+fn scrub_pane_identity(cmd: &mut impl ChildCommand, inherited: &dyn super::context::EnvSource) {
+    let changes = cmd.env_changes();
+    let is_taken = |key: &str| changes.iter().any(|(k, _)| k == key);
     for key in PANE_IDENTITY_ENV {
         if !is_taken(key) {
-            cmd.env_remove(key);
+            cmd.remove_env(OsStr::new(key));
         }
     }
     if is_taken("TMPDIR") {
@@ -213,7 +274,7 @@ fn scrub_pane_identity(cmd: &mut Command, inherited: &dyn super::context::EnvSou
     }
     let home = super::paths::home_dir(inherited);
     let mut roots = vec![super::paths::state_root(inherited, &home)];
-    if let Some((_, Some(dir))) = cmd.get_envs().find(|(k, _)| *k == "HORCH_STATE_DIR") {
+    if let Some((_, Some(dir))) = changes.iter().find(|(k, _)| k == "HORCH_STATE_DIR") {
         roots.push(PathBuf::from(dir));
     }
     let pane_tmp = inherited
@@ -221,12 +282,12 @@ fn scrub_pane_identity(cmd: &mut Command, inherited: &dyn super::context::EnvSou
         .map(PathBuf::from)
         .is_some_and(|t| roots.iter().any(|r| t.starts_with(r.join("tmp"))));
     if pane_tmp {
-        cmd.env_remove("TMPDIR");
+        cmd.remove_env(OsStr::new("TMPDIR"));
     }
 }
 
 /// What [`spawn_detached`] does to `cmd` before the spawn.
-fn detach(cmd: &mut Command) {
+fn detach(cmd: &mut impl ChildCommand) {
     scrub_child_env(cmd);
     scrub_pane_identity(cmd, &super::context::ProcessEnv);
     // Windows has no detach: the child dies with the pane there, as before.
@@ -422,6 +483,58 @@ mod tests {
         let seen = std::env::var_os("HORCH_TEST_DETACHED_ENV").expect("run by its parent test");
         let file = std::fs::File::create(seen).unwrap();
         let mut cmd = Command::new("/usr/bin/env");
+        cmd.stdout(file);
+        assert!(spawn_detached(&mut cmd).unwrap().wait().unwrap().success());
+    }
+
+    /// SR-7 through a real spawn: this test binary runs again with each
+    /// forbidden name in its environment, and the `start::Command` that its
+    /// `spawn_detached` starts prints its env.
+    #[cfg(unix)]
+    #[test]
+    fn spawn_detached_of_a_start_command_removes_a_forbidden_name_of_the_parent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let seen = tmp.path().join("env.txt");
+        let mut parent = Command::new(std::env::current_exe().unwrap());
+        parent
+            .args([
+                "--exact",
+                "runtime::process::tests::detached_start_child",
+                "--ignored",
+                "--test-threads=1",
+            ])
+            .env("HORCH_TEST_DETACHED_ENV", &seen);
+        for key in crate::harness::launch::FORBIDDEN_ENV {
+            parent.env(key, "from-the-parent");
+        }
+        let out = parent.output().unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success() && stdout.contains("1 passed"),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let env = std::fs::read_to_string(&seen).unwrap();
+        assert!(
+            env.lines()
+                .any(|l| l.starts_with("HORCH_TEST_DETACHED_ENV=")),
+            "the rest of the env stays:\n{env}"
+        );
+        for key in crate::harness::launch::FORBIDDEN_ENV {
+            assert!(
+                !env.lines().any(|l| l.starts_with(&format!("{key}="))),
+                "{key} reached the child"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "run by spawn_detached_of_a_start_command_removes_a_forbidden_name_of_the_parent"]
+    fn detached_start_child() {
+        let seen = std::env::var_os("HORCH_TEST_DETACHED_ENV").expect("run by its parent test");
+        let file = std::fs::File::create(seen).unwrap();
+        let mut cmd = horch_platform::start::command("/usr/bin/env");
         cmd.stdout(file);
         assert!(spawn_detached(&mut cmd).unwrap().wait().unwrap().success());
     }

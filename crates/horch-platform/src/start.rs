@@ -67,6 +67,11 @@ impl Command {
         self
     }
 
+    /// The variables that the command sets (`Some`) or removes (`None`).
+    pub fn get_envs(&self) -> std::process::CommandEnvs<'_> {
+        self.0.get_envs()
+    }
+
     pub fn current_dir(&mut self, dir: impl AsRef<Path>) -> &mut Self {
         self.0.current_dir(dir);
         self

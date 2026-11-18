@@ -51,7 +51,7 @@ pub const REPO_ENV: [&str; 18] = [
 
 /// The prefixes of the numbered config variables that `GIT_CONFIG_COUNT`
 /// counts.
-const REPO_ENV_NUMBERED: [&str; 2] = ["GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"];
+pub const REPO_ENV_NUMBERED: [&str; 2] = ["GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"];
 
 /// Remove every [`REPO_ENV`] variable and every `GIT_CONFIG_KEY_<n>` and
 /// `GIT_CONFIG_VALUE_<n>` from `cmd`, a git child: those this process has
