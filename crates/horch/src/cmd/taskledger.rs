@@ -5,16 +5,22 @@
 //! the board (`status`, `show`). The old session-ledger plumbing lives under
 //! `horch ledger legacy`.
 
-use horch_core::taskledger::tasks::ONE_OFF_TICKET;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{bail, Context, Result};
 use clap::{Args, Subcommand};
+use horch_core::execution::records::SessionLedger;
 use horch_core::fleetd::fleet_runtime::adapters::channel_client::{self, Sent};
+use horch_core::fleetd::fleet_runtime::adapters::config_file;
+use horch_core::fleetd::fleet_runtime::adapters::peer_process::PlatformFacts;
 use horch_core::fleetd::fleet_runtime::adapters::request_wire::{Outcome, Reply};
 use horch_core::fleetd::fleet_runtime::domain::requests::Kind;
-use horch_core::fleetd::task_execution::adapters::task_files::attempt_dir;
+use horch_core::fleetd::task_execution::adapters::outbox_reader::handoff_inside;
+use horch_core::fleetd::task_execution::adapters::outbox_writer::OutboxWriter;
+use horch_core::fleetd::task_execution::domain::outbox::{handoff_result, LineKind};
+use horch_core::fleetd::task_execution::domain::result::{ResultFile, ResultStatus};
+use horch_core::fleetd::worktree_custody::adapters::sqlite as trees;
 use horch_core::messaging::delivery;
 use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger::finish;
@@ -26,7 +32,7 @@ use horch_core::taskledger::model::{VerifyProfile, VERIFY_ENV};
 use horch_core::taskledger::runs::{self, NewRun, Run};
 use horch_core::taskledger::status;
 use horch_core::taskledger::stop;
-use horch_core::taskledger::tasks::{self, ClaimOutcome, Claimed};
+use horch_core::taskledger::tasks;
 use horch_core::taskledger::wakes;
 use horch_core::taskledger::workers;
 use horch_core::taskledger::{self, Store};
@@ -673,6 +679,9 @@ fn run_command(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode>
     {
         return add_map_dry_run(ctx, path);
     }
+    if let Some(code) = worker_files_cmd(ctx, &command)? {
+        return Ok(code);
+    }
     let store = if reads_only(&command) {
         read_only(ctx)?
     } else {
@@ -876,29 +885,8 @@ fn worker_side_cmd(
     mut store: Store,
     command: LedgerCommand,
 ) -> Result<ExitCode> {
-    if let LedgerCommand::Claim { json: as_json } = command {
-        return claim(ctx, &mut store, as_json);
-    }
     if let LedgerCommand::Worktree { command } = command {
         return worktree_cmd(ctx, &mut store, command);
-    }
-    if let LedgerCommand::Finish {
-        json: as_json,
-        rereview,
-        wait,
-        run_steps,
-    } = command
-    {
-        if let Some(wid) = worker_id_opt(ctx) {
-            refuse_push_attempt(&store, &wid)?;
-        }
-        let how = super::taskledger_finish::How {
-            as_json,
-            rereview,
-            wait,
-            run_steps,
-        };
-        return super::taskledger_finish::finish_cmd(ctx, &mut store, how);
     }
     if let LedgerCommand::Steps {
         task,
@@ -908,29 +896,119 @@ fn worker_side_cmd(
     {
         return steps_cmd(ctx, &store, task, &run, as_json);
     }
-    if let LedgerCommand::Done { summary, unlanded } = command {
-        if let Some(wid) = worker_id_opt(ctx) {
-            refuse_push_attempt(&store, &wid)?;
-        }
-        drop(store);
-        return done_exit(ctx, &summary.join(" "), unlanded.as_deref());
-    }
-    if let LedgerCommand::Handoff { path } = command {
-        return handoff_cmd(ctx, store, &path).map(|()| ExitCode::SUCCESS);
-    }
-    if let LedgerCommand::Progress { text } = command {
-        return progress(ctx, EventKind::Progress, &text);
-    }
-    if let LedgerCommand::Note { text } = command {
-        return progress(ctx, EventKind::Note, &text);
-    }
-    unreachable!("not a worker command")
+    unreachable!("worker_files_cmd runs each other worker command")
 }
 
-/// `horch ledger done`: `horch done` ([`super::messaging::done`], TRF-45),
-/// and the exit code once the finish is recorded.
-fn done_exit(ctx: &RuntimeContext, summary: &str, unlanded: Option<&str>) -> Result<ExitCode> {
-    super::messaging::done(ctx, summary, unlanded).map(|()| ExitCode::SUCCESS)
+/// The line of `claim`, `worktree new` and a worker's `worktree scratch`:
+/// since Phase 4 fleetd pushes each task (`docs/tickets/fleetd-p5/MAP.md`,
+/// Q3).
+pub const NOT_FOR_A_WORKER: &str =
+    "fleetd binds each task and makes its worktree; this command is not for a worker";
+
+/// The line of `done` and `finish` after the write of `result.json`.
+pub(super) const FLEETD_FINISHES: &str =
+    "fleetd runs the finish steps of this task and reports the result to the orchestrator, as horch ledger done does.";
+
+/// The worker commands of `horch ledger` (RR-5, FR-7, Q3 and Q4 of
+/// `docs/tickets/fleetd-p5/MAP.md`). Each one writes the outbox of its own
+/// attempt, or is refused, and opens the ledger only to read. `None`:
+/// `command` is not one of them.
+fn worker_files_cmd(ctx: &RuntimeContext, command: &LedgerCommand) -> Result<Option<ExitCode>> {
+    use LedgerCommand as C;
+    let code = match command {
+        C::Claim { .. }
+        | C::Worktree {
+            command: WorktreeCommand::New { .. },
+        } => not_for_a_worker(),
+        C::Worktree {
+            command: WorktreeCommand::Scratch { .. },
+        } => {
+            // The scratch of the operator is a request (ticket 22).
+            let in_attempt = read_only(ctx).is_ok_and(|store| own_outbox(ctx, &store).is_ok());
+            if !in_attempt {
+                return Ok(None);
+            }
+            not_for_a_worker()
+        }
+        C::Progress { text } => progress(ctx, LineKind::Progress, text)?,
+        C::Note { text } => progress(ctx, LineKind::Note, text)?,
+        C::Done { summary, unlanded } => {
+            let notes = unlanded
+                .as_ref()
+                .map(|reason| format!("unlanded: {reason}"));
+            write_completed(ctx, &summary.join(" "), notes)?
+        }
+        C::Finish { .. } => super::taskledger_finish::finish_cmd(ctx)?,
+        C::Handoff { path } => handoff(ctx, path)?,
+        _ => return Ok(None),
+    };
+    Ok(Some(code))
+}
+
+fn not_for_a_worker() -> ExitCode {
+    eprintln!("{NOT_FOR_A_WORKER}");
+    ExitCode::from(1)
+}
+
+/// The outbox writer of the own attempt of this process: the live attempt
+/// whose wrapper is in its parent chain. `store` is the ledger, opened
+/// read-only. No environment variable names the attempt.
+fn own_outbox(ctx: &RuntimeContext, store: &Store) -> Result<OutboxWriter> {
+    let config = config_file::load(&ctx.paths.fleet_root)?;
+    OutboxWriter::of_this_process(&ctx.paths.fleet_root, store.conn(), &config, &PlatformFacts)
+}
+
+/// Write `result.json` with `status: completed`, `summary` and `notes` to
+/// the outbox of the own attempt: `horch ledger done` and `finish`.
+pub(super) fn write_completed(
+    ctx: &RuntimeContext,
+    summary: &str,
+    notes: Option<String>,
+) -> Result<ExitCode> {
+    let out = own_outbox(ctx, &read_only(ctx)?)?;
+    let a = out.attempt();
+    let path = out.write_result(&ResultFile {
+        task: a.task_id.clone(),
+        attempt: a.attempt().to_string(),
+        status: ResultStatus::Completed,
+        summary: summary.to_string(),
+        commits: Vec::new(),
+        files_changed: Vec::new(),
+        acceptance_self_check: Vec::new(),
+        notes_for_next: notes,
+        handoff: None,
+    })?;
+    output::println(&format!("wrote {}", path.display()));
+    output::println(FLEETD_FINISHES);
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `horch ledger handoff <path>` (Q4): `result.json` with `status: blocked`,
+/// `reason: handoff` and the real path of the handoff file. The path must
+/// be absolute and inside the task folder or the worktree of the attempt.
+/// fleetd checks it again at ingest.
+fn handoff(ctx: &RuntimeContext, path: &Path) -> Result<ExitCode> {
+    if !path.is_absolute() {
+        bail!(
+            "the handoff path {} is not absolute: give the absolute path of the handoff file",
+            path.display()
+        );
+    }
+    let store = read_only(ctx)?;
+    let out = own_outbox(ctx, &store)?;
+    let a = out.attempt();
+    let mut roots = vec![ctx.paths.fleet_root.join("tasks").join(&a.task_id)];
+    if let Some(tree) = trees::of_task(store.conn(), &a.task_id)? {
+        roots.push(PathBuf::from(tree.path));
+    }
+    let file = handoff_inside(&path.to_string_lossy(), &roots).map_err(anyhow::Error::msg)?;
+    let summary = format!("I handed off {}. The handoff file is {file}.", a.task_id);
+    out.write_result(&handoff_result(&a.task_id, a.attempt(), &summary, &file))?;
+    output::println(&format!(
+        "{} is handed off. The next attempt reads {file} first.",
+        a.task_id
+    ));
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Import, unfinished work, the watchdog and worker rows.
@@ -1202,17 +1280,7 @@ fn worktree_cmd(
     let wid = worker_id(ctx)?;
     let git = Git::new(&ctx.bins.harness.git);
     match command {
-        WorktreeCommand::New { name, from } => {
-            let wt =
-                taskledger::worktree_ops::create(store, &git, &wid, &name, from.as_deref(), false)?;
-            output::println(&format!("path: {}", wt.path));
-            output::println(&format!("branch: {}", wt.branch));
-            output::println(&format!("base: {}", wt.base));
-            output::println(&format!(
-                "Work and commit in {}. When the work is complete, run: horch ledger finish",
-                wt.path
-            ));
-        }
+        WorktreeCommand::New { .. } => unreachable!("worker_files_cmd refuses it"),
         WorktreeCommand::Scratch { name } => scratch_cmd(ctx, store, &git, &wid, &name)?,
         WorktreeCommand::Drop {
             name,
@@ -2612,22 +2680,6 @@ fn add_map(
     Ok(ExitCode::SUCCESS)
 }
 
-fn claim(ctx: &RuntimeContext, store: &mut Store, as_json: bool) -> Result<ExitCode> {
-    let wid = worker_id(ctx)?;
-    if let Some(p) = tasks::push_claim(store.conn(), &wid)? {
-        return print_push_claim(ctx, &p, as_json);
-    }
-    let mut outcome = claim_task(store, &tools(ctx), &wid)?;
-    if let ClaimOutcome::Claimed(c) = &mut outcome {
-        absolute_ticket_if_missing(ctx, store, c);
-    }
-    if as_json {
-        json(&outcome)?;
-        return Ok(ExitCode::SUCCESS);
-    }
-    print_claim(ctx, outcome)
-}
-
 /// The finish steps of a push attempt are fleetd's: its worker runs
 /// `horch result`, not `horch ledger finish` or `horch ledger done`. An
 /// attempt that began with a claim ends by the old path.
@@ -2636,155 +2688,6 @@ fn refuse_push_attempt(store: &Store, wid: &str) -> Result<()> {
         bail!("{}", tasks::PUSH_FINISH_REFUSAL);
     }
     Ok(())
-}
-
-/// What a claim of a push attempt prints: its bound task, its 2 files and
-/// its ticket snapshot. It searches no task and writes nothing.
-fn print_push_claim(
-    ctx: &RuntimeContext,
-    p: &tasks::PushAttempt,
-    as_json: bool,
-) -> Result<ExitCode> {
-    let root = std::path::absolute(&ctx.paths.fleet_root)?;
-    let dir = attempt_dir(&root, &p.task_id, &p.attempt);
-    let (task_yaml, start_md) = (dir.join("task.yaml"), dir.join("inbox").join("START.md"));
-    if as_json {
-        json(&serde_json::json!({
-            "outcome": "push",
-            "task_id": p.task_id,
-            "task": p.task,
-            "title": p.title,
-            "attempt": p.attempt,
-            "task_yaml": task_yaml,
-            "start_md": start_md,
-            "ticket_snapshot": p.ticket_snapshot,
-        }))?;
-        return Ok(ExitCode::SUCCESS);
-    }
-    let mut out = format!(
-        "{} (attempt {}) is bound to you: {}. A claim takes no other task.\n\
-         Task file: {}\nStart file: {}\n",
-        p.task,
-        p.attempt,
-        p.title,
-        task_yaml.display(),
-        start_md.display()
-    );
-    if let Some(text) = &p.ticket_snapshot {
-        out.push_str(&format!(
-            "Ticket snapshot:\n-----\n{}\n-----\n",
-            text.trim_end()
-        ));
-    }
-    out.push_str("When the work is committed, run: horch result\n");
-    output::print(&out);
-    Ok(ExitCode::SUCCESS)
-}
-
-/// Claim the next task for `wid`. A shared-checkout task gets its checkout in
-/// the same transaction.
-fn claim_task(store: &mut Store, tools: &finish::Tools, wid: &str) -> Result<ClaimOutcome> {
-    store.immediate(|tx| {
-        let o = tasks::claim(tx, wid)?;
-        if let ClaimOutcome::Claimed(c) = &o {
-            finish::shared_claim(tools, &runs::get(tx, &c.task.run_id)?, &c.task)?;
-        }
-        Ok(o)
-    })
-}
-
-/// What a claim prints: the line to send when no task fits, else the task and
-/// the project facts.
-fn print_claim(ctx: &RuntimeContext, outcome: ClaimOutcome) -> Result<ExitCode> {
-    match outcome {
-        // The claim ended this worker (TRF-32); horch done closes its pane.
-        ClaimOutcome::NoTask { persona, .. } => {
-            output::println(&format!(
-                "No task for {persona}. Run this line to close your pane:"
-            ));
-            output::println(&format!("horch done \"No task for {persona}.\""));
-        }
-        ClaimOutcome::Claimed(c) => {
-            output::print(&render_claim(&c));
-            let facts =
-                horch_core::project_notes::display(&ctx.paths.state_root, &ctx.paths.project()?)?;
-            if !facts.is_empty() {
-                output::println(&facts);
-            }
-        }
-    }
-    Ok(ExitCode::SUCCESS)
-}
-
-/// A ticket queued from an ignored folder is not in the worker's worktree.
-/// Then the claim names the ticket by its absolute path in the project root.
-/// A tracked ticket keeps its relative path. A shared-checkout task works in
-/// the project root, so its relative path always opens.
-fn absolute_ticket_if_missing(ctx: &RuntimeContext, store: &Store, c: &mut Claimed) {
-    let Some(file) = c.task.task_file.clone() else {
-        return;
-    };
-    if Path::new(&file).is_absolute() || (c.worktree.is_none() && !c.task.uses_worktree()) {
-        return;
-    }
-    let Ok(run) = runs::get(store.conn(), &c.task.run_id) else {
-        return;
-    };
-    let in_root = Path::new(&run.project_root).join(&file);
-    if !in_root.is_file() {
-        return;
-    }
-    if !worktree_holds(ctx, c, &run, &file) {
-        c.task.task_file = Some(in_root.to_string_lossy().into_owned());
-    }
-}
-
-/// Whether the worktree of the claim, or the one cut for it, holds `file`.
-fn worktree_holds(ctx: &RuntimeContext, c: &Claimed, run: &Run, file: &str) -> bool {
-    match (&c.worktree, &run.run_branch) {
-        (Some(w), _) => Path::new(w).join(file).is_file(),
-        // A new worktree is cut from the run branch: it holds the ticket
-        // only when the branch tracks a file (a blob) at that path.
-        (None, Some(b)) => Git::new(&ctx.bins.harness.git)
-            .try_run(
-                Path::new(&run.project_root),
-                &["cat-file", "-t", &format!("{b}:{file}")],
-            )
-            .is_ok_and(|o| o.ok && o.stdout == "blob"),
-        (None, None) => true,
-    }
-}
-
-/// The code-sweep reviewer personas that cannot run here: not in the roster,
-/// or their harness CLI is not installed.
-pub(super) fn reviewers_down(ctx: &RuntimeContext) -> Vec<(String, String)> {
-    let roster = super::load_roster_unwarned(ctx, None).ok();
-    ["codex-reviewer", "architect-reviewer"]
-        .into_iter()
-        .filter_map(|p| {
-            let why = match roster.as_ref().and_then(|r| r.get(p)) {
-                None => "not in the roster".to_string(),
-                Some(t) => {
-                    let bin = t.agent.binary(&ctx.bins.harness)?;
-                    let found = if bin.is_absolute() {
-                        bin.is_file()
-                    } else {
-                        horch_core::runtime::process::which(
-                            ctx.inherited.path.as_deref(),
-                            ctx.inherited.pathext.as_deref(),
-                            &bin.to_string_lossy(),
-                        )
-                        .is_some()
-                    };
-                    if found {
-                        return None;
-                    }
-                    format!("{} is not installed", bin.display())
-                }
-            };
-            Some((p.to_string(), why))
-        })
-        .collect()
 }
 
 /// The finish steps' tools: git, gh, node, the sweep skills.
@@ -2983,57 +2886,6 @@ pub fn done_cmd(
     done
 }
 
-/// `horch ledger handoff <path>` (trace-fixes C4): hand the task off in 1
-/// transaction, wake the orchestrator, then, in a worker pane, report and
-/// close the pane as `horch done` does.
-pub fn handoff_cmd(ctx: &RuntimeContext, mut store: Store, path: &Path) -> Result<()> {
-    let wid = worker_id(ctx)?;
-    let file = handoff_file(ctx, path)?;
-    let in_pane = in_worker_pane(ctx);
-    let budget = delivery::start_push_budget(delivery::done_push_budget(&ctx.settings.faults));
-    if budget.is_some() && in_pane {
-        eprintln!("{}", super::messaging::CLOSING);
-    }
-    let out = store.immediate(|tx| tasks::handoff(tx, &wid, &file))?;
-    let run = runs::get(store.conn(), &out.task.run_id)?;
-    let short = out.task.short();
-    output::println(&format!(
-        "{short} is handed off. It is queued first with its worktree. The next claim reads {file} first."
-    ));
-    let woken = std::cell::Cell::new(false);
-    let wake = || {
-        if !woken.replace(true) {
-            super::taskledger_wake::drain_run(ctx, &store, &run, out.wake_id.as_deref());
-        }
-    };
-    if !in_pane {
-        wake();
-        return Ok(());
-    }
-    let summary = format!("I handed off {short}. The handoff file is {file}.");
-    let done = super::messaging::done_then(ctx, &summary, None, &wake);
-    wake();
-    done
-}
-
-/// The absolute path of the handoff file `path`, relative to the current
-/// directory. The file must exist.
-fn handoff_file(ctx: &RuntimeContext, path: &Path) -> Result<String> {
-    let full = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        ctx.paths.current_dir()?.join(path)
-    };
-    if !full.is_file() {
-        bail!(
-            "the handoff file {} does not exist; write it first",
-            full.display()
-        );
-    }
-    let full = full.canonicalize().unwrap_or(full);
-    Ok(full.to_string_lossy().into_owned())
-}
-
 /// Whether `horch done`'s report and pane close run: in a herdr pane of a
 /// worker with a record and a role.
 fn in_worker_pane(ctx: &RuntimeContext) -> bool {
@@ -3125,162 +2977,30 @@ pub fn is_ledger_worker(ctx: &RuntimeContext) -> bool {
         })
 }
 
-/// The text a worker reads after a claim.
-pub fn render_claim(c: &Claimed) -> String {
-    let t = &c.task;
-    let mut out = format!(
-        "Claimed {} (attempt {}): {}\n",
-        t.short(),
-        c.attempt,
-        t.title
-    );
-    if let Some(path) = &c.handoff_path {
-        out.push_str(&format!("PRIOR WORK: read {path} first\n"));
-    }
-    render_ticket(c, &mut out);
-    out.extend(tasks::answered_text(c));
-    if let Some(p) = &t.phase {
-        out.push_str(&format!("Phase: {p}.\n"));
-    }
-    if !c.own.is_empty() {
-        out.push_str(&format!("Own: {}\n", c.own.join(", ")));
-    }
-    if !c.do_not_touch.is_empty() {
-        out.push_str(&format!("Do not touch: {}\n", c.do_not_touch.join(", ")));
-    }
-    if t.is_review() {
-        out.push_str("This is a review task. Write your findings file as the ticket says, then run: horch ledger done \"<summary>\"\n");
-        return out;
-    }
-    render_workplace(c, &mut out);
-    if let Some(from) = &c.reopened_from {
-        out.push_str(&format!(
-            "Reopened from unfinished past work:\n    {from}\nUse what you can of it. Read each earlier transcript in chunks first.\n"
-        ));
-    }
-    render_prior(&c.prior, &mut out);
-    out.push_str("Record milestones with: horch ledger progress \"<text>\"\n");
-    out.push_str("When the work is complete, run: horch ledger finish\n");
-    out
-}
-
-/// The ticket: its snapshot from `add-map` first, then its path (TRF-12). A
-/// task with no snapshot names only the path.
-fn render_ticket(c: &Claimed, out: &mut String) {
-    let file = c.task.task_file.as_deref().unwrap_or("-");
-    let Some(snapshot) = &c.ticket_snapshot else {
-        out.push_str(&format!(
-            "Ticket: {file}. Read it in full and follow it exactly.\n"
-        ));
-        return;
-    };
-    let sha = c.task.ticket_sha.as_deref().unwrap_or("");
-    if file == ONE_OFF_TICKET {
-        out.push_str(&format!(
-            "Task (one-off, no ticket file):\n-----\n{}\n-----\nThe text above is the whole task. Do it exactly.\n",
-            snapshot.trim_end()
-        ));
-        return;
-    }
-    out.push_str(&format!(
-        "Ticket snapshot (sha256 {}), as add-map queued it:\n-----\n{}\n-----\n",
-        &sha[..sha.len().min(12)],
-        snapshot.trim_end()
-    ));
-    out.push_str(&format!(
-        "Ticket: {file}. The snapshot above is the ticket. Follow it exactly. The file can differ from it.\n"
-    ));
-}
-
-/// Where the worker works: an earlier attempt's worktree, a new one, or the
-/// shared checkout.
-fn render_workplace(c: &Claimed, out: &mut String) {
-    let t = &c.task;
-    match (&c.worktree, t.uses_worktree()) {
-        (Some(path), _) => {
-            out.push_str(&format!(
-                "Worktree: {path} (branch {}). It holds the earlier attempt's work. Work there.\n",
-                c.worktree_branch.as_deref().unwrap_or("?")
-            ));
-            if let Some(landed) = &c.landed_commit {
-                out.push_str(&format!(
-                    "Its work already landed at {}. The finish steps left: {}. A new commit is checked, reviewed and landed again.\n",
-                    &landed[..landed.len().min(12)],
-                    if c.steps_after_land.is_empty() {
-                        "none".to_string()
-                    } else {
-                        c.steps_after_land.join(", ")
-                    }
-                ));
-            }
+/// `horch ledger progress` and `horch ledger note`: 1 line of `kind` in
+/// `progress.jsonl` of the own attempt, then the session parts of
+/// `horch note` ([`super::messaging::note_as`], TRF-45). A failure of a
+/// session part is a warning: the line is written.
+fn progress(ctx: &RuntimeContext, kind: LineKind, text: &str) -> Result<ExitCode> {
+    own_outbox(ctx, &read_only(ctx)?)?.append(kind, &taskledger::util::now(), text)?;
+    if let Some(record_id) = ctx.worker.as_ref().and_then(|w| w.record_id.as_deref()) {
+        if let Err(e) = SessionLedger::open_in(ctx).and_then(|l| l.note(record_id, text)) {
+            eprintln!("horch: the session record did not record the note: {e:#}");
         }
-        (None, true) => match tasks::orphaned_text(c, &slug(&t.title)) {
-            Some(line) => out.push_str(&line),
-            None => out.push_str(&format!(
-                "Make your worktree first: horch ledger worktree new {}\n",
-                slug(&t.title)
-            )),
-        },
-        (None, false) => out.push_str("Work in the shared checkout.\n"),
     }
-    if let Some(line) = tasks::rescue_ref_text(c) {
-        out.push_str(&line);
+    if let Some(line) = note_handoff_warning(ctx) {
+        output::println(&line);
     }
-}
-
-/// The earlier attempts at the task, oldest first.
-fn render_prior(prior: &[tasks::PriorAttempt], out: &mut String) {
-    if prior.is_empty() {
-        return;
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        super::compact::worker_note_context(ctx, text)
+    }));
+    std::panic::set_hook(hook);
+    if let Ok(Err(error)) = result {
+        eprintln!("horch note: context follow-up: {error:#}");
     }
-    out.push_str("Earlier attempts, oldest first:\n");
-    for p in prior {
-        out.push_str(&format!(
-            "  Attempt {} by {}: {}{}.\n    Summary: {}\n    Transcript: {}\n",
-            p.attempt.unwrap_or(0),
-            p.role.as_deref().unwrap_or(&p.worker_id),
-            p.status,
-            p.end_reason
-                .as_deref()
-                .map(|r| format!(" ({r})"))
-                .unwrap_or_default(),
-            p.summary.as_deref().unwrap_or("(none)"),
-            p.transcript_path.as_deref().unwrap_or("(unknown)")
-        ));
-    }
-    out.push_str(
-        "Use what you can of the earlier work. Before you continue, read each earlier transcript in chunks to learn what went wrong.\n",
-    );
-}
-
-/// A short branch-safe name from a title.
-pub fn slug(title: &str) -> String {
-    let mut s: String = title
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    while s.contains("--") {
-        s = s.replace("--", "-");
-    }
-    let s = s.trim_matches('-');
-    s.chars()
-        .take(40)
-        .collect::<String>()
-        .trim_matches('-')
-        .to_string()
-}
-
-/// `horch ledger progress` and `horch ledger note`: `horch note`
-/// ([`super::messaging::note_as`], TRF-45) with their event kind.
-fn progress(ctx: &RuntimeContext, kind: EventKind, text: &str) -> Result<ExitCode> {
-    worker_id(ctx)?;
-    super::messaging::note_as(ctx, text, kind).map(|()| ExitCode::SUCCESS)
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Record `kind` with `text` on this worker's task ledger row. True when it
@@ -3386,10 +3106,7 @@ mod test_jobs;
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        absolute_ticket_if_missing, finish, handoff_warning, render_claim, tools, ExitCode, Git,
-        LedgerCommand, Run,
-    };
+    use super::{finish, handoff_warning, tools, ExitCode, Git, LedgerCommand, Run};
     use clap::Subcommand;
     use horch_core::fleetd::fleet_runtime::adapters::channel_server::ChannelServer;
     use horch_core::fleetd::fleet_runtime::adapters::token_file;
@@ -3398,7 +3115,7 @@ mod tests {
     use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
     use horch_core::roster::{ExecDecision, Roster};
     use horch_core::runtime::{MapEnv, RuntimeContext};
-    use horch_core::taskledger::model::{Actor, WorktreeMode};
+    use horch_core::taskledger::model::Actor;
     use horch_core::taskledger::runs::{self, NewRun};
     use horch_core::taskledger::stop;
     use horch_core::taskledger::tasks::{self, ClaimOutcome, Claimed, NewTask};
@@ -3598,22 +3315,6 @@ mod tests {
     }
 
     #[test]
-    fn trf_37_a_claim_prints_prior_work_before_the_ticket_snapshot() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = project(dir.path(), true);
-        let (_ctx, _store, mut c) = claimed(dir.path(), &root, None, |t| {
-            t.ticket_snapshot = Some("# t\n".into());
-        });
-        assert!(!render_claim(&c).contains("PRIOR WORK"));
-        c.handoff_path = Some("/w/ai_docs/handoffs/opus-1-whats-next.md".into());
-        let out = render_claim(&c);
-        let prior = out
-            .find("PRIOR WORK: read /w/ai_docs/handoffs/opus-1-whats-next.md first\n")
-            .expect("the PRIOR WORK line");
-        assert!(prior < out.find("Ticket snapshot").unwrap(), "{out}");
-    }
-
-    #[test]
     fn trf_37_note_warns_once_only_in_the_handoff_state() {
         use horch_core::compaction::policy::RowState;
         let line = handoff_warning(RowState::Handoff, "opus-1").expect("a warning");
@@ -3628,89 +3329,6 @@ mod tests {
         {
             assert_eq!(handoff_warning(s, "opus-1"), None, "{}", s.as_str());
         }
-    }
-
-    fn ticket_of(c: &Claimed) -> &str {
-        c.task.task_file.as_deref().unwrap()
-    }
-
-    #[test]
-    fn a_claim_keeps_the_ticket_path_when_the_project_root_has_no_such_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = project(dir.path(), false);
-        let (ctx, store, mut c) = claimed(dir.path(), &root, Some("fleet/r1"), |_| {});
-        absolute_ticket_if_missing(&ctx, &store, &mut c);
-        assert_eq!(ticket_of(&c), "tickets/t.md");
-    }
-
-    #[test]
-    fn a_claim_whose_run_is_gone_keeps_the_ticket_path() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = project(dir.path(), true);
-        let (ctx, store, mut c) = claimed(dir.path(), &root, Some("fleet/r1"), |_| {});
-        c.task.run_id = "no-such-run".into();
-        absolute_ticket_if_missing(&ctx, &store, &mut c);
-        assert_eq!(ticket_of(&c), "tickets/t.md");
-    }
-
-    #[test]
-    fn a_shared_task_without_a_worktree_keeps_its_relative_ticket_path() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = project(dir.path(), true);
-        let (ctx, store, mut c) = claimed(dir.path(), &root, Some("fleet/r1"), |t| {
-            t.worktree_mode = WorktreeMode::Shared
-        });
-        assert!(c.worktree.is_none());
-        absolute_ticket_if_missing(&ctx, &store, &mut c);
-        assert_eq!(ticket_of(&c), "tickets/t.md");
-    }
-
-    #[test]
-    fn a_claim_with_a_worktree_names_the_ticket_by_the_root_only_when_the_worktree_lacks_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = project(dir.path(), true);
-        let with = dir.path().join("with");
-        std::fs::create_dir_all(with.join("tickets")).unwrap();
-        std::fs::write(with.join("tickets/t.md"), "# t\n").unwrap();
-        let without = dir.path().join("without");
-        std::fs::create_dir_all(&without).unwrap();
-
-        let (ctx, store, mut c) = claimed(dir.path(), &root, Some("fleet/r1"), |_| {});
-        c.worktree = Some(with.to_string_lossy().into_owned());
-        absolute_ticket_if_missing(&ctx, &store, &mut c);
-        assert_eq!(ticket_of(&c), "tickets/t.md");
-
-        c.worktree = Some(without.to_string_lossy().into_owned());
-        absolute_ticket_if_missing(&ctx, &store, &mut c);
-        assert_eq!(
-            Path::new(ticket_of(&c)),
-            root.join("tickets/t.md"),
-            "the claim names the ticket in the project root"
-        );
-
-        // A shared task with a worktree is looked at like any other.
-        let other = tempfile::tempdir().unwrap();
-        let (ctx, store, mut shared) = claimed(other.path(), &root, Some("fleet/r1"), |t| {
-            t.worktree_mode = WorktreeMode::Shared
-        });
-        shared.worktree = Some(without.to_string_lossy().into_owned());
-        absolute_ticket_if_missing(&ctx, &store, &mut shared);
-        assert_eq!(Path::new(ticket_of(&shared)), root.join("tickets/t.md"));
-    }
-
-    #[test]
-    fn a_run_without_a_branch_keeps_the_relative_ticket_path_and_one_with_a_branch_does_not() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = project(dir.path(), true);
-        let (ctx, store, mut c) = claimed(dir.path(), &root, None, |_| {});
-        absolute_ticket_if_missing(&ctx, &store, &mut c);
-        assert_eq!(ticket_of(&c), "tickets/t.md", "no branch to cut from");
-
-        // The root is no git repository, so no branch of it holds the ticket.
-        let other = tempfile::tempdir().unwrap();
-        let (ctx, store, mut c) = claimed(other.path(), &root, Some("fleet/r1"), |_| {});
-        absolute_ticket_if_missing(&ctx, &store, &mut c);
-        assert_eq!(Path::new(ticket_of(&c)), root.join("tickets/t.md"));
     }
 
     #[test]
@@ -4159,7 +3777,7 @@ mod tests {
         let first = &queued[0];
         assert_eq!(first.claimable_by.as_deref(), Some("opus"));
         assert_eq!(first.land_check.as_deref(), Some("true"));
-        assert_eq!(first.task_file.as_deref(), Some(super::ONE_OFF_TICKET));
+        assert_eq!(first.task_file.as_deref(), Some(tasks::ONE_OFF_TICKET));
         assert_eq!(first.ticket_snapshot.as_deref(), Some("# fix a typo\n"));
         assert_eq!(
             super::spawn_line("opus", run),
@@ -4326,18 +3944,5 @@ mod tests {
         assert_eq!(check.status, StepStatus::NotApplicable, "{check:?}");
         // A worktree task with no worktree changed no file: nothing lands (T-5).
         assert_eq!(land.status, StepStatus::NotApplicable, "{land:?}");
-    }
-
-    #[test]
-    fn trf_42_a_one_off_claim_does_not_name_add_map() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = project(dir.path(), false);
-        let (_ctx, _store, c) = claimed(dir.path(), &root, None, |t| {
-            t.task_file = super::ONE_OFF_TICKET.into();
-            t.ticket_snapshot = Some("# fix a typo\n".into());
-        });
-        let out = render_claim(&c);
-        assert!(!out.contains("add-map"), "{out}");
-        assert!(out.contains("# fix a typo"), "{out}");
     }
 }

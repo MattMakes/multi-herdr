@@ -686,19 +686,6 @@ fn may_acknowledge(
     caller == orchestrator || public_id(caller).is_some_and(|id| id == orchestrator)
 }
 
-/// Acknowledge the notices horch queued for `role` (`horch ledger finish`
-/// is the worker's answer to a reviews-in notice). Best effort.
-pub fn ack_role_mail(ctx: &RuntimeContext, role: &str) {
-    let herdr = Herdr::with_bin(&ctx.bins.harness.herdr).with_timeout(pane_list_timeout());
-    let Ok(mailbox) = Mailbox::resolve_in(&herdr, ctx) else {
-        return;
-    };
-    let mail = Mail::to_role(&ctx.paths.state_root, mailbox.workspace_id(), role);
-    if let Err(error) = mail.ack_all() {
-        eprintln!("horch: acknowledging the mail of {role} failed: {error:#}");
-    }
-}
-
 /// Print `mail`, then acknowledge it unless `peek`.
 fn print_mail(mail: &Mail, peek: bool) -> Result<()> {
     // The mail comes after the roles, and the count comes last: a reader
