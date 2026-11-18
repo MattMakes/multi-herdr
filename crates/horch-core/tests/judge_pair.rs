@@ -39,6 +39,7 @@ use horch_core::taskledger::finish::{self, CodexSandbox, Tools};
 use horch_core::taskledger::git::Git;
 use horch_core::taskledger::model::{Actor, VerifyProfile, WorkKind};
 use horch_core::taskledger::runs::{self, NewRun, Run};
+use horch_core::taskledger::testing::bind_live;
 use horch_core::taskledger::tasks::{self, NewTask, Task};
 use horch_core::taskledger::workers::{self, NewWorker};
 use horch_core::taskledger::{util, Store};
@@ -224,7 +225,33 @@ impl World {
             .unwrap()
     }
 
-    /// Add the task `title` with the `Own` list `own` and claim it with a
+    /// Bind `task` to a new started worker, as push dispatch does: 1 live
+    /// attempt and the tree of the task.
+    fn bind(&mut self, task: &str) -> String {
+        let new = NewWorker {
+            run_id: self.run.run_id.clone(),
+            persona: "opus".into(),
+            role: Some("opus-1".into()),
+            ..Default::default()
+        };
+        let agent = horch_core::fleetd::task_execution::domain::task::Recorded {
+            pid: 4243,
+            pid_start: Some(2),
+        };
+        let id = bind_live(self.store.conn(), task, &new, Some(agent))
+            .unwrap()
+            .worker_id;
+        self.conn()
+            .execute(
+                "UPDATE workers SET supervisor_pid = 4242, supervisor_started = 1
+                 WHERE worker_id = ?1",
+                [&id],
+            )
+            .unwrap();
+        id
+    }
+
+    /// Add the task `title` with the `Own` list `own` and bind it to a
     /// new worker, in a new worktree. Gives the task and its worker.
     fn claimed(&mut self, title: &str, kind: WorkKind, own: &[&str]) -> (String, String) {
         let mut t = NewTask::work(title, "t.md", "opus");
@@ -232,13 +259,12 @@ impl World {
         t.work_kind = Some(kind);
         t.own = own.iter().map(|s| s.to_string()).collect();
         let run = self.run.clone();
-        self.store
-            .immediate(|tx| tasks::add(tx, &run, &t, Actor::Orchestrator).map(|_| ()))
-            .unwrap();
-        let worker = self.worker();
-        self.store
-            .immediate(|tx| tasks::claim(tx, &worker).map(|_| ()))
-            .unwrap();
+        let task = self
+            .store
+            .immediate(|tx| tasks::add(tx, &run, &t, Actor::Orchestrator))
+            .unwrap()
+            .task_id;
+        let worker = self.bind(&task);
         let wt =
             finish::worktree_new_with(&mut self.store, &self.tools.git, &worker, title, &TestJobs)
                 .unwrap();

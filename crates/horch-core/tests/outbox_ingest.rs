@@ -25,10 +25,11 @@ use horch_core::fleetd::task_execution::application::outbox_ingest::{
 };
 use horch_core::fleetd::task_execution::domain::outbox::{handoff_result, LineKind, ProgressLine};
 use horch_core::fleetd::task_execution::domain::result::{ResultFile, ResultStatus};
-use horch_core::taskledger::model::{Actor, WorkerKind};
+use horch_core::taskledger::model::{Actor, WorkerKind, WorktreeMode};
 use horch_core::taskledger::runs::{self, NewRun, Run};
-use horch_core::taskledger::tasks::{self, ClaimOutcome, NewTask};
-use horch_core::taskledger::workers::{self, NewWorker};
+use horch_core::taskledger::tasks::{self, NewTask};
+use horch_core::taskledger::testing::bind_live;
+use horch_core::taskledger::workers::NewWorker;
 use horch_core::taskledger::{schema, util};
 use horch_platform::channel::User;
 use rusqlite::{params, Connection};
@@ -94,43 +95,24 @@ impl World {
         self.dir.join("fleet")
     }
 
-    /// A task that a worker claimed, with its 1 live push attempt `A1`.
+    /// A task bound to a worker, with its 1 live push attempt `A1`.
     fn running_task(&self) -> AttemptRef {
         let n: i64 = self
             .conn
             .query_row("SELECT count(*) FROM tasks", [], |r| r.get(0))
             .unwrap();
-        let new = NewTask::work(&format!("t{n}"), &format!("tickets/t{n}.md"), "dev");
+        let mut new = NewTask::work(&format!("t{n}"), &format!("tickets/t{n}.md"), "dev");
+        new.worktree_mode = WorktreeMode::Shared;
         let task = tasks::add(&self.conn, &self.run, &new, Actor::Orchestrator).unwrap();
-        let worker = workers::insert(
-            &self.conn,
-            &NewWorker {
-                run_id: self.run.run_id.clone(),
-                kind: Some(WorkerKind::Worker),
-                persona: "dev".into(),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        self.conn
-            .execute(
-                "UPDATE workers SET status = 'spawning' WHERE worker_id = ?1",
-                [&worker],
-            )
-            .unwrap();
-        match tasks::claim(&self.conn, &worker).unwrap() {
-            ClaimOutcome::Claimed(_) => {}
-            other => panic!("no claim: {other:?}"),
-        }
-        let attempt_id = format!("{}/A1", task.task_id);
-        let push = self
-            .conn
-            .execute(
-                "UPDATE attempts SET via = 'push' WHERE id = ?1",
-                [&attempt_id],
-            )
-            .unwrap();
-        assert_eq!(push, 1, "the claim writes the attempt {attempt_id}");
+        let worker = NewWorker {
+            run_id: self.run.run_id.clone(),
+            kind: Some(WorkerKind::Worker),
+            persona: "dev".into(),
+            ..Default::default()
+        };
+        let bound = bind_live(&self.conn, &task.task_id, &worker, None).unwrap();
+        let attempt_id = bound.attempt_id;
+        assert_eq!(attempt_id, format!("{}/A1", task.task_id));
         AttemptRef {
             task_id: task.task_id,
             attempt_id,

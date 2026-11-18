@@ -105,23 +105,19 @@ impl Fleet {
                     &horch_core::taskledger::util::now(),
                     true,
                 )?;
-                let task = tasks::add(
-                    tx,
-                    &run,
-                    &NewTask::work("t", "t.md", "opus"),
-                    Actor::Orchestrator,
-                )?;
-                let worker = workers::insert(
-                    tx,
-                    &NewWorker {
-                        run_id: run.run_id.clone(),
-                        persona: "opus".into(),
-                        role: Some("worker-1".into()),
-                        workspace_id: Some("w1".into()),
-                        ..Default::default()
-                    },
-                )?;
-                tasks::claim(tx, &worker)?;
+                let mut t = NewTask::work("t", "t.md", "opus");
+                t.worktree_mode = horch_core::taskledger::model::WorktreeMode::Shared;
+                let task = tasks::add(tx, &run, &t, Actor::Orchestrator)?;
+                let new = NewWorker {
+                    run_id: run.run_id.clone(),
+                    persona: "opus".into(),
+                    role: Some("worker-1".into()),
+                    workspace_id: Some("w1".into()),
+                    ..Default::default()
+                };
+                let worker =
+                    horch_core::taskledger::testing::bind_live(tx, &task.task_id, &new, None)?
+                        .worker_id;
                 Ok((worker, task.task_id))
             })
             .unwrap();

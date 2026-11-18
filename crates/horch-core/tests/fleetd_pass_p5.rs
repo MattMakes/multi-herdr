@@ -47,10 +47,11 @@ use horch_core::fleetd::task_execution::domain::task::{AttemptRow, InPane, Recor
 use horch_core::fleetd::worker_profiles::adapters::launcher::Launcher;
 use horch_core::fleetd::worker_profiles::application::ports::LaunchSpec;
 use horch_core::runtime::fault::Faults;
-use horch_core::taskledger::model::{Actor, WorkerKind};
+use horch_core::taskledger::model::{Actor, WorkerKind, WorktreeMode};
 use horch_core::taskledger::runs::{self, NewRun, Run};
 use horch_core::taskledger::supervisor::{HeartbeatFile, HEARTBEAT_JSON};
-use horch_core::taskledger::tasks::{self, ClaimOutcome, NewTask};
+use horch_core::taskledger::tasks::{self, NewTask};
+use horch_core::taskledger::testing::bind_live;
 use horch_core::taskledger::workers::{self, NewWorker};
 use horch_core::taskledger::{schema, util};
 use horch_platform::channel::Stream;
@@ -189,17 +190,20 @@ impl World {
         id
     }
 
-    /// A task `name` that a worker with the agent `agent` claimed: 1 live
+    /// A task `name` bound to a worker with the agent `agent`: 1 live
     /// attempt. Gives the task id and the attempt id.
     fn claimed_task(&self, name: &str, agent: Option<Recorded>) -> (String, String) {
         let ticket = format!("tickets/{name}.md");
-        let new = NewTask::work(name, &ticket, "dev");
+        let mut new = NewTask::work(name, &ticket, "dev");
+        new.worktree_mode = WorktreeMode::Shared;
         let task = tasks::add(&self.conn, &self.run, &new, Actor::Orchestrator).unwrap();
-        let worker = self.worker(agent);
-        match tasks::claim(&self.conn, &worker).unwrap() {
-            ClaimOutcome::Claimed(_) => {}
-            other => panic!("no claim: {other:?}"),
-        }
+        let worker = NewWorker {
+            run_id: self.run.run_id.clone(),
+            kind: Some(WorkerKind::Worker),
+            persona: "dev".into(),
+            ..Default::default()
+        };
+        bind_live(&self.conn, &task.task_id, &worker, agent).unwrap();
         let attempt: String = self
             .conn
             .query_row(

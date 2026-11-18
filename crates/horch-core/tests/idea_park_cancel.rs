@@ -26,9 +26,10 @@ use horch_core::fleetd::task_execution::domain::dispatch::{Choice, Hold, Holds};
 use horch_core::fleetd::task_execution::domain::task::{Facts, Recorded, Seen};
 use horch_core::fleetd::worktree_custody::adapters::rescue_git::rescue_key;
 use horch_core::fleetd::worktree_custody::adapters::sqlite::{self as trees, NewWorktree};
-use horch_core::taskledger::model::{Actor, WorktreeStatus};
+use horch_core::taskledger::model::{Actor, WorktreeMode, WorktreeStatus};
 use horch_core::taskledger::runs::{self, NewRun, Run};
-use horch_core::taskledger::tasks::{self, ClaimOutcome, NewTask};
+use horch_core::taskledger::tasks::{self, NewTask};
+use horch_core::taskledger::testing::bind_live;
 use horch_core::taskledger::workers::{self, NewWorker};
 use horch_core::taskledger::Store;
 use rusqlite::{params, Connection};
@@ -138,7 +139,8 @@ impl World {
 
     /// A new ready task of `dev` with `title`. Its id.
     fn task(&mut self, title: &str) -> String {
-        let new = NewTask::work(title, &format!("tickets/{title}.md"), "dev");
+        let mut new = NewTask::work(title, &format!("tickets/{title}.md"), "dev");
+        new.worktree_mode = WorktreeMode::Shared;
         let run = self.run.clone();
         self.store
             .immediate(|tx| tasks::add(tx, &run, &new, Actor::Orchestrator))
@@ -167,26 +169,18 @@ impl World {
         state_of(self.conn(), "worktrees", "worktree_id", id)
     }
 
-    /// A worker of `dev` whose agent is `agent` claims the next ready task:
-    /// 1 live attempt. The id of the worker.
-    fn claimed(&mut self, agent: Recorded) -> String {
+    /// `task` is bound to a worker of `dev` whose agent is `agent`: 1
+    /// live attempt. The id of the worker.
+    fn claimed(&mut self, task: &str, agent: Recorded) -> String {
         let new = NewWorker {
             run_id: self.run.run_id.clone(),
             persona: "dev".into(),
             pane_id: Some("w0:p1".into()),
             ..Default::default()
         };
-        let w = self
-            .store
-            .immediate(|tx| {
-                let id = workers::insert(tx, &new)?;
-                workers::agent_started(tx, &id, agent.pid, agent.pid_start)?;
-                Ok(id)
-            })
-            .unwrap();
-        let out = self.store.immediate(|tx| tasks::claim(tx, &w)).unwrap();
-        assert!(matches!(out, ClaimOutcome::Claimed(_)));
-        w
+        bind_live(self.store.conn(), task, &new, Some(agent))
+            .unwrap()
+            .worker_id
     }
 
     /// A worktree row `id` of `task` in `state`, through the door, with
@@ -352,7 +346,7 @@ fn cancel_stops_a_live_attempt_before_the_task_is_cancelled() {
     let ready = w.task("ready");
     let mut agent = Sleep::start();
     let p = agent.recorded();
-    let worker = w.claimed(p);
+    let worker = w.claimed(&running, p);
     assert_eq!(w.task_status(&running), "running");
 
     let out = w.cancel(IDEA, "the operator drops it");
@@ -463,7 +457,7 @@ fn park_keeps_running_tasks_and_stops_dispatch() {
     let mut w = world();
     let running = w.task("running");
     let agent = Sleep::start();
-    let worker = w.claimed(agent.recorded());
+    let worker = w.claimed(&running, agent.recorded());
     let ready = w.task("ready");
     assert_eq!(w.task_status(&running), "running");
 

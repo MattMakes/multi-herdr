@@ -199,21 +199,31 @@ impl World {
     }
 }
 
-/// A started worker of `persona` that claims the next task it can.
+/// A started worker of `persona`, bound to the first startable task of
+/// `persona`.
 fn worker(tx: &rusqlite::Transaction<'_>, run: &Run, persona: &str) -> anyhow::Result<String> {
     let n: i64 = tx.query_row("SELECT count(*) FROM workers", [], |r| r.get(0))?;
-    let id = workers::insert(
-        tx,
-        &NewWorker {
-            run_id: run.run_id.clone(),
-            persona: persona.into(),
-            role: Some(format!("{persona}-{}", n + 1)),
-            ..Default::default()
-        },
+    // The first startable task of the persona, as the dispatch orders them.
+    let task = tasks::startable(tx, &run.run_id)?
+        .into_iter()
+        .find(|t| t.claimable_by.as_deref() == Some(persona))
+        .ok_or_else(|| anyhow::anyhow!("no startable task"))?
+        .task_id;
+    let new = NewWorker {
+        run_id: run.run_id.clone(),
+        persona: persona.into(),
+        role: Some(format!("{persona}-{}", n + 1)),
+        ..Default::default()
+    };
+    let agent = horch_core::fleetd::task_execution::domain::task::Recorded {
+        pid: 4243,
+        pid_start: Some(2),
+    };
+    let id = horch_core::taskledger::testing::bind_live(tx, &task, &new, Some(agent))?.worker_id;
+    tx.execute(
+        "UPDATE workers SET supervisor_pid = 4242, supervisor_started = 1 WHERE worker_id = ?1",
+        [&id],
     )?;
-    workers::supervisor_started(tx, &id, 4242, Some(1))?;
-    workers::agent_started(tx, &id, 4243, Some(2))?;
-    tasks::claim(tx, &id)?;
     Ok(id)
 }
 

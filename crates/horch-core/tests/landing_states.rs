@@ -1,8 +1,7 @@
 //! The landing state machine of a task branch: the branch follows its task,
 //! each state has a time limit on the fleet clock, a cancelled task's branch
-//! gets a rescue ref and then `abandoned`, and a detached finish of an old
-//! claim attempt blocks the landing until it ends
-//! (docs/specs/fleetd/design.md, "Landing a task branch on its feature
+//! gets a rescue ref and then `abandoned`, and no branch goes from
+//! `building` to `landed` (docs/specs/fleetd/design.md, "Landing a task branch on its feature
 //! branch", "A cancelled task does not block its idea", "What a release
 //! does to a run in flight", row Phase 4;
 //! docs/tickets/fleetd-p4/25-landing-state-machine.md).
@@ -21,13 +20,13 @@ use horch_core::fleetd::fleet_runtime::application::jobs::JobCtx;
 use horch_core::fleetd::fleet_runtime::application::ledger::Cause;
 use horch_core::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
+use horch_core::fleetd::fleet_runtime::domain::ledger::{Entity, EXITS};
 use horch_core::fleetd::ideas::application::needs_you::{open_items, NeedsYouList};
 use horch_core::fleetd::integration::adapters::sqlite::{self as rows, NewFeature};
 use horch_core::fleetd::integration::application::landing::{
-    self, BranchRescues, Effect, GitBranchRescues, Landing, OldFinishes, RunFiles, OVERDUE_KIND,
+    self, BranchRescues, Effect, GitBranchRescues, Landing, OVERDUE_KIND,
 };
 use horch_core::fleetd::worktree_custody::adapters::git::CliWorktreeGit;
-use horch_core::taskledger::finish::{detach, task_dir};
 use horch_core::taskledger::model::Actor;
 use horch_core::taskledger::runs::{self, NewRun, Run};
 use horch_core::taskledger::tasks::{self, NewTask};
@@ -44,7 +43,6 @@ struct World {
     _temp: tempfile::TempDir,
     dir: PathBuf,
     repo: PathBuf,
-    evidence: PathBuf,
     conn: Connection,
     run: Run,
     config: FleetConfig,
@@ -121,13 +119,10 @@ fn world() -> World {
     )
     .unwrap();
     tx.commit().unwrap();
-    let evidence = dir.join("evidence");
-    std::fs::create_dir_all(&evidence).unwrap();
     World {
         _temp: temp,
         dir,
         repo,
-        evidence,
         conn,
         run,
         config: FleetConfig::default(),
@@ -222,33 +217,19 @@ impl World {
         tx.commit().unwrap();
     }
 
-    fn follow_with(&mut self, clock: i64, finishes: &dyn OldFinishes) -> Vec<Effect> {
+    /// 1 pass of `follow` at `clock`.
+    fn follow(&mut self, clock: i64) -> Vec<Effect> {
         let config = self.config.clone();
         let ctx = JobCtx {
             guard: None,
             config: &config,
             needs_you: &NeedsYouList,
         };
-        let l = Landing {
-            jobs: &ctx,
-            finishes,
-        };
+        let l = Landing { jobs: &ctx };
         let tx = self.conn.transaction().unwrap();
         let effects = landing::follow(&l, &tx, FleetSeconds(clock), BUDGET).unwrap();
         tx.commit().unwrap();
         effects
-    }
-
-    /// 1 pass of `follow` at `clock`, with the run files of the evidence
-    /// root.
-    fn follow(&mut self, clock: i64) -> Vec<Effect> {
-        let evidence = self.evidence.clone();
-        self.follow_with(
-            clock,
-            &RunFiles {
-                evidence_root: &evidence,
-            },
-        )
     }
 
     /// Run each effect with `port` and record what it did.
@@ -445,14 +426,7 @@ fn rescue_survives_a_crash_before_and_after_the_commit() {
             config: &config,
             needs_you: &NeedsYouList,
         };
-        let evidence = w.evidence.clone();
-        let files = RunFiles {
-            evidence_root: &evidence,
-        };
-        let l = Landing {
-            jobs: &ctx,
-            finishes: &files,
-        };
+        let l = Landing { jobs: &ctx };
         let tx = w.conn.transaction().unwrap();
         let lost = landing::follow(&l, &tx, FleetSeconds(10), BUDGET).unwrap();
         assert_eq!(lost.len(), 1);
@@ -568,81 +542,32 @@ fn each_state_with_a_limit_is_due_by_its_key() {
     assert!(w.overdue_items().is_empty(), "gate_failed is not due yet");
 }
 
+/// T-871 removed the interim edge `building -> landed` of the old claim
+/// path. The door refuses it, and the branch of an attempt of an old
+/// ledger (`via = claim`) lands only through a bundle, as a push branch.
 #[test]
-fn detached_old_finish_blocks_landing_until_it_ends() {
-    let mut w = world();
-    let (task, branch) = w.task("a");
-    let worker = w.attempt(&task, "claim");
-    let run_file = detach::run_path(&w.evidence, &task, &worker);
-    detach::record(&run_file, std::process::id()).unwrap();
-    assert!(run_file.starts_with(task_dir(&w.evidence, &task)));
-
-    // The old finish lands and marks the task done while it still runs.
-    w.set_task(&task, "verifying");
-    w.follow(10);
-    assert_eq!(w.state(&branch), "building");
-    w.set_task(&task, "done");
-    w.follow(20);
-    assert_eq!(w.state(&branch), "building", "no landing while it runs");
-
-    detach::clear(&run_file);
-    w.follow(30);
-    assert_eq!(w.state(&branch), "landed");
-}
-
-#[test]
-fn claim_attempt_task_lands_1_time() {
+fn no_branch_goes_from_building_to_landed() {
+    assert!(!EXITS.contains(&(Entity::TaskBranch, "building", "landed")));
     let mut w = world();
     let (task, branch) = w.task("a");
     w.attempt(&task, "claim");
-    w.set_task(&task, "running");
-    w.follow(10);
-    // The old finish lands the task: its task status is `verifying` while
-    // the land runs, then `done`.
-    w.set_task(&task, "verifying");
-    w.follow(20);
-    assert_eq!(w.state(&branch), "building", "fleetd does not land it");
-    w.set_task(&task, "done");
-    let effects = w.follow(30);
-    assert!(effects.is_empty());
-    let row = w.row(&branch);
-    assert_eq!(row.landing_state.as_deref(), Some("landed"));
-    assert_eq!(row.owner, "nobody");
-    let readies: i64 = w
-        .conn
-        .query_row(
-            "SELECT count(*) FROM events WHERE entity = 'task_branch' AND entity_id = ?1
-             AND kind = 'transition' AND to_state = 'ready'",
-            [&branch],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(readies, 0, "the branch never waits for a bundle");
-    assert!(w.follow(40).is_empty());
-    assert_eq!(w.state(&branch), "landed");
-}
-
-#[test]
-fn push_attempt_branch_never_takes_the_claim_edge() {
-    // building -> landed is the edge of the old claim path only. A branch
-    // whose newest attempt began by a push lands only through a bundle.
-    let mut w = world();
-    let (task, branch) = w.task("a");
-    w.attempt(&task, "claim");
-    w.attempt(&task, "push");
     w.set_task(&task, "done");
     w.follow(10);
-    assert_eq!(
-        w.state(&branch),
-        "ready",
-        "the newest attempt began by a push"
-    );
+    assert_eq!(w.state(&branch), "ready");
 
     let (other, other_branch) = w.task("b");
     w.attempt(&other, "push");
-    w.set_task(&other, "done");
-    w.follow(20);
-    assert_eq!(w.state(&other_branch), "ready");
+    let config = w.config.clone();
+    let ctx = JobCtx {
+        guard: None,
+        config: &config,
+        needs_you: &NeedsYouList,
+    };
+    let tx = w.conn.transaction().unwrap();
+    let landed = landing::state_named("landed").unwrap();
+    let refused = landing::enter(&ctx, &tx, &other_branch, landed, FleetSeconds(20), "test");
+    assert!(refused.is_err(), "{refused:?}");
+    drop(tx);
     let landed: i64 = w
         .conn
         .query_row(
@@ -652,7 +577,7 @@ fn push_attempt_branch_never_takes_the_claim_edge() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(landed, 0, "no push branch went to landed");
+    assert_eq!(landed, 0, "no branch went to landed");
 }
 
 #[test]

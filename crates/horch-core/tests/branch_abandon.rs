@@ -29,7 +29,7 @@ use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
 use horch_core::fleetd::integration::adapters::sqlite::{self as rows, BranchRow, NewFeature};
 use horch_core::fleetd::integration::application::commands::{self, GitRefTips};
 use horch_core::fleetd::integration::application::landing::{
-    self, BranchRescues, GitBranchRescues, Landing, RunFiles,
+    self, BranchRescues, GitBranchRescues, Landing,
 };
 use horch_core::fleetd::task_execution::application::cancel;
 use horch_core::fleetd::worktree_custody::adapters::git::CliWorktreeGit;
@@ -438,7 +438,7 @@ fn cancel_that_dies_before_the_abandon_is_completed_by_the_pass() {
     let git_port = w.git_port();
     let port = GitBranchRescues { git: &git_port };
     for clock in [10, 20] {
-        let (config, evidence) = (w.config.clone(), w.dir.join("evidence"));
+        let config = w.config.clone();
         let effects = w
             .store
             .immediate(|tx| {
@@ -447,13 +447,7 @@ fn cancel_that_dies_before_the_abandon_is_completed_by_the_pass() {
                     config: &config,
                     needs_you: &NeedsYouList,
                 };
-                let files = RunFiles {
-                    evidence_root: &evidence,
-                };
-                let l = Landing {
-                    jobs: &ctx,
-                    finishes: &files,
-                };
+                let l = Landing { jobs: &ctx };
                 landing::follow(&l, tx, FleetSeconds(clock), 50)
             })
             .unwrap();

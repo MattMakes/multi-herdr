@@ -36,7 +36,7 @@ use horch_core::taskledger::git::Git;
 use horch_core::taskledger::model::{Actor, VerifyProfile, WorkKind};
 use horch_core::taskledger::runs::{self, NewRun, Run};
 use horch_core::taskledger::tasks::{self, NewTask, Task};
-use horch_core::taskledger::workers::{self, NewWorker};
+use horch_core::taskledger::workers::NewWorker;
 use horch_core::taskledger::{util, Store};
 use rusqlite::{params, Connection};
 use test_jobs::TestJobs;
@@ -175,19 +175,22 @@ impl World {
         let worker = self
             .store
             .immediate(|tx| {
-                tasks::add(tx, &run, &t, Actor::Orchestrator)?;
-                let id = workers::insert(
-                    tx,
-                    &NewWorker {
-                        run_id: run.run_id.clone(),
-                        persona: "opus".into(),
-                        role: Some("opus-1".into()),
-                        ..Default::default()
-                    },
+                let task = tasks::add(tx, &run, &t, Actor::Orchestrator)?.task_id;
+                let new = NewWorker {
+                    run_id: run.run_id.clone(),
+                    persona: "opus".into(),
+                    role: Some("opus-1".into()),
+                    ..Default::default()
+                };
+                let agent = horch_core::fleetd::task_execution::domain::task::Recorded {
+                    pid: 4243,
+                    pid_start: Some(2),
+                };
+                let id = horch_core::taskledger::testing::bind_live(tx, &task, &new, Some(agent))?.worker_id;
+                tx.execute(
+                    "UPDATE workers SET supervisor_pid = 4242, supervisor_started = 1 WHERE worker_id = ?1",
+                    [&id],
                 )?;
-                workers::supervisor_started(tx, &id, 4242, Some(1))?;
-                workers::agent_started(tx, &id, 4243, Some(2))?;
-                tasks::claim(tx, &id)?;
                 Ok(id)
             })
             .unwrap();

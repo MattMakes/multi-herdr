@@ -37,10 +37,6 @@ const ENTITIES: [Entity; 3] = [Entity::TaskBranch, Entity::Bundle, Entity::Featu
 const BRANCH_EXITS: &[(&str, &str)] = &[
     ("building", "verifying"),
     ("building", "abandoned"),
-    // Interim: the old finish of a claim attempt landed the task (ticket
-    // 25). Remove it when the claim path of `horch ledger finish` is
-    // removed.
-    ("building", "landed"),
     ("verifying", "ready"),
     ("verifying", "building"),
     ("verifying", "abandoned"),

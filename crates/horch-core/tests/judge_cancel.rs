@@ -22,8 +22,9 @@ use horch_core::fleetd::task_execution::application::cancel::{self, Cancel};
 use horch_core::fleetd::task_execution::domain::task::{Facts, Recorded, Seen};
 use horch_core::taskledger::model::{Actor, TaskKind};
 use horch_core::taskledger::runs::{self, NewRun, Run};
-use horch_core::taskledger::tasks::{self, ClaimOutcome, NewTask, Task};
-use horch_core::taskledger::workers::{self, NewWorker};
+use horch_core::taskledger::testing::bind_live;
+use horch_core::taskledger::tasks::{self, NewTask, Task};
+use horch_core::taskledger::workers::NewWorker;
 use horch_core::taskledger::Store;
 
 /// The recorded agent of the worker of the judge task. No process has it.
@@ -113,7 +114,8 @@ impl World {
         self.store.immediate(|tx| cancel::request(tx, &t, reason))
     }
 
-    /// A worker of `judge` claims the ready judge task: 1 live attempt.
+    /// The ready judge task is bound to a worker of `judge`: 1 live
+    /// attempt.
     fn judge_claimed(&mut self) -> String {
         let new = NewWorker {
             run_id: self.run.run_id.clone(),
@@ -121,17 +123,16 @@ impl World {
             pane_id: Some("w0:p2".into()),
             ..Default::default()
         };
-        let w = self
-            .store
-            .immediate(|tx| {
-                let id = workers::insert(tx, &new)?;
-                workers::agent_started(tx, &id, AGENT.pid, AGENT.pid_start)?;
-                Ok(id)
-            })
+        let conn = self.store.conn();
+        let task: String = conn
+            .query_row(
+                "SELECT task_id FROM tasks WHERE run_id = ?1 AND status = 'ready'
+                 AND claimable_by = ?2 ORDER BY seq LIMIT 1",
+                [&self.run.run_id, &new.persona],
+                |r| r.get(0),
+            )
             .unwrap();
-        let out = self.store.immediate(|tx| tasks::claim(tx, &w)).unwrap();
-        assert!(matches!(out, ClaimOutcome::Claimed(_)), "{out:?}");
-        w
+        bind_live(conn, &task, &new, Some(AGENT)).unwrap().worker_id
     }
 }
 

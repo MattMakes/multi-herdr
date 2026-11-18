@@ -45,10 +45,12 @@ use horch_core::fleetd::worktree_custody::adapters::sqlite::{
 use horch_core::fleetd::worktree_custody::application::reconcile::WorkDir;
 use horch_core::runtime::fault::Faults;
 use horch_core::taskledger::finish::CodexSandbox;
-use horch_core::taskledger::model::{Actor, WorktreeStatus};
+use horch_core::taskledger::model::{Actor, WorktreeMode, WorktreeStatus};
+use horch_core::fleetd::task_execution::domain::task::Recorded;
 use horch_core::taskledger::runs::{self, NewRun, Run};
 use horch_core::taskledger::tasks::{self, NewTask};
-use horch_core::taskledger::workers::{self, NewWorker};
+use horch_core::taskledger::testing::bind_live;
+use horch_core::taskledger::workers::NewWorker;
 use horch_core::taskledger::{schema, util};
 use rusqlite::{params, Connection};
 
@@ -263,32 +265,32 @@ impl World {
         }
     }
 
-    /// A new task, claimed by a new worker with a live attempt whose
+    /// A new task, bound to a new worker with a live attempt whose
     /// processes do not run: (task id, worker id, attempt id).
     fn claimed(&mut self, run: &Run) -> (String, String, String) {
-        let t = NewTask::work("t1", "t1.md", "opus");
+        let mut t = NewTask::work("t1", "t1.md", "opus");
+        t.worktree_mode = WorktreeMode::Shared;
         let task = tasks::add(&self.conn, run, &t, Actor::Orchestrator).unwrap();
-        let worker = workers::insert(
-            &self.conn,
-            &NewWorker {
-                run_id: run.run_id.clone(),
-                persona: "opus".into(),
-                role: Some("opus-1".into()),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        workers::supervisor_started(&self.conn, &worker, 4242, Some(1)).unwrap();
-        workers::agent_started(&self.conn, &worker, 4243, Some(2)).unwrap();
-        tasks::claim(&self.conn, &worker).unwrap();
-        let attempt: String = self
-            .conn
-            .query_row(
-                "SELECT id FROM attempts WHERE worker_id = ?1 AND state = 'live'",
+        let new = NewWorker {
+            run_id: run.run_id.clone(),
+            persona: "opus".into(),
+            role: Some("opus-1".into()),
+            ..Default::default()
+        };
+        let agent = Recorded {
+            pid: 4243,
+            pid_start: Some(2),
+        };
+        let bound = bind_live(&self.conn, &task.task_id, &new, Some(agent)).unwrap();
+        let worker = bound.worker_id;
+        self.conn
+            .execute(
+                "UPDATE workers SET supervisor_pid = 4242, supervisor_started = 1
+                 WHERE worker_id = ?1",
                 [&worker],
-                |r| r.get(0),
             )
             .unwrap();
+        let attempt = bound.attempt_id;
         (task.task_id, worker, attempt)
     }
 

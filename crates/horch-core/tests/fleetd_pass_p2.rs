@@ -35,10 +35,11 @@ use horch_core::roster::{Roster, Teammate};
 use horch_core::routing::policy::Policy;
 use horch_core::routing::quota::{PoolReading, QuotaFile, QuotaView, Window};
 use horch_core::runtime::fault::Faults;
-use horch_core::taskledger::model::{Actor, WorkerKind};
+use horch_core::taskledger::model::{Actor, WorkerKind, WorktreeMode};
 use horch_core::taskledger::orchestrator::{Holder, Probe, Respawn};
 use horch_core::taskledger::runs::{self, NewRun, Run, Thresholds};
-use horch_core::taskledger::tasks::{self, ClaimOutcome, NewTask};
+use horch_core::taskledger::tasks::{self, NewTask};
+use horch_core::taskledger::testing::bind_live;
 use horch_core::taskledger::watchdog::{Observation, Observer};
 use horch_core::taskledger::workers::{self, NewWorker, Worker};
 use horch_core::taskledger::{schema, util};
@@ -124,45 +125,26 @@ impl World {
         }
     }
 
-    fn worker(&self, agent: Option<Recorded>) -> String {
-        let new = NewWorker {
-            run_id: self.run.run_id.clone(),
-            kind: Some(WorkerKind::Worker),
-            persona: "dev".into(),
-            ..Default::default()
-        };
-        let id = workers::insert(&self.conn, &new).unwrap();
-        self.conn
-            .execute(
-                "UPDATE workers SET status = 'spawning', agent_pid = ?2, agent_started = ?3
-                 WHERE worker_id = ?1",
-                params![
-                    id,
-                    agent.map(|a| a.pid),
-                    agent.and_then(|a| a.pid_start).map(|s| s as i64)
-                ],
-            )
-            .unwrap();
-        id
-    }
-
-    /// A task of persona `dev` that a worker with the agent `agent`
-    /// claimed at the fleet clock of now: 1 live attempt. Gives the task
-    /// and the worker.
+    /// A task of persona `dev` bound to a worker with the agent `agent`
+    /// at the fleet clock of now: 1 live attempt. Gives the task and the
+    /// worker.
     fn claimed_task(&self, agent: &Agent) -> (String, String) {
         let n: i64 = self
             .conn
             .query_row("SELECT count(*) FROM tasks", [], |r| r.get(0))
             .unwrap();
         let file = format!("tickets/t{n}.md");
-        let new = NewTask::work(&format!("t{n}"), &file, "dev");
+        let mut new = NewTask::work(&format!("t{n}"), &file, "dev");
+        new.worktree_mode = WorktreeMode::Shared;
         let task = tasks::add(&self.conn, &self.run, &new, Actor::Orchestrator).unwrap();
-        let worker = self.worker(Some(agent.recorded()));
-        match tasks::claim(&self.conn, &worker).unwrap() {
-            ClaimOutcome::Claimed(_) => {}
-            other => panic!("no claim: {other:?}"),
-        }
-        (task.task_id, worker)
+        let worker = NewWorker {
+            run_id: self.run.run_id.clone(),
+            kind: Some(WorkerKind::Worker),
+            persona: "dev".into(),
+            ..Default::default()
+        };
+        let bound = bind_live(&self.conn, &task.task_id, &worker, Some(agent.recorded())).unwrap();
+        (task.task_id, bound.worker_id)
     }
 
     fn set_clock(&self, s: i64) {
@@ -475,18 +457,10 @@ fn idle_worker_is_stalled_and_queued_after_its_backoff() {
     let clock = w.clock();
     assert!(not_before > clock, "{not_before} after {clock}");
 
-    // A new worker cannot claim it before its backoff ends. A refused
-    // claim ends that worker, so the claim after the backoff is another.
-    let early = w.worker(None);
-    if let ClaimOutcome::Claimed(t) = tasks::claim(&w.conn, &early).unwrap() {
-        panic!("claimed in its backoff: {}", t.task.task_id);
-    }
+    // The task cannot start before its backoff ends.
+    assert!(!claimable(&w), "startable in its backoff");
     w.set_clock(not_before);
-    let next = w.worker(None);
-    match tasks::claim(&w.conn, &next).unwrap() {
-        ClaimOutcome::Claimed(t) => assert_eq!(t.task.task_id, task),
-        other => panic!("no claim after the backoff: {other:?}"),
-    }
+    assert!(claimable(&w), "not startable after the backoff");
 }
 
 /// The stops of the process group of an agent in 1 pass report.
@@ -501,14 +475,9 @@ fn stops(report: &PassReport) -> Vec<&str> {
         .collect()
 }
 
-/// Whether a new worker can claim a task now. A refused claim ends that
-/// worker.
+/// Whether a task of the run can start now: the dispatch can bind it.
 fn claimable(w: &World) -> bool {
-    let next = w.worker(None);
-    matches!(
-        tasks::claim(&w.conn, &next).unwrap(),
-        ClaimOutcome::Claimed(_)
-    )
+    !tasks::startable(&w.conn, &w.run.run_id).unwrap().is_empty()
 }
 
 /// FM-14 (T-271): the agent ignores SIGTERM and `stop_grace_s` is 600 s. The

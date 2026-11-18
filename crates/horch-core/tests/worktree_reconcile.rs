@@ -34,10 +34,10 @@ use horch_core::fleetd::worktree_custody::application::reconcile::{
     check_i6, reconcile_worktrees, Facts, Listed, Report, WorkDir,
 };
 use horch_core::fleetd::worktree_custody::domain::worktree::Breach;
-use horch_core::taskledger::model::{Actor, WorktreeStatus};
+use horch_core::taskledger::model::{Actor, WorktreeMode, WorktreeStatus};
 use horch_core::taskledger::runs::{self, NewRun, Run};
 use horch_core::taskledger::tasks::{self, NewTask};
-use horch_core::taskledger::workers::{self, NewWorker};
+use horch_core::taskledger::workers::NewWorker;
 use horch_core::taskledger::Store;
 use rusqlite::{Connection, Transaction};
 
@@ -128,26 +128,33 @@ impl World {
         let run = self.run.clone();
         self.store
             .immediate(|tx| {
-                let t = NewTask::work(&format!("t{n}"), &format!("t{n}.md"), "opus");
+                // A shared task: the bind makes no tree, so each test
+                // writes the rows it needs.
+                let mut t = NewTask::work(&format!("t{n}"), &format!("t{n}.md"), "opus");
+                t.worktree_mode = WorktreeMode::Shared;
                 let task = tasks::add(tx, &run, &t, Actor::Orchestrator)?;
-                let worker = workers::insert(
+                let new = NewWorker {
+                    run_id: run.run_id.clone(),
+                    persona: "opus".into(),
+                    role: Some(format!("opus-{n}")),
+                    ..Default::default()
+                };
+                let agent = horch_core::fleetd::task_execution::domain::task::Recorded {
+                    pid: 4243,
+                    pid_start: Some(2),
+                };
+                let bound = horch_core::taskledger::testing::bind_live(
                     tx,
-                    &NewWorker {
-                        run_id: run.run_id.clone(),
-                        persona: "opus".into(),
-                        role: Some(format!("opus-{n}")),
-                        ..Default::default()
-                    },
+                    &task.task_id,
+                    &new,
+                    Some(agent),
                 )?;
-                workers::supervisor_started(tx, &worker, 4242, Some(1))?;
-                workers::agent_started(tx, &worker, 4243, Some(2))?;
-                tasks::claim(tx, &worker)?;
-                let attempt: String = tx.query_row(
-                    "SELECT id FROM attempts WHERE worker_id = ?1 AND state = 'live'",
-                    [&worker],
-                    |r| r.get(0),
+                tx.execute(
+                    "UPDATE workers SET supervisor_pid = 4242, supervisor_started = 1
+                     WHERE worker_id = ?1",
+                    [&bound.worker_id],
                 )?;
-                Ok((task.task_id, worker, attempt))
+                Ok((task.task_id, bound.worker_id, bound.attempt_id))
             })
             .unwrap()
     }

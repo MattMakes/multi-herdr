@@ -34,9 +34,10 @@ use horch_core::fleetd::worker_profiles::application::ports::{
     LaunchError, LaunchSpec, Launched, ProcessHost,
 };
 use horch_core::runtime::fault::{Faults, ABORT_EXIT_CODE};
-use horch_core::taskledger::model::{Actor, WorkerKind};
+use horch_core::taskledger::model::{Actor, WorkerKind, WorktreeMode};
 use horch_core::taskledger::runs::{self, NewRun, Run};
-use horch_core::taskledger::tasks::{self, ClaimOutcome, NewTask};
+use horch_core::taskledger::tasks::{self, NewTask};
+use horch_core::taskledger::testing::bind_live;
 use horch_core::taskledger::workers::{self, NewWorker};
 use horch_core::taskledger::{schema, util};
 use horch_platform::signal::{stop_same, Stop as How};
@@ -195,16 +196,18 @@ impl World {
         self.worker(WorkerKind::Worker, "done", Some(p.recorded()));
     }
 
-    /// A task that a worker with the agent `agent` claimed: 1 live
-    /// attempt.
+    /// A task bound to a worker with the agent `agent`: 1 live attempt.
     fn claimed_task(&self, agent: Recorded) -> String {
-        let new = NewTask::work("a", "tickets/a.md", "dev");
+        let mut new = NewTask::work("a", "tickets/a.md", "dev");
+        new.worktree_mode = WorktreeMode::Shared;
         let task = tasks::add(&self.conn, &self.run, &new, Actor::Orchestrator).unwrap();
-        let worker = self.worker(WorkerKind::Worker, "spawning", Some(agent));
-        match tasks::claim(&self.conn, &worker).unwrap() {
-            ClaimOutcome::Claimed(_) => {}
-            other => panic!("no claim: {other:?}"),
-        }
+        let worker = NewWorker {
+            run_id: self.run.run_id.clone(),
+            kind: Some(WorkerKind::Worker),
+            persona: "dev".into(),
+            ..Default::default()
+        };
+        bind_live(&self.conn, &task.task_id, &worker, Some(agent)).unwrap();
         task.task_id
     }
 

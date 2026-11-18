@@ -38,8 +38,9 @@ use horch_core::fleetd::task_execution::domain::task::{Facts, Recorded, Seen};
 use horch_core::fleetd::worktree_custody::adapters::git::CliWorktreeGit;
 use horch_core::taskledger::model::Actor;
 use horch_core::taskledger::runs::{self, NewRun, Run};
-use horch_core::taskledger::tasks::{self, ClaimOutcome, NewTask};
-use horch_core::taskledger::workers::{self, NewWorker};
+use horch_core::taskledger::testing::bind_live;
+use horch_core::taskledger::tasks::{self, NewTask};
+use horch_core::taskledger::workers::NewWorker;
 use horch_core::taskledger::{util, Store};
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
@@ -263,8 +264,8 @@ impl World {
         (task, branch, tip)
     }
 
-    /// A worker of `persona` claims its ready task: 1 live attempt. Gives
-    /// the worker id.
+    /// The ready task of `persona` is bound to a worker of `persona`: 1
+    /// live attempt. Gives the worker id.
     fn claimed(&mut self, persona: &str) -> String {
         let new = NewWorker {
             run_id: self.run.run_id.clone(),
@@ -272,17 +273,16 @@ impl World {
             pane_id: Some("w0:p2".into()),
             ..Default::default()
         };
-        let w = self
-            .store
-            .immediate(|tx| {
-                let id = workers::insert(tx, &new)?;
-                workers::agent_started(tx, &id, AGENT.pid, AGENT.pid_start)?;
-                Ok(id)
-            })
+        let conn = self.store.conn();
+        let task: String = conn
+            .query_row(
+                "SELECT task_id FROM tasks WHERE run_id = ?1 AND status = 'ready'
+                 AND claimable_by = ?2 ORDER BY seq LIMIT 1",
+                [&self.run.run_id, &new.persona],
+                |r| r.get(0),
+            )
             .unwrap();
-        let out = self.store.immediate(|tx| tasks::claim(tx, &w)).unwrap();
-        assert!(matches!(out, ClaimOutcome::Claimed(_)), "{out:?}");
-        w
+        bind_live(conn, &task, &new, Some(AGENT)).unwrap().worker_id
     }
 
     fn abandon(&mut self, port: &dyn BranchRescues) -> Result<FeatureAbandoned> {
