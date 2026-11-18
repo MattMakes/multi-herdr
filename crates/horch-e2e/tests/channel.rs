@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use horch_core::execution::legacy::Record;
 use horch_core::execution::records::SessionLedger;
 use horch_core::messaging::channel;
+use horch_core::messaging::delivery::MAIL_LINE;
 use horch_core::messaging::mail::Mail;
 use horch_e2e::harness::Harness;
 use serde_json::Value;
@@ -296,9 +297,17 @@ fn arc_30_e2e_tell_types_when_no_relay_runs() {
     let h = world("arc30-no-relay");
     let sent = tell(&h);
     assert!(sent.status.success(), "{}", stderr(&sent));
-    let typed = typed_lines(&h);
+    assert_types_the_mail_line(&h);
+}
+
+/// FR-7: the pane gets only the mail line, and the mail keeps the text.
+fn assert_types_the_mail_line(h: &Harness) {
+    let typed = typed_lines(h);
     assert_eq!(typed.len(), 1, "{typed:?}");
-    assert!(typed[0].to_string().contains(&mail_line(&h, "DONE: e2e")));
+    assert!(typed[0].to_string().contains(MAIL_LINE), "{typed:?}");
+    let pending = Mail::under(&h.state, WORKSPACE).pending().unwrap();
+    assert_eq!(pending.len(), 1, "{pending:?}");
+    assert_eq!(pending[0].line(), mail_line(h, "DONE: e2e"));
 }
 
 #[test]
@@ -323,7 +332,7 @@ fn arc_30_e2e_a_live_relay_that_fails_leaves_the_tell_for_the_courier() {
 }
 
 #[test]
-fn arc_30_e2e_unconfirmed_tell_types_with_the_resent_suffix() {
+fn arc_30_e2e_unconfirmed_tell_types_the_mail_line() {
     let mut h = world("arc30-unconfirmed");
     h.set("HORCH_TEST_CHANNEL_SEND_TIMEOUT_MS", "100");
     let socket = channel_socket(&h);
@@ -342,16 +351,11 @@ fn arc_30_e2e_unconfirmed_tell_types_with_the_resent_suffix() {
     let sent = tell(&h);
     assert!(sent.status.success(), "{}", stderr(&sent));
     assert!(stderr(&sent).contains("the channel relay did not confirm the message"));
-    let typed = typed_lines(&h);
-    assert_eq!(typed.len(), 1, "{typed:?}");
-    let line = mail_line(&h, "DONE: e2e");
-    assert!(typed[0].to_string().contains(&format!(
-        "{line} (sent again: the channel relay did not confirm)"
-    )));
+    assert_types_the_mail_line(&h);
     assert!(fake_relay
         .join()
         .expect("fake relay thread")
-        .contains(&line));
+        .contains(&mail_line(&h, "DONE: e2e")));
 }
 
 #[test]

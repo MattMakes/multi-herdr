@@ -395,7 +395,7 @@ fn run(call: &mut Call) -> i32 {
         }
         ["agent", "prompt", pane, text]
             if scenario_has("fleet_probe_ack")
-                && text.contains("run horch inbox to confirm delivery") =>
+                && *text == horch_core::messaging::delivery::MAIL_LINE =>
         {
             let workspace = pane.split(':').next().unwrap_or(pane);
             let Some(binary) = std::env::current_exe()
