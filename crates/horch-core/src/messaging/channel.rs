@@ -7,7 +7,7 @@
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -529,7 +529,7 @@ fn deliver<W: Write>(
 }
 
 fn run_codex_queue(codex_bin: &Path, thread_id: &str, text: &str) -> Result<()> {
-    let mut child = Command::new(codex_bin)
+    let mut child = horch_platform::start::command(codex_bin)
         .args(["queue", "--thread", thread_id, "--message", text])
         .stdin(Stdio::null())
         .stdout(Stdio::null())

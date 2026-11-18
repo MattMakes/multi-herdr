@@ -907,7 +907,7 @@ fn opencode_usage(c: &mut Cursor, id: &str, data: &Value) -> Option<Observation>
 
 /// Run a query through `sqlite3 -readonly -json`. No rows prints nothing.
 pub(crate) fn sqlite_json(bin: &Path, db: &Path, query: &str) -> Result<Vec<Value>, Unreadable> {
-    let output = std::process::Command::new(bin)
+    let output = horch_platform::start::command(bin)
         .arg("-readonly")
         .arg("-json")
         .arg(db)

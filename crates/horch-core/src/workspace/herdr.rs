@@ -13,13 +13,14 @@ use std::ffi::OsStr;
 use std::fmt;
 use std::io::Read;
 use std::path::PathBuf;
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, Output, Stdio};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
 use horch_platform::group::{Contained, NotResumed};
+use horch_platform::start;
 use serde::Deserialize;
 
 use crate::workspace::model::*;
@@ -146,7 +147,7 @@ impl Herdr {
     }
 
     fn run<S: AsRef<OsStr>>(&self, args: &[S]) -> std::io::Result<Output> {
-        let mut command = Command::new(&self.bin);
+        let mut command = start::command(&self.bin);
         command.args(args);
         match (self.timeout, self.deadline) {
             (None, None) => command.output(),
@@ -194,7 +195,7 @@ impl Herdr {
 
     /// True when the herdr server answers at all. Cheap reachability probe.
     pub fn server_reachable(&self) -> bool {
-        Command::new(&self.bin)
+        start::command(&self.bin)
             .args(["workspace", "list"])
             .output()
             .map(|o| o.status.success())
@@ -492,7 +493,7 @@ impl Herdr {
             "--timeout",
             &timeout,
         ];
-        let out = Command::new(&self.bin)
+        let out = start::command(&self.bin)
             .args(args)
             .output()
             .context("running herdr pane wait-output")?;
@@ -502,7 +503,7 @@ impl Herdr {
 
     /// `herdr integration status`, or None when the subcommand is unavailable.
     pub fn integration_status(&self) -> Option<String> {
-        Command::new(&self.bin)
+        start::command(&self.bin)
             .args(["integration", "status"])
             .output()
             .ok()
@@ -776,7 +777,7 @@ fn name_herdr(error: std::io::Error) -> std::io::Error {
 /// whole tree is killed. Every platform then waits at most [`READER_GRACE`]
 /// for the readers.
 fn output_within(
-    mut command: Command,
+    mut command: start::Command,
     timeout: Duration,
     deadline: Option<Instant>,
 ) -> std::io::Result<Output> {
@@ -866,6 +867,7 @@ fn output_within(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     /// A fake herdr that runs `body`, already run once. macOS scans a new
     /// executable at its first exec for seconds (up to 35 s under load),
@@ -961,7 +963,7 @@ mod tests {
         for stream in ["", ">&2"] {
             let (_dir, script) = script_in(&format!("head -c 3000000 /dev/zero {stream}"));
             let error =
-                output_within(Command::new(&script), Duration::from_secs(5), None).unwrap_err();
+                output_within(start::command(&script), Duration::from_secs(5), None).unwrap_err();
             assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{stream}");
             assert!(error.to_string().contains("more than"), "{error}");
         }
@@ -988,7 +990,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn a_descendant_holding_stdout_does_not_outlive_the_timeout() {
-        let mut command = Command::new("cmd");
+        let mut command = start::command("cmd");
         command.args(["/c", "start /b ping -n 30 127.0.0.1 & exit 0"]);
         let started = Instant::now();
         let error = output_within(command, Duration::from_millis(1000), None).unwrap_err();
@@ -1017,7 +1019,7 @@ mod tests {
         let (_dir, script) = script_in("exec sleep 30");
         let started = Instant::now();
         let error =
-            output_within(Command::new(&script), Duration::from_millis(500), None).unwrap_err();
+            output_within(start::command(&script), Duration::from_millis(500), None).unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
         assert!(error.to_string().contains("did not answer"), "{error}");
         assert!(started.elapsed() >= Duration::from_millis(400));
@@ -1027,7 +1029,7 @@ mod tests {
     #[test]
     fn a_timeout_too_large_for_an_instant_is_rejected_before_spawning() {
         let (_dir, script) = script_in("exit 0");
-        let error = output_within(Command::new(&script), Duration::MAX, None).unwrap_err();
+        let error = output_within(start::command(&script), Duration::MAX, None).unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
     }
 

@@ -691,7 +691,7 @@ pub fn settle_after_close(ctx: &RuntimeContext, workspace_id: &str) {
     let Some(exe) = ctx.bins.current_exe.clone() else {
         return;
     };
-    let mut cmd = std::process::Command::new(exe);
+    let mut cmd = horch_platform::start::command(exe);
     let subcommand = if ctx.settings.tiling == TilingMode::Automatic {
         "tile"
     } else {

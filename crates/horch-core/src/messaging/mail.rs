@@ -765,7 +765,7 @@ pub fn start_courier(ctx: &crate::runtime::RuntimeContext, workspace: &str) -> R
     let Some(exe) = ctx.bins.current_exe.clone() else {
         bail!("the mail courier cannot start: the horch binary path is unknown");
     };
-    let mut cmd = std::process::Command::new(&exe);
+    let mut cmd = horch_platform::start::command(&exe);
     cmd.args(["mail", "courier", "--workspace", workspace])
         .env("HORCH_STATE_DIR", &ctx.paths.state_root)
         .stdin(std::process::Stdio::null())
