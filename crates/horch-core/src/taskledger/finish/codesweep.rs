@@ -444,7 +444,7 @@ pub fn worker_in_pane(
 /// task's current round does not block. It must name a finding of the
 /// round's report.
 pub fn waive(
-    store: &Store,
+    conn: &rusqlite::Connection,
     evidence_root: &Path,
     task: &Task,
     id: &str,
@@ -482,7 +482,7 @@ pub fn waive(
         serde_json::to_vec_pretty(&all)?,
     )?;
     util::event(
-        store.conn(),
+        conn,
         &About {
             run: Some(&task.run_id),
             task: Some(&task.task_id),

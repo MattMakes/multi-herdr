@@ -1158,6 +1158,39 @@ pub fn decide(
     Ok(())
 }
 
+/// `horch ledger reopen`: queue `new` in `run` for the open finding
+/// `finding` and close the finding as `requeued`, in the caller's
+/// transaction. The old worktree of the finding, when it is still on disk
+/// and not cleaned, becomes the worktree of the new task.
+pub fn reopen(
+    conn: &Connection,
+    run: &runs::Run,
+    new: &super::tasks::NewTask,
+    finding: &Unfinished,
+) -> Result<super::tasks::Task> {
+    let task = super::tasks::add(conn, run, new, super::model::Actor::Orchestrator)?;
+    decide(
+        conn,
+        finding.finding_id,
+        FindingStatus::Requeued,
+        "orchestrator",
+        &task.task_id,
+    )?;
+    if let Some(wt) = &finding.worktree_id {
+        let w = super::finish::worktree(conn, wt)?;
+        if Path::new(&w.path).exists() && w.status != "cleaned" {
+            conn.execute(
+                &format!(
+                    "UPDATE worktrees SET task_id = ?2, worker_id = NULL, status = {open} WHERE worktree_id = ?1",
+                    open = word(WorktreeStatus::Open)
+                ),
+                [wt, &task.task_id],
+            )?;
+        }
+    }
+    Ok(task)
+}
+
 /// The earlier sessions of `task_id`, 1 indented line each.
 fn earlier_sessions(conn: &Connection, task_id: &str) -> Result<String> {
     let mut stmt = conn.prepare(

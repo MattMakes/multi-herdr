@@ -350,7 +350,14 @@ fn trf_29_finding_ids_carry_and_reviewers_rule_on_the_answers() {
         note(&r)
     );
     let task = w.task();
-    codesweep::waive(&w.store, &w.tools.evidence_root, &task, "F1", "a test").unwrap();
+    codesweep::waive(
+        w.store.conn(),
+        &w.tools.evidence_root,
+        &task,
+        "F1",
+        "a test",
+    )
+    .unwrap();
     std::fs::write(
         w.round_dir(1).join("answers.md"),
         "F2: the caller checks it\n",

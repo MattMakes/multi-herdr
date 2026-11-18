@@ -25,11 +25,9 @@ use horch_core::taskledger::import;
 use horch_core::taskledger::map;
 use horch_core::taskledger::model::{
     Actor, EventKind, ProgressSource, StepName, TaskKind, WorkerKind, WorkerStatus, WorktreeMode,
-    WorktreeStatus,
 };
 use horch_core::taskledger::model::{FindingStatus, StopRequester, VerifyProfile, VERIFY_ENV};
 use horch_core::taskledger::runs::{self, NewRun, Run};
-use horch_core::taskledger::sql_words::word;
 use horch_core::taskledger::status;
 use horch_core::taskledger::stop;
 use horch_core::taskledger::tasks::{self, ClaimOutcome, Claimed, NewTask};
@@ -1138,7 +1136,7 @@ fn waive_cmd(
         }
     }
     let t = tasks::resolve(store.conn(), &r.run_id, task)?;
-    let w = finish::codesweep::waive(store, &tools(ctx).evidence_root, &t, finding, reason)?;
+    let w = finish::codesweep::waive(store.conn(), &tools(ctx).evidence_root, &t, finding, reason)?;
     output::println(&format!(
         "{} round {}: {} waived. The next horch ledger finish of {} reads it.",
         t.short(),
@@ -1396,37 +1394,15 @@ fn reopen_plan(
     Ok((r, t, f))
 }
 
-/// Queue the reopened task and close the finding; the finding's old
-/// worktree, when it is still on disk, becomes the task's.
+/// Queue the reopened task and close the finding
+/// ([`import::reopen`]).
 fn queue_reopened(
     store: &mut Store,
     run: &Run,
     new: &NewTask,
     finding: &import::Unfinished,
 ) -> Result<tasks::Task> {
-    store.immediate(|tx| {
-        let task = tasks::add(tx, run, new, Actor::Orchestrator)?;
-        import::decide(
-            tx,
-            finding.finding_id,
-            FindingStatus::Requeued,
-            "orchestrator",
-            &task.task_id,
-        )?;
-        // The old worktree, when it is still on disk, is this task's now.
-        if let Some(wt) = &finding.worktree_id {
-            if reusable(&finish::worktree(tx, wt)?) {
-                tx.execute(
-                    &format!(
-                        "UPDATE worktrees SET task_id = ?2, worker_id = NULL, status = {open} WHERE worktree_id = ?1",
-                        open = word(WorktreeStatus::Open)
-                    ),
-                    [wt, &task.task_id],
-                )?;
-            }
-        }
-        Ok(task)
-    })
+    store.immediate(|tx| import::reopen(tx, run, new, finding))
 }
 
 fn reopen_cmd(
@@ -1445,11 +1421,6 @@ fn reopen_cmd(
         primary
     ));
     Ok(ExitCode::SUCCESS)
-}
-
-/// Whether a finding's old worktree is still on disk and not cleaned.
-fn reusable(w: &finish::WorktreeRow) -> bool {
-    Path::new(&w.path).exists() && w.status != "cleaned"
 }
 
 fn dismiss_cmd(

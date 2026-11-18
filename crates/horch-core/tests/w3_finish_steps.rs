@@ -1167,7 +1167,14 @@ fn code_sweep_fails_on_a_critical_finding_until_it_is_waived() {
         )
     );
     let task = tasks::get(w.store.conn(), &w.worktree().task_id.unwrap()).unwrap();
-    codesweep::waive(&w.store, &w.tools.evidence_root, &task, "F1", "a test").unwrap();
+    codesweep::waive(
+        w.store.conn(),
+        &w.tools.evidence_root,
+        &task,
+        "F1",
+        "a test",
+    )
+    .unwrap();
     let r = w.finish(&id);
     assert_eq!(verdict(&r, "code-sweep"), "WARN");
     let answers = Path::new(&reviews(&w)[0].1).with_file_name("answers.md");
