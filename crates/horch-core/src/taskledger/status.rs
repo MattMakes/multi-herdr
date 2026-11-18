@@ -1094,6 +1094,17 @@ mod trf_15_tests {
                 )
             })
             .unwrap();
+        // A task needs an idea in flight of the feature of its run (FR-12).
+        store
+            .conn()
+            .execute_batch(
+                "INSERT OR IGNORE INTO features (id, name, branch, primary_branch, state,
+                    created_at, updated_at)
+                 VALUES ('F-0001', 'r1', 'fleet/r1', 'main', 'open', 'now', 'now');
+                 INSERT INTO ideas (id, feature_id, state, created_at, updated_at)
+                 VALUES ('I-0001', 'F-0001', 'in_progress', 'now', 'now');",
+            )
+            .unwrap();
         let t = NewTask::work("alpha", "tickets/alpha.md", "dev");
         let task = store
             .immediate(|tx| tasks::add(tx, &run, &t, Actor::Orchestrator))
