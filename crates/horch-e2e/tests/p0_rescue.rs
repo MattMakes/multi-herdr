@@ -1,7 +1,8 @@
 //! Phase 0 red tests of fleetd (`docs/specs/fleetd/design.md`): a herdr
 //! server restart (FM-13) and a worker killed with dirty and untracked files
-//! in its worktree (FM-25). Each test is on the list of expected failures,
-//! `expected-failures/p0_rescue.txt`, with the phase that makes it green.
+//! in its worktree (FM-25). The tests began as Phase 0 red tests on the list
+//! of expected failures, `expected-failures/p0_rescue.txt`. Phases 1 and 3
+//! made them green, and they now run as normal tests.
 //!
 //! The test plays the agent: a `sleep` process stands in for it, and the
 //! test runs the worker commands with `HORCH_WORKER_ID`. A herdr restart
