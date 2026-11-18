@@ -1536,9 +1536,9 @@ mod tests {
     #[test]
     fn a_worker_that_waits_is_progress_and_names_the_reasons() {
         let (_d, mut s, run, w) = setup();
-        // A background wait of a worker with no live agent child ends at
-        // once (MAP.md of fleetd-p2, Q23), so the 2 waits that hold here are
-        // a question and a reviewers wait whose reviews are in.
+        // The recorded agent (pid 2, start 2) is not alive, so a background
+        // wait ends at once (MAP.md of fleetd-p2, Q23). The 2 waits that
+        // hold here are a question and a reviewers wait whose reviews are in.
         workers::set_wait(s.conn(), &w, "question", "reason b", &[], 3600).unwrap();
         workers::set_wait(s.conn(), &w, workers::REVIEWS_WAIT, "reason a", &[], 3600).unwrap();
         let c = one_check(&mut s, &run, &w, live(None, "idle"));

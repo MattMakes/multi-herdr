@@ -835,14 +835,15 @@ const REVIEW_WORKING: [TaskStatus; 3] =
     [TaskStatus::Ready, TaskStatus::Leased, TaskStatus::Running];
 
 /// The child fact of the agent of `w`: a member of its process group other
-/// than the agent is alive. Another host, or a platform with no process
-/// groups, gives [`Child::Unknown`].
+/// than the agent is alive. Another host, a platform with no process
+/// groups, or no recorded agent pid gives [`Child::Unknown`]: a missing pid
+/// is no proof that the process is gone, so the wait holds to its cap.
 fn agent_child(w: &Worker) -> Child {
     if w.host.as_deref().is_some_and(|h| h != util::host_name()) {
         return Child::Unknown;
     }
     let Some(pid) = w.agent_pid.and_then(|p| u32::try_from(p).ok()) else {
-        return Child::Gone;
+        return Child::Unknown;
     };
     let started = w.agent_started.and_then(|s| u64::try_from(s).ok());
     if !crate::procid::alive(pid, started) {
@@ -1636,6 +1637,26 @@ mod tests {
     }
 
     #[test]
+    fn background_wait_of_a_worker_with_no_agent_pid_holds_to_its_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(&dir.path().join("l.sqlite3")).unwrap();
+        let (_, worker) = claimed(&mut s);
+        let w = get(s.conn(), &worker).unwrap();
+        assert_eq!(w.agent_pid, None, "the worker records no agent pid");
+        assert_eq!(agent_child(&w), Child::Unknown);
+        set_wait(s.conn(), &worker, BACKGROUND_WAIT, "build", &[], 24 * 3600).unwrap();
+        set_clock(s.conn(), 4_599);
+        assert_eq!(waiting(s.conn(), &worker).unwrap().len(), 1, "it holds");
+        assert!(ended(s.conn(), &worker).is_empty());
+        set_clock(s.conn(), 4_600);
+        assert!(waiting(s.conn(), &worker).unwrap().is_empty());
+        assert_eq!(
+            ended(s.conn(), &worker),
+            ["max_wait_reached: the background wait ended (build)"]
+        );
+    }
+
+    #[test]
     fn background_wait_is_capped_at_max_wait_s() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = Store::open(&dir.path().join("l.sqlite3")).unwrap();
@@ -1835,7 +1856,7 @@ mod tests {
     }
 
     #[test]
-    fn background_wait_whose_process_is_gone_is_ended_at_the_cap() {
+    fn background_wait_whose_process_is_gone_ends_at_once() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = Store::open(&dir.path().join("l.sqlite3")).unwrap();
         let (_, worker) = claimed(&mut s);
@@ -1850,15 +1871,13 @@ mod tests {
             )
             .unwrap();
         finish_wait(&s, &worker);
-        set_clock(s.conn(), 4_599);
-        assert_eq!(
-            waiting(s.conn(), &worker).unwrap().len(),
-            1,
-            "it holds to its cap"
-        );
-        set_clock(s.conn(), 4_600);
+        // No step runs and no review is live: no proof holds the wait
+        // (MAP.md Q23, option 1).
         assert!(waiting(s.conn(), &worker).unwrap().is_empty());
-        assert_eq!(ended(s.conn(), &worker).len(), 1);
+        assert_eq!(
+            ended(s.conn(), &worker),
+            ["child_gone: the background wait ended (horch ledger finish runs detached)"]
+        );
     }
 
     /// A finish step that stays `running` after its process died proves
