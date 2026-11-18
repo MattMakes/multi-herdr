@@ -216,13 +216,13 @@ fn check(attempt: &Attempt) -> ExitCode {
 }
 
 /// `path` is a regular file, not a link.
-fn is_regular(path: &Path) -> bool {
+pub(crate) fn is_regular(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_file())
 }
 
 /// `dir` holds a question file: a regular file that is not hidden and not
 /// a temp file (protocol rule 1).
-fn has_question(dir: &Path) -> bool {
+pub(crate) fn has_question(dir: &Path) -> bool {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return false;
     };
