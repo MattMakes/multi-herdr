@@ -114,6 +114,8 @@ pub fn repo_state(git_dir: &Path) -> String {
 pub struct GitRunner {
     bin: PathBuf,
     env: Vec<(OsString, OsString)>,
+    /// The `GIT_INDEX_FILE` of every child, set after the scrub.
+    index: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -135,6 +137,8 @@ impl GitOutput {
 pub enum GitError {
     /// `run` was called with an empty directory path.
     NoDir,
+    /// `with_index_file` was given a path that is not absolute.
+    RelativeIndex(PathBuf),
     Spawn {
         bin: PathBuf,
         source: io::Error,
@@ -150,6 +154,13 @@ impl fmt::Display for GitError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NoDir => write!(f, "git needs an explicit working directory"),
+            Self::RelativeIndex(path) => {
+                write!(
+                    f,
+                    "a private index file needs an absolute path, not {}",
+                    path.display()
+                )
+            }
             Self::Spawn { bin, source } => write!(f, "cannot run {}: {source}", bin.display()),
             Self::Failed {
                 args,
@@ -176,6 +187,7 @@ impl GitRunner {
         Self {
             bin: bin.into(),
             env: Vec::new(),
+            index: None,
         }
     }
 
@@ -185,6 +197,20 @@ impl GitRunner {
         self.env
             .push((key.as_ref().to_owned(), value.as_ref().to_owned()));
         self
+    }
+
+    /// Give every child the private index file `path` as `GIT_INDEX_FILE`.
+    /// The scrub removes a `GIT_INDEX_FILE` of the environment or of
+    /// [`GitRunner::with_env`]; this one is set after the scrub. The caller
+    /// makes `path` in a temporary folder that it owns, never in a project.
+    /// A path that is not absolute is an error.
+    pub fn with_index_file(mut self, path: impl Into<PathBuf>) -> Result<Self, GitError> {
+        let path = path.into();
+        if !path.is_absolute() {
+            return Err(GitError::RelativeIndex(path));
+        }
+        self.index = Some(path);
+        Ok(self)
     }
 
     pub fn bin(&self) -> &Path {
@@ -211,6 +237,9 @@ impl GitRunner {
             cmd.env_remove(k);
         }
         scrub_repo_env(&mut cmd);
+        if let Some(index) = &self.index {
+            cmd.env("GIT_INDEX_FILE", index);
+        }
         // The directory again as `-C`, so the repository never depends on
         // how git searches from its working directory.
         let at = std::path::absolute(dir).map_err(|source| GitError::Spawn {

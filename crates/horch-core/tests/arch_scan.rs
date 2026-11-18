@@ -1536,8 +1536,9 @@ fn outward_paths(code: &[String], module: &[&str], siblings: &[String]) -> Vec<(
 }
 
 /// The SQL tables that the string `literal` names and that are not in
-/// `owned`, in lower case. A string is SQL when its first word is a
-/// statement keyword or it holds an upper-case `BEFORE_TABLE` keyword.
+/// `owned`, in lower case. A string is SQL when its first word, up to a
+/// space, is a statement keyword (so `update-ref` is not), or it holds an
+/// upper-case `BEFORE_TABLE` keyword.
 /// Keywords and tables match in any case, as SQLite reads them.
 fn foreign_tables(literal: &str, owned: &[&str]) -> Vec<String> {
     const STATEMENTS: &[&str] = &[
@@ -1548,8 +1549,9 @@ fn foreign_tables(literal: &str, owned: &[&str]) -> Vec<String> {
         .split(|ch: char| !(ch.is_alphanumeric() || ch == '_'))
         .filter(|w| !w.is_empty())
         .collect();
-    let sql = words
-        .first()
+    let sql = literal
+        .split_whitespace()
+        .next()
         .is_some_and(|w| STATEMENTS.contains(&w.to_ascii_uppercase().as_str()))
         || words.iter().any(|w| BEFORE_TABLE.contains(w));
     if !sql {
@@ -1754,6 +1756,7 @@ fn fitness_table_rule_finds_foreign_tables() {
         "q(\"SELECT id FROM needs_you WHERE id = ?1\")",
         "q(\"INSERT INTO NEEDS_YOU (id) VALUES (?1)\")",
         "let s = \"a message from the user\";",
+        "git.run(dir, &[\"update-ref\", \"-m\", m, r, c, \"\"])",
         "let from_tasks = tasks.len();",
         "// q(\"DELETE FROM tasks\")",
         "/* q(\"DELETE FROM tasks\") */",

@@ -363,17 +363,29 @@ impl CliWorktreeGit {
         CliWorktreeGit { runner }
     }
 
+    /// This adapter, with the private index file `index` for each git call.
+    /// The caller makes `index` in a folder of the fleet root, never in a
+    /// project.
+    pub(crate) fn with_index(&self, index: &Path) -> Result<CliWorktreeGit> {
+        let runner = self
+            .runner
+            .clone()
+            .with_index_file(index)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        Ok(CliWorktreeGit { runner })
+    }
+
     /// The 1 way this adapter runs a git command: first refuse a key of the
     /// project config that starts a program, then run `git <args>` in `dir`
     /// with the keys of [`SAFE_CONFIG`], whatever its exit code.
-    fn checked(&self, dir: &Path, args: &[&str]) -> Result<GitOutput> {
+    pub(crate) fn checked(&self, dir: &Path, args: &[&str]) -> Result<GitOutput> {
         self.refuse_project_programs(dir)?;
         self.safe(dir, args)
     }
 
     /// [`CliWorktreeGit::checked`], where a non-zero exit is an error with
     /// the message of git.
-    fn git(&self, dir: &Path, args: &[&str]) -> Result<String> {
+    pub(crate) fn git(&self, dir: &Path, args: &[&str]) -> Result<String> {
         let out = self.checked(dir, args)?;
         if out.status != 0 {
             bail!(

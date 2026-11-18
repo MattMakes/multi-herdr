@@ -823,6 +823,42 @@ fn git_env_cannot_reach_another_repository() {
     );
 }
 
+/// A `GIT_INDEX_FILE` of the environment never reaches a git child: `git
+/// add` writes the index of the repository. Only `with_index_file` gives a
+/// child a private index, and only an absolute one.
+#[test]
+fn only_with_index_file_gives_git_a_private_index() {
+    let Some(repo) = Repo::new() else { return };
+    repo.write("a.txt", "a\n");
+    let decoy = repo.tmp.path().join("decoy.index");
+    let repo_index = repo.work().join(".git/index");
+
+    repo.runner()
+        .with_env("GIT_INDEX_FILE", &decoy)
+        .run(&repo.work(), &["add", "-A"])
+        .unwrap();
+    assert!(!decoy.exists(), "the scrub removes GIT_INDEX_FILE");
+    assert!(repo_index.is_file());
+
+    let before = fs::read(&repo_index).unwrap();
+    let private = repo.tmp.path().join("private.index");
+    repo.write("b.txt", "b\n");
+    repo.runner()
+        .with_index_file(&private)
+        .unwrap()
+        .run(&repo.work(), &["add", "-A"])
+        .unwrap();
+    assert!(private.is_file(), "git writes the private index");
+    assert_eq!(
+        fs::read(&repo_index).unwrap(),
+        before,
+        "the index of the repo"
+    );
+
+    let r = repo.runner().with_index_file("relative.index");
+    assert!(matches!(r, Err(GitError::RelativeIndex(_))), "{r:?}");
+}
+
 /// `REPO_ENV` holds every variable that the host git lists as local to a
 /// repository.
 #[test]

@@ -1,3 +1,267 @@
-//! The git commands of a worktree rescue.
+//! The `rescue` executor: the git commands of a worktree rescue.
 //!
-//! Ticket 06 of fleetd-p3 fills this file.
+//! `docs/specs/fleetd/design.md`, "Rescue before any cleanup": the job
+//! saves the commits, the modified files and the untracked files of 1 tree
+//! on a new ref `refs/horch/rescue/<worktree id>/<n>`, through a private
+//! index under `<fleet root>/run/`. It never changes the branch, the index
+//! or the files of the tree. It reads the ref back and shows that it holds
+//! exactly the files on disk, then writes the manifest
+//! `<fleet root>/rescue/<worktree id>-<n>.json` (RR-9, RR-16, FM-25).
+//!
+//! Each git call goes through `CliWorktreeGit::checked`, so git starts no
+//! hook and no program of the project (the fleetd git rule).
+
+use std::path::{Path, PathBuf};
+
+use anyhow::{anyhow, bail, Context, Result};
+use serde::{Deserialize, Serialize};
+
+use crate::fleetd::fleet_runtime::application::jobs::Ran;
+use crate::fleetd::fleet_runtime::domain::jobs::Outcome;
+use crate::fleetd::worktree_custody::adapters::git::{failed, CliWorktreeGit};
+use crate::fleetd::worktree_custody::adapters::sqlite::WorktreeRow;
+use crate::fleetd::worktree_custody::domain::rescue::{self, Facts};
+
+/// What a rescue saved: the result of a passed `rescue` run and the
+/// content of its manifest `<fleet root>/rescue/<worktree id>-<n>.json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Rescue {
+    /// The rescue ref, read back and verified.
+    pub rescue_ref: String,
+    /// The rescue commit that the ref names.
+    pub commit: String,
+    /// The HEAD of the tree: the parent of the rescue commit.
+    pub old_head: String,
+    /// The count of files in the rescue commit.
+    pub files: u64,
+    /// The sum of the sizes of those files, in bytes.
+    pub bytes: u64,
+    /// The attempt that held the tree; `None` when no attempt held it.
+    pub attempt: Option<String>,
+}
+
+/// The input key of a `rescue` job: the path of the tree and its HEAD.
+pub fn rescue_key(path: &str, head: &str) -> String {
+    serde_json::json!([path, head]).to_string()
+}
+
+/// The author and committer of a rescue commit, so that the commit needs
+/// no identity in the config of the user.
+const IDENTITY: [&str; 4] = ["-c", "user.name=horch", "-c", "user.email=horch@localhost"];
+
+/// The tries of the create-only ref write while other writers take each
+/// next `n` first.
+const REF_TRIES: usize = 16;
+
+/// The `rescue` job of the tree of `row`, with its private index files and
+/// its manifest under `fleet_root`. A run passes only with a verified
+/// rescue ref; its data is the [`Rescue`]. Each other end is `failed`, and
+/// the tree stays as it was.
+pub fn rescue(git: &CliWorktreeGit, fleet_root: &Path, row: &WorktreeRow) -> Ran {
+    match save(git, fleet_root, row) {
+        Ok(r) => Ran {
+            outcome: Outcome {
+                passed: true,
+                verdict: true,
+                text: format!(
+                    "saved {} on {} ({} files, {} bytes)",
+                    row.path, r.rescue_ref, r.files, r.bytes
+                ),
+            },
+            data: Some(serde_json::to_value(&r).expect("a rescue serializes")),
+        },
+        Err(e) => failed(format!("the rescue of {}: {e:#}", row.worktree_id)),
+    }
+}
+
+fn save(git: &CliWorktreeGit, fleet_root: &Path, row: &WorktreeRow) -> Result<Rescue> {
+    let id = row.worktree_id.as_str();
+    if !rescue::valid_id(id) {
+        bail!("the worktree id {id:?} cannot name a rescue ref");
+    }
+    let tree = Path::new(&row.path);
+    if !tree.is_dir() {
+        bail!("no folder at {}", row.path);
+    }
+    let run = run_folder(fleet_root, row)?;
+    let index = PrivateIndex::new(run.join(format!("rescue-{id}.index")))?;
+    let second = PrivateIndex::new(run.join(format!("rescue-{id}.verify.index")))?;
+
+    // Step 1: the tree of the folder on its HEAD, and its commit.
+    let head = rev(git, tree, "HEAD")?;
+    let saved_tree = snapshot(&git.with_index(&index.0)?, tree, &head)?;
+    let message = rescue::commit_message(id, row.owner_attempt.as_deref());
+    let mut args = IDENTITY.to_vec();
+    args.extend(["commit-tree", &saved_tree, "-p", &head, "-m", &message]);
+    let commit = git.git(tree, &args)?.trim().to_string();
+    // Step 2: the ref, create-only.
+    let (n, rescue_ref) = create_ref(git, tree, id, &commit)?;
+    // Steps 3 and 4, in this order: the read-back, then the verification.
+    let facts = Facts {
+        read_back: rev(git, tree, &rescue_ref).ok(),
+        commit_tree: rev(git, tree, &format!("{commit}^{{tree}}")).ok(),
+        commit_parent: rev(git, tree, &format!("{commit}^")).ok(),
+        disk_tree: git
+            .with_index(&second.0)
+            .and_then(|g| snapshot(&g, tree, &head))
+            .ok(),
+        head_after: rev(git, tree, "HEAD").ok(),
+        commit,
+        saved_tree,
+        head_before: head,
+    };
+    rescue::verify(&facts)
+        .map_err(|e| anyhow!("the rescue ref {rescue_ref} does not verify: {e}"))?;
+    // Step 5: the manifest.
+    let (files, bytes) = count(git, tree, &facts.commit)?;
+    let r = Rescue {
+        rescue_ref,
+        commit: facts.commit,
+        old_head: facts.head_before,
+        files,
+        bytes,
+        attempt: row.owner_attempt.clone(),
+    };
+    write_manifest(&fleet_root.join("rescue"), &format!("{id}-{n}.json"), &r)?;
+    // Step 6: the drop of `index` and `second` deletes the 2 files.
+    Ok(r)
+}
+
+/// `<fleet root>/run`, made, as an absolute path outside the tree and the
+/// project of `row`: a private index never comes from a project.
+fn run_folder(fleet_root: &Path, row: &WorktreeRow) -> Result<PathBuf> {
+    let run = fleet_root.join("run");
+    std::fs::create_dir_all(&run).with_context(|| format!("making {}", run.display()))?;
+    let run = run
+        .canonicalize()
+        .with_context(|| format!("reading {}", run.display()))?;
+    for project in [&row.path, &row.repo_root] {
+        if Path::new(project)
+            .canonicalize()
+            .is_ok_and(|p| run.starts_with(p))
+        {
+            bail!(
+                "the fleet folder {} is in the project {project}",
+                run.display()
+            );
+        }
+    }
+    Ok(run)
+}
+
+/// A private index file. Its drop deletes it and its lock file.
+struct PrivateIndex(PathBuf);
+
+impl PrivateIndex {
+    /// A new private index at `path`: a file that an earlier run left is
+    /// deleted first.
+    fn new(path: PathBuf) -> Result<PrivateIndex> {
+        let index = PrivateIndex(path);
+        for file in index.files() {
+            match std::fs::remove_file(&file) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e).with_context(|| format!("deleting {}", file.display())),
+            }
+        }
+        Ok(index)
+    }
+
+    fn files(&self) -> [PathBuf; 2] {
+        let mut lock = self.0.clone().into_os_string();
+        lock.push(".lock");
+        [self.0.clone(), lock.into()]
+    }
+}
+
+impl Drop for PrivateIndex {
+    fn drop(&mut self) {
+        for file in self.files() {
+            let _ = std::fs::remove_file(file);
+        }
+    }
+}
+
+/// The commit or object that `rev` names in the repository of `dir`.
+fn rev(git: &CliWorktreeGit, dir: &Path, rev: &str) -> Result<String> {
+    Ok(git
+        .git(dir, &["rev-parse", "--verify", "--end-of-options", rev])?
+        .trim()
+        .to_string())
+}
+
+/// The tree of the folder `dir` on `head`, through the private index of
+/// `git`: `read-tree`, `add -A`, `write-tree`. `.gitignore` applies.
+fn snapshot(git: &CliWorktreeGit, dir: &Path, head: &str) -> Result<String> {
+    git.git(dir, &["read-tree", head])?;
+    git.git(dir, &["add", "-A"])?;
+    Ok(git.git(dir, &["write-tree"])?.trim().to_string())
+}
+
+/// Write `refs/horch/rescue/<id>/<n>` = `commit` with the next `n`. The
+/// write is create-only, so a ref that exists is never overwritten; when
+/// another writer took `n` first, the next `n` is tried.
+fn create_ref(git: &CliWorktreeGit, dir: &Path, id: &str, commit: &str) -> Result<(u64, String)> {
+    let folder = rescue::ref_folder(id);
+    for _ in 0..REF_TRIES {
+        let out = git.git(dir, &["for-each-ref", "--format=%(refname)", &folder])?;
+        let refs: Vec<String> = out.lines().map(str::to_string).collect();
+        let n = rescue::next_n(id, &refs);
+        let name = rescue::ref_name(id, n);
+        let message = format!("horch rescue {id}");
+        let out = git.checked(dir, &["update-ref", "-m", &message, &name, commit, ""])?;
+        if out.status == 0 {
+            return Ok((n, name));
+        }
+        if !ref_exists(git, dir, &name)? {
+            bail!(
+                "git update-ref {name} failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+    }
+    bail!("each of {REF_TRIES} new rescue refs of {id} existed before its write")
+}
+
+fn ref_exists(git: &CliWorktreeGit, dir: &Path, name: &str) -> Result<bool> {
+    let out = git.checked(dir, &["show-ref", "--verify", "--quiet", name])?;
+    match out.status {
+        0 => Ok(true),
+        1 => Ok(false),
+        code => bail!(
+            "git show-ref of {name} failed ({code}): {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ),
+    }
+}
+
+/// The count of files in `commit` and the sum of their sizes in bytes.
+fn count(git: &CliWorktreeGit, dir: &Path, commit: &str) -> Result<(u64, u64)> {
+    let out = git.git(dir, &["ls-tree", "-r", "-l", "-z", commit])?;
+    let (mut files, mut bytes) = (0u64, 0u64);
+    // Each entry is `<mode> <type> <object> <size>\t<path>`.
+    for entry in out.split('\0').filter(|e| !e.is_empty()) {
+        let head = entry.split('\t').next().unwrap_or("");
+        let fields: Vec<&str> = head.split_whitespace().collect();
+        if fields.get(1) != Some(&"blob") {
+            continue;
+        }
+        let size = fields
+            .get(3)
+            .and_then(|s| s.parse::<u64>().ok())
+            .with_context(|| format!("git ls-tree gave no size in {entry:?}"))?;
+        files += 1;
+        bytes = bytes.saturating_add(size);
+    }
+    Ok((files, bytes))
+}
+
+/// Write `r` as `<folder>/<name>`: a temporary file, then a rename.
+fn write_manifest(folder: &Path, name: &str, r: &Rescue) -> Result<()> {
+    std::fs::create_dir_all(folder).with_context(|| format!("making {}", folder.display()))?;
+    let path = folder.join(name);
+    let tmp = folder.join(format!(".{name}.tmp"));
+    let text = serde_json::to_string_pretty(r).expect("a rescue serializes");
+    std::fs::write(&tmp, text).with_context(|| format!("writing {}", tmp.display()))?;
+    std::fs::rename(&tmp, &path).with_context(|| format!("writing {}", path.display()))
+}
