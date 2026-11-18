@@ -230,7 +230,12 @@ fn stop_process(
 
 /// Refuse the workers that `stop_worker` must not touch: the orchestrator,
 /// and a worker of another host (recorded as a step).
-fn check_stoppable(store: &Store, w: &Worker, by: StopRequester, reason: &str) -> Result<()> {
+pub(crate) fn check_stoppable(
+    conn: &Connection,
+    w: &Worker,
+    by: StopRequester,
+    reason: &str,
+) -> Result<()> {
     if w.kind == WorkerKind::Orchestrator.as_str() {
         bail!("horch ledger stop does not stop the orchestrator; the operator does");
     }
@@ -243,7 +248,7 @@ fn check_stoppable(store: &Store, w: &Worker, by: StopRequester, reason: &str) -
             pane_id: None,
             result: StopResult::RefusedOtherHost.as_str().into(),
         };
-        record(store.conn(), w, by, reason, &step, w.agent_started)?;
+        record(conn, w, by, reason, &step, w.agent_started)?;
         bail!(
             "worker {} runs on host {}, not {here}: its PIDs mean nothing here",
             w.label(),
@@ -255,7 +260,7 @@ fn check_stoppable(store: &Store, w: &Worker, by: StopRequester, reason: &str) -
 
 /// Queue the task `task_id` again when `worker_id` still holds it. Returns
 /// the task as it was read, and whether it was queued.
-fn requeue_if_held(
+pub(crate) fn requeue_if_held(
     conn: &Connection,
     task_id: &str,
     worker_id: &str,
@@ -279,27 +284,37 @@ fn end_row(
     reason: &str,
     opts: &StopOptions,
 ) -> Result<Option<String>> {
-    store.immediate(|tx| {
-        let about = About {
-            run: w.run_id.as_deref(),
-            task: w.task_id.as_deref(),
-            worker: Some(&w.worker_id),
-        };
-        workers::end(tx, &w.worker_id, opts.final_status, reason, None)?;
-        util::event(
-            tx,
-            &about,
-            by.into(),
-            EventKind::Stopped,
-            &format!("Stopping {}: {reason}", w.label()),
-        )?;
-        let Some(t) = &w.task_id else {
-            return Ok(None);
-        };
-        let why = format!("{} was stopped: {reason}", w.label());
-        let (task, held) = requeue_if_held(tx, t, &w.worker_id, &why)?;
-        Ok(held.then(|| task.short()))
-    })
+    store.immediate(|tx| end_row_in(tx, w, by, reason, opts.final_status))
+}
+
+/// The rows of [`end_row`], in the open transaction `tx`: the row ends as
+/// `final_status`, 1 `stopped` event, and the task it held is queued again.
+pub(crate) fn end_row_in(
+    tx: &Connection,
+    w: &Worker,
+    by: StopRequester,
+    reason: &str,
+    final_status: WorkerStatus,
+) -> Result<Option<String>> {
+    let about = About {
+        run: w.run_id.as_deref(),
+        task: w.task_id.as_deref(),
+        worker: Some(&w.worker_id),
+    };
+    workers::end(tx, &w.worker_id, final_status, reason, None)?;
+    util::event(
+        tx,
+        &about,
+        by.into(),
+        EventKind::Stopped,
+        &format!("Stopping {}: {reason}", w.label()),
+    )?;
+    let Some(t) = &w.task_id else {
+        return Ok(None);
+    };
+    let why = format!("{} was stopped: {reason}", w.label());
+    let (task, held) = requeue_if_held(tx, t, &w.worker_id, &why)?;
+    Ok(held.then(|| task.short()))
 }
 
 /// Stop the agent, then the supervisor, each by its recorded PID and start
@@ -365,7 +380,7 @@ pub fn stop_worker(
     opts: &StopOptions,
 ) -> Result<StopReport> {
     let w = workers::get(store.conn(), worker_id)?;
-    check_stoppable(store, &w, by, reason)?;
+    check_stoppable(store.conn(), &w, by, reason)?;
     let requeued = end_row(store, &w, by, reason, opts)?;
     let mut steps = stop_processes(store, &w, by, reason, procs, opts)?;
     let pane_step = close_pane(panes, w.pane_id.as_ref());
@@ -1081,7 +1096,7 @@ pub struct ReapReport {
 }
 
 /// Refuse a worker that already finished: there is nothing to reap.
-fn check_reapable(w: &Worker) -> Result<()> {
+pub(crate) fn check_reapable(w: &Worker) -> Result<()> {
     let status = w.status()?;
     if !status.is_live() && status != WorkerStatus::Incomplete {
         bail!(
@@ -1094,7 +1109,7 @@ fn check_reapable(w: &Worker) -> Result<()> {
 }
 
 /// Who a reap is recorded as: the watchdog, or else the orchestrator.
-fn reap_actor(by: StopRequester) -> Actor {
+pub(crate) fn reap_actor(by: StopRequester) -> Actor {
     if matches!(by, StopRequester::Watchdog) {
         Actor::Watchdog
     } else {

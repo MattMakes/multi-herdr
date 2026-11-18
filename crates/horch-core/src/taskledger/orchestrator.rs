@@ -101,6 +101,26 @@ pub fn guard(conn: &Connection, run_id: &str) -> Result<Guard> {
     )?)
 }
 
+/// Write `harness`, and `model` when the row has none, on each live
+/// orchestrator row of `workspace` that has no harness (TRF-44). Returns
+/// the rows changed.
+pub fn record_harness(
+    conn: &Connection,
+    workspace: &str,
+    harness: &str,
+    model: Option<&str>,
+) -> Result<usize> {
+    let live = super::sql_words::list(super::sql_words::WORKERS_LIVE);
+    Ok(conn.execute(
+        &format!(
+            "UPDATE workers SET harness = ?2, model = coalesce(model, ?3)
+             WHERE kind = 'orchestrator' AND workspace_id = ?1 AND harness IS NULL
+             AND status IN ({live})"
+        ),
+        params![workspace, harness, model],
+    )?)
+}
+
 /// Record a deliberate stop of the orchestrator of `run_id`: no respawn
 /// follows. The first stop time stays. True when this call recorded it.
 pub fn record_stop(conn: &Connection, run_id: &str) -> Result<bool> {
