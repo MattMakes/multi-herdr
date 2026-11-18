@@ -261,6 +261,7 @@ impl World {
             &CheckRunner {
                 host: &Launcher,
                 profiles,
+                sweep: None,
             },
         )
         .unwrap();

@@ -185,6 +185,7 @@ impl World {
         let checks = CheckRunner {
             host: &Launcher,
             profiles: &NoProfiles,
+            sweep: None,
         };
         jobs::run_job(&ctx, &mut self.conn, id, pid, &checks).unwrap();
         jobs::end_from_files(&ctx, &mut self.conn).unwrap();

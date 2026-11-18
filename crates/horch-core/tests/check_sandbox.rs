@@ -235,7 +235,11 @@ impl World {
                 .unwrap());
         }
         let me = self.row(id).pid.unwrap();
-        let checks = CheckRunner { host, profiles };
+        let checks = CheckRunner {
+            host,
+            profiles,
+            sweep: None,
+        };
         let written = jobs::run_job(&ctx, &mut self.conn, id, me, &checks).unwrap();
         assert!(written.is_some(), "run_job wrote the result of job {id}");
         let row = self.row(id);

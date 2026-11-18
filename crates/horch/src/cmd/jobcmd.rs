@@ -112,9 +112,11 @@ fn run(ctx: &RuntimeContext, id: i64) -> Result<ExitCode> {
         personas: super::taskledger::codex_personas(ctx),
     };
     let sandboxes = WorkerSandboxes::new(codex, ctx.paths.fleet_root.clone());
+    let tools = super::taskledger::tools(ctx);
     let checks = CheckRunner {
         host: &Launcher,
         profiles: &sandboxes,
+        sweep: Some(&tools),
     };
     // The fetch of the docs is in horch, not in horch-core (NFR-06).
     let docs = super::docscmd::AgentDocs::new()?;

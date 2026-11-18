@@ -484,6 +484,7 @@ fn child_job() {
     let checks = CheckRunner {
         host: &Launcher,
         profiles: &profiles,
+        sweep: None,
     };
     jobs::run_job(&ctx(&config), &mut conn, id, std::process::id(), &checks).unwrap();
 }

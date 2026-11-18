@@ -383,6 +383,7 @@ impl World {
         let checks = CheckRunner {
             host: &Launcher,
             profiles: &NoProfiles,
+            sweep: None,
         };
         let written = jobs::run_job(&ctx(&config), &mut self.conn, id, pid, &checks).unwrap();
         assert!(written.is_some(), "run_job wrote the result of job {id}");

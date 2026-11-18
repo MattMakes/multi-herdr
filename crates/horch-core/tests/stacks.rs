@@ -294,6 +294,7 @@ impl World {
         let checks = CheckRunner {
             host: &Launcher,
             profiles: &NoProfiles,
+            sweep: None,
         };
         let config = self.config.clone();
         let ctx = JobCtx {

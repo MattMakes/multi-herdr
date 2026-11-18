@@ -738,21 +738,26 @@ fn require_worktree(task: &Task, wt: Option<&WorktreeRow>) -> Result<()> {
 impl<'a> Attempt<'a> {
     fn open(store: &Store, tools: &'a Tools, worker_id: &str) -> Result<Attempt<'a>> {
         let (w, task) = held_task(store.conn(), worker_id)?;
+        Attempt::of(store.conn(), tools, w, task)
+    }
+
+    /// The attempt of worker `w` on `task`, whether or not `w` holds it.
+    fn of(conn: &Connection, tools: &'a Tools, w: Worker, task: Task) -> Result<Attempt<'a>> {
         if task.is_review() {
             bail!(
                 "{} is a review task: it has no finish steps; run horch ledger done",
                 task.short()
             );
         }
-        let run = runs::get(store.conn(), &task.run_id)?;
+        let run = runs::get(conn, &task.run_id)?;
         let names = run.steps()?;
         let root = PathBuf::from(&run.project_root);
-        let wt = worktree_of(store.conn(), &task.task_id)?;
+        let wt = worktree_of(conn, &task.task_id)?;
         require_worktree(&task, wt.as_ref())?;
         let dir = work_dir(wt.as_ref(), &root);
         let evidence_dir = tools.evidence_root.join(&task.task_id).join(&w.worker_id);
         std::fs::create_dir_all(&evidence_dir)?;
-        let default_check = default_check(store.conn(), &run.run_id)?;
+        let default_check = default_check(conn, &run.run_id)?;
         Ok(Attempt {
             tools,
             default_check,
@@ -853,18 +858,32 @@ impl<'a> Attempt<'a> {
 
     /// Run step `seq` and record its outcome; an error fails the step.
     fn run_and_record(&self, store: &mut Store, seq: i64, name: StepName) -> Result<Outcome> {
-        let cx = Ctx {
+        let cx = self.ctx(store.conn(), seq)?;
+        self.start(store, seq)?;
+        let outcome = run_step(store, &cx, name)
+            .unwrap_or_else(|e| Outcome::fail("error", None, &format!("{e:#}")));
+        record(store, &self.task, &self.w, seq, name, &outcome)?;
+        Ok(outcome)
+    }
+
+    /// What step `seq` needs to know.
+    fn ctx(&self, conn: &Connection, seq: i64) -> Result<Ctx<'_>> {
+        Ok(Ctx {
             tools: self.tools,
             run: &self.run,
             task: &self.task,
             worker: &self.w,
-            worktree: worktree_of(store.conn(), &self.task.task_id)?,
+            worktree: worktree_of(conn, &self.task.task_id)?,
             dir: self.dir.clone(),
             root: self.root.clone(),
             evidence_dir: self.evidence_dir.clone(),
             seq,
             default_check: self.default_check.clone(),
-        };
+        })
+    }
+
+    /// Mark step `seq` running: 1 more round.
+    fn start(&self, store: &mut Store, seq: i64) -> Result<()> {
         store.immediate(|tx| {
             tx.execute(
                 &format!(
@@ -876,11 +895,87 @@ impl<'a> Attempt<'a> {
                 params![self.task.task_id, self.w.worker_id, seq, util::now()],
             )?;
             Ok(())
-        })?;
-        let outcome = run_step(store, &cx, name)
-            .unwrap_or_else(|e| Outcome::fail("error", None, &format!("{e:#}")));
-        record(store, &self.task, &self.w, seq, name, &outcome)?;
-        Ok(outcome)
+        })
+    }
+}
+
+/// 1 attempt of a push dispatch, as the verifier of fleetd runs its steps
+/// (ticket 20 of `docs/tickets/fleetd-p4/`): the steps of the attempt's
+/// worker on its task. The worker need not hold the task or run: no worker
+/// is in the foreground. Each step is today's step, run and recorded as
+/// [`finish`] runs and records it. The finish of a claim attempt does not
+/// use this.
+pub struct VerifierAttempt<'a>(Attempt<'a>);
+
+impl<'a> VerifierAttempt<'a> {
+    /// The attempt of worker `worker_id` on task `task_id`.
+    pub fn open(
+        conn: &Connection,
+        tools: &'a Tools,
+        task_id: &str,
+        worker_id: &str,
+    ) -> Result<VerifierAttempt<'a>> {
+        let w = workers::get(conn, worker_id)?;
+        let task = tasks::get(conn, task_id)?;
+        Attempt::of(conn, tools, w, task).map(VerifierAttempt)
+    }
+
+    /// The steps of the run, in its order.
+    pub fn steps(&self) -> &[StepName] {
+        &self.0.names
+    }
+
+    /// Where the work is: the worktree, or the shared checkout.
+    pub fn dir(&self) -> &Path {
+        &self.0.dir
+    }
+
+    /// Make sure every step has its row.
+    pub fn seed(&self, store: &mut Store) -> Result<()> {
+        self.0.seed_steps(store)
+    }
+
+    /// The row of step `name`, once seeded.
+    pub fn row(&self, conn: &Connection, name: StepName) -> Result<Option<Step>> {
+        let rows = steps_of(conn, &self.0.task.task_id, &self.0.w.worker_id)?;
+        Ok(rows.into_iter().find(|r| r.name == name.as_str()))
+    }
+
+    /// Whether step `name` passed and still stands for the tree now.
+    pub fn stands(&self, store: &Store, name: StepName) -> Result<bool> {
+        self.0.still_passes(store, self.seq(name)?)
+    }
+
+    /// Run step `name` in this process and record its outcome, as
+    /// [`finish`] does.
+    pub fn run(&self, store: &mut Store, name: StepName) -> Result<Outcome> {
+        self.0.run_and_record(store, self.seq(name)?, name)
+    }
+
+    /// Mark step `name` running, for a step that runs in a job.
+    pub fn start(&self, store: &mut Store, name: StepName) -> Result<()> {
+        self.0.start(store, self.seq(name)?)
+    }
+
+    /// Record the outcome `o` of step `name`, which ran in a job.
+    pub fn record(&self, store: &mut Store, name: StepName, o: &Outcome) -> Result<()> {
+        record(store, &self.0.task, &self.0.w, self.seq(name)?, name, o)
+    }
+
+    /// The complexity-sweep of this attempt, with no row: the job process
+    /// writes no row.
+    pub fn complexity_sweep(&self, conn: &Connection) -> Result<Outcome> {
+        let seq = self.seq(StepName::ComplexitySweep)?;
+        complexity::step(&self.0.ctx(conn, seq)?)
+    }
+
+    fn seq(&self, name: StepName) -> Result<i64> {
+        self.0
+            .names
+            .iter()
+            .position(|n| *n == name)
+            .map(|i| i as i64 + 1)
+            .with_context(|| format!("the run has no step {}", name.as_str()))
     }
 }
 
@@ -1304,13 +1399,10 @@ fn mark_done(
     Ok(())
 }
 
-/// For a review task whose parent's reviews are now all in: the parent,
-/// with the role of its worker to tell.
-fn reviews_in_for(tx: &Connection, task: &Task) -> Result<Option<(String, Option<String>)>> {
-    let Some(parent) = task.parent_task_id.as_deref().filter(|_| task.is_review()) else {
-        return Ok(None);
-    };
-    let open: i64 = tx.query_row(
+/// The number of review tasks of `parent` that did not end: the reviews of
+/// its code-sweep round that are not in yet.
+pub fn open_reviews(conn: &Connection, parent: &str) -> Result<i64> {
+    Ok(conn.query_row(
         &format!(
             "SELECT count(*) FROM tasks WHERE parent_task_id = ?1 AND kind = 'review'
                AND status NOT IN ({ended})",
@@ -1318,8 +1410,16 @@ fn reviews_in_for(tx: &Connection, task: &Task) -> Result<Option<(String, Option
         ),
         [parent],
         |r| r.get(0),
-    )?;
-    if open > 0 {
+    )?)
+}
+
+/// For a review task whose parent's reviews are now all in: the parent,
+/// with the role of its worker to tell.
+fn reviews_in_for(tx: &Connection, task: &Task) -> Result<Option<(String, Option<String>)>> {
+    let Some(parent) = task.parent_task_id.as_deref().filter(|_| task.is_review()) else {
+        return Ok(None);
+    };
+    if open_reviews(tx, parent)? > 0 {
         return Ok(None);
     }
     let p = tasks::get(tx, parent)?;

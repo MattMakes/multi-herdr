@@ -809,6 +809,7 @@ impl RunJob for TestJobs {
             let checks = CheckRunner {
                 host: &Launcher,
                 profiles: &NoProfiles,
+                sweep: None,
             };
             let pid = job.pid.context("a running job has a pid")?;
             jobs::run_job(ctx, conn, job_id, pid, &checks)?;

@@ -375,6 +375,7 @@ impl World {
         let checks = CheckRunner {
             host: &Launcher,
             profiles: &NoProfiles,
+            sweep: None,
         };
         let written = jobs::run_job(&ctx, &mut self.conn, id, pid, &checks).unwrap();
         assert!(written.is_some(), "run_job wrote the result of job {id}");
@@ -747,6 +748,7 @@ fn job_child(value: &str) {
     let checks = CheckRunner {
         host: &Launcher,
         profiles: &NoProfiles,
+        sweep: None,
     };
     let _ = jobs::run_job(
         &ctx,

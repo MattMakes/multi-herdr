@@ -132,6 +132,7 @@ impl World {
         let checks = CheckRunner {
             host: &Launcher,
             profiles: &NoProfiles,
+            sweep: None,
         };
         jobs::run_job(&ctx, &mut self.conn, id, me, &checks).unwrap()
     }

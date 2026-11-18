@@ -18,7 +18,10 @@
 //! - Part 3 calls [`write_verdicts`] after the commit: each verdict is a
 //!   row first, then its file `verdict-<n>.json`.
 //! - [`done`] is the only move of a task from `verifying` to `done`, and it
-//!   needs a [`Verified`] that still stands.
+//!   needs a [`Verified`] that still stands. A code kind also needs each of
+//!   its review steps passed or not applicable.
+//! - Part 3 calls [`review`] after the commit: the review steps of each
+//!   code kind whose check passed (`application::review`, ticket 20).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -36,12 +39,14 @@ use crate::fleetd::ideas::application::needs_you::NeedsYouList;
 use crate::fleetd::task_execution::adapters::sqlite as attempts_store;
 use crate::fleetd::task_execution::adapters::verdict_file;
 use crate::fleetd::task_execution::application::retry::{self, Policy};
+use crate::fleetd::task_execution::application::review;
 use crate::fleetd::task_execution::domain::retry::Outcome;
 use crate::fleetd::task_execution::domain::task::AttemptState;
 use crate::fleetd::task_execution::domain::verification::{
     self, next_step, Facts, Next, Plan, Verdict, Verified,
 };
 use crate::taskledger::model::{Actor, TaskStatus, WorkerStatus};
+use crate::taskledger::store::Store;
 use crate::taskledger::tasks::{self, Task};
 use crate::taskledger::{finish, util, workers};
 
@@ -90,12 +95,30 @@ pub fn check_hash(check: Option<&str>) -> String {
 }
 
 /// The newest attempt of a task in `verifying`.
-struct Attempt {
+pub(crate) struct Attempt {
     task_id: String,
     id: String,
-    worker_id: String,
+    pub(crate) worker_id: String,
     state: String,
     via: String,
+}
+
+/// The attempt `id`.
+pub(crate) fn attempt(conn: &Connection, id: &str) -> Result<Attempt> {
+    conn.query_row(
+        "SELECT task_id, id, worker_id, state, via FROM attempts WHERE id = ?1",
+        [id],
+        |r| {
+            Ok(Attempt {
+                task_id: r.get(0)?,
+                id: r.get(1)?,
+                worker_id: r.get(2)?,
+                state: r.get(3)?,
+                via: r.get(4)?,
+            })
+        },
+    )
+    .with_context(|| format!("no attempt {id}"))
 }
 
 /// The verifier part of a pass, in the open transaction `tx`.
@@ -207,7 +230,7 @@ fn verify_one(
     match verdict.verified() {
         Some(verified) => report.passed.push(Passed { verified, next }),
         None => {
-            reject(v, tx, &task, a, &verdict)?;
+            reject(tx, v.jobs.guard, v.policy, &task, a, &verdict)?;
             report.rejected.push(task.task_id.clone());
         }
     }
@@ -216,13 +239,27 @@ fn verify_one(
 
 /// A failed verdict: the attempt `a` ends with the outcome `rejected`, its
 /// worker row ends, and rung 6 burns 1 attempt of `task`.
-fn reject(
-    v: &Verifier<'_>,
+pub(crate) fn reject(
     tx: &Connection,
+    guard: Option<Generation>,
+    policy: &dyn Fn(&Task) -> Policy,
     task: &Task,
     a: &Attempt,
     verdict: &Verdict,
 ) -> Result<()> {
+    let why = end_attempt(tx, guard, a, verdict)?;
+    retry::burn_attempt(tx, &task.task_id, Outcome::Rejected, &policy(task), &why)?;
+    Ok(())
+}
+
+/// The attempt `a` ends with the outcome `rejected` for the failed
+/// `verdict`, and its worker row ends. Gives the reason.
+pub(crate) fn end_attempt(
+    tx: &Connection,
+    guard: Option<Generation>,
+    a: &Attempt,
+    verdict: &Verdict,
+) -> Result<String> {
     let why = format!("{}: {}", verdict_file::file_name(verdict.n), verdict.reason);
     let outcome = Outcome::Rejected.as_str();
     attempts_store::set_ended(tx, &a.id, outcome, &util::now())?;
@@ -230,7 +267,7 @@ fn reject(
         let text = format!("the verifier rejected it: {why}");
         transition(
             tx,
-            v.jobs.guard,
+            guard,
             Entity::Attempt,
             &a.id,
             AttemptState::Ended.as_str(),
@@ -240,14 +277,7 @@ fn reject(
     }
     let reason = format!("{outcome}: attempt {}", a.id);
     workers::end(tx, &a.worker_id, WorkerStatus::Incomplete, &reason, None)?;
-    retry::burn_attempt(
-        tx,
-        &task.task_id,
-        Outcome::Rejected,
-        &(v.policy)(task),
-        &why,
-    )?;
-    Ok(())
+    Ok(why)
 }
 
 fn cause(text: &str) -> Cause<'_> {
@@ -283,6 +313,12 @@ pub fn done(
     if !verified.stands(&newest, tip) || attempt.as_deref() != Some(verified.attempt()) {
         return Ok(false);
     }
+    // A code kind moves to done only after its review steps (ticket 20).
+    if next_step(task.work_kind.as_deref()) == Next::Review
+        && !review::steps_through(tx, &task, verified.attempt())?
+    {
+        return Ok(false);
+    }
     let text = format!(
         "the verifier: {} judged {tip}",
         verdict_file::file_name(verified.n())
@@ -300,6 +336,23 @@ pub fn done(
         Err(DoorError::Refused { .. }) => Ok(false),
         Err(e) => Err(e.into()),
     }
+}
+
+/// Part 3 of a pass, after the commit of part 2 (ticket 20): the review
+/// steps of each task of `passed` whose next step is [`Next::Review`], in
+/// `store` with no transaction open. The structural check of a judgment
+/// kind is not run here (ticket 21). Gives what each review did, by task.
+pub fn review(
+    r: &review::Review<'_>,
+    store: &mut Store,
+    passed: Vec<Passed>,
+) -> Result<Vec<(String, review::Reviewed)>> {
+    let mut out = Vec::new();
+    for p in passed.into_iter().filter(|p| p.next == Next::Review) {
+        let task_id = p.verified.task_id().to_string();
+        out.push((task_id, review::run(r, store, p.verified)?));
+    }
+    Ok(out)
 }
 
 /// Part 3 of a pass, after the commit: write the file of each committed

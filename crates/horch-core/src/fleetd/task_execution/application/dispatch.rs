@@ -38,7 +38,7 @@ use crate::fleetd::task_execution::adapters::sqlite as store;
 use crate::fleetd::task_execution::adapters::task_files::{
     attempt_dir, write_attempt_files, AttemptFiles,
 };
-use crate::fleetd::task_execution::application::outbox_ingest;
+use crate::fleetd::task_execution::application::{outbox_ingest, review};
 use crate::fleetd::task_execution::domain::dispatch::{
     choose, Choice, Hold, Holds, ReadyTask, RunningTask,
 };
@@ -557,6 +557,8 @@ fn facts(conn: &Connection, attempt_id: &str) -> Result<TaskFacts> {
     let task = tasks::get(conn, &task_id)?;
     let run = runs::get(conn, &task.run_id)?;
     let worker = workers::get(conn, &worker_id)?;
+    // The section of a review that failed the last attempt (ticket 20).
+    let extra = review::start_section(conn, &task_id)?;
     let n = worker
         .attempt
         .with_context(|| format!("the worker of attempt {attempt_id} has no attempt number"))?;
@@ -578,7 +580,7 @@ fn facts(conn: &Connection, attempt_id: &str) -> Result<TaskFacts> {
         check: task.land_check,
         kind: task.work_kind,
         ticket_snapshot: task.ticket_snapshot.unwrap_or_default(),
-        extra: None,
+        extra,
         handoff,
     })
 }

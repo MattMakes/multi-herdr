@@ -314,6 +314,7 @@ fn write_result(conn: &mut Connection, job: &JobRow) {
     let checks = CheckRunner {
         host: &Launcher,
         profiles: &NoProfiles,
+        sweep: None,
     };
     let written = jobs::run_job(&ctx(&config), conn, job.id, job.pid.unwrap(), &checks).unwrap();
     assert!(written.is_some(), "the job process wrote its result");

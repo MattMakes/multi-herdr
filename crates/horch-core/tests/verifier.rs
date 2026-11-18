@@ -317,7 +317,8 @@ fn passed_check_of_a_code_kind_starts_the_review_steps() {
     let text = std::fs::read_to_string(w.verdict_dir(&code).join("verdict-1.json")).unwrap();
     assert!(text.contains("\"decision\":\"passed\""), "{text}");
 
-    // The review steps hand the value back: only it moves the task to done.
+    // The value alone does not move a code kind to done: its review steps
+    // pass first (ticket 20, tests/verifier_review.rs).
     let verified = report
         .passed
         .into_iter()
@@ -325,9 +326,9 @@ fn passed_check_of_a_code_kind_starts_the_review_steps() {
         .unwrap()
         .verified;
     let tx = w.conn.transaction().unwrap();
-    assert!(verifier::done(&tx, None, verified, TIP).unwrap());
+    assert!(!verifier::done(&tx, None, verified, TIP).unwrap());
     tx.commit().unwrap();
-    assert_eq!(w.status(&code), "done");
+    assert_eq!(w.status(&code), "verifying");
 }
 
 #[test]

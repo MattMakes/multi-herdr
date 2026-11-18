@@ -55,6 +55,7 @@ use crate::fleetd::integration::adapters::executors as integration;
 use crate::fleetd::task_execution::adapters::ingested_store::{
     self as ingested, ACCEPTED, REJECTED,
 };
+use crate::fleetd::task_execution::application::review;
 use crate::fleetd::worker_profiles::adapters::docs_dir;
 use crate::fleetd::worker_profiles::application::docs_sync::{self, DocsSyncRunner};
 use crate::fleetd::worker_profiles::application::ports::{LaunchSpec, ProcessHost};
@@ -694,6 +695,9 @@ pub fn run_job_with(
         return Ok(None);
     };
     let ran = match row.kind {
+        Kind::TaskCheck if review::is_complexity_key(&row.input_key) => {
+            complexity_sweep(conn, &row, runners.checks.sweep)?
+        }
         Kind::TaskCheck => task_check(conn, &row, runners.checks)?.into(),
         Kind::DocsSync => match runners.docs {
             Some(docs) => docs_sync_run(conn, &row, runners.checks.host, docs)?,
@@ -977,6 +981,45 @@ fn task_check(conn: &Connection, row: &JobRow, checks: &CheckRunner<'_>) -> Resu
     })
 }
 
+/// The `task_check` run of the complexity-sweep of a task (ticket 20 of
+/// fleetd-p4): today's step `finish::complexity`, called in this job
+/// process for the attempt of the task's worker. Its step outcome is the
+/// `data` of the result. It runs clippy and the analyser with the rights of
+/// this process, not in the sandbox of the worker, as today's finish runs
+/// it.
+fn complexity_sweep(conn: &Connection, row: &JobRow, tools: Option<&finish::Tools>) -> Result<Ran> {
+    let no_verdict = |text: String| {
+        Ran::from(Outcome {
+            passed: false,
+            verdict: false,
+            text,
+        })
+    };
+    let Some(tools) = tools else {
+        return Ok(no_verdict(
+            "this job process has no tools of the finish steps".into(),
+        ));
+    };
+    let task = tasks::get(conn, &row.subject)?;
+    let Some(worker_id) = task.current_worker_id.as_deref() else {
+        return Ok(no_verdict(format!("{} has no worker", task.short())));
+    };
+    let o = match finish::VerifierAttempt::open(conn, tools, &task.task_id, worker_id)
+        .and_then(|a| a.complexity_sweep(conn))
+    {
+        Ok(o) => o,
+        Err(e) => return Ok(no_verdict(format!("complexity-sweep: {e:#}"))),
+    };
+    Ok(Ran {
+        outcome: Outcome {
+            passed: o.status.is_through(),
+            verdict: true,
+            text: format!("complexity-sweep: {}", o.note),
+        },
+        data: Some(review::step_data(&o)),
+    })
+}
+
 /// The sandbox profiles of workers, as the check of a task needs them
 /// (SR-4). `worker_profiles::adapters::check_sandbox` implements it.
 pub trait SandboxProfiles {
@@ -989,6 +1032,10 @@ pub trait SandboxProfiles {
 pub struct CheckRunner<'a> {
     pub host: &'a dyn ProcessHost,
     pub profiles: &'a dyn SandboxProfiles,
+    /// The tools of the finish steps, for the complexity-sweep of a
+    /// `task_check` job (ticket 20 of fleetd-p4). `None`: that job gets no
+    /// verdict.
+    pub sweep: Option<&'a finish::Tools>,
 }
 
 /// The group of the running check, 0 when none runs.
