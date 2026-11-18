@@ -507,6 +507,17 @@ pub fn set_orchestrator(conn: &Connection, run_id: &str, worker_id: &str) -> Res
     Ok(())
 }
 
+/// Remove the orchestrator from the run: the release of Phase 6 gives the
+/// run's questions and wakes to the sub-orchestrator of its feature
+/// (fleetd-p6 ticket 50).
+pub fn clear_orchestrator(conn: &Connection, run_id: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE runs SET orchestrator_worker_id = NULL WHERE run_id = ?1",
+        [run_id],
+    )?;
+    Ok(())
+}
+
 /// A harness and its model, as an orchestrator row records them.
 pub type HarnessModel = (Option<String>, Option<String>);
 
