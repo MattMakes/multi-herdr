@@ -327,30 +327,23 @@ fn assert_nothing_committed(w: &World) {
 
 // ─── the tests ──────────────────────────────────────────────────────────
 
-#[test]
-fn valid_plan_commits_each_task_in_1_transaction() {
-    let mut w = world(PLAN);
-    let verdict = w.commit().unwrap();
-    let Verdict::Committed { tasks, .. } = &verdict else {
-        panic!("the plan is valid: {verdict:?}");
-    };
+/// The rows of the 4 tasks of [`PLAN`]: each is of the idea, in the
+/// internal run of its feature, with its profile, kind and check.
+fn assert_task_rows(w: &World, tasks: &[(String, String)]) -> [TaskRow; 4] {
     let keys: Vec<&str> = tasks.iter().map(|(k, _)| k.as_str()).collect();
     assert_eq!(keys, ["a", "b", "doc", "doc-judge"]);
-
-    // Each task is of the idea, in the internal run of its feature.
     assert_eq!(
         w.count("SELECT count(*) FROM tasks WHERE idea_id = 'I-0007'"),
         4
     );
-    let (a, b, doc, judge) = (w.task("a"), w.task("b"), w.task("doc"), w.task("doc-judge"));
-    for (key, t) in [("a", &a), ("b", &b), ("doc", &doc), ("doc-judge", &judge)] {
+    let rows = [w.task("a"), w.task("b"), w.task("doc"), w.task("doc-judge")];
+    for ((key, id), t) in tasks.iter().zip(&rows) {
         assert_eq!(t.run_id, w.run_id, "{key}: the internal run of {FEATURE}");
         assert_eq!(t.kind, "work", "{key}");
-        assert_eq!(t.spec["key"], key);
-        let found = tasks.iter().find(|(k, _)| k == key).unwrap();
-        assert_eq!(found.1, t.id, "{key}: the verdict names the task id");
+        assert_eq!(t.spec["key"], key.as_str());
+        assert_eq!(id, &t.id, "{key}: the verdict names the task id");
     }
-    // The profile and the kind of each task.
+    let [a, b, doc, judge] = &rows;
     assert_eq!(
         [&a.profile, &b.profile, &doc.profile, &judge.profile],
         ["coder-claude", "coder-codex", "coder-claude", "coder-codex"]
@@ -365,16 +358,29 @@ fn valid_plan_commits_each_task_in_1_transaction() {
         Some("cargo test -p x && cargo clippy")
     );
     assert_eq!(doc.land_check, None, "a structural check is no command");
+    // A task with no dependency is ready; the others wait.
+    assert_eq!(
+        [&a.status, &b.status, &doc.status, &judge.status],
+        ["ready", "pending", "ready", "pending"]
+    );
+    rows
+}
 
-    // after: is a task_deps row; judges: is the judge link, not a dep.
-    let deps: Vec<(String, String)> = w
-        .conn()
-        .prepare("SELECT task_id, blocked_by FROM task_deps")
+/// The pairs of 2 text columns of `sql`.
+fn pairs(w: &World, sql: &str) -> Vec<(String, String)> {
+    w.conn()
+        .prepare(sql)
         .unwrap()
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
         .unwrap()
         .collect::<Result<_, _>>()
-        .unwrap();
+        .unwrap()
+}
+
+/// `after:` is a task_deps row, `judges:` is the judge link and not a dep,
+/// and the requirements and the covers of [`PLAN`] are in the ledger.
+fn assert_links_and_covers(w: &World, [a, b, doc, judge]: &[TaskRow; 4]) {
+    let deps = pairs(w, "SELECT task_id, blocked_by FROM task_deps");
     assert_eq!(deps, vec![(b.id.clone(), a.id.clone())]);
     assert_eq!(judge.parent.as_deref(), Some(doc.id.as_str()));
     assert_eq!(
@@ -382,35 +388,17 @@ fn valid_plan_commits_each_task_in_1_transaction() {
         Some(doc.id.as_str())
     );
     assert_eq!(judged_task(&doc.kind, doc.parent.as_deref()), None);
-
-    // A task with no dependency is ready; the others wait.
-    assert_eq!(
-        [&a.status, &b.status, &doc.status, &judge.status],
-        ["ready", "pending", "ready", "pending"]
-    );
-
-    // The requirements, the covers, and the idea in in_progress.
-    assert_eq!(
-        ideas_store::requirements(w.conn(), IDEA).unwrap(),
-        vec![
-            (
-                "R1".to_string(),
-                "The client retries with backoff.".to_string()
-            ),
-            (
-                "R2".to_string(),
-                "The retry behaviour is documented.".to_string()
-            ),
-        ]
-    );
-    let covers: Vec<(String, String)> = w
-        .conn()
-        .prepare("SELECT task_id, req_id FROM task_covers WHERE idea_id = 'I-0007' ORDER BY task_id, req_id")
+    let reqs: Vec<String> = ideas_store::requirements(w.conn(), IDEA)
         .unwrap()
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-        .unwrap()
-        .collect::<Result<_, _>>()
-        .unwrap();
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(reqs, ["R1", "R2"]);
+    let covers = pairs(
+        w,
+        "SELECT task_id, req_id FROM task_covers WHERE idea_id = 'I-0007'
+          ORDER BY task_id, req_id",
+    );
     let mut want = vec![
         (a.id.clone(), "R1".to_string()),
         (b.id.clone(), "R1".to_string()),
@@ -418,19 +406,10 @@ fn valid_plan_commits_each_task_in_1_transaction() {
     ];
     want.sort();
     assert_eq!(covers, want);
-    let idea = w.idea();
-    assert_eq!(idea.state, "in_progress");
-    assert_eq!(idea.phase_attempts, 0);
+}
 
-    // Each task has its created event, and the idea its move.
-    assert!(
-        w.count(
-            "SELECT count(DISTINCT e.task_id) FROM events e JOIN tasks t ON t.task_id = e.task_id
-              WHERE t.idea_id = 'I-0007'"
-        ) == 4
-    );
-
-    // plan.verdict.json says valid, after the commit.
+/// plan.verdict.json says valid, with mode 0600.
+fn assert_valid_verdict_file(w: &World) {
     let verdict = w.verdict().expect("plan.verdict.json");
     assert_eq!(verdict["idea"], IDEA);
     assert_eq!(verdict["valid"], true);
@@ -440,7 +419,29 @@ fn valid_plan_commits_each_task_in_1_transaction() {
         .permissions()
         .mode();
     assert_eq!(mode & 0o777, 0o600);
+}
 
+#[test]
+fn valid_plan_commits_each_task_in_1_transaction() {
+    let mut w = world(PLAN);
+    let verdict = w.commit().unwrap();
+    let Verdict::Committed { tasks, .. } = &verdict else {
+        panic!("the plan is valid: {verdict:?}");
+    };
+    let rows = assert_task_rows(&w, tasks);
+    assert_links_and_covers(&w, &rows);
+    let idea = w.idea();
+    assert_eq!(idea.state, "in_progress");
+    assert_eq!(idea.phase_attempts, 0);
+    // Each task has its created event.
+    assert_eq!(
+        w.count(
+            "SELECT count(DISTINCT e.task_id) FROM events e JOIN tasks t ON t.task_id = e.task_id
+              WHERE t.idea_id = 'I-0007'"
+        ),
+        4
+    );
+    assert_valid_verdict_file(&w);
     // A second pass commits nothing more: the idea left ticketing.
     assert!(w.commit().is_err());
     assert_eq!(
