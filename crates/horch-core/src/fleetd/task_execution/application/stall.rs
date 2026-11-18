@@ -126,9 +126,19 @@ pub struct Stopped {
     pub worker: String,
 }
 
+/// The bounds of the stop of the old process of a `stalled` task, in
+/// seconds of the fleet clock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StopBounds {
+    /// After this time from the stall, a live old process opens 1
+    /// needs-you item.
+    pub bound_s: u64,
+    /// The time from the hard stop to the proof of the stop.
+    pub stop_grace_s: u64,
+}
+
 /// The rule of each `stalled` task at the fleet clock `clock`, in `tx`
 /// ([`settle`]). `facts` holds what the pass saw of each process.
-/// `bounds` holds the stop bound and `stop_grace_s`, in seconds.
 /// `killed_at` gives the fleet clock of the sent mark of the hard stop of
 /// a process (its pid and its start time): the proof for a process that
 /// the pass cannot tell.
@@ -145,10 +155,13 @@ pub fn settle_stalled(
     tx: &Connection,
     clock: i64,
     facts: &Facts,
-    bounds: (u64, u64),
+    bounds: StopBounds,
     killed_at: &dyn Fn((u32, u64)) -> Result<Option<i64>>,
 ) -> Result<Vec<Stopped>> {
-    let (bound_s, stop_grace_s) = bounds;
+    let StopBounds {
+        bound_s,
+        stop_grace_s,
+    } = bounds;
     resolve_left(tx)?;
     let bound = i64::try_from(bound_s).unwrap_or(i64::MAX);
     let mut out = Vec::new();
@@ -484,7 +497,18 @@ mod tests {
             Ok(killed)
         };
         f.store
-            .immediate(|tx| settle_stalled(tx, clock, &facts, (50, 20), &marks))
+            .immediate(|tx| {
+                settle_stalled(
+                    tx,
+                    clock,
+                    &facts,
+                    StopBounds {
+                        bound_s: 50,
+                        stop_grace_s: 20,
+                    },
+                    &marks,
+                )
+            })
             .unwrap()
     }
 

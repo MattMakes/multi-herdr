@@ -1,7 +1,8 @@
 //! Phase 0 red tests of fleetd (`docs/specs/fleetd/design.md`): a herdr
 //! server restart (FM-13) and a worker killed with dirty and untracked files
-//! in its worktree (FM-25). Each test is on the list of expected failures,
-//! `expected-failures/p0_rescue.txt`, with the phase that makes it green.
+//! in its worktree (FM-25). The tests began as Phase 0 red tests on the list
+//! of expected failures, `expected-failures/p0_rescue.txt`. Phases 1 and 3
+//! made them green, and they now run as normal tests.
 //!
 //! The test plays the agent: a `sleep` process stands in for it, and the
 //! test runs the worker commands with `HORCH_WORKER_ID`. A herdr restart
@@ -329,16 +330,25 @@ fn fm13_herdr_restart_rescues_each_worktree_and_the_next_attempt_reuses_it() {
                 "{}",
                 text(&o)
             );
+            // The retry waits for its backoff of 30 s on the fleet clock
+            // (rung 6, Phase 2).
+            h.advance_fleet_clock(30);
             let next = ok(&h, &["ledger", "worker", "new", "--persona", "opus"]);
             let claim = as_worker(&h, next.trim(), &["ledger", "claim", "--json"]);
             let c: Value = serde_json::from_slice(&claim.stdout)
                 .unwrap_or_else(|e| panic!("{e}: {}", text(&claim)));
-            assert_eq!(
-                c["worktree"].as_str(),
-                Some(path.to_string_lossy().as_ref()),
-                "{}",
-                text(&claim)
-            );
+            // A claim does not take a tree that is still `orphaned`: the
+            // next attempt takes it with `horch ledger worktree new`.
+            let reused = match c["worktree"].as_str() {
+                Some(p) => p.to_string(),
+                None => {
+                    let wt = ok_as(&h, next.trim(), &["ledger", "worktree", "new", "feat"]);
+                    let p = wt.lines().find_map(|l| l.strip_prefix("path: "));
+                    p.unwrap_or_else(|| panic!("no path: {wt}\nclaim: {}", text(&claim)))
+                        .to_string()
+                }
+            };
+            assert_eq!(reused, path.to_string_lossy(), "{}", text(&claim));
         },
     );
 }
