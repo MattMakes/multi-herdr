@@ -12,9 +12,14 @@
 //! file changed. A rescued tree is removed with 1 `--force` (never 2, so a
 //! locked tree stays): git refuses a tree with a modified or untracked file
 //! without it, and the guard has just shown that the rescue ref holds
-//! exactly those files. Ignored files are not on the rescue ref (design.md,
-//! "Rescue before any cleanup"; MAP.md of fleetd-p3, Q6) and are deleted
-//! with the tree; the result counts them.
+//! exactly those files. Before that removal, 1 rename (`git worktree move`)
+//! puts the folder in its quarantine folder beside it, and the checks run
+//! again there with a new snapshot (review F5 of T-287): a process that
+//! writes through the old path cannot change the tree that is removed. A
+//! run that ends between the move and the removal leaves the folder in
+//! quarantine; the next run moves it back first. Ignored files are not on
+//! the rescue ref (design.md, "Rescue before any cleanup"; MAP.md of
+//! fleetd-p3, Q6) and are deleted with the tree; the result counts them.
 //!
 //! Each git call goes through `CliWorktreeGit::checked`, so git starts no
 //! hook and no program of the project (the fleetd git rule).
@@ -83,6 +88,12 @@ pub trait RemovalGateway {
     fn alive(&self, pid: u32, start: Option<u64>) -> bool;
     /// The processes with their working folder in `tree`.
     fn cwd_pids(&self, tree: &Path) -> Result<Vec<u32>>;
+    /// `git worktree move <from> <to>` in `repo`: 1 rename of the folder,
+    /// then the record of git is changed to the new path.
+    fn move_tree(&self, repo: &Path, from: &Path, to: &Path) -> Result<()>;
+    /// `git worktree repair <tree>` in `repo`: the record of git names the
+    /// folder at `tree` again after a rename that git did not record.
+    fn repair(&self, repo: &Path, tree: &Path) -> Result<()>;
     /// `git worktree remove [--force] <tree>` in `repo`.
     fn remove(&self, repo: &Path, tree: &Path, force: bool) -> Result<()>;
     /// Whether the branch `branch` is merged into `base`.
@@ -181,6 +192,21 @@ impl RemovalGateway for CliRemoval {
         }
     }
 
+    fn move_tree(&self, repo: &Path, from: &Path, to: &Path) -> Result<()> {
+        let from = from.to_str().context("the path of a tree is not UTF-8")?;
+        let to = to.to_str().context("the path of a tree is not UTF-8")?;
+        self.git
+            .git(repo, &["worktree", "move", "--", from, to])
+            .map(drop)
+    }
+
+    fn repair(&self, repo: &Path, tree: &Path) -> Result<()> {
+        let tree = tree.to_str().context("the path of a tree is not UTF-8")?;
+        self.git
+            .git(repo, &["worktree", "repair", "--", tree])
+            .map(drop)
+    }
+
     fn remove(&self, repo: &Path, tree: &Path, force: bool) -> Result<()> {
         let tree = tree.to_str().context("the path of a tree is not UTF-8")?;
         let mut args = vec!["worktree", "remove"];
@@ -268,11 +294,19 @@ fn run(
         landed_commit,
         row.rescue_ref.as_deref(),
     )?;
+    let repo = Path::new(&row.repo_root);
+    if basis.force() {
+        restore(gw, row)?;
+    }
     let facts = read_facts(gw, row, &basis, owner, ledger);
     removal::decide(&facts)?;
-    let repo = Path::new(&row.repo_root);
-    gw.remove(repo, Path::new(&row.path), basis.force())
-        .map_err(|e| format!("{e:#}"))?;
+    let ignored_files = if basis.force() {
+        quarantine_and_remove(gw, row, &basis, owner, ledger)?
+    } else {
+        gw.remove(repo, Path::new(&row.path), false)
+            .map_err(|e| format!("{e:#}"))?;
+        facts.ignored_files.unwrap_or(0)
+    };
     // The tree is gone: a branch that cannot be deleted stays, and the run
     // still passes.
     let branch_deleted = matches!(gw.merged(repo, &row.branch, &row.base), Ok(true))
@@ -281,9 +315,91 @@ fn run(
         path: row.path.clone(),
         branch: row.branch.clone(),
         forced: basis.force(),
-        ignored_files: facts.ignored_files.unwrap_or(0),
+        ignored_files,
         branch_deleted,
     })
+}
+
+/// The removal of a rescued tree whose checks passed. 1 rename moves the
+/// folder to its quarantine folder, so a write through the old path cannot
+/// change it. The checks run again on the quarantine folder, with a new
+/// snapshot. Only when they pass is the folder removed, with 1 `--force`.
+/// Else the folder moves back; when that fails, it stays in quarantine,
+/// and the reason names the folder. Gives the count of ignored files that
+/// were deleted.
+fn quarantine_and_remove(
+    gw: &dyn RemovalGateway,
+    row: &WorktreeRow,
+    basis: &Basis,
+    owner: &Owner,
+    ledger: ReadRow<'_>,
+) -> Result<u64, String> {
+    let repo = Path::new(&row.repo_root);
+    let tree = Path::new(&row.path);
+    let quarantine = removal::quarantine_path(tree, &row.worktree_id);
+    gw.move_tree(repo, tree, &quarantine).map_err(|e| {
+        format!(
+            "the move to the quarantine folder {} failed; the next run moves back \
+             a moved folder: {e:#}",
+            quarantine.display()
+        )
+    })?;
+    let mut moved = row.clone();
+    moved.path = quarantine.display().to_string();
+    let facts = read_facts(gw, &moved, basis, owner, ledger);
+    if let Err(why) = removal::decide(&facts) {
+        return Err(match gw.move_tree(repo, &quarantine, tree) {
+            Ok(()) => format!("in quarantine, {why}"),
+            Err(e) => format!(
+                "in quarantine, {why}; the tree stays in the quarantine folder {}, \
+                 because the move back failed: {e:#}",
+                quarantine.display()
+            ),
+        });
+    }
+    gw.remove(repo, &quarantine, true).map_err(|e| {
+        format!(
+            "the removal of the quarantine folder {} failed: {e:#}",
+            quarantine.display()
+        )
+    })?;
+    Ok(facts.ignored_files.unwrap_or(0))
+}
+
+/// Move a tree that an earlier run left in its quarantine folder back to
+/// the path of `row`. A crash between the move and the removal leaves it
+/// there; the rename can be ahead of the record of git, so the record is
+/// repaired first. Nothing to do when no quarantine folder exists.
+fn restore(gw: &dyn RemovalGateway, row: &WorktreeRow) -> Result<(), String> {
+    let repo = Path::new(&row.repo_root);
+    let tree = Path::new(&row.path);
+    let quarantine = removal::quarantine_path(tree, &row.worktree_id);
+    if !exists(&quarantine)? {
+        return Ok(());
+    }
+    if exists(tree)? {
+        return Err(format!(
+            "both {} and its quarantine folder {} exist; the job changes nothing",
+            tree.display(),
+            quarantine.display()
+        ));
+    }
+    gw.repair(repo, &quarantine)
+        .and_then(|()| gw.move_tree(repo, &quarantine, tree))
+        .map_err(|e| {
+            format!(
+                "the tree stays in the quarantine folder {}, because the move back failed: {e:#}",
+                quarantine.display()
+            )
+        })
+}
+
+fn exists(path: &Path) -> Result<bool, String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(format!("reading {}: {e}", path.display())),
+    }
 }
 
 /// Read each fact of the removal of `row`, in the order of [`Facts`]. The

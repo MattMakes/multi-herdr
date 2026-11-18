@@ -7,7 +7,23 @@
 //! no stash entry names its branch; its HEAD did not move during the
 //! checks; and each fact was read.
 
+use std::path::{Path, PathBuf};
+
 use super::rescue;
+
+/// The quarantine folder of the rescued tree `id` at `tree`: a folder that
+/// fleetd owns, beside the tree, so a rename moves the tree there on the
+/// same file system. The job moves a rescued tree there before its last
+/// checks and its removal; a process that writes through the old path can
+/// no longer change it. A tree whose job ended between the move and the
+/// removal is in this folder, and the next run moves it back first.
+pub fn quarantine_path(tree: &Path, id: &str) -> PathBuf {
+    let parent = tree.parent().unwrap_or(Path::new(""));
+    parent.join(format!("{QUARANTINE_PREFIX}{id}"))
+}
+
+/// The start of the name of each quarantine folder.
+pub const QUARANTINE_PREFIX: &str = ".horch-removing-";
 
 /// The `kind` column of the needs-you item of a failed removal.
 pub const NEEDS_YOU_KIND: &str = "remove_failed";
@@ -67,6 +83,11 @@ pub fn basis(
                 landed_commit: c.to_string(),
             })
             .ok_or_else(|| format!("worktree {id} is landed but has no landed commit"));
+    }
+    if !rescue::valid_id(id) {
+        return Err(format!(
+            "the worktree id {id:?} cannot name a quarantine folder"
+        ));
     }
     rescue_ref
         .filter(|r| r.starts_with(&rescue::ref_folder(id)))
@@ -432,6 +453,15 @@ mod tests {
             rescue_ref: "r".into()
         }
         .force());
+    }
+
+    #[test]
+    fn the_quarantine_folder_is_beside_the_tree() {
+        assert_eq!(
+            quarantine_path(Path::new("/p/.worktrees/T1-x"), "wt1"),
+            Path::new("/p/.worktrees/.horch-removing-wt1")
+        );
+        assert!(basis("../x", "rescued", None, Some("refs/horch/rescue/../x/1")).is_err());
     }
 
     #[test]

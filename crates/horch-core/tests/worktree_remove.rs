@@ -792,7 +792,7 @@ fn remove_refuses_a_rescued_tree_while_the_owner_group_has_a_process() {
     assert!(!horch_core::procid::group_members(pgid).is_empty());
     assert_refused(&mut w, "t1", "a process of the owner attempt is live");
     let killed = Command::new("kill")
-        .args(["-9", &format!("-{pgid}")])
+        .args(["-9", "--", &format!("-{pgid}")])
         .status()
         .unwrap();
     assert!(killed.success());
@@ -1000,9 +1000,22 @@ fn remove_runs_no_hook_or_program_of_the_project() {
 
 // ─── the fault gateways ─────────────────────────────────────────────────
 
-/// Forward each call of [`RemovalGateway`] but `stashes` to `$inner`.
+/// Forward each call of [`RemovalGateway`] but `stashes`, `move_tree` and
+/// `remove` to `inner()`.
 macro_rules! forward_but_stashes {
     () => {
+        forward_but_stashes!(base);
+        fn move_tree(&self, repo: &Path, from: &Path, to: &Path) -> anyhow::Result<()> {
+            self.inner().move_tree(repo, from, to)
+        }
+        fn remove(&self, repo: &Path, tree: &Path, force: bool) -> anyhow::Result<()> {
+            self.inner().remove(repo, tree, force)
+        }
+    };
+    (base) => {
+        fn repair(&self, repo: &Path, tree: &Path) -> anyhow::Result<()> {
+            self.inner().repair(repo, tree)
+        }
         fn head(&self, tree: &Path) -> anyhow::Result<String> {
             self.inner().head(tree)
         }
@@ -1023,9 +1036,6 @@ macro_rules! forward_but_stashes {
         }
         fn cwd_pids(&self, tree: &Path) -> anyhow::Result<Vec<u32>> {
             self.inner().cwd_pids(tree)
-        }
-        fn remove(&self, repo: &Path, tree: &Path, force: bool) -> anyhow::Result<()> {
-            self.inner().remove(repo, tree, force)
         }
         fn merged(&self, repo: &Path, branch: &str, base: &str) -> anyhow::Result<bool> {
             self.inner().merged(repo, branch, base)
@@ -1099,5 +1109,190 @@ impl RemovalGateway for Adopts {
         )
         .unwrap();
         self.inner.stashes(repo)
+    }
+}
+
+// ─── the quarantine of a rescued tree (review F5 of T-287) ──────────────
+
+fn quarantine(w: &World, name: &str) -> PathBuf {
+    w.repo
+        .join(".worktrees")
+        .join(format!(".horch-removing-{name}"))
+}
+
+#[test]
+fn remove_keeps_a_write_through_the_old_path_after_the_decision() {
+    let mut w = world();
+    let path = w.rescued("t1");
+    let id = w.queued_remove("t1");
+    let gw = Quarantine {
+        inner: w.gateway(),
+        on_remove: Some(path.clone()),
+        into_quarantine: None,
+        fail_move_back: false,
+    };
+    let ended = w.run_with(id, "t1", &gw);
+    assert_eq!(ended.state, State::Passed, "{}", text(&ended));
+    // The writer that made the folder again keeps its file; the tree is
+    // gone.
+    assert_eq!(
+        std::fs::read_to_string(path.join("late/late.txt")).unwrap(),
+        "written after the decision\n"
+    );
+    assert!(!path.join("a.txt").exists() && !path.join(".git").exists());
+    assert!(!quarantine(&w, "t1").exists());
+    assert!(!git(&w.repo, &["worktree", "list"]).contains("t1"));
+}
+
+#[test]
+fn remove_moves_back_a_tree_that_changed_in_quarantine() {
+    let mut w = world();
+    let path = w.rescued("t1");
+    let mut want = files(&path);
+    want.push(("late.txt".into(), b"late\n".to_vec()));
+    want.sort();
+    let id = w.queued_remove("t1");
+    let gw = Quarantine {
+        inner: w.gateway(),
+        on_remove: None,
+        into_quarantine: Some("late.txt"),
+        fail_move_back: false,
+    };
+    let ended = w.run_with(id, "t1", &gw);
+    assert_eq!(ended.state, State::Failed, "{}", text(&ended));
+    assert!(
+        text(&ended).contains("in quarantine, the folder differs from the rescue ref"),
+        "{}",
+        text(&ended)
+    );
+    assert_eq!(files(&path), want, "the tree is back with each file");
+    assert!(!quarantine(&w, "t1").exists());
+    assert!(git(&path, &["status", "--porcelain"]).contains("late.txt"));
+    assert_eq!(w.row("t1").state, WorktreeState::Rescued);
+}
+
+#[test]
+fn remove_keeps_the_tree_in_quarantine_when_the_move_back_fails() {
+    let mut w = world();
+    let path = w.rescued("t1");
+    let q = quarantine(&w, "t1");
+    let id = w.queued_remove("t1");
+    let gw = Quarantine {
+        inner: w.gateway(),
+        on_remove: None,
+        into_quarantine: Some("late.txt"),
+        fail_move_back: true,
+    };
+    let ended = w.run_with(id, "t1", &gw);
+    assert_eq!(ended.state, State::Failed, "{}", text(&ended));
+    let q_s = q.display().to_string();
+    assert!(
+        text(&ended).contains(&format!("stays in the quarantine folder {q_s}")),
+        "{}",
+        text(&ended)
+    );
+    assert!(q.join("late.txt").exists() && q.join("new/u.txt").exists());
+    assert!(!path.exists());
+    assert_eq!(w.observe(id), Observed::Failed);
+    let items = open_items(&w);
+    assert!(
+        items
+            .iter()
+            .any(|i| i.entity_id == "t1" && i.text.contains(&q_s)),
+        "{items:?}"
+    );
+    assert_eq!(w.row("t1").state, WorktreeState::Rescued);
+
+    // The next run moves the tree back first, then refuses its new file.
+    assert_refused_after_restore(&mut w, "t1");
+}
+
+/// The next run of `name`, whose tree is in quarantine with a new file:
+/// the tree comes back to its path, and the removal is refused.
+fn assert_refused_after_restore(w: &mut World, name: &str) {
+    let (ended, _) = w.remove(name);
+    assert_eq!(ended.state, State::Failed, "{}", text(&ended));
+    assert!(
+        text(&ended).contains("a file changed after the rescue"),
+        "{}",
+        text(&ended)
+    );
+    let path = w.tree_path(name);
+    assert!(path.join("late.txt").exists() && path.join("new/u.txt").exists());
+    assert!(!quarantine(w, name).exists());
+    assert!(git(&path, &["status", "--porcelain"]).contains("late.txt"));
+    assert!(git(&w.repo, &["worktree", "list"]).contains(&path.display().to_string()));
+}
+
+#[test]
+fn remove_continues_after_a_crash_after_the_rename() {
+    // A crash right after the rename, before git recorded the new path:
+    // the worst case of a crash in `git worktree move`.
+    let mut w = world();
+    let path = w.rescued("t1");
+    let q = quarantine(&w, "t1");
+    std::fs::rename(&path, &q).unwrap();
+    let (ended, seen) = w.remove("t1");
+    assert_eq!(ended.state, State::Passed, "{}", text(&ended));
+    assert_eq!(seen, Observed::Removed);
+    assert!(!path.exists() && !q.exists());
+    assert!(!git(&w.repo, &["worktree", "list"]).contains("t1"));
+
+    // The same crash with a file written in quarantine: the tree comes
+    // back, and the removal is refused.
+    let path = w.rescued("t2");
+    let q = quarantine(&w, "t2");
+    std::fs::rename(&path, &q).unwrap();
+    write(&q.join("late.txt"), "late\n");
+    assert_refused_after_restore(&mut w, "t2");
+}
+
+/// A gateway with faults around the quarantine: `on_remove` writes
+/// through the old path of the tree just before the removal;
+/// `into_quarantine` writes a file into the quarantine folder just after
+/// the move; `fail_move_back` fails each move out of quarantine.
+struct Quarantine {
+    inner: CliRemoval,
+    on_remove: Option<PathBuf>,
+    into_quarantine: Option<&'static str>,
+    fail_move_back: bool,
+}
+
+impl Quarantine {
+    fn inner(&self) -> &CliRemoval {
+        &self.inner
+    }
+}
+
+impl RemovalGateway for Quarantine {
+    forward_but_stashes!(base);
+    fn stashes(&self, repo: &Path) -> anyhow::Result<Vec<String>> {
+        self.inner.stashes(repo)
+    }
+    fn move_tree(&self, repo: &Path, from: &Path, to: &Path) -> anyhow::Result<()> {
+        let back = from
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with(".horch-removing-");
+        if back && self.fail_move_back {
+            anyhow::bail!("the move back fails");
+        }
+        self.inner.move_tree(repo, from, to)?;
+        if let (false, Some(file)) = (back, self.into_quarantine) {
+            write(&to.join(file), "late\n");
+        }
+        Ok(())
+    }
+    fn remove(&self, repo: &Path, tree: &Path, force: bool) -> anyhow::Result<()> {
+        if let Some(old) = &self.on_remove {
+            assert!(
+                std::fs::write(old.join("a.txt"), "lost?\n").is_err(),
+                "the old path holds no tree any more"
+            );
+            write(&old.join("late/late.txt"), "written after the decision\n");
+        }
+        self.inner.remove(repo, tree, force)
     }
 }
