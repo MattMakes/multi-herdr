@@ -122,6 +122,7 @@ impl Harness {
                 }
             }
         });
+        build_once();
         check_built_fakes();
         warm_built_fakes();
         // A fake that starts slowly under load must not fail the local health
@@ -293,6 +294,7 @@ impl Harness {
 
     /// The `horch` binary under test, built next to the fakes.
     pub fn horch_bin() -> PathBuf {
+        build_once();
         let path = bin_dir().join(exe("horch"));
         assert!(
             path.is_file(),
@@ -840,6 +842,77 @@ fn process_list_or_sandbox<T>(
     }
 }
 
+/// Build `horch` and every fake 1 time in each test process, before the
+/// first use. `cargo test -p horch-e2e` does not build them, so without this
+/// a test runs an old binary from an earlier build (T-291, T-294). The build
+/// runs as the test process itself, outside the sealed environment. Many
+/// test processes can build at the same time: cargo's own lock on the
+/// target folder is the only lock. When nothing changed, cargo only checks.
+fn build_once() {
+    static BUILT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    BUILT.get_or_init(|| {
+        let mut cmd = build_command(&bin_dir());
+        let out = cmd
+            .output()
+            .unwrap_or_else(|e| panic!("cannot start {cmd:?}: {e}"));
+        assert!(
+            out.status.success(),
+            "the build of horch and the fakes failed: {cmd:?}\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    });
+}
+
+/// The variables cargo sets for a test process, apart from `CARGO_PKG_*`.
+const CARGO_RUN_VARS: &[&str] = &[
+    "CARGO_MANIFEST_DIR",
+    "CARGO_MANIFEST_PATH",
+    "CARGO_CRATE_NAME",
+    "CARGO_BIN_NAME",
+    "CARGO_PRIMARY_PACKAGE",
+    "CARGO_TARGET_TMPDIR",
+    "CARGO_RUSTC_CURRENT_DIR",
+    "OUT_DIR",
+];
+
+/// The cargo command that builds `horch` and the fakes into `built`, with
+/// the profile and the target folder of this test process.
+fn build_command(built: &Path) -> Command {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut cmd = Command::new(cargo);
+    // cargo sets these for the test process. A build that sees them has a
+    // different fingerprint, and cargo builds `ring` and `horch` again.
+    for (key, _) in std::env::vars_os() {
+        let key = key.to_string_lossy();
+        if key.starts_with("CARGO_PKG_") || CARGO_RUN_VARS.contains(&key.as_ref()) {
+            cmd.env_remove(key.as_ref());
+        }
+    }
+    cmd.current_dir(workspace).args([
+        "build",
+        "--locked",
+        "-p",
+        "horch",
+        "-p",
+        "horch-e2e",
+        "--bins",
+    ]);
+    match built.file_name().and_then(|n| n.to_str()) {
+        Some("debug") | None => {}
+        Some("release") => {
+            cmd.arg("--release");
+        }
+        Some(profile) => {
+            cmd.args(["--profile", profile]);
+        }
+    }
+    if let Some(target) = built.parent() {
+        cmd.arg("--target-dir").arg(target);
+    }
+    cmd
+}
+
 /// The size of each built fake when this test process first saw it.
 static BUILT_SIZES: std::sync::OnceLock<Vec<(PathBuf, u64)>> = std::sync::OnceLock::new();
 
@@ -1013,8 +1086,71 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        choose_harness_root, listed, process_list_or_sandbox, stop_stale_harnesses, OWNER_FILE,
+        build_command, choose_harness_root, listed, process_list_or_sandbox, stop_stale_harnesses,
+        OWNER_FILE,
     };
+
+    /// T-842: the harness builds `horch` and the fakes before their first
+    /// use, so no binary is older than a source file it is built from.
+    #[test]
+    fn built_binaries_are_not_older_than_their_source() {
+        let horch = super::Harness::horch_bin();
+        let fake = crate::bin_dir().join(super::exe("fake-herdr"));
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let horch_src: &[&str] = &["crates/horch/src", "crates/horch-core/src"];
+        let fake_src: &[&str] = &["crates/horch-e2e/src", "crates/horch-core/src"];
+        for (bin, dirs) in [(horch, horch_src), (fake, fake_src)] {
+            let built = std::fs::metadata(&bin).unwrap().modified().unwrap();
+            let mut files = Vec::new();
+            for dir in dirs {
+                super::walk(&root.join(dir), &mut files);
+            }
+            let newer: Vec<_> = files
+                .iter()
+                .filter(|f| f.extension().is_some_and(|e| e == "rs"))
+                .filter(|f| std::fs::metadata(f).unwrap().modified().unwrap() > built)
+                .collect();
+            assert!(
+                newer.is_empty(),
+                "{} is older than {newer:?}",
+                bin.display()
+            );
+        }
+    }
+
+    #[test]
+    fn the_build_uses_the_profile_and_target_folder_of_the_test() {
+        let args = |built: &str| -> Vec<String> {
+            build_command(Path::new(built))
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect()
+        };
+        let base = [
+            "build",
+            "--locked",
+            "-p",
+            "horch",
+            "-p",
+            "horch-e2e",
+            "--bins",
+        ];
+        let with = |more: &[&str]| -> Vec<String> {
+            base.iter().chain(more).map(|a| a.to_string()).collect()
+        };
+        assert_eq!(
+            args("/w/target/debug"),
+            with(&["--target-dir", "/w/target"])
+        );
+        assert_eq!(
+            args("/w/target/release"),
+            with(&["--release", "--target-dir", "/w/target"])
+        );
+        assert_eq!(
+            args("/w/target/ci"),
+            with(&["--profile", "ci", "--target-dir", "/w/target"])
+        );
+    }
 
     #[test]
     fn harness_root_prefers_writable_tmp_and_checks_the_tmpdir_socket_path() {
