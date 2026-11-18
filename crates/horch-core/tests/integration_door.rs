@@ -547,16 +547,97 @@ fn bundle_with_its_members_is_1_transaction() {
     assert!(out.is_err());
 }
 
+/// Run `write` in 1 transaction, then assert its 1 new event of the row
+/// `id` of `entity`: a `note` with no state, with `cause`, whose text names
+/// the entity and the row. Gives its `data_json`.
+fn fact_event(
+    w: &mut World,
+    entity: Entity,
+    id: &str,
+    cause_text: &str,
+    write: impl FnOnce(&Connection) -> anyhow::Result<()>,
+) -> String {
+    let before = w.events(entity, id).len();
+    w.store.immediate(|tx| write(tx)).unwrap();
+    let events = w.events(entity, id);
+    assert_eq!(events.len(), before + 1, "{entity} {id}");
+    let e = events.last().unwrap();
+    assert_eq!(e.kind, "note");
+    assert_eq!((e.from.as_deref(), e.to.as_deref()), (None, None));
+    assert_eq!(e.cause, cause_text);
+    let named = format!("{} {id}", noun(entity));
+    assert!(e.text.contains(&named), "{}", e.text);
+    e.data.clone().unwrap()
+}
+
+/// Each fact of the branch row `name`, with its event on the row `id` of
+/// `entity`, then the row reads back each fact.
+fn branch_facts(w: &mut World, name: &str, entity: Entity, id: &str) {
+    for fact in [
+        BranchFact::SeenTip("tip1"),
+        BranchFact::SeenRemoteTip("tip0"),
+        BranchFact::QueueSeq(Some(7)),
+        BranchFact::RepairAttempts(2),
+        BranchFact::DueAt(900),
+    ] {
+        let data = fact_event(w, entity, id, "observed", |tx| {
+            rows::set_branch_fact(tx, None, name, fact, cause("observed"))
+        });
+        assert!(data.contains(name), "{fact:?}: {data}");
+    }
+    let row = rows::branch(w.conn(), name).unwrap().unwrap();
+    assert_eq!(row.seen_tip.as_deref(), Some("tip1"));
+    assert_eq!(row.seen_remote_tip.as_deref(), Some("tip0"));
+    assert_eq!(row.queue_seq, Some(7));
+    assert_eq!(row.repair_attempts, 2);
+    assert_eq!(row.due_at, 900);
+}
+
+fn bundle_facts(w: &mut World, bundle: &str) {
+    let bundle_id: i64 = bundle.parse().unwrap();
+    for fact in [
+        BundleFact::CandidateRef(Some("refs/horch/bundle/1")),
+        BundleFact::CandidateTip("cand1"),
+    ] {
+        fact_event(w, Entity::Bundle, bundle, "built", |tx| {
+            rows::set_bundle_fact(tx, None, bundle_id, fact, cause("built"))
+        });
+    }
+    let row = rows::bundle(w.conn(), bundle_id).unwrap().unwrap();
+    assert_eq!(row.candidate_ref.as_deref(), Some("refs/horch/bundle/1"));
+    assert_eq!(row.candidate_tip.as_deref(), Some("cand1"));
+}
+
+fn feature_facts(w: &mut World) {
+    for fact in [
+        FeatureFact::PushState("failed"),
+        FeatureFact::PushFailures(3),
+        FeatureFact::PushNotBefore(Some(1200)),
+        FeatureFact::PrState("open"),
+    ] {
+        fact_event(w, Entity::Feature, FEATURE, "pushed", |tx| {
+            rows::set_feature_fact(tx, None, FEATURE, fact, cause("pushed"))
+        });
+    }
+    let row = rows::feature(w.conn(), FEATURE).unwrap().unwrap();
+    assert_eq!(row.state, "open");
+    assert_eq!(row.name.as_deref(), Some("f-0001"));
+    assert_eq!(row.branch.as_deref(), Some("fleet/r1"));
+    assert_eq!(row.primary_branch, "main");
+    assert_eq!(row.push_state.as_deref(), Some("failed"));
+    assert_eq!(row.push_failures, 3);
+    assert_eq!(row.push_not_before, Some(1200));
+    assert_eq!(row.pr_state, "open");
+}
+
 #[test]
 fn fact_writes_record_an_event_with_the_entity() {
     let mut w = world();
     let branch = w.task_branch("fleet/r1/a");
     let bundle = w.bundle("fleet/r1/b");
-    let bundle_id: i64 = bundle.parse().unwrap();
 
-    // Each fact of a task branch, of a bundle and of a feature, and each
-    // fact of a feature branch row, which has no landing state: its event
-    // is an event of its feature.
+    // A feature branch row has no landing state: the event of each of its
+    // facts is an event of its feature.
     let feature_branch = "fleet/r1";
     let new = NewBranch {
         name: feature_branch,
@@ -569,98 +650,19 @@ fn fact_writes_record_an_event_with_the_entity() {
         .immediate(|tx| rows::insert_branch(tx, None, &new, cause("feature branch made")))
         .unwrap();
     let fb = rows::branch(w.conn(), feature_branch).unwrap().unwrap();
-    assert_eq!(fb.landing_state, None);
-    assert_eq!(fb.task_id, None);
+    assert_eq!((fb.landing_state, fb.task_id), (None, None));
 
-    let branch_facts = [
-        BranchFact::SeenTip("tip1"),
-        BranchFact::SeenRemoteTip("tip0"),
-        BranchFact::QueueSeq(Some(7)),
-        BranchFact::RepairAttempts(2),
-        BranchFact::DueAt(900),
-    ];
-    for (name, entity, id) in [
-        (branch.as_str(), Entity::TaskBranch, branch.as_str()),
-        (feature_branch, Entity::Feature, FEATURE),
-    ] {
-        for fact in branch_facts {
-            let before = w.events(entity, id).len();
-            w.store
-                .immediate(|tx| rows::set_branch_fact(tx, None, name, fact, cause("observed")))
-                .unwrap();
-            let events = w.events(entity, id);
-            assert_eq!(events.len(), before + 1, "{name}: {fact:?}");
-            let e = events.last().unwrap();
-            assert_eq!(e.kind, "note");
-            assert_eq!((e.from.as_deref(), e.to.as_deref()), (None, None));
-            assert_eq!(e.cause, "observed");
-            assert!(
-                e.text.contains(&format!("{} {id}", noun(entity))),
-                "{}",
-                e.text
-            );
-            assert!(e.data.as_deref().unwrap().contains(name), "{:?}", e.data);
-        }
-        let row = rows::branch(w.conn(), name).unwrap().unwrap();
-        assert_eq!(row.seen_tip.as_deref(), Some("tip1"));
-        assert_eq!(row.seen_remote_tip.as_deref(), Some("tip0"));
-        assert_eq!(row.queue_seq, Some(7));
-        assert_eq!(row.repair_attempts, 2);
-        assert_eq!(row.due_at, 900);
-    }
+    branch_facts(&mut w, &branch, Entity::TaskBranch, &branch);
+    branch_facts(&mut w, feature_branch, Entity::Feature, FEATURE);
     let row = rows::branch(w.conn(), &branch).unwrap().unwrap();
     assert_eq!(row.landing_state.as_deref(), Some("building"));
-    assert_eq!(row.feature_id, FEATURE);
-    assert_eq!(row.owner, "worker");
+    assert_eq!(
+        (row.feature_id.as_str(), row.owner.as_str()),
+        (FEATURE, "worker")
+    );
     assert!(!row.orphan);
-
-    for fact in [
-        BundleFact::CandidateRef(Some("refs/horch/bundle/1")),
-        BundleFact::CandidateTip("cand1"),
-    ] {
-        let before = w.events(Entity::Bundle, &bundle).len();
-        w.store
-            .immediate(|tx| rows::set_bundle_fact(tx, None, bundle_id, fact, cause("built")))
-            .unwrap();
-        let events = w.events(Entity::Bundle, &bundle);
-        assert_eq!(events.len(), before + 1, "{fact:?}");
-        assert!(events
-            .last()
-            .unwrap()
-            .text
-            .contains(&format!("bundle {bundle}")));
-    }
-    let row = rows::bundle(w.conn(), bundle_id).unwrap().unwrap();
-    assert_eq!(row.candidate_ref.as_deref(), Some("refs/horch/bundle/1"));
-    assert_eq!(row.candidate_tip.as_deref(), Some("cand1"));
-
-    for fact in [
-        FeatureFact::PushState("failed"),
-        FeatureFact::PushFailures(3),
-        FeatureFact::PushNotBefore(Some(1200)),
-        FeatureFact::PrState("open"),
-    ] {
-        let before = w.events(Entity::Feature, FEATURE).len();
-        w.store
-            .immediate(|tx| rows::set_feature_fact(tx, None, FEATURE, fact, cause("pushed")))
-            .unwrap();
-        let events = w.events(Entity::Feature, FEATURE);
-        assert_eq!(events.len(), before + 1, "{fact:?}");
-        assert!(events
-            .last()
-            .unwrap()
-            .text
-            .contains(&format!("feature {FEATURE}")));
-    }
-    let row = rows::feature(w.conn(), FEATURE).unwrap().unwrap();
-    assert_eq!(row.state, "open");
-    assert_eq!(row.name.as_deref(), Some("f-0001"));
-    assert_eq!(row.branch.as_deref(), Some("fleet/r1"));
-    assert_eq!(row.primary_branch, "main");
-    assert_eq!(row.push_state.as_deref(), Some("failed"));
-    assert_eq!(row.push_failures, 3);
-    assert_eq!(row.push_not_before, Some(1200));
-    assert_eq!(row.pr_state, "open");
+    bundle_facts(&mut w, &bundle);
+    feature_facts(&mut w);
 
     // A fact of a row that does not exist writes nothing.
     let all_events = count(w.conn(), "SELECT count(*) FROM events");
