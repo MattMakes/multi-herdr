@@ -374,6 +374,16 @@ pub fn get(conn: &Connection, run_id: &str) -> Result<Run> {
     .with_context(|| format!("no run {run_id}"))
 }
 
+/// The internal run of the feature `feature_id`: the run whose feature id
+/// is `F-<run rowid>` (MAP.md of fleetd-p6, Q5), or `None`.
+pub fn of_feature(conn: &Connection, feature_id: &str) -> Result<Option<Run>> {
+    optional(conn.query_row(
+        &format!("{SELECT} WHERE printf('F-%04d', r.rowid) = ?1"),
+        [feature_id],
+        Run::from_row,
+    ))
+}
+
 /// Every run of the project at `root`, newest first.
 pub fn of_project(conn: &Connection, root: &Path) -> Result<Vec<Run>> {
     let mut stmt = conn.prepare(&format!(

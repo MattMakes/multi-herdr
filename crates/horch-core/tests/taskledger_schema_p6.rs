@@ -150,14 +150,17 @@ fn task_without_an_idea_is_refused_by_the_trigger() {
     task("n2", Some("I-0001"), "native").unwrap();
     task("imp", None, "import").expect("an imported row keeps its history");
 
-    let (fix_rounds, idea_id): (i64, String) = conn
+    let (fix_rounds, idea_id, spec_json): (i64, String, Option<String>) = conn
         .query_row(
-            "SELECT fix_rounds, idea_id FROM tasks WHERE task_id = 'n2'",
+            "SELECT fix_rounds, idea_id, spec_json FROM tasks WHERE task_id = 'n2'",
             [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .unwrap();
-    assert_eq!((fix_rounds, idea_id.as_str()), (0, "I-0001"));
+    assert_eq!(
+        (fix_rounds, idea_id.as_str(), spec_json),
+        (0, "I-0001", None)
+    );
 
     conn.execute(
         "INSERT INTO workers (worker_id, run_id, kind, persona, host, status)
