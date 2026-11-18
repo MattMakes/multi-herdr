@@ -782,3 +782,110 @@ fn idle_author_of_a_verifying_task_keeps_its_item_while_off_the_page() {
     );
     assert!(w.attempts(&task_a)[0].1 == "live" && w.attempts(&task_b)[0].1 == "live");
 }
+
+/// The outside of [`a_doorbell_that_was_not_typed_is_typed_by_the_next_pass`]:
+/// herdr shows the pane idle, and each doorbell is recorded. The first
+/// `fail` doorbells fail, as a crash between the commit and the send does.
+struct Bells {
+    inner: Fake,
+    typed: std::cell::RefCell<Vec<String>>,
+    fail: std::cell::Cell<usize>,
+}
+
+impl Outside for Bells {
+    fn panes(&self) -> Option<BTreeMap<String, InPane>> {
+        None
+    }
+
+    fn close_pane(&self, _pane: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn holds(&self) -> Vec<Hold> {
+        Vec::new()
+    }
+
+    fn worktree_folders(&self, _conn: &Connection) -> anyhow::Result<Vec<FolderItem>> {
+        Ok(Vec::new())
+    }
+
+    fn attempt_spec(&self, attempt: &AttemptRow) -> anyhow::Result<LaunchSpec> {
+        self.inner.attempt_spec(attempt)
+    }
+
+    fn observe(&self, _w: &Worker) -> Option<Observation> {
+        Some(Observation {
+            agent_alive: true,
+            herdr_status: Some("idle".into()),
+            ..Default::default()
+        })
+    }
+
+    fn doorbell(&self, pane: &str) -> anyhow::Result<()> {
+        if self.fail.get() > 0 {
+            self.fail.set(self.fail.get() - 1);
+            anyhow::bail!("lost before the send");
+        }
+        self.typed.borrow_mut().push(pane.to_string());
+        Ok(())
+    }
+}
+
+#[test]
+fn a_doorbell_that_was_not_typed_is_typed_by_the_next_pass() {
+    let mut w = world();
+    let _agent = Agent::sleeping();
+    let (task, worker) = w.claimed_task(&_agent);
+    w.conn
+        .execute(
+            "UPDATE workers SET pane_id = 'w1:p2' WHERE worker_id = ?1",
+            [&worker],
+        )
+        .unwrap();
+    let bells = Bells {
+        inner: Fake::new(&w),
+        typed: Default::default(),
+        fail: std::cell::Cell::new(1),
+    };
+    let doorbell_events = |w: &World| -> i64 {
+        w.conn
+            .query_row(
+                "SELECT count(*) FROM events WHERE kind = 'doorbell'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    let pass = |w: &mut World, clock: i64| -> PassReport {
+        w.set_clock(clock);
+        w.beat(&worker);
+        let ports = Ports {
+            outside: &bells,
+            duties: &NoDuties,
+            needs_you: &NeedsYouList,
+            host: &Launcher,
+        };
+        Pass::new(w.settings(), ports).run(&mut w.conn).unwrap()
+    };
+    // The lease renews within stall_after_s of the claim.
+    for clock in [100, 200, 290] {
+        let report = pass(&mut w, clock);
+        assert!(report.failed.is_empty(), "{report:?}");
+    }
+    assert_eq!(doorbell_events(&w), 0);
+    // Idle past stall_after_s: rung 1. Its row commits, and the send is
+    // lost.
+    let report = pass(&mut w, 310);
+    assert_eq!(report.failed.len(), 1, "{report:?}");
+    assert_eq!(doorbell_events(&w), 1);
+    assert!(bells.typed.borrow().is_empty());
+    // The next pass types it, 1 time, with no new row: the ladder did not
+    // count the lost doorbell as rung 1, and does not ring rung 2.
+    for clock in [320, 330] {
+        let report = pass(&mut w, clock);
+        assert!(report.failed.is_empty(), "{report:?}");
+    }
+    assert_eq!(*bells.typed.borrow(), ["w1:p2"]);
+    assert_eq!(doorbell_events(&w), 1);
+    assert_eq!(w.task(&task).status, "running");
+}

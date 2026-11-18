@@ -525,6 +525,28 @@ pub fn write_activity(fleet_root: &Path, seen: &BTreeMap<String, Activity>) -> R
     write_json(&activity_path(fleet_root), seen)
 }
 
+/// `<fleet root>/run/doorbells.json`: the event id of each doorbell that
+/// part 3 typed, by attempt id. A doorbell event with no mark here was not
+/// typed: the next pass types it, and the stall ladder does not count it
+/// (A24: the row, then the effect, then the observation).
+pub fn doorbells_path(fleet_root: &Path) -> PathBuf {
+    run_dir(fleet_root).join("doorbells.json")
+}
+
+/// The doorbell marks. A missing file, or a file that does not parse, is
+/// no mark: each doorbell event of a live attempt is typed again.
+pub fn read_doorbells(fleet_root: &Path) -> BTreeMap<String, BTreeSet<i64>> {
+    std::fs::read(doorbells_path(fleet_root))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+/// Write the doorbell marks atomically.
+pub fn write_doorbells(fleet_root: &Path, sent: &BTreeMap<String, BTreeSet<i64>>) -> Result<()> {
+    write_json(&doorbells_path(fleet_root), sent)
+}
+
 fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     let dir = path.parent().expect("a file of the run folder");
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;

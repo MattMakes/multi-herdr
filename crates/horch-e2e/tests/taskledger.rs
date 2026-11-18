@@ -1328,23 +1328,12 @@ fn a_worker_with_no_progress_is_stalled_by_the_ladder_and_stopped_by_its_pid() {
 
 /// In `h`, run `zeta` with 1 running task of a worker whose agent is a
 /// live child of the test, and the fleetd check before each command on.
-/// Many stall rounds keep a pass from reaping the worker. Gives the
+/// The test runs within stall_after_s (300 s) of the claim on the fleet
+/// clock, so the stall ladder does not stop the worker. Gives the
 /// fleetds of the test, the agent and the output of the worker's `claim`.
 fn claimed_run(mut h: Harness) -> (Harness, Fleetds, Stand, Output) {
     h.unset("HORCH_NO_WATCHDOG");
-    ok(
-        &h,
-        &[
-            "ledger",
-            "run",
-            "new",
-            "zeta",
-            "--check-every",
-            "1",
-            "--stall-rounds",
-            "1000",
-        ],
-    );
+    ok(&h, &["ledger", "run", "new", "zeta", "--check-every", "1"]);
     let p = ticket(&h, "t0", "# T0\n");
     ok(
         &h,

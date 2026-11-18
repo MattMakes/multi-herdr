@@ -22,10 +22,10 @@
 //! `stall_rounds` of a run stay stored.
 //!
 //! A note names the signals the watchdog could not read ("no timer format
-//! for harness pi; no transcript"), so `ledger show` explains a reap.
+//! for harness pi; no transcript"), so `ledger show` explains why a worker
+//! shows no progress.
 //!
-//! This module decides and records: the checks and the rows of a reap.
-//! The caller stops the processes and writes the wakes
+//! This module decides and records the checks. The caller writes the wakes
 //! ([`super::wakes`]). Both `horch ledger watch` and the pass of fleetd
 //! (`fleetd/fleet_runtime/adapters/watchdog_duties.rs`) use these rules.
 
@@ -292,7 +292,7 @@ pub fn check_observed(
     Ok(checked(w, p.as_ref(), task, verdict, note, round))
 }
 
-/// The result of a check, for the caller to wake or reap on.
+/// The result of a check, for the caller to wake on.
 fn checked(
     w: &Worker,
     p: Option<&Prev>,
