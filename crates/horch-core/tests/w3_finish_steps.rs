@@ -18,6 +18,7 @@ use horch_core::taskledger::finish::{
 use horch_core::taskledger::git::Git;
 use horch_core::taskledger::model::{Actor, StepName, WorktreeMode};
 use horch_core::taskledger::runs::{self, NewRun, Run};
+use horch_core::taskledger::supervisor;
 use horch_core::taskledger::tasks::{self, NewTask};
 use horch_core::taskledger::workers::{self, NewWorker};
 use horch_core::taskledger::worktree_ops;
@@ -1420,21 +1421,18 @@ fn worktree_new_refuses_a_shared_task_and_returns_an_existing_worktree() {
     assert_eq!(first.base_commit.as_deref(), Some(w.base.as_str()));
     assert_eq!(first.status, "open");
     assert!(Path::new(&first.path).ends_with(".worktrees/T2-feat-b"));
-    // A replacement worker of the task gets the same worktree.
+    // A replacement worker of the task gets the same worktree. The agent of
+    // the first worker exits: its task is queued again, without its lease.
     let run = w.run.clone();
-    w.store
-        .immediate(|tx| {
-            tx.execute(
-                "UPDATE tasks SET status = 'ready', current_worker_id = NULL WHERE seq = 2",
-                [],
-            )?;
-            tx.execute(
-                "UPDATE workers SET status = 'stopped' WHERE worker_id = ?1",
-                [&id],
-            )?;
-            Ok(())
-        })
-        .unwrap();
+    let db = w.root.parent().unwrap().join("ledger.sqlite3");
+    let ended = supervisor::agent_exited(&db, &id, Some(1)).unwrap();
+    assert_eq!(
+        ended,
+        supervisor::Ended::Requeued {
+            task: "T-2".into(),
+            persona: "opus".into()
+        }
+    );
     let next = w.store.immediate(|tx| worker(tx, &run, "opus")).unwrap();
     let again =
         finish::worktree_new_with(&mut w.store, &w.tools.git, &next, "other", &TestJobs).unwrap();
