@@ -1188,7 +1188,7 @@ fn stopping_one_of_three_workers_leaves_the_others_running() {
 }
 
 #[test]
-fn three_checks_without_progress_reap_the_worker_by_its_pid() {
+fn a_worker_with_no_progress_is_stalled_by_the_ladder_and_stopped_by_its_pid() {
     let mut h = fleet("tl-watch", "exec,stay");
     h.set("HORCH_STOP_GRACE_MS", "2000");
     ok(
@@ -1236,33 +1236,69 @@ fn three_checks_without_progress_reap_the_worker_by_its_pid() {
     );
     ok_as(&h, &id, &["ledger", "claim"]);
     // The fake agent runs, but shows no timer and writes nothing more.
+    // The checks of today still run, but no stall round reaps
+    // (docs/tickets/fleetd-p2/MAP.md, Q14).
     let mut verdicts = Vec::new();
     for _ in 0..3 {
         std::thread::sleep(Duration::from_millis(1100));
         let v = json_of(&h, &["ledger", "watch", "--once", "--force", "--json"]);
         verdicts.push(v[0]["verdict"].as_str().unwrap().to_string());
     }
-    // The first check may still see the session's transcript appear.
-    assert_eq!(verdicts.last().unwrap(), "dead", "{verdicts:?}");
+    assert!(!verdicts.iter().any(|v| v == "dead"), "{verdicts:?}");
     assert!(
-        !horch_core::procid::alive(pid, Some(started)),
-        "the agent was stopped"
+        horch_core::procid::alive(pid, Some(started)),
+        "no check stops the agent"
     );
+    // No activity past stall_after_s (300 s) of the claim: the stall
+    // ladder ends the attempt `stalled` and stops the agent by its PID.
+    h.advance_fleet_clock(400);
+    json_of(&h, &["ledger", "watch", "--once", "--force", "--json"]);
+    wait_for("the stop of the agent", || {
+        (!horch_core::procid::alive(pid, Some(started))).then_some(())
+    });
     let shown = json_of(&h, &["ledger", "show", &id, "--json"]);
     assert_eq!(shown["worker"]["status"], "incomplete");
-    // The fleetd pass stops the agent that the row names by its PID, and
-    // records the stop and the reap as the watchdog.
     assert_eq!(shown["worker"]["agent_pid"].as_i64(), Some(pid as i64));
-    let by_watchdog: Vec<&str> = shown["events"]
+    let by_horch: Vec<&str> = shown["events"]
         .as_array()
         .unwrap()
         .iter()
-        .filter(|e| e["actor"] == "watchdog")
-        .filter_map(|e| e["kind"].as_str())
+        .filter(|e| e["actor"] == "horch")
+        .filter_map(|e| e["text"].as_str())
         .collect();
-    for kind in ["stopped", "reaped"] {
-        assert!(by_watchdog.contains(&kind), "{kind}: {shown}");
+    for text in [
+        "the stall ladder ended it: stalled",
+        "working -> incomplete",
+        "T-1 is queued again",
+    ] {
+        assert!(by_horch.iter().any(|t| t.contains(text)), "{text}: {shown}");
     }
+    let db = horch_core::taskledger::Store::open(&h.root.join("ledger.sqlite3")).unwrap();
+    let outcome: String = db
+        .conn()
+        .query_row(
+            "SELECT outcome FROM attempts WHERE worker_id = ?1",
+            [&id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(outcome, "stalled");
+    let wakes: Vec<String> = {
+        let mut stmt = db
+            .conn()
+            .prepare(
+                "SELECT text FROM outbox UNION ALL
+                 SELECT text FROM events WHERE kind = 'woke'",
+            )
+            .unwrap();
+        stmt.query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    assert_eq!(wakes.len(), 2, "{wakes:?}");
+    assert!(wakes[0].contains("shows no progress"), "{}", wakes[0]);
+    assert!(wakes[1].contains("T-1: retry after 30 s"), "{}", wakes[1]);
     let t = json_of(&h, &["ledger", "show", "T-1", "--json"]);
     assert_eq!(t["task"]["status"], "queued");
     // The retry waits for its backoff of 30 s on the fleet clock (rung 6).
@@ -1783,22 +1819,69 @@ fn the_whole_flow_on_the_fake_herdr() {
                 && e["text"].as_str().unwrap().contains("Tasks can start: T-3")),
         "the orchestrator is woken for C: {events}"
     );
-    // 5. After 3 checks the watchdog reaps B's worker by its PIDs; A's and
-    // C's workers are untouched.
-    let mut last = String::new();
+    // 5. The checks of today see B with no progress, but no stall round
+    // reaps (docs/tickets/fleetd-p2/MAP.md, Q14).
+    let mut verdicts = Vec::new();
     for _ in 0..3 {
         std::thread::sleep(Duration::from_millis(1100));
         let v = json_of(&h, &["ledger", "watch", "--once", "--force", "--json"]);
-        last = v
+        if let Some(c) = v
             .as_array()
             .unwrap()
             .iter()
             .find(|c| c["worker_id"] == wb.as_str())
-            .map(|c| c["verdict"].as_str().unwrap().to_string())
-            .unwrap_or(last);
+        {
+            verdicts.push(c["verdict"].as_str().unwrap().to_string());
+        }
     }
-    assert_eq!(last, "dead");
-    assert!(!horch_core::procid::alive(bpid, Some(bstart)));
+    assert!(!verdicts.iter().any(|v| v == "dead"), "{verdicts:?}");
+    assert!(horch_core::procid::alive(bpid, Some(bstart)));
+    // No activity past stall_after_s (300 s) of its claim: the stall ladder
+    // ends B's attempt `stalled` and stops its agent by its PID.
+    h.advance_fleet_clock(400);
+    json_of(&h, &["ledger", "watch", "--once", "--force", "--json"]);
+    wait_for("the stop of B's agent", || {
+        (!horch_core::procid::alive(bpid, Some(bstart))).then_some(())
+    });
+    let db = horch_core::taskledger::Store::open(&h.root.join("ledger.sqlite3")).unwrap();
+    let outcome: String = db
+        .conn()
+        .query_row(
+            "SELECT outcome FROM attempts WHERE worker_id = ?1",
+            [&wb],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(outcome, "stalled");
+    let events = json_of(&h, &["ledger", "events", "--json"]);
+    let by_horch: Vec<&str> = events
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["actor"] == "horch")
+        .filter_map(|e| e["text"].as_str())
+        .collect();
+    for text in [
+        "the stall ladder ended it: stalled",
+        "working -> incomplete",
+        "T-2 is queued again",
+    ] {
+        assert!(by_horch.iter().any(|t| t.contains(text)), "{text}: {events}");
+    }
+    // The orchestrator got the wake for B.
+    let wakes: Vec<String> = {
+        let mut stmt = db.conn().prepare("SELECT text FROM outbox").unwrap();
+        stmt.query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    assert!(
+        wakes
+            .iter()
+            .any(|w| w.contains("codex-terra-1 on T-2 shows no progress")),
+        "{wakes:?}"
+    );
     // B waits for its retry backoff of 30 s on the fleet clock (rung 6).
     h.advance_fleet_clock(30);
     // C is claimed now (a worker row without a live process would be judged
