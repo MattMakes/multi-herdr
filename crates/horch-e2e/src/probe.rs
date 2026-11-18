@@ -9,7 +9,8 @@
 //!   a write inside them, and the 3 operator acts, each in a child under
 //!   [`horch_platform::sandbox::sandboxed`] with the rules of its rendered
 //!   config, and records each result ([`operator_boundary`]). A config that
-//!   renders no sandbox rule runs the child with no sandbox.
+//!   renders no sandbox rule runs the child with no sandbox. It then writes
+//!   `outbox/result.json` of its task folder the same way ([`write_result`]).
 //!
 //! Each result is `allowed` or `refused: <why>`. The probe removes each
 //! file that a write made. It never prints the token.
@@ -90,11 +91,7 @@ pub fn record_operator_boundary(call: &mut Call) {
 /// The report of 1 conformance run of `cli` with `argv`. `hooks` are the
 /// hook events that the fake printed to the wrapper.
 pub fn report(cli: Cli, argv: &[String], hooks: Vec<String>) -> Value {
-    let seen = match cli {
-        Cli::Claude => claude_config(argv),
-        Cli::Codex => codex_config(argv),
-        Cli::Agy => agy_config(),
-    };
+    let seen = config(cli, argv);
     json!({
         "skills": seen.skills,
         "rules": seen.rules,
@@ -103,6 +100,30 @@ pub fn report(cli: Cli, argv: &[String], hooks: Vec<String>) -> Value {
         "hooks": hooks,
         "operator_boundary": operator_boundary(seen.rules_of_sandbox.as_ref()),
     })
+}
+
+/// The shared write of a conformance run: write `outbox/result.json` of
+/// the task folder of `prompt` (`<task>/inbox/START.md`) in a child under
+/// the sandbox rules of the config, as the agent does. The file stays, so
+/// the wrapper finds it. The result is `allowed` or `refused: <why>`.
+pub fn write_result(cli: Cli, argv: &[String], prompt: &str) -> String {
+    let Some(task) = Path::new(prompt).parent().and_then(Path::parent) else {
+        return "not run: the prompt is not in a task folder".to_owned();
+    };
+    let rules = config(cli, argv).rules_of_sandbox;
+    in_child(
+        rules.as_ref(),
+        "write",
+        &task.join("outbox").join("result.json"),
+    )
+}
+
+fn config(cli: Cli, argv: &[String]) -> Seen {
+    match cli {
+        Cli::Claude => claude_config(argv),
+        Cli::Codex => codex_config(argv),
+        Cli::Agy => agy_config(),
+    }
 }
 
 /// What the fake sees in its config.

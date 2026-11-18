@@ -13,8 +13,9 @@
 //!   and no exit. Codex prints its token count only in `turn.completed`.
 //! - `exit_without_result`: the progress lines, and exit 0.
 //! - `trust_prompt`: a dialog that is not a stream line, and no exit.
-//! - `conformance`: the probes of [`crate::probe`]. The report goes into the
-//!   result line and into the log as `conformance`.
+//! - `conformance`: the probes of [`crate::probe`], and the write of
+//!   `outbox/result.json` of the task folder (`result_write`). The report
+//!   goes into the result line and into the log as `conformance`.
 
 use serde_json::{json, Value};
 
@@ -199,7 +200,8 @@ pub fn run(mut call: Call, cli: Cli, prompt: &str) -> ! {
     let mut result = first(Kind::Result);
     if scenario_has("conformance") {
         let hooks = hook_events(&progress);
-        let report = probe::report(cli, &call.argv, hooks);
+        let mut report = probe::report(cli, &call.argv, hooks);
+        report["result_write"] = Value::String(probe::write_result(cli, &call.argv, prompt));
         let text = report.to_string();
         call.extra.insert("conformance".into(), report);
         match cli {

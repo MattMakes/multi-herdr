@@ -149,7 +149,8 @@ impl AgentFacts {
         *lock(&self.last_output_at) = Some(util::now());
     }
 
-    fn pid(&self) -> Option<u32> {
+    /// The pid of the agent, once it started.
+    pub fn pid(&self) -> Option<u32> {
         Some(self.pid.load(Ordering::SeqCst)).filter(|&p| p != 0)
     }
 
