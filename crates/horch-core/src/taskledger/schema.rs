@@ -30,8 +30,12 @@ pub const EVENT_KINDS_VERSION: i64 = PHASE_3_VERSION + 1;
 /// unique only among the rows that are not `removed` (`worktree_paths`).
 pub const WORKTREE_PATHS_VERSION: i64 = EVENT_KINDS_VERSION + 1;
 
+/// The version of the Phase 4 tables of fleetd and their release backfill
+/// (`phase_4`).
+pub const PHASE_4_VERSION: i64 = WORKTREE_PATHS_VERSION + 1;
+
 /// The schema version this binary writes.
-pub const VERSION: i64 = WORKTREE_PATHS_VERSION;
+pub const VERSION: i64 = PHASE_4_VERSION;
 
 /// A rule that applies to rows this ledger writes, not to imported ones
 /// (section 11.2): `CHECK (origin = 'import' OR <expr>)`.
@@ -1067,6 +1071,214 @@ UPDATE worktrees SET state = CASE
     )
 }
 
+/// The bundle states that are not ended: a task branch is a member of at
+/// most 1 bundle in these states (I12).
+const OPEN_BUNDLE: &str = "('building', 'gating', 'passed')";
+
+/// The Phase 4 tables of fleetd (docs/specs/fleetd/design.md, "Ledger").
+/// The `branches` row of a feature branch has no task and no landing state.
+fn integration_tables() -> String {
+    "CREATE TABLE features (
+    id TEXT PRIMARY KEY,
+    name TEXT UNIQUE,
+    branch TEXT UNIQUE,
+    primary_branch TEXT NOT NULL,
+    stacked_on TEXT REFERENCES features(id),
+    state TEXT NOT NULL CHECK (state IN ('open', 'ready', 'merged', 'abandoned')),
+    pr TEXT,
+    push_state TEXT CHECK (push_state IN ('ok', 'failed')),
+    push_failures INTEGER NOT NULL DEFAULT 0,
+    push_not_before INTEGER,
+    pr_state TEXT NOT NULL DEFAULT 'none' CHECK (pr_state IN ('none', 'open', 'closed')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE branches (
+    name TEXT PRIMARY KEY,
+    feature_id TEXT NOT NULL REFERENCES features(id),
+    task_id TEXT REFERENCES tasks(task_id),
+    landing_state TEXT CHECK (landing_state IN ('building', 'verifying', 'ready', 'in_bundle',
+        'landed', 'conflicted', 'gate_failed', 'abandoned')),
+    owner TEXT NOT NULL,
+    due_at INTEGER NOT NULL,
+    queue_seq INTEGER,
+    repair_attempts INTEGER NOT NULL DEFAULT 0,
+    rescue_ref TEXT,
+    seen_tip TEXT,
+    seen_remote_tip TEXT,
+    orphan INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE bundles (
+    id INTEGER PRIMARY KEY,
+    feature_id TEXT NOT NULL REFERENCES features(id),
+    base_tip TEXT NOT NULL,
+    candidate_ref TEXT,
+    candidate_tip TEXT,
+    parent_id INTEGER REFERENCES bundles(id),
+    state TEXT NOT NULL CHECK (state IN ('building', 'gating', 'passed', 'landed', 'failed', 'dropped')),
+    job_id INTEGER REFERENCES jobs(id),
+    result TEXT CHECK (result IN ('pass', 'fail')),
+    at TEXT NOT NULL
+);
+CREATE TABLE bundle_members (
+    bundle_id INTEGER NOT NULL REFERENCES bundles(id),
+    branch TEXT NOT NULL REFERENCES branches(name),
+    position INTEGER NOT NULL,
+    PRIMARY KEY (bundle_id, branch)
+);
+CREATE INDEX bundle_members_by_branch ON bundle_members (branch);
+CREATE TABLE gate_runs (
+    id INTEGER PRIMARY KEY,
+    feature_id TEXT NOT NULL REFERENCES features(id),
+    gate TEXT NOT NULL CHECK (gate IN ('fast', 'full')),
+    tip TEXT NOT NULL,
+    base_tip TEXT NOT NULL,
+    job_id INTEGER NOT NULL REFERENCES jobs(id),
+    result TEXT CHECK (result IN ('pass', 'fail')),
+    at TEXT NOT NULL
+);
+CREATE TABLE remote_tips (
+    repo TEXT NOT NULL,
+    branch TEXT NOT NULL,
+    tip TEXT NOT NULL,
+    fetched_at TEXT NOT NULL,
+    stale_since TEXT,
+    PRIMARY KEY (repo, branch)
+);
+CREATE TABLE ingested (
+    path TEXT PRIMARY KEY,
+    sha256 TEXT,
+    log_offset INTEGER,
+    outcome TEXT NOT NULL CHECK (outcome IN ('accepted', 'rejected')),
+    reason TEXT,
+    at TEXT NOT NULL
+);"
+    .to_string()
+}
+
+/// I12, second part, in SQL, so that no writer can break it: a task branch
+/// is a member of at most 1 bundle that is not ended. A membership that is
+/// added or moved into an open bundle, and an ended bundle that opens
+/// again, are refused when 1 of its branches is in another open bundle.
+fn one_open_bundle_triggers() -> String {
+    let refuse = "SELECT RAISE(ABORT, 'I12: a task branch is a member of at most 1 bundle that is not ended');";
+    // `skip` leaves out the row that an update moves.
+    let member_rule = |skip: &str| {
+        format!(
+            "(SELECT state FROM bundles WHERE id = NEW.bundle_id) IN {OPEN_BUNDLE}
+    AND EXISTS (SELECT 1 FROM bundle_members m JOIN bundles b ON b.id = m.bundle_id
+        WHERE m.branch = NEW.branch AND m.bundle_id <> NEW.bundle_id{skip}
+            AND b.state IN {OPEN_BUNDLE})"
+        )
+    };
+    format!(
+        "CREATE TRIGGER bundle_members_one_open_insert BEFORE INSERT ON bundle_members
+WHEN {insert}
+BEGIN {refuse} END;
+CREATE TRIGGER bundle_members_one_open_update BEFORE UPDATE OF bundle_id, branch ON bundle_members
+WHEN {update}
+BEGIN {refuse} END;
+CREATE TRIGGER bundles_one_open_reopen BEFORE UPDATE OF state ON bundles
+WHEN NEW.state IN {OPEN_BUNDLE} AND OLD.state NOT IN {OPEN_BUNDLE}
+    AND EXISTS (SELECT 1 FROM bundle_members m
+        JOIN bundle_members o ON o.branch = m.branch AND o.bundle_id <> m.bundle_id
+        JOIN bundles b ON b.id = o.bundle_id
+        WHERE m.bundle_id = NEW.id AND b.state IN {OPEN_BUNDLE})
+BEGIN {refuse} END;",
+        insert = member_rule(""),
+        update = member_rule(" AND m.rowid <> OLD.rowid"),
+    )
+}
+
+/// Version [`PHASE_4_VERSION`]: the Phase 4 tables of fleetd, the I12
+/// triggers, how an attempt began (`attempts.via`, MAP.md of fleetd-p4,
+/// Q4: an attempt of today's claim path is `claim`), and the index of the
+/// reader `needs_you::open_keys` (T-263). [`phase_4_backfill`] fills the
+/// tables for a run in flight.
+fn phase_4() -> String {
+    [
+        integration_tables(),
+        one_open_bundle_triggers(),
+        "ALTER TABLE attempts ADD COLUMN via TEXT NOT NULL DEFAULT 'claim' CHECK (via IN ('claim', 'push'));
+CREATE INDEX needs_you_by_kind_state ON needs_you (kind, state);"
+            .to_string(),
+    ]
+    .join("\n")
+}
+
+/// The time limit of each backfilled `branches` row: the default
+/// `max_minutes` of a profile in the design, 60 min.
+const BACKFILL_TASK_LIMIT_S: i64 = 3600;
+
+/// The release backfill of Phase 4 (design, "What a release does to a run
+/// in flight"; MAP.md of fleetd-p4, Q5), from the rows alone: it reads no
+/// git and no process, and the first pass of fleetd checks each fact again.
+///
+/// Each run with a run branch and a base branch gets 1 feature row:
+/// - `id` is `F-<run rowid>`, 4 digits, as `F-0003`: `runs` has no seq
+///   column, and its rowid is the insert order.
+/// - `name` is the run slug, and `branch` the run branch. Both are unique
+///   in the design. When a newer run has the same slug or branch, the older
+///   run gets the name `<slug>-<rowid>` and no branch.
+/// - `state` is `merged` for a `done` run, `abandoned` for an `abandoned`
+///   run, else `open`.
+///
+/// Each feature with a branch gets the `branches` row of that branch,
+/// owned by fleetd. Each task of a run with a feature row gets the
+/// `branches` row of its newest worktree row, owned by its worker:
+/// `landed` when that tree is `landed` or the task is done with a landed
+/// commit, else `building`. Each row is due [`BACKFILL_TASK_LIMIT_S`]
+/// after the fleet clock now.
+fn phase_4_backfill(conn: &Connection, now: &str) -> Result<()> {
+    conn.execute(
+        &format!(
+            "WITH f AS (SELECT rowid AS n, slug, run_branch, base_branch, status, started_at
+        FROM runs WHERE run_branch IS NOT NULL AND base_branch IS NOT NULL)
+INSERT INTO features (id, name, branch, primary_branch, state, created_at, updated_at)
+    SELECT printf('F-%04d', n),
+        CASE WHEN EXISTS (SELECT 1 FROM f g WHERE g.slug = f.slug AND g.n > f.n)
+            THEN slug || '-' || n ELSE slug END,
+        CASE WHEN EXISTS (SELECT 1 FROM f g WHERE g.run_branch = f.run_branch AND g.n > f.n)
+            THEN NULL ELSE run_branch END,
+        base_branch,
+        CASE status WHEN '{done}' THEN 'merged' WHEN '{abandoned}' THEN 'abandoned' ELSE 'open' END,
+        started_at, ?1
+    FROM f",
+            done = RunStatus::Done,
+            abandoned = RunStatus::Abandoned,
+        ),
+        [now],
+    )?;
+    conn.execute(
+        &format!(
+            "INSERT INTO branches (name, feature_id, owner, due_at)
+    SELECT branch, id, 'fleetd', {FLEET_CLOCK} + ?1 FROM features WHERE branch IS NOT NULL"
+        ),
+        [BACKFILL_TASK_LIMIT_S],
+    )?;
+    conn.execute(
+        &format!(
+            "INSERT INTO branches (name, feature_id, task_id, landing_state, owner, due_at)
+    SELECT branch, printf('F-%04d', run_n), task_id,
+        CASE WHEN wt_status = '{landed}' OR (task_status = '{task_done}' AND landed_commit IS NOT NULL)
+            THEN 'landed' ELSE 'building' END,
+        'worker', {FLEET_CLOCK} + ?1
+    FROM (SELECT w.branch, w.status AS wt_status, w.landed_commit, t.task_id,
+                t.status AS task_status, r.rowid AS run_n,
+                row_number() OVER (PARTITION BY t.task_id
+                    ORDER BY w.created_at DESC, w.rowid DESC) AS k
+            FROM worktrees w JOIN tasks t ON t.task_id = w.task_id
+            JOIN runs r ON r.run_id = t.run_id
+            JOIN features f ON f.id = printf('F-%04d', r.rowid))
+    WHERE k = 1",
+            landed = WorktreeStatus::Landed,
+            task_done = TaskStatus::Done,
+        ),
+        [BACKFILL_TASK_LIMIT_S],
+    )?;
+    Ok(())
+}
+
 /// Bring the database to [`VERSION`]. A file from a newer binary is refused:
 /// this one would not know its columns.
 ///
@@ -1261,6 +1473,13 @@ fn migrate_unchecked(
         worktree_paths(&tx).context("building worktrees again with 1 live row for each path")?;
         no_broken_reference(&tx, WORKTREE_PATHS_VERSION)?;
     }
+    if due(PHASE_4_VERSION) {
+        tx.execute_batch(&phase_4())
+            .context("adding the features, branches, bundles and other Phase 4 tables of fleetd")?;
+        phase_4_backfill(&tx, &super::util::now())
+            .context("backfilling the feature and the branches of each run in flight")?;
+        no_broken_reference(&tx, PHASE_4_VERSION)?;
+    }
     tx.pragma_update(None, "user_version", target)?;
     tx.commit()?;
     Ok(())
@@ -1311,7 +1530,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(tables, 25);
+        assert_eq!(tables, 32);
     }
 
     /// A ledger file as version 3 left it, with 1 run.
@@ -1716,7 +1935,7 @@ mod v7_tests {
         ];
         // The Phase 2 step reads the stored text of `tasks`, so it runs on
         // the connection.
-        assert_eq!(steps.len() as i64 + 4, VERSION, "add the new step here");
+        assert_eq!(steps.len() as i64 + 5, VERSION, "add the new step here");
         for sql in steps.iter().take(version as usize) {
             conn.execute_batch(sql).unwrap();
         }
@@ -1731,6 +1950,9 @@ mod v7_tests {
         }
         if version >= WORKTREE_PATHS_VERSION {
             worktree_paths(&conn).unwrap();
+        }
+        if version >= PHASE_4_VERSION {
+            conn.execute_batch(&phase_4()).unwrap();
         }
         conn.execute("INSERT INTO projects VALUES ('p', '/r', 'now')", [])
             .unwrap();
