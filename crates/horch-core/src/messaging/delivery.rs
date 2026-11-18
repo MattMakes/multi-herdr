@@ -77,7 +77,17 @@ impl TypedLine {
 
     /// The text of the line: its entry in [`TYPED_LINES`].
     pub const fn text(self) -> &'static str {
-        TYPED_LINES[self as usize]
+        match self {
+            TypedLine::Doorbell => DOORBELL,
+            TypedLine::Mail => MAIL_LINE,
+            TypedLine::Permissions => "/permissions",
+            TypedLine::Status => "/status",
+            TypedLine::Compact => "/compact",
+            TypedLine::DeliveryEchoPosix => DELIVERY_ECHO_POSIX,
+            TypedLine::DeliveryEchoPowerShell => DELIVERY_ECHO_POWERSHELL,
+            TypedLine::SmokeEchoPosix => SMOKE_ECHO_POSIX,
+            TypedLine::SmokeEchoPowerShell => SMOKE_ECHO_POWERSHELL,
+        }
     }
 
     /// The echo of `horch doctor`'s delivery test for `shell`.

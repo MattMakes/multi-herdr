@@ -418,7 +418,7 @@ struct Tell<'a> {
 fn push_line(tell: &Tell, target: Option<String>, line: String, relay: bool) -> Result<()> {
     // The relay takes the text itself. When it does not, the text waits in
     // the mail and only the mail line is typed.
-    if relay && try_relay(tell, line)?.is_none() {
+    if relay && try_relay(tell, &line)? {
         return Ok(());
     }
     let Some(target) = target else {
@@ -442,38 +442,35 @@ fn push_line(tell: &Tell, target: Option<String>, line: String, relay: bool) -> 
     )
 }
 
-/// Offer `line` to the orchestrator's channel relay. `None`: the relay took
-/// it. `Some(line)`: the caller types it, with a duplicate warning when the
-/// relay did not confirm. An error: the relay is live but did not take or
-/// confirm durable mail. The mail stays pending, and the courier redelivers
-/// it through the relay: an idle pane can hold the operator's draft.
-fn try_relay(tell: &Tell, mut line: String) -> Result<Option<String>> {
+/// Offer `line` to the orchestrator's channel relay. `true`: the relay took
+/// it. `false`: the caller types the mail line, and the text waits in the
+/// mail (FR-7). An error: the relay is live but did not take or confirm
+/// durable mail. The mail stays pending, and the courier redelivers it
+/// through the relay: an idle pane can hold the operator's draft.
+fn try_relay(tell: &Tell, line: &str) -> Result<bool> {
     // `horch done` caps all its pushes at one budget; a spent budget skips
     // the relay and waits no more, so only an idle agent still gets the line.
     let spent = delivery::push_time_left().is_some_and(|left| left.is_zero());
     if tell.role != "orchestrator" || spent {
-        return Ok(Some(line));
+        return Ok(false);
     }
     let socket = channel::socket_path(&tell.ctx.paths.state_root, tell.mailbox.workspace_id());
     let from = tell.sender.unwrap_or("orchestrator");
-    match channel::send(&socket, from, &line, delivery::capped(send_timeout())) {
-        Ok(()) => return Ok(None),
+    match channel::send(&socket, from, line, delivery::capped(send_timeout())) {
+        Ok(()) => return Ok(true),
         // Only a line with a sender is durable mail that a courier holds.
         Err(error) if tell.sender.is_some() && channel::is_live(&socket) => {
             bail!("the channel relay did not take or confirm the message ({error}); the courier redelivers it through the relay")
         }
         Err(channel::SendError::NotDelivered(error)) if socket.exists() => eprintln!(
-            "horch tell: the channel relay did not take the message ({error}); typing it instead"
+            "horch tell: the channel relay did not take the message ({error}); typing the mail line instead"
         ),
-        Err(channel::SendError::Unconfirmed(error)) => {
-            eprintln!(
-                "horch tell: the channel relay did not confirm the message ({error}); typing it again with a duplicate warning"
-            );
-            line.push_str(" (sent again: the channel relay did not confirm)");
-        }
+        Err(channel::SendError::Unconfirmed(error)) => eprintln!(
+            "horch tell: the channel relay did not confirm the message ({error}); typing the mail line too"
+        ),
         Err(_) => {}
     }
-    Ok(Some(line))
+    Ok(false)
 }
 
 /// The relay send timeout; a debug build lets a test shorten it.

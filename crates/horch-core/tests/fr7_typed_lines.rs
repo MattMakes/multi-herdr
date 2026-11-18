@@ -34,17 +34,20 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 /// The code of `path` outside tests and comments. A file named `tests.rs`
-/// is a test module, and a `#[cfg(test)]` line ends the scan of a file.
+/// is a test module. A `#[cfg(test)]` item is skipped: a 1-line item to its
+/// `;`, a block item to its closing brace. The scan goes on after it.
 fn production_code(path: &Path) -> String {
     if path.file_name().is_some_and(|n| n == "tests.rs") {
         return String::new();
     }
     let text = std::fs::read_to_string(path).unwrap();
     let mut code = String::new();
-    for line in text.lines() {
+    let mut lines = text.lines();
+    while let Some(line) = lines.next() {
         let trimmed = line.trim_start();
         if trimmed.starts_with("#[cfg(test)]") {
-            break;
+            skip_item(&mut lines);
+            continue;
         }
         if trimmed.starts_with("//") {
             continue;
@@ -53,6 +56,20 @@ fn production_code(path: &Path) -> String {
         code.push('\n');
     }
     code
+}
+
+/// Skip the item that follows a `#[cfg(test)]` line.
+fn skip_item<'a>(lines: &mut impl Iterator<Item = &'a str>) {
+    let mut depth = 0i32;
+    let mut opened = false;
+    for line in lines.by_ref() {
+        depth += line.matches('{').count() as i32 - line.matches('}').count() as i32;
+        opened |= line.contains('{');
+        let trimmed = line.trim_end();
+        if (opened && depth <= 0) || (!opened && trimmed.ends_with(';')) {
+            return;
+        }
+    }
 }
 
 /// The argument text of each call `<call>(...)` in `code`.
@@ -156,6 +173,9 @@ fn the_list_holds_each_typed_line_once_and_each_is_1_line() {
         );
     }
     assert_eq!(TypedLine::ALL.len(), TYPED_LINES.len());
+    for (line, text) in TypedLine::ALL.iter().zip(TYPED_LINES) {
+        assert_eq!(line.text(), text, "{line:?} maps to the wrong entry");
+    }
     for (i, line) in TYPED_LINES.iter().enumerate() {
         assert!(!line.contains(['\n', '\r']), "{line:?} has a line break");
         assert!(!line.contains('{'), "{line:?} has a placeholder");

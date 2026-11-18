@@ -70,6 +70,10 @@ const START_POLL: Duration = Duration::from_millis(50);
 /// `failed` report itself.
 pub const EXIT_REPORTED: u8 = 3;
 
+/// The child's exit code when it has recorded `compact-failed` but could
+/// not queue the `failed` report as mail: the report reaches no one (FR-7).
+pub const EXIT_NOT_REPORTED: u8 = 4;
+
 /// The job's waits (design §6.8).
 const POLL: Duration = Duration::from_secs(2);
 const IDLE_POLLS: u8 = 2;
@@ -699,6 +703,10 @@ fn exited(dir: &Path, status: ExitStatus) -> Handshake {
                 || Handshake::Failed(format!("the job exited with {c} and no report in its log")),
                 Handshake::Reported,
             ),
+        Some(c) if c == i32::from(EXIT_NOT_REPORTED) => Handshake::Failed(format!(
+            "the job failed before it started, and it could not queue its report; see {}",
+            dir.join(LOG_FILE).display()
+        )),
         Some(c) => Handshake::Failed(format!("the job exited with {c} before it started")),
         None => Handshake::Failed("the job exited with a signal before it started".into()),
     }
@@ -899,8 +907,12 @@ fn refuse_child(
             )
         });
     append_log(log, Step::Start, &line);
-    if let Err(e) = report(env, &line) {
+    if let Err(e) = queue_report(env, &line) {
         append_log(log, Step::Start, &format!("not sent: {e:#}"));
+        return Outcome::code(EXIT_NOT_REPORTED);
+    }
+    if let Err(e) = ring_orchestrator(env) {
+        append_log(log, Step::Start, &format!("mail line not typed: {e:#}"));
     }
     Outcome::code(EXIT_REPORTED)
 }
@@ -913,11 +925,21 @@ fn refuse_child(
 /// fails. The pane gets only the mail line (FR-7), so a queue that fails
 /// is the error, and nothing is typed.
 fn report(env: &Env, line: &str) -> Result<()> {
-    // A BLOCKED that names no horch command goes as a NOTE (C2), in the
-    // mail and in the pane alike.
+    queue_report(env, line)?;
+    ring_orchestrator(env)
+}
+
+/// Queue `line` as durable orchestrator mail. A BLOCKED that names no horch
+/// command goes as a NOTE (C2).
+fn queue_report(env: &Env, line: &str) -> Result<()> {
     let line = &horch_core::messaging::mail::horch_line(line);
     horch_core::messaging::mail::queue_notice(env.src.ctx, env.workspace(), "orchestrator", line)
-        .context("queueing the line as mail failed")?;
+        .context("queueing the line as mail failed")
+        .map(|_| ())
+}
+
+/// Type the mail line into the orchestrator pane.
+fn ring_orchestrator(env: &Env) -> Result<()> {
     let pane = env
         .mailbox
         .pane_for("orchestrator")
@@ -1899,7 +1921,8 @@ mod tests {
     }
 
     /// FR-7: the report reaches the pane only as the mail line. A mail dir
-    /// that the trust check refuses holds no report, so nothing is typed.
+    /// that the trust check refuses holds no report, so nothing is typed,
+    /// and the exit code says that no report went.
     #[cfg(unix)]
     #[test]
     fn a_refused_mail_dir_types_nothing() {
@@ -1916,7 +1939,7 @@ mod tests {
 
         let o = f.run("sonnet-1", |a| a.foreground = true);
 
-        assert_eq!(o.code, EXIT_REPORTED, "{o:?}");
+        assert_eq!(o.code, EXIT_NOT_REPORTED, "{o:?}");
         assert!(f.typed(&orch).is_empty(), "{:?}", f.typed(&orch));
         assert!(!mail.dir().join("pending").exists(), "nothing was queued");
     }
