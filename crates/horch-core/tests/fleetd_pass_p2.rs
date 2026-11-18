@@ -139,7 +139,12 @@ impl World {
     /// claimed at the fleet clock of now: 1 live attempt. Gives the task
     /// and the worker.
     fn claimed_task(&self, agent: &Agent) -> (String, String) {
-        let new = NewTask::work("a", "tickets/a.md", "dev");
+        let n: i64 = self
+            .conn
+            .query_row("SELECT count(*) FROM tasks", [], |r| r.get(0))
+            .unwrap();
+        let file = format!("tickets/t{n}.md");
+        let new = NewTask::work(&format!("t{n}"), &file, "dev");
         let task = tasks::add(&self.conn, &self.run, &new, Actor::Orchestrator).unwrap();
         let worker = self.worker(Some(agent.recorded()));
         match tasks::claim(&self.conn, &worker).unwrap() {
@@ -712,4 +717,68 @@ fn cancel_requested_task_is_cancelled_by_the_pass_after_its_process_is_gone() {
     agent.kill();
     w.pass_at(20, &worker, &fake);
     assert_eq!(w.task(&task).status, "cancelled");
+}
+
+#[test]
+fn idle_author_of_a_verifying_task_keeps_its_item_while_off_the_page() {
+    let mut w = world();
+    let a = Agent::sleeping();
+    let b = Agent::sleeping();
+    let (task_a, worker_a) = w.claimed_task(&a);
+    let (task_b, worker_b) = w.claimed_task(&b);
+    // Each author ran finish, its waits ended, and its checks gave
+    // no_progress for 1 h.
+    let hour_ago = (Utc::now() - chrono::Duration::hours(1))
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
+    for (task, worker) in [(&task_a, &worker_a), (&task_b, &worker_b)] {
+        w.conn
+            .execute(
+                "UPDATE tasks SET status = 'verifying' WHERE task_id = ?1",
+                [task],
+            )
+            .unwrap();
+        w.conn
+            .execute(
+                "INSERT INTO checks (worker_id, at, verdict, round) VALUES (?1, ?2, 'no_progress', 1)",
+                params![worker, hour_ago],
+            )
+            .unwrap();
+    }
+    let open = |w: &World| -> Vec<String> {
+        let mut stmt = w
+            .conn
+            .prepare("SELECT key FROM needs_you WHERE kind = 'finish_idle' AND state = 'open' ORDER BY key")
+            .unwrap();
+        stmt.query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    let fake = Fake::new(&w);
+    // 1 live attempt on each page: the 2 passes see 1 author each.
+    for clock in [10, 20] {
+        w.set_clock(clock);
+        let mut settings = w.settings();
+        settings.config.pass_budget = 1;
+        let ports = Ports {
+            outside: &fake,
+            duties: &NoDuties,
+            needs_you: &NeedsYouList,
+            host: &Launcher,
+        };
+        let report = Pass::new(settings, ports).run(&mut w.conn).unwrap();
+        assert!(report.failed.is_empty(), "{report:?}");
+    }
+    let mut want = vec![
+        format!("finish_idle:{task_a}"),
+        format!("finish_idle:{task_b}"),
+    ];
+    want.sort();
+    assert_eq!(
+        open(&w),
+        want,
+        "an item stays while its author is off the page"
+    );
+    assert!(w.attempts(&task_a)[0].1 == "live" && w.attempts(&task_b)[0].1 == "live");
 }

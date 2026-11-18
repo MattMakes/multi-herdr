@@ -1663,14 +1663,18 @@ impl Rules<'_> {
     /// When each wait of its author has ended, and the checks of the author
     /// give `no_progress` for stall_after_s, 1 needs-you item names the
     /// task. The pass stops no worker and moves no task. The item resolves
-    /// when the task leaves `verifying` or the author shows progress.
+    /// when the task leaves `verifying` or the author shows progress. `live`
+    /// is 1 page of the live attempts: an item of a task whose author is not
+    /// on the page stays, unless its task left `verifying`.
     fn finish_idle(&self, live: &[LiveSeen]) -> Result<()> {
         let now = util::now();
         let mut idle = BTreeMap::new();
+        let mut seen = BTreeSet::new();
         for l in live {
             let Some(task) = l.attempt.task_id.as_deref() else {
                 continue;
             };
+            seen.insert(format!("{FINISH_IDLE}:{task}"));
             let worker = &l.worker.worker_id;
             if tasks::get(self.tx, task)?.status != TaskStatus::Verifying.as_str()
                 || !workers::waiting(self.tx, worker)?.is_empty()
@@ -1689,7 +1693,13 @@ impl Rules<'_> {
             }
         }
         for key in needs_you::open_keys(self.tx, FINISH_IDLE)? {
-            if !idle.contains_key(&key) {
+            let ended = if seen.contains(&key) {
+                !idle.contains_key(&key)
+            } else {
+                let task = key.trim_start_matches(FINISH_IDLE).trim_start_matches(':');
+                tasks::get(self.tx, task)?.status != TaskStatus::Verifying.as_str()
+            };
+            if ended {
                 self.needs_you.resolve_item(self.tx, &key)?;
             }
         }
