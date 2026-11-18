@@ -16,7 +16,6 @@ use horch_core::fleetd::fleet_runtime::adapters::watchdog_duties::DutyEffects;
 use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger::finish::land;
 use horch_core::taskledger::git::Git;
-use horch_core::taskledger::orchestrator;
 use horch_core::taskledger::runs::Run;
 use horch_core::taskledger::watchdog;
 use horch_core::taskledger::{LedgerWriter, Store};
@@ -29,9 +28,9 @@ use crate::output;
 const FLEETD_WATCHES: &str = "fleetd does the watch of each run: it checks the workers, reaps the dead and wakes the orchestrator.";
 
 /// The effects of the watchdog duties of the pass of fleetd on this machine
-/// (ticket 22): the respawn of an orchestrator, the delivery of the wakes
-/// and the cleanup retry. `horch fleetd` (ticket 23) gives them to
-/// `WatchdogDuties`, with `HerdrObserver` and `orchestrator::Os`.
+/// (ticket 22): the delivery of the wakes and the cleanup retry. `horch
+/// fleetd` (ticket 23) gives them to `WatchdogDuties`, with
+/// `HerdrObserver`.
 pub struct LiveEffects<'a> {
     pub ctx: &'a RuntimeContext,
     /// The writer of fleetd: these effects run in the fleetd process.
@@ -47,10 +46,6 @@ impl LiveEffects<'_> {
 }
 
 impl DutyEffects for LiveEffects<'_> {
-    fn respawn(&self, r: &orchestrator::Respawn) -> Result<()> {
-        super::recipes::respawn_orchestrator(self.ctx, r)
-    }
-
     fn deliver(&self, run: &Run) {
         let store = match self.store() {
             Ok(s) => s,

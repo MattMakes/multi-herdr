@@ -76,9 +76,10 @@ enum LaunchCommand {
         command: MailSubcommand,
     },
 
-    /// Launch the herdr-fleet workspace: ONE orchestrator pane, which spawns
-    /// exactly the workers the work needs, with a per-project session ledger.
-    /// `horch fleet stop` records a deliberate stop: no orchestrator respawn.
+    /// Start fleetd and the herdr-fleet workspace, with no orchestrator pane:
+    /// fleetd starts 1 sub-orchestrator for each feature. Add work with
+    /// `horch idea add "..."`. FLAVOR and --verify change nothing, and
+    /// --resume is refused.
     #[command(args_conflicts_with_subcommands = true)]
     Fleet {
         #[command(subcommand)]
@@ -1027,23 +1028,18 @@ impl LaunchCommand {
                 action: Some(FleetAction::Stop { cwd }),
                 ..
             } => cmd::recipes::fleet_stop(ctx, cwd.as_deref()),
+            // FLAVOR and --verify are parsed for old command lines and
+            // change nothing: the fleet starts no orchestrator (FM-16).
             LaunchCommand::Fleet {
                 action: None,
                 cwd,
-                flavor,
                 no_update,
                 resume,
-                verify,
+                ..
             } => done(cmd::recipes::fleet_with(
                 ctx,
                 cwd.as_deref(),
-                flavor,
-                &cmd::recipes::FleetOptions {
-                    no_update,
-                    resume,
-                    verify,
-                    respawn: None,
-                },
+                &cmd::recipes::FleetOptions { no_update, resume },
             )),
             LaunchCommand::Orchestration { cwd, no_update } => {
                 done(cmd::recipes::orchestration(ctx, cwd.as_deref(), no_update))

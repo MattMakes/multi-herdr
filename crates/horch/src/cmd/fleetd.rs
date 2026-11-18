@@ -760,20 +760,8 @@ fn with_pass<T>(
         observer: HerdrObserver { herdr: herdr() },
     };
     let observer = HerdrObserver { herdr: herdr() };
-    let workspaces = herdr();
-    let open = |ws: &str| {
-        workspaces
-            .workspace_list()
-            .ok()
-            .map(|l| l.iter().any(|w| w.workspace_id == ws))
-    };
-    let lock_dir = orchestrator::lock_dir(&ctx.paths.ledger_db);
-    let probe = orchestrator::Os {
-        lock_dir: &lock_dir,
-        herdr_open: &open,
-    };
     let effects = LiveEffects { ctx, writer };
-    let duties = WatchdogDuties::new(&observer, &probe, &effects, ctx.paths.state_root.clone());
+    let duties = WatchdogDuties::new(&observer, &effects, ctx.paths.state_root.clone());
     let duties = if force { duties.forced() } else { duties };
     let ports = Ports {
         outside: &outside,
@@ -1031,7 +1019,8 @@ impl Outside for Live<'_> {
     }
 
     /// Phase 1 puts no task attempt in `launching`: the only attempt there
-    /// is the respawn of an orchestrator, and the run duties launch it.
+    /// is a respawn of an orchestrator that an older fleetd wrote, and the
+    /// run duties end it (FM-16).
     fn attempt_spec(&self, attempt: &AttemptRow) -> Result<LaunchSpec> {
         bail!(
             "attempt {} has no launch: Phase 1 launches no task attempt",

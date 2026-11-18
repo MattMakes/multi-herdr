@@ -36,7 +36,6 @@ use horch_core::routing::policy::Policy;
 use horch_core::routing::quota::{PoolReading, QuotaFile, QuotaView, Window};
 use horch_core::runtime::fault::Faults;
 use horch_core::taskledger::model::{Actor, WorkerKind, WorktreeMode};
-use horch_core::taskledger::orchestrator::{Holder, Probe, Respawn};
 use horch_core::taskledger::runs::{self, NewRun, Run, Thresholds};
 use horch_core::taskledger::tasks::{self, NewTask};
 use horch_core::taskledger::testing::bind_live;
@@ -683,31 +682,10 @@ impl Observer for Quiet {
     }
 }
 
-/// The orchestrator facts: no lock holder, an open workspace.
-struct NoHolder;
-
-impl Probe for NoHolder {
-    fn holder(&self, _workspace: &str) -> Option<Holder> {
-        None
-    }
-
-    fn alive(&self, pid: u32, started: Option<u64>) -> bool {
-        horch_core::procid::alive(pid, started)
-    }
-
-    fn workspace_open(&self, _workspace: &str) -> Option<bool> {
-        Some(true)
-    }
-}
-
 /// The duty effects: none.
 struct NoEffects;
 
 impl DutyEffects for NoEffects {
-    fn respawn(&self, _r: &Respawn) -> anyhow::Result<()> {
-        Ok(())
-    }
-
     fn deliver(&self, _run: &Run) {}
 
     fn retry_cleanups(&self) -> anyhow::Result<Vec<String>> {
@@ -741,7 +719,7 @@ fn stall_rounds_of_today_no_longer_reap_a_worker() {
         .unwrap();
     let fake = Fake::new(&w);
     let state = w.file("state");
-    let duties = WatchdogDuties::new(&Quiet, &NoHolder, &NoEffects, state).forced();
+    let duties = WatchdogDuties::new(&Quiet, &NoEffects, state).forced();
 
     for clock in [10, 20, 30] {
         w.pass_with(clock, &worker, &fake, &duties);

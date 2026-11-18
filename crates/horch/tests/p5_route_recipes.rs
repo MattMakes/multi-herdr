@@ -1,6 +1,6 @@
-//! `horch fleet stop` and the orchestrator claim of a fleet pane send 1
-//! request each to fleetd, and `horch sessions` opens the ledger read-only
-//! (RR-5, FM-24; ticket 24 of fleetd-p5).
+//! `horch fleet stop` sends 1 request to fleetd, the pane of a fleet
+//! orchestrator sends none (FM-16), and `horch sessions` opens the ledger
+//! read-only (RR-5, FM-24; ticket 24 of fleetd-p5).
 //!
 //! Each test runs the development binary with its own ledger, state, data
 //! and fleet folders, and the watchdog off. The fleetd of a test is the
@@ -226,17 +226,13 @@ fn fleet_stop_with_fleetd_down_queues_the_request() {
     assert_eq!(queued, 1);
 }
 
+/// FM-16 (ticket 45 of fleetd-p6): the pane of a fleet orchestrator is
+/// refused before it sends the `orchestrator_claim` request.
 #[test]
-fn fleet_start_sends_orchestrator_claim() {
+fn fleet_orchestrator_pane_sends_no_orchestrator_claim() {
     let mut w = World::new();
     w.fleetd();
-    // The agent of the pane is a script that exits at once.
-    let agent = w.root.join("agent");
-    std::fs::write(&agent, "#!/bin/sh\nexit 0\n").unwrap();
-    std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let teammates = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../teammates");
-    let teammates = teammates.canonicalize().unwrap();
-    let (_, out, err) = w.horch(
+    let (code, out, err) = w.horch(
         &[
             "pane-launch",
             "--role",
@@ -245,31 +241,13 @@ fn fleet_start_sends_orchestrator_claim() {
             "fleet-orchestrator",
             "--model",
             "opus",
-            "--teammates-dir",
-            teammates.to_str().unwrap(),
         ],
-        &[
-            ("HERDR_PANE_ID", Path::new(PANE)),
-            ("HORCH_CLAUDE_BIN", &agent),
-        ],
+        &[("HERDR_PANE_ID", Path::new(PANE))],
     );
-    assert_eq!(w.requests(), applied("orchestrator_claim"), "{out}{err}");
-    assert_eq!(w.run_column("workspace_id").as_deref(), Some(WORKSPACE));
-    assert!(
-        out.contains("An orchestrator launch claims run r1: workspace (none) -> w1."),
-        "{out}{err}"
-    );
-    // The same request writes the harness on the orchestrator row.
-    let (kind, harness): (String, Option<String>) = w
-        .ledger()
-        .query_row(
-            "SELECT kind, harness FROM workers WHERE run_id = ?1",
-            [&w.run.run_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .unwrap();
-    assert_eq!(kind, "orchestrator");
-    assert_eq!(harness.as_deref(), Some("claude"));
+    assert_ne!(code, 0, "{out}{err}");
+    assert!(err.contains("horch idea add"), "{out}{err}");
+    assert_eq!(w.requests(), Vec::<(String, String)>::new(), "{out}{err}");
+    assert_eq!(w.run_column("workspace_id"), None);
 }
 
 #[test]

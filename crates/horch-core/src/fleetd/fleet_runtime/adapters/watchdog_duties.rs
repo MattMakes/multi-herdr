@@ -6,25 +6,25 @@
 //! the pass ([`RunDuties`]):
 //!
 //! 1. [`RunDuties::observe`] reads the facts with no transaction: herdr and
-//!    the transcript of each worker that is due for a check or has no claim,
-//!    and the lock holder and the herdr workspace of each orchestrator.
+//!    the transcript of each worker that is due for a check or has no claim.
 //! 2. [`RunDuties::run`] writes the rows in the transaction of the pass,
 //!    with the rules of [`crate::taskledger::watchdog`]: the check of each
 //!    due worker ([`watchdog::check_observed`]), which reaps no worker; the
 //!    end of a pre-claim worker whose supervisor is gone, with the stops of
 //!    its process and pane; the flag of an unclaimed spawn; the re-wake of startable tasks; the wake for
-//!    reviews that are in; and the check of the orchestrator. A respawn of
-//!    the orchestrator is an attempt in `launching` with no task
-//!    (`docs/tickets/fleetd-p1/MAP.md`, Q6). Each wake is an outbox row.
+//!    reviews that are in. Each wake is an outbox row.
 //! 3. [`RunDuties::act`] does the effects of the committed rows: the
-//!    respawn of each orchestrator attempt in `launching` that has no launch
-//!    record, then the delivery of the outbox of each run. The pass does the
-//!    stops.
+//!    delivery of the outbox of each run. The pass does the stops.
 //!
 //! Each effect comes from a committed row, never from memory. So a fleetd
 //! that dies after the commit leaves the row, and the next pass does the
-//! effect: the respawn from the attempt in `launching`, the stop of an
-//! ended worker from `mark_orphans`, and the wake from the outbox.
+//! effect: the stop of an ended worker from `mark_orphans`, and the wake
+//! from the outbox.
+//!
+//! No duty respawns an orchestrator: there is no long-lived orchestrator
+//! conversation (FM-16). A respawn attempt in `launching` that an older
+//! fleetd wrote is ended, and never launched. A live orchestrator of a run
+//! in flight is not stopped: it ends by itself.
 //!
 //! Each duty that reads rows has a work budget (PL-5, A32): it reads 1
 //! page of at most `pass_budget` rows from its cursor in `pass_cursors`
@@ -48,8 +48,7 @@ use anyhow::Result;
 use rusqlite::{Connection, Transaction};
 
 use crate::fleetd::fleet_runtime::adapters::cursors_store;
-use crate::fleetd::fleet_runtime::adapters::effects::{self, LaunchRecord};
-use crate::fleetd::fleet_runtime::application::ledger::{created, transition, Cause};
+use crate::fleetd::fleet_runtime::application::ledger::{transition, Cause};
 use crate::fleetd::fleet_runtime::application::pass::{
     ActCtx, DutyBudget, DutyCtx, DutyReport, RunDuties,
 };
@@ -58,18 +57,18 @@ use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 use crate::fleetd::ideas::application::needs_you::NeedsYouList;
 use crate::fleetd::task_execution::adapters::sqlite as attempts_store;
 use crate::fleetd::task_execution::application::commands;
-use crate::fleetd::task_execution::domain::task::{
-    AttemptRow, AttemptState, Recorded, RowRef, Stop,
-};
+use crate::fleetd::task_execution::domain::task::{AttemptRow, AttemptState, RowRef, Stop};
 use crate::taskledger::model::{Actor, WorkerStatus};
-use crate::taskledger::orchestrator::{self, Holder, Outcome, Probe, Respawn};
-use crate::taskledger::runs::{self, Run};
+use crate::taskledger::runs::Run;
 use crate::taskledger::watchdog::{self, Checked, Observation, Observer, Sighting};
 use crate::taskledger::workers::{self, Preclaim, Worker};
 use crate::taskledger::{outbox, tasks, util, wakes};
 
-/// The outcome of an orchestrator attempt whose agent is gone.
+/// The outcome of a respawn attempt that is never launched.
 const GONE: &str = "gone";
+
+/// Why a respawn attempt of an older fleetd ends (FM-16).
+const RETIRED: &str = "no respawn: there is no long-lived orchestrator conversation";
 
 /// The cursor of the checks of the working workers in `pass_cursors`.
 pub const WORKER_CHECKS: &str = "duty_worker_checks";
@@ -97,10 +96,6 @@ struct Page {
 /// The effects of the duties outside the ledger. The composition root of
 /// `horch fleetd` gives them; a test gives fakes.
 pub trait DutyEffects {
-    /// Start the orchestrator of the respawn `r`
-    /// (`crates/horch/src/cmd/recipes.rs`, `respawn_orchestrator`).
-    fn respawn(&self, r: &Respawn) -> Result<()>;
-
     /// Deliver the outbox rows of `run` that are not delivered.
     fn deliver(&self, run: &Run);
 
@@ -110,52 +105,20 @@ pub trait DutyEffects {
     fn retry_cleanups(&self) -> Result<Vec<String>>;
 }
 
-/// What part 1 read about the orchestrator of 1 workspace.
-#[derive(Debug, Clone, Default)]
-struct Seen {
-    holder: Option<Holder>,
-    open: Option<bool>,
-}
-
 /// The facts of part 1, and the board sighting of each run between passes.
 #[derive(Default)]
 struct State {
     /// The observation of each worker that is due or has no claim.
     observed: BTreeMap<String, Observation>,
-    /// The orchestrator facts of each workspace.
-    workspaces: BTreeMap<String, Seen>,
     /// The board that each run showed with startable tasks, and since when.
     sightings: BTreeMap<String, Option<Sighting>>,
     /// The page of [`WORKER_CHECKS`] and of [`PRECLAIM`] that part 1 read.
     pages: BTreeMap<&'static str, Page>,
-    /// The runs whose orchestrator part 1 probed: part 2 checks only them.
-    probed: BTreeSet<String>,
-}
-
-/// The orchestrator probe of part 2: the facts of part 1.
-struct Facts<'a> {
-    seen: &'a BTreeMap<String, Seen>,
-    live: &'a dyn Probe,
-}
-
-impl Probe for Facts<'_> {
-    fn holder(&self, workspace: &str) -> Option<Holder> {
-        self.seen.get(workspace).and_then(|s| s.holder)
-    }
-
-    fn alive(&self, pid: u32, started: Option<u64>) -> bool {
-        self.live.alive(pid, started)
-    }
-
-    fn workspace_open(&self, workspace: &str) -> Option<bool> {
-        self.seen.get(workspace).and_then(|s| s.open)
-    }
 }
 
 /// The duties of the old watchdog for each active run.
 pub struct WatchdogDuties<'a> {
     observer: &'a dyn Observer,
-    probe: &'a dyn Probe,
     effects: &'a dyn DutyEffects,
     /// The state folder of the mail, for the open questions of each worker.
     state_root: PathBuf,
@@ -172,13 +135,11 @@ pub struct WatchdogDuties<'a> {
 impl<'a> WatchdogDuties<'a> {
     pub fn new(
         observer: &'a dyn Observer,
-        probe: &'a dyn Probe,
         effects: &'a dyn DutyEffects,
         state_root: PathBuf,
     ) -> WatchdogDuties<'a> {
         WatchdogDuties {
             observer,
-            probe,
             effects,
             state_root,
             state: RefCell::new(State::default()),
@@ -327,10 +288,10 @@ impl<'a> WatchdogDuties<'a> {
     }
 }
 
-/// The id of the attempt of respawn `number` of the orchestrator row
-/// `worker`.
-pub fn respawn_attempt_id(worker: &str, number: i64) -> String {
-    format!("{worker}/R{number}")
+/// Whether the attempt `a` is a respawn of an orchestrator that an older
+/// fleetd wrote: no task, and the id `<worker>/R<number>`.
+fn is_respawn(a: &AttemptRow) -> bool {
+    respawn_number(a).is_some()
 }
 
 /// The respawn number of the attempt `a` of an orchestrator, when `a` is
@@ -343,23 +304,12 @@ fn respawn_number(a: &AttemptRow) -> Option<i64> {
     (worker == a.worker_id).then(|| n.parse().ok()).flatten()
 }
 
-/// The workspace of the orchestrator of `run`, when it has one.
-fn orchestrator_workspace(conn: &Connection, run: &Run) -> Result<Option<String>> {
-    let Some(id) = run.orchestrator_worker_id.as_deref() else {
-        return Ok(None);
-    };
-    let ws = workers::find(conn, id)?.and_then(|w| w.workspace_id);
-    Ok(ws.or_else(|| run.workspace_id.clone()))
-}
-
 impl RunDuties for WatchdogDuties<'_> {
     fn observe(&self, conn: &Connection, budget: DutyBudget<'_>) -> Result<()> {
         let mut state = self.state.borrow_mut();
         let state = &mut *state;
         state.observed.clear();
-        state.workspaces.clear();
         state.pages.clear();
-        state.probed.clear();
         let runs = watchdog::active_runs(conn)?;
         let active: BTreeSet<String> = runs.iter().map(|r| r.run_id.clone()).collect();
         state.sightings.retain(|run, _| active.contains(run));
@@ -381,16 +331,6 @@ impl RunDuties for WatchdogDuties<'_> {
         self.read_page(conn, WORKER_CHECKS, &working, checks, &due, state)?;
         let waits = |w: &Worker| Ok(waits_for_claim(w, &now));
         self.read_page(conn, PRECLAIM, &BEFORE_CLAIM, budget, &waits, state)?;
-        for run in runs.iter().take_while(|_| !(budget.time_up)()) {
-            if let Some(ws) = orchestrator_workspace(conn, run)? {
-                let seen = Seen {
-                    holder: self.probe.holder(&ws),
-                    open: self.probe.workspace_open(&ws),
-                };
-                state.workspaces.insert(ws, seen);
-            }
-            state.probed.insert(run.run_id.clone());
-        }
         Ok(())
     }
 
@@ -445,23 +385,19 @@ impl RunDuties for WatchdogDuties<'_> {
         let mut rows = self.rows.borrow_mut();
         rows.insert(BLOCKER_TASKS, blockers);
         rows.insert(HELD_TASKS, held);
-        let facts = Facts {
-            seen: &state.workspaces,
-            live: self.probe,
-        };
         for run in runs.iter().take_while(|_| !time_up()) {
-            if state.probed.contains(&run.run_id) {
-                check_orchestrator(tx, ctx, run, &now, &facts)?;
-            }
+            end_respawns(tx, run)?;
         }
         reaped_stops(tx, &reaped, ctx)
     }
 
+    /// A respawn attempt of an older fleetd is never launched: part 2
+    /// ends it.
     fn launches(&self, a: &AttemptRow) -> bool {
-        respawn_number(a).is_some()
+        is_respawn(a)
     }
 
-    fn act(&self, conn: &Connection, ctx: &ActCtx<'_>) -> DutyReport {
+    fn act(&self, conn: &Connection, _ctx: &ActCtx<'_>) -> DutyReport {
         let mut report = DutyReport::default();
         let runs = match watchdog::active_runs(conn) {
             Ok(r) => r,
@@ -475,85 +411,10 @@ impl RunDuties for WatchdogDuties<'_> {
             Err(e) => report.failed.push(format!("the cleanup retry: {e:#}")),
         }
         for run in &runs {
-            match self.respawn_run(conn, ctx, run) {
-                Ok(d) => report.done.extend(d),
-                Err(e) => report
-                    .failed
-                    .push(format!("the respawn of run {}: {e:#}", run.slug)),
-            }
-            // The wake goes out after the respawn, so the mailbox of the
-            // new orchestrator can take it; durable mail keeps it either way.
             self.effects.deliver(run);
         }
         report
     }
-}
-
-impl WatchdogDuties<'_> {
-    /// Respawn each orchestrator attempt of `run` in `launching` that has no
-    /// launch record. The record is written first, so an attempt is
-    /// launched at most once.
-    fn respawn_run(&self, conn: &Connection, ctx: &ActCtx<'_>, run: &Run) -> Result<Vec<String>> {
-        let mut done = Vec::new();
-        let Some(orch) = run.orchestrator_worker_id.as_deref() else {
-            return Ok(done);
-        };
-        for a in attempts_store::attempts_of_worker(conn, orch)? {
-            let Some(number) = respawn_number(&a) else {
-                continue;
-            };
-            if a.state != AttemptState::Launching
-                || effects::read_launch(ctx.fleet_root, &a.id)?.is_some()
-            {
-                continue;
-            }
-            let r = respawn_of(conn, run, &a.worker_id, number)?;
-            let record = LaunchRecord {
-                attempt: a.id.clone(),
-                launched_at: ctx.clock,
-                process: None,
-            };
-            effects::write_launch(ctx.fleet_root, &record)?;
-            if let Err(e) = self.effects.respawn(&r) {
-                orchestrator::launch_failed(conn, &r, &format!("{e:#}"))?;
-                return Err(e.context(format!("attempt {}", a.id)));
-            }
-            done.push(format!("respawn {}", a.id));
-        }
-        Ok(done)
-    }
-}
-
-/// The respawn of the attempt of respawn `number` of the orchestrator row
-/// `worker`, from the rows that the check of the orchestrator wrote.
-fn respawn_of(conn: &Connection, run: &Run, worker: &str, number: i64) -> Result<Respawn> {
-    let new = workers::get(conn, worker)?;
-    let previous = match new.previous_worker_id.as_deref() {
-        Some(id) => workers::find(conn, id)?,
-        None => None,
-    };
-    let workspace = new
-        .workspace_id
-        .clone()
-        .or_else(|| run.workspace_id.clone())
-        .unwrap_or_default();
-    Ok(Respawn {
-        run_id: run.run_id.clone(),
-        slug: run.slug.clone(),
-        project_root: run.project_root.clone(),
-        workspace_id: workspace,
-        old_pane_id: new
-            .pane_id
-            .clone()
-            .or_else(|| previous.as_ref().and_then(|p| p.pane_id.clone())),
-        old_worker_id: new
-            .previous_worker_id
-            .clone()
-            .unwrap_or_else(|| new.worker_id.clone()),
-        new_worker_id: new.worker_id.clone(),
-        number,
-        finish_steps: run.finish_steps.clone(),
-    })
 }
 
 /// Check the worker `id` of `run` when it is due and part 1 observed it.
@@ -578,20 +439,15 @@ fn check_worker(
     Ok(Some(c))
 }
 
-/// End each attempt of `worker` that holds it, with `outcome`.
-fn end_attempts(tx: &Connection, worker: &str, outcome: &str, text: &str) -> Result<()> {
-    for a in attempts_store::attempts_of_worker(tx, worker)? {
-        if !a.state.holds() {
-            continue;
-        }
-        attempts_store::set_ended(tx, &a.id, outcome, &util::now())?;
-        let by = Cause {
-            actor: Actor::Watchdog,
-            text,
-        };
-        let to = AttemptState::Ended.as_str();
-        transition(tx, None, Entity::Attempt, &a.id, to, by, &NeedsYouList)?;
-    }
+/// End the attempt `id` with `outcome`, for the reason `text`.
+fn end_attempt(tx: &Connection, id: &str, outcome: &str, text: &str) -> Result<()> {
+    attempts_store::set_ended(tx, id, outcome, &util::now())?;
+    let by = Cause {
+        actor: Actor::Watchdog,
+        text,
+    };
+    let to = AttemptState::Ended.as_str();
+    transition(tx, None, Entity::Attempt, id, to, by, &NeedsYouList)?;
     Ok(())
 }
 
@@ -722,61 +578,17 @@ fn waits_for_claim(w: &Worker, now: &str) -> bool {
         .is_some_and(|s| s >= watchdog::UNCLAIMED_AFTER_S)
 }
 
-/// The check of the orchestrator of `run`. A registered agent makes its
-/// attempt `live`. A respawn ends the attempts of the rows it replaces and
-/// writes the attempt of the new row in `launching`; part 3 starts it.
-fn check_orchestrator(
-    tx: &Transaction<'_>,
-    ctx: &DutyCtx<'_>,
-    run: &Run,
-    now: &str,
-    probe: &Facts<'_>,
-) -> Result<()> {
-    let checked = orchestrator::check(tx, &run.run_id, now, probe)?;
-    match checked.outcome {
-        Outcome::Registered(pid) => {
-            let Some(orch) = runs::get(tx, &run.run_id)?.orchestrator_worker_id else {
-                return Ok(());
-            };
-            let ws = orchestrator_workspace(tx, run)?.unwrap_or_default();
-            let started = probe.holder(&ws).and_then(|h| h.started);
-            for a in attempts_store::attempts_of_worker(tx, &orch)? {
-                if a.state == AttemptState::Launching && respawn_number(&a).is_some() {
-                    let p = Recorded {
-                        pid,
-                        pid_start: started,
-                    };
-                    commands::attempt_live(tx, Some(ctx.guard), &a.id, Some(p))?;
-                }
-            }
+/// End each respawn attempt in `launching` of the orchestrator of `run`
+/// that an older fleetd wrote: no duty respawns an orchestrator (FM-16).
+/// An attempt in `launching` has no process, so nothing is stopped.
+fn end_respawns(tx: &Transaction<'_>, run: &Run) -> Result<()> {
+    let Some(orch) = run.orchestrator_worker_id.as_deref() else {
+        return Ok(());
+    };
+    for a in attempts_store::attempts_of_worker(tx, orch)? {
+        if a.state == AttemptState::Launching && is_respawn(&a) {
+            end_attempt(tx, &a.id, GONE, RETIRED)?;
         }
-        Outcome::Respawned(r) => {
-            orchestrator::inherit_harness(tx, &r)?;
-            let gone = format!("the orchestrator respawn {} replaces it", r.number);
-            end_attempts(tx, &r.old_worker_id, GONE, &gone)?;
-            end_attempts(tx, &r.new_worker_id, GONE, &gone)?;
-            let a = AttemptRow {
-                id: respawn_attempt_id(&r.new_worker_id, r.number),
-                task_id: None,
-                worker_id: r.new_worker_id.clone(),
-                state: AttemptState::Launching,
-                process: None,
-                pane: None,
-            };
-            attempts_store::insert_attempt(tx, &a, now)?;
-            let text = format!("respawn {} of the orchestrator of run {}", r.number, r.slug);
-            let by = Cause {
-                actor: Actor::Watchdog,
-                text: &text,
-            };
-            created(tx, Some(ctx.guard), Entity::Attempt, &a.id, by)?;
-        }
-        Outcome::NotRespawned(why) => {
-            if let Some(orch) = run.orchestrator_worker_id.as_deref() {
-                end_attempts(tx, orch, GONE, &format!("no respawn: {why}"))?;
-            }
-        }
-        Outcome::Nothing | Outcome::Waiting(_) => {}
     }
     Ok(())
 }
@@ -836,9 +648,7 @@ fn transcript_facts(w: &Worker) -> (Option<i64>, Option<String>) {
 #[cfg(test)]
 mod tests {
     //! Each test uses a temp ledger and a temp fleet root, and runs whole
-    //! passes with these duties and fake herdr facts. The crash test runs
-    //! the pass in a child process: this test binary again, with the test
-    //! [`child_pass`] and the variable [`CHILD`].
+    //! passes with these duties and fake herdr facts.
 
     use std::cell::RefCell;
     use std::path::{Path, PathBuf};
@@ -850,23 +660,21 @@ mod tests {
     use super::*;
     use crate::fleetd::fleet_runtime::adapters::scans::FolderItem;
     use crate::fleetd::fleet_runtime::application::pass::{
-        Done, Outside, Pass, PassReport, Ports, Settings, ABORT_AFTER_COMMIT,
+        Done, Outside, Pass, PassReport, Ports, Settings,
     };
     use crate::fleetd::fleet_runtime::domain::config::FleetConfig;
     use crate::fleetd::fleet_runtime::domain::health::Hold;
     use crate::fleetd::fleet_runtime::domain::ledger::Generation;
+    use crate::fleetd::task_execution::domain::task::Recorded;
     use crate::fleetd::worker_profiles::application::ports::{
         LaunchError, LaunchSpec, Launched, ProcessHost,
     };
     use crate::runtime::fault::Faults;
     use crate::taskledger::model::{OutboxEvent, TaskKind, WorkerKind, WorktreeMode};
-    use crate::taskledger::runs::NewRun;
+    use crate::taskledger::runs::{self, NewRun};
     use crate::taskledger::tasks::{self, NewTask};
     use crate::taskledger::workers::NewWorker;
     use crate::taskledger::{schema, util};
-
-    /// The variable that makes [`child_pass`] run: the folder of the world.
-    const CHILD: &str = "WATCHDOG_DUTIES_TEST_CHILD";
 
     /// A temp ledger at generation 1, a fleet root and 1 run.
     struct World {
@@ -911,20 +719,6 @@ mod tests {
         World {
             dir,
             _temp: Some(temp),
-            conn,
-            run,
-        }
-    }
-
-    fn reopen(dir: &Path) -> World {
-        let conn = open(&dir.join("ledger.sqlite3"));
-        let run_id: String = conn
-            .query_row("SELECT run_id FROM runs LIMIT 1", [], |r| r.get(0))
-            .unwrap();
-        let run = runs::get(&conn, &run_id).unwrap();
-        World {
-            dir: dir.to_path_buf(),
-            _temp: None,
             conn,
             run,
         }
@@ -1106,72 +900,14 @@ mod tests {
         }
     }
 
-    /// The orchestrator facts: no lock holder, and the workspace is open.
-    struct NoHolder;
-
-    impl Probe for NoHolder {
-        fn holder(&self, _workspace: &str) -> Option<Holder> {
-            None
-        }
-
-        fn alive(&self, pid: u32, started: Option<u64>) -> bool {
-            match started {
-                Some(s) => crate::procid::is_same(pid, s),
-                None => crate::procid::alive(pid, None),
-            }
-        }
-
-        fn workspace_open(&self, _workspace: &str) -> Option<bool> {
-            Some(true)
-        }
-    }
-
-    /// The effects: each respawn appends 1 line to `respawns.txt` with the
-    /// state of its attempt, read on a second connection; each delivery
-    /// is counted.
+    /// The effects: each delivery and each cleanup retry is counted.
+    #[derive(Default)]
     struct Record {
-        dir: PathBuf,
         delivered: RefCell<usize>,
         cleanups: RefCell<usize>,
     }
 
-    impl Record {
-        fn new(w: &World) -> Record {
-            Record {
-                dir: w.dir.clone(),
-                delivered: RefCell::new(0),
-                cleanups: RefCell::new(0),
-            }
-        }
-
-        fn respawns(&self) -> Vec<String> {
-            std::fs::read_to_string(self.dir.join("respawns.txt"))
-                .unwrap_or_default()
-                .lines()
-                .map(str::to_string)
-                .collect()
-        }
-    }
-
     impl DutyEffects for Record {
-        fn respawn(&self, r: &Respawn) -> Result<()> {
-            let other = open(&self.dir.join("ledger.sqlite3"));
-            let id = respawn_attempt_id(&r.new_worker_id, r.number);
-            let state: String = other
-                .query_row("SELECT state FROM attempts WHERE id = ?1", [&id], |row| {
-                    row.get(0)
-                })
-                .unwrap_or_else(|_| "no row".into());
-            let line = format!("{id} {state}\n");
-            use std::io::Write;
-            std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(self.dir.join("respawns.txt"))?
-                .write_all(line.as_bytes())?;
-            Ok(())
-        }
-
         fn deliver(&self, _run: &Run) {
             *self.delivered.borrow_mut() += 1;
         }
@@ -1251,8 +987,8 @@ mod tests {
                 params![worker, ago(600), util::now()],
             )
             .unwrap();
-        let effects = Record::new(&w);
-        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &effects, w.dir.clone());
+        let effects = Record::default();
+        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
 
         pass(&mut w, &duties, Faults::default());
         pass(&mut w, &duties, Faults::default());
@@ -1277,8 +1013,8 @@ mod tests {
         let mut w = world();
         let agent = Proc::sleep();
         let (task, worker) = w.stalled_task(agent.recorded());
-        let effects = Record::new(&w);
-        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &effects, w.dir.clone());
+        let effects = Record::default();
+        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
 
         let report = pass(&mut w, &duties, Faults::default());
 
@@ -1300,39 +1036,62 @@ mod tests {
         assert!(crate::procid::alive(pid, None), "the agent runs on");
     }
 
+    /// FM-16: the pass respawns no orchestrator. A gone orchestrator gets
+    /// no new row and no respawn attempt, and the pass launches nothing.
     #[test]
-    fn pass_writes_a_launching_attempt_for_a_gone_orchestrator_and_respawns_it_after_the_commit() {
+    fn pass_respawns_no_gone_orchestrator() {
         let mut w = world();
         let old = w.gone_orchestrator();
-        let effects = Record::new(&w);
-        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &effects, w.dir.clone());
+        let effects = Record::default();
+        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
+
+        for _ in 0..3 {
+            let report = pass(&mut w, &duties, Faults::default());
+            assert!(report.failed.is_empty(), "{report:?}");
+        }
+
+        let run = runs::get(&w.conn, &w.run.run_id).unwrap();
+        assert_eq!(run.orchestrator_worker_id.as_deref(), Some(old.as_str()));
+        assert!(w.respawn_attempts().is_empty(), "no respawn attempt");
+        assert_eq!(
+            w.count("SELECT count(*) FROM workers WHERE kind = 'orchestrator'"),
+            1
+        );
+        let guard = crate::taskledger::orchestrator::guard(&w.conn, &w.run.run_id).unwrap();
+        assert_eq!(guard.respawns, 0, "no respawn is counted");
+    }
+
+    /// FM-16: a respawn attempt in `launching` that an older fleetd wrote
+    /// is ended by part 2, and the pass never launches it.
+    #[test]
+    fn pass_ends_a_respawn_attempt_of_an_older_fleetd_and_launches_nothing() {
+        let mut w = world();
+        let orch = w.gone_orchestrator();
+        let id = format!("{orch}/R1");
+        let a = AttemptRow {
+            id: id.clone(),
+            task_id: None,
+            worker_id: orch,
+            state: AttemptState::Launching,
+            process: None,
+            pane: None,
+        };
+        attempts_store::insert_attempt(&w.conn, &a, &util::now()).unwrap();
+        let effects = Record::default();
+        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
+        assert!(duties.launches(&a), "the pass does not launch it");
 
         let report = pass(&mut w, &duties, Faults::default());
 
-        let new = runs::get(&w.conn, &w.run.run_id)
-            .unwrap()
-            .orchestrator_worker_id
-            .unwrap();
-        assert_ne!(new, old, "a new orchestrator row takes its place");
-        let id = respawn_attempt_id(&new, 1);
-        assert_eq!(w.respawn_attempts(), vec![(id.clone(), "launching".into())]);
-        assert_eq!(
-            effects.respawns(),
-            vec![format!("{id} launching")],
-            "the respawn sees the committed attempt"
-        );
-        assert!(report.done.contains(&Done::Duty(format!("respawn {id}"))));
         assert!(report.failed.is_empty(), "{report:?}");
-
-        pass(&mut w, &duties, Faults::default());
-        assert_eq!(effects.respawns().len(), 1, "1 respawn for 1 attempt");
+        assert_eq!(w.respawn_attempts(), vec![(id, "ended".into())]);
     }
 
     #[test]
     fn pass_rewakes_startable_tasks_once_for_each_board_state() {
         let mut w = world();
-        let effects = Record::new(&w);
-        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &effects, w.dir.clone());
+        let effects = Record::default();
+        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
         let startable = |w: &World, title: &str| {
             let new = NewTask::work(title, &format!("tickets/{title}.md"), "dev");
             tasks::add(&w.conn, &w.run, &new, Actor::Orchestrator).unwrap();
@@ -1398,8 +1157,8 @@ mod tests {
                 ],
             )
             .unwrap();
-        let effects = Record::new(&w);
-        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &effects, w.dir.clone());
+        let effects = Record::default();
+        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
 
         pass(&mut w, &duties, Faults::default());
         pass(&mut w, &duties, Faults::default());
@@ -1420,8 +1179,8 @@ mod tests {
                 params![worker, ago(900), util::now()],
             )
             .unwrap();
-        let effects = Record::new(&w);
-        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &effects, w.dir.clone());
+        let effects = Record::default();
+        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
 
         pass(&mut w, &duties, Faults::default());
         pass(&mut w, &duties, Faults::default());
@@ -1443,8 +1202,8 @@ mod tests {
                 [&task.task_id],
             )
             .unwrap();
-        let effects = Record::new(&w);
-        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &effects, w.dir.clone());
+        let effects = Record::default();
+        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
 
         pass(&mut w, &duties, Faults::default());
         pass(&mut w, &duties, Faults::default());
@@ -1460,8 +1219,8 @@ mod tests {
     #[test]
     fn pass_writes_the_settled_wake_once() {
         let mut w = world();
-        let effects = Record::new(&w);
-        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &effects, w.dir.clone());
+        let effects = Record::default();
+        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
 
         pass(&mut w, &duties, Faults::default());
         pass(&mut w, &duties, Faults::default());
@@ -1478,8 +1237,8 @@ mod tests {
         second.blocked_by = vec![first.task_id.clone()];
         tasks::add(&w.conn, &w.run, &second, Actor::Orchestrator).unwrap();
         tasks::cancel(&w.conn, &first, "drop").unwrap();
-        let effects = Record::new(&w);
-        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &effects, w.dir.clone());
+        let effects = Record::default();
+        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
 
         pass(&mut w, &duties, Faults::default());
         pass(&mut w, &duties, Faults::default());
@@ -1498,8 +1257,8 @@ mod tests {
                 [&w.run.run_id],
             )
             .unwrap();
-        let effects = Record::new(&w);
-        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &effects, w.dir.clone());
+        let effects = Record::default();
+        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
 
         pass(&mut w, &duties, Faults::default());
         pass(&mut w, &duties, Faults::default());
@@ -1542,8 +1301,8 @@ mod tests {
                 params![review.task_id, ago(3600)],
             )
             .unwrap();
-        let effects = Record::new(&w);
-        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &effects, w.dir.clone());
+        let effects = Record::default();
+        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
 
         pass(&mut w, &duties, Faults::default());
         pass(&mut w, &duties, Faults::default());
@@ -1565,8 +1324,8 @@ mod tests {
         let mail = crate::messaging::mail::Mail::under(&w.dir, "w1");
         let id = mail.enqueue("worker-1", "QUESTION: choose?").unwrap();
         mail.ack(&id).unwrap();
-        let effects = Record::new(&w);
-        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &effects, w.dir.clone());
+        let effects = Record::default();
+        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
 
         pass(&mut w, &duties, Faults::default());
 
@@ -1578,8 +1337,8 @@ mod tests {
     #[test]
     fn pass_retries_the_worktree_cleanups_once_each_pass() {
         let mut w = world();
-        let effects = Record::new(&w);
-        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &effects, w.dir.clone());
+        let effects = Record::default();
+        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
 
         pass(&mut w, &duties, Faults::default());
         pass(&mut w, &duties, Faults::default());
@@ -1587,162 +1346,9 @@ mod tests {
         assert_eq!(*effects.cleanups.borrow(), 2);
     }
 
-    /// Not a test of its own: the pass of a child process of a test. It
-    /// runs only with [`CHILD`], and the fault ends it after the commit.
-    #[test]
-    fn child_pass() {
-        let Some(dir) = std::env::var_os(CHILD) else {
-            return;
-        };
-        let mut w = reopen(Path::new(&dir));
-        let faults = Faults::parse(std::env::var("HORCH_FAULT").ok().as_deref());
-        let effects = Record::new(&w);
-        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &effects, w.dir.clone());
-        pass(&mut w, &duties, faults);
-    }
-
-    /// Run [`child_pass`] in a child process that ends after the commit.
-    fn crash_after_commit(w: &World) {
-        let status = Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "fleetd::fleet_runtime::adapters::watchdog_duties::tests::child_pass",
-                "--nocapture",
-                "--test-threads=1",
-            ])
-            .env(CHILD, &w.dir)
-            .env("HORCH_FAULT", ABORT_AFTER_COMMIT)
-            .status()
-            .unwrap();
-        assert!(
-            !status.success(),
-            "the fault ends the child after the commit"
-        );
-    }
-
-    #[test]
-    fn a_crash_between_the_commit_and_the_effects_is_repaired_by_the_next_pass() {
-        let mut w = world();
-        w.gone_orchestrator();
-
-        crash_after_commit(&w);
-
-        let attempts = w.respawn_attempts();
-        assert_eq!(attempts.len(), 1, "{attempts:?}");
-        assert_eq!(attempts[0].1, "launching");
-        let effects = Record::new(&w);
-        assert!(
-            effects.respawns().is_empty(),
-            "the crash came before part 3"
-        );
-
-        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &effects, w.dir.clone());
-        pass(&mut w, &duties, Faults::default());
-
-        assert_eq!(
-            effects.respawns(),
-            vec![format!("{} launching", attempts[0].0)]
-        );
-        pass(&mut w, &duties, Faults::default());
-        assert_eq!(effects.respawns().len(), 1, "1 respawn for 1 attempt");
-    }
-
     // ─── the tests of the old `horch ledger watch` pass (ticket 25) ─────
 
-    /// 1 respawn: its number and the harness and model of its row.
-    type Try = (i64, Option<String>, Option<String>);
-
-    /// The effects of a respawn that reads the harness and the model of
-    /// the new orchestrator row, and fails while `fail` is set.
-    struct Launch {
-        dir: PathBuf,
-        fail: RefCell<bool>,
-        /// Each respawn.
-        tries: RefCell<Vec<Try>>,
-    }
-
-    impl Launch {
-        fn new(w: &World, fail: bool) -> Launch {
-            Launch {
-                dir: w.dir.clone(),
-                fail: RefCell::new(fail),
-                tries: RefCell::new(Vec::new()),
-            }
-        }
-
-        fn numbers(&self) -> Vec<i64> {
-            self.tries.borrow().iter().map(|t| t.0).collect()
-        }
-    }
-
-    impl DutyEffects for Launch {
-        fn respawn(&self, r: &Respawn) -> Result<()> {
-            let other = open(&self.dir.join("ledger.sqlite3"));
-            let row = workers::get(&other, &r.new_worker_id)?;
-            self.tries
-                .borrow_mut()
-                .push((r.number, row.harness, row.model));
-            if *self.fail.borrow() {
-                anyhow::bail!("herdr is down");
-            }
-            Ok(())
-        }
-
-        fn deliver(&self, _run: &Run) {}
-
-        fn retry_cleanups(&self) -> Result<Vec<String>> {
-            Ok(Vec::new())
-        }
-    }
-
-    /// The orchestrator facts: the live process `holder` holds the lock of
-    /// the workspace.
-    struct Held(Recorded);
-
-    impl Probe for Held {
-        fn holder(&self, _workspace: &str) -> Option<Holder> {
-            Some(Holder {
-                pid: self.0.pid,
-                started: self.0.pid_start,
-            })
-        }
-
-        fn alive(&self, pid: u32, started: Option<u64>) -> bool {
-            NoHolder.alive(pid, started)
-        }
-
-        fn workspace_open(&self, _workspace: &str) -> Option<bool> {
-            Some(true)
-        }
-    }
-
     impl World {
-        /// The current orchestrator row of the run.
-        fn orchestrator(&self) -> Worker {
-            let id = runs::get(&self.conn, &self.run.run_id)
-                .unwrap()
-                .orchestrator_worker_id
-                .unwrap();
-            workers::get(&self.conn, &id).unwrap()
-        }
-
-        /// Move the last respawn 10 min and 1 s back: the next respawn is
-        /// due (TRF-40).
-        fn respawn_due(&self) {
-            self.conn
-                .execute(
-                    "UPDATE runs SET last_respawn_at = ?2 WHERE run_id = ?1",
-                    params![self.run.run_id, ago(601)],
-                )
-                .unwrap();
-        }
-
-        fn respawns(&self) -> i64 {
-            orchestrator::guard(&self.conn, &self.run.run_id)
-                .unwrap()
-                .respawns
-        }
-
         /// The texts of the outbox rows of `event`.
         fn rows(&self, event: OutboxEvent) -> Vec<String> {
             let mut st = self
@@ -1754,98 +1360,6 @@ mod tests {
                 .map(|r| r.unwrap())
                 .collect()
         }
-    }
-
-    /// Report 28 D-c (TRF-45): the respawned orchestrator row records the
-    /// harness and the model of the row that it replaces before its launch
-    /// runs.
-    #[test]
-    fn pass_respawn_keeps_the_harness_and_the_model_of_the_old_orchestrator() {
-        let mut w = world();
-        let old = w.gone_orchestrator();
-        w.conn
-            .execute(
-                "UPDATE workers SET harness = 'codex', model = 'gpt-5.6-sol' WHERE worker_id = ?1",
-                [&old],
-            )
-            .unwrap();
-        let launch = Launch::new(&w, false);
-        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &launch, w.dir.clone());
-
-        pass(&mut w, &duties, Faults::default());
-
-        let new = w.orchestrator();
-        assert_ne!(new.worker_id, old);
-        assert_eq!(new.harness.as_deref(), Some("codex"));
-        assert_eq!(new.model.as_deref(), Some("gpt-5.6-sol"));
-        assert_eq!(
-            *launch.tries.borrow(),
-            vec![(1, Some("codex".into()), Some("gpt-5.6-sol".into()))],
-            "the launch sees the harness and the model"
-        );
-    }
-
-    /// TRF-38: each failed launch is recorded and counts 1 respawn, so a
-    /// launch that always fails cannot loop.
-    #[test]
-    fn pass_records_a_failed_respawn_launch_and_counts_it() {
-        let mut w = world();
-        w.gone_orchestrator();
-        let launch = Launch::new(&w, true);
-        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &launch, w.dir.clone());
-
-        for _ in 0..4 {
-            pass(&mut w, &duties, Faults::default());
-            // Within 10 min no respawn follows.
-            pass(&mut w, &duties, Faults::default());
-            w.respawn_due();
-        }
-
-        assert_eq!(launch.numbers(), vec![1, 2, 3]);
-        let last = w.orchestrator();
-        assert_eq!(last.status, "launch_failed");
-        assert!(
-            last.end_reason.unwrap().contains("used its 3 respawns"),
-            "the last respawn ends the pending row"
-        );
-        let failed = w.count(
-            "SELECT count(*) FROM events
-             WHERE text LIKE 'Orchestrator respawn % did not start: herdr is down'",
-        );
-        assert_eq!(failed, 3);
-        assert_eq!(w.respawns(), 3);
-    }
-
-    /// TRF-38: a failed launch keeps the pending row and the remaining
-    /// respawns; the next respawn launches it.
-    #[test]
-    fn pass_keeps_the_remaining_respawns_after_a_failed_launch() {
-        let mut w = world();
-        w.gone_orchestrator();
-        let launch = Launch::new(&w, true);
-        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &launch, w.dir.clone());
-
-        pass(&mut w, &duties, Faults::default());
-        let pending = w.orchestrator();
-        assert_eq!(pending.status, "spawning", "a failed launch stays pending");
-        assert_eq!(w.respawns(), 1);
-
-        *launch.fail.borrow_mut() = false;
-        pass(&mut w, &duties, Faults::default());
-        assert_eq!(launch.numbers(), vec![1], "no respawn within 10 min");
-        w.respawn_due();
-        pass(&mut w, &duties, Faults::default());
-        assert_eq!(launch.numbers(), vec![1, 2]);
-
-        // The launched orchestrator takes the lock of the workspace.
-        let agent = Proc::sleep();
-        let held = Held(agent.recorded());
-        let duties = WatchdogDuties::new(&Quiet, &held, &launch, w.dir.clone());
-        pass(&mut w, &duties, Faults::default());
-        let live = w.orchestrator();
-        assert_eq!(live.worker_id, pending.worker_id);
-        assert_eq!(live.status, "working");
-        assert_eq!(w.respawns(), 2, "1 respawn of 3 remains");
     }
 
     /// TRF-51, I-06: T-1 was parked unlanded, and the wake to the tasks
@@ -1871,8 +1385,8 @@ mod tests {
                 [&a.task_id],
             )
             .unwrap();
-        let effects = Record::new(&w);
-        let duties = WatchdogDuties::new(&Quiet, &NoHolder, &effects, w.dir.clone());
+        let effects = Record::default();
+        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
 
         // No worker is live, so the run is stuck too: that wake is apart.
         let parked = |w: &World| -> Vec<String> {
@@ -2019,8 +1533,8 @@ mod tests {
         let mut w = world();
         seed_big_run(&w, WORKING, CLAIMING, HELD);
         let observer = Counting::default();
-        let effects = Record::new(&w);
-        let duties = WatchdogDuties::new(&observer, &NoHolder, &effects, w.dir.clone());
+        let effects = Record::default();
+        let duties = WatchdogDuties::new(&observer, &effects, w.dir.clone());
         let mut settings = w.settings(Faults::default());
         settings.config.pass_budget = BUDGET as u64;
         let ports = Ports {
@@ -2119,8 +1633,8 @@ mod tests {
             seen: RefCell::new(0),
             clock: clock.clone(),
         };
-        let effects = Record::new(&w);
-        let duties = WatchdogDuties::new(&observer, &NoHolder, &effects, w.dir.clone());
+        let effects = Record::default();
+        let duties = WatchdogDuties::new(&observer, &effects, w.dir.clone());
         let ports = Ports {
             outside: &NoOutside,
             duties: &duties,
@@ -2162,8 +1676,8 @@ mod tests {
         let mut w = world();
         seed_big_run(&w, 50, 0, 0);
         let observer = Counting::default();
-        let effects = Record::new(&w);
-        let duties = WatchdogDuties::new(&observer, &NoHolder, &effects, w.dir.clone());
+        let effects = Record::default();
+        let duties = WatchdogDuties::new(&observer, &effects, w.dir.clone());
         let mut settings = w.settings(Faults::default());
         settings.config.pass_time_budget_s = 0;
         let ports = Ports {
