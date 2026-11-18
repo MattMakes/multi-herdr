@@ -641,28 +641,83 @@ pub fn bundle(conn: &Connection, id: i64) -> Result<Option<BundleRow>> {
     Ok(Some(found))
 }
 
+fn gate_run_row(r: &Row<'_>) -> rusqlite::Result<GateRunRow> {
+    Ok(GateRunRow {
+        id: r.get(0)?,
+        feature_id: r.get(1)?,
+        gate: r.get(2)?,
+        tip: r.get(3)?,
+        base_tip: r.get(4)?,
+        job_id: r.get(5)?,
+        result: r.get(6)?,
+        at: r.get(7)?,
+    })
+}
+
 /// The gate run `id`.
 pub fn gate_run(conn: &Connection, id: i64) -> Result<Option<GateRunRow>> {
-    let row = |r: &Row<'_>| {
-        Ok(GateRunRow {
-            id: r.get(0)?,
-            feature_id: r.get(1)?,
-            gate: r.get(2)?,
-            tip: r.get(3)?,
-            base_tip: r.get(4)?,
-            job_id: r.get(5)?,
-            result: r.get(6)?,
-            at: r.get(7)?,
-        })
-    };
     Ok(conn
         .query_row(
             "SELECT id, feature_id, gate, tip, base_tip, job_id, result, at
              FROM gate_runs WHERE id = ?1",
             [id],
-            row,
+            gate_run_row,
         )
         .optional()?)
+}
+
+/// The newest gate run of `gate` of the feature `feature_id` on `tip` over
+/// `base_tip`.
+pub fn gate_run_of(
+    conn: &Connection,
+    feature_id: &str,
+    gate: &str,
+    tip: &str,
+    base_tip: &str,
+) -> Result<Option<GateRunRow>> {
+    Ok(conn
+        .query_row(
+            "SELECT id, feature_id, gate, tip, base_tip, job_id, result, at
+             FROM gate_runs WHERE feature_id = ?1 AND gate = ?2 AND tip = ?3 AND base_tip = ?4
+             ORDER BY id DESC LIMIT 1",
+            params![feature_id, gate, tip, base_tip],
+            gate_run_row,
+        )
+        .optional()?)
+}
+
+/// Write the result `result` (`pass` or `fail`) of the gate run `id` and
+/// its last job run `job_id`, with 1 event of its feature, in `tx`.
+pub fn set_gate_result(
+    tx: &Connection,
+    guard: Option<Generation>,
+    id: i64,
+    job_id: i64,
+    result: &str,
+    cause: Cause<'_>,
+) -> Result<()> {
+    check_writable(tx, guard)?;
+    let feature: Option<String> = tx
+        .query_row(
+            "UPDATE gate_runs SET result = ?2, job_id = ?3 WHERE id = ?1 RETURNING feature_id",
+            params![id, result, job_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(feature) = feature else {
+        bail!("no gate run {id} in the ledger");
+    };
+    let data = json!({ "gate_run": id, "job": job_id, "result": result });
+    record(
+        tx,
+        guard,
+        EventKind::Note,
+        Entity::Feature,
+        &feature,
+        cause,
+        &data,
+    )?;
+    Ok(())
 }
 
 /// The fetched tip of `branch` in `repo`.

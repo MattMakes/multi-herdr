@@ -36,7 +36,7 @@ use crate::fleetd::task_execution::domain::task::AttemptState;
 use crate::fleetd::worker_profiles::adapters::launcher::Launcher;
 use crate::fleetd::worktree_custody::adapters::executors;
 use crate::fleetd::worktree_custody::adapters::git::{
-    worktree_add_key, BranchRefused, CliWorktreeGit, NoSandbox,
+    is_gate, worktree_add_key, BranchRefused, CliWorktreeGit, NoSandbox,
 };
 use crate::fleetd::worktree_custody::adapters::rescue_git::rescue_key;
 use crate::fleetd::worktree_custody::adapters::run_now::{run_now, Starter};
@@ -335,7 +335,8 @@ pub fn release(tx: &Connection, row: &WorktreeRow, why: &str) -> Result<()> {
 
 /// Observe the `worktree_add` run `job`, in `tx`:
 /// - `passed`, and the folder of the `reserved` row exists: the row moves
-///   to `created`, then to `active` with the owner of the request.
+///   to `created`, then to `active` with the owner of the request. The
+///   gate tree of a feature has no owner: it stays `created`.
 /// - `failed`, or `passed` with no folder: the `reserved` row is
 ///   dropped, with the cause `worktree_add_failed`. A run that refused a
 ///   branch that another tree holds also opens 1 needs-you item.
@@ -483,6 +484,17 @@ fn created(ctx: &JobCtx<'_>, tx: &Connection, row: WorktreeRow) -> Result<Observ
         made,
         refusals,
     )?;
+    // The gate tree of a feature has no worker and no owner attempt: fleetd
+    // owns it, and it stays `created`, which the reconciler does not orphan
+    // (ticket 28 of fleetd-p4, Q18).
+    if is_gate(&row) && row.worker_id.is_none() && row.owner_attempt.is_none() {
+        return Ok(Observed::Created(WorktreeCreated {
+            worktree_id: row.worktree_id,
+            task_id: row.task_id,
+            path: row.path,
+            branch: row.branch,
+        }));
+    }
     let owned = Cause {
         actor: Actor::Horch,
         text: "the owner of the request takes it",
