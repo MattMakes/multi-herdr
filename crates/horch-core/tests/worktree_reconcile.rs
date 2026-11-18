@@ -789,7 +789,7 @@ fn a_list_that_ended_before_a_removal_in_the_same_second_adopts_nothing() {
     w.removed("wt-old", &path);
     let mut listed = w.listed(&[(&path, "b", None)]);
     listed.job = list;
-    listed.seen_at = second_of_run(&w, list);
+    listed.seen_at = same_second(&mut w);
     let facts = Facts {
         lists: vec![listed],
         work_dirs: vec![w.work_dir(&[&path])],
@@ -811,7 +811,7 @@ fn a_list_that_started_after_a_removal_in_the_same_second_adopts_the_tree() {
     let list = w.passed_run(Kind::WorktreeList, &w.repo_s());
     let mut listed = w.listed(&[(&path, "b", None)]);
     listed.job = list;
-    listed.seen_at = second_of_run(&w, list);
+    listed.seen_at = same_second(&mut w);
     let facts = Facts {
         lists: vec![listed],
         work_dirs: vec![w.work_dir(&[&path])],
@@ -825,19 +825,22 @@ fn a_list_that_started_after_a_removal_in_the_same_second_adopts_the_tree() {
     assert_eq!(row.state, WorktreeState::Orphaned);
 }
 
-/// The end time of the run `id`, in s: the same second as the removal run
-/// of its test, as the guard of each test checks.
-fn second_of_run(w: &World, id: i64) -> String {
+/// The end second of both runs of a same-second test. The fixture writes it
+/// to each ended run, so the test does not depend on the wall clock.
+const SAME_SECOND: &str = "2026-11-17T10:00:00Z";
+
+/// Give each ended run the end time [`SAME_SECOND`], and give it.
+fn same_second(w: &mut World) -> String {
+    w.sql(
+        "UPDATE jobs SET ended_at = ?1 WHERE ended_at IS NOT NULL",
+        &[SAME_SECOND],
+    );
     let ends = w.count(
-        "SELECT count(DISTINCT ended_at) FROM jobs WHERE ended_at IS NOT NULL",
-        &[],
+        "SELECT count(*) FROM jobs WHERE ended_at = ?1",
+        &[SAME_SECOND],
     );
-    assert_eq!(
-        ends, 1,
-        "the runs did not end in the same second; run again"
-    );
-    let ended = jobs_store::get(w.conn(), id).unwrap().unwrap().ended_at;
-    ended.expect("an end time")
+    assert_eq!(ends, 2, "the list run and the removal run end in 1 second");
+    SAME_SECOND.to_string()
 }
 
 /// Q9, the act: the reconciler queues 1 rescue of each orphan and 1
