@@ -6,8 +6,7 @@
 //! - [`next`]: where the branch goes from the state of its task. `building`
 //!   follows the task to `verifying`, `verifying` to `ready` or back to
 //!   `building`. A cancelled task's branch gets a rescue ref, then
-//!   `abandoned`. The branch of an old claim attempt waits while its
-//!   detached finish runs, and the old path lands it.
+//!   `abandoned`.
 //! - [`owner`] and [`limit_s`]: the owner and the time limit of each state.
 
 /// The landing state of a task branch.
@@ -120,15 +119,6 @@ pub enum TaskFact {
     Between,
 }
 
-/// How the newest attempt of the task began (MAP.md of fleetd-p4, Q4).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Via {
-    /// `horch spawn` or the dispatch of fleetd bound it; fleetd lands it.
-    Push,
-    /// The old claim; the old finish lands it.
-    Claim,
-}
-
 /// What [`next`] decides for 1 branch.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Next {
@@ -140,35 +130,27 @@ pub enum Next {
     Rescue,
 }
 
-/// Where a branch in `state` goes when its task is in `task`, its newest
-/// attempt began by `via`, and `old_finish_runs` says whether a detached
-/// finish of an old claim attempt runs.
+/// Where a branch in `state` goes when its task is in `task`.
 ///
-/// - A detached old finish holds the branch: fleetd starts no landing of
-///   that task until it ends (release row of Phase 4).
 /// - F9: a cancelled task lands nothing. Each state that is not terminal
 ///   gets a rescue ref, then `abandoned`.
-/// - The old path lands a claim attempt: its branch stays `building` and
-///   goes to `landed` when its task is `done`, so the task lands 1 time.
-/// - A push attempt: `building` follows the task to `verifying` and
-///   `ready`, and `verifying` goes back to `building` when a new attempt
-///   holds the task. The other states move by the bundle use cases.
-pub fn next(state: LandingState, task: TaskFact, via: Via, old_finish_runs: bool) -> Next {
-    if state.is_terminal() || old_finish_runs {
+/// - `building` follows the task to `verifying` and `ready`, and
+///   `verifying` goes back to `building` when a new attempt holds the
+///   task. The other states move by the bundle use cases.
+pub fn next(state: LandingState, task: TaskFact) -> Next {
+    if state.is_terminal() {
         return Next::Stay;
     }
     if task == TaskFact::Cancelled {
         return Next::Rescue;
     }
     use LandingState as S;
-    let moves = match (via, state, task) {
-        (Via::Claim, S::Building, TaskFact::Done) => vec![S::Landed],
-        (Via::Claim, _, _) => vec![],
-        (Via::Push, S::Building, TaskFact::Verifying) => vec![S::Verifying],
-        (Via::Push, S::Building, TaskFact::Done) => vec![S::Verifying, S::Ready],
-        (Via::Push, S::Verifying, TaskFact::Done) => vec![S::Ready],
-        (Via::Push, S::Verifying, TaskFact::Working) => vec![S::Building],
-        (Via::Push, _, _) => vec![],
+    let moves = match (state, task) {
+        (S::Building, TaskFact::Verifying) => vec![S::Verifying],
+        (S::Building, TaskFact::Done) => vec![S::Verifying, S::Ready],
+        (S::Verifying, TaskFact::Done) => vec![S::Ready],
+        (S::Verifying, TaskFact::Working) => vec![S::Building],
+        _ => vec![],
     };
     if moves.is_empty() {
         Next::Stay
@@ -222,26 +204,12 @@ mod tests {
             } else {
                 Next::Rescue
             };
-            assert_eq!(next(s, TaskFact::Cancelled, Via::Push, false), want);
-            assert_eq!(next(s, TaskFact::Cancelled, Via::Claim, false), want);
+            assert_eq!(next(s, TaskFact::Cancelled), want);
         }
     }
 
     #[test]
-    fn a_running_old_finish_holds_each_state() {
-        for s in S::ALL {
-            for t in [TaskFact::Done, TaskFact::Cancelled, TaskFact::Verifying] {
-                assert_eq!(next(s, t, Via::Claim, true), Next::Stay);
-            }
-        }
-    }
-
-    #[test]
-    fn only_a_claim_attempt_goes_from_building_to_landed() {
-        assert_eq!(
-            next(S::Building, TaskFact::Done, Via::Claim, false),
-            Next::Moves(vec![S::Landed])
-        );
+    fn no_branch_goes_from_building_to_landed() {
         for s in S::ALL {
             for t in [
                 TaskFact::Working,
@@ -249,8 +217,8 @@ mod tests {
                 TaskFact::Done,
                 TaskFact::Between,
             ] {
-                if let Next::Moves(m) = next(s, t, Via::Push, false) {
-                    assert!(!m.contains(&S::Landed), "{s:?} {t:?} lands by push");
+                if let Next::Moves(m) = next(s, t) {
+                    assert!(!m.contains(&S::Landed), "{s:?} {t:?} lands");
                 }
             }
         }
@@ -258,7 +226,7 @@ mod tests {
 
     #[test]
     fn a_push_branch_follows_its_task() {
-        let n = |s, t| next(s, t, Via::Push, false);
+        let n = next;
         assert_eq!(n(S::Building, TaskFact::Working), Next::Stay);
         assert_eq!(
             n(S::Building, TaskFact::Verifying),

@@ -1513,22 +1513,20 @@ mod tests {
                     &run,
                     &tasks::NewTask {
                         check_none: true,
+                        worktree_mode: crate::taskledger::model::WorktreeMode::Shared,
                         ..tasks::NewTask::work("One-off", tasks::ONE_OFF_TICKET, "opus")
                     },
                     Actor::Orchestrator,
                 )?;
-                let w = workers::insert(
-                    tx,
-                    &NewWorker {
-                        run_id: run.run_id,
-                        persona: "opus".into(),
-                        ..Default::default()
-                    },
-                )?;
-                Ok((task.task_id, w))
+                let new = NewWorker {
+                    run_id: run.run_id,
+                    persona: "opus".into(),
+                    ..Default::default()
+                };
+                let w = crate::taskledger::testing::bind_live(tx, &task.task_id, &new, None)?;
+                Ok((task.task_id, w.worker_id))
             })
             .unwrap();
-        tasks::claim(store.conn(), &worker_id).unwrap();
         let tools = Tools {
             git: Git::new("git"),
             gh: dir.path().join("gh"),
@@ -1573,7 +1571,8 @@ mod tests {
         assert_eq!(
             moves("task", &task_id),
             vec![
-                expected_move(Some("ready"), "running"),
+                expected_move(Some("ready"), "leased"),
+                expected_move(Some("leased"), "running"),
                 expected_move(Some("running"), "verifying"),
                 expected_move(Some("verifying"), "done"),
             ]

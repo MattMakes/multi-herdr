@@ -5,13 +5,10 @@
 //! closes a pane: a reap ends the rows and queues the task in 1
 //! transaction before any signal (`preservation-04-behavior.md`, S7).
 //!
-//! - The claim writes 1 live attempt and its lease with [`start_attempt`],
-//!   or takes the attempt of a restart on a fallback to `live`.
 //! - `transition()` deletes the lease of a task that moves out of the
 //!   states that hold a lease: [`schedule_retry`] and [`escalate_task`].
 //! - `horch ledger done` ends the attempt of its worker:
 //!   [`end_own_attempt`].
-//! - I4 at the claim: [`refuse_second_attempt`].
 //! - I1, process part: [`finish_exited`]. Each dead attempt goes through
 //!   [`end_attempt`], then rung 6 ([`schedule_retry`]).
 //! - I5: [`mark_orphans`].
@@ -19,20 +16,19 @@
 use anyhow::{bail, Result};
 use rusqlite::Connection;
 
-use crate::fleetd::fleet_runtime::application::ledger::{created, transition, Cause};
+use crate::fleetd::fleet_runtime::application::ledger::{transition, Cause};
 use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
 use crate::fleetd::ideas::application::needs_you::{self, NeedsYouList};
 use crate::fleetd::ideas::domain::needs_you::Write;
 use crate::fleetd::task_execution::adapters::sqlite as store;
-use crate::fleetd::task_execution::application::lease;
 use crate::fleetd::task_execution::application::retry::{self, Policy};
 use crate::fleetd::task_execution::domain::retry::Outcome;
 use crate::fleetd::task_execution::domain::task::{
-    attempt_id, dead_attempts, held_attempt, orphans, AttemptRow, AttemptState, Facts, KeptPane,
-    Reap, Recorded, RowRef, Stop,
+    dead_attempts, held_attempt, orphans, AttemptState, Facts, KeptPane, Reap, Recorded, RowRef,
+    Stop,
 };
-use crate::taskledger::model::{Actor, EventKind, TaskStatus, WorkerStatus};
-use crate::taskledger::workers::{self, Worker};
+use crate::taskledger::model::{Actor, TaskStatus, WorkerStatus};
+use crate::taskledger::workers;
 use crate::taskledger::{tasks, util};
 
 /// The kind of the needs-you item of a pane that is not closed.
@@ -52,99 +48,6 @@ fn cause(text: &str) -> Cause<'_> {
         actor: Actor::Horch,
         text,
     }
-}
-
-/// The claim: write attempt `n` of task `task_id`, `live`, for `w`, with
-/// its agent process and pane when the row has them, and its lease on the
-/// fleet clock. Returns its id. A worker that fleetd wrote for a restart on
-/// a fallback already has its attempt of the task, in `launching` or
-/// `live`: the claim takes that attempt ([`take_restart`]).
-pub fn start_attempt(tx: &Connection, task_id: &str, n: i64, w: &Worker) -> Result<String> {
-    check_open(tx)?;
-    let process = w
-        .agent_pid
-        .and_then(|p| u32::try_from(p).ok())
-        .map(|pid| Recorded {
-            pid,
-            pid_start: w.agent_started.and_then(|s| u64::try_from(s).ok()),
-        });
-    let attempts = store::attempts_of_worker(tx, &w.worker_id)?;
-    if let Some(held) = held_attempt(&w.worker_id, &attempts) {
-        if held.task_id.as_deref() != Some(task_id) {
-            bail!(
-                "worker {} already runs attempt {} ({}); a worker runs 1 attempt at a time (I4)",
-                w.worker_id,
-                held.id,
-                held.state.as_str()
-            );
-        }
-        return take_restart(tx, held, process, w);
-    }
-    let a = AttemptRow {
-        id: attempt_id(task_id, n),
-        task_id: Some(task_id.to_string()),
-        worker_id: w.worker_id.clone(),
-        state: AttemptState::Live,
-        process,
-        pane: w.pane_id.clone(),
-    };
-    store::insert_attempt(tx, &a, &util::now())?;
-    let text = format!("{} started attempt {} of {task_id}.", w.label(), a.id);
-    let why = util::Why::Event(EventKind::AttemptStarted, &text).cause();
-    let by = Cause {
-        actor: Actor::Worker,
-        text: &why,
-    };
-    created(tx, None, Entity::Attempt, &a.id, by)?;
-    let clock = lease::fleet_clock(tx)?;
-    lease::take(tx, clock, task_id, &a.id, lease::claim_lease_s())?;
-    Ok(a.id)
-}
-
-/// The claim takes the attempt `a` of a restart on a fallback: the
-/// process of the agent of `w` goes on the row, `launching` moves to
-/// `live`, and the attempt takes the lease of its task. Returns its id.
-fn take_restart(
-    tx: &Connection,
-    a: &AttemptRow,
-    process: Option<Recorded>,
-    w: &Worker,
-) -> Result<String> {
-    let task_id = a.task_id.as_deref().unwrap_or_default();
-    if let Some(p) = process {
-        store::set_process(tx, &a.id, p)?;
-    }
-    if a.state == AttemptState::Launching {
-        let text = format!("{} claimed {task_id} with attempt {}", w.label(), a.id);
-        let by = Cause {
-            actor: Actor::Worker,
-            text: &text,
-        };
-        let live = AttemptState::Live.as_str();
-        transition(tx, None, Entity::Attempt, &a.id, live, by, &NeedsYouList)?;
-    }
-    let clock = lease::fleet_clock(tx)?;
-    lease::take(tx, clock, task_id, &a.id, lease::claim_lease_s())?;
-    Ok(a.id.clone())
-}
-
-/// I4: refuse a claim by worker `worker_id` while an attempt holds it. The
-/// attempt of a restart of the task that the worker was spawned for is not
-/// a second attempt: the claim takes it.
-pub fn refuse_second_attempt(tx: &Connection, worker_id: &str) -> Result<()> {
-    let target = workers::get(tx, worker_id)?.target_task_id;
-    let attempts: Vec<AttemptRow> = store::attempts_of_worker(tx, worker_id)?
-        .into_iter()
-        .filter(|a| target.is_none() || a.task_id != target)
-        .collect();
-    if let Some(a) = held_attempt(worker_id, &attempts) {
-        bail!(
-            "worker {worker_id} already runs attempt {} ({}); a worker runs 1 attempt at a time (I4)",
-            a.id,
-            a.state.as_str()
-        );
-    }
-    Ok(())
 }
 
 /// `horch ledger done`: the attempt that worker `worker_id` holds moves to
@@ -308,9 +211,10 @@ mod tests {
     use crate::fleetd::task_execution::domain::task::{
         InPane, ProcessScope, Recorded, RowRef, Seen, Target,
     };
+    use crate::taskledger::model::WorktreeMode;
     use crate::taskledger::model::{Actor, TaskStatus, WorkerStatus};
     use crate::taskledger::runs::{self, NewRun, Run};
-    use crate::taskledger::tasks::{self, ClaimOutcome, NewTask};
+    use crate::taskledger::tasks::{self, NewTask};
     use crate::taskledger::workers::{self, NewWorker};
     use crate::taskledger::{util, Store};
 
@@ -386,7 +290,8 @@ mod tests {
 
     impl Fixture {
         fn add_task(&mut self) -> String {
-            let new = NewTask::work("a", "tickets/a.md", "dev");
+            let mut new = NewTask::work("a", "tickets/a.md", "dev");
+            new.worktree_mode = WorktreeMode::Shared;
             let run = self.run.clone();
             self.store
                 .immediate(|tx| tasks::add(tx, &run, &new, Actor::Orchestrator))
@@ -412,11 +317,25 @@ mod tests {
                 .unwrap()
         }
 
-        fn claim(&mut self, worker: &str) -> String {
-            match self.store.immediate(|tx| tasks::claim(tx, worker)).unwrap() {
-                ClaimOutcome::Claimed(c) => c.task.task_id,
-                ClaimOutcome::NoTask { .. } => panic!("no task"),
-            }
+        /// Bind `task` to a new worker with `agent` and `supervisor`, in
+        /// pane `w0:p1`: 1 live attempt.
+        fn bind(&mut self, task: &str, agent: Recorded, supervisor: Recorded) -> String {
+            let new = NewWorker {
+                run_id: self.run.run_id.clone(),
+                persona: "dev".into(),
+                pane_id: Some("w0:p1".into()),
+                ..Default::default()
+            };
+            let conn = self.store.conn();
+            let w = crate::taskledger::testing::bind_live(conn, task, &new, Some(agent))
+                .unwrap()
+                .worker_id;
+            conn.execute(
+                "UPDATE workers SET supervisor_pid = ?2, supervisor_started = ?3 WHERE worker_id = ?1",
+                rusqlite::params![w, supervisor.pid, supervisor.pid_start.map(|s| s as i64)],
+            )
+            .unwrap();
+            w
         }
 
         fn end_worker(&mut self, worker: &str, status: WorkerStatus, host: Option<&str>) {
@@ -514,8 +433,7 @@ mod tests {
         let mut l = fixture();
         let task = l.add_task();
         let (agent, supervisor) = (Sleep::start(), Sleep::start());
-        let w = l.worker(agent.recorded(), supervisor.recorded());
-        assert_eq!(l.claim(&w), task);
+        let w = l.bind(&task, agent.recorded(), supervisor.recorded());
         agent.end();
 
         let stops = l.finish_exited(&l.facts(&[]));
@@ -541,8 +459,7 @@ mod tests {
         let mut l = fixture();
         let task = l.add_task();
         let (agent, supervisor) = (Sleep::start(), Sleep::start());
-        let w = l.worker(agent.recorded(), supervisor.recorded());
-        assert_eq!(l.claim(&w), task);
+        let w = l.bind(&task, agent.recorded(), supervisor.recorded());
         l.store
             .conn()
             .execute(
@@ -560,31 +477,6 @@ mod tests {
     }
 
     #[test]
-    fn agent_pid_recorded_after_the_claim_is_the_process_of_the_attempt() {
-        let mut l = fixture();
-        let task = l.add_task();
-        let new = NewWorker {
-            run_id: l.run.run_id.clone(),
-            persona: "dev".into(),
-            ..Default::default()
-        };
-        let w = l.store.immediate(|tx| workers::insert(tx, &new)).unwrap();
-        l.claim(&w);
-        let agent = Sleep::start();
-        let r = agent.recorded();
-        l.store
-            .immediate(|tx| workers::agent_started(tx, &w, r.pid, r.pid_start))
-            .unwrap();
-        assert_eq!(l.finish_exited(&l.facts(&[])), []);
-        assert_eq!(l.task_status(&task), "running");
-
-        agent.end();
-        l.finish_exited(&l.facts(&[]));
-
-        assert_eq!(l.task_status(&task), "ready");
-    }
-
-    #[test]
     fn dead_process_at_max_attempts_fails_the_task_for_its_replan() {
         let mut l = fixture();
         let task = l.add_task();
@@ -595,8 +487,7 @@ mod tests {
             })
             .unwrap();
         let (agent, supervisor) = (Sleep::start(), Sleep::start());
-        let w = l.worker(agent.recorded(), supervisor.recorded());
-        l.claim(&w);
+        l.bind(&task, agent.recorded(), supervisor.recorded());
         agent.end();
 
         l.finish_exited(&l.facts(&[]));
@@ -613,10 +504,9 @@ mod tests {
         let (t1, t2) = (l.add_task(), l.add_task());
         let mut agents = Vec::new();
         let mut workers = Vec::new();
-        for _ in [&t1, &t2] {
+        for t in [&t1, &t2] {
             let (agent, supervisor) = (Sleep::start(), Sleep::start());
-            let w = l.worker(agent.recorded(), supervisor.end());
-            l.claim(&w);
+            let w = l.bind(t, agent.recorded(), supervisor.end());
             agents.push(agent);
             workers.push(w);
         }
@@ -696,8 +586,7 @@ mod tests {
         let mut l = fixture();
         let task = l.add_task();
         let (agent, supervisor) = (Sleep::start(), Sleep::start());
-        let w = l.worker(agent.recorded(), supervisor.recorded());
-        l.claim(&w);
+        let w = l.bind(&task, agent.recorded(), supervisor.recorded());
         agent.end();
         let facts = l.facts(&[]);
 
@@ -761,8 +650,7 @@ mod tests {
         let mut l = fixture();
         let task = l.add_task();
         let (agent, supervisor) = (Sleep::start(), Sleep::start());
-        let w = l.worker(agent.recorded(), supervisor.recorded());
-        l.claim(&w);
+        l.bind(&task, agent.recorded(), supervisor.recorded());
         agent.end();
         let unnamed = Sleep::start();
         let facts = l.facts(&[]);

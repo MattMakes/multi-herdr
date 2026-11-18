@@ -31,12 +31,10 @@ use crate::fleetd::integration::adapters::sqlite::{
     self as rows, BranchFact, BranchRow, NewBranch,
 };
 use crate::fleetd::integration::domain::task_branch::{
-    self as rules, LandingState, Limits, Next, TaskFact, Via,
+    self as rules, LandingState, Limits, Next, TaskFact,
 };
-use crate::fleetd::task_execution::adapters::sqlite::attempt_vias;
 use crate::fleetd::worktree_custody::adapters::git::CliWorktreeGit;
 use crate::fleetd::worktree_custody::adapters::rescue_refs_git::write_branch_rescue;
-use crate::taskledger::finish::detach::{self, Detached};
 use crate::taskledger::model::{Actor, TaskStatus};
 use crate::taskledger::{runs, tasks, util};
 
@@ -49,24 +47,6 @@ pub const CURSOR: &str = "landing";
 /// The key of the needs-you item of the branch `branch` past its limit.
 pub fn overdue_key(branch: &str) -> String {
     format!("{OVERDUE_KIND}:{branch}")
-}
-
-/// Whether the detached finish of an old claim attempt runs: its
-/// `finish-run.json` names a live process.
-pub trait OldFinishes {
-    fn running(&self, task_id: &str, worker_id: &str) -> bool;
-}
-
-/// The run files of the old finish under the evidence root.
-pub struct RunFiles<'a> {
-    pub evidence_root: &'a Path,
-}
-
-impl OldFinishes for RunFiles<'_> {
-    fn running(&self, task_id: &str, worker_id: &str) -> bool {
-        let path = detach::run_path(self.evidence_root, task_id, worker_id);
-        matches!(detach::state(&path), Detached::Running(_))
-    }
 }
 
 /// The rescue ref of a branch tip, written after the commit.
@@ -99,7 +79,6 @@ impl BranchRescues for GitBranchRescues<'_> {
 /// What [`follow`] reads with.
 pub struct Landing<'a> {
     pub jobs: &'a JobCtx<'a>,
-    pub finishes: &'a dyn OldFinishes,
 }
 
 /// An effect that runs after the commit of the pass.
@@ -289,15 +268,7 @@ fn follow_one(
     };
     let state = state_named(word)?;
     let task = tasks::get(tx, task_id)?;
-    let attempts = attempt_vias(tx, task_id)?;
-    let via = match attempts.last() {
-        Some((_, v)) if v == "claim" => Via::Claim,
-        _ => Via::Push,
-    };
-    let old_finish_runs = attempts
-        .iter()
-        .any(|(worker, v)| v == "claim" && l.finishes.running(task_id, worker));
-    match rules::next(state, task_fact(&task.status), via, old_finish_runs) {
+    match rules::next(state, task_fact(&task.status)) {
         Next::Stay => {}
         Next::Moves(moves) => {
             let why = format!("its task {} is {}", task.short(), task.status);

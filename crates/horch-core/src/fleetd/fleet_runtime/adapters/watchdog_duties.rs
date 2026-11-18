@@ -859,9 +859,9 @@ mod tests {
         LaunchError, LaunchSpec, Launched, ProcessHost,
     };
     use crate::runtime::fault::Faults;
-    use crate::taskledger::model::{OutboxEvent, TaskKind, WorkerKind};
+    use crate::taskledger::model::{OutboxEvent, TaskKind, WorkerKind, WorktreeMode};
     use crate::taskledger::runs::NewRun;
-    use crate::taskledger::tasks::{self, ClaimOutcome, NewTask};
+    use crate::taskledger::tasks::{self, NewTask};
     use crate::taskledger::workers::NewWorker;
     use crate::taskledger::{schema, util};
 
@@ -975,17 +975,24 @@ mod tests {
             id
         }
 
-        /// A task that a working worker with the agent `agent` claimed an
-        /// hour ago, with no progress since. Returns the task and the
+        /// A task bound an hour ago to a working worker with the agent
+        /// `agent`, with no progress since. Returns the task and the
         /// worker.
         fn stalled_task(&self, agent: Recorded) -> (String, String) {
-            let new = NewTask::work("a", "tickets/a.md", "dev");
+            let mut new = NewTask::work("a", "tickets/a.md", "dev");
+            new.worktree_mode = WorktreeMode::Shared;
             let task = tasks::add(&self.conn, &self.run, &new, Actor::Orchestrator).unwrap();
-            let worker = self.worker(WorkerKind::Worker, "spawning", Some(agent));
-            match tasks::claim(&self.conn, &worker).unwrap() {
-                ClaimOutcome::Claimed(_) => {}
-                other => panic!("no claim: {other:?}"),
-            }
+            let w = NewWorker {
+                run_id: self.run.run_id.clone(),
+                kind: Some(WorkerKind::Worker),
+                persona: "dev".into(),
+                workspace_id: Some("w1".into()),
+                ..Default::default()
+            };
+            let worker =
+                crate::taskledger::testing::bind_live(&self.conn, &task.task_id, &w, Some(agent))
+                    .unwrap()
+                    .worker_id;
             let hour = ago(3600);
             self.conn
                 .execute(

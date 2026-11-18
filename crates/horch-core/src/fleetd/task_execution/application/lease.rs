@@ -425,9 +425,10 @@ mod tests {
     use crate::fleetd::task_execution::application::commands;
     use crate::fleetd::task_execution::domain::lease::{Holder, Limits, CLAIM_BASIS, EARNED_BASIS};
     use crate::fleetd::task_execution::domain::task::Seen;
+    use crate::taskledger::model::WorktreeMode;
     use crate::taskledger::model::{Actor, TaskStatus, WorkerStatus};
     use crate::taskledger::runs::{self, NewRun, Run};
-    use crate::taskledger::tasks::{self, ClaimOutcome, NewTask};
+    use crate::taskledger::tasks::{self, NewTask};
     use crate::taskledger::util::{self, Rule, Why};
     use crate::taskledger::workers::{self, NewWorker};
     use crate::taskledger::Store;
@@ -485,7 +486,8 @@ mod tests {
 
     impl Fixture {
         fn add_task(&mut self, ticket: &str) -> String {
-            let new = NewTask::work(ticket, &format!("tickets/{ticket}.md"), "dev");
+            let mut new = NewTask::work(ticket, &format!("tickets/{ticket}.md"), "dev");
+            new.worktree_mode = WorktreeMode::Shared;
             let run = self.run.clone();
             self.store
                 .immediate(|tx| tasks::add(tx, &run, &new, Actor::Orchestrator))
@@ -504,17 +506,25 @@ mod tests {
                 .unwrap()
         }
 
-        /// A new worker claims the next task. Gives (task, worker).
+        /// The first ready task is bound to a new worker. Gives (task,
+        /// worker).
         fn claimed(&mut self) -> (String, String) {
-            let worker = self.worker();
-            match self
-                .store
-                .immediate(|tx| tasks::claim(tx, &worker))
-                .unwrap()
-            {
-                ClaimOutcome::Claimed(c) => (c.task.task_id, worker),
-                ClaimOutcome::NoTask { .. } => panic!("no task"),
-            }
+            let conn = self.store.conn();
+            let task: String = conn
+                .query_row(
+                    "SELECT task_id FROM tasks WHERE run_id = ?1 AND status = 'ready'
+                     ORDER BY seq LIMIT 1",
+                    [&self.run.run_id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let new = NewWorker {
+                run_id: self.run.run_id.clone(),
+                persona: "dev".into(),
+                ..Default::default()
+            };
+            let bound = crate::taskledger::testing::bind_live(conn, &task, &new, None).unwrap();
+            (task, bound.worker_id)
         }
 
         fn leases(&self) -> Vec<LeaseRow> {
@@ -1016,7 +1026,11 @@ mod tests {
         let path = l.dir.path().join("handoff.md");
         std::fs::write(&path, "next steps").unwrap();
         l.store
-            .immediate(|tx| tasks::handoff(tx, &worker, path.to_str().unwrap()))
+            .immediate(|tx| {
+                tasks::handoff(tx, &worker, path.to_str().unwrap())?;
+                // The pass ends the attempt of the worker that handed off.
+                commands::end_own_attempt(tx, &worker, "handed_off")
+            })
             .unwrap();
         assert_eq!(l.status(&task), "ready");
         assert_eq!(l.leases(), vec![], "a ready task holds no lease");
@@ -1036,6 +1050,7 @@ mod tests {
         let (task, worker) = l.claimed();
         l.store
             .immediate(|tx| {
+                commands::end_own_attempt(tx, &worker, "crashed")?;
                 workers::end(tx, &worker, WorkerStatus::Incomplete, "reaped", None)?;
                 tasks::requeue(tx, &task, "worker ended")
             })

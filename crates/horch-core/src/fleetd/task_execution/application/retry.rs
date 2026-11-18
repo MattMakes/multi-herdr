@@ -98,11 +98,13 @@ mod tests {
     use crate::fleetd::fleet_runtime::adapters::clock_store::ClockStore;
     use crate::fleetd::fleet_runtime::domain::clock::AwakeReading;
     use crate::fleetd::ideas::application::needs_you;
+    use crate::fleetd::task_execution::application::commands;
     use crate::fleetd::task_execution::domain::retry::{rung6, Numbers, Rung6};
     use crate::fleetd::worker_profiles::domain::profile::Retry;
+    use crate::taskledger::model::WorktreeMode;
     use crate::taskledger::model::{Actor, WorkerStatus};
     use crate::taskledger::runs::{self, NewRun, Run};
-    use crate::taskledger::tasks::{ClaimOutcome, NewTask, Task};
+    use crate::taskledger::tasks::{NewTask, Task};
     use crate::taskledger::workers::{self, NewWorker};
     use crate::taskledger::Store;
 
@@ -143,7 +145,8 @@ mod tests {
                 Ok(run)
             })
             .unwrap();
-        let new = NewTask::work("a", "tickets/a.md", "dev");
+        let mut new = NewTask::work("a", "tickets/a.md", "dev");
+        new.worktree_mode = WorktreeMode::Shared;
         let task = store
             .immediate(|tx| tasks::add(tx, &run, &new, Actor::Orchestrator))
             .unwrap()
@@ -168,21 +171,19 @@ mod tests {
             tasks::get(self.store.conn(), &self.task).unwrap()
         }
 
-        /// A new worker of `dev` claims; the task id it got, if any.
+        /// The task is bound to a new worker of `dev` when it can start
+        /// now; the task id, if it was bound.
         fn claim(&mut self) -> Option<String> {
+            let conn = self.store.conn();
+            let startable = tasks::startable(conn, &self.run.run_id).unwrap();
+            startable.iter().find(|t| t.task_id == self.task)?;
             let new = NewWorker {
                 run_id: self.run.run_id.clone(),
                 persona: "dev".into(),
                 ..Default::default()
             };
-            let w = self
-                .store
-                .immediate(|tx| workers::insert(tx, &new))
-                .unwrap();
-            match self.store.immediate(|tx| tasks::claim(tx, &w)).unwrap() {
-                ClaimOutcome::Claimed(c) => Some(c.task.task_id),
-                ClaimOutcome::NoTask { .. } => None,
-            }
+            crate::taskledger::testing::bind_live(conn, &self.task, &new, None).unwrap();
+            Some(self.task.clone())
         }
 
         /// The worker of the running task ends, and its attempt burns 1.
@@ -191,6 +192,7 @@ mod tests {
             let worker = self.task().current_worker_id.unwrap();
             self.store
                 .immediate(|tx| {
+                    commands::end_own_attempt(tx, &worker, "crashed")?;
                     workers::end(tx, &worker, WorkerStatus::Incomplete, "test", None)?;
                     burn_attempt(tx, &task, outcome, &Policy::default(), "the worker ended")
                 })

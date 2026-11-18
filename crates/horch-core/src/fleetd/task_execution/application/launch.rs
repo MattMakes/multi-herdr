@@ -437,7 +437,7 @@ mod tests {
     use crate::taskledger::git::Git;
     use crate::taskledger::model::Actor;
     use crate::taskledger::runs::{self, NewRun, Run};
-    use crate::taskledger::tasks::{self, ClaimOutcome, NewTask};
+    use crate::taskledger::tasks::{self, NewTask};
     use crate::taskledger::workers::{self, NewWorker};
     use crate::taskledger::Store;
 
@@ -892,20 +892,18 @@ mod tests {
         let old_worker = w
             .store
             .immediate(|tx| {
-                let id = workers::insert(
-                    tx,
-                    &NewWorker {
-                        run_id: run_id.clone(),
-                        persona: "opus".into(),
-                        target_task_id: Some(task.clone()),
-                        ..Default::default()
-                    },
-                )?;
-                workers::supervisor_started(tx, &id, 4_241, Some(76))?;
-                workers::agent_started(tx, &id, OLD.pid, OLD.pid_start)?;
-                let ClaimOutcome::Claimed(_) = tasks::claim(tx, &id)? else {
-                    bail!("no claim");
+                let new = NewWorker {
+                    run_id: run_id.clone(),
+                    persona: "opus".into(),
+                    ..Default::default()
                 };
+                let id =
+                    crate::taskledger::testing::bind_live(tx, &task, &new, Some(OLD))?.worker_id;
+                tx.execute(
+                    "UPDATE workers SET supervisor_pid = 4241, supervisor_started = 76
+                     WHERE worker_id = ?1",
+                    [&id],
+                )?;
                 tasks::handoff(tx, &id, handoff.to_str().unwrap())?;
                 Ok(id)
             })

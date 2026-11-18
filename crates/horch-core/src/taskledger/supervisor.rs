@@ -722,7 +722,7 @@ mod tests {
         worker: String,
     }
 
-    /// A worker in `status` (`working` holds a claimed task).
+    /// A worker in `status` (`working` holds a bound task).
     fn fixture(status: &str) -> Fixture {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("l.sqlite3");
@@ -744,24 +744,20 @@ mod tests {
                     &crate::taskledger::util::now(),
                     true,
                 )?;
-                let id = workers::insert(
-                    tx,
-                    &NewWorker {
-                        run_id: run.run_id.clone(),
-                        persona: "opus".into(),
-                        role: Some("opus-x".into()),
-                        ..Default::default()
-                    },
-                )?;
-                if status == "working" {
-                    tasks::add(
-                        tx,
-                        &run,
-                        &NewTask::work("a", "tickets/a.md", "opus"),
-                        Actor::Orchestrator,
-                    )?;
-                    tasks::claim(tx, &id)?;
-                }
+                let new = NewWorker {
+                    run_id: run.run_id.clone(),
+                    persona: "opus".into(),
+                    role: Some("opus-x".into()),
+                    ..Default::default()
+                };
+                let id = if status == "working" {
+                    let mut t = NewTask::work("a", "tickets/a.md", "opus");
+                    t.worktree_mode = crate::taskledger::model::WorktreeMode::Shared;
+                    let task = tasks::add(tx, &run, &t, Actor::Orchestrator)?.task_id;
+                    crate::taskledger::testing::bind_live(tx, &task, &new, None)?.worker_id
+                } else {
+                    workers::insert(tx, &new)?
+                };
                 tx.execute(
                     "UPDATE workers SET status = ?2 WHERE worker_id = ?1 AND status != 'working'",
                     params![id, status],

@@ -9,7 +9,7 @@
 //!   once. With a live attempt, 1 transaction writes the reason in
 //!   `tasks.cancel_requested`, ends the attempt with the outcome `killed`
 //!   and the cause [`TASK_CANCELLED`], ends its worker row and lets go of
-//!   it. Rung 6 and the claim skip such a task.
+//!   it. Rung 6 and the bind skip such a task.
 //! - After the commit, the caller stops each held worker. When its
 //!   processes are gone, [`complete`] moves the task to `cancelled` in a
 //!   second transaction.
@@ -426,8 +426,10 @@ mod tests {
     use crate::fleetd::fleet_runtime::adapters::jobs_store::NewRun as NewJob;
     use crate::fleetd::fleet_runtime::domain::config::FleetConfig;
     use crate::fleetd::task_execution::domain::task::Seen;
+    use crate::taskledger::model::WorktreeMode;
     use crate::taskledger::runs::{self, NewRun, Run};
-    use crate::taskledger::tasks::{ClaimOutcome, NewTask, Requeue};
+    use crate::taskledger::tasks::{NewTask, Requeue};
+    use crate::taskledger::testing::bind_live;
     use crate::taskledger::workers::NewWorker;
     use crate::taskledger::Store;
 
@@ -490,7 +492,8 @@ mod tests {
                 Ok(run)
             })
             .unwrap();
-        let new = NewTask::work("a", "tickets/a.md", "dev");
+        let mut new = NewTask::work("a", "tickets/a.md", "dev");
+        new.worktree_mode = WorktreeMode::Shared;
         let task = store
             .immediate(|tx| tasks::add(tx, &run, &new, Actor::Orchestrator))
             .unwrap()
@@ -504,29 +507,27 @@ mod tests {
     }
 
     impl Fixture {
-        /// A worker of `dev` whose agent is `agent`.
-        fn worker(&mut self, agent: Recorded) -> String {
-            let new = NewWorker {
+        /// A new worker of `dev` in pane `w0:p1`.
+        fn new_worker(&self) -> NewWorker {
+            NewWorker {
                 run_id: self.run.run_id.clone(),
                 persona: "dev".into(),
                 pane_id: Some("w0:p1".into()),
                 ..Default::default()
-            };
-            self.store
-                .immediate(|tx| {
-                    let id = workers::insert(tx, &new)?;
-                    workers::agent_started(tx, &id, agent.pid, agent.pid_start)?;
-                    Ok(id)
-                })
-                .unwrap()
+            }
         }
 
-        /// A worker with agent `agent` claims the task: 1 live attempt.
+        /// The task is bound to a worker with agent `agent`: 1 live
+        /// attempt.
         fn claimed(&mut self, agent: Recorded) -> String {
-            let w = self.worker(agent);
-            let out = self.store.immediate(|tx| tasks::claim(tx, &w)).unwrap();
-            assert!(matches!(out, ClaimOutcome::Claimed(_)));
-            w
+            bind_live(
+                self.store.conn(),
+                &self.task,
+                &self.new_worker(),
+                Some(agent),
+            )
+            .unwrap()
+            .worker_id
         }
 
         /// Set the stored task word, as a test setup.
@@ -695,14 +696,13 @@ mod tests {
         assert_eq!(f.task().status, "running");
         assert_eq!(f.task().attempts, 1);
 
-        // No claim, also of a ready task (the restart on a fallback).
+        // No bind, also of a ready task (the restart on a fallback).
         f.set_status("ready");
-        let w = f.worker(Recorded {
-            pid: 4_001,
-            pid_start: Some(7),
-        });
-        let out = f.store.immediate(|tx| tasks::claim(tx, &w)).unwrap();
-        assert!(matches!(out, ClaimOutcome::NoTask { .. }));
+        let err = bind_live(f.store.conn(), &f.task, &f.new_worker(), None).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("waits for its cancel"),
+            "{err:#}"
+        );
         assert_eq!(f.task().status, "ready");
     }
 

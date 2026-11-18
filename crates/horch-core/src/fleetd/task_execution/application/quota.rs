@@ -512,8 +512,10 @@ mod tests {
     use crate::routing::policy::Policy;
     use crate::routing::quota::{PoolReading, QuotaFile, Window as QuotaWindow};
     use crate::taskledger::model::WorkerStatus;
+    use crate::taskledger::model::WorktreeMode;
     use crate::taskledger::runs::NewRun;
-    use crate::taskledger::tasks::{ClaimOutcome, NewTask};
+    use crate::taskledger::tasks::NewTask;
+    use crate::taskledger::testing::bind_live;
     use crate::taskledger::Store;
 
     const FULL: f64 = 0.98;
@@ -594,7 +596,7 @@ mod tests {
     }
 
     /// A run with 1 task of `persona` (with the task fallback `fallback`)
-    /// that 1 worker of `persona` claimed. Its attempt then ended with the
+    /// bound to 1 worker of `persona`. Its attempt then ended with the
     /// outcome `quota`, as the stall ladder ends it.
     fn fixture(persona: &str, fallback: Option<&str>) -> Fixture {
         let dir = tempfile::tempdir().unwrap();
@@ -618,7 +620,8 @@ mod tests {
                 )?;
                 let mut new = NewTask::work("a", "tickets/a.md", persona);
                 new.fallback = fallback.map(str::to_string);
-                tasks::add(tx, &run, &new, Actor::Orchestrator)?;
+                new.worktree_mode = WorktreeMode::Shared;
+                let task = tasks::add(tx, &run, &new, Actor::Orchestrator)?.task_id;
                 let w = NewWorker {
                     run_id: run.run_id.clone(),
                     persona: persona.into(),
@@ -626,13 +629,13 @@ mod tests {
                     workspace_id: Some("w0".into()),
                     ..Default::default()
                 };
-                let id = workers::insert(tx, &w)?;
-                workers::supervisor_started(tx, &id, 4_241, Some(76))?;
-                workers::agent_started(tx, &id, AGENT.pid, AGENT.pid_start)?;
-                let ClaimOutcome::Claimed(c) = tasks::claim(tx, &id)? else {
-                    panic!("no claim");
-                };
-                Ok((c.task.task_id, id))
+                let id = bind_live(tx, &task, &w, Some(AGENT))?.worker_id;
+                tx.execute(
+                    "UPDATE workers SET supervisor_pid = 4241, supervisor_started = 76
+                     WHERE worker_id = ?1",
+                    [&id],
+                )?;
+                Ok((task, id))
             })
             .unwrap();
         let mut f = Fixture {
@@ -1051,114 +1054,6 @@ mod tests {
             .unwrap(),
             Restarted::Done
         ));
-    }
-
-    /// The adopted worker of the restart runs its agent `pid`, then claims.
-    fn claim_as(f: &mut Fixture, worker: &str, pid: u32) -> tasks::Claimed {
-        f.store
-            .immediate(|tx| {
-                workers::supervisor_started(tx, worker, pid - 1, Some(8))?;
-                workers::agent_started(tx, worker, pid, Some(9))?;
-                let ClaimOutcome::Claimed(c) = tasks::claim(tx, worker)? else {
-                    panic!("no claim");
-                };
-                Ok(*c)
-            })
-            .unwrap()
-    }
-
-    fn attempts_of_task(f: &Fixture) -> Vec<(String, String, String)> {
-        let mut stmt = f
-            .store
-            .conn()
-            .prepare("SELECT id, worker_id, state FROM attempts WHERE task_id = ?1 ORDER BY rowid")
-            .unwrap();
-        stmt.query_map([&f.task], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap()
-    }
-
-    fn leased_attempt(f: &Fixture) -> Option<String> {
-        f.store
-            .conn()
-            .query_row(
-                "SELECT attempt_id FROM leases WHERE task_id = ?1",
-                [&f.task],
-                |r| r.get(0),
-            )
-            .optional()
-            .unwrap()
-    }
-
-    #[test]
-    fn claim_of_the_fallback_worker_takes_its_launching_attempt_to_live() {
-        // The pass can see the agent of the new worker before its claim and
-        // move the attempt to live: the claim takes it in both states.
-        for seen_first in [false, true] {
-            let mut f = fixture("dev", None);
-            let before = f.task();
-            let Some(Moved::Restart { attempt, worker }) = f.on_quota(&claude_full()) else {
-                panic!("no restart");
-            };
-            if seen_first {
-                f.store
-                    .immediate(|tx| commands::attempt_live(tx, None, &attempt, None))
-                    .unwrap();
-            }
-            let c = claim_as(&mut f, &worker, 5_000);
-            assert_eq!(c.task.task_id, f.task);
-            let t = f.task();
-            assert_eq!(t.status, "running");
-            assert_eq!(t.current_worker_id.as_deref(), Some(worker.as_str()));
-            assert_eq!(t.attempts, before.attempts + 1);
-            assert_eq!(
-                t.attempts - t.attempt_floor,
-                before.attempts - before.attempt_floor,
-                "the usage limit burned no attempt"
-            );
-            assert_eq!(
-                attempts_of_task(&f),
-                vec![
-                    (f.first_attempt(), f.worker.clone(), "ended".into()),
-                    (attempt.clone(), worker.clone(), "live".into()),
-                ],
-                "seen first: {seen_first}"
-            );
-            let rows = store::attempts_of_worker(f.store.conn(), &worker).unwrap();
-            assert_eq!(rows[0].process.map(|p| p.pid), Some(5_000));
-            assert_eq!(leased_attempt(&f), Some(attempt));
-        }
-    }
-
-    #[test]
-    fn claim_after_the_restart_attempt_timed_out_starts_a_new_attempt() {
-        let mut f = fixture("dev", None);
-        let Some(Moved::Restart { attempt, worker }) = f.on_quota(&claude_full()) else {
-            panic!("no restart");
-        };
-        let reap = Reap {
-            attempt: attempt.clone(),
-            worker: worker.clone(),
-            outcome: "timed_out".into(),
-            end_worker: false,
-            task: None,
-            cleanup: Default::default(),
-        };
-        f.store
-            .immediate(|tx| commands::end_attempt(tx, &reap).map(|_| ()))
-            .unwrap();
-        claim_as(&mut f, &worker, 5_000);
-        let new = attempt_id(&f.task, 2);
-        assert_eq!(
-            attempts_of_task(&f),
-            vec![
-                (f.first_attempt(), f.worker.clone(), "ended".into()),
-                (attempt, worker.clone(), "ended".into()),
-                (new.clone(), worker, "live".into()),
-            ]
-        );
-        assert_eq!(leased_attempt(&f), Some(new));
     }
 
     #[test]

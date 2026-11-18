@@ -1330,23 +1330,18 @@ mod tests {
                     &crate::taskledger::util::now(),
                     true,
                 )?;
-                tasks::add(
-                    tx,
-                    &run,
-                    &NewTask::work("t", "t.md", "opus"),
-                    Actor::Orchestrator,
-                )?;
-                let worker = insert(
-                    tx,
-                    &NewWorker {
-                        run_id: run.run_id.clone(),
-                        persona: "opus".into(),
-                        role: Some("worker-1".into()),
-                        workspace_id: Some("w1".into()),
-                        ..Default::default()
-                    },
-                )?;
-                tasks::claim(tx, &worker)?;
+                let mut t = NewTask::work("t", "t.md", "opus");
+                t.worktree_mode = crate::taskledger::model::WorktreeMode::Shared;
+                let task = tasks::add(tx, &run, &t, Actor::Orchestrator)?.task_id;
+                let new = NewWorker {
+                    run_id: run.run_id.clone(),
+                    persona: "opus".into(),
+                    role: Some("worker-1".into()),
+                    workspace_id: Some("w1".into()),
+                    ..Default::default()
+                };
+                let worker =
+                    crate::taskledger::testing::bind_live(tx, &task, &new, None)?.worker_id;
                 Ok((run.run_id, worker))
             })
             .unwrap()

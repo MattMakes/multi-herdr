@@ -1010,25 +1010,35 @@ mod tests {
     /// A task "t" claimed by a worker whose agent (PID 4000) and supervisor
     /// (PID 4001) run with start time 7. Returns the task and the worker.
     fn claimed_task(s: &mut Store) -> (tasks::Task, String) {
-        let id = worker(s, 7);
         s.immediate(|tx| {
-            let w = workers::get(tx, &id)?;
-            let run = runs::get(tx, w.run_id.as_deref().unwrap())?;
-            tasks::add(
+            let run = runs::create(
                 tx,
-                &run,
-                &tasks::NewTask::work("t", "tickets/t.md", "opus"),
-                Actor::Orchestrator,
+                Path::new("/r"),
+                &NewRun {
+                    slug: "s".into(),
+                    ..Default::default()
+                },
             )?;
+            let mut new = tasks::NewTask::work("t", "tickets/t.md", "opus");
+            new.worktree_mode = crate::taskledger::model::WorktreeMode::Shared;
+            let task = tasks::add(tx, &run, &new, Actor::Orchestrator)?;
+            let w = NewWorker {
+                run_id: run.run_id,
+                persona: "opus".into(),
+                ..Default::default()
+            };
+            let agent = crate::fleetd::task_execution::domain::task::Recorded {
+                pid: 4000,
+                pid_start: Some(7),
+            };
+            let id = crate::taskledger::testing::bind_live(tx, &task.task_id, &w, Some(agent))?
+                .worker_id;
             tx.execute(
                 "UPDATE workers SET supervisor_pid = 4001, supervisor_started = 7
                  WHERE worker_id = ?1",
                 [&id],
             )?;
-            let tasks::ClaimOutcome::Claimed(c) = tasks::claim(tx, &id)? else {
-                bail!("the worker claims the task");
-            };
-            Ok((c.task, id.clone()))
+            Ok((tasks::get(tx, &task.task_id)?, id))
         })
         .unwrap()
     }

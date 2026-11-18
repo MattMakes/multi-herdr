@@ -336,8 +336,10 @@ fn stop_of(a: &AttemptRow) -> Vec<Effect> {
 mod tests {
     use super::*;
     use crate::fleetd::task_execution::domain::task::Recorded;
+    use crate::taskledger::model::WorktreeMode;
     use crate::taskledger::runs::{self, NewRun};
-    use crate::taskledger::tasks::{self, ClaimOutcome, NewTask};
+    use crate::taskledger::tasks::{self, NewTask};
+    use crate::taskledger::testing::bind_live;
     use crate::taskledger::workers::NewWorker;
     use crate::taskledger::{status, Store};
 
@@ -371,21 +373,22 @@ mod tests {
                     &crate::taskledger::util::now(),
                     true,
                 )?;
-                let new = NewTask::work("a", "tickets/a.md", "dev");
-                tasks::add(tx, &run, &new, Actor::Orchestrator)?;
+                let mut new = NewTask::work("a", "tickets/a.md", "dev");
+                new.worktree_mode = WorktreeMode::Shared;
+                let task = tasks::add(tx, &run, &new, Actor::Orchestrator)?.task_id;
                 let w = NewWorker {
                     run_id: run.run_id.clone(),
                     persona: "dev".into(),
                     pane_id: Some("w0:p1".into()),
                     ..Default::default()
                 };
-                let id = workers::insert(tx, &w)?;
-                workers::supervisor_started(tx, &id, 4_241, Some(76))?;
-                workers::agent_started(tx, &id, AGENT.pid, AGENT.pid_start)?;
-                let ClaimOutcome::Claimed(c) = tasks::claim(tx, &id)? else {
-                    panic!("no task");
-                };
-                Ok((c.task.task_id, id))
+                let id = bind_live(tx, &task, &w, Some(AGENT))?.worker_id;
+                tx.execute(
+                    "UPDATE workers SET supervisor_pid = 4241, supervisor_started = 76
+                     WHERE worker_id = ?1",
+                    [&id],
+                )?;
+                Ok((task, id))
             })
             .unwrap();
         Fixture {

@@ -1353,19 +1353,24 @@ mod tests {
             shape(&mut t);
             let worker = store
                 .immediate(|tx| {
-                    tasks::add(tx, &run, &t, Actor::Orchestrator)?;
-                    let id = workers::insert(
-                        tx,
-                        &NewWorker {
-                            run_id: run.run_id.clone(),
-                            persona: "opus".into(),
-                            role: Some("opus-1".into()),
-                            ..Default::default()
-                        },
+                    let task = tasks::add(tx, &run, &t, Actor::Orchestrator)?.task_id;
+                    let new = NewWorker {
+                        run_id: run.run_id.clone(),
+                        persona: "opus".into(),
+                        role: Some("opus-1".into()),
+                        ..Default::default()
+                    };
+                    let agent = crate::fleetd::task_execution::domain::task::Recorded {
+                        pid: 4243,
+                        pid_start: Some(2),
+                    };
+                    let id = crate::taskledger::testing::bind_live(tx, &task, &new, Some(agent))?
+                        .worker_id;
+                    tx.execute(
+                        "UPDATE workers SET supervisor_pid = 4242, supervisor_started = 1
+                         WHERE worker_id = ?1",
+                        [&id],
                     )?;
-                    workers::supervisor_started(tx, &id, 4242, Some(1))?;
-                    workers::agent_started(tx, &id, 4243, Some(2))?;
-                    tasks::claim(tx, &id)?;
                     Ok(id)
                 })
                 .unwrap();

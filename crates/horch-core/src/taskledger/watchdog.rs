@@ -1211,24 +1211,26 @@ mod tests {
                     &crate::taskledger::util::now(),
                     true,
                 )?;
-                tasks::add(
-                    tx,
-                    &run,
-                    &NewTask::work("a", "a.md", "codex-terra"),
-                    Actor::Orchestrator,
+                let mut t = NewTask::work("a", "a.md", "codex-terra");
+                t.worktree_mode = crate::taskledger::model::WorktreeMode::Shared;
+                let task = tasks::add(tx, &run, &t, Actor::Orchestrator)?.task_id;
+                let new = NewWorker {
+                    run_id: run.run_id.clone(),
+                    persona: "codex-terra".into(),
+                    harness: Some("codex".into()),
+                    ..Default::default()
+                };
+                let agent = crate::fleetd::task_execution::domain::task::Recorded {
+                    pid: 2,
+                    pid_start: Some(2),
+                };
+                let w =
+                    crate::taskledger::testing::bind_live(tx, &task, &new, Some(agent))?.worker_id;
+                tx.execute(
+                    "UPDATE workers SET supervisor_pid = 1, supervisor_started = 1
+                     WHERE worker_id = ?1",
+                    [&w],
                 )?;
-                let w = workers::insert(
-                    tx,
-                    &NewWorker {
-                        run_id: run.run_id.clone(),
-                        persona: "codex-terra".into(),
-                        harness: Some("codex".into()),
-                        ..Default::default()
-                    },
-                )?;
-                workers::supervisor_started(tx, &w, 1, Some(1))?;
-                workers::agent_started(tx, &w, 2, Some(2))?;
-                tasks::claim(tx, &w)?;
                 Ok((run, w))
             })
             .unwrap();
