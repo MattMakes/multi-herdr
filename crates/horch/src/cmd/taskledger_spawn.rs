@@ -2038,4 +2038,25 @@ mod push_tests {
         let err = prepare(&w.ctx(None), &again, None).err().unwrap();
         assert!(err.to_string().contains("began with a claim"), "{err:#}");
     }
+
+    /// `horch result` finds its attempt by `HORCH_TASK_YAML`. The pane of
+    /// an attempt that fleetd launches with `--attempt` gets the variable
+    /// from these files (`spawn::launch`, the brief of the pane): the
+    /// `task.yaml` of that attempt, under the fleet root.
+    #[test]
+    fn spawn_of_a_bound_attempt_names_its_task_yaml() {
+        let mut w = world();
+        let task = w.task("a", "dev");
+        let first = prepare(&w.ctx(None), &args("dev"), None).unwrap().unwrap();
+        let attempt = first.push.unwrap().attempt_id;
+        drop(first.store);
+
+        let mut again = args("dev");
+        again.attempt = Some(attempt.clone());
+        let l = prepare(&w.ctx(None), &again, None).unwrap().unwrap();
+        let push = l.push.unwrap();
+        let dir = w.fleet_root().join("tasks").join(&task).join("attempts/A1");
+        assert_eq!(push.files.task_yaml, dir.join("task.yaml"));
+        assert!(push.files.task_yaml.is_file());
+    }
 }

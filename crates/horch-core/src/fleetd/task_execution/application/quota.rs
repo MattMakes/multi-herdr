@@ -142,8 +142,11 @@ pub enum Moved {
 /// `attempts` attempts. It differs from the id that a claim writes, so a
 /// restart attempt that timed out never blocks the next claim.
 fn restart_attempt_id(task_id: &str, attempts: i64) -> String {
-    format!("{task_id}/A{}-fallback", attempts + 1)
+    format!("{task_id}/A{}{RESTART_SUFFIX}", attempts + 1)
 }
+
+/// The end of the id of a restart attempt.
+const RESTART_SUFFIX: &str = "-fallback";
 
 /// The fields of 1 attempt that the quota rule reads.
 struct Attempt {
@@ -331,10 +334,12 @@ pub fn release_reset_pools(
 }
 
 /// The attempt `a` is a restart on a fallback: an attempt of a task in
-/// `launching`. Part 3 launches it with [`restart`], not with the launch
-/// of an attempt of Phase 1.
+/// `launching` with the id of [`restart_attempt_id`]. Part 3 launches it
+/// with [`restart`], not with the launch of an attempt of Phase 1. A push
+/// attempt of dispatch has the id of `attempt_id`, so it is not a restart
+/// (`application/launch.rs` launches it).
 pub fn is_restart(a: &AttemptRow) -> bool {
-    a.state == AttemptState::Launching && a.task_id.is_some()
+    a.state == AttemptState::Launching && a.task_id.is_some() && a.id.ends_with(RESTART_SUFFIX)
 }
 
 /// What `horch spawn` needs to start the fallback worker of a restart.

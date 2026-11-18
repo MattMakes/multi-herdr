@@ -15,6 +15,7 @@ use horch::project::project_facts;
 use horch_core::execution::legacy::{Record, KIND_ORCHESTRATOR};
 use horch_core::execution::records::{SessionLedger, ORCHESTRATING_TASK};
 use horch_core::execution::{ExecutionStatus, LaunchStage, SessionMode};
+use horch_core::fleetd::task_execution::application::launch::PushLaunch;
 use horch_core::fleetd::task_execution::application::quota::{Restart, ADOPT_WORKER_ENV};
 use horch_core::fleetd::worker_profiles::application::ports::{EnvRule, LaunchSpec};
 use horch_core::harness::launch::{self, DiscoveryTarget, LaunchRequest};
@@ -866,6 +867,55 @@ pub fn restart_spec(ctx: &RuntimeContext, r: &Restart) -> Result<LaunchSpec> {
     })
 }
 
+/// The launch of the push attempt `l` that fleetd bound (ticket 10 of
+/// `docs/tickets/fleetd-p4/`): `horch spawn <persona> --attempt <id>` in
+/// the run of the task, beside the pane of its orchestrator, in the
+/// workspace of the run. The spawn binds nothing: it opens the pane of the
+/// attempt, whose environment names `HORCH_TASK_YAML`. fleetd starts it
+/// through its launcher (`task_execution::application::launch::launch`),
+/// which removes `ANTHROPIC_API_KEY` (SR-7). `--exact` keeps the persona of
+/// the bind.
+// The pass of Phase 4 (ticket 46 of `docs/tickets/fleetd-p4/`) calls it
+// from the composition root of `horch fleetd`.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn push_launch_spec(ctx: &RuntimeContext, l: &PushLaunch) -> Result<LaunchSpec> {
+    let Some(pane) = l.from_pane.as_deref() else {
+        anyhow::bail!(
+            "the launch of attempt {} has no pane to split: the run has no orchestrator pane",
+            l.attempt
+        );
+    };
+    // A detached launch removes the pane identity of fleetd, so the spawn
+    // finds its mailbox only through this variable.
+    let Some(workspace) = l.workspace_id.as_deref() else {
+        anyhow::bail!(
+            "the launch of attempt {} has no workspace: the run and the worker row name none",
+            l.attempt
+        );
+    };
+    let args = [
+        "spawn",
+        l.persona.as_str(),
+        "--run",
+        l.run_slug.as_str(),
+        "--exact",
+        "--attempt",
+        l.attempt.as_str(),
+        "--from-pane",
+        pane,
+    ];
+    Ok(LaunchSpec {
+        program: ctx.bins.exe()?,
+        args: args.iter().map(OsString::from).collect(),
+        cwd: Some(PathBuf::from(&l.project_root)),
+        env_rule: EnvRule {
+            vars: vec![("HORCH_WORKSPACE_ID".into(), workspace.into())],
+        },
+        detach: true,
+        output: Some(ctx.paths.fleet_root.join("run").join("launch.log")),
+    })
+}
+
 /// The flavor whose orchestrator runs `model`; Opus, the default, for a
 /// model no flavor names.
 fn flavor_of_model(model: &str) -> FleetFlavor {
@@ -1609,6 +1659,103 @@ mod tests {
         r.workspace_id = None;
         let e = restart_spec(&test_ctx(), &r).unwrap_err();
         assert!(format!("{e:#}").contains("no workspace"), "{e:#}");
+    }
+
+    fn push(from_pane: Option<&str>, workspace: Option<&str>) -> PushLaunch {
+        PushLaunch {
+            attempt: "T1/A1".into(),
+            task_id: "T1".into(),
+            worker_id: "W1".into(),
+            persona: "opus".into(),
+            run_slug: "r1".into(),
+            project_root: "/work/proj".into(),
+            from_pane: from_pane.map(str::to_string),
+            workspace_id: workspace.map(str::to_string),
+        }
+    }
+
+    fn arg_strings(spec: &LaunchSpec) -> Vec<String> {
+        spec.args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// Ticket 10 of fleetd-p4: fleetd opens the pane of the attempt that it
+    /// bound with `horch spawn <persona> --attempt <id>`, beside the pane
+    /// of the orchestrator, in the workspace of the run. The spawn gets no
+    /// claim target and no row to adopt: the attempt names its task and
+    /// its worker.
+    #[test]
+    fn push_launch_spec_spawns_the_bound_attempt() {
+        let ctx = test_ctx();
+        let spec = push_launch_spec(&ctx, &push(Some("w0:p0"), Some("w0"))).unwrap();
+        assert_eq!(spec.program, PathBuf::from("/opt/horch/bin/horch"));
+        assert_eq!(
+            arg_strings(&spec),
+            [
+                "spawn",
+                "opus",
+                "--run",
+                "r1",
+                "--exact",
+                "--attempt",
+                "T1/A1",
+                "--from-pane",
+                "w0:p0"
+            ]
+        );
+        assert_eq!(spec.cwd.as_deref(), Some(Path::new("/work/proj")));
+        let env: Vec<(String, String)> = spec
+            .env_rule
+            .vars
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.to_string_lossy().into_owned(),
+                )
+            })
+            .collect();
+        assert_eq!(env, [("HORCH_WORKSPACE_ID".to_string(), "w0".to_string())]);
+        assert!(spec.detach);
+        assert_eq!(
+            spec.output,
+            Some(ctx.paths.fleet_root.join("run").join("launch.log"))
+        );
+    }
+
+    #[test]
+    fn push_launch_with_no_pane_or_no_workspace_is_refused() {
+        let ctx = test_ctx();
+        let e = push_launch_spec(&ctx, &push(None, Some("w0"))).unwrap_err();
+        assert!(format!("{e:#}").contains("no pane to split"), "{e:#}");
+        let e = push_launch_spec(&ctx, &push(Some("w0:p0"), None)).unwrap_err();
+        assert!(format!("{e:#}").contains("no workspace"), "{e:#}");
+    }
+
+    /// SR-7: the real detached launch of a push attempt through the
+    /// launcher of fleetd. The child has the workspace of the run, though
+    /// the launcher removes the pane identity of its starter, and it has no
+    /// claim target.
+    #[cfg(unix)]
+    #[test]
+    fn detached_push_launch_gives_the_spawn_its_workspace() {
+        use horch_core::fleetd::worker_profiles::adapters::launcher::Launcher;
+        use horch_core::fleetd::worker_profiles::application::ports::ProcessHost;
+        let dir = tempfile::tempdir().unwrap();
+        let dump = dir.path().join("env.txt");
+        let mut spec = push_launch_spec(&test_ctx(), &push(Some("w0:p0"), Some("w0"))).unwrap();
+        spec.program = PathBuf::from("/bin/sh");
+        spec.args = vec!["-c".into(), format!("env > '{}'", dump.display()).into()];
+        spec.cwd = Some(dir.path().to_path_buf());
+        spec.output = None;
+        let mut launched = Launcher.launch(&spec).unwrap();
+        launched.child.wait().unwrap();
+        let text = std::fs::read_to_string(&dump).unwrap();
+        assert!(text.lines().any(|l| l == "HORCH_WORKSPACE_ID=w0"), "{text}");
+        assert!(!text.contains(&format!("{CLAIM_TARGET_ENV}=")), "{text}");
+        assert!(!text.contains(&format!("{ADOPT_WORKER_ENV}=")), "{text}");
     }
 
     /// The real detached launch of a restart: the child that fleetd starts
