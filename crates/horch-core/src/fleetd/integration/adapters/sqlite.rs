@@ -152,6 +152,8 @@ pub enum BranchFact<'a> {
     RepairAttempts(i64),
     /// Fleet clock seconds.
     DueAt(i64),
+    /// The last rescue ref of the branch (ticket 24).
+    RescueRef(&'a str),
 }
 
 impl BranchFact<'_> {
@@ -162,6 +164,7 @@ impl BranchFact<'_> {
             BranchFact::QueueSeq(n) => ("queue_seq", int(n)),
             BranchFact::RepairAttempts(n) => ("repair_attempts", int(Some(n))),
             BranchFact::DueAt(n) => ("due_at", int(Some(n))),
+            BranchFact::RescueRef(r) => ("rescue_ref", text(Some(r))),
         }
     }
 }
@@ -592,6 +595,13 @@ pub fn branch(conn: &Connection, name: &str) -> Result<Option<BranchRow>> {
             row,
         )
         .optional()?)
+}
+
+/// The name of each branch row, sorted.
+pub fn branch_names(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare("SELECT name FROM branches ORDER BY name")?;
+    let names = stmt.query_map([], |r| r.get(0))?;
+    Ok(names.collect::<rusqlite::Result<_>>()?)
 }
 
 /// The bundle `id`, with its members in queue order.

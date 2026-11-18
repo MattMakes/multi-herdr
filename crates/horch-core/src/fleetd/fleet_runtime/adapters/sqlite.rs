@@ -361,6 +361,27 @@ pub fn has_fact(
     )?)
 }
 
+/// The stamp of the last `transition` event that moved the row `id` of
+/// `entity` to 1 of `states`, or `None` when no event did.
+pub fn entered_at(
+    conn: &Connection,
+    entity: Entity,
+    id: &str,
+    states: &[&str],
+) -> Result<Option<String>> {
+    let mut last: Option<String> = None;
+    for state in states {
+        let at: Option<String> = conn.query_row(
+            "SELECT max(at) FROM events
+             WHERE entity = ?1 AND entity_id = ?2 AND kind = ?3 AND to_state = ?4",
+            params![entity.as_str(), id, EventKind::Transition.as_str(), state],
+            |r| r.get(0),
+        )?;
+        last = last.max(at);
+    }
+    Ok(last)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

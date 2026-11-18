@@ -19,10 +19,13 @@ use crate::fleetd::task_execution::adapters::sqlite::attempts_of_worker;
 use crate::fleetd::worktree_custody::adapters::git::{self, CliWorktreeGit};
 use crate::fleetd::worktree_custody::adapters::remove_git::{self, CliRemoval, Owner};
 use crate::fleetd::worktree_custody::adapters::rescue_git;
+use crate::fleetd::worktree_custody::adapters::rescue_refs_git;
 use crate::fleetd::worktree_custody::adapters::sqlite::{
     self as store, WorktreeRow, WorktreeState,
 };
+use crate::fleetd::worktree_custody::application::rescue_refs;
 use crate::fleetd::worktree_custody::domain::removal;
+use crate::fleetd::worktree_custody::domain::rescue_class::RefOwner;
 use crate::runtime::bins::{git_bin, BinOverrides};
 use crate::runtime::context::ProcessEnv;
 use crate::runtime::paths::nonempty_path;
@@ -93,7 +96,8 @@ fn add(git: CliWorktreeGit, tree: &WorktreeRow) -> Result<Ran> {
 }
 
 /// A `worktree_list` job of the repository that is the subject of `row`.
-/// It only reads.
+/// It only reads. A passed run also holds the facts of each rescue ref of
+/// the repository (MAP.md of fleetd-p4, Q17), or the error of their read.
 fn list(conn: &Connection, row: &JobRow, git: &CliWorktreeGit) -> Result<Ran> {
     let live: Vec<WorktreeState> = WorktreeState::ALL
         .into_iter()
@@ -107,11 +111,20 @@ fn list(conn: &Connection, row: &JobRow, git: &CliWorktreeGit) -> Result<Ran> {
         .chain(rows.iter().map(|r| r.path.clone()))
         .map(PathBuf::from)
         .collect();
-    Ok(git::worktree_list(
-        &git.clone().reading(&paths),
-        Path::new(&row.subject),
-        &rows,
-    ))
+    let git = git.clone().reading(&paths);
+    let repo = Path::new(&row.subject);
+    let mut ran = git::worktree_list(&git, repo, &rows);
+    if ran.outcome.passed {
+        let owner = |o: &RefOwner| rescue_refs::owner_of(conn, o).ok().flatten();
+        let (key, value) = match rescue_refs_git::read_facts(&git, repo, &owner) {
+            Ok(facts) => (rescue_refs_git::DATA_KEY, serde_json::to_value(facts)?),
+            Err(e) => (rescue_refs_git::ERROR_KEY, format!("{e:#}").into()),
+        };
+        if let Some(serde_json::Value::Object(data)) = ran.data.as_mut() {
+            data.insert(key.to_string(), value);
+        }
+    }
+    Ok(ran)
 }
 
 /// A `worktree_remove` job: git can write the git folder, the tree and its
