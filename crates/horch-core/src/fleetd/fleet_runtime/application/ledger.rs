@@ -1,4 +1,6 @@
 //! The use of `transition()`: 1 state change and its event in 1 transaction.
+//! A task that moves to a state that holds no lease loses its lease row in
+//! the same transaction.
 //! `record()` writes 1 event of a row that does not change.
 
 use rusqlite::Connection;
@@ -108,7 +110,9 @@ impl From<anyhow::Error> for DoorError {
 
 /// Move the row `id` of `entity` to `to`, in the caller's transaction
 /// `tx`. A connection with no open transaction gives
-/// [`DoorError::NoTransaction`]. An allowed move writes the row and 1 event. A refused move writes
+/// [`DoorError::NoTransaction`]. An allowed move writes the row and 1 event.
+/// An allowed move of a task to a state that holds no lease also deletes the
+/// lease row of the task (I1, FM-14). A refused move writes
 /// no row change, 1 event and 1 needs-you item, and returns
 /// [`DoorError::Refused`]. With `Some(guard)`, a `fleetd` row of another
 /// generation gives [`DoorError::GenerationLost`] and writes nothing. Only
