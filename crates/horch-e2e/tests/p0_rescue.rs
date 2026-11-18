@@ -329,6 +329,9 @@ fn fm13_herdr_restart_rescues_each_worktree_and_the_next_attempt_reuses_it() {
                 "{}",
                 text(&o)
             );
+            // The retry waits for its backoff of 30 s on the fleet clock
+            // (rung 6, Phase 2).
+            h.advance_fleet_clock(30);
             let next = ok(&h, &["ledger", "worker", "new", "--persona", "opus"]);
             let claim = as_worker(&h, next.trim(), &["ledger", "claim", "--json"]);
             let c: Value = serde_json::from_slice(&claim.stdout)
