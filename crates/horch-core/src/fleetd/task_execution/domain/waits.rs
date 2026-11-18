@@ -10,7 +10,9 @@
 //!   live review task of the task.
 //!
 //! A read that sees a proof moves `due_at` to the fleet clock plus
-//! `max_wait_s`. With no proof, the wait ends at `due_at`. A question wait
+//! `max_wait_s`. With no proof, the wait ends at `due_at`. A background
+//! wait whose agent child is gone, with no other proof, ends at once
+//! (MAP.md, Q23). A question wait
 //! and a held reviewers wait have no proof: each ends at its first
 //! `due_at`.
 
@@ -39,6 +41,12 @@ pub struct Proof {
 impl Proof {
     fn holds(self) -> bool {
         self.child == Child::Alive || self.step_running || self.review_live
+    }
+
+    /// The child of the agent is gone, and no other proof holds the wait:
+    /// the wait ends at once. An unknown child keeps the wait to its cap.
+    fn child_gone_alone(self) -> bool {
+        self.child == Child::Gone && !self.step_running && !self.review_live
     }
 }
 
@@ -89,6 +97,9 @@ pub enum End {
     ReviewsDone,
     /// The calendar `deadline` of the wait passed first.
     DeadlinePassed,
+    /// The child process of the agent behind a background wait is gone,
+    /// and no other proof of work holds it (MAP.md, Q23).
+    ChildGone,
 }
 
 impl End {
@@ -99,6 +110,7 @@ impl End {
             End::QuestionClosed => "question_closed",
             End::ReviewsDone => "reviews_done",
             End::DeadlinePassed => "deadline_passed",
+            End::ChildGone => "child_gone",
         }
     }
 }
@@ -123,6 +135,7 @@ pub fn judge(wait: &Wait, facts: &Facts) -> Verdict {
         Behind::Reviews { ended: true, .. } => return Verdict::Ends(End::ReviewsDone),
         Behind::Question { open: true } | Behind::HeldForFinish => false,
         Behind::Reviews { working, .. } => working,
+        Behind::Background(p) if p.child_gone_alone() => return Verdict::Ends(End::ChildGone),
         Behind::Background(p) => p.holds(),
     };
     let due_at = if proof {
@@ -174,11 +187,29 @@ mod tests {
     #[test]
     fn background_wait_ends_when_the_agent_child_is_gone() {
         let wait = background(Child::Gone, 4_600);
-        assert_eq!(judge(&wait, &at(4_599)), Verdict::Holds { due_at: 4_600 });
         assert_eq!(
-            judge(&wait, &at(4_600)),
-            Verdict::Ends(End::MaxWaitReached),
-            "no proof moves due_at: the wait ends at its cap"
+            judge(&wait, &at(1_000)),
+            Verdict::Ends(End::ChildGone),
+            "the wait ends at once, long before its cap"
+        );
+        assert_eq!(waiting_until(&wait, &at(1_000)), None);
+    }
+
+    #[test]
+    fn background_wait_with_a_gone_child_and_a_running_step_still_holds() {
+        let wait = Wait {
+            behind: Behind::Background(Proof {
+                child: Child::Gone,
+                step_running: true,
+                review_live: false,
+            }),
+            due_at: 4_600,
+            deadline_passed: false,
+        };
+        assert_eq!(
+            judge(&wait, &at(1_000)),
+            Verdict::Holds { due_at: 4_600 },
+            "the running step is a proof: the wait holds to the clock plus max_wait_s"
         );
     }
 

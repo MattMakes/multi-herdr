@@ -47,7 +47,7 @@ use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 
 use crate::fleetd::fleet_runtime::adapters::clock_store::{self, ClockStore};
-use crate::fleetd::fleet_runtime::adapters::effects::{self, LaunchRecord, Watch};
+use crate::fleetd::fleet_runtime::adapters::effects::{self, Activity, LaunchRecord, Watch};
 use crate::fleetd::fleet_runtime::adapters::jobs_store::{self, JobRow};
 use crate::fleetd::fleet_runtime::adapters::scans::{
     self, FolderFact, FolderItem, Liveness, Presence, ProcessFact, ProcessItem, ScanClock,
@@ -59,6 +59,7 @@ use crate::fleetd::fleet_runtime::application::jobs::{
     self, JobCtx, JobKey, JobRunner, NeedsYouItems, NewItem,
 };
 use crate::fleetd::fleet_runtime::application::ledger::DoorError;
+use crate::fleetd::fleet_runtime::application::ledger::{transition, Cause};
 use crate::fleetd::fleet_runtime::domain::budget::{Cursor, Deadline, PassBudget, ScanKind};
 use crate::fleetd::fleet_runtime::domain::clock::{AwakeReading, FleetSeconds};
 use crate::fleetd::fleet_runtime::domain::config::FleetConfig;
@@ -70,21 +71,39 @@ use crate::fleetd::fleet_runtime::domain::pass::{
     breaches, observe_launch, stop_step, Breach, EffectKind, Holding, Launch, LaunchStep, Proc,
     StopStep, TIMED_OUT,
 };
+use crate::fleetd::ideas::adapters::questions_store;
+use crate::fleetd::ideas::application::needs_you::NeedsYouList;
+use crate::fleetd::task_execution::adapters::leases_store;
 use crate::fleetd::task_execution::adapters::sqlite as attempts_store;
-use crate::fleetd::task_execution::application::commands;
+use crate::fleetd::task_execution::application::quota::{
+    self, Pools, Restart, Restarted, Restarts,
+};
+use crate::fleetd::task_execution::application::stall as ladder;
+use crate::fleetd::task_execution::application::{cancel, commands, lease, retry};
+use crate::fleetd::task_execution::domain::lease::Limits;
+use crate::fleetd::task_execution::domain::quota::limited;
+use crate::fleetd::task_execution::domain::retry::Outcome;
+use crate::fleetd::task_execution::domain::stall::{self as rungs, Decision, PaneStatus};
 use crate::fleetd::task_execution::domain::task::{
-    self, AttemptRow, AttemptState, Facts, InPane, ProcessScope, Reap, Recorded, RowRef, Rows,
-    Seen, Stop, Target,
+    self, promotable, AttemptRow, AttemptState, Facts, InPane, ProcessScope, Reap, Recorded,
+    RowRef, Rows, Seen, Stop, Target,
 };
 use crate::fleetd::worker_profiles::application::ports::{LaunchSpec, ProcessHost};
+use crate::fleetd::worker_profiles::domain::profile::{Mode, Profile};
 use crate::fleetd::worktree_custody::adapters::git::{worktree_list_key, ListResult};
 use crate::fleetd::worktree_custody::application::disk::disk_budget;
 use crate::fleetd::worktree_custody::application::reconcile::{
     check_i6, reconcile_worktrees, Facts as WorktreeFacts, Listed, WorkDir,
 };
 use crate::fleetd::worktree_custody::domain::worktree::Breach as I6;
+use crate::roster::Roster;
+use crate::routing::quota::QuotaView;
 use crate::runtime::fault::Faults;
+use crate::taskledger::model::{Actor, EventKind, ProgressSource, TaskStatus};
 use crate::taskledger::util;
+use crate::taskledger::watchdog::{self, Observation};
+use crate::taskledger::workers::{self, Worker};
+use crate::taskledger::{tasks, timer};
 
 /// After the first full pass, the next pass sleeps for ever before its
 /// heartbeat (`p0_fleetd_hang.rs`).
@@ -98,6 +117,8 @@ pub const DROP_WATCH_EVENTS: &str = "drop-watch-events";
 const LAUNCHES: &str = "launches";
 /// The cursor of the job starts of part 3 in `pass_cursors`.
 const JOB_STARTS: &str = "job_starts";
+/// The cursor of the live attempts that part 1 observes, in `pass_cursors`.
+const LIVE_ATTEMPTS: &str = "live_attempts";
 /// The kind of the needs-you item of a breach that no step repairs.
 const BREACH: &str = "invariant_breach";
 
@@ -138,6 +159,46 @@ pub trait Outside {
 
     /// The launch spec of the attempt `attempt` in `launching`.
     fn attempt_spec(&self, attempt: &AttemptRow) -> Result<LaunchSpec>;
+
+    /// What herdr and the transcript show of the worker `w` now: the
+    /// activity and the pane facts of its attempt. `None` when the pass
+    /// reads nothing: the attempt earns no activity in this pass.
+    fn observe(&self, _w: &Worker) -> Option<Observation> {
+        None
+    }
+
+    /// The roster and the pool readings of this pass (RR-11). `None` when
+    /// they cannot be read: each persona has the profile of the design
+    /// defaults, and no pool counts as limited.
+    fn pools(&self) -> Option<PoolFacts> {
+        None
+    }
+
+    /// Type the constant doorbell of the stall ladder into the pane `pane`
+    /// with today's pane send of herdr.
+    fn doorbell(&self, pane: &str) -> Result<()> {
+        anyhow::bail!("this fleetd sends no doorbell to pane {pane}")
+    }
+
+    /// The launch of the fallback worker of the restart `r` (RR-11).
+    fn restart_spec(&self, r: &Restart) -> Result<LaunchSpec> {
+        anyhow::bail!("this fleetd starts no fallback worker for {}", r.task_id)
+    }
+}
+
+/// The roster and the pool readings of 1 pass.
+pub struct PoolFacts {
+    pub roster: Roster,
+    pub quota: QuotaView,
+}
+
+/// The restarts of part 3, through the [`Outside`] of the pass.
+struct OutsideRestarts<'a>(&'a dyn Outside);
+
+impl Restarts for OutsideRestarts<'_> {
+    fn spec(&self, r: &Restart) -> Result<LaunchSpec> {
+        self.0.restart_spec(r)
+    }
 }
 
 /// The work budget of the run duties in 1 pass (PL-5, A32).
@@ -243,6 +304,8 @@ pub enum Done {
     Stop(String),
     /// The stop of the process group of the job.
     StopJob(i64),
+    /// The doorbell of the stall ladder, typed into the pane.
+    Doorbell(String),
     /// The launch of the attempt.
     Launch(String),
     /// The start of the process of the job.
@@ -294,16 +357,22 @@ impl From<anyhow::Error> for PassError {
 enum Effect {
     Stop(Stop),
     StopJob(jobs::Stop),
+    /// The doorbell of the stall ladder into the pane.
+    Doorbell(String),
+    /// The launch of an attempt, or the restart of a task on its fallback.
     Launch(AttemptRow),
     StartJob(JobRow),
 }
 
 impl Effect {
-    fn kind(&self) -> EffectKind {
+    /// The order of part 3: each stop, then each doorbell, then each
+    /// launch and restart, then each job start.
+    fn order(&self) -> (EffectKind, bool) {
         match self {
-            Effect::Stop(_) | Effect::StopJob(_) => EffectKind::Stop,
-            Effect::Launch(_) => EffectKind::Launch,
-            Effect::StartJob(_) => EffectKind::StartJob,
+            Effect::Stop(_) | Effect::StopJob(_) => (EffectKind::Stop, false),
+            Effect::Doorbell(_) => (EffectKind::Launch, false),
+            Effect::Launch(_) => (EffectKind::Launch, true),
+            Effect::StartJob(_) => (EffectKind::StartJob, false),
         }
     }
 }
@@ -330,6 +399,25 @@ struct Read {
     /// The git repositories of the fleet: each gets its `worktree_list`
     /// job.
     repos: Vec<String>,
+    /// The live attempts of this pass, within `pass_budget`.
+    live: Vec<LiveSeen>,
+    /// The cursor of [`LIVE_ATTEMPTS`] after the live attempts of the pass.
+    live_cursor: Cursor,
+    /// The activity of each live attempt, to write after the commit.
+    activity: BTreeMap<String, Activity>,
+    pools: Option<PoolFacts>,
+}
+
+/// 1 live attempt of a task, as part 1 saw it.
+struct LiveSeen {
+    attempt: AttemptRow,
+    worker: Worker,
+    process: Seen,
+    /// The age of the wrapper heartbeat (`workers.last_checkin_at`).
+    heartbeat_age_s: Option<i64>,
+    /// A signal of activity moved since the pass before.
+    active: bool,
+    pane: Option<rungs::Pane>,
 }
 
 /// 1 attempt in `launching`, as part 1 saw it.
@@ -356,6 +444,7 @@ struct Decided {
     effects: Vec<Effect>,
     breaches: BTreeSet<String>,
     may_stop: BTreeSet<(u32, u64)>,
+    activity: BTreeMap<String, Activity>,
 }
 
 /// The pane stops of the effects of 1 pass, as part 3 does them.
@@ -487,7 +576,11 @@ impl<'a> Pass<'a> {
             Err(e) => return Err(e),
         };
         self.settings.faults.abort_if(ABORT_AFTER_COMMIT);
+        let activity = effects::write_activity(&self.settings.fleet_root, &decided.activity);
         let (mut report, pending) = self.do_effects(conn, decided.effects, decided.clock, deadline);
+        if let Err(e) = activity {
+            report.failed.push(format!("the activity record: {e:#}"));
+        }
         if report.left == 0 && !deadline.reached((self.now)()) {
             let ctx = ActCtx {
                 fleet_root: &self.settings.fleet_root,
@@ -603,11 +696,13 @@ impl<'a> Pass<'a> {
                     .filter_map(|p| Some((p.pid, p.pid_start?))),
             );
         }
+        let seen = task_processes(&rows, &liveness);
+        let (live, live_cursor, activity) = self.read_live(conn, &rows, &seen, &stamp, deadline)?;
         Ok(Read {
             stamp,
             cursors,
             task: Facts {
-                processes: task_processes(&rows, &liveness),
+                processes: seen,
                 panes,
                 stopped,
             },
@@ -618,7 +713,87 @@ impl<'a> Pass<'a> {
             awake: clock_store::awake_now()?,
             worktrees,
             repos,
+            live,
+            live_cursor,
+            activity,
+            pools: self.ports.outside.pools(),
         })
+    }
+
+    /// The facts of the live attempts of tasks, at most `pass_budget` of
+    /// them from the cursor [`LIVE_ATTEMPTS`], until the scan budget ends:
+    /// the process, the heartbeat age, the activity since the pass before
+    /// and the pane. Gives the facts, the cursor after them, and the
+    /// activity of each live attempt to write after the commit.
+    fn read_live(
+        &mut self,
+        conn: &Connection,
+        rows: &Rows,
+        seen: &BTreeMap<Recorded, Seen>,
+        stamp: &str,
+        deadline: Deadline,
+    ) -> Result<(Vec<LiveSeen>, Cursor, BTreeMap<String, Activity>)> {
+        let root = &self.settings.fleet_root;
+        let live: Vec<&AttemptRow> = rows
+            .attempts
+            .iter()
+            .filter(|a| a.state == AttemptState::Live && a.task_id.is_some())
+            .collect();
+        let before = effects::read_activity(root);
+        let mut after: BTreeMap<String, Activity> = before
+            .iter()
+            .filter(|(id, _)| live.iter().any(|a| &a.id == *id))
+            .map(|(id, s)| (id.clone(), s.clone()))
+            .collect();
+        let mut cursor = cursors_store::load(conn, LIVE_ATTEMPTS, stamp)?;
+        let scan = deadline.scan((self.now)(), self.settings.config.scan_budget_ms);
+        let budget = PassBudget::new(self.settings.config.pass_budget).rows();
+        let now = util::now();
+        let mut out = Vec::new();
+        for a in cursor
+            .turns(&live, |a| a.id.as_str())
+            .into_iter()
+            .take(budget)
+        {
+            if scan.reached((self.now)()) {
+                break;
+            }
+            cursor.step(&a.id, stamp);
+            let Some(w) = workers::find(conn, &a.worker_id)? else {
+                continue;
+            };
+            let o = self.ports.outside.observe(&w);
+            let activity = activity_of(&w, o.as_ref());
+            let active = before.get(&a.id).is_some_and(|b| activity.moved_since(b));
+            after.insert(a.id.clone(), activity);
+            let process = a
+                .process
+                .or_else(|| rows.workers.get(&a.worker_id).and_then(|r| r.agent))
+                .map_or(Seen::Unknown, |p| {
+                    seen.get(&p).copied().unwrap_or(Seen::Unknown)
+                });
+            let heartbeat_age_s = w
+                .last_checkin_at
+                .as_deref()
+                .and_then(|at| util::seconds_between(at, &now));
+            let pane = w.pane_id.clone().map(|id| rungs::Pane {
+                id,
+                status: o
+                    .as_ref()
+                    .and_then(|o| o.herdr_status.as_deref())
+                    .and_then(PaneStatus::parse),
+                screen: o.and_then(|o| o.screen),
+            });
+            out.push(LiveSeen {
+                attempt: (*a).clone(),
+                worker: w,
+                process,
+                heartbeat_age_s,
+                active,
+                pane,
+            });
+        }
+        Ok((out, cursor, after))
     }
 
     /// The holds of [`Outside::holds`] with no hold of the worktree disk
@@ -670,9 +845,23 @@ impl<'a> Pass<'a> {
         for (kind, cursor) in &read.cursors {
             cursors_store::save(&tx, kind.as_str(), cursor)?;
         }
+        cursors_store::save(&tx, LIVE_ATTEMPTS, &read.live_cursor)?;
         let launches = self.observe_intents(&tx, &read.launching, clock)?;
         let mut stops = commands::mark_orphans(&tx, &read.task)?;
-        stops.extend(commands::finish_exited(&tx, &read.task)?);
+        let pools = read.pools.as_ref().map(|p| Pools {
+            roster: &p.roster,
+            quota: &p.quota,
+            full_use: self.settings.config.pool_full_use,
+        });
+        let rules = Rules {
+            tx: &tx,
+            guard: Some(self.settings.generation),
+            clock,
+            pools: pools.as_ref(),
+            config: &self.settings.config,
+        };
+        let mut doorbells = Vec::new();
+        rules.run(&read, &mut stops, &mut doorbells)?;
         reconcile_worktrees(&self.job_ctx(), &tx, &read.worktrees, clock)?;
         let disk = disk_budget(&self.job_ctx(), &tx, clock)?;
         let mut holds = read.holds;
@@ -693,11 +882,14 @@ impl<'a> Pass<'a> {
         }
         let ctx = self.job_ctx();
         let observed = jobs::observe(&ctx, &tx, &read.jobs, clock)?;
+        rules.check_i1()?;
         let breaches = self.check_invariants(&tx, &read.worktrees)?;
         self.queue_lists(&ctx, &tx, &read.repos, clock)?;
         record_hold_changes(&tx, &self.holds, &holds)?;
-        let effects =
+        let mut effects =
             self.intended_effects(&tx, launches, stops, observed.stops, clock, &read.stamp)?;
+        effects.extend(doorbells.into_iter().map(Effect::Doorbell));
+        effects.sort_by_key(Effect::order);
         tx.commit().map_err(anyhow::Error::from)?;
         self.clock.committed(tick);
         self.holds = holds;
@@ -706,6 +898,7 @@ impl<'a> Pass<'a> {
             effects,
             breaches,
             may_stop: read.may_stop,
+            activity: read.activity,
         })
     }
 
@@ -890,7 +1083,6 @@ impl<'a> Pass<'a> {
                 .expect("a key of the list");
             effects.push(Effect::StartJob(due[i].clone()));
         }
-        effects.sort_by_key(Effect::kind);
         Ok(effects)
     }
 
@@ -914,6 +1106,10 @@ impl<'a> Pass<'a> {
             let done = match e {
                 Effect::Stop(s) => self.stop(&s, clock, &mut stops, &mut report),
                 Effect::StopJob(s) => jobs::stop(&s).then_some(Done::StopJob(s.job_id)),
+                Effect::Doorbell(pane) => self.doorbell(pane, &mut report),
+                Effect::Launch(a) if quota::is_restart(&a) => {
+                    self.restart(conn, &a, clock, &mut report)
+                }
                 Effect::Launch(a) => self.launch(&a, clock, &mut report),
                 Effect::StartJob(job) => self.start_job(conn, &job, clock, &mut report),
             };
@@ -1041,6 +1237,46 @@ impl<'a> Pass<'a> {
         }
     }
 
+    /// Type the doorbell into `pane`. The row of the doorbell is its event
+    /// of this pass: a doorbell that a crash lost is not typed again, and
+    /// the next rung of the ladder follows on its timer.
+    fn doorbell(&self, pane: String, report: &mut PassReport) -> Option<Done> {
+        match self.ports.outside.doorbell(&pane) {
+            Ok(()) => Some(Done::Doorbell(pane)),
+            Err(e) => {
+                report
+                    .failed
+                    .push(format!("the doorbell of pane {pane}: {e:#}"));
+                None
+            }
+        }
+    }
+
+    /// Start the fallback worker of the restart attempt `a` (RR-11), once,
+    /// and only when each process of an older attempt of its task is gone
+    /// (FM-14).
+    fn restart(
+        &mut self,
+        conn: &Connection,
+        a: &AttemptRow,
+        clock: FleetSeconds,
+        report: &mut PassReport,
+    ) -> Option<Done> {
+        let root = &self.settings.fleet_root;
+        let ports = OutsideRestarts(self.ports.outside);
+        match quota::restart(conn, root, clock, &a.id, self.ports.host, &ports) {
+            Ok(Restarted::Launched(l)) => {
+                self.launched.push(l.child);
+                Some(Done::Launch(a.id.clone()))
+            }
+            Ok(Restarted::Done | Restarted::Waiting { .. }) => None,
+            Err(e) => {
+                report.failed.push(format!("{e:#}"));
+                None
+            }
+        }
+    }
+
     fn start_job(
         &mut self,
         conn: &mut Connection,
@@ -1081,6 +1317,404 @@ impl<'a> Pass<'a> {
             exe: self.exe.clone(),
             version: env!("CARGO_PKG_VERSION").to_string(),
         }
+    }
+}
+
+// ─── the rules of Phase 2 in part 2 ─────────────────────────────────────
+
+/// The rules of Phase 2 in the transaction of part 2
+/// (`docs/specs/fleetd/design.md`, "The reconcile pass" and "Order inside
+/// 1 pass"). Each rule writes rows only. A stop or a doorbell is returned
+/// and part 3 does it after the commit.
+struct Rules<'a> {
+    tx: &'a Connection,
+    guard: Option<Generation>,
+    clock: FleetSeconds,
+    pools: Option<&'a Pools<'a>>,
+    config: &'a FleetConfig,
+}
+
+impl Rules<'_> {
+    /// The rules in the order of the design, after `mark_orphans`:
+    /// 1. `finish_exited`: rung 5, then the quota rule or rung 6;
+    /// 2. `complete_cancels`;
+    /// 3. `promote_pending` (I2);
+    /// 4. for each live attempt: `renew_or_expire_lease`, then the stall
+    ///    ladder, then the quota rule or rung 6 for each attempt it ended;
+    /// 5. `release_reset_pools` and `escalate_overdue`.
+    ///
+    /// So a result of this pass wins over a lease expiry of this pass: an
+    /// attempt that step 1 ended holds no lease in step 4.
+    fn run(&self, read: &Read, stops: &mut Vec<Stop>, doorbells: &mut Vec<String>) -> Result<()> {
+        stops.extend(self.finish_exited(&read.task)?);
+        cancel::complete_cancels(self.tx, &read.task)?;
+        self.promote_pending()?;
+        self.live_attempts(&read.live, stops, doorbells)?;
+        if let Some(pools) = self.pools {
+            quota::release_reset_pools(self.tx, self.guard, pools)?;
+        }
+        retry::escalate_overdue(self.tx, self.clock, self.config.replan_limit_s)?;
+        Ok(())
+    }
+
+    /// The profile of `persona` in the roster of the pass; the design
+    /// defaults with no roster or no persona.
+    fn profile(&self, persona: Option<&str>) -> Profile {
+        self.pools
+            .zip(persona)
+            .and_then(|(p, name)| p.roster.get(name))
+            .map(|t| t.profile())
+            .unwrap_or_default()
+    }
+
+    fn persona_of(&self, worker: &str) -> Result<Option<String>> {
+        Ok(workers::find(self.tx, worker)?.and_then(|w| w.persona))
+    }
+
+    /// The lease numbers of the worker `worker`.
+    fn limits(&self, worker: &str) -> Limits {
+        let persona = self.persona_of(worker).ok().flatten();
+        let l = self.profile(persona.as_deref()).liveness;
+        Limits {
+            lease_s: seconds(l.lease_s),
+            stall_after_s: seconds(l.stall_after_s),
+            heartbeat_max_age_s: seconds(self.config.heartbeat_max_age_s),
+        }
+    }
+
+    /// Whether the pool of `persona` is limited (MAP.md, Q9).
+    fn pool_limited(&self, persona: Option<&str>) -> bool {
+        let (Some(p), Some(persona)) = (self.pools, persona) else {
+            return false;
+        };
+        p.reading(persona)
+            .is_some_and(|r| limited(&r, p.full_use, p.quota.now.timestamp()))
+    }
+
+    /// After the attempt `attempt` of task `task` ended with `outcome`:
+    /// the quota rule for `quota`, rung 6 for an outcome that burns an
+    /// attempt. `asked` and `killed` have their own paths.
+    fn after_end(
+        &self,
+        attempt: &str,
+        task: &str,
+        persona: Option<&str>,
+        outcome: Outcome,
+        why: &str,
+    ) -> Result<()> {
+        if outcome == Outcome::Quota {
+            if let Some(pools) = self.pools {
+                quota::on_quota(self.tx, self.guard, attempt, pools)?;
+            }
+            return Ok(());
+        }
+        if !outcome.burns_attempt() || tasks::cancel_requested(self.tx, task)?.is_some() {
+            return Ok(());
+        }
+        let policy = retry::Policy {
+            retry: self.profile(persona).retry,
+            replan_limit_s: self.config.replan_limit_s,
+        };
+        retry::burn_attempt(self.tx, task, outcome, &policy, why)?;
+        Ok(())
+    }
+
+    /// I1, process part, with rung 5: each live attempt whose process is
+    /// gone ends with `asked` (an open question: the task waits in
+    /// `blocked_on_user`), `quota` (a limited pool: the quota rule) or
+    /// `no_result` (rung 6). An attempt whose worker row ended first keeps
+    /// the path of Phase 1.
+    fn finish_exited(&self, facts: &Facts) -> Result<Vec<Stop>> {
+        let rows = attempts_store::rows(self.tx, &util::host_name())?;
+        let mut stops = Vec::new();
+        for mut reap in task::dead_attempts(&rows, facts) {
+            let why = format!("the process of attempt {} is gone", reap.attempt);
+            let Some((task_id, _)) = reap.task.clone() else {
+                stops.extend(commands::end_attempt(self.tx, &reap)?);
+                continue;
+            };
+            if !reap.end_worker {
+                stops.extend(commands::end_attempt(self.tx, &reap)?);
+                commands::schedule_retry(self.tx, &task_id, &why)?;
+                continue;
+            }
+            let persona = self.persona_of(&reap.worker)?;
+            let outcome = self.exit_outcome(
+                questions_store::open_of_task(self.tx, &task_id)? > 0,
+                self.pool_limited(persona.as_deref()),
+            );
+            reap.outcome = outcome.as_str().to_string();
+            stops.extend(commands::end_attempt(self.tx, &reap)?);
+            if outcome == Outcome::Asked {
+                let to = TaskStatus::BlockedOnUser.as_str();
+                let by = cause("rung 5: the worker exited with an open question");
+                transition(
+                    self.tx,
+                    self.guard,
+                    Entity::Task,
+                    &task_id,
+                    to,
+                    by,
+                    &NeedsYouList,
+                )?;
+            } else {
+                self.after_end(&reap.attempt, &task_id, persona.as_deref(), outcome, &why)?;
+            }
+        }
+        Ok(stops)
+    }
+
+    /// Rung 5 of the stall ladder: the outcome of an attempt whose process
+    /// is gone, with or without an open question and a limited pool.
+    fn exit_outcome(&self, open_question: bool, pool_limited: bool) -> Outcome {
+        let exited = rungs::Facts {
+            clock: self.clock.0,
+            process: Seen::Dead,
+            active_at: None,
+            claimed_at: self.clock.0,
+            pane: None,
+            pool_limited,
+            open_question,
+            waiting_until: None,
+            interactive: false,
+            task_running: false,
+            stall_after_s: 0,
+            doorbells: Vec::new(),
+        };
+        match rungs::decide(&exited) {
+            Decision::End { outcome, .. } => outcome,
+            _ => Outcome::NoResult,
+        }
+    }
+
+    /// I2: each `pending` task of an active run whose dependencies are all
+    /// `done` moves to `ready`.
+    fn promote_pending(&self) -> Result<()> {
+        for run in watchdog::active_runs(self.tx)? {
+            let all = tasks::of_run(self.tx, &run.run_id)?;
+            let mut statuses: BTreeMap<String, String> = all
+                .iter()
+                .map(|t| (t.task_id.clone(), t.status.clone()))
+                .collect();
+            let mut deps = Vec::new();
+            for t in all
+                .iter()
+                .filter(|t| t.status == TaskStatus::Pending.as_str())
+            {
+                for b in tasks::blockers(self.tx, &t.task_id)? {
+                    deps.push((t.task_id.clone(), b.task_id.clone()));
+                    statuses.entry(b.task_id).or_insert(b.status);
+                }
+            }
+            for id in promotable(&statuses, &deps) {
+                let to = TaskStatus::Ready.as_str();
+                let by = cause("each task that it waits for is done (I2)");
+                transition(
+                    self.tx,
+                    self.guard,
+                    Entity::Task,
+                    &id,
+                    to,
+                    by,
+                    &NeedsYouList,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Step 4 for the live attempts that part 1 saw: renew or expire each
+    /// lease; an expired lease ends its attempt `stalled` with a stop of
+    /// its process group (rung 3). Then the stall ladder for each attempt
+    /// of a `running` task. Each attempt that ends goes on to the quota
+    /// rule or rung 6. A declared wait that holds (FM-3, MAP.md Q23) is
+    /// activity, for the lease and for the ladder.
+    fn live_attempts(
+        &self,
+        live: &[LiveSeen],
+        stops: &mut Vec<Stop>,
+        doorbells: &mut Vec<String>,
+    ) -> Result<()> {
+        let mut waiting_until = BTreeMap::new();
+        for l in live {
+            let waits = workers::waiting(self.tx, &l.worker.worker_id)?;
+            waiting_until.insert(l.attempt.id.clone(), waits.iter().map(|w| w.due_at).max());
+        }
+        let observed: BTreeMap<String, lease::Observed> = live
+            .iter()
+            .map(|l| {
+                let waits = waiting_until[&l.attempt.id].is_some();
+                let o = lease::Observed {
+                    process: l.process,
+                    heartbeat_age_s: l.heartbeat_age_s,
+                    active: l.active || waits,
+                };
+                (l.attempt.id.clone(), o)
+            })
+            .collect();
+        let limits = |worker: &str| self.limits(worker);
+        let expired =
+            lease::renew_or_expire_leases(self.tx, self.guard, self.clock, &observed, &limits)?;
+        let rows = attempts_store::rows(self.tx, &util::host_name())?;
+        let mut take = |effects: Vec<ladder::Effect>| {
+            for e in effects {
+                match e {
+                    ladder::Effect::Stop(s) => stops.push(s),
+                    ladder::Effect::Doorbell { pane } => doorbells.push(pane),
+                }
+            }
+        };
+        for e in expired {
+            let Some(a) = rows.attempts.iter().find(|a| a.id == e.attempt_id) else {
+                continue;
+            };
+            if a.state == AttemptState::Ended {
+                continue;
+            }
+            let end = Decision::End {
+                outcome: Outcome::Stalled,
+                stop: true,
+            };
+            take(ladder::apply(self.tx, self.guard, a, self.clock.0, &end)?);
+            let persona = self.persona_of(&a.worker_id)?;
+            let why = format!("the lease of attempt {} expired", a.id);
+            self.after_end(
+                &a.id,
+                &e.task_id,
+                persona.as_deref(),
+                Outcome::Stalled,
+                &why,
+            )?;
+        }
+        let active_at: BTreeMap<String, Option<i64>> = leases_store::held(self.tx)?
+            .into_iter()
+            .map(|h| (h.attempt_id, h.active_at))
+            .collect();
+        for l in live {
+            let a = &l.attempt;
+            let state = door::state_of(self.tx, Entity::Attempt, &a.id)?;
+            let Some(task_id) = a.task_id.as_deref() else {
+                continue;
+            };
+            let task = tasks::get(self.tx, task_id)?;
+            if state.as_deref() != Some(AttemptState::Live.as_str())
+                || task.status != TaskStatus::Running.as_str()
+            {
+                continue;
+            }
+            let last = active_at.get(&a.id).copied().flatten();
+            let facts = self.ladder_facts(l, &task, last, waiting_until[&a.id])?;
+            let decision = rungs::decide(&facts);
+            take(ladder::apply(
+                self.tx,
+                self.guard,
+                a,
+                self.clock.0,
+                &decision,
+            )?);
+            let outcome = match decision {
+                Decision::End { outcome, .. } => outcome,
+                Decision::NeedsYou { .. } => Outcome::Stalled,
+                Decision::None | Decision::Doorbell { .. } => continue,
+            };
+            let why = format!("the stall ladder ended attempt {}", a.id);
+            let persona = l.worker.persona.as_deref();
+            self.after_end(&a.id, task_id, persona, outcome, &why)?;
+        }
+        Ok(())
+    }
+
+    /// The facts of the stall ladder for the live attempt `l` of `task`,
+    /// whose last activity is `active_at`, and whose declared waits count
+    /// as activity until `waiting_until`. The claim sets `active_at`, so
+    /// the claim is the first activity.
+    fn ladder_facts(
+        &self,
+        l: &LiveSeen,
+        task: &tasks::Task,
+        active_at: Option<i64>,
+        waiting_until: Option<i64>,
+    ) -> Result<rungs::Facts> {
+        let persona = l.worker.persona.as_deref();
+        let profile = self.profile(persona);
+        Ok(rungs::Facts {
+            clock: self.clock.0,
+            process: l.process,
+            active_at,
+            claimed_at: active_at.unwrap_or(self.clock.0),
+            pane: l.pane.clone(),
+            pool_limited: self.pool_limited(persona),
+            open_question: questions_store::open_of_task(self.tx, &task.task_id)? > 0,
+            waiting_until,
+            interactive: profile.mode == Mode::Interactive,
+            task_running: task.status == TaskStatus::Running.as_str(),
+            stall_after_s: profile.liveness.stall_after_s,
+            doorbells: doorbells_of(self.tx, &l.attempt.id)?,
+        })
+    }
+
+    /// Step 6: the lease part of I1.
+    fn check_i1(&self) -> Result<()> {
+        let limits = |worker: &str| self.limits(worker);
+        lease::check_i1(self.tx, self.guard, self.clock, &limits)
+    }
+}
+
+fn cause(text: &str) -> Cause<'_> {
+    Cause {
+        actor: Actor::Horch,
+        text,
+    }
+}
+
+/// A number of seconds of a profile as a value of the fleet clock.
+fn seconds(s: u64) -> i64 {
+    i64::try_from(s).unwrap_or(i64::MAX)
+}
+
+/// The fleet clock of each doorbell of the attempt `attempt`, oldest first.
+fn doorbells_of(tx: &Connection, attempt: &str) -> Result<Vec<i64>> {
+    let mut stmt = tx.prepare(
+        "SELECT data_json FROM events WHERE kind = ?1 AND entity = ?2 AND entity_id = ?3
+         ORDER BY event_id",
+    )?;
+    let rows = stmt.query_map(
+        rusqlite::params![
+            EventKind::Doorbell.as_str(),
+            Entity::Attempt.as_str(),
+            attempt
+        ],
+        |r| r.get::<_, Option<String>>(0),
+    )?;
+    let mut out = Vec::new();
+    for data in rows {
+        let at = data?
+            .and_then(|d| serde_json::from_str::<serde_json::Value>(&d).ok())
+            .and_then(|v| v["fleet_clock"].as_i64());
+        out.extend(at);
+    }
+    Ok(out)
+}
+
+/// The activity signals of the worker `w` in the observation `o`. Only a
+/// progress that the agent recorded itself counts: a proxy checkin of a
+/// check is not activity of the agent.
+fn activity_of(w: &Worker, o: Option<&Observation>) -> Activity {
+    let by_agent = w.last_progress_source.as_deref() == Some(ProgressSource::Agent.as_str());
+    let agent = w
+        .harness
+        .as_deref()
+        .and_then(timer::Agent::of_harness)
+        .unwrap_or(timer::Agent::Any);
+    Activity {
+        progress_at: w.last_progress_at.clone().filter(|_| by_agent),
+        transcript_bytes: o.and_then(|o| o.transcript_bytes),
+        transcript_mtime: o.and_then(|o| o.transcript_mtime.clone()),
+        herdr_seq: o.and_then(|o| o.herdr_seq),
+        timer_s: o
+            .and_then(|o| o.screen.as_deref())
+            .and_then(|s| timer::working_seconds(s, agent))
+            .map(|s| seconds(s)),
     }
 }
 

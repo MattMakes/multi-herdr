@@ -12,12 +12,14 @@
 //! 4. Suspect: the timer ran less than the clock (10m, then 15m, 10 min
 //!    apart: it stopped about 5 min ago). Verified at once: herdr still
 //!    showing `working` goes to rule 5; else `no_progress`.
-//! 5. Nothing else moved, but herdr shows `working` (#203): a proxy
-//!    checkin, at most `2 * stall_rounds` checks in a row (`stall_rounds`
-//!    counts as at least 1). The next one is `suspect` (1 wake with the
-//!    pane), and the one after it is `dead`.
-//! 6. Nothing moved: `no_progress`, and 1 more stall round. At the run's
-//!    `stall_rounds` the worker is `dead`.
+//! 5. Nothing else moved, but herdr shows `working`: a proxy checkin.
+//! 6. Nothing moved: `no_progress`, and 1 more stall round. The first one
+//!    asks the worker for an update.
+//!
+//! No check reaps a worker: "3 checks of 600 s" ended with Phase 2 of
+//! fleetd. The leases and the stall ladder of the pass judge each live
+//! attempt (`docs/tickets/fleetd-p2/MAP.md`, Q14). `check_every_s` and
+//! `stall_rounds` of a run stay stored.
 //!
 //! A note names the signals the watchdog could not read ("no timer format
 //! for harness pi; no transcript"), so `ledger show` explains a reap.
@@ -32,8 +34,8 @@ use rusqlite::{params, Connection};
 use serde::Serialize;
 
 use super::model::{
-    Actor, EventKind, HeldReason, OutboxEvent, ProgressSource, RunStatus, TaskStatus, Verdict,
-    WorkerKind, WorkerStatus,
+    EventKind, HeldReason, OutboxEvent, ProgressSource, RunStatus, TaskStatus, Verdict, WorkerKind,
+    WorkerStatus,
 };
 use super::outbox::{self, Wake};
 use super::runs::Run;
@@ -110,8 +112,6 @@ pub struct Checked {
 }
 
 /// The note prefix of a check that only herdr's `working` status kept alive.
-/// [`herdr_only_streak`] counts the streak by this prefix, so every note of
-/// [`herdr_fallback`] starts with it, and no other note may.
 const HERDR_ONLY: &str = "herdr shows working";
 
 /// The signals the watchdog could not read for `w`, for the check note.
@@ -134,64 +134,16 @@ fn missing_signals(w: &Worker, o: &Observation, timer_s: Option<i64>) -> String 
     }
 }
 
-/// How many checks in a row, up to the last, only herdr's `working` status
-/// kept alive: the checks whose note starts with [`HERDR_ONLY`].
-fn herdr_only_streak(conn: &Connection, worker_id: &str, cap: i64) -> Result<i64> {
-    let mut stmt = conn
-        .prepare("SELECT note FROM checks WHERE worker_id = ?1 ORDER BY check_id DESC LIMIT ?2")?;
-    let notes = stmt
-        .query_map(params![worker_id, cap + 1], |r| r.get::<_, String>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(notes
-        .iter()
-        .take_while(|n| n.starts_with(HERDR_ONLY))
-        .count() as i64)
-}
-
-/// Nothing but herdr's `working` status moved: a proxy checkin up to the
-/// run's cap of `2 * stall_rounds` checks, then `suspect` once, then `dead`.
-/// `detail` follows [`HERDR_ONLY`] in the note of a proxy checkin.
-fn herdr_fallback(
-    conn: &Connection,
-    w: &Worker,
-    run: &Run,
-    prev_verdict: Option<&str>,
-    detail: &str,
-    missing: &str,
-) -> Result<(Verdict, String, Option<ProgressSource>)> {
-    // A run made with 0 or fewer stall rounds still gets 1 round, so the
-    // cap and the query limit stay positive.
-    let cap = 2 * run.stall_rounds.max(1);
-    let streak = herdr_only_streak(conn, &w.worker_id, cap)?;
-    // The last check was this fallback's own `suspect`: its note starts
-    // with HERDR_ONLY, so the streak counts it. A `suspect` of the timer
-    // rule (rule 4) has another note, and ends the streak at 0.
-    let after_herdr_suspect = streak > 0 && prev_verdict == Some(Verdict::Suspect.as_str());
-    Ok(if after_herdr_suspect {
-        (
-            Verdict::Dead,
-            format!(
-                "{HERDR_ONLY}, but nothing else moved for {} checks in a row{missing}",
-                streak + 1
-            ),
-            None,
-        )
-    } else if streak >= cap {
-        let pane = w.pane_id.as_deref().unwrap_or("unknown");
-        (
-                Verdict::Suspect,
-                format!(
-                    "{HERDR_ONLY}, but nothing else moved for {cap} checks in a row{missing}; pane {pane}"
-                ),
-                None,
-            )
-    } else {
-        (
-            Verdict::ProxyCheckin,
-            format!("{HERDR_ONLY}, {detail}{missing}"),
-            Some(ProgressSource::HerdrState),
-        )
-    })
+/// Nothing but herdr's `working` status moved: a proxy checkin. The check
+/// reaps no worker: the stall ladder of fleetd judges the attempt
+/// (`docs/tickets/fleetd-p2/MAP.md`, Q14). `detail` follows [`HERDR_ONLY`]
+/// in the note.
+fn herdr_fallback(detail: &str, missing: &str) -> (Verdict, String, Option<ProgressSource>) {
+    (
+        Verdict::ProxyCheckin,
+        format!("{HERDR_ONLY}, {detail}{missing}"),
+        Some(ProgressSource::HerdrState),
+    )
 }
 
 fn timer_agent(harness: Option<&str>) -> timer::Agent {
@@ -291,10 +243,8 @@ fn in_active_run(column: &str) -> String {
 /// What 1 check of 1 worker knows, for the judge and the record.
 struct Look<'a> {
     w: &'a Worker,
-    run: &'a Run,
     o: &'a Observation,
     now: &'a str,
-    prev_verdict: Option<&'a str>,
     waits: &'a [workers::Wait],
     /// Seconds since the last check (or the claim).
     elapsed: i64,
@@ -327,17 +277,15 @@ pub fn check_observed(
     );
     let look = Look {
         w,
-        run,
         o,
         now,
-        prev_verdict: p.as_ref().map(|p| p.verdict.as_str()),
         waits: &waits,
         elapsed,
         timer_s,
         timer_delta: s.timer_delta,
     };
-    let (verdict, note, source) = judge(tx, &look, &s)?;
-    let (verdict, note, round) = stall_round(tx, verdict, note, w, run)?;
+    let (verdict, note, source) = judge(&look, &s);
+    let round = round_of(tx, verdict, w)?;
     let task = task_short(tx, w);
     insert_check(tx, &look, verdict, &note, round)?;
     update_worker(tx, &w.worker_id, verdict, &note, source, round)?;
@@ -454,11 +402,8 @@ fn transcript_moved(o: &Observation, p: Option<&Prev>, since: &str) -> bool {
 type Judged = (Verdict, String, Option<ProgressSource>);
 
 /// The verdict of 1 check, by the rules in the module doc.
-fn judge(conn: &Connection, look: &Look, s: &Signals) -> Result<Judged> {
-    match proof(look, s) {
-        Some(judged) => Ok(judged),
-        None => stalled(conn, look, s),
-    }
+fn judge(look: &Look, s: &Signals) -> Judged {
+    proof(look, s).unwrap_or_else(|| stalled(look, s))
 }
 
 /// Rules 1 to 3: the agent is gone, or something moved.
@@ -505,19 +450,16 @@ fn waiting_note(waits: &[workers::Wait]) -> String {
 }
 
 /// Rules 4 to 6: nothing moved.
-fn stalled(conn: &Connection, look: &Look, s: &Signals) -> Result<Judged> {
+fn stalled(look: &Look, s: &Signals) -> Judged {
     let herdr_working = look.o.herdr_status.as_deref() == Some("working");
     let delta = look.timer_delta.unwrap_or(0);
     let missing = missing_signals(look.w, look.o, look.timer_s);
-    let fallback = |detail: String| {
-        herdr_fallback(conn, look.w, look.run, look.prev_verdict, &detail, &missing)
-    };
     if s.timer_short && herdr_working {
-        // A frozen timer under a `working` spinner gets the same cap.
-        return fallback(format!("but the timer moved {delta}s in {}s", look.elapsed));
+        let detail = format!("but the timer moved {delta}s in {}s", look.elapsed);
+        return herdr_fallback(&detail, &missing);
     }
     if s.timer_short {
-        return Ok((
+        return (
             Verdict::NoProgress,
             format!(
                 "suspect: the timer moved {delta}s in {}s (it stopped about {}s ago), herdr shows {}",
@@ -526,40 +468,31 @@ fn stalled(conn: &Connection, look: &Look, s: &Signals) -> Result<Judged> {
                 look.o.herdr_status.as_deref().unwrap_or("unknown")
             ),
             None,
-        ));
+        );
     }
     if herdr_working {
-        return fallback(format!("and nothing else moved in {}s", look.elapsed));
+        let detail = format!("and nothing else moved in {}s", look.elapsed);
+        return herdr_fallback(&detail, &missing);
     }
-    Ok((
+    (
         Verdict::NoProgress,
         format!(
             "no ledger call, no transcript growth, no state change, no running timer in {}s{missing}",
             look.elapsed
         ),
         None,
-    ))
+    )
 }
 
-/// The round of the verdict. `stall_rounds` no-progress checks in a row are
-/// `dead`, with a note that says so.
-fn stall_round(
-    conn: &Connection,
-    verdict: Verdict,
-    note: String,
-    w: &Worker,
-    run: &Run,
-) -> Result<(Verdict, String, i64)> {
-    let round = match verdict {
+/// The count of `no_progress` checks in a row, with the verdict. A count
+/// makes no verdict `dead`: the stall ladder of fleetd judges the attempt
+/// (`docs/tickets/fleetd-p2/MAP.md`, Q14).
+fn round_of(conn: &Connection, verdict: Verdict, w: &Worker) -> Result<i64> {
+    Ok(match verdict {
         Verdict::NoProgress => workers::get(conn, &w.worker_id)?.stall_rounds + 1,
         Verdict::Dead => w.stall_rounds,
         _ => 0,
-    };
-    if verdict == Verdict::NoProgress && round >= run.stall_rounds {
-        let note = format!("{note}; {round} checks in a row without progress");
-        return Ok((Verdict::Dead, note, w.stall_rounds + 1));
-    }
-    Ok((verdict, note, round))
+    })
 }
 
 /// The short name of the worker's task, when it has one.
@@ -1227,49 +1160,6 @@ pub fn review_round(conn: &Connection, parent_id: &str) -> Result<String> {
     )?)
 }
 
-// ─── the duties that the old loop and the pass of fleetd share ──────────
-
-/// The rows of the reap of the stalled worker `worker_id` (section 5.4),
-/// in the caller's transaction: the worker ends `incomplete`, its task is
-/// queued again, first in line, and the reap wake is returned. The caller
-/// stops its processes and its pane after the commit. `None` when the
-/// worker is not live: a stop or an exit settled it first.
-pub fn reap_stalled(tx: &Connection, worker_id: &str, note: &str) -> Result<Option<Wake>> {
-    let w = workers::get(tx, worker_id)?;
-    if !w.status()?.is_live() {
-        return Ok(None);
-    }
-    let reason = format!("dead: {note}");
-    let about = util::About {
-        run: w.run_id.as_deref(),
-        task: w.task_id.as_deref(),
-        worker: Some(worker_id),
-    };
-    workers::end(tx, worker_id, WorkerStatus::Incomplete, &reason, None)?;
-    let stopping = format!("Stopping {}: {reason}", w.label());
-    util::event(tx, &about, Actor::Watchdog, EventKind::Stopped, &stopping)?;
-    let persona = match &w.task_id {
-        Some(t) => {
-            let task = tasks::get(tx, t)?;
-            let held = task.in_flight() && task.current_worker_id.as_deref() == Some(worker_id);
-            if held {
-                tasks::requeue(tx, t, &format!("{} was stopped: {reason}", w.label()))?;
-            }
-            task.claimable_by
-        }
-        None => w.persona.clone(),
-    };
-    let reaped = format!("{} reaped: {note}", w.label());
-    util::event(tx, &about, Actor::Watchdog, EventKind::Reaped, &reaped)?;
-    let who = w.role.as_deref().unwrap_or(worker_id);
-    Ok(Some(super::wakes::reaped_wake(
-        tx,
-        who,
-        worker_id,
-        persona.as_deref(),
-    )))
-}
-
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
@@ -1414,10 +1304,10 @@ mod tests {
     }
 
     #[test]
-    fn three_stalled_checks_are_dead_and_progress_resets_the_count() {
+    fn stalled_checks_count_rounds_reset_on_progress_and_none_is_dead() {
         let (_d, mut s, run, w) = setup();
         let idle = || live(None, "idle");
-        let obs = Script(RefCell::new(vec![idle(), idle(), idle(), idle(), idle()]));
+        let obs = Script(RefCell::new((0..6).map(|_| idle()).collect()));
         for want in ["no_progress", "no_progress"] {
             let now = pass_time(&s, &w, 600);
             assert_eq!(
@@ -1437,12 +1327,12 @@ mod tests {
             check_run_at(&mut s, &run, &obs2, false, now).unwrap()[0].verdict,
             "progress"
         );
-        for want in ["no_progress", "no_progress", "dead"] {
+        // Past `stall_rounds` (3) the check stays `no_progress`: the stall
+        // ladder of fleetd, not a count of checks, ends an attempt.
+        for round in 1..=4 {
             let now = pass_time(&s, &w, 600);
-            assert_eq!(
-                check_run_at(&mut s, &run, &obs, false, now).unwrap()[0].verdict,
-                want
-            );
+            let c = check_run_at(&mut s, &run, &obs, false, now).unwrap();
+            assert_eq!((c[0].verdict.as_str(), c[0].round), ("no_progress", round));
         }
     }
 
@@ -1462,116 +1352,6 @@ mod tests {
         assert_eq!(worker.status, "working");
         assert_eq!(worker.stall_rounds, 0);
         assert_eq!(worker.last_progress_source.as_deref(), Some("herdr_state"));
-    }
-
-    #[test]
-    fn herdr_working_past_the_cap_is_one_suspect_then_dead() {
-        let (_d, mut s, run, w) = setup();
-        // The run keeps the default 3 stall rounds: the cap is 6 checks.
-        assert_eq!(run.stall_rounds, 3);
-        let busy = || live(None, "working");
-        let obs = Script(RefCell::new((0..8).map(|_| busy()).collect()));
-        let mut got = Vec::new();
-        for _ in 0..8 {
-            let now = pass_time(&s, &w, 600);
-            got.push(
-                check_run_at(&mut s, &run, &obs, false, now)
-                    .unwrap()
-                    .remove(0),
-            );
-        }
-        let verdicts: Vec<&str> = got.iter().map(|c| c.verdict.as_str()).collect();
-        assert_eq!(
-            verdicts,
-            [
-                "proxy_checkin",
-                "proxy_checkin",
-                "proxy_checkin",
-                "proxy_checkin",
-                "proxy_checkin",
-                "proxy_checkin",
-                "suspect",
-                "dead"
-            ]
-        );
-        assert!(got[6].changed, "the suspect check is a change: 1 wake");
-        assert!(got[6].note.contains("6 checks"), "{}", got[6].note);
-        assert!(
-            got[7].note.contains("herdr shows working"),
-            "{}",
-            got[7].note
-        );
-    }
-
-    #[test]
-    fn a_frozen_timer_under_a_working_spinner_is_capped_too() {
-        let (_d, mut s, run, w) = setup();
-        // The timer shows 10m at every check: it froze after the first.
-        let frozen = || live(screen(10), "working");
-        let obs = Script(RefCell::new((0..9).map(|_| frozen()).collect()));
-        let mut got = Vec::new();
-        for _ in 0..9 {
-            let now = pass_time(&s, &w, 600);
-            got.push(
-                check_run_at(&mut s, &run, &obs, false, now)
-                    .unwrap()
-                    .remove(0),
-            );
-        }
-        let verdicts: Vec<&str> = got.iter().map(|c| c.verdict.as_str()).collect();
-        // Check 1: the timer ran the whole interval. Checks 2 to 7: only
-        // herdr's spinner moved, up to the cap of 6. Then 1 suspect, then
-        // dead.
-        assert_eq!(
-            verdicts,
-            [
-                "proxy_checkin",
-                "proxy_checkin",
-                "proxy_checkin",
-                "proxy_checkin",
-                "proxy_checkin",
-                "proxy_checkin",
-                "proxy_checkin",
-                "suspect",
-                "dead"
-            ]
-        );
-        assert!(
-            got[1]
-                .note
-                .starts_with("herdr shows working, but the timer moved 0s in "),
-            "{}",
-            got[1].note
-        );
-        assert!(got[7].note.contains("6 checks"), "{}", got[7].note);
-    }
-
-    #[test]
-    fn a_run_with_no_stall_rounds_still_gets_one_round_of_herdr_checkins() {
-        let (_d, mut s, mut run, w) = setup();
-        s.conn()
-            .execute(
-                "UPDATE runs SET stall_rounds = 0 WHERE run_id = ?1",
-                [&run.run_id],
-            )
-            .unwrap();
-        run.stall_rounds = 0;
-        let busy = || live(None, "working");
-        let obs = Script(RefCell::new((0..4).map(|_| busy()).collect()));
-        let mut verdicts = Vec::new();
-        for _ in 0..4 {
-            let now = pass_time(&s, &w, 600);
-            verdicts.push(
-                check_run_at(&mut s, &run, &obs, false, now)
-                    .unwrap()
-                    .remove(0)
-                    .verdict,
-            );
-        }
-        assert_eq!(
-            verdicts,
-            ["proxy_checkin", "proxy_checkin", "suspect", "dead"]
-        );
     }
 
     #[test]
@@ -1756,11 +1536,14 @@ mod tests {
     #[test]
     fn a_worker_that_waits_is_progress_and_names_the_reasons() {
         let (_d, mut s, run, w) = setup();
+        // A background wait of a worker with no live agent child ends at
+        // once (MAP.md of fleetd-p2, Q23), so the 2 waits that hold here are
+        // a question and a reviewers wait whose reviews are in.
         workers::set_wait(s.conn(), &w, "question", "reason b", &[], 3600).unwrap();
-        workers::set_wait(s.conn(), &w, "background", "reason a", &[], 3600).unwrap();
+        workers::set_wait(s.conn(), &w, workers::REVIEWS_WAIT, "reason a", &[], 3600).unwrap();
         let c = one_check(&mut s, &run, &w, live(None, "idle"));
         assert_eq!(c.verdict, "progress");
-        assert_eq!(c.note, "waiting: reason a; reason b");
+        assert_eq!(c.note, "waiting: reason b; reason a");
         assert_eq!(c.round, 0);
     }
 

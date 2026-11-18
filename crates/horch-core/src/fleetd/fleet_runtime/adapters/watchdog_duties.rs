@@ -10,10 +10,9 @@
 //!    and the lock holder and the herdr workspace of each orchestrator.
 //! 2. [`RunDuties::run`] writes the rows in the transaction of the pass,
 //!    with the rules of [`crate::taskledger::watchdog`]: the check of each
-//!    due worker ([`watchdog::check_observed`]); the reap of a worker past
-//!    its stall rounds ([`watchdog::reap_stalled`]), which ends its attempt
-//!    `stalled` and returns the stops of its process and pane; the flag of
-//!    an unclaimed spawn; the re-wake of startable tasks; the wake for
+//!    due worker ([`watchdog::check_observed`]), which reaps no worker; the
+//!    end of a pre-claim worker whose supervisor is gone, with the stops of
+//!    its process and pane; the flag of an unclaimed spawn; the re-wake of startable tasks; the wake for
 //!    reviews that are in; and the check of the orchestrator. A respawn of
 //!    the orchestrator is an attempt in `launching` with no task
 //!    (`docs/tickets/fleetd-p1/MAP.md`, Q6). Each wake is an outbox row.
@@ -24,8 +23,8 @@
 //!
 //! Each effect comes from a committed row, never from memory. So a fleetd
 //! that dies after the commit leaves the row, and the next pass does the
-//! effect: the respawn from the attempt in `launching`, the stop of a
-//! reaped worker from `mark_orphans`, and the wake from the outbox.
+//! effect: the respawn from the attempt in `launching`, the stop of an
+//! ended worker from `mark_orphans`, and the wake from the outbox.
 //!
 //! Each duty that reads rows has a work budget (PL-5, A32): it reads 1
 //! page of at most `pass_budget` rows from its cursor in `pass_cursors`
@@ -36,8 +35,10 @@
 //! rows only when the count says that the wake may be due. No duty starts
 //! after the time budget of the pass.
 //!
-//! The stall reap keeps the numbers of today (`check_every_s` and
-//! `stall_rounds` of the run) until Phase 2 replaces it with leases.
+//! "3 checks of 600 s" no longer reaps a worker: the leases and the stall
+//! ladder of the pass do (`docs/tickets/fleetd-p2/MAP.md`, Q14). The run
+//! numbers `check_every_s` and `stall_rounds` only set when a check is due
+//! and when a first stall asks for an update.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -66,9 +67,6 @@ use crate::taskledger::runs::{self, Run};
 use crate::taskledger::watchdog::{self, Checked, Observation, Observer, Sighting};
 use crate::taskledger::workers::{self, Preclaim, Worker};
 use crate::taskledger::{outbox, tasks, util, wakes};
-
-/// The outcome of the attempt of a worker that the stall reap ends.
-pub const STALLED: &str = "stalled";
 
 /// The outcome of an orchestrator attempt whose agent is gone.
 const GONE: &str = "gone";
@@ -239,9 +237,8 @@ impl<'a> WatchdogDuties<'a> {
 
     /// Check each due worker of the [`WORKER_CHECKS`] `page` that part 1
     /// observed, in the order of the cursor, until the time budget ends. A
-    /// worker past its stall rounds is reaped; a first stall or a suspect
-    /// gets its wake. The cursor moves through the last worker done.
-    /// Returns the reaped workers.
+    /// first stall or a suspect gets its wake. The cursor moves through the
+    /// last worker done. No check reaps a worker.
     fn check_page(
         &self,
         tx: &Transaction<'_>,
@@ -250,10 +247,9 @@ impl<'a> WatchdogDuties<'a> {
         page: Page,
         observed: &BTreeMap<String, Observation>,
         now: &str,
-    ) -> Result<Vec<String>> {
+    ) -> Result<()> {
         let mut cursor = page.start;
         let mut keys = Vec::new();
-        let mut reaped = Vec::new();
         let mut checked = self.checked.borrow_mut();
         for w in &page.workers {
             if (ctx.budget.time_up)() {
@@ -264,18 +260,14 @@ impl<'a> WatchdogDuties<'a> {
             let Some(run) = run_of(runs, w) else {
                 continue;
             };
-            let Some((c, dead)) = check_worker(tx, run, &w.worker_id, observed, now, self.force)?
-            else {
+            let Some(c) = check_worker(tx, run, &w.worker_id, observed, now, self.force)? else {
                 continue;
             };
-            if dead {
-                reaped.push(c.worker_id.clone());
-            }
             checked.push((run.run_id.clone(), c));
         }
         cursors_store::save(tx, WORKER_CHECKS, &cursor)?;
         self.rows.borrow_mut().insert(WORKER_CHECKS, keys);
-        Ok(reaped)
+        Ok(())
     }
 
     /// The pre-claim sweep (#190) and the flag of an unclaimed spawn
@@ -417,7 +409,7 @@ impl RunDuties for WatchdogDuties<'_> {
         }
         let mut reaped = BTreeSet::new();
         if let Some(page) = state.pages.remove(WORKER_CHECKS) {
-            reaped.extend(self.check_page(tx, ctx, &runs, page, &state.observed, &now)?);
+            self.check_page(tx, ctx, &runs, page, &state.observed, &now)?;
         }
         if let Some(page) = state.pages.remove(PRECLAIM) {
             reaped.extend(self.preclaim_page(tx, ctx, &runs, page, &state.observed, &now)?);
@@ -563,7 +555,8 @@ fn respawn_of(conn: &Connection, run: &Run, worker: &str, number: i64) -> Result
 }
 
 /// Check the worker `id` of `run` when it is due and part 1 observed it.
-/// Returns the check, and whether the stall reap ended the worker.
+/// Returns the check. A check reaps no worker: the stall ladder of the
+/// pass judges each live attempt (`docs/tickets/fleetd-p2/MAP.md`, Q14).
 fn check_worker(
     tx: &Transaction<'_>,
     run: &Run,
@@ -571,7 +564,7 @@ fn check_worker(
     observed: &BTreeMap<String, Observation>,
     now: &str,
     force: bool,
-) -> Result<Option<(Checked, bool)>> {
+) -> Result<Option<Checked>> {
     let (Some(w), Some(o)) = (workers::find(tx, id)?, observed.get(id)) else {
         return Ok(None);
     };
@@ -579,16 +572,8 @@ fn check_worker(
         return Ok(None);
     }
     let c = watchdog::check_observed(tx, run, &w, o, now)?;
-    let dead = c.verdict == "dead";
-    let wake = if dead {
-        let wake = watchdog::reap_stalled(tx, &c.worker_id, &c.note)?;
-        end_attempts(tx, &c.worker_id, STALLED, &format!("stalled: {}", c.note))?;
-        wake
-    } else {
-        wakes::verdict_wake(&c)
-    };
-    write(tx, run, wake)?;
-    Ok(Some((c, dead)))
+    write(tx, run, wakes::verdict_wake(&c))?;
+    Ok(Some(c))
 }
 
 /// End each attempt of `worker` that holds it, with `outcome`.
@@ -1271,35 +1256,31 @@ mod tests {
     }
 
     #[test]
-    fn pass_reaps_a_worker_past_its_stall_rounds_and_requeues_its_task() {
+    fn pass_checks_a_worker_past_its_stall_rounds_and_reaps_none() {
         let mut w = world();
-        let mut agent = Proc::sleep();
+        let agent = Proc::sleep();
         let (task, worker) = w.stalled_task(agent.recorded());
         let effects = Record::new(&w);
         let duties = WatchdogDuties::new(&Quiet, &NoHolder, &effects, w.dir.clone());
 
         let report = pass(&mut w, &duties, Faults::default());
 
-        assert_eq!(w.status("workers", "worker_id", &worker), "incomplete");
-        assert_eq!(w.status("tasks", "task_id", &task), "ready");
-        let outcome: String = w
-            .conn
-            .query_row(
-                "SELECT outcome FROM attempts WHERE worker_id = ?1",
-                [&worker],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(outcome, STALLED);
-        assert_eq!(w.outbox(OutboxEvent::Reaped), 1);
+        let checked = duties.take_checked();
+        assert_eq!(checked.len(), 1, "the due worker gets its check");
+        assert_eq!(checked[0].1.verdict, "no_progress");
+        assert_eq!(w.status("workers", "worker_id", &worker), "working");
+        assert_eq!(w.status("tasks", "task_id", &task), "running");
+        assert_eq!(w.outbox(OutboxEvent::Reaped), 0);
+        assert_eq!(
+            w.count("SELECT count(*) FROM events WHERE kind = 'reaped'"),
+            0
+        );
         let pid = agent.0.id();
         assert!(
-            report.done.contains(&Done::Stop(format!("process {pid}"))),
+            !report.done.contains(&Done::Stop(format!("process {pid}"))),
             "{report:?}"
         );
-        assert!(agent.wait_exit(), "the stop of part 3 ends the agent");
-        let reaps = w.count("SELECT count(*) FROM events WHERE kind = 'reaped'");
-        assert_eq!(reaps, 1);
+        assert!(crate::procid::alive(pid, None), "the agent runs on");
     }
 
     #[test]
@@ -1625,14 +1606,10 @@ mod tests {
     #[test]
     fn a_crash_between_the_commit_and_the_effects_is_repaired_by_the_next_pass() {
         let mut w = world();
-        let mut agent = Proc::sleep();
-        let (task, worker) = w.stalled_task(agent.recorded());
         w.gone_orchestrator();
 
         crash_after_commit(&w);
 
-        assert_eq!(w.status("workers", "worker_id", &worker), "incomplete");
-        assert_eq!(w.status("tasks", "task_id", &task), "ready");
         let attempts = w.respawn_attempts();
         assert_eq!(attempts.len(), 1, "{attempts:?}");
         assert_eq!(attempts[0].1, "launching");
@@ -1641,21 +1618,14 @@ mod tests {
             effects.respawns().is_empty(),
             "the crash came before part 3"
         );
-        assert!(
-            matches!(agent.0.try_wait(), Ok(None)),
-            "the crash came before the stop"
-        );
 
         let duties = WatchdogDuties::new(&Quiet, &NoHolder, &effects, w.dir.clone());
         pass(&mut w, &duties, Faults::default());
 
-        assert!(agent.wait_exit(), "the next pass stops the reaped agent");
         assert_eq!(
             effects.respawns(),
             vec![format!("{} launching", attempts[0].0)]
         );
-        assert_eq!(w.outbox(OutboxEvent::Reaped), 1, "1 reap wake");
-        assert_eq!(*effects.delivered.borrow(), 1, "the next pass delivers it");
         pass(&mut w, &duties, Faults::default());
         assert_eq!(effects.respawns().len(), 1, "1 respawn for 1 attempt");
     }

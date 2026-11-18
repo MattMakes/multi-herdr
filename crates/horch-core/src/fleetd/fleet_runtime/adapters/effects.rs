@@ -26,7 +26,7 @@
 //! [`Watch`] is the file watching of part 1: a hint that puts a changed
 //! folder first in its scan.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -470,6 +470,59 @@ pub fn read_heartbeat(fleet_root: &Path) -> Result<Option<Heartbeat>> {
 /// that stops its pings.
 pub fn watchdog_ping() {
     let _ = horch_platform::service::watchdog_ping();
+}
+
+// ─── activity ───────────────────────────────────────────────────────────
+
+/// The activity signals of 1 live attempt, as 1 pass saw them
+/// (`docs/tickets/fleetd-p2/MAP.md`, Q7). The next pass compares its
+/// signals with these: a signal that moved is activity.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Activity {
+    /// The last progress that the agent recorded itself.
+    pub progress_at: Option<String>,
+    pub transcript_bytes: Option<i64>,
+    pub transcript_mtime: Option<String>,
+    /// The state counter of herdr for the pane.
+    pub herdr_seq: Option<i64>,
+    /// The seconds of the working timer on the screen.
+    pub timer_s: Option<i64>,
+}
+
+impl Activity {
+    /// Whether a signal of `self` moved since `before`. A signal that the
+    /// pass did not read is no move.
+    pub fn moved_since(&self, before: &Activity) -> bool {
+        fn moved<T: PartialEq>(now: &Option<T>, before: &Option<T>) -> bool {
+            now.is_some() && now != before
+        }
+        moved(&self.progress_at, &before.progress_at)
+            || moved(&self.transcript_bytes, &before.transcript_bytes)
+            || moved(&self.transcript_mtime, &before.transcript_mtime)
+            || moved(&self.herdr_seq, &before.herdr_seq)
+            || moved(&self.timer_s, &before.timer_s)
+    }
+}
+
+/// `<fleet root>/run/activity.json`: the [`Activity`] of each live attempt
+/// at the last pass, by attempt id. A file, not a ledger row, so that
+/// `horch ledger watch --once` compares with the pass before it.
+pub fn activity_path(fleet_root: &Path) -> PathBuf {
+    run_dir(fleet_root).join("activity.json")
+}
+
+/// The activity file. A missing file, or a file that does not parse, is
+/// no record: the next pass sees no activity for 1 pass.
+pub fn read_activity(fleet_root: &Path) -> BTreeMap<String, Activity> {
+    std::fs::read(activity_path(fleet_root))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+/// Write the activity file atomically.
+pub fn write_activity(fleet_root: &Path, seen: &BTreeMap<String, Activity>) -> Result<()> {
+    write_json(&activity_path(fleet_root), seen)
 }
 
 fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
