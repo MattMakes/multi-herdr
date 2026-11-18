@@ -21,7 +21,8 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use horch_platform::channel::User;
 use rusqlite::{Connection, OptionalExtension};
 
 use crate::fleetd::fleet_runtime::adapters::sqlite as door;
@@ -65,10 +66,12 @@ pub fn read(
     attempts: &[AttemptRef],
     max_bytes: u64,
 ) -> Result<Vec<OutboxRead>> {
+    // fleetd owns the ledger: each outbox file must be of its user.
+    let owner = User::current().context("read the user of this process")?;
     let mut out = Vec::new();
     for attempt in attempts {
         let mut done = |path: &Path| store::has(conn, &key(path));
-        let files = read_outbox(fleet_root, attempt, max_bytes, &mut done)?;
+        let files = read_outbox(fleet_root, attempt, &owner, max_bytes, &mut done)?;
         if !files.is_empty() {
             out.push(OutboxRead {
                 attempt: attempt.clone(),
@@ -122,7 +125,7 @@ pub fn ingest(tx: &Connection, guard: Option<Generation>, reads: &[OutboxRead]) 
 }
 
 /// The `ingested.path` of a file.
-fn key(path: &Path) -> String {
+pub(super) fn key(path: &Path) -> String {
     path.display().to_string()
 }
 
@@ -151,7 +154,7 @@ fn cause(text: &str) -> Cause<'_> {
 /// The worker and the state of attempt `a` when it is the newest attempt
 /// of its task; `None` for an older attempt, or for no attempt row. A file
 /// of an older attempt moves nothing.
-fn newest(tx: &Connection, a: &AttemptRef) -> Result<Option<(String, String)>> {
+pub(super) fn newest(tx: &Connection, a: &AttemptRef) -> Result<Option<(String, String)>> {
     Ok(tx
         .query_row(
             "SELECT a.worker_id, a.state FROM attempts a
@@ -165,7 +168,7 @@ fn newest(tx: &Connection, a: &AttemptRef) -> Result<Option<(String, String)>> {
 
 /// The move of `entity` `id` to `to`. A refused move is recorded by the
 /// door, and fails only its row: false.
-fn moved(
+pub(super) fn moved(
     tx: &Connection,
     guard: Option<Generation>,
     entity: Entity,

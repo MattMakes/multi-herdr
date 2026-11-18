@@ -37,6 +37,7 @@ use crate::fleetd::task_execution::adapters::sqlite as store;
 use crate::fleetd::task_execution::adapters::task_files::{
     attempt_dir, write_attempt_files, AttemptFiles,
 };
+use crate::fleetd::task_execution::application::outbox_ingest;
 use crate::fleetd::task_execution::domain::dispatch::{
     choose, Choice, Hold, Holds, ReadyTask, RunningTask,
 };
@@ -556,6 +557,7 @@ fn facts(conn: &Connection, attempt_id: &str) -> Result<TaskFacts> {
         Some(row) => (row.path, row.branch),
         None => (run.project_root.clone(), base_branch(&run)?),
     };
+    let handoff = outbox_ingest::handoff_of(conn, &task_id)?;
     Ok(TaskFacts {
         task: format!("T{}", task.seq),
         task_id,
@@ -570,6 +572,7 @@ fn facts(conn: &Connection, attempt_id: &str) -> Result<TaskFacts> {
         kind: task.work_kind,
         ticket_snapshot: task.ticket_snapshot.unwrap_or_default(),
         extra: None,
+        handoff,
     })
 }
 

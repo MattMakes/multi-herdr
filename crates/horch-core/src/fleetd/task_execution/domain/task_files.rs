@@ -36,6 +36,9 @@ pub struct TaskFacts {
     /// The section of a resolver or fix attempt (ticket 33), after the
     /// fixed part of `START.md`.
     pub extra: Option<String>,
+    /// The real path of the handoff file of the last attempt, when it ended
+    /// with a handoff and fleetd kept the path (ticket 29 of fleetd-p5, Q4).
+    pub handoff: Option<String>,
 }
 
 /// The lease renewal period that `task.yaml` names.
@@ -66,7 +69,8 @@ pub fn render_task_yaml(f: &TaskFacts, report_to: &str) -> String {
 }
 
 /// `START.md` of `f`, whose outbox is `report_to`: the ticket snapshot,
-/// then the fixed part, then the extra section, if any.
+/// then the fixed part with the handoff file, if any, then the extra
+/// section, if any.
 pub fn render_start_md(f: &TaskFacts, report_to: &str) -> String {
     let mut out = f.ticket_snapshot.clone();
     if !out.ends_with('\n') {
@@ -82,6 +86,11 @@ pub fn render_start_md(f: &TaskFacts, report_to: &str) -> String {
          To ask a question, send `QUESTION:`.\n",
         f.worktree, f.branch
     ));
+    if let Some(handoff) = &f.handoff {
+        out.push_str(&format!(
+            "\nThe last attempt handed off. Read its handoff file first: `{handoff}`\n"
+        ));
+    }
     if let Some(extra) = &f.extra {
         out.push('\n');
         out.push_str(extra);
@@ -299,6 +308,30 @@ mod tests {
         assert!(!assigns_secret("_KEY=1"));
         assert!(!assigns_secret("set the API_KEY variable"));
         assert!(!assigns_secret("api_key=1"));
+    }
+
+    #[test]
+    fn start_md_names_the_handoff_file_of_the_last_attempt() {
+        let mut f = TaskFacts {
+            task: "T1".into(),
+            task_id: "t-1".into(),
+            run: "r1".into(),
+            attempt: "A2".into(),
+            profile: "dev".into(),
+            worktree: "/w".into(),
+            branch: "b".into(),
+            read_first: "tickets/t.md".into(),
+            goal: "g".into(),
+            check: None,
+            kind: None,
+            ticket_snapshot: "# t\n".into(),
+            extra: None,
+            handoff: None,
+        };
+        assert!(!render_start_md(&f, "/o/").contains("handoff"));
+        f.handoff = Some("/fleet/tasks/t-1/handoff.md".into());
+        assert!(render_start_md(&f, "/o/")
+            .contains("Read its handoff file first: `/fleet/tasks/t-1/handoff.md`"));
     }
 
     #[test]

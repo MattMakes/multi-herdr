@@ -4,24 +4,26 @@
 //! protocol rule 7 and SR-6: a file that a worker writes is not trusted.
 //! Before this reader reads a file, it checks that the file is a regular
 //! file and not a link, that its real path is in the outbox of its own
-//! attempt, and that it is under its size limit. It opens the file and
-//! compares the identity of the open file with the identity that it
-//! checked, so a swap for a link between the check and the open is seen.
-//! The open never waits on a FIFO. Then the payload must name the task and
-//! the attempt of its path. A file that fails 1 check is a [`Read::Rejected`]
+//! attempt, and that it is under its size limit. Then it reads the file
+//! through the protected file reader (ticket 07 of fleetd-p5), which opens
+//! it without a link, sees a swap between the check and the open, and
+//! checks the owner and the mode of the file and of each folder up to the
+//! outbox (SR-6; `docs/tickets/fleetd-p5/MAP.md`, Q3). Then the payload
+//! must name the task and the attempt of its path. A file that fails 1 check is a [`Read::Rejected`]
 //! with the check in its reason. A question file uses the same reader
 //! (`docs/tickets/fleetd-p4/MAP.md`, Q10) and the same size limit.
 //!
 //! Readers ignore `*.tmp` (protocol rule 1): a writer renames its temp file
 //! when the file is whole.
 
-use std::fs::{Metadata, OpenOptions};
-use std::io::{self, Read as _};
+use std::io;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use horch_platform::channel::User;
 use serde::Deserialize;
 
+use crate::fleetd::fleet_runtime::adapters::protected_files::{read_protected, Rule};
 use crate::fleetd::task_execution::adapters::task_files::attempt_dir;
 use crate::fleetd::task_execution::domain::result::{validate, Refusal, ResultFile};
 
@@ -109,6 +111,7 @@ mod check {
     pub(super) const REAL_PATH: &str = "real_path";
     pub(super) const SIZE: &str = "size";
     pub(super) const READ: &str = "read";
+    pub(super) const PROTECTED: &str = "protected";
     pub(super) const SCHEMA: &str = "schema";
     pub(super) const TASK_ID: &str = "task_id";
     pub(super) const ATTEMPT_ID: &str = "attempt_id";
@@ -124,11 +127,13 @@ fn rejected(check: &str, detail: impl std::fmt::Display) -> Read {
 /// Read the files of the outbox of `attempt` under `fleet_root`:
 /// `result.json` first, then each question file in name order. A file
 /// whose path `done` names is not read: the ledger has it. `max_bytes` is
-/// the size limit of each file (`result_max_bytes` of `fleet.toml`). An
-/// outbox that does not exist gives no file.
+/// the size limit of each file (`result_max_bytes` of `fleet.toml`).
+/// `owner` is the user that owns the ledger: each file and each folder up to
+/// the outbox must be its own. An outbox that does not exist gives no file.
 pub fn read_outbox(
     fleet_root: &Path,
     attempt: &AttemptRef,
+    owner: &User,
     max_bytes: u64,
     done: &mut dyn FnMut(&Path) -> Result<bool>,
 ) -> Result<Vec<FileRead>> {
@@ -154,7 +159,12 @@ pub fn read_outbox(
             FileKind::Result => real_outbox.clone(),
             FileKind::Question => real_outbox.join(QUESTIONS),
         };
-        if let Some(read) = read_file(&path, &home, kind, attempt, max_bytes) {
+        let rule = Rule {
+            root: &real_outbox,
+            owner,
+            limit: max_bytes,
+        };
+        if let Some(read) = read_file(&path, &home, kind, attempt, &rule) {
             out.push(FileRead { path, kind, read });
         }
     }
@@ -182,14 +192,16 @@ fn names(dir: &Path) -> Result<Vec<String>> {
 }
 
 /// The checks of SR-6 and the payload of the file `path`, whose real
-/// folder must be `home`. `None`: no file is at `path`.
+/// folder must be `home`. The stat checks come first, so each reason names
+/// its check; then `rule` reads the file. `None`: no file is at `path`.
 fn read_file(
     path: &Path,
     home: &Path,
     kind: FileKind,
     attempt: &AttemptRef,
-    max_bytes: u64,
+    rule: &Rule<'_>,
 ) -> Option<Read> {
+    let max_bytes = rule.limit;
     let checked = match std::fs::symlink_metadata(path) {
         Ok(meta) => meta,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return None,
@@ -217,10 +229,9 @@ fn read_file(
     if checked.len() > max_bytes {
         return Some(rejected(check::SIZE, too_large(checked.len(), max_bytes)));
     }
-    let bytes = match read_same_file(path, &checked, max_bytes) {
-        Ok(Ok(bytes)) => bytes,
-        Ok(Err(refusal)) => return Some(refusal),
-        Err(e) => return Some(rejected(check::READ, e)),
+    let bytes = match read_protected(path, rule) {
+        Ok(bytes) => bytes,
+        Err(refusal) => return Some(rejected(check::PROTECTED, refusal.reason)),
     };
     let sha256 = crate::digest::sha256_bytes(&bytes).hex();
     Some(match payload(&bytes, kind, attempt, max_bytes) {
@@ -234,37 +245,6 @@ fn read_file(
 
 fn too_large(bytes: u64, max: u64) -> String {
     format!("the file has {bytes} bytes; the limit is {max} bytes")
-}
-
-/// The bytes of `path`, opened after the check `checked`: the open file
-/// must be the file that was checked, and at most `max_bytes` long.
-fn read_same_file(
-    path: &Path,
-    checked: &Metadata,
-    max_bytes: u64,
-) -> io::Result<Result<Vec<u8>, Read>> {
-    let mut options = OpenOptions::new();
-    options.read(true);
-    // Where the OS has no FIFO, a FIFO cannot block the open.
-    let _ = horch_platform::fs::open_no_block(&mut options);
-    let file = options.open(path)?;
-    let opened = file.metadata()?;
-    let same =
-        horch_platform::fs::file_identity(&opened) == horch_platform::fs::file_identity(checked);
-    if !opened.is_file() || !same {
-        return Ok(Err(rejected(
-            check::NO_LINK,
-            "the file changed between its check and its open",
-        )));
-    }
-    let mut bytes = Vec::new();
-    file.take(max_bytes.saturating_add(1))
-        .read_to_end(&mut bytes)?;
-    let len = bytes.len() as u64;
-    if len > max_bytes {
-        return Ok(Err(rejected(check::SIZE, too_large(len, max_bytes))));
-    }
-    Ok(Ok(bytes))
 }
 
 /// The payload of `bytes` of a file of `kind` of `attempt`, or the reason

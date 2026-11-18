@@ -127,6 +127,7 @@ impl World {
             .join("A1")
             .join("outbox");
         std::fs::create_dir_all(&dir).unwrap();
+        set_mode(&dir, 0o700);
         dir
     }
 
@@ -203,9 +204,21 @@ fn question_json(task: &str, attempt: &str) -> String {
     .to_string()
 }
 
+/// Write `text` to `path` with mode 0600, as the outbox writer does: the
+/// protected file reader refuses a wider mode (ticket 29 of fleetd-p5).
+fn write_0600(path: impl AsRef<std::path::Path>, text: impl AsRef<[u8]>) {
+    std::fs::write(&path, text).unwrap();
+    set_mode(path.as_ref(), 0o600);
+}
+
+fn set_mode(path: &std::path::Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+}
+
 fn write_result(w: &World, a: &AttemptRef) -> PathBuf {
     let path = w.outbox(a).join("result.json");
-    std::fs::write(&path, result_json(&a.task_id, "A1", "done")).unwrap();
+    write_0600(&path, result_json(&a.task_id, "A1", "done"));
     path
 }
 
@@ -258,7 +271,7 @@ fn symlinked_result_is_rejected_and_not_read_again() {
     let mut w = world();
     let a = w.running_task();
     let real = w.dir.join("elsewhere.json");
-    std::fs::write(&real, result_json(&a.task_id, "A1", "done")).unwrap();
+    write_0600(&real, result_json(&a.task_id, "A1", "done"));
     let path = w.outbox(&a).join("result.json");
     std::os::unix::fs::symlink(&real, &path).unwrap();
 
@@ -269,7 +282,7 @@ fn symlinked_result_is_rejected_and_not_read_again() {
 
     // A valid file at the same path later is not read: the path is done.
     std::fs::remove_file(&path).unwrap();
-    std::fs::write(&path, result_json(&a.task_id, "A1", "done")).unwrap();
+    write_0600(&path, result_json(&a.task_id, "A1", "done"));
     let report = w.pass(std::slice::from_ref(&a));
     assert_eq!(report, Report::default());
     assert_rejected(&w, &path, "no_link");
@@ -282,7 +295,7 @@ fn oversized_result_is_rejected() {
     let a = w.running_task();
     let path = w.outbox(&a).join("result.json");
     let summary = "x".repeat(usize::try_from(w.max_bytes).unwrap());
-    std::fs::write(&path, result_json(&a.task_id, "A1", &summary)).unwrap();
+    write_0600(&path, result_json(&a.task_id, "A1", &summary));
 
     w.pass(std::slice::from_ref(&a));
     assert_rejected(&w, &path, "size");
@@ -294,7 +307,7 @@ fn result_with_the_attempt_id_of_another_attempt_is_rejected() {
     let mut w = world();
     let a = w.running_task();
     let path = w.outbox(&a).join("result.json");
-    std::fs::write(&path, result_json(&a.task_id, "A2", "done")).unwrap();
+    write_0600(&path, result_json(&a.task_id, "A2", "done"));
 
     w.pass(std::slice::from_ref(&a));
     assert_rejected(&w, &path, "attempt_id");
@@ -381,7 +394,8 @@ fn question_file_moves_the_task_to_blocked_on_user_and_burns_no_attempt() {
     let burned = w.burned(&a);
     let questions = w.outbox(&a).join("questions");
     std::fs::create_dir_all(&questions).unwrap();
-    std::fs::write(questions.join("1.json"), question_json(&a.task_id, "A1")).unwrap();
+    set_mode(&questions, 0o700);
+    write_0600(questions.join("1.json"), question_json(&a.task_id, "A1"));
 
     let report = w.pass(std::slice::from_ref(&a));
     assert_eq!(report.to_blocked, vec![a.task_id.clone()]);

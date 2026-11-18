@@ -106,6 +106,7 @@ impl World {
             kind: None,
             ticket_snapshot: "# Ticket One\n".into(),
             extra: None,
+            handoff: None,
         };
         w.files = write_attempt_files(&w.root.join("fleet"), &facts, &[]).unwrap();
         w

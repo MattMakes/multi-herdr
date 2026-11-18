@@ -29,6 +29,7 @@ fn facts(root: &Path) -> TaskFacts {
         kind: Some("feature".into()),
         ticket_snapshot: SNAPSHOT.into(),
         extra: None,
+        handoff: None,
     }
 }
 

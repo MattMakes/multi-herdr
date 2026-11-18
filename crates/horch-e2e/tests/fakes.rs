@@ -1077,6 +1077,7 @@ mod phase4 {
             kind: None,
             ticket_snapshot: "# T1\n".into(),
             extra: None,
+            handoff: None,
         };
         let files = write_attempt_files(&fleet, &facts, &[]).unwrap();
         h.set("HORCH_WORKER_ID", worker.as_str());
