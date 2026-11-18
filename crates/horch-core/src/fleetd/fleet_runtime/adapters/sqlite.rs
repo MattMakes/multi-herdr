@@ -293,6 +293,24 @@ pub fn append_fact(tx: &Connection, f: &Fact<'_>) -> Result<()> {
     Ok(())
 }
 
+/// Whether an event of kind `kind` with the cause `cause` is about the row
+/// `id` of `entity`. No index of `events` covers the entity, so the read
+/// scans the table: a caller asks only about rows that need the answer.
+pub fn has_fact(
+    conn: &Connection,
+    entity: Entity,
+    id: &str,
+    kind: EventKind,
+    cause: &str,
+) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM events
+            WHERE entity = ?1 AND entity_id = ?2 AND kind = ?3 AND cause = ?4)",
+        params![entity.as_str(), id, kind.as_str(), cause],
+        |r| r.get(0),
+    )?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -575,6 +593,37 @@ mod tests {
             ))
         });
         assert!(matches!(missing.unwrap(), Err(DoorError::NoRow { .. })));
+    }
+
+    #[test]
+    fn has_fact_finds_only_an_event_of_its_row_kind_and_cause() {
+        let mut l = ledger();
+        let task = l.task(1);
+        let other = l.task(2);
+        let data = serde_json::json!({});
+        l.store
+            .immediate(|tx| {
+                record_fact(
+                    tx,
+                    None,
+                    EventKind::Note,
+                    Entity::Task,
+                    &task,
+                    cause("seen"),
+                    &data,
+                )
+                .unwrap();
+                Ok(())
+            })
+            .unwrap();
+        let has = |id: &str, kind: EventKind, text: &str| {
+            has_fact(l.conn(), Entity::Task, id, kind, text).unwrap()
+        };
+        assert!(has(&task, EventKind::Note, "seen"));
+        assert!(!has(&task, EventKind::Note, "other cause"));
+        assert!(!has(&task, EventKind::Doorbell, "seen"));
+        assert!(!has(&other, EventKind::Note, "seen"));
+        assert!(!has_fact(l.conn(), Entity::Worker, &task, EventKind::Note, "seen").unwrap());
     }
 
     /// A ledger built at version `from` and migrated to the newest version
