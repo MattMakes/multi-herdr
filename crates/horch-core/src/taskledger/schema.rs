@@ -42,8 +42,12 @@ pub const PHASE_5_VERSION: i64 = PHASE_4_VERSION + 1;
 /// their release backfill (`phase_6`).
 pub const PHASE_6_VERSION: i64 = PHASE_5_VERSION + 1;
 
+/// The version of the Phase 7 step: `events` built again, so its kind
+/// `CHECK` has the event words of the health of a profile (`phase_7`).
+pub const PHASE_7_VERSION: i64 = PHASE_6_VERSION + 1;
+
 /// The schema version this binary writes.
-pub const VERSION: i64 = PHASE_6_VERSION;
+pub const VERSION: i64 = PHASE_7_VERSION;
 
 /// A rule that applies to rows this ledger writes, not to imported ones
 /// (section 11.2): `CHECK (origin = 'import' OR <expr>)`.
@@ -666,21 +670,23 @@ fn events_v8_ddl(name: &str) -> (String, String) {
 /// `CHECK` is the list of this binary. A ledger keeps the kind list of the
 /// binary that built its `events` table, and no later step built it again,
 /// so a ledger at version 8 or more from an older binary refuses each
-/// newer kind (`doorbell`, `hold_started`, `hold_ended`).
+/// newer kind (`doorbell`, `hold_started`, `hold_ended`). A later step
+/// that adds a kind runs it again with its own `version`
+/// ([`PHASE_7_VERSION`]).
 ///
 /// The new table comes from the text of the code ([`events_v8_ddl`]),
 /// never from the stored text. Each row keeps its `event_id`, and the
 /// `AUTOINCREMENT` counter keeps its value, so no id is used again. The
 /// indexes go with the old table and are made again after the rename;
 /// `events` has no trigger.
-fn events_kinds(conn: &Connection) -> Result<()> {
+fn events_kinds(conn: &Connection, version: i64) -> Result<()> {
     let (table, indexes) = events_v8_ddl("events_kinds");
     conn.execute_batch(&table)?;
     let columns = column_names(conn, "events_kinds")?;
     if column_names(conn, "events")? != columns {
         bail!(
             "the events table does not have the columns of version {}",
-            EVENT_KINDS_VERSION - 1
+            version - 1
         );
     }
     let seq: Option<i64> = conn
@@ -1677,7 +1683,8 @@ fn migrate_unchecked(
         no_broken_reference(&tx, PHASE_3_VERSION)?;
     }
     if due(EVENT_KINDS_VERSION) {
-        events_kinds(&tx).context("building events again with the event kinds of this binary")?;
+        events_kinds(&tx, EVENT_KINDS_VERSION)
+            .context("building events again with the event kinds of this binary")?;
     }
     if due(WORKTREE_PATHS_VERSION) {
         worktree_paths(&tx).context("building worktrees again with 1 live row for each path")?;
@@ -1702,6 +1709,12 @@ fn migrate_unchecked(
             .context("backfilling the idea of each run in flight")?;
         tx.execute_batch(&tasks_need_an_idea())?;
         no_broken_reference(&tx, PHASE_6_VERSION)?;
+    }
+    if due(PHASE_7_VERSION) {
+        // The release row of Phase 7: "Ledger: None". The step changes only
+        // the words that the kind `CHECK` allows, and no row.
+        events_kinds(&tx, PHASE_7_VERSION)
+            .context("building events again with the event words of the health of a profile")?;
     }
     tx.pragma_update(None, "user_version", target)?;
     tx.commit()?;
@@ -2158,7 +2171,7 @@ mod v7_tests {
         ];
         // The Phase 2 step reads the stored text of `tasks`, so it runs on
         // the connection.
-        assert_eq!(steps.len() as i64 + 7, VERSION, "add the new step here");
+        assert_eq!(steps.len() as i64 + 8, VERSION, "add the new step here");
         for sql in steps.iter().take(version as usize) {
             conn.execute_batch(sql).unwrap();
         }
@@ -2169,7 +2182,7 @@ mod v7_tests {
             conn.execute_batch(&phase_3()).unwrap();
         }
         if version >= EVENT_KINDS_VERSION {
-            events_kinds(&conn).unwrap();
+            events_kinds(&conn, EVENT_KINDS_VERSION).unwrap();
         }
         if version >= WORKTREE_PATHS_VERSION {
             worktree_paths(&conn).unwrap();
@@ -2183,6 +2196,9 @@ mod v7_tests {
         if version >= PHASE_6_VERSION {
             conn.execute_batch(PHASE_6).unwrap();
             conn.execute_batch(&tasks_need_an_idea()).unwrap();
+        }
+        if version >= PHASE_7_VERSION {
+            events_kinds(&conn, PHASE_7_VERSION).unwrap();
         }
         conn.execute("INSERT INTO projects VALUES ('p', '/r', 'now')", [])
             .unwrap();
@@ -2289,7 +2305,7 @@ mod v7_tests {
         assert_eq!(tasks_sql(&conn), want);
     }
 
-    /// The event kinds that the `events` step of [`EVENT_KINDS_VERSION`]
+    /// The event kinds that the newest `events` step, [`PHASE_7_VERSION`],
     /// writes in its `CHECK`. A new kind needs a new step: a ledger keeps
     /// the `CHECK` of the binary that built its `events` table.
     #[test]
@@ -2334,10 +2350,12 @@ mod v7_tests {
             "hold_ended",
             "doorbell",
             "wait_ended",
+            "profile_unhealthy",
+            "profile_healthy",
         ];
         assert_eq!(
-            (EVENT_KINDS_VERSION, words.as_slice()),
-            (PHASE_3_VERSION + 1, pinned.as_slice()),
+            (PHASE_7_VERSION, words.as_slice()),
+            (PHASE_6_VERSION + 1, pinned.as_slice()),
             "the event kinds changed: add a schema step that rebuilds the events CHECK, \
              then pin the new kinds to the version of that step"
         );

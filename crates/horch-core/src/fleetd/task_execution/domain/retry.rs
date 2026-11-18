@@ -28,10 +28,13 @@ pub enum Outcome {
     Quota,
     /// The judge reports an open CRITICAL item.
     CriticalOpen,
+    /// The context of the attempt reached the limit, and the attempt ended
+    /// with a handoff (FM-20).
+    ContextLimit,
 }
 
 impl Outcome {
-    pub const ALL: [Outcome; 9] = [
+    pub const ALL: [Outcome; 10] = [
         Outcome::Rejected,
         Outcome::Crashed,
         Outcome::TimedOut,
@@ -41,6 +44,7 @@ impl Outcome {
         Outcome::Asked,
         Outcome::Quota,
         Outcome::CriticalOpen,
+        Outcome::ContextLimit,
     ];
 
     /// The word of the design, as `attempts.outcome` stores it.
@@ -55,15 +59,16 @@ impl Outcome {
             Outcome::Asked => "asked",
             Outcome::Quota => "quota",
             Outcome::CriticalOpen => "critical_open",
+            Outcome::ContextLimit => "context_limit",
         }
     }
 
-    /// A question, a usage limit and an open CRITICAL item of a judge burn
-    /// no attempt. Each other outcome burns 1.
+    /// A question, a usage limit, an open CRITICAL item of a judge and the
+    /// context limit burn no attempt. Each other outcome burns 1.
     pub fn burns_attempt(self) -> bool {
         !matches!(
             self,
-            Outcome::Asked | Outcome::Quota | Outcome::CriticalOpen
+            Outcome::Asked | Outcome::Quota | Outcome::CriticalOpen | Outcome::ContextLimit
         )
     }
 }
@@ -180,7 +185,7 @@ mod tests {
     }
 
     #[test]
-    fn the_9_stored_outcome_words_stay() {
+    fn the_10_stored_outcome_words_stay() {
         let words: Vec<&str> = Outcome::ALL.into_iter().map(Outcome::as_str).collect();
         assert_eq!(
             words,
@@ -194,6 +199,7 @@ mod tests {
                 "asked",
                 "quota",
                 "critical_open",
+                "context_limit",
             ]
         );
     }
@@ -215,7 +221,12 @@ mod tests {
                 Outcome::NoResult,
             ]
         );
-        for o in [Outcome::Asked, Outcome::Quota, Outcome::CriticalOpen] {
+        for o in [
+            Outcome::Asked,
+            Outcome::Quota,
+            Outcome::CriticalOpen,
+            Outcome::ContextLimit,
+        ] {
             assert!(!o.burns_attempt(), "{o:?}");
         }
     }

@@ -347,6 +347,10 @@ ledger_enum!(
         // A declared wait of a worker ends before its clear: its time limit
         // or the live row behind it ended; the text holds the cause.
         WaitEnded = "wait_ended",
+        // A profile turns unhealthy or healthy again (FM-19); the last of
+        // these 2 events of a profile is its health.
+        ProfileUnhealthy = "profile_unhealthy",
+        ProfileHealthy = "profile_healthy",
     }
 );
 

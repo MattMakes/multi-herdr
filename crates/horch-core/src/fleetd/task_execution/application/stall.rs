@@ -288,7 +288,8 @@ fn end(tx: &Connection, guard: Option<Generation>, a: &AttemptRow, outcome: Outc
         | Outcome::Crashed
         | Outcome::TimedOut
         | Outcome::Killed
-        | Outcome::CriticalOpen => return Ok(()),
+        | Outcome::CriticalOpen
+        | Outcome::ContextLimit => return Ok(()),
     };
     if let Some(task) = &a.task_id {
         transition(
