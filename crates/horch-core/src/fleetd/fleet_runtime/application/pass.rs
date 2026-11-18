@@ -1336,6 +1336,10 @@ fn worktree_facts(
     lists: Vec<Listed>,
 ) -> WorktreeFacts {
     let row_keys: BTreeSet<&str> = rows.iter().map(|r| r.key.as_str()).collect();
+    let repo_of: BTreeMap<&str, &str> = work_dirs
+        .iter()
+        .flat_map(|d| d.folders.iter().map(|f| (f.as_str(), d.repo.as_str())))
+        .collect();
     let mut facts = WorktreeFacts {
         lists,
         ..WorktreeFacts::default()
@@ -1345,14 +1349,14 @@ fn worktree_facts(
             facts.folders.push(fact);
             continue;
         }
-        let repo = work_dirs.iter().find(|d| d.folders.contains(&fact.key));
+        let repo = repo_of.get(fact.key.as_str()).copied();
         let (Presence::Present, Some(repo)) = (&fact.presence, repo) else {
             continue;
         };
-        match facts.work_dirs.iter_mut().find(|d| d.repo == repo.repo) {
+        match facts.work_dirs.iter_mut().find(|d| d.repo == repo) {
             Some(d) => d.folders.push(fact.key),
             None => facts.work_dirs.push(WorkDir {
-                repo: repo.repo.clone(),
+                repo: repo.to_string(),
                 folders: vec![fact.key],
             }),
         }
