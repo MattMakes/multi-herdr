@@ -954,31 +954,60 @@ fn finish_decision(
     wt: &WorktreeRow,
     direction: &str,
 ) -> Result<Done> {
-    if let Some(parked) = parked_task(store.conn(), wt)? {
-        return resume_parked(store, wt, &parked, direction);
+    let ticket = match parked_task(store.conn(), wt)? {
+        Some(_) => None,
+        None => {
+            runs::resolve(store.conn(), env.root, None, None)
+                .context("FINISH needs an active run; start one with horch fleet")?;
+            Some(write_ticket(env.root, row, wt, direction)?)
+        }
+    };
+    store.immediate(|tx| {
+        finish_in(
+            tx,
+            env.root,
+            env.primary,
+            row,
+            wt,
+            direction,
+            ticket.as_deref(),
+        )
+    })
+}
+
+/// The rows of `FINISH`, in `tx`: a parked task resumes; else 1 task with
+/// the brief `ticket` inherits the worktree. A task to queue with no
+/// `ticket` is refused.
+fn finish_in(
+    tx: &Connection,
+    root: &Path,
+    primary: &str,
+    row: &Row,
+    wt: &WorktreeRow,
+    direction: &str,
+    ticket: Option<&str>,
+) -> Result<Done> {
+    if let Some(parked) = parked_task(tx, wt)? {
+        return resume_parked(tx, wt, &parked, direction);
     }
-    let (run, _) = runs::resolve(store.conn(), env.root, None, None)
+    let (run, _) = runs::resolve(tx, root, None, None)
         .context("FINISH needs an active run; start one with horch fleet")?;
-    let ticket = write_ticket(env.root, row, wt, direction)?;
+    let ticket = ticket.context("FINISH needs its brief, and no ticket file is given")?;
     let title = format!("Finish {}: {}", row.name, first_line(direction, 60));
-    let new = NewTask::work(&title, &ticket, env.primary);
-    let task = store.immediate(|tx| {
-        let task = tasks::add(tx, &run, &new, Actor::Operator)?;
-        tx.execute(
-            &format!(
-                "UPDATE worktrees SET task_id = ?2, worker_id = NULL, status = {open}, reason = NULL
-                 WHERE worktree_id = ?1",
-                open = word(WorktreeStatus::Open)
-            ),
-            [&wt.worktree_id, &task.task_id],
-        )?;
-        Ok(task)
-    })?;
+    let new = NewTask::work(&title, ticket, primary);
+    let task = tasks::add(tx, &run, &new, Actor::Operator)?;
+    tx.execute(
+        &format!(
+            "UPDATE worktrees SET task_id = ?2, worker_id = NULL, status = {open}, reason = NULL
+             WHERE worktree_id = ?1",
+            open = word(WorktreeStatus::Open)
+        ),
+        [&wt.worktree_id, &task.task_id],
+    )?;
     Ok(Done {
         text: format!(
-            "{} queued for {} with the brief {ticket}; it inherits {}",
+            "{} queued for {primary} with the brief {ticket}; it inherits {}",
             task.short(),
-            env.primary,
             wt.path
         ),
         queued: Some(Queued {
@@ -987,6 +1016,53 @@ fn finish_decision(
             task: task.short(),
         }),
         ..Default::default()
+    })
+}
+
+/// The decisions that [`apply_in_ledger`] applies: they write rows only.
+pub const LEDGER_ONLY: [TriageDecision; 2] = [TriageDecision::Keep, TriageDecision::Finish];
+
+/// Apply the decision `d` of `row` with rows only, in `tx`, as [`apply`]
+/// does: `KEEP`, or `FINISH` with `ticket`, the brief that the command
+/// wrote. A decision that fails is recorded as failed, as in [`apply`]. A
+/// decision that is not in [`LEDGER_ONLY`] is an error, and writes nothing.
+pub fn apply_in_ledger(
+    tx: &Connection,
+    root: &Path,
+    primary: &str,
+    row: &Row,
+    d: &Decided,
+    ticket: Option<&str>,
+) -> Result<Applied> {
+    if !LEDGER_ONLY.contains(&d.decision) {
+        bail!("{} needs git; it is not applied with rows only", d.decision);
+    }
+    let wt = adopt(tx, root, row)?;
+    let result = match d.decision {
+        TriageDecision::Finish => finish_in(tx, root, primary, row, &wt, direction(d), ticket),
+        _ => Ok(Done {
+            text: "kept; it comes back at the next triage".into(),
+            ..Default::default()
+        }),
+    };
+    let (ok, text, queued) = match result {
+        Ok(done) => {
+            record(tx, row, &wt, d.decision, &done)?;
+            (true, done.text, done.queued)
+        }
+        Err(e) => {
+            let why = format!("{e:#}");
+            failed(tx, row, &wt, d.decision, &why)?;
+            (false, why, None)
+        }
+    };
+    Ok(Applied {
+        id: d.id.clone(),
+        name: d.name.clone(),
+        decision: d.decision,
+        ok,
+        text,
+        queued,
     })
 }
 
@@ -1001,7 +1077,7 @@ fn parked_task(conn: &Connection, wt: &WorktreeRow) -> Result<Option<tasks::Task
 /// `FINISH` on a parked task: requeue it on its own worktree, with the
 /// direction as the requeue reason. Its dependents keep waiting for it.
 fn resume_parked(
-    store: &mut Store,
+    tx: &Connection,
     wt: &WorktreeRow,
     parked: &tasks::Task,
     direction: &str,
@@ -1010,7 +1086,7 @@ fn resume_parked(
         "" => "worktree triage FINISH".to_string(),
         d => format!("worktree triage FINISH: {d}"),
     };
-    let task = store.immediate(|tx| tasks::requeue_by_operator(tx, parked, &why))?;
+    let task = tasks::requeue_by_operator(tx, parked, &why)?;
     Ok(Done {
         text: format!(
             "{} resumed on {}; it keeps its ticket",
@@ -1069,7 +1145,7 @@ fn pr(store: &Store, env: &Env<'_>, row: &Row, wt: &WorktreeRow, direction: &str
 /// The newest row of the project at `root` that triage settled on the ref
 /// `r`. Another project can archive the same name, so the row must be of
 /// this project.
-fn archived_row(conn: &Connection, root: &Path, r: &str) -> Result<Option<String>> {
+pub(crate) fn archived_row(conn: &Connection, root: &Path, r: &str) -> Result<Option<String>> {
     let mut stmt = conn.prepare(
         "SELECT worktree_id, repo_root FROM worktrees WHERE archive_ref = ?1
          ORDER BY decided_at DESC, rowid DESC",
@@ -1147,13 +1223,19 @@ pub fn restore(
     let mut conn = open(store)?;
     let tx = immediate(&mut conn)?;
     create::give_to_operator(&tx, &id)?;
-    tx.execute(
-        "UPDATE worktrees SET reason = ?2 WHERE worktree_id = ?1",
-        params![id, format!("restored from {r}")],
-    )?;
+    note_restored(&tx, &id, &r)?;
     tx.commit()?;
     Ok(format!(
         "restored {path_text} on {branch} at {} from {r}",
         short(&commit)
     ))
+}
+
+/// The reason of the tree `id` that a restore made from the ref `r`.
+pub(crate) fn note_restored(conn: &Connection, id: &str, r: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE worktrees SET reason = ?2 WHERE worktree_id = ?1",
+        params![id, format!("restored from {r}")],
+    )?;
+    Ok(())
 }

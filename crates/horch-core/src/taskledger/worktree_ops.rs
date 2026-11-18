@@ -12,10 +12,11 @@ use crate::fleetd::fleet_runtime::application::ledger::Cause;
 use crate::fleetd::worktree_custody::adapters::sqlite::{NewWorktree, WorktreeMode};
 use crate::fleetd::worktree_custody::application::create::{JobProcess, Lease, RunJob};
 use anyhow::{bail, Context, Result};
-use rusqlite::params;
+use rusqlite::{params, Connection};
 use std::path::{Path, PathBuf};
 
-fn valid_name(name: &str) -> Result<()> {
+/// Refuse a worktree name that is not 1 to 60 letters, digits, `-` or `_`.
+pub fn valid_name(name: &str) -> Result<()> {
     if name.is_empty()
         || name.len() > 60
         || !name
@@ -147,21 +148,7 @@ fn new_tree(
         bail!("invalid base ref");
     }
     let commit = git.rev(root, base)?;
-    let (slug, branch) = match task {
-        None => (
-            format!("_scratch/{name}"),
-            format!("fleet-scratch-{}-{name}", run.slug),
-        ),
-        Some(t) => (
-            format!("T{}-{name}", t.seq),
-            format!(
-                "{}-T{}-{name}",
-                run.run_branch.as_deref().unwrap_or("fleet"),
-                t.seq
-            ),
-        ),
-    };
-    let path = root.join(".worktrees").join(slug);
+    let (path, branch) = tree_names(run, task, name);
     if path.exists() || git.branch_exists(root, &branch) {
         bail!("worktree path or branch already exists; pick another name");
     }
@@ -183,9 +170,35 @@ fn new_tree(
     })
 }
 
+/// The path and the branch of a new tree named `name` in `run`: a task
+/// tree of `task`, or a scratch tree when `task` is `None`.
+pub fn tree_names(run: &runs::Run, task: Option<&tasks::Task>, name: &str) -> (PathBuf, String) {
+    let (slug, branch) = match task {
+        None => (
+            format!("_scratch/{name}"),
+            format!("fleet-scratch-{}-{name}", run.slug),
+        ),
+        Some(t) => (
+            format!("T{}-{name}", t.seq),
+            format!(
+                "{}-T{}-{name}",
+                run.run_branch.as_deref().unwrap_or("fleet"),
+                t.seq
+            ),
+        ),
+    };
+    let path = Path::new(&run.project_root).join(".worktrees").join(slug);
+    (path, branch)
+}
+
 /// Resolve one registered tree by id, exact mode name or final directory component in this run.
 pub fn find(store: &Store, run_id: &str, name: &str) -> Result<WorktreeRow> {
-    let mut stmt=store.conn().prepare(&format!("SELECT w.worktree_id,w.path,m.name FROM worktrees w LEFT JOIN tasks t ON t.task_id=w.task_id LEFT JOIN worktree_modes m ON m.worktree_id=w.worktree_id WHERE (t.run_id=?1 OR m.run_id=?1) AND w.status NOT IN ({gone})",gone=sql_words::list(sql_words::WORKTREES_GONE)))?;
+    find_in(store.conn(), run_id, name)
+}
+
+/// [`find`], on the connection `conn`.
+pub fn find_in(conn: &Connection, run_id: &str, name: &str) -> Result<WorktreeRow> {
+    let mut stmt=conn.prepare(&format!("SELECT w.worktree_id,w.path,m.name FROM worktrees w LEFT JOIN tasks t ON t.task_id=w.task_id LEFT JOIN worktree_modes m ON m.worktree_id=w.worktree_id WHERE (t.run_id=?1 OR m.run_id=?1) AND w.status NOT IN ({gone})",gone=sql_words::list(sql_words::WORKTREES_GONE)))?;
     let rows = stmt
         .query_map([run_id], |r| {
             Ok((
@@ -210,7 +223,7 @@ pub fn find(store: &Store, run_id: &str, name: &str) -> Result<WorktreeRow> {
             ids.len()
         );
     }
-    finish::worktree(store.conn(), &ids[0])
+    finish::worktree(conn, &ids[0])
 }
 
 // The ledger records a branch, but the live checkout can be detached or switched
@@ -319,14 +332,20 @@ pub fn drop_worktree_with(
     if !keep_branch && git.branch_exists(&root, &wt.branch) {
         let _ = git.try_run(&root, &["branch", "-d", &wt.branch]);
     }
-    store.conn().execute(
+    record_drop(store.conn(), &wt.worktree_id, reason)?;
+    finish::worktree(store.conn(), &wt.worktree_id)
+}
+
+/// The row of a dropped tree: `abandoned`, with the reason of the drop.
+pub fn record_drop(conn: &Connection, id: &str, reason: &str) -> Result<()> {
+    conn.execute(
         &format!(
             "UPDATE worktrees SET status={abandoned},reason=?2,cleaned_at=?3 WHERE worktree_id=?1",
             abandoned = word(WorktreeStatus::Abandoned)
         ),
-        params![wt.worktree_id, reason, util::now()],
+        params![id, reason, util::now()],
     )?;
-    finish::worktree(store.conn(), &wt.worktree_id)
+    Ok(())
 }
 
 /// Whether a row is scratch. Scratch rows have no task and never enter finish.

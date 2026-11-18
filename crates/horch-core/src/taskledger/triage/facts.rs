@@ -5,13 +5,13 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use chrono::{DateTime, SecondsFormat, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::{Measure, Row};
 use crate::taskledger::git::Git;
 
 /// The ages of a row's work.
-#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Age {
     pub created_at: Option<String>,
     pub last_commit_at: Option<String>,
@@ -20,7 +20,7 @@ pub struct Age {
 }
 
 /// The disk a row's folder uses.
-#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Disk {
     pub bytes: u64,
     /// The share that git ignores (build output).
@@ -28,7 +28,7 @@ pub struct Disk {
 }
 
 /// What the branch changes against its base.
-#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Diff {
     pub files: usize,
     pub insertions: usize,
@@ -38,7 +38,7 @@ pub struct Diff {
 }
 
 /// The work in the folder that no commit holds.
-#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Uncommitted {
     pub modified: usize,
     pub staged: usize,

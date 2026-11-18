@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use rusqlite::Connection;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::git::Git;
 use super::model::{FindingStatus, TaskStatus, WorkerStatus, WorktreeStatus};
@@ -39,7 +39,7 @@ pub enum Measure {
 }
 
 /// 1 parked worktree.
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Row {
     /// `W1`, `W2`, ... in name order.
     pub id: String,
