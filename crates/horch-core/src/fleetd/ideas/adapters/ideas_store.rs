@@ -27,6 +27,8 @@ pub struct IdeaRow {
     pub pane: Option<String>,
     pub waiting_on_you_since: Option<String>,
     pub approved_sha256: Option<String>,
+    /// The sha256 of the `approval.json` that fleetd wrote.
+    pub approval_sha256: Option<String>,
     pub plan_sha256: Option<String>,
     pub phase_attempts: i64,
     pub created_at: String,
@@ -72,7 +74,8 @@ pub fn idea(conn: &Connection, id: &str) -> Result<Option<IdeaRow>> {
     let row = conn
         .query_row(
             "SELECT id, feature_id, state, priority, pane, waiting_on_you_since,
-                approved_sha256, plan_sha256, phase_attempts, created_at, updated_at
+                approved_sha256, approval_sha256, plan_sha256, phase_attempts, created_at,
+                updated_at
              FROM ideas WHERE id = ?1",
             [id],
             |r| {
@@ -84,15 +87,39 @@ pub fn idea(conn: &Connection, id: &str) -> Result<Option<IdeaRow>> {
                     pane: r.get(4)?,
                     waiting_on_you_since: r.get(5)?,
                     approved_sha256: r.get(6)?,
-                    plan_sha256: r.get(7)?,
-                    phase_attempts: r.get(8)?,
-                    created_at: r.get(9)?,
-                    updated_at: r.get(10)?,
+                    approval_sha256: r.get(7)?,
+                    plan_sha256: r.get(8)?,
+                    phase_attempts: r.get(9)?,
+                    created_at: r.get(10)?,
+                    updated_at: r.get(11)?,
                 })
             },
         )
         .optional()?;
     Ok(row)
+}
+
+/// Record the approval of the idea `id` in `tx`: `approved_sha256`, the
+/// sha256 of the approved file (or the marker `release`), and
+/// `approval_sha256`, the sha256 of the `approval.json` that fleetd writes,
+/// with 1 event of the idea that holds both.
+pub fn set_approval(
+    tx: &Connection,
+    guard: Option<Generation>,
+    id: &str,
+    approved_sha256: &str,
+    approval_sha256: &str,
+    cause: Cause<'_>,
+) -> Result<()> {
+    check_writable(tx, guard)?;
+    tx.execute(
+        "UPDATE ideas SET approved_sha256 = ?2, approval_sha256 = ?3, updated_at = ?4
+         WHERE id = ?1",
+        params![id, approved_sha256, approval_sha256, util::now()],
+    )?;
+    let data = json!({ "approved_sha256": approved_sha256, "approval_sha256": approval_sha256 });
+    record(tx, guard, EventKind::Note, Entity::Idea, id, cause, &data)?;
+    Ok(())
 }
 
 /// Insert the requirements `reqs` of the idea `idea_id`, with 1 event of

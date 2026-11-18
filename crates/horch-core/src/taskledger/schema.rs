@@ -1342,6 +1342,7 @@ const PHASE_6: &str = "CREATE TABLE ideas (
     pane TEXT,
     waiting_on_you_since TEXT,
     approved_sha256 TEXT,
+    approval_sha256 TEXT,
     plan_sha256 TEXT,
     phase_attempts INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL

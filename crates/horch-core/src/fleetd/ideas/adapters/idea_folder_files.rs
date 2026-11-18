@@ -15,7 +15,9 @@ use std::path::{Path, PathBuf};
 use horch_platform::channel::User;
 use serde::{Deserialize, Serialize};
 
+use crate::digest::sha256_bytes;
 use crate::fleetd::fleet_runtime::adapters::protected_files::{read_protected, Rule};
+use crate::fleetd::ideas::domain::approval::APPROVAL_JSON;
 use crate::fleetd::ideas::domain::idea_folder::{
     check_idea_id, check_requirements, check_spec, interview_answers, interview_entry,
     interview_heading, is_idea_id, join_front_matter, parse_assumptions, split_front_matter,
@@ -290,6 +292,23 @@ impl IdeaFolder {
         check_requirements(&requirements, &assumptions, &self.read_answers()?)
             .map_err(invalid_in(REQUIREMENTS_YAML))?;
         Ok(requirements)
+    }
+
+    /// The lower-case hex sha256 of the file `name` of the folder, read with
+    /// the checks of SR-6. `name` is a path inside the folder.
+    pub fn sha256_of(&self, name: &str) -> Result<String, FolderError> {
+        Ok(sha256_bytes(self.read_text(name)?.as_bytes()).hex())
+    }
+
+    /// Replace approval.json. Only fleetd calls it (FR-10).
+    pub fn write_approval(&self, text: &str) -> Result<(), FolderError> {
+        self.replace(APPROVAL_JSON, text)
+    }
+
+    /// The text of approval.json, read with the checks of SR-6. The caller
+    /// trusts it only when its sha256 is the one that fleetd recorded.
+    pub fn read_approval(&self) -> Result<String, FolderError> {
+        self.read_text(APPROVAL_JSON)
     }
 
     /// Replace the file `name` atomically: `.name.tmp-*`, fsync, rename.
