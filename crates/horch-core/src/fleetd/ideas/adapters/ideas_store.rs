@@ -152,6 +152,20 @@ pub fn insert_requirements(
     Ok(())
 }
 
+/// The ideas of the feature `feature_id`, oldest first.
+pub fn of_feature(conn: &Connection, feature_id: &str) -> Result<Vec<IdeaRow>> {
+    let mut stmt =
+        conn.prepare("SELECT id FROM ideas WHERE feature_id = ?1 ORDER BY created_at, id")?;
+    let ids = stmt
+        .query_map([feature_id], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut out = Vec::with_capacity(ids.len());
+    for id in ids {
+        out.extend(idea(conn, &id)?);
+    }
+    Ok(out)
+}
+
 /// The requirements of the idea `idea_id`, as (`req_id`, `text`), by id.
 pub fn requirements(conn: &Connection, idea_id: &str) -> Result<Vec<(String, String)>> {
     let mut stmt =

@@ -19,6 +19,7 @@ use anyhow::{bail, Result};
 use crate::fleetd::integration::application::ports::{
     BranchTip, Candidate, IntegrationGitGateway, Member, RefMove,
 };
+use crate::fleetd::integration::application::stacks::StackGit;
 use crate::fleetd::worktree_custody::adapters::git::CliWorktreeGit;
 
 /// The reflog message of each ref move of fleetd.
@@ -334,6 +335,101 @@ impl IntegrationGitGateway for CliGitGateway {
             self.git.git(dir, &["config", key, value])?;
         }
         Ok(())
+    }
+}
+
+/// The id of the empty blob of a repository with the object format
+/// `format`. git knows it with no object in the repository.
+fn empty_blob(format: &str) -> Result<&'static str> {
+    match format {
+        "sha1" => Ok("e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"),
+        "sha256" => Ok("473a0f4c3be8a93681a267e3b1e9a7dcda1185436fe141f7749120a303721813"),
+        other => bail!("git has the object format {other}, which fleetd does not know"),
+    }
+}
+
+/// [`StackGit`] on [`CliGitGateway`]: the git reads of the stacks.
+/// `git merge-file -p` prints the merge and writes no object.
+#[derive(Debug, Clone)]
+pub struct CliStackGit {
+    gateway: CliGitGateway,
+}
+
+impl CliStackGit {
+    pub fn new(git: CliWorktreeGit) -> CliStackGit {
+        CliStackGit {
+            gateway: CliGitGateway::new(git),
+        }
+    }
+
+    /// The object of `file` at `rev`, or `None` when `rev` has no `file`.
+    fn blob(&self, repo: &Path, rev: &str, file: &str) -> Result<Option<String>> {
+        let spec = format!("{rev}:{file}");
+        let out = self
+            .gateway
+            .git
+            .checked(repo, &["rev-parse", "--verify", "--quiet", &spec])?;
+        Ok((out.status == 0).then(|| out.stdout_text()))
+    }
+}
+
+impl StackGit for CliStackGit {
+    fn tip(&self, repo: &Path, name: &str) -> Result<Option<String>> {
+        self.gateway.tip(repo, name)
+    }
+
+    fn conflict(
+        &self,
+        repo: &Path,
+        lower_tip: &str,
+        upper_tip: &str,
+        file: &str,
+    ) -> Result<String> {
+        object_id(lower_tip)?;
+        object_id(upper_tip)?;
+        let git = &self.gateway.git;
+        let format = git.git(repo, &["rev-parse", "--show-object-format"])?;
+        let empty = empty_blob(format.trim())?.to_string();
+        let base = git.checked(repo, &["merge-base", lower_tip, upper_tip])?;
+        let base = (base.status == 0).then(|| base.stdout_text());
+        let blob = |rev: Option<&str>| -> Result<String> {
+            let found = match rev {
+                Some(rev) => self.blob(repo, rev, file)?,
+                None => None,
+            };
+            Ok(found.unwrap_or_else(|| empty.clone()))
+        };
+        let ours = blob(Some(upper_tip))?;
+        let theirs = blob(Some(lower_tip))?;
+        let base_blob = blob(base.as_deref())?;
+        let out = git.checked(
+            repo,
+            &[
+                "merge-file",
+                "-p",
+                "--zdiff3",
+                "-L",
+                upper_tip,
+                "-L",
+                "base",
+                "-L",
+                lower_tip,
+                "--object-id",
+                &ours,
+                &base_blob,
+                &theirs,
+            ],
+        )?;
+        // The exit code is the count of conflicts; a negative one is an
+        // error.
+        if !(0..=127).contains(&out.status) {
+            bail!(
+                "git merge-file of {file} failed ({}): {}",
+                out.status,
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 }
 
