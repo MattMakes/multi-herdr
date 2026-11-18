@@ -62,7 +62,14 @@ pub fn run(conn: &Connection, row: &JobRow) -> Result<Ran> {
                 let landed = landed_commit(conn, &tree.worktree_id)?;
                 let owner = owner(conn, &tree)?;
                 let gw = CliRemoval::new(git, fleet_root(conn)?);
-                Ok(remove_git::remove(&gw, &tree, landed.as_deref(), &owner))
+                let ledger = |id: &str| store::get(conn, id);
+                Ok(remove_git::remove(
+                    &gw,
+                    &tree,
+                    landed.as_deref(),
+                    &owner,
+                    &ledger,
+                ))
             }
             None => Ok(git::failed(format!(
                 "no worktree {} in the ledger",

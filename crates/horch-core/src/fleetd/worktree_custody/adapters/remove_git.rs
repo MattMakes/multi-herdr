@@ -30,7 +30,7 @@ use crate::fleetd::worktree_custody::adapters::git::{failed, CliWorktreeGit};
 use crate::fleetd::worktree_custody::adapters::rescue_git::{self, PrivateIndex};
 use crate::fleetd::worktree_custody::adapters::sqlite::WorktreeRow;
 use crate::fleetd::worktree_custody::application::ports::WorktreeGitGateway;
-use crate::fleetd::worktree_custody::domain::removal::{self, Basis, Fact, Facts, Saved};
+use crate::fleetd::worktree_custody::domain::removal::{self, Basis, Fact, Facts, Record, Saved};
 
 /// The input key of a `worktree_remove` job: the path of the tree.
 pub fn remove_key(path: &str) -> String {
@@ -76,7 +76,10 @@ pub trait RemovalGateway {
     fn stashes(&self, repo: &Path) -> Result<Vec<String>>;
     /// The count of ignored files in `tree`.
     fn ignored_files(&self, tree: &Path) -> Result<u64>;
-    /// Whether the process `pid` with the start time `start` runs.
+    /// Whether the process `pid` with the start time `start` runs, or a
+    /// process of the process group `pid` runs: a child of the owner can
+    /// write into the tree from a folder outside it. A platform that cannot
+    /// list a group answers `true`.
     fn alive(&self, pid: u32, start: Option<u64>) -> bool;
     /// The processes with their working folder in `tree`.
     fn cwd_pids(&self, tree: &Path) -> Result<Vec<u32>>;
@@ -165,6 +168,7 @@ impl RemovalGateway for CliRemoval {
 
     fn alive(&self, pid: u32, start: Option<u64>) -> bool {
         crate::procid::alive(pid, start)
+            || horch_platform::process::group_members(pid).map_or(true, |m| !m.is_empty())
     }
 
     fn cwd_pids(&self, tree: &Path) -> Result<Vec<u32>> {
@@ -213,17 +217,22 @@ impl RemovalGateway for CliRemoval {
     }
 }
 
+/// Read the row of a worktree id from the ledger again.
+pub type ReadRow<'a> = &'a dyn Fn(&str) -> Result<Option<WorktreeRow>>;
+
 /// The `worktree_remove` job of the tree of `row`, with its landed commit
-/// and its owner attempt from the ledger. A run passes only when the tree
-/// is removed; its data is the [`Removed`]. Each other end is `failed`, and
-/// the tree stays as it was.
+/// and its owner attempt from the ledger. `ledger` reads the row again at
+/// the end of the checks. A run passes only when the tree is removed; its
+/// data is the [`Removed`]. Each other end is `failed`, and the tree stays
+/// as it was.
 pub fn remove(
     gw: &dyn RemovalGateway,
     row: &WorktreeRow,
     landed_commit: Option<&str>,
     owner: &Owner,
+    ledger: ReadRow<'_>,
 ) -> Ran {
-    match run(gw, row, landed_commit, owner) {
+    match run(gw, row, landed_commit, owner, ledger) {
         Ok(r) => Ran {
             outcome: Outcome {
                 passed: true,
@@ -250,6 +259,7 @@ fn run(
     row: &WorktreeRow,
     landed_commit: Option<&str>,
     owner: &Owner,
+    ledger: ReadRow<'_>,
 ) -> Result<Removed, String> {
     let id = row.worktree_id.as_str();
     let basis = removal::basis(
@@ -258,7 +268,7 @@ fn run(
         landed_commit,
         row.rescue_ref.as_deref(),
     )?;
-    let facts = read_facts(gw, row, &basis, owner);
+    let facts = read_facts(gw, row, &basis, owner, ledger);
     removal::decide(&facts)?;
     let repo = Path::new(&row.repo_root);
     gw.remove(repo, Path::new(&row.path), basis.force())
@@ -276,10 +286,17 @@ fn run(
     })
 }
 
-/// Read each fact of the removal of `row`. The HEAD comes first and last;
-/// for a rescued tree, the snapshot of the folder is the last fact before
-/// that HEAD, so the least time passes between it and the removal.
-fn read_facts(gw: &dyn RemovalGateway, row: &WorktreeRow, basis: &Basis, owner: &Owner) -> Facts {
+/// Read each fact of the removal of `row`, in the order of [`Facts`]. The
+/// HEAD and the ledger row come last; for a rescued tree, the snapshot of
+/// the folder is the last fact before them, so the least time passes
+/// between it and the removal.
+fn read_facts(
+    gw: &dyn RemovalGateway,
+    row: &WorktreeRow,
+    basis: &Basis,
+    owner: &Owner,
+    ledger: ReadRow<'_>,
+) -> Facts {
     let tree = Path::new(&row.path);
     let repo = Path::new(&row.repo_root);
     let head_before = fact(gw.head(tree));
@@ -325,12 +342,27 @@ fn read_facts(gw: &dyn RemovalGateway, row: &WorktreeRow, basis: &Basis, owner: 
         }
     };
     let head_after = fact(gw.head(tree));
+    let record_after = match ledger(&row.worktree_id) {
+        Ok(Some(now)) => Ok(record(&now)),
+        Ok(None) => Err("the ledger has no row of the tree".to_string()),
+        Err(e) => Err(format!("{e:#}")),
+    };
     Facts {
+        record_before: record(row),
         head_before,
-        saved,
         stashes,
         ignored_files,
+        saved,
         head_after,
+        record_after,
+    }
+}
+
+fn record(row: &WorktreeRow) -> Record {
+    Record {
+        state: row.state.as_str().to_string(),
+        owner_attempt: row.owner_attempt.clone(),
+        rescue_ref: row.rescue_ref.clone(),
     }
 }
 

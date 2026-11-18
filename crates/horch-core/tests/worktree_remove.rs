@@ -373,7 +373,9 @@ impl World {
         self.start(id);
         let row = self.row(name);
         let landed = self.landed_commit(name);
-        let ran = remove_git::remove(gw, &row, landed.as_deref(), &Owner::NoAttempt);
+        let db = Connection::open(self.dir.path().join("ledger.sqlite3")).unwrap();
+        let ledger = |id: &str| trees::get(&db, id);
+        let ran = remove_git::remove(gw, &row, landed.as_deref(), &Owner::NoAttempt, &ledger);
         jobs_store::set_result(&self.conn, id, &result_json(&ran)).unwrap();
         let facts = [ProcessFact {
             key: id.to_string(),
@@ -741,6 +743,70 @@ fn remove_refuses_a_rescued_tree_that_a_process_uses() {
 }
 
 #[test]
+fn remove_refuses_a_rescued_tree_that_an_attempt_takes_during_the_checks() {
+    let mut w = world();
+    let path = w.rescued("t1");
+    w.attempt("A2", std::process::id());
+    let before = kept(&w, &path);
+    let id = w.queued_remove("t1");
+    let gw = Adopts {
+        inner: w.gateway(),
+        db: w.dir.path().join("ledger.sqlite3"),
+    };
+    let ended = w.run_with(id, "t1", &gw);
+    assert_eq!(ended.state, State::Failed, "{}", text(&ended));
+    assert!(
+        text(&ended).contains("the ledger row of the tree changed during the checks"),
+        "{}",
+        text(&ended)
+    );
+    before.assert_kept(&w);
+    assert_eq!(w.row("t1").state, WorktreeState::Active);
+}
+
+#[test]
+fn remove_refuses_a_rescued_tree_while_the_owner_group_has_a_process() {
+    use std::os::unix::process::CommandExt;
+    let mut w = world();
+    // The owner leads its own process group, and its child outlives it with
+    // a working folder outside the tree.
+    let mut leader = Command::new("sh")
+        .args(["-c", "sleep 60 & wait"])
+        .current_dir(w.dir.path())
+        .process_group(0)
+        .spawn()
+        .unwrap();
+    let pgid = leader.id();
+    let worker = w.attempt("A1", pgid);
+    w.rescued("t1");
+    w.conn
+        .execute(
+            "UPDATE worktrees SET worker_id = ?2, owner_attempt = 'A1' WHERE worktree_id = ?1",
+            ["t1", worker.as_str()],
+        )
+        .unwrap();
+    // The leader is gone; its child `sleep` still runs in the group.
+    std::thread::sleep(Duration::from_millis(200));
+    leader.kill().unwrap();
+    leader.wait().unwrap();
+    assert!(!horch_core::procid::group_members(pgid).is_empty());
+    assert_refused(&mut w, "t1", "a process of the owner attempt is live");
+    let killed = Command::new("kill")
+        .args(["-9", &format!("-{pgid}")])
+        .status()
+        .unwrap();
+    assert!(killed.success());
+    for _ in 0..50 {
+        if horch_core::procid::group_members(pgid).is_empty() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let (ended, _) = w.remove("t1");
+    assert_eq!(ended.state, State::Passed, "{}", text(&ended));
+}
+
+#[test]
 fn remove_refuses_a_landed_tree_with_an_untracked_file() {
     let mut w = world();
     let path = w.landed("t1", true);
@@ -1006,6 +1072,32 @@ impl RemovalGateway for MovesHead {
             &self.tree,
             &["commit", "-q", "--allow-empty", "-m", "during the checks"],
         );
+        self.inner.stashes(repo)
+    }
+}
+
+/// A gateway that moves the row of the tree to `active` with a new owner
+/// attempt while it reads the stash list, as a claim that takes the tree.
+struct Adopts {
+    inner: CliRemoval,
+    db: PathBuf,
+}
+
+impl Adopts {
+    fn inner(&self) -> &CliRemoval {
+        &self.inner
+    }
+}
+
+impl RemovalGateway for Adopts {
+    forward_but_stashes!();
+    fn stashes(&self, repo: &Path) -> anyhow::Result<Vec<String>> {
+        let db = Connection::open(&self.db).unwrap();
+        db.execute(
+            "UPDATE worktrees SET state = 'active', owner_attempt = 'A2' WHERE worktree_id = 't1'",
+            [],
+        )
+        .unwrap();
         self.inner.stashes(repo)
     }
 }

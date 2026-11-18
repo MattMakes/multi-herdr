@@ -110,18 +110,34 @@ pub enum Saved {
     },
 }
 
-/// Each fact of 1 removal, in the order that the executor reads them.
+/// What the ledger records of the tree and what the removal relies on: its
+/// state, its owner attempt and its rescue ref.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Record {
+    pub state: String,
+    pub owner_attempt: Option<String>,
+    pub rescue_ref: Option<String>,
+}
+
+/// Each fact of 1 removal, in the order that the executor reads them. The
+/// facts of [`Saved`] come after `ignored_files`; for a rescued tree the
+/// snapshot of the folder is the last of them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Facts {
+    /// The record of the row when the job started.
+    pub record_before: Record,
     /// The HEAD at the start of the checks.
     pub head_before: Fact<String>,
-    pub saved: Saved,
     /// The lines of `git stash list` that name the branch of the tree.
     pub stashes: Fact<Vec<String>>,
     /// The count of ignored files that the removal deletes.
     pub ignored_files: Fact<u64>,
+    pub saved: Saved,
     /// The HEAD at the end of the checks.
     pub head_after: Fact<String>,
+    /// The record of the row at the end of the checks, read again from the
+    /// ledger: an attempt that took the tree changes it.
+    pub record_after: Fact<Record>,
 }
 
 fn known<'a, T>(what: &str, fact: &'a Fact<T>) -> Result<&'a T, String> {
@@ -136,6 +152,13 @@ pub fn decide(f: &Facts) -> Result<(), String> {
     let after = known("the HEAD at the end of the checks", &f.head_after)?;
     let stashes = known("the stash entries of the branch", &f.stashes)?;
     known("the count of ignored files", &f.ignored_files)?;
+    let record = known("the ledger row at the end of the checks", &f.record_after)?;
+    if *record != f.record_before {
+        return Err(format!(
+            "the ledger row of the tree changed during the checks: {:?} -> {record:?}",
+            f.record_before
+        ));
+    }
     if head != after {
         return Err(format!(
             "the HEAD moved during the checks: {head} -> {after}"
@@ -216,8 +239,18 @@ mod tests {
         Ok(v)
     }
 
+    fn record() -> Record {
+        Record {
+            state: "rescued".into(),
+            owner_attempt: None,
+            rescue_ref: Some("refs/horch/rescue/wt1/1".into()),
+        }
+    }
+
     fn rescued() -> Facts {
         Facts {
+            record_before: record(),
+            record_after: ok(record()),
             head_before: ok("h".into()),
             saved: Saved::Rescued {
                 rescue_ref: "refs/horch/rescue/wt1/1".into(),
@@ -271,6 +304,10 @@ mod tests {
                 ..rescued()
             },
             Facts {
+                record_after: Err("no row".into()),
+                ..rescued()
+            },
+            Facts {
                 saved: Saved::Landed {
                     landed_commit: "h".into(),
                     dirty: Err("git failed".into()),
@@ -315,6 +352,17 @@ mod tests {
             decide(&f).expect_err("a refusal")
         };
         assert!(set(&|f| f.head_after = ok("h2".into())).contains("moved during the checks"));
+        let adopted = set(&|f| {
+            f.record_after = ok(Record {
+                state: "active".into(),
+                owner_attempt: Some("A2".into()),
+                ..record()
+            })
+        });
+        assert!(
+            adopted.contains("ledger row of the tree changed"),
+            "{adopted}"
+        );
         assert!(set(&|f| f.stashes = ok(vec!["On b: x".into()])).contains("stash entry"));
         let rescued_field = |change: &dyn Fn(&mut Saved)| set(&|f| change(&mut f.saved));
         let parent = rescued_field(&|s| {
