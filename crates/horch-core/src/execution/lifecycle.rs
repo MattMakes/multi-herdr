@@ -2,11 +2,11 @@
 //! [`done`] is the worker's own shutdown.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{bail, Context, Result};
+use horch_platform::start::{self, Command};
 use serde::{Deserialize, Serialize};
 
 use crate::execution::legacy::HistoryEntry;
@@ -1382,7 +1382,7 @@ fn run_horch_quiet(env: &[(String, String)], args: &[&str]) -> Result<()> {
 /// environment, never in report mode.
 fn horch_command(env: &[(String, String)]) -> Command {
     // A PATH given to the child is also the one `Command` searches.
-    let mut cmd = Command::new("horch");
+    let mut cmd = start::command("horch");
     process::inherit_env(&mut cmd, env.iter().map(|(k, v)| (k, v)));
     cmd.env_remove(report::ENV);
     cmd
@@ -3023,6 +3023,67 @@ mod tests {
                 "a worker cannot register the role orchestrator: only horch fleet takes it"
             );
             assert!(!tmp.path().join("state").exists(), "no mailbox is written");
+        }
+    }
+
+    /// SR-7 (fleetd-p7 ticket 08): the `horch` that the wrapper starts never
+    /// has a forbidden name, also when the wrapper has it in its
+    /// environment. The test runs this test binary again with each
+    /// forbidden name set; its child test makes the start.
+    #[cfg(unix)]
+    mod starts {
+        use super::*;
+        use crate::harness::launch::FORBIDDEN_ENV;
+        use std::os::unix::fs::PermissionsExt;
+
+        /// The file that the fake `horch` writes its environment to.
+        const ENV_OUT: &str = "HORCH_TEST_START_ENV";
+
+        #[test]
+        fn the_horch_of_the_wrapper_starts_without_a_forbidden_name() {
+            let dir = tempfile::tempdir().unwrap();
+            let out = dir.path().join("env.txt");
+            let mut parent = std::process::Command::new(std::env::current_exe().unwrap());
+            parent
+                .args([
+                    "--exact",
+                    "execution::lifecycle::tests::starts::the_horch_of_the_wrapper_child",
+                    "--ignored",
+                    "--test-threads=1",
+                ])
+                .env(ENV_OUT, &out);
+            for key in FORBIDDEN_ENV {
+                parent.env(key, "from-the-parent");
+            }
+            let run = parent.output().unwrap();
+            let stdout = String::from_utf8_lossy(&run.stdout);
+            assert!(
+                run.status.success() && stdout.contains("1 passed"),
+                "{stdout}\n{}",
+                String::from_utf8_lossy(&run.stderr)
+            );
+            let seen = std::fs::read_to_string(&out).unwrap();
+            assert!(
+                seen.lines().any(|l| l.starts_with(&format!("{ENV_OUT}="))),
+                "the rest of the environment is missing:\n{seen}"
+            );
+            for key in FORBIDDEN_ENV {
+                assert!(
+                    !seen.lines().any(|l| l.starts_with(&format!("{key}="))),
+                    "{key} reached the child"
+                );
+            }
+        }
+
+        #[test]
+        #[ignore = "run by the_horch_of_the_wrapper_starts_without_a_forbidden_name"]
+        fn the_horch_of_the_wrapper_child() {
+            let bin = tempfile::tempdir().unwrap();
+            let horch = bin.path().join("horch");
+            std::fs::write(&horch, format!("#!/bin/sh\nenv > \"${ENV_OUT}\"\n")).unwrap();
+            std::fs::set_permissions(&horch, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let path = format!("{}:/usr/bin:/bin", bin.path().display());
+            run_horch_quiet(&[("PATH".into(), path)], &["note", "a start"]).unwrap();
         }
     }
 }

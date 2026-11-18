@@ -510,7 +510,7 @@ mod tests {
             disk_holds(&ctx),
             [
                 "the worktrees use 25.0 GB, above the budget of 20 GB, and no landed or rescued \
-              tree of a done or abandoned run is left to remove (worktree_disk_budget_gb)"
+              tree of a merged or cancelled idea is left to remove (worktree_disk_budget_gb)"
             ]
         );
         set_bytes(&mut store, 15);

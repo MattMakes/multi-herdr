@@ -5,11 +5,12 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::mpsc;
 use std::time::{Duration as StdDuration, Instant};
 
 use chrono::{DateTime, Utc};
+use horch_platform::start::{self, Command};
 use serde_json::Value;
 
 use crate::clock;
@@ -95,7 +96,7 @@ pub(crate) fn probe_claude(
 /// The command that starts Claude Code in `dir`, to take `get_usage` requests
 /// on stdin.
 fn claude_command(bin: &Path, dir: &Path) -> Command {
-    let mut cmd = Command::new(bin);
+    let mut cmd = start::command(bin);
     cmd.args([
         "-p",
         "--model",
@@ -168,7 +169,7 @@ pub(crate) fn probe_codex(bin: &Path, timeout: StdDuration) -> Result<Probed, St
 
 /// The command that starts the Codex app-server.
 fn codex_command(bin: &Path) -> Command {
-    let mut cmd = Command::new(bin);
+    let mut cmd = start::command(bin);
     cmd.arg("app-server");
     for key in crate::harness::launch::FORBIDDEN_ENV {
         cmd.env_remove(key);
@@ -197,7 +198,7 @@ pub(crate) fn probe_google(
     timeout: StdDuration,
     temp_root: &Path,
 ) -> Result<Probed, String> {
-    let mut cmd = Command::new(bin);
+    let mut cmd = start::command(bin);
     cmd.args(["-p", "/usage", "--output-format", "json", "--print-timeout"])
         .arg(format!("{}s", timeout.as_secs().max(1)))
         .current_dir(temp_root);
@@ -220,7 +221,7 @@ fn run_short(bin: &Path, args: &[&str], timeout: StdDuration) -> Result<String, 
             .unwrap_or_default(),
         args.join(" ")
     );
-    let mut cmd = Command::new(bin);
+    let mut cmd = start::command(bin);
     cmd.args(args);
     run_output(&name, cmd, timeout)
 }
@@ -333,7 +334,7 @@ pub fn probe_version(bin: &Path) -> VersionProbe {
 /// [`probe_version`] with its own deadline: no answer within `timeout` is
 /// [`VersionProbe::NoAnswer`].
 fn probe_version_within(bin: &Path, timeout: StdDuration) -> VersionProbe {
-    let mut cmd = Command::new(bin);
+    let mut cmd = start::command(bin);
     cmd.arg("--version");
     let Ok(Some((status, out, err))) = run_with_deadline(cmd, timeout) else {
         return VersionProbe::NoAnswer;
