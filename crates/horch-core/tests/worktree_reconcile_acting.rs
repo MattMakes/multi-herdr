@@ -425,6 +425,7 @@ impl World {
         };
         let written = jobs::run_job(&ctx(&config), &mut self.conn, id, pid, &checks).unwrap();
         assert!(written.is_some(), "run_job wrote the result of job {id}");
+        jobs::end_from_files(&ctx(&config), &mut self.conn).unwrap();
         self.observe_end(id)
     }
 

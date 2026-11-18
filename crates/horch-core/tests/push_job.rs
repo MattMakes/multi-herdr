@@ -305,6 +305,7 @@ impl World {
             profiles: &NoProfiles,
         };
         jobs::run_job(&ctx(&config), &mut self.conn, id, pid, &checks).unwrap();
+        jobs::end_from_files(&ctx(&config), &mut self.conn).unwrap();
         jobs_store::get(&self.conn, id).unwrap().unwrap()
     }
 

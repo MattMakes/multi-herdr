@@ -46,6 +46,7 @@ impl RunJob for TestJobs {
             };
             let pid = job.pid.context("a running job has a pid")?;
             jobs::run_job(ctx, conn, job_id, pid, &checks)?;
+            jobs::end_from_files(ctx, conn)?;
         }
         get(conn, job_id)
     }

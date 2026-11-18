@@ -11,8 +11,14 @@
 //!    launcher, then records the pid, the start time and the deadline on
 //!    the fleet clock, and moves the row to `running`.
 //! 3. The job process calls [`run_job`]. It runs the executor of the kind
-//!    and writes `result_json` and the end state.
-//! 4. Each later pass calls [`observe`]. A run whose process is gone with
+//!    and writes its result file `<fleet root>/run/jobs/<job id>-<run>.json`.
+//!    It writes no ledger row (RR-5).
+//! 4. Each later pass reads the result files after its process scan
+//!    ([`read_results`], part 1), ends each run from its file in its
+//!    transaction before [`observe`] ([`ingest_results`], part 2), and
+//!    archives the files after the commit ([`archive_results`], part 3).
+//!    A command that waits for a run calls [`end_from_files`].
+//!    Then [`observe`]: a run whose process is gone with
 //!    no result ends `abandoned`, and its next run waits for its backoff.
 //!    At `abandoned_run_limit` no new run starts, and 1 needs-you item
 //!    names the job until [`requeue`]. A run past its deadline is stopped
@@ -31,10 +37,13 @@ use anyhow::{bail, Context, Result};
 use rusqlite::{Connection, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 
+use crate::fleetd::fleet_runtime::adapters::job_result_file::{
+    self as result_file, FileRead, JobResult, Read as ResultRead,
+};
 use crate::fleetd::fleet_runtime::adapters::jobs_store::{self as store, JobRow, NewRun};
 use crate::fleetd::fleet_runtime::adapters::scans::{Liveness, ProcessFact, ProcessItem};
 use crate::fleetd::fleet_runtime::application::ledger::{
-    created, transition, Cause, DoorError, RecordRefusal,
+    created, record, transition, Cause, DoorError, RecordRefusal,
 };
 use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use crate::fleetd::fleet_runtime::domain::config::FleetConfig;
@@ -43,14 +52,18 @@ use crate::fleetd::fleet_runtime::domain::jobs::{
 };
 use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
 use crate::fleetd::integration::adapters::executors as integration;
+use crate::fleetd::task_execution::adapters::ingested_store::{
+    self as ingested, ACCEPTED, REJECTED,
+};
 use crate::fleetd::worker_profiles::application::ports::{LaunchSpec, ProcessHost};
 use crate::fleetd::worktree_custody::adapters::executors;
 use crate::taskledger::finish::{self, land::CHECK_TIMEOUT};
-use crate::taskledger::model::Actor;
+use crate::taskledger::model::{Actor, EventKind};
 use crate::taskledger::runs;
 use crate::taskledger::tasks;
 use crate::taskledger::workers::{self, Worker};
 use crate::vcs::network::{OTHER_BOUND, PUSH_BOUND};
+use horch_platform::channel::User;
 
 /// The needs-you list, as jobs use it. The ideas context implements it, so
 /// this context does not depend on ideas.
@@ -630,19 +643,23 @@ pub fn stop(s: &Stop) -> bool {
 const RECORD_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// `horch job run <id>`: the job process `me` of the run `job_id`. It
-/// waits until the row is `running` with the pid `me`, runs the executor
-/// of its kind, then writes `result_json` and the end state in 1
-/// transaction. A row that another process runs, or that the pass ended,
-/// gets no write. Gives the outcome that it wrote, or `None`.
+/// reads its row only: it waits until the row is `running` with the pid
+/// `me`, runs the executor of its kind, then writes its result file
+/// atomically under the fleet root of `conn` (Q14 of
+/// `docs/tickets/fleetd-p5/MAP.md`). The pass ends the run from the file.
+/// A row that another process runs, or that the pass ended, gets no file.
+/// Gives the outcome that it wrote, or `None`.
 ///
 /// `task_check` has its executor here, and the 4 worktree kinds have theirs
 /// in worktree custody (MAP.md of fleetd-p3, Q22), and the 7 integration
 /// kinds have their router in the integration context. Each other kind ends
 /// `failed`, with no verdict, and the result "no executor before phase
 /// <n>". The time limit is the deadline of the row: the pass stops this
-/// process at it. `checks` starts a check (SR-4).
+/// process at it. `checks` starts a check (SR-4). The job process writes
+/// no row, so it uses no field of `_ctx`; the parameter stays so that the
+/// callers of Phase 4 keep their form.
 pub fn run_job(
-    ctx: &JobCtx<'_>,
+    _ctx: &JobCtx<'_>,
     conn: &mut Connection,
     job_id: i64,
     me: u32,
@@ -665,23 +682,154 @@ pub fn run_job(
         | Kind::TrialMerge => integration::run(conn, &row)?,
         kind => jobs::no_executor(kind).into(),
     };
-    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let Some(now) = store::get(&tx, job_id)? else {
+    let Some(now) = store::get(conn, job_id)? else {
         return Ok(None);
     };
     if now.state != State::Running || now.pid != Some(me) {
         return Ok(None);
     }
-    store::set_result(&tx, job_id, &result_json(&ran))?;
-    end(
-        ctx,
-        &tx,
-        &now,
-        ran.outcome.state(),
-        "the job process wrote its result",
-    )?;
-    tx.commit()?;
+    let o = &ran.outcome;
+    let file = JobResult {
+        job_id,
+        run: now.run,
+        passed: o.passed,
+        verdict: o.verdict,
+        text: o.text.clone(),
+        data: ran.data.clone(),
+    };
+    result_file::write(&executors::fleet_root(conn)?, &file)?;
     Ok(Some(ran.outcome))
+}
+
+/// The cause of the end of a run from its result file.
+const WROTE_ITS_RESULT: &str = "the job process wrote its result";
+
+/// Part 1 of a pass, after the process scan: read each result file under
+/// `fleet_root` with the owner `owner` and the size limit `max_bytes`
+/// (SR-6). A path with an `ingested` row is not read again.
+pub fn read_results(
+    conn: &Connection,
+    fleet_root: &Path,
+    owner: &User,
+    max_bytes: u64,
+) -> Result<Vec<FileRead>> {
+    let mut seen = |path: &Path| ingested::has(conn, &ingested_key(path));
+    result_file::read_folder(fleet_root, owner, max_bytes, &mut seen)
+}
+
+/// Part 2 of a pass, before [`observe`]: record each file of `reads` 1
+/// time in `ingested`, in `tx`, and end each run from its valid file. A
+/// valid file of a run that is not `running`, or whose run is not the run
+/// of its row, is ignored with 1 event. Gives the runs that ended, each
+/// with its end state.
+pub fn ingest_results(
+    ctx: &JobCtx<'_>,
+    tx: &Connection,
+    reads: &[FileRead],
+) -> Result<Vec<(i64, State)>> {
+    let at = crate::taskledger::util::now();
+    let mut ended = Vec::new();
+    for file in reads {
+        let key = ingested_key(&file.path);
+        let (sha256, result) = match &file.read {
+            ResultRead::Seen => continue,
+            ResultRead::Rejected { sha256, reason } => {
+                let sha256 = sha256.as_deref();
+                ingested::record_message(tx, &key, sha256, REJECTED, Some(reason), &at)?;
+                continue;
+            }
+            ResultRead::Valid { sha256, result } => (sha256.as_str(), result),
+        };
+        let Some(row) = store::get(tx, result.job_id)? else {
+            let reason = format!("no job {}", result.job_id);
+            ingested::record_message(tx, &key, Some(sha256), REJECTED, Some(&reason), &at)?;
+            continue;
+        };
+        if !ingested::record_message(tx, &key, Some(sha256), ACCEPTED, None, &at)? {
+            continue;
+        }
+        if let Some(state) = end_from(ctx, tx, &row, result)? {
+            ended.push((row.id, state));
+        }
+    }
+    Ok(ended)
+}
+
+/// End the run `row` from its result file `result`, in `tx`: its end
+/// state, or `None` when the file is not of the current run of the row.
+fn end_from(
+    ctx: &JobCtx<'_>,
+    tx: &Connection,
+    row: &JobRow,
+    result: &JobResult,
+) -> Result<Option<State>> {
+    if row.run != result.run || row.state != State::Running {
+        let text = format!(
+            "ignored the result file of run {} of job {}: the row is run {} and {}",
+            result.run,
+            row.id,
+            row.run,
+            row.state.as_str()
+        );
+        let data = serde_json::json!({ "run": result.run, "row_run": row.run });
+        let id = row.id.to_string();
+        record(
+            tx,
+            ctx.guard,
+            EventKind::Note,
+            Entity::Job,
+            &id,
+            pass_cause(&text),
+            &data,
+        )?;
+        return Ok(None);
+    }
+    let ran = Ran {
+        outcome: Outcome {
+            passed: result.passed,
+            verdict: result.passed || result.verdict,
+            text: result.text.clone(),
+        },
+        data: result.data.clone(),
+    };
+    let state = ran.outcome.state();
+    store::set_result(tx, row.id, &result_json(&ran))?;
+    end(ctx, tx, row, state, WROTE_ITS_RESULT)?;
+    Ok(Some(state))
+}
+
+/// Part 3 of a pass, after the commit: move each file of `reads` to
+/// `run/jobs/archive/`. A second archive of the same reads is safe.
+pub fn archive_results(fleet_root: &Path, reads: &[FileRead]) -> Result<()> {
+    for file in reads {
+        result_file::archive(fleet_root, &file.path)?;
+    }
+    Ok(())
+}
+
+/// The 3 parts of the result files for a command that waits for a run
+/// with no pass (`run_now`): read the files under the fleet root of
+/// `conn`, end each run from its file in 1 transaction, then archive the
+/// files. The owner is the user of this process. Call it after the process
+/// scan and before [`observe`], so that a process that wrote its file and
+/// ended is not seen as gone with no result. Gives the runs that ended.
+pub fn end_from_files(ctx: &JobCtx<'_>, conn: &mut Connection) -> Result<Vec<(i64, State)>> {
+    let root = executors::fleet_root(conn)?;
+    let owner = User::current().context("the user of this process")?;
+    let reads = read_results(conn, &root, &owner, ctx.config.job_result_max_bytes)?;
+    if reads.is_empty() {
+        return Ok(Vec::new());
+    }
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let ended = ingest_results(ctx, &tx, &reads)?;
+    tx.commit()?;
+    archive_results(&root, &reads)?;
+    Ok(ended)
+}
+
+/// The `ingested.path` of a result file.
+fn ingested_key(path: &Path) -> String {
+    path.display().to_string()
 }
 
 /// The row `job_id` once it is `running` with the pid `me`, or `None` when

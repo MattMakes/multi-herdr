@@ -263,6 +263,7 @@ impl World {
         )
         .unwrap();
         assert!(written.is_some(), "run_job wrote the result of job {id}");
+        jobs::end_from_files(&ctx, &mut self.conn).unwrap();
         self.row(id).state
     }
 }

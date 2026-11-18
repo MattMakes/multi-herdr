@@ -124,6 +124,9 @@ fn observe(
         stamp: "run_now",
     };
     let facts = scans::scan_processes(&items, &mut Cursor::new("run_now"), &mut scan_clock).facts;
+    // After the scan: a process that wrote its result file and ended is
+    // ended from its file, not seen as gone with no result.
+    jobs::end_from_files(ctx, conn)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let seen = jobs::observe(ctx, &tx, &facts, clock)?;
     tx.commit()?;
