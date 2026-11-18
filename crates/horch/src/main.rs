@@ -615,6 +615,10 @@ enum ToolCommand {
     /// Write `result.json` of this attempt. `--check` tests the Stop hooks.
     Result(cmd::resultcmd::ResultArgs),
 
+    /// Ask the orchestrator a question: write 1 question file in the
+    /// outbox of this attempt.
+    Ask(cmd::askcmd::AskArgs),
+
     /// The commands of the operator on 1 feature: `horch feature abandon`.
     Feature {
         #[command(subcommand)]
@@ -1295,6 +1299,7 @@ impl ToolCommand {
             ToolCommand::Job { command } => cmd::jobcmd::job(ctx, command),
             ToolCommand::Task { command } => cmd::taskcmd::run(ctx, command),
             ToolCommand::Result(args) => cmd::resultcmd::run(ctx, args),
+            ToolCommand::Ask(args) => cmd::askcmd::run(ctx, args),
             ToolCommand::Feature { command } => cmd::featurecmd::run(ctx, command),
             ToolCommand::Branch { command } => cmd::branchcmd::run(ctx, command),
             ToolCommand::Rescue { command } => cmd::rescuecmd::run(ctx, command),

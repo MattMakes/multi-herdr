@@ -240,16 +240,20 @@ fn queue_as<'a>(
         let id = enqueued.id;
         // The first push shows the mail id too, as every redelivery does.
         line = message::with_mail_id(&line, from, &id.short());
-        if role != "orchestrator" {
-            // Worker mail holds no question for the orchestrator.
-        } else if let Err(error) = sync_question_waits(ctx, mailbox.workspace_id()) {
-            eprintln!(
-                "horch tell: question wait projection failed ({error:#}); mail remains durable"
-            );
-        } else if let Err(error) = write_question_file(ctx, &id, text) {
-            eprintln!(
-                "horch tell: the question file of the push attempt is not written ({error:#}); mail remains durable"
-            );
+        // Worker mail holds no question for the orchestrator.
+        if role == "orchestrator" {
+            if let Err(error) = sync_question_waits(ctx, mailbox.workspace_id()) {
+                eprintln!(
+                    "horch tell: question wait projection failed ({error:#}); mail remains durable"
+                );
+            }
+            if from != HORCH && asks_a_question(text) {
+                if let Err(error) = write_question_file(ctx, text) {
+                    eprintln!(
+                        "horch tell: the question file of the attempt is not written ({error:#}); mail remains durable"
+                    );
+                }
+            }
         }
         queued = Some(id);
     }
@@ -910,6 +914,13 @@ fn warn_row(
 /// [`done_then`] in its pane. Any other worker runs [`done_then`]. The
 /// order of the steps is [`lifecycle::done`]'s.
 pub fn done(ctx: &RuntimeContext, summary: &str, unlanded: Option<&str>) -> Result<()> {
+    // A worker in a live attempt writes `result.json` with `status:
+    // completed`, as `horch ledger done` does; fleetd finishes the task.
+    if super::askcmd::own_writer(ctx)?.is_ok() {
+        let notes = unlanded.map(|reason| format!("unlanded: {reason}"));
+        super::taskledger::write_completed(ctx, summary, notes)?;
+        return Ok(());
+    }
     if super::taskledger::is_ledger_worker(ctx) {
         let store = horch_core::taskledger::open(ctx)?;
         return super::taskledger::done_cmd(ctx, store, summary, unlanded);
@@ -1290,71 +1301,57 @@ fn sync_question_waits(ctx: &RuntimeContext, workspace: &str) -> Result<()> {
     horch_core::taskledger::workers::sync_questions(store.conn(), &ctx.paths.state_root, workspace)
 }
 
-/// The mode of a question file: only the user of fleetd and its workers.
-const QUESTION_FILE_MODE: u32 = 0o600;
+/// Whether a line of `text`, after an optional `[<role>]` tag, starts
+/// with `QUESTION:`.
+fn asks_a_question(text: &str) -> bool {
+    text.lines().any(|line| {
+        let line = line.trim_start();
+        let line = match line.strip_prefix('[').and_then(|rest| rest.split_once(']')) {
+            Some((_, rest)) => rest.trim_start(),
+            None => line,
+        };
+        line.starts_with("QUESTION:")
+    })
+}
 
-/// A push attempt (its pane names `HORCH_TASK_YAML`) writes the question
-/// file of the `questions` row of mail question `mail_id`, 1 time, at
-/// `outbox/questions/<n>.json` of its attempt, where `<n>` is the number of
-/// the row (design: "Workspace layout and file protocol"). The file holds
-/// `task`, `attempt`, `question_id`, `text` and `at`, and its size is under
-/// `result_max_bytes`: a longer `text` is cut, and the mail keeps all of it.
-/// A claim attempt, or a line with no `questions` row, writes no file.
-fn write_question_file(ctx: &RuntimeContext, mail_id: &Id, text: &str) -> Result<()> {
-    let Some(task_yaml) =
-        std::env::var_os(super::resultcmd::TASK_YAML_ENV).filter(|v| !v.is_empty())
-    else {
+/// The QUESTION line of `horch tell` from a process in a live attempt
+/// writes 1 question file in the outbox of that attempt, through the same
+/// writer as `horch ask`. A longer `text` is cut to fit
+/// `question_max_bytes`; the mail keeps all of it. A process in no
+/// attempt writes no file.
+fn write_question_file(ctx: &RuntimeContext, text: &str) -> Result<()> {
+    let Ok(out) = super::askcmd::own_writer(ctx)? else {
         return Ok(());
     };
-    let attempt = super::resultcmd::Attempt::resolve(
-        &ctx.paths.fleet_root,
-        Some(std::path::Path::new(&task_yaml)),
-    )?;
-    let store = horch_core::taskledger::open(ctx)?;
-    let Some((row, _)) =
-        horch_core::fleetd::ideas::application::questions::open_with_mail(store.conn())?
-            .into_iter()
-            .find(|(_, mail)| mail.as_deref() == Some(mail_id.as_str()))
-    else {
-        return Ok(());
-    };
-    let n = row
-        .id
-        .rsplit_once("/Q")
-        .and_then(|(_, n)| n.parse::<u32>().ok())
-        .with_context(|| format!("the question row id {} has no number", row.id))?;
     let max_bytes =
         horch_core::fleetd::fleet_runtime::adapters::config_file::load(&ctx.paths.fleet_root)?
-            .result_max_bytes;
-    let bytes = question_file_bytes(text, max_bytes, |text| {
-        serde_json::json!({
-            "task": attempt.task_id,
-            "attempt": attempt.attempt,
-            "question_id": row.id,
-            "text": text,
-            "at": row.asked_at,
-        })
-        .to_string()
-        .into_bytes()
+            .question_max_bytes;
+    let at = horch_core::taskledger::util::now();
+    let a = out.attempt();
+    let head = question_head(text, max_bytes, |text| {
+        horch_core::fleetd::task_execution::domain::outbox::Question {
+            task: a.task_id.clone(),
+            attempt: a.attempt().to_string(),
+            at: at.clone(),
+            text: text.to_string(),
+        }
+        .to_json(u64::MAX)
+        .map_or(u64::MAX, |json| json.len() as u64)
     });
-    let dir = attempt.outbox().join("questions");
-    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-    let path = dir.join(format!("{n}.json"));
-    horch_core::fsx::create_immutable(&path, &bytes, QUESTION_FILE_MODE)?;
+    out.write_question(&at, head)?;
     Ok(())
 }
 
-/// The bytes that `file` makes of the longest head of `text` whose file is
-/// under `max_bytes`.
-fn question_file_bytes(text: &str, max_bytes: u64, file: impl Fn(&str) -> Vec<u8>) -> Vec<u8> {
+/// The longest head of `text` whose file has at most `max_bytes` bytes;
+/// `size` gives the size of the file of a head.
+fn question_head(text: &str, max_bytes: u64, size: impl Fn(&str) -> u64) -> &str {
     let mut end = text.len();
     loop {
-        let bytes = file(&text[..end]);
-        let len = bytes.len() as u64;
-        if len < max_bytes || end == 0 {
-            return bytes;
+        let len = size(&text[..end]);
+        if len <= max_bytes || end == 0 {
+            return &text[..end];
         }
-        let over = usize::try_from(len - max_bytes + 1).unwrap_or(usize::MAX);
+        let over = usize::try_from(len - max_bytes).unwrap_or(usize::MAX);
         end = end.saturating_sub(over);
         while !text.is_char_boundary(end) {
             end -= 1;

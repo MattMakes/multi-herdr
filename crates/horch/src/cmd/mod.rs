@@ -1,4 +1,5 @@
 pub mod agentlist;
+pub mod askcmd;
 pub mod balancecmd;
 pub mod branchcmd;
 pub mod channel;

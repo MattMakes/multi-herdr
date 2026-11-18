@@ -174,6 +174,7 @@ in `harness/capabilities.rs`.
 | file | command |
 |---|---|
 | `agentlist.rs` | `horch agent-list` |
+| `askcmd.rs` | `horch ask <question>`: writes 1 question file in the outbox of the own attempt (the `fleet ask` helper) |
 | `balancecmd.rs` | `horch balance` |
 | `branchcmd.rs` | `horch branch abandon` (not built yet) |
 | `channel.rs` | `horch channel serve` (hidden; the worker-report channel relay, an MCP stdio server) |
