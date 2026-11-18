@@ -618,12 +618,18 @@ fn rescue_with_a_fleet_root_in_the_project_makes_nothing_there() {
     let before = view(&tree, "fleet/t1");
     let git_bin = CliWorktreeGit::new("git");
 
+    // A link to the project below a `..` of a folder that does not exist.
+    std::os::unix::fs::symlink(&w.repo, w.dir.path().join("project-link")).unwrap();
+    // A fleet root whose `run` is a link out of the fleet root.
+    let linked = w.dir.path().join("linked-fleet");
+    std::fs::create_dir_all(w.dir.path().join("elsewhere")).unwrap();
+    std::fs::create_dir_all(&linked).unwrap();
+    std::os::unix::fs::symlink(w.dir.path().join("elsewhere"), linked.join("run")).unwrap();
     let refused = [
         (tree.join("fleet"), "is in the project"),
-        (
-            w.repo.join("sub/../fleet"),
-            "a `..` in a part that does not exist",
-        ),
+        (w.repo.join("sub/../fleet"), "has a `..`"),
+        (w.dir.path().join("missing/../project-link"), "has a `..`"),
+        (linked, "is not in the fleet root"),
     ];
     for (root, reason) in refused {
         let ran = rescue_git::rescue(&git_bin, &root, &w.row("t1"));
@@ -632,7 +638,7 @@ fn rescue_with_a_fleet_root_in_the_project_makes_nothing_there() {
         assert!(ran.outcome.text.contains(reason), "{}", ran.outcome.text);
     }
     assert!(!tree.join("fleet").exists() && !w.repo.join("fleet").exists());
-    assert!(!w.repo.join("sub").exists());
+    assert!(!w.repo.join("sub").exists() && !w.repo.join("run").exists());
     assert_eq!(view(&tree, "fleet/t1"), before);
     let refs = git(&tree, &["for-each-ref", "refs/horch/rescue/"]);
     assert_eq!(refs, "");

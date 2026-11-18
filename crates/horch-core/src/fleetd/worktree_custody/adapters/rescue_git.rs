@@ -11,7 +11,7 @@
 //! Each git call goes through `CliWorktreeGit::checked`, so git starts no
 //! hook and no program of the project (the fleetd git rule).
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -128,29 +128,64 @@ fn save(git: &CliWorktreeGit, fleet_root: &Path, row: &WorktreeRow) -> Result<Re
 }
 
 /// `<fleet root>/run`, made, as a canonical path outside the tree and the
-/// project of `row`: a private index never comes from a project. The check
-/// comes before the folder is made, so a refused fleet root makes nothing.
+/// project of `row`: a private index never comes from a project. A fleet
+/// root with a `..` is refused. The path is checked before the folder is
+/// made, so a refused fleet root makes nothing, and the made folder is
+/// checked again: when it is not `<fleet root>/run` or it is in the
+/// project, it is removed and the rescue is refused.
 fn run_folder(fleet_root: &Path, row: &WorktreeRow) -> Result<PathBuf> {
-    let run = resolved(&fleet_root.join("run"))?;
+    if fleet_root.components().any(|c| c == Component::ParentDir) {
+        bail!("the fleet root {} has a `..`", fleet_root.display());
+    }
+    let mut projects = Vec::new();
     for project in [&row.path, &row.repo_root] {
-        let project = Path::new(project)
+        let canonical = Path::new(project)
             .canonicalize()
             .with_context(|| format!("reading {project}"))?;
-        if run.starts_with(&project) {
-            bail!(
-                "the fleet folder {} is in the project {}",
-                run.display(),
-                project.display()
-            );
-        }
+        projects.push(canonical);
     }
+    let run = resolved(&fleet_root.join("run"))?;
+    outside(&run, &projects)?;
+    let made = !run.exists();
     std::fs::create_dir_all(&run).with_context(|| format!("making {}", run.display()))?;
-    Ok(run)
+    let checked = run
+        .canonicalize()
+        .context("reading the made folder")
+        .and_then(|real| {
+            let root = fleet_root
+                .canonicalize()
+                .context("reading the fleet root")?;
+            if real != root.join("run") {
+                bail!(
+                    "the made folder {} is not in the fleet root {}",
+                    real.display(),
+                    root.display()
+                );
+            }
+            outside(&real, &projects)?;
+            Ok(real)
+        });
+    if checked.is_err() && made {
+        let _ = std::fs::remove_dir(&run);
+    }
+    checked
 }
 
-/// The canonical form of `path`, which can be absent: the canonical form
-/// of its nearest folder that exists, then the parts below it. A `..` in a
-/// part that does not exist is an error, because it has no canonical form.
+/// An error when `folder` is in 1 of `projects`, canonical paths.
+fn outside(folder: &Path, projects: &[PathBuf]) -> Result<()> {
+    match projects.iter().find(|p| folder.starts_with(p)) {
+        Some(project) => bail!(
+            "the fleet folder {} is in the project {}",
+            folder.display(),
+            project.display()
+        ),
+        None => Ok(()),
+    }
+}
+
+/// The canonical form of `path`, which can be absent and has no `..`: the
+/// canonical form of its nearest folder that exists, then the parts below
+/// it.
 fn resolved(path: &Path) -> Result<PathBuf> {
     let path = std::path::absolute(path).with_context(|| format!("reading {}", path.display()))?;
     let mut below = Vec::new();
@@ -164,10 +199,7 @@ fn resolved(path: &Path) -> Result<PathBuf> {
             Err(e) => return Err(e).with_context(|| format!("reading {}", base.display())),
         }
         let (Some(parent), Some(name)) = (base.parent(), base.file_name()) else {
-            bail!(
-                "{} has a `..` in a part that does not exist, or no folder that exists",
-                path.display()
-            );
+            bail!("{} has no folder that exists", path.display());
         };
         below.push(name.to_os_string());
         base = parent;
