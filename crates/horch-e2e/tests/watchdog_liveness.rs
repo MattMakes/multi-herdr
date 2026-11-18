@@ -144,9 +144,15 @@ fn outbox(store: &Store, run: &Run) -> Vec<String> {
         .unwrap()
 }
 
+/// The stall ladder for a busy pane with no timer (MAP.md of fleetd-p2,
+/// Q14): herdr shows `working`, but no signal moves, so the attempt earns
+/// no activity after its claim. The pass keeps it within stall_after_s (300
+/// s), with a proxy check and no stop. Past it the agent is hung: rung 3
+/// stops it at once, with no doorbell (the ladder rings only an idle
+/// pane), and rung 6 queues the task again with 1 wake.
 #[test]
-fn a_busy_pi_worker_with_no_timer_is_kept_until_the_cap_then_one_suspect_wake_then_reaped() {
-    let (h, store, run, worker, _agent) = pinned_worker("wd203-busy-pi");
+fn a_busy_pi_worker_with_no_timer_is_kept_until_stall_after_then_stopped_at_rung_3() {
+    let (h, store, run, worker, mut agent) = pinned_worker("wd203-busy-pi");
     fake(&h, &["workspace", "create", "--label", "busy"]);
     fake(
         &h,
@@ -162,46 +168,53 @@ fn a_busy_pi_worker_with_no_timer_is_kept_until_the_cap_then_one_suspect_wake_th
             "pi",
         ],
     );
-    // The default run: 3 stall rounds, so a cap of 6 herdr-only checks.
-    for m in 1..=6 {
-        let c = pinned_check(
-            &h,
-            &run,
-            &format!("2030-01-01T{:02}:{:02}:00Z", m / 6, (m % 6) * 10),
-        );
-        assert_eq!(c["verdict"], "proxy_checkin", "check {m}: {c}");
-        let note = c["note"].as_str().unwrap();
-        assert!(
-            note.contains("no timer format for harness pi; no transcript"),
-            "{note}"
-        );
-    }
+    let c = pinned_check(&h, &run, "2030-01-01T00:01:00Z");
+    assert_eq!(c["verdict"], "proxy_checkin", "{c}");
+    let note = c["note"].as_str().unwrap();
     assert!(
-        outbox(&store, &run).is_empty(),
-        "{:?}",
-        outbox(&store, &run)
+        note.contains("no timer format for harness pi; no transcript"),
+        "{note}"
     );
-    let c = pinned_check(&h, &run, "2030-01-01T01:10:00Z");
-    assert_eq!(c["verdict"], "suspect", "{c}");
-    let w = outbox(&store, &run);
-    assert_eq!(w.len(), 1, "{w:?}");
-    assert!(
-        w[0].contains("worker-1") && w[0].contains("pane w1:p1"),
-        "{}",
-        w[0]
-    );
-    let c = pinned_check(&h, &run, "2030-01-01T01:20:00Z");
-    assert_eq!(c["verdict"], "dead", "{c}");
+    let task_status = || -> String {
+        store
+            .conn()
+            .query_row("SELECT status FROM tasks", [], |r| r.get(0))
+            .unwrap()
+    };
+    assert_eq!(task_status(), "running");
+    assert!(matches!(agent.0.try_wait(), Ok(None)), "the pass kept it");
+    assert!(outbox(&store, &run).is_empty(), "{:?}", outbox(&store, &run));
+
+    // Past stall_after_s of the claim, with no activity: rung 3.
+    h.advance_fleet_clock(400);
+    pinned_check(&h, &run, "2030-01-01T00:08:00Z");
+    let (state, outcome): (String, Option<String>) = store
+        .conn()
+        .query_row("SELECT state, outcome FROM attempts", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
+    assert_eq!((state.as_str(), outcome.as_deref()), ("ended", Some("stalled")));
+    let doorbells: i64 = store
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM events WHERE kind = 'doorbell'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(doorbells, 0, "a busy pane gets no doorbell");
+    horch_e2e::harness::wait_for("the stop of rung 3 to end the agent", || {
+        matches!(agent.0.try_wait(), Ok(Some(_))).then_some(())
+    });
+    assert_eq!(task_status(), "ready", "rung 6 queued it again");
     assert_eq!(
         workers::get(store.conn(), &worker).unwrap().status,
         "incomplete"
     );
     let w = outbox(&store, &run);
-    assert_eq!(
-        w.iter().filter(|b| b.contains("may be stuck")).count(),
-        1,
-        "{w:?}"
-    );
+    assert_eq!(w.len(), 1, "{w:?}");
+    assert!(w[0].contains("T-1: retry after 30 s"), "{}", w[0]);
 }
 
 /// Write `config` as the `fleet.toml` of the fleet root of `h`: the folder
@@ -213,13 +226,15 @@ fn fleet_toml(h: &Harness, config: &str) {
 }
 
 /// A SIGTERM to fleetd while it reaps a worker does not lose the reap. The
-/// pass sent TERM to the agent, which ignores it, and the stop grace runs.
+/// stall ladder ends the attempt of a hung agent (herdr shows `working`, no
+/// activity past stall_after_s) and sends TERM to the agent, which ignores
+/// it, and the stop grace runs.
 /// fleetd ends between 2 passes, and the next fleetd kills the agent after
 /// the grace. A reap that a SIGTERM lost would leave the agent, with the
 /// task already queued again.
 #[test]
 fn a_sigterm_to_fleetd_during_a_reap_leaves_the_reap_to_the_next_fleetd() {
-    let (h, store, run, worker, _fake) = pinned_worker("wd216-term-mid-reap");
+    let (h, store, _run, worker, _fake) = pinned_worker("wd216-term-mid-reap");
     fleet_toml(&h, "pass_period_s = 1\nstop_grace_s = 8\n");
     fake(&h, &["workspace", "create", "--label", "w1"]);
     fake(
@@ -229,9 +244,9 @@ fn a_sigterm_to_fleetd_during_a_reap_leaves_the_reap_to_the_next_fleetd() {
             "test-state",
             "w1:p1",
             "--text",
-            "Ready",
+            "running a long migration test",
             "--status",
-            "idle",
+            "working",
             "--agent",
             "pi",
         ],
@@ -256,22 +271,11 @@ fn a_sigterm_to_fleetd_during_a_reap_leaves_the_reap_to_the_next_fleetd() {
         let _ = agent.wait();
         let _ = tx.send(());
     });
-    // Due now, and its next stall round is its last: the first pass reaps.
-    store
-        .conn()
-        .execute(
-            "UPDATE runs SET check_every_s = 1 WHERE run_id = ?1",
-            [&run.run_id],
-        )
-        .unwrap();
     store
         .conn()
         .execute(
             &format!(
-                "UPDATE workers SET agent_pid = {agent_pid}, agent_started = {agent_started},
-                 stall_rounds = 2,
-                 claimed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 hour'),
-                 last_progress_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 hour')
+                "UPDATE workers SET agent_pid = {agent_pid}, agent_started = {agent_started}
                  WHERE worker_id = ?1"
             ),
             [&worker],
@@ -280,7 +284,10 @@ fn a_sigterm_to_fleetd_during_a_reap_leaves_the_reap_to_the_next_fleetd() {
     let mut fleetds = Fleetds::new(&h);
     let first = fleetds.start(&h, "fleetd-1");
     let (pid, started) = fleetds.row().expect("the fleetd row");
-    // The reap sent TERM to the agent, and the stop grace runs.
+    // No activity since the claim, past stall_after_s (300 s): the agent
+    // is hung, and rung 3 stops it.
+    h.advance_fleet_clock(400);
+    // The stop sent TERM to the agent, and the stop grace runs.
     horch_e2e::harness::wait_for("the reap's TERM to the agent", || {
         got_term.exists().then_some(())
     });
