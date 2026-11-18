@@ -47,7 +47,7 @@ use horch_core::taskledger::model::{Actor, WorktreeStatus};
 use horch_core::taskledger::runs::{self, NewRun, Run};
 use horch_core::taskledger::tasks::{self, NewTask};
 use horch_core::taskledger::workers::{self, NewWorker, Worker};
-use horch_core::taskledger::worktree_ops;
+use horch_core::taskledger::worktree_ops::{self, CreateKind};
 use horch_core::taskledger::Store;
 use rusqlite::{Connection, TransactionBehavior};
 use test_jobs::TestJobs;
@@ -611,6 +611,36 @@ fn published_worktree_created_carries_worktree_id_task_id_path_branch() {
     assert_eq!(w.row(&wt.worktree_id).state, WorktreeState::Active);
 }
 
+/// Review F1: a passed run whose folder is gone before the observation
+/// does not keep the row `reserved`. The row is dropped with the reason,
+/// so the next command can make the tree again.
+#[test]
+fn passed_worktree_add_with_no_folder_drops_the_reserved_row() {
+    let mut w = World::new();
+    let id = w.claimed();
+    let wt = finish::worktree_new_with(&mut w.store, &w.git, &id, "feat", &TestJobs).unwrap();
+    let job = w.jobs(Kind::WorktreeAdd, &wt.worktree_id).remove(0);
+    std::fs::remove_dir_all(&wt.path).unwrap();
+
+    let config = FleetConfig::default();
+    let mut conn = open(&w.db());
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .unwrap();
+    tx.execute(
+        "UPDATE worktrees SET state = 'reserved' WHERE worktree_id = ?1",
+        [&wt.worktree_id],
+    )
+    .unwrap();
+    let seen = create::observe(&ctx(&config), &tx, &job).unwrap();
+    tx.commit().unwrap();
+    let Observed::Dropped(reason) = seen else {
+        panic!("a passed run with no folder drops the row: {seen:?}");
+    };
+    assert!(reason.contains("does not exist"), "{reason}");
+    assert_eq!(w.rows(), 0);
+}
+
 /// Row W2: the next attempt of the task gets the same tree. It moves to
 /// the new owner, and its base does not change without a drop.
 #[test]
@@ -635,8 +665,7 @@ fn retry_reuses_the_same_worktree() {
         &w.git,
         &next,
         "other",
-        Some("main"),
-        false,
+        CreateKind::Task { from: Some("main") },
         &TestJobs,
     )
     .unwrap_err();
@@ -717,8 +746,15 @@ fn orphaned_tree_is_rescued_before_the_next_attempt_takes_it() {
 fn scratch_tree_has_no_task_and_goes_through_the_job() {
     let mut w = World::new();
     let id = w.claimed();
-    let wt = worktree_ops::create_with(&mut w.store, &w.git, &id, "probe", None, true, &TestJobs)
-        .unwrap();
+    let wt = worktree_ops::create_with(
+        &mut w.store,
+        &w.git,
+        &id,
+        "probe",
+        CreateKind::Scratch { from: None },
+        &TestJobs,
+    )
+    .unwrap();
     assert_eq!(wt.task_id, None);
     assert!(
         wt.path.ends_with(".worktrees/_scratch/probe"),

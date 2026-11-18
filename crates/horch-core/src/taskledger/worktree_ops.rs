@@ -35,7 +35,29 @@ pub fn create(
     scratch: bool,
 ) -> Result<WorktreeRow> {
     let jobs = JobProcess::of_this_process()?;
-    create_with(store, git, worker_id, name, from, scratch, &jobs)
+    let kind = if scratch {
+        CreateKind::Scratch { from }
+    } else {
+        CreateKind::Task { from }
+    };
+    create_with(store, git, worker_id, name, kind, &jobs)
+}
+
+/// The tree that [`create_with`] makes or takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CreateKind<'a> {
+    /// The tree of the claimed task, on `from`, else on the run branch.
+    Task { from: Option<&'a str> },
+    /// A scratch tree with no task, on `from`, else on the run branch.
+    Scratch { from: Option<&'a str> },
+}
+
+impl<'a> CreateKind<'a> {
+    fn from(self) -> Option<&'a str> {
+        match self {
+            CreateKind::Task { from } | CreateKind::Scratch { from } => from,
+        }
+    }
 }
 
 /// [`create`], with `jobs` to run the `worktree_add` job.
@@ -44,11 +66,10 @@ pub fn create_with(
     git: &Git,
     worker_id: &str,
     name: &str,
-    from: Option<&str>,
-    scratch: bool,
+    kind: CreateKind<'_>,
     jobs: &dyn RunJob,
 ) -> Result<WorktreeRow> {
-    if !scratch && from.is_none() {
+    if kind == (CreateKind::Task { from: None }) {
         return finish::worktree_new_with(store, git, worker_id, name, jobs);
     }
     valid_name(name)?;
@@ -57,41 +78,53 @@ pub fn create_with(
         store.conn(),
         worker.run_id.as_deref().context("worker has no run")?,
     )?;
-    let task = worker
-        .task_id
-        .as_deref()
-        .map(|id| tasks::get(store.conn(), id))
-        .transpose()?;
-    let mut task_id = None;
-    let mut existing = None;
-    if !scratch {
-        let t = task.as_ref().context("run horch ledger claim first")?;
-        if t.current_worker_id.as_deref() != Some(worker_id) {
-            bail!("this worker no longer owns the task");
-        }
-        if !t.uses_worktree() {
-            bail!("this task works in the shared checkout");
-        }
-        task_id = Some(t.task_id.as_str());
-        existing = finish::worktree_of(store.conn(), &t.task_id)?;
-    }
-    let new = match &existing {
+    // The task of the tree: `None` for a scratch tree.
+    let task = match kind {
+        CreateKind::Scratch { .. } => None,
+        CreateKind::Task { .. } => Some(owned_task(store, &worker, worker_id)?),
+    };
+    let existing = match &task {
+        Some(t) => finish::worktree_of(store.conn(), &t.task_id)?,
+        None => None,
+    };
+    let new = match existing {
         Some(_) => None,
-        None => {
-            let task = if scratch { None } else { task.as_ref() };
-            Some(new_tree(git, &run, task, worker_id, name, from)?)
-        }
+        None => Some(new_tree(
+            git,
+            &run,
+            task.as_ref(),
+            worker_id,
+            name,
+            kind.from(),
+        )?),
     };
     let attempt = finish::live_attempt(store.conn(), worker_id)?;
     let lease = Lease {
-        task_id,
+        task_id: task.as_ref().map(|t| t.task_id.as_str()),
         worker_id,
         attempt: attempt.as_deref(),
-        from,
+        from: kind.from(),
         new: new.as_ref(),
     };
     let id = finish::lease_tree(store, jobs, &lease)?;
     finish::worktree(store.conn(), &id)
+}
+
+/// The claimed task of `worker`, when it still owns it and it uses a
+/// worktree.
+fn owned_task(store: &Store, worker: &workers::Worker, worker_id: &str) -> Result<tasks::Task> {
+    let id = worker
+        .task_id
+        .as_deref()
+        .context("run horch ledger claim first")?;
+    let t = tasks::get(store.conn(), id)?;
+    if t.current_worker_id.as_deref() != Some(worker_id) {
+        bail!("this worker no longer owns the task");
+    }
+    if !t.uses_worktree() {
+        bail!("this task works in the shared checkout");
+    }
+    Ok(t)
 }
 
 /// The row of a new tree: a task tree on `from`, or a scratch tree when

@@ -242,8 +242,8 @@ pub fn attach(
 /// Observe the `worktree_add` run `job`, in `tx`:
 /// - `passed`, and the folder of the `reserved` row exists: the row moves
 ///   to `created`, then to `active` with the owner of the request.
-/// - `failed`: the `reserved` row is dropped, with the cause
-///   `worktree_add_failed`.
+/// - `failed`, or `passed` with no folder: the `reserved` row is
+///   dropped, with the cause `worktree_add_failed`.
 /// - `abandoned`, `queued` or `running`: the row stays `reserved`. The
 ///   rule of abandoned runs gives the next run.
 ///
@@ -266,10 +266,15 @@ pub fn observe(ctx: &JobCtx<'_>, tx: &Connection, job: &JobRow) -> Result<Observ
     let reason = outcome(job).map(|o| o.text).unwrap_or_default();
     match job.state {
         State::Passed if Path::new(&row.path).is_dir() => created(ctx, tx, row),
-        State::Passed => Ok(Observed::Kept(format!(
-            "the worktree_add job {} passed, but {} does not exist",
-            job.id, row.path
-        ))),
+        // The effect did not hold: a kept row would wait for a folder that
+        // no run makes again (review F1).
+        State::Passed => {
+            drop_reserved(tx, ctx.guard, id, "worktree_add_failed", Actor::Horch)?;
+            Ok(Observed::Dropped(format!(
+                "the worktree_add job {} passed, but {} does not exist",
+                job.id, row.path
+            )))
+        }
         State::Failed => {
             drop_reserved(tx, ctx.guard, id, "worktree_add_failed", Actor::Horch)?;
             Ok(Observed::Dropped(reason))
