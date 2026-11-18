@@ -264,11 +264,9 @@ fn path_of(value: &str) -> Option<&str> {
     value.strip_prefix("{path_of:")?.strip_suffix('}')
 }
 
-/// Environment variables no agent CLI ever receives. The operator's rule
-/// (CLAUDE.md): nothing in a fleet uses `ANTHROPIC_API_KEY`. Claude panes
-/// sign in with the operator's claude.ai login. The shell that starts a
-/// fleet can export the key, so every launch removes it.
-pub const FORBIDDEN_ENV: [&str; 1] = ["ANTHROPIC_API_KEY"];
+/// Environment variables no agent CLI ever receives. The list lives in the
+/// platform start function, which removes it from each process it starts.
+pub use horch_platform::start::FORBIDDEN_ENV;
 
 /// Build the command for a teammate, whichever CLI it names, in the launch
 /// environment `env`.

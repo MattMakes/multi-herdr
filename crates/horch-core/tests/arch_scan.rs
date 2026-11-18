@@ -444,10 +444,20 @@ fn skl_05_core_skill_model_has_no_harness_flags() {
 /// - `skills/catalog.rs`, `horch_marketplace as marketplace`: the `horch`
 ///   binary may depend on `horch-core` only (NFR-05), and it drives the
 ///   marketplace through this path.
-const REEXPORT_ALLOWED: &[(&str, &str)] = &[(
-    "horch-core/skills/catalog.rs",
-    "horch_marketplace as marketplace",
-)];
+/// - `harness/launch.rs`, `horch_platform::start::FORBIDDEN_ENV`: the
+///   forbidden list moved to the platform start function
+///   (`docs/tickets/fleetd-p7/MAP.md`, Q1), and its callers keep the old
+///   path.
+const REEXPORT_ALLOWED: &[(&str, &str)] = &[
+    (
+        "horch-core/skills/catalog.rs",
+        "horch_marketplace as marketplace",
+    ),
+    (
+        "horch-core/harness/launch.rs",
+        "horch_platform::start::FORBIDDEN_ENV",
+    ),
+];
 
 /// The top-level `horch-core` files that were re-export shims (or the
 /// `ledger.rs` facade) during the refactor. None may come back.
@@ -705,9 +715,10 @@ fn ctx_07_compaction_pure_modules_do_no_io() {
     );
 }
 
-/// A child's environment is cleaned in 1 place, `scrub_child_env` (#88): a
-/// hand-built removal of the API key is the sign of a child that keeps the
-/// caller's `GIT_DIR`. Only the runtime and the launch builder name it.
+/// A child's environment is cleaned in 1 place (#88, SR-7): the platform
+/// start function (`horch-platform/src/start.rs`) and the launcher of
+/// fleetd remove each forbidden name. A hand-built removal of the API key
+/// elsewhere is the sign of a start that goes around them.
 #[test]
 fn arc_88_children_are_scrubbed_in_one_place() {
     let needle = concat!("env_remove(\"ANTHROPIC", "_API_KEY\")");
@@ -716,6 +727,7 @@ fn arc_88_children_are_scrubbed_in_one_place() {
         "horch-core",
         "horch",
         "horch-marketplace",
+        "horch-platform",
         "herdr-install",
         "agent-docs-sync",
     ] {
@@ -727,7 +739,11 @@ fn arc_88_children_are_scrubbed_in_one_place() {
         rust_files(&root, &mut files);
         files.retain(|f| {
             let rel = relative(f, &root);
-            !(krate == "horch-core" && (rel.starts_with("runtime/") || rel == "harness/launch.rs"))
+            !matches!(
+                (krate, rel.as_str()),
+                ("horch-platform", "start.rs")
+                    | ("horch-core", "fleetd/worker_profiles/adapters/launcher.rs")
+            )
         });
         for line in forbidden_lines(&root, &files, &[needle]) {
             found.push(format!("{krate}/{line}"));
@@ -735,7 +751,7 @@ fn arc_88_children_are_scrubbed_in_one_place() {
     }
     assert!(
         found.is_empty(),
-        "use runtime::process::scrub_child_env:\n{}",
+        "start the process with horch_platform::start::Command or the launcher:\n{}",
         found.join("\n")
     );
 }

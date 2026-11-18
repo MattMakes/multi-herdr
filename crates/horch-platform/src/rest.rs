@@ -17,9 +17,9 @@
 use std::fmt;
 use std::io;
 use std::path::Path;
-use std::process::Command;
 
 use crate::os::rest as os;
+use crate::start::{Start, TOKEN};
 use crate::NotSupported;
 
 /// The file extension of the release archive of this OS: `tar.gz`, or
@@ -57,8 +57,8 @@ pub fn extract_release(archive: &[u8], dir: &Path) -> io::Result<()> {
 /// Replaces this process with `cmd`. On unix it calls `exec`. On Windows it
 /// starts `cmd`, waits, and exits with its code, or 1 with no code. It
 /// returns only the error of a start that failed.
-pub fn replace_process(cmd: Command) -> io::Error {
-    os::replace_process(cmd)
+pub fn replace_process(cmd: impl Start) -> io::Error {
+    os::replace_process(cmd.into_std(TOKEN))
 }
 
 /// Puts `dir` first in the user PATH of the registry (`HKCU\Environment`),

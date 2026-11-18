@@ -26,7 +26,7 @@
 use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use crate::os::service as os;
 use crate::NotSupported;
@@ -178,7 +178,7 @@ fn run(manager: &Path, args: &[OsString], nothing_to_do: &[i32]) -> io::Result<(
         }
         text
     };
-    let out = Command::new(manager)
+    let out = crate::start::command(manager)
         .args(args)
         .stdin(Stdio::null())
         .output()

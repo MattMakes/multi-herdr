@@ -8,16 +8,17 @@
 //! section 6.
 
 use crate::os::group as os;
+use crate::start::{Start, TOKEN};
 use crate::NotSupported;
-use std::process::{Child, Command};
+use std::process::Child;
 
 /// Start the child of `cmd` in a new process group that it leads, so that
 /// [`kill_child_group`] also ends its descendants.
 ///
 /// Windows: no change to `cmd`. Windows has no process groups, so the child
 /// stays in the group of this process. Section 6, row "Process groups".
-pub fn new_group(cmd: &mut Command) {
-    os::new_group(cmd);
+pub fn new_group(cmd: &mut impl Start) {
+    os::new_group(cmd.std_mut(TOKEN));
 }
 
 /// Send `SIGKILL` to process group `pgid`. Whether the signal was sent. A
@@ -60,8 +61,8 @@ pub fn exited_without_reap(child: &mut Child) -> std::io::Result<bool> {
 /// Windows gives [`NotSupported`] and leaves `cmd` unchanged: there is no
 /// detach, and a detached child dies with the pane. Section 6, row "Service
 /// or daemon start".
-pub fn detach(cmd: &mut Command) -> Result<(), NotSupported> {
-    os::detach(cmd)
+pub fn detach(cmd: &mut impl Start) -> Result<(), NotSupported> {
+    os::detach(cmd.std_mut(TOKEN))
 }
 
 /// Whether process group `pgid` is still the one whose leader started at
@@ -91,8 +92,8 @@ impl Contained {
     /// Prepare `cmd` to be contained. macOS and Linux: [`new_group`].
     /// Windows: the child starts suspended, so it cannot start a descendant
     /// before the job holds it.
-    pub fn prepare(cmd: &mut Command) {
-        os::Contained::prepare(cmd);
+    pub fn prepare(cmd: &mut impl Start) {
+        os::Contained::prepare(cmd.std_mut(TOKEN));
     }
 
     /// Contain `child`, spawned from a command of [`Contained::prepare`],

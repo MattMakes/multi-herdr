@@ -33,9 +33,9 @@
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use crate::os::sandbox as os;
+use crate::start::{self, Sealed, Start, StdCommand, TOKEN};
 use crate::NotSupported;
 
 /// Where macOS keeps `sandbox-exec`, the Seatbelt launcher of the sandbox.
@@ -47,19 +47,20 @@ pub const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 /// `/dev/null`, and it can read the rest of the disk. `denied` wins over
 /// each of these.
 ///
-/// The returned command keeps the program, the arguments, the environment
-/// changes and the current folder of `cmd`. `Command` does not show the
+/// The returned command is of the kind of `cmd` (a [`start::Command`] or a
+/// `std` command). It keeps the program, the arguments, the environment
+/// changes and the current folder of `cmd`. A command does not show the
 /// rest of its settings, so set stdio, `env_clear` and the OS extensions
 /// on the returned command. Give absolute paths in `writable`.
 ///
 /// It gives [`NotSupported`] with a reason when this host has no sandbox:
 /// on Windows, on Linux when `bwrap` is not on the `PATH` of `cmd`, and on
 /// macOS when [`SANDBOX_EXEC`] is missing.
-pub fn sandboxed(
-    cmd: Command,
+pub fn sandboxed<C: Start>(
+    cmd: C,
     writable: &[PathBuf],
     denied: &Denials,
-) -> Result<Command, NotSupported> {
+) -> Result<C, NotSupported> {
     let temp = resolved(&std::env::temp_dir());
     let reach = Reach {
         writable,
@@ -140,7 +141,7 @@ pub struct Denials {
 ///
 /// The rest is as in [`sandboxed`]: the command and its settings, and
 /// [`NotSupported`] on a host with no sandbox.
-pub fn sandboxed_hiding(cmd: Command, reach: &Reach<'_>) -> Result<Command, NotSupported> {
+pub fn sandboxed_hiding<C: Start>(cmd: C, reach: &Reach<'_>) -> Result<C, NotSupported> {
     wrapped(cmd, reach, None)
 }
 
@@ -169,8 +170,9 @@ impl<'a> Rule<'a> {
     }
 }
 
-fn wrapped(cmd: Command, reach: &Reach<'_>, temp: Option<&Path>) -> Result<Command, NotSupported> {
-    let program = os::program(path_of(&cmd).as_deref())?;
+fn wrapped<C: Start>(cmd: C, reach: &Reach<'_>, temp: Option<&Path>) -> Result<C, NotSupported> {
+    let cmd = cmd.std(TOKEN);
+    let program = os::program(path_of(cmd).as_deref())?;
     let all = |paths: &[PathBuf]| paths.iter().map(|p| resolved(p)).collect::<Vec<_>>();
     let (writable, readable, hidden) =
         (all(reach.writable), all(reach.readable), all(reach.hidden));
@@ -186,7 +188,7 @@ fn wrapped(cmd: Command, reach: &Reach<'_>, temp: Option<&Path>) -> Result<Comma
     // macOS, and the last mount covers the ones before it on Linux.
     rules.sort_by_key(Rule::key);
     let args = os::args(&rules, temp.is_some(), reach.network);
-    Ok(wrap(&program, &args, &cmd))
+    Ok(C::from_std(wrap(&program, &args, cmd), TOKEN))
 }
 
 /// `rules` with the denials put in, so that no other rule undoes them.
@@ -234,7 +236,7 @@ pub fn host_problem(path: Option<&OsStr>) -> Option<NotSupported> {
 
 /// The `PATH` that `cmd` runs with: its own when it sets or removes one,
 /// else the `PATH` of this process.
-fn path_of(cmd: &Command) -> Option<OsString> {
+fn path_of(cmd: &StdCommand) -> Option<OsString> {
     match cmd.get_envs().find(|(key, _)| *key == "PATH") {
         Some((_, value)) => value.map(OsString::from),
         None => std::env::var_os("PATH"),
@@ -242,8 +244,8 @@ fn path_of(cmd: &Command) -> Option<OsString> {
 }
 
 /// A command that runs `program` with `args`, then the program of `cmd`.
-fn wrap(program: &Path, args: &[OsString], cmd: &Command) -> Command {
-    let mut sandboxed = Command::new(program);
+fn wrap(program: &Path, args: &[OsString], cmd: &StdCommand) -> StdCommand {
+    let mut sandboxed = start::command(program).into_std(TOKEN);
     sandboxed
         .args(args)
         .arg(cmd.get_program())

@@ -23,6 +23,7 @@ pub mod sandbox;
 pub mod service;
 pub mod shell;
 pub mod signal;
+pub mod start;
 pub mod watch;
 
 #[cfg(target_os = "linux")]

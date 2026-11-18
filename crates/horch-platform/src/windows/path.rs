@@ -80,7 +80,7 @@ pub fn clear_link(link: &Path) -> io::Result<()> {
 }
 
 fn mklink_junction(link: &Path, target: &Path) -> io::Result<()> {
-    let output = std::process::Command::new("cmd")
+    let output = crate::start::command("cmd")
         .args(["/C", "mklink", "/J"])
         .arg(link)
         .arg(target)

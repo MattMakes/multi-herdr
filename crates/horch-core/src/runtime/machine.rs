@@ -181,15 +181,15 @@ fn probe_parts(path: &Path, bins: &ProbeBins) -> Parts {
     }
 }
 
-/// Run a command with a 2 s timeout and `ANTHROPIC_API_KEY` removed.
-/// Return stdout on exit code 0. Any failure gives `None`.
+/// Run a command with a 2 s timeout, through the platform start function,
+/// which removes each forbidden name. Return stdout on exit code 0. Any
+/// failure gives `None`.
 fn run(bin: &Path, args: &[&str]) -> Option<String> {
     use std::io::Read;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
 
-    let mut child = Command::new(bin)
+    let mut child = horch_platform::start::command(bin)
         .args(args)
-        .env_remove("ANTHROPIC_API_KEY")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
