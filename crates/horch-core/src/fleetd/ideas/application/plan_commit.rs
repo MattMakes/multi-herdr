@@ -32,6 +32,7 @@ use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
 use crate::fleetd::ideas::adapters::idea_folder_files::{FolderError, IdeaFolder};
 use crate::fleetd::ideas::adapters::ideas_store::{self, IdeaRow};
 use crate::fleetd::ideas::adapters::plan_yaml;
+use crate::fleetd::ideas::application::direct::direct_requirement;
 use crate::fleetd::ideas::domain::idea_folder::FILE_LIMIT;
 use crate::fleetd::ideas::domain::plan::{Acceptance, Plan, PlannedTask};
 use crate::fleetd::ideas::domain::plan_validator::{
@@ -115,7 +116,7 @@ pub fn validate_plan(store: &mut Store, ctx: &PlanCommit<'_>, idea_id: &str) -> 
     let folder = IdeaFolder::new(ctx.ideas, idea_id, ctx.owner.clone())
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let (read, mut problems) = read_plan(folder.dir(), ctx.owner, &idea);
-    let facts = match plan_facts(&folder, ctx) {
+    let facts = match plan_facts(store.conn(), &folder, ctx, idea_id) {
         Ok(facts) => facts,
         Err(p) => {
             problems.push(p);
@@ -248,16 +249,32 @@ fn read_file(dir: &Path, owner: &User, rel: &str) -> Result<Vec<u8>, String> {
 
 /// The facts of the plan rules: the requirements, the approved assumptions
 /// and the answers from the idea folder, and the roster and the gates from
-/// the caller.
-fn plan_facts(folder: &IdeaFolder, ctx: &PlanCommit<'_>) -> Result<PlanFacts, Problem> {
+/// the caller. A `--direct` idea with no requirements.yaml has 1
+/// requirement, its approved ticket ([`direct_requirement`]).
+fn plan_facts(
+    conn: &Connection,
+    folder: &IdeaFolder,
+    ctx: &PlanCommit<'_>,
+    idea_id: &str,
+) -> Result<PlanFacts, Problem> {
     let read = |e: FolderError| Problem::plan(READ, e.to_string());
-    let approved_assumptions = match folder.read_assumptions() {
+    let mut approved_assumptions = match folder.read_assumptions() {
         Ok(a) => a.ids(),
         Err(FolderError::Missing { .. }) => Vec::new(),
         Err(e) => return Err(read(e)),
     };
+    let requirements = match folder.read_requirements() {
+        Err(e @ FolderError::Missing { .. }) => {
+            let direct = direct_requirement(conn, ctx.guard, folder, idea_id)
+                .map_err(|e| Problem::plan(READ, format!("{e:#}")))?;
+            let req = direct.ok_or_else(|| read(e))?;
+            approved_assumptions.extend(req.cites.iter().cloned());
+            vec![req]
+        }
+        other => other.map_err(read)?,
+    };
     Ok(PlanFacts {
-        requirements: folder.read_requirements().map_err(read)?,
+        requirements,
         approved_assumptions,
         answers: folder.read_answers().map_err(read)?,
         roster: ctx.roster.to_vec(),
