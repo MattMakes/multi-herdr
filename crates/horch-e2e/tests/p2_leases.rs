@@ -274,11 +274,11 @@ fn assigned(status: &str) -> bool {
     matches!(status, "leased" | "running")
 }
 
-/// The stand-in agent: a process that is not a child of the test, so its
-/// end is seen at once and no zombie looks alive. On Unix it leads its own
-/// process group, as a real agent does, so the stop of fleetd reaches its
-/// whole group. Drop kills it (on Unix, its group), so a failed assertion
-/// leaks no process.
+/// The stand-in agent: a process whose end is seen at once, because on
+/// Unix a thread of the test reaps it and on Windows no zombie stays. On
+/// Unix it leads its own process group, as a real agent does, so the stop
+/// of fleetd reaches its whole group. Drop kills it (on Unix, its group),
+/// so a failed assertion leaks no process.
 struct Agent {
     pid: u32,
     start: u64,
@@ -303,17 +303,25 @@ impl Agent {
         return Agent::start();
     }
 
-    /// `set -m` starts the background job in its own process group.
+    /// `process_group(0)` starts the agent in its own process group. A
+    /// thread waits on the child, so no zombie stays after its end. `exec`
+    /// makes the command the agent: `dash`, the `/bin/sh` of Debian, else
+    /// keeps a shell as the agent. (`set -m` in `sh -c` makes no group in
+    /// `dash`.)
     #[cfg(unix)]
     fn spawn(command: &str) -> Agent {
-        let o = std::process::Command::new("/bin/sh")
-            .args([
-                "-c",
-                &format!("set -m; {command} </dev/null >/dev/null 2>&1 & echo $!"),
-            ])
-            .output()
+        use std::os::unix::process::CommandExt;
+        use std::process::Stdio;
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", &format!("exec {command}")])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
             .unwrap();
-        let pid: u32 = String::from_utf8_lossy(&o.stdout).trim().parse().unwrap();
+        let pid = child.id();
+        std::thread::spawn(move || child.wait());
         Agent::of(pid)
     }
 
@@ -333,6 +341,11 @@ impl Agent {
 
     fn of(pid: u32) -> Agent {
         let start = horch_core::procid::start_time(pid).expect("the start time of the agent");
+        #[cfg(unix)]
+        assert!(
+            horch_core::procid::is_same_group(pid, start),
+            "agent {pid} does not lead its own process group"
+        );
         Agent { pid, start }
     }
 
@@ -360,6 +373,16 @@ impl Agent {
     #[cfg(unix)]
     fn freeze(&self) {
         self.signal_group(libc::SIGSTOP);
+        wait_for("the stopped state of the agent", || {
+            let o = std::process::Command::new("ps")
+                .args(["-o", "stat=", "-p", &self.pid.to_string()])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&o.stdout)
+                .trim()
+                .starts_with('T')
+                .then_some(())
+        });
     }
 
     fn stop(&self) {
