@@ -19,10 +19,12 @@
 //!   stop uses, and `attempts.active_at` when the agent wrote output since
 //!   the last checkin (Phase 2 Q7).
 //! - `exit.json` and `session.json` are messages: 1 `ingested` row by path
-//!   and sha256, and 1 effect. `exit.json` settles the worker row
-//!   ([`supervisor::settle`]); `session.json` fills the session id, the
-//!   transcript and the execution record id of the worker row, which the
-//!   session records show. A record id of another form rejects the file.
+//!   and sha256, and 1 effect. `exit.json` settles the worker row and ends
+//!   its session record ([`supervisor::settle_exit`]); `session.json` fills
+//!   the session id, the transcript and the execution record id of the
+//!   worker row, which the session records show. A record id of another
+//!   form rejects the file. `session.json` goes first in a pass, so the
+//!   exit of the same pass finds the record.
 //! - A file that fails a check gets 1 `ingested` row `rejected` with its
 //!   reason, and fleetd does not read its path again (protocol rule 7).
 //!
@@ -306,14 +308,15 @@ pub fn ingest(
         if let Some(f) = &r.heartbeat {
             ingest.heartbeat(id, &worker, f)?;
         }
-        if let Some(f) = &r.exit {
-            if let Some(exit) = ingest.message(f)? {
-                ingest.exit(id, &worker, exit)?;
-            }
-        }
+        // session.json first: it names the session record that the exit ends.
         if let Some(f) = &r.session {
             if let Some(session) = ingest.message(f)? {
                 ingest.session(id, &worker, session)?;
+            }
+        }
+        if let Some(f) = &r.exit {
+            if let Some(exit) = ingest.message(f)? {
+                ingest.exit(id, &worker, exit)?;
             }
         }
     }
@@ -404,9 +407,10 @@ impl Ingest<'_> {
         Ok(())
     }
 
-    /// Settle the worker of attempt `id` with the new `exit`.
+    /// Settle the worker of attempt `id` with the new `exit`, and end its
+    /// session record.
     fn exit(&mut self, id: &str, worker: &str, exit: &ExitFile) -> Result<()> {
-        let ended = supervisor::settle(self.tx, worker, exit.code)?;
+        let ended = supervisor::settle_exit(self.tx, worker, exit.code, self.at)?;
         let noted = has_fact(self.tx, Entity::Attempt, id, EventKind::Note, REPAIR_CAUSE)?;
         if exit.repaired && !noted {
             let cause = Cause {

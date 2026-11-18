@@ -10,6 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
+use rusqlite::OptionalExtension;
 
 use chrono::{DateTime, Utc};
 
@@ -329,6 +330,61 @@ pub fn session_files(state_root: &Path) -> (PathBuf, Option<PathBuf>) {
     } else {
         (state_root.join(STATE_DB), None)
     }
+}
+
+/// The rule of [`ExecutionStore::record_exit`] for the record `r`, at
+/// `at`. True when it ended the record.
+fn exit_record(r: &mut LedgerRecordV1, code: Option<i32>, at: &str) -> bool {
+    r.exit_code = code;
+    r.updated_at = at.to_string();
+    if r.is_orchestrator() || !r.execution_status().is_live() {
+        return false;
+    }
+    let state = match code {
+        Some(0) => ExecutionStatus::Done,
+        code => ExecutionStatus::Failed {
+            failure: FailureKind::AgentExited { code },
+        },
+    };
+    r.finished_at.get_or_insert_with(|| at.to_string());
+    r.set_state(state);
+    true
+}
+
+/// End the session record `record_id` in the open transaction `tx` of the
+/// ledger file that holds it, by the rule of
+/// [`ExecutionStore::record_exit`], at `at`. The ingest of `exit.json`
+/// uses it (fleetd-p5 ticket 43). A record that this file does not hold,
+/// or that does not parse, changes nothing. A record that already holds
+/// the end and `code` changes nothing, so a repeat is a no-op. True when
+/// it ended the record.
+pub fn record_exit_in(
+    tx: &rusqlite::Connection,
+    record_id: &str,
+    code: Option<i32>,
+    at: &str,
+) -> Result<bool> {
+    let json: Option<String> = tx
+        .query_row(
+            "SELECT record_json FROM session_records WHERE record_id = ?1",
+            [record_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(mut r) = json.and_then(|j| serde_json::from_str::<LedgerRecordV1>(&j).ok()) else {
+        return Ok(false);
+    };
+    let live = !r.is_orchestrator() && r.execution_status().is_live();
+    if !live && r.exit_code == code {
+        return Ok(false);
+    }
+    let ended = exit_record(&mut r, code, at);
+    r.sync_legacy_status();
+    tx.execute(
+        "UPDATE session_records SET record_json = ?2, updated_at = ?3 WHERE record_id = ?1",
+        rusqlite::params![record_id, serde_json::to_string(&r)?, r.updated_at],
+    )?;
+    Ok(ended)
 }
 
 /// 1 row of `session_records`.
@@ -808,22 +864,7 @@ impl ExecutionStore {
     pub fn record_exit(&self, key: &str, code: Option<i32>) -> Result<bool> {
         let at = crate::clock::now_stamp();
         let mut ended = false;
-        self.update_key(key, |r| {
-            r.exit_code = code;
-            r.updated_at = at.clone();
-            if r.is_orchestrator() || !r.execution_status().is_live() {
-                return;
-            }
-            let state = match code {
-                Some(0) => ExecutionStatus::Done,
-                code => ExecutionStatus::Failed {
-                    failure: FailureKind::AgentExited { code },
-                },
-            };
-            r.finished_at.get_or_insert_with(|| at.clone());
-            r.set_state(state);
-            ended = true;
-        })?;
+        self.update_key(key, |r| ended = exit_record(r, code, &at))?;
         Ok(ended)
     }
 

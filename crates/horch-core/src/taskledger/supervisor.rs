@@ -653,6 +653,25 @@ pub fn settle(tx: &rusqlite::Connection, worker_id: &str, code: Option<i32>) -> 
     Ok(Ended::Clean)
 }
 
+/// The ingest of `exit.json`: [`settle`] the worker row, and end its
+/// session record at `at` in the same transaction `tx`
+/// ([`crate::execution::store::record_exit_in`]). The record is the one
+/// that `session.json` named (`workers.legacy_record_id`). A worker with
+/// no record id, or a record that the ledger file of `tx` does not hold,
+/// ends only its worker row.
+pub fn settle_exit(
+    tx: &rusqlite::Connection,
+    worker_id: &str,
+    code: Option<i32>,
+    at: &str,
+) -> Result<Ended> {
+    let ended = settle(tx, worker_id, code)?;
+    if let Some(record) = workers::get(tx, worker_id)?.legacy_record_id {
+        crate::execution::store::record_exit_in(tx, &record, code, at)?;
+    }
+    Ok(ended)
+}
+
 /// End the worker per [`exit_rule`], or only record the exit code. Returns
 /// the reason text of the exit event.
 fn record_exit(
