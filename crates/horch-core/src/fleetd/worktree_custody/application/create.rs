@@ -23,7 +23,9 @@ use crate::fleetd::fleet_runtime::adapters::clock_store;
 use crate::fleetd::fleet_runtime::adapters::config_file;
 use crate::fleetd::fleet_runtime::adapters::jobs_store::JobRow;
 use crate::fleetd::fleet_runtime::adapters::sqlite::drop_reserved;
-use crate::fleetd::fleet_runtime::application::jobs::{self, outcome, JobCtx, JobKey, Queued};
+use crate::fleetd::fleet_runtime::application::jobs::{
+    self, outcome, result_data, JobCtx, JobKey, NewItem, Queued,
+};
 use crate::fleetd::fleet_runtime::application::ledger::{transition, Cause, RecordRefusal};
 use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use crate::fleetd::fleet_runtime::domain::config::FleetConfig;
@@ -31,7 +33,9 @@ use crate::fleetd::fleet_runtime::domain::jobs::{Kind, State};
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 use crate::fleetd::ideas::application::needs_you::NeedsYouList;
 use crate::fleetd::worker_profiles::adapters::launcher::Launcher;
-use crate::fleetd::worktree_custody::adapters::git::{worktree_add_key, CliWorktreeGit};
+use crate::fleetd::worktree_custody::adapters::git::{
+    worktree_add_key, BranchRefused, CliWorktreeGit,
+};
 use crate::fleetd::worktree_custody::adapters::rescue_git::rescue_key;
 use crate::fleetd::worktree_custody::adapters::run_now::{run_now, Starter};
 use crate::fleetd::worktree_custody::adapters::sqlite::{
@@ -243,7 +247,8 @@ pub fn attach(
 /// - `passed`, and the folder of the `reserved` row exists: the row moves
 ///   to `created`, then to `active` with the owner of the request.
 /// - `failed`, or `passed` with no folder: the `reserved` row is
-///   dropped, with the cause `worktree_add_failed`.
+///   dropped, with the cause `worktree_add_failed`. A run that refused a
+///   branch that another tree holds also opens 1 needs-you item.
 /// - `abandoned`, `queued` or `running`: the row stays `reserved`. The
 ///   rule of abandoned runs gives the next run.
 ///
@@ -277,6 +282,9 @@ pub fn observe(ctx: &JobCtx<'_>, tx: &Connection, job: &JobRow) -> Result<Observ
             )))
         }
         State::Failed => {
+            if let Some(refused) = branch_refused(job) {
+                open_branch_refused(ctx, tx, id, &refused, &reason)?;
+            }
             drop_reserved(tx, ctx.guard, id, "worktree_add_failed", Actor::Horch)?;
             Ok(Observed::Dropped(reason))
         }
@@ -290,6 +298,45 @@ pub fn observe(ctx: &JobCtx<'_>, tx: &Connection, job: &JobRow) -> Result<Observ
             job.state.as_str()
         ))),
     }
+}
+
+/// The kind of the needs-you item of a branch that a `worktree_add` run
+/// refused.
+pub const BRANCH_REFUSED_KIND: &str = "worktree_branch_refused";
+
+/// The branch that the failed run `job` refused.
+fn branch_refused(job: &JobRow) -> Option<BranchRefused> {
+    serde_json::from_value(result_data(job)?).ok()
+}
+
+/// Open the needs-you item of the refused branch: the operator frees the
+/// branch or moves its work, then the same request attaches or makes it.
+fn open_branch_refused(
+    ctx: &JobCtx<'_>,
+    tx: &Connection,
+    id: &str,
+    refused: &BranchRefused,
+    reason: &str,
+) -> Result<()> {
+    let key = format!("{BRANCH_REFUSED_KIND}:{}", refused.branch);
+    let fix = match &refused.held_by {
+        Some(tree) => {
+            format!("Commit or move the work of {tree}, then run git worktree remove there")
+        }
+        None => format!(
+            "Keep the work of {} on another branch, then delete it",
+            refused.branch
+        ),
+    };
+    let text = format!("{reason}. {fix}, and ask for the worktree again");
+    let item = NewItem {
+        key: &key,
+        kind: BRANCH_REFUSED_KIND,
+        entity: Entity::Worktree,
+        entity_id: id,
+        text: &text,
+    };
+    ctx.needs_you.open_item(tx, &item)
 }
 
 fn created(ctx: &JobCtx<'_>, tx: &Connection, row: WorktreeRow) -> Result<Observed> {

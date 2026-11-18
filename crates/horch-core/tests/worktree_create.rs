@@ -96,6 +96,14 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&o.stdout).trim().to_string()
 }
 
+/// Write `file` in the tree `dir`, commit it, and give the new HEAD.
+fn commit(dir: &Path, file: &str) -> String {
+    std::fs::write(dir.join(file), "work\n").unwrap();
+    git(dir, &["add", file]);
+    git(dir, &["commit", "--quiet", "-m", file]);
+    git(dir, &["rev-parse", "HEAD"])
+}
+
 impl World {
     /// A repository with 1 commit on `main` and the run branch, a ledger,
     /// and a run of the repository.
@@ -189,6 +197,18 @@ impl World {
 
     fn row(&self, id: &str) -> WorktreeRow {
         trees::get(self.store.conn(), id).unwrap().unwrap()
+    }
+
+    /// The count of open needs-you items of `kind`.
+    fn open_items(&self, kind: &str) -> i64 {
+        self.store
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM needs_you WHERE kind = ?1 AND state = 'open'",
+                [kind],
+                |r| r.get(0),
+            )
+            .unwrap()
     }
 
     fn rows(&self) -> i64 {
@@ -357,6 +377,10 @@ impl WorktreeGitGateway for Recording {
         });
         self.inner.add(repo, path, branch, base)
     }
+
+    fn attach(&self, repo: &Path, path: &Path, branch: &str) -> anyhow::Result<()> {
+        self.inner.attach(repo, path, branch)
+    }
 }
 
 // ─── the tests ──────────────────────────────────────────────────────────
@@ -450,14 +474,27 @@ fn attempt_waits_for_worktree_add_job_and_lease_starts_at_launch() {
 fn failed_worktree_add_drops_the_reserved_row_and_abandoned_runs_again() {
     let mut w = World::new();
     let id = w.claimed();
-    // The branch of the tree exists: the job keeps it and fails.
-    git(&w.root, &["branch", "fleet/r1-T1-feat", "main"]);
+    // Another tree holds the branch of the tree: the job refuses it.
+    let holder = w.tmp.path().join("holder");
+    let holder_text = holder.display().to_string();
+    git(
+        &w.root,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "fleet/r1-T1-feat",
+            &holder_text,
+            "main",
+        ],
+    );
     let e = finish::worktree_new_with(&mut w.store, &w.git, &id, "feat", &TestJobs).unwrap_err();
     assert!(
         e.to_string()
-            .contains("the branch fleet/r1-T1-feat exists already"),
+            .contains("the branch fleet/r1-T1-feat is checked out in"),
         "{e:#}"
     );
+    assert_eq!(w.open_items("worktree_branch_refused"), 1);
     assert_eq!(w.rows(), 0, "the reserved row is dropped");
     assert!(!w.root.join(".worktrees/T1-feat").exists());
     let dropped: String = w
@@ -612,15 +649,16 @@ fn published_worktree_created_carries_worktree_id_task_id_path_branch() {
 }
 
 /// Review F1: a passed run whose folder is gone before the observation
-/// does not keep the row `reserved`. The row is dropped with the reason, so
-/// the task is not stuck: the next command makes a tree with another name.
-/// The branch of the first run stays; no job deletes a branch.
+/// does not keep the row `reserved`. The row is dropped with the reason. The
+/// branch of the first run stays, and the retry with the same task and name
+/// attaches it with each of its commits.
 #[test]
 fn passed_worktree_add_with_no_folder_drops_the_reserved_row() {
     let mut w = World::new();
     let id = w.claimed();
     let wt = finish::worktree_new_with(&mut w.store, &w.git, &id, "feat", &TestJobs).unwrap();
     let job = w.jobs(Kind::WorktreeAdd, &wt.worktree_id).remove(0);
+    let work = commit(Path::new(&wt.path), "work.txt");
     std::fs::remove_dir_all(&wt.path).unwrap();
 
     let config = FleetConfig::default();
@@ -641,13 +679,13 @@ fn passed_worktree_add_with_no_folder_drops_the_reserved_row() {
     assert!(reason.contains("does not exist"), "{reason}");
     assert_eq!(w.rows(), 0);
 
-    let next = finish::worktree_new_with(&mut w.store, &w.git, &id, "again", &TestJobs).unwrap();
+    // The retry with the same task and name attaches the kept branch.
+    let next = finish::worktree_new_with(&mut w.store, &w.git, &id, "feat", &TestJobs).unwrap();
+    assert_eq!(next.path, wt.path);
+    assert_eq!(next.branch, wt.branch);
     assert_eq!(w.row(&next.worktree_id).state, WorktreeState::Active);
-    assert!(Path::new(&next.path).is_dir());
-    git(
-        &w.root,
-        &["rev-parse", "--verify", "refs/heads/fleet/r1-T1-feat"],
-    );
+    assert_eq!(git(Path::new(&next.path), &["rev-parse", "HEAD"]), work);
+    assert!(Path::new(&next.path).join("work.txt").is_file());
 }
 
 /// Row W2: the next attempt of the task gets the same tree. It moves to
@@ -820,4 +858,42 @@ fn a_process_that_is_not_horch_starts_no_job() {
     let e = finish::worktree_new(&mut w.store, &w.git, &id, "feat").unwrap_err();
     assert!(e.to_string().contains("is not horch"), "{e:#}");
     assert_eq!(w.rows(), 0);
+}
+
+/// Review F1, round 3: a failed add keeps the branch of the task and
+/// name. When no tree holds it any more, the retry with the same name
+/// attaches it, with each commit on it. No branch is deleted.
+#[test]
+fn same_name_retry_after_a_failed_add_attaches_the_kept_branch_with_its_commits() {
+    let mut w = World::new();
+    let id = w.claimed();
+    let holder = w.tmp.path().join("holder");
+    let holder_text = holder.display().to_string();
+    git(
+        &w.root,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "fleet/r1-T1-feat",
+            &holder_text,
+            "main",
+        ],
+    );
+    let work = commit(&holder, "work.txt");
+    let e = finish::worktree_new_with(&mut w.store, &w.git, &id, "feat", &TestJobs).unwrap_err();
+    assert!(e.to_string().contains("is checked out in"), "{e:#}");
+    assert_eq!(w.rows(), 0);
+
+    // The holder lets the branch go; its commit stays on the branch.
+    git(&w.root, &["worktree", "remove", &holder_text]);
+    let wt = finish::worktree_new_with(&mut w.store, &w.git, &id, "feat", &TestJobs).unwrap();
+    assert_eq!(wt.branch, "fleet/r1-T1-feat");
+    assert_eq!(w.row(&wt.worktree_id).state, WorktreeState::Active);
+    assert_eq!(git(Path::new(&wt.path), &["rev-parse", "HEAD"]), work);
+    assert!(Path::new(&wt.path).join("work.txt").is_file());
+    assert_eq!(
+        git(Path::new(&wt.path), &["branch", "--show-current"]),
+        "fleet/r1-T1-feat"
+    );
 }

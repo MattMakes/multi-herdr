@@ -58,4 +58,8 @@ pub trait WorktreeGitGateway {
     /// `git worktree add -b <branch> <path> <base>` in the repository
     /// `repo`.
     fn add(&self, repo: &Path, path: &Path, branch: &str, base: &str) -> Result<()>;
+
+    /// `git worktree add <path> <branch>` in the repository `repo`: the
+    /// tree on the existing branch `branch`, with each of its commits.
+    fn attach(&self, repo: &Path, path: &Path, branch: &str) -> Result<()>;
 }

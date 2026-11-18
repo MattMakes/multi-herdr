@@ -35,6 +35,7 @@ use horch_core::fleetd::worktree_custody::adapters::run_now::{run_now, Starter};
 use horch_core::fleetd::worktree_custody::adapters::sqlite::{
     self as trees, NewWorktree, WorktreeRow,
 };
+use horch_core::fleetd::worktree_custody::application::create::{self, Observed};
 use horch_core::taskledger::model::{Actor, WorktreeStatus};
 use horch_core::taskledger::schema;
 use horch_core::taskledger::workers::Worker;
@@ -423,24 +424,92 @@ fn worktree_add_job_keeps_a_folder_with_work_and_fails() {
     assert!(tree3.join("b.txt").exists());
 }
 
-#[test]
-fn worktree_add_job_with_an_existing_branch_fails_and_keeps_the_branch() {
-    let mut w = world();
+/// A branch `branch` with 1 commit on `main`, and `main` checked out
+/// again. Its tip.
+fn kept_branch(w: &World, branch: &str) -> String {
     std::fs::write(w.repo.join("c.txt"), "c\n").unwrap();
-    git(&w.repo, &["checkout", "-q", "-b", "fleet/taken"]);
+    git(&w.repo, &["checkout", "-q", "-b", branch]);
     git(&w.repo, &["add", "c.txt"]);
-    git(&w.repo, &["commit", "-q", "-m", "taken"]);
+    git(&w.repo, &["commit", "-q", "-m", "kept work"]);
     let tip = git(&w.repo, &["rev-parse", "HEAD"]);
     git(&w.repo, &["checkout", "-q", "main"]);
+    tip
+}
 
-    let row = w.reserve("t1", "fleet/taken");
+/// Observe the ended run `job` as the command does, and give the number
+/// of open needs-you items of a refused branch.
+fn observe_refused(w: &mut World, job: &JobRow) -> i64 {
+    let config = w.config.clone();
+    let tx = w
+        .conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .unwrap();
+    let seen = create::observe(&ctx(&config), &tx, job).unwrap();
+    tx.commit().unwrap();
+    assert!(matches!(seen, Observed::Dropped(_)), "{seen:?}");
+    w.conn
+        .query_row(
+            "SELECT count(*) FROM needs_you WHERE kind = ?1 AND state = 'open'",
+            [create::BRANCH_REFUSED_KIND],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+#[test]
+fn worktree_add_job_attaches_a_free_branch_of_its_task_and_name_and_keeps_its_commit() {
+    let mut w = world();
+    let tip = kept_branch(&w, "fleet-T1-t1");
+
+    let row = w.reserve("T1-t1", "fleet-T1-t1");
+    let id = w.queue_add(&row);
+    let ended = w.run(id);
+
+    assert_eq!(ended.state, State::Passed, "{}", text(&ended));
+    let tree = w.tree_path("T1-t1");
+    assert_eq!(
+        add_result(&ended).head,
+        tip,
+        "the tree is at the kept commit"
+    );
+    assert_eq!(
+        git(&tree, &["rev-parse", "--abbrev-ref", "HEAD"]),
+        "fleet-T1-t1"
+    );
+    assert!(tree.join("c.txt").exists());
+    assert_eq!(git(&w.repo, &["rev-parse", "fleet-T1-t1"]), tip);
+}
+
+#[test]
+fn worktree_add_job_refuses_a_branch_it_cannot_prove_safe_and_keeps_it() {
+    let mut w = world();
+    // Another worktree holds the branch of this task and name.
+    let tip = kept_branch(&w, "fleet-T1-t1");
+    let holder = w.tree_path("holder").display().to_string();
+    git(&w.repo, &["worktree", "add", "-q", &holder, "fleet-T1-t1"]);
+    let row = w.reserve("T1-t1", "fleet-T1-t1");
+    let id = w.queue_add(&row);
+    let ended = w.run(id);
+
+    assert_eq!(ended.state, State::Failed);
+    assert!(text(&ended).contains("fleet-T1-t1"), "{}", text(&ended));
+    assert!(text(&ended).contains(&holder), "{}", text(&ended));
+    assert_eq!(git(&w.repo, &["rev-parse", "fleet-T1-t1"]), tip);
+    assert!(!w.tree_path("T1-t1").exists());
+    assert_eq!(observe_refused(&mut w, &ended), 1);
+
+    // A branch that is not the branch of this task and name.
+    git(&w.repo, &["branch", "fleet/taken", "fleet-T1-t1"]);
+    let row = w.reserve("T2-t2", "fleet/taken");
     let id = w.queue_add(&row);
     let ended = w.run(id);
 
     assert_eq!(ended.state, State::Failed);
     assert!(text(&ended).contains("fleet/taken"), "{}", text(&ended));
+    assert!(text(&ended).contains("not the branch"), "{}", text(&ended));
     assert_eq!(git(&w.repo, &["rev-parse", "fleet/taken"]), tip);
-    assert!(!w.tree_path("t1").exists());
+    assert!(!w.tree_path("T2-t2").exists());
+    assert_eq!(observe_refused(&mut w, &ended), 2);
 }
 
 // ─── worktree_list ──────────────────────────────────────────────────────

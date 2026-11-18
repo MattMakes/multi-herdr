@@ -105,8 +105,10 @@ pub(crate) fn failed(text: String) -> Ran {
 const HOLDS_WORK: &str = "the folder holds files or commits";
 
 /// The `worktree_add` job of the `reserved` row `row`, in the project root
-/// of the row. A folder at the path is kept unless it holds no work, a
-/// branch that exists already is kept, and the row is not moved.
+/// of the row. A folder at the path is kept unless it holds no work. A
+/// branch that exists already is attached when it is the branch of the
+/// task and name of the row and no other tree holds it. Else it is refused.
+/// A branch is never deleted. The row is not moved.
 pub fn worktree_add(git: &dyn WorktreeGitGateway, row: &WorktreeRow) -> Ran {
     add(git, row).unwrap_or_else(|e| failed(format!("{e:#}")))
 }
@@ -139,12 +141,43 @@ fn add(git: &dyn WorktreeGitGateway, row: &WorktreeRow) -> Result<Ran> {
         }
     }
     if git.branch_exists(repo, &row.branch)? {
-        return Ok(failed(format!(
-            "the branch {} exists already; the job keeps it",
-            row.branch
-        )));
+        // The branch of an earlier run of this task and name: the job
+        // attaches it, with each of its commits, when no other tree holds
+        // it. A branch is never deleted (review F1 of T-288).
+        if !of_its_task_and_name(row) {
+            return Ok(refused(
+                row,
+                None,
+                format!(
+                    "the branch {} exists, and it is not the branch of the task and name of {}",
+                    row.branch, row.path
+                ),
+            ));
+        }
+        let full = format!("refs/heads/{}", row.branch);
+        let others: Vec<&ListEntry> = entries
+            .iter()
+            .filter(|e| e.branch.as_deref() == Some(full.as_str()))
+            .filter(|e| !same_path(Path::new(&e.path), path))
+            .collect();
+        if let Some(e) = others.iter().find(|e| e.prunable.is_none()) {
+            return Ok(refused(
+                row,
+                Some(&e.path),
+                format!(
+                    "the branch {} is checked out in {}; the job attaches only a branch \
+                     that no other worktree holds",
+                    row.branch, e.path
+                ),
+            ));
+        }
+        if !others.is_empty() {
+            git.prune(repo)?;
+        }
+        git.attach(repo, path, &row.branch)?;
+    } else {
+        git.add(repo, path, &row.branch, base)?;
     }
-    git.add(repo, path, &row.branch, base)?;
     let state = git
         .tree(path)?
         .with_context(|| format!("git made no work tree at {}", row.path))?;
@@ -152,6 +185,38 @@ fn add(git: &dyn WorktreeGitGateway, row: &WorktreeRow) -> Result<Ran> {
         format!("made {} on {} at {base}", row.path, row.branch),
         add_result(row, state.head),
     ))
+}
+
+/// Whether the branch of `row` is the branch that its task and name give.
+/// The folder of a task tree is `T<seq>-<name>` on the branch
+/// `<run branch>-T<seq>-<name>`, and the folder of a scratch tree is
+/// `<name>` on `fleet-scratch-<run>-<name>`: the branch ends with
+/// `-<folder>`.
+fn of_its_task_and_name(row: &WorktreeRow) -> bool {
+    Path::new(&row.path)
+        .file_name()
+        .and_then(|f| f.to_str())
+        .is_some_and(|f| row.branch.ends_with(&format!("-{f}")))
+}
+
+/// The data of a `worktree_add` run that refused the existing branch of
+/// its row: the tree at `held_by` has it checked out, or, when `held_by`
+/// is `None`, it is not the branch of the task and name of the row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BranchRefused {
+    pub branch: String,
+    pub held_by: Option<String>,
+}
+
+fn refused(row: &WorktreeRow, held_by: Option<&str>, text: String) -> Ran {
+    let data = BranchRefused {
+        branch: row.branch.clone(),
+        held_by: held_by.map(str::to_string),
+    };
+    Ran {
+        data: Some(serde_json::to_value(data).expect("a result serializes")),
+        ..failed(text)
+    }
 }
 
 fn add_result(row: &WorktreeRow, head: String) -> AddResult {
@@ -511,6 +576,13 @@ impl WorktreeGitGateway for CliWorktreeGit {
     fn add(&self, repo: &Path, path: &Path, branch: &str, base: &str) -> Result<()> {
         let path = path.to_str().context("the path of a tree is not UTF-8")?;
         self.git(repo, &["worktree", "add", "-b", branch, path, base])
+            .map(drop)
+    }
+
+    fn attach(&self, repo: &Path, path: &Path, branch: &str) -> Result<()> {
+        let path = path.to_str().context("the path of a tree is not UTF-8")?;
+        // `--` ends the options: no path or branch name reads as a flag.
+        self.git(repo, &["worktree", "add", "--", path, branch])
             .map(drop)
     }
 }
