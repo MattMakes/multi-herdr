@@ -16,10 +16,10 @@
 //! of its agent. The tests read the stored task words
 //! (`docs/tickets/fleetd-p2/MAP.md`, Q3).
 //!
-//! Unix only: `kill -STOP` has no Windows form (MAP.md, Q17). On Windows the
-//! unit tests of the heartbeat and the stall ladder hold the RR-1 row.
-
-#![cfg(unix)]
+//! RR-1 is Unix only: `kill -STOP` has no Windows form (MAP.md, Q17). On
+//! Windows the unit tests of the heartbeat and the stall ladder hold the
+//! RR-1 row. Windows has no polite stop either, so FM-14 shows the old
+//! process in its grace only on Unix.
 
 use std::path::PathBuf;
 use std::process::Output;
@@ -114,14 +114,14 @@ impl Fleet {
     }
 
     /// Move both clocks `s` seconds forward.
-    fn wait(&mut self, s: i64) {
+    fn advance_clocks(&mut self, s: i64) {
         self.h.advance_fleet_clock(s);
         self.offset += u64::try_from(s).unwrap();
     }
 
     /// Move both clocks `s` seconds forward, then run 1 pass.
     fn pass_after(&mut self, s: i64) -> String {
-        self.wait(s);
+        self.advance_clocks(s);
         self.pass()
     }
 
@@ -275,34 +275,63 @@ fn assigned(status: &str) -> bool {
 }
 
 /// The stand-in agent: a process that is not a child of the test, so its
-/// end is seen at once and no zombie looks alive. Drop continues it and
-/// kills it, so a failed assertion leaks no process.
+/// end is seen at once and no zombie looks alive. On Unix it leads its own
+/// process group, as a real agent does, so the stop of fleetd reaches its
+/// whole group. Drop kills it (on Unix, its group), so a failed assertion
+/// leaks no process.
 struct Agent {
     pid: u32,
     start: u64,
 }
 
 impl Agent {
-    /// A `sleep` process.
+    /// A process that sleeps.
     fn start() -> Agent {
-        Agent::spawn("/bin/sleep 600")
+        #[cfg(unix)]
+        return Agent::spawn("/bin/sleep 600");
+        #[cfg(windows)]
+        return Agent::spawn_windows();
     }
 
-    /// A process that ignores the polite stop (`SIGTERM`): only the kill
-    /// after the grace ends it.
+    /// A process group whose leader ignores the polite stop (`SIGTERM`):
+    /// only the kill after the grace ends the group. Windows has no polite
+    /// stop, so there it is [`Agent::start`].
     fn stubborn() -> Agent {
-        Agent::spawn("/bin/sh -c 'trap \"\" TERM; while :; do /bin/sleep 1; done'")
+        #[cfg(unix)]
+        return Agent::spawn("/bin/sh -c 'trap \"\" TERM; while :; do /bin/sleep 1; done'");
+        #[cfg(windows)]
+        return Agent::start();
     }
 
+    /// `set -m` starts the background job in its own process group.
+    #[cfg(unix)]
     fn spawn(command: &str) -> Agent {
         let o = std::process::Command::new("/bin/sh")
             .args([
                 "-c",
-                &format!("{command} </dev/null >/dev/null 2>&1 & echo $!"),
+                &format!("set -m; {command} </dev/null >/dev/null 2>&1 & echo $!"),
             ])
             .output()
             .unwrap();
         let pid: u32 = String::from_utf8_lossy(&o.stdout).trim().parse().unwrap();
+        Agent::of(pid)
+    }
+
+    /// `ping` for 600 s. Windows keeps no zombie, and the test holds no
+    /// handle to it.
+    #[cfg(windows)]
+    fn spawn_windows() -> Agent {
+        let child = std::process::Command::new("ping")
+            .args(["-n", "600", "127.0.0.1"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        Agent::of(child.id())
+    }
+
+    fn of(pid: u32) -> Agent {
         let start = horch_core::procid::start_time(pid).expect("the start time of the agent");
         Agent { pid, start }
     }
@@ -311,34 +340,52 @@ impl Agent {
         horch_core::procid::alive(self.pid, Some(self.start))
     }
 
-    fn signal(&self, sig: libc::c_int) {
-        if self.alive() {
-            // SAFETY: kill(2) on the agent of this test, while it has the
-            // start time that the test read.
-            unsafe { libc::kill(self.pid as libc::pid_t, sig) };
+    /// Whether the agent and each process of its group are gone. Windows
+    /// has no process groups: there it is the agent alone.
+    fn gone(&self) -> bool {
+        !self.alive() && horch_core::procid::group_members(self.pid).is_empty()
+    }
+
+    /// Send `sig` to the group of the agent, while the agent leads it.
+    #[cfg(unix)]
+    fn signal_group(&self, sig: libc::c_int) {
+        if horch_core::procid::is_same_group(self.pid, self.start) {
+            // SAFETY: kill(2) on the process group of the agent of this
+            // test, while the agent with its start time leads it.
+            unsafe { libc::kill(-(self.pid as libc::pid_t), sig) };
         }
     }
 
     /// `kill -STOP`: the process stays, with no output and no progress.
+    #[cfg(unix)]
     fn freeze(&self) {
-        self.signal(libc::SIGSTOP);
+        self.signal_group(libc::SIGSTOP);
+    }
+
+    fn stop(&self) {
+        #[cfg(unix)]
+        {
+            self.signal_group(libc::SIGCONT);
+            self.signal_group(libc::SIGKILL);
+        }
+        #[cfg(windows)]
+        horch_core::procid::stop_same(self.pid, self.start, horch_core::procid::Stop::Kill);
     }
 
     /// Kill the agent and wait until it is gone.
     fn kill(&self) {
-        self.signal(libc::SIGCONT);
-        self.signal(libc::SIGKILL);
-        wait_for("the end of the agent", || (!self.alive()).then_some(()));
+        self.stop();
+        wait_for("the end of the agent", || self.gone().then_some(()));
     }
 }
 
 impl Drop for Agent {
     fn drop(&mut self) {
-        self.signal(libc::SIGCONT);
-        self.signal(libc::SIGKILL);
+        self.stop();
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn rr1_stopped_worker_is_caught_within_1_lease() {
     let mut f = Fleet::new("p2-rr1");
@@ -410,58 +457,64 @@ fn rr2_expired_lease_never_leaves_the_task_assigned() {
     }
 }
 
+/// The phases of RR-6, each 1 failed attempt at a time.
+impl Fleet {
+    /// Wait out the backoff of rung 6. A claim in the backoff gets no task.
+    fn through_backoff(&mut self) {
+        let Some(nb) = self.task().not_before.filter(|nb| *nb > self.clock()) else {
+            return;
+        };
+        let early = Agent::start();
+        let w = self.worker(&early);
+        let o = self.run_as(Some(&w), &["ledger", "claim"]);
+        assert!(!assigned(&self.task().status), "{}", text(&o));
+        self.advance_clocks(nb - self.clock());
+    }
+
+    /// 1 attempt that exits with no result, and the pass that sees it.
+    /// The log of the pass.
+    fn failed_attempt(&mut self) -> String {
+        self.through_backoff();
+        let agent = Agent::start();
+        self.claimed(&agent);
+        agent.kill();
+        self.pass()
+    }
+
+    /// Fail attempts until T-1 is not `ready`. Each status on the way is
+    /// asserted against the limit `max`.
+    fn fail_until_not_ready(&mut self, max: i64, log: &mut Vec<String>) {
+        while self.task().status == "ready" {
+            log.push(self.failed_attempt());
+            let t = self.task();
+            assert!(
+                t.attempts - t.attempt_floor <= max,
+                "{} attempts since the last requeue, limit {max}\n{}",
+                t.attempts - t.attempt_floor,
+                log.join("\n")
+            );
+        }
+    }
+}
+
 #[test]
 fn rr6_task_that_fails_each_attempt_escalates_after_max_attempts() {
     const MAX: i64 = 2;
     let mut f = Fleet::new("p2-rr6");
     f.run_with_task(&["--max-attempts", &MAX.to_string()]);
     let mut log = Vec::new();
-    let mut replanned = false;
-    // Each round is 1 attempt; 2 rounds of MAX attempts and 1 more round,
-    // which must find the task escalated.
-    for _ in 0..=(2 * MAX) {
-        let t = f.task();
-        match t.status.as_str() {
-            "escalated" => break,
-            "failed" => {
-                assert!(
-                    !replanned,
-                    "a second replan of {}\n{}",
-                    t.id,
-                    log.join("\n")
-                );
-                assert_eq!(t.attempts - t.attempt_floor, MAX, "{}", log.join("\n"));
-                log.push(f.ok(&["task", "requeue", "T-1", "replan"]));
-                replanned = true;
-            }
-            "ready" => {}
-            other => panic!("T-1 is {other}\n{}", log.join("\n")),
-        }
-        if let Some(nb) = f.task().not_before.filter(|nb| *nb > f.clock()) {
-            // The backoff of rung 6 holds the claim.
-            let early = Agent::start();
-            let w = f.worker(&early);
-            let o = f.run_as(Some(&w), &["ledger", "claim"]);
-            assert!(!assigned(&f.task().status), "{}", text(&o));
-            f.wait(nb - f.clock());
-        }
-        let agent = Agent::start();
-        f.claimed(&agent);
-        // The attempt exits with no result.
-        agent.kill();
-        log.push(f.pass());
-        let t = f.task();
-        assert!(
-            t.attempts - t.attempt_floor <= MAX,
-            "{} attempts since the last requeue, limit {MAX}\n{}",
-            t.attempts - t.attempt_floor,
-            log.join("\n")
-        );
-    }
+    // The first MAX attempts fail: the task is `failed`.
+    f.fail_until_not_ready(MAX, &mut log);
+    let t = f.task();
+    assert_eq!(t.status, "failed", "{t:?}\n{}", log.join("\n"));
+    assert_eq!(t.attempts, MAX, "{t:?}\n{}", log.join("\n"));
+    // The replan.
+    log.push(f.ok(&["task", "requeue", "T-1", "replan"]));
+    // The next MAX attempts fail: the task is `escalated`.
+    f.fail_until_not_ready(MAX, &mut log);
     let log = log.join("\n");
     let t = f.task();
     assert_eq!(t.status, "escalated", "{t:?}\n{log}");
-    assert!(replanned, "no replan before the escalation\n{log}");
     assert_eq!(t.replans, 1, "{t:?}\n{log}");
     assert_eq!(
         t.attempts,
@@ -549,10 +602,14 @@ fn cancel_of_a_waiting_quota_task_is_immediate() {
     f.claimed(&agent);
     let o = f.pass();
     assert_eq!(f.task().status, "waiting_quota", "{o}");
+    wait_for("the stop of the agent by the quota rule", || {
+        agent.gone().then_some(())
+    });
     let o = f.ok(&["task", "cancel", "T-1", "not needed"]);
     assert!(o.contains("T-1 cancelled."), "{o}");
     assert_eq!(f.task().status, "cancelled", "{o}");
     assert_eq!(f.lease_rows(), 0, "{o}");
+    assert!(agent.gone(), "the agent lives after the cancel\n{o}");
 }
 
 #[test]
@@ -565,6 +622,7 @@ fn fm14_no_second_attempt_starts_while_the_old_process_lives() {
     let mut log = log;
     let (_, state) = f.attempt_of(&first);
     assert_eq!(state, "ended", "{}", log.join("\n"));
+    #[cfg(unix)]
     assert!(old.alive(), "the old process lives in its grace");
     // A new worker tries to claim after each pass, while the old process
     // lives in its grace and after the kill.
@@ -580,8 +638,8 @@ fn fm14_no_second_attempt_starts_while_the_old_process_lives() {
         assert!(f.open_attempts() <= 1, "{}", log.join("\n"));
         if assigned(&f.task().status) {
             assert!(
-                !old.alive(),
-                "a second attempt started while the process of the first lives\n{}",
+                old.gone(),
+                "a second attempt started while a process of the first lives\n{}",
                 log.join("\n")
             );
             let (_, state) = f.attempt_of(&w);
