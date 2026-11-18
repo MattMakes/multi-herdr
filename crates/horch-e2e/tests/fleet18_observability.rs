@@ -838,26 +838,48 @@ fn g53_ledger_handoff_compacts_resumes_and_records_progress_once() {
         1,
         "{lines:?}"
     );
+    // FR-7: each other line waits in mail, and the pane gets the mail line.
     assert!(
-        lines
+        lines.contains(&horch_core::messaging::delivery::MAIL_LINE),
+        "{lines:?}"
+    );
+    let mailed = |role: &str| -> Vec<String> {
+        horch_core::messaging::mail::Mail::for_role(&h.state, "w1", role)
+            .pending()
+            .unwrap()
+            .into_iter()
+            .map(|m| m.text)
+            .collect()
+    };
+    let worker_mail = mailed("sonnet-1");
+    assert!(
+        worker_mail
             .iter()
             .any(|l| l.contains("Read ai_docs/handoffs/sonnet-1-whats-next.md now. Then continue")),
-        "{lines:?}"
+        "{worker_mail:?}"
     );
     // #57: only the orchestrator resume carries the command card.
     assert!(
-        !lines
+        !worker_mail
             .iter()
+            .chain(
+                lines
+                    .iter()
+                    .map(|l| l.to_string())
+                    .collect::<Vec<_>>()
+                    .iter()
+            )
             .any(|l| l.contains("Command card:") || l.contains("decisions.md")),
-        "{lines:?}"
+        "{worker_mail:?}"
     );
+    let orchestrator_mail = mailed("orchestrator");
     assert_eq!(
-        lines
+        orchestrator_mail
             .iter()
             .filter(|l| l.contains("compaction started for sonnet-1"))
             .count(),
         1,
-        "{lines:?}"
+        "{orchestrator_mail:?}"
     );
     let (source, text): (String, String) = wait("task-ledger compaction progress", || {
         db.conn().query_row("SELECT w.last_progress_source,e.text FROM workers w JOIN events e ON e.worker_id=w.worker_id WHERE w.worker_id=?1 AND e.text LIKE 'compaction completed:%'",[&worker],|r|Ok((r.get(0)?,r.get(1)?))).ok()
