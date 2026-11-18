@@ -19,6 +19,8 @@
 //! Scenarios (a comma-separated list is allowed):
 //! - `default`: a launch exits 0 at once.
 //! - `stay`: a launch sleeps until killed, like a TUI in a pane.
+//! - `bound`, `commit`, `ask`, `result`, `noresult`: the Phase 4 keys of a
+//!   launch (`horch_e2e::agent`).
 
 use std::path::{Path, PathBuf};
 
@@ -48,6 +50,7 @@ fn main() {
     {
         usage(&call);
     }
+    horch_e2e::agent::play(&mut call);
     for key in FORBIDDEN {
         if std::env::var_os(key).is_some() {
             call.violate(format!("{key} present in the environment"));

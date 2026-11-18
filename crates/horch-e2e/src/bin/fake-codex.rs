@@ -11,6 +11,8 @@
 //! `limits_not_allowed`, `hang`, `error`. `inspect_skills`: a pane launch
 //! also writes `$CODEX_HOME/skills` and the files under it to
 //! `$HORCH_FAKE_LOG.skills.json` (`horch_e2e::write_skills_report`).
+//! A pane launch also plays the Phase 4 keys `bound`, `commit`, `ask`,
+//! `result` and `noresult` (`horch_e2e::agent`).
 //!
 //! As a pane agent, the scenario `stay` makes a launch behave like the codex
 //! TUI: a fresh launch writes a rollout file for its cwd under
@@ -56,6 +58,7 @@ fn main() {
         update(&call);
     }
     if call.argv.first().map(String::as_str) != Some("app-server") {
+        horch_e2e::agent::play(&mut call);
         if scenario_has("inspect_skills") {
             inspect_skills();
         }
