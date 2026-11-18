@@ -407,6 +407,30 @@ pub fn put_remote_tip(
     Ok(())
 }
 
+/// Mark the remote tips of `repo` stale, in `tx`: a failed fetch sets
+/// `stale_since` of each row where it is not set yet, so it keeps the time
+/// of the first failure. `stale` false clears it: a passed fetch.
+pub fn set_remote_stale(
+    tx: &Connection,
+    guard: Option<Generation>,
+    repo: &str,
+    stale: bool,
+) -> Result<()> {
+    check_writable(tx, guard)?;
+    if stale {
+        tx.execute(
+            "UPDATE remote_tips SET stale_since = ?2 WHERE repo = ?1 AND stale_since IS NULL",
+            params![repo, util::now()],
+        )?;
+    } else {
+        tx.execute(
+            "UPDATE remote_tips SET stale_since = NULL WHERE repo = ?1",
+            params![repo],
+        )?;
+    }
+    Ok(())
+}
+
 // ─── facts ──────────────────────────────────────────────────────────────
 
 /// Write `fact` of the branch row `name`, with 1 event, in `tx`. The event
