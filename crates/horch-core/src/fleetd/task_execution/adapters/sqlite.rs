@@ -222,3 +222,66 @@ pub fn idea_of_task(conn: &Connection, task_id: &str) -> Result<Option<String>> 
     )?;
     Ok(idea)
 }
+
+/// A live attempt with its own recorded wrapper process, and its task or,
+/// for a sub-orchestrator attempt, its idea (fleetd-p6 ticket 25).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LiveWrapper {
+    pub id: String,
+    pub task_id: Option<String>,
+    pub idea_id: Option<String>,
+    pub pid: u32,
+    pub pid_start: u64,
+}
+
+/// Each live attempt whose wrapper PID and start time are recorded. It
+/// only reads.
+pub fn live_wrappers(conn: &Connection) -> Result<Vec<LiveWrapper>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, task_id, idea_id, pid, pid_start FROM attempts
+         WHERE state = 'live' AND pid IS NOT NULL AND pid_start IS NOT NULL
+         ORDER BY id",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, Option<String>>(1)?,
+            r.get::<_, Option<String>>(2)?,
+            recorded(r.get(3)?, r.get(4)?),
+        ))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, task_id, idea_id, process) = row?;
+        // A value that is not a PID or a start time names no process.
+        if let Some(Recorded {
+            pid,
+            pid_start: Some(pid_start),
+        }) = process
+        {
+            out.push(LiveWrapper {
+                id,
+                task_id,
+                idea_id,
+                pid,
+                pid_start,
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// The task and the idea of attempt `id`. `None` when it has no row.
+pub fn task_and_idea(
+    conn: &Connection,
+    id: &str,
+) -> Result<Option<(Option<String>, Option<String>)>> {
+    use rusqlite::OptionalExtension as _;
+    Ok(conn
+        .query_row(
+            "SELECT task_id, idea_id FROM attempts WHERE id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?)
+}
