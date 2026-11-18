@@ -1898,24 +1898,58 @@ fn g70_finish_cli_creates_reviewer_wait_and_background_progress_cli_sets_deadlin
         assert_eq!(pinned_check(&h, &run, at)["verdict"], "progress");
     }
     // Past its deadline the wait ends. The checks see no progress, but no
-    // stall round reaps (docs/tickets/fleetd-p2/MAP.md, Q14).
+    // stall round reaps (docs/tickets/fleetd-p2/MAP.md, Q14), and the task
+    // is verifying: it has no lease and no stall ladder (Q20). Rule D: 1
+    // needs-you item names it once the author is quiet for stall_after_s.
+    let finish_idle = |store: &horch_core::taskledger::Store| -> Vec<(String, String)> {
+        let mut stmt = store
+            .conn()
+            .prepare("SELECT key, state FROM needs_you WHERE kind = 'finish_idle' ORDER BY key")
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
     for at in [
         "2030-01-08T00:10:00Z",
         "2030-01-08T00:20:00Z",
         "2030-01-08T00:30:00Z",
+        "2030-01-08T00:40:00Z",
     ] {
         assert_eq!(pinned_check(&h, &run, at)["verdict"], "no_progress");
     }
+    let task: String = store
+        .conn()
+        .query_row(
+            "SELECT task_id FROM workers WHERE worker_id = ?1",
+            [&worker],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        finish_idle(&store),
+        [(format!("finish_idle:{task}"), "open".to_string())],
+        "1 item for the task, not 1 for each pass"
+    );
     assert_eq!(
         workers::get(store.conn(), &worker).unwrap().status,
         "working"
     );
-    assert!(matches!(agent.0.try_wait(), Ok(None)), "no check stops it");
-    // No activity past stall_after_s (300 s) after the wait: the stall
-    // ladder ends the attempt `stalled` and stops the agent by its PID.
-    h.advance_fleet_clock(400);
-    pinned_check(&h, &run, "2030-01-08T00:40:00Z");
-    assert_ladder_stopped(&store, &worker, &mut agent);
+    assert!(matches!(agent.0.try_wait(), Ok(None)), "no pass stops it");
+    // The task leaves verifying: the item closes.
+    store
+        .conn()
+        .execute(
+            "UPDATE tasks SET status = 'done' WHERE task_id = ?1",
+            [&task],
+        )
+        .unwrap();
+    pinned_check(&h, &run, "2030-01-08T00:50:00Z");
+    assert_eq!(
+        finish_idle(&store),
+        [(format!("finish_idle:{task}"), "resolved".to_string())]
+    );
 
     // The background entry point is exercised independently of injected waits.
     let (h, store, run, worker, _fake) = pinned_worker("g70-progress-cli");

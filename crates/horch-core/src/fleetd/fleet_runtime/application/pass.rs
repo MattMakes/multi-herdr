@@ -72,7 +72,7 @@ use crate::fleetd::fleet_runtime::domain::pass::{
     StopStep, TIMED_OUT,
 };
 use crate::fleetd::ideas::adapters::questions_store;
-use crate::fleetd::ideas::application::needs_you::NeedsYouList;
+use crate::fleetd::ideas::application::needs_you::{self, NeedsYouList};
 use crate::fleetd::task_execution::adapters::leases_store;
 use crate::fleetd::task_execution::adapters::sqlite as attempts_store;
 use crate::fleetd::task_execution::application::quota::{
@@ -121,6 +121,9 @@ const JOB_STARTS: &str = "job_starts";
 const LIVE_ATTEMPTS: &str = "live_attempts";
 /// The kind of the needs-you item of a breach that no step repairs.
 const BREACH: &str = "invariant_breach";
+/// The kind of the needs-you item of an idle author of a `verifying` task
+/// (rule D). Phase 4 removes it, when the attempt ends at `result.json`.
+const FINISH_IDLE: &str = "finish_idle";
 
 /// What a pass reads and does outside the ledger and the process table.
 /// The composition root of `horch fleetd` gives it; a test gives fakes.
@@ -859,6 +862,7 @@ impl<'a> Pass<'a> {
             clock,
             pools: pools.as_ref(),
             config: &self.settings.config,
+            needs_you: self.ports.needs_you,
         };
         let mut doorbells = Vec::new();
         rules.run(&read, &mut stops, &mut doorbells)?;
@@ -1332,6 +1336,7 @@ struct Rules<'a> {
     clock: FleetSeconds,
     pools: Option<&'a Pools<'a>>,
     config: &'a FleetConfig,
+    needs_you: &'a dyn NeedsYouItems,
 }
 
 impl Rules<'_> {
@@ -1350,6 +1355,7 @@ impl Rules<'_> {
         cancel::complete_cancels(self.tx, &read.task)?;
         self.promote_pending()?;
         self.live_attempts(&read.live, stops, doorbells)?;
+        self.finish_idle(&read.live)?;
         if let Some(pools) = self.pools {
             quota::release_reset_pools(self.tx, self.guard, pools)?;
         }
@@ -1651,6 +1657,57 @@ impl Rules<'_> {
             stall_after_s: profile.liveness.stall_after_s,
             doorbells: doorbells_of(self.tx, &l.attempt.id)?,
         })
+    }
+
+    /// Rule D: a `verifying` task has no lease and no ladder (MAP.md, Q20).
+    /// When each wait of its author has ended, and the checks of the author
+    /// give `no_progress` for stall_after_s, 1 needs-you item names the
+    /// task. The pass stops no worker and moves no task. The item resolves
+    /// when the task leaves `verifying` or the author shows progress.
+    fn finish_idle(&self, live: &[LiveSeen]) -> Result<()> {
+        let now = util::now();
+        let mut idle = BTreeMap::new();
+        for l in live {
+            let Some(task) = l.attempt.task_id.as_deref() else {
+                continue;
+            };
+            let worker = &l.worker.worker_id;
+            if tasks::get(self.tx, task)?.status != TaskStatus::Verifying.as_str()
+                || !workers::waiting(self.tx, worker)?.is_empty()
+            {
+                continue;
+            }
+            let stall = seconds(
+                self.profile(l.worker.persona.as_deref())
+                    .liveness
+                    .stall_after_s,
+            );
+            let quiet = watchdog::quiet_since(self.tx, worker)?
+                .and_then(|at| util::seconds_between(&at, &now));
+            if quiet.is_some_and(|s| s >= stall) {
+                idle.insert(format!("{FINISH_IDLE}:{task}"), (task, l.worker.label()));
+            }
+        }
+        for key in needs_you::open_keys(self.tx, FINISH_IDLE)? {
+            if !idle.contains_key(&key) {
+                self.needs_you.resolve_item(self.tx, &key)?;
+            }
+        }
+        for (key, (task, author)) in &idle {
+            let text = format!(
+                "{author} on task {task} shows no progress after its waits ended, and the task \
+                 is verifying. fleetd does not stop it. Ask it for its status, or stop it."
+            );
+            let item = NewItem {
+                key,
+                kind: FINISH_IDLE,
+                entity: Entity::Task,
+                entity_id: task,
+                text: &text,
+            };
+            self.needs_you.open_item(self.tx, &item)?;
+        }
+        Ok(())
     }
 
     /// Step 6: the lease part of I1.

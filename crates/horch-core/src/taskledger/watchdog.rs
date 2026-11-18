@@ -764,6 +764,19 @@ pub fn clear_record(conn: &Connection, run_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// The time of the first check of the current streak of `no_progress`
+/// checks of `worker`; `None` when its last check is not `no_progress`, or
+/// it has no check.
+pub fn quiet_since(conn: &Connection, worker: &str) -> Result<Option<String>> {
+    Ok(conn.query_row(
+        "SELECT MIN(at) FROM checks WHERE worker_id = ?1 AND check_id > COALESCE(
+             (SELECT MAX(check_id) FROM checks
+              WHERE worker_id = ?1 AND verdict <> 'no_progress'), 0)",
+        [worker],
+        |r| r.get(0),
+    )?)
+}
+
 /// Every active run of the ledger, of any project: fleetd takes over the
 /// old watchdog of each and does the duties of each.
 pub fn active_runs(conn: &Connection) -> Result<Vec<Run>> {
