@@ -8,7 +8,6 @@
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{bail, Result};
 use horch_core::harness::inventory::BinaryFacts;
@@ -20,6 +19,7 @@ use horch_core::sweep;
 use horch_core::taskledger::timer::Agent;
 use horch_core::usage::has_transcript;
 use horch_core::workspace::herdr::Herdr;
+use horch_platform::start;
 
 pub fn doctor(ctx: &RuntimeContext, clean: bool) -> Result<()> {
     check(ctx)?;
@@ -451,7 +451,7 @@ fn git_lfs_problem(path: Option<&OsStr>, pathext: Option<&str>, git: &Path) -> O
             }
         }
     };
-    match Command::new(&bin).args(["lfs", "version"]).output() {
+    match start::command(&bin).args(["lfs", "version"]).output() {
         Ok(out) if out.status.success() => None,
         Ok(out) => Some(format!(
             "`{} lfs version` failed ({}). Install Git LFS (macOS: `brew install \
@@ -505,7 +505,7 @@ fn xcode_problem(path: Option<&OsStr>, pathext: Option<&str>) -> Option<String> 
     let Some(bin) = process::which(path, pathext, "xcodebuild") else {
         return Some("xcodebuild not found on PATH. Install Xcode 26 or later.".into());
     };
-    match Command::new(&bin).arg("-checkFirstLaunchStatus").output() {
+    match start::command(&bin).arg("-checkFirstLaunchStatus").output() {
         Ok(out) if out.status.success() => None,
         Ok(out) => Some(format!(
             "`{} -checkFirstLaunchStatus` failed ({}). Run `sudo xcodebuild -runFirstLaunch`, \
@@ -572,7 +572,7 @@ fn export_needed_by(roster: &Roster) -> Vec<&str> {
 
 /// The major version and the full version that `xcodebuild -version` prints.
 fn xcode_major(xcodebuild: &Path) -> Option<(u32, String)> {
-    Command::new(xcodebuild)
+    start::command(xcodebuild)
         .arg("-version")
         .output()
         .ok()
@@ -598,7 +598,7 @@ fn export_problem(
 
 fn export_help_problem(xcrun: &Path, head: &str, text: &str) -> Option<String> {
     let args = ["agent", "skills", "export", "--help"];
-    let out = match Command::new(xcrun).args(args).output() {
+    let out = match start::command(xcrun).args(args).output() {
         Ok(out) => out,
         Err(e) => return Some(format!("{head}: could not run {}: {e}", xcrun.display())),
     };
@@ -696,13 +696,16 @@ fn run_version(bin: Option<PathBuf>, tool: &ToolText) -> Result<(PathBuf, String
              {mac_path})."
         )
     })?;
-    let out = Command::new(&bin).arg("--version").output().map_err(|e| {
-        format!(
-            "could not run {}: {e}. Set {env} to the {name} executable \
+    let out = start::command(&bin)
+        .arg("--version")
+        .output()
+        .map_err(|e| {
+            format!(
+                "could not run {}: {e}. Set {env} to the {name} executable \
              (macOS: {mac_path}).",
-            bin.display()
-        )
-    })?;
+                bin.display()
+            )
+        })?;
     if out.status.success() {
         return Ok((bin, String::from_utf8_lossy(&out.stdout).into_owned()));
     }
@@ -828,7 +831,7 @@ fn godot_csharp_problems(
              The standard engine cannot run C#."
                 .into(),
         ),
-        Some(bin) => match Command::new(&bin).arg("--version").output() {
+        Some(bin) => match start::command(&bin).arg("--version").output() {
             Err(e) => problems.push(format!(
                 "C# project: could not run {}: {e}. Set GODOT_MONO_PATH to the Godot \
                  .NET executable (macOS: /Applications/Godot_mono.app/Contents/MacOS/Godot).",
@@ -1975,11 +1978,8 @@ fn docker_problem(path: Option<&OsStr>, pathext: Option<&str>) -> Option<String>
     let Some(bin) = process::which(path, pathext, "docker") else {
         return Some("docker not found on PATH".into());
     };
-    let mut cmd = Command::new(bin);
+    let mut cmd = start::command(bin);
     cmd.args(["version", "--format", "{{.Server.Version}}"]);
-    for key in horch_core::harness::launch::FORBIDDEN_ENV {
-        cmd.env_remove(key);
-    }
     use std::process::Stdio;
     let mut child = match cmd
         .stdin(Stdio::null())

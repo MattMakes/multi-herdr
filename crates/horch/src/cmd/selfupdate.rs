@@ -8,13 +8,14 @@
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use horch_core::clock;
 use horch_core::runtime::RuntimeContext;
+use horch_platform::start;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -381,11 +382,11 @@ fn restart(ctx: &RuntimeContext, dir: &Path) -> std::io::Error {
 fn restart_with(
     fleet: &Fleet<'_>,
     dir: &Path,
-    replace: impl FnOnce(Command) -> std::io::Error,
+    replace: impl FnOnce(start::Command) -> std::io::Error,
 ) -> std::io::Error {
     use std::io::Write;
     restart_fleetd(fleet, dir);
-    let mut cmd = Command::new(new_horch(dir));
+    let mut cmd = start::command(new_horch(dir));
     cmd.args(std::env::args_os().skip(1)).env(UPDATED_ENV, "1");
     let _ = std::io::stdout().flush();
     replace(cmd)
@@ -463,7 +464,7 @@ fn install_release(ctx: &RuntimeContext, release: &Release, dir: &Path) -> Resul
     let new_horch = tmp
         .path()
         .join(format!("horch{}", std::env::consts::EXE_SUFFIX));
-    let status = Command::new(&new_horch)
+    let status = start::command(&new_horch)
         .arg("install")
         .arg("--dir")
         .arg(dir)
@@ -933,14 +934,17 @@ mod tests {
         let (seen, starts) = w.run(Mode::StandIn, |fleet| {
             let mut seen = None;
             let error = restart_with(fleet, dir, |cmd| {
-                seen = Some((w.row(), cmd.get_program().to_owned()));
+                seen = Some((w.row(), format!("{cmd:?}")));
                 std::io::Error::other("the test replaces nothing")
             });
             assert_eq!(error.to_string(), "the test replaces nothing");
             seen.expect("the update replaced this process")
         });
-        let (row, program) = seen;
-        assert_eq!(program, new_horch.as_os_str());
+        let (row, command) = seen;
+        assert!(
+            command.contains(&format!("{new_horch:?}")),
+            "the update does not run the new horch: {command}"
+        );
         assert_eq!(starts, [new_horch], "the new fleetd runs the new binary");
         let row = row.expect("a fleetd row");
         assert_ne!(

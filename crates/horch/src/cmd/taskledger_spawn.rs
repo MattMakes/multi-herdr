@@ -831,7 +831,7 @@ impl SpawnReviewer for CliSpawn {
             Ok(exe) => exe,
             Err(e) => return ReviewSpawn::Failed(format!("finding the horch binary: {e}")),
         };
-        let out = std::process::Command::new(exe)
+        let out = horch_platform::start::command(exe)
             .args(["spawn", persona, "--run", &run.slug])
             .env(CLAIM_TARGET_ENV, task_id)
             .stdin(std::process::Stdio::null())

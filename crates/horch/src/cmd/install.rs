@@ -429,7 +429,7 @@ fn is_symlink(path: &Path) -> bool {
 /// Runs `<target> --version`. That reports the installed version and proves
 /// the installed file runs.
 fn installed_version(target: &Path) -> Result<String> {
-    let out = std::process::Command::new(target)
+    let out = horch_platform::start::command(target)
         .arg("--version")
         .output()
         .with_context(|| format!("running {} --version", target.display()))?;

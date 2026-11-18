@@ -22,7 +22,7 @@
 use std::cell::RefCell;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitCode, ExitStatus, Stdio};
+use std::process::{Child, ExitCode, ExitStatus, Stdio};
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result};
@@ -48,6 +48,7 @@ use horch_core::telemetry::readers::Unreadable;
 use horch_core::usage::Locations;
 use horch_core::workspace::client::WorkspaceClient;
 use horch_core::workspace::herdr::Herdr;
+use horch_platform::start;
 
 use super::context::{self, build_row, record_kind, record_workdir, Row, Sources};
 use super::mode;
@@ -622,7 +623,7 @@ fn start_failed(
 fn spawn_child(env: &Env, args: &CompactArgs, dir: &Path) -> Result<Child> {
     let log = open_log(&dir.join(LOG_FILE))?;
     let ctx = env.src.ctx;
-    let mut cmd = Command::new(&env.exe);
+    let mut cmd = start::command(&env.exe);
     cmd.args(["compact", &args.role, "--foreground"]);
     if args.force {
         cmd.arg("--force");
@@ -1838,7 +1839,7 @@ mod tests {
         let f = Fleet::new();
         let dir = f.env().job_dir("sonnet-1");
         std::fs::create_dir_all(&dir).unwrap();
-        let status = Command::new("true").status().unwrap();
+        let status = std::process::Command::new("true").status().unwrap();
         assert!(matches!(exited(&dir, status), Handshake::AlreadyRunning));
         std::fs::write(
             dir.join(JOB_FILE),

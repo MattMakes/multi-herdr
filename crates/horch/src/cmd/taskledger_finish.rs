@@ -5,7 +5,7 @@
 //! the steps run in the foreground.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode, Stdio};
+use std::process::{ExitCode, Stdio};
 
 use anyhow::{bail, Context, Result};
 use horch_core::messaging::mailbox::Mailbox;
@@ -17,6 +17,7 @@ use horch_core::taskledger::stop;
 use horch_core::taskledger::workers;
 use horch_core::taskledger::Store;
 use horch_core::workspace::herdr::Herdr;
+use horch_platform::start;
 
 use super::taskledger::{
     codex_personas, exit_of, json, reviewers_down, stop_grace, tools, worker_id, HerdrPanes,
@@ -156,7 +157,7 @@ fn start_detached(
 fn spawn_run_steps(run: &Path, rereview: bool) -> Result<std::process::Child> {
     std::fs::create_dir_all(run.parent().expect("a worker folder"))?;
     let log = std::fs::File::create(detach::log_path(run))?;
-    let mut cmd = Command::new(std::env::current_exe().context("finding the horch binary")?);
+    let mut cmd = start::command(std::env::current_exe().context("finding the horch binary")?);
     cmd.args(["ledger", "finish", "--run-steps"]);
     if rereview {
         cmd.arg("--rereview");
