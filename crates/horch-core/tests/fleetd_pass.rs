@@ -616,9 +616,14 @@ fn pass_reaps(pass: &mut Pass<'_>, w: &mut World) -> bool {
     run(pass, w);
     let record = effects::read_launch(&w.root(), LAUNCHING).unwrap().unwrap();
     let p = record.process.unwrap();
-    match p.pid_start {
-        Some(start) => horch_platform::process::start_time(p.pid) != Some(start),
-        None => !horch_platform::process::alive(p.pid),
+    // A start time that cannot be read is not "gone": a process that is
+    // still starting, or that exited and is not reaped yet, gives none.
+    if !horch_platform::process::alive(p.pid) {
+        return true;
+    }
+    match (p.pid_start, horch_platform::process::start_time(p.pid)) {
+        (Some(start), Some(now)) => now != start,
+        _ => false,
     }
 }
 
