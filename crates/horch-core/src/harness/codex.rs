@@ -32,6 +32,7 @@ use super::{
     Session, WindowInputs, Workdir,
 };
 use crate::compaction::window::OperatorWindow;
+use crate::fleetd::worker_profiles::domain::stop_gate;
 use crate::fsx;
 use crate::prompts;
 use crate::roster::{ExecDecision, ExecRule, HarnessDefault, PermissionMode, Teammate};
@@ -1344,6 +1345,7 @@ pub(super) fn codex_command(
     let multi_agent_off = push_defaults(&mut cmd, env, teammate);
     push_window_limit(&mut cmd, env, teammate);
     cmd.args(&teammate.args);
+    push_stop_hook(&mut cmd, env);
     if multi_agent_off {
         push_v1_catalog(&mut cmd, env);
     }
@@ -1355,6 +1357,21 @@ pub(super) fn codex_command(
         cmd.arg(prompt);
     }
     Ok(cmd)
+}
+
+/// A push attempt, whose launch knows its task folder, gets 1 `Stop` hook
+/// that runs `horch result --check` (FM-6). It is a session flag, so codex
+/// sees no managed hook: [`push_hook_trust`] trusts it for this launch. It
+/// comes after the teammate's args, so a `-c hooks.Stop` of the teammate
+/// does not replace it.
+fn push_stop_hook(cmd: &mut Command, env: &LaunchEnv) {
+    if env.task_dir.is_none() {
+        return;
+    }
+    let command = toml_string(&stop_gate::hook_command(&env.horch_exe));
+    cmd.arg("-c").arg(format!(
+        "hooks.Stop=[{{hooks=[{{type=\"command\",command={command}}}]}}]"
+    ));
 }
 
 /// Hooks trust is separate from the sandbox policy; the teammate may set it.

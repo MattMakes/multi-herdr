@@ -757,3 +757,92 @@ fn hdf_05_every_claude_launch_turns_attribution_off() {
         );
     }
 }
+
+// ─── Stop hooks of a push attempt (fleetd-p4 ticket 14, FM-6) ───────────────
+
+const HORCH: &str = "/opt/horch/bin/horch";
+const STOP_HOOK: &str = "'/opt/horch/bin/horch' result --check";
+
+/// A launch env of a push attempt: its task folder is known.
+fn push_env(home: &Path) -> LaunchEnv {
+    let mut env = launch_env(home);
+    env.horch_exe = PathBuf::from(HORCH);
+    env.task_dir = Some(home.join("fleet/tasks/T-1/attempts/1"));
+    env
+}
+
+/// The commands of the `hooks.Stop` entries of Claude settings.
+fn claude_stop_commands(settings: &Value) -> Vec<String> {
+    settings["hooks"]["Stop"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|e| e["hooks"].as_array().cloned().unwrap_or_default())
+        .map(|h| {
+            assert_eq!(h["type"], "command");
+            h["command"].as_str().unwrap().to_owned()
+        })
+        .collect()
+}
+
+#[test]
+fn claude_push_launch_has_a_stop_hook_that_runs_result_check() {
+    let home = tempfile::tempdir().unwrap();
+    let t = teammate("w", HarnessKind::Claude, vec![]);
+    let args = argv(&build(&push_env(home.path()), &t));
+    assert_eq!(claude_stop_commands(&settings_arg(&args)), [STOP_HOOK]);
+}
+
+#[test]
+fn claude_hook_merges_with_teammate_hooks() {
+    let home = tempfile::tempdir().unwrap();
+    let mut t = teammate("w", HarnessKind::Claude, vec![]);
+    t.settings = Some(
+        json!({"hooks": {
+            "Stop": [{"hooks": [{"type": "command", "command": "mine"}]}],
+            "PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "pre"}]}]
+        }})
+        .to_string(),
+    );
+    let settings = settings_arg(&argv(&build(&push_env(home.path()), &t)));
+    assert_eq!(claude_stop_commands(&settings), ["mine", STOP_HOOK]);
+    assert_eq!(
+        settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
+        "pre"
+    );
+}
+
+#[test]
+fn codex_push_launch_has_a_trusted_stop_hook() {
+    let home = tempfile::tempdir().unwrap();
+    let t = teammate("w", HarnessKind::Codex, vec![]);
+    let args = argv(&build(&push_env(home.path()), &t));
+    let want = format!(
+        "hooks.Stop=[{{hooks=[{{type=\"command\",command={}}}]}}]",
+        codex_toml_string(STOP_HOOK)
+    );
+    assert!(config_pairs(&args).contains(&want), "{args:?}");
+    // A session-flag hook is not managed; the launch trusts it.
+    assert!(args.iter().any(|a| a == "--dangerously-bypass-hook-trust"));
+}
+
+/// A TOML basic string, as the test reads it: quotes and backslashes escaped.
+fn codex_toml_string(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+#[test]
+fn claim_attempt_has_no_stop_hook() {
+    let home = tempfile::tempdir().unwrap();
+    let mut env = push_env(home.path());
+    env.task_dir = None;
+    let claude = argv(&build(&env, &teammate("w", HarnessKind::Claude, vec![])));
+    if claude.iter().any(|a| a == "--settings") {
+        assert!(claude_stop_commands(&settings_arg(&claude)).is_empty());
+    }
+    let codex = argv(&build(&env, &teammate("w", HarnessKind::Codex, vec![])));
+    assert!(
+        !config_pairs(&codex).iter().any(|p| p.starts_with("hooks.")),
+        "{codex:?}"
+    );
+}

@@ -21,6 +21,7 @@ use crate::compaction::window::OperatorWindow;
 use crate::fleetd::worker_profiles::domain::operator_boundary::{
     Boundary, NotSupported, OperatorPaths,
 };
+use crate::fleetd::worker_profiles::domain::stop_gate;
 use crate::roster::{expand_home, operator_enabled_plugins, operator_status_line};
 use crate::roster::{HarnessDefault, HorchAccess, Teammate, FLEET_ORCHESTRATORS};
 use crate::runtime::RuntimeContext;
@@ -359,6 +360,7 @@ fn merged_inline_settings(
     // launch merged it in; the `sandbox:` block is the truth either way.
     overlay_sandbox(teammate, obj)?;
     let changed = merge_settings_defaults(teammate, obj, || operator_settings(env))?
+        | overlay_stop_hook(env, obj)?
         | overlay_window(window, obj)
         | overlay_horch_paths(env, teammate, obj)?
         | deny_git_worktree(teammate, obj)?
@@ -384,9 +386,30 @@ fn default_overlay(env: &LaunchEnv, teammate: &Teammate) -> Result<Option<OsStri
     deny_git_worktree(teammate, &mut overlay)?;
     overlay_horch_paths(env, teammate, &mut overlay)?;
     merge_settings_defaults(teammate, &mut overlay, || operator_settings(env))?;
+    overlay_stop_hook(env, &mut overlay)?;
     overlay_window(applied_window(env), &mut overlay);
     seal_operator_boundary(env, teammate, &mut overlay)?;
     Ok((!overlay.is_empty()).then(|| Value::Object(overlay).to_string().into()))
+}
+
+/// A push attempt, whose launch knows its task folder, gets 1 `Stop` hook
+/// that runs `horch result --check` (FM-6). It goes after the Stop hooks of
+/// the teammate and the defaults, so none of them is dropped.
+fn overlay_stop_hook(
+    env: &LaunchEnv,
+    settings: &mut serde_json::Map<String, Value>,
+) -> Result<bool> {
+    if env.task_dir.is_none() {
+        return Ok(false);
+    }
+    let command = stop_gate::hook_command(&env.horch_exe);
+    object_entry(settings, "hooks")?
+        .entry("Stop")
+        .or_insert_with(|| json!([]))
+        .as_array_mut()
+        .context("hooks.Stop must be a list")?
+        .push(json!({"hooks": [{"type": "command", "command": command}]}));
+    Ok(true)
 }
 
 fn push_session_args(cmd: &mut Command, session: Session<'_>) {
