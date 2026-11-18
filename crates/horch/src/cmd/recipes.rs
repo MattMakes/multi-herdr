@@ -15,6 +15,9 @@ use horch::project::project_facts;
 use horch_core::execution::legacy::{Record, KIND_ORCHESTRATOR};
 use horch_core::execution::records::{SessionLedger, ORCHESTRATING_TASK};
 use horch_core::execution::{ExecutionStatus, LaunchStage, SessionMode};
+use horch_core::fleetd::fleet_runtime::adapters::channel_client::{self, Sent};
+use horch_core::fleetd::fleet_runtime::adapters::request_wire::Outcome;
+use horch_core::fleetd::fleet_runtime::domain::requests::Kind;
 use horch_core::fleetd::task_execution::application::launch::PushLaunch;
 use horch_core::fleetd::task_execution::application::quota::{Restart, ADOPT_WORKER_ENV};
 use horch_core::fleetd::worker_profiles::application::ports::{EnvRule, LaunchSpec};
@@ -932,10 +935,11 @@ fn flavor_of_model(model: &str) -> FleetFlavor {
 
 /// `horch fleet stop`: record a deliberate stop of the orchestrator of each
 /// active run of the project, so the watchdog never respawns it (C7). It
-/// does not end the agent.
+/// does not end the agent. fleetd records it: the command sends 1
+/// `orchestrator_stop` request with the active runs (RR-5).
 pub fn fleet_stop(ctx: &RuntimeContext, cwd: Option<&str>) -> Result<ExitCode> {
     let root = resolve_cwd(ctx, cwd)?;
-    let Some(mut store) = horch_core::taskledger::open_existing(ctx)? else {
+    let Some(store) = horch_core::taskledger::open_existing_read_only(ctx)? else {
         println!("No task ledger. Nothing to stop.");
         return Ok(ExitCode::SUCCESS);
     };
@@ -944,24 +948,59 @@ pub fn fleet_stop(ctx: &RuntimeContext, cwd: Option<&str>) -> Result<ExitCode> {
         .into_iter()
         .filter(|r| r.status == active)
         .collect();
+    drop(store);
     if runs.is_empty() {
         println!("No active run in {root}. Nothing to stop.");
+        return Ok(ExitCode::SUCCESS);
     }
-    for run in runs {
-        let recorded = store.immediate(|tx| orchestrator::record_stop(tx, &run.run_id))?;
-        if recorded {
-            println!(
-                "Run {}: the orchestrator stop is recorded. horch does not respawn it.",
-                run.slug
-            );
+    let run_ids: Vec<&str> = runs.iter().map(|r| r.run_id.as_str()).collect();
+    let payload = serde_json::json!({ "run_ids": run_ids });
+    let result = match send_request(ctx, Kind::OrchestratorStop, payload)? {
+        Reply::Applied(result) => result,
+        Reply::Refused => return Ok(ExitCode::from(1)),
+        Reply::Queued => return Ok(ExitCode::SUCCESS),
+    };
+    for run in result["runs"].as_array().into_iter().flatten() {
+        let slug = run["slug"].as_str().unwrap_or_default();
+        if run["recorded"].as_bool() == Some(true) {
+            println!("Run {slug}: the orchestrator stop is recorded. horch does not respawn it.");
         } else {
-            println!(
-                "Run {}: the orchestrator stop was recorded before.",
-                run.slug
-            );
+            println!("Run {slug}: the orchestrator stop was recorded before.");
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// What became of 1 request of this module.
+enum Reply {
+    /// fleetd applied it: its result.
+    Applied(serde_json::Value),
+    /// fleetd refused it: `refused: <reason>` is printed.
+    Refused,
+    /// fleetd is down: the request waits in its request file, and the
+    /// channel client printed where.
+    Queued,
+}
+
+/// Send 1 operator request of `kind` to fleetd (ticket 15). A refused
+/// request prints `refused: <reason>`.
+fn send_request(ctx: &RuntimeContext, kind: Kind, payload: serde_json::Value) -> Result<Reply> {
+    let serde_json::Value::Object(payload) = payload else {
+        anyhow::bail!(
+            "the payload of a {} request is not an object",
+            kind.as_str()
+        );
+    };
+    Ok(match channel_client::send(ctx, kind, payload)? {
+        Sent::Replied(reply) => match reply.outcome {
+            Outcome::Applied(result) => Reply::Applied(result),
+            Outcome::Refused(reason) => {
+                eprintln!("refused: {reason}");
+                Reply::Refused
+            }
+        },
+        Sent::Queued { .. } => Reply::Queued,
+    })
 }
 
 /// `claude 7d 100% (resets Fri 14:00Z)`: a pool in a few words.
@@ -1175,23 +1214,43 @@ pub fn pane_launch(
     require_model(kind, model)?;
     // The lock is held until the agent exits, then released on drop. A fleet
     // pane claims its run first: a refused claim starts no agent (TRF-38).
+    // A fleet pane loads its teammate before the claim: the claim request
+    // also writes its harness on the orchestrator row (TRF-44).
+    let mut launch = None;
     let (mailbox, _pane, _orchestrator_lock) = if kind.is_fleet() {
         let root = ctx.paths.current_dir()?;
         let respawn = respawn_from_env().map(|(slug, _)| slug);
-        register_fleet_pane(ctx, role, &identity, &root, respawn.as_deref())?
+        register_pane_then(ctx, role, &identity, true, |ctx, workspace, pane| {
+            let roster = launch_roster(ctx, kind, teammates_dir)?;
+            let teammate = launch_teammate(&roster, kind, model)?;
+            let harness = OrchestratorHarness {
+                agent: teammate.agent.as_str(),
+                model: model.or(teammate.model.as_deref()),
+            };
+            claim_launch_run(
+                ctx,
+                &root,
+                workspace,
+                pane,
+                respawn.as_deref(),
+                Some(&harness),
+            )?;
+            launch = Some((roster, teammate));
+            Ok(())
+        })?
     } else {
         register_pane(ctx, role, &identity, false)?
     };
     let child_env = child_env(ctx, &mailbox, &identity, teammates_dir);
     let ctx: &RuntimeContext = ctx;
-    let roster = launch_roster(ctx, kind, teammates_dir)?;
-    let teammate = launch_teammate(&roster, kind, model)?;
-    if kind.is_fleet() {
-        let model = model.or(teammate.model.as_deref());
-        if let Err(e) = record_orchestrator_harness(ctx, mailbox.workspace_id(), &teammate, model) {
-            eprintln!("horch: the task ledger did not record the orchestrator harness: {e:#}");
+    let (roster, teammate) = match launch {
+        Some(loaded) => loaded,
+        None => {
+            let roster = launch_roster(ctx, kind, teammates_dir)?;
+            let teammate = launch_teammate(&roster, kind, model)?;
+            (roster, teammate)
         }
-    }
+    };
     let prompt = briefing_for(kind, &roster, &teammate, role)?;
     let exec_rules = exec_rules_for(kind, &roster);
     let (session, workdir) = session_for(&identity, ctx)?;
@@ -1239,22 +1298,6 @@ pub(super) fn register_pane(
     register_pane_then(ctx, role, identity, fleet, |_, _, _| Ok(()))
 }
 
-/// [`register_pane`] for a fleet orchestrator of project `root`: under the
-/// workspace orchestrator lock, it claims its run ([`claim_launch_run`])
-/// before it registers its role. A refused claim writes no route and
-/// releases the lock (TRF-38).
-fn register_fleet_pane(
-    ctx: &mut RuntimeContext,
-    role: &str,
-    identity: &PaneIdentity,
-    root: &Path,
-    respawn: Option<&str>,
-) -> Result<(Mailbox, String, Option<horch_core::fsx::DirLockGuard>)> {
-    register_pane_then(ctx, role, identity, true, |ctx, workspace, pane| {
-        claim_launch_run(ctx, root, workspace, pane, respawn)
-    })
-}
-
 /// [`register_pane`] that runs `before_route` with the workspace and the
 /// pane after it takes the lock and before it writes the route. A failed
 /// `before_route` writes no route.
@@ -1278,45 +1321,63 @@ fn register_pane_then(
     Ok((mailbox, pane, lock))
 }
 
+/// The harness of a fleet orchestrator, which its claim writes on the
+/// orchestrator rows of its workspace (TRF-44).
+struct OrchestratorHarness<'a> {
+    agent: &'a str,
+    model: Option<&'a str>,
+}
+
 /// A fleet orchestrator that holds the lock of `workspace` claims the run it
-/// continues (TRF-38): the run moves to `workspace` and its stop is cleared,
-/// in 1 transaction. No ledger, or no 1 run that fits, claims nothing. A
-/// workspace with another active run fails the launch. A run whose
-/// orchestrator lives in another workspace (`Skipped`) prints the claim text
+/// continues (TRF-38): fleetd moves the run to `workspace` and clears its
+/// stop, in 1 `orchestrator_claim` request (RR-5). No ledger, or no 1 run
+/// that fits, sends nothing. A refused claim fails the launch. A run whose
+/// orchestrator lives in another workspace (`skipped`) prints the claim text
 /// and stays there: a respawn of that run fails with 1 line that names that
-/// workspace and PID; any other launch claims nothing and starts.
+/// workspace and PID; any other launch claims nothing and starts. A queued
+/// claim waits for fleetd, and the launch starts.
 fn claim_launch_run(
     ctx: &RuntimeContext,
     root: &Path,
     workspace: &str,
     pane: &str,
     respawn: Option<&str>,
+    harness: Option<&OrchestratorHarness>,
 ) -> Result<()> {
-    let Some(mut store) = horch_core::taskledger::open_existing(ctx)? else {
+    let Some(store) = horch_core::taskledger::open_existing_read_only(ctx)? else {
         return Ok(());
     };
     let Some(run) = orchestrator::launch_run(store.conn(), root, workspace, respawn)? else {
         return Ok(());
     };
-    let dir = orchestrator::lock_dir(&ctx.paths.ledger_db);
-    let probe = orchestrator::Os {
-        lock_dir: &dir,
-        herdr_open: &|_| None,
+    drop(store);
+    let payload = serde_json::json!({
+        "run_id": run.run_id,
+        "workspace": workspace,
+        "pane": pane,
+        "harness": harness.map(|h| h.agent),
+        "model": harness.and_then(|h| h.model),
+    });
+    let result = match send_request(ctx, Kind::OrchestratorClaim, payload)? {
+        Reply::Applied(result) => result,
+        Reply::Refused => anyhow::bail!(
+            "the launch starts no orchestrator: fleetd refused the claim of run {}",
+            run.slug
+        ),
+        Reply::Queued => return Ok(()),
     };
-    let claimed = store
-        .immediate(|tx| orchestrator::claim(tx, &run.run_id, workspace, Some(pane), &probe))?;
-    match claimed {
-        orchestrator::Claimed::Changed(text) => println!("{text}"),
-        orchestrator::Claimed::Skipped {
-            text,
-            workspace: held,
-            pid,
-        } => {
+    let claim = &result["claim"];
+    let text = claim["text"].as_str().unwrap_or_default();
+    match claim["state"].as_str() {
+        Some("changed") => println!("{text}"),
+        Some("skipped") => {
             println!("{text}");
             // A respawn exists to take this run over: with the run's
             // orchestrator alive it would be a 2nd orchestrator of 1 run
             // (review 32 I-01).
             if respawn.is_some() {
+                let held = claim["workspace"].as_str().unwrap_or_default();
+                let pid = &claim["pid"];
                 anyhow::bail!(
                     "the launch starts no orchestrator: run {} is held in workspace {held} by PID {pid}",
                     run.slug
@@ -1329,33 +1390,9 @@ fn claim_launch_run(
                 run.slug
             );
         }
-        orchestrator::Claimed::Unchanged => {}
+        _ => {}
     }
     Ok(())
-}
-
-/// Write the harness, and the model when it is missing, on every live
-/// orchestrator row of `workspace` that has no harness (TRF-44): the session
-/// readers show it. No ledger file writes nothing. Returns the rows changed.
-fn record_orchestrator_harness(
-    ctx: &RuntimeContext,
-    workspace: &str,
-    teammate: &Teammate,
-    model: Option<&str>,
-) -> Result<usize> {
-    let Some(store) = horch_core::taskledger::open_existing(ctx)? else {
-        return Ok(0);
-    };
-    let live =
-        horch_core::taskledger::sql_words::list(horch_core::taskledger::sql_words::WORKERS_LIVE);
-    Ok(store.conn().execute(
-        &format!(
-            "UPDATE workers SET harness = ?2, model = coalesce(model, ?3)
-             WHERE kind = 'orchestrator' AND workspace_id = ?1 AND harness IS NULL
-               AND status IN ({live})"
-        ),
-        rusqlite::params![workspace, teammate.agent.as_str(), model],
-    )?)
 }
 
 /// The briefing of a pane.
@@ -2302,6 +2339,58 @@ mod tests {
     }
 
     /// A context whose ledger lives in `dir`.
+    /// The fleetd of a unit test: the token of the fleet root of `ctx`, a
+    /// `fleetd` row that names this test process, and the channel server
+    /// with the handlers of the worker kinds in a thread. The ledger of
+    /// `ctx` must exist. The lock holder is the real one of the ledger.
+    fn test_fleetd(
+        ctx: &RuntimeContext,
+    ) -> horch_core::fleetd::fleet_runtime::adapters::channel_server::ChannelServer {
+        use horch_core::fleetd::fleet_runtime::adapters::channel_server::ChannelServer;
+        use horch_core::fleetd::fleet_runtime::application::handlers_worker::{
+            register, WorkerDeps,
+        };
+        use horch_core::fleetd::fleet_runtime::application::requests::Handlers;
+        use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
+        use std::sync::Arc;
+
+        struct AllSandboxes;
+        impl horch_core::fleetd::task_execution::application::dispatch::CheckSandboxes for AllSandboxes {
+            fn supported(&self, _persona: &str) -> bool {
+                true
+            }
+        }
+
+        let root = &ctx.paths.fleet_root;
+        std::fs::create_dir_all(root).unwrap();
+        horch_core::fleetd::fleet_runtime::adapters::token_file::ensure(root).unwrap();
+        let pid = std::process::id();
+        let start = horch_platform::process::start_time(pid).unwrap();
+        let conn = rusqlite::Connection::open(&ctx.paths.ledger_db).unwrap();
+        conn.busy_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO fleetd
+             (id, generation, pid, pid_start, started_at, fleet_clock_s, clock_ticked_at)
+             VALUES (1, 1, ?1, ?2, 'now', 0, 'now')",
+            rusqlite::params![i64::from(pid), i64::try_from(start).unwrap()],
+        )
+        .unwrap();
+        let lock_dir = orchestrator::lock_dir(&ctx.paths.ledger_db);
+        let deps = WorkerDeps {
+            guard: Generation(1),
+            config: Arc::new(Default::default()),
+            needs_you: Arc::new(horch_core::fleetd::ideas::application::needs_you::NeedsYouList),
+            git: Arc::new(horch_core::taskledger::git::Git::new("git")),
+            holds: Arc::new(Default::default),
+            sandboxes: Arc::new(AllSandboxes),
+            lock_holder: Arc::new(move |ws: &str| orchestrator::holder(&lock_dir, ws)),
+        };
+        let mut handlers = Handlers::new();
+        register(&mut handlers, &deps);
+        ChannelServer::start(root, conn, Generation(1), handlers).unwrap()
+    }
+
     fn ledger_ctx(dir: &Path) -> RuntimeContext {
         RuntimeContext::from_env(
             &horch_core::runtime::MapEnv::new("/")
@@ -2480,7 +2569,7 @@ mod tests {
         let root = dir.path().join("repo");
         std::fs::create_dir_all(&root).unwrap();
         // No ledger: nothing to claim, and no ledger is created.
-        claim_launch_run(&ctx, &root, "w2", "p2", None).unwrap();
+        claim_launch_run(&ctx, &root, "w2", "p2", None, None).unwrap();
         assert!(!ctx.paths.ledger_db.exists());
 
         let mut store = horch_core::taskledger::open(&ctx).unwrap();
@@ -2497,8 +2586,9 @@ mod tests {
                 )
             })
             .unwrap();
+        let _fleetd = test_fleetd(&ctx);
         assert_eq!(fleet_stop(&ctx, root.to_str()).unwrap(), ExitCode::SUCCESS);
-        claim_launch_run(&ctx, &root, "w2", "p2", None).unwrap();
+        claim_launch_run(&ctx, &root, "w2", "p2", None, None).unwrap();
         let after = horch_core::taskledger::runs::get(store.conn(), &run.run_id).unwrap();
         assert_eq!(after.workspace_id.as_deref(), Some("w2"));
         assert_eq!(
@@ -2580,14 +2670,15 @@ mod tests {
     fn trf_38_a_fleet_beside_a_live_run_starts_without_it() {
         let dir = tempfile::tempdir().unwrap();
         let (mut ctx, root, store, run, w1, lock_dir, _a) = held_run_fixture(dir.path());
+        let _fleetd = test_fleetd(&ctx);
         let before = horch_core::taskledger::runs::get(store.conn(), &run.run_id).unwrap();
 
-        let (_, pane, lock) = register_fleet_pane(
+        let (_, pane, lock) = register_pane_then(
             &mut ctx,
             "orchestrator",
             &PaneIdentity::default(),
-            &root,
-            None,
+            true,
+            |ctx, workspace, pane| claim_launch_run(ctx, &root, workspace, pane, None, None),
         )
         .expect("a fleet beside a live run starts");
         assert_eq!(pane, "p2");
@@ -2614,14 +2705,15 @@ mod tests {
     fn trf_38_a_refused_respawn_writes_no_route() {
         let dir = tempfile::tempdir().unwrap();
         let (mut ctx, root, store, run, w1, lock_dir, _a) = held_run_fixture(dir.path());
+        let _fleetd = test_fleetd(&ctx);
         let before = horch_core::taskledger::runs::get(store.conn(), &run.run_id).unwrap();
 
-        let Err(err) = register_fleet_pane(
+        let Err(err) = register_pane_then(
             &mut ctx,
             "orchestrator",
             &PaneIdentity::default(),
-            &root,
-            Some("r1"),
+            true,
+            |ctx, workspace, pane| claim_launch_run(ctx, &root, workspace, pane, Some("r1"), None),
         ) else {
             panic!("a skipped claim refuses the respawn");
         };
@@ -2652,11 +2744,12 @@ mod tests {
         let roster = Roster::builtin().unwrap();
         let teammate =
             launch_teammate(&roster, PaneKind::FleetCodexOrchestrator, Some("gpt-x")).unwrap();
+        let harness = OrchestratorHarness {
+            agent: teammate.agent.as_str(),
+            model: Some("gpt-x"),
+        };
         // No ledger: nothing is written, and no ledger is created.
-        assert_eq!(
-            record_orchestrator_harness(&ctx, "w1", &teammate, Some("gpt-x")).unwrap(),
-            0
-        );
+        claim_launch_run(&ctx, &root, "w1", "p1", None, Some(&harness)).unwrap();
         assert!(!ctx.paths.ledger_db.exists());
 
         let mut store = horch_core::taskledger::open(&ctx).unwrap();
@@ -2694,10 +2787,8 @@ mod tests {
                 Ok((row(tx, "working")?, row(tx, "stopped")?))
             })
             .unwrap();
-        assert_eq!(
-            record_orchestrator_harness(&ctx, "w1", &teammate, Some("gpt-x")).unwrap(),
-            1
-        );
+        let _fleetd = test_fleetd(&ctx);
+        claim_launch_run(&ctx, &root, "w1", "p1", None, Some(&harness)).unwrap();
         let get = |id: &str| horch_core::taskledger::workers::get(store.conn(), id).unwrap();
         assert_eq!(get(&live).harness.as_deref(), Some("codex"));
         assert_eq!(get(&live).model.as_deref(), Some("gpt-x"));
@@ -2729,6 +2820,7 @@ mod tests {
                 .stopped_at
         };
         assert_eq!(stopped(&store), None);
+        let _fleetd = test_fleetd(&ctx);
         assert_eq!(fleet_stop(&ctx, root.to_str()).unwrap(), ExitCode::SUCCESS);
         let first = stopped(&store).expect("the stop is recorded");
         assert_eq!(fleet_stop(&ctx, root.to_str()).unwrap(), ExitCode::SUCCESS);

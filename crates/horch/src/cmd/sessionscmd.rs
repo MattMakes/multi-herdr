@@ -174,7 +174,7 @@ pub fn sessions_filtered(
         }
         output::print(&text);
         if let Some(workspace) = caller_workspace(ctx) {
-            if let Ok(store) = horch_core::taskledger::open(ctx) {
+            if let Ok(Some(store)) = horch_core::taskledger::open_existing_read_only(ctx) {
                 if super::taskledger::project_root(ctx)
                     .ok()
                     .and_then(|root| {
