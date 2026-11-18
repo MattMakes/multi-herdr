@@ -113,6 +113,39 @@ pub struct FleetConfig {
     /// list `FLEET_ORCHESTRATORS` of `roster`. A domain module imports no
     /// other module, so a test of `adapters/config_file.rs` pins the copy.
     pub orchestrator_seats: Vec<String>,
+    /// The period of the `fetch` job of each repository. Default 60 s
+    /// (design, "Between features"; `docs/tickets/fleetd-p4/MAP.md`, Q6).
+    pub fetch_period_s: u64,
+    /// The failed `push` runs in a row before a needs-you item. Default 3
+    /// (design, "The numbers of the design").
+    pub push_failure_limit: u64,
+    /// The budget of the `unique` rescue refs. Over it, 1 item goes on the
+    /// needs-you list and nothing is deleted (design, "No work is lost").
+    /// Starting value 5120 MB: a starting value, to tune from real runs.
+    pub rescue_unique_budget_mb: u64,
+    /// The time limit of the landing state `ready`. Starting value 1800 s
+    /// (`docs/tickets/fleetd-p4/MAP.md`, Q6): a starting value, to tune from
+    /// real runs.
+    pub landing_ready_limit_s: u64,
+    /// The time limit of the landing state `repair`. Starting value 3600 s
+    /// (Q6): a starting value, to tune from real runs.
+    pub landing_repair_limit_s: u64,
+    /// The margin above the job limits for a landing state that waits on a
+    /// job. Starting value 600 s (Q6): a starting value, to tune from real
+    /// runs.
+    pub landing_job_margin_s: u64,
+    /// The time limit of a bundle in the state `passed`. Starting value
+    /// 600 s (Q6): a starting value, to tune from real runs.
+    pub bundle_passed_limit_s: u64,
+    /// The size limit of `result.json` of a worker. Starting value 64 KiB
+    /// (Q7; SR-6): a starting value, to tune from real runs.
+    pub result_max_bytes: u64,
+    /// The changed lines of a resolver task at most. Starting value 100
+    /// (Q7): a starting value, to tune from real runs.
+    pub resolver_max_lines: u64,
+    /// The files of a resolver task at most. Starting value 2 (Q7): a
+    /// starting value, to tune from real runs.
+    pub resolver_max_files: u64,
 }
 
 /// The `job_limit_s` table: the time limit of each job kind, in seconds.
@@ -125,6 +158,17 @@ pub struct JobLimits {
     pub conformance: u64,
     /// Starting value 600 s (`docs/tickets/fleetd-p3/MAP.md`, Q25).
     pub rescue: u64,
+    /// Starting value 1200 s (`docs/tickets/fleetd-p4/MAP.md`, Q-B): a
+    /// starting value, to tune from real runs.
+    pub fast_gate: u64,
+    /// Starting value 3600 s (Q-B): a starting value, to tune from real runs.
+    pub full_gate: u64,
+    /// Starting value 180 s (Q-B): a starting value, to tune from real runs.
+    pub trial_merge: u64,
+    /// Starting value 600 s (Q-B): a starting value, to tune from real runs.
+    pub bundle_build: u64,
+    /// Starting value 600 s (Q-B): a starting value, to tune from real runs.
+    pub rebase: u64,
 }
 
 impl Default for JobLimits {
@@ -136,6 +180,11 @@ impl Default for JobLimits {
             docs_sync: 3600,
             conformance: 3600,
             rescue: 600,
+            fast_gate: 1200,
+            full_gate: 3600,
+            trial_merge: 180,
+            bundle_build: 600,
+            rebase: 600,
         }
     }
 }
@@ -174,6 +223,16 @@ impl Default for FleetConfig {
             transcript_line_max_bytes: MIB,
             job_result_max_bytes: 64 * KIB,
             orchestrator_seats: vec!["orchestrator".to_string(), "orchestrator-codex".to_string()],
+            fetch_period_s: 60,
+            push_failure_limit: 3,
+            rescue_unique_budget_mb: 5120,
+            landing_ready_limit_s: 1800,
+            landing_repair_limit_s: 3600,
+            landing_job_margin_s: 600,
+            bundle_passed_limit_s: 600,
+            result_max_bytes: 64 * KIB,
+            resolver_max_lines: 100,
+            resolver_max_files: 2,
         }
     }
 }
@@ -221,6 +280,21 @@ impl FleetConfig {
             ("transcript_tail_bytes", self.transcript_tail_bytes),
             ("transcript_line_max_bytes", self.transcript_line_max_bytes),
             ("job_result_max_bytes", self.job_result_max_bytes),
+            ("job_limit_s.fast_gate", jobs.fast_gate),
+            ("job_limit_s.full_gate", jobs.full_gate),
+            ("job_limit_s.trial_merge", jobs.trial_merge),
+            ("job_limit_s.bundle_build", jobs.bundle_build),
+            ("job_limit_s.rebase", jobs.rebase),
+            ("fetch_period_s", self.fetch_period_s),
+            ("push_failure_limit", self.push_failure_limit),
+            ("rescue_unique_budget_mb", self.rescue_unique_budget_mb),
+            ("landing_ready_limit_s", self.landing_ready_limit_s),
+            ("landing_repair_limit_s", self.landing_repair_limit_s),
+            ("landing_job_margin_s", self.landing_job_margin_s),
+            ("bundle_passed_limit_s", self.bundle_passed_limit_s),
+            ("result_max_bytes", self.result_max_bytes),
+            ("resolver_max_lines", self.resolver_max_lines),
+            ("resolver_max_files", self.resolver_max_files),
         ];
         for (key, v) in positive {
             if v == 0 {
@@ -315,6 +389,11 @@ mod tests {
                 docs_sync: 3600,
                 conformance: 3600,
                 rescue: 600,
+                fast_gate: 1200,
+                full_gate: 3600,
+                trial_merge: 180,
+                bundle_build: 600,
+                rebase: 600,
             }
         );
         assert_eq!(c.health_min_free_disk_gb, 10);
@@ -574,5 +653,62 @@ mod tests {
     #[test]
     fn job_limit_s_rescue_defaults_to_600() {
         assert_eq!(FleetConfig::default().job_limit_s.rescue, 600);
+    }
+
+    #[test]
+    fn phase4_keys_have_the_design_defaults() {
+        let c = FleetConfig::default();
+        let j = &c.job_limit_s;
+        assert_eq!(
+            (
+                j.fast_gate,
+                j.full_gate,
+                j.trial_merge,
+                j.bundle_build,
+                j.rebase
+            ),
+            (1200, 3600, 180, 600, 600)
+        );
+        assert_eq!(c.fetch_period_s, 60);
+        assert_eq!(c.push_failure_limit, 3);
+        assert_eq!(c.rescue_unique_budget_mb, 5120);
+        assert_eq!(c.landing_ready_limit_s, 1800);
+        assert_eq!(c.landing_repair_limit_s, 3600);
+        assert_eq!(c.landing_job_margin_s, 600);
+        assert_eq!(c.bundle_passed_limit_s, 600);
+        assert_eq!(c.result_max_bytes, 65_536);
+        assert_eq!(c.resolver_max_lines, 100);
+        assert_eq!(c.resolver_max_files, 2);
+        assert_eq!(c.validate(), Ok(()));
+    }
+
+    #[test]
+    fn a_bad_phase4_key_names_the_key() {
+        type SetBad = fn(&mut FleetConfig);
+        let cases: [(&str, SetBad); 15] = [
+            ("job_limit_s.fast_gate", |c| c.job_limit_s.fast_gate = 0),
+            ("job_limit_s.full_gate", |c| c.job_limit_s.full_gate = 0),
+            ("job_limit_s.trial_merge", |c| c.job_limit_s.trial_merge = 0),
+            ("job_limit_s.bundle_build", |c| {
+                c.job_limit_s.bundle_build = 0
+            }),
+            ("job_limit_s.rebase", |c| c.job_limit_s.rebase = 0),
+            ("fetch_period_s", |c| c.fetch_period_s = 0),
+            ("push_failure_limit", |c| c.push_failure_limit = 0),
+            ("rescue_unique_budget_mb", |c| c.rescue_unique_budget_mb = 0),
+            ("landing_ready_limit_s", |c| c.landing_ready_limit_s = 0),
+            ("landing_repair_limit_s", |c| c.landing_repair_limit_s = 0),
+            ("landing_job_margin_s", |c| c.landing_job_margin_s = 0),
+            ("bundle_passed_limit_s", |c| c.bundle_passed_limit_s = 0),
+            ("result_max_bytes", |c| c.result_max_bytes = 0),
+            ("resolver_max_lines", |c| c.resolver_max_lines = 0),
+            ("resolver_max_files", |c| c.resolver_max_files = 0),
+        ];
+        for (key, set) in cases {
+            let mut c = FleetConfig::default();
+            set(&mut c);
+            let err = c.validate().unwrap_err().to_string();
+            assert_eq!(err, format!("{key} must be at least 1, got 0"));
+        }
     }
 }

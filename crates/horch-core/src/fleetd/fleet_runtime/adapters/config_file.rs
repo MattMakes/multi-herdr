@@ -72,6 +72,24 @@ struct FileKeys {
     transcript_line_max_bytes: Option<u64>,
     job_result_max_bytes: Option<u64>,
     orchestrator_seats: Option<Vec<String>>,
+    fetch_period_s: Option<u64>,
+    push_failure_limit: Option<u64>,
+    /// A starting value, to tune from real runs.
+    rescue_unique_budget_mb: Option<u64>,
+    /// A starting value, to tune from real runs.
+    landing_ready_limit_s: Option<u64>,
+    /// A starting value, to tune from real runs.
+    landing_repair_limit_s: Option<u64>,
+    /// A starting value, to tune from real runs.
+    landing_job_margin_s: Option<u64>,
+    /// A starting value, to tune from real runs.
+    bundle_passed_limit_s: Option<u64>,
+    /// A starting value, to tune from real runs.
+    result_max_bytes: Option<u64>,
+    /// A starting value, to tune from real runs.
+    resolver_max_lines: Option<u64>,
+    /// A starting value, to tune from real runs.
+    resolver_max_files: Option<u64>,
 }
 
 #[derive(Deserialize, Default)]
@@ -83,6 +101,16 @@ struct FileJobLimits {
     docs_sync: Option<u64>,
     conformance: Option<u64>,
     rescue: Option<u64>,
+    /// A starting value, to tune from real runs.
+    fast_gate: Option<u64>,
+    /// A starting value, to tune from real runs.
+    full_gate: Option<u64>,
+    /// A starting value, to tune from real runs.
+    trial_merge: Option<u64>,
+    /// A starting value, to tune from real runs.
+    bundle_build: Option<u64>,
+    /// A starting value, to tune from real runs.
+    rebase: Option<u64>,
 }
 
 impl FileKeys {
@@ -114,6 +142,11 @@ impl FileKeys {
                 docs_sync: file_jobs.docs_sync.unwrap_or(default_jobs.docs_sync),
                 conformance: file_jobs.conformance.unwrap_or(default_jobs.conformance),
                 rescue: file_jobs.rescue.unwrap_or(default_jobs.rescue),
+                fast_gate: file_jobs.fast_gate.unwrap_or(default_jobs.fast_gate),
+                full_gate: file_jobs.full_gate.unwrap_or(default_jobs.full_gate),
+                trial_merge: file_jobs.trial_merge.unwrap_or(default_jobs.trial_merge),
+                bundle_build: file_jobs.bundle_build.unwrap_or(default_jobs.bundle_build),
+                rebase: file_jobs.rebase.unwrap_or(default_jobs.rebase),
             },
             health_min_free_disk_gb: self
                 .health_min_free_disk_gb
@@ -171,6 +204,32 @@ impl FileKeys {
             orchestrator_seats: self
                 .orchestrator_seats
                 .unwrap_or(defaults.orchestrator_seats),
+            fetch_period_s: self.fetch_period_s.unwrap_or(defaults.fetch_period_s),
+            push_failure_limit: self
+                .push_failure_limit
+                .unwrap_or(defaults.push_failure_limit),
+            rescue_unique_budget_mb: self
+                .rescue_unique_budget_mb
+                .unwrap_or(defaults.rescue_unique_budget_mb),
+            landing_ready_limit_s: self
+                .landing_ready_limit_s
+                .unwrap_or(defaults.landing_ready_limit_s),
+            landing_repair_limit_s: self
+                .landing_repair_limit_s
+                .unwrap_or(defaults.landing_repair_limit_s),
+            landing_job_margin_s: self
+                .landing_job_margin_s
+                .unwrap_or(defaults.landing_job_margin_s),
+            bundle_passed_limit_s: self
+                .bundle_passed_limit_s
+                .unwrap_or(defaults.bundle_passed_limit_s),
+            result_max_bytes: self.result_max_bytes.unwrap_or(defaults.result_max_bytes),
+            resolver_max_lines: self
+                .resolver_max_lines
+                .unwrap_or(defaults.resolver_max_lines),
+            resolver_max_files: self
+                .resolver_max_files
+                .unwrap_or(defaults.resolver_max_files),
         }
     }
 }
@@ -303,5 +362,47 @@ mod tests {
         std::fs::write(&file, "stop_grace_s = \"x\"\n").unwrap();
         let err = format!("{:#}", load(root.path()).unwrap_err());
         assert!(err.contains("fleet.toml"), "{err}");
+    }
+
+    #[test]
+    fn fleet_toml_sets_the_phase_4_keys() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join(FILE_NAME),
+            "fetch_period_s = 61\npush_failure_limit = 4\nrescue_unique_budget_mb = 100\n\
+             landing_ready_limit_s = 62\nlanding_repair_limit_s = 63\n\
+             landing_job_margin_s = 64\nbundle_passed_limit_s = 65\n\
+             result_max_bytes = 66\nresolver_max_lines = 67\nresolver_max_files = 3\n\
+             [job_limit_s]\nfast_gate = 1\nfull_gate = 2\ntrial_merge = 3\n\
+             bundle_build = 4\nrebase = 5\n",
+        )
+        .unwrap();
+        let c = load(root.path()).unwrap();
+        let want = FleetConfig {
+            fetch_period_s: 61,
+            push_failure_limit: 4,
+            rescue_unique_budget_mb: 100,
+            landing_ready_limit_s: 62,
+            landing_repair_limit_s: 63,
+            landing_job_margin_s: 64,
+            bundle_passed_limit_s: 65,
+            result_max_bytes: 66,
+            resolver_max_lines: 67,
+            resolver_max_files: 3,
+            job_limit_s: JobLimits {
+                fast_gate: 1,
+                full_gate: 2,
+                trial_merge: 3,
+                bundle_build: 4,
+                rebase: 5,
+                ..JobLimits::default()
+            },
+            ..FleetConfig::default()
+        };
+        assert_eq!(c, want);
+        let err = format!("{:#}", parse("[job_limit_s]\nfull_gate = 0\n").unwrap_err());
+        assert!(err.contains("job_limit_s.full_gate"), "{err}");
+        let err = format!("{:#}", parse("resolver_max_file = 2\n").unwrap_err());
+        assert!(err.contains("resolver_max_file"), "{err}");
     }
 }

@@ -42,6 +42,7 @@ use crate::fleetd::fleet_runtime::domain::jobs::{
     self, after_abandoned, AfterAbandoned, Kind, Outcome, Process, Seen, State,
 };
 use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
+use crate::fleetd::integration::adapters::executors as integration;
 use crate::fleetd::worker_profiles::application::ports::{LaunchSpec, ProcessHost};
 use crate::fleetd::worktree_custody::adapters::executors;
 use crate::taskledger::finish::{self, land::CHECK_TIMEOUT, CodexSandbox};
@@ -106,8 +107,8 @@ pub enum Queued {
 
 /// The time limit of a run of `kind`, in seconds. `task_check` has the
 /// check timeout of today, `fetch` and `push` the fixed bounds of git
-/// network calls (04 F11), and the kinds of `job_limit_s` their key in
-/// `fleet.toml`. The design gives no number for the other kinds yet.
+/// network calls (04 F11), and each other kind its `job_limit_s` key in
+/// `fleet.toml`.
 pub fn time_limit_s(kind: Kind, config: &FleetConfig) -> Option<u64> {
     let limits = &config.job_limit_s;
     match kind {
@@ -120,9 +121,11 @@ pub fn time_limit_s(kind: Kind, config: &FleetConfig) -> Option<u64> {
         Kind::Rescue => Some(limits.rescue),
         Kind::DocsSync => Some(limits.docs_sync),
         Kind::Conformance => Some(limits.conformance),
-        Kind::FastGate | Kind::FullGate | Kind::TrialMerge | Kind::BundleBuild | Kind::Rebase => {
-            None
-        }
+        Kind::FastGate => Some(limits.fast_gate),
+        Kind::FullGate => Some(limits.full_gate),
+        Kind::TrialMerge => Some(limits.trial_merge),
+        Kind::BundleBuild => Some(limits.bundle_build),
+        Kind::Rebase => Some(limits.rebase),
     }
 }
 
@@ -626,7 +629,8 @@ const RECORD_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 /// gets no write. Gives the outcome that it wrote, or `None`.
 ///
 /// `task_check` has its executor here, and the 4 worktree kinds have theirs
-/// in worktree custody (MAP.md of fleetd-p3, Q22). Each other kind ends
+/// in worktree custody (MAP.md of fleetd-p3, Q22), and the 6 integration
+/// kinds have their router in the integration context. Each other kind ends
 /// `failed`, with no verdict, and the result "no executor before phase
 /// <n>". The time limit is the deadline of the row: the pass stops this
 /// process at it. `checks` starts a check (SR-4).
@@ -645,6 +649,12 @@ pub fn run_job(
         Kind::WorktreeAdd | Kind::WorktreeList | Kind::Rescue | Kind::WorktreeRemove => {
             executors::run(conn, &row)?
         }
+        Kind::BundleBuild
+        | Kind::FastGate
+        | Kind::FullGate
+        | Kind::Fetch
+        | Kind::Push
+        | Kind::Rebase => integration::run(conn, &row)?.into(),
         kind => jobs::no_executor(kind).into(),
     };
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;

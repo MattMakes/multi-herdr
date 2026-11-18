@@ -9,6 +9,7 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use horch_core::fleetd::fleet_runtime::adapters::config_file;
 use horch_core::fleetd::fleet_runtime::adapters::jobs_store::{self, JobRow};
 use horch_core::fleetd::fleet_runtime::adapters::scans::{self, ProcessFact, ScanClock};
 use horch_core::fleetd::fleet_runtime::application::jobs::{
@@ -17,8 +18,9 @@ use horch_core::fleetd::fleet_runtime::application::jobs::{
 use horch_core::fleetd::fleet_runtime::domain::budget::{Cursor, Deadline};
 use horch_core::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
-use horch_core::fleetd::fleet_runtime::domain::jobs::{Kind, State};
+use horch_core::fleetd::fleet_runtime::domain::jobs::{Kind, State, KINDS};
 use horch_core::fleetd::ideas::application::needs_you::{open_items, NeedsYouList};
+use horch_core::fleetd::integration::adapters::executors as integration_executors;
 use horch_core::fleetd::worker_profiles::adapters::launcher::Launcher;
 use horch_core::fleetd::worker_profiles::application::ports::LaunchSpec;
 use horch_core::taskledger::finish::CodexSandbox;
@@ -514,22 +516,78 @@ fn new_input_key_starts_a_new_count() {
     assert_eq!(next.not_before, Some(FleetSeconds(120)));
 }
 
+/// Each job kind has a time limit, so no job runs without one: the fixed
+/// contracts of `task_check`, `fetch` and `push`, and the `job_limit_s` key
+/// of each other kind.
 #[test]
-fn kind_with_no_time_limit_is_not_queued() {
+fn each_job_kind_has_a_time_limit() {
+    let config = FleetConfig::default();
+    let none: Vec<Kind> = KINDS
+        .iter()
+        .map(|r| r.kind)
+        .filter(|&k| jobs::time_limit_s(k, &config).is_none())
+        .collect();
+    assert_eq!(none, Vec::<Kind>::new(), "kinds with no time limit");
+    let limit = |k| jobs::time_limit_s(k, &config).unwrap();
+    assert_eq!(limit(Kind::TaskCheck), 1200);
+    assert_eq!(limit(Kind::Fetch), 180);
+    assert_eq!(limit(Kind::Push), 600);
+    assert_eq!(limit(Kind::FastGate), 1200);
+    assert_eq!(limit(Kind::FullGate), 3600);
+    assert_eq!(limit(Kind::TrialMerge), 180);
+    assert_eq!(limit(Kind::BundleBuild), 600);
+    assert_eq!(limit(Kind::Rebase), 600);
+
+    // A test `fleet.toml` sets the limit of each Phase 4 kind.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join(config_file::FILE_NAME),
+        "[job_limit_s]\nfast_gate = 11\nfull_gate = 12\ntrial_merge = 13\n\
+         bundle_build = 14\nrebase = 15\n",
+    )
+    .unwrap();
+    let file = config_file::load(dir.path()).unwrap();
+    let got: Vec<u64> = [
+        Kind::FastGate,
+        Kind::FullGate,
+        Kind::TrialMerge,
+        Kind::BundleBuild,
+        Kind::Rebase,
+    ]
+    .map(|k| jobs::time_limit_s(k, &file).unwrap())
+    .to_vec();
+    assert_eq!(got, vec![11, 12, 13, 14, 15]);
+}
+
+/// `run_job` sends `bundle_build`, `fast_gate`, `full_gate`, `fetch`, `push`
+/// and `rebase` to the router of the integration context. `trial_merge`
+/// keeps "no executor" until Phase 6.
+#[test]
+fn integration_kinds_route_to_the_integration_router() {
     let mut w = world();
-    let key = JobKey {
-        kind: Kind::FastGate,
-        subject: "B-1",
-        input_key: "tips",
-    };
-    let err = w
-        .tx(|ctx, tx| jobs::queue(ctx, tx, &key, Some("/repo"), FleetSeconds(0)))
-        .unwrap_err();
+    let launcher = Launcher;
+    let mut runner = JobRunner::new(&launcher);
+    let routed = [
+        Kind::BundleBuild,
+        Kind::FastGate,
+        Kind::FullGate,
+        Kind::Fetch,
+        Kind::Push,
+        Kind::Rebase,
+    ];
+    for kind in routed {
+        let id = new_id(w.queue(kind, "F-1", "tip1", 0));
+        w.run_job(&mut runner, id, 0);
+        let row = w.row(id);
+        let want = integration_executors::run(&w.conn, &row).unwrap();
+        assert_eq!(outcome(&row), Some(want), "{kind}");
+    }
+    let id = new_id(w.queue(Kind::TrialMerge, "B-1", "tips", 0));
+    assert_eq!(w.run_job(&mut runner, id, 0), State::Failed);
     assert_eq!(
-        err.to_string(),
-        "a fast_gate job has no time limit before phase 4"
+        outcome(&w.row(id)).unwrap().text,
+        "no executor before phase 6 for trial_merge"
     );
-    assert_eq!(w.rows(), 0);
 }
 
 /// A check runs in the sandbox profile of the worker of its task, never
