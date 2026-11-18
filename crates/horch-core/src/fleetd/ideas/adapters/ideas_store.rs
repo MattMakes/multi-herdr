@@ -122,6 +122,30 @@ pub fn set_approval(
     Ok(())
 }
 
+/// Move the idea `id` from the feature `from` to the feature `to` in `tx`,
+/// with 1 event of the idea. `false`, with no write, when the idea is not
+/// an idea of `from`.
+pub fn set_feature(
+    tx: &Connection,
+    guard: Option<Generation>,
+    id: &str,
+    from: &str,
+    to: &str,
+    cause: Cause<'_>,
+) -> Result<bool> {
+    check_writable(tx, guard)?;
+    let changed = tx.execute(
+        "UPDATE ideas SET feature_id = ?3, updated_at = ?4 WHERE id = ?1 AND feature_id = ?2",
+        params![id, from, to, util::now()],
+    )?;
+    if changed == 0 {
+        return Ok(false);
+    }
+    let data = json!({ "feature_id": to, "from": from });
+    record(tx, guard, EventKind::Note, Entity::Idea, id, cause, &data)?;
+    Ok(true)
+}
+
 /// Insert the requirements `reqs` of the idea `idea_id`, with 1 event of
 /// the idea that names their ids, in `tx`.
 pub fn insert_requirements(

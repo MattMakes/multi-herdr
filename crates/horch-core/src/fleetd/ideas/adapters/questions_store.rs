@@ -95,6 +95,15 @@ pub fn delay_open_of_feature(conn: &Connection, feature_id: &str, by_s: i64) -> 
     Ok(())
 }
 
+/// Give each open row of the feature `from` to the feature `to` and its
+/// owner `owner`. The number of moved rows.
+pub fn move_open(conn: &Connection, from: &str, to: &str, owner: &str) -> Result<usize> {
+    Ok(conn.execute(
+        "UPDATE questions SET feature_id = ?2, owner = ?3 WHERE feature_id = ?1 AND state = ?4",
+        params![from, to, owner, State::Open.as_str()],
+    )?)
+}
+
 /// The row ids of attempt `attempt_id`.
 pub fn ids_of_attempt(conn: &Connection, attempt_id: &str) -> Result<Vec<String>> {
     let mut stmt =

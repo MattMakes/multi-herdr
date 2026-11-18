@@ -230,6 +230,15 @@ pub fn tasks_of_idea(conn: &Connection, idea_id: &str) -> Result<Vec<String>> {
     Ok(ids)
 }
 
+/// Move each task of the idea `idea_id` to the run `run_id`. The number of
+/// moved tasks.
+pub fn move_tasks_of_idea(conn: &Connection, idea_id: &str, run_id: &str) -> Result<usize> {
+    Ok(conn.execute(
+        "UPDATE tasks SET run_id = ?2, updated_at = ?3 WHERE idea_id = ?1",
+        params![idea_id, run_id, crate::taskledger::util::now()],
+    )?)
+}
+
 /// The idea of the task `task_id`, or `None`.
 pub fn idea_of_task(conn: &Connection, task_id: &str) -> Result<Option<String>> {
     let idea = conn.query_row(

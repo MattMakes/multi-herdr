@@ -243,7 +243,7 @@ fn ideas_settled(conn: &Connection, id: &str) -> Result<bool> {
 }
 
 /// Whether a task branch of the feature `id` is `landed`.
-fn has_landed_branch(conn: &Connection, id: &str) -> Result<bool> {
+pub(crate) fn has_landed_branch(conn: &Connection, id: &str) -> Result<bool> {
     Ok(conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM branches
              WHERE feature_id = ?1 AND task_id IS NOT NULL AND landing_state = ?2)",
