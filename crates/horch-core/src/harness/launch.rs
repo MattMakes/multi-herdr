@@ -2776,12 +2776,14 @@ mod tests {
 
     /// A teammate's own `settings:` file replaces the plain overlay whole, so
     /// that file has to carry the skill switches itself. (The skill-bundle
-    /// path in `skills.rs` merges into the file instead.)
+    /// path in `skills.rs` merges into the file instead.) Only the
+    /// orchestrator's file passes as a path: a worker's file is read and
+    /// merged with its `git worktree` deny rules (FM-26).
     #[test]
     fn a_teammate_settings_file_replaces_the_plain_overlay() {
         let (_home, env) = fake_home(OPERATOR);
         let r = Roster::builtin().unwrap();
-        let mut t = r.require("sonnet").unwrap().clone();
+        let mut t = r.require("orchestrator").unwrap().clone();
         t.settings = Some("/tmp/worker-settings.json".into());
         t.disabled_skills = vec!["dev-prime".into()];
         let a = argv(&command_in(&env, &t, Session::Unmanaged, "p", None).unwrap());

@@ -323,7 +323,14 @@ fn inline_settings_arg(env: &LaunchEnv, teammate: &Teammate, settings: &str) -> 
     let has_defaults = HarnessDefault::for_harness(&teammate.harness_defaults, HarnessKind::Claude)
         .any(|d| d.settings.is_some());
     let window = applied_window(env);
-    if inline && (has_defaults || window.is_some() || teammate.sandbox.is_some()) {
+    let worker = !FLEET_ORCHESTRATORS.contains(&teammate.name.as_str());
+    if worker && !inline {
+        // A worker's file is read and passed inline, so its `git worktree`
+        // deny rules (FM-26) merge in.
+        let text = read_settings_value(Some(settings), env.home())?.to_string();
+        return merged_inline_settings(env, teammate, &text, window);
+    }
+    if inline && (has_defaults || window.is_some() || teammate.sandbox.is_some() || worker) {
         merged_inline_settings(env, teammate, settings, window)
     } else {
         // The teammate named its own file; that file owns the overlay.
@@ -351,6 +358,7 @@ fn merged_inline_settings(
     let changed = merge_settings_defaults(teammate, obj, || operator_settings(env))?
         | overlay_window(window, obj)
         | overlay_horch_paths(env, teammate, obj)?
+        | deny_git_worktree(teammate, obj)?
         | teammate.sandbox.is_some();
     Ok(if changed {
         value.to_string().into()
@@ -1720,8 +1728,18 @@ mod tests {
                 assert_eq!(fs["allowWrite"], json!(["/state/horch", "/home/op/.horch"]));
                 let denied = fs["denyWrite"].as_array().unwrap();
                 assert_eq!(denied.first(), Some(&json!(bundles)), "{skill_bundle:?}");
-                // After the 3 `git worktree` rules of a worker (FM-26).
-                let rules = &settings["permissions"]["deny"].as_array().unwrap()[3..5];
+                // The rules of the bundle folder; other deny rules are not
+                // this test's concern.
+                let rules: Vec<Value> = settings["permissions"]["deny"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|r| {
+                        r.as_str()
+                            .is_some_and(|r| r.ends_with(&format!("/{bundles}/**)")))
+                    })
+                    .cloned()
+                    .collect();
                 assert_eq!(
                     rules,
                     [
@@ -1857,8 +1875,14 @@ mod tests {
         assert!(settings["permissions"]
             .get("additionalDirectories")
             .is_none());
-        // The bundle folder's 2 rules and a worker's 3 `git worktree` rules.
-        assert_eq!(settings["permissions"]["deny"].as_array().unwrap().len(), 5);
+        // Only the bundle folder's 2 rules name a path.
+        let path_rules = settings["permissions"]["deny"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r.as_str().is_some_and(|r| r.contains('/')))
+            .count();
+        assert_eq!(path_rules, 2);
 
         let plain = Teammate {
             name: "plain".into(),
@@ -2127,6 +2151,26 @@ mod tests {
             let text = list.to_string();
             assert!(!text.contains("git worktree"), "{text}");
         }
+        // A worker with its own settings and no skills bundle: inline JSON,
+        // and a settings file.
+        let want = json!([
+            "Bash(rm *)",
+            "Bash(git worktree add:*)",
+            "Bash(git worktree remove:*)",
+            "Bash(git worktree prune:*)"
+        ]);
+        let own_rule = r#"{"permissions":{"deny":["Bash(rm *)"]}}"#;
+        let mut own = roster.require("opus").unwrap().clone();
+        own.settings = Some(own_rule.into());
+        let cmd = claude_command(&env, &own, Session::Unmanaged, "", None).unwrap();
+        assert_eq!(settings_arg(&cmd)["permissions"]["deny"], want);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("settings.json");
+        std::fs::write(&file, own_rule).unwrap();
+        own.settings = Some(file.to_string_lossy().into_owned());
+        let cmd = claude_command(&env, &own, Session::Unmanaged, "", None).unwrap();
+        assert_eq!(settings_arg(&cmd)["permissions"]["deny"], want);
     }
 
     /// A fleet pane launches with skills: the sandbox rides in the merged
@@ -2422,7 +2466,10 @@ mod tests {
     #[test]
     fn inline_settings_gain_defaults_and_window_or_stay_byte_for_byte() {
         let mut env = LaunchEnv::for_test();
+        // The orchestrator: a worker's inline JSON always gains its
+        // `git worktree` deny rules (FM-26).
         let mut t = quiet("m");
+        t.name = "orchestrator".into();
         t.settings = Some(r#" { "a" : 1 } "#.into());
         let value = |a: &[String]| -> String {
             a[a.iter().position(|x| x == "--settings").unwrap() + 1].clone()
