@@ -7,6 +7,7 @@ use std::process::Command;
 use anyhow::{bail, Result};
 
 use super::{CommandSpec, Harness, HarnessKind, LaunchEnv};
+use crate::fleetd::worker_profiles::domain::operator_boundary::{Boundary, NotSupported};
 use crate::roster::Teammate;
 use crate::skills::Bundle;
 
@@ -37,4 +38,18 @@ impl Harness for NoAgent {
             spec.teammate.name
         )
     }
+}
+
+/// The operator boundary of `agent: none` (SR-8): it launches no process,
+/// so no process of it can read the token, connect to the command channel
+/// or write into the request folder. It holds on each OS.
+pub fn operator_boundary(
+    _teammate: &Teammate,
+    _fleet_root: &Path,
+) -> Result<Boundary, NotSupported> {
+    Ok(Boundary {
+        read_token_denied: true,
+        connect_channel_denied: true,
+        write_requests_denied: true,
+    })
 }

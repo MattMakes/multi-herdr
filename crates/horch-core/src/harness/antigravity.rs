@@ -15,6 +15,8 @@ use anyhow::{bail, Result};
 
 use super::launch::model_for;
 use super::{CommandSpec, Harness, HarnessKind, LaunchEnv, Session, Workdir};
+use crate::fleetd::worker_profiles::domain::operator_boundary::{Boundary, NotSupported};
+use crate::roster::Teammate;
 use crate::runtime::RuntimeContext;
 
 /// Variables an `agy` child never receives, on top of
@@ -123,6 +125,23 @@ impl Harness for Antigravity {
             .into_iter()
             .collect()
     }
+}
+
+/// The operator boundary of the Antigravity adapter (SR-8, A37): not
+/// supported on any OS. `agy` has no rule that denies a connect to a Unix
+/// socket, and its docs do not say that a `read_file` deny binds the
+/// commands of its terminal sandbox (antigravity.google/docs/permissions).
+/// So no config of `agy` denies the 3 operator acts, and profile
+/// validation refuses each Antigravity worker profile.
+pub fn operator_boundary(
+    _teammate: &Teammate,
+    _fleet_root: &Path,
+) -> Result<Boundary, NotSupported> {
+    Err(NotSupported {
+        adapter: "antigravity",
+        os: std::env::consts::OS.into(),
+        reason: "agy has no rule that denies a connect to a Unix socket, and its docs do not say that a read_file deny binds its terminal commands",
+    })
 }
 
 #[cfg(test)]

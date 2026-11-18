@@ -15,6 +15,7 @@ use anyhow::{Context, Result};
 
 use super::launch::model_for;
 use super::{CommandSpec, Harness, HarnessKind, LaunchEnv, Session, Workdir};
+use crate::fleetd::worker_profiles::domain::operator_boundary::{Boundary, NotSupported};
 use crate::roster::{HarnessDefault, Teammate};
 use crate::runtime::RuntimeContext;
 use crate::skills::Bundle;
@@ -376,6 +377,22 @@ fn skills_config(inherited: Option<&str>, skills: &Path) -> Result<String> {
         paths.push(path);
     }
     Ok(value.to_string())
+}
+
+/// The operator boundary of the OpenCode adapter (SR-8, A37): not
+/// supported on any OS. OpenCode runs its tools with no OS sandbox, so a
+/// command of the agent can read the token, connect to the command channel
+/// and write into the request folder whatever its permission rules say.
+/// Profile validation refuses each OpenCode worker profile.
+pub fn operator_boundary(
+    _teammate: &Teammate,
+    _fleet_root: &Path,
+) -> Result<Boundary, NotSupported> {
+    Err(NotSupported {
+        adapter: "opencode",
+        os: std::env::consts::OS.into(),
+        reason: "opencode runs its tools with no OS sandbox",
+    })
 }
 
 #[cfg(test)]

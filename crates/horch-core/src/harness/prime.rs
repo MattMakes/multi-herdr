@@ -52,6 +52,7 @@ use serde_json::{json, Value};
 use super::claude::{default_leaves, insert_at_path};
 use super::{CommandSpec, Harness, HarnessKind, LaunchEnv, PrepareRequest, Prepared, WindowInputs};
 use crate::compaction::window::{OperatorWindow, WindowDecision};
+use crate::fleetd::worker_profiles::domain::operator_boundary::{Boundary, NotSupported};
 use crate::roster::{HarnessDefault, Teammate};
 use crate::runtime::RuntimeContext;
 use crate::skills::Bundle;
@@ -1086,6 +1087,21 @@ impl Harness for Prime {
             .into_iter()
             .collect()
     }
+}
+
+/// The operator boundary of the Prime adapter (SR-8, A37): not supported
+/// on any OS. Prime runs its tools with no sandbox and has no deny rule
+/// for a path or a socket. Profile validation refuses each Prime worker
+/// profile.
+pub fn operator_boundary(
+    _teammate: &Teammate,
+    _fleet_root: &Path,
+) -> Result<Boundary, NotSupported> {
+    Err(NotSupported {
+        adapter: "prime",
+        os: std::env::consts::OS.into(),
+        reason: "prime runs its tools with no sandbox and has no deny rule for a path or a socket",
+    })
 }
 
 #[cfg(test)]

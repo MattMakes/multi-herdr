@@ -1598,6 +1598,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let env = LaunchEnv {
             path: Some(super::super::claude::sandbox_tools_path(tmp.path(), true)),
+            // A sandboxed worker needs its fleet root (SR-8).
+            fleet_root: Some(tmp.path().join("fleet")),
             ..LaunchEnv::for_test()
         };
         for name in r.names() {

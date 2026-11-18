@@ -17,6 +17,7 @@ use sha2::{Digest as _, Sha256};
 use super::capabilities::Capabilities;
 use super::launch::model_for;
 use super::{CommandSpec, Harness, HarnessKind, LaunchEnv, PrepareRequest, Prepared, Session};
+use crate::fleetd::worker_profiles::domain::operator_boundary::{Boundary, NotSupported};
 use crate::roster::Teammate;
 use crate::runtime::RuntimeContext;
 use crate::skills::Bundle;
@@ -198,6 +199,20 @@ fn push_session_args(cmd: &mut Command, session: Session<'_>, caps: &Capabilitie
         _ => return,
     };
     cmd.arg(flag).arg(id);
+}
+
+/// The operator boundary of the pi adapter (SR-8, A37): not supported on
+/// any OS. pi runs its tools with no sandbox and has no deny rule for a
+/// path or a socket. Profile validation refuses each pi worker profile.
+pub fn operator_boundary(
+    _teammate: &Teammate,
+    _fleet_root: &Path,
+) -> Result<Boundary, NotSupported> {
+    Err(NotSupported {
+        adapter: "pi",
+        os: std::env::consts::OS.into(),
+        reason: "pi runs its tools with no sandbox and has no deny rule for a path or a socket",
+    })
 }
 
 #[cfg(all(test, unix))]
