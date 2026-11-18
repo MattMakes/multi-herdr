@@ -7,10 +7,6 @@
 //! [`ResultFile`] or a [`Refusal`] out. A domain module names only `std`, so
 //! the JSON reader and writer of this schema are here.
 
-/// The size limit of `result.json` (design, protocol rule 7). The key
-/// `result_max_bytes` of `fleet.toml` has this starting value.
-pub const RESULT_MAX_BYTES: u64 = 64 * 1024;
-
 /// The closed list of statuses. The status is the claim of the worker:
 /// only the verifier moves a task to `done`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -100,7 +96,8 @@ impl std::fmt::Display for Refusal {
 impl std::error::Error for Refusal {}
 
 /// Check `bytes` as `result.json` of attempt `attempt` of task `task`, the
-/// ids of its path, with the size limit `max_bytes`.
+/// ids of its path, with the size limit `max_bytes` (`result_max_bytes`
+/// of `fleet.toml`).
 pub fn validate(
     bytes: &[u8],
     task: &str,
@@ -533,6 +530,9 @@ impl<'a> Parser<'a> {
 mod tests {
     use super::*;
 
+    /// The starting value of `result_max_bytes`.
+    const MAX: u64 = 64 * 1024;
+
     const EXAMPLE: &str = r#"{
   "task": "T-0007-02",
   "attempt": "A1",
@@ -545,7 +545,7 @@ mod tests {
 }"#;
 
     fn check(text: &str) -> Result<ResultFile, Refusal> {
-        validate(text.as_bytes(), "T-0007-02", "A1", RESULT_MAX_BYTES)
+        validate(text.as_bytes(), "T-0007-02", "A1", MAX)
     }
 
     #[test]
@@ -587,14 +587,14 @@ mod tests {
     #[test]
     fn the_ids_of_the_payload_equal_those_of_the_path() {
         assert_eq!(
-            validate(EXAMPLE.as_bytes(), "T-9", "A1", RESULT_MAX_BYTES),
+            validate(EXAMPLE.as_bytes(), "T-9", "A1", MAX),
             Err(Refusal::OtherTask {
                 payload: "T-0007-02".into(),
                 path: "T-9".into()
             })
         );
         assert_eq!(
-            validate(EXAMPLE.as_bytes(), "T-0007-02", "A2", RESULT_MAX_BYTES),
+            validate(EXAMPLE.as_bytes(), "T-0007-02", "A2", MAX),
             Err(Refusal::OtherAttempt {
                 payload: "A1".into(),
                 path: "A2".into()
@@ -648,7 +648,7 @@ mod tests {
         for bytes in cases {
             assert!(
                 matches!(
-                    validate(bytes, "T-0007-02", "A1", RESULT_MAX_BYTES),
+                    validate(bytes, "T-0007-02", "A1", MAX),
                     Err(Refusal::NotJson(_))
                 ),
                 "{}",

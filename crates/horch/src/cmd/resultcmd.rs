@@ -14,9 +14,8 @@ use std::process::ExitCode;
 
 use anyhow::{bail, Context, Result};
 use clap::{Args, ValueEnum};
-use horch_core::fleetd::task_execution::domain::result::{
-    self as schema, ResultFile, RESULT_MAX_BYTES,
-};
+use horch_core::fleetd::fleet_runtime::adapters::config_file;
+use horch_core::fleetd::task_execution::domain::result::{self as schema, ResultFile};
 use horch_core::fleetd::worktree_custody::adapters::sqlite as custody;
 use horch_core::fsx;
 use horch_core::runtime::RuntimeContext;
@@ -268,7 +267,8 @@ fn write(ctx: &RuntimeContext, attempt: &Attempt, args: ResultArgs) -> Result<Pa
         notes_for_next: args.notes,
     };
     let bytes = file.to_json().into_bytes();
-    schema::validate(&bytes, &attempt.task_id, &attempt.attempt, RESULT_MAX_BYTES)?;
+    let max_bytes = config_file::load(&ctx.paths.fleet_root)?.result_max_bytes;
+    schema::validate(&bytes, &attempt.task_id, &attempt.attempt, max_bytes)?;
     let outbox = attempt.outbox();
     std::fs::create_dir_all(&outbox).with_context(|| format!("creating {}", outbox.display()))?;
     match fsx::create_immutable(&path, &bytes, MODE) {

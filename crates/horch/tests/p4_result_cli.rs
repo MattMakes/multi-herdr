@@ -11,14 +11,15 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use horch_core::fleetd::task_execution::adapters::task_files::{write_attempt_files, AttemptFiles};
-use horch_core::fleetd::task_execution::domain::result::{
-    validate, ResultStatus, RESULT_MAX_BYTES,
-};
+use horch_core::fleetd::task_execution::domain::result::{validate, ResultStatus};
 use horch_core::fleetd::task_execution::domain::task_files::TaskFacts;
 
 const HEALTHY_MACHINE: &str = r#"{"os":"linux","arch":"x86_64","cpus":8,"load_average_1m":1.0,"mem_total_bytes":17179869184,"mem_available_bytes":8589934592,"disk_free_bytes":214748364800,"disk_total_bytes":536870912000,"gpu":"none","max_open_files":1048576,"max_processes":100000}"#;
 
 const PATH: &str = "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin";
+
+/// The starting value of `result_max_bytes` of `fleet.toml`.
+const RESULT_MAX_BYTES: u64 = 64 * 1024;
 
 const FIRST: &str = "run `horch result` first";
 
@@ -396,7 +397,18 @@ fn oversized_result_is_refused() {
     let summary = "x".repeat(RESULT_MAX_BYTES as usize);
     let out = w.result(&["--status", "completed", "--summary", &summary]);
     assert_eq!(out.code, 1, "{}", out.err);
-    assert!(out.err.contains("limit"), "{}", out.err);
+    assert!(out.err.contains("the limit is 65536 bytes"), "{}", out.err);
+    assert!(!w.result_json().exists());
+
+    // The limit comes from the fleet.toml of the fleet.
+    let toml = w.root.join("fleet/fleet.toml");
+    let mut text = std::fs::read_to_string(&toml).unwrap();
+    text.push_str("result_max_bytes = 2000\n");
+    std::fs::write(&toml, text).unwrap();
+    let summary = "x".repeat(3000);
+    let out = w.result(&["--status", "completed", "--summary", &summary]);
+    assert_eq!(out.code, 1, "{}", out.err);
+    assert!(out.err.contains("the limit is 2000 bytes"), "{}", out.err);
     assert!(!w.result_json().exists());
     assert!(!w.outbox().exists() || names(&w.outbox()).is_empty());
 }
