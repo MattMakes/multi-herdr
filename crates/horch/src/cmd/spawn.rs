@@ -20,6 +20,7 @@ use horch_core::execution::store::ExecutionStore;
 use horch_core::execution::{
     ExecutionPlan, ExecutionStatus, LaunchStage, SessionMode, SpawnRequest, TilingMode,
 };
+use horch_core::fleetd::fleet_runtime::domain::requests::Kind;
 use horch_core::ids::{ExecutionId, SessionId, TeammateName};
 use horch_core::messaging::mailbox::Mailbox;
 use horch_core::roster::{HorchAccess, Phase, Roster, Teammate};
@@ -28,7 +29,6 @@ use horch_core::routing::policy::BalanceMode;
 use horch_core::routing::quota::QuotaView;
 use horch_core::runtime::RuntimeContext;
 use horch_core::skills::{harness_support, SkillResolution};
-use horch_core::fleetd::fleet_runtime::domain::requests::Kind;
 use horch_core::workspace::arrange;
 use horch_core::workspace::herdr::Herdr;
 use horch_core::workspace::model::Direction;
@@ -1377,11 +1377,11 @@ mod tests {
 mod trf_41_tests {
     use std::path::Path;
 
+    use horch_core::fleetd::fleet_runtime::adapters::channel_server::ChannelServer;
     use horch_core::ids::TeammateName;
     use horch_core::routing::decision::{PoolLine, RoutingMode};
     use horch_core::routing::quota::State;
     use horch_core::runtime::MapEnv;
-    use horch_core::fleetd::fleet_runtime::adapters::channel_server::ChannelServer;
     use horch_core::taskledger::model::{Actor, WorkerKind};
     use horch_core::taskledger::runs::{self, NewRun, Run};
     use horch_core::taskledger::tasks::{self, NewTask};

@@ -214,7 +214,11 @@ fn ask_writes_question_1_then_2() {
 #[test]
 fn question_line_of_tell_writes_the_same_question_file() {
     let w = world();
-    let told = w.in_attempt(&["tell", "orchestrator", "QUESTION: which port? I recommend 8080."]);
+    let told = w.in_attempt(&[
+        "tell",
+        "orchestrator",
+        "QUESTION: which port? I recommend 8080.",
+    ]);
     let q = w.questions().join("1.json");
     assert!(
         q.is_file(),
@@ -268,7 +272,15 @@ fn result_writes_through_the_outbox_writer() {
     );
     assert_eq!(r["files_changed"], serde_json::json!(["src/parse.rs"]));
     // result.json is written 1 time.
-    let again = w.in_attempt(&["result", "--status", "failed", "--summary", "x", "--commit", "abc"]);
+    let again = w.in_attempt(&[
+        "result",
+        "--status",
+        "failed",
+        "--summary",
+        "x",
+        "--commit",
+        "abc",
+    ]);
     assert_eq!(again.status.code(), Some(1), "{}", text(&again.stderr));
     assert_eq!(result(&w)["status"], "completed");
     // --check sees the result of the own attempt.

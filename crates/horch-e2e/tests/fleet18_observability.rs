@@ -323,7 +323,9 @@ impl TestFleetd {
             .unwrap();
         let fleetd = TestFleetd(child);
         let socket = root.join("run").join("fleetd.sock");
-        wait("fleetd serves its channel", || socket.exists().then_some(()));
+        wait("fleetd serves its channel", || {
+            socket.exists().then_some(())
+        });
         fleetd
     }
 }
@@ -353,7 +355,10 @@ fn wait<T>(what: &str, mut f: impl FnMut() -> Option<T>) -> T {
 fn ledger_stop_stops_a_spawned_worker_by_the_ingested_pid() {
     let h = fleet("stop-pid", "exec,stay");
     let _fleetd = TestFleetd::start(&h);
-    ok(&h, &["ledger", "run", "new", "stop", "--heartbeat-every", "1"]);
+    ok(
+        &h,
+        &["ledger", "run", "new", "stop", "--heartbeat-every", "1"],
+    );
     let file = h.project.join("stop.md");
     std::fs::write(&file, "# Stop\n**Check:** `true`\n").unwrap();
     let file = file.to_string_lossy().into_owned();

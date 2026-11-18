@@ -97,11 +97,11 @@ use crate::fleetd::task_execution::adapters::attempt_files::{self, OsProcesses, 
 use crate::fleetd::task_execution::adapters::leases_store;
 use crate::fleetd::task_execution::adapters::result_reader::AttemptRef;
 use crate::fleetd::task_execution::adapters::sqlite as attempts_store;
+use crate::fleetd::task_execution::application::outbox_ingest::{self, OutboxRead};
 use crate::fleetd::task_execution::application::quota::{
     self, Pools, Restart, Restarted, Restarts,
 };
 use crate::fleetd::task_execution::application::stall as ladder;
-use crate::fleetd::task_execution::application::outbox_ingest::{self, OutboxRead};
 use crate::fleetd::task_execution::application::{cancel, commands, lease, retry};
 use crate::fleetd::task_execution::domain::lease::Limits;
 use crate::fleetd::task_execution::domain::outbox::DIR_MODE as OUTBOX_MODE;
@@ -775,15 +775,17 @@ impl<'a> Pass<'a> {
             max_bytes: self.settings.config.request_max_bytes,
             guard: self.settings.generation,
         };
-        let failed = match request_spool::scan(conn, &spool, &mut cursor, &mut clock, &self.requests)
-        {
-            Ok(ScanOutcome::Read(_)) => Vec::new(),
-            Ok(ScanOutcome::FolderRefused { reason }) => {
-                vec![format!("the request folder: {reason}")]
-            }
-            Err(e @ DoorError::GenerationLost { .. }) => return Err(PassError::GenerationLost(e)),
-            Err(e) => vec![format!("the request files: {e}")],
-        };
+        let failed =
+            match request_spool::scan(conn, &spool, &mut cursor, &mut clock, &self.requests) {
+                Ok(ScanOutcome::Read(_)) => Vec::new(),
+                Ok(ScanOutcome::FolderRefused { reason }) => {
+                    vec![format!("the request folder: {reason}")]
+                }
+                Err(e @ DoorError::GenerationLost { .. }) => {
+                    return Err(PassError::GenerationLost(e))
+                }
+                Err(e) => vec![format!("the request files: {e}")],
+            };
         Ok((cursor, failed))
     }
 
@@ -871,7 +873,8 @@ impl<'a> Pass<'a> {
         let (attempts, failed) = scanned_attempts(&root, &rows, &scanned);
         let limits = outbox_ingest::Limits::of(config);
         let outbox_reads = outbox_ingest::read(conn, &root, &attempts, &owner, &limits)?;
-        let wrappers = attempt_files::read(conn, &root, &attempts, &owner, config.heartbeat_max_bytes)?;
+        let wrappers =
+            attempt_files::read(conn, &root, &attempts, &owner, config.heartbeat_max_bytes)?;
         let job_files = jobs::read_results(conn, &root, &owner, config.job_result_max_bytes)?;
         let repos = git_repositories(self.ports.outside.repositories(conn)?);
         let worktrees = worktree_facts(

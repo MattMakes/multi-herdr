@@ -298,7 +298,10 @@ fn record<T: DeserializeOwned>(kind: Kind, payload: &Value) -> Result<T> {
     let mut fields = Vec::with_capacity(map.len());
     for (key, value) in map {
         let Value::String(text) = value else {
-            bail!("the payload field `{key}` of {} is not a text", kind.as_str());
+            bail!(
+                "the payload field `{key}` of {} is not a text",
+                kind.as_str()
+            );
         };
         fields.push((key.as_str(), text.as_str()));
     }
@@ -352,7 +355,10 @@ fn spawn_adopt(tx: &Transaction<'_>, deps: &WorkerDeps, p: &SpawnAdoptPayload) -
         return Err(refusal("no worker row has this id"));
     };
     if w.run_id.as_deref() != Some(run.run_id.as_str()) {
-        return Err(refusal(&format!("the row is not a row of run {}", run.slug)));
+        return Err(refusal(&format!(
+            "the row is not a row of run {}",
+            run.slug
+        )));
     }
     if w.status != WorkerStatus::Spawning.as_str() {
         return Err(refusal(&format!("the row is {}, not spawning", w.status)));

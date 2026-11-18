@@ -163,7 +163,11 @@ pub fn prepare(
     let (id, first_line, push) = match (adopt_wanted(), role_run.is_some(), &args.attempt) {
         (_, _, Some(attempt)) => {
             let (worker, pushed) = push(ctx, &store, attempt, &run, &persona)?;
-            (worker, Some(start_line(&pushed.files.start_md)), Some(pushed))
+            (
+                worker,
+                Some(start_line(&pushed.files.start_md)),
+                Some(pushed),
+            )
         }
         (Some(row), false, None) => {
             let target = claim_target();
@@ -656,10 +660,10 @@ mod trf_33_34_tests {
 
     use horch_core::execution::TilingMode;
     use horch_core::taskledger::model::{Actor, StopRequester, WorkerKind};
-    use horch_core::taskledger::workers::NewWorker;
     use horch_core::taskledger::runs::NewRun;
     use horch_core::taskledger::stop::{self, Panes, Processes};
     use horch_core::taskledger::tasks::{self, NewTask};
+    use horch_core::taskledger::workers::NewWorker;
     use horch_core::workspace::model::Direction;
 
     use super::*;
@@ -775,9 +779,7 @@ mod trf_33_34_tests {
         // fleetd refuses it, because the run has no ready task to bind.
         let ctx = ctx_with(200);
         let _fleetd = super::test_fleetd::serve(&ctx);
-        let err = prepare(&ctx, &spawn, None)
-            .err()
-            .expect("no ready task");
+        let err = prepare(&ctx, &spawn, None).err().expect("no ready task");
         assert_eq!(
             err.to_string(),
             "refused: horch spawn refused: no ready task for persona opus"
@@ -1257,11 +1259,11 @@ mod push_tests {
     use horch_core::execution::TilingMode;
     use horch_core::fleetd::fleet_runtime::adapters::channel_server::ChannelServer;
     use horch_core::fleetd::fleet_runtime::adapters::effects;
-    use horch_core::taskledger::tasks;
     use horch_core::fleetd::task_execution::application::dispatch::write_missing_task_files;
     use horch_core::runtime::MapEnv;
     use horch_core::taskledger::model::{Actor, WorktreeMode};
     use horch_core::taskledger::runs::NewRun;
+    use horch_core::taskledger::tasks;
     use horch_core::taskledger::tasks::NewTask;
     use horch_core::workspace::model::Direction;
 

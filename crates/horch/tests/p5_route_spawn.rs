@@ -218,7 +218,11 @@ fn assert_bound(w: &World, task: &str, out: &Out) {
     assert_eq!(attempts.len(), 1, "{attempts:?}");
     let (_, state, worker) = &attempts[0];
     assert_eq!(state, "launching");
-    assert_eq!(out.out.trim(), worker, "stdout names the worker of the bind");
+    assert_eq!(
+        out.out.trim(),
+        worker,
+        "stdout names the worker of the bind"
+    );
     assert_eq!(w.task_row(task), ("leased".into(), Some(worker.clone())));
     assert!(out.err.contains("horch spawn: bound"), "{}", out.err);
     assert!(out.err.contains("fleetd opens the pane"), "{}", out.err);
@@ -242,7 +246,11 @@ fn spawn_sends_1_spawn_request_and_binds_through_fleetd() {
     server.stop().unwrap();
     assert_eq!(out.code, 1, "stdout: {}\nstderr: {}", out.out, out.err);
     assert!(out.err.contains("refused: "), "{}", out.err);
-    assert!(out.err.contains("no ready task for persona opus"), "{}", out.err);
+    assert!(
+        out.err.contains("no ready task for persona opus"),
+        "{}",
+        out.err
+    );
     assert_eq!(
         w.requests(),
         [
@@ -263,7 +271,9 @@ fn lose_the_reply(w: &World) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
         let mut line = Vec::new();
-        BufReader::new(&stream).read_until(b'\n', &mut line).unwrap();
+        BufReader::new(&stream)
+            .read_until(b'\n', &mut line)
+            .unwrap();
         let request = parse_request(&line, 65_536).unwrap();
         let decision = Decision::Authorized {
             auth: "token; channel".into(),

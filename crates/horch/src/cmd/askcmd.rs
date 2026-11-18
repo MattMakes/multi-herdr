@@ -52,8 +52,12 @@ pub(crate) fn own_writer(ctx: &RuntimeContext) -> Result<Result<OutboxWriter, No
         return Ok(Err(NoLiveAttempt { detail: None }));
     };
     let config = config_file::load(&ctx.paths.fleet_root)?;
-    match OutboxWriter::of_this_process(&ctx.paths.fleet_root, store.conn(), &config, &PlatformFacts)
-    {
+    match OutboxWriter::of_this_process(
+        &ctx.paths.fleet_root,
+        store.conn(),
+        &config,
+        &PlatformFacts,
+    ) {
         Ok(out) => Ok(Ok(out)),
         Err(e) => match e.downcast::<NoLiveAttempt>() {
             Ok(no) => Ok(Err(no)),

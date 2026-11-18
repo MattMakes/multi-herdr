@@ -450,7 +450,8 @@ fn bad_token_file_opens_1_needs_you_item_and_refuses_operator_requests() {
     run(&mut pass, &mut w);
     run(&mut pass, &mut w);
 
-    let open = format!("SELECT count(*) FROM needs_you WHERE kind = '{TOKEN_REFUSED}' AND state = 'open'");
+    let open =
+        format!("SELECT count(*) FROM needs_you WHERE kind = '{TOKEN_REFUSED}' AND state = 'open'");
     assert_eq!(w.count(&open), 1, "1 needs-you item names the token file");
     assert_eq!(w.request_state(&id).as_deref(), Some("refused"));
     assert_eq!(w.calls(), 0, "no operator request is applied");
@@ -491,7 +492,11 @@ fn pass_ingests_progress_result_and_heartbeat() {
         notes_for_next: None,
         handoff: None,
     };
-    write_mode(&outbox.join("result.json"), result.to_json().as_bytes(), 0o600);
+    write_mode(
+        &outbox.join("result.json"),
+        result.to_json().as_bytes(),
+        0o600,
+    );
     let hb = HeartbeatFile {
         task: task.clone(),
         attempt: short(&attempt).into(),
@@ -506,7 +511,11 @@ fn pass_ingests_progress_result_and_heartbeat() {
         written_at: util::now(),
     };
     let hb_path = w.attempt_dir(&task, &attempt).join(HEARTBEAT_JSON);
-    write_mode(&hb_path, serde_json::to_string(&hb).unwrap().as_bytes(), 0o600);
+    write_mode(
+        &hb_path,
+        serde_json::to_string(&hb).unwrap().as_bytes(),
+        0o600,
+    );
     let mut pass = w.pass(&Fake, &Launcher);
 
     run(&mut pass, &mut w);
@@ -517,7 +526,11 @@ fn pass_ingests_progress_result_and_heartbeat() {
     assert_eq!(w.count(&progress), 1, "the progress line is a row");
     let status: String = w
         .conn
-        .query_row("SELECT status FROM tasks WHERE task_id = ?1", [&task], |r| r.get(0))
+        .query_row(
+            "SELECT status FROM tasks WHERE task_id = ?1",
+            [&task],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(status, "verifying", "the result moves the task");
     let (seq, checkin): (Option<i64>, Option<String>) = w
@@ -530,7 +543,10 @@ fn pass_ingests_progress_result_and_heartbeat() {
         )
         .unwrap();
     assert_eq!(seq, Some(1), "the heartbeat is used");
-    assert!(checkin.is_some(), "the heartbeat is the checkin of the wrapper");
+    assert!(
+        checkin.is_some(),
+        "the heartbeat is the checkin of the wrapper"
+    );
 }
 
 /// At its first pass fleetd makes the outbox of each live attempt that has
