@@ -23,6 +23,9 @@ const MB: u64 = 1 << 20;
 /// Why a probe with no value is unknown.
 pub const NO_READING: &str = "the probe has no reading";
 
+/// Why a fact that the platform does not support is unknown.
+pub const NOT_SUPPORTED: &str = "not supported on this platform";
+
 /// 1 reading of the machine probe.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Reading<T> {
@@ -40,7 +43,7 @@ impl<T> From<Option<T>> for Reading<T> {
 
 /// The readings of the 5 health guards. Each count has a limit of the same
 /// scope: the processes of the user with the process limit of the user,
-/// and the open files of the user with the open file limit of the system.
+/// and the open files of the system with the open file limit of the system.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Readings {
     pub free_disk_bytes: Reading<u64>,
@@ -48,9 +51,9 @@ pub struct Readings {
     pub cpus: Reading<u32>,
     pub free_memory_bytes: Reading<u64>,
     pub user_processes: Reading<u64>,
-    pub process_limit: Reading<u64>,
-    pub user_open_files: Reading<u64>,
-    pub open_file_limit: Reading<u64>,
+    pub user_process_limit: Reading<u64>,
+    pub system_open_files: Reading<u64>,
+    pub system_open_file_limit: Reading<u64>,
 }
 
 /// The floors of the health guards, from `fleet.toml`.
@@ -169,13 +172,13 @@ pub fn health(r: &Readings, f: &Floors) -> Vec<Finding> {
         share(
             Fact::Processes,
             r.user_processes,
-            r.process_limit,
+            r.user_process_limit,
             f.max_process_share,
         ),
         share(
             Fact::OpenFiles,
-            r.user_open_files,
-            r.open_file_limit,
+            r.system_open_files,
+            r.system_open_file_limit,
             f.max_open_file_share,
         ),
     ]
@@ -258,7 +261,7 @@ fn share(fact: Fact, count: Reading<u64>, limit: Reading<u64>, max: f64) -> Opti
     (count as f64 > ceiling).then_some(())?;
     let what = match fact {
         Fact::Processes => "processes of the user",
-        _ => "open files of the user",
+        _ => "open files of the system",
     };
     hold(
         fact,
@@ -321,9 +324,9 @@ mod tests {
             cpus: Reading::Known(8),
             free_memory_bytes: Reading::Known(8 * 1024 * MB),
             user_processes: Reading::Known(500),
-            process_limit: Reading::Known(8000),
-            user_open_files: Reading::Known(24_000),
-            open_file_limit: Reading::Known(368_640),
+            user_process_limit: Reading::Known(8000),
+            system_open_files: Reading::Known(24_000),
+            system_open_file_limit: Reading::Known(368_640),
         }
     }
 
@@ -374,9 +377,9 @@ mod tests {
             cpus: Reading::Known(8),
             free_memory_bytes: Reading::Known(f.min_free_memory_mb * MB),
             user_processes: Reading::Known(900),
-            process_limit: Reading::Known(1000),
-            user_open_files: Reading::Known(900),
-            open_file_limit: Reading::Known(1000),
+            user_process_limit: Reading::Known(1000),
+            system_open_files: Reading::Known(900),
+            system_open_file_limit: Reading::Known(1000),
         };
         assert!(health(&at, &f).is_empty(), "{:?}", health(&at, &f));
         let cases: [(Fact, Readings); 5] = [
@@ -411,7 +414,7 @@ mod tests {
             (
                 Fact::OpenFiles,
                 Readings {
-                    user_open_files: Reading::Known(901),
+                    system_open_files: Reading::Known(901),
                     ..at
                 },
             ),
@@ -431,9 +434,9 @@ mod tests {
             cpus: Reading::Unknown(NO_READING),
             free_memory_bytes: none,
             user_processes: none,
-            process_limit: none,
-            user_open_files: none,
-            open_file_limit: none,
+            user_process_limit: none,
+            system_open_files: none,
+            system_open_file_limit: none,
         };
         let found = health(&unknown, &floors());
         let expected: Vec<Finding> = [
@@ -456,6 +459,58 @@ mod tests {
             ..unknown
         };
         assert_eq!(facts(&low), vec![Fact::FreeDisk]);
+    }
+
+    /// The cause of the 1 floor hold of `r`.
+    fn cause(r: &Readings) -> String {
+        match holds(r).as_slice() {
+            [hold] => hold.cause().to_string(),
+            other => panic!("expected 1 hold: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn open_file_guard_compares_system_count_with_system_limit() {
+        let r = Readings {
+            system_open_files: Reading::Known(901),
+            system_open_file_limit: Reading::Known(1000),
+            ..normal()
+        };
+        assert_eq!(facts(&r), vec![Fact::OpenFiles]);
+        let cause = cause(&r);
+        assert!(cause.contains("901 open files of the system"), "{cause}");
+        assert!(cause.contains("limit 1000"), "{cause}");
+    }
+
+    #[test]
+    fn process_guard_compares_user_count_with_user_limit() {
+        let r = Readings {
+            user_processes: Reading::Known(901),
+            user_process_limit: Reading::Known(1000),
+            ..normal()
+        };
+        assert_eq!(facts(&r), vec![Fact::Processes]);
+        let cause = cause(&r);
+        assert!(cause.contains("901 processes of the user"), "{cause}");
+        assert!(cause.contains("limit 1000"), "{cause}");
+    }
+
+    #[test]
+    fn not_supported_fact_gives_unknown_and_no_hold() {
+        // Without the unknown count, 1 open file of a limit of 1 holds.
+        let r = Readings {
+            system_open_files: Reading::Unknown(NOT_SUPPORTED),
+            system_open_file_limit: Reading::Known(1),
+            ..normal()
+        };
+        assert_eq!(
+            health(&r, &floors()),
+            vec![Finding::Unknown {
+                fact: Fact::OpenFiles,
+                why: NOT_SUPPORTED
+            }]
+        );
+        assert_eq!(NOT_SUPPORTED, "not supported on this platform");
     }
 
     #[test]

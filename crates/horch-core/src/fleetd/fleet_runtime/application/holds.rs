@@ -24,14 +24,14 @@ use crate::runtime::machine::{self, Known, MachineSnapshot, ProbeBins};
 use crate::runtime::RuntimeContext;
 use crate::taskledger::model::{Actor, EventKind};
 
-/// The readings of the platform beside [`MachineSnapshot`]: the 2 counts of
-/// the user and the open file limit of the system. `None` when the read
-/// fails or the platform does not support it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The readings of the platform beside [`MachineSnapshot`]: the count of
+/// processes of the user, and the count and the limit of open files of the
+/// system.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Counts {
-    pub user_processes: Option<u64>,
-    pub user_open_files: Option<u64>,
-    pub open_file_limit: Option<u64>,
+    pub user_processes: Reading<u64>,
+    pub system_open_files: Reading<u64>,
+    pub system_open_file_limit: Reading<u64>,
 }
 
 impl Counts {
@@ -39,11 +39,20 @@ impl Counts {
     pub fn read() -> Self {
         use horch_platform::machine as m;
         Counts {
-            user_processes: m::user_process_count().ok().flatten(),
-            user_open_files: m::user_open_file_count().ok().flatten(),
-            open_file_limit: m::system_open_file_limit().ok().flatten(),
+            user_processes: platform_reading(m::user_process_count()),
+            system_open_files: platform_reading(m::system_open_file_count()),
+            system_open_file_limit: platform_reading(m::system_open_file_limit()),
         }
     }
+}
+
+/// 1 reading of the platform. A fact that the platform does not support is
+/// unknown with [`health::NOT_SUPPORTED`], and a read that fails is unknown
+/// with [`health::NO_READING`].
+pub fn platform_reading(
+    reading: Result<Option<u64>, horch_platform::NotSupported>,
+) -> Reading<u64> {
+    reading.map_or(Reading::Unknown(health::NOT_SUPPORTED), Reading::from)
 }
 
 /// Why the memory guard does not hold on macOS when the kernel gives no free
@@ -62,10 +71,10 @@ pub fn readings(snapshot: &MachineSnapshot, counts: &Counts) -> Readings {
         load_1m: snapshot.load_average_1m.into(),
         cpus: Option::<u32>::from(snapshot.cpus).into(),
         free_memory_bytes: known(snapshot.mem_available_bytes),
-        user_processes: counts.user_processes.into(),
-        process_limit: known(snapshot.max_processes),
-        user_open_files: counts.user_open_files.into(),
-        open_file_limit: counts.open_file_limit.into(),
+        user_processes: counts.user_processes,
+        user_process_limit: known(snapshot.max_processes),
+        system_open_files: counts.system_open_files,
+        system_open_file_limit: counts.system_open_file_limit,
     }
 }
 
@@ -557,6 +566,38 @@ mod tests {
         assert_eq!(memory, expected.iter().collect::<Vec<_>>());
     }
 
+    /// A count that the platform does not support is unknown with its own
+    /// reason, apart from a count that the probe failed to read.
+    #[test]
+    fn not_supported_count_keeps_its_reason() {
+        let gap = horch_platform::NotSupported::new("machine", "windows");
+        assert_eq!(
+            platform_reading(Err(gap)),
+            Reading::Unknown(health::NOT_SUPPORTED)
+        );
+        assert_eq!(
+            platform_reading(Ok(None)),
+            Reading::Unknown(health::NO_READING)
+        );
+        assert_eq!(platform_reading(Ok(Some(3))), Reading::Known(3));
+        let counts = Counts {
+            user_processes: Reading::Known(500),
+            system_open_files: platform_reading(Err(gap)),
+            system_open_file_limit: Reading::Known(1),
+        };
+        let found = health::health(
+            &readings(&healthy(), &counts),
+            &Floors::from(&FleetConfig::default()),
+        );
+        assert_eq!(
+            found,
+            vec![Finding::Unknown {
+                fact: Fact::OpenFiles,
+                why: health::NOT_SUPPORTED
+            }]
+        );
+    }
+
     /// The guards with injected readings: a reading holds past its floor,
     /// and no reading (a denied sysctl) is unknown with its reason.
     #[test]
@@ -566,11 +607,11 @@ mod tests {
         assert_eq!(macos_free_memory(None), Reading::Unknown(MACOS_MEMORY));
         let mac = healthy();
         let counts = |limit: Option<u64>| Counts {
-            user_processes: Some(500),
-            user_open_files: Some(901),
-            open_file_limit: limit,
+            user_processes: Reading::Known(500),
+            system_open_files: Reading::Known(901),
+            system_open_file_limit: limit.into(),
         };
-        // 901 open files of the user against a system limit of 1000.
+        // 901 open files of the system against a system limit of 1000.
         let found = health::health(&readings(&mac, &counts(Some(1000))), &floors);
         assert!(
             matches!(

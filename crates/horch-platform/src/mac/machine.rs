@@ -48,6 +48,13 @@ pub(crate) fn system_open_file_limit() -> Result<Option<u64>, NotSupported> {
         .map(|v| v as u64))
 }
 
+/// `kern.num_files`: the count of open files of the system.
+pub(crate) fn system_open_file_count() -> Result<Option<u64>, NotSupported> {
+    Ok(sysctl::<libc::c_int>(c"kern.num_files")
+        .filter(|v| *v >= 0)
+        .map(|v| v as u64))
+}
+
 /// The value of the sysctl `name` of type `T` (`c_int` or `u64`), or
 /// `None` when the read fails or the size differs.
 fn sysctl<T: Copy + Default>(name: &std::ffi::CStr) -> Option<T> {

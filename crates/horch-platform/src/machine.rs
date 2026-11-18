@@ -1,14 +1,15 @@
 //! The concern machine: the machine probe. It reads load, memory, disk, the
 //! process limits, the host name, the architecture and the GPU class, with
-//! the sources of `horch-core/src/runtime/machine.rs`, and the count of
-//! processes and of open files of the user (OR-5):
+//! the sources of `horch-core/src/runtime/machine.rs`, the count of
+//! processes and of open files of the user, and the count of open files of
+//! the system (OR-5):
 //!
 //! - macOS: `getloadavg`, `gethostname`, `statvfs`, `getrlimit`, and the
 //!   commands `uname -m`, `sysctl` and `vm_stat`. The counts read
 //!   `proc_listallpids`, `proc_pidinfo(PROC_PIDTBSDINFO)` for the real uid
 //!   of each process, and `proc_pidinfo(PROC_PIDLISTFDS)` for the open
-//!   files of each process of the user. The count of open files is per
-//!   process of the user, not the system count `kern.num_files`. The read
+//!   files of each process of the user. The count of open files of the
+//!   system reads the sysctl `kern.num_files`. The read
 //!   of the uid fails for a zombie, so the count of processes does not
 //!   include zombies.
 //! - Linux: `getloadavg`, `gethostname`, `statvfs`, `getrlimit`,
@@ -26,10 +27,10 @@
 //! The health guards read 4 functions, each count with a limit of the same
 //! scope: [`user_process_count`] with the limit of the user
 //! [`max_processes`] (`RLIMIT_NPROC`, a limit for each user), and
-//! [`user_open_file_count`] with the limit of the system
+//! [`system_open_file_count`] with the limit of the system
 //! [`system_open_file_limit`] (macOS `kern.maxfiles`, Linux
 //! `/proc/sys/fs/file-max`). [`max_open_files`] is a limit for 1 process,
-//! so it is not the limit of the count of the user. A count is fast: on an Apple M-series Mac with
+//! so it is not the limit of a count. A count is fast: on an Apple M-series Mac with
 //! about 700 processes, 1 count takes less than 100 ms.
 
 use std::path::Path;
@@ -133,6 +134,13 @@ pub fn kernel_free_memory() -> Result<Option<u64>, NotSupported> {
 /// fails.
 pub fn system_open_file_limit() -> Result<Option<u64>, NotSupported> {
     os::system_open_file_limit()
+}
+
+/// The count of open files of the system, for all processes: macOS
+/// `kern.num_files`, Linux the first field of `/proc/sys/fs/file-nr`. It has
+/// the scope of [`system_open_file_limit`]. `None` when the read fails.
+pub fn system_open_file_count() -> Result<Option<u64>, NotSupported> {
+    os::system_open_file_count()
 }
 
 /// The count of processes of the user: the processes with the real uid of

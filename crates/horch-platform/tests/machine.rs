@@ -134,15 +134,30 @@ fn user_open_file_count_grows_when_this_process_opens_files() {
 
 #[cfg(unix)]
 #[test]
-fn the_system_open_file_limit_is_at_least_the_count_of_the_user() {
+fn the_system_open_file_limit_is_at_least_the_count_of_the_system() {
     // A sandbox can deny the sysctl: `None` is a valid result.
     let Some(limit) = machine::system_open_file_limit().unwrap() else {
         return;
     };
-    let count = machine::user_open_file_count()
+    let Some(count) = machine::system_open_file_count().unwrap() else {
+        return;
+    };
+    assert!(limit >= count, "limit {limit}, count {count}");
+}
+
+#[cfg(unix)]
+#[test]
+fn system_open_file_count_is_at_least_the_count_of_the_user() {
+    // A sandbox can deny the sysctl: `None` is a valid result. Files open
+    // and close between the 2 reads, so the count of the user is read
+    // first and gets a margin of 1000 files.
+    let user = machine::user_open_file_count()
         .unwrap()
         .expect("open file count");
-    assert!(limit >= count, "limit {limit}, count {count}");
+    let Some(system) = machine::system_open_file_count().unwrap() else {
+        return;
+    };
+    assert!(system + 1000 >= user, "system {system}, user {user}");
 }
 
 #[cfg(target_os = "macos")]
@@ -171,6 +186,7 @@ fn linux_needs_no_kernel_free_memory() {
 fn counts_are_not_supported_on_windows() {
     assert!(machine::user_process_count().is_err());
     assert!(machine::user_open_file_count().is_err());
+    assert!(machine::system_open_file_count().is_err());
     assert!(machine::max_open_files().is_err());
     assert!(machine::system_open_file_limit().is_err());
     assert!(machine::kernel_free_memory().is_err());

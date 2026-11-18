@@ -43,6 +43,10 @@ pub(crate) fn system_open_file_limit() -> Result<Option<u64>, NotSupported> {
     Err(GAP)
 }
 
+pub(crate) fn system_open_file_count() -> Result<Option<u64>, NotSupported> {
+    Err(GAP)
+}
+
 /// The caller uses `std::env::consts::ARCH`, as today.
 pub(crate) fn uname_arch(_run: Run<'_>) -> Result<Option<String>, NotSupported> {
     Err(GAP)
