@@ -320,8 +320,9 @@ fn g52_concurrent_workers_get_their_own_session_and_transcript() {
         &h,
         &["ledger", "run", "new", "race", "--heartbeat-every", "1"],
     );
-    // A task-less spawn needs a startable task (TRF-31): 1 per worker.
-    for n in 1..=2 {
+    // A task-less spawn binds a ready task (TRF-31, FR-5): 1 for each of
+    // the 2 workers and 1 for each of their 2 resumes.
+    for n in 1..=4 {
         let file = h.project.join(format!("race-{n}.md"));
         std::fs::write(&file, format!("# Race {n}\n**Check:** `true`\n")).unwrap();
         let file = file.to_string_lossy().into_owned();

@@ -951,3 +951,68 @@ fn add_map_prints_each_task_and_the_path_of_the_map_it_read() {
         "{out}"
     );
 }
+
+/// Release row of Phase 4: `horch spawn` binds its task and writes the
+/// files of its push attempt before it opens a pane. Here no herdr runs,
+/// so the pane step fails after the bind and gives the task back. The
+/// claim of that push attempt
+/// prints its files and searches nothing, and `finish` and `done` refuse:
+/// fleetd runs the finish steps.
+#[test]
+fn a_push_attempt_claims_nothing_and_finish_and_done_refuse() {
+    let w = World::new();
+    w.ok(&["ledger", "run", "new", "r1"]);
+    w.ok(&["ledger", "add", "--file", "t1.md", "--primary", "dev"]);
+    let spawn = w.run(&["spawn", "dev", "--run", "r1"]);
+    assert_eq!(spawn.code, 1, "no herdr: the pane step fails");
+    let bound = spawn
+        .err
+        .lines()
+        .find_map(|l| l.strip_prefix("horch spawn: bound T-1 to attempt "))
+        .unwrap_or_else(|| panic!("{}", spawn.err));
+    let (attempt, worker) = bound
+        .trim_end_matches('.')
+        .split_once(" of worker ")
+        .unwrap();
+    let task_id = attempt.strip_suffix("/A1").unwrap();
+    let dir = w
+        .tmp
+        .path()
+        .join("fleet/tasks")
+        .join(task_id)
+        .join("attempts/A1");
+    assert!(dir.join("task.yaml").is_file() && dir.join("inbox/START.md").is_file());
+
+    // `ledger add --file` stores no ticket snapshot, so the claim prints
+    // none.
+    let claim = w.run_as(Some(worker), &["ledger", "claim"]);
+    assert_eq!(claim.code, 0, "{}", claim.err);
+    assert_eq!(
+        claim.out,
+        format!(
+            "T-1 (attempt A1) is bound to you: Ticket One. A claim takes no other task.\n\
+             Task file: {}\nStart file: {}\n\
+             When the work is committed, run: horch result\n",
+            dir.join("task.yaml").display(),
+            dir.join("inbox/START.md").display()
+        )
+    );
+    let as_json = json(&w.run_as(Some(worker), &["ledger", "claim", "--json"]).out);
+    assert_eq!(as_json["outcome"], "push");
+    assert_eq!(as_json["attempt"], "A1");
+    assert_eq!(
+        as_json["start_md"],
+        dir.join("inbox/START.md").to_str().unwrap()
+    );
+
+    let refusal =
+        "horch: run `horch result` when the work is committed; fleetd runs the finish steps\n";
+    let finish = w.run_as(Some(worker), &["ledger", "finish"]);
+    assert_eq!((finish.code, finish.err.as_str()), (1, refusal));
+    let done = w.run_as(Some(worker), &["ledger", "done", "all", "good"]);
+    assert_eq!((done.code, done.err.as_str()), (1, refusal));
+    // The failed spawn gave its task back: ready, with no attempt burned.
+    let shown = json(&w.ok(&["ledger", "show", "T-1", "--json"]));
+    assert_eq!(shown["task"]["state"], "ready", "{shown}");
+    assert_eq!(shown["task"]["attempt_floor"], 1, "{shown}");
+}

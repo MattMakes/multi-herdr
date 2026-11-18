@@ -405,6 +405,10 @@ enum ProjectCommand {
         /// the worker joins the active run of this workspace, if any.
         #[arg(long = "run", value_name = "RUN")]
         run: Option<String>,
+        /// The attempt (task ledger id) that fleetd bound: open its pane,
+        /// and bind nothing.
+        #[arg(long, value_name = "ATTEMPT", hide = true)]
+        attempt: Option<String>,
     },
 }
 
@@ -1166,6 +1170,7 @@ impl ProjectCommand {
                 force,
                 replaces,
                 run,
+                attempt,
             } => done(spawn_command(
                 ctx,
                 &args,
@@ -1184,6 +1189,7 @@ impl ProjectCommand {
                     force,
                     replaces,
                     run,
+                    attempt,
                 },
             )),
         }

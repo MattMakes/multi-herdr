@@ -15,6 +15,7 @@ use horch_core::fleetd::fleet_runtime::adapters::config_file;
 use horch_core::fleetd::fleet_runtime::application::jobs::JobCtx;
 use horch_core::fleetd::fleet_runtime::domain::ledger::Entity;
 use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
+use horch_core::fleetd::task_execution::adapters::task_files::attempt_dir;
 use horch_core::fleetd::task_execution::application::cancel::{self, Cancel};
 use horch_core::fleetd::task_execution::domain::task::{Facts, Recorded, Seen};
 use horch_core::messaging::delivery;
@@ -772,6 +773,9 @@ fn worker_side_cmd(
         run_steps,
     } = command
     {
+        if let Some(wid) = worker_id_opt(ctx) {
+            refuse_push_attempt(&store, &wid)?;
+        }
         let how = super::taskledger_finish::How {
             as_json,
             rereview,
@@ -789,6 +793,9 @@ fn worker_side_cmd(
         return steps_cmd(ctx, &store, task, &run, as_json);
     }
     if let LedgerCommand::Done { summary, unlanded } = command {
+        if let Some(wid) = worker_id_opt(ctx) {
+            refuse_push_attempt(&store, &wid)?;
+        }
         drop(store);
         return done_exit(ctx, &summary.join(" "), unlanded.as_deref());
     }
@@ -2444,6 +2451,9 @@ fn add_map(
 
 fn claim(ctx: &RuntimeContext, store: &mut Store, as_json: bool) -> Result<ExitCode> {
     let wid = worker_id(ctx)?;
+    if let Some(p) = tasks::push_claim(store.conn(), &wid)? {
+        return print_push_claim(ctx, &p, as_json);
+    }
     let mut outcome = claim_task(store, &tools(ctx), &wid)?;
     if let ClaimOutcome::Claimed(c) = &mut outcome {
         absolute_ticket_if_missing(ctx, store, c);
@@ -2453,6 +2463,59 @@ fn claim(ctx: &RuntimeContext, store: &mut Store, as_json: bool) -> Result<ExitC
         return Ok(ExitCode::SUCCESS);
     }
     print_claim(ctx, outcome)
+}
+
+/// The finish steps of a push attempt are fleetd's: its worker runs
+/// `horch result`, not `horch ledger finish` or `horch ledger done`. An
+/// attempt that began with a claim ends by the old path.
+fn refuse_push_attempt(store: &Store, wid: &str) -> Result<()> {
+    if tasks::push_attempt_of(store.conn(), wid)?.is_some() {
+        bail!("{}", tasks::PUSH_FINISH_REFUSAL);
+    }
+    Ok(())
+}
+
+/// What a claim of a push attempt prints: its bound task, its 2 files and
+/// its ticket snapshot. It searches no task and writes nothing.
+fn print_push_claim(
+    ctx: &RuntimeContext,
+    p: &tasks::PushAttempt,
+    as_json: bool,
+) -> Result<ExitCode> {
+    let root = std::path::absolute(&ctx.paths.fleet_root)?;
+    let dir = attempt_dir(&root, &p.task_id, &p.attempt);
+    let (task_yaml, start_md) = (dir.join("task.yaml"), dir.join("inbox").join("START.md"));
+    if as_json {
+        json(&serde_json::json!({
+            "outcome": "push",
+            "task_id": p.task_id,
+            "task": p.task,
+            "title": p.title,
+            "attempt": p.attempt,
+            "task_yaml": task_yaml,
+            "start_md": start_md,
+            "ticket_snapshot": p.ticket_snapshot,
+        }))?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    let mut out = format!(
+        "{} (attempt {}) is bound to you: {}. A claim takes no other task.\n\
+         Task file: {}\nStart file: {}\n",
+        p.task,
+        p.attempt,
+        p.title,
+        task_yaml.display(),
+        start_md.display()
+    );
+    if let Some(text) = &p.ticket_snapshot {
+        out.push_str(&format!(
+            "Ticket snapshot:\n-----\n{}\n-----\n",
+            text.trim_end()
+        ));
+    }
+    out.push_str("When the work is committed, run: horch result\n");
+    output::print(&out);
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Claim the next task for `wid`. A shared-checkout task gets its checkout in
@@ -2725,6 +2788,7 @@ pub fn done_cmd(
     unlanded: Option<&str>,
 ) -> Result<()> {
     let wid = worker_id(ctx)?;
+    refuse_push_attempt(&store, &wid)?;
     // The report to the orchestrator and the pane close: `horch done`'s
     // machinery, when this runs in a worker pane.
     let in_pane = in_worker_pane(ctx);

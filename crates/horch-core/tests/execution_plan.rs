@@ -757,6 +757,7 @@ impl World {
             mailbox: &self.mailbox,
             tile: &tile,
             ledger_worker: None,
+            task_yaml: None,
         };
         let out = service.spawn(p, None).map(|o| o.pane);
         (out, tiled.into_inner())
@@ -970,6 +971,7 @@ fn arc_16_mark_starting_keeps_what_the_worker_recorded() {
             mailbox: &w.mailbox,
             tile: &|_, _| {},
             ledger_worker: None,
+            task_yaml: None,
         };
         let pane = service
             .spawn(plan(&req, "all-ok", None).unwrap(), None)
@@ -1105,6 +1107,7 @@ fn brief(record_id: &str) -> Brief {
         ledger_db: None,
         fleet_root: None,
         controller: None,
+        task_yaml: None,
     }
 }
 

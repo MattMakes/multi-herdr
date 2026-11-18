@@ -320,9 +320,11 @@ fn new_tree(conn: &Connection, git: &Git, task: &Task, worker_id: &str) -> Resul
         task_id: Some(task.task_id.clone()),
         worker_id: Some(worker_id.to_string()),
         repo_root: run.project_root.clone(),
+        // The run slug keeps apart the trees of 2 runs of 1 project: each
+        // run numbers its tasks from T1.
         path: root
             .join(".worktrees")
-            .join(&name)
+            .join(format!("{}-{name}", run.slug))
             .to_string_lossy()
             .into_owned(),
         branch,

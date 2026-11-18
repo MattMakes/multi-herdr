@@ -416,133 +416,139 @@ fn worker_json(h: &Harness, id: &str) -> Value {
 
 #[test]
 fn a_spawned_worker_records_its_pids_session_and_checkins() {
-    let mut h = fleet("tl-spawn", "exec,stay");
-    h.set("HORCH_HOSTNAME", "test-host");
-    ok(
-        &h,
-        &["ledger", "run", "new", "gamma", "--heartbeat-every", "1"],
-    );
-    let p = ticket(&h, "01-a", "# 01: A\n");
-    ok(
-        &h,
-        &[
-            "ledger",
-            "add",
-            "--file",
-            &p.to_string_lossy(),
-            "--primary",
-            "codex-terra",
-        ],
-    );
+    horch_e2e::expected::check(
+        file!(),
+        "a_spawned_worker_records_its_pids_session_and_checkins",
+        || {
+            let mut h = fleet("tl-spawn", "exec,stay");
+            h.set("HORCH_HOSTNAME", "test-host");
+            ok(
+                &h,
+                &["ledger", "run", "new", "gamma", "--heartbeat-every", "1"],
+            );
+            let p = ticket(&h, "01-a", "# 01: A\n");
+            ok(
+                &h,
+                &[
+                    "ledger",
+                    "add",
+                    "--file",
+                    &p.to_string_lossy(),
+                    "--primary",
+                    "codex-terra",
+                ],
+            );
 
-    let o = h.run(&[
-        "spawn",
-        "codex-terra",
-        "--from-pane",
-        "w1:p1",
-        "--no-tile",
-        "--force",
-    ]);
-    assert!(o.status.success(), "{}", text(&o));
-    let pane = out(&o).lines().last().unwrap().trim().to_string();
-    let st = json_of(&h, &["ledger", "status", "--json"]);
-    let w = st["workers"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|w| w["worker"]["kind"] == "worker")
-        .expect("spawn wrote a worker row")["worker"]
-        .clone();
-    let id = w["worker_id"].as_str().unwrap().to_string();
-    assert_eq!(w["persona"], "codex-terra");
-    assert_eq!(w["pane_id"], pane.as_str());
-    assert_eq!(w["host"], "test-host");
+            let o = h.run(&[
+                "spawn",
+                "codex-terra",
+                "--from-pane",
+                "w1:p1",
+                "--no-tile",
+                "--force",
+            ]);
+            assert!(o.status.success(), "{}", text(&o));
+            let pane = out(&o).lines().last().unwrap().trim().to_string();
+            let st = json_of(&h, &["ledger", "status", "--json"]);
+            let w = st["workers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|w| w["worker"]["kind"] == "worker")
+                .expect("spawn wrote a worker row")["worker"]
+                .clone();
+            let id = w["worker_id"].as_str().unwrap().to_string();
+            assert_eq!(w["persona"], "codex-terra");
+            assert_eq!(w["pane_id"], pane.as_str());
+            assert_eq!(w["host"], "test-host");
 
-    // The supervisor and the agent record their PIDs; the start times match.
-    let w = wait_for("both PIDs", || {
-        let w = worker_json(&h, &id);
-        (w["agent_pid"].is_i64() && w["supervisor_pid"].is_i64()).then_some(w)
-    });
-    for (pid, started) in [
-        ("supervisor_pid", "supervisor_started"),
-        ("agent_pid", "agent_started"),
-    ] {
-        let pid = w[pid].as_i64().unwrap() as u32;
-        let want = horch_core::procid::start_time(pid).expect("the process runs");
-        assert_eq!(w[started].as_i64().unwrap() as u64, want, "{pid}");
-    }
-    // The agent was told to claim. The fake writes its call record after
-    // the PIDs are in, so wait for it.
-    wait_for("the agent's task names horch ledger claim", || {
-        h.calls_of("codex")
-            .into_iter()
-            .rev()
-            .find(|c| c["argv"].to_string().contains("horch ledger claim"))
-    });
+            // The supervisor and the agent record their PIDs; the start times match.
+            let w = wait_for("both PIDs", || {
+                let w = worker_json(&h, &id);
+                (w["agent_pid"].is_i64() && w["supervisor_pid"].is_i64()).then_some(w)
+            });
+            for (pid, started) in [
+                ("supervisor_pid", "supervisor_started"),
+                ("agent_pid", "agent_started"),
+            ] {
+                let pid = w[pid].as_i64().unwrap() as u32;
+                let want = horch_core::procid::start_time(pid).expect("the process runs");
+                assert_eq!(w[started].as_i64().unwrap() as u64, want, "{pid}");
+            }
+            // The agent was told to claim. The fake writes its call record after
+            // the PIDs are in, so wait for it.
+            wait_for("the agent's task names horch ledger claim", || {
+                h.calls_of("codex")
+                    .into_iter()
+                    .rev()
+                    .find(|c| c["argv"].to_string().contains("horch ledger claim"))
+            });
 
-    // Checkins advance while the agent runs.
-    let first = w["last_checkin_at"].as_str().unwrap().to_string();
-    wait_for("2 more checkins", || {
-        let a = worker_json(&h, &id)["last_checkin_at"]
-            .as_str()?
-            .to_string();
-        (a > first).then_some(())?;
-        std::thread::sleep(Duration::from_millis(1100));
-        let b = worker_json(&h, &id)["last_checkin_at"]
-            .as_str()?
-            .to_string();
-        (b > a).then_some(())
-    });
-    // The discovered session and its transcript reach the row.
-    let w = wait_for("the session", || {
-        let w = worker_json(&h, &id);
-        w["session_id"].is_string().then_some(w)
-    });
-    let w = if w["transcript_path"].is_string() {
-        w
-    } else {
-        wait_for("the transcript", || {
-            let w = worker_json(&h, &id);
-            w["transcript_path"].is_string().then_some(w)
-        })
-    };
-    assert!(
-        Path::new(w["transcript_path"].as_str().unwrap()).is_file(),
-        "{w}"
-    );
+            // Checkins advance while the agent runs.
+            let first = w["last_checkin_at"].as_str().unwrap().to_string();
+            wait_for("2 more checkins", || {
+                let a = worker_json(&h, &id)["last_checkin_at"]
+                    .as_str()?
+                    .to_string();
+                (a > first).then_some(())?;
+                std::thread::sleep(Duration::from_millis(1100));
+                let b = worker_json(&h, &id)["last_checkin_at"]
+                    .as_str()?
+                    .to_string();
+                (b > a).then_some(())
+            });
+            // The discovered session and its transcript reach the row.
+            let w = wait_for("the session", || {
+                let w = worker_json(&h, &id);
+                w["session_id"].is_string().then_some(w)
+            });
+            let w = if w["transcript_path"].is_string() {
+                w
+            } else {
+                wait_for("the transcript", || {
+                    let w = worker_json(&h, &id);
+                    w["transcript_path"].is_string().then_some(w)
+                })
+            };
+            assert!(
+                Path::new(w["transcript_path"].as_str().unwrap()).is_file(),
+                "{w}"
+            );
 
-    // The agent claims, then is killed: the task is queued again.
-    ok_as(&h, &id, &["ledger", "claim"]);
-    let agent = w["agent_pid"].as_i64().unwrap() as u32;
-    let started = w["agent_started"].as_i64().unwrap() as u64;
-    assert!(horch_core::procid::signal_same(
-        agent,
-        started,
-        libc_sigterm()
-    ));
-    let w = wait_for("the exit", || {
-        let w = worker_json(&h, &id);
-        (w["status"] == "incomplete").then_some(w)
-    });
-    assert!(
-        w["end_reason"]
-            .as_str()
-            .unwrap()
-            .contains("before horch ledger done"),
-        "{w}"
-    );
-    let checkin = w["last_checkin_at"].as_str().unwrap().to_string();
-    std::thread::sleep(Duration::from_millis(2500));
-    assert_eq!(
-        worker_json(&h, &id)["last_checkin_at"].as_str().unwrap(),
-        checkin,
-        "checkins stop with the agent"
-    );
-    let t = json_of(&h, &["ledger", "show", "T-1", "--json"]);
-    assert_eq!(t["task"]["status"], "queued");
-    assert!(
-        t["task"]["priority"].as_i64().unwrap() < 0,
-        "first in line: {t}"
+            // The agent claims, then is killed: the task is queued again.
+            ok_as(&h, &id, &["ledger", "claim"]);
+            let agent = w["agent_pid"].as_i64().unwrap() as u32;
+            let started = w["agent_started"].as_i64().unwrap() as u64;
+            assert!(horch_core::procid::signal_same(
+                agent,
+                started,
+                libc_sigterm()
+            ));
+            let w = wait_for("the exit", || {
+                let w = worker_json(&h, &id);
+                (w["status"] == "incomplete").then_some(w)
+            });
+            assert!(
+                w["end_reason"]
+                    .as_str()
+                    .unwrap()
+                    .contains("before horch ledger done"),
+                "{w}"
+            );
+            let checkin = w["last_checkin_at"].as_str().unwrap().to_string();
+            std::thread::sleep(Duration::from_millis(2500));
+            assert_eq!(
+                worker_json(&h, &id)["last_checkin_at"].as_str().unwrap(),
+                checkin,
+                "checkins stop with the agent"
+            );
+            let t = json_of(&h, &["ledger", "show", "T-1", "--json"]);
+            assert_eq!(t["task"]["status"], "queued");
+            assert!(
+                t["task"]["priority"].as_i64().unwrap() < 0,
+                "first in line: {t}"
+            );
+        },
     );
 }
 
@@ -1091,198 +1097,213 @@ fn a_failed_reviews_in_push_is_redelivered_until_the_author_runs_finish() {
 
 #[test]
 fn stopping_one_of_three_workers_leaves_the_others_running() {
-    let mut h = fleet("tl-stop", "exec,stay");
-    h.set("HORCH_STOP_GRACE_MS", "2000");
-    ok(
-        &h,
-        &["ledger", "run", "new", "delta", "--heartbeat-every", "1"],
+    horch_e2e::expected::check(
+        file!(),
+        "stopping_one_of_three_workers_leaves_the_others_running",
+        || {
+            let mut h = fleet("tl-stop", "exec,stay");
+            h.set("HORCH_STOP_GRACE_MS", "2000");
+            ok(
+                &h,
+                &["ledger", "run", "new", "delta", "--heartbeat-every", "1"],
+            );
+            for n in 0..3 {
+                let p = ticket(&h, &format!("t{n}"), &format!("# T{n}\n"));
+                ok(
+                    &h,
+                    &[
+                        "ledger",
+                        "add",
+                        "--file",
+                        &p.to_string_lossy(),
+                        "--primary",
+                        "codex-terra",
+                    ],
+                );
+            }
+            let mut ids = Vec::new();
+            for _ in 0..3 {
+                let o = h.run(&[
+                    "spawn",
+                    "codex-terra",
+                    "--from-pane",
+                    "w1:p1",
+                    "--no-tile",
+                    "--force",
+                ]);
+                assert!(o.status.success(), "{}", text(&o));
+            }
+            let st = json_of(&h, &["ledger", "status", "--json"]);
+            for w in st["workers"].as_array().unwrap() {
+                if w["worker"]["kind"] == "worker" {
+                    ids.push(w["worker"]["worker_id"].as_str().unwrap().to_string());
+                }
+            }
+            assert_eq!(ids.len(), 3);
+            let pids: Vec<(u32, u64)> = ids
+                .iter()
+                .map(|id| {
+                    let w = wait_for("the agent PID", || {
+                        let w = worker_json(&h, id);
+                        w["agent_started"].is_i64().then_some(w)
+                    });
+                    (
+                        w["agent_pid"].as_i64().unwrap() as u32,
+                        w["agent_started"].as_i64().unwrap() as u64,
+                    )
+                })
+                .collect();
+            for id in &ids {
+                ok_as(&h, id, &["ledger", "claim"]);
+            }
+            let o = ok(&h, &["ledger", "stop", &ids[0], "the operator dropped it"]);
+            assert!(o.contains("Stopped"), "{o}");
+            assert!(
+                !horch_core::procid::alive(pids[0].0, Some(pids[0].1)),
+                "the stopped agent is gone"
+            );
+            assert!(horch_core::procid::alive(pids[1].0, Some(pids[1].1)));
+            assert!(horch_core::procid::alive(pids[2].0, Some(pids[2].1)));
+            let shown = json_of(&h, &["ledger", "show", &ids[0], "--json"]);
+            assert_eq!(shown["worker"]["status"], "stopped");
+            let stops = shown["stops"].as_array().unwrap();
+            let agent = stops.iter().find(|s| s["target"] == "agent").unwrap();
+            assert_eq!(agent["pid"].as_i64().unwrap() as u32, pids[0].0);
+            assert_eq!(agent["pid_started"].as_i64().unwrap() as u64, pids[0].1);
+            assert_eq!(agent["signal"], "TERM");
+            assert_eq!(agent["result"], "sent");
+            assert!(
+                stops
+                    .iter()
+                    .any(|s| s["target"] == "pane" && s["result"] == "pane_closed"),
+                "{shown}"
+            );
+            // Its task is queued again; the others still run.
+            let st = json_of(&h, &["ledger", "status", "--json"]);
+            assert_eq!(
+                st["counts"]["queued"], 1,
+                "the task of the stopped worker is queued again"
+            );
+            assert_eq!(st["counts"]["running"], 2);
+            // A second stop finds the processes gone and sends nothing.
+            let o = json_of(&h, &["ledger", "stop", &ids[0], "again", "--json"]);
+            assert!(
+                o["steps"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|s| s["result"] != "sent"),
+                "{o}"
+            );
+            for id in &ids[1..] {
+                ok(&h, &["ledger", "stop", id, "test teardown"]);
+            }
+        },
     );
-    for n in 0..3 {
-        let p = ticket(&h, &format!("t{n}"), &format!("# T{n}\n"));
-        ok(
-            &h,
-            &[
-                "ledger",
-                "add",
-                "--file",
-                &p.to_string_lossy(),
-                "--primary",
-                "codex-terra",
-            ],
-        );
-    }
-    let mut ids = Vec::new();
-    for _ in 0..3 {
-        let o = h.run(&[
-            "spawn",
-            "codex-terra",
-            "--from-pane",
-            "w1:p1",
-            "--no-tile",
-            "--force",
-        ]);
-        assert!(o.status.success(), "{}", text(&o));
-    }
-    let st = json_of(&h, &["ledger", "status", "--json"]);
-    for w in st["workers"].as_array().unwrap() {
-        if w["worker"]["kind"] == "worker" {
-            ids.push(w["worker"]["worker_id"].as_str().unwrap().to_string());
-        }
-    }
-    assert_eq!(ids.len(), 3);
-    let pids: Vec<(u32, u64)> = ids
-        .iter()
-        .map(|id| {
-            let w = wait_for("the agent PID", || {
-                let w = worker_json(&h, id);
-                w["agent_started"].is_i64().then_some(w)
-            });
-            (
-                w["agent_pid"].as_i64().unwrap() as u32,
-                w["agent_started"].as_i64().unwrap() as u64,
-            )
-        })
-        .collect();
-    for id in &ids {
-        ok_as(&h, id, &["ledger", "claim"]);
-    }
-    let o = ok(&h, &["ledger", "stop", &ids[0], "the operator dropped it"]);
-    assert!(o.contains("Stopped"), "{o}");
-    assert!(
-        !horch_core::procid::alive(pids[0].0, Some(pids[0].1)),
-        "the stopped agent is gone"
-    );
-    assert!(horch_core::procid::alive(pids[1].0, Some(pids[1].1)));
-    assert!(horch_core::procid::alive(pids[2].0, Some(pids[2].1)));
-    let shown = json_of(&h, &["ledger", "show", &ids[0], "--json"]);
-    assert_eq!(shown["worker"]["status"], "stopped");
-    let stops = shown["stops"].as_array().unwrap();
-    let agent = stops.iter().find(|s| s["target"] == "agent").unwrap();
-    assert_eq!(agent["pid"].as_i64().unwrap() as u32, pids[0].0);
-    assert_eq!(agent["pid_started"].as_i64().unwrap() as u64, pids[0].1);
-    assert_eq!(agent["signal"], "TERM");
-    assert_eq!(agent["result"], "sent");
-    assert!(
-        stops
-            .iter()
-            .any(|s| s["target"] == "pane" && s["result"] == "pane_closed"),
-        "{shown}"
-    );
-    // Its task is queued again; the others still run.
-    let st = json_of(&h, &["ledger", "status", "--json"]);
-    assert_eq!(st["counts"]["queued"], 1);
-    assert_eq!(st["counts"]["running"], 2);
-    // A second stop finds the processes gone and sends nothing.
-    let o = json_of(&h, &["ledger", "stop", &ids[0], "again", "--json"]);
-    assert!(
-        o["steps"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|s| s["result"] != "sent"),
-        "{o}"
-    );
-    for id in &ids[1..] {
-        ok(&h, &["ledger", "stop", id, "test teardown"]);
-    }
 }
 
 #[test]
 fn a_worker_with_no_progress_is_stalled_by_the_ladder_and_stopped_by_its_pid() {
-    let mut h = fleet("tl-watch", "exec,stay");
-    h.set("HORCH_STOP_GRACE_MS", "2000");
-    ok(
-        &h,
-        &["ledger", "run", "new", "eps", "--heartbeat-every", "1"],
-    );
-    let p = ticket(&h, "t0", "# T0\n");
-    ok(
-        &h,
-        &[
-            "ledger",
-            "add",
-            "--file",
-            &p.to_string_lossy(),
-            "--primary",
-            "codex-terra",
-        ],
-    );
-    let o = h.run(&[
-        "spawn",
-        "codex-terra",
-        "--from-pane",
-        "w1:p1",
-        "--no-tile",
-        "--force",
-    ]);
-    assert!(o.status.success(), "{}", text(&o));
-    let st = json_of(&h, &["ledger", "status", "--json"]);
-    let id = st["workers"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|w| w["worker"]["kind"] == "worker")
-        .unwrap()["worker"]["worker_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let w = wait_for("the agent PID", || {
-        let w = worker_json(&h, &id);
-        w["agent_started"].is_i64().then_some(w)
-    });
-    let (pid, started) = (
-        w["agent_pid"].as_i64().unwrap() as u32,
-        w["agent_started"].as_i64().unwrap() as u64,
-    );
-    ok_as(&h, &id, &["ledger", "claim"]);
-    // The fake agent runs, but shows no timer and writes nothing more.
-    stall_by_the_ladder(&h, &id, pid, started);
-    let shown = json_of(&h, &["ledger", "show", &id, "--json"]);
-    assert_eq!(shown["worker"]["status"], "incomplete");
-    assert_eq!(shown["worker"]["agent_pid"].as_i64(), Some(pid as i64));
-    assert_ladder_texts(&shown["events"], "T-1");
-    let db = horch_core::taskledger::Store::open(&h.root.join("ledger.sqlite3")).unwrap();
-    let wakes: Vec<String> = {
-        let mut stmt = db
-            .conn()
-            .prepare(
-                "SELECT text FROM outbox UNION ALL
+    horch_e2e::expected::check(
+        file!(),
+        "a_worker_with_no_progress_is_stalled_by_the_ladder_and_stopped_by_its_pid",
+        || {
+            let mut h = fleet("tl-watch", "exec,stay");
+            h.set("HORCH_STOP_GRACE_MS", "2000");
+            ok(
+                &h,
+                &["ledger", "run", "new", "eps", "--heartbeat-every", "1"],
+            );
+            let p = ticket(&h, "t0", "# T0\n");
+            ok(
+                &h,
+                &[
+                    "ledger",
+                    "add",
+                    "--file",
+                    &p.to_string_lossy(),
+                    "--primary",
+                    "codex-terra",
+                ],
+            );
+            let o = h.run(&[
+                "spawn",
+                "codex-terra",
+                "--from-pane",
+                "w1:p1",
+                "--no-tile",
+                "--force",
+            ]);
+            assert!(o.status.success(), "{}", text(&o));
+            let st = json_of(&h, &["ledger", "status", "--json"]);
+            let id = st["workers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|w| w["worker"]["kind"] == "worker")
+                .unwrap()["worker"]["worker_id"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            let w = wait_for("the agent PID", || {
+                let w = worker_json(&h, &id);
+                w["agent_started"].is_i64().then_some(w)
+            });
+            let (pid, started) = (
+                w["agent_pid"].as_i64().unwrap() as u32,
+                w["agent_started"].as_i64().unwrap() as u64,
+            );
+            ok_as(&h, &id, &["ledger", "claim"]);
+            // The fake agent runs, but shows no timer and writes nothing more.
+            stall_by_the_ladder(&h, &id, pid, started);
+            let shown = json_of(&h, &["ledger", "show", &id, "--json"]);
+            assert_eq!(shown["worker"]["status"], "incomplete");
+            assert_eq!(shown["worker"]["agent_pid"].as_i64(), Some(pid as i64));
+            assert_ladder_texts(&shown["events"], "T-1");
+            let db = horch_core::taskledger::Store::open(&h.root.join("ledger.sqlite3")).unwrap();
+            let wakes: Vec<String> = {
+                let mut stmt = db
+                    .conn()
+                    .prepare(
+                        "SELECT text FROM outbox UNION ALL
                  SELECT text FROM events WHERE kind = 'woke'",
-            )
-            .unwrap();
-        stmt.query_map([], |r| r.get(0))
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap()
-    };
-    assert_eq!(wakes.len(), 2, "{wakes:?}");
-    assert!(wakes[0].contains("shows no progress"), "{}", wakes[0]);
-    assert!(wakes[1].contains("T-1: retry after 30 s"), "{}", wakes[1]);
-    let t = json_of(&h, &["ledger", "show", "T-1", "--json"]);
-    assert_eq!(t["task"]["status"], "queued");
-    // The retry waits for its backoff of 30 s on the fleet clock (rung 6).
-    h.advance_fleet_clock(30);
-    // The replacement claims the same task and gets the old transcript path.
-    let plan = json_of(&h, &["ledger", "plan-workers", "--json"]);
-    assert_eq!(plan[0]["replaces"][0], id.as_str(), "{plan}");
-    let r = ok(
-        &h,
-        &[
-            "ledger",
-            "worker",
-            "new",
-            "--persona",
-            "codex-terra",
-            "--replaces",
-            &id,
-        ],
+                    )
+                    .unwrap();
+                stmt.query_map([], |r| r.get(0))
+                    .unwrap()
+                    .collect::<Result<_, _>>()
+                    .unwrap()
+            };
+            assert_eq!(wakes.len(), 2, "{wakes:?}");
+            assert!(wakes[0].contains("shows no progress"), "{}", wakes[0]);
+            assert!(wakes[1].contains("T-1: retry after 30 s"), "{}", wakes[1]);
+            let t = json_of(&h, &["ledger", "show", "T-1", "--json"]);
+            assert_eq!(t["task"]["status"], "queued");
+            // The retry waits for its backoff of 30 s on the fleet clock (rung 6).
+            h.advance_fleet_clock(30);
+            // The replacement claims the same task and gets the old transcript path.
+            let plan = json_of(&h, &["ledger", "plan-workers", "--json"]);
+            assert_eq!(plan[0]["replaces"][0], id.as_str(), "{plan}");
+            let r = ok(
+                &h,
+                &[
+                    "ledger",
+                    "worker",
+                    "new",
+                    "--persona",
+                    "codex-terra",
+                    "--replaces",
+                    &id,
+                ],
+            );
+            let rid = r.trim().to_string();
+            let claim: Value =
+                serde_json::from_str(&ok_as(&h, &rid, &["ledger", "claim", "--json"])).unwrap();
+            assert_eq!(claim["task"]["seq"], 1);
+            assert_eq!(claim["prior"][0]["worker_id"], id.as_str());
+            assert_eq!(claim["attempt"], 2);
+        },
     );
-    let rid = r.trim().to_string();
-    let claim: Value =
-        serde_json::from_str(&ok_as(&h, &rid, &["ledger", "claim", "--json"])).unwrap();
-    assert_eq!(claim["task"]["seq"], 1);
-    assert_eq!(claim["prior"][0]["worker_id"], id.as_str());
-    assert_eq!(claim["attempt"], 2);
 }
 
 /// The checks of today see `worker` with no progress, but no stall round
@@ -1745,202 +1766,204 @@ fn work_and_finish(h: &Harness, w: &str, name: &str) -> Value {
 
 #[test]
 fn the_whole_flow_on_the_fake_herdr() {
-    let mut h = finish_world("tl-e2e");
-    let quota = fixtures().join("quota/all-ok.json");
-    h.set("HORCH_QUOTA_FILE", quota.to_string_lossy());
-    h.set("HORCH_WORKSPACE_ID", "w1");
-    h.set("HORCH_FAKE_SCENARIO", "exec,stay");
-    h.set("HORCH_STOP_GRACE_MS", "2000");
-    let mut create = std::process::Command::new(h.bin.join("herdr"));
-    h.seal(&mut create);
-    assert!(create
-        .args(["workspace", "create", "--label", "e2e"])
-        .output()
-        .unwrap()
-        .status
-        .success());
+    horch_e2e::expected::check(file!(), "the_whole_flow_on_the_fake_herdr", || {
+        let mut h = finish_world("tl-e2e");
+        let quota = fixtures().join("quota/all-ok.json");
+        h.set("HORCH_QUOTA_FILE", quota.to_string_lossy());
+        h.set("HORCH_WORKSPACE_ID", "w1");
+        h.set("HORCH_FAKE_SCENARIO", "exec,stay");
+        h.set("HORCH_STOP_GRACE_MS", "2000");
+        let mut create = std::process::Command::new(h.bin.join("herdr"));
+        h.seal(&mut create);
+        assert!(create
+            .args(["workspace", "create", "--label", "e2e"])
+            .output()
+            .unwrap()
+            .status
+            .success());
 
-    // 1. The orchestrator queues 3 tasks: A and B parallel, C blocked by A.
-    ok(
-        &h,
-        &[
-            "ledger",
-            "run",
-            "new",
-            "alpha",
-            "--heartbeat-every",
-            "1",
-            "--verify",
-            "full",
-        ],
-    );
-    for (n, t, persona) in [
-        ("a", "A", "opus"),
-        ("b", "B", "codex-terra"),
-        ("c", "C", "opus"),
-    ] {
-        ticket(
+        // 1. The orchestrator queues 3 tasks: A and B parallel, C blocked by A.
+        ok(
             &h,
-            n,
-            &format!("# {t}\n\n**Persona:** primary `{persona}`\n**Check:** none\n"),
+            &[
+                "ledger",
+                "run",
+                "new",
+                "alpha",
+                "--heartbeat-every",
+                "1",
+                "--verify",
+                "full",
+            ],
         );
-    }
-    std::fs::write(
+        for (n, t, persona) in [
+            ("a", "A", "opus"),
+            ("b", "B", "codex-terra"),
+            ("c", "C", "opus"),
+        ] {
+            ticket(
+                &h,
+                n,
+                &format!("# {t}\n\n**Persona:** primary `{persona}`\n**Check:** none\n"),
+            );
+        }
+        std::fs::write(
         h.project.join("tickets/MAP.md"),
         "| # | Title | Blocked by |\n|---|---|---|\n| [1](a.md) | A | - |\n| [2](b.md) | B | - |\n| [3](c.md) | C | 1 |\n",
     )
     .unwrap();
-    ok(&h, &["ledger", "add-map", "tickets/MAP.md"]);
+        ok(&h, &["ledger", "add-map", "tickets/MAP.md"]);
 
-    // 2. plan-workers says 2: 1 opus (A) and 1 codex-terra (B).
-    let plan = json_of(&h, &["ledger", "plan-workers", "--json"]);
-    let spawn: i64 = plan
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|p| p["spawn"].as_i64().unwrap())
-        .sum();
-    assert_eq!(spawn, 2, "{plan}");
-    let wa = worker_new(&h, "opus");
-    assert!(ok_as(&h, &wa, &["ledger", "claim"]).contains("Claimed T-1"));
-    // B runs in a real pane: its agent is the fake codex that stays.
-    let o = h.run(&[
-        "spawn",
-        "codex-terra",
-        "--from-pane",
-        "w1:p1",
-        "--no-tile",
-        "--force",
-    ]);
-    assert!(o.status.success(), "{}", text(&o));
-    let st = json_of(&h, &["ledger", "status", "--json"]);
-    let wb = st["workers"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|w| w["worker"]["persona"] == "codex-terra")
-        .unwrap()["worker"]["worker_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let b = wait_for("B's agent PID", || {
-        let w = worker_json(&h, &wb);
-        w["agent_started"].is_i64().then_some(w)
-    });
-    let (bpid, bstart) = (
-        b["agent_pid"].as_i64().unwrap() as u32,
-        b["agent_started"].as_i64().unwrap() as u64,
-    );
-    assert!(ok_as(&h, &wb, &["ledger", "claim"]).contains("Claimed T-2"));
-
-    // 3. B stops making progress: its fake agent runs, but shows no timer
-    // and writes nothing.
-    // 4. A lands: every step passes, its folder is gone, and C can start.
-    work_and_finish(&h, &wa, "alpha_a");
-    ok_as(&h, &wa, &["ledger", "done", "A done."]);
-    let events = json_of(&h, &["ledger", "events", "--json"]);
-    assert!(
-        events
+        // 2. plan-workers says 2: 1 opus (A) and 1 codex-terra (B).
+        let plan = json_of(&h, &["ledger", "plan-workers", "--json"]);
+        let spawn: i64 = plan
             .as_array()
             .unwrap()
             .iter()
-            .any(|e| e["kind"] == "woke"
-                && e["text"].as_str().unwrap().contains("Tasks can start: T-3")),
-        "the orchestrator is woken for C: {events}"
-    );
-    // 5. B's checks and the stall ladder; A's worker is untouched.
-    stall_by_the_ladder(&h, &wb, bpid, bstart);
-    assert_ladder_texts(&json_of(&h, &["ledger", "events", "--json"]), "T-2");
-    // The orchestrator got the wake for B.
-    let wakes = outbox(&h);
-    assert!(
-        wakes
-            .iter()
-            .any(|w| w.contains("codex-terra-1 on T-2 shows no progress")),
-        "{wakes:?}"
-    );
-    // B waits for its retry backoff of 30 s on the fleet clock (rung 6).
-    h.advance_fleet_clock(30);
-    // C is claimed now (a worker row without a live process would be judged
-    // dead by the checks above).
-    let wc = worker_new(&h, "opus");
-    assert!(ok_as(&h, &wc, &["ledger", "claim"]).contains("Claimed T-3"));
-    let rb = ok(
-        &h,
-        &[
-            "ledger",
-            "worker",
-            "new",
-            "--persona",
+            .map(|p| p["spawn"].as_i64().unwrap())
+            .sum();
+        assert_eq!(spawn, 2, "{plan}");
+        let wa = worker_new(&h, "opus");
+        assert!(ok_as(&h, &wa, &["ledger", "claim"]).contains("Claimed T-1"));
+        // B runs in a real pane: its agent is the fake codex that stays.
+        let o = h.run(&[
+            "spawn",
             "codex-terra",
-            "--replaces",
-            &wb,
-        ],
-    )
-    .trim()
-    .to_string();
-    let claim: Value =
-        serde_json::from_str(&ok_as(&h, &rb, &["ledger", "claim", "--json"])).unwrap();
-    assert_eq!(claim["task"]["seq"], 2);
-    assert_eq!(claim["prior"][0]["worker_id"], wb.as_str());
-    assert!(
-        claim["prior"][0]["transcript_path"].is_string(),
-        "the old transcript path is handed over: {claim}"
-    );
-
-    // 6. A spare worker finds no task and names its PID.
-    let spare = worker_new(&h, "opus");
-    ok(
-        &h,
-        &[
-            "ledger",
-            "worker",
-            "pid",
-            &spare,
-            "--supervisor",
-            &std::process::id().to_string(),
-        ],
-    );
-    let none: Value =
-        serde_json::from_str(&ok_as(&h, &spare, &["ledger", "claim", "--json"])).unwrap();
-    assert_eq!(none["outcome"], "no_task", "{none}");
-    assert!(
-        none["tell"].as_str().unwrap().contains(&format!(
-            "No task for opus. I exit. PID {}.",
-            std::process::id()
-        )),
-        "{none}"
-    );
-
-    // 7. B (replaced) and C finish; everything is done and cleaned.
-    work_and_finish(&h, &rb, "alpha_b");
-    ok_as(&h, &rb, &["ledger", "done", "B done by the replacement."]);
-    work_and_finish(&h, &wc, "alpha_c");
-    ok_as(&h, &wc, &["ledger", "done", "C done."]);
-    let o = h.run(&["ledger", "status"]);
-    assert_eq!(o.status.code(), Some(0), "{}", text(&o));
-    let st = json_of(&h, &["ledger", "status", "--json"]);
-    assert!(
-        st["worktrees"]
+            "--from-pane",
+            "w1:p1",
+            "--no-tile",
+            "--force",
+        ]);
+        assert!(o.status.success(), "{}", text(&o));
+        let st = json_of(&h, &["ledger", "status", "--json"]);
+        let wb = st["workers"]
             .as_array()
             .unwrap()
             .iter()
-            .all(|w| w["status"] == "cleaned"),
-        "{st}"
-    );
-    let body = std::fs::read_to_string(h.root.join("gh/body")).unwrap();
-    for t in ["T-1", "T-2", "T-3"] {
-        assert!(
-            body.contains(&format!("<!-- horch:task {t} -->")),
-            "{t} in the PR: {body}"
+            .find(|w| w["worker"]["persona"] == "codex-terra")
+            .unwrap()["worker"]["worker_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let b = wait_for("B's agent PID", || {
+            let w = worker_json(&h, &wb);
+            w["agent_started"].is_i64().then_some(w)
+        });
+        let (bpid, bstart) = (
+            b["agent_pid"].as_i64().unwrap() as u32,
+            b["agent_started"].as_i64().unwrap() as u64,
         );
-    }
-    // Every recorded stop names an exact PID or pane.
-    let shown = json_of(&h, &["ledger", "show", &wb, "--json"]);
-    for s in shown["stops"].as_array().unwrap() {
-        assert!(s["pid"].is_i64() || s["pane_id"].is_string(), "{s}");
-    }
-    assert!(events.as_array().is_some());
+        assert!(ok_as(&h, &wb, &["ledger", "claim"]).contains("Claimed T-2"));
+
+        // 3. B stops making progress: its fake agent runs, but shows no timer
+        // and writes nothing.
+        // 4. A lands: every step passes, its folder is gone, and C can start.
+        work_and_finish(&h, &wa, "alpha_a");
+        ok_as(&h, &wa, &["ledger", "done", "A done."]);
+        let events = json_of(&h, &["ledger", "events", "--json"]);
+        assert!(
+            events
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|e| e["kind"] == "woke"
+                    && e["text"].as_str().unwrap().contains("Tasks can start: T-3")),
+            "the orchestrator is woken for C: {events}"
+        );
+        // 5. B's checks and the stall ladder; A's worker is untouched.
+        stall_by_the_ladder(&h, &wb, bpid, bstart);
+        assert_ladder_texts(&json_of(&h, &["ledger", "events", "--json"]), "T-2");
+        // The orchestrator got the wake for B.
+        let wakes = outbox(&h);
+        assert!(
+            wakes
+                .iter()
+                .any(|w| w.contains("codex-terra-1 on T-2 shows no progress")),
+            "{wakes:?}"
+        );
+        // B waits for its retry backoff of 30 s on the fleet clock (rung 6).
+        h.advance_fleet_clock(30);
+        // C is claimed now (a worker row without a live process would be judged
+        // dead by the checks above).
+        let wc = worker_new(&h, "opus");
+        assert!(ok_as(&h, &wc, &["ledger", "claim"]).contains("Claimed T-3"));
+        let rb = ok(
+            &h,
+            &[
+                "ledger",
+                "worker",
+                "new",
+                "--persona",
+                "codex-terra",
+                "--replaces",
+                &wb,
+            ],
+        )
+        .trim()
+        .to_string();
+        let claim: Value =
+            serde_json::from_str(&ok_as(&h, &rb, &["ledger", "claim", "--json"])).unwrap();
+        assert_eq!(claim["task"]["seq"], 2);
+        assert_eq!(claim["prior"][0]["worker_id"], wb.as_str());
+        assert!(
+            claim["prior"][0]["transcript_path"].is_string(),
+            "the old transcript path is handed over: {claim}"
+        );
+
+        // 6. A spare worker finds no task and names its PID.
+        let spare = worker_new(&h, "opus");
+        ok(
+            &h,
+            &[
+                "ledger",
+                "worker",
+                "pid",
+                &spare,
+                "--supervisor",
+                &std::process::id().to_string(),
+            ],
+        );
+        let none: Value =
+            serde_json::from_str(&ok_as(&h, &spare, &["ledger", "claim", "--json"])).unwrap();
+        assert_eq!(none["outcome"], "no_task", "{none}");
+        assert!(
+            none["tell"].as_str().unwrap().contains(&format!(
+                "No task for opus. I exit. PID {}.",
+                std::process::id()
+            )),
+            "{none}"
+        );
+
+        // 7. B (replaced) and C finish; everything is done and cleaned.
+        work_and_finish(&h, &rb, "alpha_b");
+        ok_as(&h, &rb, &["ledger", "done", "B done by the replacement."]);
+        work_and_finish(&h, &wc, "alpha_c");
+        ok_as(&h, &wc, &["ledger", "done", "C done."]);
+        let o = h.run(&["ledger", "status"]);
+        assert_eq!(o.status.code(), Some(0), "{}", text(&o));
+        let st = json_of(&h, &["ledger", "status", "--json"]);
+        assert!(
+            st["worktrees"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|w| w["status"] == "cleaned"),
+            "{st}"
+        );
+        let body = std::fs::read_to_string(h.root.join("gh/body")).unwrap();
+        for t in ["T-1", "T-2", "T-3"] {
+            assert!(
+                body.contains(&format!("<!-- horch:task {t} -->")),
+                "{t} in the PR: {body}"
+            );
+        }
+        // Every recorded stop names an exact PID or pane.
+        let shown = json_of(&h, &["ledger", "show", &wb, "--json"]);
+        for s in shown["stops"].as_array().unwrap() {
+            assert!(s["pid"].is_i64() || s["pane_id"].is_string(), "{s}");
+        }
+        assert!(events.as_array().is_some());
+    });
 }
 
 /// The output of `horch ledger <args>` as `worker`, success or not.

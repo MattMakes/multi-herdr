@@ -557,6 +557,7 @@ fn steward_spawn_args(root_pane: &str, run: &str) -> super::spawn::SpawnArgs {
         force: false,
         replaces: None,
         run: Some(run.to_string()),
+        attempt: None,
     }
 }
 

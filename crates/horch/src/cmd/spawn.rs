@@ -67,6 +67,9 @@ pub struct SpawnArgs {
     pub replaces: Option<String>,
     /// The task-ledger run to join (`--run`).
     pub run: Option<String>,
+    /// The push attempt that fleetd bound (`--attempt`): the spawn opens
+    /// its pane and binds nothing.
+    pub attempt: Option<String>,
 }
 
 /// The teammate `horch spawn`'s positional arguments name.
@@ -172,8 +175,9 @@ pub fn spawn(ctx: &RuntimeContext, args: SpawnArgs) -> Result<String> {
         .and(caller.as_ref())
         .and_then(|c| c.worker_id.as_deref());
     let ledger = super::taskledger_spawn::prepare(ctx, &args, controller_row)?;
+    // A push attempt is bound to a ready task, so it is never over the plan.
     let result = match ledger.as_ref() {
-        Some(l) if !brief => refuse_over_plan(ctx, l)
+        Some(l) if !brief && l.push.is_none() => refuse_over_plan(ctx, l)
             .and_then(|()| spawn_worker(ctx, args, ledger.as_ref(), controller, sandboxed)),
         _ => spawn_worker(ctx, args, ledger.as_ref(), controller, sandboxed),
     };
@@ -188,14 +192,13 @@ pub fn spawn(ctx: &RuntimeContext, args: SpawnArgs) -> Result<String> {
     result
 }
 
-/// The task of this spawn's worker: [`super::taskledger_spawn::CLAIM_TASK`]
-/// when it joins a run, a `--resume` spawn too (TRF-33). Else none.
-pub(crate) fn worker_task(joins_run: bool) -> &'static str {
-    if joins_run {
-        super::taskledger_spawn::CLAIM_TASK
-    } else {
-        ""
-    }
+/// The task of this spawn's worker: the first line of its ledger row when
+/// it joins a run, a `--resume` spawn too (TRF-33): the line that names
+/// `START.md` of its push attempt. Else none.
+pub(crate) fn worker_task(ledger: Option<&super::taskledger_spawn::LedgerSpawn>) -> String {
+    ledger
+        .and_then(|l| l.first_line.clone())
+        .unwrap_or_default()
 }
 
 /// Refuse a claiming spawn that its run's plan does not need (gap G-A): the
@@ -229,7 +232,7 @@ fn spawn_worker(
     let task = if has_task_text(&args) {
         args.task.clone()
     } else {
-        worker_task(ledger.is_some()).to_string()
+        worker_task(ledger)
     };
     let req = build_request(&args, &task)?;
     let sc = spawn_context(ctx)?;
@@ -599,6 +602,9 @@ fn launch(
         mailbox: &sc.mailbox,
         tile: &tile,
         ledger_worker: ledger.map(|l| l.worker_id.as_str()),
+        task_yaml: ledger
+            .and_then(|l| l.push.as_ref())
+            .and_then(|p| p.files.task_yaml.to_str()),
     };
     let started = SystemTime::now();
     let out = service.spawn(plan, role).inspect_err(|e| {
@@ -981,6 +987,7 @@ mod tests {
             force: false,
             replaces: None,
             run: None,
+            attempt: None,
         }
     }
 

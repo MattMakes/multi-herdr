@@ -95,6 +95,8 @@ pub struct ExecutionService<'a> {
     pub tile: &'a dyn Fn(&str, TilingMode),
     /// The worker's task ledger row, written into its brief.
     pub ledger_worker: Option<&'a str>,
+    /// `task.yaml` of the worker's push attempt, written into its brief.
+    pub task_yaml: Option<&'a str>,
 }
 
 impl ExecutionService<'_> {
@@ -248,9 +250,11 @@ impl ExecutionService<'_> {
                     .into_owned(),
             ),
             controller: plan.controller.clone(),
+            task_yaml: None,
         };
         brief.set_overrides(ctx.bins.overrides.clone());
         brief.worker_id = self.ledger_worker.map(str::to_string);
+        brief.task_yaml = self.task_yaml.map(str::to_string);
         brief.ledger_db = text(ctx.paths.ledger_override.as_deref());
         self.mailbox.write_brief(&brief)
     }

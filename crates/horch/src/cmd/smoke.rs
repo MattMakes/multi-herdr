@@ -240,6 +240,7 @@ fn smoke_spawn_args(root_pane: &str) -> SpawnArgs {
         force: true,
         replaces: None,
         run: None,
+        attempt: None,
     }
 }
 

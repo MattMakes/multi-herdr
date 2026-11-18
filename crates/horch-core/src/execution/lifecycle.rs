@@ -1597,6 +1597,7 @@ mod tests {
             ledger_db: None,
             fleet_root: None,
             controller: None,
+            task_yaml: None,
         }
     }
 
@@ -1702,6 +1703,7 @@ mod tests {
             ledger_db: None,
             fleet_root: None,
             controller: None,
+            task_yaml: None,
         };
         let mut env = MapEnv::new("/");
         for key in BinOverrides::VARS {
@@ -2126,6 +2128,7 @@ mod tests {
                     ledger_db: None,
                     fleet_root: None,
                     controller: None,
+                    task_yaml: None,
                 }
             }
         }

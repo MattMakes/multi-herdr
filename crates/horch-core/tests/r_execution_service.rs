@@ -144,6 +144,7 @@ impl World {
             mailbox: &self.mailbox,
             tile: &tile,
             ledger_worker: None,
+            task_yaml: None,
         };
         service.spawn(plan, role).map(|o| o.pane)
     }

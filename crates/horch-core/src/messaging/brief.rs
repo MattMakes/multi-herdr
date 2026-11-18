@@ -96,6 +96,11 @@ pub struct Brief {
     /// `horch done` still reports as `report_to` says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub controller: Option<String>,
+    /// The absolute path of `task.yaml` of the push attempt of this worker
+    /// (`<fleet root>/tasks/<task id>/attempts/<A n>/task.yaml`).
+    /// `horch result` finds its attempt by it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_yaml: Option<String>,
 }
 
 fn report_to_orchestrator() -> ReportTarget {
@@ -179,6 +184,9 @@ impl Brief {
         if let Some(root) = &self.fleet_root {
             out.push(("FLEET_ROOT".into(), root.clone()));
         }
+        if let Some(path) = &self.task_yaml {
+            out.push(("HORCH_TASK_YAML".into(), path.clone()));
+        }
         // The agent runs `horch spawn` and `horch done` from inside this pane;
         // they must resolve the same roster this worker was briefed from.
         if let Some(dir) = &self.teammates_dir {
@@ -257,6 +265,7 @@ mod tests {
             ledger_db: None,
             fleet_root: None,
             controller: None,
+            task_yaml: None,
         }
     }
 
@@ -366,5 +375,23 @@ mod tests {
         }
         assert!(!env.contains_key("ANTHROPIC_API_KEY"));
         assert!(!env.contains_key("HORCH_DATA_DIR"));
+    }
+
+    /// `horch result` finds its push attempt by `HORCH_TASK_YAML`, so the
+    /// brief of a push attempt carries the path into the agent's env. A
+    /// brief with no push attempt sets no such variable.
+    #[test]
+    fn transport_env_carries_the_task_yaml_of_a_push_attempt() {
+        let mut b = brief();
+        assert!(!b
+            .transport_env()
+            .iter()
+            .any(|(k, _)| k == "HORCH_TASK_YAML"));
+        let path = "/srv/fleet/tasks/t1/attempts/A1/task.yaml";
+        b.task_yaml = Some(path.into());
+        let back = Brief::from_json(&serde_json::to_string(&b).unwrap()).unwrap();
+        assert!(back
+            .transport_env()
+            .contains(&("HORCH_TASK_YAML".into(), path.into())));
     }
 }

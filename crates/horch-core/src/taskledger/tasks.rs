@@ -1146,6 +1146,41 @@ pub enum ClaimOutcome {
     },
 }
 
+/// The bound attempt of a push dispatch, as `horch ledger claim` prints
+/// it ([`push_claim`]).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PushAttempt {
+    pub task_id: String,
+    /// `T-<seq>`.
+    pub task: String,
+    pub title: String,
+    /// `A<n>`, the folder of the attempt under the folder of its task.
+    pub attempt: String,
+    /// The ticket text as `add-map` queued it.
+    pub ticket_snapshot: Option<String>,
+}
+
+/// What `horch ledger finish` and `horch ledger done` print for a push
+/// attempt: fleetd runs its finish steps.
+pub const PUSH_FINISH_REFUSAL: &str =
+    "run `horch result` when the work is committed; fleetd runs the finish steps";
+
+/// The task and the attempt number of the push attempt of worker
+/// `worker_id`, if its attempt began with a push dispatch
+/// (`attempts.via = push`).
+pub fn push_attempt_of(conn: &Connection, worker_id: &str) -> Result<Option<(String, i64)>> {
+    let row: Option<(Option<String>, Option<i64>)> = optional(conn.query_row(
+        "SELECT a.task_id, w.attempt FROM attempts a JOIN workers w ON w.worker_id = a.worker_id
+         WHERE a.worker_id = ?1 AND a.via = 'push' ORDER BY a.rowid DESC LIMIT 1",
+        [worker_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    ))?;
+    Ok(match row {
+        Some((Some(task), Some(n))) => Some((task, n)),
+        _ => None,
+    })
+}
+
 /// Claim the next task for `worker_id`. Run it in an immediate
 /// transaction: the read of the board and the write of the claim must not
 /// interleave with another claim.
@@ -1153,11 +1188,34 @@ pub fn claim(conn: &Connection, worker_id: &str) -> Result<ClaimOutcome> {
     util::atomic(conn, |conn| {
         let w = workers::get(conn, worker_id)?;
         let (run_id, persona) = check_claimer(&w)?;
+        if push_attempt_of(conn, worker_id)?.is_some() {
+            bail!(
+                "worker {} runs a push attempt: its task is bound, and a claim takes no task",
+                w.label()
+            );
+        }
         match held_task(conn, &w)? {
             Some(task) => claimed_outcome(conn, &w, task),
             None => claim_next(conn, &w, &run_id, &persona),
         }
     })
+}
+
+/// The claim of a worker of a push attempt: its bound task, with no search
+/// and no write. `None` for a worker whose attempt began with a claim: it
+/// takes the old path ([`claim`]).
+pub fn push_claim(conn: &Connection, worker_id: &str) -> Result<Option<PushAttempt>> {
+    let Some((task_id, n)) = push_attempt_of(conn, worker_id)? else {
+        return Ok(None);
+    };
+    let t = get(conn, &task_id)?;
+    Ok(Some(PushAttempt {
+        task: t.short(),
+        title: t.title.clone(),
+        attempt: format!("A{n}"),
+        ticket_snapshot: t.ticket_snapshot.clone(),
+        task_id: t.task_id,
+    }))
 }
 
 /// A second claim by a working worker gives back its own task.
@@ -1171,7 +1229,12 @@ fn held_task(conn: &Connection, w: &Worker) -> Result<Option<Task>> {
 /// Take the next task for `w`, or end `w` when the queue has none for it.
 fn claim_next(conn: &Connection, w: &Worker, run_id: &str, persona: &str) -> Result<ClaimOutcome> {
     attempt_commands::refuse_second_attempt(conn, &w.worker_id)?;
-    let Some(task) = pick_task(conn, w, run_id, persona)? else {
+    let task = match &w.target_task_id {
+        Some(target) => target_task(conn, run_id, target)?,
+        // FR-5: removed by the follow-up ticket before the gate of Phase 4
+        None => pick_task(conn, w, run_id, persona)?,
+    };
+    let Some(task) = task else {
         return no_task(conn, w, persona, run_id);
     };
     take_task(conn, w, &task)?;
@@ -1203,10 +1266,23 @@ fn check_claimer(w: &Worker) -> Result<(String, String)> {
     Ok((run_id, persona))
 }
 
-/// The next startable task of `persona`. A worker spawned for a target
-/// task takes that task first, if it is still startable (TRF-24). A
-/// replacement takes its predecessor's task first. No worker takes a task
-/// that another live, unclaimed worker was spawned for.
+/// The task `target` that a worker was spawned for (TRF-24), if it can
+/// start now. The claim takes only that task: it searches no other.
+fn target_task(conn: &Connection, run_id: &str, target: &str) -> Result<Option<Task>> {
+    if cancel_requested(conn, target)?.is_some() {
+        return Ok(None);
+    }
+    let board = Board::load(conn, run_id)?;
+    Ok(board
+        .startable()
+        .into_iter()
+        .find(|t| t.task_id == target)
+        .cloned())
+}
+
+/// The next startable task of `persona`, for a worker with no target
+/// task. A replacement takes its predecessor's task first. No worker
+/// takes a task that another live, unclaimed worker was spawned for.
 fn pick_task(conn: &Connection, w: &Worker, run_id: &str, persona: &str) -> Result<Option<Task>> {
     let board = Board::load(conn, run_id)?;
     let cancelling = cancelling(conn, run_id)?;
@@ -1215,11 +1291,6 @@ fn pick_task(conn: &Connection, w: &Worker, run_id: &str, persona: &str) -> Resu
         .into_iter()
         .filter(|t| !cancelling.contains(&t.task_id))
         .collect();
-    if let Some(target) = &w.target_task_id {
-        if let Some(t) = startable.iter().find(|t| &t.task_id == target) {
-            return Ok(Some((*t).clone()));
-        }
-    }
     let reserved = reserved_for_others(conn, w, run_id)?;
     let mine =
         |t: &&Task| t.claimable_by.as_deref() == Some(persona) && !reserved.contains(&t.task_id);
@@ -2393,10 +2464,20 @@ mod tests {
         let next = spawn_for(&mut store, &run, "codex-reviewer", None);
         assert_eq!(claim_id(&mut store, &next), Some(review2));
 
-        // A target that is no longer startable: the claim goes on as before.
+        // A target that is no longer startable: the claim searches no other
+        // task (FR-5), and the other task stays ready.
         let other = add_task(&mut store, "other", TaskKind::Work);
         let missed = spawn_for(&mut store, &run, "codex-reviewer", Some(&review));
-        assert_eq!(claim_id(&mut store, &missed), Some(other));
+        assert_eq!(claim_id(&mut store, &missed), None);
+        let status: String = store
+            .conn()
+            .query_row(
+                "SELECT status FROM tasks WHERE task_id = ?1",
+                [&other],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "ready");
 
         // A target of another run is refused at spawn.
         let (mut store2, run2) = store_with_run(&dir.path().join("b"));
@@ -3195,5 +3276,142 @@ mod attempt_tests {
 
         assert_eq!(claim_id(&mut store, &w), None);
         assert_eq!(status_of(&store, &task), "ready");
+    }
+
+    /// The bind of ticket 08 of `task`, a shared-checkout task, to 1 new
+    /// attempt of `dev`: the worker of a push attempt.
+    fn bind_push(store: &mut Store, task: &str) -> String {
+        use crate::fleetd::fleet_runtime::application::jobs::JobCtx;
+        use crate::fleetd::fleet_runtime::domain::config::FleetConfig;
+        use crate::fleetd::ideas::application::needs_you::NeedsYouList;
+        use crate::fleetd::task_execution::application::dispatch::{bind, DispatchCtx};
+        let config = FleetConfig::default();
+        let git = crate::taskledger::git::Git::new("git");
+        store
+            .immediate(|tx| {
+                let ctx = DispatchCtx {
+                    jobs: JobCtx {
+                        guard: None,
+                        config: &config,
+                        needs_you: &NeedsYouList,
+                    },
+                    clock: FleetSeconds(0),
+                    git: &git,
+                };
+                Ok(bind(tx, &ctx, task, "dev", &NewWorker::default())?.worker_id)
+            })
+            .unwrap()
+    }
+
+    fn shared_task(store: &mut Store, run: &Run, title: &str) -> String {
+        let mut new = NewTask::work(title, &format!("tickets/{title}.md"), "dev");
+        new.worktree_mode = WorktreeMode::Shared;
+        new.ticket_snapshot = Some(format!("# {title}\n"));
+        store
+            .immediate(|tx| add(tx, run, &new, Actor::Orchestrator))
+            .unwrap()
+            .task_id
+    }
+
+    /// The rows of the ledger, to compare before and after a claim.
+    fn rows(store: &Store) -> String {
+        let mut stmt = store
+            .conn()
+            .prepare(
+                "SELECT 'task', task_id, status, attempts, COALESCE(current_worker_id, '') FROM tasks
+                 UNION ALL SELECT 'worker', worker_id, status, COALESCE(attempt, 0), COALESCE(task_id, '') FROM workers
+                 UNION ALL SELECT 'attempt', id, state, 0, worker_id FROM attempts
+                 ORDER BY 1, 2",
+            )
+            .unwrap();
+        let rows: Vec<String> = stmt
+            .query_map([], |r| {
+                Ok(format!(
+                    "{} {} {} {} {}",
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, String>(4)?
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        rows.join("\n")
+    }
+
+    /// Release row of Phase 4: the claim of a push attempt gives back its
+    /// bound task and its attempt folder, and writes nothing. A claim for
+    /// the same worker never takes another task, even when 1 is ready.
+    #[test]
+    fn claim_of_a_push_attempt_searches_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, run) = ledger(dir.path());
+        let bound = shared_task(&mut store, &run, "bound");
+        let w = bind_push(&mut store, &bound);
+        add_task(&mut store, &run, "free");
+        let before = rows(&store);
+
+        let p = push_claim(store.conn(), &w)
+            .unwrap()
+            .expect("a push attempt");
+        assert_eq!(p.task_id, bound);
+        assert_eq!((p.task.as_str(), p.attempt.as_str()), ("T-1", "A1"));
+        assert_eq!(p.ticket_snapshot.as_deref(), Some("# bound\n"));
+        let err = store.immediate(|tx| claim(tx, &w)).unwrap_err();
+        assert!(err.to_string().contains("runs a push attempt"), "{err:#}");
+        assert_eq!(
+            rows(&store),
+            before,
+            "a claim of a push attempt writes nothing"
+        );
+    }
+
+    /// Release row of Phase 4: a worker whose attempt began with a claim
+    /// keeps the old path. Its first claim takes its task, its next claim
+    /// gives the same task back, and it has no push attempt.
+    #[test]
+    fn claim_attempt_keeps_the_old_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, run) = ledger(dir.path());
+        let task = add_task(&mut store, &run, "a");
+        let w = spawn_for(&mut store, &run, "dev", None);
+        assert_eq!(claim_id(&mut store, &w), Some(task.clone()));
+        assert_eq!(push_claim(store.conn(), &w).unwrap(), None);
+        let via: String = store
+            .conn()
+            .query_row("SELECT via FROM attempts WHERE worker_id = ?1", [&w], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(via, "claim");
+        assert_eq!(claim_id(&mut store, &w), Some(task));
+    }
+
+    /// FR-5: a worker spawned for a target task takes only that task. When
+    /// the target cannot start, it gets no task, and the ready task of its
+    /// persona stays ready.
+    #[test]
+    fn a_worker_with_a_target_never_searches() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, run) = ledger(dir.path());
+        let target = add_task(&mut store, &run, "target");
+        let other = add_task(&mut store, &run, "other");
+        store
+            .conn()
+            .execute(
+                "UPDATE tasks SET status = 'escalated', held_reason = 'x' WHERE task_id = ?1",
+                [&target],
+            )
+            .unwrap();
+        let w = spawn_for(&mut store, &run, "dev", Some(&target));
+        assert_eq!(claim_id(&mut store, &w), None);
+        assert_eq!(status_of(&store, &other), "ready");
+
+        let ready = add_task(&mut store, &run, "ready");
+        let w = spawn_for(&mut store, &run, "dev", Some(&ready));
+        assert_eq!(claim_id(&mut store, &w), Some(ready));
+        assert_eq!(status_of(&store, &other), "ready");
     }
 }

@@ -532,6 +532,7 @@ mod tests {
             ledger_db: None,
             fleet_root: None,
             controller: None,
+            task_yaml: None,
         }
     }
 
