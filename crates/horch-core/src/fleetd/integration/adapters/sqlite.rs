@@ -160,6 +160,8 @@ pub enum BranchFact<'a> {
     RescueRef(&'a str),
     /// The owner of its landing state (ticket 25).
     Owner(&'a str),
+    /// Found in git with no row, and adopted (I11, ticket 44).
+    Orphan,
 }
 
 impl BranchFact<'_> {
@@ -172,6 +174,7 @@ impl BranchFact<'_> {
             BranchFact::DueAt(n) => ("due_at", int(Some(n))),
             BranchFact::RescueRef(r) => ("rescue_ref", text(Some(r))),
             BranchFact::Owner(o) => ("owner", text(Some(o))),
+            BranchFact::Orphan => ("orphan", int(Some(1))),
         }
     }
 }

@@ -15,6 +15,8 @@ use rusqlite::Connection;
 use crate::fleetd::fleet_runtime::adapters::jobs_store::JobRow;
 use crate::fleetd::fleet_runtime::application::jobs::Ran;
 use crate::fleetd::fleet_runtime::domain::jobs::{self, Kind};
+use crate::fleetd::integration::adapters::git::CliGitGateway;
+use crate::fleetd::integration::application::branches;
 use crate::fleetd::task_execution::adapters::sqlite::attempts_of_worker;
 use crate::fleetd::worktree_custody::adapters::git::{self, CliWorktreeGit};
 use crate::fleetd::worktree_custody::adapters::remove_git::{self, CliRemoval, Owner};
@@ -97,7 +99,8 @@ fn add(git: CliWorktreeGit, tree: &WorktreeRow) -> Result<Ran> {
 
 /// A `worktree_list` job of the repository that is the subject of `row`.
 /// It only reads. A passed run also holds the facts of each rescue ref of
-/// the repository (MAP.md of fleetd-p4, Q17), or the error of their read.
+/// the repository, and its fleet branches and stash names (MAP.md of
+/// fleetd-p4, Q17), or the error of each read.
 fn list(conn: &Connection, row: &JobRow, git: &CliWorktreeGit) -> Result<Ran> {
     let live: Vec<WorktreeState> = WorktreeState::ALL
         .into_iter()
@@ -120,8 +123,14 @@ fn list(conn: &Connection, row: &JobRow, git: &CliWorktreeGit) -> Result<Ran> {
             Ok(facts) => (rescue_refs_git::DATA_KEY, serde_json::to_value(facts)?),
             Err(e) => (rescue_refs_git::ERROR_KEY, format!("{e:#}").into()),
         };
+        let gw = CliGitGateway::new(git.clone());
+        let (list_key, list_value) = match branches::read_listing(conn, &gw, repo) {
+            Ok(listing) => (branches::LISTING_KEY, serde_json::to_value(listing)?),
+            Err(e) => (branches::LISTING_ERROR_KEY, format!("{e:#}").into()),
+        };
         if let Some(serde_json::Value::Object(data)) = ran.data.as_mut() {
             data.insert(key.to_string(), value);
+            data.insert(list_key.to_string(), list_value);
         }
     }
     Ok(ran)

@@ -388,6 +388,10 @@ impl IntegrationGitGateway for Counting {
     fn fleet_branches(&self, repo: &Path) -> Result<Vec<BranchTip>> {
         self.inner.fleet_branches(repo)
     }
+    fn task_branches(&self, repo: &Path, run_branch: &str) -> Result<Vec<BranchTip>> {
+        self.inner.task_branches(repo, run_branch)
+    }
+
     fn stash_branches(&self, repo: &Path) -> Result<Vec<String>> {
         self.inner.stash_branches(repo)
     }

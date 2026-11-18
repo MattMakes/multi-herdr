@@ -87,6 +87,10 @@ pub trait IntegrationGitGateway {
     /// Each branch below `refs/heads/fleet/`, by name (I11).
     fn fleet_branches(&self, repo: &Path) -> Result<Vec<BranchTip>>;
 
+    /// Each branch whose name starts with `<run_branch>-T`, by name: the
+    /// task branches of a run branch outside `fleet/` (I11; Q4 of Phase 3).
+    fn task_branches(&self, repo: &Path, run_branch: &str) -> Result<Vec<BranchTip>>;
+
     /// The branches that a `git stash list` entry names, sorted, each 1
     /// time (I12, preservation row W6).
     fn stash_branches(&self, repo: &Path) -> Result<Vec<String>>;

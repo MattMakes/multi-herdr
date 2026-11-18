@@ -44,6 +44,9 @@ const SETTINGS: [(&str, &str); 2] = [
 /// The branches of the fleet.
 const FLEET_BRANCHES: &str = "refs/heads/fleet/";
 
+/// Each local branch.
+const LOCAL_BRANCHES: &str = "refs/heads/";
+
 /// [`IntegrationGitGateway`] on the git binary.
 #[derive(Debug, Clone)]
 pub struct CliGitGateway {
@@ -297,6 +300,20 @@ impl IntegrationGitGateway for CliGitGateway {
         Ok(self
             .refs(repo, FLEET_BRANCHES)?
             .into_iter()
+            .filter_map(|(name, tip)| {
+                let name = name.strip_prefix("refs/heads/")?.to_string();
+                Some(BranchTip { name, tip })
+            })
+            .collect())
+    }
+
+    fn task_branches(&self, repo: &Path, run_branch: &str) -> Result<Vec<BranchTip>> {
+        // A glob `*` of `for-each-ref` stops at a `/`, so the filter is here.
+        let prefix = format!("refs/heads/{run_branch}-T");
+        Ok(self
+            .refs(repo, LOCAL_BRANCHES)?
+            .into_iter()
+            .filter(|(name, _)| name.starts_with(&prefix))
             .filter_map(|(name, tip)| {
                 let name = name.strip_prefix("refs/heads/")?.to_string();
                 Some(BranchTip { name, tip })
