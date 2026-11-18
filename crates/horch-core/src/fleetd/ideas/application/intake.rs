@@ -83,6 +83,21 @@ pub fn add_idea(
     target: Target<'_>,
     cause: Cause<'_>,
 ) -> Result<Added> {
+    add_dependent_idea(tx, ctx, text, source, target, &[], cause)
+}
+
+/// [`add_idea`] for an idea that depends on the ideas `depends_on`: its
+/// idea.md and its `added` event name them (`horch idea amend` of a merged
+/// idea).
+pub fn add_dependent_idea(
+    tx: &Connection,
+    ctx: &JobCtx<'_>,
+    text: &str,
+    source: &str,
+    target: Target<'_>,
+    depends_on: &[String],
+    cause: Cause<'_>,
+) -> Result<Added> {
     if text.trim().is_empty() {
         bail!("the idea is empty: give its text, or a file with -f");
     }
@@ -101,7 +116,7 @@ pub fn add_idea(
         created: util::now(),
         source: source.to_string(),
         priority: PRIORITY,
-        depends_on: Vec::new(),
+        depends_on: depends_on.to_vec(),
         text: text.to_string(),
     };
     let new = NewIdea {
@@ -124,6 +139,7 @@ pub fn add_idea(
             "created": file.created,
             "source": file.source,
             "priority": file.priority,
+            "depends_on": file.depends_on,
             "text": file.text,
         }),
     )?;
@@ -204,11 +220,17 @@ fn idea_file(id: String, data: &str) -> Result<IdeaFile> {
     let priority = v["priority"]
         .as_i64()
         .with_context(|| format!("the added event of {id} has no priority"))?;
+    // An `added` event from before `depends_on` has none.
+    let depends_on = match &v["depends_on"] {
+        serde_json::Value::Null => Vec::new(),
+        d => serde_json::from_value(d.clone())
+            .with_context(|| format!("the added event of {id} has a bad depends_on"))?,
+    };
     Ok(IdeaFile {
         created: field("created")?,
         source: field("source")?,
         priority,
-        depends_on: Vec::new(),
+        depends_on,
         text: field("text")?,
         id,
     })

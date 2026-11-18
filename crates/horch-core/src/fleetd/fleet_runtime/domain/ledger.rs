@@ -347,14 +347,19 @@ pub const EXITS: &[(Entity, &str, &str)] = &[
     (Entity::Idea, "specifying", "parked"),
     (Entity::Idea, "specifying", "cancelled"),
     (Entity::Idea, "ticketing", "in_progress"),
+    // `awaiting_approval` from `ticketing`, `in_progress` and
+    // `integrating` is an amend after the approval (MAP.md, Q9).
+    (Entity::Idea, "ticketing", "awaiting_approval"),
     (Entity::Idea, "ticketing", "parked"),
     (Entity::Idea, "ticketing", "cancelled"),
     (Entity::Idea, "in_progress", "integrating"),
+    (Entity::Idea, "in_progress", "awaiting_approval"),
     (Entity::Idea, "in_progress", "parked"),
     (Entity::Idea, "in_progress", "cancelled"),
     // `in_progress` is a new task from a replan.
     (Entity::Idea, "integrating", "merged"),
     (Entity::Idea, "integrating", "in_progress"),
+    (Entity::Idea, "integrating", "awaiting_approval"),
     (Entity::Idea, "integrating", "parked"),
     (Entity::Idea, "integrating", "cancelled"),
     // A resume goes back to the state that the idea left, and only to it

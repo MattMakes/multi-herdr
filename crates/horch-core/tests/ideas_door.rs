@@ -50,9 +50,12 @@ fn design_exits() -> Vec<(&'static str, &'static str)> {
         ("specifying", "ticketing"),
         ("specifying", "awaiting_approval"),
         ("ticketing", "in_progress"),
+        ("ticketing", "awaiting_approval"),
         ("in_progress", "integrating"),
+        ("in_progress", "awaiting_approval"),
         ("integrating", "merged"),
         ("integrating", "in_progress"),
+        ("integrating", "awaiting_approval"),
         ("parked", "cancelled"),
     ];
     for left in LEFT {
