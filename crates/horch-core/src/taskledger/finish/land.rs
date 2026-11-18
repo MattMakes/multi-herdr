@@ -2,25 +2,21 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, Transaction, TransactionBehavior};
 
-use super::{set_worktree, worktree_of, Ctx, Outcome, Tools, WorktreeRow};
-use crate::fleetd::fleet_runtime::application::jobs::{outcome, JobCtx, Queued};
+use super::{job_runner, remove_tree, set_worktree, worktree_of, Ctx, Outcome, WorktreeRow};
 use crate::fleetd::fleet_runtime::application::ledger::{transition, Cause};
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 use crate::fleetd::ideas::application::needs_you::NeedsYouList;
 use crate::fleetd::worktree_custody::adapters::sqlite::{self as trees, WorktreeState};
-use crate::fleetd::worktree_custody::application::create::{self, JobProcess, RunJob};
-use crate::fleetd::worktree_custody::application::remove;
+use crate::fleetd::worktree_custody::application::create::{JobProcess, RunJob};
 use crate::taskledger::git::{dir_bytes, Git};
 use crate::taskledger::model::{Actor, EventKind, StepName, TaskStatus, WorktreeStatus};
 use crate::taskledger::sql_words::word;
 use crate::taskledger::store::Store;
-use crate::taskledger::store::BUSY_TIMEOUT;
 use crate::taskledger::util::{self, About};
 
 /// How long a land waits for another land of the same repository.
@@ -1123,136 +1119,6 @@ impl Removal<'_> {
             .exists()
             .then(|| format!("{} still exists", self.dir.display())))
     }
-}
-
-// ─── the removal of a tree through custody (fleetd-p3 ticket 12) ───────
-
-/// The job runner of `tools`: its `jobs`, else the job process of this
-/// `horch` binary.
-pub fn job_runner(tools: &Tools) -> Result<Arc<dyn RunJob>> {
-    match &tools.jobs {
-        Some(jobs) => Ok(Arc::clone(jobs)),
-        None => Ok(Arc::new(JobProcess::of_this_process()?)),
-    }
-}
-
-/// Remove the tree of the row `id` of the ledger `ledger` only through
-/// custody (RR-9, FM-27). No transaction is open while a job runs.
-/// - A `landed` or `rescued` tree: 1 `worktree_remove` job.
-/// - Each other tree: it moves to `orphaned` with no owner (`cause`), 1
-///   `rescue` job puts it on a verified rescue ref, then 1
-///   `worktree_remove` job removes it.
-///
-/// The inner `Err` is why custody refused it: the tree stays. With
-/// `keep_branch` the job never deletes the branch.
-pub(crate) fn remove_tree(
-    ledger: &Path,
-    jobs: &dyn RunJob,
-    id: &str,
-    cause: Cause<'_>,
-    keep_branch: bool,
-) -> Result<Result<(), String>> {
-    let config = create::fleet_config(ledger)?;
-    let ctx = JobCtx {
-        guard: None,
-        config: &config,
-        needs_you: &NeedsYouList,
-    };
-    let mut conn = Connection::open(ledger)
-        .with_context(|| format!("opening the task ledger {}", ledger.display()))?;
-    conn.busy_timeout(BUSY_TIMEOUT)?;
-    conn.pragma_update(None, "foreign_keys", "ON")?;
-    let row = match removable_row(&mut conn, id, cause)? {
-        Ok(row) => row,
-        Err(why) => return Ok(Err(why)),
-    };
-    if !matches!(row.state, WorktreeState::Landed | WorktreeState::Rescued) {
-        if let Err(e) = create::rescue_now(&mut conn, &ctx, jobs, &row) {
-            return Ok(Err(format!("{e:#}")));
-        }
-    }
-    remove_now(&ctx, &mut conn, jobs, id, cause.text, keep_branch)
-}
-
-fn immediate(conn: &mut Connection) -> Result<Transaction<'_>> {
-    conn.transaction_with_behavior(TransactionBehavior::Immediate)
-        .context("taking the task ledger's write lock")
-}
-
-/// The row `id`, in a state that a rescue or a removal takes. A `landed`,
-/// `landing`, `orphaned` or `rescued` row stays as it is. Each other row
-/// moves to `orphaned` with no owner, for `cause`. A move that the door
-/// refuses is recorded and keeps the row: the inner `Err` says why.
-fn removable_row(
-    conn: &mut Connection,
-    id: &str,
-    cause: Cause<'_>,
-) -> Result<Result<trees::WorktreeRow, String>> {
-    let tx = immediate(conn)?;
-    let row = trees::get(&tx, id)?.with_context(|| format!("no worktree {id} in the ledger"))?;
-    let keep = [
-        WorktreeState::Landed,
-        WorktreeState::Landing,
-        WorktreeState::Orphaned,
-        WorktreeState::Rescued,
-    ];
-    if keep.contains(&row.state) {
-        return Ok(Ok(row));
-    }
-    let moved = transition(
-        &tx,
-        None,
-        Entity::Worktree,
-        id,
-        "orphaned",
-        cause,
-        &NeedsYouList,
-    );
-    if let Err(e) = moved {
-        tx.commit()?;
-        return Ok(Err(format!("worktree {id} is {}: {e}", row.state)));
-    }
-    trees::set_owner(&tx, id, None)?;
-    let row = trees::get(&tx, id)?.with_context(|| format!("no worktree {id} in the ledger"))?;
-    tx.commit()?;
-    Ok(Ok(row))
-}
-
-/// Queue the `worktree_remove` job of the row `id`, run it through `jobs`
-/// with no transaction open, then observe it in 1 transaction.
-fn remove_now(
-    ctx: &JobCtx<'_>,
-    conn: &mut Connection,
-    jobs: &dyn RunJob,
-    id: &str,
-    cause: &str,
-    keep_branch: bool,
-) -> Result<Result<(), String>> {
-    let tx = immediate(conn)?;
-    let clock = create::fleet_clock(&tx)?;
-    let row = trees::get(&tx, id)?.with_context(|| format!("no worktree {id} in the ledger"))?;
-    let job = match remove::queue_remove(ctx, &tx, &row, cause, keep_branch, clock)? {
-        Ok(Queued::New(job)) => job,
-        Ok(Queued::Active(r) | Queued::Reused(r)) => r.id,
-        Ok(Queued::Held(r)) => {
-            return Ok(Err(format!(
-                "the worktree_remove job of {} ended abandoned {} times; run horch job requeue {} after you read why",
-                row.path, r.abandoned_runs, r.id
-            )))
-        }
-        Err(why) => return Ok(Err(why)),
-    };
-    tx.commit()?;
-    let ended = jobs.run_job(ctx, conn, job)?;
-    let tx = immediate(conn)?;
-    let seen = remove::observe(ctx, &tx, &ended)?;
-    tx.commit()?;
-    Ok(match seen {
-        remove::Observed::Removed => Ok(()),
-        _ => Err(outcome(&ended)
-            .map(|o| o.text)
-            .unwrap_or_else(|| format!("its worktree_remove job ended {}", ended.state.as_str()))),
-    })
 }
 
 /// The events of a cleanup are about the worktree's task and worker.

@@ -6,7 +6,7 @@ use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, Row};
 use serde::Serialize;
 
-use super::finish::{self, land, Tools};
+use super::finish::{self, Tools};
 use super::model::{Actor, EventKind, Origin, RunStatus, StepName, WorktreeStatus};
 use super::sql_words::{self, word};
 use super::status::Unsettled;
@@ -15,7 +15,9 @@ use super::util::{self, About};
 use crate::exeid::ExeIdentity;
 use crate::fleetd::fleet_runtime::application::ledger::Cause;
 use crate::fleetd::worktree_custody::adapters::git::{DETACHED, GATE_PREFIX};
-use crate::fleetd::worktree_custody::adapters::sqlite::{NewWorktree, WorktreeMode};
+use crate::fleetd::worktree_custody::adapters::sqlite::{
+    self as trees, NewWorktree, WorktreeMode, WorktreeState,
+};
 use crate::fleetd::worktree_custody::application::create::{self, Lease, RunJob};
 
 /// 1 run: an orchestrator's body of work.
@@ -724,18 +726,16 @@ fn gate_name(run: &Run) -> String {
 /// [`gate_dir`], so `run close` removes it (TRF-19). [`run_gate`] made the
 /// row through custody, or the next gate reuses it: it holds the folder's
 /// path, which is unique among the rows that are not `removed`. A row of
-/// an earlier run with the same slug moves to `run`.
+/// an earlier run with the same slug moves to `run`. With no such row the
+/// gate is not recorded, and the error says why.
 fn gate_worktree_row(conn: &Connection, run: &Run, tip: &str) -> Result<()> {
     let path = gate_dir(run).to_string_lossy().into_owned();
     let base = run.run_branch.as_deref().unwrap_or_default();
-    let found: Option<String> = optional(conn.query_row(
-        "SELECT worktree_id FROM worktrees WHERE path = ?1 AND state <> 'removed'",
-        [&path],
-        |r| r.get(0),
-    ))?;
-    let Some(id) = found else {
-        return Ok(());
-    };
+    let id = trees::by_path(conn, &path)?
+        .with_context(|| {
+            format!("the gate folder {path} has no worktree in the ledger, so run close cannot remove it; run horch ledger run gate again")
+        })?
+        .worktree_id;
     conn.execute(
         &format!(
             "UPDATE worktrees SET base = ?2, base_commit = ?3, status = {open},
@@ -755,8 +755,10 @@ fn gate_worktree_row(conn: &Connection, run: &Run, tip: &str) -> Result<()> {
 /// Remove the open gate folder of `run` after its close, only through
 /// custody (row W11, RR-9): the tree is rescued by a verified `rescue` job,
 /// then 1 `worktree_remove` job removes it, with no transaction open. The
-/// row becomes `cleaned`. A `NOTE:` line when custody refuses or cannot
-/// run (TRF-52); the folder and the open row then stay.
+/// row becomes `cleaned`. A `NOTE:` line when the folder has modified or
+/// untracked files, as `git worktree remove` without `--force` refused
+/// them, or when custody refuses or cannot run (TRF-52); the folder and
+/// the open row then stay.
 pub fn remove_gate_tree(store: &Store, tools: &Tools, run: &Run) -> Result<Option<String>> {
     let found: Option<(String, String)> = optional(store.conn().query_row(
         &format!(
@@ -778,11 +780,18 @@ pub fn remove_gate_tree(store: &Store, tools: &Tools, run: &Run) -> Result<Optio
         };
         // TRF-52: any error keeps the folder and its open row, and the run
         // stays closed.
-        let removed = land::job_runner(tools)
-            .and_then(|jobs| land::remove_tree(store.path(), jobs.as_ref(), &id, cause, false));
-        let refused = match removed {
-            Ok(Ok(())) => None,
-            Ok(Err(why)) => Some(why),
+        let refused = match tools.git.dirty(Path::new(&path)) {
+            Ok(dirty) if !dirty.is_empty() => Some(format!(
+                "it has modified or untracked files: {}",
+                dirty.join(", ")
+            )),
+            Ok(_) => match finish::job_runner(tools).and_then(|jobs| {
+                finish::remove_tree(store.path(), jobs.as_ref(), &id, cause, false)
+            }) {
+                Ok(Ok(())) => None,
+                Ok(Err(why)) => Some(why),
+                Err(e) => Some(format!("{e:#}")),
+            },
             Err(e) => Some(format!("{e:#}")),
         };
         if let Some(why) = refused {
@@ -822,22 +831,50 @@ pub fn gate_dir(run: &Run) -> std::path::PathBuf {
 /// Check out `tip` in `dir`: a new detached worktree, or the old one moved
 /// to `tip`. Ignored files, such as a build cache, stay. The ledger never
 /// forces git, so a gate dir with changes is refused, with its files named.
+/// The custody row of `dir` decides, not the folder alone: a `reserved`
+/// row, left by a stop between its `worktree_add` run and the observation,
+/// is finished first, and a folder with no row is refused.
 fn checkout_tip(store: &mut Store, tools: &Tools, run: &Run, dir: &Path, tip: &str) -> Result<()> {
     let git = &tools.git;
-    if dir.join(".git").exists() {
-        let dirty = git.dirty(dir)?;
-        if !dirty.is_empty() {
-            bail!(
-                "the gate folder {} has changes: {}. A check must not leave changes. Remove them, then run horch ledger run gate again",
-                dir.display(),
-                dirty.join(", ")
-            );
+    let path = dir.to_string_lossy();
+    match trees::by_path(store.conn(), &path)? {
+        None if dir.exists() => bail!(
+            "the gate folder {} has no worktree in the ledger. Remove it with git worktree remove, then run horch ledger run gate again",
+            dir.display()
+        ),
+        None => {
+            let jobs = finish::job_runner(tools)?;
+            return add_gate_tree(store, jobs.as_ref(), run, dir, tip);
         }
-        git.run(dir, &["checkout", "-q", "--detach", tip])?;
-    } else {
-        let jobs = land::job_runner(tools)?;
-        add_gate_tree(store, jobs.as_ref(), run, dir, tip)?;
+        Some(row) if row.state == WorktreeState::Reserved => {
+            let jobs = finish::job_runner(tools)?;
+            let id = finish::with_custody(store.path(), |conn, ctx| {
+                create::finish_reserved(conn, ctx, jobs.as_ref(), &row.worktree_id)
+            })?;
+            // As a new gate tree: no owner. A tree that is not `active`
+            // any more keeps its state.
+            store.immediate(|tx| match trees::get(tx, &id)? {
+                Some(r) if r.state == WorktreeState::Active => create::give_to_operator(tx, &id),
+                _ => Ok(()),
+            })?;
+        }
+        Some(row) if !dir.exists() => bail!(
+            "the gate folder {} is gone, but the ledger has its worktree {} ({})",
+            dir.display(),
+            row.worktree_id,
+            row.state.as_str()
+        ),
+        Some(_) => {}
     }
+    let dirty = git.dirty(dir)?;
+    if !dirty.is_empty() {
+        bail!(
+            "the gate folder {} has changes: {}. A check must not leave changes. Remove them, then run horch ledger run gate again",
+            dir.display(),
+            dirty.join(", ")
+        );
+    }
+    git.run(dir, &["checkout", "-q", "--detach", tip])?;
     Ok(())
 }
 
@@ -1411,6 +1448,99 @@ mod tests {
             gate_rows(&store, &run),
             vec![("open".to_string(), 1, run.run_id.clone())],
             "the gate row stays open"
+        );
+    }
+
+    /// The custody state of the gate row of `run`.
+    fn gate_state(store: &Store, run: &Run) -> String {
+        let path = gate_dir(run).to_string_lossy().into_owned();
+        trees::by_path(store.conn(), &path)
+            .unwrap()
+            .unwrap()
+            .state
+            .as_str()
+            .to_string()
+    }
+
+    #[test]
+    fn trf_52_a_gate_folder_with_an_untracked_file_stays_at_close() {
+        let (dir, mut store, run) = world();
+        let logs = dir.path().join("logs");
+        let tip = gate(&mut store, &run, "echo x > junk.txt", &logs).tip_sha;
+        let na = PrCheck::NotApplicable("the run has no remote".into());
+        close_run_with(
+            store.conn(),
+            &Git::new("git"),
+            &run,
+            None,
+            &guards(&tip, na, None),
+        )
+        .unwrap();
+        let note = remove_gate_tree(&store, &tools(Arc::new(TestJobs)), &run)
+            .unwrap()
+            .unwrap();
+        let path = gate_dir(&run).to_string_lossy().into_owned();
+        assert!(
+            note.starts_with(&format!(
+                "NOTE: the gate folder {path} stays: it has modified or untracked files: ?? junk.txt"
+            )),
+            "{note}"
+        );
+        assert!(gate_dir(&run).join("junk.txt").exists(), "the file stays");
+        assert_eq!(gate_state(&store, &run), "created", "no rescue ran");
+        assert_eq!(
+            gate_rows(&store, &run),
+            vec![("open".to_string(), 1, run.run_id.clone())],
+            "the gate row stays open"
+        );
+    }
+
+    #[test]
+    fn the_gate_finishes_a_reserved_row_before_it_reuses_the_folder() {
+        let (dir, mut store, run) = world();
+        let logs = dir.path().join("logs");
+        gate(&mut store, &run, "true", &logs);
+        // A stop after the `worktree_add` run and before its observation:
+        // the folder exists and the row is still `reserved`.
+        let path = gate_dir(&run).to_string_lossy().into_owned();
+        store
+            .conn()
+            .execute(
+                "UPDATE worktrees SET state = 'reserved' WHERE path = ?1",
+                [&path],
+            )
+            .unwrap();
+        gate(&mut store, &run, "true", &logs);
+        assert_eq!(
+            gate_state(&store, &run),
+            "created",
+            "the add run is observed and the tree has no owner"
+        );
+        assert_eq!(
+            gate_rows(&store, &run),
+            vec![("open".to_string(), 1, run.run_id.clone())]
+        );
+    }
+
+    #[test]
+    fn the_gate_refuses_a_folder_with_no_worktree_in_the_ledger() {
+        let (dir, mut store, run) = world();
+        let path = gate_dir(&run).to_string_lossy().into_owned();
+        git(
+            Path::new(&run.project_root),
+            &["worktree", "add", "--detach", &path, "HEAD"],
+        );
+        let err = run_gate(
+            &mut store,
+            &tools(Arc::new(TestJobs)),
+            &run,
+            "true",
+            &dir.path().join("logs"),
+        )
+        .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("has no worktree in the ledger"),
+            "{err:#}"
         );
     }
 

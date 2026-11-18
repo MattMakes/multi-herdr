@@ -31,11 +31,13 @@ use super::tasks::{self, Task};
 use super::util::{self, About};
 use super::workers::{self, Worker};
 use crate::fleetd::fleet_runtime::application::jobs::JobCtx;
+use crate::fleetd::fleet_runtime::application::ledger::Cause;
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 use crate::fleetd::ideas::application::needs_you::NeedsYouList;
 use crate::fleetd::task_execution::application::commands;
 use crate::fleetd::worktree_custody::adapters::sqlite::NewWorktree;
 use crate::fleetd::worktree_custody::application::create::{self, JobProcess, Lease, RunJob};
+use crate::fleetd::worktree_custody::application::remove;
 
 /// The programs and places the steps use.
 #[derive(Debug, Clone)]
@@ -542,6 +544,33 @@ pub(crate) fn lease_tree(store: &Store, jobs: &dyn RunJob, lease: &Lease<'_>) ->
 /// connection, then [`create_and_wait`] for `lease`. It gives the id of the
 /// tree. `horch ledger worktree new` and `horch worktree restore` call it.
 pub fn lease_and_wait(ledger: &Path, jobs: &dyn RunJob, lease: &Lease<'_>) -> Result<String> {
+    with_custody(ledger, |conn, ctx| {
+        create::create_and_wait(conn, ctx, jobs, lease)
+    })
+}
+
+/// The custody setup of a command that removes a tree, as
+/// [`lease_and_wait`], then [`remove::remove_tree`] of the row `id`. The
+/// inner `Err` is why custody refused it: the tree stays.
+pub(crate) fn remove_tree(
+    ledger: &Path,
+    jobs: &dyn RunJob,
+    id: &str,
+    cause: Cause<'_>,
+    keep_branch: bool,
+) -> Result<Result<(), String>> {
+    with_custody(ledger, |conn, ctx| {
+        remove::remove_tree(conn, ctx, jobs, id, cause, keep_branch)
+    })
+}
+
+/// Run `f` with the custody setup of a command on the ledger `ledger`: the
+/// config of its fleet, the job context of a command and its own
+/// connection.
+pub(crate) fn with_custody<T>(
+    ledger: &Path,
+    f: impl FnOnce(&mut Connection, &JobCtx<'_>) -> Result<T>,
+) -> Result<T> {
     let config = create::fleet_config(ledger)?;
     let ctx = JobCtx {
         guard: None,
@@ -552,7 +581,16 @@ pub fn lease_and_wait(ledger: &Path, jobs: &dyn RunJob, lease: &Lease<'_>) -> Re
         .with_context(|| format!("opening the task ledger {}", ledger.display()))?;
     conn.busy_timeout(BUSY_TIMEOUT)?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
-    create::create_and_wait(&mut conn, &ctx, jobs, lease)
+    f(&mut conn, &ctx)
+}
+
+/// The job runner of `tools`: its `jobs`, else the job process of this
+/// `horch` binary.
+pub fn job_runner(tools: &Tools) -> Result<Arc<dyn RunJob>> {
+    match &tools.jobs {
+        Some(jobs) => Ok(Arc::clone(jobs)),
+        None => Ok(Arc::new(JobProcess::of_this_process()?)),
+    }
 }
 
 /// The event of today for a new worktree of the task.

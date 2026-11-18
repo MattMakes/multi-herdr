@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::fleetd::fleet_runtime::adapters::clock_store;
 use crate::fleetd::fleet_runtime::adapters::config_file;
-use crate::fleetd::fleet_runtime::adapters::jobs_store::JobRow;
+use crate::fleetd::fleet_runtime::adapters::jobs_store::{self, JobRow};
 use crate::fleetd::fleet_runtime::adapters::sqlite::{drop_reserved, state_of};
 use crate::fleetd::fleet_runtime::application::jobs::{
     self, outcome, result_data, JobCtx, JobKey, NewItem, Queued,
@@ -181,14 +181,25 @@ fn reserved(
     row: WorktreeRow,
     clock: FleetSeconds,
 ) -> Result<CreateOutcome> {
-    let input_key = worktree_add_key(&row);
+    let job = add_run(ctx, tx, &row, clock)?;
+    Ok(CreateOutcome::Reserved { row, job })
+}
+
+/// The id of the `worktree_add` run of the `reserved` row `row` to wait
+/// for ([`queued_run`]).
+fn add_run(
+    ctx: &JobCtx<'_>,
+    tx: &Connection,
+    row: &WorktreeRow,
+    clock: FleetSeconds,
+) -> Result<i64> {
+    let input_key = worktree_add_key(row);
     let key = JobKey {
         kind: Kind::WorktreeAdd,
         subject: &row.worktree_id,
         input_key: &input_key,
     };
-    let job = queued_run(ctx, tx, &key, &row.repo_root, clock)?;
-    Ok(CreateOutcome::Reserved { row, job })
+    queued_run(ctx, tx, &key, &row.repo_root, clock)
 }
 
 /// The id of the run of `key` to wait for: a new run, the active run, or
@@ -590,26 +601,63 @@ pub fn create_and_wait(
                 }
             }
         }
-        CreateOutcome::Reserved { row, job } => {
-            let ended = jobs.run_job(ctx, conn, job)?;
-            let tx = immediate(conn)?;
-            let seen = observe(ctx, &tx, &ended)?;
-            let now = store::get(&tx, &row.worktree_id)?;
-            tx.commit()?;
-            match (seen, now) {
-                (Observed::Dropped(reason), _) => bail!(
-                    "git worktree add failed, so the ledger keeps no worktree {}: {reason}",
-                    row.path
-                ),
-                // The pass observed the run first.
-                (_, Some(now)) if now.state == WorktreeState::Active => Ok(now.worktree_id),
-                (Observed::Kept(why), _) => bail!(
-                    "worktree {} is not made yet: {why}; run the command again",
-                    row.path
-                ),
-                (_, _) => bail!("worktree {} is not active", row.path),
-            }
-        }
+        CreateOutcome::Reserved { row, job } => wait_added(conn, ctx, jobs, &row, job),
+    }
+}
+
+/// Finish the tree of the `reserved` row `id`, as [`create_and_wait`]
+/// does: its ended `worktree_add` run, its active run, or a new one, runs
+/// to its end and is observed. A stop between the run and its observation
+/// leaves the row `reserved`. A row that the pass moved on first is given
+/// as it is. It gives the id of the tree.
+pub fn finish_reserved(
+    conn: &mut Connection,
+    ctx: &JobCtx<'_>,
+    jobs: &dyn RunJob,
+    id: &str,
+) -> Result<String> {
+    let tx = immediate(conn)?;
+    let row = store::get(&tx, id)?.with_context(|| format!("no worktree {id}"))?;
+    if row.state != WorktreeState::Reserved {
+        return Ok(row.worktree_id);
+    }
+    // A `worktree_add` run is not used again: an ended run that the stop
+    // left unobserved is observed, not run a second time.
+    let last = jobs_store::latest(&tx, Kind::WorktreeAdd, id, &worktree_add_key(&row))?;
+    let job = match last {
+        Some(r) if matches!(r.state, State::Passed | State::Failed) => r.id,
+        _ => add_run(ctx, &tx, &row, fleet_clock(&tx)?)?,
+    };
+    tx.commit()?;
+    wait_added(conn, ctx, jobs, &row, job)
+}
+
+/// Run the `worktree_add` run `job` of the `reserved` row `row` to its
+/// end with no transaction open, then observe it in 1 transaction.
+fn wait_added(
+    conn: &mut Connection,
+    ctx: &JobCtx<'_>,
+    jobs: &dyn RunJob,
+    row: &WorktreeRow,
+    job: i64,
+) -> Result<String> {
+    let ended = jobs.run_job(ctx, conn, job)?;
+    let tx = immediate(conn)?;
+    let seen = observe(ctx, &tx, &ended)?;
+    let now = store::get(&tx, &row.worktree_id)?;
+    tx.commit()?;
+    match (seen, now) {
+        (Observed::Dropped(reason), _) => bail!(
+            "git worktree add failed, so the ledger keeps no worktree {}: {reason}",
+            row.path
+        ),
+        // The pass observed the run first.
+        (_, Some(now)) if now.state == WorktreeState::Active => Ok(now.worktree_id),
+        (Observed::Kept(why), _) => bail!(
+            "worktree {} is not made yet: {why}; run the command again",
+            row.path
+        ),
+        (_, _) => bail!("worktree {} is not active", row.path),
     }
 }
 

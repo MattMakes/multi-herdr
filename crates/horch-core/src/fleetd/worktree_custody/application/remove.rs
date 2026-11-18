@@ -5,10 +5,11 @@
 //! lost" (rows `landed`, `rescued`, `removed`) and "The kinds of job" (row
 //! `worktree_remove`); MAP.md of fleetd-p3, Q7 and Q8. The pass and a
 //! command call [`queue_remove`] and [`observe`] in 1 transaction, with no
-//! git call.
+//! git call. A command calls [`remove_tree`], which runs the jobs with no
+//! transaction open.
 
-use anyhow::{bail, Result};
-use rusqlite::{params, Connection};
+use anyhow::{bail, Context, Result};
+use rusqlite::{params, Connection, Transaction, TransactionBehavior};
 
 use crate::fleetd::fleet_runtime::adapters::jobs_store::{self, JobRow};
 use crate::fleetd::fleet_runtime::application::jobs::{
@@ -21,7 +22,10 @@ use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use crate::fleetd::fleet_runtime::domain::jobs::{Kind, State};
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 use crate::fleetd::worktree_custody::adapters::remove_git::{remove_key, Removed};
-use crate::fleetd::worktree_custody::adapters::sqlite::{self as store, WorktreeRow};
+use crate::fleetd::worktree_custody::adapters::sqlite::{
+    self as store, WorktreeRow, WorktreeState,
+};
+use crate::fleetd::worktree_custody::application::create::{self, RunJob};
 use crate::fleetd::worktree_custody::domain::removal;
 use crate::taskledger::model::Actor;
 use crate::taskledger::util;
@@ -177,4 +181,118 @@ fn failed(ctx: &JobCtx<'_>, tx: &Connection, id: &str, reason: &str) -> Result<O
     };
     ctx.needs_you.open_item(tx, &item)?;
     Ok(Observed::Failed)
+}
+
+// ─── the command ────────────────────────────────────────────────────────
+
+/// Remove the tree of the row `id` only through custody (RR-9, FM-27),
+/// with the connection `conn` and the job context `ctx` of a command. No
+/// transaction is open while a job runs.
+/// - A `landed` or `rescued` tree: 1 `worktree_remove` job.
+/// - Each other tree: it moves to `orphaned` with no owner (`cause`), 1
+///   `rescue` job puts it on a verified rescue ref, then 1
+///   `worktree_remove` job removes it.
+///
+/// The inner `Err` is why custody refused it: the tree stays. With
+/// `keep_branch` the job never deletes the branch.
+pub fn remove_tree(
+    conn: &mut Connection,
+    ctx: &JobCtx<'_>,
+    jobs: &dyn RunJob,
+    id: &str,
+    cause: Cause<'_>,
+    keep_branch: bool,
+) -> Result<Result<(), String>> {
+    let row = match removable_row(ctx, conn, id, cause)? {
+        Ok(row) => row,
+        Err(why) => return Ok(Err(why)),
+    };
+    if !matches!(row.state, WorktreeState::Landed | WorktreeState::Rescued) {
+        if let Err(e) = create::rescue_now(conn, ctx, jobs, &row) {
+            return Ok(Err(format!("{e:#}")));
+        }
+    }
+    remove_now(ctx, conn, jobs, id, cause.text, keep_branch)
+}
+
+fn immediate(conn: &mut Connection) -> Result<Transaction<'_>> {
+    conn.transaction_with_behavior(TransactionBehavior::Immediate)
+        .context("taking the task ledger's write lock")
+}
+
+/// The row `id`, in a state that a rescue or a removal takes. A `landed`,
+/// `landing`, `orphaned` or `rescued` row stays as it is. Each other row
+/// moves to `orphaned` with no owner, for `cause`. A move that the door
+/// refuses is recorded and keeps the row: the inner `Err` says why.
+fn removable_row(
+    ctx: &JobCtx<'_>,
+    conn: &mut Connection,
+    id: &str,
+    cause: Cause<'_>,
+) -> Result<Result<store::WorktreeRow, String>> {
+    let tx = immediate(conn)?;
+    let row = store::get(&tx, id)?.with_context(|| format!("no worktree {id} in the ledger"))?;
+    let keep = [
+        WorktreeState::Landed,
+        WorktreeState::Landing,
+        WorktreeState::Orphaned,
+        WorktreeState::Rescued,
+    ];
+    if keep.contains(&row.state) {
+        return Ok(Ok(row));
+    }
+    let moved = transition(
+        &tx,
+        None,
+        Entity::Worktree,
+        id,
+        "orphaned",
+        cause,
+        ctx.needs_you,
+    );
+    if let Err(e) = moved {
+        tx.commit()?;
+        return Ok(Err(format!("worktree {id} is {}: {e}", row.state)));
+    }
+    store::set_owner(&tx, id, None)?;
+    let row = store::get(&tx, id)?.with_context(|| format!("no worktree {id} in the ledger"))?;
+    tx.commit()?;
+    Ok(Ok(row))
+}
+
+/// Queue the `worktree_remove` job of the row `id`, run it through `jobs`
+/// with no transaction open, then observe it in 1 transaction.
+fn remove_now(
+    ctx: &JobCtx<'_>,
+    conn: &mut Connection,
+    jobs: &dyn RunJob,
+    id: &str,
+    cause: &str,
+    keep_branch: bool,
+) -> Result<Result<(), String>> {
+    let tx = immediate(conn)?;
+    let clock = create::fleet_clock(&tx)?;
+    let row = store::get(&tx, id)?.with_context(|| format!("no worktree {id} in the ledger"))?;
+    let job = match queue_remove(ctx, &tx, &row, cause, keep_branch, clock)? {
+        Ok(Queued::New(job)) => job,
+        Ok(Queued::Active(r) | Queued::Reused(r)) => r.id,
+        Ok(Queued::Held(r)) => {
+            return Ok(Err(format!(
+                "the worktree_remove job of {} ended abandoned {} times; run horch job requeue {} after you read why",
+                row.path, r.abandoned_runs, r.id
+            )))
+        }
+        Err(why) => return Ok(Err(why)),
+    };
+    tx.commit()?;
+    let ended = jobs.run_job(ctx, conn, job)?;
+    let tx = immediate(conn)?;
+    let seen = observe(ctx, &tx, &ended)?;
+    tx.commit()?;
+    Ok(match seen {
+        Observed::Removed => Ok(()),
+        _ => Err(outcome(&ended)
+            .map(|o| o.text)
+            .unwrap_or_else(|| format!("its worktree_remove job ended {}", ended.state.as_str()))),
+    })
 }

@@ -1,6 +1,6 @@
 //! Registered alternate-base, scratch and abandonment operations. Never force git.
 use super::{
-    finish::{self, land, WorktreeRow},
+    finish::{self, WorktreeRow},
     git::Git,
     model::{Actor, WorktreeStatus},
     runs,
@@ -309,7 +309,7 @@ pub fn drop_worktree_with(
             text: "dropped",
         };
         if let Err(why) =
-            land::remove_tree(store.path(), jobs, &wt.worktree_id, cause, keep_branch)?
+            finish::remove_tree(store.path(), jobs, &wt.worktree_id, cause, keep_branch)?
         {
             bail!("the worktree stays: {why}; nothing removed");
         }
