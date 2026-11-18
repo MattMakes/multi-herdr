@@ -35,6 +35,7 @@ use crate::fleetd::fleet_runtime::domain::jobs::Kind as JobKind;
 use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
 use crate::fleetd::fleet_runtime::domain::requests::Kind;
 use crate::fleetd::ideas::application::needs_you::NeedsYouList;
+use crate::fleetd::integration::application::commands::{self as integration, RefTips, Rescued};
 use crate::fleetd::worktree_custody::adapters::rescue_git::rescue_key;
 use crate::fleetd::worktree_custody::adapters::sqlite::{
     self as trees, NewWorktree, WorktreeMode, WorktreeState,
@@ -49,11 +50,9 @@ use crate::taskledger::{finish, runs, util, workers, worktree_ops};
 
 /// The kinds of this file that have no handler yet: each stays refused
 /// with [`super::requests::NOT_HANDLED`]. Their use cases come from
-/// fleetd-p4: `feature_abandon` from T-383, `branch_abandon` from T-378 and
-/// `rescue_drop` from T-386. Each such task adds its handler in
-/// [`register`].
-pub const NOT_YET_HANDLED: [Kind; 3] =
-    [Kind::FeatureAbandon, Kind::BranchAbandon, Kind::RescueDrop];
+/// fleetd-p4: `feature_abandon` from T-383 and `rescue_drop` from T-386.
+/// Each such task adds its handler in [`register`].
+pub const NOT_YET_HANDLED: [Kind; 2] = [Kind::FeatureAbandon, Kind::RescueDrop];
 
 /// The triage decisions that the `worktree_triage` handler refuses: each
 /// runs git or gh writes, and no job kind does them yet. The command keeps
@@ -66,10 +65,12 @@ pub const TRIAGE_NOT_HANDLED: [TriageDecision; 4] = [
 ];
 
 /// What the handlers of this file read: the generation of the fleetd that
-/// applies the requests, and its `fleet.toml`.
+/// applies the requests, its `fleet.toml`, and the refs of git, read with
+/// no write (the `branch_abandon` handler verifies its rescue ref).
 pub struct Custody {
     pub guard: Generation,
     pub config: FleetConfig,
+    pub refs: Box<dyn RefTips + Send + Sync>,
 }
 
 impl Custody {
@@ -93,10 +94,10 @@ pub fn register(handlers: &mut Handlers, custody: Arc<Custody>) {
     handlers.insert(Kind::WorktreeDrop, with(worktree_drop));
     handlers.insert(Kind::WorktreeRestore, with(worktree_restore));
     handlers.insert(Kind::WorktreeTriage, with(worktree_triage));
+    handlers.insert(Kind::BranchAbandon, with(branch_abandon));
     // The handlers of NOT_YET_HANDLED go here, 1 line each, with the shape
     // `fn(&Custody, &Connection, &Value) -> Result<Value>`:
     // handlers.insert(Kind::FeatureAbandon, with(feature_abandon));
-    // handlers.insert(Kind::BranchAbandon, with(branch_abandon));
     // handlers.insert(Kind::RescueDrop, with(rescue_drop));
 }
 
@@ -655,4 +656,38 @@ fn checked_ticket(c: &Custody, root: &Path, file: &TicketFile) -> Result<String>
         bail!("the brief {} differs from its sha256", full.display());
     }
     Ok(file.path.clone())
+}
+
+// ─── branch_abandon ─────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BranchAbandon {
+    branch: String,
+    /// The rescue ref that the command wrote, or `None` when git has no
+    /// such branch.
+    rescue_ref: Option<String>,
+    /// The tip of the branch that the rescue ref holds.
+    tip: Option<String>,
+}
+
+/// `horch branch abandon <branch>`: the command writes the rescue ref of
+/// the tip first (I10). The handler reads the branch and the ref again in
+/// git, with no write, and refuses facts that git does not confirm. Then it
+/// records the ref and moves the branch to `abandoned`.
+fn branch_abandon(c: &Custody, tx: &Connection, p: &Value) -> Result<Value> {
+    let BranchAbandon {
+        branch,
+        rescue_ref,
+        tip,
+    } = payload("branch_abandon", p)?;
+    let rescued = Rescued { branch, rescue_ref };
+    let repo = integration::repo_of(tx, &rescued.branch)?;
+    integration::verify(c.refs.as_ref(), &repo, &rescued, tip.as_deref())?;
+    let done = integration::record(&c.jobs(), tx, &rescued, "the operator abandons it")?;
+    Ok(json!({
+        "branch": done.branch,
+        "rescue_ref": done.rescue_ref,
+        "already": done.already,
+    }))
 }

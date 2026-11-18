@@ -26,6 +26,7 @@ use horch_core::fleetd::fleet_runtime::domain::jobs::{Kind as JobKind, State};
 use horch_core::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
 use horch_core::fleetd::fleet_runtime::domain::requests::{Kind, RequestId};
 use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
+use horch_core::fleetd::integration::application::commands::RefTips;
 use horch_core::fleetd::worktree_custody::adapters::rescue_git::rescue_key;
 use horch_core::fleetd::worktree_custody::adapters::sqlite::{self as trees, WorktreeState};
 use horch_core::taskledger::model::Actor;
@@ -37,6 +38,15 @@ use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 
 const RUN_BRANCH: &str = "fleet/r1";
+
+/// No test of this file runs git: git has no ref.
+struct NoRefs;
+
+impl RefTips for NoRefs {
+    fn tip(&self, _repo: &Path, _name: &str) -> anyhow::Result<Option<String>> {
+        Ok(None)
+    }
+}
 const BASE: &str = "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0";
 const HEAD: &str = "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1";
 
@@ -86,6 +96,7 @@ fn world() -> World {
         Arc::new(Custody {
             guard: Generation(1),
             config: FleetConfig::default(),
+            refs: Box::new(NoRefs),
         }),
     );
     World {
@@ -523,7 +534,7 @@ fn worktree_triage_queues_its_jobs() {
 }
 
 #[test]
-fn feature_abandon_branch_abandon_and_rescue_drop_stay_refused_until_their_use_cases_exist() {
+fn feature_abandon_and_rescue_drop_stay_refused_until_their_use_cases_exist() {
     let mut w = world();
     for kind in NOT_YET_HANDLED {
         assert_eq!(w.refused(kind, json!({})), NOT_HANDLED);

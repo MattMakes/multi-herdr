@@ -942,7 +942,11 @@ pub(super) fn cancel_cmd(
     let r = resolve_run(ctx, store, run)?;
     let herdr = HerdrPanes::new(ctx);
     match cancel_and_stop(store, &r, task, reason, &Stopper::real(&herdr))? {
-        Some(t) => wake_dependents(ctx, store, &r, &t),
+        Some(t) => {
+            // A cancelled task's branch: its rescue ref, then `abandoned`.
+            super::branchcmd::abandon_branches_of(ctx, store, &t);
+            wake_dependents(ctx, store, &r, &t)
+        }
         None => Ok(ExitCode::SUCCESS),
     }
 }
