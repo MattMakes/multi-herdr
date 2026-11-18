@@ -1714,7 +1714,7 @@ fn activity_of(w: &Worker, o: Option<&Observation>) -> Activity {
         timer_s: o
             .and_then(|o| o.screen.as_deref())
             .and_then(|s| timer::working_seconds(s, agent))
-            .map(|s| seconds(s)),
+            .map(seconds),
     }
 }
 

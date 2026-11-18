@@ -673,7 +673,9 @@ fn background_wait_holds_while_the_agent_child_runs_and_ends_when_it_exits() {
     assert_eq!(child.len(), 1, "{child:?}");
     // SAFETY: a signal to the child that this test started.
     unsafe { libc::kill(child[0] as i32, libc::SIGKILL) };
-    assert!(wait_for(|| horch_core::procid::group_members(pgid).len() == 1));
+    assert!(wait_for(
+        || horch_core::procid::group_members(pgid).len() == 1
+    ));
     w.pass_at(510, &worker, &fake);
     assert!(wait_row(&w).is_none(), "the wait ended");
     assert_eq!(w.task(&task).status, "running");

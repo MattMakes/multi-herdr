@@ -183,7 +183,11 @@ fn a_busy_pi_worker_with_no_timer_is_kept_until_stall_after_then_stopped_at_rung
     };
     assert_eq!(task_status(), "running");
     assert!(matches!(agent.0.try_wait(), Ok(None)), "the pass kept it");
-    assert!(outbox(&store, &run).is_empty(), "{:?}", outbox(&store, &run));
+    assert!(
+        outbox(&store, &run).is_empty(),
+        "{:?}",
+        outbox(&store, &run)
+    );
 
     // Past stall_after_s of the claim, with no activity: rung 3.
     h.advance_fleet_clock(400);
@@ -194,7 +198,10 @@ fn a_busy_pi_worker_with_no_timer_is_kept_until_stall_after_then_stopped_at_rung
             Ok((r.get(0)?, r.get(1)?))
         })
         .unwrap();
-    assert_eq!((state.as_str(), outcome.as_deref()), ("ended", Some("stalled")));
+    assert_eq!(
+        (state.as_str(), outcome.as_deref()),
+        ("ended", Some("stalled"))
+    );
     let doorbells: i64 = store
         .conn()
         .query_row(
