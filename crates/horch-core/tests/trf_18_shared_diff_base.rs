@@ -93,6 +93,7 @@ impl World {
             shell: "/bin/sh".into(),
             reviewers_down: Vec::new(),
             codex: CodexSandbox::default(),
+            jobs: None,
         };
         let mut t = NewTask::work("feature", "t.md", "opus");
         t.worktree_mode = WorktreeMode::Shared;

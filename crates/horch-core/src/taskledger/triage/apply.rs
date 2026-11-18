@@ -598,7 +598,7 @@ fn remove_now(ctx: &JobCtx<'_>, conn: &mut Connection, jobs: &dyn RunJob, id: &s
     let tx = immediate(conn)?;
     let clock = create::fleet_clock(&tx)?;
     let row = trees::get(&tx, id)?.with_context(|| format!("no worktree {id} in the ledger"))?;
-    let job = match remove::queue_remove(ctx, &tx, &row, "triage", clock)? {
+    let job = match remove::queue_remove(ctx, &tx, &row, "triage", false, clock)? {
         Ok(JobQueued::New(job)) => job,
         Ok(JobQueued::Active(r) | JobQueued::Reused(r)) => r.id,
         Ok(JobQueued::Held(r)) => bail!(
@@ -829,7 +829,7 @@ fn short(sha: &str) -> &str {
 
 /// Remove the folder after a land; the work is on `on`.
 fn remove_landed(store: &Store, env: &Env<'_>, wt: &WorktreeRow, on: &str) -> Result<String> {
-    let o = land::remove(store, env.git, wt, on, None)?;
+    let o = land::remove_with(store, env.git, wt, on, None, env.jobs)?;
     if !o.status.is_through() {
         bail!("{}", o.note);
     }

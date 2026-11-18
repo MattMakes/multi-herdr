@@ -6,12 +6,17 @@ use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, Row};
 use serde::Serialize;
 
+use super::finish::{self, land, Tools};
 use super::model::{Actor, EventKind, Origin, RunStatus, StepName, WorktreeStatus};
 use super::sql_words::{self, word};
 use super::status::Unsettled;
-use super::store::optional;
+use super::store::{optional, Store};
 use super::util::{self, About};
 use crate::exeid::ExeIdentity;
+use crate::fleetd::fleet_runtime::application::ledger::Cause;
+use crate::fleetd::worktree_custody::adapters::git::{DETACHED, GATE_PREFIX};
+use crate::fleetd::worktree_custody::adapters::sqlite::{NewWorktree, WorktreeMode};
+use crate::fleetd::worktree_custody::application::create::{self, Lease, RunJob};
 
 /// 1 run: an orchestrator's body of work.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -511,19 +516,20 @@ pub struct Closed {
 /// the run is not settled ([`super::status::unsettled`], C6). With `abandon`, every open task is
 /// cancelled first (the 1 cancel path) and the run closes as `abandoned`;
 /// an undecided worktree then keeps the run active, with the cancels done
-/// ([`Closed::parked`]).
+/// ([`Closed::parked`]). The gate folder is not removed here: a job runs
+/// with no transaction open, so the caller runs [`remove_gate_tree`] after
+/// the close commits. `_git` is not read.
 pub fn close_run(
     conn: &Connection,
-    git: &super::git::Git,
+    _git: &super::git::Git,
     run: &Run,
     abandon: Option<&str>,
 ) -> Result<Closed> {
-    close_inner(conn, git, run, abandon, None)
+    close_inner(conn, run, abandon, None)
 }
 
 fn close_inner(
     conn: &Connection,
-    git: &super::git::Git,
     run: &Run,
     abandon: Option<&str>,
     guards: Option<&CloseGuards>,
@@ -584,7 +590,7 @@ fn close_inner(
             notes: Vec::new(),
         });
     }
-    let mut notes = match (guards, abandon) {
+    let notes = match (guards, abandon) {
         (Some(g), None) => {
             let notes = check_guards(conn, run, g)?;
             if let Some(reason) = &g.pr_declined {
@@ -604,7 +610,6 @@ fn close_inner(
     };
     close(conn, &run.run_id, status)?;
     super::orchestrator::record_stop(conn, &run.run_id)?;
-    notes.extend(remove_gate_worktree(conn, git, run)?);
     if let Some(orch) = &run.orchestrator_worker_id {
         super::workers::end(
             conn,
@@ -712,47 +717,33 @@ pub fn record_gate(conn: &Connection, g: &Gate) -> Result<Gate> {
 
 /// The `worktree_modes` name of the gate folder of `run`.
 fn gate_name(run: &Run) -> String {
-    format!("_gate-{}", run.slug)
+    format!("{GATE_PREFIX}{}", run.slug)
 }
 
-/// Record [`gate_dir`] as 1 open scratch worktree row of `run` at `tip`, so
-/// `run close` removes it (TRF-19). The next gate reuses the row: it holds
-/// the folder's path, which is unique among the rows that are not
-/// `removed`. A row of an earlier run with the same slug moves to `run`. A
-/// `removed` row is history: the gate gets a new row.
+/// Record the gate of `run` at `tip` on the open scratch worktree row of
+/// [`gate_dir`], so `run close` removes it (TRF-19). [`run_gate`] made the
+/// row through custody, or the next gate reuses it: it holds the folder's
+/// path, which is unique among the rows that are not `removed`. A row of
+/// an earlier run with the same slug moves to `run`.
 fn gate_worktree_row(conn: &Connection, run: &Run, tip: &str) -> Result<()> {
     let path = gate_dir(run).to_string_lossy().into_owned();
     let base = run.run_branch.as_deref().unwrap_or_default();
-    let open = word(WorktreeStatus::Open);
     let found: Option<String> = optional(conn.query_row(
         "SELECT worktree_id FROM worktrees WHERE path = ?1 AND state <> 'removed'",
         [&path],
         |r| r.get(0),
     ))?;
-    let id = match found {
-        Some(id) => {
-            conn.execute(
-                &format!(
-                    "UPDATE worktrees SET base = ?2, base_commit = ?3, status = {open},
-                        cleaned_at = NULL, reason = NULL WHERE worktree_id = ?1"
-                ),
-                params![id, base, tip],
-            )?;
-            id
-        }
-        None => {
-            let id = util::new_id();
-            conn.execute(
-                &format!(
-                    "INSERT INTO worktrees (worktree_id, task_id, worker_id, repo_root, path,
-                        branch, base, base_commit, status, origin, created_at)
-                     VALUES (?1, NULL, NULL, ?2, ?3, '(detached)', ?4, ?5, {open}, 'native', ?6)"
-                ),
-                params![id, run.project_root, path, base, tip, util::now()],
-            )?;
-            id
-        }
+    let Some(id) = found else {
+        return Ok(());
     };
+    conn.execute(
+        &format!(
+            "UPDATE worktrees SET base = ?2, base_commit = ?3, status = {open},
+                cleaned_at = NULL, reason = NULL WHERE worktree_id = ?1",
+            open = word(WorktreeStatus::Open)
+        ),
+        params![id, base, tip],
+    )?;
     conn.execute(
         "INSERT INTO worktree_modes (worktree_id, run_id, name, scratch) VALUES (?1, ?2, ?3, 1)
          ON CONFLICT(worktree_id) DO UPDATE SET run_id = ?2, name = ?3, scratch = 1",
@@ -761,15 +752,13 @@ fn gate_worktree_row(conn: &Connection, run: &Run, tip: &str) -> Result<()> {
     Ok(())
 }
 
-/// Remove the open gate folder of `run` at its close: `git worktree remove`,
-/// never forced. The row becomes `cleaned`. A `NOTE:` line when git refuses
-/// or cannot run (TRF-52); the folder and the open row then stay.
-fn remove_gate_worktree(
-    conn: &Connection,
-    git: &super::git::Git,
-    run: &Run,
-) -> Result<Option<String>> {
-    let found: Option<(String, String)> = optional(conn.query_row(
+/// Remove the open gate folder of `run` after its close, only through
+/// custody (row W11, RR-9): the tree is rescued by a verified `rescue` job,
+/// then 1 `worktree_remove` job removes it, with no transaction open. The
+/// row becomes `cleaned`. A `NOTE:` line when custody refuses or cannot
+/// run (TRF-52); the folder and the open row then stay.
+pub fn remove_gate_tree(store: &Store, tools: &Tools, run: &Run) -> Result<Option<String>> {
+    let found: Option<(String, String)> = optional(store.conn().query_row(
         &format!(
             "SELECT w.worktree_id, w.path FROM worktrees w
              JOIN worktree_modes m ON m.worktree_id = w.worktree_id
@@ -783,21 +772,26 @@ fn remove_gate_worktree(
         return Ok(None);
     };
     if Path::new(&path).exists() {
-        // TRF-52: any git error keeps the folder and its open row, and the
-        // run still closes.
-        let refused =
-            match git.try_run(Path::new(&run.project_root), &["worktree", "remove", &path]) {
-                Ok(out) if out.ok => None,
-                Ok(out) => Some(out.stderr.trim().to_string()),
-                Err(e) => Some(format!("{e:#}")),
-            };
+        let cause = Cause {
+            actor: Actor::Orchestrator,
+            text: "the run closed",
+        };
+        // TRF-52: any error keeps the folder and its open row, and the run
+        // stays closed.
+        let removed = land::job_runner(tools)
+            .and_then(|jobs| land::remove_tree(store.path(), jobs.as_ref(), &id, cause, false));
+        let refused = match removed {
+            Ok(Ok(())) => None,
+            Ok(Err(why)) => Some(why),
+            Err(e) => Some(format!("{e:#}")),
+        };
         if let Some(why) = refused {
             return Ok(Some(format!(
-                "NOTE: the gate folder {path} stays: git worktree remove refused: {why}. Remove it yourself."
+                "NOTE: the gate folder {path} stays: {why}. Remove it yourself."
             )));
         }
     }
-    conn.execute(
+    store.conn().execute(
         &format!(
             "UPDATE worktrees SET status = {cleaned}, cleaned_at = ?2 WHERE worktree_id = ?1",
             cleaned = word(WorktreeStatus::Cleaned)
@@ -822,13 +816,14 @@ pub fn last_gate(conn: &Connection, run_id: &str, tip: &str) -> Result<Option<Ga
 pub fn gate_dir(run: &Run) -> std::path::PathBuf {
     Path::new(&run.project_root)
         .join(".worktrees")
-        .join(format!("_gate-{}", run.slug))
+        .join(gate_name(run))
 }
 
 /// Check out `tip` in `dir`: a new detached worktree, or the old one moved
 /// to `tip`. Ignored files, such as a build cache, stay. The ledger never
 /// forces git, so a gate dir with changes is refused, with its files named.
-fn checkout_tip(git: &super::git::Git, root: &Path, dir: &Path, tip: &str) -> Result<()> {
+fn checkout_tip(store: &mut Store, tools: &Tools, run: &Run, dir: &Path, tip: &str) -> Result<()> {
+    let git = &tools.git;
     if dir.join(".git").exists() {
         let dirty = git.dirty(dir)?;
         if !dirty.is_empty() {
@@ -840,22 +835,62 @@ fn checkout_tip(git: &super::git::Git, root: &Path, dir: &Path, tip: &str) -> Re
         }
         git.run(dir, &["checkout", "-q", "--detach", tip])?;
     } else {
-        let d = dir.to_string_lossy();
-        git.run(root, &["worktree", "add", "--detach", &d, tip])?;
+        let jobs = land::job_runner(tools)?;
+        add_gate_tree(store, jobs.as_ref(), run, dir, tip)?;
     }
     Ok(())
 }
 
-/// `horch ledger run gate` (C5, TRF-19): run `command` with `shell` on the
+/// Make the gate folder `dir` of `run` at `tip` through custody (row W11,
+/// FR-11): the row first, then its `worktree_add` job in the detached
+/// form, with no transaction open. The tree has no owner (`created`), as a
+/// restored tree.
+fn add_gate_tree(
+    store: &mut Store,
+    jobs: &dyn RunJob,
+    run: &Run,
+    dir: &Path,
+    tip: &str,
+) -> Result<()> {
+    let new = NewWorktree {
+        worktree_id: util::new_id(),
+        task_id: None,
+        worker_id: None,
+        repo_root: run.project_root.clone(),
+        path: dir.to_string_lossy().into_owned(),
+        branch: DETACHED.to_string(),
+        base: run.run_branch.clone().unwrap_or_default(),
+        base_commit: Some(tip.to_string()),
+        status: WorktreeStatus::Open,
+        mode: Some(WorktreeMode {
+            run_id: run.run_id.clone(),
+            name: gate_name(run),
+            scratch: true,
+        }),
+    };
+    // No task and no worker: the request never attaches another tree.
+    let lease = Lease {
+        task_id: None,
+        worker_id: "",
+        attempt: None,
+        from: None,
+        new: Some(&new),
+    };
+    let id = finish::lease_and_wait(store.path(), jobs, &lease)?;
+    store.immediate(|tx| create::give_to_operator(tx, &id))
+}
+
+/// `horch ledger run gate` (C5, TRF-19): run `command` with the shell of `tools` on the
 /// tip of the run branch, in [`gate_dir`], with its output in a log under
 /// `log_dir`. The gate as it ran; the caller records it ([`record_gate`]).
 pub fn run_gate(
-    git: &super::git::Git,
-    shell: &Path,
+    store: &mut Store,
+    tools: &Tools,
     run: &Run,
     command: &str,
     log_dir: &Path,
 ) -> Result<Gate> {
+    let (git, shell) = (&tools.git, tools.shell.as_path());
     use std::io::Write;
     let branch = run.run_branch.as_deref().with_context(|| {
         format!(
@@ -866,7 +901,7 @@ pub fn run_gate(
     let root = Path::new(&run.project_root);
     let tip = git.rev(root, branch)?;
     let dir = gate_dir(run);
-    checkout_tip(git, root, &dir, &tip)?;
+    checkout_tip(store, tools, run, &dir, &tip)?;
     std::fs::create_dir_all(log_dir).with_context(|| format!("creating {}", log_dir.display()))?;
     let log = log_dir.join(format!(
         "gate-{}-{}.log",
@@ -983,17 +1018,20 @@ fn check_guards(conn: &Connection, run: &Run, g: &CloseGuards) -> Result<Vec<Str
 /// a merged, not applicable or declined PR. `--abandon` skips the C5 checks.
 pub fn close_run_with(
     conn: &Connection,
-    git: &super::git::Git,
+    _git: &super::git::Git,
     run: &Run,
     abandon: Option<&str>,
     guards: &CloseGuards,
 ) -> Result<Closed> {
-    close_inner(conn, git, run, abandon, Some(guards))
+    close_inner(conn, run, abandon, Some(guards))
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
+    use crate::fleetd::worktree_custody::application::create::TestJobs;
     use crate::taskledger::git::Git;
     use crate::taskledger::store::Store;
 
@@ -1045,7 +1083,7 @@ mod tests {
     }
 
     fn gate(store: &mut Store, run: &Run, command: &str, logs: &Path) -> Gate {
-        let ran = run_gate(&Git::new("git"), Path::new("/bin/sh"), run, command, logs).unwrap();
+        let ran = run_gate(store, &tools(Arc::new(TestJobs)), run, command, logs).unwrap();
         store.immediate(|tx| record_gate(tx, &ran)).unwrap()
     }
 
@@ -1245,11 +1283,18 @@ mod tests {
         let (dir, mut store, run) = world();
         let logs = dir.path().join("logs");
         gate(&mut store, &run, "true", &logs);
+        // A removal as the `worktree_remove` job makes it: the folder and
+        // the row are gone.
+        let gate_path = gate_dir(&run).to_string_lossy().into_owned();
+        git(
+            Path::new(&run.project_root),
+            &["worktree", "remove", &gate_path],
+        );
         store
             .conn()
             .execute(
                 "UPDATE worktrees SET status = 'cleaned', state = 'removed' WHERE path = ?1",
-                [gate_dir(&run).to_string_lossy()],
+                [&gate_path],
             )
             .unwrap();
         gate(&mut store, &run, "true", &logs);
@@ -1293,6 +1338,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(closed.status, "done");
+        let tools = tools(Arc::new(TestJobs));
+        assert_eq!(remove_gate_tree(&store, &tools, &run).unwrap(), None);
         assert!(
             !gate_dir(&run).exists(),
             "run close removes the gate folder"
@@ -1303,25 +1350,62 @@ mod tests {
         );
     }
 
+    /// The tools of a gate, with `jobs` to run its custody jobs.
+    fn tools(jobs: Arc<dyn RunJob>) -> Tools {
+        Tools {
+            git: Git::new("git"),
+            gh: "gh".into(),
+            node: "node".into(),
+            complexity_cli: None,
+            code_sweep_dir: None,
+            evidence_root: std::path::PathBuf::new(),
+            shell: "/bin/sh".into(),
+            reviewers_down: Vec::new(),
+            codex: Default::default(),
+            jobs: Some(jobs),
+        }
+    }
+
+    /// A job runner whose job process cannot start.
+    struct NoJobs;
+
+    impl RunJob for NoJobs {
+        fn run_job(
+            &self,
+            _: &crate::fleetd::fleet_runtime::application::jobs::JobCtx<'_>,
+            _: &mut Connection,
+            _: i64,
+        ) -> Result<crate::fleetd::fleet_runtime::adapters::jobs_store::JobRow> {
+            bail!("no job process")
+        }
+    }
+
     #[test]
-    fn trf_52_a_git_spawn_error_keeps_the_gate_and_closes_the_run() {
+    fn trf_52_a_job_error_keeps_the_gate_and_closes_the_run() {
         let (dir, mut store, run) = world();
         let logs = dir.path().join("logs");
         let tip = gate(&mut store, &run, "true", &logs).tip_sha;
         assert!(gate_dir(&run).exists());
 
-        let missing = Git::new(dir.path().join("no-such-git"));
         let na = PrCheck::NotApplicable("the run has no remote".into());
-        let closed =
-            close_run_with(store.conn(), &missing, &run, None, &guards(&tip, na, None)).unwrap();
+        let closed = close_run_with(
+            store.conn(),
+            &Git::new("git"),
+            &run,
+            None,
+            &guards(&tip, na, None),
+        )
+        .unwrap();
         assert_eq!(closed.status, "done");
         let path = gate_dir(&run).to_string_lossy().into_owned();
-        let notes: Vec<&String> = closed
-            .notes
-            .iter()
-            .filter(|n| n.starts_with(&format!("NOTE: the gate folder {path} stays")))
-            .collect();
-        assert_eq!(notes.len(), 1, "1 NOTE line: {:?}", closed.notes);
+        let note = remove_gate_tree(&store, &tools(Arc::new(NoJobs)), &run)
+            .unwrap()
+            .unwrap();
+        assert!(
+            note.starts_with(&format!("NOTE: the gate folder {path} stays")),
+            "{note}"
+        );
+        assert!(note.contains("no job process"), "{note}");
         assert!(gate_dir(&run).exists(), "the gate folder stays");
         assert_eq!(
             gate_rows(&store, &run),

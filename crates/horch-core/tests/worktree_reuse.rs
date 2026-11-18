@@ -255,7 +255,7 @@ impl World {
                     config: &config,
                     needs_you: &NeedsYouList,
                 };
-                remove::queue_remove(&ctx, tx, &row, "test", FleetSeconds(0))
+                remove::queue_remove(&ctx, tx, &row, "test", false, FleetSeconds(0))
             })
             .unwrap()
     }

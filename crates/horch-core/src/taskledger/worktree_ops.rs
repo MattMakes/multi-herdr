@@ -1,13 +1,14 @@
 //! Registered alternate-base, scratch and abandonment operations. Never force git.
 use super::{
-    finish::{self, WorktreeRow},
+    finish::{self, land, WorktreeRow},
     git::Git,
-    model::WorktreeStatus,
+    model::{Actor, WorktreeStatus},
     runs,
     sql_words::{self, word},
     store::{optional, Store},
     tasks, util, workers,
 };
+use crate::fleetd::fleet_runtime::application::ledger::Cause;
 use crate::fleetd::worktree_custody::adapters::sqlite::{NewWorktree, WorktreeMode};
 use crate::fleetd::worktree_custody::application::create::{JobProcess, Lease, RunJob};
 use anyhow::{bail, Context, Result};
@@ -238,6 +239,7 @@ fn verified_head(git: &Git, root: &Path, wt: &WorktreeRow) -> Result<String> {
 }
 
 /// Drop only a clean tree. Keep the branch explicitly if it contains unique work.
+/// The custody jobs run in the job process of this `horch` binary.
 pub fn drop_worktree(
     store: &mut Store,
     git: &Git,
@@ -245,6 +247,24 @@ pub fn drop_worktree(
     name: &str,
     reason: &str,
     keep_branch: bool,
+) -> Result<WorktreeRow> {
+    let jobs = JobProcess::of_this_process()?;
+    drop_worktree_with(store, git, run_id, name, reason, keep_branch, &jobs)
+}
+
+/// [`drop_worktree`], with `jobs` to run the custody jobs. Today's
+/// refusals come first (row W6, RR-13). Then the tree is removed only
+/// through custody (RR-9): it moves to `orphaned` (cause `dropped`), a
+/// `rescue` job puts it on a verified rescue ref, and 1 `worktree_remove`
+/// job removes it. With `keep_branch` the job keeps the branch.
+pub fn drop_worktree_with(
+    store: &mut Store,
+    git: &Git,
+    run_id: &str,
+    name: &str,
+    reason: &str,
+    keep_branch: bool,
+    jobs: &dyn RunJob,
 ) -> Result<WorktreeRow> {
     if reason.trim().is_empty() {
         bail!("give a nonempty --reason");
@@ -278,26 +298,34 @@ pub fn drop_worktree(
     if !keep_branch && !unique.is_empty() {
         bail!("worktree has unpublished commits that exist nowhere else; use --keep-branch; nothing removed");
     }
-    store.immediate(|tx| {
-        // Repeat the identity check after the ref/commit safety checks, directly
-        // before removal, so a checkout changed during those reads stays intact.
-        if verified_head(git, &root, &wt)? != head {
-            bail!("worktree HEAD changed during the drop checks; nothing removed");
+    // Repeat the identity check after the ref/commit safety checks, directly
+    // before removal, so a checkout changed during those reads stays intact.
+    if verified_head(git, &root, &wt)? != head {
+        bail!("worktree HEAD changed during the drop checks; nothing removed");
+    }
+    if path.exists() {
+        let cause = Cause {
+            actor: Actor::Worker,
+            text: "dropped",
+        };
+        if let Err(why) =
+            land::remove_tree(store.path(), jobs, &wt.worktree_id, cause, keep_branch)?
+        {
+            bail!("the worktree stays: {why}; nothing removed");
         }
-        if path.exists() {
-            git.run(&root, &["worktree", "remove", &wt.path])?;
-        }
-        // Keeping a redundant branch is preferable to force deletion; -d has
-        // its own upstream check and may conservatively refuse. The folder is gone.
-        if !keep_branch && git.branch_exists(&root, &wt.branch) {
-            let _ = git.try_run(&root, &["branch", "-d", &wt.branch]);
-        }
-        tx.execute(
-            &format!("UPDATE worktrees SET status={abandoned},reason=?2,cleaned_at=?3 WHERE worktree_id=?1",abandoned=word(WorktreeStatus::Abandoned)),
-            params![wt.worktree_id, reason, util::now()],
-        )?;
-        Ok(())
-    })?;
+    }
+    // Keeping a redundant branch is preferable to force deletion; -d has
+    // its own upstream check and may conservatively refuse. The folder is gone.
+    if !keep_branch && git.branch_exists(&root, &wt.branch) {
+        let _ = git.try_run(&root, &["branch", "-d", &wt.branch]);
+    }
+    store.conn().execute(
+        &format!(
+            "UPDATE worktrees SET status={abandoned},reason=?2,cleaned_at=?3 WHERE worktree_id=?1",
+            abandoned = word(WorktreeStatus::Abandoned)
+        ),
+        params![wt.worktree_id, reason, util::now()],
+    )?;
     finish::worktree(store.conn(), &wt.worktree_id)
 }
 

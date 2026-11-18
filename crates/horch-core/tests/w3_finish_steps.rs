@@ -122,6 +122,7 @@ impl World {
             shell: "/bin/sh".into(),
             reviewers_down: Vec::new(),
             codex: CodexSandbox::default(),
+            jobs: Some(std::sync::Arc::new(TestJobs)),
         };
         World {
             tmp,
@@ -521,7 +522,15 @@ fn a_dirty_worktree_is_kept_by_cleanup() {
     let (id, path) = w.task(None, "feature.txt");
     assert!(w.finish(&id).complete);
     std::fs::write(path.join("scratch.txt"), "x\n").unwrap();
-    let o = land::remove(&w.store, &w.tools.git, &w.worktree(), RUN_BRANCH, None).unwrap();
+    let o = land::remove_with(
+        &w.store,
+        &w.tools.git,
+        &w.worktree(),
+        RUN_BRANCH,
+        None,
+        &TestJobs,
+    )
+    .unwrap();
     assert_eq!(o.verdict.as_deref(), Some("kept"));
     assert_eq!(
         o.note,
@@ -563,7 +572,7 @@ fn a_failed_branch_delete_is_retried_by_the_watchdog() {
         )
         .unwrap();
     std::fs::remove_file(&lock).unwrap();
-    let out = land::retry_cleanup(&mut w.store, &w.tools.git).unwrap();
+    let out = land::retry_cleanup_with(&mut w.store, &w.tools.git, &TestJobs).unwrap();
     assert_eq!(out.len(), 1, "{out:?}");
     assert_eq!(out[0].0, path.to_string_lossy());
     assert_eq!(out[0].1.verdict.as_deref(), Some("0 bytes freed"));
@@ -1528,13 +1537,14 @@ fn dropped(
     keep_branch: bool,
 ) -> anyhow::Result<WorktreeRow> {
     let run_id = w.run.run_id.clone();
-    worktree_ops::drop_worktree(
+    worktree_ops::drop_worktree_with(
         &mut w.store,
         &w.tools.git,
         &run_id,
         name,
         reason,
         keep_branch,
+        &TestJobs,
     )
 }
 

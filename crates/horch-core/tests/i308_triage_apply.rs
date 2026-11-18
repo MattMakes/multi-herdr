@@ -342,7 +342,9 @@ fn no_decision_forces_git_or_force_deletes_a_branch() {
         assert!(a.ok, "{}", a.line());
     }
     let calls = std::fs::read_to_string(&log).unwrap();
-    assert!(calls.contains("worktree remove"), "{calls}");
+    // No decision runs `git worktree remove` itself: the custody jobs
+    // remove each folder (fleetd-p3 ticket 12).
+    assert!(!calls.contains("worktree remove"), "{calls}");
     for line in calls.lines() {
         let words: Vec<&str> = line.split_whitespace().collect();
         assert!(

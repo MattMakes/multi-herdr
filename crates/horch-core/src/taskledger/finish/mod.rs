@@ -14,6 +14,7 @@ pub mod land;
 pub mod pr;
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection};
@@ -61,6 +62,17 @@ pub struct Tools {
     pub reviewers_down: Vec<(String, String)>,
     /// What runs the check of a Codex worker inside its pane's sandbox.
     pub codex: CodexSandbox,
+    /// What runs the custody jobs of a step, with no transaction open (the
+    /// `rescue` and `worktree_remove` jobs of cleanup, the `worktree_add`
+    /// job of the run gate). `None`: the job process `horch job run` of
+    /// this `horch` binary. A test runs its jobs in its own process.
+    pub jobs: Option<Arc<dyn RunJob>>,
+}
+
+impl std::fmt::Debug for dyn RunJob {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RunJob")
+    }
 }
 
 /// The check of a Codex worker runs in the sandbox of its pane, not with
@@ -1345,6 +1357,9 @@ mod tests {
             shell: "/bin/sh".into(),
             reviewers_down: Vec::new(),
             codex: CodexSandbox::default(),
+            jobs: Some(std::sync::Arc::new(
+                crate::fleetd::worktree_custody::application::create::TestJobs,
+            )),
         };
         finish(&mut store, &tools, &worker_id).unwrap();
         complete(&mut store, &worker_id, "all done", None).unwrap();

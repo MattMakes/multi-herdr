@@ -41,6 +41,23 @@ pub fn worktree_add_key(row: &WorktreeRow) -> String {
     serde_json::json!([row.path, row.branch, row.base_commit]).to_string()
 }
 
+/// The branch of the tree of a run gate: it has none (row W11).
+pub const DETACHED: &str = "(detached)";
+
+/// The start of the folder name and of the mode name of the tree of a run
+/// gate: `_gate-<run slug>`.
+pub const GATE_PREFIX: &str = "_gate-";
+
+/// Whether `row` is the tree of a run gate: a scratch tree `_gate-<slug>`
+/// on no branch. Only such a tree is added detached.
+pub fn is_gate(row: &WorktreeRow) -> bool {
+    row.branch == DETACHED
+        && row
+            .mode
+            .as_ref()
+            .is_some_and(|m| m.scratch && m.name.starts_with(GATE_PREFIX))
+}
+
 /// The input key of the `worktree_list` job at `clock`: the number of the
 /// period of `period_s` seconds on the fleet clock. So 1 run is made for
 /// each period.
@@ -149,7 +166,17 @@ fn add(git: &dyn WorktreeGitGateway, row: &WorktreeRow) -> Result<Ran> {
             });
         }
     }
-    if git.branch_exists(repo, &row.branch)? {
+    if row.branch == DETACHED {
+        // The tree of a run gate: `git worktree add --detach` at its base
+        // tip, with no branch.
+        if !is_gate(row) {
+            return Ok(failed(format!(
+                "only the tree of a run gate is added with no branch: {}",
+                row.path
+            )));
+        }
+        git.add(repo, path, DETACHED, base)?;
+    } else if git.branch_exists(repo, &row.branch)? {
         // The branch of an earlier run of this task and name, or the
         // branch at the base tip of the row (a restore): the job attaches
         // it, with each of its commits, when no other tree holds it. A
@@ -861,6 +888,12 @@ impl WorktreeGitGateway for CliWorktreeGit {
         self.refuse_project_programs(repo)?;
         tree_folder(path)?;
         let path = path.to_str().context("the path of a tree is not UTF-8")?;
+        if branch == DETACHED {
+            // The tree of a run gate (`is_gate`); `--` ends the options.
+            return self
+                .git(repo, &["worktree", "add", "--detach", "--", path, base])
+                .map(drop);
+        }
         self.git(repo, &["worktree", "add", "-b", branch, path, base])
             .map(drop)
     }

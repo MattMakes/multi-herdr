@@ -260,7 +260,8 @@ impl World {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .unwrap();
         let row = trees::get(&tx, id).unwrap().unwrap();
-        let Ok(Queued::New(job)) = queue_remove(&ctx(&config), &tx, &row, "a test", CLOCK).unwrap()
+        let Ok(Queued::New(job)) =
+            queue_remove(&ctx(&config), &tx, &row, "a test", false, CLOCK).unwrap()
         else {
             panic!("no new worktree_remove run of {id}");
         };

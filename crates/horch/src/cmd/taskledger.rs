@@ -1849,6 +1849,13 @@ fn close_run_cmd(
     for note in &closed.notes {
         output::println(note);
     }
+    // The gate folder goes after the close commits: its custody jobs run
+    // with no transaction open.
+    if closed.parked.is_empty() {
+        if let Some(note) = runs::remove_gate_tree(store, t, r)? {
+            output::println(&note);
+        }
+    }
     for (task, _) in &closed.cancelled {
         output::println(&format!("{task} cancelled."));
     }
@@ -1911,7 +1918,7 @@ fn gate_cmd(
         r.run_branch.as_deref().unwrap_or("-"),
         runs::gate_dir(r).display()
     ));
-    let ran = runs::run_gate(&t.git, &t.shell, r, &command, &log_dir)?;
+    let ran = runs::run_gate(store, t, r, &command, &log_dir)?;
     let gate = store.immediate(|tx| runs::record_gate(tx, &ran))?;
     let log = gate.log_path.as_deref().unwrap_or("(no log)");
     if gate.passed() {
@@ -2599,6 +2606,8 @@ pub fn tools(ctx: &RuntimeContext) -> finish::Tools {
             state_root: ctx.paths.state_root.clone(),
             personas: Vec::new(),
         },
+        // The job process `horch job run` of this binary.
+        jobs: None,
     }
 }
 
@@ -3190,6 +3199,12 @@ fn record_pids(
     })
 }
 
+/// The job runner of the integration tests of `horch-core`: a unit test is
+/// not `horch`, so its custody jobs run in the test process.
+#[cfg(test)]
+#[path = "../../../horch-core/tests/common/test_jobs.rs"]
+mod test_jobs;
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -3604,6 +3619,8 @@ mod tests {
         let mut t = tools(&ctx);
         t.git = Git::new("git");
         t.gh = gh;
+        // A unit test is not `horch`: its jobs run in the test process.
+        t.jobs = Some(std::sync::Arc::new(super::test_jobs::TestJobs));
         t.evidence_root = dir.join("evidence");
         let mut store = Store::open(&dir.join("ledger.sqlite3")).unwrap();
         let run = store

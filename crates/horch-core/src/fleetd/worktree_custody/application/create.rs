@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::fleetd::fleet_runtime::adapters::clock_store;
 use crate::fleetd::fleet_runtime::adapters::config_file;
-use crate::fleetd::fleet_runtime::adapters::jobs_store::{self, JobRow};
+use crate::fleetd::fleet_runtime::adapters::jobs_store::JobRow;
 use crate::fleetd::fleet_runtime::adapters::sqlite::{drop_reserved, state_of};
 use crate::fleetd::fleet_runtime::application::jobs::{
     self, outcome, result_data, JobCtx, JobKey, NewItem, Queued,
@@ -38,14 +38,13 @@ use crate::fleetd::worktree_custody::adapters::executors;
 use crate::fleetd::worktree_custody::adapters::git::{
     worktree_add_key, BranchRefused, CliWorktreeGit, NoSandbox,
 };
-use crate::fleetd::worktree_custody::adapters::remove_git::remove_key;
 use crate::fleetd::worktree_custody::adapters::rescue_git::rescue_key;
 use crate::fleetd::worktree_custody::adapters::run_now::{run_now, Starter};
 use crate::fleetd::worktree_custody::adapters::sqlite::{
     self as store, NewWorktree, WorktreeRow, WorktreeState,
 };
 use crate::fleetd::worktree_custody::application::ports::WorktreeGitGateway;
-use crate::fleetd::worktree_custody::application::rescue;
+use crate::fleetd::worktree_custody::application::{remove, rescue};
 use crate::runtime::bins::{git_bin, BinOverrides};
 use crate::runtime::context::{EnvSource, ProcessEnv};
 use crate::runtime::paths::nonempty_path;
@@ -283,8 +282,7 @@ fn refuse_live_owner(tx: &Connection, row: &WorktreeRow, attempt: Option<&str>) 
 /// transactions.
 fn refuse_while_removal_active(tx: &Connection, row: &WorktreeRow) -> Result<()> {
     let id = row.worktree_id.as_str();
-    let key = remove_key(&row.path);
-    let Some(run) = jobs_store::latest(tx, Kind::WorktreeRemove, id, &key)? else {
+    let Some(run) = remove::latest_removal(tx, id, &row.path)? else {
         return Ok(());
     };
     if matches!(run.state, State::Queued | State::Running | State::Passed) {

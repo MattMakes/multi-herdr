@@ -53,7 +53,8 @@ pub fn run_in(conn: &Connection, row: &JobRow, host: SandboxHost) -> Result<Ran>
             Ok(ran)
         }),
         Kind::WorktreeRemove => on_tree(conn, row, |tree| {
-            let ran = remove(conn, git.reading(&repo(tree)), &root, tree)?;
+            let (_, keep_branch) = remove_git::read_remove_key(&row.input_key);
+            let ran = remove(conn, git.reading(&repo(tree)), &root, tree, keep_branch)?;
             rescue_git::drop_index_folder(&root, tree);
             Ok(ran)
         }),
@@ -115,7 +116,13 @@ fn list(conn: &Connection, row: &JobRow, git: &CliWorktreeGit) -> Result<Ran> {
 
 /// A `worktree_remove` job: git can write the git folder, the tree and its
 /// quarantine folder.
-fn remove(conn: &Connection, git: CliWorktreeGit, root: &Path, tree: &WorktreeRow) -> Result<Ran> {
+fn remove(
+    conn: &Connection,
+    git: CliWorktreeGit,
+    root: &Path,
+    tree: &WorktreeRow,
+    keep_branch: bool,
+) -> Result<Ran> {
     let quarantine = removal::quarantine_path(Path::new(&tree.path), &tree.worktree_id);
     let git = match git::tree_writer(git, tree) {
         Ok(git) => git.writing(&[quarantine]),
@@ -131,6 +138,7 @@ fn remove(conn: &Connection, git: CliWorktreeGit, root: &Path, tree: &WorktreeRo
         landed.as_deref(),
         &owner,
         &ledger,
+        keep_branch,
     ))
 }
 

@@ -10,7 +10,7 @@
 use anyhow::{bail, Result};
 use rusqlite::{params, Connection};
 
-use crate::fleetd::fleet_runtime::adapters::jobs_store::JobRow;
+use crate::fleetd::fleet_runtime::adapters::jobs_store::{self, JobRow};
 use crate::fleetd::fleet_runtime::application::jobs::{
     self, outcome, result_data, JobCtx, JobKey, NewItem, Queued,
 };
@@ -27,15 +27,19 @@ use crate::taskledger::model::Actor;
 use crate::taskledger::util;
 
 /// Queue 1 `worktree_remove` run of the tree of `row`, in `tx`: subject
-/// its worktree id, input key its path, repository its repository. Only a
-/// row that is `landed` or `rescued` in `tx` is queued. Each other state is
-/// refused: the inner `Err` holds its reason and `cause`, the reason of the
-/// caller, and no run is queued.
+/// its worktree id, input key its path and `keep_branch`
+/// ([`remove_key`]), repository its repository. Only a row that is
+/// `landed` or `rescued` in `tx` is queued. Each other state is refused:
+/// the inner `Err` holds its reason and `cause`, the reason of the caller,
+/// and no run is queued. 1 tree has at most 1 open removal: an open run
+/// of the tree is given back, and an open run with the other
+/// `keep_branch` is refused.
 pub fn queue_remove(
     ctx: &JobCtx<'_>,
     tx: &Connection,
     row: &WorktreeRow,
     cause: &str,
+    keep_branch: bool,
     clock: FleetSeconds,
 ) -> Result<Result<Queued, String>> {
     let id = row.worktree_id.as_str();
@@ -45,13 +49,36 @@ pub fn queue_remove(
     if let Err(why) = removal::removable(id, now.state.as_str()) {
         return Ok(Err(format!("{why} ({cause})")));
     }
-    let input_key = remove_key(&now.path);
+    let input_key = remove_key(&now.path, keep_branch);
     let key = JobKey {
         kind: Kind::WorktreeRemove,
         subject: id,
         input_key: &input_key,
     };
-    Ok(Ok(jobs::queue(ctx, tx, &key, Some(&now.repo_root), clock)?))
+    match jobs::queue(ctx, tx, &key, Some(&now.repo_root), clock)? {
+        Queued::Active(open) if open.input_key != input_key => Ok(Err(format!(
+            "worktree {id} has the worktree_remove job {} in {} with another input; \
+             run the command again after it ends ({cause})",
+            open.id,
+            open.state.as_str()
+        ))),
+        q => Ok(Ok(q)),
+    }
+}
+
+/// The newest `worktree_remove` run of the tree `id` at `path`, with
+/// either `keep_branch`.
+pub fn latest_removal(tx: &Connection, id: &str, path: &str) -> Result<Option<JobRow>> {
+    let mut newest: Option<JobRow> = None;
+    for keep_branch in [false, true] {
+        let key = remove_key(path, keep_branch);
+        if let Some(run) = jobs_store::latest(tx, Kind::WorktreeRemove, id, &key)? {
+            if newest.as_ref().is_none_or(|n| run.id > n.id) {
+                newest = Some(run);
+            }
+        }
+    }
+    Ok(newest)
 }
 
 /// What [`observe`] did with the row of the tree.

@@ -118,6 +118,7 @@ impl World {
             shell: "/bin/sh".into(),
             reviewers_down: Vec::new(),
             codex: CodexSandbox::default(),
+            jobs: Some(std::sync::Arc::new(TestJobs)),
         };
         let mut t = NewTask::work("feature", "t.md", "opus");
         t.review_mode = mode;

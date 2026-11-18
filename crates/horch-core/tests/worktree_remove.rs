@@ -33,7 +33,7 @@ use horch_core::fleetd::worker_profiles::adapters::launcher::Launcher;
 use horch_core::fleetd::worker_profiles::application::ports::LaunchSpec;
 use horch_core::fleetd::worktree_custody::adapters::git::CliWorktreeGit;
 use horch_core::fleetd::worktree_custody::adapters::remove_git::{
-    self, CliRemoval, Owner, RemovalGateway, Removed,
+    self, read_remove_key, remove_key, CliRemoval, Owner, RemovalGateway, Removed,
 };
 use horch_core::fleetd::worktree_custody::adapters::rescue_git::rescue_key;
 use horch_core::fleetd::worktree_custody::adapters::sqlite::{
@@ -314,13 +314,26 @@ impl World {
     /// Queue the `worktree_remove` run of the tree `name` with
     /// `queue_remove`, in 1 transaction.
     fn queue_remove(&mut self, name: &str) -> Result<Queued, String> {
+        self.queue_remove_keeping(name, false)
+    }
+
+    /// [`World::queue_remove`] with `keep_branch`.
+    fn queue_remove_keeping(&mut self, name: &str, keep_branch: bool) -> Result<Queued, String> {
         let row = self.row(name);
         let config = self.config.clone();
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .unwrap();
-        let q = remove::queue_remove(&ctx(&config), &tx, &row, "test", FleetSeconds(0)).unwrap();
+        let q = remove::queue_remove(
+            &ctx(&config),
+            &tx,
+            &row,
+            "test",
+            keep_branch,
+            FleetSeconds(0),
+        )
+        .unwrap();
         tx.commit().unwrap();
         q
     }
@@ -375,7 +388,14 @@ impl World {
         let landed = self.landed_commit(name);
         let db = Connection::open(self.dir.path().join("ledger.sqlite3")).unwrap();
         let ledger = |id: &str| trees::get(&db, id);
-        let ran = remove_git::remove(gw, &row, landed.as_deref(), &Owner::NoAttempt, &ledger);
+        let ran = remove_git::remove(
+            gw,
+            &row,
+            landed.as_deref(),
+            &Owner::NoAttempt,
+            &ledger,
+            false,
+        );
         jobs_store::set_result(&self.conn, id, &result_json(&ran)).unwrap();
         let facts = [ProcessFact {
             key: id.to_string(),
@@ -1298,4 +1318,56 @@ impl RemovalGateway for Quarantine {
         }
         self.inner.remove(repo, tree, force)
     }
+}
+
+/// 1 tree has at most 1 open removal: while a run of 1 `keep_branch` is
+/// queued or running, `queue_remove` gives that run back for the same
+/// input and refuses the other input. After the run ends, the other input
+/// is queued.
+#[test]
+fn queue_remove_keeps_at_most_1_open_removal_of_a_tree() {
+    let mut w = world();
+    w.tree("t1", None);
+    w.set_state("t1", "landed");
+    let path = w.row("t1").path;
+    let id = w.queued_remove("t1");
+    assert_eq!(w.job(id).input_key, remove_key(&path, false));
+    for open in ["queued", "running"] {
+        if open == "running" {
+            w.start(id);
+        }
+        match w.queue_remove("t1") {
+            Ok(Queued::Active(run)) => assert_eq!(run.id, id),
+            other => panic!("{open}: expected the open run, got {other:?}"),
+        }
+        let why = w.queue_remove_keeping("t1", true).unwrap_err();
+        assert!(
+            why.contains(&format!("the worktree_remove job {id} in {open}")),
+            "{why}"
+        );
+        assert!(why.contains("with another input"), "{why}");
+    }
+    let runs: i64 = w
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM jobs WHERE kind = 'worktree_remove'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(runs, 1, "no second run is queued");
+    w.conn
+        .execute(
+            "UPDATE jobs SET state = 'failed', ended_at = '2026-01-01T00:00:00Z' WHERE id = ?1",
+            [id],
+        )
+        .unwrap();
+    let keep = match w.queue_remove_keeping("t1", true) {
+        Ok(Queued::New(keep)) => keep,
+        other => panic!("expected a new run, got {other:?}"),
+    };
+    let key = w.job(keep).input_key;
+    assert_eq!(key, remove_key(&path, true));
+    assert_eq!(read_remove_key(&key), (path.as_str(), true));
+    assert_eq!(read_remove_key(&path), (path.as_str(), false));
 }

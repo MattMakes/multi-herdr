@@ -35,7 +35,6 @@ use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use crate::fleetd::fleet_runtime::domain::jobs::{Kind, State};
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 use crate::fleetd::worktree_custody::adapters::git::{worktree_add_key, ListResult};
-use crate::fleetd::worktree_custody::adapters::remove_git::remove_key;
 use crate::fleetd::worktree_custody::adapters::rescue_git::rescue_key;
 use crate::fleetd::worktree_custody::adapters::sqlite::{
     self as store, NewWorktree, WorktreeRow, WorktreeState,
@@ -184,10 +183,7 @@ fn observe_runs(ctx: &JobCtx<'_>, tx: &Connection, report: &mut Report) -> Resul
                 }
                 None => None,
             },
-            TreeJob::Remove => {
-                let key = remove_key(&row.path);
-                jobs_store::latest(tx, Kind::WorktreeRemove, id, &key)?
-            }
+            TreeJob::Remove => remove::latest_removal(tx, id, &row.path)?,
         };
         let Some(job) = run.filter(|j| matches!(j.state, State::Passed | State::Failed)) else {
             continue;

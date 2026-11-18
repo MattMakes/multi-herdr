@@ -38,9 +38,30 @@ use crate::fleetd::worktree_custody::adapters::sqlite::WorktreeRow;
 use crate::fleetd::worktree_custody::application::ports::WorktreeGitGateway;
 use crate::fleetd::worktree_custody::domain::removal::{self, Basis, Fact, Facts, Record, Saved};
 
-/// The input key of a `worktree_remove` job: the path of the tree.
-pub fn remove_key(path: &str) -> String {
-    path.to_string()
+/// The start of the input key of a removal that keeps the branch. A path
+/// is absolute, so it never starts with it.
+const KEEP_BRANCH: &str = "keep-branch:";
+
+/// The input key of a `worktree_remove` job: the path of the tree, after
+/// `keep-branch:` when the job keeps the branch (`horch ledger worktree
+/// drop --keep-branch`). The 1 function that makes the key;
+/// [`read_remove_key`] reads it back.
+pub fn remove_key(path: &str, keep_branch: bool) -> String {
+    if keep_branch {
+        format!("{KEEP_BRANCH}{path}")
+    } else {
+        path.to_string()
+    }
+}
+
+/// The path and the `keep_branch` of the input key `key` that
+/// [`remove_key`] made. A key of a run from before `keep_branch` is the
+/// path alone: it does not keep the branch.
+pub fn read_remove_key(key: &str) -> (&str, bool) {
+    match key.strip_prefix(KEEP_BRANCH) {
+        Some(path) => (path, true),
+        None => (key, false),
+    }
 }
 
 /// What a passed removal did: the result data of the run.
@@ -54,6 +75,9 @@ pub struct Removed {
     pub ignored_files: u64,
     /// The branch was merged into the base of the row and is deleted.
     pub branch_deleted: bool,
+    /// The job kept the branch because its input asked for it.
+    #[serde(default)]
+    pub keep_branch: bool,
 }
 
 /// The owner attempt of the tree, as the ledger records it.
@@ -293,8 +317,9 @@ pub fn remove(
     landed_commit: Option<&str>,
     owner: &Owner,
     ledger: ReadRow<'_>,
+    keep_branch: bool,
 ) -> Ran {
-    match run(gw, row, landed_commit, owner, ledger) {
+    match run(gw, row, landed_commit, owner, ledger, keep_branch) {
         Ok(r) => Ran {
             outcome: Outcome {
                 passed: true,
@@ -304,7 +329,11 @@ pub fn remove(
                     r.path,
                     r.ignored_files,
                     r.branch,
-                    if r.branch_deleted { "deleted" } else { "kept" }
+                    match (r.branch_deleted, r.keep_branch) {
+                        (true, _) => "deleted",
+                        (false, true) => "kept, as the job input asks",
+                        (false, false) => "kept",
+                    }
                 ),
             },
             data: Some(serde_json::to_value(&r).expect("a removal serializes")),
@@ -322,6 +351,7 @@ fn run(
     landed_commit: Option<&str>,
     owner: &Owner,
     ledger: ReadRow<'_>,
+    keep_branch: bool,
 ) -> Result<Removed, String> {
     let id = row.worktree_id.as_str();
     let basis = removal::basis(
@@ -344,8 +374,9 @@ fn run(
         facts.ignored_files.unwrap_or(0)
     };
     // The tree is gone: a branch that cannot be deleted stays, and the run
-    // still passes.
-    let branch_deleted = matches!(gw.merged(repo, &row.branch, &row.base), Ok(true))
+    // still passes. A job that keeps the branch never deletes it.
+    let branch_deleted = !keep_branch
+        && matches!(gw.merged(repo, &row.branch, &row.base), Ok(true))
         && gw.delete_branch(repo, &row.branch, &row.base).is_ok();
     Ok(Removed {
         path: row.path.clone(),
@@ -353,6 +384,7 @@ fn run(
         forced: basis.force(),
         ignored_files,
         branch_deleted,
+        keep_branch,
     })
 }
 
