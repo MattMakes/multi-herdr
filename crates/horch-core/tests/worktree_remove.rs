@@ -60,11 +60,21 @@ struct World {
 /// A temp ledger of the current schema, and a temp repository with 1
 /// commit on `main` that holds `a.txt` and `.gitignore`.
 fn world() -> World {
+    world_in(tempfile::tempdir().unwrap())
+}
+
+/// [`world`] in a temp folder below HOME, where the repository of a user
+/// is. The folder goes at the end of the test.
+fn world_below_home() -> World {
+    let home = std::env::var_os("HOME").expect("HOME is set");
+    world_in(tempfile::tempdir_in(home).unwrap())
+}
+
+fn world_in(dir: tempfile::TempDir) -> World {
     assert!(
         std::env::var_os("FLEET_ROOT").is_none(),
         "these tests use the fleet root of their temp ledger"
     );
-    let dir = tempfile::tempdir().unwrap();
     let mut conn = Connection::open(dir.path().join("ledger.sqlite3")).unwrap();
     conn.busy_timeout(Duration::from_secs(10)).unwrap();
     schema::migrate_to(&mut conn, schema::VERSION).unwrap();
@@ -620,6 +630,21 @@ fn rr9_rescue_ref_is_read_back_before_removal() {
         .collect();
     assert_eq!(files(&back), want);
     assert!(git(&w.repo, &["branch", "--list", "fleet/t1"]).contains("fleet/t1"));
+}
+
+/// The sandbox hides HOME from git, but git can read the metadata of each
+/// folder above the repository and the fleet root.
+#[test]
+fn remove_deletes_the_tree_of_a_repository_below_home() {
+    let mut w = world_below_home();
+    let path = w.rescued("t1");
+
+    let (ended, seen) = w.remove("t1");
+
+    assert_eq!(ended.state, State::Passed, "{}", text(&ended));
+    assert_eq!(seen, Observed::Removed);
+    assert!(!path.exists(), "the folder is gone");
+    assert_eq!(w.row("t1").state, WorktreeState::Removed);
 }
 
 #[test]

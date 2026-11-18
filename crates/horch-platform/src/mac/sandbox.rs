@@ -5,7 +5,11 @@
 //! a readable path allows reads and denies writes, a writable path allows
 //! both, and a hidden path denies each file read, file write and Unix
 //! socket connection. The last rule that matches an act wins, so the rule
-//! of the longest path wins. With no network it denies each network act.
+//! of the longest path wins. Then each folder from a hidden path down to
+//! the parent of a readable or writable path in it allows a metadata read
+//! of that folder only (`stat`, `lstat`, `getattrlist`), so a program can
+//! make the leading folders of its path. It cannot list the folder or read
+//! a file in it. With no network it denies each network act.
 //! The paths reach the profile as parameters (`-D P<n>=<path>`), so a path
 //! needs no quoting in it.
 
@@ -55,9 +59,36 @@ pub(crate) fn args(rules: &[Rule<'_>], _temp: bool, network: Network) -> Vec<OsS
         value.push(path);
         args.extend([OsString::from("-D"), value]);
     }
+    for (n, folder) in hidden_parents(rules).into_iter().enumerate() {
+        profile.push_str(&format!(
+            "(allow file-read-metadata (literal (param \"M{n}\")))"
+        ));
+        let mut value = OsString::from(format!("M{n}="));
+        value.push(folder);
+        args.extend([OsString::from("-D"), value]);
+    }
     if network == Network::Denied {
         profile.push_str("(deny network*)");
     }
     args.extend([OsString::from("-p"), OsString::from(profile)]);
     args
+}
+
+/// Each folder that a hidden rule reaches and that holds a readable or
+/// writable path of `rules`, once. The rule that reaches a folder is the
+/// last rule of `rules` that holds it.
+fn hidden_parents<'a>(rules: &[Rule<'a>]) -> Vec<&'a Path> {
+    let mut folders = Vec::new();
+    for rule in rules {
+        let (Rule::Read(path) | Rule::Write(path)) = *rule else {
+            continue;
+        };
+        for folder in path.ancestors().skip(1) {
+            let reaching = rules.iter().rev().find(|r| folder.starts_with(r.path()));
+            if matches!(reaching, Some(Rule::Hide(_))) && !folders.contains(&folder) {
+                folders.push(folder);
+            }
+        }
+    }
+    folders
 }

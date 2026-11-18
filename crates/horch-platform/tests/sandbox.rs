@@ -340,6 +340,45 @@ fn hiding_sandbox_writes_a_writable_path_in_a_hidden_folder() {
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "hello\n");
 }
 
+/// git makes the leading folders of a path with a `stat` of each parent
+/// folder. So the command can read the metadata of each folder between a
+/// hidden path and a writable path in it, but it cannot list such a folder,
+/// read a file in it or see a path beside the writable path.
+#[test]
+fn hiding_sandbox_shows_only_the_metadata_of_the_parent_folders_of_a_writable_path() {
+    let dir = test_dir();
+    let home = dir.path().join("home");
+    let parent = home.join("a");
+    let tree = parent.join("b").join("tree");
+    std::fs::create_dir_all(&tree).unwrap();
+    std::fs::create_dir_all(parent.join("sibling")).unwrap();
+    std::fs::write(parent.join("secret"), "secret\n").unwrap();
+    std::fs::write(home.join("peer"), "peer\n").unwrap();
+    let script = "test -d \"$1\" && test -d \"$1/a\" && test -d \"$1/a/b\" && echo stat-ok\n\
+                  mkdir -p \"$2/x/y\" && echo mkdir-ok\n\
+                  ls -a \"$1\" \"$1/a\" \"$1/a/b\"\n\
+                  cat \"$1/a/secret\" \"$1/peer\"\n\
+                  test -e \"$1/a/sibling\" && echo sibling-seen\n\
+                  true";
+    let reach = Reach {
+        writable: std::slice::from_ref(&tree),
+        readable: &[],
+        hidden: std::slice::from_ref(&home),
+        denied: &Denials::default(),
+        network: Network::Open,
+    };
+    let Some(out) = run_reach(sh(script, &[&home, &tree]), &reach) else {
+        return;
+    };
+    let seen = String::from_utf8_lossy(&out.stdout);
+    assert!(seen.contains("stat-ok"), "{out:?}");
+    assert!(seen.contains("mkdir-ok"), "{out:?}");
+    assert!(tree.join("x").join("y").is_dir());
+    for hidden in ["secret", "sibling", "peer"] {
+        assert!(!seen.contains(hidden), "{hidden} is visible: {out:?}");
+    }
+}
+
 #[test]
 fn hiding_sandbox_hides_a_hidden_path_in_a_writable_path() {
     let dir = test_dir();

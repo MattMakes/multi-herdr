@@ -56,7 +56,17 @@ struct World {
 /// A temp ledger of the current schema, and a temp repository with 1
 /// commit on `main`.
 fn world() -> World {
-    let dir = tempfile::tempdir().unwrap();
+    world_in(tempfile::tempdir().unwrap())
+}
+
+/// [`world`] in a temp folder below HOME, where the repository of a user
+/// is. The folder goes at the end of the test.
+fn world_below_home() -> World {
+    let home = std::env::var_os("HOME").expect("HOME is set");
+    world_in(tempfile::tempdir_in(home).unwrap())
+}
+
+fn world_in(dir: tempfile::TempDir) -> World {
     let db = dir.path().join("ledger.sqlite3");
     let mut conn = open(&db);
     schema::migrate_to(&mut conn, schema::VERSION).unwrap();
@@ -513,6 +523,46 @@ fn worktree_add_job_refuses_a_branch_it_cannot_prove_safe_and_keeps_it() {
 }
 
 // ─── worktree_list ──────────────────────────────────────────────────────
+
+/// The sandbox hides HOME from git, but git can read the metadata of each
+/// folder above the repository, so it can make the leading folders of the
+/// tree.
+#[test]
+fn worktree_add_job_makes_the_tree_of_a_repository_below_home() {
+    let mut w = world_below_home();
+    let row = w.reserve("t1", "fleet/t1");
+    let id = w.queue_add(&row);
+
+    let ended = w.run(id);
+
+    assert_eq!(ended.state, State::Passed, "{}", text(&ended));
+    let path = w.tree_path("t1");
+    assert_eq!(git(&path, &["rev-parse", "HEAD"]), w.base);
+    assert_eq!(git(&path, &["branch", "--show-current"]), "fleet/t1");
+}
+
+#[test]
+fn worktree_list_job_reports_the_trees_of_a_repository_below_home() {
+    let mut w = world_below_home();
+    let row = w.reserve("t1", "fleet/t1");
+    let tree = w.tree_path("t1").display().to_string();
+    git(
+        &w.repo,
+        &["worktree", "add", "-q", "-b", "fleet/t1", &tree, "main"],
+    );
+    let id = w.queue_list(125);
+
+    let ended = w.run(id);
+
+    assert_eq!(ended.state, State::Passed, "{}", text(&ended));
+    let result = list_result(&ended);
+    assert_eq!(result.entries.len(), 2, "{result:?}");
+    let facts = result.trees.iter().find(|t| t.path == tree).unwrap();
+    assert_eq!(facts.worktree_id.as_deref(), Some(row.worktree_id.as_str()));
+    assert_eq!(facts.head.as_deref(), Some(w.base.as_str()));
+    assert_eq!(facts.dirty, Some(false));
+    assert_eq!(facts.error, None);
+}
 
 #[test]
 fn worktree_list_job_reports_each_entry_with_prunable_and_locked() {
@@ -1136,6 +1186,71 @@ fn race_driver_cannot_read_a_file_below_home_outside_the_job_paths() {
     assert!(w.repo.join("ran.txt").exists(), "the driver ran: {out:?}");
     let stolen = std::fs::read_to_string(w.repo.join("stolen.txt")).unwrap_or_default();
     assert!(!stolen.contains("secret"), "the driver read HOME: {out:?}");
+}
+
+/// git can read the metadata of each folder above a repository below the
+/// real HOME, and nothing more: a driver cannot read `~/.ssh` or a file
+/// beside the repository, and a listing of a parent folder shows no real
+/// entry of it.
+#[test]
+fn race_driver_in_a_repository_below_home_cannot_read_or_list_home() {
+    let w = world_below_home();
+    let home = PathBuf::from(std::env::var_os("HOME").unwrap())
+        .canonicalize()
+        .unwrap();
+    let world = w.dir.path().canonicalize().unwrap();
+    let beside = world.join("secret.txt");
+    std::fs::write(&beside, "secret\n").unwrap();
+    // The program is outside HOME, so git can start it.
+    let outside = tempfile::tempdir().unwrap();
+    let program = outside.path().join("steal.sh");
+    let ssh = home.join(".ssh");
+    let script = format!(
+        "#!/bin/sh\necho ran > '{repo}/ran.txt'\n\
+         for f in '{ssh}'/* '{ssh}/config' '{ssh}/id_ed25519' '{ssh}/id_rsa' '{ssh}/known_hosts' '{beside}'; do\n\
+         cat \"$f\" > /dev/null 2>&1 && echo \"read $f\" >> '{repo}/seen.txt'\ndone\n\
+         for d in '{home}' '{ssh}' '{world}'; do\n\
+         ls -A \"$d\" 2> /dev/null | sed \"s|^|$d/|\" >> '{repo}/listed.txt'\ndone\n\
+         exit 1\n",
+        repo = w.repo.display(),
+        ssh = ssh.display(),
+        beside = beside.display(),
+        home = home.display(),
+        world = world.display(),
+    );
+    std::fs::write(&program, script).unwrap();
+    make_executable(&program);
+    git(&w.repo, &["checkout", "-q", "-b", "other"]);
+    std::fs::write(w.repo.join("a.txt"), "other\n").unwrap();
+    git(&w.repo, &["commit", "-q", "-am", "other"]);
+    git(&w.repo, &["checkout", "-q", "main"]);
+    std::fs::write(w.repo.join("a.txt"), "main\n").unwrap();
+    git(&w.repo, &["commit", "-q", "-am", "main"]);
+    let (repo, program_s) = (w.repo.clone(), program.display().to_string());
+    let git = w
+        .fleet_git()
+        .writing(std::slice::from_ref(&w.repo))
+        .with_race(once("merge-tree", move || {
+            select_driver(&repo, "merge=evil");
+            set_config(&repo, "merge.evil.driver", &program_s);
+        }));
+
+    let out = git.checked(&w.repo, &["merge-tree", "--write-tree", "main", "other"]);
+
+    assert!(w.repo.join("ran.txt").exists(), "the driver ran: {out:?}");
+    let seen = std::fs::read_to_string(w.repo.join("seen.txt")).unwrap_or_default();
+    assert_eq!(seen, "", "the driver read below HOME: {out:?}");
+    // macOS refuses each listing. On Linux bwrap makes the parent folders
+    // of each mount in a new tmpfs: a listing shows only the parents of the
+    // repository and of the hidden run folder.
+    let listed = std::fs::read_to_string(w.repo.join("listed.txt")).unwrap_or_default();
+    let run = world.join("fleet").join("run");
+    for path in listed.lines() {
+        assert!(
+            w.repo.starts_with(path) || run.starts_with(path),
+            "the driver listed {path}, which is not a parent of a mount: {listed}"
+        );
+    }
 }
 
 #[test]

@@ -54,11 +54,21 @@ struct World {
 /// A temp ledger of the current schema, and a temp repository with 1
 /// commit on `main` that holds `a.txt` and `.gitignore`.
 fn world() -> World {
+    world_in(tempfile::tempdir().unwrap())
+}
+
+/// [`world`] in a temp folder below HOME, where the repository of a user
+/// is. The folder goes at the end of the test.
+fn world_below_home() -> World {
+    let home = std::env::var_os("HOME").expect("HOME is set");
+    world_in(tempfile::tempdir_in(home).unwrap())
+}
+
+fn world_in(dir: tempfile::TempDir) -> World {
     assert!(
         std::env::var_os("FLEET_ROOT").is_none(),
         "these tests use the fleet root of their temp ledger"
     );
-    let dir = tempfile::tempdir().unwrap();
     let mut conn = Connection::open(dir.path().join("ledger.sqlite3")).unwrap();
     conn.busy_timeout(Duration::from_secs(10)).unwrap();
     schema::migrate_to(&mut conn, schema::VERSION).unwrap();
@@ -475,6 +485,22 @@ fn fm_killed_worker_dirty_untracked_files_on_verified_rescue_ref() {
     );
     assert_eq!(r.old_head, before.head);
     assert_eq!(view(&tree, "fleet/t1"), before, "the tree did not change");
+}
+
+/// The sandbox hides HOME from git, but git can read the metadata of each
+/// folder above the repository and the fleet root.
+#[test]
+fn rescue_job_saves_the_tree_of_a_repository_below_home() {
+    let mut w = world_below_home();
+    let tree = w.orphan("t1");
+    work_in(&tree);
+    let id = w.queue("t1");
+
+    let job = w.run(id);
+
+    assert_eq!(job.state, State::Passed, "{}", text(&job));
+    let r = saved(&job);
+    assert_eq!(w.observe(id), Observed::Rescued(r.rescue_ref));
 }
 
 #[test]

@@ -26,11 +26,7 @@ fn roster() -> Roster {
 
 fn strings(v: &Value) -> Vec<String> {
     v.as_array()
-        .map(|a| {
-            a.iter()
-                .map(|s| s.as_str().unwrap().to_string())
-                .collect()
-        })
+        .map(|a| a.iter().map(|s| s.as_str().unwrap().to_string()).collect())
         .unwrap_or_default()
 }
 
@@ -100,7 +96,10 @@ fn idea_lead_is_interactive() {
     let t = roster().require("idea-lead").unwrap().clone();
     let profile = t.profile();
     assert_eq!(profile.mode, Mode::Interactive);
-    assert!(t.mode.is_some(), "the file states the mode, not the default");
+    assert!(
+        t.mode.is_some(),
+        "the file states the mode, not the default"
+    );
     assert_eq!(profile.fallback(), Some("codex-sol"));
 }
 
@@ -114,8 +113,15 @@ fn idea_lead_sandbox_denies_the_operator_path() {
 
     let own = Value::Object(t.sandbox.clone().expect("idea-lead has a sandbox"));
     let fs = &own["filesystem"];
-    assert_eq!(strings(&fs["allowWrite"]), [ideas.clone()], "its idea folders only");
-    assert!(strings(&fs["denyRead"]).contains(&token), "no read of the token");
+    assert_eq!(
+        strings(&fs["allowWrite"]),
+        [ideas.clone()],
+        "its idea folders only"
+    );
+    assert!(
+        strings(&fs["denyRead"]).contains(&token),
+        "no read of the token"
+    );
     assert!(
         strings(&fs["denyWrite"]).contains(&run),
         "no write into run/: the request folder and the channel socket"
@@ -160,8 +166,14 @@ fn idea_lead_sandbox_denies_the_operator_path() {
 fn idea_lead_briefing_names_each_phase() {
     let r = roster();
     let t = r.require("idea-lead").unwrap();
-    let p = prompts::worker_prompt(&r, t, "idea-0012", "Phase: clarifying", &SessionMode::Fresh(None))
-        .unwrap();
+    let p = prompts::worker_prompt(
+        &r,
+        t,
+        "idea-0012",
+        "Phase: clarifying",
+        &SessionMode::Fresh(None),
+    )
+    .unwrap();
     for phase in ["clarifying", "specifying", "ticketing", "supervising"] {
         assert!(p.contains(&format!("== Phase: {phase} ==")), "{phase}");
     }

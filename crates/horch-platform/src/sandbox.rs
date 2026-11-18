@@ -127,8 +127,15 @@ pub struct Denials {
 /// 1 path in 2 lists, hidden wins over writable, and writable over
 /// readable.
 ///
+/// A program makes the leading folders of a path with a `stat` of each
+/// parent folder. So the command can read the metadata of each folder
+/// from a hidden path down to the parent of a readable or writable path in
+/// it. It cannot list such a folder or read a file in it.
+///
 /// - macOS: Seatbelt checks each file read and write and each Unix socket
-///   connection against the rules, whether the path exists or not.
+///   connection against the rules, whether the path exists or not. Each
+///   such parent folder allows a metadata read of that folder only, so
+///   the command sees its real mode, owner, size, link count and times.
 /// - Linux: the rules are mounts, from the shortest path to the longest.
 ///   A new empty tmpfs covers each hidden folder, and `/dev/null` covers
 ///   each hidden file, so a socket file in a hidden folder is gone. A path
@@ -137,7 +144,10 @@ pub struct Denials {
 ///   and a writable one is not writable. So give writable paths that
 ///   exist. An abstract Unix socket has no path: it is not denied (but see
 ///   [`Network::Denied`]). A bound path is a mount point: the command
-///   cannot rename or remove it, only what is in it.
+///   cannot rename or remove it, only what is in it. bwrap makes each
+///   parent folder of a bound path in the tmpfs of a hidden folder. Such a
+///   folder holds only the next part of the bound path, and its metadata
+///   is of the new folder, not of the real one.
 ///
 /// The rest is as in [`sandboxed`]: the command and its settings, and
 /// [`NotSupported`] on a host with no sandbox.
@@ -154,7 +164,7 @@ pub(crate) enum Rule<'a> {
 }
 
 impl<'a> Rule<'a> {
-    fn path(&self) -> &'a Path {
+    pub(crate) fn path(&self) -> &'a Path {
         match *self {
             Rule::Read(path) | Rule::Write(path) | Rule::Hide(path) => path,
         }
