@@ -623,6 +623,11 @@ enum ToolCommand {
         command: cmd::rescuecmd::RescueCommand,
     },
 
+    /// Print the state and the result of 1 request that a command sent to
+    /// fleetd: applied, refused or pending, or "waits for fleetd" for a
+    /// request file that fleetd did not read yet. An unknown id exits 1.
+    Request(cmd::requestcmd::RequestArgs),
+
     /// Self-verifying checks of the machinery. Run these after installing.
     Smoke {
         #[command(subcommand)]
@@ -1267,6 +1272,7 @@ impl ToolCommand {
             ToolCommand::Feature { command } => cmd::featurecmd::run(ctx, command),
             ToolCommand::Branch { command } => cmd::branchcmd::run(ctx, command),
             ToolCommand::Rescue { command } => cmd::rescuecmd::run(ctx, command),
+            ToolCommand::Request(args) => cmd::requestcmd::run(ctx, args),
             ToolCommand::Smoke { command } => cmd::smoke::run(ctx, command),
             ToolCommand::Worker { role } => cmd::worker::worker(ctx, &role),
             ToolCommand::PaneLaunch {
@@ -1887,6 +1893,7 @@ mod tests {
             ("feature", false),
             ("branch", false),
             ("rescue", false),
+            ("request", false),
             ("smoke", false),
             ("worker", true),
             ("pane-launch", true),

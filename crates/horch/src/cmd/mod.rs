@@ -18,6 +18,7 @@ pub mod messaging;
 pub mod mode;
 pub mod quotacmd;
 pub mod recipes;
+pub mod requestcmd;
 pub mod rescuecmd;
 pub mod restore;
 pub mod resultcmd;

@@ -185,6 +185,7 @@ in `harness/capabilities.rs`.
 | `quotacmd.rs` | `horch quota` |
 | `recipes.rs` | `horch fleet`, `horch orchestration`, `horch pane-launch` (hidden) |
 | `rescuecmd.rs` | `horch rescue drop` (not built yet) |
+| `requestcmd.rs` | `horch request <request_id>`: the state and the result of 1 request, read-only (RR-8) |
 | `restore.rs` | herdr's agent session restore: the restored pane's identity, and the warning in `fleet` and `doctor` |
 | `resultcmd.rs` | `horch result`: writes `result.json` of an attempt; `--check` tests the Stop hooks (not built yet) |
 | `route.rs` | `horch route` |
