@@ -14,6 +14,9 @@ path = "src/main.rs"
 [dependencies]
 horch-core.workspace = true
 horch-platform.workspace = true
+# `horch docs sync` and the `docs_sync` job: the fetch, the pages, the manifest
+# and CHANGES.md of each CLI (fleetd-p7 tickets 11, 12 and 22).
+agent-docs-sync = { path = "../agent-docs-sync" }
 anyhow.workspace = true
 clap.workspace = true
 serde.workspace = true

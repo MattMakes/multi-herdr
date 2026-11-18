@@ -182,6 +182,7 @@ in `harness/capabilities.rs`.
 | `cost.rs` | `horch cost` |
 | `cost/` | the report tables and rendering of `horch cost` |
 | `delivery_probe.rs` | the delivery checks of `horch fleet` and `horch doctor` |
+| `docscmd.rs` | `horch docs sync` (the pages, manifest and CHANGES.md of each CLI; also the docs runner of the `docs_sync` job) |
 | `doctor.rs` | `horch doctor` |
 | `featurecmd.rs` | `horch feature abandon` (not built yet) |
 | `fleetd.rs` | `horch fleetd` (the fleet daemon: the composition root of its pass) and `horch fleetd check` (restarts a gone, hung or older fleetd; each `horch` command makes the same check first) |

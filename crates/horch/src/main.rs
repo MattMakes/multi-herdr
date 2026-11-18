@@ -593,6 +593,12 @@ enum ToolCommand {
         command: Option<cmd::fleetd::FleetdCommand>,
     },
 
+    /// The docs of each agent CLI: `horch docs sync`.
+    Docs {
+        #[command(subcommand)]
+        command: cmd::docscmd::DocsCommand,
+    },
+
     /// The jobs of fleetd: `horch job requeue <job>`.
     Job {
         #[command(subcommand)]
@@ -984,15 +990,16 @@ impl Command {
     }
 
     /// Whether the command runs the check of `horch fleetd check` before it
-    /// runs (PL-5). fleetd, its check, its job processes, a worker pane and
-    /// `horch ledger watch`, which runs a pass of fleetd or the check
-    /// itself, run none.
+    /// runs (PL-5). fleetd, its check, its job processes, a worker pane,
+    /// `horch docs`, which needs no fleetd, and `horch ledger watch`, which
+    /// runs a pass of fleetd or the check itself, run none.
     fn checks_fleetd(&self) -> bool {
         !matches!(
             self,
             Command::Tool(
                 ToolCommand::Worker { .. }
                     | ToolCommand::Fleetd { .. }
+                    | ToolCommand::Docs { .. }
                     | ToolCommand::Job {
                         command: cmd::jobcmd::JobCommand::Run { .. }
                     }
@@ -1284,6 +1291,7 @@ impl ToolCommand {
             ToolCommand::Install { dir } => done(cmd::install::install(ctx, dir.as_deref())),
             ToolCommand::SelfUpdate { check } => cmd::selfupdate::self_update(ctx, check),
             ToolCommand::Fleetd { command } => cmd::fleetd::fleetd(ctx, command),
+            ToolCommand::Docs { command } => cmd::docscmd::docs(ctx, command),
             ToolCommand::Job { command } => cmd::jobcmd::job(ctx, command),
             ToolCommand::Task { command } => cmd::taskcmd::run(ctx, command),
             ToolCommand::Result(args) => cmd::resultcmd::run(ctx, args),

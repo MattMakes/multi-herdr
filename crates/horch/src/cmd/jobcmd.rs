@@ -13,7 +13,7 @@ use anyhow::{bail, Context, Result};
 use clap::Subcommand;
 use horch_core::fleetd::fleet_runtime::adapters::{config_file, jobs_store};
 use horch_core::fleetd::fleet_runtime::application::jobs::{
-    self, CheckRunner, JobCtx, JobKey, Queued,
+    self, CheckRunner, JobCtx, JobKey, Queued, Runners,
 };
 use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
 use horch_core::fleetd::worker_profiles::adapters::check_sandbox::WorkerSandboxes;
@@ -116,7 +116,13 @@ fn run(ctx: &RuntimeContext, id: i64) -> Result<ExitCode> {
         host: &Launcher,
         profiles: &sandboxes,
     };
-    match jobs::run_job(&jctx, &mut conn, id, std::process::id(), &checks)? {
+    // The fetch of the docs is in horch, not in horch-core (NFR-06).
+    let docs = super::docscmd::AgentDocs::new()?;
+    let runners = Runners {
+        checks: &checks,
+        docs: Some(&docs),
+    };
+    match jobs::run_job_with(&jctx, &mut conn, id, std::process::id(), &runners)? {
         Some(o) => output::println(&format!("job {id}: {}: {}", o.state().as_str(), o.text)),
         None => output::println(&format!(
             "job {id}: this process does not run it: no result is written"

@@ -6,6 +6,7 @@ pub mod compact;
 pub mod context;
 pub mod cost;
 pub mod delivery_probe;
+pub mod docscmd;
 pub mod doctor;
 pub mod featurecmd;
 pub mod fleetd;

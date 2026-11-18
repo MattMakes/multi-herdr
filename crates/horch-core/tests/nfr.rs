@@ -149,6 +149,9 @@ fn nfr_05_no_new_runtime_crates() {
         "rusqlite",
         // The workspace leaf crate of fleetd Phase P (docs/specs/fleetd/design.md).
         "horch-platform",
+        // The workspace crate of `horch docs sync` and the `docs_sync` job
+        // (fleetd-p7 ticket 22). horch-core has no HTTP crate (NFR-06).
+        "agent-docs-sync",
     ];
     for d in deps(&repo().join("crates/horch/Cargo.toml")) {
         assert!(allowed.contains(&d.as_str()), "horch gained '{d}'");

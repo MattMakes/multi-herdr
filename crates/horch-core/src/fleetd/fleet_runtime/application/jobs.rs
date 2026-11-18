@@ -55,6 +55,8 @@ use crate::fleetd::integration::adapters::executors as integration;
 use crate::fleetd::task_execution::adapters::ingested_store::{
     self as ingested, ACCEPTED, REJECTED,
 };
+use crate::fleetd::worker_profiles::adapters::docs_dir;
+use crate::fleetd::worker_profiles::application::docs_sync::{self, DocsSyncRunner};
 use crate::fleetd::worker_profiles::application::ports::{LaunchSpec, ProcessHost};
 use crate::fleetd::worktree_custody::adapters::executors;
 use crate::taskledger::finish::{self, land::CHECK_TIMEOUT};
@@ -650,26 +652,53 @@ const RECORD_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 /// A row that another process runs, or that the pass ended, gets no file.
 /// Gives the outcome that it wrote, or `None`.
 ///
-/// `task_check` has its executor here, and the 4 worktree kinds have theirs
-/// in worktree custody (MAP.md of fleetd-p3, Q22), and the 7 integration
-/// kinds have their router in the integration context. Each other kind ends
-/// `failed`, with no verdict, and the result "no executor before phase
-/// <n>". The time limit is the deadline of the row: the pass stops this
-/// process at it. `checks` starts a check (SR-4). The job process writes
-/// no row, so it uses no field of `_ctx`; the parameter stays so that the
-/// callers of Phase 4 keep their form.
+/// `task_check` and `docs_sync` have their executors here, and the 4
+/// worktree kinds have theirs in worktree custody (MAP.md of fleetd-p3,
+/// Q22), and the 7 integration kinds have their router in the integration
+/// context. Each other kind ends `failed`, with no verdict, and the result
+/// "no executor before phase <n>". The time limit is the deadline of the
+/// row: the pass stops this process at it. `checks` starts a check (SR-4).
+/// The job process writes no row, so it uses no field of `_ctx`; the
+/// parameter stays so that the callers of Phase 4 keep their form.
+///
+/// This form has no docs runner, so `docs_sync` has no executor here;
+/// `horch job run` calls [`run_job_with`].
 pub fn run_job(
-    _ctx: &JobCtx<'_>,
+    ctx: &JobCtx<'_>,
     conn: &mut Connection,
     job_id: i64,
     me: u32,
     checks: &CheckRunner<'_>,
 ) -> Result<Option<Outcome>> {
+    let runners = Runners { checks, docs: None };
+    run_job_with(ctx, conn, job_id, me, &runners)
+}
+
+/// The executors that need a runner from outside horch-core: the check of
+/// a task (SR-4) and the fetch of the docs (NFR-06).
+pub struct Runners<'a> {
+    pub checks: &'a CheckRunner<'a>,
+    /// `None`: a `docs_sync` run ends with "no executor".
+    pub docs: Option<&'a dyn DocsSyncRunner>,
+}
+
+/// [`run_job`] with each runner of `runners`.
+pub fn run_job_with(
+    _ctx: &JobCtx<'_>,
+    conn: &mut Connection,
+    job_id: i64,
+    me: u32,
+    runners: &Runners<'_>,
+) -> Result<Option<Outcome>> {
     let Some(row) = wait_for_record(conn, job_id, me)? else {
         return Ok(None);
     };
     let ran = match row.kind {
-        Kind::TaskCheck => task_check(conn, &row, checks)?.into(),
+        Kind::TaskCheck => task_check(conn, &row, runners.checks)?.into(),
+        Kind::DocsSync => match runners.docs {
+            Some(docs) => docs_sync_run(conn, &row, runners.checks.host, docs)?,
+            None => jobs::no_executor(row.kind).into(),
+        },
         Kind::WorktreeAdd | Kind::WorktreeList | Kind::Rescue | Kind::WorktreeRemove => {
             executors::run(conn, &row)?
         }
@@ -845,6 +874,37 @@ fn wait_for_record(conn: &Connection, job_id: i64, me: u32) -> Result<Option<Job
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
+}
+
+/// The executor of `docs_sync`: steps 1 and 2 of 1 sync of the CLI of the
+/// subject `<cli> <binary id>` (MAP.md of fleetd-p7, Q8) into
+/// `<fleet root>/docs/`. The run has no repository. Its result holds the
+/// version text, the folder and each failed page; it passes when each page
+/// and CHANGES.md are written.
+fn docs_sync_run(
+    conn: &Connection,
+    row: &JobRow,
+    host: &dyn ProcessHost,
+    docs: &dyn DocsSyncRunner,
+) -> Result<Ran> {
+    let cli = row.subject.split_whitespace().next().unwrap_or_default();
+    let out = docs_dir::docs_root(&executors::fleet_root(conn)?);
+    Ok(match docs_sync::sync_cli(host, docs, cli, &out) {
+        Ok(run) => Ran {
+            outcome: Outcome {
+                passed: run.passed(),
+                verdict: true,
+                text: run.summary(),
+            },
+            data: Some(serde_json::to_value(&run)?),
+        },
+        Err(e) => Outcome {
+            passed: false,
+            verdict: false,
+            text: format!("docs sync of {cli}: {e:#}"),
+        }
+        .into(),
+    })
 }
 
 /// The executor of `task_check`: the check command of the task, as
