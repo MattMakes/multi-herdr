@@ -12,6 +12,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
+use horch_core::taskledger::finish::codesweep::REVIEWERS;
 use horch_core::taskledger::store::Store;
 use horch_e2e::harness::Harness;
 use serde_json::Value;
@@ -441,16 +442,16 @@ fn rr15_orphaned_and_rescued_trees_are_listed_with_their_rescue_ref() {
 /// T-1 of a run with the land step: its first worker makes the tree
 /// `feat` with 1 commit and is reaped, and the reconcile orphans the tree.
 /// `before_rescue` runs on the orphaned folder. The next worker rescues
-/// and takes the tree, commits 1 more file, lands it and is done. Gives
-/// the path of the tree, and the finding of the orphan before the land.
-fn orphan_then_land(h: &Harness, before_rescue: impl Fn(&Path)) -> (PathBuf, Value) {
+/// and takes the tree, commits 1 more file, lands it and is done. No
+/// command reads `ledger unfinished` before the land. Gives the path of
+/// the tree.
+fn orphan_then_land(h: &Harness, before_rescue: impl Fn(&Path)) -> PathBuf {
     ok(h, &["ledger", "run", "new", "alpha", "--steps", "land"]);
     queue(h, "01-a", "opus", &[]);
     let (w1, _, path) = claim_and_work(h, "opus", "feat");
     ok(h, &["ledger", "reap", &w1, "it hung"]);
     ok(h, &["ledger", "watch", "--once", "--force"]);
     assert_eq!(column(h, &path, "state"), "orphaned");
-    let listed = finding_of(h, &path);
     before_rescue(&path);
 
     let w2 = worker_new(h, "opus");
@@ -469,20 +470,17 @@ fn orphan_then_land(h: &Harness, before_rescue: impl Fn(&Path)) -> (PathBuf, Val
     assert!(o.status.success(), "{}", text(&o));
     ok_as(h, &w2, &["ledger", "done", "landed"]);
     assert_eq!(task(h, 1)["state"], "done");
-    (path, listed)
+    path
 }
 
 #[test]
 fn rr15_landed_work_of_a_done_task_is_not_listed() {
     let h = world("p3-unl-landed");
-    let (path, listed) = orphan_then_land(&h, |_| {});
+    let path = orphan_then_land(&h, |_| {});
     // The rescue saved nothing beyond the HEAD, and that HEAD landed.
     let list = unfinished(&h);
-    assert!(
-        !list.iter().any(|f| f["finding_id"] == listed["finding_id"]),
-        "{list:?}"
-    );
-    // The finding is not decided: it is only not listed.
+    assert!(list.is_empty(), "{list:?}");
+    // The finding of the tree is not decided: it is only not listed.
     let id = column(&h, &path, "worktree_id");
     assert_eq!(
         query(
@@ -496,14 +494,15 @@ fn rr15_landed_work_of_a_done_task_is_not_listed() {
 #[test]
 fn rr15_rescued_work_that_did_not_land_stays_listed_after_the_task_is_done() {
     let h = world("p3-unl-not-landed");
-    let (path, listed) = orphan_then_land(&h, |path| {
+    let path = orphan_then_land(&h, |path| {
         std::fs::write(path.join("scratch.txt"), "only on the rescue ref\n").unwrap();
     });
-    // The rescue ref holds scratch.txt, and scratch.txt never landed.
+    // The rescue ref holds scratch.txt, and scratch.txt never landed. The
+    // first read of `unfinished` is after the land, and it lists the tree.
     let f = finding_of(&h, &path);
-    assert_eq!(f["finding_id"], listed["finding_id"]);
     let rescue_ref = column(&h, &path, "rescue_ref");
     assert!(f["detail"].as_str().unwrap().contains(&rescue_ref), "{f}");
+    assert_eq!(finding_of(&h, &path), f, "listed until a decision");
     ok(
         &h,
         &[
@@ -588,20 +587,7 @@ fn sweep_world(name: &str) -> Harness {
     h.set("HORCH_COMPLEXITY_CLI", cli.to_string_lossy());
     let sweep = h.root.join("code-sweep");
     std::fs::create_dir_all(sweep.join("reviewers")).unwrap();
-    for r in [
-        "bug-hunter",
-        "clarity-checker",
-        "coverage-analyst",
-        "vulnerability-scanner",
-        "structure-inspector",
-        "efficiency-auditor",
-        "contract-guardian",
-        "waste-detector",
-        "reliability-auditor",
-        "dependency-examiner",
-        "power-of-ten-reviewer",
-        "interface-auditor",
-    ] {
+    for (_, r, _) in REVIEWERS {
         std::fs::write(
             sweep.join("reviewers").join(format!("{r}.md")),
             format!("You are {r}.\n"),
