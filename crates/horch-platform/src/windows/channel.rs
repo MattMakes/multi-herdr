@@ -454,7 +454,7 @@ fn token_user(token: &OwnedHandle) -> io::Result<Vec<u64>> {
 /// # Safety
 ///
 /// `sid` points to a valid SID for the length of the call.
-unsafe fn sid_text(sid: PSID) -> io::Result<String> {
+pub(crate) unsafe fn sid_text(sid: PSID) -> io::Result<String> {
     let mut text: PWSTR = ptr::null_mut();
     // SAFETY: the caller keeps `sid` valid, and `text` is valid for 1
     // write.

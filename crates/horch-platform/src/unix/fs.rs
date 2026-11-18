@@ -1,13 +1,14 @@
 //! The concern fs for the code of macOS and Linux.
 
 use std::ffi::{CStr, CString};
-use std::fs::{DirBuilder, Metadata, OpenOptions};
+use std::fs::{DirBuilder, File, Metadata, OpenOptions};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::Path;
 
+use crate::channel::User;
 use crate::fs::OwnerAndMode;
 use crate::NotSupported;
 
@@ -169,6 +170,19 @@ pub(crate) fn rename_noreplace(
         return Err(e);
     }
     std::fs::rename(from, to)
+}
+
+pub(crate) fn open_no_follow(path: &Path) -> io::Result<File> {
+    // `O_NONBLOCK`: a FIFO that replaces the file after a check of the
+    // caller does not block the open. A read of a regular file ignores it.
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+}
+
+pub(crate) fn owner_of(file: &File) -> io::Result<User> {
+    Ok(User::Uid(file.metadata()?.uid()))
 }
 
 pub(crate) fn owner_and_mode(meta: &Metadata) -> Result<OwnerAndMode, NotSupported> {

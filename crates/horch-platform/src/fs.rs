@@ -3,10 +3,11 @@
 //! Each gap of 1 OS names its row of
 //! `docs/specs/fleetd/preservation-06-wiring-and-platform.md`, section 6.
 
-use std::fs::{DirBuilder, Metadata, OpenOptions};
+use std::fs::{DirBuilder, File, Metadata, OpenOptions};
 use std::io;
 use std::path::Path;
 
+use crate::channel::User;
 use crate::os::fs as os;
 use crate::NotSupported;
 
@@ -56,6 +57,26 @@ pub fn sync_dir(dir: &Path) -> io::Result<()> {
 /// "Sockets and pipes" (`fsx.rs:186`).
 pub fn open_no_block(options: &mut OpenOptions) -> Result<(), NotSupported> {
     os::open_no_block(options)
+}
+
+/// Open the file or the folder `path` for read, and refuse a link at its
+/// last name. A link in a parent folder is followed: the caller checks the
+/// real path. On macOS and Linux the open does not wait for the writer of
+/// a FIFO.
+///
+/// macOS and Linux: `O_NOFOLLOW`, so a link is an `ELOOP` error. Windows:
+/// `FILE_FLAG_OPEN_REPARSE_POINT`, and a reparse point of any tag is an
+/// `InvalidInput` error.
+pub fn open_no_follow(path: &Path) -> io::Result<File> {
+    os::open_no_follow(path)
+}
+
+/// The owner of the open file or folder `file`.
+///
+/// macOS and Linux: [`User::Uid`]. Windows: [`User::Sid`], the owner SID
+/// of the security descriptor of the handle.
+pub fn owner_of(file: &File) -> io::Result<User> {
+    os::owner_of(file)
 }
 
 /// Remove the folder `root/<names[0]>/.../<names[n]>` and each file and
