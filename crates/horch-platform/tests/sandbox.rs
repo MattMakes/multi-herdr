@@ -11,7 +11,7 @@
 //! a Linux host without `bwrap`, the write tests assert `NotSupported`
 //! instead.
 
-use horch_platform::sandbox::{host_problem, sandboxed, sandboxed_hiding, Network, Reach};
+use horch_platform::sandbox::{host_problem, sandboxed, sandboxed_hiding, Denials, Network, Reach};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -37,7 +37,7 @@ fn host_has_no_sandbox() -> bool {
 /// Run `cmd` in the sandbox with `writable`. `None` when the host has no
 /// sandbox, after the check that `sandboxed` says so with the reason.
 fn run_sandboxed(cmd: Command, writable: &[PathBuf]) -> Option<std::process::Output> {
-    match sandboxed(cmd, writable) {
+    match sandboxed(cmd, writable, &Denials::default()) {
         Ok(mut sandboxed) => Some(sandboxed.output().expect("start the sandboxed command")),
         Err(gap) => {
             assert!(host_has_no_sandbox(), "unexpected gap: {gap}");
@@ -61,6 +61,7 @@ fn run_hiding(
             writable,
             readable: &[],
             hidden,
+            denied: &Denials::default(),
             network: Network::Open,
         },
     )
@@ -144,7 +145,8 @@ fn windows_and_linux_without_bwrap_are_not_supported_with_a_reason() {
     let mut cmd = Command::new("sh");
     // Linux looks for `bwrap` on the PATH of the command: here an empty folder.
     cmd.env("PATH", empty.path());
-    let gap = sandboxed(cmd, &[empty.path().to_path_buf()]).expect_err("no sandbox");
+    let gap =
+        sandboxed(cmd, &[empty.path().to_path_buf()], &Denials::default()).expect_err("no sandbox");
     assert_eq!(gap.os, std::env::consts::OS);
     assert_eq!(gap.concern, "sandbox");
     let reason = gap.reason.expect("a reason");
@@ -302,6 +304,7 @@ fn hiding_sandbox_reads_a_readable_path_in_a_hidden_folder_and_nothing_else_ther
         writable: &[],
         readable: std::slice::from_ref(&repo),
         hidden: std::slice::from_ref(&home),
+        denied: &Denials::default(),
         network: Network::Open,
     };
     let Some(out) = run_reach(read, &reach) else {
@@ -327,6 +330,7 @@ fn hiding_sandbox_writes_a_writable_path_in_a_hidden_folder() {
         writable: std::slice::from_ref(&git),
         readable: &[],
         hidden: std::slice::from_ref(&home),
+        denied: &Denials::default(),
         network: Network::Open,
     };
     let Some(out) = run_reach(write_command(&file), &reach) else {
@@ -346,6 +350,7 @@ fn hiding_sandbox_hides_a_hidden_path_in_a_writable_path() {
         writable: &[dir.path().join("fleet")],
         readable: &[],
         hidden: std::slice::from_ref(&run),
+        denied: &Denials::default(),
         network: Network::Open,
     };
     let read = sh("cat \"$1/operator.token\"; true", &[&run]);
@@ -373,6 +378,7 @@ fn hiding_sandbox_with_no_network_cannot_connect_to_a_tcp_listener() {
                 writable: &[],
                 readable: &[],
                 hidden: &[],
+                denied: &Denials::default(),
                 network,
             },
         )
@@ -386,4 +392,184 @@ fn hiding_sandbox_with_no_network_cannot_connect_to_a_tcp_listener() {
     );
     let denied = connect(Network::Denied).unwrap();
     assert_eq!(denied.status.code(), Some(3), "{denied:?}");
+}
+
+/// A fleet root with the 3 operator paths of the denials: the token file,
+/// the channel socket and the request folder. It is in `/tmp`, because a
+/// socket path has a short limit (SUN_LEN). The run folder has mode 0700,
+/// as the channel needs.
+#[cfg(unix)]
+struct Operator {
+    root: tempfile::TempDir,
+    token: PathBuf,
+    socket: PathBuf,
+    requests: PathBuf,
+}
+
+#[cfg(unix)]
+fn operator() -> Operator {
+    use std::os::unix::fs::DirBuilderExt;
+    let root = tempfile::tempdir_in("/tmp").unwrap();
+    let run = root.path().join("run");
+    std::fs::DirBuilder::new().mode(0o700).create(&run).unwrap();
+    let requests = run.join("requests");
+    std::fs::create_dir(&requests).unwrap();
+    let token = run.join("operator.token");
+    std::fs::write(&token, "secret\n").unwrap();
+    Operator {
+        token,
+        socket: run.join("fleetd.sock"),
+        requests,
+        root,
+    }
+}
+
+#[cfg(unix)]
+impl Operator {
+    fn denials(&self) -> Denials {
+        Denials {
+            read: vec![self.token.clone()],
+            connect: vec![self.socket.clone()],
+            write: vec![self.requests.clone()],
+        }
+    }
+
+    /// Run `cmd` with `denied`. The whole fleet root, and also each path of
+    /// `writable`, is writable, so only the denials stop an act.
+    fn run(
+        &self,
+        cmd: Command,
+        writable: &[PathBuf],
+        denied: &Denials,
+    ) -> Option<std::process::Output> {
+        let mut all = vec![self.root.path().to_path_buf()];
+        all.extend_from_slice(writable);
+        run_reach(
+            cmd,
+            &Reach {
+                writable: &all,
+                readable: &[],
+                hidden: &[],
+                denied,
+                network: Network::Open,
+            },
+        )
+    }
+}
+
+/// The text of the refusal of the OS for a denied act on this OS.
+#[cfg(unix)]
+fn refused(out: &std::process::Output, linux: &str) -> bool {
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let text = if cfg!(target_os = "macos") {
+        "Operation not permitted"
+    } else {
+        linux
+    };
+    stderr.contains(text) && !stderr.contains("No such file")
+}
+
+#[test]
+#[cfg(unix)]
+fn sandboxed_child_cannot_read_the_denied_file() {
+    let op = operator();
+    let read = || sh("cat \"$1\"", &[&op.token]);
+    let Some(open) = op.run(read(), &[], &Denials::default()) else {
+        return;
+    };
+    assert!(
+        String::from_utf8_lossy(&open.stdout).contains("secret"),
+        "the child reads the token with no denial: {open:?}"
+    );
+
+    // The token is also in a writable path: the denial wins.
+    let out = op
+        .run(read(), std::slice::from_ref(&op.token), &op.denials())
+        .unwrap();
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("secret"),
+        "the child read the token: {out:?}"
+    );
+    if cfg!(target_os = "macos") {
+        assert_eq!(out.status.code(), Some(1), "{out:?}");
+        assert!(refused(&out, ""), "{out:?}");
+    } else {
+        // bwrap puts an empty file (/dev/null) over the token.
+        assert!(out.stdout.is_empty(), "{out:?}");
+    }
+    assert_eq!(std::fs::read_to_string(&op.token).unwrap(), "secret\n");
+}
+
+#[test]
+#[cfg(unix)]
+fn sandboxed_child_cannot_connect_to_the_denied_socket() {
+    use horch_platform::channel::{Listener, Stream};
+    use std::time::{Duration, Instant};
+    let op = operator();
+    let listener = Listener::bind(&op.socket).unwrap();
+    let connect = || {
+        sh(
+            "exec perl -MIO::Socket::UNIX -e \
+             'IO::Socket::UNIX->new(Peer => $ARGV[0]) or do { print STDERR \"$!\\n\"; exit 3 }; exit 0' \
+             \"$1\"",
+            &[&op.socket],
+        )
+    };
+    let Some(open) = op.run(connect(), &[], &Denials::default()) else {
+        return;
+    };
+    assert!(
+        open.status.success(),
+        "the child connects with no denial: {open:?}"
+    );
+    // The child closed its connection, so the peer facts can be gone.
+    let _ = listener.accept();
+
+    // The socket is also in a writable path: the denial wins.
+    let out = op
+        .run(connect(), std::slice::from_ref(&op.socket), &op.denials())
+        .unwrap();
+    assert_eq!(out.status.code(), Some(3), "{out:?}");
+    assert!(refused(&out, "Connection refused"), "{out:?}");
+    // The first connection in the queue is the one of this test, so the
+    // child made none.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let _mine = Stream::connect(&op.socket, deadline).unwrap();
+    let (_, peer) = listener.accept().unwrap();
+    assert_eq!(peer.pid, Ok(std::process::id()), "the child connected");
+}
+
+#[test]
+#[cfg(unix)]
+fn sandboxed_child_cannot_write_into_the_denied_folder() {
+    let op = operator();
+    let request = op.requests.join("r.json");
+    // The request folder is also writable by itself: the denial wins.
+    let out = op.run(
+        write_command(&request),
+        std::slice::from_ref(&op.requests),
+        &op.denials(),
+    );
+    let Some(out) = out else {
+        return;
+    };
+    assert!(!out.status.success(), "{out:?}");
+    assert!(refused(&out, "Read-only file system"), "{out:?}");
+    assert!(!request.exists(), "the child wrote {request:?}");
+    assert_eq!(std::fs::read_dir(&op.requests).unwrap().count(), 0);
+}
+
+#[test]
+#[cfg(unix)]
+fn sandboxed_child_still_writes_its_allowed_paths() {
+    let op = operator();
+    let beside = op.root.path().join("run").join("fleetd.log");
+    let out = op.root.path().join("out.txt");
+    let script = "echo hello > \"$1\" && echo hello > \"$2\"";
+    let Some(result) = op.run(sh(script, &[&out, &beside]), &[], &op.denials()) else {
+        return;
+    };
+    assert!(result.status.success(), "{result:?}");
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "hello\n");
+    assert_eq!(std::fs::read_to_string(&beside).unwrap(), "hello\n");
 }

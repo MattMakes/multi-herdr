@@ -5,10 +5,25 @@
 //! [`sandboxed_hiding`] wraps a command so that it can write only in a list
 //! of paths, cannot read, write or connect to a Unix socket below a list of
 //! hidden paths, can read again a list of paths in them, and can have no
-//! network:
+//! network.
 //!
-//! - macOS: `/usr/bin/sandbox-exec` with a generated Seatbelt profile.
+//! Each call also takes [`Denials`], a required input: the operator acts
+//! that the command cannot do, whatever else the call allows (SR-8). A
+//! worker, a check and a gate cannot read the operator token, connect to
+//! the command channel or write a request file. What each OS denies:
+//!
+//! - macOS: `/usr/bin/sandbox-exec` with a generated Seatbelt profile. It
+//!   denies each file read, file write and Unix socket connect below a
+//!   denied read or connect path, and each file write below a denied write
+//!   path. Seatbelt refuses the act (`EPERM`), also for a path that does
+//!   not exist yet.
 //! - Linux: `bwrap` (bubblewrap), when it is on the `PATH` of the command.
+//!   It puts an empty file (`/dev/null`) over a denied read or connect file
+//!   and an empty tmpfs over a denied folder: a read of the token gives no
+//!   bytes, and a connect to the socket is refused (`ECONNREFUSED`). It
+//!   binds a denied write path read-only, so a write is refused (`EROFS`).
+//!   A denied path that does not exist when the command starts gets no
+//!   mount, so it is not denied.
 //! - Windows: [`NotSupported`]. A check never runs there without its
 //!   sandbox: the caller decides what to do (PL-3).
 //!
@@ -29,7 +44,8 @@ pub const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 
 /// `cmd` in the check sandbox: it can write only in the paths of
 /// `writable`, in its temp folder ([`std::env::temp_dir`]) and in
-/// `/dev/null`, and it can read the rest of the disk.
+/// `/dev/null`, and it can read the rest of the disk. `denied` wins over
+/// each of these.
 ///
 /// The returned command keeps the program, the arguments, the environment
 /// changes and the current folder of `cmd`. `Command` does not show the
@@ -39,12 +55,17 @@ pub const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 /// It gives [`NotSupported`] with a reason when this host has no sandbox:
 /// on Windows, on Linux when `bwrap` is not on the `PATH` of `cmd`, and on
 /// macOS when [`SANDBOX_EXEC`] is missing.
-pub fn sandboxed(cmd: Command, writable: &[PathBuf]) -> Result<Command, NotSupported> {
+pub fn sandboxed(
+    cmd: Command,
+    writable: &[PathBuf],
+    denied: &Denials,
+) -> Result<Command, NotSupported> {
     let temp = resolved(&std::env::temp_dir());
     let reach = Reach {
         writable,
         readable: &[],
         hidden: &[],
+        denied,
         network: Network::Open,
     };
     wrapped(cmd, &reach, Some(&temp))
@@ -72,7 +93,27 @@ pub struct Reach<'a> {
     /// The command cannot read, write or connect to a Unix socket below
     /// each of these paths.
     pub hidden: &'a [PathBuf],
+    /// The acts that the command cannot do, whatever the other fields
+    /// allow.
+    pub denied: &'a Denials,
     pub network: Network,
+}
+
+/// The acts that a sandboxed command cannot do, whatever the rest of the
+/// call allows: a denial wins over each writable, readable or hidden path,
+/// also over a longer one. Give absolute paths. The module doc names what
+/// each OS denies.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Denials {
+    /// The command cannot read these files, or below these folders. It
+    /// cannot write them or connect to a Unix socket below them either.
+    pub read: Vec<PathBuf>,
+    /// The command cannot connect to a Unix socket at or below these paths.
+    /// It cannot read or write them either.
+    pub connect: Vec<PathBuf>,
+    /// The command cannot write at or below these paths. It can read them
+    /// when the rest of the call lets it.
+    pub write: Vec<PathBuf>,
 }
 
 /// `cmd` in a sandbox with no temp folder. It can write only below the
@@ -111,7 +152,13 @@ pub(crate) enum Rule<'a> {
     Hide(&'a Path),
 }
 
-impl Rule<'_> {
+impl<'a> Rule<'a> {
+    fn path(&self) -> &'a Path {
+        match *self {
+            Rule::Read(path) | Rule::Write(path) | Rule::Hide(path) => path,
+        }
+    }
+
     fn key(&self) -> (usize, u8) {
         let (path, rank) = match self {
             Rule::Read(path) => (path, 0),
@@ -131,11 +178,49 @@ fn wrapped(cmd: Command, reach: &Reach<'_>, temp: Option<&Path>) -> Result<Comma
     rules.extend(writable.iter().map(|p| Rule::Write(p)));
     rules.extend(temp.map(Rule::Write));
     rules.extend(hidden.iter().map(|p| Rule::Hide(p)));
+    let mut sealed = all(&reach.denied.read);
+    sealed.extend(all(&reach.denied.connect));
+    let read_only = all(&reach.denied.write);
+    let mut rules = denying(rules, &sealed, &read_only);
     // The longest path last, so its rule wins: the last rule wins on
     // macOS, and the last mount covers the ones before it on Linux.
     rules.sort_by_key(Rule::key);
     let args = os::args(&rules, temp.is_some(), reach.network);
     Ok(wrap(&program, &args, &cmd))
+}
+
+/// `rules` with the denials put in, so that no other rule undoes them.
+/// Each path of `read_only` gets the rule that denies a write: each
+/// writable rule at or below it becomes readable, and the path itself gets
+/// a readable rule when the rule that reaches it allows a write. Each path
+/// of `sealed` gets a hidden rule, and each other rule at or below it goes.
+fn denying<'a>(
+    mut rules: Vec<Rule<'a>>,
+    sealed: &'a [PathBuf],
+    read_only: &'a [PathBuf],
+) -> Vec<Rule<'a>> {
+    for path in read_only {
+        let reaching = rules
+            .iter()
+            .filter(|rule| path.starts_with(rule.path()))
+            .max_by_key(|rule| rule.key())
+            .copied();
+        for rule in &mut rules {
+            if let Rule::Write(below) = *rule {
+                if below.starts_with(path) {
+                    *rule = Rule::Read(below);
+                }
+            }
+        }
+        if let Some(Rule::Write(_)) = reaching {
+            rules.push(Rule::Read(path));
+        }
+    }
+    for path in sealed {
+        rules.retain(|rule| !rule.path().starts_with(path));
+        rules.push(Rule::Hide(path));
+    }
+    rules
 }
 
 /// Why this host has no sandbox for a command that runs with `path` as its

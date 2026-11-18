@@ -1139,6 +1139,50 @@ fn race_driver_cannot_read_a_file_below_home_outside_the_job_paths() {
 }
 
 #[test]
+fn race_driver_cannot_read_the_operator_token_in_a_fleetd_git_call() {
+    let w = world();
+    let run = w.fleet_root().join("run");
+    std::fs::create_dir_all(&run).unwrap();
+    let token = run.join("operator.token");
+    std::fs::write(&token, "secret\n").unwrap();
+    // The driver writes its own marker in the repository: the marker of
+    // `attack` is outside the paths of the job.
+    let (ran, stolen) = (w.repo.join("ran.txt"), w.repo.join("stolen.txt"));
+    let probe = format!(
+        "echo ran > '{}'\ncat '{}' >> '{}'\nexit 1",
+        ran.display(),
+        token.display(),
+        stolen.display()
+    );
+    let (program, _) = w.attack("token", &probe);
+    git(&w.repo, &["checkout", "-q", "-b", "other"]);
+    std::fs::write(w.repo.join("a.txt"), "other\n").unwrap();
+    git(&w.repo, &["commit", "-q", "-am", "other"]);
+    git(&w.repo, &["checkout", "-q", "main"]);
+    std::fs::write(w.repo.join("a.txt"), "main\n").unwrap();
+    git(&w.repo, &["commit", "-q", "-am", "main"]);
+    let (repo, program_s) = (w.repo.clone(), program.display().to_string());
+    let git = w
+        .fleet_git()
+        // The repository and the token are writable, so only the operator
+        // denials of the job keep the token from the driver.
+        .writing(&[w.repo.clone(), token.clone()])
+        .with_race(once("merge-tree", move || {
+            select_driver(&repo, "merge=evil");
+            set_config(&repo, "merge.evil.driver", &program_s);
+        }));
+
+    let out = git.checked(&w.repo, &["merge-tree", "--write-tree", "main", "other"]);
+
+    assert!(ran.exists(), "the driver ran: {out:?}");
+    let read = std::fs::read_to_string(&stolen).unwrap_or_default();
+    assert!(
+        !read.contains("secret"),
+        "the driver read the token: {out:?}"
+    );
+}
+
+#[test]
 fn race_ssh_command_does_not_run_in_a_fleetd_git_call() {
     let w = world();
     let (program, marker) = w.attack("ssh", "exit 1");

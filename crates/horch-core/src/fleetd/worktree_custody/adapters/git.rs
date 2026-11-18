@@ -17,7 +17,7 @@ use std::sync::Arc;
 use anyhow::{bail, Context, Result};
 use horch_marketplace::git::{GitOutput, GitRunner, GitSandbox, SandboxHost};
 use horch_platform::fs::create_dir_mode;
-use horch_platform::sandbox::{sandboxed_hiding, Network, Reach};
+use horch_platform::sandbox::{sandboxed_hiding, Denials, Network, Reach};
 use horch_platform::NotSupported;
 use serde::{Deserialize, Serialize};
 
@@ -617,6 +617,7 @@ impl CliWorktreeGit {
             writable: &self.writable,
             readable: &self.readable,
             hidden: &hidden,
+            denied: &self.denials(),
             network: Network::Denied,
         };
         (self.host)(probe, &reach).err()
@@ -625,6 +626,19 @@ impl CliWorktreeGit {
     /// `<fleet root>/run`, with the operator token and the command channel.
     fn run_folder(&self) -> PathBuf {
         self.fleet_root.join("run")
+    }
+
+    /// The operator acts that git and each program it starts cannot do,
+    /// as a worker cannot (SR-8): read the operator token, connect to the
+    /// command channel, write a request file. The run folder is hidden
+    /// too; the denials keep the 3 paths denied whatever is writable.
+    fn denials(&self) -> Denials {
+        let run = self.run_folder();
+        Denials {
+            read: vec![run.join("operator.token")],
+            connect: vec![run.join("fleetd.sock")],
+            write: vec![run.join("requests")],
+        }
     }
 
     /// The paths that git cannot read: [`CliWorktreeGit::run_folder`], and
@@ -682,6 +696,7 @@ impl CliWorktreeGit {
             hidden: self
                 .hidden()
                 .map_err(|gap| anyhow::anyhow!("{NO_SANDBOX}: {gap}"))?,
+            denied: self.denials(),
             network: Network::Denied,
             host: self.host,
         };

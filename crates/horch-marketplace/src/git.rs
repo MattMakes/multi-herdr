@@ -10,7 +10,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use horch_platform::sandbox::{Network, Reach};
+use horch_platform::sandbox::{Denials, Network, Reach};
 use horch_platform::NotSupported;
 
 /// Removed from every git child. Git never needs the API key, and the
@@ -161,6 +161,8 @@ pub struct GitSandbox {
     pub writable: Vec<PathBuf>,
     pub readable: Vec<PathBuf>,
     pub hidden: Vec<PathBuf>,
+    /// The acts that the child cannot do, whatever the paths allow.
+    pub denied: Denials,
     pub network: Network,
     pub host: SandboxHost,
 }
@@ -324,6 +326,7 @@ impl GitRunner {
                 writable: &sandbox.writable,
                 readable: &sandbox.readable,
                 hidden: &sandbox.hidden,
+                denied: &sandbox.denied,
                 network: sandbox.network,
             };
             cmd = (sandbox.host)(cmd, &reach).map_err(GitError::NoSandbox)?;
@@ -394,6 +397,7 @@ mod tests {
             writable: Vec::new(),
             readable: Vec::new(),
             hidden: Vec::new(),
+            denied: Denials::default(),
             network: Network::Denied,
             host,
         }
