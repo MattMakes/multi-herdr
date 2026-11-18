@@ -10,12 +10,15 @@ pub const REF_PREFIX: &str = "refs/horch/rescue/";
 /// The `kind` column of the needs-you item of a failed rescue.
 pub const NEEDS_YOU_KIND: &str = "rescue_failed";
 
+/// The longest worktree id that names a rescue ref, in bytes.
+pub const MAX_ID_LEN: usize = 128;
+
 /// Whether `id` can name a rescue ref, a manifest and an index file: 1 to
-/// 128 ASCII letters, digits, `.`, `_` and `-`, with no `..`, not starting
+/// [`MAX_ID_LEN`] ASCII letters, digits, `.`, `_` and `-`, with no `..`, not starting
 /// with `.` or `-`, and not ending with `.lock`.
 pub fn valid_id(id: &str) -> bool {
     !id.is_empty()
-        && id.len() <= 128
+        && id.len() <= MAX_ID_LEN
         && id
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
@@ -185,7 +188,8 @@ mod tests {
         ] {
             assert!(!valid_id(bad), "{bad}");
         }
-        assert!(!valid_id(&"a".repeat(129)));
+        assert!(valid_id(&"a".repeat(MAX_ID_LEN)));
+        assert!(!valid_id(&"a".repeat(MAX_ID_LEN + 1)));
     }
 
     #[test]

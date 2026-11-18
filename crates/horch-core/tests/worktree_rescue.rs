@@ -610,6 +610,34 @@ esac"#,
     assert!(left.is_empty(), "{left:?}");
 }
 
+#[test]
+fn rescue_with_a_fleet_root_in_the_project_makes_nothing_there() {
+    let mut w = world();
+    let tree = w.orphan("t1");
+    work_in(&tree);
+    let before = view(&tree, "fleet/t1");
+    let git_bin = CliWorktreeGit::new("git");
+
+    let refused = [
+        (tree.join("fleet"), "is in the project"),
+        (
+            w.repo.join("sub/../fleet"),
+            "a `..` in a part that does not exist",
+        ),
+    ];
+    for (root, reason) in refused {
+        let ran = rescue_git::rescue(&git_bin, &root, &w.row("t1"));
+
+        assert!(!ran.outcome.passed);
+        assert!(ran.outcome.text.contains(reason), "{}", ran.outcome.text);
+    }
+    assert!(!tree.join("fleet").exists() && !w.repo.join("fleet").exists());
+    assert!(!w.repo.join("sub").exists());
+    assert_eq!(view(&tree, "fleet/t1"), before);
+    let refs = git(&tree, &["for-each-ref", "refs/horch/rescue/"]);
+    assert_eq!(refs, "");
+}
+
 // ─── the time limit and abandoned runs (Q25) ────────────────────────────
 
 #[test]

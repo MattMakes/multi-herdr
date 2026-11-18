@@ -202,8 +202,8 @@ impl GitRunner {
     /// Give every child the private index file `path` as `GIT_INDEX_FILE`.
     /// The scrub removes a `GIT_INDEX_FILE` of the environment or of
     /// [`GitRunner::with_env`]; this one is set after the scrub. The caller
-    /// makes `path` in a temporary folder that it owns, never in a project.
-    /// A path that is not absolute is an error.
+    /// owns `path`, keeps it outside every project, and deletes the file
+    /// when it is done. A path that is not absolute is an error.
     pub fn with_index_file(mut self, path: impl Into<PathBuf>) -> Result<Self, GitError> {
         let path = path.into();
         if !path.is_absolute() {

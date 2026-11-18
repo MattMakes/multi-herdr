@@ -364,8 +364,8 @@ impl CliWorktreeGit {
     }
 
     /// This adapter, with the private index file `index` for each git call.
-    /// The caller makes `index` in a folder of the fleet root, never in a
-    /// project.
+    /// The caller owns `index`, keeps it outside every project, and deletes
+    /// the file when it is done.
     pub(crate) fn with_index(&self, index: &Path) -> Result<CliWorktreeGit> {
         let runner = self
             .runner

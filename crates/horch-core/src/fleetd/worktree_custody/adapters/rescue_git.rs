@@ -84,12 +84,12 @@ fn save(git: &CliWorktreeGit, fleet_root: &Path, row: &WorktreeRow) -> Result<Re
         bail!("no folder at {}", row.path);
     }
     let run = run_folder(fleet_root, row)?;
-    let index = PrivateIndex::new(run.join(format!("rescue-{id}.index")))?;
-    let second = PrivateIndex::new(run.join(format!("rescue-{id}.verify.index")))?;
+    let snapshot_index = PrivateIndex::new(run.join(format!("rescue-{id}.index")))?;
+    let verification_index = PrivateIndex::new(run.join(format!("rescue-{id}.verify.index")))?;
 
     // Step 1: the tree of the folder on its HEAD, and its commit.
     let head = rev(git, tree, "HEAD")?;
-    let saved_tree = snapshot(&git.with_index(&index.0)?, tree, &head)?;
+    let saved_tree = snapshot(&git.with_index(&snapshot_index.path)?, tree, &head)?;
     let message = rescue::commit_message(id, row.owner_attempt.as_deref());
     let mut args = IDENTITY.to_vec();
     args.extend(["commit-tree", &saved_tree, "-p", &head, "-m", &message]);
@@ -102,7 +102,7 @@ fn save(git: &CliWorktreeGit, fleet_root: &Path, row: &WorktreeRow) -> Result<Re
         commit_tree: rev(git, tree, &format!("{commit}^{{tree}}")).ok(),
         commit_parent: rev(git, tree, &format!("{commit}^")).ok(),
         disk_tree: git
-            .with_index(&second.0)
+            .with_index(&verification_index.path)
             .and_then(|g| snapshot(&g, tree, &head))
             .ok(),
         head_after: rev(git, tree, "HEAD").ok(),
@@ -123,40 +123,67 @@ fn save(git: &CliWorktreeGit, fleet_root: &Path, row: &WorktreeRow) -> Result<Re
         attempt: row.owner_attempt.clone(),
     };
     write_manifest(&fleet_root.join("rescue"), &format!("{id}-{n}.json"), &r)?;
-    // Step 6: the drop of `index` and `second` deletes the 2 files.
+    // Step 6: the drop of the 2 private indexes deletes their files.
     Ok(r)
 }
 
-/// `<fleet root>/run`, made, as an absolute path outside the tree and the
-/// project of `row`: a private index never comes from a project.
+/// `<fleet root>/run`, made, as a canonical path outside the tree and the
+/// project of `row`: a private index never comes from a project. The check
+/// comes before the folder is made, so a refused fleet root makes nothing.
 fn run_folder(fleet_root: &Path, row: &WorktreeRow) -> Result<PathBuf> {
-    let run = fleet_root.join("run");
-    std::fs::create_dir_all(&run).with_context(|| format!("making {}", run.display()))?;
-    let run = run
-        .canonicalize()
-        .with_context(|| format!("reading {}", run.display()))?;
+    let run = resolved(&fleet_root.join("run"))?;
     for project in [&row.path, &row.repo_root] {
-        if Path::new(project)
+        let project = Path::new(project)
             .canonicalize()
-            .is_ok_and(|p| run.starts_with(p))
-        {
+            .with_context(|| format!("reading {project}"))?;
+        if run.starts_with(&project) {
             bail!(
-                "the fleet folder {} is in the project {project}",
-                run.display()
+                "the fleet folder {} is in the project {}",
+                run.display(),
+                project.display()
             );
         }
     }
+    std::fs::create_dir_all(&run).with_context(|| format!("making {}", run.display()))?;
     Ok(run)
 }
 
+/// The canonical form of `path`, which can be absent: the canonical form
+/// of its nearest folder that exists, then the parts below it. A `..` in a
+/// part that does not exist is an error, because it has no canonical form.
+fn resolved(path: &Path) -> Result<PathBuf> {
+    let path = std::path::absolute(path).with_context(|| format!("reading {}", path.display()))?;
+    let mut below = Vec::new();
+    let mut base = path.as_path();
+    loop {
+        match base.canonicalize() {
+            Ok(canonical) => {
+                return Ok(below.iter().rev().fold(canonical, |p, part| p.join(part)));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e).with_context(|| format!("reading {}", base.display())),
+        }
+        let (Some(parent), Some(name)) = (base.parent(), base.file_name()) else {
+            bail!(
+                "{} has a `..` in a part that does not exist, or no folder that exists",
+                path.display()
+            );
+        };
+        below.push(name.to_os_string());
+        base = parent;
+    }
+}
+
 /// A private index file. Its drop deletes it and its lock file.
-struct PrivateIndex(PathBuf);
+struct PrivateIndex {
+    path: PathBuf,
+}
 
 impl PrivateIndex {
     /// A new private index at `path`: a file that an earlier run left is
     /// deleted first.
     fn new(path: PathBuf) -> Result<PrivateIndex> {
-        let index = PrivateIndex(path);
+        let index = PrivateIndex { path };
         for file in index.files() {
             match std::fs::remove_file(&file) {
                 Ok(()) => {}
@@ -168,9 +195,9 @@ impl PrivateIndex {
     }
 
     fn files(&self) -> [PathBuf; 2] {
-        let mut lock = self.0.clone().into_os_string();
+        let mut lock = self.path.clone().into_os_string();
         lock.push(".lock");
-        [self.0.clone(), lock.into()]
+        [self.path.clone(), lock.into()]
     }
 }
 
