@@ -3,9 +3,9 @@
 //! (`docs/specs/fleetd/design.md`, "What each OS provides", row Sandbox).
 
 use std::ffi::{OsStr, OsString};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use crate::sandbox::Network;
+use crate::sandbox::{Network, Rule};
 use crate::NotSupported;
 
 pub(crate) fn program(_path: Option<&OsStr>) -> Result<PathBuf, NotSupported> {
@@ -15,11 +15,6 @@ pub(crate) fn program(_path: Option<&OsStr>) -> Result<PathBuf, NotSupported> {
 
 /// Windows has no sandbox host, so it has no arguments. [`program`] gives
 /// `NotSupported` first, so no caller gets here.
-pub(crate) fn args(
-    _writable: &[PathBuf],
-    _temp: Option<&Path>,
-    _hidden: &[PathBuf],
-    _network: Network,
-) -> Vec<OsString> {
+pub(crate) fn args(_rules: &[Rule<'_>], _temp: bool, _network: Network) -> Vec<OsString> {
     Vec::new()
 }

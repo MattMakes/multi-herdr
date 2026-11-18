@@ -139,6 +139,56 @@ mod unix {
         let dir = tempfile::tempdir().unwrap();
         fs::sync_dir(dir.path()).unwrap();
     }
+
+    #[test]
+    fn remove_dir_below_removes_the_folder_and_all_in_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("tmp").join("t1");
+        std::fs::create_dir_all(folder.join("sub").join("deeper")).unwrap();
+        std::fs::write(folder.join("index"), b"x").unwrap();
+        std::fs::write(folder.join("sub").join("deeper").join("f"), b"x").unwrap();
+        let outside = dir.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("work.txt"), b"work").unwrap();
+        std::os::unix::fs::symlink(&outside, folder.join("link")).unwrap();
+
+        fs::remove_dir_below(dir.path(), &["tmp", "t1"]).unwrap();
+
+        assert!(!folder.exists());
+        assert!(dir.path().join("tmp").is_dir(), "only the last name goes");
+        assert_eq!(std::fs::read(outside.join("work.txt")).unwrap(), b"work");
+    }
+
+    #[test]
+    fn remove_dir_below_follows_no_link_on_the_way() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("fleet");
+        let outside = dir.path().join("elsewhere");
+        std::fs::create_dir_all(outside.join("t1")).unwrap();
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(outside.join("t1").join("work.txt"), b"work").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("tmp")).unwrap();
+        std::os::unix::fs::symlink(outside.join("t1"), dir.path().join("t2")).unwrap();
+
+        assert!(fs::remove_dir_below(&root, &["tmp", "t1"]).is_err());
+        assert!(fs::remove_dir_below(dir.path(), &["t2"]).is_err());
+
+        assert_eq!(
+            std::fs::read(outside.join("t1").join("work.txt")).unwrap(),
+            b"work"
+        );
+    }
+
+    #[test]
+    fn remove_dir_below_refuses_a_name_that_is_not_1_folder_name() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("a").join("b")).unwrap();
+        for names in [&[][..], &["a/b"], &[".."], &["."], &[""]] {
+            let e = fs::remove_dir_below(&dir.path().join("a"), names).unwrap_err();
+            assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput, "{names:?}");
+        }
+        assert!(dir.path().join("a").join("b").is_dir());
+    }
 }
 
 #[test]
@@ -221,4 +271,7 @@ fn modes_and_owner_are_not_supported_on_windows() {
     let lock = dir.path().join("ledger.lock");
     let _first = fs::BreakerGuard::take(&lock).unwrap();
     assert!(fs::BreakerGuard::take(&lock).is_some());
+    assert!(is_not_supported(
+        &fs::remove_dir_below(dir.path(), &["x"]).unwrap_err()
+    ));
 }

@@ -3,8 +3,9 @@
 //! [`sandboxed`] wraps a command so that it can read the whole disk but
 //! write only in a list of paths and in its temp folder.
 //! [`sandboxed_hiding`] wraps a command so that it can write only in a list
-//! of paths, and cannot read, write or connect to a Unix socket below a
-//! list of hidden paths:
+//! of paths, cannot read, write or connect to a Unix socket below a list of
+//! hidden paths, can read again a list of paths in them, and can have no
+//! network:
 //!
 //! - macOS: `/usr/bin/sandbox-exec` with a generated Seatbelt profile.
 //! - Linux: `bwrap` (bubblewrap), when it is on the `PATH` of the command.
@@ -40,7 +41,13 @@ pub const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 /// macOS when [`SANDBOX_EXEC`] is missing.
 pub fn sandboxed(cmd: Command, writable: &[PathBuf]) -> Result<Command, NotSupported> {
     let temp = resolved(&std::env::temp_dir());
-    wrapped(cmd, writable, Some(&temp), &[], Network::Open)
+    let reach = Reach {
+        writable,
+        readable: &[],
+        hidden: &[],
+        network: Network::Open,
+    };
+    wrapped(cmd, &reach, Some(&temp))
 }
 
 /// The network rule of [`sandboxed_hiding`].
@@ -55,48 +62,79 @@ pub enum Network {
     Denied,
 }
 
-/// `cmd` in a sandbox with no temp folder: it can write only in the paths
-/// of `writable` and in `/dev/null`. Below each path of `hidden` it can
-/// not read, write or connect to a Unix socket. A hidden path wins over a
-/// writable path in it. It can read the rest of the disk.
-///
-/// - macOS: Seatbelt denies each file read and write and each Unix socket
-///   connection below a hidden path, whether the path exists or not.
-/// - Linux: a new empty tmpfs covers each hidden folder, and `/dev/null`
-///   covers each hidden file, so a socket file in a hidden folder is gone.
-///   A hidden path that does not exist when the command starts is not
-///   covered. An abstract Unix socket has no path: it is not denied (but
-///   see [`Network::Denied`]). A writable path that does not exist yet is
-///   replaced by its nearest existing folder, so the command can make a
-///   new name in that folder. Each entry that is in that folder when the
-///   command starts, and that is not a writable path and has none in it,
-///   is bound read-only on top. A link entry is not. A writable path in
-///   another writable path is not bound again, so a command can rename it.
-///
-/// `network` says whether the command can use the network.
-///
-/// The rest is as in [`sandboxed`]: the command and its settings, and
-/// [`NotSupported`] on a host with no sandbox. Give absolute paths.
-pub fn sandboxed_hiding(
-    cmd: Command,
-    writable: &[PathBuf],
-    hidden: &[PathBuf],
-    network: Network,
-) -> Result<Command, NotSupported> {
-    wrapped(cmd, writable, None, hidden, network)
+/// What a command of [`sandboxed_hiding`] can reach. Give absolute paths.
+#[derive(Debug, Clone, Copy)]
+pub struct Reach<'a> {
+    /// The command can read and write below each of these paths.
+    pub writable: &'a [PathBuf],
+    /// The command can read, and not write, below each of these paths.
+    pub readable: &'a [PathBuf],
+    /// The command cannot read, write or connect to a Unix socket below
+    /// each of these paths.
+    pub hidden: &'a [PathBuf],
+    pub network: Network,
 }
 
-fn wrapped(
-    cmd: Command,
-    writable: &[PathBuf],
-    temp: Option<&Path>,
-    hidden: &[PathBuf],
-    network: Network,
-) -> Result<Command, NotSupported> {
+/// `cmd` in a sandbox with no temp folder. It can write only below the
+/// writable paths of `reach` and in `/dev/null`, and it can read the whole
+/// disk but the hidden paths.
+///
+/// For each path the rule of the longest path of `reach` that holds it
+/// applies. So a writable or readable path in a hidden path can be reached
+/// again, and a hidden path in a writable or readable path is hidden. For
+/// 1 path in 2 lists, hidden wins over writable, and writable over
+/// readable.
+///
+/// - macOS: Seatbelt checks each file read and write and each Unix socket
+///   connection against the rules, whether the path exists or not.
+/// - Linux: the rules are mounts, from the shortest path to the longest.
+///   A new empty tmpfs covers each hidden folder, and `/dev/null` covers
+///   each hidden file, so a socket file in a hidden folder is gone. A path
+///   that does not exist when the command starts gets no mount: a hidden
+///   one is not covered, a readable one in a hidden folder is not there,
+///   and a writable one is not writable. So give writable paths that
+///   exist. An abstract Unix socket has no path: it is not denied (but see
+///   [`Network::Denied`]). A bound path is a mount point: the command
+///   cannot rename or remove it, only what is in it.
+///
+/// The rest is as in [`sandboxed`]: the command and its settings, and
+/// [`NotSupported`] on a host with no sandbox.
+pub fn sandboxed_hiding(cmd: Command, reach: &Reach<'_>) -> Result<Command, NotSupported> {
+    wrapped(cmd, reach, None)
+}
+
+/// 1 rule of a sandbox on 1 resolved path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Rule<'a> {
+    Read(&'a Path),
+    Write(&'a Path),
+    Hide(&'a Path),
+}
+
+impl Rule<'_> {
+    fn key(&self) -> (usize, u8) {
+        let (path, rank) = match self {
+            Rule::Read(path) => (path, 0),
+            Rule::Write(path) => (path, 1),
+            Rule::Hide(path) => (path, 2),
+        };
+        (path.components().count(), rank)
+    }
+}
+
+fn wrapped(cmd: Command, reach: &Reach<'_>, temp: Option<&Path>) -> Result<Command, NotSupported> {
     let program = os::program(path_of(&cmd).as_deref())?;
-    let writable: Vec<PathBuf> = writable.iter().map(|path| resolved(path)).collect();
-    let hidden: Vec<PathBuf> = hidden.iter().map(|path| resolved(path)).collect();
-    let args = os::args(&writable, temp, &hidden, network);
+    let all = |paths: &[PathBuf]| paths.iter().map(|p| resolved(p)).collect::<Vec<_>>();
+    let (writable, readable, hidden) =
+        (all(reach.writable), all(reach.readable), all(reach.hidden));
+    let mut rules: Vec<Rule<'_>> = readable.iter().map(|p| Rule::Read(p)).collect();
+    rules.extend(writable.iter().map(|p| Rule::Write(p)));
+    rules.extend(temp.map(Rule::Write));
+    rules.extend(hidden.iter().map(|p| Rule::Hide(p)));
+    // The longest path last, so its rule wins: the last rule wins on
+    // macOS, and the last mount covers the ones before it on Linux.
+    rules.sort_by_key(Rule::key);
+    let args = os::args(&rules, temp.is_some(), reach.network);
     Ok(wrap(&program, &args, &cmd))
 }
 

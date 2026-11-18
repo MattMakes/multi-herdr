@@ -12,8 +12,8 @@
 //! file changed. A rescued tree is removed with 1 `--force` (never 2, so a
 //! locked tree stays): git refuses a tree with a modified or untracked file
 //! without it, and the guard has just shown that the rescue ref holds
-//! exactly those files. Before that removal, 1 rename (`git worktree move`)
-//! puts the folder in its quarantine folder beside it, and the checks run
+//! exactly those files. Before that removal, 1 rename by fleetd and a
+//! `git worktree repair` put the folder in its quarantine folder beside it, and the checks run
 //! again there with a new snapshot (review F5 of T-287): a process that
 //! writes through the old path cannot change the tree that is removed. A
 //! run that ends between the move and the removal leaves the folder in
@@ -27,6 +27,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
+use horch_platform::fs::rename_noreplace;
 use serde::{Deserialize, Serialize};
 
 use crate::fleetd::fleet_runtime::application::jobs::Ran;
@@ -192,12 +193,16 @@ impl RemovalGateway for CliRemoval {
         }
     }
 
+    /// fleetd renames the folder itself, then `git worktree repair` names
+    /// the new folder in the record of git. So git in the sandbox writes
+    /// only the 2 exact folders, never the folder that holds the trees: on
+    /// Linux a new tree beside them stays out of reach. A refused scan
+    /// renames nothing.
     fn move_tree(&self, repo: &Path, from: &Path, to: &Path) -> Result<()> {
-        let from = from.to_str().context("the path of a tree is not UTF-8")?;
-        let to = to.to_str().context("the path of a tree is not UTF-8")?;
-        self.git
-            .git(repo, &["worktree", "move", "--", from, to])
-            .map(drop)
+        self.git.refuse_project_programs(repo)?;
+        rename_noreplace(from, to)
+            .with_context(|| format!("renaming {} to {}", from.display(), to.display()))?;
+        self.repair(repo, to)
     }
 
     fn repair(&self, repo: &Path, tree: &Path) -> Result<()> {
@@ -207,14 +212,32 @@ impl RemovalGateway for CliRemoval {
             .map(drop)
     }
 
+    /// On Linux the sandbox binds the folder of the tree, so git removes
+    /// all in it and its record, and then cannot remove the folder itself
+    /// (`EBUSY`). When git fails, its record of the tree is gone and the
+    /// folder is empty, fleetd removes that empty folder.
     fn remove(&self, repo: &Path, tree: &Path, force: bool) -> Result<()> {
-        let tree = tree.to_str().context("the path of a tree is not UTF-8")?;
+        let path = tree.to_str().context("the path of a tree is not UTF-8")?;
         let mut args = vec!["worktree", "remove"];
         if force {
             args.push("--force");
         }
-        args.extend(["--", tree]);
-        self.git.git(repo, &args).map(drop)
+        args.extend(["--", path]);
+        let failed = match self.git.git(repo, &args) {
+            Ok(_) => return Ok(()),
+            Err(e) => e,
+        };
+        let empty = std::fs::read_dir(tree).is_ok_and(|mut entries| entries.next().is_none());
+        let real = tree.canonicalize().ok();
+        let listed = self
+            .git
+            .list(repo)?
+            .iter()
+            .any(|entry| Path::new(&entry.path).canonicalize().ok() == real);
+        if !empty || listed {
+            return Err(failed);
+        }
+        std::fs::remove_dir(tree).with_context(|| format!("removing {}", tree.display()))
     }
 
     fn merged(&self, repo: &Path, branch: &str, base: &str) -> Result<bool> {

@@ -647,7 +647,8 @@ pub fn rescue_now(
     row: &WorktreeRow,
 ) -> Result<()> {
     let root = executors::fleet_root(conn)?;
-    let git = CliWorktreeGit::new(git_bin(&BinOverrides::from_env(&ProcessEnv)), root);
+    let git = CliWorktreeGit::new(git_bin(&BinOverrides::from_env(&ProcessEnv)), root)
+        .reading(&[PathBuf::from(&row.repo_root)]);
     let head = git
         .tree(Path::new(&row.path))?
         .with_context(|| format!("the orphaned worktree {} is not a work tree", row.path))?

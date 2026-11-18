@@ -11,7 +11,7 @@
 //! a Linux host without `bwrap`, the write tests assert `NotSupported`
 //! instead.
 
-use horch_platform::sandbox::{host_problem, sandboxed, sandboxed_hiding, Network};
+use horch_platform::sandbox::{host_problem, sandboxed, sandboxed_hiding, Network, Reach};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -55,17 +55,20 @@ fn run_hiding(
     writable: &[PathBuf],
     hidden: &[PathBuf],
 ) -> Option<std::process::Output> {
-    run_hiding_with(cmd, writable, hidden, Network::Open)
+    run_reach(
+        cmd,
+        &Reach {
+            writable,
+            readable: &[],
+            hidden,
+            network: Network::Open,
+        },
+    )
 }
 
-/// [`run_hiding`] with the network rule `network`.
-fn run_hiding_with(
-    cmd: Command,
-    writable: &[PathBuf],
-    hidden: &[PathBuf],
-    network: Network,
-) -> Option<std::process::Output> {
-    match sandboxed_hiding(cmd, writable, hidden, network) {
+/// Run `cmd` in the hiding sandbox with `reach`.
+fn run_reach(cmd: Command, reach: &Reach<'_>) -> Option<std::process::Output> {
+    match sandboxed_hiding(cmd, reach) {
         Ok(mut sandboxed) => Some(sandboxed.output().expect("start the sandboxed command")),
         Err(gap) => {
             assert!(host_has_no_sandbox(), "unexpected gap: {gap}");
@@ -259,45 +262,98 @@ fn hiding_sandbox_has_no_temp_folder() {
 }
 
 #[test]
-fn hiding_sandbox_makes_and_renames_a_writable_folder_that_does_not_exist_yet() {
-    let dir = test_dir();
-    let from = dir.path().join("trees").join("t1");
-    let to = dir.path().join("trees").join(".removing-t1");
-    std::fs::create_dir(dir.path().join("trees")).unwrap();
-    let script = "mkdir -p \"$1\" && echo x > \"$1/f\" && mv \"$1\" \"$2\"";
-    let writable = [from.clone(), to.clone()];
-    let Some(out) = run_hiding(sh(script, &[&from, &to]), &writable, &[]) else {
-        return;
-    };
-    assert!(out.status.success(), "{out:?}");
-    assert_eq!(std::fs::read_to_string(to.join("f")).unwrap(), "x\n");
-    assert!(!from.exists());
-}
-
-#[test]
-fn hiding_sandbox_cannot_write_a_sibling_of_a_writable_path_that_does_not_exist_yet() {
+fn hiding_sandbox_cannot_write_beside_a_writable_path_that_does_not_exist_yet() {
     let dir = test_dir();
     let trees = dir.path().join("trees");
     let sibling = trees.join("t2");
     std::fs::create_dir_all(&sibling).unwrap();
     std::fs::write(sibling.join("f"), "work\n").unwrap();
     let new = trees.join("t1");
-    let script = "mkdir \"$1\" && echo x > \"$1/f\"; echo bad > \"$2/f\"; rm -rf \"$2\"; true";
+    let script = "echo bad > \"$1/f\"; rm -rf \"$1\"; mkdir \"$2\"; true";
+    let other = trees.join("t3");
     let Some(out) = run_hiding(
-        sh(script, &[&new, &sibling]),
+        sh(script, &[&sibling, &other]),
         std::slice::from_ref(&new),
         &[],
     ) else {
         return;
     };
     assert_eq!(
-        std::fs::read_to_string(new.join("f")).unwrap(),
-        "x\n",
-        "{out:?}"
-    );
-    assert_eq!(
         std::fs::read_to_string(sibling.join("f")).unwrap(),
         "work\n",
+        "{out:?}"
+    );
+    assert!(!other.exists(), "{out:?}");
+}
+
+#[test]
+fn hiding_sandbox_reads_a_readable_path_in_a_hidden_folder_and_nothing_else_there() {
+    let dir = test_dir();
+    let home = dir.path().join("home");
+    let repo = home.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(repo.join("a.txt"), "tree\n").unwrap();
+    std::fs::write(home.join("secret"), "secret\n").unwrap();
+    let read = sh(
+        "cat \"$1/a.txt\"; cat \"$2\"; echo more >> \"$1/a.txt\"; true",
+        &[&repo, &home.join("secret")],
+    );
+    let reach = Reach {
+        writable: &[],
+        readable: std::slice::from_ref(&repo),
+        hidden: std::slice::from_ref(&home),
+        network: Network::Open,
+    };
+    let Some(out) = run_reach(read, &reach) else {
+        return;
+    };
+    let seen = String::from_utf8_lossy(&out.stdout);
+    assert!(seen.contains("tree"), "{out:?}");
+    assert!(!seen.contains("secret"), "{out:?}");
+    assert_eq!(
+        std::fs::read_to_string(repo.join("a.txt")).unwrap(),
+        "tree\n"
+    );
+}
+
+#[test]
+fn hiding_sandbox_writes_a_writable_path_in_a_hidden_folder() {
+    let dir = test_dir();
+    let home = dir.path().join("home");
+    let git = home.join("repo").join(".git");
+    std::fs::create_dir_all(&git).unwrap();
+    let file = git.join("index");
+    let reach = Reach {
+        writable: std::slice::from_ref(&git),
+        readable: &[],
+        hidden: std::slice::from_ref(&home),
+        network: Network::Open,
+    };
+    let Some(out) = run_reach(write_command(&file), &reach) else {
+        return;
+    };
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "hello\n");
+}
+
+#[test]
+fn hiding_sandbox_hides_a_hidden_path_in_a_writable_path() {
+    let dir = test_dir();
+    let run = dir.path().join("fleet").join("run");
+    std::fs::create_dir_all(&run).unwrap();
+    std::fs::write(run.join("operator.token"), "secret\n").unwrap();
+    let reach = Reach {
+        writable: &[dir.path().join("fleet")],
+        readable: &[],
+        hidden: std::slice::from_ref(&run),
+        network: Network::Open,
+    };
+    let read = sh("cat \"$1/operator.token\"; true", &[&run]);
+    let Some(out) = run_reach(read, &reach) else {
+        return;
+    };
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("secret"),
         "{out:?}"
     );
 }
@@ -311,7 +367,15 @@ fn hiding_sandbox_with_no_network_cannot_connect_to_a_tcp_listener() {
         cmd.args(["-MIO::Socket::INET", "-e"])
             .arg("IO::Socket::INET->new(PeerAddr => '127.0.0.1', PeerPort => $ARGV[0]) or exit 3; exit 0")
             .arg(&port);
-        run_hiding_with(cmd, &[], &[], network)
+        run_reach(
+            cmd,
+            &Reach {
+                writable: &[],
+                readable: &[],
+                hidden: &[],
+                network,
+            },
+        )
     };
     let Some(open) = connect(Network::Open) else {
         return;

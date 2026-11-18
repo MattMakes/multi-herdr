@@ -6,7 +6,7 @@ use std::path::Path;
 
 pub(crate) use crate::unix::fs::{
     create_dir_mode, create_mode, current_uid, file_identity, is_executable, make_executable,
-    mode_of, open_no_block, owner_and_mode, set_mode, sync_dir, BreakerGuard,
+    mode_of, open_no_block, owner_and_mode, remove_dir_below, set_mode, sync_dir, BreakerGuard,
 };
 
 pub(crate) fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {

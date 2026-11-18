@@ -990,6 +990,33 @@ fn race_clean_filter_does_not_run_in_a_rescue_job() {
 }
 
 #[test]
+fn race_filter_in_a_rescue_writes_only_its_own_index_folder_of_the_shared_tmp() {
+    let mut w = world();
+    let tmp = w.fleet_root().join("tmp");
+    let script = format!(
+        "echo ran > '{t}/t1/ran'\necho x > '{t}/stolen.txt'\nmkdir '{t}/t2'\ncat",
+        t = tmp.display()
+    );
+    let (program, _) = w.attack("tmp", &script);
+    let row = w.made("t1");
+    let (repo, program_s) = (w.repo.clone(), program.display().to_string());
+    let git = w.fleet_git().with_race(once("add", move || {
+        select_driver(&repo, "filter=evil");
+        set_config(&repo, "filter.evil.clean", &program_s);
+    }));
+
+    let ran = rescue_git::rescue(&git, &w.fleet_root(), &row);
+
+    assert!(
+        tmp.join("t1").join("ran").exists(),
+        "the filter ran: {}",
+        ran.outcome.text
+    );
+    assert!(!tmp.join("stolen.txt").exists(), "{}", ran.outcome.text);
+    assert!(!tmp.join("t2").exists(), "{}", ran.outcome.text);
+}
+
+#[test]
 fn race_fsmonitor_does_not_run_in_a_worktree_list_job() {
     let mut w = world();
     let (program, marker) = w.attack("fsmonitor", "exit 1");
@@ -1070,6 +1097,48 @@ fn race_driver_cannot_use_the_network_in_a_fleetd_git_call() {
 }
 
 #[test]
+fn race_driver_cannot_read_a_file_below_home_outside_the_job_paths() {
+    let w = world();
+    // The world folder is HOME: the repository and the fleet root are in
+    // it, and so is a file of the user.
+    let home = w.dir.path().canonicalize().unwrap();
+    std::fs::write(home.join("secret.txt"), "secret\n").unwrap();
+    // The program is outside HOME, so git can start it.
+    let outside = tempfile::tempdir().unwrap();
+    let program = outside.path().join("steal.sh");
+    let script = format!(
+        "#!/bin/sh\necho ran > '{repo}/ran.txt'\ncat '{home}/secret.txt' >> '{repo}/stolen.txt'\nexit 1\n",
+        repo = w.repo.display(),
+        home = home.display()
+    );
+    std::fs::write(&program, script).unwrap();
+    make_executable(&program);
+    git(&w.repo, &["checkout", "-q", "-b", "other"]);
+    std::fs::write(w.repo.join("a.txt"), "other\n").unwrap();
+    git(&w.repo, &["commit", "-q", "-am", "other"]);
+    git(&w.repo, &["checkout", "-q", "main"]);
+    std::fs::write(w.repo.join("a.txt"), "main\n").unwrap();
+    git(&w.repo, &["commit", "-q", "-am", "main"]);
+    let (repo, program_s) = (w.repo.clone(), program.display().to_string());
+    let git = w
+        .fleet_git()
+        .with_home(&home)
+        // The repository is writable, so git gets to the driver, which runs
+        // in the sandbox.
+        .writing(std::slice::from_ref(&w.repo))
+        .with_race(once("merge-tree", move || {
+            select_driver(&repo, "merge=evil");
+            set_config(&repo, "merge.evil.driver", &program_s);
+        }));
+
+    let out = git.checked(&w.repo, &["merge-tree", "--write-tree", "main", "other"]);
+
+    assert!(w.repo.join("ran.txt").exists(), "the driver ran: {out:?}");
+    let stolen = std::fs::read_to_string(w.repo.join("stolen.txt")).unwrap_or_default();
+    assert!(!stolen.contains("secret"), "the driver read HOME: {out:?}");
+}
+
+#[test]
 fn race_ssh_command_does_not_run_in_a_fleetd_git_call() {
     let w = world();
     let (program, marker) = w.attack("ssh", "exit 1");
@@ -1147,8 +1216,7 @@ fn race_external_diff_and_textconv_do_not_run_in_a_fleetd_git_call() {
 /// The fake answer of a host with no sandbox.
 fn no_sandbox_host(
     _cmd: Command,
-    _writable: &[PathBuf],
-    _hidden: &[PathBuf],
+    _reach: &horch_platform::sandbox::Reach<'_>,
 ) -> Result<Command, horch_platform::NotSupported> {
     Err(horch_platform::NotSupported::new("sandbox", "test").because("the fake host has none"))
 }

@@ -5,7 +5,7 @@ use std::fs::{DirBuilder, Metadata, OpenOptions};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
-use std::os::unix::io::AsRawFd;
+use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::Path;
 
 use crate::fs::OwnerAndMode;
@@ -33,6 +33,119 @@ pub(crate) fn sync_dir(dir: &Path) -> io::Result<()> {
 pub(crate) fn open_no_block(options: &mut OpenOptions) -> Result<(), NotSupported> {
     options.custom_flags(libc::O_NONBLOCK);
     Ok(())
+}
+
+/// [`crate::fs::remove_dir_below`]: each folder is opened from the handle
+/// of the folder before it, with `O_NOFOLLOW`, and each name is removed
+/// with `unlinkat` on the handle of its folder.
+pub(crate) fn remove_dir_below(root: &Path, names: &[&str]) -> io::Result<()> {
+    let root_c = CString::new(root.as_os_str().as_bytes())?;
+    // SAFETY: a NUL-terminated path that outlives the call.
+    let mut dir = owned(unsafe {
+        libc::open(
+            root_c.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+        )
+    })?;
+    let (last, way) = names.split_last().expect("the caller checks the names");
+    for name in way {
+        dir = open_below(&dir, &CString::new(*name)?)?;
+    }
+    let last = CString::new(*last)?;
+    let folder = open_below(&dir, &last)?;
+    empty_folder(&folder)?;
+    unlink_at(&dir, &last, libc::AT_REMOVEDIR)
+}
+
+/// The folder `name` in the folder `dir`, opened with no link followed.
+fn open_below(dir: &OwnedFd, name: &CStr) -> io::Result<OwnedFd> {
+    // SAFETY: an open handle and a NUL-terminated name that outlive the call.
+    owned(unsafe {
+        libc::openat(
+            dir.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    })
+}
+
+fn owned(fd: libc::c_int) -> io::Result<OwnedFd> {
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `fd` is a new open handle that only this value owns.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+fn unlink_at(dir: &OwnedFd, name: &CStr, flags: libc::c_int) -> io::Result<()> {
+    // SAFETY: an open handle and a NUL-terminated name that outlive the call.
+    if unsafe { libc::unlinkat(dir.as_raw_fd(), name.as_ptr(), flags) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Remove each entry of the open folder `dir`: a folder with all in it, and
+/// each other entry, a link too, as 1 name.
+fn empty_folder(dir: &OwnedFd) -> io::Result<()> {
+    for name in entries(dir)? {
+        let mut st = std::mem::MaybeUninit::<libc::stat>::uninit();
+        // SAFETY: an open handle, a NUL-terminated name and a stat buffer
+        // that outlive the call.
+        let rc = unsafe {
+            libc::fstatat(
+                dir.as_raw_fd(),
+                name.as_ptr(),
+                st.as_mut_ptr(),
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        };
+        if rc != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: fstatat filled the buffer.
+        let mode = unsafe { st.assume_init() }.st_mode;
+        if mode & libc::S_IFMT == libc::S_IFDIR {
+            empty_folder(&open_below(dir, &name)?)?;
+            unlink_at(dir, &name, libc::AT_REMOVEDIR)?;
+        } else {
+            unlink_at(dir, &name, 0)?;
+        }
+    }
+    Ok(())
+}
+
+/// The names in the open folder `dir`, without `.` and `..`.
+fn entries(dir: &OwnedFd) -> io::Result<Vec<CString>> {
+    // SAFETY: `dir` is an open handle; the copy is owned by the stream.
+    let copy = unsafe { libc::dup(dir.as_raw_fd()) };
+    if copy < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `copy` is an open folder handle that the stream takes.
+    let stream = unsafe { libc::fdopendir(copy) };
+    if stream.is_null() {
+        let e = io::Error::last_os_error();
+        // SAFETY: the stream did not take `copy`.
+        unsafe { libc::close(copy) };
+        return Err(e);
+    }
+    let mut names = Vec::new();
+    loop {
+        // SAFETY: `stream` is open until the closedir below.
+        let entry = unsafe { libc::readdir(stream) };
+        if entry.is_null() {
+            break;
+        }
+        // SAFETY: readdir gives an entry with a NUL-terminated name.
+        let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) };
+        if name.to_bytes() != b"." && name.to_bytes() != b".." {
+            names.push(name.to_owned());
+        }
+    }
+    // SAFETY: `stream` is open and closed only here.
+    unsafe { libc::closedir(stream) };
+    Ok(names)
 }
 
 /// [`crate::fs::rename_noreplace`] with `rename`, the call of the OS that

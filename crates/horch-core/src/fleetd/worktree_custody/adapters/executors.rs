@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use horch_marketplace::git::SandboxHost;
+use horch_platform::sandbox::sandboxed_hiding;
 use rusqlite::Connection;
 
 use crate::fleetd::fleet_runtime::adapters::jobs_store::JobRow;
@@ -31,7 +32,7 @@ use crate::runtime::paths::nonempty_path;
 /// kind. A host with no sandbox runs no git: the run fails with a text that
 /// starts with [`git::NO_SANDBOX`].
 pub fn run(conn: &Connection, row: &JobRow) -> Result<Ran> {
-    run_in(conn, row, git::job_host)
+    run_in(conn, row, sandboxed_hiding)
 }
 
 /// [`run`] with the sandbox host `host`. A test gives a fake answer.
@@ -44,20 +45,26 @@ pub fn run_in(conn: &Connection, row: &JobRow, host: SandboxHost) -> Result<Ran>
         return Ok(ran);
     }
     match row.kind {
-        Kind::WorktreeAdd => on_tree(conn, row, |tree| add(git, tree)),
+        Kind::WorktreeAdd => on_tree(conn, row, |tree| add(git.reading(&repo(tree)), tree)),
         Kind::WorktreeList => list(conn, row, &git),
         Kind::Rescue => on_tree(conn, row, |tree| {
-            let ran = rescue_git::rescue(&git, &root, tree);
+            let ran = rescue_git::rescue(&git.reading(&repo(tree)), &root, tree);
             rescue_git::drop_index_folder(&root, tree);
             Ok(ran)
         }),
         Kind::WorktreeRemove => on_tree(conn, row, |tree| {
-            let ran = remove(conn, git, &root, tree)?;
+            let ran = remove(conn, git.reading(&repo(tree)), &root, tree)?;
             rescue_git::drop_index_folder(&root, tree);
             Ok(ran)
         }),
         kind => Ok(jobs::no_executor(kind).into()),
     }
+}
+
+/// The repository root of the ledger row `tree`, which git of its job can
+/// read.
+fn repo(tree: &WorktreeRow) -> [PathBuf; 1] {
+    [PathBuf::from(&tree.repo_root)]
 }
 
 /// Run `job` on the ledger row of the tree that is the subject of `row`, or
@@ -95,7 +102,15 @@ fn list(conn: &Connection, row: &JobRow, git: &CliWorktreeGit) -> Result<Ran> {
         .into_iter()
         .filter(|r| r.repo_root == row.subject)
         .collect();
-    Ok(git::worktree_list(git, Path::new(&row.subject), &rows))
+    let paths: Vec<PathBuf> = std::iter::once(row.subject.clone())
+        .chain(rows.iter().map(|r| r.path.clone()))
+        .map(PathBuf::from)
+        .collect();
+    Ok(git::worktree_list(
+        &git.clone().reading(&paths),
+        Path::new(&row.subject),
+        &rows,
+    ))
 }
 
 /// A `worktree_remove` job: git can write the git folder, the tree and its

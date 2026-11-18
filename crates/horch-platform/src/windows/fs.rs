@@ -30,6 +30,10 @@ pub(crate) fn open_no_block(_options: &mut OpenOptions) -> Result<(), NotSupport
     Err(NOT_SUPPORTED)
 }
 
+pub(crate) fn remove_dir_below(_root: &Path, _names: &[&str]) -> io::Result<()> {
+    Err(NOT_SUPPORTED.into())
+}
+
 pub(crate) fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
     std::fs::rename(from, to)
 }

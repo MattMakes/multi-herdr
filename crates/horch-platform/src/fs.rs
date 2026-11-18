@@ -58,6 +58,27 @@ pub fn open_no_block(options: &mut OpenOptions) -> Result<(), NotSupported> {
     os::open_no_block(options)
 }
 
+/// Remove the folder `root/<names[0]>/.../<names[n]>` and each file and
+/// folder in it. No link below `root` is followed: a link on the way is an
+/// error, and a link in the folder is removed, not followed. The folders on
+/// the way are opened 1 by 1 from `root`, so a swap of 1 of them for a link
+/// after a check of the caller cannot make this remove a folder elsewhere.
+/// Each name must be 1 folder name: not empty, not `.` or `..`, no `/`.
+///
+/// Windows: an `Unsupported` error that holds [`NotSupported`]. Windows
+/// has no sandbox, so no job of fleetd makes a folder to remove there.
+pub fn remove_dir_below(root: &Path, names: &[&str]) -> io::Result<()> {
+    let valid =
+        |name: &&str| !name.is_empty() && *name != "." && *name != ".." && !name.contains('/');
+    if names.is_empty() || !names.iter().all(valid) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{names:?} is not a list of folder names"),
+        ));
+    }
+    os::remove_dir_below(root, names)
+}
+
 /// Rename `from` to `to`, and fail when `to` exists, where the OS and the
 /// file system can refuse an existing target. A plain `rename` replaces an
 /// empty dir.

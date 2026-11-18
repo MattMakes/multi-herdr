@@ -10,6 +10,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use horch_platform::sandbox::{Network, Reach};
 use horch_platform::NotSupported;
 
 /// Removed from every git child. Git never needs the API key, and the
@@ -113,12 +114,13 @@ pub fn repo_state(git_dir: &Path) -> String {
     out + &refs.join("\n")
 }
 
-/// The sandbox host: it wraps a command so that it can write only in the
-/// first list of paths, and cannot read, write or connect to a Unix socket
-/// below each path of the second list.
+/// The sandbox host: it wraps a command so that it reaches only what a
+/// [`Reach`] allows: it writes below the writable paths, reads the whole
+/// disk but the hidden paths, can read the readable paths in them again,
+/// and cannot read, write or connect to a Unix socket below a hidden path.
 /// [`horch_platform::sandbox::sandboxed_hiding`] is the real one; a test
 /// gives a fake answer.
-pub type SandboxHost = fn(Command, &[PathBuf], &[PathBuf]) -> Result<Command, NotSupported>;
+pub type SandboxHost = fn(Command, &Reach<'_>) -> Result<Command, NotSupported>;
 
 /// The variables of this process that a sandboxed git gets. It gets no
 /// other variable of this process, so a program that git starts cannot
@@ -151,14 +153,15 @@ fn sandboxed_env(cmd: &Command) -> Vec<(OsString, OsString)> {
     env
 }
 
-/// The sandbox of every child: the paths it can write, the paths below
-/// which it cannot read, write or connect to a Unix socket, and the host
-/// that wraps it. The child gets only the environment of
-/// [`SANDBOX_KEPT_ENV`] and of the runner.
+/// The sandbox of every child: what it can reach (see [`SandboxHost`]),
+/// its network rule, and the host that wraps it. The child gets only the
+/// environment of [`SANDBOX_KEPT_ENV`] and of the runner.
 #[derive(Debug, Clone)]
 pub struct GitSandbox {
     pub writable: Vec<PathBuf>,
+    pub readable: Vec<PathBuf>,
     pub hidden: Vec<PathBuf>,
+    pub network: Network,
     pub host: SandboxHost,
 }
 
@@ -317,8 +320,13 @@ impl GitRunner {
         // of `cmd`, so stdio is set on the command that runs.
         if let Some(sandbox) = &self.sandbox {
             let env = sandboxed_env(&cmd);
-            cmd = (sandbox.host)(cmd, &sandbox.writable, &sandbox.hidden)
-                .map_err(GitError::NoSandbox)?;
+            let reach = Reach {
+                writable: &sandbox.writable,
+                readable: &sandbox.readable,
+                hidden: &sandbox.hidden,
+                network: sandbox.network,
+            };
+            cmd = (sandbox.host)(cmd, &reach).map_err(GitError::NoSandbox)?;
             cmd.env_clear().envs(env);
         }
         cmd.stdin(Stdio::null())
@@ -353,11 +361,11 @@ impl GitRunner {
 mod tests {
     use super::*;
 
-    fn none(_: Command, _: &[PathBuf], _: &[PathBuf]) -> Result<Command, NotSupported> {
+    fn none(_: Command, _: &Reach<'_>) -> Result<Command, NotSupported> {
         Err(NotSupported::new("sandbox", "test").because("no host"))
     }
 
-    fn same(cmd: Command, _: &[PathBuf], _: &[PathBuf]) -> Result<Command, NotSupported> {
+    fn same(cmd: Command, _: &Reach<'_>) -> Result<Command, NotSupported> {
         Ok(cmd)
     }
 
@@ -384,7 +392,9 @@ mod tests {
     fn sandbox(host: SandboxHost) -> GitSandbox {
         GitSandbox {
             writable: Vec::new(),
+            readable: Vec::new(),
             hidden: Vec::new(),
+            network: Network::Denied,
             host,
         }
     }

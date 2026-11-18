@@ -14,6 +14,7 @@
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
+use horch_platform::fs::remove_dir_below;
 use serde::{Deserialize, Serialize};
 
 use crate::fleetd::fleet_runtime::application::jobs::Ran;
@@ -191,20 +192,16 @@ const TMP: &str = "tmp";
 
 /// Remove the private folder of the indexes of the tree of `row`, after its
 /// job. A worktree id that cannot name a folder has none. The folder is
-/// removed only when it is `<fleet root>/tmp/<worktree id>` with no link on
-/// the way, the test of [`run_folder`]: a link can name a folder outside
-/// the fleet root.
+/// `tmp/<worktree id>` below the canonical fleet root, and no link on the
+/// way is followed ([`remove_dir_below`]), so a `tmp` that is or becomes a
+/// link never makes this remove a folder outside the fleet root.
 pub fn drop_index_folder(fleet_root: &Path, row: &WorktreeRow) {
     let id = row.worktree_id.as_str();
     if !rescue::valid_id(id) {
         return;
     }
-    let folder = fleet_root.join(TMP).join(id);
-    let (Ok(real), Ok(root)) = (folder.canonicalize(), fleet_root.canonicalize()) else {
-        return;
-    };
-    if real == root.join(TMP).join(id) {
-        let _ = std::fs::remove_dir_all(real);
+    if let Ok(root) = fleet_root.canonicalize() {
+        let _ = remove_dir_below(&root, &[TMP, id]);
     }
 }
 

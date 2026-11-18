@@ -17,7 +17,7 @@ use std::sync::Arc;
 use anyhow::{bail, Context, Result};
 use horch_marketplace::git::{GitOutput, GitRunner, GitSandbox, SandboxHost};
 use horch_platform::fs::create_dir_mode;
-use horch_platform::sandbox::{sandboxed_hiding, Network};
+use horch_platform::sandbox::{sandboxed_hiding, Network, Reach};
 use horch_platform::NotSupported;
 use serde::{Deserialize, Serialize};
 
@@ -28,6 +28,9 @@ use crate::fleetd::worktree_custody::adapters::sqlite::WorktreeRow;
 use crate::fleetd::worktree_custody::application::ports::{
     ListEntry, TreeState, WorktreeGitGateway,
 };
+use crate::runtime::context::{EnvSource, ProcessEnv};
+use crate::runtime::paths::home_dir;
+use crate::runtime::process::which;
 use crate::taskledger::git::dir_bytes;
 
 // ─── the input keys ─────────────────────────────────────────────────────
@@ -388,7 +391,7 @@ fn facts(
 /// is the last scope that git reads, so each key wins over the config of
 /// the project. The git runner adds `core.hooksPath=/dev/null` too; it is
 /// here so that this list is the whole rule.
-const SAFE_CONFIG: [&str; 8] = [
+const SAFE_CONFIG: [&str; 9] = [
     // Hooks.
     "core.hooksPath=/dev/null",
     // The fsmonitor program.
@@ -398,6 +401,8 @@ const SAFE_CONFIG: [&str; 8] = [
     "tag.gpgSign=false",
     // The attributes file of the user, which can select a filter driver.
     "core.attributesFile=/dev/null",
+    // The ignore file of the user, below HOME, which git cannot read.
+    "core.excludesFile=/dev/null",
     // Each transport: the ssh command, a remote helper, `ext::`.
     "protocol.allow=never",
     // An empty value empties the list of credential helpers.
@@ -471,8 +476,9 @@ impl fmt::Debug for Race {
 /// Each git call runs in the platform sandbox (way A of T-691): git, and
 /// each program that git starts, can write only the paths of the job
 /// ([`CliWorktreeGit::writing`] and the folder of a private index),
-/// cannot read, write or connect below `<fleet root>/run`, has no network
-/// ([`job_host`]), and gets only the environment of
+/// cannot read, write or connect below `<fleet root>/run` and HOME (but
+/// the paths of the job and the git install folder), has no network, and
+/// gets only the environment of
 /// `horch_marketplace::git::SANDBOX_KEPT_ENV` and of the runner. The keys of
 /// [`SAFE_CONFIG`] and [`SAFE_ENV`] are the second layer (way B): they stop
 /// hooks, the fsmonitor, gpg, each transport, credential helpers, askpass
@@ -485,24 +491,22 @@ pub struct CliWorktreeGit {
     runner: GitRunner,
     fleet_root: PathBuf,
     writable: Vec<PathBuf>,
+    /// The paths below HOME that git can read: the git install folder and
+    /// the paths of the job.
+    readable: Vec<PathBuf>,
+    /// HOME, hidden from git, when it is an absolute path.
+    home: Option<PathBuf>,
     host: SandboxHost,
     race: Option<Race>,
-}
-
-/// The sandbox host of each git call of a job: [`sandboxed_hiding`] with no
-/// network. A job needs no network: [`SAFE_CONFIG`] allows no transport.
-pub fn job_host(
-    cmd: Command,
-    writable: &[PathBuf],
-    hidden: &[PathBuf],
-) -> Result<Command, NotSupported> {
-    sandboxed_hiding(cmd, writable, hidden, Network::Denied)
 }
 
 impl CliWorktreeGit {
     /// The adapter of a job of the fleet at `fleet_root`. It can write no
     /// path until [`CliWorktreeGit::writing`] names one.
     pub fn new(bin: impl Into<PathBuf>, fleet_root: impl Into<PathBuf>) -> CliWorktreeGit {
+        let bin = bin.into();
+        let install = install_folder(&bin, ProcessEnv.var_os("PATH").as_deref());
+        let home = Some(home_dir(&ProcessEnv)).filter(|home| home.is_absolute());
         let runner = SAFE_ENV
             .iter()
             .fold(GitRunner::new(bin), |r, (k, v)| r.with_env(k, v));
@@ -510,7 +514,9 @@ impl CliWorktreeGit {
             runner,
             fleet_root: fleet_root.into(),
             writable: Vec::new(),
-            host: job_host,
+            readable: install.into_iter().collect(),
+            home,
+            host: sandboxed_hiding,
             race: None,
         }
     }
@@ -518,6 +524,21 @@ impl CliWorktreeGit {
     /// This adapter, and git can also write below each path of `paths`.
     pub fn writing(mut self, paths: &[PathBuf]) -> CliWorktreeGit {
         self.writable.extend_from_slice(paths);
+        self
+    }
+
+    /// This adapter, and git can also read below each path of `paths`, also
+    /// when it is below HOME. Give paths of the ledger, never a path that
+    /// the project names.
+    pub fn reading(mut self, paths: &[PathBuf]) -> CliWorktreeGit {
+        self.readable.extend_from_slice(paths);
+        self
+    }
+
+    /// A test seam: `home` takes the place of HOME, which git cannot read.
+    #[doc(hidden)]
+    pub fn with_home(mut self, home: impl Into<PathBuf>) -> CliWorktreeGit {
+        self.home = Some(home.into());
         self
     }
 
@@ -560,13 +581,27 @@ impl CliWorktreeGit {
     /// Why this host cannot run git in the sandbox, or `None` when it can.
     pub fn sandbox_gap(&self) -> Option<NotSupported> {
         let probe = Command::new(self.runner.bin());
-        (self.host)(probe, &self.writable, &self.hidden()).err()
+        let hidden = self.hidden();
+        let reach = Reach {
+            writable: &self.writable,
+            readable: &self.readable,
+            hidden: &hidden,
+            network: Network::Denied,
+        };
+        (self.host)(probe, &reach).err()
     }
 
-    /// The paths that git cannot read: `<fleet root>/run`, with the
-    /// operator token and the command channel.
+    /// `<fleet root>/run`, with the operator token and the command channel.
+    fn run_folder(&self) -> PathBuf {
+        self.fleet_root.join("run")
+    }
+
+    /// The paths that git cannot read: [`CliWorktreeGit::run_folder`], and
+    /// HOME with the files of the user (keys, tokens, the shell history).
     fn hidden(&self) -> Vec<PathBuf> {
-        vec![self.fleet_root.join("run")]
+        std::iter::once(self.run_folder())
+            .chain(self.home.clone())
+            .collect()
     }
 
     /// The 1 way this adapter runs a git command: first refuse a key of the
@@ -599,14 +634,16 @@ impl CliWorktreeGit {
     /// `git <args>` in `dir` in the sandbox, with the keys of
     /// [`SAFE_CONFIG`], whatever its exit code.
     fn safe(&self, dir: &Path, args: &[&str]) -> Result<GitOutput> {
-        let hidden = self.hidden();
         // On Linux the sandbox covers a hidden folder only when it exists.
-        for folder in &hidden {
-            private_folder(folder)?;
-        }
+        private_folder(&self.run_folder())?;
+        // Git reads the folder of the call: a path of the caller.
+        let mut readable = self.readable.clone();
+        readable.push(dir.to_path_buf());
         let sandbox = GitSandbox {
             writable: self.writable.clone(),
-            hidden,
+            readable,
+            hidden: self.hidden(),
+            network: Network::Denied,
             host: self.host,
         };
         let mut full: Vec<&str> = SAFE_CONFIG.iter().flat_map(|c| ["-c", c]).collect();
@@ -622,7 +659,7 @@ impl CliWorktreeGit {
     /// An error that names the first key of the repository or worktree
     /// config of `dir` that starts a program. The global config of the user
     /// is not read.
-    fn refuse_project_programs(&self, dir: &Path) -> Result<()> {
+    pub(crate) fn refuse_project_programs(&self, dir: &Path) -> Result<()> {
         let args = ["config", "--list", "--show-origin", "--show-scope", "-z"];
         let out = self.safe(dir, &args)?;
         if out.status != 0 {
@@ -648,6 +685,19 @@ impl CliWorktreeGit {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NoSandbox {
     pub no_sandbox: String,
+}
+
+/// The install folder of the git binary `bin`, found on `path` when it is a
+/// bare name: the folder above its `bin` folder, after each link, so git can
+/// read its own files when they are below HOME.
+fn install_folder(bin: &Path, path: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
+    let found = if bin.components().count() > 1 {
+        bin.to_path_buf()
+    } else {
+        which(path, None, &bin.to_string_lossy())?
+    };
+    let real = found.canonicalize().ok()?;
+    real.parent()?.parent().map(Path::to_path_buf)
 }
 
 /// The run of a job that does not run git because this host has no
@@ -795,14 +845,17 @@ impl WorktreeGitGateway for CliWorktreeGit {
     }
 
     fn add(&self, repo: &Path, path: &Path, branch: &str, base: &str) -> Result<()> {
-        parent_folder(path)?;
+        // A refused add makes no folder.
+        self.refuse_project_programs(repo)?;
+        tree_folder(path)?;
         let path = path.to_str().context("the path of a tree is not UTF-8")?;
         self.git(repo, &["worktree", "add", "-b", branch, path, base])
             .map(drop)
     }
 
     fn attach(&self, repo: &Path, path: &Path, branch: &str) -> Result<()> {
-        parent_folder(path)?;
+        self.refuse_project_programs(repo)?;
+        tree_folder(path)?;
         let path = path.to_str().context("the path of a tree is not UTF-8")?;
         // `--` ends the options: no path or branch name reads as a flag.
         self.git(repo, &["worktree", "add", "--", path, branch])
@@ -810,13 +863,12 @@ impl WorktreeGitGateway for CliWorktreeGit {
     }
 }
 
-/// Make the folder that holds the tree at `path`. Git in the sandbox can
-/// write only the tree itself, so it cannot make that folder.
-fn parent_folder(path: &Path) -> Result<()> {
-    let Some(parent) = path.parent() else {
-        return Ok(());
-    };
-    std::fs::create_dir_all(parent).with_context(|| format!("making {}", parent.display()))
+/// Make the empty folder of the tree at `path`, and the folders that hold
+/// it. Git in the sandbox can write only the tree itself, and on Linux the
+/// sandbox binds only a folder that exists, so fleetd makes it first. Git
+/// adds a tree in an empty folder.
+fn tree_folder(path: &Path) -> Result<()> {
+    std::fs::create_dir_all(path).with_context(|| format!("making {}", path.display()))
 }
 
 /// The entries of `git worktree list --porcelain -z`: attributes end with
