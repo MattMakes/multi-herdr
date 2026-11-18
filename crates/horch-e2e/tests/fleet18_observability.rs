@@ -315,135 +315,144 @@ fn wait<T>(what: &str, mut f: impl FnMut() -> Option<T>) -> T {
 
 #[test]
 fn g52_concurrent_workers_get_their_own_session_and_transcript() {
-    let h = fleet("g52-race", "exec,stay");
-    ok(
-        &h,
-        &["ledger", "run", "new", "race", "--heartbeat-every", "1"],
-    );
-    // A task-less spawn binds a ready task (TRF-31, FR-5): 1 for each of
-    // the 2 workers and 1 for each of their 2 resumes.
-    for n in 1..=4 {
-        let file = h.project.join(format!("race-{n}.md"));
-        std::fs::write(&file, format!("# Race {n}\n**Check:** `true`\n")).unwrap();
-        let file = file.to_string_lossy().into_owned();
-        ok(
-            &h,
-            &["ledger", "add", "--file", &file, "--primary", "codex-terra"],
-        );
-    }
-    let argv = [
-        "spawn",
-        "codex-terra",
-        "--from-pane",
-        "w1:p1",
-        "--no-tile",
-        "--force",
-    ];
-    // Launch within the same polling interval. Reverse worker traversal below
-    // deliberately checks the worker that was created second first.
-    let mut first = argv.to_vec();
-    first.extend(["--role", "codex-terra-1"]);
-    let mut second = argv.to_vec();
-    second.extend(["--role", "codex-terra-2"]);
-    let a = h
-        .horch(&first)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    let b = h
-        .horch(&second)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    for child in [a, b] {
-        let o = child.wait_with_output().unwrap();
-        assert!(o.status.success(), "{}", err(&o));
-    }
-    let workers = wait("two session transcripts", || {
-        let state: serde_json::Value =
-            // The queued tasks keep the run open, so status exits 1 (TRF-15).
-            serde_json::from_str(&out(&h.run(&["ledger", "status", "--json"]))).ok()?;
-        let ws: Vec<_> = state["workers"]
-            .as_array()?
-            .iter()
-            .map(|w| w["worker"].clone())
-            .filter(|w| w["kind"] == "worker")
-            .collect();
-        (ws.len() == 2
-            && ws
-                .iter()
-                .all(|w| w["session_id"].is_string() && w["transcript_path"].is_string()))
-        .then_some(ws)
-    });
-    assert_ne!(workers[0]["session_id"], workers[1]["session_id"]);
-    assert_ne!(workers[0]["transcript_path"], workers[1]["transcript_path"]);
-    let records = SessionLedger::for_project(&h.state, &h.project.to_string_lossy())
-        .read()
-        .unwrap();
-    for w in workers.iter().rev() {
-        let record = records
-            .iter()
-            .find(|r| Some(r.record_id.as_str()) == w["legacy_record_id"].as_str())
-            .unwrap();
-        assert_eq!(record.session_id.as_deref(), w["session_id"].as_str());
-        let transcript = std::fs::read_to_string(w["transcript_path"].as_str().unwrap()).unwrap();
-        assert!(transcript.contains(&horch_core::harness::codex::launch_token(&record.record_id)));
-    }
-    // Exact PID/start identity protects cleanup from PID reuse.
-    for w in &workers {
-        let pid = w["agent_pid"].as_u64().unwrap() as u32;
-        let started = w["agent_started"].as_u64().unwrap();
-        assert!(horch_core::procid::signal_same(pid, started, 15));
-    }
-    wait("old launches exited", || {
-        let current = ledger_records(&h);
-        workers
-            .iter()
-            .all(|w| {
-                current.iter().any(|r| {
-                    Some(r.record_id.as_str()) == w["legacy_record_id"].as_str()
-                        && !r.execution_status().is_live()
-                })
-            })
-            .then_some(())
-    });
-    for (index, w) in workers.iter().enumerate() {
-        let record = w["legacy_record_id"].as_str().unwrap();
-        let session = w["session_id"].as_str().unwrap();
-        let role = format!("codex-terra-resume-{index}");
-        ok(
-            &h,
-            &[
+    horch_e2e::expected::check(
+        file!(),
+        "g52_concurrent_workers_get_their_own_session_and_transcript",
+        || {
+            let h = fleet("g52-race", "exec,stay");
+            ok(
+                &h,
+                &["ledger", "run", "new", "race", "--heartbeat-every", "1"],
+            );
+            // A task-less spawn binds a ready task (TRF-31, FR-5): 1 for each of
+            // the 2 workers and 1 for each of their 2 resumes.
+            for n in 1..=4 {
+                let file = h.project.join(format!("race-{n}.md"));
+                std::fs::write(&file, format!("# Race {n}\n**Check:** `true`\n")).unwrap();
+                let file = file.to_string_lossy().into_owned();
+                ok(
+                    &h,
+                    &["ledger", "add", "--file", &file, "--primary", "codex-terra"],
+                );
+            }
+            let argv = [
                 "spawn",
-                "--resume",
-                record,
-                "--role",
-                &role,
+                "codex-terra",
                 "--from-pane",
                 "w1:p1",
                 "--no-tile",
                 "--force",
-            ],
-        );
-        wait("resume uses own session", || {
-            h.calls_of("codex")
-                .iter()
-                .any(|call| call["resumed"] == session)
-                .then_some(())
-        });
-    }
-    let store = horch_core::taskledger::Store::open(&h.root.join("ledger.sqlite3")).unwrap();
-    let mut query=store.conn().prepare("SELECT agent_pid,agent_started FROM workers WHERE status IN ('spawning','starting','claiming','working') AND agent_pid IS NOT NULL").unwrap();
-    let pids = query
-        .query_map([], |r| Ok((r.get::<_, u32>(0)?, r.get::<_, u64>(1)?)))
-        .unwrap()
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
-    for (pid, started) in pids {
-        horch_core::procid::signal_same(pid, started, 15);
-    }
+            ];
+            // Launch within the same polling interval. Reverse worker traversal below
+            // deliberately checks the worker that was created second first.
+            let mut first = argv.to_vec();
+            first.extend(["--role", "codex-terra-1"]);
+            let mut second = argv.to_vec();
+            second.extend(["--role", "codex-terra-2"]);
+            let a = h
+                .horch(&first)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            let b = h
+                .horch(&second)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            for child in [a, b] {
+                let o = child.wait_with_output().unwrap();
+                assert!(o.status.success(), "{}", err(&o));
+            }
+            let workers = wait("two session transcripts", || {
+                let state: serde_json::Value =
+                    // The queued tasks keep the run open, so status exits 1 (TRF-15).
+                    serde_json::from_str(&out(&h.run(&["ledger", "status", "--json"]))).ok()?;
+                let ws: Vec<_> = state["workers"]
+                    .as_array()?
+                    .iter()
+                    .map(|w| w["worker"].clone())
+                    .filter(|w| w["kind"] == "worker")
+                    .collect();
+                (ws.len() == 2
+                    && ws
+                        .iter()
+                        .all(|w| w["session_id"].is_string() && w["transcript_path"].is_string()))
+                .then_some(ws)
+            });
+            assert_ne!(workers[0]["session_id"], workers[1]["session_id"]);
+            assert_ne!(workers[0]["transcript_path"], workers[1]["transcript_path"]);
+            let records = SessionLedger::for_project(&h.state, &h.project.to_string_lossy())
+                .read()
+                .unwrap();
+            for w in workers.iter().rev() {
+                let record = records
+                    .iter()
+                    .find(|r| Some(r.record_id.as_str()) == w["legacy_record_id"].as_str())
+                    .unwrap();
+                assert_eq!(record.session_id.as_deref(), w["session_id"].as_str());
+                let transcript =
+                    std::fs::read_to_string(w["transcript_path"].as_str().unwrap()).unwrap();
+                assert!(transcript
+                    .contains(&horch_core::harness::codex::launch_token(&record.record_id)));
+            }
+            // Exact PID/start identity protects cleanup from PID reuse.
+            for w in &workers {
+                let pid = w["agent_pid"].as_u64().unwrap() as u32;
+                let started = w["agent_started"].as_u64().unwrap();
+                assert!(horch_core::procid::signal_same(pid, started, 15));
+            }
+            wait("old launches exited", || {
+                let current = ledger_records(&h);
+                workers
+                    .iter()
+                    .all(|w| {
+                        current.iter().any(|r| {
+                            Some(r.record_id.as_str()) == w["legacy_record_id"].as_str()
+                                && !r.execution_status().is_live()
+                        })
+                    })
+                    .then_some(())
+            });
+            for (index, w) in workers.iter().enumerate() {
+                let record = w["legacy_record_id"].as_str().unwrap();
+                let session = w["session_id"].as_str().unwrap();
+                let role = format!("codex-terra-resume-{index}");
+                ok(
+                    &h,
+                    &[
+                        "spawn",
+                        "--resume",
+                        record,
+                        "--role",
+                        &role,
+                        "--from-pane",
+                        "w1:p1",
+                        "--no-tile",
+                        "--force",
+                    ],
+                );
+                wait("resume uses own session", || {
+                    h.calls_of("codex")
+                        .iter()
+                        .any(|call| call["resumed"] == session)
+                        .then_some(())
+                });
+            }
+            let store =
+                horch_core::taskledger::Store::open(&h.root.join("ledger.sqlite3")).unwrap();
+            let mut query=store.conn().prepare("SELECT agent_pid,agent_started FROM workers WHERE status IN ('spawning','starting','claiming','working') AND agent_pid IS NOT NULL").unwrap();
+            let pids = query
+                .query_map([], |r| Ok((r.get::<_, u32>(0)?, r.get::<_, u64>(1)?)))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            for (pid, started) in pids {
+                horch_core::procid::signal_same(pid, started, 15);
+            }
+        },
+    );
 }
 
 fn ledger_records(h: &Harness) -> Vec<horch_core::execution::legacy::Record> {

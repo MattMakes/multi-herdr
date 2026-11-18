@@ -4,7 +4,9 @@
 # waits for the push side of Phase 4: the attempt goes live when its agent
 # runs (ticket 10), horch result ends the work (tickets 12 and 13), and the
 # fixtures move to bind (the follow-up ticket of FR-5).
-the_whole_flow_on_the_fake_herdr | 4 | .contains("Claimed T-2")
-a_spawned_worker_records_its_pids_session_and_checkins | 4 | timed out waiting for the exit
-stopping_one_of_three_workers_leaves_the_others_running | 4 | the task of the stopped worker is queued again
-a_worker_with_no_progress_is_stalled_by_the_ladder_and_stopped_by_its_pid | 4 | its old process lived in the pass
+# Since T-479 (fleetd-p5 ticket 30), the wrapper of an attempt writes no
+# worker row, so each of them now stops at the wait for the agent PID.
+the_whole_flow_on_the_fake_herdr | 4 | timed out waiting for B's agent PID
+a_spawned_worker_records_its_pids_session_and_checkins | 4 | timed out waiting for both PIDs
+stopping_one_of_three_workers_leaves_the_others_running | 4 | timed out waiting for the agent PID
+a_worker_with_no_progress_is_stalled_by_the_ladder_and_stopped_by_its_pid | 4 | timed out waiting for the agent PID

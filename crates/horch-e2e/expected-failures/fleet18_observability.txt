@@ -1,0 +1,6 @@
+# Red tests of crates/horch-e2e/tests/fleet18_observability.rs.
+# Since T-479 (fleetd-p5 ticket 30), the wrapper of an attempt writes
+# session.json of its attempt, not the session columns of its worker row.
+# Not written until ticket 31: fleetd writes them from that file in
+# fleetd-p5 ticket 31.
+g52_concurrent_workers_get_their_own_session_and_transcript | 5 | timed out waiting for two session transcripts
