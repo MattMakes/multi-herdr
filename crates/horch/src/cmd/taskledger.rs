@@ -1129,7 +1129,7 @@ fn runs_now(procs: &dyn stop::Processes, p: Recorded) -> bool {
 }
 
 /// What this command sees of each process in `watch`.
-fn seen(watch: &[Recorded], procs: &dyn stop::Processes) -> Facts {
+pub(super) fn seen(watch: &[Recorded], procs: &dyn stop::Processes) -> Facts {
     let mut facts = Facts::default();
     for p in watch {
         let state = if runs_now(procs, *p) {
@@ -1157,14 +1157,14 @@ fn wake_dependents(
 
 /// How a cancel stops the workers it let go of: herdr and the processes of
 /// this machine, or fakes in tests.
-struct Stopper<'a> {
+pub(super) struct Stopper<'a> {
     panes: &'a dyn stop::Panes,
-    procs: &'a dyn stop::Processes,
+    pub(super) procs: &'a dyn stop::Processes,
     opts: stop::StopOptions,
 }
 
 impl<'a> Stopper<'a> {
-    fn real(panes: &'a HerdrPanes) -> Stopper<'a> {
+    pub(super) fn real(panes: &'a HerdrPanes) -> Stopper<'a> {
         Stopper {
             panes,
             procs: &stop::Os,
@@ -1179,7 +1179,12 @@ impl<'a> Stopper<'a> {
 /// Stop the workers that held cancelled tasks, by their recorded PIDs and
 /// panes (TRF-36). A worker that cannot be stopped gets a warning, and the
 /// cancel stands.
-fn stop_holders(store: &mut Store, holders: &[String], reason: &str, s: &Stopper) -> Result<()> {
+pub(super) fn stop_holders(
+    store: &mut Store,
+    holders: &[String],
+    reason: &str,
+    s: &Stopper,
+) -> Result<()> {
     for (w, r) in stop::stop_cancelled(store, holders, reason, s.panes, s.procs, &s.opts) {
         match r {
             Ok(report) => print_stop(&report, false)?,

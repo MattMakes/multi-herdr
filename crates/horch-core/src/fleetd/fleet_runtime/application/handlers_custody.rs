@@ -50,9 +50,9 @@ use crate::taskledger::{finish, runs, util, workers, worktree_ops};
 
 /// The kinds of this file that have no handler yet: each stays refused
 /// with [`super::requests::NOT_HANDLED`]. Their use cases come from
-/// fleetd-p4: `feature_abandon` from T-383 and `rescue_drop` from T-386.
-/// Each such task adds its handler in [`register`].
-pub const NOT_YET_HANDLED: [Kind; 2] = [Kind::FeatureAbandon, Kind::RescueDrop];
+/// fleetd-p4: `rescue_drop` from T-386. Each such task adds its handler in
+/// [`register`].
+pub const NOT_YET_HANDLED: [Kind; 1] = [Kind::RescueDrop];
 
 /// The triage decisions that the `worktree_triage` handler refuses: each
 /// runs git or gh writes, and no job kind does them yet. The command keeps
@@ -95,9 +95,9 @@ pub fn register(handlers: &mut Handlers, custody: Arc<Custody>) {
     handlers.insert(Kind::WorktreeRestore, with(worktree_restore));
     handlers.insert(Kind::WorktreeTriage, with(worktree_triage));
     handlers.insert(Kind::BranchAbandon, with(branch_abandon));
+    handlers.insert(Kind::FeatureAbandon, with(feature_abandon));
     // The handlers of NOT_YET_HANDLED go here, 1 line each, with the shape
     // `fn(&Custody, &Connection, &Value) -> Result<Value>`:
-    // handlers.insert(Kind::FeatureAbandon, with(feature_abandon));
     // handlers.insert(Kind::RescueDrop, with(rescue_drop));
 }
 
@@ -689,5 +689,52 @@ fn branch_abandon(c: &Custody, tx: &Connection, p: &Value) -> Result<Value> {
         "branch": done.branch,
         "rescue_ref": done.rescue_ref,
         "already": done.already,
+    }))
+}
+
+// ─── feature_abandon ────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FeatureAbandon {
+    feature: String,
+    /// The rescue ref that the command wrote for each task branch of the
+    /// feature that is not landed, with its tip.
+    branches: Vec<BranchAbandon>,
+}
+
+/// `horch feature abandon <feature>`: the command writes the rescue ref of
+/// each task branch of the feature that is not landed first (I10). The
+/// handler reads each branch and each ref again in git, with no write, and
+/// refuses facts that git does not confirm. Then it records the refs, moves
+/// the branches, cancels the open tasks of the run and moves the feature
+/// (`integration::record_feature`). The caller stops the workers of
+/// `to_stop`; else the pass completes each cancel that waits for a stop.
+fn feature_abandon(c: &Custody, tx: &Connection, p: &Value) -> Result<Value> {
+    let FeatureAbandon { feature, branches } = payload("feature_abandon", p)?;
+    let repo = integration::feature_repo(tx, &feature)?;
+    let mut rescued = Vec::with_capacity(branches.len());
+    for BranchAbandon {
+        branch,
+        rescue_ref,
+        tip,
+    } in branches
+    {
+        let r = Rescued { branch, rescue_ref };
+        integration::verify(c.refs.as_ref(), &repo, &r, tip.as_deref())?;
+        rescued.push(r);
+    }
+    let why = "the operator abandons the feature";
+    let done = integration::record_feature(&c.jobs(), tx, &feature, &rescued, why)?;
+    let branches: Vec<Value> = done
+        .branches
+        .iter()
+        .map(|b| json!({ "branch": b.branch, "rescue_ref": b.rescue_ref }))
+        .collect();
+    Ok(json!({
+        "feature": done.feature,
+        "already": done.already,
+        "branches": branches,
+        "to_stop": done.to_stop(),
     }))
 }

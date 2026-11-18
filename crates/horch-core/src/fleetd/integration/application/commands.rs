@@ -20,14 +20,18 @@ use rusqlite::Connection;
 
 use crate::fleetd::fleet_runtime::application::jobs::JobCtx;
 use crate::fleetd::fleet_runtime::application::ledger::Cause;
-use crate::fleetd::fleet_runtime::application::ledger::Moved;
+use crate::fleetd::fleet_runtime::application::ledger::{transition, Moved};
+use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 use crate::fleetd::integration::adapters::sqlite::{self as rows, BranchFact};
 use crate::fleetd::integration::application::landing::{self, BranchRescues};
+use crate::fleetd::integration::domain::feature::FeatureState;
 use crate::fleetd::integration::domain::task_branch::LandingState;
+use crate::fleetd::task_execution::application::cancel::{self, Cancel};
 use crate::fleetd::worktree_custody::adapters::git::CliWorktreeGit;
 use crate::fleetd::worktree_custody::application::create::fleet_clock;
 use crate::fleetd::worktree_custody::domain::{rescue, rescue_class};
 use crate::taskledger::model::Actor;
+use crate::taskledger::runs::Run;
 use crate::taskledger::{runs, tasks, Store};
 
 /// What [`abandon`] or [`record`] did.
@@ -146,6 +150,142 @@ pub fn abandon(
 ) -> Result<Abandoned> {
     let rescued = rescue(store.conn(), rescues, repo, branch)?;
     store.immediate(|tx| record(ctx, tx, &rescued, why))
+}
+
+/// What [`abandon_feature`] or [`record_feature`] did.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FeatureAbandoned {
+    pub feature: String,
+    /// The branches that this call moved to `abandoned`, by name.
+    pub branches: Vec<Abandoned>,
+    /// The cancel of each task of the run that was not terminal.
+    pub cancels: Vec<Cancel>,
+    /// The feature was `abandoned` before this call.
+    pub already: bool,
+}
+
+impl FeatureAbandoned {
+    /// The workers that the caller stops after the commit, sorted and
+    /// once each.
+    pub fn to_stop(&self) -> Vec<String> {
+        let mut out: Vec<String> = self.cancels.iter().flat_map(Cancel::to_stop).collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+}
+
+/// The run of the feature `feature` (Q5). A feature that is `merged` is
+/// refused: its changes are in the primary branch.
+fn abandonable_feature(conn: &Connection, feature: &str) -> Result<(FeatureState, Run)> {
+    let row = rows::feature(conn, feature)?
+        .with_context(|| format!("{feature} is not a feature in the ledger"))?;
+    let state = FeatureState::parse(&row.state)
+        .with_context(|| format!("{feature} has the state {:?}", row.state))?;
+    if state == FeatureState::Merged {
+        bail!("{feature} is merged; a merged feature is not abandoned");
+    }
+    let run = runs::feature_run(conn, feature)?
+        .with_context(|| format!("{feature} has no run in the ledger"))?;
+    Ok((state, run))
+}
+
+/// The repository of the feature `feature`: the project of its run.
+pub fn feature_repo(conn: &Connection, feature: &str) -> Result<PathBuf> {
+    let (_, run) = abandonable_feature(conn, feature)?;
+    Ok(PathBuf::from(run.project_root))
+}
+
+/// The task branches of the feature `feature` that are not `landed` or
+/// `abandoned`, by name.
+fn open_branches_of_feature(conn: &Connection, feature: &str) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT name FROM branches WHERE feature_id = ?1 AND task_id IS NOT NULL
+           AND landing_state NOT IN ('landed', 'abandoned') ORDER BY name",
+    )?;
+    let rows = stmt.query_map([feature], |r| r.get(0))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// Step 1 of [`abandon_feature`], before any write of the ledger: the
+/// rescue ref of each task branch of `feature` in `repo` that is not
+/// `landed` or `abandoned`, written and read back. A second call for the
+/// same tips gives the same refs.
+pub fn rescue_feature(
+    conn: &Connection,
+    rescues: &dyn BranchRescues,
+    repo: &Path,
+    feature: &str,
+) -> Result<Vec<Rescued>> {
+    abandonable_feature(conn, feature)?;
+    open_branches_of_feature(conn, feature)?
+        .iter()
+        .map(|branch| rescue(conn, rescues, repo, branch))
+        .collect()
+}
+
+/// Step 2 of [`abandon_feature`], in `tx`, in this order: each task branch
+/// of `feature` that is not `landed` or `abandoned` gets its rescue ref of
+/// `rescued` recorded and moves to `abandoned`; each task of the run that
+/// is not terminal gets the cancel of a task (a live attempt waits for its
+/// stop); the feature moves to `abandoned`. A branch with no rescue ref in
+/// `rescued` refuses the whole step, so no branch moves before its rescue
+/// (I10). A feature that is `abandoned` already is not moved again; the
+/// cancel of its tasks is asked again, so the caller stops each worker
+/// again.
+pub fn record_feature(
+    ctx: &JobCtx<'_>,
+    tx: &Connection,
+    feature: &str,
+    rescued: &[Rescued],
+    why: &str,
+) -> Result<FeatureAbandoned> {
+    let (state, run) = abandonable_feature(tx, feature)?;
+    let mut branches = Vec::new();
+    for name in open_branches_of_feature(tx, feature)? {
+        let Some(r) = rescued.iter().find(|r| r.branch == name) else {
+            bail!("{name} has no rescue ref yet; run horch feature abandon {feature} again");
+        };
+        branches.push(record(ctx, tx, r, why)?);
+    }
+    let cancels = cancel::request_each(tx, &tasks::of_run(tx, &run.run_id)?, why)?;
+    let already = state == FeatureState::Abandoned;
+    if !already {
+        let cause = Cause {
+            actor: Actor::Orchestrator,
+            text: why,
+        };
+        let to = FeatureState::Abandoned.as_str();
+        transition(
+            tx,
+            ctx.guard,
+            Entity::Feature,
+            feature,
+            to,
+            cause,
+            ctx.needs_you,
+        )?;
+    }
+    Ok(FeatureAbandoned {
+        feature: feature.to_string(),
+        branches,
+        cancels,
+        already,
+    })
+}
+
+/// `horch feature abandon <feature>`: [`rescue_feature`], then
+/// [`record_feature`] in 1 transaction of `store`.
+pub fn abandon_feature(
+    store: &mut Store,
+    ctx: &JobCtx<'_>,
+    rescues: &dyn BranchRescues,
+    repo: &Path,
+    feature: &str,
+    why: &str,
+) -> Result<FeatureAbandoned> {
+    let rescued = rescue_feature(store.conn(), rescues, repo, feature)?;
+    store.immediate(|tx| record_feature(ctx, tx, feature, &rescued, why))
 }
 
 /// The task branches of `task_id` that are not `landed` or `abandoned`.

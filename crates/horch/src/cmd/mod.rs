@@ -45,7 +45,6 @@ pub mod worker;
 pub mod worktree;
 
 use std::path::Path;
-use std::process::ExitCode;
 
 use anyhow::Result;
 use horch_core::roster::Roster;
@@ -88,11 +87,4 @@ pub fn load_roster_unwarned(ctx: &RuntimeContext, explicit: Option<&str>) -> Res
 pub fn path_text(path: Option<&Path>) -> Option<String> {
     path.map(|p| p.to_string_lossy().into_owned())
         .filter(|s| !s.is_empty())
-}
-
-/// The exit of a command that is registered but not built: "not built
-/// yet" on stderr, and exit 2.
-pub fn not_built_yet(command: &str) -> ExitCode {
-    eprintln!("{command}: not built yet");
-    ExitCode::from(2)
 }
