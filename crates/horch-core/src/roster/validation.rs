@@ -1814,15 +1814,20 @@ pub fn fallback_problems(roster: &Roster) -> Vec<String> {
 /// `no_fallback_reason` when a fallback on another harness would break it.
 /// Exempt: the top-tier seats, which wait in `waiting_quota`; the fleet
 /// orchestrators and the recipe panes, which take no ledger task; and
-/// `agent: none`, which runs no agent.
+/// `agent: none`, which runs no agent. A worker profile is also complete
+/// ([`missing_profile_fields`]).
 pub fn profile_problems(roster: &Roster) -> Vec<String> {
     let mut out = Vec::new();
     for t in roster.teammates.values() {
         let file = format!("{}.md", t.name);
-        let exempt = TOP_TIER_SEATS.iter().any(|(seat, _)| *seat == t.name)
-            || FLEET_ORCHESTRATORS.contains(&t.name.as_str())
-            || RECIPE_PANES.contains(&t.name.as_str())
-            || t.agent == HarnessKind::None;
+        let exempt = !is_worker_profile(t);
+        if !exempt {
+            out.extend(
+                missing_profile_fields(roster, t)
+                    .into_iter()
+                    .map(|f| format!("{file}: incomplete worker profile: {f}")),
+            );
+        }
         let reason = t.no_fallback_reason.as_deref().map(str::trim);
         match (t.fallbacks.is_empty(), reason) {
             (true, None) if !exempt => out.push(format!(
@@ -1844,6 +1849,60 @@ pub fn profile_problems(roster: &Roster) -> Vec<String> {
                 .problems()
                 .into_iter()
                 .map(|p| format!("{file}: {p}")),
+        );
+    }
+    out
+}
+
+/// Whether `t` is a worker profile: not a top-tier seat, which waits in
+/// `waiting_quota`; not a fleet orchestrator or a recipe pane, which take
+/// no ledger task; and not `agent: none`, which runs no agent (fleetd-p2
+/// Q8).
+fn is_worker_profile(t: &Teammate) -> bool {
+    !(TOP_TIER_SEATS.iter().any(|(seat, _)| *seat == t.name)
+        || FLEET_ORCHESTRATORS.contains(&t.name.as_str())
+        || RECIPE_PANES.contains(&t.name.as_str())
+        || t.agent == HarnessKind::None)
+}
+
+/// The FR-6 fields of worker profile `t` that have no value in its file,
+/// in its `base` or as a default of the design (`docs/tickets/fleetd-p7/
+/// MAP.md`, Q7), each with where its value comes from.
+///
+/// The other FR-6 fields always resolve: the CLI (`agent`) is required by
+/// the parser; `skills` and `mcp_servers` default to empty lists, and
+/// [`Roster::check_teammate`] refuses a name that does not resolve; the
+/// timeouts (`liveness`) and the restart policy (`retry`) have the design
+/// defaults of [`Teammate::profile`]. The sandbox and the writable paths of
+/// a CLI other than Claude are rendered by its adapter.
+fn missing_profile_fields(roster: &Roster, t: &Teammate) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    if t.model.is_none() {
+        out.push("model has no value and no default; set model");
+    }
+    // The Claude adapter renders the sandbox of the `sandbox:` block, and
+    // the writable paths of the design ({task_dir}, {worktree}) into it.
+    if t.agent == HarnessKind::Claude && t.sandbox.is_none() {
+        out.push("sandbox has no value and no default; add a sandbox: block");
+        out.push(
+            "writable_paths has no value and no default; the Claude adapter \
+             renders them into the sandbox: block",
+        );
+    }
+    // A CLI with no window setting has the design default: the wrapper ends
+    // the attempt with a handoff at 256k.
+    let settable = matches!(
+        t.agent.capabilities().compaction.trigger,
+        TriggerRule::WindowMinusReserve { .. } | TriggerRule::CodexLimit
+    );
+    if settable
+        && roster
+            .fleet_window(t, t.model.as_deref().unwrap_or_default())
+            .is_none()
+    {
+        out.push(
+            "context_budget has no value and no default; set compact_window, or \
+             add a key of _base/context-windows.md",
         );
     }
     out
