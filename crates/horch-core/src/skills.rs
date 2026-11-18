@@ -360,7 +360,17 @@ mod tests {
         let bundle = Bundle::install(tmp.path(), &t).unwrap().unwrap();
         let configured = t.agent.adapter().expose_skills(&t, &bundle, None).unwrap();
         let value: Value = serde_json::from_str(configured.settings.as_ref().unwrap()).unwrap();
-        assert_eq!(value["permissions"]["deny"], json!(["Bash(rm *)"]));
+        // The teammate's own rule stays first; a worker's 3 `git worktree`
+        // rules (FM-26) follow it.
+        assert_eq!(
+            value["permissions"]["deny"],
+            json!([
+                "Bash(rm *)",
+                "Bash(git worktree add:*)",
+                "Bash(git worktree remove:*)",
+                "Bash(git worktree prune:*)"
+            ])
+        );
         assert_eq!(value["statusLine"]["command"], "keep");
         assert_eq!(value["disableBundledSkills"], true);
         assert_eq!(value["disableWorkflows"], true);

@@ -19,7 +19,7 @@ use super::{
 };
 use crate::compaction::window::OperatorWindow;
 use crate::roster::{expand_home, operator_enabled_plugins, operator_status_line};
-use crate::roster::{HarnessDefault, HorchAccess, Teammate};
+use crate::roster::{HarnessDefault, HorchAccess, Teammate, FLEET_ORCHESTRATORS};
 use crate::runtime::RuntimeContext;
 use crate::skills::Bundle;
 use horch_platform::sandbox::SANDBOX_EXEC;
@@ -369,6 +369,7 @@ fn default_overlay(env: &LaunchEnv, teammate: &Teammate) -> Result<Option<OsStri
     overlay_skill_switches(teammate, &mut overlay, env.home())?;
     copy_operator_status_line(&mut overlay, teammate, env.home());
     overlay_sandbox(teammate, &mut overlay)?;
+    deny_git_worktree(teammate, &mut overlay)?;
     overlay_horch_paths(env, teammate, &mut overlay)?;
     merge_settings_defaults(teammate, &mut overlay, || operator_settings(env))?;
     overlay_window(applied_window(env), &mut overlay);
@@ -439,6 +440,7 @@ fn skills_settings(teammate: &Teammate, home: Option<&Path>) -> Result<Value> {
     overlay_skill_switches(teammate, obj, home)?;
     copy_operator_status_line(obj, teammate, home);
     overlay_sandbox(teammate, obj)?;
+    deny_git_worktree(teammate, obj)?;
     Ok(settings)
 }
 
@@ -998,6 +1000,28 @@ fn deny_writes(dir: &Path, settings: &mut serde_json::Map<String, Value>) -> Res
             (FS, "denyWrite", dir.to_string()),
             (PERMS, "deny", rule("Edit")),
             (PERMS, "deny", rule("Write")),
+        ],
+    )
+}
+
+/// Only fleetd makes or removes a worktree (FM-26), so a worker's Bash may
+/// not run `git worktree add`, `remove` or `prune`. A worker that makes a
+/// tree anyway is found by the reconciler as an unowned tree. A fleet
+/// orchestrator gets no such rule.
+fn deny_git_worktree(
+    teammate: &Teammate,
+    settings: &mut serde_json::Map<String, Value>,
+) -> Result<bool> {
+    if FLEET_ORCHESTRATORS.contains(&teammate.name.as_str()) {
+        return Ok(false);
+    }
+    let rule = |verb: &str| format!("Bash(git worktree {verb}:*)");
+    add_entries(
+        settings,
+        [
+            (PERMS, "deny", rule("add")),
+            (PERMS, "deny", rule("remove")),
+            (PERMS, "deny", rule("prune")),
         ],
     )
 }
@@ -1696,7 +1720,8 @@ mod tests {
                 assert_eq!(fs["allowWrite"], json!(["/state/horch", "/home/op/.horch"]));
                 let denied = fs["denyWrite"].as_array().unwrap();
                 assert_eq!(denied.first(), Some(&json!(bundles)), "{skill_bundle:?}");
-                let rules = &settings["permissions"]["deny"].as_array().unwrap()[..2];
+                // After the 3 `git worktree` rules of a worker (FM-26).
+                let rules = &settings["permissions"]["deny"].as_array().unwrap()[3..5];
                 assert_eq!(
                     rules,
                     [
@@ -1832,7 +1857,8 @@ mod tests {
         assert!(settings["permissions"]
             .get("additionalDirectories")
             .is_none());
-        assert_eq!(settings["permissions"]["deny"].as_array().unwrap().len(), 2);
+        // The bundle folder's 2 rules and a worker's 3 `git worktree` rules.
+        assert_eq!(settings["permissions"]["deny"].as_array().unwrap().len(), 5);
 
         let plain = Teammate {
             name: "plain".into(),
@@ -2068,6 +2094,41 @@ mod tests {
         );
     }
 
+    /// FM-26: only fleetd makes or removes a worktree, so a worker's settings
+    /// deny `git worktree add`, `remove` and `prune` to Bash, with and without
+    /// a skills bundle. The orchestrator's settings do not.
+    #[test]
+    fn worker_settings_deny_git_worktree_add_remove_and_prune() {
+        let roster = crate::roster::Roster::builtin().unwrap();
+        let env = LaunchEnv::for_test();
+        let deny = |name: &str| -> [Value; 2] {
+            let t = roster.require(name).unwrap();
+            let plain = default_overlay(&env, t)
+                .unwrap()
+                .map(|s| serde_json::from_str(&s.to_string_lossy()).unwrap())
+                .unwrap_or(json!({}));
+            let skills = skills_settings(t, None).unwrap();
+            [plain, skills].map(|s| s["permissions"]["deny"].clone())
+        };
+        let rules = [
+            "Bash(git worktree add:*)",
+            "Bash(git worktree remove:*)",
+            "Bash(git worktree prune:*)",
+        ];
+        for list in deny("opus") {
+            for rule in rules {
+                assert!(
+                    list.as_array().is_some_and(|l| l.contains(&json!(rule))),
+                    "{rule} in {list}"
+                );
+            }
+        }
+        for list in deny("orchestrator") {
+            let text = list.to_string();
+            assert!(!text.contains("git worktree"), "{text}");
+        }
+    }
+
     /// A fleet pane launches with skills: the sandbox rides in the merged
     /// skills overlay too, and a teammate without the field gets no block.
     #[test]
@@ -2077,7 +2138,14 @@ mod tests {
         assert_eq!(settings["sandbox"]["allowUnsandboxedCommands"], false);
         let plain = skills_settings(&Teammate::default(), None).unwrap();
         assert!(plain.get("sandbox").is_none());
-        assert!(plain.get("permissions").is_none());
+        assert_eq!(
+            plain["permissions"],
+            json!({"deny": [
+                "Bash(git worktree add:*)",
+                "Bash(git worktree remove:*)",
+                "Bash(git worktree prune:*)"
+            ]})
+        );
     }
 
     /// A settings file replaces the overlay, so it would drop the sandbox.

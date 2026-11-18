@@ -2105,3 +2105,128 @@ fn removed_matcher_finds_a_door_call_to_removed() {
         "my_transition(tx, None, Entity::Worktree, id, \"removed\", cause, r)"
     ));
 }
+
+/// The production folder whose files may run `git worktree add`, `remove`
+/// and `prune`: the worktree custody adapters of fleetd.
+const WORKTREE_CUSTODY: &str = "horch-core/src/fleetd/worktree_custody/adapters/";
+
+/// The production files outside worktree custody that may run `git worktree
+/// add`, `remove` or `prune`, and why.
+const WORKTREE_CALL_EXEMPT: &[(&str, &str)] = &[(
+    "horch-core/src/vcs/landing.rs",
+    "the claims of `horch worktree new` and `land` make trees that belong to no \
+     ledger run; the reconciler adopts such a tree as orphaned and never removes \
+     it (docs/tickets/fleetd-p3/MAP.md, Q15)",
+)];
+
+/// Whether `text` holds the string literal `"worktree"` followed in the same
+/// call by `"add"`, `"remove"` or `"prune"`: as the next item of a list
+/// (`["worktree", "add"]`) or as the next `.arg(..)` of a command.
+fn runs_git_worktree_change(text: &str) -> bool {
+    text.match_indices("\"worktree\"").any(|(at, lit)| {
+        let mut rest = text[at + lit.len()..].trim_start();
+        if let Some(r) = rest.strip_prefix(',') {
+            rest = r;
+        } else if let Some(r) = rest.strip_prefix(')') {
+            let r = r.trim_start();
+            match r
+                .strip_prefix(".arg(")
+                .or_else(|| r.strip_prefix(".args(["))
+            {
+                Some(r) => rest = r,
+                None => return false,
+            }
+        } else {
+            return false;
+        }
+        let rest = rest.trim_start();
+        ["\"add\"", "\"remove\"", "\"prune\""]
+            .iter()
+            .any(|verb| rest.starts_with(verb))
+    })
+}
+
+/// Each production file of the workspace, outside `horch-e2e` (test code),
+/// that runs `git worktree add`, `remove` or `prune`, relative to `crates/`.
+fn git_worktree_changers() -> Vec<String> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let manifest = std::fs::read_to_string(root.join("Cargo.toml")).unwrap();
+    let start = manifest.find("members = [").unwrap();
+    let end = start + manifest[start..].find(']').unwrap();
+    let mut files = Vec::new();
+    for member in manifest[start..end].split('"').skip(1).step_by(2) {
+        if member != "crates/horch-e2e" {
+            rust_files(&root.join(member).join("src"), &mut files);
+        }
+    }
+    let mut scanned = Vec::new();
+    let mut test_paths: Vec<PathBuf> = Vec::new();
+    for file in &files {
+        let prod = production_lines(&std::fs::read_to_string(file).unwrap());
+        test_paths.extend(test_module_paths(file, &prod.test_mods));
+        scanned.push((file, prod.lines));
+    }
+    let mut found = Vec::new();
+    for (file, lines) in scanned {
+        if file.file_name().is_some_and(|n| n == "tests.rs")
+            || test_paths.iter().any(|t| file.starts_with(t))
+        {
+            continue;
+        }
+        let text: Vec<&str> = lines.iter().map(|(_, l)| l.as_str()).collect();
+        if runs_git_worktree_change(&text.join("\n")) {
+            found.push(relative(file, &root.join("crates")));
+        }
+    }
+    found
+}
+
+/// FR-11 and FM-26: only worktree custody runs `git worktree add`, `remove`
+/// or `prune`. `git worktree list` is a read and is not in the rule (Q16).
+#[test]
+fn fitness_only_worktree_custody_runs_git_worktree_add_or_remove() {
+    let found = git_worktree_changers();
+    let extra: Vec<&String> = found
+        .iter()
+        .filter(|f| {
+            !f.starts_with(WORKTREE_CUSTODY) && !WORKTREE_CALL_EXEMPT.iter().any(|(p, _)| p == f)
+        })
+        .collect();
+    assert!(
+        extra.is_empty(),
+        "git worktree add, remove or prune runs outside worktree custody: {extra:?}"
+    );
+    for (path, why) in WORKTREE_CALL_EXEMPT {
+        assert!(
+            found.iter().any(|f| f == path),
+            "{path} no longer runs git worktree add or remove; drop its entry ({why})"
+        );
+    }
+}
+
+/// The matcher of the rule above finds a worktree change and no read.
+#[test]
+fn git_worktree_matcher_finds_add_remove_and_prune() {
+    for hit in [
+        "git(repo, &[\"worktree\", \"add\", \"-b\", branch, path, base])",
+        "self.git(repo, &[\"worktree\", \"prune\"])",
+        "steps.push((\"worktree remove\", vec![\"worktree\", \"remove\", &path]));",
+        "let mut args = vec![\n    \"worktree\",\n    \"remove\",\n];",
+        "Command::new(\"git\").arg(\"worktree\").arg(\"add\").arg(path)",
+        "Command::new(\"git\").arg(\"worktree\")\n    .args([\"remove\", \"--force\"])",
+    ] {
+        assert!(runs_git_worktree_change(hit), "{hit}");
+    }
+    for miss in [
+        "git(repo, &[\"worktree\", \"list\", \"--porcelain\"])",
+        "git(repo, &[\"worktree\", \"lock\", path])",
+        "git(repo, &[\"worktree\", \"repair\", \"--\", tree])",
+        "(\"worktree\", false),",
+        "Entity::Worktree => \"worktree\",",
+        "let s = \"git worktree add\";",
+        "let s = \"say \\\"worktree\\\", \\\"add\\\"\";",
+        "git(repo, &[\"branch\", \"-D\", \"add\"])",
+    ] {
+        assert!(!runs_git_worktree_change(miss), "{miss}");
+    }
+}

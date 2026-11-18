@@ -2208,6 +2208,51 @@ mod tests {
         }
     }
 
+    /// FM-26: only fleetd makes or removes a worktree, so a codex worker's
+    /// rules forbid `git worktree add`, `remove` and `prune`. A read such as
+    /// `git worktree list` runs in the sandbox, and the orchestrator's rules
+    /// do not forbid them.
+    #[cfg(unix)]
+    #[test]
+    fn worker_rules_forbid_git_worktree_add_remove_and_prune() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roster = Roster::builtin().unwrap();
+        let teammate = roster.require("codex-sol").unwrap();
+        let (_, prepared) = prepare_with_rules(tmp.path(), teammate, roster.exec_rules());
+        let home = &prepared
+            .env
+            .iter()
+            .find(|(k, _)| k == "CODEX_HOME")
+            .expect("a private codex home")
+            .1;
+        let rules = std::fs::read_to_string(Path::new(home).join("rules/horch.rules")).unwrap();
+        let forbidden = Some("forbidden".to_string());
+        for (argv, want) in [
+            (
+                &["git", "worktree", "add", "-b", "x", "../x"][..],
+                &forbidden,
+            ),
+            (
+                &["git", "worktree", "remove", "--force", "../x"],
+                &forbidden,
+            ),
+            (&["git", "worktree", "prune"], &forbidden),
+            (&["git", "worktree", "list", "--porcelain"], &None),
+            (&["git", "status"], &None),
+        ] {
+            assert_eq!(&rule_decision(&rules, argv), want, "{argv:?} in\n{rules}");
+        }
+        let orchestrator: String = roster
+            .orchestrator_exec_rules()
+            .iter()
+            .map(prompts::codex_rule_block)
+            .collect();
+        assert_eq!(
+            rule_decision(&orchestrator, &["git", "worktree", "add", "x"]),
+            None
+        );
+    }
+
     /// Whether the codex argv of a launch of `teammate` turns the network on:
     /// the `-c` pairs of the built command and of `prepare`, read for the
     /// permissions profile the launch selects.

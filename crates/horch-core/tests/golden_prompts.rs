@@ -752,6 +752,10 @@ fn bal_07_usage_limits_block_sanctioned() {
 /// rule let a worker run any check command outside its sandbox. It is
 /// replaced by 1 allow rule per worker subcommand and 3 forbidden rules for
 /// the subcommands that take a check command. They are pinned here.
+///
+/// Third sanctioned change (FM-26): only fleetd makes or removes a worktree,
+/// so 3 forbidden rules refuse `git worktree add`, `remove` and `prune` to a
+/// worker. They are pinned here.
 #[test]
 fn execpolicy_blocks_are_unchanged() {
     const SKILLS_READ: &str = "read a catalog skill that the bundle does not hold";
@@ -780,8 +784,36 @@ fn execpolicy_blocks_are_unchanged() {
     .map(|(sub, decision)| (format!("\"horch\", \"ledger\", \"{sub}\""), decision))
     .collect();
     assert_eq!(ledger, want);
+    let worktree: Vec<String> = r
+        .exec_rules()
+        .iter()
+        .filter(|rule| rule.pattern.starts_with("\"git\", \"worktree\""))
+        .map(prompts::codex_rule_block)
+        .collect();
+    let block = |verb: &str, why: &str| {
+        format!(
+            "prefix_rule(\n    pattern = [\"git\", \"worktree\", \"{verb}\"],\n    \
+             decision = \"forbidden\",\n    justification = \"herdr-fleet: {why}\",\n)\n"
+        )
+    };
+    assert_eq!(
+        worktree,
+        [
+            block(
+                "add",
+                "only fleetd makes a worktree; use horch ledger worktree new"
+            ),
+            block(
+                "remove",
+                "only fleetd removes a worktree; horch ledger finish and drop remove it"
+            ),
+            block("prune", "only fleetd prunes worktree records"),
+        ]
+    );
     for rule in r.exec_rules() {
-        if rule.pattern.starts_with("\"horch\", \"ledger\"") {
+        if rule.pattern.starts_with("\"horch\", \"ledger\"")
+            || rule.pattern.starts_with("\"git\", \"worktree\"")
+        {
             continue;
         }
         if rule.justification == SKILLS_READ {
@@ -800,7 +832,7 @@ fn execpolicy_blocks_are_unchanged() {
             "{name} drifted"
         );
     }
-    assert_eq!(r.exec_rules().len(), 4 + want.len());
+    assert_eq!(r.exec_rules().len(), 4 + want.len() + worktree.len());
 }
 
 /// The Codex flavor shares the whole orchestrator briefing and differs only in

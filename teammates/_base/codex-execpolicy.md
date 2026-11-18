@@ -51,6 +51,19 @@ rules:
   - pattern: '"horch", "ledger", "reopen"'
     decision: forbidden
     justification: a worker never reopens a task, and its check command would run unsandboxed
+  # Only fleetd makes or removes a worktree (FM-26). A worker that makes a
+  # tree anyway is found by the reconciler as an unowned tree. On Windows the
+  # shared rules file gets no forbidden rule, so there the reconciler alone
+  # catches it. `git worktree list` is a read and runs in the sandbox.
+  - pattern: '"git", "worktree", "add"'
+    decision: forbidden
+    justification: only fleetd makes a worktree; use horch ledger worktree new
+  - pattern: '"git", "worktree", "remove"'
+    decision: forbidden
+    justification: only fleetd removes a worktree; horch ledger finish and drop remove it
+  - pattern: '"git", "worktree", "prune"'
+    decision: forbidden
+    justification: only fleetd prunes worktree records
 ---
 Each rule is rendered into this launch's own `rules/horch.rules`, inside a
 private `CODEX_HOME` that lives only as long as the pane, as:

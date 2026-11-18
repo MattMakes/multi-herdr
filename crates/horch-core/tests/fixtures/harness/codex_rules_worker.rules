@@ -78,3 +78,18 @@ prefix_rule(
     decision = "forbidden",
     justification = "herdr-fleet: a worker never reopens a task, and its check command would run unsandboxed",
 )
+prefix_rule(
+    pattern = ["git", "worktree", "add"],
+    decision = "forbidden",
+    justification = "herdr-fleet: only fleetd makes a worktree; use horch ledger worktree new",
+)
+prefix_rule(
+    pattern = ["git", "worktree", "remove"],
+    decision = "forbidden",
+    justification = "herdr-fleet: only fleetd removes a worktree; horch ledger finish and drop remove it",
+)
+prefix_rule(
+    pattern = ["git", "worktree", "prune"],
+    decision = "forbidden",
+    justification = "herdr-fleet: only fleetd prunes worktree records",
+)
