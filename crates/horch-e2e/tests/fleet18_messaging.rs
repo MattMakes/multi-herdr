@@ -482,10 +482,11 @@ fn g60_pinned_two_hour_old_mail_redelivers_and_inbox_stops_courier() {
                     && c["argv"][1] == "prompt"
                     && c["argv"][3]
                         .as_str()
-                        .is_some_and(|s| s.contains("redelivery"))
+                        .is_some_and(|s| s == horch_core::messaging::delivery::MAIL_LINE)
             })
             .then_some(())
     });
+    // FR-7: the courier types the mail line; the text stays in the mail.
     assert_eq!(mail.pending().unwrap().len(), 1);
     assert!(h.run(&["inbox"]).status.success());
     wait_for("courier exit after acknowledgement", || {
@@ -720,9 +721,9 @@ fn g60_ledger_done_and_wake_queue_without_registration_then_courier_delivers() {
             .iter()
             .any(|c| {
                 c["argv"][0] == "agent"
-                    && c["argv"][3].as_str().is_some_and(|s| {
-                        s.contains("All tasks are done") && s.contains("redelivery")
-                    })
+                    && c["argv"][3]
+                        .as_str()
+                        .is_some_and(|s| s == horch_core::messaging::delivery::MAIL_LINE)
             })
             .then_some(())
     });
@@ -849,8 +850,14 @@ fn ledger_done_finds_the_orchestrator_in_a_copied_old_registry() {
             && c["argv"][2] == "w1:p1"
             && c["argv"][3]
                 .as_str()
-                .is_some_and(|t| t.contains("DONE: review complete"))
+                .is_some_and(|t| t == horch_core::messaging::delivery::MAIL_LINE)
     });
+    // FR-7: the report waits in the orchestrator mail.
+    assert!(horch_core::messaging::mail::Mail::under(&h.state, "w1")
+        .pending()
+        .unwrap()
+        .iter()
+        .any(|m| m.text.contains("DONE: review complete")));
     assert!(
         reported,
         "the report is typed into the copied orchestrator pane"
@@ -1873,30 +1880,37 @@ fn g60_plain_done_and_tell_without_registration_arrive_after_late_registration()
         .output()
         .unwrap();
     assert!(registered.status.success());
-    wait_for("both reports redelivered after registration", || {
-        let calls = h.calls_of("herdr");
-        let typed: Vec<_> = calls
+    wait_for("the mail line typed after registration", || {
+        h.calls_of("herdr")
             .iter()
-            .filter(|c| {
+            .any(|c| {
                 c["argv"][0] == "agent"
+                    && c["argv"][2] == "w1:p1"
                     && c["argv"][3]
                         .as_str()
-                        .is_some_and(|s| s.contains("redelivery"))
+                        .is_some_and(|s| s == horch_core::messaging::delivery::MAIL_LINE)
             })
-            .collect();
-        (typed.iter().any(|c| {
-            c["argv"][3]
-                .as_str()
-                .unwrap()
-                .contains("NOTE: before registration")
-        }) && typed.iter().any(|c| {
-            c["argv"][3]
-                .as_str()
-                .unwrap()
-                .contains("DONE: plain work complete")
-        }))
-        .then_some(())
+            .then_some(())
     });
+    // FR-7: both reports wait in the mail until inbox reads them.
+    let pending: Vec<String> = mail
+        .pending()
+        .unwrap()
+        .into_iter()
+        .map(|m| m.text)
+        .collect();
+    assert!(
+        pending
+            .iter()
+            .any(|t| t.contains("NOTE: before registration")),
+        "{pending:?}"
+    );
+    assert!(
+        pending
+            .iter()
+            .any(|t| t.contains("DONE: plain work complete")),
+        "{pending:?}"
+    );
     assert!(h.run(&["inbox"]).status.success());
     assert!(mail.pending().unwrap().is_empty());
 }
