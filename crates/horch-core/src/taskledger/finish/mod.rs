@@ -31,11 +31,13 @@ use super::tasks::{self, Task};
 use super::util::{self, About};
 use super::workers::{self, Worker};
 use crate::fleetd::fleet_runtime::application::jobs::JobCtx;
-use crate::fleetd::fleet_runtime::application::ledger::Cause;
+use crate::fleetd::fleet_runtime::application::ledger::{transition, Cause};
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 use crate::fleetd::ideas::application::needs_you::NeedsYouList;
 use crate::fleetd::task_execution::application::commands;
-use crate::fleetd::worktree_custody::adapters::sqlite::NewWorktree;
+use crate::fleetd::worktree_custody::adapters::sqlite::{
+    self as trees, NewWorktree, WorktreeState,
+};
 use crate::fleetd::worktree_custody::application::create::{self, JobProcess, Lease, RunJob};
 use crate::fleetd::worktree_custody::application::remove;
 
@@ -1176,7 +1178,8 @@ fn require_through(conn: &Connection, run: &Run, task: &Task, worker_id: &str) -
 }
 
 /// The task's final status, summary and event. An unlanded task is parked
-/// `escalated` and its worktree `unlanded`, still attached to the task.
+/// `escalated` and its worktree `unlanded`, still attached to the task,
+/// with no owner ([`park_tree`]).
 fn final_state(
     tx: &Connection,
     task: &Task,
@@ -1192,12 +1195,42 @@ fn final_state(
     };
     if let Some(wt) = worktree_of(tx, &task.task_id)? {
         set_worktree(tx, &wt.worktree_id, WorktreeStatus::Unlanded, Some(reason))?;
+        park_tree(tx, &wt.worktree_id, reason)?;
     }
     Ok((
         TaskStatus::Escalated.as_str(),
         format!("UNLANDED: {reason} | {summary}"),
         EventKind::Unlanded,
     ))
+}
+
+/// The tree `id` of a task that `done --unlanded` parks, in `tx`: no
+/// attempt holds it, and an `active` tree moves to `created` through the
+/// door, so the requeue resumes the task in it (RR-14; MAP.md of
+/// fleetd-p3, Q10). A tree in another state keeps it: the `landing` tree
+/// of a red land stays `landing`, and the next attempt takes it.
+fn park_tree(tx: &Connection, id: &str, reason: &str) -> Result<()> {
+    let Some(row) = trees::get(tx, id)? else {
+        return Ok(());
+    };
+    trees::set_owner(tx, id, None)?;
+    if row.state == WorktreeState::Active {
+        let text = format!("unlanded: {reason}");
+        let cause = Cause {
+            actor: Actor::Worker,
+            text: &text,
+        };
+        transition(
+            tx,
+            None,
+            Entity::Worktree,
+            id,
+            "created",
+            cause,
+            &NeedsYouList,
+        )?;
+    }
+    Ok(())
 }
 
 /// Write the task's and the worker's final state, and its event.

@@ -28,6 +28,8 @@ use super::runs;
 use super::sql_words::{self, word};
 use super::store::{optional, Store};
 use super::util;
+use crate::runtime::bins::{git_bin, BinOverrides};
+use crate::runtime::context::ProcessEnv;
 
 /// A worktree over this many bytes is a `disk_heavy` finding.
 pub const HEAVY_BYTES: u64 = 1 << 30;
@@ -890,10 +892,12 @@ impl Unfinished {
 }
 
 /// Native runs feed `unfinished` too: a cancelled task that still has an
-/// open worktree, and a task whose last attempt died and that no worker
-/// finished. Each becomes a finding once.
+/// open worktree, an `orphaned` or `rescued` tree of a task that is not
+/// done, and a task whose last attempt died and that no worker finished.
+/// Each becomes a finding once.
 pub fn sync_native(conn: &Connection) -> Result<()> {
     sync_worktrees(conn)?;
+    sync_custody_trees(conn)?;
     sync_tasks(conn)
 }
 
@@ -932,6 +936,36 @@ fn sync_worktrees(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// A finding `worktree_unlanded` for each `orphaned` or `rescued` tree of a
+/// native task that is not done, when no finding names the tree yet
+/// (RR-15). A tree that a finding names was decided, or waits for its
+/// decision.
+fn sync_custody_trees(conn: &Connection) -> Result<()> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT t.task_id, t.run_id, r.project_id, w.worktree_id, w.path, w.state, t.seq
+         FROM worktrees w JOIN tasks t ON t.task_id = w.task_id JOIN runs r ON r.run_id = t.run_id
+         WHERE t.origin = 'native' AND t.status <> {done} AND w.state IN ('orphaned', 'rescued')
+           AND NOT EXISTS (SELECT 1 FROM import_findings f WHERE f.worktree_id = w.worktree_id)",
+        done = word(TaskStatus::Done)
+    ))?;
+    let rows = stmt
+        .query_map([], |r| r.try_into())?
+        .collect::<rusqlite::Result<Vec<(String, String, String, String, String, String, i64)>>>(
+        )?;
+    for (task, run, project, wt, path, state, seq) in rows {
+        conn.execute(
+            &format!(
+                "INSERT INTO import_findings (project_id, run_id, kind, task_id, worktree_id, detail, status, created_at)
+                 VALUES (?1, ?2, {kind}, ?3, ?4, ?5, {open}, ?6)",
+                kind = word(FindingKind::WorktreeUnlanded),
+                open = word(FindingStatus::Open)
+            ),
+            params![project, run, task, wt, format!("T-{seq}: the worktree {path} is {state} and its work never landed"), util::now()],
+        )?;
+    }
+    Ok(())
+}
+
 /// A finding for each unfinished task of an ended run whose worker died on it.
 fn sync_tasks(conn: &Connection) -> Result<()> {
     let mut stmt = conn.prepare(&format!(
@@ -962,13 +996,20 @@ fn sync_tasks(conn: &Connection) -> Result<()> {
 }
 
 /// Every open finding, newest first; of 1 project when `root` is given.
+///
+/// The detail of a finding whose tree has a rescue ref names that ref. A
+/// finding is not listed while the work of its tree is landed
+/// ([`work_landed`]); a tree with work that did not land stays listed
+/// until a decision, also when its task is done (RR-15).
 pub fn unfinished(conn: &Connection, root: Option<&Path>) -> Result<Vec<Unfinished>> {
     sync_native(conn)?;
     let mut stmt = conn.prepare(&format!(
-        "SELECT f.finding_id, f.kind, r.slug, p.root, f.task_id, f.worktree_id, f.detail, f.created_at
+        "SELECT f.finding_id, f.kind, r.slug, p.root, f.task_id, f.worktree_id,
+            f.detail || COALESCE('. Rescue ref: ' || w.rescue_ref, ''), f.created_at
          FROM import_findings f
          LEFT JOIN runs r ON r.run_id = f.run_id
          LEFT JOIN projects p ON p.project_id = f.project_id
+         LEFT JOIN worktrees w ON w.worktree_id = f.worktree_id
          WHERE f.status = {open} AND (?1 IS NULL OR p.root = ?1)
          ORDER BY r.started_at DESC, f.finding_id DESC",
         open = word(FindingStatus::Open)
@@ -976,7 +1017,96 @@ pub fn unfinished(conn: &Connection, root: Option<&Path>) -> Result<Vec<Unfinish
     let rows = stmt
         .query_map([root.map(runs::root_key)], Unfinished::from_row)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(rows)
+    let git = Git::new(git_bin(&BinOverrides::from_env(&ProcessEnv)));
+    let mut open = Vec::with_capacity(rows.len());
+    for f in rows {
+        if !work_landed(conn, &git, &f)? {
+            open.push(f);
+        }
+    }
+    Ok(open)
+}
+
+/// The tree of a finding, as [`work_landed`] reads it.
+struct FindingTree {
+    path: String,
+    repo_root: String,
+    state: String,
+    rescue_ref: Option<String>,
+    landed_commit: Option<String>,
+}
+
+/// Whether the task of `f` is a native task that is done, and each piece
+/// of work of the tree of `f` is in the commit that the task landed:
+/// - the rescue ref, when the tree has one, is an ancestor of that commit,
+///   or it saved nothing beyond its parent and its parent is an ancestor;
+/// - the folder, when it is there, is clean with its HEAD an ancestor;
+/// - a folder that is gone and has no rescue ref landed an ancestor.
+///
+/// A finding with no tree, and each fact that git cannot read, gives
+/// `false`: the finding stays listed.
+fn work_landed(conn: &Connection, git: &Git, f: &Unfinished) -> Result<bool> {
+    let (Some(task), Some(wt)) = (f.task_id.as_deref(), f.worktree_id.as_deref()) else {
+        return Ok(false);
+    };
+    let landed: Option<String> = optional(conn.query_row(
+        &format!(
+            "SELECT w.landed_commit FROM tasks t JOIN worktrees w ON w.task_id = t.task_id
+             WHERE t.task_id = ?1 AND t.origin = 'native' AND t.status = {done}
+               AND w.landed_commit IS NOT NULL
+             ORDER BY w.landed_at DESC, w.rowid DESC LIMIT 1",
+            done = word(TaskStatus::Done)
+        ),
+        [task],
+        |r| r.get(0),
+    ))?;
+    let Some(landed) = landed else {
+        return Ok(false);
+    };
+    let tree: Option<FindingTree> = optional(conn.query_row(
+        "SELECT path, repo_root, state, rescue_ref, landed_commit FROM worktrees
+         WHERE worktree_id = ?1",
+        [wt],
+        |r| {
+            Ok(FindingTree {
+                path: r.get(0)?,
+                repo_root: r.get(1)?,
+                state: r.get(2)?,
+                rescue_ref: r.get(3)?,
+                landed_commit: r.get(4)?,
+            })
+        },
+    ))?;
+    let Some(tree) = tree else {
+        return Ok(false);
+    };
+    let repo = Path::new(&tree.repo_root);
+    let in_landed = |rev: &str| git.is_ancestor(repo, rev, &landed);
+    if let Some(rescue) = &tree.rescue_ref {
+        let saved_landed = in_landed(rescue)
+            || (saved_nothing(git, repo, rescue) && in_landed(&format!("{rescue}^1")));
+        if !saved_landed {
+            return Ok(false);
+        }
+    }
+    let folder = Path::new(&tree.path);
+    if tree.state != "removed" && folder.is_dir() {
+        let clean = git.dirty(folder).is_ok_and(|d| d.is_empty());
+        let head = git.rev(folder, "HEAD");
+        return Ok(clean && head.is_ok_and(|h| in_landed(&h)));
+    }
+    Ok(tree.rescue_ref.is_some() || tree.landed_commit.is_some_and(|c| in_landed(&c)))
+}
+
+/// Whether the rescue commit `rescue` holds the same files as its parent:
+/// the tree had no change beyond its HEAD when it was saved.
+fn saved_nothing(git: &Git, repo: &Path, rescue: &str) -> bool {
+    let tree_of =
+        |rev: String| git.run(repo, &["rev-parse", "--verify", &format!("{rev}^{{tree}}")]);
+    match (tree_of(rescue.to_string()), tree_of(format!("{rescue}^1"))) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
 }
 
 /// 1 finding by id.

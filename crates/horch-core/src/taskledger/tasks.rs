@@ -2091,6 +2091,8 @@ fn requeue_by_operator_in(conn: &Connection, task: &Task, reason: &str) -> Resul
 }
 
 /// The worktree a parked task kept becomes open again, for the next claim.
+/// Its state stays `created` (`done --unlanded` moved it there), and the
+/// next claim makes it `active` with the new attempt (RR-14).
 fn resume_parked_worktree(conn: &Connection, task: &Task) -> Result<()> {
     conn.execute(
         &format!(
