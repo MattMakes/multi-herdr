@@ -42,11 +42,28 @@ pub(crate) fn started_by(pid: i32, t: SystemTime) -> Option<bool> {
     Some(started_at(pid)? <= t)
 }
 
+/// The short BSD info, not [`bsd_info`]: a user can read the short info of
+/// a process of another user, such as `login` of root, so a parent chain
+/// can reach PID 1.
 pub(crate) fn parent(pid: u32) -> Result<Option<u32>, NotSupported> {
     let Some(os) = i32::try_from(pid).ok().filter(|p| *p > 0) else {
         return Ok(None);
     };
-    Ok(bsd_info(os).map(|info| info.pbi_ppid))
+    // SAFETY: `proc_bsdshortinfo` is plain data, and an all-zero value is
+    // valid.
+    let mut info: libc::proc_bsdshortinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdshortinfo>() as libc::c_int;
+    // SAFETY: the buffer is a zeroed `proc_bsdshortinfo` of `size` bytes.
+    let n = unsafe {
+        libc::proc_pidinfo(
+            os,
+            libc::PROC_PIDT_SHORTBSDINFO,
+            0,
+            (&mut info as *mut libc::proc_bsdshortinfo).cast(),
+            size,
+        )
+    };
+    Ok((n == size).then_some(info.pbsi_ppid))
 }
 
 pub(crate) fn group_members(pgid: i32) -> Result<Vec<u32>, NotSupported> {

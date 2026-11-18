@@ -70,6 +70,14 @@ fn parent_of_a_child_is_this_process() {
     assert_eq!(parent, Ok(Some(std::process::id())));
 }
 
+/// PID 1 is a process of root. Its parent is read all the same, so that a
+/// parent chain can reach PID 1 (ticket 11 of fleetd-p5).
+#[cfg(unix)]
+#[test]
+fn parent_of_a_root_process_is_read() {
+    assert_eq!(process::parent(1).unwrap(), Some(0));
+}
+
 #[cfg(unix)]
 #[test]
 fn group_members_hold_this_process() {
