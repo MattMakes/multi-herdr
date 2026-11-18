@@ -7,6 +7,7 @@ use crate::fleetd::fleet_runtime::adapters::sqlite::{self as door, Event, Fact};
 use crate::fleetd::fleet_runtime::domain::ledger::{
     decide, refused_cause, Decision, Entity, Generation,
 };
+use crate::fleetd::task_execution::domain::lease::Holder;
 use crate::taskledger::model::{Actor, EventKind};
 
 /// Where [`transition`] puts a refused row: the needs-you list. The ideas
@@ -129,6 +130,11 @@ pub fn transition(
         Decision::Unchanged => Ok(Moved::Unchanged),
         Decision::Allowed => {
             door::set_state(tx, entity, id, to)?;
+            // A task in a state that holds no lease has no lease row (I1,
+            // FM-14): each exit releases it here, so no command forgets it.
+            if entity == Entity::Task && Holder::of(to).is_none() {
+                door::delete_lease(tx, id)?;
+            }
             door::append_event(
                 tx,
                 &Event {

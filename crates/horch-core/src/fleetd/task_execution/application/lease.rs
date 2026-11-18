@@ -7,9 +7,10 @@
 //! - Each pass renews or expires each lease ([`renew_or_expire_leases`]),
 //!   after `finish_exited`: a task that a result moved out of `running` in
 //!   the pass is not expired ("Order inside 1 pass").
-//! - Each command of task execution that moves a task out of a state that
-//!   holds a lease deletes the lease ([`release`]). The I1 check of the
-//!   pass ([`check_i1`]) deletes a row that another writer leaves.
+//! - `transition()`, the 1 door, deletes the lease of each task that moves
+//!   to a state that holds no lease, in the transaction of the move. The
+//!   I1 check of the pass ([`check_i1`]) deletes a row that another writer
+//!   leaves ([`release`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -370,11 +371,11 @@ mod tests {
 
     use super::*;
     use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
-    use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
+    use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation, EXITS};
     use crate::fleetd::ideas::application::needs_you;
     use crate::fleetd::task_execution::adapters::leases_store::{self as store, LeaseRow};
     use crate::fleetd::task_execution::application::commands;
-    use crate::fleetd::task_execution::domain::lease::{Limits, CLAIM_BASIS, EARNED_BASIS};
+    use crate::fleetd::task_execution::domain::lease::{Holder, Limits, CLAIM_BASIS, EARNED_BASIS};
     use crate::fleetd::task_execution::domain::task::Seen;
     use crate::taskledger::model::{Actor, TaskStatus, WorkerStatus};
     use crate::taskledger::runs::{self, NewRun, Run};
@@ -750,6 +751,59 @@ mod tests {
         assert_eq!(l.leases(), vec![]);
     }
 
+    /// The guard: each task exit of the door from a state that holds a
+    /// lease deletes the lease when its target holds none, and keeps it
+    /// when its target holds one. A later exit cannot forget the lease.
+    #[test]
+    fn each_task_exit_out_of_a_lease_state_deletes_the_lease_in_the_door() {
+        let exits: Vec<(&str, &str)> = EXITS
+            .iter()
+            .filter(|(e, from, _)| *e == Entity::Task && Holder::of(from).is_some())
+            .map(|(_, from, to)| (*from, *to))
+            .collect();
+        assert!(exits.len() >= 10, "{exits:?}");
+        for (from, to) in exits {
+            let mut l = fixture(0);
+            l.add_task(&format!("{from}-{to}"));
+            let (task, _) = l.claimed();
+            l.store
+                .conn()
+                .execute(
+                    "UPDATE tasks SET status = ?2 WHERE task_id = ?1",
+                    params![task, from],
+                )
+                .unwrap();
+            l.store
+                .immediate(|tx| {
+                    util::transition(
+                        tx,
+                        Entity::Task,
+                        &task,
+                        to,
+                        Actor::Horch,
+                        Why::Rule(Rule::Finish, "test"),
+                    )
+                })
+                .unwrap();
+            assert_eq!(l.status(&task), to);
+            let kept = store::get(l.store.conn(), &task).unwrap().is_some();
+            assert_eq!(kept, Holder::of(to).is_some(), "{from} -> {to}");
+        }
+    }
+
+    #[test]
+    fn a_cancel_of_a_running_task_deletes_its_lease() {
+        let mut l = fixture(0);
+        l.add_task("a");
+        let (task, _) = l.claimed();
+        let t = tasks::get(l.store.conn(), &task).unwrap();
+        l.store
+            .immediate(|tx| tasks::cancel(tx, &t, "test"))
+            .unwrap();
+        assert_eq!(l.status(&task), "cancelled");
+        assert_eq!(l.leases(), vec![]);
+    }
+
     #[test]
     fn i1_live_attempt_with_no_lease_is_repaired_with_an_event() {
         let mut l = fixture(0);
@@ -779,6 +833,15 @@ mod tests {
         l.add_task("a");
         let (task, _) = l.claimed();
         l.finish(&task);
+        assert_eq!(l.leases(), vec![], "the door released the lease");
+        // Another writer, outside the door, leaves a stale row.
+        let stale = LeaseRow {
+            task_id: task.clone(),
+            attempt_id: format!("{task}/A1"),
+            expires_at: 60,
+            renew_basis: CLAIM_BASIS.into(),
+        };
+        store::put(l.store.conn(), &stale, "then").unwrap();
         assert_eq!(l.leases().len(), 1, "another writer leaves a stale row");
         l.check_i1(10);
         assert_eq!(l.leases(), vec![]);

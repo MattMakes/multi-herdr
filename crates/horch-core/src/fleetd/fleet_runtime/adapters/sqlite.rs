@@ -92,6 +92,13 @@ pub fn set_state(conn: &Connection, entity: Entity, id: &str, to: &str) -> Resul
     Ok(())
 }
 
+/// Delete the lease of task `task_id`, which moves to a state that holds
+/// no lease. Only `transition()` calls this.
+pub fn delete_lease(conn: &Connection, task_id: &str) -> Result<()> {
+    conn.execute("DELETE FROM leases WHERE task_id = ?1", [task_id])?;
+    Ok(())
+}
+
 /// The run, task and worker of the row `id` of `entity`, for the columns
 /// of today that `horch ledger show` reads.
 fn about(

@@ -1334,6 +1334,49 @@ fn done_after_every_step_passed_and_its_retry() {
     assert_eq!(again.task_id, c.task_id);
 }
 
+/// The lease rows of task `task_id`, and each attempt of worker `worker_id`
+/// with its state and outcome.
+fn lease_and_attempts(
+    w: &World,
+    task_id: &str,
+    worker_id: &str,
+) -> (i64, Vec<(String, Option<String>)>) {
+    let conn = w.store.conn();
+    let leases = conn
+        .query_row(
+            "SELECT count(*) FROM leases WHERE task_id = ?1",
+            [task_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let mut stmt = conn
+        .prepare("SELECT state, outcome FROM attempts WHERE worker_id = ?1 ORDER BY id")
+        .unwrap();
+    let attempts = stmt
+        .query_map([worker_id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    (leases, attempts)
+}
+
+#[test]
+fn done_releases_the_lease_and_ends_the_attempt_of_its_worker() {
+    let mut w = World::new(&[StepName::Land], false);
+    let (id, _) = w.task(None, "feature.txt");
+    let task = w.worktree().task_id.unwrap();
+    assert_eq!(
+        lease_and_attempts(&w, &task, &id),
+        (1, vec![("live".into(), None)])
+    );
+    w.finish(&id);
+    finish::complete(&mut w.store, &id, "all done", None).unwrap();
+    assert_eq!(
+        lease_and_attempts(&w, &task, &id),
+        (0, vec![("ended".into(), Some("done".into()))])
+    );
+}
+
 #[test]
 fn done_unlanded_parks_the_task_and_its_worktree() {
     let mut w = World::new(&[StepName::Land], false);

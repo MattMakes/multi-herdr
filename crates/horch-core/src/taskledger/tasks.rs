@@ -25,7 +25,6 @@ use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 use crate::fleetd::ideas::application::needs_you;
 use crate::fleetd::ideas::domain::needs_you::Write;
 use crate::fleetd::task_execution::application::commands as attempt_commands;
-use crate::fleetd::task_execution::application::lease;
 use crate::fleetd::task_execution::application::retry::Policy;
 use crate::fleetd::task_execution::domain::retry::{self, claimable_at, rung6, Numbers, Rung6};
 
@@ -1446,9 +1445,8 @@ pub fn handoff(tx: &Transaction, worker_id: &str, path: &str) -> Result<HandedOf
         Actor::Worker,
         util::Why::Event(EventKind::Requeued, &format!("{} handed off {}: it is queued again, first in line, with its worktree. Handoff: {path}", w.label(), task.short())),
     )?;
-    // A ready task holds no lease. The ended worker row marks the old
+    // The door released the lease. The ended worker row marks the old
     // attempt as ending, and the pass reaps it.
-    lease::release(tx, &task.task_id)?;
     tx.execute(
         &format!(
             "UPDATE tasks SET current_worker_id = NULL, held_reason = NULL,
@@ -1666,9 +1664,9 @@ pub fn burn_attempt(
 
 /// The writes of rung 6 for `task`, in the open transaction of `conn`.
 fn rung6_in(conn: &Connection, task: &Task, why: &str, policy: &Policy) -> Result<Requeue> {
-    // A ready, failed or escalated task holds no lease. The caller ended
-    // the worker row, which marks the old attempt as ending.
-    lease::release(conn, &task.task_id)?;
+    // The door releases the lease at the move to ready, failed or
+    // escalated. The caller ended the worker row, which marks the old
+    // attempt as ending.
     let run_max = super::runs::get(conn, &task.run_id)?.max_attempts;
     let n = Numbers {
         used: task.attempts - task.attempt_floor,

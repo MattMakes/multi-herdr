@@ -6,8 +6,10 @@
 //! transaction before any signal (`preservation-04-behavior.md`, S7).
 //!
 //! - The claim writes 1 live attempt and its lease with [`start_attempt`].
-//! - A command that moves a task out of the states that hold a lease
-//!   deletes the lease: [`schedule_retry`] and [`escalate_task`].
+//! - `transition()` deletes the lease of a task that moves out of the
+//!   states that hold a lease: [`schedule_retry`] and [`escalate_task`].
+//! - `horch ledger done` ends the attempt of its worker:
+//!   [`end_own_attempt`].
 //! - I4 at the claim: [`refuse_second_attempt`].
 //! - I1, process part: [`finish_exited`]. Each dead attempt goes through
 //!   [`end_attempt`], then rung 6 ([`schedule_retry`]).
@@ -97,6 +99,33 @@ pub fn refuse_second_attempt(tx: &Connection, worker_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// `horch ledger done`: the attempt that worker `worker_id` holds moves to
+/// `ended` with the outcome `outcome`, in the transaction of `done`. A
+/// worker with no attempt that holds it writes nothing.
+pub fn end_own_attempt(tx: &Connection, worker_id: &str, outcome: &str) -> Result<()> {
+    check_open(tx)?;
+    let attempts = store::attempts_of_worker(tx, worker_id)?;
+    let Some(a) = held_attempt(worker_id, &attempts) else {
+        return Ok(());
+    };
+    store::set_ended(tx, &a.id, outcome, &util::now())?;
+    let text = format!("its worker ran horch ledger done: {outcome}");
+    let by = Cause {
+        actor: Actor::Worker,
+        text: &text,
+    };
+    transition(
+        tx,
+        None,
+        Entity::Attempt,
+        &a.id,
+        AttemptState::Ended.as_str(),
+        by,
+        &NeedsYouList,
+    )?;
+    Ok(())
+}
+
 /// `EndAttempt`: the attempt of `reap` to `ended` with its outcome, and a
 /// live worker row to `incomplete`. Returns the stops of the rest of the
 /// row; each pane that no fact proves goes on the needs-you list.
@@ -153,15 +182,14 @@ pub fn attempt_live(
 pub fn schedule_retry(tx: &Connection, task_id: &str, why: &str) -> Result<()> {
     check_open(tx)?;
     retry::burn_attempt(tx, task_id, Outcome::Crashed, &Policy::default(), why)?;
-    lease::release(tx, task_id)
+    Ok(())
 }
 
 /// `EscalateTask`: task `task_id` is held for the operator, through
 /// `failed`.
 pub fn escalate_task(tx: &Connection, task_id: &str) -> Result<()> {
     check_open(tx)?;
-    tasks::escalate(tx, task_id)?;
-    lease::release(tx, task_id)
+    tasks::escalate(tx, task_id)
 }
 
 /// I1, process part: each live attempt of this host whose process is dead

@@ -169,6 +169,57 @@ fn trf_35_done_unlanded_parks_the_task_and_requeue_resumes_it_on_the_same_worktr
     assert_eq!(task_count(&w), 2);
 }
 
+/// The lease rows of `task_id`, and the state and outcome of each of its
+/// attempts.
+fn lease_and_attempts(w: &World, task_id: &str) -> (i64, Vec<(String, Option<String>)>) {
+    let conn = w.store.conn();
+    let leases = conn
+        .query_row(
+            "SELECT count(*) FROM leases WHERE task_id = ?1",
+            [task_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let mut stmt = conn
+        .prepare("SELECT state, outcome FROM attempts WHERE task_id = ?1 ORDER BY id")
+        .unwrap();
+    let attempts = stmt
+        .query_map([task_id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    (leases, attempts)
+}
+
+/// The park releases the lease and ends the attempt of its worker in the
+/// transaction of `done`, so the claim after `requeue` needs no fleetd
+/// pass (RR-17, FM-14).
+#[test]
+fn trf_35_done_unlanded_releases_the_lease_and_ends_the_attempt() {
+    let (mut w, run, worker, _path) = parked_world();
+    let task = t1(&w, &run).task_id;
+    finish::complete(&mut w.store, &worker, "tried", Some("a red check")).unwrap();
+    assert_eq!(
+        lease_and_attempts(&w, &task),
+        (0, vec![("ended".into(), Some("done".into()))])
+    );
+    let t = t1(&w, &run);
+    w.store
+        .immediate(|tx| tasks::requeue_by_operator(tx, &t, "fixed the check"))
+        .unwrap();
+    let next = new_worker(&mut w, &run);
+    let ClaimOutcome::Claimed(_) = w.store.immediate(|tx| tasks::claim(tx, &next)).unwrap() else {
+        panic!("T-1 is not claimed again");
+    };
+    assert_eq!(
+        lease_and_attempts(&w, &task),
+        (
+            1,
+            vec![("ended".into(), Some("done".into())), ("live".into(), None)]
+        )
+    );
+}
+
 #[test]
 fn trf_35_triage_finish_resumes_the_parked_task_instead_of_queuing_a_new_one() {
     let (mut w, run, worker, path) = parked_world();

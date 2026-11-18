@@ -32,6 +32,7 @@ use super::workers::{self, Worker};
 use crate::fleetd::fleet_runtime::application::jobs::JobCtx;
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 use crate::fleetd::ideas::application::needs_you::NeedsYouList;
+use crate::fleetd::task_execution::application::commands;
 use crate::fleetd::worktree_custody::adapters::sqlite::NewWorktree;
 use crate::fleetd::worktree_custody::application::create::{self, JobProcess, Lease, RunJob};
 
@@ -1200,6 +1201,9 @@ fn mark_done(
         Actor::Worker,
         util::Why::Rule(util::Rule::End, &format!("horch ledger done: {end_reason}")),
     )?;
+    // The worker ends its own attempt, so the next claim of a parked task
+    // needs no fleetd pass (FM-14). The door released the lease above.
+    commands::end_own_attempt(tx, worker_id, WorkerStatus::Done.as_str())?;
     tx.execute(
         "UPDATE workers SET summary = ?2, end_reason = ?3, ended_at = ?4,
             last_progress_at = ?4
