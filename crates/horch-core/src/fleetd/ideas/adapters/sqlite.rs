@@ -83,6 +83,14 @@ pub fn open(conn: &Connection) -> Result<Vec<Item>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// The keys of the open items of kind `kind`, in key order.
+pub fn open_keys(conn: &Connection, kind: &str) -> Result<Vec<String>> {
+    let mut stmt =
+        conn.prepare("SELECT key FROM needs_you WHERE state = ?1 AND kind = ?2 ORDER BY key")?;
+    let rows = stmt.query_map([State::Open.as_str(), kind], |r| r.get(0))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 /// Remove each item that is not open and ended at or before `cutoff`.
 /// Ledger stamps have 1 format, so they compare as text.
 pub fn delete_ended(conn: &Connection, cutoff: &str) -> Result<usize> {

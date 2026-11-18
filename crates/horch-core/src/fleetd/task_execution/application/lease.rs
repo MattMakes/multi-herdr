@@ -326,9 +326,9 @@ fn resolve_ended_breaches(tx: &Connection, repairs: &[Repair]) -> Result<()> {
             _ => None,
         })
         .collect();
-    for item in needs_you::open_items(tx)? {
-        if item.kind == I1_BREACH && !open.contains(&item.key) {
-            needs_you::resolve(tx, &item.key)?;
+    for key in needs_you::open_keys(tx, I1_BREACH)? {
+        if !open.contains(&key) {
+            needs_you::resolve(tx, &key)?;
         }
     }
     Ok(())

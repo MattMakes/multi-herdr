@@ -128,6 +128,12 @@ pub fn open_items(conn: &Connection) -> Result<Vec<Item>> {
     store::open(conn)
 }
 
+/// The keys of the open items of kind `kind`: a producer reads them to
+/// resolve the items whose cause ended.
+pub fn open_keys(conn: &Connection, kind: &str) -> Result<Vec<String>> {
+    store::open_keys(conn, kind)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,6 +239,19 @@ mod tests {
             .map(|i| i.key)
             .collect();
         assert_eq!(keys, ["illegal_transition:T-2"]);
+    }
+
+    #[test]
+    fn open_keys_gives_only_the_open_items_of_1_kind() {
+        let (_dir, mut store) = ledger();
+        write(&mut store, "i1_breach:t1", "2 live attempts");
+        write(&mut store, "i1_breach:t2", "2 live attempts");
+        write(&mut store, "pane_kept:w0:p1", "a pane");
+        store.immediate(|tx| resolve(tx, "i1_breach:t2")).unwrap();
+        assert_eq!(
+            open_keys(store.conn(), "i1_breach").unwrap(),
+            ["i1_breach:t1"]
+        );
     }
 
     #[test]
