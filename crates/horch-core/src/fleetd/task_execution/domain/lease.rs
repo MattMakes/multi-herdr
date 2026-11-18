@@ -378,15 +378,23 @@ mod tests {
         );
     }
 
-    /// A pseudo-random walk with a fixed seed (no `proptest`: NFR-11).
+    /// A pseudo-random walk with a fixed seed (no `proptest`: NFR-11): a
+    /// 64-bit linear congruential generator.
     struct Walk(u64);
 
+    /// The multiplier and the increment of the generator: the constants of
+    /// Knuth's MMIX. Any full-period pair works; the walk needs only a
+    /// fixed sequence.
+    const LCG_MULTIPLIER: u64 = 6_364_136_223_846_793_005;
+    const LCG_INCREMENT: u64 = 1_442_695_040_888_963_407;
+
     impl Walk {
+        /// The next value in `0..n`, from the high bits of the state.
         fn pick(&mut self, n: u64) -> u64 {
             self.0 = self
                 .0
-                .wrapping_mul(6_364_136_223_846_793_005)
-                .wrapping_add(1_442_695_040_888_963_407);
+                .wrapping_mul(LCG_MULTIPLIER)
+                .wrapping_add(LCG_INCREMENT);
             (self.0 >> 33) % n
         }
     }

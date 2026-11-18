@@ -11,14 +11,14 @@
 //!   holds a lease deletes the lease ([`release`]). The I1 check of the
 //!   pass ([`check_i1`]) deletes a row that another writer leaves.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{bail, Result};
 use rusqlite::Connection;
 
 use crate::fleetd::fleet_runtime::adapters::clock_store;
 use crate::fleetd::fleet_runtime::adapters::sqlite as door;
-use crate::fleetd::fleet_runtime::application::ledger::{record, transition, Cause};
+use crate::fleetd::fleet_runtime::application::ledger::{record, transition, Cause, DoorError};
 use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
 use crate::fleetd::ideas::application::needs_you::{self, NeedsYouList};
@@ -125,6 +125,7 @@ pub fn renew_or_expire_leases(
     facts: &BTreeMap<String, Observed>,
     limits: &dyn Fn(&str) -> Limits,
 ) -> Result<Vec<Expired>> {
+    check_pass(tx, guard)?;
     let now = util::now();
     let mut expired = Vec::new();
     for h in store::held(tx)? {
@@ -184,76 +185,150 @@ pub fn renew_or_expire_leases(
 /// a live attempt with a full `lease_s` of its worker, delete a lease of an
 /// ended attempt or of a task that is not held, and open 1 needs-you item
 /// for a task with 2 live attempts. Each write or delete has 1 event with
-/// the cause [`I1_REPAIRED`]. The fleetd of generation `guard` writes them.
+/// the cause [`I1_REPAIRED`], and the item of a breach that ended
+/// resolves. The fleetd of generation `guard` writes them.
 pub fn check_i1(
     tx: &Connection,
     guard: Option<Generation>,
     clock: FleetSeconds,
     limits: &dyn Fn(&str) -> Limits,
 ) -> Result<()> {
-    let (rows, live) = store::i1_rows(tx)?;
-    let mut by_task: BTreeMap<&str, (Vec<String>, Vec<String>)> = BTreeMap::new();
-    let mut worker_of: BTreeMap<&str, &str> = BTreeMap::new();
-    for a in &live {
-        let (live, ending) = by_task.entry(&a.task_id).or_default();
-        if a.worker_live { live } else { ending }.push(a.id.clone());
-        worker_of.insert(&a.id, &a.worker_id);
+    check_pass(tx, guard)?;
+    let (tasks, worker_of) = task_leases(tx)?;
+    let repairs = i1_repairs(&tasks);
+    let lease_s = |attempt: &str| limits(&worker_of[attempt]).lease_s;
+    for repair in &repairs {
+        apply(tx, guard, clock, repair, &lease_s)?;
     }
-    let tasks: Vec<TaskLeases> = rows
+    resolve_ended_breaches(tx, &repairs)
+}
+
+/// Refuse a pass with no open transaction, or a pass of a fleetd whose
+/// generation `guard` is not the generation of the `fleetd` row, before
+/// its first write.
+fn check_pass(tx: &Connection, guard: Option<Generation>) -> Result<()> {
+    if tx.is_autocommit() {
+        return Err(DoorError::NoTransaction.into());
+    }
+    if let Some(held) = guard {
+        let found = door::generation(tx)?;
+        if found != Some(held) {
+            return Err(DoorError::GenerationLost { held, found }.into());
+        }
+    }
+    Ok(())
+}
+
+/// The attempts of 1 task that are not ended.
+#[derive(Default)]
+struct Unended {
+    /// Their worker row is live.
+    live: Vec<String>,
+    /// Their worker row ended: the pass reaps them.
+    ending: Vec<String>,
+}
+
+/// The lease facts of I1 of each task, and the worker of each attempt that
+/// is not ended.
+fn task_leases(tx: &Connection) -> Result<(Vec<TaskLeases>, BTreeMap<String, String>)> {
+    let (rows, attempts) = store::i1_rows(tx)?;
+    let mut by_task: BTreeMap<String, Unended> = BTreeMap::new();
+    let mut worker_of = BTreeMap::new();
+    for a in attempts {
+        let group = by_task.entry(a.task_id).or_default();
+        let list = if a.worker_live {
+            &mut group.live
+        } else {
+            &mut group.ending
+        };
+        list.push(a.id.clone());
+        worker_of.insert(a.id, a.worker_id);
+    }
+    let tasks = rows
         .into_iter()
         .map(|t| {
-            let (live, ending) = by_task.remove(t.task_id.as_str()).unwrap_or_default();
+            let group = by_task.remove(&t.task_id).unwrap_or_default();
             TaskLeases {
-                live_attempts: live,
-                ending_attempts: ending,
                 holder: Holder::of(&t.status),
                 lease_attempt: t.lease_attempt,
+                live_attempts: group.live,
+                ending_attempts: group.ending,
                 task_id: t.task_id,
             }
         })
         .collect();
-    for repair in i1_repairs(&tasks) {
-        match repair {
-            Repair::Write {
-                task_id,
-                attempt_id,
-            } => {
-                repaired(tx, guard, clock, &task_id, "write", &attempt_id)?;
-                let lease_s = limits(worker_of[attempt_id.as_str()]).lease_s;
-                let lease = LeaseRow {
-                    expires_at: Lease::claimed(clock.0, lease_s).expires_at,
-                    task_id,
-                    attempt_id,
-                    renew_basis: I1_BASIS.to_string(),
-                };
-                store::put(tx, &lease, &util::now())?;
-            }
-            Repair::Delete {
-                task_id,
-                attempt_id,
-            } => {
-                repaired(tx, guard, clock, &task_id, "delete", &attempt_id)?;
-                release(tx, &task_id)?;
-            }
-            Repair::TwoLive { task_id, attempts } => {
-                let key = format!("{I1_BREACH}:{task_id}");
-                let text = format!(
-                    "task {task_id} has {} live attempts: {}. Each live attempt of a task needs \
-                     its own lease, and a task has 1 lease (I1, FM-14). Stop each attempt but 1.",
-                    attempts.len(),
-                    attempts.join(", ")
-                );
-                needs_you::open_item(
-                    tx,
-                    &Write {
-                        key: &key,
-                        kind: I1_BREACH,
-                        entity: Entity::Task.as_str(),
-                        entity_id: &task_id,
-                        text: &text,
-                    },
-                )?;
-            }
+    Ok((tasks, worker_of))
+}
+
+/// Do 1 repair of I1 at fleet clock `clock`. `lease_s` gives the
+/// `lease_s` of the worker of an attempt.
+fn apply(
+    tx: &Connection,
+    guard: Option<Generation>,
+    clock: FleetSeconds,
+    repair: &Repair,
+    lease_s: &dyn Fn(&str) -> i64,
+) -> Result<()> {
+    match repair {
+        Repair::Write {
+            task_id,
+            attempt_id,
+        } => {
+            repaired(tx, guard, clock, task_id, "write", attempt_id)?;
+            let lease = LeaseRow {
+                task_id: task_id.clone(),
+                attempt_id: attempt_id.clone(),
+                expires_at: Lease::claimed(clock.0, lease_s(attempt_id)).expires_at,
+                renew_basis: I1_BASIS.to_string(),
+            };
+            store::put(tx, &lease, &util::now())
+        }
+        Repair::Delete {
+            task_id,
+            attempt_id,
+        } => {
+            repaired(tx, guard, clock, task_id, "delete", attempt_id)?;
+            release(tx, task_id)
+        }
+        Repair::TwoLive { task_id, attempts } => {
+            let text = format!(
+                "task {task_id} has {} live attempts: {}. Each live attempt of a task needs \
+                 its own lease, and a task has 1 lease (I1, FM-14). Stop each attempt but 1.",
+                attempts.len(),
+                attempts.join(", ")
+            );
+            needs_you::open_item(
+                tx,
+                &Write {
+                    key: &breach_key(task_id),
+                    kind: I1_BREACH,
+                    entity: Entity::Task.as_str(),
+                    entity_id: task_id,
+                    text: &text,
+                },
+            )
+        }
+    }
+}
+
+/// The key of the needs-you item of the breach of task `task_id`.
+fn breach_key(task_id: &str) -> String {
+    format!("{I1_BREACH}:{task_id}")
+}
+
+/// Resolve each open needs-you item of kind [`I1_BREACH`] whose task is
+/// not in `repairs` with 2 live attempts.
+fn resolve_ended_breaches(tx: &Connection, repairs: &[Repair]) -> Result<()> {
+    let open: BTreeSet<String> = repairs
+        .iter()
+        .filter_map(|r| match r {
+            Repair::TwoLive { task_id, .. } => Some(breach_key(task_id)),
+            _ => None,
+        })
+        .collect();
+    for item in needs_you::open_items(tx)? {
+        if item.kind == I1_BREACH && !open.contains(&item.key) {
+            needs_you::resolve(tx, &item.key)?;
         }
     }
     Ok(())
@@ -322,7 +397,7 @@ mod tests {
     }
 
     struct Fixture {
-        _dir: tempfile::TempDir,
+        dir: tempfile::TempDir,
         store: Store,
         run: Run,
     }
@@ -346,11 +421,7 @@ mod tests {
         let run = store
             .immediate(|tx| runs::create(tx, dir.path(), &new_run))
             .unwrap();
-        Fixture {
-            _dir: dir,
-            store,
-            run,
-        }
+        Fixture { dir, store, run }
     }
 
     impl Fixture {
@@ -745,6 +816,54 @@ mod tests {
         assert_eq!(l.i1_events(&task), Vec::<serde_json::Value>::new());
     }
 
+    /// A stale generation is refused before its first write, also on the
+    /// paths that move no row: a renewal, an activity mark and a breach
+    /// item. Each write runs in an open transaction that commits on `Ok`.
+    #[test]
+    fn a_stale_generation_is_refused_before_a_renewal_an_activity_mark_or_a_breach_item() {
+        let mut l = fixture(0);
+        l.add_task("a");
+        let (task, _) = l.claimed();
+        let attempt = format!("{task}/A1");
+        let other = Some(Generation(GEN.0 + 1));
+        let dead_but_active = Observed {
+            process: Seen::Dead,
+            ..earning()
+        };
+        for facts in [
+            BTreeMap::from([(attempt.clone(), earning())]),
+            BTreeMap::from([(attempt.clone(), dead_but_active)]),
+        ] {
+            let out = l.store.immediate(|tx| {
+                renew_or_expire_leases(tx, other, FleetSeconds(5), &facts, &limits)
+            });
+            assert!(out.is_err(), "{out:?}");
+        }
+        let worker = l.worker();
+        l.store
+            .conn()
+            .execute(
+                "INSERT INTO attempts (id, task_id, worker_id, state, started_at)
+                 VALUES (?1, ?2, ?3, 'live', 'now')",
+                params![format!("{task}/A2"), task, worker],
+            )
+            .unwrap();
+        let out = l
+            .store
+            .immediate(|tx| check_i1(tx, other, FleetSeconds(5), &limits));
+        assert!(out.is_err(), "{out:?}");
+        assert_eq!(breaches(&l), Vec::<String>::new());
+        let no_tx = renew_or_expire_leases(
+            l.store.conn(),
+            Some(GEN),
+            FleetSeconds(5),
+            &BTreeMap::new(),
+            &limits,
+        );
+        assert!(no_tx.is_err(), "a pass writes in 1 open transaction");
+        assert!(check_i1(l.store.conn(), Some(GEN), FleetSeconds(5), &limits).is_err());
+    }
+
     #[test]
     fn i1_lease_of_an_ended_attempt_is_deleted() {
         let mut l = fixture(0);
@@ -773,7 +892,7 @@ mod tests {
         let mut l = fixture(0);
         l.add_task("a");
         let (task, worker) = l.claimed();
-        let path = l._dir.path().join("handoff.md");
+        let path = l.dir.path().join("handoff.md");
         std::fs::write(&path, "next steps").unwrap();
         l.store
             .immediate(|tx| tasks::handoff(tx, &worker, path.to_str().unwrap()))
@@ -825,7 +944,17 @@ mod tests {
         let before = l.leases();
         l.check_i1(10);
         l.check_i1(15);
-        assert_eq!(breaches(&l), vec![task]);
+        assert_eq!(breaches(&l), vec![task.clone()]);
         assert_eq!(l.leases(), before, "no repair is safe");
+        // The operator stops the second attempt: the item resolves.
+        l.store
+            .conn()
+            .execute(
+                "UPDATE attempts SET state = 'ended' WHERE id = ?1",
+                [format!("{task}/A2")],
+            )
+            .unwrap();
+        l.check_i1(20);
+        assert_eq!(breaches(&l), Vec::<String>::new());
     }
 }
