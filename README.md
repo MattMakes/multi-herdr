@@ -12,7 +12,6 @@ herdr-fleet`, but it's optional sugar over `horch`, not a dependency.
 |-------------------|-----------------------------------------------------------|
 | `horch`           | Build and drive multi-agent herdr workspaces              |
 | `herdr-install`   | Install the latest Herdr CLI                              |
-| `herdr-docs-sync` | Mirror the Herdr docs into `herdr-docs/`                  |
 
 ## How it works
 
@@ -1112,12 +1111,9 @@ contributor handbook, including the gate rules: never run the gate under
 
 ## Keeping the docs current
 
-`herdr-docs/` is a mirror of <https://herdr.dev/docs/>. Refresh it any time:
-
-```bash
-herdr-docs-sync              # writes to ./herdr-docs
-herdr-docs-sync --dry-run    # report what would change
-```
+`herdr-docs/` is a mirror of <https://herdr.dev/docs/>. The library
+`crates/agent-docs-sync` refreshes it; the `horch docs sync` command that
+runs it is not built yet.
 
 It discovers pages from the site's sitemap, converts each to markdown, and
 removes local files for pages that no longer exist, so the directory stays a
@@ -1266,7 +1262,7 @@ crates/
   horch-marketplace/  Skill sources, installs and the lockfile
   horch-e2e/          Fake harness binaries and the hermetic end-to-end tests
   herdr-install/      The Herdr CLI installer
-  herdr-docs-sync/    The documentation mirror
+  agent-docs-sync/    The documentation mirror of each agent CLI
 herdr-docs/           The mirrored documentation
 ```
 

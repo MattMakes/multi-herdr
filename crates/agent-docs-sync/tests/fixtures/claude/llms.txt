@@ -1,0 +1,9 @@
+# Claude Code Docs
+
+## Docs
+
+- [Overview](https://code.claude.com/docs/en/overview.md): What Claude Code is.
+- [CLI reference](https://code.claude.com/docs/en/cli-reference): Each flag of the CLI.
+- [Hooks in the SDK](https://code.claude.com/docs/en/agent-sdk/hooks.md): Hooks of the Agent SDK.
+- [Hooks](https://code.claude.com/docs/en/hooks.md): Hooks reference.
+- [Settings](https://code.claude.com/docs/en/settings.md): The settings files.

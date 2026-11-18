@@ -1,0 +1,25 @@
+# docs-sources.toml
+[herdr]
+kind = "sitemap"
+url = "https://herdr.dev/sitemap.xml"
+version_cmd = "herdr --version"
+
+[claude]
+kind = "llms_txt"
+url = "https://code.claude.com/docs/llms.txt"
+md_suffix = ".md"
+include = ["cli-reference", "env-vars", "settings", "hooks", "sandboxing", "skills", "mcp", "headless"]
+version_cmd = "claude --version"
+
+[codex]
+kind = "llms_txt"
+url = "https://learn.chatgpt.com/docs/llms.txt"
+include = ["config-reference", "non-interactive-mode", "sandboxing", "hooks", "agents-md", "build-skills"]
+also_git = "https://github.com/openai/codex"   # docs/ folder and release notes
+version_cmd = "codex --version"
+
+[agy]
+kind = "llms_txt"
+url = "https://antigravity.google/llms.txt"
+include = ["cli/reference", "cli/headless", "settings", "hooks", "sandbox", "mcp", "skills", "rules"]
+version_cmd = "agy --version"

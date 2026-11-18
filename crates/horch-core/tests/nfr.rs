@@ -207,7 +207,7 @@ fn assert_no_workspace_dep(banned: &[&str], exempt: &[&str], why: &str) {
 
 /// NFR-06 (OD6): horch-marketplace stays on its allowed list, and horch-core
 /// and horch-marketplace take no HTTP client. herdr-install and
-/// herdr-docs-sync are the standalone download tools; they used ureq before
+/// agent-docs-sync are the standalone download tools; they used ureq before
 /// this rule. horch takes ureq for `horch self-update` (operator decision,
 /// 2026-10-20).
 #[test]
@@ -234,7 +234,7 @@ fn nfr_06_dependency_allowlist() {
     assert_no_workspace_dep(
         &["reqwest", "ureq", "hyper", "isahc", "attohttpc", "curl"],
         // horch: `horch self-update` (operator decision, 2026-10-20).
-        &["herdr-install", "herdr-docs-sync", "horch"],
+        &["herdr-install", "agent-docs-sync", "horch"],
         "NFR-06: no HTTP crate",
     );
 }

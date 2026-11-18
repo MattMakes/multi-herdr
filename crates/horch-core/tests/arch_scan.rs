@@ -717,7 +717,7 @@ fn arc_88_children_are_scrubbed_in_one_place() {
         "horch",
         "horch-marketplace",
         "herdr-install",
-        "herdr-docs-sync",
+        "agent-docs-sync",
     ] {
         let root = crate_src(krate);
         if !root.is_dir() {

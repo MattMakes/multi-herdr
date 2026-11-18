@@ -24,7 +24,7 @@ The workspace has 6 crates:
 | `crates/horch-marketplace` | Skill sources, installs and the lockfile |
 | `crates/horch-e2e` | Fake harness binaries and the hermetic end-to-end tests |
 | `crates/herdr-install` | The Herdr CLI installer |
-| `crates/herdr-docs-sync` | The mirror of the herdr docs into `herdr-docs/` |
+| `crates/agent-docs-sync` | The library that mirrors the docs of each agent CLI, also into `herdr-docs/` |
 
 ## The rules the tests enforce
 
