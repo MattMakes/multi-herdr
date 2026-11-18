@@ -11,9 +11,11 @@ use std::process::ExitCode;
 
 use anyhow::{bail, Context, Result};
 use clap::{Args, Subcommand};
+use horch_core::fleetd::fleet_runtime::adapters::channel_client::{self, Sent};
 use horch_core::fleetd::fleet_runtime::adapters::config_file;
+use horch_core::fleetd::fleet_runtime::adapters::request_wire::{Outcome, Reply};
 use horch_core::fleetd::fleet_runtime::application::jobs::JobCtx;
-use horch_core::fleetd::fleet_runtime::domain::ledger::Entity;
+use horch_core::fleetd::fleet_runtime::domain::requests::Kind;
 use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
 use horch_core::fleetd::task_execution::adapters::task_files::attempt_dir;
 use horch_core::fleetd::task_execution::application::cancel::{self, Cancel};
@@ -24,9 +26,7 @@ use horch_core::taskledger::finish::{self, land};
 use horch_core::taskledger::git::Git;
 use horch_core::taskledger::import;
 use horch_core::taskledger::map;
-use horch_core::taskledger::model::{
-    Actor, EventKind, ProgressSource, StepName, TaskKind, WorkerKind, WorkerStatus, WorktreeMode,
-};
+use horch_core::taskledger::model::{EventKind, ProgressSource, StepName, WorkerKind};
 use horch_core::taskledger::model::{FindingStatus, StopRequester, VerifyProfile, VERIFY_ENV};
 use horch_core::taskledger::runs::{self, NewRun, Run};
 use horch_core::taskledger::status;
@@ -34,6 +34,8 @@ use horch_core::taskledger::stop;
 use horch_core::taskledger::tasks::{self, ClaimOutcome, Claimed, NewTask};
 use horch_core::taskledger::workers::{self, NewWorker};
 use horch_core::taskledger::{self, Store};
+use serde::Deserialize;
+use serde_json::{json, Value};
 
 use super::sessionscmd::LegacyCommand;
 use crate::output;
@@ -637,11 +639,29 @@ fn group_of(command: &LedgerCommand) -> Group {
 }
 
 pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
+    match run_command(ctx, command) {
+        Err(e) => match e.downcast_ref::<NotApplied>() {
+            Some(NotApplied::Refused(reason)) => {
+                eprintln!("refused: {reason}");
+                Ok(ExitCode::from(1))
+            }
+            // The client printed where the request waits.
+            Some(NotApplied::Queued) => Ok(ExitCode::SUCCESS),
+            None => Err(e),
+        },
+        done => done,
+    }
+}
+
+fn run_command(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
     if let LedgerCommand::Legacy { command } = command {
         return super::sessionscmd::run(ctx, command);
     }
     if let LedgerCommand::Gc = command {
-        return super::worktree::gc(ctx).map(|()| ExitCode::SUCCESS);
+        // The trash refs are git refs, not rows: the request records them.
+        let deleted = super::worktree::gc(ctx)?;
+        request(ctx, Kind::LedgerGc, json!({ "deleted": deleted }))?;
+        return Ok(ExitCode::SUCCESS);
     }
     if let LedgerCommand::Path = command {
         output::println(&ctx.paths.ledger_db.display().to_string());
@@ -657,10 +677,85 @@ pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
     {
         return add_map_dry_run(ctx, path);
     }
-    let store = taskledger::open(ctx)?;
+    let store = if reads_only(&command) {
+        read_only(ctx)?
+    } else {
+        taskledger::open(ctx)?
+    };
     // One entry per `Group`, in its order.
     let dispatch: [GroupCmd; 4] = [board_cmd, control_cmd, worker_side_cmd, admin_cmd];
     dispatch[group_of(&command) as usize](ctx, store, command)
+}
+
+/// Whether `command` changes the ledger only through requests to fleetd,
+/// so that it opens the ledger read-only (RR-5). `run close` and
+/// `run gate` still open it to write: the custody of the gate folder and
+/// the stop of a worker are not their requests.
+fn reads_only(command: &LedgerCommand) -> bool {
+    use LedgerCommand as C;
+    match command {
+        C::Run { command } => matches!(command, RunCommand::New(_) | RunCommand::List { .. }),
+        C::Import { dry_run, .. } => !dry_run,
+        C::Add(_) | C::Task(_) | C::AddMap { .. } | C::PlanWorkers { .. } => true,
+        _ => false,
+    }
+}
+
+/// The ledger, opened read-only. fleetd creates it at its start.
+fn read_only(ctx: &RuntimeContext) -> Result<Store> {
+    taskledger::open_existing_read_only(ctx)?.with_context(|| {
+        format!(
+            "the task ledger {} does not exist. fleetd creates it at its start: run horch fleetd check",
+            ctx.paths.ledger_db.display()
+        )
+    })
+}
+
+/// A request that fleetd did not apply. [`run`] prints a refusal as
+/// `refused: <reason>` and exits 1, and exits 0 for a queued request.
+#[derive(Debug)]
+enum NotApplied {
+    Refused(String),
+    Queued,
+}
+
+impl std::fmt::Display for NotApplied {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NotApplied::Refused(reason) => write!(f, "refused: {reason}"),
+            NotApplied::Queued => {
+                f.write_str("the request waits in a request file until fleetd starts")
+            }
+        }
+    }
+}
+
+impl std::error::Error for NotApplied {}
+
+/// Send 1 request of `kind` with `payload` to fleetd, and return its result
+/// when fleetd applied it. A refused or queued request is a [`NotApplied`]
+/// error.
+fn request(ctx: &RuntimeContext, kind: Kind, payload: Value) -> Result<Value> {
+    let Value::Object(payload) = payload else {
+        bail!("the payload of a request is a JSON object");
+    };
+    match channel_client::send(ctx, kind, payload)? {
+        Sent::Replied(Reply {
+            outcome: Outcome::Applied(result),
+            ..
+        }) => Ok(result),
+        Sent::Replied(Reply {
+            outcome: Outcome::Refused(reason),
+            ..
+        }) => Err(NotApplied::Refused(reason).into()),
+        Sent::Queued { .. } => Err(NotApplied::Queued.into()),
+    }
+}
+
+/// The field `key` of a request result as `T`.
+fn field<T: serde::de::DeserializeOwned>(result: &Value, key: &str) -> Result<T> {
+    serde_json::from_value(result.get(key).cloned().unwrap_or(Value::Null))
+        .with_context(|| format!("the result of fleetd has no valid `{key}`"))
 }
 
 /// The orchestrator reads and fills the board.
@@ -705,6 +800,16 @@ fn board_cmd(ctx: &RuntimeContext, mut store: Store, command: LedgerCommand) -> 
         return events_cmd(ctx, &store, &run, as_json);
     }
     unreachable!("not a board command")
+}
+
+/// What `plan-workers` prints of 1 persona of the plan.
+#[derive(Deserialize)]
+struct PlanLine {
+    persona: String,
+    spawn: i64,
+    startable: i64,
+    on_the_way: i64,
+    replaces: Vec<String>,
 }
 
 /// The orchestrator steers tasks and workers.
@@ -885,12 +990,20 @@ fn plan_workers_cmd(
     as_json: bool,
 ) -> Result<ExitCode> {
     let r = resolve_run(ctx, store, run)?;
-    adopt_workspace(ctx, store, &r)?;
-    let plan = tasks::plan_workers(store.conn(), &r.run_id)?;
+    let ws = adopted_workspace(ctx, &r);
+    let result = request(
+        ctx,
+        Kind::PlanWorkers,
+        json!({ "run_id": r.run_id, "workspace_id": ws }),
+    )?;
+    if let (Some(ws), true) = (ws, field::<bool>(&result, "adopted")?) {
+        print_adopted(&r, ws);
+    }
     if as_json {
-        json(&plan)?;
+        json(&result["plan"])?;
         return Ok(ExitCode::SUCCESS);
     }
+    let plan: Vec<PlanLine> = field(&result, "plan")?;
     if plan.is_empty() {
         output::println("No task can start now. Spawn no worker.");
     }
@@ -1321,11 +1434,24 @@ fn import_cmd(
     as_json: bool,
 ) -> Result<ExitCode> {
     let git = Git::new(&ctx.bins.harness.git);
-    let r = import::import(store, &git, &ctx.paths.state_root, dry_run)?;
+    let state_root = &ctx.paths.state_root;
+    let report = if dry_run {
+        serde_json::to_value(import::import(store, &git, state_root, true)?)?
+    } else {
+        let facts = import::gather(store.conn(), &git, state_root)?;
+        let result = request(
+            ctx,
+            Kind::LedgerImport,
+            json!({ "state_root": state_root, "facts": facts }),
+        )?;
+        result.get("report").cloned().unwrap_or(Value::Null)
+    };
     if as_json {
-        json(&r)?;
+        json(&report)?;
         return Ok(ExitCode::SUCCESS);
     }
+    let r: ImportLines = serde_json::from_value(report)
+        .context("the result of fleetd has no valid import report")?;
     output::println(&format!(
         "{}{} files: {} records copied ({} already there); {} workers, {} tasks, {} worktrees mapped; {} could not be mapped.",
         if r.dry_run { "Dry run, nothing kept. " } else { "" },
@@ -1344,6 +1470,20 @@ fn import_cmd(
         output::println("Read them with: horch ledger unfinished");
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// What `import` prints of an [`import::ImportReport`].
+#[derive(Deserialize)]
+struct ImportLines {
+    dry_run: bool,
+    files: Vec<String>,
+    raw_added: i64,
+    raw_skipped: i64,
+    workers: i64,
+    tasks: i64,
+    worktrees: i64,
+    map_errors: i64,
+    findings: std::collections::BTreeMap<String, i64>,
 }
 
 fn unfinished_cmd(
@@ -1531,26 +1671,38 @@ fn reap_cmd(
 /// `status` or `plan-workers` from a herdr pane that is not a worker's
 /// records that pane's workspace on the run, so wakes find its orchestrator.
 fn adopt_workspace(ctx: &RuntimeContext, store: &Store, run: &Run) -> Result<()> {
+    let Some(ws) = adopted_workspace(ctx, run) else {
+        return Ok(());
+    };
+    let changed = store.conn().execute(
+        "UPDATE runs SET workspace_id = ?2 WHERE run_id = ?1 AND workspace_id IS NULL",
+        [&run.run_id, ws],
+    )?;
+    if changed == 1 {
+        print_adopted(run, ws);
+    }
+    Ok(())
+}
+
+/// The workspace that `run` adopts: the workspace of the orchestrator pane
+/// that runs this command, when `run` has none.
+fn adopted_workspace<'a>(ctx: &'a RuntimeContext, run: &Run) -> Option<&'a str> {
     let (None, Some(ws), Some(_pane)) = (&run.workspace_id, &ctx.herdr.workspace, &ctx.herdr.pane)
     else {
-        return Ok(());
+        return None;
     };
     let role = ctx.worker.as_ref().and_then(|w| w.role.as_deref());
     if role.is_some_and(|r| r != "orchestrator") {
-        return Ok(());
+        return None;
     }
-    let changed = store.conn().execute(
-        "UPDATE runs SET workspace_id = ?2 WHERE run_id = ?1 AND workspace_id IS NULL",
-        [&run.run_id, ws.as_str()],
-    )?;
-    if changed == 1 {
-        eprintln!(
-            "NOTE: run {} had no workspace. It now has workspace {}, so wakes go to the orchestrator of this workspace.",
-            run.slug,
-            ws.as_str()
-        );
-    }
-    Ok(())
+    Some(ws.as_str())
+}
+
+fn print_adopted(run: &Run, ws: &str) {
+    eprintln!(
+        "NOTE: run {} had no workspace. It now has workspace {ws}, so wakes go to the orchestrator of this workspace.",
+        run.slug
+    );
 }
 
 /// Whether the project has no run, and nothing names one.
@@ -1805,11 +1957,19 @@ fn run_cmd(ctx: &RuntimeContext, store: &mut Store, command: RunCommand) -> Resu
             let r = resolve_run(ctx, store, &run)?;
             let herdr = HerdrPanes::new(ctx);
             let s = Stopper::real(&herdr);
-            close_run_cmd(&tools(ctx), store, &r, abandon.as_deref(), pr_declined, &s)
+            close_run_cmd(
+                ctx,
+                &tools(ctx),
+                store,
+                &r,
+                abandon.as_deref(),
+                pr_declined,
+                &s,
+            )
         }
         RunCommand::Gate { run, check } => {
             let r = resolve_run(ctx, store, &run)?;
-            gate_cmd(&tools(ctx), store, &r, check.as_deref())
+            gate_cmd(ctx, &tools(ctx), store, &r, check.as_deref())
         }
         RunCommand::List { json: as_json } => list_runs(store, &root, as_json),
         RunCommand::New(args) => new_run_cmd(ctx, store, &root, args),
@@ -1817,6 +1977,7 @@ fn run_cmd(ctx: &RuntimeContext, store: &mut Store, command: RunCommand) -> Resu
 }
 
 fn close_run_cmd(
+    ctx: &RuntimeContext,
     t: &finish::Tools,
     store: &mut Store,
     r: &Run,
@@ -1826,14 +1987,16 @@ fn close_run_cmd(
 ) -> Result<ExitCode> {
     // C6 first: an unsettled run gets the settled rule's refusal, before gh.
     let settled = status::unsettled(store.conn(), &r.run_id)?.is_empty();
-    let closed = match abandon {
-        Some(_) => store.immediate(|tx| runs::close_run(tx, &t.git, r, abandon))?,
-        None if !settled => store.immediate(|tx| runs::close_run(tx, &t.git, r, None))?,
-        None => {
-            let guards = close_guards(t, r, pr_declined)?;
-            store.immediate(|tx| runs::close_run_with(tx, &t.git, r, None, &guards))?
-        }
+    let guards = match abandon {
+        None if settled => Some(guards_json(&close_guards(t, r, pr_declined)?)),
+        _ => None,
     };
+    let result = request(
+        ctx,
+        Kind::RunClose,
+        json!({ "run_id": r.run_id, "abandon": abandon, "guards": guards }),
+    )?;
+    let closed: ClosedLines = field(&result, "closed")?;
     for note in &closed.notes {
         output::println(note);
     }
@@ -1884,8 +2047,45 @@ fn close_guards(
     })
 }
 
+/// What `run close` prints of a [`runs::Closed`].
+#[derive(Deserialize)]
+struct ClosedLines {
+    status: String,
+    cancelled: Vec<(String, Option<String>)>,
+    parked: Vec<String>,
+    notes: Vec<String>,
+}
+
+/// The C5 facts of a close in the payload of `run_close`.
+fn guards_json(g: &runs::CloseGuards) -> Value {
+    let pr = match &g.pr {
+        runs::PrCheck::NotApplicable(why) => json!({ "state": "not_applicable", "why": why }),
+        runs::PrCheck::Merged(number) => json!({ "state": "merged", "number": number }),
+        runs::PrCheck::Unmerged { number, state } => {
+            json!({ "state": "unmerged", "number": number, "pr_state": state })
+        }
+        runs::PrCheck::Missing => json!({ "state": "missing" }),
+    };
+    json!({ "tip": g.tip, "pr": pr, "pr_declined": g.pr_declined })
+}
+
+/// What `run gate` prints of a recorded [`runs::Gate`].
+#[derive(Deserialize)]
+struct GateLines {
+    tip_sha: String,
+    exit_code: Option<i64>,
+    log_path: Option<String>,
+}
+
+impl GateLines {
+    fn passed(&self) -> bool {
+        self.exit_code == Some(0)
+    }
+}
+
 /// `horch ledger run gate` (C5, TRF-19).
 fn gate_cmd(
+    ctx: &RuntimeContext,
     t: &finish::Tools,
     store: &mut Store,
     r: &Run,
@@ -1907,7 +2107,20 @@ fn gate_cmd(
         runs::gate_dir(r).display()
     ));
     let ran = runs::run_gate(store, t, r, &command, &log_dir)?;
-    let gate = store.immediate(|tx| runs::record_gate(tx, &ran))?;
+    let result = request(
+        ctx,
+        Kind::RunGate,
+        json!({
+            "run_id": ran.run_id,
+            "tip_sha": ran.tip_sha,
+            "command": ran.command,
+            "exit_code": ran.exit_code,
+            "log_path": ran.log_path,
+            "started_at": ran.started_at,
+            "ended_at": ran.ended_at,
+        }),
+    )?;
+    let gate: GateLines = field(&result, "gate")?;
     let log = gate.log_path.as_deref().unwrap_or("(no log)");
     if gate.passed() {
         output::println(&format!("Run gate passed on {}. Log: {log}.", gate.tip_sha));
@@ -1984,9 +2197,50 @@ fn new_run_cmd(
         },
     };
     let check = a.check.as_deref().filter(|c| !c.trim().is_empty());
-    let r = insert_run(ctx, store, root, &new, check)?;
-    report_created(&r);
+    let t = &new.thresholds;
+    let result = request(
+        ctx,
+        Kind::RunNew,
+        json!({
+            "project_root": root,
+            "slug": new.slug,
+            "workspace_id": new.workspace_id,
+            "base_branch": new.base_branch,
+            "run_branch": new.run_branch,
+            "remote": new.remote,
+            "finish_steps": new.finish_steps.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+            "thresholds": {
+                "check_every_s": t.check_every_s,
+                "stall_rounds": t.stall_rounds,
+                "heartbeat_every_s": t.heartbeat_every_s,
+                "heartbeat_stale_s": t.heartbeat_stale_s,
+                "timer_tolerance_s": t.timer_tolerance_s,
+                "max_attempts": t.max_attempts,
+            },
+            "check": check,
+            "seat": seat(ctx),
+        }),
+    )?;
+    report_created(&result_run(store, &result)?);
     Ok(ExitCode::SUCCESS)
+}
+
+/// The orchestrator that runs this command, as a request that can create a
+/// run names it: its pane, and the harness of its session record.
+fn seat(ctx: &RuntimeContext) -> Value {
+    json!({
+        "pane_id": ctx.herdr.pane.as_ref().map(|p| p.as_str()),
+        "harness": own_orchestrator_harness(ctx),
+    })
+}
+
+/// The run that a request result names, read back from the ledger.
+fn result_run(store: &Store, result: &Value) -> Result<Run> {
+    let run_id = result
+        .pointer("/run/run_id")
+        .and_then(Value::as_str)
+        .context("the result of fleetd names no run")?;
+    runs::get(store.conn(), run_id)
 }
 
 /// The finish steps of a new run: `--steps` as given, else the steps of
@@ -2091,62 +2345,6 @@ fn run_branches(
     Ok(())
 }
 
-/// Insert the run and the orchestrator's own row: the pane it runs in. It is
-/// never watched for progress (section 9).
-/// `check` is the run's default check (TRF-16).
-fn insert_run(
-    ctx: &RuntimeContext,
-    store: &mut Store,
-    root: &Path,
-    new: &NewRun,
-    check: Option<&str>,
-) -> Result<Run> {
-    let pane = ctx.herdr.pane.as_ref().map(|p| p.as_str().to_string());
-    let own = own_orchestrator_harness(ctx);
-    store.immediate(|tx| {
-        runs::refuse_a_2nd_workspace_run(tx, root, new)?;
-        let r = runs::create(tx, root, new)?;
-        if let Some(check) = check {
-            finish::set_default_check(tx, &r.run_id, check)?;
-        }
-        let (harness, model) = match &own {
-            Some(own) => own.clone(),
-            None => workspace_orchestrator_harness(tx, new.workspace_id.as_deref())?,
-        };
-        let id = workers::insert(
-            tx,
-            &NewWorker {
-                run_id: r.run_id.clone(),
-                kind: Some(WorkerKind::Orchestrator),
-                persona: "orchestrator".into(),
-                role: Some("orchestrator".into()),
-                harness,
-                model,
-                workspace_id: new.workspace_id.clone(),
-                pane_id: pane.clone(),
-                ..Default::default()
-            },
-        )?;
-        taskledger::util::transition(
-            tx,
-            Entity::Worker,
-            &id,
-            WorkerStatus::Working.as_str(),
-            Actor::Orchestrator,
-            taskledger::util::Why::Rule(
-                taskledger::util::Rule::AgentStarted,
-                &format!("the orchestrator of run {} runs in its pane", r.slug),
-            ),
-        )?;
-        tx.execute(
-            "UPDATE workers SET started_at = spawned_at WHERE worker_id = ?1",
-            [&id],
-        )?;
-        runs::set_orchestrator(tx, &r.run_id, &id)?;
-        runs::get(tx, &r.run_id)
-    })
-}
-
 /// A harness and its model, as an orchestrator row records them.
 type HarnessModel = (Option<String>, Option<String>);
 
@@ -2162,25 +2360,6 @@ fn own_orchestrator_harness(ctx: &RuntimeContext) -> Option<HarnessModel> {
     let nonempty = |s: &str| (!s.is_empty()).then(|| s.to_string());
     (record.is_orchestrator() && !record.agent.is_empty())
         .then(|| (nonempty(&record.agent), nonempty(&record.model)))
-}
-
-/// The harness and model of the newest orchestrator row of `workspace` that
-/// records one: the fleet launch wrote it (TRF-44).
-fn workspace_orchestrator_harness(
-    tx: &rusqlite::Connection,
-    workspace: Option<&str>,
-) -> Result<HarnessModel> {
-    let Some(workspace) = workspace else {
-        return Ok((None, None));
-    };
-    let row = taskledger::store::optional(tx.query_row(
-        "SELECT harness, model FROM workers
-         WHERE kind = 'orchestrator' AND workspace_id = ?1 AND harness IS NOT NULL
-         ORDER BY spawned_at DESC, rowid DESC LIMIT 1",
-        [workspace],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    ))?;
-    Ok(row.unwrap_or((None, None)))
 }
 
 /// The ticket's first heading, or its file stem.
@@ -2220,76 +2399,36 @@ fn cwd_or_root(ctx: &RuntimeContext, root: &Path) -> PathBuf {
         .unwrap_or_else(|_| root.to_path_buf())
 }
 
-/// What a ticket file says about itself; nothing when it cannot be read.
-fn facts_of(root: &Path, file: &str) -> map::TicketFacts {
-    std::fs::read_to_string(root.join(file))
-        .map(|t| map::ticket_facts(&t))
-        .unwrap_or_default()
-}
-
-/// The task `add` queues: what a flag names, else what the ticket says.
-fn new_task(root: &Path, file: String, facts: map::TicketFacts, a: AddArgs) -> NewTask {
-    let review_mode = facts.review_mode();
-    let (check_none, land_check) = resolve_check(a.check, facts.check_none, facts.check);
-    NewTask {
-        title: a.title.unwrap_or_else(|| ticket_title(&root.join(&file))),
-        task_file: file,
-        issue_url: a.issue,
-        spec_ref: a.spec,
-        primary: a.primary,
-        fallback: a.fallback,
-        phase: a.phase,
-        parallel: !a.exclusive,
-        priority: a.priority,
-        wave: None,
-        worktree_mode: if a.shared {
-            WorktreeMode::Shared
-        } else {
-            WorktreeMode::Worktree
-        },
-        check_none,
-        land_check,
-        kind: TaskKind::Work,
-        parent_task_id: None,
-        blocked_by: a.blocked_by,
-        own: if a.own.is_empty() { facts.own } else { a.own },
-        no_touch: if a.no_touch.is_empty() {
-            facts.no_touch
-        } else {
-            a.no_touch
-        },
-        work_kind: facts.kind,
-        review_mode,
-        ticket_snapshot: None,
-    }
-}
-
-/// The task's (check_none, land_check) from a `--check` flag and the
-/// ticket's `**Check:**` line. The flag value `none` means no check, the same
-/// as `**Check:** none`. It is never a shell command, and it overrides a
-/// ticket command. Without the flag, the ticket decides.
-fn resolve_check(
-    flag: Option<String>,
-    ticket_none: bool,
-    ticket_check: Option<String>,
-) -> (bool, Option<String>) {
-    match flag {
-        Some(c) if c.trim() == "none" => (true, None),
-        Some(c) => (false, Some(c)),
-        None => (ticket_none, ticket_check),
-    }
-}
-
 fn add(ctx: &RuntimeContext, store: &mut Store, a: AddArgs) -> Result<ExitCode> {
     let root = project_root(ctx)?;
     let file = ticket_path(&root, &a.file, &cwd_or_root(ctx, &root))?;
-    let facts = facts_of(&root, &file);
     let run = resolve_run(ctx, store, &a.run)?;
     let _ = a.parallel;
-    let check_timeout = a.check_timeout;
-    let new = new_task(&root, file, facts, a);
-    let t = store.immediate(|tx| tasks::add(tx, &run, &new, Actor::Orchestrator))?;
-    if let Some(secs) = check_timeout {
+    let result = request(
+        ctx,
+        Kind::TaskAdd,
+        json!({
+            "run_id": run.run_id,
+            "project_root": root,
+            "ticket_sha256": file_sha256(&root.join(&file)),
+            "task_file": file,
+            "title": a.title,
+            "issue": a.issue,
+            "spec": a.spec,
+            "primary": a.primary,
+            "fallback": a.fallback,
+            "phase": a.phase,
+            "exclusive": a.exclusive,
+            "priority": a.priority,
+            "shared": a.shared,
+            "check": a.check,
+            "blocked_by": a.blocked_by,
+            "own": a.own,
+            "no_touch": a.no_touch,
+        }),
+    )?;
+    let t: QueuedTask = field(&result, "task")?;
+    if let Some(secs) = a.check_timeout {
         finish::land::set_check_timeout(
             &tools(ctx).evidence_root,
             &t.task_id,
@@ -2298,11 +2437,28 @@ fn add(ctx: &RuntimeContext, store: &mut Store, a: AddArgs) -> Result<ExitCode> 
     }
     output::println(&format!(
         "{} queued for {}: {}.",
-        t.short(),
+        t.short,
         t.claimable_by.as_deref().unwrap_or("?"),
         t.title
     ));
     Ok(ExitCode::SUCCESS)
+}
+
+/// What a command prints of a task that a request queued.
+#[derive(Deserialize)]
+struct QueuedTask {
+    task_id: String,
+    short: String,
+    claimable_by: Option<String>,
+    title: String,
+}
+
+/// The sha256 of the ticket file `path`, which a request sends in place of
+/// its text (Q15). `None` when the file cannot be read.
+fn file_sha256(path: &Path) -> Option<String> {
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|text| tasks::ticket_sha(&text))
 }
 
 fn task_cmd(ctx: &RuntimeContext, store: &mut Store, a: TaskArgs) -> Result<ExitCode> {
@@ -2315,7 +2471,7 @@ fn task_cmd(ctx: &RuntimeContext, store: &mut Store, a: TaskArgs) -> Result<Exit
 /// the worker itself (the fleet's worktree steward) uses it. It returns the
 /// solo run that holds the task.
 pub(super) fn queue_one_off(ctx: &RuntimeContext, a: TaskArgs) -> Result<Run> {
-    let mut store = taskledger::open(ctx)?;
+    let mut store = read_only(ctx)?;
     queue_one_off_in(ctx, &mut store, a).map(|(run, _)| run)
 }
 
@@ -2326,23 +2482,47 @@ fn queue_one_off_in(ctx: &RuntimeContext, store: &mut Store, a: TaskArgs) -> Res
     let Some(workspace) = super::sessionscmd::caller_workspace(ctx) else {
         bail!("horch ledger task needs a herdr workspace. Run it in a herdr pane, or queue the task with horch ledger add --run <slug>");
     };
-    let new = one_off_task(ctx, &root, a)?;
-    let run = solo_run(ctx, store, &root, &workspace)?;
-    let t = store.immediate(|tx| tasks::add(tx, &run, &new, Actor::Orchestrator))?;
+    if a.title.trim().is_empty() {
+        bail!("a task needs a title");
+    }
+    let file = a
+        .file
+        .as_deref()
+        .map(|f| ticket_path(&root, f, &cwd_or_root(ctx, &root)))
+        .transpose()?;
+    let solo = solo_branches(ctx, store, &root, &workspace)?;
+    let result = request(
+        ctx,
+        Kind::TaskSolo,
+        json!({
+            "project_root": root,
+            "workspace_id": workspace,
+            "title": a.title,
+            "persona": a.persona,
+            "ticket_sha256": file.as_ref().and_then(|f| file_sha256(&root.join(f))),
+            "task_file": file,
+            "check": a.check,
+            "solo": solo,
+            "seat": seat(ctx),
+        }),
+    )?;
+    let run = result_run(store, &result)?;
+    if field::<bool>(&result, "created_run")? {
+        report_created(&run);
+    }
+    let t: QueuedTask = field(&result, "task")?;
+    let primary: String = field(&result, "primary")?;
     output::println(&format!(
         "{} queued in run {} for {}: {}.",
-        t.short(),
-        run.slug,
-        new.primary,
-        t.title
+        t.short, run.slug, primary, t.title
     ));
-    if new.land_check.is_none() && !new.check_none {
+    if field::<bool>(&result, "no_check")? {
         eprintln!(
             "horch ledger: warning: {} has no check, so it does not land. Queue it with --check \"<cmd>\" to run a check, or with --check none to land it without one.",
-            t.short()
+            t.short
         );
     }
-    Ok((run, new.primary))
+    Ok((run, primary))
 }
 
 /// The line that starts a worker for a one-off task of `run`.
@@ -2350,48 +2530,26 @@ fn spawn_line(persona: &str, run: &Run) -> String {
     format!("Run next: horch spawn {persona} --run {}", run.slug)
 }
 
-/// The one-off task: the ticket file's facts when `--file` names one, else
-/// a snapshot that holds only the title.
-fn one_off_task(ctx: &RuntimeContext, root: &Path, a: TaskArgs) -> Result<NewTask> {
-    if a.title.trim().is_empty() {
-        bail!("a task needs a title");
+/// The run branch of a new solo run of `workspace`, made with its branch
+/// when the workspace has no active solo run. Empty when it has one.
+fn solo_branches(
+    ctx: &RuntimeContext,
+    store: &Store,
+    root: &Path,
+    workspace: &str,
+) -> Result<Value> {
+    if runs::active_solo(store.conn(), root, workspace)?.is_some() {
+        return Ok(json!({}));
     }
-    let Some(file) = a.file else {
-        let mut new = NewTask::work(&a.title, ONE_OFF_TICKET, &a.persona);
-        new.ticket_snapshot = Some(format!("# {}\n", a.title.trim()));
-        (new.check_none, new.land_check) = resolve_check(a.check, false, None);
-        return Ok(new);
-    };
-    let file = ticket_path(root, &file, &cwd_or_root(ctx, root))?;
-    let facts = facts_of(root, &file);
-    let mut new = NewTask::work(&a.title, &file, &a.persona);
-    new.review_mode = facts.review_mode();
-    (new.check_none, new.land_check) = resolve_check(a.check, facts.check_none, facts.check);
-    new.work_kind = facts.kind;
-    new.own = facts.own;
-    new.no_touch = facts.no_touch;
-    Ok(new)
-}
-
-/// The workspace's active solo run, created with its run branch when absent.
-fn solo_run(ctx: &RuntimeContext, store: &mut Store, root: &Path, workspace: &str) -> Result<Run> {
-    if let Some(run) = runs::active_solo(store.conn(), root, workspace)? {
-        return Ok(run);
-    }
-    let mut new = runs::solo_new_run(workspace);
     let git = Git::new(&ctx.bins.harness.git);
-    if git.main_root(root).is_some() {
-        let branch = format!("fleet/{}", new.slug);
-        let base = git.current_branch(root);
-        let remote = git.has_remote(root, "origin").then(|| "origin".to_string());
-        run_branches(&git, root, &branch, base.as_deref(), remote.as_deref())?;
-        new.run_branch = Some(branch);
-        new.base_branch = base;
-        new.remote = remote;
+    if git.main_root(root).is_none() {
+        return Ok(json!({}));
     }
-    let r = insert_run(ctx, store, root, &new, None)?;
-    report_created(&r);
-    Ok(r)
+    let branch = format!("fleet/{}", runs::solo_new_run(workspace).slug);
+    let base = git.current_branch(root);
+    let remote = git.has_remote(root, "origin").then(|| "origin".to_string());
+    run_branches(&git, root, &branch, base.as_deref(), remote.as_deref())?;
+    Ok(json!({ "run_branch": branch, "base_branch": base, "remote": remote }))
 }
 
 /// `add-map --dry-run`: every problem as `<file>:<line>: <problem>`. It
@@ -2430,17 +2588,33 @@ fn add_map(
     let path = cwd_or_root(ctx, &root).join(path);
     let parsed = map::read(&path, &root)?;
     let run = resolve_run(ctx, store, arg)?;
-    let items: Vec<(String, NewTask)> = parsed.items.into_iter().map(|i| (i.key, i.task)).collect();
-    let added = store.immediate(|tx| {
-        if !again {
-            tasks::refuse_queued(tx, &run.run_id, &items)?;
-        }
-        tasks::add_many(tx, &run, &items, Actor::Orchestrator)
-    })?;
+    let map_sha256 = file_sha256(&path).with_context(|| format!("reading {}", path.display()))?;
+    // Each ticket travels as its sha256: fleetd reads the files (Q15).
+    let tickets: std::collections::BTreeMap<&str, String> = parsed
+        .items
+        .iter()
+        .map(|i| {
+            let text = i.task.ticket_snapshot.as_deref().unwrap_or_default();
+            (i.task.task_file.as_str(), tasks::ticket_sha(text))
+        })
+        .collect();
+    let result = request(
+        ctx,
+        Kind::MapAdd,
+        json!({
+            "run_id": run.run_id,
+            "project_root": root,
+            "map_path": path,
+            "map_sha256": map_sha256,
+            "tickets": tickets,
+            "again": again,
+        }),
+    )?;
+    let added: Vec<QueuedTask> = field(&result, "tasks")?;
     for t in &added {
         output::println(&format!(
             "{} queued for {}: {}.",
-            t.short(),
+            t.short,
             t.claimable_by.as_deref().unwrap_or("?"),
             t.title
         ));
@@ -3257,6 +3431,11 @@ mod tests {
         LedgerCommand, Run,
     };
     use clap::Subcommand;
+    use horch_core::fleetd::fleet_runtime::adapters::channel_server::ChannelServer;
+    use horch_core::fleetd::fleet_runtime::adapters::token_file;
+    use horch_core::fleetd::fleet_runtime::application::handlers_run;
+    use horch_core::fleetd::fleet_runtime::application::requests::Handlers;
+    use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
     use horch_core::roster::{ExecDecision, Roster};
     use horch_core::runtime::{MapEnv, RuntimeContext};
     use horch_core::taskledger::model::{Actor, WorktreeMode};
@@ -3266,6 +3445,57 @@ mod tests {
     use horch_core::taskledger::workers::{self, NewWorker};
     use horch_core::taskledger::Store;
     use std::path::Path;
+
+    /// The test process plays fleetd for the ledger of `ctx`: it writes the
+    /// `fleetd` row of this process, makes the operator token, and serves
+    /// the channel in-process with the handlers of the run and plan kinds.
+    /// A command of these tests sends its request to it (ticket 21).
+    fn serve(ctx: &RuntimeContext) -> ChannelServer {
+        let ledger = &ctx.paths.ledger_db;
+        let store = Store::open(ledger).unwrap();
+        let pid = std::process::id();
+        let start = horch_platform::process::start_time(pid).unwrap();
+        store
+            .conn()
+            .execute(
+                "INSERT INTO fleetd (id, generation, pid, pid_start, started_at, fleet_clock_s, clock_ticked_at)
+                 VALUES (1, 1, ?1, ?2, ?3, 0, ?3)",
+                rusqlite::params![
+                    pid,
+                    i64::try_from(start).unwrap(),
+                    horch_core::taskledger::util::now()
+                ],
+            )
+            .unwrap();
+        token_file::ensure(&ctx.paths.fleet_root).unwrap();
+        let mut handlers = Handlers::new();
+        handlers_run::register(&mut handlers);
+        let conn = rusqlite::Connection::open(ledger).unwrap();
+        conn.busy_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+        ChannelServer::start(&ctx.paths.fleet_root, conn, Generation(1), handlers).unwrap()
+    }
+
+    /// A context whose ledger is `dir/ledger.sqlite3`, as the test worlds
+    /// open it, so that its fleet root is `dir/fleet`.
+    fn fleet_ctx(dir: &Path) -> RuntimeContext {
+        let env = MapEnv::new(dir).with("HOME", &dir.to_string_lossy()).with(
+            "HORCH_LEDGER_DB",
+            &dir.join("ledger.sqlite3").to_string_lossy(),
+        );
+        RuntimeContext::from_env(&env).unwrap()
+    }
+
+    /// The run `slug`.
+    fn run_of(store: &Store, slug: &str) -> Run {
+        let id: String = store
+            .conn()
+            .query_row("SELECT run_id FROM runs WHERE slug = ?1", [slug], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        runs::get(store.conn(), &id).unwrap()
+    }
 
     /// Report 28 D-c: `horch ledger run new` writes the harness on the
     /// orchestrator row it inserts: from the orchestrator's own session
@@ -3286,7 +3516,8 @@ mod tests {
                     &dir.path().join("state").to_string_lossy(),
                 )
                 .with("HORCH_LEDGER_DB", &db.to_string_lossy())
-                .with("HORCH_PROJECT_DIR", &root.to_string_lossy());
+                .with("HORCH_PROJECT_DIR", &root.to_string_lossy())
+                .with("HORCH_WORKSPACE_ID", "w1");
             if let Some(id) = record {
                 env = env.with("HORCH_RECORD_ID", id);
             }
@@ -3305,13 +3536,10 @@ mod tests {
             })
             .unwrap();
         let mut store = Store::open(&db).unwrap();
+        let _fleetd = serve(&ctx);
         let run = |store: &mut Store, ctx: &RuntimeContext, slug: &str| {
-            let new = NewRun {
-                slug: slug.into(),
-                workspace_id: Some("w1".into()),
-                ..Default::default()
-            };
-            let r = super::insert_run(ctx, store, &root, &new, None).unwrap();
+            super::new_run_cmd(ctx, store, &root, new_run_args(slug)).unwrap();
+            let r = run_of(store, slug);
             let id = r.orchestrator_worker_id.unwrap();
             let w = workers::get(store.conn(), &id).unwrap();
             store
@@ -3535,7 +3763,8 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         let root = project(dir.path(), false);
-        let ctx = RuntimeContext::from_env(&MapEnv::new(dir.path())).unwrap();
+        let ctx = fleet_ctx(dir.path());
+        let _fleetd = serve(&ctx);
         let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
         for (slug, check, want) in [
             ("r1", Some("cargo test"), Some("cargo test")),
@@ -3696,12 +3925,14 @@ mod tests {
     fn trf_19_run_gate_command_records_a_gate_and_exits_by_its_result() {
         let dir = tempfile::tempdir().unwrap();
         let (t, mut store, run) = gated_world(dir.path(), "MERGED");
-        let err = super::gate_cmd(&t, &mut store, &run, None).unwrap_err();
+        let ctx = fleet_ctx(dir.path());
+        let _fleetd = serve(&ctx);
+        let err = super::gate_cmd(&ctx, &t, &mut store, &run, None).unwrap_err();
         assert!(err.to_string().contains("has no check"), "{err}");
         finish::set_default_check(store.conn(), &run.run_id, "test -f b").unwrap();
-        let code = super::gate_cmd(&t, &mut store, &run, None).unwrap();
+        let code = super::gate_cmd(&ctx, &t, &mut store, &run, None).unwrap();
         assert_eq!(code, ExitCode::SUCCESS);
-        let code = super::gate_cmd(&t, &mut store, &run, Some("exit 4")).unwrap();
+        let code = super::gate_cmd(&ctx, &t, &mut store, &run, Some("exit 4")).unwrap();
         assert_eq!(code, ExitCode::FAILURE);
         let rows: String = store
             .conn()
@@ -3719,13 +3950,17 @@ mod tests {
     fn trf_20_run_close_asks_gh_and_refuses_an_open_pr() {
         let dir = tempfile::tempdir().unwrap();
         let (t, mut store, run) = gated_world(dir.path(), "OPEN");
-        let err = super::close_run_cmd(&t, &mut store, &run, None, None, &no_stops()).unwrap_err();
+        let ctx = fleet_ctx(dir.path());
+        let _fleetd = serve(&ctx);
+        let err =
+            super::close_run_cmd(&ctx, &t, &mut store, &run, None, None, &no_stops()).unwrap_err();
         assert!(err.to_string().contains("no gate on its tip"), "{err}");
         assert_eq!(
-            super::gate_cmd(&t, &mut store, &run, Some("true")).unwrap(),
+            super::gate_cmd(&ctx, &t, &mut store, &run, Some("true")).unwrap(),
             ExitCode::SUCCESS
         );
-        let err = super::close_run_cmd(&t, &mut store, &run, None, None, &no_stops()).unwrap_err();
+        let err =
+            super::close_run_cmd(&ctx, &t, &mut store, &run, None, None, &no_stops()).unwrap_err();
         assert!(
             err.to_string().contains("PR #7 is open, not merged"),
             "{err}"
@@ -3735,6 +3970,7 @@ mod tests {
         assert_eq!(status_of(&store, &run), "active");
 
         let code = super::close_run_cmd(
+            &ctx,
             &t,
             &mut store,
             &run,
@@ -3750,21 +3986,25 @@ mod tests {
     fn trf_20_run_close_passes_with_a_merged_pr_and_without_gh() {
         let dir = tempfile::tempdir().unwrap();
         let (t, mut store, run) = gated_world(dir.path(), "MERGED");
-        super::gate_cmd(&t, &mut store, &run, Some("true")).unwrap();
-        super::close_run_cmd(&t, &mut store, &run, None, None, &no_stops()).unwrap();
+        let ctx = fleet_ctx(dir.path());
+        let _fleetd = serve(&ctx);
+        super::gate_cmd(&ctx, &t, &mut store, &run, Some("true")).unwrap();
+        super::close_run_cmd(&ctx, &t, &mut store, &run, None, None, &no_stops()).unwrap();
         assert_eq!(status_of(&store, &run), "done");
 
         // No gh: the PR condition is not applicable.
         let dir = tempfile::tempdir().unwrap();
         let (mut t, mut store, run) = gated_world(dir.path(), "OPEN");
+        let ctx = fleet_ctx(dir.path());
+        let _fleetd = serve(&ctx);
         t.gh = dir.path().join("no-such-gh");
-        super::gate_cmd(&t, &mut store, &run, Some("true")).unwrap();
+        super::gate_cmd(&ctx, &t, &mut store, &run, Some("true")).unwrap();
         let pr = finish::pr::pr_check(&t.gh, &t.git, &run).unwrap();
         assert!(
             matches!(&pr, runs::PrCheck::NotApplicable(w) if w.contains("gh is not installed")),
             "{pr:?}"
         );
-        super::close_run_cmd(&t, &mut store, &run, None, None, &no_stops()).unwrap();
+        super::close_run_cmd(&ctx, &t, &mut store, &run, None, None, &no_stops()).unwrap();
         assert_eq!(status_of(&store, &run), "done");
     }
 
@@ -3944,8 +4184,11 @@ mod tests {
     fn trf_36_run_close_abandon_signals_the_recorded_pids() {
         let dir = tempfile::tempdir().unwrap();
         let (ctx, mut store, run, c) = running(dir.path());
+        let fleet = fleet_ctx(dir.path());
+        let _fleetd = serve(&fleet);
         let procs = FakeProcs::default();
         let code = super::close_run_cmd(
+            &fleet,
             &tools(&ctx),
             &mut store,
             &run,
@@ -3967,7 +4210,13 @@ mod tests {
     /// The context of a caller in herdr workspace `workspace` (none: outside
     /// herdr) whose project is `root`, and the ledger in `dir`.
     fn task_world(dir: &Path, root: &Path, workspace: Option<&str>) -> (RuntimeContext, Store) {
-        let mut env = MapEnv::new(root).with("HORCH_PROJECT_DIR", root.to_str().unwrap());
+        let mut env = MapEnv::new(root)
+            .with("HORCH_PROJECT_DIR", root.to_str().unwrap())
+            .with("HOME", &dir.to_string_lossy())
+            .with(
+                "HORCH_LEDGER_DB",
+                &dir.join("ledger.sqlite3").to_string_lossy(),
+            );
         if let Some(ws) = workspace {
             env = env.with("HORCH_WORKSPACE_ID", ws);
         }
@@ -3991,6 +4240,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = project(dir.path(), false);
         let (ctx, mut store) = task_world(dir.path(), &root, Some("w7"));
+        let _fleetd = serve(&ctx);
         super::task_cmd(
             &ctx,
             &mut store,
@@ -4028,6 +4278,7 @@ mod tests {
         )
         .unwrap();
         let (ctx, mut store) = task_world(dir.path(), &root, Some("w7"));
+        let _fleetd = serve(&ctx);
         let file = root.join("tickets/t.md");
         super::task_cmd(&ctx, &mut store, task_args("t", Some(&file), None)).unwrap();
         let run = runs::active_solo(store.conn(), &root, "w7")
@@ -4054,6 +4305,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = project(dir.path(), false);
         let (ctx, mut store) = task_world(dir.path(), &root, Some("w7"));
+        let _fleetd = serve(&ctx);
         super::new_run_cmd(&ctx, &mut store, &root, new_run_args("plan")).unwrap();
         let err = super::new_run_cmd(&ctx, &mut store, &root, new_run_args("next"))
             .unwrap_err()
@@ -4077,6 +4329,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = project(dir.path(), false);
         let (outside, mut store) = task_world(dir.path(), &root, None);
+        let _fleetd = serve(&outside);
         super::new_run_cmd(&outside, &mut store, &root, new_run_args("loose")).unwrap();
         super::new_run_cmd(&outside, &mut store, &root, new_run_args("loose2")).unwrap();
         let (ctx, mut store) = task_world(dir.path(), &root, Some("w7"));
@@ -4154,6 +4407,7 @@ mod tests {
         git_in(&root, &["commit", "-qm", "a"]);
         let root = root.canonicalize().unwrap();
         let (ctx, mut store) = task_world(dir.path(), &root, Some("w7"));
+        let _fleetd = serve(&ctx);
         super::task_cmd(&ctx, &mut store, task_args("no check", None, None)).unwrap();
         super::task_cmd(&ctx, &mut store, task_args("tidy", None, Some(" none "))).unwrap();
         let run = runs::active_solo(store.conn(), &root, "w7")

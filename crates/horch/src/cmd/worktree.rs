@@ -436,8 +436,9 @@ fn age(s: i64) -> String {
     }
 }
 
-/// `horch ledger gc`: delete the trash refs older than 30 days.
-pub fn gc(ctx: &RuntimeContext) -> Result<()> {
+/// `horch ledger gc`: delete the trash refs older than 30 days, and return
+/// the deleted refs.
+pub fn gc(ctx: &RuntimeContext) -> Result<Vec<String>> {
     let git = Git::new(&ctx.bins.harness.git);
     let root = triage_root(ctx, &git)?;
     let deleted = triage::refs::gc(&git, &root, horch_core::clock::now())?;
@@ -447,10 +448,10 @@ pub fn gc(ctx: &RuntimeContext) -> Result<()> {
             triage::refs::TRASH_DAYS
         );
     }
-    for r in deleted {
+    for r in &deleted {
         println!("deleted {r}");
     }
-    Ok(())
+    Ok(deleted)
 }
 
 #[cfg(test)]
