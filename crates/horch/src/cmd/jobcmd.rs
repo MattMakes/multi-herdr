@@ -9,14 +9,25 @@
 
 use std::process::ExitCode;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use clap::Subcommand;
+use horch_core::execution::lifecycle::ExecCli;
 use horch_core::fleetd::fleet_runtime::adapters::config_file;
-use horch_core::fleetd::fleet_runtime::application::jobs::{self, CheckRunner, JobCtx, Runners};
+use horch_core::fleetd::fleet_runtime::application::jobs::{
+    self, CheckRunner, ConformanceSuite, JobCtx, Runners,
+};
 use horch_core::fleetd::fleet_runtime::domain::requests::Kind;
 use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
 use horch_core::fleetd::worker_profiles::adapters::check_sandbox::WorkerSandboxes;
+use horch_core::fleetd::worker_profiles::adapters::conformance_runner::{
+    reference_profile, ConformanceRunner,
+};
 use horch_core::fleetd::worker_profiles::adapters::launcher::Launcher;
+use horch_core::fleetd::worker_profiles::application::conformance::{run_suite, SuiteSubject};
+use horch_core::fleetd::worker_profiles::application::docs_sync::DocsSyncRunner;
+use horch_core::fleetd::worker_profiles::domain::conformance::{
+    ConformanceReport, CONTEXT_LIMIT, FIRST_EVENT_LIMIT,
+};
 use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger::finish::CodexSandbox;
 use serde_json::json;
@@ -85,9 +96,11 @@ fn run(ctx: &RuntimeContext, id: i64) -> Result<ExitCode> {
     };
     // The fetch of the docs is in horch, not in horch-core (NFR-06).
     let docs = super::docscmd::AgentDocs::new()?;
+    let suite = Suite { ctx, docs: &docs };
     let runners = Runners {
         checks: &checks,
         docs: Some(&docs),
+        conformance: Some(&suite),
     };
     match jobs::run_job_with(&jctx, &mut conn, id, std::process::id(), &runners)? {
         Some(o) => output::println(&format!("job {id}: {}: {}", o.state().as_str(), o.text)),
@@ -96,4 +109,57 @@ fn run(ctx: &RuntimeContext, id: i64) -> Result<ExitCode> {
         )),
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// The conformance suite of the installed CLI binaries, with the reference
+/// profile of each CLI. The real CLI runs only here, in the production
+/// `conformance` job.
+struct Suite<'a> {
+    ctx: &'a RuntimeContext,
+    /// The source of the version command of each CLI.
+    docs: &'a super::docscmd::AgentDocs,
+}
+
+impl Suite<'_> {
+    /// The runner of the suite of the reference profile `teammate`. The
+    /// throwaway folders go under the state root.
+    fn runner<'b>(&'b self, teammate: &'b horch_core::roster::Teammate) -> ConformanceRunner<'b> {
+        ConformanceRunner {
+            ctx: self.ctx,
+            teammate,
+            // The window of each seat (fleetd-p7 ticket 21, MAP.md Q16).
+            fleet_window: Some((CONTEXT_LIMIT, "context-windows.md".into())),
+            env_rule: Vec::new(),
+            scratch: self.ctx.paths.state_root.join("conformance"),
+            first_event_limit: FIRST_EVENT_LIMIT,
+        }
+    }
+}
+
+/// The exec CLI of the docs source `cli`. A CLI with no exec adapter has
+/// no suite (MAP.md of fleetd-p7, Q5).
+fn exec_cli(cli: &str) -> Result<ExecCli> {
+    Ok(match cli {
+        "claude" => ExecCli::Claude,
+        "codex" => ExecCli::Codex,
+        "agy" => ExecCli::Antigravity,
+        other => bail!("{other} has no exec adapter, so it has no conformance suite"),
+    })
+}
+
+impl ConformanceSuite for Suite<'_> {
+    fn version_cmd(&self, cli: &str) -> Result<String> {
+        exec_cli(cli)?;
+        self.docs.version_cmd(cli)
+    }
+
+    fn adapter_hash(&self, cli: &str) -> Result<String> {
+        let profile = reference_profile(exec_cli(cli)?);
+        self.runner(&profile).adapter_hash()
+    }
+
+    fn run(&self, subject: SuiteSubject) -> Result<ConformanceReport> {
+        let profile = reference_profile(exec_cli(&subject.cli)?);
+        Ok(run_suite(subject, &mut self.runner(&profile)))
+    }
 }

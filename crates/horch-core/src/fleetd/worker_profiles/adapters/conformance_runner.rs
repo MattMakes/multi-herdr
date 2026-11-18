@@ -49,6 +49,7 @@ use crate::fleetd::worker_profiles::domain::conformance::{
 };
 use crate::fleetd::worker_profiles::domain::operator_boundary::{Act, OperatorPaths};
 use crate::harness::launch::{self, LaunchRequest};
+use crate::harness::HarnessKind;
 use crate::roster::{validation, Teammate};
 use crate::runtime::RuntimeContext;
 use crate::taskledger::supervisor::{AgentFacts, AttemptFiles};
@@ -60,6 +61,36 @@ const OUTSIDE_FILE: &str = "horch-conformance-outside";
 /// The role of a conformance launch. It names the private codex home and
 /// the launch marker of the launch.
 const ROLE: &str = "conformance";
+
+/// The fixed reference profile of `cli`: a sandboxed worker in exec mode,
+/// with the model and the effort of the generic worker of the CLI. The
+/// production `conformance` job runs the suite with it, and the hash of the
+/// adapter renders it (MAP.md of fleetd-p7, Q9).
+pub fn reference_profile(cli: ExecCli) -> Teammate {
+    let (name, agent, model) = match cli {
+        ExecCli::Claude => ("conformance-claude", HarnessKind::Claude, "opus"),
+        ExecCli::Codex => ("conformance-codex", HarnessKind::Codex, "gpt-5.6-sol"),
+        ExecCli::Antigravity => (
+            "conformance-antigravity",
+            HarnessKind::Antigravity,
+            "gemini-3.8-flash",
+        ),
+    };
+    let mut t = Teammate {
+        name: name.into(),
+        agent,
+        model: Some(model.into()),
+        effort: Some("medium".into()),
+        ..Teammate::default()
+    };
+    if cli == ExecCli::Claude {
+        t.sandbox = Some(serde_json::Map::new());
+    }
+    // `mode: exec`, as a teammate file writes it.
+    let mut v = serde_json::to_value(&t).expect("a teammate serializes");
+    v["mode"] = json!("exec");
+    serde_json::from_value(v).expect("a teammate with mode exec deserializes")
+}
 
 /// The [`ConformanceLaunch`] of 1 CLI.
 pub struct ConformanceRunner<'a> {
@@ -125,6 +156,29 @@ impl ConformanceRunner<'_> {
     }
 
     fn launch_in(&self, dir: &Path, cli: ExecCli, check: Check) -> Result<Observation> {
+        let setup = self.setup(dir, check)?;
+        let ctx = &setup.ctx;
+        let files = &setup.files;
+        let session = SessionMode::Fresh(None);
+        let req = setup.request(self, &session);
+        let facts = AgentFacts::new(None);
+        let mut home = PrivateHome::Missing("the launch did not start".into());
+        let mut marker = None;
+        let watched = launch::run_exec_flow(ctx, req, files.dir(), |cmd| {
+            (home, marker) = mark_private_home(cli, &cmd, ctx)?;
+            run_watched(cmd, cli, files, &facts, self.first_event_limit)
+        });
+        if let Some(marker) = marker {
+            let _ = std::fs::remove_dir_all(marker);
+        }
+        let watched = watched?;
+        Ok(observe(watched, files, dir, home, &setup.teammate, cli))
+    }
+
+    /// The throwaway task folder `dir` of 1 launch of `check`: its work
+    /// folder, its inbox with START.md, its outbox, and the context and the
+    /// profile of the launch.
+    fn setup(&self, dir: &Path, check: Check) -> Result<Setup> {
         let work = dir.join("work");
         let files = AttemptFiles::new(
             &dir.join("fleet"),
@@ -148,36 +202,132 @@ impl ConformanceRunner<'_> {
             .to_str()
             .context("the throwaway folder is not UTF-8")?
             .to_owned();
-
         let mut ctx = self.ctx.clone();
-        ctx.paths.cwd = Some(work.clone());
-        let teammate = self.profile();
+        ctx.paths.cwd = Some(work);
+        Ok(Setup {
+            files,
+            ctx,
+            prompt,
+            teammate: self.profile(),
+        })
+    }
+
+    /// The hash of the adapter of the CLI (MAP.md of fleetd-p7, Q9): the
+    /// sha256 of the rendered conformance launch of the reference profile,
+    /// its argv and the config file that the adapter writes. The launch is
+    /// rendered in a throwaway folder and does not start. The paths of the
+    /// throwaway folder and of the private home do not reach the hash, so 2
+    /// renders of 1 adapter give 1 hash.
+    pub fn adapter_hash(&self) -> Result<String> {
+        let cli = ExecCli::of(self.teammate).with_context(|| {
+            format!(
+                "the profile {} has no exec launch: its mode is interactive, or its CLI has no exec adapter",
+                self.teammate.name
+            )
+        })?;
+        let dir = self
+            .scratch
+            .join(format!("conformance-{}", uuid::Uuid::new_v4().simple()));
+        let rendered = self.render_in(&dir, cli);
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(crate::digest::sha256_bytes(rendered?.as_bytes()).hex())
+    }
+
+    /// The text of the conformance launch of "Launch headless" in `dir`.
+    fn render_in(&self, dir: &Path, cli: ExecCli) -> Result<String> {
+        let setup = self.setup(dir, Check::LaunchHeadless)?;
         let session = SessionMode::Fresh(None);
-        let req = LaunchRequest {
+        let req = setup.request(self, &session);
+        launch::run_exec_flow(&setup.ctx, req, setup.files.dir(), |cmd| {
+            rendered_launch(cli, &cmd, dir)
+        })
+    }
+}
+
+/// The throwaway task folder of 1 launch.
+struct Setup {
+    files: AttemptFiles,
+    /// The context of the launch: its cwd is the work folder.
+    ctx: RuntimeContext,
+    /// The path of START.md.
+    prompt: String,
+    /// The reference profile with [`TEST_MCP_SERVER`].
+    teammate: Teammate,
+}
+
+impl Setup {
+    fn request<'a>(
+        &'a self,
+        runner: &ConformanceRunner<'_>,
+        session: &'a SessionMode,
+    ) -> LaunchRequest<'a> {
+        LaunchRequest {
             role: ROLE,
-            teammate: &teammate,
-            session: &session,
-            prompt: &prompt,
+            teammate: &self.teammate,
+            session,
+            prompt: &self.prompt,
             model_override: None,
             exec_rules: &[],
-            child_env: self.env_rule.clone(),
+            child_env: runner.env_rule.clone(),
             record: None,
-            fleet_window: self.fleet_window.clone(),
+            fleet_window: runner.fleet_window.clone(),
             briefing_skill: None,
-        };
-        let facts = AgentFacts::new(None);
-        let mut home = PrivateHome::Missing("the launch did not start".into());
-        let mut marker = None;
-        let watched = launch::run_exec_flow(&ctx, req, files.dir(), |cmd| {
-            (home, marker) = mark_private_home(cli, &cmd, &ctx)?;
-            run_watched(cmd, cli, &files, &facts, self.first_event_limit)
-        });
-        if let Some(marker) = marker {
-            let _ = std::fs::remove_dir_all(marker);
         }
-        let watched = watched?;
-        Ok(observe(watched, &files, dir, home, &teammate, cli))
     }
+}
+
+/// The config file that the adapter of `cli` writes into the private home
+/// of `cmd`: the `config.toml` of `CODEX_HOME`, the Antigravity
+/// `settings.json` of `HOME`. Claude Code has none: its `--settings` and
+/// `--mcp-config` are in the argv.
+fn config_file(cli: ExecCli, cmd: &Command) -> Option<(PathBuf, PathBuf)> {
+    let env = |key: &str| {
+        cmd.get_envs()
+            .find(|(k, _)| *k == key)
+            .and_then(|(_, v)| v)
+            .map(PathBuf::from)
+    };
+    match cli {
+        ExecCli::Claude => None,
+        ExecCli::Codex => env("CODEX_HOME").map(|h| (h.join("config.toml"), h)),
+        ExecCli::Antigravity => {
+            env("HOME").map(|h| (h.join(".gemini/antigravity-cli/settings.json"), h))
+        }
+    }
+}
+
+/// The text of the launch `cmd`: 1 line for each argv word, then the config
+/// file of the adapter. The path of the throwaway folder `dir` and of the
+/// private home become fixed words.
+fn rendered_launch(cli: ExecCli, cmd: &Command, dir: &Path) -> Result<String> {
+    let mut text = String::new();
+    text.push_str(&cmd.get_program().to_string_lossy());
+    for arg in cmd.get_args() {
+        text.push('\n');
+        text.push_str(&arg.to_string_lossy());
+    }
+    let mut homes = Vec::new();
+    if let Some((file, home)) = config_file(cli, cmd) {
+        if let Ok(config) = std::fs::read_to_string(&file) {
+            text.push_str("\n--- config\n");
+            text.push_str(&config);
+        }
+        homes.push(home);
+    }
+    homes.push(dir.to_path_buf());
+    // The longest path first, so a folder inside another becomes its word.
+    homes.sort_by_key(|p| std::cmp::Reverse(p.as_os_str().len()));
+    for (path, word) in homes.iter().map(|p| {
+        let word = if p.as_path() == dir {
+            "<throwaway>"
+        } else {
+            "<home>"
+        };
+        (p.to_string_lossy().into_owned(), word)
+    }) {
+        text = text.replace(&path, word);
+    }
+    Ok(text)
 }
 
 /// How long the runner waits for its own connect to the channel.

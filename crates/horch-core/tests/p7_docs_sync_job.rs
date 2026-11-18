@@ -182,6 +182,7 @@ impl World {
         let runners = Runners {
             checks: &checks,
             docs: Some(docs),
+            conformance: None,
         };
         jobs::run_job_with(&ctx, &mut self.conn, id, pid, &runners)
             .unwrap()

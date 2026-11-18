@@ -57,8 +57,10 @@ use crate::fleetd::task_execution::adapters::ingested_store::{
 };
 use crate::fleetd::task_execution::application::review;
 use crate::fleetd::worker_profiles::adapters::docs_dir;
+use crate::fleetd::worker_profiles::application::conformance::SuiteSubject;
 use crate::fleetd::worker_profiles::application::docs_sync::{self, DocsSyncRunner};
 use crate::fleetd::worker_profiles::application::ports::{LaunchSpec, ProcessHost};
+use crate::fleetd::worker_profiles::domain::conformance::{Check, ConformanceReport};
 use crate::fleetd::worktree_custody::adapters::executors;
 use crate::taskledger::finish::{self, land::CHECK_TIMEOUT};
 use crate::taskledger::model::{Actor, EventKind};
@@ -653,17 +655,19 @@ const RECORD_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 /// A row that another process runs, or that the pass ended, gets no file.
 /// Gives the outcome that it wrote, or `None`.
 ///
-/// `task_check` and `docs_sync` have their executors here, and the 4
-/// worktree kinds have theirs in worktree custody (MAP.md of fleetd-p3,
-/// Q22), and the 7 integration kinds have their router in the integration
-/// context. Each other kind ends `failed`, with no verdict, and the result
-/// "no executor before phase <n>". The time limit is the deadline of the
+/// `task_check`, `docs_sync` and `conformance` have their executors here,
+/// the 4 worktree kinds have theirs in worktree custody (MAP.md of
+/// fleetd-p3, Q22), and the 7 integration kinds have their router in the
+/// integration context. A `docs_sync` or `conformance` run with no runner
+/// ends `failed`, with no verdict, and the result "no executor before phase
+/// <n>". The time limit is the deadline of the
 /// row: the pass stops this process at it. `checks` starts a check (SR-4).
 /// The job process writes no row, so it uses no field of `_ctx`; the
 /// parameter stays so that the callers of Phase 4 keep their form.
 ///
-/// This form has no docs runner, so `docs_sync` has no executor here;
-/// `horch job run` calls [`run_job_with`].
+/// This form has no docs runner and no suite, so `docs_sync` and
+/// `conformance` have no executor here; `horch job run` calls
+/// [`run_job_with`].
 pub fn run_job(
     ctx: &JobCtx<'_>,
     conn: &mut Connection,
@@ -671,16 +675,40 @@ pub fn run_job(
     me: u32,
     checks: &CheckRunner<'_>,
 ) -> Result<Option<Outcome>> {
-    let runners = Runners { checks, docs: None };
+    let runners = Runners {
+        checks,
+        docs: None,
+        conformance: None,
+    };
     run_job_with(ctx, conn, job_id, me, &runners)
 }
 
 /// The executors that need a runner from outside horch-core: the check of
-/// a task (SR-4) and the fetch of the docs (NFR-06).
+/// a task (SR-4), the fetch of the docs (NFR-06) and the conformance suite
+/// of a CLI.
 pub struct Runners<'a> {
     pub checks: &'a CheckRunner<'a>,
     /// `None`: a `docs_sync` run ends with "no executor".
     pub docs: Option<&'a dyn DocsSyncRunner>,
+    /// `None`: a `conformance` run ends with "no executor".
+    pub conformance: Option<&'a dyn ConformanceSuite>,
+}
+
+/// The port of the conformance suite of 1 CLI (step 3 of 1 docs sync).
+/// `horch` gives it with the real CLI binary and the reference profile of
+/// the CLI.
+pub trait ConformanceSuite {
+    /// The `version_cmd` of the source `cli` of `docs-sources.toml`. An
+    /// unknown `cli` is an error that names it.
+    fn version_cmd(&self, cli: &str) -> Result<String>;
+
+    /// The hash of the adapter of `cli`: the sha256 of its rendered
+    /// conformance launch for the reference profile (MAP.md of fleetd-p7,
+    /// Q9).
+    fn adapter_hash(&self, cli: &str) -> Result<String>;
+
+    /// Run each check of the suite of `subject`.
+    fn run(&self, subject: SuiteSubject) -> Result<ConformanceReport>;
 }
 
 /// [`run_job`] with each runner of `runners`.
@@ -703,6 +731,10 @@ pub fn run_job_with(
             Some(docs) => docs_sync_run(conn, &row, runners.checks.host, docs)?,
             None => jobs::no_executor(row.kind).into(),
         },
+        Kind::Conformance => match runners.conformance {
+            Some(suite) => conformance_run(conn, &row, runners.checks.host, suite)?,
+            None => jobs::no_executor(row.kind).into(),
+        },
         Kind::WorktreeAdd | Kind::WorktreeList | Kind::Rescue | Kind::WorktreeRemove => {
             executors::run(conn, &row)?
         }
@@ -713,7 +745,6 @@ pub fn run_job_with(
         | Kind::Push
         | Kind::Rebase
         | Kind::TrialMerge => integration::run(conn, &row)?,
-        kind => jobs::no_executor(kind).into(),
     };
     let Some(now) = store::get(conn, job_id)? else {
         return Ok(None);
@@ -908,6 +939,84 @@ fn docs_sync_run(
             text: format!("docs sync of {cli}: {e:#}"),
         }
         .into(),
+    })
+}
+
+/// The facts of the result of a `conformance` run.
+#[derive(Serialize)]
+struct ConformanceData<'a> {
+    cli: &'a str,
+    version: &'a str,
+    adapter_hash: &'a str,
+    /// `<fleet root>/docs/<cli>/<version>/conformance.json`.
+    path: PathBuf,
+    /// The name of each failed check.
+    failed: Vec<&'static str>,
+}
+
+/// The executor of `conformance`: step 3 of 1 sync of the CLI of the
+/// subject `<cli> <binary id>` (MAP.md of fleetd-p7, Q8). The version text
+/// comes from the version command, started through `host` (SR-7). The
+/// suite runs, and its report goes to
+/// `<fleet root>/docs/<cli>/<version>/conformance.json`. The run has no
+/// repository. It passes when no check fails; a check that is `not
+/// supported` does not fail it. A failed run names each failed check.
+fn conformance_run(
+    conn: &Connection,
+    row: &JobRow,
+    host: &dyn ProcessHost,
+    suite: &dyn ConformanceSuite,
+) -> Result<Ran> {
+    let cli = row.subject.split_whitespace().next().unwrap_or_default();
+    let out = docs_dir::docs_root(&executors::fleet_root(conn)?);
+    let run = || -> Result<(ConformanceReport, PathBuf)> {
+        let cmd = suite.version_cmd(cli)?;
+        let version =
+            docs_sync::version_text(host, &cmd, &out).with_context(|| format!("`{cmd}`"))?;
+        let adapter_hash = suite
+            .adapter_hash(cli)
+            .context("rendering the conformance launch")?;
+        let report = suite.run(SuiteSubject {
+            cli: cli.to_string(),
+            version,
+            adapter_hash,
+        })?;
+        let path = docs_dir::write_conformance(&out, &report)?;
+        Ok((report, path))
+    };
+    let (report, path) = match run() {
+        Ok(done) => done,
+        Err(e) => {
+            return Ok(Outcome {
+                passed: false,
+                verdict: false,
+                text: format!("conformance of {cli}: {e:#}"),
+            }
+            .into())
+        }
+    };
+    let failure = report.failure();
+    let text = match &failure {
+        Some(failure) => failure.to_string(),
+        None => format!(
+            "conformance of {} {}: each check passed",
+            report.cli, report.version
+        ),
+    };
+    let data = ConformanceData {
+        cli: &report.cli,
+        version: &report.version,
+        adapter_hash: &report.adapter_hash,
+        path,
+        failed: report.failed().into_iter().map(Check::name).collect(),
+    };
+    Ok(Ran {
+        outcome: Outcome {
+            passed: failure.is_none(),
+            verdict: true,
+            text,
+        },
+        data: Some(serde_json::to_value(&data)?),
     })
 }
 
