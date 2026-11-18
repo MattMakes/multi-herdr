@@ -39,7 +39,6 @@ use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use crate::fleetd::fleet_runtime::domain::jobs::{Kind, State};
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 use crate::fleetd::worktree_custody::adapters::git::{worktree_add_key, ListResult};
-use crate::fleetd::worktree_custody::adapters::remove_git::remove_key;
 use crate::fleetd::worktree_custody::adapters::rescue_git::{rescue_key, Rescue};
 use crate::fleetd::worktree_custody::adapters::sqlite::{
     self as store, NewWorktree, WorktreeRow, WorktreeState,
@@ -80,8 +79,8 @@ pub struct Facts {
     pub lists: Vec<Listed>,
 }
 
-/// What 1 call did. Each list holds worktree ids, in row order, but
-/// `not_trees`.
+/// What 1 call did. Each list but `not_trees` holds worktree ids, in row
+/// order; `not_trees` holds paths.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Report {
     /// The ended runs of the worktree jobs that the call observed.
@@ -272,26 +271,16 @@ fn plain_folders(known: &BTreeSet<&str>, facts: &Facts) -> Vec<String> {
         if lists.is_empty() {
             continue;
         }
-        let unnamed: Vec<Seen> = d
-            .folders
-            .iter()
-            .filter(|path| {
-                !lists
-                    .iter()
-                    .any(|l| l.result.entries.iter().any(|e| &e.path == *path))
-            })
-            .map(|path| Seen {
-                repo: d.repo.clone(),
-                path: path.clone(),
-                branch: None,
-                main: false,
-                gone: false,
-            })
-            .collect();
+        let named = |path: &str| {
+            lists
+                .iter()
+                .any(|l| l.result.entries.iter().any(|e| e.path == path))
+        };
         out.extend(
-            rules::adoptions(known, &unnamed, &[])
-                .into_iter()
-                .map(|a| a.path),
+            d.folders
+                .iter()
+                .filter(|path| !named(path) && rules::unowned(known, path))
+                .cloned(),
         );
     }
     out
@@ -594,7 +583,7 @@ fn act(ctx: &JobCtx<'_>, tx: &Connection, clock: FleetSeconds, report: &mut Repo
                 }
             }
             Some(TreeJob::Remove) => {
-                if queue_removal(ctx, tx, &row, "its tree is landed", clock)? {
+                if remove::queue_auto_remove(ctx, tx, &row, "its tree is landed", clock)? {
                     report.removals.push(id.to_string());
                 }
             }
@@ -602,28 +591,6 @@ fn act(ctx: &JobCtx<'_>, tx: &Connection, clock: FleetSeconds, report: &mut Repo
         }
     }
     Ok(())
-}
-
-/// Queue the `worktree_remove` run of `row` for `cause`; `true` for a new
-/// run. After a run of the same input key that ended `failed`, no new run
-/// is queued: its needs-you item stays open and says how to run it again
-/// (an operator decision, MAP.md of fleetd-p3; it differs from the row
-/// `worktree_remove` of "The kinds of job" in the design). A run that ended
-/// `abandoned` runs again after its backoff, up to `abandoned_run_limit`.
-pub(super) fn queue_removal(
-    ctx: &JobCtx<'_>,
-    tx: &Connection,
-    row: &WorktreeRow,
-    cause: &str,
-    clock: FleetSeconds,
-) -> Result<bool> {
-    let key = remove_key(&row.path, false);
-    let last = jobs_store::latest(tx, Kind::WorktreeRemove, &row.worktree_id, &key)?;
-    if last.is_some_and(|j| j.state == State::Failed) {
-        return Ok(false);
-    }
-    let queued = remove::queue_remove(ctx, tx, row, cause, false, clock)?;
-    Ok(matches!(queued, Ok(Queued::New(_))))
 }
 
 /// Queue the `rescue` run of the orphan `row` at the HEAD that the last

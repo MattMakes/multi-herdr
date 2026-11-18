@@ -70,6 +70,35 @@ pub fn queue_remove(
     }
 }
 
+/// Queue the automatic removal of `row` for `cause`, as the reconciler and
+/// the disk budget queue it, in `tx`; `true` for a new run. A tree whose
+/// removal failed ([`removal_failed`]) is not queued again: its needs-you
+/// item stays open and says how to run it again (an operator decision,
+/// MAP.md of fleetd-p3; it differs from the row `worktree_remove` of "The
+/// kinds of job" in the design). A run that ended `abandoned` runs again
+/// after its backoff, up to `abandoned_run_limit`.
+pub fn queue_auto_remove(
+    ctx: &JobCtx<'_>,
+    tx: &Connection,
+    row: &WorktreeRow,
+    cause: &str,
+    clock: FleetSeconds,
+) -> Result<bool> {
+    if removal_failed(tx, &row.worktree_id, &row.path)? {
+        return Ok(false);
+    }
+    let queued = queue_remove(ctx, tx, row, cause, false, clock)?;
+    Ok(matches!(queued, Ok(Queued::New(_))))
+}
+
+/// Whether the last automatic removal of the tree `id` at `path` (the
+/// branch not kept) ended `failed`.
+pub fn removal_failed(tx: &Connection, id: &str, path: &str) -> Result<bool> {
+    let key = remove_key(path, false);
+    let last = jobs_store::latest(tx, Kind::WorktreeRemove, id, &key)?;
+    Ok(last.is_some_and(|j| j.state == State::Failed))
+}
+
 /// The newest `worktree_remove` run of the tree `id` at `path`, with
 /// either `keep_branch`.
 pub fn latest_removal(tx: &Connection, id: &str, path: &str) -> Result<Option<JobRow>> {

@@ -21,7 +21,7 @@ use crate::fleetd::fleet_runtime::application::jobs::{JobCtx, NewItem};
 use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 use crate::fleetd::worktree_custody::adapters::sqlite as store;
-use crate::fleetd::worktree_custody::application::reconcile::queue_removal;
+use crate::fleetd::worktree_custody::application::remove::{queue_auto_remove, removal_failed};
 use crate::fleetd::worktree_custody::domain::disk::{
     self as rules, Decision, Tree, BUDGET_KEY, GB, NEEDS_YOU_KEY, NEEDS_YOU_KIND,
 };
@@ -42,7 +42,8 @@ pub struct Report {
     pub hold: Option<String>,
 }
 
-/// 1 row that is not `removed`, with the status of its run.
+/// 1 row that is not `removed`, with the status of its run and whether its
+/// automatic removal failed.
 struct Measured {
     id: String,
     state: String,
@@ -50,6 +51,7 @@ struct Measured {
     run_status: Option<String>,
     created_at: String,
     bytes: Option<u64>,
+    removal_failed: bool,
 }
 
 /// The decision of the budget of `budget_gb` GB for the trees in `conn`.
@@ -64,6 +66,7 @@ pub fn decision(conn: &Connection, budget_gb: u64) -> Result<Decision> {
             run_status: r.run_status.as_deref(),
             created_at: &r.created_at,
             bytes: r.bytes,
+            removal_failed: r.removal_failed,
         })
         .collect();
     Ok(rules::decide(&trees, budget_gb))
@@ -99,7 +102,7 @@ fn queue_removals(
             continue;
         };
         let cause = "the worktrees are above their disk budget";
-        if queue_removal(ctx, tx, &row, cause, clock)? {
+        if queue_auto_remove(ctx, tx, &row, cause, clock)? {
             removals.push(id.clone());
         }
     }
@@ -135,7 +138,8 @@ fn sync_hold_item(ctx: &JobCtx<'_>, tx: &Connection, d: &Decision) -> Result<()>
 /// or of its mode row.
 fn measured(conn: &Connection) -> Result<Vec<Measured>> {
     let mut stmt = conn.prepare(
-        "SELECT w.worktree_id, w.state, w.task_id, w.created_at, w.bytes_on_disk, m.run_id
+        "SELECT w.worktree_id, w.state, w.task_id, w.created_at, w.bytes_on_disk, m.run_id,
+                w.path
            FROM worktrees w LEFT JOIN worktree_modes m ON m.worktree_id = w.worktree_id
           WHERE w.state <> 'removed'",
     )?;
@@ -148,11 +152,12 @@ fn measured(conn: &Connection) -> Result<Vec<Measured>> {
                 r.get::<_, String>(3)?,
                 r.get::<_, Option<i64>>(4)?,
                 r.get::<_, Option<String>>(5)?,
+                r.get::<_, String>(6)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut out = Vec::with_capacity(rows.len());
-    for (id, state, task_id, created_at, bytes, mode_run) in rows {
+    for (id, state, task_id, created_at, bytes, mode_run, path) in rows {
         let run_id = match task_id.as_deref() {
             Some(task) => Some(tasks::get(conn, task)?.run_id),
             None => mode_run,
@@ -161,6 +166,7 @@ fn measured(conn: &Connection) -> Result<Vec<Measured>> {
             Some(run) => Some(runs::get(conn, &run)?.status),
             None => None,
         };
+        let removal_failed = removal_failed(conn, &id, &path)?;
         out.push(Measured {
             id,
             state,
@@ -168,6 +174,7 @@ fn measured(conn: &Connection) -> Result<Vec<Measured>> {
             run_status,
             created_at,
             bytes: bytes.and_then(|b| u64::try_from(b).ok()),
+            removal_failed,
         });
     }
     Ok(out)

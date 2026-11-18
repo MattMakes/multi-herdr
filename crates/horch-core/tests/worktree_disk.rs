@@ -254,16 +254,23 @@ impl World {
     /// A passed `worktree_remove` run of the tree `id`, ended before the
     /// next pass: the reconciler of that pass observes it.
     fn removal_passed(&mut self, id: &str) {
+        self.removal_ended(id, true);
+    }
+
+    /// The `worktree_remove` run of the tree `id`, ended `passed` or
+    /// `failed` before the next pass.
+    fn removal_ended(&mut self, id: &str, passed: bool) {
         let config = self.config.clone();
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .unwrap();
         let row = trees::get(&tx, id).unwrap().unwrap();
-        let Ok(Queued::New(job)) =
-            queue_remove(&ctx(&config), &tx, &row, "a test", false, CLOCK).unwrap()
-        else {
-            panic!("no new worktree_remove run of {id}");
+        // The run that the budget queued, else a new one.
+        let job = match queue_remove(&ctx(&config), &tx, &row, "a test", false, CLOCK).unwrap() {
+            Ok(Queued::New(job)) => job,
+            Ok(Queued::Active(open)) => open.id,
+            other => panic!("no worktree_remove run of {id}: {other:?}"),
         };
         let key = job.to_string();
         transition(
@@ -277,25 +284,34 @@ impl World {
         )
         .unwrap();
         jobs_store::set_started(&tx, job, 4_000_000, None, FleetSeconds(1_000_000)).unwrap();
-        let result = serde_json::json!({
-            "passed": true,
-            "verdict": true,
-            "text": "removed",
-            "data": {
-                "path": row.path,
-                "branch": row.branch,
-                "forced": false,
-                "ignored_files": 0,
-                "branch_deleted": false,
-            },
-        });
+        let result = if passed {
+            serde_json::json!({
+                "passed": true,
+                "verdict": true,
+                "text": "removed",
+                "data": {
+                    "path": row.path,
+                    "branch": row.branch,
+                    "forced": false,
+                    "ignored_files": 0,
+                    "branch_deleted": false,
+                },
+            })
+        } else {
+            serde_json::json!({
+                "passed": false,
+                "verdict": false,
+                "text": "the tree has an untracked file",
+            })
+        };
         jobs_store::set_result(&tx, job, &result.to_string()).unwrap();
         let gone = ProcessFact {
             key,
             liveness: Liveness::Dead,
         };
         let seen = jobs::observe(&ctx(&config), &tx, &[gone], CLOCK).unwrap();
-        assert_eq!(seen.ended, vec![(job, State::Passed)]);
+        let end = if passed { State::Passed } else { State::Failed };
+        assert_eq!(seen.ended, vec![(job, end)]);
         tx.commit().unwrap();
     }
 
@@ -519,6 +535,37 @@ fn hold_opens_1_needs_you_item_and_resolves_under_the_budget() {
             ("hold_ended".to_string(), fact)
         ]
     );
+}
+
+/// A tree whose removal failed frees no space: the budget takes the next
+/// spare tree instead, and holds dispatch when no spare tree is left.
+#[test]
+fn a_tree_whose_removal_failed_frees_no_space() {
+    let mut w = world();
+    let done = w.run("done");
+    let t1 = w.task(&done, "t1");
+    let t2 = w.task(&done, "t2");
+    // 30 GB against the budget of 20 GB: 1 of the 2 trees is enough.
+    w.row("stuck", Some(&t1), "landed", "2026-01-01T00:00:00Z", 15);
+    w.row("next", Some(&t2), "landed", "2026-01-02T00:00:00Z", 15);
+    assert_eq!(w.budget().removals, ["stuck"]);
+    w.removal_ended("stuck", false);
+
+    let report = w.budget();
+
+    assert_eq!(report.removals, ["next"], "{report:?}");
+    assert!(report.hold.is_none(), "{report:?}");
+    let d = decision(&w.conn, 20).unwrap();
+    assert_eq!(d.remove, ["next"]);
+
+    // Without the next tree, nothing is left to remove: the budget holds.
+    w.sql("DELETE FROM jobs WHERE subject = 'next'", &[]);
+    w.sql("DELETE FROM worktrees WHERE worktree_id = 'next'", &[]);
+    w.set_gb("stuck", 25);
+    let report = w.budget();
+    assert!(report.removals.is_empty(), "{report:?}");
+    assert!(report.hold.is_some(), "{report:?}");
+    assert_eq!(w.disk_items().len(), 1);
 }
 
 /// The act (ticket 18 of fleetd-p3): the budget queues 1 removal for space,

@@ -33,6 +33,9 @@ pub struct Tree<'a> {
     pub created_at: &'a str,
     /// `None` until the `worktree_list` job measured it.
     pub bytes: Option<u64>,
+    /// Its automatic removal failed and was not run again: it frees no
+    /// space until an operator runs it again.
+    pub removal_failed: bool,
 }
 
 /// What the budget does now.
@@ -48,8 +51,12 @@ pub struct Decision {
     pub hold: bool,
 }
 
-/// Whether the budget may remove `tree` for space.
+/// Whether the budget may remove `tree` for space. A tree whose removal
+/// failed is not spare.
 pub fn spare(tree: &Tree<'_>) -> bool {
+    if tree.removal_failed {
+        return false;
+    }
     let finished = matches!(tree.run_status, Some("done" | "abandoned"));
     let state = match tree.state {
         "landed" => true,
@@ -115,6 +122,7 @@ mod tests {
             run_status: Some(run),
             created_at: at,
             bytes: Some(gb * GB),
+            removal_failed: false,
         }
     }
 
@@ -193,6 +201,11 @@ mod tests {
             ..tree("t", "landed", "done", at, 1)
         };
         assert!(!spare(&no_run), "a tree of no run stays");
+        let failed = Tree {
+            removal_failed: true,
+            ..tree("t", "landed", "done", at, 1)
+        };
+        assert!(!spare(&failed), "a tree whose removal failed stays");
     }
 
     #[test]

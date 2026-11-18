@@ -70,9 +70,10 @@ pub fn adoptions(known: &BTreeSet<&str>, seen: &[Seen], runs: &[RunBranch]) -> V
     let mut taken: BTreeSet<&str> = known.clone();
     let mut out = Vec::new();
     for s in seen {
-        if s.main || s.gone || quarantine(&s.path) || !taken.insert(s.path.as_str()) {
+        if s.main || s.gone || !unowned(&taken, &s.path) {
             continue;
         }
+        taken.insert(s.path.as_str());
         let branch = s.branch.clone().unwrap_or_default();
         let task = task_of_branch(&s.repo, &branch, runs);
         out.push(Adopt {
@@ -83,6 +84,13 @@ pub fn adoptions(known: &BTreeSet<&str>, seen: &[Seen], runs: &[RunBranch]) -> V
         });
     }
     out
+}
+
+/// Whether the tree at `path` is one that no row owns: `known` (the path
+/// of each row) does not hold it, and it is not a quarantine folder of a
+/// removal.
+pub fn unowned(known: &BTreeSet<&str>, path: &str) -> bool {
+    !known.contains(path) && !quarantine(path)
 }
 
 /// Whether the last part of `path` names a quarantine folder of a removal.
