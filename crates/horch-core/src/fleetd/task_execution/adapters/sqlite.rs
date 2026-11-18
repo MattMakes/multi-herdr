@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::{anyhow, Result};
-use rusqlite::{params, Connection, OptionalExtension, Row};
+use rusqlite::{params, Connection, Row};
 
 use crate::fleetd::task_execution::domain::task::{
     AttemptRow, AttemptState, Recorded, Rows, TaskRow, WorkerRow,
@@ -111,24 +111,11 @@ fn workers(conn: &Connection, host: &str) -> Result<BTreeMap<String, WorkerRow>>
 }
 
 /// Each task of the idea `idea_id`, as (`task_id`, `status`), oldest first.
-pub fn tasks_of_idea(conn: &Connection, idea_id: &str) -> Result<Vec<(String, String)>> {
+pub fn task_states_of_idea(conn: &Connection, idea_id: &str) -> Result<Vec<(String, String)>> {
     let mut stmt =
         conn.prepare("SELECT task_id, status FROM tasks WHERE idea_id = ?1 ORDER BY rowid")?;
     let rows = stmt.query_map([idea_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
-}
-
-/// The idea of the task `task_id`; `None` when the task has no idea or is
-/// not in the ledger.
-pub fn idea_of_task(conn: &Connection, task_id: &str) -> Result<Option<String>> {
-    let idea: Option<Option<String>> = conn
-        .query_row(
-            "SELECT idea_id FROM tasks WHERE task_id = ?1",
-            [task_id],
-            |r| r.get(0),
-        )
-        .optional()?;
-    Ok(idea.flatten())
 }
 
 /// The task row of task `task_id`.

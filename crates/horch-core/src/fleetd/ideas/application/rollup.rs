@@ -127,7 +127,7 @@ fn in_state(conn: &Connection, id: &str, state: &str) -> Result<bool> {
 /// Each task of the idea `id` that is not cancelled is done, and each task
 /// branch that is not abandoned is landed. `false` for an idea with no task.
 fn work_is_in(conn: &Connection, id: &str) -> Result<bool> {
-    let tasks = task_rows::tasks_of_idea(conn, id)?;
+    let tasks = task_rows::task_states_of_idea(conn, id)?;
     if tasks.is_empty() {
         return Ok(false);
     }
@@ -150,10 +150,7 @@ fn work_is_in(conn: &Connection, id: &str) -> Result<bool> {
 
 /// Each worktree row of a task of the idea `id` is `removed` or `rescued`.
 fn trees_are_saved(conn: &Connection, id: &str) -> Result<bool> {
-    let tasks: BTreeSet<String> = task_rows::tasks_of_idea(conn, id)?
-        .into_iter()
-        .map(|(task, _)| task)
-        .collect();
+    let tasks: BTreeSet<String> = task_rows::tasks_of_idea(conn, id)?.into_iter().collect();
     let live: Vec<WorktreeState> = WorktreeState::ALL
         .into_iter()
         .filter(|s| *s != WorktreeState::Removed)
