@@ -1308,10 +1308,30 @@ fn stall_by_the_ladder(h: &Harness, worker: &str, pid: u32, started: u64) {
     );
     h.advance_fleet_clock(400);
     json_of(h, &["ledger", "watch", "--once", "--force", "--json"]);
+    let db = horch_core::taskledger::Store::open(&h.root.join("ledger.sqlite3")).unwrap();
+    let task_status = || -> String {
+        db.conn()
+            .query_row(
+                "SELECT t.status FROM tasks t JOIN attempts a ON a.task_id = t.task_id
+                 WHERE a.worker_id = ?1",
+                [worker],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    // The stall pass saw the old process alive: the task stays stalled, so
+    // no claim starts a new attempt beside it (FM-14).
+    assert_eq!(
+        task_status(),
+        "stalled",
+        "its old process lived in the pass"
+    );
     wait_for("the stop of the agent", || {
         (!horch_core::procid::alive(pid, Some(started))).then_some(())
     });
-    let db = horch_core::taskledger::Store::open(&h.root.join("ledger.sqlite3")).unwrap();
+    // The next pass sees the old process gone: rung 6.
+    json_of(h, &["ledger", "watch", "--once", "--force", "--json"]);
+    assert_eq!(task_status(), "ready", "rung 6 after the process is gone");
     let outcome: String = db
         .conn()
         .query_row(

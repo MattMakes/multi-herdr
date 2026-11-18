@@ -1013,9 +1013,15 @@ fn pinned_check(
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     serde_json::from_slice::<serde_json::Value>(&o.stdout).unwrap()[0].clone()
 }
-/// The stall ladder ended the attempt of `worker` `stalled`, wrote its
-/// events and its wake, and stopped `agent` by its recorded PID.
-fn assert_ladder_stopped(store: &horch_core::taskledger::Store, worker: &str, agent: &mut Agent) {
+/// The stall ladder ended the attempt of `worker` `stalled` and stopped
+/// `agent` by its recorded PID. After `next_pass` sees the agent gone, the
+/// task is queued again with its events and its wake (FM-14).
+fn assert_ladder_stopped(
+    store: &horch_core::taskledger::Store,
+    worker: &str,
+    agent: &mut Agent,
+    next_pass: impl FnOnce(),
+) {
     use horch_core::taskledger::workers;
     let attempt: (String, Option<String>) = store
         .conn()
@@ -1029,6 +1035,29 @@ fn assert_ladder_stopped(store: &horch_core::taskledger::Store, worker: &str, ag
     let w = workers::get(store.conn(), worker).unwrap();
     assert_eq!(w.status, "incomplete");
     assert_eq!(w.agent_pid, Some(i64::from(agent.0.id())));
+    let task_status = || -> String {
+        store
+            .conn()
+            .query_row(
+                "SELECT t.status FROM tasks t JOIN attempts a ON a.task_id = t.task_id
+                 WHERE a.worker_id = ?1",
+                [worker],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    // The stall pass saw the old process alive: the task stays stalled, so
+    // no claim starts a new attempt beside it.
+    assert_eq!(
+        task_status(),
+        "stalled",
+        "its old process lived in the pass"
+    );
+    horch_e2e::harness::wait_for("the stop of the agent by its PID", || {
+        matches!(agent.0.try_wait(), Ok(Some(_))).then_some(())
+    });
+    next_pass();
+    assert_eq!(task_status(), "ready", "rung 6 after the process is gone");
     let texts = |sql: &str| -> Vec<String> {
         let mut stmt = store.conn().prepare(sql).unwrap();
         stmt.query_map([], |r| r.get(0))
@@ -1052,9 +1081,6 @@ fn assert_ladder_stopped(store: &horch_core::taskledger::Store, worker: &str, ag
         wakes.iter().any(|w| w.contains("T-1: retry after 30 s")),
         "{wakes:?}"
     );
-    horch_e2e::harness::wait_for("the stop of the agent by its PID", || {
-        matches!(agent.0.try_wait(), Ok(Some(_))).then_some(())
-    });
 }
 fn pin_wait(store: &horch_core::taskledger::Store, worker: &str, kind: &str, deadline: &str) {
     store.conn().execute("UPDATE worker_waits SET started_at='2030-01-01T00:00:00Z',deadline=?3 WHERE worker_id=?1 AND kind=?2",[worker,kind,deadline]).unwrap();
@@ -1131,7 +1157,9 @@ fn g70_pinned_cli_sixty_minute_review_wait_and_normal_reap_after_completion() {
     // ladder ends the attempt `stalled` and stops the agent by its PID.
     h.advance_fleet_clock(400);
     pinned_check(&h, &run, "2030-01-01T01:40:00Z");
-    assert_ladder_stopped(&store, &worker, &mut agent);
+    assert_ladder_stopped(&store, &worker, &mut agent, || {
+        pinned_check(&h, &run, "2030-01-01T01:40:00Z");
+    });
 }
 #[test]
 fn g70_pinned_cli_question_reply_resets_stalls() {
@@ -1199,7 +1227,9 @@ fn g70_pinned_cli_question_reply_resets_stalls() {
     // ladder ends the attempt `stalled` and stops the agent by its PID.
     h.advance_fleet_clock(400);
     pinned_check(&h, &run, "2030-01-07T00:40:00Z");
-    assert_ladder_stopped(&store, &worker, &mut agent);
+    assert_ladder_stopped(&store, &worker, &mut agent, || {
+        pinned_check(&h, &run, "2030-01-07T00:40:00Z");
+    });
 }
 #[test]
 fn g70_pinned_cli_wait_expires_and_dead_agent_is_immediate() {

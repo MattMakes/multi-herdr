@@ -211,9 +211,18 @@ fn a_busy_pi_worker_with_no_timer_is_kept_until_stall_after_then_stopped_at_rung
         )
         .unwrap();
     assert_eq!(doorbells, 0, "a busy pane gets no doorbell");
+    // The stall pass saw the old process alive: the task stays stalled, so
+    // no claim starts a new attempt beside it (FM-14).
+    assert_eq!(
+        task_status(),
+        "stalled",
+        "its old process lived in the pass"
+    );
     horch_e2e::harness::wait_for("the stop of rung 3 to end the agent", || {
         matches!(agent.0.try_wait(), Ok(Some(_))).then_some(())
     });
+    // The next pass sees the old process gone: rung 6.
+    pinned_check(&h, &run, "2030-01-01T00:08:00Z");
     assert_eq!(task_status(), "ready", "rung 6 queued it again");
     assert_eq!(
         workers::get(store.conn(), &worker).unwrap().status,
