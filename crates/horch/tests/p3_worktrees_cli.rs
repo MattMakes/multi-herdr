@@ -383,10 +383,49 @@ fn restore_of_a_task_makes_branch_rescue_t_seq_n_and_its_tree_with_each_rescued_
         std::fs::read_to_string(tree.join("a.txt")).unwrap(),
         "changed\n"
     );
+    // F2 of review round 1: the tree is for the operator. It is `created`
+    // with no owner, which the reconciler leaves as it is, not `active`
+    // with no owner, which it orphans.
     let listed = w.ok(&["worktrees"]);
+    let line = listed
+        .lines()
+        .find(|l| l.ends_with(&format!(" path={}", tree.display())))
+        .unwrap_or_else(|| panic!("{listed}"));
+    assert!(line.starts_with("state=created "), "{line}");
     assert!(
-        listed.contains(&format!(" path={}\n", tree.display())),
-        "{listed}"
+        line.contains(" task=- ") && line.contains(" owner=- "),
+        "{line}"
+    );
+}
+
+/// F1 of review round 1: Phase 3 deletes no rescue ref, so a tree that
+/// custody removed still gives its rescue ref back.
+#[test]
+fn restore_of_a_task_whose_tree_is_removed_uses_its_rescue_ref() {
+    let w = World::with_a_tree();
+    let rescue_ref = w.rescued();
+    let id = w.row().worktree_id;
+    w.store()
+        .conn()
+        .execute(
+            "UPDATE worktrees SET state = 'removed' WHERE worktree_id = ?1",
+            [&id],
+        )
+        .unwrap();
+
+    let out = w.ok(&["worktree", "restore", "T1"]);
+
+    let tree = w.proj().join(".worktrees/rescue-T1-1");
+    assert_eq!(
+        out,
+        format!(
+            "restored {rescue_ref} on rescue/T1-1 at {}\n",
+            tree.display()
+        )
+    );
+    assert_eq!(
+        std::fs::read_to_string(tree.join("u.txt")).unwrap(),
+        "unsaved\n"
     );
 }
 

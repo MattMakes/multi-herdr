@@ -4,6 +4,8 @@ use std::path::PathBuf;
 
 use anyhow::{anyhow, bail, Context, Result};
 use horch_core::fleetd::fleet_runtime::application::jobs::JobCtx;
+use horch_core::fleetd::fleet_runtime::application::ledger::{transition, Cause};
+use horch_core::fleetd::fleet_runtime::domain::ledger::Entity;
 use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
 use horch_core::fleetd::worktree_custody::adapters::sqlite::NewWorktree;
 use horch_core::fleetd::worktree_custody::application::create::{
@@ -15,12 +17,12 @@ use horch_core::fleetd::worktree_custody::application::queries::{
 use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger;
 use horch_core::taskledger::git::Git;
-use horch_core::taskledger::model::WorktreeStatus;
+use horch_core::taskledger::model::{Actor, WorktreeStatus};
 use horch_core::taskledger::store::BUSY_TIMEOUT;
 use horch_core::taskledger::triage::{self, human_bytes, Measure};
 use horch_core::taskledger::util;
 use horch_core::vcs::landing::{ClaimState, Landing, Skipped, Unregistered};
-use rusqlite::Connection;
+use rusqlite::{Connection, TransactionBehavior};
 
 use super::messaging;
 use super::taskledger::{resolve_run, RunArg};
@@ -350,12 +352,36 @@ fn restore_rescue(store: &taskledger::Store, git: &Git, source: &RescueSource) -
         .with_context(|| format!("opening the task ledger {}", store.path().display()))?;
     conn.busy_timeout(BUSY_TIMEOUT)?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
-    create_and_wait(&mut conn, &ctx, &JobProcess::of_this_process()?, &lease)?;
+    let id = create_and_wait(&mut conn, &ctx, &JobProcess::of_this_process()?, &lease)?;
+    unowned(&mut conn, &id)?;
     Ok(format!(
         "restored {} on {branch} at {}",
         source.rescue_ref,
         path.display()
     ))
+}
+
+/// Move the restored tree `id` from `active` to `created` with no owner.
+/// The tree is for the operator, not for an attempt: the reconciler leaves
+/// a `created` tree as it is, but it orphans an `active` tree with no
+/// owner (MAP.md of fleetd-p3, Q10 and Q23).
+fn unowned(conn: &mut Connection, id: &str) -> Result<()> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let cause = Cause {
+        actor: Actor::Operator,
+        text: "horch worktree restore gives it to the operator, with no owner",
+    };
+    transition(
+        &tx,
+        None,
+        Entity::Worktree,
+        id,
+        "created",
+        cause,
+        &NeedsYouList,
+    )?;
+    tx.commit()?;
+    Ok(())
 }
 
 /// `horch worktrees [--json]`: 1 line for each tree that is not `removed`,

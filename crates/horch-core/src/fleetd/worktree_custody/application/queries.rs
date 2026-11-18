@@ -7,7 +7,7 @@
 //! `worktree_list` job of the pass stored: no query walks a folder.
 
 use anyhow::{Context, Result};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
 
 use crate::fleetd::worktree_custody::adapters::sqlite::{self as store, WorktreeRow};
@@ -150,7 +150,7 @@ pub fn rescue_source(
             .into_iter()
             .find(|t| t.seq == seq)
         {
-            Some(task) => store::of_task(conn, &task.task_id)?,
+            Some(task) => rescued_tree_of_task(conn, &task.task_id)?,
             None => None,
         },
         (None, _) => store::get(conn, name)?,
@@ -182,6 +182,25 @@ fn job_word(w: Would) -> &'static str {
     match w {
         Would::Rescue => "rescue",
         Would::Remove => "remove",
+    }
+}
+
+/// The newest tree of the task `task_id` that has a rescue ref, in any
+/// state: Phase 3 deletes no rescue ref, so a `removed` tree keeps its ref
+/// (Q6).
+fn rescued_tree_of_task(conn: &Connection, task_id: &str) -> Result<Option<WorktreeRow>> {
+    let id: Option<String> = conn
+        .query_row(
+            "SELECT worktree_id FROM worktrees
+              WHERE task_id = ?1 AND COALESCE(rescue_ref, '') <> ''
+              ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            [task_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    match id {
+        Some(id) => store::get(conn, &id),
+        None => Ok(None),
     }
 }
 
