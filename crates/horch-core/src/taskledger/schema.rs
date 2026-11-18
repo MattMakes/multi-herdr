@@ -1399,9 +1399,9 @@ fn phase_6_backfill(conn: &Connection, now: &str) -> Result<()> {
 
 /// The idea of the run `run_id`, `I-<run rowid>` (4 digits, as the feature
 /// `F-<run rowid>` of Phase 4), written when it does not exist. `adding` is
-/// true when the caller adds a task to the run. The release backfill and
-/// `tasks::add` both use it, so a run of today's flow has 1 idea; ticket 47
-/// of fleetd-p6 removes the call of `tasks::add`.
+/// true when the caller adds a task to the run. The release backfill uses
+/// it, so a run of today's flow has 1 idea. `tasks::add` writes no idea
+/// (ticket 47 of fleetd-p6).
 ///
 /// - A run with no feature row gets one only when it has, or gets, a task
 ///   that is not done and not cancelled; else it gets no idea (`None`). The

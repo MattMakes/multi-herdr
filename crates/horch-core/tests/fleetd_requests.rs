@@ -371,7 +371,7 @@ fn operator_request_without_a_valid_token_is_refused_and_recorded() {
 fn kind_with_no_handler_is_refused() {
     let mut w = world();
     let (handlers, calls) = counting(Kind::TaskCancel);
-    let req = request(Kind::RunNew, json!({}));
+    let req = request(Kind::LedgerGc, json!({}));
 
     let reply = send(&mut w, &req, &authorized(), &handlers);
 

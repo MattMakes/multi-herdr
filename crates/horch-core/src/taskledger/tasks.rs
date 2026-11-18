@@ -644,6 +644,38 @@ fn validate(new: &NewTask) -> Result<()> {
     Ok(())
 }
 
+/// FR-12: the idea of a new task of `run`. A task with a parent takes the
+/// idea of its parent; else it takes the youngest idea in flight of the
+/// feature of `run` (`F-<run rowid>`, MAP.md of fleetd-p6, Q5). It reads
+/// only: with no idea, the task is refused.
+fn idea_of_new_task(conn: &Connection, run: &Run, new: &NewTask) -> Result<String> {
+    if let Some(parent) = &new.parent_task_id {
+        let idea: Option<String> = conn
+            .query_row(
+                "SELECT idea_id FROM tasks WHERE task_id = ?1",
+                [parent],
+                |r| r.get(0),
+            )
+            .with_context(|| format!("the parent task {parent} is not in the ledger"))?;
+        return idea.with_context(|| {
+            format!("the parent task {parent} has no idea, and a task needs an idea (FR-12)")
+        });
+    }
+    let rowid: i64 = conn.query_row(
+        "SELECT rowid FROM runs WHERE run_id = ?1",
+        [&run.run_id],
+        |r| r.get(0),
+    )?;
+    let feature = format!("F-{rowid:04}");
+    crate::fleetd::integration::application::stacks::youngest_idea_in_flight(conn, &feature)?
+        .with_context(|| {
+            format!(
+                "run {} has no idea in flight of its feature {feature}, and a task needs an idea (FR-12). Add one: horch idea add",
+                run.slug
+            )
+        })
+}
+
 fn insert(conn: &Connection, run: &Run, new: &NewTask, state: TaskStatus) -> Result<String> {
     let seq: i64 = conn.query_row(
         "SELECT COALESCE(MAX(seq), 0) + 1 FROM tasks WHERE run_id = ?1",
@@ -652,10 +684,7 @@ fn insert(conn: &Connection, run: &Run, new: &NewTask, state: TaskStatus) -> Res
     )?;
     let id = util::new_id();
     let now = util::now();
-    // FR-12: each task belongs to an idea. Ticket 47 of fleetd-p6 removes
-    // this call when it retires today's task flow.
-    let idea = super::schema::run_idea(conn, &run.run_id, &now, true)?
-        .context("a run that gets a task gets an idea")?;
+    let idea = idea_of_new_task(conn, run, new)?;
     conn.execute(
         "INSERT INTO tasks (task_id, run_id, seq, title, task_file, issue_url, spec_ref,
             primary_persona, fallback_persona, claimable_by, phase, parallel, priority, wave,

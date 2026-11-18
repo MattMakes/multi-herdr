@@ -3,8 +3,8 @@
 //! The JSON form of a request and of a reply, and the payload hash, are in
 //! `adapters/request_wire.rs`, because a domain module names only `std`.
 //!
-//! Requirements: RR-8, SR-8, FM-15, FR-10. Ticket 08 of fleetd-p5 and
-//! ticket 06 of fleetd-p6.
+//! Requirements: RR-8, SR-8, FM-15, FR-10. Ticket 08 of fleetd-p5, and
+//! tickets 06 and 47 of fleetd-p6.
 
 use std::path::Path;
 
@@ -36,16 +36,9 @@ impl Class {
 /// `docs/tickets/fleetd-p5/MAP.md`, 1 kind for each command that changes
 /// state, with the 4 kinds of the records of 1 spawn after `spawn` (ticket
 /// 23 of fleetd-p5), then the idea kinds of Phase 6 (design, "Each request
-/// kind has a class").
+/// kind has a class"). A kind of [`RETIRED`] is not a kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Kind {
-    RunNew,
-    RunClose,
-    RunGate,
-    TaskAdd,
-    MapAdd,
-    TaskSolo,
-    PlanWorkers,
     LedgerImport,
     LedgerGc,
     TaskRequeue,
@@ -88,14 +81,7 @@ pub enum Kind {
 
 impl Kind {
     /// Each kind, in the order of the MAP table, then the idea kinds.
-    pub const ALL: [Kind; 45] = [
-        Kind::RunNew,
-        Kind::RunClose,
-        Kind::RunGate,
-        Kind::TaskAdd,
-        Kind::MapAdd,
-        Kind::TaskSolo,
-        Kind::PlanWorkers,
+    pub const ALL: [Kind; 38] = [
         Kind::LedgerImport,
         Kind::LedgerGc,
         Kind::TaskRequeue,
@@ -139,13 +125,6 @@ impl Kind {
     /// The name of the kind on the wire and in the `requests` row.
     pub fn as_str(self) -> &'static str {
         match self {
-            Kind::RunNew => "run_new",
-            Kind::RunClose => "run_close",
-            Kind::RunGate => "run_gate",
-            Kind::TaskAdd => "task_add",
-            Kind::MapAdd => "map_add",
-            Kind::TaskSolo => "task_solo",
-            Kind::PlanWorkers => "plan_workers",
             Kind::LedgerImport => "ledger_import",
             Kind::LedgerGc => "ledger_gc",
             Kind::TaskRequeue => "task_requeue",
@@ -197,14 +176,89 @@ impl Kind {
         }
     }
 
-    /// The kind of the wire name `name`. An unknown name is refused, and
-    /// the reason repeats the name.
+    /// The kind of the wire name `name`. A retired name is refused with
+    /// its new command. An unknown name is refused, and the reason repeats
+    /// the name.
     pub fn parse(name: &str) -> Result<Kind, RequestError> {
+        if let Some(r) = retired(name) {
+            return Err(RequestError::Retired(r.instead));
+        }
         Kind::ALL
             .into_iter()
             .find(|k| k.as_str() == name)
             .ok_or_else(|| RequestError::UnknownKind(echo(name, ECHO_MAX_CHARS)))
     }
+}
+
+/// A request kind that Phase 6 retires, the command that sent it, and what
+/// you do in its place: the table "Old flow and new" of
+/// `docs/tickets/fleetd-p6/MAP.md`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Retired {
+    /// The wire name of the kind.
+    pub kind: &'static str,
+    /// The old command.
+    pub command: &'static str,
+    /// What you do in its place.
+    pub instead: &'static str,
+}
+
+impl Retired {
+    /// The line that the old command prints: `<command> is retired.
+    /// <instead>`.
+    pub fn line(&self) -> String {
+        format!("{} is retired. {}", self.command, self.instead)
+    }
+}
+
+/// What you do in place of `horch ledger add` and `horch ledger task`.
+const DIRECT: &str =
+    "Add a ticket that you wrote: horch idea add --direct <ticket file> [--to <feature>]";
+
+/// Each retired kind (ticket 47 of fleetd-p6). fleetd refuses a request of
+/// one with the reason `retired kind: <instead>`: a request file of an old
+/// client, written before the update.
+pub const RETIRED: [Retired; 7] = [
+    Retired {
+        kind: "run_new",
+        command: "horch ledger run new",
+        instead: r#"Add an idea: horch idea add "<idea>""#,
+    },
+    Retired {
+        kind: "run_close",
+        command: "horch ledger run close",
+        instead: "Merge the pull request of the feature: fleetd sees the merge. To drop a feature: horch feature abandon <feature>",
+    },
+    Retired {
+        kind: "run_gate",
+        command: "horch ledger run gate",
+        instead: "fleetd runs the full gate of a feature when its task branches are landed",
+    },
+    Retired {
+        kind: "task_add",
+        command: "horch ledger add",
+        instead: DIRECT,
+    },
+    Retired {
+        kind: "map_add",
+        command: "horch ledger add-map",
+        instead: r#"Add an idea: horch idea add "<idea>". For 1 ticket that you wrote: horch idea add --direct <ticket file>. To check a map: horch ledger add-map --dry-run <file>"#,
+    },
+    Retired {
+        kind: "task_solo",
+        command: "horch ledger task",
+        instead: DIRECT,
+    },
+    Retired {
+        kind: "plan_workers",
+        command: "horch ledger plan-workers",
+        instead: "fleetd dispatches each ready task: horch ideas and horch ledger status show each hold",
+    },
+];
+
+/// The retired kind of the wire name `kind`, or `None`.
+pub fn retired(kind: &str) -> Option<&'static Retired> {
+    RETIRED.iter().find(|r| r.kind == kind)
 }
 
 /// The idempotency key of a request: 1 UUID v4 text that the client makes.
@@ -417,7 +471,13 @@ impl IdeaAdd {
 fn spawn_record_fields(kind: Kind) -> Option<(&'static [&'static str], &'static [&'static str])> {
     match kind {
         Kind::SpawnAdopt => Some((
-            &["run_id", "worker_id", "persona", "target_task_id", "spawn_pid"],
+            &[
+                "run_id",
+                "worker_id",
+                "persona",
+                "target_task_id",
+                "spawn_pid",
+            ],
             &[],
         )),
         Kind::SpawnGateNote => Some((&["text"], &["run_id", "worker_id"])),
@@ -475,6 +535,8 @@ pub enum RequestError {
     Malformed(String),
     /// The kind is not in the catalog. The text is the escaped name.
     UnknownKind(String),
+    /// The kind is retired. The text is what you do in its place.
+    Retired(&'static str),
     /// The `request_id` breaks its rule. The text says which part.
     BadRequestId(&'static str),
 }
@@ -497,6 +559,7 @@ impl std::fmt::Display for RequestError {
             }
             RequestError::Malformed(text) => write!(f, "malformed request: {text}"),
             RequestError::UnknownKind(name) => write!(f, "unknown request kind `{name}`"),
+            RequestError::Retired(instead) => write!(f, "retired kind: {instead}"),
             RequestError::BadRequestId(why) => write!(f, "bad request_id: {why}"),
         }
     }
@@ -522,16 +585,9 @@ fn echo(text: &str, max_chars: usize) -> String {
 mod tests {
     use super::*;
 
-    /// The table "Request kinds" of `docs/tickets/fleetd-p5/MAP.md`, then
-    /// the idea kinds of Phase 6.
-    const MAP_TABLE: [(&str, Class); 45] = [
-        ("run_new", Class::Operator),
-        ("run_close", Class::Operator),
-        ("run_gate", Class::Operator),
-        ("task_add", Class::Operator),
-        ("map_add", Class::Operator),
-        ("task_solo", Class::Operator),
-        ("plan_workers", Class::Operator),
+    /// The table "Request kinds" of `docs/tickets/fleetd-p5/MAP.md` with no
+    /// retired kind, then the idea kinds of Phase 6.
+    const MAP_TABLE: [(&str, Class); 38] = [
         ("ledger_import", Class::Operator),
         ("ledger_gc", Class::Operator),
         ("task_requeue", Class::Operator),
@@ -598,6 +654,26 @@ mod tests {
     }
 
     #[test]
+    fn retired_kind_is_refused_with_its_new_command() {
+        for r in RETIRED {
+            let err = Kind::parse(r.kind).unwrap_err();
+            assert_eq!(err, RequestError::Retired(r.instead));
+            assert_eq!(err.to_string(), format!("retired kind: {}", r.instead));
+            assert_eq!(r.line(), format!("{} is retired. {}", r.command, r.instead));
+            assert!(
+                !Kind::ALL.iter().any(|k| k.as_str() == r.kind),
+                "{}",
+                r.kind
+            );
+        }
+        assert_eq!(
+            retired("run_new").map(|r| r.command),
+            Some("horch ledger run new")
+        );
+        assert_eq!(retired("idea_add"), None);
+    }
+
+    #[test]
     fn worker_kind_is_class_worker() {
         for name in ["progress", "result", "ask", "idea_note"] {
             assert_eq!(Kind::parse(name).unwrap().class(), Class::Worker, "{name}");
@@ -622,15 +698,31 @@ mod tests {
         let mut extra = launched.to_vec();
         extra.push(("task_id", "T1"));
         let err = check_spawn_record(Kind::WorkerLaunched, &extra).unwrap_err();
-        assert!(err.to_string().contains("unknown payload field `task_id`"), "{err}");
+        assert!(
+            err.to_string().contains("unknown payload field `task_id`"),
+            "{err}"
+        );
         let err = check_spawn_record(Kind::WorkerLaunched, &launched[1..]).unwrap_err();
-        assert!(err.to_string().contains("no payload field `run_id`"), "{err}");
-        let err =
-            check_spawn_record(Kind::WorkerLaunchFailed, &[("run_id", "R1"), ("worker_id", " "), ("reason", "x")])
-                .unwrap_err();
-        assert!(err.to_string().contains("empty payload field `worker_id`"), "{err}");
-        assert_eq!(check_spawn_record(Kind::SpawnGateNote, &[("text", "spawn gate: x")]), Ok(()));
-        assert!(check_spawn_record(Kind::SpawnGateNote, &[("text", "x"), ("run_id", "R1")]).is_err());
+        assert!(
+            err.to_string().contains("no payload field `run_id`"),
+            "{err}"
+        );
+        let err = check_spawn_record(
+            Kind::WorkerLaunchFailed,
+            &[("run_id", "R1"), ("worker_id", " "), ("reason", "x")],
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("empty payload field `worker_id`"),
+            "{err}"
+        );
+        assert_eq!(
+            check_spawn_record(Kind::SpawnGateNote, &[("text", "spawn gate: x")]),
+            Ok(())
+        );
+        assert!(
+            check_spawn_record(Kind::SpawnGateNote, &[("text", "x"), ("run_id", "R1")]).is_err()
+        );
         assert_eq!(check_spawn_record(Kind::Spawn, &[("anything", "")]), Ok(()));
         for kind in [
             Kind::SpawnAdopt,

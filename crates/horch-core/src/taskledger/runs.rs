@@ -337,33 +337,6 @@ pub fn active_solo(conn: &Connection, root: &Path, workspace: &str) -> Result<Op
         .find(|r| r.slug == slug && r.status == RunStatus::Active.as_str()))
 }
 
-/// Refuse `new` when its workspace already has an active non-solo run in
-/// project `root` (D13, TRF-34). A solo run, and a run with no workspace,
-/// never clash. `horch ledger run new` calls it before its git work and
-/// again in the insert's transaction.
-pub fn refuse_a_2nd_workspace_run(conn: &Connection, root: &Path, new: &NewRun) -> Result<()> {
-    let Some(ws) = new.workspace_id.as_deref() else {
-        return Ok(());
-    };
-    if new.slug.starts_with(SOLO_PREFIX) {
-        return Ok(());
-    }
-    let taken = of_project(conn, root)?.into_iter().find(|r| {
-        r.status == RunStatus::Active.as_str()
-            && !is_solo(r)
-            && r.workspace_id.as_deref() == Some(ws)
-    });
-    match taken {
-        Some(r) => bail!(
-            "workspace {ws} already has active run {} ({}). A run belongs to 1 workspace. Close it with horch ledger run close --run {}, or run horch ledger run new in another workspace",
-            r.slug,
-            r.run_id,
-            r.slug
-        ),
-        None => Ok(()),
-    }
-}
-
 /// 1 run by id.
 pub fn get(conn: &Connection, run_id: &str) -> Result<Run> {
     conn.query_row(
@@ -516,92 +489,6 @@ pub fn clear_orchestrator(conn: &Connection, run_id: &str) -> Result<()> {
         [run_id],
     )?;
     Ok(())
-}
-
-/// A harness and its model, as an orchestrator row records them.
-pub type HarnessModel = (Option<String>, Option<String>);
-
-/// The orchestrator that creates a run: the pane it runs in, and its
-/// harness and model when its session record names them.
-#[derive(Debug, Clone, Default)]
-pub struct Seat {
-    pub pane_id: Option<String>,
-    pub harness: Option<HarnessModel>,
-}
-
-/// Create the run `new` in `root` with its default `check` (TRF-16), and
-/// the orchestrator's own worker row: the pane it runs in. It is never
-/// watched for progress (section 9). A seat with no harness takes the
-/// harness of the newest orchestrator of the run's workspace.
-pub fn create_with_orchestrator(
-    conn: &Connection,
-    root: &Path,
-    new: &NewRun,
-    check: Option<&str>,
-    seat: &Seat,
-) -> Result<Run> {
-    use super::model::{WorkerKind, WorkerStatus};
-    use super::workers::{self, NewWorker};
-    use crate::fleetd::fleet_runtime::domain::ledger::Entity;
-    refuse_a_2nd_workspace_run(conn, root, new)?;
-    let r = create(conn, root, new)?;
-    if let Some(check) = check {
-        finish::set_default_check(conn, &r.run_id, check)?;
-    }
-    let (harness, model) = match &seat.harness {
-        Some(own) => own.clone(),
-        None => workspace_orchestrator_harness(conn, new.workspace_id.as_deref())?,
-    };
-    let id = workers::insert(
-        conn,
-        &NewWorker {
-            run_id: r.run_id.clone(),
-            kind: Some(WorkerKind::Orchestrator),
-            persona: "orchestrator".into(),
-            role: Some("orchestrator".into()),
-            harness,
-            model,
-            workspace_id: new.workspace_id.clone(),
-            pane_id: seat.pane_id.clone(),
-            ..Default::default()
-        },
-    )?;
-    util::transition(
-        conn,
-        Entity::Worker,
-        &id,
-        WorkerStatus::Working.as_str(),
-        Actor::Orchestrator,
-        util::Why::Rule(
-            util::Rule::AgentStarted,
-            &format!("the orchestrator of run {} runs in its pane", r.slug),
-        ),
-    )?;
-    conn.execute(
-        "UPDATE workers SET started_at = spawned_at WHERE worker_id = ?1",
-        [&id],
-    )?;
-    set_orchestrator(conn, &r.run_id, &id)?;
-    get(conn, &r.run_id)
-}
-
-/// The harness and model of the newest orchestrator of `workspace` that
-/// records a harness.
-pub fn workspace_orchestrator_harness(
-    conn: &Connection,
-    workspace: Option<&str>,
-) -> Result<HarnessModel> {
-    let Some(workspace) = workspace else {
-        return Ok((None, None));
-    };
-    let row = optional(conn.query_row(
-        "SELECT harness, model FROM workers
-         WHERE kind = 'orchestrator' AND workspace_id = ?1 AND harness IS NOT NULL
-         ORDER BY spawned_at DESC, rowid DESC LIMIT 1",
-        [workspace],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    ))?;
-    Ok(row.unwrap_or((None, None)))
 }
 
 /// Record `workspace` on run `run_id` when the run has none. Whether it
@@ -1798,52 +1685,5 @@ mod tests {
             .unwrap();
         let (run, note) = resolve(store.conn(), &root, None, Some("w9")).unwrap();
         assert_eq!((run.slug.as_str(), note), ("solo-w9", None));
-    }
-
-    fn planned(slug: &str, ws: Option<&str>) -> NewRun {
-        NewRun {
-            slug: slug.into(),
-            workspace_id: ws.map(str::to_string),
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn trf_34_refuses_a_2nd_active_run_in_a_workspace() {
-        let (_dir, mut store, root) = solo_world();
-        let first = store
-            .immediate(|tx| create(tx, &root, &planned("plan", Some("w7"))))
-            .unwrap();
-        let err = refuse_a_2nd_workspace_run(store.conn(), &root, &planned("next", Some("w7")))
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("plan"), "{err}");
-        assert!(err.contains("horch ledger run close --run plan"), "{err}");
-        assert!(err.contains("another workspace"), "{err}");
-        // Another workspace is free.
-        refuse_a_2nd_workspace_run(store.conn(), &root, &planned("next", Some("w8"))).unwrap();
-        // A closed run frees its workspace.
-        store
-            .immediate(|tx| close(tx, &first.run_id, RunStatus::Done))
-            .unwrap();
-        refuse_a_2nd_workspace_run(store.conn(), &root, &planned("next", Some("w7"))).unwrap();
-    }
-
-    #[test]
-    fn trf_34_ignores_solo_and_workspaceless_runs() {
-        let (_dir, mut store, root) = solo_world();
-        store
-            .immediate(|tx| create(tx, &root, &solo_new_run("w7")))
-            .unwrap();
-        store
-            .immediate(|tx| create(tx, &root, &planned("loose", None)))
-            .unwrap();
-        refuse_a_2nd_workspace_run(store.conn(), &root, &planned("plan", Some("w7"))).unwrap();
-        store
-            .immediate(|tx| create(tx, &root, &planned("plan", Some("w7"))))
-            .unwrap();
-        // A new solo run and a new run with no workspace never clash.
-        refuse_a_2nd_workspace_run(store.conn(), &root, &solo_new_run("w7")).unwrap();
-        refuse_a_2nd_workspace_run(store.conn(), &root, &planned("free", None)).unwrap();
     }
 }
