@@ -135,7 +135,7 @@ above. CI on Linux needs the `bubblewrap` package, and a runner that lets it mak
    35 (T-261). The operator has not confirmed this deviation.
 2. `cancelled` is terminal (MAP Q22, T-260). A requeue of a cancelled task is refused by the door.
    `docs/specs/fleetd/preservation-04-behavior.md` row L8 still says that a requeue is possible
-   today. This ticket does not change `docs/specs/fleetd/`.
+   today. This ticket does not change `docs/specs/fleetd/preservation-04-behavior.md`.
 3. A task at its attempt limit is `failed`, not held or `escalated` (T-265). The orchestrator gets
    1 QUESTION: requeue it 1 time (its 1 replan), or cancel it.
 4. The pinned group of T-260: `TASK_EXITS_OF_TODAY` holds 3 exits that today's code still writes

@@ -305,9 +305,9 @@ impl Agent {
 
     /// `process_group(0)` starts the agent in its own process group. A
     /// thread waits on the child, so no zombie stays after its end. `exec`
-    /// makes the command the agent: `dash`, the `/bin/sh` of Debian, else
-    /// keeps a shell as the agent. (`set -m` in `sh -c` makes no group in
-    /// `dash`.)
+    /// replaces `/bin/sh` with the command, so the command leads the group.
+    /// Without `exec`, `dash` (the `/bin/sh` of Debian) stays the group
+    /// leader. (`set -m` in `sh -c` makes no group in `dash`.)
     #[cfg(unix)]
     fn spawn(command: &str) -> Agent {
         use std::os::unix::process::CommandExt;
