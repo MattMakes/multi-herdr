@@ -30,7 +30,9 @@ use crate::fleetd::fleet_runtime::application::jobs::JobCtx;
 use crate::fleetd::fleet_runtime::application::ledger::{created, transition, Cause};
 use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
+use crate::fleetd::ideas::adapters::ideas_store;
 use crate::fleetd::ideas::application::needs_you::NeedsYouList;
+use crate::fleetd::ideas::application::park_cancel::PARKED;
 use crate::fleetd::task_execution::adapters::sqlite as store;
 use crate::fleetd::task_execution::adapters::task_files::{
     attempt_dir, write_attempt_files, AttemptFiles,
@@ -441,9 +443,17 @@ pub fn choices(
         by_run: BTreeMap::new(),
     };
     let mut ready = Vec::new();
+    let mut parked = Vec::new();
     for id in task_ids(conn, &[TaskStatus::Ready])? {
         // Its cancel waits for the stop of an attempt: it binds no more.
         if tasks::cancel_requested(conn, &id)?.is_some() {
+            continue;
+        }
+        // No new task of a parked idea is dispatched (MAP.md of
+        // fleetd-p6, Q10).
+        if let Some(idea) = parked_idea(conn, &id)? {
+            let hold = Hold::IdeaParked { idea };
+            parked.push(Choice::Held { task_id: id, hold });
             continue;
         }
         let t = tasks::get(conn, &id)?;
@@ -461,7 +471,17 @@ pub fn choices(
                 .insert(t.persona.clone(), NO_CHECK_SANDBOX.to_string());
         }
     }
-    Ok(choose(&ready, &running, &holds))
+    parked.extend(choose(&ready, &running, &holds));
+    Ok(parked)
+}
+
+/// The idea of task `task_id` when that idea is `parked`.
+fn parked_idea(conn: &Connection, task_id: &str) -> Result<Option<String>> {
+    let Some(id) = store::idea_of_task(conn, task_id)? else {
+        return Ok(None);
+    };
+    let parked = ideas_store::idea(conn, &id)?.is_some_and(|i| i.state == PARKED);
+    Ok(parked.then_some(id))
 }
 
 /// 1 dispatch pass of fleetd, in the open transaction `tx`: bind each

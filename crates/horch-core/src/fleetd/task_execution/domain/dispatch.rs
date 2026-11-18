@@ -87,6 +87,9 @@ pub enum Hold {
     OpenAttempt { attempt: String },
     /// The tree of the task is `orphaned` and waits for its rescue.
     TreeRescue,
+    /// The idea of the task is `parked`: no new task of it is dispatched
+    /// (`docs/tickets/fleetd-p6/MAP.md`, Q10).
+    IdeaParked { idea: String },
     /// An exclusive task runs, or this exclusive task waits for others.
     Exclusive { running: String },
     /// Another shared-checkout task works in the 1 shared checkout.
@@ -104,6 +107,7 @@ impl std::fmt::Display for Hold {
             Hold::NotBefore { seconds } => write!(f, "retry after {seconds} s"),
             Hold::OpenAttempt { attempt } => write!(f, "attempt {attempt} is not ended"),
             Hold::TreeRescue => write!(f, "its worktree is orphaned and waits for its rescue"),
+            Hold::IdeaParked { idea } => write!(f, "its idea {idea} is parked"),
             Hold::Exclusive { running } => write!(f, "exclusive: waits for {running}"),
             Hold::SharedCheckout { running } => {
                 write!(f, "exclusive: shared checkout, waits for {running}")

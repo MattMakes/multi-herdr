@@ -189,3 +189,36 @@ pub fn set_ended(conn: &Connection, id: &str, outcome: &str, now: &str) -> Resul
     )?;
     Ok(())
 }
+
+/// The tasks of the idea `idea_id` that are not `done` and not `cancelled`,
+/// by id.
+pub fn open_tasks_of_idea(conn: &Connection, idea_id: &str) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT task_id FROM tasks WHERE idea_id = ?1 AND status NOT IN (?2, ?3)
+         ORDER BY task_id",
+    )?;
+    let ended = [TaskStatus::Done.as_str(), TaskStatus::Cancelled.as_str()];
+    let ids = stmt
+        .query_map(params![idea_id, ended[0], ended[1]], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(ids)
+}
+
+/// Each task of the idea `idea_id`, by id.
+pub fn tasks_of_idea(conn: &Connection, idea_id: &str) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare("SELECT task_id FROM tasks WHERE idea_id = ?1 ORDER BY task_id")?;
+    let ids = stmt
+        .query_map([idea_id], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(ids)
+}
+
+/// The idea of the task `task_id`, or `None`.
+pub fn idea_of_task(conn: &Connection, task_id: &str) -> Result<Option<String>> {
+    let idea = conn.query_row(
+        "SELECT idea_id FROM tasks WHERE task_id = ?1",
+        [task_id],
+        |r| r.get(0),
+    )?;
+    Ok(idea)
+}
