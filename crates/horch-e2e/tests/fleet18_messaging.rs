@@ -339,6 +339,35 @@ fn check(
         .verdict
         .clone()
 }
+/// 3 checks of `worker` with no progress: each gives `no_progress` with a
+/// rising stall round, none gives `dead`, and the worker stays `working`.
+fn assert_no_reap(
+    store: &mut horch_core::taskledger::Store,
+    run: &horch_core::taskledger::runs::Run,
+    worker: &str,
+) {
+    use horch_core::taskledger::workers;
+    let mut rounds = Vec::new();
+    for _ in 0..3 {
+        store
+            .conn()
+            .execute(
+                "UPDATE workers SET last_progress_at='2000-01-01T00:00:00Z' WHERE worker_id=?1",
+                [worker],
+            )
+            .unwrap();
+        let c = horch_core::taskledger::watchdog::check_run(store, run, &Idle(true), true)
+            .unwrap()
+            .remove(0);
+        assert_eq!(c.verdict, "no_progress", "{c:?}");
+        rounds.push(c.round);
+    }
+    assert!(rounds.windows(2).all(|r| r[1] > r[0]), "{rounds:?}");
+    assert_eq!(
+        workers::get(store.conn(), worker).unwrap().status,
+        "working"
+    );
+}
 #[test]
 fn g70_reviewer_wait_holds_sixty_minutes_then_three_idle_checks_reap() {
     use horch_core::taskledger::{
@@ -380,9 +409,9 @@ fn g70_reviewer_wait_holds_sixty_minutes_then_three_idle_checks_reap() {
             [&review.task_id],
         )
         .unwrap();
-    for verdict in ["no_progress", "no_progress", "dead"] {
-        assert_eq!(check(&mut store, &run, &worker, true), verdict);
-    }
+    // The checks of today see no progress, but no stall round reaps
+    // (docs/tickets/fleetd-p2/MAP.md, Q14). The ladder proof: g70_pinned_cli_sixty_minute_review_wait_and_normal_reap_after_completion.
+    assert_no_reap(&mut store, &run, &worker);
 }
 #[test]
 fn g70_waiting_background_deadline_and_dead_process() {
@@ -448,9 +477,9 @@ fn g70_question_wait_clears_on_orchestrator_answer_and_stalls_restart() {
     mail.close_question(&id.short()).unwrap().unwrap();
     workers::sync_questions(store.conn(), dir.path(), "w1").unwrap();
     assert!(workers::waiting(store.conn(), &worker).unwrap().is_empty());
-    for verdict in ["no_progress", "no_progress", "dead"] {
-        assert_eq!(check(&mut store, &run, &worker, true), verdict);
-    }
+    // The checks of today see no progress, but no stall round reaps
+    // (docs/tickets/fleetd-p2/MAP.md, Q14). The ladder proof: g70_pinned_cli_question_reply_resets_stalls.
+    assert_no_reap(&mut store, &run, &worker);
 }
 
 #[test]
