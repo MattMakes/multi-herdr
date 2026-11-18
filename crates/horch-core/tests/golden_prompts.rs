@@ -336,7 +336,7 @@ work. These commands are on your PATH:
                 "worker-{name}-{label} should end its horch note bullet exactly once"
             );
             assert_eq!(
-                push_attempt_worker_blocks(trf_46_worker_blocks(fleet18_worker_blocks(was.replace(old_agent, new_agent)
+                phase5_worker_blocks(push_attempt_worker_blocks(trf_46_worker_blocks(fleet18_worker_blocks(was.replace(old_agent, new_agent)
                     .replace(note_end, &format!("{note_end}{skills_read}"))
                     .replace(
                         lifecycle_end,
@@ -346,7 +346,7 @@ work. These commands are on your PATH:
                     )
                     .replace(old_wait_words, new_wait_words)
                     .replace(old_wait_reply, new_wait_reply)
-                    .replace(old_scope_wait, new_scope_wait)), label == "idle")),
+                    .replace(old_scope_wait, new_scope_wait)), label == "idle"))),
                 got,
                 "worker-{name}-{label} drifted outside the named sanctioned blocks"
             );
@@ -2316,6 +2316,151 @@ are on your PATH:
   other worktree. fleetd lands it.
 - In an attempt that began with a claim, follow the claim. Use only
   horch ledger worktree new. horch ledger finish lands that worktree.
+- The rest of this section applies only outside a ledger run.
+"###,
+        ),
+    ];
+    for (old, new) in blocks {
+        assert_eq!(expected.matches(old).count(), 1, "{old}");
+        expected = expected.replace(old, new);
+    }
+    expected
+}
+
+// Phase 5 sanctioned blocks (fleetd-p5 ticket 48, FR-7 and RR-5): a worker
+// reports only through files of its outbox, and fleetd reads them into the
+// ledger. The push section names each report command and its file:
+// `horch ledger progress`, `horch result` or `horch ledger done`, `horch ask`
+// and `horch ledger handoff`. From Phase 5 no worker claims, so the claim
+// section and its worktree line go. 2 of its bullets move into the push
+// section: the rule to run each horch ledger command alone (the roster check
+// of each codex worker requires it) and the rule on process stops. Each block is literal: the old text it replaces and
+// the new text.
+fn phase5_worker_blocks(mut expected: String) -> String {
+    let blocks: &[(&str, &str)] = &[
+        (
+            r###"- Before horch result or horch ledger finish, check every ticket step and
+  every Own: file. Name anything not done in the summary.
+"###,
+            r###"- Before horch result or horch ledger done, check every ticket step and
+  every Own: file. Name anything not done in the summary.
+"###,
+        ),
+        (
+            r###"  A push attempt ends with horch result, not with horch done.
+"###,
+            r###"  A push attempt ends with horch result or horch ledger done.
+"###,
+        ),
+        (
+            r###"- horch ledger progress "<milestone>" - record each milestone.
+- When the work is committed, run:
+  horch result --status completed --summary "<one paragraph>"
+  If the work cannot be completed, use --status blocked or --status failed.
+  fleetd then runs the finish steps: the check, the sweeps and the land.
+  Then end your turn.
+- If you cannot continue without an answer, send QUESTION: with
+  horch tell orchestrator, then end your turn.
+- End your turn only after horch result or a QUESTION: line. A Stop hook
+  can hold your turn until 1 of them exists.
+- The claim, the worktree commands, horch ledger finish and
+  horch ledger done are not for a push attempt.
+
+== Task ledger: an attempt that began with a claim ==
+This section is only for an attempt that began with a claim: your task is
+"Run horch ledger claim.". The task ledger holds your work. These commands
+are on your PATH:
+- horch ledger claim - take your task. It prints the ticket snapshot, then
+  the ticket path. The snapshot is your ticket: read it in full and follow
+  it exactly. Read the file only for context. If it prints that there is
+  no task for you, send the line it prints, then end your turn.
+- If the claim prints "PRIOR WORK: read <path> first", read that handoff
+  file before the ticket. Continue from its next step.
+- If the claim lists earlier attempts, read each transcript in chunks
+  before you continue. Use what you can of the earlier work.
+- horch ledger worktree new <name> [--from <ref>] - make your worktree.
+  Work and commit there. The ledger records the ref as its base.
+- horch ledger worktree scratch <name> - make recorded throwaway work.
+  Scratch worktrees never need to land and do not block finish or done.
+- horch ledger worktree drop <name> --reason "<why>" [--keep-branch] - drop
+  work that will not land. Keep the branch to preserve unpublished commits.
+- horch ledger progress "<milestone>" - record each milestone. horch checks
+  every working worker every 10 minutes. A worker without progress for 3
+  checks is stopped, and its task goes to another worker.
+- horch ledger status, horch ledger show <task> and horch ledger steps -
+  read the run board, 1 task, and the finish steps of your task.
+- Run each horch ledger command alone. Do not add a pipe, ";", "&&" or a
+  redirect. Read its exit code from the tool result. In a Codex sandbox,
+  only a horch ledger command that is the whole command reaches the ledger.
+- horch ledger finish - run it when the work is complete and committed. It
+  runs the finish steps of your run in order, from check, code-sweep,
+  complexity-sweep, recheck, land, pr, cleanup. Its output names the
+  steps your run uses. It stops at the first step that does not
+  pass. Fix the cause, commit, and run it again. Never skip a step.
+  In your pane, finish runs detached and prints "finish runs (PID <n>);
+  horch tells you the result. End your turn now". End your turn then.
+  horch sends you the result as a [horch] NOTE line. Outside your pane, and
+  with --wait or --json, finish runs in the foreground: run it with the
+  longest timeout of your shell tool, because a check can take minutes.
+- When code-sweep queues reviewer tasks, end your turn. horch spawns the
+  reviewers and tells you when the reviews are in. Fix each Critical and
+  Important finding, or answer an Important finding with 1 line
+  "F<n>: <reason>" in the answers file it names. The finding id F<n> stays
+  the same in every round. Your ticket's **Review:** sets the rounds:
+  none is 0, light is 1, full is at most 3.
+- When complexity-sweep names functions, use the complexity-sweep skill to
+  reduce their complexity. Commit, then run finish again.
+- horch ledger done "<summary>" - run it when finish prints that every step
+  passed. It reports to the orchestrator and closes your pane. horch done
+  does the same for a ledger task.
+- horch ledger handoff <absolute path> - hand your task to a fresh worker.
+  Write the handoff file first. Your session ends, and the task goes back
+  to the queue first with your worktree. The next claim prints
+  "PRIOR WORK: read <path> first". Use it only when the orchestrator or a
+  horch line tells you to.
+- Never stop a process by a name or a pattern. Never run pkill or killall.
+"###,
+            r###"- You report only through files of your outbox, <path>/outbox/. fleetd
+  reads them into the task ledger. The commands below write these files.
+  Never write a file of the outbox by hand.
+- horch ledger progress "<milestone>" - record each milestone. It adds 1
+  line to outbox/progress.jsonl.
+- Run each horch ledger command alone. Do not add a pipe, ";", "&&" or a
+  redirect. Read its exit code from the tool result. In a Codex sandbox,
+  only a horch ledger command that is the whole command reaches the ledger.
+- When the work is committed, run:
+  horch result --status completed --summary "<one paragraph>"
+  If the work cannot be completed, use --status blocked or --status failed.
+  horch ledger done "<summary>" is the same as --status completed.
+  Each one writes outbox/result.json.
+  fleetd then runs the finish steps: the check, the sweeps and the land.
+  Then end your turn.
+- If you cannot continue without an answer, run horch ask "<question>",
+  then end your turn. It writes 1 file in outbox/questions/. A QUESTION:
+  line of horch tell orchestrator writes the same file.
+- horch ledger handoff <absolute path> - hand your task to a fresh worker.
+  Write the handoff file first, in your worktree or your task folder.
+  It writes outbox/result.json with status blocked. The next attempt reads
+  the handoff file first. Use it only when the orchestrator or a horch line
+  tells you to.
+- End your turn only after horch result, horch ledger done,
+  horch ledger handoff or horch ask. A Stop hook can hold your turn until
+  1 of them exists.
+- fleetd binds each task and makes its worktree. horch ledger claim, the
+  horch ledger worktree commands and horch ledger finish are not for a
+  worker.
+- Never stop a process by a name or a pattern. Never run pkill or killall.
+"###,
+        ),
+        (
+            r###"- In a push attempt, START.md names your worktree. Work there, and make no
+  other worktree. fleetd lands it.
+- In an attempt that began with a claim, follow the claim. Use only
+  horch ledger worktree new. horch ledger finish lands that worktree.
+- The rest of this section applies only outside a ledger run.
+"###,
+            r###"- In a push attempt, START.md names your worktree. Work there, and make no
+  other worktree. fleetd lands it.
 - The rest of this section applies only outside a ledger run.
 "###,
         ),

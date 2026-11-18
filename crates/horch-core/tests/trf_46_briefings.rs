@@ -166,13 +166,15 @@ fn instructed_ids(text: &str) -> Vec<&str> {
         .collect()
 }
 
-/// FR-5 and FM-6, the text side: the push section tells a worker to read
-/// `START.md`, to commit in the tree it names and to end with `horch result`
-/// or a QUESTION: line. It never tells it to search for work, to make a
-/// worktree or to run the finish steps. The claim section stays, marked for
-/// an attempt that began with a claim.
+/// FR-5, FM-6, FR-7 and RR-5, the text side: the push section tells a
+/// worker to read `START.md`, to commit in the tree it names, and to report
+/// only through the files of its outbox: `horch ledger progress`,
+/// `horch result` or `horch ledger done`, `horch ask` and
+/// `horch ledger handoff`. It never tells it to search for work, to make a
+/// worktree or to run the finish steps. From Phase 5 no worker claims, so no
+/// worker briefing has a claim section.
 #[test]
-fn the_push_attempt_section_names_start_md_and_horch_result() {
+fn the_push_attempt_section_names_start_md_and_the_outbox_files() {
     let r = roster();
     let pushes: Vec<_> = workers(&r)
         .into_iter()
@@ -186,9 +188,16 @@ fn the_push_attempt_section_names_start_md_and_horch_result() {
             "Read START.md in full",
             "the worktree that START.md names",
             "Do not search for work.",
+            "You report only through files of your outbox",
+            "horch ledger progress \"<milestone>\"",
+            "outbox/progress.jsonl",
             "horch result --status completed --summary",
-            "send QUESTION:",
-            "End your turn only after horch result or a QUESTION: line.",
+            "horch ledger done \"<summary>\"",
+            "outbox/result.json",
+            "horch ask \"<question>\"",
+            "outbox/questions/",
+            "horch ledger handoff <absolute path>",
+            "End your turn only after horch result, horch ledger done,",
             "fleetd then runs the finish steps",
         ] {
             assert!(push.contains(needed), "{name}: {needed:?} missing");
@@ -202,18 +211,27 @@ fn the_push_attempt_section_names_start_md_and_horch_result() {
         ] {
             assert!(!push.contains(instruction), "{name}: {instruction:?}");
         }
-        let claim = section(
-            text,
-            "== Task ledger: an attempt that began with a claim ==",
-        );
-        assert!(
-            claim.starts_with("\nThis section is only for an attempt that began with a claim"),
-            "{name}"
-        );
         let worktrees = section(text, "== Worktrees ==");
         assert!(
             worktrees.contains("In a push attempt, START.md names your worktree."),
             "{name}"
         );
+    }
+}
+
+/// From Phase 5 no worker claims (fleetd-p5 ticket 27): no worker briefing
+/// has the claim section, or a line that tells a worker to claim.
+#[test]
+fn no_worker_briefing_has_a_claim_section() {
+    let r = roster();
+    for (name, text) in workers(&r) {
+        for gone in [
+            "== Task ledger",
+            "began with a claim",
+            "- horch ledger claim",
+            "follow the claim",
+        ] {
+            assert!(!text.contains(gone), "{name}: {gone:?}");
+        }
     }
 }
