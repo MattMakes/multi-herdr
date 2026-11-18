@@ -1964,13 +1964,18 @@ mod tests {
                     .execute(params![format!("{t}/A1"), t, wk, pid, start, hour])
                     .unwrap();
             }
+            // The claiming workers check in 1 day from now: the 4 passes
+            // take minutes on a loaded host, and a check-in of the seed time
+            // would get stale (`heartbeat_stale_s`) or unclaimed
+            // (`UNCLAIMED_AFTER_S`) within the test.
+            let later = ago(-86_400);
             for n in 1..=claiming {
                 let wk = format!("BC-{n:05}");
                 let none: Option<&str> = None;
                 let no_attempt: Option<i64> = None;
                 worker
                     .execute(params![
-                        wk, run, host, pid, start, none, no_attempt, "claiming", now, none, now
+                        wk, run, host, pid, start, none, no_attempt, "claiming", later, none, later
                     ])
                     .unwrap();
             }
