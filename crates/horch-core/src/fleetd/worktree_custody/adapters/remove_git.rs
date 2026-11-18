@@ -129,7 +129,7 @@ pub trait RemovalGateway {
 }
 
 /// [`RemovalGateway`] on the git binary, the processes of the platform
-/// and the private index files under `<fleet root>/run`.
+/// and the private index files under `<fleet root>/tmp/<worktree id>/`.
 #[derive(Debug, Clone)]
 pub struct CliRemoval {
     git: CliWorktreeGit,
