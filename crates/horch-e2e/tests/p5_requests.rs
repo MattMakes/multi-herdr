@@ -118,12 +118,7 @@ fn note_request(h: &Harness, id: &str, note: &str) -> Request {
         request_id: RequestId::parse(id).unwrap(),
         kind: Kind::SpawnGateNote,
         payload,
-        token: Some(
-            token_file::read(&fleet_root(h))
-                .unwrap()
-                .text()
-                .to_string(),
-        ),
+        token: Some(token_file::read(&fleet_root(h)).unwrap().text().to_string()),
     }
 }
 
@@ -141,7 +136,9 @@ fn send(h: &Harness, request: &Request) -> Reply {
     stream.write_all(request.to_line().as_bytes()).unwrap();
     stream.flush().unwrap();
     let mut line = Vec::new();
-    BufReader::new(&stream).read_until(b'\n', &mut line).unwrap();
+    BufReader::new(&stream)
+        .read_until(b'\n', &mut line)
+        .unwrap();
     assert_eq!(line.last(), Some(&b'\n'), "1 whole reply line");
     parse_reply(&line, MAX_BYTES).unwrap()
 }
@@ -262,7 +259,11 @@ fn fleetd_killed_before_the_commit_applies_the_request_file_once_after_restart()
         Some("pending"),
         "the pending row is committed, the decision is not"
     );
-    assert_eq!(effects(&h, "before the commit"), 0, "no effect before the commit");
+    assert_eq!(
+        effects(&h, "before the commit"),
+        0,
+        "no effect before the commit"
+    );
     assert!(file.is_file(), "the request file stays for the next fleetd");
     assert!(!archived(&h, &request).exists());
 
@@ -386,7 +387,11 @@ fn known_request_id_with_another_payload_is_refused() {
     );
     assert_eq!(rows_of(&h, id), 1);
     assert_eq!(effects(&h, "first payload"), 1);
-    assert_eq!(effects(&h, "other payload"), 0, "no effect of the other payload");
+    assert_eq!(
+        effects(&h, "other payload"),
+        0,
+        "no effect of the other payload"
+    );
 
     // The request file path refuses it too, and archives the file.
     let file = write_request_file(&h, &other);
