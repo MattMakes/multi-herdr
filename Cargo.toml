@@ -34,3 +34,9 @@ undocumented_unsafe_blocks = "warn"
 
 [profile.release]
 strip = true
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.test]
+debug = "line-tables-only"
