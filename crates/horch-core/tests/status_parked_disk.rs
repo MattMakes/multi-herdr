@@ -104,6 +104,28 @@ fn status_sums_the_stored_bytes_and_walks_no_folder() {
 }
 
 #[test]
+fn status_reads_the_bytes_of_the_live_row_and_not_of_a_removed_row_at_its_path() {
+    let (dir, store, run) = ledger();
+    let tree = dir.path().join("tree");
+    write(&tree, "f.txt", "y");
+    // The history of the folder: a row that triage trashed, with its own
+    // measurement.
+    store
+        .conn()
+        .execute(
+            "INSERT INTO worktrees (worktree_id, repo_root, path, branch, base, status, state, created_at, bytes, bytes_measured_at)
+             VALUES ('old', '/repo', ?1, 'old', 'main', 'trashed', 'removed', '1999-01-01T00:00:00Z', ?2, ?3)",
+            rusqlite::params![tree.to_string_lossy(), 5 * GB, ago(Duration::hours(2))],
+        )
+        .unwrap();
+    parked(&store, &run, &tree, Some((GB, ago(Duration::minutes(30)))));
+    assert_eq!(
+        parked_line(&store, &run),
+        "Parked worktrees: 1 (1.0 GB, measured 30m ago). Decide about them with horch worktree triage."
+    );
+}
+
+#[test]
 fn status_says_when_no_worktree_was_measured() {
     let (dir, store, run) = ledger();
     let folder = dir.path().join("a");

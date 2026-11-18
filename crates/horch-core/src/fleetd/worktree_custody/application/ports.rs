@@ -52,6 +52,10 @@ pub trait WorktreeGitGateway {
     /// Whether the branch `branch` exists in the repository `repo`.
     fn branch_exists(&self, repo: &Path, branch: &str) -> Result<bool>;
 
+    /// The commit of the branch `branch` in the repository `repo`, or
+    /// `None` when the branch does not exist.
+    fn branch_tip(&self, repo: &Path, branch: &str) -> Result<Option<String>>;
+
     /// `git worktree prune` in the repository `repo`.
     fn prune(&self, repo: &Path) -> Result<()>;
 

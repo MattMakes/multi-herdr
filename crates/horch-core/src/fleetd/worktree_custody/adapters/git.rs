@@ -141,10 +141,11 @@ fn add(git: &dyn WorktreeGitGateway, row: &WorktreeRow) -> Result<Ran> {
         }
     }
     if git.branch_exists(repo, &row.branch)? {
-        // The branch of an earlier run of this task and name: the job
-        // attaches it, with each of its commits, when no other tree holds
-        // it. A branch is never deleted (review F1 of T-288).
-        if !of_its_task_and_name(row) {
+        // The branch of an earlier run of this task and name, or the
+        // branch at the base tip of the row (a restore): the job attaches
+        // it, with each of its commits, when no other tree holds it. A
+        // branch is never deleted (review F1 of T-288).
+        if !of_its_task_and_name(row) && !at_its_base(git, row)? {
             return Ok(refused(
                 row,
                 None,
@@ -185,6 +186,14 @@ fn add(git: &dyn WorktreeGitGateway, row: &WorktreeRow) -> Result<Ran> {
         format!("made {} on {} at {base}", row.path, row.branch),
         add_result(row, state.head),
     ))
+}
+
+/// Whether the branch of `row` holds exactly the base tip that the row
+/// records. A restore records the tip of its archive or trash ref, so the
+/// job attaches the archived branch only while it is at that commit.
+fn at_its_base(git: &dyn WorktreeGitGateway, row: &WorktreeRow) -> Result<bool> {
+    let tip = git.branch_tip(Path::new(&row.repo_root), &row.branch)?;
+    Ok(tip.is_some() && tip.as_deref() == row.base_commit.as_deref())
 }
 
 /// Whether the branch of `row` is the branch that its task and name give.
@@ -572,6 +581,18 @@ impl WorktreeGitGateway for CliWorktreeGit {
         }
     }
 
+    fn branch_tip(&self, repo: &Path, branch: &str) -> Result<Option<String>> {
+        if !self.branch_exists(repo, branch)? {
+            return Ok(None);
+        }
+        let full = format!("refs/heads/{branch}");
+        Ok(Some(
+            self.git(repo, &["rev-parse", "--verify", &full])?
+                .trim()
+                .to_string(),
+        ))
+    }
+
     fn prune(&self, repo: &Path) -> Result<()> {
         self.git(repo, &["worktree", "prune"]).map(drop)
     }
@@ -632,6 +653,84 @@ fn parse_list(out: &str) -> Vec<ListEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A repository with 2 commits on `main` and the branch `feat` at the
+    /// first; the row of the folder `.worktrees/feat` on `feat`, whose base
+    /// tip is `base`.
+    fn restore_row(base: impl Fn(&str, &str) -> String) -> (tempfile::TempDir, WorktreeRow) {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        let git = |args: &[&str]| {
+            let o = std::process::Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@t",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .unwrap();
+            assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+            String::from_utf8_lossy(&o.stdout).trim().to_string()
+        };
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&["init", "--quiet"]);
+        git(&["commit", "--quiet", "--allow-empty", "-m", "one"]);
+        git(&["branch", "feat"]);
+        let one = git(&["rev-parse", "HEAD"]);
+        git(&["commit", "--quiet", "--allow-empty", "-m", "two"]);
+        let two = git(&["rev-parse", "HEAD"]);
+        let row = WorktreeRow {
+            worktree_id: "w1".into(),
+            task_id: None,
+            worker_id: None,
+            repo_root: repo.display().to_string(),
+            path: repo.join(".worktrees").join("feat").display().to_string(),
+            branch: "feat".into(),
+            base: "feat".into(),
+            base_commit: Some(base(&one, &two)),
+            status: crate::taskledger::model::WorktreeStatus::Open,
+            state: crate::fleetd::worktree_custody::adapters::sqlite::WorktreeState::Reserved,
+            owner_attempt: None,
+            head_sha: None,
+            dirty: false,
+            bytes_on_disk: None,
+            rescue_ref: None,
+            seen_at: None,
+            mode: None,
+        };
+        (dir, row)
+    }
+
+    #[test]
+    fn worktree_add_attaches_an_existing_branch_that_is_at_the_base_tip_of_its_row() {
+        let (_dir, row) = restore_row(|one, _| one.to_string());
+        let ran = worktree_add(&CliWorktreeGit::new("git"), &row);
+        assert!(ran.outcome.passed, "{}", ran.outcome.text);
+        let head = CliWorktreeGit::new("git")
+            .git(Path::new(&row.path), &["branch", "--show-current"])
+            .unwrap();
+        assert_eq!(head.trim(), "feat");
+    }
+
+    #[test]
+    fn worktree_add_refuses_an_existing_branch_that_is_not_at_the_base_tip_of_its_row() {
+        let (_dir, row) = restore_row(|_, two| two.to_string());
+        let ran = worktree_add(&CliWorktreeGit::new("git"), &row);
+        assert!(!ran.outcome.passed, "{}", ran.outcome.text);
+        assert!(
+            ran.outcome
+                .text
+                .contains("it is not the branch of the task and name"),
+            "{}",
+            ran.outcome.text
+        );
+        assert!(!Path::new(&row.path).exists());
+    }
 
     #[test]
     fn parse_list_reads_each_attribute() {

@@ -235,6 +235,7 @@ pub fn triage_apply(ctx: &RuntimeContext, file: &str, primary: &str) -> Result<(
         .parent()
         .map(|p| p.join("evidence"))
         .unwrap_or_else(|| PathBuf::from("evidence"));
+    let jobs = JobProcess::of_this_process()?;
     let env = triage::apply::Env {
         git: &git,
         root: &root,
@@ -242,6 +243,7 @@ pub fn triage_apply(ctx: &RuntimeContext, file: &str, primary: &str) -> Result<(
         gh: remote.is_some().then_some(gh.as_path()),
         remote: remote.as_deref(),
         primary,
+        jobs: &jobs,
     };
     let applied = triage::apply::apply(&mut store, &env, &rows, &decided)?;
     for a in &applied {
@@ -288,14 +290,15 @@ pub fn restore(ctx: &RuntimeContext, name: &str) -> Result<()> {
     let git = Git::new(&ctx.bins.harness.git);
     let root = triage_root(ctx, &git)?;
     let mut store = taskledger::open(ctx)?;
+    let jobs = JobProcess::of_this_process()?;
     // A project with no single active run has no `T<seq>` to look up; a
     // worktree id needs no run.
     let run = resolve_run(ctx, &store, &RunArg::default()).ok();
     let source =
         queries::rescue_source(store.conn(), run.as_ref().map(|r| r.run_id.as_str()), name)?;
     let line = match source {
-        Some(source) => restore_rescue(&mut store, &git, &source)?,
-        None => triage::apply::restore(&store, &git, &root, name)?,
+        Some(source) => restore_rescue(&mut store, &git, &jobs, &source)?,
+        None => triage::apply::restore(&store, &git, &jobs, &root, name)?,
     };
     println!("{line}");
     Ok(())
@@ -308,6 +311,7 @@ pub fn restore(ctx: &RuntimeContext, name: &str) -> Result<()> {
 fn restore_rescue(
     store: &mut taskledger::Store,
     git: &Git,
+    jobs: &JobProcess,
     source: &RescueSource,
 ) -> Result<String> {
     let repo = PathBuf::from(&source.row.repo_root);
@@ -342,7 +346,7 @@ fn restore_rescue(
         from: None,
         new: Some(&new),
     };
-    let id = lease_and_wait(store.path(), &JobProcess::of_this_process()?, &lease)?;
+    let id = lease_and_wait(store.path(), jobs, &lease)?;
     unowned(store, &id)?;
     Ok(format!(
         "restored {} on {branch} at {}",

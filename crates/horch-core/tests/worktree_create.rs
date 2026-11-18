@@ -353,6 +353,10 @@ impl WorktreeGitGateway for Recording {
         self.inner.branch_exists(repo, branch)
     }
 
+    fn branch_tip(&self, repo: &Path, branch: &str) -> anyhow::Result<Option<String>> {
+        self.inner.branch_tip(repo, branch)
+    }
+
     fn prune(&self, repo: &Path) -> anyhow::Result<()> {
         self.inner.prune(repo)
     }

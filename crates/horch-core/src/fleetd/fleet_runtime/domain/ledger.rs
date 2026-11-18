@@ -225,6 +225,9 @@ pub const EXITS: &[(Entity, &str, &str)] = &[
     // the row (MAP.md of fleetd-p3, Q18). `removed` is terminal.
     (Entity::Worktree, "reserved", "created"),
     (Entity::Worktree, "created", "active"),
+    // An operator triage of a tree with no owner: it is rescued before
+    // its removal (fleetd-p3 ticket 13).
+    (Entity::Worktree, "created", "orphaned"),
     // `created` is `done --unlanded`; `orphaned` is a dead owner.
     (Entity::Worktree, "active", "created"),
     (Entity::Worktree, "active", "landing"),
@@ -233,6 +236,8 @@ pub const EXITS: &[(Entity, &str, &str)] = &[
     (Entity::Worktree, "landing", "landed"),
     (Entity::Worktree, "landing", "rescued"),
     (Entity::Worktree, "landed", "removed"),
+    // An operator triage of a landed tree that the cleanup did not remove.
+    (Entity::Worktree, "landed", "orphaned"),
     (Entity::Worktree, "orphaned", "rescued"),
     // `active` is the next claim.
     (Entity::Worktree, "rescued", "active"),
@@ -450,16 +455,19 @@ mod tests {
     #[test]
     fn allowed_transitions_of_worktree_equal_the_design_table() {
         // The column "Leaves when", with the choices of MAP.md of
-        // fleetd-p3, Q10. The drop of a `reserved` row is not a move.
+        // fleetd-p3, Q10. The drop of a `reserved` row is not a move. Triage
+        // orphans a `created` or `landed` tree before its rescue (ticket 13).
         let design = vec![
             ("reserved", "created"),
             ("created", "active"),
+            ("created", "orphaned"),
             ("active", "created"),
             ("active", "landing"),
             ("active", "orphaned"),
             ("landing", "landed"),
             ("landing", "rescued"),
             ("landed", "removed"),
+            ("landed", "orphaned"),
             ("orphaned", "rescued"),
             ("rescued", "active"),
             ("rescued", "removed"),

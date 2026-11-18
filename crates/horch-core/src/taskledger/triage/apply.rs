@@ -7,6 +7,12 @@
 //! uncommitted file is lost; a failed step deletes nothing and leaves the
 //! row `cleanup_failed` with the reason; `LAND` never moves the default
 //! branch.
+//!
+//! A folder goes only through the custody jobs (fleetd-p3 ticket 13,
+//! RR-9): after the commit of its files and the read-back of its archive or
+//! trash ref, a `rescue` job puts it on a verified rescue ref, then a
+//! `worktree_remove` job removes it. A restore makes its tree through a
+//! `worktree_add` job.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -16,18 +22,27 @@ use rusqlite::{params, Connection};
 
 use super::reply::Decided;
 use super::{human_bytes, listed_worktrees, refs, Row};
+use crate::fleetd::fleet_runtime::application::jobs::{outcome, JobCtx, Queued as JobQueued};
+use crate::fleetd::fleet_runtime::application::ledger::{transition, Cause, DoorError};
+use crate::fleetd::fleet_runtime::domain::ledger::Entity;
+use crate::fleetd::ideas::application::needs_you::NeedsYouList;
+use crate::fleetd::worktree_custody::adapters::sqlite::{
+    self as trees, NewWorktree, WorktreeState,
+};
+use crate::fleetd::worktree_custody::application::create::{self, Lease, RunJob};
+use crate::fleetd::worktree_custody::application::remove;
 use crate::runtime::process::scrub_child_env;
 use crate::taskledger::finish::{self, land, WorktreeRow};
 use crate::taskledger::git::{dir_bytes, Git};
 use crate::taskledger::model::{Actor, EventKind, FindingStatus, TriageDecision, WorktreeStatus};
 use crate::taskledger::sql_words::word;
-use crate::taskledger::store::{optional, Store};
+use crate::taskledger::store::{optional, Store, BUSY_TIMEOUT};
 use crate::taskledger::tasks::{self, NewTask};
 use crate::taskledger::util::{self, About};
 use crate::taskledger::{import, runs};
 
 /// What the decisions run with.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Env<'a> {
     pub git: &'a Git,
     /// The main checkout.
@@ -40,6 +55,8 @@ pub struct Env<'a> {
     pub remote: Option<&'a str>,
     /// The persona of the tasks that `FINISH` queues.
     pub primary: &'a str,
+    /// What runs the `rescue` and `worktree_remove` jobs of a removal.
+    pub jobs: &'a dyn RunJob,
 }
 
 /// A task that `FINISH` queued: the caller wakes the run's orchestrator.
@@ -123,17 +140,17 @@ pub fn apply(
 }
 
 fn apply_one(store: &mut Store, env: &Env<'_>, row: &Row, d: &Decided) -> Result<Applied> {
-    let wt = adopt(store.conn(), env.root, row)?;
+    let wt = store.immediate(|tx| adopt(tx, env.root, row))?;
     let result = match d.decision {
         TriageDecision::Keep => Ok(Done {
             text: "kept; it comes back at the next triage".into(),
             ..Default::default()
         }),
-        TriageDecision::Archive => archive(env, row, &wt),
-        TriageDecision::Delete => delete(env, row, &wt),
+        TriageDecision::Archive => archive(store, env, row, &wt),
+        TriageDecision::Delete => delete(store, env, row, &wt),
         TriageDecision::Land => land_decision(store, env, row, &wt),
         TriageDecision::Finish => finish_decision(store, env, row, &wt, direction(d)),
-        TriageDecision::Pr => pr(env, row, &wt, direction(d)),
+        TriageDecision::Pr => pr(store, env, row, &wt, direction(d)),
     };
     let (ok, text, queued) = match result {
         Ok(done) => {
@@ -160,37 +177,64 @@ fn direction(d: &Decided) -> &str {
     d.direction.as_deref().unwrap_or("")
 }
 
-/// The ledger row of a triage row. A folder that no row named gets one
-/// (`origin = 'import'`), so its decision is recorded like any other.
-fn adopt(conn: &Connection, root: &Path, row: &Row) -> Result<WorktreeRow> {
+/// The cause of each custody write of triage.
+const TRIAGE: Cause<'static> = Cause {
+    actor: Actor::Operator,
+    text: "triage",
+};
+
+/// The reason of a row that triage adopts.
+const FOUND: &str = "found on disk by worktree triage";
+
+/// The ledger row of a triage row, in `tx`. A folder that no live row names
+/// gets one (`origin = 'import'`) in `orphaned`, through the custody store
+/// (row W7), so its decision is recorded like any other. A `removed` row
+/// of the same path stays as history.
+fn adopt(tx: &Connection, root: &Path, row: &Row) -> Result<WorktreeRow> {
     if let Some(id) = &row.worktree_id {
-        return finish::worktree(conn, id);
+        return finish::worktree(tx, id);
     }
-    let existing: Option<String> = optional(conn.query_row(
-        "SELECT worktree_id FROM worktrees WHERE path = ?1",
+    let branch = row.branch.as_deref().unwrap_or("");
+    let existing: Option<String> = optional(tx.query_row(
+        "SELECT worktree_id FROM worktrees WHERE path = ?1 AND state <> 'removed'",
         [&row.path],
         |r| r.get(0),
     ))?;
-    let id = existing.unwrap_or_else(util::new_id);
-    let abandoned = word(WorktreeStatus::Abandoned);
-    conn.execute(
-        &format!(
-            "INSERT INTO worktrees (worktree_id, repo_root, path, branch, base, base_commit, status, origin, created_at, reason)
-             VALUES (?1, ?2, ?3, ?4, ?5, NULL, {abandoned}, 'import', ?6, ?7)
-             ON CONFLICT(path) DO UPDATE SET status = {abandoned}, branch = ?4, base = ?5, reason = ?7,
-                decision = NULL, decided_at = NULL, cleaned_at = NULL"
-        ),
-        params![
-            id,
-            root.to_string_lossy(),
-            row.path,
-            row.branch.as_deref().unwrap_or(""),
-            row.base,
-            util::now(),
-            "found on disk by worktree triage"
-        ],
-    )?;
-    finish::worktree(conn, &id)
+    let id = match existing {
+        Some(id) => {
+            tx.execute(
+                &format!(
+                    "UPDATE worktrees SET status = {abandoned}, branch = ?2, base = ?3, reason = ?4,
+                        decision = NULL, decided_at = NULL, cleaned_at = NULL
+                     WHERE worktree_id = ?1",
+                    abandoned = word(WorktreeStatus::Abandoned)
+                ),
+                params![id, branch, row.base, FOUND],
+            )?;
+            id
+        }
+        None => {
+            let new = NewWorktree {
+                worktree_id: util::new_id(),
+                task_id: None,
+                worker_id: None,
+                repo_root: root.to_string_lossy().into_owned(),
+                path: row.path.clone(),
+                branch: branch.to_string(),
+                base: row.base.clone(),
+                base_commit: None,
+                status: WorktreeStatus::Abandoned,
+                mode: None,
+            };
+            trees::insert_orphan(tx, None, &new, TRIAGE)?;
+            tx.execute(
+                "UPDATE worktrees SET origin = 'import', reason = ?2 WHERE worktree_id = ?1",
+                params![new.worktree_id, FOUND],
+            )?;
+            new.worktree_id
+        }
+    };
+    finish::worktree(tx, &id)
 }
 
 /// The event kind that records a decision.
@@ -281,14 +325,17 @@ fn failed(
     )
 }
 
-/// A checked-out branch must be the recorded branch. A clean detached HEAD
-/// is also safe when a durable branch, remote, or tag already reaches it.
+/// A checked-out branch must be the recorded branch, when the row records
+/// one. A clean detached HEAD is also safe when a durable branch, remote,
+/// or tag already reaches it; a folder with no recorded branch is checked
+/// too (RR-17).
 fn check_identity(git: &Git, wt: &WorktreeRow) -> Result<()> {
     let dir = Path::new(&wt.path);
-    if !dir.exists() || wt.branch.is_empty() {
+    if !dir.exists() {
         return Ok(());
     }
     match git.current_branch(dir) {
+        Some(_) if wt.branch.is_empty() => Ok(()),
         Some(b) if b == wt.branch => Ok(()),
         Some(b) => bail!(
             "the worktree is on {b}, not its recorded branch {}; nothing removed",
@@ -372,32 +419,140 @@ fn must_be_safe(git: &Git, root: &Path, wt: &WorktreeRow, holder: &str, tip: &st
     Ok(())
 }
 
-/// Remove the folder, never forced. The bytes it held.
-fn remove_folder(git: &Git, root: &Path, wt: &WorktreeRow) -> Result<u64> {
+/// Remove the folder, never forced, and only through custody (RR-9): the
+/// row is `orphaned` (cause `triage`), a `rescue` job puts the folder on a
+/// verified rescue ref, then a `worktree_remove` job removes it. A refused
+/// move, a failed rescue or a refused removal keeps the folder. The bytes
+/// it held.
+fn remove_folder(store: &Store, env: &Env<'_>, wt: &WorktreeRow) -> Result<u64> {
     let dir = PathBuf::from(&wt.path);
     if !dir.exists() {
         return Ok(0);
     }
     let bytes = dir_bytes(&dir);
-    git.run(root, &["worktree", "remove", &wt.path])?;
+    let config = create::fleet_config(store.path())?;
+    let ctx = JobCtx {
+        guard: None,
+        config: &config,
+        needs_you: &NeedsYouList,
+    };
+    let mut conn = open(store)?;
+    let row = orphan(&ctx, &mut conn, &wt.worktree_id)?;
+    create::rescue_now(&mut conn, &ctx, env.jobs, &row)?;
+    remove_now(&ctx, &mut conn, env.jobs, &wt.worktree_id)?;
     if dir.exists() {
-        bail!("{} still exists after git worktree remove", wt.path);
+        bail!("{} still exists after its worktree_remove job", wt.path);
     }
     Ok(bytes)
 }
 
-/// `ARCHIVE`: the work stays at `refs/horch/archive/<name>` and on its
-/// branch; the folder goes.
-fn archive(env: &Env<'_>, row: &Row, wt: &WorktreeRow) -> Result<Done> {
-    let tip = prepare(env.git, env.root, row, wt)?;
-    archive_at(env, row, wt, &tip, "")
+/// A connection of its own to the ledger of `store`: a job runs with no
+/// transaction open, and the custody calls take `&mut Connection`.
+fn open(store: &Store) -> Result<Connection> {
+    let conn = Connection::open(store.path())
+        .with_context(|| format!("opening the task ledger {}", store.path().display()))?;
+    conn.busy_timeout(BUSY_TIMEOUT)?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    Ok(conn)
 }
 
-fn archive_at(env: &Env<'_>, row: &Row, wt: &WorktreeRow, tip: &str, before: &str) -> Result<Done> {
+fn immediate(conn: &mut Connection) -> Result<rusqlite::Transaction<'_>> {
+    conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .context("taking the task ledger's write lock")
+}
+
+/// The row `id`, moved to `orphaned` unless it is `orphaned` or `rescued`.
+/// A `landing` row stays: its rescue moves it to `rescued`. Triage lists
+/// only a row that no live worker holds, so an orphaned row has no owner
+/// attempt (MAP.md of fleetd-p3, Q10). A move that the door refuses is
+/// recorded (1 event, 1 needs-you item) and keeps the folder.
+fn orphan(ctx: &JobCtx<'_>, conn: &mut Connection, id: &str) -> Result<trees::WorktreeRow> {
+    let tx = immediate(conn)?;
+    let row = trees::get(&tx, id)?.with_context(|| format!("no worktree {id} in the ledger"))?;
+    let keep = [
+        WorktreeState::Orphaned,
+        WorktreeState::Rescued,
+        WorktreeState::Landing,
+    ];
+    if keep.contains(&row.state) {
+        return Ok(row);
+    }
+    match transition(
+        &tx,
+        ctx.guard,
+        Entity::Worktree,
+        id,
+        "orphaned",
+        TRIAGE,
+        ctx.needs_you,
+    ) {
+        Ok(_) => {}
+        Err(DoorError::Refused { .. }) => {
+            tx.commit()?;
+            bail!(
+                "the worktree stays: its row is {}, and triage cannot move it to orphaned",
+                row.state
+            );
+        }
+        Err(e) => return Err(e.into()),
+    }
+    trees::set_owner(&tx, id, None)?;
+    let row = trees::get(&tx, id)?.with_context(|| format!("no worktree {id} in the ledger"))?;
+    tx.commit()?;
+    Ok(row)
+}
+
+/// Queue the `worktree_remove` job of the row `id`, run it through `jobs`
+/// with no transaction open, then observe it in 1 transaction.
+fn remove_now(ctx: &JobCtx<'_>, conn: &mut Connection, jobs: &dyn RunJob, id: &str) -> Result<()> {
+    let tx = immediate(conn)?;
+    let clock = create::fleet_clock(&tx)?;
+    let row = trees::get(&tx, id)?.with_context(|| format!("no worktree {id} in the ledger"))?;
+    let job = match remove::queue_remove(ctx, &tx, &row, "triage", clock)? {
+        Ok(JobQueued::New(job)) => job,
+        Ok(JobQueued::Active(r) | JobQueued::Reused(r)) => r.id,
+        Ok(JobQueued::Held(r)) => bail!(
+            "the worktree_remove job of {} ended abandoned {} times; run horch job requeue {} after you read why",
+            row.path,
+            r.abandoned_runs,
+            r.id
+        ),
+        Err(why) => bail!("the worktree stays: {why}"),
+    };
+    tx.commit()?;
+    let ended = jobs.run_job(ctx, conn, job)?;
+    let tx = immediate(conn)?;
+    let seen = remove::observe(ctx, &tx, &ended)?;
+    tx.commit()?;
+    match seen {
+        remove::Observed::Removed => Ok(()),
+        _ => bail!(
+            "its worktree_remove job did not remove it ({}: {}); the worktree stays",
+            ended.state.as_str(),
+            outcome(&ended).map(|o| o.text).unwrap_or_default()
+        ),
+    }
+}
+
+/// `ARCHIVE`: the work stays at `refs/horch/archive/<name>` and on its
+/// branch; the folder goes.
+fn archive(store: &Store, env: &Env<'_>, row: &Row, wt: &WorktreeRow) -> Result<Done> {
+    let tip = prepare(env.git, env.root, row, wt)?;
+    archive_at(store, env, row, wt, &tip, "")
+}
+
+fn archive_at(
+    store: &Store,
+    env: &Env<'_>,
+    row: &Row,
+    wt: &WorktreeRow,
+    tip: &str,
+    before: &str,
+) -> Result<Done> {
     let r = refs::archive_ref(&row.name);
     refs::write(env.git, env.root, &r, tip)?;
     must_be_safe(env.git, env.root, wt, &r, tip)?;
-    let bytes = remove_folder(env.git, env.root, wt)?;
+    let bytes = remove_folder(store, env, wt)?;
     let branch = if wt.branch.is_empty() {
         String::new()
     } else {
@@ -472,12 +627,12 @@ fn delete_branch(
 
 /// `DELETE`: the work goes to a dated trash ref, then the folder and the
 /// branch go. `horch ledger gc` deletes the trash ref 30 days on.
-fn delete(env: &Env<'_>, row: &Row, wt: &WorktreeRow) -> Result<Done> {
+fn delete(store: &Store, env: &Env<'_>, row: &Row, wt: &WorktreeRow) -> Result<Done> {
     let tip = prepare(env.git, env.root, row, wt)?;
     let trash = refs::trash_ref(&row.name, crate::clock::now());
     refs::write(env.git, env.root, &trash, &tip)?;
     must_be_safe(env.git, env.root, wt, &trash, &tip)?;
-    let bytes = remove_folder(env.git, env.root, wt)?;
+    let bytes = remove_folder(store, env, wt)?;
     let branch = delete_branch(env.git, env.root, wt, &trash, &tip)?;
     Ok(Done {
         status: Some(WorktreeStatus::Trashed),
@@ -760,7 +915,7 @@ fn resume_parked(
 
 /// `PR`: push the branch, open a pull request with the direction as its
 /// title and body, then archive the folder.
-fn pr(env: &Env<'_>, row: &Row, wt: &WorktreeRow, direction: &str) -> Result<Done> {
+fn pr(store: &Store, env: &Env<'_>, row: &Row, wt: &WorktreeRow, direction: &str) -> Result<Done> {
     let (Some(gh), Some(remote)) = (env.gh, env.remote) else {
         bail!("PR is not offered here: gh or a git remote is missing");
     };
@@ -791,6 +946,7 @@ fn pr(env: &Env<'_>, row: &Row, wt: &WorktreeRow, direction: &str) -> Result<Don
     }
     let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
     archive_at(
+        store,
         env,
         row,
         wt,
@@ -800,9 +956,16 @@ fn pr(env: &Env<'_>, row: &Row, wt: &WorktreeRow, direction: &str) -> Result<Don
 }
 
 /// `horch worktree restore <name>`: make the folder again from the
-/// archive ref (else the newest trash ref). The row is `open` and
-/// undecided again, so the next triage shows it.
-pub fn restore(store: &Store, git: &Git, root: &Path, name: &str) -> Result<String> {
+/// archive ref (else the newest trash ref), through a `worktree_add` job
+/// (`jobs` runs it). The archived row stays as history; the restored tree
+/// has a new row, `open` and undecided, so the next triage shows it.
+pub fn restore(
+    store: &Store,
+    git: &Git,
+    jobs: &dyn RunJob,
+    root: &Path,
+    name: &str,
+) -> Result<String> {
     let r = refs::restorable(git, root, name)?
         .with_context(|| format!("no refs/horch/archive/{name} and no trash ref of {name}"))?;
     let commit = git.rev(root, &r)?;
@@ -810,41 +973,54 @@ pub fn restore(store: &Store, git: &Git, root: &Path, name: &str) -> Result<Stri
     if path.exists() {
         bail!("{} exists already", path.display());
     }
-    let row: Option<(String, String)> = optional(store.conn().query_row(
-        "SELECT worktree_id, branch FROM worktrees WHERE archive_ref = ?1
+    let row: Option<String> = optional(store.conn().query_row(
+        "SELECT worktree_id FROM worktrees WHERE archive_ref = ?1
          ORDER BY decided_at DESC LIMIT 1",
         [&r],
-        |x| Ok((x.get(0)?, x.get(1)?)),
+        |x| x.get(0),
     ))?;
-    let branch = row
+    let old = match &row {
+        Some(id) => trees::get(store.conn(), id)?,
+        None => None,
+    };
+    let branch = old
         .as_ref()
-        .map(|(_, b)| b.clone())
+        .map(|o| o.branch.clone())
         .filter(|b| !b.is_empty())
         .unwrap_or_else(|| format!("restored/{name}"));
     let path_text = path.to_string_lossy().into_owned();
-    if git.branch_exists(root, &branch) {
-        if git.rev(root, &branch)? != commit {
-            bail!("the branch {branch} moved since {r}; check it out by hand: git worktree add {path_text} {branch}");
-        }
-        git.run(root, &["worktree", "add", "--quiet", &path_text, &branch])?;
-    } else {
-        git.run(
-            root,
-            &[
-                "worktree", "add", "--quiet", "-b", &branch, &path_text, &commit,
-            ],
-        )?;
+    if git.branch_exists(root, &branch) && git.rev(root, &branch)? != commit {
+        bail!("the branch {branch} moved since {r}; check it out by hand: git worktree add {path_text} {branch}");
     }
-    if let Some((id, _)) = &row {
-        store.conn().execute(
-            &format!(
-                "UPDATE worktrees SET status = {open}, decision = NULL, decided_at = NULL, cleaned_at = NULL,
-                    worker_id = NULL, reason = ?2 WHERE worktree_id = ?1",
-                open = word(WorktreeStatus::Open)
-            ),
-            params![id, format!("restored from {r}")],
-        )?;
-    }
+    // The job attaches the branch at `commit`, or makes it there.
+    let new = NewWorktree {
+        worktree_id: util::new_id(),
+        task_id: old.as_ref().and_then(|o| o.task_id.clone()),
+        worker_id: None,
+        repo_root: root.to_string_lossy().into_owned(),
+        path: path_text.clone(),
+        branch: branch.clone(),
+        base: old
+            .as_ref()
+            .map_or_else(|| branch.clone(), |o| o.base.clone()),
+        base_commit: Some(commit.clone()),
+        status: WorktreeStatus::Open,
+        mode: old.and_then(|o| o.mode),
+    };
+    // No task and no worker: the request never attaches another tree, and
+    // the new row has no owner.
+    let lease = Lease {
+        task_id: None,
+        worker_id: "",
+        attempt: None,
+        from: None,
+        new: Some(&new),
+    };
+    let id = finish::lease_tree(store, jobs, &lease)?;
+    store.conn().execute(
+        "UPDATE worktrees SET reason = ?2 WHERE worktree_id = ?1",
+        params![id, format!("restored from {r}")],
+    )?;
     Ok(format!(
         "restored {path_text} on {branch} at {} from {r}",
         short(&commit)

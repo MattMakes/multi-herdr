@@ -577,8 +577,9 @@ pub fn create_and_wait(
 }
 
 /// The verified rescue of the `orphaned` tree `row`: its `rescue` job runs
-/// through `jobs`, then 1 transaction observes it.
-fn rescue_now(
+/// through `jobs`, then 1 transaction observes it. Triage calls it too
+/// before the removal of a tree (fleetd-p3 ticket 13).
+pub fn rescue_now(
     conn: &mut Connection,
     ctx: &JobCtx<'_>,
     jobs: &dyn RunJob,
@@ -621,7 +622,7 @@ fn immediate(conn: &mut Connection) -> Result<Transaction<'_>> {
 
 /// The fleet clock. A ledger that no fleetd ever ticked has no `fleetd`
 /// row: its clock is 0.
-fn fleet_clock(conn: &Connection) -> Result<FleetSeconds> {
+pub fn fleet_clock(conn: &Connection) -> Result<FleetSeconds> {
     match clock_store::read(conn) {
         Ok(clock) => Ok(clock),
         Err(e)

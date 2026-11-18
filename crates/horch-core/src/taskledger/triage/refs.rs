@@ -4,18 +4,28 @@
 //! its work at `refs/horch/trash/<name>/<UTC yyyymmddThhmmssZ>` until
 //! [`gc`] deletes it, 30 days on. The time is in the name, so a folder that
 //! never had a ledger row is dated too. Local refs only: no remote needed.
+//!
+//! The rescue refs of the custody jobs sit beside them, at
+//! `refs/horch/rescue/<worktree id>/<n>`. [`gc`] never deletes one
+//! (MAP.md of fleetd-p3, Q6).
 
 use std::path::Path;
 
 use anyhow::{bail, Result};
 use chrono::{DateTime, NaiveDateTime, Utc};
 
+use crate::runtime::context::{EnvSource, ProcessEnv};
+use crate::runtime::fault::Faults;
 use crate::taskledger::git::Git;
 
 /// The prefix of every archive ref.
 pub const ARCHIVE: &str = "refs/horch/archive/";
 /// The prefix of every trash ref.
 pub const TRASH: &str = "refs/horch/trash/";
+/// The prefix of every rescue ref. Triage writes none and deletes none.
+pub const RESCUE: &str = "refs/horch/rescue/";
+/// The `HORCH_FAULT` point that makes the read-back of a ref write fail.
+pub const READ_BACK_FAULT: &str = "triage-ref-read-back";
 /// How long a trash ref stays before [`gc`] deletes it.
 pub const TRASH_DAYS: i64 = 30;
 
@@ -58,7 +68,13 @@ pub fn write(git: &Git, root: &Path, refname: &str, tip: &str) -> Result<()> {
     }
     let expect = old.unwrap_or_default();
     git.run(root, &["update-ref", refname, tip, &expect])?;
-    if read(git, root, refname).as_deref() != Some(tip) {
+    let faults = Faults::parse(ProcessEnv.var("HORCH_FAULT").as_deref());
+    let back = if faults.has(READ_BACK_FAULT) {
+        None
+    } else {
+        read(git, root, refname)
+    };
+    if back.as_deref() != Some(tip) {
         bail!("{refname} does not hold {tip} after the write; nothing removed");
     }
     Ok(())
@@ -89,7 +105,7 @@ pub fn restorable(git: &Git, root: &Path, name: &str) -> Result<Option<String>> 
 
 /// `horch ledger gc`: delete every trash ref older than [`TRASH_DAYS`] at
 /// `now`, and return them. A ref whose name has no time is kept. Only trash
-/// refs are ever deleted here.
+/// refs are ever deleted here: an archive or [`RESCUE`] ref stays.
 pub fn gc(git: &Git, root: &Path, now: DateTime<Utc>) -> Result<Vec<String>> {
     let mut deleted = Vec::new();
     for r in refs_under(git, root, TRASH)? {

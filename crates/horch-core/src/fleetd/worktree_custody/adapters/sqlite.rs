@@ -193,12 +193,13 @@ pub fn of_task(conn: &Connection, task_id: &str) -> Result<Option<WorktreeRow>> 
     one(conn, &sql, task_id)
 }
 
-/// The row of the folder `path`; `None` when no row has that path.
+/// The row of the folder `path` that is not `removed`; `None` when no such
+/// row has that path. A `removed` row is history, read by its id.
 pub fn by_path(conn: &Connection, path: &str) -> Result<Option<WorktreeRow>> {
     let sql = format!(
         "SELECT {COLUMNS} FROM worktrees w
          LEFT JOIN worktree_modes m ON m.worktree_id = w.worktree_id
-         WHERE w.path = ?1"
+         WHERE w.path = ?1 AND w.state <> 'removed'"
     );
     one(conn, &sql, path)
 }
@@ -515,6 +516,32 @@ mod tests {
                 ("wt2".into(), None, "orphaned".into(), "adopt".into()),
             ],
             "1 event for each new row, and none for the facts"
+        );
+    }
+
+    #[test]
+    fn by_path_gives_the_live_row_and_not_a_removed_row_of_its_path() {
+        let mut l = ledger();
+        let old = new_row(&l, "wt1");
+        l.store
+            .immediate(|tx| insert_orphan(tx, None, &old, cause("adopt")))
+            .unwrap();
+        move_to(&mut l, "wt1", WorktreeState::Rescued);
+        move_to(&mut l, "wt1", WorktreeState::Removed);
+        assert_eq!(by_path(l.store.conn(), &old.path).unwrap(), None);
+        // A folder at the path of the removed row is a new row.
+        let new = NewWorktree {
+            worktree_id: "wt2".into(),
+            ..old.clone()
+        };
+        l.store
+            .immediate(|tx| insert_orphan(tx, None, &new, cause("adopt")))
+            .unwrap();
+        let got = by_path(l.store.conn(), &old.path).unwrap().unwrap();
+        assert_eq!(got.worktree_id, "wt2");
+        assert_eq!(
+            get(l.store.conn(), "wt1").unwrap().unwrap().state,
+            WorktreeState::Removed
         );
     }
 

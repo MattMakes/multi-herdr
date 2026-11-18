@@ -244,6 +244,7 @@ fn trf_35_triage_finish_resumes_the_parked_task_instead_of_queuing_a_new_one() {
         gh: None,
         remote: None,
         primary: "opus",
+        jobs: &TestJobs,
     };
     let a = apply::apply(&mut w.store, &env, &rows, &decided)
         .unwrap()

@@ -717,14 +717,15 @@ fn gate_name(run: &Run) -> String {
 
 /// Record [`gate_dir`] as 1 open scratch worktree row of `run` at `tip`, so
 /// `run close` removes it (TRF-19). The next gate reuses the row: it holds
-/// the folder's path, which is unique. A row of an earlier run with the
-/// same slug moves to `run`.
+/// the folder's path, which is unique among the rows that are not
+/// `removed`. A row of an earlier run with the same slug moves to `run`. A
+/// `removed` row is history: the gate gets a new row.
 fn gate_worktree_row(conn: &Connection, run: &Run, tip: &str) -> Result<()> {
     let path = gate_dir(run).to_string_lossy().into_owned();
     let base = run.run_branch.as_deref().unwrap_or_default();
     let open = word(WorktreeStatus::Open);
     let found: Option<String> = optional(conn.query_row(
-        "SELECT worktree_id FROM worktrees WHERE path = ?1",
+        "SELECT worktree_id FROM worktrees WHERE path = ?1 AND state <> 'removed'",
         [&path],
         |r| r.get(0),
     ))?;
@@ -1237,6 +1238,31 @@ mod tests {
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap()
+    }
+
+    #[test]
+    fn the_gate_reuses_no_removed_row_of_its_folder() {
+        let (dir, mut store, run) = world();
+        let logs = dir.path().join("logs");
+        gate(&mut store, &run, "true", &logs);
+        store
+            .conn()
+            .execute(
+                "UPDATE worktrees SET status = 'cleaned', state = 'removed' WHERE path = ?1",
+                [gate_dir(&run).to_string_lossy()],
+            )
+            .unwrap();
+        gate(&mut store, &run, "true", &logs);
+        let mut rows = gate_rows(&store, &run);
+        rows.sort();
+        assert_eq!(
+            rows,
+            [
+                ("cleaned".to_string(), 1, run.run_id.clone()),
+                ("open".to_string(), 1, run.run_id.clone()),
+            ],
+            "the removed row stays as history, and the gate has a new row"
+        );
     }
 
     #[test]

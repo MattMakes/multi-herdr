@@ -1856,12 +1856,20 @@ fn assigns(clause: &[String], column: &str) -> bool {
 
 /// The direct state writes that are not a state change of a row in flight:
 /// the path, a part of the SQL text, and why it is exempt.
-const STATE_WRITES_EXEMPT: &[(&str, &str, &str)] = &[(
-    "horch-core/src/taskledger/schema.rs",
-    "UPDATE worktrees SET state = CASE",
-    "the release backfill of Phase 3 gives each row its first state \
-     (docs/tickets/fleetd-p3/MAP.md, Q19)",
-)];
+const STATE_WRITES_EXEMPT: &[(&str, &str, &str)] = &[
+    (
+        "horch-core/src/taskledger/schema.rs",
+        "UPDATE worktrees SET state = CASE",
+        "the release backfill of Phase 3 gives each row its first state \
+         (docs/tickets/fleetd-p3/MAP.md, Q19)",
+    ),
+    (
+        "horch-core/src/taskledger/schema.rs",
+        "UPDATE worktrees SET state = 'removed' WHERE status IN",
+        "the worktree_paths step makes each row that today's triage archived or \
+         trashed removed: its folder is gone (fleetd-p3 ticket 13, Q5)",
+    ),
+];
 
 fn exempt(found: &str) -> bool {
     STATE_WRITES_EXEMPT

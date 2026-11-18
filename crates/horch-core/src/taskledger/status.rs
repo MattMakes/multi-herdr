@@ -151,7 +151,8 @@ impl Parked {
             parked.count += 1;
             let stored: Option<(i64, String)> = optional(conn.query_row(
                 "SELECT bytes, bytes_measured_at FROM worktrees
-                     WHERE path = ?1 AND bytes IS NOT NULL AND bytes_measured_at IS NOT NULL",
+                     WHERE path = ?1 AND state <> 'removed'
+                         AND bytes IS NOT NULL AND bytes_measured_at IS NOT NULL",
                 [&path],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             ))?;

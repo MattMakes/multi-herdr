@@ -597,7 +597,7 @@ fn insert_worktree(
         "INSERT INTO worktrees (worktree_id, task_id, worker_id, repo_root, path, branch, base,
             base_commit, status, landed_commit, bytes_on_disk, origin, import_raw_id, created_at, reason)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'import', ?12, ?13, ?14)
-         ON CONFLICT(path) DO NOTHING",
+         ON CONFLICT(path) WHERE state <> 'removed' DO NOTHING",
         params![
             id,
             record.map(|(_, t, _, _)| t),

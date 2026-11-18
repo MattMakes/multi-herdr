@@ -2,6 +2,8 @@
 //! a temp dir, with a git that records every call (#308, sections 3 and 5).
 
 mod i308_support;
+#[path = "common/test_jobs.rs"]
+mod test_jobs;
 #[path = "common/warm.rs"]
 mod warm;
 
@@ -13,6 +15,7 @@ use horch_core::taskledger::runs::{self, NewRun};
 use horch_core::taskledger::triage::apply::{self, Applied, Env};
 use horch_core::taskledger::triage::{self, refs, reply, Measure, Row};
 use i308_support::{commit, git, write, World};
+use test_jobs::TestJobs;
 
 /// A git that writes each call to `<top>/git.log`, then runs the host git.
 /// With `fail_trash`, a write of a trash ref fails.
@@ -67,16 +70,19 @@ fn decide_with(
         gh: gh.map(|g| g.0),
         remote: gh.map(|g| g.1),
         primary: "opus",
+        jobs: &TestJobs,
     };
     let mut out = apply::apply(&mut w.store, &env, &rows, &decided).unwrap();
     out.remove(0)
 }
 
+/// `col` of the newest row of the folder `path`: a restore adds a row, and
+/// the removed row of the folder stays as history.
 fn column(w: &World, path: &Path, col: &str) -> Option<String> {
     w.store
         .conn()
         .query_row(
-            &format!("SELECT {col} FROM worktrees WHERE path = ?1"),
+            &format!("SELECT {col} FROM worktrees WHERE path = ?1 ORDER BY rowid DESC LIMIT 1"),
             [path.to_string_lossy()],
             |r| r.get(0),
         )
@@ -213,7 +219,7 @@ fn archive_keeps_the_branch_and_an_untracked_file_and_restore_brings_it_back() {
     // Archived rows are settled: the next triage does not list them.
     assert!(rows(&w, &g).is_empty());
 
-    let said = apply::restore(&w.store, &g, &w.root, "feat").unwrap();
+    let said = apply::restore(&w.store, &g, &TestJobs, &w.root, "feat").unwrap();
     assert!(said.starts_with("restored "), "{said}");
     assert_eq!(
         std::fs::read_to_string(path.join("notes.txt")).unwrap(),
@@ -238,7 +244,7 @@ fn delete_writes_a_trash_ref_removes_folder_and_branch_and_restore_works() {
     assert!(trash.starts_with("refs/horch/trash/feat/"), "{trash}");
     assert_eq!(w.rev(&trash), tip);
     assert_eq!(column(&w, &path, "status").as_deref(), Some("trashed"));
-    apply::restore(&w.store, &g, &w.root, "feat").unwrap();
+    apply::restore(&w.store, &g, &TestJobs, &w.root, "feat").unwrap();
     assert_eq!(git(&path, &["rev-parse", "HEAD"]), tip);
 }
 

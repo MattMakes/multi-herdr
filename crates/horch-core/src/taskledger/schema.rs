@@ -26,8 +26,12 @@ pub const PHASE_3_VERSION: i64 = PHASE_2_VERSION + 1;
 /// kinds of this binary (`events_kinds`).
 pub const EVENT_KINDS_VERSION: i64 = PHASE_3_VERSION + 1;
 
+/// The version of the step that builds `worktrees` again with its `path`
+/// unique only among the rows that are not `removed` (`worktree_paths`).
+pub const WORKTREE_PATHS_VERSION: i64 = EVENT_KINDS_VERSION + 1;
+
 /// The schema version this binary writes.
-pub const VERSION: i64 = EVENT_KINDS_VERSION;
+pub const VERSION: i64 = WORKTREE_PATHS_VERSION;
 
 /// A rule that applies to rows this ledger writes, not to imported ones
 /// (section 11.2): `CHECK (origin = 'import' OR <expr>)`.
@@ -690,6 +694,86 @@ INSERT INTO sqlite_sequence (name, seq) VALUES ('events', {seq});"
     Ok(())
 }
 
+/// `worktrees` as version [`WORKTREE_PATHS_VERSION`] builds it, with the
+/// name `name`: the table, then its index, which names `worktrees`. The
+/// columns are those of [`v5`], [`V6`] and [`phase_3`], in that order, and
+/// `path` is unique only among the rows that are not `removed`.
+fn worktrees_paths_ddl(name: &str) -> (String, String) {
+    let table = worktrees_table()
+        .replace(
+            "CREATE TABLE worktrees (",
+            &format!("CREATE TABLE {name} ("),
+        )
+        .replace(
+            "\n    path TEXT NOT NULL UNIQUE,",
+            "\n    path TEXT NOT NULL,",
+        )
+        .replace(V1_WORKTREE_STATUS, &WorktreeStatus::check("status"))
+        .replace(
+            "\n    reason TEXT\n);",
+            &format!(
+                "\n    reason TEXT,
+    archive_ref TEXT,
+    decision TEXT {decision},
+    decided_at TEXT,
+    bytes_freed INTEGER,
+    bytes INTEGER,
+    bytes_measured_at TEXT,
+    state TEXT NOT NULL DEFAULT 'orphaned' {WORKTREE_STATE},
+    owner_attempt TEXT REFERENCES attempts(id),
+    head_sha TEXT,
+    dirty INTEGER NOT NULL DEFAULT 0,
+    rescue_ref TEXT,
+    seen_at TEXT\n);",
+                decision = TriageDecision::check("decision")
+            ),
+        );
+    let index =
+        "CREATE UNIQUE INDEX worktrees_live_path ON worktrees (path) WHERE state <> 'removed';"
+            .to_string();
+    (table, index)
+}
+
+/// Version [`WORKTREE_PATHS_VERSION`]: `worktrees` built again, so 1 path
+/// is unique only among the rows that are not `removed`. A removed row
+/// keeps its path as history, and a restore makes a new row at that path
+/// (fleetd-p3 ticket 13).
+///
+/// A row that today's triage `archived` or `trashed` has no folder: triage
+/// writes those words only after the removal. The Phase 3 backfill made it
+/// `orphaned`; this step makes it `removed`, from the rows alone, so the
+/// path is free for a restore.
+///
+/// The new table comes from the text of the code
+/// ([`worktrees_paths_ddl`]), never from the stored text. Each row keeps
+/// each of its columns. `worktrees` has no index and no trigger of its
+/// own before this step. The rows of `worktree_modes` point at
+/// `worktrees`: [`migrate`] turns the foreign keys off around it and checks
+/// them before the commit.
+fn worktree_paths(conn: &Connection) -> Result<()> {
+    let (table, index) = worktrees_paths_ddl("worktrees_paths");
+    conn.execute_batch(&table)?;
+    let columns = column_names(conn, "worktrees_paths")?;
+    if column_names(conn, "worktrees")? != columns {
+        bail!(
+            "the worktrees table does not have the columns of version {}",
+            WORKTREE_PATHS_VERSION - 1
+        );
+    }
+    conn.execute_batch(&format!(
+        "INSERT INTO worktrees_paths ({columns}) SELECT {columns} FROM worktrees;
+DROP TABLE worktrees;
+ALTER TABLE worktrees_paths RENAME TO worktrees;
+UPDATE worktrees SET state = 'removed'
+    WHERE status IN ('{archived}', '{trashed}') AND state <> 'removed';
+{index}",
+        columns = columns.join(", "),
+        archived = WorktreeStatus::Archived,
+        trashed = WorktreeStatus::Trashed,
+    ))?;
+    Ok(())
+}
+
 /// 1 live attempt, `<task id>/A<attempt>`, for each live worker with a task.
 fn attempts_backfill() -> String {
     let live: Vec<String> = WorkerStatus::ALL
@@ -1173,6 +1257,10 @@ fn migrate_unchecked(
     if due(EVENT_KINDS_VERSION) {
         events_kinds(&tx).context("building events again with the event kinds of this binary")?;
     }
+    if due(WORKTREE_PATHS_VERSION) {
+        worktree_paths(&tx).context("building worktrees again with 1 live row for each path")?;
+        no_broken_reference(&tx, WORKTREE_PATHS_VERSION)?;
+    }
     tx.pragma_update(None, "user_version", target)?;
     tx.commit()?;
     Ok(())
@@ -1628,7 +1716,7 @@ mod v7_tests {
         ];
         // The Phase 2 step reads the stored text of `tasks`, so it runs on
         // the connection.
-        assert_eq!(steps.len() as i64 + 3, VERSION, "add the new step here");
+        assert_eq!(steps.len() as i64 + 4, VERSION, "add the new step here");
         for sql in steps.iter().take(version as usize) {
             conn.execute_batch(sql).unwrap();
         }
@@ -1640,6 +1728,9 @@ mod v7_tests {
         }
         if version >= EVENT_KINDS_VERSION {
             events_kinds(&conn).unwrap();
+        }
+        if version >= WORKTREE_PATHS_VERSION {
+            worktree_paths(&conn).unwrap();
         }
         conn.execute("INSERT INTO projects VALUES ('p', '/r', 'now')", [])
             .unwrap();
@@ -1849,6 +1940,116 @@ ALTER TABLE events_old RENAME TO events;
         Ok(conn.last_insert_rowid())
     }
 
+    /// Insert the worktree `id` at `path` in `state`.
+    fn insert_tree(
+        conn: &Connection,
+        id: &str,
+        path: &str,
+        state: &str,
+    ) -> rusqlite::Result<usize> {
+        conn.execute(
+            "INSERT INTO worktrees (worktree_id, repo_root, path, branch, base, status, state, created_at)
+             VALUES (?1, '/r', ?2, 'b', 'main', 'cleaned', ?3, 'now')",
+            rusqlite::params![id, path, state],
+        )
+    }
+
+    #[test]
+    fn worktree_paths_permits_removed_rows_and_1_live_row_of_a_path() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&mut conn).unwrap();
+        insert_tree(&conn, "w1", "/r/.worktrees/a", "removed").unwrap();
+        insert_tree(&conn, "w2", "/r/.worktrees/a", "removed").unwrap();
+        insert_tree(&conn, "w3", "/r/.worktrees/a", "active").unwrap();
+        let n: i64 = conn
+            .query_row("SELECT count(*) FROM worktrees", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 3);
+        let index: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name = 'worktrees_live_path'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(index.contains("WHERE state <> 'removed'"), "{index}");
+    }
+
+    #[test]
+    fn worktree_paths_refuses_2_live_rows_of_1_path() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&mut conn).unwrap();
+        insert_tree(&conn, "w1", "/r/.worktrees/a", "orphaned").unwrap();
+        let e = insert_tree(&conn, "w2", "/r/.worktrees/a", "reserved").unwrap_err();
+        assert!(e.to_string().contains("UNIQUE"), "{e}");
+        // A live row cannot take the path of a live row by an update.
+        insert_tree(&conn, "w3", "/r/.worktrees/a", "removed").unwrap();
+        assert!(conn
+            .execute(
+                "UPDATE worktrees SET state = 'active' WHERE worktree_id = 'w3'",
+                []
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn worktree_paths_step_keeps_each_row_and_column() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ledger.sqlite3");
+        file_at(&path, WORKTREE_PATHS_VERSION - 1);
+        let mut conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "INSERT INTO worktrees (worktree_id, repo_root, path, branch, base, status, created_at,
+                 decision, archive_ref, bytes, bytes_measured_at, state, head_sha, dirty, rescue_ref, seen_at)
+             VALUES ('w1', '/r', '/r/.worktrees/a', 'a', 'main', 'archived', 'then', 'ARCHIVE',
+                 'refs/horch/archive/a', 7, 'now', 'removed', 'abc', 1, 'refs/horch/rescue/w1/1', 'now');
+             INSERT INTO worktrees (worktree_id, repo_root, path, branch, base, status, created_at, state)
+             VALUES ('w2', '/r', '/r/.worktrees/b', 'b', 'main', 'open', 'then', 'active');
+             INSERT INTO runs (run_id, project_id, slug, status, started_at) VALUES ('r1', 'p', 's', 'active', 'now');
+             INSERT INTO worktree_modes (worktree_id, run_id, name, scratch) VALUES ('w2', 'r1', 'b', 0);",
+        )
+        .unwrap();
+        let rows = |conn: &Connection| -> Vec<Vec<Option<String>>> {
+            let cols = column_names(conn, "worktrees").unwrap();
+            let sql = format!(
+                "SELECT {} FROM worktrees ORDER BY worktree_id",
+                cols.iter()
+                    .map(|c| format!("CAST({c} AS TEXT)"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            let mut stmt = conn.prepare(&sql).unwrap();
+            stmt.query_map([], |r| {
+                (0..cols.len())
+                    .map(|i| r.get(i))
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+        };
+        // A tree that today's triage archived has no folder: it is removed.
+        conn.execute_batch(
+            "INSERT INTO worktrees (worktree_id, repo_root, path, branch, base, status, created_at, state)
+             VALUES ('w4', '/r', '/r/.worktrees/c', 'c', 'main', 'trashed', 'then', 'orphaned');",
+        )
+        .unwrap();
+        let mut before = rows(&conn);
+        let columns = column_names(&conn, "worktrees").unwrap();
+        let state = columns.iter().position(|c| c == "state").unwrap();
+        before[2][state] = Some("removed".into());
+        migrate(&mut conn).unwrap();
+        assert_eq!(rows(&conn), before);
+        assert_eq!(column_names(&conn, "worktrees").unwrap(), columns);
+        let modes: i64 = conn
+            .query_row("SELECT count(*) FROM worktree_modes", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(modes, 1);
+        // The new row of a restore takes the path of a removed row.
+        insert_tree(&conn, "w3", "/r/.worktrees/a", "reserved").unwrap();
+        insert_tree(&conn, "w5", "/r/.worktrees/c", "reserved").unwrap();
+    }
+
     #[test]
     fn events_kinds_step_takes_the_new_kinds_and_keeps_each_row_and_id() {
         let dir = tempfile::tempdir().unwrap();
@@ -1862,7 +2063,7 @@ ALTER TABLE events_old RENAME TO events;
             .unwrap();
         let before = all_events(&conn);
         assert_eq!(before.len(), 9_999);
-        migrate(&mut conn).unwrap();
+        migrate_to(&mut conn, EVENT_KINDS_VERSION).unwrap();
         assert_eq!(all_events(&conn), before);
         assert_eq!(insert_doorbell(&conn).unwrap(), 10_001);
         let indexes: Vec<String> = conn
