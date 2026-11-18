@@ -302,3 +302,39 @@ pub fn task_and_idea(
         )
         .optional()?)
 }
+
+/// Each sub-orchestrator attempt of the idea `idea_id` (no task), oldest
+/// first, with its outcome.
+pub fn idea_attempts(
+    conn: &Connection,
+    idea_id: &str,
+) -> Result<Vec<(AttemptRow, Option<String>)>> {
+    let sql = format!(
+        "SELECT {ATTEMPT_COLUMNS}, a.outcome FROM attempts a
+         JOIN workers w ON w.worker_id = a.worker_id
+         WHERE a.idea_id = ?1 AND a.task_id IS NULL ORDER BY a.rowid"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([idea_id], |r| Ok((attempt(r)?, r.get(7)?)))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// The idea of each sub-orchestrator attempt that is not ended, each once.
+pub fn ideas_with_open_attempts(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT idea_id FROM attempts
+         WHERE task_id IS NULL AND idea_id IS NOT NULL AND state <> 'ended' ORDER BY 1",
+    )?;
+    let rows = stmt.query_map([], |r| r.get(0))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// Record the idea `idea_id` of the sub-orchestrator attempt `id`, which
+/// fleetd launches (`via = push`).
+pub fn set_idea(conn: &Connection, id: &str, idea_id: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE attempts SET idea_id = ?2, via = 'push' WHERE id = ?1",
+        params![id, idea_id],
+    )?;
+    Ok(())
+}
