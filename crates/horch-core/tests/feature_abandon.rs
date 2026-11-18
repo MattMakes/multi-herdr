@@ -330,6 +330,15 @@ impl World {
         .collect()
     }
 
+    /// `branch` moved to `abandoned` 1 time, and its rescue ref keeps
+    /// `tip`.
+    fn assert_abandoned_once(&self, branch: &str, tip: &str) {
+        assert_eq!(self.state(branch), "abandoned");
+        assert_eq!(self.moves("task_branch", branch, "abandoned"), 1);
+        let rescue = self.rescue_ref(branch).unwrap();
+        assert_eq!(git(&self.repo, &["rev-parse", &rescue]), tip);
+    }
+
     /// The count of moves of the `entity` `id` to `to`.
     fn moves(&self, entity: &str, id: &str, to: &str) -> i64 {
         self.store
@@ -676,18 +685,8 @@ fn crash_in_the_middle_completes_on_the_next_pass() {
     assert_eq!(w.state(&a), "building");
 
     // Fault point 3: the commit, and fleetd dies before the stop of the
-    // live attempt.
-    let config = w.config.clone();
-    let jobs = JobCtx {
-        guard: None,
-        config: &config,
-        needs_you: &NeedsYouList,
-    };
-    let rescued = commands::rescue_feature(w.store.conn(), &port, &w.repo, FEATURE).unwrap();
-    let done = w
-        .store
-        .immediate(|tx| commands::record_feature(&jobs, tx, FEATURE, &rescued, WHY))
-        .unwrap();
+    // live attempt (the use case commits; the caller stops after it).
+    let done = w.abandon(&port).unwrap();
     assert_eq!(done.to_stop(), std::slice::from_ref(&worker));
     assert_eq!(w.rescue_refs(), second, "no second ref for the same tip");
     assert_eq!(w.feature_state(), "abandoned");
@@ -707,12 +706,8 @@ fn crash_in_the_middle_completes_on_the_next_pass() {
 
     // Each effect happened 1 time, and no tip is lost.
     assert_eq!(w.rescue_refs(), second);
-    for (branch, tip) in [(&a, &a_tip), (&b, &b_tip)] {
-        assert_eq!(w.state(branch), "abandoned");
-        assert_eq!(w.moves("task_branch", branch, "abandoned"), 1);
-        let rescue = w.rescue_ref(branch).unwrap();
-        assert_eq!(git(&w.repo, &["rev-parse", &rescue]), *tip);
-    }
+    w.assert_abandoned_once(&a, &a_tip);
+    w.assert_abandoned_once(&b, &b_tip);
     assert_eq!(w.moves("feature", FEATURE, "abandoned"), 1);
     assert_eq!(w.moves("task", &live, "cancelled"), 1);
     assert_eq!(w.task_status(&live), "cancelled");
