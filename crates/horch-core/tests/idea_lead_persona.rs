@@ -78,7 +78,9 @@ fn idea_lead_loads_from_the_roster() {
     assert_eq!(t.base.as_deref(), Some("fleet-idea-lead"));
     assert_eq!(t.model.as_deref(), Some("opus"));
     assert_eq!(t.effort.as_deref(), Some("medium"));
-    assert_eq!(t.fallbacks, ["codex-sol"]);
+    // A fallback launches without the sandbox block, so it names none.
+    assert!(t.fallbacks.is_empty(), "{:?}", t.fallbacks);
+    assert!(t.no_fallback_reason.is_some());
     assert!(
         r.base("fleet-idea-lead").is_some(),
         "the base _base/fleet-idea-lead.md is compiled in"
@@ -100,7 +102,7 @@ fn idea_lead_is_interactive() {
         t.mode.is_some(),
         "the file states the mode, not the default"
     );
-    assert_eq!(profile.fallback(), Some("codex-sol"));
+    assert_eq!(profile.fallback(), None);
 }
 
 #[test]

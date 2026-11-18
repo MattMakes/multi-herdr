@@ -6,8 +6,8 @@ agent: claude
 model: opus
 # medium: the model guide default (design, "Worker profiles and adapters").
 effort: medium
-# When the Opus pool cannot serve the launch (RR-11).
-fallbacks: [codex-sol]
+fallbacks: []
+no_fallback_reason: "A fallback launches without the sandbox block of this file, so the worker sandbox of SR-8 would be gone. When the Opus pool is out, the task waits."
 # Interactive: it interviews the operator in its herdr pane (design, "Exec or
 # interactive": sub-orchestrators are interactive).
 mode: interactive

@@ -9,6 +9,8 @@ use serde::Serialize;
 
 use crate::exeid::{exe_identity, ExeIdentity};
 use crate::fleetd::ideas::application::needs_you;
+use crate::fleetd::worker_profiles::adapters::check_sandbox::NO_CHECK_SANDBOX_KIND;
+use crate::fleetd::worker_profiles::adapters::sandbox_rules::NO_SANDBOX;
 use crate::fleetd::worktree_custody::application::queries::{self as custody, DiskTotal};
 
 use super::model::{TaskStatus, WorktreeStatus};
@@ -590,10 +592,19 @@ pub fn render(r: &Report) -> String {
     out
 }
 
-/// The open needs-you items; nothing when there are none.
+/// The open needs-you items; nothing when there are none. A persona whose
+/// item says it has no sandbox on this host gets its own line first (SR-8,
+/// A37): fleetd dispatches none of its tasks.
 fn render_needs_you(out: &mut String, n: &NeedsYou) {
     if n.items.is_empty() {
         return;
+    }
+    for i in n.items.iter().filter(|i| i.kind == NO_CHECK_SANDBOX_KIND) {
+        let persona = i
+            .key
+            .strip_prefix(&format!("{NO_CHECK_SANDBOX_KIND}:"))
+            .unwrap_or(&i.key);
+        let _ = writeln!(out, "Profile {persona}: {NO_SANDBOX}.");
     }
     let _ = writeln!(out, "Needs you ({}):", n.open);
     for i in &n.items {

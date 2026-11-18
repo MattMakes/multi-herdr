@@ -14,7 +14,13 @@
 //! On a host with no platform sandbox, a persona of another CLI has no
 //! check sandbox: fleetd does not dispatch it, and 1 needs-you item for
 //! each persona says why (Q-A).
+//!
+//! A worker profile that profile validation refuses on this host (SR-8,
+//! A37; `sandbox_rules.rs`) takes the same path: no dispatch and 1
+//! needs-you item, unless its fallback has a sandbox here and takes the
+//! task.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -27,9 +33,12 @@ use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 use crate::fleetd::task_execution::adapters::task_files::attempt_dir;
 use crate::fleetd::task_execution::application::dispatch::{CheckSandboxes, NO_CHECK_SANDBOX};
 use crate::fleetd::task_execution::domain::dispatch::Hold;
+use crate::fleetd::worker_profiles::adapters::sandbox_rules;
 use crate::fleetd::worker_profiles::application::ports::LaunchSpec;
 use crate::fleetd::worker_profiles::domain::operator_boundary::OperatorPaths;
+use crate::roster::Roster;
 use crate::taskledger::finish::CodexSandbox;
+use crate::taskledger::tasks;
 use crate::taskledger::workers::Worker;
 
 /// The kind of the needs-you item of a persona with no check sandbox. Its
@@ -46,6 +55,12 @@ pub struct WorkerSandboxes {
     pub fleet_root: PathBuf,
     /// Why this host has no platform sandbox, or `None` when it has one.
     pub gap: Option<NotSupported>,
+    /// The worker profiles that profile validation refuses on this host,
+    /// with the reason of each (SR-8, A37; `sandbox_rules.rs`).
+    pub refused: BTreeMap<String, String>,
+    /// The roster fallback of each persona. `None` for a persona with a
+    /// `no_fallback_reason`: its task never moves to another persona.
+    pub fallbacks: BTreeMap<String, Option<String>>,
 }
 
 impl WorkerSandboxes {
@@ -55,7 +70,82 @@ impl WorkerSandboxes {
             codex,
             fleet_root,
             gap: horch_platform::sandbox::host_problem(None),
+            refused: BTreeMap::new(),
+            fallbacks: BTreeMap::new(),
         }
+    }
+
+    /// These sandboxes with the profile refusals and the fallbacks of
+    /// `roster`. `seats` are the `orchestrator_seats` of `fleet.toml`.
+    pub fn with_profiles(mut self, roster: &Roster, seats: &[String]) -> WorkerSandboxes {
+        self.refused = sandbox_rules::refused(roster, seats, &self.fleet_root);
+        self.fallbacks = roster
+            .names()
+            .into_iter()
+            .filter_map(|name| {
+                let t = roster.get(name)?;
+                let fallback = match t.no_fallback_reason {
+                    Some(_) => None,
+                    None => t.profile().fallback,
+                };
+                Some((name.to_string(), fallback))
+            })
+            .collect();
+        self
+    }
+
+    /// Give each task of `held` that waits for a persona with no sandbox
+    /// here to its fallback, when the fallback has a sandbox here (the
+    /// fallback rule of the roster: the fallback of the task, else the
+    /// first fallback of the persona), in `tx`. Each moved task leaves
+    /// `held`, so it opens no needs-you item, and the next dispatch pass
+    /// binds it. Run it before [`WorkerSandboxes::open_items`].
+    pub fn move_to_fallbacks(&self, tx: &Connection, held: &mut Vec<(String, Hold)>) -> Result<()> {
+        let mut kept = Vec::with_capacity(held.len());
+        for (task_id, hold) in held.drain(..) {
+            let fallback = match &hold {
+                Hold::Persona { persona, cause } if cause == NO_CHECK_SANDBOX => {
+                    let task = tasks::get(tx, &task_id)?;
+                    self.fallback_of(persona, task.fallback_persona.as_deref())
+                        .map(|fb| (task, persona.clone(), fb))
+                }
+                _ => None,
+            };
+            let Some((mut task, persona, fb)) = fallback else {
+                kept.push((task_id, hold));
+                continue;
+            };
+            let why = self.why(&persona);
+            task.fallback_persona = Some(fb);
+            tasks::fallback(tx, &task, &format!("{persona}: {why}"))?;
+        }
+        *held = kept;
+        Ok(())
+    }
+
+    /// The fallback of a task of `persona` whose own fallback is `own`,
+    /// when it has a sandbox here. A persona with a `no_fallback_reason`
+    /// has none.
+    fn fallback_of(&self, persona: &str, own: Option<&str>) -> Option<String> {
+        let fallback = match self.fallbacks.get(persona) {
+            Some(None) => None,
+            Some(Some(roster)) => Some(own.unwrap_or(roster)),
+            None => own,
+        };
+        fallback
+            .filter(|fb| *fb != persona && self.supported(fb))
+            .map(str::to_string)
+    }
+
+    /// Why `persona` has no sandbox here.
+    fn why(&self, persona: &str) -> String {
+        if let Some(reason) = self.refused.get(persona) {
+            return reason.clone();
+        }
+        self.gap.as_ref().map_or_else(
+            || "the sandbox did not start".to_string(),
+            |g| g.to_string(),
+        )
     }
 
     /// Open 1 needs-you item for each persona of `held` that has the hold
@@ -77,14 +167,18 @@ impl WorkerSandboxes {
             }
             done.push(persona);
             let key = format!("{NO_CHECK_SANDBOX_KIND}:{persona}");
-            let why = self.gap.as_ref().map_or_else(
-                || "the sandbox did not start".to_string(),
-                |g| g.to_string(),
-            );
-            let text = format!(
-                "persona {persona} has {NO_CHECK_SANDBOX}: {why}. fleetd dispatches no task \
-                 of {persona}. Install the sandbox host, or give its tasks another persona."
-            );
+            let text = match self.refused.get(persona.as_str()) {
+                Some(why) => format!(
+                    "profile {persona} is {why}. fleetd dispatches no task of {persona}. \
+                     Give the profile a sandbox that denies the 3 operator acts, or give its \
+                     tasks another persona."
+                ),
+                None => format!(
+                    "persona {persona} has {NO_CHECK_SANDBOX}: {}. fleetd dispatches no task \
+                     of {persona}. Install the sandbox host, or give its tasks another persona.",
+                    self.why(persona)
+                ),
+            };
             needs_you.open_item(
                 tx,
                 &NewItem {
@@ -131,7 +225,8 @@ impl WorkerSandboxes {
 
 impl CheckSandboxes for WorkerSandboxes {
     fn supported(&self, persona: &str) -> bool {
-        self.codex.personas.iter().any(|p| p == persona) || self.gap.is_none()
+        !self.refused.contains_key(persona)
+            && (self.codex.personas.iter().any(|p| p == persona) || self.gap.is_none())
     }
 }
 

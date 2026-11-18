@@ -3,6 +3,7 @@
 //! fallback rules (design section 13.3).
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use anyhow::{bail, Result};
 
@@ -21,6 +22,7 @@ use super::{
 use crate::compaction::window::{
     headroom, native_trigger, threshold, BASE_THRESHOLD, HEADROOM_FLOOR,
 };
+use crate::fleetd::worker_profiles::domain::operator_boundary::{Boundary, NotSupported};
 use crate::harness::capabilities::TriggerRule;
 use crate::harness::launch::FORBIDDEN_ENV;
 use crate::harness::HarnessKind;
@@ -1772,6 +1774,24 @@ const CLAUDE_ONLY_TOOLS: [&str; 7] = [
     "Skill",
 ];
 
+/// The operator boundary of the adapter of `t` on this OS (SR-8, A37): for
+/// each of the 3 operator acts, whether the sandbox config that the adapter
+/// renders for `t` denies it, or [`NotSupported`] when the adapter has no
+/// sandbox here. `fleetd::worker_profiles::adapters::sandbox_rules` refuses
+/// a worker profile on this verdict.
+pub fn operator_boundary(t: &Teammate, fleet_root: &Path) -> Result<Boundary, NotSupported> {
+    use crate::harness::{antigravity, claude, codex, none, opencode, pi, prime};
+    match t.agent {
+        HarnessKind::Claude => claude::operator_boundary(t, fleet_root),
+        HarnessKind::Codex => codex::operator_boundary(t, fleet_root),
+        HarnessKind::OpenCode => opencode::operator_boundary(t, fleet_root),
+        HarnessKind::Pi => pi::operator_boundary(t, fleet_root),
+        HarnessKind::Prime => prime::operator_boundary(t, fleet_root),
+        HarnessKind::Antigravity => antigravity::operator_boundary(t, fleet_root),
+        HarnessKind::None => none::operator_boundary(t, fleet_root),
+    }
+}
+
 /// Section 13.3 rules 1-5, as `horch teammates --check` errors (BAL-02).
 pub fn fallback_problems(roster: &Roster) -> Vec<String> {
     let mut out = Vec::new();
@@ -2268,6 +2288,9 @@ w3-codex: sandbox is Claude only; agent codex cannot honour it";
                 "smoke" | "judge" | "antigravity" | "spec-writer" | "ticket-writer"
                 | "skill-importer" | "intake-auditor" | "intake-analyst" | "intake-sanitizer"
                 | "intake-writer" | "intake-reviewer" | "audio-reviewer" => None,
+                // 1 process for each phase of 1 idea (clarify, specify,
+                // ticket, supervise), so no single phase fits it.
+                "idea-lead" => None,
                 "researcher" | "product-lead" | "designer" | "design-director"
                 | "one-page-design" => Some(Phase::Research),
                 "staff-engineer"
@@ -2960,8 +2983,8 @@ w3-codex: sandbox is Claude only; agent codex cannot honour it";
             .collect();
         assert_eq!(
             covered.len(),
-            78,
-            "the rule should cover 78 claude teammates"
+            79,
+            "the rule should cover 79 claude teammates"
         );
         // sound-engineer runs on claude; audio-reviewer runs on agy.
         assert!(covered.contains(&"sound-engineer"), "{covered:?}");

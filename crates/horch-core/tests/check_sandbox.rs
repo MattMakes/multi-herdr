@@ -96,6 +96,8 @@ impl World {
             codex,
             fleet_root: self.fleet_root.clone(),
             gap,
+            refused: Default::default(),
+            fallbacks: Default::default(),
         }
     }
 
