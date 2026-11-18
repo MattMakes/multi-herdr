@@ -29,7 +29,7 @@ pub struct Source {
     pub md_suffix: Option<String>,
     /// The pages of an `llms_txt` source, as paths relative to the docs.
     pub include: Vec<String>,
-    /// A git repository whose docs are copied too (ticket 12 reads it).
+    /// A git repository whose `docs/` folder is copied too.
     pub also_git: Option<String>,
     /// The command that prints the installed version.
     pub version_cmd: String,

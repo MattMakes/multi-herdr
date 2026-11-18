@@ -2,10 +2,14 @@
 //!
 //! [`sync`] fetches the pages of 1 source of `docs-sources.toml` into
 //! `<out>/<tool>/<version>/`, reports what changed, removes local pages that
-//! are gone, and writes a manifest of page hashes. The caller gives the
-//! version text and the fetch port; this crate starts no process.
+//! are gone, and writes a manifest of page hashes. It then writes
+//! `<out>/<tool>/CHANGES.md` against the previous version and copies the
+//! `docs/` folder of an `also_git` repository. The caller gives the version
+//! text and the fetch port; the only process this crate starts is git.
 
+mod changes;
 mod clean;
+mod git;
 mod llms;
 mod page;
 mod sitemap;
@@ -18,6 +22,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+pub use changes::{CHANGES_FILE, VERSIONS_FILE};
+pub use git::GIT_DIR;
 use sitemap::Sitemap;
 pub use sources::{parse_sources, sources, Kind, Source};
 
@@ -97,8 +103,9 @@ struct Wanted {
 /// Mirror the pages of `source` into `<out>/<tool>/<version>/`.
 ///
 /// A page that fails is reported, and the others are still written. Stale
-/// pages are removed only when no page failed. An error means that the page
-/// list itself could not be read.
+/// pages are removed only when no page failed. The `also_git` clone is the
+/// report entry [`GIT_DIR`]. An error means that the page list itself could
+/// not be read, or that CHANGES.md could not be written.
 pub fn sync(source: &Source, version: &str, fetch: &dyn Fetch, out: &Path) -> Result<Report> {
     check_version(version)?;
     let dir = out.join(&source.tool).join(version);
@@ -123,6 +130,13 @@ pub fn sync(source: &Source, version: &str, fetch: &dyn Fetch, out: &Path) -> Re
         pages.extend(remove_stale(&dir, &wanted)?);
     }
     write_manifest(&source.tool, version, &dir)?;
+    changes::write(&out.join(&source.tool), &source.tool, version)?;
+    if let Some(url) = &source.also_git {
+        pages.push(PageReport {
+            file: GIT_DIR.to_string(),
+            outcome: git::copy_docs(url, &dir),
+        });
+    }
     Ok(Report { dir, pages })
 }
 

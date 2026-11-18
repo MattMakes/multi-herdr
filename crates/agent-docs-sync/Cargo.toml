@@ -18,6 +18,7 @@ ego-tree = "0.9"
 htmd = "0.1"
 quick-xml = "0.37"
 sha2 = "0.10"
+horch-platform.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
