@@ -16,10 +16,11 @@
 use std::fmt;
 use std::io::Read;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use horch_marketplace::git::{scrub_repo_env, GitOutput, GitRunner};
+use horch_platform::start;
 
 use crate::runtime::process;
 
@@ -46,7 +47,6 @@ const FIXED_ENV: [(&str, &str); 3] = [
     ("LC_ALL", "C"),
     ("GIT_CONFIG_NOSYSTEM", "1"),
 ];
-const FORBIDDEN_ENV: [&str; 1] = ["ANTHROPIC_API_KEY"];
 const FIXED_CONFIG: &str = "core.hooksPath=/dev/null";
 
 /// A git network command ran past its bound and horch killed it.
@@ -139,16 +139,13 @@ pub fn output(bin: &Path, dir: &Path, args: &[&str]) -> anyhow::Result<GitOutput
         )
         .map(|o| o.stdout_text())
         .unwrap_or_default();
-    let mut cmd = Command::new(bin);
+    let mut cmd = start::command(bin);
     cmd.current_dir(dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     for (k, v) in FIXED_ENV {
         cmd.env(k, v);
-    }
-    for k in FORBIDDEN_ENV {
-        cmd.env_remove(k);
     }
     scrub_repo_env(&mut cmd);
     // Its own group, so a kill also ends the ssh child that holds the pipes.

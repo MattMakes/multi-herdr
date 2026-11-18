@@ -1,10 +1,10 @@
 //! The check, recheck, land and cleanup steps (#36).
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
+use horch_platform::start::{self, Command};
 use rusqlite::{params, Connection, Transaction, TransactionBehavior};
 
 use super::{job_runner, remove_tree, set_worktree, worktree_of, Ctx, Outcome, WorktreeRow};
@@ -238,7 +238,7 @@ fn check_process(cx: &Ctx<'_>, dir: &Path, command: &str, sandboxed: bool) -> Re
             .with_context(|| format!("creating {}", tmpdir.display()))?;
         let mut tmp_pair = std::ffi::OsString::from("TMPDIR=");
         tmp_pair.push(&tmpdir);
-        let mut cmd = Command::new(&codex.bin);
+        let mut cmd = start::command(&codex.bin);
         cmd.args(crate::harness::codex::sandbox_args(&codex.state_root, dir))
             .arg("/usr/bin/env")
             .arg(tmp_pair)
@@ -246,7 +246,7 @@ fn check_process(cx: &Ctx<'_>, dir: &Path, command: &str, sandboxed: bool) -> Re
             .env_remove("TMPDIR");
         cmd
     } else {
-        Command::new(&cx.tools.shell)
+        start::command(&cx.tools.shell)
     };
     cmd.arg("-c").arg(command);
     Ok(cmd)
@@ -1244,6 +1244,7 @@ mod tests {
     use crate::taskledger::runs::{self, NewRun, Run};
     use crate::taskledger::tasks::{self, NewTask};
     use crate::taskledger::workers::{self, NewWorker};
+    use std::process::Command;
 
     thread_local! {
         /// The land-lock wait of a test, instead of [`LAND_LOCK_TIMEOUT`].

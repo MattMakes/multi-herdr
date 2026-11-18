@@ -468,6 +468,13 @@ fn open_branch_refused(
     ctx.needs_you.open_item(tx, &item)
 }
 
+/// The gate tree of a feature has no worker and no owner attempt: fleetd
+/// owns it, and it stays `created`, which the reconciler does not orphan
+/// (ticket 28 of fleetd-p4, Q18).
+fn stays_created(row: &WorktreeRow) -> bool {
+    is_gate(row) && row.worker_id.is_none() && row.owner_attempt.is_none()
+}
+
 fn created(ctx: &JobCtx<'_>, tx: &Connection, row: WorktreeRow) -> Result<Observed> {
     let id = row.worktree_id.as_str();
     let refusals: &dyn RecordRefusal = ctx.needs_you;
@@ -484,10 +491,7 @@ fn created(ctx: &JobCtx<'_>, tx: &Connection, row: WorktreeRow) -> Result<Observ
         made,
         refusals,
     )?;
-    // The gate tree of a feature has no worker and no owner attempt: fleetd
-    // owns it, and it stays `created`, which the reconciler does not orphan
-    // (ticket 28 of fleetd-p4, Q18).
-    if is_gate(&row) && row.worker_id.is_none() && row.owner_attempt.is_none() {
+    if stays_created(&row) {
         return Ok(Observed::Created(WorktreeCreated {
             worktree_id: row.worktree_id,
             task_id: row.task_id,
@@ -665,6 +669,9 @@ fn wait_added(
         ),
         // The pass observed the run first.
         (_, Some(now)) if now.state == WorktreeState::Active => Ok(now.worktree_id),
+        (_, Some(now)) if now.state == WorktreeState::Created && stays_created(&now) => {
+            Ok(now.worktree_id)
+        }
         (Observed::Kept(why), _) => bail!(
             "worktree {} is not made yet: {why}; run the command again",
             row.path
@@ -808,5 +815,86 @@ impl RunJob for TestJobs {
             jobs::end_from_files(ctx, conn)?;
         }
         get(conn)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fleetd::worktree_custody::adapters::git::{DETACHED, GATE_PREFIX};
+    use crate::fleetd::worktree_custody::adapters::sqlite::WorktreeMode;
+    use crate::taskledger::model::WorktreeStatus;
+    use crate::taskledger::runs::{self, NewRun};
+    use crate::taskledger::{finish, util, Store};
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let o = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    }
+
+    /// A gate tree with no worker and no owner stays `created`, as
+    /// [`created`] leaves it, so the command that asked for it gets its id.
+    #[test]
+    fn create_and_wait_gives_a_gate_tree_that_stays_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("repo");
+        std::fs::create_dir(&root).unwrap();
+        git(&root, &["init", "-q", "-b", "main"]);
+        git(&root, &["commit", "-q", "--allow-empty", "-m", "a"]);
+        git(&root, &["branch", "fleet/r1"]);
+        let tip = git(&root, &["rev-parse", "HEAD"]);
+        let ledger = dir.path().join("ledger.sqlite3");
+        let mut ledger_store = Store::open(&ledger).unwrap();
+        let run = ledger_store
+            .immediate(|tx| {
+                runs::create(
+                    tx,
+                    &root,
+                    &NewRun {
+                        slug: "r1".into(),
+                        base_branch: Some("main".into()),
+                        run_branch: Some("fleet/r1".into()),
+                        ..Default::default()
+                    },
+                )
+            })
+            .unwrap();
+        let path = root.join(".worktrees").join(format!("{GATE_PREFIX}r1"));
+        let new = NewWorktree {
+            worktree_id: util::new_id(),
+            task_id: None,
+            worker_id: None,
+            repo_root: run.project_root.clone(),
+            path: path.to_string_lossy().into_owned(),
+            branch: DETACHED.to_string(),
+            base: "fleet/r1".into(),
+            base_commit: Some(tip),
+            status: WorktreeStatus::Open,
+            mode: Some(WorktreeMode {
+                run_id: run.run_id.clone(),
+                name: format!("{GATE_PREFIX}r1"),
+                scratch: true,
+            }),
+        };
+        let lease = Lease {
+            task_id: None,
+            worker_id: "",
+            attempt: None,
+            from: None,
+            new: Some(&new),
+        };
+        let id = finish::lease_and_wait(&ledger, &TestJobs, &lease).unwrap();
+        assert_eq!(id, new.worktree_id);
+        let row = store::get(ledger_store.conn(), &id).unwrap().unwrap();
+        assert_eq!(row.state, WorktreeState::Created);
+        assert!(path.is_dir());
     }
 }

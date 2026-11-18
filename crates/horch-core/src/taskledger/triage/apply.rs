@@ -15,9 +15,9 @@
 //! `worktree_add` job.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{bail, Context, Result};
+use horch_platform::start;
 use rusqlite::{params, Connection};
 
 use super::reply::Decided;
@@ -108,7 +108,7 @@ struct Done {
 
 /// The remote `PR` uses, when `gh` runs and the repository has a remote.
 pub fn pr_remote(git: &Git, root: &Path, gh: &Path) -> Option<String> {
-    let mut version = Command::new(gh);
+    let mut version = start::command(gh);
     version.arg("--version");
     scrub_child_env(&mut version);
     let gh_runs = version.output().is_ok_and(|o| o.status.success());
@@ -1116,7 +1116,7 @@ fn pr(store: &Store, env: &Env<'_>, row: &Row, wt: &WorktreeRow, direction: &str
     if !push.ok {
         bail!("git push {remote} {b}:{b} failed: {}", push.stderr);
     }
-    let mut create = Command::new(gh);
+    let mut create = start::command(gh);
     create
         .current_dir(env.root)
         .args(["pr", "create", "--head", b, "--title"])

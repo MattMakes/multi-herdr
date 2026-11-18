@@ -7,9 +7,9 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{Context, Result};
+use horch_platform::start::{self, Command};
 use serde::Deserialize;
 
 use super::{Ctx, Outcome};
@@ -279,7 +279,7 @@ fn rust_sources(names: &str, dir: &Path) -> Vec<String> {
 /// `cargo clippy` with only the cognitive-complexity lint, capped at warn so
 /// a `#![deny(...)]` in the code does not stop the build.
 fn clippy(dir: &Path) -> Command {
-    let mut cmd = Command::new("cargo");
+    let mut cmd = start::command("cargo");
     cmd.args([
         "clippy",
         "--quiet",
@@ -367,11 +367,11 @@ impl Analyser<'_> {
     /// they have one.
     fn command(&self, files: &[String], config: Option<&Path>) -> Command {
         let mut cmd = if self.cli.extension().is_some_and(|e| e == "js") {
-            let mut c = Command::new(self.node);
+            let mut c = start::command(self.node);
             c.arg(self.cli);
             c
         } else {
-            Command::new(self.cli)
+            start::command(self.cli)
         };
         cmd.args(["--format", "json", "--threshold-action", "none"]);
         if let Some(config) = config {

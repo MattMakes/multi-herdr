@@ -7,9 +7,9 @@
 //! other's section.
 
 use std::path::Path;
-use std::process::Command;
 
 use anyhow::{bail, Context, Result};
+use horch_platform::start;
 use serde::Deserialize;
 
 use super::{land, worktree_of, Ctx, Outcome};
@@ -19,7 +19,7 @@ use crate::taskledger::store::Store;
 use crate::taskledger::util::{self, About};
 
 fn gh(bin: &Path, dir: &Path, args: &[&str]) -> Result<String> {
-    let mut cmd = Command::new(bin);
+    let mut cmd = start::command(bin);
     cmd.args(args).current_dir(dir);
     crate::runtime::process::scrub_child_env(&mut cmd);
     let out = cmd
@@ -406,7 +406,7 @@ pub fn pr_check(
     };
     let n_text = n.to_string();
     let args = ["pr", "view", n_text.as_str(), "--json", "state"];
-    let mut cmd = Command::new(gh_bin);
+    let mut cmd = start::command(gh_bin);
     cmd.args(args).current_dir(root);
     crate::runtime::process::scrub_child_env(&mut cmd);
     let out = match cmd.output() {

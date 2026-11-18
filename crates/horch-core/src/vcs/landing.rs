@@ -6,12 +6,13 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Utc};
 use horch_marketplace::git::{GitOutput, GitRunner};
+use horch_platform::start;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
@@ -999,7 +1000,7 @@ impl Landing {
     }
 
     fn run_check(&self, dir: &Path, command: &str) -> Result<std::process::ExitStatus> {
-        let mut child = Command::new("sh");
+        let mut child = start::command("sh");
         child
             .arg("-c")
             .arg(command)
@@ -1182,6 +1183,7 @@ mod rfc3339 {
 mod tests {
     use super::*;
     use std::fs;
+    use std::process::Command;
     use std::sync::Arc;
     use tempfile::TempDir;
 

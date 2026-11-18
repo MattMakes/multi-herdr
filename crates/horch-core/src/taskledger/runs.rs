@@ -1116,7 +1116,7 @@ pub fn run_gate(
         std::fs::File::create(&log).with_context(|| format!("creating {}", log.display()))?;
     writeln!(file, "$ {command}\n# in {} at {tip}", dir.display())?;
     let started_at = util::now();
-    let mut cmd = std::process::Command::new(shell);
+    let mut cmd = horch_platform::start::command(shell);
     cmd.arg("-c")
         .arg(command)
         .current_dir(&dir)
