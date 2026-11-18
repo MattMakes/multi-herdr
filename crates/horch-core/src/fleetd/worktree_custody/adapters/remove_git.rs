@@ -198,8 +198,21 @@ impl RemovalGateway for CliRemoval {
     /// only the 2 exact folders, never the folder that holds the trees: on
     /// Linux a new tree beside them stays out of reach. A refused scan
     /// renames nothing.
+    /// As `git worktree move`, it refuses a locked tree.
     fn move_tree(&self, repo: &Path, from: &Path, to: &Path) -> Result<()> {
-        self.git.refuse_project_programs(repo)?;
+        let real = from
+            .canonicalize()
+            .with_context(|| format!("reading {}", from.display()))?;
+        let locked = self.git.list(repo)?.into_iter().find_map(|entry| {
+            let same = Path::new(&entry.path).canonicalize().ok().as_ref() == Some(&real);
+            entry.locked.filter(|_| same)
+        });
+        if let Some(reason) = locked {
+            bail!(
+                "cannot move a locked working tree {} (lock reason: {reason:?})",
+                from.display()
+            );
+        }
         rename_noreplace(from, to)
             .with_context(|| format!("renaming {} to {}", from.display(), to.display()))?;
         self.repair(repo, to)

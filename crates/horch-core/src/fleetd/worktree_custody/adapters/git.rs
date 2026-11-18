@@ -978,12 +978,18 @@ mod tests {
         (dir, row)
     }
 
+    /// The git of the `worktree_add` job of `row`, with the fleet root in
+    /// `dir`: it can write the git folder and the tree.
+    fn add_git(dir: &tempfile::TempDir, row: &WorktreeRow) -> CliWorktreeGit {
+        tree_writer(CliWorktreeGit::new("git", dir.path().join("fleet")), row).unwrap()
+    }
+
     #[test]
     fn worktree_add_attaches_an_existing_branch_that_is_at_the_base_tip_of_its_row() {
-        let (_dir, row) = restore_row(|one, _| one.to_string());
-        let ran = worktree_add(&CliWorktreeGit::new("git"), &row);
+        let (dir, row) = restore_row(|one, _| one.to_string());
+        let ran = worktree_add(&add_git(&dir, &row), &row);
         assert!(ran.outcome.passed, "{}", ran.outcome.text);
-        let head = CliWorktreeGit::new("git")
+        let head = add_git(&dir, &row)
             .git(Path::new(&row.path), &["branch", "--show-current"])
             .unwrap();
         assert_eq!(head.trim(), "feat");
@@ -991,8 +997,8 @@ mod tests {
 
     #[test]
     fn worktree_add_refuses_an_existing_branch_that_is_not_at_the_base_tip_of_its_row() {
-        let (_dir, row) = restore_row(|_, two| two.to_string());
-        let ran = worktree_add(&CliWorktreeGit::new("git"), &row);
+        let (dir, row) = restore_row(|_, two| two.to_string());
+        let ran = worktree_add(&add_git(&dir, &row), &row);
         assert!(!ran.outcome.passed, "{}", ran.outcome.text);
         assert!(
             ran.outcome
