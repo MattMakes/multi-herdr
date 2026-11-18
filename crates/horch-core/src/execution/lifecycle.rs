@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::execution::legacy::HistoryEntry;
 use crate::execution::store::ExecutionStore;
 use crate::execution::SessionMode;
+use crate::fleetd::worker_profiles::domain::profile::Mode;
 use crate::harness::launch::{self, DiscoveryTarget, LaunchRequest};
 use crate::harness::HarnessKind;
 use crate::ids::SessionId;
@@ -21,7 +22,7 @@ use crate::messaging::message::strip_done_prefix;
 use crate::messaging::report;
 use crate::roster::{HorchAccess, Roster, Teammate};
 use crate::runtime::{process, RuntimeContext};
-use crate::taskledger::supervisor::{AgentFacts, Checkins};
+use crate::taskledger::supervisor::{AgentFacts, AttemptFiles, Checkins, OutcomeHint};
 use crate::workspace::client::WorkspaceClient;
 use crate::workspace::herdr::Herdr;
 use crate::workspace::model::Pane;
@@ -691,6 +692,289 @@ fn run_agent(
     code
 }
 
+/// The stream of the CLI of an exec attempt, in its attempt folder.
+pub const TRANSCRIPT_JSONL: &str = "transcript.jsonl";
+
+/// The prompt file of an attempt, in its attempt folder.
+const START_MD: &str = "inbox/START.md";
+
+/// The most characters of 1 line that the wrapper renders into the pane.
+const PANE_LINE_MAX: usize = 120;
+
+/// A CLI with an exec adapter (fleetd-p7 tickets 13 to 15).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecCli {
+    Claude,
+    Codex,
+    Antigravity,
+}
+
+/// The harness of each CLI with an exec adapter.
+const EXEC_CLIS: [(HarnessKind, ExecCli); 3] = [
+    (HarnessKind::Claude, ExecCli::Claude),
+    (HarnessKind::Codex, ExecCli::Codex),
+    (HarnessKind::Antigravity, ExecCli::Antigravity),
+];
+
+/// What 1 line of an exec stream tells the wrapper, the same for each CLI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamEvent {
+    /// The agent works.
+    Activity,
+    /// The tokens of the context. It is also activity.
+    ContextTokens(u64),
+    /// The usage-limit or outage signal of the CLI (RR-11).
+    UsageLimited,
+    /// The last line of the run.
+    Result,
+    /// No signal.
+    Other,
+}
+
+impl StreamEvent {
+    /// Whether the event renews the activity of the attempt.
+    pub fn is_activity(self) -> bool {
+        matches!(self, StreamEvent::Activity | StreamEvent::ContextTokens(_))
+    }
+
+    /// The word of the event in the pane.
+    fn word(self) -> String {
+        match self {
+            StreamEvent::Activity => "activity".into(),
+            StreamEvent::ContextTokens(n) => format!("context {n} tokens"),
+            StreamEvent::UsageLimited => "usage limit".into(),
+            StreamEvent::Result => "result".into(),
+            StreamEvent::Other => "other".into(),
+        }
+    }
+}
+
+impl ExecCli {
+    /// The exec CLI of `teammate`: `None` when the mode of its profile is
+    /// interactive, or when its CLI has no exec adapter (FR-6).
+    pub fn of(teammate: &Teammate) -> Option<ExecCli> {
+        if teammate.profile().mode != Mode::Exec {
+            return None;
+        }
+        EXEC_CLIS
+            .iter()
+            .find(|(kind, _)| *kind == teammate.agent)
+            .map(|(_, cli)| *cli)
+    }
+
+    /// The event of 1 stream line, as the adapter of this CLI reads it.
+    pub fn read(self, line: &str) -> StreamEvent {
+        use crate::harness::{antigravity as agy, claude, codex};
+        match self {
+            ExecCli::Claude => match claude::read_event(line) {
+                claude::Event::Activity => StreamEvent::Activity,
+                claude::Event::ContextTokens(n) => StreamEvent::ContextTokens(n),
+                claude::Event::UsageLimited => StreamEvent::UsageLimited,
+                claude::Event::Result => StreamEvent::Result,
+                claude::Event::Other => StreamEvent::Other,
+            },
+            ExecCli::Codex => match codex::read_event(line) {
+                codex::ExecEvent::Activity => StreamEvent::Activity,
+                codex::ExecEvent::ContextTokens(n) => StreamEvent::ContextTokens(n),
+                codex::ExecEvent::UsageLimited => StreamEvent::UsageLimited,
+                codex::ExecEvent::Result => StreamEvent::Result,
+                codex::ExecEvent::Other => StreamEvent::Other,
+            },
+            ExecCli::Antigravity => match agy::read_event(line) {
+                agy::Event::Activity | agy::Event::SoftDenied { .. } => StreamEvent::Activity,
+                agy::Event::ContextTokens(n) => StreamEvent::ContextTokens(n),
+                agy::Event::UsageLimited { .. } => StreamEvent::UsageLimited,
+                agy::Event::Result { .. } => StreamEvent::Result,
+                agy::Event::Other => StreamEvent::Other,
+            },
+        }
+    }
+}
+
+/// How an exec run ended. The code is `None` when a signal ended the CLI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecEnd {
+    /// The CLI exited by itself.
+    Exited(Option<i32>),
+    /// The stream showed a usage limit, and the wrapper ended the CLI.
+    UsageLimited(Option<i32>),
+}
+
+impl ExecEnd {
+    pub fn code(self) -> Option<i32> {
+        match self {
+            ExecEnd::Exited(code) | ExecEnd::UsageLimited(code) => code,
+        }
+    }
+
+    /// The outcome hint of `exit.json`: `quota` after a usage limit.
+    pub fn outcome_hint(self) -> Option<OutcomeHint> {
+        match self {
+            ExecEnd::Exited(_) => None,
+            ExecEnd::UsageLimited(_) => Some(OutcomeHint::Quota),
+        }
+    }
+
+    /// Whether the repair pass of FM-6 applies: an attempt that ends with
+    /// `quota` did not end without its result.
+    pub fn repair_applies(self) -> bool {
+        matches!(self, ExecEnd::Exited(_))
+    }
+}
+
+/// 1 exec run of an attempt: its CLI, its wrapper files, the facts of its
+/// heartbeat, and the pane that shows the stream.
+pub struct ExecAttempt<'a> {
+    pub cli: ExecCli,
+    pub files: &'a AttemptFiles,
+    pub facts: &'a AgentFacts,
+    pub pane: &'a mut dyn std::io::Write,
+}
+
+/// Run the exec command `cmd` of an attempt to its end, in its own process
+/// group. Each stream line goes to [`TRANSCRIPT_JSONL`], and 1 short text
+/// of its event to the pane. Each activity event writes a heartbeat. A
+/// usage limit ends the CLI and its group at once. The run returns when the
+/// CLI exits: the caller writes `exit.json` with [`write_exec_exit`].
+pub fn run_exec(mut cmd: Command, attempt: &mut ExecAttempt<'_>) -> Result<ExecEnd> {
+    let path = attempt.files.dir().join(TRANSCRIPT_JSONL);
+    let mut transcript = open_transcript(&path)?;
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped());
+    horch_platform::group::new_group(&mut cmd);
+    let name = cmd.get_program().to_string_lossy().into_owned();
+    let mut child = cmd.spawn().with_context(|| format!("launching {name}"))?;
+    attempt.facts.agent_started(child.id());
+    let stdout = child.stdout.take().context("the CLI has no stdout pipe")?;
+    let read = read_stream(std::io::BufReader::new(stdout), &mut transcript, attempt);
+    if !matches!(read, Ok(false)) {
+        horch_platform::group::kill_child_group(&mut child);
+    }
+    let status = child
+        .wait()
+        .with_context(|| format!("waiting for {name}"))?;
+    Ok(if read? {
+        ExecEnd::UsageLimited(status.code())
+    } else {
+        ExecEnd::Exited(status.code())
+    })
+}
+
+/// Write `exit.json` of an exec attempt that ended with `end`.
+pub fn write_exec_exit(files: &AttemptFiles, end: ExecEnd, repaired: bool) -> Result<()> {
+    files.write_exit_hinted(end.code(), repaired, end.outcome_hint())
+}
+
+/// Open [`TRANSCRIPT_JSONL`] to append. A resume adds to the same file.
+fn open_transcript(path: &Path) -> Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).append(true);
+    // Windows has no file modes: the file keeps the default access.
+    let _ = horch_platform::fs::create_mode(&mut options, 0o600);
+    options
+        .open(path)
+        .with_context(|| format!("opening {}", path.display()))
+}
+
+/// Read the stream until it ends, or until a usage limit: `true`.
+fn read_stream(
+    stdout: impl std::io::BufRead,
+    transcript: &mut std::fs::File,
+    attempt: &mut ExecAttempt<'_>,
+) -> Result<bool> {
+    use std::io::Write as _;
+    for line in stdout.split(b'\n') {
+        let mut line = line.context("reading the stream of the CLI")?;
+        if line.last() == Some(&b'\r') {
+            line.pop();
+        }
+        line.push(b'\n');
+        transcript
+            .write_all(&line)
+            .context("writing the transcript")?;
+        let text = String::from_utf8_lossy(&line[..line.len() - 1]);
+        let event = attempt.cli.read(&text);
+        // The pane is for the eyes only: a failed write stops nothing.
+        let _ = writeln!(attempt.pane, "{}", render(event, &text));
+        let _ = attempt.pane.flush();
+        if event.is_activity() {
+            attempt.facts.activity();
+            if let Err(e) = attempt.files.write_heartbeat(attempt.facts) {
+                eprintln!("horch worker: heartbeat.json is not written: {e:#}");
+            }
+        }
+        if event == StreamEvent::UsageLimited {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// The pane text of 1 stream line: its event and the kind of the line, at
+/// most [`PANE_LINE_MAX`] characters.
+fn render(event: StreamEvent, line: &str) -> String {
+    let what = match serde_json::from_str::<serde_json::Value>(line) {
+        Ok(v) => {
+            let at = |path: &str| v.pointer(path).and_then(serde_json::Value::as_str);
+            let kind = at("/type").or_else(|| at("/event")).unwrap_or("?");
+            match at("/subtype")
+                .or_else(|| at("/item/type"))
+                .or_else(|| at("/step_update/step_type"))
+            {
+                Some(sub) => format!("{kind}/{sub}"),
+                None => kind.to_string(),
+            }
+        }
+        Err(_) => line.trim().to_string(),
+    };
+    format!("[{}] {what}", event.word())
+        .chars()
+        .take(PANE_LINE_MAX)
+        .collect()
+}
+
+/// Run the exec launch of 1 attempt through the harness flow, with its
+/// stream in the pane of this wrapper.
+fn run_exec_agent(
+    ctx: &RuntimeContext,
+    brief: &Brief,
+    mailbox: &Mailbox,
+    plan: &AgentPlan<'_>,
+    env: Vec<(String, String)>,
+    attempt: (ExecCli, &AttemptFiles, &AgentFacts),
+) -> Result<ExecEnd> {
+    let (cli, files, facts) = attempt;
+    let (roster, teammate) = (plan.roster, plan.teammate);
+    let req = LaunchRequest {
+        role: &brief.role,
+        teammate,
+        session: &brief.session,
+        prompt: plan.prompt,
+        model_override: None,
+        exec_rules: roster.exec_rules(),
+        child_env: env,
+        record: Some(DiscoveryTarget {
+            mailbox,
+            record_id: &brief.record_id,
+            workdir: brief.workdir_or_project(),
+        }),
+        fleet_window: roster.fleet_window(teammate, teammate.model.as_deref().unwrap_or_default()),
+        briefing_skill: None,
+    };
+    launch::run_exec_flow(ctx, req, files.dir(), |cmd| {
+        let mut pane = std::io::stdout().lock();
+        run_exec(
+            cmd,
+            &mut ExecAttempt {
+                cli,
+                files,
+                facts,
+                pane: &mut pane,
+            },
+        )
+    })
+}
+
 /// The worker in a real herdr pane.
 pub struct PaneWorker<'a> {
     pub ctx: &'a mut RuntimeContext,
@@ -709,6 +993,9 @@ pub struct PaneWorker<'a> {
     facts: Option<Arc<AgentFacts>>,
     /// The repair resume of FM-6 ran.
     repaired: bool,
+    /// The attempt files of an exec attempt and the end of its first run,
+    /// for its `exit.json`.
+    exec: Option<(AttemptFiles, ExecEnd)>,
 }
 
 impl<'a> PaneWorker<'a> {
@@ -727,7 +1014,43 @@ impl<'a> PaneWorker<'a> {
             ledger: None,
             facts: None,
             repaired: false,
+            exec: None,
         }
+    }
+
+    /// How the first run of an exec attempt ended. `None` for an
+    /// interactive attempt.
+    pub fn exec_end(&self) -> Option<ExecEnd> {
+        self.exec.as_ref().map(|(_, end)| *end)
+    }
+
+    /// The exec CLI and the attempt files of a launch of `teammate`, or
+    /// `None` for an interactive launch: the mode of the profile is
+    /// interactive, the worker has no attempt, or the attempt has no
+    /// `START.md`. Only Claude Code has an exec form of a resume, so the
+    /// repair resume of another CLI runs interactive, as before.
+    fn exec_plan(&self, teammate: &Teammate, resume: bool) -> Option<(ExecCli, AttemptFiles)> {
+        let cli = ExecCli::of(teammate)?;
+        if resume && cli != ExecCli::Claude {
+            return None;
+        }
+        let (db, id) = self.ledger.as_ref()?;
+        let files = match AttemptFiles::of_worker(db, id, &self.ctx.paths.fleet_root) {
+            Ok(files) => files?,
+            Err(e) => {
+                eprintln!("horch worker[{}]: no exec launch: {e:#}", self.role);
+                return None;
+            }
+        };
+        if !files.dir().join(START_MD).is_file() {
+            eprintln!(
+                "horch worker[{}]: no exec launch: {} is missing",
+                self.role,
+                files.dir().join(START_MD).display()
+            );
+            return None;
+        }
+        Some((cli, files))
     }
 
     /// The repair resume of FM-6 ran: [`EXIT_JSON`] says so.
@@ -749,8 +1072,12 @@ impl<'a> PaneWorker<'a> {
             return;
         };
         let fleet_root = &self.ctx.paths.fleet_root;
-        let written =
-            crate::taskledger::supervisor::write_exit(db, id, fleet_root, code, self.repaired);
+        let written = match &self.exec {
+            Some((files, end)) => write_exec_exit(files, *end, self.repaired).map(|()| true),
+            None => {
+                crate::taskledger::supervisor::write_exit(db, id, fleet_root, code, self.repaired)
+            }
+        };
         if let Err(e) = written {
             eprintln!(
                 "horch worker[{}]: exit.json of the attempt is not written: {e:#}",
@@ -963,9 +1290,12 @@ impl<'a> PaneWorker<'a> {
         let ctx: &RuntimeContext = self.ctx;
         let mailbox = self.mailbox()?;
         let (roster, teammate) = self.load_roster(brief)?;
-        let prompt = match prompt {
-            Some(line) => line.to_string(),
-            None => self.worker_prompt(brief, &roster, &teammate)?,
+        let exec = self.exec_plan(&teammate, prompt.is_some());
+        let prompt = match (prompt, &exec) {
+            (Some(line), _) => line.to_string(),
+            // An exec attempt starts with the path of its START.md.
+            (None, Some((_, files))) => files.dir().join(START_MD).to_string_lossy().into_owned(),
+            (None, None) => self.worker_prompt(brief, &roster, &teammate)?,
         };
         // The agent starts in its workdir (a candidate's worktree), once the
         // roster has resolved from the project.
@@ -976,9 +1306,24 @@ impl<'a> PaneWorker<'a> {
         let env = child_env(mailbox, brief, self.path.clone());
         // Held until the agent exits; dropping it removes the socket.
         let _report = start_report_server(ctx, brief, &teammate, &env)?;
-        let checkins = self.start_checkins(brief, facts);
+        let checkins = self.start_checkins(brief, facts.clone());
         if teammate.agent == HarnessKind::None {
             self.run_smoke_agent(&env, checkins)
+        } else if let Some((cli, files)) = exec {
+            let plan = AgentPlan {
+                roster: &roster,
+                teammate: &teammate,
+                prompt: &prompt,
+            };
+            let end = run_exec_agent(ctx, brief, mailbox, &plan, env, (cli, &files, &facts));
+            if let Some(c) = checkins {
+                c.stop();
+            }
+            let end = end?;
+            self.launched = true;
+            // The first run decides `exit.json`; a repair resume does not.
+            self.exec.get_or_insert((files, end));
+            Ok(end.code())
         } else {
             let plan = AgentPlan {
                 roster: &roster,

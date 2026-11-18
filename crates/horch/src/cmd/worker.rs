@@ -14,6 +14,10 @@
 //! 1 short resume of the same session with the fixed line of
 //! `domain/repair.rs`, before it records the exit. The wrapper writes no
 //! ledger row (RR-5): `exit.json` of the attempt says that the repair ran.
+//!
+//! An exec attempt (fleetd-p7 ticket 17) has the same repair pass, with
+//! its resume in exec mode. An exec attempt that ended on a usage limit
+//! has none: its `exit.json` has the outcome hint `quota`.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -68,9 +72,13 @@ impl WorkerSteps for Repairing<'_> {
     }
 
     /// The agent, then the repair pass. The code is the one of the first
-    /// exit: the repair is not an attempt.
+    /// exit: the repair is not an attempt. An exec attempt that ended on a
+    /// usage limit ends with `quota`, not without its result: no repair.
     fn launch(&mut self, brief: &Brief) -> Result<Option<i32>> {
         let code = self.0.launch(brief)?;
+        if self.0.exec_end().is_some_and(|end| !end.repair_applies()) {
+            return Ok(code);
+        }
         if let Err(e) = self.repair(brief) {
             eprintln!(
                 "horch worker[{}]: the repair pass failed: {e:#}",

@@ -21,7 +21,7 @@ use std::fs::{DirBuilder, OpenOptions};
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -82,6 +82,20 @@ pub struct ExitFile {
     /// The wrapper ran the repair resume of FM-6 before the exit.
     pub repaired: bool,
     pub at: String,
+    /// What the wrapper saw end the agent, when it saw a signal of the
+    /// CLI. A hint from a process that the agent can reach: never a proof
+    /// of success.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome_hint: Option<OutcomeHint>,
+}
+
+/// The outcome hint of [`EXIT_JSON`]. A closed list, so no hint can say
+/// that a task is done: only the verified result does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutcomeHint {
+    /// The CLI showed its usage-limit or outage signal (RR-11).
+    Quota,
 }
 
 /// The content of [`SESSION_JSON`].
@@ -106,6 +120,11 @@ pub struct AgentFacts {
     /// The `seq` of the last heartbeat.
     seq: AtomicU64,
     mux_pane: Option<String>,
+    /// The time of the last activity of the agent: `last_output_at`.
+    last_output_at: Mutex<Option<String>>,
+    /// Held over 1 heartbeat write, so 2 writers of 1 wrapper do not mix
+    /// their temporary file or their `seq` order.
+    beat: Mutex<()>,
 }
 
 impl AgentFacts {
@@ -121,6 +140,11 @@ impl AgentFacts {
         self.pid.store(pid, Ordering::SeqCst);
     }
 
+    /// The agent showed activity now: an event of its stream.
+    pub fn activity(&self) {
+        *lock(&self.last_output_at) = Some(util::now());
+    }
+
     fn pid(&self) -> Option<u32> {
         Some(self.pid.load(Ordering::SeqCst)).filter(|&p| p != 0)
     }
@@ -128,6 +152,11 @@ impl AgentFacts {
     fn next_seq(&self) -> u64 {
         self.seq.fetch_add(1, Ordering::SeqCst) + 1
     }
+}
+
+/// Lock `m`. A writer that panicked left a whole value: take it.
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|p| p.into_inner())
 }
 
 /// The wrapper files of 1 attempt.
@@ -182,6 +211,7 @@ impl AttemptFiles {
 
     /// Replace [`HEARTBEAT_JSON`] with the facts of now and the next `seq`.
     pub fn write_heartbeat(&self, facts: &AgentFacts) -> Result<()> {
+        let _beat = lock(&facts.beat);
         let pid = facts.pid();
         let file = HeartbeatFile {
             task: self.task(),
@@ -198,7 +228,7 @@ impl AttemptFiles {
                 state.to_string()
             }),
             agent_state: None,
-            last_output_at: None,
+            last_output_at: lock(&facts.last_output_at).clone(),
             tokens: None,
             seq: facts.next_seq(),
             written_at: util::now(),
@@ -209,12 +239,23 @@ impl AttemptFiles {
 
     /// Write [`EXIT_JSON`]. A second exit is refused.
     pub fn write_exit(&self, code: Option<i32>, repaired: bool) -> Result<()> {
+        self.write_exit_hinted(code, repaired, None)
+    }
+
+    /// [`AttemptFiles::write_exit`] with the outcome hint `hint`.
+    pub fn write_exit_hinted(
+        &self,
+        code: Option<i32>,
+        repaired: bool,
+        hint: Option<OutcomeHint>,
+    ) -> Result<()> {
         let file = ExitFile {
             task: self.task(),
             attempt: self.attempt(),
             code,
             repaired,
             at: util::now(),
+            outcome_hint: hint,
         };
         if !write_file(&self.dir, EXIT_JSON, &serde_json::to_vec(&file)?, false)? {
             bail!(

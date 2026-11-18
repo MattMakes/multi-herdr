@@ -572,6 +572,88 @@ pub(crate) fn run_flow_code(ctx: &RuntimeContext, req: LaunchRequest<'_>) -> Res
     code
 }
 
+/// The exec launch of 1 attempt (fleetd-p7 ticket 17). The preparation is
+/// the one of [`run_flow_code`]: skills, trust, the window decision, the
+/// adapter's `prepare` and the agent git env of SR-3. The command is the
+/// exec launch of the adapter, with `task_dir` (the attempt folder) and the
+/// workdir as its writable folders, and `req.prompt` as its prompt: the
+/// path of `inbox/START.md`, or the line of a resume. `run` starts the
+/// command and waits for it. Only Claude Code has an exec form of a resume.
+pub(crate) fn run_exec_flow<T>(
+    ctx: &RuntimeContext,
+    req: LaunchRequest<'_>,
+    task_dir: &Path,
+    run: impl FnOnce(Command) -> Result<T>,
+) -> Result<T> {
+    let kind = req.teammate.agent;
+    if req.session.is_resume() && kind != HarnessKind::Claude {
+        bail!("the exec adapter of {kind:?} has no resume");
+    }
+    let launch = prepare_launch(ctx, &req)?;
+    let mut teammate = req.teammate.clone();
+    if let Some(model) = req.model_override {
+        teammate.model = Some(model.to_string());
+    }
+    teammate
+        .args
+        .extend(launch.prepared.extra_args.iter().cloned());
+    let workdir = launch_workdir(ctx, &req);
+    let mut env = LaunchEnv::from_context(ctx);
+    if !launch.v1_catalog_ready {
+        env.state_root = None;
+    }
+    env.compact_window = Some(launch.decision.clone());
+    env.report_socket = report_socket(ctx, &req);
+    if let Some((_, dir)) = req
+        .child_env
+        .iter()
+        .rfind(|(key, value)| key == "HORCH_TEAMMATES_DIR" && !value.is_empty())
+    {
+        env.roster_dir = Some(PathBuf::from(dir));
+    }
+    env.task_dir = Some(task_dir.to_path_buf());
+    env.worktree = Some(workdir.clone());
+    let mut cmd = match kind {
+        HarnessKind::Claude => {
+            let session = session_for(kind.adapter().capabilities(), req.session);
+            super::claude::exec_command(&env, &teammate, session, Path::new(req.prompt))?
+        }
+        HarnessKind::Codex => super::codex::exec_command(&env, &teammate, req.prompt)?,
+        HarnessKind::Antigravity => {
+            let model = teammate
+                .model
+                .as_deref()
+                .with_context(|| format!("teammate '{}' has no model", teammate.name))?;
+            super::antigravity::exec_command(&super::antigravity::ExecLaunch {
+                bin: &env.bins.antigravity,
+                model,
+                effort: teammate.effort.as_deref(),
+                home: &ctx.paths.home,
+                workdir: &workdir,
+                prompt: req.prompt,
+            })
+        }
+        other => bail!("{other:?} has no exec adapter"),
+    };
+    cmd.current_dir(&workdir);
+    crate::runtime::process::inherit_env(&mut cmd, teammate_env(&teammate, &env));
+    crate::runtime::process::inherit_env(&mut cmd, req.child_env.clone());
+    // Last, so a value the harness prepared (codex's private home) wins.
+    for (key, value) in &launch.prepared.env {
+        cmd.env(key, value);
+    }
+    let decision = window_in_effect(launch.decision.clone(), &teammate, &cmd);
+    record_window(ctx, &req, &decision);
+    crate::runtime::process::scrub_child_env(&mut cmd);
+    // After the scrub, which removes each `GIT_CONFIG_*` variable.
+    for (key, value) in &launch.git_env {
+        cmd.env(key, value);
+    }
+    let out = run(cmd);
+    launch.prepared.finish();
+    out
+}
+
 /// What a launch holds from its preparation until the agent exits.
 struct PreparedLaunch {
     /// Held across the launch, so lazy reads of the bundle remain valid.
