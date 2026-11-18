@@ -337,12 +337,18 @@ fn fm13_herdr_restart_rescues_each_worktree_and_the_next_attempt_reuses_it() {
             let claim = as_worker(&h, next.trim(), &["ledger", "claim", "--json"]);
             let c: Value = serde_json::from_slice(&claim.stdout)
                 .unwrap_or_else(|e| panic!("{e}: {}", text(&claim)));
-            assert_eq!(
-                c["worktree"].as_str(),
-                Some(path.to_string_lossy().as_ref()),
-                "{}",
-                text(&claim)
-            );
+            // A claim does not take a tree that is still `orphaned`: the
+            // next attempt takes it with `horch ledger worktree new`.
+            let reused = match c["worktree"].as_str() {
+                Some(p) => p.to_string(),
+                None => {
+                    let wt = ok_as(&h, next.trim(), &["ledger", "worktree", "new", "feat"]);
+                    let p = wt.lines().find_map(|l| l.strip_prefix("path: "));
+                    p.unwrap_or_else(|| panic!("no path: {wt}\nclaim: {}", text(&claim)))
+                        .to_string()
+                }
+            };
+            assert_eq!(reused, path.to_string_lossy(), "{}", text(&claim));
         },
     );
 }
