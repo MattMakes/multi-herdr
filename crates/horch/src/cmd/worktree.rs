@@ -2,14 +2,28 @@
 
 use std::path::PathBuf;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Context, Result};
+use horch_core::fleetd::fleet_runtime::application::jobs::JobCtx;
+use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
+use horch_core::fleetd::worktree_custody::adapters::sqlite::NewWorktree;
+use horch_core::fleetd::worktree_custody::application::create::{
+    self, create_and_wait, JobProcess, Lease,
+};
+use horch_core::fleetd::worktree_custody::application::queries::{
+    self, DiskTotal, RescueSource, WorktreeView,
+};
 use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger;
 use horch_core::taskledger::git::Git;
-use horch_core::taskledger::triage::{self, Measure};
+use horch_core::taskledger::model::WorktreeStatus;
+use horch_core::taskledger::store::BUSY_TIMEOUT;
+use horch_core::taskledger::triage::{self, human_bytes, Measure};
+use horch_core::taskledger::util;
 use horch_core::vcs::landing::{ClaimState, Landing, Skipped, Unregistered};
+use rusqlite::Connection;
 
 use super::messaging;
+use super::taskledger::{resolve_run, RunArg};
 
 fn landing(ctx: &RuntimeContext) -> Landing {
     Landing::new(ctx.bins.harness.git.clone(), ctx.paths.state_root.clone())
@@ -268,14 +282,159 @@ fn wake_for_finish(
     }
 }
 
-/// `horch worktree restore <name>`: the folder again, from its archive or
-/// trash ref.
+/// `horch worktree restore <name>`: a task (`T<seq>` of the active run) or
+/// a worktree id whose row has a rescue ref gives its newest rescue ref
+/// back as a branch and a tree (MAP.md of fleetd-p3, Q14). Each other name
+/// gets the folder again from its archive or trash ref.
 pub fn restore(ctx: &RuntimeContext, name: &str) -> Result<()> {
     let git = Git::new(&ctx.bins.harness.git);
     let root = triage_root(ctx, &git)?;
     let store = taskledger::open(ctx)?;
-    println!("{}", triage::apply::restore(&store, &git, &root, name)?);
+    // A project with no single active run has no `T<seq>` to look up; a
+    // worktree id needs no run.
+    let run = resolve_run(ctx, &store, &RunArg::default()).ok();
+    let source =
+        queries::rescue_source(store.conn(), run.as_ref().map(|r| r.run_id.as_str()), name)?;
+    let line = match source {
+        Some(source) => restore_rescue(&store, &git, &source)?,
+        None => triage::apply::restore(&store, &git, &root, name)?,
+    };
+    println!("{line}");
     Ok(())
+}
+
+/// Make the branch `rescue/T<seq>-<n>` at the rescue commit of `source` and
+/// its tree `<project>/.worktrees/rescue-T<seq>-<n>`, through the
+/// `worktree_add` job of custody. It refuses, and changes nothing, when the
+/// branch or the folder exists.
+fn restore_rescue(store: &taskledger::Store, git: &Git, source: &RescueSource) -> Result<String> {
+    let repo = PathBuf::from(&source.row.repo_root);
+    let slug = format!("T{}-{}", source.seq, source.n);
+    let branch = format!("rescue/{slug}");
+    let path = repo.join(".worktrees").join(format!("rescue-{slug}"));
+    if git.branch_exists(&repo, &branch) {
+        bail!("the branch {branch} exists; restore changed nothing");
+    }
+    if path.exists() {
+        bail!("{} exists; restore changed nothing", path.display());
+    }
+    let commit = git.rev(&repo, &format!("{}^{{commit}}", source.rescue_ref))?;
+    let new = NewWorktree {
+        worktree_id: util::new_id(),
+        task_id: None,
+        worker_id: None,
+        repo_root: source.row.repo_root.clone(),
+        path: path.to_string_lossy().into_owned(),
+        branch: branch.clone(),
+        base: source.rescue_ref.clone(),
+        base_commit: Some(commit),
+        status: WorktreeStatus::Open,
+        mode: None,
+    };
+    let lease = Lease {
+        task_id: None,
+        // Only the attach of an existing task tree reads the worker; a
+        // new row takes `new.worker_id`.
+        worker_id: "",
+        attempt: None,
+        from: None,
+        new: Some(&new),
+    };
+    let config = create::fleet_config(store.path())?;
+    let ctx = JobCtx {
+        guard: None,
+        config: &config,
+        needs_you: &NeedsYouList,
+    };
+    let mut conn = Connection::open(store.path())
+        .with_context(|| format!("opening the task ledger {}", store.path().display()))?;
+    conn.busy_timeout(BUSY_TIMEOUT)?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    create_and_wait(&mut conn, &ctx, &JobProcess::of_this_process()?, &lease)?;
+    Ok(format!(
+        "restored {} on {branch} at {}",
+        source.rescue_ref,
+        path.display()
+    ))
+}
+
+/// `horch worktrees [--json]`: 1 line for each tree that is not `removed`,
+/// then the total. It only reads the ledger.
+pub fn worktrees(ctx: &RuntimeContext, json: bool) -> Result<()> {
+    let (rows, total) = match taskledger::open_existing_read_only(ctx)? {
+        Some(store) => (
+            queries::worktree_rows(store.conn())?,
+            queries::total_bytes(store.conn())?,
+        ),
+        None => (Vec::new(), DiskTotal::default()),
+    };
+    if json {
+        let v = serde_json::json!({
+            "worktrees": rows,
+            "count": total.count,
+            "total_bytes": total.bytes,
+            "unmeasured": total.unmeasured,
+        });
+        println!("{}", serde_json::to_string_pretty(&v)?);
+        return Ok(());
+    }
+    for r in &rows {
+        println!("{}", worktree_line(r));
+    }
+    println!("{}", total_line(&total));
+    Ok(())
+}
+
+/// 1 tree: a word for each fact, the path last.
+fn worktree_line(r: &WorktreeView) -> String {
+    let dash = |v: &Option<String>| v.clone().unwrap_or_else(|| "-".into());
+    let mut line = format!(
+        "state={} status={} task={} run={} worker={} owner={} age={} size={} dirty={}",
+        r.state,
+        r.status,
+        dash(&r.task),
+        dash(&r.run),
+        dash(&r.worker),
+        dash(&r.owner_attempt),
+        r.age_s.map_or_else(|| "-".into(), age),
+        r.bytes_on_disk.map_or_else(
+            || "?".into(),
+            |b| human_bytes(u64::try_from(b).unwrap_or(0)).replace(' ', "")
+        ),
+        u8::from(r.dirty),
+    );
+    if let Some(rescue) = &r.rescue_ref {
+        line.push_str(&format!(" rescue={rescue}"));
+    }
+    if let Some(job) = r.would {
+        line.push_str(&format!(" would={job}"));
+    }
+    line.push_str(&format!(" path={}", r.path));
+    line
+}
+
+/// The total size of all trees.
+fn total_line(t: &DiskTotal) -> String {
+    let unmeasured = match t.unmeasured {
+        0 => String::new(),
+        n => format!("; {n} not measured"),
+    };
+    format!(
+        "total: {} worktree{}, {} on disk{unmeasured}",
+        t.count,
+        if t.count == 1 { "" } else { "s" },
+        human_bytes(t.bytes)
+    )
+}
+
+/// An age in its largest whole unit: `45s`, `5m`, `2h`, `3d`.
+fn age(s: i64) -> String {
+    match s.max(0) {
+        s if s < 60 => format!("{s}s"),
+        s if s < 3600 => format!("{}m", s / 60),
+        s if s < 86_400 => format!("{}h", s / 3600),
+        s => format!("{}d", s / 86_400),
+    }
 }
 
 /// `horch ledger gc`: delete the trash refs older than 30 days.

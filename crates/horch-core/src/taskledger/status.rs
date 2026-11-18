@@ -9,6 +9,7 @@ use serde::Serialize;
 
 use crate::exeid::{exe_identity, ExeIdentity};
 use crate::fleetd::ideas::application::needs_you;
+use crate::fleetd::worktree_custody::application::queries::{self as custody, DiskTotal};
 
 use super::model::{TaskStatus, WorktreeStatus};
 use super::runs::Run;
@@ -83,6 +84,8 @@ pub struct Report {
     pub orchestrator: Option<String>,
     /// The open items of the needs-you list (FM-44).
     pub needs_you: NeedsYou,
+    /// The total size of all trees of the fleet (FM-28).
+    pub worktree_disk: DiskTotal,
 }
 
 /// The open items of the needs-you list. It has no run: each board shows
@@ -524,6 +527,7 @@ pub fn report_for(conn: &Connection, run: &Run, current: Option<&ExeIdentity>) -
         parked: Parked::of(conn, &run.run_id, &now)?,
         orchestrator: super::orchestrator::status_line(conn, &run.run_id)?,
         needs_you: NeedsYou::of(conn)?,
+        worktree_disk: custody::total_bytes(conn)?,
     })
 }
 
@@ -560,6 +564,7 @@ pub fn render(r: &Report) -> String {
     render_live(&mut out, &r.workers);
     render_open_worktrees(&mut out, &r.worktrees);
     render_parked(&mut out, &r.parked);
+    render_worktree_disk(&mut out, &r.worktree_disk);
     render_needs_you(&mut out, &r.needs_you);
     if !r.unsettled.is_empty() {
         let items: Vec<String> = r.unsettled.iter().map(|u| u.to_string()).collect();
@@ -709,6 +714,25 @@ fn render_parked(out: &mut String, p: &Parked) {
         out,
         "Parked worktrees: {} ({disk}). Decide about them with horch worktree triage.",
         p.count,
+    );
+}
+
+/// The total size of all trees of the fleet, as the `worktree_list` job
+/// measured them; nothing when the fleet has no tree.
+fn render_worktree_disk(out: &mut String, d: &DiskTotal) {
+    if d.count == 0 {
+        return;
+    }
+    let unmeasured = match d.unmeasured {
+        0 => String::new(),
+        n => format!("; {n} not measured"),
+    };
+    let _ = writeln!(
+        out,
+        "Worktree disk: {} in {} worktree{}{unmeasured}.",
+        super::triage::human_bytes(d.bytes),
+        d.count,
+        if d.count == 1 { "" } else { "s" },
     );
 }
 

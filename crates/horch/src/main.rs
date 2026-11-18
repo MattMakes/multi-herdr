@@ -260,6 +260,14 @@ enum ProjectCommand {
         command: WorktreeSubcommand,
     },
 
+    /// List each worktree of the fleet with its state, task, owner, age and
+    /// size, then the total.
+    Worktrees {
+        /// Print the rows and the total as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Read the project session ledger. Do this before spawning.
     Sessions {
         /// Print the raw ledger JSON instead of the readable summary.
@@ -682,7 +690,9 @@ enum WorktreeSubcommand {
         #[command(subcommand)]
         action: Option<TriageAction>,
     },
-    /// Recreate an archived or trashed worktree folder from its ref.
+    /// Give back the newest rescue ref of a task (`T<seq>`) or worktree id
+    /// as the branch `rescue/T<seq>-<n>` and its tree; else recreate an
+    /// archived or trashed worktree folder from its ref.
     Restore { name: String },
 }
 
@@ -1053,6 +1063,7 @@ impl ProjectCommand {
     fn dispatch(self, ctx: &mut Ctx) -> Result<ExitCode> {
         match self {
             ProjectCommand::Worktree { command } => done(worktree_command(ctx, command)),
+            ProjectCommand::Worktrees { json } => done(cmd::worktree::worktrees(ctx, json)),
             ProjectCommand::Sessions {
                 json,
                 all,
@@ -1748,6 +1759,7 @@ mod tests {
             ("mode", false),
             ("done", false),
             ("worktree", false),
+            ("worktrees", false),
             ("sessions", false),
             ("teammates", false),
             ("cost", false),

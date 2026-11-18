@@ -134,6 +134,7 @@ fn render_prints_each_section() {
          \x20 dev-x                working   T-1   checkin - ago, progress - ago  UNWATCHED\n\
          Worktrees:\n\
          \x20 T-1   open           /repo/.worktrees/a (base main)\n\
+         Worktree disk: 0 B in 1 worktree; 1 not measured.\n\
          Unsettled: T-1 (running), T-2 (held: two failures), T-3 (landing), worktree /repo/.worktrees/a (open).\n\
          5 tasks: 1 done, 1 running, 1 landing, 1 queued, 1 cancelled. Not complete.\n"
     );
