@@ -41,11 +41,12 @@ use horch_e2e::{hang, prime_session_id, say, scenario_has, write_skills_report, 
 use serde_json::{json, Value};
 
 fn main() {
+    horch_e2e::probe::child_entry();
     let mut call = Call::start("prime");
     let argv = call.argv.clone();
     let args: Vec<&str> = argv.iter().map(String::as_str).collect();
     match args.as_slice() {
-        ["--version"] => say("0.10.0"),
+        ["--version"] => say(&horch_e2e::probe::version_or("0.10.0")),
         ["update"] => update(&call),
         ["status", ..] => say(&Value::Array(scanned_daemons()).to_string()),
         ["shutdown", rest @ ..] => shutdown(&call, rest.contains(&"--force")),
@@ -103,6 +104,7 @@ fn launch(call: &mut Call, args: &[&str]) {
         let (dirs, flags) = skill_flags(options);
         write_skills_report("prime", &dirs, json!({ "flags": flags }));
     }
+    horch_e2e::probe::record_operator_boundary(call);
     // Eager: a `stay` launch is killed, so nothing is written after it.
     call.flush();
     if scenario_has("stay") {

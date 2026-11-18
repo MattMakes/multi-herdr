@@ -17,9 +17,11 @@ use std::path::{Path, PathBuf};
 use serde_json::{json, Value};
 
 pub mod agent;
+pub mod exec;
 pub mod expected;
 pub mod fleetd;
 pub mod harness;
+pub mod probe;
 pub mod process;
 
 /// One call of a fake, built up while it runs and written when it finishes.

@@ -14,14 +14,15 @@ use horch_e2e::{say, scenario, scenario_has, write_skills_report, Call};
 use serde_json::json;
 
 fn main() {
-    let call = Call::start("pi");
+    horch_e2e::probe::child_entry();
+    let mut call = Call::start("pi");
     let code = if scenario() == "crash" {
         eprintln!("pi: Node.js 22.19 or newer is required");
         1
     } else if call.argv == ["update", "--self"] {
         update(&call)
     } else if call.argv.iter().any(|a| a == "--version") {
-        say("0.85.1");
+        say(&horch_e2e::probe::version_or("0.85.1"));
         0
     } else {
         if scenario_has("inspect_skills") {
@@ -38,6 +39,7 @@ fn main() {
             }
             write_skills_report("pi", &dirs, json!({ "flags": flags }));
         }
+        horch_e2e::probe::record_operator_boundary(&mut call);
         0
     };
     call.flush();

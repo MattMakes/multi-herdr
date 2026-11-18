@@ -31,13 +31,14 @@ use horch_e2e::{hang, opencode_session_id, say, scenario_has, write_skills_repor
 use serde_json::json;
 
 fn main() {
+    horch_e2e::probe::child_entry();
     let mut call = Call::start("opencode");
     let argv = call.argv.clone();
     let args: Vec<&str> = argv.iter().map(String::as_str).collect();
     let cwd = std::env::current_dir().unwrap_or_default();
     let id = opencode_session_id(&cwd);
     match args.as_slice() {
-        ["--version"] => say("1.18.33"),
+        ["--version"] => say(&horch_e2e::probe::version_or("1.18.33")),
         ["upgrade"] => update(&call),
         ["session", "list", ..] => {
             call.extra.insert("session_id".into(), json!(id));
@@ -64,6 +65,7 @@ fn main() {
             if scenario_has("inspect_skills") {
                 inspect_skills();
             }
+            horch_e2e::probe::record_operator_boundary(&mut call);
             // Eager: a `stay` launch is killed, so nothing is written after it.
             call.flush();
             if std::env::var("HORCH_FAKE_TRANSCRIPTS").is_ok_and(|v| v == "1") {

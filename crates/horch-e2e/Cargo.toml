@@ -47,6 +47,9 @@ path = "src/bin/fake-ollama.rs"
 # `procid`: fake-herdr and the harness signal a recorded process group only
 # while it is the same group.
 horch-core.workspace = true
+# `sandbox::sandboxed`: the probe child of the conformance probes runs under
+# the rules of the rendered config of its fake (`probe.rs`).
+horch-platform.workspace = true
 # `git::scrub_repo_env`: every git child of the harness and the fakes.
 horch-marketplace.workspace = true
 # `kill`: teardown and fake-herdr signal process groups without a fork.

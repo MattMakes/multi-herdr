@@ -772,6 +772,7 @@ dependencies = [
  "anyhow",
  "horch-core",
  "horch-marketplace",
+ "horch-platform",
  "libc",
  "rusqlite",
  "serde_json",

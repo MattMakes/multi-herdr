@@ -1205,3 +1205,576 @@ mod phase4 {
         assert!(!a.dir().join("outbox/result.json").exists());
     }
 }
+
+/// The fake agents of Phase 7 (fleetd-p7 ticket 16): exec mode with the
+/// argv of each exec adapter, the scenario keys `usage_limit`,
+/// `long_context`, `exit_without_result` and `trust_prompt`, and the probes
+/// of the conformance suite (`version:<text>` and `conformance`).
+#[cfg(unix)]
+mod phase7 {
+    use std::io::{BufRead, BufReader};
+    use std::path::{Path, PathBuf};
+    use std::process::{Child, Command, Output, Stdio};
+
+    use horch_core::harness::{antigravity, claude, codex};
+    use horch_e2e::harness::Harness;
+    use serde_json::{json, Value};
+
+    /// The 3 CLIs with an exec adapter, by the name of their fake.
+    const EXEC_CLIS: [&str; 3] = ["claude", "codex", "agy"];
+
+    /// A harness with a `START.md` that the exec argv names.
+    fn harness(name: &str, scenario: &str) -> (Harness, PathBuf) {
+        let mut h = Harness::new(name);
+        h.set("HORCH_FAKE_SCENARIO", scenario);
+        let start = h.root.join("attempt/inbox/START.md");
+        std::fs::create_dir_all(start.parent().unwrap()).unwrap();
+        std::fs::write(&start, "Do task T-1.\n").unwrap();
+        (h, start)
+    }
+
+    /// The exec argv of `cli`, as the adapters of tickets 13 to 15 build it,
+    /// with `extra` before the prompt.
+    fn exec_argv(cli: &str, start: &Path, extra: &[&str]) -> Vec<String> {
+        let start = start.to_string_lossy().into_owned();
+        let mut argv: Vec<String> = match cli {
+            "claude" => ["-p", "--output-format", "stream-json", "--verbose"]
+                .iter()
+                .chain(&["--include-hook-events", "--model", "claude-opus-5-5"])
+                .map(|s| s.to_string())
+                .collect(),
+            "codex" => vec!["exec".into(), "--json".into()],
+            "agy" => ["-p", &start, "--output-format", "stream-json"]
+                .iter()
+                .chain(&["--mode", "auto", "--model", "gemini-3.8-flash"])
+                .map(|s| s.to_string())
+                .collect(),
+            other => panic!("no exec adapter for {other}"),
+        };
+        argv.extend(extra.iter().map(|s| s.to_string()));
+        if cli != "agy" {
+            argv.push(start);
+        }
+        argv
+    }
+
+    fn command(h: &Harness, cli: &str, argv: &[String]) -> Command {
+        let exe = format!("{cli}{}", std::env::consts::EXE_SUFFIX);
+        let mut cmd = Command::new(h.bin.join(exe));
+        cmd.args(argv).current_dir(&h.project);
+        h.seal(&mut cmd);
+        cmd
+    }
+
+    fn exec(h: &Harness, cli: &str, start: &Path, extra: &[&str]) -> Output {
+        let argv = exec_argv(cli, start, extra);
+        command(h, cli, &argv).output().expect("running a fake")
+    }
+
+    fn lines(out: &Output) -> Vec<String> {
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// The event name of 1 stream line, read by the parser of the adapter.
+    fn event(cli: &str, line: &str) -> String {
+        let name = match cli {
+            "claude" => format!("{:?}", claude::read_event(line)),
+            "codex" => format!("{:?}", codex::read_event(line)),
+            _ => format!("{:?}", antigravity::read_event(line)),
+        };
+        name.split([' ', '(', '{']).next().unwrap().to_owned()
+    }
+
+    fn events(cli: &str, out: &Output) -> Vec<String> {
+        lines(out).iter().map(|l| event(cli, l)).collect()
+    }
+
+    /// The fixture lines of `cli`, as the adapter tickets recorded them.
+    fn fixture(cli: &str) -> Vec<Value> {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../horch-core/tests/fixtures/streams")
+            .join(format!("{cli}-exec.jsonl"));
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    }
+
+    /// The stream line of 1 fixture entry: the bare line, with no doc key.
+    fn bare(cli: &str, entry: &Value) -> Value {
+        if cli == "codex" {
+            return entry["line"].clone();
+        }
+        let mut v = entry.clone();
+        let map = v.as_object_mut().unwrap();
+        map.remove("_doc");
+        map.remove("_expect");
+        v
+    }
+
+    fn the_call(h: &Harness, cli: &str) -> Value {
+        let fake = if cli == "agy" { "antigravity" } else { cli };
+        let calls = h.calls_of(fake);
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        calls[0].clone()
+    }
+
+    #[test]
+    fn fake_claude_exec_prints_the_fixture_stream() {
+        exec_prints_the_fixture_stream("claude");
+    }
+
+    #[test]
+    fn fake_codex_exec_prints_the_fixture_stream() {
+        exec_prints_the_fixture_stream("codex");
+    }
+
+    #[test]
+    fn fake_agy_exec_prints_the_fixture_stream() {
+        exec_prints_the_fixture_stream("agy");
+    }
+
+    /// Each printed line is a line of the fixture, the run makes progress,
+    /// and it ends with 1 result and exit 0. The fake read `START.md`.
+    fn exec_prints_the_fixture_stream(cli: &str) {
+        let (h, start) = harness(&format!("p7-exec-{cli}"), "default");
+        let out = exec(&h, cli, &start, &[]);
+        assert!(out.status.success(), "{out:?}");
+        let known: Vec<Value> = fixture(cli).iter().map(|e| bare(cli, e)).collect();
+        let printed = lines(&out);
+        for line in &printed {
+            let v: Value = serde_json::from_str(line).unwrap();
+            assert!(known.contains(&v), "{cli}: not a fixture line: {line}");
+        }
+        let events = events(cli, &out);
+        assert!(events.len() >= 3, "{cli}: {events:?}");
+        assert_eq!(events.last().unwrap(), "Result", "{cli}: {events:?}");
+        assert_eq!(events.iter().filter(|e| *e == "Result").count(), 1);
+        assert!(!events.iter().any(|e| e == "UsageLimited"), "{events:?}");
+        let call = the_call(&h, cli);
+        assert_eq!(call["exec_prompt"], "Do task T-1.\n", "{call}");
+        assert_eq!(call["violations"], json!([]), "{call}");
+    }
+
+    #[test]
+    fn fake_exec_names_a_prompt_that_is_not_a_file() {
+        let (h, start) = harness("p7-noprompt", "default");
+        std::fs::remove_file(&start).unwrap();
+        let out = exec(&h, "claude", &start, &[]);
+        assert!(!out.status.success(), "{out:?}");
+        let violations = the_call(&h, "claude")["violations"].to_string();
+        assert!(violations.contains("START.md"), "{violations}");
+    }
+
+    #[test]
+    fn fake_codex_usage_limit_prints_the_signal() {
+        usage_limit_prints_the_signal("codex");
+    }
+
+    #[test]
+    fn fake_claude_usage_limit_prints_the_signal() {
+        usage_limit_prints_the_signal("claude");
+    }
+
+    #[test]
+    fn fake_agy_usage_limit_prints_the_signal() {
+        usage_limit_prints_the_signal("agy");
+    }
+
+    /// The last line is the usage-limit signal of the CLI, the run has no
+    /// result, and the fake exits by itself with a failure.
+    fn usage_limit_prints_the_signal(cli: &str) {
+        let (h, start) = harness(&format!("p7-limit-{cli}"), "usage_limit");
+        let out = exec(&h, cli, &start, &[]);
+        assert!(!out.status.success(), "{out:?}");
+        let events = events(cli, &out);
+        assert_eq!(events.last().unwrap(), "UsageLimited", "{cli}: {events:?}");
+        assert!(!events.iter().any(|e| e == "Result"), "{cli}: {events:?}");
+    }
+
+    #[test]
+    fn fake_exec_exit_without_result_prints_no_result() {
+        for cli in EXEC_CLIS {
+            let (h, start) = harness(&format!("p7-nores-{cli}"), "exit_without_result");
+            let out = exec(&h, cli, &start, &[]);
+            assert!(out.status.success(), "{cli}: {out:?}");
+            let events = events(cli, &out);
+            assert!(events.iter().any(|e| e == "Activity"), "{cli}: {events:?}");
+            assert!(
+                !events.iter().any(|e| e == "Result" || e == "UsageLimited"),
+                "{cli}: {events:?}"
+            );
+        }
+    }
+
+    /// Start `cli` in exec mode and read its stdout until `stop` holds for a
+    /// line. The child still runs: the caller ends it.
+    fn read_until(
+        h: &Harness,
+        cli: &str,
+        start: &Path,
+        stop: impl Fn(&str) -> bool,
+    ) -> (Child, Vec<String>) {
+        let argv = exec_argv(cli, start, &[]);
+        let mut child = command(h, cli, &argv)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut seen = Vec::new();
+        let mut reader = BufReader::new(child.stdout.take().unwrap());
+        loop {
+            let mut line = String::new();
+            let n = reader.read_line(&mut line).unwrap();
+            assert!(n > 0, "{cli}: the fake ended before the line; saw {seen:?}");
+            let line = line.trim_end().to_owned();
+            seen.push(line.clone());
+            if stop(&line) {
+                break;
+            }
+        }
+        // The pipe stays open, so a later print of the fake does not fail.
+        std::mem::forget(reader);
+        (child, seen)
+    }
+
+    /// The child has not exited by itself. Then end it.
+    fn still_runs_then_end(mut child: Child) {
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "the fake stopped by itself"
+        );
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+
+    #[test]
+    fn fake_agy_long_context_passes_256000_tokens() {
+        let (h, start) = harness("p7-long-agy", "long_context");
+        let past = |line: &str| {
+            matches!(antigravity::read_event(line),
+                antigravity::Event::ContextTokens(n) if n > 256_000)
+        };
+        let (child, _) = read_until(&h, "agy", &start, past);
+        still_runs_then_end(child);
+    }
+
+    #[test]
+    fn fake_claude_long_context_passes_256000_tokens() {
+        let (h, start) = harness("p7-long-claude", "long_context");
+        let past = |line: &str| matches!(claude::read_event(line), claude::Event::ContextTokens(n) if n > 256_000);
+        let (child, _) = read_until(&h, "claude", &start, past);
+        still_runs_then_end(child);
+    }
+
+    /// Codex prints its token count only in `turn.completed`.
+    #[test]
+    fn fake_codex_long_context_passes_256000_tokens() {
+        let (h, start) = harness("p7-long-codex", "long_context");
+        let past = |line: &str| {
+            let v: Value = serde_json::from_str(line).unwrap_or(Value::Null);
+            v["usage"]["input_tokens"]
+                .as_u64()
+                .is_some_and(|n| n > 256_000)
+        };
+        let (child, _) = read_until(&h, "codex", &start, past);
+        still_runs_then_end(child);
+    }
+
+    #[test]
+    fn fake_exec_trust_prompt_prints_a_dialog_and_waits() {
+        for cli in EXEC_CLIS {
+            let (h, start) = harness(&format!("p7-trust-{cli}"), "trust_prompt");
+            let (child, seen) = read_until(&h, cli, &start, |l| l.contains("trust"));
+            assert!(
+                seen.iter()
+                    .all(|l| serde_json::from_str::<Value>(l).is_err()),
+                "{cli}: a dialog comes before any stream line: {seen:?}"
+            );
+            still_runs_then_end(child);
+        }
+    }
+
+    #[test]
+    fn fake_probe_version_comes_from_the_scenario() {
+        for cli in ["claude", "codex", "agy", "opencode", "pi", "prime-agent"] {
+            let mut h = Harness::new(&format!("p7-ver-{cli}"));
+            h.set("HORCH_FAKE_SCENARIO", "version:9.8.7-probe");
+            let exe = format!("{cli}{}", std::env::consts::EXE_SUFFIX);
+            let mut cmd = Command::new(h.bin.join(exe));
+            cmd.arg("--version");
+            h.seal(&mut cmd);
+            let out = cmd.output().unwrap();
+            assert!(out.status.success(), "{cli}: {out:?}");
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout).trim(),
+                "9.8.7-probe",
+                "{cli}"
+            );
+        }
+    }
+
+    /// A fleet root with the operator token, a listening command channel
+    /// and the request folder, and a worktree in it.
+    struct Fleet {
+        root: PathBuf,
+        worktree: PathBuf,
+        _channel: std::os::unix::net::UnixListener,
+    }
+
+    fn fleet(h: &mut Harness) -> Fleet {
+        let root = h.root.join("fleet");
+        let run = root.join("run");
+        std::fs::create_dir_all(run.join("requests")).unwrap();
+        std::fs::write(run.join("operator.token"), "secret-token\n").unwrap();
+        let channel = std::os::unix::net::UnixListener::bind(run.join("fleetd.sock")).unwrap();
+        let worktree = h.project.clone();
+        h.set("FLEET_ROOT", root.to_string_lossy());
+        Fleet {
+            root,
+            worktree,
+            _channel: channel,
+        }
+    }
+
+    /// The `--settings` of a sandboxed Claude Code worker: it writes only in
+    /// its worktree, and it cannot read the run folder of the fleet.
+    fn claude_settings(f: &Fleet) -> String {
+        json!({
+            "env": {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "256000"},
+            "sandbox": {
+                "enabled": true,
+                "filesystem": {
+                    "allowWrite": [f.worktree],
+                    "denyRead": [f.root.join("run")],
+                    "denyWrite": [f.root.join("run")],
+                }
+            }
+        })
+        .to_string()
+    }
+
+    /// The probe report of 1 conformance run of `cli`, from its result line
+    /// and from the log.
+    fn report(h: &Harness, cli: &str, out: &Output) -> Value {
+        assert!(out.status.success(), "{cli}: {out:?}");
+        let call = the_call(h, cli);
+        let logged = call["conformance"].clone();
+        assert!(logged.is_object(), "{cli}: {call}");
+        let text = lines(out)
+            .into_iter()
+            .find(|l| l.contains("\\\"operator_boundary\\\""))
+            .unwrap_or_else(|| panic!("{cli}: no report in the stream: {out:?}"));
+        let line: Value = serde_json::from_str(&text).unwrap();
+        let inner = [
+            &line["result"],
+            &line["result"]["response"],
+            &line["item"]["text"],
+        ]
+        .into_iter()
+        .find_map(|v| {
+            v.as_str()
+                .and_then(|s| serde_json::from_str::<Value>(s).ok())
+        })
+        .unwrap_or_else(|| panic!("{cli}: the report is not JSON: {text}"));
+        assert_eq!(inner, logged, "{cli}");
+        logged
+    }
+
+    #[test]
+    fn fake_probe_sandbox_write_outside_is_refused() {
+        let (mut h, start) = harness("p7-sbx-write", "conformance");
+        let f = fleet(&mut h);
+        let settings = claude_settings(&f);
+        let out = exec(&h, "claude", &start, &["--settings", &settings]);
+        let r = report(&h, "claude", &out);
+        let probe = &r["operator_boundary"];
+        assert_eq!(probe["sandbox"], "on", "{r}");
+        assert!(
+            probe["write_outside"]
+                .as_str()
+                .unwrap()
+                .starts_with("refused"),
+            "{r}"
+        );
+        assert!(
+            probe["write_inside"]
+                .as_str()
+                .unwrap()
+                .starts_with("allowed"),
+            "{r}"
+        );
+        let outside = h.project.parent().unwrap();
+        let left: Vec<_> = std::fs::read_dir(outside)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with("horch-probe"))
+            .collect();
+        assert!(left.is_empty(), "the probe left a file outside: {left:?}");
+    }
+
+    #[test]
+    fn fake_probe_operator_acts_are_refused() {
+        let (mut h, start) = harness("p7-sbx-acts", "conformance");
+        let f = fleet(&mut h);
+        let settings = claude_settings(&f);
+        let out = exec(&h, "claude", &start, &["--settings", &settings]);
+        let r = report(&h, "claude", &out);
+        for act in ["read_token", "connect_channel", "write_requests"] {
+            let result = r["operator_boundary"][act].as_str().unwrap();
+            assert!(result.starts_with("refused"), "{act}: {r}");
+        }
+        let requests = std::fs::read_dir(f.root.join("run/requests"))
+            .unwrap()
+            .count();
+        assert_eq!(requests, 0, "a request file got through");
+    }
+
+    /// Codex: the `-c` permissions of its rendered config close the run
+    /// folder (`"none"`) and open the worktree.
+    #[test]
+    fn fake_codex_probe_applies_the_permissions_of_its_config() {
+        let (mut h, start) = harness("p7-sbx-codex", "conformance");
+        let f = fleet(&mut h);
+        let fs = format!(
+            "permissions.fleet_write.filesystem={{\":project_roots\"={{\".\"=\"write\"}},\"{}\"=\"none\"}}",
+            f.root.join("run").display()
+        );
+        let roots = format!(
+            "permissions.fleet_write.workspace_roots={{\"{}\"=true}}",
+            f.worktree.display()
+        );
+        let out = exec(&h, "codex", &start, &["-c", &fs, "-c", &roots]);
+        let r = report(&h, "codex", &out);
+        let probe = &r["operator_boundary"];
+        assert_eq!(probe["sandbox"], "on", "{r}");
+        for act in [
+            "write_outside",
+            "read_token",
+            "connect_channel",
+            "write_requests",
+        ] {
+            assert!(
+                probe[act].as_str().unwrap().starts_with("refused"),
+                "{act}: {r}"
+            );
+        }
+        assert!(
+            probe["write_inside"]
+                .as_str()
+                .unwrap()
+                .starts_with("allowed"),
+            "{r}"
+        );
+    }
+
+    #[test]
+    fn fake_probe_reads_back_the_compaction_setting() {
+        let (mut h, start) = harness("p7-compact-claude", "conformance");
+        let f = fleet(&mut h);
+        let settings = claude_settings(&f);
+        let out = exec(&h, "claude", &start, &["--settings", &settings]);
+        assert_eq!(report(&h, "claude", &out)["compaction"], "256000");
+
+        let (mut h, start) = harness("p7-compact-codex", "conformance");
+        fleet(&mut h);
+        let out = exec(
+            &h,
+            "codex",
+            &start,
+            &["-c", "model_auto_compact_token_limit=256000"],
+        );
+        assert_eq!(report(&h, "codex", &out)["compaction"], "256000");
+
+        let (mut h, start) = harness("p7-compact-agy", "conformance");
+        fleet(&mut h);
+        let out = exec(&h, "agy", &start, &[]);
+        assert_eq!(report(&h, "agy", &out)["compaction"], Value::Null);
+    }
+
+    #[test]
+    fn fake_probe_lists_skills_rules_mcp_servers_and_hooks() {
+        let (mut h, start) = harness("p7-config-claude", "conformance");
+        fleet(&mut h);
+        let plugin = h.root.join("plugin");
+        std::fs::create_dir_all(plugin.join("skills/tdd")).unwrap();
+        let config = h.root.join("claude-home");
+        std::fs::create_dir_all(config.join("rules")).unwrap();
+        std::fs::write(config.join("rules/no-key.md"), "x").unwrap();
+        std::fs::write(config.join("CLAUDE.md"), "x").unwrap();
+        h.set("CLAUDE_CONFIG_DIR", config.to_string_lossy());
+        let mcp = r#"{"mcpServers":{"horch":{"command":"horch"}}}"#;
+        let plugin = plugin.to_string_lossy().into_owned();
+        let extra = ["--mcp-config", mcp, "--model", "m", "--plugin-dir", &plugin];
+        let out = exec(&h, "claude", &start, &extra);
+        let r = report(&h, "claude", &out);
+        assert_eq!(r["skills"], json!(["tdd"]), "{r}");
+        assert_eq!(r["rules"], json!(["CLAUDE.md", "no-key.md"]), "{r}");
+        assert_eq!(r["mcp_servers"], json!(["horch"]), "{r}");
+        assert_eq!(r["hooks"], json!(["PreToolUse"]), "{r}");
+
+        let (mut h, start) = harness("p7-config-codex", "conformance");
+        fleet(&mut h);
+        let home = h.root.join("codex-home");
+        std::fs::create_dir_all(home.join("skills/review")).unwrap();
+        std::fs::write(home.join("AGENTS.md"), "x").unwrap();
+        std::fs::write(
+            home.join("config.toml"),
+            "[mcp_servers.docs]\ncommand = \"d\"\n",
+        )
+        .unwrap();
+        h.set("CODEX_HOME", home.to_string_lossy());
+        let out = exec(
+            &h,
+            "codex",
+            &start,
+            &["-c", "mcp_servers.horch.command=\"horch\""],
+        );
+        let r = report(&h, "codex", &out);
+        assert_eq!(r["skills"], json!(["review"]), "{r}");
+        assert_eq!(r["rules"], json!(["AGENTS.md"]), "{r}");
+        assert_eq!(r["mcp_servers"], json!(["docs", "horch"]), "{r}");
+        assert_eq!(r["hooks"], json!([]), "{r}");
+    }
+
+    /// OpenCode, pi and Prime render no sandbox rule, so the probe runs each
+    /// act with no sandbox and records what it could do (MAP.md Q5).
+    #[test]
+    fn fake_opencode_pi_prime_probe_the_operator_boundary() {
+        for (cli, program) in [
+            ("opencode", "opencode"),
+            ("pi", "pi"),
+            ("prime", "prime-agent"),
+        ] {
+            let mut h = Harness::new(&format!("p7-ob-{cli}"));
+            h.set("HORCH_FAKE_SCENARIO", "conformance");
+            let f = fleet(&mut h);
+            let exe = format!("{program}{}", std::env::consts::EXE_SUFFIX);
+            let mut cmd = Command::new(h.bin.join(exe));
+            cmd.current_dir(&h.project);
+            h.seal(&mut cmd);
+            let out = cmd.output().unwrap();
+            let calls = h.calls_of(cli);
+            let probe = calls
+                .iter()
+                .find_map(|c| c.get("conformance").cloned())
+                .unwrap_or_else(|| panic!("{cli}: no probe in the log: {calls:?} {out:?}"));
+            let probe = &probe["operator_boundary"];
+            assert_eq!(probe["sandbox"], "none", "{cli}: {probe}");
+            for act in ["read_token", "connect_channel", "write_requests"] {
+                assert!(
+                    probe[act].as_str().unwrap().starts_with("allowed"),
+                    "{cli} {act}: {probe}"
+                );
+            }
+            let left = std::fs::read_dir(f.root.join("run/requests"))
+                .unwrap()
+                .count();
+            assert_eq!(left, 0, "{cli}: the probe left its request file");
+        }
+    }
+}

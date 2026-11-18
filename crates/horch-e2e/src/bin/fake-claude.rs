@@ -27,18 +27,23 @@ use horch_e2e::{hang, say, scenario, scenario_has, write_skills_report, Call};
 use serde_json::{json, Value};
 
 fn main() {
+    horch_e2e::probe::child_entry();
     let mut call = Call::start("claude");
     // The operator's rule (CLAUDE.md): nothing horch starts carries the key.
     if std::env::var_os("ANTHROPIC_API_KEY").is_some() {
         call.violate("ANTHROPIC_API_KEY present in the environment");
     }
     if call.argv.iter().any(|a| a == "--version") {
-        say("2.1.284 (Claude Code)");
+        say(&horch_e2e::probe::version_or("2.1.284 (Claude Code)"));
         call.flush();
         return;
     }
     if call.argv == ["update"] {
         update(&call);
+    }
+    if let Some((cli, prompt)) = horch_e2e::exec::Cli::of_argv("claude", &call.argv) {
+        let prompt = prompt.to_owned();
+        horch_e2e::exec::run(call, cli, &prompt);
     }
     let probe = call
         .argv

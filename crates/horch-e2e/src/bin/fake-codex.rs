@@ -35,6 +35,7 @@ use serde_json::{json, Value};
 const ALLOWED: [&str; 3] = ["initialize", "initialized", "account/rateLimits/read"];
 
 fn main() {
+    horch_e2e::probe::child_entry();
     // horch reads the model catalog before each Codex launch with
     // multi_agent off (4278edc). Answer like the real CLI and record no
     // call: it is a lookup, not an agent run.
@@ -50,12 +51,16 @@ fn main() {
         sandbox(&mut call);
     }
     if call.argv.iter().any(|a| a == "--version") {
-        say("codex-cli 0.158.0");
+        say(&horch_e2e::probe::version_or("codex-cli 0.158.0"));
         call.flush();
         return;
     }
     if call.argv == ["update"] {
         update(&call);
+    }
+    if let Some((cli, prompt)) = horch_e2e::exec::Cli::of_argv("codex", &call.argv) {
+        let prompt = prompt.to_owned();
+        horch_e2e::exec::run(call, cli, &prompt);
     }
     if call.argv.first().map(String::as_str) != Some("app-server") {
         horch_e2e::agent::play(&mut call);

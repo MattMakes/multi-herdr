@@ -35,10 +35,11 @@ const FORBIDDEN: [&str; 4] = [
 ];
 
 fn main() {
+    horch_e2e::probe::child_entry();
     let mut call = Call::start("antigravity");
     let args: Vec<String> = call.argv.clone();
     if args == ["--version"] {
-        say("1.1.3");
+        say(&horch_e2e::probe::version_or("1.1.3"));
         call.flush();
         return;
     }
@@ -49,6 +50,9 @@ fn main() {
         && args.get(1).map(String::as_str) == Some("/usage")
     {
         usage(&call);
+    }
+    if let Some((cli, prompt)) = horch_e2e::exec::Cli::of_argv("antigravity", &args) {
+        horch_e2e::exec::run(call, cli, prompt);
     }
     horch_e2e::agent::play(&mut call);
     for key in FORBIDDEN {
