@@ -337,12 +337,14 @@ impl World {
     /// the git binary `bin`: the result is written on the run, and the pass
     /// observes that its process is gone.
     fn run_with_git(&mut self, id: i64, name: &str, bin: &Path) -> JobRow {
+        let git = CliWorktreeGit::new(bin, self.fleet_root());
+        self.run_with(id, name, &git)
+    }
+
+    /// [`World::run_with_git`] through the adapter `git`.
+    fn run_with(&mut self, id: i64, name: &str, git: &CliWorktreeGit) -> JobRow {
         self.start(id, "true", &[], 0);
-        let ran = rescue_git::rescue(
-            &CliWorktreeGit::new(bin),
-            &self.fleet_root(),
-            &self.row(name),
-        );
+        let ran = rescue_git::rescue(git, &self.fleet_root(), &self.row(name));
         jobs_store::set_result(&self.conn, id, &result_json(&ran)).unwrap();
         self.see(id, Liveness::Dead, 0);
         self.job(id)
@@ -581,17 +583,20 @@ fn failed_rescue_verification_keeps_the_tree() {
     let tree = w.orphan("t1");
     work_in(&tree);
     // A file changes between step 1 and step 4: just before the `add` of
-    // the second private index.
+    // the second private index. Git in the sandbox cannot write the tree,
+    // so the change comes from the test, between 2 git calls.
     let late = tree.join("late.txt");
-    let bin = w.git_wrapper(&format!(
-        r#"case "$GIT_INDEX_FILE:$*" in *verify.index:*" add "*)
-  echo late > '{}';;
-esac"#,
-        late.display()
-    ));
+    let adds = std::sync::atomic::AtomicUsize::new(0);
+    let file = late.clone();
+    let git = CliWorktreeGit::new("git", w.fleet_root()).with_race(move |_, args| {
+        let add = args.contains(&"add");
+        if add && adds.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+            std::fs::write(&file, "late\n").unwrap();
+        }
+    });
     let id = w.queue("t1");
 
-    let job = w.run_with_git(id, "t1", &bin);
+    let job = w.run_with(id, "t1", &git);
 
     assert_eq!(job.state, State::Failed, "{}", text(&job));
     assert!(text(&job).contains("files on disk"), "{}", text(&job));
@@ -605,8 +610,8 @@ esac"#,
     assert_eq!(items[0].kind, "rescue_failed");
     assert!(tree.join("u.txt").is_file() && late.is_file());
     // The private index files are gone.
-    let run = w.fleet_root().join("run");
-    let left: Vec<_> = std::fs::read_dir(&run).unwrap().collect();
+    let folder = w.fleet_root().join("tmp").join("t1");
+    let left: Vec<_> = std::fs::read_dir(&folder).unwrap().collect();
     assert!(left.is_empty(), "{left:?}");
 }
 
@@ -639,19 +644,19 @@ fn rescue_refuses_a_fleet_root_with_a_parent_component() {
     );
 
     assert!(!w.repo.join("sub").exists() && !w.repo.join("fleet").exists());
-    assert!(!w.repo.join("run").exists());
+    assert!(!w.repo.join("tmp").exists());
     assert_eq!(git(&tree, &["for-each-ref", "refs/horch/rescue/"]), "");
 }
 
 #[test]
-fn rescue_refuses_a_run_folder_that_links_out_of_the_fleet_root() {
+fn rescue_refuses_an_index_folder_that_links_out_of_the_fleet_root() {
     let mut w = world();
     let tree = w.orphan("t1");
     let fleet = w.dir.path().join("linked-fleet");
     let elsewhere = w.dir.path().join("elsewhere");
     std::fs::create_dir_all(&fleet).unwrap();
     std::fs::create_dir_all(&elsewhere).unwrap();
-    std::os::unix::fs::symlink(&elsewhere, fleet.join("run")).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, fleet.join("tmp")).unwrap();
 
     refused_rescue(&w, &fleet, "is not in the fleet root");
 
@@ -662,7 +667,7 @@ fn rescue_refuses_a_run_folder_that_links_out_of_the_fleet_root() {
 /// The rescue of the tree `t1` with the fleet root `root`, which fails with
 /// `reason`.
 fn refused_rescue(w: &World, root: &Path, reason: &str) {
-    let ran = rescue_git::rescue(&CliWorktreeGit::new("git"), root, &w.row("t1"));
+    let ran = rescue_git::rescue(&CliWorktreeGit::new("git", root), root, &w.row("t1"));
     assert!(!ran.outcome.passed);
     assert!(ran.outcome.text.contains(reason), "{}", ran.outcome.text);
 }

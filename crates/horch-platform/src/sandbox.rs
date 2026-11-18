@@ -1,7 +1,10 @@
 //! The concern sandbox: the check sandbox (SR-4), the sandbox host of PL-2.
 //!
 //! [`sandboxed`] wraps a command so that it can read the whole disk but
-//! write only in a list of paths and in its temp folder:
+//! write only in a list of paths and in its temp folder.
+//! [`sandboxed_hiding`] wraps a command so that it can write only in a list
+//! of paths, and cannot read, write or connect to a Unix socket below a
+//! list of hidden paths:
 //!
 //! - macOS: `/usr/bin/sandbox-exec` with a generated Seatbelt profile.
 //! - Linux: `bwrap` (bubblewrap), when it is on the `PATH` of the command.
@@ -36,9 +39,45 @@ pub const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 /// on Windows, on Linux when `bwrap` is not on the `PATH` of `cmd`, and on
 /// macOS when [`SANDBOX_EXEC`] is missing.
 pub fn sandboxed(cmd: Command, writable: &[PathBuf]) -> Result<Command, NotSupported> {
+    let temp = resolved(&std::env::temp_dir());
+    wrapped(cmd, writable, Some(&temp), &[])
+}
+
+/// `cmd` in a sandbox with no temp folder: it can write only in the paths
+/// of `writable` and in `/dev/null`. Below each path of `hidden` it can
+/// not read, write or connect to a Unix socket. A hidden path wins over a
+/// writable path in it. It can read the rest of the disk.
+///
+/// - macOS: Seatbelt denies each file read and write and each Unix socket
+///   connection below a hidden path, whether the path exists or not.
+/// - Linux: a new empty tmpfs covers each hidden folder, and `/dev/null`
+///   covers each hidden file, so a socket file in a hidden folder is gone.
+///   A hidden path that does not exist when the command starts is not
+///   covered. An abstract Unix socket has no path: it is not denied. A
+///   writable path that does not exist yet is replaced by its nearest
+///   existing folder, so that folder is writable. A writable path in
+///   another writable path is not bound again, so a command can rename it.
+///
+/// The rest is as in [`sandboxed`]: the command and its settings, and
+/// [`NotSupported`] on a host with no sandbox. Give absolute paths.
+pub fn sandboxed_hiding(
+    cmd: Command,
+    writable: &[PathBuf],
+    hidden: &[PathBuf],
+) -> Result<Command, NotSupported> {
+    wrapped(cmd, writable, None, hidden)
+}
+
+fn wrapped(
+    cmd: Command,
+    writable: &[PathBuf],
+    temp: Option<&Path>,
+    hidden: &[PathBuf],
+) -> Result<Command, NotSupported> {
     let program = os::program(path_of(&cmd).as_deref())?;
     let writable: Vec<PathBuf> = writable.iter().map(|path| resolved(path)).collect();
-    let args = os::args(&writable, &resolved(&std::env::temp_dir()));
+    let hidden: Vec<PathBuf> = hidden.iter().map(|path| resolved(path)).collect();
+    let args = os::args(&writable, temp, &hidden);
     Ok(wrap(&program, &args, &cmd))
 }
 
@@ -79,9 +118,16 @@ fn wrap(program: &Path, args: &[OsString], cmd: &Command) -> Command {
     sandboxed
 }
 
-/// `path` as the kernel sees it, with each link resolved, or `path` itself
-/// when it does not exist yet. Seatbelt compares the resolved path: on
-/// macOS `/tmp` is `/private/tmp`.
+/// `path` as the kernel sees it, with each link resolved. A path that does
+/// not exist yet keeps its resolved nearest existing folder and the rest of
+/// its names. Seatbelt compares the resolved path: on macOS `/tmp` is
+/// `/private/tmp`.
 fn resolved(path: &Path) -> PathBuf {
-    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+    if let Ok(path) = path.canonicalize() {
+        return path;
+    }
+    match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) if parent != path => resolved(parent).join(name),
+        _ => path.to_path_buf(),
+    }
 }

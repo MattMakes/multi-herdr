@@ -34,8 +34,9 @@ use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 use crate::fleetd::ideas::application::needs_you::NeedsYouList;
 use crate::fleetd::task_execution::domain::task::AttemptState;
 use crate::fleetd::worker_profiles::adapters::launcher::Launcher;
+use crate::fleetd::worktree_custody::adapters::executors;
 use crate::fleetd::worktree_custody::adapters::git::{
-    worktree_add_key, BranchRefused, CliWorktreeGit,
+    worktree_add_key, BranchRefused, CliWorktreeGit, NO_SANDBOX,
 };
 use crate::fleetd::worktree_custody::adapters::remove_git::remove_key;
 use crate::fleetd::worktree_custody::adapters::rescue_git::rescue_key;
@@ -365,6 +366,9 @@ pub fn observe(ctx: &JobCtx<'_>, tx: &Connection, job: &JobRow) -> Result<Observ
             if let Some(refused) = branch_refused(job) {
                 open_branch_refused(ctx, tx, id, &refused, &reason)?;
             }
+            if reason.starts_with(NO_SANDBOX) {
+                open_no_sandbox(ctx, tx, Kind::WorktreeAdd, id, &reason)?;
+            }
             drop_reserved(tx, ctx.guard, id, "worktree_add_failed", Actor::Horch)?;
             Ok(Observed::Dropped(reason))
         }
@@ -378,6 +382,35 @@ pub fn observe(ctx: &JobCtx<'_>, tx: &Connection, job: &JobRow) -> Result<Observ
             job.state.as_str()
         ))),
     }
+}
+
+/// The kind of the needs-you item of a job kind that ran no git because the
+/// host has no sandbox.
+pub const GIT_SANDBOX_KIND: &str = "git_sandbox";
+
+/// Open the needs-you item of the job kind `kind` that ran no git because
+/// the host has no sandbox: 1 item for each kind, not 1 for each job. The
+/// entity is `id`, the subject of the first such job.
+pub fn open_no_sandbox(
+    ctx: &JobCtx<'_>,
+    tx: &Connection,
+    kind: Kind,
+    id: &str,
+    reason: &str,
+) -> Result<()> {
+    let key = format!("{GIT_SANDBOX_KIND}:{kind}");
+    let text = format!(
+        "{reason}. Run fleetd on a host with a sandbox (macOS, or Linux with \
+         bubblewrap on the PATH), then ask again"
+    );
+    let item = NewItem {
+        key: &key,
+        kind: GIT_SANDBOX_KIND,
+        entity: Entity::Worktree,
+        entity_id: id,
+        text: &text,
+    };
+    ctx.needs_you.open_item(tx, &item)
 }
 
 /// The kind of the needs-you item of a branch that a `worktree_add` run
@@ -607,7 +640,8 @@ pub fn rescue_now(
     jobs: &dyn RunJob,
     row: &WorktreeRow,
 ) -> Result<()> {
-    let git = CliWorktreeGit::new(git_bin(&BinOverrides::from_env(&ProcessEnv)));
+    let root = executors::fleet_root(conn)?;
+    let git = CliWorktreeGit::new(git_bin(&BinOverrides::from_env(&ProcessEnv)), root);
     let head = git
         .tree(Path::new(&row.path))?
         .with_context(|| format!("the orphaned worktree {} is not a work tree", row.path))?

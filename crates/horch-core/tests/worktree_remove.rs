@@ -412,9 +412,12 @@ impl World {
         (ended, seen)
     }
 
-    /// The real gateway of a job of this world.
+    /// The real gateway of a job of this world. Git can write the git
+    /// folder of the repository and the folder of its trees.
     fn gateway(&self) -> CliRemoval {
-        CliRemoval::new(CliWorktreeGit::new("git"), self.dir.path().join("fleet"))
+        let fleet = self.dir.path().join("fleet");
+        let writable = [self.repo.join(".git"), self.repo.join(".worktrees")];
+        CliRemoval::new(CliWorktreeGit::new("git", &fleet).writing(&writable), fleet)
     }
 
     /// A `live` attempt `id` of a new worker whose agent process is `pid`.

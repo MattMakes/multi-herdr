@@ -402,8 +402,9 @@ fn worktree_row_is_reserved_before_the_folder_exists() {
         let mut conn = open(&db);
         let job = running_add(&conn);
         let tree = trees::get(&conn, &job.subject).unwrap().unwrap();
+        let fleet = db.parent().unwrap().join("fleet");
         let gateway = Recording {
-            inner: CliWorktreeGit::new("git"),
+            inner: custody_git::tree_writer(CliWorktreeGit::new("git", fleet), &tree).unwrap(),
             db,
             worktree_id: job.subject.clone(),
             seen: recorded,

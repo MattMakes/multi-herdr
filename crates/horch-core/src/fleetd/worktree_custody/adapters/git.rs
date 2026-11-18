@@ -4,15 +4,21 @@
 //! lost" and "The kinds of job" (rows `worktree_add` and `worktree_list`):
 //! each git call of custody is a job, never work inside a pass (FM-12).
 //!
-//! [`CliWorktreeGit`] runs git with the rights of fleetd and with no
-//! sandbox, so git starts no hook and no program of the project (the fleetd
-//! git rule, review F4 of T-607). Each of its calls goes through
-//! `CliWorktreeGit::checked`.
+//! [`CliWorktreeGit`] runs each git call in the platform sandbox, and with
+//! a config that the project cannot change, so a program of the project
+//! never runs with the rights of fleetd (the fleetd git rule, review F4 of
+//! T-607, T-691). Each of its calls goes through `CliWorktreeGit::checked`.
 
+use std::fmt;
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
-use horch_marketplace::git::{GitOutput, GitRunner};
+use horch_marketplace::git::{GitOutput, GitRunner, GitSandbox, SandboxHost};
+use horch_platform::fs::create_dir_mode;
+use horch_platform::sandbox::sandboxed_hiding;
+use horch_platform::NotSupported;
 use serde::{Deserialize, Serialize};
 
 use crate::fleetd::fleet_runtime::application::jobs::Ran;
@@ -378,21 +384,41 @@ fn facts(
 
 // ─── the git adapter ────────────────────────────────────────────────────
 
-/// The `-c` keys of each git call, before its subcommand. The git runner
-/// adds `core.hooksPath=/dev/null` too; it is here so that this list is the
-/// whole rule.
-const SAFE_CONFIG: [&str; 4] = [
+/// The `-c` keys of each git call, before its subcommand. The command line
+/// is the last scope that git reads, so each key wins over the config of
+/// the project. The git runner adds `core.hooksPath=/dev/null` too; it is
+/// here so that this list is the whole rule.
+const SAFE_CONFIG: [&str; 8] = [
+    // Hooks.
     "core.hooksPath=/dev/null",
+    // The fsmonitor program.
     "core.fsmonitor=false",
+    // The gpg program.
     "commit.gpgSign=false",
     "tag.gpgSign=false",
+    // The attributes file of the user, which can select a filter driver.
+    "core.attributesFile=/dev/null",
+    // Each transport: the ssh command, a remote helper, `ext::`.
+    "protocol.allow=never",
+    // An empty value empties the list of credential helpers.
+    "credential.helper=",
+    "core.askPass=",
 ];
 
-/// The environment of each git call.
-const SAFE_ENV: [(&str, &str); 3] = [
+/// The environment of each git call. The global and system config and the
+/// system attributes file are not read: the global config of the user can
+/// define a filter driver (for example git-lfs) that a `.gitattributes` of
+/// the project selects (review F4 of T-287). No git call takes an
+/// optional lock: a `git status` does not write the index of a worker
+/// tree, so a worker commit never finds an `index.lock` of fleetd (T-290).
+const SAFE_ENV: [(&str, &str); 7] = [
     ("GIT_TERMINAL_PROMPT", "0"),
     ("GIT_EDITOR", "true"),
     ("GIT_SEQUENCE_EDITOR", "true"),
+    ("GIT_CONFIG_GLOBAL", "/dev/null"),
+    ("GIT_CONFIG_NOSYSTEM", "1"),
+    ("GIT_ATTR_NOSYSTEM", "1"),
+    ("GIT_OPTIONAL_LOCKS", "0"),
 ];
 
 /// The config keys that start a program, as `<section>.<name>`.
@@ -423,43 +449,129 @@ const PROGRAM_SUBKEYS: [&str; 8] = [
 /// The config scopes that the project controls.
 const PROJECT_SCOPES: [&str; 2] = ["local", "worktree"];
 
+/// The start of the text of a job that did not run git because this host
+/// has no sandbox.
+pub const NO_SANDBOX: &str = "no sandbox";
+
+/// A test seam: it runs after the scan of the project config and before
+/// git starts, with the folder and the arguments of the git call.
+type RaceFn = dyn Fn(&Path, &[&str]) + Send + Sync;
+
+#[derive(Clone)]
+struct Race(Arc<RaceFn>);
+
+impl fmt::Debug for Race {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Race")
+    }
+}
+
 /// [`WorktreeGitGateway`] on the git binary.
+///
+/// Each git call runs in the platform sandbox (way A of T-691): git, and
+/// each program that git starts, can write only the paths of the job
+/// ([`CliWorktreeGit::writing`] and the folder of a private index), and
+/// cannot read, write or connect below `<fleet root>/run`. The keys of
+/// [`SAFE_CONFIG`] and [`SAFE_ENV`] are the second layer (way B): they stop
+/// hooks, the fsmonitor, gpg, each transport, credential helpers, askpass
+/// and the global filter drivers. A filter, merge or diff driver of the
+/// project config has a free name, and `$GIT_DIR/info/attributes` can
+/// select it, so only the sandbox stops it when it comes after the scan.
+/// So does `diff.external`: an empty value makes git run an empty program.
 #[derive(Debug, Clone)]
 pub struct CliWorktreeGit {
     runner: GitRunner,
+    fleet_root: PathBuf,
+    writable: Vec<PathBuf>,
+    host: SandboxHost,
+    race: Option<Race>,
 }
 
 impl CliWorktreeGit {
-    pub fn new(bin: impl Into<PathBuf>) -> CliWorktreeGit {
+    /// The adapter of a job of the fleet at `fleet_root`. It can write no
+    /// path until [`CliWorktreeGit::writing`] names one.
+    pub fn new(bin: impl Into<PathBuf>, fleet_root: impl Into<PathBuf>) -> CliWorktreeGit {
         let runner = SAFE_ENV
             .iter()
             .fold(GitRunner::new(bin), |r, (k, v)| r.with_env(k, v));
-        CliWorktreeGit { runner }
+        CliWorktreeGit {
+            runner,
+            fleet_root: fleet_root.into(),
+            writable: Vec::new(),
+            host: sandboxed_hiding,
+            race: None,
+        }
+    }
+
+    /// This adapter, and git can also write below each path of `paths`.
+    pub fn writing(mut self, paths: &[PathBuf]) -> CliWorktreeGit {
+        self.writable.extend_from_slice(paths);
+        self
     }
 
     /// This adapter, with the private index file `index` for each git call.
-    /// The caller owns `index`, keeps it outside every project, and deletes
-    /// the file when it is done.
+    /// Git can write in the folder of `index`. The caller owns `index`,
+    /// keeps it outside every project, and deletes the file when it is
+    /// done.
     pub(crate) fn with_index(&self, index: &Path) -> Result<CliWorktreeGit> {
+        let folder = index.parent().context("a private index has a folder")?;
         let runner = self
             .runner
             .clone()
             .with_index_file(index)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
-        Ok(CliWorktreeGit { runner })
+        Ok(CliWorktreeGit {
+            runner,
+            ..self.clone()
+        }
+        .writing(&[folder.to_path_buf()]))
+    }
+
+    /// A test seam: `host` takes the place of the sandbox of the platform.
+    #[doc(hidden)]
+    pub fn with_sandbox_host(mut self, host: SandboxHost) -> CliWorktreeGit {
+        self.host = host;
+        self
+    }
+
+    /// A test seam: `race` runs after the scan of the project config and
+    /// before git starts, with the folder and the arguments of the git call.
+    #[doc(hidden)]
+    pub fn with_race(
+        mut self,
+        race: impl Fn(&Path, &[&str]) + Send + Sync + 'static,
+    ) -> CliWorktreeGit {
+        self.race = Some(Race(Arc::new(race)));
+        self
+    }
+
+    /// Why this host cannot run git in the sandbox, or `None` when it can.
+    pub fn sandbox_gap(&self) -> Option<NotSupported> {
+        let probe = Command::new(self.runner.bin());
+        (self.host)(probe, &self.writable, &self.hidden()).err()
+    }
+
+    /// The paths that git cannot read: `<fleet root>/run`, with the
+    /// operator token and the command channel.
+    fn hidden(&self) -> Vec<PathBuf> {
+        vec![self.fleet_root.join("run")]
     }
 
     /// The 1 way this adapter runs a git command: first refuse a key of the
     /// project config that starts a program, then run `git <args>` in `dir`
-    /// with the keys of [`SAFE_CONFIG`], whatever its exit code.
-    pub(crate) fn checked(&self, dir: &Path, args: &[&str]) -> Result<GitOutput> {
+    /// in the sandbox, with the keys of [`SAFE_CONFIG`], whatever its exit
+    /// code.
+    pub fn checked(&self, dir: &Path, args: &[&str]) -> Result<GitOutput> {
         self.refuse_project_programs(dir)?;
+        if let Some(Race(race)) = &self.race {
+            race(dir, args);
+        }
         self.safe(dir, args)
     }
 
     /// [`CliWorktreeGit::checked`], where a non-zero exit is an error with
     /// the message of git.
-    pub(crate) fn git(&self, dir: &Path, args: &[&str]) -> Result<String> {
+    pub fn git(&self, dir: &Path, args: &[&str]) -> Result<String> {
         let out = self.checked(dir, args)?;
         if out.status != 0 {
             bail!(
@@ -472,12 +584,24 @@ impl CliWorktreeGit {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 
-    /// `git <args>` in `dir` with the keys of [`SAFE_CONFIG`], whatever its
-    /// exit code.
+    /// `git <args>` in `dir` in the sandbox, with the keys of
+    /// [`SAFE_CONFIG`], whatever its exit code.
     fn safe(&self, dir: &Path, args: &[&str]) -> Result<GitOutput> {
+        let hidden = self.hidden();
+        // On Linux the sandbox covers a hidden folder only when it exists.
+        for folder in &hidden {
+            private_folder(folder)?;
+        }
+        let sandbox = GitSandbox {
+            writable: self.writable.clone(),
+            hidden,
+            host: self.host,
+        };
         let mut full: Vec<&str> = SAFE_CONFIG.iter().flat_map(|c| ["-c", c]).collect();
         full.extend_from_slice(args);
         self.runner
+            .clone()
+            .with_sandbox(sandbox)
             .output(dir, &full)
             .map_err(|e| anyhow::anyhow!("{e}"))
             .with_context(|| format!("running git {} in {}", args.join(" "), dir.display()))
@@ -485,7 +609,7 @@ impl CliWorktreeGit {
 
     /// An error that names the first key of the repository or worktree
     /// config of `dir` that starts a program. The global config of the user
-    /// is not the project's.
+    /// is not read.
     fn refuse_project_programs(&self, dir: &Path) -> Result<()> {
         let args = ["config", "--list", "--show-origin", "--show-scope", "-z"];
         let out = self.safe(dir, &args)?;
@@ -505,6 +629,53 @@ impl CliWorktreeGit {
         }
         Ok(())
     }
+}
+
+/// The run of a job that does not run git because this host has no
+/// sandbox, or `None` when it has one. The text starts with [`NO_SANDBOX`].
+pub fn no_sandbox(git: &CliWorktreeGit) -> Option<Ran> {
+    git.sandbox_gap().map(|gap| {
+        failed(format!(
+            "{NO_SANDBOX}: {gap}; fleetd runs git in a project only in the sandbox, \
+             so the job ran no git"
+        ))
+    })
+}
+
+/// The git folder `<repo root>/.git` of the repository at `repo_root`,
+/// which git of a job can write. It must be a folder: a `.git` file can
+/// name any folder.
+pub fn repo_git_dir(repo_root: &Path) -> Result<PathBuf> {
+    let dir = repo_root.join(".git");
+    if !dir.is_dir() {
+        bail!(
+            "{} is not a folder; fleetd runs git only in a repository with its own .git folder",
+            dir.display()
+        );
+    }
+    Ok(dir)
+}
+
+/// `git`, and it can also write the git folder of the repository of `row`
+/// and the folder of its tree.
+pub fn tree_writer(git: CliWorktreeGit, row: &WorktreeRow) -> Result<CliWorktreeGit> {
+    let dir = repo_git_dir(Path::new(&row.repo_root))?;
+    Ok(git.writing(&[dir, PathBuf::from(&row.path)]))
+}
+
+/// Make `folder` and its parents when it does not exist. The new folders
+/// have mode 0700.
+pub(crate) fn private_folder(folder: &Path) -> Result<()> {
+    if folder.is_dir() {
+        return Ok(());
+    }
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    // A host with no modes (Windows) makes the folder with its default rights.
+    let _ = create_dir_mode(&mut builder, 0o700);
+    builder
+        .create(folder)
+        .with_context(|| format!("making {}", folder.display()))
 }
 
 /// The first key that starts a program in a project scope of the output of
@@ -598,17 +769,28 @@ impl WorktreeGitGateway for CliWorktreeGit {
     }
 
     fn add(&self, repo: &Path, path: &Path, branch: &str, base: &str) -> Result<()> {
+        parent_folder(path)?;
         let path = path.to_str().context("the path of a tree is not UTF-8")?;
         self.git(repo, &["worktree", "add", "-b", branch, path, base])
             .map(drop)
     }
 
     fn attach(&self, repo: &Path, path: &Path, branch: &str) -> Result<()> {
+        parent_folder(path)?;
         let path = path.to_str().context("the path of a tree is not UTF-8")?;
         // `--` ends the options: no path or branch name reads as a flag.
         self.git(repo, &["worktree", "add", "--", path, branch])
             .map(drop)
     }
+}
+
+/// Make the folder that holds the tree at `path`. Git in the sandbox can
+/// write only the tree itself, so it cannot make that folder.
+fn parent_folder(path: &Path) -> Result<()> {
+    let Some(parent) = path.parent() else {
+        return Ok(());
+    };
+    std::fs::create_dir_all(parent).with_context(|| format!("making {}", parent.display()))
 }
 
 /// The entries of `git worktree list --porcelain -z`: attributes end with

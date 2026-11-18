@@ -2,12 +2,15 @@
 //! through `GitRunner::run` or `GitRunner::output`, in an explicit directory,
 //! with prompts, system config and hooks off. The core crate's VCS layer
 //! wraps this module later, so it stays general: any argv, any directory.
+//! [`GitRunner::with_sandbox`] runs each child in the platform sandbox.
 
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+
+use horch_platform::NotSupported;
 
 /// Removed from every git child. Git never needs the API key, and the
 /// operator's shell can carry an invalid, billed one.
@@ -110,12 +113,29 @@ pub fn repo_state(git_dir: &Path) -> String {
     out + &refs.join("\n")
 }
 
+/// The sandbox host: it wraps a command so that it can write only in the
+/// first list of paths and cannot read the second list.
+/// [`horch_platform::sandbox::sandboxed_hiding`] is the real one; a test
+/// gives a fake answer.
+pub type SandboxHost = fn(Command, &[PathBuf], &[PathBuf]) -> Result<Command, NotSupported>;
+
+/// The sandbox of every child: the paths it can write, the paths it cannot
+/// read, and the host that wraps it.
+#[derive(Debug, Clone)]
+pub struct GitSandbox {
+    pub writable: Vec<PathBuf>,
+    pub hidden: Vec<PathBuf>,
+    pub host: SandboxHost,
+}
+
 #[derive(Debug, Clone)]
 pub struct GitRunner {
     bin: PathBuf,
     env: Vec<(OsString, OsString)>,
     /// The `GIT_INDEX_FILE` of every child, set after the scrub.
     index: Option<PathBuf>,
+    /// The sandbox of every child, when it has one.
+    sandbox: Option<GitSandbox>,
 }
 
 #[derive(Debug, Clone)]
@@ -139,6 +159,8 @@ pub enum GitError {
     NoDir,
     /// `with_index_file` was given a path that is not absolute.
     RelativeIndex(PathBuf),
+    /// The runner has a sandbox and this host has none, so git did not run.
+    NoSandbox(NotSupported),
     Spawn {
         bin: PathBuf,
         source: io::Error,
@@ -161,6 +183,7 @@ impl fmt::Display for GitError {
                     path.display()
                 )
             }
+            Self::NoSandbox(gap) => write!(f, "no sandbox: {gap}"),
             Self::Spawn { bin, source } => write!(f, "cannot run {}: {source}", bin.display()),
             Self::Failed {
                 args,
@@ -188,7 +211,15 @@ impl GitRunner {
             bin: bin.into(),
             env: Vec::new(),
             index: None,
+            sandbox: None,
         }
+    }
+
+    /// Run every child in `sandbox`. A host with no sandbox gives
+    /// [`GitError::NoSandbox`], and git does not run.
+    pub fn with_sandbox(mut self, sandbox: GitSandbox) -> Self {
+        self.sandbox = Some(sandbox);
+        self
     }
 
     /// Add one variable to every child, for example `GIT_CONFIG_GLOBAL` in
@@ -223,10 +254,7 @@ impl GitRunner {
             return Err(GitError::NoDir);
         }
         let mut cmd = Command::new(&self.bin);
-        cmd.current_dir(dir)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        cmd.current_dir(dir);
         for (k, v) in &self.env {
             cmd.env(k, v);
         }
@@ -251,6 +279,15 @@ impl GitRunner {
             cmd.arg("-c").arg(c);
         }
         cmd.args(args);
+        // The sandbox keeps the program, arguments, environment and folder
+        // of `cmd`, so stdio is set on the command that runs.
+        if let Some(sandbox) = &self.sandbox {
+            cmd = (sandbox.host)(cmd, &sandbox.writable, &sandbox.hidden)
+                .map_err(GitError::NoSandbox)?;
+        }
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
         let out = cmd.output().map_err(|source| GitError::Spawn {
             bin: self.bin.clone(),
             source,
@@ -273,5 +310,32 @@ impl GitRunner {
             });
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn none(_: Command, _: &[PathBuf], _: &[PathBuf]) -> Result<Command, NotSupported> {
+        Err(NotSupported::new("sandbox", "test").because("no host"))
+    }
+
+    fn sandbox(host: SandboxHost) -> GitSandbox {
+        GitSandbox {
+            writable: Vec::new(),
+            hidden: Vec::new(),
+            host,
+        }
+    }
+
+    #[test]
+    fn a_host_with_no_sandbox_runs_no_git() {
+        let dir = tempfile::tempdir().unwrap();
+        let runner = GitRunner::new("git").with_sandbox(sandbox(none));
+        let e = runner.output(dir.path(), &["init", "-q"]).unwrap_err();
+        assert!(matches!(e, GitError::NoSandbox(_)), "{e:?}");
+        assert!(e.to_string().starts_with("no sandbox: "), "{e}");
+        assert!(!dir.path().join(".git").exists(), "git did not run");
     }
 }

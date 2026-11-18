@@ -808,7 +808,7 @@ fn each_gateway_call_refuses_a_project_program_before_its_git_command() {
     use horch_core::fleetd::worktree_custody::application::ports::WorktreeGitGateway;
 
     let w = world();
-    let gw = CliWorktreeGit::new("git");
+    let gw = CliWorktreeGit::new("git", w.dir.path().join("fleet"));
     let tree = w.tree_path("t1");
     assert!(gw.branch_exists(&w.repo, "main").unwrap());
     git(&w.repo, &["config", "core.sshCommand", "/bin/false"]);
@@ -824,4 +824,477 @@ fn each_gateway_call_refuses_a_project_program_before_its_git_command() {
     refused(gw.add(&w.repo, &tree, "fleet/t1", &w.base));
     assert!(!tree.exists(), "the refused add changes nothing");
     assert!(!git(&w.repo, &["branch", "--list", "fleet/t1"]).contains("fleet/t1"));
+}
+
+// ─── the race attacks of T-691 ──────────────────────────────────────────
+//
+// A live process of the project writes a program setting into the config
+// of the repository AFTER the scan of fleetd and BEFORE the git command
+// (the race seam of `CliWorktreeGit`). The program writes a marker in a
+// folder that git of a job cannot write. The marker must not exist.
+
+use horch_core::fleetd::worktree_custody::adapters::executors;
+use horch_core::fleetd::worktree_custody::adapters::git::{
+    self as custody_git, CliWorktreeGit, NO_SANDBOX,
+};
+use horch_core::fleetd::worktree_custody::adapters::rescue_git;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+
+impl World {
+    /// The fleet root of this world: the folder `fleet` beside the ledger.
+    fn fleet_root(&self) -> PathBuf {
+        self.dir.path().join("fleet")
+    }
+
+    /// The fleetd adapter of a job of this world. It can write no path.
+    fn fleet_git(&self) -> CliWorktreeGit {
+        CliWorktreeGit::new("git", self.fleet_root())
+    }
+
+    /// A program `name` that writes its marker, then runs `rest`. Its
+    /// marker is in a folder outside the repository and the fleet root.
+    fn attack(&self, name: &str, rest: &str) -> (PathBuf, PathBuf) {
+        let folder = self.dir.path().join("attack");
+        std::fs::create_dir_all(&folder).unwrap();
+        let marker = folder.join(format!("{name}.ran"));
+        let program = folder.join(format!("{name}.sh"));
+        let script = format!("#!/bin/sh\necho ran > '{}'\n{rest}\n", marker.display());
+        std::fs::write(&program, script).unwrap();
+        make_executable(&program);
+        (program, marker)
+    }
+
+    /// A tree `name` made by the test on the branch `fleet/<name>`, with a
+    /// modified file and an untracked file, and its row.
+    fn made(&mut self, name: &str) -> WorktreeRow {
+        let row = self.reserve(name, &format!("fleet/{name}"));
+        let path = self.tree_path(name);
+        let path_s = path.display().to_string();
+        git(
+            &self.repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                &row.branch,
+                &path_s,
+                &self.base,
+            ],
+        );
+        std::fs::write(path.join("a.txt"), "changed\n").unwrap();
+        std::fs::write(path.join("new.txt"), "new\n").unwrap();
+        row
+    }
+}
+
+/// A race seam that runs `attack` once, just before the first git call
+/// whose arguments hold `trigger`.
+fn once(
+    trigger: &'static str,
+    attack: impl Fn() + Send + Sync + 'static,
+) -> impl Fn(&Path, &[&str]) + Send + Sync + 'static {
+    let done = Arc::new(AtomicBool::new(false));
+    move |_, args| {
+        if args.contains(&trigger) && !done.swap(true, Ordering::SeqCst) {
+            attack();
+        }
+    }
+}
+
+/// The attacker: write `key = value` into the config of the repository.
+fn set_config(repo: &Path, key: &str, value: &str) {
+    git(repo, &["config", key, value]);
+}
+
+/// The attacker: select a driver for each path in `$GIT_DIR/info/attributes`,
+/// which git reads whatever its options.
+fn select_driver(repo: &Path, attribute: &str) {
+    let info = repo.join(".git").join("info");
+    std::fs::create_dir_all(&info).unwrap();
+    std::fs::write(info.join("attributes"), format!("* {attribute}\n")).unwrap();
+}
+
+/// The program did not run. A job that failed names `key` as its reason.
+fn stopped(marker: &Path, passed: bool, text: &str, key: &str) {
+    assert!(!marker.exists(), "the program ran: {text}");
+    if !passed {
+        assert!(text.contains(key), "the result says why: {text}");
+    }
+}
+
+#[test]
+fn race_hook_does_not_run_in_a_worktree_add_job() {
+    let mut w = world();
+    let (program, marker) = w.attack("hook", "exit 0");
+    let hooks = w.dir.path().join("evil-hooks");
+    std::fs::create_dir_all(&hooks).unwrap();
+    std::fs::copy(&program, hooks.join("post-checkout")).unwrap();
+    make_executable(&hooks.join("post-checkout"));
+    let row = w.reserve("t1", "fleet/t1");
+    let (repo, hooks_s) = (w.repo.clone(), hooks.display().to_string());
+    let git = custody_git::tree_writer(w.fleet_git(), &row)
+        .unwrap()
+        .with_race(once("add", move || {
+            set_config(&repo, "core.hooksPath", &hooks_s)
+        }));
+
+    let ran = custody_git::worktree_add(&git, &row);
+
+    assert!(ran.outcome.passed, "{}", ran.outcome.text);
+    stopped(&marker, true, &ran.outcome.text, "");
+}
+
+#[test]
+fn race_smudge_filter_does_not_run_in_a_worktree_add_job() {
+    let mut w = world();
+    let (program, marker) = w.attack("smudge", "cat");
+    let row = w.reserve("t1", "fleet/t1");
+    let (repo, program_s) = (w.repo.clone(), program.display().to_string());
+    let git = custody_git::tree_writer(w.fleet_git(), &row)
+        .unwrap()
+        .with_race(once("add", move || {
+            select_driver(&repo, "filter=evil");
+            set_config(&repo, "filter.evil.smudge", &program_s);
+        }));
+
+    let ran = custody_git::worktree_add(&git, &row);
+
+    stopped(
+        &marker,
+        ran.outcome.passed,
+        &ran.outcome.text,
+        "filter.evil.smudge",
+    );
+}
+
+#[test]
+fn race_clean_filter_does_not_run_in_a_rescue_job() {
+    let mut w = world();
+    let (program, marker) = w.attack("clean", "cat");
+    let row = w.made("t1");
+    let (repo, program_s) = (w.repo.clone(), program.display().to_string());
+    let git = w.fleet_git().with_race(once("add", move || {
+        select_driver(&repo, "filter=evil");
+        set_config(&repo, "filter.evil.clean", &program_s);
+    }));
+
+    let ran = rescue_git::rescue(&git, &w.fleet_root(), &row);
+
+    // The scan of the next git call finds the key, so the rescue fails and
+    // the tree stays.
+    assert!(!ran.outcome.passed, "{}", ran.outcome.text);
+    stopped(&marker, false, &ran.outcome.text, "filter.evil.clean");
+    assert!(w.tree_path("t1").join("new.txt").is_file());
+}
+
+#[test]
+fn race_fsmonitor_does_not_run_in_a_worktree_list_job() {
+    let mut w = world();
+    let (program, marker) = w.attack("fsmonitor", "exit 1");
+    let row = w.made("t1");
+    let (repo, program_s) = (w.repo.clone(), program.display().to_string());
+    let git = w.fleet_git().with_race(once("status", move || {
+        set_config(&repo, "core.fsmonitor", &program_s)
+    }));
+
+    let ran = custody_git::worktree_list(&git, &w.repo, &[row]);
+
+    stopped(
+        &marker,
+        ran.outcome.passed,
+        &ran.outcome.text,
+        "core.fsmonitor",
+    );
+}
+
+#[test]
+fn race_merge_driver_does_not_run_in_a_fleetd_git_call() {
+    let w = world();
+    let (program, marker) = w.attack("merge", "exit 1");
+    git(&w.repo, &["checkout", "-q", "-b", "other"]);
+    std::fs::write(w.repo.join("a.txt"), "other\n").unwrap();
+    git(&w.repo, &["commit", "-q", "-am", "other"]);
+    git(&w.repo, &["checkout", "-q", "main"]);
+    std::fs::write(w.repo.join("a.txt"), "main\n").unwrap();
+    git(&w.repo, &["commit", "-q", "-am", "main"]);
+    let (repo, program_s) = (w.repo.clone(), program.display().to_string());
+    let git = w
+        .fleet_git()
+        .writing(&[w.repo.join(".git")])
+        .with_race(once("merge-tree", move || {
+            select_driver(&repo, "merge=evil");
+            set_config(&repo, "merge.evil.driver", &program_s);
+        }));
+
+    let out = git.checked(&w.repo, &["merge-tree", "--write-tree", "main", "other"]);
+
+    stopped(&marker, true, &format!("{out:?}"), "");
+}
+
+#[test]
+fn race_ssh_command_does_not_run_in_a_fleetd_git_call() {
+    let w = world();
+    let (program, marker) = w.attack("ssh", "exit 1");
+    let (repo, program_s) = (w.repo.clone(), program.display().to_string());
+    let git = w.fleet_git().with_race(once("ls-remote", move || {
+        set_config(&repo, "core.sshCommand", &program_s)
+    }));
+
+    let out = git.checked(&w.repo, &["ls-remote", "ssh://git@example.invalid/r.git"]);
+
+    stopped(&marker, true, &format!("{out:?}"), "");
+}
+
+/// A local HTTP server that answers each request with 401, so git asks
+/// its credential helpers. Its URL.
+fn asks_for_credentials() -> String {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/r.git", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf);
+            let _ = stream.write_all(
+                b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"r\"\r\n\
+                  Content-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+        }
+    });
+    url
+}
+
+#[test]
+fn race_credential_helper_does_not_run_in_a_fleetd_git_call() {
+    let w = world();
+    let (program, marker) = w.attack("credential", "exit 1");
+    let url = asks_for_credentials();
+    let (repo, helper) = (w.repo.clone(), format!("!{}", program.display()));
+    let git = w.fleet_git().with_race(once("ls-remote", move || {
+        set_config(&repo, "credential.helper", &helper)
+    }));
+
+    let out = git.checked(&w.repo, &["ls-remote", &url]);
+
+    stopped(&marker, true, &format!("{out:?}"), "");
+}
+
+#[test]
+fn race_external_diff_and_textconv_do_not_run_in_a_fleetd_git_call() {
+    let mut w = world();
+    let (external, external_marker) = w.attack("external-diff", "exit 0");
+    let (textconv, textconv_marker) = w.attack("textconv", "cat \"$1\"");
+    w.made("t1");
+    let tree = w.tree_path("t1");
+    let repo = w.repo.clone();
+    let (external_s, textconv_s) = (
+        external.display().to_string(),
+        textconv.display().to_string(),
+    );
+    let git = w.fleet_git().with_race(once("diff", move || {
+        set_config(&repo, "diff.external", &external_s);
+        select_driver(&repo, "diff=evil");
+        set_config(&repo, "diff.evil.textconv", &textconv_s);
+    }));
+
+    let out = git.checked(&tree, &["diff", "HEAD"]);
+
+    stopped(&external_marker, true, &format!("{out:?}"), "");
+    stopped(&textconv_marker, true, &format!("{out:?}"), "");
+}
+
+// ─── no sandbox ─────────────────────────────────────────────────────────
+
+/// The fake answer of a host with no sandbox.
+fn no_sandbox_host(
+    _cmd: Command,
+    _writable: &[PathBuf],
+    _hidden: &[PathBuf],
+) -> Result<Command, horch_platform::NotSupported> {
+    Err(horch_platform::NotSupported::new("sandbox", "test").because("the fake host has none"))
+}
+
+#[test]
+fn job_on_a_host_with_no_sandbox_runs_no_git_and_opens_1_needs_you_item() {
+    let mut w = world();
+    for name in ["t1", "t2"] {
+        let row = w.reserve(name, &format!("fleet/{name}"));
+        let id = w.queue_add(&row);
+        let mut job = w.job(id);
+
+        let ran = executors::run_in(&w.conn, &job, no_sandbox_host).unwrap();
+
+        assert!(!ran.outcome.passed);
+        assert!(
+            ran.outcome.text.starts_with(NO_SANDBOX),
+            "{}",
+            ran.outcome.text
+        );
+        assert!(ran.outcome.text.contains("the fake host has none"));
+        assert!(!w.tree_path(name).exists(), "no git ran");
+        assert_eq!(git(&w.repo, &["branch", "--list", &row.branch]), "");
+        // The run ends `failed` with this text, and the command observes it.
+        job.state = State::Failed;
+        job.result_json = Some(
+            serde_json::json!({"passed": false, "verdict": false, "text": ran.outcome.text})
+                .to_string(),
+        );
+        let config = w.config.clone();
+        let tx = w
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+        let seen = create::observe(&ctx(&config), &tx, &job).unwrap();
+        tx.commit().unwrap();
+        assert!(matches!(seen, Observed::Dropped(_)), "{seen:?}");
+    }
+    let items: Vec<(String, String)> = w
+        .conn
+        .prepare("SELECT key, text FROM needs_you WHERE kind = ?1 AND state = 'open'")
+        .unwrap()
+        .query_map([create::GIT_SANDBOX_KIND], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(items.len(), 1, "1 item for each kind: {items:?}");
+    assert_eq!(items[0].0, "git_sandbox:worktree_add");
+    assert!(items[0].1.starts_with(NO_SANDBOX), "{}", items[0].1);
+}
+
+// ─── the rescue saves the bytes on disk ─────────────────────────────────
+
+#[test]
+fn rescue_saves_each_file_byte_for_byte_with_the_filters_off() {
+    let mut w = world();
+    let row = w.made("t1");
+    let tree = w.tree_path("t1");
+    // The tree converts line endings: a `.gitattributes` of the tree, and
+    // `core.autocrlf` in the config of the repository.
+    std::fs::write(tree.join(".gitattributes"), "*.txt text eol=lf\n").unwrap();
+    git(&tree, &["add", ".gitattributes"]);
+    git(&tree, &["commit", "-q", "-m", "attributes"]);
+    git(&w.repo, &["config", "core.autocrlf", "true"]);
+    let files: [(&str, &[u8]); 3] = [
+        ("a.txt", b"changed\r\nline\r\n"),
+        ("new.txt", b"untracked\r\n"),
+        ("raw.bin", b"\x00\r\n\xff"),
+    ];
+    for (name, bytes) in files {
+        std::fs::write(tree.join(name), bytes).unwrap();
+    }
+
+    let ran = rescue_git::rescue(&w.fleet_git(), &w.fleet_root(), &row);
+
+    assert!(ran.outcome.passed, "{}", ran.outcome.text);
+    let commit = ran.data.unwrap()["commit"].as_str().unwrap().to_string();
+    for (name, bytes) in files {
+        let out = git_out(&tree, &["cat-file", "blob", &format!("{commit}:{name}")]);
+        assert_eq!(out.stdout, bytes, "{name} is saved byte for byte");
+    }
+}
+
+/// The variable that marks the child run of
+/// [`rescue_runs_no_filter_of_the_global_config`].
+const GLOBAL_CHILD: &str = "HORCH_T691_GLOBAL_CHILD";
+
+/// Review F4 of T-287: the global config of the user defines an lfs-style
+/// filter, and a `.gitattributes` of the project selects it. The rescue
+/// runs no filter and saves the bytes on disk. The test runs again in a
+/// child process with `GIT_CONFIG_GLOBAL` set, as a user has it.
+#[test]
+fn rescue_runs_no_filter_of_the_global_config() {
+    let Some(global) = std::env::var_os(GLOBAL_CHILD) else {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("lfs.ran");
+        let program = dir.path().join("lfs.sh");
+        let script = format!(
+            "#!/bin/sh\necho ran > '{}'\necho pointer\n",
+            marker.display()
+        );
+        std::fs::write(&program, script).unwrap();
+        make_executable(&program);
+        let config = dir.path().join("gitconfig");
+        let text = format!(
+            "[filter \"lfs\"]\n\tclean = {0}\n\tsmudge = {0}\n\tprocess = {0}\n\trequired = true\n",
+            program.display()
+        );
+        std::fs::write(&config, text).unwrap();
+        let out = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "rescue_runs_no_filter_of_the_global_config",
+                "--nocapture",
+            ])
+            .env(GLOBAL_CHILD, &config)
+            .env("GIT_CONFIG_GLOBAL", &config)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        assert!(String::from_utf8_lossy(&out.stdout).contains("1 passed"));
+        assert!(!marker.exists(), "the global filter ran");
+        return;
+    };
+    assert_eq!(
+        std::env::var_os("GIT_CONFIG_GLOBAL").as_deref(),
+        Some(global.as_os_str())
+    );
+    let mut w = world();
+    let row = w.made("t1");
+    let tree = w.tree_path("t1");
+    std::fs::write(tree.join(".gitattributes"), "*.bin filter=lfs\n").unwrap();
+    std::fs::write(tree.join("big.bin"), b"\x00big\r\n").unwrap();
+
+    let ran = rescue_git::rescue(&w.fleet_git(), &w.fleet_root(), &row);
+
+    assert!(ran.outcome.passed, "{}", ran.outcome.text);
+    let commit = ran.data.unwrap()["commit"].as_str().unwrap().to_string();
+    let out = git_out(&tree, &["cat-file", "blob", &format!("{commit}:big.bin")]);
+    assert_eq!(out.stdout, b"\x00big\r\n");
+}
+
+/// The `git status` of a tree takes no optional lock: a job with the git
+/// folder writable (a remove job) does not write the index of a worker
+/// tree, so a worker commit never finds an `index.lock` of fleetd.
+#[test]
+fn tree_state_does_not_write_the_index_of_a_worker_tree() {
+    use horch_core::fleetd::worktree_custody::application::ports::WorktreeGitGateway;
+
+    let w = world();
+    let tree = w.tree_path("t1");
+    let tree_s = tree.display().to_string();
+    git(
+        &w.repo,
+        &["worktree", "add", "-q", "-b", "fleet/t1", &tree_s, "main"],
+    );
+    let index = PathBuf::from(git(
+        &tree,
+        &["rev-parse", "--path-format=absolute", "--git-path", "index"],
+    ));
+    // The same bytes with a new time: a status with an optional lock
+    // refreshes the index and writes it.
+    let file = std::fs::File::options()
+        .write(true)
+        .open(tree.join("a.txt"))
+        .unwrap();
+    file.set_modified(std::time::SystemTime::now() + Duration::from_secs(60))
+        .unwrap();
+    let before = std::fs::read(&index).unwrap();
+
+    // A remove job may write the git folder and the tree.
+    let gw =
+        CliWorktreeGit::new("git", w.fleet_root()).writing(&[w.repo.join(".git"), tree.clone()]);
+    let state = gw.tree(&tree).unwrap().expect("a tree");
+    assert!(!state.dirty, "{state:?}");
+    assert_eq!(
+        std::fs::read(&index).unwrap(),
+        before,
+        "status wrote the index"
+    );
 }

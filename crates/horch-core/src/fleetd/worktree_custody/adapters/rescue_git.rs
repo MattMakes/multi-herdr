@@ -3,13 +3,13 @@
 //! `docs/specs/fleetd/design.md`, "Rescue before any cleanup": the job
 //! saves the commits, the modified files and the untracked files of 1 tree
 //! on a new ref `refs/horch/rescue/<worktree id>/<n>`, through a private
-//! index under `<fleet root>/run/`. It never changes the branch, the index
+//! index under `<fleet root>/tmp/<worktree id>/`. It never changes the branch, the index
 //! or the files of the tree. It reads the ref back and shows that it holds
 //! exactly the files on disk, then writes the manifest
 //! `<fleet root>/rescue/<worktree id>-<n>.json` (RR-9, RR-16, FM-25).
 //!
-//! Each git call goes through `CliWorktreeGit::checked`, so git starts no
-//! hook and no program of the project (the fleetd git rule).
+//! Each git call goes through `CliWorktreeGit::checked`, so git runs in the
+//! sandbox and starts no hook (the fleetd git rule).
 
 use std::path::{Component, Path, PathBuf};
 
@@ -18,7 +18,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::fleetd::fleet_runtime::application::jobs::Ran;
 use crate::fleetd::fleet_runtime::domain::jobs::Outcome;
-use crate::fleetd::worktree_custody::adapters::git::{failed, CliWorktreeGit};
+use crate::fleetd::worktree_custody::adapters::git::{
+    failed, private_folder, repo_git_dir, CliWorktreeGit,
+};
 use crate::fleetd::worktree_custody::adapters::sqlite::WorktreeRow;
 use crate::fleetd::worktree_custody::domain::rescue::{self, Facts};
 
@@ -83,6 +85,11 @@ fn save(git: &CliWorktreeGit, fleet_root: &Path, row: &WorktreeRow) -> Result<Re
     if !tree.is_dir() {
         bail!("no folder at {}", row.path);
     }
+    // Git can write the git folder of the repository, and the folder of
+    // each private index.
+    let git = &git
+        .clone()
+        .writing(&[repo_git_dir(Path::new(&row.repo_root))?]);
     let run = run_folder(fleet_root, row)?;
     let snapshot_index = PrivateIndex::new(run.join(format!("rescue-{id}.index")))?;
     let verification_index = PrivateIndex::new(run.join(format!("rescue-{id}.verify.index")))?;
@@ -127,15 +134,23 @@ fn save(git: &CliWorktreeGit, fleet_root: &Path, row: &WorktreeRow) -> Result<Re
     Ok(r)
 }
 
-/// `<fleet root>/run`, made, as a canonical path outside the tree and the
-/// project of `row`: a private index never comes from a project. A fleet
-/// root with a `..` is refused. The path is checked before the folder is
-/// made, so a refused fleet root makes nothing, and the made folder is
-/// checked again: when it is not `<fleet root>/run` or it is in the
-/// project, it is removed and the rescue is refused.
+/// The private folder of the indexes of the tree of `row`:
+/// `<fleet root>/tmp/<worktree id>`, made with mode 0700, as a canonical
+/// path outside the tree and the project of `row`. A private index never
+/// comes from a project, and it is not in `<fleet root>/run`, which git
+/// cannot read. A fleet root with a `..` is refused. The path is checked
+/// before the folder is made, so a refused fleet root makes nothing, and
+/// the made folder is checked again: when it is not
+/// `<fleet root>/tmp/<worktree id>` or it is in the project, it is removed
+/// and the job is refused. The executor removes it after the job
+/// ([`drop_index_folder`]).
 pub(crate) fn run_folder(fleet_root: &Path, row: &WorktreeRow) -> Result<PathBuf> {
     if fleet_root.components().any(|c| c == Component::ParentDir) {
         bail!("the fleet root {} has a `..`", fleet_root.display());
+    }
+    let id = row.worktree_id.as_str();
+    if !rescue::valid_id(id) {
+        bail!("the worktree id {id:?} cannot name a folder");
     }
     let mut projects = Vec::new();
     for project in [&row.path, &row.repo_root] {
@@ -144,18 +159,18 @@ pub(crate) fn run_folder(fleet_root: &Path, row: &WorktreeRow) -> Result<PathBuf
             .with_context(|| format!("reading {project}"))?;
         projects.push(canonical);
     }
-    let run = resolved(&fleet_root.join("run"))?;
-    outside(&run, &projects)?;
-    let made = !run.exists();
-    std::fs::create_dir_all(&run).with_context(|| format!("making {}", run.display()))?;
-    let checked = run
+    let folder = resolved(&fleet_root.join(TMP).join(id))?;
+    outside(&folder, &projects)?;
+    let made = !folder.exists();
+    private_folder(&folder)?;
+    let checked = folder
         .canonicalize()
         .context("reading the made folder")
         .and_then(|real| {
             let root = fleet_root
                 .canonicalize()
                 .context("reading the fleet root")?;
-            if real != root.join("run") {
+            if real != root.join(TMP).join(id) {
                 bail!(
                     "the made folder {} is not in the fleet root {}",
                     real.display(),
@@ -166,9 +181,20 @@ pub(crate) fn run_folder(fleet_root: &Path, row: &WorktreeRow) -> Result<PathBuf
             Ok(real)
         });
     if checked.is_err() && made {
-        let _ = std::fs::remove_dir(&run);
+        let _ = std::fs::remove_dir(&folder);
     }
     checked
+}
+
+/// The folder of the fleet root that holds the private folder of each tree.
+const TMP: &str = "tmp";
+
+/// Remove the private folder of the indexes of the tree of `row`, after its
+/// job. A worktree id that cannot name a folder has none.
+pub fn drop_index_folder(fleet_root: &Path, row: &WorktreeRow) {
+    if rescue::valid_id(&row.worktree_id) {
+        let _ = std::fs::remove_dir_all(fleet_root.join(TMP).join(&row.worktree_id));
+    }
 }
 
 /// An error when `folder` is in 1 of `projects`, canonical paths.
@@ -251,10 +277,23 @@ pub(crate) fn rev(git: &CliWorktreeGit, dir: &Path, rev: &str) -> Result<String>
 
 /// The tree of the folder `dir` on `head`, through the private index of
 /// `git`: `read-tree`, `add -A`, `write-tree`. `.gitignore` applies.
+///
+/// The filters are off, so each file is saved byte for byte as it is on
+/// disk: the attributes come from the empty tree, not from a
+/// `.gitattributes` of the tree, and `core.autocrlf` is off. The rescue and
+/// the removal both take this snapshot, so they compare the same bytes.
+/// `$GIT_DIR/info/attributes` still applies: git has no switch for it.
 pub(crate) fn snapshot(git: &CliWorktreeGit, dir: &Path, head: &str) -> Result<String> {
-    git.git(dir, &["read-tree", head])?;
-    git.git(dir, &["add", "-A"])?;
-    Ok(git.git(dir, &["write-tree"])?.trim().to_string())
+    let empty = git.git(dir, &["hash-object", "-t", "tree", "/dev/null"])?;
+    let source = format!("--attr-source={}", empty.trim());
+    let raw = |args: &[&str]| {
+        let mut full = vec![source.as_str(), "-c", "core.autocrlf=false"];
+        full.extend_from_slice(args);
+        git.git(dir, &full)
+    };
+    raw(&["read-tree", head])?;
+    raw(&["add", "-A"])?;
+    Ok(raw(&["write-tree"])?.trim().to_string())
 }
 
 /// Write `refs/horch/rescue/<id>/<n>` = `commit` with the next `n`. The
