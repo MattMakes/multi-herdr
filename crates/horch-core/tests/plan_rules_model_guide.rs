@@ -69,7 +69,7 @@ fn assert_one(plan: &Plan, words: &str) {
 
 #[test]
 fn default_opus_medium_task_is_valid() {
-    assert_eq!(PlanValidator::validate(&plan("opus"), &facts()), vec![]);
+    assert_eq!(problems(&plan("opus")), vec![]);
 }
 
 #[test]
