@@ -282,7 +282,7 @@ mod tests {
         let mut l = fixture(0);
         assert_eq!(l.claim_and_fail(0), Requeue::Queued);
         assert_eq!(l.claim_and_fail(30), Requeue::Queued);
-        assert_eq!(l.claim_and_fail(150), Requeue::Held);
+        assert_eq!(l.claim_and_fail(150), Requeue::Failed);
         let t = l.task();
         assert_eq!(t.status, "failed");
         assert_eq!(t.due_at, Some(150 + 1800));
@@ -328,7 +328,7 @@ mod tests {
         l.replan();
         assert_eq!(l.claim_and_fail(200), Requeue::Queued);
         assert_eq!(l.claim_and_fail(230), Requeue::Queued);
-        assert_eq!(l.claim_and_fail(350), Requeue::Held);
+        assert_eq!(l.claim_and_fail(350), Requeue::Escalated);
         let t = l.task();
         assert_eq!(t.status, "escalated");
         assert_eq!(t.held_reason.as_deref(), Some("3 attempts failed"));

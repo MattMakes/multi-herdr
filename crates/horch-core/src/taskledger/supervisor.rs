@@ -306,7 +306,7 @@ fn requeue_after_exit(
     let how = tasks::requeue(tx, &task, &format!("{} {reason}", w.label()))?;
     let t = tasks::get(tx, &task)?;
     Ok(match how {
-        tasks::Requeue::Held => Ended::Held { task: t.short() },
+        tasks::Requeue::Failed | tasks::Requeue::Escalated => Ended::Held { task: t.short() },
         _ => Ended::Requeued {
             task: t.short(),
             persona: t.claimable_by.unwrap_or_default(),

@@ -385,7 +385,7 @@ fn shared_checkout_tasks_run_one_at_a_time() {
 }
 
 #[test]
-fn an_agent_that_exits_on_its_last_attempt_holds_the_task() {
+fn an_agent_that_exits_on_its_last_attempt_fails_the_task() {
     use horch_core::taskledger::supervisor::{self, Ended};
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("ledger.sqlite3");

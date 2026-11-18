@@ -1562,9 +1562,11 @@ pub enum Requeue {
     Skipped,
     /// Queued again, first in line, after its backoff (rung 6).
     Queued,
-    /// Not claimable: `failed`, waiting for its 1 replan by the
-    /// orchestrator, or `escalated`, held for the operator (rung 6, #168).
-    Held,
+    /// `failed`: no attempt left; it waits for its 1 replan by the
+    /// orchestrator of the run (rung 6).
+    Failed,
+    /// `escalated`: held for the operator after its replan (rung 6, #168).
+    Escalated,
 }
 
 /// The kind of the needs-you item of an escalated task.
@@ -1634,12 +1636,12 @@ fn rung6_in(conn: &Connection, task: &Task, why: &str, policy: &Policy) -> Resul
         Rung6::Fail { due_at } => {
             fail_in(conn, task, why, clock.map(|_| FleetSeconds(due_at)))?;
             outbox::write(conn, &task.run_id, &replan_wake(conn, task, policy)?)?;
-            Ok(Requeue::Held)
+            Ok(Requeue::Failed)
         }
         Rung6::Escalate => {
             fail_in(conn, task, why, None)?;
             hold_in(conn, task)?;
-            Ok(Requeue::Held)
+            Ok(Requeue::Escalated)
         }
     }
 }

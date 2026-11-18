@@ -126,8 +126,8 @@ fn end(tx: &Connection, guard: Option<Generation>, a: &AttemptRow, outcome: Outc
     let to = match outcome {
         Outcome::Stalled => TaskStatus::Stalled,
         Outcome::Asked => TaskStatus::BlockedOnUser,
-        // The ladder ends no attempt with the other 5 words; the task stays
-        // for the path of its outcome, as with quota and no_result.
+        // The ladder ends no attempt with the words that are not stalled,
+        // asked, quota or no_result; each has the path of its outcome.
         Outcome::Quota
         | Outcome::NoResult
         | Outcome::Rejected
