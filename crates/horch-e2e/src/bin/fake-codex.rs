@@ -13,6 +13,8 @@
 //! `$HORCH_FAKE_LOG.skills.json` (`horch_e2e::write_skills_report`).
 //! A pane launch also plays the Phase 4 keys `bound`, `commit`, `ask`,
 //! `result` and `noresult` (`horch_e2e::agent`).
+//! It then plays the Phase 6 keys of the fake idea-lead and the fake judge
+//! (`horch_e2e::idea_agent`).
 //!
 //! As a pane agent, the scenario `stay` makes a launch behave like the codex
 //! TUI: a fresh launch writes a rollout file for its cwd under
@@ -64,6 +66,7 @@ fn main() {
     }
     if call.argv.first().map(String::as_str) != Some("app-server") {
         horch_e2e::agent::play(&mut call);
+        horch_e2e::idea_agent::play(&mut call);
         if scenario_has("inspect_skills") {
             inspect_skills();
         }

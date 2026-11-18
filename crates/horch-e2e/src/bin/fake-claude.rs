@@ -19,6 +19,8 @@
 //!
 //! A pane launch also plays the Phase 4 keys `bound`, `commit`, `ask`,
 //! `result` and `noresult` (`horch_e2e::agent`).
+//! It then plays the Phase 6 keys of the fake idea-lead and the fake judge
+//! (`horch_e2e::idea_agent`).
 
 use std::io::BufRead;
 use std::path::Path;
@@ -51,6 +53,7 @@ fn main() {
         .any(|w| w[0] == "--input-format" && w[1] == "stream-json");
     if !probe {
         horch_e2e::agent::play(&mut call);
+        horch_e2e::idea_agent::play(&mut call);
         if scenario_has("inspect_skills") {
             inspect_skills(&call.argv);
         }

@@ -21,6 +21,7 @@ pub mod exec;
 pub mod expected;
 pub mod fleetd;
 pub mod harness;
+pub mod idea_agent;
 pub mod probe;
 pub mod process;
 

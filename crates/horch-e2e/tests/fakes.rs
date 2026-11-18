@@ -1778,3 +1778,327 @@ mod phase7 {
         }
     }
 }
+
+/// The keys of Phase 6: the fake idea-lead (fake-claude, and fake-codex as
+/// its fallback) and the fake judge.
+mod phase6 {
+    use std::path::{Path, PathBuf};
+    use std::process::{Command, Output};
+
+    use horch_core::fleetd::ideas::adapters::idea_folder_files::IdeaFolder;
+    use horch_core::fleetd::ideas::adapters::plan_yaml;
+    use horch_core::fleetd::ideas::domain::idea_folder::{check_spec, parse_assumptions};
+    use horch_core::fleetd::ideas::domain::plan_rules_dag;
+    use horch_core::fleetd::ideas::domain::plan_validator::PlanFacts;
+    use horch_e2e::harness::Harness;
+    use serde_json::Value;
+
+    const IDEA: &str = "I-0001";
+
+    /// A harness with the idea folder of `I-0001` under its fleet root, a
+    /// scratch ledger path, and `horch` on `PATH`, as in a pane.
+    fn idea(name: &str) -> (Harness, PathBuf) {
+        let mut h = Harness::new(name);
+        let fleet = h.root.join("fleet");
+        // fleetd makes the folder with mode 0700, as the reads of SR-6 need.
+        let user = horch_platform::channel::User::current().unwrap();
+        let folder = IdeaFolder::create(&fleet.join("ideas"), IDEA, user)
+            .unwrap()
+            .dir()
+            .to_path_buf();
+        std::fs::write(
+            folder.join("idea.md"),
+            format!("---\nid: {IDEA}\n---\nA fake idea.\n"),
+        )
+        .unwrap();
+        h.set(
+            "HORCH_LEDGER_DB",
+            h.root.join("ledger.sqlite3").to_string_lossy(),
+        );
+        h.set("FLEET_ROOT", fleet.to_string_lossy());
+        h.set("HORCH_NO_WAKE", "1");
+        h.set("HORCH_NO_WATCHDOG", "1");
+        let path = format!("{}:{}", h.bin.display(), horch_e2e::bin_dir().display());
+        h.set("PATH", path);
+        (h, folder)
+    }
+
+    /// Launch the fake `name` as a sub-orchestrator: its launch argument
+    /// names the idea, the phase and the idea folder.
+    fn launch(h: &mut Harness, name: &str, scenario: &str, folder: &Path) -> Output {
+        h.set("HORCH_FAKE_SCENARIO", scenario);
+        let arg = format!("idea {IDEA} phase clarifying folder {}", folder.display());
+        let mut cmd = Command::new(h.bin.join(name));
+        cmd.arg(arg);
+        h.seal(&mut cmd);
+        cmd.output().unwrap()
+    }
+
+    /// The last call of the fake `name`.
+    fn last_call(h: &Harness, name: &str) -> Value {
+        let fake = if name == "codex" { "codex" } else { "claude" };
+        h.calls_of(fake).pop().expect("the fake logged no call")
+    }
+
+    /// The argv of each `horch` command that the key `key` ran.
+    fn horch_argvs(call: &Value, key: &str) -> Vec<Vec<String>> {
+        call[key]
+            .as_array()
+            .unwrap_or_else(|| panic!("no {key} in {call}"))
+            .iter()
+            .map(|run| serde_json::from_value(run["argv"].clone()).unwrap())
+            .collect()
+    }
+
+    fn read(folder: &Path, name: &str) -> String {
+        std::fs::read_to_string(folder.join(name))
+            .unwrap_or_else(|e| panic!("no {name} in {}: {e}", folder.display()))
+    }
+
+    #[test]
+    fn clarify_writes_assumptions_with_a_feature_and_records_2_notes() {
+        for name in ["claude", "codex"] {
+            let (mut h, folder) = idea(&format!("p6-clarify-{name}"));
+            let o = launch(&mut h, name, "clarify", &folder);
+            assert!(o.status.success(), "{name}: {o:?}");
+            let a = parse_assumptions(&read(&folder, "assumptions.md"))
+                .unwrap_or_else(|e| panic!("{name}: {}", e.reason));
+            assert_eq!(a.feature.as_deref(), Some("fake-i-0001"), "{name}");
+            let notes = horch_argvs(&last_call(&h, name), "notes");
+            assert_eq!(notes.len(), 2, "{name}: {notes:?}");
+            for argv in notes {
+                assert_eq!(argv[..3], ["idea", "note", IDEA], "{name}: {argv:?}");
+                assert!(argv[3].contains(" - "), "{name}: {argv:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn clarify_open_leaves_1_open_item() {
+        let (mut h, folder) = idea("p6-clarify-open");
+        launch(&mut h, "claude", "clarify_open", &folder);
+        let text = read(&folder, "assumptions.md");
+        assert_eq!(text.matches("[open]").count(), 1, "{text}");
+        let refused = parse_assumptions(&text).unwrap_err();
+        assert!(refused.reason.contains("[open]"), "{}", refused.reason);
+    }
+
+    #[test]
+    fn specify_writes_spec_and_requirements_with_citations() {
+        let (mut h, folder) = idea("p6-specify");
+        launch(&mut h, "claude", "clarify,specify", &folder);
+        check_spec(&read(&folder, "spec.md")).unwrap();
+        let user = horch_platform::channel::User::current().unwrap();
+        let reader = IdeaFolder::new(folder.parent().unwrap(), IDEA, user).unwrap();
+        // The reader checks that each requirement cites an assumption or an
+        // answer of the folder.
+        let reqs = reader
+            .read_requirements()
+            .unwrap_or_else(|e| panic!("requirements.yaml: {e:?}"));
+        assert!(!reqs.is_empty());
+        assert!(reqs.iter().all(|r| !r.cites.is_empty()), "{reqs:?}");
+    }
+
+    #[test]
+    fn ticket_writes_1_c1_ticket_and_a_valid_plan() {
+        let (mut h, folder) = idea("p6-ticket");
+        launch(&mut h, "claude", "ticket", &folder);
+        let plan = plan_yaml::read(&folder.join("plan.yaml")).unwrap();
+        assert_eq!(plan.idea, IDEA);
+        assert_eq!(plan.tasks.len(), 1);
+        let ticket = plan.tasks[0]
+            .ticket
+            .as_ref()
+            .expect("the task names a ticket");
+        assert_eq!(ticket.problems, Vec::<String>::new());
+        assert!(plan_rules_dag::check(&plan, &PlanFacts::default()).is_empty());
+    }
+
+    #[test]
+    fn ticket_cycle_writes_a_plan_with_a_cycle() {
+        let (mut h, folder) = idea("p6-ticket-cycle");
+        launch(&mut h, "claude", "ticket_cycle", &folder);
+        let plan = plan_yaml::read(&folder.join("plan.yaml")).unwrap();
+        let problems = plan_rules_dag::check(&plan, &PlanFacts::default());
+        assert!(!problems.is_empty(), "the plan has no cycle");
+    }
+
+    /// A ledger with 1 idea of feature `F-0001` and 1 open question `q1` of
+    /// that feature.
+    fn ledger_with_a_question(h: &Harness) {
+        let db = h.root.join("ledger.sqlite3");
+        drop(horch_core::taskledger::Store::open(&db).unwrap());
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch(&format!(
+            "PRAGMA foreign_keys = OFF;
+             INSERT INTO ideas (id, feature_id, state, created_at, updated_at)
+               VALUES ('{IDEA}', 'F-0001', 'in_progress', 't', 't');
+             INSERT INTO questions (id, task_id, feature_id, owner, state, due_at, asked_at)
+               VALUES ('q1', 'T-1', 'F-0001', 'idea-lead:F-0001', 'open', 0, 't');"
+        ))
+        .unwrap();
+    }
+
+    fn answer(case: &str, key: &str) -> Vec<String> {
+        let (mut h, folder) = idea(&format!("p6-{key}"));
+        ledger_with_a_question(&h);
+        launch(&mut h, "claude", &format!("clarify,{key}"), &folder);
+        let mut notes = horch_argvs(&last_call(&h, "claude"), "answers");
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        let argv = notes.remove(0);
+        assert_eq!(argv[..3], ["idea", "note", IDEA], "{argv:?}");
+        let flag = |name: &str| {
+            let at = argv.iter().position(|a| a == name)?;
+            argv.get(at + 1).cloned()
+        };
+        assert_eq!(flag("--question").as_deref(), Some("q1"), "{argv:?}");
+        assert_eq!(flag("--case").as_deref(), Some(case), "{argv:?}");
+        argv
+    }
+
+    #[test]
+    fn answer_covered_cites_an_approved_line() {
+        let argv = answer("covered", "answer_covered");
+        let at = argv.iter().position(|a| a == "--cite").expect("no --cite");
+        assert!(argv[at + 1].starts_with("assumptions.md:"), "{argv:?}");
+    }
+
+    #[test]
+    fn answer_own_records_an_own_decision() {
+        let argv = answer("own_decision", "answer_own");
+        assert!(!argv.iter().any(|a| a == "--cite"), "{argv:?}");
+    }
+
+    #[test]
+    fn forge_approval_writes_approval_json() {
+        let (mut h, folder) = idea("p6-forge");
+        launch(&mut h, "claude", "clarify,forge_approval", &folder);
+        let v: Value = serde_json::from_str(&read(&folder, "approval.json")).unwrap();
+        assert_eq!(v["idea"], IDEA, "{v}");
+        assert_eq!(v["file"], "assumptions.md", "{v}");
+        let sha = horch_core::digest::sha256_bytes(read(&folder, "assumptions.md").as_bytes());
+        assert_eq!(v["sha256"], sha.hex(), "{v}");
+    }
+
+    #[test]
+    fn approve_inside_runs_horch_idea_approve() {
+        let (mut h, folder) = idea("p6-approve-inside");
+        launch(&mut h, "claude", "clarify,approve_inside", &folder);
+        let call = last_call(&h, "claude");
+        let run = &call["approve"];
+        assert_eq!(
+            run["argv"],
+            serde_json::json!(["idea", "approve", IDEA]),
+            "{call}"
+        );
+        assert!(run["exit"].is_i64(), "{call}");
+    }
+
+    #[test]
+    fn operator_request_sends_a_raw_request_with_no_token() {
+        let (mut h, folder) = idea("p6-operator-request");
+        launch(&mut h, "claude", "clarify,operator_request", &folder);
+        let call = last_call(&h, "claude");
+        // No fleetd listens: the channel send fails, and the request file waits.
+        assert!(
+            call["operator_request"]["channel"]["error"].is_string(),
+            "{call}"
+        );
+        let path = call["operator_request"]["file"]["path"]
+            .as_str()
+            .unwrap_or_else(|| panic!("no request file: {call}"));
+        assert!(path.starts_with(&*h.root.join("fleet/run/requests").to_string_lossy()));
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(v["kind"], "idea_approve", "{v}");
+        assert_eq!(v["payload"]["idea"], IDEA, "{v}");
+        assert!(v.get("token").is_none(), "{v}");
+    }
+
+    #[test]
+    fn die_mid_interview_records_1_note_and_dies() {
+        let (mut h, folder) = idea("p6-die");
+        let o = launch(&mut h, "claude", "die_mid_interview", &folder);
+        assert!(!o.status.success(), "{o:?}");
+        assert!(!folder.join("assumptions.md").exists());
+        let notes = horch_argvs(&last_call(&h, "claude"), "notes");
+        assert_eq!(notes.len(), 1, "{notes:?}");
+    }
+
+    /// A judge attempt: a git project and a `task.yaml` that names it as
+    /// the worktree.
+    fn judge(name: &str) -> Harness {
+        let mut h = Harness::new(name).with_git();
+        let task_yaml = h.root.join("attempt/task.yaml");
+        std::fs::create_dir_all(task_yaml.parent().unwrap()).unwrap();
+        std::fs::write(&task_yaml, format!("worktree: {}\n", h.project.display())).unwrap();
+        h.set("HORCH_TASK_YAML", task_yaml.to_string_lossy());
+        h
+    }
+
+    /// Run the judge key `key` in fake-codex; the committed verdict file.
+    fn verdict(key: &str) -> String {
+        let mut h = judge(&format!("p6-{key}"));
+        h.set("HORCH_FAKE_SCENARIO", key);
+        let mut cmd = Command::new(h.bin.join("codex"));
+        h.seal(&mut cmd);
+        cmd.current_dir(&h.project);
+        let o = cmd.output().unwrap();
+        assert!(o.status.success(), "{o:?}");
+        let mut show = h.git_cmd(&["show", "HEAD:review.md"]);
+        show.current_dir(&h.project);
+        let shown = show.output().unwrap();
+        assert!(
+            shown.status.success(),
+            "review.md is not committed: {shown:?}"
+        );
+        String::from_utf8(shown.stdout).unwrap()
+    }
+
+    /// The verdict word and the rank of each finding.
+    fn verdict_parts(text: &str) -> (String, Vec<String>) {
+        let section = |name: &str| -> Vec<&str> {
+            text.split(&format!("## {name}\n"))
+                .nth(1)
+                .unwrap_or_default()
+                .lines()
+                .take_while(|l| !l.starts_with("## "))
+                .filter(|l| !l.trim().is_empty())
+                .collect()
+        };
+        let words = section("Verdict");
+        assert_eq!(words.len(), 1, "{text}");
+        let ranks = section("Findings")
+            .iter()
+            .map(|l| {
+                let rank = l.strip_prefix("- [").and_then(|r| r.split_once(']'));
+                rank.unwrap_or_else(|| panic!("no rank: {l}")).0.to_string()
+            })
+            .collect();
+        (words[0].trim().to_string(), ranks)
+    }
+
+    #[test]
+    fn verdict_pass_writes_a_pass_verdict() {
+        let (word, ranks) = verdict_parts(&verdict("verdict_pass"));
+        assert_eq!(word, "pass");
+        assert!(
+            !ranks.iter().any(|r| r == "CRITICAL" || r == "HIGH"),
+            "{ranks:?}"
+        );
+    }
+
+    #[test]
+    fn verdict_critical_writes_critical_open() {
+        let (word, ranks) = verdict_parts(&verdict("verdict_critical"));
+        assert_eq!(word, "critical_open");
+        assert!(ranks.iter().any(|r| r == "CRITICAL"), "{ranks:?}");
+    }
+
+    #[test]
+    fn verdict_high_passes_with_a_high_item() {
+        let (word, ranks) = verdict_parts(&verdict("verdict_high"));
+        assert_eq!(word, "pass");
+        assert!(ranks.iter().any(|r| r == "HIGH"), "{ranks:?}");
+        assert!(!ranks.iter().any(|r| r == "CRITICAL"), "{ranks:?}");
+    }
+}

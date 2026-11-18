@@ -40,11 +40,7 @@ pub fn play(call: &mut Call) {
         return;
     }
     let binding = binding();
-    let task_yaml = env_path(TASK_YAML_ENV).or_else(|| {
-        let (task_id, n) = binding.as_ref()?;
-        let fleet_root = Paths::from_env(&ProcessEnv).fleet_root;
-        Some(attempt_dir(&fleet_root, task_id, &format!("A{n}")).join("task.yaml"))
-    });
+    let task_yaml = task_yaml(binding.as_ref());
     if scenario_has("bound") {
         let entry = entry(
             call,
@@ -54,12 +50,7 @@ pub fn play(call: &mut Call) {
         call.extra.insert("entry".into(), entry);
         call.flush();
     }
-    let worktree = task_yaml
-        .as_deref()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .and_then(|text| yaml_value(&text, "worktree"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    let worktree = worktree_of(task_yaml.as_deref());
     if scenario_has("commit") {
         let out = commit(call, &worktree);
         call.extra.insert("commit".into(), out);
@@ -79,6 +70,31 @@ pub fn play(call: &mut Call) {
         call.extra.insert("result".into(), horch(&worktree, &args));
     }
     call.flush();
+}
+
+/// The worktree of the attempt of this pane: the `worktree` of its
+/// `task.yaml`, else the cwd.
+pub(crate) fn worktree() -> PathBuf {
+    worktree_of(task_yaml(binding().as_ref()).as_deref())
+}
+
+/// The `task.yaml` of the attempt: `$HORCH_TASK_YAML`, else the one of the
+/// attempt that the ledger binds to the worker.
+fn task_yaml(binding: Option<&(String, i64)>) -> Option<PathBuf> {
+    env_path(TASK_YAML_ENV).or_else(|| {
+        let (task_id, n) = binding?;
+        let fleet_root = Paths::from_env(&ProcessEnv).fleet_root;
+        Some(attempt_dir(&fleet_root, task_id, &format!("A{n}")).join("task.yaml"))
+    })
+}
+
+/// The `worktree` of `task_yaml`, else the cwd.
+fn worktree_of(task_yaml: Option<&Path>) -> PathBuf {
+    task_yaml
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|text| yaml_value(&text, "worktree"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
 }
 
 /// The task id and the attempt number that the ledger binds to the worker
@@ -158,7 +174,7 @@ fn commit(call: &Call, worktree: &Path) -> Value {
 }
 
 /// Run git in `dir` with no hook and a fixed identity; its trimmed stdout.
-fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
+pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     let bin = env_path("HORCH_GIT_BIN").unwrap_or_else(|| PathBuf::from("git"));
     let mut cmd = Command::new(bin);
     horch_marketplace::git::scrub_repo_env(&mut cmd);
@@ -186,7 +202,7 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
 }
 
 /// Run `horch <args>` in `dir`; its exit code and output.
-fn horch(dir: &Path, args: &[&str]) -> Value {
+pub(crate) fn horch(dir: &Path, args: &[&str]) -> Value {
     match Command::new("horch").current_dir(dir).args(args).output() {
         Ok(out) => json!({
             "exit": out.status.code(),
