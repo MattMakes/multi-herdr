@@ -8,6 +8,9 @@
 //! Each test has its own temp ledger, fleet root and repositories. The job
 //! process of each job is this test binary again, with the test
 //! [`child_job`]: it runs the executor of its job with the git of its world.
+//! The job processes are shell scripts, so the tests run on Unix only.
+
+#![cfg(unix)]
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -39,6 +42,7 @@ use horch_core::fleetd::worktree_custody::adapters::git::worktree_add_key;
 use horch_core::fleetd::worktree_custody::adapters::sqlite::{
     self as trees, NewWorktree, WorktreeState,
 };
+use horch_core::fleetd::worktree_custody::application::reconcile::WorkDir;
 use horch_core::runtime::fault::Faults;
 use horch_core::taskledger::finish::CodexSandbox;
 use horch_core::taskledger::model::{Actor, WorktreeStatus};
@@ -366,9 +370,8 @@ fn run(pass: &mut Pass<'_>, w: &mut World) -> PassReport {
 // ─── the fakes ──────────────────────────────────────────────────────────
 
 /// The worktree facts and the repositories as the composition root of
-/// fleetd gives them: the folder of each row that is not `removed` (key:
-/// its id), and each folder of the work directory of each repository with
-/// no row (key: its path). No herdr.
+/// fleetd gives them: the folder of each row that is not `removed`, and the
+/// entries of the work directory of each repository. No herdr.
 struct Trees;
 
 impl Outside for Trees {
@@ -385,32 +388,29 @@ impl Outside for Trees {
     }
 
     fn worktree_folders(&self, conn: &Connection) -> anyhow::Result<Vec<FolderItem>> {
-        let rows: Vec<_> = trees::in_states(conn, &WorktreeState::ALL)?
+        Ok(trees::in_states(conn, &WorktreeState::ALL)?
             .into_iter()
             .filter(|r| r.state != WorktreeState::Removed)
-            .collect();
-        let mut items: Vec<FolderItem> = rows
-            .iter()
             .map(|r| FolderItem {
-                key: r.worktree_id.clone(),
-                path: PathBuf::from(&r.path),
+                key: r.worktree_id,
+                path: PathBuf::from(r.path),
             })
-            .collect();
+            .collect())
+    }
+
+    fn work_dirs(&self, conn: &Connection) -> anyhow::Result<Vec<WorkDir>> {
+        let mut out = Vec::new();
         for repo in self.repositories(conn)? {
-            let Ok(names) = std::fs::read_dir(Path::new(&repo).join(".worktrees")) else {
+            let Ok(entries) = std::fs::read_dir(Path::new(&repo).join(".worktrees")) else {
                 continue;
             };
-            for e in names.flatten() {
-                let path = e.path().display().to_string();
-                if rows.iter().all(|r| r.path != path) {
-                    items.push(FolderItem {
-                        key: path.clone(),
-                        path: PathBuf::from(path),
-                    });
-                }
-            }
+            let folders = entries
+                .flatten()
+                .map(|e| e.path().display().to_string())
+                .collect();
+            out.push(WorkDir { repo, folders });
         }
-        Ok(items)
+        Ok(out)
     }
 
     fn repositories(&self, conn: &Connection) -> anyhow::Result<Vec<String>> {
@@ -451,7 +451,12 @@ impl Watching {
 
 impl ProcessHost for Watching {
     fn launch(&self, spec: &LaunchSpec) -> Result<Launched, LaunchError> {
-        let id: i64 = spec.args[2].to_str().unwrap().parse().unwrap();
+        // The job process runs as `<horch> job run <id>`.
+        let [job, run, id] = &spec.args[..] else {
+            panic!("a job launch is `job run <id>`: {:?}", spec.args);
+        };
+        assert_eq!((job.to_str(), run.to_str()), (Some("job"), Some("run")));
+        let id: i64 = id.to_str().unwrap().parse().unwrap();
         let state = self.tree.as_ref().map(|t| {
             let conn = open(&self.db);
             trees::get(&conn, t)
@@ -589,7 +594,7 @@ fn worktree_list_job_is_queued_once_per_period_per_repository() {
     assert_eq!(w.lists(&a).len(), 1, "no second run in the period");
     assert_eq!(w.lists(&b).len(), 1, "no second run in the period");
 
-    w.set_fleet_clock(60);
+    w.set_fleet_clock(i64::try_from(w.config.worktree_list_period_s).unwrap());
     run(&mut pass, &mut w);
     for repo in [&a, &b] {
         let lists = w.lists(repo);

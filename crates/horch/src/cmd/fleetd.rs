@@ -26,7 +26,7 @@
 //! launcher.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -57,6 +57,7 @@ use horch_core::fleetd::task_execution::domain::task::{AttemptRow, InPane};
 use horch_core::fleetd::worker_profiles::adapters::launcher::Launcher;
 use horch_core::fleetd::worker_profiles::application::ports::{EnvRule, LaunchSpec, ProcessHost};
 use horch_core::fleetd::worktree_custody::adapters::sqlite::{self as trees, WorktreeState};
+use horch_core::fleetd::worktree_custody::application::reconcile::WorkDir;
 use horch_core::procid;
 use horch_core::runtime::{Paths, RuntimeContext};
 use horch_core::taskledger::model::RunStatus;
@@ -828,24 +829,26 @@ impl Outside for Live<'_> {
     }
 
     /// The folder of each worktree row that is not `removed`, by its
-    /// worktree id, and each folder in `<project>/.worktrees/` of each
-    /// repository of the fleet that no row names, by its path (MAP.md of
-    /// fleetd-p3, Q4). A work directory that cannot be listed gives no
-    /// folder in this pass.
+    /// worktree id.
     fn worktree_folders(&self, conn: &Connection) -> Result<Vec<FolderItem>> {
         let kept: Vec<WorktreeState> = WorktreeState::ALL
             .into_iter()
             .filter(|s| *s != WorktreeState::Removed)
             .collect();
-        let rows = trees::in_states(conn, &kept)?;
-        let mut items: Vec<FolderItem> = rows
-            .iter()
+        Ok(trees::in_states(conn, &kept)?
+            .into_iter()
             .map(|r| FolderItem {
-                key: r.worktree_id.clone(),
-                path: PathBuf::from(&r.path),
+                key: r.worktree_id,
+                path: PathBuf::from(r.path),
             })
-            .collect();
-        let named: BTreeSet<&str> = rows.iter().map(|r| r.path.as_str()).collect();
+            .collect())
+    }
+
+    /// The entries of `<project>/.worktrees/` of each repository of the
+    /// fleet (MAP.md of fleetd-p3, Q4). A work directory that cannot be
+    /// listed gives no entry in this pass.
+    fn work_dirs(&self, conn: &Connection) -> Result<Vec<WorkDir>> {
+        let mut out = Vec::new();
         for repo in self.repositories(conn)? {
             let work_dir = Path::new(&repo).join(".worktrees");
             let entries = match std::fs::read_dir(&work_dir) {
@@ -856,15 +859,13 @@ impl Outside for Live<'_> {
                     continue;
                 }
             };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                let key = path.display().to_string();
-                if !named.contains(key.as_str()) {
-                    items.push(FolderItem { key, path });
-                }
-            }
+            let folders = entries
+                .flatten()
+                .map(|e| e.path().display().to_string())
+                .collect();
+            out.push(WorkDir { repo, folders });
         }
-        Ok(items)
+        Ok(out)
     }
 
     /// The project root of each run that is not `done` or `abandoned`,

@@ -17,9 +17,10 @@
 //!    `record_hold_changes` and `intended_effects`. The worktree
 //!    observations and orphan marks come before the run duties and the job
 //!    queues (stops come before launches). Each effect is a row in an
-//!    intended state when the transaction commits. No effect occurs inside it. The run duties
-//!    have a [`DutyBudget`]: at most `pass_budget` rows of each paged duty,
-//!    and no new duty work after the time budget of the pass.
+//!    intended state when the transaction commits. No effect occurs inside
+//!    it. The run duties have a [`DutyBudget`]: at most `pass_budget` rows
+//!    of each paged duty, and no new duty work after the time budget of the
+//!    pass.
 //! 3. After the commit it does the effects, stops before launches, until
 //!    the time budget of the pass ends. The rest stay intended rows for the
 //!    next pass. When time is left, the run duties do their effects. Then
@@ -110,13 +111,18 @@ pub trait Outside {
     /// The health holds now (OR-4, OR-5).
     fn holds(&self) -> Vec<Hold>;
 
-    /// The folders of the scan of worktree folders: the folder of each
-    /// worktree row that is not `removed`, with its worktree id as its key,
-    /// and each folder in `<project>/.worktrees/` of each repository of
-    /// [`Outside::repositories`] that no row names, with its path as its key
-    /// (MAP.md of fleetd-p3, Q4). A path is written as git writes it. The
-    /// rows are not rows of fleet runtime.
+    /// The folder of each worktree row that is not `removed`, with its
+    /// worktree id as its key, for the scan of worktree folders. A path is
+    /// written as git writes it. The rows are not rows of fleet runtime.
     fn worktree_folders(&self, conn: &Connection) -> Result<Vec<FolderItem>>;
+
+    /// The listing of the work directory `<project>/.worktrees/` of each
+    /// repository of [`Outside::repositories`]: the full path of each entry
+    /// (MAP.md of fleetd-p3, Q4). The scan of worktree folders reads each
+    /// entry that no row names. An `Outside` with no runs has none.
+    fn work_dirs(&self, _conn: &Connection) -> Result<Vec<WorkDir>> {
+        Ok(Vec::new())
+    }
 
     /// The repositories of the fleet: the project root of each run that is
     /// not `done` or `abandoned`, each once. The runs are not rows of fleet
@@ -536,7 +542,9 @@ impl<'a> Pass<'a> {
         let records = launch_records(&root, &rows)?;
         let processes = process_items(&rows, &records, jobs::processes(conn)?);
         let outboxes = outbox_items(&root, &rows);
-        let trees = self.ports.outside.worktree_folders(conn)?;
+        let rows_folders = self.ports.outside.worktree_folders(conn)?;
+        let work_dirs = self.ports.outside.work_dirs(conn)?;
+        let trees = tree_items(&rows_folders, &work_dirs);
         let changed = self.changed_folders(&outboxes, &trees);
         let mut cursors = Vec::new();
         let mut liveness = BTreeMap::new();
@@ -571,7 +579,12 @@ impl<'a> Pass<'a> {
             cursors.push((kind, cursor));
         }
         let repos = git_repositories(self.ports.outside.repositories(conn)?);
-        let worktrees = worktree_facts(&trees, folders, last_lists(conn, &repos)?);
+        let worktrees = worktree_facts(
+            &rows_folders,
+            &work_dirs,
+            folders,
+            last_lists(conn, &repos)?,
+        );
         let mut may_stop = may_stop(&rows, &liveness);
         let panes = self.ports.outside.panes();
         let stopped = effects::read_stopped(&root, |pid, start| !may_stop.contains(&(pid, start)))
@@ -1297,37 +1310,49 @@ fn last_lists(conn: &Connection, repos: &[String]) -> Result<Vec<Listed>> {
     Ok(out)
 }
 
-/// The worktree facts of part 1: the scanned folder of each row, by its
-/// worktree id; each scanned folder of a work directory that exists, under
-/// its repository; and the `lists`. A folder of a work directory has its
-/// path as its key ([`Outside::worktree_folders`]).
+/// The items of the scan of worktree folders: the folder of each row, by
+/// its worktree id, then each entry of `work_dirs` that no row names, by its
+/// path.
+fn tree_items(rows: &[FolderItem], work_dirs: &[WorkDir]) -> Vec<FolderItem> {
+    let named: BTreeSet<&Path> = rows.iter().map(|r| r.path.as_path()).collect();
+    let entries = work_dirs
+        .iter()
+        .flat_map(|d| &d.folders)
+        .filter(|f| !named.contains(Path::new(f)))
+        .map(|f| FolderItem {
+            key: f.clone(),
+            path: PathBuf::from(f),
+        });
+    rows.iter().cloned().chain(entries).collect()
+}
+
+/// The worktree facts of part 1: the scanned folder of each row of `rows`;
+/// each scanned entry of `work_dirs` that exists, under its repository; and
+/// the `lists`.
 fn worktree_facts(
-    items: &[FolderItem],
+    rows: &[FolderItem],
+    work_dirs: &[WorkDir],
     scanned: Vec<FolderFact>,
     lists: Vec<Listed>,
 ) -> WorktreeFacts {
-    let by_key: BTreeMap<&str, &FolderItem> = items.iter().map(|i| (i.key.as_str(), i)).collect();
+    let row_keys: BTreeSet<&str> = rows.iter().map(|r| r.key.as_str()).collect();
     let mut facts = WorktreeFacts {
         lists,
         ..WorktreeFacts::default()
     };
     for fact in scanned {
-        let Some(item) = by_key.get(fact.key.as_str()) else {
-            continue;
-        };
-        if Path::new(&item.key) != item.path {
+        if row_keys.contains(fact.key.as_str()) {
             facts.folders.push(fact);
             continue;
         }
-        let repo = item.path.parent().and_then(Path::parent);
+        let repo = work_dirs.iter().find(|d| d.folders.contains(&fact.key));
         let (Presence::Present, Some(repo)) = (&fact.presence, repo) else {
             continue;
         };
-        let repo = repo.display().to_string();
-        match facts.work_dirs.iter_mut().find(|d| d.repo == repo) {
+        match facts.work_dirs.iter_mut().find(|d| d.repo == repo.repo) {
             Some(d) => d.folders.push(fact.key),
             None => facts.work_dirs.push(WorkDir {
-                repo,
+                repo: repo.repo.clone(),
                 folders: vec![fact.key],
             }),
         }
