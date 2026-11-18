@@ -93,6 +93,7 @@ use crate::fleetd::ideas::adapters::questions_store;
 use crate::fleetd::ideas::application::needs_you::{self, NeedsYouList};
 use crate::fleetd::ideas::domain::needs_you::Write as NeedsYouWrite;
 use crate::fleetd::integration::adapters::sqlite as integration_rows;
+use crate::fleetd::integration::domain::task_branch::LandingState;
 use crate::fleetd::task_execution::adapters::attempt_files::{self, OsProcesses, WrapperRead};
 use crate::fleetd::task_execution::adapters::leases_store;
 use crate::fleetd::task_execution::adapters::result_reader::AttemptRef;
@@ -101,6 +102,11 @@ use crate::fleetd::task_execution::application::outbox_ingest::{self, OutboxRead
 use crate::fleetd::task_execution::application::quota::{
     self, Pools, Restart, Restarted, Restarts,
 };
+use crate::fleetd::task_execution::application::dispatch::{self, DispatchCtx};
+use crate::fleetd::task_execution::application::launch::{self as push, Launches};
+use crate::fleetd::task_execution::application::verifier::{self, Passed, Verifier};
+use crate::fleetd::task_execution::application::{repair, review};
+use crate::fleetd::task_execution::domain::dispatch::Holds as DispatchHolds;
 use crate::fleetd::task_execution::application::stall as ladder;
 use crate::fleetd::task_execution::application::{cancel, commands, lease, retry};
 use crate::fleetd::task_execution::domain::lease::Limits;
@@ -112,9 +118,11 @@ use crate::fleetd::task_execution::domain::task::{
     self, promotable, AttemptRow, AttemptState, Facts, InPane, ProcessScope, Reap, Recorded,
     RowRef, Rows, Seen, Stop, Target,
 };
+use crate::fleetd::worker_profiles::adapters::check_sandbox::WorkerSandboxes;
 use crate::fleetd::worker_profiles::application::ports::{LaunchSpec, ProcessHost};
 use crate::fleetd::worker_profiles::domain::profile::{Mode, Profile};
 use crate::fleetd::worktree_custody::adapters::git::{worktree_list_key, ListResult};
+use crate::fleetd::worktree_custody::adapters::sqlite as trees;
 use crate::fleetd::worktree_custody::application::disk::disk_budget;
 use crate::fleetd::worktree_custody::application::reconcile::{
     check_i6, reconcile_worktrees, Facts as WorktreeFacts, Listed, WorkDir,
@@ -123,17 +131,23 @@ use crate::fleetd::worktree_custody::domain::worktree::Breach as I6;
 use crate::roster::Roster;
 use crate::routing::quota::QuotaView;
 use crate::runtime::fault::Faults;
+use crate::taskledger::finish::Tools;
 use crate::taskledger::model::{Actor, EventKind, ProgressSource, TaskStatus};
 use crate::taskledger::util;
 use crate::taskledger::watchdog::{self, Observation};
 use crate::taskledger::workers::{self, Worker};
-use crate::taskledger::{tasks, timer};
+use crate::taskledger::git::Git;
+use crate::taskledger::sql_words::WORKTREES_GONE;
+use crate::taskledger::store::Store;
+use crate::taskledger::{runs, tasks, timer};
 
 /// After the first full pass, the next pass sleeps for ever before its
 /// heartbeat (`p0_fleetd_hang.rs`).
 pub const HANG_PASS: &str = "hang-pass";
 /// The pass ends the process after the commit of part 2, before part 3.
 pub const ABORT_AFTER_COMMIT: &str = "abort-after-commit";
+/// The fault point that ends fleetd in part 2, before its commit.
+pub const ABORT_BEFORE_COMMIT: &str = "abort-before-commit";
 /// The file watching reports nothing.
 pub const DROP_WATCH_EVENTS: &str = "drop-watch-events";
 
@@ -143,6 +157,12 @@ const LAUNCHES: &str = "launches";
 const JOB_STARTS: &str = "job_starts";
 /// The cursor of the live attempts that part 1 observes, in `pass_cursors`.
 const LIVE_ATTEMPTS: &str = "live_attempts";
+/// The `pass_cursors` kind of the dispatch: the last task that a pass
+/// bound. The rules of `domain/dispatch.rs` give the order of the binds.
+const DISPATCH: &str = "dispatch";
+/// The `attempts.via` of an attempt that fleetd bound (Q4 of
+/// `docs/tickets/fleetd-p4/MAP.md`).
+const PUSH: &str = "push";
 /// The kind of the needs-you item of a breach that no step repairs.
 const BREACH: &str = "invariant_breach";
 /// The kind of the needs-you item of an operator token file that fails its
@@ -306,6 +326,19 @@ impl RunDuties for NoDuties {
     }
 }
 
+/// The ports of the Phase 4 work of task execution
+/// (`docs/tickets/fleetd-p4/46-pass-wiring-dispatch-and-verifier.md`).
+#[derive(Clone, Copy)]
+pub struct TaskWork<'a> {
+    /// The tools of the finish steps: the git of the binds and of the
+    /// tips, and the review steps of the verifier.
+    pub tools: &'a Tools,
+    /// The check sandbox of each persona (SR-4).
+    pub sandboxes: &'a WorkerSandboxes,
+    /// The spawn of each push attempt that fleetd bound.
+    pub launches: &'a dyn Launches,
+}
+
 /// The settings of 1 fleetd.
 #[derive(Debug, Clone)]
 pub struct Settings {
@@ -391,6 +424,8 @@ enum Effect {
     Doorbell(Bell),
     /// The launch of an attempt, or the restart of a task on its fallback.
     Launch(AttemptRow),
+    /// The spawn of a push attempt that fleetd bound, by its id.
+    PushLaunch(String),
     StartJob(JobRow),
 }
 
@@ -409,7 +444,7 @@ impl Effect {
         match self {
             Effect::Stop(_) | Effect::StopJob(_) => Rank::Stop,
             Effect::Doorbell(_) => Rank::Doorbell,
-            Effect::Launch(_) => Rank::Launch,
+            Effect::Launch(_) | Effect::PushLaunch(_) => Rank::Launch,
             Effect::StartJob(_) => Rank::StartJob,
         }
     }
@@ -463,6 +498,9 @@ struct Read {
     /// Why the operator token file failed its checks; `None` when it
     /// passed them.
     token_fault: Option<String>,
+    /// The tip of the task branch of each task that the verifier or a
+    /// repair result reads, by task id. A task with no tip waits.
+    tips: BTreeMap<String, String>,
     /// The lines of what part 1 could not do.
     failed: Vec<String>,
 }
@@ -497,6 +535,27 @@ struct ProcessItems {
     jobs: BTreeSet<String>,
 }
 
+/// The attempts to launch in part 3: the attempts in `launching` of the
+/// run duties and of the restarts, and the push attempts by id.
+struct ToLaunch {
+    attempts: Vec<AttemptRow>,
+    push: Vec<String>,
+}
+
+/// What the Phase 4 work of part 2 decided.
+#[derive(Default)]
+struct WorkRows {
+    /// The stops of the processes of older attempts, before a launch.
+    stops: Vec<Stop>,
+    /// The push attempts to launch, in the order of their rows.
+    launches: Vec<String>,
+    /// The tasks whose check did not fail, for the review steps and the
+    /// structural check of part 3.
+    passed: Vec<Passed>,
+    /// The lines of what failed: a bind or a repair start.
+    failed: Vec<String>,
+}
+
 /// The decisions of part 2.
 struct Decided {
     clock: FleetSeconds,
@@ -505,6 +564,12 @@ struct Decided {
     may_stop: BTreeSet<(u32, u64)>,
     activity: BTreeMap<String, Activity>,
     sent: BTreeMap<String, BTreeSet<i64>>,
+    /// The tasks whose check did not fail.
+    passed: Vec<Passed>,
+    /// The roster of the pass, for the numbers of rung 6 in part 3.
+    roster: Option<Roster>,
+    /// The lines of what failed in part 2 and kept its row unchanged.
+    failed: Vec<String>,
 }
 
 /// The pane stops of the effects of 1 pass, as part 3 does them.
@@ -589,6 +654,9 @@ pub struct Pass<'a> {
     full_passes: u64,
     /// The handlers of the request files.
     requests: Handlers,
+    /// The ports of the Phase 4 work of task execution; `None`: the pass
+    /// does none of it.
+    work: Option<TaskWork<'a>>,
 }
 
 impl<'a> Pass<'a> {
@@ -607,7 +675,16 @@ impl<'a> Pass<'a> {
             exe: effects::this_exe(),
             full_passes: 0,
             requests: Handlers::new(),
+            work: None,
         }
+    }
+
+    /// Do the Phase 4 work of task execution with `work` in each pass:
+    /// dispatch, the launch of push attempts, the verifier, the review
+    /// steps and the repair attempts.
+    pub fn with_task_work(mut self, work: TaskWork<'a>) -> Pass<'a> {
+        self.work = Some(work);
+        self
     }
 
     /// Apply each request file with `handlers`. With none, each operator
@@ -654,9 +731,22 @@ impl<'a> Pass<'a> {
             Err(e) => return Err(e),
         };
         self.settings.faults.abort_if(ABORT_AFTER_COMMIT);
+        let mut decided = decided;
+        failed.append(&mut decided.failed);
+        if self.work.is_some() {
+            // `task.yaml` and `START.md` of each bound attempt come before
+            // its launch, also after a crash between the commit and them.
+            failed.extend(write_task_files(conn, &self.settings.fleet_root));
+        }
         let activity = effects::write_activity(&self.settings.fleet_root, &decided.activity);
-        let (mut report, pending) =
-            self.do_effects(conn, decided.effects, decided.sent, decided.clock, deadline);
+        let passed = std::mem::take(&mut decided.passed);
+        let effects = std::mem::take(&mut decided.effects);
+        let sent = std::mem::take(&mut decided.sent);
+        let (mut report, pending) = self.do_effects(conn, effects, sent, decided.clock, deadline);
+        if let Some(w) = self.work {
+            let lines = self.verify_after_commit(conn, w, &decided, passed, deadline);
+            report.failed.extend(lines);
+        }
         report.failed.extend(old_stops);
         report.failed.extend(failed);
         if let Err(e) = jobs::archive_results(&self.settings.fleet_root, &job_files) {
@@ -898,6 +988,17 @@ impl<'a> Pass<'a> {
         }
         let seen = task_processes(&rows, &liveness);
         let (live, live_cursor, activity) = self.read_live(conn, &rows, &seen, &stamp, deadline)?;
+        // A result of this pass moves its task to `verifying` in part 2, and
+        // the verifier of the same pass queues its check.
+        let results: BTreeSet<&str> = outbox_reads
+            .iter()
+            .filter(|r| !r.messages.is_empty())
+            .map(|r| r.attempt.task_id.as_str())
+            .collect();
+        let tips = match &self.work {
+            Some(w) => task_tips(conn, &w.tools.git, &results)?,
+            None => BTreeMap::new(),
+        };
         let mut sent = effects::read_doorbells(&self.settings.fleet_root);
         sent.retain(|id, _| {
             rows.attempts
@@ -928,6 +1029,7 @@ impl<'a> Pass<'a> {
             wrappers,
             job_files,
             token_fault,
+            tips,
             failed,
         })
     }
@@ -1081,7 +1183,11 @@ impl<'a> Pass<'a> {
         let guard = Some(self.settings.generation);
         outbox_ingest::ingest(&tx, guard, &read.outboxes)?;
         let at = util::now();
-        attempt_files::ingest(&tx, guard, &read.wrappers, clock, &at, &OsProcesses)?;
+        let wrappers = attempt_files::ingest(&tx, guard, &read.wrappers, clock, &at, &OsProcesses)?;
+        start_running(&tx, guard, clock, &wrappers.checkins, |persona| {
+            let roster = read.pools.as_ref().map(|p| &p.roster);
+            seconds(profile_of(roster, persona).liveness.lease_s)
+        })?;
         jobs::ingest_results(&self.job_ctx(), &tx, &read.job_files)?;
         token_item(&tx, &self.settings.fleet_root, read.token_fault.as_deref())?;
         let launches = self.observe_intents(&tx, &read.launching, clock)?;
@@ -1120,16 +1226,48 @@ impl<'a> Pass<'a> {
             };
             stops.extend(self.ports.duties.run(&tx, &duty)?);
         }
+        let mut work = WorkRows::default();
+        if let Some(w) = &self.work {
+            work = self.dispatch_rows(&tx, w, &holds, clock, &read.stamp)?;
+            stops.append(&mut work.stops);
+        }
         let ctx = self.job_ctx();
         let observed = jobs::observe(&ctx, &tx, &read.jobs, clock)?;
+        if self.work.is_some() {
+            let policy = |t: &tasks::Task| rules.policy(t.primary_persona.as_deref());
+            let v = Verifier {
+                jobs: &ctx,
+                clock,
+                tips: &read.tips,
+                policy: &policy,
+            };
+            work.passed = verifier::verify(&v, &tx)?.passed;
+            let r = repair::Results {
+                jobs: &ctx,
+                clock,
+                tips: &read.tips,
+                fleet_root: &self.settings.fleet_root,
+            };
+            repair::observe(&r, &tx)?;
+        }
         rules.check_i1()?;
         let breaches = self.check_invariants(&tx, &read.worktrees)?;
         self.queue_lists(&ctx, &tx, &read.repos, clock)?;
         record_hold_changes(&tx, &self.holds, &holds)?;
-        let mut effects =
-            self.intended_effects(&tx, launches, stops, observed.stops, clock, &read.stamp)?;
+        let mut effects = self.intended_effects(
+            &tx,
+            ToLaunch {
+                attempts: launches,
+                push: work.launches,
+            },
+            stops,
+            observed.stops,
+            clock,
+            &read.stamp,
+        )?;
         effects.extend(doorbells.into_iter().map(Effect::Doorbell));
         effects.sort_by_key(Effect::order);
+        self.settings.faults.abort_if(ABORT_BEFORE_COMMIT);
         tx.commit().map_err(anyhow::Error::from)?;
         self.clock.committed(tick);
         self.holds = holds;
@@ -1140,7 +1278,109 @@ impl<'a> Pass<'a> {
             may_stop: read.may_stop,
             activity: read.activity,
             sent: read.sent,
+            passed: work.passed,
+            roster: read.pools.map(|p| p.roster),
+            failed: work.failed,
         })
+    }
+
+    /// The Phase 4 rows of part 2 that come before the job observations,
+    /// after the stops of `mark_orphans`, the rules of the leases and the
+    /// worktree reconciler, so `holds` holds the disk budget of this pass:
+    /// the binds of the ready tasks, at most `pass_budget`; the hold and
+    /// the needs-you item of a persona with no check sandbox; the resolver
+    /// and fix attempts that are due; and the stops and launches of the
+    /// push attempts in `launching` (ticket 10).
+    fn dispatch_rows(
+        &self,
+        tx: &Transaction<'_>,
+        w: &TaskWork<'_>,
+        holds: &[Hold],
+        clock: FleetSeconds,
+        stamp: &str,
+    ) -> Result<WorkRows> {
+        let budget = PassBudget::new(self.settings.config.pass_budget).rows();
+        let ctx = DispatchCtx {
+            jobs: self.job_ctx(),
+            clock,
+            git: &w.tools.git,
+        };
+        let mut d = dispatch::dispatch_due(tx, &ctx, &dispatch_holds(holds, clock), w.sandboxes, budget)?;
+        w.sandboxes.move_to_fallbacks(tx, &mut d.held)?;
+        w.sandboxes.open_items(tx, self.ports.needs_you, &d.held)?;
+        if !d.bound.is_empty() {
+            let mut cursor = cursors_store::load(tx, DISPATCH, stamp)?;
+            for b in &d.bound {
+                cursor.step(&b.task_id, stamp);
+            }
+            cursors_store::save(tx, DISPATCH, &cursor)?;
+        }
+        repair::start_due(tx, &ctx, budget)?;
+        let plan = push::plan(tx, ctx.jobs.guard, &|r| w.launches.alive(r))?;
+        Ok(WorkRows {
+            stops: plan.stops,
+            launches: plan.launches,
+            passed: Vec::new(),
+            failed: d
+                .failed
+                .into_iter()
+                .map(|(task, e)| format!("the bind of task {task}: {e}"))
+                .collect(),
+        })
+    }
+
+    /// Part 3 of the verifier, after the effects of the pass: the
+    /// structural check and the review steps of each task of `passed`, in
+    /// the time left, then the file of each committed verdict. A task that
+    /// part 3 does not reach is passed again by the verifier of the next
+    /// pass. Gives the lines of what failed.
+    fn verify_after_commit(
+        &mut self,
+        conn: &mut Connection,
+        w: TaskWork<'_>,
+        decided: &Decided,
+        passed: Vec<Passed>,
+        deadline: Deadline,
+    ) -> Vec<String> {
+        let mut failed = Vec::new();
+        if !passed.is_empty() && !deadline.reached((self.now)()) {
+            if let Err(e) = self.review_steps(conn, w, decided, passed) {
+                failed.push(format!("the review steps: {e:#}"));
+            }
+        }
+        if let Err(e) = verifier::write_verdicts(conn, &self.settings.fleet_root) {
+            failed.push(format!("the verdict files: {e:#}"));
+        }
+        failed
+    }
+
+    /// The structural check and the review steps of `passed`, in a store of
+    /// the ledger of `conn` with no transaction open.
+    fn review_steps(
+        &self,
+        conn: &Connection,
+        w: TaskWork<'_>,
+        decided: &Decided,
+        passed: Vec<Passed>,
+    ) -> Result<()> {
+        let path = conn
+            .path()
+            .filter(|p| !p.is_empty())
+            .context("the ledger has no file")?;
+        let mut store = Store::open(Path::new(path))?;
+        let ctx = self.job_ctx();
+        let roster = decided.roster.as_ref();
+        let config = &self.settings.config;
+        let policy = |t: &tasks::Task| retry_policy(roster, config, t.primary_persona.as_deref());
+        let r = review::Review {
+            jobs: &ctx,
+            clock: decided.clock,
+            tools: w.tools,
+            policy: &policy,
+        };
+        verifier::structural(&r, &mut store, &passed)?;
+        verifier::review(&r, &mut store, passed)?;
+        Ok(())
     }
 
     fn job_ctx(&self) -> JobCtx<'_> {
@@ -1170,6 +1410,8 @@ impl<'a> Pass<'a> {
             }
             match observe_launch(l.row_process, l.launch, clock) {
                 LaunchStep::Launch if self.ports.duties.launches(a) => {}
+                // The launch plan of Phase 4 launches a push attempt.
+                LaunchStep::Launch if via(tx, &a.id)? == PUSH => {}
                 LaunchStep::Launch => launches.push(a.clone()),
                 LaunchStep::Wait => {}
                 LaunchStep::Live => {
@@ -1290,7 +1532,7 @@ impl<'a> Pass<'a> {
     fn intended_effects(
         &self,
         tx: &Transaction<'_>,
-        launches: Vec<AttemptRow>,
+        launches: ToLaunch,
         stops: Vec<Stop>,
         job_stops: Vec<jobs::Stop>,
         clock: FleetSeconds,
@@ -1306,13 +1548,17 @@ impl<'a> Pass<'a> {
             }
         }
         effects.extend(job_stops.into_iter().map(Effect::StopJob));
-        let ids: Vec<String> = launches.iter().map(|a| a.id.clone()).collect();
+        let ids: Vec<String> = launches
+            .attempts
+            .iter()
+            .map(|a| a.id.clone())
+            .chain(launches.push.iter().cloned())
+            .collect();
         for id in take(tx, LAUNCHES, &ids, budget, stamp)? {
-            let a = launches
-                .iter()
-                .find(|a| a.id == id)
-                .expect("an id of the list");
-            effects.push(Effect::Launch(a.clone()));
+            match launches.attempts.iter().find(|a| a.id == id) {
+                Some(a) => effects.push(Effect::Launch(a.clone())),
+                None => effects.push(Effect::PushLaunch(id)),
+            }
         }
         let due = jobs::due_to_start(tx, clock)?;
         let ids: Vec<String> = due.iter().map(|j| job_cursor_key(j.id)).collect();
@@ -1353,6 +1599,7 @@ impl<'a> Pass<'a> {
                     self.restart(conn, &a, clock, &mut report)
                 }
                 Effect::Launch(a) => self.launch(&a, clock, &mut report),
+                Effect::PushLaunch(id) => self.push_launch(conn, &id, clock, &mut report),
                 Effect::StartJob(job) => self.start_job(conn, &job, clock, &mut report),
             };
             report.done.extend(done);
@@ -1515,6 +1762,35 @@ impl<'a> Pass<'a> {
         }
     }
 
+    /// Spawn the push attempt `id` through the launcher (ticket 10): the
+    /// spawn decides again on the rows of now, and writes its launch record
+    /// before the process starts, so it is launched at most once.
+    fn push_launch(
+        &mut self,
+        conn: &Connection,
+        id: &str,
+        clock: FleetSeconds,
+        report: &mut PassReport,
+    ) -> Option<Done> {
+        let launches = self.work?.launches;
+        let root = &self.settings.fleet_root;
+        match push::launch(conn, root, clock, id, self.ports.host, launches) {
+            Ok(push::Launch::Launched(started)) => {
+                self.launched.push(started.child);
+                Some(Done::Launch(id.to_string()))
+            }
+            Ok(push::Launch::Done) => None,
+            Ok(push::Launch::Waiting(why)) => {
+                report.failed.push(format!("the launch of attempt {id} waits: {why}"));
+                None
+            }
+            Err(e) => {
+                report.failed.push(format!("the launch of attempt {id}: {e:#}"));
+                None
+            }
+        }
+    }
+
     /// Type the doorbell `bell` into its pane, then mark its event as
     /// typed in `sent` and its file. A doorbell that a crash or an error
     /// lost has no mark: the next pass types it again, and the ladder does
@@ -1658,11 +1934,7 @@ impl Rules<'_> {
     /// The profile of `persona` in the roster of the pass; the design
     /// defaults with no roster or no persona.
     fn profile(&self, persona: Option<&str>) -> Profile {
-        self.pools
-            .zip(persona)
-            .and_then(|(p, name)| p.roster.get(name))
-            .map(|t| t.profile())
-            .unwrap_or_default()
+        profile_of(self.pools.map(|p| p.roster), persona)
     }
 
     fn persona_of(&self, worker: &str) -> Result<Option<String>> {
@@ -1720,10 +1992,7 @@ impl Rules<'_> {
 
     /// The numbers of rung 6 for a task of `persona`.
     fn policy(&self, persona: Option<&str>) -> retry::Policy {
-        retry::Policy {
-            retry: self.profile(persona).retry,
-            replan_limit_s: self.config.replan_limit_s,
-        }
+        retry_policy(self.pools.map(|p| p.roster), self.config, persona)
     }
 
     /// Step 5: rung 6 for each `stalled` task whose old process the pass
@@ -2459,6 +2728,164 @@ fn make_outbox(dir: &Path) -> std::io::Result<()> {
             Ok(())
         }
         r => r,
+    }
+}
+
+/// The profile of `persona` in `roster`; the design defaults with no
+/// roster or no persona.
+fn profile_of(roster: Option<&Roster>, persona: Option<&str>) -> Profile {
+    roster
+        .zip(persona)
+        .and_then(|(r, name)| r.get(name))
+        .map(|t| t.profile())
+        .unwrap_or_default()
+}
+
+/// The numbers of rung 6 for a task of `persona`.
+fn retry_policy(
+    roster: Option<&Roster>,
+    config: &FleetConfig,
+    persona: Option<&str>,
+) -> retry::Policy {
+    retry::Policy {
+        retry: profile_of(roster, persona).retry,
+        replan_limit_s: config.replan_limit_s,
+    }
+}
+
+/// The holds of a dispatch from the global holds `holds` of the pass, at
+/// fleet clock `clock`. A pacing hold of a pool is not here: the spawn of
+/// the attempt refuses a paced pool, as today.
+fn dispatch_holds(holds: &[Hold], clock: FleetSeconds) -> DispatchHolds {
+    DispatchHolds {
+        clock: clock.0,
+        global: holds
+            .iter()
+            .filter_map(|h| h.global().map(|name| format!("{name}: {}", h.cause())))
+            .collect(),
+        ..DispatchHolds::default()
+    }
+}
+
+/// The first heartbeat of the wrapper of a push attempt
+/// (`docs/specs/fleetd/design.md`, the task state table, row `leased`):
+/// the attempt in `launching` goes `live`, and its `leased` task goes
+/// `running` and takes its lease for `lease_s` of the persona of the
+/// attempt. `checkins` are the attempts whose heartbeat this pass used. A
+/// repair attempt of a `done` task only goes `live`: its bind took the
+/// lease.
+fn start_running(
+    tx: &Connection,
+    guard: Option<Generation>,
+    clock: FleetSeconds,
+    checkins: &[String],
+    lease_s: impl Fn(Option<&str>) -> i64,
+) -> Result<()> {
+    for id in checkins {
+        let row: Option<(Option<String>, String, String, Option<String>)> = tx
+            .query_row(
+                "SELECT a.task_id, a.state, a.via, w.persona
+                 FROM attempts a JOIN workers w ON w.worker_id = a.worker_id
+                 WHERE a.id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .optional()?;
+        let Some((Some(task_id), state, via, persona)) = row else {
+            continue;
+        };
+        if via != PUSH {
+            continue;
+        }
+        if state == AttemptState::Launching.as_str() {
+            commands::attempt_live(tx, guard, id, None)?;
+        } else if state != AttemptState::Live.as_str() {
+            continue;
+        }
+        if tasks::get(tx, &task_id)?.status != TaskStatus::Leased.as_str() {
+            continue;
+        }
+        let text = format!("the first heartbeat of the wrapper of attempt {id}");
+        let cause = Cause {
+            actor: Actor::Horch,
+            text: &text,
+        };
+        let to = TaskStatus::Running.as_str();
+        match transition(tx, guard, Entity::Task, &task_id, to, cause, &NeedsYouList) {
+            Ok(_) => lease::take(tx, clock, &task_id, id, lease_s(persona.as_deref()))?,
+            // The door recorded the refusal: only this row fails.
+            Err(DoorError::Refused { .. }) => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
+}
+
+/// The tip of the task branch of each task in `verifying`, of each task of
+/// `results` (a result file of this pass) and of each task whose branch
+/// waits for a repair, by task id: the branch of its tree, or the run
+/// branch for a task of the shared checkout. Each tip is 1 `git rev-parse`
+/// of a local ref, which reads no working tree and no network (PL-5). A
+/// branch that git does not have gives no tip.
+fn task_tips(
+    conn: &Connection,
+    git: &Git,
+    results: &BTreeSet<&str>,
+) -> Result<BTreeMap<String, String>> {
+    let mut stmt = conn.prepare(
+        "SELECT task_id FROM tasks WHERE status = ?1
+         UNION
+         SELECT task_id FROM branches
+         WHERE task_id IS NOT NULL AND landing_state IN (?2, ?3)",
+    )?;
+    let args = (
+        TaskStatus::Verifying.as_str(),
+        LandingState::Conflicted.as_str(),
+        LandingState::GateFailed.as_str(),
+    );
+    let mut ids: BTreeSet<String> = stmt
+        .query_map(args, |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    ids.extend(results.iter().map(|t| t.to_string()));
+    let mut tips = BTreeMap::new();
+    for id in ids {
+        let task = tasks::get(conn, &id)?;
+        let tree = trees::of_task(conn, &id)?
+            .filter(|r| task.uses_worktree() && !WORKTREES_GONE.contains(&r.status));
+        let (repo, branch) = match tree {
+            Some(r) => (r.repo_root, r.branch),
+            None => {
+                let run = runs::get(conn, &task.run_id)?;
+                let Some(branch) = run.run_branch.or(run.base_branch) else {
+                    continue;
+                };
+                (run.project_root, branch)
+            }
+        };
+        let spec = format!("refs/heads/{branch}^{{commit}}");
+        let out = git.try_run(Path::new(&repo), &["rev-parse", "--verify", "--quiet", &spec])?;
+        if out.ok {
+            tips.insert(id, out.stdout.trim().to_string());
+        }
+    }
+    Ok(tips)
+}
+
+/// The `via` of the attempt `id`.
+fn via(conn: &Connection, id: &str) -> Result<String> {
+    conn.query_row("SELECT via FROM attempts WHERE id = ?1", [id], |r| r.get(0))
+        .with_context(|| format!("reading the via of attempt {id}"))
+}
+
+/// Write `task.yaml` and `START.md` of each push attempt in `launching`
+/// that has none. Gives the lines of the writes that failed.
+fn write_task_files(conn: &Connection, root: &Path) -> Vec<String> {
+    match dispatch::write_missing_task_files(conn, root, &[]) {
+        Ok(written) => written
+            .into_iter()
+            .filter_map(|(id, r)| r.err().map(|e| format!("the task files of attempt {id}: {e:#}")))
+            .collect(),
+        Err(e) => vec![format!("the task files: {e:#}")],
     }
 }
 

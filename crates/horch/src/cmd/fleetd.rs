@@ -51,7 +51,7 @@ use horch_core::fleetd::fleet_runtime::application::handlers_custody::{self, Cus
 use horch_core::fleetd::fleet_runtime::application::handlers_task::{self, TaskHandlers};
 use horch_core::fleetd::fleet_runtime::application::handlers_worker::{self, WorkerDeps};
 use horch_core::fleetd::fleet_runtime::application::pass::{
-    Outside, Pass, PassError, PoolFacts, Ports, Settings,
+    Outside, Pass, PassError, PoolFacts, Ports, Settings, TaskWork,
 };
 use horch_core::fleetd::fleet_runtime::application::requests::Handlers;
 use horch_core::fleetd::fleet_runtime::application::{handlers_run, holds};
@@ -61,10 +61,11 @@ use horch_core::fleetd::fleet_runtime::domain::heartbeat::{is_hung, is_older, Ex
 use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
 use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
 use horch_core::fleetd::integration::application::commands::GitRefTips;
-use horch_core::fleetd::task_execution::application::dispatch::CheckSandboxes;
+use horch_core::fleetd::task_execution::application::launch::{Launches, PushLaunch};
 use horch_core::fleetd::task_execution::application::quota::Restart;
 use horch_core::fleetd::task_execution::domain::dispatch::Holds;
 use horch_core::fleetd::task_execution::domain::task::{AttemptRow, InPane};
+use horch_core::fleetd::worker_profiles::adapters::check_sandbox::WorkerSandboxes;
 use horch_core::fleetd::worker_profiles::adapters::launcher::Launcher;
 use horch_core::fleetd::worker_profiles::application::ports::{EnvRule, LaunchSpec, ProcessHost};
 use horch_core::fleetd::worktree_custody::adapters::git::CliWorktreeGit;
@@ -73,6 +74,7 @@ use horch_core::fleetd::worktree_custody::application::reconcile::WorkDir;
 use horch_core::messaging::delivery::{self, TypedLine};
 use horch_core::procid;
 use horch_core::runtime::{Paths, RuntimeContext};
+use horch_core::taskledger::finish::CodexSandbox;
 use horch_core::taskledger::git::Git;
 use horch_core::taskledger::model::RunStatus;
 use horch_core::taskledger::orchestrator;
@@ -662,7 +664,7 @@ fn request_handlers(ctx: &RuntimeContext, settings: &Settings) -> Handlers {
         git: Arc::new(Git::new(&ctx.bins.harness.git)),
         // The holds of today's `horch spawn`: the fleet clock only.
         holds: Arc::new(Holds::default),
-        sandboxes: Arc::new(EverySandbox),
+        sandboxes: Arc::new(check_sandboxes(ctx)),
         lock_holder: Arc::new(move |ws: &str| orchestrator::holder(&lock_dir, ws)),
     };
     handlers_worker::register(&mut handlers, &worker);
@@ -684,14 +686,27 @@ fn request_handlers(ctx: &RuntimeContext, settings: &Settings) -> Handlers {
     handlers
 }
 
-/// Each persona has a check sandbox, as for today's `horch spawn`, until
-/// ticket 18 of Phase 4 gives the check sandbox of each persona on this
-/// host.
-struct EverySandbox;
+/// The check sandbox of each worker on this host (ticket 18 of Phase 4):
+/// Codex for a Codex worker, the platform sandbox for each other worker. A
+/// persona with no check sandbox gets no dispatch (SR-4).
+fn check_sandboxes(ctx: &RuntimeContext) -> WorkerSandboxes {
+    let codex = CodexSandbox {
+        bin: ctx.bins.harness.codex.clone(),
+        state_root: ctx.paths.state_root.clone(),
+        personas: super::taskledger::codex_personas(ctx),
+    };
+    WorkerSandboxes::new(codex, ctx.paths.fleet_root.clone())
+}
 
-impl CheckSandboxes for EverySandbox {
-    fn supported(&self, _persona: &str) -> bool {
-        true
+/// The spawn of each push attempt that fleetd bound:
+/// `horch spawn <persona> --attempt <id>` (ticket 10 of Phase 4).
+struct PushSpawns<'a> {
+    ctx: &'a RuntimeContext,
+}
+
+impl Launches for PushSpawns<'_> {
+    fn spec(&self, l: &PushLaunch) -> Result<LaunchSpec> {
+        super::recipes::push_launch_spec(self.ctx, l)
     }
 }
 
@@ -767,7 +782,17 @@ fn with_pass<T>(
         host: &Launcher,
     };
     let requests = request_handlers(ctx, &settings);
-    let mut pass = Pass::new(settings, ports).with_requests(requests);
+    let tools = super::taskledger::tools(ctx);
+    let sandboxes = check_sandboxes(ctx);
+    let spawns = PushSpawns { ctx };
+    let work = TaskWork {
+        tools: &tools,
+        sandboxes: &sandboxes,
+        launches: &spawns,
+    };
+    let mut pass = Pass::new(settings, ports)
+        .with_requests(requests)
+        .with_task_work(work);
     f(&mut pass, &duties)
 }
 

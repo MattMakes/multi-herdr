@@ -417,4 +417,79 @@ mod tests {
         let after = workers::find(store.conn(), &worker).unwrap().unwrap();
         assert_eq!(after.status, before.status);
     }
+
+    /// `horch ledger watch --once` runs the Phase 4 pass of fleetd: its 1
+    /// pass binds the ready task of a run to a push attempt
+    /// (`docs/tickets/fleetd-p4/46-pass-wiring-dispatch-and-verifier.md`).
+    /// The run has no orchestrator pane, so its spawn waits: the bind is the
+    /// fact that this test reads.
+    #[test]
+    fn watch_once_runs_the_phase4_pass() {
+        use horch_core::runtime::{MapEnv, RuntimeContext};
+        use horch_core::taskledger::model::{Actor, WorktreeMode};
+        use horch_core::taskledger::tasks::{self, NewTask};
+
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
+        let project = dir.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&project)
+                .args(args)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "a"]);
+        let db = dir.join("ledger.sqlite3");
+        let env = MapEnv::new(dir)
+            .with("HORCH_STATE_DIR", dir.join("state").to_str().unwrap())
+            .with("HORCH_DATA_DIR", dir.join("data").to_str().unwrap())
+            .with("HORCH_LEDGER_DB", db.to_str().unwrap())
+            .with("HORCH_HERDR_BIN", dir.join("no-herdr").to_str().unwrap());
+        let ctx = RuntimeContext::from_env(&env).unwrap();
+        let mut store = Store::open(&db).unwrap();
+        let new_run = NewRun {
+            slug: "r1".into(),
+            base_branch: Some("main".into()),
+            ..Default::default()
+        };
+        let (run, task) = store
+            .immediate(|tx| {
+                let run = runs::create(tx, &project, &new_run)?;
+                let mut t = NewTask::work("a", "a.md", "dev");
+                t.worktree_mode = WorktreeMode::Shared;
+                let task = tasks::add(tx, &run, &t, Actor::Orchestrator)?;
+                Ok((run, task.task_id))
+            })
+            .unwrap();
+
+        super::once_report(&ctx, &run, true, true).unwrap();
+
+        // A host with no check sandbox holds the persona (SR-4).
+        if horch_platform::sandbox::host_problem(None).is_some() {
+            let status: String = store
+                .conn()
+                .query_row("SELECT status FROM tasks WHERE task_id = ?1", [&task], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert_eq!(status, "ready", "no check sandbox: no bind");
+            return;
+        }
+        let (status, via): (String, String) = store
+            .conn()
+            .query_row(
+                "SELECT t.status, a.via FROM tasks t JOIN attempts a ON a.task_id = t.task_id
+                 WHERE t.task_id = ?1",
+                [&task],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((status.as_str(), via.as_str()), ("leased", "push"));
+    }
 }
