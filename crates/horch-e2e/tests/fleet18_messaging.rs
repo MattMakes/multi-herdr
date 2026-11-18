@@ -1901,39 +1901,56 @@ fn g70_finish_cli_creates_reviewer_wait_and_background_progress_cli_sets_deadlin
     // stall round reaps (docs/tickets/fleetd-p2/MAP.md, Q14), and the task
     // is verifying: it has no lease and no stall ladder (Q20). Rule D: 1
     // needs-you item names it once the author is quiet for stall_after_s.
-    let finish_idle = |store: &horch_core::taskledger::Store| -> Vec<(String, String)> {
-        let mut stmt = store
-            .conn()
-            .prepare("SELECT key, state FROM needs_you WHERE kind = 'finish_idle' ORDER BY key")
-            .unwrap();
-        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap()
-    };
+    assert_finish_idle_item(&h, &store, &run, &worker, &mut agent);
+    background_progress_cli_sets_deadline();
+}
+
+/// The `needs_you` items of rule D, as (key, state), by key.
+fn finish_idle(store: &horch_core::taskledger::Store) -> Vec<(String, String)> {
+    let mut stmt = store
+        .conn()
+        .prepare("SELECT key, state FROM needs_you WHERE kind = 'finish_idle' ORDER BY key")
+        .unwrap();
+    stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+}
+
+/// Rule D for the verifying task of `worker`, whose wait has ended: the
+/// checks see no progress, the worker stays, 1 needs-you item names the
+/// task, and the item closes when the task leaves verifying.
+fn assert_finish_idle_item(
+    h: &Harness,
+    store: &horch_core::taskledger::Store,
+    run: &horch_core::taskledger::runs::Run,
+    worker: &str,
+    agent: &mut Agent,
+) {
+    use horch_core::taskledger::workers;
     for at in [
         "2030-01-08T00:10:00Z",
         "2030-01-08T00:20:00Z",
         "2030-01-08T00:30:00Z",
         "2030-01-08T00:40:00Z",
     ] {
-        assert_eq!(pinned_check(&h, &run, at)["verdict"], "no_progress");
+        assert_eq!(pinned_check(h, run, at)["verdict"], "no_progress");
     }
     let task: String = store
         .conn()
         .query_row(
             "SELECT task_id FROM workers WHERE worker_id = ?1",
-            [&worker],
+            [worker],
             |r| r.get(0),
         )
         .unwrap();
     assert_eq!(
-        finish_idle(&store),
+        finish_idle(store),
         [(format!("finish_idle:{task}"), "open".to_string())],
         "1 item for the task, not 1 for each pass"
     );
     assert_eq!(
-        workers::get(store.conn(), &worker).unwrap().status,
+        workers::get(store.conn(), worker).unwrap().status,
         "working"
     );
     assert!(matches!(agent.0.try_wait(), Ok(None)), "no pass stops it");
@@ -1945,13 +1962,18 @@ fn g70_finish_cli_creates_reviewer_wait_and_background_progress_cli_sets_deadlin
             [&task],
         )
         .unwrap();
-    pinned_check(&h, &run, "2030-01-08T00:50:00Z");
+    pinned_check(h, run, "2030-01-08T00:50:00Z");
     assert_eq!(
-        finish_idle(&store),
+        finish_idle(store),
         [(format!("finish_idle:{task}"), "resolved".to_string())]
     );
+}
 
-    // The background entry point is exercised independently of injected waits.
+/// The background entry point of `horch ledger progress` sets a deadline,
+/// and a new background wait ends at once when the child of the agent
+/// exits.
+fn background_progress_cli_sets_deadline() {
+    use horch_core::taskledger::workers;
     let (h, store, run, worker, _fake) = pinned_worker("g70-progress-cli");
     let (agent, child) = agent_with_child(&store, &worker);
     let progress = h
