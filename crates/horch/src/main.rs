@@ -595,6 +595,13 @@ enum ToolCommand {
         command: cmd::jobcmd::JobCommand,
     },
 
+    /// The commands of the operator on 1 task: `horch task requeue` and
+    /// `horch task cancel`.
+    Task {
+        #[command(subcommand)]
+        command: cmd::taskcmd::TaskCommand,
+    },
+
     /// Self-verifying checks of the machinery. Run these after installing.
     Smoke {
         #[command(subcommand)]
@@ -1233,6 +1240,7 @@ impl ToolCommand {
             ToolCommand::SelfUpdate { check } => cmd::selfupdate::self_update(ctx, check),
             ToolCommand::Fleetd { command } => cmd::fleetd::fleetd(ctx, command),
             ToolCommand::Job { command } => cmd::jobcmd::job(ctx, command),
+            ToolCommand::Task { command } => cmd::taskcmd::run(ctx, command),
             ToolCommand::Smoke { command } => cmd::smoke::run(ctx, command),
             ToolCommand::Worker { role } => cmd::worker::worker(ctx, &role),
             ToolCommand::PaneLaunch {
@@ -1780,6 +1788,7 @@ mod tests {
             ("self-update", false),
             ("fleetd", false),
             ("job", false),
+            ("task", false),
             ("smoke", false),
             ("worker", true),
             ("pane-launch", true),

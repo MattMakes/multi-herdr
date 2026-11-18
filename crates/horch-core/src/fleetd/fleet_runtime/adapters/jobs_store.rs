@@ -105,6 +105,15 @@ pub fn latest(
     )
 }
 
+/// The newest run of `kind` and `subject`, of any input key.
+pub fn last(conn: &Connection, kind: Kind, subject: &str) -> Result<Option<JobRow>> {
+    one(
+        conn,
+        "WHERE kind = ?1 AND subject = ?2 ORDER BY id DESC LIMIT 1",
+        params![kind.as_str(), subject],
+    )
+}
+
 /// The `queued` runs that may start at `clock`, oldest first.
 pub fn due(conn: &Connection, clock: FleetSeconds) -> Result<Vec<JobRow>> {
     rows(
@@ -228,5 +237,31 @@ mod tests {
             ended_at: Some("e".into()),
         };
         assert_eq!(row, want);
+    }
+
+    #[test]
+    fn last_is_the_newest_run_of_a_kind_and_subject() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        schema::migrate_to(&mut conn, schema::VERSION).unwrap();
+        let run = |subject, input_key, run| NewRun {
+            kind: Kind::TaskCheck,
+            subject,
+            repo: None,
+            input_key,
+            run,
+            abandoned_runs: 0,
+            not_before: None,
+            time_limit_s: 60,
+        };
+        assert_eq!(last(&conn, Kind::TaskCheck, "T-1").unwrap(), None);
+        let first = insert(&conn, &run("T-1", "tip1", 1)).unwrap();
+        // 1 run of a kind and subject is active at a time.
+        conn.execute("UPDATE jobs SET state = 'abandoned' WHERE id = ?1", [first])
+            .unwrap();
+        let newest = insert(&conn, &run("T-1", "tip2", 1)).unwrap();
+        insert(&conn, &run("T-2", "tip3", 1)).unwrap();
+        let row = last(&conn, Kind::TaskCheck, "T-1").unwrap().unwrap();
+        assert_eq!((row.id, row.input_key.as_str()), (newest, "tip2"));
+        assert_eq!(last(&conn, Kind::Push, "T-1").unwrap(), None);
     }
 }

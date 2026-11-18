@@ -113,6 +113,7 @@ in `harness/capabilities.rs`.
 | `skillscmd.rs` | `horch skills` |
 | `smoke.rs` | `horch smoke messaging`, `fleet`, `tile` |
 | `spawn.rs` | `horch spawn` |
+| `taskcmd.rs` | `horch task requeue` and `horch task cancel`; `horch ledger requeue` and `cancel` run the same code |
 | `taskledger.rs` | `horch ledger` (the SQLite task ledger): every subcommand except `legacy` |
 | `taskledger_finish.rs` | `horch ledger finish`: the finish steps in the foreground or detached, and the mail with the result of a detached finish |
 | `taskledger_spawn.rs` | the task-ledger side of `horch spawn`: the worker row and its id in the brief |

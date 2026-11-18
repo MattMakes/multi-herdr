@@ -11,7 +11,12 @@ use std::process::ExitCode;
 
 use anyhow::{bail, Context, Result};
 use clap::{Args, Subcommand};
+use horch_core::fleetd::fleet_runtime::adapters::config_file;
+use horch_core::fleetd::fleet_runtime::application::jobs::JobCtx;
 use horch_core::fleetd::fleet_runtime::domain::ledger::Entity;
+use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
+use horch_core::fleetd::task_execution::application::cancel::{self, Cancel};
+use horch_core::fleetd::task_execution::domain::task::{Facts, Recorded, Seen};
 use horch_core::messaging::delivery;
 use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger::finish::{self, land};
@@ -920,7 +925,8 @@ fn fallback_cmd(
     Ok(ExitCode::SUCCESS)
 }
 
-fn cancel_cmd(
+/// `horch ledger cancel` and `horch task cancel`.
+pub(super) fn cancel_cmd(
     ctx: &RuntimeContext,
     store: &mut Store,
     task: &str,
@@ -929,32 +935,85 @@ fn cancel_cmd(
 ) -> Result<ExitCode> {
     let r = resolve_run(ctx, store, run)?;
     let herdr = HerdrPanes::new(ctx);
-    let t = cancel_and_stop(store, &r, task, reason, &Stopper::real(&herdr))?;
-    wake_dependents(ctx, store, &r, &t)
+    match cancel_and_stop(store, &r, task, reason, &Stopper::real(&herdr))? {
+        Some(t) => wake_dependents(ctx, store, &r, &t),
+        None => Ok(ExitCode::SUCCESS),
+    }
 }
 
-/// Cancel the task, then stop the worker that held it (TRF-36). The cancel
-/// comes first and lets go of the worker, so the stop queues nothing again.
+/// Cancel the task (`docs/specs/fleetd/design.md`, "A cancel"). With a
+/// live attempt, the first transaction ends the attempt and lets go of its
+/// worker, the worker is stopped by its recorded PIDs and pane (TRF-36),
+/// and the task is `cancelled` only when the process of each attempt is
+/// gone. Else the next pass of fleetd completes the cancel, and this gives
+/// `None`. With no live attempt, the task is `cancelled` at once, and a
+/// worker that held it with no attempt row is stopped after.
 fn cancel_and_stop(
     store: &mut Store,
     run: &Run,
     task: &str,
     reason: &str,
     s: &Stopper,
-) -> Result<tasks::Task> {
-    let holder = tasks::resolve(store.conn(), &run.run_id, task)?.current_worker_id;
-    let t = cancel_task(store, run, task, reason)?;
-    output::println(&format!("{} cancelled.", t.short()));
-    let holders: Vec<String> = holder.into_iter().collect();
-    stop_holders(store, &holders, &format!("task cancelled: {reason}"), s)?;
-    Ok(t)
+) -> Result<Option<tasks::Task>> {
+    let asked = store.immediate(|tx| {
+        let t = tasks::resolve(tx, &run.run_id, task)?;
+        cancel::request(tx, &t, reason)
+    })?;
+    let why = format!("task cancelled: {reason}");
+    let (t, held) = match asked {
+        Cancel::Cancelled { task: t, holder } => {
+            output::println(&format!("{} cancelled.", t.short()));
+            let holders: Vec<String> = holder.into_iter().collect();
+            stop_holders(store, &holders, &why, s)?;
+            return Ok(Some(t));
+        }
+        Cancel::Stopping { task: t, held } => (t, held),
+    };
+    let mut live: Vec<String> = held
+        .into_iter()
+        .filter(|h| h.process.is_none_or(|p| runs_now(s.procs, p)))
+        .map(|h| h.worker_id)
+        .collect();
+    live.sort();
+    live.dedup();
+    stop_holders(store, &live, &why, s)?;
+    let facts = seen(&cancel::watched(store.conn(), &t.task_id)?, s.procs);
+    match store.immediate(|tx| cancel::complete(tx, &t.task_id, &facts))? {
+        Some(t) => {
+            output::println(&format!("{} cancelled.", t.short()));
+            Ok(Some(t))
+        }
+        None => {
+            output::println(&format!(
+                "{} is not cancelled yet: a process of its attempt still runs. The next pass of fleetd cancels it when the process is gone.",
+                t.short()
+            ));
+            Ok(None)
+        }
+    }
 }
 
-fn cancel_task(store: &mut Store, run: &Run, task: &str, reason: &str) -> Result<tasks::Task> {
-    store.immediate(|tx| {
-        let t = tasks::resolve(tx, &run.run_id, task)?;
-        tasks::cancel(tx, &t, reason)
-    })
+/// Whether the recorded process `p` runs: by its pid and start time, or
+/// by its pid alone when no start time is recorded.
+fn runs_now(procs: &dyn stop::Processes, p: Recorded) -> bool {
+    match p.pid_start {
+        Some(start) => procs.is_same(p.pid, start),
+        None => procs.exists(p.pid),
+    }
+}
+
+/// What this command sees of each process in `watch`.
+fn seen(watch: &[Recorded], procs: &dyn stop::Processes) -> Facts {
+    let mut facts = Facts::default();
+    for p in watch {
+        let state = if runs_now(procs, *p) {
+            Seen::Alive
+        } else {
+            Seen::Dead
+        };
+        facts.processes.insert(*p, state);
+    }
+    facts
 }
 
 /// Name the tasks that wait for a cancelled task, and wake on them.
@@ -1035,7 +1094,8 @@ fn unblock_cmd(
     Ok(ExitCode::SUCCESS)
 }
 
-fn requeue_cmd(
+/// `horch ledger requeue` and `horch task requeue`.
+pub(super) fn requeue_cmd(
     ctx: &RuntimeContext,
     store: &mut Store,
     task: &str,
@@ -1044,9 +1104,15 @@ fn requeue_cmd(
 ) -> Result<ExitCode> {
     orchestrator_only(ctx, store, "requeue")?;
     let r = resolve_run(ctx, store, run)?;
+    let config = config_file::load(&ctx.paths.fleet_root)?;
+    let jobs = JobCtx {
+        guard: None,
+        config: &config,
+        needs_you: &NeedsYouList,
+    };
     let t = store.immediate(|tx| {
         let t = tasks::resolve(tx, &r.run_id, task)?;
-        tasks::requeue_by_operator(tx, &t, reason)
+        cancel::requeue(tx, &jobs, &t, reason)
     })?;
     output::println(&format!("{} is queued again.", t.short()));
     super::taskledger_wake::nudge_startable(ctx, store, &r);
@@ -3765,12 +3831,51 @@ mod tests {
             "not wanted",
             &stopper(&procs),
         )
-        .unwrap();
+        .unwrap()
+        .expect("the processes are gone, so the task is cancelled");
         assert_eq!(*procs.sent.borrow(), term_to_both());
         assert_eq!(t.status, "cancelled");
         assert_eq!(
             tasks::get(store.conn(), &t.task_id).unwrap().status,
             "cancelled"
+        );
+        assert_eq!(requeues(&store), 0);
+    }
+
+    /// Processes that each run with start time 7 and ignore each signal.
+    struct Stubborn;
+
+    impl stop::Processes for Stubborn {
+        fn is_same(&self, _: u32, started: u64) -> bool {
+            started == 7
+        }
+        fn exists(&self, _: u32) -> bool {
+            true
+        }
+        fn stop_same(&self, _: u32, started: u64, _: horch_core::procid::Stop) -> bool {
+            started == 7
+        }
+    }
+
+    /// The stop comes before the move: while the process of the attempt
+    /// runs, the task is not `cancelled`, and its cancel waits for the pass.
+    #[test]
+    fn a_cancel_whose_process_runs_on_does_not_move_the_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_ctx, mut store, run, c) = running(dir.path());
+        let s = super::Stopper {
+            panes: &Nothing,
+            procs: &Stubborn,
+            opts: fast(),
+        };
+        let t =
+            super::cancel_and_stop(&mut store, &run, &c.task.short(), "not wanted", &s).unwrap();
+        assert_eq!(t, None);
+        let row = tasks::get(store.conn(), &c.task.task_id).unwrap();
+        assert_eq!(row.status, "running");
+        assert_eq!(
+            tasks::cancel_requested(store.conn(), &c.task.task_id).unwrap(),
+            Some("not wanted".to_string())
         );
         assert_eq!(requeues(&store), 0);
     }

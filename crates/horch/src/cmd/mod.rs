@@ -23,6 +23,7 @@ pub mod sessionscmd;
 pub mod skillscmd;
 pub mod smoke;
 pub mod spawn;
+pub mod taskcmd;
 pub mod taskledger;
 pub mod taskledger_finish;
 pub mod taskledger_spawn;

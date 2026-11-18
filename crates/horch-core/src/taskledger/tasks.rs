@@ -1204,7 +1204,12 @@ fn check_claimer(w: &Worker) -> Result<(String, String)> {
 /// that another live, unclaimed worker was spawned for.
 fn pick_task(conn: &Connection, w: &Worker, run_id: &str, persona: &str) -> Result<Option<Task>> {
     let board = Board::load(conn, run_id)?;
-    let startable = board.startable();
+    let cancelling = cancelling(conn, run_id)?;
+    let startable: Vec<&Task> = board
+        .startable()
+        .into_iter()
+        .filter(|t| !cancelling.contains(&t.task_id))
+        .collect();
     if let Some(target) = &w.target_task_id {
         if let Some(t) = startable.iter().find(|t| &t.task_id == target) {
             return Ok(Some((*t).clone()));
@@ -1224,6 +1229,28 @@ fn pick_task(conn: &Connection, w: &Worker, run_id: &str, persona: &str) -> Resu
     Ok(first(predecessor.as_deref())
         .or_else(|| first(None))
         .cloned())
+}
+
+/// The tasks of `run_id` whose cancel waits for the stop of an attempt
+/// (`tasks.cancel_requested`). The claim skips them.
+fn cancelling(conn: &Connection, run_id: &str) -> Result<BTreeSet<String>> {
+    let mut stmt = conn
+        .prepare("SELECT task_id FROM tasks WHERE run_id = ?1 AND cancel_requested IS NOT NULL")?;
+    let ids = stmt
+        .query_map([run_id], |r| r.get(0))?
+        .collect::<rusqlite::Result<BTreeSet<String>>>()?;
+    Ok(ids)
+}
+
+/// The reason of the cancel of task `task_id` that waits for the stop of
+/// an attempt, or `None`. Rung 6 and the claim skip such a task.
+pub fn cancel_requested(conn: &Connection, task_id: &str) -> Result<Option<String>> {
+    let reason = conn.query_row(
+        "SELECT cancel_requested FROM tasks WHERE task_id = ?1",
+        [task_id],
+        |r| r.get(0),
+    )?;
+    Ok(reason)
 }
 
 /// The tasks that other workers of `run_id` were spawned for. A reservation
@@ -1673,7 +1700,8 @@ fn cancel_in(conn: &Connection, task: &Task, reason: &str) -> Result<Task> {
 /// What [`requeue`] did with a task whose worker ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Requeue {
-    /// The task was not running: nothing changed.
+    /// The task was not running, or its cancel waits for the stop of its
+    /// attempt: nothing changed.
     Skipped,
     /// Queued again, first in line, after its backoff (rung 6).
     Queued,
@@ -1730,6 +1758,10 @@ pub fn burn_attempt(
 
 /// The writes of rung 6 for `task`, in the open transaction of `conn`.
 fn rung6_in(conn: &Connection, task: &Task, why: &str, policy: &Policy) -> Result<Requeue> {
+    // A cancelled task is never retried (ticket 13 of fleetd-p2).
+    if cancel_requested(conn, &task.task_id)?.is_some() {
+        return Ok(Requeue::Skipped);
+    }
     // The door releases the lease at the move to ready, failed or
     // escalated. The caller ended the worker row, which marks the old
     // attempt as ending.
@@ -3111,5 +3143,50 @@ mod attempt_tests {
         let w = spawn_for(&mut store, &run, "dev", None);
         assert_eq!(claim_id(&mut store, &w), Some(free.clone()));
         assert_eq!(status_of(&store, &free), "running");
+    }
+
+    fn request_cancel(store: &Store, task_id: &str) {
+        store
+            .conn()
+            .execute(
+                "UPDATE tasks SET cancel_requested = 'dropped' WHERE task_id = ?1",
+                [task_id],
+            )
+            .unwrap();
+    }
+
+    /// Ticket 13 of fleetd-p2: a task whose cancel waits for the stop of
+    /// its attempt is not retried by rung 6.
+    #[test]
+    fn rung_6_skips_a_task_with_a_cancel_requested() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, run) = ledger(dir.path());
+        let task = add_task(&mut store, &run, "a");
+        let w = worker(&mut store, &run);
+        store.immediate(|tx| claim(tx, &w)).unwrap();
+        request_cancel(&store, &task);
+
+        let how = store
+            .immediate(|tx| requeue(tx, &task, "its worker ended"))
+            .unwrap();
+
+        assert_eq!(how, Requeue::Skipped);
+        assert_eq!(status_of(&store, &task), "running");
+        assert_eq!(get(store.conn(), &task).unwrap().attempts, 1);
+    }
+
+    /// Ticket 13 of fleetd-p2: the claim skips a ready task whose cancel
+    /// waits for the stop of an attempt, also for a worker spawned for it.
+    #[test]
+    fn claim_skips_a_task_with_a_cancel_requested() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, run) = ledger(dir.path());
+        let task = add_task(&mut store, &run, "a");
+        request_cancel(&store, &task);
+
+        let w = spawn_for(&mut store, &run, "dev", Some(&task));
+
+        assert_eq!(claim_id(&mut store, &w), None);
+        assert_eq!(status_of(&store, &task), "ready");
     }
 }
