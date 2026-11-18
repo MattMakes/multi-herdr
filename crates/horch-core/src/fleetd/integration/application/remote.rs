@@ -13,6 +13,15 @@
 //! the job (`adapters/exec_fetch.rs`) does the network work outside each
 //! transaction, then records what it saw with [`record_passed`] or
 //! [`record_failed`].
+//!
+//! "Push and pull request results are facts on the feature row": 1 `push`
+//! job pushes the feature branch. Its input key is the feature tip and
+//! `seen_remote_tip` ([`push_key`]), and the push is a compare-and-set on
+//! `seen_remote_tip` (I9, `--force-with-lease`). [`queue_push`] is the rule
+//! of when to push (MAP.md of fleetd-p4, Q21). A passed run records
+//! [`record_push_passed`], a failed run [`record_push_failed`]: a backoff
+//! on the fleet clock, and at `push_failure_limit` failures in a row 1
+//! needs-you item (FM-43).
 
 use anyhow::Result;
 use rusqlite::Connection;
@@ -23,9 +32,12 @@ use crate::fleetd::fleet_runtime::application::jobs::{
 };
 use crate::fleetd::fleet_runtime::application::ledger::Cause;
 use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
-use crate::fleetd::fleet_runtime::domain::jobs::{Kind, State};
+use crate::fleetd::fleet_runtime::domain::config::FleetConfig;
+use crate::fleetd::fleet_runtime::domain::jobs::{self as job_rules, Kind, State};
 use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
-use crate::fleetd::integration::adapters::sqlite::{self as rows, FeatureFact};
+use crate::fleetd::integration::adapters::sqlite::{
+    self as rows, BranchFact, BranchRow, FeatureFact, FeatureRow,
+};
 use crate::fleetd::integration::domain::project::Remote;
 use crate::taskledger::model::Actor;
 
@@ -199,6 +211,211 @@ fn record_pr(
     Ok(())
 }
 
+// ─── push ───────────────────────────────────────────────────────────────
+
+/// The kind of the needs-you item of a push that failed
+/// `push_failure_limit` times in a row.
+pub const PUSH_FAILED_KIND: &str = "push_failed";
+
+/// The key of the needs-you item of the failed pushes of `feature`.
+pub fn push_failed_key(feature: &str) -> String {
+    format!("{PUSH_FAILED_KIND}:{feature}")
+}
+
+/// The word of the input key for "no `seen_remote_tip`": the remote has no
+/// branch that fleetd saw.
+const NO_REMOTE_TIP: &str = "none";
+
+/// The input of 1 push: the tip to push, the remote tip that fleetd last
+/// saw (the lease), and the remote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PushInput {
+    pub tip: String,
+    /// `None`: the remote must not have the branch.
+    pub seen: Option<String>,
+    pub remote: String,
+}
+
+impl PushInput {
+    /// The input of the push input key `key`, as [`push_key`] writes it.
+    pub fn parse(key: &str) -> Option<PushInput> {
+        let mut parts = key.splitn(3, ' ');
+        let (tip, seen, remote) = (parts.next()?, parts.next()?, parts.next()?);
+        if tip.is_empty() || seen.is_empty() || remote.is_empty() {
+            return None;
+        }
+        Some(PushInput {
+            tip: tip.to_string(),
+            seen: (seen != NO_REMOTE_TIP).then(|| seen.to_string()),
+            remote: remote.to_string(),
+        })
+    }
+}
+
+/// The input key of the push of `tip` to `remote` with the lease `seen`
+/// ("The kinds of job": the feature tip and `seen_remote_tip`).
+pub fn push_key(remote: &str, tip: &str, seen: Option<&str>) -> String {
+    format!("{tip} {} {remote}", seen.unwrap_or(NO_REMOTE_TIP))
+}
+
+/// The tip to push of the feature `feature` with the branch row `branch`
+/// at `clock`, or `None`. The local tip (`seen_tip`) is pushed when it is
+/// not `seen_remote_tip`, the feature is `ready`, has an open pull request
+/// or was just rebased (Q21), and its push backoff has ended.
+pub fn push_due<'a>(
+    feature: &FeatureRow,
+    branch: &'a BranchRow,
+    rebased: bool,
+    clock: FleetSeconds,
+) -> Option<&'a str> {
+    let tip = branch.seen_tip.as_deref()?;
+    if branch.seen_remote_tip.as_deref() == Some(tip) {
+        return None;
+    }
+    let wanted = rebased || feature.state == "ready" || feature.pr_state == "open";
+    let waits = feature.push_not_before.is_some_and(|end| clock.0 < end);
+    (wanted && !waits).then_some(tip)
+}
+
+/// The push rule: queue a run of the push of `feature` of the repository
+/// `repo` when [`push_due`] gives a tip at `clock`, in `tx`. `remote` is
+/// the remote of the project file, and `rebased` is `true` after a rebase
+/// of the feature branch (ticket 41). `None` when nothing is due, and
+/// always with `remote = none`.
+pub fn queue_push(
+    ctx: &JobCtx<'_>,
+    tx: &Connection,
+    repo: &str,
+    feature: &str,
+    remote: &Remote,
+    rebased: bool,
+    clock: FleetSeconds,
+) -> Result<Option<Queued>> {
+    let Remote::Named(name) = remote else {
+        return Ok(None);
+    };
+    let Some(f) = rows::feature(tx, feature)? else {
+        return Ok(None);
+    };
+    let Some(b) = f
+        .branch
+        .as_deref()
+        .map(|n| rows::branch(tx, n))
+        .transpose()?
+        .flatten()
+    else {
+        return Ok(None);
+    };
+    let Some(tip) = push_due(&f, &b, rebased, clock) else {
+        return Ok(None);
+    };
+    let input_key = push_key(name, tip, b.seen_remote_tip.as_deref());
+    let key = JobKey {
+        kind: Kind::Push,
+        subject: feature,
+        input_key: &input_key,
+    };
+    jobs::queue(ctx, tx, &key, Some(repo), clock).map(Some)
+}
+
+/// Record the passed push of `tip` of `feature`, in `tx`: `seen_remote_tip`
+/// is `tip`, `push_state` is `ok`, the failures and the backoff end, and so
+/// does the needs-you item of the failed pushes.
+pub fn record_push_passed(
+    tx: &Connection,
+    guard: Option<Generation>,
+    needs_you: &dyn NeedsYouItems,
+    feature: &str,
+    tip: &str,
+) -> Result<()> {
+    let f = feature_row(tx, feature)?;
+    if let Some(branch) = f.branch.as_deref() {
+        let why = format!("the push job pushed {tip}");
+        rows::set_branch_fact(
+            tx,
+            guard,
+            branch,
+            BranchFact::SeenRemoteTip(tip),
+            cause(&why),
+        )?;
+    }
+    let why = "the push job passed";
+    if f.push_state.as_deref() != Some("ok") {
+        rows::set_feature_fact(tx, guard, feature, FeatureFact::PushState("ok"), cause(why))?;
+    }
+    if f.push_failures != 0 {
+        rows::set_feature_fact(tx, guard, feature, FeatureFact::PushFailures(0), cause(why))?;
+    }
+    if f.push_not_before.is_some() {
+        rows::set_feature_fact(
+            tx,
+            guard,
+            feature,
+            FeatureFact::PushNotBefore(None),
+            cause(why),
+        )?;
+    }
+    needs_you.resolve_item(tx, &push_failed_key(feature))?;
+    Ok(())
+}
+
+/// Record the failed push of `feature` at `clock`, in `tx`, for the reason
+/// `why`: `push_state` is `failed`, `push_failures` grows by 1, and
+/// `push_not_before` is the end of its backoff (`job_backoff_s`). At
+/// `push_failure_limit` failures in a row, 1 needs-you item is open.
+/// `seen_remote_tip` stays: a remote that moved is not overwritten later.
+pub fn record_push_failed(
+    tx: &Connection,
+    guard: Option<Generation>,
+    needs_you: &dyn NeedsYouItems,
+    config: &FleetConfig,
+    feature: &str,
+    clock: FleetSeconds,
+    why: &str,
+) -> Result<()> {
+    let f = feature_row(tx, feature)?;
+    let failures = f.push_failures.saturating_add(1);
+    let n = u64::try_from(failures).unwrap_or(u64::MAX);
+    let end = job_rules::deadline(clock, job_rules::backoff_s(&config.job_backoff_s, n));
+    let text = format!("the push job failed: {why}");
+    if f.push_state.as_deref() != Some("failed") {
+        rows::set_feature_fact(
+            tx,
+            guard,
+            feature,
+            FeatureFact::PushState("failed"),
+            cause(&text),
+        )?;
+    }
+    for fact in [
+        FeatureFact::PushFailures(failures),
+        FeatureFact::PushNotBefore(Some(end.0)),
+    ] {
+        rows::set_feature_fact(tx, guard, feature, fact, cause(&text))?;
+    }
+    if n >= config.push_failure_limit {
+        let text = format!(
+            "The push of feature {feature} failed {failures} times in a row. \
+             The last failure: {why}. fleetd tries again after each backoff."
+        );
+        needs_you.open_item(
+            tx,
+            &NewItem {
+                key: &push_failed_key(feature),
+                kind: PUSH_FAILED_KIND,
+                entity: Entity::Feature,
+                entity_id: feature,
+                text: &text,
+            },
+        )?;
+    }
+    Ok(())
+}
+
+fn feature_row(tx: &Connection, feature: &str) -> Result<FeatureRow> {
+    rows::feature(tx, feature)?.ok_or_else(|| anyhow::anyhow!("no feature {feature} in the ledger"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,6 +441,97 @@ mod tests {
             started_at: None,
             ended_at: None,
         }
+    }
+
+    fn feature(state: &str, pr_state: &str, not_before: Option<i64>) -> FeatureRow {
+        FeatureRow {
+            id: "F-1".into(),
+            name: None,
+            branch: Some("b".into()),
+            primary_branch: "main".into(),
+            stacked_on: None,
+            state: state.into(),
+            pr: None,
+            push_state: None,
+            push_failures: 0,
+            push_not_before: not_before,
+            pr_state: pr_state.into(),
+            created_at: "now".into(),
+            updated_at: "now".into(),
+        }
+    }
+
+    fn branch(seen_tip: Option<&str>, seen_remote_tip: Option<&str>) -> BranchRow {
+        BranchRow {
+            name: "b".into(),
+            feature_id: "F-1".into(),
+            task_id: None,
+            landing_state: None,
+            owner: "fleetd".into(),
+            due_at: 0,
+            queue_seq: None,
+            repair_attempts: 0,
+            rescue_ref: None,
+            seen_tip: seen_tip.map(Into::into),
+            seen_remote_tip: seen_remote_tip.map(Into::into),
+            orphan: false,
+        }
+    }
+
+    #[test]
+    fn a_push_is_due_for_a_new_tip_of_a_ready_feature_an_open_pr_or_a_rebase() {
+        let at = FleetSeconds(100);
+        let new = branch(Some("b2"), Some("b1"));
+        assert_eq!(
+            push_due(&feature("ready", "none", None), &new, false, at),
+            Some("b2")
+        );
+        assert_eq!(
+            push_due(&feature("open", "open", None), &new, false, at),
+            Some("b2")
+        );
+        assert_eq!(
+            push_due(&feature("open", "none", None), &new, true, at),
+            Some("b2")
+        );
+        assert_eq!(
+            push_due(&feature("open", "none", None), &new, false, at),
+            None
+        );
+        // The remote has the tip, or fleetd saw no local tip.
+        let same = branch(Some("b1"), Some("b1"));
+        assert_eq!(
+            push_due(&feature("ready", "open", None), &same, true, at),
+            None
+        );
+        let none = branch(None, None);
+        assert_eq!(
+            push_due(&feature("ready", "open", None), &none, true, at),
+            None
+        );
+        // The backoff of a failed push.
+        assert_eq!(
+            push_due(&feature("ready", "none", Some(101)), &new, false, at),
+            None
+        );
+        assert_eq!(
+            push_due(&feature("ready", "none", Some(100)), &new, false, at),
+            Some("b2")
+        );
+    }
+
+    #[test]
+    fn a_push_key_names_the_tip_the_lease_and_the_remote() {
+        let key = push_key("origin", "t", Some("s"));
+        let input = PushInput::parse(&key).unwrap();
+        assert_eq!(
+            (input.tip.as_str(), input.seen.as_deref()),
+            ("t", Some("s"))
+        );
+        assert_eq!(input.remote, "origin");
+        let first = PushInput::parse(&push_key("up", "t", None)).unwrap();
+        assert_eq!(first.seen, None);
+        assert_eq!(PushInput::parse("t s"), None);
     }
 
     #[test]

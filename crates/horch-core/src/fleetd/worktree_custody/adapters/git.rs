@@ -819,7 +819,7 @@ pub(crate) fn private_folder(folder: &Path) -> Result<()> {
 /// `git config --list --show-origin --show-scope -z`, with its origin. Each
 /// record is `<scope>\0<origin>\0<key>\n<value>\0`; a key with no value has
 /// no `\n`.
-fn project_program(text: &str) -> Option<(String, String)> {
+pub(crate) fn project_program(text: &str) -> Option<(String, String)> {
     let parts: Vec<&str> = text.split('\0').collect();
     parts.chunks_exact(3).find_map(|rec| {
         let (scope, origin, pair) = (rec[0], rec[1], rec[2]);
