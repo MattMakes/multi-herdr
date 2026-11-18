@@ -41,8 +41,8 @@
 //! sweep and [`finish_pane`] handle that layout too; the Rust `prime-agent`
 //! cannot name or stop such a daemon, so horch leaves a live one running.
 
+use horch_platform::start::Command;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::SystemTime;
 
 use anyhow::{Context, Result};
@@ -272,7 +272,7 @@ impl Daemon {
     /// ends that worker; the stop must not end with it (live check X2:
     /// prime-6). horch waits for it, so it is not a background job.
     fn shutdown(&self) -> Stop {
-        let mut cmd = Command::new(&self.bin);
+        let mut cmd = horch_platform::start::command(&self.bin);
         cmd.args(["shutdown", "--force", "--json"])
             .env("TMPDIR", self.tmpdir())
             .stdin(std::process::Stdio::null())
@@ -324,7 +324,7 @@ impl Daemon {
     /// The pid of the Prime daemon listening on this launch's socket, from
     /// `TMPDIR=<launch>/ prime-agent status --json`.
     fn daemon_pid(&self) -> Option<i32> {
-        let mut cmd = Command::new(&self.bin);
+        let mut cmd = horch_platform::start::command(&self.bin);
         cmd.args(["status", "--json"])
             .env("TMPDIR", self.tmpdir())
             .stdin(std::process::Stdio::null())
@@ -501,7 +501,7 @@ fn terminate(pid: i32, started: Option<u64>) {
         _ if horch_platform::rest::STATUS_HAS_START_TIMES => return,
         _ => {}
     }
-    let _ = Command::new("taskkill")
+    let _ = horch_platform::start::command("taskkill")
         .args(["/PID", &pid.to_string(), "/T"])
         .status();
 }

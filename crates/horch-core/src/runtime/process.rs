@@ -140,6 +140,7 @@ pub trait ChildCommand: start::Start {
     /// Each variable that the command sets (`Some`) or removes (`None`).
     fn env_changes(&self) -> Vec<(OsString, Option<OsString>)>;
     fn remove_env(&mut self, key: &OsStr);
+    fn set_env(&mut self, key: &OsStr, value: &OsStr);
     fn start(&mut self) -> std::io::Result<Child>;
 }
 
@@ -151,6 +152,9 @@ impl ChildCommand for start::Command {
     }
     fn remove_env(&mut self, key: &OsStr) {
         self.env_remove(key);
+    }
+    fn set_env(&mut self, key: &OsStr, value: &OsStr) {
+        self.env(key, value);
     }
     fn start(&mut self) -> std::io::Result<Child> {
         self.spawn()
@@ -165,6 +169,9 @@ impl ChildCommand for Command {
     }
     fn remove_env(&mut self, key: &OsStr) {
         self.env_remove(key);
+    }
+    fn set_env(&mut self, key: &OsStr, value: &OsStr) {
+        self.env(key, value);
     }
     fn start(&mut self) -> std::io::Result<Child> {
         self.spawn()
@@ -212,12 +219,13 @@ fn scrub_repo_env(cmd: &mut impl ChildCommand) {
 /// This is what inheriting them from the parent used to mean: a value the
 /// builder put on the command itself always won over the parent's. A
 /// forbidden key never gets through.
-pub(crate) fn inherit_env<K, V>(cmd: &mut Command, vars: impl IntoIterator<Item = (K, V)>)
+pub(crate) fn inherit_env<C, K, V>(cmd: &mut C, vars: impl IntoIterator<Item = (K, V)>)
 where
+    C: ChildCommand,
     K: AsRef<OsStr>,
     V: AsRef<OsStr>,
 {
-    let taken: Vec<OsString> = cmd.get_envs().map(|(k, _)| k.to_os_string()).collect();
+    let taken: Vec<OsString> = cmd.env_changes().into_iter().map(|(k, _)| k).collect();
     for (key, value) in vars {
         let key = key.as_ref();
         if taken.iter().any(|t| t == key)
@@ -227,7 +235,7 @@ where
         {
             continue;
         }
-        cmd.env(key, value);
+        cmd.set_env(key, value.as_ref());
     }
 }
 

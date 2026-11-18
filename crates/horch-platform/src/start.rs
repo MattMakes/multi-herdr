@@ -77,6 +77,18 @@ impl Command {
         self.0.get_envs()
     }
 
+    pub fn get_program(&self) -> &OsStr {
+        self.0.get_program()
+    }
+
+    pub fn get_args(&self) -> std::process::CommandArgs<'_> {
+        self.0.get_args()
+    }
+
+    pub fn get_current_dir(&self) -> Option<&Path> {
+        self.0.get_current_dir()
+    }
+
     pub fn current_dir(&mut self, dir: impl AsRef<Path>) -> &mut Self {
         self.0.current_dir(dir);
         self

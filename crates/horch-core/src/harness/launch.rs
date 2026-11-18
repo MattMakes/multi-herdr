@@ -6,10 +6,11 @@
 //! nowhere in any file. Everything below is derived from the teammate's
 //! frontmatter; nothing is hard-coded per call site.
 
+use horch_platform::start::Command;
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -2871,7 +2872,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn an_agent_launch_drops_the_git_repository_variables() {
-        let out = Command::new(std::env::current_exe().unwrap())
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
                 "harness::launch::tests::git_env_agent_launch_child",

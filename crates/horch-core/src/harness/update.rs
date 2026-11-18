@@ -32,8 +32,9 @@
 //! server, and that closes every pane. [`run_herdr_update`] runs it only on
 //! the operator's request, attached to the operator's terminal.
 
+use horch_platform::start::Command;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Child, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -279,7 +280,7 @@ fn locked_update(
         }
     }
     let before = probe_version(job.bin).version();
-    let mut cmd = Command::new(job.bin);
+    let mut cmd = horch_platform::start::command(job.bin);
     cmd.args(job.args);
     if days > 0 {
         cmd.envs(cooldown::child_env(now, days));
@@ -652,7 +653,7 @@ fn skip_osc(chars: &mut std::iter::Peekable<impl Iterator<Item = char>>) {
 /// status is herdr's.
 pub fn run_herdr_update(ctx: &RuntimeContext) -> Result<ExitStatus> {
     let bin = &ctx.bins.harness.herdr;
-    let mut cmd = Command::new(bin);
+    let mut cmd = horch_platform::start::command(bin);
     cmd.arg("update");
     process::scrub_child_env(&mut cmd);
     cmd.stdin(Stdio::inherit())
@@ -828,7 +829,7 @@ mod tests {
         /// The pids of live processes whose command line names this
         /// updater's script.
         fn live_updaters(&self) -> Vec<u32> {
-            let out = Command::new("pgrep")
+            let out = std::process::Command::new("pgrep")
                 .arg("-f")
                 .arg(self.dir.path().join("codex"))
                 .output()
@@ -876,7 +877,7 @@ mod tests {
     /// A `sleep 60` in its own process group: a live updater stand-in.
     #[cfg(unix)]
     fn sleeper() -> (std::process::Child, StopGroupOnDrop) {
-        let mut cmd = Command::new("sleep");
+        let mut cmd = std::process::Command::new("sleep");
         cmd.arg("60");
         std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
         let child = cmd.spawn().unwrap();
@@ -1038,7 +1039,7 @@ mod tests {
 
         // An updater that ended unseen: the fleet step counts its start as
         // the last check and removes the mark.
-        let mut ended = Command::new("true").spawn().unwrap();
+        let mut ended = std::process::Command::new("true").spawn().unwrap();
         ended.wait().unwrap();
         let at = now - chrono::TimeDelta::hours(1);
         fake.mark_running(ended.id(), None, at);
@@ -1175,7 +1176,7 @@ mod tests {
         let fake = FakeUpdater::new(0, 0, 20_000);
         std::fs::create_dir_all(fake.dir.path().join("home/.local/state/horch/update")).unwrap();
         for suffix in ["running", "checked"] {
-            let made = Command::new("mkfifo")
+            let made = std::process::Command::new("mkfifo")
                 .arg(fake.file(suffix))
                 .status()
                 .unwrap();

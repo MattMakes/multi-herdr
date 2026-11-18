@@ -8,8 +8,8 @@
 //! then built from the session, with no model call, and keeps horch's
 //! keep-list. The operator's `~/.pi/agent` is not read or written.
 
+use horch_platform::start::Command;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{Context as _, Result};
 use sha2::{Digest as _, Sha256};
@@ -133,7 +133,7 @@ pub(super) fn pi_family_command(
     prompt: &str,
     model_override: Option<&str>,
 ) -> Result<Command> {
-    let mut cmd = Command::new(bin);
+    let mut cmd = horch_platform::start::command(bin);
     cmd.arg("--model").arg(model_for(teammate, model_override)?);
 
     if let Some(effort) = &teammate.effort {

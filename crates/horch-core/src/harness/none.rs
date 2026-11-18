@@ -1,8 +1,8 @@
 //! `agent: none`: the smoke teammate, which exercises the machinery and
 //! launches no CLI.
 
+use horch_platform::start::Command;
 use std::path::Path;
-use std::process::Command;
 
 use anyhow::{bail, Result};
 

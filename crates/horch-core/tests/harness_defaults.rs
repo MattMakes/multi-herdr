@@ -3,9 +3,9 @@
 //! No real harness binary and no herdr: each test builds the command and
 //! reads its argv and env.
 
+use horch_platform::start::Command;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use horch_core::harness::codex::codex_config_value;
 use horch_core::harness::launch::{self, teammate_env, FORBIDDEN_ENV};

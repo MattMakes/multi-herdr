@@ -2728,6 +2728,305 @@
         "via": null
       }
     },
+    "idea-lead|exact|advise": {
+      "decision": {
+        "decision": "spawn",
+        "note": "claude pool tight (7d 88%, pace 1.9x, resets Fri 14:00Z). Fallback codex-sol is ok.",
+        "teammate": "idea-lead"
+      },
+      "resolved": {
+        "agent": "claude",
+        "effort": "medium",
+        "model": "opus",
+        "name": "idea-lead"
+      },
+      "route_json": {
+        "decision": "spawn",
+        "line": "NOTE: claude pool tight (7d 88%, pace 1.9x, resets Fri 14:00Z). Fallback codex-sol is ok.",
+        "mode": "advise",
+        "pools": [
+          {
+            "detail": "7d 88%, pace 1.9x, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "tight"
+          },
+          {
+            "detail": "7d 12%, resets Sat 19:16Z",
+            "pool": "codex",
+            "state": "ok"
+          }
+        ],
+        "reason": "claude pool tight (7d 88%, pace 1.9x, resets Fri 14:00Z). Fallback codex-sol is ok.",
+        "teammate": "idea-lead",
+        "via": null
+      }
+    },
+    "idea-lead|exact|auto": {
+      "decision": {
+        "decision": "spawn",
+        "note": "claude pool tight (7d 88%, pace 1.9x, resets Fri 14:00Z). Fallback codex-sol is ok.",
+        "teammate": "idea-lead"
+      },
+      "resolved": {
+        "agent": "claude",
+        "effort": "medium",
+        "model": "opus",
+        "name": "idea-lead"
+      },
+      "route_json": {
+        "decision": "spawn",
+        "line": "NOTE: claude pool tight (7d 88%, pace 1.9x, resets Fri 14:00Z). Fallback codex-sol is ok.",
+        "mode": "auto",
+        "pools": [
+          {
+            "detail": "7d 88%, pace 1.9x, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "tight"
+          },
+          {
+            "detail": "7d 12%, resets Sat 19:16Z",
+            "pool": "codex",
+            "state": "ok"
+          }
+        ],
+        "reason": "claude pool tight (7d 88%, pace 1.9x, resets Fri 14:00Z). Fallback codex-sol is ok.",
+        "teammate": "idea-lead",
+        "via": null
+      }
+    },
+    "idea-lead|exact|off": {
+      "decision": {
+        "decision": "spawn",
+        "note": null,
+        "teammate": "idea-lead"
+      },
+      "resolved": {
+        "agent": "claude",
+        "effort": "medium",
+        "model": "opus",
+        "name": "idea-lead"
+      },
+      "route_json": {
+        "decision": "spawn",
+        "line": null,
+        "mode": "off",
+        "pools": [
+          {
+            "detail": "7d 88%, pace 1.9x, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "tight"
+          },
+          {
+            "detail": "7d 12%, resets Sat 19:16Z",
+            "pool": "codex",
+            "state": "ok"
+          }
+        ],
+        "reason": null,
+        "teammate": "idea-lead",
+        "via": null
+      }
+    },
+    "idea-lead|force|advise": {
+      "decision": {
+        "decision": "spawn",
+        "note": "claude pool tight (7d 88%, pace 1.9x, resets Fri 14:00Z). Fallback codex-sol is ok.",
+        "teammate": "idea-lead"
+      },
+      "resolved": {
+        "agent": "claude",
+        "effort": "medium",
+        "model": "opus",
+        "name": "idea-lead"
+      },
+      "route_json": {
+        "decision": "spawn",
+        "line": "NOTE: claude pool tight (7d 88%, pace 1.9x, resets Fri 14:00Z). Fallback codex-sol is ok.",
+        "mode": "advise",
+        "pools": [
+          {
+            "detail": "7d 88%, pace 1.9x, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "tight"
+          },
+          {
+            "detail": "7d 12%, resets Sat 19:16Z",
+            "pool": "codex",
+            "state": "ok"
+          }
+        ],
+        "reason": "claude pool tight (7d 88%, pace 1.9x, resets Fri 14:00Z). Fallback codex-sol is ok.",
+        "teammate": "idea-lead",
+        "via": null
+      }
+    },
+    "idea-lead|force|auto": {
+      "decision": {
+        "decision": "substitute",
+        "original": "idea-lead",
+        "reason": "claude 7d 88%, resets 2026-10-02T14:00Z",
+        "via": "codex-sol"
+      },
+      "resolved": {
+        "agent": "codex",
+        "effort": "medium",
+        "model": "gpt-5.6-sol",
+        "name": "idea-lead"
+      },
+      "route_json": {
+        "decision": "substitute",
+        "line": "SUBSTITUTED: idea-lead runs on codex-sol. Reason: claude 7d 88%, resets 2026-10-02T14:00Z.",
+        "mode": "auto",
+        "pools": [
+          {
+            "detail": "7d 88%, pace 1.9x, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "tight"
+          },
+          {
+            "detail": "7d 12%, resets Sat 19:16Z",
+            "pool": "codex",
+            "state": "ok"
+          }
+        ],
+        "reason": "claude 7d 88%, resets 2026-10-02T14:00Z",
+        "teammate": "idea-lead",
+        "via": "codex-sol"
+      }
+    },
+    "idea-lead|force|off": {
+      "decision": {
+        "decision": "spawn",
+        "note": null,
+        "teammate": "idea-lead"
+      },
+      "resolved": {
+        "agent": "claude",
+        "effort": "medium",
+        "model": "opus",
+        "name": "idea-lead"
+      },
+      "route_json": {
+        "decision": "spawn",
+        "line": null,
+        "mode": "off",
+        "pools": [
+          {
+            "detail": "7d 88%, pace 1.9x, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "tight"
+          },
+          {
+            "detail": "7d 12%, resets Sat 19:16Z",
+            "pool": "codex",
+            "state": "ok"
+          }
+        ],
+        "reason": null,
+        "teammate": "idea-lead",
+        "via": null
+      }
+    },
+    "idea-lead|none|advise": {
+      "decision": {
+        "decision": "spawn",
+        "note": "claude pool tight (7d 88%, pace 1.9x, resets Fri 14:00Z). Fallback codex-sol is ok.",
+        "teammate": "idea-lead"
+      },
+      "resolved": {
+        "agent": "claude",
+        "effort": "medium",
+        "model": "opus",
+        "name": "idea-lead"
+      },
+      "route_json": {
+        "decision": "spawn",
+        "line": "NOTE: claude pool tight (7d 88%, pace 1.9x, resets Fri 14:00Z). Fallback codex-sol is ok.",
+        "mode": "advise",
+        "pools": [
+          {
+            "detail": "7d 88%, pace 1.9x, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "tight"
+          },
+          {
+            "detail": "7d 12%, resets Sat 19:16Z",
+            "pool": "codex",
+            "state": "ok"
+          }
+        ],
+        "reason": "claude pool tight (7d 88%, pace 1.9x, resets Fri 14:00Z). Fallback codex-sol is ok.",
+        "teammate": "idea-lead",
+        "via": null
+      }
+    },
+    "idea-lead|none|auto": {
+      "decision": {
+        "decision": "substitute",
+        "original": "idea-lead",
+        "reason": "claude 7d 88%, resets 2026-10-02T14:00Z",
+        "via": "codex-sol"
+      },
+      "resolved": {
+        "agent": "codex",
+        "effort": "medium",
+        "model": "gpt-5.6-sol",
+        "name": "idea-lead"
+      },
+      "route_json": {
+        "decision": "substitute",
+        "line": "SUBSTITUTED: idea-lead runs on codex-sol. Reason: claude 7d 88%, resets 2026-10-02T14:00Z.",
+        "mode": "auto",
+        "pools": [
+          {
+            "detail": "7d 88%, pace 1.9x, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "tight"
+          },
+          {
+            "detail": "7d 12%, resets Sat 19:16Z",
+            "pool": "codex",
+            "state": "ok"
+          }
+        ],
+        "reason": "claude 7d 88%, resets 2026-10-02T14:00Z",
+        "teammate": "idea-lead",
+        "via": "codex-sol"
+      }
+    },
+    "idea-lead|none|off": {
+      "decision": {
+        "decision": "spawn",
+        "note": null,
+        "teammate": "idea-lead"
+      },
+      "resolved": {
+        "agent": "claude",
+        "effort": "medium",
+        "model": "opus",
+        "name": "idea-lead"
+      },
+      "route_json": {
+        "decision": "spawn",
+        "line": null,
+        "mode": "off",
+        "pools": [
+          {
+            "detail": "7d 88%, pace 1.9x, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "tight"
+          },
+          {
+            "detail": "7d 12%, resets Sat 19:16Z",
+            "pool": "codex",
+            "state": "ok"
+          }
+        ],
+        "reason": null,
+        "teammate": "idea-lead",
+        "via": null
+      }
+    },
     "opencode-lightning|exact|advise": {
       "decision": {
         "decision": "spawn",

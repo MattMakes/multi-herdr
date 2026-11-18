@@ -4,8 +4,8 @@
 //! decided. Temp homes with hand-written settings files; no real CLI and no
 //! machine settings (the managed-settings path is a temp path).
 
+use horch_platform::start::Command;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use horch_core::compaction::window::{WindowDecision, WindowSource};
 use horch_core::execution::legacy::{LedgerRecordV1, LedgerWindow, LedgerWindowSource};

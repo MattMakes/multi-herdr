@@ -19,9 +19,10 @@
 //! The alternative - appending to the shared `rules/default.rules` - grants
 //! every codex session on the machine whatever any fleet ever needed, forever.
 
+use horch_platform::start::Command;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Child, ExitStatus, Stdio};
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{bail, Context, Result};
@@ -66,7 +67,7 @@ pub fn codex_home(home: &Path, codex_home_var: Option<&Path>) -> PathBuf {
 /// v1 multi-agent protocol. Codex otherwise exposes v2 collaboration tools
 /// even when `features.multi_agent=false`.
 pub(crate) fn write_v1_catalog(codex_bin: &Path, state_root: &Path) -> Result<PathBuf> {
-    let mut cmd = Command::new(codex_bin);
+    let mut cmd = horch_platform::start::command(codex_bin);
     cmd.args(["debug", "models"]);
     let output = run_with_deadline(cmd, Duration::from_secs(5))?;
     if !output.status.success() {
@@ -1278,7 +1279,7 @@ impl CodexFacts {
     /// leaves its fact unknown, and an unknown fact does not hold.
     pub fn probe(bin: &Path) -> CodexFacts {
         let stdout = |args: &[&str]| {
-            let mut cmd = Command::new(bin);
+            let mut cmd = horch_platform::start::command(bin);
             cmd.args(args);
             run_with_deadline(cmd, FACTS_PROBE_TIMEOUT)
                 .ok()
@@ -1638,7 +1639,7 @@ pub(super) fn codex_command(
 ) -> Result<Command> {
     let bin = env.bins.codex.clone();
     let model = format!("model=\"{}\"", model_for(teammate, model_override)?);
-    let mut cmd = Command::new(&bin);
+    let mut cmd = horch_platform::start::command(&bin);
 
     // `resume` is a subcommand, so it has to lead.
     if let Session::Resume(_) = session {
@@ -2033,7 +2034,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let slow = fake_codex(tmp.path(), "slow", "sleep 30");
         let started = Instant::now();
-        let err = run_with_deadline(Command::new(&slow), Duration::from_millis(300)).unwrap_err();
+        let err = run_with_deadline(
+            horch_platform::start::command(&slow),
+            Duration::from_millis(300),
+        )
+        .unwrap_err();
         assert_eq!(err.to_string(), "codex debug models timed out after 0s");
         assert!(started.elapsed() < Duration::from_secs(20));
     }

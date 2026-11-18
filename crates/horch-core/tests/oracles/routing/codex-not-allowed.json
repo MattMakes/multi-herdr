@@ -2770,6 +2770,303 @@
         "via": null
       }
     },
+    "idea-lead|exact|advise": {
+      "decision": {
+        "decision": "spawn",
+        "note": null,
+        "teammate": "idea-lead"
+      },
+      "resolved": {
+        "agent": "claude",
+        "effort": "medium",
+        "model": "opus",
+        "name": "idea-lead"
+      },
+      "route_json": {
+        "decision": "spawn",
+        "line": null,
+        "mode": "advise",
+        "pools": [
+          {
+            "detail": "7d 40%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "ok"
+          },
+          {
+            "detail": "ordinary usage not allowed",
+            "pool": "codex",
+            "state": "exhausted"
+          }
+        ],
+        "reason": null,
+        "teammate": "idea-lead",
+        "via": null
+      }
+    },
+    "idea-lead|exact|auto": {
+      "decision": {
+        "decision": "spawn",
+        "note": null,
+        "teammate": "idea-lead"
+      },
+      "resolved": {
+        "agent": "claude",
+        "effort": "medium",
+        "model": "opus",
+        "name": "idea-lead"
+      },
+      "route_json": {
+        "decision": "spawn",
+        "line": null,
+        "mode": "auto",
+        "pools": [
+          {
+            "detail": "7d 40%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "ok"
+          },
+          {
+            "detail": "ordinary usage not allowed",
+            "pool": "codex",
+            "state": "exhausted"
+          }
+        ],
+        "reason": null,
+        "teammate": "idea-lead",
+        "via": null
+      }
+    },
+    "idea-lead|exact|off": {
+      "decision": {
+        "decision": "spawn",
+        "note": null,
+        "teammate": "idea-lead"
+      },
+      "resolved": {
+        "agent": "claude",
+        "effort": "medium",
+        "model": "opus",
+        "name": "idea-lead"
+      },
+      "route_json": {
+        "decision": "spawn",
+        "line": null,
+        "mode": "off",
+        "pools": [
+          {
+            "detail": "7d 40%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "ok"
+          },
+          {
+            "detail": "ordinary usage not allowed",
+            "pool": "codex",
+            "state": "exhausted"
+          }
+        ],
+        "reason": null,
+        "teammate": "idea-lead",
+        "via": null
+      }
+    },
+    "idea-lead|force|advise": {
+      "decision": {
+        "decision": "spawn",
+        "note": null,
+        "teammate": "idea-lead"
+      },
+      "resolved": {
+        "agent": "claude",
+        "effort": "medium",
+        "model": "opus",
+        "name": "idea-lead"
+      },
+      "route_json": {
+        "decision": "spawn",
+        "line": null,
+        "mode": "advise",
+        "pools": [
+          {
+            "detail": "7d 40%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "ok"
+          },
+          {
+            "detail": "ordinary usage not allowed",
+            "pool": "codex",
+            "state": "exhausted"
+          }
+        ],
+        "reason": null,
+        "teammate": "idea-lead",
+        "via": null
+      }
+    },
+    "idea-lead|force|auto": {
+      "decision": {
+        "decision": "spawn",
+        "note": null,
+        "teammate": "idea-lead"
+      },
+      "resolved": {
+        "agent": "claude",
+        "effort": "medium",
+        "model": "opus",
+        "name": "idea-lead"
+      },
+      "route_json": {
+        "decision": "spawn",
+        "line": null,
+        "mode": "auto",
+        "pools": [
+          {
+            "detail": "7d 40%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "ok"
+          },
+          {
+            "detail": "ordinary usage not allowed",
+            "pool": "codex",
+            "state": "exhausted"
+          }
+        ],
+        "reason": null,
+        "teammate": "idea-lead",
+        "via": null
+      }
+    },
+    "idea-lead|force|off": {
+      "decision": {
+        "decision": "spawn",
+        "note": null,
+        "teammate": "idea-lead"
+      },
+      "resolved": {
+        "agent": "claude",
+        "effort": "medium",
+        "model": "opus",
+        "name": "idea-lead"
+      },
+      "route_json": {
+        "decision": "spawn",
+        "line": null,
+        "mode": "off",
+        "pools": [
+          {
+            "detail": "7d 40%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "ok"
+          },
+          {
+            "detail": "ordinary usage not allowed",
+            "pool": "codex",
+            "state": "exhausted"
+          }
+        ],
+        "reason": null,
+        "teammate": "idea-lead",
+        "via": null
+      }
+    },
+    "idea-lead|none|advise": {
+      "decision": {
+        "decision": "spawn",
+        "note": null,
+        "teammate": "idea-lead"
+      },
+      "resolved": {
+        "agent": "claude",
+        "effort": "medium",
+        "model": "opus",
+        "name": "idea-lead"
+      },
+      "route_json": {
+        "decision": "spawn",
+        "line": null,
+        "mode": "advise",
+        "pools": [
+          {
+            "detail": "7d 40%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "ok"
+          },
+          {
+            "detail": "ordinary usage not allowed",
+            "pool": "codex",
+            "state": "exhausted"
+          }
+        ],
+        "reason": null,
+        "teammate": "idea-lead",
+        "via": null
+      }
+    },
+    "idea-lead|none|auto": {
+      "decision": {
+        "decision": "spawn",
+        "note": null,
+        "teammate": "idea-lead"
+      },
+      "resolved": {
+        "agent": "claude",
+        "effort": "medium",
+        "model": "opus",
+        "name": "idea-lead"
+      },
+      "route_json": {
+        "decision": "spawn",
+        "line": null,
+        "mode": "auto",
+        "pools": [
+          {
+            "detail": "7d 40%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "ok"
+          },
+          {
+            "detail": "ordinary usage not allowed",
+            "pool": "codex",
+            "state": "exhausted"
+          }
+        ],
+        "reason": null,
+        "teammate": "idea-lead",
+        "via": null
+      }
+    },
+    "idea-lead|none|off": {
+      "decision": {
+        "decision": "spawn",
+        "note": null,
+        "teammate": "idea-lead"
+      },
+      "resolved": {
+        "agent": "claude",
+        "effort": "medium",
+        "model": "opus",
+        "name": "idea-lead"
+      },
+      "route_json": {
+        "decision": "spawn",
+        "line": null,
+        "mode": "off",
+        "pools": [
+          {
+            "detail": "7d 40%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "ok"
+          },
+          {
+            "detail": "ordinary usage not allowed",
+            "pool": "codex",
+            "state": "exhausted"
+          }
+        ],
+        "reason": null,
+        "teammate": "idea-lead",
+        "via": null
+      }
+    },
     "opencode-lightning|exact|advise": {
       "decision": {
         "decision": "spawn",

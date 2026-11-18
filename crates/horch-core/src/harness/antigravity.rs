@@ -7,8 +7,8 @@
 //! workspace directory to its newest conversation id. A resume passes
 //! `--conversation <id>`.
 
+use horch_platform::start::Command;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{Duration, SystemTime};
 
 use anyhow::{bail, Result};
@@ -77,7 +77,7 @@ impl Harness for Antigravity {
 
     fn command(&self, env: &LaunchEnv, spec: &CommandSpec<'_>) -> Result<Command> {
         let teammate = spec.teammate;
-        let mut cmd = Command::new(&env.bins.antigravity);
+        let mut cmd = horch_platform::start::command(&env.bins.antigravity);
         cmd.arg("--model")
             .arg(model_for(teammate, spec.model_override)?);
         if let Some(effort) = &teammate.effort {

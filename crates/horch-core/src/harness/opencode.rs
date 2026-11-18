@@ -7,8 +7,8 @@
 //! `directory` it belongs to and when it was created. That is enough to tell one
 //! worker's session from another's without reading OpenCode's database.
 
+use horch_platform::start::Command;
 use std::path::Path;
-use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
@@ -38,7 +38,7 @@ pub(crate) fn find_sessions(
     project_dir: &str,
     since: SystemTime,
 ) -> Vec<SessionCandidate> {
-    let output = Command::new(bin)
+    let output = horch_platform::start::command(bin)
         .args(["session", "list", "--format", "json"])
         .current_dir(project_dir)
         .output();
@@ -194,7 +194,7 @@ pub(super) fn opencode_command(
     prompt: &str,
     model_override: Option<&str>,
 ) -> Result<Command> {
-    let mut cmd = Command::new(&env.bins.opencode);
+    let mut cmd = horch_platform::start::command(&env.bins.opencode);
     cmd.arg("--model").arg(model_for(teammate, model_override)?);
 
     if let Some(config) = config_env(env, teammate)? {

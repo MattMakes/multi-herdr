@@ -4,9 +4,9 @@
 //! after launch. Skills reach it as a `--plugin-dir` plus a `--settings`
 //! overlay.
 
+use horch_platform::start::Command;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 use sha2::{Digest as _, Sha256};
@@ -164,7 +164,7 @@ pub(super) fn claude_command(
     prompt: &str,
     model_override: Option<&str>,
 ) -> Result<Command> {
-    let mut cmd = Command::new(&env.bins.claude);
+    let mut cmd = horch_platform::start::command(&env.bins.claude);
 
     // ORDERING MATTERS. `--mcp-config`, `--tools`, `--allowedTools` and
     // `--disallowedTools` are variadic (`<x...>`): they keep consuming

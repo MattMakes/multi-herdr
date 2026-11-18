@@ -257,6 +257,9 @@ impl World {
             ("HORCH_DATA_DIR", Some(root.join("data"))),
             ("XDG_STATE_HOME", None),
             ("XDG_DATA_HOME", None),
+            // A herdr pane sets it, and a sandboxed Claude teammate
+            // (idea-lead) allows its socket.
+            ("HERDR_SOCKET_PATH", None),
         ];
         for (key, value) in roots {
             saved.push((key, std::env::var_os(key)));
@@ -338,8 +341,11 @@ fn bundle_root(bundle: &Bundle) -> PathBuf {
 }
 
 /// How a launch oracle builds one command.
-type Build =
-    dyn Fn(&Teammate, Session<'_>, Option<&Bundle>) -> anyhow::Result<std::process::Command>;
+type Build = dyn Fn(
+    &Teammate,
+    Session<'_>,
+    Option<&Bundle>,
+) -> anyhow::Result<horch_platform::start::Command>;
 
 /// The launch environment the process environment describes, as the
 /// binary's bootstrap builds it. [`World`] sets that environment.
@@ -353,7 +359,7 @@ fn legacy_build(
     t: &Teammate,
     session: Session<'_>,
     bundle: Option<&Bundle>,
-) -> anyhow::Result<std::process::Command> {
+) -> anyhow::Result<horch_platform::start::Command> {
     launch::command_with_skills_in(&launch_env(), t, session, PROMPT, None, bundle)
 }
 
@@ -363,8 +369,13 @@ fn adapter_build(
     t: &Teammate,
     session: Session<'_>,
     bundle: Option<&Bundle>,
-) -> anyhow::Result<std::process::Command> {
-    let env = launch_env();
+) -> anyhow::Result<horch_platform::start::Command> {
+    let mut env = launch_env();
+    // As `command_with_skills_in` does: a bundle with activated skills is
+    // also in the launch environment, for the sandbox of the adapter.
+    env.skill_bundle = bundle
+        .filter(|b| !b.plan().activated.is_empty())
+        .map(|b| b.root().to_path_buf());
     let adapter = t.agent.adapter();
     let (adjusted, prompt) = match bundle {
         Some(b) => (
@@ -700,6 +711,10 @@ fn oracle_skills_match() {
 const TEAMMATES_AT_A0: usize = 33;
 const QUOTA_FIXTURES_AT_A0: usize = 12;
 
+/// Teammates added after A0 that are not in [`SKIP_NEW_TEAMMATES`], so they
+/// have an oracle file: `idea-lead` (T-529).
+const TEAMMATES_AFTER_A0: usize = 1;
+
 fn files_in(dir: &Path) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = std::fs::read_dir(dir)
         .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
@@ -715,10 +730,16 @@ fn files_in(dir: &Path) -> Vec<PathBuf> {
 fn arc_01_baseline_oracles_present() {
     let cli = Path::new(env!("CARGO_MANIFEST_DIR")).join("../horch/tests/oracles");
     let expect = [
-        (oracles().join("launch"), TEAMMATES_AT_A0),
+        (
+            oracles().join("launch"),
+            TEAMMATES_AT_A0 + TEAMMATES_AFTER_A0,
+        ),
         (oracles().join("routing"), QUOTA_FIXTURES_AT_A0 + 1),
         (oracles().join("ledgers"), LEDGERS.len() * 3),
-        (oracles().join("skills"), TEAMMATES_AT_A0 * PHASES.len()),
+        (
+            oracles().join("skills"),
+            (TEAMMATES_AT_A0 + TEAMMATES_AFTER_A0) * PHASES.len(),
+        ),
         // skills, skills --json, and text plus JSON for each phase.
         (cli.join("skills"), 2 + 2 * PHASES.len()),
         // text plus JSON for each ledger fixture.

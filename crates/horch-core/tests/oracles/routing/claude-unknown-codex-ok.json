@@ -2728,6 +2728,305 @@
         "via": null
       }
     },
+    "idea-lead|exact|advise": {
+      "decision": {
+        "decision": "spawn",
+        "note": "claude pool unknown (probe timed out after 10s). Fallback codex-sol is ok.",
+        "teammate": "idea-lead"
+      },
+      "resolved": {
+        "agent": "claude",
+        "effort": "medium",
+        "model": "opus",
+        "name": "idea-lead"
+      },
+      "route_json": {
+        "decision": "spawn",
+        "line": "NOTE: claude pool unknown (probe timed out after 10s). Fallback codex-sol is ok.",
+        "mode": "advise",
+        "pools": [
+          {
+            "detail": "probe timed out after 10s",
+            "pool": "claude",
+            "state": "unknown"
+          },
+          {
+            "detail": "7d 12%, resets Sat 19:16Z",
+            "pool": "codex",
+            "state": "ok"
+          }
+        ],
+        "reason": "claude pool unknown (probe timed out after 10s). Fallback codex-sol is ok.",
+        "teammate": "idea-lead",
+        "via": null
+      }
+    },
+    "idea-lead|exact|auto": {
+      "decision": {
+        "decision": "spawn",
+        "note": "claude pool unknown (probe timed out after 10s). Fallback codex-sol is ok.",
+        "teammate": "idea-lead"
+      },
+      "resolved": {
+        "agent": "claude",
+        "effort": "medium",
+        "model": "opus",
+        "name": "idea-lead"
+      },
+      "route_json": {
+        "decision": "spawn",
+        "line": "NOTE: claude pool unknown (probe timed out after 10s). Fallback codex-sol is ok.",
+        "mode": "auto",
+        "pools": [
+          {
+            "detail": "probe timed out after 10s",
+            "pool": "claude",
+            "state": "unknown"
+          },
+          {
+            "detail": "7d 12%, resets Sat 19:16Z",
+            "pool": "codex",
+            "state": "ok"
+          }
+        ],
+        "reason": "claude pool unknown (probe timed out after 10s). Fallback codex-sol is ok.",
+        "teammate": "idea-lead",
+        "via": null
+      }
+    },
+    "idea-lead|exact|off": {
+      "decision": {
+        "decision": "spawn",
+        "note": null,
+        "teammate": "idea-lead"
+      },
+      "resolved": {
+        "agent": "claude",
+        "effort": "medium",
+        "model": "opus",
+        "name": "idea-lead"
+      },
+      "route_json": {
+        "decision": "spawn",
+        "line": null,
+        "mode": "off",
+        "pools": [
+          {
+            "detail": "probe timed out after 10s",
+            "pool": "claude",
+            "state": "unknown"
+          },
+          {
+            "detail": "7d 12%, resets Sat 19:16Z",
+            "pool": "codex",
+            "state": "ok"
+          }
+        ],
+        "reason": null,
+        "teammate": "idea-lead",
+        "via": null
+      }
+    },
+    "idea-lead|force|advise": {
+      "decision": {
+        "decision": "spawn",
+        "note": "claude pool unknown (probe timed out after 10s). Fallback codex-sol is ok.",
+        "teammate": "idea-lead"
+      },
+      "resolved": {
+        "agent": "claude",
+        "effort": "medium",
+        "model": "opus",
+        "name": "idea-lead"
+      },
+      "route_json": {
+        "decision": "spawn",
+        "line": "NOTE: claude pool unknown (probe timed out after 10s). Fallback codex-sol is ok.",
+        "mode": "advise",
+        "pools": [
+          {
+            "detail": "probe timed out after 10s",
+            "pool": "claude",
+            "state": "unknown"
+          },
+          {
+            "detail": "7d 12%, resets Sat 19:16Z",
+            "pool": "codex",
+            "state": "ok"
+          }
+        ],
+        "reason": "claude pool unknown (probe timed out after 10s). Fallback codex-sol is ok.",
+        "teammate": "idea-lead",
+        "via": null
+      }
+    },
+    "idea-lead|force|auto": {
+      "decision": {
+        "decision": "substitute",
+        "original": "idea-lead",
+        "reason": "claude unknown: probe timed out after 10s",
+        "via": "codex-sol"
+      },
+      "resolved": {
+        "agent": "codex",
+        "effort": "medium",
+        "model": "gpt-5.6-sol",
+        "name": "idea-lead"
+      },
+      "route_json": {
+        "decision": "substitute",
+        "line": "SUBSTITUTED: idea-lead runs on codex-sol. Reason: claude unknown: probe timed out after 10s.",
+        "mode": "auto",
+        "pools": [
+          {
+            "detail": "probe timed out after 10s",
+            "pool": "claude",
+            "state": "unknown"
+          },
+          {
+            "detail": "7d 12%, resets Sat 19:16Z",
+            "pool": "codex",
+            "state": "ok"
+          }
+        ],
+        "reason": "claude unknown: probe timed out after 10s",
+        "teammate": "idea-lead",
+        "via": "codex-sol"
+      }
+    },
+    "idea-lead|force|off": {
+      "decision": {
+        "decision": "spawn",
+        "note": null,
+        "teammate": "idea-lead"
+      },
+      "resolved": {
+        "agent": "claude",
+        "effort": "medium",
+        "model": "opus",
+        "name": "idea-lead"
+      },
+      "route_json": {
+        "decision": "spawn",
+        "line": null,
+        "mode": "off",
+        "pools": [
+          {
+            "detail": "probe timed out after 10s",
+            "pool": "claude",
+            "state": "unknown"
+          },
+          {
+            "detail": "7d 12%, resets Sat 19:16Z",
+            "pool": "codex",
+            "state": "ok"
+          }
+        ],
+        "reason": null,
+        "teammate": "idea-lead",
+        "via": null
+      }
+    },
+    "idea-lead|none|advise": {
+      "decision": {
+        "decision": "spawn",
+        "note": "claude pool unknown (probe timed out after 10s). Fallback codex-sol is ok.",
+        "teammate": "idea-lead"
+      },
+      "resolved": {
+        "agent": "claude",
+        "effort": "medium",
+        "model": "opus",
+        "name": "idea-lead"
+      },
+      "route_json": {
+        "decision": "spawn",
+        "line": "NOTE: claude pool unknown (probe timed out after 10s). Fallback codex-sol is ok.",
+        "mode": "advise",
+        "pools": [
+          {
+            "detail": "probe timed out after 10s",
+            "pool": "claude",
+            "state": "unknown"
+          },
+          {
+            "detail": "7d 12%, resets Sat 19:16Z",
+            "pool": "codex",
+            "state": "ok"
+          }
+        ],
+        "reason": "claude pool unknown (probe timed out after 10s). Fallback codex-sol is ok.",
+        "teammate": "idea-lead",
+        "via": null
+      }
+    },
+    "idea-lead|none|auto": {
+      "decision": {
+        "decision": "substitute",
+        "original": "idea-lead",
+        "reason": "claude unknown: probe timed out after 10s",
+        "via": "codex-sol"
+      },
+      "resolved": {
+        "agent": "codex",
+        "effort": "medium",
+        "model": "gpt-5.6-sol",
+        "name": "idea-lead"
+      },
+      "route_json": {
+        "decision": "substitute",
+        "line": "SUBSTITUTED: idea-lead runs on codex-sol. Reason: claude unknown: probe timed out after 10s.",
+        "mode": "auto",
+        "pools": [
+          {
+            "detail": "probe timed out after 10s",
+            "pool": "claude",
+            "state": "unknown"
+          },
+          {
+            "detail": "7d 12%, resets Sat 19:16Z",
+            "pool": "codex",
+            "state": "ok"
+          }
+        ],
+        "reason": "claude unknown: probe timed out after 10s",
+        "teammate": "idea-lead",
+        "via": "codex-sol"
+      }
+    },
+    "idea-lead|none|off": {
+      "decision": {
+        "decision": "spawn",
+        "note": null,
+        "teammate": "idea-lead"
+      },
+      "resolved": {
+        "agent": "claude",
+        "effort": "medium",
+        "model": "opus",
+        "name": "idea-lead"
+      },
+      "route_json": {
+        "decision": "spawn",
+        "line": null,
+        "mode": "off",
+        "pools": [
+          {
+            "detail": "probe timed out after 10s",
+            "pool": "claude",
+            "state": "unknown"
+          },
+          {
+            "detail": "7d 12%, resets Sat 19:16Z",
+            "pool": "codex",
+            "state": "ok"
+          }
+        ],
+        "reason": null,
+        "teammate": "idea-lead",
+        "via": null
+      }
+    },
     "opencode-lightning|exact|advise": {
       "decision": {
         "decision": "spawn",

@@ -19,10 +19,10 @@ pub mod prime;
 pub mod trust;
 pub mod update;
 
+use horch_platform::start::Command;
 use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::str::FromStr;
 use std::time::SystemTime;
 
