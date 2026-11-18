@@ -1866,7 +1866,10 @@ fn the_whole_flow_on_the_fake_herdr() {
         "working -> incomplete",
         "T-2 is queued again",
     ] {
-        assert!(by_horch.iter().any(|t| t.contains(text)), "{text}: {events}");
+        assert!(
+            by_horch.iter().any(|t| t.contains(text)),
+            "{text}: {events}"
+        );
     }
     // The orchestrator got the wake for B.
     let wakes: Vec<String> = {
