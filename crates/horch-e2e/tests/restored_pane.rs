@@ -185,7 +185,12 @@ fn an_operator_shell_on_a_registered_pane_id_stays_the_operator() {
         "{}",
         text(&tell)
     );
-    assert!(pending(&h).is_empty(), "an operator line is not mail");
+    // FR-7: the operator line waits in mail too, untagged and from the
+    // operator, not from the role of the pane.
+    let mail = pending(&h);
+    assert_eq!(mail.len(), 1, "{mail:?}");
+    assert_eq!(mail[0].from, "operator");
+    assert_eq!(mail[0].text, "NOTE: from me");
 }
 
 fn doctor_text(h: &Harness) -> String {

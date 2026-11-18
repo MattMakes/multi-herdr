@@ -145,7 +145,14 @@ fn worker_done_reports_without_the_default_tell_grace() {
         .success()),
         "the worker pane {pane} never closed"
     );
-    let polls = polls_before_line(&h, "w1:p1", "DONE:").expect("done typed its report");
+    // FR-7: done types the mail line, and its report waits in the mail.
+    let polls = polls_before_line(&h, "w1:p1", horch_core::messaging::delivery::MAIL_LINE)
+        .expect("done typed the mail line");
+    assert!(horch_core::messaging::mail::Mail::under(&h.state, "w1")
+        .pending()
+        .unwrap()
+        .iter()
+        .any(|m| m.text.contains("DONE:")));
     assert_eq!(
         polls, 1,
         "done looked at the orchestrator pane {polls} times before its report: \
