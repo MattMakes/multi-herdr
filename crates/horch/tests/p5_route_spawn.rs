@@ -175,7 +175,7 @@ impl World {
     fn requests(&self) -> Vec<(String, String)> {
         let conn = self.conn();
         let mut stmt = conn
-            .prepare("SELECT kind, state FROM requests ORDER BY received_at, request_id")
+            .prepare("SELECT kind, state FROM requests ORDER BY rowid")
             .unwrap();
         stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
             .unwrap()
