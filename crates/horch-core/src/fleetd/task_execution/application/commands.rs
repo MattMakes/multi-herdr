@@ -31,7 +31,7 @@ use crate::fleetd::task_execution::domain::task::{
     attempt_id, dead_attempts, held_attempt, orphans, AttemptRow, AttemptState, Facts, KeptPane,
     Reap, Recorded, RowRef, Stop,
 };
-use crate::taskledger::model::{Actor, EventKind, WorkerStatus};
+use crate::taskledger::model::{Actor, EventKind, TaskStatus, WorkerStatus};
 use crate::taskledger::workers::{self, Worker};
 use crate::taskledger::{tasks, util};
 
@@ -241,7 +241,9 @@ pub fn escalate_task(tx: &Connection, task_id: &str) -> Result<()> {
 }
 
 /// I1, process part: each live attempt of this host whose process is dead
-/// ends, and the task of its worker is queued again or held.
+/// ends, and the task of its worker is queued again or held. A resolver or
+/// fix attempt of a `done` task ends with no rung 6: the task stays `done`
+/// (ticket 33), and ticket 34 counts the end on its branch.
 pub fn finish_exited(tx: &Connection, facts: &Facts) -> Result<Vec<Stop>> {
     check_open(tx)?;
     let rows = store::rows(tx, &util::host_name())?;
@@ -250,7 +252,9 @@ pub fn finish_exited(tx: &Connection, facts: &Facts) -> Result<Vec<Stop>> {
         stops.extend(end_attempt(tx, &reap)?);
         let why = format!("the process of attempt {} is gone", reap.attempt);
         if let Some((task, _)) = &reap.task {
-            schedule_retry(tx, task, &why)?;
+            if tasks::get(tx, task)?.status != TaskStatus::Done.as_str() {
+                schedule_retry(tx, task, &why)?;
+            }
         }
     }
     Ok(stops)
@@ -518,6 +522,31 @@ mod tests {
         );
         // The next pass finds nothing more to end.
         assert_eq!(l.finish_exited(&l.facts(&[])), []);
+    }
+
+    /// Ticket 33: the dead process of a resolver or fix attempt of a `done`
+    /// task ends its attempt with no rung 6, and the task stays `done`.
+    #[test]
+    fn dead_attempt_of_a_done_task_ends_and_the_task_stays_done() {
+        let mut l = fixture();
+        let task = l.add_task();
+        let (agent, supervisor) = (Sleep::start(), Sleep::start());
+        let w = l.worker(agent.recorded(), supervisor.recorded());
+        assert_eq!(l.claim(&w), task);
+        l.store
+            .conn()
+            .execute(
+                "UPDATE tasks SET status = 'done' WHERE task_id = ?1",
+                [&task],
+            )
+            .unwrap();
+        agent.end();
+
+        l.finish_exited(&l.facts(&[]));
+
+        assert_eq!(l.attempt_states(), [(format!("{task}/A1"), "ended".into())]);
+        assert_eq!(l.worker_status(&w), "incomplete");
+        assert_eq!(l.task_status(&task), "done");
     }
 
     #[test]

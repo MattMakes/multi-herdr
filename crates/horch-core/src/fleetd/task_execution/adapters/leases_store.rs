@@ -56,6 +56,18 @@ fn held_words() -> String {
         .join(", ")
 }
 
+/// The SQL test that the task `t` is `done` with an attempt that is not
+/// ended: a resolver or fix attempt of its branch (ticket 33). The caller
+/// decides whether its branch holds the lease.
+fn done_with_open_attempt() -> String {
+    format!(
+        "(t.status = '{done}' AND EXISTS (SELECT 1 FROM attempts o
+            WHERE o.task_id = t.task_id AND o.state <> '{ended}'))",
+        done = Holder::Repair.as_str(),
+        ended = AttemptState::Ended.as_str()
+    )
+}
+
 /// The lease of task `task_id`.
 pub fn get(conn: &Connection, task_id: &str) -> Result<Option<LeaseRow>> {
     Ok(conn
@@ -160,16 +172,17 @@ pub struct LeasedTask {
     pub lease_attempt: Option<String>,
 }
 
-/// The lease facts of I1: each task that holds a lease or has a lease row,
-/// in task order, and the attempts of those tasks that are not ended,
+/// The lease facts of I1: each task that holds a lease, has a lease row, or
+/// is `done` with an attempt that is not ended, in task order, and the attempts of those tasks that are not ended,
 /// oldest first.
 pub fn i1_rows(conn: &Connection) -> Result<(Vec<LeasedTask>, Vec<LiveAttempt>)> {
     let tasks = format!(
         "SELECT t.task_id, t.status, l.attempt_id FROM tasks t
          LEFT JOIN leases l ON l.task_id = t.task_id
-         WHERE t.status IN ({held}) OR l.task_id IS NOT NULL
+         WHERE t.status IN ({held}) OR l.task_id IS NOT NULL OR {done}
          ORDER BY t.task_id",
-        held = held_words()
+        held = held_words(),
+        done = done_with_open_attempt()
     );
     let tasks = conn
         .prepare(&tasks)?
@@ -184,11 +197,12 @@ pub fn i1_rows(conn: &Connection) -> Result<(Vec<LeasedTask>, Vec<LiveAttempt>)>
     let live = format!(
         "SELECT a.id, a.task_id, a.worker_id, w.status FROM attempts a
          JOIN tasks t ON t.task_id = a.task_id JOIN workers w ON w.worker_id = a.worker_id
-         WHERE a.state <> '{ended}' AND (t.status IN ({held})
+         WHERE a.state <> '{ended}' AND (t.status IN ({held}) OR t.status = '{done}'
             OR t.task_id IN (SELECT task_id FROM leases))
          ORDER BY a.rowid",
         ended = AttemptState::Ended.as_str(),
-        held = held_words()
+        held = held_words(),
+        done = Holder::Repair.as_str()
     );
     let live = conn
         .prepare(&live)?

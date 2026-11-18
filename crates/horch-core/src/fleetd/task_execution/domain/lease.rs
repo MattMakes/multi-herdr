@@ -10,13 +10,16 @@
 //!   `heartbeat_max_age_s` old, and the last activity is at most
 //!   `stall_after_s` old. The model's own words are not a signal.
 //! - Expire ([`judge`]): the fleet clock past `expires_at` moves a
-//!   `running` task to `stalled`.
+//!   `running` task to `stalled`, and ends the resolver or fix attempt of a
+//!   `done` task ([`Holder::Repair`]) with no move of the task.
 //! - Pause: a task in `waiting_quota` keeps its lease, and the lease does
 //!   not expire.
 //! - I1 ([`i1_repairs`]): each live attempt of a held task has exactly 1
-//!   lease, and each lease belongs to a live attempt of a held task. An
-//!   attempt whose worker row ended (a handoff, a reap) is ending: the
-//!   pass reaps it, and I1 does not count it as a second live attempt.
+//!   lease, and each lease belongs to a live attempt of a held task. A
+//!   `done` task whose branch is `conflicted` or `gate_failed` is held while
+//!   its resolver or fix attempt is live. An attempt whose worker row ended
+//!   (a handoff, a reap) is ending: the pass reaps it, and I1 does not
+//!   count it as a second live attempt.
 
 use super::task::Seen;
 
@@ -40,10 +43,16 @@ pub enum Holder {
     Stalled,
     /// The lease is paused until the pool resets.
     WaitingQuota,
+    /// A `done` task whose branch is `conflicted` or `gate_failed`: its
+    /// resolver or fix attempt holds the lease while it is live (I1). The
+    /// lease expires like the lease of a `running` task, and its expiry
+    /// ends the attempt, not the task ("Leases, not claims", rule 2).
+    Repair,
 }
 
 impl Holder {
-    /// Every task state that holds a lease.
+    /// Every task state that holds a lease by its state alone. A `done`
+    /// task holds one only with a branch to repair ([`Holder::of_task`]).
     pub const ALL: [Holder; 4] = [
         Holder::Leased,
         Holder::Running,
@@ -58,13 +67,21 @@ impl Holder {
             Holder::Running => "running",
             Holder::Stalled => "stalled",
             Holder::WaitingQuota => "waiting_quota",
+            Holder::Repair => "done",
         }
     }
 
     /// The holder of a `tasks.status` word; `None` for a state that holds
-    /// no lease.
+    /// no lease by its state alone.
     pub fn of(word: &str) -> Option<Holder> {
         Self::ALL.into_iter().find(|h| h.as_str() == word)
+    }
+
+    /// The holder of a task in the state `word`. `repair` says that the
+    /// task is `done` and its branch is `conflicted` or `gate_failed`.
+    pub fn of_task(word: &str, repair: bool) -> Option<Holder> {
+        Holder::of(word)
+            .or_else(|| (repair && word == Holder::Repair.as_str()).then_some(Holder::Repair))
     }
 }
 
@@ -124,10 +141,11 @@ fn earned(clock: i64, s: &Signals, l: &Limits) -> bool {
 /// The verdict of 1 pass at fleet clock `clock` on the lease of a task in
 /// state `holder`. An expiry wins over the signals of the same pass: the
 /// lease is a deadline, and the signals of the passes before did not earn
-/// it. Only a `running` task expires: `leased` has the start timeout,
-/// `stalled` expired already, and `waiting_quota` is paused.
+/// it. Only a `running` task and a repair attempt of a `done` task expire:
+/// `leased` has the start timeout, `stalled` expired already, and
+/// `waiting_quota` is paused.
 pub fn judge(holder: Holder, lease: Lease, clock: i64, s: &Signals, l: &Limits) -> Verdict {
-    if holder != Holder::Running {
+    if !matches!(holder, Holder::Running | Holder::Repair) {
         return Verdict::Keep;
     }
     if clock > lease.expires_at {
@@ -199,14 +217,14 @@ pub fn i1_repairs(tasks: &[TaskLeases]) -> Vec<Repair> {
                 task_id,
                 attempt_id: stale.to_string(),
             }),
-            (Some(Holder::Leased | Holder::Running | Holder::Stalled), [], Some(stale))
-                if !t.ending_attempts.iter().any(|a| a == stale) =>
-            {
-                out.push(Repair::Delete {
-                    task_id,
-                    attempt_id: stale.to_string(),
-                })
-            }
+            (
+                Some(Holder::Leased | Holder::Running | Holder::Stalled | Holder::Repair),
+                [],
+                Some(stale),
+            ) if !t.ending_attempts.iter().any(|a| a == stale) => out.push(Repair::Delete {
+                task_id,
+                attempt_id: stale.to_string(),
+            }),
             _ => {}
         }
     }
@@ -552,8 +570,76 @@ mod tests {
             ("waiting_quota", Some(Holder::WaitingQuota)),
             ("verifying", None),
             ("ready", None),
+            ("done", None),
         ] {
             assert_eq!(Holder::of(word), h, "{word}");
         }
+    }
+
+    /// Ticket 33: a `done` task holds a lease only with a branch to repair.
+    #[test]
+    fn done_task_holds_a_lease_only_with_a_branch_to_repair() {
+        assert_eq!(Holder::of_task("done", true), Some(Holder::Repair));
+        assert_eq!(Holder::of_task("done", false), None);
+        assert_eq!(Holder::of_task("running", true), Some(Holder::Running));
+        assert_eq!(Holder::of_task("cancelled", true), None);
+    }
+
+    /// Ticket 33: the lease of a repair attempt expires like the lease of a
+    /// `running` task.
+    #[test]
+    fn repair_lease_expires_like_a_running_lease() {
+        let lease = Lease::claimed(0, LIMITS.lease_s);
+        let dead = Signals {
+            process: Seen::Dead,
+            heartbeat_age_s: None,
+            active_at: None,
+        };
+        assert_eq!(
+            judge(Holder::Repair, lease, 120, &dead, &LIMITS),
+            Verdict::Keep
+        );
+        assert_eq!(
+            judge(Holder::Repair, lease, 121, &dead, &LIMITS),
+            Verdict::Expire
+        );
+        assert_eq!(
+            judge(Holder::Repair, lease, 100, &earning(100), &LIMITS),
+            Verdict::Renew { expires_at: 220 }
+        );
+    }
+
+    /// Ticket 33: a live repair attempt of a `done` task gets its lease, and
+    /// a `done` task with no live attempt keeps none.
+    #[test]
+    fn i1_writes_and_deletes_the_lease_of_a_repair_attempt() {
+        let missing = TaskLeases {
+            task_id: "t".into(),
+            holder: Some(Holder::Repair),
+            lease_attempt: None,
+            live_attempts: vec!["t/A2".into()],
+            ending_attempts: vec![],
+        };
+        assert_eq!(
+            i1_repairs(&[missing]),
+            vec![Repair::Write {
+                task_id: "t".into(),
+                attempt_id: "t/A2".into()
+            }]
+        );
+        let ended = TaskLeases {
+            task_id: "t".into(),
+            holder: Some(Holder::Repair),
+            lease_attempt: Some("t/A2".into()),
+            live_attempts: vec![],
+            ending_attempts: vec![],
+        };
+        assert_eq!(
+            i1_repairs(&[ended]),
+            vec![Repair::Delete {
+                task_id: "t".into(),
+                attempt_id: "t/A2".into()
+            }]
+        );
     }
 }

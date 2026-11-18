@@ -675,6 +675,33 @@ pub fn branch_names(conn: &Connection) -> Result<Vec<String>> {
     Ok(names.collect::<rusqlite::Result<_>>()?)
 }
 
+/// The name and the task of each branch row of a task in `state`, sorted
+/// by name (the repair attempts of ticket 33).
+pub fn task_branches_in(conn: &Connection, state: &str) -> Result<Vec<(String, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT name, task_id FROM branches
+         WHERE landing_state = ?1 AND task_id IS NOT NULL ORDER BY name",
+    )?;
+    let rows = stmt.query_map([state], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// The id and the job of each bundle in `state` that holds the branch
+/// `branch`, newest first (the conflict of a resolver attempt, ticket 33).
+pub fn bundle_jobs_of_branch(
+    conn: &Connection,
+    branch: &str,
+    state: &str,
+) -> Result<Vec<(i64, i64)>> {
+    let mut stmt = conn.prepare(
+        "SELECT b.id, b.job_id FROM bundles b JOIN bundle_members m ON m.bundle_id = b.id
+         WHERE m.branch = ?1 AND b.state = ?2 AND b.job_id IS NOT NULL
+         ORDER BY b.id DESC",
+    )?;
+    let rows = stmt.query_map([branch, state], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 /// The bundle `id`, with its members in queue order.
 pub fn bundle(conn: &Connection, id: i64) -> Result<Option<BundleRow>> {
     let row = |r: &Row<'_>| {

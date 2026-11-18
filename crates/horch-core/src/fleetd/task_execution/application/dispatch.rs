@@ -38,7 +38,7 @@ use crate::fleetd::task_execution::adapters::sqlite as store;
 use crate::fleetd::task_execution::adapters::task_files::{
     attempt_dir, write_attempt_files, AttemptFiles,
 };
-use crate::fleetd::task_execution::application::{outbox_ingest, review};
+use crate::fleetd::task_execution::application::{outbox_ingest, repair, review};
 use crate::fleetd::task_execution::domain::dispatch::{
     choose, Choice, Hold, Holds, ReadyTask, RunningTask,
 };
@@ -544,8 +544,9 @@ fn dispatched_worker(conn: &Connection, task_id: &str) -> Result<NewWorker> {
 
 // ─── the task files ─────────────────────────────────────────────────────
 
-/// The facts of the files of the attempt `attempt_id`, from its rows.
-fn facts(conn: &Connection, attempt_id: &str) -> Result<TaskFacts> {
+/// The facts of the files of the attempt `attempt_id` under `fleet_root`,
+/// from its rows.
+fn facts(conn: &Connection, fleet_root: &Path, attempt_id: &str) -> Result<TaskFacts> {
     let (task_id, worker_id): (Option<String>, String) = conn
         .query_row(
             "SELECT task_id, worker_id FROM attempts WHERE id = ?1",
@@ -557,8 +558,12 @@ fn facts(conn: &Connection, attempt_id: &str) -> Result<TaskFacts> {
     let task = tasks::get(conn, &task_id)?;
     let run = runs::get(conn, &task.run_id)?;
     let worker = workers::get(conn, &worker_id)?;
-    // The section of a review that failed the last attempt (ticket 20).
-    let extra = review::start_section(conn, &task_id)?;
+    // The section of a resolver or fix attempt (ticket 33), else the
+    // section of a review that failed the last attempt (ticket 20).
+    let extra = match repair::start_section(conn, fleet_root, attempt_id)? {
+        Some(section) => Some(section),
+        None => review::start_section(conn, &task_id)?,
+    };
     let n = worker
         .attempt
         .with_context(|| format!("the worker of attempt {attempt_id} has no attempt number"))?;
@@ -595,7 +600,7 @@ pub fn write_task_files(
     attempt_id: &str,
     secrets: &[Secret],
 ) -> Result<AttemptFiles> {
-    let facts = facts(conn, attempt_id)?;
+    let facts = facts(conn, fleet_root, attempt_id)?;
     Ok(write_attempt_files(fleet_root, &facts, secrets)?)
 }
 
@@ -615,7 +620,7 @@ pub fn write_missing_task_files(
         .collect::<rusqlite::Result<_>>()?;
     let mut out = Vec::new();
     for id in ids {
-        let facts = facts(conn, &id)?;
+        let facts = facts(conn, fleet_root, &id)?;
         let dir = attempt_dir(fleet_root, &facts.task_id, &facts.attempt);
         if dir.join("task.yaml").exists() {
             continue;

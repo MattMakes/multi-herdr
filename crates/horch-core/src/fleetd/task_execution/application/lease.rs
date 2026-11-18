@@ -6,7 +6,9 @@
 //!   transaction of the claim.
 //! - Each pass renews or expires each lease ([`renew_or_expire_leases`]),
 //!   after `finish_exited`: a task that a result moved out of `running` in
-//!   the pass is not expired ("Order inside 1 pass").
+//!   the pass is not expired ("Order inside 1 pass"). The expiry of the
+//!   lease of a resolver or fix attempt of a `done` task ends that attempt
+//!   and moves no task ([`end_repair_attempt`], ticket 33).
 //! - `transition()`, the 1 door, deletes the lease of each task that moves
 //!   to a state that holds no lease, in the transaction of the move. The
 //!   I1 check of the pass ([`check_i1`]) deletes a row that another writer
@@ -25,14 +27,17 @@ use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
 use crate::fleetd::ideas::application::needs_you::{self, NeedsYouList};
 use crate::fleetd::ideas::domain::needs_you::Write;
 use crate::fleetd::task_execution::adapters::leases_store::{self as store, LeaseRow};
+use crate::fleetd::task_execution::adapters::sqlite as attempts_store;
+use crate::fleetd::task_execution::application::repair;
 use crate::fleetd::task_execution::domain::lease::{
     i1_repairs, judge, Holder, Lease, Limits, Repair, Signals, TaskLeases, Verdict, CLAIM_BASIS,
     EARNED_BASIS, I1_BASIS,
 };
-use crate::fleetd::task_execution::domain::task::Seen;
+use crate::fleetd::task_execution::domain::retry::Outcome;
+use crate::fleetd::task_execution::domain::task::{AttemptState, Seen};
 use crate::fleetd::worker_profiles::domain::profile::Liveness;
-use crate::taskledger::model::{Actor, EventKind, TaskStatus};
-use crate::taskledger::util;
+use crate::taskledger::model::{Actor, EventKind, TaskStatus, WorkerStatus};
+use crate::taskledger::{util, workers};
 
 /// The cause of the move of a task to `stalled` when its lease expires.
 pub const LEASE_EXPIRED: &str = "lease_expired";
@@ -132,7 +137,7 @@ pub fn renew_or_expire_leases(
     for h in store::held(tx)? {
         // A task that left the held states, or a lease of an ended
         // attempt: the I1 check deletes the row.
-        let Some(holder) = Holder::of(&h.task_status) else {
+        let Some(holder) = holder(tx, &h.task_id, &h.task_status)? else {
             continue;
         };
         if !h.attempt_live {
@@ -157,6 +162,9 @@ pub fn renew_or_expire_leases(
                 store::renew(tx, &h.task_id, expires_at, EARNED_BASIS, &now)?
             }
             Verdict::Keep => {}
+            Verdict::Expire if holder == Holder::Repair => {
+                end_repair_attempt(tx, guard, &h.task_id, &h.attempt_id, &h.worker_id)?
+            }
             Verdict::Expire => {
                 let cause = Cause {
                     actor: Actor::Horch,
@@ -180,6 +188,48 @@ pub fn renew_or_expire_leases(
         }
     }
     Ok(expired)
+}
+
+/// The holder of the task `task_id` in the state `status`. A `done` task
+/// holds the lease only while its branch waits for a resolver or fix
+/// attempt (ticket 33).
+fn holder(tx: &Connection, task_id: &str, status: &str) -> Result<Option<Holder>> {
+    let repair = status == Holder::Repair.as_str() && repair::has_branch_to_repair(tx, task_id)?;
+    Ok(Holder::of_task(status, repair))
+}
+
+/// Rule 2 of "Leases, not claims": the lease of the resolver or fix attempt
+/// `attempt_id` of the `done` task `task_id` expired. The attempt ends with
+/// the outcome `stalled`, its live worker row ends `incomplete`, and the
+/// lease row goes. The task does not move. I5 stops the process of the
+/// ended rows, and ticket 34 counts the end in `repair_attempts`.
+fn end_repair_attempt(
+    tx: &Connection,
+    guard: Option<Generation>,
+    task_id: &str,
+    attempt_id: &str,
+    worker_id: &str,
+) -> Result<()> {
+    let outcome = Outcome::Stalled.as_str();
+    attempts_store::set_ended(tx, attempt_id, outcome, &util::now())?;
+    transition(
+        tx,
+        guard,
+        Entity::Attempt,
+        attempt_id,
+        AttemptState::Ended.as_str(),
+        Cause {
+            actor: Actor::Horch,
+            text: LEASE_EXPIRED,
+        },
+        &NeedsYouList,
+    )?;
+    let live = workers::get(tx, worker_id)?.status()?.is_live();
+    if live {
+        let reason = format!("{outcome}: the lease of attempt {attempt_id} expired");
+        workers::end(tx, worker_id, WorkerStatus::Incomplete, &reason, None)?;
+    }
+    release(tx, task_id)
 }
 
 /// The lease part of I1 at fleet clock `clock`: write the missing lease of
@@ -245,19 +295,17 @@ fn task_leases(tx: &Connection) -> Result<(Vec<TaskLeases>, BTreeMap<String, Str
         list.push(a.id.clone());
         worker_of.insert(a.id, a.worker_id);
     }
-    let tasks = rows
-        .into_iter()
-        .map(|t| {
-            let group = by_task.remove(&t.task_id).unwrap_or_default();
-            TaskLeases {
-                holder: Holder::of(&t.status),
-                lease_attempt: t.lease_attempt,
-                live_attempts: group.live,
-                ending_attempts: group.ending,
-                task_id: t.task_id,
-            }
-        })
-        .collect();
+    let mut tasks = Vec::new();
+    for t in rows {
+        let group = by_task.remove(&t.task_id).unwrap_or_default();
+        tasks.push(TaskLeases {
+            holder: holder(tx, &t.task_id, &t.status)?,
+            lease_attempt: t.lease_attempt,
+            live_attempts: group.live,
+            ending_attempts: group.ending,
+            task_id: t.task_id,
+        });
+    }
     Ok((tasks, worker_of))
 }
 
