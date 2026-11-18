@@ -1923,6 +1923,7 @@ mod tests {
             ("job", false),
             ("task", false),
             ("result", false),
+            ("ask", false),
             ("feature", false),
             ("branch", false),
             ("rescue", false),

@@ -1260,10 +1260,12 @@ mod tests {
             "{}",
             row("codex-sol")
         );
+        // A codex teammate with no compact_window has the window of its
+        // harness.
         assert!(
-            row("codex-luna").contains("harness"),
+            row("astra-creative").contains("harness"),
             "{}",
-            row("codex-luna")
+            row("astra-creative")
         );
         assert!(
             row("orchestrator").ends_with("~/.claude/settings.json"),
