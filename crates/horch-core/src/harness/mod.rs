@@ -6,7 +6,7 @@
 
 pub mod antigravity;
 pub mod capabilities;
-pub(crate) mod claude;
+pub mod claude;
 pub(crate) mod claude_plugins;
 pub mod codex;
 pub mod cooldown;

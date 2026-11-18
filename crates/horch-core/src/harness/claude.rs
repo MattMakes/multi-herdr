@@ -18,6 +18,9 @@ use super::{
     CommandSpec, Harness, HarnessKind, LaunchEnv, PrepareRequest, Prepared, Session, WindowInputs,
 };
 use crate::compaction::window::OperatorWindow;
+use crate::fleetd::worker_profiles::domain::operator_boundary::{
+    Boundary, NotSupported, OperatorPaths,
+};
 use crate::roster::{expand_home, operator_enabled_plugins, operator_status_line};
 use crate::roster::{HarnessDefault, HorchAccess, Teammate, FLEET_ORCHESTRATORS};
 use crate::runtime::RuntimeContext;
@@ -360,6 +363,7 @@ fn merged_inline_settings(
         | overlay_horch_paths(env, teammate, obj)?
         | deny_git_worktree(teammate, obj)?
         | teammate.sandbox.is_some();
+    seal_operator_boundary(env, teammate, obj)?;
     Ok(if changed {
         value.to_string().into()
     } else {
@@ -381,6 +385,7 @@ fn default_overlay(env: &LaunchEnv, teammate: &Teammate) -> Result<Option<OsStri
     overlay_horch_paths(env, teammate, &mut overlay)?;
     merge_settings_defaults(teammate, &mut overlay, || operator_settings(env))?;
     overlay_window(applied_window(env), &mut overlay);
+    seal_operator_boundary(env, teammate, &mut overlay)?;
     Ok((!overlay.is_empty()).then(|| Value::Object(overlay).to_string().into()))
 }
 
@@ -830,7 +835,9 @@ fn report_socket<'a>(env: &'a LaunchEnv, teammate: &Teammate) -> Option<&'a Path
 /// Open horch's own paths to a sandboxed teammate's Bash. For
 /// `horch_access: full`, so `horch tell`, `horch done`, `horch ledger` and
 /// `horch spawn` work in the pane:
-/// - the state root and the ledger folder, for read and write;
+/// - the state root and the ledger folder, for read, and for write only
+///   for a fleet orchestrator; a worker writes its task folder and its
+///   worktree instead ([`seal_operator_boundary`] closes the rest);
 /// - Unix sockets under the state root (the channel relays) and
 ///   `$HERDR_SOCKET_PATH`, for connect.
 ///
@@ -854,17 +861,22 @@ fn overlay_horch_paths(
     let sandbox = sandbox
         .as_object_mut()
         .context("sandbox must be an object")?;
-    let (dirs, sockets) = match teammate.horch_access {
-        HorchAccess::Full => (
-            [&env.state_root, &env.ledger_dir],
+    let roots = [&env.state_root, &env.ledger_dir];
+    let (reads, writes, sockets) = match teammate.horch_access {
+        // From Phase 5 a worker writes only its task folder and its
+        // worktree (RR-5; design, `writable_paths`).
+        HorchAccess::Full if is_worker(teammate) => (
+            roots,
+            [&env.task_dir, &env.worktree],
             [&env.state_root, &env.herdr_socket],
         ),
-        HorchAccess::Report => ([&None, &None], [&env.report_socket, &None]),
+        HorchAccess::Full => (roots, roots, [&env.state_root, &env.herdr_socket]),
+        HorchAccess::Report => ([&None, &None], [&None, &None], [&env.report_socket, &None]),
     };
     let mut changed = false;
     for (section, key, paths) in [
-        ("filesystem", "allowRead", dirs),
-        ("filesystem", "allowWrite", dirs),
+        ("filesystem", "allowRead", reads),
+        ("filesystem", "allowWrite", writes),
         ("network", "allowUnixSockets", sockets),
     ] {
         let list = object_entry(sandbox, section)?
@@ -1058,6 +1070,334 @@ fn add_entries<const N: usize>(
         }
     }
     Ok(changed)
+}
+
+/// Whether `teammate` is a worker. A fleet orchestrator is not a worker
+/// profile: it gets no operator deny until Phase 6
+/// (`docs/tickets/fleetd-p5/MAP.md`, Q2).
+fn is_worker(teammate: &Teammate) -> bool {
+    !FLEET_ORCHESTRATORS.contains(&teammate.name.as_str())
+}
+
+/// The operator boundary of a sandboxed worker (SR-8, FM-32, RR-5): no
+/// tool reads or writes `<fleet root>/run/`, no Bash command connects to
+/// the command channel, and no tool writes the task ledger. It runs after
+/// each other overlay, so no entry of the teammate or of horch undoes it.
+/// A sandboxed worker with no known fleet root is refused: a guard whose
+/// fact is unknown does not hold.
+fn seal_operator_boundary(
+    env: &LaunchEnv,
+    teammate: &Teammate,
+    settings: &mut serde_json::Map<String, Value>,
+) -> Result<()> {
+    if !is_worker(teammate) || teammate.sandbox.is_none() || !settings.contains_key("sandbox") {
+        return Ok(());
+    }
+    let fleet_root = env.fleet_root.as_deref().with_context(|| {
+        format!(
+            "{}: refusing to launch a sandboxed worker with no fleet root (SR-8)",
+            teammate.name
+        )
+    })?;
+    let paths = OperatorPaths::of(fleet_root);
+    let mut ledger = Vec::new();
+    if let Some(db) = &env.ledger_db {
+        // The default fleet root is in the ledger folder, and `denyWrite`
+        // wins over `allowWrite`, so the folder is closed only when it does
+        // not hold the fleet root. Else its database files are.
+        match db.parent() {
+            Some(dir) if !fleet_root.starts_with(dir) => ledger.push(Closed::Folder(dir.into())),
+            _ => {}
+        }
+        for suffix in ["", "-wal", "-shm", "-journal"] {
+            let mut file = db.clone().into_os_string();
+            file.push(suffix);
+            ledger.push(Closed::File(file.into()));
+        }
+    }
+    seal(settings, &paths, &ledger, env.home())
+}
+
+/// A path that a worker cannot write.
+enum Closed {
+    File(PathBuf),
+    Folder(PathBuf),
+}
+
+impl Closed {
+    fn path(&self) -> &Path {
+        match self {
+            Closed::File(path) | Closed::Folder(path) => path,
+        }
+    }
+
+    /// The path in a permission rule: `//` starts an absolute path.
+    fn rule(&self, tool: &str) -> String {
+        match self {
+            Closed::File(path) => format!("{tool}(/{})", path.display()),
+            Closed::Folder(path) => format!("{tool}(/{}/**)", path.display()),
+        }
+    }
+}
+
+/// Put the operator boundary into `settings`, which holds a `sandbox`
+/// block. `ledger` are the paths of the task ledger. `home` expands a `~/`
+/// entry of the teammate.
+fn seal(
+    settings: &mut serde_json::Map<String, Value>,
+    paths: &OperatorPaths,
+    ledger: &[Closed],
+    home: Option<&Path>,
+) -> Result<()> {
+    let run = Closed::Folder(paths.run.clone());
+    // Bash by the sandbox: a read deny of the run folder also hides the
+    // channel socket on Linux, where `allowUnixSockets` is ignored. A
+    // request file carries the token, so the whole folder is closed.
+    add_entries(
+        settings,
+        [
+            (FS, "denyRead", run.path().to_string_lossy().into_owned()),
+            (PERMS, "deny", run.rule("Read")),
+        ],
+    )?;
+    for closed in std::iter::once(&run).chain(ledger) {
+        add_entries(
+            settings,
+            [
+                (
+                    FS,
+                    "denyWrite",
+                    closed.path().to_string_lossy().into_owned(),
+                ),
+                // An `Edit(...)` deny closes the path to Edit and Write too.
+                (PERMS, "deny", closed.rule("Edit")),
+            ],
+        )?;
+    }
+    let sandbox = object_entry(settings, "sandbox")?;
+    // A narrower `allowRead` re-opens a part of a `denyRead` folder.
+    retain_entries(
+        object_entry(sandbox, "filesystem")?,
+        "allowRead",
+        |entry| match SandboxPath::of(entry, home) {
+            SandboxPath::Exact(path) => !path.starts_with(&paths.run),
+            SandboxPath::Glob(prefix) => !related(&prefix, &paths.run),
+            SandboxPath::Unknown => false,
+        },
+    )?;
+    let network = object_entry(sandbox, "network")?;
+    retain_entries(network, "allowUnixSockets", |entry| {
+        match SandboxPath::of(entry, home) {
+            SandboxPath::Exact(path) => !related(&path, &paths.run),
+            SandboxPath::Glob(prefix) => !related(&prefix, &paths.run),
+            SandboxPath::Unknown => false,
+        }
+    })?;
+    network.insert("allowAllUnixSockets".into(), Value::Bool(false));
+    Ok(())
+}
+
+/// Keep each string of the list at `key` for which `keep` is true. A
+/// missing list stays missing.
+fn retain_entries(
+    node: &mut serde_json::Map<String, Value>,
+    key: &str,
+    keep: impl Fn(&str) -> bool,
+) -> Result<()> {
+    let Some(list) = node.get_mut(key) else {
+        return Ok(());
+    };
+    let list = list
+        .as_array_mut()
+        .with_context(|| format!("sandbox list {key} must be a list"))?;
+    list.retain(|entry| entry.as_str().is_some_and(&keep));
+    Ok(())
+}
+
+/// Whether 1 of `a` and `b` holds the other.
+fn related(a: &Path, b: &Path) -> bool {
+    a.starts_with(b) || b.starts_with(a)
+}
+
+/// What a path entry of a `sandbox` block names
+/// (code.claude.com/docs/en/settings-reference, "Sandbox path prefixes").
+#[derive(Debug, PartialEq, Eq)]
+enum SandboxPath {
+    /// 1 absolute path, and all below it.
+    Exact(PathBuf),
+    /// A pattern: the absolute folder before its first wildcard.
+    Glob(PathBuf),
+    /// A relative path: what it names depends on the settings file.
+    Unknown,
+}
+
+impl SandboxPath {
+    fn of(entry: &str, home: Option<&Path>) -> SandboxPath {
+        let entry = entry.trim_end_matches("/**");
+        let entry = entry.trim_end_matches('/');
+        let path = match (entry.strip_prefix("~/"), home) {
+            (Some(rest), Some(home)) => home.join(rest),
+            (Some(_), None) => return SandboxPath::Unknown,
+            (None, _) if entry.starts_with('/') => PathBuf::from(entry),
+            (None, _) => return SandboxPath::Unknown,
+        };
+        let text = path.to_string_lossy();
+        match text.find(['*', '?', '[', '{']) {
+            None => SandboxPath::Exact(path.components().collect()),
+            Some(i) => {
+                let prefix = Path::new(&text[..i]);
+                let folder = if text[..i].ends_with('/') {
+                    prefix
+                } else {
+                    prefix.parent().unwrap_or(Path::new("/"))
+                };
+                SandboxPath::Glob(folder.components().collect())
+            }
+        }
+    }
+}
+
+/// The operator boundary of the Claude Code adapter on this OS: for each
+/// operator act, whether the `--settings` that horch renders for a worker
+/// `teammate` of the fleet at `fleet_root` denies it (SR-8). Profile
+/// validation refuses a profile whose boundary does not hold.
+pub fn operator_boundary(teammate: &Teammate, fleet_root: &Path) -> Result<Boundary, NotSupported> {
+    operator_boundary_on(std::env::consts::OS, teammate, fleet_root)
+}
+
+/// [`operator_boundary`] on the OS `os` (a value of
+/// [`std::env::consts::OS`]). The Claude Code sandbox runs on macOS
+/// (Seatbelt) and Linux (bubblewrap) only.
+pub fn operator_boundary_on(
+    os: &str,
+    teammate: &Teammate,
+    fleet_root: &Path,
+) -> Result<Boundary, NotSupported> {
+    if !matches!(os, "macos" | "linux") {
+        return Err(NotSupported {
+            adapter: "claude",
+            os: os.to_string(),
+            reason: "Claude Code sandboxes Bash only on macOS and Linux",
+        });
+    }
+    let home = crate::runtime::paths::home_dir(&crate::runtime::ProcessEnv);
+    let paths = OperatorPaths::of(fleet_root);
+    let mut settings = serde_json::Map::new();
+    let rendered = overlay_sandbox(teammate, &mut settings).and_then(|()| {
+        if is_worker(teammate) && settings.contains_key("sandbox") {
+            seal(&mut settings, &paths, &[], Some(&home))?;
+        }
+        Ok(())
+    });
+    if rendered.is_err() {
+        return Ok(Boundary::default());
+    }
+    Ok(boundary_of(&settings, &paths, Some(&home)))
+}
+
+/// What the rendered `settings` deny of the 3 operator acts. A rule that
+/// this function cannot read does not deny: a pattern or a relative path
+/// in an allow list opens, and in a deny list closes nothing.
+fn boundary_of(
+    settings: &serde_json::Map<String, Value>,
+    paths: &OperatorPaths,
+    home: Option<&Path>,
+) -> Boundary {
+    let Some(sandbox) = settings.get("sandbox").and_then(Value::as_object) else {
+        return Boundary::default();
+    };
+    let forced_on = |path: &[&str], forced: bool| {
+        let (key, parents) = path.split_last().expect("a non-empty key path");
+        let node = parents
+            .iter()
+            .try_fold(sandbox, |node, parent| node.get(*parent)?.as_object());
+        node.and_then(|n| n.get(*key)) == Some(&Value::Bool(forced))
+    };
+    let on = SANDBOX_FORCED
+        .iter()
+        .all(|&(path, forced)| forced_on(path, forced))
+        && sandbox_problems(sandbox).is_empty();
+    if !on {
+        return Boundary::default();
+    }
+    let list = |section: &str, key: &str| -> Vec<SandboxPath> {
+        let items = sandbox
+            .get(section)
+            .and_then(|s| s.get(key))
+            .and_then(Value::as_array);
+        items
+            .into_iter()
+            .flatten()
+            .map(|v| {
+                v.as_str()
+                    .map_or(SandboxPath::Unknown, |s| SandboxPath::of(s, home))
+            })
+            .collect()
+    };
+    let read_denied = |path: &Path| {
+        // The narrower rule applies; a tie or an unreadable allow opens.
+        let deny = list("filesystem", "denyRead")
+            .iter()
+            .filter_map(|p| match p {
+                SandboxPath::Exact(d) if path.starts_with(d) => Some(d.components().count()),
+                _ => None,
+            })
+            .max();
+        let allow = list("filesystem", "allowRead")
+            .iter()
+            .filter_map(|p| match p {
+                SandboxPath::Exact(a) if path.starts_with(a) => Some(a.components().count()),
+                SandboxPath::Exact(_) => None,
+                SandboxPath::Glob(g) if !related(g, path) => None,
+                _ => Some(usize::MAX),
+            })
+            .max();
+        deny.is_some_and(|deny| allow.is_none_or(|allow| deny > allow))
+    };
+    let closes = |key: &str, path: &Path| {
+        list("filesystem", key)
+            .iter()
+            .any(|p| matches!(p, SandboxPath::Exact(d) if path.starts_with(d)))
+    };
+    let all_sockets = sandbox
+        .get("network")
+        .and_then(|n| n.get("allowAllUnixSockets"))
+        .is_some_and(|v| v != &Value::Bool(false));
+    let socket_allowed = list("network", "allowUnixSockets").iter().any(|p| match p {
+        SandboxPath::Exact(s) => paths.channel.starts_with(s),
+        SandboxPath::Glob(g) => related(g, &paths.channel),
+        SandboxPath::Unknown => true,
+    });
+    Boundary {
+        read_token_denied: read_denied(&paths.token) && rule_denies(settings, "Read", &paths.token),
+        connect_channel_denied: !all_sockets && !socket_allowed && read_denied(&paths.channel),
+        write_requests_denied: closes("denyWrite", &paths.requests)
+            && rule_denies(settings, "Edit", &paths.requests),
+    }
+}
+
+/// Whether a `permissions.deny` rule of `tool` closes `path`: `Tool(//p)`
+/// for `p` itself, `Tool(//p/**)` for `p` and all below it.
+fn rule_denies(settings: &serde_json::Map<String, Value>, tool: &str, path: &Path) -> bool {
+    let rules = settings
+        .get("permissions")
+        .and_then(|p| p.get("deny"))
+        .and_then(Value::as_array);
+    let prefix = format!("{tool}(//");
+    rules
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .any(|rule| {
+            let Some(inner) = rule.strip_prefix(&prefix).and_then(|r| r.strip_suffix(')')) else {
+                return false;
+            };
+            let inner = format!("/{inner}");
+            match inner.strip_suffix("/**") {
+                Some(dir) => !dir.contains(['*', '?']) && path.starts_with(dir),
+                None => Path::new(&inner) == path,
+            }
+        })
 }
 
 /// What in a teammate's `sandbox:` block would open a way out, one line
@@ -1486,6 +1826,9 @@ mod tests {
             path: Some(sandbox_tools_path(&tmp.join(tools.to_string()), tools)),
             state_root: Some(PathBuf::from("/state/horch")),
             ledger_dir: Some(PathBuf::from("/home/op/.horch")),
+            ledger_db: Some(PathBuf::from("/home/op/.horch/ledger.sqlite3")),
+            fleet_root: Some(PathBuf::from("/home/op/.horch/fleet")),
+            home: Some(PathBuf::from("/home/op")),
             herdr_socket: Some(PathBuf::from("/home/op/.config/herdr/herdr.sock")),
             ..LaunchEnv::for_test()
         })
@@ -1531,12 +1874,22 @@ mod tests {
                     "network": {
                         "allowedDomains": ["api.appstoreconnect.apple.com"],
                         "strictAllowlist": true,
-                        "allowUnixSockets": ["/state/horch", "/home/op/.config/herdr/herdr.sock"]
+                        "allowUnixSockets": ["/state/horch", "/home/op/.config/herdr/herdr.sock"],
+                        "allowAllUnixSockets": false
                     },
                     "filesystem": {
                         "allowRead": ["~/.config/horch/asc", "/state/horch", "/home/op/.horch"],
-                        "allowWrite": ["/state/horch", "/home/op/.horch"],
-                        "denyWrite": ["/state/horch/skill-bundles"]
+                        // A worker has no task folder or worktree here.
+                        "allowWrite": [],
+                        "denyRead": ["/home/op/.horch/fleet/run"],
+                        "denyWrite": [
+                            "/state/horch/skill-bundles",
+                            "/home/op/.horch/fleet/run",
+                            "/home/op/.horch/ledger.sqlite3",
+                            "/home/op/.horch/ledger.sqlite3-wal",
+                            "/home/op/.horch/ledger.sqlite3-shm",
+                            "/home/op/.horch/ledger.sqlite3-journal"
+                        ]
                     }
                 })
             );
@@ -1579,7 +1932,9 @@ mod tests {
                 json!(["/state/horch/report/r1.sock"])
             );
             let text = settings.to_string();
-            for path in ["/home/op/.horch", "herdr.sock", "\"/state/horch\""] {
+            // The operator boundary names the run folder and the ledger
+            // files in its deny lists, never the ledger folder itself.
+            for path in ["\"/home/op/.horch\"", "herdr.sock", "\"/state/horch\""] {
                 assert!(!text.contains(path), "{path}: {text}");
             }
             let socket = built
@@ -1626,7 +1981,7 @@ mod tests {
                 assert_eq!(reads.first(), Some(&json!("/side")), "{access:?}");
                 assert_eq!(reads.last(), Some(&json!(bundle)), "{access:?}");
                 let denied = fs["denyWrite"].as_array().unwrap();
-                assert_eq!(denied.last(), Some(&json!(bundle)), "{access:?}");
+                assert!(denied.contains(&json!(bundle)), "{access:?}");
                 let writes = fs["allowWrite"].as_array().unwrap();
                 assert!(!writes.contains(&json!(bundle)), "{access:?}");
                 let perms = &settings["permissions"];
@@ -1634,14 +1989,12 @@ mod tests {
                 // `/side` is the teammate's own `allowRead` path (T-31).
                 assert_eq!(perms["additionalDirectories"], json!(["/side", bundle]));
                 let rules = perms["deny"].as_array().unwrap();
-                assert_eq!(
-                    rules[rules.len() - 2..],
-                    [
-                        json!(format!("Edit(/{bundle}/**)")),
-                        json!(format!("Write(/{bundle}/**)"))
-                    ],
-                    "{access:?}"
-                );
+                for rule in [
+                    format!("Edit(/{bundle}/**)"),
+                    format!("Write(/{bundle}/**)"),
+                ] {
+                    assert!(rules.contains(&json!(rule)), "{access:?}");
+                }
             }
         }
     }
@@ -1725,7 +2078,9 @@ mod tests {
                         .unwrap();
                 let settings = settings_arg(&built);
                 let fs = &settings["sandbox"]["filesystem"];
-                assert_eq!(fs["allowWrite"], json!(["/state/horch", "/home/op/.horch"]));
+                // A worker writes only its task folder and worktree, and
+                // this launch has neither.
+                assert_eq!(fs["allowWrite"], json!([]));
                 let denied = fs["denyWrite"].as_array().unwrap();
                 assert_eq!(denied.first(), Some(&json!(bundles)), "{skill_bundle:?}");
                 // The rules of the bundle folder; other deny rules are not
@@ -1868,19 +2223,22 @@ mod tests {
         .unwrap();
         let settings = settings_arg(&built);
         // Only the state root's bundle folder (ticket 28), no bundle of its own.
-        assert_eq!(
-            settings["sandbox"]["filesystem"]["denyWrite"],
-            json!(["/state/horch/skill-bundles"])
-        );
+        let bundles: Vec<&Value> = settings["sandbox"]["filesystem"]["denyWrite"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|p| p.as_str().is_some_and(|p| p.contains("skill-bundles")))
+            .collect();
+        assert_eq!(bundles, [&json!("/state/horch/skill-bundles")]);
         assert!(settings["permissions"]
             .get("additionalDirectories")
             .is_none());
-        // Only the bundle folder's 2 rules name a path.
+        // Only the bundle folder's 2 rules name a path in the state root.
         let path_rules = settings["permissions"]["deny"]
             .as_array()
             .unwrap()
             .iter()
-            .filter(|r| r.as_str().is_some_and(|r| r.contains('/')))
+            .filter(|r| r.as_str().is_some_and(|r| r.contains("/state/horch")))
             .count();
         assert_eq!(path_rules, 2);
 
@@ -1967,6 +2325,55 @@ mod tests {
         assert!(!got.iter().any(|a| a.contains("/state/horch")), "{got:?}");
     }
 
+    /// A sandboxed worker whose fleet root is unknown does not start: its
+    /// operator boundary cannot be written (SR-8).
+    #[test]
+    fn a_sandboxed_worker_without_a_fleet_root_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let [env, _] = sandbox_envs(tmp.path());
+        if !host_can_sandbox(&env) {
+            return;
+        }
+        let env = LaunchEnv {
+            fleet_root: None,
+            ..env
+        };
+        let err = super::super::launch::command_in(
+            &env,
+            &sandboxed(json!({})),
+            Session::Fresh("id"),
+            "go",
+            None,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("no fleet root"), "{err}");
+    }
+
+    /// A fleet orchestrator is not a worker profile: its settings get no
+    /// operator deny until Phase 6 (MAP Q2), and its boundary says so.
+    #[test]
+    fn a_fleet_orchestrator_gets_no_operator_boundary() {
+        let t = Teammate {
+            name: FLEET_ORCHESTRATORS[0].into(),
+            ..sandboxed(json!({}))
+        };
+        let boundary = operator_boundary_on("macos", &t, Path::new("/fleet")).unwrap();
+        assert_eq!(boundary, Boundary::default());
+    }
+
+    #[test]
+    fn a_sandbox_path_entry_names_a_path_a_pattern_or_nothing_known() {
+        let home = Some(Path::new("/home/op"));
+        let of = |entry| SandboxPath::of(entry, home);
+        assert_eq!(of("/a/b/"), SandboxPath::Exact("/a/b".into()));
+        assert_eq!(of("//a/b/**"), SandboxPath::Exact("/a/b".into()));
+        assert_eq!(of("~/x"), SandboxPath::Exact("/home/op/x".into()));
+        assert_eq!(of("/a/*/c"), SandboxPath::Glob("/a".into()));
+        assert_eq!(of("/a/b*"), SandboxPath::Glob("/a".into()));
+        assert_eq!(of("./x"), SandboxPath::Unknown);
+        assert_eq!(SandboxPath::of("~/x", None), SandboxPath::Unknown);
+    }
+
     /// A skills launch carries the sandbox as inline settings JSON. The
     /// launch adds horch's paths to it too, once each, and keeps the forced
     /// keys.
@@ -1986,7 +2393,9 @@ mod tests {
         let settings = settings_arg(&built);
         let fs = &settings["sandbox"]["filesystem"];
         assert_eq!(fs["allowRead"], json!(["/state/horch", "/home/op/.horch"]));
-        assert_eq!(fs["allowWrite"], json!(["/state/horch", "/home/op/.horch"]));
+        // The teammate's own path stays; a worker gets no horch path to
+        // write but its task folder and worktree.
+        assert_eq!(fs["allowWrite"], json!(["/state/horch"]));
         assert_eq!(
             settings["sandbox"]["network"]["allowUnixSockets"],
             json!(["/state/horch", "/home/op/.config/herdr/herdr.sock"])
@@ -2038,7 +2447,7 @@ mod tests {
         );
         assert_eq!(
             settings["sandbox"]["filesystem"]["allowWrite"],
-            json!(["/state/horch", "/home/op/.horch"]),
+            json!([]),
             "{settings}"
         );
         assert_eq!(

@@ -71,6 +71,19 @@ pub struct LaunchEnv {
     /// `$HERDR_SOCKET_PATH`. A sandboxed Claude launch allows Bash to
     /// connect to it.
     pub herdr_socket: Option<PathBuf>,
+    /// The task ledger database (`Paths::ledger_db`). A sandboxed Claude
+    /// worker cannot write it or its `-wal`, `-shm` and `-journal` files
+    /// (RR-5).
+    pub ledger_db: Option<PathBuf>,
+    /// The fleet root of fleetd (`Paths::fleet_root`). A sandboxed Claude
+    /// worker cannot read or write its `run/` folder, or connect to the
+    /// command channel in it (SR-8).
+    pub fleet_root: Option<PathBuf>,
+    /// The task folder of the worker's attempt. A sandboxed Claude worker
+    /// writes only it and [`LaunchEnv::worktree`].
+    pub task_dir: Option<PathBuf>,
+    /// The worktree of the worker's task.
+    pub worktree: Option<PathBuf>,
     /// The pane's report socket (`messaging::report::socket_path`), for a
     /// `horch_access: report` launch with a ledger record. Such a launch
     /// opens only this socket to Bash, and gets no state root, ledger
@@ -118,6 +131,10 @@ impl LaunchEnv {
             state_root: Some(ctx.paths.state_root.clone()),
             ledger_dir: ctx.paths.ledger_db.parent().map(Path::to_path_buf),
             herdr_socket: ctx.inherited.herdr_socket_path.clone(),
+            ledger_db: Some(ctx.paths.ledger_db.clone()),
+            fleet_root: Some(ctx.paths.fleet_root.clone()),
+            task_dir: None,
+            worktree: None,
             report_socket: None,
             skill_bundle: None,
             roster_dir: ctx.bins.roster_override.clone(),
@@ -146,6 +163,10 @@ impl LaunchEnv {
             state_root: None,
             ledger_dir: None,
             herdr_socket: None,
+            ledger_db: None,
+            fleet_root: None,
+            task_dir: None,
+            worktree: None,
             report_socket: None,
             skill_bundle: None,
             roster_dir: None,
