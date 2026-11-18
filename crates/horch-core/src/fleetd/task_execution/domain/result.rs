@@ -311,6 +311,11 @@ fn self_check(item: &Json) -> Result<SelfCheck, String> {
     }
 }
 
+/// Whether `text` is 1 JSON document. The error names why not.
+pub(crate) fn parse_json(text: &str) -> Result<(), String> {
+    Parser::new(text).document().map(|_| ())
+}
+
 /// `s` as a JSON string.
 pub(crate) fn json_string(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
