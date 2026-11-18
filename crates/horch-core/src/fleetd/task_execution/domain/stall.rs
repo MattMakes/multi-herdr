@@ -240,6 +240,55 @@ fn excerpt(screen: Option<&str>) -> String {
     screen[start..].to_string()
 }
 
+/// What the pass does with a `stalled` task. The design moves a `stalled`
+/// task on only after the process group of its attempt is stopped (the
+/// state table, row `stalled`, and FM-14).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Settle {
+    /// A process of the old attempt can be alive: the task stays `stalled`.
+    Wait,
+    /// No process of the old attempt is alive: rung 6.
+    Rung6,
+    /// A process of the old attempt is alive past the stop bound: the task
+    /// stays `stalled`, and the operator gets 1 needs-you item.
+    Stuck,
+}
+
+/// The stop bound: the time from the stall to the end of its stop, in
+/// seconds of the fleet clock. It holds the polite stop and its grace
+/// `stop_grace_s`, the hard stop within 1 pass of `pass_period_s`, the
+/// grace of the hard stop, and 1 more pass that reads the facts.
+pub fn stop_bound_s(stop_grace_s: u64, pass_period_s: u64) -> u64 {
+    stop_grace_s.saturating_add(pass_period_s).saturating_mul(2)
+}
+
+/// The decision for a `stalled` task at the fleet clock `clock`.
+/// `processes` holds what the pass saw of each process of the attempts of
+/// the task. `bound_at` is the end of the stop bound on the fleet clock.
+/// - Each process is dead, or there is no process: rung 6 at once.
+/// - A process is alive: wait. Past `bound_at` the hard stop did not end
+///   it: [`Settle::Stuck`].
+/// - The pass cannot tell (a process that it did not read, or a platform
+///   that cannot see it): wait until `bound_at`, then rung 6. At
+///   `bound_at` the hard stop was sent and its grace passed, so the old
+///   process is stopped as far as fleetd can stop it.
+pub fn settle(processes: &[Seen], clock: i64, bound_at: i64) -> Settle {
+    let past = clock >= bound_at;
+    if processes.iter().all(|p| *p == Seen::Dead) {
+        Settle::Rung6
+    } else if processes.contains(&Seen::Alive) {
+        if past {
+            Settle::Stuck
+        } else {
+            Settle::Wait
+        }
+    } else if past {
+        Settle::Rung6
+    } else {
+        Settle::Wait
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -577,5 +626,24 @@ mod tests {
     fn doorbell_holds_no_task_data() {
         assert_eq!(DOORBELL.lines().count(), 1);
         assert!(!DOORBELL.contains('{'));
+    }
+
+    #[test]
+    fn stalled_task_moves_on_only_when_no_old_process_can_be_alive() {
+        let (dead, alive, unknown) = (Seen::Dead, Seen::Alive, Seen::Unknown);
+        assert_eq!(settle(&[], 10, 100), Settle::Rung6);
+        assert_eq!(settle(&[dead, dead], 10, 100), Settle::Rung6);
+        assert_eq!(settle(&[dead, alive], 10, 100), Settle::Wait);
+        assert_eq!(settle(&[dead, alive], 100, 100), Settle::Stuck);
+        assert_eq!(settle(&[dead, unknown], 99, 100), Settle::Wait);
+        assert_eq!(settle(&[dead, unknown], 100, 100), Settle::Rung6);
+        assert_eq!(settle(&[alive, unknown], 100, 100), Settle::Stuck);
+    }
+
+    #[test]
+    fn stop_bound_holds_2_graces_and_2_passes() {
+        assert_eq!(stop_bound_s(20, 5), 50);
+        assert_eq!(stop_bound_s(600, 5), 1_210);
+        assert_eq!(stop_bound_s(u64::MAX, 5), u64::MAX);
     }
 }

@@ -1408,7 +1408,9 @@ impl Rules<'_> {
     /// 3. `promote_pending` (I2);
     /// 4. for each live attempt: `renew_or_expire_lease`, then the stall
     ///    ladder, then the quota rule or rung 6 for each attempt it ended;
-    /// 5. `release_reset_pools` and `escalate_overdue`.
+    /// 5. `settle_stalled`: rung 6 for each `stalled` task whose old
+    ///    process is gone (FM-14);
+    /// 6. `release_reset_pools` and `escalate_overdue`.
     ///
     /// So a result of this pass wins over a lease expiry of this pass: an
     /// attempt that step 1 ended holds no lease in step 4.
@@ -1417,6 +1419,7 @@ impl Rules<'_> {
         cancel::complete_cancels(self.tx, &read.task)?;
         self.promote_pending()?;
         self.live_attempts(&read.live, stops, doorbells)?;
+        self.settle_stalled(&read.task)?;
         self.finish_idle(&read.live)?;
         if let Some(pools) = self.pools {
             quota::release_reset_pools(self.tx, self.guard, pools)?;
@@ -1476,14 +1479,37 @@ impl Rules<'_> {
             }
             return Ok(());
         }
-        if !outcome.burns_attempt() || tasks::cancel_requested(self.tx, task)?.is_some() {
+        // A `stalled` task waits for the stop of its old process:
+        // `settle_stalled` does its rung 6 (FM-14).
+        if !outcome.burns_attempt()
+            || outcome == Outcome::Stalled
+            || tasks::cancel_requested(self.tx, task)?.is_some()
+        {
             return Ok(());
         }
-        let policy = retry::Policy {
+        retry::burn_attempt(self.tx, task, outcome, &self.policy(persona), why)?;
+        Ok(())
+    }
+
+    /// The numbers of rung 6 for a task of `persona`.
+    fn policy(&self, persona: Option<&str>) -> retry::Policy {
+        retry::Policy {
             retry: self.profile(persona).retry,
             replan_limit_s: self.config.replan_limit_s,
-        };
-        retry::burn_attempt(self.tx, task, outcome, &policy, why)?;
+        }
+    }
+
+    /// Step 5: rung 6 for each `stalled` task whose old process the pass
+    /// sees gone. A task whose old process lives stays `stalled`, so no
+    /// claim starts a new attempt beside it.
+    fn settle_stalled(&self, facts: &Facts) -> Result<()> {
+        let bound = rungs::stop_bound_s(self.config.stop_grace_s, self.config.pass_period_s);
+        for s in ladder::settle_stalled(self.tx, self.clock.0, facts, bound)? {
+            let persona = self.persona_of(&s.worker)?;
+            let why = format!("the process of attempt {} is gone", s.attempt);
+            let policy = self.policy(persona.as_deref());
+            retry::burn_attempt(self.tx, &s.task, Outcome::Stalled, &policy, &why)?;
+        }
         Ok(())
     }
 

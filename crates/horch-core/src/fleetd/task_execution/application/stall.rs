@@ -14,6 +14,8 @@
 //!   (ticket 11) acts on `quota`.
 //! - Rung 4: the end `stalled`, and 1 needs-you item `dialog:<attempt>`
 //!   with the screen excerpt.
+//! - [`settle_stalled`]: a `stalled` task goes to rung 6 only after the
+//!   pass sees no process of its old attempt alive (FM-14).
 
 use anyhow::{bail, Result};
 use rusqlite::Connection;
@@ -23,16 +25,21 @@ use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
 use crate::fleetd::ideas::application::needs_you::{self, NeedsYouList};
 use crate::fleetd::ideas::domain::needs_you::Write;
 use crate::fleetd::task_execution::adapters::sqlite as store;
+use crate::fleetd::task_execution::application::cancel;
 use crate::fleetd::task_execution::domain::retry::Outcome;
-use crate::fleetd::task_execution::domain::stall::Decision;
+use crate::fleetd::task_execution::domain::stall::{settle, Decision, Settle};
 use crate::fleetd::task_execution::domain::task::{
-    AttemptRow, AttemptState, ProcessScope, RowRef, Stop, Target,
+    AttemptRow, AttemptState, Facts, ProcessScope, RowRef, Seen, Stop, Target,
 };
 use crate::taskledger::model::{Actor, EventKind, TaskStatus, WorkerStatus};
 use crate::taskledger::{util, workers};
 
 /// The kind of the needs-you item of an attempt that waits on a dialog.
 const DIALOG: &str = "dialog";
+
+/// The kind of the needs-you item of a `stalled` task whose old process
+/// lives past the stop bound.
+const STOP_FAILED: &str = "stop_failed";
 
 /// 1 effect of the ladder, to do after the commit.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -105,6 +112,109 @@ pub fn apply(
             Ok(stop_of(a))
         }
     }
+}
+
+/// A `stalled` task whose old attempt is stopped: rung 6 applies to it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Stopped {
+    pub task: String,
+    /// The last attempt of the task.
+    pub attempt: String,
+    /// The worker of `attempt`.
+    pub worker: String,
+}
+
+/// The rule of each `stalled` task at the fleet clock `clock`, in `tx`
+/// ([`settle`]). `facts` holds what the pass saw of each process.
+/// `bound_s` is the stop bound in seconds.
+///
+/// - The first pass of a stall writes `tasks.due_at`: the end of the stop
+///   bound.
+/// - The tasks that rung 6 can move are returned. The caller does rung 6.
+/// - A task whose old process lives past the bound gets 1 needs-you item
+///   and stays `stalled`.
+/// - A task with a cancel that waits has its own path: `complete_cancels`.
+pub fn settle_stalled(
+    tx: &Connection,
+    clock: i64,
+    facts: &Facts,
+    bound_s: u64,
+) -> Result<Vec<Stopped>> {
+    let bound = i64::try_from(bound_s).unwrap_or(i64::MAX);
+    let mut out = Vec::new();
+    for (task, due_at) in stalled_tasks(tx)? {
+        let bound_at = match due_at {
+            Some(t) => t,
+            None => {
+                let t = clock.saturating_add(bound);
+                tx.execute(
+                    "UPDATE tasks SET due_at = ?2 WHERE task_id = ?1",
+                    rusqlite::params![task, t],
+                )?;
+                t
+            }
+        };
+        let seen: Vec<Seen> = cancel::watched(tx, &task)?
+            .iter()
+            .map(|p| facts.processes.get(p).copied().unwrap_or(Seen::Unknown))
+            .collect();
+        let key = format!("{STOP_FAILED}:{task}");
+        match settle(&seen, clock, bound_at) {
+            Settle::Wait => {}
+            Settle::Stuck => stop_failed(tx, &task, &key, bound_s)?,
+            Settle::Rung6 => {
+                needs_you::resolve(tx, &key)?;
+                let (attempt, worker) = last_attempt(tx, &task)?;
+                out.push(Stopped {
+                    task,
+                    attempt,
+                    worker,
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Each `stalled` task with no cancel that waits, with its `due_at`.
+fn stalled_tasks(tx: &Connection) -> Result<Vec<(String, Option<i64>)>> {
+    let mut stmt = tx.prepare(
+        "SELECT task_id, due_at FROM tasks
+         WHERE status = ?1 AND cancel_requested IS NULL ORDER BY task_id",
+    )?;
+    let rows = stmt.query_map([TaskStatus::Stalled.as_str()], |r| {
+        Ok((r.get(0)?, r.get(1)?))
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// The id and the worker of the last attempt of task `task`.
+fn last_attempt(tx: &Connection, task: &str) -> Result<(String, String)> {
+    Ok(tx.query_row(
+        "SELECT id, worker_id FROM attempts WHERE task_id = ?1 ORDER BY rowid DESC LIMIT 1",
+        [task],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?)
+}
+
+/// Open the needs-you item `key` of the `stalled` task `task`.
+fn stop_failed(tx: &Connection, task: &str, key: &str, bound_s: u64) -> Result<()> {
+    let text = format!(
+        "Task {task} is stalled, and a process of its old attempt is alive {bound_s} s after the \
+         stall. fleetd sent the polite stop and the hard stop. The task stays stalled, so no \
+         new attempt starts beside the old process. Stop the process yourself. The next pass \
+         then moves the task on."
+    );
+    needs_you::open_item(
+        tx,
+        &Write {
+            key,
+            kind: STOP_FAILED,
+            entity: Entity::Task.as_str(),
+            entity_id: task,
+            text: &text,
+        },
+    )
 }
 
 /// End the attempt `a` with `outcome`, end its live worker row, and move

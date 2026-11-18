@@ -19,7 +19,7 @@ use chrono::Utc;
 use horch_core::fleetd::fleet_runtime::adapters::scans::FolderItem;
 use horch_core::fleetd::fleet_runtime::adapters::watchdog_duties::{DutyEffects, WatchdogDuties};
 use horch_core::fleetd::fleet_runtime::application::pass::{
-    NoDuties, Outside, Pass, PassReport, PoolFacts, Ports, RunDuties, Settings,
+    Done, NoDuties, Outside, Pass, PassReport, PoolFacts, Ports, RunDuties, Settings,
 };
 use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
 use horch_core::fleetd::fleet_runtime::domain::health::Hold;
@@ -52,6 +52,8 @@ struct World {
     _temp: tempfile::TempDir,
     conn: Connection,
     run: Run,
+    /// The `fleet.toml` of each pass.
+    config: FleetConfig,
 }
 
 fn world() -> World {
@@ -80,6 +82,7 @@ fn world_with(new_run: NewRun) -> World {
         _temp: temp,
         conn,
         run,
+        config: FleetConfig::default(),
     }
 }
 
@@ -107,7 +110,7 @@ impl World {
         Settings {
             fleet_root: self.root(),
             generation: Generation(1),
-            config: FleetConfig::default(),
+            config: self.config.clone(),
             horch,
             faults: Faults::default(),
         }
@@ -450,7 +453,14 @@ fn idle_worker_is_stalled_and_queued_after_its_backoff() {
     let attempts = w.attempts(&task);
     assert_eq!(attempts[0].1, "ended", "{attempts:?}");
     assert_eq!(attempts[0].2.as_deref(), Some("stalled"));
+    assert_eq!(
+        w.task(&task).status,
+        "stalled",
+        "the stop comes after the commit"
+    );
     assert!(agent.exits(), "the stop of rung 3 ended the agent");
+    // The next pass sees the old process gone: rung 6.
+    w.pass_at(315, &worker, &fake);
     let t = w.task(&task);
     assert_eq!(t.status, "ready", "rung 6 queued it again");
     let not_before = t.not_before.expect("a backoff");
@@ -469,6 +479,77 @@ fn idle_worker_is_stalled_and_queued_after_its_backoff() {
         ClaimOutcome::Claimed(t) => assert_eq!(t.task.task_id, task),
         other => panic!("no claim after the backoff: {other:?}"),
     }
+}
+
+/// The stops of the process group of an agent in 1 pass report.
+fn stops(report: &PassReport) -> Vec<&str> {
+    report
+        .done
+        .iter()
+        .filter_map(|d| match d {
+            Done::Stop(s) => Some(s.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether a new worker can claim a task now. A refused claim ends that
+/// worker.
+fn claimable(w: &World) -> bool {
+    let next = w.worker(None);
+    matches!(
+        tasks::claim(&w.conn, &next).unwrap(),
+        ClaimOutcome::Claimed(_)
+    )
+}
+
+/// FM-14 (T-271): the agent ignores SIGTERM and `stop_grace_s` is 600 s. The
+/// lease expires, the polite stop does not end the agent, and 120 s later
+/// the task is still `stalled`: no claim starts attempt 2 beside the live
+/// attempt 1. After the hard stop the next pass moves it to `ready`, and
+/// its backoff starts at that move.
+#[test]
+fn stalled_task_stays_stalled_while_the_old_process_lives() {
+    let mut w = world();
+    w.config.stop_grace_s = 600;
+    let mut agent = Agent::run("trap '' TERM INT HUP; while :; do sleep 0.1; done");
+    let (task, worker) = w.claimed_task(&agent);
+    let fake = Fake::new(&w);
+
+    // The lease of 120 s from the claim at 0 expired: rung 3.
+    let report = w.pass_at(1_000, &worker, &fake);
+    assert_eq!(stops(&report).len(), 1, "1 polite stop: {report:?}");
+    let attempts = w.attempts(&task);
+    assert_eq!(attempts[0].2.as_deref(), Some("stalled"), "{attempts:?}");
+    assert_eq!(w.task(&task).status, "stalled");
+    assert!(agent.alive(), "it ignores the polite stop");
+
+    let report = w.pass_at(1_120, &worker, &fake);
+    assert!(stops(&report).is_empty(), "no stop again: {report:?}");
+    assert!(agent.alive(), "it lives in its grace");
+    assert_eq!(w.task(&task).status, "stalled", "its old process lives");
+    assert!(!claimable(&w), "no attempt 2 beside a live attempt 1");
+    assert_eq!(w.attempts(&task).len(), 1);
+
+    // Past the grace of the polite stop: the hard stop.
+    let report = w.pass_at(1_600, &worker, &fake);
+    assert_eq!(
+        stops(&report),
+        ["kill process ".to_string() + &agent.recorded().pid.to_string()]
+    );
+    assert!(agent.exits(), "the hard stop ended it");
+
+    w.pass_at(1_610, &worker, &fake);
+    let t = w.task(&task);
+    assert_eq!(t.status, "ready", "rung 6 after the process is gone");
+    assert_eq!(
+        t.not_before,
+        Some(w.clock() + 30),
+        "the backoff starts at the move"
+    );
+    assert!(!claimable(&w), "in its backoff");
+    w.set_clock(w.clock() + 30);
+    assert!(claimable(&w));
 }
 
 #[test]
@@ -694,8 +775,9 @@ fn background_wait_holds_while_the_agent_child_runs_and_ends_when_it_exits() {
     w.pass_at(810, &worker, &fake);
     let attempts = w.attempts(&task);
     assert_eq!(attempts[0].2.as_deref(), Some("stalled"), "{attempts:?}");
-    assert_eq!(w.task(&task).status, "ready");
     assert!(agent.exits());
+    w.pass_at(815, &worker, &fake);
+    assert_eq!(w.task(&task).status, "ready");
 }
 
 #[test]
