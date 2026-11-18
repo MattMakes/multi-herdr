@@ -37,7 +37,8 @@ pub struct LedgerSpawn {
     pub worker_id: String,
 }
 
-/// Write the worker row when this spawn joins a task-ledger run: it names
+/// Write the worker row, or adopt the row that fleetd wrote for a restart
+/// (`HORCH_ADOPT_WORKER`), when this spawn joins a task-ledger run: it names
 /// one with `--run` (or `HORCH_RUN_ID`), it replaces a ledger worker, its
 /// workspace has an active run, or a `spawn_only` controller in an active
 /// run sends a role its brief. `None` otherwise: a controller outside every

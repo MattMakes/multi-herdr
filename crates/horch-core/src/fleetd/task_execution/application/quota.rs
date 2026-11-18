@@ -34,7 +34,6 @@ use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
 use crate::fleetd::ideas::application::needs_you::NeedsYouList;
 use crate::fleetd::task_execution::adapters::sqlite as store;
-use crate::fleetd::task_execution::application::lease;
 use crate::fleetd::task_execution::domain::quota::{exit, released, Exit, Reading, Window};
 use crate::fleetd::task_execution::domain::retry::Outcome;
 use crate::fleetd::task_execution::domain::task::{AttemptRow, AttemptState, Recorded};
@@ -198,19 +197,7 @@ pub fn on_quota(
         return Ok(None);
     }
     let old = workers::get(tx, &a.worker_id)?;
-    let persona = old.persona.clone().unwrap_or_default();
-    let own = pools.reading(&persona);
-    let own_pool = own.as_ref().map_or("", |r| r.pool.as_str());
-    let fallback = pools.fallback(&persona, task.fallback_persona.as_deref());
-    let candidate = fallback
-        .as_deref()
-        .and_then(|f| Some((f, pools.reading(f)?)));
-    let decided = exit(
-        own_pool,
-        candidate.as_ref().map(|(f, r)| (*f, r)),
-        pools.full_use,
-        pools.now(),
-    );
+    let (decided, own_pool) = decide(&old, &task, pools);
     // No attempt is burned: the next claim adds 1 to `attempts`, and the
     // floor moves with it.
     tx.execute(
@@ -221,68 +208,87 @@ pub fn on_quota(
     )?;
     match decided {
         Exit::Restart { persona: fb } => {
-            let to = TaskStatus::Ready.as_str();
-            let why = cause(USAGE_LIMIT_FALLBACK);
-            transition(tx, guard, Entity::Task, &task_id, to, why, &NeedsYouList)?;
-            tx.execute(
-                "UPDATE tasks SET claimable_by = ?2, fallback_reason = ?3, not_before = NULL
-                 WHERE task_id = ?1",
-                params![task_id, fb, format!("usage limit of pool {own_pool}")],
-            )?;
-            // A ready task holds no lease.
-            lease::release(tx, &task_id)?;
-            let worker = workers::insert(
-                tx,
-                &NewWorker {
-                    run_id: task.run_id.clone(),
-                    kind: Some(WorkerKind::Worker),
-                    persona: fb,
-                    workspace_id: old.workspace_id.clone(),
-                    previous_worker_id: Some(old.worker_id.clone()),
-                    target_task_id: Some(task_id.clone()),
-                    ..Default::default()
-                },
-            )?;
-            let row = AttemptRow {
-                id: restart_attempt_id(&task_id, task.attempts),
-                task_id: Some(task_id.clone()),
-                worker_id: worker.clone(),
-                state: AttemptState::Launching,
-                process: None,
-                pane: None,
-            };
-            store::insert_attempt(tx, &row, &util::now())?;
-            created(
-                tx,
-                guard,
-                Entity::Attempt,
-                &row.id,
-                cause(USAGE_LIMIT_FALLBACK),
-            )?;
-            Ok(Some(Moved::Restart {
-                attempt: row.id,
-                worker,
-            }))
+            let why = format!("usage limit of pool {own_pool}");
+            move_to_fallback(tx, guard, &task, &old, fb, &why).map(Some)
         }
         Exit::Wait => {
             // The lease stays, and `waiting_quota` pauses it.
             let to = TaskStatus::WaitingQuota.as_str();
-            transition(
-                tx,
-                guard,
-                Entity::Task,
-                &task_id,
-                to,
-                cause(USAGE_LIMIT),
-                &NeedsYouList,
-            )?;
+            let why = cause(USAGE_LIMIT);
+            transition(tx, guard, Entity::Task, &task_id, to, why, &NeedsYouList)?;
             Ok(Some(Moved::Wait))
         }
     }
 }
 
+/// The exit of `task`, whose worker `old` hit a usage limit, and the pool
+/// of `old`.
+fn decide(old: &workers::Worker, task: &tasks::Task, pools: &Pools<'_>) -> (Exit, String) {
+    let persona = old.persona.clone().unwrap_or_default();
+    let own = pools.reading(&persona);
+    let own_pool = own.map_or_else(String::new, |r| r.pool);
+    let fallback = pools.fallback(&persona, task.fallback_persona.as_deref());
+    let candidate = fallback
+        .as_deref()
+        .and_then(|f| Some((f, pools.reading(f)?)));
+    let decided = exit(
+        &own_pool,
+        candidate.as_ref().map(|(f, r)| (*f, r)),
+        pools.full_use,
+        pools.now(),
+    );
+    (decided, own_pool)
+}
+
+/// `running -> ready` for the fallback persona `fb`, the worker row that
+/// its spawn adopts, and its attempt in `launching`.
+fn move_to_fallback(
+    tx: &Connection,
+    guard: Option<Generation>,
+    task: &tasks::Task,
+    old: &workers::Worker,
+    fb: String,
+    reason: &str,
+) -> Result<Moved> {
+    let task_id = &task.task_id;
+    let to = TaskStatus::Ready.as_str();
+    let why = cause(USAGE_LIMIT_FALLBACK);
+    transition(tx, guard, Entity::Task, task_id, to, why, &NeedsYouList)?;
+    tx.execute(
+        "UPDATE tasks SET claimable_by = ?2, fallback_reason = ?3, not_before = NULL
+         WHERE task_id = ?1",
+        params![task_id, fb, reason],
+    )?;
+    let worker = workers::insert(
+        tx,
+        &NewWorker {
+            run_id: task.run_id.clone(),
+            kind: Some(WorkerKind::Worker),
+            persona: fb,
+            workspace_id: old.workspace_id.clone(),
+            previous_worker_id: Some(old.worker_id.clone()),
+            target_task_id: Some(task_id.clone()),
+            ..Default::default()
+        },
+    )?;
+    let row = AttemptRow {
+        id: restart_attempt_id(task_id, task.attempts),
+        task_id: Some(task_id.clone()),
+        worker_id: worker.clone(),
+        state: AttemptState::Launching,
+        process: None,
+        pane: None,
+    };
+    store::insert_attempt(tx, &row, &util::now())?;
+    created(tx, guard, Entity::Attempt, &row.id, why)?;
+    Ok(Moved::Restart {
+        attempt: row.id,
+        worker,
+    })
+}
+
 /// Move each task in `waiting_quota` whose pool reset to `ready`, in the
-/// open transaction `tx`, and delete its lease. The pool is the pool of
+/// open transaction `tx`; `transition()` deletes its lease. The pool is the pool of
 /// the persona that claims the task next (`claimable_by`). A persona that
 /// is not in the roster has no pool to wait on. Returns the ids of the
 /// moved tasks.
@@ -319,7 +325,6 @@ pub fn release_reset_pools(
             cause(POOL_RESET),
             &NeedsYouList,
         )?;
-        lease::release(tx, &task_id)?;
         moved.push(task_id);
     }
     Ok(moved)
@@ -347,6 +352,9 @@ pub struct Restart {
     /// The pane to split: the pane of the orchestrator of the run, else
     /// the pane of the worker that hit the limit.
     pub from_pane: Option<String>,
+    /// The workspace of the new worker row, else of the run: `horch spawn`
+    /// resolves its mailbox from it, as a detached process has no pane.
+    pub workspace_id: Option<String>,
 }
 
 /// The effects of a restart outside the ledger.
@@ -426,6 +434,7 @@ fn restart_of(
         run_slug: run.slug,
         project_root: run.project_root,
         from_pane: orchestrator_pane.or(previous_pane),
+        workspace_id: w.workspace_id.clone().or(run.workspace_id),
     })
 }
 
@@ -490,7 +499,7 @@ mod tests {
     use chrono::{DateTime, Utc};
 
     use super::*;
-    use crate::fleetd::task_execution::application::commands;
+    use crate::fleetd::task_execution::application::{commands, lease};
     use crate::fleetd::task_execution::domain::lease::Limits;
     use crate::fleetd::task_execution::domain::task::{attempt_id, Reap};
     use crate::harness::HarnessKind;
@@ -602,6 +611,7 @@ mod tests {
                     run_id: run.run_id.clone(),
                     persona: persona.into(),
                     pane_id: Some("w0:p1".into()),
+                    workspace_id: Some("w0".into()),
                     ..Default::default()
                 };
                 let id = workers::insert(tx, &w)?;
@@ -952,6 +962,7 @@ mod tests {
         );
         assert_eq!((r.persona.as_str(), r.run_slug.as_str()), ("alt", "r1"));
         assert_eq!(r.from_pane.as_deref(), Some("w0:p1"));
+        assert_eq!(r.workspace_id.as_deref(), Some("w0"));
         let record = effects::read_launch(&root, &attempt).unwrap().unwrap();
         assert_eq!(
             record.process, None,
@@ -1170,22 +1181,26 @@ mod tests {
         assert_eq!(dev.windows[0].used, 1.0);
         let alt = pools.reading("alt").unwrap();
         assert_eq!((alt.pool.as_str(), alt.windows.len()), ("codex", 0));
-        // This module names no credential and reads no environment.
+        // The code of this module reads no environment, starts no process
+        // and opens no keychain: each reading comes through `QuotaView`.
         let src = include_str!("quota.rs");
-        let code = src
+        let code: Vec<&str> = src
             .split("#[cfg(test)]")
             .next()
             .unwrap()
-            .to_ascii_lowercase();
-        for word in [
-            "credential",
-            "token",
-            "keychain",
-            "api_key",
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect();
+        for api in [
+            "std::env",
             "env::var",
-            "auth",
+            "std::process",
+            "Command::new",
+            "keychain",
+            "ANTHROPIC_API_KEY",
         ] {
-            assert!(!code.contains(word), "quota.rs names {word}");
+            let hit = code.iter().find(|l| l.contains(api));
+            assert!(hit.is_none(), "quota.rs uses {api}: {hit:?}");
         }
     }
 }

@@ -831,6 +831,15 @@ pub fn restart_spec(ctx: &RuntimeContext, r: &Restart) -> Result<LaunchSpec> {
             r.persona
         );
     };
+    // A detached launch removes the pane identity of fleetd, so the spawn
+    // finds its mailbox only through this variable.
+    let Some(workspace) = r.workspace_id.as_deref() else {
+        anyhow::bail!(
+            "the restart of {} on {} has no workspace: the worker row and the run name none",
+            r.task_id,
+            r.persona
+        );
+    };
     let args = [
         "spawn",
         r.persona.as_str(),
@@ -848,6 +857,7 @@ pub fn restart_spec(ctx: &RuntimeContext, r: &Restart) -> Result<LaunchSpec> {
             vars: vec![
                 (CLAIM_TARGET_ENV.into(), r.task_id.as_str().into()),
                 (ADOPT_WORKER_ENV.into(), r.worker_id.as_str().into()),
+                ("HORCH_WORKSPACE_ID".into(), workspace.into()),
             ],
         },
         detach: true,
@@ -1527,6 +1537,7 @@ mod tests {
             run_slug: "r1".into(),
             project_root: "/work/proj".into(),
             from_pane: from_pane.map(str::to_string),
+            workspace_id: Some("w0".into()),
         }
     }
 
@@ -1573,6 +1584,7 @@ mod tests {
             [
                 (CLAIM_TARGET_ENV.to_string(), "T1".to_string()),
                 (ADOPT_WORKER_ENV.to_string(), "W2".to_string()),
+                ("HORCH_WORKSPACE_ID".to_string(), "w0".to_string()),
             ]
         );
         assert!(spec.detach);
@@ -1586,6 +1598,51 @@ mod tests {
     fn restart_with_no_pane_to_split_is_refused() {
         let e = restart_spec(&test_ctx(), &restart(None)).unwrap_err();
         assert!(format!("{e:#}").contains("no pane to split"), "{e:#}");
+    }
+
+    /// `horch spawn` resolves its mailbox from `HORCH_WORKSPACE_ID` or its
+    /// pane, and a detached launch has neither unless the spec sets it.
+    #[test]
+    fn restart_with_no_workspace_is_refused() {
+        let mut r = restart(Some("w1:p3"));
+        r.workspace_id = None;
+        let e = restart_spec(&test_ctx(), &r).unwrap_err();
+        assert!(format!("{e:#}").contains("no workspace"), "{e:#}");
+    }
+
+    /// The real detached launch of a restart: the child that fleetd starts
+    /// has the workspace, the claim target and the row, though the launcher
+    /// removes the pane identity of its starter. The context that `horch
+    /// spawn` builds from that environment names the workspace of its
+    /// mailbox.
+    #[cfg(unix)]
+    #[test]
+    fn detached_restart_gives_the_spawn_its_workspace() {
+        use horch_core::fleetd::worker_profiles::adapters::launcher::Launcher;
+        use horch_core::fleetd::worker_profiles::application::ports::ProcessHost;
+        let dir = tempfile::tempdir().unwrap();
+        let dump = dir.path().join("env.txt");
+        let mut spec = restart_spec(&test_ctx(), &restart(Some("w1:p3"))).unwrap();
+        spec.program = PathBuf::from("/bin/sh");
+        spec.args = vec!["-c".into(), format!("env > '{}'", dump.display()).into()];
+        spec.cwd = Some(dir.path().to_path_buf());
+        spec.output = None;
+        let mut launched = Launcher.launch(&spec).unwrap();
+        launched.child.wait().unwrap();
+        let text = std::fs::read_to_string(&dump).unwrap();
+        let mut env = horch_core::runtime::MapEnv::new(dir.path().to_str().unwrap())
+            .with_exe("/opt/horch/bin/horch");
+        for line in text.lines() {
+            if let Some((k, v)) = line.split_once('=') {
+                if k.starts_with("HORCH_") || k.starts_with("HERDR_") {
+                    env = env.with(k, v);
+                }
+            }
+        }
+        let ctx = RuntimeContext::from_env(&env).unwrap();
+        assert_eq!(ctx.herdr.workspace.as_ref().map(|w| w.as_str()), Some("w0"));
+        assert!(text.contains(&format!("{CLAIM_TARGET_ENV}=T1")), "{text}");
+        assert!(text.contains(&format!("{ADOPT_WORKER_ENV}=W2")), "{text}");
     }
 
     /// TRF-43: the worktree steward's work is a one-off ledger task, and its
