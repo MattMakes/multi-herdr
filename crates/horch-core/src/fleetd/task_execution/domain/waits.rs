@@ -31,7 +31,8 @@ pub struct Proof {
     pub child: Child,
     /// A finish step of the task of the worker is `running`.
     pub step_running: bool,
-    /// A review task of the task of the worker is not ended.
+    /// A review task of the task of the worker is `ready`, `leased` or
+    /// `running`.
     pub review_live: bool,
 }
 
