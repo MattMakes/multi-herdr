@@ -86,10 +86,7 @@ fn a_fleet_starts_no_orchestrator_pane() {
     let records = SessionLedger::for_project(&h.state, &cwd(&h))
         .read()
         .unwrap_or_default();
-    assert!(
-        !records.iter().any(|r| r.is_orchestrator()),
-        "{records:#?}"
-    );
+    assert!(!records.iter().any(|r| r.is_orchestrator()), "{records:#?}");
 }
 
 #[test]
@@ -190,4 +187,3 @@ fn a_scratch_fleet_does_not_change_an_existing_default_ledger() {
         "the fleet changed the default ledger"
     );
 }
-

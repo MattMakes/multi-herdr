@@ -11,20 +11,25 @@
 //!    with the rules of [`crate::taskledger::watchdog`]: the check of each
 //!    due worker ([`watchdog::check_observed`]), which reaps no worker; the
 //!    end of a pre-claim worker whose supervisor is gone, with the stops of
-//!    its process and pane; the flag of an unclaimed spawn; the re-wake of startable tasks; the wake for
-//!    reviews that are in. Each wake is an outbox row.
+//!    its process and pane; the flag of an unclaimed spawn; and the wakes
+//!    of today, each to its new owner (`taskledger::wakes`): a stuck run, a
+//!    ready feature, a stalled blocker and a held task are needs-you items
+//!    by key; a first stall and a suspect are 1 `doorbell` event of the
+//!    live sub-orchestrator of the feature of the task; the startable, the
+//!    reviews-in and the pre-claim wakes go to fleetd and write nothing.
 //! 3. [`RunDuties::act`] does the effects of the committed rows: the
-//!    delivery of the outbox of each run. The pass does the stops.
+//!    cleanup retry and the delivery of the outbox rows that other paths
+//!    wrote. The pass does the stops.
 //!
 //! Each effect comes from a committed row, never from memory. So a fleetd
 //! that dies after the commit leaves the row, and the next pass does the
-//! effect: the stop of an ended worker from `mark_orphans`, and the wake
-//! from the outbox.
+//! effect: the stop of an ended worker from `mark_orphans`, and the
+//! delivery of an outbox row.
 //!
-//! No duty respawns an orchestrator: there is no long-lived orchestrator
-//! conversation (FM-16). A respawn attempt in `launching` that an older
-//! fleetd wrote is ended, and never launched. A live orchestrator of a run
-//! in flight is not stopped: it ends by itself.
+//! No wake goes to an orchestrator, and no duty respawns one: there is no
+//! long-lived orchestrator conversation (FM-16). A respawn attempt in
+//! `launching` that an older fleetd wrote is ended, and never launched. A
+//! live orchestrator of a run in flight is not stopped: it ends by itself.
 //!
 //! Each duty that reads rows has a work budget (PL-5, A32): it reads 1
 //! page of at most `pass_budget` rows from its cursor in `pass_cursors`
@@ -46,23 +51,26 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use rusqlite::{Connection, Transaction};
+use serde_json::json;
 
 use crate::fleetd::fleet_runtime::adapters::cursors_store;
-use crate::fleetd::fleet_runtime::application::ledger::{transition, Cause};
+use crate::fleetd::fleet_runtime::application::ledger::{record, transition, Cause};
 use crate::fleetd::fleet_runtime::application::pass::{
     ActCtx, DutyBudget, DutyCtx, DutyReport, RunDuties,
 };
 use crate::fleetd::fleet_runtime::domain::budget::{Cursor, PassBudget};
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
+use crate::fleetd::ideas::application::answers::live_owner;
 use crate::fleetd::ideas::application::needs_you::NeedsYouList;
 use crate::fleetd::task_execution::adapters::sqlite as attempts_store;
 use crate::fleetd::task_execution::application::commands;
 use crate::fleetd::task_execution::domain::task::{AttemptRow, AttemptState, RowRef, Stop};
-use crate::taskledger::model::{Actor, WorkerStatus};
+use crate::taskledger::model::{Actor, EventKind, WorkerStatus};
 use crate::taskledger::runs::Run;
-use crate::taskledger::watchdog::{self, Checked, Observation, Observer, Sighting};
-use crate::taskledger::workers::{self, Preclaim, Worker};
-use crate::taskledger::{outbox, tasks, util, wakes};
+use crate::taskledger::wakes::{self, Item, Routed};
+use crate::taskledger::watchdog::{self, Checked, Observation, Observer};
+use crate::taskledger::workers::{self, Worker};
+use crate::taskledger::{tasks, util};
 
 /// The outcome of a respawn attempt that is never launched.
 const GONE: &str = "gone";
@@ -110,8 +118,6 @@ pub trait DutyEffects {
 struct State {
     /// The observation of each worker that is due or has no claim.
     observed: BTreeMap<String, Observation>,
-    /// The board that each run showed with startable tasks, and since when.
-    sightings: BTreeMap<String, Option<Sighting>>,
     /// The page of [`WORKER_CHECKS`] and of [`PRECLAIM`] that part 1 read.
     pages: BTreeMap<&'static str, Page>,
 }
@@ -221,7 +227,8 @@ impl<'a> WatchdogDuties<'a> {
             let Some(run) = run_of(runs, w) else {
                 continue;
             };
-            let Some(c) = check_worker(tx, run, &w.worker_id, observed, now, self.force)? else {
+            let Some(c) = check_worker(tx, ctx, run, &w.worker_id, observed, now, self.force)?
+            else {
                 continue;
             };
             checked.push((run.run_id.clone(), c));
@@ -247,14 +254,9 @@ impl<'a> WatchdogDuties<'a> {
         observed: &BTreeMap<String, Observation>,
         now: &str,
     ) -> Result<Vec<String>> {
-        let status = |w: &Worker| {
-            observed
-                .get(&w.worker_id)
-                .and_then(|o| o.herdr_status.clone())
-        };
         let mut cursor = page.start;
         let mut keys = Vec::new();
-        let mut ended: BTreeMap<String, Vec<Preclaim>> = BTreeMap::new();
+        let mut ended: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for w in &page.workers {
             if (ctx.budget.time_up)() {
                 break;
@@ -267,21 +269,15 @@ impl<'a> WatchdogDuties<'a> {
             let rows: Vec<Worker> = workers::find(tx, &w.worker_id)?.into_iter().collect();
             for p in workers::sweep_preclaim_of(tx, run, rows, &workers::supervisor_alive)? {
                 if p.ended.is_some() {
-                    ended.entry(run.run_id.clone()).or_default().push(p);
-                } else {
-                    write(tx, run, wakes::preclaim_wakes(tx, run, &[p], &status))?;
+                    ended
+                        .entry(run.run_id.clone())
+                        .or_default()
+                        .push(p.worker.worker_id);
                 }
             }
             flag_unclaimed(tx, run, &w.worker_id, observed, now)?;
         }
-        let mut out = Vec::new();
-        for run in runs {
-            let Some(swept) = ended.remove(&run.run_id) else {
-                continue;
-            };
-            write(tx, run, wakes::preclaim_wakes(tx, run, &swept, &status))?;
-            out.extend(swept.into_iter().map(|p| p.worker.worker_id));
-        }
+        let out = ended.into_values().flatten().collect();
         cursors_store::save(tx, PRECLAIM, &cursor)?;
         self.rows.borrow_mut().insert(PRECLAIM, keys);
         Ok(out)
@@ -311,8 +307,6 @@ impl RunDuties for WatchdogDuties<'_> {
         state.observed.clear();
         state.pages.clear();
         let runs = watchdog::active_runs(conn)?;
-        let active: BTreeSet<String> = runs.iter().map(|r| r.run_id.clone()).collect();
-        state.sightings.retain(|run, _| active.contains(run));
         let now = util::now();
         // `horch ledger watch --once --force` checks each working worker.
         let checks = DutyBudget {
@@ -357,8 +351,7 @@ impl RunDuties for WatchdogDuties<'_> {
             reaped.extend(self.preclaim_page(tx, ctx, &runs, page, &state.observed, &now)?);
         }
         for run in runs.iter().take_while(|_| !time_up()) {
-            let seen = state.sightings.entry(run.run_id.clone()).or_default();
-            run_wakes(tx, run, &now, seen)?;
+            run_items(tx, run)?;
         }
         // The lost wakes I-05 to I-07 (TRF-51), each from its page.
         let blockers = task_duty(
@@ -367,21 +360,16 @@ impl RunDuties for WatchdogDuties<'_> {
             &runs,
             BLOCKER_TASKS,
             watchdog::blocker_page,
-            &|run, t| {
+            &|_, t| {
                 if watchdog::is_stalled_blocker(tx, t)? {
-                    write(tx, run, wakes::blocker_wake(tx, &t.task_id)?)?;
+                    open_item(tx, wakes::blocker_item(tx, &t.task_id)?)?;
                 }
                 Ok(())
             },
         )?;
-        let held = task_duty(
-            tx,
-            ctx,
-            &runs,
-            HELD_TASKS,
-            watchdog::held_page,
-            &|run, t| write(tx, run, wakes::held_wake(tx, t)),
-        )?;
+        let held = task_duty(tx, ctx, &runs, HELD_TASKS, watchdog::held_page, &|_, t| {
+            open_item(tx, wakes::held_item(tx, t)?)
+        })?;
         let mut rows = self.rows.borrow_mut();
         rows.insert(BLOCKER_TASKS, blockers);
         rows.insert(HELD_TASKS, held);
@@ -422,6 +410,7 @@ impl RunDuties for WatchdogDuties<'_> {
 /// pass judges each live attempt (`docs/tickets/fleetd-p2/MAP.md`, Q14).
 fn check_worker(
     tx: &Transaction<'_>,
+    ctx: &DutyCtx<'_>,
     run: &Run,
     id: &str,
     observed: &BTreeMap<String, Observation>,
@@ -435,7 +424,7 @@ fn check_worker(
         return Ok(None);
     }
     let c = watchdog::check_observed(tx, run, &w, o, now)?;
-    write(tx, run, wakes::verdict_wake(&c))?;
+    route(tx, ctx, wakes::verdict_doorbell(tx, &c)?)?;
     Ok(Some(c))
 }
 
@@ -515,20 +504,56 @@ fn task_duty(
     Ok(keys)
 }
 
-/// The wakes of `run` that need the whole run: the stuck wake, the
-/// startable re-wake (TRF-22) and the lost wakes I-03 and I-04 (TRF-51).
-/// The stuck, startable and settled wakes ask 1 count query before they
-/// read rows; the reviews-in wake is 1 query.
-fn run_wakes(
-    tx: &Transaction<'_>,
-    run: &Run,
-    now: &str,
-    seen: &mut Option<Sighting>,
-) -> Result<()> {
-    write(tx, run, wakes::stuck_wake(tx, run)?)?;
-    write(tx, run, watchdog::startable_rewake(tx, run, now, seen)?)?;
-    write(tx, run, wakes::settled_wake(tx, run)?)?;
-    write(tx, run, wakes::reviews_in_wakes(tx, run, now)?)
+/// The wakes of `run` that need the whole run, each to its new owner
+/// (`taskledger::wakes`, FM-16): a stuck run and a settled run whose
+/// feature is ready are needs-you items by key. The startable re-wake and
+/// the reviews-in wake go to fleetd, which dispatches each ready task and
+/// runs the finish steps: they write nothing. The stuck and settled items
+/// ask 1 count query before they read rows.
+fn run_items(tx: &Transaction<'_>, run: &Run) -> Result<()> {
+    open_item(tx, wakes::stuck_item(tx, run)?)?;
+    open_item(tx, wakes::settled_item(tx, run)?)
+}
+
+/// Open the needs-you item `item` by its key, when there is one.
+fn open_item(tx: &Connection, item: Option<Item>) -> Result<()> {
+    match item {
+        Some(i) => i.open(tx),
+        None => Ok(()),
+    }
+}
+
+/// Give the routed wake `routed` to its owner in `tx`: a needs-you item by
+/// its key, or 1 `doorbell` event of the live sub-orchestrator of its
+/// feature, and of no other feature. A feature with no live
+/// sub-orchestrator gets no event: the stall ladder of fleetd acts on the
+/// attempt.
+fn route(tx: &Connection, ctx: &DutyCtx<'_>, routed: Option<Routed>) -> Result<()> {
+    match routed {
+        None => Ok(()),
+        Some(Routed::NeedsYou(i)) => i.open(tx),
+        Some(Routed::Doorbell { feature_id, text }) => {
+            let Some((attempt, _pane)) = live_owner(tx, &feature_id)? else {
+                return Ok(());
+            };
+            let by = Cause {
+                actor: Actor::Watchdog,
+                text: &text,
+            };
+            let data = json!({ "fleet_clock": ctx.clock.0, "feature": feature_id });
+            let guard = Some(ctx.guard);
+            record(
+                tx,
+                guard,
+                EventKind::Doorbell,
+                Entity::Attempt,
+                &attempt,
+                by,
+                &data,
+            )?;
+            Ok(())
+        }
+    }
 }
 
 /// Flag the spawned worker `id` of `run` when it has no claim, once.
@@ -545,24 +570,10 @@ fn flag_unclaimed(
     let Some(u) = watchdog::unclaimed(tx, run, w, now)? else {
         return Ok(());
     };
+    // The verdict event flags it once. Its wake goes to fleetd, which binds
+    // a task before the pane exists (FM-16): no outbox row.
     let status = observed.get(id).and_then(|o| o.herdr_status.clone());
-    write(
-        tx,
-        run,
-        watchdog::flag_unclaimed(tx, run, &u, status.as_deref())?,
-    )
-}
-
-/// Write each wake of `wakes` in the outbox of `run`. A wake whose key
-/// exists writes no row.
-fn write(
-    tx: &Transaction<'_>,
-    run: &Run,
-    wakes: impl IntoIterator<Item = outbox::Wake>,
-) -> Result<()> {
-    for wake in wakes {
-        outbox::write(tx, &run.run_id, &wake)?;
-    }
+    watchdog::flag_unclaimed(tx, run, &u, status.as_deref())?;
     Ok(())
 }
 
@@ -674,7 +685,7 @@ mod tests {
     use crate::taskledger::runs::{self, NewRun};
     use crate::taskledger::tasks::{self, NewTask};
     use crate::taskledger::workers::NewWorker;
-    use crate::taskledger::{schema, util};
+    use crate::taskledger::{outbox, schema, util};
 
     /// A temp ledger at generation 1, a fleet root and 1 run.
     struct World {
@@ -995,12 +1006,8 @@ mod tests {
 
         let flags = w.count("SELECT count(*) FROM events WHERE text LIKE 'No claim:%'");
         assert_eq!(flags, 1, "1 flag for 1 unclaimed spawn");
-        assert_eq!(w.outbox(OutboxEvent::UnclaimedSpawn), 1);
-        let text: String = w
-            .conn
-            .query_row("SELECT text FROM outbox", [], |r| r.get(0))
-            .unwrap();
-        assert!(text.contains("herdr status idle"), "{text}");
+        // FM-16: its wake goes to fleetd, so no outbox row.
+        assert_eq!(w.outbox(OutboxEvent::UnclaimedSpawn), 0);
         assert_eq!(
             *effects.delivered.borrow(),
             2,
@@ -1088,7 +1095,7 @@ mod tests {
     }
 
     #[test]
-    fn pass_rewakes_startable_tasks_once_for_each_board_state() {
+    fn pass_writes_no_startable_rewake() {
         let mut w = world();
         let effects = Record::default();
         let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
@@ -1117,15 +1124,14 @@ mod tests {
             w.count("SELECT count(*) FROM outbox WHERE text LIKE '%no worker is on its way%'")
         };
 
+        // FM-16: fleetd dispatches each ready task, so the board that
+        // waited 200 s gets no re-wake, in any board state.
         startable(&w, "a");
         pass(&mut w, &duties, Faults::default());
-        assert_eq!(rewakes(&w), 1, "the board waited 200 s: 1 re-wake");
         pass(&mut w, &duties, Faults::default());
-        assert_eq!(rewakes(&w), 1, "the same board state: no second re-wake");
-
         startable(&w, "b");
         pass(&mut w, &duties, Faults::default());
-        assert_eq!(rewakes(&w), 2, "a new board state: 1 more re-wake");
+        assert_eq!(rewakes(&w), 0);
     }
 
     /// The number of outbox rows whose text has `part`.
@@ -1164,7 +1170,11 @@ mod tests {
         pass(&mut w, &duties, Faults::default());
 
         assert_eq!(w.status("workers", "worker_id", &worker), "no_task");
-        assert_eq!(wakes_with(&w, "ended before they claimed a task"), 1);
+        assert_eq!(
+            wakes_with(&w, "ended before they claimed a task"),
+            0,
+            "the wake goes to fleetd (FM-16)"
+        );
         assert!(agent.wait_exit(), "part 3 stops the agent of the ended row");
     }
 
@@ -1186,12 +1196,13 @@ mod tests {
         pass(&mut w, &duties, Faults::default());
 
         assert_eq!(w.status("workers", "worker_id", &worker), "claiming");
-        assert_eq!(w.outbox(OutboxEvent::UnclaimedSpawn), 1, "1 question");
-        assert_eq!(wakes_with(&w, "herdr status idle"), 1);
+        let flags = w.count("SELECT count(*) FROM events WHERE text LIKE 'No claim:%'");
+        assert_eq!(flags, 1, "1 flag");
+        assert_eq!(w.outbox(OutboxEvent::UnclaimedSpawn), 0, "no wake (FM-16)");
     }
 
     #[test]
-    fn pass_wakes_a_stuck_run_once_and_asks_about_a_held_task() {
+    fn pass_opens_1_item_for_a_stuck_run_and_1_for_a_held_task() {
         let mut w = world();
         let new = NewTask::work("a", "tickets/a.md", "dev");
         let task = tasks::add(&w.conn, &w.run, &new, Actor::Orchestrator).unwrap();
@@ -1208,28 +1219,46 @@ mod tests {
         pass(&mut w, &duties, Faults::default());
         pass(&mut w, &duties, Faults::default());
 
-        assert_eq!(wakes_with(&w, "the run is stuck"), 1, "1 stuck wake");
-        assert_eq!(
-            wakes_with(&w, "is held: 3 attempts failed"),
-            1,
-            "1 held question"
-        );
+        // FM-16: both go to you, 1 needs-you item each, by key.
+        assert_eq!(w.items("stuck").len(), 1, "1 stuck item");
+        let held = w.items("held");
+        assert_eq!(held.len(), 1, "1 held item");
+        assert!(held[0].contains("3 attempts failed"), "{held:?}");
+        assert_eq!(wakes_with(&w, "the run is stuck"), 0);
+        assert_eq!(wakes_with(&w, "is held: 3 attempts failed"), 0);
     }
 
+    /// FM-16: a settled run goes to you only when its feature is `ready`:
+    /// 1 needs-you item by the key of the feature, and no wake.
     #[test]
-    fn pass_writes_the_settled_wake_once() {
+    fn pass_opens_1_item_for_a_settled_run_of_a_ready_feature() {
         let mut w = world();
         let effects = Record::default();
         let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
 
         pass(&mut w, &duties, Faults::default());
+        assert!(
+            w.items("feature_ready").is_empty(),
+            "the run has no feature"
+        );
+
+        w.conn
+            .execute(
+                "INSERT INTO features (id, primary_branch, state, created_at, updated_at)
+                 SELECT printf('F-%04d', rowid), 'main', 'ready', 'now', 'now'
+                 FROM runs WHERE run_id = ?1",
+                [&w.run.run_id],
+            )
+            .unwrap();
+        pass(&mut w, &duties, Faults::default());
         pass(&mut w, &duties, Faults::default());
 
-        assert_eq!(w.outbox(OutboxEvent::Settled), 1);
+        assert_eq!(w.items("feature_ready").len(), 1);
+        assert_eq!(w.outbox(OutboxEvent::Settled), 0);
     }
 
     #[test]
-    fn pass_wakes_once_about_a_cancelled_task_that_open_tasks_wait_for() {
+    fn pass_opens_1_item_for_a_cancelled_task_that_open_tasks_wait_for() {
         let mut w = world();
         let first = NewTask::work("a", "tickets/a.md", "dev");
         let first = tasks::add(&w.conn, &w.run, &first, Actor::Orchestrator).unwrap();
@@ -1243,14 +1272,48 @@ mod tests {
         pass(&mut w, &duties, Faults::default());
         pass(&mut w, &duties, Faults::default());
 
-        assert_eq!(w.outbox(OutboxEvent::Cancelled), 1);
+        // FM-16: 1 needs-you item by the key of the blocker, no wake.
+        assert_eq!(w.items("blocker").len(), 1);
+        assert_eq!(w.outbox(OutboxEvent::Cancelled), 0);
     }
 
+    /// FM-16: the first stall of a task goes to the live sub-orchestrator
+    /// of the feature of its task as 1 `doorbell` event, once. No item and
+    /// no wake.
     #[test]
-    fn pass_asks_a_worker_on_its_first_stall_for_an_update_once() {
+    fn pass_rings_the_live_sub_orchestrator_of_the_feature_on_the_first_stall() {
         let mut w = world();
         let agent = Proc::sleep();
         let (task, worker) = w.stalled_task(agent.recorded());
+        w.conn
+            .execute(
+                "UPDATE runs SET stall_rounds = 3 WHERE run_id = ?1",
+                [&w.run.run_id],
+            )
+            .unwrap();
+        let lead = Proc::sleep();
+        let attempt = w.sub_orchestrator(&task, lead.recorded());
+        let effects = Record::default();
+        let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
+
+        pass(&mut w, &duties, Faults::default());
+        pass(&mut w, &duties, Faults::default());
+
+        assert_eq!(w.doorbells(&attempt), vec!["shows no progress".to_string()]);
+        assert!(w.items("stall").is_empty());
+        assert_eq!(wakes_with(&w, "shows no progress"), 0);
+        assert_eq!(w.status("workers", "worker_id", &worker), "working");
+        assert_eq!(w.status("tasks", "task_id", &task), "running");
+    }
+
+    /// FM-16: with no live sub-orchestrator of the feature, a first stall
+    /// writes no item, no wake and no doorbell: the stall ladder of fleetd
+    /// acts on the attempt.
+    #[test]
+    fn pass_writes_nothing_on_a_first_stall_when_no_sub_orchestrator_runs() {
+        let mut w = world();
+        let agent = Proc::sleep();
+        let (task, _worker) = w.stalled_task(agent.recorded());
         w.conn
             .execute(
                 "UPDATE runs SET stall_rounds = 3 WHERE run_id = ?1",
@@ -1261,19 +1324,15 @@ mod tests {
         let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
 
         pass(&mut w, &duties, Faults::default());
-        pass(&mut w, &duties, Faults::default());
 
-        assert_eq!(
-            wakes_with(&w, "shows no progress"),
-            1,
-            "1 wake on the first stall, none on the second"
-        );
-        assert_eq!(w.status("workers", "worker_id", &worker), "working");
-        assert_eq!(w.status("tasks", "task_id", &task), "running");
+        assert!(w.items("stall").is_empty());
+        assert_eq!(wakes_with(&w, "shows no progress"), 0);
+        let rung = w.count("SELECT count(*) FROM events WHERE kind = 'doorbell'");
+        assert_eq!(rung, 0, "no doorbell of task {task}");
     }
 
     #[test]
-    fn pass_writes_the_reviews_in_wake_once() {
+    fn pass_writes_no_reviews_in_wake() {
         let mut w = world();
         let author = w.worker(WorkerKind::Worker, "working", None);
         let new = NewTask::work("a", "tickets/a.md", "dev");
@@ -1307,7 +1366,8 @@ mod tests {
         pass(&mut w, &duties, Faults::default());
         pass(&mut w, &duties, Faults::default());
 
-        assert_eq!(w.outbox(OutboxEvent::ReviewsIn), 1);
+        // FM-16: fleetd runs the finish steps, so no wake.
+        assert_eq!(w.outbox(OutboxEvent::ReviewsIn), 0);
     }
 
     #[test]
@@ -1349,6 +1409,63 @@ mod tests {
     // ─── the tests of the old `horch ledger watch` pass (ticket 25) ─────
 
     impl World {
+        /// A live sub-orchestrator attempt of the idea of `task`, in pane
+        /// `p9`, with the process `process`. Returns the attempt id.
+        fn sub_orchestrator(&self, task: &str, process: Recorded) -> String {
+            let idea = attempts_store::idea_of_task(&self.conn, task)
+                .unwrap()
+                .expect("the task has an idea");
+            let lead = self.worker(WorkerKind::Worker, "working", Some(process));
+            let a = AttemptRow {
+                id: format!("{lead}/lead"),
+                task_id: None,
+                worker_id: lead,
+                state: AttemptState::Live,
+                process: Some(process),
+                pane: Some("p9".into()),
+            };
+            attempts_store::insert_attempt(&self.conn, &a, &util::now()).unwrap();
+            attempts_store::set_idea(&self.conn, &a.id, &idea).unwrap();
+            a.id
+        }
+
+        /// The cause texts of the `doorbell` events of `attempt`, cut to
+        /// their words after `shows`.
+        fn doorbells(&self, attempt: &str) -> Vec<String> {
+            let mut st = self
+                .conn
+                .prepare(
+                    "SELECT text FROM events WHERE kind = 'doorbell' AND entity_id = ?1
+                     ORDER BY event_id",
+                )
+                .unwrap();
+            st.query_map([attempt], |r| r.get::<_, String>(0))
+                .unwrap()
+                .map(|r| {
+                    let t = r.unwrap();
+                    if t.contains("shows no progress") {
+                        "shows no progress".to_string()
+                    } else {
+                        t
+                    }
+                })
+                .collect()
+        }
+
+        /// The texts of the open needs-you items of `kind`, by key.
+        fn items(&self, kind: &str) -> Vec<String> {
+            let mut st = self
+                .conn
+                .prepare(
+                    "SELECT text FROM needs_you WHERE kind = ?1 AND state = 'open' ORDER BY key",
+                )
+                .unwrap();
+            st.query_map([kind], |r| r.get(0))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect()
+        }
+
         /// The texts of the outbox rows of `event`.
         fn rows(&self, event: OutboxEvent) -> Vec<String> {
             let mut st = self
@@ -1363,10 +1480,10 @@ mod tests {
     }
 
     /// TRF-51, I-06: T-1 was parked unlanded, and the wake to the tasks
-    /// that wait for it was lost. The pass writes it once, and the direct
-    /// path after it writes no second row.
+    /// that wait for it was lost. The pass opens 1 needs-you item for it,
+    /// and a second pass keeps 1.
     #[test]
-    fn pass_writes_a_lost_parked_blocker_wake_once() {
+    fn pass_opens_a_lost_parked_blocker_item_once() {
         let mut w = world();
         let a = tasks::add(
             &w.conn,
@@ -1389,30 +1506,17 @@ mod tests {
         let duties = WatchdogDuties::new(&Quiet, &effects, w.dir.clone());
 
         // No worker is live, so the run is stuck too: that wake is apart.
-        let parked = |w: &World| -> Vec<String> {
-            let rows = w.rows(OutboxEvent::Held);
-            rows.into_iter()
-                .filter(|r| r.contains("T-2 waits:"))
-                .collect()
-        };
         pass(&mut w, &duties, Faults::default());
-        let rows = parked(&w);
-        assert_eq!(rows.len(), 1, "{rows:?}");
-        assert!(
-            rows[0].contains("T-2 waits: T-1 is parked unlanded"),
-            "{rows:?}"
-        );
+        pass(&mut w, &duties, Faults::default());
 
-        pass(&mut w, &duties, Faults::default());
-        // The direct path (`taskledger_wake::stalled_dependents`) writes
-        // the same keyed row.
-        let t = tasks::get(&w.conn, &a.task_id).unwrap();
-        let waiting = tasks::dependents(&w.conn, &a.task_id).unwrap();
-        let wake = wakes::dependents_wake(&t, &waiting).expect("the wake");
-        let tx = w.conn.transaction().unwrap();
-        outbox::write(&tx, &w.run.run_id, &wake).unwrap();
-        tx.commit().unwrap();
-        assert_eq!(parked(&w).len(), 1);
+        // FM-16: 1 needs-you item by the key of the blocker, and no wake.
+        let items = w.items("blocker");
+        assert_eq!(items.len(), 1, "{items:?}");
+        assert!(
+            items[0].contains("T-2 waits: T-1 is parked unlanded"),
+            "{items:?}"
+        );
+        assert!(w.rows(OutboxEvent::Held).is_empty());
     }
 
     /// herdr and the transcript as [`Quiet`]; it counts each worker it
@@ -1598,8 +1702,8 @@ mod tests {
             let fair = (PASSES * BUDGET / n)..=(PASSES * BUDGET).div_ceil(n);
             assert!(keys.values().all(|c| fair.contains(c)), "{duty}: {keys:?}");
         }
-        // Each held task has its 1 question, once.
-        assert_eq!(wakes_with(&w, "is held: attempts"), HELD as i64);
+        // Each held task has its 1 needs-you item, once.
+        assert_eq!(w.items("held").len(), HELD);
     }
 
     /// herdr and the transcript as [`Quiet`]; the observation number `at`
@@ -1742,10 +1846,10 @@ mod tests {
                 &runs,
                 HELD_TASKS,
                 watchdog::held_page,
-                &|run, t| {
+                &|_, t| {
                     done.set(done.get() + 1);
                     up.set(done.get() == cut_after);
-                    write(&tx, run, wakes::held_wake(&tx, t))
+                    open_item(&tx, wakes::held_item(&tx, t)?)
                 },
             )
             .unwrap();
@@ -1765,8 +1869,8 @@ mod tests {
             "the budget ends the page after 4 rows"
         );
         assert_eq!(duty(6, 0), all[4..], "the next pass starts at row 5");
-        assert_eq!(wakes_with(&w, "is held: attempts"), HELD as i64);
+        assert_eq!(w.items("held").len(), HELD);
         assert_eq!(duty(6, 0), all[..6], "the next lap starts at row 1");
-        assert_eq!(wakes_with(&w, "is held: attempts"), HELD as i64);
+        assert_eq!(w.items("held").len(), HELD, "1 item for each held task");
     }
 }

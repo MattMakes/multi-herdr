@@ -23,9 +23,9 @@
 //! known goes to you as a needs-you item, because a guard whose fact is
 //! unknown does not hold.
 //!
-//! The outbox builders below (`settled_wake` to `preclaim_wakes`) are
-//! interim: their callers still write outbox rows. They are removed when
-//! T-547 and T-553 wire the routed functions of this module into fleetd.
+//! The outbox builders below are interim: their callers still write
+//! outbox rows. They are removed when T-547 and T-553 wire the routed
+//! functions of this module into fleetd.
 //!
 //! Each interim builder reads the board in the caller's transaction and
 //! returns the [`Wake`]; the caller writes it with [`outbox::write`]. A
@@ -48,7 +48,7 @@ use super::status;
 use super::tasks;
 use super::util;
 use super::watchdog::{self, Checked};
-use super::workers::{self, Preclaim, Worker};
+use super::workers;
 
 /// Each wake of today's orchestrator, by the builder that makes it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -494,28 +494,6 @@ pub fn tagged(text: &str) -> String {
     }
 }
 
-/// The wake of a verdict: ask a worker on its first stall for an update,
-/// and name the pane of a suspect. `None` for each other verdict.
-///
-/// Interim: removed when T-547 and T-553 wire the routed functions.
-pub fn verdict_wake(c: &Checked) -> Option<Wake> {
-    let who = c.role.as_deref().unwrap_or(&c.worker_id);
-    let on = c.task.as_deref().unwrap_or("its task");
-    let text = match c.verdict.as_str() {
-        "no_progress" if c.first_stall => format!(
-            "NOTE: {who} on {on} shows no progress ({}). Ask it for an update: horch tell {who} \"[orchestrator] QUESTION: What is your status?\"",
-            c.note
-        ),
-        "suspect" => format!(
-            "NOTE: {who} on {on} may be stuck in pane {}: {}. The watchdog reaps it at the next check unless something else moves.",
-            c.pane_id.as_deref().unwrap_or("unknown"),
-            c.note
-        ),
-        _ => return None,
-    };
-    Some(Wake::new(OutboxEvent::Held, util::new_id(), tagged(&text)))
-}
-
 /// The wake after the reap of `worker_id`: the held QUESTION of its task;
 /// for a `failed` task, no spawn (its replan wake asks for the decision);
 /// else which persona to spawn, and how.
@@ -653,56 +631,4 @@ pub fn reviews_in_wakes(conn: &Connection, run: &Run, now: &str) -> Result<Vec<W
 pub fn blocker_wake(conn: &Connection, task_id: &str) -> Result<Option<Wake>> {
     let t = tasks::get(conn, task_id)?;
     Ok(dependents_wake(&t, &tasks::dependents(conn, task_id)?))
-}
-
-/// The wakes of the pre-claim sweep `swept` of `run` (#190): 1 question
-/// for each live worker that does not claim, with the herdr status of its
-/// pane from `status`, and 1 wake for the workers that ended, with the
-/// spawns that the freed slots allow.
-///
-/// Interim: removed when T-547 and T-553 wire the routed functions.
-pub fn preclaim_wakes(
-    conn: &Connection,
-    run: &Run,
-    swept: &[Preclaim],
-    status: &dyn Fn(&Worker) -> Option<String>,
-) -> Vec<Wake> {
-    let mut out = Vec::new();
-    let mut ended = Vec::new();
-    let mut ended_ids = Vec::new();
-    for p in swept {
-        match &p.ended {
-            Some(end) => {
-                ended.push(format!("{} ({end}: {})", p.worker.label(), p.note));
-                ended_ids.push(p.worker.worker_id.clone());
-            }
-            None => {
-                let state = status(&p.worker).unwrap_or_else(|| "unknown".into());
-                let text = format!(
-                    "NOTE: {}. Look at its pane {} (herdr status {state}): it may wait at a login, trust or quota prompt.",
-                    p.note,
-                    p.worker.pane_id.as_deref().unwrap_or("(none)")
-                );
-                let subject = format!("asked:{}", p.worker.worker_id);
-                out.push(Wake::new(
-                    OutboxEvent::UnclaimedSpawn,
-                    subject,
-                    tagged(&text),
-                ));
-            }
-        }
-    }
-    if !ended.is_empty() {
-        let advice = spawn_advice(conn, run).map(|(_, a)| a).unwrap_or_default();
-        let text = format!(
-            "NOTE: These workers ended before they claimed a task: {}. {advice}",
-            ended.join(", ")
-        );
-        out.push(Wake::new(
-            OutboxEvent::UnclaimedSpawn,
-            format!("ended:{}", ended_ids.join(",")),
-            tagged(text.trim_end()),
-        ));
-    }
-    out
 }
