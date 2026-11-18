@@ -26,7 +26,7 @@
 //! launcher.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -56,10 +56,12 @@ use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
 use horch_core::fleetd::task_execution::domain::task::{AttemptRow, InPane};
 use horch_core::fleetd::worker_profiles::adapters::launcher::Launcher;
 use horch_core::fleetd::worker_profiles::application::ports::{EnvRule, LaunchSpec, ProcessHost};
+use horch_core::fleetd::worktree_custody::adapters::sqlite::{self as trees, WorktreeState};
 use horch_core::procid;
 use horch_core::runtime::{Paths, RuntimeContext};
+use horch_core::taskledger::model::RunStatus;
 use horch_core::taskledger::orchestrator;
-use horch_core::taskledger::sql_words::{list, WORKTREES_HELD};
+use horch_core::taskledger::sql_words::list;
 use horch_core::taskledger::store::{default_path, BUSY_TIMEOUT};
 use horch_core::taskledger::{watchdog, Store};
 use horch_core::workspace::herdr::Herdr;
@@ -825,20 +827,59 @@ impl Outside for Live<'_> {
         }
     }
 
-    /// The folder of each worktree that a task still holds.
+    /// The folder of each worktree row that is not `removed`, by its
+    /// worktree id, and each folder in `<project>/.worktrees/` of each
+    /// repository of the fleet that no row names, by its path (MAP.md of
+    /// fleetd-p3, Q4). A work directory that cannot be listed gives no
+    /// folder in this pass.
     fn worktree_folders(&self, conn: &Connection) -> Result<Vec<FolderItem>> {
+        let kept: Vec<WorktreeState> = WorktreeState::ALL
+            .into_iter()
+            .filter(|s| *s != WorktreeState::Removed)
+            .collect();
+        let rows = trees::in_states(conn, &kept)?;
+        let mut items: Vec<FolderItem> = rows
+            .iter()
+            .map(|r| FolderItem {
+                key: r.worktree_id.clone(),
+                path: PathBuf::from(&r.path),
+            })
+            .collect();
+        let named: BTreeSet<&str> = rows.iter().map(|r| r.path.as_str()).collect();
+        for repo in self.repositories(conn)? {
+            let work_dir = Path::new(&repo).join(".worktrees");
+            let entries = match std::fs::read_dir(&work_dir) {
+                Ok(entries) => entries,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => {
+                    eprintln!("horch fleetd: listing {}: {e}", work_dir.display());
+                    continue;
+                }
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let key = path.display().to_string();
+                if !named.contains(key.as_str()) {
+                    items.push(FolderItem { key, path });
+                }
+            }
+        }
+        Ok(items)
+    }
+
+    /// The project root of each run that is not `done` or `abandoned`,
+    /// each once, in order (MAP.md of fleetd-p3, Q4).
+    fn repositories(&self, conn: &Connection) -> Result<Vec<String>> {
         let sql = format!(
-            "SELECT worktree_id, path FROM worktrees WHERE status IN ({}) ORDER BY worktree_id",
-            list(WORKTREES_HELD)
+            "SELECT DISTINCT p.root FROM runs r JOIN projects p ON p.project_id = r.project_id
+             WHERE r.status NOT IN ({}) ORDER BY p.root",
+            list(&[RunStatus::Done, RunStatus::Abandoned])
         );
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map([], |r| {
-            Ok(FolderItem {
-                key: r.get(0)?,
-                path: PathBuf::from(r.get::<_, String>(1)?),
-            })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+        let roots = stmt
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>();
+        roots.context("reading the repositories of the fleet")
     }
 
     /// Phase 1 puts no task attempt in `launching`: the only attempt there

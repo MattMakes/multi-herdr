@@ -5,14 +5,19 @@
 //!
 //! 1. It reads the facts with no transaction, each scan within its budget
 //!    from its cursor: the processes that rows name, the outboxes, the
-//!    worktree folders, the requests, the herdr panes, the health holds and
-//!    the launch record of each attempt in `launching`.
-//! 2. In 1 transaction it calls the steps of Phase 1 in the order of the
-//!    design: `check_generation`, `tick_fleet_clock`, `observe_intents`,
-//!    `mark_orphans`, `finish_exited`, the run duties ([`RunDuties`]),
-//!    `observe_jobs`, `check_invariants`, `record_hold_changes` and
-//!    `intended_effects`. Each effect is a row in an intended state when
-//!    the transaction commits. No effect occurs inside it. The run duties
+//!    worktree folders and the folders of the work directories, the
+//!    requests, the herdr panes, the health holds and the launch record of
+//!    each attempt in `launching`. It reads the last passed `worktree_list`
+//!    run of each repository from `jobs`. It runs no git.
+//! 2. In 1 transaction it calls these steps, in this order:
+//!    `check_generation`, `tick_fleet_clock`, `observe_intents`,
+//!    `mark_orphans`, `finish_exited`, `reconcile_worktrees`, the run
+//!    duties ([`RunDuties`]), `observe_jobs`, `check_invariants` (with I6),
+//!    the `worktree_list` job of each repository in each period,
+//!    `record_hold_changes` and `intended_effects`. The worktree
+//!    observations and orphan marks come before the run duties and the job
+//!    queues (stops come before launches). Each effect is a row in an
+//!    intended state when the transaction commits. No effect occurs inside it. The run duties
 //!    have a [`DutyBudget`]: at most `pass_budget` rows of each paged duty,
 //!    and no new duty work after the time budget of the pass.
 //! 3. After the commit it does the effects, stops before launches, until
@@ -24,27 +29,31 @@
 //! intended rows, and the next pass does each effect once: a launch is
 //! keyed by its attempt id, a stop by the pid and start time of its
 //! process, and a job start by the id of its row.
+//!
+//! 1 git writer for each repository (MAP.md of fleetd-p3, Q12): part 2
+//! takes a due `worktree_add`, `worktree_remove` or `rescue` job only when
+//! no such job of its repository runs or is already an effect of the pass.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use rusqlite::{Connection, Transaction, TransactionBehavior};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 
 use crate::fleetd::fleet_runtime::adapters::clock_store::{self, ClockStore};
 use crate::fleetd::fleet_runtime::adapters::effects::{self, LaunchRecord, Watch};
-use crate::fleetd::fleet_runtime::adapters::jobs_store::JobRow;
+use crate::fleetd::fleet_runtime::adapters::jobs_store::{self, JobRow};
 use crate::fleetd::fleet_runtime::adapters::scans::{
-    self, FolderItem, Liveness, ProcessFact, ProcessItem, ScanClock,
+    self, FolderFact, FolderItem, Liveness, Presence, ProcessFact, ProcessItem, ScanClock,
 };
 use crate::fleetd::fleet_runtime::adapters::sqlite as door;
 use crate::fleetd::fleet_runtime::adapters::{cursors_store, fleetd_row};
 use crate::fleetd::fleet_runtime::application::holds::record_hold_changes;
 use crate::fleetd::fleet_runtime::application::jobs::{
-    self, JobCtx, JobRunner, NeedsYouItems, NewItem,
+    self, JobCtx, JobKey, JobRunner, NeedsYouItems, NewItem,
 };
 use crate::fleetd::fleet_runtime::application::ledger::DoorError;
 use crate::fleetd::fleet_runtime::domain::budget::{Cursor, Deadline, PassBudget, ScanKind};
@@ -52,6 +61,7 @@ use crate::fleetd::fleet_runtime::domain::clock::{AwakeReading, FleetSeconds};
 use crate::fleetd::fleet_runtime::domain::config::FleetConfig;
 use crate::fleetd::fleet_runtime::domain::health::Hold;
 use crate::fleetd::fleet_runtime::domain::heartbeat::{Exe, Heartbeat};
+use crate::fleetd::fleet_runtime::domain::jobs::{Kind, State};
 use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
 use crate::fleetd::fleet_runtime::domain::pass::{
     breaches, observe_launch, stop_step, Breach, EffectKind, Holding, Launch, LaunchStep, Proc,
@@ -64,6 +74,11 @@ use crate::fleetd::task_execution::domain::task::{
     Seen, Stop, Target,
 };
 use crate::fleetd::worker_profiles::application::ports::{LaunchSpec, ProcessHost};
+use crate::fleetd::worktree_custody::adapters::git::{worktree_list_key, ListResult};
+use crate::fleetd::worktree_custody::application::reconcile::{
+    check_i6, reconcile_worktrees, Facts as WorktreeFacts, Listed, WorkDir,
+};
+use crate::fleetd::worktree_custody::domain::worktree::Breach as I6;
 use crate::runtime::fault::Faults;
 use crate::taskledger::util;
 
@@ -95,9 +110,20 @@ pub trait Outside {
     /// The health holds now (OR-4, OR-5).
     fn holds(&self) -> Vec<Hold>;
 
-    /// The folder of each worktree that is not cleaned, for the scan of
-    /// worktree folders. The rows are not rows of fleet runtime.
+    /// The folders of the scan of worktree folders: the folder of each
+    /// worktree row that is not `removed`, with its worktree id as its key,
+    /// and each folder in `<project>/.worktrees/` of each repository of
+    /// [`Outside::repositories`] that no row names, with its path as its key
+    /// (MAP.md of fleetd-p3, Q4). A path is written as git writes it. The
+    /// rows are not rows of fleet runtime.
     fn worktree_folders(&self, conn: &Connection) -> Result<Vec<FolderItem>>;
+
+    /// The repositories of the fleet: the project root of each run that is
+    /// not `done` or `abandoned`, each once. The runs are not rows of fleet
+    /// runtime. An `Outside` with no runs, as a fake of a test, has none.
+    fn repositories(&self, _conn: &Connection) -> Result<Vec<String>> {
+        Ok(Vec::new())
+    }
 
     /// The launch spec of the attempt `attempt` in `launching`.
     fn attempt_spec(&self, attempt: &AttemptRow) -> Result<LaunchSpec>;
@@ -288,6 +314,11 @@ struct Read {
     may_stop: BTreeSet<(u32, u64)>,
     holds: Vec<Hold>,
     awake: AwakeReading,
+    /// The worktree facts of the reconciler.
+    worktrees: WorktreeFacts,
+    /// The git repositories of the fleet: each gets its `worktree_list`
+    /// job.
+    repos: Vec<String>,
 }
 
 /// 1 attempt in `launching`, as part 1 saw it.
@@ -509,6 +540,7 @@ impl<'a> Pass<'a> {
         let changed = self.changed_folders(&outboxes, &trees);
         let mut cursors = Vec::new();
         let mut liveness = BTreeMap::new();
+        let mut folders = Vec::new();
         for kind in ScanKind::ALL {
             let mut cursor = cursors_store::load(conn, kind.as_str(), &stamp)?;
             let start = (self.now)();
@@ -526,7 +558,9 @@ impl<'a> Pass<'a> {
                     scans::scan_outboxes(&outboxes, &changed, &mut cursor, &mut clock);
                 }
                 ScanKind::WorktreeFolders => {
-                    scans::scan_worktree_folders(&trees, &changed, &mut cursor, &mut clock);
+                    let scan =
+                        scans::scan_worktree_folders(&trees, &changed, &mut cursor, &mut clock);
+                    folders = scan.facts;
                 }
                 // The requests come in Phase 5; an unreadable folder keeps
                 // its cursor.
@@ -536,6 +570,8 @@ impl<'a> Pass<'a> {
             }
             cursors.push((kind, cursor));
         }
+        let repos = git_repositories(self.ports.outside.repositories(conn)?);
+        let worktrees = worktree_facts(&trees, folders, last_lists(conn, &repos)?);
         let mut may_stop = may_stop(&rows, &liveness);
         let panes = self.ports.outside.panes();
         let stopped = effects::read_stopped(&root, |pid, start| !may_stop.contains(&(pid, start)))
@@ -562,6 +598,8 @@ impl<'a> Pass<'a> {
             may_stop,
             holds: self.ports.outside.holds(),
             awake: clock_store::awake_now()?,
+            worktrees,
+            repos,
         })
     }
 
@@ -606,6 +644,7 @@ impl<'a> Pass<'a> {
         let launches = self.observe_intents(&tx, &read.launching, clock)?;
         let mut stops = commands::mark_orphans(&tx, &read.task)?;
         stops.extend(commands::finish_exited(&tx, &read.task)?);
+        reconcile_worktrees(&self.job_ctx(), &tx, &read.worktrees, clock)?;
         {
             let now = RefCell::new(&mut self.now);
             let time_up = || deadline.reached((now.borrow_mut())());
@@ -622,7 +661,8 @@ impl<'a> Pass<'a> {
         }
         let ctx = self.job_ctx();
         let observed = jobs::observe(&ctx, &tx, &read.jobs, clock)?;
-        let breaches = self.check_invariants(&tx)?;
+        let breaches = self.check_invariants(&tx, &read.worktrees)?;
+        self.queue_lists(&ctx, &tx, &read.repos, clock)?;
         record_hold_changes(&tx, &self.holds, &read.holds)?;
         let effects =
             self.intended_effects(&tx, launches, stops, observed.stops, clock, &read.stamp)?;
@@ -687,9 +727,14 @@ impl<'a> Pass<'a> {
     }
 
     /// I1 and I4: a worker or a task with more than 1 attempt that holds
-    /// it gets 1 needs-you item. An item of the last pass whose breach
+    /// it gets 1 needs-you item. I6: each breach that the worktree facts
+    /// show gets 1 needs-you item. An item of the last pass whose breach
     /// ended is resolved. Returns the keys of the open breaches.
-    fn check_invariants(&self, tx: &Transaction<'_>) -> Result<BTreeSet<String>> {
+    fn check_invariants(
+        &self,
+        tx: &Transaction<'_>,
+        worktrees: &WorktreeFacts,
+    ) -> Result<BTreeSet<String>> {
         let rows = attempts_store::rows(tx, &util::host_name())?;
         let holding: Vec<Holding<'_>> = rows
             .attempts
@@ -726,10 +771,51 @@ impl<'a> Pass<'a> {
             self.ports.needs_you.open_item(tx, &item)?;
             keys.insert(key);
         }
+        for b in check_i6(tx, worktrees)? {
+            let Some((id, text)) = i6_text(&b) else {
+                continue;
+            };
+            let entity = Entity::Worktree;
+            let key = format!("{BREACH}:I6:{entity}:{id}");
+            let item = NewItem {
+                key: &key,
+                kind: BREACH,
+                entity,
+                entity_id: &id,
+                text: &text,
+            };
+            self.ports.needs_you.open_item(tx, &item)?;
+            keys.insert(key);
+        }
         for gone in self.breaches.difference(&keys) {
             self.ports.needs_you.resolve_item(tx, gone)?;
         }
         Ok(keys)
+    }
+
+    /// 1 `worktree_list` job for each repository of `repos` in each period
+    /// of `worktree_list_period_s` on the fleet clock: a repository whose
+    /// run of this period exists, in any state, gets no other (RR-10, Q11).
+    fn queue_lists(
+        &self,
+        ctx: &JobCtx<'_>,
+        tx: &Transaction<'_>,
+        repos: &[String],
+        clock: FleetSeconds,
+    ) -> Result<()> {
+        let key = worktree_list_key(clock, self.settings.config.worktree_list_period_s);
+        for repo in repos {
+            if jobs_store::latest(tx, Kind::WorktreeList, repo, &key)?.is_some() {
+                continue;
+            }
+            let job = JobKey {
+                kind: Kind::WorktreeList,
+                subject: repo,
+                input_key: &key,
+            };
+            jobs::queue(ctx, tx, &job, Some(repo), clock)?;
+        }
+        Ok(())
     }
 
     /// The effects of the rows in an intended state, stops first. Launches
@@ -764,7 +850,8 @@ impl<'a> Pass<'a> {
         }
         let due = jobs::due_to_start(tx, clock)?;
         let ids: Vec<String> = due.iter().map(|j| job_cursor_key(j.id)).collect();
-        for id in take(tx, JOB_STARTS, &ids, budget, stamp)? {
+        let startable = startable(tx, &due, &ids, budget, stamp)?;
+        for id in take(tx, JOB_STARTS, &startable, budget, stamp)? {
             let i = ids
                 .iter()
                 .position(|k| *k == id)
@@ -1141,4 +1228,139 @@ fn take(
         .collect();
     cursors_store::save(tx, kind, &cursor)?;
     Ok(chosen)
+}
+
+/// The keys of the `due` jobs (with the keys `ids`) that part 3 may start,
+/// in the turn order of the cursor of the job starts, at most `budget`: a
+/// git writer only when no git writer of its repository runs and none is
+/// taken before it in this pass (MAP.md of fleetd-p3, Q12). A writer that
+/// waits keeps its turn.
+fn startable(
+    tx: &Transaction<'_>,
+    due: &[JobRow],
+    ids: &[String],
+    budget: PassBudget,
+    stamp: &str,
+) -> Result<Vec<String>> {
+    let cursor = cursors_store::load(tx, JOB_STARTS, stamp)?;
+    let mut writing = BTreeSet::new();
+    let mut out = Vec::new();
+    for (job, id) in cursor.turns(&due.iter().zip(ids).collect::<Vec<_>>(), |(_, id)| id) {
+        if out.len() == budget.rows() {
+            break;
+        }
+        if let (true, Some(repo)) = (jobs::is_git_writer(job.kind), job.repo.as_deref()) {
+            if writing.contains(repo) || jobs::git_writer_busy(tx, repo)? {
+                continue;
+            }
+            writing.insert(repo);
+        }
+        out.push((*id).clone());
+    }
+    Ok(out)
+}
+
+/// The repositories of `repos` that are git repositories: a `.git` is at
+/// the root. A folder that is not one has no worktree list.
+fn git_repositories(repos: Vec<String>) -> Vec<String> {
+    repos
+        .into_iter()
+        .filter(|r| Path::new(r).join(".git").exists())
+        .collect()
+}
+
+/// The last passed `worktree_list` run of each of `repos`, read from
+/// `jobs`. A run whose result does not parse gives no list.
+fn last_lists(conn: &Connection, repos: &[String]) -> Result<Vec<Listed>> {
+    let sql = "SELECT id FROM jobs WHERE kind = ?1 AND subject = ?2 AND state = ?3
+               ORDER BY id DESC LIMIT 1";
+    let mut out = Vec::new();
+    for repo in repos {
+        let args = (Kind::WorktreeList.as_str(), repo, State::Passed.as_str());
+        let id: Option<i64> = conn.query_row(sql, args, |r| r.get(0)).optional()?;
+        let Some(row) = id
+            .map(|id| jobs_store::get(conn, id))
+            .transpose()?
+            .flatten()
+        else {
+            continue;
+        };
+        let parsed = jobs::result_data(&row).map(serde_json::from_value::<ListResult>);
+        if let Some(Ok(result)) = parsed {
+            out.push(Listed {
+                repo: repo.clone(),
+                seen_at: row.ended_at.unwrap_or(row.created_at),
+                result,
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// The worktree facts of part 1: the scanned folder of each row, by its
+/// worktree id; each scanned folder of a work directory that exists, under
+/// its repository; and the `lists`. A folder of a work directory has its
+/// path as its key ([`Outside::worktree_folders`]).
+fn worktree_facts(
+    items: &[FolderItem],
+    scanned: Vec<FolderFact>,
+    lists: Vec<Listed>,
+) -> WorktreeFacts {
+    let by_key: BTreeMap<&str, &FolderItem> = items.iter().map(|i| (i.key.as_str(), i)).collect();
+    let mut facts = WorktreeFacts {
+        lists,
+        ..WorktreeFacts::default()
+    };
+    for fact in scanned {
+        let Some(item) = by_key.get(fact.key.as_str()) else {
+            continue;
+        };
+        if Path::new(&item.key) != item.path {
+            facts.folders.push(fact);
+            continue;
+        }
+        let repo = item.path.parent().and_then(Path::parent);
+        let (Presence::Present, Some(repo)) = (&fact.presence, repo) else {
+            continue;
+        };
+        let repo = repo.display().to_string();
+        match facts.work_dirs.iter_mut().find(|d| d.repo == repo) {
+            Some(d) => d.folders.push(fact.key),
+            None => facts.work_dirs.push(WorkDir {
+                repo,
+                folders: vec![fact.key],
+            }),
+        }
+    }
+    facts
+}
+
+/// The worktree or path, and the text, of the needs-you item of the I6
+/// breach `b`. A row with no folder has the item of the reconciler that
+/// escalates a vanished folder (FM-27), so it gets none here.
+fn i6_text(b: &I6) -> Option<(String, String)> {
+    Some(match b {
+        I6::NoRow { repo, path } => (
+            path.clone(),
+            format!(
+                "I6: the tree {path} of {repo} has no worktree row, and fleetd did not adopt it. \
+                 Find why the adoption failed in the events of the pass."
+            ),
+        ),
+        I6::NoFolder { .. } => return None,
+        I6::ReservedWithNoJob { id } => (
+            id.clone(),
+            format!(
+                "I6: the reserved worktree {id} has no worktree_add run. fleetd writes the \
+                 row and its run in 1 transaction, so another writer changed the ledger."
+            ),
+        ),
+        I6::RemovedUnsaved { id } => (
+            id.clone(),
+            format!(
+                "I6: the worktree {id} is removed, and its work is not landed and has no \
+                 rescue ref. Find its commits in the reflog of its branch."
+            ),
+        ),
+    })
 }
