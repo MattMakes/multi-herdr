@@ -63,6 +63,8 @@ pub struct WorkDir {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Listed {
     pub repo: String,
+    /// The id of the run in `jobs`.
+    pub job: i64,
     /// When the run read its facts: the `seen_at` of each row it names.
     pub seen_at: String,
     pub result: ListResult,
@@ -243,19 +245,16 @@ fn known_paths<'a>(
     rows.map(|r| r.path.as_str()).chain(listed).collect()
 }
 
-/// The trees that the views show: each entry of `git worktree list` whose
-/// folder the folder scan of this pass shows, and that no removal outdated.
-/// A folder of a work directory is a tree only when the last
-/// `worktree_list` result of its repository names it: with no result yet,
-/// its adoption waits for one.
+/// The trees that the views show: each entry of `git worktree list` that
+/// [`admits`] gives as a tree now. A folder of a work directory is a tree
+/// only when the last `worktree_list` result of its repository names it:
+/// with no result yet, its adoption waits for one.
 fn seen(conn: &Connection, rows: &[WorktreeRow], facts: &Facts) -> Result<Vec<Seen>> {
     let mut out = Vec::new();
     for l in &facts.lists {
         for (n, e) in l.result.entries.iter().enumerate() {
             let main = n == 0 || e.bare;
-            if !main
-                && (!scanned(facts, rows, l, &e.path) || removed_after(conn, rows, l, &e.path)?)
-            {
+            if !main && !admits(conn, rows, facts, l, &e.path)? {
                 continue;
             }
             out.push(Seen {
@@ -270,46 +269,72 @@ fn seen(conn: &Connection, rows: &[WorktreeRow], facts: &Facts) -> Result<Vec<Se
     Ok(out)
 }
 
-/// Whether the folder scan of this pass shows the folder `path` of an
-/// entry of `list`. A folder that a row names is scanned by the row; any
-/// other folder of the work directory `<repo>/.worktrees/` is scanned as an
-/// entry. A folder that no row names outside the work directory is not
-/// scanned: the list alone shows it, as the removal rule permits.
-fn scanned(facts: &Facts, rows: &[WorktreeRow], list: &Listed, path: &str) -> bool {
-    let by_row: Vec<Folder> = rows
+/// What shows that the folder of an entry of a `worktree_list` result is
+/// there now, besides the list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Evidence {
+    /// The scan of this pass read the folder of a row at the path.
+    RowScan(Folder),
+    /// The path is in the work directory `<repo>/.worktrees/`, which the
+    /// scan of this pass lists: whether the listing holds it.
+    WorkDirScan { listed: bool },
+    /// No scan of this pass reads the path: a folder that no row names,
+    /// outside the work directory. The list is the only evidence.
+    ListOnly,
+}
+
+/// The evidence for the folder `path` of an entry of `list`.
+fn evidence(facts: &Facts, rows: &[WorktreeRow], list: &Listed, path: &str) -> Evidence {
+    let read = rows
         .iter()
         .filter(|r| r.path == path)
         .map(|r| folder(facts, &r.worktree_id))
         .filter(|f| *f != Folder::Unknown)
-        .collect();
-    if !by_row.is_empty() {
-        return by_row.contains(&Folder::Present);
+        .max_by_key(|f| *f == Folder::Present);
+    if let Some(f) = read {
+        return Evidence::RowScan(f);
     }
-    let in_work_dir = Path::new(path).parent() == Some(&Path::new(&list.repo).join(".worktrees"));
-    let in_scan = facts
-        .work_dirs
-        .iter()
-        .any(|d| d.repo == list.repo && d.folders.iter().any(|f| f == path));
-    in_scan || !in_work_dir
+    let work_dir = Path::new(&list.repo).join(".worktrees");
+    if Path::new(path).parent() == Some(work_dir.as_path()) {
+        let listed = facts
+            .work_dirs
+            .iter()
+            .any(|d| d.repo == list.repo && d.folders.iter().any(|f| f == path));
+        return Evidence::WorkDirScan { listed };
+    }
+    Evidence::ListOnly
 }
 
-/// Whether a removal of the folder `path` ended after `list` read its
-/// facts: the list outdates, and the folder it names is gone.
-fn removed_after(
+/// Whether the entry `path` of `list` is a tree now: its folder is not
+/// shown gone by a scan of this pass, and no passed removal of the path
+/// made the list result stale.
+fn admits(
     conn: &Connection,
     rows: &[WorktreeRow],
+    facts: &Facts,
     list: &Listed,
     path: &str,
 ) -> Result<bool> {
-    let Some(read) = crate::clock::parse(&list.seen_at) else {
-        return Ok(false);
+    let shown = match evidence(facts, rows, list, path) {
+        Evidence::RowScan(f) => f == Folder::Present,
+        Evidence::WorkDirScan { listed } => listed,
+        Evidence::ListOnly => true,
     };
+    Ok(shown && !stale(conn, rows, list, path)?)
+}
+
+/// Whether a passed removal of the folder `path` was queued after the run
+/// of `list`: the run may have read the tree before it went. The order is
+/// the order of the ids of the runs, which cannot tie, as 2 times of 1 s
+/// can. A list run queued after the removal but started before its end is
+/// not stale by this rule: the scan of [`evidence`] shows that the folder
+/// is gone.
+fn stale(conn: &Connection, rows: &[WorktreeRow], list: &Listed, path: &str) -> Result<bool> {
     for row in rows.iter().filter(|r| r.path == path) {
         let Some(job) = jobs_store::last(conn, Kind::WorktreeRemove, &row.worktree_id)? else {
             continue;
         };
-        let ended = job.ended_at.as_deref().and_then(crate::clock::parse);
-        if job.state == State::Passed && ended.is_some_and(|e| e >= read) {
+        if job.state == State::Passed && job.id > list.job {
             return Ok(true);
         }
     }

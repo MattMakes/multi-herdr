@@ -757,6 +757,104 @@ fn epoch_ms(at: &str) -> i64 {
         .timestamp_millis()
 }
 
+fn now_ms() -> i64 {
+    let since = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+    i64::try_from(since.as_millis()).unwrap()
+}
+
+/// Wait until the fleetd `pid` wrote its first heartbeat.
+fn wait_for_heartbeat(h: &Harness, pid: u32) {
+    let until = Instant::now() + Duration::from_secs(60);
+    while heartbeat(h, pid).is_none() {
+        assert!(Instant::now() < until, "no heartbeat of fleetd {pid}");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// What a command did while the test watched the heartbeat.
+struct Watched {
+    out: String,
+    took: Duration,
+    /// The longest time with no new heartbeat.
+    longest_still: Duration,
+    /// When the command exited, in ms after the Unix epoch.
+    exited_ms: i64,
+}
+
+/// Run `horch ledger worktree new <name>` as `worker`, and watch the
+/// heartbeat of the fleetd `pid` until the command exits.
+fn add_watching_heartbeat(h: &Harness, worker: &str, name: &str, pid: u32) -> Watched {
+    let mut add = h
+        .horch(&["ledger", "worktree", "new", name])
+        .env("HORCH_WORKER_ID", worker)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let began = Instant::now();
+    let mut last = heartbeat(h, pid);
+    let mut moved_at = Instant::now();
+    let mut longest_still = Duration::ZERO;
+    let status = loop {
+        if let Some(s) = add.try_wait().unwrap() {
+            break s;
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(SLOW_ADD_S + 120),
+            "the add did not end\n{}",
+            board(h)
+        );
+        let now = heartbeat(h, pid);
+        if now != last {
+            last = now;
+            moved_at = Instant::now();
+        }
+        longest_still = longest_still.max(moved_at.elapsed());
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    let exited_ms = now_ms();
+    let mut out = String::new();
+    add.stdout.take().unwrap().read_to_string(&mut out).unwrap();
+    let mut err = String::new();
+    add.stderr.take().unwrap().read_to_string(&mut err).unwrap();
+    assert!(status.success(), "{out}\n{err}");
+    Watched {
+        out,
+        took: began.elapsed(),
+        longest_still,
+        exited_ms,
+    }
+}
+
+/// The 1 `worktree_add` run of the tree at `path` passed, took the slow
+/// add, and ended before `exited_ms`: the command gave the path only after
+/// the job passed (Q17).
+fn assert_add_job_passed_before(h: &Harness, path: &Path, exited_ms: i64) {
+    let id = column(h, path, "worktree_id").unwrap();
+    let job = query(
+        h,
+        &format!(
+            "SELECT state || ' ' || started_at || ' ' || ended_at FROM jobs
+             WHERE kind = 'worktree_add' AND subject = '{id}'"
+        ),
+    );
+    assert_eq!(job.len(), 1, "{}", board(h));
+    let parts: Vec<&str> = job[0].split(' ').collect();
+    assert_eq!(parts[0], "passed", "{}", board(h));
+    let (started, ended) = (epoch_ms(parts[1]), epoch_ms(parts[2]));
+    let slow_ms = i64::try_from(SLOW_ADD_S * 1000).unwrap();
+    assert!(
+        ended - started >= slow_ms,
+        "the job is not the slow add: {}",
+        job[0]
+    );
+    assert!(
+        ended <= exited_ms,
+        "the path came before the job passed: {}",
+        job[0]
+    );
+}
+
 #[test]
 fn slow_worktree_add_of_60_s_keeps_the_heartbeat_and_the_tree_is_used_only_after_its_job_passed() {
     let mut h = fleet("p3-slow-add");
@@ -767,57 +865,19 @@ fn slow_worktree_add_of_60_s_keeps_the_heartbeat_and_the_tree_is_used_only_after
     let (w, _) = live_claim(&h, &mut agents);
     let mut fleetds = Fleetds::new(&h);
     let pid = fleetds.start(&h, "fleetd");
-    let until = Instant::now() + Duration::from_secs(60);
-    while heartbeat(&h, pid).is_none() {
-        assert!(Instant::now() < until, "no heartbeat of fleetd {pid}");
-        std::thread::sleep(Duration::from_millis(200));
-    }
+    wait_for_heartbeat(&h, pid);
 
-    let mut add = h
-        .horch(&["ledger", "worktree", "new", "feat"])
-        .env("HORCH_WORKER_ID", &w)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let began = Instant::now();
-    let mut last = heartbeat(&h, pid);
-    let mut moved_at = Instant::now();
-    let mut longest = Duration::ZERO;
-    let status = loop {
-        if let Some(s) = add.try_wait().unwrap() {
-            break s;
-        }
-        assert!(
-            began.elapsed() < Duration::from_secs(SLOW_ADD_S + 120),
-            "the add did not end\n{}",
-            board(&h)
-        );
-        let now = heartbeat(&h, pid);
-        if now != last {
-            last = now;
-            moved_at = Instant::now();
-        }
-        longest = longest.max(moved_at.elapsed());
-        std::thread::sleep(Duration::from_millis(200));
-    };
-    let ended_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as i64;
-    let mut out = String::new();
-    add.stdout.take().unwrap().read_to_string(&mut out).unwrap();
-    let mut err = String::new();
-    add.stderr.take().unwrap().read_to_string(&mut err).unwrap();
-    assert!(status.success(), "{out}\n{err}");
+    let add = add_watching_heartbeat(&h, &w, "feat", pid);
+
     assert!(
-        began.elapsed() >= Duration::from_secs(SLOW_ADD_S),
+        add.took >= Duration::from_secs(SLOW_ADD_S),
         "the add was not slow: {:?}",
-        began.elapsed()
+        add.took
     );
     assert!(
-        longest <= Duration::from_secs(PASS_TIME_BUDGET_S),
-        "the heartbeat stood still {longest:?} during the add\n{}",
+        add.longest_still <= Duration::from_secs(PASS_TIME_BUDGET_S),
+        "the heartbeat stood still {:?} during the add\n{}",
+        add.longest_still,
         board(&h)
     );
     assert!(
@@ -826,34 +886,10 @@ fn slow_worktree_add_of_60_s_keeps_the_heartbeat_and_the_tree_is_used_only_after
             .is_some_and(|(p, started)| horch_core::procid::alive(p, Some(started))),
         "fleetd stopped during the add"
     );
-
-    // The command gives the path only after the job passed.
-    let path = tree_path(&out);
-    assert!(path.is_dir(), "{out}");
-    let id = column(&h, &path, "worktree_id").unwrap();
-    let job = query(
-        &h,
-        &format!(
-            "SELECT state || ' ' || started_at || ' ' || ended_at FROM jobs
-             WHERE kind = 'worktree_add' AND subject = '{id}'"
-        ),
-    );
-    assert_eq!(job.len(), 1, "{}", board(&h));
-    let parts: Vec<&str> = job[0].split(' ').collect();
-    assert_eq!(parts[0], "passed", "{}", board(&h));
-    let (started, ended) = (epoch_ms(parts[1]), epoch_ms(parts[2]));
-    assert!(
-        ended - started >= (SLOW_ADD_S * 1000) as i64,
-        "the job is not the slow add: {}",
-        job[0]
-    );
-    assert!(
-        ended <= ended_ms,
-        "the path came before the job passed: {}",
-        job[0]
-    );
+    let path = tree_path(&add.out);
+    assert!(path.is_dir(), "{}", add.out);
+    assert_add_job_passed_before(&h, &path, add.exited_ms);
     assert_eq!(state(&h, &path).as_deref(), Some("active"), "{}", board(&h));
-
     let work = work_in(&h, &path, "feat");
     assert_kept(&h, &[&work]);
 }

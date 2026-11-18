@@ -275,9 +275,38 @@ impl World {
         }
         Listed {
             repo: self.repo_s(),
+            job: 0,
             seen_at: "2026-11-17T10:00:00Z".to_string(),
             result,
         }
+    }
+
+    /// 1 run of `kind` on `subject`, queued, started and passed through the
+    /// door. Gives its id.
+    fn passed_run(&mut self, kind: Kind, subject: &str) -> i64 {
+        let config = self.config.clone();
+        let repo = self.repo_s();
+        self.store
+            .immediate(|tx| {
+                let job = JobKey {
+                    kind,
+                    subject,
+                    input_key: "run",
+                };
+                let Queued::New(id) = jobs::queue(&ctx(&config), tx, &job, Some(&repo), CLOCK)?
+                else {
+                    panic!("a new run");
+                };
+                end_run(tx, &config, id, true)?;
+                Ok(id)
+            })
+            .unwrap()
+    }
+
+    /// A `removed` row `id` at `path`, whose removal run passed.
+    fn removed(&mut self, id: &str, path: &str) {
+        self.row_in(id, path, "removed", (None, None, None));
+        self.passed_run(Kind::WorktreeRemove, id);
     }
 
     fn work_dir(&self, folders: &[&str]) -> WorkDir {
@@ -718,30 +747,15 @@ fn a_list_that_a_removal_outdated_adopts_no_new_row() {
     let mut w = World::new();
     let gone = w.no_folder("gone");
     let raced = w.folder("raced");
-    for (id, path) in [("wt-gone", &gone), ("wt-raced", &raced)] {
-        w.row_in(id, path, "removed", (None, None, None));
-        let config = w.config.clone();
-        let repo = w.repo_s();
-        w.store
-            .immediate(|tx| {
-                let job = JobKey {
-                    kind: Kind::WorktreeRemove,
-                    subject: id,
-                    input_key: "removal",
-                };
-                let Queued::New(job_id) = jobs::queue(&ctx(&config), tx, &job, Some(&repo), CLOCK)?
-                else {
-                    panic!("a new run");
-                };
-                end_run(tx, &config, job_id, true)
-            })
-            .unwrap();
-    }
-    // The list read its facts before the removals ended. The scan of this
-    // pass shows no folder at `gone`; a folder at `raced` came back after
-    // the removal, and only a newer list can name it.
+    let list = w.passed_run(Kind::WorktreeList, &w.repo_s());
+    w.removed("wt-gone", &gone);
+    w.removed("wt-raced", &raced);
+    // The scan of this pass shows no folder at `gone`; a folder at `raced`
+    // came back after the removal, and only a newer list can name it.
+    let mut listed = w.listed(&[(&gone, "b-gone", None), (&raced, "b-raced", None)]);
+    listed.job = list;
     let facts = Facts {
-        lists: vec![w.listed(&[(&gone, "b-gone", None), (&raced, "b-raced", None)])],
+        lists: vec![listed],
         work_dirs: vec![w.work_dir(&[&raced])],
         ..Facts::default()
     };
@@ -762,6 +776,68 @@ fn a_list_that_a_removal_outdated_adopts_no_new_row() {
         .filter(|b| matches!(b, Breach::NoRow { .. }))
         .count();
     assert_eq!(no_row, 0, "{:?}", w.i6(&facts));
+}
+
+/// The list run and the removal run end in the same second; the order of
+/// their run ids decides. A list run queued before the removal run is
+/// stale: the folder at the path gets no row.
+#[test]
+fn a_list_that_ended_before_a_removal_in_the_same_second_adopts_nothing() {
+    let mut w = World::new();
+    let path = w.folder("tree");
+    let list = w.passed_run(Kind::WorktreeList, &w.repo_s());
+    w.removed("wt-old", &path);
+    let mut listed = w.listed(&[(&path, "b", None)]);
+    listed.job = list;
+    listed.seen_at = second_of_run(&w, list);
+    let facts = Facts {
+        lists: vec![listed],
+        work_dirs: vec![w.work_dir(&[&path])],
+        ..Facts::default()
+    };
+
+    let report = w.reconcile(&facts);
+
+    assert!(report.adopted.is_empty(), "{report:?}");
+}
+
+/// A list run that started after the removal ended, in the same second,
+/// is fresh: the folder at the path is a tree, and gets a new row.
+#[test]
+fn a_list_that_started_after_a_removal_in_the_same_second_adopts_the_tree() {
+    let mut w = World::new();
+    let path = w.folder("tree");
+    w.removed("wt-old", &path);
+    let list = w.passed_run(Kind::WorktreeList, &w.repo_s());
+    let mut listed = w.listed(&[(&path, "b", None)]);
+    listed.job = list;
+    listed.seen_at = second_of_run(&w, list);
+    let facts = Facts {
+        lists: vec![listed],
+        work_dirs: vec![w.work_dir(&[&path])],
+        ..Facts::default()
+    };
+
+    let report = w.reconcile(&facts);
+
+    assert_eq!(report.adopted.len(), 1, "{report:?}");
+    let row = trees::by_path(w.conn(), &path).unwrap().unwrap();
+    assert_eq!(row.state, WorktreeState::Orphaned);
+}
+
+/// The end time of the run `id`, in s: the same second as the removal run
+/// of its test, as the guard of each test checks.
+fn second_of_run(w: &World, id: i64) -> String {
+    let ends = w.count(
+        "SELECT count(DISTINCT ended_at) FROM jobs WHERE ended_at IS NOT NULL",
+        &[],
+    );
+    assert_eq!(
+        ends, 1,
+        "the runs did not end in the same second; run again"
+    );
+    let ended = jobs_store::get(w.conn(), id).unwrap().unwrap().ended_at;
+    ended.expect("an end time")
 }
 
 /// Q9, the act: the reconciler queues 1 rescue of each orphan and 1

@@ -2288,6 +2288,7 @@ fn last_lists(conn: &Connection, repos: &[String]) -> Result<Vec<Listed>> {
         if let Some(Ok(result)) = parsed {
             out.push(Listed {
                 repo: repo.clone(),
+                job: row.id,
                 seen_at: row.ended_at.unwrap_or(row.created_at),
                 result,
             });

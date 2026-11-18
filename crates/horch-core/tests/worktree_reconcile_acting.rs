@@ -339,6 +339,7 @@ impl World {
             }],
             lists: vec![Listed {
                 repo: self.repo.display().to_string(),
+                job: 0,
                 seen_at: util::now(),
                 result,
             }],
