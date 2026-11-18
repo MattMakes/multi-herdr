@@ -2639,12 +2639,15 @@ mod tests {
             assert!(!text.contains("git worktree"), "{text}");
         }
         // A worker with its own settings and no skills bundle: inline JSON,
-        // and a settings file.
+        // and a settings file. The sandbox of the worker (fleetd-p5 39)
+        // adds the operator boundary of the fleet root.
         let want = json!([
             "Bash(rm *)",
             "Bash(git worktree add:*)",
             "Bash(git worktree remove:*)",
-            "Bash(git worktree prune:*)"
+            "Bash(git worktree prune:*)",
+            "Read(//fleet/run/**)",
+            "Edit(//fleet/run/**)"
         ]);
         let own_rule = r#"{"permissions":{"deny":["Bash(rm *)"]}}"#;
         let mut own = roster.require("opus").unwrap().clone();
@@ -2655,9 +2658,15 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let file = tmp.path().join("settings.json");
         std::fs::write(&file, own_rule).unwrap();
+        // A settings file cannot be combined with a sandbox, so this worker
+        // has none, and no operator boundary.
         own.settings = Some(file.to_string_lossy().into_owned());
+        own.sandbox = None;
         let cmd = claude_command(&env, &own, Session::Unmanaged, "", None).unwrap();
-        assert_eq!(settings_arg(&cmd)["permissions"]["deny"], want);
+        assert_eq!(
+            settings_arg(&cmd)["permissions"]["deny"],
+            json!(want.as_array().unwrap()[..4])
+        );
     }
 
     /// A fleet pane launches with skills: the sandbox rides in the merged

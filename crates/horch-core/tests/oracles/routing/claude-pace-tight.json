@@ -2723,7 +2723,7 @@
     "idea-lead|exact|advise": {
       "decision": {
         "decision": "spawn",
-        "note": "claude pool tight (7d 60%, pace 1.3x, resets Fri 14:00Z). Fallback codex-sol is ok.",
+        "note": "claude pool tight (7d 60%, pace 1.3x, resets Fri 14:00Z).",
         "teammate": "idea-lead"
       },
       "resolved": {
@@ -2734,21 +2734,16 @@
       },
       "route_json": {
         "decision": "spawn",
-        "line": "NOTE: claude pool tight (7d 60%, pace 1.3x, resets Fri 14:00Z). Fallback codex-sol is ok.",
+        "line": "NOTE: claude pool tight (7d 60%, pace 1.3x, resets Fri 14:00Z).",
         "mode": "advise",
         "pools": [
           {
             "detail": "7d 60%, pace 1.3x, resets Fri 14:00Z",
             "pool": "claude",
             "state": "tight"
-          },
-          {
-            "detail": "7d 12%, resets Sat 19:16Z",
-            "pool": "codex",
-            "state": "ok"
           }
         ],
-        "reason": "claude pool tight (7d 60%, pace 1.3x, resets Fri 14:00Z). Fallback codex-sol is ok.",
+        "reason": "claude pool tight (7d 60%, pace 1.3x, resets Fri 14:00Z).",
         "teammate": "idea-lead",
         "via": null
       }
@@ -2756,7 +2751,7 @@
     "idea-lead|exact|auto": {
       "decision": {
         "decision": "spawn",
-        "note": "claude pool tight (7d 60%, pace 1.3x, resets Fri 14:00Z). Fallback codex-sol is ok.",
+        "note": "claude pool tight (7d 60%, pace 1.3x, resets Fri 14:00Z).",
         "teammate": "idea-lead"
       },
       "resolved": {
@@ -2767,21 +2762,16 @@
       },
       "route_json": {
         "decision": "spawn",
-        "line": "NOTE: claude pool tight (7d 60%, pace 1.3x, resets Fri 14:00Z). Fallback codex-sol is ok.",
+        "line": "NOTE: claude pool tight (7d 60%, pace 1.3x, resets Fri 14:00Z).",
         "mode": "auto",
         "pools": [
           {
             "detail": "7d 60%, pace 1.3x, resets Fri 14:00Z",
             "pool": "claude",
             "state": "tight"
-          },
-          {
-            "detail": "7d 12%, resets Sat 19:16Z",
-            "pool": "codex",
-            "state": "ok"
           }
         ],
-        "reason": "claude pool tight (7d 60%, pace 1.3x, resets Fri 14:00Z). Fallback codex-sol is ok.",
+        "reason": "claude pool tight (7d 60%, pace 1.3x, resets Fri 14:00Z).",
         "teammate": "idea-lead",
         "via": null
       }
@@ -2807,11 +2797,6 @@
             "detail": "7d 60%, pace 1.3x, resets Fri 14:00Z",
             "pool": "claude",
             "state": "tight"
-          },
-          {
-            "detail": "7d 12%, resets Sat 19:16Z",
-            "pool": "codex",
-            "state": "ok"
           }
         ],
         "reason": null,
@@ -2822,7 +2807,7 @@
     "idea-lead|force|advise": {
       "decision": {
         "decision": "spawn",
-        "note": "claude pool tight (7d 60%, pace 1.3x, resets Fri 14:00Z). Fallback codex-sol is ok.",
+        "note": "claude pool tight (7d 60%, pace 1.3x, resets Fri 14:00Z).",
         "teammate": "idea-lead"
       },
       "resolved": {
@@ -2833,21 +2818,16 @@
       },
       "route_json": {
         "decision": "spawn",
-        "line": "NOTE: claude pool tight (7d 60%, pace 1.3x, resets Fri 14:00Z). Fallback codex-sol is ok.",
+        "line": "NOTE: claude pool tight (7d 60%, pace 1.3x, resets Fri 14:00Z).",
         "mode": "advise",
         "pools": [
           {
             "detail": "7d 60%, pace 1.3x, resets Fri 14:00Z",
             "pool": "claude",
             "state": "tight"
-          },
-          {
-            "detail": "7d 12%, resets Sat 19:16Z",
-            "pool": "codex",
-            "state": "ok"
           }
         ],
-        "reason": "claude pool tight (7d 60%, pace 1.3x, resets Fri 14:00Z). Fallback codex-sol is ok.",
+        "reason": "claude pool tight (7d 60%, pace 1.3x, resets Fri 14:00Z).",
         "teammate": "idea-lead",
         "via": null
       }
@@ -2855,7 +2835,7 @@
     "idea-lead|force|auto": {
       "decision": {
         "decision": "spawn",
-        "note": "claude pool tight (7d 60%, pace 1.3x, resets Fri 14:00Z). Fallback codex-sol is ok.",
+        "note": "claude pool tight (7d 60%, pace 1.3x, resets Fri 14:00Z).",
         "teammate": "idea-lead"
       },
       "resolved": {
@@ -2866,21 +2846,16 @@
       },
       "route_json": {
         "decision": "spawn",
-        "line": "NOTE: claude pool tight (7d 60%, pace 1.3x, resets Fri 14:00Z). Fallback codex-sol is ok.",
+        "line": "NOTE: claude pool tight (7d 60%, pace 1.3x, resets Fri 14:00Z).",
         "mode": "auto",
         "pools": [
           {
             "detail": "7d 60%, pace 1.3x, resets Fri 14:00Z",
             "pool": "claude",
             "state": "tight"
-          },
-          {
-            "detail": "7d 12%, resets Sat 19:16Z",
-            "pool": "codex",
-            "state": "ok"
           }
         ],
-        "reason": "claude pool tight (7d 60%, pace 1.3x, resets Fri 14:00Z). Fallback codex-sol is ok.",
+        "reason": "claude pool tight (7d 60%, pace 1.3x, resets Fri 14:00Z).",
         "teammate": "idea-lead",
         "via": null
       }
@@ -2906,11 +2881,6 @@
             "detail": "7d 60%, pace 1.3x, resets Fri 14:00Z",
             "pool": "claude",
             "state": "tight"
-          },
-          {
-            "detail": "7d 12%, resets Sat 19:16Z",
-            "pool": "codex",
-            "state": "ok"
           }
         ],
         "reason": null,
@@ -2921,7 +2891,7 @@
     "idea-lead|none|advise": {
       "decision": {
         "decision": "spawn",
-        "note": "claude pool tight (7d 60%, pace 1.3x, resets Fri 14:00Z). Fallback codex-sol is ok.",
+        "note": "claude pool tight (7d 60%, pace 1.3x, resets Fri 14:00Z).",
         "teammate": "idea-lead"
       },
       "resolved": {
@@ -2932,21 +2902,16 @@
       },
       "route_json": {
         "decision": "spawn",
-        "line": "NOTE: claude pool tight (7d 60%, pace 1.3x, resets Fri 14:00Z). Fallback codex-sol is ok.",
+        "line": "NOTE: claude pool tight (7d 60%, pace 1.3x, resets Fri 14:00Z).",
         "mode": "advise",
         "pools": [
           {
             "detail": "7d 60%, pace 1.3x, resets Fri 14:00Z",
             "pool": "claude",
             "state": "tight"
-          },
-          {
-            "detail": "7d 12%, resets Sat 19:16Z",
-            "pool": "codex",
-            "state": "ok"
           }
         ],
-        "reason": "claude pool tight (7d 60%, pace 1.3x, resets Fri 14:00Z). Fallback codex-sol is ok.",
+        "reason": "claude pool tight (7d 60%, pace 1.3x, resets Fri 14:00Z).",
         "teammate": "idea-lead",
         "via": null
       }
@@ -2954,7 +2919,7 @@
     "idea-lead|none|auto": {
       "decision": {
         "decision": "spawn",
-        "note": "claude pool tight (7d 60%, pace 1.3x, resets Fri 14:00Z). Fallback codex-sol is ok.",
+        "note": "claude pool tight (7d 60%, pace 1.3x, resets Fri 14:00Z).",
         "teammate": "idea-lead"
       },
       "resolved": {
@@ -2965,21 +2930,16 @@
       },
       "route_json": {
         "decision": "spawn",
-        "line": "NOTE: claude pool tight (7d 60%, pace 1.3x, resets Fri 14:00Z). Fallback codex-sol is ok.",
+        "line": "NOTE: claude pool tight (7d 60%, pace 1.3x, resets Fri 14:00Z).",
         "mode": "auto",
         "pools": [
           {
             "detail": "7d 60%, pace 1.3x, resets Fri 14:00Z",
             "pool": "claude",
             "state": "tight"
-          },
-          {
-            "detail": "7d 12%, resets Sat 19:16Z",
-            "pool": "codex",
-            "state": "ok"
           }
         ],
-        "reason": "claude pool tight (7d 60%, pace 1.3x, resets Fri 14:00Z). Fallback codex-sol is ok.",
+        "reason": "claude pool tight (7d 60%, pace 1.3x, resets Fri 14:00Z).",
         "teammate": "idea-lead",
         "via": null
       }
@@ -3005,11 +2965,6 @@
             "detail": "7d 60%, pace 1.3x, resets Fri 14:00Z",
             "pool": "claude",
             "state": "tight"
-          },
-          {
-            "detail": "7d 12%, resets Sat 19:16Z",
-            "pool": "codex",
-            "state": "ok"
           }
         ],
         "reason": null,

@@ -165,7 +165,7 @@ impl LaunchEnv {
             ledger_dir: None,
             herdr_socket: None,
             ledger_db: None,
-            fleet_root: None,
+            fleet_root: Some(PathBuf::from("/fleet")),
             task_dir: None,
             worktree: None,
             report_socket: None,
@@ -1648,7 +1648,9 @@ mod tests {
                 "--permission-mode",
                 "auto",
                 "--settings",
-                r#"{"attribution":{"commit":"","pr":"","sessionUrl":false},"enabledPlugins":{"skill-creator@claude-plugins-official":false},"includeCoAuthoredBy":false,"permissions":{"deny":["Bash(git worktree add:*)","Bash(git worktree remove:*)","Bash(git worktree prune:*)"]},"remoteControlAtStartup":false,"skillOverrides":{"anthropic-skills:skill-creator":"off","herdr-orchestrator":"off","herdr-worker":"off","herdr:herdr-orchestrator":"off","herdr:herdr-worker":"off","skill-creator":"off"},"syncClaudeAiSkills":false}"#,
+                // The sandbox of each worker (fleetd-p5 39) and its operator
+                // boundary of the fleet root.
+                r#"{"attribution":{"commit":"","pr":"","sessionUrl":false},"enabledPlugins":{"skill-creator@claude-plugins-official":false},"includeCoAuthoredBy":false,"permissions":{"blockReadsOutsideWorkingDirectories":true,"deny":["Bash(git worktree add:*)","Bash(git worktree remove:*)","Bash(git worktree prune:*)","Read(//fleet/run/**)","Edit(//fleet/run/**)"]},"remoteControlAtStartup":false,"sandbox":{"allowUnsandboxedCommands":false,"enabled":true,"failIfUnavailable":true,"filesystem":{"allowRead":[],"allowWrite":[],"denyRead":["/fleet/run"],"denyWrite":["/fleet/run"]},"network":{"allowAllUnixSockets":false,"allowUnixSockets":[],"allowedDomains":["*"],"strictAllowlist":true}},"skillOverrides":{"anthropic-skills:skill-creator":"off","herdr-orchestrator":"off","herdr-worker":"off","herdr:herdr-orchestrator":"off","herdr:herdr-worker":"off","skill-creator":"off"},"syncClaudeAiSkills":false}"#,
                 "--session-id",
                 "sid",
                 "p"
@@ -2697,7 +2699,7 @@ mod tests {
         let overlay = settings_overlay(&a).expect("a --settings overlay");
         assert_eq!(
             overlay,
-            serde_json::json!({
+            with_worker_sandbox(serde_json::json!({
                 "syncClaudeAiSkills": false,
                 "remoteControlAtStartup": false,
                 "includeCoAuthoredBy": false,
@@ -2716,8 +2718,36 @@ mod tests {
                     "skill-creator": "off",
                     "anthropic-skills:skill-creator": "off"
                 }
-            })
+            }))
         );
+    }
+
+    /// `overlay` with the sandbox that each worker teammate has since
+    /// fleetd-p5 39, and its operator boundary of the fleet root `/fleet`.
+    fn with_worker_sandbox(mut overlay: serde_json::Value) -> serde_json::Value {
+        let permissions = &mut overlay["permissions"];
+        permissions["blockReadsOutsideWorkingDirectories"] = serde_json::json!(true);
+        let deny = permissions["deny"].as_array_mut().unwrap();
+        deny.push(serde_json::json!("Read(//fleet/run/**)"));
+        deny.push(serde_json::json!("Edit(//fleet/run/**)"));
+        overlay["sandbox"] = serde_json::json!({
+            "allowUnsandboxedCommands": false,
+            "enabled": true,
+            "failIfUnavailable": true,
+            "filesystem": {
+                "allowRead": [],
+                "allowWrite": [],
+                "denyRead": ["/fleet/run"],
+                "denyWrite": ["/fleet/run"]
+            },
+            "network": {
+                "allowAllUnixSockets": false,
+                "allowUnixSockets": [],
+                "allowedDomains": ["*"],
+                "strictAllowlist": true
+            }
+        });
+        overlay
     }
 
     /// `inherit_claudeai_skills: true` leaves the switch out. `sonnet` still
@@ -2733,7 +2763,7 @@ mod tests {
         let overlay = settings_overlay(&a).expect("a --settings overlay");
         assert_eq!(
             overlay,
-            serde_json::json!({"remoteControlAtStartup": false,
+            with_worker_sandbox(serde_json::json!({"remoteControlAtStartup": false,
                 "includeCoAuthoredBy": false,
                 "permissions": {"deny": [
                     "Bash(git worktree add:*)",
@@ -2749,7 +2779,7 @@ mod tests {
                 "herdr:herdr-worker": "off",
                 "skill-creator": "off",
                 "anthropic-skills:skill-creator": "off"
-            }}),
+            }})),
             "the synced-skills switch must be the only thing opting out removes"
         );
 
@@ -2775,7 +2805,7 @@ mod tests {
         let overlay = settings_overlay(&a).expect("a --settings overlay");
         assert_eq!(
             overlay,
-            serde_json::json!({
+            with_worker_sandbox(serde_json::json!({
                 "syncClaudeAiSkills": false,
                 "remoteControlAtStartup": false,
                 "includeCoAuthoredBy": false,
@@ -2792,7 +2822,7 @@ mod tests {
                     "skill-creator": "off",
                     "anthropic-skills:skill-creator": "off"
                 }
-            })
+            }))
         );
     }
 

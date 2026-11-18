@@ -572,8 +572,10 @@ fn ctx_05_recorded_applied_matches_the_command() {
     assert!(d.applied);
     assert_eq!(window_in_settings(&args), Some(json!("200000")));
 
-    // A settings file: never applied.
+    // A settings file: never applied. A settings file cannot be combined
+    // with the worker sandbox (fleetd-p5 39), so this teammate has none.
     let mut file = opus.clone();
+    file.sandbox = None;
     let path = w.home.join("mine.json");
     w.write(&path, "{}");
     file.settings = Some(path.to_string_lossy().into_owned());

@@ -2741,11 +2741,6 @@
             "detail": "7d 40%, resets Fri 14:00Z",
             "pool": "claude",
             "state": "ok"
-          },
-          {
-            "detail": "7d 12%, resets Sat 19:16Z",
-            "pool": "codex",
-            "state": "ok"
           }
         ],
         "reason": null,
@@ -2773,11 +2768,6 @@
           {
             "detail": "7d 40%, resets Fri 14:00Z",
             "pool": "claude",
-            "state": "ok"
-          },
-          {
-            "detail": "7d 12%, resets Sat 19:16Z",
-            "pool": "codex",
             "state": "ok"
           }
         ],
@@ -2807,11 +2797,6 @@
             "detail": "7d 40%, resets Fri 14:00Z",
             "pool": "claude",
             "state": "ok"
-          },
-          {
-            "detail": "7d 12%, resets Sat 19:16Z",
-            "pool": "codex",
-            "state": "ok"
           }
         ],
         "reason": null,
@@ -2839,11 +2824,6 @@
           {
             "detail": "7d 40%, resets Fri 14:00Z",
             "pool": "claude",
-            "state": "ok"
-          },
-          {
-            "detail": "7d 12%, resets Sat 19:16Z",
-            "pool": "codex",
             "state": "ok"
           }
         ],
@@ -2873,11 +2853,6 @@
             "detail": "7d 40%, resets Fri 14:00Z",
             "pool": "claude",
             "state": "ok"
-          },
-          {
-            "detail": "7d 12%, resets Sat 19:16Z",
-            "pool": "codex",
-            "state": "ok"
           }
         ],
         "reason": null,
@@ -2905,11 +2880,6 @@
           {
             "detail": "7d 40%, resets Fri 14:00Z",
             "pool": "claude",
-            "state": "ok"
-          },
-          {
-            "detail": "7d 12%, resets Sat 19:16Z",
-            "pool": "codex",
             "state": "ok"
           }
         ],
@@ -2939,11 +2909,6 @@
             "detail": "7d 40%, resets Fri 14:00Z",
             "pool": "claude",
             "state": "ok"
-          },
-          {
-            "detail": "7d 12%, resets Sat 19:16Z",
-            "pool": "codex",
-            "state": "ok"
           }
         ],
         "reason": null,
@@ -2972,11 +2937,6 @@
             "detail": "7d 40%, resets Fri 14:00Z",
             "pool": "claude",
             "state": "ok"
-          },
-          {
-            "detail": "7d 12%, resets Sat 19:16Z",
-            "pool": "codex",
-            "state": "ok"
           }
         ],
         "reason": null,
@@ -3004,11 +2964,6 @@
           {
             "detail": "7d 40%, resets Fri 14:00Z",
             "pool": "claude",
-            "state": "ok"
-          },
-          {
-            "detail": "7d 12%, resets Sat 19:16Z",
-            "pool": "codex",
             "state": "ok"
           }
         ],

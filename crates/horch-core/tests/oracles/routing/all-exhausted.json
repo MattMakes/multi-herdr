@@ -2877,11 +2877,6 @@
             "detail": "7d 100%, resets Fri 14:00Z",
             "pool": "claude",
             "state": "exhausted"
-          },
-          {
-            "detail": "7d 99%, resets Sat 19:16Z",
-            "pool": "codex",
-            "state": "exhausted"
           }
         ],
         "reason": "claude pool exhausted (7d 100%, resets Fri 14:00Z).",
@@ -2897,11 +2892,6 @@
             "detail": "7d 100%, resets Fri 14:00Z",
             "pool": "claude",
             "state": "exhausted"
-          },
-          {
-            "detail": "7d 99%, resets Sat 19:16Z",
-            "pool": "codex",
-            "state": "exhausted"
           }
         ],
         "reason": "claude 7d 100%, resets 2026-10-02T14:00Z",
@@ -2910,17 +2900,12 @@
       "resolved": null,
       "route_json": {
         "decision": "refuse",
-        "line": "REFUSED: idea-lead cannot start. claude exhausted (7d 100%, resets Fri 14:00Z). codex exhausted (7d 99%, resets Sat 19:16Z). Options: wait, --force, or choose a teammate yourself.",
+        "line": "REFUSED: idea-lead cannot start. claude exhausted (7d 100%, resets Fri 14:00Z). Options: wait, --force, or choose a teammate yourself.",
         "mode": "auto",
         "pools": [
           {
             "detail": "7d 100%, resets Fri 14:00Z",
             "pool": "claude",
-            "state": "exhausted"
-          },
-          {
-            "detail": "7d 99%, resets Sat 19:16Z",
-            "pool": "codex",
             "state": "exhausted"
           }
         ],
@@ -2950,11 +2935,6 @@
             "detail": "7d 100%, resets Fri 14:00Z",
             "pool": "claude",
             "state": "exhausted"
-          },
-          {
-            "detail": "7d 99%, resets Sat 19:16Z",
-            "pool": "codex",
-            "state": "exhausted"
           }
         ],
         "reason": null,
@@ -2982,11 +2962,6 @@
           {
             "detail": "7d 100%, resets Fri 14:00Z",
             "pool": "claude",
-            "state": "exhausted"
-          },
-          {
-            "detail": "7d 99%, resets Sat 19:16Z",
-            "pool": "codex",
             "state": "exhausted"
           }
         ],
@@ -3016,11 +2991,6 @@
             "detail": "7d 100%, resets Fri 14:00Z",
             "pool": "claude",
             "state": "exhausted"
-          },
-          {
-            "detail": "7d 99%, resets Sat 19:16Z",
-            "pool": "codex",
-            "state": "exhausted"
           }
         ],
         "reason": "claude pool exhausted (7d 100%, resets Fri 14:00Z). Spawned anyway (--force).",
@@ -3048,11 +3018,6 @@
           {
             "detail": "7d 100%, resets Fri 14:00Z",
             "pool": "claude",
-            "state": "exhausted"
-          },
-          {
-            "detail": "7d 99%, resets Sat 19:16Z",
-            "pool": "codex",
             "state": "exhausted"
           }
         ],
@@ -3082,11 +3047,6 @@
             "detail": "7d 100%, resets Fri 14:00Z",
             "pool": "claude",
             "state": "exhausted"
-          },
-          {
-            "detail": "7d 99%, resets Sat 19:16Z",
-            "pool": "codex",
-            "state": "exhausted"
           }
         ],
         "reason": "claude pool exhausted (7d 100%, resets Fri 14:00Z).",
@@ -3102,11 +3062,6 @@
             "detail": "7d 100%, resets Fri 14:00Z",
             "pool": "claude",
             "state": "exhausted"
-          },
-          {
-            "detail": "7d 99%, resets Sat 19:16Z",
-            "pool": "codex",
-            "state": "exhausted"
           }
         ],
         "reason": "claude 7d 100%, resets 2026-10-02T14:00Z",
@@ -3115,17 +3070,12 @@
       "resolved": null,
       "route_json": {
         "decision": "refuse",
-        "line": "REFUSED: idea-lead cannot start. claude exhausted (7d 100%, resets Fri 14:00Z). codex exhausted (7d 99%, resets Sat 19:16Z). Options: wait, --force, or choose a teammate yourself.",
+        "line": "REFUSED: idea-lead cannot start. claude exhausted (7d 100%, resets Fri 14:00Z). Options: wait, --force, or choose a teammate yourself.",
         "mode": "auto",
         "pools": [
           {
             "detail": "7d 100%, resets Fri 14:00Z",
             "pool": "claude",
-            "state": "exhausted"
-          },
-          {
-            "detail": "7d 99%, resets Sat 19:16Z",
-            "pool": "codex",
             "state": "exhausted"
           }
         ],
@@ -3154,11 +3104,6 @@
           {
             "detail": "7d 100%, resets Fri 14:00Z",
             "pool": "claude",
-            "state": "exhausted"
-          },
-          {
-            "detail": "7d 99%, resets Sat 19:16Z",
-            "pool": "codex",
             "state": "exhausted"
           }
         ],

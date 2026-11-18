@@ -2791,11 +2791,6 @@
             "detail": "7d 40%, resets Fri 14:00Z",
             "pool": "claude",
             "state": "ok"
-          },
-          {
-            "detail": "ordinary usage not allowed",
-            "pool": "codex",
-            "state": "exhausted"
           }
         ],
         "reason": null,
@@ -2824,11 +2819,6 @@
             "detail": "7d 40%, resets Fri 14:00Z",
             "pool": "claude",
             "state": "ok"
-          },
-          {
-            "detail": "ordinary usage not allowed",
-            "pool": "codex",
-            "state": "exhausted"
           }
         ],
         "reason": null,
@@ -2857,11 +2847,6 @@
             "detail": "7d 40%, resets Fri 14:00Z",
             "pool": "claude",
             "state": "ok"
-          },
-          {
-            "detail": "ordinary usage not allowed",
-            "pool": "codex",
-            "state": "exhausted"
           }
         ],
         "reason": null,
@@ -2890,11 +2875,6 @@
             "detail": "7d 40%, resets Fri 14:00Z",
             "pool": "claude",
             "state": "ok"
-          },
-          {
-            "detail": "ordinary usage not allowed",
-            "pool": "codex",
-            "state": "exhausted"
           }
         ],
         "reason": null,
@@ -2923,11 +2903,6 @@
             "detail": "7d 40%, resets Fri 14:00Z",
             "pool": "claude",
             "state": "ok"
-          },
-          {
-            "detail": "ordinary usage not allowed",
-            "pool": "codex",
-            "state": "exhausted"
           }
         ],
         "reason": null,
@@ -2956,11 +2931,6 @@
             "detail": "7d 40%, resets Fri 14:00Z",
             "pool": "claude",
             "state": "ok"
-          },
-          {
-            "detail": "ordinary usage not allowed",
-            "pool": "codex",
-            "state": "exhausted"
           }
         ],
         "reason": null,
@@ -2989,11 +2959,6 @@
             "detail": "7d 40%, resets Fri 14:00Z",
             "pool": "claude",
             "state": "ok"
-          },
-          {
-            "detail": "ordinary usage not allowed",
-            "pool": "codex",
-            "state": "exhausted"
           }
         ],
         "reason": null,
@@ -3022,11 +2987,6 @@
             "detail": "7d 40%, resets Fri 14:00Z",
             "pool": "claude",
             "state": "ok"
-          },
-          {
-            "detail": "ordinary usage not allowed",
-            "pool": "codex",
-            "state": "exhausted"
           }
         ],
         "reason": null,
@@ -3055,11 +3015,6 @@
             "detail": "7d 40%, resets Fri 14:00Z",
             "pool": "claude",
             "state": "ok"
-          },
-          {
-            "detail": "ordinary usage not allowed",
-            "pool": "codex",
-            "state": "exhausted"
           }
         ],
         "reason": null,

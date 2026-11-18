@@ -2759,7 +2759,7 @@
     "idea-lead|exact|advise": {
       "decision": {
         "decision": "spawn",
-        "note": "claude pool exhausted (7d 100%, resets Fri 14:00Z). Fallback codex-sol is ok.",
+        "note": "claude pool exhausted (7d 100%, resets Fri 14:00Z).",
         "teammate": "idea-lead"
       },
       "resolved": {
@@ -2770,21 +2770,16 @@
       },
       "route_json": {
         "decision": "spawn",
-        "line": "NOTE: claude pool exhausted (7d 100%, resets Fri 14:00Z). Fallback codex-sol is ok.",
+        "line": "NOTE: claude pool exhausted (7d 100%, resets Fri 14:00Z).",
         "mode": "advise",
         "pools": [
           {
             "detail": "7d 100%, resets Fri 14:00Z",
             "pool": "claude",
             "state": "exhausted"
-          },
-          {
-            "detail": "7d 12%, resets Sat 19:16Z",
-            "pool": "codex",
-            "state": "ok"
           }
         ],
-        "reason": "claude pool exhausted (7d 100%, resets Fri 14:00Z). Fallback codex-sol is ok.",
+        "reason": "claude pool exhausted (7d 100%, resets Fri 14:00Z).",
         "teammate": "idea-lead",
         "via": null
       }
@@ -2797,11 +2792,6 @@
             "detail": "7d 100%, resets Fri 14:00Z",
             "pool": "claude",
             "state": "exhausted"
-          },
-          {
-            "detail": "7d 12%, resets Sat 19:16Z",
-            "pool": "codex",
-            "state": "ok"
           }
         ],
         "reason": "claude 7d 100%, resets 2026-10-02T14:00Z",
@@ -2810,18 +2800,13 @@
       "resolved": null,
       "route_json": {
         "decision": "refuse",
-        "line": "REFUSED: idea-lead cannot start. claude exhausted (7d 100%, resets Fri 14:00Z). codex ok (7d 12%, resets Sat 19:16Z). Options: wait, --force, or choose a teammate yourself.",
+        "line": "REFUSED: idea-lead cannot start. claude exhausted (7d 100%, resets Fri 14:00Z). Options: wait, --force, or choose a teammate yourself.",
         "mode": "auto",
         "pools": [
           {
             "detail": "7d 100%, resets Fri 14:00Z",
             "pool": "claude",
             "state": "exhausted"
-          },
-          {
-            "detail": "7d 12%, resets Sat 19:16Z",
-            "pool": "codex",
-            "state": "ok"
           }
         ],
         "reason": "claude 7d 100%, resets 2026-10-02T14:00Z",
@@ -2850,11 +2835,6 @@
             "detail": "7d 100%, resets Fri 14:00Z",
             "pool": "claude",
             "state": "exhausted"
-          },
-          {
-            "detail": "7d 12%, resets Sat 19:16Z",
-            "pool": "codex",
-            "state": "ok"
           }
         ],
         "reason": null,
@@ -2865,7 +2845,7 @@
     "idea-lead|force|advise": {
       "decision": {
         "decision": "spawn",
-        "note": "claude pool exhausted (7d 100%, resets Fri 14:00Z). Fallback codex-sol is ok.",
+        "note": "claude pool exhausted (7d 100%, resets Fri 14:00Z).",
         "teammate": "idea-lead"
       },
       "resolved": {
@@ -2876,57 +2856,46 @@
       },
       "route_json": {
         "decision": "spawn",
-        "line": "NOTE: claude pool exhausted (7d 100%, resets Fri 14:00Z). Fallback codex-sol is ok.",
+        "line": "NOTE: claude pool exhausted (7d 100%, resets Fri 14:00Z).",
         "mode": "advise",
         "pools": [
           {
             "detail": "7d 100%, resets Fri 14:00Z",
             "pool": "claude",
             "state": "exhausted"
-          },
-          {
-            "detail": "7d 12%, resets Sat 19:16Z",
-            "pool": "codex",
-            "state": "ok"
           }
         ],
-        "reason": "claude pool exhausted (7d 100%, resets Fri 14:00Z). Fallback codex-sol is ok.",
+        "reason": "claude pool exhausted (7d 100%, resets Fri 14:00Z).",
         "teammate": "idea-lead",
         "via": null
       }
     },
     "idea-lead|force|auto": {
       "decision": {
-        "decision": "substitute",
-        "original": "idea-lead",
-        "reason": "claude 7d 100%, resets 2026-10-02T14:00Z",
-        "via": "codex-sol"
+        "decision": "spawn",
+        "note": "claude pool exhausted (7d 100%, resets Fri 14:00Z). Spawned anyway (--force).",
+        "teammate": "idea-lead"
       },
       "resolved": {
-        "agent": "codex",
+        "agent": "claude",
         "effort": "medium",
-        "model": "gpt-5.6-sol",
+        "model": "opus",
         "name": "idea-lead"
       },
       "route_json": {
-        "decision": "substitute",
-        "line": "SUBSTITUTED: idea-lead runs on codex-sol. Reason: claude 7d 100%, resets 2026-10-02T14:00Z.",
+        "decision": "spawn",
+        "line": "NOTE: claude pool exhausted (7d 100%, resets Fri 14:00Z). Spawned anyway (--force).",
         "mode": "auto",
         "pools": [
           {
             "detail": "7d 100%, resets Fri 14:00Z",
             "pool": "claude",
             "state": "exhausted"
-          },
-          {
-            "detail": "7d 12%, resets Sat 19:16Z",
-            "pool": "codex",
-            "state": "ok"
           }
         ],
-        "reason": "claude 7d 100%, resets 2026-10-02T14:00Z",
+        "reason": "claude pool exhausted (7d 100%, resets Fri 14:00Z). Spawned anyway (--force).",
         "teammate": "idea-lead",
-        "via": "codex-sol"
+        "via": null
       }
     },
     "idea-lead|force|off": {
@@ -2950,11 +2919,6 @@
             "detail": "7d 100%, resets Fri 14:00Z",
             "pool": "claude",
             "state": "exhausted"
-          },
-          {
-            "detail": "7d 12%, resets Sat 19:16Z",
-            "pool": "codex",
-            "state": "ok"
           }
         ],
         "reason": null,
@@ -2965,7 +2929,7 @@
     "idea-lead|none|advise": {
       "decision": {
         "decision": "spawn",
-        "note": "claude pool exhausted (7d 100%, resets Fri 14:00Z). Fallback codex-sol is ok.",
+        "note": "claude pool exhausted (7d 100%, resets Fri 14:00Z).",
         "teammate": "idea-lead"
       },
       "resolved": {
@@ -2976,57 +2940,48 @@
       },
       "route_json": {
         "decision": "spawn",
-        "line": "NOTE: claude pool exhausted (7d 100%, resets Fri 14:00Z). Fallback codex-sol is ok.",
+        "line": "NOTE: claude pool exhausted (7d 100%, resets Fri 14:00Z).",
         "mode": "advise",
         "pools": [
           {
             "detail": "7d 100%, resets Fri 14:00Z",
             "pool": "claude",
             "state": "exhausted"
-          },
-          {
-            "detail": "7d 12%, resets Sat 19:16Z",
-            "pool": "codex",
-            "state": "ok"
           }
         ],
-        "reason": "claude pool exhausted (7d 100%, resets Fri 14:00Z). Fallback codex-sol is ok.",
+        "reason": "claude pool exhausted (7d 100%, resets Fri 14:00Z).",
         "teammate": "idea-lead",
         "via": null
       }
     },
     "idea-lead|none|auto": {
       "decision": {
-        "decision": "substitute",
-        "original": "idea-lead",
+        "decision": "refuse",
+        "pools": [
+          {
+            "detail": "7d 100%, resets Fri 14:00Z",
+            "pool": "claude",
+            "state": "exhausted"
+          }
+        ],
         "reason": "claude 7d 100%, resets 2026-10-02T14:00Z",
-        "via": "codex-sol"
+        "teammate": "idea-lead"
       },
-      "resolved": {
-        "agent": "codex",
-        "effort": "medium",
-        "model": "gpt-5.6-sol",
-        "name": "idea-lead"
-      },
+      "resolved": null,
       "route_json": {
-        "decision": "substitute",
-        "line": "SUBSTITUTED: idea-lead runs on codex-sol. Reason: claude 7d 100%, resets 2026-10-02T14:00Z.",
+        "decision": "refuse",
+        "line": "REFUSED: idea-lead cannot start. claude exhausted (7d 100%, resets Fri 14:00Z). Options: wait, --force, or choose a teammate yourself.",
         "mode": "auto",
         "pools": [
           {
             "detail": "7d 100%, resets Fri 14:00Z",
             "pool": "claude",
             "state": "exhausted"
-          },
-          {
-            "detail": "7d 12%, resets Sat 19:16Z",
-            "pool": "codex",
-            "state": "ok"
           }
         ],
         "reason": "claude 7d 100%, resets 2026-10-02T14:00Z",
         "teammate": "idea-lead",
-        "via": "codex-sol"
+        "via": null
       }
     },
     "idea-lead|none|off": {
@@ -3050,11 +3005,6 @@
             "detail": "7d 100%, resets Fri 14:00Z",
             "pool": "claude",
             "state": "exhausted"
-          },
-          {
-            "detail": "7d 12%, resets Sat 19:16Z",
-            "pool": "codex",
-            "state": "ok"
           }
         ],
         "reason": null,
