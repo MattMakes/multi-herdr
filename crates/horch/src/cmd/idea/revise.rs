@@ -1,12 +1,14 @@
 //! `horch idea revise <id> <text>`: send an idea back with what to change
-//! (`docs/specs/fleetd/design.md`, "Quick approval stays with you").
-//! Ticket 23 of fleetd-p6 fills it.
+//! (`docs/specs/fleetd/design.md`, "Quick approval stays with you"). It
+//! sends `idea_revise` to fleetd.
 
 use std::process::ExitCode;
 
 use anyhow::Result;
 use clap::Args;
+use horch_core::fleetd::fleet_runtime::domain::requests::Kind;
 use horch_core::runtime::RuntimeContext;
+use serde_json::{json, Map};
 
 #[derive(Args)]
 pub struct ReviseArgs {
@@ -17,6 +19,15 @@ pub struct ReviseArgs {
 }
 
 /// `horch idea revise`.
-pub fn run(_ctx: &RuntimeContext, _args: ReviseArgs) -> Result<ExitCode> {
-    super::not_built_yet("horch idea revise", 23)
+pub fn run(ctx: &RuntimeContext, args: ReviseArgs) -> Result<ExitCode> {
+    let mut payload = Map::new();
+    payload.insert("idea".into(), json!(args.id));
+    payload.insert("text".into(), json!(args.text));
+    super::send(ctx, "horch idea revise", Kind::IdeaRevise, payload, |r| {
+        println!(
+            "{}: sent back ({})",
+            super::text(r, "idea"),
+            super::text(r, "state")
+        );
+    })
 }

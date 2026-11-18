@@ -1,6 +1,7 @@
 //! `horch feature abandon <feature>`: the operator ends a feature
 //! (`docs/specs/fleetd/design.md`, "Features, landing and integration").
-//! Ticket 35 builds it and adds the role check.
+//! Ticket 35 builds it and adds the role check. It refuses to run inside a
+//! fleet attempt (SR-5; ticket 23 of fleetd-p6).
 
 use std::process::ExitCode;
 
@@ -19,8 +20,14 @@ pub enum FeatureCommand {
 }
 
 /// `horch feature`.
-pub fn run(_ctx: &RuntimeContext, command: FeatureCommand) -> Result<ExitCode> {
+pub fn run(ctx: &RuntimeContext, command: FeatureCommand) -> Result<ExitCode> {
     match command {
-        FeatureCommand::Abandon { .. } => Ok(super::not_built_yet("horch feature abandon")),
+        FeatureCommand::Abandon { .. } => {
+            let command = "horch feature abandon";
+            if let Some(refused) = super::idea::refuse_inside_fleet_attempt(ctx, command) {
+                return Ok(refused);
+            }
+            Ok(super::not_built_yet(command))
+        }
     }
 }

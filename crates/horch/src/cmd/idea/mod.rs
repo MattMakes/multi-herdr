@@ -1,7 +1,7 @@
 //! `horch idea` and `horch ideas`: the operator captures, approves and
 //! steers ideas, and the sub-orchestrator records notes
-//! (`docs/specs/fleetd/design.md`, "Ideas"). 1 file for each subcommand;
-//! each body is a stub until the ticket of fleetd-p6 that it names fills it.
+//! (`docs/specs/fleetd/design.md`, "Ideas"). 1 file for each subcommand.
+//! Each write command sends its request to fleetd with the channel client.
 
 pub mod add;
 pub mod amend;
@@ -17,7 +17,17 @@ use std::process::ExitCode;
 
 use anyhow::Result;
 use clap::Subcommand;
+use horch_core::fleetd::fleet_runtime::adapters::channel_client::{self, Sent};
+use horch_core::fleetd::fleet_runtime::adapters::peer_process::{
+    peer_in_live_attempt, AttemptProcess, Fact, PlatformFacts,
+};
+use horch_core::fleetd::fleet_runtime::adapters::request_wire::Outcome;
+use horch_core::fleetd::fleet_runtime::domain::requests::Kind;
+use horch_core::fleetd::task_execution::adapters::sqlite::open_attempts_with_persona;
+use horch_core::fleetd::task_execution::domain::task::Recorded;
 use horch_core::runtime::RuntimeContext;
+use horch_core::taskledger;
+use serde_json::{Map, Value};
 
 #[derive(Subcommand)]
 pub enum IdeaCommand {
@@ -56,9 +66,95 @@ pub fn run(ctx: &RuntimeContext, command: IdeaCommand) -> Result<ExitCode> {
     }
 }
 
-/// The exit of a subcommand whose ticket has not filled it yet:
-/// "not built yet: ticket NN of fleetd-p6" on stderr, and exit 1.
-fn not_built_yet(command: &str, ticket: u8) -> Result<ExitCode> {
-    eprintln!("{command}: not built yet: ticket {ticket:02} of fleetd-p6");
-    Ok(ExitCode::from(1))
+/// Send 1 operator request of `kind` with the channel client, or write a
+/// request file when fleetd is down. An applied request gives its result
+/// to `print`, and exits 0. A refused request prints its reason on stderr,
+/// and exits 1. A queued request prints its id and its file, and exits 0.
+fn send(
+    ctx: &RuntimeContext,
+    command: &str,
+    kind: Kind,
+    payload: Map<String, Value>,
+    print: impl FnOnce(&Value),
+) -> Result<ExitCode> {
+    match channel_client::send(ctx, kind, payload)? {
+        Sent::Replied(reply) => match reply.outcome {
+            Outcome::Applied(result) => {
+                print(&result);
+                Ok(ExitCode::SUCCESS)
+            }
+            Outcome::Refused(reason) => {
+                eprintln!("{command}: refused: {reason}");
+                Ok(ExitCode::from(1))
+            }
+        },
+        Sent::Queued { request_id, path } => {
+            println!(
+                "request {request_id}: waits for fleetd in {}",
+                path.display()
+            );
+            Ok(ExitCode::SUCCESS)
+        }
+    }
+}
+
+/// The text of `key` in the result of a request, else `-`.
+fn text<'a>(result: &'a Value, key: &str) -> &'a str {
+    result.get(key).and_then(Value::as_str).unwrap_or("-")
+}
+
+/// The first guard of `horch idea approve`, `horch idea add --direct` and
+/// `horch feature abandon` (SR-5, FR-10): `Some(exit 1)` when the process
+/// tree of this process holds the recorded process of a live attempt.
+/// The fact is the peer process fact of the channel server, never an
+/// environment variable. A fact that is unknown refuses too: a guard whose
+/// fact is unknown does not hold. With no live attempt, nothing can hold
+/// this process. The checks of fleetd at the server stay the wall.
+pub(crate) fn refuse_inside_fleet_attempt(ctx: &RuntimeContext, command: &str) -> Option<ExitCode> {
+    let reason = match attempt_fact(ctx) {
+        Fact::No => return None,
+        Fact::Yes(attempts) => format!(
+            "this process runs inside the fleet attempt {}",
+            attempts.join(", ")
+        ),
+        Fact::Unknown => {
+            "horch cannot prove that this process runs outside a fleet attempt, because a process fact is unknown".to_string()
+        }
+    };
+    eprintln!(
+        "{command}: refused inside a fleet attempt: {reason}. Run it yourself from a terminal outside the fleet."
+    );
+    Some(ExitCode::from(1))
+}
+
+/// Is this process in a live attempt of the ledger, read-only.
+fn attempt_fact(ctx: &RuntimeContext) -> Fact {
+    let Ok(store) = taskledger::open_existing_read_only(ctx) else {
+        return Fact::Unknown;
+    };
+    let Some(store) = store else {
+        return Fact::No;
+    };
+    let Ok(rows) = open_attempts_with_persona(store.conn()) else {
+        return Fact::Unknown;
+    };
+    let mut attempts = Vec::with_capacity(rows.len());
+    for (row, _) in rows {
+        let Some(Recorded {
+            pid,
+            pid_start: Some(start),
+        }) = row.process
+        else {
+            return Fact::Unknown;
+        };
+        attempts.push(AttemptProcess {
+            attempt: row.id,
+            wrapper_pid: pid,
+            wrapper_start: start,
+        });
+    }
+    if attempts.is_empty() {
+        return Fact::No;
+    }
+    peer_in_live_attempt(std::process::id(), &attempts, &PlatformFacts)
 }
