@@ -16,6 +16,7 @@ use horch_core::fleetd::fleet_runtime::application::jobs::{
     self, CheckRunner, JobCtx, JobKey, Queued,
 };
 use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
+use horch_core::fleetd::worker_profiles::adapters::check_sandbox::WorkerSandboxes;
 use horch_core::fleetd::worker_profiles::adapters::launcher::Launcher;
 use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger::finish::CodexSandbox;
@@ -110,9 +111,10 @@ fn run(ctx: &RuntimeContext, id: i64) -> Result<ExitCode> {
         state_root: ctx.paths.state_root.clone(),
         personas: super::taskledger::codex_personas(ctx),
     };
+    let sandboxes = WorkerSandboxes::new(codex, ctx.paths.fleet_root.clone());
     let checks = CheckRunner {
         host: &Launcher,
-        profiles: &codex,
+        profiles: &sandboxes,
     };
     match jobs::run_job(&jctx, &mut conn, id, std::process::id(), &checks)? {
         Some(o) => output::println(&format!("job {id}: {}: {}", o.state().as_str(), o.text)),

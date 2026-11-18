@@ -45,8 +45,9 @@ use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
 use crate::fleetd::integration::adapters::executors as integration;
 use crate::fleetd::worker_profiles::application::ports::{LaunchSpec, ProcessHost};
 use crate::fleetd::worktree_custody::adapters::executors;
-use crate::taskledger::finish::{self, land::CHECK_TIMEOUT, CodexSandbox};
+use crate::taskledger::finish::{self, land::CHECK_TIMEOUT};
 use crate::taskledger::model::Actor;
+use crate::taskledger::runs;
 use crate::taskledger::tasks;
 use crate::taskledger::workers::{self, Worker};
 use crate::vcs::network::{OTHER_BOUND, PUSH_BOUND};
@@ -699,8 +700,9 @@ fn wait_for_record(conn: &Connection, job_id: i64, me: u32) -> Result<Option<Job
 }
 
 /// The executor of `task_check`: the check command of the task, as
-/// `finish` reads it, in the worktree of the task, in the sandbox profile
-/// of the worker of the task (SR-4). Its exit code is the verdict. A task
+/// `finish` reads it, in the worktree of the task (the project root for a
+/// task of the shared checkout), in the sandbox profile of the worker of
+/// the task (SR-4). Its exit code is the verdict. A task
 /// with no worker, or a worker with no sandbox profile, gets no check.
 fn task_check(conn: &Connection, row: &JobRow, checks: &CheckRunner<'_>) -> Result<Outcome> {
     let no_verdict = |text: String| Outcome {
@@ -725,13 +727,22 @@ fn task_check(conn: &Connection, row: &JobRow, checks: &CheckRunner<'_>) -> Resu
         }
         return Ok(no_verdict(format!("{} has no check command", task.short())));
     };
-    let Some(wt) = finish::worktree_of(conn, &task.task_id)? else {
-        return Ok(no_verdict(format!("{} has no worktree", task.short())));
+    // A task of the shared checkout works in the project root.
+    let dir = if task.uses_worktree() {
+        let Some(wt) = finish::worktree_of(conn, &task.task_id)? else {
+            return Ok(no_verdict(format!("{} has no worktree", task.short())));
+        };
+        PathBuf::from(wt.path)
+    } else {
+        PathBuf::from(runs::get(conn, &task.run_id)?.project_root)
     };
-    let dir = Path::new(&wt.path);
     if !dir.is_dir() {
-        return Ok(no_verdict(format!("the worktree {} is missing", wt.path)));
+        return Ok(no_verdict(format!(
+            "the folder {} is missing",
+            dir.display()
+        )));
     }
+    let dir = dir.as_path();
     let Some(worker_id) = task.current_worker_id.as_deref() else {
         return Ok(no_verdict(format!(
             "SR-4: {} has no worker, so its check has no sandbox profile; \
@@ -754,12 +765,12 @@ fn task_check(conn: &Connection, row: &JobRow, checks: &CheckRunner<'_>) -> Resu
     Ok(Outcome {
         passed: status.success(),
         verdict: true,
-        text: format!("`{check}` in {}: exit {:?}", wt.path, status.code()),
+        text: format!("`{check}` in {}: exit {:?}", dir.display(), status.code()),
     })
 }
 
 /// The sandbox profiles of workers, as the check of a task needs them
-/// (SR-4).
+/// (SR-4). `worker_profiles::adapters::check_sandbox` implements it.
 pub trait SandboxProfiles {
     /// The launch of `check` in `dir` in the sandbox profile of `worker`,
     /// or `None` when the worker has no sandbox profile.
@@ -770,44 +781,6 @@ pub trait SandboxProfiles {
 pub struct CheckRunner<'a> {
     pub host: &'a dyn ProcessHost,
     pub profiles: &'a dyn SandboxProfiles,
-}
-
-/// In Phase 1 only a worker of a Codex pane has a sandbox profile: the
-/// sandbox of its pane, by the rule of `check_process` in
-/// `taskledger/finish/land.rs` (#181). Only the shell gets the TMPDIR of
-/// the pane, as `/tmp` is read-only in the sandbox.
-impl SandboxProfiles for CodexSandbox {
-    fn check_launch(&self, worker: &Worker, dir: &Path, check: &str) -> Result<Option<LaunchSpec>> {
-        if !self.runs(worker) {
-            return Ok(None);
-        }
-        let role = worker.role.as_deref().unwrap_or(&worker.worker_id);
-        let tmpdir = crate::harness::codex::pane_tmpdir(&self.state_root, role);
-        std::fs::create_dir_all(&tmpdir)
-            .with_context(|| format!("creating {}", tmpdir.display()))?;
-        let mut tmp_pair = std::ffi::OsString::from("TMPDIR=");
-        tmp_pair.push(&tmpdir);
-        let mut args: Vec<std::ffi::OsString> =
-            crate::harness::codex::sandbox_args(&self.state_root, dir)
-                .into_iter()
-                .map(Into::into)
-                .collect();
-        args.extend([
-            "/usr/bin/env".into(),
-            tmp_pair,
-            horch_platform::shell::CHECK_SHELL.into(),
-            "-c".into(),
-            check.into(),
-        ]);
-        Ok(Some(LaunchSpec {
-            program: self.bin.clone(),
-            args,
-            cwd: Some(dir.to_path_buf()),
-            env_rule: Default::default(),
-            detach: false,
-            output: None,
-        }))
-    }
 }
 
 /// The group of the running check, 0 when none runs.
