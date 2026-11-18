@@ -927,6 +927,7 @@ impl Command {
                     | MessagingCommand::Note { .. }
             ) | Command::Session(SessionCommand::Done { .. })
                 | Command::Grid(GridCommand::Ledger { .. })
+                | Command::Tool(ToolCommand::Task { .. })
         )
     }
 
@@ -1850,6 +1851,7 @@ mod tests {
         assert!(!parse(&["horch", "tile"]).reminds());
         assert!(parse(&["horch", "done", "x"]).adopts_identity());
         assert!(parse(&["horch", "ledger", "path"]).adopts_identity());
+        assert!(parse(&["horch", "task", "cancel", "T-1", "x"]).adopts_identity());
         assert!(!parse(&["horch", "peek", "r"]).adopts_identity());
     }
 

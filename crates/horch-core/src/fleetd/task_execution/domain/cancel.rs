@@ -82,22 +82,12 @@ pub fn stop_seen(watch: &[Recorded], facts: &Facts) -> bool {
 mod tests {
     use super::*;
 
-    const NOT_TERMINAL: [&str; 10] = [
-        "pending",
-        "ready",
-        "leased",
-        "running",
-        "stalled",
-        "verifying",
-        "blocked_on_user",
-        "waiting_quota",
-        "failed",
-        "escalated",
-    ];
-
+    /// The test of each state of the 1 list of states is in
+    /// `application::cancel`: this module names nothing outside its
+    /// domain.
     #[test]
-    fn each_state_that_is_not_terminal_has_a_cancel() {
-        for s in NOT_TERMINAL {
+    fn a_state_that_is_not_terminal_has_a_cancel() {
+        for s in ["pending", "running", "escalated"] {
             assert_eq!(cancel_path(s, false, false), CancelPath::Now, "{s}");
             assert_eq!(cancel_path(s, true, false), CancelPath::StopFirst, "{s}");
             assert_eq!(cancel_path(s, false, true), CancelPath::StopFirst, "{s}");

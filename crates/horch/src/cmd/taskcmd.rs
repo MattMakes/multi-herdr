@@ -66,6 +66,9 @@ mod tests {
         _dir: tempfile::TempDir,
         ctx: RuntimeContext,
         db: PathBuf,
+        root: PathBuf,
+        /// The worker that claimed T-1.
+        worker: String,
     }
 
     /// A ledger with the run "r1" and 2 tasks: T-1, and T-2 that waits for
@@ -100,10 +103,11 @@ mod tests {
             persona: "dev".into(),
             ..Default::default()
         };
-        store
+        let worker = store
             .immediate(|tx| {
                 let id = workers::insert(tx, &w)?;
-                tasks::claim(tx, &id)
+                tasks::claim(tx, &id)?;
+                Ok(id)
             })
             .unwrap();
         shape(&mut store, &t1);
@@ -114,6 +118,8 @@ mod tests {
             ctx: RuntimeContext::from_env(&env).unwrap(),
             _dir: dir,
             db,
+            root,
+            worker,
         }
     }
 
@@ -223,5 +229,40 @@ mod tests {
                 .any(|r| r.starts_with("Integer(1) | Text(\"ready\") | Integer(1) | Integer(1)")),
             "{rows:#?}"
         );
+    }
+
+    /// `task_cancel` and `task_requeue` are commands of the operator: a
+    /// worker pane is refused, and the ledger does not change.
+    #[test]
+    fn a_worker_cannot_cancel_or_requeue_a_task() {
+        let w = world(|_, _| {});
+        let before = rows(&w);
+        let env = MapEnv::new(&w.root)
+            .with("HORCH_PROJECT_DIR", w.root.to_str().unwrap())
+            .with("HORCH_LEDGER_DB", w.db.to_str().unwrap())
+            .with("HORCH_WORKER_ID", &w.worker);
+        let ctx = RuntimeContext::from_env(&env).unwrap();
+        let cancel = TaskCommand::Cancel {
+            task: "T-1".into(),
+            reason: "mine".into(),
+            run: run_args(),
+        };
+        let requeue = TaskCommand::Requeue {
+            task: "T-1".into(),
+            reason: "mine".into(),
+            run: run_args(),
+        };
+
+        let err = run(&ctx, cancel).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "horch ledger cancel is for the orchestrator, not a worker"
+        );
+        let err = run(&ctx, requeue).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "horch ledger requeue is for the orchestrator, not a worker"
+        );
+        assert_eq!(rows(&w), before);
     }
 }

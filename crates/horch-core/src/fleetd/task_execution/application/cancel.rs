@@ -10,7 +10,7 @@
 //!   `tasks.cancel_requested`, ends the attempt with the outcome `killed`
 //!   and the cause [`TASK_CANCELLED`], ends its worker row and lets go of
 //!   it. Rung 6 and the claim skip such a task.
-//! - After the commit, the caller stops each [`Held`] worker. When its
+//! - After the commit, the caller stops each held worker. When its
 //!   processes are gone, [`complete`] moves the task to `cancelled` in a
 //!   second transaction.
 //! - When the caller does not see the processes gone (a timeout, or the
@@ -43,23 +43,15 @@ use crate::taskledger::model::{Actor, TaskStatus, WorkerStatus};
 use crate::taskledger::tasks::{self, Task};
 use crate::taskledger::{util, workers};
 
-/// A worker that a cancel stops, with the process of its attempt: the
-/// agent process of the attempt, else of the worker. `None` when no row
-/// records one.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Held {
-    pub worker_id: String,
-    pub process: Option<Recorded>,
-}
-
 /// What [`request`] did.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cancel {
     /// The task is `cancelled`. `holder` is the worker that held it with
     /// no attempt row: the caller stops it after the commit, as today.
     Cancelled { task: Task, holder: Option<String> },
-    /// The task waits for the stop of `held`, with `cancel_requested` set.
-    Stopping { task: Task, held: Vec<Held> },
+    /// The task waits for the stop of the workers `held`, with
+    /// `cancel_requested` set.
+    Stopping { task: Task, held: Vec<String> },
 }
 
 /// 1 attempt of a task, with its process.
@@ -67,6 +59,8 @@ struct AttemptOf {
     id: String,
     worker_id: String,
     holds: bool,
+    /// It ended with the outcome `killed`, as a cancel ends it.
+    killed: bool,
     process: Option<Recorded>,
 }
 
@@ -82,18 +76,20 @@ fn recorded(pid: Option<i64>, start: Option<i64>) -> Option<Recorded> {
 /// has the agent of its worker.
 fn attempts_of(conn: &Connection, task_id: &str) -> Result<Vec<AttemptOf>> {
     let mut stmt = conn.prepare(
-        "SELECT a.id, a.worker_id, a.state, COALESCE(a.pid, w.agent_pid),
+        "SELECT a.id, a.worker_id, a.state, a.outcome, COALESCE(a.pid, w.agent_pid),
             CASE WHEN a.pid IS NULL THEN w.agent_started ELSE a.pid_start END
          FROM attempts a LEFT JOIN workers w ON w.worker_id = a.worker_id
          WHERE a.task_id = ?1 ORDER BY a.rowid",
     )?;
     let rows = stmt.query_map([task_id], |r| {
         let state: String = r.get(2)?;
+        let outcome: Option<String> = r.get(3)?;
         Ok(AttemptOf {
             id: r.get(0)?,
             worker_id: r.get(1)?,
             holds: AttemptState::parse(&state).is_some_and(AttemptState::holds),
-            process: recorded(r.get(3)?, r.get(4)?),
+            killed: outcome.as_deref() == Some(Outcome::Killed.as_str()),
+            process: recorded(r.get(4)?, r.get(5)?),
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -125,19 +121,17 @@ pub fn request(tx: &Connection, task: &Task, reason: &str) -> Result<Cancel> {
             Ok(Cancel::Cancelled { task: t, holder })
         }
         CancelPath::StopFirst if requested.is_some() => {
-            // A cancel that waits already: stop each attempt again.
-            let held = attempts.into_iter().map(held_of).collect();
+            // A cancel that waits already: stop each attempt that it ended
+            // again.
+            let held = attempts
+                .into_iter()
+                .filter(|a| a.killed)
+                .map(|a| a.worker_id)
+                .collect();
             let task = tasks::get(tx, &task.task_id)?;
             Ok(Cancel::Stopping { task, held })
         }
         CancelPath::StopFirst => stop_first(tx, task, reason, attempts),
-    }
-}
-
-fn held_of(a: AttemptOf) -> Held {
-    Held {
-        worker_id: a.worker_id,
-        process: a.process,
     }
 }
 
@@ -165,7 +159,7 @@ fn stop_first(
 ) -> Result<Cancel> {
     let why = format!("{TASK_CANCELLED}: {reason}");
     let now = util::now();
-    let mut held: Vec<Held> = Vec::new();
+    let mut held: Vec<String> = Vec::new();
     for a in attempts.into_iter().filter(|a| a.holds) {
         store::set_ended(tx, &a.id, Outcome::Killed.as_str(), &now)?;
         let cause = Cause {
@@ -182,20 +176,16 @@ fn stop_first(
             cause,
             &NeedsYouList,
         )?;
-        held.push(held_of(a));
+        held.push(a.worker_id);
     }
     if let Some(w) = &task.current_worker_id {
-        if !held.iter().any(|h| &h.worker_id == w) {
-            let agent = workers::get(tx, w)?;
-            held.push(Held {
-                worker_id: w.clone(),
-                process: recorded(agent.agent_pid, agent.agent_started),
-            });
+        if !held.contains(w) {
+            held.push(w.clone());
         }
     }
     let ended = format!("task cancelled: {reason}");
-    for h in &held {
-        workers::end(tx, &h.worker_id, WorkerStatus::Stopped, &ended, None)?;
+    for w in &held {
+        workers::end(tx, w, WorkerStatus::Stopped, &ended, None)?;
     }
     tx.execute(
         "UPDATE tasks SET cancel_requested = ?2, current_worker_id = NULL, updated_at = ?3
@@ -477,25 +467,20 @@ mod tests {
         f
     }
 
-    const NOT_TERMINAL: [&str; 10] = [
-        "pending",
-        "ready",
-        "leased",
-        "running",
-        "stalled",
-        "verifying",
-        "blocked_on_user",
-        "waiting_quota",
-        "failed",
-        "escalated",
-    ];
+    /// Each task state that is not terminal, from the 1 list of states.
+    fn not_terminal() -> impl Iterator<Item = &'static str> {
+        TaskStatus::ALL
+            .iter()
+            .filter(|s| !matches!(s, TaskStatus::Done | TaskStatus::Cancelled))
+            .map(|s| s.as_str())
+    }
 
     /// `ddd/08-code/implementation-plan.md`, Slice 2: from each state that
     /// is not terminal, a task with a live attempt is `cancelled` only
     /// after the process of the attempt is gone.
     #[test]
     fn cancel_from_each_non_terminal_state_stops_the_process_group_before_the_move() {
-        for state in NOT_TERMINAL {
+        for state in not_terminal() {
             let mut f = fixture();
             let mut agent = Sleep::start();
             let p = agent.recorded();
@@ -506,14 +491,7 @@ mod tests {
                 panic!("{state}: a live attempt is stopped first");
             };
             assert_eq!(task.status, state, "{state}: no move before the stop");
-            assert_eq!(
-                held,
-                [Held {
-                    worker_id: w.clone(),
-                    process: Some(p),
-                }],
-                "{state}"
-            );
+            assert_eq!(held, std::slice::from_ref(&w), "{state}");
             assert_eq!(f.cancel_requested().as_deref(), Some("dropped"), "{state}");
             assert_eq!(
                 f.attempt(),
@@ -615,6 +593,35 @@ mod tests {
         assert_eq!(f.cancel_requested(), None);
     }
 
+    /// The command died after the first transaction, before its stop: the
+    /// attempt and its worker row are ended, so I5 of the pass stops the
+    /// process that they name, and then the pass completes the cancel.
+    #[test]
+    fn i5_stops_the_process_that_a_dead_cancel_left() {
+        use crate::fleetd::task_execution::application::commands;
+        use crate::fleetd::task_execution::domain::task::Target;
+
+        let mut f = fixture();
+        let agent = Sleep::start();
+        let p = agent.recorded();
+        f.claimed(p);
+        f.request("dropped").unwrap();
+
+        let stops = f
+            .store
+            .immediate(|tx| commands::mark_orphans(tx, &facts(p, Seen::Alive)))
+            .unwrap();
+
+        assert!(
+            stops.iter().any(|s| matches!(
+                s.target,
+                Target::Process { pid, .. } if pid == p.pid
+            )),
+            "{stops:?}"
+        );
+        assert_eq!(f.task().status, "running");
+    }
+
     /// A second cancel of a task whose cancel waits stops its attempts
     /// again and writes nothing new.
     #[test]
@@ -630,13 +637,7 @@ mod tests {
             panic!("the cancel still waits for its stop");
         };
         assert_eq!(task.status, "running");
-        assert_eq!(
-            held,
-            [Held {
-                worker_id: w,
-                process: Some(p),
-            }]
-        );
+        assert_eq!(held, [w]);
         assert_eq!(f.cancel_requested().as_deref(), Some("dropped"));
     }
 

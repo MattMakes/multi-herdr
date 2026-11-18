@@ -933,6 +933,7 @@ pub(super) fn cancel_cmd(
     reason: &str,
     run: &RunArg,
 ) -> Result<ExitCode> {
+    orchestrator_only(ctx, store, "cancel")?;
     let r = resolve_run(ctx, store, run)?;
     let herdr = HerdrPanes::new(ctx);
     match cancel_and_stop(store, &r, task, reason, &Stopper::real(&herdr))? {
@@ -960,7 +961,7 @@ fn cancel_and_stop(
         cancel::request(tx, &t, reason)
     })?;
     let why = format!("task cancelled: {reason}");
-    let (t, held) = match asked {
+    let (t, mut held) = match asked {
         Cancel::Cancelled { task: t, holder } => {
             output::println(&format!("{} cancelled.", t.short()));
             let holders: Vec<String> = holder.into_iter().collect();
@@ -969,14 +970,11 @@ fn cancel_and_stop(
         }
         Cancel::Stopping { task: t, held } => (t, held),
     };
-    let mut live: Vec<String> = held
-        .into_iter()
-        .filter(|h| h.process.is_none_or(|p| runs_now(s.procs, p)))
-        .map(|h| h.worker_id)
-        .collect();
-    live.sort();
-    live.dedup();
-    stop_holders(store, &live, &why, s)?;
+    // Each held worker is stopped: its agent can be gone while its
+    // supervisor or its pane is not.
+    held.sort();
+    held.dedup();
+    stop_holders(store, &held, &why, s)?;
     let facts = seen(&cancel::watched(store.conn(), &t.task_id)?, s.procs);
     match store.immediate(|tx| cancel::complete(tx, &t.task_id, &facts))? {
         Some(t) => {
