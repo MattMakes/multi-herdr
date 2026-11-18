@@ -256,13 +256,14 @@ fn queue_check(h: &Harness, task: &str, time_limit_s: Option<u64>) -> i64 {
         .unwrap()
 }
 
-/// Each job row, in the order of its run.
+/// Each `task_check` job row, in the order of its run. The `worktree_add`
+/// job of `horch ledger worktree new` is not a check, so it does not count.
 fn job_rows(db: &Path) -> Vec<jobs_store::JobRow> {
     let store = Store::open(db).unwrap();
     let ids: Vec<i64> = {
         let mut stmt = store
             .conn()
-            .prepare("SELECT id FROM jobs ORDER BY run")
+            .prepare("SELECT id FROM jobs WHERE kind = 'task_check' ORDER BY run")
             .unwrap();
         let ids = stmt
             .query_map([], |r| r.get(0))
