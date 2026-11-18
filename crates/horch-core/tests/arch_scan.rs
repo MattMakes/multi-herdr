@@ -1956,7 +1956,8 @@ fn sql_words(literal: &str) -> Vec<String> {
 /// column. `worktrees.status` keeps the writes of today
 /// (`docs/tickets/fleetd-p3/MAP.md`, Q3): only its `state` is here. The
 /// task branch, the bundle and the feature are entities of Phase 4
-/// (`docs/tickets/fleetd-p4/06-integration-entities-in-the-door.md`).
+/// (`docs/tickets/fleetd-p4/06-integration-entities-in-the-door.md`), and
+/// the idea is an entity of Phase 6 (`docs/tickets/fleetd-p6/04-door.md`).
 const STATE_COLUMNS: &[(&str, &str)] = &[
     ("tasks", "status"),
     ("workers", "status"),
@@ -1964,6 +1965,7 @@ const STATE_COLUMNS: &[(&str, &str)] = &[
     ("branches", "landing_state"),
     ("bundles", "state"),
     ("features", "state"),
+    ("ideas", "state"),
 ];
 
 /// When the words from `at` start `UPDATE [OR <conflict>] [main.]<table>`

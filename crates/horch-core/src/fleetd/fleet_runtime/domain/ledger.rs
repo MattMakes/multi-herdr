@@ -7,7 +7,8 @@
 /// The kinds of row that `transition()` moves: the entities of Phase 1
 /// (`docs/tickets/fleetd-p1/MAP.md`, Q5), the worktree of Phase 3
 /// (`docs/tickets/fleetd-p3/MAP.md`, Q3), and the task branch, the bundle
-/// and the feature of Phase 4 (`docs/tickets/fleetd-p4/06-integration-entities-in-the-door.md`).
+/// and the feature of Phase 4 (`docs/tickets/fleetd-p4/06-integration-entities-in-the-door.md`),
+/// and the idea of Phase 6 (`docs/tickets/fleetd-p6/04-door.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Entity {
     /// `tasks.status`.
@@ -30,11 +31,13 @@ pub enum Entity {
     Bundle,
     /// `features.state`.
     Feature,
+    /// `ideas.state`.
+    Idea,
 }
 
 impl Entity {
     /// Every entity.
-    pub const ALL: [Entity; 9] = [
+    pub const ALL: [Entity; 10] = [
         Entity::Task,
         Entity::Worker,
         Entity::Attempt,
@@ -44,6 +47,7 @@ impl Entity {
         Entity::TaskBranch,
         Entity::Bundle,
         Entity::Feature,
+        Entity::Idea,
     ];
 
     /// The word of `events.entity` and of `needs_you.entity`.
@@ -58,6 +62,7 @@ impl Entity {
             Entity::TaskBranch => "task_branch",
             Entity::Bundle => "bundle",
             Entity::Feature => "feature",
+            Entity::Idea => "idea",
         }
     }
 }
@@ -100,6 +105,14 @@ pub fn decide(entity: Entity, from: &str, to: &str) -> Decision {
     }
 }
 
+/// Whether the move of a row of `entity` from `from` to `to` is a resume:
+/// a parked idea goes back to the state that it left, and only to that
+/// state (`docs/tickets/fleetd-p6/MAP.md`, Q10). `transition()` refuses a
+/// resume to another state. A cancel is not a resume.
+pub fn is_resume(entity: Entity, from: &str, to: &str) -> bool {
+    entity == Entity::Idea && from == "parked" && to != "cancelled"
+}
+
 /// The cause of the event of a refused move.
 pub fn refused_cause(cause: &str) -> String {
     format!("illegal_transition: {cause}")
@@ -137,7 +150,9 @@ pub const TASK_EXITS_OF_TODAY: [(Entity, &str, &str); 3] = [
 /// `docs/tickets/fleetd-p3/MAP.md`, Q10. The moves of task branch, bundle
 /// and feature are the column "Leaves when" of their tables in the design
 /// ("Landing a task branch on its feature branch", "The bundle state
-/// machine", "The feature state machine").
+/// machine", "The feature state machine"). The moves of idea are the
+/// column "Leaves when" of "The idea state machine" of the design, with the
+/// choices of `docs/tickets/fleetd-p6/MAP.md`, Q9 and Q10.
 pub const EXITS: &[(Entity, &str, &str)] = &[
     // The task table of the design. `done` and `cancelled` are terminal;
     // each other state has an exit to `cancelled` (A cancel).
@@ -310,6 +325,48 @@ pub const EXITS: &[(Entity, &str, &str)] = &[
     (Entity::Feature, "ready", "open"),
     (Entity::Feature, "ready", "merged"),
     (Entity::Feature, "ready", "abandoned"),
+    // The idea table of the design. `merged` and `cancelled` are terminal.
+    // Each other state leaves to `parked` and `cancelled` (`horch idea park`
+    // or `cancel`, an escalation, 7 days with no answer).
+    // `ticketing` is an idea added with `--direct`.
+    (Entity::Idea, "captured", "clarifying"),
+    (Entity::Idea, "captured", "ticketing"),
+    (Entity::Idea, "captured", "parked"),
+    (Entity::Idea, "captured", "cancelled"),
+    (Entity::Idea, "clarifying", "awaiting_approval"),
+    (Entity::Idea, "clarifying", "parked"),
+    (Entity::Idea, "clarifying", "cancelled"),
+    // `clarifying` is `horch idea revise`.
+    (Entity::Idea, "awaiting_approval", "specifying"),
+    (Entity::Idea, "awaiting_approval", "clarifying"),
+    (Entity::Idea, "awaiting_approval", "parked"),
+    (Entity::Idea, "awaiting_approval", "cancelled"),
+    // `awaiting_approval` is an amend after the approval (MAP.md, Q9).
+    (Entity::Idea, "specifying", "ticketing"),
+    (Entity::Idea, "specifying", "awaiting_approval"),
+    (Entity::Idea, "specifying", "parked"),
+    (Entity::Idea, "specifying", "cancelled"),
+    (Entity::Idea, "ticketing", "in_progress"),
+    (Entity::Idea, "ticketing", "parked"),
+    (Entity::Idea, "ticketing", "cancelled"),
+    (Entity::Idea, "in_progress", "integrating"),
+    (Entity::Idea, "in_progress", "parked"),
+    (Entity::Idea, "in_progress", "cancelled"),
+    // `in_progress` is a new task from a replan.
+    (Entity::Idea, "integrating", "merged"),
+    (Entity::Idea, "integrating", "in_progress"),
+    (Entity::Idea, "integrating", "parked"),
+    (Entity::Idea, "integrating", "cancelled"),
+    // A resume goes back to the state that the idea left, and only to it
+    // ([`is_resume`]; MAP.md, Q10).
+    (Entity::Idea, "parked", "captured"),
+    (Entity::Idea, "parked", "clarifying"),
+    (Entity::Idea, "parked", "awaiting_approval"),
+    (Entity::Idea, "parked", "specifying"),
+    (Entity::Idea, "parked", "ticketing"),
+    (Entity::Idea, "parked", "in_progress"),
+    (Entity::Idea, "parked", "integrating"),
+    (Entity::Idea, "parked", "cancelled"),
 ];
 
 #[cfg(test)]
@@ -581,6 +638,19 @@ mod tests {
                     ]
                     .contains(word),
                     Entity::Feature => ["open", "ready", "merged", "abandoned"].contains(word),
+                    Entity::Idea => [
+                        "captured",
+                        "clarifying",
+                        "awaiting_approval",
+                        "specifying",
+                        "ticketing",
+                        "in_progress",
+                        "integrating",
+                        "merged",
+                        "parked",
+                        "cancelled",
+                    ]
+                    .contains(word),
                 };
                 assert!(known, "{entity} {word}");
             }

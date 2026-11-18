@@ -7,7 +7,7 @@ use rusqlite::Connection;
 
 use crate::fleetd::fleet_runtime::adapters::sqlite::{self as door, Event, Fact};
 use crate::fleetd::fleet_runtime::domain::ledger::{
-    decide, refused_cause, Decision, Entity, Generation,
+    decide, is_resume, refused_cause, Decision, Entity, Generation,
 };
 use crate::fleetd::task_execution::domain::lease::Holder;
 use crate::taskledger::model::{Actor, EventKind};
@@ -130,7 +130,7 @@ pub fn transition(
     check_open(tx)?;
     check_generation(tx, guard)?;
     let from = state_of(tx, entity, id)?;
-    match decide(entity, &from, to) {
+    match decide_move(tx, entity, id, &from, to)? {
         Decision::Unchanged => Ok(Moved::Unchanged),
         Decision::Allowed => {
             door::set_state(tx, entity, id, to)?;
@@ -246,6 +246,27 @@ fn check_generation(tx: &Connection, guard: Option<Generation>) -> Result<(), Do
         return Err(DoorError::GenerationLost { held, found });
     }
     Ok(())
+}
+
+/// The decision for the move of the row `id` of `entity` from `from` to
+/// `to`: the table, and for a resume the state that the row left. A resume
+/// to another state, or of a row whose park has no event, is refused (a
+/// guard whose fact is unknown does not hold).
+fn decide_move(
+    tx: &Connection,
+    entity: Entity,
+    id: &str,
+    from: &str,
+    to: &str,
+) -> anyhow::Result<Decision> {
+    let decision = decide(entity, from, to);
+    if decision == Decision::Allowed
+        && is_resume(entity, from, to)
+        && door::left_state(tx, entity, id, from)?.as_deref() != Some(to)
+    {
+        return Ok(Decision::Refused);
+    }
+    Ok(decision)
 }
 
 /// The state of the row `id` of `entity`, or [`DoorError::NoRow`].

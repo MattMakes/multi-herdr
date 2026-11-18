@@ -10,7 +10,7 @@ use std::cell::RefCell;
 use anyhow::{bail, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
+use crate::fleetd::fleet_runtime::domain::ledger::{refused_cause, Entity, Generation};
 use crate::taskledger::model::{Actor, EventKind, TaskStatus};
 use crate::taskledger::util;
 
@@ -76,6 +76,7 @@ fn table(entity: Entity) -> (&'static str, &'static str, &'static str) {
         Entity::TaskBranch => ("branches", "name", "landing_state"),
         Entity::Bundle => ("bundles", "id", "state"),
         Entity::Feature => ("features", "id", "state"),
+        Entity::Idea => ("ideas", "id", "state"),
     }
 }
 
@@ -96,6 +97,36 @@ pub fn set_state(conn: &Connection, entity: Entity, id: &str, to: &str) -> Resul
     let sql = format!("UPDATE {name} SET {state} = ?2 WHERE {key} = ?1");
     conn.execute(&sql, params![id, to])?;
     Ok(())
+}
+
+/// The state that the row `id` of `entity` left on its last move to the
+/// state `into`: the `from_state` of the newest event of an allowed move
+/// to `into`. `None` when no such event exists. A refused move writes an
+/// event with the cause [`refused_cause`], so it is not a move.
+pub fn left_state(
+    conn: &Connection,
+    entity: Entity,
+    id: &str,
+    into: &str,
+) -> Result<Option<String>> {
+    let refused = format!("{}%", refused_cause(""));
+    let found: Option<Option<String>> = conn
+        .query_row(
+            "SELECT from_state FROM events
+             WHERE entity = ?1 AND entity_id = ?2 AND kind = ?3 AND to_state = ?4
+                AND cause NOT LIKE ?5
+             ORDER BY event_id DESC LIMIT 1",
+            params![
+                entity.as_str(),
+                id,
+                EventKind::Transition.as_str(),
+                into,
+                refused
+            ],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(found.flatten())
 }
 
 /// Delete the lease of task `task_id`, which moves to a state that holds
@@ -130,7 +161,7 @@ fn about(
             "SELECT t.run_id, b.task_id, t.current_worker_id FROM branches b
              LEFT JOIN tasks t ON t.task_id = b.task_id WHERE b.name = ?1"
         }
-        Entity::Job | Entity::NeedsYou | Entity::Bundle | Entity::Feature => {
+        Entity::Job | Entity::NeedsYou | Entity::Bundle | Entity::Feature | Entity::Idea => {
             return Ok((None, None, None))
         }
     };
