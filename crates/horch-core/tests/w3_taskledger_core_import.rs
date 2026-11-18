@@ -98,6 +98,11 @@ impl Fixture {
     }
 }
 
+/// A worktree claim of the old JSON ledger, on the branch `id`.
+fn claim(id: &str, path: &Path, state: &str) -> Value {
+    json!({"id": id, "path": path.to_str().unwrap(), "branch": id, "base": "main", "state": state})
+}
+
 fn session(f: &Fixture, id: &str, extra: Value) -> Value {
     let mut r = json!({
         "record_id": id, "project": f.repo.to_str().unwrap(), "workspace_id": "ws1",
@@ -206,7 +211,6 @@ fn an_imported_cleaned_tree_is_removed_and_a_new_tree_takes_its_path() {
     let mut f = fixture();
     let open_here = f.worktree_add("open-here");
     let gone = f.repo.join(".worktrees").join("landed-gone");
-    let claim = |id: &str, path: &Path, state: &str| json!({"id": id, "path": path.to_str().unwrap(), "branch": id, "base": "main", "state": state});
     f.write(
         "worktrees/claims.json",
         json!([
@@ -244,6 +248,37 @@ fn an_imported_cleaned_tree_is_removed_and_a_new_tree_takes_its_path() {
         .unwrap();
 }
 
+/// A `removed` row is history: a git worktree made by hand at its path
+/// later is an orphan that a second import reports.
+#[test]
+fn a_tree_made_by_hand_at_the_path_of_an_imported_cleaned_tree_is_an_orphan() {
+    let mut f = fixture();
+    f.write(
+        "ledger.json",
+        json!([session(
+            &f,
+            "a",
+            json!({"status": "done", "history": done_history("ok")})
+        )]),
+    );
+    let gone = f.repo.join(".worktrees").join("reused");
+    f.write(
+        "worktrees/claims.json",
+        json!([claim("c1", &gone, "landed")]),
+    );
+    f.import(false);
+    let by_hand = f.worktree_add("reused");
+    f.import(false);
+    let rows = f.rows("SELECT kind, detail FROM import_findings");
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0][0], "worktree_orphan");
+    assert!(
+        rows[0][1].starts_with(&by_hand.display().to_string()),
+        "{}",
+        rows[0][1]
+    );
+}
+
 #[test]
 fn a_second_import_skips_what_it_has_and_a_dry_run_keeps_nothing() {
     let mut f = fixture();
@@ -272,7 +307,6 @@ fn each_claim_state_maps_to_a_worktree_status() {
     let landed_here = f.worktree_add("landed-here");
     let open_here = f.worktree_add("open-here");
     let gone = |n: &str| f.repo.join(".worktrees").join(n);
-    let claim = |id: &str, path: &Path, state: &str| json!({"id": id, "path": path.to_str().unwrap(), "branch": id, "base": "main", "state": state});
     let claims = vec![
         claim("c1", &gone("landed-gone"), "landed"),
         claim("c2", &landed_here, "landed"),

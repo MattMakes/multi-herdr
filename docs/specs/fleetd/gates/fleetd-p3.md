@@ -85,7 +85,7 @@ Each Windows cell is "pending CI".
 | Test: herdr restart | `fm13_herdr_restart_rescues_each_worktree_and_the_next_attempt_reuses_it` | `d84c9ddd` | green | not run | pending CI |
 | Test: slow add | `slow_worktree_add_of_60_s_keeps_the_heartbeat_and_the_tree_is_used_only_after_its_job_passed` (`p3_worktrees.rs`); `slow_worktree_add_job_keeps_the_pass_under_its_time_budget` (`fleetd_pass_p3.rs`). In Phase 3 "the attempt launches only after its job passed" is: `horch ledger worktree new` gives the path only after the `worktree_add` job passed (MAP Q17). | `d84c9ddd` | green: 2 of 2 pass | not run | pending CI |
 | Run in flight (release row of Phase 3) | `live_tree_and_dirty_orphan_on_phase_2_are_active_and_listed_and_nothing_is_removed_after_the_update` (`crates/horch-e2e/tests/p3_release.rs`) | `d84c9ddd` | green | not run | pending CI |
-| The state of a new row (check of the orchestrator) | `fitness_each_worktree_insert_writes_its_state`, `worktree_insert_matcher_finds_an_insert_without_state` (`arch_scan.rs`); `an_imported_cleaned_tree_is_removed_and_a_new_tree_takes_its_path` (`crates/horch-core/tests/w3_taskledger_core_import.rs`) | `b6bffd23` | green: 3 of 3 pass; each failed before the fix | not run | pending CI |
+| The state of a new row (check of the orchestrator) | `fitness_each_worktree_insert_writes_its_state`, `worktree_insert_matcher_finds_an_insert_without_state` (`arch_scan.rs`); `an_imported_cleaned_tree_is_removed_and_a_new_tree_takes_its_path`, `a_tree_made_by_hand_at_the_path_of_an_imported_cleaned_tree_is_an_orphan` (`crates/horch-core/tests/w3_taskledger_core_import.rs`) | `b6bffd23`, review F1 | green: 4 of 4 pass; each failed before its fix | not run | pending CI |
 
 The gate of Phase 3 is green on macOS. The gate is not complete until Linux and Windows have runs.
 
@@ -101,6 +101,8 @@ default lists a live tree as orphaned. The production writers of a `worktrees` r
   So an imported `cleaned` tree was `orphaned`, not `removed`. That row held the partial unique
   index of its path, and a new tree at that path failed. `b6bffd23` writes the state of the
   release backfill (MAP Q19): `cleaned` is `removed`, each other status is `orphaned`.
+  The import also counts a tree as known only when its row is not `removed` (review F1), so a
+  tree made by hand at the path of a `removed` row is reported as an orphan.
 
 The new `arch_scan` rule `fitness_each_worktree_insert_writes_its_state` fails each production
 `INSERT INTO worktrees` that does not name `state`. `docs/architecture.md` lists it.

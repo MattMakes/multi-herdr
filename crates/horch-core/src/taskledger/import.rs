@@ -745,11 +745,12 @@ fn project_roots(conn: &Connection) -> Result<Vec<(String, String)>> {
     Ok(roots)
 }
 
-/// The canonical paths of every worktree the ledger names. Git can report a
+/// The canonical paths of every worktree row that is not `removed`. Git can report a
 /// worktree through a different spelling than its claim (macOS `/tmp` is
 /// `/private/tmp`).
 fn known_worktrees(conn: &Connection) -> Result<HashSet<PathBuf>> {
-    let mut stmt = conn.prepare("SELECT path FROM worktrees")?;
+    // A `removed` row is history: its path is free for a new tree.
+    let mut stmt = conn.prepare("SELECT path FROM worktrees WHERE state <> 'removed'")?;
     let paths = stmt
         .query_map([], |r| r.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
