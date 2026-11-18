@@ -94,7 +94,8 @@ fn plan_without_paired_judge_is_refused() {
         judge("doc-judge", "doc", "judge-codex"),
     ]);
     assert!(check(&p, &facts()).is_empty());
-    assert!(PlanValidator::validate(&p, &facts()).is_empty());
+    let all = PlanValidator::validate(&p, &facts());
+    assert!(judge_problems(&all).is_empty(), "{all:?}");
 }
 
 #[test]
