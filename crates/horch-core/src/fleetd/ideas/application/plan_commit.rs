@@ -218,7 +218,7 @@ fn read_plan(dir: &Path, owner: &User, idea: &IdeaRow) -> (Option<ReadPlan>, Vec
 }
 
 /// The text of the ticket `rel`, a relative path inside the idea folder.
-fn read_ticket(dir: &Path, owner: &User, rel: &str) -> Result<String, String> {
+pub(crate) fn read_ticket(dir: &Path, owner: &User, rel: &str) -> Result<String, String> {
     let inside = !rel.is_empty()
         && Path::new(rel)
             .components()
@@ -232,7 +232,7 @@ fn read_ticket(dir: &Path, owner: &User, rel: &str) -> Result<String, String> {
 
 /// The bytes of the file `rel` of the idea folder `dir`, read with the
 /// checks of SR-6, or the reason of the first check that fails.
-fn read_file(dir: &Path, owner: &User, rel: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn read_file(dir: &Path, owner: &User, rel: &str) -> Result<Vec<u8>, String> {
     let path = dir.join(rel);
     if let Err(e) = std::fs::symlink_metadata(&path) {
         if e.kind() == std::io::ErrorKind::NotFound {
@@ -251,7 +251,7 @@ fn read_file(dir: &Path, owner: &User, rel: &str) -> Result<Vec<u8>, String> {
 /// and the answers from the idea folder, and the roster and the gates from
 /// the caller. A `--direct` idea with no requirements.yaml has 1
 /// requirement, its approved ticket ([`direct_requirement`]).
-fn plan_facts(
+pub(crate) fn plan_facts(
     conn: &Connection,
     folder: &IdeaFolder,
     ctx: &PlanCommit<'_>,
@@ -398,7 +398,7 @@ fn commit(
 }
 
 /// The task of the port `AddPlannedTasks` for the plan task `task`.
-fn planned_task(
+pub(crate) fn planned_task(
     task: &PlannedTask,
     ticket: Option<&str>,
     dir: &Path,
