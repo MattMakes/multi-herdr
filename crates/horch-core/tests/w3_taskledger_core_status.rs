@@ -2,10 +2,12 @@
 
 use std::path::Path;
 
+use horch_core::fleetd::task_execution::domain::task::Recorded;
 use horch_core::taskledger::model::Actor;
 use horch_core::taskledger::runs::{self, NewRun, Run};
 use horch_core::taskledger::status;
-use horch_core::taskledger::tasks::{self, ClaimOutcome, NewTask};
+use horch_core::taskledger::tasks::{self, NewTask};
+use horch_core::taskledger::testing;
 use horch_core::taskledger::workers::{self, NewWorker};
 use horch_core::taskledger::Store;
 
@@ -49,24 +51,31 @@ fn add(store: &mut Store, run: &Run, title: &str) -> tasks::Task {
 fn busy_board() -> (tempfile::TempDir, Store, Run) {
     let (dir, mut store, run) = ledger();
     let first = add(&mut store, &run, "alpha");
-    let worker = store
-        .immediate(|tx| {
-            let id = workers::insert(
-                tx,
-                &NewWorker {
-                    run_id: run.run_id.clone(),
-                    persona: "dev".into(),
-                    role: Some("dev-x".into()),
-                    ..Default::default()
-                },
-            )?;
-            workers::supervisor_started(tx, &id, 4242, Some(1))?;
-            workers::agent_started(tx, &id, 4243, Some(2))?;
-            Ok(id)
-        })
+    // fleetd binds T-1 to a live worker (FR-5). It works in the shared
+    // checkout: the worktree row of the board is added below.
+    store
+        .conn()
+        .execute(
+            "UPDATE tasks SET worktree_mode = 'shared' WHERE task_id = ?1",
+            [&first.task_id],
+        )
         .unwrap();
-    let out = store.immediate(|tx| tasks::claim(tx, &worker)).unwrap();
-    assert!(matches!(out, ClaimOutcome::Claimed(_)));
+    let new = NewWorker {
+        run_id: run.run_id.clone(),
+        persona: "dev".into(),
+        role: Some("dev-x".into()),
+        ..Default::default()
+    };
+    let agent = Recorded {
+        pid: 4243,
+        pid_start: Some(2),
+    };
+    let worker = testing::bind_live(store.conn(), &first.task_id, &new, Some(agent))
+        .unwrap()
+        .worker_id;
+    store
+        .immediate(|tx| workers::supervisor_started(tx, &worker, 4242, Some(1)))
+        .unwrap();
     for title in ["beta", "gamma", "delta", "eps"] {
         add(&mut store, &run, title);
     }

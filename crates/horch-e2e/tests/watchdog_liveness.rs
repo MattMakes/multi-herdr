@@ -73,7 +73,7 @@ fn pinned_worker(name: &str) -> (Harness, Store, Run, String, Agent) {
                 &NewTask::work("author", "author.md", "pi-worker"),
                 Actor::Orchestrator,
             )?;
-            let w = workers::insert(
+            let w = bind_first(
                 tx,
                 &NewWorker {
                     run_id: run.run_id.clone(),
@@ -83,10 +83,12 @@ fn pinned_worker(name: &str) -> (Harness, Store, Run, String, Agent) {
                     workspace_id: Some("w1".into()),
                     ..Default::default()
                 },
+                horch_core::fleetd::task_execution::domain::task::Recorded {
+                    pid: pid,
+                    pid_start: Some(started),
+                },
             )?;
             workers::supervisor_started(tx, &w, 1, Some(1))?;
-            workers::agent_started(tx, &w, pid, Some(started))?;
-            tasks::claim(tx, &w)?;
             Ok((run, w))
         })
         .unwrap();
@@ -617,4 +619,24 @@ fn a_run_made_outside_herdr_warns_and_the_first_pane_plan_records_its_workspace(
     let o = plan("w3");
     assert!(!String::from_utf8_lossy(&o.stderr).contains("NOTE: run auth"));
     assert_eq!(workspace().as_deref(), Some("w1"));
+}
+
+/// fleetd binds the first startable task of the run and persona of `new`
+/// to a new worker with the live agent `agent`, and gives the worker (FR-5).
+/// The run has no git repository: the task works in the shared checkout.
+fn bind_first(
+    tx: &rusqlite::Connection,
+    new: &horch_core::taskledger::workers::NewWorker,
+    agent: horch_core::fleetd::task_execution::domain::task::Recorded,
+) -> anyhow::Result<String> {
+    let task = horch_core::taskledger::tasks::startable(tx, &new.run_id)?
+        .into_iter()
+        .find(|t| t.claimable_by.as_deref() == Some(new.persona.as_str()))
+        .ok_or_else(|| anyhow::anyhow!("no startable task of {}", new.persona))?
+        .task_id;
+    tx.execute(
+        "UPDATE tasks SET worktree_mode = 'shared' WHERE task_id = ?1",
+        [&task],
+    )?;
+    Ok(horch_core::taskledger::testing::bind_live(tx, &task, new, Some(agent))?.worker_id)
 }

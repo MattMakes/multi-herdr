@@ -1,6 +1,6 @@
-//! The next attempt of a task works in the tree of the last attempt: a
-//! claim and a handoff give the tree to the new attempt, an `orphaned`
-//! tree is taken only after its rescue, and the claim names the rescue ref
+//! The next attempt of a task works in the tree of the last attempt: the
+//! bind of fleetd and a handoff give the tree to the new attempt, and an
+//! `orphaned` tree is taken only after its rescue
 //! (docs/specs/fleetd/design.md, "Worktrees: leased, reconciled, never
 //! lost", "Reuse, don't redo"; FM-13, FM-14, FM-25; rows W2 and W3 of
 //! preservation-04-behavior.md; docs/tickets/fleetd-p3/11-claim-reuses-the-tree.md).
@@ -22,6 +22,8 @@ use horch_core::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
 use horch_core::fleetd::fleet_runtime::domain::ledger::Entity;
 use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
+use horch_core::fleetd::task_execution::application::dispatch::Bound;
+use horch_core::fleetd::task_execution::domain::task::Recorded;
 use horch_core::fleetd::worktree_custody::adapters::sqlite::{
     self as trees, WorktreeRow, WorktreeState,
 };
@@ -31,7 +33,8 @@ use horch_core::taskledger::git::Git;
 use horch_core::taskledger::model::Actor;
 use horch_core::taskledger::runs::{self, NewRun, Run};
 use horch_core::taskledger::supervisor;
-use horch_core::taskledger::tasks::{self, ClaimOutcome, Claimed, NewTask};
+use horch_core::taskledger::tasks::{self, NewTask};
+use horch_core::taskledger::testing;
 use horch_core::taskledger::workers::{self, NewWorker};
 use horch_core::taskledger::Store;
 use test_jobs::TestJobs;
@@ -87,11 +90,9 @@ fn cause() -> Cause<'static> {
     }
 }
 
-fn claimed(outcome: ClaimOutcome) -> Claimed {
-    match outcome {
-        ClaimOutcome::Claimed(c) => *c,
-        other => panic!("expected a claim, got {other:?}"),
-    }
+/// The path of the tree of `bound`.
+fn tree_path(bound: &Bound) -> Option<&str> {
+    bound.worktree.as_ref().map(|t| t.path.as_str())
 }
 
 impl World {
@@ -147,39 +148,37 @@ impl World {
         }
     }
 
-    /// A started worker of the run, with no claim.
-    fn worker(&mut self) -> String {
-        let run = self.run.clone();
+    /// fleetd binds the task to a new started worker of the run and its
+    /// live attempt (FR-5). A refused bind writes nothing.
+    fn bind(&mut self) -> anyhow::Result<Bound> {
+        let n: i64 = self
+            .store
+            .conn()
+            .query_row("SELECT count(*) FROM workers", [], |r| r.get(0))?;
+        let task: String = self
+            .store
+            .conn()
+            .query_row("SELECT task_id FROM tasks", [], |r| r.get(0))?;
+        let new = NewWorker {
+            run_id: self.run.run_id.clone(),
+            persona: "opus".into(),
+            role: Some(format!("opus-{}", n + 1)),
+            ..Default::default()
+        };
+        let agent = Recorded {
+            pid: 4243,
+            pid_start: Some(2),
+        };
+        let bound = testing::bind_live(self.store.conn(), &task, &new, Some(agent))?;
         self.store
-            .immediate(|tx| {
-                let n: i64 = tx.query_row("SELECT count(*) FROM workers", [], |r| r.get(0))?;
-                let id = workers::insert(
-                    tx,
-                    &NewWorker {
-                        run_id: run.run_id.clone(),
-                        persona: "opus".into(),
-                        role: Some(format!("opus-{}", n + 1)),
-                        ..Default::default()
-                    },
-                )?;
-                workers::supervisor_started(tx, &id, 4242, Some(1))?;
-                workers::agent_started(tx, &id, 4243, Some(2))?;
-                Ok(id)
-            })
-            .unwrap()
+            .immediate(|tx| workers::supervisor_started(tx, &bound.worker_id, 4242, Some(1)))?;
+        Ok(bound)
     }
 
-    fn claim(&mut self, worker_id: &str) -> anyhow::Result<Claimed> {
-        self.store
-            .immediate(|tx| tasks::claim(tx, worker_id))
-            .map(claimed)
-    }
-
-    /// A new worker that claims the task and makes its tree; gives the
-    /// worker id and the tree.
+    /// fleetd binds the task to a new worker, which makes its tree; gives
+    /// the worker id and the tree.
     fn first_attempt(&mut self) -> (String, WorktreeRow) {
-        let a = self.worker();
-        self.claim(&a).unwrap();
+        let a = self.bind().unwrap().worker_id;
         let wt =
             finish::worktree_new_with(&mut self.store, &self.git, &a, "feat", &TestJobs).unwrap();
         let tree = self.row(&wt.worktree_id);
@@ -312,47 +311,41 @@ fn files(tree: &Path) -> Vec<(String, Vec<u8>)> {
 // ─── FM-25 and FM-13: the next attempt reuses the tree ──────────────────
 
 #[test]
-fn claim_of_a_retried_task_makes_its_tree_active_with_the_new_attempt() {
+fn bind_of_a_retried_task_makes_its_tree_active_with_the_new_attempt() {
     let mut w = World::new();
     let (a, tree) = w.first_attempt();
     w.exit(&a);
 
-    let b = w.worker();
-    let c = w.claim(&b).unwrap();
+    let c = w.bind().unwrap();
+    let b = c.worker_id.clone();
 
     let row = w.row(&tree.worktree_id);
     assert_eq!(row.state, WorktreeState::Active);
     assert_eq!(row.owner_attempt, Some(w.attempt(&b)));
     assert_eq!(row.worker_id.as_deref(), Some(b.as_str()));
-    assert_eq!(c.worktree.as_deref(), Some(tree.path.as_str()));
-    assert_eq!(c.orphaned_worktree, None);
-    assert_eq!(c.rescue_ref, None);
-    assert_eq!(tasks::rescue_ref_text(&c), None);
+    assert_eq!(tree_path(&c), Some(tree.path.as_str()));
+    assert_eq!(c.worktree.as_ref().and_then(|t| t.add_job), None);
 }
 
 #[test]
-fn claim_of_a_task_with_a_rescued_tree_names_the_rescue_ref() {
+fn bind_of_a_task_with_a_rescued_tree_takes_the_tree() {
     let mut w = World::new();
     let (a, tree) = w.first_attempt();
     w.exit(&a);
     let rescue_ref = w.rescued(&tree);
 
-    let b = w.worker();
-    let c = w.claim(&b).unwrap();
+    let c = w.bind().unwrap();
+    let b = c.worker_id.clone();
 
     let row = w.row(&tree.worktree_id);
     assert_eq!(row.state, WorktreeState::Active);
     assert_eq!(row.owner_attempt, Some(w.attempt(&b)));
-    assert_eq!(c.worktree.as_deref(), Some(tree.path.as_str()));
-    assert_eq!(c.rescue_ref.as_deref(), Some(rescue_ref.as_str()));
-    assert_eq!(
-        tasks::rescue_ref_text(&c).as_deref(),
-        Some(format!("Its work of the last attempt is also saved at {rescue_ref}.\n").as_str())
-    );
+    assert_eq!(tree_path(&c), Some(tree.path.as_str()));
+    assert_eq!(row.rescue_ref.as_deref(), Some(rescue_ref.as_str()));
 }
 
 #[test]
-fn claim_of_a_task_with_an_orphaned_tree_does_not_take_it_before_the_rescue() {
+fn bind_of_a_task_with_an_orphaned_tree_is_refused_before_the_rescue() {
     let mut w = World::new();
     let (a, tree) = w.first_attempt();
     std::fs::write(Path::new(&tree.path).join("work.txt"), "unsaved\n").unwrap();
@@ -360,31 +353,15 @@ fn claim_of_a_task_with_an_orphaned_tree_does_not_take_it_before_the_rescue() {
     w.move_tree(&tree.worktree_id, "orphaned");
     let before = w.row(&tree.worktree_id);
 
-    let b = w.worker();
-    let c = w.claim(&b).unwrap();
+    let e = w.bind().unwrap_err();
 
-    // The claim takes the task, not the tree.
-    assert_eq!(w.task_status(), "running");
-    assert_eq!(w.row(&tree.worktree_id), before);
-    assert_eq!(c.worktree, None);
-    assert_eq!(c.orphaned_worktree.as_deref(), Some(tree.path.as_str()));
-    let text = tasks::orphaned_text(&c, "feat").unwrap();
-    assert_eq!(
-        text,
-        format!(
-            "Orphaned: the worktree {} of the last attempt has no owner. Run horch ledger worktree new feat. It rescues the worktree first, then gives it to you.\n",
-            tree.path
-        )
+    // The bind takes neither the task nor the tree: the rescue comes first.
+    assert!(
+        format!("{e:#}").contains("is orphaned: its rescue comes first"),
+        "{e:#}"
     );
-
-    // horch ledger worktree new rescues the tree, then gives it to the
-    // new attempt, with each file.
-    let wt = finish::worktree_new_with(&mut w.store, &w.git, &b, "feat", &TestJobs).unwrap();
-    assert_eq!(wt.worktree_id, tree.worktree_id);
-    let row = w.row(&tree.worktree_id);
-    assert_eq!(row.state, WorktreeState::Active);
-    assert_eq!(row.owner_attempt, Some(w.attempt(&b)));
-    assert!(row.rescue_ref.is_some(), "the rescue wrote its ref");
+    assert_eq!(w.task_status(), "ready", "the refused bind wrote nothing");
+    assert_eq!(w.row(&tree.worktree_id), before);
     assert_eq!(
         std::fs::read_to_string(Path::new(&tree.path).join("work.txt")).unwrap(),
         "unsaved\n"
@@ -410,14 +387,15 @@ fn handoff_moves_the_owner_of_the_tree() {
     assert_eq!(row.owner_attempt, None);
     assert_eq!(row.worker_id, None);
 
-    let b = w.worker();
-    let c = w.claim(&b).unwrap();
+    let c = w.bind().unwrap();
+    let b = c.worker_id.clone();
     let row = w.row(&tree.worktree_id);
     assert_eq!(row.state, WorktreeState::Active);
     assert_eq!(row.owner_attempt, Some(w.attempt(&b)));
     assert_eq!(row.worker_id.as_deref(), Some(b.as_str()));
-    assert_eq!(c.worktree.as_deref(), Some(tree.path.as_str()));
-    assert_eq!(c.handoff_path.as_deref(), Some(file.as_str()));
+    assert_eq!(tree_path(&c), Some(tree.path.as_str()));
+    let old = workers::get(w.store.conn(), &a).unwrap();
+    assert_eq!(old.handoff_path.as_deref(), Some(file.as_str()));
 }
 
 #[test]
@@ -428,7 +406,7 @@ fn owner_does_not_move_while_the_old_attempt_is_live() {
     // The task is in the queue again while its worker and its attempt are
     // still live: no handoff, no reap, no lease. The worker row lets go
     // of the task, so the unique index of `workers.task_id` does not
-    // refuse the claim first, and the tree is the last guard.
+    // refuse the bind first. The bind refuses the open attempt (I1).
     w.store
         .immediate(|tx| {
             tx.execute(
@@ -444,18 +422,17 @@ fn owner_does_not_move_while_the_old_attempt_is_live() {
         })
         .unwrap();
 
-    let b = w.worker();
-    let e = w.claim(&b).unwrap_err();
+    let e = w.bind().unwrap_err();
 
     assert!(
-        format!("{e:#}").contains(&format!("live attempt {owner}")),
+        format!("{e:#}").contains(&format!("the attempt {owner} that is not ended")),
         "{e:#}"
     );
     let row = w.row(&tree.worktree_id);
     assert_eq!(row.state, WorktreeState::Active);
     assert_eq!(row.owner_attempt, Some(owner));
     assert_eq!(row.worker_id.as_deref(), Some(a.as_str()));
-    assert_eq!(w.task_status(), "ready", "the refused claim wrote nothing");
+    assert_eq!(w.task_status(), "ready", "the refused bind wrote nothing");
 }
 
 // ─── W3: a reap leaves the tree with its files ──────────────────────────
@@ -482,17 +459,17 @@ fn reap_leaves_the_tree_and_each_file() {
     assert_eq!(files(path), before);
     assert_eq!(git(path, &["rev-parse", "HEAD"]), head);
 
-    let b = w.worker();
-    let c = w.claim(&b).unwrap();
-    assert_eq!(c.worktree.as_deref(), Some(tree.path.as_str()));
+    let c = w.bind().unwrap();
+    let b = c.worker_id.clone();
+    assert_eq!(tree_path(&c), Some(tree.path.as_str()));
     assert_eq!(w.row(&tree.worktree_id).owner_attempt, Some(w.attempt(&b)));
     assert_eq!(files(path), before);
 }
 
-// ─── the claim and the worktree_remove job never both pass ──────────────
+// ─── the bind and the worktree_remove job never both pass ───────────────
 
 #[test]
-fn claim_refuses_a_tree_while_its_worktree_remove_job_is_queued_running_or_passed() {
+fn bind_refuses_a_tree_while_its_worktree_remove_job_is_queued_running_or_passed() {
     let mut w = World::new();
     let (a, tree) = w.first_attempt();
     w.exit(&a);
@@ -502,10 +479,9 @@ fn claim_refuses_a_tree_while_its_worktree_remove_job_is_queued_running_or_passe
         other => panic!("expected a new run, got {other:?}"),
     };
 
-    let b = w.worker();
     for state in ["queued", "running", "passed"] {
         w.set_job_state(job, state);
-        let e = w.claim(&b).unwrap_err();
+        let e = w.bind().unwrap_err();
         assert!(
             format!("{e:#}").contains(&format!("worktree_remove job {job}")),
             "{state}: {e:#}"
@@ -514,26 +490,25 @@ fn claim_refuses_a_tree_while_its_worktree_remove_job_is_queued_running_or_passe
         assert_eq!(
             w.task_status(),
             "ready",
-            "{state}: the refused claim wrote nothing"
+            "{state}: the refused bind wrote nothing"
         );
     }
 
-    // A failed removal keeps the tree: the next claim takes it.
+    // A failed removal keeps the tree: the next bind takes it.
     w.set_job_state(job, "failed");
-    let c = w.claim(&b).unwrap();
-    assert_eq!(c.worktree.as_deref(), Some(tree.path.as_str()));
+    let c = w.bind().unwrap();
+    assert_eq!(tree_path(&c), Some(tree.path.as_str()));
     assert_eq!(w.row(&tree.worktree_id).state, WorktreeState::Active);
 }
 
 #[test]
-fn worktree_remove_is_refused_after_the_claim_took_the_tree() {
+fn worktree_remove_is_refused_after_the_bind_took_the_tree() {
     let mut w = World::new();
     let (a, tree) = w.first_attempt();
     w.exit(&a);
     w.rescued(&tree);
 
-    let b = w.worker();
-    w.claim(&b).unwrap();
+    w.bind().unwrap();
 
     let refused = w.queue_remove(&tree).unwrap_err();
     assert!(refused.contains("active"), "{refused}");

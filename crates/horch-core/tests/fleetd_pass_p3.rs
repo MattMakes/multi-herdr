@@ -33,6 +33,7 @@ use horch_core::fleetd::fleet_runtime::domain::health::Hold;
 use horch_core::fleetd::fleet_runtime::domain::jobs::{Kind, State};
 use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
 use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
+use horch_core::fleetd::task_execution::domain::task::Recorded;
 use horch_core::fleetd::task_execution::domain::task::{AttemptRow, InPane};
 use horch_core::fleetd::worker_profiles::adapters::launcher::Launcher;
 use horch_core::fleetd::worker_profiles::application::ports::{
@@ -46,7 +47,6 @@ use horch_core::fleetd::worktree_custody::application::reconcile::WorkDir;
 use horch_core::runtime::fault::Faults;
 use horch_core::taskledger::finish::CodexSandbox;
 use horch_core::taskledger::model::{Actor, WorktreeMode, WorktreeStatus};
-use horch_core::fleetd::task_execution::domain::task::Recorded;
 use horch_core::taskledger::runs::{self, NewRun, Run};
 use horch_core::taskledger::tasks::{self, NewTask};
 use horch_core::taskledger::testing::bind_live;

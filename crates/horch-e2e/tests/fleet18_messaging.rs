@@ -291,7 +291,7 @@ fn ledger_worker() -> (
                 &NewTask::work("author", "author.md", "codex-terra"),
                 Actor::Orchestrator,
             )?;
-            let worker = workers::insert(
+            let worker = bind_first(
                 tx,
                 &NewWorker {
                     run_id: run.run_id.clone(),
@@ -300,10 +300,12 @@ fn ledger_worker() -> (
                     workspace_id: Some("w1".into()),
                     ..Default::default()
                 },
+                horch_core::fleetd::task_execution::domain::task::Recorded {
+                    pid: 2,
+                    pid_start: Some(2),
+                },
             )?;
             workers::supervisor_started(tx, &worker, 1, Some(1))?;
-            workers::agent_started(tx, &worker, 2, Some(2))?;
-            tasks::claim(tx, &worker)?;
             Ok((run, worker))
         })
         .unwrap();
@@ -703,7 +705,7 @@ fn pinned_worker(
                 &NewTask::work("author", "author.md", "codex-terra"),
                 Actor::Orchestrator,
             )?;
-            let w = workers::insert(
+            let w = bind_first(
                 tx,
                 &NewWorker {
                     run_id: run.run_id.clone(),
@@ -712,10 +714,12 @@ fn pinned_worker(
                     workspace_id: Some("w1".into()),
                     ..Default::default()
                 },
+                horch_core::fleetd::task_execution::domain::task::Recorded {
+                    pid: pid,
+                    pid_start: Some(started),
+                },
             )?;
             workers::supervisor_started(tx, &w, 1, Some(1))?;
-            workers::agent_started(tx, &w, pid, Some(started))?;
-            tasks::claim(tx, &w)?;
             Ok((run, w))
         })
         .unwrap();
@@ -1774,4 +1778,24 @@ fn a_pass_with_an_unknown_orchestrator_ends_within_the_push_budget() {
         "{pending:?}"
     );
     assert!(h.run(&["inbox"]).status.success());
+}
+
+/// fleetd binds the first startable task of the run and persona of `new`
+/// to a new worker with the live agent `agent`, and gives the worker (FR-5).
+/// The run has no git repository: the task works in the shared checkout.
+fn bind_first(
+    tx: &rusqlite::Connection,
+    new: &horch_core::taskledger::workers::NewWorker,
+    agent: horch_core::fleetd::task_execution::domain::task::Recorded,
+) -> anyhow::Result<String> {
+    let task = horch_core::taskledger::tasks::startable(tx, &new.run_id)?
+        .into_iter()
+        .find(|t| t.claimable_by.as_deref() == Some(new.persona.as_str()))
+        .ok_or_else(|| anyhow::anyhow!("no startable task of {}", new.persona))?
+        .task_id;
+    tx.execute(
+        "UPDATE tasks SET worktree_mode = 'shared' WHERE task_id = ?1",
+        [&task],
+    )?;
+    Ok(horch_core::taskledger::testing::bind_live(tx, &task, new, Some(agent))?.worker_id)
 }

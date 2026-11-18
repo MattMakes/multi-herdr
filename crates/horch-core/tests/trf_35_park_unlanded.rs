@@ -9,17 +9,20 @@ mod test_jobs;
 use std::path::{Path, PathBuf};
 use test_jobs::TestJobs;
 
+use horch_core::fleetd::task_execution::application::dispatch::Bound;
+use horch_core::fleetd::task_execution::domain::task::Recorded;
 use horch_core::taskledger::finish;
 use horch_core::taskledger::model::Actor;
 use horch_core::taskledger::runs::{self, NewRun, Run};
-use horch_core::taskledger::tasks::{self, ClaimOutcome, NewTask, Wait};
+use horch_core::taskledger::tasks::{self, NewTask, Wait};
+use horch_core::taskledger::testing;
 use horch_core::taskledger::triage::apply::{self, Env};
 use horch_core::taskledger::triage::{self, reply, Measure};
 use horch_core::taskledger::workers::{self, NewWorker};
 use i308_support::{commit, World};
 
 /// A run on `main` with T-1 and T-2 (blocked by T-1), and a worker that
-/// claimed T-1 and committed 1 file in its worktree `feat`.
+/// is bound to T-1 and committed 1 file in its worktree `feat`.
 fn parked_world() -> (World, Run, String, PathBuf) {
     let mut w = World::new();
     let root = w.root.clone();
@@ -55,35 +58,31 @@ fn parked_world() -> (World, Run, String, PathBuf) {
             Ok(run)
         })
         .unwrap();
-    let worker = new_worker(&mut w, &run);
-    let ClaimOutcome::Claimed(c) = w.store.immediate(|tx| tasks::claim(tx, &worker)).unwrap()
-    else {
-        panic!("T-1 is not claimed");
-    };
-    assert_eq!(c.task.short(), "T-1");
+    let worker = bind_t1(&mut w, &run).worker_id;
     let wt = finish::worktree_new_with(&mut w.store, &w.git, &worker, "feat", &TestJobs).unwrap();
     let path = PathBuf::from(&wt.path);
     commit(&path, "f.txt", "work\n");
     (w, run, worker, path)
 }
 
-fn new_worker(w: &mut World, run: &Run) -> String {
+/// Bind T-1 to a new started worker, as fleetd does (FR-5).
+fn bind_t1(w: &mut World, run: &Run) -> Bound {
+    let task = t1(w, run).task_id;
+    let new = NewWorker {
+        run_id: run.run_id.clone(),
+        persona: "opus".into(),
+        role: Some("opus-x".into()),
+        ..Default::default()
+    };
+    let agent = Recorded {
+        pid: 4243,
+        pid_start: Some(2),
+    };
+    let bound = testing::bind_live(w.store.conn(), &task, &new, Some(agent)).unwrap();
     w.store
-        .immediate(|tx| {
-            let id = workers::insert(
-                tx,
-                &NewWorker {
-                    run_id: run.run_id.clone(),
-                    persona: "opus".into(),
-                    role: Some("opus-x".into()),
-                    ..Default::default()
-                },
-            )?;
-            workers::supervisor_started(tx, &id, 4242, Some(1))?;
-            workers::agent_started(tx, &id, 4243, Some(2))?;
-            Ok(id)
-        })
-        .unwrap()
+        .immediate(|tx| workers::supervisor_started(tx, &bound.worker_id, 4242, Some(1)))
+        .unwrap();
+    bound
 }
 
 fn t1(w: &World, run: &Run) -> tasks::Task {
@@ -167,12 +166,11 @@ fn trf_35_done_unlanded_parks_the_task_and_requeue_resumes_it_on_the_same_worktr
         Some(Wait::BlockedBy { task, .. }) if task == "T-1"
     ));
 
-    let next = new_worker(&mut w, &run);
-    let ClaimOutcome::Claimed(c) = w.store.immediate(|tx| tasks::claim(tx, &next)).unwrap() else {
-        panic!("T-1 is not claimed again");
-    };
-    assert_eq!(c.task.short(), "T-1");
-    assert_eq!(c.worktree.as_deref(), Some(path.to_string_lossy().as_ref()));
+    let next = bind_t1(&mut w, &run);
+    assert_eq!(
+        next.worktree.map(|t| t.path).as_deref(),
+        Some(path.to_string_lossy().as_ref())
+    );
     assert_eq!(task_count(&w), 2);
 }
 
@@ -199,7 +197,7 @@ fn lease_and_attempts(w: &World, task_id: &str) -> (i64, Vec<(String, Option<Str
 }
 
 /// The park releases the lease and ends the attempt of its worker in the
-/// transaction of `done`, so the claim after `requeue` needs no fleetd
+/// transaction of `done`, so the bind after `requeue` needs no fleetd
 /// pass (RR-17, FM-14).
 #[test]
 fn trf_35_done_unlanded_releases_the_lease_and_ends_the_attempt() {
@@ -214,10 +212,7 @@ fn trf_35_done_unlanded_releases_the_lease_and_ends_the_attempt() {
     w.store
         .immediate(|tx| tasks::requeue_by_operator(tx, &t, "fixed the check"))
         .unwrap();
-    let next = new_worker(&mut w, &run);
-    let ClaimOutcome::Claimed(_) = w.store.immediate(|tx| tasks::claim(tx, &next)).unwrap() else {
-        panic!("T-1 is not claimed again");
-    };
+    bind_t1(&mut w, &run);
     assert_eq!(
         lease_and_attempts(&w, &task),
         (

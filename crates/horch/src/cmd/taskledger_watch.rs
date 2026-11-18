@@ -338,26 +338,33 @@ mod tests {
                     &horch_core::taskledger::util::now(),
                     true,
                 )?;
-                tasks::add(
-                    tx,
-                    &run,
-                    &NewTask::work("a", "a.md", "dev"),
-                    Actor::Orchestrator,
-                )?;
+                // No git repository: the task works in the shared checkout.
+                let mut a = NewTask::work("a", "a.md", "dev");
+                a.worktree_mode = horch_core::taskledger::model::WorktreeMode::Shared;
+                let task = tasks::add(tx, &run, &a, Actor::Orchestrator)?.task_id;
                 let new_worker = NewWorker {
                     run_id: run.run_id.clone(),
                     persona: "dev".into(),
                     ..Default::default()
                 };
-                let w = workers::insert(tx, &new_worker)?;
-                // This test is the live agent of the worker. A live attempt
-                // owns it, and the fleet clock of 1 pass stays within the
-                // stall_after_s of the claim, so no pass stops it.
+                // This test is the live agent of the worker. fleetd binds
+                // the task to a live attempt that owns it (FR-5), and the
+                // fleet clock of 1 pass stays within the stall_after_s of
+                // the bind, so no pass stops it.
                 let me = std::process::id();
                 let started = horch_core::procid::start_time(me);
+                let agent = horch_core::fleetd::task_execution::domain::task::Recorded {
+                    pid: me,
+                    pid_start: started,
+                };
+                let w = horch_core::taskledger::testing::bind_live(
+                    tx,
+                    &task,
+                    &new_worker,
+                    Some(agent),
+                )?
+                .worker_id;
                 workers::supervisor_started(tx, &w, me, started)?;
-                workers::agent_started(tx, &w, me, started)?;
-                tasks::claim(tx, &w)?;
                 Ok((run, w))
             })
             .unwrap();

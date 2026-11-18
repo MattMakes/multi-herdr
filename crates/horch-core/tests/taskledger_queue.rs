@@ -1,25 +1,41 @@
-//! The task ledger's queue: the claimable rule, claims, fallback, cycles
-//! (#32, #33). The CLI seam has its own tests in horch-e2e; these pin the
-//! rule clause by clause.
+//! The task ledger's queue: the startable rule, fallback, cycles (#32,
+//! #33). No worker finds a task by a search: each test takes the first
+//! startable task of a persona and binds it as fleetd does (FR-5). The CLI
+//! seam has its own tests in horch-e2e; these pin the rule clause by
+//! clause.
 
 use std::path::Path;
 
-use horch_core::taskledger::model::{Actor, WorkerStatus};
+use horch_core::fleetd::task_execution::domain::task::Recorded;
+use horch_core::taskledger::model::Actor;
 use horch_core::taskledger::runs::{self, NewRun, Run};
-use horch_core::taskledger::tasks::{self, ClaimOutcome, NewTask, Wait};
+use horch_core::taskledger::tasks::{self, NewTask, Wait};
+use horch_core::taskledger::testing;
 use horch_core::taskledger::workers::{self, NewWorker};
 use horch_core::taskledger::Store;
 
 fn ledger() -> (tempfile::TempDir, Store, Run) {
+    ledger_with(runs::Thresholds::default())
+}
+
+/// A ledger with 1 run on `main` of a git repository: the bind of a
+/// worktree task reads the commit of its base.
+fn ledger_with(thresholds: runs::Thresholds) -> (tempfile::TempDir, Store, Run) {
     let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["commit", "-q", "--allow-empty", "-m", "base"]);
     let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
     let run = store
         .immediate(|tx| {
             let run = runs::create(
                 tx,
-                Path::new("/repo"),
+                &repo,
                 &NewRun {
                     slug: "r1".into(),
+                    base_branch: Some("main".into()),
+                    thresholds,
                     ..Default::default()
                 },
             )?;
@@ -34,6 +50,16 @@ fn ledger() -> (tempfile::TempDir, Store, Run) {
         })
         .unwrap();
     (dir, store, run)
+}
+
+fn git(dir: &Path, args: &[&str]) {
+    let out = std::process::Command::new("git")
+        .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git {args:?}: {out:?}");
 }
 
 fn add(
@@ -69,15 +95,33 @@ fn worker(store: &mut Store, run: &Run, persona: &str) -> String {
         .unwrap()
 }
 
-fn claim(store: &mut Store, w: &str) -> ClaimOutcome {
-    store.immediate(|tx| tasks::claim(tx, w)).unwrap()
+/// The first startable task of `persona` in board order, bound to a new
+/// live worker of `persona` as fleetd binds it: its seq and the worker.
+/// `None` when no task of `persona` can start.
+fn take(store: &mut Store, run: &Run, persona: &str) -> Option<(i64, String)> {
+    let task = tasks::startable(store.conn(), &run.run_id)
+        .unwrap()
+        .into_iter()
+        .find(|t| t.claimable_by.as_deref() == Some(persona))?;
+    let new = NewWorker {
+        run_id: run.run_id.clone(),
+        persona: persona.into(),
+        role: Some(format!("{persona}-x")),
+        ..Default::default()
+    };
+    let agent = Recorded {
+        pid: 4243,
+        pid_start: Some(2),
+    };
+    let bound = testing::bind_live(store.conn(), &task.task_id, &new, Some(agent)).unwrap();
+    store
+        .immediate(|tx| workers::supervisor_started(tx, &bound.worker_id, 4242, Some(1)))
+        .unwrap();
+    Some((task.seq, bound.worker_id))
 }
 
-fn claimed_seq(o: &ClaimOutcome) -> Option<i64> {
-    match o {
-        ClaimOutcome::Claimed(c) => Some(c.task.seq),
-        ClaimOutcome::NoTask { .. } => None,
-    }
+fn taken_seq(store: &mut Store, run: &Run, persona: &str) -> Option<i64> {
+    take(store, run, persona).map(|(seq, _)| seq)
 }
 
 fn finish(store: &mut Store, task_id: &str) {
@@ -101,15 +145,12 @@ fn a_blocked_task_waits_for_its_blocker() {
     let b = add(&mut s, &run, "b", "opus", |t| {
         t.blocked_by = vec!["T-1".into()]
     });
-    let w1 = worker(&mut s, &run, "opus");
-    assert_eq!(claimed_seq(&claim(&mut s, &w1)), Some(1));
-    let w2 = worker(&mut s, &run, "opus");
-    assert_eq!(claimed_seq(&claim(&mut s, &w2)), None, "B is blocked");
+    assert_eq!(taken_seq(&mut s, &run, "opus"), Some(1));
+    assert_eq!(taken_seq(&mut s, &run, "opus"), None, "B is blocked");
     let waits = tasks::waits(s.conn(), &run.run_id).unwrap();
     assert!(matches!(&waits[0].1, Wait::BlockedBy { task, .. } if task == "T-1"));
     finish(&mut s, &a.task_id);
-    let w3 = worker(&mut s, &run, "opus");
-    assert_eq!(claimed_seq(&claim(&mut s, &w3)), Some(b.seq));
+    assert_eq!(taken_seq(&mut s, &run, "opus"), Some(b.seq));
 }
 
 #[test]
@@ -118,17 +159,10 @@ fn an_exclusive_task_runs_alone() {
     add(&mut s, &run, "a", "opus", |_| {});
     add(&mut s, &run, "x", "opus", |t| t.parallel = false);
     add(&mut s, &run, "c", "opus", |_| {});
-    let w1 = worker(&mut s, &run, "opus");
-    assert_eq!(claimed_seq(&claim(&mut s, &w1)), Some(1));
+    assert_eq!(taken_seq(&mut s, &run, "opus"), Some(1));
     // X waits for A; C may start beside A.
-    let w2 = worker(&mut s, &run, "opus");
-    assert_eq!(claimed_seq(&claim(&mut s, &w2)), Some(3));
-    let w3 = worker(&mut s, &run, "opus");
-    assert_eq!(
-        claimed_seq(&claim(&mut s, &w3)),
-        None,
-        "X waits for A and C"
-    );
+    assert_eq!(taken_seq(&mut s, &run, "opus"), Some(3));
+    assert_eq!(taken_seq(&mut s, &run, "opus"), None, "X waits for A and C");
 }
 
 #[test]
@@ -136,10 +170,8 @@ fn nothing_starts_beside_a_running_exclusive_task() {
     let (_d, mut s, run) = ledger();
     add(&mut s, &run, "x", "opus", |t| t.parallel = false);
     add(&mut s, &run, "b", "opus", |_| {});
-    let w1 = worker(&mut s, &run, "opus");
-    assert_eq!(claimed_seq(&claim(&mut s, &w1)), Some(1));
-    let w2 = worker(&mut s, &run, "opus");
-    assert_eq!(claimed_seq(&claim(&mut s, &w2)), None);
+    assert_eq!(taken_seq(&mut s, &run, "opus"), Some(1));
+    assert_eq!(taken_seq(&mut s, &run, "opus"), None);
 }
 
 #[test]
@@ -154,11 +186,9 @@ fn two_tasks_never_hold_one_file() {
     add(&mut s, &run, "c", "opus", |t| {
         t.own = vec!["src/parser.rs".into()]
     });
-    let w1 = worker(&mut s, &run, "opus");
-    assert_eq!(claimed_seq(&claim(&mut s, &w1)), Some(1));
-    let w2 = worker(&mut s, &run, "opus");
+    assert_eq!(taken_seq(&mut s, &run, "opus"), Some(1));
     assert_eq!(
-        claimed_seq(&claim(&mut s, &w2)),
+        taken_seq(&mut s, &run, "opus"),
         Some(3),
         "src/parser.rs does not overlap"
     );
@@ -190,34 +220,15 @@ fn a_queued_task_behind_a_task_with_its_file_waits_on_the_file() {
 }
 
 #[test]
-fn only_the_named_persona_claims_until_fallback() {
+fn only_the_named_persona_takes_the_task_until_fallback() {
     let (_d, mut s, run) = ledger();
     let t = add(&mut s, &run, "a", "opus", |t| {
         t.fallback = Some("sonnet".into())
     });
-    let ws = worker(&mut s, &run, "sonnet");
-    assert!(matches!(claim(&mut s, &ws), ClaimOutcome::NoTask { .. }));
-    let st = workers::get(s.conn(), &ws).unwrap();
-    assert_eq!(st.status, WorkerStatus::NoTask.as_str());
+    assert_eq!(taken_seq(&mut s, &run, "sonnet"), None);
     s.immediate(|tx| tasks::fallback(tx, &t, "opus pool refused"))
         .unwrap();
-    let ws2 = worker(&mut s, &run, "sonnet");
-    assert_eq!(claimed_seq(&claim(&mut s, &ws2)), Some(1));
-}
-
-#[test]
-fn no_task_names_the_supervisor_pid() {
-    let (_d, mut s, run) = ledger();
-    let w = worker(&mut s, &run, "opus");
-    match claim(&mut s, &w) {
-        ClaimOutcome::NoTask { tell, .. } => {
-            assert!(
-                tell.contains("NOTE: No task for opus. I exit. PID 4242."),
-                "{tell}"
-            );
-        }
-        other => panic!("{other:?}"),
-    }
+    assert_eq!(taken_seq(&mut s, &run, "sonnet"), Some(1));
 }
 
 #[test]
@@ -297,70 +308,11 @@ fn plan_workers_subtracts_workers_on_their_way() {
 }
 
 #[test]
-fn eight_racing_claims_take_exactly_three_tasks() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("ledger.sqlite3");
-    let mut s = Store::open(&path).unwrap();
-    let run = s
-        .immediate(|tx| {
-            let run = runs::create(
-                tx,
-                Path::new("/repo"),
-                &NewRun {
-                    slug: "race".into(),
-                    ..Default::default()
-                },
-            )?;
-            // FR-12: a task needs an idea in flight of the feature of its run.
-            horch_core::taskledger::schema::run_idea(
-                tx,
-                &run.run_id,
-                &horch_core::taskledger::util::now(),
-                true,
-            )?;
-            Ok(run)
-        })
-        .unwrap();
-    for n in 0..3 {
-        add(&mut s, &run, &format!("t{n}"), "opus", |_| {});
-    }
-    let ids: Vec<String> = (0..8).map(|_| worker(&mut s, &run, "opus")).collect();
-    drop(s);
-    let handles: Vec<_> = ids
-        .into_iter()
-        .map(|id| {
-            let path = path.clone();
-            std::thread::spawn(move || {
-                let mut s = Store::open(&path).unwrap();
-                s.immediate(|tx| tasks::claim(tx, &id)).unwrap()
-            })
-        })
-        .collect();
-    let outcomes: Vec<ClaimOutcome> = handles.into_iter().map(|h| h.join().unwrap()).collect();
-    let mut won: Vec<i64> = outcomes.iter().filter_map(claimed_seq).collect();
-    won.sort();
-    assert_eq!(won, vec![1, 2, 3]);
-    let s = Store::open(&path).unwrap();
-    for t in tasks::of_run(s.conn(), &run.run_id).unwrap() {
-        let working: i64 = s
-            .conn()
-            .query_row(
-                "SELECT count(*) FROM workers WHERE task_id = ?1 AND status = 'working'",
-                [&t.task_id],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(working, 1, "{}", t.short());
-    }
-}
-
-#[test]
 fn a_cancelled_task_is_finished_and_not_claimable() {
     let (_d, mut s, run) = ledger();
     let t = add(&mut s, &run, "a", "opus", |_| {});
     s.immediate(|tx| tasks::cancel(tx, &t, "dropped")).unwrap();
-    let w = worker(&mut s, &run, "opus");
-    assert!(matches!(claim(&mut s, &w), ClaimOutcome::NoTask { .. }));
+    assert_eq!(taken_seq(&mut s, &run, "opus"), None);
 }
 
 #[test]
@@ -392,47 +344,22 @@ fn shared_checkout_tasks_run_one_at_a_time() {
         "{}",
         waits[0].1
     );
-    let w1 = worker(&mut s, &run, "opus");
-    assert_eq!(claimed_seq(&claim(&mut s, &w1)), Some(1));
-    let w2 = worker(&mut s, &run, "opus");
-    assert_eq!(claimed_seq(&claim(&mut s, &w2)), Some(3));
-    let w3 = worker(&mut s, &run, "opus");
-    assert_eq!(claimed_seq(&claim(&mut s, &w3)), None, "T-2 waits for T-1");
+    assert_eq!(taken_seq(&mut s, &run, "opus"), Some(1));
+    assert_eq!(taken_seq(&mut s, &run, "opus"), Some(3));
+    assert_eq!(taken_seq(&mut s, &run, "opus"), None, "T-2 waits for T-1");
 }
 
 #[test]
 fn an_agent_that_exits_on_its_last_attempt_fails_the_task() {
     use horch_core::taskledger::supervisor::{self, Ended};
-    let dir = tempfile::tempdir().unwrap();
+    let (dir, mut store, run) = ledger_with(runs::Thresholds {
+        max_attempts: Some(2),
+        ..Default::default()
+    });
     let db = dir.path().join("ledger.sqlite3");
-    let mut store = Store::open(&db).unwrap();
-    let run = store
-        .immediate(|tx| {
-            let run = runs::create(
-                tx,
-                Path::new("/repo"),
-                &NewRun {
-                    slug: "r1".into(),
-                    thresholds: runs::Thresholds {
-                        max_attempts: Some(2),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                },
-            )?;
-            // FR-12: a task needs an idea in flight of the feature of its run.
-            horch_core::taskledger::schema::run_idea(
-                tx,
-                &run.run_id,
-                &horch_core::taskledger::util::now(),
-                true,
-            )?;
-            Ok(run)
-        })
-        .unwrap();
     let t = add(&mut store, &run, "a", "opus", |_| {});
-    let first = worker(&mut store, &run, "opus");
-    assert_eq!(claimed_seq(&claim(&mut store, &first)), Some(1));
+    let (seq, first) = take(&mut store, &run, "opus").unwrap();
+    assert_eq!(seq, 1);
     assert_eq!(
         horch_core::taskledger::Store::open(&db)
             .and_then(|mut s| s.immediate(|tx| supervisor::settle(tx, &first, Some(1))))
@@ -442,8 +369,8 @@ fn an_agent_that_exits_on_its_last_attempt_fails_the_task() {
             persona: "opus".into()
         }
     );
-    let second = worker(&mut store, &run, "opus");
-    assert_eq!(claimed_seq(&claim(&mut store, &second)), Some(1));
+    let (seq, second) = take(&mut store, &run, "opus").unwrap();
+    assert_eq!(seq, 1);
     assert_eq!(
         horch_core::taskledger::Store::open(&db)
             .and_then(|mut s| s.immediate(|tx| supervisor::settle(tx, &second, Some(1))))
@@ -458,8 +385,7 @@ fn an_agent_that_exits_on_its_last_attempt_fails_the_task() {
     assert!(tasks::startable(store.conn(), &run.run_id)
         .unwrap()
         .is_empty());
-    let third = worker(&mut store, &run, "opus");
-    assert_eq!(claimed_seq(&claim(&mut store, &third)), None);
+    assert_eq!(taken_seq(&mut store, &run, "opus"), None);
     // The replan, then 2 more exits: escalated, held for the operator.
     store
         .immediate(|tx| tasks::requeue_by_operator(tx, &held, "replan"))
@@ -474,8 +400,8 @@ fn an_agent_that_exits_on_its_last_attempt_fails_the_task() {
         ),
         ("fifth", Ended::Escalated { task: "T-1".into() }),
     ] {
-        let w = worker(&mut store, &run, "opus");
-        assert_eq!(claimed_seq(&claim(&mut store, &w)), Some(1), "{n}");
+        let (seq, w) = take(&mut store, &run, "opus").unwrap();
+        assert_eq!(seq, 1, "{n}");
         assert_eq!(
             horch_core::taskledger::Store::open(&db)
                 .and_then(|mut s| s.immediate(|tx| supervisor::settle(tx, &w, Some(1))))

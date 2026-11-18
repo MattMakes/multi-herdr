@@ -22,8 +22,8 @@ use horch_core::fleetd::task_execution::application::cancel::{self, Cancel};
 use horch_core::fleetd::task_execution::domain::task::{Facts, Recorded, Seen};
 use horch_core::taskledger::model::{Actor, TaskKind};
 use horch_core::taskledger::runs::{self, NewRun, Run};
-use horch_core::taskledger::testing::bind_live;
 use horch_core::taskledger::tasks::{self, NewTask, Task};
+use horch_core::taskledger::testing::bind_live;
 use horch_core::taskledger::workers::NewWorker;
 use horch_core::taskledger::Store;
 

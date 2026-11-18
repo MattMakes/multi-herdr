@@ -17,10 +17,12 @@ use horch_core::fleetd::fleet_runtime::domain::authorize::Decision;
 use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
 use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
 use horch_core::fleetd::fleet_runtime::domain::requests::{Kind, RequestId};
+use horch_core::fleetd::task_execution::domain::task::Recorded;
 use horch_core::taskledger::model::Actor;
 use horch_core::taskledger::runs::{self, NewRun, Run};
-use horch_core::taskledger::tasks::{self, ClaimOutcome, NewTask};
-use horch_core::taskledger::workers::{self, NewWorker};
+use horch_core::taskledger::tasks::{self, NewTask};
+use horch_core::taskledger::testing;
+use horch_core::taskledger::workers::NewWorker;
 use horch_core::taskledger::{util, Store};
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
@@ -180,7 +182,7 @@ impl World {
         rows[0].clone()
     }
 
-    /// A worker of `dev` with a recorded agent process claims T-1: 1 live
+    /// fleetd binds T-1 to a worker of `dev` with a recorded agent process: 1 live
     /// attempt. No process runs: the handler reads only the rows.
     fn claimed(&mut self) -> String {
         let new = NewWorker {
@@ -189,15 +191,22 @@ impl World {
             pane_id: Some("w0:p1".into()),
             ..Default::default()
         };
+        // The project is no git repository: T-1 works in the shared
+        // checkout, so its bind reserves no tree.
         self.store
-            .immediate(|tx| {
-                let id = workers::insert(tx, &new)?;
-                workers::agent_started(tx, &id, 4_000_001, Some(7))?;
-                let out = tasks::claim(tx, &id)?;
-                assert!(matches!(out, ClaimOutcome::Claimed(_)));
-                Ok(id)
-            })
+            .conn()
+            .execute(
+                "UPDATE tasks SET worktree_mode = 'shared' WHERE task_id = ?1",
+                [&self.t1],
+            )
+            .unwrap();
+        let agent = Recorded {
+            pid: 4_000_001,
+            pid_start: Some(7),
+        };
+        testing::bind_live(self.store.conn(), &self.t1, &new, Some(agent))
             .unwrap()
+            .worker_id
     }
 
     /// 1 open finding of the kind `ended_without_done` about T-1.

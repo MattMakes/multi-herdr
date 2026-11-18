@@ -5,10 +5,9 @@
 //! fleetd (`dispatch_due`), the `spawn` request handler of fleetd
 //! (`handlers_worker.rs`) and `horch spawn` (`taskledger_spawn.rs`).
 //!
-//! `pick_task`, the search of `horch ledger claim`, stays for a worker with
-//! no target task until the follow-up ticket of Phase 4 removes it. Its 1
-//! call carries the FR-5 marker. `CLAIM_TASK`, the first line that told a
-//! worker to search, is gone.
+//! `pick_task`, the search of `horch ledger claim`, and `tasks::claim` are
+//! gone (T-871). `CLAIM_TASK`, the first line that told a worker to search,
+//! is gone.
 
 use std::path::{Path, PathBuf};
 
@@ -107,9 +106,6 @@ const SPAWN_HANDLER: &str =
     "crates/horch-core/src/fleetd/fleet_runtime/application/handlers_worker.rs";
 const TASKS: &str = "crates/horch-core/src/taskledger/tasks.rs";
 
-/// The marker of the 1 search that the follow-up ticket removes.
-const MARKER: &str = "// FR-5: removed by the follow-up ticket before the gate of Phase 4";
-
 #[test]
 fn the_scan_finds_a_call_and_skips_a_definition_and_a_comment() {
     assert!(calls("    let c = choices(tx, &h, &s, None)?;", "choices"));
@@ -149,20 +145,26 @@ fn only_the_bind_and_its_dispatch_points_choose_a_task() {
 }
 
 #[test]
-fn the_claim_search_has_1_marked_call_and_no_other() {
-    let calls = callers("pick_task");
-    assert_eq!(
-        calls.iter().map(|(f, _)| f.as_str()).collect::<Vec<_>>(),
-        [TASKS],
-        "FR-5: pick_task has 1 call, in the claim: {calls:?}"
+fn the_claim_search_is_gone() {
+    let left: Vec<String> = sources()
+        .into_iter()
+        .flat_map(|(f, text)| {
+            code_lines(&text)
+                .into_iter()
+                .filter(|l| l.contains("pick_task") || l.contains("tasks::claim("))
+                .map(move |l| format!("{f}: {}", l.trim()))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert!(
+        left.is_empty(),
+        "FR-5: no code searches for a task or claims one:\n{}",
+        left.join("\n")
     );
-    let text = std::fs::read_to_string(workspace_root().join(TASKS)).unwrap();
-    let lines: Vec<&str> = text.lines().collect();
-    let at = calls[0].1 - 1;
-    assert_eq!(
-        lines[at - 1].trim(),
-        MARKER,
-        "the call of pick_task carries the FR-5 marker"
+    let tasks = std::fs::read_to_string(workspace_root().join(TASKS)).unwrap();
+    assert!(
+        !code_lines(&tasks).iter().any(|l| l.contains("fn claim(")),
+        "FR-5: {TASKS} has no claim"
     );
 }
 

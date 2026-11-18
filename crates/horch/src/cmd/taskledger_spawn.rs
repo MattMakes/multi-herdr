@@ -905,12 +905,10 @@ mod trf_33_34_tests {
         let run = made[0].clone();
         store
             .immediate(|tx| {
-                tasks::add(
-                    tx,
-                    &run,
-                    &NewTask::work("alpha", "tickets/a.md", "opus"),
-                    Actor::Orchestrator,
-                )
+                // No git repository: the task works in the shared checkout.
+                let mut alpha = NewTask::work("alpha", "tickets/a.md", "opus");
+                alpha.worktree_mode = horch_core::taskledger::model::WorktreeMode::Shared;
+                tasks::add(tx, &run, &alpha, Actor::Orchestrator)
             })
             .unwrap();
         let new_row = |store: &mut Store, prev: Option<String>| {
@@ -930,12 +928,20 @@ mod trf_33_34_tests {
                 })
                 .unwrap()
         };
-        let first = new_row(&mut store, None);
-        let claimed = store.immediate(|tx| tasks::claim(tx, &first)).unwrap();
-        assert!(
-            matches!(claimed, tasks::ClaimOutcome::Claimed(_)),
-            "{claimed:?}"
-        );
+        // fleetd binds the task to the first worker (FR-5).
+        let task = tasks::of_run(store.conn(), &run.run_id).unwrap()[0]
+            .task_id
+            .clone();
+        let new = NewWorker {
+            run_id: run.run_id.clone(),
+            kind: Some(WorkerKind::Worker),
+            persona: "opus".into(),
+            workspace_id: Some("w1".into()),
+            ..Default::default()
+        };
+        let first = horch_core::taskledger::testing::bind_live(store.conn(), &task, &new, None)
+            .unwrap()
+            .worker_id;
         stop::reap(
             &mut store,
             &first,
