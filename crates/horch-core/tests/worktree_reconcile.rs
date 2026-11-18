@@ -398,6 +398,68 @@ fn i6_worktree_on_disk_without_row_is_adopted_not_deleted() {
     assert_eq!(w.i6(&after), vec![]);
 }
 
+/// I6 with history: a folder at the path of a `removed` row (a tree that
+/// triage removed, made again by hand) gets a new `orphaned` row; the
+/// removed row stays as it is, and nothing is removed.
+#[test]
+fn a_folder_at_the_path_of_a_removed_row_is_adopted_as_a_new_row() {
+    let mut w = World::new();
+    let path = w.folder("hand-made");
+    w.row_in("old", &path, "removed", (None, None, None));
+    w.sql(
+        "UPDATE worktrees SET status = 'trashed' WHERE worktree_id = ?1",
+        &["old"],
+    );
+    let facts = Facts {
+        work_dirs: vec![w.work_dir(&[&path])],
+        lists: vec![w.listed(&[(&path, "hand-made", None)])],
+        ..Facts::default()
+    };
+    assert_eq!(
+        w.i6(&facts),
+        vec![Breach::NoRow {
+            repo: w.repo_s(),
+            path: path.clone()
+        }]
+    );
+
+    let report = w.reconcile(&facts);
+
+    assert_eq!(report.adopted.len(), 1, "{report:?}");
+    let row = trees::by_path(w.conn(), &path).unwrap().unwrap();
+    assert_ne!(row.worktree_id, "old");
+    assert_eq!(row.state, WorktreeState::Orphaned);
+    assert_eq!(w.row("old").state, WorktreeState::Removed);
+    assert!(exists(&path), "the folder stays");
+    assert_eq!(w.count("SELECT count(*) FROM jobs", &[]), 0);
+}
+
+/// A tree that the list names by its path alone refreshes the live row of
+/// that path, not a `removed` row of the same path.
+#[test]
+fn worktree_list_result_by_path_refreshes_the_live_row_and_not_a_removed_row() {
+    let mut w = World::new();
+    let path = w.folder("again");
+    w.row_in("old", &path, "removed", (None, None, None));
+    w.sql(
+        "UPDATE worktrees SET status = 'trashed' WHERE worktree_id = ?1",
+        &["old"],
+    );
+    w.row_in("new", &path, "created", (None, None, None));
+    let mut listed = w.listed(&[(&path, "fleet/r1-new", None)]);
+    listed.result.trees[1] = tree(&path, None, "c0ffee", false, Some(4096));
+    let facts = Facts {
+        lists: vec![listed],
+        ..Facts::default()
+    };
+
+    let report = w.reconcile(&facts);
+
+    assert_eq!(report.refreshed, vec!["new".to_string()]);
+    assert_eq!(w.row("new").head_sha.as_deref(), Some("c0ffee"));
+    assert_eq!(w.row("old").head_sha, None);
+}
+
 /// FM-25: the attempt that owns an `active` tree ends; the same call
 /// marks the tree `orphaned`. A live owner keeps it.
 #[test]

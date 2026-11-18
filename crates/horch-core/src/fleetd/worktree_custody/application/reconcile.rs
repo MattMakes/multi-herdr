@@ -264,10 +264,12 @@ fn short_branch(full: &str) -> String {
 }
 
 /// Adopt each tree that no row owns as `orphaned`, with the task that its
-/// branch names (RR-10, FM-26, Q15).
+/// branch names (RR-10, FM-26, Q15). A `removed` row owns no tree: a
+/// folder at its path gets a new row, as [`check_i6`] reads it.
 fn adopt(ctx: &JobCtx<'_>, tx: &Connection, facts: &Facts, report: &mut Report) -> Result<()> {
     let rows = all_rows(tx)?;
-    let known = known_paths(rows.iter(), facts);
+    let live = rows.iter().filter(|r| r.state != WorktreeState::Removed);
+    let known = known_paths(live, facts);
     let seen = seen(facts);
     // The runs are read only for the repositories of a tree to adopt.
     let repos: BTreeSet<String> = rules::adoptions(&known, &seen, &[])
@@ -322,11 +324,15 @@ fn refresh(tx: &Connection, facts: &Facts, report: &mut Report) -> Result<()> {
             let (Some(head), Some(dirty), None) = (&t.head, t.dirty, &t.error) else {
                 continue;
             };
-            let row = rows.iter().find(|r| match &t.worktree_id {
-                Some(id) => &r.worktree_id == id,
-                None => r.path == t.path,
-            });
-            let Some(row) = row.filter(|r| r.state != WorktreeState::Removed) else {
+            // A `removed` row of the same path is history.
+            let row = rows
+                .iter()
+                .filter(|r| r.state != WorktreeState::Removed)
+                .find(|r| match &t.worktree_id {
+                    Some(id) => &r.worktree_id == id,
+                    None => r.path == t.path,
+                });
+            let Some(row) = row else {
                 continue;
             };
             let bytes = t.bytes.and_then(|b| i64::try_from(b).ok());
