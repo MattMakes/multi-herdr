@@ -116,12 +116,30 @@ pub enum Hold {
     Floor { fact: Fact, cause: String },
     /// Pacing of 1 pool: it holds only the dispatch to that pool.
     Pacing { pool: String, cause: String },
+    /// The worktrees stay above their disk budget with no tree left to
+    /// remove for space (FM-28, OR-1): a global hold.
+    WorktreeDisk { cause: String },
 }
+
+/// The name of the global hold of the worktree disk budget.
+pub const WORKTREE_DISK: &str = "worktree_disk";
 
 impl Hold {
     pub fn cause(&self) -> &str {
         match self {
-            Hold::Floor { cause, .. } | Hold::Pacing { cause, .. } => cause,
+            Hold::Floor { cause, .. }
+            | Hold::Pacing { cause, .. }
+            | Hold::WorktreeDisk { cause } => cause,
+        }
+    }
+
+    /// The name of a global hold, as its events write it; `None` for a
+    /// hold of 1 pool.
+    pub fn global(&self) -> Option<&'static str> {
+        match self {
+            Hold::Floor { fact, .. } => Some(fact.as_str()),
+            Hold::WorktreeDisk { .. } => Some(WORKTREE_DISK),
+            Hold::Pacing { .. } => None,
         }
     }
 }
@@ -324,7 +342,9 @@ mod tests {
             .into_iter()
             .map(|h| match h {
                 Hold::Floor { fact, .. } => fact,
-                Hold::Pacing { .. } => panic!("health gives no pacing hold"),
+                Hold::Pacing { .. } | Hold::WorktreeDisk { .. } => {
+                    panic!("health gives only floor holds")
+                }
             })
             .collect()
     }
@@ -465,5 +485,24 @@ mod tests {
         ] {
             assert_eq!(pacing("claude", &on_pace, &rule), None, "{on_pace:?}");
         }
+    }
+
+    #[test]
+    fn a_floor_and_the_worktree_disk_are_global_and_pacing_is_not() {
+        let floor = Hold::Floor {
+            fact: Fact::FreeDisk,
+            cause: "low".into(),
+        };
+        let disk = Hold::WorktreeDisk {
+            cause: "over".into(),
+        };
+        let pace = Hold::Pacing {
+            pool: "claude".into(),
+            cause: "ahead".into(),
+        };
+        assert_eq!(floor.global(), Some("free_disk"));
+        assert_eq!(disk.global(), Some(WORKTREE_DISK));
+        assert_eq!(disk.cause(), "over");
+        assert_eq!(pace.global(), None);
     }
 }

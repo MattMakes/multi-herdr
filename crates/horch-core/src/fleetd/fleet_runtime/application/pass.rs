@@ -6,12 +6,14 @@
 //! 1. It reads the facts with no transaction, each scan within its budget
 //!    from its cursor: the processes that rows name, the outboxes, the
 //!    worktree folders and the folders of the work directories, the
-//!    requests, the herdr panes, the health holds and the launch record of
-//!    each attempt in `launching`. It reads the last passed `worktree_list`
-//!    run of each repository from `jobs`. It runs no git.
+//!    requests, the herdr panes, the health holds, the hold of the worktree
+//!    disk budget and the launch record of each attempt in `launching`. It
+//!    reads the last passed `worktree_list` run of each repository from
+//!    `jobs`. It runs no git.
 //! 2. In 1 transaction it calls these steps, in this order:
 //!    `check_generation`, `tick_fleet_clock`, `observe_intents`,
-//!    `mark_orphans`, `finish_exited`, `reconcile_worktrees`, the run
+//!    `mark_orphans`, `finish_exited`, `reconcile_worktrees`,
+//!    `disk_budget`, the run
 //!    duties ([`RunDuties`]), `observe_jobs`, `check_invariants` (with I6),
 //!    the `worktree_list` job of each repository in each period,
 //!    `record_hold_changes` and `intended_effects`. The worktree
@@ -52,7 +54,7 @@ use crate::fleetd::fleet_runtime::adapters::scans::{
 };
 use crate::fleetd::fleet_runtime::adapters::sqlite as door;
 use crate::fleetd::fleet_runtime::adapters::{cursors_store, fleetd_row};
-use crate::fleetd::fleet_runtime::application::holds::record_hold_changes;
+use crate::fleetd::fleet_runtime::application::holds::{record_hold_changes, worktree_disk};
 use crate::fleetd::fleet_runtime::application::jobs::{
     self, JobCtx, JobKey, JobRunner, NeedsYouItems, NewItem,
 };
@@ -76,6 +78,7 @@ use crate::fleetd::task_execution::domain::task::{
 };
 use crate::fleetd::worker_profiles::application::ports::{LaunchSpec, ProcessHost};
 use crate::fleetd::worktree_custody::adapters::git::{worktree_list_key, ListResult};
+use crate::fleetd::worktree_custody::application::disk::disk_budget;
 use crate::fleetd::worktree_custody::application::reconcile::{
     check_i6, reconcile_worktrees, Facts as WorktreeFacts, Listed, WorkDir,
 };
@@ -108,7 +111,9 @@ pub trait Outside {
     /// Close the exact pane `pane`.
     fn close_pane(&self, pane: &str) -> Result<()>;
 
-    /// The health holds now (OR-4, OR-5).
+    /// The health holds now (OR-4, OR-5). The pass reads the hold of the
+    /// worktree disk budget from the ledger itself, in place of any that
+    /// this gives.
     fn holds(&self) -> Vec<Hold>;
 
     /// The folder of each worktree row that is not `removed`, with its
@@ -609,11 +614,28 @@ impl<'a> Pass<'a> {
             jobs: job_facts(&processes.jobs, &liveness),
             launching: launching(&rows, &records, &liveness),
             may_stop,
-            holds: self.ports.outside.holds(),
+            holds: self.holds_now(conn)?,
             awake: clock_store::awake_now()?,
             worktrees,
             repos,
         })
+    }
+
+    /// The holds of [`Outside::holds`], with the hold of the worktree disk
+    /// budget read from `conn` in place of any that it gives.
+    fn holds_now(&self, conn: &Connection) -> Result<Vec<Hold>> {
+        let mut holds: Vec<Hold> = self
+            .ports
+            .outside
+            .holds()
+            .into_iter()
+            .filter(|h| !matches!(h, Hold::WorktreeDisk { .. }))
+            .collect();
+        holds.extend(worktree_disk(
+            conn,
+            self.settings.config.worktree_disk_budget_gb,
+        )?);
+        Ok(holds)
     }
 
     /// Watch the outboxes and the worktree folders, and give the folders
@@ -658,6 +680,7 @@ impl<'a> Pass<'a> {
         let mut stops = commands::mark_orphans(&tx, &read.task)?;
         stops.extend(commands::finish_exited(&tx, &read.task)?);
         reconcile_worktrees(&self.job_ctx(), &tx, &read.worktrees, clock)?;
+        disk_budget(&self.job_ctx(), &tx, clock)?;
         {
             let now = RefCell::new(&mut self.now);
             let time_up = || deadline.reached((now.borrow_mut())());

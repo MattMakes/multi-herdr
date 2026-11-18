@@ -1,5 +1,6 @@
-//! The holds on new dispatch: the 5 health guards, pacing of a pool, and the
-//! events of a global hold (OR-4, OR-5).
+//! The holds on new dispatch: the 5 health guards, pacing of a pool, the
+//! worktree disk budget, and the events of a global hold (OR-1, OR-4,
+//! OR-5, FM-28).
 //!
 //! In Phase 1 the dispatch points are `horch spawn` and `horch ledger spawn`
 //! (`docs/tickets/fleetd-p1/MAP.md`, Q16). Each calls [`holds`] and refuses
@@ -11,8 +12,10 @@ use rusqlite::Connection;
 
 use crate::fleetd::fleet_runtime::adapters::config_file;
 use crate::fleetd::fleet_runtime::domain::health::{
-    self, Fact, Finding, Floors, Hold, PaceRule, PoolWindow, Reading, Readings,
+    self, Finding, Floors, Hold, PaceRule, PoolWindow, Reading, Readings,
 };
+use crate::fleetd::worktree_custody::application::disk;
+use crate::fleetd::worktree_custody::domain::disk::hold_cause;
 use crate::routing::quota::{model_family, pool_for, QuotaView, State};
 use crate::runtime::machine::{self, Known, MachineSnapshot, ProbeBins};
 use crate::runtime::RuntimeContext;
@@ -63,9 +66,10 @@ pub fn readings(snapshot: &MachineSnapshot, counts: &Counts) -> Readings {
     }
 }
 
-/// The holds and unknowns of the health guards now. The machine probe reads
-/// the disk of the project, or the fixture `HORCH_MACHINE_FILE`; the floors
-/// come from `<fleet root>/fleet.toml`.
+/// The holds and unknowns of the health guards now, and the hold of the
+/// worktree disk budget. The machine probe reads the disk of the project,
+/// or the fixture `HORCH_MACHINE_FILE`; the floors and the budget come from
+/// `<fleet root>/fleet.toml`. A ledger that does not exist has no trees.
 pub fn holds(ctx: &RuntimeContext) -> Result<Vec<Finding>> {
     let config = config_file::load(&ctx.paths.fleet_root)?;
     let project = ctx
@@ -82,7 +86,25 @@ pub fn holds(ctx: &RuntimeContext) -> Result<Vec<Finding>> {
         r.free_memory_bytes =
             macos_free_memory(horch_platform::machine::kernel_free_memory().ok().flatten());
     }
-    Ok(health::health(&r, &Floors::from(&config)))
+    let mut found = health::health(&r, &Floors::from(&config));
+    // The open that migrates, as the dispatch points open the ledger next:
+    // a ledger of an older schema has no `worktrees.state` yet.
+    if let Some(store) = crate::taskledger::open_existing(ctx)? {
+        let disk = worktree_disk(store.conn(), config.worktree_disk_budget_gb)
+            .context("reading the worktree disk budget")?;
+        found.extend(disk.map(Finding::Hold));
+    }
+    Ok(found)
+}
+
+/// The global hold of the worktree disk budget of `budget_gb` GB: the total
+/// size of all trees stays above it after each tree that the budget may
+/// remove (FM-28, OR-1).
+pub fn worktree_disk(conn: &Connection, budget_gb: u64) -> Result<Option<Hold>> {
+    let d = disk::decision(conn, budget_gb)?;
+    Ok(d.hold.then(|| Hold::WorktreeDisk {
+        cause: hold_cause(&d),
+    }))
 }
 
 /// The free memory of macOS for the guard: the free memory of the kernel,
@@ -121,14 +143,12 @@ pub fn pacing(view: &QuotaView, agent: &str, model: &str) -> Option<Hold> {
     health::pacing(pool, &windows, &rule)
 }
 
-/// The global holds (the health floors) of `holds`, with their causes.
-fn floors_of(holds: &[Hold]) -> Vec<(Fact, &str)> {
+/// The global holds (the health floors and the worktree disk) of `holds`,
+/// each with its name and its cause.
+fn globals(holds: &[Hold]) -> Vec<(&'static str, &str)> {
     holds
         .iter()
-        .filter_map(|h| match h {
-            Hold::Floor { fact, cause } => Some((*fact, cause.as_str())),
-            Hold::Pacing { .. } => None,
-        })
+        .filter_map(|h| h.global().map(|name| (name, h.cause())))
         .collect()
 }
 
@@ -137,23 +157,23 @@ fn floors_of(holds: &[Hold]) -> Vec<(Fact, &str)> {
 /// that is not in `now`, each with its cause. A pacing hold is not global
 /// and records nothing.
 pub fn record_hold_changes(tx: &Connection, before: &[Hold], now: &[Hold]) -> Result<()> {
-    let (before, now) = (floors_of(before), floors_of(now));
-    let has = |list: &[(Fact, &str)], fact: Fact| list.iter().any(|(f, _)| *f == fact);
-    for (fact, cause) in &now {
-        if !has(&before, *fact) {
-            append(tx, EventKind::HoldStarted, *fact, cause)?;
+    let (before, now) = (globals(before), globals(now));
+    let has = |list: &[(&str, &str)], name: &str| list.iter().any(|(n, _)| *n == name);
+    for (name, cause) in &now {
+        if !has(&before, name) {
+            append(tx, EventKind::HoldStarted, name, cause)?;
         }
     }
-    for (fact, cause) in &before {
-        if !has(&now, *fact) {
-            append(tx, EventKind::HoldEnded, *fact, cause)?;
+    for (name, cause) in &before {
+        if !has(&now, name) {
+            append(tx, EventKind::HoldEnded, name, cause)?;
         }
     }
     Ok(())
 }
 
-fn append(tx: &Connection, kind: EventKind, fact: Fact, cause: &str) -> Result<()> {
-    let data = serde_json::json!({ "fact": fact.as_str() }).to_string();
+fn append(tx: &Connection, kind: EventKind, fact: &str, cause: &str) -> Result<()> {
+    let data = serde_json::json!({ "fact": fact }).to_string();
     tx.execute(
         "INSERT INTO events (at, actor, kind, text, cause, data_json)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -166,7 +186,7 @@ fn append(tx: &Connection, kind: EventKind, fact: Fact, cause: &str) -> Result<(
             data
         ],
     )
-    .with_context(|| format!("recording the {} event of {}", kind.as_str(), fact.as_str()))?;
+    .with_context(|| format!("recording the {} event of {fact}", kind.as_str()))?;
     Ok(())
 }
 
@@ -174,6 +194,7 @@ fn append(tx: &Connection, kind: EventKind, fact: Fact, cause: &str) -> Result<(
 mod tests {
     use super::*;
     use crate::fleetd::fleet_runtime::domain::config::FleetConfig;
+    use crate::fleetd::fleet_runtime::domain::health::Fact;
     use crate::taskledger::Store;
 
     fn floor(fact: Fact, cause: &str) -> Hold {
@@ -236,6 +257,126 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_worktree_disk_hold_records_1_event_when_it_starts_and_1_when_it_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
+        let disk = Hold::WorktreeDisk {
+            cause: "the worktrees use 25.0 GB".into(),
+        };
+        let passes: [&[Hold]; 4] = [
+            &[],
+            std::slice::from_ref(&disk),
+            std::slice::from_ref(&disk),
+            &[],
+        ];
+        for pair in passes.windows(2) {
+            store
+                .immediate(|tx| record_hold_changes(tx, pair[0], pair[1]))
+                .unwrap();
+        }
+        let cause = disk.cause().to_string();
+        let data = r#"{"fact":"worktree_disk"}"#.to_string();
+        assert_eq!(
+            events(&store),
+            vec![
+                (
+                    "hold_started".into(),
+                    format!("hold_started: {cause}"),
+                    cause.clone(),
+                    data.clone()
+                ),
+                (
+                    "hold_ended".into(),
+                    format!("hold_ended: {cause}"),
+                    cause,
+                    data
+                ),
+            ]
+        );
+    }
+
+    /// The dispatch points refuse on each hold of [`holds`]: over the
+    /// budget with no spare tree, it gives the worktree disk hold.
+    #[test]
+    fn holds_give_the_worktree_disk_hold_over_the_budget_and_none_under_it() {
+        use crate::fleetd::fleet_runtime::application::ledger::Cause;
+        use crate::fleetd::worktree_custody::adapters::sqlite::{self as trees, NewWorktree};
+        use crate::fleetd::worktree_custody::domain::disk::GB;
+        use crate::taskledger::model::WorktreeStatus;
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ledger.sqlite3");
+        let machine = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/machine/mac-m5-128g.json"
+        );
+        let ctx = RuntimeContext::from_env(
+            &crate::runtime::MapEnv::new("/")
+                .with(
+                    "HORCH_STATE_DIR",
+                    dir.path().join("state").to_str().unwrap(),
+                )
+                .with("FLEET_ROOT", dir.path().join("fleet").to_str().unwrap())
+                .with("HORCH_LEDGER_DB", db.to_str().unwrap())
+                .with("HORCH_MACHINE_FILE", machine)
+                .with("HORCH_PROJECT_DIR", dir.path().to_str().unwrap()),
+        )
+        .unwrap();
+        let disk_holds = |ctx: &RuntimeContext| -> Vec<String> {
+            holds(ctx)
+                .unwrap()
+                .into_iter()
+                .filter_map(|f| match f {
+                    Finding::Hold(h @ Hold::WorktreeDisk { .. }) => Some(h.cause().to_string()),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert!(disk_holds(&ctx).is_empty(), "no ledger has no trees");
+        let mut store = Store::open(&db).unwrap();
+        let new = NewWorktree {
+            worktree_id: "live".into(),
+            task_id: None,
+            worker_id: None,
+            repo_root: dir.path().display().to_string(),
+            path: dir.path().join(".worktrees/live").display().to_string(),
+            branch: "fleet/live".into(),
+            base: "main".into(),
+            base_commit: None,
+            status: WorktreeStatus::Open,
+            mode: None,
+        };
+        let cause = Cause {
+            actor: Actor::Horch,
+            text: "a test",
+        };
+        let set_bytes = |store: &mut Store, gb: u64| {
+            store
+                .immediate(|tx| {
+                    tx.execute(
+                        "UPDATE worktrees SET state = 'active', bytes_on_disk = ?1",
+                        [i64::try_from(gb * GB).unwrap()],
+                    )?;
+                    Ok(())
+                })
+                .unwrap();
+        };
+        store
+            .immediate(|tx| trees::insert_orphan(tx, None, &new, cause))
+            .unwrap();
+        set_bytes(&mut store, 25);
+        assert_eq!(
+            disk_holds(&ctx),
+            [
+                "the worktrees use 25.0 GB, above the budget of 20 GB, and no landed or rescued \
+              tree of a done or abandoned run is left to remove (worktree_disk_budget_gb)"
+            ]
+        );
+        set_bytes(&mut store, 15);
+        assert!(disk_holds(&ctx).is_empty());
+    }
+
     /// On a live Mac the memory guard reads the free memory of the kernel,
     /// which counts the file cache as free. When a sandbox denies the
     /// sysctl, the guard says why and does not hold.
@@ -250,6 +391,10 @@ mod tests {
                     dir.path().join("state").to_str().unwrap(),
                 )
                 .with("FLEET_ROOT", dir.path().join("fleet").to_str().unwrap())
+                .with(
+                    "HORCH_LEDGER_DB",
+                    dir.path().join("ledger.sqlite3").to_str().unwrap(),
+                )
                 .with("HORCH_PROJECT_DIR", dir.path().to_str().unwrap()),
         )
         .unwrap();
