@@ -1,1 +1,642 @@
-//! The rows of the integration tables (ticket 06).
+//! The rows of the integration tables: `features`, `branches`, `bundles`,
+//! `bundle_members`, `gate_runs` and `remote_tips`.
+//!
+//! No other code writes these tables. A new feature, task branch or bundle
+//! and its event go through `created()` of the 1 door. A state change is
+//! not a function of this store: the use cases call `transition()`
+//! (`docs/specs/fleetd/design.md`, "Ledger", rule 1 "One door"). Each write
+//! of a fact that is not a state records 1 event with its entity (OR-2).
+//! A feature branch row has no landing state, so it is not a task branch:
+//! the event of its row is an event of its feature.
+
+use anyhow::{bail, Result};
+use rusqlite::types::Value;
+use rusqlite::{params, Connection, OptionalExtension, Row};
+use serde_json::json;
+
+use crate::fleetd::fleet_runtime::adapters::sqlite::check_writable;
+use crate::fleetd::fleet_runtime::application::ledger::{created, record, Cause};
+use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
+use crate::taskledger::model::EventKind;
+use crate::taskledger::util;
+
+/// The first state of a feature and of a task branch, and of a bundle.
+const FEATURE_FIRST: &str = "open";
+const BRANCH_FIRST: &str = "building";
+const BUNDLE_FIRST: &str = "building";
+
+/// 1 row of `features`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FeatureRow {
+    pub id: String,
+    pub name: Option<String>,
+    pub branch: Option<String>,
+    pub primary_branch: String,
+    pub stacked_on: Option<String>,
+    pub state: String,
+    pub pr: Option<String>,
+    pub push_state: Option<String>,
+    pub push_failures: i64,
+    /// Fleet clock seconds.
+    pub push_not_before: Option<i64>,
+    pub pr_state: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// 1 row of `branches`: a task branch, or the branch of a feature
+/// (`task_id` and `landing_state` are null).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchRow {
+    pub name: String,
+    pub feature_id: String,
+    pub task_id: Option<String>,
+    pub landing_state: Option<String>,
+    pub owner: String,
+    /// Fleet clock seconds.
+    pub due_at: i64,
+    pub queue_seq: Option<i64>,
+    pub repair_attempts: i64,
+    pub rescue_ref: Option<String>,
+    pub seen_tip: Option<String>,
+    pub seen_remote_tip: Option<String>,
+    pub orphan: bool,
+}
+
+/// 1 row of `bundles`, with its members in queue order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BundleRow {
+    pub id: i64,
+    pub feature_id: String,
+    pub base_tip: String,
+    pub candidate_ref: Option<String>,
+    pub candidate_tip: Option<String>,
+    pub parent_id: Option<i64>,
+    pub state: String,
+    pub job_id: Option<i64>,
+    pub result: Option<String>,
+    pub at: String,
+    pub members: Vec<String>,
+}
+
+/// 1 row of `gate_runs`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GateRunRow {
+    pub id: i64,
+    pub feature_id: String,
+    pub gate: String,
+    pub tip: String,
+    pub base_tip: String,
+    pub job_id: i64,
+    pub result: Option<String>,
+    pub at: String,
+}
+
+/// 1 row of `remote_tips`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteTipRow {
+    pub repo: String,
+    pub branch: String,
+    pub tip: String,
+    pub fetched_at: String,
+    pub stale_since: Option<String>,
+}
+
+/// A new feature. It starts `open`.
+#[derive(Debug, Clone, Copy)]
+pub struct NewFeature<'a> {
+    pub id: &'a str,
+    pub name: Option<&'a str>,
+    pub branch: Option<&'a str>,
+    pub primary_branch: &'a str,
+}
+
+/// A new branch row. A row with a task is a task branch, and it starts
+/// `building`. A row with no task is the branch of its feature.
+#[derive(Debug, Clone, Copy)]
+pub struct NewBranch<'a> {
+    pub name: &'a str,
+    pub feature_id: &'a str,
+    pub task_id: Option<&'a str>,
+    pub owner: &'a str,
+    /// Fleet clock seconds.
+    pub due_at: i64,
+}
+
+/// A new bundle of 1 or more task branches, in queue order. It starts
+/// `building`.
+#[derive(Debug, Clone, Copy)]
+pub struct NewBundle<'a> {
+    pub feature_id: &'a str,
+    pub base_tip: &'a str,
+    pub parent_id: Option<i64>,
+    pub members: &'a [&'a str],
+}
+
+/// A new run of a gate: `fast` or `full`.
+#[derive(Debug, Clone, Copy)]
+pub struct NewGateRun<'a> {
+    pub feature_id: &'a str,
+    pub gate: &'a str,
+    pub tip: &'a str,
+    pub base_tip: &'a str,
+    pub job_id: i64,
+}
+
+/// A fact of a branch row that is not its state.
+#[derive(Debug, Clone, Copy)]
+pub enum BranchFact<'a> {
+    SeenTip(&'a str),
+    SeenRemoteTip(&'a str),
+    QueueSeq(Option<i64>),
+    RepairAttempts(i64),
+    /// Fleet clock seconds.
+    DueAt(i64),
+}
+
+impl BranchFact<'_> {
+    fn cell(self) -> (&'static str, Value) {
+        match self {
+            BranchFact::SeenTip(t) => ("seen_tip", text(Some(t))),
+            BranchFact::SeenRemoteTip(t) => ("seen_remote_tip", text(Some(t))),
+            BranchFact::QueueSeq(n) => ("queue_seq", int(n)),
+            BranchFact::RepairAttempts(n) => ("repair_attempts", int(Some(n))),
+            BranchFact::DueAt(n) => ("due_at", int(Some(n))),
+        }
+    }
+}
+
+/// A fact of a bundle that is not its state.
+#[derive(Debug, Clone, Copy)]
+pub enum BundleFact<'a> {
+    /// `None` when the deletion of the ref is verified.
+    CandidateRef(Option<&'a str>),
+    CandidateTip(&'a str),
+}
+
+impl BundleFact<'_> {
+    fn cell(self) -> (&'static str, Value) {
+        match self {
+            BundleFact::CandidateRef(r) => ("candidate_ref", text(r)),
+            BundleFact::CandidateTip(t) => ("candidate_tip", text(Some(t))),
+        }
+    }
+}
+
+/// A fact of a feature that is not its state.
+#[derive(Debug, Clone, Copy)]
+pub enum FeatureFact<'a> {
+    /// `ok` or `failed`.
+    PushState(&'a str),
+    PushFailures(i64),
+    /// Fleet clock seconds.
+    PushNotBefore(Option<i64>),
+    /// `none`, `open` or `closed`.
+    PrState(&'a str),
+}
+
+impl FeatureFact<'_> {
+    fn cell(self) -> (&'static str, Value) {
+        match self {
+            FeatureFact::PushState(s) => ("push_state", text(Some(s))),
+            FeatureFact::PushFailures(n) => ("push_failures", int(Some(n))),
+            FeatureFact::PushNotBefore(n) => ("push_not_before", int(n)),
+            FeatureFact::PrState(s) => ("pr_state", text(Some(s))),
+        }
+    }
+}
+
+fn text(t: Option<&str>) -> Value {
+    t.map_or(Value::Null, |t| Value::Text(t.to_string()))
+}
+
+fn int(n: Option<i64>) -> Value {
+    n.map_or(Value::Null, Value::Integer)
+}
+
+/// The `data_json` of the event of a fact: its column and value, and the
+/// branch of a branch row.
+fn fact_data(branch: Option<&str>, column: &str, value: &Value) -> serde_json::Value {
+    let mut data = serde_json::Map::new();
+    if let Some(name) = branch {
+        data.insert("branch".into(), json!(name));
+    }
+    let value = match value {
+        Value::Integer(n) => json!(n),
+        Value::Text(t) => json!(t),
+        _ => serde_json::Value::Null,
+    };
+    data.insert(column.into(), value);
+    serde_json::Value::Object(data)
+}
+
+// ─── inserts ────────────────────────────────────────────────────────────
+
+/// Insert the `open` feature `new`, with its event, in `tx`.
+pub fn insert_feature(
+    tx: &Connection,
+    guard: Option<Generation>,
+    new: &NewFeature<'_>,
+    cause: Cause<'_>,
+) -> Result<()> {
+    // `created()` checks this too, but after the insert.
+    check_writable(tx, guard)?;
+    let now = util::now();
+    tx.execute(
+        "INSERT INTO features (id, name, branch, primary_branch, state, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+        params![
+            new.id,
+            new.name,
+            new.branch,
+            new.primary_branch,
+            FEATURE_FIRST,
+            now
+        ],
+    )?;
+    created(tx, guard, Entity::Feature, new.id, cause)?;
+    Ok(())
+}
+
+/// Insert the branch row `new`, with its event, in `tx`: a task branch in
+/// `building`, or the branch of a feature with no landing state.
+pub fn insert_branch(
+    tx: &Connection,
+    guard: Option<Generation>,
+    new: &NewBranch<'_>,
+    cause: Cause<'_>,
+) -> Result<()> {
+    check_writable(tx, guard)?;
+    let state = new.task_id.map(|_| BRANCH_FIRST);
+    tx.execute(
+        "INSERT INTO branches (name, feature_id, task_id, landing_state, owner, due_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            new.name,
+            new.feature_id,
+            new.task_id,
+            state,
+            new.owner,
+            new.due_at
+        ],
+    )?;
+    if state.is_some() {
+        created(tx, guard, Entity::TaskBranch, new.name, cause)?;
+    } else {
+        let data = json!({ "branch": new.name });
+        record(
+            tx,
+            guard,
+            EventKind::Note,
+            Entity::Feature,
+            new.feature_id,
+            cause,
+            &data,
+        )?;
+    }
+    Ok(())
+}
+
+/// Insert the `building` bundle `new` and its members, with its event, in
+/// `tx`. The bundle row, its members and its event are written together or
+/// not at all, so the caller's transaction goes on after an error: a member
+/// with no row, or a member of another bundle that is not ended (I12).
+/// Gives the id of the bundle.
+pub fn insert_bundle(
+    tx: &Connection,
+    guard: Option<Generation>,
+    new: &NewBundle<'_>,
+    cause: Cause<'_>,
+) -> Result<i64> {
+    if new.members.is_empty() {
+        bail!("a bundle needs 1 or more task branches");
+    }
+    check_writable(tx, guard)?;
+    tx.execute_batch("SAVEPOINT insert_bundle")?;
+    match bundle_rows(tx, guard, new, cause) {
+        Ok(id) => {
+            tx.execute_batch("RELEASE insert_bundle")?;
+            Ok(id)
+        }
+        Err(e) => {
+            tx.execute_batch("ROLLBACK TO insert_bundle; RELEASE insert_bundle")?;
+            Err(e)
+        }
+    }
+}
+
+fn bundle_rows(
+    tx: &Connection,
+    guard: Option<Generation>,
+    new: &NewBundle<'_>,
+    cause: Cause<'_>,
+) -> Result<i64> {
+    tx.execute(
+        "INSERT INTO bundles (feature_id, base_tip, parent_id, state, at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            new.feature_id,
+            new.base_tip,
+            new.parent_id,
+            BUNDLE_FIRST,
+            util::now()
+        ],
+    )?;
+    let id = tx.last_insert_rowid();
+    for (position, branch) in new.members.iter().enumerate() {
+        tx.execute(
+            "INSERT INTO bundle_members (bundle_id, branch, position) VALUES (?1, ?2, ?3)",
+            params![id, branch, position as i64],
+        )?;
+    }
+    created(tx, guard, Entity::Bundle, &id.to_string(), cause)?;
+    Ok(id)
+}
+
+/// Insert the gate run `new`, with 1 event of its feature, in `tx`. Gives
+/// its id.
+pub fn insert_gate_run(
+    tx: &Connection,
+    guard: Option<Generation>,
+    new: &NewGateRun<'_>,
+    cause: Cause<'_>,
+) -> Result<i64> {
+    check_writable(tx, guard)?;
+    tx.execute(
+        "INSERT INTO gate_runs (feature_id, gate, tip, base_tip, job_id, at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            new.feature_id,
+            new.gate,
+            new.tip,
+            new.base_tip,
+            new.job_id,
+            util::now()
+        ],
+    )?;
+    let id = tx.last_insert_rowid();
+    let data = json!({ "gate_run": id, "gate": new.gate, "tip": new.tip });
+    record(
+        tx,
+        guard,
+        EventKind::Note,
+        Entity::Feature,
+        new.feature_id,
+        cause,
+        &data,
+    )?;
+    Ok(id)
+}
+
+/// Write the fetched tip `tip` of `branch` in `repo`, in `tx`: a passed
+/// fetch, so the row is not stale. A remote tip is not a row of an entity,
+/// and each fetch period writes it, so it has no event.
+pub fn put_remote_tip(
+    tx: &Connection,
+    guard: Option<Generation>,
+    repo: &str,
+    branch: &str,
+    tip: &str,
+) -> Result<()> {
+    check_writable(tx, guard)?;
+    tx.execute(
+        "INSERT OR REPLACE INTO remote_tips (repo, branch, tip, fetched_at, stale_since)
+         VALUES (?1, ?2, ?3, ?4, NULL)",
+        params![repo, branch, tip, util::now()],
+    )?;
+    Ok(())
+}
+
+// ─── facts ──────────────────────────────────────────────────────────────
+
+/// Write `fact` of the branch row `name`, with 1 event, in `tx`. The event
+/// of a task branch is an event of the task branch; the event of a feature
+/// branch is an event of its feature.
+pub fn set_branch_fact(
+    tx: &Connection,
+    guard: Option<Generation>,
+    name: &str,
+    fact: BranchFact<'_>,
+    cause: Cause<'_>,
+) -> Result<()> {
+    check_writable(tx, guard)?;
+    let Some(row) = branch(tx, name)? else {
+        bail!("no branch {name} in the ledger");
+    };
+    let (column, value) = fact.cell();
+    tx.execute(
+        &format!("UPDATE branches SET {column} = ?2 WHERE name = ?1"),
+        params![name, value],
+    )?;
+    let data = fact_data(Some(name), column, &value);
+    let (entity, id) = match row.landing_state {
+        Some(_) => (Entity::TaskBranch, name),
+        None => (Entity::Feature, row.feature_id.as_str()),
+    };
+    record(tx, guard, EventKind::Note, entity, id, cause, &data)?;
+    Ok(())
+}
+
+/// Write `fact` of the bundle `id`, with 1 event, in `tx`.
+pub fn set_bundle_fact(
+    tx: &Connection,
+    guard: Option<Generation>,
+    id: i64,
+    fact: BundleFact<'_>,
+    cause: Cause<'_>,
+) -> Result<()> {
+    check_writable(tx, guard)?;
+    let (column, value) = fact.cell();
+    let changed = tx.execute(
+        &format!("UPDATE bundles SET {column} = ?2 WHERE id = ?1"),
+        params![id, value],
+    )?;
+    if changed != 1 {
+        bail!("no bundle {id} in the ledger");
+    }
+    let data = fact_data(None, column, &value);
+    let key = id.to_string();
+    record(
+        tx,
+        guard,
+        EventKind::Note,
+        Entity::Bundle,
+        &key,
+        cause,
+        &data,
+    )?;
+    Ok(())
+}
+
+/// Write `fact` of the feature `id`, with 1 event, in `tx`.
+pub fn set_feature_fact(
+    tx: &Connection,
+    guard: Option<Generation>,
+    id: &str,
+    fact: FeatureFact<'_>,
+    cause: Cause<'_>,
+) -> Result<()> {
+    check_writable(tx, guard)?;
+    let (column, value) = fact.cell();
+    let changed = tx.execute(
+        &format!("UPDATE features SET {column} = ?2, updated_at = ?3 WHERE id = ?1"),
+        params![id, value, util::now()],
+    )?;
+    if changed != 1 {
+        bail!("no feature {id} in the ledger");
+    }
+    let data = fact_data(None, column, &value);
+    record(
+        tx,
+        guard,
+        EventKind::Note,
+        Entity::Feature,
+        id,
+        cause,
+        &data,
+    )?;
+    Ok(())
+}
+
+// ─── reads ──────────────────────────────────────────────────────────────
+
+/// The feature `id`.
+pub fn feature(conn: &Connection, id: &str) -> Result<Option<FeatureRow>> {
+    let row = |r: &Row<'_>| {
+        Ok(FeatureRow {
+            id: r.get(0)?,
+            name: r.get(1)?,
+            branch: r.get(2)?,
+            primary_branch: r.get(3)?,
+            stacked_on: r.get(4)?,
+            state: r.get(5)?,
+            pr: r.get(6)?,
+            push_state: r.get(7)?,
+            push_failures: r.get(8)?,
+            push_not_before: r.get(9)?,
+            pr_state: r.get(10)?,
+            created_at: r.get(11)?,
+            updated_at: r.get(12)?,
+        })
+    };
+    Ok(conn
+        .query_row(
+            "SELECT id, name, branch, primary_branch, stacked_on, state, pr, push_state,
+                push_failures, push_not_before, pr_state, created_at, updated_at
+             FROM features WHERE id = ?1",
+            [id],
+            row,
+        )
+        .optional()?)
+}
+
+/// The branch row `name`.
+pub fn branch(conn: &Connection, name: &str) -> Result<Option<BranchRow>> {
+    let row = |r: &Row<'_>| {
+        Ok(BranchRow {
+            name: r.get(0)?,
+            feature_id: r.get(1)?,
+            task_id: r.get(2)?,
+            landing_state: r.get(3)?,
+            owner: r.get(4)?,
+            due_at: r.get(5)?,
+            queue_seq: r.get(6)?,
+            repair_attempts: r.get(7)?,
+            rescue_ref: r.get(8)?,
+            seen_tip: r.get(9)?,
+            seen_remote_tip: r.get(10)?,
+            orphan: r.get(11)?,
+        })
+    };
+    Ok(conn
+        .query_row(
+            "SELECT name, feature_id, task_id, landing_state, owner, due_at, queue_seq,
+                repair_attempts, rescue_ref, seen_tip, seen_remote_tip, orphan
+             FROM branches WHERE name = ?1",
+            [name],
+            row,
+        )
+        .optional()?)
+}
+
+/// The bundle `id`, with its members in queue order.
+pub fn bundle(conn: &Connection, id: i64) -> Result<Option<BundleRow>> {
+    let row = |r: &Row<'_>| {
+        Ok(BundleRow {
+            id: r.get(0)?,
+            feature_id: r.get(1)?,
+            base_tip: r.get(2)?,
+            candidate_ref: r.get(3)?,
+            candidate_tip: r.get(4)?,
+            parent_id: r.get(5)?,
+            state: r.get(6)?,
+            job_id: r.get(7)?,
+            result: r.get(8)?,
+            at: r.get(9)?,
+            members: Vec::new(),
+        })
+    };
+    let Some(mut found) = conn
+        .query_row(
+            "SELECT id, feature_id, base_tip, candidate_ref, candidate_tip, parent_id, state,
+                job_id, result, at
+             FROM bundles WHERE id = ?1",
+            [id],
+            row,
+        )
+        .optional()?
+    else {
+        return Ok(None);
+    };
+    let mut stmt =
+        conn.prepare("SELECT branch FROM bundle_members WHERE bundle_id = ?1 ORDER BY position")?;
+    found.members = stmt
+        .query_map([id], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(Some(found))
+}
+
+/// The gate run `id`.
+pub fn gate_run(conn: &Connection, id: i64) -> Result<Option<GateRunRow>> {
+    let row = |r: &Row<'_>| {
+        Ok(GateRunRow {
+            id: r.get(0)?,
+            feature_id: r.get(1)?,
+            gate: r.get(2)?,
+            tip: r.get(3)?,
+            base_tip: r.get(4)?,
+            job_id: r.get(5)?,
+            result: r.get(6)?,
+            at: r.get(7)?,
+        })
+    };
+    Ok(conn
+        .query_row(
+            "SELECT id, feature_id, gate, tip, base_tip, job_id, result, at
+             FROM gate_runs WHERE id = ?1",
+            [id],
+            row,
+        )
+        .optional()?)
+}
+
+/// The fetched tip of `branch` in `repo`.
+pub fn remote_tip(conn: &Connection, repo: &str, branch: &str) -> Result<Option<RemoteTipRow>> {
+    let row = |r: &Row<'_>| {
+        Ok(RemoteTipRow {
+            repo: r.get(0)?,
+            branch: r.get(1)?,
+            tip: r.get(2)?,
+            fetched_at: r.get(3)?,
+            stale_since: r.get(4)?,
+        })
+    };
+    Ok(conn
+        .query_row(
+            "SELECT repo, branch, tip, fetched_at, stale_since
+             FROM remote_tips WHERE repo = ?1 AND branch = ?2",
+            [repo, branch],
+            row,
+        )
+        .optional()?)
+}

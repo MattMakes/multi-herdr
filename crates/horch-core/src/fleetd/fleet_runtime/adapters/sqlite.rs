@@ -73,14 +73,20 @@ fn table(entity: Entity) -> (&'static str, &'static str, &'static str) {
         Entity::Job => ("jobs", "id", "state"),
         Entity::NeedsYou => ("needs_you", "key", "state"),
         Entity::Worktree => ("worktrees", "worktree_id", "state"),
+        Entity::TaskBranch => ("branches", "name", "landing_state"),
+        Entity::Bundle => ("bundles", "id", "state"),
+        Entity::Feature => ("features", "id", "state"),
     }
 }
 
-/// The state of the row `id` of `entity`; `None` when no row has that id.
+/// The state of the row `id` of `entity`; `None` when no row has that id,
+/// or when its state is null: a feature branch row has no landing state,
+/// so it is not a task branch.
 pub fn state_of(conn: &Connection, entity: Entity, id: &str) -> Result<Option<String>> {
     let (name, key, state) = table(entity);
     let sql = format!("SELECT {state} FROM {name} WHERE {key} = ?1");
-    Ok(conn.query_row(&sql, [id], |r| r.get(0)).optional()?)
+    let found: Option<Option<String>> = conn.query_row(&sql, [id], |r| r.get(0)).optional()?;
+    Ok(found.flatten())
 }
 
 /// Write `to` in the state column of the row `id` of `entity`. Only
@@ -120,7 +126,13 @@ fn about(
              LEFT JOIN worktree_modes m ON m.worktree_id = w.worktree_id
              WHERE w.worktree_id = ?1"
         }
-        Entity::Job | Entity::NeedsYou => return Ok((None, None, None)),
+        Entity::TaskBranch => {
+            "SELECT t.run_id, b.task_id, t.current_worker_id FROM branches b
+             LEFT JOIN tasks t ON t.task_id = b.task_id WHERE b.name = ?1"
+        }
+        Entity::Job | Entity::NeedsYou | Entity::Bundle | Entity::Feature => {
+            return Ok((None, None, None))
+        }
     };
     let row = conn
         .query_row(sql, [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))

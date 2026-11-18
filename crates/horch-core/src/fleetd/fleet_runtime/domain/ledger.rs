@@ -5,9 +5,9 @@
 //! (`docs/specs/fleetd/design.md`, "Ledger", rule 1 "One door").
 
 /// The kinds of row that `transition()` moves: the entities of Phase 1
-/// (`docs/tickets/fleetd-p1/MAP.md`, Q5) and the worktree of Phase 3
-/// (`docs/tickets/fleetd-p3/MAP.md`, Q3). Runs keep their writes until
-/// Phase 4.
+/// (`docs/tickets/fleetd-p1/MAP.md`, Q5), the worktree of Phase 3
+/// (`docs/tickets/fleetd-p3/MAP.md`, Q3), and the task branch, the bundle
+/// and the feature of Phase 4 (`docs/tickets/fleetd-p4/06-integration-entities-in-the-door.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Entity {
     /// `tasks.status`.
@@ -23,21 +23,30 @@ pub enum Entity {
     /// `worktrees.state`. `worktrees.status` keeps the words and the writes
     /// of today (`docs/tickets/fleetd-p3/MAP.md`, Q3).
     Worktree,
+    /// `branches.landing_state`. A feature branch row has no landing state,
+    /// so it is not a row of this entity.
+    TaskBranch,
+    /// `bundles.state`.
+    Bundle,
+    /// `features.state`.
+    Feature,
 }
 
 impl Entity {
     /// Every entity.
-    pub const ALL: [Entity; 6] = [
+    pub const ALL: [Entity; 9] = [
         Entity::Task,
         Entity::Worker,
         Entity::Attempt,
         Entity::Job,
         Entity::NeedsYou,
         Entity::Worktree,
+        Entity::TaskBranch,
+        Entity::Bundle,
+        Entity::Feature,
     ];
 
-    /// The word of `events.entity`. Each event and each message that gives
-    /// a state also gives this word.
+    /// The word of `events.entity` and of `needs_you.entity`.
     pub fn as_str(self) -> &'static str {
         match self {
             Entity::Task => "task",
@@ -46,13 +55,21 @@ impl Entity {
             Entity::Job => "job",
             Entity::NeedsYou => "needs_you",
             Entity::Worktree => "worktree",
+            Entity::TaskBranch => "task_branch",
+            Entity::Bundle => "bundle",
+            Entity::Feature => "feature",
         }
     }
 }
 
+/// The name of the entity in a text: the text of each event and each
+/// message that gives a state names the entity with it (OR-2).
 impl std::fmt::Display for Entity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
+        match self {
+            Entity::TaskBranch => f.write_str("task branch"),
+            other => f.write_str(other.as_str()),
+        }
     }
 }
 
@@ -93,7 +110,7 @@ pub const REFUSED_KIND: &str = "illegal_transition";
 
 /// The key of the needs-you item of a refused move of 1 row.
 pub fn refused_key(entity: Entity, id: &str) -> String {
-    format!("{REFUSED_KIND}:{entity}:{id}")
+    format!("{REFUSED_KIND}:{}:{id}", entity.as_str())
 }
 
 /// The task exits that the code of today writes and the 12-state table of
@@ -117,7 +134,10 @@ pub const TASK_EXITS_OF_TODAY: [(Entity, &str, &str); 3] = [
 /// attempt, job and needs-you item are the exits of their state tables in
 /// the design and in ticket 10. The moves of worktree are the column
 /// "Leaves when" of the worktree table of the design, with the choices of
-/// `docs/tickets/fleetd-p3/MAP.md`, Q10.
+/// `docs/tickets/fleetd-p3/MAP.md`, Q10. The moves of task branch, bundle
+/// and feature are the column "Leaves when" of their tables in the design
+/// ("Landing a task branch on its feature branch", "The bundle state
+/// machine", "The feature state machine").
 pub const EXITS: &[(Entity, &str, &str)] = &[
     // The task table of the design. `done` and `cancelled` are terminal;
     // each other state has an exit to `cancelled` (A cancel).
@@ -248,6 +268,48 @@ pub const EXITS: &[(Entity, &str, &str)] = &[
     // `active` is the next claim.
     (Entity::Worktree, "rescued", "active"),
     (Entity::Worktree, "rescued", "removed"),
+    // The task branch table of the design. `landed` and `abandoned` are
+    // terminal. Each other state leaves to `abandoned`: `horch feature
+    // abandon` moves each branch of the feature that is not landed, a
+    // cancelled task moves its `building` or `verifying` branch, and
+    // `horch branch abandon` moves a `conflicted` or `gate_failed` branch.
+    (Entity::TaskBranch, "building", "verifying"),
+    (Entity::TaskBranch, "building", "abandoned"),
+    // `building` is a failed check with a new attempt.
+    (Entity::TaskBranch, "verifying", "ready"),
+    (Entity::TaskBranch, "verifying", "building"),
+    (Entity::TaskBranch, "verifying", "abandoned"),
+    (Entity::TaskBranch, "ready", "in_bundle"),
+    (Entity::TaskBranch, "ready", "abandoned"),
+    // `ready` is a dropped bundle or a clean part of a bisect.
+    (Entity::TaskBranch, "in_bundle", "landed"),
+    (Entity::TaskBranch, "in_bundle", "ready"),
+    (Entity::TaskBranch, "in_bundle", "gate_failed"),
+    (Entity::TaskBranch, "in_bundle", "conflicted"),
+    (Entity::TaskBranch, "in_bundle", "abandoned"),
+    // A resolver attempt passes its check.
+    (Entity::TaskBranch, "conflicted", "ready"),
+    (Entity::TaskBranch, "conflicted", "abandoned"),
+    // A fix attempt passes its check.
+    (Entity::TaskBranch, "gate_failed", "verifying"),
+    (Entity::TaskBranch, "gate_failed", "abandoned"),
+    // The bundle table of the design. `landed`, `failed` and `dropped` are
+    // terminal.
+    (Entity::Bundle, "building", "gating"),
+    (Entity::Bundle, "building", "dropped"),
+    (Entity::Bundle, "gating", "passed"),
+    (Entity::Bundle, "gating", "failed"),
+    (Entity::Bundle, "gating", "dropped"),
+    (Entity::Bundle, "passed", "landed"),
+    (Entity::Bundle, "passed", "dropped"),
+    // The feature table of the design. `merged` and `abandoned` are
+    // terminal. `open -> merged` is a merge with ideas in flight.
+    (Entity::Feature, "open", "ready"),
+    (Entity::Feature, "open", "merged"),
+    (Entity::Feature, "open", "abandoned"),
+    (Entity::Feature, "ready", "open"),
+    (Entity::Feature, "ready", "merged"),
+    (Entity::Feature, "ready", "abandoned"),
 ];
 
 #[cfg(test)]
@@ -503,6 +565,22 @@ mod tests {
                     }
                     Entity::NeedsYou => ["open", "resolved", "superseded"].contains(word),
                     Entity::Worktree => WORKTREE_STATES.contains(word),
+                    Entity::TaskBranch => [
+                        "building",
+                        "verifying",
+                        "ready",
+                        "in_bundle",
+                        "landed",
+                        "conflicted",
+                        "gate_failed",
+                        "abandoned",
+                    ]
+                    .contains(word),
+                    Entity::Bundle => [
+                        "building", "gating", "passed", "landed", "failed", "dropped",
+                    ]
+                    .contains(word),
+                    Entity::Feature => ["open", "ready", "merged", "abandoned"].contains(word),
                 };
                 assert!(known, "{entity} {word}");
             }
@@ -526,6 +604,12 @@ mod tests {
             refused_key(Entity::Task, "T-3"),
             "illegal_transition:task:T-3"
         );
+        // The key holds the column word; a text holds the name.
+        assert_eq!(
+            refused_key(Entity::TaskBranch, "fleet/a"),
+            "illegal_transition:task_branch:fleet/a"
+        );
+        assert_eq!(Entity::TaskBranch.to_string(), "task branch");
         assert_eq!(refused_cause("claim"), "illegal_transition: claim");
     }
 }

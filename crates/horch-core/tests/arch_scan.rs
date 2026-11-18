@@ -1933,11 +1933,16 @@ fn sql_words(literal: &str) -> Vec<String> {
 
 /// The tables whose state column only the 1 door writes, with that
 /// column. `worktrees.status` keeps the writes of today
-/// (`docs/tickets/fleetd-p3/MAP.md`, Q3): only its `state` is here.
+/// (`docs/tickets/fleetd-p3/MAP.md`, Q3): only its `state` is here. The
+/// task branch, the bundle and the feature are entities of Phase 4
+/// (`docs/tickets/fleetd-p4/06-integration-entities-in-the-door.md`).
 const STATE_COLUMNS: &[(&str, &str)] = &[
     ("tasks", "status"),
     ("workers", "status"),
     ("worktrees", "state"),
+    ("branches", "landing_state"),
+    ("bundles", "state"),
+    ("features", "state"),
 ];
 
 /// When the words from `at` start `UPDATE [OR <conflict>] [main.]<table>`
@@ -2067,9 +2072,9 @@ fn production_sql(matches: fn(&str) -> bool) -> Vec<String> {
     found
 }
 
-/// OR-2: each production write of `tasks.status`, `workers.status` and
-/// `worktrees.state` goes through `transition()`, so each state change has
-/// its event and cause.
+/// OR-2: each production write of a state column of [`STATE_COLUMNS`]
+/// goes through `transition()`, so each state change has its event and
+/// cause.
 #[test]
 fn fitness_status_writes_go_through_transition() {
     let mut found = direct_state_writes();
