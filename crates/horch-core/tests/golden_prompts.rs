@@ -760,6 +760,10 @@ fn bal_07_usage_limits_block_sanctioned() {
 /// Fourth sanctioned change (fleetd-p5 ticket 36): the allow rules of the
 /// worker subcommands are gone, so no `horch ledger` command escapes the
 /// Codex sandbox. The 3 forbidden rules stay.
+///
+/// Fifth sanctioned change (SR-3, fleetd-p4 ticket 22): no agent pushes,
+/// merges a PR or makes a release, so 3 forbidden rules refuse `git push`,
+/// `gh pr merge` and `gh release` to a worker. They are pinned here.
 #[test]
 fn execpolicy_blocks_are_unchanged() {
     const SKILLS_READ: &str = "read a catalog skill that the bundle does not hold";
@@ -805,9 +809,37 @@ fn execpolicy_blocks_are_unchanged() {
             block("prune", "only fleetd prunes worktree records"),
         ]
     );
+    let sr3 = [
+        (
+            "\"git\", \"push\"",
+            "fleet agents do not push; fleetd pushes the feature branch",
+        ),
+        (
+            "\"gh\", \"pr\", \"merge\"",
+            "fleet agents do not merge a pull request",
+        ),
+        ("\"gh\", \"release\"", "fleet agents do not make a release"),
+    ];
+    let pushes: Vec<String> = r
+        .exec_rules()
+        .iter()
+        .filter(|rule| sr3.iter().any(|(p, _)| rule.pattern == *p))
+        .map(prompts::codex_rule_block)
+        .collect();
+    let want_pushes: Vec<String> = sr3
+        .iter()
+        .map(|(pattern, why)| {
+            format!(
+                "prefix_rule(\n    pattern = [{pattern}],\n    \
+                 decision = \"forbidden\",\n    justification = \"herdr-fleet: {why}\",\n)\n"
+            )
+        })
+        .collect();
+    assert_eq!(pushes, want_pushes);
     for rule in r.exec_rules() {
         if rule.pattern.starts_with("\"horch\", \"ledger\"")
             || rule.pattern.starts_with("\"git\", \"worktree\"")
+            || sr3.iter().any(|(p, _)| rule.pattern == *p)
         {
             continue;
         }
@@ -827,7 +859,10 @@ fn execpolicy_blocks_are_unchanged() {
             "{name} drifted"
         );
     }
-    assert_eq!(r.exec_rules().len(), 4 + want.len() + worktree.len());
+    assert_eq!(
+        r.exec_rules().len(),
+        4 + want.len() + worktree.len() + pushes.len()
+    );
 }
 
 /// The Codex flavor shares the whole orchestrator briefing and differs only in

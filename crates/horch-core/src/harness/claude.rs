@@ -18,6 +18,7 @@ use super::{
     CommandSpec, Harness, HarnessKind, LaunchEnv, PrepareRequest, Prepared, Session, WindowInputs,
 };
 use crate::compaction::window::OperatorWindow;
+use crate::fleetd::worker_profiles::domain::launch_env;
 use crate::fleetd::worker_profiles::domain::operator_boundary::{
     Boundary, NotSupported, OperatorPaths,
 };
@@ -449,6 +450,7 @@ fn merged_inline_settings(
         | overlay_window(window, obj)
         | overlay_horch_paths(env, teammate, obj)?
         | deny_git_worktree(teammate, obj)?
+        | deny_agent_push(teammate, obj)?
         | overlay_exec(env, teammate, obj, mode)?
         | teammate.sandbox.is_some();
     seal_operator_boundary(env, teammate, obj)?;
@@ -470,6 +472,7 @@ fn default_overlay(env: &LaunchEnv, teammate: &Teammate, mode: Mode) -> Result<O
     copy_operator_status_line(&mut overlay, teammate, env.home());
     overlay_sandbox(teammate, &mut overlay)?;
     deny_git_worktree(teammate, &mut overlay)?;
+    deny_agent_push(teammate, &mut overlay)?;
     overlay_horch_paths(env, teammate, &mut overlay)?;
     merge_settings_defaults(teammate, &mut overlay, || operator_settings(env))?;
     overlay_stop_hook(env, &mut overlay)?;
@@ -603,6 +606,7 @@ fn skills_settings(teammate: &Teammate, home: Option<&Path>) -> Result<Value> {
     copy_operator_status_line(obj, teammate, home);
     overlay_sandbox(teammate, obj)?;
     deny_git_worktree(teammate, obj)?;
+    deny_agent_push(teammate, obj)?;
     Ok(settings)
 }
 
@@ -1207,6 +1211,28 @@ fn deny_git_worktree(
             (PERMS, "deny", rule("add")),
             (PERMS, "deny", rule("remove")),
             (PERMS, "deny", rule("prune")),
+        ],
+    )
+}
+
+/// SR-3: no agent pushes, merges a PR or makes a release, so a worker's
+/// Bash may not run `git push`, `gh pr merge` or `gh release`. The agent
+/// hooks path also refuses a push; this rule also stops `--no-verify`. A
+/// fleet orchestrator gets no such rule.
+fn deny_agent_push(
+    teammate: &Teammate,
+    settings: &mut serde_json::Map<String, Value>,
+) -> Result<bool> {
+    if !is_worker(teammate) {
+        return Ok(false);
+    }
+    let [push, merge, release] = launch_env::DENIED_COMMANDS.map(launch_env::claude_deny_rule);
+    add_entries(
+        settings,
+        [
+            (PERMS, "deny", push),
+            (PERMS, "deny", merge),
+            (PERMS, "deny", release),
         ],
     )
 }
@@ -2856,6 +2882,9 @@ mod tests {
             "Bash(git worktree add:*)",
             "Bash(git worktree remove:*)",
             "Bash(git worktree prune:*)",
+            "Bash(git push:*)",
+            "Bash(gh pr merge:*)",
+            "Bash(gh release:*)",
             "Read(//fleet/run/**)",
             "Edit(//fleet/run/**)"
         ]);
@@ -2875,7 +2904,7 @@ mod tests {
         let cmd = claude_command(&env, &own, Session::Unmanaged, "", None).unwrap();
         assert_eq!(
             settings_arg(&cmd)["permissions"]["deny"],
-            json!(want.as_array().unwrap()[..4])
+            json!(want.as_array().unwrap()[..7])
         );
     }
 
@@ -2893,7 +2922,10 @@ mod tests {
             json!({"deny": [
                 "Bash(git worktree add:*)",
                 "Bash(git worktree remove:*)",
-                "Bash(git worktree prune:*)"
+                "Bash(git worktree prune:*)",
+                "Bash(git push:*)",
+                "Bash(gh pr merge:*)",
+                "Bash(gh release:*)"
             ]})
         );
     }

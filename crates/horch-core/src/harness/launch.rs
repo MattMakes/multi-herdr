@@ -21,6 +21,7 @@ use crate::compaction::window::{self, WindowDecision, WindowSource};
 use crate::execution::legacy::LedgerWindow;
 use crate::execution::records::SessionLedger;
 use crate::execution::SessionMode;
+use crate::fleetd::worker_profiles::domain::launch_env;
 use crate::messaging::delivery::{self, Readiness, Timing, TypedLine};
 use crate::messaging::mail;
 use crate::messaging::mailbox::Mailbox;
@@ -544,6 +545,10 @@ pub(crate) fn run_flow_code(ctx: &RuntimeContext, req: LaunchRequest<'_>) -> Res
     let decision = window_in_effect(launch.decision.clone(), &teammate, &cmd);
     record_window(ctx, &req, &decision);
     crate::runtime::process::scrub_child_env(&mut cmd);
+    // After the scrub, which removes each `GIT_CONFIG_*` variable.
+    for (key, value) in &launch.git_env {
+        cmd.env(key, value);
+    }
     let name = format!("{:?}", cmd.get_program());
 
     // A resume on a CLI that drops its command-line prompt gets the prompt
@@ -575,6 +580,8 @@ struct PreparedLaunch {
     decision: WindowDecision,
     /// Whether the v1 model catalog for codex is current.
     v1_catalog_ready: bool,
+    /// The agent hooks path of a worker (SR-3); empty for an orchestrator.
+    git_env: Vec<(String, String)>,
 }
 
 /// Everything before the command: skills, briefing, trust, the codex v1
@@ -597,7 +604,11 @@ fn prepare_launch(ctx: &RuntimeContext, req: &LaunchRequest<'_>) -> Result<Prepa
     }
     let v1_catalog_ready = codex_v1_catalog_ready(ctx, req.teammate);
     let decision = window_decision(ctx, req.teammate, model, &workdir, req.fleet_window.clone());
-    let shell_env = agent_shell_env(ctx, req);
+    let git_env = agent_git_env(ctx, req.teammate)?;
+    let mut shell_env = agent_shell_env(ctx, req);
+    // Codex also needs them in its shell policy: its default filter drops
+    // each inherited name with `KEY` in it.
+    shell_env.extend(git_env.iter().cloned());
     let prepared = req.teammate.agent.adapter().prepare(
         ctx,
         &PrepareRequest {
@@ -617,7 +628,32 @@ fn prepare_launch(ctx: &RuntimeContext, req: &LaunchRequest<'_>) -> Result<Prepa
         prepared,
         decision,
         v1_catalog_ready,
+        git_env,
     })
+}
+
+/// SR-3: a worker gets the agent hooks path, whose `pre-push` hook refuses
+/// (`fleetd::worker_profiles::domain::launch_env`). A fleet orchestrator
+/// gets none, as it gets no `git worktree` deny rule.
+fn agent_git_env(ctx: &RuntimeContext, teammate: &Teammate) -> Result<Vec<(String, String)>> {
+    if crate::roster::FLEET_ORCHESTRATORS.contains(&teammate.name.as_str()) {
+        return Ok(Vec::new());
+    }
+    write_agent_hooks(&ctx.paths.fleet_root)?;
+    Ok(launch_env::git_env(&ctx.paths.fleet_root).to_vec())
+}
+
+/// Write the agent hooks folder of `fleet_root`, each file with mode 0755,
+/// and return its path. Each launch writes them again, so a changed or
+/// removed file comes back. The write is atomic: a running git sees the old
+/// file or the new one.
+pub fn write_agent_hooks(fleet_root: &Path) -> Result<PathBuf> {
+    let dir = launch_env::hooks_dir(fleet_root);
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    for (name, text) in launch_env::hook_files() {
+        crate::fsx::write_atomic(&dir.join(name), text.as_bytes(), 0o755)?;
+    }
+    Ok(dir)
 }
 
 /// The directory the agent works in.
@@ -1664,7 +1700,7 @@ mod tests {
                 "--settings",
                 // The sandbox of each worker (fleetd-p5 39) and its operator
                 // boundary of the fleet root.
-                r#"{"attribution":{"commit":"","pr":"","sessionUrl":false},"enabledPlugins":{"skill-creator@claude-plugins-official":false},"includeCoAuthoredBy":false,"permissions":{"blockReadsOutsideWorkingDirectories":true,"deny":["Bash(git worktree add:*)","Bash(git worktree remove:*)","Bash(git worktree prune:*)","Read(//fleet/run/**)","Edit(//fleet/run/**)"]},"remoteControlAtStartup":false,"sandbox":{"allowUnsandboxedCommands":false,"enabled":true,"failIfUnavailable":true,"filesystem":{"allowRead":[],"allowWrite":[],"denyRead":["/fleet/run"],"denyWrite":["/fleet/run"]},"network":{"allowAllUnixSockets":false,"allowUnixSockets":[],"allowedDomains":["*"],"strictAllowlist":true}},"skillOverrides":{"anthropic-skills:skill-creator":"off","herdr-orchestrator":"off","herdr-worker":"off","herdr:herdr-orchestrator":"off","herdr:herdr-worker":"off","skill-creator":"off"},"syncClaudeAiSkills":false}"#,
+                r#"{"attribution":{"commit":"","pr":"","sessionUrl":false},"enabledPlugins":{"skill-creator@claude-plugins-official":false},"includeCoAuthoredBy":false,"permissions":{"blockReadsOutsideWorkingDirectories":true,"deny":["Bash(git worktree add:*)","Bash(git worktree remove:*)","Bash(git worktree prune:*)","Bash(git push:*)","Bash(gh pr merge:*)","Bash(gh release:*)","Read(//fleet/run/**)","Edit(//fleet/run/**)"]},"remoteControlAtStartup":false,"sandbox":{"allowUnsandboxedCommands":false,"enabled":true,"failIfUnavailable":true,"filesystem":{"allowRead":[],"allowWrite":[],"denyRead":["/fleet/run"],"denyWrite":["/fleet/run"]},"network":{"allowAllUnixSockets":false,"allowUnixSockets":[],"allowedDomains":["*"],"strictAllowlist":true}},"skillOverrides":{"anthropic-skills:skill-creator":"off","herdr-orchestrator":"off","herdr-worker":"off","herdr:herdr-orchestrator":"off","herdr:herdr-worker":"off","skill-creator":"off"},"syncClaudeAiSkills":false}"#,
                 "--session-id",
                 "sid",
                 "p"
@@ -2775,7 +2811,10 @@ mod tests {
                 "permissions": {"deny": [
                     "Bash(git worktree add:*)",
                     "Bash(git worktree remove:*)",
-                    "Bash(git worktree prune:*)"
+                    "Bash(git worktree prune:*)",
+                    "Bash(git push:*)",
+                    "Bash(gh pr merge:*)",
+                    "Bash(gh release:*)"
                 ]},
                 "attribution": {"commit": "", "pr": "", "sessionUrl": false},
                 "enabledPlugins": {"herdr@m": false, "skill-creator@claude-plugins-official": false},
@@ -2837,7 +2876,10 @@ mod tests {
                 "permissions": {"deny": [
                     "Bash(git worktree add:*)",
                     "Bash(git worktree remove:*)",
-                    "Bash(git worktree prune:*)"
+                    "Bash(git worktree prune:*)",
+                    "Bash(git push:*)",
+                    "Bash(gh pr merge:*)",
+                    "Bash(gh release:*)"
                 ]},
                 "attribution": {"commit": "", "pr": "", "sessionUrl": false},
                 "enabledPlugins": {"herdr@m": false, "skill-creator@claude-plugins-official": false},
@@ -2881,7 +2923,10 @@ mod tests {
                 "permissions": {"deny": [
                     "Bash(git worktree add:*)",
                     "Bash(git worktree remove:*)",
-                    "Bash(git worktree prune:*)"
+                    "Bash(git worktree prune:*)",
+                    "Bash(git push:*)",
+                    "Bash(gh pr merge:*)",
+                    "Bash(gh release:*)"
                 ]},
                 "attribution": {"commit": "", "pr": "", "sessionUrl": false},
                 "enabledPlugins": {"skill-creator@claude-plugins-official": false},

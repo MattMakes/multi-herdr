@@ -48,3 +48,18 @@ prefix_rule(
     decision = "forbidden",
     justification = "herdr-fleet: only fleetd prunes worktree records",
 )
+prefix_rule(
+    pattern = ["git", "push"],
+    decision = "forbidden",
+    justification = "herdr-fleet: fleet agents do not push; fleetd pushes the feature branch",
+)
+prefix_rule(
+    pattern = ["gh", "pr", "merge"],
+    decision = "forbidden",
+    justification = "herdr-fleet: fleet agents do not merge a pull request",
+)
+prefix_rule(
+    pattern = ["gh", "release"],
+    decision = "forbidden",
+    justification = "herdr-fleet: fleet agents do not make a release",
+)

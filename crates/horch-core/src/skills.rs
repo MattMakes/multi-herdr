@@ -361,14 +361,17 @@ mod tests {
         let configured = t.agent.adapter().expose_skills(&t, &bundle, None).unwrap();
         let value: Value = serde_json::from_str(configured.settings.as_ref().unwrap()).unwrap();
         // The teammate's own rule stays first; a worker's 3 `git worktree`
-        // rules (FM-26) follow it.
+        // rules (FM-26) and its 3 SR-3 rules follow it.
         assert_eq!(
             value["permissions"]["deny"],
             json!([
                 "Bash(rm *)",
                 "Bash(git worktree add:*)",
                 "Bash(git worktree remove:*)",
-                "Bash(git worktree prune:*)"
+                "Bash(git worktree prune:*)",
+                "Bash(git push:*)",
+                "Bash(gh pr merge:*)",
+                "Bash(gh release:*)"
             ])
         );
         assert_eq!(value["statusLine"]["command"], "keep");

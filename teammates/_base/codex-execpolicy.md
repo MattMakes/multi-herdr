@@ -45,6 +45,18 @@ rules:
   - pattern: '"git", "worktree", "prune"'
     decision: forbidden
     justification: only fleetd prunes worktree records
+  # SR-3: no agent pushes, merges a PR or makes a release; fleetd pushes
+  # the feature branch. The pre-push hook of the agent hooks path also
+  # refuses a push; this rule also stops `git push --no-verify`.
+  - pattern: '"git", "push"'
+    decision: forbidden
+    justification: fleet agents do not push; fleetd pushes the feature branch
+  - pattern: '"gh", "pr", "merge"'
+    decision: forbidden
+    justification: fleet agents do not merge a pull request
+  - pattern: '"gh", "release"'
+    decision: forbidden
+    justification: fleet agents do not make a release
 ---
 Each rule is rendered into this launch's own `rules/horch.rules`, inside a
 private `CODEX_HOME` that lives only as long as the pane, as:
