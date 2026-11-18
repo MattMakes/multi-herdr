@@ -1833,59 +1833,21 @@ mod tests {
     /// TRF-43: the worktree steward's work is a one-off ledger task, and its
     /// spawn carries no task text, so it claims that task. TRF-34: the spawn
     /// names the solo run that holds the task.
-    ///
-    /// The task goes to fleetd as a `task_solo` request (ticket 21 of
-    /// fleetd-p5): the fleetd of the test is the channel server with the
-    /// run handlers, in this process. Unix only: the peer process check of
-    /// the Windows channel gives unknown (Q11 of that map).
-    #[cfg(unix)]
     #[test]
     fn trf_43_the_steward_task_is_queued_and_its_spawn_has_no_task_text() {
-        use std::os::unix::fs::PermissionsExt;
-
-        use horch_core::fleetd::fleet_runtime::adapters::channel_server::ChannelServer;
-        use horch_core::fleetd::fleet_runtime::adapters::token_file;
-        use horch_core::fleetd::fleet_runtime::application::handlers_run;
-        use horch_core::fleetd::fleet_runtime::application::requests::Handlers;
-        use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
         use horch_core::taskledger::{runs, tasks, Store};
-        // A short folder: `sun_path` holds about 104 bytes on macOS.
-        let dir = tempfile::Builder::new()
-            .prefix("t43")
-            .tempdir_in("/tmp")
-            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("proj");
         std::fs::create_dir_all(&root).unwrap();
-        let fleet = dir.path().join("f");
-        std::fs::create_dir_all(&fleet).unwrap();
-        std::fs::set_permissions(&fleet, std::fs::Permissions::from_mode(0o700)).unwrap();
-        token_file::ensure(&fleet).unwrap();
         let env = horch_core::runtime::MapEnv::new(&root)
             .with("HORCH_PROJECT_DIR", root.to_str().unwrap())
-            .with("HORCH_WORKSPACE_ID", "w7")
-            .with("FLEET_ROOT", fleet.to_str().unwrap());
+            .with("HORCH_WORKSPACE_ID", "w7");
         let mut ctx = RuntimeContext::from_env(&env).unwrap();
         ctx.paths.ledger_db = dir.path().join("ledger.sqlite3");
-        let store = Store::open(&ctx.paths.ledger_db).unwrap();
-        let pid = std::process::id();
-        let start = horch_platform::process::start_time(pid).unwrap();
-        store
-            .conn()
-            .execute(
-                "INSERT INTO fleetd (id, generation, pid, pid_start, started_at, fleet_clock_s, clock_ticked_at)
-                 VALUES (1, 1, ?1, ?2, 'now', 0, 'now')",
-                rusqlite::params![i64::from(pid), i64::try_from(start).unwrap()],
-            )
-            .unwrap();
-        let mut handlers = Handlers::new();
-        handlers_run::register(&mut handlers);
-        let conn = rusqlite::Connection::open(&ctx.paths.ledger_db).unwrap();
-        conn.busy_timeout(std::time::Duration::from_secs(10))
-            .unwrap();
-        let _fleetd = ChannelServer::start(&fleet, conn, Generation(1), handlers).unwrap();
 
         let run = super::super::taskledger::queue_one_off(&ctx, steward_task(3).unwrap()).unwrap();
 
+        let store = Store::open(&ctx.paths.ledger_db).unwrap();
         let all = runs::of_project(store.conn(), &root.canonicalize().unwrap()).unwrap();
         assert_eq!(all.len(), 1, "{all:?}");
         assert_eq!(all[0].workspace_id.as_deref(), Some("w7"));
