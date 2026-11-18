@@ -21,6 +21,7 @@ use horch_core::fleetd::worker_profiles::domain::conformance::{
     Check, CheckResult, Verdict, CHECKS, CONTEXT_LIMIT, FIRST_EVENT_LIMIT, MARKER_SKILL,
     TEST_MCP_SERVER,
 };
+use horch_core::fleetd::worker_profiles::domain::operator_boundary::OperatorPaths;
 use horch_core::harness::HarnessKind;
 use horch_core::roster::Teammate;
 use horch_core::runtime::{MapEnv, RuntimeContext};
@@ -151,6 +152,11 @@ impl Machine {
 
     fn home(&self) -> PathBuf {
         self.path("home")
+    }
+
+    /// The operator paths of the fleet root of [`Machine::ctx`].
+    fn operator_paths(&self) -> OperatorPaths {
+        OperatorPaths::of(&self.path("ledger/fleet"))
     }
 
     fn log(&self) -> PathBuf {
@@ -285,7 +291,7 @@ fn launch_headless_passes_when_the_cli_streams_and_exits_0() {
     // The CLI read the fixed prompt of the check.
     assert_eq!(
         m.calls()[0]["exec_prompt"],
-        Check::LaunchHeadless.prompt(),
+        Check::LaunchHeadless.prompt(&m.operator_paths()),
         "{:?}",
         m.calls()
     );
@@ -476,7 +482,10 @@ fn exit_without_result_triggers_the_stop_gate() {
     let r = m.check(&claude(), "exit_without_result", Check::StopGate);
     assert_verdict(&r, Check::StopGate, Verdict::Pass);
     assert!(r.evidence.contains("repair pass"), "{r:?}");
-    assert_eq!(m.calls()[0]["exec_prompt"], Check::StopGate.prompt());
+    assert_eq!(
+        m.calls()[0]["exec_prompt"],
+        Check::StopGate.prompt(&m.operator_paths())
+    );
 }
 
 #[test]
@@ -517,14 +526,13 @@ fn conformance_json_lists_each_check() {
             .iter()
             .map(|c| c["name"].as_str().unwrap())
             .collect();
-        let want: Vec<&str> = CHECKS
-            .iter()
-            .filter(|c| **c != Check::OperatorBoundary)
-            .map(|c| c.name())
-            .collect();
+        let want: Vec<&str> = CHECKS.iter().map(|c| c.name()).collect();
         assert_eq!(names, want, "{text}");
         for c in v["checks"].as_array().unwrap() {
-            assert!(c["verdict"] == "pass" || c["verdict"] == "fail", "{c}");
+            assert!(
+                ["pass", "fail", "not supported"].contains(&c["verdict"].as_str().unwrap()),
+                "{c}"
+            );
             assert!(c["evidence"].as_str().is_some_and(|e| !e.is_empty()), "{c}");
         }
         assert_eq!(read_conformance_json(&text).unwrap(), report);

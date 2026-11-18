@@ -1792,6 +1792,27 @@ pub fn operator_boundary(t: &Teammate, fleet_root: &Path) -> Result<Boundary, No
     }
 }
 
+/// [`operator_boundary`] for the CLI binaries `bins`, not the binaries of
+/// the environment of this process. The conformance suite proves the
+/// binary under test ("Operator boundary"). Only the Codex boundary reads
+/// facts of its binary.
+pub fn operator_boundary_with_bins(
+    t: &Teammate,
+    fleet_root: &Path,
+    bins: &crate::runtime::bins::HarnessBins,
+) -> Result<Boundary, NotSupported> {
+    use crate::harness::codex;
+    match t.agent {
+        HarnessKind::Codex => codex::operator_boundary_on(
+            std::env::consts::OS,
+            &codex::CodexFacts::probe(&bins.codex),
+            t,
+            fleet_root,
+        ),
+        _ => operator_boundary(t, fleet_root),
+    }
+}
+
 /// Section 13.3 rules 1-5, as `horch teammates --check` errors (BAL-02).
 pub fn fallback_problems(roster: &Roster) -> Vec<String> {
     let mut out = Vec::new();

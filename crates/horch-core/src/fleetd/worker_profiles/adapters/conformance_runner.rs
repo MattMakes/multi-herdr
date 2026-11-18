@@ -1,6 +1,12 @@
 //! The real launch of each conformance check through the launcher.
 //! fleetd-p7 tickets 23 and 24 fill it.
 //!
+//! "Operator boundary" (SR-8): the prompt names the token, the channel and
+//! the request folder of the fleet root of this process. Before the launch
+//! the runner checks that it can reach each of them itself, so that a
+//! refusal inside the sandbox proves the sandbox. When it cannot, the check
+//! has no launch.
+//!
 //! 1 launch is the exec launch of the adapter (fleetd-p7 tickets 13 to 15)
 //! with the preparation of a worker launch, run by the wrapper of ticket 17
 //! ([`run_exec`]), so that each event that reaches a worker's wrapper
@@ -41,8 +47,9 @@ use crate::fleetd::worker_profiles::application::conformance::{
 use crate::fleetd::worker_profiles::domain::conformance::{
     Check, Hook, LaunchEnd, Observation, PrivateHome, MARKER_SKILL, TEST_MCP_SERVER,
 };
+use crate::fleetd::worker_profiles::domain::operator_boundary::{Act, OperatorPaths};
 use crate::harness::launch::{self, LaunchRequest};
-use crate::roster::Teammate;
+use crate::roster::{validation, Teammate};
 use crate::runtime::RuntimeContext;
 use crate::taskledger::supervisor::{AgentFacts, AttemptFiles};
 
@@ -88,6 +95,17 @@ impl ConformanceLaunch for ConformanceRunner<'_> {
         let _ = std::fs::remove_dir_all(&dir);
         observed.map_err(|e| format!("{e:#}"))
     }
+
+    /// The boundary of the adapter for the fleet root of this process, and
+    /// the operator acts that this process cannot do itself. The Codex
+    /// boundary reads the facts of the Codex binary under test.
+    fn operator_boundary(&mut self) -> Result<Vec<String>, String> {
+        let root = &self.ctx.paths.fleet_root;
+        let boundary =
+            validation::operator_boundary_with_bins(self.teammate, root, &self.ctx.bins.harness);
+        boundary.map_err(|e| e.to_string())?;
+        Ok(operator_reach(&OperatorPaths::of(root)))
+    }
 }
 
 impl ConformanceRunner<'_> {
@@ -122,8 +140,9 @@ impl ConformanceRunner<'_> {
         ] {
             std::fs::create_dir_all(d).with_context(|| format!("creating {}", d.display()))?;
         }
+        let operator = OperatorPaths::of(&self.ctx.paths.fleet_root);
         let start_md = files.dir().join("inbox/START.md");
-        std::fs::write(&start_md, check.prompt())
+        std::fs::write(&start_md, check.prompt(&operator))
             .with_context(|| format!("writing {}", start_md.display()))?;
         let prompt = start_md
             .to_str()
@@ -159,6 +178,40 @@ impl ConformanceRunner<'_> {
         let watched = watched?;
         Ok(observe(watched, &files, dir, home, &teammate, cli))
     }
+}
+
+/// How long the runner waits for its own connect to the channel.
+const CHANNEL_CONNECT_LIMIT: Duration = Duration::from_secs(5);
+
+/// The operator acts that this process cannot do itself, outside the
+/// sandbox, each with its reason. A token that is missing or empty, a
+/// channel with no listener or a missing request folder would refuse the
+/// act inside the sandbox too. The runner opens the token but does not
+/// read it, and it writes no request file.
+fn operator_reach(operator: &OperatorPaths) -> Vec<String> {
+    let token = std::fs::File::open(&operator.token)
+        .and_then(|f| f.metadata())
+        .map_err(|e| e.to_string())
+        .and_then(|m| match m.len() {
+            0 => Err("the token file is empty".to_owned()),
+            _ => Ok(()),
+        });
+    let deadline = std::time::Instant::now() + CHANNEL_CONNECT_LIMIT;
+    let channel = horch_platform::channel::Stream::connect(&operator.channel, deadline)
+        .map(drop)
+        .map_err(|e| e.to_string());
+    let requests = match operator.requests.is_dir() {
+        true => Ok(()),
+        false => Err(format!("{} is not a folder", operator.requests.display())),
+    };
+    [
+        (Act::ReadToken, token),
+        (Act::ConnectChannel, channel),
+        (Act::WriteRequests, requests),
+    ]
+    .into_iter()
+    .filter_map(|(act, reach)| reach.err().map(|why| format!("{act}: {why}")))
+    .collect()
 }
 
 /// The private config home of the launch `cmd`, with [`MARKER_SKILL`] put

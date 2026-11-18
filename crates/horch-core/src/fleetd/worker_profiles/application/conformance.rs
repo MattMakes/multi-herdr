@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::fleetd::worker_profiles::domain::conformance::{
-    judge, Check, CheckResult, ConformanceReport, Observation, ProbeReport, Verdict, CHECKS,
+    judge, operator_unreachable, Check, CheckResult, ConformanceReport, Observation, ProbeReport,
+    Verdict, CHECKS,
 };
 
 /// The real launch of 1 check: its fixed prompt in a fresh throwaway task
@@ -14,6 +15,12 @@ pub trait ConformanceLaunch {
     /// The observation of the launch of `check`. An error is a launch that
     /// did not start, with its reason.
     fn launch(&mut self, check: Check) -> Result<Observation, String>;
+
+    /// Whether "Operator boundary" can run: `Err` with the reason when the
+    /// adapter of the profile has no sandbox on this OS, else each operator
+    /// act that this process cannot do itself, outside the sandbox, with
+    /// its reason.
+    fn operator_boundary(&mut self) -> Result<Vec<String>, String>;
 }
 
 /// The CLI under test: its name, its version text and the hash of its
@@ -26,8 +33,19 @@ pub struct SuiteSubject {
 }
 
 /// The verdict of 1 check: its launch, then its rule. A launch that did not
-/// start fails the check with its reason.
+/// start fails the check with its reason. "Operator boundary" has no
+/// launch when the adapter has no sandbox on this OS (`not supported` with
+/// the reason), or when this process cannot do 1 of the acts itself (fail).
 pub fn run_check(port: &mut dyn ConformanceLaunch, check: Check) -> CheckResult {
+    if check == Check::OperatorBoundary {
+        match port.operator_boundary() {
+            Err(why) => return CheckResult::not_supported(check, why),
+            Ok(unreachable) if !unreachable.is_empty() => {
+                return operator_unreachable(&unreachable)
+            }
+            Ok(_) => {}
+        }
+    }
     match port.launch(check) {
         Ok(observation) => judge(check, &observation),
         Err(why) => CheckResult::fail(check, format!("the launch did not start: {why}")),
@@ -37,11 +55,7 @@ pub fn run_check(port: &mut dyn ConformanceLaunch, check: Check) -> CheckResult 
 /// Run each check of the suite of 1 exec CLI, in the order of the design,
 /// and give the report of `conformance.json`.
 pub fn run_suite(subject: SuiteSubject, port: &mut dyn ConformanceLaunch) -> ConformanceReport {
-    let checks = CHECKS
-        .into_iter()
-        .filter(|c| c.in_exec_suite())
-        .map(|c| run_check(port, c))
-        .collect();
+    let checks = CHECKS.into_iter().map(|c| run_check(port, c)).collect();
     ConformanceReport {
         cli: subject.cli,
         version: subject.version,
@@ -59,8 +73,8 @@ struct ReportJson {
     checks: Vec<CheckJson>,
 }
 
-/// 1 check in `conformance.json`: its name, `pass` or `fail`, and 1 line of
-/// evidence.
+/// 1 check in `conformance.json`: its name, `pass`, `fail` or `not
+/// supported`, and 1 line of evidence.
 #[derive(Serialize, Deserialize)]
 struct CheckJson {
     name: String,
@@ -147,6 +161,9 @@ pub fn read_probe_report(text: &str) -> Option<ProbeReport> {
         compaction: text_of(&v["compaction"]),
         result_write: text_of(&v["result_write"]),
         write_outside: text_of(&v["operator_boundary"]["write_outside"]),
+        read_token: text_of(&v["operator_boundary"]["read_token"]),
+        connect_channel: text_of(&v["operator_boundary"]["connect_channel"]),
+        write_requests: text_of(&v["operator_boundary"]["write_requests"]),
     })
 }
 
