@@ -79,20 +79,23 @@ pub fn tell_answer(ctx: &RuntimeContext, role: &str, question: &str, text: &str)
         return Ok(());
     };
     if let Some(id) = &outgoing.answers {
-        if let Err(error) = record_answer(ctx, id, text) {
-            eprintln!("horch tell: the ledger did not record the answer ({error:#}); the answer still goes");
-        }
+        record_answer(ctx, outgoing.mailbox.workspace_id(), id, text)
+            .context("the ledger did not record the answer, so the question stays open")?;
     }
     outgoing.push().map(|_| ())
 }
 
 /// Record `text` as the answer of the `questions` row of mail question
-/// `id`, before the push: a worker that exited with its question gets the
-/// answer at the next claim of its task.
-fn record_answer(ctx: &RuntimeContext, id: &str, text: &str) -> Result<()> {
+/// `id`, before the push closes the mail question: a worker that exited
+/// with its question gets the answer at the next claim of its task. A sync
+/// first writes the row of a question that no pass has seen yet. A
+/// question with no row (its worker holds no task, or it has its answer)
+/// records nothing.
+fn record_answer(ctx: &RuntimeContext, workspace: &str, id: &str, text: &str) -> Result<()> {
     if !ctx.paths.ledger_db.exists() {
         return Ok(());
     }
+    sync_question_waits(ctx, workspace)?;
     let store = horch_core::taskledger::open(ctx)?;
     horch_core::fleetd::ideas::application::questions::answer_mail(store.conn(), id, text)?;
     Ok(())

@@ -46,9 +46,11 @@ impl Proof {
 pub enum Behind {
     /// A question wait. `open`: its `questions` row is `open`.
     Question { open: bool },
-    /// A reviewers wait with review task ids. `live`: 1 of them is not
-    /// ended.
-    Reviews { live: bool },
+    /// A reviewers wait with review task ids. `working`: 1 of them is
+    /// `ready`, `leased` or `running`, a proof of work. `ended`: each of
+    /// them is `done` or `cancelled`. A review in another state (`failed`,
+    /// `waiting_quota`) holds the wait only to its cap.
+    Reviews { working: bool, ended: bool },
     /// A reviewers wait with no task ids: the reviews are in, and the
     /// author has yet to run `horch ledger finish` (#177).
     HeldForFinish,
@@ -117,9 +119,9 @@ pub fn judge(wait: &Wait, facts: &Facts) -> Verdict {
     }
     let proof = match wait.behind {
         Behind::Question { open: false } => return Verdict::Ends(End::QuestionClosed),
-        Behind::Reviews { live: false } => return Verdict::Ends(End::ReviewsDone),
+        Behind::Reviews { ended: true, .. } => return Verdict::Ends(End::ReviewsDone),
         Behind::Question { open: true } | Behind::HeldForFinish => false,
-        Behind::Reviews { live: true } => true,
+        Behind::Reviews { working, .. } => working,
         Behind::Background(p) => p.holds(),
     };
     let due_at = if proof {
@@ -232,13 +234,19 @@ mod tests {
     #[test]
     fn a_reviewers_wait_holds_while_a_review_is_live() {
         let live = Wait {
-            behind: Behind::Reviews { live: true },
+            behind: Behind::Reviews {
+                working: true,
+                ended: false,
+            },
             due_at: 4_600,
             deadline_passed: false,
         };
         assert_eq!(waiting_until(&live, &at(9_000)), Some(12_600));
         let done = Wait {
-            behind: Behind::Reviews { live: false },
+            behind: Behind::Reviews {
+                working: false,
+                ended: true,
+            },
             ..live
         };
         assert_eq!(judge(&done, &FACTS), Verdict::Ends(End::ReviewsDone));
@@ -247,6 +255,23 @@ mod tests {
             ..live
         };
         assert_eq!(judge(&held, &at(4_600)), Verdict::Ends(End::MaxWaitReached));
+    }
+
+    #[test]
+    fn a_review_that_does_not_work_holds_the_wait_only_to_its_cap() {
+        let failed = Wait {
+            behind: Behind::Reviews {
+                working: false,
+                ended: false,
+            },
+            due_at: 4_600,
+            deadline_passed: false,
+        };
+        assert_eq!(waiting_until(&failed, &at(4_000)), Some(4_600));
+        assert_eq!(
+            judge(&failed, &at(4_600)),
+            Verdict::Ends(End::MaxWaitReached)
+        );
     }
 
     #[test]

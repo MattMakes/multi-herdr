@@ -830,6 +830,10 @@ fn end_wait(conn: &Connection, w: &Worker, kind: &str, reason: &str, cause: End)
     clear_wait(conn, &w.worker_id, kind)
 }
 
+/// The states of a review task that does work: a proof behind a wait.
+const REVIEW_WORKING: [TaskStatus; 3] =
+    [TaskStatus::Ready, TaskStatus::Leased, TaskStatus::Running];
+
 /// The child fact of the agent of `w`: a member of its process group other
 /// than the agent is alive. Another host, or a platform with no process
 /// groups, gives [`Child::Unknown`].
@@ -871,11 +875,9 @@ fn background_proof(conn: &Connection, w: &Worker) -> Result<Proof> {
     let review_live: i64 = conn.query_row(
         &format!(
             "SELECT count(*) FROM tasks WHERE parent_task_id = ?1 AND kind = {}
-             AND status IN ({}, {}, {})",
+             AND status IN ({})",
             word(TaskKind::Review),
-            word(TaskStatus::Ready),
-            word(TaskStatus::Leased),
-            word(TaskStatus::Running)
+            sql_words::list(&REVIEW_WORKING)
         ),
         [task],
         |r| r.get(0),
@@ -901,12 +903,20 @@ fn behind(conn: &Connection, w: &Worker, row: &WaitRow, task_ids: &[String]) -> 
             },
         },
         REVIEWS_WAIT if task_ids.is_empty() => Behind::HeldForFinish,
-        REVIEWS_WAIT => Behind::Reviews {
-            live: !task_ids.iter().all(|id| {
-                super::tasks::get(conn, id)
-                    .is_ok_and(|t| matches!(t.status.as_str(), "done" | "cancelled"))
-            }),
-        },
+        REVIEWS_WAIT => {
+            let states = task_ids
+                .iter()
+                .map(|id| super::tasks::get(conn, id).map(|t| t.status))
+                .collect::<Result<Vec<_>>>()?;
+            Behind::Reviews {
+                working: states
+                    .iter()
+                    .any(|s| REVIEW_WORKING.iter().any(|w| w.as_str() == s)),
+                ended: states
+                    .iter()
+                    .all(|s| matches!(s.as_str(), "done" | "cancelled")),
+            }
+        }
         _ => Behind::Background(background_proof(conn, w)?),
     })
 }
@@ -1057,12 +1067,12 @@ pub fn sync_questions(conn: &Connection, state: &std::path::Path, workspace: &st
     let mut asked = conn.prepare(&format!(
         "SELECT worker_id FROM workers WHERE workspace_id=?1 AND status={working} AND role=?2"
     ))?;
-    for (role, questions) in &by_role {
+    for (role, asked_by_role) in &by_role {
         let ids = asked
             .query_map(params![workspace, role], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         for id in ids {
-            wait_on_questions(conn, &get(conn, &id)?, questions)?;
+            wait_on_questions(conn, &get(conn, &id)?, asked_by_role)?;
         }
     }
     let mut waits = conn.prepare(&format!(
@@ -1094,13 +1104,13 @@ fn end_question_wait(conn: &Connection, w: &Worker) -> Result<()> {
     end_wait(conn, w, QUESTION_WAIT, &row.reason, End::QuestionClosed)
 }
 
-/// Write the `questions` rows of the open mail questions `questions` of
+/// Write the `questions` rows of the open mail questions `open` of
 /// worker `w`, oldest first, and point its question wait at the oldest.
 /// A worker with no task asks for nothing that a row can hold.
 fn wait_on_questions(
     conn: &Connection,
     w: &Worker,
-    questions: &[&crate::messaging::mail::Message],
+    open: &[&crate::messaging::mail::Message],
 ) -> Result<()> {
     let (Some(task), Some(run_id)) = (w.task_id.as_deref(), w.run_id.as_deref()) else {
         return Ok(());
@@ -1116,7 +1126,7 @@ fn wait_on_questions(
     let clock = lease::fleet_clock(conn)?;
     let limit = FleetConfig::default().question_limit_s;
     let mut rows: Vec<(&crate::messaging::mail::Message, Question)> = Vec::new();
-    for q in questions {
+    for q in open {
         let asked_at = crate::clock::stamp(q.created_at.into());
         let ask = questions::Ask {
             task_id: task,
