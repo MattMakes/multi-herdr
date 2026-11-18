@@ -11,12 +11,12 @@
 //! (TRF-45), where the session readers and writers find it. A record that
 //! table has already keeps its row: a later write there is newer.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, Row};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::git::{dir_bytes, Git};
@@ -112,26 +112,36 @@ fn record_key(kind: SourceKind, path: &Path, r: &Value) -> Option<String> {
     }
 }
 
-/// The records of an old file: an array, or 1 record.
-fn read_records(path: &Path) -> Result<Vec<Value>> {
-    let text =
-        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+/// The records of the old file `path`, whose sha256 must be `sha256`.
+fn read_records(path: &Path, sha256: &str) -> Result<Vec<Value>> {
+    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    if sha256_hex(&bytes) != sha256 {
+        bail!(
+            "{} changed after the import facts were read",
+            path.display()
+        );
+    }
+    parse_records(path, &bytes)
+}
+
+/// The records of the text `bytes` of an old file: an array, or 1 record.
+fn parse_records(path: &Path, bytes: &[u8]) -> Result<Vec<Value>> {
     let v: Value =
-        serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+        serde_json::from_slice(bytes).with_context(|| format!("parsing {}", path.display()))?;
     Ok(match v {
         Value::Array(a) => a,
         other => vec![other],
     })
 }
 
-/// Stage 1: copy each record of `path` into `import_raw`.
+/// Stage 1: copy each record `records` of `path` into `import_raw`.
 fn stage1(
     conn: &Connection,
     kind: SourceKind,
     path: &Path,
+    records: &[Value],
     report: &mut ImportReport,
 ) -> Result<()> {
-    let records = read_records(path)?;
     for (key, r) in records
         .iter()
         .filter_map(|r| record_key(kind, path, r).map(|k| (k, r)))
@@ -633,10 +643,11 @@ fn insert_worktree(
     Ok(())
 }
 
-/// Map 1 worktree claim, and record what the disk says about it.
+/// Map 1 worktree claim, and record what the disk says about it in
+/// `facts`.
 fn map_claim(
     conn: &Connection,
-    git: &Git,
+    facts: &ImportFacts,
     raw_id: i64,
     c: &Value,
     report: &mut ImportReport,
@@ -645,15 +656,21 @@ fn map_claim(
     let branch = str_of(c, "branch").unwrap_or("");
     let base = str_of(c, "base").unwrap_or("");
     let dir = Path::new(path);
-    let repo = claim_repo(git, dir).context("cannot tell which repository the claim belongs to")?;
+    let disk = facts
+        .claim(c)
+        .with_context(|| format!("the import facts have no entry for the claim {path}"))?;
+    let repo = disk
+        .repo
+        .as_deref()
+        .map(PathBuf::from)
+        .context("cannot tell which repository the claim belongs to")?;
     let record = str_of(c, "record_id")
         .map(|r| mapped_record(conn, r))
         .transpose()?
         .flatten();
-    let exists = dir.exists();
-    let status = claim_status(str_of(c, "state").unwrap_or("open"), exists);
+    let bytes = disk.bytes;
+    let status = claim_status(str_of(c, "state").unwrap_or("open"), bytes.is_some());
     let id = util::new_id();
-    let bytes = exists.then(|| dir_bytes(dir));
     insert_worktree(
         conn,
         c,
@@ -663,29 +680,29 @@ fn map_claim(
         (status, bytes),
     )?;
     report.worktrees += 1;
-    let facts = claim_facts(
+    let found = claim_facts(
         conn,
-        git,
+        (disk.ahead, disk.dirty),
         (&repo, dir),
         record.as_ref(),
         &id,
         ((branch, base), (status, bytes)),
     )?;
-    claim_findings(conn, report, &facts)?;
+    claim_findings(conn, report, &found)?;
     Ok(format!("worktrees:{id}"))
 }
 
-/// Measure the claim's worktree and gather what its findings need. A worktree
-/// is on disk exactly when `bytes` is known.
+/// Gather what the findings of the claim's worktree need, from its
+/// measures `(ahead, dirty)`. A worktree is on disk exactly when `bytes` is
+/// known.
 fn claim_facts<'a>(
     conn: &Connection,
-    git: &Git,
+    (ahead, dirty): (usize, usize),
     (repo, dir): (&Path, &Path),
     record: Option<&'a MappedRecord>,
     id: &'a str,
     ((branch, base), (status, bytes)): ((&str, &str), (&'static str, Option<u64>)),
 ) -> Result<ClaimFacts<'a>> {
-    let (ahead, dirty) = claim_measures(git, repo, dir, (branch, base), bytes.is_some());
     let text = format!(
         "{} (branch {branch}, base {base}): {}, {ahead} commits not on {base}, {dirty} uncommitted files, {} bytes",
         dir.display(),
@@ -763,14 +780,18 @@ fn canonical(p: &str) -> PathBuf {
 
 /// Folders git knows under `<repo>/.worktrees/` that no row names: reported,
 /// never removed.
-fn orphans(conn: &Connection, git: &Git, report: &mut ImportReport) -> Result<()> {
+fn orphans(conn: &Connection, facts: &ImportFacts, report: &mut ImportReport) -> Result<()> {
     let known = known_worktrees(conn)?;
     for (pid, root) in project_roots(conn)? {
-        for p in fleet_worktrees(git, Path::new(&root)) {
-            if known.contains(&canonical(&p)) || orphan_reported(conn, &p)? {
+        let listed = facts
+            .worktrees
+            .get(&root)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        for ListedTree { path: p, bytes } in listed {
+            if known.contains(&canonical(p)) || orphan_reported(conn, p)? {
                 continue;
             }
-            let bytes = dir_bytes(Path::new(&p));
             finding(
                 conn,
                 report,
@@ -789,7 +810,7 @@ fn orphans(conn: &Connection, git: &Git, report: &mut ImportReport) -> Result<()
 /// mapped keeps its raw copy with the error.
 fn map_staged(
     tx: &Connection,
-    git: &Git,
+    facts: &ImportFacts,
     kind: SourceKind,
     report: &mut ImportReport,
 ) -> Result<()> {
@@ -801,7 +822,7 @@ fn map_staged(
         .query_map([kind.as_str()], |r| r.try_into())?
         .collect::<rusqlite::Result<Vec<(i64, String)>>>()?;
     for (raw_id, json) in rows {
-        map_one(tx, git, kind, (raw_id, &json), report)?;
+        map_one(tx, facts, kind, (raw_id, &json), report)?;
     }
     Ok(())
 }
@@ -809,7 +830,7 @@ fn map_staged(
 /// Map 1 raw row and record where it went, or why it did not.
 fn map_one(
     tx: &Connection,
-    git: &Git,
+    facts: &ImportFacts,
     kind: SourceKind,
     (raw_id, json): (i64, &str),
     report: &mut ImportReport,
@@ -817,7 +838,7 @@ fn map_one(
     let v: Value = serde_json::from_str(json)?;
     let mapped = match kind {
         SourceKind::SessionLedger => map_session(tx, raw_id, &v, report),
-        _ => map_claim(tx, git, raw_id, &v, report),
+        _ => map_claim(tx, facts, raw_id, &v, report),
     };
     match mapped {
         Ok(to) => tx.execute(
@@ -835,13 +856,199 @@ fn map_one(
     Ok(())
 }
 
-/// Stage 1 for every old file under `state_root`.
-fn stage1_all(tx: &Connection, state_root: &Path, report: &mut ImportReport) -> Result<()> {
-    for (kind, path) in sources(state_root) {
-        report.files.push(path.to_string_lossy().into_owned());
-        stage1(tx, kind, &path, report)?;
+/// Stage 1 for every old file under `state_root`. Each file must have the
+/// sha256 that `facts` recorded for it, and `facts` must name each file.
+fn stage1_all(
+    tx: &Connection,
+    state_root: &Path,
+    facts: &ImportFacts,
+    report: &mut ImportReport,
+) -> Result<()> {
+    let found = sources(state_root);
+    let paths: BTreeSet<String> = found
+        .iter()
+        .map(|(_, p)| p.to_string_lossy().into_owned())
+        .collect();
+    if paths != facts.files.keys().cloned().collect() {
+        bail!(
+            "the old files under {} changed after the import facts were read",
+            state_root.display()
+        );
+    }
+    for (kind, path) in found {
+        let name = path.to_string_lossy().into_owned();
+        let records = read_records(&path, &facts.files[&name])?;
+        report.files.push(name);
+        stage1(tx, kind, &path, &records, report)?;
     }
     Ok(())
+}
+
+/// What the disk and git say for 1 import: the facts that the rows of
+/// [`import_from`] need and that a ledger transaction cannot read. The
+/// command gathers them with [`gather`] and sends them; fleetd writes the
+/// rows from them, and runs no git.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ImportFacts {
+    /// The sha256 of each old file under the state root, by its path.
+    pub files: BTreeMap<String, String>,
+    /// The facts of each worktree claim to map.
+    pub claims: Vec<ClaimDisk>,
+    /// The fleet worktrees that `git worktree list` reports, by project
+    /// root.
+    pub worktrees: BTreeMap<String, Vec<ListedTree>>,
+}
+
+/// What the disk and git say about the worktree of 1 claim.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ClaimDisk {
+    /// The `path`, `branch` and `base` of the claim, as it names them.
+    pub path: String,
+    pub branch: String,
+    pub base: String,
+    /// The repository of the worktree; `None` when no fact names it.
+    pub repo: Option<String>,
+    /// The bytes of the folder; `None` when it is gone from disk.
+    pub bytes: Option<u64>,
+    /// The commits of the branch that are not on the base.
+    pub ahead: usize,
+    /// The uncommitted files of the folder.
+    pub dirty: usize,
+}
+
+/// 1 worktree that `git worktree list` reports, with its bytes on disk.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ListedTree {
+    pub path: String,
+    pub bytes: u64,
+}
+
+impl ImportFacts {
+    /// The facts of the claim `c`.
+    fn claim(&self, c: &Value) -> Option<&ClaimDisk> {
+        let (path, branch, base) = claim_names(c);
+        self.claims
+            .iter()
+            .find(|d| d.path == path && d.branch == branch && d.base == base)
+    }
+}
+
+/// The `path`, `branch` and `base` of the claim `c`.
+fn claim_names(c: &Value) -> (&str, &str, &str) {
+    (
+        str_of(c, "path").unwrap_or(""),
+        str_of(c, "branch").unwrap_or(""),
+        str_of(c, "base").unwrap_or(""),
+    )
+}
+
+/// Gather the [`ImportFacts`] of an import of `state_root` into the ledger
+/// `conn`: it reads the old files, the claims that `conn` has staged, the
+/// disk and git. It writes nothing.
+pub fn gather(conn: &Connection, git: &Git, state_root: &Path) -> Result<ImportFacts> {
+    let mut facts = ImportFacts::default();
+    let mut claims = Vec::new();
+    for (kind, path) in sources(state_root) {
+        let bytes = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+        let name = path.to_string_lossy().into_owned();
+        facts.files.insert(name, sha256_hex(&bytes));
+        if kind == SourceKind::WorktreeClaims {
+            claims.extend(parse_records(&path, &bytes)?);
+        }
+    }
+    claims.extend(staged_claims(conn)?);
+    for c in &claims {
+        let Some(disk) = claim_disk(git, c) else {
+            continue;
+        };
+        if facts.claim(c).is_none() {
+            facts.claims.push(disk);
+        }
+    }
+    let mut roots: BTreeSet<String> = project_roots(conn)?.into_iter().map(|(_, r)| r).collect();
+    roots.extend(facts.claims.iter().filter_map(|d| d.repo.clone()));
+    for root in roots {
+        let listed = fleet_worktrees(git, Path::new(&root))
+            .into_iter()
+            .map(|path| ListedTree {
+                bytes: dir_bytes(Path::new(&path)),
+                path,
+            })
+            .collect();
+        facts.worktrees.insert(root, listed);
+    }
+    Ok(facts)
+}
+
+/// The claims that `conn` has staged and not mapped.
+fn staged_claims(conn: &Connection) -> Result<Vec<Value>> {
+    let mut stmt = conn.prepare(
+        "SELECT raw_json FROM import_raw
+         WHERE source_kind = ?1 AND mapped_to IS NULL AND map_error IS NULL",
+    )?;
+    let rows = stmt
+        .query_map([SourceKind::WorktreeClaims.as_str()], |r| {
+            r.get::<_, String>(0)
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    rows.iter()
+        .map(|j| serde_json::from_str(j).context("parsing a staged claim"))
+        .collect()
+}
+
+/// What the disk and git say about the worktree of the claim `c`; `None`
+/// for a claim with no path.
+fn claim_disk(git: &Git, c: &Value) -> Option<ClaimDisk> {
+    let (path, branch, base) = claim_names(c);
+    if path.is_empty() {
+        return None;
+    }
+    let dir = Path::new(path);
+    let repo = claim_repo(git, dir);
+    let exists = dir.exists();
+    let (ahead, dirty) = match &repo {
+        Some(repo) => claim_measures(git, repo, dir, (branch, base), exists),
+        None => (0, 0),
+    };
+    Some(ClaimDisk {
+        path: path.to_string(),
+        branch: branch.to_string(),
+        base: base.to_string(),
+        repo: repo.map(|r| r.to_string_lossy().into_owned()),
+        bytes: exists.then(|| dir_bytes(dir)),
+        ahead,
+        dirty,
+    })
+}
+
+/// The sha256 of `bytes`, in lowercase hex.
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Import every old file under `state_root` into `conn` from `facts`. The
+/// caller holds the transaction: it commits or rolls back.
+pub fn import_from(
+    conn: &Connection,
+    state_root: &Path,
+    facts: &ImportFacts,
+    dry_run: bool,
+) -> Result<ImportReport> {
+    let mut report = ImportReport {
+        dry_run,
+        ..Default::default()
+    };
+    stage1_all(conn, state_root, facts, &mut report)?;
+    // Stage 2: session records first, so claims find their records.
+    for kind in [SourceKind::SessionLedger, SourceKind::WorktreeClaims] {
+        map_staged(conn, facts, kind, &mut report)?;
+    }
+    orphans(conn, facts, &mut report)?;
+    Ok(report)
 }
 
 /// Import every old file under `state_root`. With `dry_run` nothing is kept.
@@ -851,20 +1058,12 @@ pub fn import(
     state_root: &Path,
     dry_run: bool,
 ) -> Result<ImportReport> {
-    let mut report = ImportReport {
-        dry_run,
-        ..Default::default()
-    };
+    let facts = gather(store.conn(), git, state_root)?;
     let tx = store
         .conn()
         .unchecked_transaction()
         .context("starting the import")?;
-    stage1_all(&tx, state_root, &mut report)?;
-    // Stage 2: session records first, so claims find their records.
-    for kind in [SourceKind::SessionLedger, SourceKind::WorktreeClaims] {
-        map_staged(&tx, git, kind, &mut report)?;
-    }
-    orphans(&tx, git, &mut report)?;
+    let report = import_from(&tx, state_root, &facts, dry_run)?;
     if dry_run {
         tx.rollback()?;
     } else {

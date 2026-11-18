@@ -507,6 +507,102 @@ pub fn set_orchestrator(conn: &Connection, run_id: &str, worker_id: &str) -> Res
     Ok(())
 }
 
+/// A harness and its model, as an orchestrator row records them.
+pub type HarnessModel = (Option<String>, Option<String>);
+
+/// The orchestrator that creates a run: the pane it runs in, and its
+/// harness and model when its session record names them.
+#[derive(Debug, Clone, Default)]
+pub struct Seat {
+    pub pane_id: Option<String>,
+    pub harness: Option<HarnessModel>,
+}
+
+/// Create the run `new` in `root` with its default `check` (TRF-16), and
+/// the orchestrator's own worker row: the pane it runs in. It is never
+/// watched for progress (section 9). A seat with no harness takes the
+/// harness of the newest orchestrator of the run's workspace.
+pub fn create_with_orchestrator(
+    conn: &Connection,
+    root: &Path,
+    new: &NewRun,
+    check: Option<&str>,
+    seat: &Seat,
+) -> Result<Run> {
+    use super::model::{WorkerKind, WorkerStatus};
+    use super::workers::{self, NewWorker};
+    use crate::fleetd::fleet_runtime::domain::ledger::Entity;
+    refuse_a_2nd_workspace_run(conn, root, new)?;
+    let r = create(conn, root, new)?;
+    if let Some(check) = check {
+        finish::set_default_check(conn, &r.run_id, check)?;
+    }
+    let (harness, model) = match &seat.harness {
+        Some(own) => own.clone(),
+        None => workspace_orchestrator_harness(conn, new.workspace_id.as_deref())?,
+    };
+    let id = workers::insert(
+        conn,
+        &NewWorker {
+            run_id: r.run_id.clone(),
+            kind: Some(WorkerKind::Orchestrator),
+            persona: "orchestrator".into(),
+            role: Some("orchestrator".into()),
+            harness,
+            model,
+            workspace_id: new.workspace_id.clone(),
+            pane_id: seat.pane_id.clone(),
+            ..Default::default()
+        },
+    )?;
+    util::transition(
+        conn,
+        Entity::Worker,
+        &id,
+        WorkerStatus::Working.as_str(),
+        Actor::Orchestrator,
+        util::Why::Rule(
+            util::Rule::AgentStarted,
+            &format!("the orchestrator of run {} runs in its pane", r.slug),
+        ),
+    )?;
+    conn.execute(
+        "UPDATE workers SET started_at = spawned_at WHERE worker_id = ?1",
+        [&id],
+    )?;
+    set_orchestrator(conn, &r.run_id, &id)?;
+    get(conn, &r.run_id)
+}
+
+/// The harness and model of the newest orchestrator of `workspace` that
+/// records a harness.
+pub fn workspace_orchestrator_harness(
+    conn: &Connection,
+    workspace: Option<&str>,
+) -> Result<HarnessModel> {
+    let Some(workspace) = workspace else {
+        return Ok((None, None));
+    };
+    let row = optional(conn.query_row(
+        "SELECT harness, model FROM workers
+         WHERE kind = 'orchestrator' AND workspace_id = ?1 AND harness IS NOT NULL
+         ORDER BY spawned_at DESC, rowid DESC LIMIT 1",
+        [workspace],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    ))?;
+    Ok(row.unwrap_or((None, None)))
+}
+
+/// Record `workspace` on run `run_id` when the run has none. Whether it
+/// did.
+pub fn adopt_workspace(conn: &Connection, run_id: &str, workspace: &str) -> Result<bool> {
+    let changed = conn.execute(
+        "UPDATE runs SET workspace_id = ?2 WHERE run_id = ?1 AND workspace_id IS NULL",
+        [run_id, workspace],
+    )?;
+    Ok(changed == 1)
+}
+
 /// Record the run's pull request.
 pub fn set_pr(conn: &Connection, run_id: &str, number: i64, url: &str) -> Result<()> {
     conn.execute(
