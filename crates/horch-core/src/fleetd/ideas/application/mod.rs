@@ -1,4 +1,20 @@
 //! The application layer of ideas: use cases over the domain.
 
+pub mod amend;
+pub mod answers;
+pub mod approval;
+pub mod direct;
+pub mod dispatcher;
+pub mod intake;
 pub mod needs_you;
+pub mod notes_ingest;
+pub mod park_cancel;
+pub mod plan_commit;
+pub mod queries;
+pub mod question_flow;
 pub mod questions;
+pub mod release;
+pub mod replan;
+pub mod rollup;
+pub mod sub_orchestrators;
+pub mod waiting;

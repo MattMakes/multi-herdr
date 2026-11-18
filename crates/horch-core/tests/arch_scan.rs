@@ -1389,7 +1389,16 @@ const FLEETD_TABLE_OWNERS: &[(&str, &[&str])] = &[
         ],
     ),
     ("worker_profiles", &[]),
-    ("ideas", &["needs_you", "questions"]),
+    (
+        "ideas",
+        &[
+            "needs_you",
+            "questions",
+            "ideas",
+            "requirements",
+            "task_covers",
+        ],
+    ),
     ("worktree_custody", &["worktrees", "worktree_modes"]),
     (
         "integration",
@@ -1400,6 +1409,7 @@ const FLEETD_TABLE_OWNERS: &[(&str, &[&str])] = &[
             "bundle_members",
             "gate_runs",
             "remote_tips",
+            "trial_merges",
         ],
     ),
 ];
@@ -1431,6 +1441,59 @@ const FLEETD_PHASE5_FILES: &[&str] = &[
     "task_execution/adapters/attempt_files.rs",
     "worker_profiles/domain/operator_boundary.rs",
     "worker_profiles/adapters/sandbox_rules.rs",
+];
+
+/// The module files of Phase 6 (docs/tickets/fleetd-p6/MAP.md, Q16), under
+/// `fleetd/`. Each exists and is a `pub mod` of the `mod.rs` of its folder.
+const FLEETD_PHASE6_FILES: &[&str] = &[
+    "ideas/domain/idea.rs",
+    "ideas/domain/idea_folder.rs",
+    "ideas/domain/approval.rs",
+    "ideas/domain/plan.rs",
+    "ideas/domain/plan_validator.rs",
+    "ideas/domain/plan_rules_dag.rs",
+    "ideas/domain/plan_rules_coverage.rs",
+    "ideas/domain/plan_rules_profiles.rs",
+    "ideas/domain/plan_rules_gates.rs",
+    "ideas/domain/plan_rules_judges.rs",
+    "ideas/domain/plan_rules_model_guide.rs",
+    "ideas/domain/answer.rs",
+    "ideas/application/intake.rs",
+    "ideas/application/direct.rs",
+    "ideas/application/approval.rs",
+    "ideas/application/amend.rs",
+    "ideas/application/park_cancel.rs",
+    "ideas/application/dispatcher.rs",
+    "ideas/application/sub_orchestrators.rs",
+    "ideas/application/waiting.rs",
+    "ideas/application/plan_commit.rs",
+    "ideas/application/replan.rs",
+    "ideas/application/rollup.rs",
+    "ideas/application/question_flow.rs",
+    "ideas/application/answers.rs",
+    "ideas/application/notes_ingest.rs",
+    "ideas/application/queries.rs",
+    "ideas/application/release.rs",
+    "ideas/adapters/ideas_store.rs",
+    "ideas/adapters/idea_folder_files.rs",
+    "ideas/adapters/plan_yaml.rs",
+    "ideas/adapters/idea_notes_reader.rs",
+    "ideas/adapters/needs_you_folder.rs",
+    "ideas/adapters/notify.rs",
+    "integration/domain/trial_merge.rs",
+    "integration/domain/stack.rs",
+    "integration/application/new_features.rs",
+    "integration/application/trial_merges.rs",
+    "integration/application/stacks.rs",
+    "integration/application/stack_edges.rs",
+    "integration/application/merged_with_ideas.rs",
+    "integration/application/judge_branch.rs",
+    "integration/adapters/exec_trial_merge.rs",
+    "integration/adapters/trial_merges_store.rs",
+    "task_execution/domain/judge_pair.rs",
+    "task_execution/application/judge_pair.rs",
+    "task_execution/application/planned_tasks.rs",
+    "fleet_runtime/application/handlers_idea.rs",
 ];
 
 /// The 1 door: it writes the state of each entity, so it names the tables
@@ -1645,14 +1708,15 @@ fn foreign_tables(literal: &str, owned: &[&str]) -> Vec<String> {
 
 /// The `fleetd/` folder, after it asserts that each context of
 /// `FLEETD_TABLE_OWNERS` has a `domain/` folder, that no other context
-/// folder exists, and that each file of `FLEETD_PHASE5_FILES` is a module.
+/// folder exists, and that each file of `FLEETD_PHASE5_FILES` and
+/// `FLEETD_PHASE6_FILES` is a module.
 fn fleetd_root() -> PathBuf {
     let fleetd = crate_src("horch-core").join("fleetd");
     for (ctx, _) in FLEETD_TABLE_OWNERS {
         let domain = fleetd.join(ctx).join("domain");
         assert!(domain.is_dir(), "{} is missing", domain.display());
     }
-    for file in FLEETD_PHASE5_FILES {
+    for file in FLEETD_PHASE5_FILES.iter().chain(FLEETD_PHASE6_FILES) {
         let path = fleetd.join(file);
         assert!(path.is_file(), "fleetd/{file} is missing");
         let name = path.file_stem().unwrap().to_string_lossy();

@@ -2,6 +2,7 @@
 
 pub mod cancel;
 pub mod dispatch;
+pub mod judge_pair;
 pub mod lease;
 pub mod outbox;
 pub mod quota;

@@ -1,4 +1,16 @@
 //! The domain layer of ideas: rules with no I/O.
 
+pub mod answer;
+pub mod approval;
+pub mod idea;
+pub mod idea_folder;
 pub mod needs_you;
+pub mod plan;
+pub mod plan_rules_coverage;
+pub mod plan_rules_dag;
+pub mod plan_rules_gates;
+pub mod plan_rules_judges;
+pub mod plan_rules_model_guide;
+pub mod plan_rules_profiles;
+pub mod plan_validator;
 pub mod questions;
