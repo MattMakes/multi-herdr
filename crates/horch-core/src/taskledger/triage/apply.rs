@@ -425,17 +425,12 @@ fn must_be_safe(git: &Git, root: &Path, wt: &WorktreeRow, holder: &str, tip: &st
 /// verified rescue ref, then a `worktree_remove` job removes it. A refused
 /// move, a failed rescue or a refused removal keeps the folder. The bytes
 /// it held. A folder that is gone already is settled by [`settle_gone`]
-/// with `holder`, the ref that the operator decision `decision` wrote.
-fn remove_folder(
-    store: &Store,
-    env: &Env<'_>,
-    wt: &WorktreeRow,
-    holder: &str,
-    decision: &str,
-) -> Result<u64> {
+/// with `holder`, the ref that the decision `f` wrote.
+fn remove_folder(store: &Store, env: &Env<'_>, f: &Freeing<'_>, holder: &str) -> Result<u64> {
+    let wt = f.wt;
     let dir = PathBuf::from(&wt.path);
     if !dir.exists() {
-        settle_gone(store, env, wt, holder, decision)?;
+        settle_gone(store, env, f, holder)?;
         return Ok(0);
     }
     let bytes = dir_bytes(&dir);
@@ -470,20 +465,15 @@ fn immediate(conn: &mut Connection) -> Result<rusqlite::Transaction<'_>> {
         .context("taking the task ledger's write lock")
 }
 
-/// The operator decision `decision` on a row whose folder is gone: the
+/// The operator decision of `f` on a row whose folder is gone: the
 /// answer to the FM-27 escalation. The row goes through `orphaned` to
 /// `removed` only when [`settle_refusal`] permits it: the folder is gone,
 /// `git worktree list` does not name its path, and `holder`, read back,
 /// holds the tip of its branch (or the row has no branch). This is the
 /// only caller of the door move `orphaned` to `removed`. A refusal keeps
 /// the row.
-fn settle_gone(
-    store: &Store,
-    env: &Env<'_>,
-    wt: &WorktreeRow,
-    holder: &str,
-    decision: &str,
-) -> Result<()> {
+fn settle_gone(store: &Store, env: &Env<'_>, f: &Freeing<'_>, holder: &str) -> Result<()> {
+    let wt = f.wt;
     let folder = if Path::new(&wt.path).exists() {
         Folder::Present
     } else {
@@ -508,7 +498,10 @@ fn settle_gone(
     let mut conn = open(store)?;
     let row = orphan(&ctx, &mut conn, &wt.worktree_id)?;
     let tx = immediate(&mut conn)?;
-    let text = format!("triage {decision}: the folder is gone and {holder} holds its work");
+    let text = format!(
+        "triage {}: the folder is gone and {holder} holds its work",
+        f.decision
+    );
     let cause = Cause {
         actor: Actor::Operator,
         text: &text,
@@ -631,26 +624,48 @@ fn remove_now(ctx: &JobCtx<'_>, conn: &mut Connection, jobs: &dyn RunJob, id: &s
     }
 }
 
+/// A decision that frees the folder of `wt` (ARCHIVE, DELETE or PR): the
+/// row, its worktree, the tip that holds the work once the uncommitted
+/// files are committed, and the decision, which names the cause of a
+/// settle.
+struct Freeing<'a> {
+    row: &'a Row,
+    wt: &'a WorktreeRow,
+    tip: String,
+    decision: TriageDecision,
+}
+
+impl<'a> Freeing<'a> {
+    /// Check the folder, commit its uncommitted files, and read its tip.
+    fn prepare(
+        env: &Env<'_>,
+        row: &'a Row,
+        wt: &'a WorktreeRow,
+        decision: TriageDecision,
+    ) -> Result<Self> {
+        let tip = prepare(env.git, env.root, row, wt)?;
+        Ok(Freeing {
+            row,
+            wt,
+            tip,
+            decision,
+        })
+    }
+}
+
 /// `ARCHIVE`: the work stays at `refs/horch/archive/<name>` and on its
 /// branch; the folder goes.
 fn archive(store: &Store, env: &Env<'_>, row: &Row, wt: &WorktreeRow) -> Result<Done> {
-    let tip = prepare(env.git, env.root, row, wt)?;
-    archive_at(store, env, row, wt, &tip, "", "ARCHIVE")
+    let f = Freeing::prepare(env, row, wt, TriageDecision::Archive)?;
+    archive_at(store, env, &f, "")
 }
 
-fn archive_at(
-    store: &Store,
-    env: &Env<'_>,
-    row: &Row,
-    wt: &WorktreeRow,
-    tip: &str,
-    before: &str,
-    decision: &str,
-) -> Result<Done> {
+fn archive_at(store: &Store, env: &Env<'_>, f: &Freeing<'_>, before: &str) -> Result<Done> {
+    let (row, wt) = (f.row, f.wt);
     let r = refs::archive_ref(&row.name);
-    refs::write(env.git, env.root, &r, tip)?;
-    must_be_safe(env.git, env.root, wt, &r, tip)?;
-    let bytes = remove_folder(store, env, wt, &r, decision)?;
+    refs::write(env.git, env.root, &r, &f.tip)?;
+    must_be_safe(env.git, env.root, wt, &r, &f.tip)?;
+    let bytes = remove_folder(store, env, f, &r)?;
     let branch = if wt.branch.is_empty() {
         String::new()
     } else {
@@ -726,12 +741,12 @@ fn delete_branch(
 /// `DELETE`: the work goes to a dated trash ref, then the folder and the
 /// branch go. `horch ledger gc` deletes the trash ref 30 days on.
 fn delete(store: &Store, env: &Env<'_>, row: &Row, wt: &WorktreeRow) -> Result<Done> {
-    let tip = prepare(env.git, env.root, row, wt)?;
+    let f = Freeing::prepare(env, row, wt, TriageDecision::Delete)?;
     let trash = refs::trash_ref(&row.name, crate::clock::now());
-    refs::write(env.git, env.root, &trash, &tip)?;
-    must_be_safe(env.git, env.root, wt, &trash, &tip)?;
-    let bytes = remove_folder(store, env, wt, &trash, "DELETE")?;
-    let branch = delete_branch(env.git, env.root, wt, &trash, &tip)?;
+    refs::write(env.git, env.root, &trash, &f.tip)?;
+    must_be_safe(env.git, env.root, wt, &trash, &f.tip)?;
+    let bytes = remove_folder(store, env, &f, &trash)?;
+    let branch = delete_branch(env.git, env.root, wt, &trash, &f.tip)?;
     Ok(Done {
         status: Some(WorktreeStatus::Trashed),
         archive_ref: Some(trash.clone()),
@@ -1017,7 +1032,7 @@ fn pr(store: &Store, env: &Env<'_>, row: &Row, wt: &WorktreeRow, direction: &str
     let (Some(gh), Some(remote)) = (env.gh, env.remote) else {
         bail!("PR is not offered here: gh or a git remote is missing");
     };
-    let tip = prepare(env.git, env.root, row, wt)?;
+    let f = Freeing::prepare(env, row, wt, TriageDecision::Pr)?;
     let b = &wt.branch;
     let push = env
         .git
@@ -1046,11 +1061,8 @@ fn pr(store: &Store, env: &Env<'_>, row: &Row, wt: &WorktreeRow, direction: &str
     archive_at(
         store,
         env,
-        row,
-        wt,
-        &tip,
+        &f,
         &format!("pushed {b} to {remote}; opened {url}; "),
-        "PR",
     )
 }
 
