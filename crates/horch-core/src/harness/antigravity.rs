@@ -127,6 +127,145 @@ impl Harness for Antigravity {
     }
 }
 
+/// The facts of 1 exec attempt of `agy` (design, "How each adapter applies
+/// a profile", column Antigravity CLI).
+#[derive(Debug, Clone, Copy)]
+pub struct ExecLaunch<'a> {
+    /// The `agy` program.
+    pub bin: &'a Path,
+    pub model: &'a str,
+    /// `--effort`; `None` for a model id that carries its level.
+    pub effort: Option<&'a str>,
+    /// The private `HOME` of the attempt, with the seeded
+    /// `~/.gemini/antigravity-cli/settings.json`. The login stays in the
+    /// OS keychain (antigravity.google/docs/cli/troubleshooting).
+    pub home: &'a Path,
+    pub workdir: &'a Path,
+    /// The path of `inbox/START.md` of the task.
+    pub prompt: &'a str,
+}
+
+/// The exec launch of 1 attempt:
+/// `agy -p <START.md> --output-format stream-json --mode auto --model <m>
+/// [--effort <e>]`. `-p` takes the next argument as its prompt. `--mode auto`
+/// runs safe tools without a dialog, and headless mode soft-denies the rest
+/// (antigravity.google/docs/cli/headless), so the attempt never waits.
+pub fn exec_command(launch: &ExecLaunch<'_>) -> Command {
+    let mut cmd = horch_platform::start::command(launch.bin);
+    cmd.arg("-p")
+        .arg(launch.prompt)
+        .args(["--output-format", "stream-json", "--mode", "auto"])
+        .arg("--model")
+        .arg(launch.model);
+    if let Some(effort) = launch.effort {
+        cmd.arg("--effort").arg(effort);
+    }
+    cmd.current_dir(launch.workdir).env("HOME", launch.home);
+    for key in ANTIGRAVITY_FORBIDDEN_ENV {
+        cmd.env_remove(key);
+    }
+    cmd
+}
+
+/// What 1 line of the `stream-json` output means to the wrapper.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Event {
+    /// The run made progress.
+    Activity,
+    /// A tool call that needed approval was denied, and the run goes on.
+    SoftDenied { tool: String, message: String },
+    /// The plan quota of the model is spent: the outcome `quota` (RR-11).
+    UsageLimited { message: String },
+    /// The final `result` event with its status, `SUCCESS` or another.
+    Result { status: String },
+    /// The context of the last model turn, in tokens (FM-20).
+    ContextTokens(u64),
+    /// A line that is not an event of the stream.
+    Other,
+}
+
+impl Event {
+    /// The events that show a live run: each renews the heartbeat.
+    pub fn is_activity(&self) -> bool {
+        matches!(
+            self,
+            Event::Activity | Event::SoftDenied { .. } | Event::ContextTokens(_)
+        )
+    }
+}
+
+/// Words of a tool error that name a soft denial. The docs give the error
+/// object (`type`, `message`) but not its text for a denial, so this list
+/// is to confirm in conformance (fleetd-p7 MAP R4).
+const DENIAL_WORDS: [&str; 3] = ["permission", "denied", "approval"];
+
+/// Words of an `ERROR` result that name a usage limit. Not in the docs; to
+/// confirm in conformance (fleetd-p7 MAP R4).
+const LIMIT_WORDS: [&str; 4] = ["quota", "rate limit", "usage limit", "resource_exhausted"];
+
+/// Read 1 line of `agy -p --output-format stream-json`
+/// (antigravity.google/docs/cli/headless).
+pub fn read_event(line: &str) -> Event {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+        return Event::Other;
+    };
+    match v.get("event").and_then(|e| e.as_str()) {
+        Some("init") => Event::Activity,
+        Some("step_update") => v.get("step_update").map_or(Event::Other, read_step),
+        Some("result") => v.get("result").map_or(Event::Other, read_result),
+        _ => Event::Other,
+    }
+}
+
+fn str_at<'v>(v: &'v serde_json::Value, key: &str) -> &'v str {
+    v.get(key).and_then(|s| s.as_str()).unwrap_or("")
+}
+
+fn read_step(step: &serde_json::Value) -> Event {
+    if let Some(error) = step.get("tool_info").and_then(|t| t.get("error")) {
+        let message = str_at(error, "message");
+        let text = format!("{} {message}", str_at(error, "type")).to_lowercase();
+        if DENIAL_WORDS.iter().any(|w| text.contains(w)) {
+            return Event::SoftDenied {
+                tool: str_at(step, "tool_name").to_owned(),
+                message: message.to_owned(),
+            };
+        }
+    }
+    // Only a model turn reports the context: `input_tokens` excludes the
+    // cached part, and a checkpoint step is a small call of its own.
+    if str_at(step, "step_type") == "agent_response" {
+        if let Some(usage) = step.get("usage") {
+            let count = |key| usage.get(key).and_then(|n| n.as_u64()).unwrap_or(0);
+            return Event::ContextTokens(count("input_tokens") + count("cache_read_tokens"));
+        }
+    }
+    Event::Activity
+}
+
+fn read_result(result: &serde_json::Value) -> Event {
+    let status = str_at(result, "status");
+    let error = str_at(result, "error");
+    if status == "ERROR" && names_a_limit(error) {
+        return Event::UsageLimited {
+            message: error.to_owned(),
+        };
+    }
+    Event::Result {
+        status: status.to_owned(),
+    }
+}
+
+/// `error` names a usage limit: 1 of [`LIMIT_WORDS`], or the HTTP status
+/// 429 as a whole word.
+fn names_a_limit(error: &str) -> bool {
+    let error = error.to_lowercase();
+    LIMIT_WORDS.iter().any(|w| error.contains(w))
+        || error
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|word| word == "429")
+}
+
 /// The operator boundary of the Antigravity adapter (SR-8, A37): not
 /// supported on any OS. `agy` has no rule that denies a connect to a Unix
 /// socket, and its docs do not say that a `read_file` deny binds the
@@ -329,5 +468,13 @@ mod tests {
         assert_eq!(find_session(&cache, &dir, before).as_deref(), Some("c-1"));
         let after = SystemTime::now() + Duration::from_secs(60);
         assert_eq!(find_session(&cache, &dir, after), None);
+    }
+
+    #[test]
+    fn a_limit_is_named_by_a_word_not_by_a_digit_run() {
+        assert!(names_a_limit("HTTP 429 Too Many Requests"));
+        assert!(names_a_limit("Rate limit reached"));
+        assert!(!names_a_limit("step 14290 failed"));
+        assert!(!names_a_limit(""));
     }
 }
