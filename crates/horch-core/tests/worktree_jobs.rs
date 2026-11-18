@@ -732,3 +732,27 @@ fn worktree_jobs_run_no_hook_or_program_of_the_project() {
     assert!(!hook_marker.exists(), "no hook ran");
     assert!(!monitor_marker.exists(), "no fsmonitor ran");
 }
+
+#[test]
+fn each_gateway_call_refuses_a_project_program_before_its_git_command() {
+    use horch_core::fleetd::worktree_custody::adapters::git::CliWorktreeGit;
+    use horch_core::fleetd::worktree_custody::application::ports::WorktreeGitGateway;
+
+    let w = world();
+    let gw = CliWorktreeGit::new("git");
+    let tree = w.tree_path("t1");
+    assert!(gw.branch_exists(&w.repo, "main").unwrap());
+    git(&w.repo, &["config", "core.sshCommand", "/bin/false"]);
+
+    let refused = |r: anyhow::Result<()>| {
+        let e = format!("{:#}", r.expect_err("a refusal"));
+        assert!(e.contains("core.sshcommand"), "{e}");
+    };
+    refused(gw.branch_exists(&w.repo, "main").map(drop));
+    refused(gw.list(&w.repo).map(drop));
+    refused(gw.tree(&w.repo).map(drop));
+    refused(gw.prune(&w.repo));
+    refused(gw.add(&w.repo, &tree, "fleet/t1", &w.base));
+    assert!(!tree.exists(), "the refused add changes nothing");
+    assert!(!git(&w.repo, &["branch", "--list", "fleet/t1"]).contains("fleet/t1"));
+}
