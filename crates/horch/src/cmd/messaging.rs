@@ -15,6 +15,7 @@ use horch_core::execution::lifecycle::{
     self, ClaimLine, DoneRequest, DoneSteps, ReportStatus, ReportTarget,
 };
 use horch_core::execution::records::{SessionLedger, EVENT_REPORT_FAILED, EVENT_REPORT_QUEUED};
+use horch_core::fleetd::task_execution::adapters::outbox_writer::OutboxWriter;
 use horch_core::harness::launch;
 use horch_core::messaging::channel;
 use horch_core::messaging::delivery::{self, TypedLine};
@@ -35,17 +36,27 @@ use horch_core::workspace::herdr::Herdr;
 use super::context::{self, Sources};
 use crate::output;
 
-/// Report mode: a `horch_access: report` pane sends `request` to its
+/// Report mode: a `horch_access: report` pane runs `request`. `progress`
+/// and `done` write the outbox that `outbox` gives; `tell` goes to the
 /// report socket. `None` (any other command) is refused before anything
-/// else runs. The worker parent runs the request with its own identity.
-pub fn report_mode(socket: &std::path::Path, request: Option<report::Request>) -> Result<()> {
+/// else runs.
+pub fn report_mode(
+    socket: &std::path::Path,
+    request: Option<report::Request>,
+    outbox: impl FnOnce() -> Result<OutboxWriter>,
+) -> Result<()> {
     let Some(request) = request else {
         bail!(
             "this pane has horch_access: report. Only `horch ledger progress <text>`, \
              `horch tell <report target> <text>` and `horch done <summary>` work here"
         );
     };
-    report::send(socket, &request)
+    report::report(
+        socket,
+        &request,
+        outbox,
+        &horch_core::taskledger::util::now(),
+    )
 }
 
 /// Deliver `text` into the pane registered as `role`.

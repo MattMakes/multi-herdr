@@ -1661,7 +1661,11 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("only to orchestrator"), "{err}");
-        let err = report::send(&path, &report::Request::Progress { text: "x".into() }).unwrap_err();
+        let tell = report::Request::Tell {
+            to: "orchestrator".into(),
+            text: "x".into(),
+        };
+        let err = report::send(&path, &tell).unwrap_err();
         assert!(err.to_string().contains("running horch"), "{err}");
         drop(server);
         assert!(!path.exists());

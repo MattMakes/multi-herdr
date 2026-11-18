@@ -864,8 +864,10 @@ fn report_socket<'a>(env: &'a LaunchEnv, teammate: &Teammate) -> Option<&'a Path
 /// - Unix sockets under the state root (the channel relays) and
 ///   `$HERDR_SOCKET_PATH`, for connect.
 ///
-/// For `horch_access: report`, only the pane's report socket, for connect
-/// (`docs/security/sandboxed-pane-horch-access.md`, C1 to C3).
+/// For `horch_access: report`, the pane's report socket, for connect
+/// (`docs/security/sandboxed-pane-horch-access.md`, C1 to C3). A report
+/// pane of a task also reads the ledger folder and writes its task folder,
+/// where `horch ledger progress` and `horch done` write its outbox.
 ///
 /// The paths come from the launch's resolved roots, so a moved root is the
 /// one opened. A launch with no `sandbox:` block, or whose settings carry
@@ -894,7 +896,21 @@ fn overlay_horch_paths(
             [&env.state_root, &env.herdr_socket],
         ),
         HorchAccess::Full => (roots, roots, [&env.state_root, &env.herdr_socket]),
-        HorchAccess::Report => ([&None, &None], [&None, &None], [&env.report_socket, &None]),
+        // A report pane of a task reads the ledger, to find its own
+        // attempt, and writes its task folder, the outbox (ticket 32 of
+        // fleetd-p5). A pane with no task gets neither.
+        HorchAccess::Report => {
+            let ledger = if env.task_dir.is_some() {
+                &env.ledger_dir
+            } else {
+                &None
+            };
+            (
+                [ledger, &None],
+                [&env.task_dir, &None],
+                [&env.report_socket, &None],
+            )
+        }
     };
     let mut changed = false;
     for (section, key, paths) in [
@@ -1968,6 +1984,45 @@ mod tests {
                 socket,
                 Some(std::ffi::OsStr::new("/state/horch/report/r1.sock"))
             );
+        }
+    }
+
+    /// A `horch_access: report` launch of a task also opens the ledger
+    /// folder to read and its task folder to write, for its outbox (ticket
+    /// 32 of fleetd-p5). It gets no other path and no other socket.
+    #[test]
+    fn a_report_launch_of_a_task_reads_the_ledger_and_writes_its_task_folder() {
+        let mut t = sandboxed(json!({
+            "filesystem": {"allowRead": ["/side"], "allowWrite": ["/side"]}
+        }));
+        t.horch_access = HorchAccess::Report;
+        let tmp = tempfile::tempdir().unwrap();
+        let [env, _] = sandbox_envs(tmp.path());
+        if !host_can_sandbox(&env) {
+            return;
+        }
+        let task = "/home/op/.horch/fleet/tasks/T-1";
+        let env = LaunchEnv {
+            report_socket: Some(PathBuf::from("/state/horch/report/r1.sock")),
+            task_dir: Some(PathBuf::from(task)),
+            ..env
+        };
+        let built =
+            super::super::launch::command_in(&env, &t, Session::Fresh("id"), "go", None).unwrap();
+        let settings = settings_arg(&built);
+        let s = &settings["sandbox"];
+        assert_eq!(
+            s["filesystem"]["allowRead"],
+            json!(["/side", "/home/op/.horch"])
+        );
+        assert_eq!(s["filesystem"]["allowWrite"], json!(["/side", task]));
+        assert_eq!(
+            s["network"]["allowUnixSockets"],
+            json!(["/state/horch/report/r1.sock"])
+        );
+        let text = settings.to_string();
+        for path in ["herdr.sock", "\"/state/horch\""] {
+            assert!(!text.contains(path), "{path}: {text}");
         }
     }
 

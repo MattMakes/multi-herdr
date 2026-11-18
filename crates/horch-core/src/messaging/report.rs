@@ -1,21 +1,30 @@
-//! The report socket of a `horch_access: report` pane
-//! (`docs/security/sandboxed-pane-horch-access.md`, C1).
+//! The reports of a `horch_access: report` pane
+//! (`docs/security/sandboxed-pane-horch-access.md`, C1;
+//! `docs/specs/fleetd/design.md`, Migration plan item 7, row 06 S11).
 //!
-//! The sandboxed agent in such a pane reaches no horch state: no state root,
-//! no ledger folder, no relay or herdr socket. Its `horch worker` parent,
-//! which runs outside the sandbox, serves 1 Unix socket for the pane, and
-//! the `horch` CLI in the pane talks only to it ([`ENV`]).
+//! The sandboxed agent in such a pane reads the ledger and writes only its
+//! task folder. It reaches no state root, relay or herdr socket. The `horch`
+//! CLI in the pane runs 3 commands ([`report`]):
+//! - `horch ledger progress <text>` appends 1 line to `progress.jsonl` of
+//!   the outbox of its own attempt;
+//! - `horch done <summary>` writes `result.json` of that outbox, with the
+//!   status `completed`;
+//! - `horch tell <target> <text>` goes over the report socket ([`ENV`]).
 //!
-//! Protocol: 1 request per connection. The client writes 1 JSON line of at
-//! most [`MAX_REQUEST`] bytes, then reads 1 JSON [`Reply`] line.
-//! - `{"verb":"progress","text":..}`: the parent records ledger progress
-//!   for its own worker row.
+//! The outbox writer finds the own attempt by the process chain, never by
+//! the environment, so a pane with no live attempt gets "no live attempt of
+//! this process". No outbox step needs a socket, so a pane on Windows keeps
+//! its reports.
+//!
+//! The report socket: its `horch worker` parent, which runs outside the
+//! sandbox, serves 1 Unix socket for the pane. 1 request per connection.
+//! The client writes 1 JSON line of at most [`MAX_REQUEST`] bytes, then
+//! reads 1 JSON [`Reply`] line. The 1 verb that remains:
 //! - `{"verb":"tell","to":..,"text":..}`: the parent tells the brief's
 //!   controller, or else its report target ([`target`]), tagged with the
 //!   brief's role. Any other `to` is refused.
-//! - `{"verb":"done","text":..}`: the parent runs `horch done` for its own
-//!   record.
 //!
+//! `progress` and `done` are refused on the socket: they write the outbox.
 //! Every other verb or key, a line over the limit and an empty text are
 //! refused. The role and record come from the parent, never from the pane.
 
@@ -32,6 +41,12 @@ use serde::{Deserialize, Serialize};
 
 use super::brief::Brief;
 use crate::execution::ReportTarget;
+use crate::fleetd::fleet_runtime::adapters::config_file;
+use crate::fleetd::fleet_runtime::adapters::peer_process::PlatformFacts;
+use crate::fleetd::task_execution::adapters::outbox_writer::OutboxWriter;
+use crate::fleetd::task_execution::domain::outbox::LineKind;
+use crate::fleetd::task_execution::domain::result::{ResultFile, ResultStatus};
+use crate::taskledger::store::Store;
 
 /// The variable that puts the `horch` CLI in report mode. Its value is the
 /// socket path.
@@ -51,6 +66,10 @@ pub fn socket_path(state_root: &Path, record_id: &str) -> PathBuf {
         .join("report")
         .join(format!("{}.sock", super::file_safe(record_id)))
 }
+
+/// The refusal of `progress` and `done` on the report socket.
+pub const OUTBOX_VERBS: &str =
+    "progress and done write the outbox of the attempt; this socket takes only tell";
 
 /// 1 request from the pane.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,6 +138,9 @@ pub fn handle(line: &[u8], report_to: Option<&str>, exec: &Executor) -> Reply {
     };
     if request.text().trim().is_empty() {
         return Reply::refused("the text is empty");
+    }
+    if !matches!(request, Request::Tell { .. }) {
+        return Reply::refused(OUTBOX_VERBS);
     }
     if let Request::Tell { to, .. } = &request {
         match report_to {
@@ -219,6 +241,54 @@ impl Drop for Server {
     }
 }
 
+/// Run 1 command of a report pane. `progress` and `done` write the outbox
+/// that `outbox` gives, at the time `at`, with no socket call. `tell` goes
+/// over the report socket at `socket` ([`send`]). An empty text is refused
+/// before each step.
+pub fn report(
+    socket: &Path,
+    request: &Request,
+    outbox: impl FnOnce() -> Result<OutboxWriter>,
+    at: &str,
+) -> Result<()> {
+    if request.text().trim().is_empty() {
+        bail!("the text is empty");
+    }
+    match request {
+        Request::Progress { text } => outbox()?.append(LineKind::Progress, at, text),
+        Request::Done { text } => {
+            let writer = outbox()?;
+            writer.write_result(&completed(&writer, text))?;
+            Ok(())
+        }
+        Request::Tell { .. } => send(socket, request),
+    }
+}
+
+/// The `result.json` of `horch done <summary>`.
+fn completed(writer: &OutboxWriter, summary: &str) -> ResultFile {
+    ResultFile {
+        task: writer.attempt().task_id.clone(),
+        attempt: writer.attempt().attempt().to_string(),
+        status: ResultStatus::Completed,
+        summary: summary.to_string(),
+        commits: Vec::new(),
+        files_changed: Vec::new(),
+        acceptance_self_check: Vec::new(),
+        notes_for_next: None,
+        handoff: None,
+    }
+}
+
+/// The outbox writer of the own attempt of this process: the ledger at
+/// `ledger_db`, opened read-only, and `fleet.toml` of `fleet_root`.
+pub fn own_outbox(ledger_db: &Path, fleet_root: &Path) -> Result<OutboxWriter> {
+    let ledger = Store::open_read_only(ledger_db)?;
+    let config = config_file::load(fleet_root)?;
+    OutboxWriter::of_this_process(fleet_root, ledger.conn(), &config, &PlatformFacts)
+}
+
+/// Send 1 request over the report socket at `path` and read its answer.
 /// On a host without local sockets it refuses with
 /// "the report socket needs a Unix host".
 pub fn send(path: &Path, request: &Request) -> Result<()> {
@@ -236,12 +306,6 @@ pub fn send(path: &Path, request: &Request) -> Result<()> {
     let mut reply = String::new();
     BufReader::new(stream).read_line(&mut reply)?;
     if reply.is_empty() {
-        // A `horch done` that works closes this pane, and the parent dies
-        // with it before it can answer. Any other request needs an answer.
-        if matches!(request, Request::Done { .. }) {
-            eprintln!("horch done: the worker is closing this pane");
-            return Ok(());
-        }
         bail!("the report socket closed without an answer");
     }
     let reply: Reply = serde_json::from_str(&reply).context("reading the report answer")?;
@@ -311,36 +375,23 @@ mod tests {
     }
 
     #[test]
-    fn each_verb_runs_once() {
+    fn tell_runs_once() {
         let (seen, exec) = recorder();
-        for v in [
-            serde_json::json!({"verb": "progress", "text": "step 1"}),
-            serde_json::json!({"verb": "tell", "to": "orchestrator", "text": "hi"}),
-            serde_json::json!({"verb": "done", "text": "finished"}),
-        ] {
-            let reply = handle(&line(v), Some("orchestrator"), exec.as_ref());
-            assert_eq!(
-                reply,
-                Reply {
-                    ok: true,
-                    error: None
-                }
-            );
-        }
+        let tell = serde_json::json!({"verb": "tell", "to": "orchestrator", "text": "hi"});
+        let reply = handle(&line(tell), Some("orchestrator"), exec.as_ref());
+        assert_eq!(
+            reply,
+            Reply {
+                ok: true,
+                error: None
+            }
+        );
         assert_eq!(
             *seen.lock().unwrap(),
-            [
-                Request::Progress {
-                    text: "step 1".into()
-                },
-                Request::Tell {
-                    to: "orchestrator".into(),
-                    text: "hi".into()
-                },
-                Request::Done {
-                    text: "finished".into()
-                },
-            ]
+            [Request::Tell {
+                to: "orchestrator".into(),
+                text: "hi".into()
+            }]
         );
     }
 
@@ -405,8 +456,8 @@ mod tests {
     fn an_executor_error_reaches_the_client() {
         let exec: Box<Executor> = Box::new(|_: &Request| bail!("the ledger is locked"));
         let reply = handle(
-            &line(serde_json::json!({"verb": "progress", "text": "x"})),
-            None,
+            &line(serde_json::json!({"verb": "tell", "to": "orchestrator", "text": "x"})),
+            Some("orchestrator"),
             exec.as_ref(),
         );
         assert_eq!(reply.error.as_deref(), Some("the ledger is locked"));
@@ -424,24 +475,24 @@ mod tests {
         );
     }
 
-    /// A parent that dies during a request (a `horch done` closes the pane
-    /// and the parent with it) answers nothing: `done` succeeds, and every
-    /// other verb fails.
+    /// A parent that dies during a request answers nothing: the request
+    /// fails.
     #[cfg(unix)]
     #[test]
-    fn a_closed_socket_is_success_only_for_done() {
+    fn a_closed_socket_is_an_error() {
         let tmp = tempfile::Builder::new().tempdir_in("/tmp").unwrap();
         let path = tmp.path().join("r.sock");
         let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
         let mute = std::thread::spawn(move || {
-            for _ in 0..2 {
-                let (stream, _) = listener.accept().unwrap();
-                let mut line = String::new();
-                BufReader::new(&stream).read_line(&mut line).unwrap();
-            }
+            let (stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(&stream).read_line(&mut line).unwrap();
         });
-        send(&path, &Request::Done { text: "x".into() }).unwrap();
-        let err = send(&path, &Request::Progress { text: "x".into() }).unwrap_err();
+        let tell = Request::Tell {
+            to: "orchestrator".into(),
+            text: "x".into(),
+        };
+        let err = send(&path, &tell).unwrap_err();
         assert!(
             err.to_string().contains("closed without an answer"),
             "{err}"
@@ -462,7 +513,8 @@ mod tests {
         assert_eq!(mode, 0o600);
         send(
             &path,
-            &Request::Progress {
+            &Request::Tell {
+                to: "orchestrator".into(),
                 text: "step 1".into(),
             },
         )
@@ -481,7 +533,8 @@ mod tests {
         );
         let err = send(
             &path,
-            &Request::Done {
+            &Request::Tell {
+                to: "orchestrator".into(),
                 text: "x".repeat(MAX_REQUEST),
             },
         )

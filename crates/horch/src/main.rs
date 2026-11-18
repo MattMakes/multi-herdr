@@ -864,11 +864,14 @@ fn run() -> Result<std::process::ExitCode> {
     // The one read of the process environment. Every command takes its
     // values from this context.
     let mut ctx = bootstrap::context()?;
-    // A `horch_access: report` pane reaches only its report socket.
+    // A `horch_access: report` pane reaches only its outbox and its report
+    // socket.
     if let Some(socket) = ctx.report_socket.clone() {
+        let paths = &ctx.paths;
         return done(cmd::messaging::report_mode(
             &socket,
             cli.command.report_request(),
+            || horch_core::messaging::report::own_outbox(&paths.ledger_db, &paths.fleet_root),
         ));
     }
     cli.command.warn_stale(&ctx);
@@ -1430,12 +1433,12 @@ mod tests {
     use super::*;
     use clap::CommandFactory;
 
-    /// In a `horch_access: report` pane, `tell`, `done` and `ledger
-    /// progress` reach the report socket as 1 request each, and every other
-    /// command is refused without a request.
+    /// In a `horch_access: report` pane, `tell` reaches the report socket
+    /// as 1 request, `done` and `ledger progress` go to the outbox, and
+    /// every other command is refused without a request.
     #[cfg(unix)]
     #[test]
-    fn report_mode_sends_3_commands_and_refuses_the_rest() {
+    fn report_mode_routes_3_commands_and_refuses_the_rest() {
         use horch_core::messaging::report::{self, Request};
         use std::sync::{Arc, Mutex};
         let tmp = tempfile::Builder::new().tempdir_in("/tmp").unwrap();
@@ -1450,11 +1453,18 @@ mod tests {
             report::Server::start(path.clone(), Some("orchestrator".into()), exec).unwrap();
         let run = |argv: &[&str]| {
             let cli = Cli::try_parse_from(argv).unwrap();
-            cmd::messaging::report_mode(&path, cli.command.report_request())
+            cmd::messaging::report_mode(&path, cli.command.report_request(), || {
+                anyhow::bail!("the outbox of this test")
+            })
         };
-        run(&["horch", "ledger", "progress", "step 1"]).unwrap();
+        for argv in [
+            &["horch", "ledger", "progress", "step 1"][..],
+            &["horch", "done", "all", "done"],
+        ] {
+            let err = run(argv).unwrap_err();
+            assert_eq!(err.to_string(), "the outbox of this test", "{argv:?}");
+        }
         run(&["horch", "tell", "orchestrator", "[r] NOTE:", "hi"]).unwrap();
-        run(&["horch", "done", "all", "done"]).unwrap();
         let err = run(&["horch", "tell", "sonnet-1", "x"]).unwrap_err();
         assert!(err.to_string().contains("only to orchestrator"), "{err}");
         for argv in [
@@ -1473,18 +1483,10 @@ mod tests {
         }
         assert_eq!(
             *seen.lock().unwrap(),
-            [
-                Request::Progress {
-                    text: "step 1".into()
-                },
-                Request::Tell {
-                    to: "orchestrator".into(),
-                    text: "[r] NOTE: hi".into()
-                },
-                Request::Done {
-                    text: "all done".into()
-                },
-            ]
+            [Request::Tell {
+                to: "orchestrator".into(),
+                text: "[r] NOTE: hi".into()
+            }]
         );
     }
 
