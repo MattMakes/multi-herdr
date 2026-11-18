@@ -1054,10 +1054,16 @@ fn a_failed_reviews_in_push_is_redelivered_until_the_author_runs_finish() {
                     && c["argv"][2] == "w1:p1"
                     && c["argv"][3]
                         .as_str()
-                        .is_some_and(|t| t.contains("The reviews of T-1 are in"))
+                        .is_some_and(|t| t == horch_core::messaging::delivery::MAIL_LINE)
             })
             .count()
     };
+    // FR-7: the pane gets the mail line, and the notice waits in the mail.
+    assert!(mail
+        .pending()
+        .unwrap()
+        .iter()
+        .any(|m| m.text.contains("The reviews of T-1 are in")));
     // The first prompt failed; the courier's redelivery is the next one.
     wait_for("the courier's redelivery", || {
         (reviews_in_prompts() >= 2).then_some(())
