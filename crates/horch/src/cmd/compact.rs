@@ -881,8 +881,9 @@ fn run_job(
 
 /// A child that refuses before its first job step: `compact-failed`
 /// `step start: <reason>` on the record (when there is one), the `failed`
-/// report to the orchestrator pane, the same line in `job.log`, exit
-/// [`EXIT_REPORTED`].
+/// report queued as orchestrator mail with the mail line typed, the same
+/// line in `job.log`, exit [`EXIT_REPORTED`]. When the report cannot be
+/// queued, it reaches no one: exit [`EXIT_NOT_REPORTED`].
 fn refuse_child(
     env: &Env,
     role: &str,

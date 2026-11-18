@@ -33,29 +33,130 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// The code of `path` outside tests and comments. A file named `tests.rs`
-/// is a test module. A `#[cfg(test)]` item is skipped: a 1-line item to its
-/// `;`, a block item to its closing brace. The scan goes on after it.
+/// The code of `path` outside tests, with comments and the contents of
+/// string and char literals blanked ([`blank_literals`]). A file named
+/// `tests.rs` is a test module. A `#[cfg(test)]` item is skipped: a 1-line
+/// item to its `;`, a block item to its closing brace. The scan goes on
+/// after it.
 fn production_code(path: &Path) -> String {
     if path.file_name().is_some_and(|n| n == "tests.rs") {
         return String::new();
     }
-    let text = std::fs::read_to_string(path).unwrap();
+    let text = blank_literals(&std::fs::read_to_string(path).unwrap());
     let mut code = String::new();
     let mut lines = text.lines();
     while let Some(line) = lines.next() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("#[cfg(test)]") {
+        if line.trim_start().starts_with("#[cfg(test)]") {
             skip_item(&mut lines);
-            continue;
-        }
-        if trimmed.starts_with("//") {
             continue;
         }
         code.push_str(line);
         code.push('\n');
     }
     code
+}
+
+/// `text` with each comment and the contents of each string, raw string and
+/// char literal replaced by spaces. Line breaks stay, so a brace or a
+/// parenthesis that is counted is always code.
+fn blank_literals(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let blank = |c: char| if c == '\n' { '\n' } else { ' ' };
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let next = chars.get(i + 1).copied();
+        if c == '/' && next == Some('/') {
+            while i < chars.len() && chars[i] != '\n' {
+                out.push(' ');
+                i += 1;
+            }
+        } else if c == '/' && next == Some('*') {
+            let mut depth = 0;
+            while i < chars.len() {
+                if chars[i] == '/' && chars.get(i + 1) == Some(&'*') {
+                    depth += 1;
+                    out.push_str("  ");
+                    i += 2;
+                } else if chars[i] == '*' && chars.get(i + 1) == Some(&'/') {
+                    depth -= 1;
+                    out.push_str("  ");
+                    i += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    out.push(blank(chars[i]));
+                    i += 1;
+                }
+            }
+        } else if c == 'r' && matches!(next, Some('"') | Some('#')) && !ident_before(&chars, i) {
+            let hashes = chars[i + 1..].iter().take_while(|&&h| h == '#').count();
+            if chars.get(i + 1 + hashes) != Some(&'"') {
+                out.push(c);
+                i += 1;
+                continue;
+            }
+            out.push('"');
+            i += 2 + hashes;
+            let close: Vec<char> = std::iter::once('"')
+                .chain((0..hashes).map(|_| '#'))
+                .collect();
+            while i < chars.len() && !chars[i..].starts_with(&close) {
+                out.push(blank(chars[i]));
+                i += 1;
+            }
+            out.push('"');
+            i += close.len();
+        } else if c == '"' {
+            out.push('"');
+            i += 1;
+            while i < chars.len() && chars[i] != '"' {
+                if chars[i] == '\\' {
+                    out.push(' ');
+                    i += 1;
+                }
+                if i < chars.len() {
+                    out.push(blank(chars[i]));
+                    i += 1;
+                }
+            }
+            out.push('"');
+            i += 1;
+        } else if c == '\'' && is_char_literal(&chars, i) {
+            // An escape (`'\''`, `'\u{2500}'`) ends at the first quote
+            // after its escaped char; a plain char literal is 3 chars long.
+            let end = if chars[i + 1] == '\\' {
+                (i + 3..chars.len())
+                    .find(|&j| chars[j] == '\'')
+                    .unwrap_or(chars.len() - 1)
+            } else {
+                i + 2
+            };
+            out.push_str("''");
+            i = end + 1;
+        } else {
+            out.push(c);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Whether the `r` at `i` is the end of an identifier, as in `for`.
+fn ident_before(chars: &[char], i: usize) -> bool {
+    i > 0 && (chars[i - 1].is_alphanumeric() || chars[i - 1] == '_')
+}
+
+/// Whether the `'` at `i` opens a char literal, not a lifetime: `'x'` or an
+/// escape such as `'\n'` or `'\u{2500}'`.
+fn is_char_literal(chars: &[char], i: usize) -> bool {
+    match chars.get(i + 1) {
+        Some('\\') => true,
+        Some(_) => chars.get(i + 2) == Some(&'\''),
+        None => false,
+    }
 }
 
 /// Skip the item that follows a `#[cfg(test)]` line.
@@ -70,6 +171,20 @@ fn skip_item<'a>(lines: &mut impl Iterator<Item = &'a str>) {
             return;
         }
     }
+}
+
+#[test]
+fn blank_literals_hides_braces_in_comments_and_literals() {
+    let code = "fn a() { let s = \"{\"; let r = r#\"}\"#; let c = '{'; // }\n/* { */ }\n";
+    let blanked = blank_literals(code);
+    assert_eq!(blanked.matches('{').count(), 1, "{blanked}");
+    assert_eq!(blanked.matches('}').count(), 1, "{blanked}");
+    assert_eq!(blanked.lines().count(), 2);
+    assert_eq!(
+        blank_literals("fn f<'a>(x: &'a str) {}"),
+        "fn f<'a>(x: &'a str) {}"
+    );
+    assert_eq!(blank_literals("let q = '\\''; {").matches('{').count(), 1);
 }
 
 /// The argument text of each call `<call>(...)` in `code`.
