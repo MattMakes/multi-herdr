@@ -10,14 +10,23 @@
 /// How an attempt ended, when the verifier did not verify it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
+    /// The verifier rejected the result.
     Rejected,
+    /// The process of the attempt died.
     Crashed,
+    /// No first signal within the start timeout.
     TimedOut,
+    /// Rungs 3 and 4 of the stall ladder.
     Stalled,
+    /// The attempt was stopped.
     Killed,
+    /// The process exited with no result.
     NoResult,
+    /// The worker asked a question.
     Asked,
+    /// A usage limit.
     Quota,
+    /// The judge reports an open CRITICAL item.
     CriticalOpen,
 }
 
@@ -34,7 +43,7 @@ impl Outcome {
         Outcome::CriticalOpen,
     ];
 
-    /// The word of the outcome in the design.
+    /// The word of the design, as `attempts.outcome` stores it.
     pub fn as_str(self) -> &'static str {
         match self {
             Outcome::Rejected => "rejected",
@@ -168,6 +177,25 @@ mod tests {
         assert_eq!(at(1, limit, 1, 5000), retry_at(5030));
         // The last attempt after the replan fails: escalated.
         assert_eq!(at(4, limit, 1, 5000), Rung6::Escalate);
+    }
+
+    #[test]
+    fn the_9_stored_outcome_words_stay() {
+        let words: Vec<&str> = Outcome::ALL.into_iter().map(Outcome::as_str).collect();
+        assert_eq!(
+            words,
+            [
+                "rejected",
+                "crashed",
+                "timed_out",
+                "stalled",
+                "killed",
+                "no_result",
+                "asked",
+                "quota",
+                "critical_open",
+            ]
+        );
     }
 
     #[test]

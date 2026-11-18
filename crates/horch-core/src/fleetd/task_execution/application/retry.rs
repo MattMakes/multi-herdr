@@ -370,6 +370,22 @@ mod tests {
     }
 
     #[test]
+    fn cancel_of_an_escalated_task_resolves_its_needs_you_item() {
+        let mut l = fixture(0);
+        for clock in [0, 30, 150] {
+            l.claim_and_fail(clock);
+        }
+        l.overdue(150 + 1800);
+        assert_eq!(l.escalated_items().len(), 1);
+        let t = l.task();
+        l.store
+            .immediate(|tx| tasks::cancel(tx, &t, "the plan drops it"))
+            .unwrap();
+        assert_eq!(l.task().status, "cancelled");
+        assert_eq!(l.escalated_items(), Vec::<String>::new());
+    }
+
+    #[test]
     fn failed_task_past_replan_limit_escalates() {
         let mut l = fixture(0);
         for clock in [0, 30, 150] {
@@ -384,10 +400,19 @@ mod tests {
         assert_eq!(l.overdue(9999), Vec::<String>::new(), "1 escalation");
     }
 
-    /// The state of the walk: the task word and its counters.
+    /// The task states that the walk reaches.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+    enum State {
+        Ready,
+        Running,
+        Failed,
+        Escalated,
+    }
+
+    /// The state of the walk: the task state and its counters.
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
     struct Node {
-        state: &'static str,
+        state: State,
         used: i64,
         replans: i64,
     }
@@ -404,10 +429,10 @@ mod tests {
             replans,
         };
         match n.state {
-            "ready" => vec![(false, to("running", n.used + 1, n.replans))],
+            State::Ready => vec![(false, to(State::Running, n.used + 1, n.replans))],
             // An outcome that burns no attempt (asked, quota,
             // critical_open) gives the attempt back: it is no retry.
-            "running" => Outcome::ALL
+            State::Running => Outcome::ALL
                 .into_iter()
                 .filter(|o| o.burns_attempt())
                 .map(|_| {
@@ -417,21 +442,22 @@ mod tests {
                         replans: n.replans,
                     };
                     let next = match rung6(&nums, &policy.retry.backoff_s, 1, 0) {
-                        Rung6::Retry { .. } => to("ready", n.used, n.replans),
-                        Rung6::Fail { .. } => to("failed", n.used, n.replans),
-                        Rung6::Escalate => to("escalated", n.used, n.replans),
+                        Rung6::Retry { .. } => to(State::Ready, n.used, n.replans),
+                        Rung6::Fail { .. } => to(State::Failed, n.used, n.replans),
+                        Rung6::Escalate => to(State::Escalated, n.used, n.replans),
                     };
                     (true, next)
                 })
                 .collect(),
-            "failed" => {
-                let mut out = vec![(false, to("escalated", n.used, n.replans))];
+            State::Failed => {
+                let mut out = vec![(false, to(State::Escalated, n.used, n.replans))];
                 if n.replans == 0 {
-                    out.push((false, to("ready", 0, 1)));
+                    out.push((false, to(State::Ready, 0, 1)));
                 }
                 out
             }
-            _ => Vec::new(),
+            // The operator requeue is the exit of the walk.
+            State::Escalated => Vec::new(),
         }
     }
 
@@ -454,7 +480,7 @@ mod tests {
             // attempts, and no path of burned attempts comes back to a
             // node it left (no cycle).
             let start = Node {
-                state: "ready",
+                state: State::Ready,
                 used: 0,
                 replans: 0,
             };
@@ -466,7 +492,7 @@ mod tests {
                 let next: BTreeSet<(bool, Node)> =
                     moves(&n, &policy, run_max).into_iter().collect();
                 if next.is_empty() {
-                    assert_eq!(n.state, "escalated", "{n:?} has no exit");
+                    assert_eq!(n.state, State::Escalated, "{n:?} has no exit");
                     most = most.max(burned);
                 }
                 for (burns, m) in next {

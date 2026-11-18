@@ -1529,6 +1529,8 @@ fn cancel_in(conn: &Connection, task: &Task, reason: &str) -> Result<Task> {
          WHERE task_id = ?1",
         params![task.task_id, format!("cancelled: {reason}"), util::now()],
     )?;
+    // A cancel is an exit of `escalated`: its needs-you item is answered.
+    needs_you::resolve(conn, &escalated_key(&task.task_id))?;
     if let Some(w) = &task.current_worker_id {
         workers::end(conn, w, WorkerStatus::Stopped, &why, None)?;
     }
@@ -1799,11 +1801,16 @@ pub fn attempt_ends(conn: &Connection, task: &Task) -> Result<Vec<String>> {
         .collect())
 }
 
-/// `horch ledger requeue`: the operator wants a held (`escalated`) task
-/// worked on again. Its attempt history stays, and it gets the run's
-/// `max_attempts` anew. A parked task resumes on the worktree it parked
-/// with. `cancelled` is terminal: the door of [`util::transition`] refuses
-/// the requeue of a cancelled task and records the refusal.
+/// `horch ledger requeue` of a task in 1 of 2 states:
+/// - `escalated`: the operator wants the held task worked on again.
+/// - `failed`: its 1 replan by the orchestrator of the run (MAP.md, Q12).
+///   `replans` goes to 1.
+///
+/// In both, the task moves to `ready`. Its attempt history stays, and it
+/// gets its attempt limit anew (`attempt_floor`). A parked task resumes on
+/// the worktree it parked with. `cancelled` is terminal: the door of
+/// [`util::transition`] refuses the requeue of a cancelled task and records
+/// the refusal.
 pub fn requeue_by_operator(conn: &Connection, task: &Task, reason: &str) -> Result<Task> {
     let held = [TaskStatus::Escalated, TaskStatus::Failed];
     if !is_in(&held, &task.status) && task.status != TaskStatus::Cancelled.as_str() {
@@ -1817,7 +1824,7 @@ pub fn requeue_by_operator(conn: &Connection, task: &Task, reason: &str) -> Resu
 }
 
 /// The writes of [`requeue_by_operator`], in the open transaction of
-/// `conn`. A held (`escalated`) task moves to `ready`. The door of
+/// `conn`. An `escalated` or `failed` task moves to `ready`. The door of
 /// [`util::transition`] refuses a cancelled task.
 fn requeue_by_operator_in(conn: &Connection, task: &Task, reason: &str) -> Result<Task> {
     let now = util::now();

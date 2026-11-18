@@ -8,6 +8,7 @@
 //! the pane. The heartbeat is a fact of the lease. A usage limit is never
 //! a stall.
 
+use crate::fleetd::task_execution::domain::retry::Outcome;
 use crate::fleetd::task_execution::domain::task::Seen;
 
 /// The 1 line that fleetd types into an idle pane at rungs 1 and 2. It
@@ -107,31 +108,6 @@ impl AgentState {
             AgentState::Hung => "hung",
             AgentState::UsageLimited => "usage_limited",
             AgentState::Exited => "exited",
-        }
-    }
-}
-
-/// The outcome of an attempt that the ladder ends.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Outcome {
-    /// Rungs 3 and 4. It burns 1 attempt (rung 6).
-    Stalled,
-    /// The worker asked a question. It burns no attempt.
-    Asked,
-    /// A usage limit. It burns no attempt.
-    Quota,
-    /// The process exited with no result. It burns 1 attempt (rung 6).
-    NoResult,
-}
-
-impl Outcome {
-    /// The word of `attempts.outcome`.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Outcome::Stalled => "stalled",
-            Outcome::Asked => "asked",
-            Outcome::Quota => "quota",
-            Outcome::NoResult => "no_result",
         }
     }
 }

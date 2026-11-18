@@ -23,7 +23,8 @@ use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
 use crate::fleetd::ideas::application::needs_you::{self, NeedsYouList};
 use crate::fleetd::ideas::domain::needs_you::Write;
 use crate::fleetd::task_execution::adapters::sqlite as store;
-use crate::fleetd::task_execution::domain::stall::{Decision, Outcome};
+use crate::fleetd::task_execution::domain::retry::Outcome;
+use crate::fleetd::task_execution::domain::stall::Decision;
 use crate::fleetd::task_execution::domain::task::{
     AttemptRow, AttemptState, ProcessScope, RowRef, Stop, Target,
 };
@@ -125,7 +126,15 @@ fn end(tx: &Connection, guard: Option<Generation>, a: &AttemptRow, outcome: Outc
     let to = match outcome {
         Outcome::Stalled => TaskStatus::Stalled,
         Outcome::Asked => TaskStatus::BlockedOnUser,
-        Outcome::Quota | Outcome::NoResult => return Ok(()),
+        // The ladder ends no attempt with the other 5 words; the task stays
+        // for the path of its outcome, as with quota and no_result.
+        Outcome::Quota
+        | Outcome::NoResult
+        | Outcome::Rejected
+        | Outcome::Crashed
+        | Outcome::TimedOut
+        | Outcome::Killed
+        | Outcome::CriticalOpen => return Ok(()),
     };
     if let Some(task) = &a.task_id {
         transition(
