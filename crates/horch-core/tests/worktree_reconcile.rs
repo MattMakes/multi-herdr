@@ -684,16 +684,16 @@ fn adopted_tree_is_linked_to_the_task_its_branch_names() {
     let seq: i64 = w.count("SELECT seq FROM tasks WHERE task_id = ?1", &[&task]);
     let linked = w.folder("linked");
     let free = w.folder("free");
+    let unknown = w.folder("unknown");
+    let missing = w.no_folder("missing");
     let facts = Facts {
         lists: vec![w.listed(&[
             (&linked, &format!("{RUN_BRANCH}-T{seq}-feat"), None),
             (&free, "someone/else", None),
-            (
-                &w.no_folder("missing"),
-                &format!("{RUN_BRANCH}-T99-x"),
-                None,
-            ),
+            (&unknown, &format!("{RUN_BRANCH}-T99-x"), None),
+            (&missing, &format!("{RUN_BRANCH}-T{seq}-gone"), None),
         ])],
+        work_dirs: vec![w.work_dir(&[&linked, &free, &unknown])],
         ..Facts::default()
     };
 
@@ -703,7 +703,65 @@ fn adopted_tree_is_linked_to_the_task_its_branch_names() {
     let task_of = |p: &str| trees::by_path(w.conn(), p).unwrap().unwrap().task_id;
     assert_eq!(task_of(&linked), Some(task));
     assert_eq!(task_of(&free), None);
-    assert_eq!(task_of(&w.no_folder("missing")), None, "no task T99");
+    assert_eq!(task_of(&unknown), None, "no task T99");
+    assert!(
+        trees::by_path(w.conn(), &missing).unwrap().is_none(),
+        "a listed entry whose folder the scan does not show gets no row"
+    );
+}
+
+/// A `worktree_list` result that a removal outdated adopts nothing: the
+/// list named the tree, then its `worktree_remove` run passed, and the same
+/// pass reads that list. No new row, and no rescue run (FM-27, FM-28).
+#[test]
+fn a_list_that_a_removal_outdated_adopts_no_new_row() {
+    let mut w = World::new();
+    let gone = w.no_folder("gone");
+    let raced = w.folder("raced");
+    for (id, path) in [("wt-gone", &gone), ("wt-raced", &raced)] {
+        w.row_in(id, path, "removed", (None, None, None));
+        let config = w.config.clone();
+        let repo = w.repo_s();
+        w.store
+            .immediate(|tx| {
+                let job = JobKey {
+                    kind: Kind::WorktreeRemove,
+                    subject: id,
+                    input_key: "removal",
+                };
+                let Queued::New(job_id) = jobs::queue(&ctx(&config), tx, &job, Some(&repo), CLOCK)?
+                else {
+                    panic!("a new run");
+                };
+                end_run(tx, &config, job_id, true)
+            })
+            .unwrap();
+    }
+    // The list read its facts before the removals ended. The scan of this
+    // pass shows no folder at `gone`; a folder at `raced` came back after
+    // the removal, and only a newer list can name it.
+    let facts = Facts {
+        lists: vec![w.listed(&[(&gone, "b-gone", None), (&raced, "b-raced", None)])],
+        work_dirs: vec![w.work_dir(&[&raced])],
+        ..Facts::default()
+    };
+    let rows = w.count("SELECT count(*) FROM worktrees", &[]);
+
+    let report = w.reconcile(&facts);
+
+    assert!(report.adopted.is_empty(), "{report:?}");
+    assert!(report.rescues.is_empty(), "{report:?}");
+    assert_eq!(w.count("SELECT count(*) FROM worktrees", &[]), rows);
+    assert_eq!(
+        w.count("SELECT count(*) FROM jobs WHERE kind = 'rescue'", &[]),
+        0
+    );
+    let no_row = w
+        .i6(&facts)
+        .into_iter()
+        .filter(|b| matches!(b, Breach::NoRow { .. }))
+        .count();
+    assert_eq!(no_row, 0, "{:?}", w.i6(&facts));
 }
 
 /// Q9, the act: the reconciler queues 1 rescue of each orphan and 1

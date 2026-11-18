@@ -140,7 +140,8 @@ pub fn check_i6(conn: &Connection, facts: &Facts) -> Result<Vec<Breach>> {
         .filter(|r| r.state != WorktreeState::Removed)
         .collect();
     let known = known_paths(live.iter().copied(), facts);
-    let mut out: Vec<Breach> = rules::adoptions(&known, &seen(facts), &[])
+    let seen = seen(conn, &rows, facts)?;
+    let mut out: Vec<Breach> = rules::adoptions(&known, &seen, &[])
         .into_iter()
         .map(|a| Breach::NoRow {
             repo: a.repo,
@@ -242,24 +243,61 @@ fn known_paths<'a>(
     rows.map(|r| r.path.as_str()).chain(listed).collect()
 }
 
-/// The trees that the views show: each entry of `git worktree list`. A
-/// folder of a work directory is a tree only when the last `worktree_list`
-/// result of its repository names it: with no result yet, its adoption
-/// waits for one.
-fn seen(facts: &Facts) -> Vec<Seen> {
+/// The trees that the views show: each entry of `git worktree list` whose
+/// folder the folder scan of this pass shows, and that no removal outdated.
+/// A folder of a work directory is a tree only when the last
+/// `worktree_list` result of its repository names it: with no result yet,
+/// its adoption waits for one.
+fn seen(conn: &Connection, rows: &[WorktreeRow], facts: &Facts) -> Result<Vec<Seen>> {
     let mut out = Vec::new();
     for l in &facts.lists {
         for (n, e) in l.result.entries.iter().enumerate() {
+            let main = n == 0 || e.bare;
+            if !main && (!scanned(facts, l, &e.path) || removed_after(conn, rows, l, &e.path)?) {
+                continue;
+            }
             out.push(Seen {
                 repo: l.repo.clone(),
                 path: e.path.clone(),
                 branch: e.branch.as_deref().map(short_branch),
-                main: n == 0 || e.bare,
+                main,
                 gone: e.prunable.is_some(),
             });
         }
     }
-    out
+    Ok(out)
+}
+
+/// Whether the folder scan of this pass shows the folder `path` in a work
+/// directory of the repository of `list`.
+fn scanned(facts: &Facts, list: &Listed, path: &str) -> bool {
+    facts
+        .work_dirs
+        .iter()
+        .any(|d| d.repo == list.repo && d.folders.iter().any(|f| f == path))
+}
+
+/// Whether a removal of the folder `path` ended after `list` read its
+/// facts: the list outdates, and the folder it names is gone.
+fn removed_after(
+    conn: &Connection,
+    rows: &[WorktreeRow],
+    list: &Listed,
+    path: &str,
+) -> Result<bool> {
+    let Some(read) = crate::clock::parse(&list.seen_at) else {
+        return Ok(false);
+    };
+    for row in rows.iter().filter(|r| r.path == path) {
+        let Some(job) = jobs_store::last(conn, Kind::WorktreeRemove, &row.worktree_id)? else {
+            continue;
+        };
+        let ended = job.ended_at.as_deref().and_then(crate::clock::parse);
+        if job.state == State::Passed && ended.is_some_and(|e| e >= read) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// The folders of the work directories that no row owns and that the
@@ -299,7 +337,7 @@ fn adopt(ctx: &JobCtx<'_>, tx: &Connection, facts: &Facts, report: &mut Report) 
     let live = rows.iter().filter(|r| r.state != WorktreeState::Removed);
     let known = known_paths(live, facts);
     report.not_trees = plain_folders(&known, facts);
-    let seen = seen(facts);
+    let seen = seen(tx, &rows, facts)?;
     // The runs are read only for the repositories of a tree to adopt.
     let repos: BTreeSet<String> = rules::adoptions(&known, &seen, &[])
         .into_iter()
