@@ -257,6 +257,67 @@ pub fn is_solo(run: &Run) -> bool {
     run.slug.starts_with(SOLO_PREFIX)
 }
 
+/// Create the internal run of a new feature (fleetd-p6 MAP.md, Q5) in the
+/// project `root`, on the base branch `primary_branch`, with no run branch
+/// yet. Gives the feature id `F-<run rowid>` (4 digits, as the backfill of
+/// Phase 4), which is also the slug of the run. The caller writes the
+/// feature row in the same transaction.
+pub fn create_feature_run(conn: &Connection, root: &Path, primary_branch: &str) -> Result<String> {
+    // No code deletes a run, so the next rowid is 1 more than the largest.
+    let next: i64 = conn.query_row("SELECT COALESCE(MAX(rowid), 0) + 1 FROM runs", [], |r| {
+        r.get(0)
+    })?;
+    let feature = format!("F-{next:04}");
+    let new = NewRun {
+        slug: feature.clone(),
+        base_branch: Some(primary_branch.to_string()),
+        ..NewRun::default()
+    };
+    let run = create(conn, root, &new)?;
+    let rowid: i64 = conn.query_row(
+        "SELECT rowid FROM runs WHERE run_id = ?1",
+        [&run.run_id],
+        |r| r.get(0),
+    )?;
+    if rowid != next {
+        bail!("the internal run of {feature} got the rowid {rowid}, not {next}");
+    }
+    Ok(feature)
+}
+
+/// The rowid of the internal run of the feature `F-<rowid>`.
+fn feature_rowid(feature_id: &str) -> Option<i64> {
+    feature_id.strip_prefix("F-")?.parse().ok()
+}
+
+/// The internal run of the feature `feature_id` (fleetd-p6 MAP.md, Q5), or
+/// `None`.
+pub fn feature_run(conn: &Connection, feature_id: &str) -> Result<Option<Run>> {
+    let Some(rowid) = feature_rowid(feature_id) else {
+        return Ok(None);
+    };
+    optional(conn.query_row(
+        &format!("{SELECT} WHERE r.rowid = ?1"),
+        [rowid],
+        Run::from_row,
+    ))
+}
+
+/// Set the run branch of the internal run of the feature `feature_id` to
+/// the feature branch `branch`.
+pub fn set_feature_run_branch(conn: &Connection, feature_id: &str, branch: &str) -> Result<()> {
+    let rowid = feature_rowid(feature_id)
+        .with_context(|| format!("{feature_id} is not the id of a feature"))?;
+    let changed = conn.execute(
+        "UPDATE runs SET run_branch = ?2 WHERE rowid = ?1",
+        params![rowid, branch],
+    )?;
+    if changed != 1 {
+        bail!("the task ledger has no internal run of {feature_id}");
+    }
+    Ok(())
+}
+
 /// What a new solo run of `workspace` records: its slug, its workspace and
 /// the minimal profile's finish steps. The caller fills in the branches.
 pub fn solo_new_run(workspace: &str) -> NewRun {
