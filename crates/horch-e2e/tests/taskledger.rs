@@ -1595,8 +1595,13 @@ fn the_import_finds_work_that_never_landed() {
     let c = ok_as(&h, &w, &["ledger", "claim"]);
     assert!(c.contains("Reopened from unfinished past work"), "{c}");
     let un_claimed = link.join(un.strip_prefix(&proj).unwrap());
+    // The import adopts the tree as `orphaned`: the claim does not take it
+    // before its rescue (ticket 11 of fleetd-p3).
     assert!(
-        c.contains(&format!("Worktree: {}", un_claimed.display())),
+        c.contains(&format!(
+            "Orphaned: the worktree {} of the last attempt has no owner. Run horch ledger worktree new",
+            un_claimed.display()
+        )),
         "{c}"
     );
     // The inherited worktree lacks the untracked ticket: the claim names it

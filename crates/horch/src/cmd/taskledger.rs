@@ -2937,11 +2937,17 @@ fn render_workplace(c: &Claimed, out: &mut String) {
                 ));
             }
         }
-        (None, true) => out.push_str(&format!(
-            "Make your worktree first: horch ledger worktree new {}\n",
-            slug(&t.title)
-        )),
+        (None, true) => match tasks::orphaned_text(c, &slug(&t.title)) {
+            Some(line) => out.push_str(&line),
+            None => out.push_str(&format!(
+                "Make your worktree first: horch ledger worktree new {}\n",
+                slug(&t.title)
+            )),
+        },
         (None, false) => out.push_str("Work in the shared checkout.\n"),
+    }
+    if let Some(line) = tasks::rescue_ref_text(c) {
+        out.push_str(&line);
     }
 }
 

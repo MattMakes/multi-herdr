@@ -232,8 +232,8 @@ fn a_claim_hands_the_open_worktree_to_the_new_worker() {
     sql(
         &s,
         &format!(
-            "INSERT INTO worktrees (worktree_id, task_id, repo_root, path, branch, base, status, origin, created_at) \
-             VALUES ('wt1', '{}', '/repo', '/repo/.worktrees/a', 'fleet/a', 'main', 'open', 'native', '2000-01-01T00:00:00Z')",
+            "INSERT INTO worktrees (worktree_id, task_id, repo_root, path, branch, base, status, state, origin, created_at) \
+             VALUES ('wt1', '{}', '/repo', '/repo/.worktrees/a', 'fleet/a', 'main', 'open', 'created', 'native', '2000-01-01T00:00:00Z')",
             t.task_id
         ),
     );

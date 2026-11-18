@@ -21,8 +21,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::fleetd::fleet_runtime::adapters::clock_store;
 use crate::fleetd::fleet_runtime::adapters::config_file;
-use crate::fleetd::fleet_runtime::adapters::jobs_store::JobRow;
-use crate::fleetd::fleet_runtime::adapters::sqlite::drop_reserved;
+use crate::fleetd::fleet_runtime::adapters::jobs_store::{self, JobRow};
+use crate::fleetd::fleet_runtime::adapters::sqlite::{drop_reserved, state_of};
 use crate::fleetd::fleet_runtime::application::jobs::{
     self, outcome, result_data, JobCtx, JobKey, NewItem, Queued,
 };
@@ -32,10 +32,12 @@ use crate::fleetd::fleet_runtime::domain::config::FleetConfig;
 use crate::fleetd::fleet_runtime::domain::jobs::{Kind, State};
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 use crate::fleetd::ideas::application::needs_you::NeedsYouList;
+use crate::fleetd::task_execution::domain::task::AttemptState;
 use crate::fleetd::worker_profiles::adapters::launcher::Launcher;
 use crate::fleetd::worktree_custody::adapters::git::{
     worktree_add_key, BranchRefused, CliWorktreeGit,
 };
+use crate::fleetd::worktree_custody::adapters::remove_git::remove_key;
 use crate::fleetd::worktree_custody::adapters::rescue_git::rescue_key;
 use crate::fleetd::worktree_custody::adapters::run_now::{run_now, Starter};
 use crate::fleetd::worktree_custody::adapters::sqlite::{
@@ -46,8 +48,9 @@ use crate::fleetd::worktree_custody::application::rescue;
 use crate::runtime::bins::{git_bin, BinOverrides};
 use crate::runtime::context::{EnvSource, ProcessEnv};
 use crate::runtime::paths::nonempty_path;
-use crate::taskledger::model::Actor;
+use crate::taskledger::model::{Actor, WorkerStatus};
 use crate::taskledger::sql_words::WORKTREES_GONE;
+use crate::taskledger::workers;
 
 // ─── the request ────────────────────────────────────────────────────────
 
@@ -216,7 +219,10 @@ fn queued_run(
 /// - `reserved`, `active`, `landing` or `landed`: only the owner changes.
 /// - `orphaned`: no change; [`Attach::NeedsRescue`].
 ///
-/// Claim and handoff call it too (ticket 11 of fleetd-p3).
+/// It refuses a row that another live attempt owns (FM-14), and a row
+/// whose removal can run ([`refuse_removal`]).
+///
+/// The claim calls it too (ticket 11 of fleetd-p3).
 pub fn attach(
     tx: &Connection,
     row: &WorktreeRow,
@@ -229,6 +235,8 @@ pub fn attach(
         WorktreeState::Removed => bail!("worktree {id} is removed"),
         _ => {}
     }
+    refuse_live_owner(tx, row, attempt)?;
+    refuse_removal(tx, row)?;
     tx.execute(
         "UPDATE worktrees SET worker_id = ?2 WHERE worktree_id = ?1",
         params![id, worker],
@@ -241,6 +249,78 @@ pub fn attach(
     }
     let row = store::get(tx, id)?.with_context(|| format!("no worktree {id} in the ledger"))?;
     Ok(Attach::Attached(row))
+}
+
+/// Refuse a new owner of `row` while its owner attempt holds it: the
+/// attempt is not `attempt`, is not ended, and the worker of the row is
+/// live (FM-14). An attempt whose worker row ended (a handoff, a reap) is
+/// ending: the pass reaps it, and it holds no tree.
+fn refuse_live_owner(tx: &Connection, row: &WorktreeRow, attempt: Option<&str>) -> Result<()> {
+    let Some(owner) = row.owner_attempt.as_deref().filter(|o| Some(*o) != attempt) else {
+        return Ok(());
+    };
+    let not_ended =
+        state_of(tx, Entity::Attempt, owner)?.is_some_and(|s| s != AttemptState::Ended.as_str());
+    let worker_live = match row.worker_id.as_deref() {
+        Some(w) => workers::find(tx, w)?
+            .is_some_and(|w| WorkerStatus::parse(&w.status).is_ok_and(WorkerStatus::is_live)),
+        None => false,
+    };
+    if not_ended && worker_live {
+        bail!(
+            "worktree {} is held by the live attempt {owner}; a new attempt takes it only after that attempt ends (FM-14)",
+            row.worktree_id
+        );
+    }
+    Ok(())
+}
+
+/// Refuse a new owner of `row` while its `worktree_remove` run is `queued`
+/// or `running`, or `passed` before a pass observed it. A claim and a
+/// removal never both pass: `queue_remove` refuses a row that is not
+/// `landed` or `rescued`, and the writer lock of SQLite orders the 2
+/// transactions.
+fn refuse_removal(tx: &Connection, row: &WorktreeRow) -> Result<()> {
+    let id = row.worktree_id.as_str();
+    let key = remove_key(&row.path);
+    let Some(run) = jobs_store::latest(tx, Kind::WorktreeRemove, id, &key)? else {
+        return Ok(());
+    };
+    if matches!(run.state, State::Queued | State::Running | State::Passed) {
+        bail!(
+            "worktree {id} has the worktree_remove job {} in {}; it takes no new owner until a pass ends that job. Run the command again after that",
+            run.id,
+            run.state.as_str()
+        );
+    }
+    Ok(())
+}
+
+/// The owner of `row` gives it up, in `tx`: the row has no worker and no
+/// owner attempt. An `active` row moves to `created` (the design row
+/// `active`: retried, back to `created`), so the next attempt of its task
+/// takes it. Each other state stays. Handoff calls it (ticket 11 of
+/// fleetd-p3).
+pub fn release(tx: &Connection, row: &WorktreeRow, why: &str) -> Result<()> {
+    let id = row.worktree_id.as_str();
+    tx.execute(
+        "UPDATE worktrees SET worker_id = NULL WHERE worktree_id = ?1",
+        [id],
+    )?;
+    store::set_owner(tx, id, None)?;
+    if row.state == WorktreeState::Active {
+        let refusals: &dyn RecordRefusal = &NeedsYouList;
+        transition(
+            tx,
+            None,
+            Entity::Worktree,
+            id,
+            "created",
+            by_worker(why),
+            refusals,
+        )?;
+    }
+    Ok(())
 }
 
 /// Observe the `worktree_add` run `job`, in `tx`:

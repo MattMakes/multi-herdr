@@ -27,6 +27,10 @@ use crate::fleetd::ideas::domain::needs_you::Write;
 use crate::fleetd::task_execution::application::commands as attempt_commands;
 use crate::fleetd::task_execution::application::retry::Policy;
 use crate::fleetd::task_execution::domain::retry::{self, claimable_at, rung6, Numbers, Rung6};
+use crate::fleetd::worktree_custody::adapters::sqlite::{
+    self as trees, WorktreeRow, WorktreeState,
+};
+use crate::fleetd::worktree_custody::application::create;
 
 /// How much a retried task moves ahead of the queue (section 5.4).
 pub const RETRY_PRIORITY_BOOST: i64 = 1000;
@@ -1051,6 +1055,29 @@ pub struct Claimed {
     /// The answered questions of the task, oldest first. The claim prints
     /// them after the ticket snapshot.
     pub answered: Vec<AnsweredQuestion>,
+    /// The rescue ref of the tree of the task, its safety copy (FM-25).
+    pub rescue_ref: Option<String>,
+    /// The `orphaned` tree of the task, which the claim did not take:
+    /// `horch ledger worktree new` rescues it first, then takes it.
+    pub orphaned_worktree: Option<String>,
+}
+
+/// The line of the claim that names the rescue ref of the tree. `None`
+/// when the tree has none.
+pub fn rescue_ref_text(c: &Claimed) -> Option<String> {
+    let r = c.rescue_ref.as_deref()?;
+    Some(format!(
+        "Its work of the last attempt is also saved at {r}.\n"
+    ))
+}
+
+/// The line of the claim about an `orphaned` tree that the claim did not
+/// take. `name` is the name for `horch ledger worktree new`.
+pub fn orphaned_text(c: &Claimed, name: &str) -> Option<String> {
+    let path = c.orphaned_worktree.as_deref()?;
+    Some(format!(
+        "Orphaned: the worktree {path} of the last attempt has no owner. Run horch ledger worktree new {name}. It rescues the worktree first, then gives it to you.\n"
+    ))
 }
 
 /// 1 answered question of a task, as data to print.
@@ -1346,16 +1373,20 @@ fn take_task(conn: &Connection, w: &Worker, task: &Task) -> Result<()> {
          WHERE worker_id = ?1",
         params![worker_id, task.task_id, attempt, now],
     )?;
-    attempt_commands::start_attempt(conn, &task.task_id, attempt, w)?;
-    // An open worktree from an earlier attempt becomes this worker's.
-    conn.execute(
-        &format!(
-            "UPDATE worktrees SET worker_id = ?2 WHERE task_id = ?1 AND status IN ({held})",
-            held = sql_words::list(sql_words::WORKTREES_HELD)
-        ),
-        params![task.task_id, worker_id],
-    )?;
+    let attempt_id = attempt_commands::start_attempt(conn, &task.task_id, attempt, w)?;
+    // The tree of an earlier attempt becomes the tree of this attempt
+    // (FM-25). An `orphaned` tree stays: `horch ledger worktree new`
+    // rescues it first, then takes it.
+    if let Some(row) = held_tree(conn, &task.task_id)? {
+        create::attach(conn, &row, worker_id, Some(&attempt_id))?;
+    }
     Ok(())
+}
+
+/// The tree of `task_id` that an attempt can hold: the newest row that is
+/// not `removed`, with a held status.
+fn held_tree(conn: &Connection, task_id: &str) -> Result<Option<WorktreeRow>> {
+    Ok(trees::of_task(conn, task_id)?.filter(|r| sql_words::WORKTREES_HELD.contains(&r.status)))
 }
 
 fn claimed(conn: &Connection, w: &Worker, task: Task) -> Result<Claimed> {
@@ -1380,17 +1411,16 @@ fn claimed(conn: &Connection, w: &Worker, task: Task) -> Result<Claimed> {
             transcript_path: a.transcript_path,
         })
         .collect();
-    let wt: Option<(String, String, Option<String>)> = optional(conn.query_row(
-        &format!(
-            "SELECT path, branch, CASE WHEN status IN ({landed}) THEN landed_commit END
-             FROM worktrees WHERE task_id = ?1 AND status IN ({held})
-             ORDER BY created_at DESC LIMIT 1",
-            landed = sql_words::list(sql_words::WORKTREES_LANDED),
-            held = sql_words::list(sql_words::WORKTREES_HELD)
-        ),
-        [&task.task_id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-    ))?;
+    let tree = held_tree(conn, &task.task_id)?;
+    let rescue_ref = tree.as_ref().and_then(|t| t.rescue_ref.clone());
+    let (wt, orphaned_worktree) = match tree {
+        Some(t) if t.state == WorktreeState::Orphaned => (None, Some(t.path)),
+        Some(t) => {
+            let landed = landed_commit(conn, &t)?;
+            (Some((t.path, t.branch, landed)), None)
+        }
+        None => (None, None),
+    };
     let steps = super::runs::get(conn, &task.run_id)?.steps()?;
     let steps_after_land = steps
         .iter()
@@ -1411,8 +1441,23 @@ fn claimed(conn: &Connection, w: &Worker, task: Task) -> Result<Claimed> {
         ticket_snapshot: task.ticket_snapshot.clone(),
         handoff_path,
         answered: answered_questions(conn, &task.task_id)?,
+        rescue_ref,
+        orphaned_worktree,
         task,
     })
+}
+
+/// The commit that the landed tree `t` landed; `None` for a tree that
+/// did not land.
+fn landed_commit(conn: &Connection, t: &WorktreeRow) -> Result<Option<String>> {
+    if !sql_words::WORKTREES_LANDED.contains(&t.status) {
+        return Ok(None);
+    }
+    Ok(conn.query_row(
+        "SELECT landed_commit FROM worktrees WHERE worktree_id = ?1",
+        [&t.worktree_id],
+        |r| r.get(0),
+    )?)
 }
 
 /// What [`handoff`] did.
@@ -1460,13 +1505,9 @@ pub fn handoff(tx: &Transaction, worker_id: &str, path: &str) -> Result<HandedOf
         params![task.task_id, util::now()],
     )?;
     // The worktree waits for the next claim, which takes it over.
-    tx.execute(
-        &format!(
-            "UPDATE worktrees SET worker_id = NULL WHERE task_id = ?1 AND status IN ({held})",
-            held = sql_words::list(sql_words::WORKTREES_HELD)
-        ),
-        [&task.task_id],
-    )?;
+    if let Some(row) = held_tree(tx, &task.task_id)? {
+        create::release(tx, &row, "its attempt handed off the task")?;
+    }
     let wake_id = outbox::write(tx, &task.run_id, &handoff_wake(&w, &task, path))?;
     Ok(HandedOff {
         task: get(tx, &task.task_id)?,
@@ -2594,9 +2635,9 @@ mod tests {
             .immediate(|tx| {
                 tx.execute(
                     "INSERT INTO worktrees (worktree_id, task_id, worker_id, repo_root, path,
-                        branch, base, status, origin, created_at)
+                        branch, base, status, state, origin, created_at)
                      VALUES ('wt1', ?1, ?2, '/repo', '/repo/.worktrees/b', 'fleet/b', 'main',
-                        'open', 'native', ?3)",
+                        'open', 'active', 'native', ?3)",
                     params![c.task.task_id, w, util::now()],
                 )?;
                 Ok(())
