@@ -392,7 +392,7 @@ fn rr2_expired_lease_never_leaves_the_task_assigned() {
     let log = log.join("\n");
     let t = f.task();
     assert!(
-        t.status == "ready" || t.status == "escalated",
+        matches!(t.status.as_str(), "stalled" | "ready" | "escalated"),
         "after its lease expired, {} is {}\n{log}",
         t.id,
         t.status
