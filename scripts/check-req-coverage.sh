@@ -8,15 +8,21 @@
 # refer to it. An ID defined twice is an error. When the table has a `Phase`
 # (or `Ph`) column, the ID's phase is that cell's first token (A0..A12,
 # B1..B6); otherwise the ID is legacy and has no phase.
+# The Rust copy of this rule is requirement_ids in crates/horch-core/src/taskledger/map.rs.
 #
 #   scripts/check-req-coverage.sh                  # every ID (all phases have landed)
 #   scripts/check-req-coverage.sh --through A3     # legacy IDs + phases A0..A3
 #   scripts/check-req-coverage.sh --phase A1,B2    # only IDs of these phases
 #   scripts/check-req-coverage.sh TEL-05 ...       # only these IDs
+#   scripts/check-req-coverage.sh --help           # print this text
 #
 # Prints each ID with the tests found, and exits 1 if any ID has none, or if
 # nothing is left to check (a moved or deleted spec must not pass silently).
 set -euo pipefail
+if [ "${1:-}" = "--help" ]; then
+  awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"
+  exit 0
+fi
 cd "$(dirname "$0")/.."
 order="A0 A1 A2 A3 A4 A5 A6 A7 A8 A9 A10 A11 A12 B1 B2 B3 B4 B5 B6"
 

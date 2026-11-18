@@ -21,6 +21,13 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
+use crate::fleetd::ideas::adapters::plan_yaml;
+use crate::fleetd::ideas::domain::plan::{Acceptance, Kind, Plan, PlannedTask};
+use crate::fleetd::ideas::domain::plan_validator::{
+    self, PlanFacts, PlanValidator, Problem as PlanProblem, Requirement,
+};
+use crate::fleetd::ideas::domain::{plan_rules_coverage, plan_rules_dag, plan_rules_judges};
+
 use super::model::{ReviewMode, TaskKind, WorkKind, WorktreeMode};
 use super::tasks::NewTask;
 
@@ -905,6 +912,9 @@ fn parse(path: &Path, relative_to: &Path, mode: Mode) -> Result<(Map, Vec<Proble
         &mut problems,
     );
     order_problems(&rows, &ctx, &mut problems);
+    if ctx.mode == Mode::DryRun && problems.is_empty() && !rows.items.is_empty() {
+        problems = validate_map(&rows, &table.spec_ref, &ctx, *header_line);
+    }
     if rows.items.is_empty() && problems.is_empty() {
         problems = map_problem(
             &ctx.map_file,
@@ -941,11 +951,280 @@ pub fn read(path: &Path, relative_to: &Path) -> Result<Map> {
     Ok(map)
 }
 
-/// Check the map at `path` and every ticket it links against C1, for
-/// `add-map --dry-run`. Nothing is written. The error is only for a map
-/// file that cannot be read.
+/// Check the map at `path` and every ticket it links against C1, then run
+/// the plan validator on it, for `add-map --dry-run`. A `.yaml` file is a
+/// plan.yaml: the plan validator runs on it. Nothing is written. The error
+/// is only for a file that cannot be read or is not a plan.yaml.
 pub fn check(path: &Path, relative_to: &Path) -> Result<(Map, Vec<Problem>)> {
+    if is_plan_yaml(path) {
+        return check_plan_yaml(path, relative_to);
+    }
     parse(path, relative_to, Mode::DryRun)
+}
+
+/// The rules that a dry run reports. A dry run has no roster and no
+/// `fleet.toml`, so it does not report the profile, gate and model guide
+/// rules: fleetd runs them when it commits a plan. A `MAP.md` has no judge
+/// task (its review is the code sweep), and the requirements of a
+/// `plan.yaml` come from its idea folder, which a dry run does not read.
+const MAP_RULES: [&str; 3] = [
+    plan_validator::SCHEMA,
+    plan_rules_dag::RULE,
+    plan_rules_coverage::RULE,
+];
+const PLAN_YAML_RULES: [&str; 3] = [
+    plan_validator::SCHEMA,
+    plan_rules_dag::RULE,
+    plan_rules_judges::RULE,
+];
+
+/// Each problem of `plan` that one of `rules` finds.
+fn validated(plan: &Plan, facts: &PlanFacts, rules: &[&str]) -> Vec<PlanProblem> {
+    PlanValidator::validate(plan, facts)
+        .into_iter()
+        .filter(|p| rules.contains(&p.rule))
+        .collect()
+}
+
+/// The text of a validator problem, with its rule and its task.
+fn problem_text(p: &PlanProblem, what: &str) -> String {
+    match &p.task {
+        Some(key) => format!("{}: {what} {key}: {}", p.rule, p.message),
+        None => format!("{}: {}", p.rule, p.message),
+    }
+}
+
+/// `line` of a requirement table row: `| XXX-00 | ...`.
+fn is_requirement_row(line: &str) -> bool {
+    let b = line.as_bytes();
+    b.len() >= 10
+        && b.starts_with(b"| ")
+        && b[2..5].iter().all(u8::is_ascii_uppercase)
+        && b[5] == b'-'
+        && b[6..8].iter().all(u8::is_ascii_digit)
+        && &b[8..10] == b" |"
+}
+
+/// Cell `n` of a table line, counted from 1, as the script's `cell` reads it.
+fn table_cell(line: &str, n: usize) -> &str {
+    line.split('|')
+        .nth(n)
+        .unwrap_or("")
+        .trim_matches([' ', '\t'])
+}
+
+/// The requirement ids that `spec` defines, with the line of each. This is
+/// the rule of `scripts/check-req-coverage.sh`: a row `| XXX-00 | ...`
+/// defines its id only in a table whose header's second cell is
+/// `Requirement` or `Check`. A line that does not start with `|` ends a
+/// table. Keep the 2 the same.
+pub fn requirement_ids(spec: &str) -> Vec<(String, usize)> {
+    let mut out = Vec::new();
+    let (mut in_table, mut defining) = (false, false);
+    for (i, line) in spec.lines().enumerate() {
+        if !line.starts_with('|') {
+            in_table = false;
+        } else if !in_table {
+            in_table = true;
+            defining = matches!(table_cell(line, 2), "Requirement" | "Check");
+        } else if defining && is_requirement_row(line) {
+            out.push((table_cell(line, 1).to_string(), i + 1));
+        }
+    }
+    out
+}
+
+/// `word` is a requirement id: 3 capital letters, `-` and 2 digits.
+fn is_requirement_id(word: &str) -> bool {
+    let b = word.as_bytes();
+    b.len() == 6
+        && b[..3].iter().all(u8::is_ascii_uppercase)
+        && b[3] == b'-'
+        && b[4..].iter().all(u8::is_ascii_digit)
+}
+
+/// The requirement ids that a ticket names in its `## Requirements` section.
+fn covered_ids(ticket: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut inside = false;
+    for line in ticket.lines().map(str::trim) {
+        if line.starts_with('#') {
+            inside = line.trim_start_matches('#').trim() == "Requirements";
+            continue;
+        }
+        if !inside {
+            continue;
+        }
+        for word in line.split(|c: char| !c.is_ascii_alphanumeric() && c != '-') {
+            if is_requirement_id(word) && !out.iter().any(|id| id == word) {
+                out.push(word.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// The spec of a map: the requirements that its tables define. The spec
+/// path is relative to the folder of the map or to a folder above it (the
+/// root of its worktree), else to the project root. Each one
+/// cites the spec, and the map approves the spec (an approved map is the
+/// approval of a run in flight).
+fn spec_facts(spec_ref: &Option<String>, ctx: &RowContext) -> Result<PlanFacts, String> {
+    let Some(spec) = spec_ref else {
+        return Ok(PlanFacts::default());
+    };
+    let text = ctx
+        .dir
+        .ancestors()
+        .chain([ctx.relative_to])
+        .find_map(|base| std::fs::read_to_string(base.join(spec)).ok());
+    let text = match text {
+        Some(text) => text,
+        None if spec.ends_with(".md") => {
+            return Err(format!(
+                "the map names the spec {spec}, which cannot be read"
+            ))
+        }
+        None => return Ok(PlanFacts::default()),
+    };
+    let mut requirements: Vec<Requirement> = Vec::new();
+    for (id, _) in requirement_ids(&text) {
+        if !requirements.iter().any(|r| r.id == id) {
+            requirements.push(Requirement {
+                id,
+                text: String::new(),
+                cites: vec![spec.clone()],
+            });
+        }
+    }
+    Ok(PlanFacts {
+        requirements,
+        approved_assumptions: vec![spec.clone()],
+        ..PlanFacts::default()
+    })
+}
+
+/// 1 ticket of a map as a task of a plan. A blocker `T-<n>` is a task of the
+/// run, not of the map, so it is not an `after:` key. A ticket with
+/// `**Check:** none` has the structural check of its ticket file.
+fn planned_task(item: &MapItem) -> PlannedTask {
+    let t = &item.task;
+    let kind_word = t.work_kind.map(|k| k.as_str()).unwrap_or("").to_string();
+    let acceptance = match (&t.land_check, t.check_none) {
+        (Some(cmd), _) => vec![Acceptance::Run(cmd.clone())],
+        (None, true) => vec![Acceptance::Sections {
+            file: t.task_file.clone(),
+            sections: Vec::new(),
+        }],
+        (None, false) => Vec::new(),
+    };
+    PlannedTask {
+        key: item.key.clone(),
+        title: t.title.clone(),
+        kind: Kind::parse(&kind_word),
+        kind_word,
+        profile: t.primary.clone(),
+        covers: covered_ids(t.ticket_snapshot.as_deref().unwrap_or("")),
+        acceptance,
+        after: t
+            .blocked_by
+            .iter()
+            .filter(|b| !b.starts_with("T-"))
+            .cloned()
+            .collect(),
+        ..PlannedTask::default()
+    }
+}
+
+/// The problems of the plan validator for a map whose rows all read well.
+/// A `MAP.md` has no idea, feature or branch: the map stands in for the idea
+/// and the feature, and its tasks land on the branch of its run.
+fn validate_map(
+    rows: &Rows,
+    spec_ref: &Option<String>,
+    ctx: &RowContext,
+    header: usize,
+) -> Vec<Problem> {
+    let at = |line: usize, problem: String| Problem {
+        file: ctx.map_file.clone(),
+        line,
+        problem,
+    };
+    let facts = match spec_facts(spec_ref, ctx) {
+        Ok(facts) => facts,
+        Err(problem) => return vec![at(header, problem)],
+    };
+    let plan = Plan {
+        idea: ctx.map_file.clone(),
+        repo: ctx.relative_to.display().to_string(),
+        feature: ctx.map_file.clone(),
+        base_branch: "the branch of the run".into(),
+        fable_approved: false,
+        tasks: rows.items.iter().map(planned_task).collect(),
+    };
+    validated(&plan, &facts, &MAP_RULES)
+        .iter()
+        .map(|p| {
+            let line = p
+                .task
+                .as_ref()
+                .and_then(|k| rows.items.iter().position(|i| &i.key == k))
+                .map_or(header, |i| rows.lines[i]);
+            at(line, problem_text(p, "ticket"))
+        })
+        .collect()
+}
+
+/// `path` names a `plan.yaml`.
+fn is_plan_yaml(path: &Path) -> bool {
+    path.extension().is_some_and(|e| e == "yaml" || e == "yml")
+}
+
+/// The line of the task `key` in a plan.yaml; 1 when it is not found.
+fn yaml_line(text: &str, key: &str) -> usize {
+    text.lines()
+        .position(|l| {
+            let l = l.trim().trim_start_matches("- ").trim();
+            l.strip_prefix("key:")
+                .is_some_and(|v| v.trim().trim_matches(['"', '\'']) == key)
+        })
+        .map_or(1, |i| i + 1)
+}
+
+/// The dry run of a plan.yaml: each task is an item, and each problem of the
+/// plan validator is a problem.
+fn check_plan_yaml(path: &Path, relative_to: &Path) -> Result<(Map, Vec<Problem>)> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("reading the plan {}", path.display()))?;
+    let plan = plan_yaml::read(path)?;
+    let file = project_path(path, relative_to);
+    let problems = validated(&plan, &PlanFacts::default(), &PLAN_YAML_RULES)
+        .iter()
+        .map(|p| Problem {
+            file: file.clone(),
+            line: p.task.as_deref().map_or(1, |k| yaml_line(&text, k)),
+            problem: problem_text(p, "task"),
+        })
+        .collect();
+    let items = plan
+        .tasks
+        .iter()
+        .map(|t| MapItem {
+            key: t.key.clone(),
+            task: NewTask::work(
+                &t.title,
+                t.ticket.as_ref().map_or("", |f| f.path.as_str()),
+                &t.profile,
+            ),
+        })
+        .collect();
+    Ok((
+        Map {
+            spec_ref: None,
+            items,
+        },
+        problems,
+    ))
 }
 
 #[cfg(test)]
