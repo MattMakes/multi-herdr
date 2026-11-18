@@ -34,8 +34,9 @@ impl Class {
 
 /// Each request kind: the table "Request kinds" of
 /// `docs/tickets/fleetd-p5/MAP.md`, 1 kind for each command that changes
-/// state, then the idea kinds of Phase 6 (design, "Each request kind has a
-/// class").
+/// state, with the 4 kinds of the records of 1 spawn after `spawn` (ticket
+/// 23 of fleetd-p5), then the idea kinds of Phase 6 (design, "Each request
+/// kind has a class").
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Kind {
     RunNew,
@@ -59,6 +60,10 @@ pub enum Kind {
     WorkerNew,
     WorkerPid,
     Spawn,
+    SpawnAdopt,
+    SpawnGateNote,
+    WorkerLaunched,
+    WorkerLaunchFailed,
     OrchestratorClaim,
     OrchestratorStop,
     JobRequeue,
@@ -83,7 +88,7 @@ pub enum Kind {
 
 impl Kind {
     /// Each kind, in the order of the MAP table, then the idea kinds.
-    pub const ALL: [Kind; 41] = [
+    pub const ALL: [Kind; 45] = [
         Kind::RunNew,
         Kind::RunClose,
         Kind::RunGate,
@@ -105,6 +110,10 @@ impl Kind {
         Kind::WorkerNew,
         Kind::WorkerPid,
         Kind::Spawn,
+        Kind::SpawnAdopt,
+        Kind::SpawnGateNote,
+        Kind::WorkerLaunched,
+        Kind::WorkerLaunchFailed,
         Kind::OrchestratorClaim,
         Kind::OrchestratorStop,
         Kind::JobRequeue,
@@ -151,6 +160,10 @@ impl Kind {
             Kind::WorkerNew => "worker_new",
             Kind::WorkerPid => "worker_pid",
             Kind::Spawn => "spawn",
+            Kind::SpawnAdopt => "spawn_adopt",
+            Kind::SpawnGateNote => "spawn_gate_note",
+            Kind::WorkerLaunched => "worker_launched",
+            Kind::WorkerLaunchFailed => "worker_launch_failed",
             Kind::OrchestratorClaim => "orchestrator_claim",
             Kind::OrchestratorStop => "orchestrator_stop",
             Kind::JobRequeue => "job_requeue",
@@ -399,6 +412,59 @@ impl IdeaAdd {
     }
 }
 
+/// The required and the optional payload fields of each kind of the
+/// records of 1 spawn (ticket 23 of fleetd-p5). `None` for each other kind.
+fn spawn_record_fields(kind: Kind) -> Option<(&'static [&'static str], &'static [&'static str])> {
+    match kind {
+        Kind::SpawnAdopt => Some((
+            &["run_id", "worker_id", "persona", "target_task_id", "spawn_pid"],
+            &[],
+        )),
+        Kind::SpawnGateNote => Some((&["text"], &["run_id", "worker_id"])),
+        Kind::WorkerLaunched => Some((
+            &["run_id", "worker_id", "pane", "role", "harness", "model"],
+            &["effort"],
+        )),
+        Kind::WorkerLaunchFailed => Some((&["run_id", "worker_id", "reason"], &[])),
+        _ => None,
+    }
+}
+
+/// Check the payload `fields` of a kind of the records of 1 spawn: each key
+/// is a field of the kind, each text is not empty, and each required field
+/// is there. `spawn_gate_note` has both `run_id` and `worker_id` or
+/// neither. Each other kind passes.
+pub fn check_spawn_record(kind: Kind, fields: &[(&str, &str)]) -> Result<(), RequestError> {
+    let Some((required, optional)) = spawn_record_fields(kind) else {
+        return Ok(());
+    };
+    let name = kind.as_str();
+    for (key, text) in fields {
+        if !required.contains(key) && !optional.contains(key) {
+            return Err(RequestError::malformed(&format!(
+                "{name} has the unknown payload field `{key}`"
+            )));
+        }
+        if text.trim().is_empty() {
+            return Err(RequestError::malformed(&format!(
+                "{name} has the empty payload field `{key}`"
+            )));
+        }
+    }
+    let has = |key: &str| fields.iter().any(|(k, _)| *k == key);
+    if let Some(key) = required.iter().find(|k| !has(k)) {
+        return Err(RequestError::malformed(&format!(
+            "{name} has no payload field `{key}`"
+        )));
+    }
+    if kind == Kind::SpawnGateNote && has("run_id") != has("worker_id") {
+        return Err(RequestError::malformed(
+            "spawn_gate_note has both run_id and worker_id, or neither",
+        ));
+    }
+    Ok(())
+}
+
 /// The reason that a request or a reply is refused.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RequestError {
@@ -458,7 +524,7 @@ mod tests {
 
     /// The table "Request kinds" of `docs/tickets/fleetd-p5/MAP.md`, then
     /// the idea kinds of Phase 6.
-    const MAP_TABLE: [(&str, Class); 41] = [
+    const MAP_TABLE: [(&str, Class); 45] = [
         ("run_new", Class::Operator),
         ("run_close", Class::Operator),
         ("run_gate", Class::Operator),
@@ -480,6 +546,10 @@ mod tests {
         ("worker_new", Class::Operator),
         ("worker_pid", Class::Operator),
         ("spawn", Class::Operator),
+        ("spawn_adopt", Class::Operator),
+        ("spawn_gate_note", Class::Operator),
+        ("worker_launched", Class::Operator),
+        ("worker_launch_failed", Class::Operator),
         ("orchestrator_claim", Class::Operator),
         ("orchestrator_stop", Class::Operator),
         ("job_requeue", Class::Operator),
@@ -536,6 +606,40 @@ mod tests {
         assert_eq!(workers.count(), 4);
         assert_eq!(Class::Worker.as_str(), "worker");
         assert_eq!(Class::Operator.as_str(), "operator");
+    }
+
+    #[test]
+    fn spawn_record_payload_check_refuses_an_unknown_an_empty_and_a_missing_field() {
+        let launched = [
+            ("run_id", "R1"),
+            ("worker_id", "W1"),
+            ("pane", "p1"),
+            ("role", "opus-1"),
+            ("harness", "claude"),
+            ("model", "m"),
+        ];
+        assert_eq!(check_spawn_record(Kind::WorkerLaunched, &launched), Ok(()));
+        let mut extra = launched.to_vec();
+        extra.push(("task_id", "T1"));
+        let err = check_spawn_record(Kind::WorkerLaunched, &extra).unwrap_err();
+        assert!(err.to_string().contains("unknown payload field `task_id`"), "{err}");
+        let err = check_spawn_record(Kind::WorkerLaunched, &launched[1..]).unwrap_err();
+        assert!(err.to_string().contains("no payload field `run_id`"), "{err}");
+        let err =
+            check_spawn_record(Kind::WorkerLaunchFailed, &[("run_id", "R1"), ("worker_id", " "), ("reason", "x")])
+                .unwrap_err();
+        assert!(err.to_string().contains("empty payload field `worker_id`"), "{err}");
+        assert_eq!(check_spawn_record(Kind::SpawnGateNote, &[("text", "spawn gate: x")]), Ok(()));
+        assert!(check_spawn_record(Kind::SpawnGateNote, &[("text", "x"), ("run_id", "R1")]).is_err());
+        assert_eq!(check_spawn_record(Kind::Spawn, &[("anything", "")]), Ok(()));
+        for kind in [
+            Kind::SpawnAdopt,
+            Kind::SpawnGateNote,
+            Kind::WorkerLaunched,
+            Kind::WorkerLaunchFailed,
+        ] {
+            assert_eq!(kind.class(), Class::Operator, "{}", kind.as_str());
+        }
     }
 
     #[test]

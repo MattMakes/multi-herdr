@@ -533,3 +533,182 @@ fn each_kind_twice_with_1_request_id_has_1_effect() {
         assert_eq!(w.rows(), rows, "{}: a second effect", kind.as_str());
     }
 }
+
+// ─── the records of 1 spawn (ticket 23 of fleetd-p5) ────────────────────
+
+/// A worker row of another run, so a payload that names it with run `r1`
+/// is refused.
+fn worker_of_other_run(w: &World) -> String {
+    let root = std::path::PathBuf::from(&w.run.project_root);
+    let other = runs::create(
+        &w.conn,
+        &root,
+        &NewRun {
+            slug: "r2".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    workers::insert(
+        &w.conn,
+        &NewWorker {
+            run_id: other.run_id,
+            kind: Some(WorkerKind::Worker),
+            persona: "opus".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn spawn_adopt_adopts_a_restart_row_once() {
+    let mut w = world();
+    let task = w.add("T", WorktreeMode::Shared);
+    let out = w.send(
+        Kind::Spawn,
+        json!({ "run_id": w.run.run_id, "persona": "opus" }),
+    );
+    let wid = out["worker_id"].as_str().unwrap().to_string();
+    w.conn
+        .execute(
+            "UPDATE workers SET target_task_id = ?2 WHERE worker_id = ?1",
+            params![wid, task],
+        )
+        .unwrap();
+    let payload = json!({
+        "run_id": w.run.run_id, "worker_id": wid, "persona": "opus",
+        "target_task_id": task, "spawn_pid": "4242",
+    });
+    let out = w.send(Kind::SpawnAdopt, payload.clone());
+    assert_eq!(out["worker_id"], json!(wid));
+    let data: String = w
+        .conn
+        .query_row(
+            "SELECT data_json FROM events WHERE entity_id = ?1 AND cause = 'adopted_by_spawn'",
+            [&wid],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(data.contains("4242"), "{data}");
+    let why = w.refused(Kind::SpawnAdopt, payload);
+    assert!(why.contains("another spawn adopted the row"), "{why}");
+    let why = w.refused(
+        Kind::SpawnAdopt,
+        json!({
+            "run_id": w.run.run_id, "worker_id": wid, "persona": "codex",
+            "target_task_id": task, "spawn_pid": "1",
+        }),
+    );
+    assert!(why.contains("not a row of persona codex"), "{why}");
+    let other = worker_of_other_run(&w);
+    let why = w.refused(
+        Kind::SpawnAdopt,
+        json!({
+            "run_id": w.run.run_id, "worker_id": other, "persona": "opus",
+            "target_task_id": task, "spawn_pid": "1",
+        }),
+    );
+    assert!(why.contains("not a row of run r1"), "{why}");
+}
+
+#[test]
+fn spawn_gate_note_writes_1_note_about_the_run_and_the_worker() {
+    let mut w = world();
+    let wid = w.worker(None);
+    let text = "spawn gate: teammate=opus outcome=NOTE pool=claude reason=near the limit";
+    w.send(
+        Kind::SpawnGateNote,
+        json!({ "run_id": w.run.run_id, "worker_id": wid, "text": text }),
+    );
+    assert_eq!(w.events(&wid, "note"), [text]);
+    w.send(Kind::SpawnGateNote, json!({ "text": text }));
+    let notes: i64 = w
+        .conn
+        .query_row(
+            "SELECT count(*) FROM events WHERE kind = 'note' AND text = ?1",
+            [text],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(notes, 2, "a spawn outside each run records its note too");
+    let why = w.refused(Kind::SpawnGateNote, json!({ "text": "free text" }));
+    assert!(why.contains("does not start with `spawn gate: `"), "{why}");
+    let other = worker_of_other_run(&w);
+    let why = w.refused(
+        Kind::SpawnGateNote,
+        json!({ "run_id": w.run.run_id, "worker_id": other, "text": text }),
+    );
+    assert!(why.contains("is not a worker of run"), "{why}");
+}
+
+#[test]
+fn worker_launched_records_the_pane_and_the_launch() {
+    let mut w = world();
+    let wid = w.worker(None);
+    w.send(
+        Kind::WorkerLaunched,
+        json!({
+            "run_id": w.run.run_id, "worker_id": wid, "pane": "p-7", "role": "opus-3",
+            "harness": "claude", "model": "m1", "effort": "high",
+        }),
+    );
+    let row: (Option<String>, Option<String>, Option<String>, Option<String>, Option<String>) = w
+        .conn
+        .query_row(
+            "SELECT pane_id, role, harness, model, effort FROM workers WHERE worker_id = ?1",
+            [&wid],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        row,
+        (
+            Some("p-7".into()),
+            Some("opus-3".into()),
+            Some("claude".into()),
+            Some("m1".into()),
+            Some("high".into())
+        )
+    );
+    let why = w.refused(
+        Kind::WorkerLaunched,
+        json!({
+            "run_id": w.run.run_id, "worker_id": "W-none", "pane": "p", "role": "r",
+            "harness": "claude", "model": "m",
+        }),
+    );
+    assert!(why.contains("no worker row has the id W-none"), "{why}");
+    let why = w.refused(
+        Kind::WorkerLaunched,
+        json!({ "run_id": w.run.run_id, "worker_id": wid, "pane": "p" }),
+    );
+    assert!(why.contains("no payload field `role`"), "{why}");
+}
+
+#[test]
+fn worker_launch_failed_ends_an_unclaimed_row() {
+    let mut w = world();
+    let wid = workers::insert(
+        &w.conn,
+        &NewWorker {
+            run_id: w.run.run_id.clone(),
+            kind: Some(WorkerKind::Worker),
+            persona: "opus".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    w.send(
+        Kind::WorkerLaunchFailed,
+        json!({ "run_id": w.run.run_id, "worker_id": wid, "reason": "REFUSED: pool closed" }),
+    );
+    assert_eq!(workers::get(&w.conn, &wid).unwrap().status, "launch_failed");
+    let other = worker_of_other_run(&w);
+    let why = w.refused(
+        Kind::WorkerLaunchFailed,
+        json!({ "run_id": w.run.run_id, "worker_id": other, "reason": "x" }),
+    );
+    assert!(why.contains("is not a worker of run"), "{why}");
+    assert_eq!(workers::get(&w.conn, &other).unwrap().status, "spawning");
+}

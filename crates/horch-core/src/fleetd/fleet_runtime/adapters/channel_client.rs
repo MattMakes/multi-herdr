@@ -31,6 +31,11 @@ use crate::taskledger::store::{self, Store};
 /// (`preservation-05-contracts-and-values.md`, row V-18).
 const CONNECT_WAIT: Duration = Duration::from_secs(5);
 
+/// The longest wait for the reply of 1 send, and for the write of the
+/// request line. A send past it is a lost reply, so a fleetd that accepts
+/// and never answers cannot hold a command with no end.
+const REPLY_WAIT: Duration = Duration::from_secs(30);
+
 /// The most sends of 1 request. A send after the first comes only after a
 /// lost reply, when the `requests` row is missing or `pending`.
 const MAX_SENDS: usize = 3;
@@ -178,6 +183,10 @@ fn fleetd_process(ctx: &RuntimeContext) -> Result<Option<(u32, u64)>> {
 /// Write `line` to the server, then read 1 reply line. `None` when the
 /// connection ends before a whole reply line: the reply is lost.
 fn exchange(stream: &Stream, line: &str, max_bytes: u64, id: &RequestId) -> Result<Option<Reply>> {
+    stream
+        .set_read_timeout(REPLY_WAIT)
+        .and_then(|()| stream.set_write_timeout(REPLY_WAIT))
+        .with_context(|| format!("request {id}: setting the reply deadline"))?;
     let mut writer = stream;
     if writer
         .write_all(line.as_bytes())

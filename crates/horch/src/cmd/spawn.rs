@@ -28,11 +28,12 @@ use horch_core::routing::policy::BalanceMode;
 use horch_core::routing::quota::QuotaView;
 use horch_core::runtime::RuntimeContext;
 use horch_core::skills::{harness_support, SkillResolution};
-use horch_core::taskledger::model::{Actor, EventKind};
-use horch_core::taskledger::util::{event as ledger_event, About};
+use horch_core::fleetd::fleet_runtime::domain::requests::Kind;
 use horch_core::workspace::arrange;
 use horch_core::workspace::herdr::Herdr;
 use horch_core::workspace::model::Direction;
+
+use super::taskledger_spawn::Prepared;
 
 /// How long `horch spawn` waits for its worker to register or to leave a
 /// startup error (`HORCH_SPAWN_WAIT_MS` overrides it). After it, the spawn
@@ -174,7 +175,11 @@ pub fn spawn(ctx: &RuntimeContext, args: SpawnArgs) -> Result<String> {
         .as_ref()
         .and(caller.as_ref())
         .and_then(|c| c.worker_id.as_deref());
-    let ledger = super::taskledger_spawn::prepare(ctx, &args, controller_row)?;
+    let ledger = match super::taskledger_spawn::prepare(ctx, &args, controller_row)? {
+        Prepared::NoRun => None,
+        Prepared::Pane(l) => Some(l),
+        Prepared::Ended(line) => return Ok(line),
+    };
     // A push attempt is bound to a ready task, so it is never over the plan.
     let result = match ledger.as_ref() {
         Some(l) if !brief && l.push.is_none() => refuse_over_plan(ctx, l)
@@ -187,7 +192,7 @@ pub fn spawn(ctx: &RuntimeContext, args: SpawnArgs) -> Result<String> {
             Some(SpawnError::Refused { line, .. }) => line.clone(),
             _ => format!("{e:#}"),
         };
-        l.launch_failed(&reason);
+        l.launch_failed(ctx, &reason);
     }
     result
 }
@@ -204,7 +209,7 @@ pub(crate) fn worker_task(ledger: Option<&super::taskledger_spawn::LedgerSpawn>)
 /// Refuse a claiming spawn that its run's plan does not need (gap G-A): the
 /// workers of its persona on their way already cover the startable tasks.
 fn refuse_over_plan(ctx: &RuntimeContext, l: &super::taskledger_spawn::LedgerSpawn) -> Result<()> {
-    let Some(store) = horch_core::taskledger::open_existing(ctx)? else {
+    let Some(store) = horch_core::taskledger::open_existing_read_only(ctx)? else {
         return Ok(());
     };
     match horch_core::taskledger::tasks::spawn_refusal(store.conn(), &l.run.run_id, &l.worker_id)? {
@@ -318,20 +323,17 @@ impl GateRecord {
     }
 }
 
-/// Write 1 ledger event for a gate decision, about the run and the worker
-/// this spawn joins (`about`), if any. Best effort: a failed write prints a
-/// warning and never changes the spawn.
+/// Record 1 ledger event for a gate decision, about the run and the worker
+/// this spawn joins (`about`), if any, with 1 `spawn_gate_note` request.
+/// Best effort: a failed request prints a warning and never changes the
+/// spawn.
 fn record_gate(ctx: &RuntimeContext, about: Option<(&str, &str)>, rec: &GateRecord) {
-    let write = || -> Result<()> {
-        let mut store = horch_core::taskledger::open(ctx)?;
-        let about = About {
-            run: about.map(|(run, _)| run),
-            task: None,
-            worker: about.map(|(_, worker)| worker),
-        };
-        store.immediate(|tx| ledger_event(tx, &about, Actor::Horch, EventKind::Note, &rec.text()))
-    };
-    if let Err(e) = write() {
+    let mut payload = serde_json::json!({ "text": rec.text() });
+    if let Some((run, worker)) = about {
+        payload["run_id"] = run.into();
+        payload["worker_id"] = worker.into();
+    }
+    if let Err(e) = super::taskledger_spawn::request(ctx, Kind::SpawnGateNote, payload) {
         eprintln!("horch spawn: the task ledger did not record the gate decision: {e:#}");
     }
 }
@@ -360,7 +362,7 @@ struct Agent {
 
 /// The agent process recorded on worker row `worker_id`, when it has one.
 fn recorded_agent(ctx: &RuntimeContext, worker_id: &str) -> Option<Agent> {
-    let store = horch_core::taskledger::open(ctx).ok()?;
+    let store = horch_core::taskledger::open_existing_read_only(ctx).ok()??;
     let w = horch_core::taskledger::workers::find(store.conn(), worker_id).ok()??;
     Some(Agent {
         pid: u32::try_from(w.agent_pid?).ok()?,
@@ -609,13 +611,14 @@ fn launch(
     let started = SystemTime::now();
     let out = service.spawn(plan, role).inspect_err(|e| {
         if let Some(l) = ledger {
-            l.launch_failed(&format!("{e:#}"));
+            l.launch_failed(ctx, &format!("{e:#}"));
         }
     })?;
     sweep_state(ctx, sandboxed);
     let launch = &out.plan.launch;
     if let Some(l) = ledger {
         l.spawned(
+            ctx,
             out.plan.execution.role.as_str(),
             &out.pane,
             launch.teammate.agent.as_str(),
@@ -782,7 +785,7 @@ fn wait_for_start(
     match await_worker(data_root, &keys, started, wait, SPAWN_POLL, &mut registered) {
         WorkerStart::Registered => Ok(()),
         WorkerStart::Failed(error) => {
-            record_failed_start(sc, out, &error, ledger);
+            record_failed_start(ctx, sc, out, &error, ledger);
             bail!("worker {role} (pane {pane}) failed to start: {error}")
         }
         WorkerStart::Waiting => {
@@ -798,6 +801,7 @@ fn wait_for_start(
 
 /// End the record of a worker that failed at startup, and clean up after it.
 fn record_failed_start(
+    ctx: &RuntimeContext,
     sc: &SpawnContext,
     out: &SpawnOutcome,
     error: &str,
@@ -816,7 +820,7 @@ fn record_failed_start(
     let _ = sc.herdr.pane_close(&out.pane);
     sc.mailbox.unregister(out.plan.execution.role.as_str());
     if let Some(l) = ledger {
-        l.launch_failed(error);
+        l.launch_failed(ctx, error);
     }
 }
 
@@ -847,7 +851,7 @@ pub fn fleet_warnings(ctx: &RuntimeContext, as_note: bool) {
         let listed = |w: &str| workspaces.iter().any(|ws| ws.workspace_id == w);
         let mut active = std::collections::BTreeMap::<String, Option<String>>::new();
         // A read only: a scratch fleet must not create the ledger (#199).
-        if let Ok(Some(store)) = horch_core::taskledger::open_existing(ctx) {
+        if let Ok(Some(store)) = horch_core::taskledger::open_existing_read_only(ctx) {
             if let Ok(root) = super::taskledger::project_root(ctx) {
                 if let Ok(runs) = horch_core::taskledger::runs::of_project(store.conn(), &root) {
                     for run in runs.into_iter().filter(|r| r.status == "active") {
@@ -1377,8 +1381,11 @@ mod trf_41_tests {
     use horch_core::routing::decision::{PoolLine, RoutingMode};
     use horch_core::routing::quota::State;
     use horch_core::runtime::MapEnv;
+    use horch_core::fleetd::fleet_runtime::adapters::channel_server::ChannelServer;
+    use horch_core::taskledger::model::{Actor, WorkerKind};
     use horch_core::taskledger::runs::{self, NewRun, Run};
     use horch_core::taskledger::tasks::{self, NewTask};
+    use horch_core::taskledger::workers::{self, NewWorker};
     use horch_core::taskledger::Store;
 
     use super::*;
@@ -1414,8 +1421,19 @@ mod trf_41_tests {
         }
     }
 
-    /// A ledger with 1 run and 1 startable `opus` task.
-    fn world() -> (tempfile::TempDir, RuntimeContext, Store, Run) {
+    /// A ledger with 1 run, 1 startable `opus` task and 1 worker row, and
+    /// an in-process fleetd that serves its channel.
+    /// The server ends before its folder goes: fields drop in order.
+    struct World {
+        _fleetd: ChannelServer,
+        _dir: tempfile::TempDir,
+        ctx: RuntimeContext,
+        store: Store,
+        run: Run,
+        worker: String,
+    }
+
+    fn world() -> World {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("ledger.sqlite3");
         let ctx = RuntimeContext::from_env(
@@ -1424,7 +1442,8 @@ mod trf_41_tests {
                     "HORCH_STATE_DIR",
                     dir.path().join("state").to_str().unwrap(),
                 )
-                .with("HORCH_LEDGER_DB", db.to_str().unwrap()),
+                .with("HORCH_LEDGER_DB", db.to_str().unwrap())
+                .with("FLEET_ROOT", dir.path().join("fleet").to_str().unwrap()),
         )
         .unwrap();
         let mut store = Store::open(&db).unwrap();
@@ -1450,7 +1469,28 @@ mod trf_41_tests {
                 )
             })
             .unwrap();
-        (dir, ctx, store, run)
+        let worker = store
+            .immediate(|tx| {
+                workers::insert(
+                    tx,
+                    &NewWorker {
+                        run_id: run.run_id.clone(),
+                        kind: Some(WorkerKind::Worker),
+                        persona: "opus".into(),
+                        ..Default::default()
+                    },
+                )
+            })
+            .unwrap();
+        let fleetd = crate::cmd::taskledger_spawn::test_fleetd::serve(&ctx);
+        World {
+            _dir: dir,
+            ctx,
+            store,
+            run,
+            worker,
+            _fleetd: fleetd,
+        }
     }
 
     /// The gate events of a run: (actor, kind, worker, text).
@@ -1513,20 +1553,21 @@ mod trf_41_tests {
 
     #[test]
     fn trf_41_each_decision_is_1_ledger_event_about_the_run_and_the_worker() {
-        let (_dir, ctx, store, run) = world();
-        let about = Some((run.run_id.as_str(), "w-1"));
+        let w = world();
+        let (ctx, store, run) = (&w.ctx, &w.store, &w.run);
+        let about = Some((run.run_id.as_str(), w.worker.as_str()));
         record_gate(
-            &ctx,
+            ctx,
             about,
             &GateRecord::spoken(&provenance("opus", "opus", Some("n"))),
         );
-        record_gate(&ctx, about, &GateRecord::refused(&refusal()).unwrap());
-        let events = gate_events(&store, &run);
+        record_gate(ctx, about, &GateRecord::refused(&refusal()).unwrap());
+        let events = gate_events(store, run);
         assert_eq!(events.len(), 2, "{events:?}");
         for (actor, kind, worker, _) in &events {
             assert_eq!(
                 (actor.as_str(), kind.as_str(), worker.as_deref()),
-                ("horch", "note", Some("w-1"))
+                ("horch", "note", Some(w.worker.as_str()))
             );
         }
         assert!(events[0].3.contains("outcome=NOTE"));
@@ -1535,16 +1576,17 @@ mod trf_41_tests {
 
     #[test]
     fn trf_41_the_record_never_changes_routing() {
-        let (_dir, ctx, store, run) = world();
+        let w = world();
+        let (ctx, store, run) = (&w.ctx, &w.store, &w.run);
         let before = tasks::plan_workers(store.conn(), &run.run_id).unwrap();
-        let about = Some((run.run_id.as_str(), "w-1"));
-        record_gate(&ctx, about, &GateRecord::refused(&refusal()).unwrap());
+        let about = Some((run.run_id.as_str(), w.worker.as_str()));
+        record_gate(ctx, about, &GateRecord::refused(&refusal()).unwrap());
         record_gate(
-            &ctx,
+            ctx,
             about,
             &GateRecord::spoken(&provenance("opus", "codex-sol", None)),
         );
-        assert_eq!(gate_events(&store, &run).len(), 2);
+        assert_eq!(gate_events(store, run).len(), 2);
         assert_eq!(
             tasks::plan_workers(store.conn(), &run.run_id).unwrap(),
             before

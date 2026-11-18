@@ -1,39 +1,31 @@
-//! `horch spawn`'s task-ledger side (#34): the worker row is written before
-//! the pane opens, its id travels in the brief, and the role and pane are
+//! `horch spawn`'s task-ledger side (#34): the worker row exists before the
+//! pane opens, its id travels in the brief, and the role and pane are
 //! recorded once the split is done.
+//!
+//! The command changes no row itself (RR-5, ticket 23 of fleetd-p5): each
+//! change is 1 request to fleetd, and each read opens the ledger read-only.
+//! A spawn that binds a task ends after the reply: fleetd makes its tree and
+//! launches `horch spawn --attempt` for it (ticket 10 of fleetd-p4).
 
 use std::path::Path;
 
 use anyhow::{bail, ensure, Result};
 use horch_core::execution::store::ExecutionStore;
-use horch_core::fleetd::fleet_runtime::adapters::config_file;
-use horch_core::fleetd::fleet_runtime::adapters::effects::{self, LaunchRecord};
+use horch_core::fleetd::fleet_runtime::adapters::channel_client::{self, Sent};
+use horch_core::fleetd::fleet_runtime::adapters::request_wire::Outcome;
 use horch_core::fleetd::fleet_runtime::application::holds;
-use horch_core::fleetd::fleet_runtime::application::jobs::JobCtx;
-use horch_core::fleetd::fleet_runtime::application::ledger::{self, Cause};
 use horch_core::fleetd::fleet_runtime::domain::health::Finding;
-use horch_core::fleetd::fleet_runtime::domain::ledger::Entity;
-use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
-use horch_core::fleetd::task_execution::adapters::sqlite as attempts_store;
+use horch_core::fleetd::fleet_runtime::domain::requests::Kind;
 use horch_core::fleetd::task_execution::adapters::task_files::AttemptFiles;
-use horch_core::fleetd::task_execution::application::dispatch::{
-    bind, choices, write_task_files, Bound, CheckSandboxes, DispatchCtx,
-};
+use horch_core::fleetd::task_execution::application::dispatch::write_task_files;
 use horch_core::fleetd::task_execution::application::quota::ADOPT_WORKER_ENV;
-use horch_core::fleetd::task_execution::domain::dispatch::{Choice, Holds};
 use horch_core::fleetd::task_execution::domain::task::AttemptState;
-use horch_core::fleetd::worktree_custody::adapters::sqlite::{self as trees, WorktreeState};
-use horch_core::fleetd::worktree_custody::application::create::{self, JobProcess};
 use horch_core::runtime::RuntimeContext;
-use horch_core::taskledger::git::Git;
-use horch_core::taskledger::model::{
-    Actor, EventKind, RunStatus, TaskStatus, WorkerKind, WorkerStatus,
-};
+use horch_core::taskledger::model::{RunStatus, WorkerStatus};
 use horch_core::taskledger::runs::{self, Run};
-use horch_core::taskledger::tasks::{self, Task};
-use horch_core::taskledger::util::{self, About};
-use horch_core::taskledger::workers::{self, NewWorker};
+use horch_core::taskledger::workers;
 use horch_core::taskledger::{self, Store};
+use serde_json::{Map, Value};
 
 use super::spawn::SpawnArgs;
 use super::taskledger::{project_root, RunArg};
@@ -48,12 +40,6 @@ const ADOPTED_CLAIM_LINE: &str = "Run horch ledger claim. Read the ticket file i
 /// (TRF-24, L2). Reviewer auto-spawn sets it on its `horch spawn` child.
 pub const CLAIM_TARGET_ENV: &str = "HORCH_CLAIM_TARGET";
 
-/// The fault point before the commit of the bind of a spawn.
-pub const FAULT_BEFORE_BIND_COMMIT: &str = "spawn-bind-before-commit";
-/// The fault point after the commit of the bind and before its effects:
-/// the tree, the task files, the launch record and the pane.
-pub const FAULT_AFTER_BIND_COMMIT: &str = "spawn-bind-after-commit";
-
 /// The first line of the pane of a push attempt (Q8 of
 /// `docs/tickets/fleetd-p4/MAP.md`): 1 fixed format with the absolute path
 /// of its `START.md`, because a pane has no task folder as its cwd.
@@ -61,9 +47,54 @@ pub fn start_line(start_md: &Path) -> String {
     format!("Read {} and continue.", start_md.display())
 }
 
+/// Send 1 request of `kind` with `payload` to fleetd (ticket 15). Gives the
+/// result of an applied request, or `None` when the request waits in a
+/// request file because fleetd is down: the client printed that line. A
+/// refused request is the error `refused: <reason>`.
+pub(crate) fn request(ctx: &RuntimeContext, kind: Kind, payload: Value) -> Result<Option<Value>> {
+    let Value::Object(payload) = payload else {
+        bail!("the payload of {} is not an object", kind.as_str());
+    };
+    match channel_client::send(ctx, kind, payload)? {
+        Sent::Replied(reply) => match reply.outcome {
+            Outcome::Applied(result) => Ok(Some(result)),
+            Outcome::Refused(reason) => bail!("refused: {reason}"),
+        },
+        Sent::Queued { .. } => Ok(None),
+    }
+}
+
+/// The text field `key` of the result of a request.
+fn text_of(result: &Value, key: &str) -> Result<String> {
+    result[key]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| anyhow::anyhow!("the reply of fleetd has no text `{key}`"))
+}
+
+/// A payload object from the fields that have a value.
+fn payload(fields: &[(&str, Option<&str>)]) -> Value {
+    let map: Map<String, Value> = fields
+        .iter()
+        .filter_map(|(k, v)| v.map(|v| (k.to_string(), Value::String(v.to_string()))))
+        .collect();
+    Value::Object(map)
+}
+
+/// What `horch spawn` does after its ledger side.
+pub enum Prepared {
+    /// The spawn joins no task-ledger run.
+    NoRun,
+    /// The spawn opens the pane of this worker row.
+    Pane(LedgerSpawn),
+    /// The spawn ends after its request, and prints this line on stdout:
+    /// the worker of a bind that fleetd launches, or the id of a request
+    /// that waits for fleetd.
+    Ended(String),
+}
+
 /// A spawn's worker row.
 pub struct LedgerSpawn {
-    store: std::cell::RefCell<Store>,
     pub run: Run,
     pub worker_id: String,
     /// The first line of the pane: [`start_line`] of a push attempt, or the
@@ -74,70 +105,27 @@ pub struct LedgerSpawn {
     pub push: Option<Pushed>,
 }
 
-/// The push attempt that a spawn opens the pane of.
+/// The push attempt that fleetd bound and that a spawn opens the pane of
+/// (`--attempt`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pushed {
     pub attempt_id: String,
     pub task_id: String,
     pub files: AttemptFiles,
-    /// This spawn bound the attempt; `false` for `--attempt`, whose
-    /// attempt fleetd bound.
-    pub own_bind: bool,
 }
 
-/// The outcome of the attempt of a spawn that failed before its agent ran.
-const LAUNCH_FAILED: &str = "launch_failed";
-
-/// Undo the bind of a spawn that failed before its agent ran, for example
-/// a refusal of the spawn gate: its attempt ends `launch_failed`, its tree
-/// goes back to its task, and the task goes back to `ready`. No attempt is
-/// burned: the floor of its attempt count rises with the count.
-fn unbind(tx: &rusqlite::Connection, p: &Pushed, reason: &str) -> Result<()> {
-    let text = format!("its spawn failed before its agent ran: {reason}");
-    let why = || Cause {
-        actor: Actor::Horch,
-        text: &text,
-    };
-    attempts_store::set_ended(tx, &p.attempt_id, LAUNCH_FAILED, &util::now())?;
-    let ended = AttemptState::Ended.as_str();
-    ledger::transition(
-        tx,
-        None,
-        Entity::Attempt,
-        &p.attempt_id,
-        ended,
-        why(),
-        &NeedsYouList,
-    )?;
-    if let Some(row) = trees::of_task(tx, &p.task_id)?.filter(|r| {
-        r.state == WorktreeState::Active && r.owner_attempt.as_deref() == Some(&p.attempt_id)
-    }) {
-        create::release(tx, &row, &text)?;
-    }
-    let ready = TaskStatus::Ready.as_str();
-    ledger::transition(
-        tx,
-        None,
-        Entity::Task,
-        &p.task_id,
-        ready,
-        why(),
-        &NeedsYouList,
-    )?;
-    tx.execute(
-        "UPDATE tasks SET attempt_floor = attempt_floor + 1, current_worker_id = NULL
-         WHERE task_id = ?1",
-        [&p.task_id],
-    )?;
-    Ok(())
-}
-
-/// Write the worker row, or adopt the row that fleetd wrote for a restart
-/// (`HORCH_ADOPT_WORKER`), when this spawn joins a task-ledger run: it names
-/// one with `--run` (or `HORCH_RUN_ID`), it replaces a ledger worker, its
+/// The ledger side of a spawn that joins a task-ledger run: it names one
+/// with `--run` (or `HORCH_RUN_ID`), it replaces a ledger worker, its
 /// workspace has an active run, or a `spawn_only` controller in an active
-/// run sends a role its brief. `None` otherwise: a controller outside every
-/// run sends its brief outside every run too.
+/// run sends a role its brief. [`Prepared::NoRun`] otherwise: a controller
+/// outside every run sends its brief outside every run too.
+///
+/// - `--attempt`: the attempt that fleetd bound; its task files are
+///   written, and no row changes.
+/// - `HORCH_ADOPT_WORKER`: 1 `spawn_adopt` request adopts the row that
+///   fleetd wrote for a restart.
+/// - a role of a controller: 1 `spawn` request writes its row.
+/// - else 1 `spawn` request binds a ready task, and fleetd launches it.
 ///
 /// `controller` is the caller's ledger row when the caller has
 /// `spawn_only` and passed its check (T-38). Only such a spawn carries task
@@ -146,16 +134,24 @@ pub fn prepare(
     ctx: &RuntimeContext,
     args: &SpawnArgs,
     controller: Option<&str>,
-) -> Result<Option<LedgerSpawn>> {
+) -> Result<Prepared> {
     refuse_on_hold(ctx)?;
-    let mut store = taskledger::open(ctx)?;
+    let Some(store) = taskledger::open_existing_read_only(ctx)? else {
+        if args.run.is_some() || args.attempt.is_some() {
+            bail!(
+                "the ledger {} does not exist",
+                ctx.paths.ledger_db.display()
+            );
+        }
+        return Ok(Prepared::NoRun);
+    };
     let role_run = controller_run(&store, args, controller)?;
     let run = match &role_run {
         Some(run) => run.clone(),
-        None if !args.task.trim().is_empty() => return Ok(None),
+        None if !args.task.trim().is_empty() => return Ok(Prepared::NoRun),
         None => {
             let Some(explicit) = ledger_run_wanted(ctx, &store, args)? else {
-                return Ok(None);
+                return Ok(Prepared::NoRun);
             };
             super::taskledger::resolve_run(ctx, &store, &RunArg { run: explicit })?
         }
@@ -163,31 +159,65 @@ pub fn prepare(
     ensure_active(&run)?;
     let persona = spawn_persona(ctx, args)?;
     ensure_replaceable(&store, args, &run)?;
-    let (id, first_line, push) = match (adopt_wanted(), role_run.is_some()) {
-        (Some(row), false) => {
-            let id = adopt(&mut store, &row, &run, &persona, claim_target().as_deref())?;
+    let workspace = ctx.herdr.workspace.as_ref().map(|w| w.as_str().to_string());
+    let (id, first_line, push) = match (adopt_wanted(), role_run.is_some(), &args.attempt) {
+        (_, _, Some(attempt)) => {
+            let (worker, pushed) = push(ctx, &store, attempt, &run, &persona)?;
+            (worker, Some(start_line(&pushed.files.start_md)), Some(pushed))
+        }
+        (Some(row), false, None) => {
+            let target = claim_target();
+            let Some(id) = adopt(ctx, &row, &run, &persona, target.as_deref())? else {
+                return Ok(Prepared::Ended(String::new()));
+            };
             (id, Some(ADOPTED_CLAIM_LINE.to_string()), None)
         }
-        (Some(row), true) => {
+        (Some(row), true, None) => {
             bail!("horch spawn refused: a controller's brief adopts no worker row ({row})")
         }
-        (None, true) => {
-            let id = insert_row(ctx, &mut store, args, &run, persona)?;
-            mark_no_claim(&mut store, &run, &id, controller.unwrap_or_default())?;
-            (id, None, None)
+        (None, true, None) => {
+            let sent = payload(&[
+                ("run_id", Some(&run.run_id)),
+                ("persona", Some(&persona)),
+                ("controller", controller),
+                ("target_task_id", claim_target().as_deref()),
+                ("workspace_id", workspace.as_deref()),
+                ("replaces", args.replaces.as_deref()),
+                ("resume", args.resume.as_deref()),
+            ]);
+            let Some(result) = request(ctx, Kind::Spawn, sent)? else {
+                return Ok(Prepared::Ended(String::new()));
+            };
+            (text_of(&result, "worker_id")?, None, None)
         }
-        (None, false) => {
-            let target = claim_target();
-            let (worker, pushed) = push(ctx, &mut store, args, &run, &persona, target)?;
-            (
-                worker,
-                Some(start_line(&pushed.files.start_md)),
-                Some(pushed),
-            )
+        (None, false, None) => {
+            let target = match claim_target() {
+                Some(t) => Some(t),
+                None => replaced_task(store.conn(), args)?,
+            };
+            let sent = payload(&[
+                ("run_id", Some(&run.run_id)),
+                ("persona", Some(&persona)),
+                ("target_task_id", target.as_deref()),
+                ("workspace_id", workspace.as_deref()),
+                ("replaces", args.replaces.as_deref()),
+                ("resume", args.resume.as_deref()),
+            ]);
+            let Some(result) = request(ctx, Kind::Spawn, sent)? else {
+                return Ok(Prepared::Ended(String::new()));
+            };
+            let worker = text_of(&result, "worker_id")?;
+            eprintln!(
+                "horch spawn: bound {} to attempt {} of worker {}.",
+                text_of(&result, "task")?,
+                text_of(&result, "attempt_id")?,
+                worker
+            );
+            eprintln!("horch spawn: fleetd opens the pane of the attempt.");
+            return Ok(Prepared::Ended(worker));
         }
     };
-    Ok(Some(LedgerSpawn {
-        store: std::cell::RefCell::new(store),
+    Ok(Prepared::Pane(LedgerSpawn {
         run,
         worker_id: id,
         first_line,
@@ -195,130 +225,61 @@ pub fn prepare(
     }))
 }
 
-/// The push attempt of a worker spawn, before its pane exists (FR-5,
-/// FM-2): the attempt that `--attempt` names, which fleetd bound, else a
-/// new bind of the first ready task of `persona` in `run`, `target` first.
-/// A new bind makes
-/// its tree, writes `task.yaml` and `START.md`, and writes the launch
-/// record of the attempt, so the pass does not launch it a second time.
-/// Gives the worker row and the attempt.
+/// The push attempt `attempt` that fleetd bound (`--attempt`), with its
+/// `task.yaml` and `START.md` written. Gives its worker row and the
+/// attempt.
 fn push(
     ctx: &RuntimeContext,
-    store: &mut Store,
-    args: &SpawnArgs,
+    store: &Store,
+    attempt: &str,
     run: &Run,
     persona: &str,
-    target: Option<String>,
 ) -> Result<(String, Pushed)> {
-    let config = config_file::load(&ctx.paths.fleet_root)?;
-    let jobs = JobCtx {
-        guard: None,
-        config: &config,
-        needs_you: &NeedsYouList,
-    };
-    let (worker, attempt_id, task_id) = match &args.attempt {
-        Some(attempt) => bound_attempt(store, attempt, run, persona)?,
-        None => {
-            let b = bind_task(ctx, store, &jobs, args, run, persona, target)?;
-            if let Some(tree) = b.worktree.as_ref().filter(|t| t.add_job.is_some()) {
-                // The `worktree_add` job runs with no transaction open, on
-                // its own connection, as `horch ledger worktree new` runs it.
-                let process = JobProcess::of_this_process()?;
-                let mut conn = rusqlite::Connection::open(store.path())?;
-                conn.busy_timeout(std::time::Duration::from_secs(30))?;
-                create::finish_reserved(&mut conn, &jobs, &process, &tree.worktree_id)?;
-            }
-            (b.worker_id, b.attempt_id, b.task_id)
-        }
-    };
+    let (worker, attempt_id, task_id) = bound_attempt(store, attempt, run, persona)?;
     let files = write_task_files(store.conn(), &ctx.paths.fleet_root, &attempt_id, &[])?;
-    if args.attempt.is_none() {
-        let record = LaunchRecord {
-            attempt: attempt_id.clone(),
-            launched_at: create::fleet_clock(store.conn())?,
-            process: None,
-        };
-        effects::write_launch(&ctx.paths.fleet_root, &record)?;
-    }
     Ok((
         worker,
         Pushed {
             attempt_id,
             task_id,
             files,
-            own_bind: args.attempt.is_none(),
         },
     ))
 }
 
-/// Each persona has a check sandbox until ticket 18 of Phase 4 gives the
-/// check sandbox of each persona on this host.
-struct EverySandbox;
-
-impl CheckSandboxes for EverySandbox {
-    fn supported(&self, _persona: &str) -> bool {
-        true
-    }
-}
-
-/// Bind the first ready task of `persona` in `run` to a new attempt, in 1
-/// transaction (ticket 08). `target`, the task of [`CLAIM_TARGET_ENV`],
-/// else the task of the worker that `--replaces` names, goes first (L2). A
-/// spawn with no task to bind binds nothing: the error names each task of
-/// `persona` that a hold keeps ready, with its hold.
-fn bind_task(
+/// Adopt the worker row `worker_id` that fleetd wrote for a restart on a
+/// fallback (RR-11), in place of a new row, with 1 `spawn_adopt` request.
+/// The variable is an input that any process can set, so fleetd checks the
+/// row and records the adoption in 1 transaction: 2 spawns that name 1 row
+/// cannot both adopt it. `target` is the task that [`CLAIM_TARGET_ENV`]
+/// names. `None` when the request waits for fleetd.
+///
+/// The Phase 2 bridge: Phase 4 replaces it with the push dispatch, which
+/// binds the task to a worker before the pane opens.
+fn adopt(
     ctx: &RuntimeContext,
-    store: &mut Store,
-    jobs: &JobCtx<'_>,
-    args: &SpawnArgs,
+    worker_id: &str,
     run: &Run,
     persona: &str,
-    target: Option<String>,
-) -> Result<Bound> {
-    let git = Git::new(&ctx.bins.harness.git);
-    let faults = &ctx.settings.faults;
-    let worker = NewWorker {
-        workspace_id: ctx.herdr.workspace.as_ref().map(|w| w.as_str().to_string()),
-        previous_worker_id: args.replaces.clone(),
-        resumed_from_session: args.resume.clone(),
-        ..Default::default()
+    target: Option<&str>,
+) -> Result<Option<String>> {
+    let Some(target) = target else {
+        bail!(
+            "horch spawn refused: it cannot adopt worker row {worker_id}: the row is not spawned for the task that {CLAIM_TARGET_ENV} names"
+        );
     };
-    let bound = store.immediate(|tx| {
-        let target = match &target {
-            Some(t) => Some(t.clone()),
-            None => replaced_task(tx, args)?,
-        };
-        let clock = create::fleet_clock(tx)?;
-        let holds = Holds {
-            clock: clock.0,
-            ..Holds::default()
-        };
-        let task_id = chosen_task(tx, run, persona, target.as_deref(), &holds)?;
-        let dctx = DispatchCtx {
-            jobs: JobCtx {
-                guard: jobs.guard,
-                config: jobs.config,
-                needs_you: jobs.needs_you,
-            },
-            clock,
-            git: &git,
-        };
-        let bound = bind(tx, &dctx, &task_id, persona, &worker)?;
-        if faults.has(FAULT_BEFORE_BIND_COMMIT) {
-            bail!("HORCH_FAULT {FAULT_BEFORE_BIND_COMMIT}");
-        }
-        Ok(bound)
-    })?;
-    if faults.has(FAULT_AFTER_BIND_COMMIT) {
-        bail!("HORCH_FAULT {FAULT_AFTER_BIND_COMMIT}");
+    let pid = std::process::id().to_string();
+    let sent = payload(&[
+        ("run_id", Some(&run.run_id)),
+        ("worker_id", Some(worker_id)),
+        ("persona", Some(persona)),
+        ("target_task_id", Some(target)),
+        ("spawn_pid", Some(&pid)),
+    ]);
+    match request(ctx, Kind::SpawnAdopt, sent)? {
+        Some(result) => Ok(Some(text_of(&result, "worker_id")?)),
+        None => Ok(None),
     }
-    eprintln!(
-        "horch spawn: bound {} to attempt {} of worker {}.",
-        tasks::get(store.conn(), &bound.task_id)?.short(),
-        bound.attempt_id,
-        bound.worker_id
-    );
-    Ok(bound)
 }
 
 /// The task of the worker that `--replaces` names, if it has one.
@@ -329,55 +290,12 @@ fn replaced_task(conn: &rusqlite::Connection, args: &SpawnArgs) -> Result<Option
     Ok(workers::find(conn, prev)?.and_then(|w| w.task_id))
 }
 
-/// The persona of the next attempt of `t`: `claimable_by`, else its
-/// primary (the rule of the bind).
-fn next_persona(t: &Task) -> Option<&str> {
-    t.claimable_by.as_deref().or(t.primary_persona.as_deref())
-}
-
-/// The first task of `run` and `persona` that the dispatch choice binds
-/// now, `target` first. Else the refusal: no ready task, or each hold.
-fn chosen_task(
-    tx: &rusqlite::Connection,
-    run: &Run,
-    persona: &str,
-    target: Option<&str>,
-    holds: &Holds,
-) -> Result<String> {
-    let mut held = Vec::new();
-    for choice in choices(tx, holds, &EverySandbox, target)? {
-        let (task_id, hold) = match choice {
-            Choice::Bind { task_id, .. } => (task_id, None),
-            Choice::Held { task_id, hold } => (task_id, Some(hold)),
-        };
-        let t = tasks::get(tx, &task_id)?;
-        if t.run_id != run.run_id || next_persona(&t) != Some(persona) {
-            continue;
-        }
-        match hold {
-            None => return Ok(task_id),
-            Some(hold) => held.push(format!("{}: {hold}", t.short())),
-        }
-    }
-    if held.is_empty() {
-        bail!(
-            "horch spawn refused: run {} has no ready task for persona {persona}",
-            run.slug
-        );
-    }
-    bail!(
-        "horch spawn refused: no ready task for persona {persona} in run {} can start now:\n  - {}",
-        run.slug,
-        held.join("\n  - ")
-    )
-}
-
 /// The push attempt `attempt` that fleetd bound, for `--attempt`: it is in
 /// `launching`, it began with a push dispatch, and its worker is a
 /// `spawning` row of `run` and `persona` with no agent. Gives its worker,
 /// the attempt and its task.
 fn bound_attempt(
-    store: &mut Store,
+    store: &Store,
     attempt: &str,
     run: &Run,
     persona: &str,
@@ -557,31 +475,6 @@ fn controller_run(
     Ok((run.status == RunStatus::Active.as_str()).then_some(run))
 }
 
-/// The text a role's row starts its "no claim" verdict with. It is the
-/// prefix of the watchdog's own verdict (`workers::sweep_preclaim`), which
-/// reports a `claiming` worker once and never again after it.
-const NO_CLAIM: &str = "No claim:";
-
-/// Record that a role works from its brief and claims no task, so the
-/// watchdog never reports it as a worker that has not claimed one.
-fn mark_no_claim(store: &mut Store, run: &Run, worker_id: &str, controller: &str) -> Result<()> {
-    store.immediate(|tx| {
-        util::event(
-            tx,
-            &About {
-                run: Some(&run.run_id),
-                task: None,
-                worker: Some(worker_id),
-            },
-            Actor::Horch,
-            EventKind::Verdict,
-            &format!(
-                "{NO_CLAIM} a role of controller worker {controller}; it works from its brief and claims no task."
-            ),
-        )
-    })
-}
-
 /// The run `--run` or `HORCH_RUN_ID` names.
 fn explicit_run(args: &SpawnArgs) -> Option<String> {
     args.run
@@ -598,123 +491,12 @@ fn active_runs(store: &Store, root: &Path) -> Result<Vec<Run>> {
         .collect())
 }
 
-/// Insert the worker row of this spawn and return its id.
-fn insert_row(
-    ctx: &RuntimeContext,
-    store: &mut Store,
-    args: &SpawnArgs,
-    run: &Run,
-    persona: String,
-) -> Result<String> {
-    store.immediate(|tx| {
-        workers::insert(
-            tx,
-            &NewWorker {
-                run_id: run.run_id.clone(),
-                kind: Some(WorkerKind::Worker),
-                persona,
-                workspace_id: ctx.herdr.workspace.as_ref().map(|w| w.as_str().to_string()),
-                previous_worker_id: args.replaces.clone(),
-                resumed_from_session: args.resume.clone(),
-                target_task_id: claim_target(),
-                ..Default::default()
-            },
-        )
-    })
-}
-
-/// The cause of the event that records the adoption of a worker row.
-const ADOPTED: &str = "adopted_by_spawn";
-
 /// The worker row that [`ADOPT_WORKER_ENV`] names, if it is set: fleetd
 /// wrote it for a restart on a fallback.
 fn adopt_wanted() -> Option<String> {
     std::env::var(ADOPT_WORKER_ENV)
         .ok()
         .filter(|v| !v.trim().is_empty())
-}
-
-/// Adopt the worker row `worker_id` that fleetd wrote for a restart on a
-/// fallback (RR-11), in place of a new row. The variable is an input that
-/// any process can set, so the row must be in `spawning` with no agent
-/// PID, hold exactly 1 attempt, in `launching`, and have the run, the
-/// persona and the target task of this spawn. The check and the record of
-/// the adoption are 1 immediate transaction through the door, so 2 spawns
-/// that name 1 row cannot both adopt it. Each other case refuses and
-/// adopts nothing.
-///
-/// The Phase 2 bridge: Phase 4 replaces it with the push dispatch, which
-/// binds the task to a worker before the pane opens.
-fn adopt(
-    store: &mut Store,
-    worker_id: &str,
-    run: &Run,
-    persona: &str,
-    target: Option<&str>,
-) -> Result<String> {
-    store.immediate(|tx| {
-        let refusal = |why: &str| {
-            anyhow::anyhow!("horch spawn refused: it cannot adopt worker row {worker_id}: {why}")
-        };
-        let Some(w) = workers::find(tx, worker_id)? else {
-            return Err(refusal("no worker row has this id"));
-        };
-        if w.run_id.as_deref() != Some(run.run_id.as_str()) {
-            return Err(refusal(&format!(
-                "the row is not a row of run {}",
-                run.slug
-            )));
-        }
-        if w.status != WorkerStatus::Spawning.as_str() {
-            return Err(refusal(&format!("the row is {}, not spawning", w.status)));
-        }
-        if w.agent_pid.is_some() {
-            return Err(refusal("the row has an agent PID"));
-        }
-        if w.persona.as_deref() != Some(persona) {
-            return Err(refusal(&format!(
-                "the row is not a row of persona {persona}"
-            )));
-        }
-        if target.is_none() || w.target_task_id.as_deref() != target {
-            return Err(refusal(&format!(
-                "the row is not spawned for the task that {CLAIM_TARGET_ENV} names"
-            )));
-        }
-        let attempts = attempts_store::attempts_of_worker(tx, worker_id)?;
-        let launching = matches!(
-            attempts.as_slice(),
-            [a] if a.state == AttemptState::Launching && a.task_id.as_deref() == target
-        );
-        if !launching {
-            return Err(refusal(
-                "the row does not have exactly 1 attempt in launching",
-            ));
-        }
-        let adopted: i64 = tx.query_row(
-            "SELECT COUNT(*) FROM events WHERE entity = ?1 AND entity_id = ?2 AND cause = ?3",
-            rusqlite::params![Entity::Worker.as_str(), worker_id, ADOPTED],
-            |r| r.get(0),
-        )?;
-        if adopted > 0 {
-            return Err(refusal("another spawn adopted the row"));
-        }
-        let by = Cause {
-            actor: Actor::Worker,
-            text: ADOPTED,
-        };
-        let data = serde_json::json!({ "spawn_pid": std::process::id() });
-        ledger::record(
-            tx,
-            None,
-            EventKind::Note,
-            Entity::Worker,
-            worker_id,
-            by,
-            &data,
-        )?;
-        Ok(worker_id.to_string())
-    })
 }
 
 /// The task [`CLAIM_TARGET_ENV`] names, if it is set.
@@ -763,20 +545,28 @@ fn ensure_replaceable(store: &Store, args: &SpawnArgs, run: &Run) -> Result<()> 
 }
 
 impl LedgerSpawn {
-    /// The pane is open and runs `horch worker <role>`.
+    /// The pane is open and runs `horch worker <role>`: 1 `worker_launched`
+    /// request records it. A failed record prints a warning and never fails
+    /// the spawn.
     pub fn spawned(
         &self,
+        ctx: &RuntimeContext,
         role: &str,
         pane: &str,
         harness: &str,
         model: &str,
         effort: Option<&str>,
     ) {
-        let r = self.store.borrow_mut().immediate(|tx| {
-            workers::set_pane(tx, &self.worker_id, pane)?;
-            workers::set_launch(tx, &self.worker_id, role, harness, model, effort)
-        });
-        if let Err(e) = r {
+        let sent = payload(&[
+            ("run_id", Some(&self.run.run_id)),
+            ("worker_id", Some(&self.worker_id)),
+            ("pane", Some(pane)),
+            ("role", Some(role)),
+            ("harness", Some(harness)),
+            ("model", Some(model)),
+            ("effort", effort),
+        ]);
+        if let Err(e) = request(ctx, Kind::WorkerLaunched, sent) {
             eprintln!("horch spawn: the task ledger did not record pane {pane}: {e:#}");
         }
         eprintln!(
@@ -785,27 +575,88 @@ impl LedgerSpawn {
         );
     }
 
-    /// The spawn failed before the worker ran. A bind of this spawn is
-    /// undone in the same transaction ([`unbind`]).
-    pub fn launch_failed(&self, reason: &str) {
-        let r = self.store.borrow_mut().immediate(|tx| {
-            workers::launch_failed(tx, &self.worker_id, reason)?;
-            match self.push.as_ref().filter(|p| p.own_bind) {
-                Some(p) => unbind(tx, p, reason),
-                None => Ok(()),
-            }
-        });
-        if let Err(e) = r {
+    /// The spawn failed before the worker ran: 1 `worker_launch_failed`
+    /// request ends its row.
+    pub fn launch_failed(&self, ctx: &RuntimeContext, reason: &str) {
+        let sent = payload(&[
+            ("run_id", Some(&self.run.run_id)),
+            ("worker_id", Some(&self.worker_id)),
+            ("reason", Some(reason)),
+        ]);
+        if let Err(e) = request(ctx, Kind::WorkerLaunchFailed, sent) {
             eprintln!("horch spawn: the task ledger did not record the failed start: {e:#}");
         }
     }
 }
+
+/// An in-process fleetd for the tests of `horch spawn`: the channel server
+/// of ticket 13 with the worker handlers of ticket 19, on the ledger and
+/// the fleet root of a test context. The `fleetd` row names this process,
+/// so the client of the channel accepts the server.
+#[cfg(test)]
+pub(crate) mod test_fleetd {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use horch_core::fleetd::fleet_runtime::adapters::channel_server::ChannelServer;
+    use horch_core::fleetd::fleet_runtime::adapters::token_file;
+    use horch_core::fleetd::fleet_runtime::application::handlers_worker::{register, WorkerDeps};
+    use horch_core::fleetd::fleet_runtime::application::requests::Handlers;
+    use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
+    use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
+    use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
+    use horch_core::fleetd::task_execution::application::dispatch::CheckSandboxes;
+    use horch_core::fleetd::task_execution::domain::dispatch::Holds;
+    use horch_core::runtime::RuntimeContext;
+    use horch_core::taskledger::git::Git;
+    use horch_core::taskledger::orchestrator::Holder;
+    use horch_core::taskledger::util;
+
+    struct AllSandboxes;
+
+    impl CheckSandboxes for AllSandboxes {
+        fn supported(&self, _persona: &str) -> bool {
+            true
+        }
+    }
+
+    /// Serve the channel of `ctx` until the server is dropped.
+    pub fn serve(ctx: &RuntimeContext) -> ChannelServer {
+        let conn = rusqlite::Connection::open(&ctx.paths.ledger_db).unwrap();
+        conn.busy_timeout(Duration::from_secs(10)).unwrap();
+        let pid = std::process::id();
+        let start = horch_platform::process::start_time(pid).unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO fleetd (id, generation, pid, pid_start, started_at, fleet_clock_s, clock_ticked_at)
+             VALUES (1, 1, ?1, ?2, ?3, 0, ?3)",
+            rusqlite::params![pid, start as i64, util::now()],
+        )
+        .unwrap();
+        let root = &ctx.paths.fleet_root;
+        std::fs::create_dir_all(root).unwrap();
+        token_file::ensure(root).unwrap();
+        let deps = WorkerDeps {
+            guard: Generation(1),
+            config: Arc::new(FleetConfig::default()),
+            needs_you: Arc::new(NeedsYouList),
+            git: Arc::new(Git::new("git")),
+            holds: Arc::new(Holds::default),
+            sandboxes: Arc::new(AllSandboxes),
+            lock_holder: Arc::new(|_: &str| None::<Holder>),
+        };
+        let mut handlers = Handlers::new();
+        register(&mut handlers, &deps);
+        ChannelServer::start(root, conn, Generation(1), handlers).unwrap()
+    }
+}
+
 #[cfg(test)]
 mod trf_33_34_tests {
     use std::time::Duration;
 
     use horch_core::execution::TilingMode;
-    use horch_core::taskledger::model::{Actor, StopRequester};
+    use horch_core::taskledger::model::{Actor, StopRequester, WorkerKind};
+    use horch_core::taskledger::workers::NewWorker;
     use horch_core::taskledger::runs::NewRun;
     use horch_core::taskledger::stop::{self, Panes, Processes};
     use horch_core::taskledger::tasks::{self, NewTask};
@@ -921,13 +772,15 @@ mod trf_33_34_tests {
         assert_eq!(workers(), 0, "a refused spawn writes no row");
 
         // A normal probe resumes dispatch: the spawn passes the guard, and
-        // the run has no ready task to bind.
-        let err = prepare(&ctx_with(200), &spawn, None)
+        // fleetd refuses it, because the run has no ready task to bind.
+        let ctx = ctx_with(200);
+        let _fleetd = super::test_fleetd::serve(&ctx);
+        let err = prepare(&ctx, &spawn, None)
             .err()
             .expect("no ready task");
         assert_eq!(
             err.to_string(),
-            "horch spawn refused: run r1 has no ready task for persona opus"
+            "refused: horch spawn refused: no ready task for persona opus"
         );
         assert_eq!(workers(), 0);
     }
@@ -1103,7 +956,10 @@ mod trf_33_34_tests {
 mod tests {
     use std::path::Path;
 
+    use horch_core::taskledger::model::{Actor, EventKind, WorkerKind};
     use horch_core::taskledger::runs::NewRun;
+    use horch_core::taskledger::util::{self, About};
+    use horch_core::taskledger::workers::NewWorker;
 
     use super::*;
 
@@ -1135,7 +991,21 @@ mod tests {
                 Ok((run, role, plain))
             })
             .unwrap();
-        mark_no_claim(&mut s, &run, &role, "w-controller").unwrap();
+        // The verdict of the `spawn` handler for a role (ticket 19).
+        s.immediate(|tx| {
+            util::event(
+                tx,
+                &About {
+                    run: Some(&run.run_id),
+                    task: None,
+                    worker: Some(&role),
+                },
+                Actor::Horch,
+                EventKind::Verdict,
+                "No claim: a role of controller worker w-controller; it works from its brief and claims no task.",
+            )
+        })
+        .unwrap();
         s.conn()
             .execute(
                 "UPDATE workers SET status = 'claiming', started_at = '2000-01-01T00:00:00Z',
@@ -1154,13 +1024,21 @@ mod tests {
 
 #[cfg(test)]
 mod adoption_tests {
+    use horch_core::fleetd::fleet_runtime::adapters::channel_server::ChannelServer;
+    use horch_core::fleetd::task_execution::adapters::sqlite as attempts_store;
     use horch_core::fleetd::task_execution::domain::task::AttemptRow;
+    use horch_core::runtime::MapEnv;
+    use horch_core::taskledger::model::{Actor, WorkerKind};
     use horch_core::taskledger::runs::NewRun;
     use horch_core::taskledger::tasks::{self, NewTask};
+    use horch_core::taskledger::util;
+    use horch_core::taskledger::workers::NewWorker;
 
     use super::*;
 
+    /// The server ends before its folder goes: fields drop in order.
     struct World {
+        _fleetd: Option<ChannelServer>,
         dir: tempfile::TempDir,
         store: Store,
         run: Run,
@@ -1190,15 +1068,29 @@ mod adoption_tests {
                 Ok((run, t.task_id))
             })
             .unwrap();
-        World {
+        let mut w = World {
             dir,
             store,
             run,
             task,
-        }
+            _fleetd: None,
+        };
+        w._fleetd = Some(super::test_fleetd::serve(&w.ctx()));
+        w
     }
 
     impl World {
+        fn ctx(&self) -> RuntimeContext {
+            let p = |name: &str| self.dir.path().join(name).to_str().unwrap().to_string();
+            let env = MapEnv::new("/")
+                .with("HORCH_STATE_DIR", &p("state"))
+                .with("HORCH_DATA_DIR", &p("data"))
+                .with("HORCH_LEDGER_DB", &p("ledger.sqlite3"))
+                .with("FLEET_ROOT", &p("fleet"))
+                .with("HORCH_PROJECT_DIR", &p(""));
+            RuntimeContext::from_env(&env).unwrap()
+        }
+
         /// The rows that fleetd writes for a restart on `alt`: a worker in
         /// `spawning` for the task, with `attempts` attempts of `state`.
         fn restart_row(&mut self, attempts: &[AttemptState]) -> String {
@@ -1233,7 +1125,8 @@ mod adoption_tests {
 
         fn adopt(&mut self, row: &str, persona: &str, target: Option<&str>) -> Result<String> {
             let run = self.run.clone();
-            adopt(&mut self.store, row, &run, persona, target)
+            adopt(&self.ctx(), row, &run, persona, target)
+                .map(|id| id.expect("fleetd serves the request"))
         }
 
         fn adopted_events(&self, row: &str) -> i64 {
@@ -1241,7 +1134,7 @@ mod adoption_tests {
                 .conn()
                 .query_row(
                     "SELECT COUNT(*) FROM events WHERE entity_id = ?1 AND cause = ?2",
-                    [row, ADOPTED],
+                    [row, "adopted_by_spawn"],
                     |r| r.get(0),
                 )
                 .unwrap()
@@ -1250,7 +1143,7 @@ mod adoption_tests {
 
     fn refused(r: Result<String>, why: &str) {
         let e = format!("{:#}", r.expect_err(why));
-        assert!(e.starts_with("horch spawn refused: it cannot adopt"), "{e}");
+        assert!(e.contains("horch spawn refused: it cannot adopt"), "{e}");
         assert!(e.contains(why), "{e} does not say {why}");
     }
 
@@ -1292,7 +1185,7 @@ mod adoption_tests {
             })
             .unwrap();
         refused(
-            adopt(&mut w.store, &row, &other, "alt", Some(&task)),
+            adopt(&w.ctx(), &row, &other, "alt", Some(&task)).map(|id| id.unwrap()),
             "not a row of run r2",
         );
         refused(
@@ -1342,16 +1235,14 @@ mod adoption_tests {
     fn two_spawns_that_name_1_row_cannot_both_adopt_it() {
         let mut w = world();
         let row = w.restart_row(&[AttemptState::Launching]);
-        let db = w.dir.path().join("ledger.sqlite3");
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
         let spawns: Vec<_> = (0..2)
             .map(|_| {
-                let (db, row, run, task) = (db.clone(), row.clone(), w.run.clone(), w.task.clone());
+                let (ctx, row, run, task) = (w.ctx(), row.clone(), w.run.clone(), w.task.clone());
                 let barrier = barrier.clone();
                 std::thread::spawn(move || {
-                    let mut store = Store::open(&db).unwrap();
                     barrier.wait();
-                    adopt(&mut store, &row, &run, "alt", Some(&task)).is_ok()
+                    adopt(&ctx, &row, &run, "alt", Some(&task)).is_ok()
                 })
             })
             .collect();
@@ -1364,6 +1255,9 @@ mod adoption_tests {
 #[cfg(test)]
 mod push_tests {
     use horch_core::execution::TilingMode;
+    use horch_core::fleetd::fleet_runtime::adapters::channel_server::ChannelServer;
+    use horch_core::fleetd::fleet_runtime::adapters::effects;
+    use horch_core::taskledger::tasks;
     use horch_core::fleetd::task_execution::application::dispatch::write_missing_task_files;
     use horch_core::runtime::MapEnv;
     use horch_core::taskledger::model::{Actor, WorktreeMode};
@@ -1375,7 +1269,9 @@ mod push_tests {
 
     const HEALTHY: &str = r#"{"os":"macos","arch":"arm64","cpus":8,"load_average_1m":1.0,"mem_total_bytes":17179869184,"mem_available_bytes":8589934592,"disk_free_bytes":214748364800,"disk_total_bytes":536870912000,"gpu":"none","max_open_files":256,"max_processes":100000}"#;
 
+    /// The server ends before its folder goes: fields drop in order.
     struct World {
+        _fleetd: Option<ChannelServer>,
         dir: tempfile::TempDir,
         store: Store,
         run: Run,
@@ -1400,7 +1296,14 @@ mod push_tests {
                 )
             })
             .unwrap();
-        World { dir, store, run }
+        let mut w = World {
+            dir,
+            store,
+            run,
+            _fleetd: None,
+        };
+        w._fleetd = Some(super::test_fleetd::serve(&w.ctx(None)));
+        w
     }
 
     impl World {
@@ -1465,68 +1368,88 @@ mod push_tests {
         }
     }
 
-    /// FM-2 and FR-5: `prepare`, which runs before the pane opens, binds
-    /// the ready task to 1 push attempt, writes `task.yaml`, `START.md` and
-    /// the launch record, and gives the first line that names `START.md`.
+    /// The bind of a spawn, through fleetd: the spawn ends after the reply.
+    fn bind(w: &World) -> String {
+        match prepare(&w.ctx(None), &args("dev"), None).unwrap() {
+            Prepared::Ended(worker) => worker,
+            _ => panic!("a spawn that binds ends after its request"),
+        }
+    }
+
+    /// The attempt of the worker `worker`.
+    fn attempt_of(w: &World, worker: &str) -> String {
+        w.store
+            .conn()
+            .query_row(
+                "SELECT id FROM attempts WHERE worker_id = ?1",
+                [worker],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    /// FM-2, FR-5 and RR-5: `prepare` sends 1 `spawn` request, and fleetd
+    /// binds the ready task to 1 push attempt in `launching`. The command
+    /// writes no file and no launch record: fleetd writes the task files
+    /// and launches the attempt (ticket 10 of fleetd-p4). The pass writes
+    /// the files 1 time, and a second pass changes nothing.
     #[test]
-    fn spawn_binds_the_task_before_the_pane() {
+    fn spawn_binds_the_task_through_fleetd_and_opens_no_pane() {
         let mut w = world();
         let task = w.task("a", "dev");
-        let l = prepare(&w.ctx(None), &args("dev"), None)
-            .unwrap()
-            .expect("the spawn joins run r1");
-
-        let push = l.push.clone().expect("a push attempt");
-        assert_eq!(push.task_id, task);
-        assert_eq!(push.attempt_id, format!("{task}/A1"));
+        let worker = bind(&w);
+        let attempt = attempt_of(&w, &worker);
+        assert_eq!(attempt, format!("{task}/A1"));
         assert_eq!(w.status(&task), "leased");
-        let (state, via, worker): (String, String, String) = w
+        let (state, via): (String, String) = w
             .store
             .conn()
             .query_row(
-                "SELECT state, via, worker_id FROM attempts WHERE id = ?1",
-                [&push.attempt_id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                "SELECT state, via FROM attempts WHERE id = ?1",
+                [&attempt],
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap();
         assert_eq!((state.as_str(), via.as_str()), ("launching", "push"));
-        assert_eq!(worker, l.worker_id);
-        let dir = w.fleet_root().join("tasks").join(&task).join("attempts/A1");
-        assert_eq!(push.files.task_yaml, dir.join("task.yaml"));
-        assert!(push.files.task_yaml.is_file() && push.files.start_md.is_file());
         assert_eq!(
-            l.first_line.as_deref(),
-            Some(
-                format!(
-                    "Read {} and continue.",
-                    dir.join("inbox/START.md").display()
-                )
-                .as_str()
-            )
-        );
-        assert!(
-            effects::read_launch(&w.fleet_root(), &push.attempt_id)
-                .unwrap()
-                .is_some(),
-            "the launch record keeps the pass from a second launch"
+            w.count("SELECT COUNT(*) FROM requests WHERE kind = 'spawn' AND state = 'applied'"),
+            1
         );
         assert_eq!(w.count("SELECT COUNT(*) FROM workers"), 1);
+        assert!(
+            effects::read_launch(&w.fleet_root(), &attempt)
+                .unwrap()
+                .is_none(),
+            "the pass of fleetd launches the attempt"
+        );
+        let yaml = w
+            .fleet_root()
+            .join("tasks")
+            .join(&task)
+            .join("attempts/A1/task.yaml");
+        assert!(!yaml.exists());
+        let pass = || write_missing_task_files(w.store.conn(), &w.fleet_root(), &[]).unwrap();
+        let first = pass();
+        assert_eq!(first.len(), 1);
+        assert!(first[0].1.is_ok() && yaml.is_file());
+        let bytes = std::fs::read(&yaml).unwrap();
+        assert!(pass().is_empty(), "the next pass writes nothing again");
+        assert_eq!(std::fs::read(&yaml).unwrap(), bytes);
     }
 
-    /// A spawn with no task to bind binds nothing and refuses before the
-    /// pane: with no ready task of its persona, and with a held task, whose
-    /// hold it names.
+    /// A spawn with no task to bind binds nothing: fleetd refuses it with
+    /// no ready task of its persona, and with a held task, whose hold it
+    /// names.
     #[test]
-    fn spawn_with_no_ready_task_opens_no_pane() {
+    fn spawn_with_no_ready_task_binds_nothing() {
         let mut w = world();
         w.task("other", "ops");
         let err = prepare(&w.ctx(None), &args("dev"), None)
             .err()
-            .expect("a refusal");
-        assert_eq!(
-            err.to_string(),
-            "horch spawn refused: run r1 has no ready task for persona dev"
-        );
+            .expect("a refusal")
+            .to_string();
+        assert!(err.starts_with("refused: "), "{err}");
+        assert!(err.contains("no ready task for persona dev"), "{err}");
 
         let held = w.task("later", "dev");
         w.store
@@ -1538,124 +1461,55 @@ mod push_tests {
             .unwrap();
         let err = prepare(&w.ctx(None), &args("dev"), None)
             .err()
-            .expect("a refusal");
-        assert_eq!(
-            err.to_string(),
-            "horch spawn refused: no ready task for persona dev in run r1 can start now:\n  \
-             - T-2: retry after 600 s"
-        );
+            .expect("a refusal")
+            .to_string();
+        assert!(err.contains("T-2: retry after 600 s"), "{err}");
         assert_eq!(w.count("SELECT COUNT(*) FROM workers"), 0);
         assert_eq!(w.count("SELECT COUNT(*) FROM attempts"), 0);
         assert_eq!(w.status(&held), "ready");
     }
 
-    /// The target task of a reviewer spawn goes first (L2).
+    /// A spawn that fails before its agent runs records it with 1
+    /// `worker_launch_failed` request: its worker row ends `launch_failed`.
     #[test]
-    fn spawn_binds_its_target_task_first() {
+    fn a_failed_spawn_records_launch_failed_through_fleetd() {
         let mut w = world();
-        w.task("older", "dev");
-        let target = w.task("review", "dev");
+        w.task("a", "dev");
+        let worker = bind(&w);
+        let mut again = args("dev");
+        again.attempt = Some(attempt_of(&w, &worker));
         let ctx = w.ctx(None);
-        let run = w.run.clone();
-        let (_, pushed) = push(
-            &ctx,
-            &mut w.store,
-            &args("dev"),
-            &run,
-            "dev",
-            Some(target.clone()),
-        )
-        .unwrap();
-        assert_eq!(pushed.task_id, target);
-    }
-
-    /// The crash test of the bind. A fault before the commit: no row, the
-    /// task stays ready, no file. A fault after the commit and before the
-    /// effects: the task is leased with 1 launching attempt and no files;
-    /// the next pass writes the files 1 time, and a second pass changes
-    /// nothing.
-    #[test]
-    fn a_crash_around_the_bind_commit_loses_no_task() {
-        let mut w = world();
-        let task = w.task("a", "dev");
-        let before = prepare(&w.ctx(Some(FAULT_BEFORE_BIND_COMMIT)), &args("dev"), None);
-        assert!(format!("{:#}", before.err().unwrap()).contains(FAULT_BEFORE_BIND_COMMIT));
-        assert_eq!(w.status(&task), "ready");
-        assert_eq!(w.count("SELECT COUNT(*) FROM attempts"), 0);
-        assert_eq!(w.count("SELECT COUNT(*) FROM workers"), 0);
-        assert!(!w.fleet_root().join("tasks").exists());
-
-        let after = prepare(&w.ctx(Some(FAULT_AFTER_BIND_COMMIT)), &args("dev"), None);
-        assert!(format!("{:#}", after.err().unwrap()).contains(FAULT_AFTER_BIND_COMMIT));
-        assert_eq!(w.status(&task), "leased");
-        assert_eq!(
-            w.count("SELECT COUNT(*) FROM attempts WHERE state = 'launching' AND via = 'push'"),
-            1
-        );
-        let yaml = w
-            .fleet_root()
-            .join("tasks")
-            .join(&task)
-            .join("attempts/A1/task.yaml");
-        assert!(!yaml.exists());
-
-        let pass = || write_missing_task_files(w.store.conn(), &w.fleet_root(), &[]).unwrap();
-        let first = pass();
-        assert_eq!(first.len(), 1);
-        assert!(first[0].1.is_ok() && yaml.is_file());
-        let bytes = std::fs::read(&yaml).unwrap();
-        assert!(pass().is_empty(), "the next pass writes nothing again");
-        assert_eq!(std::fs::read(&yaml).unwrap(), bytes);
-        assert_eq!(w.count("SELECT COUNT(*) FROM attempts"), 1);
-    }
-
-    /// A spawn that fails before its agent runs (a refusal of the spawn
-    /// gate, no herdr) gives its task back: the attempt ends
-    /// `launch_failed`, the task is ready again, and no attempt is burned.
-    /// The next spawn binds attempt A2.
-    #[test]
-    fn a_failed_spawn_gives_its_task_back() {
-        let mut w = world();
-        let task = w.task("a", "dev");
-        let l = prepare(&w.ctx(None), &args("dev"), None).unwrap().unwrap();
-        l.launch_failed("REFUSED: dev cannot start.");
-        drop(l);
-        assert_eq!(w.status(&task), "ready");
-        let t = tasks::get(w.store.conn(), &task).unwrap();
-        assert_eq!(
-            (t.attempts, t.attempt_floor),
-            (1, 1),
-            "no attempt is burned"
-        );
-        assert_eq!(t.current_worker_id, None);
-        assert_eq!(
-            w.count(
-                "SELECT COUNT(*) FROM attempts WHERE state = 'ended' AND outcome = 'launch_failed'"
-            ),
-            1
-        );
+        let Prepared::Pane(l) = prepare(&ctx, &again, None).unwrap() else {
+            panic!("--attempt opens a pane");
+        };
+        l.launch_failed(&ctx, "REFUSED: dev cannot start.");
         assert_eq!(
             w.count("SELECT COUNT(*) FROM workers WHERE status = 'launch_failed'"),
             1
         );
-        let next = prepare(&w.ctx(None), &args("dev"), None).unwrap().unwrap();
-        assert_eq!(next.push.unwrap().attempt_id, format!("{task}/A2"));
+        assert_eq!(
+            w.count(
+                "SELECT COUNT(*) FROM requests WHERE kind = 'worker_launch_failed' AND state = 'applied'"
+            ),
+            1
+        );
     }
 
     /// `--attempt` opens the pane of an attempt that fleetd bound: it binds
-    /// nothing, and it refuses an attempt that began with a claim.
+    /// nothing, sends no request, and refuses an attempt that began with a
+    /// claim.
     #[test]
     fn spawn_of_a_bound_attempt_binds_nothing() {
         let mut w = world();
         let task = w.task("a", "dev");
         w.task("b", "dev");
-        let first = prepare(&w.ctx(None), &args("dev"), None).unwrap().unwrap();
-        let attempt = first.push.unwrap().attempt_id;
-        drop(first.store);
+        let attempt = attempt_of(&w, &bind(&w));
 
         let mut again = args("dev");
         again.attempt = Some(attempt.clone());
-        let l = prepare(&w.ctx(None), &again, None).unwrap().unwrap();
+        let Prepared::Pane(l) = prepare(&w.ctx(None), &again, None).unwrap() else {
+            panic!("--attempt opens a pane");
+        };
         let push = l.push.unwrap();
         assert_eq!(
             (push.task_id.as_str(), push.attempt_id.as_str()),
@@ -1667,6 +1521,7 @@ mod push_tests {
             "no second bind"
         );
         assert_eq!(w.count("SELECT COUNT(*) FROM workers"), 1);
+        assert_eq!(w.count("SELECT COUNT(*) FROM requests"), 1);
 
         w.store
             .conn()
@@ -1682,21 +1537,29 @@ mod push_tests {
     /// `horch result` finds its attempt by `HORCH_TASK_YAML`. The pane of
     /// an attempt that fleetd launches with `--attempt` gets the variable
     /// from these files (`spawn::launch`, the brief of the pane): the
-    /// `task.yaml` of that attempt, under the fleet root.
+    /// `task.yaml` of that attempt, under the fleet root, and the first
+    /// line names its `START.md`.
     #[test]
     fn spawn_of_a_bound_attempt_names_its_task_yaml() {
         let mut w = world();
         let task = w.task("a", "dev");
-        let first = prepare(&w.ctx(None), &args("dev"), None).unwrap().unwrap();
-        let attempt = first.push.unwrap().attempt_id;
-        drop(first.store);
+        let attempt = attempt_of(&w, &bind(&w));
 
         let mut again = args("dev");
         again.attempt = Some(attempt.clone());
-        let l = prepare(&w.ctx(None), &again, None).unwrap().unwrap();
+        let Prepared::Pane(l) = prepare(&w.ctx(None), &again, None).unwrap() else {
+            panic!("--attempt opens a pane");
+        };
         let push = l.push.unwrap();
         let dir = w.fleet_root().join("tasks").join(&task).join("attempts/A1");
         assert_eq!(push.files.task_yaml, dir.join("task.yaml"));
-        assert!(push.files.task_yaml.is_file());
+        assert!(push.files.task_yaml.is_file() && push.files.start_md.is_file());
+        assert_eq!(
+            l.first_line,
+            Some(format!(
+                "Read {} and continue.",
+                dir.join("inbox/START.md").display()
+            ))
+        );
     }
 }
