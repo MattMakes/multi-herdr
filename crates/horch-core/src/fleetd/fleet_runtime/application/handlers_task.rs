@@ -181,12 +181,24 @@ fn cancel(_: &TaskHandlers, tx: &Connection, payload: &Value) -> Result<Value> {
     let a: TaskReason = parse(payload)?;
     let (run, note) = run_of(tx, payload)?;
     let t = tasks::resolve(tx, &run.run_id, &a.task)?;
-    let (values, line) = match cancel::request(tx, &t, &a.reason)? {
-        Cancel::Cancelled { task, holder } => (
+    let asked = cancel::request(tx, &t, &a.reason)?;
+    let judges: Vec<String> = asked
+        .judges()
+        .iter()
+        .map(|j| {
+            format!(
+                "{} is the judge task of {}: its cancel follows.",
+                j.task().short(),
+                asked.task().short()
+            )
+        })
+        .collect();
+    let (values, line) = match asked {
+        Cancel::Cancelled { task, holder, .. } => (
             json!({ "task": task.short(), "status": "cancelled", "holder": holder }),
             format!("{} cancelled.", task.short()),
         ),
-        Cancel::Stopping { task, mut held } => {
+        Cancel::Stopping { task, mut held, .. } => {
             held.sort();
             held.dedup();
             (
@@ -198,7 +210,9 @@ fn cancel(_: &TaskHandlers, tx: &Connection, payload: &Value) -> Result<Value> {
             )
         }
     };
-    Ok(result(values, vec![line], note))
+    let mut lines = judges;
+    lines.push(line);
+    Ok(result(values, lines, note))
 }
 
 /// `horch ledger unblock`.
