@@ -494,7 +494,8 @@ pub struct CliWorktreeGit {
     /// The paths below HOME that git can read: the git install folder and
     /// the paths of the job.
     readable: Vec<PathBuf>,
-    /// HOME, hidden from git, when it is an absolute path.
+    /// HOME, hidden from git. `None` when HOME is not an absolute path:
+    /// then no git runs.
     home: Option<PathBuf>,
     host: SandboxHost,
     race: Option<Race>,
@@ -538,7 +539,7 @@ impl CliWorktreeGit {
     /// A test seam: `home` takes the place of HOME, which git cannot read.
     #[doc(hidden)]
     pub fn with_home(mut self, home: impl Into<PathBuf>) -> CliWorktreeGit {
-        self.home = Some(home.into());
+        self.home = Some(home.into()).filter(|home| home.is_absolute());
         self
     }
 
@@ -581,7 +582,10 @@ impl CliWorktreeGit {
     /// Why this host cannot run git in the sandbox, or `None` when it can.
     pub fn sandbox_gap(&self) -> Option<NotSupported> {
         let probe = Command::new(self.runner.bin());
-        let hidden = self.hidden();
+        let hidden = match self.hidden() {
+            Ok(hidden) => hidden,
+            Err(gap) => return Some(gap),
+        };
         let reach = Reach {
             writable: &self.writable,
             readable: &self.readable,
@@ -598,10 +602,16 @@ impl CliWorktreeGit {
 
     /// The paths that git cannot read: [`CliWorktreeGit::run_folder`], and
     /// HOME with the files of the user (keys, tokens, the shell history).
-    fn hidden(&self) -> Vec<PathBuf> {
-        std::iter::once(self.run_folder())
-            .chain(self.home.clone())
-            .collect()
+    /// With no absolute HOME, the folder of the user is not known, so no
+    /// git runs: a gap of the sandbox.
+    fn hidden(&self) -> Result<Vec<PathBuf>, NotSupported> {
+        let home =
+            self.home
+                .clone()
+                .ok_or(NotSupported::new("sandbox", std::env::consts::OS).because(
+                "HOME is not an absolute path, so the sandbox cannot hide the files of the user",
+            ))?;
+        Ok(vec![self.run_folder(), home])
     }
 
     /// The 1 way this adapter runs a git command: first refuse a key of the
@@ -642,7 +652,9 @@ impl CliWorktreeGit {
         let sandbox = GitSandbox {
             writable: self.writable.clone(),
             readable,
-            hidden: self.hidden(),
+            hidden: self
+                .hidden()
+                .map_err(|gap| anyhow::anyhow!("{NO_SANDBOX}: {gap}"))?,
             network: Network::Denied,
             host: self.host,
         };

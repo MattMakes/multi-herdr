@@ -1273,6 +1273,26 @@ fn job_on_a_host_with_no_sandbox_runs_no_git_and_opens_1_needs_you_item() {
     assert!(items[0].1.starts_with(NO_SANDBOX), "{}", items[0].1);
 }
 
+#[test]
+fn job_with_no_absolute_home_runs_no_git() {
+    let w = world();
+    for home in ["", "relative/home"] {
+        let fleet = w.fleet_git().with_home(home);
+
+        let ran = custody_git::no_sandbox(&fleet).expect("no sandbox without an absolute HOME");
+        assert!(
+            ran.outcome.text.starts_with(NO_SANDBOX),
+            "{}",
+            ran.outcome.text
+        );
+        assert!(ran.outcome.text.contains("HOME"), "{}", ran.outcome.text);
+        assert!(ran.data.is_some(), "the typed no_sandbox data");
+        let e = fleet.git(&w.repo, &["branch", "no-home"]).unwrap_err();
+        assert!(format!("{e:#}").contains(NO_SANDBOX), "{e:#}");
+        assert!(!git(&w.repo, &["branch", "--list", "no-home"]).contains("no-home"));
+    }
+}
+
 // ─── the rescue saves the bytes on disk ─────────────────────────────────
 
 #[test]
