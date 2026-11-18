@@ -1,10 +1,10 @@
-//! The state machine of a feature (ticket 36).
+//! The state machine of a feature (ticket 36 of fleetd-p4, ticket 34 of
+//! fleetd-p6).
 //!
 //! `docs/specs/fleetd/design.md`, "The feature state machine", "Between
-//! features" (The full gate; Merged), I8; `docs/tickets/fleetd-p4/MAP.md`,
-//! Q20: in Phases 4 and 5 a feature is 1 run, and "each idea is
-//! `integrating`, `cancelled` or `parked`" is "each task of the run is
-//! `done` or `cancelled`".
+//! features" (The full gate; Merged), I8. A feature leaves `open` for
+//! `ready` when each of its ideas is `integrating`, `cancelled` or `parked`
+//! and the full gate passed on its current tips.
 //!
 //! [`next`] gives the move of a feature from the facts that fleetd read
 //! for it. `merged` and `abandoned` are terminal: fleetd decides `merged`
@@ -62,10 +62,10 @@ pub enum FullGate {
 /// The facts of 1 feature that is not terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Facts {
-    /// Each task of the run is `done` or `cancelled` (Q20).
-    pub tasks_settled: bool,
-    /// Each task branch of the feature is `landed` or `abandoned`.
-    pub branches_settled: bool,
+    /// The feature has at least 1 idea, and each idea of the feature is
+    /// `integrating`, `cancelled` or `parked`. An idea in `integrating` has
+    /// each task branch `landed` or `abandoned`.
+    pub ideas_settled: bool,
     /// At least 1 task branch of the feature is `landed`. A feature with no
     /// landed branch has no changes of its own: it is not ready, and its
     /// tip in the primary branch is not a merge.
@@ -79,7 +79,7 @@ pub struct Facts {
 impl Facts {
     /// The feature waits only for its full gate.
     fn settled(&self) -> bool {
-        self.tasks_settled && self.branches_settled && self.has_landed_work
+        self.ideas_settled && self.has_landed_work
     }
 }
 
@@ -128,8 +128,7 @@ mod tests {
 
     fn facts() -> Facts {
         Facts {
-            tasks_settled: true,
-            branches_settled: true,
+            ideas_settled: true,
             has_landed_work: true,
             full_gate: FullGate::Passed,
             changes_in_primary: false,
@@ -155,11 +154,7 @@ mod tests {
         assert_eq!(next(S, &gate(FullGate::Failed)), Next::Stay);
         for f in [
             Facts {
-                tasks_settled: false,
-                ..facts()
-            },
-            Facts {
-                branches_settled: false,
+                ideas_settled: false,
                 ..facts()
             },
             Facts {
@@ -192,7 +187,7 @@ mod tests {
     fn merged_needs_landed_work_and_is_terminal() {
         let merged = Facts {
             changes_in_primary: true,
-            tasks_settled: false,
+            ideas_settled: false,
             full_gate: FullGate::NotJudged,
             ..facts()
         };

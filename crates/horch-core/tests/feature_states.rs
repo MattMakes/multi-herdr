@@ -3,7 +3,9 @@
 //! `open` when a tip moves, and `merged` by content, decided 1 time
 //! (docs/specs/fleetd/design.md, "The feature state machine", "Between
 //! features" (The full gate; Merged), I8; docs/tickets/fleetd-p4/MAP.md,
-//! Q5 and Q20; docs/tickets/fleetd-p4/36-feature-state-machine.md).
+//! Q5; docs/tickets/fleetd-p4/36-feature-state-machine.md). The idea
+//! state of docs/tickets/fleetd-p6/34-feature-ready.md replaces the stand-in
+//! of Q20: the test sets the idea of the run to `integrating`.
 //!
 //! Each test has its own temporary ledger and git repository. No test reads
 //! the load, the limits or the clock of the machine: the fleet clock is a
@@ -209,6 +211,17 @@ impl World {
             .unwrap();
     }
 
+    /// The idea of the run is `integrating`, as the roll-up writes it when
+    /// each task is settled (the idea state machine is not under test here).
+    fn integrating(&self) {
+        self.conn
+            .execute(
+                "UPDATE ideas SET state = 'integrating' WHERE feature_id = ?1",
+                [FEATURE],
+            )
+            .unwrap();
+    }
+
     /// The full gate runs of the feature, as (tip, base tip, result).
     fn full_gates(&self) -> Vec<(String, String, Option<String>)> {
         let mut stmt = self
@@ -264,6 +277,7 @@ impl World {
         self.fetched_main(&self.tip("main"));
         self.settle(&t1, "done", &b1, "landed");
         self.settle(&t2, "cancelled", &b2, "abandoned");
+        self.integrating();
         self.follow();
         self.pass_full_gate();
         self.follow();
@@ -361,9 +375,11 @@ fn feature_is_ready_after_its_branches_landed_and_the_full_gate_passed() {
     w.follow();
     assert!(w.full_gates().is_empty());
 
-    // Each task is done or cancelled, each branch landed or abandoned: 1
-    // full gate on the feature tip over the fetched primary tip.
+    // Each task is done or cancelled, each branch landed or abandoned, so
+    // the idea of the run is `integrating`: 1 full gate on the feature tip
+    // over the fetched primary tip.
     w.settle(&t2, "cancelled", &b2, "abandoned");
+    w.integrating();
     w.follow();
     assert_eq!(w.state(), "open");
     assert_eq!(w.full_gates(), vec![(tip.clone(), main.clone(), None)]);
@@ -468,6 +484,7 @@ fn remote_none_reads_the_local_primary_branch() {
     w.commit_on(RUN_BRANCH, "b.txt", "b\n");
     let tip = w.commit_on(RUN_BRANCH, "fleet.toml", "remote = \"none\"\n");
     w.settle(&t1, "done", &b1, "landed");
+    w.integrating();
     // A fetched tip that the project does not use.
     let side = w.commit_on("main", "c.txt", "c\n");
     git(&w.repo, &["reset", "--quiet", "--hard", "HEAD~1"]);

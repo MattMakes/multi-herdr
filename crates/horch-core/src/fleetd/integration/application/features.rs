@@ -1,4 +1,5 @@
-//! The use cases of the feature state machine (ticket 36).
+//! The use cases of the feature state machine (ticket 36 of fleetd-p4,
+//! ticket 34 of fleetd-p6).
 //!
 //! `docs/specs/fleetd/design.md`, "The feature state machine", "Between
 //! features" (The full gate; Merged), I8; `docs/tickets/fleetd-p4/MAP.md`,
@@ -11,11 +12,11 @@
 //!   fetched tip of the primary branch in `remote_tips`, or the local
 //!   primary branch when the project file at the feature tip sets
 //!   `remote = none`.
-//! - each task of the run is `done` or `cancelled`, and each task branch is
-//!   `landed` or `abandoned`: the full gate runs 1 time as a job on the
+//! - each idea of the feature is `integrating`, `cancelled` or `parked`, and
+//!   1 task branch is `landed`: the full gate runs 1 time as a job on the
 //!   feature tip over the primary tip. Its pass on these 2 tips makes the
-//!   feature `ready`. A pass on a tip that moved is stale, so a `ready`
-//!   feature goes back to `open`, and the gate runs again.
+//!   feature `ready`. A pass on a tip that moved is stale, and a new idea
+//!   of the feature holds it, so a `ready` feature goes back to `open`.
 //! - git shows the changes of the feature tip in the primary tip by
 //!   content: `merged` (I8). A `merged` feature is terminal: [`follow`]
 //!   does not read git for it again.
@@ -30,6 +31,7 @@ use crate::fleetd::fleet_runtime::application::ledger::{transition, Cause};
 use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use crate::fleetd::fleet_runtime::domain::jobs::Kind;
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
+use crate::fleetd::ideas::adapters::ideas_store;
 use crate::fleetd::integration::adapters::exec_gate::{self, GateRequest};
 use crate::fleetd::integration::adapters::project_file;
 use crate::fleetd::integration::adapters::sqlite as rows;
@@ -39,11 +41,15 @@ use crate::fleetd::integration::domain::feature::{
 };
 use crate::fleetd::integration::domain::project::{ProjectSettings, Remote};
 use crate::fleetd::integration::domain::task_branch::LandingState;
-use crate::taskledger::model::{Actor, TaskStatus};
-use crate::taskledger::{runs, tasks};
+use crate::taskledger::model::Actor;
+use crate::taskledger::runs;
 
 /// The word of the full gate in `gate_runs`.
 const FULL_GATE: &str = "full";
+
+/// The states of an idea that do not hold its feature in `open` (design,
+/// "The feature state machine").
+const SETTLED_IDEA: [&str; 3] = ["integrating", "cancelled", "parked"];
 
 /// What [`follow`] reads with.
 pub struct Features<'a> {
@@ -117,11 +123,9 @@ fn follow_one(f: &Features<'_>, tx: &Connection, id: &str, clock: FleetSeconds) 
         Ok(tips) => tips,
         Err(why) => return Ok(Step::Waits(why)),
     };
-    let (open_branches, landed) = branch_counts(tx, id)?;
-    let has_landed_work = landed > 0;
+    let has_landed_work = has_landed_branch(tx, id)?;
     let facts = Facts {
-        tasks_settled: !has_open_task(tx, &run.run_id)?,
-        branches_settled: open_branches == 0,
+        ideas_settled: ideas_settled(tx, id)?,
         has_landed_work,
         full_gate: full_gate(tx, id, &tips)?,
         changes_in_primary: has_landed_work
@@ -172,7 +176,7 @@ fn why_enter(to: FeatureState, tips: &Tips) -> String {
             tips.feature, tips.primary
         ),
         _ => format!(
-            "no full gate pass on {} over the primary tip {}, or a task is not settled",
+            "no full gate pass on {} over the primary tip {}, or an idea is in flight",
             tips.feature, tips.primary
         ),
     }
@@ -227,28 +231,24 @@ fn project_settings(
     }
 }
 
-/// Whether a task of the run `run_id` is not `done` and not `cancelled`
-/// (Q20).
-fn has_open_task(conn: &Connection, run_id: &str) -> Result<bool> {
-    let settled = [TaskStatus::Done.as_str(), TaskStatus::Cancelled.as_str()];
-    Ok(tasks::of_run(conn, run_id)?
-        .iter()
-        .any(|t| !settled.contains(&t.status.as_str())))
+/// Whether the feature `id` has at least 1 idea, and each of its ideas is
+/// `integrating`, `cancelled` or `parked`. A feature with no idea row is
+/// not settled: a guard whose fact is unknown does not hold.
+fn ideas_settled(conn: &Connection, id: &str) -> Result<bool> {
+    let ideas = ideas_store::of_feature(conn, id)?;
+    Ok(!ideas.is_empty()
+        && ideas
+            .iter()
+            .all(|i| SETTLED_IDEA.contains(&i.state.as_str())))
 }
 
-/// The task branches of the feature `id`: the count that is not `landed`
-/// and not `abandoned`, and the count that is `landed`.
-fn branch_counts(conn: &Connection, id: &str) -> Result<(i64, i64)> {
+/// Whether a task branch of the feature `id` is `landed`.
+fn has_landed_branch(conn: &Connection, id: &str) -> Result<bool> {
     Ok(conn.query_row(
-        "SELECT COALESCE(SUM(landing_state NOT IN (?2, ?3)), 0),
-                COALESCE(SUM(landing_state = ?2), 0)
-         FROM branches WHERE feature_id = ?1 AND task_id IS NOT NULL",
-        params![
-            id,
-            LandingState::Landed.as_str(),
-            LandingState::Abandoned.as_str()
-        ],
-        |r| Ok((r.get(0)?, r.get(1)?)),
+        "SELECT EXISTS (SELECT 1 FROM branches
+             WHERE feature_id = ?1 AND task_id IS NOT NULL AND landing_state = ?2)",
+        params![id, LandingState::Landed.as_str()],
+        |r| r.get(0),
     )?)
 }
 
