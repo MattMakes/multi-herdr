@@ -229,14 +229,18 @@ fn queue_as<'a>(
         let id = enqueued.id;
         // The first push shows the mail id too, as every redelivery does.
         line = message::with_mail_id(&line, from, &id.short());
-        queued = Some(id);
         if role != "orchestrator" {
             // Worker mail holds no question for the orchestrator.
         } else if let Err(error) = sync_question_waits(ctx, mailbox.workspace_id()) {
             eprintln!(
                 "horch tell: question wait projection failed ({error:#}); mail remains durable"
             );
+        } else if let Err(error) = write_question_file(ctx, &id, text) {
+            eprintln!(
+                "horch tell: the question file of the push attempt is not written ({error:#}); mail remains durable"
+            );
         }
+        queued = Some(id);
     }
     if !durable {
         // FR-7: the pane gets only the mail line, so this line waits in the
@@ -1286,6 +1290,78 @@ fn sync_question_waits(ctx: &RuntimeContext, workspace: &str) -> Result<()> {
     }
     let store = horch_core::taskledger::open(ctx)?;
     horch_core::taskledger::workers::sync_questions(store.conn(), &ctx.paths.state_root, workspace)
+}
+
+/// The mode of a question file: only the user of fleetd and its workers.
+const QUESTION_FILE_MODE: u32 = 0o600;
+
+/// A push attempt (its pane names `HORCH_TASK_YAML`) writes the question
+/// file of the `questions` row of mail question `mail_id`, 1 time, at
+/// `outbox/questions/<n>.json` of its attempt, where `<n>` is the number of
+/// the row (design: "Workspace layout and file protocol"). The file holds
+/// `task`, `attempt`, `question_id`, `text` and `at`, and its size is under
+/// `result_max_bytes`: a longer `text` is cut, and the mail keeps all of it.
+/// A claim attempt, or a line with no `questions` row, writes no file.
+fn write_question_file(ctx: &RuntimeContext, mail_id: &Id, text: &str) -> Result<()> {
+    let Some(task_yaml) =
+        std::env::var_os(super::resultcmd::TASK_YAML_ENV).filter(|v| !v.is_empty())
+    else {
+        return Ok(());
+    };
+    let attempt = super::resultcmd::Attempt::resolve(
+        &ctx.paths.fleet_root,
+        Some(std::path::Path::new(&task_yaml)),
+    )?;
+    let store = horch_core::taskledger::open(ctx)?;
+    let Some((row, _)) =
+        horch_core::fleetd::ideas::application::questions::open_with_mail(store.conn())?
+            .into_iter()
+            .find(|(_, mail)| mail.as_deref() == Some(mail_id.as_str()))
+    else {
+        return Ok(());
+    };
+    let n = row
+        .id
+        .rsplit_once("/Q")
+        .and_then(|(_, n)| n.parse::<u32>().ok())
+        .with_context(|| format!("the question row id {} has no number", row.id))?;
+    let max_bytes =
+        horch_core::fleetd::fleet_runtime::adapters::config_file::load(&ctx.paths.fleet_root)?
+            .result_max_bytes;
+    let bytes = question_file_bytes(text, max_bytes, |text| {
+        serde_json::json!({
+            "task": attempt.task_id,
+            "attempt": attempt.attempt,
+            "question_id": row.id,
+            "text": text,
+            "at": row.asked_at,
+        })
+        .to_string()
+        .into_bytes()
+    });
+    let dir = attempt.outbox().join("questions");
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    let path = dir.join(format!("{n}.json"));
+    horch_core::fsx::create_immutable(&path, &bytes, QUESTION_FILE_MODE)?;
+    Ok(())
+}
+
+/// The bytes that `file` makes of the longest head of `text` whose file is
+/// under `max_bytes`.
+fn question_file_bytes(text: &str, max_bytes: u64, file: impl Fn(&str) -> Vec<u8>) -> Vec<u8> {
+    let mut end = text.len();
+    loop {
+        let bytes = file(&text[..end]);
+        let len = bytes.len() as u64;
+        if len < max_bytes || end == 0 {
+            return bytes;
+        }
+        let over = usize::try_from(len - max_bytes + 1).unwrap_or(usize::MAX);
+        end = end.saturating_sub(over);
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+    }
 }
 
 fn ledger_role_state(ctx: &RuntimeContext, workspace: &str, role: &str) -> String {

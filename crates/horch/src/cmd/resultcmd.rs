@@ -102,9 +102,9 @@ fn refuse(cause: &str) -> ExitCode {
 
 /// A push attempt, as its `task.yaml` names it.
 #[derive(Debug)]
-struct Attempt {
-    task_id: String,
-    attempt: String,
+pub(crate) struct Attempt {
+    pub(crate) task_id: String,
+    pub(crate) attempt: String,
     /// The attempt folder, with no link in its path.
     dir: PathBuf,
     worktree: PathBuf,
@@ -114,7 +114,7 @@ impl Attempt {
     /// The attempt of `task_yaml`. It must be
     /// `<fleet_root>/tasks/<task id>/attempts/<attempt>/task.yaml`, and its
     /// `task_id`, `attempt` and `report_to` must be those of its path.
-    fn resolve(fleet_root: &Path, task_yaml: Option<&Path>) -> Result<Attempt> {
+    pub(crate) fn resolve(fleet_root: &Path, task_yaml: Option<&Path>) -> Result<Attempt> {
         let Some(task_yaml) = task_yaml else {
             bail!("this pane is not a push attempt: {TASK_YAML_ENV} is not set");
         };
@@ -169,7 +169,7 @@ impl Attempt {
         })
     }
 
-    fn outbox(&self) -> PathBuf {
+    pub(crate) fn outbox(&self) -> PathBuf {
         self.dir.join("outbox")
     }
 
