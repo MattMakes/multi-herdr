@@ -420,7 +420,7 @@ fn an_agent_that_exits_on_its_last_attempt_fails_the_task() {
     assert_eq!(claimed_seq(&claim(&mut store, &second)), Some(1));
     assert_eq!(
         supervisor::agent_exited(&db, &second, Some(1)).unwrap(),
-        Ended::Held { task: "T-1".into() }
+        Ended::Failed { task: "T-1".into() }
     );
     let held = tasks::get(store.conn(), &t.task_id).unwrap();
     // Rung 6: no attempt left, so the task is failed and waits for its 1
@@ -432,6 +432,27 @@ fn an_agent_that_exits_on_its_last_attempt_fails_the_task() {
         .is_empty());
     let third = worker(&mut store, &run, "opus");
     assert_eq!(claimed_seq(&claim(&mut store, &third)), None);
+    // The replan, then 2 more exits: escalated, held for the operator.
+    store
+        .immediate(|tx| tasks::requeue_by_operator(tx, &held, "replan"))
+        .unwrap();
+    for (n, ended) in [
+        (
+            "fourth",
+            Ended::Requeued {
+                task: "T-1".into(),
+                persona: "opus".into(),
+            },
+        ),
+        ("fifth", Ended::Escalated { task: "T-1".into() }),
+    ] {
+        let w = worker(&mut store, &run, "opus");
+        assert_eq!(claimed_seq(&claim(&mut store, &w)), Some(1), "{n}");
+        assert_eq!(supervisor::agent_exited(&db, &w, Some(1)).unwrap(), ended);
+    }
+    let escalated = tasks::get(store.conn(), &t.task_id).unwrap();
+    assert_eq!(escalated.status, "escalated");
+    assert_eq!(escalated.held_reason.as_deref(), Some("2 attempts failed"));
 }
 
 #[test]

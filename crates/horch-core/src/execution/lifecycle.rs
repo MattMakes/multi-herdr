@@ -730,7 +730,12 @@ impl<'a> PaneWorker<'a> {
                 " The task ledger queued {task} again. Spawn {persona} with: \
                  horch spawn {persona} --replaces {id}"
             )),
-            Ok(Ended::Held { task }) => Some(format!(
+            Ok(Ended::Failed { task }) => Some(format!(
+                " QUESTION: replan {task}: it used up its attempts and failed. Requeue it 1 \
+                 time (horch ledger requeue {task} \"<reason>\"), or cancel it (horch ledger \
+                 cancel {task} \"<reason>\"). Spawn no replacement."
+            )),
+            Ok(Ended::Escalated { task }) => Some(format!(
                 " QUESTION: {task} used up its attempts and is held. Ask the operator: \
                  requeue it (horch ledger requeue {task} \"<reason>\"), change the ticket, \
                  or cancel it. Spawn no replacement."

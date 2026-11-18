@@ -232,9 +232,12 @@ pub enum Ended {
     Clean,
     /// It held a task without finishing it: the task is queued again.
     Requeued { task: String, persona: String },
-    /// It held a task that has now used up its attempts: the task is held
-    /// for the operator (#168).
-    Held { task: String },
+    /// It held a task that has now used up its attempts: the task is
+    /// `failed` and waits for its 1 replan by the orchestrator (rung 6).
+    Failed { task: String },
+    /// It held a task that used up its attempts after its replan: the task
+    /// is `escalated`, held for the operator (#168).
+    Escalated { task: String },
 }
 
 /// Settle the worker row after the agent exited with `code`.
@@ -306,7 +309,8 @@ fn requeue_after_exit(
     let how = tasks::requeue(tx, &task, &format!("{} {reason}", w.label()))?;
     let t = tasks::get(tx, &task)?;
     Ok(match how {
-        tasks::Requeue::Failed | tasks::Requeue::Escalated => Ended::Held { task: t.short() },
+        tasks::Requeue::Failed => Ended::Failed { task: t.short() },
+        tasks::Requeue::Escalated => Ended::Escalated { task: t.short() },
         _ => Ended::Requeued {
             task: t.short(),
             persona: t.claimable_by.unwrap_or_default(),
