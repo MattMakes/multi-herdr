@@ -1598,7 +1598,16 @@ fn status_cmd(
     }
     let run = resolve_run(ctx, store, arg)?;
     adopt_workspace(ctx, store, &run)?;
-    let report = status::report(store.conn(), &run)?;
+    // The pool of each persona: a ready task of a paced pool shows its hold.
+    let roster = super::load_roster_unwarned(ctx, None)
+        .or_else(|_| horch_core::roster::Roster::builtin())
+        .ok();
+    let pool_of = |persona: &str| {
+        let t = roster.as_ref()?.get(persona)?;
+        let model = t.model.as_deref().unwrap_or_default();
+        Some(horch_core::routing::quota::pool_for(t.agent.as_str(), model).to_string())
+    };
+    let report = status::report_with(store.conn(), &run, &pool_of)?;
     print_status(&report, as_json)
 }
 

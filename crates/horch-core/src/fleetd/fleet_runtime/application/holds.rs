@@ -7,22 +7,31 @@
 //! with each hold and its cause. The reconcile pass calls
 //! [`record_hold_changes`] in each pass (ticket 21).
 
+use std::collections::BTreeMap;
+
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 
-use crate::fleetd::fleet_runtime::adapters::config_file;
-use crate::fleetd::fleet_runtime::application::jobs::{NeedsYouItems, NewItem};
+use crate::fleetd::fleet_runtime::adapters::sqlite::generation;
+use crate::fleetd::fleet_runtime::adapters::{clock_store, config_file, jobs_store};
+use crate::fleetd::fleet_runtime::application::jobs::{self, NeedsYouItems, NewItem};
 use crate::fleetd::fleet_runtime::domain::health::{
     self, Finding, Floors, Hold, PaceRule, PoolWindow, Reading, Readings,
 };
+use crate::fleetd::fleet_runtime::domain::jobs::{Kind, State as JobState};
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
+use crate::fleetd::integration::application::queries as integration;
 use crate::fleetd::integration::domain::project::{self, ProjectSettings};
+use crate::fleetd::task_execution::application::dispatch::{choices, CheckSandboxes};
+use crate::fleetd::task_execution::domain::dispatch::{Choice, Hold as DispatchHold, Holds};
+use crate::fleetd::worktree_custody::adapters::sqlite::{self as trees, WorktreeState};
 use crate::fleetd::worktree_custody::application::disk;
 use crate::fleetd::worktree_custody::domain::disk::hold_cause;
 use crate::routing::quota::{model_family, pool_for, QuotaView, State};
 use crate::runtime::machine::{self, Known, MachineSnapshot, ProbeBins};
 use crate::runtime::RuntimeContext;
 use crate::taskledger::model::{Actor, EventKind};
+use crate::taskledger::tasks;
 
 /// The readings of the platform beside [`MachineSnapshot`]: the count of
 /// processes of the user, and the count and the limit of open files of the
@@ -206,39 +215,108 @@ pub fn sync_missing_fast_gate(
     Ok(hold)
 }
 
-/// The global holds (the health floors and the worktree disk) of `holds`,
-/// each with its name and its cause.
-fn globals(holds: &[Hold]) -> Vec<(&'static str, &str)> {
-    holds
-        .iter()
-        .filter_map(|h| h.global().map(|name| (name, h.cause())))
-        .collect()
+/// The key of 1 hold that its events record: the name of a global hold,
+/// or `pool:<pool>` for the pacing of 1 pool.
+fn key(h: &Hold) -> Option<String> {
+    match h {
+        Hold::Pacing { pool, .. } => Some(format!("pool:{pool}")),
+        _ => h.global().map(str::to_string),
+    }
 }
 
-/// Record 1 `hold_started` event for each global hold of `now` that is not
-/// in `before`, and 1 `hold_ended` event for each global hold of `before`
-/// that is not in `now`, each with its cause. A pacing hold is not global
-/// and records nothing.
+/// The data of the events of the hold `h`: a global hold names its `fact`,
+/// as the events of the health floors do, and a pacing hold names its
+/// `pool`.
+fn data(h: &Hold) -> serde_json::Value {
+    match h {
+        Hold::Pacing { pool, .. } => serde_json::json!({ "pool": pool }),
+        _ => serde_json::json!({ "fact": h.global() }),
+    }
+}
+
+/// The SQL key of a hold event: the same text as [`key`].
+const EVENT_KEY: &str = "COALESCE(json_extract(data_json, '$.fact'),
+    'pool:' || json_extract(data_json, '$.pool'))";
+
+/// 1 hold that its last event says is on: a `hold_started` event with no
+/// `hold_ended` event after it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenHold {
+    /// The name of a global hold, or `pool:<pool>`.
+    pub key: String,
+    /// The pool of a pacing hold; `None` for a global hold.
+    pub pool: Option<String>,
+    pub cause: String,
+}
+
+/// Each hold whose last event is `hold_started`, in key order (OR-1). The
+/// ledger keeps them, so they survive a restart of fleetd.
+pub fn open_holds(conn: &Connection) -> Result<Vec<OpenHold>> {
+    let sql = format!(
+        "SELECT {EVENT_KEY}, json_extract(data_json, '$.pool'), cause FROM events
+         WHERE event_id IN (
+            SELECT max(event_id) FROM events
+            WHERE kind IN ('hold_started', 'hold_ended') GROUP BY {EVENT_KEY})
+         AND kind = 'hold_started'
+         ORDER BY 1"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], |r| {
+        Ok(OpenHold {
+            key: r.get(0)?,
+            pool: r.get(1)?,
+            cause: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// Record 1 `hold_started` event for each global hold and each pacing hold
+/// of `now` that is not on, and 1 `hold_ended` event for each hold that is
+/// on and not in `now`, each with its cause. A hold is on when it is in
+/// `before` or its last event in the ledger is `hold_started`: a fleetd
+/// that starts again with no holds in memory starts no hold twice, and
+/// ends a hold that ended while no fleetd ran.
 pub fn record_hold_changes(tx: &Connection, before: &[Hold], now: &[Hold]) -> Result<()> {
-    let (before, now) = (globals(before), globals(now));
-    let has = |list: &[(&str, &str)], name: &str| list.iter().any(|(n, _)| *n == name);
-    for (name, cause) in &now {
-        if !has(&before, name) {
-            append(tx, EventKind::HoldStarted, name, cause)?;
+    let mut on: Vec<(String, String, serde_json::Value)> = open_holds(tx)?
+        .into_iter()
+        .map(|o| {
+            let data = match &o.pool {
+                Some(pool) => serde_json::json!({ "pool": pool }),
+                None => serde_json::json!({ "fact": o.key }),
+            };
+            (o.key, o.cause, data)
+        })
+        .collect();
+    for h in before {
+        if let Some(k) = key(h) {
+            if !on.iter().any(|(n, ..)| *n == k) {
+                on.push((k, h.cause().to_string(), data(h)));
+            }
         }
     }
-    for (name, cause) in &before {
-        if !has(&now, name) {
-            append(tx, EventKind::HoldEnded, name, cause)?;
+    let now: Vec<(String, &Hold)> = now.iter().filter_map(|h| key(h).map(|k| (k, h))).collect();
+    for (k, h) in &now {
+        if !on.iter().any(|(n, ..)| n == k) {
+            append(tx, EventKind::HoldStarted, k, h.cause(), &data(h))?;
+        }
+    }
+    for (k, cause, data) in &on {
+        if !now.iter().any(|(n, _)| n == k) {
+            append(tx, EventKind::HoldEnded, k, cause, data)?;
         }
     }
     Ok(())
 }
 
-/// The event of the global hold `name`; its data names it as `fact`, as
-/// the events of the health floors do.
-fn append(tx: &Connection, kind: EventKind, name: &str, cause: &str) -> Result<()> {
-    let data = serde_json::json!({ "fact": name }).to_string();
+/// The event of the hold `name`, with `data`.
+fn append(
+    tx: &Connection,
+    kind: EventKind,
+    name: &str,
+    cause: &str,
+    data: &serde_json::Value,
+) -> Result<()> {
     tx.execute(
         "INSERT INTO events (at, actor, kind, text, cause, data_json)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -248,11 +326,114 @@ fn append(tx: &Connection, kind: EventKind, name: &str, cause: &str) -> Result<(
             kind.as_str(),
             format!("{}: {cause}", kind.as_str()),
             cause,
-            data
+            data.to_string()
         ],
     )
     .with_context(|| format!("recording the {} event of {name}", kind.as_str()))?;
     Ok(())
+}
+
+/// Each persona is supported: the board shows a persona with no check
+/// sandbox in its needs-you list.
+struct EverySandbox;
+
+impl CheckSandboxes for EverySandbox {
+    fn supported(&self, _persona: &str) -> bool {
+        true
+    }
+}
+
+/// The hold on dispatch of each task, by task id, from the ledger (OR-1,
+/// FM-45): a ready task held by an open global hold, an unhealthy profile,
+/// the pacing of the pool that `pool_of` gives for its persona, a missing
+/// fast gate or `not_before`; and a task whose `worktree_add` waits for a
+/// git job that holds its repository.
+pub fn task_holds(
+    conn: &Connection,
+    pool_of: &dyn Fn(&str) -> Option<String>,
+) -> Result<BTreeMap<String, String>> {
+    let open = open_holds(conn)?;
+    let holds = Holds {
+        // With no fleetd that ran, no `not_before` is judged.
+        clock: match generation(conn)? {
+            Some(_) => clock_store::read(conn)?.0,
+            None => i64::MAX,
+        },
+        global: open
+            .iter()
+            .filter(|o| o.pool.is_none())
+            .map(|o| o.cause.clone())
+            .collect(),
+        projects: integration::integration(conn)?
+            .holds
+            .into_iter()
+            .map(|h| (h.project, h.cause))
+            .collect(),
+        ..Holds::default()
+    };
+    let mut out = git_job_holds(conn)?;
+    for choice in choices(conn, &holds, &EverySandbox, None)? {
+        let (task_id, hold) = match choice {
+            Choice::Held { task_id, hold } => (task_id, Some(hold)),
+            Choice::Bind { task_id, .. } => (task_id, None),
+        };
+        // Pacing holds 1 persona: after a global hold and an unhealthy
+        // profile, before the rest, as dispatch orders its holds.
+        let first = matches!(
+            hold,
+            Some(DispatchHold::Global(_) | DispatchHold::UnhealthyProfile { .. })
+        );
+        let paced = if first {
+            None
+        } else {
+            let t = tasks::get(conn, &task_id)?;
+            let persona = t.claimable_by.or(t.primary_persona).unwrap_or_default();
+            let pool = pool_of(&persona);
+            open.iter()
+                .find(|o| o.pool.is_some() && o.pool == pool)
+                .map(|o| DispatchHold::Persona {
+                    persona,
+                    cause: o.cause.clone(),
+                })
+        };
+        let shown = paced.or(hold).filter(|h| {
+            matches!(
+                h,
+                DispatchHold::Global(_)
+                    | DispatchHold::UnhealthyProfile { .. }
+                    | DispatchHold::Persona { .. }
+                    | DispatchHold::Project { .. }
+                    | DispatchHold::NotBefore { .. }
+            )
+        });
+        if let Some(h) = shown {
+            out.insert(task_id, h.to_string());
+        }
+    }
+    Ok(out)
+}
+
+/// The hold of each task whose `reserved` tree waits for its `queued`
+/// `worktree_add` run while another git writer of its repository runs:
+/// "git job <kind> <id> holds <repo>" (1 git writer for each repository,
+/// MAP.md of fleetd-p3, Q12).
+fn git_job_holds(conn: &Connection) -> Result<BTreeMap<String, String>> {
+    let mut out = BTreeMap::new();
+    for tree in trees::in_states(conn, &[WorktreeState::Reserved])? {
+        let Some(task) = tree.task_id else {
+            continue;
+        };
+        let add = jobs_store::active(conn, Kind::WorktreeAdd, &tree.worktree_id)?;
+        if add.is_none_or(|j| j.state != JobState::Queued) {
+            continue;
+        }
+        let repo = tree.repo_root;
+        if let Some(j) = jobs::git_writers_running(conn, &repo)?.first() {
+            let cause = format!("git job {} {} holds {repo}", j.kind.as_str(), j.id);
+            out.insert(task, cause);
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -376,23 +557,24 @@ mod tests {
                 .immediate(|tx| record_hold_changes(tx, pair[0], pair[1]))
                 .unwrap();
         }
-        let cause = disk.cause().to_string();
-        let data = r#"{"fact":"free_disk"}"#.to_string();
+        // A pacing hold records its events too, with its pool (T-599), so
+        // the board shows it.
+        let row = |kind: &str, cause: &str, data: &str| {
+            (
+                kind.to_string(),
+                format!("{kind}: {cause}"),
+                cause.to_string(),
+                data.to_string(),
+            )
+        };
+        let (fact, pool) = (r#"{"fact":"free_disk"}"#, r#"{"pool":"claude"}"#);
         assert_eq!(
             events(&store),
             vec![
-                (
-                    "hold_started".into(),
-                    format!("hold_started: {cause}"),
-                    cause.clone(),
-                    data.clone()
-                ),
-                (
-                    "hold_ended".into(),
-                    format!("hold_ended: {cause}"),
-                    cause,
-                    data
-                ),
+                row("hold_started", disk.cause(), fact),
+                row("hold_started", "pool claude is ahead", pool),
+                row("hold_ended", "pool claude is ahead", pool),
+                row("hold_ended", disk.cause(), fact),
             ]
         );
     }

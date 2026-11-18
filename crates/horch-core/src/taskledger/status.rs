@@ -1,5 +1,6 @@
 //! `horch ledger status` and `show`: the board of a run (section 5.6).
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
@@ -8,6 +9,9 @@ use rusqlite::{params, Connection, Row};
 use serde::Serialize;
 
 use crate::exeid::{exe_identity, ExeIdentity};
+use crate::fleetd::fleet_runtime::adapters::clock_store;
+use crate::fleetd::fleet_runtime::adapters::sqlite::generation;
+use crate::fleetd::fleet_runtime::application::holds;
 use crate::fleetd::ideas::application::needs_you;
 use crate::fleetd::integration::application::queries::{self as integration, Integration};
 use crate::fleetd::worker_profiles::adapters::check_sandbox::NO_CHECK_SANDBOX_KIND;
@@ -95,6 +99,58 @@ pub struct Report {
     /// The holds, the refs, the push state and the remote state of
     /// integration (OR-1, FM-45).
     pub integration: Integration,
+    /// The cause of each global hold and each pacing hold on dispatch that
+    /// is on (OR-1, FM-45).
+    pub dispatch_holds: Vec<String>,
+    /// Each lease of the run, with the last signal of its worker (OR-1).
+    pub leases: Vec<LeaseLine>,
+}
+
+/// 1 lease of a task of the run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LeaseLine {
+    pub task: String,
+    pub attempt: String,
+    /// The label of the worker of the attempt.
+    pub worker: String,
+    pub renewed_at: String,
+    pub renew_basis: String,
+    /// The seconds to its expiry on the fleet clock; `None` when fleetd
+    /// never ran.
+    pub expires_in_s: Option<i64>,
+    /// Why the progress of the worker last moved, and when.
+    pub last_signal: Option<String>,
+    pub last_signal_at: Option<String>,
+}
+
+/// Each lease of a task of `run_id`, in task order.
+fn leases(conn: &Connection, run_id: &str) -> Result<Vec<LeaseLine>> {
+    let clock = match generation(conn)? {
+        Some(_) => Some(clock_store::read(conn)?.0),
+        None => None,
+    };
+    let mut stmt = conn.prepare(
+        "SELECT t.seq, l.attempt_id, COALESCE(w.role, w.worker_id), l.renewed_at,
+                l.renew_basis, l.expires_at, w.last_progress_source, w.last_progress_at
+         FROM leases l JOIN tasks t ON t.task_id = l.task_id
+         JOIN attempts a ON a.id = l.attempt_id
+         JOIN workers w ON w.worker_id = a.worker_id
+         WHERE t.run_id = ?1 ORDER BY t.seq",
+    )?;
+    let rows = stmt.query_map(params![run_id], |r| {
+        let expires_at: i64 = r.get(5)?;
+        Ok(LeaseLine {
+            task: format!("T-{}", r.get::<_, i64>(0)?),
+            attempt: r.get(1)?,
+            worker: r.get(2)?,
+            renewed_at: r.get(3)?,
+            renew_basis: r.get(4)?,
+            expires_in_s: clock.map(|c| expires_at - c),
+            last_signal: r.get(6)?,
+            last_signal_at: r.get(7)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
 /// The open items of the needs-you list. It has no run: each board shows
@@ -374,6 +430,7 @@ fn task_line(
     conn: &Connection,
     t: Task,
     waits: &[(Task, tasks::Wait)],
+    held: &BTreeMap<String, String>,
     roster: &[Worker],
 ) -> Result<TaskLine> {
     let attempt_ends = if t.attempts > 1 {
@@ -390,7 +447,10 @@ fn task_line(
     Ok(TaskLine {
         attempt_ends,
         worker,
-        waits: task_wait(&t, waits),
+        waits: match held.get(&t.task_id) {
+            Some(cause) if t.held_reason.is_none() => Some(format!("hold on dispatch: {cause}")),
+            _ => task_wait(&t, waits),
+        },
         task: t,
     })
 }
@@ -516,21 +576,42 @@ pub fn unsettled(conn: &Connection, run_id: &str) -> Result<Vec<Unsettled>> {
 
 /// Build the board of `run`.
 pub fn report(conn: &Connection, run: &Run) -> Result<Report> {
+    report_with(conn, run, &|_| None)
+}
+
+/// [`report`], with `pool_of` the pool of each persona: a ready task of a
+/// paced pool shows its pacing hold.
+pub fn report_with(
+    conn: &Connection,
+    run: &Run,
+    pool_of: &dyn Fn(&str) -> Option<String>,
+) -> Result<Report> {
     let current = std::env::current_exe().ok().and_then(|p| exe_identity(&p));
-    report_for(conn, run, current.as_ref())
+    board(conn, run, current.as_ref(), pool_of)
 }
 
 /// Build the board of `run`, judging its watchdog against the binary
 /// `current` that builds it.
 pub fn report_for(conn: &Connection, run: &Run, current: Option<&ExeIdentity>) -> Result<Report> {
+    board(conn, run, current, &|_| None)
+}
+
+/// [`report_for`], with `pool_of` the pool of each persona.
+fn board(
+    conn: &Connection,
+    run: &Run,
+    current: Option<&ExeIdentity>,
+    pool_of: &dyn Fn(&str) -> Option<String>,
+) -> Result<Report> {
     let now = util::now();
     let waits = tasks::waits(conn, &run.run_id)?;
+    let held = holds::task_holds(conn, pool_of)?;
     let roster = workers::of_run(conn, &run.run_id)?;
     let mut counts = Counts::default();
     let mut lines = Vec::new();
     for t in tasks::of_run(conn, &run.run_id)? {
         counts.add(&t.status);
-        lines.push(task_line(conn, t, &waits, &roster)?);
+        lines.push(task_line(conn, t, &waits, &held, &roster)?);
     }
     let wl = worker_lines(conn, run, roster, &lines, &now)?;
     let wts = worktrees(conn, &run.run_id)?;
@@ -551,6 +632,11 @@ pub fn report_for(conn: &Connection, run: &Run, current: Option<&ExeIdentity>) -
         needs_you,
         worktree_disk: custody::total_bytes(conn)?,
         integration: integration::integration(conn)?,
+        dispatch_holds: holds::open_holds(conn)?
+            .into_iter()
+            .map(|h| h.cause)
+            .collect(),
+        leases: leases(conn, &run.run_id)?,
     })
 }
 
@@ -585,6 +671,10 @@ pub fn render(r: &Report) -> String {
     }
     render_tasks(&mut out, &r.tasks);
     render_live(&mut out, &r.workers);
+    render_leases(&mut out, &r.leases);
+    for cause in &r.dispatch_holds {
+        let _ = writeln!(out, "Hold on dispatch: {cause}.");
+    }
     render_open_worktrees(&mut out, &r.worktrees);
     render_parked(&mut out, &r.parked);
     render_worktree_disk(&mut out, &r.worktree_disk);
@@ -716,6 +806,25 @@ fn render_live(out: &mut String, workers: &[WorkerLine]) {
             } else {
                 ""
             }
+        );
+    }
+}
+
+/// 1 line for each lease, with the last signal of its worker.
+fn render_leases(out: &mut String, leases: &[LeaseLine]) {
+    for l in leases {
+        let expires = match l.expires_in_s {
+            Some(s) => format!("expires in {s} s"),
+            None => "no fleet clock".to_string(),
+        };
+        let signal = match (&l.last_signal, &l.last_signal_at) {
+            (Some(s), Some(at)) => format!("last signal {s} at {at}"),
+            _ => "no signal yet".to_string(),
+        };
+        let _ = writeln!(
+            out,
+            "Lease of {}: attempt {} of {}, renewed at {} by {}, {expires}; {signal}.",
+            l.task, l.attempt, l.worker, l.renewed_at, l.renew_basis
         );
     }
 }
