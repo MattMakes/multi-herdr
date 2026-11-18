@@ -137,9 +137,26 @@ fn arc_31_e2e_done_refuses_then_unlanded_reports() {
         .get(RECORD)
         .unwrap();
     assert_eq!(record.status, STATUS_DONE);
-    let calls = serde_json::to_string(&h.calls_of("herdr")).unwrap();
+    let calls = reported(&h);
     assert!(calls.contains("UNLANDED:"), "{calls}");
     assert!(calls.contains("wt/sonnet-1-unit"), "{calls}");
+}
+
+/// FR-7: the pane gets only the mail line, and the report waits in the
+/// orchestrator mail. The texts of that mail, once the line was typed.
+fn reported(h: &Harness) -> String {
+    let calls = serde_json::to_string(&h.calls_of("herdr")).unwrap();
+    assert!(
+        calls.contains(horch_core::messaging::delivery::MAIL_LINE),
+        "{calls}"
+    );
+    horch_core::messaging::mail::Mail::under(&h.state, WORKSPACE)
+        .pending()
+        .unwrap()
+        .into_iter()
+        .map(|m| m.text)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// A harness with its own task ledger, for the worktrees the ledger records.
@@ -195,7 +212,7 @@ fn arc_31_e2e_list_and_done_survive_a_deleted_worktree_folder() {
 
     let done = h.run(&["done", "s"]);
     assert!(done.status.success(), "{}", stderr(&done));
-    let calls = serde_json::to_string(&h.calls_of("herdr")).unwrap();
+    let calls = reported(&h);
     assert!(calls.contains("UNREGISTERED:"), "{calls}");
     assert!(calls.contains(".worktrees/kept"), "{calls}");
     assert!(!calls.contains(".worktrees/gone"), "{calls}");
