@@ -1,9 +1,10 @@
-//! The worktree reconciler in report-only mode: it adopts each tree with no
-//! row, marks the tree of a dead owner `orphaned`, observes the worktree
-//! jobs, escalates a vanished folder, checks I6, and queues no rescue and
-//! no removal (docs/specs/fleetd/design.md, "Worktrees: leased, reconciled,
-//! never lost", "Ledger" I6, RR-10, FM-25, FM-26, FM-27;
-//! docs/tickets/fleetd-p3/09-worktree-reconciler-report-only.md).
+//! The worktree reconciler: it adopts each tree with no row, marks the tree
+//! of a dead owner `orphaned`, observes the worktree jobs, escalates a
+//! vanished folder, checks I6, and queues the rescue of each orphan and the
+//! removal of each landed tree (docs/specs/fleetd/design.md, "Worktrees:
+//! leased, reconciled, never lost", "Ledger" I6, RR-10, FM-25, FM-26,
+//! FM-27; docs/tickets/fleetd-p3/09-worktree-reconciler-report-only.md and
+//! 18-reconciler-acts.md).
 //!
 //! The reconciler runs no git and reads no folder: each test gives the
 //! facts of part 1 of a pass as values. Each test has its own temporary
@@ -390,7 +391,15 @@ fn i6_worktree_on_disk_without_row_is_adopted_not_deleted() {
         1
     );
     assert!(exists(&path), "the folder stays");
-    assert_eq!(w.count("SELECT count(*) FROM jobs", &[]), 0);
+    // The adopted orphan gets its rescue, and nothing removes it.
+    assert_eq!(
+        w.count(
+            "SELECT count(*) FROM jobs WHERE kind = 'rescue' AND subject = ?1",
+            &[&row.worktree_id]
+        ),
+        1
+    );
+    assert_eq!(w.count("SELECT count(*) FROM jobs", &[]), 1);
     // The facts of the list are on the new row in the same call.
     assert_eq!(row.head_sha.as_deref(), Some("h1"));
     let mut after = facts.clone();
@@ -431,7 +440,15 @@ fn a_folder_at_the_path_of_a_removed_row_is_adopted_as_a_new_row() {
     assert_eq!(row.state, WorktreeState::Orphaned);
     assert_eq!(w.row("old").state, WorktreeState::Removed);
     assert!(exists(&path), "the folder stays");
-    assert_eq!(w.count("SELECT count(*) FROM jobs", &[]), 0);
+    // The adopted orphan gets its rescue, and nothing removes it.
+    assert_eq!(
+        w.count(
+            "SELECT count(*) FROM jobs WHERE kind = 'rescue' AND subject = ?1",
+            &[&row.worktree_id]
+        ),
+        1
+    );
+    assert_eq!(w.count("SELECT count(*) FROM jobs", &[]), 1);
 }
 
 /// A tree that the list names by its path alone refreshes the live row of
@@ -689,43 +706,60 @@ fn adopted_tree_is_linked_to_the_task_its_branch_names() {
     assert_eq!(task_of(&w.no_folder("missing")), None, "no task T99");
 }
 
-/// Q9: report-only mode reports the orphan it would rescue and the landed
-/// tree it would remove, 1 event each, and queues no job.
+/// Q9, the act: the reconciler queues 1 rescue of each orphan and 1
+/// removal of each landed tree, once, and nothing else. The ref of an
+/// earlier rescue of a reused tree does not save the orphan now. An orphan
+/// whose HEAD no `worktree_list` result gave yet waits for it.
 #[test]
-fn report_only_queues_no_rescue_and_no_remove_job() {
+fn act_queues_1_rescue_of_each_orphan_and_1_removal_of_each_landed_tree() {
     let mut w = World::new();
     let orphan = w.folder("orphan");
     w.row_in("orphan", &orphan, "orphaned", (None, None, None));
-    let landed = w.folder("landed");
-    w.row_in("landed", &landed, "landed", (None, None, None));
-    let saved = w.folder("saved");
-    w.row_in("saved", &saved, "orphaned", (None, None, None));
     w.sql(
-        "UPDATE worktrees SET rescue_ref = 'refs/horch/rescue/saved/1' WHERE worktree_id = 'saved'",
+        "UPDATE worktrees SET head_sha = 'h1' WHERE worktree_id = 'orphan'",
         &[],
     );
+    let unread = w.folder("unread");
+    w.row_in("unread", &unread, "orphaned", (None, None, None));
+    let landed = w.folder("landed");
+    w.row_in("landed", &landed, "landed", (None, None, None));
+    let reused = w.folder("reused");
+    w.row_in("reused", &reused, "orphaned", (None, None, None));
+    w.sql(
+        "UPDATE worktrees SET rescue_ref = 'refs/horch/rescue/reused/1', head_sha = 'h2'
+          WHERE worktree_id = 'reused'",
+        &[],
+    );
+    let created = w.folder("created");
+    w.row_in("created", &created, "created", (None, None, None));
     let facts = Facts::default();
 
     let report = w.reconcile(&facts);
     let again = w.reconcile(&facts);
 
-    assert_eq!(report.would_rescue, vec!["orphan".to_string()]);
-    assert_eq!(report.would_remove, vec!["landed".to_string()]);
-    assert_eq!(
-        again.would_rescue, report.would_rescue,
-        "listed on each pass"
-    );
-    assert_eq!(w.count("SELECT count(*) FROM jobs", &[]), 0);
-    let events = |id: &str, cause: &str| {
+    assert_eq!(report.rescues, ["orphan", "reused"]);
+    assert_eq!(report.removals, vec!["landed".to_string()]);
+    assert!(again.rescues.is_empty(), "{again:?}");
+    assert!(again.removals.is_empty(), "{again:?}");
+    let jobs = |kind: &str, id: &str| {
         w.count(
-            "SELECT count(*) FROM events WHERE entity_id = ?1 AND cause = ?2",
-            &[id, cause],
+            "SELECT count(*) FROM jobs WHERE kind = ?1 AND subject = ?2 AND state = 'queued'",
+            &[kind, id],
         )
     };
-    assert_eq!(events("orphan", "would_rescue"), 1);
-    assert_eq!(events("landed", "would_remove"), 1);
-    assert_eq!(events("saved", "would_rescue"), 0);
-    for id in ["orphan", "landed", "saved"] {
+    assert_eq!(jobs("rescue", "orphan"), 1);
+    assert_eq!(jobs("rescue", "reused"), 1);
+    assert_eq!(jobs("worktree_remove", "landed"), 1);
+    assert_eq!(w.count("SELECT count(*) FROM jobs", &[]), 3);
+    assert_eq!(
+        w.count(
+            "SELECT count(*) FROM events WHERE cause IN ('would_rescue', 'would_remove')",
+            &[]
+        ),
+        0,
+        "no report-only event"
+    );
+    for id in ["orphan", "unread", "landed", "reused", "created"] {
         assert!(exists(&w.row(id).path));
     }
 }

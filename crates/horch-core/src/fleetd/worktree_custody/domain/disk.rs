@@ -20,10 +20,6 @@ pub const BUDGET_KEY: &str = "worktree_disk_budget_gb";
 pub const NEEDS_YOU_KEY: &str = "worktree_disk";
 pub const NEEDS_YOU_KIND: &str = "worktree_disk";
 
-/// The cause of the event of a tree that report-only mode does not remove
-/// for space (MAP.md of fleetd-p3, Q9).
-pub const WOULD_REMOVE: &str = "would_remove_for_space";
-
 /// 1 tree that is not `removed`, as the budget reads it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tree<'a> {

@@ -400,8 +400,13 @@ fn worktree_line(r: &WorktreeView) -> String {
     if let Some(rescue) = &r.rescue_ref {
         line.push_str(&format!(" rescue={rescue}"));
     }
-    if let Some(job) = r.would {
-        line.push_str(&format!(" would={job}"));
+    if !r.jobs.is_empty() {
+        let jobs: Vec<String> = r
+            .jobs
+            .iter()
+            .map(|j| format!("{}#{}:{}", j.kind, j.id, j.state))
+            .collect();
+        line.push_str(&format!(" jobs={}", jobs.join(",")));
     }
     line.push_str(&format!(" path={}", r.path));
     line

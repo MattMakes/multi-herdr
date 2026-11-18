@@ -4,8 +4,8 @@
 //! (docs/specs/fleetd/design.md, "Worktrees: leased, reconciled, never
 //! lost" ("Disk"), FM-28, OR-1; docs/tickets/fleetd-p3/16-worktree-disk-budget.md).
 //!
-//! Report-only mode (MAP.md of fleetd-p3, Q9): the budget reports the trees
-//! that it would remove and queues no `worktree_remove` job.
+//! The budget queues 1 `worktree_remove` job for each tree that it removes
+//! (MAP.md of fleetd-p3, Q9; docs/tickets/fleetd-p3/18-reconciler-acts.md).
 //!
 //! Each test has its own temp ledger, fleet root and git repository. The
 //! sizes are values of `bytes_on_disk`, as the `worktree_list` job stores
@@ -37,7 +37,7 @@ use horch_core::fleetd::worker_profiles::application::ports::{
     LaunchError, LaunchSpec, Launched, ProcessHost,
 };
 use horch_core::fleetd::worktree_custody::adapters::sqlite::{self as trees, NewWorktree};
-use horch_core::fleetd::worktree_custody::application::disk::{disk_budget, Report};
+use horch_core::fleetd::worktree_custody::application::disk::{decision, disk_budget, Report};
 use horch_core::fleetd::worktree_custody::application::remove::queue_remove;
 use horch_core::fleetd::worktree_custody::domain::disk::GB;
 use horch_core::runtime::fault::Faults;
@@ -393,23 +393,22 @@ fn over_budget_removes_landed_and_rescued_trees_of_finished_runs_oldest_first() 
     let report = w.budget();
     assert_eq!(report.total, 45 * GB);
     assert_eq!(report.budget, 20 * GB);
-    assert_eq!(report.would_remove, ["oldest", "middle", "newest"]);
+    assert_eq!(report.removals, ["oldest", "middle", "newest"]);
     assert!(report.hold.is_some(), "30 GB stays after the 3 spare trees");
     for id in ["oldest", "middle", "newest"] {
         assert_eq!(
             w.count(&format!(
-                "SELECT COUNT(*) FROM events WHERE entity = 'worktree' AND entity_id = '{id}'
-                  AND kind = 'note' AND cause = 'would_remove_for_space'"
+                "SELECT COUNT(*) FROM jobs WHERE kind = 'worktree_remove' AND subject = '{id}'"
             )),
             1,
             "{id}"
         );
     }
+    assert_eq!(w.removal_jobs(), 3);
     // Under a budget of 40 GB the oldest spare tree is enough.
-    w.config.worktree_disk_budget_gb = 40;
-    let report = w.budget();
-    assert_eq!(report.would_remove, ["oldest"]);
-    assert!(report.hold.is_none());
+    let d = decision(&w.conn, 40).unwrap();
+    assert_eq!(d.remove, ["oldest"]);
+    assert!(!d.hold);
 }
 
 #[test]
@@ -436,7 +435,7 @@ fn over_budget_never_removes_an_active_tree_and_holds_dispatch() {
     w.row("spare", Some(&t2), "landed", "2026-01-02T00:00:00Z", 5);
 
     let report = w.budget();
-    assert_eq!(report.would_remove, ["spare"]);
+    assert_eq!(report.removals, ["spare"]);
     assert!(report.hold.is_some(), "{report:?}");
     let hold = worktree_disk(&w.conn, w.config.worktree_disk_budget_gb).unwrap();
     assert!(
@@ -444,7 +443,10 @@ fn over_budget_never_removes_an_active_tree_and_holds_dispatch() {
         "{hold:?}"
     );
     assert_eq!(w.disk_items().len(), 1);
-    assert_eq!(w.removal_jobs(), 0);
+    assert_eq!(
+        w.count("SELECT COUNT(*) FROM jobs WHERE kind = 'worktree_remove' AND subject = 'live'"),
+        0
+    );
     assert_eq!(w.state("live"), "active");
     assert_eq!(git(&path, &["rev-parse", "HEAD"]), head);
     assert_eq!(
@@ -470,7 +472,7 @@ fn over_budget_never_removes_a_tree_of_an_active_run() {
     w.row("landed", Some(&t1), "landed", "2026-01-01T00:00:00Z", 15);
     w.row("rescued", Some(&t2), "rescued", "2026-01-02T00:00:00Z", 15);
     let report = w.budget();
-    assert!(report.would_remove.is_empty(), "{report:?}");
+    assert!(report.removals.is_empty(), "{report:?}");
     assert!(report.hold.is_some());
     assert_eq!(w.state("landed"), "landed");
     assert_eq!(w.state("rescued"), "rescued");
@@ -481,7 +483,8 @@ fn hold_opens_1_needs_you_item_and_resolves_under_the_budget() {
     let mut w = world();
     let active = w.run("active");
     let t1 = w.task(&active, "t1");
-    w.row("big", Some(&t1), "landed", "2026-01-01T00:00:00Z", 25);
+    // A rescued tree of an active run: no removal takes it (Q8).
+    w.row("big", Some(&t1), "rescued", "2026-01-01T00:00:00Z", 25);
     let mut pass = w.pass(&Nothing, &NoLaunch);
 
     pass.run(&mut w.conn).unwrap();
@@ -518,28 +521,31 @@ fn hold_opens_1_needs_you_item_and_resolves_under_the_budget() {
     );
 }
 
+/// The act (ticket 18 of fleetd-p3): the budget queues 1 removal for space,
+/// and does not queue it again while it is queued.
 #[test]
-fn report_only_mode_queues_no_removal_for_space() {
+fn over_budget_queues_1_removal_for_space() {
     let mut w = world();
     let done = w.run("done");
     let t1 = w.task(&done, "t1");
     w.row("spare", Some(&t1), "landed", "2026-01-01T00:00:00Z", 25);
-    for _ in 0..2 {
-        let report = w.budget();
-        assert_eq!(report.would_remove, ["spare"]);
+    let first = w.budget();
+    let second = w.budget();
+    assert_eq!(first.removals, ["spare"]);
+    assert!(second.removals.is_empty(), "{second:?}");
+    for report in [first, second] {
         assert!(report.hold.is_none(), "the spare tree is enough: no hold");
     }
-    assert_eq!(w.removal_jobs(), 0);
-    assert_eq!(w.state("spare"), "landed");
-    assert!(w.disk_items().is_empty());
+    assert_eq!(w.removal_jobs(), 1);
     assert_eq!(
         w.count(
-            "SELECT COUNT(*) FROM events WHERE entity_id = 'spare'
-              AND cause = 'would_remove_for_space'"
+            "SELECT COUNT(*) FROM jobs WHERE kind = 'worktree_remove'
+              AND subject = 'spare' AND state = 'queued'"
         ),
-        1,
-        "1 event for each row"
+        1
     );
+    assert_eq!(w.state("spare"), "landed");
+    assert!(w.disk_items().is_empty());
 }
 
 /// The hold comes from the rows that the reconciler of the same pass

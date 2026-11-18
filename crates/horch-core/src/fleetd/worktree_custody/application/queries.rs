@@ -10,8 +10,9 @@ use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
 
+use crate::fleetd::fleet_runtime::adapters::jobs_store;
+use crate::fleetd::fleet_runtime::domain::jobs::Kind;
 use crate::fleetd::worktree_custody::adapters::sqlite::{self as store, WorktreeRow};
-use crate::fleetd::worktree_custody::domain::worktree::{would, Would};
 use crate::taskledger::{runs, tasks, util, workers};
 
 /// 1 tree that is not `removed`, as `horch worktrees` shows it.
@@ -36,10 +37,20 @@ pub struct WorktreeView {
     pub bytes_on_disk: Option<i64>,
     pub dirty: bool,
     pub rescue_ref: Option<String>,
-    /// `rescue` or `remove`: the job that the reconciler would queue, which
-    /// report-only mode does not queue (RR-10, Q9).
-    pub would: Option<&'static str>,
+    /// The `queued` or `running` worktree jobs of the tree.
+    pub jobs: Vec<TreeJobView>,
 }
+
+/// 1 `queued` or `running` job of a tree.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TreeJobView {
+    pub id: i64,
+    pub kind: &'static str,
+    pub state: &'static str,
+}
+
+/// The kinds of job whose subject is a tree.
+const TREE_KINDS: [Kind; 3] = [Kind::WorktreeAdd, Kind::Rescue, Kind::WorktreeRemove];
 
 /// The total size of all trees that are not `removed`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
@@ -103,8 +114,18 @@ fn view(conn: &Connection, row: WorktreeRow, age_s: Option<i64>) -> Result<Workt
         ),
         None => None,
     };
+    let mut jobs = Vec::new();
+    for kind in TREE_KINDS {
+        if let Some(j) = jobs_store::active(conn, kind, &row.worktree_id)? {
+            jobs.push(TreeJobView {
+                id: j.id,
+                kind: kind.as_str(),
+                state: j.state.as_str(),
+            });
+        }
+    }
     Ok(WorktreeView {
-        would: would(row.state.as_str(), row.rescue_ref.as_deref()).map(job_word),
+        jobs,
         worktree_id: row.worktree_id,
         path: row.path,
         state: row.state.as_str().to_string(),
@@ -175,14 +196,6 @@ pub fn rescue_source(
         seq,
         n,
     }))
-}
-
-/// The word of the job that report-only mode does not queue.
-fn job_word(w: Would) -> &'static str {
-    match w {
-        Would::Rescue => "rescue",
-        Would::Remove => "remove",
-    }
 }
 
 /// The newest tree of the task `task_id` that has a rescue ref, in any

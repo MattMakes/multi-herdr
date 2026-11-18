@@ -116,11 +116,11 @@ pub fn observe(ctx: &JobCtx<'_>, tx: &Connection, job: &JobRow) -> Result<Observ
     match job.state {
         State::Passed => match result_data(job).and_then(|d| serde_json::from_value(d).ok()) {
             Some(r) => removed(ctx, tx, id, &r),
-            None => failed(ctx, tx, id, "the passed run gives no removal"),
+            None => failed(ctx, tx, job, "the passed run gives no removal"),
         },
         State::Failed => {
             let reason = outcome(job).map(|o| o.text).unwrap_or_default();
-            failed(ctx, tx, id, &reason)
+            failed(ctx, tx, job, &reason)
         }
         State::Queued | State::Running | State::Abandoned => Ok(Observed::Kept),
     }
@@ -169,9 +169,16 @@ fn removed(ctx: &JobCtx<'_>, tx: &Connection, id: &str, r: &Removed) -> Result<O
     Ok(Observed::Removed)
 }
 
-fn failed(ctx: &JobCtx<'_>, tx: &Connection, id: &str, reason: &str) -> Result<Observed> {
+/// Open the needs-you item of the failed removal `job`. The pass does not
+/// queue the same removal again, so the item says how to run it again.
+fn failed(ctx: &JobCtx<'_>, tx: &Connection, job: &JobRow, reason: &str) -> Result<Observed> {
+    let id = job.subject.as_str();
     let key = removal::needs_you_key(id);
-    let text = format!("The removal of worktree {id} failed, so its tree stays: {reason}");
+    let text = format!(
+        "The removal of worktree {id} failed, so its tree stays: {reason}. \
+         Correct the cause, then run horch job requeue {}, or horch worktree drop or cleanup.",
+        job.id
+    );
     let item = NewItem {
         key: &key,
         kind: removal::NEEDS_YOU_KIND,

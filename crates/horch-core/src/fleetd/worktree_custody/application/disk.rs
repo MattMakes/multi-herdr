@@ -1,13 +1,13 @@
-//! The use case of the disk budget of the worktrees, in report-only mode.
+//! The use case of the disk budget of the worktrees.
 //!
 //! `docs/specs/fleetd/design.md`, "Worktrees: leased, reconciled, never
 //! lost" ("Disk"), FM-28, OR-1; MAP.md of fleetd-p3, Q8, Q9 and Q20.
 //! [`disk_budget`] runs in part 2 of a pass, after `reconcile_worktrees`.
 //! It reads the sizes that the `worktree_list` job stored and runs no git.
 //!
-//! Report-only mode (Q9): it queues no remove job. It reports each tree of
-//! the decision that has no active `worktree_remove` run, with 1 event for
-//! each row. Ticket 18 of fleetd-p3 queues the removals.
+//! It queues 1 `worktree_remove` job for each tree of the decision (Q9).
+//! The job runs outside the pass, and its guard checks the tree again at
+//! its removal.
 //!
 //! The hold: when the total stays above the budget after each tree of the
 //! decision, 1 needs-you item is open with the total and the budget. It is
@@ -16,19 +16,15 @@
 
 use anyhow::Result;
 use rusqlite::Connection;
-use serde_json::json;
 
-use crate::fleetd::fleet_runtime::adapters::jobs_store;
-use crate::fleetd::fleet_runtime::adapters::sqlite::has_fact;
 use crate::fleetd::fleet_runtime::application::jobs::{JobCtx, NewItem};
-use crate::fleetd::fleet_runtime::application::ledger::{record, Cause};
 use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
-use crate::fleetd::fleet_runtime::domain::jobs::Kind;
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
+use crate::fleetd::worktree_custody::adapters::sqlite as store;
+use crate::fleetd::worktree_custody::application::reconcile::queue_removal;
 use crate::fleetd::worktree_custody::domain::disk::{
-    self as rules, Decision, Tree, BUDGET_KEY, GB, NEEDS_YOU_KEY, NEEDS_YOU_KIND, WOULD_REMOVE,
+    self as rules, Decision, Tree, BUDGET_KEY, GB, NEEDS_YOU_KEY, NEEDS_YOU_KIND,
 };
-use crate::taskledger::model::{Actor, EventKind};
 use crate::taskledger::{runs, tasks};
 
 /// What 1 call of [`disk_budget`] found.
@@ -38,9 +34,9 @@ pub struct Report {
     pub total: u64,
     /// The budget, in bytes.
     pub budget: u64,
-    /// The trees of the decision with no active `worktree_remove` run,
-    /// oldest first: what report-only mode does not queue.
-    pub would_remove: Vec<String>,
+    /// The trees of the decision that got a new `worktree_remove` run,
+    /// oldest first.
+    pub removals: Vec<String>,
     /// The cause of the hold when the total stays above the budget: new
     /// dispatch holds, and the needs-you item is open.
     pub hold: Option<String>,
@@ -73,58 +69,41 @@ pub fn decision(conn: &Connection, budget_gb: u64) -> Result<Decision> {
     Ok(rules::decide(&trees, budget_gb))
 }
 
-/// The disk budget in `tx`, at `clock` (part 2 of a pass): report the
-/// trees that a removal for space would take, and open or resolve the
-/// needs-you item of the hold.
+/// The disk budget in `tx`, at `clock` (part 2 of a pass): queue the
+/// removal of each tree of the decision, and open or resolve the needs-you
+/// item of the hold.
 pub fn disk_budget(ctx: &JobCtx<'_>, tx: &Connection, clock: FleetSeconds) -> Result<Report> {
     let d = decision(tx, ctx.config.worktree_disk_budget_gb)?;
-    let would_remove = report_removals(ctx, tx, &d, clock)?;
+    let removals = queue_removals(ctx, tx, &d, clock)?;
     sync_hold_item(ctx, tx, &d)?;
     Ok(Report {
         total: d.total,
         budget: d.budget,
-        would_remove,
+        removals,
         hold: d.hold.then(|| rules::hold_cause(&d)),
     })
 }
 
-/// The trees of `d` with no active `worktree_remove` run, each with 1
-/// event the first time it is reported (report-only mode, Q9).
-fn report_removals(
+/// Queue 1 `worktree_remove` run of each tree of `d`, oldest first. A
+/// tree with an active run, or whose same removal failed, is not queued
+/// again. Give the trees with a new run.
+fn queue_removals(
     ctx: &JobCtx<'_>,
     tx: &Connection,
     d: &Decision,
     clock: FleetSeconds,
 ) -> Result<Vec<String>> {
-    let mut would_remove = Vec::new();
+    let mut removals = Vec::new();
     for id in &d.remove {
-        if jobs_store::active(tx, Kind::WorktreeRemove, id)?.is_some() {
+        let Some(row) = store::get(tx, id)? else {
             continue;
-        }
-        would_remove.push(id.clone());
-        if has_fact(tx, Entity::Worktree, id, EventKind::Note, WOULD_REMOVE)? {
-            continue;
-        }
-        let data = json!({
-            "total_bytes": d.total,
-            "budget_bytes": d.budget,
-            "fleet_clock": clock.0,
-        });
-        let cause = Cause {
-            actor: Actor::Horch,
-            text: WOULD_REMOVE,
         };
-        record(
-            tx,
-            ctx.guard,
-            EventKind::Note,
-            Entity::Worktree,
-            id,
-            cause,
-            &data,
-        )?;
+        let cause = "the worktrees are above their disk budget";
+        if queue_removal(ctx, tx, &row, cause, clock)? {
+            removals.push(id.clone());
+        }
     }
-    Ok(would_remove)
+    Ok(removals)
 }
 
 /// Open the needs-you item of the hold of `d` with the total and the

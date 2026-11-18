@@ -9,10 +9,14 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use horch_core::fleetd::fleet_runtime::application::jobs::JobCtx;
 use horch_core::fleetd::fleet_runtime::application::ledger::{transition, Cause};
+use horch_core::fleetd::fleet_runtime::domain::clock::FleetSeconds;
+use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
 use horch_core::fleetd::fleet_runtime::domain::ledger::Entity;
 use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
 use horch_core::fleetd::worktree_custody::adapters::sqlite as custody;
+use horch_core::fleetd::worktree_custody::application::reconcile::{reconcile_worktrees, Facts};
 use horch_core::taskledger::model::Actor;
 use horch_core::taskledger::Store;
 
@@ -218,6 +222,31 @@ impl World {
             .unwrap();
     }
 
+    /// 1 call of the reconciler with no new fact, as part 2 of a pass:
+    /// the id of the rescue job that it queues for the orphan of T1.
+    fn reconcile(&self) -> i64 {
+        let id = self.row().worktree_id;
+        let config = FleetConfig::default();
+        let ctx = JobCtx {
+            guard: None,
+            config: &config,
+            needs_you: &NeedsYouList,
+        };
+        let report = self
+            .store()
+            .immediate(|tx| reconcile_worktrees(&ctx, tx, &Facts::default(), FleetSeconds(0)))
+            .unwrap();
+        assert_eq!(report.rescues, std::slice::from_ref(&id), "{report:?}");
+        self.store()
+            .conn()
+            .query_row(
+                "SELECT id FROM jobs WHERE kind = 'rescue' AND subject = ?1",
+                [&id],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
     /// Orphan the tree of T1, then let the worker take it again: its
     /// rescue job runs first, and the row keeps the rescue ref.
     fn rescued(&self) -> String {
@@ -291,29 +320,40 @@ fn worktrees_lists_each_tree_with_state_task_owner_age_and_size() {
     assert_eq!(lines[1], "total: 1 worktree, 2.0 KB on disk");
 }
 
-/// RR-10: report-only mode lists each orphan that is on disk with the job
-/// that it would get, and changes nothing.
+/// RR-10: each orphan on disk is listed with the rescue job that the
+/// reconciler queued for it; the listing changes nothing.
 #[test]
-fn worktrees_marks_an_orphan_that_report_only_mode_would_rescue() {
+fn worktrees_shows_the_rescue_job_that_the_reconciler_queued_for_an_orphan() {
     let w = World::with_a_tree();
+    w.measure(2048);
     w.orphan();
+    let job = w.reconcile();
 
     let out = w.ok(&["worktrees"]);
 
     let line = out.lines().next().unwrap();
     assert!(line.starts_with("state=orphaned "), "{line}");
-    assert!(line.contains(" would=rescue "), "{line}");
+    assert!(
+        line.contains(&format!(" jobs=rescue#{job}:queued ")),
+        "{line}"
+    );
+    assert!(!line.contains(" would="), "{line}");
     assert!(
         line.ends_with(&format!(" path={}", w.tree().display())),
         "{line}"
     );
     assert!(
-        out.ends_with("total: 1 worktree, 0 B on disk; 1 not measured\n"),
+        out.ends_with("total: 1 worktree, 2.0 KB on disk\n"),
         "{out}"
     );
     assert_eq!(w.rescue_refs(), "");
     assert!(w.tree().join("u.txt").is_file());
     assert_eq!(w.row().state, custody::WorktreeState::Orphaned);
+    let v = json(&w.ok(&["worktrees", "--json"]));
+    assert_eq!(
+        v["worktrees"][0]["jobs"],
+        serde_json::json!([{"id": job, "kind": "rescue", "state": "queued"}])
+    );
 }
 
 #[test]
@@ -339,7 +379,7 @@ fn worktrees_json_has_each_field() {
         "bytes_on_disk",
         "dirty",
         "rescue_ref",
-        "would",
+        "jobs",
     ] {
         assert!(r.get(key).is_some(), "{key}: {r}");
     }
@@ -349,7 +389,7 @@ fn worktrees_json_has_each_field() {
     assert_eq!(r["worker"], "dev1");
     assert_eq!(r["bytes_on_disk"], 4096);
     assert_eq!(r["dirty"], true);
-    assert_eq!(r["would"], serde_json::Value::Null);
+    assert_eq!(r["jobs"], serde_json::json!([]));
     assert_eq!(v["total_bytes"], 4096);
     assert_eq!(v["unmeasured"], 0);
 }

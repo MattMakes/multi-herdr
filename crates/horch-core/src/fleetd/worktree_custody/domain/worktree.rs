@@ -214,39 +214,25 @@ pub fn vanished_key(id: &str) -> String {
     format!("{VANISHED_KIND}:{id}")
 }
 
-/// A job that report-only mode does not queue (Q9).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Would {
-    Rescue,
-    Remove,
-}
-
-impl Would {
-    /// The cause of its event.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Would::Rescue => "would_rescue",
-            Would::Remove => "would_remove",
-        }
-    }
-}
-
-/// The job that a row in `state` would get: an `orphaned` row with no
-/// rescue ref a rescue, a `landed` row a removal.
-pub fn would(state: &str, rescue_ref: Option<&str>) -> Option<Would> {
-    match state {
-        "orphaned" if rescue_ref.is_none_or(str::is_empty) => Some(Would::Rescue),
-        "landed" => Some(Would::Remove),
-        _ => None,
-    }
-}
-
 /// A job of a tree whose ended run the reconciler observes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TreeJob {
     Add,
     Rescue,
     Remove,
+}
+
+/// The job that the reconciler queues for a row in `state`: a rescue of an
+/// `orphaned` row, a removal of a `landed` row (FM-25, FM-27, Q8). A
+/// verified rescue moves an orphan to `rescued`, so an `orphaned` row has no
+/// verified rescue of its state now, even with the ref of an earlier
+/// rescue of a reused tree. A `rescued` row is removed only for space.
+pub fn to_queue(state: &str) -> Option<TreeJob> {
+    match state {
+        "orphaned" => Some(TreeJob::Rescue),
+        "landed" => Some(TreeJob::Remove),
+        _ => None,
+    }
 }
 
 /// The job whose ended run a row in `state` waits for: the `worktree_add`
@@ -444,15 +430,13 @@ mod tests {
     }
 
     #[test]
-    fn would_rescue_an_orphan_with_no_ref_and_remove_a_landed_tree() {
-        assert_eq!(would("orphaned", None), Some(Would::Rescue));
-        assert_eq!(would("orphaned", Some("")), Some(Would::Rescue));
-        assert_eq!(would("orphaned", Some("refs/horch/rescue/w/1")), None);
-        assert_eq!(would("landed", None), Some(Would::Remove));
+    fn to_queue_a_rescue_of_an_orphan_and_a_removal_of_a_landed_tree() {
+        assert_eq!(to_queue("orphaned"), Some(TreeJob::Rescue));
+        assert_eq!(to_queue("landed"), Some(TreeJob::Remove));
         for state in [
             "reserved", "created", "active", "landing", "rescued", "removed",
         ] {
-            assert_eq!(would(state, None), None, "{state}");
+            assert_eq!(to_queue(state), None, "{state}");
         }
     }
 
