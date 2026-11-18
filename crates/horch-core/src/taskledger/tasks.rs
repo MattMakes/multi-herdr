@@ -652,13 +652,17 @@ fn insert(conn: &Connection, run: &Run, new: &NewTask, state: TaskStatus) -> Res
     )?;
     let id = util::new_id();
     let now = util::now();
+    // FR-12: each task belongs to an idea. Ticket 47 of fleetd-p6 removes
+    // this call when it retires today's task flow.
+    let idea = super::schema::run_idea(conn, &run.run_id, &now, true)?
+        .context("a run that gets a task gets an idea")?;
     conn.execute(
         "INSERT INTO tasks (task_id, run_id, seq, title, task_file, issue_url, spec_ref,
             primary_persona, fallback_persona, claimable_by, phase, parallel, priority, wave,
             worktree_mode, land_check, kind, parent_task_id, status, origin, created_at, updated_at,
-            work_kind, review_mode, ticket_snapshot, ticket_sha, check_none)
+            work_kind, review_mode, ticket_snapshot, ticket_sha, check_none, idea_id)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?8, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-            ?18, ?19, ?20, ?20, ?21, ?22, ?23, ?24, ?25)",
+            ?18, ?19, ?20, ?20, ?21, ?22, ?23, ?24, ?25, ?26)",
         params![
             id,
             run.run_id,
@@ -685,6 +689,7 @@ fn insert(conn: &Connection, run: &Run, new: &NewTask, state: TaskStatus) -> Res
             new.ticket_snapshot,
             new.ticket_snapshot.as_deref().map(ticket_sha),
             new.check_none as i64,
+            idea,
         ],
     )?;
     for (paths, mode) in [

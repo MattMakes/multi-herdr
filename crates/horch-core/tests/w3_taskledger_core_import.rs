@@ -446,8 +446,15 @@ fn native_fixture(f: &Fixture) {
     for sql in [
         "INSERT INTO projects (project_id, root, created_at) VALUES ('p1', '/proj', 'now')",
         "INSERT INTO runs (run_id, project_id, slug, finish_steps, status, origin, started_at) VALUES ('r1', 'p1', 'r1', '[]', 'done', 'native', 'now')",
-        "INSERT INTO tasks (task_id, run_id, seq, title, task_file, primary_persona, claimable_by, status, origin, created_at, updated_at) VALUES ('t1', 'r1', 1, 'one', 'a.md', 'dev', 'dev', 'cancelled', 'native', 'now', 'now')",
-        "INSERT INTO tasks (task_id, run_id, seq, title, task_file, primary_persona, claimable_by, status, origin, created_at, updated_at) VALUES ('t2', 'r1', 2, 'two', 'b.md', 'dev', 'dev', 'running', 'native', 'now', 'now')",
+    ] {
+        c.execute(sql, []).unwrap();
+    }
+    // FR-12: each native task belongs to an idea.
+    let idea = horch_core::taskledger::schema::run_idea(c, "r1", "now", true).unwrap();
+    assert_eq!(idea.as_deref(), Some("I-0001"));
+    for sql in [
+        "INSERT INTO tasks (task_id, run_id, seq, title, task_file, primary_persona, claimable_by, status, origin, created_at, updated_at, idea_id) VALUES ('t1', 'r1', 1, 'one', 'a.md', 'dev', 'dev', 'cancelled', 'native', 'now', 'now', 'I-0001')",
+        "INSERT INTO tasks (task_id, run_id, seq, title, task_file, primary_persona, claimable_by, status, origin, created_at, updated_at, idea_id) VALUES ('t2', 'r1', 2, 'two', 'b.md', 'dev', 'dev', 'running', 'native', 'now', 'now', 'I-0001')",
         "INSERT INTO workers (worker_id, run_id, persona, host, status, origin, task_id) VALUES ('w2', 'r1', 'dev', 'h', 'incomplete', 'native', 't2')",
         "INSERT INTO worktrees (worktree_id, task_id, repo_root, path, branch, base, status, origin, created_at) VALUES ('wt1', 't1', '/proj', '/proj/.worktrees/one', 'one', 'main', 'open', 'native', 'now')",
     ] {

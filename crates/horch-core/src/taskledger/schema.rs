@@ -38,8 +38,12 @@ pub const PHASE_4_VERSION: i64 = WORKTREE_PATHS_VERSION + 1;
 /// `polite_stops` (`phase_5`).
 pub const PHASE_5_VERSION: i64 = PHASE_4_VERSION + 1;
 
+/// The version of the Phase 6 tables of fleetd, the idea of each task and
+/// their release backfill (`phase_6`).
+pub const PHASE_6_VERSION: i64 = PHASE_5_VERSION + 1;
+
 /// The schema version this binary writes.
-pub const VERSION: i64 = PHASE_5_VERSION;
+pub const VERSION: i64 = PHASE_6_VERSION;
 
 /// A rule that applies to rows this ledger writes, not to imported ones
 /// (section 11.2): `CHECK (origin = 'import' OR <expr>)`.
@@ -1316,6 +1320,175 @@ CREATE TABLE polite_stops (
     )
 }
 
+/// Version [`PHASE_6_VERSION`]: the Phase 6 tables of fleetd, as the design
+/// writes them (docs/specs/fleetd/design.md, "Ledger"), the idea of each
+/// task (FR-12) and of each sub-orchestrator attempt, and the fix rounds of
+/// a judged task (RR-3). [`phase_6_backfill`] gives each run in flight its
+/// idea, and [`tasks_need_an_idea`] then refuses a task with no idea.
+const PHASE_6: &str = "CREATE TABLE ideas (
+    id TEXT PRIMARY KEY,
+    feature_id TEXT NOT NULL REFERENCES features(id),
+    state TEXT NOT NULL CHECK (state IN
+        ('captured', 'clarifying', 'awaiting_approval', 'specifying',
+         'ticketing', 'in_progress', 'integrating', 'merged',
+         'parked', 'cancelled')),
+    priority INTEGER NOT NULL DEFAULT 0,
+    pane TEXT,
+    waiting_on_you_since TEXT,
+    approved_sha256 TEXT,
+    plan_sha256 TEXT,
+    phase_attempts INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE requirements (
+    idea_id TEXT REFERENCES ideas(id), req_id TEXT, text TEXT,
+    PRIMARY KEY (idea_id, req_id)
+);
+CREATE TABLE task_covers (task_id TEXT, idea_id TEXT, req_id TEXT);
+CREATE TABLE trial_merges (
+    left_ref TEXT, right_ref TEXT, left_tip TEXT, right_tip TEXT,
+    job_id INTEGER NOT NULL REFERENCES jobs(id),
+    clean INTEGER, conflict_files TEXT, at TEXT NOT NULL,
+    PRIMARY KEY (left_tip, right_tip)
+);
+ALTER TABLE tasks ADD COLUMN idea_id TEXT REFERENCES ideas(id);
+ALTER TABLE tasks ADD COLUMN fix_rounds INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE attempts ADD COLUMN idea_id TEXT REFERENCES ideas(id);";
+
+/// FR-12 in SQL: SQLite cannot add a `NOT NULL` column with no default, so
+/// this trigger refuses a new task with no idea. An imported row keeps its
+/// history (section 11.2).
+fn tasks_need_an_idea() -> String {
+    format!(
+        "CREATE TRIGGER tasks_need_an_idea BEFORE INSERT ON tasks
+WHEN NEW.idea_id IS NULL AND NEW.origin <> '{import}'
+BEGIN SELECT RAISE(ABORT, 'a task needs an idea (FR-12)'); END;",
+        import = Origin::Import,
+    )
+}
+
+/// The marker in `ideas.approved_sha256` of the idea that the release gives
+/// a run (MAP.md of fleetd-p6, Q6): the first pass of fleetd writes the
+/// `approval.json` of the run's `MAP.md`.
+const RELEASE_APPROVAL: &str = "release";
+
+/// The release backfill of Phase 6 (design, "What a release does to a run
+/// in flight"; MAP.md of fleetd-p6, Q5): [`run_idea`] for each run, oldest
+/// first, so a feature name that a run takes is taken for the next one. It
+/// reads no file and starts no process.
+fn phase_6_backfill(conn: &Connection, now: &str) -> Result<()> {
+    let runs: Vec<String> = conn
+        .prepare("SELECT run_id FROM runs ORDER BY rowid")?
+        .query_map([], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    for run in runs {
+        run_idea(conn, &run, now, false)?;
+    }
+    Ok(())
+}
+
+/// The idea of the run `run_id`, `I-<run rowid>` (4 digits, as the feature
+/// `F-<run rowid>` of Phase 4), written when it does not exist. `adding` is
+/// true when the caller adds a task to the run. The release backfill and
+/// `tasks::add` both use it, so a run of today's flow has 1 idea; ticket 47
+/// of fleetd-p6 removes the call of `tasks::add`.
+///
+/// - A run with no feature row gets one only when it has, or gets, a task
+///   that is not done and not cancelled; else it gets no idea (`None`). The
+///   new feature follows the rule of [`phase_4_backfill`] for 1 run: `name`
+///   is the slug, or `<slug>-<rowid>` when a feature has that name;
+///   `branch` is the run branch when no feature and no branch row has it,
+///   with its `branches` row owned by fleetd; `primary_branch` is the base
+///   branch, or `main` for a run that names none.
+/// - The idea is `in_progress` when the run has, or gets, a task that is
+///   not done and not cancelled, else `integrating`. Its `approved_sha256`
+///   is [`RELEASE_APPROVAL`].
+/// - Each task of the run with no idea gets it. Each question of the run
+///   moves to the feature, owned by `idea-lead:<feature id>` (MAP.md, Q11).
+pub fn run_idea(
+    conn: &Connection,
+    run_id: &str,
+    now: &str,
+    adding: bool,
+) -> Result<Option<String>> {
+    let open_task = format!(
+        "EXISTS (SELECT 1 FROM tasks t WHERE t.run_id = runs.run_id AND t.status NOT IN ({done}, {cancelled}))",
+        done = word(TaskStatus::Done),
+        cancelled = word(TaskStatus::Cancelled),
+    );
+    let (n, open): (i64, bool) = conn
+        .query_row(
+            &format!("SELECT rowid, {open_task} FROM runs WHERE run_id = ?1"),
+            [run_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?
+        .with_context(|| format!("the task ledger has no run {run_id}"))?;
+    let open = open || adding;
+    let feature = format!("F-{n:04}");
+    let idea = format!("I-{n:04}");
+    let exists =
+        |sql: &str, id: &str| -> Result<bool> { Ok(conn.query_row(sql, [id], |r| r.get(0))?) };
+    if exists("SELECT EXISTS (SELECT 1 FROM ideas WHERE id = ?1)", &idea)? {
+        return Ok(Some(idea));
+    }
+    if !exists(
+        "SELECT EXISTS (SELECT 1 FROM features WHERE id = ?1)",
+        &feature,
+    )? {
+        if !open {
+            return Ok(None);
+        }
+        conn.execute(
+            &format!(
+                "INSERT INTO features (id, name, branch, primary_branch, state, created_at, updated_at)
+    SELECT ?2,
+        CASE WHEN NOT EXISTS (SELECT 1 FROM features WHERE name = slug) THEN slug
+            WHEN NOT EXISTS (SELECT 1 FROM features WHERE name = slug || '-' || rowid)
+                THEN slug || '-' || rowid END,
+        CASE WHEN NOT EXISTS (SELECT 1 FROM features WHERE branch = run_branch)
+            AND NOT EXISTS (SELECT 1 FROM branches WHERE name = run_branch) THEN run_branch END,
+        COALESCE(base_branch, 'main'),
+        CASE status WHEN '{done}' THEN 'merged' WHEN '{abandoned}' THEN 'abandoned' ELSE 'open' END,
+        started_at, ?3
+    FROM runs WHERE run_id = ?1",
+                done = RunStatus::Done,
+                abandoned = RunStatus::Abandoned,
+            ),
+            [run_id, &feature, now],
+        )?;
+        conn.execute(
+            &format!(
+                "INSERT INTO branches (name, feature_id, owner, due_at)
+    SELECT branch, id, 'fleetd', {FLEET_CLOCK} + ?2 FROM features WHERE id = ?1 AND branch IS NOT NULL"
+            ),
+            rusqlite::params![feature, BACKFILL_TASK_LIMIT_S],
+        )?;
+    }
+    conn.execute(
+        "INSERT INTO ideas (id, feature_id, state, approved_sha256, created_at, updated_at)
+    SELECT ?2, ?3, ?4, ?5, started_at, ?6 FROM runs WHERE run_id = ?1",
+        rusqlite::params![
+            run_id,
+            idea,
+            feature,
+            if open { "in_progress" } else { "integrating" },
+            RELEASE_APPROVAL,
+            now
+        ],
+    )?;
+    conn.execute(
+        "UPDATE tasks SET idea_id = ?2 WHERE run_id = ?1 AND idea_id IS NULL",
+        [run_id, &idea],
+    )?;
+    conn.execute(
+        "UPDATE questions SET feature_id = ?2, owner = 'idea-lead:' || ?2
+    WHERE task_id IN (SELECT task_id FROM tasks WHERE run_id = ?1)",
+        [run_id, &feature],
+    )?;
+    Ok(Some(idea))
+}
+
 /// Bring the database to [`VERSION`]. A file from a newer binary is refused:
 /// this one would not know its columns.
 ///
@@ -1521,6 +1694,15 @@ fn migrate_unchecked(
         tx.execute_batch(&phase_5())
             .context("adding the requests and polite_stops tables of fleetd")?;
     }
+    if due(PHASE_6_VERSION) {
+        tx.execute_batch(PHASE_6).context(
+            "adding the ideas, requirements, task_covers and trial_merges tables of fleetd",
+        )?;
+        phase_6_backfill(&tx, &super::util::now())
+            .context("backfilling the idea of each run in flight")?;
+        tx.execute_batch(&tasks_need_an_idea())?;
+        no_broken_reference(&tx, PHASE_6_VERSION)?;
+    }
     tx.pragma_update(None, "user_version", target)?;
     tx.commit()?;
     Ok(())
@@ -1571,7 +1753,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(tables, 34);
+        assert_eq!(tables, 38);
     }
 
     /// A ledger file as version 3 left it, with 1 run.
@@ -1976,7 +2158,7 @@ mod v7_tests {
         ];
         // The Phase 2 step reads the stored text of `tasks`, so it runs on
         // the connection.
-        assert_eq!(steps.len() as i64 + 6, VERSION, "add the new step here");
+        assert_eq!(steps.len() as i64 + 7, VERSION, "add the new step here");
         for sql in steps.iter().take(version as usize) {
             conn.execute_batch(sql).unwrap();
         }
@@ -1997,6 +2179,10 @@ mod v7_tests {
         }
         if version >= PHASE_5_VERSION {
             conn.execute_batch(&phase_5()).unwrap();
+        }
+        if version >= PHASE_6_VERSION {
+            conn.execute_batch(PHASE_6).unwrap();
+            conn.execute_batch(&tasks_need_an_idea()).unwrap();
         }
         conn.execute("INSERT INTO projects VALUES ('p', '/r', 'now')", [])
             .unwrap();

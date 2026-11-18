@@ -491,4 +491,15 @@ fn a_schema_2_ledger_migrates_forward_and_keeps_its_rows() {
     assert_eq!(task.current_worker_id.as_deref(), Some("w"));
     assert_eq!(task.held_reason, None);
     assert_eq!(task.attempt_floor, 0);
+    let idea: Option<String> = store
+        .conn()
+        .query_row("SELECT idea_id FROM tasks WHERE task_id = 'T-1'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        idea.as_deref(),
+        Some("I-0001"),
+        "the release gives the run 1 idea"
+    );
 }

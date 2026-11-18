@@ -590,11 +590,15 @@ fn seed_folders(h: &Harness, agent: &Agent) {
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )?;
+            // FR-12: each task belongs to an idea.
+            let idea = horch_core::taskledger::schema::run_idea(tx, &run, &now, true)?
+                .expect("a run that gets a task gets an idea");
             let mut task = tx.prepare(
                 "INSERT INTO tasks (task_id, run_id, seq, title, task_file, primary_persona,
-                     claimable_by, status, attempts, current_worker_id, created_at, updated_at)
+                     claimable_by, status, attempts, current_worker_id, created_at, updated_at,
+                     idea_id)
                  VALUES (?1, ?2, ?3, ?1, 'tickets/scan.md', 'opus', 'opus', 'running', 1, ?4,
-                     ?5, ?5)",
+                     ?5, ?5, ?6)",
             )?;
             let mut worker = tx.prepare(
                 "INSERT INTO workers (worker_id, run_id, kind, persona, host, agent_pid,
@@ -615,7 +619,7 @@ fn seed_folders(h: &Harness, agent: &Agent) {
                 let task_id = format!("S-{n:05}");
                 let worker_id = format!("SW-{n:05}");
                 let attempt_id = format!("{task_id}/A1");
-                task.execute((&task_id, &run, n as i64, &worker_id, &now))?;
+                task.execute((&task_id, &run, n as i64, &worker_id, &now, &idea))?;
                 worker.execute((&worker_id, &run, &host, pid, start, &task_id, &now))?;
                 attempt.execute((&attempt_id, &task_id, &worker_id, pid, start, &now))?;
                 let outbox = outbox_dir(&root, &task_id, &attempt_id);

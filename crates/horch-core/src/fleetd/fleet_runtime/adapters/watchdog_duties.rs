@@ -1908,13 +1908,17 @@ mod tests {
         let host = util::host_name();
         let run = &w.run.run_id;
         let tx = w.conn.unchecked_transaction().unwrap();
+        // FR-12: each task belongs to an idea.
+        let idea = crate::taskledger::schema::run_idea(&tx, run, &now, true)
+            .unwrap()
+            .unwrap();
         {
             let mut task = tx
                 .prepare(
                     "INSERT INTO tasks (task_id, run_id, seq, title, task_file, primary_persona,
                          claimable_by, status, attempts, current_worker_id, held_reason,
-                         created_at, updated_at)
-                     VALUES (?1, ?2, ?3, ?1, 'tickets/big.md', 'dev', 'dev', ?4, 1, ?5, ?6, ?7, ?7)",
+                         created_at, updated_at, idea_id)
+                     VALUES (?1, ?2, ?3, ?1, 'tickets/big.md', 'dev', 'dev', ?4, 1, ?5, ?6, ?7, ?7, ?8)",
                 )
                 .unwrap();
             let mut worker = tx
@@ -1936,8 +1940,10 @@ mod tests {
                 let (t, wk) = (format!("B-{n:05}"), format!("BW-{n:05}"));
                 let worker_of = Some(wk.as_str());
                 let held: Option<&str> = None;
-                task.execute(params![t, run, n as i64, "running", worker_of, held, hour])
-                    .unwrap();
+                task.execute(params![
+                    t, run, n as i64, "running", worker_of, held, hour, idea
+                ])
+                .unwrap();
                 let claimed = Some(hour.as_str());
                 worker
                     .execute(params![
@@ -1969,7 +1975,8 @@ mod tests {
                     "escalated",
                     none,
                     Some("attempts"),
-                    hour
+                    hour,
+                    idea
                 ])
                 .unwrap();
             }
