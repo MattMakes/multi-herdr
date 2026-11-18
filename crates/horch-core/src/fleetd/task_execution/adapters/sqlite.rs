@@ -86,12 +86,13 @@ pub fn open_attempts_with_persona(conn: &Connection) -> Result<Vec<(AttemptRow, 
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// The task, the state, the `via` and the persona of the worker of the
-/// attempt `id`, or `None` when the ledger has no such attempt.
-pub fn attempt_via(
-    conn: &Connection,
-    id: &str,
-) -> Result<Option<(Option<String>, String, String, Option<String>)>> {
+/// The task, the state, the `via` and the persona of the worker of 1
+/// attempt.
+pub type AttemptVia = (Option<String>, String, String, Option<String>);
+
+/// The [`AttemptVia`] of the attempt `id`, or `None` when the ledger has no
+/// such attempt.
+pub fn attempt_via(conn: &Connection, id: &str) -> Result<Option<AttemptVia>> {
     let row = conn
         .query_row(
             "SELECT a.task_id, a.state, a.via, w.persona
