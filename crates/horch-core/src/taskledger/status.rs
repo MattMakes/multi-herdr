@@ -9,6 +9,7 @@ use serde::Serialize;
 
 use crate::exeid::{exe_identity, ExeIdentity};
 use crate::fleetd::ideas::application::needs_you;
+use crate::fleetd::integration::application::queries::{self as integration, Integration};
 use crate::fleetd::worker_profiles::adapters::check_sandbox::NO_CHECK_SANDBOX_KIND;
 use crate::fleetd::worker_profiles::adapters::sandbox_rules::NO_SANDBOX;
 use crate::fleetd::worktree_custody::application::queries::{self as custody, DiskTotal};
@@ -88,6 +89,12 @@ pub struct Report {
     pub needs_you: NeedsYou,
     /// The total size of all trees of the fleet (FM-28).
     pub worktree_disk: DiskTotal,
+    /// Each persona with no check sandbox on this host: fleetd dispatches
+    /// none of its tasks (MAP.md of fleetd-p4, Q-A).
+    pub no_check_sandbox: Vec<String>,
+    /// The holds, the refs, the push state and the remote state of
+    /// integration (OR-1, FM-45).
+    pub integration: Integration,
 }
 
 /// The open items of the needs-you list. It has no run: each board shows
@@ -126,6 +133,16 @@ impl NeedsYou {
             open: items.len(),
             items,
         })
+    }
+
+    /// The persona of each item that says it has no check sandbox.
+    fn no_check_sandbox(&self) -> Vec<String> {
+        let prefix = format!("{NO_CHECK_SANDBOX_KIND}:");
+        self.items
+            .iter()
+            .filter(|i| i.kind == NO_CHECK_SANDBOX_KIND)
+            .map(|i| i.key.strip_prefix(&prefix).unwrap_or(&i.key).to_string())
+            .collect()
     }
 }
 
@@ -518,6 +535,7 @@ pub fn report_for(conn: &Connection, run: &Run, current: Option<&ExeIdentity>) -
     let wl = worker_lines(conn, run, roster, &lines, &now)?;
     let wts = worktrees(conn, &run.run_id)?;
     let unsettled = unsettled(conn, &run.run_id)?;
+    let needs_you = NeedsYou::of(conn)?;
     Ok(Report {
         run: run.clone(),
         tasks: lines,
@@ -529,8 +547,10 @@ pub fn report_for(conn: &Connection, run: &Run, current: Option<&ExeIdentity>) -
         watchdog: WatchdogLine::of(run, current),
         parked: Parked::of(conn, &run.run_id, &now)?,
         orchestrator: super::orchestrator::status_line(conn, &run.run_id)?,
-        needs_you: NeedsYou::of(conn)?,
+        no_check_sandbox: needs_you.no_check_sandbox(),
+        needs_you,
         worktree_disk: custody::total_bytes(conn)?,
+        integration: integration::integration(conn)?,
     })
 }
 
@@ -568,7 +588,8 @@ pub fn render(r: &Report) -> String {
     render_open_worktrees(&mut out, &r.worktrees);
     render_parked(&mut out, &r.parked);
     render_worktree_disk(&mut out, &r.worktree_disk);
-    render_needs_you(&mut out, &r.needs_you);
+    render_integration(&mut out, &r.integration);
+    render_needs_you(&mut out, &r.no_check_sandbox, &r.needs_you);
     if !r.unsettled.is_empty() {
         let items: Vec<String> = r.unsettled.iter().map(|u| u.to_string()).collect();
         let _ = writeln!(out, "Unsettled: {}.", items.join(", "));
@@ -595,15 +616,11 @@ pub fn render(r: &Report) -> String {
 /// The open needs-you items; nothing when there are none. A persona whose
 /// item says it has no sandbox on this host gets its own line first (SR-8,
 /// A37): fleetd dispatches none of its tasks.
-fn render_needs_you(out: &mut String, n: &NeedsYou) {
+fn render_needs_you(out: &mut String, no_check_sandbox: &[String], n: &NeedsYou) {
     if n.items.is_empty() {
         return;
     }
-    for i in n.items.iter().filter(|i| i.kind == NO_CHECK_SANDBOX_KIND) {
-        let persona = i
-            .key
-            .strip_prefix(&format!("{NO_CHECK_SANDBOX_KIND}:"))
-            .unwrap_or(&i.key);
+    for persona in no_check_sandbox {
         let _ = writeln!(out, "Profile {persona}: {NO_SANDBOX}.");
     }
     let _ = writeln!(out, "Needs you ({}):", n.open);
@@ -746,6 +763,48 @@ fn render_worktree_disk(out: &mut String, d: &DiskTotal) {
         d.count,
         if d.count == 1 { "" } else { "s" },
     );
+}
+
+/// 1 line for each fact of integration that is there: each hold of a
+/// project, the bundle refs, the rescue classes, the push state of each
+/// feature and each stale remote tip.
+fn render_integration(out: &mut String, i: &Integration) {
+    for h in &i.holds {
+        let _ = writeln!(
+            out,
+            "Hold on dispatch of project {}: {}.",
+            h.project, h.cause
+        );
+    }
+    if i.bundle_refs > 0 {
+        let _ = writeln!(out, "Bundle refs: {}.", i.bundle_refs);
+    }
+    if let Some(r) = &i.rescue {
+        let _ = writeln!(
+            out,
+            "Rescue refs: {} unique ({}), {} superseded ({}).",
+            r.unique.count,
+            super::triage::human_bytes(r.unique.bytes),
+            r.superseded.count,
+            super::triage::human_bytes(r.superseded.bytes),
+        );
+    }
+    for f in &i.features {
+        let push = match f.push_state.as_deref() {
+            None => "not pushed".to_string(),
+            Some("failed") => format!("push failed {} times", f.push_failures),
+            Some(state) => format!("push {state}"),
+        };
+        let name = f.name.as_deref().unwrap_or("no name");
+        let _ = writeln!(out, "Feature {} ({name}) {}: {push}.", f.id, f.state);
+    }
+    for s in &i.stale_remotes {
+        let _ = writeln!(
+            out,
+            "Remote tip of {} in {}: stale since {}.",
+            s.branch, s.repo, s.stale_since
+        );
+    }
 }
 
 /// How long ago, in the largest whole unit: `45s`, `5m`, `2h`, `3d`.

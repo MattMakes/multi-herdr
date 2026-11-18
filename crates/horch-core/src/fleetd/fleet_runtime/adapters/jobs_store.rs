@@ -114,6 +114,16 @@ pub fn last(conn: &Connection, kind: Kind, subject: &str) -> Result<Option<JobRo
     )
 }
 
+/// The newest `passed` run of `kind` for each subject, by subject.
+pub fn last_passed(conn: &Connection, kind: Kind) -> Result<Vec<JobRow>> {
+    rows(
+        conn,
+        "WHERE id IN (SELECT MAX(id) FROM jobs WHERE kind = ?1 AND state = 'passed'
+            GROUP BY subject) ORDER BY subject",
+        [kind.as_str()],
+    )
+}
+
 /// The `queued` runs that may start at `clock`, oldest first.
 pub fn due(conn: &Connection, clock: FleetSeconds) -> Result<Vec<JobRow>> {
     rows(
