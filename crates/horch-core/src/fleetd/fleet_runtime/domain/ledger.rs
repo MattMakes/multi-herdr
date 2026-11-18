@@ -180,9 +180,12 @@ pub const EXITS: &[(Entity, &str, &str)] = &[
     (Entity::Task, "stalled", "failed"),
     (Entity::Task, "stalled", "verifying"),
     (Entity::Task, "stalled", "cancelled"),
-    // `ready` is the outcome `rejected`, rung 6 and a fix round.
+    // `ready` is the outcome `rejected`, rung 6 and a fix round. `pending`
+    // is a judge task in a fix round of its judge pair (The judge pair,
+    // step 5).
     (Entity::Task, "verifying", "done"),
     (Entity::Task, "verifying", "ready"),
+    (Entity::Task, "verifying", "pending"),
     (Entity::Task, "verifying", "failed"),
     (Entity::Task, "verifying", "cancelled"),
     (Entity::Task, "blocked_on_user", "ready"),
@@ -440,6 +443,7 @@ mod tests {
             ("stalled", "cancelled"),
             ("verifying", "done"),
             ("verifying", "ready"),
+            ("verifying", "pending"),
             ("verifying", "failed"),
             ("verifying", "cancelled"),
             ("blocked_on_user", "ready"),

@@ -2,10 +2,9 @@
 //! (docs/tickets/fleetd-p4/21-structural-check.md): after the check of a
 //! push attempt passed, the verifier checks the outputs of a task of a
 //! judgment kind at the tip of its branch. Its outputs are the files of its
-//! `Own` that its commits changed (Q12 of the MAP). With no judge before
-//! Phase 6, the task passes on its structural check and today's finish
-//! steps (docs/specs/fleetd/design.md, FR-4, "Done for each kind of task",
-//! "Migration plan" item 6, FM-9).
+//! `Own` that its commits changed (Q12 of the MAP). A task whose check
+//! passes waits in `verifying` for its judge task (tests/judge_pair.rs;
+//! docs/specs/fleetd/design.md, FR-4, "Done for each kind of task", FM-9).
 //!
 //! Each test uses a temp git repository, a temp ledger and a temp fleet
 //! root. A pass is part 2 (the verifier, in 1 transaction) and part 3 (the
@@ -333,21 +332,26 @@ fn docs_task_with_its_file_and_sections_passes() {
 
     let pass = w.verify(&task);
 
+    // The check passes, and the task waits in verifying for its judge
+    // task (The judge pair, step 1; tests/judge_pair.rs).
     assert_eq!(
         pass.structural,
-        vec![(task.clone(), Structural::Reviewed(Reviewed::Done))]
+        vec![(task.clone(), Structural::WaitsForJudge)]
     );
     assert!(pass.reviewed.is_empty());
-    assert_eq!(w.status(&task), "done");
+    assert_eq!(w.status(&task), "verifying");
     let newest = w.newest(&task);
     assert_eq!(newest.decision, Decision::Passed);
     assert_eq!(
         newest.reason,
         "structural: passed: data/plan.json, docs/sync.md"
     );
-    // The next pass finds the task done and does nothing more.
+    // The next pass finds the check passed and records nothing more.
     let again = w.pass();
-    assert!(again.structural.is_empty(), "{again:?}");
+    assert_eq!(
+        again.structural,
+        vec![(task.clone(), Structural::WaitsForJudge)]
+    );
     assert_eq!(verdict_file::recorded(w.conn(), &task).unwrap().len(), 2);
 }
 

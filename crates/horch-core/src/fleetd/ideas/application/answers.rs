@@ -556,7 +556,7 @@ fn refuse(tx: &Connection, ctx: &Answering<'_>, q: &Question, reason: String) ->
 }
 
 /// The live process of `feature` in a pane: (attempt, pane).
-fn live_owner(conn: &Connection, feature: &str) -> Result<Option<(String, String)>> {
+pub(crate) fn live_owner(conn: &Connection, feature: &str) -> Result<Option<(String, String)>> {
     let mut found = None;
     for idea in ideas_store::of_feature(conn, feature)? {
         for (a, _) in attempts::idea_attempts(conn, &idea.id)? {
