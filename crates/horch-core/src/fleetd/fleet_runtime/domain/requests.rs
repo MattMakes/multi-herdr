@@ -3,7 +3,10 @@
 //! The JSON form of a request and of a reply, and the payload hash, are in
 //! `adapters/request_wire.rs`, because a domain module names only `std`.
 //!
-//! Requirements: RR-8, SR-8, FM-15. Ticket 08 of fleetd-p5.
+//! Requirements: RR-8, SR-8, FM-15, FR-10. Ticket 08 of fleetd-p5 and
+//! ticket 06 of fleetd-p6.
+
+use std::path::Path;
 
 /// The most bytes of a `request_id`.
 pub const REQUEST_ID_MAX_BYTES: usize = 64;
@@ -29,9 +32,10 @@ impl Class {
     }
 }
 
-/// Each request kind of Phase 5: the table "Request kinds" of
+/// Each request kind: the table "Request kinds" of
 /// `docs/tickets/fleetd-p5/MAP.md`, 1 kind for each command that changes
-/// state.
+/// state, then the idea kinds of Phase 6 (design, "Each request kind has a
+/// class").
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Kind {
     RunNew,
@@ -68,11 +72,18 @@ pub enum Kind {
     Progress,
     Result,
     Ask,
+    IdeaAdd,
+    IdeaAmend,
+    IdeaApprove,
+    IdeaRevise,
+    IdeaPark,
+    IdeaCancel,
+    IdeaNote,
 }
 
 impl Kind {
-    /// Each kind, in the order of the MAP table.
-    pub const ALL: [Kind; 34] = [
+    /// Each kind, in the order of the MAP table, then the idea kinds.
+    pub const ALL: [Kind; 41] = [
         Kind::RunNew,
         Kind::RunClose,
         Kind::RunGate,
@@ -107,6 +118,13 @@ impl Kind {
         Kind::Progress,
         Kind::Result,
         Kind::Ask,
+        Kind::IdeaAdd,
+        Kind::IdeaAmend,
+        Kind::IdeaApprove,
+        Kind::IdeaRevise,
+        Kind::IdeaPark,
+        Kind::IdeaCancel,
+        Kind::IdeaNote,
     ];
 
     /// The name of the kind on the wire and in the `requests` row.
@@ -146,14 +164,22 @@ impl Kind {
             Kind::Progress => "progress",
             Kind::Result => "result",
             Kind::Ask => "ask",
+            Kind::IdeaAdd => "idea_add",
+            Kind::IdeaAmend => "idea_amend",
+            Kind::IdeaApprove => "idea_approve",
+            Kind::IdeaRevise => "idea_revise",
+            Kind::IdeaPark => "idea_park",
+            Kind::IdeaCancel => "idea_cancel",
+            Kind::IdeaNote => "idea_note",
         }
     }
 
-    /// `worker` for the 3 kinds that are files of an attempt, else
+    /// `worker` for the 3 kinds that are files of an attempt and for
+    /// `idea_note`, a file of a sub-orchestrator in its idea folder, else
     /// `operator`.
     pub fn class(self) -> Class {
         match self {
-            Kind::Progress | Kind::Result | Kind::Ask => Class::Worker,
+            Kind::Progress | Kind::Result | Kind::Ask | Kind::IdeaNote => Class::Worker,
             _ => Class::Operator,
         }
     }
@@ -208,6 +234,113 @@ pub fn check_size(bytes: usize, max_bytes: u64) -> Result<(), RequestError> {
         return Err(RequestError::TooLarge { bytes, max_bytes });
     }
     Ok(())
+}
+
+/// The payload of `idea_add`: the idea, and with `--to` the feature that it
+/// joins. Each field is 1 text: `text`, or `direct` and `sha256`, and `to`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IdeaAdd {
+    pub idea: IdeaInput,
+    pub to: Option<String>,
+}
+
+/// What `horch idea add` captures.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IdeaInput {
+    /// The text of the idea.
+    Text(String),
+    /// `--direct`: the ticket file that you wrote.
+    Direct(DirectTicket),
+}
+
+/// A `--direct` ticket file: its absolute path and the lower-case hex
+/// sha256 of its bytes. A request line stays small, so it carries the path,
+/// and fleetd refuses the request when the file has another sha256 (Q15 of
+/// `docs/tickets/fleetd-p5/MAP.md`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirectTicket {
+    path: String,
+    sha256: String,
+}
+
+impl DirectTicket {
+    pub fn new(path: &str, sha256: &str) -> Result<DirectTicket, RequestError> {
+        if !Path::new(path).is_absolute() {
+            return Err(RequestError::malformed(
+                "the --direct ticket file is not an absolute path",
+            ));
+        }
+        let hex = sha256
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+        if sha256.len() != 64 || !hex {
+            return Err(RequestError::malformed(
+                "the sha256 of the --direct ticket file is not 64 lower-case hex characters",
+            ));
+        }
+        Ok(DirectTicket {
+            path: path.to_string(),
+            sha256: sha256.to_string(),
+        })
+    }
+
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    pub fn sha256(&self) -> &str {
+        &self.sha256
+    }
+}
+
+impl IdeaAdd {
+    /// The payload `fields`, each a key and its text. It refuses an unknown
+    /// key, both `text` and `direct` or neither, `direct` without `sha256`
+    /// or `sha256` without `direct`, and an empty `to`.
+    pub fn from_fields(fields: &[(&str, &str)]) -> Result<IdeaAdd, RequestError> {
+        if let Some((key, _)) = fields
+            .iter()
+            .find(|(k, _)| !["text", "direct", "sha256", "to"].contains(k))
+        {
+            return Err(RequestError::malformed(&format!(
+                "idea_add has the unknown payload field `{key}`"
+            )));
+        }
+        let field = |key: &str| fields.iter().find(|(k, _)| *k == key).map(|(_, v)| *v);
+        let idea = match (field("text"), field("direct"), field("sha256")) {
+            (Some(text), None, None) => IdeaInput::Text(text.to_string()),
+            (None, Some(path), Some(sha256)) => IdeaInput::Direct(DirectTicket::new(path, sha256)?),
+            (None, Some(_), None) => {
+                return Err(RequestError::malformed(
+                    "idea_add --direct has no sha256 of its ticket file",
+                ))
+            }
+            _ => {
+                return Err(RequestError::malformed(
+                    "idea_add needs a text or a --direct ticket file with its sha256, not both",
+                ))
+            }
+        };
+        let to = match field("to") {
+            Some("") => return Err(RequestError::malformed("idea_add --to names no feature")),
+            to => to.map(str::to_string),
+        };
+        Ok(IdeaAdd { idea, to })
+    }
+
+    /// The payload fields of this request, each a key and its text.
+    pub fn fields(&self) -> Vec<(&'static str, &str)> {
+        let mut fields = match &self.idea {
+            IdeaInput::Text(text) => vec![("text", text.as_str())],
+            IdeaInput::Direct(ticket) => {
+                vec![("direct", ticket.path()), ("sha256", ticket.sha256())]
+            }
+        };
+        if let Some(to) = &self.to {
+            fields.push(("to", to.as_str()));
+        }
+        fields
+    }
 }
 
 /// The reason that a request or a reply is refused.
@@ -267,8 +400,9 @@ fn echo(text: &str, max_chars: usize) -> String {
 mod tests {
     use super::*;
 
-    /// The table "Request kinds" of `docs/tickets/fleetd-p5/MAP.md`.
-    const MAP_TABLE: [(&str, Class); 34] = [
+    /// The table "Request kinds" of `docs/tickets/fleetd-p5/MAP.md`, then
+    /// the idea kinds of Phase 6.
+    const MAP_TABLE: [(&str, Class); 41] = [
         ("run_new", Class::Operator),
         ("run_close", Class::Operator),
         ("run_gate", Class::Operator),
@@ -303,6 +437,13 @@ mod tests {
         ("progress", Class::Worker),
         ("result", Class::Worker),
         ("ask", Class::Worker),
+        ("idea_add", Class::Operator),
+        ("idea_amend", Class::Operator),
+        ("idea_approve", Class::Operator),
+        ("idea_revise", Class::Operator),
+        ("idea_park", Class::Operator),
+        ("idea_cancel", Class::Operator),
+        ("idea_note", Class::Worker),
     ];
 
     #[test]
@@ -319,9 +460,9 @@ mod tests {
 
     #[test]
     fn unknown_kind_is_refused_with_its_name() {
-        let err = Kind::parse("idea_add").unwrap_err();
-        assert_eq!(err, RequestError::UnknownKind("idea_add".into()));
-        assert!(err.to_string().contains("idea_add"), "{err}");
+        let err = Kind::parse("idea_show").unwrap_err();
+        assert_eq!(err, RequestError::UnknownKind("idea_show".into()));
+        assert!(err.to_string().contains("idea_show"), "{err}");
         assert!(Kind::parse("").is_err());
         assert!(Kind::parse("Run_New").is_err(), "names are exact");
         let err = Kind::parse("x\u{1b}[2J\n").unwrap_err().to_string();
@@ -332,11 +473,11 @@ mod tests {
 
     #[test]
     fn worker_kind_is_class_worker() {
-        for name in ["progress", "result", "ask"] {
+        for name in ["progress", "result", "ask", "idea_note"] {
             assert_eq!(Kind::parse(name).unwrap().class(), Class::Worker, "{name}");
         }
         let workers = Kind::ALL.iter().filter(|k| k.class() == Class::Worker);
-        assert_eq!(workers.count(), 3);
+        assert_eq!(workers.count(), 4);
         assert_eq!(Class::Worker.as_str(), "worker");
         assert_eq!(Class::Operator.as_str(), "operator");
     }

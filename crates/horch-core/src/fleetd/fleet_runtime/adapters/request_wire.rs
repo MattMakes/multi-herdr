@@ -285,9 +285,9 @@ mod tests {
         ));
         assert_eq!(
             bad(&format!(
-                r#"{{"request_id":"{ID}","kind":"idea_add","payload":{{}}}}"#
+                r#"{{"request_id":"{ID}","kind":"idea_show","payload":{{}}}}"#
             )),
-            RequestError::UnknownKind("idea_add".into())
+            RequestError::UnknownKind("idea_show".into())
         );
         for text in [
             format!(r#"{{"request_id":"{ID}","kind":"spawn","payload":[]}}"#),

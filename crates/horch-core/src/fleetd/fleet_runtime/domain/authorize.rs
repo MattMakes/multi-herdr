@@ -208,12 +208,12 @@ mod tests {
     #[test]
     fn unknown_kind_is_refused() {
         let facts = RequestFacts {
-            kind: "idea_add".to_string(),
+            kind: "idea_show".to_string(),
             ..channel()
         };
         let reason = refusal(&facts);
         assert!(
-            reason.contains("unknown request kind `idea_add`"),
+            reason.contains("unknown request kind `idea_show`"),
             "{reason}"
         );
     }
