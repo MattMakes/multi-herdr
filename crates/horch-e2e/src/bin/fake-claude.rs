@@ -16,6 +16,9 @@
 //! `inspect_skills`: a pane launch also writes the `skills/` dir of each
 //! `--plugin-dir`, the plugin manifest names and the `--settings` value to
 //! `$HORCH_FAKE_LOG.skills.json` (`horch_e2e::write_skills_report`).
+//!
+//! A pane launch also plays the Phase 4 keys `bound`, `commit`, `ask`,
+//! `result` and `noresult` (`horch_e2e::agent`).
 
 use std::io::BufRead;
 use std::path::Path;
@@ -42,6 +45,7 @@ fn main() {
         .windows(2)
         .any(|w| w[0] == "--input-format" && w[1] == "stream-json");
     if !probe {
+        horch_e2e::agent::play(&mut call);
         if scenario_has("inspect_skills") {
             inspect_skills(&call.argv);
         }

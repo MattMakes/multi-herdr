@@ -10,8 +10,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::execution::legacy::HistoryEntry;
 use crate::execution::store::ExecutionStore;
+use crate::execution::SessionMode;
 use crate::harness::launch::{self, DiscoveryTarget, LaunchRequest};
 use crate::harness::HarnessKind;
+use crate::ids::SessionId;
 use crate::messaging::brief::Brief;
 use crate::messaging::mailbox::Mailbox;
 use crate::messaging::message::strip_done_prefix;
@@ -840,6 +842,69 @@ impl<'a> PaneWorker<'a> {
         out
     }
 
+    /// The task ledger file and this worker's row in it, from the brief.
+    pub fn ledger(&self) -> Option<(&Path, &str)> {
+        self.ledger
+            .as_ref()
+            .map(|(db, id)| (db.as_path(), id.as_str()))
+    }
+
+    /// Resume the session of the agent that exited, with `prompt` as its
+    /// line, and wait for it: the repair pass of FM-6. The session id is
+    /// the one of the brief, else the one the launch discovered. `None`: a
+    /// signal ended the resumed agent.
+    pub fn resume(&mut self, brief: &Brief, prompt: &str) -> Result<Option<i32>> {
+        let id = match brief.session.id() {
+            Some(id) => id.clone(),
+            None => {
+                let record = self.store()?.get(&brief.record_id)?;
+                let id = record
+                    .session_id
+                    .context("the launch did not record the session id of the agent")?;
+                SessionId::new(id)?
+            }
+        };
+        let resumed = Brief {
+            session: SessionMode::Resume(id),
+            ..brief.clone()
+        };
+        self.run_launch(&resumed, Some(prompt))
+    }
+
+    /// Run the agent of `brief` and wait for it. `prompt` is its first
+    /// line; `None` gives the worker briefing.
+    fn run_launch(&mut self, brief: &Brief, prompt: Option<&str>) -> Result<Option<i32>> {
+        let ctx: &RuntimeContext = self.ctx;
+        let mailbox = self.mailbox()?;
+        let (roster, teammate) = self.load_roster(brief)?;
+        let prompt = match prompt {
+            Some(line) => line.to_string(),
+            None => self.worker_prompt(brief, &roster, &teammate)?,
+        };
+        // The agent starts in its workdir (a candidate's worktree), once the
+        // roster has resolved from the project.
+        if let Some(workdir) = &brief.workdir {
+            (self.enter_dir)(Path::new(workdir))
+                .with_context(|| format!("entering workdir {workdir}"))?;
+        }
+        let env = child_env(mailbox, brief, self.path.clone());
+        // Held until the agent exits; dropping it removes the socket.
+        let _report = start_report_server(ctx, brief, &teammate, &env)?;
+        let checkins = self.start_checkins(brief);
+        if teammate.agent == HarnessKind::None {
+            self.run_smoke_agent(&env, checkins)
+        } else {
+            let plan = AgentPlan {
+                roster: &roster,
+                teammate: &teammate,
+                prompt: &prompt,
+            };
+            let code = run_agent(ctx, brief, mailbox, &plan, env, checkins)?;
+            self.launched = true;
+            Ok(code)
+        }
+    }
+
     fn herdr(&self) -> Herdr {
         Herdr::with_bin(&self.ctx.bins.harness.herdr)
     }
@@ -941,32 +1006,7 @@ impl WorkerSteps for PaneWorker<'_> {
     }
 
     fn launch(&mut self, brief: &Brief) -> Result<Option<i32>> {
-        let ctx: &RuntimeContext = self.ctx;
-        let mailbox = self.mailbox()?;
-        let (roster, teammate) = self.load_roster(brief)?;
-        let prompt = self.worker_prompt(brief, &roster, &teammate)?;
-        // The agent starts in its workdir (a candidate's worktree), once the
-        // roster has resolved from the project.
-        if let Some(workdir) = &brief.workdir {
-            (self.enter_dir)(Path::new(workdir))
-                .with_context(|| format!("entering workdir {workdir}"))?;
-        }
-        let env = child_env(mailbox, brief, self.path.clone());
-        // Held until the agent exits; dropping it removes the socket.
-        let _report = start_report_server(ctx, brief, &teammate, &env)?;
-        let checkins = self.start_checkins(brief);
-        if teammate.agent == HarnessKind::None {
-            self.run_smoke_agent(&env, checkins)
-        } else {
-            let plan = AgentPlan {
-                roster: &roster,
-                teammate: &teammate,
-                prompt: &prompt,
-            };
-            let code = run_agent(ctx, brief, mailbox, &plan, env, checkins)?;
-            self.launched = true;
-            Ok(code)
-        }
+        self.run_launch(brief, None)
     }
 
     /// An agent that exits before `horch done` reported nothing, and the

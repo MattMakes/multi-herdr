@@ -32,10 +32,15 @@ use super::{
     Session, WindowInputs, Workdir,
 };
 use crate::compaction::window::OperatorWindow;
+use crate::fleetd::worker_profiles::domain::operator_boundary::{
+    Boundary, NotSupported, OperatorPaths,
+};
 use crate::fleetd::worker_profiles::domain::stop_gate;
 use crate::fsx;
 use crate::prompts;
-use crate::roster::{ExecDecision, ExecRule, HarnessDefault, PermissionMode, Teammate};
+use crate::roster::{
+    ExecDecision, ExecRule, HarnessDefault, PermissionMode, Teammate, FLEET_ORCHESTRATORS,
+};
 use crate::runtime::{process, RuntimeContext};
 
 /// Path to codex's shared rules file: `~/.codex/rules/default.rules`.
@@ -1096,6 +1101,12 @@ fn profile_sandbox(profile: &str) -> String {
 /// (X6 repro 5). See `fleet_write_profile_args`.
 pub const FLEET_WRITE_PROFILE: &str = "fleet_write";
 
+/// The entries of the filesystem table of [`FLEET_WRITE_PROFILE`], without
+/// its braces.
+const FLEET_WRITE_FILESYSTEM: &str = "\":project_roots\"={\".\"=\"write\",\".git\"=\"write\",\
+     \".codex\"=\"write\",\".agents\"=\"write\",\".aws\"=\"write\"},\
+     \":slash_tmp\"=\"read\",\":tmpdir\"=\"read\"";
+
 /// The `-c` pairs that define [`FLEET_WRITE_PROFILE`]:
 ///
 /// - The pane's folder (codex's project roots) is writable throughout,
@@ -1114,11 +1125,7 @@ fn fleet_write_profile_args(state_root: &str) -> Vec<String> {
     let p = FLEET_WRITE_PROFILE;
     [
         format!("permissions.{p}.extends=\":workspace\""),
-        format!(
-            "permissions.{p}.filesystem={{\":project_roots\"={{\".\"=\"write\",\".git\"=\"write\",\
-             \".codex\"=\"write\",\".agents\"=\"write\",\".aws\"=\"write\"}},\
-             \":slash_tmp\"=\"read\",\":tmpdir\"=\"read\"}}"
-        ),
+        format!("permissions.{p}.filesystem={{{FLEET_WRITE_FILESYSTEM}}}"),
         format!(
             "permissions.{p}.workspace_roots={{{}=true}}",
             toml_string(state_root)
@@ -1146,6 +1153,316 @@ pub fn sandbox_args(state_root: &Path, dir: &Path) -> Vec<String> {
         "--".into(),
     ]);
     args
+}
+
+/// Whether `teammate` is a worker. A fleet orchestrator is not a worker
+/// profile: it gets no operator deny until Phase 6
+/// (`docs/tickets/fleetd-p5/MAP.md`, Q2).
+fn is_worker(teammate: &Teammate) -> bool {
+    !FLEET_ORCHESTRATORS.contains(&teammate.name.as_str())
+}
+
+/// Whether a push attempt of `teammate` gets [`worker_seal_args`]: a
+/// worker that launches in [`FLEET_WRITE_PROFILE`]. Profile validation
+/// refuses each other worker profile, because its boundary does not hold.
+fn sealed(teammate: &Teammate) -> bool {
+    is_worker(teammate) && write_profile_form(teammate)
+}
+
+/// The `-c` pairs that seal [`FLEET_WRITE_PROFILE`] for a worker of a push
+/// attempt (SR-8, FM-17, RR-5; the design's `writable_paths`). They come
+/// after the teammate's args, and a later `-c` pair for a table replaces
+/// the earlier one, so they replace the profile that `prepare` defines:
+///
+/// - The writable roots are the task folder and the worktree. The state
+///   root and the ledger are not writable.
+/// - `<fleet root>/run` is `"none"`: no read of the operator token, and no
+///   write into the request folder or another file of the run folder.
+/// - The network goes through the Codex network proxy
+///   (`features.network_proxy`). The proxy connects a Unix socket only
+///   under an allowed path: the task folder and the worktree, never the
+///   command channel. HTTPS to each domain and local binding stay open.
+/// - `TMPDIR` is `<task folder>/tmp`, because the state root that holds
+///   the pane's temp folder is not writable.
+///
+/// A probe of Codex 0.167.0 on macOS proved each point (2026-11-18).
+fn worker_seal_args(
+    paths: &OperatorPaths,
+    task_dir: &Path,
+    worktree: Option<&Path>,
+) -> Vec<String> {
+    let p = FLEET_WRITE_PROFILE;
+    let roots: Vec<String> = std::iter::once(task_dir)
+        .chain(worktree)
+        .map(|root| toml_string(&root.to_string_lossy()))
+        .collect();
+    let each_root = |value: &str| {
+        roots
+            .iter()
+            .map(|root| format!("{root}={value}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let run = toml_string(&paths.run.to_string_lossy());
+    let tmpdir = toml_string(&task_dir.join("tmp").to_string_lossy());
+    [
+        format!("default_permissions=\"{p}\""),
+        format!("permissions.{p}.extends=\":workspace\""),
+        format!("permissions.{p}.filesystem={{{FLEET_WRITE_FILESYSTEM},{run}=\"none\"}}"),
+        format!("permissions.{p}.workspace_roots={{{}}}", each_root("true")),
+        format!(
+            "permissions.{p}.network={{enabled=true,allow_local_binding=true,\
+             domains={{\"*\"=\"allow\"}},unix_sockets={{{}}}}}",
+            each_root("\"allow\"")
+        ),
+        "features.network_proxy=true".to_string(),
+        format!("shell_environment_policy.set.TMPDIR={tmpdir}"),
+    ]
+    .into_iter()
+    .flat_map(|pair| ["-c".to_string(), pair])
+    .collect()
+}
+
+/// Seal the launch of a push attempt's worker ([`worker_seal_args`]) and
+/// make its temp folder. A sealed worker with no known fleet root is
+/// refused: a guard whose fact is unknown does not hold.
+fn push_operator_seal(cmd: &mut Command, env: &LaunchEnv, teammate: &Teammate) -> Result<()> {
+    let Some(task_dir) = env.task_dir.as_deref().filter(|_| sealed(teammate)) else {
+        return Ok(());
+    };
+    let fleet_root = env.fleet_root.as_deref().with_context(|| {
+        format!(
+            "{}: refusing to launch a Codex worker with no fleet root (SR-8)",
+            teammate.name
+        )
+    })?;
+    let tmpdir = task_dir.join("tmp");
+    std::fs::create_dir_all(&tmpdir).with_context(|| format!("creating {}", tmpdir.display()))?;
+    cmd.args(worker_seal_args(
+        &OperatorPaths::of(fleet_root),
+        task_dir,
+        env.worktree.as_deref(),
+    ));
+    Ok(())
+}
+
+/// The lowest Codex version whose sandbox is proven to refuse the 3
+/// operator acts under [`worker_seal_args`]. `features.network_proxy` is
+/// experimental, so the config alone is not trusted.
+macro_rules! boundary_since {
+    () => {
+        "0.167.0"
+    };
+}
+
+/// The lowest Codex version on which the operator boundary is proven. The
+/// conformance check "Operator boundary" of Phase 7 runs the 3 acts inside
+/// the real Codex sandbox.
+pub const OPERATOR_BOUNDARY_SINCE: &str = boundary_since!();
+
+/// How long 1 probe of the Codex binary can take.
+const FACTS_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// What the operator boundary needs to know of the installed Codex.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CodexFacts {
+    /// The first line of `codex --version`, for example
+    /// `codex-cli 0.167.0`. `None`: unknown.
+    pub version: Option<String>,
+    /// Whether `codex features list` names the `network_proxy` feature.
+    pub network_proxy: bool,
+}
+
+impl CodexFacts {
+    /// Ask `bin` for its version and its features. A probe that fails
+    /// leaves its fact unknown, and an unknown fact does not hold.
+    pub fn probe(bin: &Path) -> CodexFacts {
+        let stdout = |args: &[&str]| {
+            let mut cmd = Command::new(bin);
+            cmd.args(args);
+            run_with_deadline(cmd, FACTS_PROBE_TIMEOUT)
+                .ok()
+                .filter(|out| out.status.success())
+                .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+        };
+        CodexFacts {
+            version: stdout(&["--version"]).and_then(|s| s.lines().next().map(str::to_string)),
+            network_proxy: stdout(&["features", "list"]).is_some_and(|s| {
+                s.lines()
+                    .any(|line| line.split_whitespace().next() == Some("network_proxy"))
+            }),
+        }
+    }
+}
+
+/// The `(major, minor, patch)` of the last word of a `--version` line.
+fn version_of(text: &str) -> Option<(u64, u64, u64)> {
+    let word = text.split_whitespace().last()?.trim_start_matches('v');
+    let core = word.split(['-', '+']).next()?;
+    let mut parts = core.split('.').map(|part| part.parse::<u64>().ok());
+    Some((parts.next()??, parts.next()??, parts.next()??))
+}
+
+/// The operator boundary of the Codex adapter on this OS, for the Codex
+/// that `HORCH_CODEX_BIN` or `PATH` names (SR-8). Profile validation
+/// refuses a profile whose boundary does not hold.
+pub fn operator_boundary(teammate: &Teammate, fleet_root: &Path) -> Result<Boundary, NotSupported> {
+    let bin = crate::runtime::bins::codex_bin(&crate::runtime::BinOverrides::from_env(
+        &crate::runtime::ProcessEnv,
+    ));
+    operator_boundary_on(
+        std::env::consts::OS,
+        &CodexFacts::probe(&bin),
+        teammate,
+        fleet_root,
+    )
+}
+
+/// [`operator_boundary`] on the OS `os` (a value of
+/// [`std::env::consts::OS`]) with the Codex `facts`: for each operator act,
+/// whether the args that horch renders for a push attempt of `teammate`
+/// deny it.
+pub fn operator_boundary_on(
+    os: &str,
+    facts: &CodexFacts,
+    teammate: &Teammate,
+    fleet_root: &Path,
+) -> Result<Boundary, NotSupported> {
+    let not_supported = |reason| NotSupported {
+        adapter: "codex",
+        os: os.to_string(),
+        reason,
+    };
+    match os {
+        "macos" | "linux" => {}
+        "windows" => {
+            return Err(not_supported(
+                "Codex documents no deny-read or Unix socket rule for its Windows sandbox",
+            ))
+        }
+        _ => return Err(not_supported("Codex has no sandbox on this OS")),
+    }
+    match facts.version.as_deref().and_then(version_of) {
+        None => {
+            return Err(not_supported(concat!(
+                "the Codex version is unknown; the operator boundary is proven from Codex ",
+                boundary_since!()
+            )))
+        }
+        Some(v) if Some(v) < version_of(OPERATOR_BOUNDARY_SINCE) => {
+            return Err(not_supported(concat!(
+                "Codex is older than ",
+                boundary_since!(),
+                ", the lowest version on which the operator boundary is proven"
+            )))
+        }
+        Some(_) => {}
+    }
+    if !facts.network_proxy {
+        return Err(not_supported(
+            "this Codex has no network_proxy feature, which denies the connect to the command channel",
+        ));
+    }
+    let paths = OperatorPaths::of(fleet_root);
+    let mut args = permission_args(teammate).unwrap_or_default();
+    args.extend(default_args(teammate, || None));
+    args.extend(teammate.args.iter().cloned());
+    if sealed(teammate) {
+        // The roots of an attempt are under the fleet root, outside `run/`.
+        let task_dir = fleet_root
+            .join("tasks")
+            .join("T-0")
+            .join("attempts")
+            .join("1");
+        let worktree = fleet_root.join("work").join("T-0");
+        args.extend(worker_seal_args(&paths, &task_dir, Some(&worktree)));
+    }
+    Ok(boundary_of(&args, &paths))
+}
+
+/// What the rendered launch `args` deny of the 3 operator acts. Only
+/// [`FLEET_WRITE_PROFILE`] on `:workspace` with no sandbox flag can deny.
+/// A pair that this reader cannot read does not deny.
+fn boundary_of(args: &[String], paths: &OperatorPaths) -> Boundary {
+    let p = FLEET_WRITE_PROFILE;
+    let text = |key: &str| final_value(args, key).and_then(|v| v.as_str().map(str::to_string));
+    let sandbox_flag = args.iter().any(|arg| {
+        matches!(arg.as_str(), "-s" | "--sandbox")
+            || arg.starts_with("--sandbox=")
+            || sandbox_alias(arg).is_some()
+    });
+    let in_profile = !sandbox_flag
+        && !config_keys_of(args).contains(&"sandbox_mode")
+        && text("default_permissions").as_deref() == Some(p)
+        && text(&format!("permissions.{p}.extends")).as_deref() == Some(":workspace");
+    if !in_profile {
+        return Boundary::default();
+    }
+    let run = paths.run.to_string_lossy();
+    let run_closed = final_value(args, &format!("permissions.{p}.filesystem"))
+        .is_some_and(|fs| fs.get(run.as_ref()).and_then(toml::Value::as_str) == Some("none"));
+    let proxy = final_value(args, "features.network_proxy").and_then(|v| v.as_bool()) == Some(true);
+    let channel_closed = proxy
+        && final_value(args, &format!("permissions.{p}.network"))
+            .is_some_and(|net| net_closes(&net, &paths.channel));
+    Boundary {
+        read_token_denied: run_closed,
+        connect_channel_denied: run_closed && channel_closed,
+        write_requests_denied: run_closed,
+    }
+}
+
+/// Whether the network table `net` of a proxied profile refuses a connect
+/// to `channel`: it does not allow all Unix sockets, and no `allow` rule of
+/// `unix_sockets` is the channel or a folder of it. A relative path counts
+/// as an allow of the channel.
+fn net_closes(net: &toml::Value, channel: &Path) -> bool {
+    let all_open = net
+        .get("dangerously_allow_all_unix_sockets")
+        .is_some_and(|v| v.as_bool() != Some(false));
+    let opened = match net.get("unix_sockets") {
+        None => false,
+        Some(rules) => rules.as_table().is_none_or(|rules| {
+            rules.iter().any(|(path, rule)| {
+                rule.as_str() != Some("deny")
+                    && (!Path::new(path).is_absolute() || channel.starts_with(path))
+            })
+        }),
+    };
+    !all_open && !opened
+}
+
+/// The keys of the `-c` pairs of `args`.
+fn config_keys_of(args: &[String]) -> Vec<&str> {
+    args.windows(2)
+        .filter(|w| matches!(w[0].as_str(), "-c" | "--config"))
+        .filter_map(|w| w[1].split_once('=').map(|(key, _)| key.trim()))
+        .collect()
+}
+
+/// The value of `key` after each `-c` pair of `args`, parsed as TOML: the
+/// last pair that sets `key`, unless a later pair sets a table that holds
+/// `key` or a key inside `key`, which this reader does not merge. `None`:
+/// unset, unknown or not TOML.
+fn final_value(args: &[String], key: &str) -> Option<toml::Value> {
+    let mut value = None;
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        if !matches!(arg.as_str(), "-c" | "--config") {
+            continue;
+        }
+        let Some((k, v)) = it.next().and_then(|pair| pair.split_once('=')) else {
+            continue;
+        };
+        let k = k.trim();
+        if k == key {
+            value = Some(v);
+        } else if k.starts_with(&format!("{key}.")) || key.starts_with(&format!("{k}.")) {
+            value = None;
+        }
+    }
+    let table: toml::Table = toml::from_str(&format!("v = {}", value?)).ok()?;
+    table.get("v").cloned()
 }
 
 /// The pane's private temp dir, `<state root>/tmp/<role>`: `/tmp` and the
@@ -1345,6 +1662,7 @@ pub(super) fn codex_command(
     let multi_agent_off = push_defaults(&mut cmd, env, teammate);
     push_window_limit(&mut cmd, env, teammate);
     cmd.args(&teammate.args);
+    push_operator_seal(&mut cmd, env, teammate)?;
     push_stop_hook(&mut cmd, env);
     if multi_agent_off {
         push_v1_catalog(&mut cmd, env);
@@ -2179,13 +2497,14 @@ mod tests {
             .max_by_key(|d| rank(d))
     }
 
-    /// #181: a codex worker reaches the task ledger outside its sandbox only
-    /// through the subcommands a worker runs. `finish` lifts the sandbox;
-    /// `add` and `reopen`, which take any `--check` command, are refused; a
-    /// subcommand no rule names runs in the sandbox.
+    /// #181, FM-17: from Phase 5 each `horch ledger` command of a codex
+    /// worker runs in its sandbox and writes the outbox in the task folder:
+    /// no rule lifts the sandbox for `finish`, `claim` or another
+    /// subcommand. `add` and `reopen`, which take any `--check` command,
+    /// stay refused.
     #[cfg(unix)]
     #[test]
-    fn a_worker_launch_allows_ledger_finish_and_forbids_ledger_add() {
+    fn a_worker_launch_runs_ledger_commands_in_the_sandbox_and_forbids_ledger_add() {
         let tmp = tempfile::tempdir().unwrap();
         let roster = Roster::builtin().unwrap();
         let teammate = roster.require("codex-sol").unwrap();
@@ -2200,14 +2519,15 @@ mod tests {
         let allow = Some("allow".to_string());
         let forbidden = Some("forbidden".to_string());
         for (argv, want) in [
-            (&["horch", "ledger", "finish"][..], &allow),
-            (&["horch", "ledger", "claim"], &allow),
-            (&["horch", "ledger", "progress", "step 1 done"], &allow),
-            (&["horch", "ledger", "worktree", "new", "x"], &allow),
-            (&["horch", "ledger", "done", "summary"], &allow),
-            (&["horch", "ledger", "status"], &allow),
-            (&["horch", "ledger", "show", "T-1"], &allow),
-            (&["horch", "ledger", "steps"], &allow),
+            (&["horch", "ledger", "finish"][..], &None),
+            (&["horch", "ledger", "claim"], &None),
+            (&["horch", "ledger", "progress", "step 1 done"], &None),
+            (&["horch", "ledger", "worktree", "new", "x"], &None),
+            (&["horch", "ledger", "done", "summary"], &None),
+            (&["horch", "ledger", "handoff", "/x.md"], &None),
+            (&["horch", "ledger", "status"], &None),
+            (&["horch", "ledger", "show", "T-1"], &None),
+            (&["horch", "ledger", "steps"], &None),
             (
                 &["horch", "ledger", "add", "t.md", "--check", "sh x"],
                 &forbidden,
@@ -3379,7 +3699,7 @@ mod tests {
         let text = std::fs::read_to_string(rules_path(home.path())).unwrap();
         assert!(!text.contains("forbidden"), "{text}");
         assert_eq!(
-            rule_decision(&text, &["horch", "ledger", "finish"]),
+            rule_decision(&text, &["horch", "tell", "orchestrator", "x"]),
             Some("allow".into())
         );
         assert_eq!(
@@ -3428,8 +3748,9 @@ mod tests {
             rule_decision(&text, &["horch", "ledger", "cancel", "T-1"]),
             None
         );
+        assert_eq!(rule_decision(&text, &["horch", "ledger", "claim"]), None);
         assert_eq!(
-            rule_decision(&text, &["horch", "ledger", "claim"]),
+            rule_decision(&text, &["horch", "tell", "orchestrator", "x"]),
             Some("allow".into())
         );
 

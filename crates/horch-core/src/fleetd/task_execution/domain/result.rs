@@ -56,7 +56,15 @@ pub struct ResultFile {
     pub files_changed: Vec<String>,
     pub acceptance_self_check: Vec<SelfCheck>,
     pub notes_for_next: Option<String>,
+    /// The handoff file of a handed-off attempt, an absolute path
+    /// (`docs/tickets/fleetd-p5/MAP.md`, Q4). The file then has
+    /// `"reason": "handoff"` and `"handoff": <path>`, and the status is
+    /// `blocked`. `None`: the file has neither key.
+    pub handoff: Option<String>,
 }
+
+/// The `reason` of a handoff result (Q4 of `docs/tickets/fleetd-p5/MAP.md`).
+pub const HANDOFF_REASON: &str = "handoff";
 
 /// Why a `result.json` is not valid.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -146,7 +154,7 @@ impl ResultFile {
             .notes_for_next
             .as_deref()
             .map_or("null".to_string(), json_string);
-        let lines = [
+        let mut lines = vec![
             format!("\"task\": {}", json_string(&self.task)),
             format!("\"attempt\": {}", json_string(&self.attempt)),
             format!("\"status\": {}", json_string(self.status.as_str())),
@@ -156,12 +164,16 @@ impl ResultFile {
             format!("\"acceptance_self_check\": [{}]", checks.join(", ")),
             format!("\"notes_for_next\": {notes}"),
         ];
+        if let Some(path) = &self.handoff {
+            lines.push(format!("\"reason\": {}", json_string(HANDOFF_REASON)));
+            lines.push(format!("\"handoff\": {}", json_string(path)));
+        }
         format!("{{\n  {}\n}}\n", lines.join(",\n  "))
     }
 }
 
 /// The keys of the schema. Each other key is refused.
-const KEYS: [&str; 8] = [
+const KEYS: [&str; 10] = [
     "task",
     "attempt",
     "status",
@@ -170,6 +182,8 @@ const KEYS: [&str; 8] = [
     "files_changed",
     "acceptance_self_check",
     "notes_for_next",
+    "reason",
+    "handoff",
 ];
 
 /// The [`ResultFile`] of a parsed JSON value.
@@ -209,7 +223,37 @@ fn from_value(value: Json) -> Result<ResultFile, String> {
         files_changed: string_list(get("files_changed"), "files_changed")?,
         acceptance_self_check: self_checks(get("acceptance_self_check"))?,
         notes_for_next,
+        handoff: handoff(get("reason"), get("handoff"), status)?,
     })
+}
+
+/// The handoff path of the keys `reason` and `handoff`: both are given or
+/// neither is. `reason` is only `handoff`, the path is absolute, and the
+/// status is `blocked`.
+fn handoff(
+    reason: Option<&Json>,
+    path: Option<&Json>,
+    status: ResultStatus,
+) -> Result<Option<String>, String> {
+    let (reason, path) = match (reason, path) {
+        (None, None) => return Ok(None),
+        (Some(Json::Str(reason)), Some(Json::Str(path))) => (reason, path),
+        _ => return Err("\"reason\" and \"handoff\" are given together, each as a string".into()),
+    };
+    if reason != HANDOFF_REASON {
+        return Err(format!(
+            "\"reason\" is {reason:?}; it must be {HANDOFF_REASON:?}"
+        ));
+    }
+    if status != ResultStatus::Blocked {
+        return Err("a handoff result has the status blocked".into());
+    }
+    if !std::path::Path::new(path).is_absolute() {
+        return Err(format!(
+            "\"handoff\" is {path:?}; it must be an absolute path"
+        ));
+    }
+    Ok(Some(path.clone()))
 }
 
 /// An optional list of strings: missing is empty.
@@ -268,7 +312,7 @@ fn self_check(item: &Json) -> Result<SelfCheck, String> {
 }
 
 /// `s` as a JSON string.
-fn json_string(s: &str) -> String {
+pub(crate) fn json_string(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
     for c in s.chars() {

@@ -1329,8 +1329,9 @@ CREATE TABLE polite_stops (
 /// Version [`PHASE_6_VERSION`]: the Phase 6 tables of fleetd, as the design
 /// writes them (docs/specs/fleetd/design.md, "Ledger"), the idea of each
 /// task (FR-12) and of each sub-orchestrator attempt, and the fix rounds of
-/// a judged task (RR-3). [`phase_6_backfill`] gives each run in flight its
-/// idea, and [`tasks_need_an_idea`] then refuses a task with no idea.
+/// a judged task (RR-3) and the task as its plan commits it (`spec_json`).
+/// [`phase_6_backfill`] gives each run in flight its idea, and
+/// [`tasks_need_an_idea`] then refuses a task with no idea.
 const PHASE_6: &str = "CREATE TABLE ideas (
     id TEXT PRIMARY KEY,
     feature_id TEXT NOT NULL REFERENCES features(id),
@@ -1360,6 +1361,7 @@ CREATE TABLE trial_merges (
 );
 ALTER TABLE tasks ADD COLUMN idea_id TEXT REFERENCES ideas(id);
 ALTER TABLE tasks ADD COLUMN fix_rounds INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tasks ADD COLUMN spec_json TEXT;
 ALTER TABLE attempts ADD COLUMN idea_id TEXT REFERENCES ideas(id);";
 
 /// FR-12 in SQL: SQLite cannot add a `NOT NULL` column with no default, so

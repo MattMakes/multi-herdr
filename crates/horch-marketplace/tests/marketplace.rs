@@ -921,8 +921,15 @@ fn nfr_07_git_only_on_temp_repos() {
         "the spawn is outside fixture::git"
     );
 
+    // SR-7: the crate starts each process through the platform start function.
+    let start = concat!("start", "::command(");
     for (name, text) in src_files() {
-        let n = text.matches(spawn).count();
+        assert_eq!(
+            text.matches(spawn).count(),
+            0,
+            "{name}: a direct process start"
+        );
+        let n = text.matches(start).count();
         let expected = usize::from(name == "git.rs");
         assert_eq!(n, expected, "{name}: process spawns outside git.rs");
     }

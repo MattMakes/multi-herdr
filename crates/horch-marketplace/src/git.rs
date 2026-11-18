@@ -8,14 +8,11 @@ use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use horch_platform::sandbox::{Denials, Network, Reach};
+use horch_platform::start::{self, Command};
 use horch_platform::NotSupported;
-
-/// Removed from every git child. Git never needs the API key, and the
-/// operator's shell can carry an invalid, billed one.
-const FORBIDDEN_ENV: [&str; 1] = ["ANTHROPIC_API_KEY"];
 
 /// Removed from every git child, so the `-C` directory alone selects the
 /// repository and its config. A caller inside a git hook, or under
@@ -53,23 +50,49 @@ pub const REPO_ENV: [&str; 18] = [
 /// counts.
 pub const REPO_ENV_NUMBERED: [&str; 2] = ["GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"];
 
+/// A git child that [`scrub_repo_env`] cleans: a [`start::Command`], or
+/// the `std` command of a caller that has not moved to it yet (SR-7).
+pub trait GitChild {
+    /// The names that the command sets or removes.
+    fn env_names(&self) -> Vec<OsString>;
+    fn remove_env(&mut self, key: &OsStr);
+}
+
+impl GitChild for Command {
+    fn env_names(&self) -> Vec<OsString> {
+        self.get_envs().map(|(k, _)| k.to_os_string()).collect()
+    }
+    fn remove_env(&mut self, key: &OsStr) {
+        self.env_remove(key);
+    }
+}
+
+impl GitChild for std::process::Command {
+    fn env_names(&self) -> Vec<OsString> {
+        self.get_envs().map(|(k, _)| k.to_os_string()).collect()
+    }
+    fn remove_env(&mut self, key: &OsStr) {
+        self.env_remove(key);
+    }
+}
+
 /// Remove every [`REPO_ENV`] variable and every `GIT_CONFIG_KEY_<n>` and
 /// `GIT_CONFIG_VALUE_<n>` from `cmd`, a git child: those this process has
 /// and those set on `cmd`. Call it after any `env` call.
-pub fn scrub_repo_env(cmd: &mut Command) {
+pub fn scrub_repo_env(cmd: &mut impl GitChild) {
     for k in REPO_ENV {
-        cmd.env_remove(k);
+        cmd.remove_env(OsStr::new(k));
     }
     let numbered: Vec<OsString> = std::env::vars_os()
         .map(|(k, _)| k)
-        .chain(cmd.get_envs().map(|(k, _)| k.to_os_string()))
+        .chain(cmd.env_names())
         .filter(|k| {
             k.to_str()
                 .is_some_and(|k| REPO_ENV_NUMBERED.iter().any(|p| k.starts_with(p)))
         })
         .collect();
     for k in numbered {
-        cmd.env_remove(k);
+        cmd.remove_env(&k);
     }
 }
 
@@ -292,16 +315,13 @@ impl GitRunner {
         if dir.as_os_str().is_empty() {
             return Err(GitError::NoDir);
         }
-        let mut cmd = Command::new(&self.bin);
+        let mut cmd = start::command(&self.bin);
         cmd.current_dir(dir);
         for (k, v) in &self.env {
             cmd.env(k, v);
         }
         for (k, v) in FIXED_ENV {
             cmd.env(k, v);
-        }
-        for k in FORBIDDEN_ENV {
-            cmd.env_remove(k);
         }
         scrub_repo_env(&mut cmd);
         if let Some(index) = &self.index {

@@ -196,6 +196,10 @@ pub enum FeatureFact<'a> {
     PushNotBefore(Option<i64>),
     /// `none`, `open` or `closed`.
     PrState(&'a str),
+    /// The kebab-case name, checked by fleetd (ticket 15 of fleetd-p6).
+    Name(&'a str),
+    /// The feature branch, written before git has it (ticket 15 of fleetd-p6).
+    Branch(&'a str),
 }
 
 impl FeatureFact<'_> {
@@ -205,6 +209,8 @@ impl FeatureFact<'_> {
             FeatureFact::PushFailures(n) => ("push_failures", int(Some(n))),
             FeatureFact::PushNotBefore(n) => ("push_not_before", int(n)),
             FeatureFact::PrState(s) => ("pr_state", text(Some(s))),
+            FeatureFact::Name(s) => ("name", text(Some(s))),
+            FeatureFact::Branch(s) => ("branch", text(Some(s))),
         }
     }
 }
@@ -555,6 +561,46 @@ pub fn feature(conn: &Connection, id: &str) -> Result<Option<FeatureRow>> {
             row,
         )
         .optional()?)
+}
+
+/// The feature with the name `name`.
+pub fn feature_named(conn: &Connection, name: &str) -> Result<Option<FeatureRow>> {
+    let id: Option<String> = conn
+        .query_row("SELECT id FROM features WHERE name = ?1", [name], |r| {
+            r.get(0)
+        })
+        .optional()?;
+    match id {
+        Some(id) => feature(conn, &id),
+        None => Ok(None),
+    }
+}
+
+/// Whether a feature has the name `name` or the branch `branch`, or a
+/// branch row has the name `branch`.
+pub fn name_taken(conn: &Connection, name: &str, branch: &str) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM features WHERE name = ?1 OR branch = ?2)
+             OR EXISTS (SELECT 1 FROM branches WHERE name = ?2)",
+        [name, branch],
+        |r| r.get(0),
+    )?)
+}
+
+/// The branch of each `open` or `ready` feature that has its branch row,
+/// with the `seen_tip` of that row, as (feature id, branch, seen tip), by
+/// feature id.
+pub fn live_feature_branches(conn: &Connection) -> Result<Vec<(String, String, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT f.id, f.branch, b.seen_tip FROM features f
+         JOIN branches b ON b.name = f.branch AND b.feature_id = f.id AND b.task_id IS NULL
+         WHERE f.state IN ('open', 'ready') AND b.seen_tip IS NOT NULL
+         ORDER BY f.id",
+    )?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(rows)
 }
 
 /// Each task with a task branch row, and whether 1 of its task branches

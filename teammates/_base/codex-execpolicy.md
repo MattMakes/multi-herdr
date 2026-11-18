@@ -16,32 +16,13 @@ rules:
     justification: read a catalog skill that the bundle does not hold
   - pattern: '"horch", "done"'
     justification: mark session done and close own pane
-  # The task ledger is outside the sandbox's writable roots, so each ledger
-  # command a worker runs needs its own allow rule. Only the worker's own
-  # subcommands are allowed (#181). `add`, `add-map` and `reopen` take any
-  # `--check` command, which `finish` would then run outside the sandbox, so
-  # they are forbidden: a forbidden rule beats any allow rule. `finish` runs
-  # a codex worker's check inside `codex sandbox` with the pane's profile;
-  # its git, push and gh commands run outside the sandbox. On Windows every codex session shares 1
-  # rules file, so a codex orchestrator's broad ledger rule reaches workers.
-  - pattern: '"horch", "ledger", "claim"'
-    justification: take the next task for this worker
-  - pattern: '"horch", "ledger", "worktree"'
-    justification: make, scratch or drop the worker's own worktree
-  - pattern: '"horch", "ledger", "progress"'
-    justification: record a milestone of the worker's task
-  - pattern: '"horch", "ledger", "status"'
-    justification: read the board of the run
-  - pattern: '"horch", "ledger", "show"'
-    justification: read 1 task or worker with its history
-  - pattern: '"horch", "ledger", "steps"'
-    justification: read the finish steps of the worker's task
-  - pattern: '"horch", "ledger", "finish"'
-    justification: run the finish steps, then land and push the worker's work
-  - pattern: '"horch", "ledger", "done"'
-    justification: finish the worker's task and close its pane
-  - pattern: '"horch", "ledger", "handoff"'
-    justification: hand the worker's task to a fresh worker and close its pane
+  # From Phase 5 a worker's ledger commands run in its sandbox: they read
+  # the ledger read-only and write the outbox in the task folder, a
+  # writable root (FM-17). So no rule lets `horch ledger` leave the sandbox
+  # (#181). `add`, `add-map` and `reopen` take any `--check` command, so
+  # they stay forbidden: a forbidden rule beats any allow rule. On Windows
+  # every codex session shares 1 rules file, so a codex orchestrator's
+  # broad ledger rule reaches workers.
   - pattern: '"horch", "ledger", "add"'
     decision: forbidden
     justification: a worker never queues a task, and its check command would run unsandboxed
@@ -77,5 +58,5 @@ private `CODEX_HOME` that lives only as long as the pane, as:
 `decision` is `allow` when the rule does not set it. Codex takes the
 strictest decision of every rule that matches a command. An allow rule
 lifts the sandbox only for a command that is the whole exec call: a
-`horch ledger` command after `;` or `&&`, or with a pipe, runs in the
-sandbox and cannot open the ledger.
+`horch tell` command after `;` or `&&`, or with a pipe, runs in the
+sandbox.

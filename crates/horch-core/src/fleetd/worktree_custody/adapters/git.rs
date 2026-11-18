@@ -11,7 +11,6 @@
 
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
@@ -615,7 +614,7 @@ impl CliWorktreeGit {
 
     /// Why this host cannot run git in the sandbox, or `None` when it can.
     pub fn sandbox_gap(&self) -> Option<NotSupported> {
-        let probe = Command::new(self.runner.bin());
+        let probe = horch_platform::start::command(self.runner.bin());
         let hidden = match self.hidden() {
             Ok(hidden) => hidden,
             Err(gap) => return Some(gap),

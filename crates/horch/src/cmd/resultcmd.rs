@@ -216,13 +216,13 @@ fn check(attempt: &Attempt) -> ExitCode {
 }
 
 /// `path` is a regular file, not a link.
-fn is_regular(path: &Path) -> bool {
+pub(crate) fn is_regular(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_file())
 }
 
 /// `dir` holds a question file: a regular file that is not hidden and not
 /// a temp file (protocol rule 1).
-fn has_question(dir: &Path) -> bool {
+pub(crate) fn has_question(dir: &Path) -> bool {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return false;
     };
@@ -265,6 +265,7 @@ fn write(ctx: &RuntimeContext, attempt: &Attempt, args: ResultArgs) -> Result<Pa
         files_changed,
         acceptance_self_check: Vec::new(),
         notes_for_next: args.notes,
+        handoff: None,
     };
     let bytes = file.to_json().into_bytes();
     let max_bytes = config_file::load(&ctx.paths.fleet_root)?.result_max_bytes;

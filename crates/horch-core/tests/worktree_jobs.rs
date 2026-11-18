@@ -1374,9 +1374,9 @@ fn race_external_diff_and_textconv_do_not_run_in_a_fleetd_git_call() {
 
 /// The fake answer of a host with no sandbox.
 fn no_sandbox_host(
-    _cmd: Command,
+    _cmd: horch_platform::start::Command,
     _reach: &horch_platform::sandbox::Reach<'_>,
-) -> Result<Command, horch_platform::NotSupported> {
+) -> Result<horch_platform::start::Command, horch_platform::NotSupported> {
     Err(horch_platform::NotSupported::new("sandbox", "test").because("the fake host has none"))
 }
 

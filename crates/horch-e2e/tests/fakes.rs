@@ -959,3 +959,248 @@ fn a_fake_logs_one_call_id_per_process() {
     assert_ne!(calls[0]["call_id"], calls[1]["call_id"]);
     assert!(calls[0]["call_id"].is_string(), "{calls:?}");
 }
+
+// ─── the Phase 4 keys of the fake agents ────────────────────────────────
+
+/// Unix only: the attempt folder and the worktree come from a git project.
+#[cfg(unix)]
+mod phase4 {
+    use super::*;
+
+    /// A git project with its own ledger: 1 run, 1 task claimed by worker
+    /// `opus1`, its worktree, and the `task.yaml` of its attempt under the
+    /// fleet root. The fakes find `horch` on `PATH`, as in a pane.
+    struct Attempt {
+        h: Harness,
+        worker: String,
+        task_id: String,
+        task_yaml: std::path::PathBuf,
+        worktree: std::path::PathBuf,
+    }
+
+    fn horch_ok(h: &Harness, worker: Option<&str>, args: &[&str]) -> String {
+        let mut cmd = h.horch(args);
+        if let Some(w) = worker {
+            cmd.env("HORCH_WORKER_ID", w);
+        }
+        let o = cmd.output().unwrap();
+        assert!(
+            o.status.success(),
+            "horch {args:?}: {}{}",
+            String::from_utf8_lossy(&o.stdout),
+            String::from_utf8_lossy(&o.stderr)
+        );
+        String::from_utf8_lossy(&o.stdout).into_owned()
+    }
+
+    fn git_ok(h: &Harness, dir: &Path, args: &[&str]) -> String {
+        let mut cmd = h.git_cmd(args);
+        cmd.current_dir(dir);
+        let o = cmd.output().unwrap();
+        assert!(o.status.success(), "git {args:?}: {o:?}");
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    }
+
+    fn attempt(name: &str) -> Attempt {
+        use horch_core::fleetd::task_execution::adapters::task_files::write_attempt_files;
+        use horch_core::fleetd::task_execution::domain::task_files::TaskFacts;
+
+        let mut h = Harness::new(name).with_git();
+        let db = h.root.join("ledger.sqlite3");
+        let fleet = h.root.join("fleet");
+        h.set("HORCH_LEDGER_DB", db.to_string_lossy());
+        h.set("FLEET_ROOT", fleet.to_string_lossy());
+        h.set("HORCH_NO_WAKE", "1");
+        h.set("HORCH_NO_WATCHDOG", "1");
+        let path = format!("{}:{}", h.bin.display(), horch_e2e::bin_dir().display());
+        h.set("PATH", path);
+        std::fs::create_dir_all(h.project.join("tickets")).unwrap();
+        std::fs::write(h.project.join("tickets/t1.md"), "# T1\n").unwrap();
+        git_ok(&h, &h.project, &["add", "tickets/t1.md"]);
+        git_ok(&h, &h.project, &["commit", "-q", "-m", "t1"]);
+        horch_ok(&h, None, &["ledger", "run", "new", "r1"]);
+        horch_ok(
+            &h,
+            None,
+            &[
+                "ledger",
+                "add",
+                "--file",
+                "tickets/t1.md",
+                "--primary",
+                "opus",
+            ],
+        );
+        let worker = horch_ok(
+            &h,
+            None,
+            &[
+                "ledger",
+                "worker",
+                "new",
+                "--persona",
+                "opus",
+                "--role",
+                "opus1",
+            ],
+        )
+        .trim()
+        .to_string();
+        horch_ok(&h, Some(&worker), &["ledger", "claim"]);
+        horch_ok(&h, Some(&worker), &["ledger", "worktree", "new", "feat"]);
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        let (task_id, n): (String, i64) = conn
+            .query_row(
+                "SELECT task_id, attempt FROM workers WHERE worker_id = ?1",
+                [&worker],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        let worktree: String = conn
+            .query_row(
+                "SELECT path FROM worktrees WHERE task_id = ?1",
+                [&task_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let facts = TaskFacts {
+            task: "T1".into(),
+            task_id: task_id.clone(),
+            run: "r1".into(),
+            attempt: format!("A{n}"),
+            profile: "opus".into(),
+            worktree: worktree.clone(),
+            branch: "fleet/r1-T1-feat".into(),
+            read_first: "tickets/t1.md".into(),
+            goal: "T1".into(),
+            check: None,
+            kind: None,
+            ticket_snapshot: "# T1\n".into(),
+            extra: None,
+        };
+        let files = write_attempt_files(&fleet, &facts, &[]).unwrap();
+        h.set("HORCH_WORKER_ID", worker.as_str());
+        h.set("HORCH_TASK_YAML", files.task_yaml.to_string_lossy());
+        Attempt {
+            h,
+            worker,
+            task_id,
+            task_yaml: files.task_yaml,
+            worktree: worktree.into(),
+        }
+    }
+
+    impl Attempt {
+        fn dir(&self) -> &Path {
+            self.task_yaml.parent().unwrap()
+        }
+
+        /// Launch the fake `name` as a pane agent of this attempt.
+        fn launch(&mut self, name: &str, scenario: &str) -> Output {
+            self.h.set("HORCH_FAKE_SCENARIO", scenario);
+            let args: &[&str] = match name {
+                "agy" => &["--model", "m", "--prompt-interactive", "p"],
+                _ => &[],
+            };
+            let mut cmd = Command::new(self.h.bin.join(name));
+            cmd.args(args);
+            self.h.seal(&mut cmd);
+            cmd.current_dir(&self.worktree);
+            let o = cmd.output().unwrap();
+            assert!(o.status.success(), "{name}: {o:?}");
+            o
+        }
+
+        fn head(&self) -> String {
+            git_ok(&self.h, &self.worktree, &["rev-parse", "HEAD"])
+        }
+    }
+
+    #[test]
+    fn bound_scenario_writes_entry_json_at_entry() {
+        let mut a = attempt("fakes-bound");
+        let entry = a.dir().join("entry.json");
+        for name in ["claude", "codex", "agy"] {
+            let _ = std::fs::remove_file(&entry);
+            a.launch(name, "bound");
+            let text = std::fs::read_to_string(&entry)
+                .unwrap_or_else(|e| panic!("{name}: no {}: {e}", entry.display()));
+            let v: Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(v["bound"], true, "{name}: {v}");
+            assert_eq!(v["task_id"], a.task_id.as_str(), "{name}: {v}");
+            assert_eq!(v["worker_id"], a.worker.as_str(), "{name}: {v}");
+            assert_eq!(v["task_yaml_exists"], true, "{name}: {v}");
+        }
+        // An agent whose worker has no task is not bound, and a missing
+        // `task.yaml` is reported as missing.
+        std::fs::remove_file(&entry).unwrap();
+        std::fs::remove_file(&a.task_yaml).unwrap();
+        a.h.set("HORCH_WORKER_ID", "w-none");
+        a.launch("claude", "bound");
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&entry).unwrap()).unwrap();
+        assert_eq!(v["bound"], false, "{v}");
+        assert_eq!(v["task_id"], Value::Null, "{v}");
+        assert_eq!(v["task_yaml_exists"], false, "{v}");
+    }
+
+    #[test]
+    fn result_scenario_writes_result_json() {
+        let mut a = attempt("fakes-result");
+        let before = a.head();
+        a.launch("claude", "commit,result");
+        let after = a.head();
+        assert_ne!(before, after, "the commit scenario made no commit");
+        let path = a.dir().join("outbox/result.json");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("no {}: {e}: {:?}", path.display(), a.h.calls_of("claude")));
+        let v: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["task"], a.task_id.as_str(), "{v}");
+        assert_eq!(v["status"], "completed", "{v}");
+        assert_eq!(v["commits"], serde_json::json!([after]), "{v}");
+        assert_eq!(
+            v["files_changed"],
+            serde_json::json!(["fake-claude.txt"]),
+            "{v}"
+        );
+    }
+
+    #[test]
+    fn noresult_scenario_writes_nothing() {
+        let mut a = attempt("fakes-noresult");
+        let before = a.head();
+        a.launch("codex", "noresult");
+        assert_eq!(a.head(), before);
+        let mut left: Vec<String> = std::fs::read_dir(a.dir())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["inbox", "task.yaml"], "the attempt folder changed");
+        // `noresult` wins over `result`: the agent exits with no result.
+        a.launch("codex", "result,noresult");
+        assert!(!a.dir().join("outbox").exists());
+    }
+
+    #[test]
+    fn ask_scenario_sends_one_question() {
+        let mut a = attempt("fakes-ask");
+        a.h.set("HORCH_WORKSPACE_ID", "w1");
+        let created = fake(&a.h, "herdr", &["workspace", "create", "--label", "ask"]);
+        assert!(created.status.success(), "{created:?}");
+        let registered =
+            a.h.horch(&["register", "orchestrator"])
+                .env("HERDR_PANE_ID", "w1:p1")
+                .output()
+                .unwrap();
+        assert!(registered.status.success(), "{registered:?}");
+        a.launch("agy", "ask");
+        let calls = a.h.calls_of("antigravity");
+        let ask = &calls.last().unwrap()["ask"];
+        assert_eq!(ask["exit"], 0, "{calls:?}");
+        assert!(
+            ask["text"].as_str().unwrap().starts_with("QUESTION: "),
+            "{calls:?}"
+        );
+        assert!(!a.dir().join("outbox/result.json").exists());
+    }
+}
