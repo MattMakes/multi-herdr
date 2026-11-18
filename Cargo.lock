@@ -768,6 +768,7 @@ dependencies = [
  "horch-core",
  "horch-marketplace",
  "libc",
+ "rusqlite",
  "serde_json",
  "tempfile",
 ]
