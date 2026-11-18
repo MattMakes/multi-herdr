@@ -38,7 +38,9 @@ use crate::fleetd::task_execution::adapters::task_files::{
 use crate::fleetd::task_execution::domain::dispatch::{
     choose, Choice, Hold, Holds, ReadyTask, RunningTask,
 };
-use crate::fleetd::task_execution::domain::task::{attempt_id, AttemptRow, AttemptState};
+use crate::fleetd::task_execution::domain::task::{
+    attempt_id, judged_task, AttemptRow, AttemptState,
+};
 use crate::fleetd::task_execution::domain::task_files::{Secret, TaskFacts};
 use crate::fleetd::worktree_custody::adapters::sqlite::{
     self as trees, NewWorktree, WorktreeRow, WorktreeState,
@@ -281,11 +283,30 @@ fn base_branch(run: &Run) -> Result<String> {
         .context("the run has no run branch: create runs in a git repository")
 }
 
-/// The row of a new tree of `task`, from the tip of the run branch.
+/// The base branch of a new tree of `task`. A judge task starts from the
+/// task branch of the task it judges, so the judge reads the result before
+/// it lands (The judge pair, step 2). Each other task starts from the run
+/// branch.
+fn tree_base(conn: &Connection, run: &Run, task: &Task) -> Result<String> {
+    let Some(judged) = judged_task(&task.kind, task.parent_task_id.as_deref()) else {
+        return base_branch(run);
+    };
+    match task_tree(conn, judged)? {
+        Some(row) => Ok(row.branch),
+        None => bail!(
+            "{} judges {}, which has no worktree: a judge tree starts from the judged branch",
+            task.short(),
+            tasks::get(conn, judged)?.short()
+        ),
+    }
+}
+
+/// The row of a new tree of `task`, from the tip of its base branch
+/// ([`tree_base`]).
 fn new_tree(conn: &Connection, git: &Git, task: &Task, worker_id: &str) -> Result<NewWorktree> {
     let run = runs::get(conn, &task.run_id)?;
     let root = Path::new(&run.project_root);
-    let base = base_branch(&run)?;
+    let base = tree_base(conn, &run, task)?;
     let name = format!("T{}-{}", task.seq, slug(&task.title));
     // Beside the run branch, not under it: git cannot hold both `fleet/x`
     // and `fleet/x/T1-y`.

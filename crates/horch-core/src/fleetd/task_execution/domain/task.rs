@@ -6,6 +6,8 @@
 //!
 //! - I1, process part: a live attempt whose process is dead ends, and the
 //!   task that its worker holds is queued again or held ([`dead_attempts`]).
+//! - I2: a `pending` task whose `after:` and `judges:` dependencies are
+//!   all met is promotable ([`promotable_deps`]).
 //! - I4: a worker never gets a second attempt ([`held_attempt`]).
 //! - I5: a process or pane that an ended row names, and that no live
 //!   attempt and no live worker row owns, is an orphan to stop
@@ -137,26 +139,73 @@ pub struct TaskRow {
     pub max_attempts: i64,
 }
 
-/// I2: the `pending` tasks whose dependencies are all met, in id order.
-/// `statuses` maps each task id to its status. `deps` holds
-/// (task, dependency) pairs. `landed` maps each task with a task branch
-/// row to whether that branch is `landed`. A dependency is met when its
-/// task is `done` and, if it has a branch row, its branch is `landed`. A
-/// task with no branch row (a claim attempt or a shared-checkout task)
-/// keeps the rule `done`. A dependency with no task row is not met.
+/// I2 with `after:` dependencies only: [`promotable_deps`] with each pair
+/// of `deps` an [`DepKind::After`] dependency.
 pub fn promotable(
     statuses: &BTreeMap<String, String>,
     deps: &[(String, String)],
     landed: &BTreeMap<String, bool>,
 ) -> Vec<String> {
-    let met = |d: &String| {
-        statuses.get(d).is_some_and(|s| s == "done") && landed.get(d).copied().unwrap_or(true)
-    };
-    let unmet: BTreeSet<&String> = deps
+    let deps: Vec<Dep> = deps
         .iter()
-        .filter(|(_, d)| !met(d))
-        .map(|(t, _)| t)
+        .map(|(task, on)| Dep {
+            task: task.clone(),
+            on: on.clone(),
+            kind: DepKind::After,
+        })
         .collect();
+    promotable_deps(statuses, &deps, landed, &BTreeSet::new())
+}
+
+/// The 2 kinds of dependency of I2.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DepKind {
+    /// `after:`: met when its task is `done` and, if it has a task branch
+    /// row, its branch is `landed`.
+    After,
+    /// `judges:`, the dependency of a judge task on the task it judges:
+    /// met when the judged task is `verifying` and its structural check
+    /// passed. The judge reads the result before it lands.
+    Judges,
+}
+
+/// `task` waits for `on`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Dep {
+    pub task: String,
+    pub on: String,
+    pub kind: DepKind,
+}
+
+/// The task that a task judges: a task of kind `work` with a parent task
+/// is a judge task, and its parent is the judged task. A review task has
+/// kind `review`, and it is never a judge task. Each caller that asks
+/// "is this a judge task" uses this function.
+pub fn judged_task<'a>(kind: &str, parent_task_id: Option<&'a str>) -> Option<&'a str> {
+    parent_task_id.filter(|_| kind == "work")
+}
+
+/// I2: the `pending` tasks whose dependencies are all met, in id order.
+/// `statuses` maps each task id to its status. `landed` maps each task
+/// with a task branch row to whether that branch is `landed`; a task with
+/// no branch row (a claim attempt or a shared-checkout task) keeps the
+/// rule `done` for an `after:` dependency. `structural_passed` holds each
+/// task whose structural check passed for its current result. A
+/// dependency with no task row is not met.
+pub fn promotable_deps(
+    statuses: &BTreeMap<String, String>,
+    deps: &[Dep],
+    landed: &BTreeMap<String, bool>,
+    structural_passed: &BTreeSet<String>,
+) -> Vec<String> {
+    let met = |d: &Dep| {
+        let status = statuses.get(&d.on).map(String::as_str);
+        match d.kind {
+            DepKind::After => status == Some("done") && landed.get(&d.on).copied().unwrap_or(true),
+            DepKind::Judges => status == Some("verifying") && structural_passed.contains(&d.on),
+        }
+    };
+    let unmet: BTreeSet<&String> = deps.iter().filter(|d| !met(d)).map(|d| &d.task).collect();
     statuses
         .iter()
         .filter(|(id, status)| *status == "pending" && !unmet.contains(id))
