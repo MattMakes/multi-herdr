@@ -612,8 +612,9 @@ fn published_worktree_created_carries_worktree_id_task_id_path_branch() {
 }
 
 /// Review F1: a passed run whose folder is gone before the observation
-/// does not keep the row `reserved`. The row is dropped with the reason,
-/// so the next command can make the tree again.
+/// does not keep the row `reserved`. The row is dropped with the reason, so
+/// the task is not stuck: the next command makes a tree with another name.
+/// The branch of the first run stays; no job deletes a branch.
 #[test]
 fn passed_worktree_add_with_no_folder_drops_the_reserved_row() {
     let mut w = World::new();
@@ -639,6 +640,14 @@ fn passed_worktree_add_with_no_folder_drops_the_reserved_row() {
     };
     assert!(reason.contains("does not exist"), "{reason}");
     assert_eq!(w.rows(), 0);
+
+    let next = finish::worktree_new_with(&mut w.store, &w.git, &id, "again", &TestJobs).unwrap();
+    assert_eq!(w.row(&next.worktree_id).state, WorktreeState::Active);
+    assert!(Path::new(&next.path).is_dir());
+    git(
+        &w.root,
+        &["rev-parse", "--verify", "refs/heads/fleet/r1-T1-feat"],
+    );
 }
 
 /// Row W2: the next attempt of the task gets the same tree. It moves to

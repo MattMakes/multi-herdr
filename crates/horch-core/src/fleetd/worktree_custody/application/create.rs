@@ -267,7 +267,8 @@ pub fn observe(ctx: &JobCtx<'_>, tx: &Connection, job: &JobRow) -> Result<Observ
     match job.state {
         State::Passed if Path::new(&row.path).is_dir() => created(ctx, tx, row),
         // The effect did not hold: a kept row would wait for a folder that
-        // no run makes again (review F1).
+        // no run makes again, as the next run keeps the branch of this run
+        // and fails (review F1). The branch stays for the reconciler.
         State::Passed => {
             drop_reserved(tx, ctx.guard, id, "worktree_add_failed", Actor::Horch)?;
             Ok(Observed::Dropped(format!(
