@@ -20,9 +20,9 @@
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output};
 
-use horch_core::procid;
 use horch_core::taskledger::runs::root_key;
 use horch_core::taskledger::schema;
+use horch_core::{clock, procid};
 use horch_e2e::harness::Harness;
 use rusqlite::Connection;
 
@@ -52,26 +52,10 @@ fn text(o: &Output) -> String {
     )
 }
 
-/// `secs` after the Unix epoch as RFC 3339, the form of `HORCH_NOW`.
+/// `secs` after the Unix epoch as a ledger timestamp, the form of
+/// `HORCH_NOW`.
 fn rfc3339(secs: i64) -> String {
-    let days = secs.div_euclid(86_400);
-    let rem = secs.rem_euclid(86_400);
-    // Civil date from days (Howard Hinnant's algorithm).
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = yoe + era * 400 + i64::from(m <= 2);
-    format!(
-        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
-        rem / 3600,
-        rem % 3600 / 60,
-        rem % 60
-    )
+    clock::stamp(clock::from_epoch_ms(secs * 1000).unwrap())
 }
 
 /// A harness with its own ledger file and a git repository, and no
@@ -197,13 +181,20 @@ fn checkin(h: &Harness, at: i64) {
     .unwrap();
 }
 
-/// Run `horch` at the wall time `at`, as the worker when `worker` is set.
-fn horch_at(h: &Harness, at: i64, worker: bool, args: &[&str]) -> Output {
+/// Run `horch` at the wall time `at`.
+fn horch_at(h: &Harness, at: i64, args: &[&str]) -> Output {
+    run_at(h.horch(args), at, args)
+}
+
+/// Run `horch` at the wall time `at` as the worker [`WORKER`].
+fn worker_at(h: &Harness, at: i64, args: &[&str]) -> Output {
     let mut cmd = h.horch(args);
+    cmd.env("HORCH_WORKER_ID", WORKER);
+    run_at(cmd, at, args)
+}
+
+fn run_at(mut cmd: Command, at: i64, args: &[&str]) -> Output {
     cmd.env("HORCH_NOW", rfc3339(at));
-    if worker {
-        cmd.env("HORCH_WORKER_ID", WORKER);
-    }
     let o = cmd.output().unwrap();
     assert!(o.status.success(), "horch {}: {}", args.join(" "), text(&o));
     o
@@ -219,7 +210,7 @@ fn leases(conn: &Connection) -> Vec<(String, i64)> {
         .unwrap()
 }
 
-fn one(conn: &Connection, sql: &str) -> String {
+fn scalar_text(conn: &Connection, sql: &str) -> String {
     conn.query_row(sql, [], |r| r.get(0)).unwrap()
 }
 
@@ -238,7 +229,7 @@ fn held_task_with_a_live_worker_on_phase_1_is_not_reaped_after_the_update_and_ha
 
     // The update: the binary of this branch opens the ledger, and the
     // migration runs.
-    let o = horch_at(&h, now, false, &["ledger", "show", TASK, "--json"]);
+    let o = horch_at(&h, now, &["ledger", "show", TASK, "--json"]);
     let conn = Connection::open(db(&h)).unwrap();
     assert_eq!(user_version(&conn), schema::VERSION, "{}", text(&o));
     let first = leases(&conn);
@@ -268,29 +259,24 @@ fn held_task_with_a_live_worker_on_phase_1_is_not_reaped_after_the_update_and_ha
         now += STEP_S;
         h.advance_fleet_clock(STEP_S);
         checkin(&h, now);
-        horch_at(&h, now, true, &["ledger", "progress", "building"]);
-        let o = horch_at(
-            &h,
-            now,
-            false,
-            &["ledger", "watch", "--once", "--force", "--json"],
-        );
+        worker_at(&h, now, &["ledger", "progress", "building"]);
+        let o = horch_at(&h, now, &["ledger", "watch", "--once", "--force", "--json"]);
         seen.push(text(&o));
     }
     let seen = seen.join("\n");
 
     let conn = Connection::open(db(&h)).unwrap();
-    let status = one(
+    let status = scalar_text(
         &conn,
         &format!("SELECT status FROM tasks WHERE task_id = '{TASK}'"),
     );
     assert_eq!(status, "running", "{seen}");
-    let worker = one(
+    let worker = scalar_text(
         &conn,
         &format!("SELECT status FROM workers WHERE worker_id = '{WORKER}'"),
     );
     assert_eq!(worker, "working", "the worker is not reaped\n{seen}");
-    let attempt = one(
+    let attempt = scalar_text(
         &conn,
         &format!("SELECT state FROM attempts WHERE id = '{ATTEMPT}'"),
     );
