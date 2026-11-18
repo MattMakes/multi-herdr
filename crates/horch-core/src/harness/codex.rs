@@ -1637,37 +1637,12 @@ pub(super) fn codex_command(
     prompt: &str,
     model_override: Option<&str>,
 ) -> Result<Command> {
-    let bin = env.bins.codex.clone();
-    let model = format!("model=\"{}\"", model_for(teammate, model_override)?);
-    let mut cmd = horch_platform::start::command(&bin);
-
+    let mut cmd = horch_platform::start::command(&env.bins.codex);
     // `resume` is a subcommand, so it has to lead.
     if let Session::Resume(_) = session {
         cmd.arg("resume");
     }
-    if teammate.worker_channel {
-        push_channel_args(&mut cmd, env)?;
-    }
-    cmd.arg("-c").arg(&model);
-    // Fleet panes must reach their briefing without startup dialogs. Keep
-    // sandbox/command approval policy separate from trust for enabled hooks.
-    cmd.args(["-c", "check_for_update_on_startup=false"]);
-    cmd.args(["-c", "tui.resume_cwd=\"current\""]);
-    push_hook_trust(&mut cmd, teammate);
-
-    push_permission_args(&mut cmd, teammate)?;
-    if let Some(effort) = &teammate.effort {
-        cmd.arg("-c")
-            .arg(format!("model_reasoning_effort=\"{effort}\""));
-    }
-    let multi_agent_off = push_defaults(&mut cmd, env, teammate);
-    push_window_limit(&mut cmd, env, teammate);
-    cmd.args(&teammate.args);
-    push_operator_seal(&mut cmd, env, teammate)?;
-    push_stop_hook(&mut cmd, env);
-    if multi_agent_off {
-        push_v1_catalog(&mut cmd, env);
-    }
+    push_launch_args(&mut cmd, env, teammate, model_override, Mode::Interactive)?;
     if let Session::Resume(id) = session {
         cmd.arg(id);
     }
@@ -1676,6 +1651,145 @@ pub(super) fn codex_command(
         cmd.arg(prompt);
     }
     Ok(cmd)
+}
+
+/// The compaction limit of an exec attempt when no fleet window applies
+/// (FR-9).
+pub const EXEC_COMPACT_LIMIT: u64 = 256_000;
+
+/// Whether a launch runs the terminal UI or `codex exec`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Interactive,
+    Exec,
+}
+
+/// The launch of 1 exec attempt: `codex exec --json`, its global flags
+/// after the subcommand (the CLI reference says so), and `prompt` last.
+/// It never waits on an approval (`-a never`, FM-18), and it compacts at
+/// the fleet window or else at [`EXEC_COMPACT_LIMIT`] (FR-9). The private
+/// `CODEX_HOME` comes from [`Harness::prepare`], as for an interactive
+/// launch. The wrapper reads its stdout with [`read_event`].
+pub fn exec_command(env: &LaunchEnv, teammate: &Teammate, prompt: &str) -> Result<Command> {
+    if teammate
+        .args
+        .iter()
+        .any(|a| a == "-a" || a == "--ask-for-approval" || a.starts_with("--ask-for-approval="))
+    {
+        bail!(
+            "teammate '{}' sets an approval policy in its args; an exec attempt never waits on an approval",
+            teammate.name
+        );
+    }
+    let mut cmd = horch_platform::start::command(&env.bins.codex);
+    cmd.args(["exec", "--json"]);
+    push_launch_args(&mut cmd, env, teammate, None, Mode::Exec)?;
+    cmd.arg(prompt);
+    Ok(cmd)
+}
+
+/// The args of a launch between the subcommand and the prompt.
+fn push_launch_args(
+    cmd: &mut Command,
+    env: &LaunchEnv,
+    teammate: &Teammate,
+    model_override: Option<&str>,
+    mode: Mode,
+) -> Result<()> {
+    if teammate.worker_channel {
+        push_channel_args(cmd, env)?;
+    }
+    let model = format!("model=\"{}\"", model_for(teammate, model_override)?);
+    cmd.arg("-c").arg(&model);
+    // Fleet panes must reach their briefing without startup dialogs. Keep
+    // sandbox/command approval policy separate from trust for enabled hooks.
+    cmd.args(["-c", "check_for_update_on_startup=false"]);
+    if mode == Mode::Interactive {
+        cmd.args(["-c", "tui.resume_cwd=\"current\""]);
+    }
+    push_hook_trust(cmd, teammate);
+
+    push_permission_args(cmd, teammate, mode)?;
+    if let Some(effort) = &teammate.effort {
+        cmd.arg("-c")
+            .arg(format!("model_reasoning_effort=\"{effort}\""));
+    }
+    let multi_agent_off = push_defaults(cmd, env, teammate);
+    push_window_limit(cmd, env, teammate, mode);
+    cmd.args(&teammate.args);
+    push_operator_seal(cmd, env, teammate)?;
+    push_stop_hook(cmd, env);
+    if multi_agent_off {
+        push_v1_catalog(cmd, env);
+    }
+    Ok(())
+}
+
+/// What 1 line of the `codex exec --json` stream means to the wrapper.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecEvent {
+    /// The agent works: a `thread.*`, `turn.started` or `item.*` line.
+    Activity,
+    /// A usage limit ends the attempt with the outcome `quota` (RR-11).
+    UsageLimited,
+    /// `turn.completed`: the run has its final answer.
+    Result,
+    /// The context size in tokens. The Codex stream gives none: its
+    /// `turn.completed` usage counts the tokens of the turn, not the
+    /// context, and Codex compacts by itself (FR-9).
+    ContextTokens(u64),
+    /// Any other line, also a line that is not JSON.
+    Other,
+}
+
+/// The message prefix of a Codex usage limit, as a rollout records it
+/// (`tests/fixtures/telemetry/codex/sessions`).
+const USAGE_LIMIT_MESSAGE: &str = "You've hit your usage limit";
+
+/// Read 1 line of the `codex exec --json` stream. The forms and their doc
+/// pages are in `tests/fixtures/streams/codex-exec.jsonl`. The docs of
+/// `--json` give no error fields, so a usage limit is a `turn.failed` or
+/// `error` line with the error info `UsageLimitExceeded` of the app-server
+/// page (in any case, camel or snake), or with the usage-limit message.
+/// The conformance suite confirms the real form.
+pub fn read_event(line: &str) -> ExecEvent {
+    let Ok(serde_json::Value::Object(v)) = serde_json::from_str::<serde_json::Value>(line) else {
+        return ExecEvent::Other;
+    };
+    match v.get("type").and_then(serde_json::Value::as_str) {
+        Some("turn.failed" | "error") if is_usage_limit(&v) => ExecEvent::UsageLimited,
+        Some("turn.completed") => ExecEvent::Result,
+        Some(t) if t.starts_with("thread.") || t.starts_with("item.") || t == "turn.started" => {
+            ExecEvent::Activity
+        }
+        _ => ExecEvent::Other,
+    }
+}
+
+/// Whether a failure line, or its `error` object, names a usage limit.
+fn is_usage_limit(line: &serde_json::Map<String, serde_json::Value>) -> bool {
+    let error = line.get("error").and_then(serde_json::Value::as_object);
+    [Some(line), error].into_iter().flatten().any(|obj| {
+        let info = obj
+            .get("codexErrorInfo")
+            .or_else(|| obj.get("codex_error_info"));
+        let names_limit = match info {
+            Some(serde_json::Value::String(s)) => is_usage_limit_name(s),
+            Some(serde_json::Value::Object(o)) => o.keys().any(|k| is_usage_limit_name(k)),
+            _ => false,
+        };
+        names_limit
+            || obj
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|m| m.starts_with(USAGE_LIMIT_MESSAGE))
+    })
+}
+
+/// `UsageLimitExceeded`, `usageLimitExceeded` or `usage_limit_exceeded`.
+fn is_usage_limit_name(name: &str) -> bool {
+    name.replace('_', "")
+        .eq_ignore_ascii_case("usagelimitexceeded")
 }
 
 /// A push attempt, whose launch knows its task folder, gets 1 `Stop` hook
@@ -1759,12 +1873,21 @@ fn push_channel_args(cmd: &mut Command, env: &LaunchEnv) -> Result<()> {
 }
 
 /// A permission mode needs a codex equivalent; one without is a roster error.
-fn push_permission_args(cmd: &mut Command, teammate: &Teammate) -> Result<()> {
+/// An exec launch replaces each approval policy with `never`, and has
+/// `-a never` also with no permission mode. Only a launch that bypasses
+/// approvals and the sandbox gets no `-a`: it never asks.
+fn push_permission_args(cmd: &mut Command, teammate: &Teammate, launch: Mode) -> Result<()> {
     let Some(mode) = teammate.permission_mode else {
+        if launch == Mode::Exec {
+            cmd.args(["-a", "never"]);
+        }
         return Ok(());
     };
     match permission_args(teammate) {
-        Some(args) => {
+        Some(mut args) => {
+            if launch == Mode::Exec {
+                exec_never_asks(&mut args);
+            }
             cmd.args(args);
             Ok(())
         }
@@ -1776,11 +1899,30 @@ fn push_permission_args(cmd: &mut Command, teammate: &Teammate) -> Result<()> {
     }
 }
 
+/// Set each `-a <policy>` of `args` to `never`, or add `-a never`.
+fn exec_never_asks(args: &mut Vec<String>) {
+    if args
+        .iter()
+        .any(|a| a == "--dangerously-bypass-approvals-and-sandbox")
+    {
+        return;
+    }
+    match args.iter().position(|a| a == "-a") {
+        Some(i) if i + 1 < args.len() => args[i + 1] = "never".into(),
+        _ => args.extend(["-a".into(), "never".into()]),
+    }
+}
+
 /// The fleet window, with the defaults: only when the decision applies it,
-/// and not over the teammate's own pair.
-fn push_window_limit(cmd: &mut Command, env: &LaunchEnv, teammate: &Teammate) {
+/// and not over the teammate's own pair. An exec launch with no applied
+/// window gets [`EXEC_COMPACT_LIMIT`].
+fn push_window_limit(cmd: &mut Command, env: &LaunchEnv, teammate: &Teammate, mode: Mode) {
     let window = env.compact_window.as_ref().filter(|d| d.applied);
-    if let Some(n) = window.and_then(|d| d.tokens) {
+    let tokens = window.and_then(|d| d.tokens).or(match mode {
+        Mode::Exec => Some(EXEC_COMPACT_LIMIT),
+        Mode::Interactive => None,
+    });
+    if let Some(n) = tokens {
         if !HarnessDefault::config_keys(&teammate.args).contains(&LIMIT_KEY) {
             cmd.arg("-c").arg(format!("{LIMIT_KEY}={n}"));
         }
