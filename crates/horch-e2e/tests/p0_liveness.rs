@@ -683,36 +683,41 @@ fn a_pane_that_names_another_process_after_the_polite_stop_is_kept_with_1_item()
     let _ = horch_core::procid::signal_same(foreign.0, foreign.1, libc::SIGKILL);
 }
 
-/// A record of a polite stop that does not parse is no proof: the pane is
-/// kept, 1 needs-you item asks the operator, and the fleetd log names the
-/// record.
+/// An old record of a polite stop (a file of `run/stops/` of an older
+/// fleetd) that does not parse is no proof: fleetd removes it, the fleetd
+/// log names it, and the pane is kept.
 #[test]
-fn an_unreadable_record_of_the_polite_stop_keeps_the_pane_with_1_item() {
+fn an_unreadable_old_record_of_the_polite_stop_is_removed_and_the_pane_is_kept() {
     let config = format!("pass_period_s = 30\n{NO_KILL}");
     let (h, mut store, run) = pane_fleet("p0-polite-unreadable", &config);
     let (mut fleetds, shell) = stopped_then_crashed(&h, &mut store, &run);
+    // In place of the row of fleetd-1: the file of an older fleetd.
+    let deleted = store
+        .conn()
+        .execute(
+            "DELETE FROM polite_stops WHERE pid = ?1 AND pid_start = ?2",
+            [i64::from(shell.0), shell.1 as i64],
+        )
+        .unwrap();
+    assert_eq!(deleted, 1, "no row of the polite stop");
     let record = h
         .root
         .join("fleet/run/stops")
         .join(format!("{}-{}.json", shell.0, shell.1));
-    assert!(record.exists(), "no record of the polite stop");
+    std::fs::create_dir_all(record.parent().unwrap()).unwrap();
     std::fs::write(&record, "not json").unwrap();
     fleetds.start(&h, "fleetd-2");
+    let shown = record.display().to_string();
     wait_for_or(
-        "the needs-you item of the kept pane",
-        || (open_items(&store) == ["pane_kept:w1:p1"]).then_some(()),
+        "the fleetd log line of the unreadable record",
         || {
-            format!(
-                "items {:?}\n{}",
-                open_items(&store),
-                fleetds.output("fleetd-2", "stderr")
-            )
+            fleetds
+                .output("fleetd-2", "stderr")
+                .contains(&shown)
+                .then_some(())
         },
+        || fleetds.output("fleetd-2", "stderr"),
     );
-    assert!(panes(&h).contains(&"w1:p1".to_string()));
-    let log = fleetds.output("fleetd-2", "stderr");
-    assert!(
-        log.contains(&record.display().to_string()),
-        "the fleetd log does not name the unreadable record:\n{log}"
-    );
+    assert!(!record.exists(), "fleetd removed the old record");
+    assert!(panes(&h).contains(&"w1:p1".to_string()), "the pane is kept");
 }

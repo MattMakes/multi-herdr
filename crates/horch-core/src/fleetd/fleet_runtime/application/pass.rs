@@ -43,7 +43,7 @@ use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 
 use crate::fleetd::fleet_runtime::adapters::clock_store::{self, ClockStore};
@@ -53,7 +53,7 @@ use crate::fleetd::fleet_runtime::adapters::scans::{
     self, FolderFact, FolderItem, Liveness, Presence, ProcessFact, ProcessItem, ScanClock,
 };
 use crate::fleetd::fleet_runtime::adapters::sqlite as door;
-use crate::fleetd::fleet_runtime::adapters::{cursors_store, fleetd_row};
+use crate::fleetd::fleet_runtime::adapters::{cursors_store, fleetd_row, polite_stops_store};
 use crate::fleetd::fleet_runtime::application::holds::record_hold_changes;
 use crate::fleetd::fleet_runtime::application::jobs::{
     self, JobCtx, JobKey, JobRunner, NeedsYouItems, NewItem,
@@ -580,6 +580,7 @@ impl<'a> Pass<'a> {
     pub fn run(&mut self, conn: &mut Connection) -> Result<PassReport, PassError> {
         let deadline = Deadline::pass((self.now)(), self.settings.config.pass_time_budget_s);
         self.reap();
+        let old_stops = self.import_old_stops(conn);
         let read = self.read_facts(conn, deadline)?;
         {
             let now = RefCell::new(&mut self.now);
@@ -602,6 +603,7 @@ impl<'a> Pass<'a> {
         let activity = effects::write_activity(&self.settings.fleet_root, &decided.activity);
         let (mut report, pending) =
             self.do_effects(conn, decided.effects, decided.sent, decided.clock, deadline);
+        report.failed.extend(old_stops);
         if let Err(e) = activity {
             report.failed.push(format!("the activity record: {e:#}"));
         }
@@ -617,18 +619,10 @@ impl<'a> Pass<'a> {
         let kept = |pid, start| {
             decided.may_stop.contains(&(pid, start)) || pending.contains(&(pid, start))
         };
-        match effects::forget_polite(&self.settings.fleet_root, kept) {
-            Ok(unreadable) => report.failed.extend(unreadable.iter().map(|path| {
-                format!(
-                    "the record of a polite stop {} does not parse: it proves no pane, so \
-                     fleetd kept the pane of each row that names its process, and removed \
-                     the record",
-                    path.display()
-                )
-            })),
-            Err(e) => report
+        if let Err(e) = polite_stops_store::forget(conn, self.settings.generation, kept) {
+            report
                 .failed
-                .push(format!("the records of polite stops: {e}")),
+                .push(format!("the rows of polite stops: {e:#}"));
         }
         self.breaches = decided.breaches;
         if self.settings.faults.has(HANG_PASS) && self.full_passes > 0 {
@@ -645,6 +639,18 @@ impl<'a> Pass<'a> {
         }
         self.full_passes += 1;
         Ok(report)
+    }
+
+    /// At the first pass of this fleetd, make a row of each polite stop
+    /// file of an older fleetd in `run/stops/` and remove the files. Gives
+    /// the log lines of the files that failed a check.
+    fn import_old_stops(&self, conn: &mut Connection) -> Vec<String> {
+        if self.full_passes > 0 {
+            return Vec::new();
+        }
+        let root = &self.settings.fleet_root;
+        polite_stops_store::import_old_files(conn, self.settings.generation, root)
+            .unwrap_or_else(|e| vec![format!("the old records of polite stops: {e:#}")])
     }
 
     /// Reap each ended process that this fleetd started, so that its pid
@@ -709,8 +715,8 @@ impl<'a> Pass<'a> {
         );
         let mut may_stop = may_stop(&rows, &liveness);
         let panes = self.ports.outside.panes();
-        let stopped = effects::read_stopped(&root, |pid, start| !may_stop.contains(&(pid, start)))
-            .context("reading the records of polite stops")?;
+        let stopped =
+            polite_stops_store::stopped(conn, |pid, start| !may_stop.contains(&(pid, start)))?;
         // With no snapshot, no pane can be judged: a record whose process a
         // row with a pane names waits for a pass with one.
         if panes.is_none() {
@@ -1186,7 +1192,7 @@ impl<'a> Pass<'a> {
             } => {
                 let process = (*pid, *pid_start);
                 let (done, kill) =
-                    self.stop_process(&s.row, process, *scope, clock, stops, report)?;
+                    self.stop_process(conn, &s.row, process, *scope, clock, stops, report)?;
                 self.mark_stop(conn, &s.row, process, kill, clock, report);
                 Some(done)
             }
@@ -1200,8 +1206,10 @@ impl<'a> Pass<'a> {
     /// The step of the stop of `process` of `row` at `clock`: the polite
     /// stop, the wait in its grace, or the kill. Its record of the polite
     /// stop holds the pane that the process proves.
+    #[allow(clippy::too_many_arguments)]
     fn stop_process(
         &self,
+        conn: &mut Connection,
         row: &RowRef,
         (pid, pid_start): (u32, u64),
         scope: ProcessScope,
@@ -1209,13 +1217,13 @@ impl<'a> Pass<'a> {
         stops: &mut PaneStops,
         report: &mut PassReport,
     ) -> Option<(Done, bool)> {
-        let root = &self.settings.fleet_root;
+        let guard = self.settings.generation;
         let failed = |e: String| format!("the stop of process {pid}: {e}");
-        let polite = match effects::read_polite(root, pid, pid_start) {
+        let polite = match polite_stops_store::get(conn, pid, pid_start) {
             Ok(p) => p,
             Err(e) => {
                 stops.hold(row);
-                report.failed.push(failed(e.to_string()));
+                report.failed.push(failed(format!("{e:#}")));
                 return None;
             }
         };
@@ -1224,10 +1232,10 @@ impl<'a> Pass<'a> {
         match stop_step(polite.as_ref().map(|p| p.at), clock, grace) {
             StopStep::Polite => {
                 stops.hold(row);
-                // The record comes first: a restart after the signal still
+                // The row comes first: a restart after the signal still
                 // counts its grace and still has the proof of the pane.
-                let record = effects::Polite { at: clock, pane };
-                if let Err(e) = effects::write_polite(root, pid, pid_start, &record) {
+                let record = polite_stops_store::Polite { at: clock, pane };
+                if let Err(e) = polite_stops_store::record(conn, guard, pid, pid_start, &record) {
                     report.failed.push(failed(format!("{e:#}")));
                     return None;
                 }
@@ -1236,11 +1244,12 @@ impl<'a> Pass<'a> {
             }
             StopStep::Wait => {
                 stops.hold(row);
-                // A pane proven after the polite stop goes on its record, so
+                // A pane proven after the polite stop goes on its row, so
                 // the pane closes when the process ends.
                 if let Some(p) = polite.filter(|p| pane.is_some() && pane != p.pane) {
-                    let record = effects::Polite { pane, ..p };
-                    if let Err(e) = effects::write_polite(root, pid, pid_start, &record) {
+                    let record = polite_stops_store::Polite { pane, ..p };
+                    if let Err(e) = polite_stops_store::record(conn, guard, pid, pid_start, &record)
+                    {
                         report.failed.push(failed(format!("{e:#}")));
                     }
                 }

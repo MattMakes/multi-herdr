@@ -14,8 +14,8 @@ use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
 use horch_core::fleetd::fleet_runtime::adapters::effects::{self, LaunchRecord};
-use horch_core::fleetd::fleet_runtime::adapters::jobs_store;
 use horch_core::fleetd::fleet_runtime::adapters::scans::FolderItem;
+use horch_core::fleetd::fleet_runtime::adapters::{jobs_store, polite_stops_store};
 use horch_core::fleetd::fleet_runtime::application::jobs::{self, JobCtx, JobKey, Queued};
 use horch_core::fleetd::fleet_runtime::application::pass::{
     Done, NoDuties, Outside, Pass, PassReport, Ports, Settings, ABORT_AFTER_COMMIT, HANG_PASS,
@@ -812,7 +812,12 @@ fn a_restart_keeps_the_grace_of_a_polite_stop() {
         vec![Done::Stop(format!("process {pid}"))]
     );
     assert_eq!(run(&mut pass, &mut w).done, Vec::new(), "within its grace");
-    let record = effects::polite_path(&w.root(), pid, recorded.pid_start.unwrap());
+    let start = recorded.pid_start.unwrap();
+    let has_row = |w: &World| {
+        polite_stops_store::get(&w.conn, pid, start)
+            .unwrap()
+            .is_some()
+    };
 
     // A pass whose process scan reaches nothing keeps the record.
     let mut blind = w.settings(Faults::default());
@@ -820,7 +825,7 @@ fn a_restart_keeps_the_grace_of_a_polite_stop() {
     let mut pass = Pass::new(blind, ports(&fake, &Launcher));
     assert_eq!(run(&mut pass, &mut w).done, Vec::new());
     assert!(
-        record.exists(),
+        has_row(&w),
         "a process that the scan did not reach keeps its grace"
     );
 
@@ -839,5 +844,5 @@ fn a_restart_keeps_the_grace_of_a_polite_stop() {
     );
     assert!(stubborn.wait_exit(), "the kill ended it");
     run(&mut pass, &mut w);
-    assert!(!record.exists(), "the record of a gone process is removed");
+    assert!(!has_row(&w), "the row of a gone process is deleted");
 }
