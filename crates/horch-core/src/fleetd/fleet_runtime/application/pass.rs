@@ -73,6 +73,7 @@ use crate::fleetd::fleet_runtime::domain::pass::{
 };
 use crate::fleetd::ideas::adapters::questions_store;
 use crate::fleetd::ideas::application::needs_you::{self, NeedsYouList};
+use crate::fleetd::integration::adapters::sqlite as integration_rows;
 use crate::fleetd::task_execution::adapters::leases_store;
 use crate::fleetd::task_execution::adapters::sqlite as attempts_store;
 use crate::fleetd::task_execution::application::quota::{
@@ -1620,7 +1621,8 @@ impl Rules<'_> {
     }
 
     /// I2: each `pending` task of an active run whose dependencies are all
-    /// `done` moves to `ready`.
+    /// met moves to `ready`: `done`, and `landed` for a task with a branch
+    /// row.
     fn promote_pending(&self) -> Result<()> {
         for run in watchdog::active_runs(self.tx)? {
             let all = tasks::of_run(self.tx, &run.run_id)?;
@@ -1638,9 +1640,10 @@ impl Rules<'_> {
                     statuses.entry(b.task_id).or_insert(b.status);
                 }
             }
-            for id in promotable(&statuses, &deps) {
+            let landed = integration_rows::tasks_landed(self.tx)?;
+            for id in promotable(&statuses, &deps, &landed) {
                 let to = TaskStatus::Ready.as_str();
-                let by = cause("each task that it waits for is done (I2)");
+                let by = cause("each task that it waits for is done and landed (I2)");
                 transition(
                     self.tx,
                     self.guard,

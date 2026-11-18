@@ -139,12 +139,22 @@ pub struct TaskRow {
 
 /// I2: the `pending` tasks whose dependencies are all met, in id order.
 /// `statuses` maps each task id to its status. `deps` holds
-/// (task, dependency) pairs. In Phase 2 a dependency is met when its task
-/// is `done`; a dependency with no row is not met.
-pub fn promotable(statuses: &BTreeMap<String, String>, deps: &[(String, String)]) -> Vec<String> {
+/// (task, dependency) pairs. `landed` maps each task with a task branch
+/// row to whether that branch is `landed`. A dependency is met when its
+/// task is `done` and, if it has a branch row, its branch is `landed`. A
+/// task with no branch row (a claim attempt or a shared-checkout task)
+/// keeps the rule `done`. A dependency with no task row is not met.
+pub fn promotable(
+    statuses: &BTreeMap<String, String>,
+    deps: &[(String, String)],
+    landed: &BTreeMap<String, bool>,
+) -> Vec<String> {
+    let met = |d: &String| {
+        statuses.get(d).is_some_and(|s| s == "done") && landed.get(d).copied().unwrap_or(true)
+    };
     let unmet: BTreeSet<&String> = deps
         .iter()
-        .filter(|(_, d)| statuses.get(d).is_none_or(|s| s != "done"))
+        .filter(|(_, d)| !met(d))
         .map(|(t, _)| t)
         .collect();
     statuses
@@ -821,7 +831,10 @@ mod tests {
         ]);
         let deps = deps(&[("T-3", "T-1"), ("T-3", "T-2"), ("T-5", "T-1")]);
         // T-4 has no dependency: each of its 0 dependencies is met.
-        assert_eq!(promotable(&tasks, &deps), vec!["T-3", "T-4"]);
+        assert_eq!(
+            promotable(&tasks, &deps, &BTreeMap::new()),
+            vec!["T-3", "T-4"]
+        );
     }
 
     #[test]
@@ -840,7 +853,26 @@ mod tests {
             ("T-4", "T-5"),
             ("T-6", "T-9"),
         ]);
-        assert_eq!(promotable(&tasks, &deps), Vec::<String>::new());
+        assert_eq!(
+            promotable(&tasks, &deps, &BTreeMap::new()),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn a_done_dependency_with_a_branch_row_is_met_only_when_landed() {
+        let tasks = statuses(&[
+            ("T-1", "done"),
+            ("T-2", "done"),
+            ("T-3", "done"),
+            ("T-4", "pending"),
+            ("T-5", "pending"),
+            ("T-6", "pending"),
+        ]);
+        let deps = deps(&[("T-4", "T-1"), ("T-5", "T-2"), ("T-6", "T-3")]);
+        // T-1 has an unlanded branch, T-2 a landed one, T-3 no branch row.
+        let landed = BTreeMap::from([("T-1".to_string(), false), ("T-2".to_string(), true)]);
+        assert_eq!(promotable(&tasks, &deps, &landed), vec!["T-5", "T-6"]);
     }
 
     #[test]

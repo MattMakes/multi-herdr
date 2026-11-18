@@ -530,6 +530,17 @@ pub fn feature(conn: &Connection, id: &str) -> Result<Option<FeatureRow>> {
         .optional()?)
 }
 
+/// Each task with a task branch row, and whether 1 of its task branches
+/// is `landed` (I2).
+pub fn tasks_landed(conn: &Connection) -> Result<std::collections::BTreeMap<String, bool>> {
+    let mut stmt = conn.prepare(
+        "SELECT task_id, max(landing_state = 'landed') FROM branches
+         WHERE task_id IS NOT NULL GROUP BY task_id",
+    )?;
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 /// The branch row `name`.
 pub fn branch(conn: &Connection, name: &str) -> Result<Option<BranchRow>> {
     let row = |r: &Row<'_>| {
