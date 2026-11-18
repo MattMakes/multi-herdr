@@ -579,7 +579,7 @@ fn integration_kinds_route_to_the_integration_router() {
         let id = new_id(w.queue(kind, "F-1", "tip1", 0));
         w.run_job(&mut runner, id, 0);
         let row = w.row(id);
-        let want = integration_executors::run(&w.conn, &row).unwrap();
+        let want = integration_executors::run(&w.conn, &row).unwrap().outcome;
         assert_eq!(outcome(&row), Some(want), "{kind}");
     }
     let id = new_id(w.queue(Kind::TrialMerge, "B-1", "tips", 0));

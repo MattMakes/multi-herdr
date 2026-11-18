@@ -102,6 +102,23 @@ impl CliGitGateway {
         }
     }
 
+    /// The newest committer date of the commits `a` and `b`, as git reads
+    /// a date (`<seconds> +0000`). A merge commit of the candidate gets it,
+    /// so a candidate tip depends only on its inputs, and a repeated build
+    /// gives the same tip.
+    fn newest_date(&self, repo: &Path, a: &str, b: &str) -> Result<String> {
+        let out = self.git.git(repo, &["show", "-s", "--format=%ct", a, b])?;
+        let mut newest: u64 = 0;
+        for line in out.lines() {
+            let seconds: u64 = line
+                .trim()
+                .parse()
+                .map_err(|_| anyhow::anyhow!("git show printed '{line}', not a date"))?;
+            newest = newest.max(seconds);
+        }
+        Ok(format!("{newest} +0000"))
+    }
+
     /// The paths that differ between the commits `a` and `b`.
     fn changed_paths(&self, repo: &Path, a: &str, b: &str) -> Result<BTreeSet<String>> {
         let out = self.git.git(
@@ -264,7 +281,13 @@ impl IntegrationGitGateway for CliGitGateway {
             let mut args = IDENTITY.to_vec();
             args.extend(["commit-tree", tree, "-p", &head, "-p", &member.tip]);
             args.extend(["-m", &message]);
-            head = self.git.git(repo, &args)?.trim().to_string();
+            let date = self.newest_date(repo, &head, &member.tip)?;
+            let git = self
+                .git
+                .clone()
+                .with_env("GIT_AUTHOR_DATE", &date)
+                .with_env("GIT_COMMITTER_DATE", &date);
+            head = git.git(repo, &args)?.trim().to_string();
         }
         Ok(Candidate::Built { tip: head })
     }

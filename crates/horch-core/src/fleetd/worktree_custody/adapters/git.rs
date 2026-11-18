@@ -555,6 +555,13 @@ impl CliWorktreeGit {
         self
     }
 
+    /// This adapter, and each git call also gets `value` in the environment
+    /// key `key`.
+    pub fn with_env(mut self, key: &str, value: &str) -> CliWorktreeGit {
+        self.runner = self.runner.with_env(key, value);
+        self
+    }
+
     /// This adapter, and git can also read below each path of `paths`, also
     /// when it is below HOME. Give paths of the ledger, never a path that
     /// the project names.
