@@ -531,30 +531,43 @@ fn g57_compacting_orchestrator_types_its_command_card() {
         })
         .filter_map(|a| a.get(3).and_then(|v| v.as_str()))
         .collect();
-    // Sanctioned actual compact argument (#57): keep the real run identity and
-    // decisions-log path; roster and ownership come from the task ledger.
-    let compact_lines: Vec<_> = lines
-        .iter()
-        .filter(|l| l.starts_with("/compact "))
-        .collect();
-    assert_eq!(compact_lines.len(), 1, "{lines:?}");
+    // FR-7: `/compact` takes no argument. The keep-list of #57 (the real run
+    // identity and decisions-log path; roster and ownership from the task
+    // ledger) is in the orchestrator brief.
+    let compact_lines: Vec<_> = lines.iter().filter(|l| l.starts_with("/compact")).collect();
+    assert_eq!(compact_lines, [&"/compact"], "{lines:?}");
+    let roster = Roster::builtin().unwrap();
+    let brief = prompts::agent_prompt(
+        &roster,
+        roster.require("orchestrator").unwrap(),
+        "orchestrator",
+    )
+    .unwrap();
     for required in [
-        "your actual run slug",
-        "ai_docs/plans/<run-slug>/decisions.md",
+        "the run slug and ai_docs/plans/<run-slug>/decisions.md",
         "Use the actual slug and path from your run, not placeholder text",
-        "rebuild the roster and ownership from horch ledger status instead of retaining them",
+        "in a ledger run, rebuild roster and ownership from horch ledger status",
+        "The full state is in ai_docs/handoffs/orchestrator-whats-next.md.",
     ] {
-        assert!(
-            compact_lines[0].contains(required),
-            "missing {required}: {}",
-            compact_lines[0]
-        );
+        assert!(brief.contains(required), "the brief lacks {required}");
     }
-    let cards: Vec<_> = lines
+    // FR-7: the command card waits in the orchestrator mail; the pane gets
+    // the mail line.
+    assert!(
+        lines.contains(&horch_core::messaging::delivery::MAIL_LINE),
+        "{lines:?}"
+    );
+    let mail: Vec<String> = horch_core::messaging::mail::Mail::under(&h.state, "w1")
+        .pending()
+        .unwrap()
+        .into_iter()
+        .map(|m| m.text)
+        .collect();
+    let cards: Vec<_> = mail
         .iter()
         .filter(|l| l.contains("Command card:"))
         .collect();
-    assert_eq!(cards.len(), 1, "{lines:?}");
+    assert_eq!(cards.len(), 1, "{mail:?}");
     assert!(!cards[0].contains('\n'));
     for command in [
         "horch ledger status",
