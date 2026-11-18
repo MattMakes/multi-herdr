@@ -15,12 +15,14 @@ use horch_core::fleetd::fleet_runtime::adapters::scans::{self, ProcessFact, Scan
 use horch_core::fleetd::fleet_runtime::application::jobs::{
     self, outcome, CheckRunner, JobCtx, JobKey, JobRunner, Queued, SandboxProfiles, Stop,
 };
+use horch_core::fleetd::fleet_runtime::application::ledger::Cause;
 use horch_core::fleetd::fleet_runtime::domain::budget::{Cursor, Deadline};
 use horch_core::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
 use horch_core::fleetd::fleet_runtime::domain::jobs::{Kind, State, KINDS};
 use horch_core::fleetd::ideas::application::needs_you::{open_items, NeedsYouList};
 use horch_core::fleetd::integration::adapters::executors as integration_executors;
+use horch_core::fleetd::integration::adapters::sqlite::{self as integration_rows, NewFeature};
 use horch_core::fleetd::worker_profiles::adapters::launcher::Launcher;
 use horch_core::fleetd::worker_profiles::application::ports::LaunchSpec;
 use horch_core::taskledger::finish::CodexSandbox;
@@ -335,13 +337,15 @@ fn pure_job_result_is_used_again_and_effect_job_runs_again() {
     assert_eq!(w.row(again).run, 2);
     assert_eq!(w.row(again).state, State::Queued);
 
-    // A kind with no executor in Phase 1 fails with no verdict, so even a
-    // pure kind runs again.
-    let id = new_id(w.queue(Kind::Fetch, "repo", "origin", 0));
+    // A kind with no executor yet fails with no verdict, and its next need
+    // is a new run.
+    let id = new_id(w.queue(Kind::DocsSync, "claude", "1.0", 0));
     assert_eq!(w.run_job(&mut runner, id, 0), State::Failed);
     let o = outcome(&w.row(id)).unwrap();
     assert!(!o.verdict);
-    assert_eq!(o.text, "no executor before phase 4 for fetch");
+    assert_eq!(o.text, "no executor before phase 7 for docs_sync");
+    let again = new_id(w.queue(Kind::DocsSync, "claude", "1.0", 2));
+    assert_eq!(w.row(again).run, 2);
 }
 
 #[test]
@@ -568,6 +572,21 @@ fn integration_kinds_route_to_the_integration_router() {
     let mut w = world();
     let launcher = Launcher;
     let mut runner = JobRunner::new(&launcher);
+    // The feature F-1: the push executor records its result on it.
+    w.tx(|_, tx| {
+        let new = NewFeature {
+            id: "F-1",
+            name: None,
+            branch: Some("fleet/f-1"),
+            primary_branch: "main",
+        };
+        let cause = Cause {
+            actor: Actor::Horch,
+            text: "feature accepted",
+        };
+        integration_rows::insert_feature(tx, None, &new, cause)
+    })
+    .unwrap();
     let routed = [
         Kind::BundleBuild,
         Kind::FastGate,
