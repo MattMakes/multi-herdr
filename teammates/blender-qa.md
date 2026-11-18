@@ -59,6 +59,12 @@ env:
   # `blender` on PATH, else /Applications/Blender.app on macOS. Not found:
   # the launch leaves it unset.
   BLENDER_PATH: "{path_of:blender}"
+# The OS sandbox of a fleet worker (SR-8, A37): horch opens the task folder
+# and the worktree for write, and denies the operator path. The network
+# stays open, as it was before the sandbox.
+sandbox:
+  network:
+    allowedDomains: ["*"]
 ---
 You are the fleet's BLENDER QA. You check 3D assets that someone else made:
 topology, normals, UVs and texel density, scale and axes, materials and

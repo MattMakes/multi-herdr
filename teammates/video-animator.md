@@ -23,6 +23,12 @@ skills: [video-motion, video-character, video-motion-match, motion-gsap]
 disallowed_tools: [Agent]
 # Stale external copies of the fleet briefing; the repo carries the real one.
 disabled_skills: [herdr-orchestrator, herdr-worker]
+# The OS sandbox of a fleet worker (SR-8, A37): horch opens the task folder
+# and the worktree for write, and denies the operator path. The network
+# stays open, as it was before the sandbox.
+sandbox:
+  network:
+    allowedDomains: ["*"]
 ---
 You are the fleet's VIDEO ANIMATOR. You build the scenes of a video as HTML,
 CSS, SVG, Canvas or GSAP that a headless browser renders frame by frame.

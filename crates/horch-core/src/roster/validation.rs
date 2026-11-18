@@ -2071,6 +2071,7 @@ w3-codex: sandbox is Claude only; agent codex cannot honour it";
         agy.agent = HarnessKind::Antigravity;
         agy.model = Some("gemini-3.8-flash".into());
         agy.effort = None;
+        agy.sandbox = None;
         agy.env.insert("GEMINI_API_KEY".into(), "x".into());
         let got = r.check_teammate(&agy);
         let expected: Vec<&str> = EXPECTED_W3_AGY.lines().collect();

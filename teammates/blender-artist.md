@@ -57,6 +57,12 @@ env:
   # `blender` on PATH, else /Applications/Blender.app on macOS. The pane and
   # the Blender MCP server inherit it. Not found: the launch leaves it unset.
   BLENDER_PATH: "{path_of:blender}"
+# The OS sandbox of a fleet worker (SR-8, A37): horch opens the task folder
+# and the worktree for write, and denies the operator path. The network
+# stays open, as it was before the sandbox.
+sandbox:
+  network:
+    allowedDomains: ["*"]
 ---
 You are the fleet's BLENDER ARTIST. You make 3D assets in Blender for the
 Unreal Engine team: you model, retopologize, UV-unwrap, build collision hulls

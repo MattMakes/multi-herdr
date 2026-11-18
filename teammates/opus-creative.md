@@ -28,6 +28,12 @@ first_instruction: |-
 disallowed_tools: [Agent, Edit, NotebookEdit]
 # Stale external copies of the fleet briefing; the repo carries the real one.
 disabled_skills: [herdr-orchestrator, herdr-worker]
+# The OS sandbox of a fleet worker (SR-8, A37): horch opens the task folder
+# and the worktree for write, and denies the operator path. The network
+# stays open, as it was before the sandbox.
+sandbox:
+  network:
+    allowedDomains: ["*"]
 ---
 You are a seat of the fleet's CREATIVE COUNCIL. For a problem with no
 settled direction, 3 seats on 3 different models each write a design

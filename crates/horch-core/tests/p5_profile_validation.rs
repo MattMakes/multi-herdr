@@ -11,6 +11,7 @@
 
 #![cfg(unix)]
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
@@ -314,4 +315,55 @@ fn fallback_with_a_sandbox_takes_the_task() {
     }
     let task = tasks::get(&w.conn, &a).unwrap();
     assert_eq!(task.claimable_by.as_deref(), Some(PI));
+}
+
+/// Each worker teammate of `teammates/` has a sandbox that denies the 3
+/// operator acts on macOS and Linux (ticket 39). The personas below stay
+/// refused, each with the words its reason must hold:
+/// - the adapter is `NotSupported` on this OS, so the persona never runs
+///   as a worker here (A37);
+/// - the 2 panes of the `horch orchestration` recipe take no ledger task,
+///   so fleetd never dispatches them, and they keep their launch of today.
+#[test]
+fn builtin_roster_has_no_refused_worker_profile_on_macos() {
+    let not_supported = |adapter| ("not supported", adapter);
+    let recipe_pane = ("does not deny the operator acts", "");
+    let expected: BTreeMap<&str, (&str, &str)> = BTreeMap::from([
+        ("antigravity", not_supported("antigravity")),
+        ("audio-reviewer", not_supported("antigravity")),
+        ("spec-writer", not_supported("antigravity")),
+        ("ticket-writer", not_supported("antigravity")),
+        ("opencode-lightning", not_supported("opencode")),
+        ("opencode-pickle", not_supported("opencode")),
+        ("opencode-ultra", not_supported("opencode")),
+        ("pi", not_supported("pi")),
+        ("prime", not_supported("prime")),
+        ("orchestration-orchestrator", recipe_pane),
+        ("orchestration-worker", recipe_pane),
+    ]);
+    let roster = Roster::builtin().unwrap();
+    let fleet_root = Path::new("/fleet");
+    let got = refused(&roster, &seats(), fleet_root);
+    let names: BTreeMap<&str, &str> = got
+        .iter()
+        .map(|(name, why)| (name.as_str(), why.as_str()))
+        .collect();
+    let unexpected: Vec<String> = names
+        .iter()
+        .filter(|(name, _)| !expected.contains_key(*name))
+        .map(|(name, why)| format!("{name}: {why}"))
+        .collect();
+    assert!(
+        unexpected.is_empty(),
+        "refused worker profiles:\n{}",
+        unexpected.join("\n")
+    );
+    for (name, (cause, adapter)) in &expected {
+        let why = names
+            .get(name)
+            .unwrap_or_else(|| panic!("{name} is no longer refused"));
+        assert!(why.starts_with(NO_SANDBOX), "{name}: {why}");
+        assert!(why.contains(cause), "{name}: {why}");
+        assert!(why.contains(adapter), "{name}: {why}");
+    }
 }

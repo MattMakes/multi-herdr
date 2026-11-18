@@ -48,6 +48,12 @@ mcp_servers: {}
 disallowed_tools: [Agent]
 # Stale external copies of the fleet briefing; the repo carries the real one.
 disabled_skills: [herdr-orchestrator, herdr-worker]
+# The OS sandbox of a fleet worker (SR-8, A37): horch opens the task folder
+# and the worktree for write, and denies the operator path. The network
+# stays open, as it was before the sandbox.
+sandbox:
+  network:
+    allowedDomains: ["*"]
 ---
 You are the fleet's GODOT XR DEVELOPER. You build virtual and mixed reality
 on OpenXR: the `XROrigin3D` and camera, controllers and hand tracking,

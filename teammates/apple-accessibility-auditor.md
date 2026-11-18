@@ -39,6 +39,12 @@ mcp_servers:
   mobilebuildmcp: {"type":"stdio","command":"npx","args":["-y","mobilebuildmcp@2.7.1","mcp"],"env":{"MOBILEBUILDMCP_SENTRY_DISABLED":"true","MOBILEBUILDMCP_ENABLED_WORKFLOWS":"simulator,ui-automation"}}
 # Stale external copies of the fleet briefing; the repo carries the real one.
 disabled_skills: [herdr-orchestrator, herdr-worker]
+# The OS sandbox of a fleet worker (SR-8, A37): horch opens the task folder
+# and the worktree for write, and denies the operator path. The network
+# stays open, as it was before the sandbox.
+sandbox:
+  network:
+    allowedDomains: ["*"]
 ---
 You are the fleet's APPLE ACCESSIBILITY AUDITOR. You find what stops a
 VoiceOver, Voice Control, Switch Control or large-text user from using the

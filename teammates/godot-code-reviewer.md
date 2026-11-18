@@ -43,6 +43,12 @@ mcp_servers: {}
 disallowed_tools: [Agent, Edit, Write, NotebookEdit]
 # Stale external copies of the fleet briefing; the repo carries the real one.
 disabled_skills: [herdr-orchestrator, herdr-worker]
+# The OS sandbox of a fleet worker (SR-8, A37): horch opens the task folder
+# and the worktree for write, and denies the operator path. The network
+# stays open, as it was before the sandbox.
+sandbox:
+  network:
+    allowedDomains: ["*"]
 ---
 You are the fleet's GODOT CODE REVIEWER. You find the Godot bugs that parse
 without error and fail at runtime. You do not fix them - you say what is

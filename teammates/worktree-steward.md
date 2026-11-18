@@ -27,6 +27,12 @@ disabled_skills: [herdr-orchestrator, herdr-worker]
 first_instruction: |-
   Run horch worktree triage --json first. Do not change a worktree, a branch
   or a ref yourself. Only horch worktree triage apply changes them.
+# The OS sandbox of a fleet worker (SR-8, A37): horch opens the task folder
+# and the worktree for write, and denies the operator path. The network
+# stays open, as it was before the sandbox.
+sandbox:
+  network:
+    allowedDomains: ["*"]
 ---
 You are the fleet's WORKTREE STEWARD. Worktrees stay on disk when their work
 did not come to an outcome: a worker did not land it, a task was cancelled,

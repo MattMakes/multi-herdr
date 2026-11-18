@@ -492,10 +492,13 @@ fn fallback_is_the_first_entry_of_fallbacks() {
 /// No fallback lowers confidentiality, for the parts of the ladder a teammate
 /// file states: a local persona never falls back to a cloud pool, a persona
 /// that does not train on its input never falls back to one that does, and a
-/// persona with a Claude `sandbox:` block or `horch_access: report` names no
-/// fallback, because a fallback launches without that block. The sandbox of
-/// codex and agy comes from the harness, not from the file, so this test
-/// cannot read it.
+/// persona with a Claude `sandbox:` block that walls more than the fleet
+/// worker block, or with `horch_access: report`, names no fallback, because
+/// a fallback launches without that block. The fleet worker block only
+/// turns the sandbox on with the network of today (ticket 39); profile
+/// validation refuses a fallback whose own sandbox does not deny the
+/// operator path. The sandbox of codex and agy comes from the harness, not
+/// from the file, so this test cannot read it.
 #[test]
 fn no_fallback_lowers_confidentiality() {
     use crate::routing::quota::{pool_for, POOL_LOCAL};
@@ -503,7 +506,12 @@ fn no_fallback_lowers_confidentiality() {
     let pool =
         |t: &super::Teammate| pool_for(t.agent.as_str(), t.model.as_deref().unwrap_or_default());
     for t in roster.teammates.values() {
-        let walled = t.sandbox.is_some() || t.horch_access == super::HorchAccess::Report;
+        let fleet_worker = serde_json::json!({"network": {"allowedDomains": ["*"]}});
+        let walls = |s: &serde_json::Map<String, serde_json::Value>| {
+            serde_json::Value::Object(s.clone()) != fleet_worker
+        };
+        let walled =
+            t.sandbox.as_ref().is_some_and(walls) || t.horch_access == super::HorchAccess::Report;
         assert!(
             !walled || t.fallbacks.is_empty(),
             "{}: a sandboxed persona names fallback {:?}",
