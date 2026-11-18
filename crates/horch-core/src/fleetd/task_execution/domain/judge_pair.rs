@@ -79,6 +79,28 @@ pub enum VerdictError {
     CriticalOpenWithoutCritical,
 }
 
+impl std::fmt::Display for VerdictError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VerdictError::VerdictWords { count } => {
+                write!(f, "the verdict has {count} words, not 1")
+            }
+            VerdictError::UnknownVerdict { word } => {
+                write!(f, "the verdict `{word}` is not `pass` or `critical_open`")
+            }
+            VerdictError::FindingWithoutRank { line } => {
+                write!(f, "the finding at line {line} has no rank")
+            }
+            VerdictError::CriticalNotOpen => {
+                write!(f, "a CRITICAL item is open and the verdict is `pass`")
+            }
+            VerdictError::CriticalOpenWithoutCritical => {
+                write!(f, "the verdict is `critical_open` and no item is CRITICAL")
+            }
+        }
+    }
+}
+
 /// The section a line belongs to.
 #[derive(Clone, Copy, PartialEq)]
 enum Section {
@@ -138,7 +160,9 @@ fn verdict_word(words: &[&str], errors: &mut Vec<VerdictError>) -> Option<Verdic
         ["pass"] => Some(VerdictWord::Pass),
         ["critical_open"] => Some(VerdictWord::CriticalOpen),
         [word] => {
-            errors.push(VerdictError::UnknownVerdict { word: (*word).to_string() });
+            errors.push(VerdictError::UnknownVerdict {
+                word: (*word).to_string(),
+            });
             None
         }
         _ => {

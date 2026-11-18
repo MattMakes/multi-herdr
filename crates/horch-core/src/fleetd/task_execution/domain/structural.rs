@@ -10,10 +10,16 @@
 //!   branch and names each failure: a file that is not at the tip, a `.md`
 //!   file with no `## ` heading or with an empty section, a `.json` file
 //!   that does not parse, or no output at all.
+//! - [`check_judge`] is the check of kind `judge`: each `.md` output is a
+//!   verdict file with 1 verdict and a rank on each finding
+//!   ([`judge_pair::parse_verdict`]). An open CRITICAL item gives the
+//!   outcome `critical_open`, which burns no attempt (RR-3, FM-33).
 //! - The verdict of the check is a verdict with no job run. Its reason
 //!   starts with [`PASSED`] or [`FAILED`]. [`is_pass`] reads it back.
 
+use crate::fleetd::task_execution::domain::judge_pair;
 use crate::fleetd::task_execution::domain::result::parse_json;
+use crate::fleetd::task_execution::domain::retry::Outcome;
 use crate::fleetd::task_execution::domain::verification::{Decision, Verdict};
 
 /// The start of the reason of a passed structural check.
@@ -36,6 +42,9 @@ pub struct Checked {
     pub files: Vec<String>,
     /// Each failure, named. Empty: the check passed.
     pub failures: Vec<String>,
+    /// The outcome of a passed judge check: `critical_open` for an open
+    /// CRITICAL item. `None` for each other check.
+    pub outcome: Option<Outcome>,
 }
 
 impl Checked {
@@ -44,6 +53,7 @@ impl Checked {
         Checked {
             files: Vec::new(),
             failures: vec![why.to_string()],
+            outcome: None,
         }
     }
 
@@ -89,30 +99,51 @@ pub fn outputs_of(own: &[String], changed: &[String]) -> Vec<String> {
 
 /// The structural check of `outputs`.
 pub fn check(outputs: &[Output]) -> Checked {
+    check_with(outputs, |text| (markdown(text), None))
+}
+
+/// The structural check of kind `judge`: a `.md` output is a verdict file.
+pub fn check_judge(outputs: &[Output]) -> Checked {
+    let mut checked = check_with(outputs, |text| match judge_pair::parse_verdict(text) {
+        Ok(v) => (Vec::new(), v.outcome()),
+        Err(errors) => (errors.iter().map(ToString::to_string).collect(), None),
+    });
+    if !checked.passed() {
+        checked.outcome = None;
+    }
+    checked
+}
+
+/// The check of `outputs`, with `md` for the text of each `.md` file. `md`
+/// returns the failures of the file and its outcome.
+fn check_with(outputs: &[Output], md: impl Fn(&str) -> (Vec<String>, Option<Outcome>)) -> Checked {
     let mut files: Vec<String> = outputs.iter().map(|o| o.path.clone()).collect();
     files.sort();
     if files.is_empty() {
         return Checked::unreadable("the commits change no file of Own");
     }
     let mut failures = Vec::new();
+    let mut outcome = None;
     for o in outputs {
         let Some(text) = &o.text else {
             failures.push(format!("{}: not at the tip", o.path));
             continue;
         };
         if o.path.ends_with(".md") {
-            failures.extend(
-                markdown(text)
-                    .into_iter()
-                    .map(|f| format!("{}: {f}", o.path)),
-            );
+            let (found, out) = md(text);
+            failures.extend(found.into_iter().map(|f| format!("{}: {f}", o.path)));
+            outcome = outcome.or(out);
         } else if o.path.ends_with(".json") {
             if let Err(e) = parse_json(text) {
                 failures.push(format!("{}: invalid JSON: {e}", o.path));
             }
         }
     }
-    Checked { files, failures }
+    Checked {
+        files,
+        failures,
+        outcome,
+    }
 }
 
 /// 1 line of a markdown file.
