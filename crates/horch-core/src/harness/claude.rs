@@ -164,7 +164,70 @@ pub(super) fn claude_command(
     prompt: &str,
     model_override: Option<&str>,
 ) -> Result<Command> {
+    build_command(
+        env,
+        teammate,
+        session,
+        prompt,
+        model_override,
+        Mode::Interactive,
+    )
+}
+
+/// The exec launch of 1 attempt (design, "Worker profiles and adapters",
+/// row `mode: exec`): `claude -p --output-format stream-json --verbose
+/// --include-hook-events`, with `--permission-mode dontAsk`, its explicit
+/// allow rules and `--permission-prompts none`, so no dialog can stop it
+/// (FM-18), and [`EXEC_COMPACT_WINDOW`] in the settings env (FR-9). The
+/// prompt is the path of the attempt's `inbox/START.md`. The rest is the
+/// interactive launch of today: the `--settings` overlay and
+/// `--strict-mcp-config`, no `CLAUDE_CONFIG_DIR`. The command is scrubbed;
+/// the caller starts it through the launcher.
+pub fn exec_command(
+    env: &LaunchEnv,
+    teammate: &Teammate,
+    session: Session<'_>,
+    start_md: &Path,
+) -> Result<Command> {
+    let prompt = start_md
+        .to_str()
+        .with_context(|| format!("{}: START.md path is not UTF-8", start_md.display()))?;
+    let mut cmd = build_command(env, teammate, session, prompt, None, Mode::Exec)?;
+    crate::runtime::process::scrub_child_env(&mut cmd);
+    Ok(cmd)
+}
+
+/// The compaction window of an exec attempt, in tokens (FR-9). A plain
+/// integer: Claude Code reads `256k` as 256.
+pub const EXEC_COMPACT_WINDOW: u64 = 256_000;
+
+/// How the launch runs: a pane agent of today, or a run-to-completion
+/// process that prints its stream.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Interactive,
+    Exec,
+}
+
+fn build_command(
+    env: &LaunchEnv,
+    teammate: &Teammate,
+    session: Session<'_>,
+    prompt: &str,
+    model_override: Option<&str>,
+    mode: Mode,
+) -> Result<Command> {
     let mut cmd = horch_platform::start::command(&env.bins.claude);
+    if mode == Mode::Exec {
+        // First, so no variadic flag below can take one of them.
+        cmd.args([
+            "-p",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--include-hook-events",
+        ]);
+    }
 
     // ORDERING MATTERS. `--mcp-config`, `--tools`, `--allowedTools` and
     // `--disallowedTools` are variadic (`<x...>`): they keep consuming
@@ -178,10 +241,10 @@ pub(super) fn claude_command(
     let model = model_for(teammate, model_override)?;
     cmd.arg("--model").arg(model);
 
-    push_model_args(&mut cmd, teammate, model);
+    push_model_args(&mut cmd, teammate, model, mode);
     push_plugin_args(&mut cmd, env, teammate)?;
     check_sandbox_host(env, teammate)?;
-    push_settings_arg(&mut cmd, env, teammate)?;
+    push_settings_arg(&mut cmd, env, teammate, mode)?;
     if let Some(socket) = report_socket(env, teammate) {
         cmd.env(crate::messaging::report::ENV, socket);
     }
@@ -251,7 +314,7 @@ fn push_tool_args(cmd: &mut Command, teammate: &Teammate) {
     }
 }
 
-fn push_model_args(cmd: &mut Command, teammate: &Teammate, model: &str) {
+fn push_model_args(cmd: &mut Command, teammate: &Teammate, model: &str, mode: Mode) {
     // Haiku 4.5 has no effort setting, and a `--model haiku` override can land
     // on a teammate whose file sets one; drop it rather than fail the launch.
     if let Some(effort) = &teammate.effort {
@@ -259,7 +322,16 @@ fn push_model_args(cmd: &mut Command, teammate: &Teammate, model: &str) {
             cmd.arg("--effort").arg(effort);
         }
     }
-    if let Some(mode) = teammate.permission_mode {
+    if mode == Mode::Exec {
+        // Nobody answers a prompt in exec: what the allow rules of
+        // `overlay_exec` do not allow is denied, never asked.
+        cmd.args([
+            "--permission-mode",
+            "dontAsk",
+            "--permission-prompts",
+            "none",
+        ]);
+    } else if let Some(mode) = teammate.permission_mode {
         cmd.arg("--permission-mode").arg(mode.as_str());
     }
     // Which of the operator's settings files load. Normally all of them: the
@@ -302,10 +374,15 @@ fn check_sandbox_host(env: &LaunchEnv, teammate: &Teammate) -> Result<()> {
 
 /// `--settings` takes a path OR a JSON string, and is not repeatable, so
 /// everything horch wants to overlay has to be assembled into one object.
-fn push_settings_arg(cmd: &mut Command, env: &LaunchEnv, teammate: &Teammate) -> Result<()> {
+fn push_settings_arg(
+    cmd: &mut Command,
+    env: &LaunchEnv,
+    teammate: &Teammate,
+    mode: Mode,
+) -> Result<()> {
     let arg = match &teammate.settings {
-        Some(settings) => inline_settings_arg(env, teammate, settings).map(Some),
-        None => default_overlay(env, teammate),
+        Some(settings) => inline_settings_arg(env, teammate, settings, mode).map(Some),
+        None => default_overlay(env, teammate, mode),
     }?;
     if let Some(arg) = arg {
         cmd.arg("--settings").arg(arg);
@@ -314,7 +391,12 @@ fn push_settings_arg(cmd: &mut Command, env: &LaunchEnv, teammate: &Teammate) ->
 }
 
 /// The `--settings` argument for a teammate that names its own settings.
-fn inline_settings_arg(env: &LaunchEnv, teammate: &Teammate, settings: &str) -> Result<OsString> {
+fn inline_settings_arg(
+    env: &LaunchEnv,
+    teammate: &Teammate,
+    settings: &str,
+    mode: Mode,
+) -> Result<OsString> {
     let inline = settings.trim_start().starts_with('{');
     // A skills launch gives inline JSON with the sandbox merged in. A file
     // the teammate named would replace the overlay and drop the sandbox.
@@ -324,18 +406,20 @@ fn inline_settings_arg(env: &LaunchEnv, teammate: &Teammate, settings: &str) -> 
             teammate.name
         );
     }
+    let exec = mode == Mode::Exec;
     let has_defaults = HarnessDefault::for_harness(&teammate.harness_defaults, HarnessKind::Claude)
         .any(|d| d.settings.is_some());
     let window = applied_window(env);
     let worker = !FLEET_ORCHESTRATORS.contains(&teammate.name.as_str());
-    if worker && !inline {
+    if (worker || exec) && !inline {
         // A worker's file is read and passed inline, so its `git worktree`
-        // deny rules (FM-26) merge in.
+        // deny rules (FM-26) merge in, and so do the rules of an exec launch.
         let text = read_settings_value(Some(settings), env.home())?.to_string();
-        return merged_inline_settings(env, teammate, &text, window);
+        return merged_inline_settings(env, teammate, &text, window, mode);
     }
-    if inline && (has_defaults || window.is_some() || teammate.sandbox.is_some() || worker) {
-        merged_inline_settings(env, teammate, settings, window)
+    if inline && (has_defaults || window.is_some() || teammate.sandbox.is_some() || worker || exec)
+    {
+        merged_inline_settings(env, teammate, settings, window, mode)
     } else {
         // The teammate named its own file; that file owns the overlay.
         Ok(env.expand_home(settings).into_os_string())
@@ -350,6 +434,7 @@ fn merged_inline_settings(
     teammate: &Teammate,
     settings: &str,
     window: Option<u64>,
+    mode: Mode,
 ) -> Result<OsString> {
     let mut value: Value =
         serde_json::from_str(settings).context("invalid teammate settings JSON")?;
@@ -364,6 +449,7 @@ fn merged_inline_settings(
         | overlay_window(window, obj)
         | overlay_horch_paths(env, teammate, obj)?
         | deny_git_worktree(teammate, obj)?
+        | overlay_exec(env, teammate, obj, mode)?
         | teammate.sandbox.is_some();
     seal_operator_boundary(env, teammate, obj)?;
     Ok(if changed {
@@ -375,7 +461,7 @@ fn merged_inline_settings(
 
 /// The `--settings` overlay of a teammate with no settings of its own, as
 /// JSON text; `None` when it would be empty.
-fn default_overlay(env: &LaunchEnv, teammate: &Teammate) -> Result<Option<OsString>> {
+fn default_overlay(env: &LaunchEnv, teammate: &Teammate, mode: Mode) -> Result<Option<OsString>> {
     let mut overlay = serde_json::Map::new();
     disable_operator_plugins(&mut overlay, teammate, env.home())?;
     // Whatever inherit_plugins says: the generic tiers inherit plugins, but
@@ -388,8 +474,48 @@ fn default_overlay(env: &LaunchEnv, teammate: &Teammate) -> Result<Option<OsStri
     merge_settings_defaults(teammate, &mut overlay, || operator_settings(env))?;
     overlay_stop_hook(env, &mut overlay)?;
     overlay_window(applied_window(env), &mut overlay);
+    overlay_exec(env, teammate, &mut overlay, mode)?;
     seal_operator_boundary(env, teammate, &mut overlay)?;
     Ok((!overlay.is_empty()).then(|| Value::Object(overlay).to_string().into()))
+}
+
+/// The settings of an exec launch: [`EXEC_COMPACT_WINDOW`] as the window,
+/// over any value before it, and the explicit allow rules of
+/// `--permission-mode dontAsk`. Reads need no rule. Bash is allowed only in
+/// the sandbox, which is its wall; Edit and Write only in the writable
+/// paths, the worktree and the task folder; and Skill, for the fleet
+/// skills. A deny rule still wins over each of them. No change for an
+/// interactive launch. Returns whether the settings changed.
+fn overlay_exec(
+    env: &LaunchEnv,
+    teammate: &Teammate,
+    settings: &mut serde_json::Map<String, Value>,
+    mode: Mode,
+) -> Result<bool> {
+    if mode != Mode::Exec {
+        return Ok(false);
+    }
+    let vars = object_entry(settings, "env")?;
+    // A percentage would make the trigger unknown.
+    vars.remove(PCT_OVERRIDE_ENV);
+    vars.insert(
+        WINDOW_ENV.into(),
+        Value::String(EXEC_COMPACT_WINDOW.to_string()),
+    );
+    let mut rules = vec!["Skill".to_owned()];
+    if teammate.sandbox.is_some() {
+        rules.push("Bash".to_owned());
+    }
+    for dir in [&env.worktree, &env.task_dir].into_iter().flatten() {
+        // A rule path that starts with `//` is absolute.
+        let dir = dir.to_string_lossy();
+        rules.push(format!("Edit(/{dir}/**)"));
+        rules.push(format!("Write(/{dir}/**)"));
+    }
+    for rule in rules {
+        add_entries(settings, [(PERMS, "allow", rule)])?;
+    }
+    Ok(true)
 }
 
 /// A push attempt, whose launch knows its task folder, gets 1 `Stop` hook
@@ -1625,6 +1751,90 @@ fn plugin_keys(plugin: &str, enabled: &[String], installed: Option<&Value>) -> V
 pub(crate) const AMBIENT_SKILL_CREATOR: [&str; 2] =
     ["skill-creator", "anthropic-skills:skill-creator"];
 
+/// What 1 line of the exec stream tells the wrapper. Each form, with its
+/// doc page, is in `tests/fixtures/streams/claude-exec.jsonl`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Event {
+    /// The agent works: the start of the session, a hook of a tool call, a
+    /// tool call or a tool result.
+    Activity,
+    /// A usage limit or a provider outage: the attempt ends with the
+    /// outcome `quota` (RR-11).
+    UsageLimited,
+    /// The last line of the stream: the run is over.
+    Result,
+    /// A message of the main conversation, with the tokens of its context.
+    /// It is also activity.
+    ContextTokens(u64),
+    /// No signal: a retry, a warning, or a line that is not a known form.
+    Other,
+}
+
+impl Event {
+    /// Whether the event renews the activity of the attempt.
+    pub fn is_activity(&self) -> bool {
+        matches!(self, Event::Activity | Event::ContextTokens(_))
+    }
+}
+
+/// The `api_error_status` of a result that ended on a usage limit (429) or
+/// an outage (5xx, 529 overloaded included).
+fn quota_status(status: u64) -> bool {
+    status == 429 || (500..600).contains(&status)
+}
+
+/// The event of 1 line of `claude -p --output-format stream-json`. The
+/// forms come from the `headless` and `cli-reference` pages and the Agent
+/// SDK message types they link to:
+///
+/// - `rate_limit_event` with `rate_limit_info.status` `rejected`: a usage
+///   limit. `allowed` and `allowed_warning` are no signal.
+/// - `result`: the end. With an `api_error_status` of 429 or 5xx, the API
+///   error that ended the run was a usage limit or an outage.
+/// - `assistant` with `parent_tool_use_id` null and `message.usage`: the
+///   context is its input tokens, cache reads and cache writes included.
+///   A subagent message is activity only: its context is not this one.
+/// - `user` (a tool result), `system/init`, and `system/hook_started`,
+///   `hook_progress` and `hook_response` (`--include-hook-events`).
+/// - `system/api_retry` is no signal: Claude Code still retries, and a
+///   result follows when it gives up.
+pub fn read_event(line: &str) -> Event {
+    let Ok(v) = serde_json::from_str::<Value>(line) else {
+        return Event::Other;
+    };
+    let str_at = |path: &str| v.pointer(path).and_then(Value::as_str);
+    match str_at("/type") {
+        Some("rate_limit_event") if str_at("/rate_limit_info/status") == Some("rejected") => {
+            Event::UsageLimited
+        }
+        Some("result") => match v.get("api_error_status").and_then(Value::as_u64) {
+            Some(status) if quota_status(status) => Event::UsageLimited,
+            _ => Event::Result,
+        },
+        Some("assistant") => main_context_tokens(&v).map_or(Event::Activity, Event::ContextTokens),
+        Some("user") => Event::Activity,
+        Some("system") => match str_at("/subtype") {
+            Some("init" | "hook_started" | "hook_progress" | "hook_response") => Event::Activity,
+            _ => Event::Other,
+        },
+        _ => Event::Other,
+    }
+}
+
+/// The context tokens of an `assistant` message of the main conversation.
+fn main_context_tokens(v: &Value) -> Option<u64> {
+    if !v.get("parent_tool_use_id").is_some_and(Value::is_null) {
+        return None;
+    }
+    let usage = v.pointer("/message/usage")?;
+    let tokens = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
+    Some(
+        tokens("input_tokens")
+            + tokens("cache_creation_input_tokens")
+            + tokens("cache_read_input_tokens"),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2614,7 +2824,7 @@ mod tests {
         let env = LaunchEnv::for_test();
         let deny = |name: &str| -> [Value; 2] {
             let t = roster.require(name).unwrap();
-            let plain = default_overlay(&env, t)
+            let plain = default_overlay(&env, t, Mode::Interactive)
                 .unwrap()
                 .map(|s| serde_json::from_str(&s.to_string_lossy()).unwrap())
                 .unwrap_or(json!({}));
