@@ -548,7 +548,10 @@ impl WorktreeGitGateway for CliWorktreeGit {
             return Ok(None);
         }
         let head = self.git(path, &["rev-parse", "--verify", "HEAD"])?;
-        let status = self.git(path, &["status", "--porcelain", "--untracked-files=all"])?;
+        let status = self.git(
+            path,
+            &["--no-optional-locks", "status", "--porcelain", "-uall"],
+        )?;
         Ok(Some(TreeState {
             head: head.trim().to_string(),
             dirty: !status.trim().is_empty(),

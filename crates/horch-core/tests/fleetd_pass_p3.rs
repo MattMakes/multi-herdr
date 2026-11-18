@@ -701,3 +701,35 @@ fn pass_marks_the_tree_of_a_dead_owner_orphaned_before_any_dispatch() {
         "the tree is orphaned at the first launch"
     );
 }
+
+/// The `worktree_list` job reads the dirty flag of each tree and writes
+/// nothing in it: its `git status` takes no optional lock, so it never
+/// rewrites the index of a tree while its worker runs git there.
+#[test]
+fn worktree_list_job_writes_no_index_of_a_tree() {
+    let mut w = world();
+    let (repo, _) = w.repo("a");
+    let tree = format!("{repo}/.worktrees/T1-feat");
+    git(
+        Path::new(&repo),
+        &["worktree", "add", "-q", "-b", "feat", &tree],
+    );
+    // A new mtime with the same content: a git status that may write
+    // refreshes the stat data of the index.
+    std::thread::sleep(Duration::from_millis(1100));
+    std::fs::write(Path::new(&tree).join("a.txt"), "a\n").unwrap();
+    let index = Path::new(&repo).join(".git/worktrees/T1-feat/index");
+    let before = std::fs::read(&index).unwrap();
+    let host = Watching::new(&w, None);
+    let mut pass = w.pass(&Trees, &host);
+
+    run(&mut pass, &mut w);
+    let list = w.lists(&repo);
+    assert_eq!(w.ended(list[0].id).state, State::Passed);
+
+    assert_eq!(
+        std::fs::read(&index).unwrap(),
+        before,
+        "the index is unchanged"
+    );
+}
