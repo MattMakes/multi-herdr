@@ -187,6 +187,7 @@ fn result_json(task: &str, attempt: &str, summary: &str) -> String {
         files_changed: vec!["src/lib.rs".into()],
         acceptance_self_check: Vec::new(),
         notes_for_next: None,
+        handoff: None,
     }
     .to_json()
 }

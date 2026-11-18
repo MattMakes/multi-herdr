@@ -265,6 +265,7 @@ fn write(ctx: &RuntimeContext, attempt: &Attempt, args: ResultArgs) -> Result<Pa
         files_changed,
         acceptance_self_check: Vec::new(),
         notes_for_next: args.notes,
+        handoff: None,
     };
     let bytes = file.to_json().into_bytes();
     let max_bytes = config_file::load(&ctx.paths.fleet_root)?.result_max_bytes;
