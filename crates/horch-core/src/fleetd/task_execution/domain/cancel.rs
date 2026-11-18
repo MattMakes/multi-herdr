@@ -17,6 +17,9 @@ pub const TASK_CANCELLED: &str = "task_cancelled";
 /// The terminal task states: no exit, also not to `cancelled`.
 const TERMINAL: [&str; 2] = ["done", "cancelled"];
 
+/// The task state whose old attempt can still have a live process.
+const STALLED: &str = "stalled";
+
 /// How the cancel of 1 task goes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CancelPath {
@@ -31,11 +34,12 @@ pub enum CancelPath {
 
 /// The cancel of a task in the state `status`. `live_attempt`: an attempt
 /// of the task holds its worker. `requested`: a cancel of the task waits
-/// for the stop of its attempt.
+/// for the stop of its attempt. A `stalled` task waits for the stop of its
+/// old attempt (FM-14), so its cancel also waits for that stop.
 pub fn cancel_path(status: &str, live_attempt: bool, requested: bool) -> CancelPath {
     if TERMINAL.contains(&status) {
         CancelPath::Refused
-    } else if live_attempt || requested {
+    } else if live_attempt || requested || status == STALLED {
         CancelPath::StopFirst
     } else {
         CancelPath::Now
@@ -95,6 +99,8 @@ mod tests {
         for s in TERMINAL {
             assert_eq!(cancel_path(s, true, true), CancelPath::Refused, "{s}");
         }
+        // A stalled task has no live attempt, but its old process can live.
+        assert_eq!(cancel_path("stalled", false, false), CancelPath::StopFirst);
     }
 
     #[test]

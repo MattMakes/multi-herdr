@@ -552,6 +552,74 @@ fn stalled_task_stays_stalled_while_the_old_process_lives() {
     assert!(claimable(&w));
 }
 
+/// The old process is gone in the pass that sees the lease expired: the
+/// task moves to `ready` in that pass, as before FM-14.
+#[test]
+fn task_whose_old_process_is_gone_moves_in_the_same_pass() {
+    let mut w = world();
+    let mut agent = Agent::sleeping();
+    let (task, worker) = w.claimed_task(&agent);
+    agent.kill();
+    let fake = Fake::new(&w);
+
+    w.pass_at(1_000, &worker, &fake);
+    let t = w.task(&task);
+    assert_eq!(t.status, "ready", "{:?}", w.attempts(&task));
+    assert_eq!(t.not_before, Some(1_030));
+}
+
+/// A result before the pass wins over the lease expiry: the task is
+/// `verifying`, so the pass gives it no lease rule and no stall rule.
+#[test]
+fn verifying_task_is_not_stalled_by_an_old_lease() {
+    let mut w = world();
+    let agent = Agent::sleeping();
+    let (task, worker) = w.claimed_task(&agent);
+    // The worker ran finish: its result moved the task to verifying.
+    w.conn
+        .execute(
+            "UPDATE tasks SET status = 'verifying' WHERE task_id = ?1",
+            [&task],
+        )
+        .unwrap();
+    let fake = Fake::new(&w);
+
+    w.pass_at(1_000, &worker, &fake);
+    assert_eq!(w.task(&task).status, "verifying");
+    assert_eq!(w.caused(&task, "lease_expired"), 0);
+    let attempts = w.attempts(&task);
+    assert_ne!(attempts[0].2.as_deref(), Some("stalled"), "{attempts:?}");
+}
+
+/// A cancel of a `stalled` task waits for the stop of its old process
+/// (T-268): the pass moves it to `cancelled` only after the process is
+/// gone.
+#[test]
+fn cancel_of_a_stalled_task_waits_for_its_old_process() {
+    let mut w = world();
+    w.config.stop_grace_s = 600;
+    let mut agent = Agent::run("trap '' TERM INT HUP; while :; do sleep 0.1; done");
+    let (task, worker) = w.claimed_task(&agent);
+    let fake = Fake::new(&w);
+    w.pass_at(1_000, &worker, &fake);
+    assert_eq!(w.task(&task).status, "stalled");
+    {
+        let tx = w.conn.transaction().unwrap();
+        let t = tasks::get(&tx, &task).unwrap();
+        let out = cancel::request(&tx, &t, "the operator cancelled it").unwrap();
+        assert!(matches!(out, cancel::Cancel::Stopping { .. }), "{out:?}");
+        tx.commit().unwrap();
+    }
+
+    w.pass_at(1_010, &worker, &fake);
+    assert!(agent.alive(), "it ignores the polite stop");
+    assert_eq!(w.task(&task).status, "stalled", "its old process lives");
+
+    agent.kill();
+    w.pass_at(1_020, &worker, &fake);
+    assert_eq!(w.task(&task).status, "cancelled");
+}
+
 #[test]
 fn usage_limited_worker_restarts_on_the_fallback_and_burns_no_attempt() {
     let mut w = world();

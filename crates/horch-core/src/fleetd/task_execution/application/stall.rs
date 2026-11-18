@@ -435,6 +435,66 @@ mod tests {
         assert_eq!(f.worker_status(), "incomplete");
     }
 
+    /// [`settle_stalled`] at `clock` with a bound of 50 s, in a pass that
+    /// saw the agent as `seen`.
+    fn settle_at(f: &mut Fixture, clock: i64, seen: Seen) -> Vec<Stopped> {
+        let facts = Facts {
+            processes: [(AGENT, seen)].into(),
+            ..Facts::default()
+        };
+        f.store
+            .immediate(|tx| settle_stalled(tx, clock, &facts, 50))
+            .unwrap()
+    }
+
+    /// Step 4 of FM-14: the agent lives past the stop bound. The task stays
+    /// `stalled` with 1 needs-you item. When the agent is gone, the item
+    /// is resolved and the task goes to rung 6.
+    #[test]
+    fn stalled_task_whose_old_process_lives_past_the_bound_gets_1_item() {
+        let mut f = fixture();
+        f.apply(&Decision::End {
+            outcome: Outcome::Stalled,
+            stop: true,
+        });
+        // The first pass of the stall writes the end of the bound.
+        assert_eq!(settle_at(&mut f, 1_300, Seen::Alive), Vec::new());
+        assert_eq!(settle_at(&mut f, 1_349, Seen::Alive), Vec::new());
+        assert_eq!(f.task().due_at, Some(1_350));
+        assert!(needs_you::open_items(f.store.conn()).unwrap().is_empty());
+        assert_eq!(settle_at(&mut f, 1_350, Seen::Alive), Vec::new());
+        assert_eq!(settle_at(&mut f, 1_400, Seen::Alive), Vec::new());
+        let items = needs_you::open_items(f.store.conn()).unwrap();
+        assert_eq!(items.len(), 1, "{items:?}");
+        assert_eq!(items[0].key, format!("stop_failed:{}", f.task));
+        assert_eq!(f.task().status, "stalled");
+
+        let a = f.attempt();
+        assert_eq!(
+            settle_at(&mut f, 1_410, Seen::Dead),
+            vec![Stopped {
+                task: f.task.clone(),
+                attempt: a.id,
+                worker: f.worker.clone(),
+            }]
+        );
+        assert!(needs_you::open_items(f.store.conn()).unwrap().is_empty());
+    }
+
+    /// The pass cannot tell (`Unknown`, as on a platform that cannot see
+    /// the process): the task waits until the bound, then goes to rung 6.
+    #[test]
+    fn stalled_task_with_an_unknown_process_moves_at_the_bound() {
+        let mut f = fixture();
+        f.apply(&Decision::End {
+            outcome: Outcome::Stalled,
+            stop: true,
+        });
+        assert_eq!(settle_at(&mut f, 1_300, Seen::Unknown), Vec::new());
+        assert_eq!(settle_at(&mut f, 1_349, Seen::Unknown), Vec::new());
+        assert_eq!(settle_at(&mut f, 1_350, Seen::Unknown).len(), 1);
+    }
+
     #[test]
     fn quota_and_no_result_end_the_attempt_and_leave_the_task_to_its_rule() {
         for (outcome, stop) in [(Outcome::Quota, true), (Outcome::NoResult, false)] {
