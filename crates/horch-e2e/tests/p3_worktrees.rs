@@ -181,7 +181,20 @@ fn live_claim(h: &Harness, agents: &mut Agents) -> (String, String) {
         .arg("600")
         .spawn()
         .unwrap();
-    horch_core::taskledger::supervisor::agent_started(&ledger(h), &w, agent.id()).unwrap();
+    horch_core::taskledger::Store::open(&ledger(h))
+        .and_then(|mut store| {
+            let pid = agent.id();
+            // The agent PID row that `horch worker` wrote before Phase 5.
+            store.immediate(|tx| {
+                horch_core::taskledger::workers::agent_started(
+                    tx,
+                    &w,
+                    pid,
+                    horch_core::procid::start_time(pid),
+                )
+            })
+        })
+        .unwrap();
     agents.0.push(agent);
     let c: Value = serde_json::from_str(&ok_as(h, &w, &["ledger", "claim", "--json"])).unwrap();
     (w, c["task"]["task_id"].as_str().unwrap().to_string())

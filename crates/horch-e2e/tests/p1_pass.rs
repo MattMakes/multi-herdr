@@ -328,7 +328,20 @@ fn worker(h: &Harness) -> Worker {
         .trim()
         .to_string();
     let agent = Agent::start();
-    horch_core::taskledger::supervisor::agent_started(&db(h), &id, agent.pid()).unwrap();
+    horch_core::taskledger::Store::open(&db(h))
+        .and_then(|mut store| {
+            let pid = agent.pid();
+            // The agent PID row that `horch worker` wrote before Phase 5.
+            store.immediate(|tx| {
+                horch_core::taskledger::workers::agent_started(
+                    tx,
+                    &id,
+                    pid,
+                    horch_core::procid::start_time(pid),
+                )
+            })
+        })
+        .unwrap();
     Worker { id, agent }
 }
 

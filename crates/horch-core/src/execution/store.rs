@@ -373,7 +373,7 @@ fn read_session_rows(db: &Path, slug: Option<&str>) -> Vec<SessionRow> {
     if !db.is_file() {
         return Vec::new();
     }
-    crate::taskledger::Store::open(db)
+    crate::taskledger::Store::open_read_only(db)
         .and_then(|store| session_rows(store.conn(), slug))
         .unwrap_or_default()
 }
@@ -992,7 +992,7 @@ fn ledger_workers(db: &Path, project: &Path) -> Vec<LedgerWorker> {
         return Vec::new();
     }
     let read = || -> Result<Vec<LedgerWorker>> {
-        let store = crate::taskledger::Store::open(db)?;
+        let store = crate::taskledger::Store::open_read_only(db)?;
         let mut stmt = store.conn().prepare(
             "SELECT w.*, t.seq AS task_seq, t.title AS task_title
              FROM workers w

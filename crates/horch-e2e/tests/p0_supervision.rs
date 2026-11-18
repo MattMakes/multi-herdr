@@ -237,7 +237,20 @@ fn claimed_run(h: &Harness) -> (WatchdogTeardown, Output) {
         agent: Command::new("/bin/sleep").arg("600").spawn().unwrap(),
         locks: h.root.join("locks"),
     };
-    horch_core::taskledger::supervisor::agent_started(&db(h), &w, teardown.agent.id()).unwrap();
+    horch_core::taskledger::Store::open(&db(h))
+        .and_then(|mut store| {
+            let pid = teardown.agent.id();
+            // The agent PID row that `horch worker` wrote before Phase 5.
+            store.immediate(|tx| {
+                horch_core::taskledger::workers::agent_started(
+                    tx,
+                    &w,
+                    pid,
+                    horch_core::procid::start_time(pid),
+                )
+            })
+        })
+        .unwrap();
     let mut cmd = h.horch(&["ledger", "claim"]);
     cmd.env("HORCH_WORKER_ID", &w);
     let o = cmd.output().unwrap();

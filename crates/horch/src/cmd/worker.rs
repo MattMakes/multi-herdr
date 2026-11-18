@@ -12,7 +12,8 @@
 //! push attempt. When its agent exits with commits since the base and with
 //! no `result.json` and no question file, it runs the repair pass of FM-6:
 //! 1 short resume of the same session with the fixed line of
-//! `domain/repair.rs`, before it records the exit.
+//! `domain/repair.rs`, before it records the exit. The wrapper writes no
+//! ledger row (RR-5): `exit.json` of the attempt says that the repair ran.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -20,17 +21,16 @@ use std::process::ExitCode;
 use anyhow::{Context, Result};
 use horch_core::execution::lifecycle::{run_worker, PaneWorker, WorkerSteps};
 use horch_core::fleetd::fleet_runtime::adapters::sqlite::has_fact;
-use horch_core::fleetd::fleet_runtime::application::ledger::{record, Cause};
 use horch_core::fleetd::fleet_runtime::domain::ledger::Entity;
 use horch_core::fleetd::task_execution::adapters::task_files::attempt_dir;
 use horch_core::fleetd::task_execution::domain::repair::{
-    repair_pass, RepairFacts, RepairPort, Repaired, REPAIR_CAUSE, REPAIR_LINE,
+    repair_pass, RepairFacts, RepairPort, Repaired, REPAIR_CAUSE,
 };
 use horch_core::fleetd::worktree_custody::adapters::sqlite as trees;
 use horch_core::messaging::brief::Brief;
 use horch_core::runtime::RuntimeContext;
 use horch_core::taskledger::git::Git;
-use horch_core::taskledger::model::{Actor, EventKind};
+use horch_core::taskledger::model::EventKind;
 use horch_core::taskledger::{runs, tasks, Store};
 use rusqlite::OptionalExtension;
 
@@ -113,6 +113,7 @@ impl Repairing<'_> {
             return Ok(());
         };
         let git = Git::new(&self.0.ctx.bins.harness.git);
+        let worker_repaired = self.0.repaired();
         let worker = &mut self.0;
         let mut resume = |line: &str| worker.resume(brief, line);
         let mut port = LedgerRepair {
@@ -120,12 +121,18 @@ impl Repairing<'_> {
             attempt,
             git,
             resume: &mut resume,
+            recorded: worker_repaired,
         };
-        if let Repaired::Resumed(code) = repair_pass(&mut port)? {
+        let repaired = repair_pass(&mut port);
+        let (recorded, id) = (port.recorded, port.attempt.id);
+        if recorded {
+            self.0.mark_repaired();
+        }
+        if let Repaired::Resumed(code) = repaired? {
             let how = code.map_or("a signal".to_string(), |c| format!("code {c}"));
             eprintln!(
-                "horch worker[{}]: the repair resume of {} ended with {how}",
-                brief.role, port.attempt.id
+                "horch worker[{}]: the repair resume of {id} ended with {how}",
+                brief.role
             );
         }
         Ok(())
@@ -146,7 +153,7 @@ impl PushAttempt {
     /// The newest attempt of `worker_id` with `via = push`. `None` for a
     /// worker of a claim attempt, or of no task.
     fn of_worker(db: &Path, worker_id: &str, fleet_root: &Path) -> Result<Option<PushAttempt>> {
-        let store = Store::open(db)?;
+        let store = Store::open_read_only(db)?;
         let conn = store.conn();
         let row: Option<(String, Option<String>)> = conn
             .query_row(
@@ -182,13 +189,16 @@ impl PushAttempt {
     }
 }
 
-/// The repair pass of 1 push attempt on the task ledger, its tree and its
-/// outbox.
+/// The repair pass of 1 push attempt on the task ledger (read-only), its
+/// tree and its outbox.
 struct LedgerRepair<'r> {
     db: PathBuf,
     attempt: PushAttempt,
     git: Git,
     resume: &'r mut dyn FnMut(&str) -> Result<Option<i32>>,
+    /// The repair is recorded: this wrapper ran it, and its `exit.json`
+    /// says so.
+    recorded: bool,
 }
 
 impl RepairPort for LedgerRepair<'_> {
@@ -204,40 +214,28 @@ impl RepairPort for LedgerRepair<'_> {
             .trim()
             .parse()
             .with_context(|| format!("git rev-list --count {range} printed {count:?}"))?;
-        let store = Store::open(&self.db)?;
+        let store = Store::open_read_only(&self.db)?;
         Ok(RepairFacts {
             exited: true,
             commits_since_base: count > 0,
             result_json: is_regular(&a.outbox.join("result.json")),
             question_file: has_question(&a.outbox.join("questions")),
-            repaired: has_fact(
-                store.conn(),
-                Entity::Attempt,
-                &a.id,
-                EventKind::Note,
-                REPAIR_CAUSE,
-            )?,
+            repaired: self.recorded
+                || has_fact(
+                    store.conn(),
+                    Entity::Attempt,
+                    &a.id,
+                    EventKind::Note,
+                    REPAIR_CAUSE,
+                )?,
         })
     }
 
+    /// No ledger row (RR-5): `exit.json` carries the repair, and fleetd
+    /// writes its event.
     fn record(&mut self) -> Result<()> {
-        let id = self.attempt.id.clone();
-        Store::open(&self.db)?.immediate(|tx| {
-            let cause = Cause {
-                actor: Actor::Supervisor,
-                text: REPAIR_CAUSE,
-            };
-            let data = serde_json::json!({ "line": REPAIR_LINE });
-            Ok(record(
-                tx,
-                None,
-                EventKind::Note,
-                Entity::Attempt,
-                &id,
-                cause,
-                &data,
-            )?)
-        })
+        self.recorded = true;
+        Ok(())
     }
 
     fn resume(&mut self, line: &str) -> Result<Option<i32>> {
@@ -254,6 +252,8 @@ mod tests {
     use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
     use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
     use horch_core::fleetd::task_execution::application::dispatch::{bind, Bound, DispatchCtx};
+    use horch_core::fleetd::task_execution::domain::repair::REPAIR_LINE;
+    use horch_core::taskledger::model::Actor;
     use horch_core::taskledger::runs::NewRun;
     use horch_core::taskledger::tasks::NewTask;
     use horch_core::taskledger::workers::NewWorker;
@@ -294,6 +294,9 @@ mod tests {
         fleet_root: PathBuf,
         bound: Bound,
         tree: PathBuf,
+        /// The repairs that the wrapper recorded: `exit.json` says
+        /// `repaired` when it is more than 0.
+        repairs: std::cell::Cell<i64>,
     }
 
     impl World {
@@ -355,6 +358,7 @@ mod tests {
                 fleet_root,
                 tree: PathBuf::from(t.path),
                 bound,
+                repairs: std::cell::Cell::new(0),
             }
         }
 
@@ -383,27 +387,36 @@ mod tests {
                 lines.push(line.to_string());
                 Ok(Some(0))
             };
+            let before = self.repairs.get() > 0;
             let mut port = LedgerRepair {
                 db: self.db.clone(),
                 attempt,
                 git: Git::new("git"),
                 resume: &mut resume,
+                recorded: before,
             };
             let done = repair_pass(&mut port).unwrap();
+            if port.recorded && !before {
+                self.repairs.set(self.repairs.get() + 1);
+            }
             (done, lines)
         }
 
+        /// The repairs that the wrapper recorded for `exit.json`. The
+        /// wrapper writes no ledger event of a repair (RR-5).
         fn repair_events(&self) -> i64 {
-            Store::open(&self.db)
+            let events: i64 = Store::open_read_only(&self.db)
                 .unwrap()
                 .conn()
                 .query_row(
                     "SELECT COUNT(*) FROM events WHERE entity = 'attempt' AND entity_id = ?1
-                     AND kind = 'note' AND cause = ?2 AND actor = 'supervisor'",
+                     AND kind = 'note' AND cause = ?2",
                     [&self.bound.attempt_id, REPAIR_CAUSE],
                     |r| r.get(0),
                 )
-                .unwrap()
+                .unwrap();
+            assert_eq!(events, 0, "the wrapper writes no repair event");
+            self.repairs.get()
         }
 
         /// The attempt count and status of the task, its attempt rows, and

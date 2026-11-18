@@ -146,7 +146,20 @@ impl Fleet {
         let o = self.run_as(None, &["ledger", "worker", "new", "--persona", "opus"]);
         assert!(o.status.success(), "{}", text(&o));
         let w = String::from_utf8_lossy(&o.stdout).trim().to_string();
-        horch_core::taskledger::supervisor::agent_started(&self.db(), &w, agent.pid).unwrap();
+        horch_core::taskledger::Store::open(&self.db())
+            .and_then(|mut store| {
+                let pid = agent.pid;
+                // The agent PID row that `horch worker` wrote before Phase 5.
+                store.immediate(|tx| {
+                    horch_core::taskledger::workers::agent_started(
+                        tx,
+                        &w,
+                        pid,
+                        horch_core::procid::start_time(pid),
+                    )
+                })
+            })
+            .unwrap();
         w
     }
 

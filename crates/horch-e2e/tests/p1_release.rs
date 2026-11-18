@@ -152,7 +152,20 @@ fn phase_p_run(h: &Harness) -> (String, Proc, String) {
         .trim()
         .to_string();
     let agent = Proc::sleep();
-    horch_core::taskledger::supervisor::agent_started(&db(h), &w, agent.pid).unwrap();
+    horch_core::taskledger::Store::open(&db(h))
+        .and_then(|mut store| {
+            let pid = agent.pid;
+            // The agent PID row that `horch worker` wrote before Phase 5.
+            store.immediate(|tx| {
+                horch_core::taskledger::workers::agent_started(
+                    tx,
+                    &w,
+                    pid,
+                    horch_core::procid::start_time(pid),
+                )
+            })
+        })
+        .unwrap();
     let mut claim = h.horch(&["ledger", "claim"]);
     claim.env("HORCH_WORKER_ID", &w);
     let o = claim.output().unwrap();

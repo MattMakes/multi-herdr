@@ -1484,7 +1484,9 @@ fn worktree_new_refuses_a_shared_task_and_returns_an_existing_worktree() {
     // the first worker exits: its task is queued again, without its lease.
     let run = w.run.clone();
     let db = w.root.parent().unwrap().join("ledger.sqlite3");
-    let ended = supervisor::agent_exited(&db, &id, Some(1)).unwrap();
+    let ended = horch_core::taskledger::Store::open(&db)
+        .and_then(|mut s| s.immediate(|tx| supervisor::settle(tx, &id, Some(1))))
+        .unwrap();
     assert_eq!(
         ended,
         supervisor::Ended::Requeued {

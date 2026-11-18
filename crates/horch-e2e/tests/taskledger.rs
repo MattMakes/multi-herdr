@@ -1410,7 +1410,20 @@ fn claimed_run(mut h: Harness) -> (Harness, Fleetds, Stand, Output) {
     let w = worker_new(&h, "opus");
     let fleetds = Fleetds::new(&h);
     let agent = Stand::new();
-    horch_core::taskledger::supervisor::agent_started(&ledger_db(&h), &w, agent.0.id()).unwrap();
+    horch_core::taskledger::Store::open(&ledger_db(&h))
+        .and_then(|mut store| {
+            let pid = agent.0.id();
+            // The agent PID row that `horch worker` wrote before Phase 5.
+            store.immediate(|tx| {
+                horch_core::taskledger::workers::agent_started(
+                    tx,
+                    &w,
+                    pid,
+                    horch_core::procid::start_time(pid),
+                )
+            })
+        })
+        .unwrap();
     let mut cmd = h.horch(&["ledger", "claim"]);
     cmd.env("HORCH_WORKER_ID", &w);
     let o = cmd.output().unwrap();

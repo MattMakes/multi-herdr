@@ -410,7 +410,9 @@ fn an_agent_that_exits_on_its_last_attempt_fails_the_task() {
     let first = worker(&mut store, &run, "opus");
     assert_eq!(claimed_seq(&claim(&mut store, &first)), Some(1));
     assert_eq!(
-        supervisor::agent_exited(&db, &first, Some(1)).unwrap(),
+        horch_core::taskledger::Store::open(&db)
+            .and_then(|mut s| s.immediate(|tx| supervisor::settle(tx, &first, Some(1))))
+            .unwrap(),
         Ended::Requeued {
             task: "T-1".into(),
             persona: "opus".into()
@@ -419,7 +421,9 @@ fn an_agent_that_exits_on_its_last_attempt_fails_the_task() {
     let second = worker(&mut store, &run, "opus");
     assert_eq!(claimed_seq(&claim(&mut store, &second)), Some(1));
     assert_eq!(
-        supervisor::agent_exited(&db, &second, Some(1)).unwrap(),
+        horch_core::taskledger::Store::open(&db)
+            .and_then(|mut s| s.immediate(|tx| supervisor::settle(tx, &second, Some(1))))
+            .unwrap(),
         Ended::Failed { task: "T-1".into() }
     );
     let held = tasks::get(store.conn(), &t.task_id).unwrap();
@@ -448,7 +452,12 @@ fn an_agent_that_exits_on_its_last_attempt_fails_the_task() {
     ] {
         let w = worker(&mut store, &run, "opus");
         assert_eq!(claimed_seq(&claim(&mut store, &w)), Some(1), "{n}");
-        assert_eq!(supervisor::agent_exited(&db, &w, Some(1)).unwrap(), ended);
+        assert_eq!(
+            horch_core::taskledger::Store::open(&db)
+                .and_then(|mut s| s.immediate(|tx| supervisor::settle(tx, &w, Some(1))))
+                .unwrap(),
+            ended
+        );
     }
     let escalated = tasks::get(store.conn(), &t.task_id).unwrap();
     assert_eq!(escalated.status, "escalated");

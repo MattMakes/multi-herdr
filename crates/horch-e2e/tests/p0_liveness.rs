@@ -139,7 +139,20 @@ fn worker_with_agent(
     let o = h.run(&["ledger", "worker", "new", "--persona", persona]);
     assert!(o.status.success(), "{}", text(&o));
     let w = String::from_utf8_lossy(&o.stdout).trim().to_string();
-    horch_core::taskledger::supervisor::agent_started(&db(h), &w, agent.pid()).unwrap();
+    horch_core::taskledger::Store::open(&db(h))
+        .and_then(|mut store| {
+            let pid = agent.pid();
+            // The agent PID row that `horch worker` wrote before Phase 5.
+            store.immediate(|tx| {
+                horch_core::taskledger::workers::agent_started(
+                    tx,
+                    &w,
+                    pid,
+                    horch_core::procid::start_time(pid),
+                )
+            })
+        })
+        .unwrap();
     w
 }
 

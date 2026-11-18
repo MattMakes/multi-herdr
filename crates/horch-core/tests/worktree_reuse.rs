@@ -183,7 +183,9 @@ impl World {
     /// The agent of `worker_id` exits with code 1: the supervisor reaps
     /// the worker, and its task goes back to the queue.
     fn exit(&self, worker_id: &str) {
-        supervisor::agent_exited(self.store.path(), worker_id, Some(1)).unwrap();
+        horch_core::taskledger::Store::open(self.store.path())
+            .and_then(|mut s| s.immediate(|tx| supervisor::settle(tx, worker_id, Some(1))))
+            .unwrap();
         assert_eq!(self.task_status(), "ready");
     }
 

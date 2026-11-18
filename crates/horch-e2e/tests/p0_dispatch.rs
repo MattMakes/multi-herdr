@@ -216,12 +216,20 @@ fn fm6_agent_that_exits_without_done_leaves_its_work_to_the_next_attempt() {
                 .arg("600")
                 .spawn()
                 .unwrap();
-            horch_core::taskledger::supervisor::agent_started(
-                &h.root.join("ledger.sqlite3"),
-                &w,
-                agent.id(),
-            )
-            .unwrap();
+            horch_core::taskledger::Store::open(&h.root.join("ledger.sqlite3"))
+                .and_then(|mut store| {
+                    let pid = agent.id();
+                    // The agent PID row that `horch worker` wrote before Phase 5.
+                    store.immediate(|tx| {
+                        horch_core::taskledger::workers::agent_started(
+                            tx,
+                            &w,
+                            pid,
+                            horch_core::procid::start_time(pid),
+                        )
+                    })
+                })
+                .unwrap();
             ok_as(&h, &w, &["ledger", "claim"]);
             let wt = ok_as(&h, &w, &["ledger", "worktree", "new", "work"]);
             let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());

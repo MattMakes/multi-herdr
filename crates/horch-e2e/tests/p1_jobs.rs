@@ -212,7 +212,20 @@ fn checked_task(h: &Harness, fleetds: &mut Fleetds, check: &str) -> String {
     let agent = Command::new("sleep").arg("3600").spawn().unwrap();
     let agent_pid = agent.id();
     fleetds.children.push(agent);
-    horch_core::taskledger::supervisor::agent_started(&db(h), &w, agent_pid).unwrap();
+    horch_core::taskledger::Store::open(&db(h))
+        .and_then(|mut store| {
+            let pid = agent_pid;
+            // The agent PID row that `horch worker` wrote before Phase 5.
+            store.immediate(|tx| {
+                horch_core::taskledger::workers::agent_started(
+                    tx,
+                    &w,
+                    pid,
+                    horch_core::procid::start_time(pid),
+                )
+            })
+        })
+        .unwrap();
     ok_as(h, &w, &["ledger", "claim"]);
     ok_as(h, &w, &["ledger", "worktree", "new", "work"]);
     Store::open(&db(h))

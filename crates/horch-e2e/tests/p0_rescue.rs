@@ -138,7 +138,20 @@ fn held_task(h: &Harness, td: &mut Teardown, name: &str) -> (String, String, Out
         .arg("600")
         .spawn()
         .unwrap();
-    horch_core::taskledger::supervisor::agent_started(&ledger(h), &w, agent.id()).unwrap();
+    horch_core::taskledger::Store::open(&ledger(h))
+        .and_then(|mut store| {
+            let pid = agent.id();
+            // The agent PID row that `horch worker` wrote before Phase 5.
+            store.immediate(|tx| {
+                horch_core::taskledger::workers::agent_started(
+                    tx,
+                    &w,
+                    pid,
+                    horch_core::procid::start_time(pid),
+                )
+            })
+        })
+        .unwrap();
     td.agents.push(agent);
     let claim = as_worker(h, &w, &["ledger", "claim"]);
     assert!(claim.status.success(), "{}", text(&claim));

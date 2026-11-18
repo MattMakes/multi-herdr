@@ -613,7 +613,20 @@ fn watch_once_json_lists_each_checked_worker() {
         .trim()
         .to_string();
     let db = w.tmp.path().join("home/.horch/ledger.sqlite3");
-    horch_core::taskledger::supervisor::agent_started(&db, &id, std::process::id()).unwrap();
+    horch_core::taskledger::Store::open(&db)
+        .and_then(|mut store| {
+            let pid = std::process::id();
+            // The agent PID row that `horch worker` wrote before Phase 5.
+            store.immediate(|tx| {
+                horch_core::taskledger::workers::agent_started(
+                    tx,
+                    &id,
+                    pid,
+                    horch_core::procid::start_time(pid),
+                )
+            })
+        })
+        .unwrap();
     assert_eq!(w.run_as(Some(&id), &["ledger", "claim"]).code, 0);
     let forced = w.run(&["ledger", "watch", "--once", "--force", "--json"]);
     assert_eq!(forced.code, 0, "{}", forced.err);

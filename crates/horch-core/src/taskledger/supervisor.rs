@@ -1,41 +1,333 @@
-//! What `horch worker` (the supervisor) writes to the task ledger
-//! (section 4.6, #34): its own PID, its agent's PID, a checkin every
-//! `heartbeat_every_s`, the session and transcript once known, and the end.
+//! What `horch worker` (the supervisor, the wrapper of an attempt) reports
+//! about its agent (section 4.6, #34). From Phase 5 it writes no ledger row
+//! (RR-5): it writes 3 files into the folder of its attempt,
+//! `<fleet root>/tasks/<task>/attempts/<n>/`, and fleetd reads them
+//! (`docs/specs/fleetd/design.md`, "Workspace layout and file protocol",
+//! protocol rules 1 to 3):
+//!
+//! - [`HEARTBEAT_JSON`]: a snapshot, every `heartbeat_every_s`, with a `seq`
+//!   that grows by 1 on each write (RR-8).
+//! - [`EXIT_JSON`]: the exit of the agent, 1 time.
+//! - [`SESSION_JSON`]: the session id of the CLI and its harness, 1 time,
+//!   when the wrapper finds it.
+//!
+//! Each file is written as `<name>.tmp` with mode 0600, fsynced, renamed to
+//! its name, and then the folder is fsynced. The wrapper opens the ledger
+//! read-only, only to find its attempt. A worker with no attempt (an
+//! operator spawn) writes no file. [`settle`] is the exit rule of the worker
+//! row, for the code that applies the facts of `exit.json`.
 
+use std::fs::{DirBuilder, OpenOptions};
+use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
-use rusqlite::params;
+use anyhow::{bail, Context, Result};
+use rusqlite::OptionalExtension;
+use serde::{Deserialize, Serialize};
 
-use super::model::{Actor, EventKind, StopRequester, StopResult, StopTarget, WorkerStatus};
+use super::model::{Actor, EventKind, WorkerStatus};
 use super::store::Store;
 use super::tasks;
 use super::util::{self, About};
 use super::workers;
+use crate::fleetd::task_execution::adapters::result_reader::AttemptRef;
+use crate::fleetd::task_execution::adapters::task_files::attempt_dir;
+use crate::fleetd::task_execution::domain::outbox::{DIR_MODE, FILE_MODE, TMP_SUFFIX};
 
-/// Record that the supervisor runs: this process's PID and start time, and
-/// the role spawn gave it.
-pub fn started(db: &Path, worker_id: &str, role: &str) -> Result<()> {
-    let pid = std::process::id();
-    let mut s = Store::open(db)?;
-    s.immediate(|tx| {
-        workers::supervisor_started(tx, worker_id, pid, crate::procid::start_time(pid))?;
-        tx.execute(
-            "UPDATE workers SET role = COALESCE(role, ?2) WHERE worker_id = ?1",
-            params![worker_id, role],
-        )?;
-        Ok(())
-    })
+/// The snapshot of the wrapper in the attempt folder.
+pub const HEARTBEAT_JSON: &str = "heartbeat.json";
+/// The exit of the agent in the attempt folder.
+pub const EXIT_JSON: &str = "exit.json";
+/// The session of the agent in the attempt folder.
+pub const SESSION_JSON: &str = "session.json";
+
+/// The content of [`HEARTBEAT_JSON`] (the example of the design). A fact
+/// that the wrapper does not know is `null`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeartbeatFile {
+    pub task: String,
+    pub attempt: String,
+    /// The PID of the agent, once it started.
+    pub pid: Option<u32>,
+    pub pgid: Option<u32>,
+    /// The pane of the wrapper.
+    pub mux_pane: Option<String>,
+    /// `running` while the agent process lives, then `exited`.
+    pub proc_state: Option<String>,
+    pub agent_state: Option<String>,
+    pub last_output_at: Option<String>,
+    pub tokens: Option<Tokens>,
+    pub seq: u64,
+    pub written_at: String,
 }
 
-/// Record the agent child's PID and start time.
-pub fn agent_started(db: &Path, worker_id: &str, pid: u32) -> Result<()> {
-    let mut s = Store::open(db)?;
-    s.immediate(|tx| workers::agent_started(tx, worker_id, pid, crate::procid::start_time(pid)))
+/// The context use of the agent.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Tokens {
+    pub context: u64,
+    pub limit: u64,
+}
+
+/// The content of [`EXIT_JSON`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExitFile {
+    pub task: String,
+    pub attempt: String,
+    /// The exit code; `null` when a signal ended the agent.
+    pub code: Option<i32>,
+    /// The wrapper ran the repair resume of FM-6 before the exit.
+    pub repaired: bool,
+    pub at: String,
+}
+
+/// The content of [`SESSION_JSON`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionFile {
+    pub task: String,
+    pub attempt: String,
+    pub session_id: String,
+    /// The harness of the CLI, as the brief names it.
+    pub harness: String,
+    /// The transcript of the session, when the wrapper found it.
+    pub transcript: Option<String>,
+    pub written_at: String,
+}
+
+/// What the wrapper knows of its agent. The launch and each heartbeat
+/// writer of 1 wrapper share it, so the `seq` grows over the repair resume.
+#[derive(Debug, Default)]
+pub struct AgentFacts {
+    /// 0 until the agent starts.
+    pid: AtomicU32,
+    /// The `seq` of the last heartbeat.
+    seq: AtomicU64,
+    mux_pane: Option<String>,
+}
+
+impl AgentFacts {
+    pub fn new(mux_pane: Option<String>) -> Arc<AgentFacts> {
+        Arc::new(AgentFacts {
+            mux_pane,
+            ..AgentFacts::default()
+        })
+    }
+
+    /// The agent process `pid` started.
+    pub fn agent_started(&self, pid: u32) {
+        self.pid.store(pid, Ordering::SeqCst);
+    }
+
+    fn pid(&self) -> Option<u32> {
+        Some(self.pid.load(Ordering::SeqCst)).filter(|&p| p != 0)
+    }
+
+    fn next_seq(&self) -> u64 {
+        self.seq.fetch_add(1, Ordering::SeqCst) + 1
+    }
+}
+
+/// The wrapper files of 1 attempt.
+#[derive(Clone, Debug)]
+pub struct AttemptFiles {
+    attempt: AttemptRef,
+    dir: PathBuf,
+}
+
+impl AttemptFiles {
+    pub fn new(fleet_root: &Path, attempt: AttemptRef) -> AttemptFiles {
+        let dir = attempt_dir(fleet_root, &attempt.task_id, attempt.attempt());
+        AttemptFiles { attempt, dir }
+    }
+
+    /// The files of the newest attempt of `worker_id` in the ledger `db`,
+    /// which it opens read-only. `None`: the worker has no attempt.
+    pub fn of_worker(db: &Path, worker_id: &str, fleet_root: &Path) -> Result<Option<Self>> {
+        let store = Store::open_read_only(db)?;
+        let row: Option<(String, String)> = store
+            .conn()
+            .query_row(
+                "SELECT id, task_id FROM attempts WHERE worker_id = ?1 AND task_id IS NOT NULL
+                 ORDER BY rowid DESC LIMIT 1",
+                [worker_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        Ok(row.map(|(attempt_id, task_id)| {
+            AttemptFiles::new(
+                fleet_root,
+                AttemptRef {
+                    task_id,
+                    attempt_id,
+                },
+            )
+        }))
+    }
+
+    /// The attempt folder.
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    fn task(&self) -> String {
+        self.attempt.task_id.clone()
+    }
+
+    fn attempt(&self) -> String {
+        self.attempt.attempt().to_string()
+    }
+
+    /// Replace [`HEARTBEAT_JSON`] with the facts of now and the next `seq`.
+    pub fn write_heartbeat(&self, facts: &AgentFacts) -> Result<()> {
+        let pid = facts.pid();
+        let file = HeartbeatFile {
+            task: self.task(),
+            attempt: self.attempt(),
+            pid,
+            pgid: None,
+            mux_pane: facts.mux_pane.clone(),
+            proc_state: pid.map(|p| {
+                let state = if horch_platform::process::alive(p) {
+                    "running"
+                } else {
+                    "exited"
+                };
+                state.to_string()
+            }),
+            agent_state: None,
+            last_output_at: None,
+            tokens: None,
+            seq: facts.next_seq(),
+            written_at: util::now(),
+        };
+        write_file(&self.dir, HEARTBEAT_JSON, &serde_json::to_vec(&file)?, true)?;
+        Ok(())
+    }
+
+    /// Write [`EXIT_JSON`]. A second exit is refused.
+    pub fn write_exit(&self, code: Option<i32>, repaired: bool) -> Result<()> {
+        let file = ExitFile {
+            task: self.task(),
+            attempt: self.attempt(),
+            code,
+            repaired,
+            at: util::now(),
+        };
+        if !write_file(&self.dir, EXIT_JSON, &serde_json::to_vec(&file)?, false)? {
+            bail!(
+                "{} exists; the exit of an attempt is written 1 time",
+                self.dir.join(EXIT_JSON).display()
+            );
+        }
+        Ok(())
+    }
+
+    /// Write [`SESSION_JSON`] 1 time. False: it exists, and stays.
+    pub fn write_session(
+        &self,
+        session_id: &str,
+        harness: &str,
+        transcript: Option<&str>,
+    ) -> Result<bool> {
+        let file = SessionFile {
+            task: self.task(),
+            attempt: self.attempt(),
+            session_id: session_id.to_string(),
+            harness: harness.to_string(),
+            transcript: transcript.map(str::to_string),
+            written_at: util::now(),
+        };
+        write_file(&self.dir, SESSION_JSON, &serde_json::to_vec(&file)?, false)
+    }
+}
+
+/// Write `bytes` to `dir/name` through `name.tmp`: mode 0600, fsync,
+/// rename, fsync of `dir`. With `replace` false, an existing file stays and
+/// the result is false. A link at the temp name is removed, not followed.
+fn write_file(dir: &Path, name: &str, bytes: &[u8], replace: bool) -> Result<bool> {
+    make_dir(dir)?;
+    let path = dir.join(name);
+    if !replace && path.symlink_metadata().is_ok() {
+        return Ok(false);
+    }
+    let tmp = dir.join(format!("{name}{TMP_SUFFIX}"));
+    match std::fs::remove_file(&tmp) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => {
+            return Err(e).with_context(|| format!("remove {}", tmp.display()));
+        }
+        _ => {}
+    }
+    let renamed = write_temp(&tmp, bytes).and_then(|()| {
+        if replace {
+            std::fs::rename(&tmp, &path)
+        } else {
+            horch_platform::fs::rename_noreplace(&tmp, &path)
+        }
+    });
+    if renamed.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    match renamed {
+        Err(e) if !replace && e.kind() == io::ErrorKind::AlreadyExists => return Ok(false),
+        r => r.with_context(|| format!("write {}", path.display()))?,
+    }
+    ok_if_not_supported(horch_platform::fs::sync_dir(dir))
+        .with_context(|| format!("sync {}", dir.display()))?;
+    Ok(true)
+}
+
+/// Create `tmp` (never through a link) with `bytes` and mode 0600, synced.
+fn write_temp(tmp: &Path, bytes: &[u8]) -> io::Result<()> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    // Where the OS has no modes, the file gets the default permissions.
+    let _ = horch_platform::fs::create_mode(&mut options, FILE_MODE);
+    let mut file = options.open(tmp)?;
+    // The umask may have cleared bits of the mode.
+    ok_if_not_supported(horch_platform::fs::set_mode(tmp, FILE_MODE))?;
+    file.write_all(bytes)?;
+    file.sync_all()
+}
+
+/// Make the attempt folder with mode 0700 when it is missing.
+fn make_dir(dir: &Path) -> Result<()> {
+    if dir.is_dir() {
+        return Ok(());
+    }
+    let mut builder = DirBuilder::new();
+    builder.recursive(true);
+    let _ = horch_platform::fs::create_dir_mode(&mut builder, DIR_MODE);
+    builder
+        .create(dir)
+        .with_context(|| format!("make {}", dir.display()))
+}
+
+/// An `Unsupported` error of the platform (Windows: no modes, no dir sync)
+/// is not a failure of the write.
+fn ok_if_not_supported(r: io::Result<()>) -> io::Result<()> {
+    match r {
+        Err(e) if e.kind() == io::ErrorKind::Unsupported => Ok(()),
+        r => r,
+    }
+}
+
+/// Write [`EXIT_JSON`] of the newest attempt of `worker_id`. False: the
+/// worker has no attempt, and no file is written.
+pub fn write_exit(
+    db: &Path,
+    worker_id: &str,
+    fleet_root: &Path,
+    code: Option<i32>,
+    repaired: bool,
+) -> Result<bool> {
+    let Some(files) = AttemptFiles::of_worker(db, worker_id, fleet_root)? else {
+        return Ok(false);
+    };
+    files.write_exit(code, repaired)?;
+    Ok(true)
 }
 
 /// Looks up the session id and transcript path while the agent runs.
@@ -97,7 +389,7 @@ pub fn interval(db: &Path, worker_id: &str, fleet_root: &Path) -> Duration {
     if let Some(line) = warning {
         eprintln!("{line}");
     }
-    let run = Store::open(db).ok().and_then(|s| {
+    let run = Store::open_read_only(db).ok().and_then(|s| {
         s.conn()
             .query_row(
                 "SELECT r.heartbeat_every_s FROM workers w JOIN runs r ON r.run_id = w.run_id
@@ -111,20 +403,68 @@ pub fn interval(db: &Path, worker_id: &str, fleet_root: &Path) -> Duration {
     Duration::from_secs(secs)
 }
 
-/// Write `last_checkin_at = now` every `every` until stopped, and fill the
-/// session id and transcript path as soon as `lookup` knows them.
-pub fn start_checkins(
+/// The heartbeat writer of 1 wrapper: [`HEARTBEAT_JSON`] on each beat, and
+/// [`SESSION_JSON`] 1 time when `lookup` knows the session id.
+pub struct HeartbeatWriter {
     db: PathBuf,
     worker_id: String,
-    every: Duration,
+    fleet_root: PathBuf,
+    /// The files of the attempt, once the ledger has it.
+    files: Option<AttemptFiles>,
+    facts: Arc<AgentFacts>,
+    harness: String,
     lookup: SessionLookup,
-) -> Checkins {
+    session_written: bool,
+}
+
+impl HeartbeatWriter {
+    pub fn new(
+        db: PathBuf,
+        worker_id: String,
+        fleet_root: PathBuf,
+        facts: Arc<AgentFacts>,
+        harness: String,
+        lookup: SessionLookup,
+    ) -> HeartbeatWriter {
+        HeartbeatWriter {
+            db,
+            worker_id,
+            fleet_root,
+            files: None,
+            facts,
+            harness,
+            lookup,
+            session_written: false,
+        }
+    }
+
+    /// 1 beat. A worker with no attempt yet writes nothing.
+    pub fn beat(&mut self) -> Result<()> {
+        let files = match &self.files {
+            Some(files) => files,
+            None => match AttemptFiles::of_worker(&self.db, &self.worker_id, &self.fleet_root)? {
+                Some(files) => self.files.insert(files),
+                None => return Ok(()),
+            },
+        };
+        files.write_heartbeat(&self.facts)?;
+        if !self.session_written {
+            if let (Some(session), transcript) = (self.lookup)() {
+                files.write_session(&session, &self.harness, transcript.as_deref())?;
+                self.session_written = true;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Beat `writer` every `every` until stopped.
+pub fn start_heartbeats(mut writer: HeartbeatWriter, every: Duration) -> Checkins {
     let stop = Arc::new(AtomicBool::new(false));
     let flag = stop.clone();
     let thread = std::thread::spawn(move || {
         let tick = Duration::from_millis(100).min(every);
         let mut since = Duration::ZERO;
-        let mut session_known = false;
         let mut log = CheckinLog::default();
         loop {
             if flag.load(Ordering::SeqCst) {
@@ -132,8 +472,7 @@ pub fn start_checkins(
             }
             if since >= every {
                 since = Duration::ZERO;
-                let result = beat(&db, &worker_id, &lookup, &mut session_known)
-                    .map_err(|e| format!("{e:#}"));
+                let result = writer.beat().map_err(|e| format!("{e:#}"));
                 if let Some(line) = log.record(result, Instant::now()) {
                     eprintln!("{line}");
                 }
@@ -201,30 +540,6 @@ impl CheckinLog {
     }
 }
 
-fn beat(
-    db: &Path,
-    worker_id: &str,
-    lookup: &SessionLookup,
-    session_known: &mut bool,
-) -> Result<()> {
-    let s = Store::open(db)?;
-    workers::checkin(s.conn(), worker_id)?;
-    if !*session_known {
-        let (session, transcript) = lookup();
-        if session.is_some() || transcript.is_some() {
-            workers::set_session(
-                s.conn(),
-                worker_id,
-                session.as_deref(),
-                transcript.as_deref(),
-            )?;
-            let w = workers::get(s.conn(), worker_id)?;
-            *session_known = w.session_id.is_some() && w.transcript_path.is_some();
-        }
-    }
-    Ok(())
-}
-
 /// How a worker's agent ended, for the supervisor's report.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ended {
@@ -240,13 +555,10 @@ pub enum Ended {
     Escalated { task: String },
 }
 
-/// Settle the worker row after the agent exited with `code`.
-pub fn agent_exited(db: &Path, worker_id: &str, code: Option<i32>) -> Result<Ended> {
-    let mut s = Store::open(db)?;
-    s.immediate(|tx| settle(tx, worker_id, code))
-}
-
-fn settle(tx: &rusqlite::Connection, worker_id: &str, code: Option<i32>) -> Result<Ended> {
+/// Settle the worker row of `worker_id` after its agent exited with
+/// `code`, in the transaction `tx`: the rule for the facts of
+/// [`EXIT_JSON`].
+pub fn settle(tx: &rusqlite::Connection, worker_id: &str, code: Option<i32>) -> Result<Ended> {
     let w = workers::get(tx, worker_id)?;
     let status = w.status()?;
     let about = About {
@@ -318,31 +630,6 @@ fn requeue_after_exit(
     })
 }
 
-/// Record that the worker closed its own pane.
-pub fn closed_own_pane(db: &Path, worker_id: &str, pane: &str, outcome: &Result<()>) -> Result<()> {
-    let s = Store::open(db)?;
-    s.conn().execute(
-        "INSERT INTO stops (worker_id, requested_by, reason, target, pane_id, result, at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![
-            worker_id,
-            StopRequester::SelfExit.as_str(),
-            match outcome {
-                Ok(()) => "the worker finished and closed its own pane".to_string(),
-                Err(e) => format!("closing its own pane failed: {e:#}"),
-            },
-            StopTarget::Pane.as_str(),
-            pane,
-            match outcome {
-                Ok(()) => StopResult::PaneClosed.as_str(),
-                Err(_) => StopResult::Error.as_str(),
-            },
-            util::now()
-        ],
-    )?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -350,6 +637,7 @@ mod tests {
     use crate::taskledger::runs::{self, NewRun};
     use crate::taskledger::tasks::{self, NewTask};
     use crate::taskledger::workers::NewWorker;
+    use rusqlite::params;
 
     struct Fixture {
         _dir: tempfile::TempDir,
@@ -404,6 +692,11 @@ mod tests {
             store,
             worker,
         }
+    }
+
+    /// Settle the worker as the code that applies `exit.json` does.
+    fn agent_exited(db: &Path, worker_id: &str, code: Option<i32>) -> Result<Ended> {
+        Store::open(db)?.immediate(|tx| settle(tx, worker_id, code))
     }
 
     fn row(f: &Fixture) -> (String, Option<String>, Option<i64>) {
