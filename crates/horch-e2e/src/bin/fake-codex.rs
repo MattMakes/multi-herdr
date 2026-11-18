@@ -22,6 +22,17 @@
 //! id is a UUID derived from the canonical cwd, recorded as `session_id`; a
 //! `resume <id>` launch records `resumed` and writes nothing.
 //!
+//! A pane launch plays the Phase 5 report keys after the Phase 4 keys, each
+//! as a tool command of the real Codex: `report_progress` runs
+//! `horch ledger progress`, `report_done` runs `horch ledger done`, and
+//! `report_result` runs `horch result`. A command that an allow rule of
+//! `$CODEX_HOME/rules/` matches runs outside the sandbox, and a forbidden
+//! rule refuses it. Each other command runs with writes confined to the cwd
+//! and the roots of the last `-c permissions.<p>.workspace_roots=` pair,
+//! with the `TMPDIR` of `shell_environment_policy.set.TMPDIR`. Each key logs
+//! its exit code, output, `sandboxed` and `writable`. `rules` logs the rules.
+//! The sandbox is the one of the platform (`horch_platform::sandbox`).
+//!
 //! As `codex sandbox ... -C <dir> -- <command>` it runs the command as a
 //! child with writes confined to `dir` and the profile's workspace roots,
 //! records them as `sandbox_writable`, and exits with the command's code.
@@ -32,6 +43,7 @@ use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
 use horch_e2e::{hang, hash16, say, scenario, scenario_has, write_skills_report, Call};
+use horch_platform::sandbox::{sandboxed, Denials};
 use serde_json::{json, Value};
 
 const ALLOWED: [&str; 3] = ["initialize", "initialized", "account/rateLimits/read"];
@@ -66,6 +78,7 @@ fn main() {
     }
     if call.argv.first().map(String::as_str) != Some("app-server") {
         horch_e2e::agent::play(&mut call);
+        report(&mut call);
         horch_e2e::idea_agent::play(&mut call);
         if scenario_has("inspect_skills") {
             inspect_skills();
@@ -239,6 +252,157 @@ fn update(call: &Call) -> ! {
     }
     horch_e2e::say("codex-cli 0.158.0 is the latest version");
     std::process::exit(0);
+}
+
+/// The Phase 5 report keys of a pane launch: see the module doc.
+fn report(call: &mut Call) {
+    let keys: [(&str, &[&str]); 3] = [
+        (
+            "report_progress",
+            &["ledger", "progress", "fake codex: step 1 is done"],
+        ),
+        (
+            "report_done",
+            &["ledger", "done", "fake codex: all steps are done"],
+        ),
+        (
+            "report_result",
+            &[
+                "result",
+                "--status",
+                "completed",
+                "--summary",
+                "fake codex wrote its result",
+            ],
+        ),
+    ];
+    if !keys.iter().any(|(key, _)| scenario_has(key)) {
+        return;
+    }
+    let rules = rules();
+    call.extra.insert(
+        "rules".into(),
+        json!(rules
+            .iter()
+            .map(|(pattern, decision)| json!({"pattern": pattern, "decision": decision}))
+            .collect::<Vec<_>>()),
+    );
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let mut writable = vec![cwd.to_string_lossy().into_owned()];
+    writable.extend(last_config(&call.argv, ".workspace_roots=").map_or_else(Vec::new, quoted));
+    let tmpdir = last_config(&call.argv, "shell_environment_policy.set.TMPDIR=")
+        .and_then(|value| quoted(value).into_iter().next());
+    for (key, args) in keys.iter().filter(|(key, _)| scenario_has(key)) {
+        let mut argv = vec!["horch".to_string()];
+        argv.extend(args.iter().map(|a| a.to_string()));
+        let out = tool_command(&argv, &rules, &writable, tmpdir.as_deref());
+        call.extra.insert((*key).into(), out);
+    }
+    call.flush();
+}
+
+/// Run `argv` as Codex runs a tool command: a forbidden rule refuses it, an
+/// allow rule runs it unconfined, else it runs confined to `writable`.
+fn tool_command(
+    argv: &[String],
+    rules: &[(Vec<String>, String)],
+    writable: &[String],
+    tmpdir: Option<&str>,
+) -> Value {
+    let matched: Vec<&str> = rules
+        .iter()
+        .filter(|(pattern, _)| argv.starts_with(pattern))
+        .map(|(_, decision)| decision.as_str())
+        .collect();
+    if matched.contains(&"forbidden") {
+        return json!({"exit": null, "forbidden": true, "sandboxed": false});
+    }
+    let confine = !matched.contains(&"allow");
+    let Some(program) = on_path(&argv[0]) else {
+        return json!({"error": format!("{} is not on PATH", argv[0])});
+    };
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(&argv[1..]);
+    if confine {
+        if let Some(tmpdir) = tmpdir {
+            cmd.env("TMPDIR", tmpdir);
+        }
+        let roots: Vec<PathBuf> = writable.iter().map(PathBuf::from).collect();
+        cmd = match sandboxed(cmd, &roots, &Denials::default()) {
+            Ok(cmd) => cmd,
+            Err(e) => return json!({"error": format!("no sandbox on this OS: {e}")}),
+        };
+    }
+    match cmd.output() {
+        Ok(out) => json!({
+            "exit": out.status.code(),
+            "stdout": String::from_utf8_lossy(&out.stdout),
+            "stderr": String::from_utf8_lossy(&out.stderr),
+            "sandboxed": confine,
+            "writable": writable,
+        }),
+        Err(e) => json!({"error": format!("{argv:?}: {e}")}),
+    }
+}
+
+/// The prefix rules of `$CODEX_HOME/rules/*.rules`: each pattern and its
+/// decision (`allow` when the rule sets none).
+fn rules() -> Vec<(Vec<String>, String)> {
+    let Some(home) = std::env::var_os("CODEX_HOME") else {
+        return Vec::new();
+    };
+    let mut files: Vec<PathBuf> = std::fs::read_dir(Path::new(&home).join("rules"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "rules"))
+        .collect();
+    files.sort();
+    let mut rules = Vec::new();
+    for text in files.iter().filter_map(|f| std::fs::read_to_string(f).ok()) {
+        for block in text.split("prefix_rule(").skip(1) {
+            let field = |name: &str| {
+                block
+                    .lines()
+                    .find_map(|l| l.trim().strip_prefix(name)?.trim().strip_prefix('='))
+                    .map(str::trim)
+            };
+            let pattern = field("pattern").map_or_else(Vec::new, quoted);
+            let decision = field("decision")
+                .and_then(|d| quoted(d).into_iter().next())
+                .unwrap_or_else(|| "allow".into());
+            if !pattern.is_empty() {
+                rules.push((pattern, decision));
+            }
+        }
+    }
+    rules
+}
+
+/// The value of the last `-c` pair of `argv` whose text contains `key`,
+/// from the end of `key` on.
+fn last_config<'a>(argv: &'a [String], key: &str) -> Option<&'a str> {
+    argv.windows(2)
+        .rev()
+        .filter(|w| matches!(w[0].as_str(), "-c" | "--config"))
+        .find_map(|w| w[1].split_once(key).map(|(_, value)| value))
+}
+
+/// Each double-quoted string of `text`, with no escape in it.
+fn quoted(text: &str) -> Vec<String> {
+    text.split('"')
+        .skip(1)
+        .step_by(2)
+        .map(str::to_string)
+        .collect()
+}
+
+/// The path of `name` in a folder of `PATH`.
+fn on_path(name: &str) -> Option<PathBuf> {
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|dir| dir.join(name))
+        .find(|p| p.is_file())
 }
 
 /// `codex sandbox [opts] -- <command>`: see the module doc.
