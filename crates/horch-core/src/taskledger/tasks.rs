@@ -1411,16 +1411,7 @@ fn claimed(conn: &Connection, w: &Worker, task: Task) -> Result<Claimed> {
             transcript_path: a.transcript_path,
         })
         .collect();
-    let tree = held_tree(conn, &task.task_id)?;
-    let rescue_ref = tree.as_ref().and_then(|t| t.rescue_ref.clone());
-    let (wt, orphaned_worktree) = match tree {
-        Some(t) if t.state == WorktreeState::Orphaned => (None, Some(t.path)),
-        Some(t) => {
-            let landed = landed_commit(conn, &t)?;
-            (Some((t.path, t.branch, landed)), None)
-        }
-        None => (None, None),
-    };
+    let tree = claimed_tree(conn, &task.task_id)?;
     let steps = super::runs::get(conn, &task.run_id)?.steps()?;
     let steps_after_land = steps
         .iter()
@@ -1433,17 +1424,51 @@ fn claimed(conn: &Connection, w: &Worker, task: Task) -> Result<Claimed> {
         do_not_touch: files(conn, &task.task_id, FileMode::DoNotTouch)?,
         attempt: w.attempt.unwrap_or(task.attempts),
         prior,
-        worktree: wt.as_ref().map(|(p, _, _)| p.clone()),
+        worktree: tree.worktree,
         reopened_from: super::import::reopened_from(conn, &task.task_id)?,
-        landed_commit: wt.as_ref().and_then(|(_, _, l)| l.clone()),
+        landed_commit: tree.landed_commit,
         steps_after_land,
-        worktree_branch: wt.map(|(_, b, _)| b),
+        worktree_branch: tree.branch,
         ticket_snapshot: task.ticket_snapshot.clone(),
         handoff_path,
         answered: answered_questions(conn, &task.task_id)?,
-        rescue_ref,
-        orphaned_worktree,
+        rescue_ref: tree.rescue_ref,
+        orphaned_worktree: tree.orphaned_worktree,
         task,
+    })
+}
+
+/// The tree of a claimed task, as the fields of [`Claimed`] give it.
+#[derive(Default)]
+struct ClaimedTree {
+    /// The tree that the attempt holds.
+    worktree: Option<String>,
+    branch: Option<String>,
+    landed_commit: Option<String>,
+    rescue_ref: Option<String>,
+    /// The `orphaned` tree that waits for its rescue.
+    orphaned_worktree: Option<String>,
+}
+
+/// The held tree of `task_id`: an `orphaned` tree gives only its path, as
+/// the claim does not take it before its rescue.
+fn claimed_tree(conn: &Connection, task_id: &str) -> Result<ClaimedTree> {
+    let Some(t) = held_tree(conn, task_id)? else {
+        return Ok(ClaimedTree::default());
+    };
+    if t.state == WorktreeState::Orphaned {
+        return Ok(ClaimedTree {
+            rescue_ref: t.rescue_ref,
+            orphaned_worktree: Some(t.path),
+            ..ClaimedTree::default()
+        });
+    }
+    Ok(ClaimedTree {
+        landed_commit: landed_commit(conn, &t)?,
+        worktree: Some(t.path),
+        branch: Some(t.branch),
+        rescue_ref: t.rescue_ref,
+        orphaned_worktree: None,
     })
 }
 

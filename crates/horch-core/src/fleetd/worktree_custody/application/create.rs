@@ -220,7 +220,7 @@ fn queued_run(
 /// - `orphaned`: no change; [`Attach::NeedsRescue`].
 ///
 /// It refuses a row that another live attempt owns (FM-14), and a row
-/// whose removal can run ([`refuse_removal`]).
+/// whose removal can run ([`refuse_while_removal_active`]).
 ///
 /// The claim calls it too (ticket 11 of fleetd-p3).
 pub fn attach(
@@ -236,7 +236,7 @@ pub fn attach(
         _ => {}
     }
     refuse_live_owner(tx, row, attempt)?;
-    refuse_removal(tx, row)?;
+    refuse_while_removal_active(tx, row)?;
     tx.execute(
         "UPDATE worktrees SET worker_id = ?2 WHERE worktree_id = ?1",
         params![id, worker],
@@ -280,7 +280,7 @@ fn refuse_live_owner(tx: &Connection, row: &WorktreeRow, attempt: Option<&str>) 
 /// removal never both pass: `queue_remove` refuses a row that is not
 /// `landed` or `rescued`, and the writer lock of SQLite orders the 2
 /// transactions.
-fn refuse_removal(tx: &Connection, row: &WorktreeRow) -> Result<()> {
+fn refuse_while_removal_active(tx: &Connection, row: &WorktreeRow) -> Result<()> {
     let id = row.worktree_id.as_str();
     let key = remove_key(&row.path);
     let Some(run) = jobs_store::latest(tx, Kind::WorktreeRemove, id, &key)? else {
