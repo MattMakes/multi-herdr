@@ -898,9 +898,8 @@ fn behind(conn: &Connection, w: &Worker, row: &WaitRow, task_ids: &[String]) -> 
         QUESTION_WAIT => Behind::Question {
             open: match &row.question_id {
                 None => true,
-                Some(id) => {
-                    questions_store::get(conn, id)?.is_some_and(|q| q.state == QuestionState::Open)
-                }
+                Some(id) => questions_store::get(conn, id)?
+                    .is_some_and(|q| q.state != QuestionState::Answered),
             },
         },
         REVIEWS_WAIT if task_ids.is_empty() => Behind::HeldForFinish,
@@ -1113,7 +1112,7 @@ fn wait_on_questions(
     w: &Worker,
     open: &[&crate::messaging::mail::Message],
 ) -> Result<()> {
-    let (Some(task), Some(run_id)) = (w.task_id.as_deref(), w.run_id.as_deref()) else {
+    let Some(task) = w.task_id.as_deref() else {
         return Ok(());
     };
     let attempt =
@@ -1121,9 +1120,6 @@ fn wait_on_questions(
             .into_iter()
             .rfind(|a| a.task_id.as_deref() == Some(task))
             .map_or_else(|| w.worker_id.clone(), |a| a.id);
-    let owner = super::runs::get(conn, run_id)?
-        .orchestrator_worker_id
-        .unwrap_or_else(|| "orchestrator".to_string());
     let clock = lease::fleet_clock(conn)?;
     let limit = FleetConfig::default().question_limit_s;
     let mut rows: Vec<(&crate::messaging::mail::Message, Question)> = Vec::new();
@@ -1132,8 +1128,6 @@ fn wait_on_questions(
         let ask = questions::Ask {
             task_id: task,
             attempt_id: &attempt,
-            run_id,
-            owner: &owner,
             mail_id: q.id.as_str(),
             text: &q.text,
             asked_at: &asked_at,
@@ -1169,20 +1163,23 @@ fn wait_on_questions(
     waits_store::put(conn, &w.worker_id, &wait)
 }
 
-/// Each open `questions` row of a run of `workspace` whose mail question is
-/// not in `open` goes to `answered`. An answer through `horch tell
-/// --answers` recorded its text before the mail question closed.
+/// Each `questions` row that waits for an answer, of a feature whose
+/// internal run (`F-<run rowid>`, fleetd-p6 MAP.md Q5) is of `workspace`,
+/// and whose mail question is not in `open`, goes to `answered`. An answer
+/// through `horch tell --answers` recorded its text before the mail
+/// question closed.
 fn close_answered_rows(
     conn: &Connection,
     workspace: &str,
     open: &[crate::messaging::mail::Message],
 ) -> Result<()> {
-    let mut stmt = conn.prepare("SELECT run_id FROM runs WHERE workspace_id = ?1")?;
-    let runs = stmt
+    let mut stmt =
+        conn.prepare("SELECT printf('F-%04d', rowid) FROM runs WHERE workspace_id = ?1")?;
+    let features = stmt
         .query_map([workspace], |r| r.get::<_, String>(0))?
         .collect::<rusqlite::Result<std::collections::BTreeSet<_>>>()?;
     for (q, mail_id) in questions::open_with_mail(conn)? {
-        if !runs.contains(&q.feature_id) {
+        if !features.contains(&q.feature_id) {
             continue;
         }
         if !open
@@ -1688,7 +1685,7 @@ mod tests {
     fn question_wait_points_at_its_open_questions_row() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = Store::open(&dir.path().join("l.sqlite3")).unwrap();
-        let (run, worker) = claimed(&mut s);
+        let (_, worker) = claimed(&mut s);
         mail_question(dir.path(), "QUESTION: which?");
         mail_question(dir.path(), "QUESTION: where?");
         sync_questions(s.conn(), dir.path(), "w1").unwrap();
@@ -1705,9 +1702,11 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(rows.len(), 2, "1 row for each open question: {rows:?}");
-        assert!(rows
-            .iter()
-            .all(|r| r.1 == run && r.2 == "open" && r.3 == 1_900));
+        assert!(
+            rows.iter()
+                .all(|r| r.1 == "F-0001" && r.2 == "open" && r.3 == 1_900),
+            "the feature of the run of the task: {rows:?}"
+        );
         let wait = question_wait(s.conn(), &worker).expect("a question wait");
         assert_eq!(wait.question_id.as_deref(), Some(rows[0].0.as_str()));
         assert!(rows[0].0.ends_with("/Q1"), "{rows:?}");

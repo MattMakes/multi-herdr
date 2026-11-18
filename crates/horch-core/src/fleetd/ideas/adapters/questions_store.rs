@@ -53,12 +53,46 @@ pub fn insert(conn: &Connection, q: &Question) -> Result<()> {
     Ok(())
 }
 
-/// Move the open row `id` to `answered` at `at`. Whether it was open.
+/// Move the row `id` that waits for an answer (`open` or `escalated`) to
+/// `answered` at `at`. Whether it waited.
 pub fn set_answered(conn: &Connection, id: &str, at: &str) -> Result<bool> {
     Ok(conn.execute(
-        "UPDATE questions SET state = ?2, answered_at = ?3 WHERE id = ?1 AND state = ?4",
-        params![id, State::Answered.as_str(), at, State::Open.as_str()],
+        "UPDATE questions SET state = ?2, answered_at = ?3 WHERE id = ?1 AND state IN (?4, ?5)",
+        params![
+            id,
+            State::Answered.as_str(),
+            at,
+            State::Open.as_str(),
+            State::Escalated.as_str()
+        ],
     )? > 0)
+}
+
+/// Move the open row `id` to `escalated`. Whether it was open.
+pub fn set_escalated(conn: &Connection, id: &str) -> Result<bool> {
+    Ok(conn.execute(
+        "UPDATE questions SET state = ?2 WHERE id = ?1 AND state = ?3",
+        params![id, State::Escalated.as_str(), State::Open.as_str()],
+    )? > 0)
+}
+
+/// Give the row `id` the feature `feature_id` and the owner `owner`.
+pub fn set_owner(conn: &Connection, id: &str, feature_id: &str, owner: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE questions SET feature_id = ?2, owner = ?3 WHERE id = ?1",
+        params![id, feature_id, owner],
+    )?;
+    Ok(())
+}
+
+/// Move the time limit of each open row of feature `feature_id` `by_s`
+/// seconds later.
+pub fn delay_open_of_feature(conn: &Connection, feature_id: &str, by_s: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE questions SET due_at = due_at + ?2 WHERE feature_id = ?1 AND state = ?3",
+        params![feature_id, by_s, State::Open.as_str()],
+    )?;
+    Ok(())
 }
 
 /// The row ids of attempt `attempt_id`.
@@ -78,9 +112,24 @@ pub fn open_of_task(conn: &Connection, task_id: &str) -> Result<i64> {
     )?)
 }
 
+/// The number of rows of task `task_id` that wait for an answer: `open`
+/// or `escalated`.
+pub fn unanswered_of_task(conn: &Connection, task_id: &str) -> Result<i64> {
+    Ok(conn.query_row(
+        "SELECT count(*) FROM questions WHERE task_id = ?1 AND state <> ?2",
+        params![task_id, State::Answered.as_str()],
+        |r| r.get(0),
+    )?)
+}
+
 /// The open rows, oldest first.
 pub fn open(conn: &Connection) -> Result<Vec<Question>> {
     rows_where(conn, "state = ?1", [State::Open.as_str()])
+}
+
+/// The rows that wait for an answer (`open` or `escalated`), oldest first.
+pub fn unanswered(conn: &Connection) -> Result<Vec<Question>> {
+    rows_where(conn, "state <> ?1", [State::Answered.as_str()])
 }
 
 /// The rows of task `task_id`, oldest first.

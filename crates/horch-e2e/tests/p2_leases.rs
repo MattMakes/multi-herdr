@@ -178,18 +178,17 @@ impl Fleet {
         store
             .conn()
             .query_row(
-                "SELECT task_id, run_id, status, attempts, attempt_floor, replans, not_before
+                "SELECT task_id, status, attempts, attempt_floor, replans, not_before
                  FROM tasks",
                 [],
                 |r| {
                     Ok(Task {
                         id: r.get(0)?,
-                        run_id: r.get(1)?,
-                        status: r.get(2)?,
-                        attempts: r.get(3)?,
-                        attempt_floor: r.get(4)?,
-                        replans: r.get(5)?,
-                        not_before: r.get(6)?,
+                        status: r.get(1)?,
+                        attempts: r.get(2)?,
+                        attempt_floor: r.get(3)?,
+                        replans: r.get(4)?,
+                        not_before: r.get(5)?,
                     })
                 },
             )
@@ -274,7 +273,6 @@ impl Fleet {
 #[derive(Debug)]
 struct Task {
     id: String,
-    run_id: String,
     status: String,
     attempts: i64,
     attempt_floor: i64,
@@ -602,8 +600,6 @@ fn cancel_of_a_blocked_on_user_task_is_immediate() {
     let ask = Ask {
         task_id: &t.id,
         attempt_id: &attempt,
-        run_id: &t.run_id,
-        owner: "orchestrator",
         mail_id: "m1",
         text: "which way?",
         asked_at: &now,

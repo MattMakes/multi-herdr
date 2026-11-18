@@ -3,7 +3,7 @@
 //! Each use case runs in the transaction of its caller, else in 1 new
 //! transaction.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use rusqlite::Connection;
 use serde_json::json;
 
@@ -11,19 +11,19 @@ use crate::fleetd::fleet_runtime::application::ledger::{record, Cause};
 use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 use crate::fleetd::ideas::adapters::questions_store as store;
+use crate::fleetd::ideas::application::needs_you;
+use crate::fleetd::ideas::application::question_flow::{feature_of_task, needs_you_key, owner_of};
 use crate::fleetd::ideas::domain::questions::{next_n, row_id, Question, State};
 use crate::taskledger::model::{Actor, EventKind};
 use crate::taskledger::{tasks, util};
 
-/// 1 open mail question of the worker of an attempt.
+/// 1 open mail question of the worker of an attempt. Its feature is the
+/// feature of the idea of its task, and its owner is the sub-orchestrator
+/// of that feature ([`owner_of`]; fleetd-p6 MAP.md, Q11).
 #[derive(Debug, Clone, Copy)]
 pub struct Ask<'a> {
     pub task_id: &'a str,
     pub attempt_id: &'a str,
-    /// The run id: the feature before Phase 4 (MAP.md, Q13).
-    pub run_id: &'a str,
-    /// The orchestrator of the run.
-    pub owner: &'a str,
     /// The id of the mail question.
     pub mail_id: &'a str,
     pub text: &'a str,
@@ -31,8 +31,11 @@ pub struct Ask<'a> {
 }
 
 /// The `questions` row of the mail question of `a`: the row that exists,
-/// else a new `open` row with the time limit `question_limit_s` after
-/// `clock`, and 1 `question` event that holds the mail id and the text.
+/// else a new `open` row of the feature of its task, owned by the
+/// sub-orchestrator of that feature, with the time limit `question_limit_s`
+/// after `clock`, and 1 `question` event that holds the mail id and the
+/// text. The question flow counts the limit only while the owner runs
+/// ([`crate::fleetd::ideas::application::question_flow`]).
 pub fn ask(
     conn: &Connection,
     a: &Ask<'_>,
@@ -46,13 +49,19 @@ pub fn ask(
         if let Some(q) = asked.and_then(|f| store::get(tx, &f.question_id).transpose()) {
             return q;
         }
+        let feature = feature_of_task(tx, a.task_id)?.with_context(|| {
+            format!(
+                "task {} has no idea, so its question has no owner",
+                a.task_id
+            )
+        })?;
         let ids = store::ids_of_attempt(tx, a.attempt_id)?;
         let n = next_n(a.attempt_id, ids.iter().map(String::as_str));
         let q = Question {
             id: row_id(a.attempt_id, n),
             task_id: a.task_id.to_string(),
-            feature_id: a.run_id.to_string(),
-            owner: a.owner.to_string(),
+            owner: owner_of(&feature),
+            feature_id: feature,
             state: State::Open,
             due_at: clock.0.saturating_add_unsigned(question_limit_s),
             asked_at: a.asked_at.to_string(),
@@ -66,8 +75,9 @@ pub fn ask(
     })
 }
 
-/// The answer `answer` to the mail question `mail_id`: its open row goes
-/// to `answered`. The id of the row, or `None` when no open row asked it.
+/// The answer `answer` to the mail question `mail_id`: its row that waits
+/// for an answer goes to `answered`. The id of the row, or `None` when no
+/// such row asked it.
 pub fn answer_mail(conn: &Connection, mail_id: &str, answer: &str) -> Result<Option<String>> {
     util::atomic(conn, |tx| {
         let open = open_with_mail(tx)?;
@@ -82,8 +92,10 @@ pub fn answer_mail(conn: &Connection, mail_id: &str, answer: &str) -> Result<Opt
     })
 }
 
-/// The open row `q` goes to `answered`, with the answer text when it is
-/// known, and frees its task when no other question of the task is open.
+/// The row `q` that waits for an answer (`open` or `escalated`) goes to
+/// `answered`, with the answer text when it is known. Its needs-you item
+/// is resolved, and its task is freed when no other question of the task
+/// waits for an answer.
 pub fn answered(conn: &Connection, q: &Question, answer: Option<&str>) -> Result<()> {
     util::atomic(conn, |tx| {
         if !store::set_answered(tx, &q.id, &util::now())? {
@@ -92,7 +104,8 @@ pub fn answered(conn: &Connection, q: &Question, answer: Option<&str>) -> Result
         let text = format!("question {} answered", q.id);
         let data = json!({ "question_id": q.id, "text": answer });
         record_event(tx, EventKind::Answered, &q.task_id, &text, &data)?;
-        if store::open_of_task(tx, &q.task_id)? == 0 {
+        needs_you::resolve(tx, &needs_you_key(&q.id))?;
+        if store::unanswered_of_task(tx, &q.task_id)? == 0 {
             tasks::question_answered(tx, &q.task_id, &q.id)?;
         }
         Ok(())
@@ -109,6 +122,15 @@ struct Fact {
     text: Option<String>,
 }
 
+/// The text of the question of the row `q`, when its `question` event holds
+/// it.
+pub fn asked_text(conn: &Connection, q: &Question) -> Result<Option<String>> {
+    Ok(facts(conn, &q.task_id, EventKind::Question)?
+        .into_iter()
+        .find(|f| f.question_id == q.id && f.text.is_some())
+        .and_then(|f| f.text))
+}
+
 /// The facts of kind `kind` about task `task_id`, oldest first.
 fn facts(conn: &Connection, task_id: &str, kind: EventKind) -> Result<Vec<Fact>> {
     tasks::task_facts(conn, task_id, kind)?
@@ -117,10 +139,11 @@ fn facts(conn: &Connection, task_id: &str, kind: EventKind) -> Result<Vec<Fact>>
         .collect()
 }
 
-/// Each open row with the mail id of its question, oldest first.
+/// Each row that waits for an answer (`open` or `escalated`) with the mail
+/// id of its question, oldest first.
 pub fn open_with_mail(conn: &Connection) -> Result<Vec<(Question, Option<String>)>> {
     let mut out = Vec::new();
-    for q in store::open(conn)? {
+    for q in store::unanswered(conn)? {
         let mail = facts(conn, &q.task_id, EventKind::Question)?
             .into_iter()
             .find(|f| f.question_id == q.id)
@@ -147,7 +170,7 @@ pub fn answered_of_task(conn: &Connection, task_id: &str) -> Result<Vec<Answered
         facts
             .iter()
             .rev()
-            .find(|f| f.question_id == id)
+            .find(|f| f.question_id == id && f.text.is_some())
             .and_then(|f| f.text.clone())
     };
     Ok(store::of_task(conn, task_id)?
@@ -187,13 +210,12 @@ mod tests {
         _dir: tempfile::TempDir,
         store: Store,
         task: String,
-        run: String,
     }
 
     fn fixture() -> Fixture {
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open(&dir.path().join("l.sqlite3")).unwrap();
-        let (run, task) = store
+        let task = store
             .immediate(|tx| {
                 let run = runs::create(
                     tx,
@@ -205,14 +227,13 @@ mod tests {
                 )?;
                 let new = NewTask::work("t", "t.md", "opus");
                 let task = tasks::add(tx, &run, &new, Actor::Orchestrator)?;
-                Ok((run.run_id, task.task_id))
+                Ok(task.task_id)
             })
             .unwrap();
         Fixture {
             _dir: dir,
             store,
             task,
-            run,
         }
     }
 
@@ -220,8 +241,6 @@ mod tests {
         Ask {
             task_id: &f.task,
             attempt_id: "A1",
-            run_id: &f.run,
-            owner: "orchestrator",
             mail_id,
             text: "QUESTION: which?",
             asked_at: "2026-11-17T00:00:00Z",
@@ -233,8 +252,8 @@ mod tests {
         let f = fixture();
         let q = ask(f.store.conn(), &ask_of(&f, "m1"), FleetSeconds(100), 900).unwrap();
         assert_eq!(q.id, "A1/Q1");
-        assert_eq!(q.owner, "orchestrator");
-        assert_eq!(q.feature_id, f.run);
+        assert_eq!(q.feature_id, "F-0001", "the feature of the run of the task");
+        assert_eq!(q.owner, "idea-lead:F-0001");
         assert_eq!(q.state, State::Open);
         assert_eq!(q.due_at, 1_000);
         assert_eq!(store::get(f.store.conn(), "A1/Q1").unwrap(), Some(q));
