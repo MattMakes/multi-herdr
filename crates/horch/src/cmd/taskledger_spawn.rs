@@ -7,9 +7,14 @@ use std::path::Path;
 use anyhow::{bail, ensure, Result};
 use horch_core::execution::store::ExecutionStore;
 use horch_core::fleetd::fleet_runtime::application::holds;
+use horch_core::fleetd::fleet_runtime::application::ledger::{self, Cause};
 use horch_core::fleetd::fleet_runtime::domain::health::Finding;
+use horch_core::fleetd::fleet_runtime::domain::ledger::Entity;
+use horch_core::fleetd::task_execution::adapters::sqlite as attempts_store;
+use horch_core::fleetd::task_execution::application::quota::ADOPT_WORKER_ENV;
+use horch_core::fleetd::task_execution::domain::task::AttemptState;
 use horch_core::runtime::RuntimeContext;
-use horch_core::taskledger::model::{Actor, EventKind, RunStatus, WorkerKind};
+use horch_core::taskledger::model::{Actor, EventKind, RunStatus, WorkerKind, WorkerStatus};
 use horch_core::taskledger::runs::{self, Run};
 use horch_core::taskledger::util::{self, About};
 use horch_core::taskledger::workers::{self, NewWorker};
@@ -62,7 +67,15 @@ pub fn prepare(
     ensure_active(&run)?;
     let persona = spawn_persona(ctx, args)?;
     ensure_replaceable(&store, args, &run)?;
-    let id = insert_row(ctx, &mut store, args, &run, persona)?;
+    let id = match adopt_wanted() {
+        Some(row) if role_run.is_none() => {
+            adopt(&mut store, &row, &run, &persona, claim_target().as_deref())?
+        }
+        Some(row) => {
+            bail!("horch spawn refused: a controller's brief adopts no worker row ({row})")
+        }
+        None => insert_row(ctx, &mut store, args, &run, persona)?,
+    };
     if role_run.is_some() {
         mark_no_claim(&mut store, &run, &id, controller.unwrap_or_default())?;
     }
@@ -272,6 +285,100 @@ fn insert_row(
                 ..Default::default()
             },
         )
+    })
+}
+
+/// The cause of the event that records the adoption of a worker row.
+const ADOPTED: &str = "adopted_by_spawn";
+
+/// The worker row that [`ADOPT_WORKER_ENV`] names, if it is set: fleetd
+/// wrote it for a restart on a fallback.
+fn adopt_wanted() -> Option<String> {
+    std::env::var(ADOPT_WORKER_ENV)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+}
+
+/// Adopt the worker row `worker_id` that fleetd wrote for a restart on a
+/// fallback (RR-11), in place of a new row. The variable is an input that
+/// any process can set, so the row must be in `spawning` with no agent
+/// PID, hold exactly 1 attempt, in `launching`, and have the run, the
+/// persona and the target task of this spawn. The check and the record of
+/// the adoption are 1 immediate transaction through the door, so 2 spawns
+/// that name 1 row cannot both adopt it. Each other case refuses and
+/// adopts nothing.
+///
+/// The Phase 2 bridge: Phase 4 replaces it with the push dispatch, which
+/// binds the task to a worker before the pane opens.
+fn adopt(
+    store: &mut Store,
+    worker_id: &str,
+    run: &Run,
+    persona: &str,
+    target: Option<&str>,
+) -> Result<String> {
+    store.immediate(|tx| {
+        let refusal = |why: &str| {
+            anyhow::anyhow!("horch spawn refused: it cannot adopt worker row {worker_id}: {why}")
+        };
+        let Some(w) = workers::find(tx, worker_id)? else {
+            return Err(refusal("no worker row has this id"));
+        };
+        if w.run_id.as_deref() != Some(run.run_id.as_str()) {
+            return Err(refusal(&format!(
+                "the row is not a row of run {}",
+                run.slug
+            )));
+        }
+        if w.status != WorkerStatus::Spawning.as_str() {
+            return Err(refusal(&format!("the row is {}, not spawning", w.status)));
+        }
+        if w.agent_pid.is_some() {
+            return Err(refusal("the row has an agent PID"));
+        }
+        if w.persona.as_deref() != Some(persona) {
+            return Err(refusal(&format!(
+                "the row is not a row of persona {persona}"
+            )));
+        }
+        if target.is_none() || w.target_task_id.as_deref() != target {
+            return Err(refusal(&format!(
+                "the row is not spawned for the task that {CLAIM_TARGET_ENV} names"
+            )));
+        }
+        let attempts = attempts_store::attempts_of_worker(tx, worker_id)?;
+        let launching = matches!(
+            attempts.as_slice(),
+            [a] if a.state == AttemptState::Launching && a.task_id.as_deref() == target
+        );
+        if !launching {
+            return Err(refusal(
+                "the row does not have exactly 1 attempt in launching",
+            ));
+        }
+        let adopted: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM events WHERE entity = ?1 AND entity_id = ?2 AND cause = ?3",
+            rusqlite::params![Entity::Worker.as_str(), worker_id, ADOPTED],
+            |r| r.get(0),
+        )?;
+        if adopted > 0 {
+            return Err(refusal("another spawn adopted the row"));
+        }
+        let by = Cause {
+            actor: Actor::Worker,
+            text: ADOPTED,
+        };
+        let data = serde_json::json!({ "spawn_pid": std::process::id() });
+        ledger::record(
+            tx,
+            None,
+            EventKind::Note,
+            Entity::Worker,
+            worker_id,
+            by,
+            &data,
+        )?;
+        Ok(worker_id.to_string())
     })
 }
 
@@ -1057,5 +1164,214 @@ mod tests {
         let noted: Vec<&str> = swept.iter().map(|p| p.worker.worker_id.as_str()).collect();
         assert_eq!(noted, [plain.as_str()], "{swept:?}");
         assert!(swept.iter().all(|p| p.ended.is_none()), "{swept:?}");
+    }
+}
+
+#[cfg(test)]
+mod adoption_tests {
+    use horch_core::fleetd::task_execution::domain::task::AttemptRow;
+    use horch_core::taskledger::runs::NewRun;
+    use horch_core::taskledger::tasks::{self, NewTask};
+
+    use super::*;
+
+    struct World {
+        dir: tempfile::TempDir,
+        store: Store,
+        run: Run,
+        task: String,
+    }
+
+    /// A run with 1 task of `dev` and a second run.
+    fn world() -> World {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
+        let (run, task) = store
+            .immediate(|tx| {
+                let run = runs::create(
+                    tx,
+                    dir.path(),
+                    &NewRun {
+                        slug: "r1".into(),
+                        ..Default::default()
+                    },
+                )?;
+                let t = tasks::add(
+                    tx,
+                    &run,
+                    &NewTask::work("a", "tickets/a.md", "dev"),
+                    Actor::Orchestrator,
+                )?;
+                Ok((run, t.task_id))
+            })
+            .unwrap();
+        World {
+            dir,
+            store,
+            run,
+            task,
+        }
+    }
+
+    impl World {
+        /// The rows that fleetd writes for a restart on `alt`: a worker in
+        /// `spawning` for the task, with `attempts` attempts of `state`.
+        fn restart_row(&mut self, attempts: &[AttemptState]) -> String {
+            let (run_id, task) = (self.run.run_id.clone(), self.task.clone());
+            self.store
+                .immediate(|tx| {
+                    let id = workers::insert(
+                        tx,
+                        &NewWorker {
+                            run_id: run_id.clone(),
+                            kind: Some(WorkerKind::Worker),
+                            persona: "alt".into(),
+                            target_task_id: Some(task.clone()),
+                            ..Default::default()
+                        },
+                    )?;
+                    for (n, state) in attempts.iter().enumerate() {
+                        let a = AttemptRow {
+                            id: format!("{task}/A{n}-{id}"),
+                            task_id: Some(task.clone()),
+                            worker_id: id.clone(),
+                            state: *state,
+                            process: None,
+                            pane: None,
+                        };
+                        attempts_store::insert_attempt(tx, &a, &util::now())?;
+                    }
+                    Ok(id)
+                })
+                .unwrap()
+        }
+
+        fn adopt(&mut self, row: &str, persona: &str, target: Option<&str>) -> Result<String> {
+            let run = self.run.clone();
+            adopt(&mut self.store, row, &run, persona, target)
+        }
+
+        fn adopted_events(&self, row: &str) -> i64 {
+            self.store
+                .conn()
+                .query_row(
+                    "SELECT COUNT(*) FROM events WHERE entity_id = ?1 AND cause = ?2",
+                    [row, ADOPTED],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        }
+    }
+
+    fn refused(r: Result<String>, why: &str) {
+        let e = format!("{:#}", r.expect_err(why));
+        assert!(e.starts_with("horch spawn refused: it cannot adopt"), "{e}");
+        assert!(e.contains(why), "{e} does not say {why}");
+    }
+
+    #[test]
+    fn spawn_adopts_the_row_that_fleetd_wrote_once() {
+        let mut w = world();
+        let row = w.restart_row(&[AttemptState::Launching]);
+        let task = w.task.clone();
+        assert_eq!(w.adopt(&row, "alt", Some(&task)).unwrap(), row);
+        assert_eq!(w.adopted_events(&row), 1);
+        refused(
+            w.adopt(&row, "alt", Some(&task)),
+            "another spawn adopted the row",
+        );
+        assert_eq!(w.adopted_events(&row), 1);
+    }
+
+    #[test]
+    fn spawn_refuses_each_row_that_it_cannot_adopt() {
+        let mut w = world();
+        let task = w.task.clone();
+        refused(
+            w.adopt("no-such-row", "alt", Some(&task)),
+            "no worker row has this id",
+        );
+
+        let row = w.restart_row(&[AttemptState::Launching]);
+        let other = w
+            .store
+            .immediate(|tx| {
+                runs::create(
+                    tx,
+                    w.dir.path(),
+                    &NewRun {
+                        slug: "r2".into(),
+                        ..Default::default()
+                    },
+                )
+            })
+            .unwrap();
+        refused(
+            adopt(&mut w.store, &row, &other, "alt", Some(&task)),
+            "not a row of run r2",
+        );
+        refused(
+            w.adopt(&row, "dev", Some(&task)),
+            "not a row of persona dev",
+        );
+        refused(w.adopt(&row, "alt", None), "not spawned for the task");
+        refused(
+            w.adopt(&row, "alt", Some("other-task")),
+            "not spawned for the task",
+        );
+
+        let row = w.restart_row(&[]);
+        refused(
+            w.adopt(&row, "alt", Some(&task)),
+            "exactly 1 attempt in launching",
+        );
+        let row = w.restart_row(&[AttemptState::Ended]);
+        refused(
+            w.adopt(&row, "alt", Some(&task)),
+            "exactly 1 attempt in launching",
+        );
+        let row = w.restart_row(&[AttemptState::Launching, AttemptState::Launching]);
+        refused(
+            w.adopt(&row, "alt", Some(&task)),
+            "exactly 1 attempt in launching",
+        );
+
+        let row = w.restart_row(&[AttemptState::Launching]);
+        w.store
+            .immediate(|tx| workers::agent_started(tx, &row, 4_242, Some(7)))
+            .unwrap();
+        refused(
+            w.adopt(&row, "alt", Some(&task)),
+            "the row has an agent PID",
+        );
+
+        let row = w.restart_row(&[AttemptState::Launching]);
+        w.store
+            .immediate(|tx| workers::launch_failed(tx, &row, "x"))
+            .unwrap();
+        refused(w.adopt(&row, "alt", Some(&task)), "not spawning");
+        assert_eq!(w.adopted_events(&row), 0);
+    }
+
+    #[test]
+    fn two_spawns_that_name_1_row_cannot_both_adopt_it() {
+        let mut w = world();
+        let row = w.restart_row(&[AttemptState::Launching]);
+        let db = w.dir.path().join("ledger.sqlite3");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let spawns: Vec<_> = (0..2)
+            .map(|_| {
+                let (db, row, run, task) = (db.clone(), row.clone(), w.run.clone(), w.task.clone());
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let mut store = Store::open(&db).unwrap();
+                    barrier.wait();
+                    adopt(&mut store, &row, &run, "alt", Some(&task)).is_ok()
+                })
+            })
+            .collect();
+        let adopted: Vec<bool> = spawns.into_iter().map(|s| s.join().unwrap()).collect();
+        assert_eq!(adopted.iter().filter(|a| **a).count(), 1, "{adopted:?}");
+        assert_eq!(w.adopted_events(&row), 1);
     }
 }

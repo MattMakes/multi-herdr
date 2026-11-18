@@ -5,7 +5,8 @@
 //! closes a pane: a reap ends the rows and queues the task in 1
 //! transaction before any signal (`preservation-04-behavior.md`, S7).
 //!
-//! - The claim writes 1 live attempt and its lease with [`start_attempt`].
+//! - The claim writes 1 live attempt and its lease with [`start_attempt`],
+//!   or takes the attempt of a restart on a fallback to `live`.
 //! - `transition()` deletes the lease of a task that moves out of the
 //!   states that hold a lease: [`schedule_retry`] and [`escalate_task`].
 //! - `horch ledger done` ends the attempt of its worker:
@@ -55,7 +56,9 @@ fn cause(text: &str) -> Cause<'_> {
 
 /// The claim: write attempt `n` of task `task_id`, `live`, for `w`, with
 /// its agent process and pane when the row has them, and its lease on the
-/// fleet clock. Returns its id.
+/// fleet clock. Returns its id. A worker that fleetd wrote for a restart on
+/// a fallback already has its attempt of the task, in `launching` or
+/// `live`: the claim takes that attempt ([`take_restart`]).
 pub fn start_attempt(tx: &Connection, task_id: &str, n: i64, w: &Worker) -> Result<String> {
     check_open(tx)?;
     let process = w
@@ -65,6 +68,18 @@ pub fn start_attempt(tx: &Connection, task_id: &str, n: i64, w: &Worker) -> Resu
             pid,
             pid_start: w.agent_started.and_then(|s| u64::try_from(s).ok()),
         });
+    let attempts = store::attempts_of_worker(tx, &w.worker_id)?;
+    if let Some(held) = held_attempt(&w.worker_id, &attempts) {
+        if held.task_id.as_deref() != Some(task_id) {
+            bail!(
+                "worker {} already runs attempt {} ({}); a worker runs 1 attempt at a time (I4)",
+                w.worker_id,
+                held.id,
+                held.state.as_str()
+            );
+        }
+        return take_restart(tx, held, process, w);
+    }
     let a = AttemptRow {
         id: attempt_id(task_id, n),
         task_id: Some(task_id.to_string()),
@@ -86,9 +101,42 @@ pub fn start_attempt(tx: &Connection, task_id: &str, n: i64, w: &Worker) -> Resu
     Ok(a.id)
 }
 
-/// I4: refuse a claim by worker `worker_id` while an attempt holds it.
+/// The claim takes the attempt `a` of a restart on a fallback: the
+/// process of the agent of `w` goes on the row, `launching` moves to
+/// `live`, and the attempt takes the lease of its task. Returns its id.
+fn take_restart(
+    tx: &Connection,
+    a: &AttemptRow,
+    process: Option<Recorded>,
+    w: &Worker,
+) -> Result<String> {
+    let task_id = a.task_id.as_deref().unwrap_or_default();
+    if let Some(p) = process {
+        store::set_process(tx, &a.id, p)?;
+    }
+    if a.state == AttemptState::Launching {
+        let text = format!("{} claimed {task_id} with attempt {}", w.label(), a.id);
+        let by = Cause {
+            actor: Actor::Worker,
+            text: &text,
+        };
+        let live = AttemptState::Live.as_str();
+        transition(tx, None, Entity::Attempt, &a.id, live, by, &NeedsYouList)?;
+    }
+    let clock = lease::fleet_clock(tx)?;
+    lease::take(tx, clock, task_id, &a.id, lease::claim_lease_s())?;
+    Ok(a.id.clone())
+}
+
+/// I4: refuse a claim by worker `worker_id` while an attempt holds it. The
+/// attempt of a restart of the task that the worker was spawned for is not
+/// a second attempt: the claim takes it.
 pub fn refuse_second_attempt(tx: &Connection, worker_id: &str) -> Result<()> {
-    let attempts = store::attempts_of_worker(tx, worker_id)?;
+    let target = workers::get(tx, worker_id)?.target_task_id;
+    let attempts: Vec<AttemptRow> = store::attempts_of_worker(tx, worker_id)?
+        .into_iter()
+        .filter(|a| target.is_none() || a.task_id != target)
+        .collect();
     if let Some(a) = held_attempt(worker_id, &attempts) {
         bail!(
             "worker {worker_id} already runs attempt {} ({}); a worker runs 1 attempt at a time (I4)",

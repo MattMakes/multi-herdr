@@ -6,6 +6,7 @@
 //! `fleet` starts one orchestrator alone, which then grows and shrinks the fleet
 //! itself through the session ledger.
 
+use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 
@@ -14,6 +15,8 @@ use horch::project::project_facts;
 use horch_core::execution::legacy::{Record, KIND_ORCHESTRATOR};
 use horch_core::execution::records::{SessionLedger, ORCHESTRATING_TASK};
 use horch_core::execution::{ExecutionStatus, LaunchStage, SessionMode};
+use horch_core::fleetd::task_execution::application::quota::{Restart, ADOPT_WORKER_ENV};
+use horch_core::fleetd::worker_profiles::application::ports::{EnvRule, LaunchSpec};
 use horch_core::harness::launch::{self, DiscoveryTarget, LaunchRequest};
 use horch_core::harness::HarnessKind;
 use horch_core::ids::SessionId;
@@ -30,6 +33,7 @@ use horch_core::workspace::model::{Direction, NewWorkspace};
 use horch_core::workspace::paneshell::PaneShell;
 
 use super::doctor;
+use super::taskledger_spawn::CLAIM_TARGET_ENV;
 
 /// What a launched pane should become.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -806,6 +810,51 @@ pub fn respawn_orchestrator(ctx: &RuntimeContext, respawn: &Respawn) -> Result<(
     fleet_with(ctx, Some(&respawn.project_root), flavor, &options)
 }
 
+/// The launch of the restart `r` of a task on its fallback persona (RR-11):
+/// today's `horch spawn <fallback>` in the run of the task, with the claim
+/// target of the task and the worker row that fleetd wrote for it. fleetd
+/// starts it through its launcher (`task_execution::application::quota::
+/// restart`), so it inherits the folders and the ledger of fleetd. `--exact`
+/// keeps the persona: a fallback does not move to a third persona.
+///
+/// The Phase 2 bridge: Phase 4 replaces it with the push dispatch, which
+/// binds the task to a worker before the pane opens.
+// The pass of Phase 2 (ticket 14 of `docs/tickets/fleetd-p2/`) calls it
+// from the composition root of `horch fleetd`.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn restart_spec(ctx: &RuntimeContext, r: &Restart) -> Result<LaunchSpec> {
+    let Some(pane) = r.from_pane.as_deref() else {
+        anyhow::bail!(
+            "the restart of {} on {} has no pane to split: the run has no orchestrator pane, \
+             and the worker that hit the usage limit had no pane",
+            r.task_id,
+            r.persona
+        );
+    };
+    let args = [
+        "spawn",
+        r.persona.as_str(),
+        "--run",
+        r.run_slug.as_str(),
+        "--exact",
+        "--from-pane",
+        pane,
+    ];
+    Ok(LaunchSpec {
+        program: ctx.bins.exe()?,
+        args: args.iter().map(OsString::from).collect(),
+        cwd: Some(PathBuf::from(&r.project_root)),
+        env_rule: EnvRule {
+            vars: vec![
+                (CLAIM_TARGET_ENV.into(), r.task_id.as_str().into()),
+                (ADOPT_WORKER_ENV.into(), r.worker_id.as_str().into()),
+            ],
+        },
+        detach: true,
+        output: Some(ctx.paths.fleet_root.join("run").join("restart.log")),
+    })
+}
+
 /// The flavor whose orchestrator runs `model`; Opus, the default, for a
 /// model no flavor names.
 fn flavor_of_model(model: &str) -> FleetFlavor {
@@ -1467,6 +1516,76 @@ mod tests {
     /// [`workspace_label`] against the test process's current directory.
     fn label(path: &Path) -> String {
         workspace_label(path, std::env::current_dir().ok().as_deref())
+    }
+
+    fn restart(from_pane: Option<&str>) -> Restart {
+        Restart {
+            attempt: "T1/A2-fallback".into(),
+            task_id: "T1".into(),
+            worker_id: "W2".into(),
+            persona: "codex-sol".into(),
+            run_slug: "r1".into(),
+            project_root: "/work/proj".into(),
+            from_pane: from_pane.map(str::to_string),
+        }
+    }
+
+    /// RR-11: the restart on a fallback is today's `horch spawn <fallback>`
+    /// with the claim target of the task, the row that fleetd wrote, and no
+    /// fallback of its own (no third persona). It starts through the
+    /// launcher of fleetd and outlives the pass.
+    #[test]
+    fn restart_spec_spawns_the_fallback_for_the_task_and_its_row() {
+        let ctx = test_ctx();
+        let spec = restart_spec(&ctx, &restart(Some("w1:p3"))).unwrap();
+        assert_eq!(spec.program, PathBuf::from("/opt/horch/bin/horch"));
+        let args: Vec<String> = spec
+            .args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args,
+            [
+                "spawn",
+                "codex-sol",
+                "--run",
+                "r1",
+                "--exact",
+                "--from-pane",
+                "w1:p3"
+            ]
+        );
+        assert_eq!(spec.cwd.as_deref(), Some(Path::new("/work/proj")));
+        let env: Vec<(String, String)> = spec
+            .env_rule
+            .vars
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.to_string_lossy().into_owned(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            env,
+            [
+                (CLAIM_TARGET_ENV.to_string(), "T1".to_string()),
+                (ADOPT_WORKER_ENV.to_string(), "W2".to_string()),
+            ]
+        );
+        assert!(spec.detach);
+        assert_eq!(
+            spec.output,
+            Some(ctx.paths.fleet_root.join("run").join("restart.log"))
+        );
+    }
+
+    #[test]
+    fn restart_with_no_pane_to_split_is_refused() {
+        let e = restart_spec(&test_ctx(), &restart(None)).unwrap_err();
+        assert!(format!("{e:#}").contains("no pane to split"), "{e:#}");
     }
 
     /// TRF-43: the worktree steward's work is a one-off ledger task, and its
