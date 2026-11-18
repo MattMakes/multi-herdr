@@ -966,7 +966,9 @@ fn skl_08_briefing_matches_baseline_modulo_path() {
             compared += 1;
         }
     }
-    assert_eq!(compared, 33 * 4);
+    // 34 teammates: the 33 of A0 and idea-lead (T-529), whose 4 skill
+    // oracles were blessed in T-575.
+    assert_eq!(compared, 34 * 4);
 }
 
 #[test]
