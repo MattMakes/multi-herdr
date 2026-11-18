@@ -1226,6 +1226,7 @@ impl<'a> PaneWorker<'a> {
             brief.agent.clone(),
             lookup(),
         )
+        .with_record_id(brief.record_id.clone())
         .with_no_attempt_beat(no_attempt_beat);
         Some(crate::taskledger::supervisor::start_heartbeats(
             writer, every,

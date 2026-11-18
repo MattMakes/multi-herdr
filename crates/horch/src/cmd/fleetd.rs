@@ -30,6 +30,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
@@ -44,7 +45,12 @@ use horch_core::fleetd::fleet_runtime::adapters::fleetd_row::{self, lock_path, w
 use horch_core::fleetd::fleet_runtime::adapters::old_watchdog;
 use horch_core::fleetd::fleet_runtime::adapters::scans::FolderItem;
 use horch_core::fleetd::fleet_runtime::adapters::watchdog_duties::{HerdrObserver, WatchdogDuties};
-use horch_core::fleetd::fleet_runtime::application::holds;
+use horch_core::fleetd::fleet_runtime::adapters::channel_server::ChannelServer;
+use horch_core::fleetd::fleet_runtime::application::handlers_custody::{self, Custody};
+use horch_core::fleetd::fleet_runtime::application::handlers_task::{self, TaskHandlers};
+use horch_core::fleetd::fleet_runtime::application::handlers_worker::{self, WorkerDeps};
+use horch_core::fleetd::fleet_runtime::application::requests::Handlers;
+use horch_core::fleetd::fleet_runtime::application::{handlers_run, holds};
 use horch_core::fleetd::fleet_runtime::application::pass::{
     Outside, Pass, PassError, PoolFacts, Ports, Settings,
 };
@@ -53,15 +59,20 @@ use horch_core::fleetd::fleet_runtime::domain::health::{Finding, Hold};
 use horch_core::fleetd::fleet_runtime::domain::heartbeat::{is_hung, is_older, Exe, Heartbeat};
 use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
 use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
+use horch_core::fleetd::integration::application::commands::GitRefTips;
+use horch_core::fleetd::task_execution::application::dispatch::CheckSandboxes;
 use horch_core::fleetd::task_execution::application::quota::Restart;
+use horch_core::fleetd::task_execution::domain::dispatch::Holds;
 use horch_core::fleetd::task_execution::domain::task::{AttemptRow, InPane};
 use horch_core::fleetd::worker_profiles::adapters::launcher::Launcher;
 use horch_core::fleetd::worker_profiles::application::ports::{EnvRule, LaunchSpec, ProcessHost};
+use horch_core::fleetd::worktree_custody::adapters::git::CliWorktreeGit;
 use horch_core::fleetd::worktree_custody::adapters::sqlite::{self as trees, WorktreeState};
 use horch_core::fleetd::worktree_custody::application::reconcile::WorkDir;
 use horch_core::messaging::delivery::{self, TypedLine};
 use horch_core::procid;
 use horch_core::runtime::{Paths, RuntimeContext};
+use horch_core::taskledger::git::Git;
 use horch_core::taskledger::model::RunStatus;
 use horch_core::taskledger::orchestrator;
 use horch_core::taskledger::sql_words::list;
@@ -575,7 +586,11 @@ fn daemon(ctx: &RuntimeContext) -> Result<ExitCode> {
         horch,
         lock: RefCell::new(Some(started.lock)),
     };
+    let handlers = request_handlers(ctx, &settings);
     with_pass(ctx, settings, false, |pass, _| {
+        let Some(_channel) = start_channel(ctx, pass, &mut conn, handlers) else {
+            return;
+        };
         run_loop(
             period,
             &mut || one_pass(pass, &mut conn),
@@ -584,6 +599,91 @@ fn daemon(ctx: &RuntimeContext) -> Result<ExitCode> {
         )
     });
     Ok(ExitCode::SUCCESS)
+}
+
+/// The start of Phase 5 after the lock and the generation: the operator
+/// token and the request files that wait ([`Pass::start`]), then the
+/// channel server with `handlers` ([`Pass::serve`]). A channel that does
+/// not start is printed, and the passes run without it: the request files
+/// still reach fleetd. `None`: another fleetd took the generation, and
+/// this fleetd exits.
+fn start_channel(
+    ctx: &RuntimeContext,
+    pass: &mut Pass<'_>,
+    conn: &mut Connection,
+    handlers: Handlers,
+) -> Option<Option<ChannelServer>> {
+    match pass.start(conn) {
+        Ok(failed) => {
+            for f in &failed {
+                eprintln!("horch fleetd: {f}");
+            }
+        }
+        Err(PassError::GenerationLost(e)) => {
+            eprintln!("horch fleetd: {e}: this fleetd exits");
+            return None;
+        }
+        Err(e @ PassError::Failed(_)) => eprintln!("horch fleetd: the start: {e}"),
+    }
+    let server = ledger_conn(&ctx.paths.ledger_db).and_then(|c| pass.serve(c, handlers));
+    match server {
+        Ok(server) => Some(Some(server)),
+        Err(e) => {
+            eprintln!("horch fleetd: the command channel did not start: {e:#}");
+            Some(None)
+        }
+    }
+}
+
+/// The handlers of the request kinds of Phase 5 (the table "Request kinds"
+/// of `docs/tickets/fleetd-p5/MAP.md`): the run and plan kinds, the task
+/// kinds, the worker kinds and the custody kinds. The channel server and
+/// the request files of the fleetd of `settings` each get 1 copy.
+fn request_handlers(ctx: &RuntimeContext, settings: &Settings) -> Handlers {
+    let config = Arc::new(settings.config.clone());
+    let guard = settings.generation;
+    let mut handlers = Handlers::new();
+    handlers_run::register(&mut handlers);
+    handlers_task::register(
+        &mut handlers,
+        TaskHandlers {
+            config: Arc::clone(&config),
+            evidence_root: super::taskledger::tools(ctx).evidence_root,
+        },
+    );
+    let lock_dir = orchestrator::lock_dir(&ctx.paths.ledger_db);
+    let worker = WorkerDeps {
+        guard,
+        config: Arc::clone(&config),
+        needs_you: Arc::new(NeedsYouList),
+        git: Arc::new(Git::new(&ctx.bins.harness.git)),
+        // The holds of today's `horch spawn`: the fleet clock only.
+        holds: Arc::new(Holds::default),
+        sandboxes: Arc::new(EverySandbox),
+        lock_holder: Arc::new(move |ws: &str| orchestrator::holder(&lock_dir, ws)),
+    };
+    handlers_worker::register(&mut handlers, &worker);
+    let git = CliWorktreeGit::new(&ctx.bins.harness.git, &settings.fleet_root);
+    handlers_custody::register(
+        &mut handlers,
+        Arc::new(Custody {
+            guard,
+            config: settings.config.clone(),
+            refs: Box::new(GitRefTips { git }),
+        }),
+    );
+    handlers
+}
+
+/// Each persona has a check sandbox, as for today's `horch spawn`, until
+/// ticket 18 of Phase 4 gives the check sandbox of each persona on this
+/// host.
+struct EverySandbox;
+
+impl CheckSandboxes for EverySandbox {
+    fn supported(&self, _persona: &str) -> bool {
+        true
+    }
 }
 
 /// The settings of the fleetd of `generation` that runs `horch`.
@@ -656,7 +756,8 @@ fn with_pass<T>(
         needs_you: &NeedsYouList,
         host: &Launcher,
     };
-    let mut pass = Pass::new(settings, ports);
+    let requests = request_handlers(ctx, &settings);
+    let mut pass = Pass::new(settings, ports).with_requests(requests);
     f(&mut pass, &duties)
 }
 
@@ -684,6 +785,9 @@ pub(crate) fn watch_once(ctx: &RuntimeContext, force: bool) -> Result<Once> {
     drop(store);
     let mut conn = ledger_conn(&ctx.paths.ledger_db)?;
     with_pass(ctx, settings, force, |pass, duties| {
+        for f in pass.start(&mut conn).map_err(|e| anyhow::anyhow!("{e}"))? {
+            eprintln!("horch ledger watch: {f}");
+        }
         let report = pass.run(&mut conn).map_err(|e| anyhow::anyhow!("{e}"))?;
         for f in &report.failed {
             eprintln!("horch ledger watch: {f}");

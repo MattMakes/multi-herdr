@@ -302,6 +302,39 @@ fn ok(h: &Harness, args: &[&str]) -> String {
     assert!(o.status.success(), "{} {}", out(&o), err(&o));
     out(&o)
 }
+/// A test fleetd of `h`, with 1 pass each second. It ingests the wrapper
+/// files of each attempt (`session.json`, `heartbeat.json`). A drop kills
+/// it.
+struct TestFleetd(std::process::Child);
+
+impl TestFleetd {
+    fn start(h: &Harness) -> TestFleetd {
+        let root = h.root.join("fleet");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("fleet.toml"), "pass_period_s = 1\n").unwrap();
+        let mut cmd = std::process::Command::new(Harness::horch_bin());
+        h.seal(&mut cmd);
+        let child = cmd
+            .arg("fleetd")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::fs::File::create(h.root.join("fleetd.stdout")).unwrap())
+            .stderr(std::fs::File::create(h.root.join("fleetd.stderr")).unwrap())
+            .spawn()
+            .unwrap();
+        let fleetd = TestFleetd(child);
+        let socket = root.join("run").join("fleetd.sock");
+        wait("fleetd serves its channel", || socket.exists().then_some(()));
+        fleetd
+    }
+}
+
+impl Drop for TestFleetd {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 fn wait<T>(what: &str, mut f: impl FnMut() -> Option<T>) -> T {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while std::time::Instant::now() < deadline {
@@ -313,6 +346,57 @@ fn wait<T>(what: &str, mut f: impl FnMut() -> Option<T>) -> T {
     panic!("timed out waiting for {what}");
 }
 
+/// `horch ledger stop` stops a spawned worker by the agent PID that fleetd
+/// ingested from `heartbeat.json` of its attempt: the wrapper writes no
+/// ledger row (RR-5).
+#[test]
+fn ledger_stop_stops_a_spawned_worker_by_the_ingested_pid() {
+    let h = fleet("stop-pid", "exec,stay");
+    let _fleetd = TestFleetd::start(&h);
+    ok(&h, &["ledger", "run", "new", "stop", "--heartbeat-every", "1"]);
+    let file = h.project.join("stop.md");
+    std::fs::write(&file, "# Stop\n**Check:** `true`\n").unwrap();
+    let file = file.to_string_lossy().into_owned();
+    ok(
+        &h,
+        &["ledger", "add", "--file", &file, "--primary", "codex-terra"],
+    );
+    ok(
+        &h,
+        &[
+            "spawn",
+            "codex-terra",
+            "--from-pane",
+            "w1:p1",
+            "--no-tile",
+            "--force",
+            "--role",
+            "codex-terra-1",
+        ],
+    );
+    let (worker, pid, started) = wait("the ingested agent PID", || {
+        let state: serde_json::Value =
+            serde_json::from_str(&out(&h.run(&["ledger", "status", "--json"]))).ok()?;
+        let w = state["workers"]
+            .as_array()?
+            .iter()
+            .map(|w| w["worker"].clone())
+            .find(|w| w["kind"] == "worker" && w["agent_pid"].as_u64().is_some())?;
+        Some((
+            w["worker_id"].as_str()?.to_string(),
+            w["agent_pid"].as_u64()? as u32,
+            w["agent_started"].as_u64()?,
+        ))
+    });
+    assert_eq!(horch_core::procid::start_time(pid), Some(started));
+
+    ok(&h, &["ledger", "stop", &worker, "the test stops it"]);
+
+    wait("the agent is gone", || {
+        (horch_core::procid::start_time(pid) != Some(started)).then_some(())
+    });
+}
+
 #[test]
 fn g52_concurrent_workers_get_their_own_session_and_transcript() {
     horch_e2e::expected::check(
@@ -320,6 +404,7 @@ fn g52_concurrent_workers_get_their_own_session_and_transcript() {
         "g52_concurrent_workers_get_their_own_session_and_transcript",
         || {
             let h = fleet("g52-race", "exec,stay");
+            let _fleetd = TestFleetd::start(&h);
             ok(
                 &h,
                 &["ledger", "run", "new", "race", "--heartbeat-every", "1"],

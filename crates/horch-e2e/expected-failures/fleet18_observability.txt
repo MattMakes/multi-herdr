@@ -1,6 +1,8 @@
 # Red tests of crates/horch-e2e/tests/fleet18_observability.rs.
-# Since T-479 (fleetd-p5 ticket 30), the wrapper of an attempt writes
-# session.json of its attempt, not the session columns of its worker row.
-# Not written until ticket 31: fleetd writes them from that file in
-# fleetd-p5 ticket 31.
-g52_concurrent_workers_get_their_own_session_and_transcript | 5 | timed out waiting for two session transcripts
+# Since T-490 (fleetd-p5 ticket 41), fleetd ingests session.json,
+# heartbeat.json and exit.json, so the session, the transcript, the record
+# id and the agent PID reach the worker row. The wrapper of a worker with
+# an attempt no longer ends its session record at the exit of the agent
+# (RR-5), and the exit.json ingest does not end it either, so the record
+# stays live.
+g52_concurrent_workers_get_their_own_session_and_transcript | 5 | timed out waiting for old launches exited

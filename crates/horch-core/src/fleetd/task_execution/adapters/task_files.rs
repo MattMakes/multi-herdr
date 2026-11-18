@@ -8,7 +8,9 @@
 //! file or no file (protocol rule 1). A file that exists is never
 //! rewritten (rule 2): the same bytes again are accepted, other bytes are
 //! refused. `START.md` is written before `task.yaml`, so an attempt with a
-//! `task.yaml` also has its `START.md`.
+//! `task.yaml` also has its `START.md`. The attempt folder and its inbox
+//! have mode 0700, so that fleetd reads the files of the attempt with the
+//! SR-6 checks.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -25,6 +27,8 @@ const IDEAS: &str = "ideas";
 
 /// The file mode of both files: only the user of fleetd and its workers.
 const MODE: u32 = 0o600;
+/// The mode of the attempt folder and of its inbox (SR-6).
+const DIR_MODE: u32 = 0o700;
 
 /// The 2 files of an attempt.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -125,11 +129,31 @@ pub fn write_attempt_files(
         start_md: dir.join("inbox").join("START.md"),
     };
     let inbox = dir.join("inbox");
-    std::fs::create_dir_all(&inbox).map_err(|source| FsxError::Io {
-        path: inbox.clone(),
-        source,
-    })?;
+    make_dirs(&dir, &inbox)?;
     fsx::create_immutable(&files.start_md, start.as_bytes(), MODE)?;
     fsx::create_immutable(&files.task_yaml, yaml.as_bytes(), MODE)?;
     Ok(files)
+}
+
+/// Make `inbox` and its missing parents with [`DIR_MODE`], and set that
+/// mode on the attempt folder `dir` and on `inbox`, which the umask can
+/// clear. Where the OS has no modes, the folders keep the default.
+fn make_dirs(dir: &Path, inbox: &Path) -> Result<(), FsxError> {
+    let io = |path: &Path| {
+        let path = path.to_path_buf();
+        move |source| FsxError::Io { path, source }
+    };
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    let _ = horch_platform::fs::create_dir_mode(&mut builder, DIR_MODE);
+    builder.create(inbox).map_err(io(inbox))?;
+    for folder in [dir, inbox] {
+        match horch_platform::fs::set_mode(folder, DIR_MODE) {
+            Err(e)
+                if e.get_ref()
+                    .is_some_and(|inner| inner.is::<horch_platform::NotSupported>()) => {}
+            r => r.map_err(io(folder))?,
+        }
+    }
+    Ok(())
 }

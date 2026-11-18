@@ -4,13 +4,19 @@
 //! FM-11, FM-12, PL-5). [`Pass::run`] runs 1 pass in 3 parts:
 //!
 //! 1. It reads the facts with no transaction, each scan within its budget
-//!    from its cursor: the processes that rows name, the outboxes, the
-//!    worktree folders and the folders of the work directories, the
-//!    requests, the herdr panes, the health holds and the launch record of
-//!    each attempt in `launching`. It reads the last passed `worktree_list`
-//!    run of each repository from `jobs`. It runs no git.
+//!    from its cursor: the request files (each applied in its own
+//!    transactions, as the channel applies a request), the processes that
+//!    rows name, the outboxes, the wrapper files of each attempt of the
+//!    outbox scan, the job result files, the worktree folders and the
+//!    folders of the work directories, the herdr panes, the health holds
+//!    and the launch record of each attempt in `launching`. It makes the
+//!    missing outbox of each live attempt of its outbox scan (Q3 of
+//!    `docs/tickets/fleetd-p5/MAP.md`). It reads the last passed
+//!    `worktree_list` run of each repository from `jobs`. It runs no git.
 //! 2. In 1 transaction it calls these steps, in this order:
-//!    `check_generation`, `tick_fleet_clock`, `observe_intents`,
+//!    `check_generation`, `tick_fleet_clock`, the ingest of the outbox,
+//!    wrapper and job result files, the needs-you item of the operator
+//!    token, `observe_intents`,
 //!    `mark_orphans`, `finish_exited`, `reconcile_worktrees`,
 //!    `disk_budget` (it gives the hold of the worktree disk budget from the
 //!    rows that the reconciler wrote), the run
@@ -25,8 +31,13 @@
 //!    pass.
 //! 3. After the commit it does the effects, stops before launches, until
 //!    the time budget of the pass ends. The rest stay intended rows for the
-//!    next pass. When time is left, the run duties do their effects. Then
-//!    it writes the heartbeat and pings the watchdog.
+//!    next pass. When time is left, the run duties do their effects. It
+//!    archives the job result files that the transaction ingested. Then it
+//!    writes the heartbeat and pings the watchdog.
+//!
+//! At its start, after the lock and the generation, fleetd calls
+//! [`Pass::start`] (the operator token, then the request files that wait)
+//! and then [`Pass::serve`] (the channel server).
 //!
 //! A crash before the commit leaves no effect. A crash after it leaves
 //! intended rows, and the next pass does each effect once: a launch is
@@ -43,16 +54,22 @@ use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use horch_platform::channel::User;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 
+use crate::fleetd::fleet_runtime::adapters::channel_server::ChannelServer;
 use crate::fleetd::fleet_runtime::adapters::clock_store::{self, ClockStore};
 use crate::fleetd::fleet_runtime::adapters::effects::{self, Activity, LaunchRecord, Watch};
+use crate::fleetd::fleet_runtime::adapters::job_result_file::FileRead as JobFile;
 use crate::fleetd::fleet_runtime::adapters::jobs_store::{self, JobRow};
+use crate::fleetd::fleet_runtime::adapters::request_spool::{self, ScanOutcome, Spool};
 use crate::fleetd::fleet_runtime::adapters::scans::{
-    self, FolderFact, FolderItem, Liveness, Presence, ProcessFact, ProcessItem, ScanClock,
+    self, FolderFact, FolderItem, Listing, Liveness, OutboxFact, Presence, ProcessFact,
+    ProcessItem, ScanClock,
 };
 use crate::fleetd::fleet_runtime::adapters::sqlite as door;
+use crate::fleetd::fleet_runtime::adapters::token_file::{self, Token};
 use crate::fleetd::fleet_runtime::adapters::{cursors_store, fleetd_row, polite_stops_store};
 use crate::fleetd::fleet_runtime::application::holds::record_hold_changes;
 use crate::fleetd::fleet_runtime::application::jobs::{
@@ -60,6 +77,7 @@ use crate::fleetd::fleet_runtime::application::jobs::{
 };
 use crate::fleetd::fleet_runtime::application::ledger::DoorError;
 use crate::fleetd::fleet_runtime::application::ledger::{record, transition, Cause};
+use crate::fleetd::fleet_runtime::application::requests::Handlers;
 use crate::fleetd::fleet_runtime::domain::budget::{Cursor, Deadline, PassBudget, ScanKind};
 use crate::fleetd::fleet_runtime::domain::clock::{AwakeReading, FleetSeconds};
 use crate::fleetd::fleet_runtime::domain::config::FleetConfig;
@@ -73,15 +91,20 @@ use crate::fleetd::fleet_runtime::domain::pass::{
 };
 use crate::fleetd::ideas::adapters::questions_store;
 use crate::fleetd::ideas::application::needs_you::{self, NeedsYouList};
+use crate::fleetd::ideas::domain::needs_you::Write as NeedsYouWrite;
 use crate::fleetd::integration::adapters::sqlite as integration_rows;
+use crate::fleetd::task_execution::adapters::attempt_files::{self, OsProcesses, WrapperRead};
 use crate::fleetd::task_execution::adapters::leases_store;
+use crate::fleetd::task_execution::adapters::result_reader::AttemptRef;
 use crate::fleetd::task_execution::adapters::sqlite as attempts_store;
 use crate::fleetd::task_execution::application::quota::{
     self, Pools, Restart, Restarted, Restarts,
 };
 use crate::fleetd::task_execution::application::stall as ladder;
+use crate::fleetd::task_execution::application::outbox_ingest::{self, OutboxRead};
 use crate::fleetd::task_execution::application::{cancel, commands, lease, retry};
 use crate::fleetd::task_execution::domain::lease::Limits;
+use crate::fleetd::task_execution::domain::outbox::DIR_MODE as OUTBOX_MODE;
 use crate::fleetd::task_execution::domain::quota::limited;
 use crate::fleetd::task_execution::domain::retry::Outcome;
 use crate::fleetd::task_execution::domain::stall::{self as rungs, Decision, PaneStatus};
@@ -122,6 +145,9 @@ const JOB_STARTS: &str = "job_starts";
 const LIVE_ATTEMPTS: &str = "live_attempts";
 /// The kind of the needs-you item of a breach that no step repairs.
 const BREACH: &str = "invariant_breach";
+/// The kind of the needs-you item of an operator token file that fails its
+/// checks. While it is open, fleetd applies no operator request.
+pub const TOKEN_REFUSED: &str = "operator_token_refused";
 /// The kind of the needs-you item of an idle author of a `verifying` task
 /// (rule D). Phase 4 removes it, when the attempt ends at `result.json`.
 const FINISH_IDLE: &str = "finish_idle";
@@ -428,6 +454,17 @@ struct Read {
     /// The doorbell events that part 3 typed, of each live attempt.
     sent: BTreeMap<String, BTreeSet<i64>>,
     pools: Option<PoolFacts>,
+    /// The outbox files of the attempts of the outbox scan.
+    outboxes: Vec<OutboxRead>,
+    /// The wrapper files of the attempts of the outbox scan.
+    wrappers: Vec<WrapperRead>,
+    /// The job result files.
+    job_files: Vec<JobFile>,
+    /// Why the operator token file failed its checks; `None` when it
+    /// passed them.
+    token_fault: Option<String>,
+    /// The lines of what part 1 could not do.
+    failed: Vec<String>,
 }
 
 /// 1 live attempt of a task, as part 1 saw it.
@@ -550,6 +587,8 @@ pub struct Pass<'a> {
     /// The binary of this process at its start.
     exe: Exe,
     full_passes: u64,
+    /// The handlers of the request files.
+    requests: Handlers,
 }
 
 impl<'a> Pass<'a> {
@@ -567,7 +606,15 @@ impl<'a> Pass<'a> {
             watch: Watch::new(),
             exe: effects::this_exe(),
             full_passes: 0,
+            requests: Handlers::new(),
         }
+    }
+
+    /// Apply each request file with `handlers`. With none, each operator
+    /// request is refused as not handled.
+    pub fn with_requests(mut self, handlers: Handlers) -> Pass<'a> {
+        self.requests = handlers;
+        self
     }
 
     /// Read the time budgets on `now` instead of the monotonic clock.
@@ -581,7 +628,14 @@ impl<'a> Pass<'a> {
         let deadline = Deadline::pass((self.now)(), self.settings.config.pass_time_budget_s);
         self.reap();
         let old_stops = self.import_old_stops(conn);
-        let read = self.read_facts(conn, deadline)?;
+        // A missing token file is made again; a file that exists is never
+        // replaced.
+        let token = token_file::ensure(&self.settings.fleet_root).map_err(|e| format!("{e:#}"));
+        let (requests, request_failed) = self.request_files(conn, deadline, token.as_ref().ok())?;
+        let mut read = self.read_facts(conn, deadline, requests, token.err())?;
+        let mut failed = std::mem::take(&mut read.failed);
+        failed.extend(request_failed);
+        let job_files = read.job_files.clone();
         {
             let now = RefCell::new(&mut self.now);
             let time_up = || deadline.reached((now.borrow_mut())());
@@ -604,6 +658,12 @@ impl<'a> Pass<'a> {
         let (mut report, pending) =
             self.do_effects(conn, decided.effects, decided.sent, decided.clock, deadline);
         report.failed.extend(old_stops);
+        report.failed.extend(failed);
+        if let Err(e) = jobs::archive_results(&self.settings.fleet_root, &job_files) {
+            report
+                .failed
+                .push(format!("the archive of the job result files: {e:#}"));
+        }
         if let Err(e) = activity {
             report.failed.push(format!("the activity record: {e:#}"));
         }
@@ -641,6 +701,92 @@ impl<'a> Pass<'a> {
         Ok(report)
     }
 
+    /// The start of this fleetd after the lock and the generation (Phase
+    /// 5): make the operator token, then apply the request files that wait,
+    /// within the time budget of 1 pass. A token file that fails its checks
+    /// is not replaced: it opens 1 needs-you item, and no operator request
+    /// is applied until it is corrected. Gives the lines of what failed.
+    pub fn start(&mut self, conn: &mut Connection) -> Result<Vec<String>, PassError> {
+        let deadline = Deadline::pass((self.now)(), self.settings.config.pass_time_budget_s);
+        let token = token_file::ensure(&self.settings.fleet_root).map_err(|e| format!("{e:#}"));
+        let fault = token.as_ref().err().map(String::as_str);
+        let guard = self.settings.generation;
+        let root = self.settings.fleet_root.clone();
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(anyhow::Error::from)?;
+        match fleetd_row::check_generation(&tx, guard) {
+            Ok(()) => {}
+            Err(e @ DoorError::GenerationLost { .. }) => return Err(PassError::GenerationLost(e)),
+            Err(e) => return Err(PassError::Failed(e.into())),
+        }
+        token_item(&tx, &root, fault)?;
+        tx.commit().map_err(anyhow::Error::from)?;
+        let (cursor, mut failed) = self.request_files(conn, deadline, token.as_ref().ok())?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(anyhow::Error::from)?;
+        cursors_store::save(&tx, ScanKind::Requests.as_str(), &cursor)?;
+        tx.commit().map_err(anyhow::Error::from)?;
+        if let Err(e) = token {
+            failed.insert(0, format!("the operator token: {e}"));
+        }
+        Ok(failed)
+    }
+
+    /// Start the channel server of this fleetd with `ledger` as its own
+    /// connection to the ledger and `handlers` as the handlers of its
+    /// requests. Call it after [`Pass::start`]. The server ends when the
+    /// returned value is dropped.
+    pub fn serve(&self, ledger: Connection, handlers: Handlers) -> Result<ChannelServer> {
+        ChannelServer::start(
+            &self.settings.fleet_root,
+            ledger,
+            self.settings.generation,
+            handlers,
+        )
+    }
+
+    /// Part 1, first: apply the request files from the cursor of the
+    /// requests scan until its budget ends. Each file gets its `requests`
+    /// row in its own transactions, as a request of the channel does
+    /// (ticket 14). `token` is the operator token, `None` when its file
+    /// failed its checks. Gives the cursor after the files, and the line of
+    /// a failure. A lost generation ends the pass.
+    fn request_files(
+        &mut self,
+        conn: &mut Connection,
+        deadline: Deadline,
+        token: Option<&Token>,
+    ) -> Result<(Cursor, Vec<String>), PassError> {
+        let stamp = util::now();
+        let owner = User::current().context("reading the user of fleetd")?;
+        let mut cursor = cursors_store::load(conn, ScanKind::Requests.as_str(), &stamp)?;
+        let start = (self.now)();
+        let mut clock = ScanClock {
+            deadline: deadline.scan(start, self.settings.config.scan_budget_ms),
+            now: &mut *self.now,
+            stamp: &stamp,
+        };
+        let spool = Spool {
+            fleet_root: &self.settings.fleet_root,
+            owner: &owner,
+            token,
+            max_bytes: self.settings.config.request_max_bytes,
+            guard: self.settings.generation,
+        };
+        let failed = match request_spool::scan(conn, &spool, &mut cursor, &mut clock, &self.requests)
+        {
+            Ok(ScanOutcome::Read(_)) => Vec::new(),
+            Ok(ScanOutcome::FolderRefused { reason }) => {
+                vec![format!("the request folder: {reason}")]
+            }
+            Err(e @ DoorError::GenerationLost { .. }) => return Err(PassError::GenerationLost(e)),
+            Err(e) => vec![format!("the request files: {e}")],
+        };
+        Ok((cursor, failed))
+    }
+
     /// At the first pass of this fleetd, make a row of each polite stop
     /// file of an older fleetd in `run/stops/` and remove the files. Gives
     /// the log lines of the files that failed a check.
@@ -663,7 +809,16 @@ impl<'a> Pass<'a> {
 
     // ─── part 1 ─────────────────────────────────────────────────────────
 
-    fn read_facts(&mut self, conn: &Connection, deadline: Deadline) -> Result<Read> {
+    /// `requests` is the cursor of the request files after
+    /// [`Pass::request_files`], and `token_fault` why the token file failed
+    /// its checks.
+    fn read_facts(
+        &mut self,
+        conn: &Connection,
+        deadline: Deadline,
+        requests: Cursor,
+        token_fault: Option<String>,
+    ) -> Result<Read> {
         let root = self.settings.fleet_root.clone();
         let stamp = util::now();
         let rows = attempts_store::rows(conn, &util::host_name())?;
@@ -677,8 +832,12 @@ impl<'a> Pass<'a> {
         let mut cursors = Vec::new();
         let mut liveness = BTreeMap::new();
         let mut folders = Vec::new();
+        let mut scanned = Vec::new();
         for kind in ScanKind::ALL {
-            let mut cursor = cursors_store::load(conn, kind.as_str(), &stamp)?;
+            let mut cursor = match kind {
+                ScanKind::Requests => requests.clone(),
+                _ => cursors_store::load(conn, kind.as_str(), &stamp)?,
+            };
             let start = (self.now)();
             let mut clock = ScanClock {
                 deadline: deadline.scan(start, self.settings.config.scan_budget_ms),
@@ -691,21 +850,29 @@ impl<'a> Pass<'a> {
                     liveness.extend(scan.facts.into_iter().map(|f| (f.key, f.liveness)));
                 }
                 ScanKind::Outboxes => {
-                    scans::scan_outboxes(&outboxes, &changed, &mut cursor, &mut clock);
+                    let scan = scans::scan_outboxes(&outboxes, &changed, &mut cursor, &mut clock);
+                    scanned = scan.facts;
                 }
                 ScanKind::WorktreeFolders => {
                     let scan =
                         scans::scan_worktree_folders(&trees, &changed, &mut cursor, &mut clock);
                     folders = scan.facts;
                 }
-                // The requests come in Phase 5; an unreadable folder keeps
-                // its cursor.
-                ScanKind::Requests => {
-                    let _ = scans::scan_requests(&root, &mut cursor, &mut clock);
-                }
+                // The request files were applied first, in
+                // `request_files`.
+                ScanKind::Requests => {}
             }
             cursors.push((kind, cursor));
         }
+        // After the process scan: a process that is gone wrote its files
+        // before it ended.
+        let config = &self.settings.config;
+        let owner = User::current().context("reading the user of fleetd")?;
+        let (attempts, failed) = scanned_attempts(&root, &rows, &scanned);
+        let limits = outbox_ingest::Limits::of(config);
+        let outbox_reads = outbox_ingest::read(conn, &root, &attempts, &owner, &limits)?;
+        let wrappers = attempt_files::read(conn, &root, &attempts, &owner, config.heartbeat_max_bytes)?;
+        let job_files = jobs::read_results(conn, &root, &owner, config.job_result_max_bytes)?;
         let repos = git_repositories(self.ports.outside.repositories(conn)?);
         let worktrees = worktree_facts(
             &rows_folders,
@@ -754,6 +921,11 @@ impl<'a> Pass<'a> {
             activity,
             sent,
             pools: self.ports.outside.pools(),
+            outboxes: outbox_reads,
+            wrappers,
+            job_files,
+            token_fault,
+            failed,
         })
     }
 
@@ -900,6 +1072,15 @@ impl<'a> Pass<'a> {
             cursors_store::save(&tx, kind.as_str(), cursor)?;
         }
         cursors_store::save(&tx, LIVE_ATTEMPTS, &read.live_cursor)?;
+        // The files of the attempts and the jobs come before the leases and
+        // the job observations: a result of this pass wins over an expiry
+        // of this pass ("Order inside 1 pass").
+        let guard = Some(self.settings.generation);
+        outbox_ingest::ingest(&tx, guard, &read.outboxes)?;
+        let at = util::now();
+        attempt_files::ingest(&tx, guard, &read.wrappers, clock, &at, &OsProcesses)?;
+        jobs::ingest_results(&self.job_ctx(), &tx, &read.job_files)?;
+        token_item(&tx, &self.settings.fleet_root, read.token_fault.as_deref())?;
         let launches = self.observe_intents(&tx, &read.launching, clock)?;
         let mut stops = commands::mark_orphans(&tx, &read.task)?;
         let pools = read.pools.as_ref().map(|p| Pools {
@@ -2212,13 +2393,96 @@ fn outbox_items(root: &std::path::Path, rows: &Rows) -> Vec<FolderItem> {
         .iter()
         .filter(|a| a.state != AttemptState::Ended)
         .filter_map(|a| {
-            let task = a.task_id.as_deref()?;
             Some(FolderItem {
                 key: a.id.clone(),
-                path: scans::outbox_dir(root, task, &a.id),
+                path: attempt_ref(a)?.outbox(root),
             })
         })
         .collect()
+}
+
+/// The task and the attempt of the row `a`; `None` for an attempt with no
+/// task.
+fn attempt_ref(a: &AttemptRow) -> Option<AttemptRef> {
+    Some(AttemptRef {
+        task_id: a.task_id.clone()?,
+        attempt_id: a.id.clone(),
+    })
+}
+
+/// The attempt of each outbox that the outbox scan read, from `rows`. A
+/// live attempt whose outbox is missing gets it, with mode 0700, so that
+/// an old worker writes files from then (Q3 of
+/// `docs/tickets/fleetd-p5/MAP.md`). Gives the attempts, and the lines of
+/// the outboxes that could not be made.
+fn scanned_attempts(
+    root: &Path,
+    rows: &Rows,
+    scanned: &[OutboxFact],
+) -> (Vec<AttemptRef>, Vec<String>) {
+    let mut attempts = Vec::new();
+    let mut failed = Vec::new();
+    for fact in scanned {
+        let Some(row) = rows.attempts.iter().find(|a| a.id == fact.key) else {
+            continue;
+        };
+        let Some(attempt) = attempt_ref(row) else {
+            continue;
+        };
+        if row.state == AttemptState::Live && matches!(fact.listing, Listing::Missing) {
+            let dir = attempt.outbox(root);
+            if let Err(e) = make_outbox(&dir) {
+                failed.push(format!("the outbox {}: {e}", dir.display()));
+            }
+        }
+        attempts.push(attempt);
+    }
+    (attempts, failed)
+}
+
+/// Make the outbox `dir` and its missing parents with mode 0700. Where the
+/// OS has no modes, the folders get the default permissions.
+fn make_outbox(dir: &Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    let _ = horch_platform::fs::create_dir_mode(&mut builder, OUTBOX_MODE);
+    builder.create(dir)?;
+    // The umask may have cleared bits of the mode.
+    match horch_platform::fs::set_mode(dir, OUTBOX_MODE) {
+        Err(e)
+            if e.get_ref()
+                .is_some_and(|inner| inner.is::<horch_platform::NotSupported>()) =>
+        {
+            Ok(())
+        }
+        r => r,
+    }
+}
+
+/// Open the needs-you item of the operator token file of `root` with the
+/// reason `fault`, or resolve it when `fault` is `None`, in `tx`.
+fn token_item(tx: &Connection, root: &Path, fault: Option<&str>) -> Result<()> {
+    let path = token_file::path(root).display().to_string();
+    let key = format!("{TOKEN_REFUSED}:{path}");
+    let Some(fault) = fault else {
+        needs_you::resolve(tx, &key)?;
+        return Ok(());
+    };
+    let text = format!(
+        "The operator token file {path} fails its checks: {fault}. fleetd applies no operator \
+         request until you correct it: give it to the user of fleetd with mode 0600, or remove \
+         it and restart fleetd."
+    );
+    needs_you::open_item(
+        tx,
+        &NeedsYouWrite {
+            key: &key,
+            kind: TOKEN_REFUSED,
+            entity: "fleetd",
+            entity_id: &path,
+            text: &text,
+        },
+    )
 }
 
 /// At most `budget` of `keys`, from the cursor `kind`, which moves past

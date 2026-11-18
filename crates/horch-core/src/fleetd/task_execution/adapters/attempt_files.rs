@@ -20,8 +20,9 @@
 //!   the last checkin (Phase 2 Q7).
 //! - `exit.json` and `session.json` are messages: 1 `ingested` row by path
 //!   and sha256, and 1 effect. `exit.json` settles the worker row
-//!   ([`supervisor::settle`]); `session.json` fills the session id and the
-//!   transcript of the worker row, which the session records show.
+//!   ([`supervisor::settle`]); `session.json` fills the session id, the
+//!   transcript and the execution record id of the worker row, which the
+//!   session records show. A record id of another form rejects the file.
 //! - A file that fails a check gets 1 `ingested` row `rejected` with its
 //!   reason, and fleetd does not read its path again (protocol rule 7).
 //!
@@ -167,10 +168,40 @@ pub fn read(
             attempt: a.clone(),
             heartbeat: read_file(conn, &dir, HEARTBEAT_JSON, a, &rule(heartbeat_max_bytes))?,
             exit: read_file(conn, &dir, EXIT_JSON, a, &rule(EXIT_MAX_BYTES))?,
-            session: read_file(conn, &dir, SESSION_JSON, a, &rule(SESSION_MAX_BYTES))?,
+            session: read_file(conn, &dir, SESSION_JSON, a, &rule(SESSION_MAX_BYTES))?
+                .map(checked_session),
         });
     }
     Ok(out)
+}
+
+/// The most bytes of the record id of `session.json`.
+pub const RECORD_ID_MAX_BYTES: usize = 64;
+
+/// `f` with its record id checked: the id is a claim of a file in the task
+/// folder, so a form other than 1 to [`RECORD_ID_MAX_BYTES`] ASCII letters,
+/// digits, `-` and `_` rejects the file.
+fn checked_session(mut f: WrapperFile<SessionFile>) -> WrapperFile<SessionFile> {
+    if let Found::Valid { sha256, file } = &f.found {
+        if let Some(id) = file.record_id.as_deref().filter(|id| !record_id_ok(id)) {
+            let shown: String = id.chars().take(RECORD_ID_MAX_BYTES).collect();
+            f.found = Found::Rejected {
+                sha256: Some(sha256.clone()),
+                reason: format!(
+                    "record_id {shown:?} is not 1 to {RECORD_ID_MAX_BYTES} ASCII letters, digits, - and _"
+                ),
+            };
+        }
+    }
+    f
+}
+
+/// Whether `id` has the form of an execution record id.
+fn record_id_ok(id: &str) -> bool {
+    (1..=RECORD_ID_MAX_BYTES).contains(&id.len())
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 /// The `ingested.path` of a file.
@@ -406,6 +437,10 @@ impl Ingest<'_> {
             Some(&s.session_id),
             s.transcript.as_deref(),
         )?;
+        // `checked_session` checked the form of the id in part 1.
+        if let Some(record_id) = &s.record_id {
+            workers::set_record(self.tx, worker, record_id)?;
+        }
         self.report.sessions.push(id.to_string());
         Ok(())
     }

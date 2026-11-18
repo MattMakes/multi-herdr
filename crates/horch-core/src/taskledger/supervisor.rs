@@ -108,6 +108,10 @@ pub struct SessionFile {
     pub harness: String,
     /// The transcript of the session, when the wrapper found it.
     pub transcript: Option<String>,
+    /// The id of the execution record of the session, so that fleetd joins
+    /// the worker row to it. A wrapper of an older version writes none.
+    #[serde(default)]
+    pub record_id: Option<String>,
     pub written_at: String,
 }
 
@@ -272,6 +276,7 @@ impl AttemptFiles {
         session_id: &str,
         harness: &str,
         transcript: Option<&str>,
+        record_id: Option<&str>,
     ) -> Result<bool> {
         let file = SessionFile {
             task: self.task(),
@@ -279,6 +284,7 @@ impl AttemptFiles {
             session_id: session_id.to_string(),
             harness: harness.to_string(),
             transcript: transcript.map(str::to_string),
+            record_id: record_id.map(str::to_string),
             written_at: util::now(),
         };
         write_file(&self.dir, SESSION_JSON, &serde_json::to_vec(&file)?, false)
@@ -458,6 +464,8 @@ pub struct HeartbeatWriter {
     session_written: bool,
     /// The beat of a worker with no attempt, from the caller.
     no_attempt: Option<NoAttemptBeat>,
+    /// The id of the execution record of the wrapper, for [`SESSION_JSON`].
+    record_id: Option<String>,
 }
 
 /// The beat of a worker that has no attempt, so no attempt folder.
@@ -482,7 +490,15 @@ impl HeartbeatWriter {
             lookup,
             session_written: false,
             no_attempt: None,
+            record_id: None,
         }
+    }
+
+    /// Write `record_id`, the id of the execution record of the wrapper,
+    /// in [`SESSION_JSON`].
+    pub fn with_record_id(mut self, record_id: String) -> HeartbeatWriter {
+        self.record_id = Some(record_id);
+        self
     }
 
     /// Run `beat` on each beat while the worker has no attempt.
@@ -504,7 +520,12 @@ impl HeartbeatWriter {
         files.write_heartbeat(&self.facts)?;
         if !self.session_written {
             if let (Some(session), transcript) = (self.lookup)() {
-                files.write_session(&session, &self.harness, transcript.as_deref())?;
+                files.write_session(
+                    &session,
+                    &self.harness,
+                    transcript.as_deref(),
+                    self.record_id.as_deref(),
+                )?;
                 self.session_written = true;
             }
         }

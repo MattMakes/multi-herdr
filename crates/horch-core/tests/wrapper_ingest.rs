@@ -31,7 +31,7 @@ use horch_core::fleetd::task_execution::adapters::result_reader::AttemptRef;
 use horch_core::taskledger::model::{Actor, StopRequester, WorkerStatus};
 use horch_core::taskledger::runs::{self, NewRun};
 use horch_core::taskledger::stop::{self, Panes, StopOptions};
-use horch_core::taskledger::supervisor::{AgentFacts, AttemptFiles, HEARTBEAT_JSON};
+use horch_core::taskledger::supervisor::{AgentFacts, AttemptFiles, HEARTBEAT_JSON, SESSION_JSON};
 use horch_core::taskledger::tasks::{self, NewTask};
 use horch_core::taskledger::workers::{self, NewWorker};
 use horch_core::taskledger::Store;
@@ -363,7 +363,7 @@ fn session_json_writes_the_session_record_once() {
     let procs = FakeProcesses::default();
     assert!(w
         .files()
-        .write_session("s-1", "claude", Some("/t/s-1.jsonl"))
+        .write_session("s-1", "claude", Some("/t/s-1.jsonl"), Some("r-1"))
         .unwrap());
     let read = w.read();
     w.ingest(&read, T1, &procs);
@@ -373,6 +373,7 @@ fn session_json_writes_the_session_record_once() {
     let row = w.worker_row();
     assert_eq!(row.session_id.as_deref(), Some("s-1"));
     assert_eq!(row.transcript_path.as_deref(), Some("/t/s-1.jsonl"));
+    assert_eq!(row.legacy_record_id.as_deref(), Some("r-1"));
     let sessions = format!(
         "SELECT count(*) FROM events WHERE kind = 'session' AND worker_id = '{}'",
         w.worker
@@ -382,6 +383,35 @@ fn session_json_writes_the_session_record_once() {
         w.count("SELECT count(*) FROM ingested WHERE outcome = 'accepted'"),
         1
     );
+}
+
+/// The record id of `session.json` is a claim of a file in the task
+/// folder: an id of another form, or longer than 64 bytes, rejects the file
+/// and writes no column of the worker row.
+#[test]
+fn session_json_with_a_bad_record_id_is_rejected() {
+    for bad in ["r 1", "../r-1", "", &"r".repeat(65)] {
+        let mut w = World::new();
+        let procs = FakeProcesses::default();
+        let file = serde_json::json!({
+            "task": w.attempt.task_id,
+            "attempt": "A1",
+            "session_id": "s-1",
+            "harness": "claude",
+            "transcript": null,
+            "record_id": bad,
+            "written_at": T1,
+        });
+        w.write_raw(SESSION_JSON, file.to_string().as_bytes());
+        let read = w.read();
+        w.ingest(&read, T1, &procs);
+
+        let row = w.worker_row();
+        assert_eq!(row.legacy_record_id, None, "{bad:?}");
+        assert_eq!(row.session_id, None, "{bad:?}");
+        let rejected = "SELECT count(*) FROM ingested WHERE outcome = 'rejected' AND reason LIKE 'record_id %'";
+        assert_eq!(w.count(rejected), 1, "{bad:?}");
+    }
 }
 
 #[test]
