@@ -41,6 +41,7 @@ use crate::fleetd::task_execution::adapters::sqlite as attempts_store;
 use crate::fleetd::task_execution::application::ingest::{self, key, moved, newest};
 use crate::fleetd::task_execution::application::lease;
 use crate::fleetd::task_execution::domain::outbox::LineKind;
+use crate::fleetd::task_execution::domain::retry::Outcome;
 use crate::fleetd::task_execution::domain::task::AttemptState;
 use crate::fleetd::worktree_custody::adapters::sqlite as trees;
 use crate::taskledger::model::{
@@ -312,7 +313,7 @@ fn hand_off(
 
 /// The handoff file that `START.md` of the next attempt of `task_id` names:
 /// the kept handoff file of its last ended attempt, when that attempt
-/// ended `handed_off`.
+/// ended `handed_off` or `context_limit` (fleetd-p7 ticket 18).
 pub fn handoff_of(conn: &Connection, task_id: &str) -> Result<Option<String>> {
     Ok(conn
         .query_row(
@@ -330,7 +331,10 @@ pub fn handoff_of(conn: &Connection, task_id: &str) -> Result<Option<String>> {
         )
         .optional()?
         .and_then(|(outcome, path)| {
-            (outcome.as_deref() == Some(handed_off_word())).then_some(path)?
+            let handed = [handed_off_word(), Outcome::ContextLimit.as_str()];
+            outcome
+                .is_some_and(|o| handed.contains(&o.as_str()))
+                .then_some(path)?
         }))
 }
 

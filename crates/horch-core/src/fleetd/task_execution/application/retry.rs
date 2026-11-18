@@ -9,14 +9,33 @@
 //! - [`escalate_overdue`]: the pass moves each `failed` task past its
 //!   `due_at` to `escalated`.
 
-use anyhow::{bail, Result};
-use rusqlite::Connection;
+use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
+use std::path::{Path, PathBuf};
 
+use anyhow::{bail, Context, Result};
+use rusqlite::{params, Connection, OptionalExtension};
+
+use crate::execution::lifecycle::TRANSCRIPT_JSONL;
+use crate::fleetd::fleet_runtime::adapters::sqlite::fact_data;
+use crate::fleetd::fleet_runtime::application::ledger::{record, transition, Cause};
 use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use crate::fleetd::fleet_runtime::domain::config::FleetConfig;
-use crate::fleetd::task_execution::domain::retry::{replan_overdue, Outcome};
+use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
+use crate::fleetd::ideas::application::needs_you::{self, NeedsYouList};
+use crate::fleetd::ideas::domain::needs_you::Write;
+use crate::fleetd::task_execution::adapters::outbox_reader::progress_path;
+use crate::fleetd::task_execution::adapters::result_reader::AttemptRef;
+use crate::fleetd::task_execution::adapters::sqlite as attempts_store;
+use crate::fleetd::task_execution::adapters::task_files::attempt_dir;
+use crate::fleetd::task_execution::domain::context_limit::{loops, End, CONTEXT_LIMIT};
+use crate::fleetd::task_execution::domain::retry::{
+    handoff_text, replan_overdue, HandoffFacts, Outcome,
+};
+use crate::fleetd::task_execution::domain::task::AttemptState;
 use crate::fleetd::worker_profiles::domain::profile::Retry;
+use crate::taskledger::model::{Actor, EventKind, TaskStatus, WorkerStatus};
 use crate::taskledger::tasks::{self, Requeue};
+use crate::taskledger::{util, workers};
 
 /// The numbers that rung 6 reads: the retry numbers of the profile of the
 /// task and `replan_limit_s` of `fleet.toml`.
@@ -62,6 +81,314 @@ pub fn burn_attempt(
         &format!("{why} ({})", outcome.as_str()),
         policy,
     )
+}
+
+/// The cause of the `exited` fact of an attempt that ended at the context
+/// limit. Its `data_json` holds the head of the worktree at the end.
+pub const CONTEXT_LIMIT_END: &str = "context_limit";
+
+/// The kind of the needs-you item of a context-limit loop.
+pub const CONTEXT_LIMIT_LOOP: &str = "context_limit_loop";
+
+/// The handoff file of an attempt, in its attempt folder.
+const HANDOFF_MD: &str = "handoff.md";
+
+/// What fleetd knows of the worktree of an attempt at its end: its head
+/// commit (`None` when unknown) and its `git diff`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TreeAtEnd {
+    pub head: Option<String>,
+    pub diff: String,
+}
+
+/// What [`on_context_limit`] did with the task.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ContextLimitMove {
+    /// The task is `ready` at once, and its next attempt reads `handoff`.
+    Ready { handoff: PathBuf },
+    /// The loop guard held: the task is `escalated` with 1 needs-you item.
+    Held,
+}
+
+/// The attempt `attempt` reached the context limit, and its wrapper ended
+/// it (FM-20, MAP.md Q2), in the open transaction `tx`. The attempt ends
+/// with the outcome `context_limit`, which burns no attempt, and the head
+/// of `tree` goes into the `data_json` of its `exited` fact. The task moves
+/// to `ready` at once, with no `not_before`, and the handoff file of rung 6
+/// for the next attempt in the same worktree. The loop guard: when the
+/// attempt before it also ended at the limit at the same head, the task
+/// goes to `escalated` with 1 needs-you item instead. `tail_bytes` bounds
+/// each tail that the handoff file holds. `None`: the task already moved,
+/// or the attempt ended with another outcome.
+pub fn on_context_limit(
+    tx: &Connection,
+    guard: Option<Generation>,
+    fleet_root: &Path,
+    tail_bytes: u64,
+    attempt: &AttemptRef,
+    tree: &TreeAtEnd,
+) -> Result<Option<ContextLimitMove>> {
+    if tx.is_autocommit() {
+        bail!("the context limit writes its rows in 1 open transaction of the ledger");
+    }
+    let word = Outcome::ContextLimit.as_str();
+    let (worker, state, outcome) = attempt_row(tx, &attempt.attempt_id)?;
+    let ended = state == AttemptState::Ended.as_str();
+    if ended && outcome.as_deref() != Some(word) {
+        return Ok(None);
+    }
+    let task = tasks::get(tx, &attempt.task_id)?;
+    if task.status != TaskStatus::Running.as_str()
+        || task.current_worker_id.as_deref() != Some(worker.as_str())
+    {
+        return Ok(None);
+    }
+    end_at_limit(tx, guard, attempt, &worker, ended, tree.head.as_deref())?;
+    let previous = previous_end(tx, attempt)?;
+    // No attempt is burned: the next claim adds 1 to `attempts`, and the
+    // floor moves with it.
+    tx.execute(
+        "UPDATE tasks SET attempt_floor = attempt_floor + 1, current_worker_id = NULL,
+            not_before = NULL, updated_at = ?2
+         WHERE task_id = ?1",
+        params![attempt.task_id, util::now()],
+    )?;
+    let this = End {
+        outcome: Some(word),
+        head: tree.head.as_deref(),
+    };
+    if let Some(p) = &previous {
+        let before = End {
+            outcome: p.outcome.as_deref(),
+            head: p.head.as_deref(),
+        };
+        if loops(Some(&before), &this) {
+            hold_loop(tx, guard, attempt, &p.id)?;
+            return Ok(Some(ContextLimitMove::Held));
+        }
+    }
+    let handoff = write_handoff(fleet_root, tail_bytes, attempt, &tree.diff)?;
+    let path = handoff.to_string_lossy();
+    tx.execute(
+        "UPDATE workers SET handoff_path = ?2 WHERE worker_id = ?1",
+        params![worker, path],
+    )?;
+    let text = format!(
+        "context limit: attempt {} ended at {CONTEXT_LIMIT} tokens; handoff file {path}",
+        attempt.attempt_id
+    );
+    let ready = TaskStatus::Ready.as_str();
+    transition(
+        tx,
+        guard,
+        Entity::Task,
+        &attempt.task_id,
+        ready,
+        by_fleetd(&text),
+        &NeedsYouList,
+    )?;
+    Ok(Some(ContextLimitMove::Ready { handoff }))
+}
+
+fn by_fleetd(text: &str) -> Cause<'_> {
+    Cause {
+        actor: Actor::Horch,
+        text,
+    }
+}
+
+/// The worker, the state and the outcome of the attempt `id`.
+fn attempt_row(tx: &Connection, id: &str) -> Result<(String, String, Option<String>)> {
+    tx.query_row(
+        "SELECT worker_id, state, outcome FROM attempts WHERE id = ?1",
+        [id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )
+    .optional()?
+    .with_context(|| format!("no attempt {id}"))
+}
+
+/// End the attempt `a` of `worker` with `context_limit`, when it is not
+/// `ended` yet, end its live worker row, and record `head` in its `exited`
+/// fact.
+fn end_at_limit(
+    tx: &Connection,
+    guard: Option<Generation>,
+    a: &AttemptRef,
+    worker: &str,
+    ended: bool,
+    head: Option<&str>,
+) -> Result<()> {
+    let word = Outcome::ContextLimit.as_str();
+    let text =
+        format!("the wrapper ended it at the context limit of {CONTEXT_LIMIT} tokens: {word}");
+    if !ended {
+        attempts_store::set_ended(tx, &a.attempt_id, word, &util::now())?;
+        let to = AttemptState::Ended.as_str();
+        transition(
+            tx,
+            guard,
+            Entity::Attempt,
+            &a.attempt_id,
+            to,
+            by_fleetd(&text),
+            &NeedsYouList,
+        )?;
+    }
+    let reason = format!("{word}: attempt {}", a.attempt_id);
+    workers::end(tx, worker, WorkerStatus::Incomplete, &reason, None)?;
+    let data = serde_json::json!({ "outcome": word, "head": head });
+    record(
+        tx,
+        guard,
+        EventKind::Exited,
+        Entity::Attempt,
+        &a.attempt_id,
+        Cause {
+            actor: Actor::Horch,
+            text: CONTEXT_LIMIT_END,
+        },
+        &data,
+    )?;
+    Ok(())
+}
+
+/// 1 ended attempt, as the loop guard reads it.
+struct PreviousEnd {
+    id: String,
+    outcome: Option<String>,
+    /// The head that its `exited` fact recorded.
+    head: Option<String>,
+}
+
+/// The ended attempt of the task of `a` just before `a`.
+fn previous_end(tx: &Connection, a: &AttemptRef) -> Result<Option<PreviousEnd>> {
+    let row: Option<(String, Option<String>)> = tx
+        .query_row(
+            "SELECT id, outcome FROM attempts
+             WHERE task_id = ?1 AND state = ?3
+               AND rowid < (SELECT rowid FROM attempts WHERE id = ?2)
+             ORDER BY rowid DESC LIMIT 1",
+            params![a.task_id, a.attempt_id, AttemptState::Ended.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let Some((id, outcome)) = row else {
+        return Ok(None);
+    };
+    let data = fact_data(
+        tx,
+        Entity::Attempt,
+        &id,
+        EventKind::Exited,
+        CONTEXT_LIMIT_END,
+    )?;
+    let head = data
+        .and_then(|d| serde_json::from_str::<serde_json::Value>(&d).ok())
+        .and_then(|v| v.get("head")?.as_str().map(str::to_string));
+    Ok(Some(PreviousEnd { id, outcome, head }))
+}
+
+/// The loop guard held for the attempts `previous` and `a`: the task goes
+/// `running -> failed -> escalated`, and 1 needs-you item names the task
+/// and the 2 attempts.
+fn hold_loop(
+    tx: &Connection,
+    guard: Option<Generation>,
+    a: &AttemptRef,
+    previous: &str,
+) -> Result<()> {
+    let task = &a.task_id;
+    let text = format!(
+        "Task {task} reached the context limit of {CONTEXT_LIMIT} tokens in 2 attempts in a row, \
+         {previous} and {}, with no new commit between them. The task is held, so it does not \
+         loop. Split the task, or requeue it with horch task requeue {task}.",
+        a.attempt_id
+    );
+    for to in [TaskStatus::Failed, TaskStatus::Escalated] {
+        transition(
+            tx,
+            guard,
+            Entity::Task,
+            task,
+            to.as_str(),
+            by_fleetd(&text),
+            &NeedsYouList,
+        )?;
+    }
+    tx.execute(
+        "UPDATE tasks SET held_reason = ?2, due_at = NULL, updated_at = ?3 WHERE task_id = ?1",
+        params![task, "context limit loop", util::now()],
+    )?;
+    let key = format!("{CONTEXT_LIMIT_LOOP}:{task}");
+    needs_you::open_item(
+        tx,
+        &Write {
+            key: &key,
+            kind: CONTEXT_LIMIT_LOOP,
+            entity: Entity::Task.as_str(),
+            entity_id: task,
+            text: &text,
+        },
+    )
+}
+
+/// Write the handoff file of rung 6 for the attempt `a` into its attempt
+/// folder: the tails of its `progress.jsonl` and `transcript.jsonl`, at most
+/// `tail_bytes` each, and `diff`. A second write gives the same file.
+fn write_handoff(
+    fleet_root: &Path,
+    tail_bytes: u64,
+    a: &AttemptRef,
+    diff: &str,
+) -> Result<PathBuf> {
+    let dir = attempt_dir(fleet_root, &a.task_id, a.attempt());
+    let progress = tail(&progress_path(fleet_root, a), tail_bytes)?;
+    let transcript = tail(&dir.join(TRANSCRIPT_JSONL), tail_bytes)?;
+    let why = format!(
+        "The attempt ended because its context reached the limit of {CONTEXT_LIMIT} tokens."
+    );
+    let text = handoff_text(&HandoffFacts {
+        attempt: &a.attempt_id,
+        why: &why,
+        progress: &progress,
+        diff,
+        transcript_tail: &transcript,
+    });
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    let path = dir.join(HANDOFF_MD);
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).write(true).truncate(true);
+    // Windows has no file modes: the file keeps the default access.
+    let _ = horch_platform::fs::create_mode(&mut options, 0o600);
+    options
+        .open(&path)
+        .and_then(|mut f| f.write_all(text.as_bytes()))
+        .with_context(|| format!("writing {}", path.display()))?;
+    Ok(path)
+}
+
+/// The last `bytes` of the file `path` from its first whole line. A missing
+/// file gives an empty text.
+fn tail(path: &Path, bytes: u64) -> Result<String> {
+    let mut file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+        Err(e) => return Err(e).with_context(|| format!("opening {}", path.display())),
+    };
+    let len = file.metadata()?.len();
+    let start = len.saturating_sub(bytes);
+    file.seek(SeekFrom::Start(start))?;
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf)?;
+    let text = String::from_utf8_lossy(&buf);
+    if start == 0 {
+        return Ok(text.into_owned());
+    }
+    Ok(text
+        .split_once('\n')
+        .map_or("", |(_, rest)| rest)
+        .to_string())
 }
 
 /// Move each `failed` task past its `due_at` at fleet clock `clock` to

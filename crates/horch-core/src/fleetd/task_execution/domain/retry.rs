@@ -142,6 +142,46 @@ pub fn claimable_at(not_before: Option<i64>, clock: i64) -> bool {
     not_before.is_none_or(|t| clock >= t)
 }
 
+/// The facts of 1 ended attempt that its handoff file holds (rung 6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HandoffFacts<'a> {
+    /// The id of the attempt that ended.
+    pub attempt: &'a str,
+    /// Why it ended.
+    pub why: &'a str,
+    /// The tail of its `outbox/progress.jsonl`.
+    pub progress: &'a str,
+    /// The `git diff` of its worktree.
+    pub diff: &'a str,
+    /// The tail of its `transcript.jsonl`.
+    pub transcript_tail: &'a str,
+}
+
+/// The text of the handoff file that the next attempt in the same worktree
+/// reads first: the progress lines, `git diff` and the transcript tail of
+/// the attempt that ended.
+pub fn handoff_text(f: &HandoffFacts<'_>) -> String {
+    let section = |title: &str, body: &str| {
+        let body = if body.trim().is_empty() {
+            "(empty)\n".to_string()
+        } else if body.ends_with('\n') {
+            body.to_string()
+        } else {
+            format!("{body}\n")
+        };
+        format!("\n## {title}\n\n~~~~\n{body}~~~~\n")
+    };
+    format!(
+        "# Handoff of attempt {}\n\n{}\n\nThe worktree keeps the work of that attempt. \
+         Read this file, then go on from the last step.\n{}{}{}",
+        f.attempt,
+        f.why,
+        section("Progress (outbox/progress.jsonl)", f.progress),
+        section("git diff", f.diff),
+        section("Transcript tail (transcript.jsonl)", f.transcript_tail),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,6 +269,22 @@ mod tests {
         ] {
             assert!(!o.burns_attempt(), "{o:?}");
         }
+    }
+
+    #[test]
+    fn handoff_text_holds_progress_diff_and_transcript_tail() {
+        let text = handoff_text(&HandoffFacts {
+            attempt: "T-1/A1",
+            why: "The context reached the limit.",
+            progress: "{\"text\":\"step 1\"}\n",
+            diff: "+new line",
+            transcript_tail: "",
+        });
+        assert!(text.starts_with("# Handoff of attempt T-1/A1\n"));
+        assert!(text.contains("The context reached the limit."));
+        assert!(text.contains("~~~~\n{\"text\":\"step 1\"}\n~~~~"));
+        assert!(text.contains("~~~~\n+new line\n~~~~"));
+        assert!(text.contains("## Transcript tail (transcript.jsonl)\n\n~~~~\n(empty)\n~~~~"));
     }
 
     #[test]

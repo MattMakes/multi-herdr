@@ -96,6 +96,9 @@ pub struct ExitFile {
 pub enum OutcomeHint {
     /// The CLI showed its usage-limit or outage signal (RR-11).
     Quota,
+    /// The context of a CLI with no compaction setting reached the 256k
+    /// limit, and the wrapper ended the CLI (FM-20).
+    ContextLimit,
 }
 
 /// The content of [`SESSION_JSON`].

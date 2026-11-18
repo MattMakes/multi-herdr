@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::execution::legacy::HistoryEntry;
 use crate::execution::store::ExecutionStore;
 use crate::execution::SessionMode;
+use crate::fleetd::task_execution::domain::context_limit;
 use crate::fleetd::worker_profiles::domain::profile::Mode;
 use crate::harness::launch::{self, DiscoveryTarget, LaunchRequest};
 use crate::harness::HarnessKind;
@@ -762,6 +763,29 @@ impl ExecCli {
             .map(|(_, cli)| *cli)
     }
 
+    /// Whether this CLI has its own compaction setting. Claude Code and
+    /// Codex compact at 256000 by their setting (fleetd-p7 tickets 13 and
+    /// 14). Antigravity has none, so the wrapper ends it at the limit.
+    fn compacts(self) -> bool {
+        match self {
+            ExecCli::Claude | ExecCli::Codex => true,
+            ExecCli::Antigravity => false,
+        }
+    }
+
+    /// Why the wrapper ends this CLI after `event`, if it does: a usage
+    /// limit, or the context limit of a CLI with no compaction setting
+    /// (FM-20).
+    fn stop(self, event: StreamEvent) -> Option<Stop> {
+        match event {
+            StreamEvent::UsageLimited => Some(Stop::UsageLimited),
+            StreamEvent::ContextTokens(n) if !self.compacts() && context_limit::reached(n) => {
+                Some(Stop::ContextLimit)
+            }
+            _ => None,
+        }
+    }
+
     /// The event of 1 stream line, as the adapter of this CLI reads it.
     pub fn read(self, line: &str) -> StreamEvent {
         use crate::harness::{antigravity as agy, claude, codex};
@@ -798,25 +822,32 @@ pub enum ExecEnd {
     Exited(Option<i32>),
     /// The stream showed a usage limit, and the wrapper ended the CLI.
     UsageLimited(Option<i32>),
+    /// The context of a CLI with no compaction setting reached the limit,
+    /// and the wrapper ended the CLI (FM-20).
+    ContextLimit(Option<i32>),
 }
 
 impl ExecEnd {
     pub fn code(self) -> Option<i32> {
         match self {
-            ExecEnd::Exited(code) | ExecEnd::UsageLimited(code) => code,
+            ExecEnd::Exited(code) | ExecEnd::UsageLimited(code) | ExecEnd::ContextLimit(code) => {
+                code
+            }
         }
     }
 
-    /// The outcome hint of `exit.json`: `quota` after a usage limit.
+    /// The outcome hint of `exit.json`: `quota` after a usage limit,
+    /// `context_limit` after the context limit.
     pub fn outcome_hint(self) -> Option<OutcomeHint> {
         match self {
             ExecEnd::Exited(_) => None,
             ExecEnd::UsageLimited(_) => Some(OutcomeHint::Quota),
+            ExecEnd::ContextLimit(_) => Some(OutcomeHint::ContextLimit),
         }
     }
 
     /// Whether the repair pass of FM-6 applies: an attempt that ends with
-    /// `quota` did not end without its result.
+    /// `quota` or at the context limit did not end without its result.
     pub fn repair_applies(self) -> bool {
         matches!(self, ExecEnd::Exited(_))
     }
@@ -834,7 +865,8 @@ pub struct ExecAttempt<'a> {
 /// Run the exec command `cmd` of an attempt to its end, in its own process
 /// group. Each stream line goes to [`TRANSCRIPT_JSONL`], and 1 short text
 /// of its event to the pane. Each activity event writes a heartbeat. A
-/// usage limit ends the CLI and its group at once. The run returns when the
+/// usage limit ends the CLI and its group at once, and so does the 256k
+/// context limit of a CLI with no compaction setting. The run returns when the
 /// CLI exits: the caller writes `exit.json` with [`write_exec_exit`].
 pub fn run_exec(mut cmd: Command, attempt: &mut ExecAttempt<'_>) -> Result<ExecEnd> {
     let path = attempt.files.dir().join(TRANSCRIPT_JSONL);
@@ -847,17 +879,25 @@ pub fn run_exec(mut cmd: Command, attempt: &mut ExecAttempt<'_>) -> Result<ExecE
     attempt.facts.agent_started(child.id());
     let stdout = child.stdout.take().context("the CLI has no stdout pipe")?;
     let read = read_stream(std::io::BufReader::new(stdout), &mut transcript, attempt);
-    if !matches!(read, Ok(false)) {
+    if !matches!(read, Ok(None)) {
         horch_platform::group::kill_child_group(&mut child);
     }
     let status = child
         .wait()
         .with_context(|| format!("waiting for {name}"))?;
-    Ok(if read? {
-        ExecEnd::UsageLimited(status.code())
-    } else {
-        ExecEnd::Exited(status.code())
+    let code = status.code();
+    Ok(match read? {
+        None => ExecEnd::Exited(code),
+        Some(Stop::UsageLimited) => ExecEnd::UsageLimited(code),
+        Some(Stop::ContextLimit) => ExecEnd::ContextLimit(code),
     })
+}
+
+/// Why the wrapper ends the CLI before the CLI exits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stop {
+    UsageLimited,
+    ContextLimit,
 }
 
 /// Write `exit.json` of an exec attempt that ended with `end`.
@@ -876,12 +916,13 @@ fn open_transcript(path: &Path) -> Result<std::fs::File> {
         .with_context(|| format!("opening {}", path.display()))
 }
 
-/// Read the stream until it ends, or until a usage limit: `true`.
+/// Read the stream until it ends: `None`. A usage limit, or the context
+/// limit of a CLI with no compaction setting, stops the read at once.
 fn read_stream(
     stdout: impl std::io::BufRead,
     transcript: &mut std::fs::File,
     attempt: &mut ExecAttempt<'_>,
-) -> Result<bool> {
+) -> Result<Option<Stop>> {
     use std::io::Write as _;
     for line in stdout.split(b'\n') {
         let mut line = line.context("reading the stream of the CLI")?;
@@ -903,11 +944,11 @@ fn read_stream(
                 eprintln!("horch worker: heartbeat.json is not written: {e:#}");
             }
         }
-        if event == StreamEvent::UsageLimited {
-            return Ok(true);
+        if let Some(stop) = attempt.cli.stop(event) {
+            return Ok(Some(stop));
         }
     }
-    Ok(false)
+    Ok(None)
 }
 
 /// The pane text of 1 stream line: its event and the kind of the line, at
