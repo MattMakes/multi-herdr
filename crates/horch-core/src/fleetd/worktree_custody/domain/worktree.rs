@@ -95,7 +95,8 @@ fn quarantine(path: &str) -> bool {
 
 /// The task that `branch` of the repository `repo` names:
 /// `<run branch>-T<seq>-<name>` of a run of `repo` (Q4). The longest run
-/// branch that matches wins.
+/// branch that matches wins; of 2 runs with the same branch, the first in
+/// `runs` wins.
 pub fn task_of_branch(repo: &str, branch: &str, runs: &[RunBranch]) -> Option<TaskRef> {
     runs.iter()
         .filter(|r| r.repo == repo && !r.branch.is_empty())
@@ -107,7 +108,7 @@ pub fn task_of_branch(repo: &str, branch: &str, runs: &[RunBranch]) -> Option<Ta
             }
             Some((r, seq.parse::<i64>().ok()?))
         })
-        .max_by_key(|(r, _)| r.branch.len())
+        .min_by_key(|(r, _)| std::cmp::Reverse(r.branch.len()))
         .map(|(r, seq)| TaskRef {
             run_id: r.run_id.clone(),
             seq,
@@ -332,6 +333,20 @@ mod tests {
         assert_eq!(task("fleet/a-Tx2-feat"), None);
         assert_eq!(task("fleet/b-T1-feat"), None);
         assert_eq!(task_of_branch("/other", "fleet/a-T1-x", &runs), None);
+    }
+
+    /// `runs::of_project` gives the newest run first. 2 runs with the same
+    /// run branch give the task of the newest (review F2).
+    #[test]
+    fn task_of_branch_takes_the_first_run_of_a_shared_run_branch() {
+        let runs = [run("new", "fleet/a"), run("old", "fleet/a")];
+        assert_eq!(
+            task_of_branch("/r", "fleet/a-T3-x", &runs),
+            Some(TaskRef {
+                run_id: "new".into(),
+                seq: 3
+            })
+        );
     }
 
     fn owner(attempt: Option<Attempt>, worker_live: bool) -> Owner {

@@ -172,32 +172,34 @@ fn add_run(conn: &Connection, row: &WorktreeRow) -> Result<Option<jobs_store::Jo
 fn observe_runs(ctx: &JobCtx<'_>, tx: &Connection, report: &mut Report) -> Result<()> {
     for row in all_rows(tx)? {
         let id = row.worktree_id.as_str();
-        let run = match rules::awaited(row.state.as_str()) {
-            Some(TreeJob::Add) => add_run(tx, &row)?,
-            Some(TreeJob::Rescue) => match row.head_sha.as_deref() {
+        let Some(awaited) = rules::awaited(row.state.as_str()) else {
+            continue;
+        };
+        let run = match awaited {
+            TreeJob::Add => add_run(tx, &row)?,
+            TreeJob::Rescue => match row.head_sha.as_deref() {
                 Some(head) => {
                     let key = rescue_key(&row.path, head);
                     jobs_store::latest(tx, Kind::Rescue, id, &key)?
                 }
                 None => None,
             },
-            Some(TreeJob::Remove) => {
+            TreeJob::Remove => {
                 let key = remove_key(&row.path);
                 jobs_store::latest(tx, Kind::WorktreeRemove, id, &key)?
             }
-            None => None,
         };
         let Some(job) = run.filter(|j| matches!(j.state, State::Passed | State::Failed)) else {
             continue;
         };
-        match job.kind {
-            Kind::WorktreeAdd => {
+        match awaited {
+            TreeJob::Add => {
                 create::observe(ctx, tx, &job)?;
             }
-            Kind::Rescue => {
+            TreeJob::Rescue => {
                 rescue::observe(ctx, tx, &job)?;
             }
-            _ => {
+            TreeJob::Remove => {
                 remove::observe(ctx, tx, &job)?;
             }
         }
@@ -439,14 +441,22 @@ fn in_git(facts: &Facts, row: &WorktreeRow) -> bool {
         .iter()
         .filter(|l| l.repo == row.repo_root)
         .any(|l| {
-            l.result.entries.iter().any(|e| {
-                e.prunable.is_none()
-                    && (e.path == row.path
-                        || l.result.trees.iter().any(|t| {
-                            t.path == e.path && t.worktree_id.as_ref() == Some(&row.worktree_id)
-                        }))
-            })
+            l.result
+                .entries
+                .iter()
+                .any(|e| e.prunable.is_none() && names_row(&l.result, &e.path, row))
         })
+}
+
+/// Whether the entry at `path` of `result` is the tree of `row`: by its
+/// path as text, or by the row that the `worktree_list` run matched to it.
+fn names_row(result: &ListResult, path: &str, row: &WorktreeRow) -> bool {
+    let same_path = path == row.path;
+    let same_row = result
+        .trees
+        .iter()
+        .any(|t| t.path == path && t.worktree_id.as_ref() == Some(&row.worktree_id));
+    same_path || same_row
 }
 
 /// Whether a removal set the tree of `row` aside: its remove run is
