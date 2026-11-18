@@ -106,14 +106,10 @@ fn command(spec: &LaunchSpec) -> Result<Command, LaunchError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fleetd::fleet_runtime::application::ledger::{transition, Cause};
-    use crate::fleetd::fleet_runtime::domain::ledger::Entity;
-    use crate::fleetd::ideas::application::needs_you::NeedsYouList;
+    use crate::fleetd::ideas::application::needs_you::open_item;
+    use crate::fleetd::ideas::domain::needs_you::Write;
     use crate::fleetd::worker_profiles::application::ports::EnvRule;
     use crate::harness::launch::FORBIDDEN_ENV;
-    use crate::taskledger::model::Actor;
-    use crate::taskledger::runs::{self, NewRun};
-    use crate::taskledger::tasks::{self, NewTask};
     use crate::taskledger::Store;
     use std::ffi::OsString;
     use std::path::PathBuf;
@@ -266,33 +262,17 @@ mod tests {
     fn launch_inside_a_transaction_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open(&dir.path().join("ledger.sqlite3")).unwrap();
-        let new = NewRun {
-            slug: "r1".into(),
-            ..Default::default()
-        };
-        let run = store
-            .immediate(|tx| runs::create(tx, dir.path(), &new))
-            .unwrap();
-        let new = NewTask::work("t1", "t1.md", "dev");
-        let task = store
-            .immediate(|tx| tasks::add(tx, &run, &new, Actor::Orchestrator))
-            .unwrap()
-            .task_id;
-        let cause = Cause {
-            actor: Actor::Horch,
+        // A needs-you item is a door write that needs no run, task or idea.
+        let item = Write {
+            key: "test:1",
+            kind: "test",
+            entity: "job",
+            entity_id: "1",
             text: "test",
         };
         let refused = store
             .immediate(|tx| {
-                transition(
-                    tx,
-                    None,
-                    Entity::Task,
-                    &task,
-                    "cancelled",
-                    cause,
-                    &NeedsYouList,
-                )?;
+                open_item(tx, &item)?;
                 Ok(Launcher.launch(&spec("true", &[])))
             })
             .unwrap();

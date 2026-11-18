@@ -114,6 +114,17 @@ pub fn last(conn: &Connection, kind: Kind, subject: &str) -> Result<Option<JobRo
     )
 }
 
+/// The newest run of `kind` whose subject is `word` or starts with `word`
+/// and a space, of any input key.
+pub fn last_of_word(conn: &Connection, kind: Kind, word: &str) -> Result<Option<JobRow>> {
+    one(
+        conn,
+        "WHERE kind = ?1 AND (subject = ?2 OR substr(subject, 1, length(?2) + 1) = ?2 || ' ')
+            ORDER BY id DESC LIMIT 1",
+        params![kind.as_str(), word],
+    )
+}
+
 /// The newest `passed` run of `kind` for each subject, by subject.
 pub fn last_passed(conn: &Connection, kind: Kind) -> Result<Vec<JobRow>> {
     rows(
