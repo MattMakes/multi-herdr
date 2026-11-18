@@ -1017,10 +1017,28 @@ pub fn restore(
         new: Some(&new),
     };
     let id = finish::lease_tree(store, jobs, &lease)?;
-    store.conn().execute(
+    // The tree is for the operator, not for an attempt: the reconciler
+    // leaves a `created` tree as it is, but it orphans an `active` tree with
+    // no owner (MAP.md of fleetd-p3, Q10 and Q23).
+    let mut conn = open(store)?;
+    let tx = immediate(&mut conn)?;
+    transition(
+        &tx,
+        None,
+        Entity::Worktree,
+        &id,
+        "created",
+        Cause {
+            actor: Actor::Operator,
+            text: "horch worktree restore gives it to the operator, with no owner",
+        },
+        &NeedsYouList,
+    )?;
+    tx.execute(
         "UPDATE worktrees SET reason = ?2 WHERE worktree_id = ?1",
         params![id, format!("restored from {r}")],
     )?;
+    tx.commit()?;
     Ok(format!(
         "restored {path_text} on {branch} at {} from {r}",
         short(&commit)

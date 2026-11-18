@@ -403,8 +403,10 @@ fn restore_makes_its_tree_through_a_worktree_add_job() {
         "untracked\n"
     );
     assert_eq!(git_in(&h, &path, &["branch", "--show-current"]), "feat");
-    // The removed row keeps its path; the restored tree has a new row.
-    assert_eq!(states(&h, &path), ["removed", "active"]);
+    // The removed row keeps its path; the restored tree has a new row. It
+    // is for the operator: `created` with no owner, so the reconciler does
+    // not orphan it.
+    assert_eq!(states(&h, &path), ["removed", "created"]);
 }
 
 #[test]
