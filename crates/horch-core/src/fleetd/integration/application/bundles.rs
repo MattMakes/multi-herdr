@@ -13,6 +13,12 @@
 //!   member to `conflicted`; another failure or a moved feature tip drops
 //!   the bundle, and its members go back to `ready`. An abandoned run of
 //!   either job runs again.
+//! - The verdict of the fast gate (ticket 30): a pass moves the bundle to
+//!   `passed`, due after `bundle_passed_limit_s`. A failure moves it to
+//!   `failed`, and the bisect writes 1 child bundle with `parent_id` for
+//!   each half, built and gated in the same way. A failed bundle of 1
+//!   member sends its branch to `gate_failed`; [`failed_gate`] names the
+//!   gate job whose result names the gate output.
 //! - Each step reads the rows again, so after a restart each bundle goes on
 //!   from its row: no bundle is built 2 times, and no member stays
 //!   `in_bundle` for ever (FM-36).
@@ -22,7 +28,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::fleetd::fleet_runtime::adapters::jobs_store::{self, JobRow};
 use crate::fleetd::fleet_runtime::application::jobs::{self, JobCtx, JobKey, NewItem, Queued};
@@ -35,14 +41,15 @@ use crate::fleetd::ideas::application::needs_you;
 use crate::fleetd::integration::adapters::exec_bundle::{self, Build};
 use crate::fleetd::integration::adapters::exec_gate::{self, GateRequest};
 use crate::fleetd::integration::adapters::sqlite::{
-    self as rows, BundleFact, BundleRow, NewBundle,
+    self as rows, BranchFact, BundleFact, BundleRow, NewBundle,
 };
 use crate::fleetd::integration::application::landing;
 use crate::fleetd::integration::application::ports::IntegrationGitGateway;
+use crate::fleetd::integration::domain::bisector::{self, Decision, Verdict};
 use crate::fleetd::integration::domain::bundle::{
     self as rules, BuildFact, BundleState, DropCause, Limits, Step,
 };
-use crate::fleetd::integration::domain::task_branch::LandingState;
+use crate::fleetd::integration::domain::task_branch::{self, LandingState};
 use crate::taskledger::model::Actor;
 use crate::taskledger::runs;
 
@@ -155,24 +162,55 @@ fn form(
         return Ok(());
     }
     let ctx = b.jobs;
-    let member_names: Vec<&str> = members.iter().map(String::as_str).collect();
-    let due_at = rules::due_at(BundleState::Building, clock.0, &limits(ctx.config))
-        .context("building has a time limit")?;
-    let new = NewBundle {
+    let why = format!("{} ready task branches of {feature_id}", members.len());
+    let part = Part {
         feature_id,
         base_tip: &base,
         parent_id: None,
-        members: &member_names,
-        due_at,
+        members: &members,
+        tips: &tips,
     };
-    let why = format!("{} ready task branches of {feature_id}", members.len());
-    let id = rows::insert_bundle(tx, ctx.guard, &new, by_fleetd(&why))?;
+    let id = insert(ctx, tx, clock, &t, &part, &why)?;
     let why = format!("it is a member of bundle {id}");
     for name in &members {
         landing::enter(ctx, tx, name, LandingState::InBundle, clock, &why)?;
     }
-    let tips: Vec<&str> = tips.iter().map(String::as_str).collect();
-    let input_key = exec_bundle::input_key(&base, &tips);
+    Ok(())
+}
+
+/// The rows of 1 new bundle: its members in queue order and the tip of
+/// each, on `base_tip`; `parent_id` is the failed bundle of a bisect part.
+struct Part<'p> {
+    feature_id: &'p str,
+    base_tip: &'p str,
+    parent_id: Option<i64>,
+    members: &'p [String],
+    tips: &'p [String],
+}
+
+/// Write the `building` bundle `part` with its members and queue its
+/// `bundle_build` job, in `tx`. Gives the id of the bundle.
+fn insert(
+    ctx: &JobCtx<'_>,
+    tx: &Connection,
+    clock: FleetSeconds,
+    t: &Target,
+    part: &Part<'_>,
+    why: &str,
+) -> Result<i64> {
+    let member_names: Vec<&str> = part.members.iter().map(String::as_str).collect();
+    let due_at = rules::due_at(BundleState::Building, clock.0, &limits(ctx.config))
+        .context("building has a time limit")?;
+    let new = NewBundle {
+        feature_id: part.feature_id,
+        base_tip: part.base_tip,
+        parent_id: part.parent_id,
+        members: &member_names,
+        due_at,
+    };
+    let id = rows::insert_bundle(tx, ctx.guard, &new, by_fleetd(why))?;
+    let tips: Vec<&str> = part.tips.iter().map(String::as_str).collect();
+    let input_key = exec_bundle::input_key(part.base_tip, &tips);
     let subject = id.to_string();
     let key = JobKey {
         kind: Kind::BundleBuild,
@@ -180,7 +218,8 @@ fn form(
         input_key: &input_key,
     };
     let queued = jobs::queue(ctx, tx, &key, Some(&t.repo_text()), clock)?;
-    set_job(ctx, tx, id, &queued, "the build of its candidate is queued")
+    set_job(ctx, tx, id, &queued, "the build of its candidate is queued")?;
+    Ok(id)
 }
 
 /// Record the run of `queued` as the job of the bundle `id`, when it is a
@@ -213,7 +252,7 @@ fn step(b: &Bundles<'_>, tx: &Connection, clock: FleetSeconds, id: i64) -> Resul
     };
     let ctx = b.jobs;
     match &next {
-        Step::Stay if state == BundleState::Gating => gate(ctx, tx, clock, &bundle, &t),
+        Step::Stay if state == BundleState::Gating => judge(b, tx, clock, &bundle, &t),
         Step::Stay => Ok(()),
         Step::Rebuild => rebuild(ctx, tx, clock, id, job.as_ref()),
         Step::Gate {
@@ -323,6 +362,171 @@ fn gate(
         // The gates of the feature hold for want of a sandbox.
         None => Ok(()),
     }
+}
+
+/// The word of the fast gate in `gate_runs`.
+const FAST_GATE: &str = "fast";
+
+/// Act on the verdict of the fast gate of the `gating` bundle `bundle`
+/// (ticket 30): no verdict queues the gate, a pass moves the bundle to
+/// `passed`, and a failure moves it to `failed` and bisects it.
+fn judge(
+    b: &Bundles<'_>,
+    tx: &Connection,
+    clock: FleetSeconds,
+    bundle: &BundleRow,
+    t: &Target,
+) -> Result<()> {
+    let ctx = b.jobs;
+    match bisector::decide(verdict(tx, bundle)?, &bundle.members) {
+        Decision::Wait => gate(ctx, tx, clock, bundle, t),
+        Decision::Pass => {
+            let why = "its fast gate passed";
+            enter(ctx, tx, clock, bundle.id, BundleState::Passed, why)?;
+            let due = clock.0.saturating_add(
+                i64::try_from(ctx.config.bundle_passed_limit_s).unwrap_or(i64::MAX),
+            );
+            rows::set_bundle_fact(
+                tx,
+                ctx.guard,
+                bundle.id,
+                BundleFact::DueAt(due),
+                by_fleetd(why),
+            )
+        }
+        Decision::GateFailed { member } => {
+            enter(
+                ctx,
+                tx,
+                clock,
+                bundle.id,
+                BundleState::Failed,
+                "its fast gate failed",
+            )?;
+            let why = format!(
+                "it is the failing branch of bundle {}: the output of its fast gate is the result of job {}",
+                bundle.id,
+                bundle.job_id.unwrap_or_default()
+            );
+            landing::enter(ctx, tx, &member, LandingState::GateFailed, clock, &why)?;
+            Ok(())
+        }
+        Decision::Split { left, right } => {
+            enter(
+                ctx,
+                tx,
+                clock,
+                bundle.id,
+                BundleState::Failed,
+                "its fast gate failed",
+            )?;
+            for half in [left, right] {
+                bisect_part(b, tx, clock, bundle, t, &half)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+/// The verdict of the fast gate of `bundle` on its candidate over its base
+/// tip, from its `gate_runs` row. A gate is pure, so the newest row of the
+/// same 2 tips is the verdict.
+fn verdict(tx: &Connection, bundle: &BundleRow) -> Result<Verdict> {
+    let Some(tip) = bundle.candidate_tip.as_deref() else {
+        return Ok(Verdict::Pending);
+    };
+    let run = rows::gate_run_of(tx, &bundle.feature_id, FAST_GATE, tip, &bundle.base_tip)?;
+    Ok(match run.and_then(|r| r.result).as_deref() {
+        Some("pass") => Verdict::Passed,
+        Some("fail") => Verdict::Failed,
+        _ => Verdict::Pending,
+    })
+}
+
+/// Write 1 child bundle of the failed `parent` with the members `half`, on
+/// the base tip of the parent. Each member stays `in_bundle`, with the due
+/// time of a new bundle. A member that git no longer has goes back to
+/// `ready`.
+fn bisect_part(
+    b: &Bundles<'_>,
+    tx: &Connection,
+    clock: FleetSeconds,
+    parent: &BundleRow,
+    t: &Target,
+    half: &[String],
+) -> Result<()> {
+    let ctx = b.jobs;
+    let mut members = Vec::new();
+    let mut tips = Vec::new();
+    for name in half {
+        match head_tip(b, t, name)? {
+            Some(tip) => {
+                members.push(name.clone());
+                tips.push(tip);
+            }
+            None => {
+                let why = format!("bundle {} failed, and git has no branch {name}", parent.id);
+                landing::enter(ctx, tx, name, LandingState::Ready, clock, &why)?;
+            }
+        }
+    }
+    if members.is_empty() {
+        return Ok(());
+    }
+    let why = format!("a bisect part of the failed bundle {}", parent.id);
+    let part = Part {
+        feature_id: &parent.feature_id,
+        base_tip: &parent.base_tip,
+        parent_id: Some(parent.id),
+        members: &members,
+        tips: &tips,
+    };
+    let id = insert(ctx, tx, clock, t, &part, &why)?;
+    let due = task_branch::due_at(
+        LandingState::InBundle,
+        clock.0,
+        &landing::limits(ctx.config),
+    );
+    if let Some(due) = due {
+        let why = format!(
+            "it is a member of bundle {id}, a bisect part of bundle {}",
+            parent.id
+        );
+        for name in &members {
+            rows::set_branch_fact(tx, ctx.guard, name, BranchFact::DueAt(due), by_fleetd(&why))?;
+        }
+    }
+    Ok(())
+}
+
+/// The failed fast gate that sent a task branch to `gate_failed`: the
+/// bundle of 1 member that failed, and its gate job. The result of the job
+/// names the output of the gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FailedGate {
+    pub bundle_id: i64,
+    pub job_id: i64,
+}
+
+/// The newest failed gate of `branch` (ticket 33 gives its output to the
+/// fix attempt), or `None` when no failed bundle of 1 member holds it.
+pub fn failed_gate(conn: &Connection, branch: &str) -> Result<Option<FailedGate>> {
+    let found = conn
+        .query_row(
+            "SELECT b.id, b.job_id FROM bundles b JOIN bundle_members m ON m.bundle_id = b.id
+             WHERE m.branch = ?1 AND b.state = ?2 AND b.job_id IS NOT NULL
+               AND (SELECT COUNT(*) FROM bundle_members n WHERE n.bundle_id = b.id) = 1
+             ORDER BY b.id DESC LIMIT 1",
+            params![branch, BundleState::Failed.as_str()],
+            |r| {
+                Ok(FailedGate {
+                    bundle_id: r.get(0)?,
+                    job_id: r.get(1)?,
+                })
+            },
+        )
+        .optional()?;
+    Ok(found)
 }
 
 /// Move the bundle `id` to `to` through `transition()`, and write the due
