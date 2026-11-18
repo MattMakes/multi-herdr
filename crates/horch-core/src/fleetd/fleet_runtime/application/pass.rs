@@ -1537,7 +1537,10 @@ impl Rules<'_> {
     /// claim starts a new attempt beside it.
     fn settle_stalled(&self, facts: &Facts) -> Result<()> {
         let bound = rungs::stop_bound_s(self.config.stop_grace_s, self.config.pass_period_s);
-        let bounds = (bound, self.config.stop_grace_s);
+        let bounds = ladder::StopBounds {
+            bound_s: bound,
+            stop_grace_s: self.config.stop_grace_s,
+        };
         let killed_at = |p: (u32, u64)| stop_sent_at(self.tx, p, true);
         for s in ladder::settle_stalled(self.tx, self.clock.0, facts, bounds, &killed_at)? {
             let persona = self.persona_of(&s.worker)?;
