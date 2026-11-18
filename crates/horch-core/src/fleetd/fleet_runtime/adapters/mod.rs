@@ -14,6 +14,7 @@ pub mod peer_process;
 pub mod polite_stops_store;
 pub mod protected_files;
 pub mod request_spool;
+pub mod request_wire;
 pub mod requests_store;
 pub mod scans;
 pub mod sqlite;

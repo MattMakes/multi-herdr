@@ -1428,6 +1428,7 @@ const FLEETD_PHASE5_FILES: &[&str] = &[
     "fleet_runtime/adapters/requests_store.rs",
     "fleet_runtime/adapters/channel_server.rs",
     "fleet_runtime/adapters/request_spool.rs",
+    "fleet_runtime/adapters/request_wire.rs",
     "fleet_runtime/adapters/protected_files.rs",
     "fleet_runtime/adapters/token_file.rs",
     "fleet_runtime/adapters/peer_process.rs",
