@@ -40,7 +40,19 @@ pub const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 /// macOS when [`SANDBOX_EXEC`] is missing.
 pub fn sandboxed(cmd: Command, writable: &[PathBuf]) -> Result<Command, NotSupported> {
     let temp = resolved(&std::env::temp_dir());
-    wrapped(cmd, writable, Some(&temp), &[])
+    wrapped(cmd, writable, Some(&temp), &[], Network::Open)
+}
+
+/// The network rule of [`sandboxed_hiding`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Network {
+    /// The command can use the network.
+    Open,
+    /// The command cannot open a network connection. On macOS this
+    /// includes each Unix socket connection. On Linux the command gets a
+    /// new network namespace: it has no network and no abstract Unix
+    /// socket, but it can connect to a Unix socket file that it can see.
+    Denied,
 }
 
 /// `cmd` in a sandbox with no temp folder: it can write only in the paths
@@ -53,10 +65,15 @@ pub fn sandboxed(cmd: Command, writable: &[PathBuf]) -> Result<Command, NotSuppo
 /// - Linux: a new empty tmpfs covers each hidden folder, and `/dev/null`
 ///   covers each hidden file, so a socket file in a hidden folder is gone.
 ///   A hidden path that does not exist when the command starts is not
-///   covered. An abstract Unix socket has no path: it is not denied. A
-///   writable path that does not exist yet is replaced by its nearest
-///   existing folder, so that folder is writable. A writable path in
+///   covered. An abstract Unix socket has no path: it is not denied (but
+///   see [`Network::Denied`]). A writable path that does not exist yet is
+///   replaced by its nearest existing folder, so the command can make a
+///   new name in that folder. Each entry that is in that folder when the
+///   command starts, and that is not a writable path and has none in it,
+///   is bound read-only on top. A link entry is not. A writable path in
 ///   another writable path is not bound again, so a command can rename it.
+///
+/// `network` says whether the command can use the network.
 ///
 /// The rest is as in [`sandboxed`]: the command and its settings, and
 /// [`NotSupported`] on a host with no sandbox. Give absolute paths.
@@ -64,8 +81,9 @@ pub fn sandboxed_hiding(
     cmd: Command,
     writable: &[PathBuf],
     hidden: &[PathBuf],
+    network: Network,
 ) -> Result<Command, NotSupported> {
-    wrapped(cmd, writable, None, hidden)
+    wrapped(cmd, writable, None, hidden, network)
 }
 
 fn wrapped(
@@ -73,11 +91,12 @@ fn wrapped(
     writable: &[PathBuf],
     temp: Option<&Path>,
     hidden: &[PathBuf],
+    network: Network,
 ) -> Result<Command, NotSupported> {
     let program = os::program(path_of(&cmd).as_deref())?;
     let writable: Vec<PathBuf> = writable.iter().map(|path| resolved(path)).collect();
     let hidden: Vec<PathBuf> = hidden.iter().map(|path| resolved(path)).collect();
-    let args = os::args(&writable, temp, &hidden);
+    let args = os::args(&writable, temp, &hidden, network);
     Ok(wrap(&program, &args, &cmd))
 }
 

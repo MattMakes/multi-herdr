@@ -190,10 +190,21 @@ pub(crate) fn run_folder(fleet_root: &Path, row: &WorktreeRow) -> Result<PathBuf
 const TMP: &str = "tmp";
 
 /// Remove the private folder of the indexes of the tree of `row`, after its
-/// job. A worktree id that cannot name a folder has none.
+/// job. A worktree id that cannot name a folder has none. The folder is
+/// removed only when it is `<fleet root>/tmp/<worktree id>` with no link on
+/// the way, the test of [`run_folder`]: a link can name a folder outside
+/// the fleet root.
 pub fn drop_index_folder(fleet_root: &Path, row: &WorktreeRow) {
-    if rescue::valid_id(&row.worktree_id) {
-        let _ = std::fs::remove_dir_all(fleet_root.join(TMP).join(&row.worktree_id));
+    let id = row.worktree_id.as_str();
+    if !rescue::valid_id(id) {
+        return;
+    }
+    let folder = fleet_root.join(TMP).join(id);
+    let (Ok(real), Ok(root)) = (folder.canonicalize(), fleet_root.canonicalize()) else {
+        return;
+    };
+    if real == root.join(TMP).join(id) {
+        let _ = std::fs::remove_dir_all(real);
     }
 }
 
@@ -283,7 +294,17 @@ pub(crate) fn rev(git: &CliWorktreeGit, dir: &Path, rev: &str) -> Result<String>
 /// `.gitattributes` of the tree, and `core.autocrlf` is off. The rescue and
 /// the removal both take this snapshot, so they compare the same bytes.
 /// `$GIT_DIR/info/attributes` still applies: git has no switch for it.
+/// A git older than 2.41 has no `--attr-source`: the snapshot fails and
+/// saves nothing, so the tree stays.
 pub(crate) fn snapshot(git: &CliWorktreeGit, dir: &Path, head: &str) -> Result<String> {
+    let version = git.git(dir, &["version"])?;
+    if !has_attr_source(&version) {
+        bail!(
+            "{}: a snapshot with the filters off needs git 2.41 or newer \
+             (`--attr-source`), so the job saved no file; install a newer git",
+            version.trim()
+        );
+    }
     let empty = git.git(dir, &["hash-object", "-t", "tree", "/dev/null"])?;
     let source = format!("--attr-source={}", empty.trim());
     let raw = |args: &[&str]| {
@@ -294,6 +315,16 @@ pub(crate) fn snapshot(git: &CliWorktreeGit, dir: &Path, head: &str) -> Result<S
     raw(&["read-tree", head])?;
     raw(&["add", "-A"])?;
     Ok(raw(&["write-tree"])?.trim().to_string())
+}
+
+/// True when the `git version` text `version` names git 2.41 or newer.
+fn has_attr_source(version: &str) -> bool {
+    let number = version.trim().strip_prefix("git version ").unwrap_or("");
+    let mut parts = number.split('.').map(|p| p.parse::<u32>().ok());
+    match (parts.next().flatten(), parts.next().flatten()) {
+        (Some(major), Some(minor)) => (major, minor) >= (2, 41),
+        _ => false,
+    }
 }
 
 /// Write `refs/horch/rescue/<id>/<n>` = `commit` with the next `n`. The
@@ -362,4 +393,19 @@ fn write_manifest(folder: &Path, name: &str, r: &Rescue) -> Result<()> {
     let text = serde_json::to_string_pretty(r).expect("a rescue serializes");
     std::fs::write(&tmp, text).with_context(|| format!("writing {}", tmp.display()))?;
     std::fs::rename(&tmp, &path).with_context(|| format!("writing {}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::has_attr_source;
+
+    #[test]
+    fn attr_source_is_in_git_2_41_and_newer() {
+        assert!(has_attr_source("git version 2.41.0\n"));
+        assert!(has_attr_source("git version 2.50.1 (Apple Git-155)"));
+        assert!(has_attr_source("git version 3.0.0"));
+        assert!(!has_attr_source("git version 2.39.5"));
+        assert!(!has_attr_source("git version 2.40.1.windows.1"));
+        assert!(!has_attr_source("not git"));
+    }
 }

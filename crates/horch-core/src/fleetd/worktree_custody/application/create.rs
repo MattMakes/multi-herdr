@@ -36,7 +36,7 @@ use crate::fleetd::task_execution::domain::task::AttemptState;
 use crate::fleetd::worker_profiles::adapters::launcher::Launcher;
 use crate::fleetd::worktree_custody::adapters::executors;
 use crate::fleetd::worktree_custody::adapters::git::{
-    worktree_add_key, BranchRefused, CliWorktreeGit, NO_SANDBOX,
+    worktree_add_key, BranchRefused, CliWorktreeGit, NoSandbox,
 };
 use crate::fleetd::worktree_custody::adapters::remove_git::remove_key;
 use crate::fleetd::worktree_custody::adapters::rescue_git::rescue_key;
@@ -366,7 +366,7 @@ pub fn observe(ctx: &JobCtx<'_>, tx: &Connection, job: &JobRow) -> Result<Observ
             if let Some(refused) = branch_refused(job) {
                 open_branch_refused(ctx, tx, id, &refused, &reason)?;
             }
-            if reason.starts_with(NO_SANDBOX) {
+            if no_sandbox(job).is_some() {
                 open_no_sandbox(ctx, tx, Kind::WorktreeAdd, id, &reason)?;
             }
             drop_reserved(tx, ctx.guard, id, "worktree_add_failed", Actor::Horch)?;
@@ -419,6 +419,12 @@ pub const BRANCH_REFUSED_KIND: &str = "worktree_branch_refused";
 
 /// The branch that the failed run `job` refused.
 fn branch_refused(job: &JobRow) -> Option<BranchRefused> {
+    serde_json::from_value(result_data(job)?).ok()
+}
+
+/// The reason of the failed run `job` that ran no git because the host has
+/// no sandbox.
+fn no_sandbox(job: &JobRow) -> Option<NoSandbox> {
     serde_json::from_value(result_data(job)?).ok()
 }
 

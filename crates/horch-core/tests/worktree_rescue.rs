@@ -664,6 +664,67 @@ fn rescue_refuses_an_index_folder_that_links_out_of_the_fleet_root() {
     assert_eq!(git(&tree, &["for-each-ref", "refs/horch/rescue/"]), "");
 }
 
+#[test]
+fn rescue_with_a_git_older_than_2_41_saves_nothing_and_says_why() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut w = world();
+    let tree = w.orphan("t1");
+    work_in(&tree);
+    // git 2.39 has no `--attr-source`: this git says it is 2.39.5.
+    let old = w.dir.path().join("old-git");
+    std::fs::write(
+        &old,
+        "#!/bin/sh\nfor a; do [ \"$a\" = version ] && { echo 'git version 2.39.5'; exit 0; }; done\nexec git \"$@\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let root = w.dir.path().join("fleet");
+
+    let ran = rescue_git::rescue(&CliWorktreeGit::new(&old, &root), &root, &w.row("t1"));
+
+    assert!(!ran.outcome.passed);
+    let text = &ran.outcome.text;
+    assert!(
+        text.contains("git 2.41 or newer") && text.contains("2.39.5"),
+        "{text}"
+    );
+    assert_eq!(git(&tree, &["for-each-ref", "refs/horch/rescue/"]), "");
+    assert_eq!(std::fs::read_to_string(tree.join("u.txt")).unwrap(), "u\n");
+}
+
+#[test]
+fn job_end_keeps_a_folder_of_the_tree_id_that_a_linked_tmp_reaches() {
+    let mut w = world();
+    w.orphan("t1");
+    let fleet = w.dir.path().join("linked-fleet");
+    let elsewhere = w.dir.path().join("elsewhere");
+    std::fs::create_dir_all(&fleet).unwrap();
+    std::fs::create_dir_all(elsewhere.join("t1")).unwrap();
+    std::fs::write(elsewhere.join("t1").join("work.txt"), "work\n").unwrap();
+    std::os::unix::fs::symlink(&elsewhere, fleet.join("tmp")).unwrap();
+
+    rescue_git::drop_index_folder(&fleet, &w.row("t1"));
+
+    assert_eq!(
+        std::fs::read_to_string(elsewhere.join("t1").join("work.txt")).unwrap(),
+        "work\n"
+    );
+}
+
+#[test]
+fn job_end_drops_the_index_folder_of_the_tree() {
+    let mut w = world();
+    let tree = w.orphan("t1");
+    work_in(&tree);
+    let fleet = w.dir.path().join("fleet");
+    std::fs::create_dir_all(fleet.join("tmp").join("t1")).unwrap();
+
+    rescue_git::drop_index_folder(&fleet, &w.row("t1"));
+
+    assert!(!fleet.join("tmp").join("t1").exists());
+    assert!(fleet.join("tmp").is_dir());
+}
+
 /// The rescue of the tree `t1` with the fleet root `root`, which fails with
 /// `reason`.
 fn refused_rescue(w: &World, root: &Path, reason: &str) {

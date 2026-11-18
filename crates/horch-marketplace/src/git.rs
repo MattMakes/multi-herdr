@@ -114,13 +114,47 @@ pub fn repo_state(git_dir: &Path) -> String {
 }
 
 /// The sandbox host: it wraps a command so that it can write only in the
-/// first list of paths and cannot read the second list.
+/// first list of paths, and cannot read, write or connect to a Unix socket
+/// below each path of the second list.
 /// [`horch_platform::sandbox::sandboxed_hiding`] is the real one; a test
 /// gives a fake answer.
 pub type SandboxHost = fn(Command, &[PathBuf], &[PathBuf]) -> Result<Command, NotSupported>;
 
-/// The sandbox of every child: the paths it can write, the paths it cannot
-/// read, and the host that wraps it.
+/// The variables of this process that a sandboxed git gets. It gets no
+/// other variable of this process, so a program that git starts cannot
+/// read a secret of fleetd from its environment.
+pub const SANDBOX_KEPT_ENV: [&str; 9] = [
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "LC_MESSAGES",
+    "TZ",
+];
+
+/// The whole environment of the sandboxed `cmd`: the variables of
+/// [`SANDBOX_KEPT_ENV`] of this process, then the changes of `cmd`.
+fn sandboxed_env(cmd: &Command) -> Vec<(OsString, OsString)> {
+    let mut env: Vec<(OsString, OsString)> = SANDBOX_KEPT_ENV
+        .iter()
+        .filter_map(|k| std::env::var_os(k).map(|v| (OsString::from(k), v)))
+        .collect();
+    for (key, value) in cmd.get_envs() {
+        env.retain(|(k, _)| k != key);
+        if let Some(value) = value {
+            env.push((key.to_owned(), value.to_owned()));
+        }
+    }
+    env
+}
+
+/// The sandbox of every child: the paths it can write, the paths below
+/// which it cannot read, write or connect to a Unix socket, and the host
+/// that wraps it. The child gets only the environment of
+/// [`SANDBOX_KEPT_ENV`] and of the runner.
 #[derive(Debug, Clone)]
 pub struct GitSandbox {
     pub writable: Vec<PathBuf>,
@@ -282,8 +316,10 @@ impl GitRunner {
         // The sandbox keeps the program, arguments, environment and folder
         // of `cmd`, so stdio is set on the command that runs.
         if let Some(sandbox) = &self.sandbox {
+            let env = sandboxed_env(&cmd);
             cmd = (sandbox.host)(cmd, &sandbox.writable, &sandbox.hidden)
                 .map_err(GitError::NoSandbox)?;
+            cmd.env_clear().envs(env);
         }
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -319,6 +355,30 @@ mod tests {
 
     fn none(_: Command, _: &[PathBuf], _: &[PathBuf]) -> Result<Command, NotSupported> {
         Err(NotSupported::new("sandbox", "test").because("no host"))
+    }
+
+    fn same(cmd: Command, _: &[PathBuf], _: &[PathBuf]) -> Result<Command, NotSupported> {
+        Ok(cmd)
+    }
+
+    #[test]
+    fn a_sandboxed_git_gets_only_the_kept_variables_of_this_process() {
+        assert!(
+            std::env::var_os("CARGO_MANIFEST_DIR").is_some(),
+            "cargo sets it"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let git = GitRunner::new("git")
+            .with_env("HORCH_TEST_SET", "kept")
+            .with_sandbox(sandbox(same));
+        git.run(dir.path(), &["init", "-q"]).unwrap();
+        let out = git
+            .run(dir.path(), &["-c", "alias.vars=!env", "vars"])
+            .unwrap();
+        let vars = String::from_utf8_lossy(&out.stdout);
+        assert!(!vars.contains("CARGO_MANIFEST_DIR="), "{vars}");
+        assert!(vars.contains("HORCH_TEST_SET=kept"), "{vars}");
+        assert!(vars.lines().any(|l| l.starts_with("PATH=")), "{vars}");
     }
 
     fn sandbox(host: SandboxHost) -> GitSandbox {

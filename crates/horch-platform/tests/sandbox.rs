@@ -11,7 +11,7 @@
 //! a Linux host without `bwrap`, the write tests assert `NotSupported`
 //! instead.
 
-use horch_platform::sandbox::{host_problem, sandboxed, sandboxed_hiding};
+use horch_platform::sandbox::{host_problem, sandboxed, sandboxed_hiding, Network};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -55,7 +55,17 @@ fn run_hiding(
     writable: &[PathBuf],
     hidden: &[PathBuf],
 ) -> Option<std::process::Output> {
-    match sandboxed_hiding(cmd, writable, hidden) {
+    run_hiding_with(cmd, writable, hidden, Network::Open)
+}
+
+/// [`run_hiding`] with the network rule `network`.
+fn run_hiding_with(
+    cmd: Command,
+    writable: &[PathBuf],
+    hidden: &[PathBuf],
+    network: Network,
+) -> Option<std::process::Output> {
+    match sandboxed_hiding(cmd, writable, hidden, network) {
         Ok(mut sandboxed) => Some(sandboxed.output().expect("start the sandboxed command")),
         Err(gap) => {
             assert!(host_has_no_sandbox(), "unexpected gap: {gap}");
@@ -262,4 +272,54 @@ fn hiding_sandbox_makes_and_renames_a_writable_folder_that_does_not_exist_yet() 
     assert!(out.status.success(), "{out:?}");
     assert_eq!(std::fs::read_to_string(to.join("f")).unwrap(), "x\n");
     assert!(!from.exists());
+}
+
+#[test]
+fn hiding_sandbox_cannot_write_a_sibling_of_a_writable_path_that_does_not_exist_yet() {
+    let dir = test_dir();
+    let trees = dir.path().join("trees");
+    let sibling = trees.join("t2");
+    std::fs::create_dir_all(&sibling).unwrap();
+    std::fs::write(sibling.join("f"), "work\n").unwrap();
+    let new = trees.join("t1");
+    let script = "mkdir \"$1\" && echo x > \"$1/f\"; echo bad > \"$2/f\"; rm -rf \"$2\"; true";
+    let Some(out) = run_hiding(
+        sh(script, &[&new, &sibling]),
+        std::slice::from_ref(&new),
+        &[],
+    ) else {
+        return;
+    };
+    assert_eq!(
+        std::fs::read_to_string(new.join("f")).unwrap(),
+        "x\n",
+        "{out:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(sibling.join("f")).unwrap(),
+        "work\n",
+        "{out:?}"
+    );
+}
+
+#[test]
+fn hiding_sandbox_with_no_network_cannot_connect_to_a_tcp_listener() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port().to_string();
+    let connect = |network: Network| {
+        let mut cmd = Command::new("perl");
+        cmd.args(["-MIO::Socket::INET", "-e"])
+            .arg("IO::Socket::INET->new(PeerAddr => '127.0.0.1', PeerPort => $ARGV[0]) or exit 3; exit 0")
+            .arg(&port);
+        run_hiding_with(cmd, &[], &[], network)
+    };
+    let Some(open) = connect(Network::Open) else {
+        return;
+    };
+    assert!(
+        open.status.success(),
+        "the probe connects with the network: {open:?}"
+    );
+    let denied = connect(Network::Denied).unwrap();
+    assert_eq!(denied.status.code(), Some(3), "{denied:?}");
 }

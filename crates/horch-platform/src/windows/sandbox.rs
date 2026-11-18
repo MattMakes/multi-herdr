@@ -5,6 +5,7 @@
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
+use crate::sandbox::Network;
 use crate::NotSupported;
 
 pub(crate) fn program(_path: Option<&OsStr>) -> Result<PathBuf, NotSupported> {
@@ -18,6 +19,7 @@ pub(crate) fn args(
     _writable: &[PathBuf],
     _temp: Option<&Path>,
     _hidden: &[PathBuf],
+    _network: Network,
 ) -> Vec<OsString> {
     Vec::new()
 }

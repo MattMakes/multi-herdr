@@ -3,14 +3,15 @@
 //! The profile allows all, then denies each file write, then allows a write
 //! below each writable path and to `/dev/null`. Last, it denies each file
 //! read, file write and Unix socket connection below each hidden path, so a
-//! hidden path wins over a writable path. The paths reach the profile as
+//! hidden path wins over a writable path. With no network it denies each
+//! network act. The paths reach the profile as
 //! parameters (`-D W<n>=<path>`, `-D H<n>=<path>`), so a path needs no
 //! quoting in it.
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
-use crate::sandbox::SANDBOX_EXEC;
+use crate::sandbox::{Network, SANDBOX_EXEC};
 use crate::NotSupported;
 
 /// [`SANDBOX_EXEC`]. Its place is fixed, so `PATH` plays no part.
@@ -24,7 +25,12 @@ pub(crate) fn program(_path: Option<&OsStr>) -> Result<PathBuf, NotSupported> {
 }
 
 /// The `-D` parameters and the `-p` profile of `sandbox-exec`.
-pub(crate) fn args(writable: &[PathBuf], temp: Option<&Path>, hidden: &[PathBuf]) -> Vec<OsString> {
+pub(crate) fn args(
+    writable: &[PathBuf],
+    temp: Option<&Path>,
+    hidden: &[PathBuf],
+    network: Network,
+) -> Vec<OsString> {
     let mut profile = String::from(
         "(version 1)(allow default)(deny file-write*)(allow file-write* (literal \"/dev/null\")",
     );
@@ -50,6 +56,9 @@ pub(crate) fn args(writable: &[PathBuf], temp: Option<&Path>, hidden: &[PathBuf]
              (deny network-outbound (remote unix-socket (subpath (param \"H{n}\"))))"
         ));
         define(format!("H{n}"), path);
+    }
+    if network == Network::Denied {
+        profile.push_str("(deny network*)");
     }
     args.extend([OsString::from("-p"), OsString::from(profile)]);
     args

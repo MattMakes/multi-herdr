@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use horch_marketplace::git::SandboxHost;
-use horch_platform::sandbox::sandboxed_hiding;
 use rusqlite::Connection;
 
 use crate::fleetd::fleet_runtime::adapters::jobs_store::JobRow;
@@ -32,7 +31,7 @@ use crate::runtime::paths::nonempty_path;
 /// kind. A host with no sandbox runs no git: the run fails with a text that
 /// starts with [`git::NO_SANDBOX`].
 pub fn run(conn: &Connection, row: &JobRow) -> Result<Ran> {
-    run_in(conn, row, sandboxed_hiding)
+    run_in(conn, row, git::job_host)
 }
 
 /// [`run`] with the sandbox host `host`. A test gives a fake answer.
@@ -45,63 +44,79 @@ pub fn run_in(conn: &Connection, row: &JobRow, host: SandboxHost) -> Result<Ran>
         return Ok(ran);
     }
     match row.kind {
-        // The subject is the worktree id.
-        Kind::WorktreeAdd => match store::get(conn, &row.subject)? {
-            Some(tree) => Ok(match git::tree_writer(git, &tree) {
-                Ok(git) => git::worktree_add(&git, &tree),
-                Err(e) => git::failed(format!("{e:#}")),
-            }),
-            None => Ok(git::failed(format!(
-                "no worktree {} in the ledger",
-                row.subject
-            ))),
-        },
-        // The subject is the repository root. The job only reads.
-        Kind::WorktreeList => {
-            let live: Vec<WorktreeState> = WorktreeState::ALL
-                .into_iter()
-                .filter(|s| *s != WorktreeState::Removed)
-                .collect();
-            let rows: Vec<_> = store::in_states(conn, &live)?
-                .into_iter()
-                .filter(|r| r.repo_root == row.subject)
-                .collect();
-            Ok(git::worktree_list(&git, Path::new(&row.subject), &rows))
-        }
-        Kind::Rescue => match store::get(conn, &row.subject)? {
-            Some(tree) => {
-                let ran = rescue_git::rescue(&git, &root, &tree);
-                rescue_git::drop_index_folder(&root, &tree);
-                Ok(ran)
-            }
-            None => Ok(git::failed(format!(
-                "no worktree {} in the ledger",
-                row.subject
-            ))),
-        },
-        Kind::WorktreeRemove => match store::get(conn, &row.subject)? {
-            Some(tree) => {
-                let path = Path::new(&tree.path);
-                let quarantine = removal::quarantine_path(path, &tree.worktree_id);
-                let git = match git::tree_writer(git, &tree) {
-                    Ok(git) => git.writing(&[quarantine]),
-                    Err(e) => return Ok(git::failed(format!("{e:#}"))),
-                };
-                let landed = landed_commit(conn, &tree.worktree_id)?;
-                let owner = owner(conn, &tree)?;
-                let gw = CliRemoval::new(git, root.clone());
-                let ledger = |id: &str| store::get(conn, id);
-                let ran = remove_git::remove(&gw, &tree, landed.as_deref(), &owner, &ledger);
-                rescue_git::drop_index_folder(&root, &tree);
-                Ok(ran)
-            }
-            None => Ok(git::failed(format!(
-                "no worktree {} in the ledger",
-                row.subject
-            ))),
-        },
+        Kind::WorktreeAdd => on_tree(conn, row, |tree| add(git, tree)),
+        Kind::WorktreeList => list(conn, row, &git),
+        Kind::Rescue => on_tree(conn, row, |tree| {
+            let ran = rescue_git::rescue(&git, &root, tree);
+            rescue_git::drop_index_folder(&root, tree);
+            Ok(ran)
+        }),
+        Kind::WorktreeRemove => on_tree(conn, row, |tree| {
+            let ran = remove(conn, git, &root, tree)?;
+            rescue_git::drop_index_folder(&root, tree);
+            Ok(ran)
+        }),
         kind => Ok(jobs::no_executor(kind).into()),
     }
+}
+
+/// Run `job` on the ledger row of the tree that is the subject of `row`, or
+/// fail when the ledger has none.
+fn on_tree(
+    conn: &Connection,
+    row: &JobRow,
+    job: impl FnOnce(&WorktreeRow) -> Result<Ran>,
+) -> Result<Ran> {
+    match store::get(conn, &row.subject)? {
+        Some(tree) => job(&tree),
+        None => Ok(git::failed(format!(
+            "no worktree {} in the ledger",
+            row.subject
+        ))),
+    }
+}
+
+/// A `worktree_add` job: git can write the git folder and the tree.
+fn add(git: CliWorktreeGit, tree: &WorktreeRow) -> Result<Ran> {
+    Ok(match git::tree_writer(git, tree) {
+        Ok(git) => git::worktree_add(&git, tree),
+        Err(e) => git::failed(format!("{e:#}")),
+    })
+}
+
+/// A `worktree_list` job of the repository that is the subject of `row`.
+/// It only reads.
+fn list(conn: &Connection, row: &JobRow, git: &CliWorktreeGit) -> Result<Ran> {
+    let live: Vec<WorktreeState> = WorktreeState::ALL
+        .into_iter()
+        .filter(|s| *s != WorktreeState::Removed)
+        .collect();
+    let rows: Vec<_> = store::in_states(conn, &live)?
+        .into_iter()
+        .filter(|r| r.repo_root == row.subject)
+        .collect();
+    Ok(git::worktree_list(git, Path::new(&row.subject), &rows))
+}
+
+/// A `worktree_remove` job: git can write the git folder, the tree and its
+/// quarantine folder.
+fn remove(conn: &Connection, git: CliWorktreeGit, root: &Path, tree: &WorktreeRow) -> Result<Ran> {
+    let quarantine = removal::quarantine_path(Path::new(&tree.path), &tree.worktree_id);
+    let git = match git::tree_writer(git, tree) {
+        Ok(git) => git.writing(&[quarantine]),
+        Err(e) => return Ok(git::failed(format!("{e:#}"))),
+    };
+    let landed = landed_commit(conn, &tree.worktree_id)?;
+    let owner = owner(conn, tree)?;
+    let gw = CliRemoval::new(git, root.to_path_buf());
+    let ledger = |id: &str| store::get(conn, id);
+    Ok(remove_git::remove(
+        &gw,
+        tree,
+        landed.as_deref(),
+        &owner,
+        &ledger,
+    ))
 }
 
 fn landed_commit(conn: &Connection, id: &str) -> Result<Option<String>> {

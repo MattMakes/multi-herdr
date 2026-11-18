@@ -1034,6 +1034,42 @@ fn race_merge_driver_does_not_run_in_a_fleetd_git_call() {
 }
 
 #[test]
+fn race_driver_cannot_use_the_network_in_a_fleetd_git_call() {
+    let w = world();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let probe = format!(
+        "perl -MIO::Socket::INET -e 'IO::Socket::INET->new(PeerAddr => \"127.0.0.1\", PeerPort => {port})'\nexit 1"
+    );
+    let (program, _) = w.attack("network", &probe);
+    git(&w.repo, &["checkout", "-q", "-b", "other"]);
+    std::fs::write(w.repo.join("a.txt"), "other\n").unwrap();
+    git(&w.repo, &["commit", "-q", "-am", "other"]);
+    git(&w.repo, &["checkout", "-q", "main"]);
+    std::fs::write(w.repo.join("a.txt"), "main\n").unwrap();
+    git(&w.repo, &["commit", "-q", "-am", "main"]);
+    let (repo, program_s) = (w.repo.clone(), program.display().to_string());
+    let git = w
+        .fleet_git()
+        // The repository is writable, so git gets to the driver, which runs
+        // in the sandbox.
+        .writing(std::slice::from_ref(&w.repo))
+        .with_race(once("merge-tree", move || {
+            select_driver(&repo, "merge=evil");
+            set_config(&repo, "merge.evil.driver", &program_s);
+        }));
+
+    let out = git.checked(&w.repo, &["merge-tree", "--write-tree", "main", "other"]);
+
+    listener.set_nonblocking(true).unwrap();
+    let connection = listener.accept();
+    assert!(
+        matches!(&connection, Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
+        "the driver connected: {connection:?}, {out:?}"
+    );
+}
+
+#[test]
 fn race_ssh_command_does_not_run_in_a_fleetd_git_call() {
     let w = world();
     let (program, marker) = w.attack("ssh", "exit 1");
@@ -1139,8 +1175,13 @@ fn job_on_a_host_with_no_sandbox_runs_no_git_and_opens_1_needs_you_item() {
         // The run ends `failed` with this text, and the command observes it.
         job.state = State::Failed;
         job.result_json = Some(
-            serde_json::json!({"passed": false, "verdict": false, "text": ran.outcome.text})
-                .to_string(),
+            serde_json::json!({
+                "passed": false,
+                "verdict": false,
+                "text": ran.outcome.text,
+                "data": ran.data,
+            })
+            .to_string(),
         );
         let config = w.config.clone();
         let tx = w

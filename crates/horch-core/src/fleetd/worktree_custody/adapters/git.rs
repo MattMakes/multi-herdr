@@ -17,7 +17,7 @@ use std::sync::Arc;
 use anyhow::{bail, Context, Result};
 use horch_marketplace::git::{GitOutput, GitRunner, GitSandbox, SandboxHost};
 use horch_platform::fs::create_dir_mode;
-use horch_platform::sandbox::sandboxed_hiding;
+use horch_platform::sandbox::{sandboxed_hiding, Network};
 use horch_platform::NotSupported;
 use serde::{Deserialize, Serialize};
 
@@ -470,8 +470,10 @@ impl fmt::Debug for Race {
 ///
 /// Each git call runs in the platform sandbox (way A of T-691): git, and
 /// each program that git starts, can write only the paths of the job
-/// ([`CliWorktreeGit::writing`] and the folder of a private index), and
-/// cannot read, write or connect below `<fleet root>/run`. The keys of
+/// ([`CliWorktreeGit::writing`] and the folder of a private index),
+/// cannot read, write or connect below `<fleet root>/run`, has no network
+/// ([`job_host`]), and gets only the environment of
+/// `horch_marketplace::git::SANDBOX_KEPT_ENV` and of the runner. The keys of
 /// [`SAFE_CONFIG`] and [`SAFE_ENV`] are the second layer (way B): they stop
 /// hooks, the fsmonitor, gpg, each transport, credential helpers, askpass
 /// and the global filter drivers. A filter, merge or diff driver of the
@@ -487,6 +489,16 @@ pub struct CliWorktreeGit {
     race: Option<Race>,
 }
 
+/// The sandbox host of each git call of a job: [`sandboxed_hiding`] with no
+/// network. A job needs no network: [`SAFE_CONFIG`] allows no transport.
+pub fn job_host(
+    cmd: Command,
+    writable: &[PathBuf],
+    hidden: &[PathBuf],
+) -> Result<Command, NotSupported> {
+    sandboxed_hiding(cmd, writable, hidden, Network::Denied)
+}
+
 impl CliWorktreeGit {
     /// The adapter of a job of the fleet at `fleet_root`. It can write no
     /// path until [`CliWorktreeGit::writing`] names one.
@@ -498,7 +510,7 @@ impl CliWorktreeGit {
             runner,
             fleet_root: fleet_root.into(),
             writable: Vec::new(),
-            host: sandboxed_hiding,
+            host: job_host,
             race: None,
         }
     }
@@ -631,14 +643,28 @@ impl CliWorktreeGit {
     }
 }
 
+/// The result data of a job that ran no git because this host has no
+/// sandbox: the reason of the platform.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NoSandbox {
+    pub no_sandbox: String,
+}
+
 /// The run of a job that does not run git because this host has no
-/// sandbox, or `None` when it has one. The text starts with [`NO_SANDBOX`].
+/// sandbox, or `None` when it has one. The text starts with [`NO_SANDBOX`],
+/// and the data is [`NoSandbox`].
 pub fn no_sandbox(git: &CliWorktreeGit) -> Option<Ran> {
     git.sandbox_gap().map(|gap| {
-        failed(format!(
-            "{NO_SANDBOX}: {gap}; fleetd runs git in a project only in the sandbox, \
-             so the job ran no git"
-        ))
+        let data = NoSandbox {
+            no_sandbox: gap.to_string(),
+        };
+        Ran {
+            data: Some(serde_json::to_value(data).expect("a result serializes")),
+            ..failed(format!(
+                "{NO_SANDBOX}: {gap}; fleetd runs git in a project only in the sandbox, \
+                 so the job ran no git"
+            ))
+        }
     })
 }
 
