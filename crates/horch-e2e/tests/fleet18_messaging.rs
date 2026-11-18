@@ -391,20 +391,26 @@ fn g70_waiting_background_deadline_and_dead_process() {
         workers,
     };
     let (_dir, mut store, run, worker) = ledger_worker();
-    workers::progress(
-        store.conn(),
-        &worker,
-        ProgressSource::Agent,
-        EventKind::Progress,
-        "waiting: background build",
-    )
-    .unwrap();
+    let (agent, child) = agent_with_child(&store, &worker);
+    let wait = |store: &horch_core::taskledger::Store, text: &str| {
+        workers::progress(
+            store.conn(),
+            &worker,
+            ProgressSource::Agent,
+            EventKind::Progress,
+            text,
+        )
+        .unwrap();
+    };
+    wait(&store, "waiting: background build");
     assert_eq!(
         workers::waiting(store.conn(), &worker).unwrap()[0].reason,
         "background build"
     );
     assert_eq!(check(&mut store, &run, &worker, true), "progress");
     assert_eq!(check(&mut store, &run, &worker, false), "dead");
+    // Past its deadline the wait ends. The checks see no progress, but no
+    // stall round reaps (docs/tickets/fleetd-p2/MAP.md, Q14).
     store
         .conn()
         .execute(
@@ -412,9 +418,21 @@ fn g70_waiting_background_deadline_and_dead_process() {
             [],
         )
         .unwrap();
-    for verdict in ["no_progress", "no_progress", "dead"] {
-        assert_eq!(check(&mut store, &run, &worker, true), verdict);
+    for _ in 0..3 {
+        assert_eq!(check(&mut store, &run, &worker, true), "no_progress");
     }
+    assert!(workers::waiting(store.conn(), &worker).unwrap().is_empty());
+    // A new wait holds while the child runs, and ends at once when it
+    // exits.
+    wait(&store, "waiting: background test");
+    assert_eq!(workers::waiting(store.conn(), &worker).unwrap().len(), 1);
+    end_child(&agent, child);
+    assert!(workers::waiting(store.conn(), &worker).unwrap().is_empty());
+    assert_eq!(
+        last_wait_end(&store, &worker),
+        "child_gone: the background wait ended (background test)"
+    );
+    drop(agent);
 }
 #[test]
 fn g70_question_wait_clears_on_orchestrator_answer_and_stalls_restart() {
@@ -966,6 +984,49 @@ fn pinned_check(
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     serde_json::from_slice::<serde_json::Value>(&o.stdout).unwrap()[0].clone()
 }
+/// The stall ladder ended the attempt of `worker` `stalled`, wrote its
+/// events and its wake, and stopped `agent` by its recorded PID.
+fn assert_ladder_stopped(store: &horch_core::taskledger::Store, worker: &str, agent: &mut Agent) {
+    use horch_core::taskledger::workers;
+    let attempt: (String, Option<String>) = store
+        .conn()
+        .query_row(
+            "SELECT state, outcome FROM attempts WHERE worker_id = ?1",
+            [worker],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(attempt, ("ended".to_string(), Some("stalled".to_string())));
+    let w = workers::get(store.conn(), worker).unwrap();
+    assert_eq!(w.status, "incomplete");
+    assert_eq!(w.agent_pid, Some(i64::from(agent.0.id())));
+    let texts = |sql: &str| -> Vec<String> {
+        let mut stmt = store.conn().prepare(sql).unwrap();
+        stmt.query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    let events = texts("SELECT text FROM events WHERE actor = 'horch' ORDER BY event_id");
+    for text in [
+        "the stall ladder ended it: stalled",
+        "working -> incomplete",
+        "T-1 is queued again",
+    ] {
+        assert!(
+            events.iter().any(|e| e.contains(text)),
+            "{text}: {events:?}"
+        );
+    }
+    let wakes = texts("SELECT text FROM outbox ORDER BY rowid");
+    assert!(
+        wakes.iter().any(|w| w.contains("T-1: retry after 30 s")),
+        "{wakes:?}"
+    );
+    horch_e2e::harness::wait_for("the stop of the agent by its PID", || {
+        matches!(agent.0.try_wait(), Ok(Some(_))).then_some(())
+    });
+}
 fn pin_wait(store: &horch_core::taskledger::Store, worker: &str, kind: &str, deadline: &str) {
     store.conn().execute("UPDATE worker_waits SET started_at='2030-01-01T00:00:00Z',deadline=?3 WHERE worker_id=?1 AND kind=?2",[worker,kind,deadline]).unwrap();
 }
@@ -976,7 +1037,7 @@ fn g70_pinned_cli_sixty_minute_review_wait_and_normal_reap_after_completion() {
         tasks::{self, NewTask},
         workers,
     };
-    let (h, mut store, run, worker, _agent) = pinned_worker("g70-pinned-review");
+    let (h, mut store, run, worker, mut agent) = pinned_worker("g70-pinned-review");
     let review = store
         .immediate(|tx| {
             let mut t = NewTask::work("review", "review.md", "codex-terra");
@@ -1022,22 +1083,31 @@ fn g70_pinned_cli_sixty_minute_review_wait_and_normal_reap_after_completion() {
             [&review.task_id],
         )
         .unwrap();
-    for (at, want) in [
-        ("2030-01-01T01:10:00Z", "no_progress"),
-        ("2030-01-01T01:20:00Z", "no_progress"),
-        ("2030-01-01T01:30:00Z", "dead"),
+    // The reviews are in: the wait ends. The checks of today see no
+    // progress, but no stall round reaps (docs/tickets/fleetd-p2/MAP.md,
+    // Q14).
+    for at in [
+        "2030-01-01T01:10:00Z",
+        "2030-01-01T01:20:00Z",
+        "2030-01-01T01:30:00Z",
     ] {
-        assert_eq!(pinned_check(&h, &run, at)["verdict"], want);
+        assert_eq!(pinned_check(&h, &run, at)["verdict"], "no_progress");
     }
     assert_eq!(
         workers::get(store.conn(), &worker).unwrap().status,
-        "incomplete"
+        "working"
     );
+    assert!(matches!(agent.0.try_wait(), Ok(None)), "no check stops it");
+    // No activity past stall_after_s (300 s) after the wait: the stall
+    // ladder ends the attempt `stalled` and stops the agent by its PID.
+    h.advance_fleet_clock(400);
+    pinned_check(&h, &run, "2030-01-01T01:40:00Z");
+    assert_ladder_stopped(&store, &worker, &mut agent);
 }
 #[test]
 fn g70_pinned_cli_question_reply_resets_stalls() {
     use horch_core::taskledger::workers;
-    let (h, store, run, worker, _agent) = pinned_worker("g70-pinned-question");
+    let (h, store, run, worker, mut agent) = pinned_worker("g70-pinned-question");
     fake(&h, &["workspace", "create", "--label", "question"]);
     fake(
         &h,
@@ -1081,22 +1151,32 @@ fn g70_pinned_cli_question_reply_resets_stalls() {
         "{}",
         String::from_utf8_lossy(&reply.stderr)
     );
-    for (at, want) in [
-        ("2030-01-07T00:10:00Z", "no_progress"),
-        ("2030-01-07T00:20:00Z", "no_progress"),
-        ("2030-01-07T00:30:00Z", "dead"),
+    // The reply ends the question wait. The checks of today see no
+    // progress, but no stall round reaps (docs/tickets/fleetd-p2/MAP.md,
+    // Q14).
+    for at in [
+        "2030-01-07T00:10:00Z",
+        "2030-01-07T00:20:00Z",
+        "2030-01-07T00:30:00Z",
     ] {
-        assert_eq!(pinned_check(&h, &run, at)["verdict"], want);
+        assert_eq!(pinned_check(&h, &run, at)["verdict"], "no_progress");
     }
     assert_eq!(
         workers::get(store.conn(), &worker).unwrap().status,
-        "incomplete"
+        "working"
     );
+    assert!(matches!(agent.0.try_wait(), Ok(None)), "no check stops it");
+    // No activity past stall_after_s (300 s) after the reply: the stall
+    // ladder ends the attempt `stalled` and stops the agent by its PID.
+    h.advance_fleet_clock(400);
+    pinned_check(&h, &run, "2030-01-07T00:40:00Z");
+    assert_ladder_stopped(&store, &worker, &mut agent);
 }
 #[test]
 fn g70_pinned_cli_wait_expires_and_dead_agent_is_immediate() {
     use horch_core::taskledger::workers;
-    let (h, store, run, worker, mut agent) = pinned_worker("g70-pinned-expiry");
+    let (h, store, run, worker, _fake) = pinned_worker("g70-pinned-expiry");
+    let (mut agent, child) = agent_with_child(&store, &worker);
     workers::set_wait(store.conn(), &worker, "background", "build", &[], 86400).unwrap();
     pin_wait(&store, &worker, "background", "2030-01-01T00:30:00Z");
     assert_eq!(
@@ -1117,10 +1197,26 @@ fn g70_pinned_cli_wait_expires_and_dead_agent_is_immediate() {
     )
     .unwrap();
     pin_wait(&store, &worker, "background", "2030-01-02T00:00:00Z");
+    assert_eq!(
+        pinned_check(&h, &run, "2030-01-01T00:42:00Z")["verdict"],
+        "progress",
+        "the wait holds while the child runs"
+    );
+    // The child exits: the wait ends at once, long before its deadline.
+    end_child(&agent, child);
+    assert_eq!(
+        pinned_check(&h, &run, "2030-01-01T00:44:00Z")["verdict"],
+        "no_progress"
+    );
+    assert!(workers::waiting(store.conn(), &worker).unwrap().is_empty());
+    assert_eq!(
+        last_wait_end(&store, &worker),
+        "child_gone: the background wait ended (another build)"
+    );
     agent.0.kill().unwrap();
     agent.0.wait().unwrap();
     // 1 pass ends the attempt of the dead agent at once, before the duty
-    // check and before the pinned wait expires (I4).
+    // check (I4).
     pinned_check(&h, &run, "2030-01-01T00:50:00Z");
     let attempt: (String, Option<String>) = store
         .conn()
@@ -1144,6 +1240,72 @@ fn g70_pinned_cli_wait_expires_and_dead_agent_is_immediate() {
         workers::get(store.conn(), &worker).unwrap().status,
         "incomplete"
     );
+}
+
+/// An agent that leads its own process group; the group is killed on
+/// drop, so a failed assertion leaks no child.
+struct GroupAgent(std::process::Child);
+
+/// Make the agent of `worker` and of its attempt a new process that leads
+/// its own process group, with a live child: the background work that
+/// holds its wait (MAP.md of fleetd-p2, Q23). Gives the agent and the pid
+/// of its child.
+fn agent_with_child(store: &horch_core::taskledger::Store, worker: &str) -> (GroupAgent, u32) {
+    use std::os::unix::process::CommandExt;
+    let agent = GroupAgent(
+        std::process::Command::new("/bin/sh")
+            .args(["-c", "sleep 600 & wait; exec sleep 3600"])
+            .process_group(0)
+            .spawn()
+            .unwrap(),
+    );
+    let pid = agent.0.id();
+    let started = horch_e2e::harness::wait_for("the agent's identity", || {
+        horch_core::procid::start_time(pid)
+    });
+    let child = horch_e2e::harness::wait_for("the agent's child", || {
+        let members = horch_core::procid::group_members(pid);
+        members.into_iter().find(|m| *m != pid)
+    });
+    for sql in [
+        format!(
+            "UPDATE workers SET agent_pid = {pid}, agent_started = {started} WHERE worker_id = ?1"
+        ),
+        format!("UPDATE attempts SET pid = {pid}, pid_start = {started} WHERE worker_id = ?1"),
+    ] {
+        store.conn().execute(&sql, [worker]).unwrap();
+    }
+    (agent, child)
+}
+
+/// Kill the child `child` of `agent`, and wait until it is gone.
+fn end_child(agent: &GroupAgent, child: u32) {
+    let pid = agent.0.id();
+    // SAFETY: a signal to the child that this test started.
+    unsafe { libc::kill(child as i32, libc::SIGKILL) };
+    horch_e2e::harness::wait_for("the child to exit", || {
+        (horch_core::procid::group_members(pid) == [pid]).then_some(())
+    });
+}
+
+/// The text of the last `wait_ended` event of `worker`.
+fn last_wait_end(store: &horch_core::taskledger::Store, worker: &str) -> String {
+    store
+        .conn()
+        .query_row(
+            "SELECT text FROM events WHERE kind = 'wait_ended' AND worker_id = ?1
+             ORDER BY event_id DESC LIMIT 1",
+            [worker],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+impl Drop for GroupAgent {
+    fn drop(&mut self) {
+        // SAFETY: a signal to the process group that this test started.
+        unsafe { libc::kill(-(self.0.id() as i32), libc::SIGKILL) };
+        let _ = self.0.wait();
+    }
 }
 
 #[test]
@@ -1588,7 +1750,7 @@ fn g60_pinned_running_courier_skips_busy_and_login_backlog_without_burst() {
 #[test]
 fn g70_finish_cli_creates_reviewer_wait_and_background_progress_cli_sets_deadline() {
     use horch_core::taskledger::{finish::codesweep::REVIEWERS, tasks, workers};
-    let (h, store, run, worker, _agent) = pinned_worker("g70-finish-cli");
+    let (h, store, run, worker, mut agent) = pinned_worker("g70-finish-cli");
     let mut h = h.with_git();
     let git = |args: &[&str]| {
         let o = h.git_cmd(args).output().unwrap();
@@ -1706,20 +1868,29 @@ fn g70_finish_cli_creates_reviewer_wait_and_background_progress_cli_sets_deadlin
     ] {
         assert_eq!(pinned_check(&h, &run, at)["verdict"], "progress");
     }
-    for (at, want) in [
-        ("2030-01-08T00:10:00Z", "no_progress"),
-        ("2030-01-08T00:20:00Z", "no_progress"),
-        ("2030-01-08T00:30:00Z", "dead"),
+    // Past its deadline the wait ends. The checks see no progress, but no
+    // stall round reaps (docs/tickets/fleetd-p2/MAP.md, Q14).
+    for at in [
+        "2030-01-08T00:10:00Z",
+        "2030-01-08T00:20:00Z",
+        "2030-01-08T00:30:00Z",
     ] {
-        assert_eq!(pinned_check(&h, &run, at)["verdict"], want);
+        assert_eq!(pinned_check(&h, &run, at)["verdict"], "no_progress");
     }
     assert_eq!(
         workers::get(store.conn(), &worker).unwrap().status,
-        "incomplete"
+        "working"
     );
+    assert!(matches!(agent.0.try_wait(), Ok(None)), "no check stops it");
+    // No activity past stall_after_s (300 s) after the wait: the stall
+    // ladder ends the attempt `stalled` and stops the agent by its PID.
+    h.advance_fleet_clock(400);
+    pinned_check(&h, &run, "2030-01-08T00:40:00Z");
+    assert_ladder_stopped(&store, &worker, &mut agent);
 
     // The background entry point is exercised independently of injected waits.
-    let (h, store, run, worker, _agent) = pinned_worker("g70-progress-cli");
+    let (h, store, run, worker, _fake) = pinned_worker("g70-progress-cli");
+    let (agent, child) = agent_with_child(&store, &worker);
     let progress = h
         .horch(&["ledger", "progress", "waiting: background command"])
         .env("HORCH_WORKER_ID", &worker)
@@ -1737,6 +1908,28 @@ fn g70_finish_cli_creates_reviewer_wait_and_background_progress_cli_sets_deadlin
     assert_eq!(
         pinned_check(&h, &run, "2030-01-02T00:00:01Z")["verdict"],
         "no_progress"
+    );
+    // A new wait holds while the child runs, and ends at once when it
+    // exits.
+    let progress = h
+        .horch(&["ledger", "progress", "waiting: background test"])
+        .env("HORCH_WORKER_ID", &worker)
+        .env("HORCH_NOW", "2030-01-02T00:01:00Z")
+        .output()
+        .unwrap();
+    assert!(progress.status.success());
+    assert_eq!(
+        pinned_check(&h, &run, "2030-01-02T00:02:00Z")["verdict"],
+        "progress"
+    );
+    end_child(&agent, child);
+    assert_eq!(
+        pinned_check(&h, &run, "2030-01-02T00:03:00Z")["verdict"],
+        "no_progress"
+    );
+    assert_eq!(
+        last_wait_end(&store, &worker),
+        "child_gone: the background wait ended (background test)"
     );
 }
 
