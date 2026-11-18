@@ -56,95 +56,109 @@ fn production_code(path: &Path) -> String {
     code
 }
 
-/// `text` with each comment and the contents of each string, raw string and
-/// char literal replaced by spaces. Line breaks stay, so a brace or a
-/// parenthesis that is counted is always code.
+/// `text` with each comment and each string, raw string and char literal
+/// replaced by spaces. Line breaks stay, so a brace or a parenthesis that is
+/// counted is always code.
 fn blank_literals(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
-    let blank = |c: char| if c == '\n' { '\n' } else { ' ' };
     let mut i = 0;
     while i < chars.len() {
-        let c = chars[i];
-        let next = chars.get(i + 1).copied();
-        if c == '/' && next == Some('/') {
-            while i < chars.len() && chars[i] != '\n' {
-                out.push(' ');
+        match literal_end(&chars, i) {
+            Some(end) => {
+                let end = end.min(chars.len());
+                out.extend(
+                    chars[i..end]
+                        .iter()
+                        .map(|&c| if c == '\n' { '\n' } else { ' ' }),
+                );
+                i = end;
+            }
+            None => {
+                out.push(chars[i]);
                 i += 1;
             }
-        } else if c == '/' && next == Some('*') {
-            let mut depth = 0;
-            while i < chars.len() {
-                if chars[i] == '/' && chars.get(i + 1) == Some(&'*') {
-                    depth += 1;
-                    out.push_str("  ");
-                    i += 2;
-                } else if chars[i] == '*' && chars.get(i + 1) == Some(&'/') {
-                    depth -= 1;
-                    out.push_str("  ");
-                    i += 2;
-                    if depth == 0 {
-                        break;
-                    }
-                } else {
-                    out.push(blank(chars[i]));
-                    i += 1;
-                }
-            }
-        } else if c == 'r' && matches!(next, Some('"') | Some('#')) && !ident_before(&chars, i) {
-            let hashes = chars[i + 1..].iter().take_while(|&&h| h == '#').count();
-            if chars.get(i + 1 + hashes) != Some(&'"') {
-                out.push(c);
-                i += 1;
-                continue;
-            }
-            out.push('"');
-            i += 2 + hashes;
-            let close: Vec<char> = std::iter::once('"')
-                .chain((0..hashes).map(|_| '#'))
-                .collect();
-            while i < chars.len() && !chars[i..].starts_with(&close) {
-                out.push(blank(chars[i]));
-                i += 1;
-            }
-            out.push('"');
-            i += close.len();
-        } else if c == '"' {
-            out.push('"');
-            i += 1;
-            while i < chars.len() && chars[i] != '"' {
-                if chars[i] == '\\' {
-                    out.push(' ');
-                    i += 1;
-                }
-                if i < chars.len() {
-                    out.push(blank(chars[i]));
-                    i += 1;
-                }
-            }
-            out.push('"');
-            i += 1;
-        } else if c == '\'' && is_char_literal(&chars, i) {
-            // An escape (`'\''`, `'\u{2500}'`) ends at the first quote
-            // after its escaped char; a plain char literal is 3 chars long.
-            let end = if chars[i + 1] == '\\' {
-                (i + 3..chars.len())
-                    .find(|&j| chars[j] == '\'')
-                    .unwrap_or(chars.len() - 1)
-            } else {
-                i + 2
-            };
-            out.push_str("''");
-            i = end + 1;
-        } else {
-            out.push(c);
-            i += 1;
         }
     }
     out
 }
 
-/// Whether the `r` at `i` is the end of an identifier, as in `for`.
+/// The end (exclusive) of the comment or literal that starts at `i`, or
+/// `None` when code starts at `i`.
+fn literal_end(chars: &[char], i: usize) -> Option<usize> {
+    match (chars[i], chars.get(i + 1)) {
+        ('/', Some('/')) => Some(i + chars[i..].iter().take_while(|&&c| c != '\n').count()),
+        ('/', Some('*')) => Some(block_comment_end(chars, i)),
+        ('"', _) => Some(string_end(chars, i + 1)),
+        ('\'', _) if is_char_literal(chars, i) => Some(char_literal_end(chars, i)),
+        _ if ident_before(chars, i) => None,
+        _ => ["br", "cr", "r"]
+            .iter()
+            .find(|p| chars[i..].starts_with(&p.chars().collect::<Vec<_>>()))
+            .and_then(|p| raw_string_end(chars, i + p.len())),
+    }
+}
+
+/// The end of the nested block comment that starts at `i`.
+fn block_comment_end(chars: &[char], mut i: usize) -> usize {
+    let mut depth = 0;
+    while i < chars.len() {
+        if chars[i..].starts_with(&['/', '*']) {
+            depth += 1;
+            i += 2;
+        } else if chars[i..].starts_with(&['*', '/']) {
+            depth -= 1;
+            i += 2;
+            if depth == 0 {
+                return i;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    i
+}
+
+/// The end of a string whose content starts at `i`, after its open quote.
+fn string_end(chars: &[char], mut i: usize) -> usize {
+    while i < chars.len() && chars[i] != '"' {
+        i += if chars[i] == '\\' { 2 } else { 1 };
+    }
+    i + 1
+}
+
+/// The end of a raw string whose `#` marks or open quote start at `i`, or
+/// `None` when no raw string starts there.
+fn raw_string_end(chars: &[char], i: usize) -> Option<usize> {
+    let hashes = chars[i..].iter().take_while(|&&h| h == '#').count();
+    if chars.get(i + hashes) != Some(&'"') {
+        return None;
+    }
+    let close: Vec<char> = std::iter::once('"')
+        .chain((0..hashes).map(|_| '#'))
+        .collect();
+    let body = i + hashes + 1;
+    Some(
+        (body..chars.len())
+            .find(|&j| chars[j..].starts_with(&close))
+            .map_or(chars.len(), |j| j + close.len()),
+    )
+}
+
+/// The end of the char literal at `i`. An escape (`'\''`, `'\u{2500}'`)
+/// ends at the first quote after its escaped char. A plain char literal is
+/// 3 chars long.
+fn char_literal_end(chars: &[char], i: usize) -> usize {
+    if chars[i + 1] == '\\' {
+        (i + 3..chars.len())
+            .find(|&j| chars[j] == '\'')
+            .map_or(chars.len(), |j| j + 1)
+    } else {
+        i + 3
+    }
+}
+
+/// Whether the char before `i` ends an identifier, as the `r` in `for`.
 fn ident_before(chars: &[char], i: usize) -> bool {
     i > 0 && (chars[i - 1].is_alphanumeric() || chars[i - 1] == '_')
 }
@@ -185,6 +199,17 @@ fn blank_literals_hides_braces_in_comments_and_literals() {
         "fn f<'a>(x: &'a str) {}"
     );
     assert_eq!(blank_literals("let q = '\\''; {").matches('{').count(), 1);
+    let raw_bytes = "let a = br#\"\"{\"#; let b = cr\"}\"; let c = b\"{\"; {";
+    assert_eq!(
+        blank_literals(raw_bytes).matches('{').count(),
+        1,
+        "{raw_bytes}"
+    );
+    assert_eq!(
+        blank_literals(raw_bytes).matches('}').count(),
+        0,
+        "{raw_bytes}"
+    );
 }
 
 /// The argument text of each call `<call>(...)` in `code`.
