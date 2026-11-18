@@ -26,8 +26,8 @@ use std::process::{Child, Command, Output};
 use horch_core::taskledger::runs::root_key;
 use horch_core::taskledger::schema;
 use horch_core::{clock, procid};
-use horch_e2e::harness::{wait_for, Harness};
-use rusqlite::{Connection, OptionalExtension};
+use horch_e2e::harness::{wait_for_or, Harness};
+use rusqlite::Connection;
 
 /// The fleet clock of the Phase 2 `fleetd` row at the update.
 const CLOCK: i64 = 5000;
@@ -312,6 +312,20 @@ fn tree_row(conn: &Connection, id: &str) -> (String, Option<String>, Option<Stri
     .unwrap()
 }
 
+/// Each job: `kind subject state`, for the message of a failed wait.
+fn jobs(h: &Harness) -> String {
+    let conn = Connection::open(db(h)).unwrap();
+    let mut stmt = conn
+        .prepare("SELECT kind || ' ' || subject || ' ' || state FROM jobs ORDER BY id")
+        .unwrap();
+    let rows: Vec<String> = stmt
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    rows.join("\n")
+}
+
 fn scalar_text(conn: &Connection, sql: &str, key: &str) -> String {
     conn.query_row(sql, [key], |r| r.get(0)).unwrap()
 }
@@ -404,25 +418,28 @@ fn live_tree_and_dirty_orphan_on_phase_2_are_active_and_listed_and_nothing_is_re
         let o = horch_at(&h, now, &["ledger", "watch", "--once", "--force", "--json"]);
         seen.push(text(&o));
     }
-    // The last pass reads the end of the rescue job of B.
-    let rescued = wait_for("the end of the rescue job of B", || {
-        let conn = Connection::open(db(&h)).unwrap();
-        let state: Option<String> = conn
-            .query_row(
-                "SELECT state FROM jobs WHERE kind = 'rescue' ORDER BY id DESC LIMIT 1",
-                [],
-                |r| r.get(0),
-            )
-            .optional()
-            .unwrap();
-        state.filter(|s| s != "queued" && s != "running")
-    });
+    // More passes at the same time, with no other bound than the wait:
+    // a pass reads the result of the worktree_list job, queues the rescue
+    // of B, and a later pass observes the end of that rescue job.
     now += STEP_S;
     h.advance_fleet_clock(STEP_S);
     checkin(&h, now);
     worker_at(&h, now, &["ledger", "progress", "building"]);
-    let o = horch_at(&h, now, &["ledger", "watch", "--once", "--force", "--json"]);
-    seen.push(format!("rescue job: {rescued}\n{}", text(&o)));
+    let mut last = String::new();
+    wait_for_or(
+        "the rescue of B, queued and observed",
+        || {
+            last = text(&horch_at(
+                &h,
+                now,
+                &["ledger", "watch", "--once", "--force", "--json"],
+            ));
+            let conn = Connection::open(db(&h)).unwrap();
+            tree_row(&conn, TREE_B).2
+        },
+        || jobs(&h),
+    );
+    seen.push(last);
     let listed = text(&horch_at(&h, now, &["worktrees"]));
     seen.push(listed.clone());
     let seen = seen.join("\n");
