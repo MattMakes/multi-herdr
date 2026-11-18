@@ -9,6 +9,10 @@
 //! - a background wait: a child of the agent, a running finish step, or a
 //!   live review task of the task.
 //!
+//! Only an interactive attempt declares a background wait. An exec
+//! attempt has none: its process runs until it exits, and the wrapper sees
+//! the exit (`docs/tickets/fleetd-p7/MAP.md`, Q3; `Mode::has_background_wait`).
+//!
 //! A read that sees a proof moves `due_at` to the fleet clock plus
 //! `max_wait_s`. With no proof, the wait ends at `due_at`. A background
 //! wait whose agent child is gone, with no other proof, ends at once

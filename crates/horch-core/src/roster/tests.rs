@@ -454,14 +454,14 @@ fn liveness_and_retry_absent_give_the_design_defaults() {
 }
 
 #[test]
-fn mode_absent_is_interactive_in_phase_2() {
+fn mode_absent_is_exec_in_phase_7() {
     let roster = Roster::builtin().unwrap();
+    assert_eq!(roster.require("opus").unwrap().profile().mode, Mode::Exec);
+    let roster = roster_with_probe("fallbacks: [codex-sol]\nmode: interactive");
     assert_eq!(
-        roster.require("opus").unwrap().profile().mode,
+        roster.require("probe").unwrap().profile().mode,
         Mode::Interactive
     );
-    let roster = roster_with_probe("fallbacks: [codex-sol]\nmode: exec");
-    assert_eq!(roster.require("probe").unwrap().profile().mode, Mode::Exec);
 }
 
 #[test]

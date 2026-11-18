@@ -8,12 +8,45 @@
 /// How fleetd runs a worker of the persona.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Mode {
-    /// A run-to-completion process.
-    Exec,
-    /// An agent in a herdr pane. The default until Phase 7 makes exec the
-    /// default (`docs/tickets/fleetd-p2/MAP.md`, Q10).
+    /// A run-to-completion process. The default from Phase 7
+    /// (`docs/tickets/fleetd-p7/MAP.md`, Q3).
     #[default]
+    Exec,
+    /// An agent in a herdr pane.
     Interactive,
+}
+
+impl Mode {
+    /// The mode of a profile whose file names no mode: exec for a CLI with
+    /// an exec adapter, else interactive (`docs/tickets/fleetd-p7/MAP.md`,
+    /// Q5).
+    pub fn default_for(exec_adapter: bool) -> Mode {
+        if exec_adapter {
+            Mode::Exec
+        } else {
+            Mode::Interactive
+        }
+    }
+
+    /// The mode of a launched attempt. The launch fixes it, so a change of
+    /// the profile does not change a live attempt. `exec_stream`: the
+    /// wrapper opened the exec stream of the attempt, which it does before
+    /// it starts the CLI. Before that, no agent process exists, and the
+    /// attempt counts as interactive, the treatment of the release before.
+    pub fn of_launch(exec_stream: bool) -> Mode {
+        if exec_stream {
+            Mode::Exec
+        } else {
+            Mode::Interactive
+        }
+    }
+
+    /// Whether an attempt of this mode may declare a background wait. An
+    /// exec attempt has none: its process runs until it exits, and the
+    /// wrapper sees the exit (`docs/tickets/fleetd-p7/MAP.md`, Q3).
+    pub fn has_background_wait(self) -> bool {
+        self == Mode::Interactive
+    }
 }
 
 /// The liveness numbers of a persona, in seconds of the fleet clock.
@@ -139,7 +172,7 @@ mod tests {
     #[test]
     fn the_default_profile_has_the_design_numbers_and_no_problem() {
         let p = Profile::default();
-        assert_eq!(p.mode, Mode::Interactive);
+        assert_eq!(p.mode, Mode::Exec);
         assert_eq!(
             p.liveness,
             Liveness {
@@ -152,6 +185,25 @@ mod tests {
         assert_eq!(p.retry.max_attempts, None);
         assert_eq!(p.retry.backoff_s, [30, 120, 480]);
         assert!(p.problems().is_empty(), "{:?}", p.problems());
+    }
+
+    #[test]
+    fn mode_absent_is_exec_in_phase_7() {
+        assert_eq!(Mode::default(), Mode::Exec);
+        assert_eq!(Mode::default_for(true), Mode::Exec);
+        assert_eq!(Mode::default_for(false), Mode::Interactive);
+    }
+
+    #[test]
+    fn an_attempt_is_exec_only_after_its_exec_stream_opens() {
+        assert_eq!(Mode::of_launch(true), Mode::Exec);
+        assert_eq!(Mode::of_launch(false), Mode::Interactive);
+    }
+
+    #[test]
+    fn only_an_interactive_attempt_has_a_background_wait() {
+        assert!(Mode::Interactive.has_background_wait());
+        assert!(!Mode::Exec.has_background_wait());
     }
 
     #[test]

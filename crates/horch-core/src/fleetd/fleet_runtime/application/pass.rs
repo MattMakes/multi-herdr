@@ -1825,7 +1825,9 @@ impl Rules<'_> {
             pool_limited: self.pool_limited(persona),
             open_question: questions_store::open_of_task(self.tx, &task.task_id)? > 0,
             waiting_until,
-            interactive: profile.mode == Mode::Interactive,
+            // The mode of the launch, not of the profile now: a live
+            // interactive attempt keeps rung 5 after an update.
+            interactive: workers::attempt_mode(self.tx, &l.worker.worker_id) == Mode::Interactive,
             task_running: task.status == TaskStatus::Running.as_str(),
             stall_after_s: profile.liveness.stall_after_s,
             doorbells: doorbells_of(self.tx, &l.attempt.id)?

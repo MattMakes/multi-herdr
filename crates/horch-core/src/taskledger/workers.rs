@@ -1,7 +1,7 @@
 //! Worker rows: 1 process life each (section 4.6).
 
 use anyhow::{bail, Context, Result};
-use rusqlite::{params, Connection, Row};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::Serialize;
 
 use super::model::{
@@ -11,17 +11,21 @@ use super::model::{
 use super::sql_words::{self, word};
 use super::store::optional;
 use super::util::{self, About};
+use crate::execution::lifecycle::TRANSCRIPT_JSONL;
 use crate::fleetd::fleet_runtime::domain::config::FleetConfig;
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 use crate::fleetd::ideas::adapters::questions_store;
 use crate::fleetd::ideas::application::questions;
 use crate::fleetd::ideas::domain::questions::{Question, State as QuestionState};
+use crate::fleetd::task_execution::adapters::result_reader::AttemptRef;
+use crate::fleetd::task_execution::adapters::task_files::attempt_dir;
 use crate::fleetd::task_execution::adapters::waits_store::{self, WaitRow};
 use crate::fleetd::task_execution::application::lease;
 use crate::fleetd::task_execution::domain::waits::{
     self, Behind, Child, End, Facts, Proof, Verdict,
 };
-use crate::fleetd::worker_profiles::domain::profile::Liveness;
+use crate::fleetd::worker_profiles::domain::profile::{Liveness, Mode};
+use crate::fleetd::worktree_custody::adapters::executors::fleet_root;
 
 /// 1 worker row.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -776,6 +780,36 @@ pub fn hold_for_finish(conn: &Connection, worker: &str) -> Result<()> {
 
 /// Set the wait `kind` of `worker`: its calendar deadline `seconds` from
 /// now, and its cap `due_at` [`max_wait_s`] after the fleet clock.
+/// The mode of the newest attempt of `worker`, as its launch fixed it: exec
+/// when its attempt folder holds the exec stream ([`TRANSCRIPT_JSONL`]),
+/// which the wrapper opens before it starts the CLI. The profile of today
+/// does not change it, so a live interactive attempt stays interactive
+/// after an update. An unknown fact (no attempt, no fleet root) gives
+/// interactive, the treatment of the release before.
+pub fn attempt_mode(conn: &Connection, worker: &str) -> Mode {
+    let attempt = conn
+        .query_row(
+            "SELECT id, task_id FROM attempts WHERE worker_id = ?1 AND task_id IS NOT NULL
+             ORDER BY rowid DESC LIMIT 1",
+            [worker],
+            |r| {
+                Ok(AttemptRef {
+                    attempt_id: r.get(0)?,
+                    task_id: r.get(1)?,
+                })
+            },
+        )
+        .optional();
+    match (attempt, fleet_root(conn)) {
+        (Ok(Some(a)), Ok(root)) => Mode::of_launch(
+            attempt_dir(&root, &a.task_id, a.attempt())
+                .join(TRANSCRIPT_JSONL)
+                .exists(),
+        ),
+        _ => Mode::Interactive,
+    }
+}
+
 pub fn set_wait(
     conn: &Connection,
     worker: &str,
@@ -784,6 +818,9 @@ pub fn set_wait(
     task_ids: &[String],
     seconds: i64,
 ) -> Result<()> {
+    if kind == BACKGROUND_WAIT && !attempt_mode(conn, worker).has_background_wait() {
+        return Ok(());
+    }
     let now = crate::clock::now();
     let clock = lease::fleet_clock(conn)?.0;
     let row = WaitRow {

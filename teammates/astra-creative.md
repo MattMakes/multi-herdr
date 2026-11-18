@@ -3,6 +3,9 @@ name: astra-creative
 brief_description: "Creative council. fleet_write: project/.git writes + network; other paths sandboxed. plan: read-only."
 base: fleet-worker
 agent: codex
+# Interactive: a top-tier seat (TOP_TIER_SEATS) talks with the operator in
+# its herdr pane (design, "Exec or interactive").
+mode: interactive
 phase: plan
 # A top-tier seat (TOP_TIER_SEATS): spawned by name only, never routed.
 model: gpt-6-astra

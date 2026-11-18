@@ -4,6 +4,9 @@ brief_description: "Fleet orchestrator. fleet_write: project/.git writes + netwo
 hidden: true
 base: fleet-orchestrator
 agent: codex
+# Interactive: the operator steers the orchestrator in its herdr pane
+# (design, "Exec or interactive").
+mode: interactive
 phase: plan
 skills: [orchestrate]
 model: gpt-6-astra

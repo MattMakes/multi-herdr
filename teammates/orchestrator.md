@@ -4,6 +4,9 @@ brief_description: The fleet orchestrator, Claude flavor. Never spawned as a wor
 hidden: true
 base: fleet-orchestrator
 agent: claude
+# Interactive: the operator steers the orchestrator in its herdr pane
+# (design, "Exec or interactive").
+mode: interactive
 phase: plan
 # skill-creator is a verbatim copy (skills/copied.json).
 # It and orchestrate are orchestrator-only: `horch teammates --check` fails

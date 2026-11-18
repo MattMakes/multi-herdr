@@ -38,6 +38,15 @@ pub(crate) const TOP_TIER_SEATS: [(&str, &str); 2] =
 /// The teammate files `horch fleet` launches as the orchestrator.
 pub(crate) const FLEET_ORCHESTRATORS: [&str; 2] = ["orchestrator", "orchestrator-codex"];
 
+/// The CLIs with an exec adapter (fleetd-p7 tickets 13 to 15). A profile
+/// of 1 of them runs exec when its file names no mode; any other CLI runs
+/// interactive (`docs/tickets/fleetd-p7/MAP.md`, Q5).
+pub(crate) const EXEC_ADAPTERS: [HarnessKind; 3] = [
+    HarnessKind::Claude,
+    HarnessKind::Codex,
+    HarnessKind::Antigravity,
+];
+
 /// The teammate files of the fixed 5-pane `horch orchestration` recipe. They
 /// have no base and take no ledger task, so fleetd never dispatches them, and
 /// they need no fallback.
@@ -396,7 +405,7 @@ impl Teammate {
             mode: match self.mode {
                 Some(ModeSetting::Exec) => Mode::Exec,
                 Some(ModeSetting::Interactive) => Mode::Interactive,
-                None => Mode::default(),
+                None => Mode::default_for(EXEC_ADAPTERS.contains(&self.agent)),
             },
             liveness,
             retry,
