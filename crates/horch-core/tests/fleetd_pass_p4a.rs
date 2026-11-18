@@ -128,7 +128,9 @@ impl World {
     fn reopen(dir: &Path) -> World {
         let conn = open(&dir.join("ledger.sqlite3"));
         let run_id: String = conn
-            .query_row("SELECT run_id FROM runs WHERE slug = 'r1'", [], |r| r.get(0))
+            .query_row("SELECT run_id FROM runs WHERE slug = 'r1'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         let run = runs::get(&conn, &run_id).unwrap();
         let tools = Tools {
@@ -160,10 +162,6 @@ impl World {
 
     fn root(&self) -> PathBuf {
         self.dir.join("fleet")
-    }
-
-    fn project(&self) -> PathBuf {
-        self.dir.join("project")
     }
 
     fn launches_file(&self) -> PathBuf {
@@ -217,7 +215,9 @@ impl World {
     fn attempts(&self, task: &str) -> Vec<(String, String)> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, state FROM attempts WHERE task_id = ?1 AND via = 'push' ORDER BY rowid")
+            .prepare(
+                "SELECT id, state FROM attempts WHERE task_id = ?1 AND via = 'push' ORDER BY rowid",
+            )
             .unwrap();
         stmt.query_map([task], |r| Ok((r.get(0)?, r.get(1)?)))
             .unwrap()
@@ -436,7 +436,10 @@ fn pass_binds_a_ready_task_and_launches_it_after_the_commit() {
     assert_eq!(w.attempts(&task)[0].1, "launching");
     let dir = attempt_dir(&w.root(), &task, &n);
     assert!(dir.join("task.yaml").exists(), "task.yaml after the commit");
-    assert!(dir.join("inbox").join("START.md").exists(), "START.md after the commit");
+    assert!(
+        dir.join("inbox").join("START.md").exists(),
+        "START.md after the commit"
+    );
     assert_eq!(w.wait_launches(1), vec![id.clone()], "1 launch");
     let dispatch: Option<String> = w
         .conn
@@ -448,7 +451,11 @@ fn pass_binds_a_ready_task_and_launches_it_after_the_commit() {
         .optional()
         .unwrap()
         .flatten();
-    assert_eq!(dispatch.as_deref(), Some(task.as_str()), "the dispatch cursor");
+    assert_eq!(
+        dispatch.as_deref(),
+        Some(task.as_str()),
+        "the dispatch cursor"
+    );
 
     run(&mut p, &mut conn);
     std::thread::sleep(Duration::from_millis(200));
@@ -737,14 +744,20 @@ fn crash_after_the_commit_of_the_bind_launches_once_on_the_next_pass() {
     assert_eq!(w.status(&task), "leased", "the row is committed");
     let (id, n) = w.attempt(&task);
     let dir = attempt_dir(&w.root(), &task, &n);
-    assert!(!dir.join("task.yaml").exists(), "no effect before the crash");
+    assert!(
+        !dir.join("task.yaml").exists(),
+        "no effect before the crash"
+    );
     assert!(w.launched().is_empty(), "no launch before the crash");
 
     let sp = spawns(&w);
     let mut conn = open(&w.dir.join("ledger.sqlite3"));
     let mut p = pass(&w, &sp, Faults::default());
     run(&mut p, &mut conn);
-    assert!(dir.join("task.yaml").exists(), "the next pass wrote the files");
+    assert!(
+        dir.join("task.yaml").exists(),
+        "the next pass wrote the files"
+    );
     assert_eq!(w.wait_launches(1), vec![id.clone()]);
     run(&mut p, &mut conn);
     std::thread::sleep(Duration::from_millis(200));

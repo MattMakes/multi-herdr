@@ -98,17 +98,17 @@ use crate::fleetd::task_execution::adapters::attempt_files::{self, OsProcesses, 
 use crate::fleetd::task_execution::adapters::leases_store;
 use crate::fleetd::task_execution::adapters::result_reader::AttemptRef;
 use crate::fleetd::task_execution::adapters::sqlite as attempts_store;
+use crate::fleetd::task_execution::application::dispatch::{self, DispatchCtx};
+use crate::fleetd::task_execution::application::launch::{self as push, Launches};
 use crate::fleetd::task_execution::application::outbox_ingest::{self, OutboxRead};
 use crate::fleetd::task_execution::application::quota::{
     self, Pools, Restart, Restarted, Restarts,
 };
-use crate::fleetd::task_execution::application::dispatch::{self, DispatchCtx};
-use crate::fleetd::task_execution::application::launch::{self as push, Launches};
+use crate::fleetd::task_execution::application::stall as ladder;
 use crate::fleetd::task_execution::application::verifier::{self, Passed, Verifier};
+use crate::fleetd::task_execution::application::{cancel, commands, lease, retry};
 use crate::fleetd::task_execution::application::{repair, review};
 use crate::fleetd::task_execution::domain::dispatch::Holds as DispatchHolds;
-use crate::fleetd::task_execution::application::stall as ladder;
-use crate::fleetd::task_execution::application::{cancel, commands, lease, retry};
 use crate::fleetd::task_execution::domain::lease::Limits;
 use crate::fleetd::task_execution::domain::outbox::DIR_MODE as OUTBOX_MODE;
 use crate::fleetd::task_execution::domain::quota::limited;
@@ -132,13 +132,13 @@ use crate::roster::Roster;
 use crate::routing::quota::QuotaView;
 use crate::runtime::fault::Faults;
 use crate::taskledger::finish::Tools;
+use crate::taskledger::git::Git;
 use crate::taskledger::model::{Actor, EventKind, ProgressSource, TaskStatus};
+use crate::taskledger::sql_words::WORKTREES_GONE;
+use crate::taskledger::store::Store;
 use crate::taskledger::util;
 use crate::taskledger::watchdog::{self, Observation};
 use crate::taskledger::workers::{self, Worker};
-use crate::taskledger::git::Git;
-use crate::taskledger::sql_words::WORKTREES_GONE;
-use crate::taskledger::store::Store;
 use crate::taskledger::{runs, tasks, timer};
 
 /// After the first full pass, the next pass sleeps for ever before its
@@ -1305,7 +1305,8 @@ impl<'a> Pass<'a> {
             clock,
             git: &w.tools.git,
         };
-        let mut d = dispatch::dispatch_due(tx, &ctx, &dispatch_holds(holds, clock), w.sandboxes, budget)?;
+        let mut d =
+            dispatch::dispatch_due(tx, &ctx, &dispatch_holds(holds, clock), w.sandboxes, budget)?;
         w.sandboxes.move_to_fallbacks(tx, &mut d.held)?;
         w.sandboxes.open_items(tx, self.ports.needs_you, &d.held)?;
         if !d.bound.is_empty() {
@@ -1781,11 +1782,15 @@ impl<'a> Pass<'a> {
             }
             Ok(push::Launch::Done) => None,
             Ok(push::Launch::Waiting(why)) => {
-                report.failed.push(format!("the launch of attempt {id} waits: {why}"));
+                report
+                    .failed
+                    .push(format!("the launch of attempt {id} waits: {why}"));
                 None
             }
             Err(e) => {
-                report.failed.push(format!("the launch of attempt {id}: {e:#}"));
+                report
+                    .failed
+                    .push(format!("the launch of attempt {id}: {e:#}"));
                 None
             }
         }
@@ -2782,16 +2787,8 @@ fn start_running(
     lease_s: impl Fn(Option<&str>) -> i64,
 ) -> Result<()> {
     for id in checkins {
-        let row: Option<(Option<String>, String, String, Option<String>)> = tx
-            .query_row(
-                "SELECT a.task_id, a.state, a.via, w.persona
-                 FROM attempts a JOIN workers w ON w.worker_id = a.worker_id
-                 WHERE a.id = ?1",
-                [id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )
-            .optional()?;
-        let Some((Some(task_id), state, via, persona)) = row else {
+        let Some((Some(task_id), state, via, persona)) = attempts_store::attempt_via(tx, id)?
+        else {
             continue;
         };
         if via != PUSH {
@@ -2832,20 +2829,13 @@ fn task_tips(
     git: &Git,
     results: &BTreeSet<&str>,
 ) -> Result<BTreeMap<String, String>> {
-    let mut stmt = conn.prepare(
-        "SELECT task_id FROM tasks WHERE status = ?1
-         UNION
-         SELECT task_id FROM branches
-         WHERE task_id IS NOT NULL AND landing_state IN (?2, ?3)",
-    )?;
-    let args = (
-        TaskStatus::Verifying.as_str(),
-        LandingState::Conflicted.as_str(),
-        LandingState::GateFailed.as_str(),
-    );
-    let mut ids: BTreeSet<String> = stmt
-        .query_map(args, |r| r.get(0))?
-        .collect::<rusqlite::Result<_>>()?;
+    let mut ids: BTreeSet<String> = attempts_store::tasks_in(conn, TaskStatus::Verifying.as_str())?
+        .into_iter()
+        .collect();
+    for state in [LandingState::Conflicted, LandingState::GateFailed] {
+        let branches = integration_rows::task_branches_in(conn, state.as_str())?;
+        ids.extend(branches.into_iter().map(|(_, task)| task));
+    }
     ids.extend(results.iter().map(|t| t.to_string()));
     let mut tips = BTreeMap::new();
     for id in ids {
@@ -2863,7 +2853,10 @@ fn task_tips(
             }
         };
         let spec = format!("refs/heads/{branch}^{{commit}}");
-        let out = git.try_run(Path::new(&repo), &["rev-parse", "--verify", "--quiet", &spec])?;
+        let out = git.try_run(
+            Path::new(&repo),
+            &["rev-parse", "--verify", "--quiet", &spec],
+        )?;
         if out.ok {
             tips.insert(id, out.stdout.trim().to_string());
         }
@@ -2873,8 +2866,9 @@ fn task_tips(
 
 /// The `via` of the attempt `id`.
 fn via(conn: &Connection, id: &str) -> Result<String> {
-    conn.query_row("SELECT via FROM attempts WHERE id = ?1", [id], |r| r.get(0))
-        .with_context(|| format!("reading the via of attempt {id}"))
+    let row = attempts_store::attempt_via(conn, id)?;
+    row.map(|(_, _, via, _)| via)
+        .with_context(|| format!("the ledger has no attempt {id}"))
 }
 
 /// Write `task.yaml` and `START.md` of each push attempt in `launching`
@@ -2883,7 +2877,10 @@ fn write_task_files(conn: &Connection, root: &Path) -> Vec<String> {
     match dispatch::write_missing_task_files(conn, root, &[]) {
         Ok(written) => written
             .into_iter()
-            .filter_map(|(id, r)| r.err().map(|e| format!("the task files of attempt {id}: {e:#}")))
+            .filter_map(|(id, r)| {
+                r.err()
+                    .map(|e| format!("the task files of attempt {id}: {e:#}"))
+            })
             .collect(),
         Err(e) => vec![format!("the task files: {e:#}")],
     }

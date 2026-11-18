@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::{anyhow, Result};
-use rusqlite::{params, Connection, Row};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 
 use crate::fleetd::task_execution::domain::task::{
     AttemptRow, AttemptState, Recorded, Rows, TaskRow, WorkerRow,
@@ -84,6 +84,33 @@ pub fn open_attempts_with_persona(conn: &Connection) -> Result<Vec<(AttemptRow, 
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map([], |r| Ok((attempt(r)?, r.get(7)?)))?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// The task, the state, the `via` and the persona of the worker of the
+/// attempt `id`, or `None` when the ledger has no such attempt.
+pub fn attempt_via(
+    conn: &Connection,
+    id: &str,
+) -> Result<Option<(Option<String>, String, String, Option<String>)>> {
+    let row = conn
+        .query_row(
+            "SELECT a.task_id, a.state, a.via, w.persona
+             FROM attempts a JOIN workers w ON w.worker_id = a.worker_id
+             WHERE a.id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()?;
+    Ok(row)
+}
+
+/// The id of each task with the status `status`, by id.
+pub fn tasks_in(conn: &Connection, status: &str) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare("SELECT task_id FROM tasks WHERE status = ?1 ORDER BY task_id")?;
+    let ids = stmt
+        .query_map([status], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(ids)
 }
 
 /// The worker row of `r`; `host` is the host of this machine.
