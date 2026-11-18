@@ -103,10 +103,10 @@ fn live_features(conn: &Connection) -> Result<Vec<String>> {
 }
 
 /// The tips that the feature is judged on.
-struct Tips {
-    repo: PathBuf,
-    feature: String,
-    primary: String,
+pub(crate) struct Tips {
+    pub(crate) repo: PathBuf,
+    pub(crate) feature: String,
+    pub(crate) primary: String,
 }
 
 fn follow_one(f: &Features<'_>, tx: &Connection, id: &str, clock: FleetSeconds) -> Result<Step> {
@@ -184,7 +184,7 @@ fn why_enter(to: FeatureState, tips: &Tips) -> String {
 
 /// The feature tip and the primary tip of `row` in the repository
 /// `project_root`. The inner `Err` is why fleetd cannot read them yet.
-fn read_tips(
+pub(crate) fn read_tips(
     git: &dyn IntegrationGitGateway,
     conn: &Connection,
     project_root: &str,
@@ -220,7 +220,7 @@ fn read_tips(
 
 /// The project file at the feature tip `tip`, or the defaults when the
 /// commit has none.
-fn project_settings(
+pub(crate) fn project_settings(
     git: &dyn IntegrationGitGateway,
     repo: &Path,
     tip: &str,

@@ -21,7 +21,7 @@ pub fn run(conn: &Connection, row: &JobRow) -> Result<Ran> {
         Kind::FastGate | Kind::FullGate => exec_gate::run(conn, row).map(Ran::from),
         Kind::Fetch => exec_fetch::run(conn, row).map(Ran::from),
         Kind::Push => exec_push::run(conn, row).map(Ran::from),
-        Kind::Rebase => exec_rebase::run(conn, row).map(Ran::from),
+        Kind::Rebase => exec_rebase::run(conn, row),
         Kind::TrialMerge => exec_trial_merge::run(conn, row),
         kind => Ok(no_executor(kind).into()),
     }
