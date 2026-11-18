@@ -12,27 +12,23 @@ use std::process::ExitCode;
 use anyhow::{bail, Context, Result};
 use clap::{Args, Subcommand};
 use horch_core::fleetd::fleet_runtime::adapters::channel_client::{self, Sent};
-use horch_core::fleetd::fleet_runtime::adapters::config_file;
 use horch_core::fleetd::fleet_runtime::adapters::request_wire::{Outcome, Reply};
-use horch_core::fleetd::fleet_runtime::application::jobs::JobCtx;
 use horch_core::fleetd::fleet_runtime::domain::requests::Kind;
-use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
 use horch_core::fleetd::task_execution::adapters::task_files::attempt_dir;
-use horch_core::fleetd::task_execution::application::cancel::{self, Cancel};
-use horch_core::fleetd::task_execution::domain::task::{Facts, Recorded, Seen};
 use horch_core::messaging::delivery;
 use horch_core::runtime::RuntimeContext;
-use horch_core::taskledger::finish::{self, land};
+use horch_core::taskledger::finish;
 use horch_core::taskledger::git::Git;
 use horch_core::taskledger::import;
 use horch_core::taskledger::map;
 use horch_core::taskledger::model::{EventKind, ProgressSource, StepName, WorkerKind};
-use horch_core::taskledger::model::{FindingStatus, StopRequester, VerifyProfile, VERIFY_ENV};
+use horch_core::taskledger::model::{VerifyProfile, VERIFY_ENV};
 use horch_core::taskledger::runs::{self, NewRun, Run};
 use horch_core::taskledger::status;
 use horch_core::taskledger::stop;
-use horch_core::taskledger::tasks::{self, ClaimOutcome, Claimed, NewTask};
-use horch_core::taskledger::workers::{self, NewWorker};
+use horch_core::taskledger::tasks::{self, ClaimOutcome, Claimed};
+use horch_core::taskledger::wakes;
+use horch_core::taskledger::workers;
 use horch_core::taskledger::{self, Store};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -697,6 +693,21 @@ fn reads_only(command: &LedgerCommand) -> bool {
         C::Run { command } => matches!(command, RunCommand::New(_) | RunCommand::List { .. }),
         C::Import { dry_run, .. } => !dry_run,
         C::Add(_) | C::Task(_) | C::AddMap { .. } | C::PlanWorkers { .. } => true,
+        C::Fallback { .. }
+        | C::Cancel { .. }
+        | C::Unblock { .. }
+        | C::Requeue { .. }
+        | C::Waive { .. }
+        | C::Stop { .. }
+        | C::Reap { .. }
+        | C::Reopen { .. }
+        | C::Dismiss { .. }
+        | C::Worker { .. }
+        | C::Unfinished { .. } => true,
+        C::Worktree { command } => matches!(
+            command,
+            WorktreeCommand::Scratch { .. } | WorktreeCommand::Drop { .. }
+        ),
         _ => false,
     }
 }
@@ -813,21 +824,21 @@ struct PlanLine {
 }
 
 /// The orchestrator steers tasks and workers.
-fn control_cmd(ctx: &RuntimeContext, mut store: Store, command: LedgerCommand) -> Result<ExitCode> {
+fn control_cmd(ctx: &RuntimeContext, store: Store, command: LedgerCommand) -> Result<ExitCode> {
     if let LedgerCommand::Fallback { task, reason, run } = command {
-        return fallback_cmd(ctx, &mut store, &task, &reason, &run);
+        return fallback_cmd(ctx, &store, &task, &reason, &run);
     }
     if let LedgerCommand::Cancel {
         task, reason, run, ..
     } = command
     {
-        return cancel_cmd(ctx, &mut store, &task, &reason, &run);
+        return cancel_cmd(ctx, &store, &task, &reason, &run);
     }
     if let LedgerCommand::Unblock { task, from, run } = command {
-        return unblock_cmd(ctx, &mut store, &task, &from, &run);
+        return unblock_cmd(ctx, &store, &task, &from, &run);
     }
     if let LedgerCommand::Requeue { task, reason, run } = command {
-        return requeue_cmd(ctx, &mut store, &task, &reason, &run);
+        return requeue_cmd(ctx, &store, &task, &reason, &run);
     }
     if let LedgerCommand::Waive {
         task,
@@ -845,7 +856,7 @@ fn control_cmd(ctx: &RuntimeContext, mut store: Store, command: LedgerCommand) -
         json: as_json,
     } = command
     {
-        return stop_cmd(ctx, &mut store, &worker, &reason, &run, as_json);
+        return stop_cmd(ctx, &store, &worker, &reason, &run, as_json);
     }
     if let LedgerCommand::Reap {
         worker,
@@ -854,7 +865,7 @@ fn control_cmd(ctx: &RuntimeContext, mut store: Store, command: LedgerCommand) -
         json: as_json,
     } = command
     {
-        return reap_cmd(ctx, &mut store, &worker, &reason, &run, as_json);
+        return reap_cmd(ctx, &store, &worker, &reason, &run, as_json);
     }
     unreachable!("not a control command")
 }
@@ -936,7 +947,7 @@ fn admin_cmd(ctx: &RuntimeContext, mut store: Store, command: LedgerCommand) -> 
         json: as_json,
     } = command
     {
-        return unfinished_cmd(ctx, &mut store, project.as_deref(), as_json);
+        return unfinished_cmd(ctx, &store, project.as_deref(), as_json);
     }
     if let LedgerCommand::Reopen {
         finding,
@@ -954,7 +965,7 @@ fn admin_cmd(ctx: &RuntimeContext, mut store: Store, command: LedgerCommand) -> 
                 fallback,
                 check,
             };
-            reopen_cmd(ctx, &mut store, finding, ticket, &run)
+            reopen_cmd(ctx, &store, finding, ticket, &run)
         };
     }
     if let LedgerCommand::Dismiss {
@@ -963,10 +974,10 @@ fn admin_cmd(ctx: &RuntimeContext, mut store: Store, command: LedgerCommand) -> 
         cleanup,
     } = command
     {
-        return dismiss_cmd(ctx, &store, finding, &reason, cleanup);
+        return dismiss_cmd(ctx, finding, &reason, cleanup);
     }
     if let LedgerCommand::Worker { command } = command {
-        return worker_cmd(ctx, &mut store, command);
+        return worker_cmd(ctx, &store, command);
     }
     if let LedgerCommand::Watch {
         run,
@@ -1025,133 +1036,57 @@ fn plan_workers_cmd(
 
 fn fallback_cmd(
     ctx: &RuntimeContext,
-    store: &mut Store,
+    store: &Store,
     task: &str,
     reason: &str,
     run: &RunArg,
 ) -> Result<ExitCode> {
     let r = resolve_run(ctx, store, run)?;
-    let t = store.immediate(|tx| {
-        let t = tasks::resolve(tx, &r.run_id, task)?;
-        tasks::fallback(tx, &t, reason)
-    })?;
-    output::println(&format!(
-        "{} can now be claimed by {}.",
-        t.short(),
-        t.claimable_by.as_deref().unwrap_or("?")
-    ));
+    let args = json!({ "task": task, "reason": reason });
+    print_lines(&request(ctx, Kind::TaskFallback, run_payload(&r, args))?)?;
     Ok(ExitCode::SUCCESS)
 }
 
-/// `horch ledger cancel` and `horch task cancel`.
+/// The payload of a request on the run `r`: the fields of `args`, and the
+/// run by its project and its id, as the task handlers of fleetd resolve it.
+fn run_payload(r: &Run, mut args: Value) -> Value {
+    args["project"] = json!(r.project_root);
+    args["run"] = json!(r.run_id);
+    args
+}
+
+/// Print each line of the result of a request.
+fn print_lines(result: &Value) -> Result<()> {
+    for line in field::<Vec<String>>(result, "lines")? {
+        output::println(&line);
+    }
+    Ok(())
+}
+
+/// `horch ledger cancel` and `horch task cancel`. fleetd cancels the task.
+/// With a live attempt, its pass stops the processes of the attempt first
+/// and cancels the task when they are gone. A task cancelled at once gets
+/// 1 `branch_abandon` request for each open task branch. The pass abandons
+/// the branches of a task that it cancels later, and wakes the orchestrator
+/// on the tasks that wait for it (the lost wakes of the stalled blocker).
 pub(super) fn cancel_cmd(
     ctx: &RuntimeContext,
-    store: &mut Store,
+    store: &Store,
     task: &str,
     reason: &str,
     run: &RunArg,
 ) -> Result<ExitCode> {
     orchestrator_only(ctx, store, "cancel")?;
     let r = resolve_run(ctx, store, run)?;
-    let herdr = HerdrPanes::new(ctx);
-    match cancel_and_stop(store, &r, task, reason, &Stopper::real(&herdr))? {
-        Some(t) => {
-            // A cancelled task's branch: its rescue ref, then `abandoned`.
-            super::branchcmd::abandon_branches_of(ctx, store, &t);
-            wake_dependents(ctx, store, &r, &t)
-        }
-        None => Ok(ExitCode::SUCCESS),
+    let args = json!({ "task": task, "reason": reason });
+    let result = request(ctx, Kind::TaskCancel, run_payload(&r, args))?;
+    print_lines(&result)?;
+    if field::<String>(&result, "status")? == "cancelled" {
+        let t = tasks::resolve(store.conn(), &r.run_id, task)?;
+        // A cancelled task's branch: its rescue ref, then `abandoned`.
+        super::branchcmd::abandon_branches_of(ctx, store, &t);
+        print_waiting(&t.short(), &tasks::dependents(store.conn(), &t.task_id)?);
     }
-}
-
-/// Cancel the task (`docs/specs/fleetd/design.md`, "A cancel"). With a
-/// live attempt, the first transaction ends the attempt and lets go of its
-/// worker, the worker is stopped by its recorded PIDs and pane (TRF-36),
-/// and the task is `cancelled` only when the process of each attempt is
-/// gone. Else the next pass of fleetd completes the cancel, and this gives
-/// `None`. With no live attempt, the task is `cancelled` at once, and a
-/// worker that held it with no attempt row is stopped after.
-fn cancel_and_stop(
-    store: &mut Store,
-    run: &Run,
-    task: &str,
-    reason: &str,
-    s: &Stopper,
-) -> Result<Option<tasks::Task>> {
-    let asked = store.immediate(|tx| {
-        let t = tasks::resolve(tx, &run.run_id, task)?;
-        cancel::request(tx, &t, reason)
-    })?;
-    let why = format!("task cancelled: {reason}");
-    for j in asked.judges() {
-        output::println(&format!(
-            "{} is the judge task of {}: its cancel follows.",
-            j.task().short(),
-            asked.task().short()
-        ));
-    }
-    // Each held worker is stopped, those of its judge tasks too: its agent
-    // can be gone while its supervisor or its pane is not. The pass
-    // completes the cancel of a judge task that waits for its stop.
-    let held = asked.to_stop();
-    let t = match asked {
-        Cancel::Cancelled { task: t, .. } => {
-            output::println(&format!("{} cancelled.", t.short()));
-            stop_holders(store, &held, &why, s)?;
-            return Ok(Some(t));
-        }
-        Cancel::Stopping { task: t, .. } => t,
-    };
-    stop_holders(store, &held, &why, s)?;
-    let facts = seen(&cancel::watched(store.conn(), &t.task_id)?, s.procs);
-    match store.immediate(|tx| cancel::complete(tx, &t.task_id, &facts))? {
-        Some(t) => {
-            output::println(&format!("{} cancelled.", t.short()));
-            Ok(Some(t))
-        }
-        None => {
-            output::println(&format!(
-                "{} is not cancelled yet: a process of its attempt still runs. The next pass of fleetd cancels it when the process is gone.",
-                t.short()
-            ));
-            Ok(None)
-        }
-    }
-}
-
-/// Whether the recorded process `p` runs: by its pid and start time, or
-/// by its pid alone when no start time is recorded.
-fn runs_now(procs: &dyn stop::Processes, p: Recorded) -> bool {
-    match p.pid_start {
-        Some(start) => procs.is_same(p.pid, start),
-        None => procs.exists(p.pid),
-    }
-}
-
-/// What this command sees of each process in `watch`.
-pub(super) fn seen(watch: &[Recorded], procs: &dyn stop::Processes) -> Facts {
-    let mut facts = Facts::default();
-    for p in watch {
-        let state = if runs_now(procs, *p) {
-            Seen::Alive
-        } else {
-            Seen::Dead
-        };
-        facts.processes.insert(*p, state);
-    }
-    facts
-}
-
-/// Name the tasks that wait for a cancelled task, and wake on them.
-fn wake_dependents(
-    ctx: &RuntimeContext,
-    store: &Store,
-    run: &Run,
-    t: &tasks::Task,
-) -> Result<ExitCode> {
-    let waiting = tasks::dependents(store.conn(), &t.task_id)?;
-    print_waiting(&t.short(), &waiting);
-    super::taskledger_wake::stalled_dependents(ctx, store, run, &t.short(), &waiting);
     Ok(ExitCode::SUCCESS)
 }
 
@@ -1207,46 +1142,30 @@ fn print_waiting(task: &str, waiting: &[tasks::Task]) {
 
 fn unblock_cmd(
     ctx: &RuntimeContext,
-    store: &mut Store,
+    store: &Store,
     task: &str,
     from: &str,
     run: &RunArg,
 ) -> Result<ExitCode> {
     orchestrator_only(ctx, store, "unblock")?;
     let r = resolve_run(ctx, store, run)?;
-    let t = store.immediate(|tx| {
-        let t = tasks::resolve(tx, &r.run_id, task)?;
-        let b = tasks::resolve(tx, &r.run_id, from)?;
-        tasks::unblock(tx, &t, &b)?;
-        Ok(t)
-    })?;
-    output::println(&format!("{} no longer waits for {from}.", t.short()));
-    super::taskledger_wake::nudge_startable(ctx, store, &r);
+    let args = json!({ "task": task, "from": from });
+    print_lines(&request(ctx, Kind::TaskUnblock, run_payload(&r, args))?)?;
     Ok(ExitCode::SUCCESS)
 }
 
 /// `horch ledger requeue` and `horch task requeue`.
 pub(super) fn requeue_cmd(
     ctx: &RuntimeContext,
-    store: &mut Store,
+    store: &Store,
     task: &str,
     reason: &str,
     run: &RunArg,
 ) -> Result<ExitCode> {
     orchestrator_only(ctx, store, "requeue")?;
     let r = resolve_run(ctx, store, run)?;
-    let config = config_file::load(&ctx.paths.fleet_root)?;
-    let jobs = JobCtx {
-        guard: None,
-        config: &config,
-        needs_you: &NeedsYouList,
-    };
-    let t = store.immediate(|tx| {
-        let t = tasks::resolve(tx, &r.run_id, task)?;
-        cancel::requeue(tx, &jobs, &t, reason)
-    })?;
-    output::println(&format!("{} is queued again.", t.short()));
-    super::taskledger_wake::nudge_startable(ctx, store, &r);
+    let args = json!({ "task": task, "reason": reason });
+    print_lines(&request(ctx, Kind::TaskRequeue, run_payload(&r, args))?)?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -1270,15 +1189,8 @@ fn waive_cmd(
             bail!("only the orchestrator waives a code-sweep finding; fix it, or answer an Important finding in the answers file");
         }
     }
-    let t = tasks::resolve(store.conn(), &r.run_id, task)?;
-    let w = finish::codesweep::waive(store.conn(), &tools(ctx).evidence_root, &t, finding, reason)?;
-    output::println(&format!(
-        "{} round {}: {} waived. The next horch ledger finish of {} reads it.",
-        t.short(),
-        w.round,
-        w.id,
-        t.short()
-    ));
+    let args = json!({ "task": task, "finding": finding, "reason": reason });
+    print_lines(&request(ctx, Kind::LedgerWaive, run_payload(&r, args))?)?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -1301,12 +1213,7 @@ fn worktree_cmd(
                 wt.path
             ));
         }
-        WorktreeCommand::Scratch { name } => {
-            let wt = taskledger::worktree_ops::create(store, &git, &wid, &name, None, true)?;
-            output::println(&format!("path: {}", wt.path));
-            output::println(&format!("branch: {}", wt.branch));
-            output::println("Scratch worktree: drop it when it is no longer needed; it does not block completion.");
-        }
+        WorktreeCommand::Scratch { name } => scratch_cmd(ctx, store, &git, &wid, &name)?,
         WorktreeCommand::Drop {
             name,
             reason,
@@ -1314,7 +1221,13 @@ fn worktree_cmd(
             run,
         } => {
             let run_id = drop_run_id(ctx, store, &wid, &run)?;
-            drop_worktree_cmd(store, &git, &run_id, &name, &reason, keep_branch)?
+            let drop = DropArgs {
+                run_id: &run_id,
+                name: &name,
+                reason: &reason,
+                keep_branch,
+            };
+            drop_worktree_cmd(ctx, store, &git, &drop)?
         }
     }
     Ok(ExitCode::SUCCESS)
@@ -1330,18 +1243,132 @@ fn drop_run_id(ctx: &RuntimeContext, store: &Store, wid: &str, run: &RunArg) -> 
         .context("worker has no run")
 }
 
-fn drop_worktree_cmd(
-    store: &mut Store,
+/// `horch ledger worktree scratch`: the request with the git facts that
+/// fleetd checks. The `worktree_add` job of fleetd makes the tree.
+fn scratch_cmd(
+    ctx: &RuntimeContext,
+    store: &Store,
     git: &Git,
-    run_id: &str,
+    wid: &str,
     name: &str,
-    reason: &str,
-    keep_branch: bool,
 ) -> Result<()> {
-    let wt =
-        taskledger::worktree_ops::drop_worktree(store, git, run_id, name, reason, keep_branch)?;
-    output::println(&format!("abandoned: {} ({reason})", wt.path));
+    taskledger::worktree_ops::valid_name(name)?;
+    let w = workers::get(store.conn(), wid)?;
+    let run = runs::get(
+        store.conn(),
+        w.run_id.as_deref().context("worker has no run")?,
+    )?;
+    let base = run
+        .run_branch
+        .as_deref()
+        .or(run.base_branch.as_deref())
+        .context("run has no git base")?;
+    if base.starts_with('-') || base.contains(['\n', '\r']) {
+        bail!("invalid base ref");
+    }
+    let root = Path::new(&run.project_root);
+    let (path, branch) = taskledger::worktree_ops::tree_names(&run, None, name);
+    let result = request(
+        ctx,
+        Kind::WorktreeScratch,
+        json!({
+            "worker_id": wid,
+            "name": name,
+            "base": base,
+            "base_commit": git.rev(root, base)?,
+            "path_exists": path.exists(),
+            "branch_exists": git.branch_exists(root, &branch),
+        }),
+    )?;
+    output::println(&format!("path: {}", field::<String>(&result, "path")?));
+    output::println(&format!("branch: {}", field::<String>(&result, "branch")?));
+    output::println(
+        "Scratch worktree: drop it when it is no longer needed; it does not block completion.",
+    );
     Ok(())
+}
+
+/// The arguments of `horch ledger worktree drop`.
+struct DropArgs<'a> {
+    run_id: &'a str,
+    name: &'a str,
+    reason: &'a str,
+    keep_branch: bool,
+}
+
+/// `horch ledger worktree drop`: the request with the git facts of the
+/// tree. fleetd refuses it as today's drop does, or removes the tree
+/// through custody.
+fn drop_worktree_cmd(ctx: &RuntimeContext, store: &Store, git: &Git, d: &DropArgs) -> Result<()> {
+    let wt = taskledger::worktree_ops::find_in(store.conn(), d.run_id, d.name)?;
+    let facts = drop_facts(
+        git,
+        Path::new(&wt.repo_root),
+        Path::new(&wt.path),
+        &wt.branch,
+    )?;
+    request(
+        ctx,
+        Kind::WorktreeDrop,
+        json!({
+            "run_id": d.run_id,
+            "name": d.name,
+            "reason": d.reason,
+            "keep_branch": d.keep_branch,
+            "facts": facts,
+        }),
+    )?;
+    output::println(&format!("abandoned: {} ({})", wt.path, d.reason));
+    Ok(())
+}
+
+/// The git facts of the drop of the tree at `path` with the recorded
+/// `branch` in the repository `root`. A fact of the folder that cannot be
+/// read is `null`, and fleetd refuses the drop on it.
+fn drop_facts(git: &Git, root: &Path, path: &Path, branch: &str) -> Result<Value> {
+    let path_exists = path.exists();
+    let (dirty, head_branch, head_is_recorded) = if path_exists {
+        let recorded = git.rev(root, branch).ok();
+        let head = git.rev(path, "HEAD").ok();
+        (
+            git.dirty(path).ok().map(|d| !d.is_empty()),
+            git.current_branch(path),
+            recorded.zip(head).map(|(a, b)| a == b),
+        )
+    } else {
+        (None, None, None)
+    };
+    let stash = !git.stashes_on(root, branch)?.is_empty();
+    let head = if path_exists {
+        git.rev(path, "HEAD")?
+    } else {
+        git.rev(root, branch)?
+    };
+    // A local branch or tag, or a remote ref, is a copy of the work. A
+    // reflog or a linked HEAD is not.
+    let refs = git.run(
+        root,
+        &[
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/heads",
+            "refs/remotes",
+            "refs/tags",
+        ],
+    )?;
+    let own = format!("refs/heads/{branch}");
+    let mut args = vec!["rev-list", head.as_str(), "--not"];
+    args.extend(refs.lines().filter(|r| *r != own));
+    let unique_commits = !git.run(root, &args)?.is_empty();
+    Ok(json!({
+        "path_exists": path_exists,
+        "dirty": dirty,
+        "head_branch": head_branch,
+        "head_is_recorded": head_is_recorded,
+        "stash": stash,
+        "unique_commits": unique_commits,
+        "head": head,
+    }))
 }
 
 fn steps_cmd(
@@ -1493,7 +1520,7 @@ struct ImportLines {
 
 fn unfinished_cmd(
     ctx: &RuntimeContext,
-    store: &mut Store,
+    store: &Store,
     project: Option<&str>,
     as_json: bool,
 ) -> Result<ExitCode> {
@@ -1502,7 +1529,7 @@ fn unfinished_cmd(
         Some(p) => Some(PathBuf::from(p)),
         None => Some(project_root(ctx)?),
     };
-    let list = store.immediate(|tx| import::unfinished(tx, root.as_deref()))?;
+    let list = import::unfinished(store.conn(), root.as_deref())?;
     if as_json {
         json(&list)?;
     } else {
@@ -1536,140 +1563,93 @@ struct ReopenTicket {
     check: Option<String>,
 }
 
-/// The run, the new task and the finding that `reopen` works from.
-fn reopen_plan(
+fn reopen_cmd(
     ctx: &RuntimeContext,
     store: &Store,
     finding: i64,
     ticket: ReopenTicket,
     run: &RunArg,
-) -> Result<(Run, NewTask, import::Unfinished)> {
+) -> Result<ExitCode> {
     let root = project_root(ctx)?;
     let cwd = ctx.paths.current_dir().unwrap_or_else(|_| root.clone());
     let path = ticket_path(&root, &ticket.file, &cwd)?;
     let r = resolve_run(ctx, store, run)?;
-    let f = import::get_finding(store.conn(), finding)?;
-    let mut t = NewTask::work(&ticket_title(&root.join(&path)), &path, &ticket.primary);
-    t.fallback = ticket.fallback;
-    t.land_check = ticket.check;
-    t.spec_ref = Some(format!("finding F{finding}"));
-    Ok((r, t, f))
-}
-
-/// Queue the reopened task and close the finding
-/// ([`import::reopen`]).
-fn queue_reopened(
-    store: &mut Store,
-    run: &Run,
-    new: &NewTask,
-    finding: &import::Unfinished,
-) -> Result<tasks::Task> {
-    store.immediate(|tx| import::reopen(tx, run, new, finding))
-}
-
-fn reopen_cmd(
-    ctx: &RuntimeContext,
-    store: &mut Store,
-    finding: i64,
-    ticket: ReopenTicket,
-    run: &RunArg,
-) -> Result<ExitCode> {
-    let primary = ticket.primary.clone();
-    let (r, t, f) = reopen_plan(ctx, store, finding, ticket, run)?;
-    let task = queue_reopened(store, &r, &t, &f)?;
-    output::println(&format!(
-        "{} queued for {} from finding F{finding}.",
-        task.short(),
-        primary
-    ));
+    let args = json!({
+        "finding": finding,
+        "file": path,
+        "title": ticket_title(&root.join(&path)),
+        "primary": ticket.primary,
+        "fallback": ticket.fallback,
+        "check": ticket.check,
+    });
+    print_lines(&request(ctx, Kind::LedgerReopen, run_payload(&r, args))?)?;
     Ok(ExitCode::SUCCESS)
 }
 
+/// `horch ledger dismiss`. With `--cleanup`, fleetd queues the removal of
+/// the recorded tree of the finding through custody.
 fn dismiss_cmd(
     ctx: &RuntimeContext,
-    store: &Store,
     finding: i64,
     reason: &str,
     cleanup: bool,
 ) -> Result<ExitCode> {
-    let f = import::get_finding(store.conn(), finding)?;
-    if cleanup {
-        let Some(wt) = &f.worktree_id else {
-            bail!("finding F{finding} has no recorded worktree; --cleanup removes only a recorded path");
-        };
-        let w = finish::worktree(store.conn(), wt)?;
-        let git = Git::new(&ctx.bins.harness.git);
-        let o = land::remove(store, &git, &w, &w.base, None)?;
-        if !o.status.is_through() {
-            bail!("{}", o.note);
-        }
-        output::println(&o.note);
-    }
-    import::decide(
-        store.conn(),
-        finding,
-        FindingStatus::Dismissed,
-        "orchestrator",
-        reason,
-    )?;
-    output::println(&format!("Finding F{finding} dismissed."));
+    let args = json!({ "finding": finding, "reason": reason, "cleanup": cleanup });
+    print_lines(&request(ctx, Kind::LedgerDismiss, args)?)?;
     Ok(ExitCode::SUCCESS)
 }
 
 fn stop_cmd(
     ctx: &RuntimeContext,
-    store: &mut Store,
+    store: &Store,
     worker: &str,
     reason: &str,
     run: &RunArg,
     as_json: bool,
 ) -> Result<ExitCode> {
     let r = resolve_run(ctx, store, run)?;
-    let w = workers::resolve(store.conn(), &r.run_id, worker)?;
-    let herdr = HerdrPanes::new(ctx);
-    let report = stop::stop_worker(
-        store,
-        &w.worker_id,
-        StopRequester::Orchestrator,
-        reason,
-        &herdr,
-        &stop::Os,
-        &stop::StopOptions {
-            grace: stop_grace(),
-            ..Default::default()
-        },
-    )?;
-    print_stop(&report, as_json)?;
-    if let Some(t) = &report.requeued {
-        super::taskledger_wake::nudge_startable(ctx, store, &r);
-        eprintln!("horch ledger: {t} is queued again.");
-    }
+    let args = json!({ "run_id": r.run_id, "worker": worker, "reason": reason });
+    print_ended(&request(ctx, Kind::WorkerStop, args)?, as_json)?;
     Ok(ExitCode::SUCCESS)
 }
 
 fn reap_cmd(
     ctx: &RuntimeContext,
-    store: &mut Store,
+    store: &Store,
     worker: &str,
     reason: &str,
     run: &RunArg,
     as_json: bool,
 ) -> Result<ExitCode> {
     let r = resolve_run(ctx, store, run)?;
-    let w = workers::resolve(store.conn(), &r.run_id, worker)?;
-    let herdr = HerdrPanes::new(ctx);
-    let report = stop::reap(
-        store,
-        &w.worker_id,
-        StopRequester::Orchestrator,
-        reason,
-        &herdr,
-        &stop::Os,
-        stop_grace(),
-    )?;
-    print_stop(&report.stop, as_json)?;
-    super::taskledger_wake::after_reap(ctx, store, &r, &report);
+    let args = json!({ "run_id": r.run_id, "worker": worker, "reason": reason });
+    let result = request(ctx, Kind::WorkerReap, args)?;
+    print_ended(&result, as_json)?;
+    if !as_json {
+        // The caller is the orchestrator: it reads what to spawn here.
+        let id: String = field(&result, "worker_id")?;
+        let who: String = field(&result, "worker")?;
+        let persona: Option<String> = field(&result, "persona")?;
+        let next = wakes::reaped_wake(store.conn(), &who, &id, persona.as_deref());
+        output::println(&next.text);
+    }
     Ok(ExitCode::SUCCESS)
+}
+
+/// What `stop` and `reap` print of the result of fleetd. The pass of
+/// fleetd stops the processes of the ended worker row and closes its pane.
+fn print_ended(result: &Value, as_json: bool) -> Result<()> {
+    if as_json {
+        return json(result);
+    }
+    output::println(&format!(
+        "Stopped {}: the next pass of fleetd stops its processes and closes its pane.",
+        field::<String>(result, "worker")?
+    ));
+    if let Some(t) = field::<Option<String>>(result, "requeued")? {
+        eprintln!("horch ledger: {t} is queued again.");
+    }
+    Ok(())
 }
 
 /// A run created outside herdr has no workspace (#218). The first
@@ -3359,7 +3339,7 @@ fn handoff_warning(state: horch_core::compaction::policy::RowState, role: &str) 
     })
 }
 
-fn worker_cmd(ctx: &RuntimeContext, store: &mut Store, command: WorkerCommand) -> Result<ExitCode> {
+fn worker_cmd(ctx: &RuntimeContext, store: &Store, command: WorkerCommand) -> Result<ExitCode> {
     match command {
         WorkerCommand::New {
             persona,
@@ -3367,60 +3347,35 @@ fn worker_cmd(ctx: &RuntimeContext, store: &mut Store, command: WorkerCommand) -
             replaces,
             pane,
             run,
-        } => new_worker(ctx, store, persona, role, replaces, pane, &run),
+        } => {
+            let r = resolve_run(ctx, store, &run)?;
+            let args = json!({
+                "run_id": r.run_id,
+                "persona": persona,
+                "role": role,
+                "replaces": replaces,
+                "pane": pane,
+            });
+            let result = request(ctx, Kind::WorkerNew, args)?;
+            output::println(&field::<String>(&result, "worker_id")?);
+        }
         WorkerCommand::Pid {
             worker,
             supervisor,
             agent,
-        } => record_pids(store, &worker, supervisor, agent),
+        } => {
+            // The start time of each PID, read here as today.
+            let pid =
+                |pid: u32| json!({ "pid": pid, "started": horch_core::procid::start_time(pid) });
+            let args = json!({
+                "worker": worker,
+                "supervisor": supervisor.map(pid),
+                "agent": agent.map(pid),
+            });
+            request(ctx, Kind::WorkerPid, args)?;
+        }
     }
-}
-
-/// Insert a worker row and print its id.
-fn new_worker(
-    ctx: &RuntimeContext,
-    store: &mut Store,
-    persona: String,
-    role: Option<String>,
-    replaces: Option<String>,
-    pane: Option<String>,
-    run: &RunArg,
-) -> Result<ExitCode> {
-    let r = resolve_run(ctx, store, run)?;
-    let id = store.immediate(|tx| {
-        workers::insert(
-            tx,
-            &NewWorker {
-                run_id: r.run_id.clone(),
-                kind: Some(WorkerKind::Worker),
-                persona,
-                role,
-                previous_worker_id: replaces,
-                pane_id: pane,
-                ..Default::default()
-            },
-        )
-    })?;
-    output::println(&id);
     Ok(ExitCode::SUCCESS)
-}
-
-/// Record the PIDs of a worker's supervisor and agent.
-fn record_pids(
-    store: &mut Store,
-    worker: &str,
-    supervisor: Option<u32>,
-    agent: Option<u32>,
-) -> Result<ExitCode> {
-    store.immediate(|tx| {
-        if let Some(pid) = supervisor {
-            workers::supervisor_started(tx, worker, pid, horch_core::procid::start_time(pid))?;
-        }
-        if let Some(pid) = agent {
-            workers::agent_started(tx, worker, pid, horch_core::procid::start_time(pid))?;
-        }
-        Ok(ExitCode::SUCCESS)
-    })
 }
 
 /// The job runner of the integration tests of `horch-core`: a unit test is
@@ -4122,67 +4077,6 @@ mod tests {
     fn term_to_both() -> Vec<(u32, horch_core::procid::Stop)> {
         use horch_core::procid::Stop;
         vec![(4000, Stop::Term), (4001, Stop::Term)]
-    }
-
-    #[test]
-    fn trf_36_cancel_signals_the_recorded_pids_and_writes_no_requeue() {
-        let dir = tempfile::tempdir().unwrap();
-        let (_ctx, mut store, run, c) = running(dir.path());
-        let procs = FakeProcs::default();
-        let t = super::cancel_and_stop(
-            &mut store,
-            &run,
-            &c.task.short(),
-            "not wanted",
-            &stopper(&procs),
-        )
-        .unwrap()
-        .expect("the processes are gone, so the task is cancelled");
-        assert_eq!(*procs.sent.borrow(), term_to_both());
-        assert_eq!(t.status, "cancelled");
-        assert_eq!(
-            tasks::get(store.conn(), &t.task_id).unwrap().status,
-            "cancelled"
-        );
-        assert_eq!(requeues(&store), 0);
-    }
-
-    /// Processes that each run with start time 7 and ignore each signal.
-    struct Stubborn;
-
-    impl stop::Processes for Stubborn {
-        fn is_same(&self, _: u32, started: u64) -> bool {
-            started == 7
-        }
-        fn exists(&self, _: u32) -> bool {
-            true
-        }
-        fn stop_same(&self, _: u32, started: u64, _: horch_core::procid::Stop) -> bool {
-            started == 7
-        }
-    }
-
-    /// The stop comes before the move: while the process of the attempt
-    /// runs, the task is not `cancelled`, and its cancel waits for the pass.
-    #[test]
-    fn a_cancel_whose_process_runs_on_does_not_move_the_task() {
-        let dir = tempfile::tempdir().unwrap();
-        let (_ctx, mut store, run, c) = running(dir.path());
-        let s = super::Stopper {
-            panes: &Nothing,
-            procs: &Stubborn,
-            opts: fast(),
-        };
-        let t =
-            super::cancel_and_stop(&mut store, &run, &c.task.short(), "not wanted", &s).unwrap();
-        assert_eq!(t, None);
-        let row = tasks::get(store.conn(), &c.task.task_id).unwrap();
-        assert_eq!(row.status, "running");
-        assert_eq!(
-            tasks::cancel_requested(store.conn(), &c.task.task_id).unwrap(),
-            Some("not wanted".to_string())
-        );
-        assert_eq!(requeues(&store), 0);
     }
 
     #[test]

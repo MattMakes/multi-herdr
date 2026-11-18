@@ -264,21 +264,6 @@ pub fn nudge_startable(ctx: &RuntimeContext, store: &Store, run: &Run) {
     wake_as(ctx, store, run, |tx| startable_wake(tx, run));
 }
 
-/// After a reap: tell the orchestrator which persona to spawn, and how.
-pub fn after_reap(
-    ctx: &RuntimeContext,
-    store: &Store,
-    run: &Run,
-    report: &horch_core::taskledger::stop::ReapReport,
-) {
-    let worker_id = report.stop.worker_id.as_str();
-    let who = report.stop.role.as_deref().unwrap_or(worker_id);
-    let persona = report.persona.as_deref();
-    wake_as(ctx, store, run, |tx| {
-        Ok(Some(wakes::reaped_wake(tx, who, worker_id, persona)))
-    });
-}
-
 #[cfg(test)]
 mod trf_15_tests {
     use horch_core::taskledger::status;
