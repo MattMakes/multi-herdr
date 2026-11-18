@@ -4,11 +4,24 @@ use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, Row};
 use serde::Serialize;
 
-use super::model::{Actor, EndReason, EventKind, Origin, ProgressSource, WorkerKind, WorkerStatus};
+use super::model::{
+    Actor, EndReason, EventKind, Origin, ProgressSource, StepStatus, TaskKind, TaskStatus,
+    WorkerKind, WorkerStatus,
+};
 use super::sql_words::{self, word};
 use super::store::optional;
 use super::util::{self, About};
+use crate::fleetd::fleet_runtime::domain::config::FleetConfig;
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
+use crate::fleetd::ideas::adapters::questions_store;
+use crate::fleetd::ideas::application::questions;
+use crate::fleetd::ideas::domain::questions::{Question, State as QuestionState};
+use crate::fleetd::task_execution::adapters::waits_store::{self, WaitRow};
+use crate::fleetd::task_execution::application::lease;
+use crate::fleetd::task_execution::domain::waits::{
+    self, Behind, Child, End, Facts, Proof, Verdict,
+};
+use crate::fleetd::worker_profiles::domain::profile::Liveness;
 
 /// 1 worker row.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -415,9 +428,16 @@ pub fn progress(
     )?;
     if source == ProgressSource::Agent {
         if let Some(reason) = text.trim_start().strip_prefix("waiting:") {
-            set_wait(conn, worker_id, "background", reason.trim(), &[], 24 * 3600)?;
+            set_wait(
+                conn,
+                worker_id,
+                BACKGROUND_WAIT,
+                reason.trim(),
+                &[],
+                24 * 3600,
+            )?;
         } else {
-            clear_wait(conn, worker_id, "background")?;
+            clear_wait(conn, worker_id, BACKGROUND_WAIT)?;
         }
     }
     let actor = match source {
@@ -689,17 +709,34 @@ pub struct Wait {
     pub started_at: String,
     pub deadline: String,
     pub task_ids: Vec<String>,
+    /// The fleet clock at which the wait stops counting as activity
+    /// (`waiting_until`): its cap `max_wait_s` (FM-3).
+    pub due_at: i64,
+    /// The `questions` row behind a question wait.
+    pub question_id: Option<String>,
 }
 
 /// The wait kind of an author on its reviews.
 pub const REVIEWS_WAIT: &str = "reviewers";
 
+/// The wait kind of a worker question.
+pub const QUESTION_WAIT: &str = "question";
+
+/// The wait kind of a long command or a detached finish.
+pub const BACKGROUND_WAIT: &str = "background";
+
 /// How long an author waits for its reviews when no deadline is known.
 pub const REVIEWS_WAIT_SECS: i64 = 7 * 24 * 3600;
 
+/// `liveness.max_wait_s` of a worker. A ledger command has no roster, so it
+/// uses the default of a profile, as the claim does for `lease_s`.
+fn max_wait_s() -> i64 {
+    i64::try_from(Liveness::default().max_wait_s).unwrap_or(i64::MAX)
+}
+
 /// Whether `wait` is an author's reviewers wait after its reviews are in:
 /// it has no task ids, so [`waiting`] keeps it until finish clears it or
-/// its deadline passes (#177).
+/// its deadline or its cap passes (#177).
 pub fn holds_for_finish(wait: &Wait) -> bool {
     wait.kind == REVIEWS_WAIT && wait.task_ids.is_empty()
 }
@@ -737,6 +774,8 @@ pub fn hold_for_finish(conn: &Connection, worker: &str) -> Result<()> {
     )
 }
 
+/// Set the wait `kind` of `worker`: its calendar deadline `seconds` from
+/// now, and its cap `due_at` [`max_wait_s`] after the fleet clock.
 pub fn set_wait(
     conn: &Connection,
     worker: &str,
@@ -746,11 +785,17 @@ pub fn set_wait(
     seconds: i64,
 ) -> Result<()> {
     let now = crate::clock::now();
-    let deadline = crate::clock::stamp(now + chrono::Duration::seconds(seconds));
-    conn.execute("INSERT INTO worker_waits(worker_id,kind,reason,started_at,deadline,task_ids)
-        VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(worker_id,kind) DO UPDATE SET
-        reason=excluded.reason,started_at=excluded.started_at,deadline=excluded.deadline,task_ids=excluded.task_ids",
-        params![worker,kind,reason,crate::clock::stamp(now),deadline,serde_json::to_string(task_ids)?])?;
+    let clock = lease::fleet_clock(conn)?.0;
+    let row = WaitRow {
+        kind: kind.to_string(),
+        reason: reason.to_string(),
+        started_at: crate::clock::stamp(now),
+        deadline: crate::clock::stamp(now + chrono::Duration::seconds(seconds)),
+        task_ids: serde_json::to_string(task_ids)?,
+        due_at: Some(clock.saturating_add(max_wait_s())),
+        question_id: None,
+    };
+    waits_store::put(conn, worker, &row)?;
     conn.execute(
         "UPDATE workers SET stall_rounds=0 WHERE worker_id=?1",
         [worker],
@@ -759,11 +804,7 @@ pub fn set_wait(
 }
 
 pub fn clear_wait(conn: &Connection, worker: &str, kind: &str) -> Result<()> {
-    if conn.execute(
-        "DELETE FROM worker_waits WHERE worker_id=?1 AND kind=?2",
-        params![worker, kind],
-    )? > 0
-    {
+    if waits_store::delete(conn, worker, kind)? {
         conn.execute(
             "UPDATE workers SET stall_rounds=0 WHERE worker_id=?1",
             [worker],
@@ -772,40 +813,147 @@ pub fn clear_wait(conn: &Connection, worker: &str, kind: &str) -> Result<()> {
     Ok(())
 }
 
-/// Expired waits and completed reviews stop holding the watchdog immediately.
-pub fn waiting(conn: &Connection, worker: &str) -> Result<Vec<Wait>> {
-    let mut stmt=conn.prepare("SELECT kind,reason,started_at,deadline,task_ids FROM worker_waits WHERE worker_id=?1 ORDER BY kind")?;
-    let rows = stmt
-        .query_map([worker], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, String>(4)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut out = Vec::new();
-    for (kind, reason, started_at, deadline, ids) in rows {
-        let task_ids: Vec<String> = serde_json::from_str(&ids)?;
-        let reviews_done = kind == REVIEWS_WAIT
-            && !task_ids.is_empty()
-            && task_ids.iter().all(|id| {
+/// End the wait `kind` of `worker` for `cause`: 1 `wait_ended` event, then
+/// the clear.
+fn end_wait(conn: &Connection, w: &Worker, kind: &str, reason: &str, cause: End) -> Result<()> {
+    util::event(
+        conn,
+        &About {
+            run: w.run_id.as_deref(),
+            task: w.task_id.as_deref(),
+            worker: Some(&w.worker_id),
+        },
+        Actor::Horch,
+        EventKind::WaitEnded,
+        &format!("{}: the {kind} wait ended ({reason})", cause.as_str()),
+    )?;
+    clear_wait(conn, &w.worker_id, kind)
+}
+
+/// The child fact of the agent of `w`: a member of its process group other
+/// than the agent is alive. Another host, or a platform with no process
+/// groups, gives [`Child::Unknown`].
+fn agent_child(w: &Worker) -> Child {
+    if w.host.as_deref().is_some_and(|h| h != util::host_name()) {
+        return Child::Unknown;
+    }
+    let Some(pid) = w.agent_pid.and_then(|p| u32::try_from(p).ok()) else {
+        return Child::Gone;
+    };
+    let started = w.agent_started.and_then(|s| u64::try_from(s).ok());
+    if !crate::procid::alive(pid, started) {
+        return Child::Gone;
+    }
+    match horch_platform::process::group_members(pid) {
+        Ok(members) if members.iter().any(|m| *m != pid) => Child::Alive,
+        Ok(_) => Child::Gone,
+        Err(_) => Child::Unknown,
+    }
+}
+
+/// The proof of work behind the background wait of `w`.
+fn background_proof(conn: &Connection, w: &Worker) -> Result<Proof> {
+    let Some(task) = w.task_id.as_deref() else {
+        return Ok(Proof {
+            child: agent_child(w),
+            step_running: false,
+            review_live: false,
+        });
+    };
+    let step_running: i64 = conn.query_row(
+        &format!(
+            "SELECT count(*) FROM task_steps WHERE task_id = ?1 AND worker_id = ?2 AND status = {}",
+            word(StepStatus::Running)
+        ),
+        params![task, w.worker_id],
+        |r| r.get(0),
+    )?;
+    let review_live: i64 = conn.query_row(
+        &format!(
+            "SELECT count(*) FROM tasks WHERE parent_task_id = ?1 AND kind = {}
+             AND status IN ({}, {}, {})",
+            word(TaskKind::Review),
+            word(TaskStatus::Ready),
+            word(TaskStatus::Leased),
+            word(TaskStatus::Running)
+        ),
+        [task],
+        |r| r.get(0),
+    )?;
+    Ok(Proof {
+        child: agent_child(w),
+        step_running: step_running > 0,
+        review_live: review_live > 0,
+    })
+}
+
+/// What is behind the wait `row` of `w`.
+fn behind(conn: &Connection, w: &Worker, row: &WaitRow, task_ids: &[String]) -> Result<Behind> {
+    Ok(match row.kind.as_str() {
+        // A question wait that no sync linked yet (a wait of the release)
+        // holds to its cap.
+        QUESTION_WAIT => Behind::Question {
+            open: match &row.question_id {
+                None => true,
+                Some(id) => {
+                    questions_store::get(conn, id)?.is_some_and(|q| q.state == QuestionState::Open)
+                }
+            },
+        },
+        REVIEWS_WAIT if task_ids.is_empty() => Behind::HeldForFinish,
+        REVIEWS_WAIT => Behind::Reviews {
+            live: !task_ids.iter().all(|id| {
                 super::tasks::get(conn, id)
                     .is_ok_and(|t| matches!(t.status.as_str(), "done" | "cancelled"))
-            });
-        if deadline <= util::now() || reviews_done {
-            clear_wait(conn, worker, &kind)?;
-            continue;
+            }),
+        },
+        _ => Behind::Background(background_proof(conn, w)?),
+    })
+}
+
+/// The waits of `worker` that count as activity now. A wait past its
+/// deadline or its cap `due_at`, or with no live row behind it, ends with a
+/// `wait_ended` event. A wait with a proof of work gets its cap moved
+/// ([`waits::judge`]).
+pub fn waiting(conn: &Connection, worker: &str) -> Result<Vec<Wait>> {
+    let rows = waits_store::of_worker(conn, worker)?;
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    let w = get(conn, worker)?;
+    let facts = Facts {
+        clock: lease::fleet_clock(conn)?.0,
+        max_wait_s: max_wait_s(),
+    };
+    let now = util::now();
+    let mut out = Vec::new();
+    for row in rows {
+        let task_ids: Vec<String> = serde_json::from_str(&row.task_ids)?;
+        let due_at = row
+            .due_at
+            .unwrap_or_else(|| facts.clock.saturating_add(facts.max_wait_s));
+        let wait = waits::Wait {
+            behind: behind(conn, &w, &row, &task_ids)?,
+            due_at,
+            deadline_passed: row.deadline <= now,
+        };
+        match waits::judge(&wait, &facts) {
+            Verdict::Ends(cause) => end_wait(conn, &w, &row.kind, &row.reason, cause)?,
+            Verdict::Holds { due_at: until } => {
+                if row.due_at != Some(until) {
+                    waits_store::set_due_at(conn, worker, &row.kind, until)?;
+                }
+                out.push(Wait {
+                    kind: row.kind,
+                    reason: row.reason,
+                    started_at: row.started_at,
+                    deadline: row.deadline,
+                    task_ids,
+                    due_at: until,
+                    question_id: row.question_id,
+                });
+            }
         }
-        out.push(Wait {
-            kind,
-            reason,
-            started_at,
-            deadline,
-            task_ids,
-        });
     }
     Ok(out)
 }
@@ -887,17 +1035,21 @@ fn acted_since(
 }
 
 /// Project the messaging layer's authoritative questions into ledger waits.
-/// First close the horch questions whose ledger action happened. A wait
-/// names its question by id (`#<id>`): an answer by that id ends it, and
-/// the next open question of the role starts a new wait.
+/// First close the horch questions whose ledger action happened. Each open
+/// question of a working worker with a task gets 1 `questions` row
+/// ([`questions::ask`]). The question wait of the worker points at the row
+/// of its oldest open question, names the question by id (`#<id>`), and
+/// keeps its cap while it points at the same row. A row whose mail
+/// question is no longer open goes to `answered`, and its wait ends.
 pub fn sync_questions(conn: &Connection, state: &std::path::Path, workspace: &str) -> Result<()> {
     let mail = crate::messaging::mail::Mail::under(state, workspace);
     close_acted_questions(conn, &mail, workspace)?;
-    let questions = mail.open_questions()?;
-    // The oldest open question of a role fixes the deadline; polling must never extend it.
-    let mut oldest = std::collections::BTreeMap::new();
-    for q in &questions {
-        oldest.entry(q.from.as_str()).or_insert(q);
+    let open = mail.open_questions()?;
+    close_answered_rows(conn, workspace, &open)?;
+    let mut by_role: std::collections::BTreeMap<&str, Vec<&crate::messaging::mail::Message>> =
+        std::collections::BTreeMap::new();
+    for q in &open {
+        by_role.entry(q.from.as_str()).or_default().push(q);
     }
     let working = word(WorkerStatus::Working);
     // The pass reads only the workers that a question or a question wait
@@ -905,31 +1057,128 @@ pub fn sync_questions(conn: &Connection, state: &std::path::Path, workspace: &st
     let mut asked = conn.prepare(&format!(
         "SELECT worker_id FROM workers WHERE workspace_id=?1 AND status={working} AND role=?2"
     ))?;
-    for (role, q) in &oldest {
+    for (role, questions) in &by_role {
         let ids = asked
             .query_map(params![workspace, role], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        let started: chrono::DateTime<chrono::Utc> = q.created_at.into();
-        let deadline = crate::clock::stamp(started + chrono::Duration::days(7));
-        let reason = format!("#{} {}", q.id.short(), q.text);
         for id in ids {
-            conn.execute("INSERT INTO worker_waits(worker_id,kind,reason,started_at,deadline) VALUES(?1,'question',?2,?3,?4)
-                ON CONFLICT(worker_id,kind) DO UPDATE SET reason=excluded.reason,started_at=excluded.started_at,deadline=excluded.deadline",
-                params![id,reason,crate::clock::stamp(started),deadline])?;
+            wait_on_questions(conn, &get(conn, &id)?, questions)?;
         }
     }
     let mut waits = conn.prepare(&format!(
         "SELECT w.worker_id, w.role FROM worker_waits q JOIN workers w ON w.worker_id = q.worker_id
          WHERE q.kind='question' AND w.workspace_id=?1 AND w.status={working}"
     ))?;
-    let waiting = waits
+    let waiting_workers = waits
         .query_map([workspace], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    for (id, role) in waiting {
-        if !role.is_some_and(|r| oldest.contains_key(r.as_str())) {
-            clear_wait(conn, &id, "question")?;
+    for (id, role) in waiting_workers {
+        if !role.is_some_and(|r| by_role.contains_key(r.as_str())) {
+            end_question_wait(conn, &get(conn, &id)?)?;
+        }
+    }
+    Ok(())
+}
+
+/// End the question wait of `w`, when it has one: no open question is
+/// behind it.
+fn end_question_wait(conn: &Connection, w: &Worker) -> Result<()> {
+    let Some(row) = waits_store::of_worker(conn, &w.worker_id)?
+        .into_iter()
+        .find(|r| r.kind == QUESTION_WAIT)
+    else {
+        return Ok(());
+    };
+    end_wait(conn, w, QUESTION_WAIT, &row.reason, End::QuestionClosed)
+}
+
+/// Write the `questions` rows of the open mail questions `questions` of
+/// worker `w`, oldest first, and point its question wait at the oldest.
+/// A worker with no task asks for nothing that a row can hold.
+fn wait_on_questions(
+    conn: &Connection,
+    w: &Worker,
+    questions: &[&crate::messaging::mail::Message],
+) -> Result<()> {
+    let (Some(task), Some(run_id)) = (w.task_id.as_deref(), w.run_id.as_deref()) else {
+        return Ok(());
+    };
+    let attempt =
+        crate::fleetd::task_execution::adapters::sqlite::attempts_of_worker(conn, &w.worker_id)?
+            .into_iter()
+            .rfind(|a| a.task_id.as_deref() == Some(task))
+            .map_or_else(|| w.worker_id.clone(), |a| a.id);
+    let owner = super::runs::get(conn, run_id)?
+        .orchestrator_worker_id
+        .unwrap_or_else(|| "orchestrator".to_string());
+    let clock = lease::fleet_clock(conn)?;
+    let limit = FleetConfig::default().question_limit_s;
+    let mut rows: Vec<(&crate::messaging::mail::Message, Question)> = Vec::new();
+    for q in questions {
+        let asked_at = crate::clock::stamp(q.created_at.into());
+        let ask = questions::Ask {
+            task_id: task,
+            attempt_id: &attempt,
+            run_id,
+            owner: &owner,
+            mail_id: q.id.as_str(),
+            text: &q.text,
+            asked_at: &asked_at,
+        };
+        let row = questions::ask(conn, &ask, clock, limit)?;
+        // An answer recorded before its delivery closed the mail question
+        // leaves the row answered: no wait points at it.
+        if row.state == QuestionState::Open {
+            rows.push((q, row));
+        }
+    }
+    let Some((oldest, row)) = rows.first() else {
+        return end_question_wait(conn, w);
+    };
+    let started: chrono::DateTime<chrono::Utc> = oldest.created_at.into();
+    let earlier = waits_store::of_worker(conn, &w.worker_id)?
+        .into_iter()
+        .find(|r| r.kind == QUESTION_WAIT);
+    // Polling never extends a wait: the cap of a wait on the same row stays.
+    let due_at = earlier
+        .filter(|r| r.question_id.as_deref() == Some(row.id.as_str()))
+        .and_then(|r| r.due_at)
+        .unwrap_or_else(|| clock.0.saturating_add(max_wait_s()));
+    let wait = WaitRow {
+        kind: QUESTION_WAIT.to_string(),
+        reason: format!("#{} {}", oldest.id.short(), oldest.text),
+        started_at: crate::clock::stamp(started),
+        deadline: crate::clock::stamp(started + chrono::Duration::days(7)),
+        task_ids: "[]".to_string(),
+        due_at: Some(due_at),
+        question_id: Some(row.id.clone()),
+    };
+    waits_store::put(conn, &w.worker_id, &wait)
+}
+
+/// Each open `questions` row of a run of `workspace` whose mail question is
+/// not in `open` goes to `answered`. An answer through `horch tell
+/// --answers` recorded its text before the mail question closed.
+fn close_answered_rows(
+    conn: &Connection,
+    workspace: &str,
+    open: &[crate::messaging::mail::Message],
+) -> Result<()> {
+    let mut stmt = conn.prepare("SELECT run_id FROM runs WHERE workspace_id = ?1")?;
+    let runs = stmt
+        .query_map([workspace], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<std::collections::BTreeSet<_>>>()?;
+    for (q, mail_id) in questions::open_with_mail(conn)? {
+        if !runs.contains(&q.feature_id) {
+            continue;
+        }
+        if !open
+            .iter()
+            .any(|m| Some(m.id.as_str()) == mail_id.as_deref())
+        {
+            questions::answered(conn, &q, None)?;
         }
     }
     Ok(())
@@ -1007,7 +1256,8 @@ mod tests {
             .unwrap()
     }
 
-    /// A run in workspace `w1` with task T-1 and a working worker `worker-1`.
+    /// A run in workspace `w1` with task T-1, which the worker `worker-1`
+    /// claimed.
     fn asker(store: &mut Store) -> (String, String) {
         use crate::taskledger::tasks::{self, NewTask};
         store
@@ -1037,13 +1287,7 @@ mod tests {
                         ..Default::default()
                     },
                 )?;
-                tx.execute(
-                    &format!(
-                        "UPDATE workers SET status = {} WHERE worker_id = ?1",
-                        word(WorkerStatus::Working)
-                    ),
-                    [&worker],
-                )?;
+                tasks::claim(tx, &worker)?;
                 Ok((run.run_id, worker))
             })
             .unwrap()
@@ -1308,5 +1552,338 @@ mod tests {
             )
             .unwrap();
         assert_eq!(rows, 0);
+    }
+
+    /// The `fleetd` row at fleet clock `clock`, or the clock moved there.
+    fn set_clock(conn: &Connection, clock: i64) {
+        conn.execute(
+            "INSERT INTO fleetd (id, generation, pid, pid_start, started_at, fleet_clock_s, clock_ticked_at)
+             VALUES (1, 1, 1, 1, 'then', ?1, 'then')
+             ON CONFLICT (id) DO UPDATE SET fleet_clock_s = excluded.fleet_clock_s",
+            [clock],
+        )
+        .unwrap();
+    }
+
+    /// The `wait_ended` event texts of `worker`.
+    fn ended(conn: &Connection, worker: &str) -> Vec<String> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT text FROM events WHERE kind = 'wait_ended' AND worker_id = ?1
+                 ORDER BY event_id",
+            )
+            .unwrap();
+        stmt.query_map([worker], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    fn row(conn: &Connection, worker: &str, kind: &str) -> Option<WaitRow> {
+        waits_store::of_worker(conn, worker)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.kind == kind)
+    }
+
+    /// A claimed worker whose agent is gone, at fleet clock 1000.
+    fn claimed(s: &mut Store) -> (String, String) {
+        let (run, worker) = asker(s);
+        set_clock(s.conn(), 1_000);
+        (run, worker)
+    }
+
+    #[test]
+    fn wait_gets_due_at_max_wait_s_on_the_fleet_clock() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(&dir.path().join("l.sqlite3")).unwrap();
+        let (_, worker) = claimed(&mut s);
+        set_wait(s.conn(), &worker, BACKGROUND_WAIT, "build", &[], 24 * 3600).unwrap();
+        assert_eq!(
+            row(s.conn(), &worker, BACKGROUND_WAIT).unwrap().due_at,
+            Some(4_600)
+        );
+        let waits = waiting(s.conn(), &worker).unwrap();
+        assert_eq!(waits.len(), 1, "{waits:?}");
+        assert_eq!(waits[0].due_at, 4_600);
+    }
+
+    #[test]
+    fn wait_past_due_at_ends_with_an_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(&dir.path().join("l.sqlite3")).unwrap();
+        let (_, worker) = claimed(&mut s);
+        set_wait(s.conn(), &worker, BACKGROUND_WAIT, "build", &[], 24 * 3600).unwrap();
+        set_clock(s.conn(), 4_599);
+        assert_eq!(waiting(s.conn(), &worker).unwrap().len(), 1);
+        set_clock(s.conn(), 4_600);
+        assert!(waiting(s.conn(), &worker).unwrap().is_empty());
+        assert!(row(s.conn(), &worker, BACKGROUND_WAIT).is_none());
+        assert_eq!(
+            ended(s.conn(), &worker),
+            ["max_wait_reached: the background wait ended (build)"]
+        );
+    }
+
+    #[test]
+    fn background_wait_is_capped_at_max_wait_s() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(&dir.path().join("l.sqlite3")).unwrap();
+        let (_, worker) = claimed(&mut s);
+        // `horch ledger progress "waiting: ..."` sets a calendar deadline
+        // of 24 h; the fleet clock caps it at max_wait_s.
+        progress(
+            s.conn(),
+            &worker,
+            ProgressSource::Agent,
+            EventKind::Progress,
+            "waiting: a long test",
+        )
+        .unwrap();
+        let wait = row(s.conn(), &worker, BACKGROUND_WAIT).unwrap();
+        assert_eq!(wait.due_at, Some(4_600));
+        set_clock(s.conn(), 4_600);
+        assert!(waiting(s.conn(), &worker).unwrap().is_empty());
+        assert_eq!(ended(s.conn(), &worker).len(), 1);
+    }
+
+    fn mail_question(dir: &Path, text: &str) -> crate::messaging::mail::Id {
+        crate::messaging::mail::Mail::under(dir, "w1")
+            .enqueue("worker-1", text)
+            .unwrap()
+    }
+
+    #[test]
+    fn question_wait_points_at_its_open_questions_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(&dir.path().join("l.sqlite3")).unwrap();
+        let (run, worker) = claimed(&mut s);
+        mail_question(dir.path(), "QUESTION: which?");
+        mail_question(dir.path(), "QUESTION: where?");
+        sync_questions(s.conn(), dir.path(), "w1").unwrap();
+        sync_questions(s.conn(), dir.path(), "w1").unwrap();
+
+        let rows: Vec<(String, String, String, i64)> = {
+            let mut stmt = s
+                .conn()
+                .prepare("SELECT id, feature_id, state, due_at FROM questions ORDER BY id")
+                .unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        assert_eq!(rows.len(), 2, "1 row for each open question: {rows:?}");
+        assert!(rows
+            .iter()
+            .all(|r| r.1 == run && r.2 == "open" && r.3 == 1_900));
+        let wait = question_wait(s.conn(), &worker).expect("a question wait");
+        assert_eq!(wait.question_id.as_deref(), Some(rows[0].0.as_str()));
+        assert!(rows[0].0.ends_with("/Q1"), "{rows:?}");
+        assert_eq!(wait.due_at, 4_600);
+    }
+
+    #[test]
+    fn question_wait_ends_when_its_row_is_answered() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(&dir.path().join("l.sqlite3")).unwrap();
+        let (_, worker) = claimed(&mut s);
+        let id = mail_question(dir.path(), "QUESTION: which?");
+        sync_questions(s.conn(), dir.path(), "w1").unwrap();
+        let qid = question_wait(s.conn(), &worker)
+            .unwrap()
+            .question_id
+            .unwrap();
+
+        // The answer by id records its text, then closes the mail question.
+        let answered = questions::answer_mail(s.conn(), id.as_str(), "the first").unwrap();
+        assert_eq!(answered.as_deref(), Some(qid.as_str()));
+        assert!(question_wait(s.conn(), &worker).is_none());
+        assert_eq!(
+            ended(s.conn(), &worker),
+            ["question_closed: the question wait ended (#".to_string()
+                + &id.short()
+                + " QUESTION: which?)"]
+        );
+    }
+
+    #[test]
+    fn reviewers_wait_with_no_live_review_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(&dir.path().join("l.sqlite3")).unwrap();
+        let (run, worker) = claimed(&mut s);
+        let review = review_of(&mut s, &run, &worker);
+        set_wait(
+            s.conn(),
+            &worker,
+            REVIEWS_WAIT,
+            "reviews",
+            std::slice::from_ref(&review),
+            7 * 24 * 3600,
+        )
+        .unwrap();
+        set_clock(s.conn(), 20_000);
+        let waits = waiting(s.conn(), &worker).unwrap();
+        assert_eq!(waits.len(), 1, "a live review moves the cap: {waits:?}");
+        assert_eq!(waits[0].due_at, 23_600);
+
+        s.conn()
+            .execute(
+                "UPDATE tasks SET status = 'done' WHERE task_id = ?1",
+                [&review],
+            )
+            .unwrap();
+        assert!(waiting(s.conn(), &worker).unwrap().is_empty());
+        assert_eq!(
+            ended(s.conn(), &worker),
+            ["reviews_done: the reviewers wait ended (reviews)"]
+        );
+    }
+
+    /// A review task of the task of `worker`, in `ready`.
+    fn review_of(s: &mut Store, run: &str, worker: &str) -> String {
+        use crate::taskledger::tasks::{self, NewTask};
+        let parent = get(s.conn(), worker).unwrap().task_id.unwrap();
+        s.immediate(|tx| {
+            let run = runs::get(tx, run)?;
+            let mut new = NewTask::work("review", "r.md", "codex-reviewer");
+            new.kind = crate::taskledger::model::TaskKind::Review;
+            new.parent_task_id = Some(parent.clone());
+            Ok(tasks::add(tx, &run, &new, Actor::Orchestrator)?.task_id)
+        })
+        .unwrap()
+    }
+
+    /// The detached finish wait of `worker`: deadline 4 h from now.
+    fn finish_wait(s: &Store, worker: &str) {
+        set_wait(
+            s.conn(),
+            worker,
+            crate::taskledger::finish::detach::FINISH_WAIT,
+            "horch ledger finish runs detached",
+            &[],
+            4 * 3600,
+        )
+        .unwrap();
+    }
+
+    /// Orchestrator rule of T-267: a finish of 3 h whose process lives
+    /// keeps its wait. The agent leads a process group with 1 child.
+    #[cfg(unix)]
+    #[test]
+    fn finish_wait_of_3_h_with_a_live_process_is_not_ended() {
+        use std::os::unix::process::CommandExt;
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(&dir.path().join("l.sqlite3")).unwrap();
+        let (_, worker) = claimed(&mut s);
+        let mut agent = std::process::Command::new("sh")
+            .args(["-c", "sleep 60 & wait"])
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let pid = agent.id();
+        let child_up = (0..100).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            horch_platform::process::group_members(pid).is_ok_and(|m| m.iter().any(|p| *p != pid))
+        });
+        assert!(child_up, "the agent has a child");
+        s.conn()
+            .execute(
+                "UPDATE workers SET agent_pid = ?2, agent_started = ?3 WHERE worker_id = ?1",
+                params![
+                    worker,
+                    pid,
+                    crate::procid::start_time(pid).map(|t| t as i64)
+                ],
+            )
+            .unwrap();
+        finish_wait(&s, &worker);
+        for clock in [3_000, 6_000, 9_000, 1_000 + 3 * 3600] {
+            set_clock(s.conn(), clock);
+            let waits = waiting(s.conn(), &worker).unwrap();
+            assert_eq!(waits.len(), 1, "fleet clock {clock}: {waits:?}");
+            assert_eq!(waits[0].due_at, clock + 3_600);
+        }
+        let _ = std::process::Command::new("kill")
+            .args(["-KILL", &format!("-{pid}")])
+            .status();
+        let _ = agent.wait();
+        assert!(ended(s.conn(), &worker).is_empty());
+    }
+
+    #[test]
+    fn finish_wait_with_open_review_tasks_is_not_ended() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(&dir.path().join("l.sqlite3")).unwrap();
+        let (run, worker) = claimed(&mut s);
+        review_of(&mut s, &run, &worker);
+        finish_wait(&s, &worker);
+        set_clock(s.conn(), 1_000 + 3 * 3600);
+        let waits = waiting(s.conn(), &worker).unwrap();
+        assert_eq!(waits.len(), 1, "{waits:?}");
+        assert_eq!(waits[0].due_at, 1_000 + 4 * 3600);
+    }
+
+    #[test]
+    fn background_wait_whose_process_is_gone_is_ended_at_the_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(&dir.path().join("l.sqlite3")).unwrap();
+        let (_, worker) = claimed(&mut s);
+        // The recorded agent is a process that has ended.
+        let mut gone = std::process::Command::new("true").spawn().unwrap();
+        let pid = gone.id();
+        gone.wait().unwrap();
+        s.conn()
+            .execute(
+                "UPDATE workers SET agent_pid = ?2 WHERE worker_id = ?1",
+                params![worker, pid],
+            )
+            .unwrap();
+        finish_wait(&s, &worker);
+        set_clock(s.conn(), 4_599);
+        assert_eq!(
+            waiting(s.conn(), &worker).unwrap().len(),
+            1,
+            "it holds to its cap"
+        );
+        set_clock(s.conn(), 4_600);
+        assert!(waiting(s.conn(), &worker).unwrap().is_empty());
+        assert_eq!(ended(s.conn(), &worker).len(), 1);
+    }
+
+    /// A finish step that stays `running` after its process died proves
+    /// work. The calendar deadline of the finish wait (3 x the check
+    /// timeout + 1 h) ends it, so it never holds for ever.
+    #[test]
+    fn a_stale_running_step_holds_the_wait_only_to_its_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(&dir.path().join("l.sqlite3")).unwrap();
+        let (_, worker) = claimed(&mut s);
+        let task = get(s.conn(), &worker).unwrap().task_id.unwrap();
+        s.conn()
+            .execute(
+                "INSERT INTO task_steps (task_id, worker_id, seq, name, status)
+                 VALUES (?1, ?2, 1, 'check', 'running')",
+                params![task, worker],
+            )
+            .unwrap();
+        finish_wait(&s, &worker);
+        set_clock(s.conn(), 1_000 + 10 * 3600);
+        assert_eq!(
+            waiting(s.conn(), &worker).unwrap().len(),
+            1,
+            "the step proves work"
+        );
+        s.conn()
+            .execute(
+                "UPDATE worker_waits SET deadline = '2000-01-01T00:00:00Z' WHERE worker_id = ?1",
+                [&worker],
+            )
+            .unwrap();
+        assert!(waiting(s.conn(), &worker).unwrap().is_empty());
+        assert_eq!(
+            ended(s.conn(), &worker),
+            ["deadline_passed: the background wait ended (horch ledger finish runs detached)"]
+        );
     }
 }

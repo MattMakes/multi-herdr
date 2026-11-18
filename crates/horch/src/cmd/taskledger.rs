@@ -2861,6 +2861,7 @@ pub fn render_claim(c: &Claimed) -> String {
         out.push_str(&format!("PRIOR WORK: read {path} first\n"));
     }
     render_ticket(c, &mut out);
+    out.extend(tasks::answered_text(c));
     if let Some(p) = &t.phase {
         out.push_str(&format!("Phase: {p}.\n"));
     }

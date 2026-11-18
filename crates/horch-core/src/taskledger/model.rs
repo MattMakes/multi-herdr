@@ -344,6 +344,9 @@ ledger_enum!(
         // Rung 1 or 2 of the stall ladder rings the doorbell of an
         // attempt; `data_json` holds the fleet clock.
         Doorbell = "doorbell",
+        // A declared wait of a worker ends before its clear: its time limit
+        // or the live row behind it ended; the text holds the cause.
+        WaitEnded = "wait_ended",
     }
 );
 

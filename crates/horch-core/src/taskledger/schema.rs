@@ -1790,6 +1790,7 @@ mod v7_tests {
             "hold_started",
             "hold_ended",
             "doorbell",
+            "wait_ended",
         ];
         assert_eq!(
             (EVENT_KINDS_VERSION, words.as_slice()),

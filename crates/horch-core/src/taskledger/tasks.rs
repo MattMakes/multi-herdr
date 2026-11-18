@@ -1049,6 +1049,56 @@ pub struct Claimed {
     /// The handoff file of the last attempt, when it ended through
     /// `horch ledger handoff` (C4). The claim prints it first.
     pub handoff_path: Option<String>,
+    /// The answered questions of the task, oldest first. The claim prints
+    /// them after the ticket snapshot.
+    pub answered: Vec<AnsweredQuestion>,
+}
+
+/// 1 answered question of a task, as data to print.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AnsweredQuestion {
+    pub id: String,
+    pub question: String,
+    pub answer: String,
+}
+
+/// The answered questions of task `task_id`, with no control characters.
+fn answered_questions(conn: &Connection, task_id: &str) -> Result<Vec<AnsweredQuestion>> {
+    use crate::fleetd::ideas::domain::questions::printable;
+    let text = |t: Option<String>| {
+        t.as_deref()
+            .map_or_else(|| "(no text recorded)".into(), printable)
+    };
+    Ok(
+        crate::fleetd::ideas::application::questions::answered_of_task(conn, task_id)?
+            .into_iter()
+            .map(|a| AnsweredQuestion {
+                id: a.id,
+                question: text(a.question),
+                answer: text(a.answer),
+            })
+            .collect(),
+    )
+}
+
+/// The text of the answered questions of a claim, to print after the
+/// ticket snapshot. `None` when the task has none.
+pub fn answered_text(c: &Claimed) -> Option<String> {
+    if c.answered.is_empty() {
+        return None;
+    }
+    let mut out = String::from(
+        "Answered questions of this task. Go on from the committed work in the worktree:\n",
+    );
+    for a in &c.answered {
+        out.push_str(&format!(
+            "Question {}:\n-----\n{}\n-----\nAnswer:\n-----\n{}\n-----\n",
+            a.id,
+            a.question.trim_end(),
+            a.answer.trim_end()
+        ));
+    }
+    Some(out)
 }
 
 /// The result of `horch ledger claim`.
@@ -1361,6 +1411,7 @@ fn claimed(conn: &Connection, w: &Worker, task: Task) -> Result<Claimed> {
         worktree_branch: wt.map(|(_, b, _)| b),
         ticket_snapshot: task.ticket_snapshot.clone(),
         handoff_path,
+        answered: answered_questions(conn, &task.task_id)?,
         task,
     })
 }
@@ -1712,6 +1763,55 @@ pub fn escalate(conn: &Connection, task_id: &str) -> Result<()> {
     hold_in(conn, &task)
 }
 
+/// The `data_json` of each event of kind `kind` about task `task_id`,
+/// oldest first.
+pub fn task_facts(
+    conn: &Connection,
+    task_id: &str,
+    kind: EventKind,
+) -> Result<Vec<serde_json::Value>> {
+    let mut stmt = conn.prepare(
+        "SELECT data_json FROM events WHERE task_id = ?1 AND kind = ?2 AND entity = ?3
+           AND data_json IS NOT NULL
+         ORDER BY event_id",
+    )?;
+    let rows = stmt.query_map(
+        params![task_id, kind.as_str(), Entity::Task.as_str()],
+        |r| r.get::<_, String>(0),
+    )?;
+    rows.map(|raw| Ok(serde_json::from_str(&raw?)?)).collect()
+}
+
+/// The answer to question `question_id` frees task `task_id`: a
+/// `blocked_on_user` task moves to `ready`, cause `question_answered`, in
+/// the open transaction of `conn`. Its worktree stays, so the next claim
+/// goes on from the committed work. Whether the task moved.
+pub fn question_answered(conn: &Connection, task_id: &str, question_id: &str) -> Result<bool> {
+    if get(conn, task_id)?.status != TaskStatus::BlockedOnUser.as_str() {
+        return Ok(false);
+    }
+    let text = format!("question_answered: {question_id}");
+    let cause = crate::fleetd::fleet_runtime::application::ledger::Cause {
+        actor: Actor::Horch,
+        text: &text,
+    };
+    crate::fleetd::fleet_runtime::application::ledger::transition(
+        conn,
+        None,
+        Entity::Task,
+        task_id,
+        TaskStatus::Ready.as_str(),
+        cause,
+        &needs_you::NeedsYouList,
+    )?;
+    conn.execute(
+        "UPDATE tasks SET current_worker_id = NULL, due_at = NULL, updated_at = ?2
+         WHERE task_id = ?1",
+        params![task_id, util::now()],
+    )?;
+    Ok(true)
+}
+
 /// Queue `task` again, first in line, not claimed before `not_before`.
 fn retry_in(
     conn: &Connection,
@@ -2053,6 +2153,102 @@ mod tests {
             ClaimOutcome::Claimed(c) => Some(c.task.task_id),
             ClaimOutcome::NoTask { .. } => None,
         }
+    }
+
+    /// A task of `run` that a first worker claimed, asked 1 question about
+    /// and left: the task is `blocked_on_user` with 1 open question.
+    fn blocked_task(store: &mut Store, run: &Run) -> (String, String) {
+        use crate::fleetd::ideas::application::questions::{ask, Ask};
+        let new = NewTask::work("t", "t.md", "dev");
+        let task = store
+            .immediate(|tx| add(tx, run, &new, Actor::Orchestrator))
+            .unwrap()
+            .task_id;
+        let first = spawn_for(store, run, "dev", None);
+        assert_eq!(claim_id(store, &first), Some(task.clone()));
+        let a = Ask {
+            task_id: &task,
+            attempt_id: "A1",
+            run_id: &run.run_id,
+            owner: "orchestrator",
+            mail_id: "m1",
+            text: "QUESTION: which file?\u{1b}[2J",
+            asked_at: "2026-11-17T00:00:00Z",
+        };
+        ask(store.conn(), &a, FleetSeconds(0), 900).unwrap();
+        store
+            .conn()
+            .execute(
+                "UPDATE tasks SET status = 'blocked_on_user' WHERE task_id = ?1",
+                [&task],
+            )
+            .unwrap();
+        store
+            .conn()
+            .execute(
+                "UPDATE workers SET status = 'incomplete' WHERE worker_id = ?1",
+                [&first],
+            )
+            .unwrap();
+        // Rung 5 ended the attempt with the outcome `asked`.
+        store
+            .conn()
+            .execute(
+                "UPDATE attempts SET state = 'ended', outcome = 'asked' WHERE task_id = ?1",
+                [&task],
+            )
+            .unwrap();
+        (task, first)
+    }
+
+    #[test]
+    fn answer_moves_a_blocked_on_user_task_to_ready() {
+        use crate::fleetd::ideas::application::questions::answer_mail;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, run) = store_with_run(dir.path());
+        let (task, _) = blocked_task(&mut store, &run);
+        answer_mail(store.conn(), "m1", "src/a.rs").unwrap();
+        let t = get(store.conn(), &task).unwrap();
+        assert_eq!(t.status, TaskStatus::Ready.as_str());
+        assert_eq!(t.current_worker_id, None);
+        let cause: String = store
+            .conn()
+            .query_row(
+                "SELECT cause FROM events WHERE kind = 'transition' AND entity = 'task'
+                 AND entity_id = ?1 ORDER BY event_id DESC LIMIT 1",
+                [&task],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(cause, "question_answered: A1/Q1");
+    }
+
+    #[test]
+    fn claim_of_an_answered_task_prints_the_question_and_the_answer() {
+        use crate::fleetd::ideas::application::questions::answer_mail;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, run) = store_with_run(dir.path());
+        let (task, _) = blocked_task(&mut store, &run);
+        answer_mail(store.conn(), "m1", "src/a.rs\u{7}").unwrap();
+        let next = spawn_for(&mut store, &run, "dev", None);
+        let ClaimOutcome::Claimed(c) = store.immediate(|tx| claim(tx, &next)).unwrap() else {
+            panic!("no claim");
+        };
+        assert_eq!(c.task.task_id, task);
+        assert_eq!(
+            c.answered,
+            [AnsweredQuestion {
+                id: "A1/Q1".into(),
+                question: "QUESTION: which file? [2J".into(),
+                answer: "src/a.rs ".into(),
+            }]
+        );
+        let text = answered_text(&c).unwrap();
+        assert!(
+            text.contains("Question A1/Q1:\n-----\nQUESTION: which file? [2J\n-----\n"),
+            "{text}"
+        );
+        assert!(text.contains("Answer:\n-----\nsrc/a.rs\n-----\n"), "{text}");
     }
 
     /// Review 31 I-08: an older startable task of `codex-reviewer` and then

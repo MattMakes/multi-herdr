@@ -75,10 +75,27 @@ pub fn tell_answer(ctx: &RuntimeContext, role: &str, question: &str, text: &str)
     if sender.as_deref().is_some_and(|s| s != "orchestrator") {
         bail!("only the orchestrator answers a question with --answers; send a QUESTION: or NOTE: line instead");
     }
-    match queue_as(ctx, sender, role, text, false, Some(question))? {
-        Some(outgoing) => outgoing.push().map(|_| ()),
-        None => Ok(()),
+    let Some(outgoing) = queue_as(ctx, sender, role, text, false, Some(question))? else {
+        return Ok(());
+    };
+    if let Some(id) = &outgoing.answers {
+        if let Err(error) = record_answer(ctx, id, text) {
+            eprintln!("horch tell: the ledger did not record the answer ({error:#}); the answer still goes");
+        }
     }
+    outgoing.push().map(|_| ())
+}
+
+/// Record `text` as the answer of the `questions` row of mail question
+/// `id`, before the push: a worker that exited with its question gets the
+/// answer at the next claim of its task.
+fn record_answer(ctx: &RuntimeContext, id: &str, text: &str) -> Result<()> {
+    if !ctx.paths.ledger_db.exists() {
+        return Ok(());
+    }
+    let store = horch_core::taskledger::open(ctx)?;
+    horch_core::fleetd::ideas::application::questions::answer_mail(store.conn(), id, text)?;
+    Ok(())
 }
 
 fn tell_outcome(ctx: &RuntimeContext, role: &str, text: &str) -> Result<ReportStatus> {
