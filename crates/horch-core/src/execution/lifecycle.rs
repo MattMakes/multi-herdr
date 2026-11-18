@@ -759,10 +759,56 @@ impl<'a> PaneWorker<'a> {
         }
     }
 
+    /// Whether the worker of this wrapper has an attempt (see
+    /// [`worker_has_attempt`]).
+    fn has_attempt(&self) -> bool {
+        self.ledger
+            .as_ref()
+            .is_some_and(|(db, id)| worker_has_attempt(db, id, &self.ctx.paths.fleet_root))
+    }
+
+    /// Interim, removed by fleetd-p5 ticket 42 (W6): settle the worker row
+    /// of a worker with no attempt. The text to add to the orchestrator's
+    /// line when the task is queued again or held.
+    fn ledger_exit(&self, brief: &Brief, code: Option<i32>) -> Option<String> {
+        use crate::taskledger::supervisor::Ended;
+        let (db, id) = self.ledger.as_ref()?;
+        match no_attempt::settle(db, id, code) {
+            Ok(Ended::Requeued { task, persona }) => Some(format!(
+                " The task ledger queued {task} again. Spawn {persona} with: \
+                 horch spawn {persona} --replaces {id}"
+            )),
+            Ok(Ended::Failed { task }) => Some(format!(
+                " QUESTION: replan {task}: it used up its attempts and failed. Requeue it 1 \
+                 time (horch ledger requeue {task} \"<reason>\"), or cancel it (horch ledger \
+                 cancel {task} \"<reason>\"). Spawn no replacement."
+            )),
+            Ok(Ended::Escalated { task }) => Some(format!(
+                " QUESTION: {task} used up its attempts and is held. Ask the operator: \
+                 requeue it (horch ledger requeue {task} \"<reason>\"), change the ticket, \
+                 or cancel it. Spawn no replacement."
+            )),
+            Ok(_) => None,
+            Err(e) => {
+                eprintln!(
+                    "horch worker[{}]: the task ledger did not record the exit: {e:#}",
+                    brief.role
+                );
+                None
+            }
+        }
+    }
+
     /// Tell the orchestrator that the agent exited early.
-    fn tell_early_exit(&self, brief: &Brief, code: Option<i32>) -> Result<()> {
+    fn tell_early_exit(
+        &self,
+        brief: &Brief,
+        code: Option<i32>,
+        requeued: Option<String>,
+    ) -> Result<()> {
         let env = child_env(self.mailbox()?, brief, self.path.clone());
-        let line = early_exit_line(brief, code);
+        let mut line = early_exit_line(brief, code);
+        line.extend(requeued);
         warn_worker(
             &brief.role,
             "could not tell the orchestrator about the exit",
@@ -810,22 +856,50 @@ impl<'a> PaneWorker<'a> {
     /// it runs.
     fn start_checkins(&self, brief: &Brief, facts: Arc<AgentFacts>) -> Option<Checkins> {
         let (db, id) = self.ledger.clone()?;
+        let fleet_root = self.ctx.paths.fleet_root.clone();
         let observed = facts.clone();
-        launch::observe_agent_start(move |pid| observed.agent_started(pid));
-        let every = crate::taskledger::supervisor::interval(&db, &id, &self.ctx.paths.fleet_root);
-        let lookup = session_lookup(
-            self.ctx.clone(),
-            brief.record_id.clone(),
-            brief.agent.clone(),
+        let (obs_db, obs_id, obs_root, role) = (
+            db.clone(),
+            id.clone(),
+            fleet_root.clone(),
+            brief.role.clone(),
         );
+        launch::observe_agent_start(move |pid| {
+            observed.agent_started(pid);
+            // Interim, removed by fleetd-p5 ticket 42 (W7): the agent PID
+            // of a worker with no attempt, for horch ledger stop.
+            if !worker_has_attempt(&obs_db, &obs_id, &obs_root) {
+                warn_worker(
+                    &role,
+                    "the task ledger did not record the agent PID",
+                    no_attempt::agent_started(&obs_db, &obs_id, pid),
+                );
+            }
+        });
+        let every = crate::taskledger::supervisor::interval(&db, &id, &fleet_root);
+        let lookup = || {
+            session_lookup(
+                self.ctx.clone(),
+                brief.record_id.clone(),
+                brief.agent.clone(),
+            )
+        };
+        // Interim, removed by fleetd-p5 ticket 42 (W8): the checkin and the
+        // session of a worker with no attempt.
+        let (beat_db, beat_id, beat_lookup) = (db.clone(), id.clone(), lookup());
+        let mut session_known = false;
+        let no_attempt_beat: crate::taskledger::supervisor::NoAttemptBeat = Box::new(move || {
+            no_attempt::checkin(&beat_db, &beat_id, &beat_lookup, &mut session_known)
+        });
         let writer = crate::taskledger::supervisor::HeartbeatWriter::new(
             db,
             id,
-            self.ctx.paths.fleet_root.clone(),
+            fleet_root,
             facts,
             brief.agent.clone(),
-            lookup,
-        );
+            lookup(),
+        )
+        .with_no_attempt_beat(no_attempt_beat);
         Some(crate::taskledger::supervisor::start_heartbeats(
             writer, every,
         ))
@@ -839,6 +913,10 @@ impl<'a> PaneWorker<'a> {
     ) -> Result<Option<i32>> {
         if let Some(facts) = &self.facts {
             facts.agent_started(std::process::id());
+        }
+        // Interim, removed by fleetd-p5 ticket 42 (W7).
+        if let Some((db, id)) = self.ledger.as_ref().filter(|_| !self.has_attempt()) {
+            let _ = no_attempt::agent_started(db, id, std::process::id());
         }
         let out = run_smoke(env).map(|()| Some(0));
         drop(checkins);
@@ -998,11 +1076,20 @@ impl WorkerSteps for PaneWorker<'_> {
         Ok(())
     }
 
-    /// From Phase 5 the wrapper writes no ledger row (RR-5): fleetd has the
-    /// wrapper PID from its launch, the role and the record from the spawn
-    /// request, and the running state from the first heartbeat.
-    fn set_running(&mut self, _brief: &Brief) -> Result<()> {
-        Ok(())
+    /// From Phase 5 the wrapper of an attempt writes no ledger row (RR-5):
+    /// fleetd has the wrapper PID from its launch, the role and the record
+    /// from the spawn request, and the running state from the first
+    /// heartbeat.
+    fn set_running(&mut self, brief: &Brief) -> Result<()> {
+        if self.has_attempt() {
+            return Ok(());
+        }
+        // Interim, removed by fleetd-p5 ticket 42 (W7, W6): the start row
+        // and the running state of a worker with no attempt.
+        if let Some((db, id)) = &self.ledger {
+            no_attempt::started(db, id, &brief.record_id, &brief.role)?;
+        }
+        self.store()?.mark_running(&brief.record_id)
     }
 
     fn launch(&mut self, brief: &Brief) -> Result<Option<i32>> {
@@ -1015,12 +1102,26 @@ impl WorkerSteps for PaneWorker<'_> {
     /// tells the orchestrator. Only after an agent ran: a startup failure is
     /// `horch spawn`'s to report. A failed tell is printed.
     fn agent_exited(&mut self, brief: &Brief, code: Option<i32>) -> Result<()> {
-        self.write_exit(brief, code);
-        // A record that `horch done` ended told the orchestrator already.
-        let record = self.store()?.get(&brief.record_id)?;
-        let live = !record.is_orchestrator() && record.execution_status().is_live();
-        if live && self.launched && brief.report_to == ReportTarget::Orchestrator {
-            self.tell_early_exit(brief, code)?;
+        if self.has_attempt() {
+            self.write_exit(brief, code);
+            // A record that `horch done` ended told the orchestrator already.
+            let record = self.store()?.get(&brief.record_id)?;
+            let live = !record.is_orchestrator() && record.execution_status().is_live();
+            if live && self.launched && brief.report_to == ReportTarget::Orchestrator {
+                self.tell_early_exit(brief, code, None)?;
+            }
+            return Ok(());
+        }
+        // Interim, removed by fleetd-p5 ticket 42 (W6): the exit of a worker
+        // with no attempt, in its worker row and its session record.
+        let requeued = self.ledger_exit(brief, code);
+        let store = self.store()?;
+        let ended = store.record_exit(&brief.record_id, code)?;
+        if ended && self.launched {
+            record_early_exit(&store, &brief.record_id, code)?;
+            if brief.report_to == ReportTarget::Orchestrator {
+                self.tell_early_exit(brief, code, requeued)?;
+            }
         }
         Ok(())
     }
@@ -1102,6 +1203,81 @@ fn start_report_server(
     let exec: Box<report::Executor> =
         Box::new(move |request: &report::Request| run_horch_quiet(&env, &report_args(request)));
     report::Server::start(path, report_target(brief), exec).map(Some)
+}
+
+/// Whether `worker_id` has an attempt in the task ledger `db`, read
+/// read-only. An attempt that cannot be read counts as none.
+fn worker_has_attempt(db: &Path, worker_id: &str, fleet_root: &Path) -> bool {
+    matches!(
+        crate::taskledger::supervisor::AttemptFiles::of_worker(db, worker_id, fleet_root),
+        Ok(Some(_))
+    )
+}
+
+/// Interim, removed by fleetd-p5 ticket 42: the ledger writes of a worker
+/// that has no attempt, so no attempt folder for its files. A worker with
+/// an attempt writes files only (RR-5). W6 is the exit, W7 the start row
+/// and the agent PID, W8 the checkin and the session.
+mod no_attempt {
+    use std::path::Path;
+
+    use anyhow::Result;
+    use rusqlite::params;
+
+    use crate::taskledger::supervisor::{self, Ended, SessionLookup};
+    use crate::taskledger::{workers, Store};
+
+    /// W7: the record, the PID and start time of this process, and the role.
+    pub(super) fn started(db: &Path, worker_id: &str, record_id: &str, role: &str) -> Result<()> {
+        let pid = std::process::id();
+        Store::open(db)?.immediate(|tx| {
+            workers::set_record(tx, worker_id, record_id)?;
+            workers::supervisor_started(tx, worker_id, pid, crate::procid::start_time(pid))?;
+            tx.execute(
+                "UPDATE workers SET role = COALESCE(role, ?2) WHERE worker_id = ?1",
+                params![worker_id, role],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// W7: the PID and start time of the agent.
+    pub(super) fn agent_started(db: &Path, worker_id: &str, pid: u32) -> Result<()> {
+        Store::open(db)?.immediate(|tx| {
+            workers::agent_started(tx, worker_id, pid, crate::procid::start_time(pid))
+        })
+    }
+
+    /// W8: `last_checkin_at = now`, and the session id and transcript once
+    /// `lookup` knows them.
+    pub(super) fn checkin(
+        db: &Path,
+        worker_id: &str,
+        lookup: &SessionLookup,
+        session_known: &mut bool,
+    ) -> Result<()> {
+        let s = Store::open(db)?;
+        workers::checkin(s.conn(), worker_id)?;
+        if !*session_known {
+            let (session, transcript) = lookup();
+            if session.is_some() || transcript.is_some() {
+                workers::set_session(
+                    s.conn(),
+                    worker_id,
+                    session.as_deref(),
+                    transcript.as_deref(),
+                )?;
+                let w = workers::get(s.conn(), worker_id)?;
+                *session_known = w.session_id.is_some() && w.transcript_path.is_some();
+            }
+        }
+        Ok(())
+    }
+
+    /// W6: settle the worker row after the agent exited with `code`.
+    pub(super) fn settle(db: &Path, worker_id: &str, code: Option<i32>) -> Result<Ended> {
+        Store::open(db)?.immediate(|tx| supervisor::settle(tx, worker_id, code))
+    }
 }
 
 /// Read the session id the launch recorded in the session ledger, and find
@@ -2533,10 +2709,10 @@ mod tests {
 
         /// N-11: a project dir that is missing fails `enter_context` after
         /// the brief's `state_dir` and `project_dir` apply, so the startup
-        /// failure reaches the spawner. From Phase 5 the wrapper writes no
-        /// ledger row (RR-5): the failure reaches the spawner through the
-        /// startup error file of the record, and the record stays as the
-        /// spawner wrote it.
+        /// failure reaches the spawner, and the exit reaches the record of
+        /// this worker with no attempt (interim W6). From Phase 5 the
+        /// wrapper writes no startup failure row (RR-5): the failure reaches
+        /// the spawner through the startup error file of the record.
         #[test]
         fn pane_worker_records_a_startup_failure_in_the_briefs_ledger() {
             let tmp = tempfile::tempdir().unwrap();
@@ -2565,9 +2741,6 @@ mod tests {
             brief.project_dir = project_text.clone();
             brief.state_dir = Some(state.to_string_lossy().into_owned());
 
-            let before = ExecutionStore::for_project(&state, &project_text)
-                .get("r1")
-                .unwrap();
             let since = SystemTime::now();
             let e = worker.enter_context(&brief).unwrap_err();
             let error = format!("{e:#}");
@@ -2583,11 +2756,178 @@ mod tests {
             let r = ExecutionStore::for_project(&state, &project_text)
                 .get("r1")
                 .unwrap();
-            assert_eq!(
-                serde_json::to_value(&r).unwrap(),
-                serde_json::to_value(&before).unwrap(),
-                "the wrapper writes no session record"
+            assert!(
+                r.history.iter().all(|h| h.event != EVENT_STARTUP_FAILED),
+                "the wrapper writes no startup failure row: {:?}",
+                r.history
             );
+            assert!(
+                !r.execution_status().is_live(),
+                "{:?}",
+                r.execution_status()
+            );
+        }
+
+        /// A ledger with 1 worker of task T-1, a session record `r1`, and a
+        /// brief of that worker. With `attempt`, the worker has a live
+        /// attempt.
+        struct LedgerWorld {
+            tmp: tempfile::TempDir,
+            db: PathBuf,
+            worker: String,
+            task: String,
+            state: PathBuf,
+            brief: Brief,
+        }
+
+        impl LedgerWorld {
+            fn new(attempt: bool) -> LedgerWorld {
+                use crate::taskledger::model::Actor;
+                use crate::taskledger::runs::{self, NewRun};
+                use crate::taskledger::tasks::{self, NewTask};
+                use crate::taskledger::workers::{self, NewWorker};
+                let tmp = tempfile::tempdir().unwrap();
+                let top = tmp.path().canonicalize().unwrap();
+                let project = top.join("repo");
+                std::fs::create_dir_all(&project).unwrap();
+                let project_text = project.to_string_lossy().into_owned();
+                let state = top.join("state");
+                let db = top.join("ledger.sqlite3");
+                let mut store = crate::taskledger::Store::open(&db).unwrap();
+                let (worker, task) = store
+                    .immediate(|tx| {
+                        let run = runs::create(
+                            tx,
+                            &project,
+                            &NewRun {
+                                slug: "s".into(),
+                                ..Default::default()
+                            },
+                        )?;
+                        let task = tasks::add(
+                            tx,
+                            &run,
+                            &NewTask::work("a", "tickets/a.md", "opus"),
+                            Actor::Orchestrator,
+                        )?;
+                        let worker = workers::insert(
+                            tx,
+                            &NewWorker {
+                                run_id: run.run_id.clone(),
+                                persona: "opus".into(),
+                                role: Some("sonnet-1".into()),
+                                ..Default::default()
+                            },
+                        )?;
+                        if attempt {
+                            tx.execute(
+                                "INSERT INTO attempts (id, task_id, worker_id, state)
+                                 VALUES (?1, ?2, ?3, 'live')",
+                                [&format!("{}/A1", task.task_id), &task.task_id, &worker],
+                            )?;
+                        }
+                        Ok((worker, task.task_id))
+                    })
+                    .unwrap();
+                crate::execution::records::SessionLedger::for_project(&state, &project_text)
+                    .add(crate::execution::records::NewRecord {
+                        record_id: "r1",
+                        agent: "claude",
+                        tier: "sonnet",
+                        model: "sonnet",
+                        role: "sonnet-1",
+                        session_id: None,
+                        task: "t",
+                        phase: None,
+                    })
+                    .unwrap();
+                let mut brief = Steps::brief();
+                brief.project_dir = project_text;
+                brief.state_dir = Some(state.to_string_lossy().into_owned());
+                brief.ledger_db = Some(db.to_string_lossy().into_owned());
+                brief.worker_id = Some(worker.clone());
+                brief.fleet_root = Some(top.join("fleet").to_string_lossy().into_owned());
+                LedgerWorld {
+                    tmp,
+                    db,
+                    worker,
+                    task,
+                    state,
+                    brief,
+                }
+            }
+
+            /// The worker row columns of the interim writes W6 and W7.
+            fn worker_row(&self) -> serde_json::Value {
+                let store = crate::taskledger::Store::open_read_only(&self.db).unwrap();
+                store
+                    .conn()
+                    .query_row(
+                        "SELECT legacy_record_id, supervisor_pid, agent_pid, last_checkin_at,
+                                status, exit_code FROM workers WHERE worker_id = ?1",
+                        [&self.worker],
+                        |r| {
+                            Ok(serde_json::json!([
+                                r.get::<_, Option<String>>(0)?,
+                                r.get::<_, Option<i64>>(1)?,
+                                r.get::<_, Option<i64>>(2)?,
+                                r.get::<_, Option<String>>(3)?,
+                                r.get::<_, String>(4)?,
+                                r.get::<_, Option<i64>>(5)?,
+                            ]))
+                        },
+                    )
+                    .unwrap()
+            }
+
+            fn record(&self) -> serde_json::Value {
+                let r = ExecutionStore::for_project(&self.state, &self.brief.project_dir)
+                    .get("r1")
+                    .unwrap();
+                serde_json::to_value(r).unwrap()
+            }
+
+            /// Run the start and the exit steps of a `PaneWorker` for the
+            /// brief.
+            fn start_and_exit(&self) {
+                let mut ctx =
+                    RuntimeContext::from_env(&MapEnv::new(self.tmp.path().join("home"))).unwrap();
+                let enter_dir = |_: &Path| -> Result<()> { Ok(()) };
+                let mut worker = PaneWorker::new(&mut ctx, "sonnet-1", &enter_dir);
+                worker.enter_context(&self.brief).unwrap();
+                worker.set_running(&self.brief).unwrap();
+                worker.agent_exited(&self.brief, Some(1)).unwrap();
+            }
+        }
+
+        /// The interim writes W6 and W7 are only for a worker with no
+        /// attempt: a worker with an attempt writes `exit.json` and no
+        /// ledger row.
+        #[test]
+        fn a_worker_with_an_attempt_uses_no_interim_ledger_write() {
+            let w = LedgerWorld::new(true);
+            let (row, record) = (w.worker_row(), w.record());
+            w.start_and_exit();
+            assert_eq!(w.worker_row(), row, "no worker column changes");
+            assert_eq!(w.record(), record, "the session record does not change");
+            let exit = Path::new(w.brief.fleet_root.as_deref().unwrap())
+                .join("tasks")
+                .join(&w.task)
+                .join("attempts/A1")
+                .join(crate::taskledger::supervisor::EXIT_JSON);
+            assert!(exit.is_file(), "{}", exit.display());
+
+            // The same steps for a worker with no attempt use them.
+            let w = LedgerWorld::new(false);
+            w.start_and_exit();
+            let row = w.worker_row();
+            assert_eq!(row[0], "r1", "{row}");
+            assert!(row[1].is_i64(), "the supervisor PID: {row}");
+            assert_eq!(row[5], 1, "the exit code: {row}");
+            assert_ne!(w.record()["exit_code"], serde_json::Value::Null);
+            assert!(!Path::new(w.brief.fleet_root.as_deref().unwrap())
+                .join("tasks")
+                .exists());
         }
 
         /// The checkin period comes from `fleet.toml` of the fleet root, so

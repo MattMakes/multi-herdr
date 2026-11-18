@@ -415,7 +415,12 @@ pub struct HeartbeatWriter {
     harness: String,
     lookup: SessionLookup,
     session_written: bool,
+    /// The beat of a worker with no attempt, from the caller.
+    no_attempt: Option<NoAttemptBeat>,
 }
+
+/// The beat of a worker that has no attempt, so no attempt folder.
+pub type NoAttemptBeat = Box<dyn FnMut() -> Result<()> + Send>;
 
 impl HeartbeatWriter {
     pub fn new(
@@ -435,16 +440,24 @@ impl HeartbeatWriter {
             harness,
             lookup,
             session_written: false,
+            no_attempt: None,
         }
     }
 
-    /// 1 beat. A worker with no attempt yet writes nothing.
+    /// Run `beat` on each beat while the worker has no attempt.
+    pub fn with_no_attempt_beat(mut self, beat: NoAttemptBeat) -> HeartbeatWriter {
+        self.no_attempt = Some(beat);
+        self
+    }
+
+    /// 1 beat. A worker with no attempt yet writes no file: it runs the
+    /// beat of [`HeartbeatWriter::with_no_attempt_beat`], if any.
     pub fn beat(&mut self) -> Result<()> {
         let files = match &self.files {
             Some(files) => files,
             None => match AttemptFiles::of_worker(&self.db, &self.worker_id, &self.fleet_root)? {
                 Some(files) => self.files.insert(files),
-                None => return Ok(()),
+                None => return self.no_attempt.as_mut().map_or(Ok(()), |beat| beat()),
             },
         };
         files.write_heartbeat(&self.facts)?;
