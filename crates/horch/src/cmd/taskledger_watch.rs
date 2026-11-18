@@ -299,7 +299,6 @@ mod tests {
     fn once_fleet(dir: &Path) -> (horch_core::runtime::RuntimeContext, runs::Run, String) {
         use horch_core::runtime::{MapEnv, RuntimeContext};
         use horch_core::taskledger::model::Actor;
-        use horch_core::taskledger::runs::Thresholds;
         use horch_core::taskledger::tasks::{self, NewTask};
 
         let db = dir.join("ledger.sqlite3");
@@ -312,10 +311,6 @@ mod tests {
         let mut store = Store::open(&db).unwrap();
         let new_run = NewRun {
             slug: "r1".into(),
-            thresholds: Thresholds {
-                stall_rounds: Some(1000),
-                ..Default::default()
-            },
             ..Default::default()
         };
         let (run, worker) = store
@@ -334,8 +329,8 @@ mod tests {
                 };
                 let w = workers::insert(tx, &new_worker)?;
                 // This test is the live agent of the worker. A live attempt
-                // owns it, and 1000 stall rounds keep a check from reaping
-                // it, so no pass stops it.
+                // owns it, and the fleet clock of 1 pass stays within the
+                // stall_after_s of the claim, so no pass stops it.
                 let me = std::process::id();
                 let started = horch_core::procid::start_time(me);
                 workers::supervisor_started(tx, &w, me, started)?;

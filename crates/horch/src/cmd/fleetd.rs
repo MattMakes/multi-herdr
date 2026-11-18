@@ -46,13 +46,14 @@ use horch_core::fleetd::fleet_runtime::adapters::scans::FolderItem;
 use horch_core::fleetd::fleet_runtime::adapters::watchdog_duties::{HerdrObserver, WatchdogDuties};
 use horch_core::fleetd::fleet_runtime::application::holds;
 use horch_core::fleetd::fleet_runtime::application::pass::{
-    Outside, Pass, PassError, Ports, Settings,
+    Outside, Pass, PassError, PoolFacts, Ports, Settings,
 };
 use horch_core::fleetd::fleet_runtime::domain::config::HANG_LIMIT_S;
 use horch_core::fleetd::fleet_runtime::domain::health::{Finding, Hold};
 use horch_core::fleetd::fleet_runtime::domain::heartbeat::{is_hung, is_older, Exe, Heartbeat};
 use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
 use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
+use horch_core::fleetd::task_execution::application::quota::Restart;
 use horch_core::fleetd::task_execution::domain::task::{AttemptRow, InPane};
 use horch_core::fleetd::worker_profiles::adapters::launcher::Launcher;
 use horch_core::fleetd::worker_profiles::application::ports::{EnvRule, LaunchSpec, ProcessHost};
@@ -64,6 +65,9 @@ use horch_core::taskledger::model::RunStatus;
 use horch_core::taskledger::orchestrator;
 use horch_core::taskledger::sql_words::list;
 use horch_core::taskledger::store::{default_path, BUSY_TIMEOUT};
+use horch_core::messaging::delivery::{self, TypedLine};
+use horch_core::taskledger::watchdog::{Observation, Observer};
+use horch_core::taskledger::workers::Worker;
 use horch_core::taskledger::{watchdog, Store};
 use horch_core::workspace::herdr::Herdr;
 use horch_platform::lock::FleetdLock;
@@ -628,6 +632,7 @@ fn with_pass<T>(
     let outside = Live {
         ctx,
         herdr: herdr(),
+        observer: HerdrObserver { herdr: herdr() },
     };
     let observer = HerdrObserver { herdr: herdr() };
     let workspaces = herdr();
@@ -778,6 +783,8 @@ fn run_loop(
 struct Live<'a> {
     ctx: &'a RuntimeContext,
     herdr: Herdr,
+    /// herdr and the transcript of a live attempt.
+    observer: HerdrObserver,
 }
 
 impl Outside for Live<'_> {
@@ -890,6 +897,32 @@ impl Outside for Live<'_> {
             "attempt {} has no launch: Phase 1 launches no task attempt",
             attempt.id
         )
+    }
+
+    fn observe(&self, w: &Worker) -> Option<Observation> {
+        Some(self.observer.observe(w))
+    }
+
+    /// The roster and the pool readings of the state folder. The pass
+    /// starts no probe: a reading that is missing or old stays as it is
+    /// (`horch quota` and the spawn gate refresh it).
+    fn pools(&self) -> Option<PoolFacts> {
+        let ctx = self.ctx;
+        let root = &ctx.paths.state_root;
+        let roster = super::load_roster_unwarned(ctx, None).ok()?;
+        let policy = super::quotacmd::load_policy(ctx, root).ok()?;
+        let env = super::quotacmd::quota_env(ctx);
+        let now = horch_core::clock::now();
+        let quota = horch_core::routing::snapshot::obtain(root, now, &policy, false, &env).ok()?;
+        Some(PoolFacts { roster, quota })
+    }
+
+    fn doorbell(&self, pane: &str) -> Result<()> {
+        delivery::send_line(&self.herdr, pane, TypedLine::Doorbell)
+    }
+
+    fn restart_spec(&self, r: &Restart) -> Result<LaunchSpec> {
+        super::recipes::restart_spec(self.ctx, r)
     }
 }
 
