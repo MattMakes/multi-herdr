@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::Result;
+use horch_core::fleetd::fleet_runtime::adapters::jobs_store;
 use horch_core::fleetd::fleet_runtime::application::jobs::JobCtx;
 use horch_core::fleetd::fleet_runtime::application::ledger::Cause;
 use horch_core::fleetd::fleet_runtime::domain::clock::FleetSeconds;
@@ -31,6 +32,10 @@ use horch_core::fleetd::integration::application::ports::{
     BranchTip, Candidate, IntegrationGitGateway, Member, RefMove,
 };
 use horch_core::fleetd::worktree_custody::adapters::git::CliWorktreeGit;
+use horch_core::fleetd::worktree_custody::application::create::{self, Observed};
+use horch_core::fleetd::worktree_custody::application::gate_tree::{
+    self, GateTree, GateTreeRequest,
+};
 use horch_core::taskledger::model::Actor;
 use horch_core::taskledger::runs::{self, NewRun, Run};
 use horch_core::taskledger::tasks::{self, NewTask};
@@ -81,7 +86,16 @@ fn git(dir: &Path, args: &[&str]) -> String {
 /// A repository with `main` and the run branch at the same commit, a temp
 /// ledger with the fleet clock at 0, the run and its feature `F-0001` in
 /// `open`.
+/// [`bare_world`] with the gate tree of [`FEATURE`] made, so a full gate
+/// can run.
 fn world() -> World {
+    let w = bare_world();
+    w.gate_tree();
+    w
+}
+
+/// A world whose feature has no gate tree yet.
+fn bare_world() -> World {
     let temp = tempfile::tempdir().unwrap();
     let dir = temp.path().to_path_buf();
     let repo = dir.join("repo");
@@ -159,6 +173,67 @@ impl World {
 
     fn follow(&self) {
         self.follow_with(&self.git);
+    }
+
+    /// The repository as the run names it: fleetd reads this path.
+    fn project_root(&self) -> PathBuf {
+        PathBuf::from(&self.run.project_root)
+    }
+
+    /// The gate tree of [`FEATURE`]: its reserved row, then its made
+    /// folder.
+    fn gate_tree(&self) {
+        let job = self.reserve_gate_tree();
+        self.make_gate_tree(job);
+    }
+
+    /// The `worktree_add` run of the reserved gate tree of [`FEATURE`].
+    fn reserve_gate_tree(&self) -> i64 {
+        let tip = self.tip(RUN_BRANCH);
+        let repo = self.project_root();
+        let req = GateTreeRequest {
+            feature_id: FEATURE,
+            run_id: &self.run.run_id,
+            repo: &repo,
+            base: RUN_BRANCH,
+            tip: &tip,
+        };
+        let tx = self.conn.unchecked_transaction().unwrap();
+        let reserved = gate_tree::reserve(&self.jobs(), &tx, &req, FleetSeconds(0)).unwrap();
+        tx.commit().unwrap();
+        match reserved {
+            GateTree::Reserved { job, .. } => job,
+            other => panic!("expected a reserved gate tree, got {other:?}"),
+        }
+    }
+
+    /// The `worktree_add` run `job` of the gate tree makes its folder and
+    /// passes, and a pass observes it.
+    fn make_gate_tree(&self, job: i64) {
+        let path = gate_tree::path(&self.project_root(), FEATURE);
+        let tip = self.tip(RUN_BRANCH);
+        git(
+            &self.repo,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "--detach",
+                &path.to_string_lossy(),
+                &tip,
+            ],
+        );
+        self.conn
+            .execute(
+                "UPDATE jobs SET state = 'passed', result_json = ?2 WHERE id = ?1",
+                params![job, r#"{"passed":true,"verdict":true,"text":"made"}"#],
+            )
+            .unwrap();
+        let ended = jobs_store::get(&self.conn, job).unwrap().unwrap();
+        let tx = self.conn.unchecked_transaction().unwrap();
+        let seen = create::observe(&self.jobs(), &tx, &ended).unwrap();
+        tx.commit().unwrap();
+        assert!(matches!(seen, Observed::Created(_)), "{seen:?}");
     }
 
     fn state(&self) -> String {
@@ -416,6 +491,41 @@ fn feature_is_ready_after_its_branches_landed_and_the_full_gate_passed() {
     assert_eq!(w.state(), "ready");
     w.follow();
     assert_eq!(w.state(), "ready");
+}
+
+/// Q18: a full gate runs only in the gate tree of its feature. A feature
+/// that never rebased has no gate tree: when its full gate is due, the pass
+/// reserves the tree and queues its `worktree_add` run, and no full gate.
+/// The pass after the tree is made queues 1 full gate.
+#[test]
+fn full_gate_waits_for_the_gate_tree_of_the_feature() {
+    let w = bare_world();
+    w.fetched_main(&w.tip("main"));
+    let (t1, b1) = w.task("one");
+    let tip = w.commit_on(RUN_BRANCH, "b.txt", "b\n");
+    let main = w.tip("main");
+    w.settle(&t1, "done", &b1, "landed");
+    w.integrating();
+
+    w.follow();
+    assert!(w.full_gates().is_empty(), "no gate tree, no gate");
+    let tree = gate_tree::of_feature(&w.conn, &w.project_root(), FEATURE)
+        .unwrap()
+        .expect("the reserved row of the gate tree");
+    let adds: Vec<(i64, String)> = {
+        let mut stmt = w
+            .conn
+            .prepare("SELECT id, subject FROM jobs WHERE kind = 'worktree_add'")
+            .unwrap();
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        rows.collect::<rusqlite::Result<_>>().unwrap()
+    };
+    assert_eq!(adds.len(), 1, "{adds:?}");
+    assert_eq!(adds[0].1, tree.worktree_id);
+
+    w.make_gate_tree(adds[0].0);
+    w.follow();
+    assert_eq!(w.full_gates(), vec![(tip, main, None)]);
 }
 
 #[test]

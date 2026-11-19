@@ -41,6 +41,7 @@ use crate::fleetd::integration::domain::feature::{
 };
 use crate::fleetd::integration::domain::project::{ProjectSettings, Remote};
 use crate::fleetd::integration::domain::task_branch::LandingState;
+use crate::fleetd::worktree_custody::application::gate_tree::{self, GateTreeRequest};
 use crate::taskledger::model::Actor;
 use crate::taskledger::runs;
 
@@ -69,6 +70,9 @@ pub enum Step {
     /// feature does not move.
     Waits(String),
 }
+
+/// Why a full gate waits: the gate tree of its feature is not made yet.
+pub const GATE_TREE_NOT_MADE: &str = "the gate tree of the feature is not made yet";
 
 fn by_fleetd(text: &str) -> Cause<'_> {
     Cause {
@@ -162,6 +166,16 @@ fn follow_one(f: &Features<'_>, tx: &Connection, id: &str, clock: FleetSeconds) 
             Ok(Step::Entered(to))
         }
         Next::RunFullGate => {
+            let tree = GateTreeRequest {
+                feature_id: id,
+                run_id: &run.run_id,
+                repo: &tips.repo,
+                base: row.branch.as_deref().unwrap_or_default(),
+                tip: &tips.feature,
+            };
+            if !gate_tree::ready(f.jobs, tx, &tree, clock)? {
+                return Ok(Step::Waits(GATE_TREE_NOT_MADE.into()));
+            }
             let req = GateRequest {
                 kind: Kind::FullGate,
                 subject: id,
