@@ -566,9 +566,9 @@ fn g57_compacting_orchestrator_types_its_command_card() {
     assert_eq!(cards.len(), 1, "{mail:?}");
     assert!(!cards[0].contains('\n'));
     for command in [
+        "horch ideas",
+        "horch idea show",
         "horch ledger status",
-        "horch ledger plan-workers",
-        "horch spawn",
         "horch tell",
         "horch inbox",
         "horch ledger events",
