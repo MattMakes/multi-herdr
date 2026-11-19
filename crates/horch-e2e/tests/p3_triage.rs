@@ -91,7 +91,9 @@ fn commit_all(h: &Harness, dir: &Path, message: &str) {
 }
 
 /// `horch worktree triage apply` of 1 decision of the row W1 `name`: its
-/// result line. A failed decision exits non-zero.
+/// result line. A failed decision exits non-zero. fleetd applies `ARCHIVE`,
+/// `DELETE`, `LAND` and `PR` in a `triage_apply` job (T-888), so this
+/// waits until each such job ended.
 fn apply(h: &Harness, name: &str, decision: &str) -> String {
     let body = format!(
         "| ID | Worktree | Suggested | Decision | Direction |\n|----|----|----|----|----|\n\
@@ -102,6 +104,12 @@ fn apply(h: &Harness, name: &str, decision: &str) -> String {
     let o = h.run(&["worktree", "triage", "apply", &p.to_string_lossy()]);
     let said = out(&o);
     assert!(said.starts_with("W1 "), "{}", text(&o));
+    wait_for("the triage_apply jobs to end", || {
+        jobs(h, "triage_apply")
+            .iter()
+            .all(|s| s == "passed" || s == "failed")
+            .then_some(())
+    });
     said
 }
 
