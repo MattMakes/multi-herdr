@@ -72,16 +72,18 @@ impl World {
     /// The fleet, with `scenario` as the keys of each fake agent.
     fn new(name: &str, scenario: &str) -> World {
         let mut h = Harness::new(name).with_git();
-        // The ledger is in the state folder and the fleet root is next to
-        // it, with no FLEET_ROOT: a pane gets only HORCH_STATE_DIR and
-        // HORCH_DATA_DIR, and its worker finds the same paths there.
-        let fleet = h.state.join("fleet");
+        // The ledger and the fleet root are outside the state folder, as
+        // in production: a worker can write the state folder, and the
+        // throwaway folders of the conformance job are under the fleet
+        // root. The pane command gets both paths (T-890).
+        let fleet = h.root.join("fleet");
         std::fs::create_dir_all(&fleet).unwrap();
         std::fs::write(fleet.join("fleet.toml"), FLEET_TOML).unwrap();
         h.set(
             "HORCH_LEDGER_DB",
-            h.state.join("ledger.sqlite3").to_string_lossy(),
+            h.root.join("ledger.sqlite3").to_string_lossy(),
         );
+        h.set("FLEET_ROOT", fleet.to_string_lossy());
         h.set("HORCH_NO_WAKE", "1");
         h.set("HORCH_NO_WATCHDOG", "1");
         h.set(
