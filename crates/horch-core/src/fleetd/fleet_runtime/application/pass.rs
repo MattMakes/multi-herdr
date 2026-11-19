@@ -158,8 +158,8 @@ use crate::fleetd::task_execution::domain::quota::limited;
 use crate::fleetd::task_execution::domain::retry::Outcome;
 use crate::fleetd::task_execution::domain::stall::{self as rungs, Decision, PaneStatus};
 use crate::fleetd::task_execution::domain::task::{
-    self, judged_task, promotable_deps, AttemptRow, AttemptState, Dep, DepKind, Facts, InPane,
-    ProcessScope, Reap, Recorded, RowRef, Rows, Seen, Stop, Target,
+    self, judged_task, promotable_deps, AttemptRow, AttemptState, Dep, DepKind, Facts, GroupLeft,
+    InPane, ProcessScope, Reap, Recorded, RowRef, Rows, Seen, Stop, Target,
 };
 use crate::fleetd::worker_profiles::adapters::check_sandbox::WorkerSandboxes;
 use crate::fleetd::worker_profiles::application::conformance::read_conformance_json;
@@ -1052,8 +1052,17 @@ impl<'a> Pass<'a> {
         );
         let mut may_stop = may_stop(&rows, &liveness);
         let panes = self.ports.outside.panes();
-        let stopped =
+        let mut stopped =
             polite_stops_store::stopped(conn, |pid, start| !may_stop.contains(&(pid, start)))?;
+        // FR-10: a gone leader can leave members in its group (an agent
+        // that ignores the polite stop). The record of its polite stop
+        // stays, so the grace goes on and the hard stop comes.
+        for s in &mut stopped {
+            s.group = effects::group_left(s.process);
+            if s.group == GroupLeft::Members {
+                may_stop.extend(s.process.pid_start.map(|start| (s.process.pid, start)));
+            }
+        }
         // With no snapshot, no pane can be judged: a record whose process a
         // row with a pane names waits for a pass with one.
         if panes.is_none() {
