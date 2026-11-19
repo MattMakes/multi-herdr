@@ -605,8 +605,8 @@ impl Flight {
     }
 
     /// After the old path, [`TASK`] is landed 1 time: the run branch holds
-    /// the 1 commit of the task, its task branch is `landed`, and no bundle
-    /// lands it again in 5 more passes.
+    /// the 1 commit of the task, its task branch is `landed` through 1
+    /// bundle with no candidate commit, and 5 more passes change nothing.
     fn assert_landed_once(&self) {
         wait_for_or(
             "the task branch of T-1 to be landed",
@@ -626,7 +626,13 @@ impl Flight {
             Some("landed"),
             "{seen}"
         );
-        assert_eq!(count(&conn, "SELECT COUNT(*) FROM bundles"), 0, "{seen}");
+        // T-871: a branch lands only through a bundle. Its work is already
+        // on the run branch, so the bundle lands it with no candidate commit.
+        let bundles = format!(
+            "SELECT COUNT(*) FROM bundles b JOIN bundle_members m ON m.bundle_id = b.id
+             WHERE m.branch = '{TREE_BRANCH}' AND b.state = 'landed'"
+        );
+        assert_eq!(count(&conn, &bundles), 1, "1 landed bundle\n{seen}");
         assert_eq!(
             count(&conn, "SELECT COUNT(*) FROM attempts WHERE task_id = 'T-1'"),
             1,
