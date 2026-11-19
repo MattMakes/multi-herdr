@@ -142,7 +142,7 @@ pub fn play(call: &mut Call) {
 }
 
 /// The first word of `argv` that is a folder with an `idea.md`.
-fn idea_folder(argv: &[String]) -> Option<PathBuf> {
+pub(crate) fn idea_folder(argv: &[String]) -> Option<PathBuf> {
     argv.iter()
         .flat_map(|a| a.split_whitespace())
         .map(PathBuf::from)
@@ -346,7 +346,7 @@ fn open_question(idea: &str) -> Option<String> {
 }
 
 /// Send `request` on the channel of the fleet; the reply line, or the error.
-fn send_on_channel(fleet_root: &Path, request: &Request) -> Value {
+pub(crate) fn send_on_channel(fleet_root: &Path, request: &Request) -> Value {
     let channel = fleet_root.join("run").join("fleetd.sock");
     let stream =
         match horch_platform::channel::Stream::connect(&channel, Instant::now() + CONNECT_WAIT) {

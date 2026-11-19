@@ -7,7 +7,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-pub(crate) use crate::unix::process::alive;
+pub(crate) use crate::unix::process::{alive, group_of, session_of};
 
 /// The BSD info of `pid` from `proc_pidinfo`. `None` when no process has
 /// the pid.

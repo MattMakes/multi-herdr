@@ -106,6 +106,16 @@ pub(crate) fn parent(_pid: u32) -> Result<Option<u32>, NotSupported> {
 }
 
 /// Windows has no process groups.
+pub(crate) fn group_of(_pid: i32) -> Result<Option<u32>, NotSupported> {
+    Err(NOT_SUPPORTED)
+}
+
+/// Windows has no sessions of the POSIX kind.
+pub(crate) fn session_of(_pid: i32) -> Result<Option<u32>, NotSupported> {
+    Err(NOT_SUPPORTED)
+}
+
+/// Windows has no process groups.
 pub(crate) fn group_members(_pgid: i32) -> Result<Vec<u32>, NotSupported> {
     Err(NOT_SUPPORTED)
 }

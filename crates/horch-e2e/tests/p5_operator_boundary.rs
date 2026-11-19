@@ -651,7 +651,7 @@ fn link_bwrap(h: &Harness) {
 
 /// The reason of a refusal on the channel from a peer in a worker attempt.
 fn peer_reason(a: &Attempt) -> String {
-    format!("the peer process is in live attempt {}", a.id)
+    format!("the peer process is a fleet process of attempt {}", a.id)
 }
 
 /// The reason of a refusal of an operator request with no valid token.

@@ -1,13 +1,13 @@
-//! The peer process fact (ticket 11 of fleetd-p5, SR-8) with real child
-//! processes: is the peer in a live attempt, by the group or by the parent
-//! chain of its wrapper.
+//! The fleet process fact (ticket 11 of fleetd-p5, SR-8; FR-10) with real
+//! child processes: is the peer a fleet process, by the group or by the
+//! parent chain of its wrapper.
 #![cfg(unix)]
 
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
 
 use horch_core::fleetd::fleet_runtime::adapters::peer_process::{
-    peer_in_live_attempt, AttemptProcess, Fact, PlatformFacts, ProcessFacts,
+    fleet_process, Fact, FleetProcess, PlatformFacts, ProcessFacts,
 };
 use horch_platform::{group, process};
 
@@ -39,12 +39,12 @@ impl Wrapper {
         Wrapper::start("sleep 30 & echo $!; wait", "")
     }
 
-    fn attempt(&self, id: &str) -> AttemptProcess {
+    fn attempt(&self, id: &str) -> FleetProcess {
         let pid = self.child.id();
-        AttemptProcess {
+        FleetProcess {
             attempt: id.to_string(),
-            wrapper_pid: pid,
-            wrapper_start: process::start_time(pid).unwrap(),
+            pid,
+            start: process::start_time(pid).unwrap(),
         }
     }
 }
@@ -82,6 +82,14 @@ impl ProcessFacts for UnreadableParent {
     fn in_group(&self, pid: u32, leader: u32, leader_start: u64) -> Option<bool> {
         PlatformFacts.in_group(pid, leader, leader_start)
     }
+
+    fn group_of(&self, pid: u32) -> Option<u32> {
+        PlatformFacts.group_of(pid)
+    }
+
+    fn session_of(&self, pid: u32) -> Option<u32> {
+        PlatformFacts.session_of(pid)
+    }
 }
 
 fn yes(id: &str) -> Fact {
@@ -93,7 +101,7 @@ fn child_of_the_wrapper_is_in_the_attempt() {
     let w = Wrapper::with_sleep();
     let attempts = [w.attempt("A-1")];
     assert_eq!(
-        peer_in_live_attempt(w.printed, &attempts, &PlatformFacts),
+        fleet_process(w.printed, &attempts, &PlatformFacts),
         yes("A-1")
     );
 }
@@ -110,7 +118,7 @@ fn grandchild_in_another_group_is_in_the_attempt_by_its_parent_chain() {
         .unwrap()
         .contains(&grandchild));
     let attempts = [w.attempt("A-2")];
-    let got = peer_in_live_attempt(grandchild, &attempts, &PlatformFacts);
+    let got = fleet_process(grandchild, &attempts, &PlatformFacts);
     kill(middle);
     assert_eq!(got, yes("A-2"));
 }
@@ -121,7 +129,7 @@ fn process_outside_each_attempt_is_not() {
     let outside = Wrapper::with_sleep();
     let attempts = [w.attempt("A-3")];
     assert_eq!(
-        peer_in_live_attempt(outside.printed, &attempts, &PlatformFacts),
+        fleet_process(outside.printed, &attempts, &PlatformFacts),
         Fact::No
     );
 }
@@ -130,9 +138,9 @@ fn process_outside_each_attempt_is_not() {
 fn reused_pid_with_another_start_time_is_not_the_wrapper() {
     let w = Wrapper::with_sleep();
     let mut attempt = w.attempt("A-4");
-    attempt.wrapper_start += 1;
+    attempt.start += 1;
     assert_eq!(
-        peer_in_live_attempt(w.printed, &[attempt], &PlatformFacts),
+        fleet_process(w.printed, &[attempt], &PlatformFacts),
         Fact::No
     );
 }
@@ -146,7 +154,35 @@ fn unreadable_parent_is_unknown() {
         of: outside.child.id(),
     };
     assert_eq!(
-        peer_in_live_attempt(outside.printed, &attempts, &facts),
+        fleet_process(outside.printed, &attempts, &facts),
         Fact::Unknown
+    );
+}
+
+#[test]
+fn orphan_in_the_group_of_an_ended_wrapper_is_a_fleet_process() {
+    // The wrapper starts `sleep` in its group and exits: `sleep` lives on
+    // with no parent chain to the wrapper, as an agent that outlives its
+    // attempt.
+    let mut w = Wrapper::start("sleep 30 & echo $!", "");
+    let attempt = w.attempt("A-6");
+    let _ = w.child.wait();
+    assert_eq!(
+        process::group_of(w.printed).unwrap(),
+        Some(attempt.pid),
+        "sleep stays in the group of the wrapper"
+    );
+    assert_eq!(
+        fleet_process(w.printed, &[attempt], &PlatformFacts),
+        yes("A-6")
+    );
+}
+
+#[test]
+fn no_recorded_process_is_no_fleet_process() {
+    let outside = Wrapper::with_sleep();
+    assert_eq!(
+        fleet_process(outside.printed, &[], &PlatformFacts),
+        Fact::No
     );
 }

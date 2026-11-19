@@ -63,6 +63,29 @@ pub fn group_members(pgid: u32) -> Result<Vec<u32>, NotSupported> {
     }
 }
 
+/// The process group of process `pid`. `Ok(None)` when it cannot be read.
+///
+/// Windows gives [`NotSupported`]: it has no process groups.
+/// `docs/specs/fleetd/preservation-06-wiring-and-platform.md`, section 6,
+/// row "Process identity and liveness", names the gap.
+pub fn group_of(pid: u32) -> Result<Option<u32>, NotSupported> {
+    match raw(pid) {
+        Some(pid) => os::group_of(pid),
+        None => Ok(None),
+    }
+}
+
+/// The session of process `pid`: the pid of its session leader. `Ok(None)`
+/// when it cannot be read.
+///
+/// Windows gives [`NotSupported`]: it has no sessions of this kind.
+pub fn session_of(pid: u32) -> Result<Option<u32>, NotSupported> {
+    match raw(pid) {
+        Some(pid) => os::session_of(pid),
+        None => Ok(None),
+    }
+}
+
 /// The pids of the processes that this user can see whose working folder
 /// is `dir` or a folder in it. Give `dir` as a canonical path: the OS gives
 /// canonical working folders. A process whose working folder cannot be read

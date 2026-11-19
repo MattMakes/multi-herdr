@@ -1,0 +1,341 @@
+//! The fake idea-lead of the FR-10 tests (`crates/horch-e2e/tests/p6_fr10_approval.rs`).
+//!
+//! A key of this fake is a word `[fr10:<key>]` in the `idea.md` of its
+//! idea, so 2 ideas of 1 fleet can have 2 behaviours. An idea with such a
+//! word gets only this fake, not the keys of `idea_agent`.
+//!
+//! - `approve_waiting`: the own idea stays in `clarifying`, so the own
+//!   attempt stays live. Wait until another idea is in `awaiting_approval`.
+//!   Then try to approve it 5 ways, each logged under `tries`: `cli`
+//!   (`horch idea approve`), `child_shell` (`sh -c` of it), `detached` (a
+//!   child in a new session and a new process group, whose parent waits),
+//!   and `raw` (a raw `idea_approve` on the channel with the operator
+//!   token). Then write a valid `assumptions.md`.
+//! - `orphan`: as `approve_waiting`, but 1 try only, `orphan`: a double
+//!   fork. The child makes a new session and a new process group, starts
+//!   the grandchild and exits, so the grandchild has no parent in the
+//!   attempt.
+//! - `outlive`: write a valid `assumptions.md` and ignore `SIGINT`, so the
+//!   agent lives on after fleetd ended its attempt. Wait until each own
+//!   attempt is ended (the operator approves the own idea, so the phase of
+//!   the attempt is old), then try `cli` and `raw` on another idea in
+//!   `awaiting_approval`. Then wait for the stop of fleetd.
+//! - `forge`: write a valid `assumptions.md`, wait until the own idea is in
+//!   `awaiting_approval`, then write `approval.json` with its sha256.
+//!
+//! The fake acts only in the phase `clarifying`. In a later phase it exits.
+//!
+//! Before the tries the fake logs `attempts`: the state of each attempt of
+//! its own idea, as the ledger has it. The fake never logs the operator
+//! token.
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+
+use horch_core::digest::sha256_bytes;
+use horch_core::fleetd::fleet_runtime::adapters::request_wire::Request;
+use horch_core::fleetd::fleet_runtime::domain::requests::{Kind, RequestId};
+use horch_core::runtime::{Paths, ProcessEnv};
+use horch_core::taskledger::Store;
+use serde_json::{json, Map, Value};
+
+use crate::idea_agent::{idea_folder, send_on_channel};
+use crate::{hash16, Call};
+
+/// The longest wait for an idea state.
+const STATE_WAIT: Duration = Duration::from_secs(60);
+
+/// The longest wait for the result of the orphan.
+const ORPHAN_WAIT: Duration = Duration::from_secs(60);
+
+/// The longest wait of `outlive` for its stop.
+const STOP_WAIT: Duration = Duration::from_secs(120);
+
+/// The state of an idea that waits for the operator.
+const AWAITING: &str = "awaiting_approval";
+
+/// Play the FR-10 keys of the idea of this launch. False when the idea has
+/// no such key: the caller plays the other keys.
+pub fn play(call: &mut Call) -> bool {
+    let Some(folder) = idea_folder(&call.argv) else {
+        return false;
+    };
+    let text = std::fs::read_to_string(folder.join("idea.md")).unwrap_or_default();
+    let has = |key: &str| text.contains(&format!("[fr10:{key}]"));
+    if !text.contains("[fr10:") {
+        return false;
+    }
+    if !call.argv.iter().any(|a| a.contains("in phase clarifying")) {
+        return true;
+    }
+    let lead = Lead::new(folder);
+    if has("approve_waiting") || has("orphan") {
+        let Some(target) = lead.other_waiting() else {
+            call.extra
+                .insert("fr10".into(), json!({"error": "no other idea waits"}));
+            return true;
+        };
+        call.extra.insert("target".into(), json!(target));
+        call.extra.insert("attempts".into(), json!(lead.attempts()));
+        let mut tries = Map::new();
+        if has("orphan") {
+            tries.insert("orphan".into(), lead.orphan(&target));
+        } else {
+            tries.insert("cli".into(), lead.cli(&target));
+            tries.insert("child_shell".into(), lead.child_shell(&target));
+            tries.insert("detached".into(), lead.detached(&target));
+            tries.insert("raw".into(), lead.raw(&target, &call.call_id));
+        }
+        call.extra.insert("tries".into(), Value::Object(tries));
+        call.flush();
+        lead.write_assumptions();
+        return true;
+    }
+    if has("outlive") {
+        ignore_sigint();
+        lead.write_assumptions();
+        call.extra
+            .insert("attempts".into(), json!(lead.wait_ended()));
+        let Some(target) = lead.other_waiting() else {
+            call.extra
+                .insert("fr10".into(), json!({"error": "no other idea waits"}));
+            return true;
+        };
+        call.extra.insert("target".into(), json!(target));
+        let mut tries = Map::new();
+        tries.insert("cli".into(), lead.cli(&target));
+        tries.insert("raw".into(), lead.raw(&target, &call.call_id));
+        call.extra.insert("tries".into(), Value::Object(tries));
+        call.flush();
+        std::thread::sleep(STOP_WAIT);
+        return true;
+    }
+    if has("forge") {
+        lead.write_assumptions();
+        let seen = lead.wait_state(&lead.idea);
+        call.extra.insert("awaited".into(), json!(seen));
+        call.extra.insert("attempts".into(), json!(lead.attempts()));
+        let path = lead.folder.join("approval.json");
+        let wrote = match write(&path, &lead.forged_approval()) {
+            Ok(()) => json!(true),
+            Err(e) => json!(e),
+        };
+        call.extra.insert("forged".into(), wrote);
+        return true;
+    }
+    false
+}
+
+/// The fake idea-lead of 1 idea folder.
+struct Lead {
+    folder: PathBuf,
+    idea: String,
+}
+
+impl Lead {
+    fn new(folder: PathBuf) -> Lead {
+        let idea = folder
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        Lead { folder, idea }
+    }
+
+    fn ideas(&self) -> PathBuf {
+        self.folder
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default()
+    }
+
+    /// A valid `assumptions.md` with no open item.
+    fn write_assumptions(&self) {
+        let text = format!(
+            "# {} assumptions\nfeature: fake-{}\n\n\
+             1. [confirmed] The idea changes the file fake.txt.\n\
+             2. [assumed] The idea needs 1 task.\n",
+            self.idea,
+            self.idea.to_lowercase()
+        );
+        if let Err(e) = write(&self.folder.join("assumptions.md"), &text) {
+            eprintln!("fake fr10 lead: {e}");
+        }
+    }
+
+    /// approval.json with the sha256 of the own `assumptions.md`.
+    fn forged_approval(&self) -> String {
+        let bytes = std::fs::read(self.folder.join("assumptions.md")).unwrap_or_default();
+        json!({
+            "idea": self.idea,
+            "file": "assumptions.md",
+            "sha256": sha256_bytes(&bytes).hex(),
+            "approved_at": "2026-01-01T00:00:00Z",
+            "by": "operator",
+        })
+        .to_string()
+    }
+
+    /// Wait until `idea` is in `awaiting_approval`; the last state seen.
+    fn wait_state(&self, idea: &str) -> Option<String> {
+        let end = Instant::now() + STATE_WAIT;
+        loop {
+            let state = query_one("SELECT state FROM ideas WHERE id = ?1", idea);
+            if state.as_deref() == Some(AWAITING) || Instant::now() >= end {
+                return state;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    /// Wait until another idea is in `awaiting_approval`; its id.
+    fn other_waiting(&self) -> Option<String> {
+        let end = Instant::now() + STATE_WAIT;
+        loop {
+            let other = query_one(
+                "SELECT id FROM ideas WHERE state = 'awaiting_approval' AND id != ?1
+                 ORDER BY id LIMIT 1",
+                &self.idea,
+            );
+            if other.is_some() || Instant::now() >= end {
+                return other;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    /// Wait until each attempt of the own idea is ended; the last
+    /// [`Lead::attempts`] seen.
+    fn wait_ended(&self) -> Vec<String> {
+        let end = Instant::now() + STATE_WAIT;
+        loop {
+            let seen = self.attempts();
+            let ended = !seen.is_empty() && seen.iter().all(|a| a.ends_with(" ended"));
+            if ended || Instant::now() >= end {
+                return seen;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    /// `<attempt id> <state>` of each attempt of the own idea.
+    fn attempts(&self) -> Vec<String> {
+        let Ok(store) = Store::open_read_only(&Paths::from_env(&ProcessEnv).ledger_db) else {
+            return Vec::new();
+        };
+        let conn = store.conn();
+        let Ok(mut stmt) = conn
+            .prepare("SELECT id || ' ' || state FROM attempts WHERE idea_id = ?1 ORDER BY rowid")
+        else {
+            return Vec::new();
+        };
+        stmt.query_map([&self.idea], |r| r.get(0))
+            .map(|rows| rows.filter_map(Result::ok).collect())
+            .unwrap_or_default()
+    }
+
+    /// `horch idea approve <idea>`.
+    fn cli(&self, idea: &str) -> Value {
+        output(Command::new("horch").args(["idea", "approve", idea]))
+    }
+
+    /// `sh -c "horch idea approve <idea>"`: a child shell of the agent.
+    fn child_shell(&self, idea: &str) -> Value {
+        let line = format!("horch idea approve {idea}");
+        output(Command::new("/bin/sh").args(["-c", &line]))
+    }
+
+    /// `horch idea approve <idea>` in a new session and a new process
+    /// group. The agent waits for it.
+    fn detached(&self, idea: &str) -> Value {
+        let mut cmd = Command::new("horch");
+        cmd.args(["idea", "approve", idea]);
+        if let Err(e) = horch_platform::group::detach(&mut cmd) {
+            return json!({"error": format!("detach: {e:?}")});
+        }
+        output(&mut cmd)
+    }
+
+    /// A double fork: the child makes a new session and a new process
+    /// group, starts the grandchild and exits. The grandchild runs
+    /// `horch idea approve <idea>` and writes its output in the idea folder
+    /// of the target.
+    fn orphan(&self, idea: &str) -> Value {
+        const PERL: &str = r#"use POSIX; my $p = fork(); if ($p == 0) { POSIX::setsid(); my $q = fork(); if ($q == 0) { exec("/bin/sh", "-c", $ARGV[0]); } exit 0; } waitpid($p, 0);"#;
+        let out = self.ideas().join(format!("fr10-orphan-{}.out", self.idea));
+        let code = out.with_extension("code");
+        let line = format!(
+            "echo $$ > {pid}; horch idea approve {idea} > {out} 2>&1; echo $? > {code}.tmp; mv {code}.tmp {code}",
+            pid = out.with_extension("pid").display(),
+            out = out.display(),
+            code = code.display(),
+        );
+        let started = output(Command::new("/usr/bin/perl").args(["-e", PERL, &line]));
+        let end = Instant::now() + ORPHAN_WAIT;
+        while !code.is_file() && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let read = |p: &Path| std::fs::read_to_string(p).unwrap_or_default();
+        json!({
+            "started": started,
+            "pid": read(&out.with_extension("pid")).trim(),
+            "exit": read(&code).trim().parse::<i32>().ok(),
+            "stderr": read(&out),
+        })
+    }
+
+    /// A raw `idea_approve` of `idea` on the channel, with the operator
+    /// token of the fleet.
+    fn raw(&self, idea: &str, call_id: &str) -> Value {
+        let fleet_root = Paths::from_env(&ProcessEnv).fleet_root;
+        let token = match std::fs::read_to_string(fleet_root.join("run").join("operator.token")) {
+            Ok(t) => t.trim().to_string(),
+            Err(e) => return json!({"error": format!("read the operator token: {}", e.kind())}),
+        };
+        let bytes =
+            std::fs::read(self.ideas().join(idea).join("assumptions.md")).unwrap_or_default();
+        let mut payload = Map::new();
+        payload.insert("idea".into(), json!(idea));
+        payload.insert("sha256".into(), json!(sha256_bytes(&bytes).hex()));
+        let request_id = hash16(&format!("{call_id}-raw-{idea}"));
+        let request = Request {
+            request_id: RequestId::parse(&request_id).expect("16 hex digits are a request id"),
+            kind: Kind::IdeaApprove,
+            payload,
+            token: Some(token),
+        };
+        let mut sent = send_on_channel(&fleet_root, &request);
+        sent["request_id"] = json!(request_id);
+        sent
+    }
+}
+
+/// The first column of the first row of `sql` with the 1 parameter `arg`.
+fn query_one(sql: &str, arg: &str) -> Option<String> {
+    let store = Store::open_read_only(&Paths::from_env(&ProcessEnv).ledger_db).ok()?;
+    store.conn().query_row(sql, [arg], |r| r.get(0)).ok()
+}
+
+/// Run `cmd`; its exit code and output.
+fn output(cmd: &mut Command) -> Value {
+    match cmd.stdin(Stdio::null()).output() {
+        Ok(out) => json!({
+            "exit": out.status.code(),
+            "stdout": String::from_utf8_lossy(&out.stdout),
+            "stderr": String::from_utf8_lossy(&out.stderr),
+        }),
+        Err(e) => json!({"error": e.to_string()}),
+    }
+}
+
+/// Write `text` in `path` atomically.
+fn write(path: &Path, text: &str) -> Result<(), String> {
+    horch_core::fsx::write_atomic(path, text.as_bytes(), 0o600)
+        .map_err(|e| format!("writing {}: {e:#}", path.display()))
+}
+
+/// Ignore `SIGINT`, the polite stop of fleetd.
+fn ignore_sigint() {
+    // SAFETY: `signal` with `SIG_IGN` sets 1 flag of this process.
+    unsafe { libc::signal(libc::SIGINT, libc::SIG_IGN) };
+}
