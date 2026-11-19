@@ -23,6 +23,9 @@ pub struct Git {
     /// [`CALL_DEADLINE`] and [`CALL_OUTPUT_CAP`]; tests make them small.
     deadline: Duration,
     output_cap: usize,
+    /// Folders a worker can write besides the main checkout's working tree
+    /// (the state root): a hook or filter program in one never runs.
+    untrusted: Vec<PathBuf>,
 }
 
 /// How much of the repository's own config a call may run.
@@ -136,6 +139,7 @@ impl Git {
             repo: RepoConfig::Safe,
             deadline: CALL_DEADLINE,
             output_cap: CALL_OUTPUT_CAP,
+            untrusted: Vec::new(),
         }
     }
 
@@ -157,6 +161,18 @@ impl Git {
             p.filters = filters;
         }
         Ok(git)
+    }
+
+    /// This git, with `roots` (canonical when they exist) as folders a
+    /// worker can write besides the main checkout's working tree.
+    pub fn with_untrusted(&self, roots: &[&Path]) -> Git {
+        Git {
+            untrusted: roots
+                .iter()
+                .map(|r| std::fs::canonicalize(r).unwrap_or_else(|_| r.to_path_buf()))
+                .collect(),
+            ..self.clone()
+        }
     }
 
     /// This git with the repository's filters and no hook: for the merge
@@ -233,7 +249,7 @@ impl Git {
                 cmd.arg("-C").arg(dir).env_remove("ANTHROPIC_API_KEY");
                 cmd
             }
-            RepoConfig::Filters => self.base(dir),
+            RepoConfig::Filters => self.trusted_filters(dir)?,
             RepoConfig::Safe => self.safe(dir, pin)?,
         };
         cmd.args(args);
@@ -306,20 +322,137 @@ impl Git {
     /// Why the hooks of the main checkout `root` are not the operator's, or
     /// `None` when they are.
     fn foreign_hooks(&self, root: &Path) -> Result<Option<String>> {
-        let Some(path) = self.config_value(root, "core.hooksPath")? else {
-            return Ok(None);
+        let configured = self.config_value(root, "core.hooksPath")?;
+        let (root, common) = self.trust_roots(root)?;
+        if let Some(path) = &configured {
+            if let Some(why) = hooks_verdict(path, &root, common.as_deref()) {
+                return Ok(Some(why));
+            }
+        }
+        let Some(common) = common else {
+            return Ok(Some("the git dir cannot be resolved".to_string()));
         };
-        let path = path.as_str();
+        let dir = match &configured {
+            Some(path) => normalize(&root.join(path)),
+            None => common.join("hooks"),
+        };
+        // The hook file itself: a link in the git dir can name a script
+        // that the worker's commits change.
+        for name in PUSH_HOOKS {
+            let hook = dir.join(name);
+            if std::fs::symlink_metadata(&hook).is_err() {
+                continue;
+            }
+            match std::fs::canonicalize(&hook) {
+                Ok(real) if !self.writable(&real, &root, &common) => {}
+                Ok(real) => {
+                    return Ok(Some(format!(
+                        "hook {name} runs {}, a file a worker can change",
+                        real.display()
+                    )))
+                }
+                Err(_) => return Ok(Some(format!("hook {name} is a link that does not resolve"))),
+            }
+        }
+        Ok(None)
+    }
+
+    /// The canonical main checkout `root`, and its canonical common git dir
+    /// when it resolves.
+    fn trust_roots(&self, root: &Path) -> Result<(PathBuf, Option<PathBuf>)> {
         let root = std::fs::canonicalize(root)
             .with_context(|| format!("{} does not exist", root.display()))?;
-        let common = self
+        // Safe: this lookup runs inside the opted-in modes' own setup.
+        let safe = Git {
+            repo: RepoConfig::Safe,
+            ..self.clone()
+        };
+        let common = safe
             .run(
                 &root,
                 &["rev-parse", "--path-format=absolute", "--git-common-dir"],
             )
             .ok()
             .and_then(|c| std::fs::canonicalize(c.trim()).ok());
-        Ok(hooks_verdict(path, &root, common.as_deref()))
+        Ok((root, common))
+    }
+
+    /// Whether the canonical path `real` is a file a worker can change: in
+    /// the working tree of `root` (every `.worktrees/*` too) outside its git
+    /// dir `common`, or in an untrusted folder.
+    fn writable(&self, real: &Path, root: &Path, common: &Path) -> bool {
+        (real.starts_with(root) && !real.starts_with(common))
+            || self.untrusted.iter().any(|u| real.starts_with(u))
+    }
+
+    /// git in `dir` with [`SAFE_CONFIG`] and the repository's filters,
+    /// except a filter program a worker can change: that one is set empty,
+    /// and when its filter is required the call is refused.
+    fn trusted_filters(&self, dir: &Path) -> Result<Command> {
+        let (root, common) = self.trust_roots(dir)?;
+        let Some(common) = common else {
+            bail!(
+                "refused: the git dir of {} cannot be resolved",
+                root.display()
+            );
+        };
+        let mut cmd = self.base(dir);
+        for (name, kind, value) in self.filter_programs(dir)? {
+            let program = filter_program(&value, &root);
+            if !program
+                .as_deref()
+                .is_some_and(|p| self.writable(p, &root, &common))
+            {
+                continue;
+            }
+            let required = self.config_value(dir, &format!("filter.{name}.required"))?;
+            if required.is_some_and(|v| ["true", "yes", "on", "1"].contains(&v.as_str())) {
+                bail!(
+                    "refused: filter {name} is required, and its {kind} program {} is a file a \
+                     worker can change",
+                    program.unwrap_or_default().display()
+                );
+            }
+            cmd.arg("-c").arg(format!("filter.{name}.{kind}="));
+        }
+        Ok(cmd)
+    }
+
+    /// Every `filter.<name>.<clean|smudge|process>` the config of `dir` sets,
+    /// as `(name, kind, command)`, read without overrides.
+    fn filter_programs(&self, dir: &Path) -> Result<Vec<(String, String, String)>> {
+        let mut cmd = Command::new(&self.bin);
+        cmd.arg("-C")
+            .arg(dir)
+            .args([
+                "config",
+                "--null",
+                "--get-regexp",
+                r"^filter\..*\.(clean|smudge|process)$",
+            ])
+            .env_remove("ANTHROPIC_API_KEY");
+        let out = run_until(cmd, Vec::new(), MAX_DRIVER_KEYS, LOOKUP_DEADLINE)
+            .context("listing the filter programs")?;
+        if out.status.code() == Some(1) && out.records.is_empty() {
+            return Ok(Vec::new());
+        }
+        if !out.status.success() || !out.complete {
+            bail!(
+                "refused: cannot list the filter programs of {}",
+                dir.display()
+            );
+        }
+        let mut programs = Vec::new();
+        for record in &out.records {
+            let text = String::from_utf8_lossy(record);
+            let (key, value) = text.split_once('\n').unwrap_or((&text, ""));
+            let names = filter_driver_names(&[key.as_bytes().to_vec()])?;
+            let (Some(name), Some((_, kind))) = (names.first(), key.rsplit_once('.')) else {
+                continue;
+            };
+            programs.push((name.clone(), kind.to_string(), value.to_string()));
+        }
+        Ok(programs)
     }
 
     /// Whether the config of `root` sets a git-lfs filter.
@@ -552,19 +685,26 @@ pub fn worktree_gitdir(
 fn worktree_entry(common: &Path, worktree: &Path, worktree_canonical: &Path) -> Result<PathBuf> {
     let recorded = format!("{}/.git", worktree.display());
     let names_worktree = |entry: &Path| {
-        std::fs::read_to_string(entry.join("gitdir")).is_ok_and(|t| {
-            let t = t.trim();
-            // With `worktree.useRelativePaths`, git writes the path relative
-            // to the entry; `join` keeps an absolute path as it is.
-            t == recorded
-                || std::fs::canonicalize(entry.join(t))
-                    .is_ok_and(|p| p == worktree_canonical.join(".git"))
-        })
+        let file = entry.join("gitdir");
+        // A small regular file only: a huge one fails here, never in memory.
+        let small = std::fs::symlink_metadata(&file)
+            .is_ok_and(|m| m.is_file() && m.len() <= MAX_DOTGIT_BYTES);
+        small
+            && std::fs::read_to_string(&file).is_ok_and(|t| {
+                let t = t.trim();
+                // With `worktree.useRelativePaths`, git writes the path relative
+                // to the entry; `join` keeps an absolute path as it is.
+                t == recorded
+                    || std::fs::canonicalize(entry.join(t))
+                        .is_ok_and(|p| p == worktree_canonical.join(".git"))
+            })
     };
     let matches: Vec<PathBuf> = std::fs::read_dir(common.join("worktrees"))
         .map(|rd| {
             rd.filter_map(|e| e.ok().map(|e| e.path()))
                 .filter(|e| names_worktree(e))
+                // 2 matches already refuse: no need to read the rest.
+                .take(2)
                 .collect()
         })
         .unwrap_or_default();
@@ -634,6 +774,24 @@ fn lexical_join(base: &Path, relative: &Path) -> Option<PathBuf> {
         }
     }
     Some(out)
+}
+
+/// The hooks a push runs.
+const PUSH_HOOKS: [&str; 2] = ["pre-push", "reference-transaction"];
+
+/// The canonical program a filter `command` starts: its first word, as a
+/// path from the top of the working tree `root` when it holds a `/`, else
+/// found on horch's own `PATH`. `None` when it cannot be found: git cannot
+/// start it either. Only the first word: an interpreter's script argument
+/// is not checked.
+fn filter_program(command: &str, root: &Path) -> Option<PathBuf> {
+    let first = command.split_whitespace().next()?;
+    let path = if first.contains('/') {
+        root.join(first)
+    } else {
+        crate::runtime::process::which_on_path(first)?
+    };
+    std::fs::canonicalize(path).ok()
 }
 
 /// Why `core.hooksPath` `path` of the main checkout `root` (canonical) is

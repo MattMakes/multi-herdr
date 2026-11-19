@@ -286,7 +286,11 @@ fn a_claim_names_an_ignored_ticket_by_an_absolute_path_that_opens_from_the_workt
         "the ignored ticket is not in the worktree"
     );
     let opened = worktree.join(&ticket);
-    assert!(opened.is_file(), "Ticket {ticket} from {}: {claim}", worktree.display());
+    assert!(
+        opened.is_file(),
+        "Ticket {ticket} from {}: {claim}",
+        worktree.display()
+    );
 }
 
 #[test]
@@ -1966,6 +1970,29 @@ fn a_codex_worker_with_a_land_conflict_is_told_to_report_it() {
 }
 
 #[test]
+fn a_land_that_stops_on_an_error_sets_the_worktree_back_to_open() {
+    let h = finish_world("tl-land-error");
+    let (w, wt) = claimed_with_check(&h, "true", Some("land"), Some("codex"));
+    std::fs::write(wt.join("x.txt"), "worker\n").unwrap();
+    git_in(&h, &wt, &["add", "x.txt"]);
+    git_in(
+        &h,
+        &wt,
+        &["commit", "--quiet", "--no-verify", "-m", "worker"],
+    );
+    // No run branch: the land errors before the run branch can move.
+    let project = h.project.clone();
+    git_in(&h, &project, &["branch", "-D", "fleet/alpha"]);
+
+    let (_, r) = finish_json(&h, &w);
+    assert_eq!(r["stopped_at"], "land", "{r}");
+    let message = r["message"].as_str().unwrap();
+    assert!(message.contains("the land stopped"), "{message}");
+    let st = json_of(&h, &["ledger", "status", "--json"]);
+    assert_eq!(st["worktrees"][0]["status"], "open", "{st}");
+}
+
+#[test]
 fn a_codex_binary_inside_the_worktree_is_refused_and_never_runs() {
     let mut h = finish_world("tl-codex-in-wt");
     let (w, wt) = claimed_with_check(&h, "true", Some("check"), Some("codex"));
@@ -1985,6 +2012,99 @@ fn a_codex_binary_inside_the_worktree_is_refused_and_never_runs() {
     let message = r["message"].as_str().unwrap();
     assert!(message.contains("HORCH_CODEX_BIN"), "{message}");
     assert!(!ran.exists(), "the planted codex never runs");
+}
+
+#[test]
+fn a_pre_push_hook_linked_into_the_working_tree_does_not_run() {
+    let h = finish_world("tl-hook-link");
+    let (w, wt) = claimed_with_check(&h, "true", Some("check,land"), Some("claude"));
+    std::fs::write(wt.join("feature.txt"), "feature\n").unwrap();
+    git_in(&h, &wt, &["add", "feature.txt"]);
+    git_in(
+        &h,
+        &wt,
+        &["commit", "--quiet", "--no-verify", "-m", "feature"],
+    );
+    // The hook in the git dir is a link to a script a worker's commit can
+    // change.
+    let project = h.project.clone();
+    let ran = h.root.join("linked-hook-ran");
+    let script = project.join("hook.sh");
+    sh_script(&script, &format!(": > '{}'", ran.display()));
+    std::os::unix::fs::symlink(&script, project.join(".git/hooks/pre-push")).unwrap();
+
+    let (code, r) = finish_json(&h, &w);
+    assert_eq!(code, Some(0), "{r}");
+    assert!(!ran.exists(), "the linked hook never runs");
+    let land = r["steps"][1]["note"].as_str().unwrap();
+    assert!(
+        land.contains("hook pre-push runs") && land.contains("a worker can change"),
+        "{land}"
+    );
+}
+
+#[test]
+fn the_merge_runs_a_trusted_filter_and_not_one_a_worker_can_change() {
+    let h = finish_world("tl-merge-filters");
+    let (w, wt) = claimed_with_check(&h, "true", Some("check,land"), Some("claude"));
+    let project = h.project.clone();
+    // x's smudge is a script in the working tree; y's is outside every
+    // writable root, as git-lfs is.
+    let tracked_ran = h.root.join("tracked-smudge-ran");
+    let trusted_ran = h.root.join("trusted-smudge-ran");
+    let tracked = project.join("smudge.sh");
+    sh_script(&tracked, &format!(": > '{}'; cat", tracked_ran.display()));
+    let trusted_dir = h.root.join("trusted");
+    std::fs::create_dir_all(&trusted_dir).unwrap();
+    let trusted = trusted_dir.join("smudge.sh");
+    sh_script(
+        &trusted,
+        &format!(
+            ": > '{}'; while IFS= read -r l; do echo \"S:$l\"; done",
+            trusted_ran.display()
+        ),
+    );
+    git_in(
+        &h,
+        &project,
+        &["config", "filter.x.smudge", &tracked.to_string_lossy()],
+    );
+    git_in(
+        &h,
+        &project,
+        &["config", "filter.y.smudge", &trusted.to_string_lossy()],
+    );
+    std::fs::write(
+        wt.join(".gitattributes"),
+        "*.dat filter=x\n*.dt2 filter=y\n",
+    )
+    .unwrap();
+    std::fs::write(wt.join("a.dat"), "a\n").unwrap();
+    std::fs::write(wt.join("b.dt2"), "b\n").unwrap();
+    git_in(&h, &wt, &["add", ".gitattributes", "a.dat", "b.dt2"]);
+    git_in(
+        &h,
+        &wt,
+        &["commit", "--quiet", "--no-verify", "-m", "feature"],
+    );
+    // The run branch is checked out, so land merges in the main checkout.
+    git_in(&h, &project, &["checkout", "--quiet", "fleet/alpha"]);
+
+    let (code, r) = finish_json(&h, &w);
+    assert_eq!(code, Some(0), "{r}");
+    assert!(
+        !tracked_ran.exists(),
+        "the smudge a worker can change never runs"
+    );
+    assert!(trusted_ran.exists(), "the trusted smudge runs");
+    assert_eq!(
+        std::fs::read_to_string(project.join("b.dt2")).unwrap(),
+        "S:b\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.join("a.dat")).unwrap(),
+        "a\n"
+    );
 }
 
 #[test]

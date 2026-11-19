@@ -739,6 +739,26 @@ fn a_required_filter_in_the_global_config_is_refused_too() {
 }
 
 #[test]
+fn a_filter_driver_named_like_no_filter_is_refused() {
+    let (h, w, wt) = claimed("lc-driver-name");
+    let project = h.project.clone();
+    std::fs::write(wt.join("a.txt"), "a\n").unwrap();
+    let before = head(&h, &wt);
+    for name in ["unspecified", "unset", "set"] {
+        let key = format!("filter.{name}.clean");
+        git_in(&h, &project, &["config", &key, "cat"]);
+        let o = as_worker(&h, &w, &wt, &["ledger", "commit", "-m", "x", "--", "a.txt"]);
+        assert!(
+            !o.status.success() && text(&o).contains("cannot tell from no filter"),
+            "{name}: {}",
+            text(&o)
+        );
+        git_in(&h, &project, &["config", "--unset", &key]);
+    }
+    assert_eq!(head(&h, &wt), before, "nothing is committed");
+}
+
+#[test]
 fn a_name_that_is_not_utf8_keeps_its_required_filter() {
     use std::os::unix::ffi::OsStrExt;
     let (h, w, wt) = claimed("lc-bytes");

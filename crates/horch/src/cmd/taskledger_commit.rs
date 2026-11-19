@@ -581,7 +581,7 @@ fn refuse_required_filters(git: &Trusted, names: &[OsString], from: Attributes) 
         return Ok(());
     }
     let required = required_filters(git)?;
-    let refused: Vec<String> = path_filters(git, attribute_git(&git.bin), names, from)?
+    let refused: Vec<String> = path_filters(git, || attribute_git(&git.bin), names, from)?
         .into_iter()
         .filter(|(_, filter)| required.contains(filter))
         .map(|(path, filter)| format!("{} (filter={filter})", path.to_string_lossy()))
@@ -610,7 +610,7 @@ fn refuse_staging_filters(git: &Trusted, names: &[OsString]) -> Result<()> {
     }
     let selected: Vec<String> = path_filters(
         git,
-        clean_git(&git.bin, git.tree),
+        || clean_git(&git.bin, git.tree),
         names,
         Attributes::Worktree,
     )?
@@ -682,27 +682,41 @@ fn changed_paths(git: &Trusted) -> Result<Stage> {
 /// argument limit.
 fn path_filters(
     git: &Trusted,
-    base: Command,
+    base: impl Fn() -> Command,
     names: &[OsString],
     from: Attributes,
 ) -> Result<Vec<(OsString, String)>> {
-    let expected = 3 * names.len();
     let mut args: Vec<OsString> = vec!["check-attr".into()];
     if from == Attributes::Staged {
         args.push("--cached".into());
     }
     args.extend(["-z".into(), "--stdin".into(), "filter".into()]);
-    let mut input = Vec::new();
-    for name in names {
-        input.extend_from_slice(name.as_encoded_bytes());
-        input.push(0);
+    // In batches: horch holds at most 1 batch of output, and keeps only the
+    // paths that have a filter.
+    let mut selected = Vec::new();
+    for batch in names.chunks(CHECK_ATTR_BATCH) {
+        let mut input = Vec::new();
+        for name in batch {
+            input.extend_from_slice(name.as_encoded_bytes());
+            input.push(0);
+        }
+        let out = run_until(
+            git.command(base(), &args),
+            input,
+            3 * batch.len(),
+            GIT_DEADLINE,
+        )?;
+        if !out.complete || !out.status.success() {
+            bail!("git check-attr failed: {}", out.status);
+        }
+        selected.extend(filter_records(&out.records, batch.len())?);
     }
-    let out = run_until(git.command(base, &args), input, expected, GIT_DEADLINE)?;
-    if !out.complete || !out.status.success() {
-        bail!("git check-attr failed: {}", out.status);
-    }
-    filter_records(&out.records, names.len())
+    Ok(selected)
 }
+
+/// Paths per `git check-attr` call: at most 3 records of [`MAX_RECORD`]
+/// bytes each come back for every path.
+const CHECK_ATTR_BATCH: usize = 500;
 
 /// Where `git check-attr` reads `.gitattributes` files.
 #[derive(Clone, Copy, PartialEq)]
@@ -1049,6 +1063,18 @@ impl Trusted {
             .filter(|(key, _)| !git.repo_sets(key))
             .collect();
         git.filters = git.filter_drivers()?;
+        // check-attr prints `unspecified` or `unset` for a path with no
+        // filter, and a driver of that name could not be told apart.
+        if let Some(name) = git
+            .filters
+            .iter()
+            .find(|n| matches!(n.as_str(), "unspecified" | "unset" | "set"))
+        {
+            bail!(
+                "refused: the git config names a filter driver {name:?}, which git check-attr \
+                 cannot tell from no filter. Ask the orchestrator for a Claude worker to commit."
+            );
+        }
         Ok(git)
     }
 

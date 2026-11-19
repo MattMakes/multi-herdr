@@ -1257,7 +1257,7 @@ pub fn tools(ctx: &RuntimeContext) -> finish::Tools {
         .map(|d| d.join("code/cli/dist/index.js"))
     });
     finish::Tools {
-        git: Git::new(&ctx.bins.harness.git),
+        git: Git::new(&ctx.bins.harness.git).with_untrusted(&[&ctx.paths.state_root]),
         gh: env("HORCH_GH_BIN").unwrap_or_else(|| PathBuf::from("gh")),
         node: env("HORCH_NODE_BIN").unwrap_or_else(|| PathBuf::from("node")),
         complexity_cli,

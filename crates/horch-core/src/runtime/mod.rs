@@ -7,6 +7,8 @@
 pub mod bins;
 pub(crate) mod context;
 pub mod fault;
+#[cfg(windows)]
+pub mod job;
 pub mod machine;
 pub(crate) mod paths;
 pub mod process;

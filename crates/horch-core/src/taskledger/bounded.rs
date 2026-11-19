@@ -77,7 +77,7 @@ pub fn run_bounded<O, E>(
     limit: Duration,
     read_out: impl FnOnce(ChildStdout) -> O + Send + 'static,
     read_err: impl FnOnce(ChildStderr) -> E + Send + 'static,
-    stop_early: impl Fn(&O) -> bool,
+    stop_early: impl Fn(Option<&O>) -> bool,
 ) -> Result<Bounded<O, E>>
 where
     O: Send + 'static,
@@ -117,7 +117,7 @@ pub fn run_records(
         limit,
         move |o| read_delimited(BufReader::new(o), sep, max),
         read_stderr,
-        |r: &Result<(Vec<Vec<u8>>, bool)>| !matches!(r, Ok((_, true))),
+        |r: Option<&Result<(Vec<Vec<u8>>, bool)>>| r.is_some_and(|r| !matches!(r, Ok((_, true)))),
     )?;
     if run.timed_out {
         bail!(
@@ -147,13 +147,22 @@ pub struct Capped {
 /// deadline are errors.
 pub fn run_capped(cmd: Command, limit: Duration, cap: usize) -> Result<Capped> {
     let program = cmd.get_program().to_string_lossy().into_owned();
+    // stderr over the cap stops the run as soon as stdout over it does.
+    let err_over = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = Arc::clone(&err_over);
     let run = run_bounded(
         cmd,
         Vec::new(),
         limit,
-        move |o| read_capped(o, cap, false),
-        move |e| read_capped(e, cap, true),
-        |r: &(Vec<u8>, bool)| r.1,
+        move |o| read_capped(o, cap),
+        move |e| {
+            let read = read_capped(e, cap);
+            flag.store(read.1, std::sync::atomic::Ordering::SeqCst);
+            read
+        },
+        |r: Option<&(Vec<u8>, bool)>| {
+            r.is_some_and(|r| r.1) || err_over.load(std::sync::atomic::Ordering::SeqCst)
+        },
     )?;
     if run.timed_out {
         bail!(
@@ -171,19 +180,13 @@ pub fn run_capped(cmd: Command, limit: Duration, cap: usize) -> Result<Capped> {
     })
 }
 
-/// At most `cap` bytes of `reader`, and true when it had more. With
-/// `drain`, the rest is read and dropped, so the writer never blocks;
-/// without, the read stops at once.
-fn read_capped(reader: impl Read, cap: usize, drain: bool) -> (Vec<u8>, bool) {
+/// At most `cap` bytes of `reader`, and true when it had more. The read
+/// stops at the first byte past the cap: the runner then stops the child.
+fn read_capped(reader: impl Read, cap: usize) -> (Vec<u8>, bool) {
     let mut kept = Vec::new();
-    let mut reader = reader;
-    let _ = reader.by_ref().take(cap as u64 + 1).read_to_end(&mut kept);
+    let _ = reader.take(cap as u64 + 1).read_to_end(&mut kept);
     let over = kept.len() > cap;
     kept.truncate(cap);
-    if over && drain {
-        let mut dropped = [0u8; 8192];
-        while reader.read(&mut dropped).is_ok_and(|n| n > 0) {}
-    }
     (kept, over)
 }
 
@@ -215,7 +218,7 @@ pub fn run_logged(
         limit,
         move |o| stream_to(o, &out),
         move |e| stream_to(e, &err),
-        |_: &()| false,
+        |_: Option<&()>| false,
     )?;
     Ok((run.status, run.timed_out))
 }
@@ -280,13 +283,22 @@ where
         Stdio::piped()
     };
     let program = cmd.get_program().to_string_lossy().into_owned();
-    let mut child = cmd
-        .stdin(stdin)
+    cmd.stdin(stdin)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+        .stderr(Stdio::piped());
+    // On Windows the child starts suspended inside a job that kills its
+    // whole tree when the guard drops.
+    #[cfg(windows)]
+    let (mut child, job) = crate::runtime::job::spawn_contained(&mut cmd)
         .with_context(|| format!("running {program}"))?;
+    #[cfg(not(windows))]
+    let mut child = cmd.spawn().with_context(|| format!("running {program}"))?;
     let group = GroupGuard::of(&child);
+    #[cfg(windows)]
+    let group = GroupGuard {
+        job: Some(job),
+        ..group
+    };
     let writer = child
         .stdin
         .take()
@@ -309,17 +321,22 @@ where
 fn monitor<O, E>(
     run: &mut Running<O, E>,
     end: Instant,
-    stop_early: &dyn Fn(&O) -> bool,
+    stop_early: &dyn Fn(Option<&O>) -> bool,
 ) -> Result<(ExitStatus, Option<O>, bool, Instant)> {
     let mut read = None;
+    let mut next_scan = Instant::now();
     loop {
+        if Instant::now() >= next_scan {
+            run.group.track();
+            next_scan = Instant::now() + TRACK_INTERVAL;
+        }
         if let Some(status) = poll_exit(&mut run.child)? {
             return Ok((status, read, false, end));
         }
         if run.out.as_ref().is_some_and(JoinHandle::is_finished) {
             read = run.out.take().and_then(|h| h.join().ok());
         }
-        let early = read.as_ref().is_some_and(stop_early);
+        let early = stop_early(read.as_ref());
         let late = Instant::now() >= end;
         if early || late {
             let status = kill_and_reap(&mut run.child)?;
@@ -356,11 +373,23 @@ fn collect<O, E>(run: Running<O, E>, read: Option<O>, join_end: Instant) -> Resu
     Ok((out, err))
 }
 
-/// Stops what is left of a child's process group when dropped, on every
-/// return: TERM, a grace, then KILL ([`stop_group`]).
+/// How often the runner reads the process table for descendants of the
+/// child. A helper that leaves the group and whose parent exits within 1
+/// interval is not seen.
+const TRACK_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Stops what is left of a child's process tree when dropped, on every
+/// return. Unix: the child's process group (TERM, a grace, then KILL, see
+/// [`stop_group`]), and each descendant seen outside it (a helper that
+/// called `setsid` or `setpgid`), while its start time still matches.
+/// Windows: the job that holds the tree closes and kills it.
 struct GroupGuard {
     pgid: u32,
     started: u64,
+    /// Descendants seen by [`GroupGuard::track`], with their start times.
+    tracked: Vec<(u32, u64)>,
+    #[cfg(windows)]
+    job: Option<crate::runtime::job::Job>,
 }
 
 impl GroupGuard {
@@ -369,6 +398,22 @@ impl GroupGuard {
             pgid: child.id(),
             // Names the group after the leader is reaped (see `stop_group`).
             started: crate::procid::start_time(child.id()).unwrap_or(0),
+            tracked: Vec::new(),
+            #[cfg(windows)]
+            job: None,
+        }
+    }
+
+    /// Add every process now in the tree to the tracked set.
+    fn track(&mut self) {
+        #[cfg(unix)]
+        {
+            let known: Vec<u32> = self.tracked.iter().map(|t| t.0).collect();
+            for pid in new_descendants(self.pgid, &known, &process_table()) {
+                if let Some(started) = crate::procid::start_time(pid) {
+                    self.tracked.push((pid, started));
+                }
+            }
         }
     }
 }
@@ -376,7 +421,75 @@ impl GroupGuard {
 impl Drop for GroupGuard {
     fn drop(&mut self) {
         #[cfg(unix)]
-        stop_group(self.pgid, self.started);
+        {
+            self.track();
+            stop_group(self.pgid, self.started);
+            stop_tracked(&self.tracked);
+        }
+    }
+}
+
+/// `(pid, ppid, pgid)` of every process, from `ps`; empty when it fails.
+/// A fixed path: never a `ps` found on a `PATH` a worker can change.
+#[cfg(unix)]
+fn process_table() -> Vec<(u32, u32, u32)> {
+    let ps = ["/bin/ps", "/usr/bin/ps"]
+        .into_iter()
+        .find(|p| Path::new(p).is_file());
+    let Some(Ok(out)) = ps.map(|ps| {
+        Command::new(ps)
+            .args(["-A", "-o", "pid=", "-o", "ppid=", "-o", "pgid="])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+    }) else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut f = line.split_whitespace().map(str::parse::<u32>);
+            Some((f.next()?.ok()?, f.next()?.ok()?, f.next()?.ok()?))
+        })
+        .collect()
+}
+
+/// The pids in `table` that `known` lacks and whose parent chain reaches
+/// `leader` or a `known` pid, or whose group is `leader`'s.
+fn new_descendants(leader: u32, known: &[u32], table: &[(u32, u32, u32)]) -> Vec<u32> {
+    let mut found: std::collections::HashSet<u32> = known.iter().copied().collect();
+    found.insert(leader);
+    let mut added = Vec::new();
+    loop {
+        let before = added.len();
+        for &(pid, ppid, pgid) in table {
+            if !found.contains(&pid) && (found.contains(&ppid) || pgid == leader) {
+                found.insert(pid);
+                added.push(pid);
+            }
+        }
+        if added.len() == before {
+            return added;
+        }
+    }
+}
+
+/// TERM each tracked process that still has its start time, wait up to
+/// [`REAP_GRACE`] for them to end, then KILL the rest. A pid with another
+/// start time was given out again: it is left alone.
+#[cfg(unix)]
+fn stop_tracked(tracked: &[(u32, u64)]) {
+    use crate::procid::{is_same, stop_same, Stop};
+    let live = |t: &&(u32, u64)| is_same(t.0, t.1);
+    for t in tracked.iter().filter(live) {
+        stop_same(t.0, t.1, Stop::Term);
+    }
+    let until = Instant::now() + REAP_GRACE;
+    while tracked.iter().any(|t| is_same(t.0, t.1)) && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    for t in tracked.iter().filter(live) {
+        stop_same(t.0, t.1, Stop::Kill);
     }
 }
 
@@ -529,6 +642,86 @@ pub fn read_delimited(
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    /// Wait up to 1 s for `pid` to be gone, or fail the test.
+    #[cfg(unix)]
+    fn assert_gone(pid: libc::pid_t, what: &str) {
+        let returned = Instant::now();
+        // SAFETY: signal 0 only checks that the pid exists.
+        while unsafe { libc::kill(pid, 0) } == 0 {
+            assert!(
+                returned.elapsed() < Duration::from_secs(1),
+                "{what}: {pid} survived"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_helper_that_leaves_the_group_is_stopped_when_the_run_ends() {
+        // A helper in a new session (setsid), and one that also ignores TERM.
+        for (what, term) in [
+            ("setsid", ""),
+            ("setsid ignoring TERM", "$SIG{TERM}='IGNORE';"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let pid_file = dir.path().join("helper.pid");
+            let script = format!(
+                "perl -e 'use POSIX; POSIX::setsid(); {term} sleep 30' </dev/null >/dev/null 2>&1 & \
+                 echo $! > '{}'; sleep 0.5; exit 0",
+                pid_file.display()
+            );
+            let started = Instant::now();
+            let _ = run_until(sh(&script), Vec::new(), 5, Duration::from_secs(10));
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "{what}: {:?}",
+                started.elapsed()
+            );
+            let pid: libc::pid_t = std::fs::read_to_string(&pid_file)
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            assert_gone(pid, what);
+        }
+    }
+
+    #[test]
+    fn descendants_are_found_by_parent_chain_or_group() {
+        // 10 leads; 11 is its child; 12 left the group but is 11's child;
+        // 13 is in 10's group with another parent; 20 is unrelated.
+        let table = [
+            (10, 1, 10),
+            (11, 10, 10),
+            (12, 11, 12),
+            (13, 1, 10),
+            (20, 1, 20),
+        ];
+        let mut found = new_descendants(10, &[], &table);
+        found.sort();
+        assert_eq!(found, vec![11, 12, 13]);
+        // A known pid whose parent died still leads its own children.
+        assert_eq!(new_descendants(10, &[12], &[(30, 12, 30)]), vec![30]);
+    }
+
+    #[test]
+    fn a_capped_run_that_floods_stderr_stops_at_the_cap() {
+        let started = Instant::now();
+        let e = run_capped(
+            sh("while :; do head -c 65536 /dev/zero >&2; done"),
+            Duration::from_secs(20),
+            1024,
+        )
+        .unwrap_err();
+        assert!(e.to_string().contains("more than 1024 bytes"), "{e}");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+    }
 
     #[test]
     fn a_logged_run_past_its_deadline_is_stopped_inside_it() {

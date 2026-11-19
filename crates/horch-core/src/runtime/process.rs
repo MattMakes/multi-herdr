@@ -28,6 +28,11 @@ pub fn which(path: Option<&OsStr>, pathext: Option<&str>, name: &str) -> Option<
     which_in(path?, name, &path_extensions(pathext))
 }
 
+/// Find `name` on this process's own `PATH`.
+pub fn which_on_path(name: &str) -> Option<PathBuf> {
+    which(std::env::var_os("PATH").as_deref(), None, name)
+}
+
 /// Find `name` in an explicit PATH-formatted list.
 pub(crate) fn which_in(paths: &OsStr, name: &str, extensions: &[String]) -> Option<PathBuf> {
     for dir in std::env::split_paths(paths).filter(|d| !d.as_os_str().is_empty()) {

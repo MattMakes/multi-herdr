@@ -36,21 +36,22 @@ const TRUSTED_CODEXES: [&str; 3] = [
     "/usr/bin/codex",
 ];
 
+/// How a check ended. A runner failure is an `Err` around it.
+enum CheckResult {
+    Passed,
+    Failed(String),
+}
+
 /// Run `command` in `dir` with the shell, in its own process group, for at
 /// most [`CHECK_DEADLINE`]; its output streams to `log`, capped at
-/// [`CHECK_LOG_CAP`]. `Ok(Err(why))` is a failed check. When the worker
+/// [`CHECK_LOG_CAP`]. An `Err` is a check that could not run. When the worker
 /// that holds the claim runs on Codex, the check runs in the same `codex
 /// sandbox` its pane has: the committed code is the worker's, and outside a
 /// sandbox it would run with the operator's rights. The harness comes from
 /// the ledger's worker row, which spawn wrote, never from the worker's
 /// environment. A row with no harness fails: the check would run
 /// unsandboxed for a worker that may be on Codex.
-fn run_check(
-    cx: &Ctx<'_>,
-    dir: &Path,
-    command: &str,
-    log: &Path,
-) -> Result<std::result::Result<(), String>> {
+fn run_check(cx: &Ctx<'_>, dir: &Path, command: &str, log: &Path) -> Result<CheckResult> {
     let sandboxed = is_codex(cx)?;
     // /tmp is read-only in the sandbox: a private temp dir in the state
     // root, as a pane has, removed after the check.
@@ -92,13 +93,13 @@ fn run_check(
     let mut file = std::fs::OpenOptions::new().append(true).open(log)?;
     std::io::Write::write_all(&mut file, end.as_bytes())?;
     Ok(match (timed_out, status.success()) {
-        (true, _) => Err(format!(
+        (true, _) => CheckResult::Failed(format!(
             "check ran longer than {} min; read {}",
             CHECK_DEADLINE.as_secs() / 60,
             log.display()
         )),
-        (false, true) => Ok(()),
-        (false, false) => Err(format!(
+        (false, true) => CheckResult::Passed,
+        (false, false) => CheckResult::Failed(format!(
             "`{command}` failed; read {} and fix it",
             log.display()
         )),
@@ -193,8 +194,10 @@ pub fn check(cx: &Ctx<'_>, name: StepName) -> Result<Outcome> {
         .join(format!("{}-{}.log", cx.seq, name.as_str()));
     let tree = cx.tools.git.tree(&cx.dir).ok();
     match run_check(cx, &cx.dir, cmd, &log)? {
-        Ok(()) => Ok(Outcome::pass("exit 0", Some(log), &format!("`{cmd}` passed")).judged(tree)),
-        Err(why) => Ok(Outcome::fail("red", Some(log), &why).judged(tree)),
+        CheckResult::Passed => {
+            Ok(Outcome::pass("exit 0", Some(log), &format!("`{cmd}` passed")).judged(tree))
+        }
+        CheckResult::Failed(why) => Ok(Outcome::fail("red", Some(log), &why).judged(tree)),
     }
 }
 
@@ -286,67 +289,19 @@ pub fn land(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
         )?;
         Ok(Outcome::fail("not landed", Some(log.clone()), &why))
     };
-    // Rebase on the run branch's tip.
-    let target_before = git.rev(&cx.root, &run_branch)?;
-    let rebase = git.try_run(&dir, &["rebase", &target_before])?;
-    if !rebase.ok {
-        let _ = git.try_run(&dir, &["rebase", "--abort"]);
-        std::fs::write(&log, format!("{}\n{}", rebase.stdout, rebase.stderr))?;
-        return red(store, conflict_text(cx, &run_branch, &dir));
-    }
-    if let Some(cmd) = cx
-        .task
-        .land_check
-        .as_deref()
-        .filter(|c| !c.trim().is_empty())
-    {
-        // Any failure here sets the worktree back to open: a Codex worker
-        // commits only in an open worktree.
-        match run_check(cx, &dir, cmd, &log) {
-            Ok(Ok(())) => {}
-            Ok(Err(why)) => return red(store, format!("after the rebase: {why}")),
-            Err(e) => return red(store, format!("the check could not run: {e:#}")),
-        }
-    }
-    let new = git.rev(&dir, "HEAD")?;
-    if !git.is_ancestor(&cx.root, &target_before, &new) {
-        return red(
-            store,
-            "the rebased branch does not contain the run branch".into(),
-        );
-    }
-    // Fast-forward the run branch: by merge when it is checked out in the
-    // main checkout, else by a compare-and-swap of its ref. Never forced.
-    let checked_out = git.current_branch(&cx.root).as_deref() == Some(run_branch.as_str());
-    if checked_out {
-        // The repository's filters (git-lfs), never its hooks: a hooks path
-        // can be a folder the worker's commits fill.
-        let ff = git
-            .with_repo_filters()
-            .try_run(&cx.root, &["merge", "--ff-only", &new])?;
-        if !ff.ok {
-            return red(
-                store,
-                format!("fast-forward of {run_branch} failed: {}", ff.stderr),
-            );
-        }
-    } else {
-        let r = git.try_run(
-            &cx.root,
-            &[
-                "update-ref",
-                &format!("refs/heads/{run_branch}"),
-                &new,
-                &target_before,
-            ],
-        )?;
-        if !r.ok {
-            return red(
-                store,
-                format!("{run_branch} moved during the land; run finish again"),
-            );
-        }
-    }
+    // Until the run branch moves, any failure sets the worktree back to
+    // open: a Codex worker commits only in an open worktree, and a land
+    // left in `landing` is never retried.
+    let new = match advance(cx, &dir, &run_branch, &log) {
+        Ok(Advance::Moved(new)) => new,
+        Ok(Advance::Red(why)) => return red(store, why),
+        Err(e) => return red(store, format!("the land stopped: {e:#}")),
+    };
+    // The run branch has the commit: record it before the push can fail.
+    store.conn().execute(
+        "UPDATE worktrees SET status = 'landed', landed_commit = ?2, landed_at = ?3 WHERE worktree_id = ?1",
+        params![wt.worktree_id, new, util::now()],
+    )?;
     let mut note = format!(
         "{} landed on {run_branch} at {}",
         wt.branch,
@@ -359,11 +314,6 @@ pub fn land(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
         }
         if !push.ok {
             // The land stands; the push is retried by the next finish.
-            set_worktree(store.conn(), &wt.worktree_id, WorktreeStatus::Landed, None)?;
-            store.conn().execute(
-                "UPDATE worktrees SET landed_commit = ?2, landed_at = ?3 WHERE worktree_id = ?1",
-                params![wt.worktree_id, new, util::now()],
-            )?;
             return Ok(Outcome::fail(
                 "landed, not pushed",
                 Some(log),
@@ -373,9 +323,8 @@ pub fn land(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
         note.push_str(&format!("; pushed to {remote}"));
     }
     store.conn().execute(
-        "UPDATE worktrees SET status = 'landed', landed_commit = ?2, landed_at = ?3, reason = NULL
-         WHERE worktree_id = ?1",
-        params![wt.worktree_id, new, util::now()],
+        "UPDATE worktrees SET reason = NULL WHERE worktree_id = ?1",
+        params![wt.worktree_id],
     )?;
     util::event(
         store.conn(),
@@ -386,6 +335,81 @@ pub fn land(store: &mut Store, cx: &Ctx<'_>) -> Result<Outcome> {
     )?;
     std::fs::write(&log, format!("{note}\n"))?;
     Ok(Outcome::pass(&new, Some(log), &note))
+}
+
+/// How the run branch fared in a land.
+enum Advance {
+    /// The run branch is at this commit now.
+    Moved(String),
+    /// The run branch did not move, for this reason.
+    Red(String),
+}
+
+/// Rebase the worktree in `dir` on the run branch's tip, run the land
+/// check, then fast-forward the run branch. An `Err` comes only before the
+/// run branch moves.
+fn advance(cx: &Ctx<'_>, dir: &Path, run_branch: &str, log: &Path) -> Result<Advance> {
+    let git = &cx.tools.git;
+    // Rebase on the run branch's tip.
+    let target_before = git.rev(&cx.root, run_branch)?;
+    let rebase = git.try_run(dir, &["rebase", &target_before])?;
+    if !rebase.ok {
+        let _ = git.try_run(dir, &["rebase", "--abort"]);
+        std::fs::write(log, format!("{}\n{}", rebase.stdout, rebase.stderr))?;
+        return Ok(Advance::Red(conflict_text(cx, run_branch, dir)));
+    }
+    if let Some(cmd) = cx
+        .task
+        .land_check
+        .as_deref()
+        .filter(|c| !c.trim().is_empty())
+    {
+        match run_check(cx, dir, cmd, log) {
+            Ok(CheckResult::Passed) => {}
+            Ok(CheckResult::Failed(why)) => {
+                return Ok(Advance::Red(format!("after the rebase: {why}")))
+            }
+            Err(e) => return Ok(Advance::Red(format!("the check could not run: {e:#}"))),
+        }
+    }
+    let new = git.rev(dir, "HEAD")?;
+    if !git.is_ancestor(&cx.root, &target_before, &new) {
+        return Ok(Advance::Red(
+            "the rebased branch does not contain the run branch".into(),
+        ));
+    }
+    // Fast-forward the run branch: by merge when it is checked out in the
+    // main checkout, else by a compare-and-swap of its ref. Never forced.
+    let checked_out = git.current_branch(&cx.root).as_deref() == Some(run_branch);
+    if checked_out {
+        // The repository's filters (git-lfs), never its hooks: a hooks path
+        // can be a folder the worker's commits fill.
+        let ff = git
+            .with_repo_filters()
+            .try_run(&cx.root, &["merge", "--ff-only", &new])?;
+        if !ff.ok {
+            return Ok(Advance::Red(format!(
+                "fast-forward of {run_branch} failed: {}",
+                ff.stderr
+            )));
+        }
+    } else {
+        let r = git.try_run(
+            &cx.root,
+            &[
+                "update-ref",
+                &format!("refs/heads/{run_branch}"),
+                &new,
+                &target_before,
+            ],
+        )?;
+        if !r.ok {
+            return Ok(Advance::Red(format!(
+                "{run_branch} moved during the land; run finish again"
+            )));
+        }
+    }
+    Ok(Advance::Moved(new))
 }
 
 /// A shared-checkout task: its commits are on the run branch already when
