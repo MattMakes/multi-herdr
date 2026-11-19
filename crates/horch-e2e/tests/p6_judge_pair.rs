@@ -172,7 +172,13 @@ impl World {
             show(
                 "tasks",
                 "SELECT task_id, kind, IFNULL(parent_task_id, '-'), status, \
-                 fix_rounds, attempt_floor, IFNULL(idea_id, '-') FROM tasks",
+                 fix_rounds, attempt_floor, IFNULL(idea_id, '-'), \
+                 IFNULL(primary_persona, '-') FROM tasks",
+            ),
+            show(
+                "profile facts",
+                "SELECT event_id, entity_id, kind, IFNULL(cause, '-') \
+                 FROM events WHERE entity = 'profile' ORDER BY event_id",
             ),
             show(
                 "attempts",
