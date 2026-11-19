@@ -1,3 +1,1 @@
 # Red tests of crates/horch-e2e/tests/p0_landing.rs (fleetd Phase 0, ticket 07).
-given_3_ready_branches_when_bundle_then_fast_gate_runs_once_and_none_is_forgotten | 4 | the fast gate runs 1 time for the bundle of 3 ready branches; the fast gate ran
-two_conflicting_features_keep_their_tips_and_reach_a_decision | 6 | horch idea add: refused: not handled in this version
