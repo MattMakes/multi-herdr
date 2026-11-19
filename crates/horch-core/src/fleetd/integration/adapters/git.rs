@@ -91,21 +91,6 @@ impl CliGitGateway {
         Ok(RefMove::Mismatch { actual })
     }
 
-    /// Whether `a` is an ancestor of `b`, or `a` is `b`.
-    fn is_ancestor(&self, repo: &Path, a: &str, b: &str) -> Result<bool> {
-        let out = self
-            .git
-            .checked(repo, &["merge-base", "--is-ancestor", a, b])?;
-        match out.status {
-            0 => Ok(true),
-            1 => Ok(false),
-            s => bail!(
-                "git merge-base --is-ancestor {a} {b} failed ({s}): {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            ),
-        }
-    }
-
     /// The newest committer date of the commits `a` and `b`, as git reads
     /// a date (`<seconds> +0000`). A merge commit of the candidate gets it,
     /// so a candidate tip depends only on its inputs, and a repeated build
@@ -176,6 +161,20 @@ fn stash_branch(subject: &str) -> Option<&str> {
 }
 
 impl IntegrationGitGateway for CliGitGateway {
+    fn is_ancestor(&self, repo: &Path, a: &str, b: &str) -> Result<bool> {
+        let out = self
+            .git
+            .checked(repo, &["merge-base", "--is-ancestor", a, b])?;
+        match out.status {
+            0 => Ok(true),
+            1 => Ok(false),
+            s => bail!(
+                "git merge-base --is-ancestor {a} {b} failed ({s}): {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ),
+        }
+    }
+
     fn tip(&self, repo: &Path, name: &str) -> Result<Option<String>> {
         full_ref(name)?;
         Ok(self
@@ -219,6 +218,13 @@ impl IntegrationGitGateway for CliGitGateway {
         self.failed_move(repo, name, Some(expected_old), &out.stderr)
     }
 
+    fn contains(&self, repo: &Path, tip: &str, ancestor: &str) -> Result<bool> {
+        for id in [tip, ancestor] {
+            object_id(id)?;
+        }
+        self.is_ancestor(repo, ancestor, tip)
+    }
+
     fn changes_in(
         &self,
         repo: &Path,
@@ -251,6 +257,13 @@ impl IntegrationGitGateway for CliGitGateway {
         let mut head = base_tip.to_string();
         for member in members {
             object_id(&member.tip)?;
+            // A member that is already in the candidate, as a branch that the
+            // old path landed, adds no merge commit: the candidate stays at
+            // its tip, and a bundle of only such members lands at the base
+            // tip with no ref move.
+            if self.is_ancestor(repo, &member.tip, &head)? {
+                continue;
+            }
             let args = [
                 "merge-tree",
                 "--write-tree",
