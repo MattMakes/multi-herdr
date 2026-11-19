@@ -133,26 +133,31 @@ pub fn advance_in(
 
 /// The build job of a bundle is a separate process: a pass can drop the
 /// bundle while the job runs, and the job can still write the candidate
-/// ref after the drop. Record the candidate of each such passed job on its
-/// dropped bundle, so the deletion of candidate refs deletes the ref. A
-/// recorded bundle has its `candidate_tip`, so it is recorded 1 time.
+/// ref after the drop. The ids of the dropped bundles whose build job has
+/// not ended, or passed with a candidate that the row does not record yet.
+/// A pass follows them, so [`advance_in`] records each such candidate.
+pub fn late_builds(conn: &Connection) -> Result<Vec<i64>> {
+    let mut ids = Vec::new();
+    for (id, job) in rows::dropped_without_candidate(conn)? {
+        let job = jobs_store::get(conn, job)?;
+        let late = job.as_ref().is_some_and(|j| j.kind == Kind::BundleBuild)
+            && matches!(
+                build_fact(job.as_ref()),
+                BuildFact::Pending | BuildFact::Built { .. }
+            );
+        if late {
+            ids.push(id);
+        }
+    }
+    Ok(ids)
+}
+
+/// Record the candidate of the passed build job of each dropped bundle of
+/// [`late_builds`] on its row, so the deletion of candidate refs deletes
+/// the ref. A recorded bundle has its `candidate_tip`, so it is recorded 1
+/// time.
 fn late_candidates(ctx: &JobCtx<'_>, tx: &Connection, bundles: Option<&[i64]>) -> Result<()> {
-    let mut stmt = tx.prepare(
-        "SELECT b.id FROM bundles b JOIN jobs j ON j.id = b.job_id
-         WHERE b.state = ?1 AND b.candidate_tip IS NULL AND j.kind = ?2 AND j.state = ?3
-         ORDER BY b.id",
-    )?;
-    let ids: Vec<i64> = stmt
-        .query_map(
-            params![
-                BundleState::Dropped.as_str(),
-                Kind::BundleBuild.as_str(),
-                State::Passed.as_str()
-            ],
-            |r| r.get(0),
-        )?
-        .collect::<rusqlite::Result<_>>()?;
-    for id in ids {
+    for id in late_builds(tx)? {
         if bundles.is_some_and(|ids| !ids.contains(&id)) {
             continue;
         }

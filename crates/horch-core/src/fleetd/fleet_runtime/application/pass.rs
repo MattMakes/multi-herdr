@@ -4455,10 +4455,11 @@ impl Pass<'_> {
         let gw = CliGitGateway::new(git.clone());
         let live = integration_rows::feature_ids(tx, true)?;
         let chosen = take(tx, RowKind::Features.as_str(), &live, budget, stamp)?;
-        let keys: Vec<String> = integration_rows::bundles_to_follow(tx)?
-            .into_iter()
-            .map(id_key)
-            .collect();
+        let mut follow = integration_rows::bundles_to_follow(tx)?;
+        follow.extend(bundles::late_builds(tx)?);
+        follow.sort_unstable();
+        follow.dedup();
+        let keys: Vec<String> = follow.into_iter().map(id_key).collect();
         let ids: Vec<i64> = take(tx, RowKind::Bundles.as_str(), &keys, budget, stamp)?
             .iter()
             .filter_map(|k| k.parse().ok())
