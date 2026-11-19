@@ -74,6 +74,11 @@ pub enum Step {
 /// Why a full gate waits: the gate tree of its feature is not made yet.
 pub const GATE_TREE_NOT_MADE: &str = "the gate tree of the feature is not made yet";
 
+/// Why a settled feature has no full gate yet: its tip does not contain the
+/// fetched primary tip.
+pub const WAITS_FOR_REBASE: &str =
+    "the feature tip does not contain the fetched primary tip; the rebase comes first";
+
 fn by_fleetd(text: &str) -> Cause<'_> {
     Cause {
         actor: Actor::Horch,
@@ -164,6 +169,14 @@ fn follow_one(f: &Features<'_>, tx: &Connection, id: &str, clock: FleetSeconds) 
                 f.jobs.needs_you,
             )?;
             Ok(Step::Entered(to))
+        }
+        // The full gate judges the feature tip over the fetched primary
+        // tip, and the gate refuses a tip that does not contain it. So no
+        // full gate is queued then: a queued gate holds the gate tree, and
+        // the rebase that brings the primary tip in waits for the tree
+        // (continuous rebase, FM-42).
+        Next::RunFullGate if !f.git.contains(&tips.repo, &tips.feature, &tips.primary)? => {
+            Ok(Step::Waits(WAITS_FOR_REBASE.into()))
         }
         Next::RunFullGate => {
             let tree = GateTreeRequest {

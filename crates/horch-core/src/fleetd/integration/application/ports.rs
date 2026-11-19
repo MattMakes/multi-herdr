@@ -66,6 +66,10 @@ pub trait IntegrationGitGateway {
     /// Delete the ref `name` only when it is at `expected_old`.
     fn delete_ref(&self, repo: &Path, name: &str, expected_old: &str) -> Result<RefMove>;
 
+    /// Whether `ancestor` is an ancestor of `tip`, or is `tip`:
+    /// `git merge-base --is-ancestor <ancestor> <tip>`.
+    fn contains(&self, repo: &Path, tip: &str, ancestor: &str) -> Result<bool>;
+
     /// Whether the changes of the branch at `branch_tip` are in
     /// `target_tip` (I8): `branch_tip` is an ancestor of `target_tip`, or
     /// each file that the branch changed from its merge base with `base`

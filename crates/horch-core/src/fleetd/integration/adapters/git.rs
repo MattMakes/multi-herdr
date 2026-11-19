@@ -218,6 +218,13 @@ impl IntegrationGitGateway for CliGitGateway {
         self.failed_move(repo, name, Some(expected_old), &out.stderr)
     }
 
+    fn contains(&self, repo: &Path, tip: &str, ancestor: &str) -> Result<bool> {
+        for id in [tip, ancestor] {
+            object_id(id)?;
+        }
+        self.is_ancestor(repo, ancestor, tip)
+    }
+
     fn changes_in(
         &self,
         repo: &Path,

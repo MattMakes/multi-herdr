@@ -446,6 +446,11 @@ impl IntegrationGitGateway for Git {
         Ok(RefMove::Moved)
     }
 
+    /// Each feature tip contains the primary tip in this test.
+    fn contains(&self, _: &Path, _: &str, _: &str) -> Result<bool> {
+        Ok(true)
+    }
+
     fn changes_in(&self, _: &Path, _: &str, _: &str, _: &str) -> Result<bool> {
         Ok(false)
     }

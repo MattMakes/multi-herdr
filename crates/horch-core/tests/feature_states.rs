@@ -23,14 +23,19 @@ use horch_core::fleetd::fleet_runtime::application::jobs::JobCtx;
 use horch_core::fleetd::fleet_runtime::application::ledger::Cause;
 use horch_core::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
+use horch_core::fleetd::fleet_runtime::domain::jobs::Kind;
 use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
+use horch_core::fleetd::integration::adapters::exec_rebase::GitRebaseRefs;
 use horch_core::fleetd::integration::adapters::git::CliGitGateway;
-use horch_core::fleetd::integration::adapters::sqlite::{self as rows, NewFeature};
+use horch_core::fleetd::integration::adapters::sqlite::{
+    self as rows, BranchFact, NewBranch, NewFeature,
+};
 use horch_core::fleetd::integration::application::features::{self, Features};
 use horch_core::fleetd::integration::application::landing;
 use horch_core::fleetd::integration::application::ports::{
     BranchTip, Candidate, IntegrationGitGateway, Member, RefMove,
 };
+use horch_core::fleetd::integration::application::rebase::{self, Effect, Rebases};
 use horch_core::fleetd::worktree_custody::adapters::git::CliWorktreeGit;
 use horch_core::fleetd::worktree_custody::application::create::{self, Observed};
 use horch_core::fleetd::worktree_custody::application::gate_tree::{
@@ -169,6 +174,57 @@ impl World {
         let tx = self.conn.unchecked_transaction().unwrap();
         features::follow(&f, &tx, FleetSeconds(0)).unwrap();
         tx.commit().unwrap();
+    }
+
+    /// The rebase refs of fleetd in this repository.
+    fn rebase_refs(&self) -> GitRebaseRefs {
+        let dir = self.repo.parent().unwrap();
+        GitRebaseRefs::new(
+            CliWorktreeGit::new("git", dir.join("fleet")).writing(&[self.repo.join(".git")]),
+        )
+    }
+
+    /// Run the rescue `effect` after the commit, and record it, as the
+    /// effects of a pass do.
+    fn rescue(&self, effect: &Effect) {
+        let done = rebase::run(effect, &self.rebase_refs()).unwrap();
+        let ctx = self.jobs();
+        let tx = self.conn.unchecked_transaction().unwrap();
+        rebase::observe(&ctx, &tx, &done).unwrap();
+        tx.commit().unwrap();
+    }
+
+    /// The branch row of the run branch at its tip, as the branch scan of
+    /// a pass records it.
+    fn seen_run_branch(&self) {
+        let tip = self.tip(RUN_BRANCH);
+        let tx = self.conn.unchecked_transaction().unwrap();
+        let row = NewBranch {
+            name: RUN_BRANCH,
+            feature_id: FEATURE,
+            task_id: None,
+            owner: "fleetd",
+            due_at: 0,
+        };
+        rows::insert_branch(&tx, None, &row, cause("feature branch")).unwrap();
+        rows::set_branch_fact(&tx, None, RUN_BRANCH, BranchFact::SeenTip(&tip), cause("seen"))
+            .unwrap();
+        tx.commit().unwrap();
+    }
+
+    /// 1 pass of the continuous rebase: its effects.
+    fn follow_rebase(&self) -> Vec<Effect> {
+        let ctx = self.jobs();
+        let refs = self.rebase_refs();
+        let r = Rebases {
+            jobs: &ctx,
+            git: &self.git,
+            refs: &refs,
+        };
+        let tx = self.conn.unchecked_transaction().unwrap();
+        let effects = rebase::follow(&r, &tx, FleetSeconds(0)).unwrap();
+        tx.commit().unwrap();
+        effects
     }
 
     fn follow(&self) {
@@ -407,6 +463,10 @@ impl IntegrationGitGateway for Counting<'_> {
         self.call();
         self.inner.delete_ref(repo, name, expected_old)
     }
+    fn contains(&self, repo: &Path, tip: &str, ancestor: &str) -> Result<bool> {
+        self.call();
+        self.inner.contains(repo, tip, ancestor)
+    }
     fn changes_in(&self, repo: &Path, tip: &str, base: &str, target: &str) -> Result<bool> {
         self.call();
         self.inner.changes_in(repo, tip, base, target)
@@ -532,11 +592,15 @@ fn full_gate_waits_for_the_gate_tree_of_the_feature() {
     assert_eq!(w.full_gates(), vec![(tip, main, None)]);
 }
 
+/// The primary tip moves after the full gate passed: the gate is stale, and
+/// the feature is `open`. The feature tip does not contain the fetched
+/// primary tip, so no full gate runs on it (the gate would refuse it), and
+/// the gate tree stays free for the rebase (continuous rebase, FM-42).
+/// After the rebase, 1 full gate runs on the new tips.
 #[test]
-fn moved_primary_tip_makes_the_full_gate_stale_and_the_feature_open() {
+fn moved_primary_tip_makes_the_feature_open_and_the_rebase_comes_before_the_full_gate() {
     let w = world();
     w.ready();
-    let tip = w.tip(RUN_BRANCH);
     let moved = w.commit_on("main", "c.txt", "c\n");
     // The local primary branch is not the fetched tip: nothing changes.
     w.follow();
@@ -545,13 +609,44 @@ fn moved_primary_tip_makes_the_full_gate_stale_and_the_feature_open() {
     w.fetched_main(&moved);
     w.follow();
     assert_eq!(w.state(), "open");
-    // The pass on the old tips does not make the feature ready again: the
-    // gate runs again on the new tips.
     w.follow();
     assert_eq!(w.state(), "open");
+    assert_eq!(
+        w.full_gates().len(),
+        1,
+        "no full gate on a feature tip that does not contain the fetched primary tip"
+    );
+    assert!(
+        !rebase::gate_tree_busy(&w.conn, FEATURE).unwrap(),
+        "no full gate holds the gate tree"
+    );
+    // The rebase starts: its first effect is the rescue ref of the old
+    // feature tip. After the rescue, the next pass queues the rebase job.
+    w.seen_run_branch();
+    let old = w.tip(RUN_BRANCH);
+    let effects = w.follow_rebase();
+    assert!(
+        matches!(&effects[..], [Effect::Rescue { branch, tip, .. }]
+            if branch == RUN_BRANCH && *tip == old),
+        "the rescue of the old feature tip: {effects:?}"
+    );
+    w.rescue(&effects[0]);
+    assert!(w.follow_rebase().is_empty());
+    assert!(
+        jobs_store::active(&w.conn, Kind::Rebase, RUN_BRANCH)
+            .unwrap()
+            .is_some(),
+        "the rebase job of {RUN_BRANCH} is queued"
+    );
+
+    // The rebase job moved the feature branch onto the primary tip.
+    git(&w.repo, &["rebase", "--quiet", "main", RUN_BRANCH]);
+    git(&w.repo, &["checkout", "--quiet", "main"]);
+    let rebased = w.tip(RUN_BRANCH);
+    w.follow();
     let gates = w.full_gates();
     assert_eq!(gates.len(), 2);
-    assert_eq!(gates[1], (tip, moved, None));
+    assert_eq!(gates[1], (rebased, moved, None));
     w.pass_full_gate();
     w.follow();
     assert_eq!(w.state(), "ready");
