@@ -464,6 +464,14 @@ mod tests {
             .with("HORCH_LEDGER_DB", db.to_str().unwrap())
             .with("HORCH_HERDR_BIN", dir.join("no-herdr").to_str().unwrap());
         let ctx = RuntimeContext::from_env(&env).unwrap();
+        // The load of the build host does not hold dispatch in this test.
+        let root = &ctx.paths.fleet_root;
+        std::fs::create_dir_all(root).unwrap();
+        std::fs::write(
+            root.join("fleet.toml"),
+            "health_max_load_per_cpu = 1000000.0\n",
+        )
+        .unwrap();
         let mut store = Store::open(&db).unwrap();
         let new_run = NewRun {
             slug: "r1".into(),
