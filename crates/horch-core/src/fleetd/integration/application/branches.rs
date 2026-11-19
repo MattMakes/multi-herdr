@@ -224,7 +224,11 @@ fn open_one(
 /// repairs. A branch with no task, as a feature branch, takes the primary
 /// persona of the newest task of the feature that has one. `None` when no
 /// task of the feature has a primary persona.
-pub fn resolver_persona(conn: &Connection, feature_id: &str, branch: &str) -> Result<Option<String>> {
+pub fn resolver_persona(
+    conn: &Connection,
+    feature_id: &str,
+    branch: &str,
+) -> Result<Option<String>> {
     if let Some(task) = rows::branch(conn, branch)?.and_then(|b| b.task_id) {
         if let Some(persona) = tasks::get(conn, &task)?.primary_persona {
             return Ok(Some(persona));

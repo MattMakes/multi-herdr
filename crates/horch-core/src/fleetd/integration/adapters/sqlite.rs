@@ -633,29 +633,6 @@ pub fn bundles_to_follow(conn: &Connection) -> Result<Vec<i64>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// Each task branch that is a member of more than 1 bundle that is not
-/// ended (a breach of I12), with the ids of those bundles, by name.
-pub fn branches_in_open_bundles(conn: &Connection) -> Result<Vec<(String, Vec<i64>)>> {
-    let mut stmt = conn.prepare(
-        "SELECT m.branch, group_concat(b.id) FROM bundle_members m
-         JOIN bundles b ON b.id = m.bundle_id
-         WHERE b.state IN ('building', 'gating', 'passed')
-         GROUP BY m.branch HAVING count(*) > 1 ORDER BY m.branch",
-    )?;
-    let rows = stmt.query_map([], |r| {
-        let ids: String = r.get(1)?;
-        Ok((r.get::<_, String>(0)?, ids))
-    })?;
-    let mut out = Vec::new();
-    for row in rows {
-        let (branch, ids) = row?;
-        let mut ids: Vec<i64> = ids.split(',').filter_map(|i| i.parse().ok()).collect();
-        ids.sort_unstable();
-        out.push((branch, ids));
-    }
-    Ok(out)
-}
-
 /// The branch of each `open` or `ready` feature that has its branch row,
 /// with the `seen_tip` of that row, as (feature id, branch, seen tip), by
 /// feature id.

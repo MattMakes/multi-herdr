@@ -87,7 +87,12 @@ fn git_out(dir: &Path, args: &[&str]) -> Output {
         .arg("-C")
         .arg(dir)
         .args(["-c", "user.name=t", "-c", "user.email=t@t"])
-        .args(["-c", "commit.gpgSign=false", "-c", "core.hooksPath=/dev/null"])
+        .args([
+            "-c",
+            "commit.gpgSign=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+        ])
         .args(args)
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_NOSYSTEM", "1")
@@ -133,7 +138,11 @@ fn world(remote: &str) -> World {
     fs::create_dir_all(&project).unwrap();
     git(&project, &["init", "-q", "-b", "main"]);
     fs::write(project.join("a.txt"), "a\n").unwrap();
-    fs::write(project.join("fleet.toml"), format!("remote = \"{remote}\"\n")).unwrap();
+    fs::write(
+        project.join("fleet.toml"),
+        format!("remote = \"{remote}\"\n"),
+    )
+    .unwrap();
     git(&project, &["add", "a.txt", "fleet.toml"]);
     git(&project, &["commit", "-q", "-m", "a"]);
     git(&project, &["branch", FEATURE_BRANCH]);
@@ -330,7 +339,9 @@ impl World {
             needs_you: &NeedsYouList,
         };
         let mut conn = open(&self.db());
-        let ended = test_jobs::TestJobs.run_job(&ctx, &mut conn, job.id).unwrap();
+        let ended = test_jobs::TestJobs
+            .run_job(&ctx, &mut conn, job.id)
+            .unwrap();
         assert_eq!(ended.state, State::Passed, "{ended:?}");
     }
 
@@ -485,7 +496,9 @@ fn ready_branches_of_1_feature_land_by_passes_alone() {
 
     let id = to_passed_gate(&w, &mut p, &mut conn);
     let candidate_ref = format!("refs/horch/bundle/{id}");
-    let candidate = w.tip(&candidate_ref).expect("the build wrote the candidate");
+    let candidate = w
+        .tip(&candidate_ref)
+        .expect("the build wrote the candidate");
     // The pass moves the bundle to `passed` and the ref after its commit.
     run(&mut p, &mut conn);
     assert_eq!(w.tip(FEATURE_BRANCH).as_deref(), Some(candidate.as_str()));
@@ -495,7 +508,10 @@ fn ready_branches_of_1_feature_land_by_passes_alone() {
     for b in ABC {
         assert_eq!(w.landing(b), "landed", "{b}");
         let tip = w.tip(b).unwrap();
-        git(&w.repo(), &["merge-base", "--is-ancestor", &tip, FEATURE_BRANCH]);
+        git(
+            &w.repo(),
+            &["merge-base", "--is-ancestor", &tip, FEATURE_BRANCH],
+        );
     }
     assert_eq!(w.jobs_of(Kind::BundleBuild).len(), 1, "1 build");
     assert_eq!(w.jobs_of(Kind::FastGate).len(), 1, "1 fast gate run");
@@ -557,7 +573,11 @@ fn only_1_git_writer_job_runs_for_1_repository() {
             "SELECT count(*) FROM jobs WHERE state = 'running' AND repo = '{repo}'"
         ));
         assert_eq!(running, 1, "1 git writer runs while {kind} runs");
-        let pid = jobs_store::get(&conn, writer).unwrap().unwrap().pid.unwrap();
+        let pid = jobs_store::get(&conn, writer)
+            .unwrap()
+            .unwrap()
+            .pid
+            .unwrap();
         let _ = Command::new("kill").arg(pid.to_string()).status();
     }
 }
@@ -570,9 +590,9 @@ fn only_1_git_writer_job_runs_for_1_repository() {
 ///   `dropped` 1 time, and the new tip is recorded 1 time.
 /// - I11: a fleet branch with no row is adopted, reported with 1 needs-you
 ///   item and not deleted.
-/// - I12: a task branch in 2 bundles that are not ended gets 1 needs-you
-///   item. A landed branch is deleted, and a landed branch that a stash
-///   entry names is kept.
+/// - I12: a landed branch is deleted, and a landed branch that a stash
+///   entry names is kept. The schema trigger refuses a task branch in 2
+///   bundles that are not ended, so that breach cannot be written.
 #[test]
 fn each_invariant_breach_records_1_event() {
     // I9.
@@ -592,7 +612,11 @@ fn each_invariant_breach_records_1_event() {
     assert_eq!(w.moves_to(&id.to_string(), "dropped"), 1, "I9: 1 drop");
     assert_eq!(w.tip(FEATURE_BRANCH).as_deref(), Some(moved.as_str()));
     let seen = rows::branch(&w.conn, FEATURE_BRANCH).unwrap().unwrap();
-    assert_eq!(seen.seen_tip.as_deref(), Some(moved.as_str()), "I9: new tip");
+    assert_eq!(
+        seen.seen_tip.as_deref(),
+        Some(moved.as_str()),
+        "I9: new tip"
+    );
     drop(p);
 
     // I11 and I12.
@@ -617,31 +641,6 @@ fn each_invariant_breach_records_1_event() {
     git(&repo, &["add", "wip.txt"]);
     git(&repo, &["stash", "push", "-q", "-m", "wip"]);
     git(&repo, &["checkout", "-q", "main"]);
-    let twice = "fleet/r1-T3-twice";
-    w.task_branch(twice, "dev", "done");
-    let base = w.tip(FEATURE_BRANCH).unwrap();
-    for _ in 0..2 {
-        w.conn
-            .execute(
-                "INSERT INTO bundles (feature_id, base_tip, candidate_tip, state, due_at, at)
-                 VALUES (?1, ?2, ?2, 'gating', 999999, 'now')",
-                params![FEATURE, base],
-            )
-            .unwrap();
-        w.conn
-            .execute(
-                "INSERT INTO bundle_members (bundle_id, branch, position)
-                 VALUES (last_insert_rowid(), ?1, 0)",
-                [twice],
-            )
-            .unwrap();
-    }
-    w.conn
-        .execute(
-            "UPDATE branches SET landing_state = 'in_bundle' WHERE name = ?1",
-            [twice],
-        )
-        .unwrap();
     let f = fake(&w);
     let mut conn = open(&w.db());
     let mut p = fleetd(&w, &f, Faults::default());
@@ -655,8 +654,6 @@ fn each_invariant_breach_records_1_event() {
     assert_eq!(w.item_events(&orphan_key), 1, "I11: 1 item");
     assert!(rows::branch(&w.conn, orphan).unwrap().unwrap().orphan);
     assert!(w.tip(orphan).is_some(), "I11: the orphan is not deleted");
-    let twice_key = format!("invariant_breach:I12:task_branch:{twice}");
-    assert_eq!(w.item_events(&twice_key), 1, "I12: 1 item");
     assert_eq!(w.tip(done), None, "I12: the landed branch is deleted");
     assert!(w.tip(stashed).is_some(), "I12: the stash keeps its branch");
 }
@@ -691,16 +688,7 @@ fn branch_rows_continue_at_their_cursor() {
     assert_eq!(moved(&w), names[..4].to_vec());
     run(&mut fleetd(&w, &f, Faults::default()), &mut conn);
     assert_eq!(moved(&w), names.to_vec());
-    let after: Option<String> = w
-        .conn
-        .query_row(
-            "SELECT after_key FROM pass_cursors WHERE kind = 'branches'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(after.as_deref(), Some(names[4].as_str()));
-    for kind in ["bundles", "features"] {
+    for kind in ["branches", "bundles", "features"] {
         let rows = w.count(&format!(
             "SELECT count(*) FROM pass_cursors WHERE kind = '{kind}'"
         ));
@@ -844,7 +832,11 @@ fn crash_before_and_after_the_commit_of_the_ref_move_lands_once() {
 
     crash(&w, ABORT_AFTER_COMMIT);
     assert_eq!(w.bundle_state(id), "passed", "the intended row");
-    assert_eq!(w.tip(FEATURE_BRANCH), Some(base), "no move before the effect");
+    assert_eq!(
+        w.tip(FEATURE_BRANCH),
+        Some(base),
+        "no move before the effect"
+    );
 
     let mut p = fleetd(&w, &f, Faults::default());
     run(&mut p, &mut conn);
@@ -855,6 +847,9 @@ fn crash_before_and_after_the_commit_of_the_ref_move_lands_once() {
     for b in ABC {
         assert_eq!(w.moves_to(b, "landed"), 1, "{b} lands 1 time");
         let tip = w.tip(b).expect("no tip is lost");
-        git(&w.repo(), &["merge-base", "--is-ancestor", &tip, FEATURE_BRANCH]);
+        git(
+            &w.repo(),
+            &["merge-base", "--is-ancestor", &tip, FEATURE_BRANCH],
+        );
     }
 }

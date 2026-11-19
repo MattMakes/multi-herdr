@@ -52,9 +52,9 @@
 //! work of the pass: after the verifier, part 2 queues the due fetch and
 //! push jobs, follows the task branches, the bundles, the ref moves, the
 //! candidate refs, the features and the rebases, opens the resolver tasks
-//! of a rebase conflict, and checks I11, I12 and the rescue classes. The
-//! branches, the bundles and the features each have their cursor in
-//! `pass_cursors`. Part 3 then writes the rescue refs, moves the feature
+//! of a rebase conflict, and checks I11, the I12 deletion guard and the
+//! rescue classes. The branches, the bundles and the features each have
+//! their cursor in `pass_cursors`. Part 3 then writes the rescue refs, moves the feature
 //! refs and deletes the refs that are due, each by compare-and-set, after
 //! the other effects and within the time budget.
 
@@ -3613,8 +3613,9 @@ impl Pass<'_> {
     /// (fetch and push), `land_bundles` (the task branches, the bundles,
     /// the ref moves and the candidate refs), `integrate_features` (the
     /// feature state machine, the rebases and their resolver tasks), and
-    /// the checks of I11, I12 and the rescue classes from the last
-    /// `worktree_list` run of each repository. I8 holds at each transition
+    /// the checks of I11, the I12 deletion guard and the rescue classes
+    /// from the last `worktree_list` run of each repository (a schema
+    /// trigger holds the I12 bundle membership). I8 holds at each transition
     /// to `landed` or `merged`, I9 at each ref move, and I10 before each
     /// rebase: the use cases check them.
     fn integration_rows(
@@ -3687,7 +3688,6 @@ impl Pass<'_> {
         let lists = branches::listings(tx)?;
         branches::adopt_orphans(&ctx, tx, &lists, clock)?;
         out.branches = branches::deletions(tx, &lists)?;
-        self.check_i12(tx)?;
         let facts: Vec<RepoFacts> = lists
             .into_iter()
             .map(|l| RepoFacts {
@@ -3731,39 +3731,6 @@ impl Pass<'_> {
             };
             let why = cause("a rebase of the feature branch conflicts");
             branches::open_rebase_resolvers_in(tx, &r, why, Some(std::slice::from_ref(&feature)))?;
-        }
-        Ok(())
-    }
-
-    /// I12: a task branch is a member of at most 1 bundle that is not
-    /// ended. Each breach gets 1 needs-you item, and the item of a breach
-    /// that ended is resolved.
-    fn check_i12(&self, tx: &Transaction<'_>) -> Result<()> {
-        let prefix = format!("{BREACH}:I12:{}:", Entity::TaskBranch.as_str());
-        let mut open = BTreeSet::new();
-        for (branch, ids) in integration_rows::branches_in_open_bundles(tx)? {
-            let key = format!("{prefix}{branch}");
-            let list: Vec<String> = ids.iter().map(i64::to_string).collect();
-            let text = format!(
-                "I12: the task branch {branch} is a member of {} bundles that are not ended: {}. \
-                 fleetd does not drop a bundle for it. End the bundles that must not land.",
-                ids.len(),
-                list.join(", ")
-            );
-            let item = NewItem {
-                key: &key,
-                kind: BREACH,
-                entity: Entity::TaskBranch,
-                entity_id: &branch,
-                text: &text,
-            };
-            self.ports.needs_you.open_item(tx, &item)?;
-            open.insert(key);
-        }
-        for key in needs_you::open_keys(tx, BREACH)? {
-            if key.starts_with(&prefix) && !open.contains(&key) {
-                self.ports.needs_you.resolve_item(tx, &key)?;
-            }
         }
         Ok(())
     }
