@@ -110,6 +110,20 @@ fn fake(name: &str) -> PathBuf {
             "the build of the fakes failed: {cmd:?}\n{}",
             String::from_utf8_lossy(&out.stderr)
         );
+        // macOS holds a new binary at its first launch, for minutes. Take
+        // that hold here, with no bound, so no bounded wait of a test
+        // counts it.
+        for bin in FAKES {
+            let path = dir.join(format!("{bin}{}", std::env::consts::EXE_SUFFIX));
+            let status = StdCommand::new(&path)
+                .arg("--version")
+                .env_remove("HORCH_FAKE_LOG")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .status()
+                .unwrap();
+            assert!(status.success(), "{bin} --version: {status}");
+        }
     });
     dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
 }
@@ -155,6 +169,17 @@ fn kill_cli(files: &AttemptFiles) {
     }
 }
 
+/// End the CLI that the wrapper started with `kill -KILL`, by the pid that
+/// the wrapper took at its spawn. A bounded wait that fails calls it, so
+/// the scoped wrapper thread ends and the test fails, not hangs.
+fn kill_agent(facts: &AgentFacts) {
+    if let Some(pid) = facts.pid() {
+        let _ = StdCommand::new("kill")
+            .args(["-KILL", &pid.to_string()])
+            .status();
+    }
+}
+
 /// Run `cmd` through the wrapper. `watch` gets each pane line until it
 /// returns `true`, then `act` runs. A run that does not end within
 /// [`BOUND`] after that is ended, and the test fails.
@@ -191,14 +216,14 @@ fn run_watched(
             }
         };
         if !seen {
-            kill_cli(files);
+            kill_agent(facts);
             panic!("the stream showed no awaited line within {BOUND:?}");
         }
         act();
         match end.recv_timeout(BOUND) {
             Ok(end) => end,
             Err(_) => {
-                kill_cli(files);
+                kill_agent(facts);
                 panic!("the wrapper did not end the CLI within {BOUND:?}");
             }
         }
