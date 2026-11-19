@@ -100,11 +100,9 @@ pub fn attempt_via(conn: &Connection, id: &str) -> Result<Option<AttemptVia>> {
 /// attempt.
 pub fn worker_of_attempt(conn: &Connection, id: &str) -> Result<Option<String>> {
     let row = conn
-        .query_row(
-            "SELECT worker_id FROM attempts WHERE id = ?1",
-            [id],
-            |r| r.get(0),
-        )
+        .query_row("SELECT worker_id FROM attempts WHERE id = ?1", [id], |r| {
+            r.get(0)
+        })
         .optional()?;
     Ok(row)
 }
