@@ -124,6 +124,20 @@ mod tests {
     use crate::taskledger::tasks::{self, NewTask};
     use crate::taskledger::{workers, Store};
 
+    /// A task needs an idea in flight of the feature of its run (FR-12).
+    fn idea_in_flight(store: &Store) {
+        store
+            .conn()
+            .execute_batch(
+                "INSERT OR IGNORE INTO features (id, name, branch, primary_branch, state,
+                    created_at, updated_at)
+                 VALUES ('F-0001', 'r1', 'fleet/r1', 'main', 'open', 'now', 'now');
+                 INSERT INTO ideas (id, feature_id, state, created_at, updated_at)
+                 VALUES ('I-0001', 'F-0001', 'in_progress', 'now', 'now');",
+            )
+            .unwrap();
+    }
+
     #[test]
     fn bind_live_gives_a_running_task_a_working_worker_and_a_live_attempt() {
         let dir = tempfile::tempdir().unwrap();
@@ -135,6 +149,7 @@ mod tests {
         let run = store
             .immediate(|tx| runs::create(tx, dir.path(), &new_run))
             .unwrap();
+        idea_in_flight(&store);
         let mut new = NewTask::work("a", "tickets/a.md", "dev");
         new.worktree_mode = WorktreeMode::Shared;
         let task = store
@@ -203,6 +218,7 @@ mod tests {
         let run = store
             .immediate(|tx| runs::create(tx, dir.path(), &new_run))
             .unwrap();
+        idea_in_flight(&store);
         let mut new = NewTask::work("a", "tickets/a.md", "dev");
         new.worktree_mode = WorktreeMode::Shared;
         let task = store
