@@ -111,6 +111,23 @@ impl World {
         w.git(&["commit", "-q", "-m", "base"]);
 
         w.h.serve_fleetd();
+        // The health of each profile is known before the plan: the judge
+        // task gets a healthy profile at the plan time. A profile that
+        // becomes unhealthy later holds its task by the design.
+        for cli in ["claude", "codex", "agy"] {
+            wait_for_or(
+                &format!("an ended conformance run of {cli}"),
+                || {
+                    let ended = w.rows(&format!(
+                        "SELECT id FROM jobs WHERE kind = 'conformance' \
+                         AND subject LIKE '{cli} %' \
+                         AND state IN ('passed', 'failed', 'abandoned')"
+                    ));
+                    (!ended.is_empty()).then_some(())
+                },
+                || w.context(),
+            );
+        }
         let o =
             w.h.run(&["idea", "add", "--direct", &ticket.to_string_lossy()]);
         assert!(o.status.success(), "horch idea add --direct: {}", text(&o));
