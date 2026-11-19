@@ -441,6 +441,7 @@ fn resolver_task(e: &Edges<'_>, idea: &str, key: &str, f: &RebaseFacts<'_>) -> P
         spec_json: spec.to_string(),
         after: Vec::new(),
         judges: None,
+        own: Vec::new(),
     }
 }
 
