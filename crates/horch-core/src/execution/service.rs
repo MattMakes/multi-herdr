@@ -278,24 +278,25 @@ impl ExecutionService<'_> {
     }
 
     /// Run `horch worker <role>` in the new pane, with this process's skill
-    /// store as `HORCH_DATA_DIR` and state folder as `HORCH_STATE_DIR`: a
-    /// pane does not inherit this environment, the worker finds its brief in
-    /// the state folder, and the worker's agent inherits the worker's.
+    /// store as `HORCH_DATA_DIR`, state folder as `HORCH_STATE_DIR` and
+    /// fleet (`Paths::fleet_env`): a pane does not inherit this environment,
+    /// the worker finds its brief in the state folder, the worker's agent
+    /// inherits the worker's, and the worker reads the operator token and
+    /// finds the channel of fleetd in the fleet root (T-890). The worker
+    /// never guesses its fleet from its state folder.
     fn run(&self, pane: &str, role: &str) -> Result<()> {
         if self.ctx.settings.faults.has("fail-pane-run") {
             return Err(anyhow!("HORCH_FAULT fail-pane-run"));
         }
         let exe = self.ctx.bins.exe()?;
-        let data_root = self.ctx.paths.data_root.to_string_lossy();
-        let state_root = self.ctx.paths.state_root.to_string_lossy();
-        let command = PaneShell::host().command_line_with_env(
-            &exe,
-            &[
-                ("HORCH_DATA_DIR", data_root.as_ref()),
-                ("HORCH_STATE_DIR", state_root.as_ref()),
-            ],
-            &["worker", role],
-        );
+        let paths = &self.ctx.paths;
+        let mut vars = vec![
+            ("HORCH_DATA_DIR", paths.data_root.to_string_lossy()),
+            ("HORCH_STATE_DIR", paths.state_root.to_string_lossy()),
+        ];
+        vars.extend(paths.fleet_env().map(|(k, v)| (k, v.to_string_lossy())));
+        let vars: Vec<(&str, &str)> = vars.iter().map(|(k, v)| (*k, v.as_ref())).collect();
+        let command = PaneShell::host().command_line_with_env(&exe, &vars, &["worker", role]);
         self.workspace.pane_run(pane, &command)
     }
 
