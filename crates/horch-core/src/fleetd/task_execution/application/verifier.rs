@@ -203,7 +203,7 @@ fn verify_one(
         base: base.as_deref(),
         check: check.as_deref(),
         check_hash: &hash,
-        check_none: task.check_none || (judge && check.is_none()),
+        check_none: task.check_none,
     };
     let next = next_of(tx, &task)?;
     // The verdict of this attempt, tip and check stands: decide no more.
@@ -215,7 +215,12 @@ fn verify_one(
             return Ok(());
         }
     }
-    let verdict = match verification::plan(&facts) {
+    let planned = if judge {
+        verification::plan_judge(&facts)
+    } else {
+        verification::plan(&facts)
+    };
+    let verdict = match planned {
         Plan::Decided(verdict) => verdict,
         Plan::Check { input_key } => {
             let key = JobKey {
