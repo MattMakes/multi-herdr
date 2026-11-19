@@ -600,7 +600,7 @@ mod tests {
 
     /// The table "Request kinds" of `docs/tickets/fleetd-p5/MAP.md` with no
     /// retired kind, then the idea kinds of Phase 6.
-    const MAP_TABLE: [(&str, Class); 38] = [
+    const MAP_TABLE: [(&str, Class); 42] = [
         ("ledger_import", Class::Operator),
         ("ledger_gc", Class::Operator),
         ("task_requeue", Class::Operator),
@@ -629,6 +629,10 @@ mod tests {
         ("feature_abandon", Class::Operator),
         ("branch_abandon", Class::Operator),
         ("rescue_drop", Class::Operator),
+        ("worker_progress", Class::Operator),
+        ("worker_done", Class::Operator),
+        ("run_adopt", Class::Operator),
+        ("question_answer", Class::Operator),
         ("progress", Class::Worker),
         ("result", Class::Worker),
         ("ask", Class::Worker),
