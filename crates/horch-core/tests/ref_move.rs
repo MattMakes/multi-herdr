@@ -668,7 +668,10 @@ fn member_that_git_lost_lands_by_its_recorded_tip() {
     git(&w.repo, &["branch", "-D", A]);
 
     let moves = w.pass(20);
-    assert!(moves.is_empty(), "the feature is at the candidate: {moves:?}");
+    assert!(
+        moves.is_empty(),
+        "the feature is at the candidate: {moves:?}"
+    );
     assert_eq!(w.bundle(id).state, "landed");
     assert_eq!(w.landing_state(A), "landed");
     assert_eq!(w.tip(FEATURE_BRANCH), tip);

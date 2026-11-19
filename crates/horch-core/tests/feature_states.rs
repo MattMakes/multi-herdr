@@ -207,8 +207,14 @@ impl World {
             due_at: 0,
         };
         rows::insert_branch(&tx, None, &row, cause("feature branch")).unwrap();
-        rows::set_branch_fact(&tx, None, RUN_BRANCH, BranchFact::SeenTip(&tip), cause("seen"))
-            .unwrap();
+        rows::set_branch_fact(
+            &tx,
+            None,
+            RUN_BRANCH,
+            BranchFact::SeenTip(&tip),
+            cause("seen"),
+        )
+        .unwrap();
         tx.commit().unwrap();
     }
 
