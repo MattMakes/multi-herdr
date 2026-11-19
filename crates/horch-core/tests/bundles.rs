@@ -23,10 +23,10 @@ use horch_core::fleetd::integration::adapters::exec_bundle::{self, Build};
 use horch_core::fleetd::integration::adapters::exec_gate::gate_key;
 use horch_core::fleetd::integration::adapters::git::CliGitGateway;
 use horch_core::fleetd::integration::adapters::sqlite::{
-    self as rows, BundleRow, NewBranch, NewBundle, NewFeature,
+    self as rows, BranchFact, BundleRow, NewBranch, NewBundle, NewFeature,
 };
 use horch_core::fleetd::integration::application::bundles::{
-    self, overdue_key, Bundles, OVERDUE_KIND,
+    self, no_tip_key, overdue_key, Bundles, NO_TIP_KIND, OVERDUE_KIND,
 };
 use horch_core::fleetd::integration::application::landing;
 use horch_core::fleetd::integration::domain::task_branch::LandingState;
@@ -607,6 +607,54 @@ fn moved_feature_tip_drops_a_building_bundle() {
     assert_eq!(next.members, names(&ABC));
 }
 
+/// The build job of a bundle is a separate process. When the feature tip
+/// moves while the job runs, a pass drops the bundle, and the job can still
+/// write the candidate ref after the drop. The pass that sees the passed
+/// job records that ref on the dropped row, so fleetd deletes it ("fleetd
+/// owns the candidate refs").
+#[test]
+fn candidate_written_after_the_drop_is_recorded_for_its_deletion() {
+    let mut w = three_ready();
+    w.pass(100);
+    let id = w.only_bundle().id;
+    let build = w.jobs_of(Kind::BundleBuild)[0].id;
+    // The job process checks that the bundle is building and writes the
+    // ref, then fleetd drops the bundle, then the job ends.
+    let row = jobs_store::get(&w.conn, build).unwrap().unwrap();
+    let ran = exec_bundle::run(&w.conn, &row).unwrap();
+    let Some(Build::Candidate {
+        candidate_ref,
+        candidate_tip,
+    }) = ran.data.clone().map(|d| serde_json::from_value(d).unwrap())
+    else {
+        panic!("the build of 3 clean members gives a candidate");
+    };
+    w.commit_on(FEATURE_BRANCH, "f.txt", "moved\n");
+    w.pass(200);
+    assert_eq!(w.bundle(id).state, "dropped");
+    assert_eq!(w.bundle(id).candidate_ref, None);
+    let json = serde_json::json!({
+        "passed": true,
+        "verdict": true,
+        "text": ran.outcome.text,
+        "data": ran.data,
+    });
+    w.end_job(build, "passed", Some(&json.to_string()));
+
+    w.pass(300);
+    let bundle = w.bundle(id);
+    assert_eq!(bundle.state, "dropped");
+    assert_eq!(
+        bundle.candidate_ref.as_deref(),
+        Some(candidate_ref.as_str())
+    );
+    assert_eq!(
+        bundle.candidate_tip.as_deref(),
+        Some(candidate_tip.as_str())
+    );
+    assert_eq!(w.tip(&candidate_ref), candidate_tip);
+}
+
 #[test]
 fn moved_feature_tip_drops_a_gating_bundle() {
     let mut w = three_ready();
@@ -793,4 +841,93 @@ fn failed_build_drops_the_bundle_and_its_members_go_back_to_ready() {
         assert_eq!(w.landing_state(b), "ready");
     }
     assert!(w.jobs_of(Kind::FastGate).is_empty());
+}
+
+// ─── a member already in the feature (T-402, option 1) ──────────────────
+
+impl World {
+    /// The candidate of the only bundle after its build passes.
+    fn built_candidate(&mut self) -> String {
+        self.pass(100);
+        let build = self.jobs_of(Kind::BundleBuild)[0].id;
+        let Some(Build::Candidate { candidate_tip, .. }) = self.run_build(build) else {
+            panic!("the build gives a candidate");
+        };
+        candidate_tip
+    }
+
+    /// The merge commits of `rev` past `base`.
+    fn merges_past(&self, base: &str, rev: &str) -> Vec<String> {
+        let out = git(
+            &self.repo,
+            &["rev-list", "--merges", &format!("{base}..{rev}")],
+        );
+        out.lines().map(str::to_string).collect()
+    }
+}
+
+/// Run A: the old path already put the work of a ready task branch on the
+/// feature. Its bundle lands it with no candidate commit: the candidate is
+/// the feature tip, so the ref move later sees the feature at the candidate
+/// and moves nothing.
+#[test]
+fn member_already_in_the_feature_adds_no_candidate_commit() {
+    let mut w = world();
+    w.ready_branch("fleet/r1-a", "a1.txt");
+    let tip = w.tip("fleet/r1-a");
+    git(&w.repo, &["branch", "-f", FEATURE_BRANCH, &tip]);
+
+    let candidate = w.built_candidate();
+    assert_eq!(candidate, tip, "the candidate is the feature tip");
+    assert_eq!(w.only_bundle().base_tip, tip);
+    assert_eq!(w.landing_state("fleet/r1-a"), "in_bundle");
+}
+
+/// Run B: git no longer has the ready task branch. Its recorded tip is in
+/// the feature, so it lands the same way. A branch with no known tip gets
+/// 1 needs-you item and joins no bundle.
+#[test]
+fn lost_branch_lands_on_its_recorded_tip_else_opens_1_item() {
+    let mut w = world();
+    w.ready_branch("fleet/r1-a", "a1.txt");
+    w.ready_branch("fleet/r1-b", "b1.txt");
+    let tip = w.tip("fleet/r1-a");
+    git(&w.repo, &["branch", "-f", FEATURE_BRANCH, &tip]);
+    let tx = w.conn.transaction().unwrap();
+    let fact = BranchFact::SeenTip(&tip);
+    rows::set_branch_fact(&tx, None, "fleet/r1-a", fact, cause("fleetd read the tip")).unwrap();
+    tx.commit().unwrap();
+    git(&w.repo, &["branch", "-D", "fleet/r1-a", "fleet/r1-b"]);
+
+    let candidate = w.built_candidate();
+    assert_eq!(candidate, tip);
+    assert_eq!(w.landing_state("fleet/r1-a"), "in_bundle");
+    assert_eq!(w.landing_state("fleet/r1-b"), "ready");
+    let items = open_keys(&w.conn, NO_TIP_KIND).unwrap();
+    assert_eq!(items, [no_tip_key("fleet/r1-b")]);
+
+    // The next pass opens no second item.
+    w.pass(200);
+    let items = open_keys(&w.conn, NO_TIP_KIND).unwrap();
+    assert_eq!(items, [no_tip_key("fleet/r1-b")]);
+}
+
+/// A normal member next to a member already in the feature still gets its
+/// merge commit: 1 merge commit on the feature tip.
+#[test]
+fn normal_member_still_gets_its_candidate_commit() {
+    let mut w = world();
+    w.ready_branch("fleet/r1-a", "a1.txt");
+    w.ready_branch("fleet/r1-b", "b1.txt");
+    let a = w.tip("fleet/r1-a");
+    git(&w.repo, &["branch", "-f", FEATURE_BRANCH, &a]);
+
+    let candidate = w.built_candidate();
+    assert_ne!(candidate, a);
+    assert_eq!(w.merges_past(&a, &candidate).len(), 1);
+    let b = w.tip("fleet/r1-b");
+    assert_eq!(
+        git(&w.repo, &["merge-base", "--is-ancestor", &b, &candidate]),
+        ""
+    );
 }

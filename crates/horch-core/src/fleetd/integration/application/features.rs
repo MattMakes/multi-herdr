@@ -41,6 +41,7 @@ use crate::fleetd::integration::domain::feature::{
 };
 use crate::fleetd::integration::domain::project::{ProjectSettings, Remote};
 use crate::fleetd::integration::domain::task_branch::LandingState;
+use crate::fleetd::worktree_custody::application::gate_tree::{self, GateTreeRequest};
 use crate::taskledger::model::Actor;
 use crate::taskledger::runs;
 
@@ -69,6 +70,14 @@ pub enum Step {
     /// feature does not move.
     Waits(String),
 }
+
+/// Why a full gate waits: the gate tree of its feature is not made yet.
+pub const GATE_TREE_NOT_MADE: &str = "the gate tree of the feature is not made yet";
+
+/// Why a settled feature has no full gate yet: its tip does not contain the
+/// fetched primary tip.
+pub const WAITS_FOR_REBASE: &str =
+    "the feature tip does not contain the fetched primary tip; the rebase comes first";
 
 fn by_fleetd(text: &str) -> Cause<'_> {
     Cause {
@@ -161,7 +170,25 @@ fn follow_one(f: &Features<'_>, tx: &Connection, id: &str, clock: FleetSeconds) 
             )?;
             Ok(Step::Entered(to))
         }
+        // The full gate judges the feature tip over the fetched primary
+        // tip, and the gate refuses a tip that does not contain it. So no
+        // full gate is queued then: a queued gate holds the gate tree, and
+        // the rebase that brings the primary tip in waits for the tree
+        // (continuous rebase, FM-42).
+        Next::RunFullGate if !f.git.contains(&tips.repo, &tips.feature, &tips.primary)? => {
+            Ok(Step::Waits(WAITS_FOR_REBASE.into()))
+        }
         Next::RunFullGate => {
+            let tree = GateTreeRequest {
+                feature_id: id,
+                run_id: &run.run_id,
+                repo: &tips.repo,
+                base: row.branch.as_deref().unwrap_or_default(),
+                tip: &tips.feature,
+            };
+            if !gate_tree::ready(f.jobs, tx, &tree, clock)? {
+                return Ok(Step::Waits(GATE_TREE_NOT_MADE.into()));
+            }
             let req = GateRequest {
                 kind: Kind::FullGate,
                 subject: id,

@@ -64,7 +64,7 @@ use horch_core::fleetd::ideas::adapters::needs_you_folder::Mirrored;
 use horch_core::fleetd::ideas::adapters::notify::{self, Notice};
 use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
 use horch_core::fleetd::ideas::domain::plan_validator::{DeclaredGates, RosterProfile};
-use horch_core::fleetd::integration::adapters::git::CliGitGateway;
+use horch_core::fleetd::integration::adapters::git::ProjectGitGateway;
 use horch_core::fleetd::integration::adapters::project_file;
 use horch_core::fleetd::integration::adapters::sqlite as feature_rows;
 use horch_core::fleetd::integration::application::commands::GitRefTips;
@@ -712,7 +712,7 @@ fn register_idea_handlers(
             ideas: settings.fleet_root.join(IDEAS_DIR),
             owner,
             roster: Arc::new(move || roster_profiles(&roster_ctx, &sandboxes)),
-            git: Arc::new(CliGitGateway::new(git)),
+            git: Arc::new(ProjectGitGateway::new(git)),
         },
     );
 }
@@ -746,7 +746,7 @@ fn roster_profiles(ctx: &RuntimeContext, sandboxes: &WorkerSandboxes) -> Vec<Ros
 struct LiveIdeas<'a> {
     ctx: &'a RuntimeContext,
     sandboxes: &'a WorkerSandboxes,
-    git: CliGitGateway,
+    git: ProjectGitGateway,
     herdr: Herdr,
 }
 
@@ -926,7 +926,7 @@ fn with_pass<T>(
     let ideas = LiveIdeas {
         ctx,
         sandboxes: &sandboxes,
-        git: CliGitGateway::new(CliWorktreeGit::new(
+        git: ProjectGitGateway::new(CliWorktreeGit::new(
             &ctx.bins.harness.git,
             &settings.fleet_root,
         )),

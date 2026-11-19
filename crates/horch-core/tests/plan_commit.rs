@@ -28,10 +28,11 @@ use horch_core::fleetd::ideas::application::plan_commit::{
 };
 use horch_core::fleetd::ideas::domain::plan_validator::{DeclaredGates, RosterProfile};
 use horch_core::fleetd::integration::adapters::sqlite::{self as rows, NewFeature};
+use horch_core::fleetd::task_execution::domain::structural;
 use horch_core::fleetd::task_execution::domain::task::judged_task;
-use horch_core::taskledger::model::Actor;
+use horch_core::taskledger::model::{Actor, FileMode};
 use horch_core::taskledger::runs::{self, NewRun};
-use horch_core::taskledger::tasks::ticket_sha;
+use horch_core::taskledger::tasks::{self, ticket_sha};
 use horch_core::taskledger::Store;
 use horch_platform::channel::User;
 use rusqlite::Connection;
@@ -569,4 +570,25 @@ fn plan_sha256_is_on_the_idea() {
     let want = sha256_hex(PLAN.as_bytes());
     assert_eq!(w.idea().plan_sha256.as_deref(), Some(want.as_str()));
     assert_eq!(w.verdict().unwrap()["plan_sha256"], want.as_str());
+}
+
+/// Each committed task has its Own rows in `task_files`: the `outputs` of
+/// plan.yaml and the `**Own:**` paths of its ticket. The structural check
+/// of a judgment kind reads them, so it finds the output of `doc` and of
+/// `doc-judge` (fault 2 of fleetd-build ticket 56).
+#[test]
+fn committed_task_has_its_own_rows() {
+    let mut w = world(PLAN);
+    w.commit().unwrap();
+    let own = |key: &str| tasks::files(w.conn(), &w.task(key).id, FileMode::Own).unwrap();
+    assert_eq!(own("a"), ["src/a.rs"], "the Own paths of the ticket");
+    assert_eq!(own("b"), Vec::<String>::new(), "no outputs and no ticket");
+    assert_eq!(own("doc"), ["docs/sync.md"]);
+    assert_eq!(own("doc-judge"), ["docs/sync.review.md"]);
+    let changed = ["docs/sync.md".to_string(), "src/other.rs".to_string()];
+    assert_eq!(
+        structural::outputs_of(&own("doc"), &changed),
+        ["docs/sync.md"],
+        "the structural check reads the Own rows"
+    );
 }

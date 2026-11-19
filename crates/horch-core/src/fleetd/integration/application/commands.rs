@@ -373,3 +373,38 @@ pub fn verify(refs: &dyn RefTips, repo: &Path, rescued: &Rescued, tip: Option<&s
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A project below HOME, as each real project of an operator is: the
+    /// sandbox of fleetd hides HOME, so GitRefTips must read the repository
+    /// of its call (fleetd-build ticket 56).
+    #[test]
+    fn git_ref_tips_reads_a_project_below_home() {
+        let home = tempfile::tempdir().unwrap();
+        let home_path = home.path().canonicalize().unwrap();
+        let repo = home_path.join("projects").join("app");
+        std::fs::create_dir_all(&repo).unwrap();
+        let git = |args: &[&str]| {
+            let o = std::process::Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@t.invalid"])
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .unwrap();
+            assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+            String::from_utf8_lossy(&o.stdout).trim().to_string()
+        };
+        git(&["init", "--quiet", "--initial-branch=main"]);
+        git(&["commit", "--quiet", "--allow-empty", "-m", "one"]);
+        let head = git(&["rev-parse", "HEAD"]);
+        let fleet = tempfile::tempdir().unwrap();
+        let refs = GitRefTips {
+            git: CliWorktreeGit::new("git", fleet.path()).with_home(&home_path),
+        };
+        let tip = refs.tip(&repo, "refs/heads/main").unwrap();
+        assert_eq!(tip.as_deref(), Some(head.as_str()));
+    }
+}

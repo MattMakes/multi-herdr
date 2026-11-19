@@ -40,7 +40,7 @@ use crate::fleetd::ideas::domain::plan_validator::{
 };
 use crate::fleetd::task_execution::application::planned_tasks::{self, add_planned_tasks};
 use crate::fsx;
-use crate::taskledger::map::ticket_problems;
+use crate::taskledger::map::{ticket_facts, ticket_problems};
 use crate::taskledger::model::{Actor, EventKind, WorkKind};
 use crate::taskledger::{runs, util, Store};
 
@@ -426,7 +426,20 @@ pub(crate) fn planned_task(
         spec_json: spec_json(task).to_string(),
         after: task.after.clone(),
         judges: task.judges.clone(),
+        own: own_paths(task, ticket),
     }
+}
+
+/// The Own paths of `task`: its `outputs`, then the `**Own:**` paths of
+/// its ticket that are not outputs.
+fn own_paths(task: &PlannedTask, ticket: Option<&str>) -> Vec<String> {
+    let mut own = task.outputs.clone();
+    for path in ticket.map(|t| ticket_facts(t).own).unwrap_or_default() {
+        if !own.contains(&path) {
+            own.push(path);
+        }
+    }
+    own
 }
 
 /// The task as committed: each field of plan.yaml.

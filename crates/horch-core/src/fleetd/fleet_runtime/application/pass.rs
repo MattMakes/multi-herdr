@@ -128,6 +128,9 @@ use crate::fleetd::integration::application::new_features::{self, BranchRef};
 use crate::fleetd::integration::application::ports::IntegrationGitGateway;
 use crate::fleetd::integration::application::trial_merges;
 use crate::fleetd::integration::application::{merged_with_ideas, stack_edges, stacks};
+use crate::fleetd::integration::domain::project::{
+    missing_fast_gate_cause, ProjectSettings, MISSING_FAST_GATE_KIND,
+};
 use crate::fleetd::integration::domain::stack::StackPlanner;
 use crate::fleetd::integration::domain::task_branch::LandingState;
 use crate::fleetd::task_execution::adapters::attempt_files::{
@@ -155,8 +158,8 @@ use crate::fleetd::task_execution::domain::quota::limited;
 use crate::fleetd::task_execution::domain::retry::Outcome;
 use crate::fleetd::task_execution::domain::stall::{self as rungs, Decision, PaneStatus};
 use crate::fleetd::task_execution::domain::task::{
-    self, promotable, AttemptRow, AttemptState, Facts, InPane, ProcessScope, Reap, Recorded,
-    RowRef, Rows, Seen, Stop, Target,
+    self, judged_task, promotable_deps, AttemptRow, AttemptState, Dep, DepKind, Facts, InPane,
+    ProcessScope, Reap, Recorded, RowRef, Rows, Seen, Stop, Target,
 };
 use crate::fleetd::worker_profiles::adapters::check_sandbox::WorkerSandboxes;
 use crate::fleetd::worker_profiles::application::conformance::read_conformance_json;
@@ -1307,7 +1310,15 @@ impl<'a> Pass<'a> {
         }
         let mut work = WorkRows::default();
         if let Some(w) = &self.work {
+            // The project holds of this pass come before its dispatch.
+            let repos = feature_repos(&tx)?;
+            let gw =
+                CliGitGateway::new(effects::integration_git(&self.settings.fleet_root, &repos));
+            let gates = sync_gate_holds(&self.job_ctx(), &tx, &gw);
             work = self.dispatch_rows(&tx, w, &holds, &personas, clock, &read.stamp)?;
+            if let Err(e) = gates {
+                work.failed.push(format!("the gate holds: {e:#}"));
+            }
             stops.append(&mut work.stops);
         }
         let ctx = self.job_ctx();
@@ -1397,7 +1408,7 @@ impl<'a> Pass<'a> {
         let mut d = dispatch::dispatch_due(
             tx,
             &ctx,
-            &dispatch_holds(holds, paced, clock),
+            &dispatch_holds(holds, paced, project_holds(tx)?, clock),
             w.sandboxes,
             budget,
         )?;
@@ -2243,7 +2254,17 @@ impl Rules<'_> {
                 }
             }
             let landed = integration_rows::tasks_landed(self.tx)?;
-            for id in promotable(&statuses, &deps, &landed) {
+            let (judges, passed) = judge_deps(self.tx, &all)?;
+            let deps: Vec<Dep> = deps
+                .into_iter()
+                .map(|(t, on)| Dep {
+                    task: t,
+                    on,
+                    kind: DepKind::After,
+                })
+                .chain(judges)
+                .collect();
+            for id in promotable_deps(&statuses, &deps, &landed, &passed) {
                 let to = TaskStatus::Ready.as_str();
                 let by = cause("each task that it waits for is done and landed (I2)");
                 transition(
@@ -2893,12 +2914,14 @@ fn retry_policy(
     }
 }
 
-/// The holds of a dispatch from the global holds `holds` of the pass, at
-/// fleet clock `clock`. A pacing hold of a pool is not here: the spawn of
-/// the attempt refuses a paced pool, as today.
+/// The holds of a dispatch from the global holds `holds` of the pass and
+/// the project holds `projects`, at fleet clock `clock`. A pacing hold of a
+/// pool is not here: the spawn of the attempt refuses a paced pool, as
+/// today.
 fn dispatch_holds(
     holds: &[Hold],
     paced: &BTreeMap<String, String>,
+    projects: BTreeMap<String, String>,
     clock: FleetSeconds,
 ) -> DispatchHolds {
     DispatchHolds {
@@ -2908,8 +2931,23 @@ fn dispatch_holds(
             .filter_map(|h| h.global().map(|name| format!("{name}: {}", h.cause())))
             .collect(),
         personas: paced.clone(),
+        projects,
         ..DispatchHolds::default()
     }
+}
+
+/// The cause of the hold of each project with no fast gate, by project
+/// id: its open needs-you item records it (Q-C of
+/// `docs/tickets/fleetd-p4/MAP.md`).
+fn project_holds(conn: &Connection) -> Result<BTreeMap<String, String>> {
+    Ok(needs_you::open_items(conn)?
+        .into_iter()
+        .filter(|i| i.kind == MISSING_FAST_GATE_KIND)
+        .map(|i| {
+            let cause = missing_fast_gate_cause(&i.entity_id);
+            (i.entity_id, cause)
+        })
+        .collect())
 }
 
 /// The first heartbeat of the wrapper of a push attempt
@@ -4455,10 +4493,11 @@ impl Pass<'_> {
         let gw = CliGitGateway::new(git.clone());
         let live = integration_rows::feature_ids(tx, true)?;
         let chosen = take(tx, RowKind::Features.as_str(), &live, budget, stamp)?;
-        let keys: Vec<String> = integration_rows::bundles_to_follow(tx)?
-            .into_iter()
-            .map(id_key)
-            .collect();
+        let mut follow = integration_rows::bundles_to_follow(tx)?;
+        follow.extend(bundles::late_builds(tx)?);
+        follow.sort_unstable();
+        follow.dedup();
+        let keys: Vec<String> = follow.into_iter().map(id_key).collect();
         let ids: Vec<i64> = take(tx, RowKind::Bundles.as_str(), &keys, budget, stamp)?
             .iter()
             .filter_map(|k| k.parse().ok())
@@ -4943,6 +4982,31 @@ fn feature_persona(tx: &Connection, id: &str) -> Result<Option<String>> {
 
 /// The repository of each feature, each 1 time: the git of integration
 /// reads them. A folder that is not a git repository is left out.
+/// The `judges:` dependency of each `pending` judge task of `all`, and the
+/// judged tasks whose structural check passed for their newest attempt
+/// (I2; ticket 40 of fleetd-p6). A judge task has no `task_deps` row.
+fn judge_deps(tx: &Connection, all: &[tasks::Task]) -> Result<(Vec<Dep>, BTreeSet<String>)> {
+    let mut deps = Vec::new();
+    let mut passed = BTreeSet::new();
+    for t in all
+        .iter()
+        .filter(|t| t.status == TaskStatus::Pending.as_str())
+    {
+        let Some(judged) = judged_task(&t.kind, t.parent_task_id.as_deref()) else {
+            continue;
+        };
+        if verifier::structural_passed(tx, judged)? {
+            passed.insert(judged.to_string());
+        }
+        deps.push(Dep {
+            task: t.task_id.clone(),
+            on: judged.to_string(),
+            kind: DepKind::Judges,
+        });
+    }
+    Ok((deps, passed))
+}
+
 fn feature_repos(conn: &Connection) -> Result<Vec<PathBuf>> {
     let mut repos = Vec::new();
     for id in integration_rows::feature_ids(conn, false)? {
@@ -4958,6 +5022,57 @@ fn feature_repos(conn: &Connection) -> Result<Vec<PathBuf>> {
         .collect())
 }
 
+/// The run of the feature `feature` and the project file at its tip, or
+/// the line of a project file that does not parse. `None`: the feature has
+/// no branch tip yet.
+fn feature_settings(
+    tx: &Connection,
+    gw: &CliGitGateway,
+    feature: &str,
+) -> Result<Option<(runs::Run, std::result::Result<ProjectSettings, String>)>> {
+    let Some(branch) = integration_rows::feature(tx, feature)?.and_then(|f| f.branch) else {
+        return Ok(None);
+    };
+    let Some(run) = runs::feature_run(tx, feature)? else {
+        return Ok(None);
+    };
+    let repo = PathBuf::from(&run.project_root);
+    let Some(tip) = gw.tip(&repo, &format!("refs/heads/{branch}"))? else {
+        return Ok(None);
+    };
+    let settings = integration::features::project_settings(gw, &repo, &tip)
+        .map_err(|e| format!("feature {feature}: {e:#}"));
+    Ok(Some((run, settings)))
+}
+
+/// Q-C of `docs/tickets/fleetd-p4/MAP.md`: a project with no fast gate
+/// holds the new dispatch of its tasks, with 1 needs-you item, and no task
+/// is lost or cancelled. The project file is read at the tip of each live
+/// feature of the project; 1 tip with no fast gate holds the project. The
+/// hold ends when each tip declares the gate. A project file that does not
+/// parse changes no hold: [`queue_remote`] reports it.
+fn sync_gate_holds(ctx: &JobCtx<'_>, tx: &Connection, gw: &CliGitGateway) -> Result<()> {
+    let mut by_project: BTreeMap<String, ProjectSettings> = BTreeMap::new();
+    for feature in integration_rows::feature_ids(tx, true)? {
+        let Some((run, settings)) = feature_settings(tx, gw, &feature)? else {
+            continue;
+        };
+        let Ok(s) = settings else {
+            continue;
+        };
+        let held = by_project
+            .get(&run.project_id)
+            .is_some_and(|h| h.fast_gate().is_none());
+        if !held {
+            by_project.insert(run.project_id, s);
+        }
+    }
+    for (project, settings) in &by_project {
+        holds::sync_missing_fast_gate(tx, ctx.needs_you, project, settings)?;
+    }
+    Ok(())
+}
+
 /// `queue_due_jobs` of 1 feature: the fetch of its repository at each
 /// period, and the push of its branch when it is due, each with the remote
 /// of the project file at the feature tip. A feature with no branch tip
@@ -4969,19 +5084,12 @@ fn queue_remote(
     feature: &str,
     clock: FleetSeconds,
 ) -> Result<Option<String>> {
-    let Some(branch) = integration_rows::feature(tx, feature)?.and_then(|f| f.branch) else {
+    let Some((run, settings)) = feature_settings(tx, gw, feature)? else {
         return Ok(None);
     };
-    let Some(run) = runs::feature_run(tx, feature)? else {
-        return Ok(None);
-    };
-    let repo = PathBuf::from(&run.project_root);
-    let Some(tip) = gw.tip(&repo, &format!("refs/heads/{branch}"))? else {
-        return Ok(None);
-    };
-    let settings = match integration::features::project_settings(gw, &repo, &tip) {
+    let settings = match settings {
         Ok(s) => s,
-        Err(e) => return Ok(Some(format!("feature {feature}: {e:#}"))),
+        Err(e) => return Ok(Some(e)),
     };
     let root = &run.project_root;
     integration::remote::queue_fetch(ctx, tx, root, &settings.remote, clock)?;

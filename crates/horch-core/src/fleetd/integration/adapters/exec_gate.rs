@@ -24,12 +24,13 @@
 //! process, and the job process kills the group of its gate first.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus};
+use std::process::ExitStatus;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use anyhow::{anyhow, bail, Context, Result};
 use horch_platform::sandbox::{sandboxed, Denials};
 use horch_platform::shell::CHECK_SHELL;
+use horch_platform::start::{self, Command};
 use horch_platform::NotSupported;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -152,7 +153,7 @@ pub fn held(conn: &Connection, feature_id: &str) -> Result<bool> {
 /// Why this host has no gate sandbox `sandbox`, or `None` when it has one.
 /// A pass calls it before [`end_hold`].
 pub fn sandbox_gap(sandbox: GateSandbox) -> Option<NotSupported> {
-    sandbox(Command::new(CHECK_SHELL), &[], &Denials::default()).err()
+    sandbox(start::command(CHECK_SHELL), &[], &Denials::default()).err()
 }
 
 /// End the hold of `feature_id`, in `tx`: close its needs-you item. `false`
@@ -309,7 +310,7 @@ impl GateRun {
         let git = CliWorktreeGit::new(git_bin(&BinOverrides::from_env(&ProcessEnv)), &self.root)
             .reading(std::slice::from_ref(&self.repo))
             .writing(&[git_dir, tree.clone()]);
-        let probe = sandbox(Command::new(CHECK_SHELL), &writable, &denied);
+        let probe = sandbox(start::command(CHECK_SHELL), &writable, &denied);
         if let Some(gap) = probe.err().or_else(|| git.sandbox_gap()) {
             return Ok(no_sandbox(&gap));
         }
@@ -411,7 +412,7 @@ impl GateRun {
         if let Some(dir) = output.parent() {
             std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         }
-        let mut cmd = Command::new(CHECK_SHELL);
+        let mut cmd = start::command(CHECK_SHELL);
         cmd.arg("-c")
             .arg(command)
             .current_dir(tree)
