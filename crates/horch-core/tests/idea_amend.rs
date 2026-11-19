@@ -246,8 +246,8 @@ fn two_amends_before_their_effects_get_2_numbers_and_2_files() {
     let folder = w.folder(&idea);
     let mut amendments = Vec::new();
     for text in ["Cap the delay at 30 s", "Log each retry"] {
-        let tx = rusqlite::Transaction::new_unchecked(&w.conn, TransactionBehavior::Immediate)
-            .unwrap();
+        let tx =
+            rusqlite::Transaction::new_unchecked(&w.conn, TransactionBehavior::Immediate).unwrap();
         let amended = amend_idea(&tx, &w.ctx(), &folder, &idea, text, w.project()).unwrap();
         tx.commit().unwrap();
         let Amended::Amendment(a) = amended else {
@@ -262,7 +262,10 @@ fn two_amends_before_their_effects_get_2_numbers_and_2_files() {
     }
     assert_eq!(
         folder.read_amendments().unwrap(),
-        vec!["Cap the delay at 30 s".to_string(), "Log each retry".to_string()]
+        vec![
+            "Cap the delay at 30 s".to_string(),
+            "Log each retry".to_string()
+        ]
     );
 }
 

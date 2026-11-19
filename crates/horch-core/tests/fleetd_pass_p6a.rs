@@ -733,7 +733,9 @@ fn a_request_effect_that_cannot_be_written_does_not_block_the_next_one() {
         .conn
         .prepare("SELECT key, entity_id FROM needs_you WHERE kind = ?1 AND state = 'open'")
         .unwrap()
-        .query_map(["request_effects_unwritten"], |r| Ok((r.get(0)?, r.get(1)?)))
+        .query_map(["request_effects_unwritten"], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
         .unwrap()
         .collect::<rusqlite::Result<_>>()
         .unwrap();
