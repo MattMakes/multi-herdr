@@ -188,6 +188,7 @@ impl World {
         let show =
             |title: &str, sql: &str| format!("{title}:\n  {}\n", self.rows(sql).join("\n  "));
         [
+            show("now", "SELECT strftime('%H:%M:%f', 'now')"),
             show(
                 "tasks",
                 "SELECT task_id, kind, IFNULL(parent_task_id, '-'), status, \
@@ -196,7 +197,7 @@ impl World {
             ),
             show(
                 "profile facts",
-                "SELECT event_id, entity_id, kind, IFNULL(cause, '-') \
+                "SELECT event_id, substr(at, 12, 12), entity_id, kind, IFNULL(cause, '-') \
                  FROM events WHERE entity = 'profile' ORDER BY event_id",
             ),
             show(
@@ -211,13 +212,13 @@ impl World {
             ),
             show(
                 "task facts",
-                "SELECT event_id, entity_id, kind, substr(IFNULL(cause, '-'), 1, 300), \
+                "SELECT event_id, substr(at, 12, 12), entity_id, kind, substr(IFNULL(cause, '-'), 1, 300), \
                  substr(IFNULL(data_json, '-'), 1, 400) \
                  FROM events WHERE entity = 'task' AND kind <> 'transition' ORDER BY event_id",
             ),
             show(
                 "attempt facts",
-                "SELECT event_id, entity_id, kind, IFNULL(from_state, '-'), \
+                "SELECT event_id, substr(at, 12, 12), entity_id, kind, IFNULL(from_state, '-'), \
                  IFNULL(to_state, '-'), substr(IFNULL(cause, '-'), 1, 200) \
                  FROM events WHERE entity = 'attempt' ORDER BY event_id",
             ),
@@ -227,7 +228,7 @@ impl World {
             ),
             show(
                 "task moves",
-                "SELECT event_id, entity_id, from_state, to_state, IFNULL(cause, '-') \
+                "SELECT event_id, substr(at, 12, 12), entity_id, from_state, to_state, IFNULL(cause, '-') \
                  FROM events WHERE kind = 'transition' AND entity = 'task' ORDER BY event_id",
             ),
             format!("git refs:\n{}\n", self.refs()),
@@ -477,6 +478,14 @@ fn fm9_judgment_task_is_done_only_after_its_judge() {
 fn fm33_two_fix_rounds_escalate() {
     let w = World::new("p6-judge-fm33", "commit,result,verdict_critical");
     let pair = w.pair();
+    // 6 attempts run 1 after the other. Each judge verdict is 1 step of
+    // the flow, and each step has its own deadline.
+    for n in 1..=3 {
+        w.wait(
+            &format!("judge attempt {n} with an open CRITICAL item"),
+            || (w.attempts_with(&pair.judge, "critical_open") >= n).then_some(()),
+        );
+    }
     w.wait_status(&pair.judged, "escalated");
     w.wait_status(&pair.judge, "escalated");
     let rounds = w.one(&format!(
