@@ -1,0 +1,26 @@
+# Code sweep of T-177 (round 1)
+
+Overall verdict: FAIL
+
+| Reviewer | Verdict | Critical | Important | Minor |
+|---|---|---|---|---|
+| bug-hunter | PASS | 0 | 0 | 1 |
+| clarity-checker | WARN | 0 | 5 | 0 |
+| vulnerability-scanner | FAIL | 2 | 2 | 1 |
+
+## Critical
+- F7 [vulnerability-scanner] crates/ui-prop-tester/src/shrink.rs:88 `shrink` trusts the trace header as a `Target`, so a supplied terminal trace can set `program` and `args`, and a browser trace can set `chrome`; calibration then launches that attacker-selected executable through `Target::open`, which makes shrinking a shared bug-report trace arbitrary code execution. Fix: Treat recorded target fields as display-only, require the executable/browser path and remote endpoint as explicit CLI input for every shrink, and never launch a path deserialized from a trace.
+- F8 [vulnerability-scanner] crates/ui-prop-tester/src/engine.rs:237 Every browser run serializes the complete `BrowserConfig` into the trace header, including `--header` values and full `--cookie` strings, before `write_trace_file` stores the self-contained trace that the skill tells users to retain and use for bug reports. Fix: Exclude or irreversibly redact authentication headers, cookies, remote-endpoint credentials, and sensitive command arguments from trace metadata, require them again for replay/shrink, and create trace files with owner-only permissions.
+
+## Important
+- F2 [clarity-checker] crates/horch-core/src/harness/claude.rs:877 `overlay_horch_paths` assembles the same `.git` and `.worktrees` write grants here and again at line 912 through `repository_write_paths`, with only the second path also adding `additionalDirectories`; future permission changes must keep two discovery and grant paths synchronized. Fix: make one helper resolve root checkouts and linked worktrees, then add all repository grants in one `add_entries` call.
+- F3 [clarity-checker] crates/ui-prop-tester/src/browser/tracker.rs:50 `PageTracker::handle` is a 180-line dispatcher that also implements download, target-lifecycle, navigation, network-status, console, exception, and drag state transitions, so each protocol change requires editing one high-coupling method. Fix: keep a small event-domain dispatcher and extract named handlers for downloads, target/page lifecycle, network responses, and runtime events.
+- F4 [clarity-checker] crates/ui-prop-tester/src/shrink.rs:55 `run` spans about 180 lines and combines path validation, trace/specification loading, property selection, calibration, delta-debugging, and report persistence, which obscures the shrink algorithm and makes setup changes risky. Fix: extract a prepared shrink context plus separate calibration, reduction, and result-writing functions.
+- F5 [clarity-checker] skills/incremental-game-design/assets/godot/tuning_bench/bench_cli.gd:72 `_main` spans 165 lines, declares 22 option variables, parses every flag, loads settings and checks, applies overrides, and dispatches 7 modes in one method. Fix: introduce a typed options object and extract argument parsing, bench preparation, override loading, and mode dispatch into focused functions.
+- F6 [clarity-checker] skills/incremental-game-design/assets/godot/tuning_bench/bench_timeline.gd:44 `_draw` spans 135 lines and separately lays out phase bands, both axes, the income series, 3 event strips, and the legend, making any visual change depend on unrelated local state. Fix: compute a small layout value once and extract named draw helpers for bands, axes/income, event strips, and legend.
+- F9 [vulnerability-scanner] crates/ui-prop-tester/src/inspect.rs:233 The loopback trace viewer accepts any `Host` and serves the complete trace and screenshots without a capability token, so a malicious website can use DNS rebinding against the predictable default port 1073 and read `/api/header`, `/api/states`, and `/api/screenshots/*` as same-origin data. Fix: Put an unguessable token in every viewer URL and API request, validate `Host` against the exact loopback authority, and reject unexpected browser origins.
+- F10 [vulnerability-scanner] crates/ui-prop-tester/src/browser/cookies.rs:10 Cookie validation errors interpolate the complete `--cookie` argument, including its secret value, and the same disclosure recurs for invalid names, attributes, dates, and browser refusal. Fix: Parse the cookie name separately and report only the name and invalid attribute while replacing the value with a fixed redaction.
+
+## Minor
+- F1 [bug-hunter] docs/tickets/fleetd-p1/MAP.md:111 Q3 now declares the fleetd migration schema v9, but Q7 and the coverage row at line 161 still identify that same migration as schema v8, leaving the Phase 1 map internally inconsistent. Fix: change those two current-schema references to v9 while retaining historical ticket names where needed.
+- F11 [vulnerability-scanner] crates/ui-prop-tester/src/trace.rs:193 The trace reader accepts an attacker-controlled 64-bit record length and allocates that amount at line 195 before checking remaining input, so a tiny malicious trace can crash or exhaust memory in `trace`, `inspect`, or `shrink`. Fix: Enforce per-record and total trace-size limits before allocation and reject lengths larger than the remaining bounded input.

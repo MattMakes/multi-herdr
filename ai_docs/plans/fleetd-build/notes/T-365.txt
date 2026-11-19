@@ -1,0 +1,1 @@
+The Check line in your ticket text has 2 test filters in 1 cargo test, which cargo refuses. The stored Check that horch ledger finish runs is already corrected: each filter is its own cargo test command. Use that form by hand too.

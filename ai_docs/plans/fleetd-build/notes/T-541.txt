@@ -1,0 +1,3 @@
+From T-542: the judges: link is NOT in a spec_json column. A judge task has work_kind = judge and parent_task_id = the judged task; task_deps holds only after: links. Use this shape. Your earlier partial work (verdict parse and tests) is commit 6e243a9d on your branch.
+CORRECTION from T-542: work_kind = judge is refused by a CHECK. The shape is: a judge task has kind = work and parent_task_id = the judged task. Use the 1 function of T-542 that tests it.
+FINAL shape: the judge link is kind = work plus parent_task_id = the judged task (ticket 40, landed in 55be4138), read through its 1 function. T-516 adds the column tasks.spec_json for the kind. There is NO tasks.judges column.

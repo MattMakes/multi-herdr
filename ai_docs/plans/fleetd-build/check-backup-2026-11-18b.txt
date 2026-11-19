@@ -1,0 +1,6 @@
+491|landing|cargo test -p horch-core --test arch_scan && cargo test -p horch-core --test fleetd_single_writer && cargo test -p horch-core --test nfr --test architecture_doc && cargo build -p horch --tests --locked
+870|queued|cargo test -p horch-e2e --test taskledger && cargo test -p horch-core --test nfr --test arch_scan --test architecture_doc && cargo fmt --all --check
+871|running|cargo test -p horch-core --locked --no-fail-fast && cargo test -p horch --locked --no-fail-fast && cargo fmt --all --check
+880|running|cargo test -p horch --locked --no-fail-fast && cargo test -p horch-e2e --locked --no-fail-fast && cargo test -p horch-core --test nfr --test arch_scan --test architecture_doc && cargo fmt --all --check
+882|queued|cargo test --workspace --locked --no-fail-fast && cargo fmt --all --check
+886|queued|cargo test -p horch-e2e --locked --no-fail-fast && cargo test -p horch-core --test nfr --test arch_scan --test architecture_doc && cargo fmt --all --check

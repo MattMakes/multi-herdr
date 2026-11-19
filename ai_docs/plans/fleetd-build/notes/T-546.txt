@@ -1,0 +1,4 @@
+Facts from the first attempt of T-546 (it was parked until Phase 5 landed):
+- crates/horch-core/tests/fleetd_config_p5.rs and docs/architecture.md line 75 use orchestrator_seats or is_orchestrator_seat. Both are outside Own; Own is extended to them for the removal.
+- git grep is_orchestrator_seat also finds the ticket files docs/tickets/fleetd-p5/09 and docs/tickets/fleetd-p6/44, so the Done-when check applies to code only.
+- At that time no code outside domain/authorize.rs called authorize() or used AttemptFacts. Check again.

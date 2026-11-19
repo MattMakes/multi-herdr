@@ -1,0 +1,8 @@
+The test sleep_does_not_expire_a_lease (crates/horch-e2e/tests/p0_liveness.rs) is off the list of expected failures since T-263, but it passes for the wrong reason: it only sees that a lease row exists. Your ticket must make it strict. Note of the worker of T-263: [opus-hardening-37] NOTE: sleep_does_not_expire_a_lease passes only because the claim now writes a lease row. It proves nothing about a sleep. I removed its line from p0_liveness.txt.
+Reason 1: no pass calls renew_or_expire_leases before ticket 14, so nothing can expire a lease.
+Reason 2: HORCH_NOW moves only the wall clock. The fleet clock ticks on horch_platform::awake::now, and no test override of the awake clock exists.
+Ticket 15 must make the test assert these facts:
+1. A control case: with a large pass_period_s, passes move the fleet clock past expires_at, and the task moves to stalled with an event cause lease_expired. This proves that the pass runs the expiry.
+2. After the 2 h wall clock jump, fleet_clock_s grows by at most 2 pass periods.
+3. The task stays running, no lease_expired event exists, and expires_at - fleet_clock_s > 0.
+4. A real sleep needs an awake clock that stops. Ticket 15 needs a test seam for horch_platform::awake::now, or a unit test of clock::tick with a reading that does not move.

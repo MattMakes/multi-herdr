@@ -1,0 +1,27 @@
+[
+ {
+  "seq": 357,
+  "old": "cargo test -p horch-core --lib harness::claude harness::codex harness::antigravity fleetd::worker_profiles && cargo test -p horch-core --test harness_defaults && cargo test -p horch-core --test nfr --test arch_scan --test architecture_doc",
+  "new": "cargo test -p horch-core --lib harness::claude && cargo test -p horch-core --lib harness::codex && cargo test -p horch-core --lib harness::antigravity && cargo test -p horch-core --lib fleetd::worker_profiles && cargo test -p horch-core --test harness_defaults && cargo test -p horch-core --test nfr --test arch_scan --test architecture_doc"
+ },
+ {
+  "seq": 361,
+  "old": "cargo test -p horch-core --lib fleetd::worker_profiles fleetd::fleet_runtime::application::jobs && cargo test -p horch-core --test check_sandbox && cargo test -p horch-core --test nfr --test arch_scan --test architecture_doc",
+  "new": "cargo test -p horch-core --lib fleetd::worker_profiles && cargo test -p horch-core --lib fleetd::fleet_runtime::application::jobs && cargo test -p horch-core --test check_sandbox && cargo test -p horch-core --test nfr --test arch_scan --test architecture_doc"
+ },
+ {
+  "seq": 365,
+  "old": "cargo test -p horch-core --lib harness fleetd::worker_profiles::domain::launch_env && cargo test -p horch-core --test sr3_no_agent_push && cargo test -p horch-core --test nfr --test arch_scan --test architecture_doc",
+  "new": "cargo test -p horch-core --lib harness && cargo test -p horch-core --lib fleetd::worker_profiles::domain::launch_env && cargo test -p horch-core --test sr3_no_agent_push && cargo test -p horch-core --test nfr --test arch_scan --test architecture_doc"
+ },
+ {
+  "seq": 371,
+  "old": "cargo test -p horch-core --lib fleetd::integration::adapters::exec_gate fleetd::worktree_custody::application::gate_tree && cargo test -p horch-core --test gate_jobs && cargo test -p horch-core --test nfr --test arch_scan --test architecture_doc",
+  "new": "cargo test -p horch-core --lib fleetd::integration::adapters::exec_gate && cargo test -p horch-core --lib fleetd::worktree_custody::application::gate_tree && cargo test -p horch-core --test gate_jobs && cargo test -p horch-core --test nfr --test arch_scan --test architecture_doc"
+ },
+ {
+  "seq": 384,
+  "old": "cargo test -p horch-core --lib fleetd::integration::adapters::exec_rebase fleetd::integration::application::rebase && cargo test -p horch-core --test rebase_job && cargo test -p horch-core --test nfr --test arch_scan --test architecture_doc",
+  "new": "cargo test -p horch-core --lib fleetd::integration::adapters::exec_rebase && cargo test -p horch-core --lib fleetd::integration::application::rebase && cargo test -p horch-core --test rebase_job && cargo test -p horch-core --test nfr --test arch_scan --test architecture_doc"
+ }
+]

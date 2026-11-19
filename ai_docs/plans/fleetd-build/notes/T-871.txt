@@ -1,0 +1,13 @@
+Changes since the ticket was written:
+1. T-476 is landed: horch ledger claim refuses each caller now. So each test that uses claim as setup is red now. Your work is urgent. You do not wait for gate T-404.
+2. T-880 (opus-hardening-154) runs beside you in the same test folders. T-880 moves tests to a test fleetd and removes tests that pin removed behavior. T-880 does NOT move claim fixtures: that is yours. Read its progress notes (horch ledger show T-880) for the list of files. Merge the run branch often.
+3. Since T-472, horch spawn asks fleetd to open the pane, and fleetd launches an attempt only after T-389 (the pass of Phase 4, part 1). Your bind helper must give a test a bound task and a live attempt through the door that fleetd uses, without a real pane where the test does not need one.
+4. HORCH_TASK_YAML is retired (T-477). Tests p4_question_file and p4_result_cli need the new way to find the attempt; move them.
+5. The interim edge (TaskBranch, building, landed) of T-368: remove it only if no code path uses it after the claim search is gone. If the old finish path of horch ledger finish still needs it, name that in the done summary and leave the edge.
+6. Your Check is the whole workspace. Tests that are red for a cause of T-880, T-881, T-882, T-884 or T-885 are not yours: name them in the done summary, and send QUESTION if the Check cannot pass because of them.
+7. From T-491 (base 2fa277a9): cargo test -p horch --bins has 26 red unit tests on the base. Your Check runs cargo test -p horch, so these are yours to make green or to name with their owner:
+   - cmd::context ctx_06: commit 50cc5eda (fleetd-p7 21) gives codex-sol a 256000 window; the test expects 200000. Update the pin.
+   - cmd::recipes trf_43: fleetd-p6 47 retired horch ledger task. Move or remove under the rule of T-880 (a removed behavior, name the test that covers the new one).
+   - 10 tests cmd::taskledger_spawn, 2 tests cmd::spawn trf_41, 1 test cmd::sessionscmd trf_44: claim fixtures or no test fleetd.
+   - 7 tests cmd::worker repair, 2 tests cmd::taskledger_wake trf_15 and trf_21, 2 tests cmd::taskledger_watch watch_once, 1 test cmd::taskledger no_allowed_ledger_subcommand_takes_a_check_command: find the cause of each. A product fault: send QUESTION.
+   Read the done summary of T-491 for the list.

@@ -1,0 +1,15 @@
+393|cargo test -p horch-e2e --test p0_landing && cargo test -p horch-e2e --test expected_failures && cargo test -p horch-core --test nfr --test arch_scan --test architecture_doc
+397|cargo test -p horch-e2e --test p4_repair && cargo test -p horch-core --test nfr --test arch_scan --test architecture_doc
+404|cargo test --workspace --locked && cargo test -p horch-core --test nfr --test arch_scan --test architecture_doc
+498|cargo test --workspace --locked
+556|cargo test -p horch-e2e --test p0_ideas && cargo test -p horch-e2e --test expected_failures && cargo test -p horch-core --test nfr --test arch_scan --test architecture_doc
+557|cargo test -p horch-e2e --test p0_landing && cargo test -p horch-e2e --test expected_failures && cargo test -p horch-core --test nfr --test arch_scan --test architecture_doc
+558|cargo test -p horch-e2e --test p6_intake && cargo test -p horch-core --test nfr --test arch_scan --test architecture_doc
+559|cargo test -p horch-e2e --test p6_sub_orchestrators && cargo test -p horch-core --test nfr --test arch_scan --test architecture_doc
+560|cargo test -p horch-e2e --test p6_plans && cargo test -p horch-core --test nfr --test arch_scan --test architecture_doc
+561|cargo test -p horch-e2e --test p6_judge_pair && cargo test -p horch-core --test nfr --test arch_scan --test architecture_doc
+562|cargo test -p horch-e2e --test p6_questions && cargo test -p horch-core --test nfr --test arch_scan --test architecture_doc
+564|cargo test -p horch-e2e --test p6_release && cargo test -p horch-core --test nfr --test arch_scan --test architecture_doc
+567|cargo test --workspace --locked
+603|cargo test -p horch-e2e --test p7_exec && cargo test -p horch-core --test nfr --test arch_scan --test architecture_doc
+606|cargo test --workspace --locked && cargo test -p horch-core --test nfr --test arch_scan --test architecture_doc

@@ -1,0 +1,11 @@
+SPEED RULE of the operator from 2026-11-18: the tasks of this phase landed with no code review and with only their ticket Check. So this gate is the first run of the whole suite for them. Run cargo build --workspace --bins, then cargo test --workspace --locked --no-fail-fast on macOS, and the gate tests on Linux in Docker with bubblewrap. Correct each red test in the gate task (Own is extended to what a fix needs; a product fault that is not small goes to the orchestrator as QUESTION). List in the gate file each task of the phase and say that its review is deferred to the end review.
+Linux: if Docker on this Mac does not start a container after 2 tries, do not wait for it. Write 'Linux: pending CI, Docker did not start' in the gate file and go on.
+Check at this gate: T-486 and ticket 38 of Phase 5 remove 9 personas from dispatch (no OS sandbox), with spec-writer and ticket-writer among them. Prove that the idea flow of Phase 6 (brief, spec, tickets) can still run with a persona that has a sandbox, and name it in the gate file.
+Also: crates/horch-core/tests/trial_merges.rs has 3 of 5 tests red since commit 26304a42 (job results moved to files): the test must call jobs::end_from_files after run_job. Fix it in the gate if it is still red.
+Also: no interim outbox builder of wakes.rs (T-548) has a caller left.
+Also from T-471: the commands of horch ledger write no wake row now. Check the decision table of wakes.rs (T-548): the startable wake (after unblock, requeue, stop) and the reaped wake have an owner in fleetd, or the gate file says why the push flow does not need them.
+Also: T-882 (tests set up through the idea flow, after T-549) must be landed before this gate.
+T-894 must be landed (idea flow through the binary).
+T-896 must be landed (a direct idea never goes to clarifying).
+T-897 must be landed (a worker question becomes a questions row).
+T-898 must be landed (FR-10: no fleet process can approve). Run its 4 tests of crates/horch-e2e/tests/p6_fr10_approval.rs as part of the gate.

@@ -1,0 +1,1 @@
+From T-504: tasks::add writes the feature and idea rows for a run that has none (interim, so the trigger tasks_need_an_idea does not break horch ledger add, add-map and run new). Your ticket retires those commands: remove this interim call in the same change.

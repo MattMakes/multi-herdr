@@ -1,0 +1,1 @@
+Host facts: macOS holds each new test binary at launch for 10 minutes or more, and the disk is small. Run only the test files of your ticket, with a 60 minute limit, and send horch ledger progress each 5 min. Do not run a whole-crate test run.

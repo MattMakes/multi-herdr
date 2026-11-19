@@ -1,0 +1,1 @@
+Your task starts early, before the gates of Phases 2 to 4, to use free capacity. Some code of the earlier phases can be missing on the run branch. If a file, a function or a test that your ticket names "from ticket NN of fleetd-pN" does not exist yet, do not write it yourself and do not guess: send BLOCKED with the exact name, then end your turn. I start you again when it lands.

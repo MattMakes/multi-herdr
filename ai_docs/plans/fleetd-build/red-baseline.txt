@@ -1,0 +1,230 @@
+# T-880 baseline: red tests before T-880
+
+Run: `cargo test -p horch --locked --no-fail-fast` and `cargo test -p horch-e2e --locked --no-fail-fast` on fleet/fleetd-build at adb0bafc, 2026-11-18.
+Format: crate, test file, test name, cause (first panic line).
+
+## horch: 43 red tests
+
+- horch | context.rs | cmd::context::tests::ctx_06_windows_view_lists_claude_and_codex_teammates | codex-luna                   codex     gpt-5.6-luna                          256,000  fleet     256,000     300,000  teammate    204,800    51,200  teammate codex-luna compact_window note: run with `R
+- horch | recipes.rs | cmd::recipes::tests::trf_43_the_steward_task_is_queued_and_its_spawn_has_no_task_text | called `Result::unwrap()` on an `Err` value: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch | main.rs | tests::help_lists_the_same_commands_in_the_same_order | assertion `left == right` failed   left: [("channel", true), ("mail", true), ("fleet", false), ("orchestration", false), ("update", false), ("tell", false), ("inbox", false), ("peek", false), ("note",
+- horch | ledger_cli.rs | check_none_flag_on_add_stores_no_check | ["ledger", "run", "new", "r1"]: horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch | ledger_cli.rs | check_none_in_ticket_on_add_without_flag_stores_no_check | ["ledger", "run", "new", "r1"]: horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch | p3_worktrees_cli.rs | ledger_status_shows_the_total_size_of_all_trees | assertion `left == right` failed: ["ledger", "run", "new", "r1"]: horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch | p3_worktrees_cli.rs | restore_of_an_archive_name_keeps_today_s_behavior | assertion `left == right` failed: ["ledger", "run", "new", "r1"]: horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch | p3_worktrees_cli.rs | restore_of_a_task_makes_branch_rescue_t_seq_n_and_its_tree_with_each_rescued_file | assertion `left == right` failed: ["ledger", "run", "new", "r1"]: horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch | p3_worktrees_cli.rs | restore_runs_no_hook_of_the_project | assertion `left == right` failed: ["ledger", "run", "new", "r1"]: horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch | p3_worktrees_cli.rs | restore_of_a_task_whose_tree_is_removed_uses_its_rescue_ref | assertion `left == right` failed: ["ledger", "run", "new", "r1"]: horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch | p3_worktrees_cli.rs | worktrees_lists_each_tree_with_state_task_owner_age_and_size | assertion `left == right` failed: ["ledger", "run", "new", "r1"]: horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch | p3_worktrees_cli.rs | worktrees_shows_the_rescue_job_that_the_reconciler_queued_for_an_orphan | assertion `left == right` failed: ["ledger", "run", "new", "r1"]: horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch | p3_worktrees_cli.rs | restore_refuses_when_the_branch_or_the_folder_exists_and_changes_nothing | assertion `left == right` failed: ["ledger", "run", "new", "r1"]: horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch | p3_worktrees_cli.rs | worktrees_json_has_each_field | assertion `left == right` failed: ["ledger", "run", "new", "r1"]: horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch | p4_question_file.rs | two_questions_write_2_files | assertion `left == right` failed: horch ["ledger", "run", "new", "r1"]: horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch | p4_question_file.rs | question_of_a_push_attempt_writes_1_question_file | assertion `left == right` failed: horch ["ledger", "run", "new", "r1"]: horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch | p4_question_file.rs | a_long_question_file_stays_under_64_kib | assertion `left == right` failed: horch ["ledger", "run", "new", "r1"]: horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch | p4_question_file.rs | question_of_a_claim_attempt_writes_no_file | assertion `left == right` failed: horch ["ledger", "run", "new", "r1"]: horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch | p4_result_cli.rs | oversized_result_is_refused | assertion `left == right` failed: horch ["ledger", "run", "new", "r1"]: horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch | p4_result_cli.rs | second_result_of_1_attempt_is_refused | assertion `left == right` failed: horch ["ledger", "run", "new", "r1"]: horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch | p4_result_cli.rs | check_exits_2_with_neither_file_and_0_with_one | assertion `left == right` failed: horch ["ledger", "run", "new", "r1"]: horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch | p4_result_cli.rs | result_writes_a_valid_file_once | assertion `left == right` failed: horch ["ledger", "run", "new", "r1"]: horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch | p4_result_cli.rs | result_outside_a_push_attempt_is_refused | assertion `left == right` failed: horch ["ledger", "run", "new", "r1"]: horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch | p4_result_cli.rs | result_json_with_another_status_is_refused | assertion `left == right` failed: horch ["ledger", "run", "new", "r1"]: horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch | trf_11_add_map_cli.rs | trf_12_claim_prints_the_snapshot_after_the_ticket_changed_or_went | assertion `left == right` failed: ["ledger", "run", "new", "r1"]: horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch | trf_11_add_map_cli.rs | trf_13_add_map_refuses_a_ticket_already_queued_unless_again | assertion `left == right` failed: ["ledger", "run", "new", "r1"]: horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch | trf_11_add_map_cli.rs | trf_11_dry_run_names_each_problem_and_writes_nothing | assertion `left == right` failed: ["ledger", "run", "new", "r1"]: horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch | trf_11_add_map_cli.rs | trf_14_add_map_stores_kind_review_and_check_none | assertion `left == right` failed: ["ledger", "run", "new", "r1"]: horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch | trf_37_ledger_handoff_cli.rs | trf_37_handoff_requeues_the_task_and_the_next_claim_reads_the_handoff_first | assertion `left == right` failed: ["ledger", "run", "new", "r1"]: horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch | w3_ledger_cli_pins.rs | add_refuses_a_check_timeout_of_zero_after_it_queued_the_task | assertion `left == right` failed: ["ledger", "run", "new", "r1"]: horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch | w3_ledger_cli_pins.rs | watch_once_json_lists_each_checked_worker | assertion `left == right` failed: ["ledger", "run", "new", "r1", "--check-every", "10", "--stall-rounds", "1000"]: horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horc
+- horch | w3_ledger_cli_pins.rs | watch_once_reports_in_text_and_json | assertion `left == right` failed: ["ledger", "run", "new", "r1", "--check-every", "10"]: horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch | w3_ledger_cli_pins.rs | claim_prints_the_line_to_send_the_ticket_and_the_project_facts | assertion `left == right` failed: ["ledger", "run", "new", "r1"]: horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch | w3_ledger_cli_pins.rs | a_worker_claims_makes_a_worktree_and_finishes | assertion `left == right` failed: ["ledger", "run", "new", "r1", "--verify", "full"]: horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch | w3_ledger_cli_pins.rs | add_map_prints_each_task_and_the_path_of_the_map_it_read | assertion `left == right` failed: ["ledger", "run", "new", "r1"]: horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch | w3_ledger_cli_pins.rs | a_command_with_no_fleetd_row_starts_no_watchdog | assertion `left == right` failed: ["ledger", "run", "new", "r1", "--check-every", "10"]: horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch | w3_ledger_cli_pins.rs | spawn_checks_the_run_the_persona_and_the_replaced_worker | horch: horch spawn needs HORCH_WORKSPACE_ID set, or to run inside a herdr pane: not inside a herdr pane (HERDR_PANE_ID is unset) and HORCH_WORKSPACE_ID is not set
+- horch | w3_ledger_cli_pins.rs | run_new_creates_the_branch_and_reports_it | assertion `left == right` failed: horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch | w3_ledger_cli_pins.rs | the_unfinished_import_and_refusal_arms_print_their_pinned_text | assertion `left == right` failed: ["ledger", "unfinished"]: horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch | w3_ledger_cli_pins.rs | add_takes_the_title_check_and_files_from_the_ticket_unless_a_flag_names_them | assertion `left == right` failed: ["ledger", "run", "new", "r1"]: horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch | w3_ledger_cli_pins.rs | ensure_starts_nothing_with_the_watchdog_off_or_without_a_ledger | assertion `left == right` failed: ["ledger", "run", "new", "r1", "--check-every", "10"]: horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch | w3_ledger_cli_pins.rs | a_push_attempt_claims_nothing_and_finish_and_done_refuse | assertion `left == right` failed: ["ledger", "run", "new", "r1"]: horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch | w3_ledger_cli_pins.rs | the_board_commands_print_their_pinned_text | assertion `left == right` failed: ["ledger", "run", "new", "r1", "--steps", "check,land"]: horch ledger: created run branch fleet/r1 from main. horch: reading the operator token: token file <tmp> is r
+
+## horch-e2e: 177 red tests
+
+- horch-e2e | done_budget.rs | ledger_done_finishes_in_time_against_a_stuck_orchestrator | status: exit status: 1 stdout:
+- horch-e2e | done_budget.rs | ledger_done_killed_during_the_wake_push_has_recorded_the_report | status: exit status: 1 stdout:
+- horch-e2e | fakes.rs | phase4::ask_scenario_sends_one_question | horch ["ledger", "run", "new", "r1"]: horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch-e2e | fakes.rs | phase4::noresult_scenario_writes_nothing | horch ["ledger", "run", "new", "r1"]: horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch-e2e | fakes.rs | phase4::result_scenario_writes_result_json | horch ["ledger", "run", "new", "r1"]: horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch-e2e | fakes.rs | phase4::bound_scenario_writes_entry_json_at_entry | horch ["ledger", "run", "new", "r1"]: horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch-e2e | fleet18_brief_worktree.rs | g69_drop_keep_branch_refuses_detached_unique_commits | ["ledger", "run", "new", "review"]: Output { status: ExitStatus(unix_wait_status(256)), stdout: "", stderr: "horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch flee
+- horch-e2e | fleet18_brief_worktree.rs | g69_open_scratch_does_not_block_finish_or_done | ["ledger", "run", "new", "review"]: Output { status: ExitStatus(unix_wait_status(256)), stdout: "", stderr: "horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch flee
+- horch-e2e | fleet18_brief_worktree.rs | g69_drop_refuses_changed_checked_out_branch | ["ledger", "run", "new", "review"]: Output { status: ExitStatus(unix_wait_status(256)), stdout: "", stderr: "horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch flee
+- horch-e2e | fleet18_brief_worktree.rs | g69_from_scratch_and_drop_preserve_unpublished_work | ["ledger", "run", "new", "review"]: Output { status: ExitStatus(unix_wait_status(256)), stdout: "", stderr: "horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch flee
+- horch-e2e | fleet18_brief_worktree.rs | g69_drop_refuses_detached_unique_commits | ["ledger", "run", "new", "review"]: Output { status: ExitStatus(unix_wait_status(256)), stdout: "", stderr: "horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch flee
+- horch-e2e | fleet18_brief_worktree.rs | g56_facts_reach_claim_and_launch_context_and_are_project_scoped | ["ledger", "run", "new", "review"]: Output { status: ExitStatus(unix_wait_status(256)), stdout: "", stderr: "horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch flee
+- horch-e2e | fleet18_messaging.rs | g60_ledger_done_and_wake_queue_without_registration_then_courier_delivers | horch: no live attempt of this process
+- horch-e2e | fleet18_messaging.rs | g62_ledger_wake_uses_run_workspace_and_records_login_queue_cause | horch: no live attempt of this process
+- horch-e2e | fleet18_messaging.rs | g70_finish_cli_creates_reviewer_wait_and_background_progress_cli_sets_deadline | called `Result::unwrap()` on an `Err` value: Error("EOF while parsing a value", line: 1, column: 0)
+- horch-e2e | fleet18_messaging.rs | ledger_done_finds_the_orchestrator_in_a_copied_old_registry | horch: no live attempt of this process
+- horch-e2e | fleet18_observability.rs | g50_live_foreign_runs_and_legacy_orchestrators_warn_but_do_not_block | horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch-e2e | fleet18_observability.rs | g53_ledger_handoff_compacts_resumes_and_records_progress_once | horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch-e2e | fleet18_observability.rs | g51_sessions_points_to_ledger_status_only_for_the_callers_active_run | horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch-e2e | fleet18_observability.rs | g54_doctor_missing_mcp_and_hanging_docker_are_warnings | warning: godot-csharp-engineer: the persona names the Task tool, which codex (fallback codex-sol) lacks warning: apple-platform-developer: operator skill swiftui-whats-new-27 is not installed on this 
+- horch-e2e | fleet18_observability.rs | g52_concurrent_workers_get_their_own_session_and_transcript | timed out waiting for two session transcripts
+- horch-e2e | fleet18_observability.rs | ledger_stop_stops_a_spawned_worker_by_the_ingested_pid | timed out waiting for the ingested agent PID
+- horch-e2e | fleet_start.rs | a_scratch_fleet_does_not_change_an_existing_default_ledger | horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch-e2e | i308_fleet_steward.rs | the_no_change_steward_task_finishes_without_a_worktree | horch ledger run new alpha: status: exit status: 1 stdout:
+- horch-e2e | i308_fleet_steward.rs | an_exhausted_claude_pool_starts_no_codex_steward | horch ledger run new alpha: status: exit status: 1 stdout:
+- horch-e2e | i308_fleet_steward.rs | a_fleet_with_an_abandoned_worktree_spawns_the_worktree_steward | horch ledger run new alpha: status: exit status: 1 stdout:
+- horch-e2e | i308_fleet_steward.rs | triage_delete_accepts_a_clean_detached_head_reachable_from_a_branch | horch ledger run new alpha: status: exit status: 1 stdout:
+- horch-e2e | i308_fleet_steward.rs | a_worker_can_drop_a_clean_worktree_from_an_explicit_other_run | horch ledger run new alpha: status: exit status: 1 stdout:
+- horch-e2e | i308_fleet_steward.rs | triage_lists_rows_from_a_ledger_it_cannot_write | horch ledger run new alpha: status: exit status: 1 stdout:
+- horch-e2e | i308_fleet_steward.rs | triage_delete_refuses_a_detached_unique_commit | horch ledger run new alpha: status: exit status: 1 stdout:
+- horch-e2e | i308_triage.rs | run_close_abandon_cancels_then_refuses_until_the_worktree_is_decided | horch ledger run new alpha: status: exit status: 1 stdout:
+- horch-e2e | i308_triage.rs | finish_queues_a_task_that_inherits_the_worktree_and_wakes_the_orchestrator | horch ledger run new alpha: status: exit status: 1 stdout:
+- horch-e2e | i308_triage.rs | run_close_refuses_while_a_parked_worktree_has_no_decision | horch ledger run new alpha: status: exit status: 1 stdout:
+- horch-e2e | i308_triage.rs | a_bad_reply_names_its_lines_and_runs_nothing | horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch-e2e | i308_triage.rs | archive_restore_and_gc_through_the_cli | horch worktree triage apply <tmp> status: exit status: 1 stdout:
+- horch-e2e | p0_dispatch.rs | fm2_agent_that_never_claims_has_its_task_bound_at_spawn | horch ledger run new alpha: status: exit status: 1 stdout:
+- horch-e2e | p0_dispatch.rs | fm6_agent_that_exits_without_done_leaves_its_work_to_the_next_attempt | horch ledger run new beta --check-every 1 --stall-rounds 1: status: exit status: 1 stdout:
+- horch-e2e | p0_ideas.rs | fm8_two_ideas_sent_back_to_back_stay_2_ideas | horch idea add "Retry sync with backoff and log each retry": status: exit status: 1 stdout:
+- horch-e2e | p0_landing.rs | given_3_ready_branches_when_bundle_then_fast_gate_runs_once_and_none_is_forgotten | horch ledger run new alpha --steps land: status: exit status: 1 stdout:
+- horch-e2e | p0_landing.rs | two_conflicting_features_keep_their_tips_and_reach_a_decision | horch idea add --direct <tmp> status: exit status: 1 stdout:
+- horch-e2e | p0_liveness.rs | sleep_does_not_expire_a_lease | horch ledger run new eps: status: exit status: 1 stdout:
+- horch-e2e | p0_liveness.rs | fm5_usage_limited_worker_is_not_reaped_and_burns_no_attempt | horch ledger run new eps: status: exit status: 1 stdout:
+- horch-e2e | p0_liveness.rs | fm3_idle_claim_is_caught_in_under_10_min | horch ledger run new eps: status: exit status: 1 stdout:
+- horch-e2e | p0_liveness.rs | fm4_dead_agent_ends_its_attempt_within_30_s | horch ledger run new eps: status: exit status: 1 stdout:
+- horch-e2e | p0_rescue.rs | fm13_herdr_restart_ends_attempts_and_queues_tasks_again | horch ledger run new fm13: status: exit status: 1 stdout:
+- horch-e2e | p0_rescue.rs | fm25_killed_worker_with_dirty_and_untracked_files_loses_nothing | horch ledger run new fm25 --stall-rounds 1: status: exit status: 1 stdout:
+- horch-e2e | p0_rescue.rs | fm13_herdr_restart_rescues_each_worktree_and_the_next_attempt_reuses_it | horch ledger run new fm13: status: exit status: 1 stdout:
+- horch-e2e | p0_supervision.rs | fm34_daemon_restart_on_a_new_binary_keeps_the_run | horch ledger run new zeta --check-every 1 --stall-rounds 1000: status: exit status: 1 stdout:
+- horch-e2e | p0_supervision.rs | fm7_killed_watchdog_does_not_stop_the_reconcile | horch ledger run new zeta --check-every 1 --stall-rounds 1000: status: exit status: 1 stdout:
+- horch-e2e | p1_jobs.rs | job_past_its_limit_runs_again_after_its_backoff_and_after_3_abandoned_runs_goes_to_you | horch ledger run new jobs --check /bin/sleep 600: status: exit status: 1 stdout:
+- horch-e2e | p1_jobs.rs | job_of_5_min_runs_while_fleetd_stays_healthy_and_is_not_restarted | horch ledger run new jobs --check /bin/sleep 300: status: exit status: 1 stdout:
+- horch-e2e | p1_pass.rs | scans_of_10000_folders_keep_the_heartbeat_under_30_s_and_go_on_at_their_cursors_after_a_restart | horch ledger run new alpha --steps check --check true --check-every 3600 --stall-rounds 1000: status: exit status: 1 stdout:
+- horch-e2e | p1_pass.rs | fm11_fleetd_aborted_after_the_commit_does_each_effect_once_on_restart | horch ledger run new alpha --steps check --check true --check-every 3600 --stall-rounds 1000: status: exit status: 1 stdout:
+- horch-e2e | p1_pass.rs | rr4_tasks_complete_with_all_file_watch_events_dropped | horch ledger claim as 1d51c862-8b6d-473c-8730-5a2f4819d27f: status: exit status: 1 stdout:
+- horch-e2e | p1_pass.rs | rr7_fleetd_killed_mid_run_ends_as_a_clean_run | horch ledger claim as 465ade55-4ef5-496c-9f48-ca9eb27b52e8: status: exit status: 1 stdout:
+- horch-e2e | p1_release.rs | update_with_a_live_worker_and_a_live_old_watchdog_leaves_1_control_path | horch ledger run new zeta --check-every 1 --stall-rounds 1000: status: exit status: 1 stdout:
+- horch-e2e | p1_release.rs | fleetd_runs_no_pass_while_an_old_watchdog_may_still_run | horch ledger run new zeta --check-every 1 --stall-rounds 1000: status: exit status: 1 stdout:
+- horch-e2e | p2_leases.rs | cancel_of_a_waiting_quota_task_is_immediate | horch ledger run new p2: status: exit status: 1 stdout:
+- horch-e2e | p2_leases.rs | rr1_stopped_worker_is_caught_within_1_lease | horch ledger run new p2: status: exit status: 1 stdout:
+- horch-e2e | p2_leases.rs | cancel_of_a_running_task_stops_its_process_before_the_task_is_cancelled | horch ledger run new p2: status: exit status: 1 stdout:
+- horch-e2e | p2_leases.rs | fm14_no_second_attempt_starts_while_the_old_process_lives | horch ledger run new p2: status: exit status: 1 stdout:
+- horch-e2e | p2_leases.rs | cancel_of_a_blocked_on_user_task_is_immediate | horch ledger run new p2: status: exit status: 1 stdout:
+- horch-e2e | p2_leases.rs | rr2_expired_lease_never_leaves_the_task_assigned | horch ledger run new p2: status: exit status: 1 stdout:
+- horch-e2e | p2_leases.rs | rr6_task_that_fails_each_attempt_escalates_after_max_attempts | horch ledger run new p2 --max-attempts 2: status: exit status: 1 stdout:
+- horch-e2e | p2_release.rs | held_task_with_a_live_worker_on_phase_1_is_not_reaped_after_the_update_and_has_1_lease | horch ledger progress building: status: exit status: 1 stdout:
+- horch-e2e | p3_refusals.rs | dismiss_cleanup_rescues_then_removes_only_the_recorded_path | horch ledger run new alpha --steps land: status: exit status: 1 stdout:
+- horch-e2e | p3_refusals.rs | drop_of_a_merged_branch_deletes_it_and_keep_branch_keeps_it | horch ledger run new alpha --steps land: status: exit status: 1 stdout:
+- horch-e2e | p3_refusals.rs | run_gate_folder_is_added_and_removed_through_the_jobs | horch ledger run new alpha --steps land: status: exit status: 1 stdout:
+- horch-e2e | p3_refusals.rs | cleanup_after_land_removes_a_landed_tree_through_the_remove_job | horch ledger run new alpha --steps land,cleanup: status: exit status: 1 stdout:
+- horch-e2e | p3_refusals.rs | rr13_drop_of_a_dirty_tree_is_refused_and_the_tree_stays | horch ledger run new alpha --steps land: status: exit status: 1 stdout:
+- horch-e2e | p3_refusals.rs | cleanup_of_a_landed_tree_with_an_untracked_file_is_refused_and_marked_cleanup_failed | horch ledger run new alpha --steps land,cleanup: status: exit status: 1 stdout:
+- horch-e2e | p3_refusals.rs | rr13_drop_of_a_branch_with_a_stash_entry_is_refused_and_the_tree_stays | horch ledger run new alpha --steps land: status: exit status: 1 stdout:
+- horch-e2e | p3_refusals.rs | rr13_drop_of_unpublished_unique_commits_is_refused_and_the_tree_stays | horch ledger run new alpha --steps land: status: exit status: 1 stdout:
+- horch-e2e | p3_refusals.rs | rr13_drop_with_a_head_that_moved_during_the_checks_is_refused_and_the_tree_stays | horch ledger run new alpha --steps land: status: exit status: 1 stdout:
+- horch-e2e | p3_refusals.rs | drop_of_a_clean_tree_writes_a_verified_rescue_ref_before_the_removal | horch ledger run new alpha --steps land: status: exit status: 1 stdout:
+- horch-e2e | p3_release.rs | live_tree_and_dirty_orphan_on_phase_2_are_active_and_listed_and_nothing_is_removed_after_the_update | horch ledger progress building: status: exit status: 1 stdout:
+- horch-e2e | p3_triage.rs | a_folder_at_the_path_of_a_removed_row_is_a_new_orphaned_row_and_nothing_is_removed | status: exit status: 1 stdout:
+- horch-e2e | p3_triage.rs | rr17_triage_refuses_a_unique_detached_head_and_the_tree_stays | status: exit status: 1 stdout:
+- horch-e2e | p3_triage.rs | rr16_failed_read_back_keeps_the_folder | status: exit status: 1 stdout:
+- horch-e2e | p3_triage.rs | rr17_triage_deletes_a_branch_only_when_the_trash_ref_holds_its_tip | status: exit status: 1 stdout:
+- horch-e2e | p3_triage.rs | pres_04_w9_triage_commits_untracked_before_delete | status: exit status: 1 stdout:
+- horch-e2e | p3_triage.rs | pres_04_w8_refs_move_forward_and_are_read_back | status: exit status: 1 stdout:
+- horch-e2e | p3_triage.rs | restore_runs_no_hook_of_the_project | status: exit status: 1 stdout:
+- horch-e2e | p3_triage.rs | trash_ref_older_than_30_days_is_collected_and_a_rescue_ref_is_not | status: exit status: 1 stdout:
+- horch-e2e | p3_triage.rs | restore_makes_its_tree_through_a_worktree_add_job | status: exit status: 1 stdout:
+- horch-e2e | p3_triage.rs | rr16_second_rescue_through_triage_does_not_overwrite_the_first_ref | status: exit status: 1 stdout:
+- horch-e2e | p3_unlanded.rs | rr15_rescued_work_that_did_not_land_stays_listed_after_the_task_is_done | horch ledger run new alpha --steps land: status: exit status: 1 stdout:
+- horch-e2e | p3_unlanded.rs | pres_04_l9_unlanded_work_is_listed_and_decided_once | horch ledger run new alpha --steps land: status: exit status: 1 stdout:
+- horch-e2e | p3_unlanded.rs | rr14_requeue_of_a_parked_task_runs_in_the_same_tree | horch ledger run new alpha --steps land: status: exit status: 1 stdout:
+- horch-e2e | p3_unlanded.rs | rr18_requeue_of_an_escalated_task_sets_its_attempt_count_to_0 | horch ledger run new alpha --steps land --max-attempts 2: status: exit status: 1 stdout:
+- horch-e2e | p3_unlanded.rs | pres_04_l5_unlanded_task_keeps_worktree_and_blocks_dependents | horch ledger run new alpha --steps land: status: exit status: 1 stdout:
+- horch-e2e | p3_unlanded.rs | rr15_orphaned_and_rescued_trees_are_listed_with_their_rescue_ref | horch ledger run new alpha --steps land: status: exit status: 1 stdout:
+- horch-e2e | p3_unlanded.rs | rr18_review_requeue_keeps_the_attempt_count | horch ledger run new alpha --steps code-sweep: status: exit status: 1 stdout:
+- horch-e2e | p3_unlanded.rs | rr15_landed_work_of_a_done_task_is_not_listed | horch ledger run new alpha --steps land: status: exit status: 1 stdout:
+- horch-e2e | p3_worktrees.rs | rr10_hand_made_worktree_is_adopted_within_1_list_period | horch ledger run new rr10: status: exit status: 1 stdout:
+- horch-e2e | p3_worktrees.rs | fm27_vanished_tree_opens_1_needs_you_item_within_60_s | horch ledger run new fm27: status: exit status: 1 stdout:
+- horch-e2e | p3_worktrees.rs | fm28_over_budget_removes_finished_trees_and_holds_dispatch_before_an_active_tree | horch ledger run new old: status: exit status: 1 stdout:
+- horch-e2e | p3_worktrees.rs | slow_worktree_add_of_60_s_keeps_the_heartbeat_and_the_tree_is_used_only_after_its_job_passed | horch ledger run new slow: status: exit status: 1 stdout:
+- horch-e2e | p3_worktrees.rs | fm27_only_landed_or_rescued_trees_are_removed | horch ledger run new fm27 --steps land: status: exit status: 1 stdout:
+- horch-e2e | p3_worktrees.rs | fr11_worker_own_git_worktree_add_is_flagged_on_the_next_pass | horch ledger run new fr11: status: exit status: 1 stdout:
+- horch-e2e | p3_worktrees.rs | fm26_tree_made_outside_fleetd_is_rescued_and_its_files_are_on_the_ref | horch ledger run new fm26: status: exit status: 1 stdout:
+- horch-e2e | skill_intake_spawn.rs | a_report_role_with_a_row_and_no_task_runs_to_done | status: exit status: 1 stdout:
+- horch-e2e | skill_intake_spawn.rs | a_controller_in_a_run_spawns_a_role_that_joins_the_run | status: exit status: 1 stdout:
+- horch-e2e | skill_intake_spawn.rs | trf_43_a_spoofed_pane_id_cannot_send_a_brief | status: exit status: 1 stdout:
+- horch-e2e | skill_intake_spawn.rs | trf_43_a_controller_outside_every_run_cannot_send_a_brief | status: exit status: 1 stdout:
+- horch-e2e | skill_intake_spawn.rs | trf_43_a_worker_without_spawn_only_cannot_send_a_brief | status: exit status: 1 stdout:
+- horch-e2e | skills_exposure.rs | operator_skills_e2e_check_warns_on_a_missing_name | stdout:  stderr: warning: godot-csharp-engineer: the persona names the Task tool, which codex (fallback codex-sol) lacks
+- horch-e2e | skills_exposure.rs | operator_skills_e2e_exposure_claude | stdout:  stderr: warning: godot-csharp-engineer: the persona names the Task tool, which codex (fallback codex-sol) lacks
+- horch-e2e | taskledger.rs | a_command_means_the_run_it_names_before_the_run_of_its_worker | horch ledger run new a: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | a_claim_names_an_ignored_ticket_by_an_absolute_path_that_opens_from_the_worktree | horch ledger run new gamma: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | a_claim_starts_no_watchdog | horch ledger run new zeta --check-every 1: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | a_cancel_names_the_tasks_that_wait_for_it | horch ledger run new a: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | a_command_from_another_workspace_says_whose_run_it_uses | horch ledger run new a: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | a_closed_run_frees_the_project_for_the_next_run | horch ledger run new a: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | a_claim_names_a_tracked_ticket_by_its_relative_path | horch ledger run new delta: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | a_dead_fleetd_is_restarted_by_the_next_command | horch ledger run new zeta --check-every 1: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | a_cancelled_review_is_queued_again_and_the_sweep_then_passes | horch ledger run new alpha --steps code-sweep: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | a_codex_workers_sandboxed_check_past_its_timeout_leaves_no_process | horch ledger run new alpha --steps check: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | a_cancelled_task_does_not_land_or_turn_done | horch ledger run new r2 --steps land,cleanup: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | a_codex_workers_check_cannot_write_outside_its_worktree | horch ledger run new alpha --steps check: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | a_landed_worktree_passes_land_at_once_in_a_run_with_no_remote | horch ledger run new alpha --steps land,cleanup: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | a_commit_after_the_land_is_checked_and_reviewed_again | horch ledger run new alpha --steps check,code-sweep,land,cleanup: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | a_live_worker_that_does_not_claim_is_reported_once | horch ledger run new a --heartbeat-stale 100000: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | a_check_past_its_timeout_is_killed_with_its_children | horch ledger run new alpha --steps check: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | a_refused_spawn_ends_its_worker_row | horch ledger run new a: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | a_cancel_during_the_land_lands_nothing | horch ledger run new r2 --steps land,cleanup: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | a_critical_finding_fails_until_a_fix_is_reviewed_again | horch ledger run new alpha --steps code-sweep: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | a_detached_finish_returns_at_once_and_mails_the_result | horch ledger run new alpha --steps check: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | a_failed_reviews_in_tell_wakes_the_orchestrator_once | horch ledger run new alpha --steps code-sweep: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | a_failed_push_after_a_land_is_retried_by_the_next_finish | horch ledger run new alpha --steps land,cleanup: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | a_spawn_joins_the_run_of_its_own_workspace | horch ledger run new a: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | a_failed_reviews_in_push_is_redelivered_until_the_author_runs_finish | horch ledger run new alpha --steps code-sweep: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | a_spawn_of_an_unknown_teammate_leaves_no_live_row | horch ledger run new a: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | a_killed_detached_finish_is_reported_by_the_next_finish | horch ledger run new alpha --steps check: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | a_spawned_worker_records_its_pids_session_and_checkins | horch ledger run new gamma --heartbeat-every 1: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | a_stuck_run_wakes_from_the_watchdog_when_no_task_finishes | horch ledger run new a: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | a_complexity_report_past_64_kib_is_read_whole | horch ledger run new alpha --steps complexity-sweep: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | a_task_reaped_max_attempts_times_fails_and_its_replan_requeues_it | horch ledger run new a --max-attempts 2: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | a_worker_with_no_progress_is_stalled_by_the_ladder_and_stopped_by_its_pid | horch ledger run new eps --heartbeat-every 1: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | add_map_queues_a_ticket_map_in_one_step | horch ledger run new beta: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | a_land_checks_outside_the_lock_and_lands_after_a_faster_task | horch ledger run new alpha --steps land: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | a_landed_worktree_with_no_new_commit_passes_land_without_a_push | horch ledger run new alpha --steps land,cleanup: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | an_unlanded_done_names_its_dependents_and_a_stuck_run_wakes_once | horch ledger run new a: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | close_abandon_cancels_the_open_tasks | horch ledger run new a: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | eight_parallel_claim_processes_take_exactly_three_tasks | horch ledger run new race: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | a_missing_reviewer_prompt_queues_no_review | horch ledger run new alpha --steps code-sweep: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | a_new_tree_supersedes_the_open_reviews_of_the_old_round | horch ledger run new alpha --steps code-sweep: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | ledger_watch_points_at_fleetd | horch ledger run new a --check-every 10: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | a_queued_review_moves_to_its_fallback_persona | horch ledger run new alpha --steps code-sweep: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | a_replacement_commit_after_the_land_lands_and_is_pushed | horch ledger run new alpha --steps land,cleanup: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | a_replacement_with_the_same_tree_reuses_the_finished_round | horch ledger run new alpha --steps code-sweep: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | queue_claim_and_status_through_the_cli | horch ledger run new alpha: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | replacing_a_live_worker_names_the_stop_command | horch ledger run new a: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | requeue_refuses_a_task_that_is_neither_held_nor_cancelled | horch ledger run new a: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | a_reviewer_that_cannot_run_hands_the_round_to_its_fallback | horch ledger run new alpha --steps code-sweep: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | run_new_refuses_an_old_run_branch_behind_the_main_branch | horch ledger run new a: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | spawn_run_names_the_run_the_worker_joins | status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | stopping_one_of_three_workers_leaves_the_others_running | horch ledger run new delta --heartbeat-every 1: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | the_no_watchdog_setting_turns_off_the_fleetd_check | horch ledger run new zeta: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | the_watchdog_ends_pre_claim_rows_whose_process_is_gone | horch ledger run new a: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | trf_43_a_spawn_with_task_text_refuses_with_the_ledger_task_command | horch ledger run new a: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | trf_43_assign_is_gone | horch ledger run new eta: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | the_import_finds_work_that_never_landed | EOF while parsing a value at line 1 column 0: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | a_shared_task_claims_on_the_run_branch_and_lands_only_new_clean_commits | horch ledger run new alpha --steps check,land: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | two_fleetds_started_at_once_leave_1 | horch ledger run new zeta --check-every 1: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | a_task_finishes_through_review_land_pr_and_cleanup | horch ledger run new alpha --verify full: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | a_rust_only_change_is_not_sent_to_the_complexity_analyser | horch ledger run new alpha --steps complexity-sweep: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | finish_finds_the_code_sweep_skill_in_the_plugins_of_the_home | horch ledger run new alpha --steps code-sweep: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | finish_finds_the_code_sweep_skill_in_the_skill_store | horch ledger run new alpha --steps code-sweep: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | finish_finds_the_complexity_analyser_in_a_local_marketplace_of_the_store | horch ledger run new alpha --steps complexity-sweep: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | finish_finds_the_complexity_analyser_in_the_plugins_of_the_home | horch ledger run new alpha --steps complexity-sweep: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | finish_finds_the_complexity_analyser_in_the_skill_store | horch ledger run new alpha --steps complexity-sweep: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | only_the_orchestrator_waives_a_critical_finding | horch ledger run new alpha --steps code-sweep: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | the_whole_flow_on_the_fake_herdr | horch ledger run new alpha --heartbeat-every 1 --verify full: status: exit status: 1 stdout:
+- horch-e2e | taskledger.rs | an_outer_git_dir_reaches_no_child_of_finish | horch ledger run new alpha --steps check,complexity-sweep,land,pr: status: exit status: 1 stdout:
+- horch-e2e | watchdog_liveness.rs | a_run_made_outside_herdr_warns_and_the_first_pane_plan_records_its_workspace | horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check
+- horch-e2e | worktree.rs | arc_31_e2e_a_ledger_worktree_is_not_unregistered | horch: the task ledger <tmp> does not exist. fleetd creates it at its start: run horch fleetd check

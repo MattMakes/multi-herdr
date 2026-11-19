@@ -1,0 +1,1 @@
+From T-378: horch task cancel calls commands::abandon after its cancel commits. The other cancel sources get the branch abandon from landing::follow in the pass. Your task wires that: the pass abandons the branch of each cancelled task whose branch is not abandoned (also after a crash between the cancel commit and the abandon). Add 1 test (FM-39).

@@ -1,0 +1,4 @@
+From T-491: 2 more writers are yours: crates/horch/src/cmd/compact.rs (the compact job writes workers::progress for a compacted worker) and crates/horch/src/cmd/taskledger_wake.rs (drain_workspace of the mail courier marks outbox rows). Group 9 (LiveEffects of taskledger_watch.rs) runs in the fleetd process and is not an exception; skip step 3.
+From T-880: horch ledger unfinished fails with 'attempt to write a readonly database'. It is a read command that writes. Fix it in your task and add 1 test.
+From T-492: horch rescue drop goes through a request with a rescue_drop handler (class operator, refused to a worker). Make the rescue drop case of T-492 green and remove its line from crates/horch-e2e/expected-failures/p5_operator_boundary.txt.
+Triage ARCHIVE, DELETE, LAND, PR: the CLI refuses them for now (option 1), and the text says that they return in a later task (T-888).

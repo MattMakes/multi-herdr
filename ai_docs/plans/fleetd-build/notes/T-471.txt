@@ -1,0 +1,2 @@
+About routed commands: a CLI test outside Own that goes red only because no fleetd serves the request stays red until T-880 (after T-490 wires the channel server). Use an in-process ChannelServer in your new tests, as the done summary of T-470 describes. List each red test file in the done summary.
+A routing task before you (taskcmd.rs, by opus-131, T-474) sends task_requeue and task_cancel through 1 shared function. Read its done summary and call that function from requeue_cmd and cancel_cmd in taskledger.rs. Do not write a second send path.

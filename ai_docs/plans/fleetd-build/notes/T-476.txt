@@ -1,0 +1,1 @@
+About routed commands: a CLI test outside Own that goes red only because no fleetd serves the request stays red until T-880 (after T-490 wires the channel server). Use an in-process ChannelServer in your new tests, as the done summary of T-470 describes. List each red test file in the done summary.

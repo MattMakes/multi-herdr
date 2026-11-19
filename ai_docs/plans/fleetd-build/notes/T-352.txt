@@ -1,0 +1,1 @@
+From T-355 (horch result): horch result finds its attempt from the pane variable HORCH_TASK_YAML, the absolute path <fleet root>/tasks/<task_id>/attempts/<A n>/task.yaml. The task that launches an attempt must set HORCH_TASK_YAML in the pane or process environment of the attempt. Check it and add 1 test.

@@ -1,0 +1,11 @@
+SPEED RULE of the operator from 2026-11-18: the tasks of this phase landed with no code review and with only their ticket Check. So this gate is the first run of the whole suite for them. Run cargo build --workspace --bins, then cargo test --workspace --locked --no-fail-fast on macOS, and the gate tests on Linux in Docker with bubblewrap. Correct each red test in the gate task (Own is extended to what a fix needs; a product fault that is not small goes to the orchestrator as QUESTION). List in the gate file each task of the phase and say that its review is deferred to the end review.
+END REVIEW (operator, 2026-11-18): the code review of each task after the Phase 3 gate was deferred. The orchestrator must queue and land the end review tasks (1 for each of Phases 4, 5, 6, 7, with security review for Phase 5 and each sandbox, token and git job change) BEFORE this gate starts. Do not start this gate while an end review task is open.
+Linux: if Docker on this Mac does not start a container after 2 tries, do not wait for it. Write 'Linux: pending CI, Docker did not start' in the gate file and go on.
+Also: the end review tasks T-872 to T-879 (review and fixes of Phases 4 to 7) must be landed before this gate. If one is not landed, send BLOCKED.
+Also from T-599: fleetd dispatch computes no pacing hold (WorkerDeps.holds is Holds::default; only horch spawn refuses on pacing from the quota file). Check that a task fed pacing into the pass. If none did, that is a red rule of the gate: send BLOCKED with the facts.
+T-891 (the conformance suite passes for each exec CLI) must be landed, and crates/horch-e2e/expected-failures/p7_docs_sync.txt must have no line.
+T-892 must be landed, and crates/horch-e2e/expected-failures/p7_exec.txt must have no line.
+T-891 owns expected-failure lines of T-602 and T-604 too; no list of expected failures may have a line with owner T-891 or T-892.
+T-895 must be landed, and crates/horch-e2e/expected-failures/p7_exec.txt must have no line.
+T-898 must be landed (FR-10: no fleet process can approve). Run its 4 tests of crates/horch-e2e/tests/p6_fr10_approval.rs as part of the gate.
+T-899 must be landed (the wrapper sends no request of class operator).

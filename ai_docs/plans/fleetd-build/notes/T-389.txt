@@ -1,0 +1,1 @@
+From T-480: the ingest functions of heartbeat.json, exit.json and session.json exist after T-480 (read its done summary). If your pass part scans the outbox and ingests, call them, or leave the call to T-490 and say so in the done summary.

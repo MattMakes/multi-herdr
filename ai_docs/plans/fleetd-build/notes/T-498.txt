@@ -1,0 +1,18 @@
+SPEED RULE of the operator from 2026-11-18: the tasks of this phase landed with no code review and with only their ticket Check. So this gate is the first run of the whole suite for them. Run cargo build --workspace --bins, then cargo test --workspace --locked --no-fail-fast on macOS, and the gate tests on Linux in Docker with bubblewrap. Correct each red test in the gate task (Own is extended to what a fix needs; a product fault that is not small goes to the orchestrator as QUESTION). List in the gate file each task of the phase and say that its review is deferred to the end review.
+Linux: if Docker on this Mac does not start a container after 2 tries, do not wait for it. Write 'Linux: pending CI, Docker did not start' in the gate file and go on.
+Check at this gate: no request kind is still refused with 'not handled in this version' (grep). The handlers of feature_abandon, branch_abandon and rescue_drop were handed to T-383, T-378 and T-386.
+Known exception to the 'not handled' check: triage LAND and PR (T-469) have no job kind yet. The orchestrator owes a follow-up ticket or an operator decision; name the state in the gate file.
+Check at this gate (from T-479, wrapper writes removed): each of these facts has a working fleetd writer and 1 test: supervisor pid and role and record id (W1), the stop row of a pane that closed itself (W2), the repair pass note from exit.json repaired: true (W3), the session record states running and exit and early exit (W4), the launch failure record (W5). Also: the early-exit tell to the orchestrator lost its requeue text; restore it from the fleetd side or name it.
+Check at this gate (RR-5): no job process writes the ledger. T-482 found that exec_push.rs and exec_fetch.rs still do. It must be fixed (note given to T-491) before this gate.
+Also: the interim writes W6, W7, W8 of T-479 (lifecycle.rs, worker with no attempt) must be gone (ticket 42, T-491).
+Also: T-871 (remove the claim task search, FR-5, and the interim edge of T-368) must be landed before this gate.
+Also: T-880 (each CLI test of a routed command uses a test fleetd) must be landed before this gate.
+Also: a routed horch command with no fleetd (no socket, no answer) ends in a bounded time with a clear text. T-472 and T-473 had test runs that hung for this cause. Check 1 command by hand.
+Also: T-881 (the exit ingest ends the session record; g52 green) must be landed before this gate.
+Also: the arch rule of the single writer (T-491) has no exception line. T-883, T-884 and T-885 remove them and must be landed before this gate.
+Also: T-886 (the horch-e2e claim fixtures use the bind helper) must be landed before this gate.
+Also: T-887 queued (the tree of horch worktree restore is not orphaned) must be landed before this gate.
+Correction: the 4 triage decisions ARCHIVE, DELETE, LAND, PR are no exception any more. T-888 applies them through a fleetd job and must be landed before this gate.
+Also: crates/horch-e2e/expected-failures/p5_operator_boundary.txt has no line (the rescue drop case of T-492; T-885 routes rescue drop). If the line stays, that is a red rule of the gate (SR-8).
+T-898 must be landed (FR-10: no fleet process can approve). Run its 4 tests of crates/horch-e2e/tests/p6_fr10_approval.rs as part of the gate.
+T-899 must be landed (the wrapper sends no request of class operator).
