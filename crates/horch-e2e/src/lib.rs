@@ -22,6 +22,7 @@ pub mod expected;
 pub mod fleetd;
 pub mod harness;
 pub mod idea_agent;
+pub mod ledger_seed;
 pub mod probe;
 pub mod process;
 
