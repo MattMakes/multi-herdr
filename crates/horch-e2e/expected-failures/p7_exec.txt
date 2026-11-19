@@ -1,14 +1,7 @@
 # Red tests of crates/horch-e2e/tests/p7_exec.rs.
 # Owner: T-892.
-# fleetd records no wrapper PID and start time on a push attempt at
-# launching -> live, so the outbox writer of horch result and of a QUESTION
-# tell refuses the agent of each attempt that fleetd launches.
-exec_claude_task_runs_to_done | 7 | no live attempt of this process
-exec_codex_task_runs_to_done | 7 | no live attempt of this process
-exec_agy_task_runs_to_done | 7 | no live attempt of this process
-exec_question_exits_and_the_task_waits_in_blocked_on_user | 7 | no live attempt of this process
-agy_long_context_ends_with_context_limit_and_the_next_attempt_has_the_handoff | 7 | no live attempt of this process
-# fleetd ignores the outcome hint quota of exit.json. With no wrapper PID on
-# the attempt row, the attempt of the usage limit also never ends.
+# fleetd ignores the outcome hint quota of exit.json. fleetd notes "the
+# wrapper saw a usage limit", but the attempt stays live: it does not end
+# with quota, and the task does not restart on its fallback.
 exec_usage_limit_restarts_on_the_fallback_and_burns_no_attempt | 7 | waiting for the attempt A1 to end
 new_attempt_gets_the_256000_window | 7 | waiting for the attempt A1 to end
