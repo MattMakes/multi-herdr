@@ -311,7 +311,7 @@ impl World {
         }
         let read = |p: PathBuf| std::fs::read_to_string(p).unwrap_or_default();
         format!(
-            "calls:\n{}\nfleetd.stderr:\n{}\nattempts: {:?}\ntask: {}\nevents:\n{}\nfleet events:\n{}",
+            "calls:\n{}\nfleetd.stderr:\n{}\nattempts: {:?}\ntask: {}\nevents:\n{}\nfleet events:\n{}\nprofile health:\n{}",
             calls.join("\n"),
             read(self.h.root.join("fleetd.stderr")),
             self.attempts(),
@@ -325,6 +325,14 @@ impl World {
                 "SELECT kind || ' ' || substr(text, 1, 200) FROM events
                  WHERE task_id IS NULL AND kind <> 'profile_unhealthy'
                  ORDER BY event_id DESC LIMIT 20"
+            )
+            .join("\n"),
+            self.rows(
+                "SELECT kind || ' ' || substr(text, 1, 160) FROM events
+                 WHERE kind IN ('profile_unhealthy', 'profile_healthy')
+                   AND (text LIKE '%profile antigravity%' OR text LIKE '%profile opus%'
+                        OR text LIKE '%profile codex-sol%')
+                 ORDER BY event_id"
             )
             .join("\n"),
         )
