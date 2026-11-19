@@ -232,7 +232,10 @@ fn idea_lead_attempt(
     let refusal =
         |why: &str| anyhow::anyhow!("horch spawn refused: it cannot open attempt {attempt}: {why}");
     if l.state != AttemptState::Launching.as_str() {
-        return Err(refusal(&format!("the attempt is {}, not launching", l.state)));
+        return Err(refusal(&format!(
+            "the attempt is {}, not launching",
+            l.state
+        )));
     }
     if l.run_id != run.run_id {
         return Err(refusal(&format!("its worker is not of run {}", run.slug)));
@@ -1613,7 +1616,10 @@ mod push_tests {
         let mut again = args("dev");
         again.attempt = Some(only_attempt(&w));
         let err = prepare(&w.ctx(None), &again, None).err().unwrap();
-        assert!(err.to_string().contains("the attempt has no task"), "{err:#}");
+        assert!(
+            err.to_string().contains("the attempt has no task"),
+            "{err:#}"
+        );
 
         let w = world();
         taskless_attempt(&w, "clarifying/1", "idea-lead", AttemptState::Live);

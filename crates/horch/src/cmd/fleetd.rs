@@ -46,7 +46,7 @@ use horch_core::fleetd::fleet_runtime::adapters::fleetd_row::{self, lock_path, w
 use horch_core::fleetd::fleet_runtime::adapters::old_watchdog;
 use horch_core::fleetd::fleet_runtime::adapters::scans::{CliPath, FolderItem};
 use horch_core::fleetd::fleet_runtime::adapters::watchdog_duties::{
-    idea_lead_launch, HerdrObserver, IdeaLeadLaunch, WatchdogDuties,
+    idea_lead_launch, HerdrObserver, WatchdogDuties,
 };
 use horch_core::fleetd::fleet_runtime::application::handlers_cli::{self, CliHandlers};
 use horch_core::fleetd::fleet_runtime::application::handlers_custody::{self, Custody};
@@ -855,51 +855,40 @@ fn check_sandboxes(ctx: &RuntimeContext) -> WorkerSandboxes {
 /// `horch spawn <persona> --attempt <id>` (ticket 10 of Phase 4).
 struct PushSpawns<'a> {
     ctx: &'a RuntimeContext,
+    herdr: Herdr,
 }
 
 impl Launches for PushSpawns<'_> {
     fn spec(&self, l: &PushLaunch) -> Result<LaunchSpec> {
-        super::recipes::push_launch_spec(self.ctx, l)
+        spawn_spec(self.ctx, &self.herdr, l.clone())
     }
 }
 
-/// The launch of the idea-lead attempt `a` (T-890), with the recipe of a
-/// push attempt: `horch spawn idea-lead --run <run> --exact --attempt <id>
-/// --from-pane <pane>`. The spawn takes the brief of the idea from the same
-/// rows. `None` when `a` is not an idea-lead attempt.
-fn idea_lead_spec(ctx: &RuntimeContext, herdr: &Herdr, a: &AttemptRow) -> Result<Option<LaunchSpec>> {
-    let Some(store) = horch_core::taskledger::open_existing_read_only(ctx)? else {
-        return Ok(None);
-    };
-    let Some(l) = idea_lead_launch(store.conn(), &ctx.paths.fleet_root, &a.id)? else {
-        return Ok(None);
-    };
-    let (pane, workspace) = idea_lead_pane(herdr, &l)?;
-    let push = PushLaunch {
-        attempt: l.attempt,
-        // An idea-lead attempt has no task. The recipe does not read it.
-        task_id: String::new(),
-        worker_id: l.worker_id,
-        persona: l.persona,
-        run_slug: l.run_slug,
-        project_root: l.project_root,
-        from_pane: Some(pane),
-        workspace_id: Some(workspace),
-    };
-    super::recipes::push_launch_spec(ctx, &push).map(Some)
+/// The launch of the attempt of `l`: [`super::recipes::push_launch_spec`]
+/// with the pane of [`launch_pane`]. Each push attempt and each idea-lead
+/// attempt launches through it.
+fn spawn_spec(ctx: &RuntimeContext, herdr: &Herdr, mut l: PushLaunch) -> Result<LaunchSpec> {
+    let (pane, workspace) = launch_pane(herdr, &l)?;
+    l.from_pane = Some(pane);
+    l.workspace_id = Some(workspace);
+    super::recipes::push_launch_spec(ctx, &l)
 }
 
-/// The pane that the launch of `l` splits, and its workspace: the pane of
-/// the feature that herdr proved, else the first pane of the herdr
-/// workspace whose label is the name of the project folder, as `horch
-/// fleet` names it. No other workspace is used: with neither, the launch
-/// fails, and the start timeout of the pass ends the attempt.
-fn idea_lead_pane(herdr: &Herdr, l: &IdeaLeadLaunch) -> Result<(String, String)> {
-    if let Some(pane) = &l.pane {
+/// The pane that the launch of `l` splits, and its workspace: the recorded
+/// pane of `l`, else the first pane of the herdr workspace whose label is
+/// the name of the project folder, as `horch fleet` names it. In Phase 6
+/// no run has an orchestrator pane, so the recorded pane is often missing.
+/// No other workspace is used: with neither, the launch fails, and the
+/// start timeout of the pass ends the attempt.
+fn launch_pane(herdr: &Herdr, l: &PushLaunch) -> Result<(String, String)> {
+    if let Some(pane) = &l.from_pane {
         let workspace = match &l.workspace_id {
             Some(w) => w.clone(),
             None => herdr.pane_get(pane)?.workspace_id.with_context(|| {
-                format!("herdr names no workspace of pane {pane} of attempt {}", l.attempt)
+                format!(
+                    "herdr names no workspace of pane {pane} of attempt {}",
+                    l.attempt
+                )
             })?,
         };
         return Ok((pane.clone(), workspace));
@@ -910,7 +899,7 @@ fn idea_lead_pane(herdr: &Herdr, l: &IdeaLeadLaunch) -> Result<(String, String)>
         .unwrap_or_default();
     let no_pane = |why: &str| {
         anyhow::anyhow!(
-            "the launch of idea-lead attempt {} has no pane: no pane of its feature is recorded, \
+            "the launch of attempt {} has no pane: the ledger records no pane for it, \
              and {why}. Start the fleet with horch fleet in {}",
             l.attempt,
             l.project_root
@@ -927,6 +916,35 @@ fn idea_lead_pane(herdr: &Herdr, l: &IdeaLeadLaunch) -> Result<(String, String)>
         .next()
         .ok_or_else(|| no_pane(&format!("herdr workspace {label} has no pane")))?;
     Ok((pane.pane_id, workspace.workspace_id))
+}
+
+/// The launch of the idea-lead attempt `a` (T-890), with the recipe of a
+/// push attempt: `horch spawn idea-lead --run <run> --exact --attempt <id>
+/// --from-pane <pane>`. The spawn takes the brief of the idea from the same
+/// rows. `None` when `a` is not an idea-lead attempt.
+fn idea_lead_spec(
+    ctx: &RuntimeContext,
+    herdr: &Herdr,
+    a: &AttemptRow,
+) -> Result<Option<LaunchSpec>> {
+    let Some(store) = horch_core::taskledger::open_existing_read_only(ctx)? else {
+        return Ok(None);
+    };
+    let Some(l) = idea_lead_launch(store.conn(), &ctx.paths.fleet_root, &a.id)? else {
+        return Ok(None);
+    };
+    let push = PushLaunch {
+        attempt: l.attempt,
+        // An idea-lead attempt has no task. The recipe does not read it.
+        task_id: String::new(),
+        worker_id: l.worker_id,
+        persona: l.persona,
+        run_slug: l.run_slug,
+        project_root: l.project_root,
+        from_pane: l.pane,
+        workspace_id: l.workspace_id,
+    };
+    spawn_spec(ctx, herdr, push).map(Some)
 }
 
 /// The settings of the fleetd of `generation` that runs `horch`.
@@ -1000,7 +1018,10 @@ fn with_pass<T>(
         )),
         herdr: herdr(),
     };
-    let spawns = PushSpawns { ctx };
+    let spawns = PushSpawns {
+        ctx,
+        herdr: herdr(),
+    };
     let work = TaskWork {
         tools: &tools,
         sandboxes: &sandboxes,

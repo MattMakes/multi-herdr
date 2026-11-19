@@ -2063,11 +2063,7 @@ mod idea_lead_tests {
         assert!(l.brief.contains(&idea), "{}", l.brief);
         assert!(l.brief.contains("phase clarifying"), "{}", l.brief);
         let word = folder.display().to_string();
-        assert!(
-            l.brief.split_whitespace().any(|w| w == word),
-            "{}",
-            l.brief
-        );
+        assert!(l.brief.split_whitespace().any(|w| w == word), "{}", l.brief);
     }
 
     #[test]
