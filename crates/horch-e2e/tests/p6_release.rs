@@ -628,11 +628,15 @@ fn p6_release_run_with_an_open_question_gets_1_idea_1_feature_and_1_owner() {
         || (!f.rows(&sub_orchestrator).is_empty()).then_some(()),
         || f.diagnostics(),
     );
+    // I13: at most 1 sub-orchestrator of the feature runs at a time. An
+    // attempt whose process ended is followed by a new one.
     f.wait_passes(1);
-    assert_eq!(
-        f.rows(&sub_orchestrator).len(),
-        1,
-        "1 sub-orchestrator for the feature\n{}",
+    let running = format!(
+        "SELECT id FROM attempts WHERE task_id IS NULL AND idea_id = '{IDEA}' AND state <> 'ended'"
+    );
+    assert!(
+        f.rows(&running).len() <= 1,
+        "at most 1 sub-orchestrator of the feature at a time\n{}",
         f.diagnostics()
     );
     assert_eq!(
