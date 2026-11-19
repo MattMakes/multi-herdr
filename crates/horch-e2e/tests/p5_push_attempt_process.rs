@@ -31,8 +31,8 @@ fn text(o: &Output) -> String {
 
 /// A harness with its own ledger file, a git repository, a fleet.toml and
 /// the herdr workspace `w1` (root pane `w1:p1`). The fake agents play
-/// `scenario`. No fleetd serves it: each pass is 1 `horch ledger watch
-/// --once`.
+/// `scenario`. A test fleetd with 1 pass each second serves it after the
+/// seed.
 fn fleet(name: &str, scenario: &str) -> Harness {
     fleet_with(name, scenario, None)
 }
@@ -52,16 +52,29 @@ fn fleet_with(name: &str, scenario: &str, first: Option<&str>) -> Harness {
     h.set("HORCH_NO_WATCHDOG", "1");
     let quota = fixtures().join("quota/all-ok.json");
     h.set("HORCH_QUOTA_FILE", quota.to_string_lossy());
-    h.set("HORCH_WORKSPACE_ID", "w1");
     h.set("HORCH_FAKE_SCENARIO", scenario);
     // The load of the build host does not hold dispatch in this test.
     let root = h.fleet_root();
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(
         root.join("fleet.toml"),
-        "health_max_load_per_cpu = 1000000.0\n",
+        "health_max_load_per_cpu = 1000000.0\npass_period_s = 1\n",
     )
     .unwrap();
+    // The project declares its gates, so no hold of a missing fast gate
+    // stops the dispatch (Phase 4, Q-C).
+    std::fs::write(
+        h.project.join("fleet.toml"),
+        "[gates]\nfast = \"true\"\nfull = \"true\"\n",
+    )
+    .unwrap();
+    for args in [
+        &["add", "fleet.toml"][..],
+        &["commit", "--quiet", "--no-gpg-sign", "-m", "gates"],
+    ] {
+        let o = h.git_cmd(args).output().unwrap();
+        assert!(o.status.success(), "git {args:?}: {}", text(&o));
+    }
     // The fake agent runs `horch result` and `horch ask` from PATH.
     std::os::unix::fs::symlink(Harness::horch_bin(), h.bin.join("horch")).unwrap();
     if let Some(first) = first {
@@ -75,13 +88,11 @@ fn fleet_with(name: &str, scenario: &str, first: Option<&str>) -> Harness {
         let path = h.write_warmed("claude-slow", script.as_bytes());
         h.set("HORCH_CLAUDE_BIN", path.to_string_lossy());
     }
-    let mut create = std::process::Command::new(h.bin.join("herdr"));
-    h.seal(&mut create);
-    let o = create
-        .args(["workspace", "create", "--label", name])
-        .output()
-        .unwrap();
-    assert!(o.status.success(), "{}", text(&o));
+    // The workspace of the fleet has the label of the project folder, so
+    // fleetd launches an attempt with no recorded pane in it (T-890).
+    let workspace = h.fleet_workspace();
+    assert_eq!(workspace, "w1");
+    h.set("HORCH_WORKSPACE_ID", workspace);
     h
 }
 
@@ -94,13 +105,14 @@ fn queue_one(h: &Harness, slug: &str) {
     // A heartbeat each 1 s, so a pass sees the wrapper soon.
     let run = seed_run(h, slug, Some(1), "w1:p1");
     seed_task(h, &run, &ticket, "opus");
+    // After T-884 a launched spawn writes its session record through
+    // fleetd, so a push launch needs a fleetd that runs (T-890).
+    h.serve_fleetd();
 }
 
-/// Run 1 pass: `horch ledger watch --once`.
-fn pass(h: &Harness) -> Output {
-    let o = h.run(&["ledger", "watch", "--once", "--force", "--json"]);
-    assert!(o.status.success(), "{}", text(&o));
-    o
+/// Wait for about 1 pass of the test fleetd.
+fn pass() {
+    std::thread::sleep(std::time::Duration::from_secs(1));
 }
 
 fn json_of(h: &Harness, args: &[&str]) -> Value {
@@ -120,11 +132,16 @@ fn task_status(h: &Harness) -> String {
         .to_string()
 }
 
-/// The last log record of the fake claude that holds key `key`.
+/// The last log record that holds key `key` of a fake claude that runs an
+/// attempt under the fleet root of `h`. The adapter conformance runs of
+/// fleetd have their own fleet root, and their records do not count.
 fn fake_key(h: &Harness, key: &str) -> Option<Value> {
+    let tasks = h.fleet_root().join("tasks");
+    let tasks = tasks.to_string_lossy();
     h.calls_of("claude")
         .into_iter()
         .rev()
+        .filter(|c| c["argv"].to_string().contains(tasks.as_ref()))
         .find_map(|c| c.get(key).cloned())
 }
 
@@ -163,7 +180,7 @@ fn until<T>(h: &Harness, what: &str, mut f: impl FnMut() -> Option<T>) -> T {
     wait_for_or(
         what,
         || {
-            pass(h);
+            pass();
             f()
         },
         || context(h),

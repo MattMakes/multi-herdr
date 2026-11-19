@@ -46,6 +46,20 @@ fn world(name: &str) -> Harness {
         "health_max_load_per_cpu = 1000000.0\npass_period_s = 1\n",
     )
     .unwrap();
+    // The project declares its gates, so no hold of a missing fast gate
+    // stops the dispatch (Phase 4, Q-C).
+    std::fs::write(
+        h.project.join("fleet.toml"),
+        "[gates]\nfast = \"true\"\nfull = \"true\"\n",
+    )
+    .unwrap();
+    for args in [
+        &["add", "fleet.toml"][..],
+        &["commit", "--quiet", "--no-gpg-sign", "-m", "gates"],
+    ] {
+        let o = h.git_cmd(args).output().unwrap();
+        assert!(o.status.success(), "git {args:?}: {}", text(&o));
+    }
     h
 }
 
