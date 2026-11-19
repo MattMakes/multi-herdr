@@ -14,7 +14,6 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
 use horch_core::fleetd::ideas::application::needs_you::{open_items, NeedsYouList};
 use horch_core::fleetd::task_execution::application::dispatch::{choices, CheckSandboxes};
 use horch_core::fleetd::task_execution::domain::dispatch::{Choice, Holds};
@@ -56,10 +55,6 @@ fn pi(fallback: Option<&str>) -> Teammate {
         fallbacks: fallback.into_iter().map(str::to_string).collect(),
         ..Teammate::default()
     }
-}
-
-fn seats() -> Vec<String> {
-    FleetConfig::default().orchestrator_seats
 }
 
 struct World {
@@ -117,7 +112,7 @@ impl World {
             gap: None,
             ..WorkerSandboxes::new(codex, self.fleet_root.clone())
         }
-        .with_profiles(roster, &seats())
+        .with_profiles(roster)
     }
 
     fn ready(&self, title: &str, persona: &str) -> String {
@@ -196,7 +191,7 @@ fn profile_on_an_os_without_its_sandbox_is_refused() {
         );
     }
     // pi has no sandbox on any OS, so this OS refuses it too.
-    let why = refusal(&pi(None), &seats(), fleet_root).unwrap();
+    let why = refusal(&pi(None), fleet_root).unwrap();
     assert!(why.starts_with(NO_SANDBOX), "{why}");
     assert!(why.contains("pi"), "{why}");
 }
@@ -204,41 +199,33 @@ fn profile_on_an_os_without_its_sandbox_is_refused() {
 #[test]
 fn worker_profile_with_no_sandbox_is_refused() {
     let fleet_root = Path::new("/fleet");
-    let why = refusal(&claude("claude-open", None), &seats(), fleet_root).unwrap();
+    let why = refusal(&claude("claude-open", None), fleet_root).unwrap();
     assert!(why.starts_with(NO_SANDBOX), "{why}");
     for act in Act::ALL {
         assert!(why.contains(&act.to_string()), "{act}: {why}");
     }
     assert_eq!(
-        refusal(
-            &claude(BOXED, Some(serde_json::json!({}))),
-            &seats(),
-            fleet_root
-        ),
+        refusal(&claude(BOXED, Some(serde_json::json!({}))), fleet_root),
         None
     );
 }
 
 #[test]
-fn orchestrator_seat_is_not_refused_by_the_operator_rule() {
+fn old_orchestrator_seat_is_refused_like_each_worker_profile() {
+    // Phase 6 removed the orchestrator seat (ticket 44 of fleetd-p6).
     let fleet_root = Path::new("/fleet");
-    for seat in seats() {
-        assert_eq!(
-            refusal(&claude(&seat, None), &seats(), fleet_root),
-            None,
-            "{seat}"
-        );
+    for seat in ["orchestrator", "orchestrator-codex"] {
+        assert!(refusal(&claude(seat, None), fleet_root).is_some(), "{seat}");
     }
-    // The seats come from fleet.toml, not from the name of a persona.
-    let own = vec!["lead".to_string()];
-    assert_eq!(refusal(&claude("lead", None), &own, fleet_root), None);
-    assert!(refusal(&claude("orchestrator", None), &own, fleet_root).is_some());
     let r = roster(vec![
         claude("orchestrator", None),
         claude("claude-open", None),
     ]);
-    let got = refused(&r, &seats(), fleet_root);
-    assert_eq!(got.keys().collect::<Vec<_>>(), ["claude-open"]);
+    let got = refused(&r, fleet_root);
+    assert_eq!(
+        got.keys().collect::<Vec<_>>(),
+        ["claude-open", "orchestrator"]
+    );
 }
 
 #[test]
@@ -331,7 +318,10 @@ fn fallback_with_a_sandbox_takes_the_task() {
 /// - the adapter is `NotSupported` on this OS, so the persona never runs
 ///   as a worker here (A37);
 /// - the 2 panes of the `horch orchestration` recipe take no ledger task,
-///   so fleetd never dispatches them, and they keep their launch of today.
+///   so fleetd never dispatches them, and they keep their launch of today;
+/// - `orchestrator`, the old orchestrator seat: Phase 6 removed its
+///   exemption (ticket 44 of fleetd-p6), and fleetd launches no
+///   orchestrator.
 #[test]
 fn builtin_roster_has_no_refused_worker_profile_on_macos() {
     let not_supported = |adapter| ("not supported", adapter);
@@ -348,10 +338,11 @@ fn builtin_roster_has_no_refused_worker_profile_on_macos() {
         ("prime", not_supported("prime")),
         ("orchestration-orchestrator", recipe_pane),
         ("orchestration-worker", recipe_pane),
+        ("orchestrator", recipe_pane),
     ]);
     let roster = Roster::builtin().unwrap();
     let fleet_root = Path::new("/fleet");
-    let got = refused(&roster, &seats(), fleet_root);
+    let got = refused(&roster, fleet_root);
     let names: BTreeMap<&str, &str> = got
         .iter()
         .map(|(name, why)| (name.as_str(), why.as_str()))

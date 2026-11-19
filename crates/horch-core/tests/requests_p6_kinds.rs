@@ -24,7 +24,6 @@ fn operator_facts(kind: &str, source: Source) -> RequestFacts {
         caller: Some("me".into()),
         ledger_user: Some("me".into()),
         token_valid: true,
-        orchestrator_seats: Vec::new(),
     }
 }
 

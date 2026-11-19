@@ -76,9 +76,9 @@ impl WorkerSandboxes {
     }
 
     /// These sandboxes with the profile refusals and the fallbacks of
-    /// `roster`. `seats` are the `orchestrator_seats` of `fleet.toml`.
-    pub fn with_profiles(mut self, roster: &Roster, seats: &[String]) -> WorkerSandboxes {
-        self.refused = sandbox_rules::refused(roster, seats, &self.fleet_root);
+    /// `roster`.
+    pub fn with_profiles(mut self, roster: &Roster) -> WorkerSandboxes {
+        self.refused = sandbox_rules::refused(roster, &self.fleet_root);
         self.fallbacks = roster
             .names()
             .into_iter()

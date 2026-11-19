@@ -141,7 +141,6 @@ impl ChannelServer {
             handlers,
             options,
             max_bytes: usize::try_from(config.request_max_bytes).unwrap_or(usize::MAX),
-            seats: config.orchestrator_seats,
             ledger_user: ledger_user.to_string(),
         };
         let stop = Arc::new(AtomicBool::new(false));
@@ -239,7 +238,6 @@ struct Server {
     handlers: Handlers,
     options: Options,
     max_bytes: usize,
-    seats: Vec<String>,
     ledger_user: String,
 }
 
@@ -315,7 +313,6 @@ impl Server {
             caller: (self.options.peer_user)(peer).ok().map(|u| u.to_string()),
             ledger_user: Some(self.ledger_user.clone()),
             token_valid,
-            orchestrator_seats: self.seats.clone(),
         }
     }
 }

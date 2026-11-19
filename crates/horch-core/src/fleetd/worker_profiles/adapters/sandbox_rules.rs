@@ -5,9 +5,8 @@
 //! Requirements: SR-8, A37, 06 S9. A worker never runs without its
 //! sandbox. A refused profile gets no dispatch and 1 needs-you item
 //! (`check_sandbox.rs`), and `horch status` shows it as [`NO_SANDBOX`].
-//! An orchestrator seat of `fleet.toml` is not a worker profile, so this
-//! rule does not refuse it until Phase 6 (`docs/tickets/fleetd-p5/MAP.md`,
-//! Q2).
+//! Each profile is a worker profile: Phase 6 removed the orchestrator seat
+//! (ticket 44 of fleetd-p6), so this rule checks the old seat too.
 //!
 //! A refusal is a fact of this host (its OS and its CLI versions), not a
 //! fault of a teammate file, so it is not a line of `horch teammates
@@ -40,23 +39,19 @@ pub fn refusal_of(boundary: &Result<Boundary, NotSupported>) -> Option<String> {
     }
 }
 
-/// Why profile validation refuses `t` on this OS, or `None`. `seats` are
-/// the `orchestrator_seats` of `fleet.toml`; a seat is not refused.
-pub fn refusal(t: &Teammate, seats: &[String], fleet_root: &Path) -> Option<String> {
-    if seats.contains(&t.name) {
-        return None;
-    }
+/// Why profile validation refuses `t` on this OS, or `None`.
+pub fn refusal(t: &Teammate, fleet_root: &Path) -> Option<String> {
     refusal_of(&operator_boundary(t, fleet_root))
 }
 
 /// Each refused worker profile of `roster`, by persona, with its reason.
-pub fn refused(roster: &Roster, seats: &[String], fleet_root: &Path) -> BTreeMap<String, String> {
+pub fn refused(roster: &Roster, fleet_root: &Path) -> BTreeMap<String, String> {
     roster
         .names()
         .into_iter()
         .filter_map(|name| {
             let t = roster.get(name)?;
-            refusal(t, seats, fleet_root).map(|why| (name.to_string(), why))
+            refusal(t, fleet_root).map(|why| (name.to_string(), why))
         })
         .collect()
 }

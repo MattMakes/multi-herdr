@@ -216,7 +216,6 @@ fn read_file(
         caller: Some(caller.clone()),
         ledger_user: Some(caller.clone()),
         token_valid: token_valid(spool.token, request.token.as_deref()),
-        orchestrator_seats: Vec::new(),
     });
     let reply = handle(
         conn,

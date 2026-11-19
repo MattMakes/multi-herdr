@@ -108,12 +108,6 @@ pub struct FleetConfig {
     /// The size limit of a job result file. Starting value 64 KiB
     /// (`docs/tickets/fleetd-p5/MAP.md`, Q14).
     pub job_result_max_bytes: u64,
-    /// The personas whose attempt with a null task is an orchestrator seat.
-    /// fleetd knows a seat only from the ledger and this key, never from an
-    /// environment variable (`docs/tickets/fleetd-p5/MAP.md`, Q2). Default: the
-    /// list `FLEET_ORCHESTRATORS` of `roster`. A domain module imports no
-    /// other module, so a test of `adapters/config_file.rs` pins the copy.
-    pub orchestrator_seats: Vec<String>,
     /// The period of the `fetch` job of each repository. Default 60 s
     /// (design, "Between features"; `docs/tickets/fleetd-p4/MAP.md`, Q6).
     pub fetch_period_s: u64,
@@ -327,7 +321,6 @@ impl Default for FleetConfig {
             transcript_tail_bytes: 256 * KIB,
             transcript_line_max_bytes: MIB,
             job_result_max_bytes: 64 * KIB,
-            orchestrator_seats: vec!["orchestrator".to_string(), "orchestrator-codex".to_string()],
             fetch_period_s: 60,
             push_failure_limit: 3,
             rescue_unique_budget_mb: 5120,

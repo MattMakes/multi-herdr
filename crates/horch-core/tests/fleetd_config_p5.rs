@@ -1,6 +1,6 @@
 //! The Phase 5 keys of `fleet.toml`: the size limits of the protocol rules
-//! (design, "Workspace layout and file protocol", Protocol rules, rule 7)
-//! and the list of orchestrator seats (`docs/tickets/fleetd-p5/MAP.md`, Q2).
+//! (design, "Workspace layout and file protocol", Protocol rules, rule 7).
+//! Phase 6 retired the list of orchestrator seats (`p6_authorize.rs`).
 
 use horch_core::fleetd::fleet_runtime::adapters::config_file;
 use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
@@ -25,8 +25,7 @@ fn phase5_key_from_the_file_wins() {
     let c = config_file::parse(
         "question_max_bytes = 1\nrequest_max_bytes = 2\nheartbeat_max_bytes = 3\n\
          progress_max_bytes = 4\nprogress_max_lines = 5\nprogress_line_max_bytes = 6\n\
-         transcript_tail_bytes = 7\ntranscript_line_max_bytes = 8\njob_result_max_bytes = 9\n\
-         orchestrator_seats = [\"lead\"]\n",
+         transcript_tail_bytes = 7\ntranscript_line_max_bytes = 8\njob_result_max_bytes = 9\n",
     )
     .unwrap();
     let want = FleetConfig {
@@ -39,16 +38,9 @@ fn phase5_key_from_the_file_wins() {
         transcript_tail_bytes: 7,
         transcript_line_max_bytes: 8,
         job_result_max_bytes: 9,
-        orchestrator_seats: vec!["lead".to_string()],
         ..FleetConfig::default()
     };
     assert_eq!(c, want);
-}
-
-#[test]
-fn orchestrator_seats_default_to_fleet_orchestrators() {
-    let c = config_file::parse("").unwrap();
-    assert_eq!(c.orchestrator_seats, ["orchestrator", "orchestrator-codex"]);
 }
 
 #[test]

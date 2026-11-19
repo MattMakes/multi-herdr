@@ -341,7 +341,6 @@ fn operator_request_without_a_valid_token_is_refused_and_recorded() {
         caller: Some(ME.into()),
         ledger_user: Some(ME.into()),
         token_valid: false,
-        orchestrator_seats: Vec::new(),
     });
     let Decision::Refused { reason } = &decision else {
         panic!("no valid token is refused: {decision:?}");

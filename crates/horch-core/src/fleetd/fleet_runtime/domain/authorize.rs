@@ -10,13 +10,13 @@
 //!    refused (SR-5).
 //! 4. An `operator` kind with no valid token is refused (SR-8).
 //! 5. On the channel, a peer in a live attempt, or a peer whose fact is
-//!    unknown, is refused, unless each of its attempts is an orchestrator
-//!    seat (SR-8, Q2 of `docs/tickets/fleetd-p5/MAP.md`).
+//!    unknown, is refused (SR-8). No attempt has operator rights: Phase 6
+//!    removed the orchestrator seat (FM-32; ticket 44 of fleetd-p6).
 //!
 //! Else the request is authorized. A guard whose fact is unknown does not
 //! hold, so an unknown fact never authorizes.
 
-use super::operator::{is_orchestrator_seat, AttemptFacts};
+use super::operator::AttemptFacts;
 use super::requests::{Class, Kind};
 
 /// The facts of 1 request.
@@ -35,8 +35,6 @@ pub struct RequestFacts {
     /// of `run/operator.token`. `false` when the token is absent, is not
     /// equal, or fails to read.
     pub token_valid: bool,
-    /// `orchestrator_seats` of `fleet.toml`.
-    pub orchestrator_seats: Vec<String>,
 }
 
 /// The source of a request.
@@ -91,7 +89,7 @@ fn decide(facts: &RequestFacts) -> Result<String, String> {
     }
     match &facts.source {
         Source::RequestFile => Ok("token; request file".into()),
-        Source::Channel { peer } => check_peer(peer, &facts.orchestrator_seats),
+        Source::Channel { peer } => check_peer(peer),
     }
 }
 
@@ -109,30 +107,22 @@ fn check_caller(facts: &RequestFacts) -> Result<(), String> {
     }
 }
 
-/// SR-8 and Q2: a peer outside each live attempt, or a peer whose each
-/// attempt is an orchestrator seat. An empty list names no attempt, so it
-/// proves nothing and does not hold.
-fn check_peer(peer: &PeerProcess, seats: &[String]) -> Result<String, String> {
-    let attempts = match peer {
-        PeerProcess::Outside => return Ok("token; peer outside each live attempt".into()),
+/// SR-8: only a peer outside each live attempt. A peer in a live attempt
+/// is refused, whatever its task or persona.
+fn check_peer(peer: &PeerProcess) -> Result<String, String> {
+    match peer {
+        PeerProcess::Outside => Ok("token; peer outside each live attempt".into()),
         PeerProcess::Unknown => {
-            return Err(
-                "the peer process is unknown, so the peer process check does not hold".into(),
-            )
+            Err("the peer process is unknown, so the peer process check does not hold".into())
         }
-        PeerProcess::Inside(attempts) if attempts.is_empty() => {
-            return Err("the peer process is in a live attempt that the fact does not name".into())
-        }
-        PeerProcess::Inside(attempts) => attempts,
-    };
-    if let Some(worker) = attempts.iter().find(|a| !is_orchestrator_seat(a, seats)) {
-        return Err(format!(
-            "the peer process is in live attempt {}, which is not an orchestrator seat",
-            worker.attempt
-        ));
+        PeerProcess::Inside(attempts) => match attempts.first() {
+            None => Err("the peer process is in a live attempt that the fact does not name".into()),
+            Some(a) => Err(format!(
+                "the peer process is in live attempt {} of persona {}",
+                a.attempt, a.persona
+            )),
+        },
     }
-    let ids: Vec<&str> = attempts.iter().map(|a| a.attempt.as_str()).collect();
-    Ok(format!("token; orchestrator seat {}", ids.join(", ")))
 }
 
 #[cfg(test)]
@@ -140,10 +130,6 @@ mod tests {
     use super::*;
 
     const USER: &str = "uid 501";
-
-    fn seats() -> Vec<String> {
-        vec!["orchestrator".to_string()]
-    }
 
     fn attempt(id: &str, task: Option<&str>, persona: &str) -> AttemptFacts {
         AttemptFacts {
@@ -165,7 +151,6 @@ mod tests {
             caller: Some(USER.to_string()),
             ledger_user: Some(USER.to_string()),
             token_valid: true,
-            orchestrator_seats: seats(),
         }
     }
 
@@ -277,7 +262,7 @@ mod tests {
         };
         let reason = refusal(&facts);
         assert!(reason.contains("live attempt A-3"), "{reason}");
-        // An attempt with a null task of a persona outside the seats.
+        // An attempt with a null task.
         let facts = RequestFacts {
             source: Source::Channel {
                 peer: PeerProcess::Inside(vec![attempt("A-4", None, "opus-hardening")]),
@@ -285,7 +270,7 @@ mod tests {
             ..channel()
         };
         assert!(refusal(&facts).contains("live attempt A-4"));
-        // A seat and a worker attempt both hold the peer.
+        // 2 attempts hold the peer: the reason names the first.
         let facts = RequestFacts {
             source: Source::Channel {
                 peer: PeerProcess::Inside(vec![
@@ -295,7 +280,7 @@ mod tests {
             },
             ..channel()
         };
-        assert!(refusal(&facts).contains("live attempt A-3"));
+        assert!(refusal(&facts).contains("live attempt A-1"));
         // No attempt named: the fact says nothing, so it does not hold.
         let facts = RequestFacts {
             source: Source::Channel {
@@ -316,23 +301,6 @@ mod tests {
         };
         let reason = refusal(&facts);
         assert!(reason.contains("peer process is unknown"), "{reason}");
-    }
-
-    #[test]
-    fn operator_kind_from_an_orchestrator_seat_is_authorized() {
-        let facts = RequestFacts {
-            source: Source::Channel {
-                peer: PeerProcess::Inside(vec![attempt("A-1", None, "orchestrator")]),
-            },
-            ..channel()
-        };
-        assert_eq!(auth(&facts), "token; orchestrator seat A-1");
-        // The same attempt with no seats in fleet.toml.
-        let facts = RequestFacts {
-            orchestrator_seats: Vec::new(),
-            ..facts
-        };
-        refusal(&facts);
     }
 
     #[test]

@@ -263,17 +263,17 @@ fn assert_refused(row: &RequestRow, reason_has: &str) {
 const FEATURE: &str = "F-0001";
 const FEATURE_BRANCH: &str = "fleet/F-0001";
 
-/// The persona of the orchestrator seat: in `orchestrator_seats` of the
-/// `fleet.toml` of the test.
+/// The persona of the old orchestrator seat, which Phase 6 removed (ticket
+/// 44 of fleetd-p6).
 const SEAT: &str = "orchestrator";
 
 /// The persona of the worker of a test.
 const WORKER: &str = "opus-hardening";
 
-/// The `fleet.toml` of a test: 1 pass each second, the 1 seat [`SEAT`],
-/// and the longest heartbeat age.
+/// The `fleet.toml` of a test: 1 pass each second and the longest
+/// heartbeat age.
 fn fleet_toml() -> String {
-    format!("pass_period_s = 1\nheartbeat_max_age_s = 300\norchestrator_seats = [\"{SEAT}\"]\n")
+    "pass_period_s = 1\nheartbeat_max_age_s = 300\n".to_string()
 }
 
 /// 1 live attempt of a test: its id and its stand-in wrapper, which leads
@@ -1024,13 +1024,12 @@ impl World {
     }
 }
 
-/// A worker cannot make itself an orchestrator seat: fleetd knows a seat
-/// only from the ledger and `fleet.toml`. Each of these is refused:
+/// A worker cannot make itself an orchestrator seat. Each of these is
+/// refused:
 /// - a worker attempt whose environment names the orchestrator persona,
 ///   its role and the worker of a real seat;
 /// - an attempt whose worker has the persona of a seat but a task;
-/// - an attempt with a null task whose persona is not in
-///   `orchestrator_seats`.
+/// - an attempt with a null task of another persona.
 #[test]
 fn forged_orchestrator_seat_is_refused() {
     let mut w = World::new("p5-sr8-forged");
@@ -1051,23 +1050,6 @@ fn forged_orchestrator_seat_is_refused() {
     let no_task_not_a_seat = w.live_attempt(WORKER, WorkerKind::Orchestrator, false);
     let row = w.gc_from(&no_task_not_a_seat, "persona", &[]);
     assert_refused(&row, &peer_reason(&no_task_not_a_seat));
-}
-
-/// An attempt with a null task whose persona is in `orchestrator_seats`
-/// of `fleet.toml` is an orchestrator seat: its request with the token is
-/// authorized on the channel while a worker attempt is live (Q2).
-#[test]
-fn orchestrator_seat_of_fleet_toml_is_authorized() {
-    let mut w = World::new("p5-sr8-seat");
-    let _worker = w.live_attempt(WORKER, WorkerKind::Worker, true);
-    let seat = w.live_attempt(SEAT, WorkerKind::Orchestrator, false);
-    let row = w.gc_from(&seat, "seat", &[]);
-    assert_eq!(row.state, "applied", "{row:?}");
-    assert_eq!(
-        row.auth.as_deref(),
-        Some(format!("token; orchestrator seat {}", seat.id).as_str()),
-        "{row:?}"
-    );
 }
 
 /// The control case: you, outside each live attempt, run an operator-only

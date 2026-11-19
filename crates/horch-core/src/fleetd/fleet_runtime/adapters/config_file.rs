@@ -2,9 +2,11 @@
 //!
 //! A missing file, or a missing key, gives the value of
 //! [`FleetConfig::default`]. An unknown key, a value of the wrong type and a
-//! value out of range are refused, with the name of the key.
+//! value out of range are refused, with the name of the key. A retired key
+//! is read and ignored, with 1 warning line in each process.
 
 use std::path::Path;
+use std::sync::Once;
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -24,20 +26,37 @@ pub fn load(fleet_root: &Path) -> Result<FleetConfig> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(FleetConfig::default()),
         Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
     };
-    parse(&text).with_context(|| format!("reading {}", path.display()))
+    let (config, warning) =
+        parse_with_warning(&text).with_context(|| format!("reading {}", path.display()))?;
+    if let Some(warning) = warning {
+        static WARNED: Once = Once::new();
+        WARNED.call_once(|| eprintln!("warning: {warning}"));
+    }
+    Ok(config)
 }
 
 /// Parse the text of `fleet.toml`, then validate it.
 pub fn parse(text: &str) -> Result<FleetConfig> {
+    parse_with_warning(text).map(|(config, _)| config)
+}
+
+/// [`parse`], and the warning of a retired key, or `None`.
+pub fn parse_with_warning(text: &str) -> Result<(FleetConfig, Option<String>)> {
     // serde names an unknown key and a value of the wrong type.
-    let file: FileKeys = toml::from_str(text).map_err(|e| anyhow::anyhow!("fleet.toml: {e}"))?;
+    let mut file: FileKeys =
+        toml::from_str(text).map_err(|e| anyhow::anyhow!("fleet.toml: {e}"))?;
+    let warning = file.orchestrator_seats.take().map(|_| {
+        "fleet.toml: the key orchestrator_seats is retired and gives no operator right. \
+         Remove it."
+            .to_string()
+    });
     let config = file
         .into_config()
         .map_err(|e| anyhow::anyhow!("fleet.toml: {e}"))?;
     config
         .validate()
         .map_err(|e| anyhow::anyhow!("fleet.toml: {e}"))?;
-    Ok(config)
+    Ok((config, warning))
 }
 
 /// The keys as the file has them: each is optional.
@@ -75,7 +94,10 @@ struct FileKeys {
     transcript_tail_bytes: Option<u64>,
     transcript_line_max_bytes: Option<u64>,
     job_result_max_bytes: Option<u64>,
-    orchestrator_seats: Option<Vec<String>>,
+    /// Retired in Phase 6: no agent has operator rights (SR-8, FM-32). Any
+    /// value gives 1 warning line and sets nothing (Q19 of
+    /// `docs/tickets/fleetd-p6/MAP.md`).
+    orchestrator_seats: Option<toml::Value>,
     fetch_period_s: Option<u64>,
     push_failure_limit: Option<u64>,
     /// A starting value, to tune from real runs.
@@ -214,9 +236,6 @@ impl FileKeys {
             job_result_max_bytes: self
                 .job_result_max_bytes
                 .unwrap_or(defaults.job_result_max_bytes),
-            orchestrator_seats: self
-                .orchestrator_seats
-                .unwrap_or(defaults.orchestrator_seats),
             fetch_period_s: self.fetch_period_s.unwrap_or(defaults.fetch_period_s),
             push_failure_limit: self
                 .push_failure_limit
@@ -254,12 +273,6 @@ impl FileKeys {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn orchestrator_seats_default_equals_fleet_orchestrators() {
-        let seats = FleetConfig::default().orchestrator_seats;
-        assert_eq!(seats, crate::roster::FLEET_ORCHESTRATORS);
-    }
 
     #[test]
     fn missing_file_gives_the_defaults() {
