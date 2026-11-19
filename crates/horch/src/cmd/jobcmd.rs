@@ -125,7 +125,9 @@ struct Suite<'a> {
 
 impl Suite<'_> {
     /// The runner of the suite of the reference profile `teammate`. The
-    /// throwaway folders go under the state root.
+    /// throwaway folders go under the fleet root, outside each writable root
+    /// of a worker: a worker can write into the state root (`horch note`),
+    /// so there the outside write of "Sandbox boundary" is allowed.
     fn runner<'b>(&'b self, teammate: &'b horch_core::roster::Teammate) -> ConformanceRunner<'b> {
         ConformanceRunner {
             ctx: self.ctx,
@@ -133,7 +135,7 @@ impl Suite<'_> {
             // The window of each seat (fleetd-p7 ticket 21, MAP.md Q16).
             fleet_window: Some((CONTEXT_LIMIT, "context-windows.md".into())),
             env_rule: Vec::new(),
-            scratch: self.ctx.paths.state_root.join("conformance"),
+            scratch: self.ctx.paths.fleet_root.join("conformance"),
             first_event_limit: FIRST_EVENT_LIMIT,
         }
     }
