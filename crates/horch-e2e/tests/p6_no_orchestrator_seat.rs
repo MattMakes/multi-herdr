@@ -424,7 +424,7 @@ fn old_seat_operator_request_on_the_channel_is_refused() {
     let row = w.decided(&id);
     assert_refused(
         &row,
-        &format!("the peer process is in live attempt {}", a.id),
+        &format!("the peer process is a fleet process of attempt {}", a.id),
     );
     assert!(
         row.reason.as_deref().unwrap_or_default().contains(OLD_SEAT),

@@ -77,6 +77,48 @@ pub fn open_attempts_with_persona(conn: &Connection) -> Result<Vec<(AttemptRow, 
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// The recorded processes of 1 attempt for the fleet process rule (FR-10):
+/// the process of the attempt row, and the wrapper and the agent of its
+/// worker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttemptProcesses {
+    pub attempt: String,
+    pub task: Option<String>,
+    pub persona: Option<String>,
+    pub ended: bool,
+    /// Each recorded process, at most 3. A process may have no start time.
+    pub processes: Vec<Recorded>,
+}
+
+/// The recorded processes of each attempt that is not `ended`, or that
+/// ended at or after the ledger stamp `ended_since`, in the order of their
+/// rows.
+pub fn fleet_processes(conn: &Connection, ended_since: &str) -> Result<Vec<AttemptProcesses>> {
+    let mut stmt = conn.prepare(
+        "SELECT a.id, a.task_id, w.persona, a.state = 'ended', a.pid, a.pid_start,
+                w.supervisor_pid, w.supervisor_started, w.agent_pid, w.agent_started
+         FROM attempts a JOIN workers w ON w.worker_id = a.worker_id
+         WHERE a.state != 'ended' OR a.ended_at >= ?1 ORDER BY a.rowid",
+    )?;
+    let rows = stmt.query_map([ended_since], |r| {
+        let processes = [(4, 5), (6, 7), (8, 9)]
+            .into_iter()
+            .map(|(p, s)| Ok(recorded(r.get(p)?, r.get(s)?)))
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .flatten()
+            .collect();
+        Ok(AttemptProcesses {
+            attempt: r.get(0)?,
+            task: r.get(1)?,
+            persona: r.get(2)?,
+            ended: r.get(3)?,
+            processes,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 /// The task, the state, the `via` and the persona of the worker of 1
 /// attempt.
 pub type AttemptVia = (Option<String>, String, String, Option<String>);
@@ -214,6 +256,20 @@ pub fn set_process(conn: &Connection, id: &str, p: Recorded) -> Result<()> {
         ],
     )?;
     Ok(())
+}
+
+/// Whether an attempt other than `id` records the process `p`.
+pub fn process_of_other_attempt(conn: &Connection, id: &str, p: Recorded) -> Result<bool> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM attempts WHERE id != ?1 AND pid = ?2 AND pid_start = ?3",
+        params![
+            id,
+            i64::from(p.pid),
+            p.pid_start.and_then(|s| i64::try_from(s).ok())
+        ],
+        |r| r.get(0),
+    )?;
+    Ok(n > 0)
 }
 
 /// Write the process `p` on the attempt `id` when its row has no process.

@@ -335,7 +335,7 @@ fn operator_request_from_a_process_of_a_live_attempt_is_refused() {
     let Outcome::Refused(reason) = got.outcome else {
         panic!("a process of a live attempt is refused: {got:?}");
     };
-    assert!(reason.contains("live attempt A-1"), "{reason}");
+    assert!(reason.contains("fleet process of attempt A-1"), "{reason}");
     assert_eq!(w.calls(), 0);
     let (state, _, auth, _) = w.row(&req.request_id).unwrap();
     assert_eq!((state.as_str(), auth), ("refused", None));

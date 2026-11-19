@@ -1270,7 +1270,8 @@ impl<'a> Pass<'a> {
         })?;
         jobs::ingest_results(&self.job_ctx(), &tx, &read.job_files)?;
         token_item(&tx, &self.settings.fleet_root, read.token_fault.as_deref())?;
-        let launches = self.observe_intents(&tx, &read.launching, clock)?;
+        let launches =
+            self.observe_intents(&tx, &read.launching, read.task.panes.as_ref(), clock)?;
         let mut stops = commands::mark_orphans(&tx, &read.task)?;
         let pools = read.pools.as_ref().map(|p| Pools {
             roster: &p.roster,
@@ -1546,6 +1547,7 @@ impl<'a> Pass<'a> {
         &self,
         tx: &Transaction<'_>,
         launching: &[Launching],
+        panes: Option<&BTreeMap<String, InPane>>,
         clock: FleetSeconds,
     ) -> Result<Vec<AttemptRow>> {
         let mut launches = Vec::new();
@@ -1555,7 +1557,20 @@ impl<'a> Pass<'a> {
             if state.as_deref() != Some(AttemptState::Launching.as_str()) {
                 continue;
             }
-            match observe_launch(l.row_process, l.launch, clock) {
+            let mut step = observe_launch(l.row_process, l.launch, clock);
+            if a.task_id.is_none() {
+                match pane_wrapper(tx, a, panes)? {
+                    Some(wrapper) => {
+                        let guard = Some(self.settings.generation);
+                        commands::attempt_live(tx, guard, &a.id, Some(wrapper))?;
+                        continue;
+                    }
+                    // The launch process is `horch spawn`, not the wrapper.
+                    None if step == LaunchStep::Live => step = LaunchStep::Wait,
+                    None => {}
+                }
+            }
+            match step {
                 LaunchStep::Launch if self.ports.duties.launches(a) => {}
                 // The launch plan of Phase 4 launches a push attempt of a
                 // task. The pass launches a sub-orchestrator attempt.
@@ -2777,6 +2792,32 @@ fn to_seen(p: Proc) -> Seen {
         Proc::Dead => Seen::Dead,
         Proc::Absent | Proc::Unknown => Seen::Unknown,
     }
+}
+
+/// FR-10, I5: the wrapper of the attempt `a` with no task (a
+/// sub-orchestrator), from the pane of its worker. Its launch runs
+/// `horch spawn`, which ends when the pane runs: so the launch process is
+/// never the process of the attempt. The pane shell runs
+/// `exec horch worker`, so the process that herdr shows in the pane is the
+/// wrapper, and its agent runs in its process group. A process that another
+/// attempt records is the old wrapper of a pane that the attempt takes:
+/// the pass waits for the new one.
+fn pane_wrapper(
+    tx: &Connection,
+    a: &AttemptRow,
+    panes: Option<&BTreeMap<String, InPane>>,
+) -> Result<Option<Recorded>> {
+    let Some(InPane::Runs { pid, pid_start }) = a.pane.as_ref().and_then(|p| panes?.get(p)) else {
+        return Ok(None);
+    };
+    let wrapper = Recorded {
+        pid: *pid,
+        pid_start: Some(*pid_start),
+    };
+    if attempts_store::process_of_other_attempt(tx, &a.id, wrapper)? {
+        return Ok(None);
+    }
+    Ok(Some(wrapper))
 }
 
 /// The launch record of each attempt in `launching`.

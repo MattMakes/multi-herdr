@@ -1,33 +1,44 @@
-//! The peer process fact: is the process of a channel peer in a live
-//! attempt (its process group, its job object, or a descendant of its
-//! wrapper): yes, no or unknown.
+//! The fleet process fact (FR-10, SR-8): is a process a process of a fleet
+//! attempt: yes, no or unknown. [`fleet_process`] is the 1 rule. The CLI
+//! guard of each `operator` command and the peer process check of fleetd
+//! both use it.
 //!
-//! Requirements: SR-8. fleetd refuses an `operator` request on the channel
-//! from a peer in a live attempt, and from a peer whose fact is unknown (a
-//! guard whose fact is unknown does not hold).
+//! The facts are facts of the OS that fleetd recorded, never an environment
+//! variable: the PID and the start time of the wrapper and of the agent of
+//! each attempt that is not ended, or that ended in the last
+//! [`ENDED_COUNTS_S`]. A pane of a worker enters as its process: the pane
+//! shell runs `exec horch worker`, so the pane process is the wrapper.
 //!
-//! - Yes: the peer is in the process group that the wrapper of a live
-//!   attempt leads, or the peer or a parent in its chain is that wrapper.
+//! - Yes: a process of the chain of the caller is a recorded process (PID
+//!   and start time), or is in the process group or the session that a
+//!   recorded process made. So a child shell of the agent, a child in a new
+//!   group or a new session whose parent runs, and an agent that lives on
+//!   after its attempt ended are each a fleet process.
 //! - No: the chain reaches PID 1, or a process with no parent, with each
-//!   fact read, and no group and no process of it is of a live attempt.
-//! - Unknown: a parent or a group fact is `NotSupported` or fails to read,
-//!   the start time of a process with the PID of a wrapper fails to read, or
-//!   the chain is longer than [`MAX_CHAIN`].
+//!   fact read, and no fact matches.
+//! - Unknown: a parent, a group, a session or a start time fails to read,
+//!   or the chain is longer than [`MAX_CHAIN`]. The caller refuses.
 //!
-//! A PID can go to a later process. Each compare with a wrapper uses the PID
-//! and the start time.
+//! A PID can go to a later process. Each compare uses the PID and the start
+//! time, also for an ended attempt.
 //!
-//! A process that leaves the group of its attempt and loses its parent chain
-//! (an orphan in a new group) answers no. The worker sandbox, which denies
-//! each write in `<fleet root>/run/`, and the operator token guard that case.
+//! Gap: a process that makes a new group and a new session and whose parent
+//! then ends (a double fork) has no fact that ties it to its attempt. The
+//! worker sandbox, which denies the operator token and the command channel,
+//! guards that case.
 //!
-//! Windows gap: the platform gives no job object fact and no parent PID on
-//! Windows (`NotSupported`). So on Windows each answer is unknown, and
-//! fleetd refuses each `operator` request on the channel (Q11 of
-//! `docs/tickets/fleetd-p5/MAP.md`). The request file path, with the token,
-//! still works for the operator on Windows.
+//! Windows gap: the platform gives no parent PID, no group and no session
+//! on Windows (`NotSupported`). So on Windows each answer is unknown when
+//! the ledger records a fleet process, and fleetd refuses each `operator`
+//! request on the channel (Q11 of `docs/tickets/fleetd-p5/MAP.md`). The
+//! request file path, with the token, still works for the operator on
+//! Windows.
 
+use anyhow::Result;
 use horch_platform::{group, process};
+use rusqlite::Connection;
+
+use crate::fleetd::task_execution::adapters::sqlite::{self as attempts_store, AttemptProcesses};
 
 /// The most processes of a chain that the walk reads, the peer included.
 pub const MAX_CHAIN: usize = 64;
@@ -43,15 +54,51 @@ pub enum Fact {
     Unknown,
 }
 
-/// The process facts of 1 live attempt, from the ledger: the PID and the
-/// start time of its wrapper. The launcher starts the wrapper as the leader
-/// of a new process group, so that group is the group of the attempt.
+/// How long an ended attempt counts for [`fleet_process`], from its end:
+/// 24 hours. The stop ladder stops each process of an attempt in seconds,
+/// so a process that lives on after its attempt ended is found in this
+/// time. The bound also stops an old PID of a long-ended attempt from
+/// counting against a later process for ever.
+pub const ENDED_COUNTS_S: i64 = 24 * 60 * 60;
+
+/// 1 recorded process of a fleet attempt, from the ledger: the wrapper or
+/// the agent of an attempt that is not ended, or that ended in the last
+/// [`ENDED_COUNTS_S`]. The launcher starts the wrapper as the leader of a
+/// new process group, and a herdr pane starts it as the leader of a
+/// session, so its PID also names its group and its session.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AttemptProcess {
+pub struct FleetProcess {
     pub attempt: String,
-    pub wrapper_pid: u32,
+    pub pid: u32,
     /// A start time of [`horch_platform::process::start_time`].
-    pub wrapper_start: u64,
+    pub start: u64,
+}
+
+/// The recorded processes of the fleet for [`fleet_process`], read now,
+/// with the rows that hold them. `None` when an
+/// attempt that is not ended has a process with no start time: its fact is
+/// unknown. A process of an ended attempt with no start time cannot be
+/// compared, so it does not count.
+pub fn recorded_processes(
+    conn: &Connection,
+) -> Result<Option<(Vec<FleetProcess>, Vec<AttemptProcesses>)>> {
+    let since = crate::clock::now() - chrono::Duration::seconds(ENDED_COUNTS_S);
+    let rows = attempts_store::fleet_processes(conn, &crate::clock::stamp(since))?;
+    let mut out = Vec::new();
+    for row in &rows {
+        for p in &row.processes {
+            match p.pid_start {
+                Some(start) => out.push(FleetProcess {
+                    attempt: row.attempt.clone(),
+                    pid: p.pid,
+                    start,
+                }),
+                None if !row.ended => return Ok(None),
+                None => {}
+            }
+        }
+    }
+    Ok(Some((out, rows)))
 }
 
 /// The process facts that the answer reads. `None` is a fact that is
@@ -65,6 +112,15 @@ pub trait ProcessFacts {
     /// start time `leader_start`. `Some(false)` when `leader` does not lead
     /// that group.
     fn in_group(&self, pid: u32, leader: u32, leader_start: u64) -> Option<bool>;
+    /// The process group of `pid`. The default is a fact that is not
+    /// supported.
+    fn group_of(&self, _pid: u32) -> Option<u32> {
+        None
+    }
+    /// The session of `pid`. The default is a fact that is not supported.
+    fn session_of(&self, _pid: u32) -> Option<u32> {
+        None
+    }
 }
 
 /// The process facts of the OS, from `horch_platform`.
@@ -91,35 +147,62 @@ impl ProcessFacts for PlatformFacts {
         }
         Some(members.contains(&pid))
     }
+
+    fn group_of(&self, pid: u32) -> Option<u32> {
+        process::group_of(pid).ok().flatten()
+    }
+
+    fn session_of(&self, pid: u32) -> Option<u32> {
+        process::session_of(pid).ok().flatten()
+    }
 }
 
-/// Is the process `peer` in a live attempt of `attempts`.
-pub fn peer_in_live_attempt(
-    peer: u32,
-    attempts: &[AttemptProcess],
-    facts: &dyn ProcessFacts,
-) -> Fact {
-    let mut found: Vec<String> = Vec::new();
-    for a in attempts {
-        match facts.in_group(peer, a.wrapper_pid, a.wrapper_start) {
-            None => return Fact::Unknown,
-            Some(true) => found.push(a.attempt.clone()),
-            Some(false) => {}
-        }
+/// FR-10, SR-8: is the process `peer` a fleet process. The CLI guard of
+/// each `operator` command and the peer process check of fleetd both use
+/// this rule; the check of fleetd is the one that counts.
+///
+/// The walk reads the chain of `peer` up to PID 1. Each process of the
+/// chain is a fleet process when:
+/// - its PID and start time are those of a process of `recorded`, or
+/// - its process group or its session has the PID of a process of
+///   `recorded`, and that PID still names that process (see
+///   [`still_names`]).
+///
+/// A fact that cannot be read is [`Fact::Unknown`]: the caller refuses.
+/// With no recorded process, no process can be a fleet process.
+pub fn fleet_process(peer: u32, recorded: &[FleetProcess], facts: &dyn ProcessFacts) -> Fact {
+    if recorded.is_empty() {
+        return Fact::No;
     }
+    let mut found: Vec<String> = Vec::new();
+    let mut add = |id: &str| {
+        if !found.iter().any(|f| f == id) {
+            found.push(id.to_string());
+        }
+    };
     let mut pid = peer;
     for _ in 0..MAX_CHAIN {
-        let wrappers = attempts.iter().filter(|a| a.wrapper_pid == pid);
-        for a in wrappers {
+        if pid == 1 {
+            return verdict(found);
+        }
+        for r in recorded.iter().filter(|r| r.pid == pid) {
             let Some(start) = facts.start_time(pid) else {
                 return Fact::Unknown;
             };
-            if a.wrapper_start == start && !found.contains(&a.attempt) {
-                found.push(a.attempt.clone());
+            if r.start == start {
+                add(&r.attempt);
             }
         }
-        if pid == 1 {
-            return verdict(found);
+        let (Some(group), Some(session)) = (facts.group_of(pid), facts.session_of(pid)) else {
+            return Fact::Unknown;
+        };
+        for r in recorded
+            .iter()
+            .filter(|r| r.pid == group || r.pid == session)
+        {
+            if still_names(r, facts) {
+                add(&r.attempt);
+            }
         }
         match facts.parent(pid) {
             None => return Fact::Unknown,
@@ -128,6 +211,17 @@ pub fn peer_in_live_attempt(
         }
     }
     Fact::Unknown
+}
+
+/// Whether the group or the session with the id `r.pid`, which holds a
+/// process of the chain, is the one that `r` made. While a group or a
+/// session has a member, the OS gives its id to no new process. So a
+/// process with that PID is the one that made it: compare its start time.
+/// When no start time can be read, the leader has ended and the group or
+/// the session lives on: it is the one of `r`. A start time that fails to
+/// read for a process that runs also gives `true`: the rule refuses.
+fn still_names(r: &FleetProcess, facts: &dyn ProcessFacts) -> bool {
+    facts.start_time(r.pid).is_none_or(|start| start == r.start)
 }
 
 fn verdict(found: Vec<String>) -> Fact {

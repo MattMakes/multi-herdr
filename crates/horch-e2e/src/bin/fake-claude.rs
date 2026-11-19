@@ -53,7 +53,9 @@ fn main() {
         .any(|w| w[0] == "--input-format" && w[1] == "stream-json");
     if !probe {
         horch_e2e::agent::play(&mut call);
-        horch_e2e::idea_agent::play(&mut call);
+        if !horch_e2e::fr10_agent::play(&mut call) {
+            horch_e2e::idea_agent::play(&mut call);
+        }
         if scenario_has("inspect_skills") {
             inspect_skills(&call.argv);
         }

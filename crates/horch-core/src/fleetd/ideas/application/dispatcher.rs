@@ -18,6 +18,8 @@
 //! - `clarifying` -> `awaiting_approval` when assumptions.md validates. A
 //!   feature with no branch first gets its name from the line `feature:`
 //!   (`NameFeatureBranch`); a refused name keeps the idea in `clarifying`.
+//! - `awaiting_approval` stays: only your approve moves it. An approval.json
+//!   that fleetd did not write is ignored and logged 1 time (FR-10).
 //! - `specifying` -> `ticketing` when spec.md and requirements.yaml
 //!   validate, and each requirement cites an assumption or an answer.
 //! - `ticketing` -> `in_progress` through `ValidatePlan`, when plan.yaml
@@ -45,6 +47,7 @@ use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 use crate::fleetd::ideas::adapters::idea_folder_files::IdeaFolder;
 use crate::fleetd::ideas::adapters::ideas_store::{self, IdeaRow};
+use crate::fleetd::ideas::application::approval::trusted_approval;
 use crate::fleetd::ideas::application::direct;
 use crate::fleetd::ideas::application::plan_commit::{
     validate_plan, PlanCommit, Verdict, PLAN_YAML, VERDICT_FILE,
@@ -62,7 +65,13 @@ use crate::taskledger::{runs, Store};
 pub const CURSOR: &str = "ideas";
 
 /// The states in which the dispatcher moves an idea.
-pub const DISPATCHED: [&str; 4] = ["captured", "clarifying", "specifying", "ticketing"];
+pub const DISPATCHED: [&str; 5] = [
+    "captured",
+    "clarifying",
+    "awaiting_approval",
+    "specifying",
+    "ticketing",
+];
 
 /// The states of an idea in planning. While 1 idea of a feature is in 1 of
 /// them, the next idea of the feature waits in `captured`. The design lists
@@ -184,6 +193,7 @@ impl Dispatcher {
         let step = match idea.state.as_str() {
             "captured" => captured(store, ctx, &idea, folder.dir())?,
             "clarifying" => clarifying(store, ctx, &idea, &folder, report)?,
+            "awaiting_approval" => awaiting(store, ctx, &idea, &folder)?,
             "specifying" => specifying(store, ctx, &idea, &folder)?,
             "ticketing" => ticketing(store, ctx, &idea, folder.dir())?,
             _ => Step::Stayed { wrote: false },
@@ -212,7 +222,7 @@ impl Dispatcher {
 fn dispatched(conn: &Connection) -> Result<Vec<String>> {
     let mut stmt = conn.prepare(
         "SELECT id FROM ideas
-         WHERE state IN ('captured', 'clarifying', 'specifying', 'ticketing')
+         WHERE state IN ('captured', 'clarifying', 'awaiting_approval', 'specifying', 'ticketing')
          ORDER BY id",
     )?;
     let ids = stmt
@@ -322,6 +332,20 @@ fn clarifying(
             "assumptions.md validates",
         )
     })
+}
+
+/// `awaiting_approval`: the idea waits for you, and nothing moves it here.
+/// An approval.json that fleetd did not write is ignored, and 1 event of
+/// the idea logs it (FR-10, FM-32). The idea is not checked again until a
+/// file of its folder changes.
+fn awaiting(
+    store: &mut Store,
+    ctx: &Dispatch<'_>,
+    idea: &IdeaRow,
+    folder: &IdeaFolder,
+) -> Result<Step> {
+    store.immediate(|tx| trusted_approval(tx, ctx.plan.guard, folder, &idea.id))?;
+    Ok(Step::Stayed { wrote: true })
 }
 
 /// `specifying`: spec.md and requirements.yaml validate, and each

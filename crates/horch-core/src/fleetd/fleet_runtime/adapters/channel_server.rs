@@ -17,7 +17,7 @@
 //!    no row and replies `{"state": "refused", "reason"}` with no
 //!    `request_id`.
 //! 3. It collects the facts: the peer user (SR-5), the token (SR-8) and the
-//!    peer process fact against the live attempts of the ledger (SR-8),
+//!    fleet process fact of the peer process (`fleet_process`, SR-8, FR-10),
 //!    and decides with [`authorize`].
 //! 4. It records and applies the request with [`handle`] (RR-8, FM-15),
 //!    and writes the reply line. Then it closes the connection.
@@ -41,7 +41,7 @@ use horch_platform::NotSupported;
 use rusqlite::{Connection, TransactionBehavior};
 
 use crate::fleetd::fleet_runtime::adapters::peer_process::{
-    peer_in_live_attempt, AttemptProcess, Fact, PlatformFacts,
+    fleet_process, recorded_processes, Fact, PlatformFacts,
 };
 use crate::fleetd::fleet_runtime::adapters::request_wire::{parse_request, Request};
 use crate::fleetd::fleet_runtime::adapters::{config_file, fleetd_row, token_file};
@@ -54,8 +54,6 @@ use crate::fleetd::fleet_runtime::domain::ledger::Generation;
 use crate::fleetd::fleet_runtime::domain::operator::AttemptFacts;
 use crate::fleetd::ideas::application::needs_you;
 use crate::fleetd::ideas::domain::needs_you::Write as NeedsYouWrite;
-use crate::fleetd::task_execution::adapters::sqlite as attempts_store;
-use crate::fleetd::task_execution::domain::task::Recorded;
 
 /// The deadline of 1 connection: the read of its line, and on unix the
 /// write of its reply. It is the connect time of today
@@ -382,53 +380,28 @@ fn write_reply(stream: &Stream, line: &str, timeout: Duration) {
         .and_then(|()| writer.flush());
 }
 
-/// Is the process of `peer` in a live attempt. A fact that is not
-/// supported or that fails to read is [`PeerProcess::Unknown`].
+/// Is the process of `peer` a fleet process ([`fleet_process`], FR-10). A
+/// fact that is not supported or that fails to read is
+/// [`PeerProcess::Unknown`].
 fn peer_process(conn: &Connection, peer: &Peer) -> PeerProcess {
     let Ok(pid) = peer.pid else {
         return PeerProcess::Unknown;
     };
-    let Ok(Some(live)) = live_attempts(conn) else {
+    let Ok(Some((recorded, rows))) = recorded_processes(conn) else {
         return PeerProcess::Unknown;
     };
-    let processes: Vec<AttemptProcess> = live.iter().map(|(p, _)| p.clone()).collect();
-    match peer_in_live_attempt(pid, &processes, &PlatformFacts) {
+    match fleet_process(pid, &recorded, &PlatformFacts) {
         Fact::No => PeerProcess::Outside,
         Fact::Unknown => PeerProcess::Unknown,
         Fact::Yes(ids) => PeerProcess::Inside(
             ids.iter()
-                .filter_map(|id| live.iter().find(|(p, _)| &p.attempt == id))
-                .map(|(_, facts)| facts.clone())
+                .filter_map(|id| rows.iter().find(|r| &r.attempt == id))
+                .map(|r| AttemptFacts {
+                    attempt: r.attempt.clone(),
+                    task: r.task.clone(),
+                    persona: r.persona.clone().unwrap_or_default(),
+                })
                 .collect(),
         ),
     }
-}
-
-/// The process and the facts of each attempt that is not ended and has a
-/// pid. `None` when such an attempt has no valid pid or start time: its
-/// process fact is unknown.
-fn live_attempts(conn: &Connection) -> Result<Option<Vec<(AttemptProcess, AttemptFacts)>>> {
-    let mut live = Vec::new();
-    for (row, persona) in attempts_store::open_attempts_with_persona(conn)? {
-        let Some(Recorded {
-            pid,
-            pid_start: Some(start),
-        }) = row.process
-        else {
-            return Ok(None);
-        };
-        live.push((
-            AttemptProcess {
-                attempt: row.id.clone(),
-                wrapper_pid: pid,
-                wrapper_start: start,
-            },
-            AttemptFacts {
-                attempt: row.id,
-                task: row.task_id,
-                persona: persona.unwrap_or_default(),
-            },
-        ));
-    }
-    Ok(Some(live))
 }

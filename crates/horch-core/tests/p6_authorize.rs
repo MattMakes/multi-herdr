@@ -48,7 +48,7 @@ fn orchestrator_seat_has_no_operator_right() {
         match authorize(&channel_facts(vec![seat])) {
             Decision::Refused { reason } => {
                 assert!(
-                    reason.contains("the peer process is in live attempt A-7"),
+                    reason.contains("the peer process is a fleet process of attempt A-7"),
                     "{persona}: {reason}"
                 );
                 assert!(reason.contains(persona), "{persona}: {reason}");
