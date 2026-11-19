@@ -243,6 +243,8 @@ fn world() -> World {
         },
     )
     .unwrap();
+    // A task needs an idea in flight of the feature of its run (FR-12).
+    schema::run_idea(&conn, &run.run_id, &util::now(), true).unwrap();
     std::fs::create_dir_all(dir.join("fleet")).unwrap();
     let w = World {
         dir,
