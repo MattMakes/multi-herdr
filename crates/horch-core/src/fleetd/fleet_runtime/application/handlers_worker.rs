@@ -36,6 +36,7 @@ use crate::fleetd::fleet_runtime::application::requests::Handlers;
 use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
 use crate::fleetd::fleet_runtime::domain::requests::{check_spawn_record, Kind};
 use crate::fleetd::task_execution::adapters::sqlite as attempts_store;
+use crate::fleetd::task_execution::application::commands as task_commands;
 use crate::fleetd::task_execution::domain::task::AttemptState;
 use crate::taskledger::model::{Actor, EventKind, RunStatus, StopRequester, WorkerStatus};
 use crate::taskledger::runs::{self, Run};
@@ -315,16 +316,20 @@ pub struct StopPayload {
     pub reason: String,
 }
 
-/// Record the stop of 1 worker: its row ends `stopped`, and the task it
-/// held is queued again. The pass stops its processes.
+/// Record the stop of 1 worker: its live attempt ends `killed`, its row
+/// ends `stopped`, and the task it held is queued again. The pass stops
+/// its processes after the commit and records each signal in `stops`.
+/// This request sends no signal, so its `steps` are empty.
 fn worker_stop(tx: &Transaction<'_>, p: &StopPayload) -> Result<Value> {
     let w = workers::resolve(tx, &p.run_id, &p.worker)?;
     let by = StopRequester::Orchestrator;
     stop::check_stoppable(tx, &w, by, &p.reason)?;
+    task_commands::end_stopped_attempt(tx, &w.worker_id, &p.reason)?;
     let requeued = stop::end_row_in(tx, &w, by, &p.reason, WorkerStatus::Stopped)?;
     Ok(json!({
         "worker_id": w.worker_id,
         "worker": w.label(),
         "requeued": requeued,
+        "steps": [],
     }))
 }
