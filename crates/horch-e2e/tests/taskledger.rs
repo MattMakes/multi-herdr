@@ -80,7 +80,7 @@ fn fleet(name: &str, scenario: &str) -> Harness {
 /// (Phase 5). Gives the harness when fleetd serves.
 fn push_fleet(name: &str, scenario: &str, slug: &str, tasks: &[&str]) -> Harness {
     let mut h = world_without_fleetd(name);
-    push_env(&mut h, name, scenario);
+    push_env(&mut h, scenario);
     let run = seed_run(&h, slug, Some(1), "w1:p1");
     for (n, title) in tasks.iter().enumerate() {
         let p = ticket(&h, &format!("t{n}"), &format!("# {title}\n"));
@@ -91,16 +91,28 @@ fn push_fleet(name: &str, scenario: &str, slug: &str, tasks: &[&str]) -> Harness
 }
 
 /// The environment of [`push_fleet`] in `h`, whose fleetd is down: the
-/// workspace `w1` of the fake herdr, codex-terra interactive, and a pass of
-/// fleetd each second.
-fn push_env(h: &mut Harness, name: &str, scenario: &str) {
+/// workspace `w1` of the fake herdr with the label of the project folder,
+/// as `horch fleet` makes it (fleetd opens the pane of an attempt there),
+/// codex-terra interactive, and a pass of fleetd each second.
+fn push_env(h: &mut Harness, scenario: &str) {
     let quota = fixtures().join("quota/all-ok.json");
     h.set("HORCH_QUOTA_FILE", quota.to_string_lossy());
     h.set("HORCH_WORKSPACE_ID", "w1");
     h.set("HORCH_FAKE_SCENARIO", scenario);
     h.set("HORCH_FAULT", "delivery-probe-ms:100");
     h.set("HORCH_HOSTNAME", "test-host");
-    herdr_json(h, &["workspace", "create", "--label", name]);
+    // The session records and the task ledger share 1 file below the state
+    // folder, as in production: the session store sends its requests to
+    // the fleet root next to that file, which is the fleet root of fleetd.
+    let db = h.state.join("ledger.sqlite3");
+    h.set("HORCH_LEDGER_DB", db.to_string_lossy());
+    let label = h
+        .project
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    herdr_json(h, &["workspace", "create", "--label", &label]);
     // codex-terra runs interactive, as before exec became the default mode
     // (fleetd-p7 ticket 19): the fake agent stays in its pane.
     let teammates = h.root.join("teammates");
@@ -1160,7 +1172,7 @@ fn a_worker_with_no_progress_is_stalled_by_the_ladder_and_stopped_by_its_pid() {
             assert_eq!(shown["worker"]["status"], "incomplete");
             assert_eq!(shown["worker"]["agent_pid"].as_i64(), Some(pid as i64));
             assert_ladder_texts(&shown["events"], "T-1");
-            let db = horch_core::taskledger::Store::open(&h.root.join("ledger.sqlite3")).unwrap();
+            let db = horch_core::taskledger::Store::open(&h.ledger_db()).unwrap();
             let wakes: Vec<String> = {
                 let mut stmt = db
                     .conn()
@@ -1222,7 +1234,7 @@ fn stall_by_the_ladder(h: &Harness, worker: &str, pid: u32, started: u64) {
     );
     h.advance_fleet_clock(400);
     h.without_fleetd(|| json_of(h, &["ledger", "watch", "--once", "--force", "--json"]));
-    let db = horch_core::taskledger::Store::open(&h.root.join("ledger.sqlite3")).unwrap();
+    let db = horch_core::taskledger::Store::open(&h.ledger_db()).unwrap();
     let task_status = || -> String {
         db.conn()
             .query_row(
@@ -1593,7 +1605,7 @@ fn the_whole_flow_on_the_fake_herdr() {
         let mut h = finish_world("tl-e2e");
         h.stop_fleetd();
         h.set("HORCH_STOP_GRACE_MS", "2000");
-        push_env(&mut h, "e2e", "exec,stay");
+        push_env(&mut h, "exec,stay");
 
         // 1. The orchestrator queues B first: fleetd launches its agent, the
         // fake codex that stays and never ends with a result.
@@ -3149,7 +3161,7 @@ fn wakes(h: &Harness) -> Vec<String> {
 /// its wakes to the outbox and delivers them from there, so a wake that
 /// `HORCH_NO_WAKE=1` keeps is a row, with no `woke` event.
 fn outbox(h: &Harness) -> Vec<String> {
-    let store = horch_core::taskledger::Store::open(&h.root.join("ledger.sqlite3")).unwrap();
+    let store = horch_core::taskledger::Store::open(&h.ledger_db()).unwrap();
     let mut stmt = store
         .conn()
         .prepare("SELECT text FROM outbox ORDER BY rowid")
