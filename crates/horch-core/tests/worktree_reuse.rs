@@ -22,6 +22,7 @@ use horch_core::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
 use horch_core::fleetd::fleet_runtime::domain::ledger::Entity;
 use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
+use horch_core::fleetd::task_execution::application::commands;
 use horch_core::fleetd::task_execution::application::dispatch::Bound;
 use horch_core::fleetd::task_execution::domain::task::Recorded;
 use horch_core::fleetd::worktree_custody::adapters::sqlite::{
@@ -170,8 +171,7 @@ impl World {
             pid_start: Some(2),
         };
         let bound = testing::bind_live(self.store.conn(), &task, &new, Some(agent))?;
-        self.store
-            .immediate(|tx| workers::supervisor_started(tx, &bound.worker_id, 4242, Some(1)))?;
+        testing::record_supervisor(self.store.conn(), &bound.worker_id, 4242, Some(1))?;
         Ok(bound)
     }
 
@@ -190,7 +190,14 @@ impl World {
     /// the worker, and its task goes back to the queue.
     fn exit(&self, worker_id: &str) {
         horch_core::taskledger::Store::open(self.store.path())
-            .and_then(|mut s| s.immediate(|tx| supervisor::settle(tx, worker_id, Some(1))))
+            .and_then(|mut s| {
+                s.immediate(|tx| {
+                    let ended = supervisor::settle(tx, worker_id, Some(1))?;
+                    // The pass of fleetd ends the attempt of the exited agent.
+                    commands::end_own_attempt(tx, worker_id, "crashed")?;
+                    Ok(ended)
+                })
+            })
             .unwrap();
         assert_eq!(self.task_status(), "ready");
     }
@@ -377,7 +384,11 @@ fn handoff_moves_the_owner_of_the_tree() {
     let file = w.handoff_file();
 
     w.store
-        .immediate(|tx| tasks::handoff(tx, &a, &file))
+        .immediate(|tx| {
+            tasks::handoff(tx, &a, &file)?;
+            // The pass of fleetd ends the attempt that handed off.
+            commands::end_own_attempt(tx, &a, "handed_off")
+        })
         .unwrap();
 
     // The design row `active`: retried -> back to `created`, with no

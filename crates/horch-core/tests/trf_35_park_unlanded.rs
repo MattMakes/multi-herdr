@@ -79,9 +79,7 @@ fn bind_t1(w: &mut World, run: &Run) -> Bound {
         pid_start: Some(2),
     };
     let bound = testing::bind_live(w.store.conn(), &task, &new, Some(agent)).unwrap();
-    w.store
-        .immediate(|tx| workers::supervisor_started(tx, &bound.worker_id, 4242, Some(1)))
-        .unwrap();
+    testing::record_supervisor(w.store.conn(), &bound.worker_id, 4242, Some(1)).unwrap();
     bound
 }
 

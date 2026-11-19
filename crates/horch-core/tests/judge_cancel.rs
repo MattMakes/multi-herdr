@@ -132,6 +132,13 @@ impl World {
                 |r| r.get(0),
             )
             .unwrap();
+        // The run has no git repository and the judged task no tree: the
+        // judge works in the shared checkout.
+        conn.execute(
+            "UPDATE tasks SET worktree_mode = 'shared' WHERE task_id = ?1",
+            [&task],
+        )
+        .unwrap();
         bind_live(conn, &task, &new, Some(AGENT)).unwrap().worker_id
     }
 }

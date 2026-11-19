@@ -305,7 +305,7 @@ fn ledger_worker() -> (
                     pid_start: Some(2),
                 },
             )?;
-            workers::supervisor_started(tx, &worker, 1, Some(1))?;
+            horch_core::taskledger::testing::record_supervisor(tx, &worker, 1, Some(1))?;
             Ok((run, worker))
         })
         .unwrap();
@@ -719,7 +719,7 @@ fn pinned_worker(
                     pid_start: Some(started),
                 },
             )?;
-            workers::supervisor_started(tx, &w, 1, Some(1))?;
+            horch_core::taskledger::testing::record_supervisor(tx, &w, 1, Some(1))?;
             Ok((run, w))
         })
         .unwrap();

@@ -6,6 +6,7 @@
 
 use std::path::Path;
 
+use horch_core::fleetd::task_execution::application::commands;
 use horch_core::fleetd::task_execution::domain::task::Recorded;
 use horch_core::taskledger::model::Actor;
 use horch_core::taskledger::runs::{self, NewRun, Run};
@@ -114,9 +115,7 @@ fn take(store: &mut Store, run: &Run, persona: &str) -> Option<(i64, String)> {
         pid_start: Some(2),
     };
     let bound = testing::bind_live(store.conn(), &task.task_id, &new, Some(agent)).unwrap();
-    store
-        .immediate(|tx| workers::supervisor_started(tx, &bound.worker_id, 4242, Some(1)))
-        .unwrap();
+    testing::record_supervisor(store.conn(), &bound.worker_id, 4242, Some(1)).unwrap();
     Some((task.seq, bound.worker_id))
 }
 
@@ -362,7 +361,12 @@ fn an_agent_that_exits_on_its_last_attempt_fails_the_task() {
     assert_eq!(seq, 1);
     assert_eq!(
         horch_core::taskledger::Store::open(&db)
-            .and_then(|mut s| s.immediate(|tx| supervisor::settle(tx, &first, Some(1))))
+            .and_then(|mut s| s.immediate(|tx| {
+                let ended = supervisor::settle(tx, &first, Some(1))?;
+                // The pass of fleetd ends the attempt of the exited agent.
+                commands::end_own_attempt(tx, &first, "crashed")?;
+                Ok(ended)
+            }))
             .unwrap(),
         Ended::Requeued {
             task: "T-1".into(),
@@ -373,7 +377,12 @@ fn an_agent_that_exits_on_its_last_attempt_fails_the_task() {
     assert_eq!(seq, 1);
     assert_eq!(
         horch_core::taskledger::Store::open(&db)
-            .and_then(|mut s| s.immediate(|tx| supervisor::settle(tx, &second, Some(1))))
+            .and_then(|mut s| s.immediate(|tx| {
+                let ended = supervisor::settle(tx, &second, Some(1))?;
+                // The pass of fleetd ends the attempt of the exited agent.
+                commands::end_own_attempt(tx, &second, "crashed")?;
+                Ok(ended)
+            }))
             .unwrap(),
         Ended::Failed { task: "T-1".into() }
     );
@@ -404,7 +413,12 @@ fn an_agent_that_exits_on_its_last_attempt_fails_the_task() {
         assert_eq!(seq, 1, "{n}");
         assert_eq!(
             horch_core::taskledger::Store::open(&db)
-                .and_then(|mut s| s.immediate(|tx| supervisor::settle(tx, &w, Some(1))))
+                .and_then(|mut s| s.immediate(|tx| {
+                    let ended = supervisor::settle(tx, &w, Some(1))?;
+                    // The pass of fleetd ends the attempt of the exited agent.
+                    commands::end_own_attempt(tx, &w, "crashed")?;
+                    Ok(ended)
+                }))
                 .unwrap(),
             ended
         );

@@ -88,7 +88,7 @@ fn pinned_worker(name: &str) -> (Harness, Store, Run, String, Agent) {
                     pid_start: Some(started),
                 },
             )?;
-            workers::supervisor_started(tx, &w, 1, Some(1))?;
+            horch_core::taskledger::testing::record_supervisor(tx, &w, 1, Some(1))?;
             Ok((run, w))
         })
         .unwrap();

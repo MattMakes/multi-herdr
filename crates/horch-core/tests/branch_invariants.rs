@@ -295,19 +295,27 @@ impl World {
         git(&self.repo, &["stash", "clear"]);
     }
 
-    /// Move the task branch `name` to `to` through the 1 door.
+    /// Move the task branch `name` from `building` to `to` through the 1
+    /// door. A branch lands only from a bundle: `landed` goes through
+    /// `verifying`, `ready` and `in_bundle` first.
     fn move_branch(&mut self, name: &str, to: &str) {
+        let path: &[&str] = match to {
+            "landed" => &["verifying", "ready", "in_bundle", "landed"],
+            _ => &[to],
+        };
         self.store
             .immediate(|tx| {
-                transition(
-                    tx,
-                    None,
-                    Entity::TaskBranch,
-                    name,
-                    to,
-                    cause("test"),
-                    &NeedsYouList,
-                )?;
+                for state in path {
+                    transition(
+                        tx,
+                        None,
+                        Entity::TaskBranch,
+                        name,
+                        state,
+                        cause("test"),
+                        &NeedsYouList,
+                    )?;
+                }
                 Ok(())
             })
             .unwrap();

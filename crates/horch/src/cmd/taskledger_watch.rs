@@ -364,7 +364,7 @@ mod tests {
                     Some(agent),
                 )?
                 .worker_id;
-                workers::supervisor_started(tx, &w, me, started)?;
+                horch_core::taskledger::testing::record_supervisor(tx, &w, me, started)?;
                 Ok((run, w))
             })
             .unwrap();

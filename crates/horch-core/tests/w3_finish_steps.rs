@@ -148,7 +148,8 @@ impl World {
 
     /// A claimed task of a new `persona` worker; returns the worker id.
     fn claimed(&mut self, persona: &str, f: impl FnOnce(&mut NewTask)) -> String {
-        let mut t = NewTask::work("feature", "t.md", persona);
+        // The bind names the branch of the tree `<run branch>-T<seq>-<title>`.
+        let mut t = NewTask::work("feat", "t.md", persona);
         f(&mut t);
         let run = self.run.clone();
         self.store

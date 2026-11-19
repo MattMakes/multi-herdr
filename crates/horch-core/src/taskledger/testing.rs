@@ -88,6 +88,32 @@ pub fn bind_live(
     })
 }
 
+/// Record the supervisor process `pid` of the worker `worker_id` that
+/// [`bind_live`] made, as the launch does. The worker is `working` already,
+/// so this writes only the process fields; [`workers::supervisor_started`]
+/// moves a `starting` worker.
+///
+/// [`workers::supervisor_started`]: crate::taskledger::workers::supervisor_started
+pub fn record_supervisor(
+    conn: &Connection,
+    worker_id: &str,
+    pid: u32,
+    started: Option<u64>,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE workers SET supervisor_pid = ?2, supervisor_started = ?3,
+            started_at = ?4, last_checkin_at = ?4
+         WHERE worker_id = ?1",
+        params![
+            worker_id,
+            pid as i64,
+            started.map(|s| s as i64),
+            util::now()
+        ],
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

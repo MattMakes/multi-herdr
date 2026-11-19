@@ -73,9 +73,7 @@ fn busy_board() -> (tempfile::TempDir, Store, Run) {
     let worker = testing::bind_live(store.conn(), &first.task_id, &new, Some(agent))
         .unwrap()
         .worker_id;
-    store
-        .immediate(|tx| workers::supervisor_started(tx, &worker, 4242, Some(1)))
-        .unwrap();
+    testing::record_supervisor(store.conn(), &worker, 4242, Some(1)).unwrap();
     for title in ["beta", "gamma", "delta", "eps"] {
         add(&mut store, &run, title);
     }
@@ -152,6 +150,7 @@ fn render_prints_each_section() {
          Worktrees:\n\
          \x20 T-1   open           /repo/.worktrees/a (base main)\n\
          Worktree disk: 0 B in 1 worktree; 1 not measured.\n\
+         Feature F-0001 (r1) open: not pushed.\n\
          Unsettled: T-1 (running), T-2 (held: two failures), T-3 (landing), worktree /repo/.worktrees/a (open).\n\
          5 tasks: 1 done, 1 running, 1 landing, 1 queued, 1 cancelled. Not complete.\n"
     );

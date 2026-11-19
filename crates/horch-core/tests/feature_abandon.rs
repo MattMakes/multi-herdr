@@ -282,6 +282,13 @@ impl World {
                 |r| r.get(0),
             )
             .unwrap();
+        // The test made the branch of the task itself: the bind reserves
+        // no second tree and branch.
+        conn.execute(
+            "UPDATE tasks SET worktree_mode = 'shared' WHERE task_id = ?1",
+            [&task],
+        )
+        .unwrap();
         bind_live(conn, &task, &new, Some(AGENT)).unwrap().worker_id
     }
 
