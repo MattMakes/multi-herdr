@@ -9,6 +9,9 @@ const DAY: Duration = Duration::from_secs(24 * 60 * 60);
 /// A state root and a temp root in one temp dir, and a fake herdr with 1
 /// workspace (`w1`) and 1 pane (`p1`) in it.
 struct World {
+    /// The fleetd of the session records, which the sweep writes (T-884).
+    /// Declared first, so it drops before the folder.
+    _fleetd: crate::fleetd::fleet_runtime::adapters::channel_server::ChannelServer,
     tmp: tempfile::TempDir,
     herdr: FakeWorkspace,
 }
@@ -24,7 +27,16 @@ impl World {
             (ws.workspace_id.as_str(), ws.root_pane_id.as_str()),
             ("w1", "p1")
         );
-        World { tmp, herdr }
+        let fleetd = crate::execution::store::test_serve(
+            &tmp.path()
+                .join("state")
+                .join(crate::execution::store::STATE_DB),
+        );
+        World {
+            _fleetd: fleetd,
+            tmp,
+            herdr,
+        }
     }
 
     fn state(&self) -> PathBuf {
@@ -504,6 +516,9 @@ fn run_due_leaves_bundles_only_for_live_records_once_an_hour() {
     let tmp = tempfile::tempdir().unwrap();
     let ctx = script_ctx(tmp.path());
     let state = tmp.path().join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let _fleetd =
+        crate::execution::store::test_serve(&state.join(crate::execution::store::STATE_DB));
     let ledger = SessionLedger::for_project(&state, "/proj");
     for (id, pane) in [("live-1", "p1"), ("closed-1", "p7"), ("done-1", "p1")] {
         ledger

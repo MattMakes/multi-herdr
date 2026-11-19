@@ -147,7 +147,10 @@ fn a_bad_id_or_agent_is_refused() {
 
 fn store() -> (tempfile::TempDir, ExecutionStore) {
     let tmp = tempfile::tempdir().unwrap();
-    let store = ExecutionStore::for_project(tmp.path(), "/work/alpha");
+    // A test of the store writes with the writer of fleetd (T-884).
+    let store = ExecutionStore::for_project(tmp.path(), "/work/alpha").with_writer(
+        std::sync::Arc::new(horch_core::taskledger::store::LedgerWriter::fleetd()),
+    );
     (tmp, store)
 }
 

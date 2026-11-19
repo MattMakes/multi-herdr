@@ -11,6 +11,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{bail, ensure, Context, Result};
 use rusqlite::OptionalExtension;
@@ -31,6 +32,7 @@ use crate::fleetd::fleet_runtime::domain::requests::Kind;
 use crate::ids::{IdError, PaneId, WorkspaceId};
 use crate::runtime::{Paths, RuntimeContext};
 use crate::skills::activation::ResolvedSkillRef;
+use crate::taskledger::store::LedgerWriter;
 use crate::workspace::client::WorkspaceClient;
 
 /// The history text of a record that [`ExecutionStore::end_if_pane_closed`]
@@ -327,6 +329,17 @@ pub fn session_db(paths: &Paths) -> PathBuf {
     }
 }
 
+/// The fleet root of the fleetd that owns the session records file `db`,
+/// for a process with `paths`: the fleet root of `paths` when `db` is its
+/// ledger, else the folder `fleet` beside `db`.
+pub fn session_fleet_root(paths: &Paths, db: &Path) -> PathBuf {
+    if paths.ledger_db == db {
+        paths.fleet_root.clone()
+    } else {
+        db.parent().unwrap_or(Path::new("")).join("fleet")
+    }
+}
+
 /// The session records file and the task ledger to overlay for a reader that
 /// knows only `state_root`: this process's own files when `state_root` is
 /// this process's state root, else `<state_root>/ledger.sqlite3` and no
@@ -399,6 +412,21 @@ pub fn record_exit_in(
 /// row changed after its client read it. The client reads again and sends
 /// again.
 pub const SESSION_RECORD_CHANGED: &str = "a session record changed after it was read";
+
+/// The error of a `session_records` row that changed after its client read
+/// it ([`SESSION_RECORD_CHANGED`]).
+#[derive(Debug)]
+pub struct SessionRecordChanged {
+    pub record_id: String,
+}
+
+impl std::fmt::Display for SessionRecordChanged {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{SESSION_RECORD_CHANGED}: {}", self.record_id)
+    }
+}
+
+impl std::error::Error for SessionRecordChanged {}
 
 /// The most bytes of a project path in a `session_records` request.
 const PROJECT_ROOT_MAX_BYTES: usize = 4096;
@@ -509,11 +537,12 @@ pub fn apply_session_records(tx: &rusqlite::Connection, payload: &Value) -> Resu
             );
         }
         let found = stored.as_ref().map(|(_, json)| row_hash(json));
-        ensure!(
-            found == row.expected,
-            "{SESSION_RECORD_CHANGED}: {}",
-            row.record_id
-        );
+        if found != row.expected {
+            return Err(SessionRecordChanged {
+                record_id: row.record_id.clone(),
+            }
+            .into());
+        }
         put_row(tx, &p.project_root, &slug, row, stored.is_some())?;
     }
     Ok(serde_json::json!({ "rows": p.rows.len() }))
@@ -770,6 +799,11 @@ pub struct ExecutionStore {
     /// The context that reaches the fleetd of [`Self::db`], when the store
     /// was opened from 1 ([`ExecutionStore::open_in`]).
     fleet: Option<Box<RuntimeContext>>,
+    /// The paths the store was opened with ([`ExecutionStore::open`]).
+    paths: Option<Box<Paths>>,
+    /// The writer of fleetd: with it, a write applies in this process, on
+    /// the path of the `session_records` handler.
+    writer: Option<Arc<LedgerWriter>>,
 }
 
 impl ExecutionStore {
@@ -791,6 +825,8 @@ impl ExecutionStore {
             slug,
             task_ledger: None,
             fleet: None,
+            paths: None,
+            writer: None,
         }
     }
 
@@ -798,12 +834,14 @@ impl ExecutionStore {
     /// session records in [`session_db`], reading through the task ledger of
     /// `paths`.
     pub fn open(paths: &Paths, project: &Path) -> Self {
-        Self::in_db(
+        let mut store = Self::in_db(
             &paths.state_root,
             &session_db(paths),
             &project.to_string_lossy(),
         )
-        .with_task_ledger(&paths.ledger_db, project)
+        .with_task_ledger(&paths.ledger_db, project);
+        store.paths = Some(Box::new(paths.clone()));
+        store
     }
 
     /// The store for the context's state root and project, reading through
@@ -812,6 +850,15 @@ impl ExecutionStore {
         let mut store = Self::open(&ctx.paths, &ctx.paths.project()?);
         store.fleet = Some(Box::new(ctx.clone()));
         Ok(store)
+    }
+
+    /// Write through the writer of fleetd, in this process, with the
+    /// handler of `session_records` ([`apply_session_records`]). Only a
+    /// process that holds the writer (fleetd, or a test of the store) can
+    /// call it.
+    pub fn with_writer(mut self, writer: Arc<LedgerWriter>) -> Self {
+        self.writer = Some(writer);
+        self
     }
 
     /// Read the worker rows of `project`'s runs in the task ledger `db` over
@@ -934,6 +981,13 @@ impl ExecutionStore {
             if changed.is_empty() {
                 return Ok(out);
             }
+            if let Some(writer) = &self.writer {
+                match self.apply(writer, changed) {
+                    Ok(()) => return Ok(out),
+                    Err(e) if e.downcast_ref::<SessionRecordChanged>().is_some() => continue,
+                    Err(e) => return Err(e),
+                }
+            }
             match self.send(changed)? {
                 Sent::Queued { .. } => return Ok(out),
                 Sent::Replied(reply) => match reply.outcome {
@@ -952,30 +1006,44 @@ impl ExecutionStore {
         )
     }
 
-    /// Send the rows `rows` to the fleetd of [`Self::db`].
-    fn send(&self, rows: Vec<SessionRowChange>) -> Result<Sent> {
-        let payload = serde_json::to_value(SessionRecordsPayload {
+    /// The payload of the change `rows`.
+    fn payload(&self, rows: Vec<SessionRowChange>) -> Result<Value> {
+        Ok(serde_json::to_value(SessionRecordsPayload {
             project_root: self.project.clone(),
             rows,
-        })?;
-        let Value::Object(payload) = payload else {
+        })?)
+    }
+
+    /// Apply the rows `rows` in this process with the writer of fleetd.
+    fn apply(&self, writer: &LedgerWriter, rows: Vec<SessionRowChange>) -> Result<()> {
+        let payload = self.payload(rows)?;
+        let mut store = writer.open(&self.db)?;
+        store.immediate(|tx| apply_session_records(tx, &payload))?;
+        Ok(())
+    }
+
+    /// Send the rows `rows` to the fleetd of [`Self::db`].
+    fn send(&self, rows: Vec<SessionRowChange>) -> Result<Sent> {
+        let Value::Object(payload) = self.payload(rows)? else {
             bail!("the payload of session_records is not an object");
         };
         channel_client::send(&self.fleet_context()?, Kind::SessionRecords, payload)
     }
 
     /// The context of the fleetd that owns [`Self::db`]: the context of the
-    /// store, else of this process. A file that is not the ledger of that
-    /// context is the ledger of the fleet root beside it.
+    /// store, else of this process with the paths of the store. A file that
+    /// is not the ledger of those paths is the ledger of the fleet root
+    /// beside it ([`session_fleet_root`]).
     fn fleet_context(&self) -> Result<RuntimeContext> {
         let mut ctx = match &self.fleet {
             Some(ctx) => (**ctx).clone(),
             None => RuntimeContext::from_env(&crate::runtime::ProcessEnv)?,
         };
-        if ctx.paths.ledger_db != self.db {
-            ctx.paths.fleet_root = self.db.parent().unwrap_or(Path::new("")).join("fleet");
-            ctx.paths.ledger_db = self.db.clone();
+        if let Some(paths) = &self.paths {
+            ctx.paths = (**paths).clone();
         }
+        ctx.paths.fleet_root = session_fleet_root(&ctx.paths, &self.db);
+        ctx.paths.ledger_db = self.db.clone();
         Ok(ctx)
     }
 
@@ -1555,7 +1623,7 @@ mod trf_44_tests {
         let db = tmp.path().join("ledger.sqlite3");
         let state = tmp.path().join("state");
         std::fs::create_dir_all(&state).unwrap();
-        let fleetd = super::test_fleetd::serve(&state.join(STATE_DB));
+        let fleetd = test_serve(&state.join(STATE_DB));
         let ledger = SessionLedger::for_project(&state, project.to_str().unwrap())
             .with_task_ledger(&db, &project);
         Fixture {
@@ -1801,44 +1869,17 @@ mod trf_44_tests {
     }
 }
 
-/// An in-process fleetd for the tests of the session store: the channel
-/// server with only the handler of `session_records`, on the ledger `db`
-/// and the fleet root beside it, where [`ExecutionStore::update`] finds it.
-/// The `fleetd` row names this process, so the client accepts the server.
-/// Hold the server after the temporary folder, so that it drops first.
+/// Serve `session_records` for the ledger `db` on the fleet root beside it,
+/// where [`ExecutionStore::update`] of a store with no context finds it.
 #[cfg(test)]
-pub(crate) mod test_fleetd {
-    use std::path::Path;
-
-    use crate::fleetd::fleet_runtime::adapters::channel_server::ChannelServer;
-    use crate::fleetd::fleet_runtime::adapters::token_file;
-    use crate::fleetd::fleet_runtime::application::requests::Handlers;
-    use crate::fleetd::fleet_runtime::domain::ledger::Generation;
-    use crate::fleetd::fleet_runtime::domain::requests::Kind;
-
-    /// Serve `session_records` for the ledger `db` until the server drops.
-    pub(crate) fn serve(db: &Path) -> ChannelServer {
-        drop(crate::taskledger::Store::open(db).unwrap());
-        let conn = rusqlite::Connection::open(db).unwrap();
-        conn.busy_timeout(std::time::Duration::from_secs(10))
-            .unwrap();
-        let pid = std::process::id();
-        let start = horch_platform::process::start_time(pid).unwrap();
-        conn.execute(
-            "INSERT OR REPLACE INTO fleetd (id, generation, pid, pid_start, started_at, fleet_clock_s, clock_ticked_at)
-             VALUES (1, 1, ?1, ?2, ?3, 0, ?3)",
-            rusqlite::params![pid, start as i64, crate::taskledger::util::now()],
-        )
-        .unwrap();
-        let root = db.parent().unwrap().join("fleet");
-        std::fs::create_dir_all(&root).unwrap();
-        token_file::ensure(&root).unwrap();
-        let mut handlers = Handlers::new();
-        handlers.insert(Kind::SessionRecords, |tx, p| {
-            super::apply_session_records(tx, p)
-        });
-        ChannelServer::start(&root, conn, Generation(1), handlers).unwrap()
-    }
+pub(crate) fn test_serve(
+    db: &Path,
+) -> crate::fleetd::fleet_runtime::adapters::channel_server::ChannelServer {
+    crate::fleetd::fleet_runtime::adapters::test_fleetd::serve_session_records_at(
+        db,
+        &db.parent().unwrap().join("fleet"),
+    )
+    .unwrap()
 }
 
 #[cfg(test)]
@@ -1879,7 +1920,7 @@ mod trf_45_tests {
         let tmp = tempfile::tempdir().unwrap();
         let state = tmp.path().join("state");
         std::fs::create_dir_all(&state).unwrap();
-        let _fleetd = super::test_fleetd::serve(&state.join(STATE_DB));
+        let _fleetd = test_serve(&state.join(STATE_DB));
         let ledger = SessionLedger::for_project(&state, "/repo");
         let store = ledger.store().clone();
         add(&ledger, "r-1");
@@ -1935,7 +1976,7 @@ mod trf_45_tests {
         assert_eq!(store.read().unwrap()[0].record_id, "old-1");
         assert!(!store.db().exists(), "a read creates no file");
 
-        let _fleetd = super::test_fleetd::serve(store.db());
+        let _fleetd = test_serve(store.db());
         store.mark_running("old-1").unwrap();
         assert_eq!(std::fs::read_to_string(store.path()).unwrap(), text);
         let rows = read_session_rows(store.db(), Some("-repo"));
@@ -1980,7 +2021,7 @@ mod trf_45_tests {
                 )
             })
             .unwrap();
-        let _fleetd = super::test_fleetd::serve(&db);
+        let _fleetd = test_serve(&db);
         let store = ExecutionStore::in_db(tmp.path(), &db, "/repo");
         store
             .insert(LedgerRecordV1 {
@@ -2120,7 +2161,7 @@ mod session_records_tests {
     fn update_reads_again_after_a_refused_change() {
         let tmp = tempfile::tempdir().unwrap();
         let db = tmp.path().join(STATE_DB);
-        let _fleetd = super::test_fleetd::serve(&db);
+        let _fleetd = test_serve(&db);
         let store = ExecutionStore::for_project(tmp.path(), "/repo");
         let other = store.clone();
         store.insert(record("r1")).unwrap();

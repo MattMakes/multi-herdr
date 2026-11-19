@@ -2901,7 +2901,7 @@ mod tests {
         #[test]
         fn horch_sessions_shows_the_startup_error() {
             let tmp = tempfile::tempdir().unwrap();
-            let _fleetd = crate::execution::store::test_fleetd::serve(
+            let _fleetd = crate::execution::store::test_serve(
                 &tmp.path().join(crate::execution::store::STATE_DB),
             );
             let ledger = crate::execution::records::SessionLedger::for_project(tmp.path(), "/p");
@@ -2956,9 +2956,8 @@ mod tests {
             let tmp = tempfile::tempdir().unwrap();
             let state = tmp.path().join("state");
             std::fs::create_dir_all(&state).unwrap();
-            let _fleetd = crate::execution::store::test_fleetd::serve(
-                &state.join(crate::execution::store::STATE_DB),
-            );
+            let _fleetd =
+                crate::execution::store::test_serve(&state.join(crate::execution::store::STATE_DB));
             let project = tmp.path().join("missing");
             let project_text = project.to_string_lossy().into_owned();
             let ledger =
@@ -3079,7 +3078,7 @@ mod tests {
                     })
                     .unwrap();
                 std::fs::create_dir_all(&state).unwrap();
-                let fleetd = crate::execution::store::test_fleetd::serve(
+                let fleetd = crate::execution::store::test_serve(
                     &state.join(crate::execution::store::STATE_DB),
                 );
                 crate::execution::records::SessionLedger::for_project(&state, &project_text)
