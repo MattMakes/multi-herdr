@@ -2521,17 +2521,7 @@ const LEDGER_WRITERS_EXEMPT: &[(&str, &str, &str)] = &[
     (
         "horch-core/src/taskledger/mod.rs",
         "Store::open(&ctx.paths.ledger_db)",
-        "taskledger::open, the writable open of the T-884 entries below",
-    ),
-    (
-        "horch-core/src/execution/lifecycle.rs",
-        "Store::open(db)",
-        "T-884: W6, W7 and W8 of a worker with no attempt",
-    ),
-    (
-        "horch-core/src/execution/store.rs",
-        "taskledger::Store::open(&self.db)",
-        "T-884: ExecutionStore::update writes the session records",
+        "taskledger::open, a writable open that only tests call",
     ),
 ];
 

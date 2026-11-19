@@ -252,7 +252,7 @@ fn a_resume_updates_its_record_in_place_and_keeps_its_history() {
         });
     w.store
         .update(|rs| {
-            rs.push(stored);
+            rs.push(stored.clone());
             Ok(())
         })
         .unwrap();

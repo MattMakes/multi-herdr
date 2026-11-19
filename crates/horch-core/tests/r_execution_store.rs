@@ -182,7 +182,7 @@ fn working() -> LedgerRecordV1 {
 fn put(store: &ExecutionStore, r: LedgerRecordV1) {
     store
         .update(|rs| {
-            rs.push(r);
+            rs.push(r.clone());
             Ok(())
         })
         .unwrap();
