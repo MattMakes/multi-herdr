@@ -8,11 +8,13 @@
 //! idea for a decision: it only checks that files exist and validate.
 //!
 //! The moves of 1 pass:
-//! - `captured` -> `clarifying`, or `ticketing` for a `--direct` idea (its
-//!   folder has plan.yaml), when it is the oldest captured idea of its
-//!   feature and no other idea of its feature is in planning
-//!   ([`PLANNING`]). So the ideas of 1 feature are planned 1 at a time, in
-//!   order (A28).
+//! - `captured` -> `clarifying`, or `ticketing` for a `--direct` idea, when
+//!   it is the oldest captured idea of its feature and no other idea of its
+//!   feature is in planning ([`PLANNING`]). So the ideas of 1 feature are
+//!   planned 1 at a time, in order (A28). The ledger tells that an idea is
+//!   `--direct` ([`direct::is_direct`]), not plan.yaml: plan.yaml is an
+//!   effect after the commit (A24). A `--direct` idea whose files are not
+//!   written yet stays in `captured` for the next pass.
 //! - `clarifying` -> `awaiting_approval` when assumptions.md validates. A
 //!   feature with no branch first gets its name from the line `feature:`
 //!   (`NameFeatureBranch`); a refused name keeps the idea in `clarifying`.
@@ -43,6 +45,7 @@ use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 use crate::fleetd::ideas::adapters::idea_folder_files::IdeaFolder;
 use crate::fleetd::ideas::adapters::ideas_store::{self, IdeaRow};
+use crate::fleetd::ideas::application::direct;
 use crate::fleetd::ideas::application::plan_commit::{
     validate_plan, PlanCommit, Verdict, PLAN_YAML, VERDICT_FILE,
 };
@@ -219,10 +222,14 @@ fn dispatched(conn: &Connection) -> Result<Vec<String>> {
 }
 
 /// `captured`: the oldest captured idea of a feature with no idea in
-/// planning moves to `clarifying`, or to `ticketing` when its folder has
-/// plan.yaml (a `--direct` idea).
+/// planning moves to `clarifying`, or to `ticketing` when it is a
+/// `--direct` idea. A `--direct` idea whose files are not written yet
+/// stays.
 fn captured(store: &mut Store, ctx: &Dispatch<'_>, idea: &IdeaRow, dir: &Path) -> Result<Step> {
-    let to = if dir.join(PLAN_YAML).exists() {
+    let to = if direct::is_direct(store.conn(), &idea.id)? {
+        if !direct::files_written(dir) {
+            return Ok(Step::Stayed { wrote: false });
+        }
         "ticketing"
     } else {
         "clarifying"
@@ -248,7 +255,7 @@ fn captured(store: &mut Store, ctx: &Dispatch<'_>, idea: &IdeaRow, dir: &Path) -
             return Ok(Step::Stayed { wrote: false });
         }
         let text = if to == "ticketing" {
-            "the --direct idea has plan.yaml and no other idea of its feature is in planning"
+            "the --direct idea has its files and no other idea of its feature is in planning"
         } else {
             "no other idea of its feature is in planning"
         };

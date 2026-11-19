@@ -23,6 +23,12 @@
 //!   `ticketing`.
 //! - [`direct_requirement`] gives the plan validator the 1 requirement of a
 //!   `--direct` idea: the approved ticket, which cites itself.
+//! - [`is_direct`] reads from the ledger whether an idea is a `--direct`
+//!   idea, and [`files_written`] tells whether the effects after the
+//!   commit wrote its files. The dispatcher decides from both (ticket 58
+//!   of fleetd-build): plan.yaml alone is an effect after the commit (A24),
+//!   so a pass before the effects saw no plan.yaml and moved the idea to
+//!   `clarifying`.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -33,6 +39,7 @@ use rusqlite::Connection;
 use serde_json::json;
 
 use crate::digest::sha256_bytes;
+use crate::fleetd::fleet_runtime::adapters::sqlite::fact_data;
 use crate::fleetd::fleet_runtime::application::jobs::JobCtx;
 use crate::fleetd::fleet_runtime::application::ledger::{transition, Cause};
 use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
@@ -42,12 +49,14 @@ use crate::fleetd::ideas::adapters::ideas_store;
 use crate::fleetd::ideas::application::approval::{
     record_approval, trusted_approval, ApprovalFile,
 };
-use crate::fleetd::ideas::application::intake::{add_idea, write_idea_file, Added, Target};
+use crate::fleetd::ideas::application::intake::{
+    add_idea, write_idea_file, Added, Target, ADDED_CAUSE,
+};
 use crate::fleetd::ideas::application::needs_you::open_item;
 use crate::fleetd::ideas::application::plan_commit::{
     validate_plan, PlanCommit, Verdict, PLAN_YAML,
 };
-use crate::fleetd::ideas::domain::approval::{Approval, BY_OPERATOR};
+use crate::fleetd::ideas::domain::approval::{Approval, APPROVAL_JSON, BY_OPERATOR};
 use crate::fleetd::ideas::domain::idea::FIRST;
 use crate::fleetd::ideas::domain::needs_you::Write;
 use crate::fleetd::ideas::domain::plan::Kind;
@@ -59,7 +68,7 @@ use crate::fleetd::integration::application::ports::IntegrationGitGateway;
 use crate::fleetd::worker_profiles::application::health;
 use crate::fsx;
 use crate::taskledger::map::ticket_facts;
-use crate::taskledger::model::Actor;
+use crate::taskledger::model::{Actor, EventKind};
 use crate::taskledger::{runs, util, Store};
 
 /// The source of the idea.md of a `--direct` idea.
@@ -484,6 +493,25 @@ pub fn direct_requirement(
         text: format!("The work of the ticket {}", approval.file),
         cites: vec![approval.file],
     }))
+}
+
+/// Whether `idea` is a `--direct` idea: its `added` event, which the
+/// request commits with the idea row, has the source [`SOURCE`]. An idea
+/// with no `added` event (a backfilled idea) is not one.
+pub fn is_direct(conn: &Connection, idea: &str) -> Result<bool> {
+    let Some(data) = fact_data(conn, Entity::Idea, idea, EventKind::Added, ADDED_CAUSE)? else {
+        return Ok(false);
+    };
+    let v: serde_json::Value = serde_json::from_str(&data)
+        .with_context(|| format!("the added event of {idea} is not JSON"))?;
+    Ok(v["source"].as_str() == Some(SOURCE))
+}
+
+/// Whether the effects after the commit wrote the files of the `--direct`
+/// idea in its folder `dir`: plan.yaml, and approval.json, which the
+/// effects write after the ticket and plan.yaml.
+pub fn files_written(dir: &Path) -> bool {
+    dir.join(PLAN_YAML).exists() && dir.join(APPROVAL_JSON).exists()
 }
 
 fn by_fleetd(text: &str) -> Cause<'_> {
