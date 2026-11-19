@@ -144,17 +144,7 @@ fn world() -> World {
         ..Default::default()
     };
     let run = store
-        .immediate(|tx| {
-            let run = runs::create(tx, dir.path(), &new)?;
-            // FR-12: a task needs an idea in flight of the feature of its run.
-            horch_core::taskledger::schema::run_idea(
-                tx,
-                &run.run_id,
-                &horch_core::taskledger::util::now(),
-                true,
-            )?;
-            Ok(run)
-        })
+        .immediate(|tx| runs::create(tx, dir.path(), &new))
         .unwrap();
     let mut w = World {
         _dir: dir,
@@ -163,6 +153,18 @@ fn world() -> World {
         tasks: 0,
     };
     w.feature(FEATURE, "fleet/r1");
+    // FR-12: a task needs an idea in flight of the feature of its run.
+    let run_id = w.run.run_id.clone();
+    w.store
+        .immediate(|tx| {
+            horch_core::taskledger::schema::run_idea(
+                tx,
+                &run_id,
+                &horch_core::taskledger::util::now(),
+                true,
+            )
+        })
+        .unwrap();
     w
 }
 
