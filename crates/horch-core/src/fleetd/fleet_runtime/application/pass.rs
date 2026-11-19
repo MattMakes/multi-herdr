@@ -1307,7 +1307,7 @@ impl<'a> Pass<'a> {
             repair::observe(&r, &tx)?;
         }
         let integration = match self.work {
-            Some(w) => self.integrate(&tx, &w, clock, &read.stamp)?,
+            Some(_) => self.integrate(&tx, clock, &read.stamp)?,
             None => Integrated::default(),
         };
         rules.check_i1()?;
@@ -3589,12 +3589,11 @@ impl Pass<'_> {
     fn integrate(
         &self,
         tx: &Transaction<'_>,
-        w: &TaskWork<'_>,
         clock: FleetSeconds,
         stamp: &str,
     ) -> Result<Integrated> {
         tx.execute_batch(&format!("SAVEPOINT {INTEGRATION}"))?;
-        match self.integration_rows(tx, w, clock, stamp) {
+        match self.integration_rows(tx, clock, stamp) {
             Ok(done) => {
                 tx.execute_batch(&format!("RELEASE {INTEGRATION}"))?;
                 Ok(done)
@@ -3621,7 +3620,6 @@ impl Pass<'_> {
     fn integration_rows(
         &self,
         tx: &Transaction<'_>,
-        w: &TaskWork<'_>,
         clock: FleetSeconds,
         stamp: &str,
     ) -> Result<Integrated> {
@@ -3649,13 +3647,7 @@ impl Pass<'_> {
             out.failed
                 .extend(queue_remote(&ctx, tx, &gw, feature, clock)?);
         }
-        let finishes = landing::RunFiles {
-            evidence_root: &w.tools.evidence_root,
-        };
-        let l = landing::Landing {
-            jobs: &ctx,
-            finishes: &finishes,
-        };
+        let l = landing::Landing { jobs: &ctx };
         out.rescues = landing::follow(&l, tx, clock, budget.rows())?;
         let b = bundles::Bundles {
             jobs: &ctx,
