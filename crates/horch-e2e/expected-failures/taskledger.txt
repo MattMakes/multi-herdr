@@ -1,8 +1,8 @@
 # Red tests of crates/horch-e2e/tests/taskledger.rs. T-870 moved their
 # setup to ledger_seed and the fleetd push launch. Each one stays red for a
-# product cause, and T-893 owns each one.
+# product cause.
 #
-# T-893: A ends with horch result, but A never reaches done. The ticket of
-# T-892 names the cause: horch result fails with 'no live attempt of this
-# process'.
+# T-900: A waits in verifying for its 3 review tasks. A review task of a
+# push attempt has no worktree, so its horch result fails ('the task ledger
+# has no worktree of <task>; give --commit'), and no path ends it done.
 the_whole_flow_on_the_fake_herdr | 4 | timed out waiting for T-2 done
