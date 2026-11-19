@@ -8,12 +8,15 @@
 
 use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::time::{Duration, Instant};
 
 use horch_core::taskledger::Store;
+use horch_platform::channel::Stream;
 
-use crate::harness::{wait_for, Harness};
+use crate::harness::{wait_for, wait_for_or, Harness};
 
 const SIGKILL: i32 = 9;
+const SIGTERM: i32 = 15;
 
 /// The fleetd processes of 1 test, on the ledger `<root>/ledger.sqlite3` of
 /// its harness.
@@ -25,8 +28,13 @@ pub struct Fleetds {
 
 impl Fleetds {
     pub fn new(h: &Harness) -> Fleetds {
+        Fleetds::on(h, h.root.join("ledger.sqlite3"))
+    }
+
+    /// The fleetd processes of 1 test, on the ledger `db`.
+    pub fn on(h: &Harness, db: PathBuf) -> Fleetds {
         Fleetds {
-            db: h.root.join("ledger.sqlite3"),
+            db,
             root: h.root.clone(),
             children: Vec::new(),
         }
@@ -73,6 +81,39 @@ impl Fleetds {
         pid
     }
 
+    /// [`Fleetds::spawn`], then wait until the new fleetd serves its
+    /// channel at `<fleet root>/run/fleetd.sock`. A routed `horch` command
+    /// then gets its reply. Gives its PID.
+    pub fn serve(&mut self, h: &Harness, name: &str) -> u32 {
+        let pid = self.spawn(h, name);
+        let socket = h.fleet_root().join("run").join("fleetd.sock");
+        let stderr = self.root.join(format!("{name}.stderr"));
+        let read_stderr = || std::fs::read_to_string(&stderr).unwrap_or_default();
+        let child = self
+            .children
+            .iter_mut()
+            .find(|c| c.id() == pid)
+            .expect("the new fleetd");
+        wait_for_or(
+            "the test fleetd to serve its channel",
+            || {
+                let probe = Instant::now() + Duration::from_millis(100);
+                if Stream::connect(&socket, probe).is_ok() {
+                    return Some(());
+                }
+                let exited = child.try_wait().ok().flatten();
+                assert!(
+                    exited.is_none(),
+                    "the test fleetd exited ({exited:?}): {}",
+                    read_stderr()
+                );
+                None
+            },
+            read_stderr,
+        );
+        pid
+    }
+
     /// The text that the fleetd `name` wrote to `ext` (`stdout` or
     /// `stderr`).
     pub fn output(&self, name: &str, ext: &str) -> String {
@@ -88,6 +129,21 @@ impl Fleetds {
             .find(|c| c.id() == pid)
             .expect("a fleetd of this test");
         wait_for("fleetd to exit", || child.try_wait().unwrap())
+    }
+
+    /// Stop the fleetd that the row names with SIGTERM: it exits after the
+    /// pass that runs. Wait until it is gone.
+    pub fn stop_current(&mut self) {
+        let (pid, started) = self.row().expect("the fleetd row");
+        assert!(horch_core::procid::signal_same(pid, started, SIGTERM));
+        // A child of the test stays a zombie, which counts as alive, until
+        // it is waited for.
+        for child in self.children.iter_mut().filter(|c| c.id() == pid) {
+            let _ = child.wait();
+        }
+        wait_for("fleetd to end", || {
+            (!horch_core::procid::alive(pid, Some(started))).then_some(())
+        });
     }
 
     /// Kill the fleetd that the row names, and wait until it is gone. Gives

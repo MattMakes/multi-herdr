@@ -26,12 +26,27 @@ fn out(o: &Output) -> String {
 
 /// A harness with its own ledger file and a git repository.
 fn world(name: &str) -> Harness {
+    let h = world_without_fleetd(name);
+    h.serve_fleetd();
+    h
+}
+
+/// [`world`] with no test fleetd: for a test of a command that reads the
+/// ledger only, such as `horch ledger status`.
+fn world_without_fleetd(name: &str) -> Harness {
     let mut h = Harness::new(name).with_git();
     let db = h.root.join("ledger.sqlite3");
     h.set("HORCH_LEDGER_DB", db.to_string_lossy());
     h.set("HORCH_NO_WAKE", "1");
     h.set("HORCH_NO_WATCHDOG", "1");
     h
+}
+
+/// Start the test fleetd again, so that it has the environment that the
+/// caller set after [`world`].
+fn restart_fleetd(h: &Harness) {
+    h.stop_fleetd();
+    h.serve_fleetd();
 }
 
 /// A harness in workspace `w1` (root pane `w1:p1`) whose panes run their
@@ -49,6 +64,7 @@ fn fleet(name: &str, scenario: &str) -> Harness {
         .output()
         .unwrap();
     assert!(o.status.success(), "{}", text(&o));
+    restart_fleetd(&h);
     h
 }
 
@@ -98,7 +114,7 @@ fn worker_new(h: &Harness, persona: &str) -> String {
 
 #[test]
 fn status_on_a_fresh_ledger_creates_it_and_says_no_runs() {
-    let h = world("tl-fresh");
+    let h = world_without_fleetd("tl-fresh");
     let db = h.root.join("ledger.sqlite3");
     assert!(!db.exists());
     let o = h.run(&["ledger", "status"]);
@@ -647,6 +663,7 @@ fn finish_world(name: &str) -> Harness {
         .unwrap();
     }
     h.set("HORCH_CODE_SWEEP_DIR", sweep.to_string_lossy());
+    restart_fleetd(&h);
     h
 }
 
@@ -1314,7 +1331,8 @@ fn stall_by_the_ladder(h: &Harness, worker: &str, pid: u32, started: u64) {
     let mut verdicts = Vec::new();
     for _ in 0..3 {
         std::thread::sleep(Duration::from_millis(1100));
-        let v = json_of(h, &["ledger", "watch", "--once", "--force", "--json"]);
+        let v =
+            h.without_fleetd(|| json_of(h, &["ledger", "watch", "--once", "--force", "--json"]));
         let mine = v
             .as_array()
             .unwrap()
@@ -1328,7 +1346,7 @@ fn stall_by_the_ladder(h: &Harness, worker: &str, pid: u32, started: u64) {
         "no check stops the agent"
     );
     h.advance_fleet_clock(400);
-    json_of(h, &["ledger", "watch", "--once", "--force", "--json"]);
+    h.without_fleetd(|| json_of(h, &["ledger", "watch", "--once", "--force", "--json"]));
     let db = horch_core::taskledger::Store::open(&h.root.join("ledger.sqlite3")).unwrap();
     let task_status = || -> String {
         db.conn()
@@ -1351,7 +1369,7 @@ fn stall_by_the_ladder(h: &Harness, worker: &str, pid: u32, started: u64) {
         (!horch_core::procid::alive(pid, Some(started))).then_some(())
     });
     // The next pass sees the old process gone: rung 6.
-    json_of(h, &["ledger", "watch", "--once", "--force", "--json"]);
+    h.without_fleetd(|| json_of(h, &["ledger", "watch", "--once", "--force", "--json"]));
     assert_eq!(task_status(), "ready", "rung 6 after the process is gone");
     let outcome: String = db
         .conn()
@@ -1408,6 +1426,8 @@ fn claimed_run(mut h: Harness) -> (Harness, Fleetds, Stand, Output) {
         ],
     );
     let w = worker_new(&h, "opus");
+    // The test runs its own fleetd after the routed setup.
+    h.stop_fleetd();
     let fleetds = Fleetds::new(&h);
     let agent = Stand::new();
     horch_core::taskledger::Store::open(&ledger_db(&h))
@@ -1487,6 +1507,8 @@ fn a_dead_fleetd_is_restarted_by_the_next_command() {
 fn the_no_watchdog_setting_turns_off_the_fleetd_check() {
     let h = world("tl-fleetd-off");
     ok(&h, &["ledger", "run", "new", "zeta"]);
+    // The test runs its own fleetd after the routed setup.
+    h.stop_fleetd();
     let mut fleetds = Fleetds::new(&h);
     fleetds.start(&h, "fleetd-1");
     let (pid, started) = fleetds.kill_current();
@@ -3518,7 +3540,7 @@ fn the_watchdog_ends_pre_claim_rows_whose_process_is_gone() {
     );
 
     // 1 pass now: ghost2's supervisor is gone; ghost is in its launch grace.
-    ok(&h, &["ledger", "watch", "--once", "--force"]);
+    h.without_fleetd(|| ok(&h, &["ledger", "watch", "--once", "--force"]));
     let (st, why) = worker_status(&h, &ghost2);
     assert_eq!(st, "no_task", "{why}");
     assert!(why.contains("supervisor is gone"), "{why}");
@@ -3538,11 +3560,13 @@ fn the_watchdog_ends_pre_claim_rows_whose_process_is_gone() {
         .to_string();
     assert!(line.ends_with("STALE"), "{}", text(&o));
     let before = outbox(&h).len();
-    let o = run_env(
-        &h,
-        &[("HORCH_NOW", &later(200))],
-        &["ledger", "watch", "--once", "--force"],
-    );
+    let o = h.without_fleetd(|| {
+        run_env(
+            &h,
+            &[("HORCH_NOW", &later(200))],
+            &["ledger", "watch", "--once", "--force"],
+        )
+    });
     assert!(o.status.success(), "{}", text(&o));
     assert_eq!(worker_status(&h, &ghost).0, "launch_failed");
     let new: Vec<String> = outbox(&h).split_off(before);
@@ -3586,7 +3610,7 @@ fn a_live_worker_that_does_not_claim_is_reported_once() {
     ok(&h, &["ledger", "worker", "pid", &id, "--agent", &me]);
     let watch = |at: Option<String>| {
         let env: Vec<(&str, &str)> = at.iter().map(|t| ("HORCH_NOW", t.as_str())).collect();
-        let o = run_env(&h, &env, &["ledger", "watch", "--once", "--force"]);
+        let o = h.without_fleetd(|| run_env(&h, &env, &["ledger", "watch", "--once", "--force"]));
         assert!(o.status.success(), "{}", text(&o));
     };
     // Within the 3 min claim grace (TRF-23) the worker is never touched.
@@ -3782,8 +3806,8 @@ fn an_unlanded_done_names_its_dependents_and_a_stuck_run_wakes_once() {
     assert!(s[0].contains("T-1 is held (unlanded)"), "{s:?}");
     assert!(s[0].contains("T-2: T-1 is parked unlanded"), "{s:?}");
     // The watchdog sees the same stuck run: no second wake.
-    ok(&h, &["ledger", "watch", "--once", "--force"]);
-    ok(&h, &["ledger", "watch", "--once", "--force"]);
+    h.without_fleetd(|| ok(&h, &["ledger", "watch", "--once", "--force"]));
+    h.without_fleetd(|| ok(&h, &["ledger", "watch", "--once", "--force"]));
     assert_eq!(stuck(&h).len(), 1, "{:?}", wakes(&h));
 }
 
@@ -3800,7 +3824,7 @@ fn a_stuck_run_wakes_from_the_watchdog_when_no_task_finishes() {
     ok(&h, &["ledger", "worker", "pid", &w, "--supervisor", &me]);
     ok(&h, &["ledger", "worker", "pid", &w, "--agent", &me]);
     ok_as(&h, &w, &["ledger", "claim"]);
-    ok(&h, &["ledger", "watch", "--once", "--force"]);
+    h.without_fleetd(|| ok(&h, &["ledger", "watch", "--once", "--force"]));
     assert!(
         !outbox(&h).iter().any(|w| w.contains("stuck")),
         "{:?}",
@@ -3808,8 +3832,8 @@ fn a_stuck_run_wakes_from_the_watchdog_when_no_task_finishes() {
     );
     // Its worker is stopped and T-1 cancelled: nothing will start.
     ok(&h, &["ledger", "cancel", "T-1", "dropped"]);
-    ok(&h, &["ledger", "watch", "--once", "--force"]);
-    ok(&h, &["ledger", "watch", "--once", "--force"]);
+    h.without_fleetd(|| ok(&h, &["ledger", "watch", "--once", "--force"]));
+    h.without_fleetd(|| ok(&h, &["ledger", "watch", "--once", "--force"]));
     let stuck: Vec<String> = outbox(&h)
         .into_iter()
         .filter(|w| w.contains("the run is stuck:"))
@@ -3940,6 +3964,7 @@ fn a_cancel_during_the_land_lands_nothing() {
 fn pane_world(name: &str, check: &str, timeout: Option<&str>) -> (Harness, String) {
     let mut h = finish_world(name);
     h.set("HORCH_WORKSPACE_ID", "w1");
+    restart_fleetd(&h);
     let herdr = |args: &[&str]| {
         let mut cmd = std::process::Command::new(h.bin.join("herdr"));
         h.seal(&mut cmd);

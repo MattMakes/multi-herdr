@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 
 use horch_core::taskledger::store::Store;
-use horch_e2e::harness::Harness;
+use horch_e2e::harness::{wait_for, Harness};
 
 fn text(o: &Output) -> String {
     format!(
@@ -32,6 +32,7 @@ fn world(name: &str) -> Harness {
     h.set("HORCH_LEDGER_DB", ledger(&h).to_string_lossy());
     h.set("HORCH_NO_WAKE", "1");
     h.set("HORCH_NO_WATCHDOG", "1");
+    h.serve_fleetd();
     h
 }
 
@@ -397,7 +398,11 @@ fn restore_makes_its_tree_through_a_worktree_add_job() {
         said.trim_end().ends_with("from refs/horch/archive/feat"),
         "{said}"
     );
-    assert_eq!(jobs(&h, "worktree_add"), ["passed"]);
+    // The worktree_add job runs in the next pass of fleetd (ticket 25 of
+    // fleetd-p5, T-474).
+    wait_for("the worktree_add job to pass", || {
+        (jobs(&h, "worktree_add") == ["passed"]).then_some(())
+    });
     assert_eq!(
         std::fs::read_to_string(path.join("new.txt")).unwrap(),
         "untracked\n"
@@ -426,6 +431,11 @@ fn restore_runs_no_hook_of_the_project() {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
     ok(&h, &["worktree", "restore", "feat"]);
+    // The worktree_add job runs in the next pass of fleetd (ticket 25 of
+    // fleetd-p5, T-474).
+    wait_for("the restored tree", || {
+        (jobs(&h, "worktree_add") == ["passed"]).then_some(())
+    });
     assert!(path.exists());
     assert!(
         !marker.exists(),

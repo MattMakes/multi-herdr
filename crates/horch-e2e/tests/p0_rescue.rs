@@ -48,6 +48,7 @@ fn fleet(name: &str) -> Harness {
     );
     h.set("HORCH_WORKSPACE_ID", "w1");
     herdr(&h, &["workspace", "create", "--label", name]);
+    h.serve_fleetd();
     h
 }
 
@@ -186,7 +187,7 @@ fn worktree_with_commit(h: &Harness, worker: &str) -> (PathBuf, String) {
 
 /// The reconcile of today, 1 pass that checks each worker now.
 fn reconcile(h: &Harness) -> Output {
-    let o = h.run(&["ledger", "watch", "--once", "--force", "--json"]);
+    let o = h.without_fleetd(|| h.run(&["ledger", "watch", "--once", "--force", "--json"]));
     assert!(o.status.success(), "{}", text(&o));
     o
 }

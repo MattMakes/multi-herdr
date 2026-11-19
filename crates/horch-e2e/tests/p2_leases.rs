@@ -73,6 +73,7 @@ impl Fleet {
         std::fs::create_dir_all(&root).unwrap();
         let config = format!("pass_period_s = 3600\nstop_grace_s = {GRACE_S}\n");
         std::fs::write(root.join("fleet.toml"), config).unwrap();
+        h.serve_fleetd();
         Fleet {
             h,
             base: horch_core::clock::now_stamp(),
@@ -106,9 +107,11 @@ impl Fleet {
         text(&o)
     }
 
-    /// 1 forced pass of fleetd.
+    /// 1 forced pass of fleetd, while the test fleetd is down.
     fn pass(&self) -> String {
-        let o = self.run_as(None, &["ledger", "watch", "--once", "--force", "--json"]);
+        let o = self.h.without_fleetd(|| {
+            self.run_as(None, &["ledger", "watch", "--once", "--force", "--json"])
+        });
         assert!(o.status.success(), "horch ledger watch: {}", text(&o));
         text(&o)
     }

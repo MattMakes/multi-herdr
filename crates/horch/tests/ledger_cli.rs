@@ -1,20 +1,26 @@
 //! `horch ledger add` maps `--check none` to "no check", the same as the
 //! ticket line `**Check:** none`. It never stores the shell command `none`.
 //! Every test runs the binary on a temp git project, with the watchdog off
-//! and no herdr pane.
+//! and no herdr pane. A test fleetd serves the requests of the commands.
+
+mod support;
 
 use std::path::PathBuf;
 use std::process::Command;
 
+use support::fleetd::{short_tempdir, TestFleetd};
+
 const PATH: &str = "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin";
 
+/// The fleetd drops first: fields drop in order.
 struct World {
+    _fleetd: Option<TestFleetd>,
     tmp: tempfile::TempDir,
 }
 
 impl World {
     fn new() -> World {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = short_tempdir();
         let proj = tmp.path().join("proj");
         std::fs::create_dir_all(proj.join("tickets")).unwrap();
         for args in [
@@ -35,7 +41,10 @@ impl World {
                 .unwrap();
             assert!(st.success(), "git {args:?}");
         }
-        World { tmp }
+        let mut w = World { _fleetd: None, tmp };
+        let fleet_root = w.tmp.path().join("home/.horch/fleet");
+        w._fleetd = Some(TestFleetd::start(w.horch(), &fleet_root));
+        w
     }
 
     fn proj(&self) -> PathBuf {
@@ -55,21 +64,24 @@ impl World {
         out
     }
 
-    /// Run horch. It returns success and stdout followed by stderr.
-    fn run(&self, args: &[&str]) -> (bool, String) {
+    /// The `horch` binary with the environment of the test.
+    fn horch(&self) -> Command {
         let root = self.tmp.path();
-        let o = Command::new(env!("CARGO_BIN_EXE_horch"))
-            .args(args)
-            .current_dir(self.proj())
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_horch"));
+        cmd.current_dir(self.proj())
             .env_clear()
             .env("PATH", PATH)
             .env("HOME", root.join("home"))
             .env("XDG_DATA_HOME", root.join("data"))
             .env("HORCH_STATE_DIR", root.join("state"))
             .env("HORCH_PROJECT_DIR", self.proj())
-            .env("HORCH_NO_WATCHDOG", "1")
-            .output()
-            .unwrap();
+            .env("HORCH_NO_WATCHDOG", "1");
+        cmd
+    }
+
+    /// Run horch. It returns success and stdout followed by stderr.
+    fn run(&self, args: &[&str]) -> (bool, String) {
+        let o = self.horch().args(args).output().unwrap();
         let out = String::from_utf8(o.stdout).unwrap();
         let err = String::from_utf8(o.stderr).unwrap();
         (o.status.success(), format!("{out}{err}"))
@@ -78,17 +90,9 @@ impl World {
     /// The `task` object of each queued task, in queue order. `status`
     /// exits non-zero with no orchestrator, so only its JSON counts.
     fn tasks(&self) -> Vec<serde_json::Value> {
-        let root = self.tmp.path();
-        let o = Command::new(env!("CARGO_BIN_EXE_horch"))
+        let o = self
+            .horch()
             .args(["ledger", "status", "--json"])
-            .current_dir(self.proj())
-            .env_clear()
-            .env("PATH", PATH)
-            .env("HOME", root.join("home"))
-            .env("XDG_DATA_HOME", root.join("data"))
-            .env("HORCH_STATE_DIR", root.join("state"))
-            .env("HORCH_PROJECT_DIR", self.proj())
-            .env("HORCH_NO_WATCHDOG", "1")
             .output()
             .unwrap();
         let st: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();

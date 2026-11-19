@@ -35,6 +35,7 @@ fn world(name: &str) -> Harness {
     h.set("HORCH_LEDGER_DB", ledger(&h).to_string_lossy());
     h.set("HORCH_NO_WAKE", "1");
     h.set("HORCH_NO_WATCHDOG", "1");
+    h.serve_fleetd();
     h
 }
 
@@ -410,7 +411,7 @@ fn rr15_orphaned_and_rescued_trees_are_listed_with_their_rescue_ref() {
     let rescue_ref = column(&h, &rescued, "rescue_ref");
     assert!(rescue_ref.starts_with("refs/horch/rescue/"), "{rescue_ref}");
     ok(&h, &["ledger", "reap", &w1, "it hung"]);
-    ok(&h, &["ledger", "watch", "--once", "--force"]);
+    h.without_fleetd(|| ok(&h, &["ledger", "watch", "--once", "--force"]));
     assert_eq!(column(&h, &orphan, "state"), "orphaned");
     assert_eq!(column(&h, &rescued, "state"), "rescued");
 
@@ -433,7 +434,7 @@ fn rr15_orphaned_and_rescued_trees_are_listed_with_their_rescue_ref() {
         &h,
         &["ledger", "dismiss", &o["finding_id"].to_string(), "x"],
     );
-    ok(&h, &["ledger", "watch", "--once", "--force"]);
+    h.without_fleetd(|| ok(&h, &["ledger", "watch", "--once", "--force"]));
     let list = unfinished(&h);
     assert_eq!(list.len(), 1, "{list:?}");
     assert_eq!(list[0]["finding_id"], r["finding_id"]);
@@ -450,7 +451,7 @@ fn orphan_then_land(h: &Harness, before_rescue: impl Fn(&Path)) -> PathBuf {
     queue(h, "01-a", "opus", &[]);
     let (w1, _, path) = claim_and_work(h, "opus", "feat");
     ok(h, &["ledger", "reap", &w1, "it hung"]);
-    ok(h, &["ledger", "watch", "--once", "--force"]);
+    h.without_fleetd(|| ok(h, &["ledger", "watch", "--once", "--force"]));
     assert_eq!(column(h, &path, "state"), "orphaned");
     before_rescue(&path);
 

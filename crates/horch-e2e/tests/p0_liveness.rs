@@ -126,6 +126,9 @@ fn worker_with_agent(
     fallback: Option<&str>,
     agent: &Agent,
 ) -> String {
+    // The test fleetd applies the routed setup. The test then runs its own
+    // passes and fleetd.
+    h.serve_fleetd();
     let mut new = vec!["ledger", "run", "new", "eps"];
     new.extend_from_slice(run);
     ok(h, &new);
@@ -139,6 +142,7 @@ fn worker_with_agent(
     let o = h.run(&["ledger", "worker", "new", "--persona", persona]);
     assert!(o.status.success(), "{}", text(&o));
     let w = String::from_utf8_lossy(&o.stdout).trim().to_string();
+    h.stop_fleetd();
     horch_core::taskledger::Store::open(&db(h))
         .and_then(|mut store| {
             let pid = agent.pid();

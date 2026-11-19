@@ -94,6 +94,7 @@ fn world(name: &str) -> Harness {
             ..Record::default()
         })
         .unwrap();
+    h.serve_fleetd();
     h
 }
 

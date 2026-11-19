@@ -7,8 +7,12 @@
 
 #![cfg(unix)]
 
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use support::fleetd::{short_tempdir, TestFleetd};
 
 use horch_core::fleetd::task_execution::adapters::task_files::{write_attempt_files, AttemptFiles};
 use horch_core::fleetd::task_execution::domain::result::{validate, ResultStatus};
@@ -29,7 +33,9 @@ struct Out {
     err: String,
 }
 
+/// The fleetd drops first: fields drop in order.
 struct World {
+    _fleetd: Option<TestFleetd>,
     _tmp: tempfile::TempDir,
     root: PathBuf,
     task_id: String,
@@ -40,7 +46,7 @@ impl World {
     /// A project with 1 run, 1 task T1 claimed by a worker, its tree, and
     /// the `task.yaml` of attempt A1 of T1 under the fleet root.
     fn new() -> World {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = short_tempdir();
         let root = tmp.path().canonicalize().unwrap();
         let proj = root.join("proj");
         std::fs::create_dir_all(&proj).unwrap();
@@ -58,6 +64,7 @@ impl World {
         )
         .unwrap();
         let mut w = World {
+            _fleetd: None,
             _tmp: tmp,
             root,
             task_id: String::new(),
@@ -66,6 +73,10 @@ impl World {
                 start_md: PathBuf::new(),
             },
         };
+        w._fleetd = Some(TestFleetd::start(
+            w.command(None, None),
+            &w.root.join("fleet"),
+        ));
         w.ok(None, &["ledger", "run", "new", "r1"]);
         w.ok(
             None,
@@ -139,8 +150,8 @@ impl World {
             .to_string()
     }
 
-    /// `horch <args>` in the tree of T1. `task_yaml` is `HORCH_TASK_YAML`.
-    fn horch(&self, task_yaml: Option<&Path>, worker: Option<&str>, args: &[&str]) -> Out {
+    /// The `horch` binary with the environment of the test.
+    fn command(&self, task_yaml: Option<&Path>, worker: Option<&str>) -> Command {
         let root = &self.root;
         let proj = root.join("proj");
         let cwd = if self.tree().is_dir() {
@@ -149,8 +160,7 @@ impl World {
             proj.clone()
         };
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_horch"));
-        cmd.args(args)
-            .current_dir(cwd)
+        cmd.current_dir(cwd)
             .env_clear()
             .env("PATH", PATH)
             .env("HOME", root.join("home"))
@@ -169,6 +179,13 @@ impl World {
         if let Some(path) = task_yaml {
             cmd.env("HORCH_TASK_YAML", path);
         }
+        cmd
+    }
+
+    /// `horch <args>` in the tree of T1. `task_yaml` is `HORCH_TASK_YAML`.
+    fn horch(&self, task_yaml: Option<&Path>, worker: Option<&str>, args: &[&str]) -> Out {
+        let mut cmd = self.command(task_yaml, worker);
+        cmd.args(args);
         let o = cmd.output().unwrap();
         Out {
             code: o.status.code().unwrap(),

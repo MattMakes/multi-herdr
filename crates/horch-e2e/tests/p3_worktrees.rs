@@ -60,6 +60,7 @@ fn world(name: &str) -> Harness {
     h.set("HORCH_LEDGER_DB", ledger(&h).to_string_lossy());
     h.set("HORCH_NO_WAKE", "1");
     h.set("HORCH_NO_WATCHDOG", "1");
+    h.serve_fleetd();
     h
 }
 
@@ -311,7 +312,7 @@ fn fleet_clock(h: &Harness) -> i64 {
 
 /// 1 fleetd pass, then a wait until each job that it started has ended.
 fn pass(h: &Harness) -> Output {
-    let o = h.run(&["ledger", "watch", "--once", "--force", "--json"]);
+    let o = h.without_fleetd(|| h.run(&["ledger", "watch", "--once", "--force", "--json"]));
     assert!(o.status.success(), "{}", text(&o));
     let until = Instant::now() + Duration::from_secs(120);
     while !query(h, "SELECT id FROM jobs WHERE state = 'running'").is_empty() {

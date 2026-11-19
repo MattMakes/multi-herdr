@@ -31,6 +31,7 @@ fn world(name: &str) -> Harness {
     h.set("HORCH_LEDGER_DB", db.to_string_lossy());
     h.set("HORCH_NO_WAKE", "1");
     h.set("HORCH_NO_WATCHDOG", "1");
+    h.serve_fleetd();
     h
 }
 

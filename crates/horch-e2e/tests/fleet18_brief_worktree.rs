@@ -99,6 +99,7 @@ fn ledger_world(name: &str) -> (Harness, String) {
     );
     h.set("HORCH_NO_WATCHDOG", "1");
     h.set("HORCH_NO_WAKE", "1");
+    h.serve_fleetd();
     ok(&h, &["ledger", "run", "new", "review"]);
     std::fs::write(h.project.join("ticket.md"), "# Review\n\n**Check:** none\n").unwrap();
     ok(

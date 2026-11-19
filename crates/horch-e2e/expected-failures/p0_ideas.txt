@@ -1,3 +1,3 @@
 # Red tests of ticket 06 (fleetd Phase 0): FM-1 and FM-8.
 fm1_plan_with_an_uncovered_requirement_is_refused | 6 | add-map --dry-run accepts a plan with no task for XR-02
-fm8_two_ideas_sent_back_to_back_stay_2_ideas | 6 | error: unrecognized subcommand 'idea'
+fm8_two_ideas_sent_back_to_back_stay_2_ideas | 6 | refused: not handled in this version

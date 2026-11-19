@@ -1018,6 +1018,7 @@ mod phase4 {
         std::fs::write(h.project.join("tickets/t1.md"), "# T1\n").unwrap();
         git_ok(&h, &h.project, &["add", "tickets/t1.md"]);
         git_ok(&h, &h.project, &["commit", "-q", "-m", "t1"]);
+        h.serve_fleetd();
         horch_ok(&h, None, &["ledger", "run", "new", "r1"]);
         horch_ok(
             &h,

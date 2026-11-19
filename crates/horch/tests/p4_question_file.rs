@@ -8,8 +8,12 @@
 
 #![cfg(unix)]
 
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use support::fleetd::{short_tempdir, TestFleetd};
 
 use horch_core::fleetd::task_execution::adapters::task_files::{write_attempt_files, AttemptFiles};
 use horch_core::fleetd::task_execution::domain::task_files::TaskFacts;
@@ -24,7 +28,9 @@ const ROLE: &str = "dev1";
 /// The starting value of `result_max_bytes` of `fleet.toml`.
 const MAX_BYTES: u64 = 64 * 1024;
 
+/// The fleetd drops first: fields drop in order.
 struct World {
+    _fleetd: Option<TestFleetd>,
     _tmp: tempfile::TempDir,
     root: PathBuf,
     worker: String,
@@ -36,7 +42,7 @@ impl World {
     /// A project with 1 run, 1 task T1 claimed by worker `dev1`, and the
     /// `task.yaml` of attempt A1 of T1 under the fleet root.
     fn new() -> World {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = short_tempdir();
         let root = tmp.path().canonicalize().unwrap();
         let proj = root.join("proj");
         std::fs::create_dir_all(&proj).unwrap();
@@ -61,6 +67,7 @@ impl World {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&herdr, std::fs::Permissions::from_mode(0o755)).unwrap();
         let mut w = World {
+            _fleetd: None,
             _tmp: tmp,
             root,
             worker: String::new(),
@@ -70,6 +77,7 @@ impl World {
                 start_md: PathBuf::new(),
             },
         };
+        w._fleetd = Some(TestFleetd::start(w.command(None), &w.root.join("fleet")));
         w.ok(&["ledger", "run", "new", "r1"]);
         w.ok(&["ledger", "add", "--file", "t1.md", "--primary", "dev"]);
         w.worker = w
@@ -145,12 +153,11 @@ impl World {
             .unwrap()
     }
 
-    /// `horch <args>` as the worker; `task_yaml` is `HORCH_TASK_YAML`.
-    fn horch(&self, task_yaml: Option<&Path>, args: &[&str]) -> (i32, String, String) {
+    /// The `horch` binary with the environment of the test.
+    fn command(&self, task_yaml: Option<&Path>) -> Command {
         let root = &self.root;
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_horch"));
-        cmd.args(args)
-            .current_dir(root.join("proj"))
+        cmd.current_dir(root.join("proj"))
             .env_clear()
             .env("PATH", PATH)
             .env("HOME", root.join("home"))
@@ -172,6 +179,13 @@ impl World {
         if let Some(path) = task_yaml {
             cmd.env("HORCH_TASK_YAML", path);
         }
+        cmd
+    }
+
+    /// `horch <args>` as the worker; `task_yaml` is `HORCH_TASK_YAML`.
+    fn horch(&self, task_yaml: Option<&Path>, args: &[&str]) -> (i32, String, String) {
+        let mut cmd = self.command(task_yaml);
+        cmd.args(args);
         let o = cmd.output().unwrap();
         (
             o.status.code().unwrap(),

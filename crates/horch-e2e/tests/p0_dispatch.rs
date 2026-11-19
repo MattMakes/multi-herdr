@@ -29,6 +29,7 @@ fn world(name: &str) -> Harness {
     h.set("HORCH_LEDGER_DB", db.to_string_lossy());
     h.set("HORCH_NO_WAKE", "1");
     h.set("HORCH_NO_WATCHDOG", "1");
+    h.serve_fleetd();
     h
 }
 
@@ -245,7 +246,8 @@ fn fm6_agent_that_exits_without_done_leaves_its_work_to_the_next_attempt() {
             agent.kill().unwrap();
             agent.wait().unwrap();
 
-            let watch = h.run(&["ledger", "watch", "--once", "--force", "--json"]);
+            let watch =
+                h.without_fleetd(|| h.run(&["ledger", "watch", "--once", "--force", "--json"]));
             assert!(watch.status.success(), "{}", text(&watch));
             let t = json_of(&h, &["ledger", "show", "T-1", "--json"]);
             assert_eq!(t["task"]["status"], "queued", "{t}: {}", text(&watch));

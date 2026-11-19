@@ -120,6 +120,9 @@ fn record_old_watchdog(h: &Harness, run_id: &str, p: &Proc, started: Option<u64>
 /// Many stall rounds keep a check from reaping the live worker. Gives the
 /// worker id, its agent and the run id.
 fn phase_p_run(h: &Harness) -> (String, Proc, String) {
+    // The test fleetd applies the routed setup; the test runs its own
+    // fleetd and checks after it.
+    h.serve_fleetd();
     ok(
         h,
         &[
@@ -166,6 +169,7 @@ fn phase_p_run(h: &Harness) -> (String, Proc, String) {
             })
         })
         .unwrap();
+    h.stop_fleetd();
     let mut claim = h.horch(&["ledger", "claim"]);
     claim.env("HORCH_WORKER_ID", &w);
     let o = claim.output().unwrap();

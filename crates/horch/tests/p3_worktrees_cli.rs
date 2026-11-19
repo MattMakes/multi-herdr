@@ -6,8 +6,12 @@
 
 #![cfg(unix)]
 
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use support::fleetd::{short_tempdir, TestFleetd};
 
 use horch_core::fleetd::fleet_runtime::application::jobs::JobCtx;
 use horch_core::fleetd::fleet_runtime::application::ledger::{transition, Cause};
@@ -30,7 +34,9 @@ struct Out {
     err: String,
 }
 
+/// The fleetd drops first: fields drop in order.
 struct World {
+    _fleetd: Option<TestFleetd>,
     _tmp: tempfile::TempDir,
     /// The temporary folder with no symlink in its path, as git and the
     /// ledger write it.
@@ -42,9 +48,10 @@ impl World {
     /// A project with 1 run `r1`, 1 task T1 claimed by the worker `dev1`,
     /// and its tree `T1-feat` with 1 untracked and 1 changed file.
     fn with_a_tree() -> World {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = short_tempdir();
         let root = tmp.path().canonicalize().unwrap();
         let mut w = World {
+            _fleetd: None,
             _tmp: tmp,
             root,
             worker: String::new(),
@@ -64,6 +71,7 @@ impl World {
             "health_max_process_share = 1.0\nhealth_max_open_file_share = 1.0\n",
         )
         .unwrap();
+        w._fleetd = Some(TestFleetd::start(w.command(None), &w.root().join("fleet")));
         w.ok(&["ledger", "run", "new", "r1"]);
         w.ok(&["ledger", "add", "--file", "t1.md", "--primary", "dev"]);
         w.worker = w
@@ -128,11 +136,12 @@ impl World {
         String::from_utf8(out.stdout).unwrap()
     }
 
-    fn horch(&self, worker: Option<&str>, args: &[&str]) -> Out {
+    /// The `horch` binary with the environment of the test; `worker` sets
+    /// `HORCH_WORKER_ID`.
+    fn command(&self, worker: Option<&str>) -> Command {
         let root = self.root();
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_horch"));
-        cmd.args(args)
-            .current_dir(self.proj())
+        cmd.current_dir(self.proj())
             .env_clear()
             .env("PATH", PATH)
             .env("HOME", root.join("home"))
@@ -148,7 +157,11 @@ impl World {
         if let Some(w) = worker {
             cmd.env("HORCH_WORKER_ID", w);
         }
-        let o = cmd.output().unwrap();
+        cmd
+    }
+
+    fn horch(&self, worker: Option<&str>, args: &[&str]) -> Out {
+        let o = self.command(worker).args(args).output().unwrap();
         Out {
             code: o.status.code().unwrap(),
             out: String::from_utf8(o.stdout).unwrap(),

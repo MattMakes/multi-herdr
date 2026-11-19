@@ -205,6 +205,9 @@ fn kill_lock_owner(lock: &Path) {
 /// `sleep` child of the test. Many stall rounds keep a watchdog from reaping
 /// the live worker. Returns the output of the worker's `claim`.
 fn claimed_run(h: &Harness) -> (WatchdogTeardown, Output) {
+    // The test fleetd applies the routed setup; the test runs its own
+    // fleetd and checks after it.
+    h.serve_fleetd();
     ok(
         h,
         &[
@@ -251,6 +254,7 @@ fn claimed_run(h: &Harness) -> (WatchdogTeardown, Output) {
             })
         })
         .unwrap();
+    h.stop_fleetd();
     let mut cmd = h.horch(&["ledger", "claim"]);
     cmd.env("HORCH_WORKER_ID", &w);
     let o = cmd.output().unwrap();

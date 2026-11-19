@@ -112,6 +112,7 @@ fn g51_sessions_points_to_ledger_status_only_for_the_callers_active_run() {
     h.set("HORCH_NO_WAKE", "1");
     h.set("HORCH_WORKSPACE_ID", "w1");
     assert!(!out(&h.run(&["sessions"])).contains("horch ledger status"));
+    h.serve_fleetd();
     let o = h.run(&["ledger", "run", "new", "review"]);
     assert!(o.status.success(), "{}", err(&o));
     let text = out(&h.run(&["sessions"]));
@@ -302,39 +303,14 @@ fn ok(h: &Harness, args: &[&str]) -> String {
     assert!(o.status.success(), "{} {}", out(&o), err(&o));
     out(&o)
 }
-/// A test fleetd of `h`, with 1 pass each second. It ingests the wrapper
-/// files of each attempt (`session.json`, `heartbeat.json`). A drop kills
-/// it.
-struct TestFleetd(std::process::Child);
-
-impl TestFleetd {
-    fn start(h: &Harness) -> TestFleetd {
-        let root = h.root.join("fleet");
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(root.join("fleet.toml"), "pass_period_s = 1\n").unwrap();
-        let mut cmd = std::process::Command::new(Harness::horch_bin());
-        h.seal(&mut cmd);
-        let child = cmd
-            .arg("fleetd")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::fs::File::create(h.root.join("fleetd.stdout")).unwrap())
-            .stderr(std::fs::File::create(h.root.join("fleetd.stderr")).unwrap())
-            .spawn()
-            .unwrap();
-        let fleetd = TestFleetd(child);
-        let socket = root.join("run").join("fleetd.sock");
-        wait("fleetd serves its channel", || {
-            socket.exists().then_some(())
-        });
-        fleetd
-    }
-}
-
-impl Drop for TestFleetd {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
+/// Start the test fleetd of `h` with 1 pass each second. It ingests the
+/// wrapper files of each attempt (`session.json`, `heartbeat.json`). The
+/// drop of `h` stops it.
+fn serve_fast_fleetd(h: &Harness) {
+    let root = h.fleet_root();
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("fleet.toml"), "pass_period_s = 1\n").unwrap();
+    h.serve_fleetd();
 }
 
 fn wait<T>(what: &str, mut f: impl FnMut() -> Option<T>) -> T {
@@ -354,7 +330,7 @@ fn wait<T>(what: &str, mut f: impl FnMut() -> Option<T>) -> T {
 #[test]
 fn ledger_stop_stops_a_spawned_worker_by_the_ingested_pid() {
     let h = fleet("stop-pid", "exec,stay");
-    let _fleetd = TestFleetd::start(&h);
+    serve_fast_fleetd(&h);
     ok(
         &h,
         &["ledger", "run", "new", "stop", "--heartbeat-every", "1"],
@@ -409,7 +385,7 @@ fn g52_concurrent_workers_get_their_own_session_and_transcript() {
         "g52_concurrent_workers_get_their_own_session_and_transcript",
         || {
             let h = fleet("g52-race", "exec,stay");
-            let _fleetd = TestFleetd::start(&h);
+            serve_fast_fleetd(&h);
             ok(
                 &h,
                 &["ledger", "run", "new", "race", "--heartbeat-every", "1"],
@@ -741,6 +717,7 @@ fn g53_below_threshold_handoff_does_not_schedule() {
 #[test]
 fn g50_live_foreign_runs_and_legacy_orchestrators_warn_but_do_not_block() {
     let h = fleet("g50-runs", "");
+    h.serve_fleetd();
     herdr(&h, &["workspace", "create", "--label", "other"]);
     let mut new = h.horch(&["ledger", "run", "new", "foreign"]);
     new.env("HORCH_WORKSPACE_ID", "w2");
@@ -842,6 +819,7 @@ fn g50_legacy_orchestrator_and_host_load_are_advisory() {
 #[test]
 fn g53_ledger_handoff_compacts_resumes_and_records_progress_once() {
     let (mut h, pane) = compact_world("g53-auto", true);
+    h.serve_fleetd();
     ok(&h, &["ledger", "run", "new", "compact"]);
     let worker = ok(&h, &["ledger", "worker", "new", "--persona", "sonnet"])
         .trim()

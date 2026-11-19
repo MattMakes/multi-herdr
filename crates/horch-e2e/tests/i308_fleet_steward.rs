@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use horch_e2e::harness::{fixtures, Harness};
+use horch_e2e::harness::{fixtures, wait_for, Harness};
 
 fn text(o: &std::process::Output) -> String {
     format!(
@@ -31,6 +31,7 @@ fn harness(name: &str) -> Harness {
         fixtures().join("quota/all-ok.json").to_string_lossy(),
     );
     h.set("HORCH_FAKE_SCENARIO", "");
+    h.serve_fleetd();
     h
 }
 
@@ -257,6 +258,20 @@ fn a_worker_can_drop_a_clean_worktree_from_an_explicit_other_run() {
         .to_string();
     let said = worker_ok(&h, &owner, &["ledger", "worktree", "scratch", "bisect"]);
     let path = PathBuf::from(said.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
+    // A worktree_add job of the next pass makes the tree (ticket 22 of
+    // fleetd-p5, T-471).
+    wait_for("the scratch tree to leave reserved", || {
+        let v: serde_json::Value = serde_json::from_str(&ok(&h, &["worktrees", "--json"])).unwrap();
+        let rows = v["worktrees"].as_array().cloned().unwrap_or_default();
+        rows.iter()
+            .any(|r| {
+                r["path"]
+                    .as_str()
+                    .is_some_and(|p| p.ends_with("_scratch/bisect"))
+                    && r["state"] != "reserved"
+            })
+            .then_some(())
+    });
     assert!(path.exists(), "{said}");
     ok(&h, &["ledger", "run", "new", "beta"]);
     let steward = ok(
@@ -284,10 +299,35 @@ fn a_worker_can_drop_a_clean_worktree_from_an_explicit_other_run() {
     let own_run = as_worker(&h, &steward, &drop);
     assert!(!own_run.status.success(), "{}", text(&own_run));
     assert!(path.exists());
+    let tip = git(&h, &path, &["rev-parse", "HEAD"]);
     let mut other_run = drop.to_vec();
     other_run.extend(["--run", "alpha"]);
     worker_ok(&h, &steward, &other_run);
-    assert!(!path.exists());
+    // docs/specs/fleetd/design.md, the worktree state table, row `rescued`:
+    // fleetd saves the tree on a rescue ref and keeps the folder until its
+    // idea is merged or cancelled.
+    let rescue_ref = wait_for("the dropped tree to be rescued", || {
+        let v: serde_json::Value = serde_json::from_str(&ok(&h, &["worktrees", "--json"])).unwrap();
+        let rows = v["worktrees"].as_array().cloned().unwrap_or_default();
+        rows.into_iter().find_map(|r| {
+            let bisect = r["path"]
+                .as_str()
+                .is_some_and(|p| p.ends_with("_scratch/bisect"));
+            (bisect && r["state"] == "rescued")
+                .then(|| r["rescue_ref"].as_str().map(str::to_string))
+        })
+    })
+    .expect("a rescued row names its rescue ref");
+    // The rescue commit has the tip as its parent and the tree of the tip:
+    // the clean tree is saved whole.
+    let at = |rev: String| git(&h, &h.project, &["rev-parse", &rev]);
+    assert_eq!(at(format!("{rescue_ref}^1")), tip, "{rescue_ref}");
+    assert_eq!(
+        at(format!("{rescue_ref}^{{tree}}")),
+        at(format!("{tip}^{{tree}}")),
+        "{rescue_ref}"
+    );
+    assert!(path.exists());
 }
 
 /// The `ledger status --json` board of `run`. Status exits 1 while the run

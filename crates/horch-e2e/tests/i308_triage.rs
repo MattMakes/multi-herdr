@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
-use horch_e2e::harness::Harness;
+use horch_e2e::harness::{wait_for, Harness};
 use serde_json::Value;
 
 fn text(o: &Output) -> String {
@@ -30,6 +30,7 @@ fn world(name: &str) -> Harness {
     );
     h.set("HORCH_NO_WAKE", "1");
     h.set("HORCH_NO_WATCHDOG", "1");
+    h.serve_fleetd();
     h
 }
 
@@ -126,7 +127,7 @@ fn a_bad_reply_names_its_lines_and_runs_nothing() {
 }
 
 #[test]
-fn finish_queues_a_task_that_inherits_the_worktree_and_wakes_the_orchestrator() {
+fn finish_queues_a_task_that_inherits_the_worktree() {
     let h = world("i308-finish");
     ok(&h, &["ledger", "run", "new", "alpha"]);
     let path = folder(&h, "T7-cache");
@@ -145,15 +146,17 @@ fn finish_queues_a_task_that_inherits_the_worktree_and_wakes_the_orchestrator() 
     let task: Value = serde_json::from_str(&status).unwrap();
     assert_eq!(task["task"]["status"], "queued", "{task:#}");
     assert!(path.exists());
+    // A routed FINISH sends no wake (ticket 25 of fleetd-p5, T-474): the
+    // event of the queued task is the record.
     let events: Value = serde_json::from_str(&ok(&h, &["ledger", "events", "--json"])).unwrap();
-    let woke = events
+    let added = events
         .as_array()
         .unwrap()
         .iter()
-        .filter(|e| e["kind"] == "woke")
+        .filter(|e| e["kind"] == "added")
         .filter_map(|e| e["text"].as_str())
-        .find(|t| t.contains("worktree triage queued T-1 (FINISH)"));
-    assert!(woke.is_some(), "{events:#}");
+        .find(|t| *t == "T-1 queued for opus: Finish T7-cache: Fix the flaky test, then land.");
+    assert!(added.is_some(), "{events:#}");
     // The task's worktree has a worker coming: it is no longer parked.
     assert_eq!(triage_json(&h)["rows"], serde_json::json!([]));
 }
@@ -172,10 +175,13 @@ fn archive_restore_and_gc_through_the_cli() {
     assert!(!path.exists());
     let said = ok(&h, &["worktree", "restore", "feat"]);
     assert!(said.starts_with("restored "), "{said}");
-    assert_eq!(
-        std::fs::read_to_string(path.join("untracked.txt")).unwrap(),
-        "keep\n"
-    );
+    // A worktree_add job of the next pass makes the tree (ticket 25 of
+    // fleetd-p5, T-474).
+    let untracked = path.join("untracked.txt");
+    wait_for("the restored tree", || {
+        std::fs::read_to_string(&untracked).ok()
+    });
+    assert_eq!(std::fs::read_to_string(&untracked).unwrap(), "keep\n");
     assert_eq!(
         ok(&h, &["ledger", "gc"]).trim(),
         "No trash ref is older than 30 days."

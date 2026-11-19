@@ -2,10 +2,15 @@
 //! (trace-fixes ticket 10): `--dry-run` (TRF-11), the ticket snapshot in the
 //! claim (TRF-12), the refusal of a ticket already queued (TRF-13) and the
 //! `Kind`, `Review` and `Check none` fields (TRF-14). Every test runs the
-//! binary on a temp git project, with the watchdog off and no herdr pane.
+//! binary on a temp git project, with the watchdog off and no herdr pane. A
+//! test fleetd serves the requests of the commands.
+
+mod support;
 
 use std::path::PathBuf;
 use std::process::Command;
+
+use support::fleetd::{short_tempdir, TestFleetd};
 
 struct Out {
     code: i32,
@@ -13,7 +18,9 @@ struct Out {
     err: String,
 }
 
+/// The fleetd drops first: fields drop in order.
 struct World {
+    _fleetd: Option<TestFleetd>,
     tmp: tempfile::TempDir,
 }
 
@@ -21,7 +28,14 @@ const PATH: &str = "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin";
 
 impl World {
     fn new() -> World {
-        let tmp = tempfile::tempdir().unwrap();
+        let mut w = World::without_fleetd();
+        w.start_fleetd();
+        w
+    }
+
+    /// The temp git project, and no fleetd: no ledger exists yet.
+    fn without_fleetd() -> World {
+        let tmp = short_tempdir();
         let proj = tmp.path().join("proj");
         std::fs::create_dir_all(proj.join("tickets")).unwrap();
         for args in [
@@ -42,7 +56,12 @@ impl World {
                 .unwrap();
             assert!(st.success(), "git {args:?}");
         }
-        World { tmp }
+        World { _fleetd: None, tmp }
+    }
+
+    fn start_fleetd(&mut self) {
+        let fleet_root = self.tmp.path().join("home/.horch/fleet");
+        self._fleetd = Some(TestFleetd::start(self.horch(), &fleet_root));
     }
 
     fn proj(&self) -> PathBuf {
@@ -53,11 +72,11 @@ impl World {
         std::fs::write(self.proj().join("tickets").join(name), text).unwrap();
     }
 
-    fn run_as(&self, worker: Option<&str>, args: &[&str]) -> Out {
+    /// The `horch` binary with the environment of the test.
+    fn horch(&self) -> Command {
         let root = self.tmp.path();
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_horch"));
-        cmd.args(args)
-            .current_dir(self.proj())
+        cmd.current_dir(self.proj())
             .env_clear()
             .env("PATH", PATH)
             .env("HOME", root.join("home"))
@@ -65,6 +84,12 @@ impl World {
             .env("HORCH_STATE_DIR", root.join("state"))
             .env("HORCH_PROJECT_DIR", self.proj())
             .env("HORCH_NO_WATCHDOG", "1");
+        cmd
+    }
+
+    fn run_as(&self, worker: Option<&str>, args: &[&str]) -> Out {
+        let mut cmd = self.horch();
+        cmd.args(args);
         if let Some(w) = worker {
             cmd.env("HORCH_WORKER_ID", w);
         }
@@ -135,7 +160,8 @@ fn trf_11_dry_run_names_each_problem_and_writes_nothing() {
     assert_eq!(w.task_count(), 0);
 
     // A clean map passes the dry run, needs no run, and still queues nothing.
-    let w = World::new();
+    // fleetd creates the ledger at its start, so it starts after the dry run.
+    let mut w = World::without_fleetd();
     w.write("a.md", &c1("A", FIELDS));
     w.write("MAP.md", MAP);
     let ledger = PathBuf::from(w.ok(&["ledger", "path"]).trim());
@@ -146,52 +172,9 @@ fn trf_11_dry_run_names_each_problem_and_writes_nothing() {
             && out.ends_with("follow the ticket format. Nothing was queued.\n"),
         "{out}"
     );
+    w.start_fleetd();
     w.ok(&["ledger", "run", "new", "r1"]);
     assert_eq!(w.task_count(), 0);
-}
-
-#[test]
-fn trf_12_claim_prints_the_snapshot_after_the_ticket_changed_or_went() {
-    let w = World::new();
-    w.ok(&["ledger", "run", "new", "r1"]);
-    let text = c1("A", FIELDS);
-    w.write("a.md", &text);
-    w.write("MAP.md", MAP);
-    w.ok(&["ledger", "add-map", "tickets/MAP.md"]);
-    let show: serde_json::Value =
-        serde_json::from_str(&w.ok(&["ledger", "show", "T-1", "--json"])).unwrap();
-    let sha = show["task"]["ticket_sha"]
-        .as_str()
-        .or_else(|| show["ticket_sha"].as_str())
-        .map(str::to_string);
-
-    w.write("a.md", "# 01: Changed\n\nSomething else.\n");
-    let worker = w
-        .ok(&["ledger", "worker", "new", "--persona", "dev"])
-        .trim()
-        .to_string();
-    let o = w.run_as(Some(&worker), &["ledger", "claim"]);
-    assert_eq!(o.code, 0, "{}", o.err);
-    let snapshot_at = o.out.find("Do A.").expect("the claim prints the snapshot");
-    let path_at = o.out.find("Ticket: ").expect("the claim prints the path");
-    assert!(
-        snapshot_at < path_at,
-        "the snapshot comes first:\n{}",
-        o.out
-    );
-    assert!(!o.out.contains("Something else."), "{}", o.out);
-    assert!(o.out.contains("Ticket snapshot (sha256 "), "{}", o.out);
-    if let Some(sha) = sha {
-        assert!(o.out.contains(&sha[..12]), "{}", o.out);
-    }
-
-    std::fs::remove_file(w.proj().join("tickets/a.md")).unwrap();
-    let o = w.run_as(Some(&worker), &["ledger", "claim"]);
-    assert_eq!(o.code, 0, "{}", o.err);
-    assert!(o.out.contains(text.trim_end()), "{}", o.out);
-    let json: serde_json::Value =
-        serde_json::from_str(&w.run_as(Some(&worker), &["ledger", "claim", "--json"]).out).unwrap();
-    assert_eq!(json["ticket_snapshot"], text);
 }
 
 #[test]

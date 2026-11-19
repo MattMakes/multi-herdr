@@ -208,17 +208,21 @@ fn a_scratch_fleet_does_not_change_an_existing_default_ledger() {
     let mut h = harness("f199-old", "");
     h.unset("HORCH_LEDGER_DB");
     h.unset("HORCH_NO_WATCHDOG").unset("HORCH_NO_WAKE");
-    // The operator's real ledger, with 1 active run of this project.
+    // The operator's real ledger, with 1 active run of this project. The
+    // test fleetd applies the run, then stops before the fleet starts.
+    h.serve_fleetd();
     let o = h.run(&["ledger", "run", "new", "real"]);
     assert!(o.status.success(), "{}{}", out(&o), err(&o));
-    let before = std::fs::read(default_ledger(&h)).unwrap();
-    let o = h.run(&["fleet", "opus", "--no-update", "--cwd", &cwd(&h)]);
-    assert!(o.status.success(), "{}{}", out(&o), err(&o));
-    assert_eq!(
-        std::fs::read(default_ledger(&h)).unwrap(),
-        before,
-        "the fleet changed the default ledger"
-    );
+    h.without_fleetd(|| {
+        let before = std::fs::read(default_ledger(&h)).unwrap();
+        let o = h.run(&["fleet", "opus", "--no-update", "--cwd", &cwd(&h)]);
+        assert!(o.status.success(), "{}{}", out(&o), err(&o));
+        assert_eq!(
+            std::fs::read(default_ledger(&h)).unwrap(),
+            before,
+            "the fleet changed the default ledger"
+        );
+    });
 }
 
 /// #199: with `HORCH_LEDGER_DB` set, the orchestrator pane of a real fleet

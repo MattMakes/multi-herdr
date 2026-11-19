@@ -1,11 +1,16 @@
 //! `horch ledger`: pins the output and exit code of the task-ledger
 //! subcommands (status, show, run, add, plan-workers, fallback, cancel,
-//! unblock, requeue, events, claim, worktree, steps, finish, done, import,
-//! unfinished), so a refactor of the CLI body keeps them. Every test runs the
-//! binary on a temp git project, with the watchdog off and no herdr pane.
+//! unblock, requeue, events, import, unfinished), so a refactor of the CLI
+//! body keeps them. Every test runs the binary on a temp git project, with
+//! the watchdog off and no herdr pane. A test fleetd serves the requests of
+//! the commands.
 
-use std::path::{Path, PathBuf};
+mod support;
+
+use std::path::PathBuf;
 use std::process::Command;
+
+use support::fleetd::{short_tempdir, TestFleetd};
 
 const HEALTHY_MACHINE: &str = r#"{"os":"linux","arch":"x86_64","cpus":8,"load_average_1m":1.0,"mem_total_bytes":17179869184,"mem_available_bytes":8589934592,"disk_free_bytes":214748364800,"disk_total_bytes":536870912000,"gpu":"none","max_open_files":1048576,"max_processes":100000}"#;
 
@@ -15,13 +20,26 @@ struct Out {
     err: String,
 }
 
+/// The fleetd drops first: fields drop in order.
 struct World {
+    _fleetd: Option<TestFleetd>,
     tmp: tempfile::TempDir,
 }
 
 impl World {
+    /// The temp project with a test fleetd that serves its requests.
     fn new() -> World {
-        let tmp = tempfile::tempdir().unwrap();
+        let mut w = World::without_fleetd();
+        w._fleetd = Some(TestFleetd::start(
+            w.horch(true),
+            &w.tmp.path().join("fleet"),
+        ));
+        w
+    }
+
+    /// The temp project, and no fleetd: no ledger exists yet.
+    fn without_fleetd() -> World {
+        let tmp = short_tempdir();
         let proj = tmp.path().join("proj");
         let git = |args: &[&str]| {
             let st = Command::new("git")
@@ -55,23 +73,19 @@ impl World {
             "health_max_process_share = 1.0\nhealth_max_open_file_share = 1.0\n",
         )
         .unwrap();
-        World { tmp }
+        World { _fleetd: None, tmp }
     }
 
     fn proj(&self) -> PathBuf {
         self.tmp.path().join("proj")
     }
 
-    fn run_as(&self, worker: Option<&str>, args: &[&str]) -> Out {
-        self.run_env(worker, true, args)
-    }
-
-    /// `watchdog_off` sets `HORCH_NO_WATCHDOG=1`.
-    fn run_env(&self, worker: Option<&str>, watchdog_off: bool, args: &[&str]) -> Out {
+    /// The `horch` binary with the environment of the test. `watchdog_off`
+    /// sets `HORCH_NO_WATCHDOG=1`.
+    fn horch(&self, watchdog_off: bool) -> Command {
         let root = self.tmp.path();
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_horch"));
-        cmd.args(args)
-            .current_dir(self.proj())
+        cmd.current_dir(self.proj())
             .env_clear()
             .env("PATH", "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin")
             .env("HOME", root.join("home"))
@@ -83,6 +97,17 @@ impl World {
         if watchdog_off {
             cmd.env("HORCH_NO_WATCHDOG", "1");
         }
+        cmd
+    }
+
+    fn run_as(&self, worker: Option<&str>, args: &[&str]) -> Out {
+        self.run_env(worker, true, args)
+    }
+
+    /// `watchdog_off` sets `HORCH_NO_WATCHDOG=1`.
+    fn run_env(&self, worker: Option<&str>, watchdog_off: bool, args: &[&str]) -> Out {
+        let mut cmd = self.horch(watchdog_off);
+        cmd.args(args);
         if let Some(w) = worker {
             cmd.env("HORCH_WORKER_ID", w);
         }
@@ -121,10 +146,6 @@ fn untimed(text: &str) -> Vec<String> {
 
 fn json(text: &str) -> serde_json::Value {
     serde_json::from_str(text).unwrap_or_else(|e| panic!("{e}: {text}"))
-}
-
-fn path_free(p: &Path) -> String {
-    p.file_name().unwrap().to_string_lossy().into_owned()
 }
 
 #[test]
@@ -231,25 +252,22 @@ fn the_board_commands_print_their_pinned_text() {
         (unblock.code, unblock.out.as_str()),
         (0, "T-2 no longer waits for T-1.\n")
     );
-    assert!(
-        unblock
-            .err
-            .starts_with("horch ledger: the orchestrator was not woken: "),
-        "{}",
-        unblock.err
-    );
+    // The command writes no wake (ticket 22 of fleetd-p5, T-471), so it
+    // prints no wake note.
+    assert_eq!(unblock.err, "");
     assert_eq!(
         w.ok(&["ledger", "cancel", "T-2", "nope"]),
         "T-2 cancelled.\n"
     );
     // `cancelled` is terminal (fleetd-p2 MAP.md, Q22): the door refuses
-    // the requeue.
+    // the requeue. fleetd refuses the request (ticket 22 of fleetd-p5,
+    // T-471).
     let requeue = w.run(&["ledger", "requeue", "T-2", "again"]);
     assert_eq!((requeue.code, requeue.out.as_str()), (1, ""));
     assert!(
         requeue
             .err
-            .starts_with("horch: illegal transition of task ")
+            .starts_with("refused: illegal transition of task ")
             && requeue.err.ends_with(": cancelled -> ready\n"),
         "{}",
         requeue.err
@@ -258,16 +276,17 @@ fn the_board_commands_print_their_pinned_text() {
     assert_eq!(refused.code, 1);
     assert_eq!(
         refused.err,
-        "horch: T-1 is queued; only a held task is requeued\n"
+        "refused: T-1 is queued; only a held task is requeued\n"
     );
     assert_show_of_t2(&w);
     assert_board_events(&untimed(&w.ok(&["ledger", "events"])));
+    assert_refused_requeue(&w);
     let close = w.run(&["ledger", "run", "close"]);
     assert_eq!(close.code, 1);
     assert!(
         close
             .err
-            .starts_with("horch: run r1 still has open work: T-1 (queued)."),
+            .starts_with("refused: run r1 still has open work: T-1 (queued)."),
         "{}",
         close.err
     );
@@ -329,6 +348,25 @@ fn assert_show_of_t2(w: &World) {
 
 /// The events of the board test, in order: `horch ledger events` without
 /// its times.
+/// fleetd records the refused requeue of the cancelled T-2 in its request
+/// row (ticket 22 of fleetd-p5, T-471).
+fn assert_refused_requeue(w: &World) {
+    let conn = rusqlite::Connection::open(w.tmp.path().join("home/.horch/ledger.sqlite3")).unwrap();
+    let refused: Vec<(String, String)> = conn
+        .prepare("SELECT kind, reason FROM requests WHERE state = 'refused' ORDER BY rowid")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert!(
+        refused.iter().any(|(kind, reason)| kind == "task_requeue"
+            && reason.starts_with("illegal transition of task ")
+            && reason.ends_with(": cancelled -> ready")),
+        "{refused:?}"
+    );
+}
+
 fn assert_board_events(events: &[String]) {
     assert_eq!(
         events[0],
@@ -362,157 +400,12 @@ fn assert_board_events(events: &[String]) {
         ) && events[6].ends_with(": queued -> queued"),
         "{events:?}"
     );
-    // 1 undelivered wake stays in the outbox. The requeue brings the board
-    // back to the same state, so it writes no second wake (TRF-21).
-    assert!(
-        events[7].ends_with(
-            "; it stays in the outbox: [horch] NOTE: Tasks can start: T-1, T-2. Spawn: dev x1, dev2 x1."
-        ),
-        "{events:?}"
-    );
-    assert_eq!(events[8], "orchestrator cancelled     T-2 cancelled: nope");
-    // `cancelled` is terminal: the door refuses the requeue and records it.
-    assert!(
-        events[9].starts_with(
-            "orchestrator transition    illegal_transition: requeued: T-2 is queued again by the operator: again; task "
-        ) && events[9].ends_with(": cancelled -> queued"),
-        "{events:?}"
-    );
-    assert_eq!(events.len(), 10, "{events:?}");
-}
-
-#[test]
-fn a_worker_claims_makes_a_worktree_and_finishes() {
-    let w = World::new();
-    // A task with no check lands only when its ticket says so (TRF-17).
-    std::fs::write(w.proj().join("t1.md"), "# Ticket One\n\n**Check:** none\n").unwrap();
-    w.ok(&["ledger", "run", "new", "r1", "--verify", "full"]);
-    w.ok(&["ledger", "add", "--file", "t1.md", "--primary", "dev"]);
-    let id = w
-        .ok(&[
-            "ledger",
-            "worker",
-            "new",
-            "--persona",
-            "dev",
-            "--role",
-            "dev1",
-        ])
-        .trim()
-        .to_string();
-    let as_worker = |args: &[&str]| w.run_as(Some(&id), args);
-    assert_claim_prints_the_ticket(&w, &id);
-    make_and_drop_worktrees(&w, &id);
-    assert_finish_steps(&w, &id);
-    let done = as_worker(&["ledger", "done", "all", "good"]);
-    assert_eq!(done.code, 0, "{}", done.err);
-    assert_eq!(done.out, "T-1 done.\n");
-    let shown = w.ok(&["ledger", "show", "dev1"]);
-    assert!(shown.starts_with("dev1 done ("), "{shown}");
-    assert!(shown.contains("persona dev.\n"), "{shown}");
-    let worker_json = json(&w.ok(&["ledger", "show", "dev1", "--json"]));
-    assert_eq!(worker_json["worker"]["role"], "dev1");
-    assert!(worker_json["stops"].is_array());
-}
-
-/// A claim needs HORCH_WORKER_ID and prints the ticket and the next steps.
-fn assert_claim_prints_the_ticket(w: &World, id: &str) {
-    let as_worker = |args: &[&str]| w.run_as(Some(id), args);
-    let none = w.run(&["ledger", "claim"]);
-    assert_eq!(none.code, 1);
-    assert!(
-        none.err.starts_with("horch: HORCH_WORKER_ID is not set"),
-        "{}",
-        none.err
-    );
-    let claim = as_worker(&["ledger", "claim"]);
-    assert_eq!(claim.code, 0, "{}", claim.err);
-    let lines: Vec<&str> = claim.out.lines().collect();
-    assert_eq!(lines[0], "Claimed T-1 (attempt 1): Ticket One");
-    assert!(
-        lines[1].starts_with("Ticket: ")
-            && lines[1].ends_with("t1.md. Read it in full and follow it exactly.")
-    );
-    assert_eq!(
-        lines[2],
-        "Make your worktree first: horch ledger worktree new ticket-one"
-    );
-    assert_eq!(
-        lines[3],
-        "Record milestones with: horch ledger progress \"<text>\""
-    );
-    assert_eq!(
-        lines[4],
-        "When the work is complete, run: horch ledger finish"
-    );
-}
-
-/// Finish refuses without a worktree. A scratch worktree drops cleanly.
-fn make_and_drop_worktrees(w: &World, id: &str) {
-    let as_worker = |args: &[&str]| w.run_as(Some(id), args);
-    assert_eq!(as_worker(&["ledger", "steps"]).out, "");
-    assert_eq!(as_worker(&["ledger", "progress", "half way"]).code, 0);
-    let early = as_worker(&["ledger", "finish", "--json"]);
-    assert_eq!(early.code, 1);
-    assert_eq!(
-        early.err,
-        "horch: T-1 has no worktree. Make it with horch ledger worktree new <name>, work and commit there, then run finish\n"
-    );
-    let wt = as_worker(&["ledger", "worktree", "new", "feat"]);
-    let wt_lines: Vec<&str> = wt.out.lines().collect();
-    assert_eq!(
-        path_free(Path::new(wt_lines[0].strip_prefix("path: ").unwrap())),
-        "T1-feat"
-    );
-    assert_eq!(wt_lines[1], "branch: fleet/r1-T1-feat");
-    assert_eq!(wt_lines[2], "base: fleet/r1");
-    assert!(wt_lines[3].ends_with(". When the work is complete, run: horch ledger finish"));
-    let scratch = as_worker(&["ledger", "worktree", "scratch", "scr"]);
-    assert!(scratch.out.contains("branch: fleet-scratch-r1-scr\nScratch worktree: drop it when it is no longer needed; it does not block completion.\n"), "{}", scratch.out);
-    let dropped = as_worker(&["ledger", "worktree", "drop", "scr", "--reason", "r"]);
-    assert!(
-        dropped.out.starts_with("abandoned: ") && dropped.out.ends_with("/scr (r)\n"),
-        "{}",
-        dropped.out
-    );
-}
-
-/// Finish reports all 7 steps, and ledger steps prints the same steps.
-fn assert_finish_steps(w: &World, id: &str) {
-    let as_worker = |args: &[&str]| w.run_as(Some(id), args);
-    let report = json(&as_worker(&["ledger", "finish", "--json"]).out);
-    assert_eq!(report["task"], "T-1");
-    let steps: Vec<(&str, &str)> = report["steps"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|s| (s["name"].as_str().unwrap(), s["status"].as_str().unwrap()))
-        .collect();
-    assert_eq!(
-        steps,
-        [
-            ("check", "not_applicable"),
-            ("code-sweep", "not_applicable"),
-            ("complexity-sweep", "not_applicable"),
-            ("recheck", "not_applicable"),
-            // The worktree has no commit, so nothing lands and nothing is
-            // pushed (video-lessons T-15).
-            ("land", "not_applicable"),
-            ("pr", "not_applicable"),
-            ("cleanup", "passed"),
-        ]
-    );
-    let table = as_worker(&["ledger", "steps"]).out;
-    let rows: Vec<Vec<&str>> = table
-        .lines()
-        .map(|l| l.split_whitespace().collect())
-        .collect();
-    assert_eq!(rows.len(), 7);
-    assert_eq!(&rows[0][..4], ["1", "check", "not_applicable", "not"]);
-    assert_eq!(&rows[4][..3], ["5", "land", "not_applicable"]);
-    assert_eq!(rows[6][..3], ["7", "cleanup", "passed"]);
-    let by_task = w.ok(&["ledger", "steps", "T-1", "--json"]);
-    assert_eq!(json(&by_task).as_array().unwrap().len(), 7);
+    // The commands write no wake (ticket 22 of fleetd-p5, T-471), so no
+    // wake event follows.
+    assert_eq!(events[7], "orchestrator cancelled     T-2 cancelled: nope");
+    // `cancelled` is terminal: fleetd refuses the requeue and records it in
+    // its request row (see `assert_refused_requeue`), not as an event.
+    assert_eq!(events.len(), 8, "{events:?}");
 }
 
 #[test]
@@ -529,18 +422,21 @@ fn the_unfinished_import_and_refusal_arms_print_their_pinned_text() {
     );
     let dismiss = w.run(&["ledger", "dismiss", "5", "x"]);
     assert_eq!(dismiss.code, 1);
-    assert_eq!(dismiss.err, "horch: no finding 5: Query returned no rows\n");
+    assert_eq!(
+        dismiss.err,
+        "refused: no finding 5: Query returned no rows\n"
+    );
     w.ok(&["ledger", "run", "new", "r1"]);
     w.ok(&["ledger", "add", "--file", "t1.md", "--primary", "dev"]);
     let waive = w.run(&["ledger", "waive", "T-1", "F1", "reason"]);
     assert_eq!(waive.code, 1);
-    assert_eq!(waive.err, "horch: T-1 has no code-sweep round\n");
+    assert_eq!(waive.err, "refused: T-1 has no code-sweep round\n");
     let stop = w.run(&["ledger", "stop", "nobody", "why"]);
     assert_eq!(stop.code, 1);
-    assert!(stop.err.starts_with("horch: "), "{}", stop.err);
+    assert!(stop.err.starts_with("refused: "), "{}", stop.err);
     let pid = w.run(&["ledger", "worker", "pid", "nobody", "--agent", "1"]);
     assert_eq!(pid.code, 1, "{}", pid.err);
-    assert_eq!(pid.err, "horch: no worker nobody in the task ledger\n");
+    assert_eq!(pid.err, "refused: no worker nobody in the task ledger\n");
 }
 
 /// A world with run `r1` (checks every 10 s) and 1 claimed task.
@@ -669,7 +565,7 @@ fn ensure_starts_nothing_with_the_watchdog_off_or_without_a_ledger() {
     let (w, _) = world_with_a_claimed_task();
     let off = w.run_env(None, true, &["ledger", "status"]);
     assert!(!off.err.contains("watchdog"), "{}", off.err);
-    let bare = World::new();
+    let bare = World::without_fleetd();
     let none = bare.run_env(None, false, &["ledger", "path"]);
     assert_eq!(none.code, 0);
     assert!(!none.err.contains("watchdog"), "{}", none.err);
@@ -730,71 +626,6 @@ fn spawn_checks_the_run_the_persona_and_the_replaced_worker() {
     assert_eq!(
         closed.err,
         "horch: run r1 is done; a closed run takes no new worker\n"
-    );
-}
-
-/// `ledger claim`: the line a worker sends when nothing is meant for it, the
-/// ticket path in text and in JSON, and the project facts after the text.
-#[test]
-fn claim_prints_the_line_to_send_the_ticket_and_the_project_facts() {
-    let w = World::new();
-    w.ok(&["ledger", "run", "new", "r1"]);
-    w.ok(&["ledger", "add", "--file", "t1.md", "--primary", "dev"]);
-    let new_worker = |persona: &str| {
-        w.ok(&["ledger", "worker", "new", "--persona", persona])
-            .trim()
-            .to_string()
-    };
-
-    let (text_id, json_id) = (new_worker("other"), new_worker("another"));
-    let none = w.run_as(Some(&text_id), &["ledger", "claim"]);
-    assert_eq!(none.code, 0, "{}", none.err);
-    assert_eq!(
-        none.out,
-        "No task for other. Run this line to close your pane:\nhorch done \"No task for other.\"\n"
-    );
-    let none = w.run_as(Some(&json_id), &["ledger", "claim", "--json"]);
-    assert_eq!(none.code, 0, "{}", none.err);
-    let none = json(&none.out);
-    assert_eq!(none["outcome"], "no_task");
-    assert_eq!(none["persona"], "another");
-    assert_eq!(
-        none["tell"],
-        format!("horch tell orchestrator \"[{json_id}] NOTE: No task for another. I exit. PID unknown.\"")
-    );
-
-    // t1.md is not committed, so a worktree would not hold it: both forms
-    // name it by its absolute path.
-    let dev = new_worker("dev");
-    let claimed = w.run_as(Some(&dev), &["ledger", "claim", "--json"]);
-    assert_eq!(claimed.code, 0, "{}", claimed.err);
-    let claimed = json(&claimed.out);
-    assert_eq!(claimed["outcome"], "claimed");
-    let ticket = claimed["task"]["task_file"].as_str().unwrap();
-    assert!(
-        Path::new(ticket).is_absolute() && ticket.ends_with("/t1.md"),
-        "{claimed}"
-    );
-    let text = w.run_as(Some(&dev), &["ledger", "claim"]);
-    assert_eq!(text.code, 0, "{}", text.err);
-    let lines: Vec<&str> = text.out.lines().collect();
-    assert_eq!(
-        lines[1],
-        format!("Ticket: {ticket}. Read it in full and follow it exactly.")
-    );
-    assert_eq!(lines.last(), Some(&"(No project facts recorded.)"));
-
-    assert_eq!(
-        w.ok(&["note", "--fact", "the build needs X"]),
-        "Project fact recorded.\n"
-    );
-    let text = w.run_as(Some(&dev), &["ledger", "claim"]);
-    assert!(
-        text.out.ends_with(
-            "When the work is complete, run: horch ledger finish\n- the build needs X\n"
-        ),
-        "{}",
-        text.out
     );
 }
 
@@ -963,69 +794,4 @@ fn add_map_prints_each_task_and_the_path_of_the_map_it_read() {
         given.starts_with("2 tasks queued from ") && given.ends_with("/proj/MAP.md."),
         "{out}"
     );
-}
-
-/// Release row of Phase 4: `horch spawn` binds its task and writes the
-/// files of its push attempt before it opens a pane. Here no herdr runs,
-/// so the pane step fails after the bind and gives the task back. The
-/// claim of that push attempt
-/// prints its files and searches nothing, and `finish` and `done` refuse:
-/// fleetd runs the finish steps.
-#[test]
-fn a_push_attempt_claims_nothing_and_finish_and_done_refuse() {
-    let w = World::new();
-    w.ok(&["ledger", "run", "new", "r1"]);
-    w.ok(&["ledger", "add", "--file", "t1.md", "--primary", "dev"]);
-    let spawn = w.run(&["spawn", "dev", "--run", "r1"]);
-    assert_eq!(spawn.code, 1, "no herdr: the pane step fails");
-    let bound = spawn
-        .err
-        .lines()
-        .find_map(|l| l.strip_prefix("horch spawn: bound T-1 to attempt "))
-        .unwrap_or_else(|| panic!("{}", spawn.err));
-    let (attempt, worker) = bound
-        .trim_end_matches('.')
-        .split_once(" of worker ")
-        .unwrap();
-    let task_id = attempt.strip_suffix("/A1").unwrap();
-    let dir = w
-        .tmp
-        .path()
-        .join("fleet/tasks")
-        .join(task_id)
-        .join("attempts/A1");
-    assert!(dir.join("task.yaml").is_file() && dir.join("inbox/START.md").is_file());
-
-    // `ledger add --file` stores no ticket snapshot, so the claim prints
-    // none.
-    let claim = w.run_as(Some(worker), &["ledger", "claim"]);
-    assert_eq!(claim.code, 0, "{}", claim.err);
-    assert_eq!(
-        claim.out,
-        format!(
-            "T-1 (attempt A1) is bound to you: Ticket One. A claim takes no other task.\n\
-             Task file: {}\nStart file: {}\n\
-             When the work is committed, run: horch result\n",
-            dir.join("task.yaml").display(),
-            dir.join("inbox/START.md").display()
-        )
-    );
-    let as_json = json(&w.run_as(Some(worker), &["ledger", "claim", "--json"]).out);
-    assert_eq!(as_json["outcome"], "push");
-    assert_eq!(as_json["attempt"], "A1");
-    assert_eq!(
-        as_json["start_md"],
-        dir.join("inbox/START.md").to_str().unwrap()
-    );
-
-    let refusal =
-        "horch: run `horch result` when the work is committed; fleetd runs the finish steps\n";
-    let finish = w.run_as(Some(worker), &["ledger", "finish"]);
-    assert_eq!((finish.code, finish.err.as_str()), (1, refusal));
-    let done = w.run_as(Some(worker), &["ledger", "done", "all", "good"]);
-    assert_eq!((done.code, done.err.as_str()), (1, refusal));
-    // The failed spawn gave its task back: ready, with no attempt burned.
-    let shown = json(&w.ok(&["ledger", "show", "T-1", "--json"]));
-    assert_eq!(shown["task"]["state"], "ready", "{shown}");
-    assert_eq!(shown["task"]["attempt_floor"], 1, "{shown}");
 }

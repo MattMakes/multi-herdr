@@ -385,6 +385,9 @@ fn complete(h: &Harness, w: &mut Worker, seq: i64) {
 /// numbers of the run never reap a quiet worker during a test: only a dead
 /// agent ends an attempt.
 fn plan(h: &Harness, tasks: usize) {
+    // The test fleetd applies the routed plan; the test then runs its own
+    // fleetd.
+    h.serve_fleetd();
     ok(
         h,
         &[
@@ -416,6 +419,7 @@ fn plan(h: &Harness, tasks: usize) {
             ],
         );
     }
+    h.stop_fleetd();
 }
 
 /// The status of the task `seq`.

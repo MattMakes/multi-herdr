@@ -60,6 +60,9 @@ pub struct Harness {
     removed: BTreeSet<String>,
     /// The real `git`, by absolute path, once [`Harness::with_git`] found it.
     git: Option<PathBuf>,
+    /// The test fleetd of [`Harness::serve_fleetd`]. The drop stops it
+    /// before the teardown looks for leaked processes.
+    fleetd: std::cell::RefCell<Option<crate::fleetd::Fleetds>>,
 }
 
 /// The commit date of the fixture repo, and of every commit made through the
@@ -109,6 +112,7 @@ impl Harness {
             env: BTreeMap::new(),
             removed: BTreeSet::new(),
             git: None,
+            fleetd: std::cell::RefCell::new(None),
         };
         for dir in [&h.home, &h.state, &h.tmp, &h.bin, &h.project] {
             std::fs::create_dir_all(dir).expect("creating harness dirs");
@@ -409,6 +413,73 @@ impl Harness {
         cmd.envs(env);
     }
 
+    /// The task ledger of the sealed environment: `HORCH_LEDGER_DB`, else
+    /// `<home>/.horch/ledger.sqlite3`.
+    pub fn ledger_db(&self) -> PathBuf {
+        self.env
+            .get("HORCH_LEDGER_DB")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.home.join(".horch/ledger.sqlite3"))
+    }
+
+    /// The fleet root of the sealed environment: `FLEET_ROOT`, else the
+    /// folder `fleet` next to [`Harness::ledger_db`].
+    pub fn fleet_root(&self) -> PathBuf {
+        self.env
+            .get("FLEET_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                self.ledger_db()
+                    .parent()
+                    .expect("a ledger file has a folder")
+                    .join("fleet")
+            })
+    }
+
+    /// Start the test fleetd of this harness: `horch fleetd` on
+    /// [`Harness::ledger_db`], in the sealed environment. It returns when
+    /// fleetd serves its channel, so a routed `horch` command gets its
+    /// reply. Set the environment that names the ledger first. The drop of
+    /// the harness stops it. Its output is in `<root>/fleetd.stdout` and
+    /// `<root>/fleetd.stderr`.
+    pub fn serve_fleetd(&self) {
+        let mut fleetd = self.fleetd.borrow_mut();
+        assert!(fleetd.is_none(), "1 test fleetd for each harness");
+        let mut fleetds = crate::fleetd::Fleetds::on(self, self.ledger_db());
+        fleetds.serve(self, "fleetd");
+        *fleetd = Some(fleetds);
+    }
+
+    /// Stop the test fleetd of [`Harness::serve_fleetd`] with SIGTERM, and
+    /// wait until it is gone. A test that runs its own fleetd or its own
+    /// passes after a routed setup calls it.
+    pub fn stop_fleetd(&self) {
+        let mut fleetds = self
+            .fleetd
+            .borrow_mut()
+            .take()
+            .expect("the test fleetd of serve_fleetd");
+        fleetds.stop_current();
+    }
+
+    /// Run `f` while the test fleetd of [`Harness::serve_fleetd`] is down,
+    /// then start it again. A test uses it for a command that needs the
+    /// lock of fleetd, such as `horch ledger watch --once`, which runs no
+    /// pass while a fleetd holds the lock. A routed command in `f` writes a
+    /// request file.
+    pub fn without_fleetd<T>(&self, f: impl FnOnce() -> T) -> T {
+        let mut fleetds = self
+            .fleetd
+            .borrow_mut()
+            .take()
+            .expect("the test fleetd of serve_fleetd");
+        fleetds.stop_current();
+        let out = f();
+        fleetds.serve(self, "fleetd");
+        *self.fleetd.borrow_mut() = Some(fleetds);
+        out
+    }
+
     /// Put an executable `name` with `contents` in `bin/` and return its
     /// path. An existing entry is removed first, never written through: it
     /// can be a link to a built fake.
@@ -550,6 +621,7 @@ fn choose_harness_root(preferred: &Path, fallback: &Path, preferred_writable: bo
 
 impl Drop for Harness {
     fn drop(&mut self) {
+        drop(self.fleetd.get_mut().take());
         let leaked = match reap(&self.root, &self.log) {
             Ok(leaked) => leaked,
             // A test that passes while its processes cannot be seen can

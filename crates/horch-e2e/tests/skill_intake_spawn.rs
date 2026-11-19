@@ -89,6 +89,7 @@ fn roster_harness(label: &str) -> Harness {
         .output()
         .unwrap();
     assert!(o.status.success(), "{}", text(&o));
+    h.serve_fleetd();
     h
 }
 
