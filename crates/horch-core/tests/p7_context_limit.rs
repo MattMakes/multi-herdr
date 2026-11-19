@@ -31,14 +31,14 @@ use horch_core::fleetd::task_execution::application::retry::{
 };
 use horch_core::fleetd::task_execution::domain::context_limit::CONTEXT_LIMIT;
 use horch_core::harness::antigravity::{self, ExecLaunch};
-use horch_core::taskledger::model::{Actor, WorkerKind};
+use horch_core::taskledger::model::{Actor, WorkerKind, WorktreeMode};
 use horch_core::taskledger::runs::{self, NewRun, Run};
 use horch_core::taskledger::supervisor::{
     AgentFacts, AttemptFiles, ExitFile, HeartbeatFile, OutcomeHint, EXIT_JSON, HEARTBEAT_JSON,
 };
-use horch_core::taskledger::tasks::{self, ClaimOutcome, NewTask};
-use horch_core::taskledger::workers::{self, NewWorker};
-use horch_core::taskledger::{schema, util};
+use horch_core::taskledger::tasks::{self, NewTask};
+use horch_core::taskledger::workers::NewWorker;
+use horch_core::taskledger::{schema, testing, util};
 use horch_platform::start::{self, Command};
 use rusqlite::{params, Connection};
 
@@ -321,46 +321,27 @@ impl World {
         }
     }
 
-    /// Add 1 task, and claim it with a new worker.
+    /// Add 1 task of the shared checkout, and bind it to a new live
+    /// attempt. The test keeps its own git worktree in [`World::tree`].
     fn running_task(&self) -> AttemptRef {
-        let new = NewTask::work("t", "tickets/t.md", "agy");
+        let mut new = NewTask::work("t", "tickets/t.md", "agy");
+        new.worktree_mode = WorktreeMode::Shared;
         let task = tasks::add(&self.conn, &self.run, &new, Actor::Orchestrator).unwrap();
         self.claim(&task.task_id)
     }
 
-    /// A new worker claims the task `task_id`: its new live attempt.
+    /// A new worker binds the task `task_id`: its new live attempt.
     fn claim(&self, task_id: &str) -> AttemptRef {
-        let worker = workers::insert(
-            &self.conn,
-            &NewWorker {
-                run_id: self.run.run_id.clone(),
-                kind: Some(WorkerKind::Worker),
-                persona: "agy".into(),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        self.conn
-            .execute(
-                "UPDATE workers SET status = 'spawning' WHERE worker_id = ?1",
-                [&worker],
-            )
-            .unwrap();
-        match tasks::claim(&self.conn, &worker).unwrap() {
-            ClaimOutcome::Claimed(_) => {}
-            other => panic!("no claim: {other:?}"),
-        }
-        let attempt_id: String = self
-            .conn
-            .query_row(
-                "SELECT id FROM attempts WHERE task_id = ?1 AND worker_id = ?2",
-                [task_id, &worker],
-                |r| r.get(0),
-            )
-            .unwrap();
+        let worker = NewWorker {
+            run_id: self.run.run_id.clone(),
+            kind: Some(WorkerKind::Worker),
+            persona: "agy".into(),
+            ..Default::default()
+        };
+        let bound = testing::bind_live(&self.conn, task_id, &worker, None).unwrap();
         AttemptRef {
             task_id: task_id.to_string(),
-            attempt_id,
+            attempt_id: bound.attempt_id,
         }
     }
 
