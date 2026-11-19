@@ -140,7 +140,7 @@ use crate::fleetd::task_execution::adapters::leases_store;
 use crate::fleetd::task_execution::adapters::result_reader::AttemptRef;
 use crate::fleetd::task_execution::adapters::sqlite as attempts_store;
 use crate::fleetd::task_execution::application::dispatch::{self, DispatchCtx};
-use crate::fleetd::task_execution::application::judge_pair::Settled;
+use crate::fleetd::task_execution::application::judge_pair::{self, Settled};
 use crate::fleetd::task_execution::application::launch::{self as push, Launches};
 use crate::fleetd::task_execution::application::outbox_ingest::{self, OutboxRead};
 use crate::fleetd::task_execution::application::planned_tasks;
@@ -1277,8 +1277,19 @@ impl<'a> Pass<'a> {
             quota: &p.quota,
             full_use: self.settings.config.pool_full_use,
         });
+        // The judge branches of a fix round, for I2 (judge pair, step 6).
+        let judge_git = effects::integration_git(&self.settings.fleet_root, &feature_repos(&tx)?);
+        let judge_gw = CliGitGateway::new(judge_git.clone());
+        let judge_refs = GitJudgeBranchRefs::new(
+            judge_git,
+            effects::judge_index_folder(&self.settings.fleet_root),
+        );
         let rules = Rules {
             tx: &tx,
+            judge_branches: JudgeGit {
+                git: &judge_gw,
+                refs: &judge_refs,
+            },
             guard: Some(self.settings.generation),
             clock,
             pools: pools.as_ref(),
@@ -2056,6 +2067,15 @@ struct Rules<'a> {
     sent: &'a BTreeMap<String, BTreeSet<i64>>,
     /// The push attempts whose `exit.json` this pass ingested.
     exited: &'a [String],
+    /// The git of the judge branches, for I2 of a judge task.
+    judge_branches: JudgeGit<'a>,
+}
+
+/// The git that reads whether a judge branch holds its judged tip.
+#[derive(Clone, Copy)]
+struct JudgeGit<'a> {
+    git: &'a dyn IntegrationGitGateway,
+    refs: &'a dyn judge_branch::JudgeBranchRefs,
 }
 
 impl Rules<'_> {
@@ -2264,7 +2284,7 @@ impl Rules<'_> {
                 }
             }
             let landed = integration_rows::tasks_landed(self.tx)?;
-            let (judges, passed) = judge_deps(self.tx, &all)?;
+            let (judges, passed) = judge_deps(self.tx, &all, self.judge_branches)?;
             let deps: Vec<Dep> = deps
                 .into_iter()
                 .map(|(t, on)| Dep {
@@ -5088,7 +5108,11 @@ fn feature_persona(tx: &Connection, id: &str) -> Result<Option<String>> {
 /// The `judges:` dependency of each `pending` judge task of `all`, and the
 /// judged tasks whose structural check passed for their newest attempt
 /// (I2; ticket 40 of fleetd-p6). A judge task has no `task_deps` row.
-fn judge_deps(tx: &Connection, all: &[tasks::Task]) -> Result<(Vec<Dep>, BTreeSet<String>)> {
+fn judge_deps(
+    tx: &Connection,
+    all: &[tasks::Task],
+    branches: JudgeGit<'_>,
+) -> Result<(Vec<Dep>, BTreeSet<String>)> {
     let mut deps = Vec::new();
     let mut passed = BTreeSet::new();
     for t in all
@@ -5098,7 +5122,8 @@ fn judge_deps(tx: &Connection, all: &[tasks::Task]) -> Result<(Vec<Dep>, BTreeSe
         let Some(judged) = judged_task(&t.kind, t.parent_task_id.as_deref()) else {
             continue;
         };
-        if verifier::structural_passed(tx, judged)? {
+        if verifier::structural_passed(tx, judged)? && judge_branch_ready(tx, t, judged, branches)?
+        {
             passed.insert(judged.to_string());
         }
         deps.push(Dep {
@@ -5108,6 +5133,22 @@ fn judge_deps(tx: &Connection, all: &[tasks::Task]) -> Result<(Vec<Dep>, BTreeSe
         });
     }
     Ok((deps, passed))
+}
+
+/// Whether the judge task `judge` of `judged` may run its next attempt: in
+/// the first round, yes; in a fix round, only when its judge branch holds
+/// the new judged tip, so fleetd moves the branch first (judge pair, step
+/// 6). The rule is the one of [`judge_branch::follow`].
+fn judge_branch_ready(
+    tx: &Connection,
+    judge: &tasks::Task,
+    judged: &str,
+    branches: JudgeGit<'_>,
+) -> Result<bool> {
+    if !judge_pair::in_fix_round(tx, judged)? {
+        return Ok(true);
+    }
+    judge_branch::holds_judged_tip(branches.git, branches.refs, tx, judge)
 }
 
 fn feature_repos(conn: &Connection) -> Result<Vec<PathBuf>> {

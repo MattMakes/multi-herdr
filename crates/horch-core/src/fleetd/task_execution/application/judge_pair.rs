@@ -225,6 +225,12 @@ fn done(tx: &Connection, guard: Option<Generation>, verified: Verified, task: &T
     Ok(())
 }
 
+/// Whether the judged task `task_id` is in a fix round: its judge task
+/// runs its next attempt on a moved judge branch (step 6).
+pub fn in_fix_round(conn: &Connection, task_id: &str) -> Result<bool> {
+    Ok(fix_rounds(conn, task_id)? > 0)
+}
+
 fn fix_rounds(conn: &Connection, task_id: &str) -> Result<i64> {
     Ok(conn.query_row(
         "SELECT fix_rounds FROM tasks WHERE task_id = ?1",

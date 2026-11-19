@@ -498,3 +498,20 @@ fn move_with_a_stale_seen_tip_moves_nothing() {
     );
     assert_eq!(w.tip(JUDGE_BRANCH), other);
 }
+
+/// I2 of the judge task of a fix round asks this rule: its judge branch
+/// holds the new judged tip only after fleetd moved it, so the judge task
+/// stays `pending` until the move, and its next attempt reads the change
+/// (judge pair, step 6; fault 11 of T-561).
+#[test]
+fn judge_branch_holds_the_new_judged_tip_only_after_its_move() {
+    let mut w = world();
+    let judge_id = w.row(JUDGE_BRANCH).task_id.unwrap();
+    let holds = |w: &World| {
+        let judge = tasks::get(&w.conn, &judge_id).unwrap();
+        judge_branch::holds_judged_tip(&w.gateway(), &w.refs(), &w.conn, &judge).unwrap()
+    };
+    assert!(!holds(&w), "the judge branch is on the first judged tip");
+    w.settle();
+    assert!(holds(&w), "the judge branch moved onto the fixed tip");
+}
