@@ -36,7 +36,7 @@ use crate::fleetd::task_execution::domain::task::AttemptState;
 use crate::fleetd::worker_profiles::adapters::launcher::Launcher;
 use crate::fleetd::worktree_custody::adapters::executors;
 use crate::fleetd::worktree_custody::adapters::git::{
-    is_gate, worktree_add_key, BranchRefused, CliWorktreeGit, NoSandbox,
+    worktree_add_key, BranchRefused, CliWorktreeGit, NoSandbox,
 };
 use crate::fleetd::worktree_custody::adapters::rescue_git::rescue_key;
 use crate::fleetd::worktree_custody::adapters::run_now::{run_now, Starter};
@@ -468,11 +468,12 @@ fn open_branch_refused(
     ctx.needs_you.open_item(tx, &item)
 }
 
-/// The gate tree of a feature has no worker and no owner attempt: fleetd
-/// owns it, and it stays `created`, which the reconciler does not orphan
-/// (ticket 28 of fleetd-p4, Q18).
+/// A tree with no worker and no owner attempt stays `created`, which the
+/// reconciler does not orphan: no attempt holds it (design, the row
+/// `created`). These are the gate tree of a feature (ticket 28 of
+/// fleetd-p4, Q18) and the tree of `horch worktree restore` (T-887).
 fn stays_created(row: &WorktreeRow) -> bool {
-    is_gate(row) && row.worker_id.is_none() && row.owner_attempt.is_none()
+    row.worker_id.is_none() && row.owner_attempt.is_none()
 }
 
 fn created(ctx: &JobCtx<'_>, tx: &Connection, row: WorktreeRow) -> Result<Observed> {
@@ -897,5 +898,129 @@ mod tests {
         let row = store::get(ledger_store.conn(), &id).unwrap().unwrap();
         assert_eq!(row.state, WorktreeState::Created);
         assert!(path.is_dir());
+    }
+
+    /// A git repository with 1 commit and a run on it, in `dir`.
+    fn repo_and_run(dir: &Path) -> (Store, runs::Run, String) {
+        let root = dir.join("repo");
+        std::fs::create_dir(&root).unwrap();
+        git(&root, &["init", "-q", "-b", "main"]);
+        git(&root, &["commit", "-q", "--allow-empty", "-m", "a"]);
+        let tip = git(&root, &["rev-parse", "HEAD"]);
+        let mut ledger_store = Store::open(&dir.join("ledger.sqlite3")).unwrap();
+        let run = ledger_store
+            .immediate(|tx| {
+                let run = runs::create(
+                    tx,
+                    &root,
+                    &NewRun {
+                        slug: "r1".into(),
+                        base_branch: Some("main".into()),
+                        ..Default::default()
+                    },
+                )?;
+                // FR-12: a task needs an idea in flight of the feature of its run.
+                crate::taskledger::schema::run_idea(tx, &run.run_id, &util::now(), true)?;
+                Ok(run)
+            })
+            .unwrap();
+        (ledger_store, run, tip)
+    }
+
+    /// The new row of a tree `name` on its own branch, as a restore makes
+    /// it: no task, and the worker `worker_id`.
+    fn new_tree(run: &runs::Run, tip: &str, name: &str, worker_id: Option<String>) -> NewWorktree {
+        let path = Path::new(&run.project_root).join(".worktrees").join(name);
+        NewWorktree {
+            worktree_id: util::new_id(),
+            task_id: None,
+            worker_id,
+            repo_root: run.project_root.clone(),
+            path: path.to_string_lossy().into_owned(),
+            branch: name.to_string(),
+            base: "main".into(),
+            base_commit: Some(tip.to_string()),
+            status: WorktreeStatus::Open,
+            mode: None,
+        }
+    }
+
+    fn lease_of<'a>(new: &'a NewWorktree, worker_id: &'a str) -> Lease<'a> {
+        Lease {
+            task_id: None,
+            worker_id,
+            attempt: None,
+            from: None,
+            new: Some(new),
+        }
+    }
+
+    /// The state of the row `id` after 1 reconcile with no new facts.
+    fn reconciled(ledger_store: &mut Store, id: &str) -> WorktreeState {
+        use crate::fleetd::worktree_custody::application::reconcile::{reconcile_worktrees, Facts};
+        let config = fleet_config(ledger_store.path()).unwrap();
+        let ctx = JobCtx {
+            guard: None,
+            config: &config,
+            needs_you: &NeedsYouList,
+        };
+        ledger_store
+            .immediate(|tx| reconcile_worktrees(&ctx, tx, &Facts::default(), fleet_clock(tx)?))
+            .unwrap();
+        store::get(ledger_store.conn(), id).unwrap().unwrap().state
+    }
+
+    /// The tree of `horch worktree restore` has no worker and no owner
+    /// attempt: it stays `created` (design, the row `created`: no attempt
+    /// holds it), and the reconciler does not orphan it (T-887).
+    #[test]
+    fn a_tree_with_no_worker_and_no_owner_stays_created_and_is_not_orphaned() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ledger_store, run, tip) = repo_and_run(dir.path());
+        let new = new_tree(&run, &tip, "feat", None);
+        let id = finish::lease_and_wait(&ledger_store, &TestJobs, &lease_of(&new, "")).unwrap();
+        let row = store::get(ledger_store.conn(), &id).unwrap().unwrap();
+        assert_eq!(row.state, WorktreeState::Created);
+        assert_eq!(reconciled(&mut ledger_store, &id), WorktreeState::Created);
+    }
+
+    /// The tree of a task attempt, as dispatch binds it, still moves to
+    /// `active` when its `worktree_add` job passes: the worker is not live
+    /// yet and the attempt is `launching`. The reconciler does not orphan
+    /// it, as the attempt holds it.
+    #[test]
+    fn a_tree_of_a_launching_attempt_goes_to_active_and_is_not_orphaned() {
+        use crate::taskledger::tasks::{self, NewTask};
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ledger_store, run, tip) = repo_and_run(dir.path());
+        let (task_id, worker) = ledger_store
+            .immediate(|tx| {
+                let task = NewTask::work("t1", "t1.md", "opus");
+                let task_id = tasks::add(tx, &run, &task, Actor::Orchestrator)?.task_id;
+                let new = workers::NewWorker {
+                    run_id: run.run_id.clone(),
+                    persona: "opus".into(),
+                    ..Default::default()
+                };
+                let worker = workers::insert(tx, &new)?;
+                tx.execute(
+                    "INSERT INTO attempts (id, task_id, worker_id, state) VALUES ('A1', ?1, ?2, 'launching')",
+                    [&task_id, &worker],
+                )?;
+                Ok((task_id, worker))
+            })
+            .unwrap();
+        let mut new = new_tree(&run, &tip, "T1-feat", Some(worker.clone()));
+        new.task_id = Some(task_id.clone());
+        let lease = Lease {
+            task_id: Some(&task_id),
+            attempt: Some("A1"),
+            ..lease_of(&new, &worker)
+        };
+        let id = finish::lease_and_wait(&ledger_store, &TestJobs, &lease).unwrap();
+        let row = store::get(ledger_store.conn(), &id).unwrap().unwrap();
+        assert_eq!(row.state, WorktreeState::Active);
+        assert_eq!(row.owner_attempt.as_deref(), Some("A1"));
+        assert_eq!(reconciled(&mut ledger_store, &id), WorktreeState::Active);
     }
 }
