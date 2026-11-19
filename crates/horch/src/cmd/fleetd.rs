@@ -44,7 +44,7 @@ use horch_core::fleetd::fleet_runtime::adapters::effects::{
 };
 use horch_core::fleetd::fleet_runtime::adapters::fleetd_row::{self, lock_path, wait_until_free};
 use horch_core::fleetd::fleet_runtime::adapters::old_watchdog;
-use horch_core::fleetd::fleet_runtime::adapters::scans::FolderItem;
+use horch_core::fleetd::fleet_runtime::adapters::scans::{CliPath, FolderItem};
 use horch_core::fleetd::fleet_runtime::adapters::watchdog_duties::{HerdrObserver, WatchdogDuties};
 use horch_core::fleetd::fleet_runtime::application::handlers_cli::{self, CliHandlers};
 use horch_core::fleetd::fleet_runtime::application::handlers_custody::{self, Custody};
@@ -73,7 +73,7 @@ use horch_core::fleetd::worktree_custody::adapters::sqlite::{self as trees, Work
 use horch_core::fleetd::worktree_custody::application::reconcile::WorkDir;
 use horch_core::messaging::delivery::{self, TypedLine};
 use horch_core::procid;
-use horch_core::runtime::{Paths, RuntimeContext};
+use horch_core::runtime::{process, Paths, RuntimeContext};
 use horch_core::taskledger::finish::CodexSandbox;
 use horch_core::taskledger::git::Git;
 use horch_core::taskledger::model::RunStatus;
@@ -1052,6 +1052,25 @@ impl Outside for Live<'_> {
 
     fn restart_spec(&self, r: &Restart) -> Result<LaunchSpec> {
         super::recipes::restart_spec(self.ctx, r)
+    }
+
+    /// Each tool of `docs-sources.toml` whose version command names a
+    /// binary on the `PATH` of fleetd, with the path of that binary. A tool
+    /// that is not installed has no binary, so it gets no docs job.
+    fn cli_binaries(&self) -> Vec<CliPath> {
+        let Ok(sources) = agent_docs_sync::sources() else {
+            return Vec::new();
+        };
+        let path = self.ctx.inherited.path.as_deref();
+        let pathext = self.ctx.inherited.pathext.as_deref();
+        sources
+            .into_iter()
+            .filter_map(|s| {
+                let bin = s.version_cmd.split_whitespace().next()?;
+                let path = process::which(path, pathext, bin)?;
+                Some(CliPath { cli: s.tool, path })
+            })
+            .collect()
     }
 }
 

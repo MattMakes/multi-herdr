@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use crate::fleetd::fleet_runtime::domain::budget::{Cursor, Deadline};
+use crate::fleetd::fleet_runtime::domain::budget::{Cursor, Deadline, PassBudget};
 
 /// The time of a scan: its deadline, the monotonic clock it reads between
 /// 2 items, and the calendar stamp of a new lap.
@@ -277,6 +277,43 @@ fn listing(dir: &Path) -> Listing {
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Listing::Missing,
         Err(e) => Listing::Unreadable(e.to_string()),
+    }
+}
+
+/// A CLI of the docs sources (`docs-sources.toml`) and the path of its
+/// binary: 1 item of the scan of the CLI binaries of Phase 7.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CliPath {
+    pub cli: String,
+    pub path: PathBuf,
+}
+
+/// The scan of the CLI binaries (fleetd-p7 ticket 30): `read` of at most
+/// `budget` items in turn order from the cursor, until the deadline. An
+/// item that `read` cannot read gives no fact, and the next lap reads it
+/// again.
+pub fn scan_cli_binaries<F>(
+    items: &[CliPath],
+    budget: PassBudget,
+    cursor: &mut Cursor,
+    clock: &mut ScanClock<'_>,
+    mut read: impl FnMut(&CliPath) -> Option<F>,
+) -> Scan<F> {
+    let mut facts = Vec::new();
+    let lap = cursor.turns(items, |i| i.cli.as_str());
+    for item in lap.into_iter().take(budget.rows()) {
+        if clock.deadline.reached((clock.now)()) {
+            return Scan {
+                facts,
+                stopped_at_budget: true,
+            };
+        }
+        facts.extend(read(item));
+        cursor.step(&item.cli, clock.stamp);
+    }
+    Scan {
+        facts,
+        stopped_at_budget: false,
     }
 }
 

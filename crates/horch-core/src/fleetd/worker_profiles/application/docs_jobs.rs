@@ -21,9 +21,29 @@ use crate::fleetd::fleet_runtime::domain::jobs::{Kind, State};
 use crate::fleetd::worker_profiles::domain::docs_jobs::{
     due, input_key, subject, CliFacts, DocsJob, LastRun, Why,
 };
+use crate::harness::HarnessKind;
 
 /// The count of hex digits of a binary id.
 const BINARY_ID_LEN: usize = 16;
+
+/// The docs source of each CLI with an exec adapter, with its harness: the
+/// 3 CLIs of the adapter table (MAP.md Q5). Each other docs source (herdr)
+/// has no conformance suite.
+const EXEC_SOURCES: [(&str, HarnessKind); 3] = [
+    ("claude", HarnessKind::Claude),
+    ("codex", HarnessKind::Codex),
+    ("agy", HarnessKind::Antigravity),
+];
+
+/// The harness of the docs source `cli` when it has an exec adapter, and
+/// so a conformance suite: the docs source `agy` is the CLI of the harness
+/// `antigravity`.
+pub fn exec_harness(cli: &str) -> Option<HarnessKind> {
+    EXEC_SOURCES
+        .iter()
+        .find(|(name, _)| *name == cli)
+        .map(|(_, kind)| *kind)
+}
 
 /// A CLI and the binary id of its binary now: 1 fact of the scan of the
 /// CLI binaries.
@@ -78,6 +98,7 @@ pub fn queue_docs_jobs(
         let conf = last_run(tx, Kind::Conformance, &cli.cli)?;
         let facts = CliFacts {
             binary_id: &cli.binary_id,
+            conformance: exec_harness(&cli.cli).is_some(),
             last_docs_sync: docs.as_ref(),
             last_conformance: conf.as_ref(),
         };

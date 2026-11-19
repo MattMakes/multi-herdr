@@ -17,6 +17,7 @@ use crate::fleetd::fleet_runtime::adapters::sqlite::{
     append_named_fact, last_named_facts, NamedFact,
 };
 use crate::fleetd::fleet_runtime::domain::ledger::Generation;
+use crate::fleetd::worker_profiles::application::docs_jobs::exec_harness;
 use crate::fleetd::worker_profiles::domain::conformance::ConformanceReport;
 use crate::fleetd::worker_profiles::domain::health::{self, Health, Mark, PROFILE};
 use crate::harness::HarnessKind;
@@ -67,8 +68,9 @@ pub fn mark_healthy(
     Ok(mark)
 }
 
-/// Mark each profile of `profiles` whose agent is the CLI of the
-/// conformance run `report`, in `tx`: unhealthy after a failed run, with
+/// Mark each profile of `profiles` whose agent is the harness of the CLI of
+/// the conformance run `report` (the docs source `agy` is the harness
+/// `antigravity`), in `tx`: unhealthy after a failed run, with
 /// the failed checks as the cause, and healthy again after a passed run.
 pub fn mark_after_conformance(
     tx: &Connection,
@@ -79,7 +81,7 @@ pub fn mark_after_conformance(
     let unhealthy = unhealthy_profiles(tx)?;
     let of_cli: Vec<(String, Health)> = profiles
         .iter()
-        .filter(|(_, agent)| agent.as_str() == report.cli)
+        .filter(|(_, agent)| exec_harness(&report.cli) == Some(*agent))
         .map(|(name, _)| {
             let now = match unhealthy.get(*name) {
                 Some(reason) => Health::Unhealthy {

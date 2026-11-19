@@ -14,6 +14,10 @@
 //!    from the one of its last `conformance` run.
 //! 4. `conformance` after each `docs_sync` run ends with a result.
 //!
+//! A CLI with no exec adapter (herdr) has no conformance suite (MAP.md
+//! Q5): it gets no `conformance` run, and rule 3 reads the binary id of its
+//! last `docs_sync` run.
+//!
 //! A kind with a queued or running run of the CLI gets no second run.
 //!
 //! The subject of a run is `<cli> <binary id>` (Q8). Its input key is the
@@ -73,6 +77,8 @@ pub struct LastRun {
 pub struct CliFacts<'a> {
     /// The binary id of the CLI now.
     pub binary_id: &'a str,
+    /// Whether the CLI has a conformance suite: an exec adapter.
+    pub conformance: bool,
     pub last_docs_sync: Option<&'a LastRun>,
     pub last_conformance: Option<&'a LastRun>,
 }
@@ -106,7 +112,8 @@ pub fn horch_of(input_key: &str) -> Option<&str> {
 pub fn due(clock: i64, horch_id: &str, cli: &CliFacts<'_>) -> Vec<Due> {
     let docs = cli.last_docs_sync;
     let conf = cli.last_conformance;
-    let new_cli = conf.is_none_or(|c| binary_of(&c.subject) != Some(cli.binary_id));
+    let last = if cli.conformance { conf } else { docs };
+    let new_cli = last.is_none_or(|r| binary_of(&r.subject) != Some(cli.binary_id));
     let mut out = Vec::new();
     if !docs.is_some_and(|d| d.active) {
         let why = if new_cli {
@@ -125,7 +132,7 @@ pub fn due(clock: i64, horch_id: &str, cli: &CliFacts<'_>) -> Vec<Due> {
             });
         }
     }
-    if !conf.is_some_and(|c| c.active) {
+    if cli.conformance && !conf.is_some_and(|c| c.active) {
         let after_docs = docs.is_some_and(|d| d.has_result && conf.is_none_or(|c| c.id < d.id));
         let why = if new_cli {
             Some(Why::NewCli)
@@ -168,6 +175,7 @@ mod tests {
     fn a_new_cli_gets_docs_sync_and_conformance() {
         let facts = CliFacts {
             binary_id: "b1",
+            conformance: true,
             last_docs_sync: None,
             last_conformance: None,
         };
@@ -186,6 +194,7 @@ mod tests {
         let conf = run(2, "b1", "h1");
         let facts = CliFacts {
             binary_id: "b1",
+            conformance: true,
             last_docs_sync: Some(&docs),
             last_conformance: Some(&conf),
         };
@@ -203,6 +212,7 @@ mod tests {
         let conf = run(2, "b1", "h1");
         let facts = CliFacts {
             binary_id: "b1",
+            conformance: true,
             last_docs_sync: Some(&docs),
             last_conformance: Some(&conf),
         };
@@ -218,5 +228,27 @@ mod tests {
         assert_eq!(binary_of(&s), Some("abc"));
         assert_eq!(horch_of(&input_key(&s, "h9")), Some("h9"));
         assert_eq!(horch_of("codex abc"), None);
+    }
+
+    #[test]
+    fn a_cli_with_no_conformance_suite_gets_docs_sync_only() {
+        let mut facts = CliFacts {
+            binary_id: "b1",
+            conformance: false,
+            last_docs_sync: None,
+            last_conformance: None,
+        };
+        assert_eq!(
+            jobs(&due(0, "h1", &facts)),
+            [(DocsJob::DocsSync, Why::NewCli)]
+        );
+        let docs = run(1, "b1", "h1");
+        facts.last_docs_sync = Some(&docs);
+        assert!(due(10, "h1", &facts).is_empty(), "no loop, no conformance");
+        facts.binary_id = "b2";
+        assert_eq!(
+            jobs(&due(10, "h1", &facts)),
+            [(DocsJob::DocsSync, Why::NewCli)]
+        );
     }
 }

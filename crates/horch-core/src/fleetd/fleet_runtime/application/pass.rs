@@ -65,13 +65,13 @@ use crate::fleetd::fleet_runtime::adapters::job_result_file::FileRead as JobFile
 use crate::fleetd::fleet_runtime::adapters::jobs_store::{self, JobRow};
 use crate::fleetd::fleet_runtime::adapters::request_spool::{self, ScanOutcome, Spool};
 use crate::fleetd::fleet_runtime::adapters::scans::{
-    self, FolderFact, FolderItem, Listing, Liveness, OutboxFact, Presence, ProcessFact,
+    self, CliPath, FolderFact, FolderItem, Listing, Liveness, OutboxFact, Presence, ProcessFact,
     ProcessItem, ScanClock,
 };
 use crate::fleetd::fleet_runtime::adapters::sqlite as door;
 use crate::fleetd::fleet_runtime::adapters::token_file::{self, Token};
 use crate::fleetd::fleet_runtime::adapters::{cursors_store, fleetd_row, polite_stops_store};
-use crate::fleetd::fleet_runtime::application::holds::record_hold_changes;
+use crate::fleetd::fleet_runtime::application::holds::{self, record_hold_changes};
 use crate::fleetd::fleet_runtime::application::jobs::{
     self, JobCtx, JobKey, JobRunner, NeedsYouItems, NewItem,
 };
@@ -90,11 +90,15 @@ use crate::fleetd::fleet_runtime::domain::pass::{
     TIMED_OUT,
 };
 use crate::fleetd::ideas::adapters::questions_store;
+use crate::fleetd::ideas::application::intake::{self, pending_idea_files, write_idea_file};
 use crate::fleetd::ideas::application::needs_you::{self, NeedsYouList};
 use crate::fleetd::ideas::domain::needs_you::Write as NeedsYouWrite;
 use crate::fleetd::integration::adapters::sqlite as integration_rows;
+use crate::fleetd::integration::application::new_features::Project;
 use crate::fleetd::integration::domain::task_branch::LandingState;
-use crate::fleetd::task_execution::adapters::attempt_files::{self, OsProcesses, WrapperRead};
+use crate::fleetd::task_execution::adapters::attempt_files::{
+    self, Found, OsProcesses, WrapperRead,
+};
 use crate::fleetd::task_execution::adapters::leases_store;
 use crate::fleetd::task_execution::adapters::result_reader::AttemptRef;
 use crate::fleetd::task_execution::adapters::sqlite as attempts_store;
@@ -119,7 +123,14 @@ use crate::fleetd::task_execution::domain::task::{
     RowRef, Rows, Seen, Stop, Target,
 };
 use crate::fleetd::worker_profiles::adapters::check_sandbox::WorkerSandboxes;
+use crate::fleetd::worker_profiles::application::conformance::read_conformance_json;
+use crate::fleetd::worker_profiles::application::docs_jobs::{
+    binary_id, queue_docs_jobs, scan_cli, CliBinary,
+};
+use crate::fleetd::worker_profiles::application::drift_idea::{add_drift_idea, KIND as DRIFT};
+use crate::fleetd::worker_profiles::application::health::mark_after_conformance;
 use crate::fleetd::worker_profiles::application::ports::{LaunchSpec, ProcessHost};
+use crate::fleetd::worker_profiles::domain::conformance::ConformanceReport;
 use crate::fleetd::worker_profiles::domain::profile::{Mode, Profile};
 use crate::fleetd::worktree_custody::adapters::git::{worktree_list_key, ListResult};
 use crate::fleetd::worktree_custody::adapters::sqlite as trees;
@@ -128,6 +139,7 @@ use crate::fleetd::worktree_custody::application::reconcile::{
     check_i6, reconcile_worktrees, Facts as WorktreeFacts, Listed, WorkDir,
 };
 use crate::fleetd::worktree_custody::domain::worktree::Breach as I6;
+use crate::harness::HarnessKind;
 use crate::roster::Roster;
 use crate::routing::quota::QuotaView;
 use crate::runtime::fault::Faults;
@@ -136,6 +148,8 @@ use crate::taskledger::git::Git;
 use crate::taskledger::model::{Actor, EventKind, ProgressSource, TaskStatus};
 use crate::taskledger::sql_words::WORKTREES_GONE;
 use crate::taskledger::store::Store;
+use crate::taskledger::supervisor::OutcomeHint;
+use crate::taskledger::triage::default_branch;
 use crate::taskledger::util;
 use crate::taskledger::watchdog::{self, Observation};
 use crate::taskledger::workers::{self, Worker};
@@ -233,6 +247,13 @@ pub trait Outside {
     /// The launch of the fallback worker of the restart `r` (RR-11).
     fn restart_spec(&self, r: &Restart) -> Result<LaunchSpec> {
         anyhow::bail!("this fleetd starts no fallback worker for {}", r.task_id)
+    }
+
+    /// Each CLI of the docs sources and the path of its binary, for the
+    /// scan of the CLI binaries of Phase 7. An `Outside` with no CLIs, as a
+    /// fake of a test, has none.
+    fn cli_binaries(&self) -> Vec<CliPath> {
+        Vec::new()
     }
 }
 
@@ -503,6 +524,8 @@ struct Read {
     tips: BTreeMap<String, String>,
     /// The lines of what part 1 could not do.
     failed: Vec<String>,
+    /// The facts of Phase 7.
+    p7: P7Read,
 }
 
 /// 1 live attempt of a task, as part 1 saw it.
@@ -747,6 +770,7 @@ impl<'a> Pass<'a> {
             let lines = self.verify_after_commit(conn, w, &decided, passed, deadline);
             report.failed.extend(lines);
         }
+        self.p7_effects(conn, deadline, &mut report);
         report.failed.extend(old_stops);
         report.failed.extend(failed);
         if let Err(e) = jobs::archive_results(&self.settings.fleet_root, &job_files) {
@@ -999,6 +1023,7 @@ impl<'a> Pass<'a> {
             Some(w) => task_tips(conn, &w.tools.git, &results)?,
             None => BTreeMap::new(),
         };
+        let p7 = self.read_p7(conn, deadline, &stamp, &wrappers)?;
         let mut sent = effects::read_doorbells(&self.settings.fleet_root);
         sent.retain(|id, _| {
             rows.attempts
@@ -1031,6 +1056,7 @@ impl<'a> Pass<'a> {
             token_fault,
             tips,
             failed,
+            p7,
         })
     }
 
@@ -1182,6 +1208,7 @@ impl<'a> Pass<'a> {
         // of this pass ("Order inside 1 pass").
         let guard = Some(self.settings.generation);
         outbox_ingest::ingest(&tx, guard, &read.outboxes)?;
+        let limit_failed = context_limits(&tx, guard, &self.settings, &read.p7)?;
         let at = util::now();
         let wrappers = attempt_files::ingest(&tx, guard, &read.wrappers, clock, &at, &OsProcesses)?;
         start_running(&tx, guard, clock, &wrappers.checkins, |persona| {
@@ -1212,6 +1239,8 @@ impl<'a> Pass<'a> {
         let disk = disk_budget(&self.job_ctx(), &tx, clock)?;
         let mut holds = read.holds;
         holds.extend(disk.hold.map(|cause| Hold::WorktreeDisk { cause }));
+        let (paced, personas) = pacing(read.pools.as_ref());
+        holds.extend(paced);
         {
             let now = RefCell::new(&mut self.now);
             let time_up = || deadline.reached((now.borrow_mut())());
@@ -1228,11 +1257,14 @@ impl<'a> Pass<'a> {
         }
         let mut work = WorkRows::default();
         if let Some(w) = &self.work {
-            work = self.dispatch_rows(&tx, w, &holds, clock, &read.stamp)?;
+            work = self.dispatch_rows(&tx, w, &holds, &personas, clock, &read.stamp)?;
             stops.append(&mut work.stops);
         }
         let ctx = self.job_ctx();
         let observed = jobs::observe(&ctx, &tx, &read.jobs, clock)?;
+        work.failed.extend(limit_failed);
+        work.failed
+            .extend(self.p7_rows(&tx, &read.p7, read.pools.as_ref(), clock)?);
         if self.work.is_some() {
             let policy = |t: &tasks::Task| rules.policy(t.primary_persona.as_deref());
             let v = Verifier {
@@ -1296,6 +1328,7 @@ impl<'a> Pass<'a> {
         tx: &Transaction<'_>,
         w: &TaskWork<'_>,
         holds: &[Hold],
+        paced: &BTreeMap<String, String>,
         clock: FleetSeconds,
         stamp: &str,
     ) -> Result<WorkRows> {
@@ -1305,8 +1338,13 @@ impl<'a> Pass<'a> {
             clock,
             git: &w.tools.git,
         };
-        let mut d =
-            dispatch::dispatch_due(tx, &ctx, &dispatch_holds(holds, clock), w.sandboxes, budget)?;
+        let mut d = dispatch::dispatch_due(
+            tx,
+            &ctx,
+            &dispatch_holds(holds, paced, clock),
+            w.sandboxes,
+            budget,
+        )?;
         w.sandboxes.move_to_fallbacks(tx, &mut d.held)?;
         w.sandboxes.open_items(tx, self.ports.needs_you, &d.held)?;
         if !d.bound.is_empty() {
@@ -2761,13 +2799,18 @@ fn retry_policy(
 /// The holds of a dispatch from the global holds `holds` of the pass, at
 /// fleet clock `clock`. A pacing hold of a pool is not here: the spawn of
 /// the attempt refuses a paced pool, as today.
-fn dispatch_holds(holds: &[Hold], clock: FleetSeconds) -> DispatchHolds {
+fn dispatch_holds(
+    holds: &[Hold],
+    paced: &BTreeMap<String, String>,
+    clock: FleetSeconds,
+) -> DispatchHolds {
     DispatchHolds {
         clock: clock.0,
         global: holds
             .iter()
             .filter_map(|h| h.global().map(|name| format!("{name}: {}", h.cause())))
             .collect(),
+        personas: paced.clone(),
         ..DispatchHolds::default()
     }
 }
@@ -3084,4 +3127,388 @@ fn i6_text(b: &I6) -> Option<(String, String)> {
             ),
         ),
     })
+}
+
+// ─── Phase 7 ────────────────────────────────────────────────────────────
+//
+// `docs/tickets/fleetd-p7/30-pass-wiring.md`. Part 1 scans the CLI
+// binaries within the scan budget from its cursor, and reads the worktree
+// at the end of each attempt that the wrapper ended at the context limit.
+// Part 2 ingests `context_limit` before the wrapper files settle the
+// worker (`finish_exited`), then, after the job observations, marks the
+// health of the profiles after each ended `conformance` run, adds the
+// drift idea of a failed run, and queues the docs jobs (`queue_due_jobs`).
+// Part 3 starts the queued jobs with the other job starts of the pass, and
+// writes the idea.md of each drift idea. Each mark and each idea is
+// idempotent on the id of its run: a note on the run, in the same
+// transaction, says that the pass acted on it.
+
+/// The cursor of the scan of the CLI binaries in `pass_cursors`.
+const CLI_BINARIES: &str = "cli_binaries";
+
+/// The cause of the note on an ended `conformance` run that the pass acted
+/// on: its health marks and its drift idea.
+const CONFORMANCE_ACTED: &str = "conformance result acted on";
+
+/// The facts of Phase 7 that part 1 read.
+struct P7Read {
+    /// The binary id of the horch binary of the job processes; `None` when
+    /// it cannot be read: the pass queues no docs job then.
+    horch_id: Option<String>,
+    /// The CLI binaries that the scan read in this pass.
+    clis: Vec<CliBinary>,
+    /// The cursor of [`CLI_BINARIES`] after the scan.
+    cli_cursor: Cursor,
+    /// Each attempt that the wrapper ended at the context limit, with its
+    /// worktree at the end.
+    limits: Vec<(AttemptRef, retry::TreeAtEnd)>,
+}
+
+impl Pass<'_> {
+    /// Part 1 of Phase 7: the scan of the CLI binaries, at most
+    /// `pass_budget` of them from the cursor until the scan budget ends,
+    /// and the worktree of each attempt of `wrappers` whose `exit.json`
+    /// says the context limit.
+    fn read_p7(
+        &mut self,
+        conn: &Connection,
+        deadline: Deadline,
+        stamp: &str,
+        wrappers: &[WrapperRead],
+    ) -> Result<P7Read> {
+        let paths = self.ports.outside.cli_binaries();
+        let mut cli_cursor = cursors_store::load(conn, CLI_BINARIES, stamp)?;
+        let mut clock = ScanClock {
+            deadline: deadline.scan((self.now)(), self.settings.config.scan_budget_ms),
+            now: &mut *self.now,
+            stamp,
+        };
+        let budget = PassBudget::new(self.settings.config.pass_budget);
+        let read = |c: &CliPath| scan_cli(&c.cli, &c.path);
+        let clis = scans::scan_cli_binaries(&paths, budget, &mut cli_cursor, &mut clock, read);
+        let clis = clis.facts;
+        let git = self.work.map(|w| &w.tools.git);
+        let tail = self.settings.config.transcript_tail_bytes;
+        let mut limits = Vec::new();
+        for w in wrappers.iter().filter(|w| at_context_limit(w)) {
+            limits.push((w.attempt.clone(), tree_at_end(conn, git, &w.attempt, tail)?));
+        }
+        Ok(P7Read {
+            horch_id: binary_id(&self.settings.horch),
+            clis,
+            cli_cursor,
+            limits,
+        })
+    }
+
+    /// Part 2 of Phase 7, after the job observations: the health marks and
+    /// the drift idea of each ended `conformance` run, then the docs jobs
+    /// that are due. Gives the lines of what failed.
+    fn p7_rows(
+        &self,
+        tx: &Transaction<'_>,
+        p7: &P7Read,
+        pools: Option<&PoolFacts>,
+        clock: FleetSeconds,
+    ) -> Result<Vec<String>> {
+        cursors_store::save(tx, CLI_BINARIES, &p7.cli_cursor)?;
+        let mut failed = Vec::new();
+        // With no roster, no profile is known: the runs wait for a pass
+        // with one.
+        if let Some(p) = pools {
+            failed.extend(self.conformance_results(tx, &p.roster)?);
+        }
+        if let Some(horch_id) = &p7.horch_id {
+            queue_docs_jobs(&self.job_ctx(), tx, clock, horch_id, &p7.clis)?;
+        }
+        Ok(failed)
+    }
+
+    /// The health marks of each profile of `roster` after each ended
+    /// `conformance` run that the pass did not act on yet, at most
+    /// `pass_budget` runs, and the drift idea of a failed run.
+    fn conformance_results(&self, tx: &Transaction<'_>, roster: &Roster) -> Result<Vec<String>> {
+        let guard = Some(self.settings.generation);
+        let budget = PassBudget::new(self.settings.config.pass_budget).rows();
+        let profiles: Vec<(&str, HarnessKind)> = roster
+            .names()
+            .into_iter()
+            .filter_map(|name| Some((name, roster.get(name)?.agent)))
+            .collect();
+        let mut failed = Vec::new();
+        for id in ended_not_noted(tx, Kind::Conformance, CONFORMANCE_ACTED, budget)? {
+            // A failure keeps the rows of the run unchanged, and the next
+            // pass tries the run again.
+            match row_alone(tx, || self.act_on_conformance(tx, guard, id, &profiles))? {
+                Ok(lines) => failed.extend(lines),
+                Err(e) => failed.push(format!("conformance run {id}: {e}")),
+            }
+        }
+        Ok(failed)
+    }
+
+    /// The health marks and the drift idea of the ended `conformance` run
+    /// `id`, and the note that the pass acted on it. A report that cannot
+    /// be read gives no mark: the note records the run, and the line says
+    /// why. Gives the lines of what failed.
+    fn act_on_conformance(
+        &self,
+        tx: &Transaction<'_>,
+        guard: Option<Generation>,
+        id: i64,
+        profiles: &[(&str, HarnessKind)],
+    ) -> Result<Vec<String>> {
+        let mut failed = Vec::new();
+        let mut note = serde_json::json!({});
+        let row = jobs_store::get(tx, id)?.with_context(|| format!("no job {id}"))?;
+        match conformance_report(&row) {
+            Ok(None) => {}
+            Err(e) => failed.push(format!("the report of conformance run {id}: {e:#}")),
+            Ok(Some(report)) => {
+                mark_after_conformance(tx, guard, &report, profiles)?;
+                if report.failure().is_some() {
+                    note = self.drift(tx, &report, &mut failed)?;
+                }
+            }
+        }
+        let cause = Cause {
+            actor: Actor::Horch,
+            text: CONFORMANCE_ACTED,
+        };
+        record(
+            tx,
+            guard,
+            EventKind::Note,
+            Entity::Job,
+            &id.to_string(),
+            cause,
+            &note,
+        )?;
+        Ok(failed)
+    }
+
+    /// Add the drift idea of the failed run `report` to the project of the
+    /// fleet: the first repository of [`Outside::repositories`] by path, so
+    /// each pass chooses the same one. Gives the data of the note on the
+    /// run, which names the project and the idea. With no project, no idea
+    /// is added, and `failed` gets 1 line.
+    fn drift(
+        &self,
+        tx: &Transaction<'_>,
+        report: &ConformanceReport,
+        failed: &mut Vec<String>,
+    ) -> Result<serde_json::Value> {
+        let mut repos = self.ports.outside.repositories(tx)?;
+        repos.sort();
+        let git = self
+            .work
+            .map_or_else(|| Git::new("git"), |w| w.tools.git.clone());
+        let project = repos.into_iter().next().and_then(|root| {
+            let branch = default_branch(&git, Path::new(&root))?;
+            Some((root, branch))
+        });
+        let Some((root, branch)) = project else {
+            failed.push(format!(
+                "the drift idea of {} {}: the fleet has no project with a primary branch",
+                report.cli, report.version
+            ));
+            return Ok(serde_json::json!({ "project": null }));
+        };
+        let target = intake::Target::New(Project {
+            root: Path::new(&root),
+            primary_branch: &branch,
+        });
+        let fleet_root = &self.settings.fleet_root;
+        let added = add_drift_idea(tx, &self.job_ctx(), report, fleet_root, target)?;
+        let idea = added.map(|a| a.file.id);
+        Ok(serde_json::json!({ "project": root, "idea": idea }))
+    }
+
+    /// Part 3 of Phase 7: write the idea.md of each drift idea that has
+    /// none, at most `pass_budget` of them, until the time budget ends.
+    fn p7_effects(&mut self, conn: &Connection, deadline: Deadline, report: &mut PassReport) {
+        let ideas = self.settings.fleet_root.join("ideas");
+        let pending = match pending_idea_files(conn, &ideas) {
+            Ok(p) => p,
+            Err(e) => {
+                report.failed.push(format!("the drift ideas: {e:#}"));
+                return;
+            }
+        };
+        let budget = PassBudget::new(self.settings.config.pass_budget).rows();
+        for file in pending.iter().filter(|f| f.source == DRIFT).take(budget) {
+            if deadline.reached((self.now)()) {
+                report.left += 1;
+                continue;
+            }
+            let written = User::current()
+                .map_err(anyhow::Error::from)
+                .and_then(|owner| write_idea_file(&ideas, owner, file));
+            match written {
+                Ok(_) => report
+                    .done
+                    .push(Done::Duty(format!("idea.md of drift idea {}", file.id))),
+                Err(e) => report
+                    .failed
+                    .push(format!("idea.md of drift idea {}: {e:#}", file.id)),
+            }
+        }
+    }
+}
+
+/// Part 2 of Phase 7, before the wrapper files settle the worker: each
+/// attempt that the wrapper ended at the context limit ends with
+/// `context_limit`, burns no attempt, and its task goes to `ready` with a
+/// handoff file, or holds at a loop (FM-20, MAP.md of fleetd-p7, Q2).
+///
+/// A failure keeps the rows of its attempt unchanged, and gives its line:
+/// the wrapper files then settle the worker as an exit with no result.
+fn context_limits(
+    tx: &Transaction<'_>,
+    guard: Option<Generation>,
+    settings: &Settings,
+    p7: &P7Read,
+) -> Result<Vec<String>> {
+    let tail = settings.config.transcript_tail_bytes;
+    let mut failed = Vec::new();
+    for (a, tree) in &p7.limits {
+        let moved = row_alone(tx, || {
+            retry::on_context_limit(tx, guard, &settings.fleet_root, tail, a, tree)
+        })?;
+        if let Err(e) = moved {
+            failed.push(format!(
+                "the context limit of attempt {}: {e}",
+                a.attempt_id
+            ));
+        }
+    }
+    Ok(failed)
+}
+
+/// Run `f` in a savepoint of `tx`: an error rolls back only the rows of
+/// `f`, and gives its line.
+fn row_alone<T>(tx: &Connection, f: impl FnOnce() -> Result<T>) -> Result<Result<T, String>> {
+    tx.execute_batch("SAVEPOINT p7_row")?;
+    match f() {
+        Ok(v) => {
+            tx.execute_batch("RELEASE p7_row")?;
+            Ok(Ok(v))
+        }
+        Err(e) => {
+            tx.execute_batch("ROLLBACK TO p7_row; RELEASE p7_row")?;
+            Ok(Err(format!("{e:#}")))
+        }
+    }
+}
+
+/// Whether the wrapper says in a valid `exit.json` of `w` that it ended
+/// the attempt at the context limit.
+fn at_context_limit(w: &WrapperRead) -> bool {
+    w.exit.as_ref().is_some_and(|f| {
+        matches!(&f.found, Found::Valid { file, .. }
+            if file.outcome_hint == Some(OutcomeHint::ContextLimit))
+    })
+}
+
+/// The worktree of the task of `a` at the end of the attempt: its head and
+/// its `git diff`, cut to `tail` bytes. With no git, or a git that fails,
+/// the head is unknown and the diff is empty: an unknown head never holds
+/// the loop guard.
+fn tree_at_end(
+    conn: &Connection,
+    git: Option<&Git>,
+    a: &AttemptRef,
+    tail: u64,
+) -> Result<retry::TreeAtEnd> {
+    let Some(git) = git else {
+        return Ok(retry::TreeAtEnd::default());
+    };
+    let task = tasks::get(conn, &a.task_id)?;
+    let dir = match trees::of_task(conn, &a.task_id)? {
+        Some(r) if task.uses_worktree() => r.path,
+        _ => runs::get(conn, &task.run_id)?.project_root,
+    };
+    let dir = Path::new(&dir);
+    let out = |args: &[&str]| {
+        git.try_run(dir, args)
+            .ok()
+            .filter(|o| o.ok)
+            .map(|o| o.stdout)
+    };
+    let head = out(&["rev-parse", "HEAD"]).map(|h| h.trim().to_string());
+    let mut diff = out(&["diff"]).unwrap_or_default();
+    let mut cut = usize::try_from(tail).unwrap_or(usize::MAX).min(diff.len());
+    while !diff.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    diff.truncate(cut);
+    Ok(retry::TreeAtEnd { head, diff })
+}
+
+/// The report of the ended `conformance` run `row`: its `conformance.json`
+/// at the path of its result. `None` when the run wrote no report, as a
+/// run whose version command failed.
+fn conformance_report(row: &JobRow) -> Result<Option<ConformanceReport>> {
+    let Some(path) =
+        jobs::result_data(row).and_then(|d| d.get("path")?.as_str().map(PathBuf::from))
+    else {
+        return Ok(None);
+    };
+    let text =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let report =
+        read_conformance_json(&text).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+    Ok(Some(report))
+}
+
+/// The pacing holds of the pools of the roster in `pools`: 1 hold for each
+/// paced pool, and the cause of each paced persona. A pool with no fresh
+/// reading paces nothing.
+fn pacing(pools: Option<&PoolFacts>) -> (Vec<Hold>, BTreeMap<String, String>) {
+    let mut paced: Vec<Hold> = Vec::new();
+    let mut personas = BTreeMap::new();
+    let Some(p) = pools else {
+        return (paced, personas);
+    };
+    for name in p.roster.names() {
+        let Some(t) = p.roster.get(name) else {
+            continue;
+        };
+        let model = t.model.as_deref().unwrap_or_default();
+        let Some(hold) = holds::pacing(&p.quota, t.agent.as_str(), model) else {
+            continue;
+        };
+        personas.insert(name.to_string(), hold.cause().to_string());
+        let pool = |h: &Hold| match h {
+            Hold::Pacing { pool, .. } => Some(pool.clone()),
+            _ => None,
+        };
+        if !paced.iter().any(|h| pool(h) == pool(&hold)) {
+            paced.push(hold);
+        }
+    }
+    (paced, personas)
+}
+
+/// The ids of the ended runs of `kind` with no note of `cause`, oldest
+/// first, at most `budget` of them.
+fn ended_not_noted(tx: &Connection, kind: Kind, cause: &str, budget: usize) -> Result<Vec<i64>> {
+    let sql = "SELECT j.id FROM jobs j WHERE j.kind = ?1 AND j.state IN (?2, ?3)
+         AND NOT EXISTS (SELECT 1 FROM events e WHERE e.entity = ?4
+             AND e.entity_id = CAST(j.id AS TEXT) AND e.kind = ?5 AND e.cause = ?6)
+         ORDER BY j.id LIMIT ?7";
+    let mut stmt = tx.prepare(sql)?;
+    let ids = stmt.query_map(
+        rusqlite::params![
+            kind.as_str(),
+            State::Passed.as_str(),
+            State::Failed.as_str(),
+            Entity::Job.as_str(),
+            EventKind::Note.as_str(),
+            cause,
+            i64::try_from(budget).unwrap_or(i64::MAX),
+        ],
+        |r| r.get(0),
+    )?;
+    Ok(ids.collect::<rusqlite::Result<_>>()?)
 }
