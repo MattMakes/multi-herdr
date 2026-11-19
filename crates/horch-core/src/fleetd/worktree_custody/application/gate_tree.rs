@@ -117,6 +117,24 @@ pub fn reserve(
     Ok(GateTree::Reserved { row, job })
 }
 
+/// Whether a gate of `req.feature_id` can run in its gate tree now: the
+/// tree is `created` and its folder exists. A feature with no gate tree
+/// gets its reserved row and its `worktree_add` run (Q18), and a later pass
+/// runs the gate.
+pub fn ready(
+    ctx: &JobCtx<'_>,
+    tx: &Connection,
+    req: &GateTreeRequest<'_>,
+    clock: FleetSeconds,
+) -> Result<bool> {
+    Ok(match reserve(ctx, tx, req, clock)? {
+        GateTree::Ready(tree) => {
+            tree.state == WorktreeState::Created && Path::new(&tree.path).is_dir()
+        }
+        GateTree::Reserved { .. } => false,
+    })
+}
+
 /// The gate tree of `feature_id` in `repo` that is not `removed`.
 pub fn of_feature(conn: &Connection, repo: &Path, feature_id: &str) -> Result<Option<WorktreeRow>> {
     store::by_path(conn, &path(repo, feature_id).to_string_lossy())

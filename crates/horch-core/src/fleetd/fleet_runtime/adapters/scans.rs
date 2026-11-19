@@ -1,7 +1,8 @@
 //! The fact scans of a pass, each in its budget.
 //!
 //! Part 1 of a pass runs 4 scans (`docs/tickets/fleetd-p1/MAP.md`, Q4):
-//! processes, outboxes, worktree folders and requests. Each scan walks its
+//! processes, outboxes, worktree folders and requests. Phase 6 adds the
+//! scan of the idea folders, which the idea duties run after part 2. Each scan walks its
 //! items in turn order from its [`Cursor`], looks at its [`Deadline`]
 //! between 2 items, and stops there. The next pass continues at the
 //! cursor. A folder that file watching reports goes first; it does not move
@@ -209,6 +210,24 @@ pub fn scan_requests(
         Listing::Unreadable(e) => return Err(std::io::Error::other(e)),
     };
     Ok(walk(&names, |n| n, &[], cursor, clock, Clone::clone))
+}
+
+/// The idea folders of `<fleet root>/ideas/` (`ideas`), in turn order: each
+/// folder name goes to `read`, which reads the files of the folder. No
+/// folder gives no facts. The idea folders scan of Phase 6 has the time
+/// budget of the fact scans of Phase 1 (ticket 51 of fleetd-p6).
+pub fn scan_idea_folders<F>(
+    ideas: &Path,
+    cursor: &mut Cursor,
+    clock: &mut ScanClock<'_>,
+    read: impl FnMut(&String) -> F,
+) -> std::io::Result<Scan<F>> {
+    let names = match listing(ideas) {
+        Listing::Missing => Vec::new(),
+        Listing::Names(names) => names,
+        Listing::Unreadable(e) => return Err(std::io::Error::other(e)),
+    };
+    Ok(walk(&names, |n| n, &[], cursor, clock, read))
 }
 
 /// The liveness of process `pid` with the recorded start time `pid_start`.

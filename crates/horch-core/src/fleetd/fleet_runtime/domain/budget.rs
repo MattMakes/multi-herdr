@@ -83,6 +83,35 @@ impl ScanKind {
     }
 }
 
+/// The rows of `pass_cursors` that the idea duties of Phase 6 own in the
+/// pass (ticket 51 of fleetd-p6). Each takes at most `pass_budget` rows in
+/// 1 pass. The dispatcher, the question flow, the sub-orchestrators and the
+/// waits keep their cursors in their use cases.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IdeaCursor {
+    /// The folders of `<fleet root>/ideas/`: the notes of each idea. The
+    /// scan has the time budget of the fact scans.
+    IdeaFolders,
+    /// The `requests` rows whose effects the pass wrote, by row number.
+    RequestEffects,
+    /// The tasks that wait for their replan.
+    Replans,
+    /// The files of `<fleet root>/needs-you/`.
+    NeedsYou,
+}
+
+impl IdeaCursor {
+    /// The `kind` of the row in `pass_cursors`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            IdeaCursor::IdeaFolders => "idea_folders",
+            IdeaCursor::RequestEffects => "idea_effects",
+            IdeaCursor::Replans => "replans",
+            IdeaCursor::NeedsYou => "needs_you",
+        }
+    }
+}
+
 /// The 3 row kinds of integration that part 2 of a pass walks within
 /// `pass_budget`, each with its row in `pass_cursors`
 /// (`docs/tickets/fleetd-p4/47-pass-wiring-integration.md`).

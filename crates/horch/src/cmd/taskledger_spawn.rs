@@ -14,6 +14,7 @@ use anyhow::{bail, ensure, Result};
 use horch_core::execution::store::ExecutionStore;
 use horch_core::fleetd::fleet_runtime::adapters::channel_client::{self, Sent};
 use horch_core::fleetd::fleet_runtime::adapters::request_wire::Outcome;
+use horch_core::fleetd::fleet_runtime::adapters::watchdog_duties::idea_lead_launch;
 use horch_core::fleetd::fleet_runtime::application::holds;
 use horch_core::fleetd::fleet_runtime::domain::health::Finding;
 use horch_core::fleetd::fleet_runtime::domain::requests::{retired, Kind};
@@ -116,6 +117,8 @@ pub struct LedgerSpawn {
     pub first_line: Option<String>,
     /// The push attempt of the worker, with its files.
     pub push: Option<Pushed>,
+    /// The worker is the idea-lead of an idea-lead attempt (T-890).
+    pub idea_lead: bool,
 }
 
 /// The push attempt that fleetd bound and that a spawn opens the pane of
@@ -172,7 +175,15 @@ pub fn prepare(
     ensure_active(&run)?;
     let persona = spawn_persona(ctx, args)?;
     ensure_replaceable(&store, args, &run)?;
+    let idea_lead = match &args.attempt {
+        Some(attempt) => idea_lead_attempt(ctx, &store, attempt, &run, &persona)?,
+        None => None,
+    };
     let (id, first_line, push) = match (&args.attempt, adopt_wanted()) {
+        (Some(_), _) if idea_lead.is_some() => {
+            let (worker, brief) = idea_lead.clone().expect("an idea-lead attempt");
+            (worker, Some(brief), None)
+        }
         (Some(attempt), _) => {
             let (worker, pushed) = push(ctx, &store, attempt, &run, &persona)?;
             (
@@ -198,7 +209,45 @@ pub fn prepare(
         worker_id: id,
         first_line,
         push,
+        idea_lead: idea_lead.is_some(),
     }))
+}
+
+/// The idea-lead attempt `attempt` that fleetd started (T-890): an attempt
+/// with no task whose rows make it an idea-lead attempt
+/// ([`idea_lead_launch`]). It is in `launching`, and its worker is a
+/// `spawning` row of `run` and `persona` with no agent. Gives its worker and
+/// the brief of its idea, the first line of its pane. `None` for each
+/// other attempt: [`bound_attempt`] refuses an attempt with no task.
+fn idea_lead_attempt(
+    ctx: &RuntimeContext,
+    store: &Store,
+    attempt: &str,
+    run: &Run,
+    persona: &str,
+) -> Result<Option<(String, String)>> {
+    let Some(l) = idea_lead_launch(store.conn(), &ctx.paths.fleet_root, attempt)? else {
+        return Ok(None);
+    };
+    let refusal =
+        |why: &str| anyhow::anyhow!("horch spawn refused: it cannot open attempt {attempt}: {why}");
+    if l.state != AttemptState::Launching.as_str() {
+        return Err(refusal(&format!(
+            "the attempt is {}, not launching",
+            l.state
+        )));
+    }
+    if l.run_id != run.run_id {
+        return Err(refusal(&format!("its worker is not of run {}", run.slug)));
+    }
+    if l.persona != persona {
+        return Err(refusal(&format!("its worker is not of persona {persona}")));
+    }
+    let w = workers::get(store.conn(), &l.worker_id)?;
+    if w.status != WorkerStatus::Spawning.as_str() || w.agent_pid.is_some() {
+        return Err(refusal("its worker has started"));
+    }
+    Ok(Some((l.worker_id, l.brief)))
 }
 
 /// The push attempt `attempt` that fleetd bound (`--attempt`), with its
@@ -513,6 +562,12 @@ fn ensure_replaceable(store: &Store, args: &SpawnArgs, run: &Run) -> Result<()> 
 }
 
 impl LedgerSpawn {
+    /// The worker claims its task: no push attempt and no idea-lead
+    /// attempt gave it its work.
+    pub fn claims(&self) -> bool {
+        self.push.is_none() && !self.idea_lead
+    }
+
     /// The pane is open and runs `horch worker <role>`: 1 `worker_launched`
     /// request records it. A failed record prints a warning and never fails
     /// the spawn.
@@ -1493,5 +1548,84 @@ mod push_tests {
                 dir.join("inbox/START.md").display()
             ))
         );
+    }
+    /// 1 attempt `id` with no task, in `state`, of the idea of `r1` and a
+    /// new `spawning` worker of `persona`, as the sub-orchestrators write
+    /// an idea-lead attempt (T-890).
+    fn taskless_attempt(w: &World, id: &str, persona: &str, state: AttemptState) {
+        use horch_core::fleetd::task_execution::adapters::sqlite as attempts_store;
+        use horch_core::fleetd::task_execution::domain::task::AttemptRow;
+        let conn = w.store.conn();
+        let idea: String = conn
+            .query_row("SELECT id FROM ideas", [], |r| r.get(0))
+            .unwrap();
+        let worker_id = workers::insert(
+            conn,
+            &NewWorker {
+                run_id: w.run.run_id.clone(),
+                kind: Some(horch_core::taskledger::model::WorkerKind::Worker),
+                persona: persona.into(),
+                ..NewWorker::default()
+            },
+        )
+        .unwrap();
+        let row = AttemptRow {
+            id: format!("{idea}/{id}"),
+            task_id: None,
+            worker_id,
+            state,
+            process: None,
+            pane: None,
+        };
+        let now = horch_core::taskledger::util::now();
+        attempts_store::insert_attempt(conn, &row, &now).unwrap();
+        attempts_store::set_idea(conn, &row.id, &idea).unwrap();
+    }
+
+    /// The id of the only attempt.
+    fn only_attempt(w: &World) -> String {
+        w.store
+            .conn()
+            .query_row("SELECT id FROM attempts", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// `--attempt` opens the pane of an idea-lead attempt in `launching`:
+    /// no task files, and the first line is the brief of its idea.
+    #[test]
+    fn spawn_of_an_idea_lead_attempt_starts_on_the_brief_of_its_idea() {
+        let w = world();
+        taskless_attempt(&w, "clarifying/1", "idea-lead", AttemptState::Launching);
+        let mut again = args("idea-lead");
+        again.attempt = Some(only_attempt(&w));
+        let Prepared::Pane(l) = prepare(&w.ctx(None), &again, None).unwrap() else {
+            panic!("--attempt opens a pane");
+        };
+        assert!(l.push.is_none() && !l.claims());
+        let first = l.first_line.unwrap();
+        assert!(first.contains("phase clarifying"), "{first}");
+        assert_eq!(w.count("SELECT COUNT(*) FROM requests"), 0);
+    }
+
+    /// `--attempt` refuses each attempt with no task that is not an
+    /// idea-lead attempt in `launching`.
+    #[test]
+    fn spawn_refuses_an_attempt_with_no_task_that_is_not_a_launching_idea_lead() {
+        let w = world();
+        taskless_attempt(&w, "clarifying/1", "dev", AttemptState::Launching);
+        let mut again = args("dev");
+        again.attempt = Some(only_attempt(&w));
+        let err = prepare(&w.ctx(None), &again, None).err().unwrap();
+        assert!(
+            err.to_string().contains("the attempt has no task"),
+            "{err:#}"
+        );
+
+        let w = world();
+        taskless_attempt(&w, "clarifying/1", "idea-lead", AttemptState::Live);
+        let mut again = args("idea-lead");
+        again.attempt = Some(only_attempt(&w));
+        let err = prepare(&w.ctx(None), &again, None).err().unwrap();
+        assert!(err.to_string().contains("not launching"), "{err:#}");
     }
 }

@@ -950,6 +950,7 @@ fn ledger_dump(store: &ExecutionStore) -> [String; 2] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use horch_core::fleetd::fleet_runtime::adapters::test_fleetd::serve_session_records_at;
 
     /// A smoke pane is a fresh shell: its `horch` line names the state folder
     /// the checks read, for each shell, however the parent chose it.
@@ -1031,6 +1032,11 @@ mod tests {
     #[test]
     fn smoke_session_is_done_only_with_one_finished_noted_record() {
         let tmp = tempfile::tempdir().unwrap();
+        let _fleetd = serve_session_records_at(
+            &tmp.path().join(horch_core::execution::store::STATE_DB),
+            &tmp.path().join("fleet"),
+        )
+        .unwrap();
         let ledger = SessionLedger::for_project(tmp.path(), "/p");
         assert!(!smoke_session_done(&ledger), "empty ledger");
 
@@ -1075,6 +1081,11 @@ mod tests {
     #[test]
     fn a_done_session_without_a_note_fails_the_check() {
         let tmp = tempfile::tempdir().unwrap();
+        let _fleetd = serve_session_records_at(
+            &tmp.path().join(horch_core::execution::store::STATE_DB),
+            &tmp.path().join("fleet"),
+        )
+        .unwrap();
         let ledger = SessionLedger::for_project(tmp.path(), "/p");
         ledger
             .add(horch_core::execution::records::NewRecord {
@@ -1273,6 +1284,11 @@ mod tests {
     #[test]
     fn trf_45_ledger_dump_prints_the_stored_session_records() {
         let tmp = tempfile::tempdir().unwrap();
+        let _fleetd = serve_session_records_at(
+            &tmp.path().join(horch_core::execution::store::STATE_DB),
+            &tmp.path().join("fleet"),
+        )
+        .unwrap();
         let ledger = SessionLedger::for_project(tmp.path(), "/p");
         ledger
             .add(horch_core::execution::records::NewRecord {

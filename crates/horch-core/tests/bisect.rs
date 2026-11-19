@@ -25,6 +25,10 @@ use horch_core::fleetd::integration::application::bundles::{self, Bundles, Faile
 use horch_core::fleetd::integration::application::landing;
 use horch_core::fleetd::integration::domain::task_branch::LandingState;
 use horch_core::fleetd::worktree_custody::adapters::git::CliWorktreeGit;
+use horch_core::fleetd::worktree_custody::application::create::{self, Observed};
+use horch_core::fleetd::worktree_custody::application::gate_tree::{
+    self, GateTree, GateTreeRequest,
+};
 use horch_core::taskledger::model::Actor;
 use horch_core::taskledger::runs::{self, NewRun, Run};
 use horch_core::taskledger::tasks::{self, NewTask};
@@ -129,7 +133,7 @@ fn world() -> World {
     )
     .unwrap();
     tx.commit().unwrap();
-    World {
+    let w = World {
         _temp: temp,
         root,
         repo,
@@ -138,10 +142,56 @@ fn world() -> World {
         config: FleetConfig::default(),
         tasks: 0,
         clock: 0,
-    }
+    };
+    w.gate_tree();
+    w
 }
 
 impl World {
+    /// The gate tree of [`FEATURE`], so a fast gate can run (Q18): its
+    /// reserved row, the folder that its `worktree_add` job makes, and the
+    /// observation of the passed job, as a pass observes it.
+    fn gate_tree(&self) {
+        let tip = git(&self.repo, &["rev-parse", FEATURE_BRANCH]);
+        let req = GateTreeRequest {
+            feature_id: FEATURE,
+            run_id: &self.run.run_id,
+            repo: &self.repo,
+            base: FEATURE_BRANCH,
+            tip: &tip,
+        };
+        let ctx = JobCtx {
+            guard: None,
+            config: &self.config,
+            needs_you: &NeedsYouList,
+        };
+        let tx = self.conn.unchecked_transaction().unwrap();
+        let job = match gate_tree::reserve(&ctx, &tx, &req, FleetSeconds(0)).unwrap() {
+            GateTree::Reserved { job, .. } => job,
+            other => panic!("expected a reserved gate tree, got {other:?}"),
+        };
+        tx.commit().unwrap();
+        let path = gate_tree::path(&self.repo, FEATURE);
+        git(
+            &self.repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                &path.to_string_lossy(),
+                &tip,
+            ],
+        );
+        let json = r#"{"passed":true,"verdict":true,"text":"made"}"#;
+        self.end_job(job, "passed", json);
+        let ended = jobs_store::get(&self.conn, job).unwrap().unwrap();
+        let tx = self.conn.unchecked_transaction().unwrap();
+        let seen = create::observe(&ctx, &tx, &ended).unwrap();
+        tx.commit().unwrap();
+        assert!(matches!(seen, Observed::Created(_)), "{seen:?}");
+    }
+
     /// Commit `file` with `text` on `branch`, made from the feature branch
     /// when it is new.
     fn commit_on(&self, branch: &str, file: &str, text: &str) {

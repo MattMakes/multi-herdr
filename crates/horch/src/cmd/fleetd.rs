@@ -45,13 +45,16 @@ use horch_core::fleetd::fleet_runtime::adapters::effects::{
 use horch_core::fleetd::fleet_runtime::adapters::fleetd_row::{self, lock_path, wait_until_free};
 use horch_core::fleetd::fleet_runtime::adapters::old_watchdog;
 use horch_core::fleetd::fleet_runtime::adapters::scans::{CliPath, FolderItem};
-use horch_core::fleetd::fleet_runtime::adapters::watchdog_duties::{HerdrObserver, WatchdogDuties};
+use horch_core::fleetd::fleet_runtime::adapters::watchdog_duties::{
+    idea_lead_launch, HerdrObserver, WatchdogDuties,
+};
 use horch_core::fleetd::fleet_runtime::application::handlers_cli::{self, CliHandlers};
 use horch_core::fleetd::fleet_runtime::application::handlers_custody::{self, Custody};
+use horch_core::fleetd::fleet_runtime::application::handlers_idea::{self, IdeaHandlers};
 use horch_core::fleetd::fleet_runtime::application::handlers_task::{self, TaskHandlers};
 use horch_core::fleetd::fleet_runtime::application::handlers_worker::{self, WorkerDeps};
 use horch_core::fleetd::fleet_runtime::application::pass::{
-    Outside, Pass, PassError, PoolFacts, Ports, Settings, TaskWork,
+    IdeaPorts, Outside, Pass, PassError, PoolFacts, Ports, Primary, Settings, TaskWork, IDEAS_DIR,
 };
 use horch_core::fleetd::fleet_runtime::application::requests::Handlers;
 use horch_core::fleetd::fleet_runtime::application::{handlers_run, holds};
@@ -59,8 +62,16 @@ use horch_core::fleetd::fleet_runtime::domain::config::HANG_LIMIT_S;
 use horch_core::fleetd::fleet_runtime::domain::health::{Finding, Hold};
 use horch_core::fleetd::fleet_runtime::domain::heartbeat::{is_hung, is_older, Exe, Heartbeat};
 use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
+use horch_core::fleetd::ideas::adapters::needs_you_folder::Mirrored;
+use horch_core::fleetd::ideas::adapters::notify::{self, Notice};
 use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
+use horch_core::fleetd::ideas::domain::plan_validator::{DeclaredGates, RosterProfile};
+use horch_core::fleetd::integration::adapters::git::ProjectGitGateway;
+use horch_core::fleetd::integration::adapters::project_file;
+use horch_core::fleetd::integration::adapters::sqlite as feature_rows;
 use horch_core::fleetd::integration::application::commands::GitRefTips;
+use horch_core::fleetd::integration::application::ports::IntegrationGitGateway;
+use horch_core::fleetd::task_execution::application::dispatch::CheckSandboxes;
 use horch_core::fleetd::task_execution::application::launch::{Launches, PushLaunch};
 use horch_core::fleetd::task_execution::application::quota::Restart;
 use horch_core::fleetd::task_execution::domain::task::{AttemptRow, InPane};
@@ -76,12 +87,14 @@ use horch_core::runtime::{process, Paths, RuntimeContext};
 use horch_core::taskledger::finish::CodexSandbox;
 use horch_core::taskledger::model::RunStatus;
 use horch_core::taskledger::orchestrator;
+use horch_core::taskledger::runs;
 use horch_core::taskledger::sql_words::list;
 use horch_core::taskledger::store::{default_path, BUSY_TIMEOUT};
 use horch_core::taskledger::watchdog::{Observation, Observer};
 use horch_core::taskledger::workers::Worker;
 use horch_core::taskledger::{watchdog, LedgerWriter, Store};
 use horch_core::workspace::herdr::Herdr;
+use horch_platform::channel::User;
 use horch_platform::lock::FleetdLock;
 use horch_platform::service;
 use rusqlite::Connection;
@@ -640,7 +653,8 @@ fn start_channel(
 /// The handlers of the request kinds of Phase 5 (the table "Request kinds"
 /// of `docs/tickets/fleetd-p5/MAP.md`): the run and plan kinds, the task
 /// kinds, the worker kinds, the kinds of the last direct writers of the CLI
-/// (T-885) and the custody kinds. The channel server and
+/// (T-885) and the custody kinds, and the idea kinds of Phase 6 (T-553).
+/// The channel server and
 /// the request files of the fleetd of `settings` each get 1 copy.
 fn request_handlers(ctx: &RuntimeContext, settings: &Settings) -> Handlers {
     let config = Arc::new(settings.config.clone());
@@ -668,10 +682,161 @@ fn request_handlers(ctx: &RuntimeContext, settings: &Settings) -> Handlers {
         Arc::new(Custody {
             guard,
             config: settings.config.clone(),
-            refs: Box::new(GitRefTips { git }),
+            refs: Box::new(GitRefTips { git: git.clone() }),
         }),
     );
+    register_idea_handlers(ctx, settings, &mut handlers, git);
     handlers
+}
+
+/// The handlers of the idea request kinds of Phase 6 (T-553). With no user
+/// of fleetd, the kinds get no handler, and fleetd prints 1 line.
+fn register_idea_handlers(
+    ctx: &RuntimeContext,
+    settings: &Settings,
+    handlers: &mut Handlers,
+    git: CliWorktreeGit,
+) {
+    let owner = match User::current() {
+        Ok(owner) => owner,
+        Err(e) => {
+            eprintln!("horch fleetd: no idea requests: reading the user of fleetd: {e}");
+            return;
+        }
+    };
+    let roster_ctx = ctx.clone();
+    let sandboxes = check_sandboxes(ctx);
+    handlers_idea::register(
+        handlers,
+        IdeaHandlers {
+            guard: settings.generation,
+            config: Arc::new(settings.config.clone()),
+            ideas: settings.fleet_root.join(IDEAS_DIR),
+            owner,
+            roster: Arc::new(move || roster_profiles(&roster_ctx, &sandboxes)),
+            git: Arc::new(ProjectGitGateway::new(git)),
+        },
+    );
+}
+
+/// The profiles of the roster now, for the plan validator of Phase 6: the
+/// roster as `horch spawn` loads it, and the check sandbox of each persona
+/// on this host. A roster that does not load gives no profile, so the
+/// validator refuses each plan that names a profile.
+fn roster_profiles(ctx: &RuntimeContext, sandboxes: &WorkerSandboxes) -> Vec<RosterProfile> {
+    let Ok(roster) = super::load_roster_unwarned(ctx, None) else {
+        return Vec::new();
+    };
+    roster
+        .names()
+        .into_iter()
+        .filter_map(|name| roster.get(name))
+        .map(|t| RosterProfile {
+            name: t.name.clone(),
+            provider: t.agent.as_str().to_string(),
+            model: t.model.clone().unwrap_or_default(),
+            effort: t.effort.clone(),
+            fallback: t.fallbacks.first().cloned(),
+            sandbox_here: sandboxes.supported(&t.name),
+        })
+        .collect()
+}
+
+/// The live sources of the idea duties of Phase 6 (T-553). The launch of
+/// an idea-lead attempt is not here: [`Live::attempt_spec`] refuses it
+/// until T-890.
+struct LiveIdeas<'a> {
+    ctx: &'a RuntimeContext,
+    sandboxes: &'a WorkerSandboxes,
+    git: ProjectGitGateway,
+    herdr: Herdr,
+}
+
+impl LiveIdeas<'_> {
+    /// The repository and the primary branch of each open or ready feature,
+    /// sorted. `branchless` keeps only the features with no branch yet.
+    fn projects(&self, conn: &Connection, branchless: bool) -> Result<Vec<(PathBuf, String)>> {
+        let mut stmt = conn.prepare(
+            "SELECT id, primary_branch FROM features
+             WHERE state IN ('open', 'ready') AND (?1 = 0 OR branch IS NULL)",
+        )?;
+        let features = stmt
+            .query_map([branchless], |r| Ok((r.get::<_, String>(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<(String, String)>>>()
+            .context("reading the open features")?;
+        let mut projects = std::collections::BTreeSet::new();
+        for (id, branch) in features {
+            if let Some(run) = runs::feature_run(conn, &id)? {
+                projects.insert((PathBuf::from(run.project_root), branch));
+            }
+        }
+        Ok(projects.into_iter().collect())
+    }
+
+    /// The tip of `branch` of `repo`: the last fetched tip that is not
+    /// stale, else the local branch.
+    fn tip(&self, conn: &Connection, repo: &Path, branch: &str) -> Result<Option<String>> {
+        if let Some(row) = feature_rows::remote_tip(conn, &repo.to_string_lossy(), branch)? {
+            if row.stale_since.is_none() {
+                return Ok(Some(row.tip));
+            }
+        }
+        self.git.tip(repo, &format!("refs/heads/{branch}"))
+    }
+}
+
+impl IdeaPorts for LiveIdeas<'_> {
+    fn roster(&self) -> Vec<RosterProfile> {
+        roster_profiles(self.ctx, self.sandboxes)
+    }
+
+    /// The gates of the project `fleet.toml` at the primary tip of the
+    /// first project with an open feature, by path. No project, or no file
+    /// at the tip, gives no gate.
+    fn gates(&self, conn: &Connection) -> Result<DeclaredGates> {
+        let Some((repo, branch)) = self.projects(conn, false)?.into_iter().next() else {
+            return Ok(DeclaredGates::default());
+        };
+        let Some(tip) = self.tip(conn, &repo, &branch)? else {
+            return Ok(DeclaredGates::default());
+        };
+        let Some(text) = self.git.fleet_toml(&repo, &tip)? else {
+            return Ok(DeclaredGates::default());
+        };
+        let project =
+            project_file::parse(&text).with_context(|| format!("{} at {tip}", repo.display()))?;
+        Ok(DeclaredGates {
+            fast: project.fast_gate().map(str::to_string),
+            full: project.full_gate().map(str::to_string),
+        })
+    }
+
+    fn git(&self) -> &dyn IntegrationGitGateway {
+        &self.git
+    }
+
+    /// A project whose primary branch has no tip gets no entry: its ideas
+    /// wait in `clarifying`.
+    fn primaries(&self, conn: &Connection) -> Result<Vec<Primary>> {
+        let mut primaries = Vec::new();
+        for (repo, branch) in self.projects(conn, true)? {
+            if let Some(tip) = self.tip(conn, &repo, &branch)? {
+                primaries.push(Primary { repo, branch, tip });
+            }
+        }
+        Ok(primaries)
+    }
+
+    fn now(&self) -> chrono::DateTime<chrono::FixedOffset> {
+        chrono::Local::now().fixed_offset()
+    }
+
+    fn notify(&self, mirrored: &Mirrored, seq: u64) -> Result<()> {
+        match notify::notify(&self.herdr, mirrored, seq) {
+            Notice::Quiet | Notice::Sent => Ok(()),
+            Notice::Failed(line) => bail!("the needs-you report to herdr: {line}"),
+        }
+    }
 }
 
 /// The check sandbox of each worker on this host (ticket 18 of Phase 4):
@@ -690,12 +855,96 @@ fn check_sandboxes(ctx: &RuntimeContext) -> WorkerSandboxes {
 /// `horch spawn <persona> --attempt <id>` (ticket 10 of Phase 4).
 struct PushSpawns<'a> {
     ctx: &'a RuntimeContext,
+    herdr: Herdr,
 }
 
 impl Launches for PushSpawns<'_> {
     fn spec(&self, l: &PushLaunch) -> Result<LaunchSpec> {
-        super::recipes::push_launch_spec(self.ctx, l)
+        spawn_spec(self.ctx, &self.herdr, l.clone())
     }
+}
+
+/// The launch of the attempt of `l`: [`super::recipes::push_launch_spec`]
+/// with the pane of [`launch_pane`]. Each push attempt and each idea-lead
+/// attempt launches through it.
+fn spawn_spec(ctx: &RuntimeContext, herdr: &Herdr, mut l: PushLaunch) -> Result<LaunchSpec> {
+    let (pane, workspace) = launch_pane(herdr, &l)?;
+    l.from_pane = Some(pane);
+    l.workspace_id = Some(workspace);
+    super::recipes::push_launch_spec(ctx, &l)
+}
+
+/// The pane that the launch of `l` splits, and its workspace: the recorded
+/// pane of `l`, else the first pane of the herdr workspace whose label is
+/// the name of the project folder, as `horch fleet` names it. In Phase 6
+/// no run has an orchestrator pane, so the recorded pane is often missing.
+/// No other workspace is used: with neither, the launch fails, and the
+/// start timeout of the pass ends the attempt.
+fn launch_pane(herdr: &Herdr, l: &PushLaunch) -> Result<(String, String)> {
+    if let Some(pane) = &l.from_pane {
+        let workspace = match &l.workspace_id {
+            Some(w) => w.clone(),
+            None => herdr.pane_get(pane)?.workspace_id.with_context(|| {
+                format!(
+                    "herdr names no workspace of pane {pane} of attempt {}",
+                    l.attempt
+                )
+            })?,
+        };
+        return Ok((pane.clone(), workspace));
+    }
+    let label = Path::new(&l.project_root)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let no_pane = |why: &str| {
+        anyhow::anyhow!(
+            "the launch of attempt {} has no pane: the ledger records no pane for it, \
+             and {why}. Start the fleet with horch fleet in {}",
+            l.attempt,
+            l.project_root
+        )
+    };
+    let workspace = herdr
+        .workspace_list()?
+        .into_iter()
+        .find(|w| w.label.as_deref() == Some(label.as_str()))
+        .ok_or_else(|| no_pane(&format!("no herdr workspace has the label {label}")))?;
+    let pane = herdr
+        .pane_list(&workspace.workspace_id)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| no_pane(&format!("herdr workspace {label} has no pane")))?;
+    Ok((pane.pane_id, workspace.workspace_id))
+}
+
+/// The launch of the idea-lead attempt `a` (T-890), with the recipe of a
+/// push attempt: `horch spawn idea-lead --run <run> --exact --attempt <id>
+/// --from-pane <pane>`. The spawn takes the brief of the idea from the same
+/// rows. `None` when `a` is not an idea-lead attempt.
+fn idea_lead_spec(
+    ctx: &RuntimeContext,
+    herdr: &Herdr,
+    a: &AttemptRow,
+) -> Result<Option<LaunchSpec>> {
+    let Some(store) = horch_core::taskledger::open_existing_read_only(ctx)? else {
+        return Ok(None);
+    };
+    let Some(l) = idea_lead_launch(store.conn(), &ctx.paths.fleet_root, &a.id)? else {
+        return Ok(None);
+    };
+    let push = PushLaunch {
+        attempt: l.attempt,
+        // An idea-lead attempt has no task. The recipe does not read it.
+        task_id: String::new(),
+        worker_id: l.worker_id,
+        persona: l.persona,
+        run_slug: l.run_slug,
+        project_root: l.project_root,
+        from_pane: l.pane,
+        workspace_id: l.workspace_id,
+    };
+    spawn_spec(ctx, herdr, push).map(Some)
 }
 
 /// The settings of the fleetd of `generation` that runs `horch`.
@@ -760,7 +1009,19 @@ fn with_pass<T>(
     let requests = request_handlers(ctx, &settings);
     let tools = super::taskledger::tools(ctx);
     let sandboxes = check_sandboxes(ctx);
-    let spawns = PushSpawns { ctx };
+    let ideas = LiveIdeas {
+        ctx,
+        sandboxes: &sandboxes,
+        git: ProjectGitGateway::new(CliWorktreeGit::new(
+            &ctx.bins.harness.git,
+            &settings.fleet_root,
+        )),
+        herdr: herdr(),
+    };
+    let spawns = PushSpawns {
+        ctx,
+        herdr: herdr(),
+    };
     let work = TaskWork {
         tools: &tools,
         sandboxes: &sandboxes,
@@ -768,7 +1029,8 @@ fn with_pass<T>(
     };
     let mut pass = Pass::new(settings, ports)
         .with_requests(requests)
-        .with_task_work(work);
+        .with_task_work(work)
+        .with_idea_work(&ideas);
     f(&mut pass, &duties)
 }
 
@@ -1006,10 +1268,13 @@ impl Outside for Live<'_> {
         roots.context("reading the repositories of the fleet")
     }
 
-    /// Phase 1 puts no task attempt in `launching`: the only attempt there
-    /// is a respawn of an orchestrator that an older fleetd wrote, and the
-    /// run duties end it (FM-16).
+    /// An idea-lead attempt gets [`idea_lead_spec`] (T-890). Phase 1 puts
+    /// no other attempt here: a respawn of an orchestrator that an older
+    /// fleetd wrote has no launch, and the run duties end it (FM-16).
     fn attempt_spec(&self, attempt: &AttemptRow) -> Result<LaunchSpec> {
+        if let Some(spec) = idea_lead_spec(self.ctx, &self.herdr, attempt)? {
+            return Ok(spec);
+        }
         bail!(
             "attempt {} has no launch: Phase 1 launches no task attempt",
             attempt.id

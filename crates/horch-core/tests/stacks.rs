@@ -203,6 +203,7 @@ impl World {
                 spec_json: "{}".into(),
                 after: Vec::new(),
                 judges: None,
+                own: Vec::new(),
             })
             .collect();
         self.write(|tx| {

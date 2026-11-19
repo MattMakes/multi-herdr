@@ -1507,6 +1507,12 @@ mod tests {
             RuntimeContext::from_env(&env).unwrap()
         };
         let both = ctx(Some("r-1"), Some(&wid));
+        // The fleetd of the session records (T-884).
+        let _fleetd =
+            horch_core::fleetd::fleet_runtime::adapters::test_fleetd::serve_session_records(
+                &both.paths,
+            )
+            .unwrap();
         SessionLedger::open_in(&both)
             .unwrap()
             .add(horch_core::execution::records::NewRecord {

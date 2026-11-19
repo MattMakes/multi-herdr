@@ -37,7 +37,8 @@ impl Class {
 /// state, with the 4 kinds of the records of 1 spawn of fleetd (ticket 23
 /// of fleetd-p5), the 4 kinds of the last direct writers of the CLI after
 /// `rescue_drop` (T-885), then the idea kinds of Phase 6 (design, "Each
-/// request kind has a class"). A kind of [`RETIRED`] is not a kind.
+/// request kind has a class"), then `session_records`, the writes of the
+/// session store (T-884). A kind of [`RETIRED`] is not a kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Kind {
     LedgerImport,
@@ -75,11 +76,13 @@ pub enum Kind {
     IdeaPark,
     IdeaCancel,
     IdeaNote,
+    SessionRecords,
 }
 
 impl Kind {
-    /// Each kind, in the order of the MAP table, then the idea kinds.
-    pub const ALL: [Kind; 35] = [
+    /// Each kind, in the order of the MAP table, then the idea kinds, then
+    /// `session_records`.
+    pub const ALL: [Kind; 36] = [
         Kind::LedgerImport,
         Kind::LedgerGc,
         Kind::TaskRequeue,
@@ -115,6 +118,7 @@ impl Kind {
         Kind::IdeaPark,
         Kind::IdeaCancel,
         Kind::IdeaNote,
+        Kind::SessionRecords,
     ];
 
     /// The name of the kind on the wire and in the `requests` row.
@@ -155,6 +159,7 @@ impl Kind {
             Kind::IdeaPark => "idea_park",
             Kind::IdeaCancel => "idea_cancel",
             Kind::IdeaNote => "idea_note",
+            Kind::SessionRecords => "session_records",
         }
     }
 
@@ -616,8 +621,9 @@ mod tests {
     use super::*;
 
     /// The table "Request kinds" of `docs/tickets/fleetd-p5/MAP.md` with no
-    /// retired kind, then the idea kinds of Phase 6.
-    const MAP_TABLE: [(&str, Class); 35] = [
+    /// retired kind, then the idea kinds of Phase 6, then `session_records`
+    /// (T-884).
+    const MAP_TABLE: [(&str, Class); 36] = [
         ("ledger_import", Class::Operator),
         ("ledger_gc", Class::Operator),
         ("task_requeue", Class::Operator),
@@ -653,6 +659,7 @@ mod tests {
         ("idea_park", Class::Operator),
         ("idea_cancel", Class::Operator),
         ("idea_note", Class::Worker),
+        ("session_records", Class::Operator),
     ];
 
     #[test]

@@ -471,9 +471,11 @@ fn ctx_05_launch_records_window_decision() {
         golden
     );
 
-    // Through the store.
+    // Through the store, with the writer of fleetd (T-884).
     let tmp = tempfile::tempdir().unwrap();
-    let store = ExecutionStore::for_project(tmp.path(), "/p");
+    let store = ExecutionStore::for_project(tmp.path(), "/p").with_writer(std::sync::Arc::new(
+        horch_core::taskledger::store::LedgerWriter::fleetd(),
+    ));
     store
         .insert(LedgerRecordV1 {
             record_id: "rec-1".into(),
@@ -556,7 +558,11 @@ fn ctx_05_recorded_applied_matches_the_command() {
         )
     );
 
-    // The record stores what the command carries.
+    // The record stores what the command carries. The store of the context
+    // sends its writes to fleetd (T-884).
+    let _fleetd =
+        horch_core::fleetd::fleet_runtime::adapters::test_fleetd::serve_session_records(&ctx.paths)
+            .unwrap();
     let store = ExecutionStore::open_in(&ctx).unwrap();
     store
         .insert(LedgerRecordV1 {

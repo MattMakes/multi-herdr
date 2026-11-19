@@ -912,6 +912,9 @@ pub(crate) mod testkit {
     }
 
     pub struct World {
+        /// The fleetd of the session records (T-884). Declared first, so
+        /// it drops before the folder.
+        pub _fleetd: horch_core::fleetd::fleet_runtime::adapters::channel_server::ChannelServer,
         pub tmp: tempfile::TempDir,
         pub ctx: RuntimeContext,
         pub ledger: SessionLedger,
@@ -956,7 +959,13 @@ pub(crate) mod testkit {
             let ledger = SessionLedger::open_in(&ctx).unwrap();
             let loc = Locations::from_context(&ctx);
             let cache = cache_dir(&ctx);
+            let fleetd =
+                horch_core::fleetd::fleet_runtime::adapters::test_fleetd::serve_session_records(
+                    &ctx.paths,
+                )
+                .unwrap();
             World {
+                _fleetd: fleetd,
                 tmp,
                 ctx,
                 ledger,

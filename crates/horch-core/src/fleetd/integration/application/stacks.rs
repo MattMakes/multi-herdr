@@ -211,6 +211,45 @@ pub fn stack_conflict(
     })
 }
 
+/// Each conflicting trial merge of 2 in-flight features that is the newest
+/// trial merge of its 2 refs, oldest first, with the id of its younger
+/// feature: the feature that a stack puts on top. An older trial merge of
+/// the same 2 refs is of old tips, so the pass reads git for it no more.
+pub fn newest_conflicts(
+    tx: &Connection,
+    planner: &StackPlanner,
+) -> Result<Vec<(TrialMergeRow, String)>> {
+    let mut stmt = tx.prepare(
+        "SELECT t.left_tip, t.right_tip FROM trial_merges t
+         JOIN features l ON 'refs/heads/' || l.branch = t.left_ref
+         JOIN features r ON 'refs/heads/' || r.branch = t.right_ref
+         WHERE t.clean = 0 AND l.state IN ('open', 'ready') AND r.state IN ('open', 'ready')
+             AND NOT EXISTS (SELECT 1 FROM trial_merges n
+                 WHERE n.left_ref = t.left_ref AND n.right_ref = t.right_ref AND n.at > t.at)
+         ORDER BY t.at, t.left_tip, t.right_tip",
+    )?;
+    let keys = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("reading the newest conflicting trial merges")?;
+    let mut out = Vec::with_capacity(keys.len());
+    for (left, right) in keys {
+        let Some(row) = store::get(tx, &left, &right)? else {
+            continue;
+        };
+        let (Some(l), Some(r)) = (side(tx, &row.left_ref)?, side(tx, &row.right_ref)?) else {
+            continue;
+        };
+        let upper = match planner.decide(&view(&l), &view(&r)) {
+            Decision::Stack { upper, .. }
+            | Decision::Stacked { upper, .. }
+            | Decision::Held { upper, .. } => upper,
+        };
+        out.push((row, upper));
+    }
+    Ok(out)
+}
+
 /// The facts of `f` that the planner reads.
 fn view(f: &Side) -> StackSide<'_> {
     StackSide {
@@ -393,6 +432,7 @@ fn resolver_task(
         spec_json: spec.to_string(),
         after: Vec::new(),
         judges: None,
+        own: Vec::new(),
     }
 }
 

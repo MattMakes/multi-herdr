@@ -31,7 +31,8 @@
 //! Keys of the fake judge: `verdict_pass`, `verdict_critical`,
 //! `verdict_high` write `review.md` in the worktree of the attempt and
 //! commit it: a `## Verdict` section with 1 word and a `## Findings` list
-//! of ranked items.
+//! of ranked items. [`crate::agent::play`] runs them, only for a judge
+//! task, before `result`.
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -63,6 +64,9 @@ const IDEA_KEYS: [&str; 11] = [
     "operator_request",
 ];
 
+/// The keys of the fake judge.
+pub(crate) const VERDICT_KEYS: [&str; 3] = ["verdict_pass", "verdict_critical", "verdict_high"];
+
 /// The verdict file of the fake judge, in its worktree.
 const VERDICT_FILE: &str = "review.md";
 
@@ -74,7 +78,6 @@ const CONNECT_WAIT: Duration = Duration::from_secs(5);
 
 /// Run the Phase 6 keys of `$HORCH_FAKE_SCENARIO` for a pane launch.
 pub fn play(call: &mut Call) {
-    judge(call);
     if !IDEA_KEYS.iter().any(|k| scenario_has(k)) {
         return;
     }
@@ -364,7 +367,7 @@ fn write_file(path: &Path, text: &str) -> Result<(), String> {
 
 /// The fake judge: write the verdict of its key in `review.md` and commit
 /// it.
-fn judge(call: &mut Call) {
+pub(crate) fn judge(call: &mut Call) {
     let verdict = if scenario_has("verdict_critical") {
         (
             "critical_open",
