@@ -621,12 +621,16 @@ pub fn feature_ids(conn: &Connection, live: bool) -> Result<Vec<String>> {
 }
 
 /// The ids of the bundles that a pass follows: each bundle that is not
-/// ended, and each ended bundle whose candidate ref is not verified as
-/// deleted, by id.
+/// ended, each ended bundle whose candidate ref is not verified as deleted,
+/// and each dropped bundle with no recorded candidate whose build job has
+/// not ended or passed (its job can write the ref after the drop), by id.
 pub fn bundles_to_follow(conn: &Connection) -> Result<Vec<i64>> {
     let mut stmt = conn.prepare(
         "SELECT id FROM bundles
          WHERE state IN ('building', 'gating', 'passed') OR candidate_ref IS NOT NULL
+            OR (state = 'dropped' AND candidate_tip IS NULL AND job_id IN (
+                SELECT id FROM jobs WHERE kind = 'bundle_build'
+                AND state IN ('queued', 'running', 'passed')))
          ORDER BY id",
     )?;
     let rows = stmt.query_map([], |r| r.get(0))?;
