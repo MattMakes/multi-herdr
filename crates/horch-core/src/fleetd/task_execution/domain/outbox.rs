@@ -115,10 +115,9 @@ impl Question {
     /// The JSON text of the file, when it has at most `max_bytes` bytes
     /// (`question_max_bytes` of `fleet.toml`).
     pub fn to_json(&self, max_bytes: u64) -> Result<String, TooLarge> {
-        let mail_id = self
-            .mail_id
-            .as_deref()
-            .map_or(String::new(), |id| format!(",\n  \"mail_id\": {}", json_string(id)));
+        let mail_id = self.mail_id.as_deref().map_or(String::new(), |id| {
+            format!(",\n  \"mail_id\": {}", json_string(id))
+        });
         let text = format!(
             "{{\n  \"task\": {},\n  \"attempt\": {},\n  \"at\": {},\n  \"text\": {}{mail_id}\n}}\n",
             json_string(&self.task),

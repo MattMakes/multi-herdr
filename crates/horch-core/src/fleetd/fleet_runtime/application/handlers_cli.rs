@@ -9,7 +9,6 @@
 //! that its command wrote, through the same functions of `taskledger/` and
 //! `fleetd/`, in the transaction of its request. It does no effect.
 
-
 use anyhow::{bail, ensure, Context, Result};
 use rusqlite::Connection;
 use serde::de::DeserializeOwned;

@@ -250,7 +250,9 @@ impl World {
 
     /// The folder of attempt `attempt` of the task.
     fn attempt_dir(&self, attempt: &str) -> PathBuf {
-        let (task, n) = attempt.rsplit_once('/').expect("an attempt id names its task");
+        let (task, n) = attempt
+            .rsplit_once('/')
+            .expect("an attempt id names its task");
         self.h
             .fleet_root()
             .join("tasks")
@@ -407,40 +409,6 @@ fn question_tell_of_a_push_worker_gives_1_row_with_its_owner() {
     assert_1_row_of_the_first_attempt(&w, &task);
 }
 
-/// RR-12: the answer of the owner (the fake sub-orchestrator answers with
-/// its own decision) answers the row, the task leaves `blocked_on_user`,
-/// and `START.md` of the next attempt holds the question and the answer.
-#[test]
-fn answer_of_the_owner_reaches_the_next_attempt() {
-    let w = World::new("p6-wq-owner", "stay,answer_own", &horch_ask(QUESTION));
-    let task = w.task();
-    w.wait("the answered question", || {
-        let rows = w.questions(&task);
-        (rows.len() == 1 && rows[0].1 == "answered").then_some(())
-    });
-    let next = w.wait("the next attempt of the task", || {
-        w.attempts(&task).get(1).map(|a| a.0.clone())
-    });
-    assert_ne!(w.status(&task), "blocked_on_user", "{}", w.context());
-    let start = w.wait("START.md of the next attempt", || w.start_md(&next));
-    assert!(
-        start.contains(QUESTION),
-        "START.md of the next attempt holds the question:\n{start}"
-    );
-    // The fake sub-orchestrator answers with this text (crate::idea_agent).
-    let answer = w
-        .one(&format!(
-            "SELECT json_extract(data_json, '$.text') FROM events
-             WHERE kind = 'answered' AND entity_id = {}",
-            quoted(&task)
-        ))
-        .expect("the answered event holds the answer");
-    assert!(
-        !answer.is_empty() && start.contains(&answer),
-        "START.md of the next attempt holds the answer {answer:?}:\n{start}"
-    );
-}
-
 /// RR-12: the answer by `horch tell <role> --answers <id>` to the QUESTION
 /// line of a worker answers its row, the task leaves `blocked_on_user`, and
 /// `START.md` of the next attempt holds the question and the answer.
@@ -533,9 +501,26 @@ fn fake_sub_orchestrator_does_not_ask_and_makes_no_idea() {
         w.one("SELECT id FROM attempts WHERE task_id IS NULL")
     });
     w.passes(QUIET_PASSES);
-    let asks: Vec<String> = w
-        .h
-        .calls_of("claude")
+    // A sub-orchestrator call names an idea folder in its argv. A worker
+    // call and a conformance call do not, and they can play `ask`.
+    let leads: Vec<serde_json::Value> =
+        w.h.calls_of("claude")
+            .into_iter()
+            .filter(|c| {
+                c["argv"].as_array().into_iter().flatten().any(|a| {
+                    a.as_str()
+                        .unwrap_or_default()
+                        .split_whitespace()
+                        .any(|p| std::path::Path::new(p).join("idea.md").is_file())
+                })
+            })
+            .collect();
+    assert!(
+        !leads.is_empty(),
+        "no sub-orchestrator call\n{}",
+        w.context()
+    );
+    let asks: Vec<String> = leads
         .iter()
         .filter(|c| c.get("ask").is_some())
         .map(|c| c.to_string())

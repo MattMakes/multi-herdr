@@ -145,7 +145,9 @@ pub fn answers_section(answered: &[AnsweredQuestion]) -> Option<String> {
         out.push_str(&format!(
             "\n### Question {}\n\n{}\n\nAnswer: {}\n",
             q.id,
-            q.question.as_deref().unwrap_or("(the question has no text)"),
+            q.question
+                .as_deref()
+                .unwrap_or("(the question has no text)"),
             q.answer.as_deref().unwrap_or("(the answer has no text)"),
         ));
     }
