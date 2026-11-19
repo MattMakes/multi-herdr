@@ -15,9 +15,9 @@
 //!   fork. The child makes a new session and a new process group, starts
 //!   the grandchild and exits, so the grandchild has no parent in the
 //!   attempt.
-//! - `outlive`: write a valid `assumptions.md` and ignore `SIGINT`, so the
+//! - `outlive`: write a valid `assumptions.md` and ignore `SIGTERM`, so the
 //!   agent lives on after fleetd ended its attempt. Wait until each own
-//!   attempt is ended (the operator approves the own idea, so the phase of
+//!   `clarifying` attempt is ended (the operator approves the own idea, so the phase of
 //!   the attempt is old), then try `cli` and `raw` on another idea in
 //!   `awaiting_approval`. Then wait for the stop of fleetd.
 //! - `forge`: write a valid `assumptions.md`, wait until the own idea is in
@@ -49,8 +49,9 @@ const STATE_WAIT: Duration = Duration::from_secs(60);
 /// The longest wait for the result of the orphan.
 const ORPHAN_WAIT: Duration = Duration::from_secs(60);
 
-/// The longest wait of `outlive` for its stop.
-const STOP_WAIT: Duration = Duration::from_secs(120);
+/// The longest wait of `outlive` for its stop: longer than each wait of
+/// the test, so only a stop of fleetd ends it in time.
+const STOP_WAIT: Duration = Duration::from_secs(600);
 
 /// The state of an idea that waits for the operator.
 const AWAITING: &str = "awaiting_approval";
@@ -93,7 +94,7 @@ pub fn play(call: &mut Call) -> bool {
         return true;
     }
     if has("outlive") {
-        ignore_sigint();
+        ignore_sigterm();
         lead.write_assumptions();
         call.extra
             .insert("attempts".into(), json!(lead.wait_ended()));
@@ -204,12 +205,17 @@ impl Lead {
         }
     }
 
-    /// Wait until each attempt of the own idea is ended; the last
-    /// [`Lead::attempts`] seen.
+    /// Wait until each `clarifying` attempt of the own idea is ended; the
+    /// last of those [`Lead::attempts`] seen. An attempt of a later phase
+    /// is not the attempt of this launch.
     fn wait_ended(&self) -> Vec<String> {
         let end = Instant::now() + STATE_WAIT;
         loop {
-            let seen = self.attempts();
+            let seen: Vec<String> = self
+                .attempts()
+                .into_iter()
+                .filter(|a| a.contains("/clarifying/"))
+                .collect();
             let ended = !seen.is_empty() && seen.iter().all(|a| a.ends_with(" ended"));
             if ended || Instant::now() >= end {
                 return seen;
@@ -265,7 +271,7 @@ impl Lead {
         let out = self.ideas().join(format!("fr10-orphan-{}.out", self.idea));
         let code = out.with_extension("code");
         let line = format!(
-            "echo $$ > {pid}; horch idea approve {idea} > {out} 2>&1; echo $? > {code}.tmp; mv {code}.tmp {code}",
+            "echo $$ > {pid}; horch idea approve {idea} > {out} 2>&1; echo $? > {code}.tmp; /bin/mv {code}.tmp {code}",
             pid = out.with_extension("pid").display(),
             out = out.display(),
             code = code.display(),
@@ -334,8 +340,8 @@ fn write(path: &Path, text: &str) -> Result<(), String> {
         .map_err(|e| format!("writing {}: {e:#}", path.display()))
 }
 
-/// Ignore `SIGINT`, the polite stop of fleetd.
-fn ignore_sigint() {
+/// Ignore `SIGTERM`, the polite stop of fleetd.
+fn ignore_sigterm() {
     // SAFETY: `signal` with `SIG_IGN` sets 1 flag of this process.
-    unsafe { libc::signal(libc::SIGINT, libc::SIG_IGN) };
+    unsafe { libc::signal(libc::SIGTERM, libc::SIG_IGN) };
 }

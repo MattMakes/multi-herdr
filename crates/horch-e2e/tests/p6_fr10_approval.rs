@@ -180,8 +180,8 @@ impl World {
         })
     }
 
-    /// FR-10: the idea stays in `awaiting_approval` with no approval, and
-    /// no `idea_approve` request is applied.
+    /// FR-10: the idea stays in `awaiting_approval` with no approval, and no
+    /// `idea_approve` request of it is applied.
     fn assert_still_waiting(&self, idea: &str) {
         self.wait("the idea in awaiting_approval", || {
             (self.idea_state(idea).as_deref() == Some("awaiting_approval")).then_some(())
@@ -207,9 +207,10 @@ impl World {
                AND to_state IS NOT NULL"
         ));
         assert!(!moves.iter().any(|s| s == "specifying"), "{moves:?}");
-        let applied = self.rows(
-            "SELECT request_id FROM requests WHERE kind = 'idea_approve' AND state = 'applied'",
-        );
+        let applied = self.rows(&format!(
+            "SELECT request_id FROM requests WHERE kind = 'idea_approve' AND state = 'applied'
+               AND json_extract(payload_json, '$.idea') = '{idea}'"
+        ));
         assert!(applied.is_empty(), "{applied:?}\n{}", self.context());
     }
 
@@ -393,8 +394,8 @@ fn fr10_d_agent_written_approval_is_not_accepted() {
     assert!(w.folder(&idea).join("approval.json").is_file());
     w.assert_still_waiting(&idea);
     let ignored = w.rows(&format!(
-        "SELECT text FROM events WHERE entity = 'idea' AND entity_id = '{idea}'
-           AND text LIKE 'approval.json ignored%'"
+        "SELECT cause FROM events WHERE entity = 'idea' AND entity_id = '{idea}'
+           AND cause LIKE 'approval.json ignored%'"
     ));
     assert_eq!(ignored.len(), 1, "{ignored:?}\n{}", w.context());
 }
