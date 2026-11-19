@@ -8,7 +8,6 @@ use horch_core::digest::sha256_bytes;
 use horch_core::fleetd::fleet_runtime::application::handlers_custody::TRIAGE_NOT_HANDLED;
 use horch_core::fleetd::fleet_runtime::domain::requests::Kind;
 use horch_core::fleetd::worktree_custody::adapters::sqlite as trees;
-use horch_core::fleetd::worktree_custody::application::create::JobProcess;
 use horch_core::fleetd::worktree_custody::application::queries::{
     self, DiskTotal, RescueSource, WorktreeView,
 };
@@ -173,13 +172,9 @@ fn triage_root(ctx: &RuntimeContext, git: &Git) -> Result<PathBuf> {
 pub fn triage_rows(ctx: &RuntimeContext, measure: Measure) -> Result<Vec<triage::Row>> {
     let git = Git::new(&ctx.bins.harness.git);
     let root = triage_root(ctx, &git)?;
-    // A sandboxed caller (a codex pane) cannot write the ledger. The listing
-    // then reads it read-only and skips the bytes cache (T-5).
-    let store = match taskledger::open_existing(ctx) {
-        Ok(store) => store,
-        Err(_) => taskledger::open_existing_read_only(ctx)?,
-    };
-    match store {
+    // The listing reads the ledger read-only and skips the bytes cache
+    // (T-5): only fleetd writes the ledger (RR-5, T-885).
+    match taskledger::open_existing_read_only(ctx)? {
         Some(store) => triage::collect(store.conn(), &git, &root, measure),
         None => triage::collect_without_ledger(&git, &root, measure),
     }
@@ -238,8 +233,7 @@ pub fn triage_apply(ctx: &RuntimeContext, file: &str, primary: &str) -> Result<E
         .iter()
         .any(|d| TRIAGE_NOT_HANDLED.contains(&d.decision))
     {
-        drop(store);
-        return triage_apply_direct(ctx, &git, &root, &rows, &decided, primary, remote);
+        return refuse_direct_decisions(&decided);
     }
     let mut decisions = Vec::new();
     for d in &decided {
@@ -284,72 +278,24 @@ pub fn triage_apply(ctx: &RuntimeContext, file: &str, primary: &str) -> Result<E
     })
 }
 
-/// A reply with an `ARCHIVE`, `DELETE`, `LAND` or `PR` decision keeps the
-/// direct path of today: fleetd has no handler for them yet, because no
-/// job kind does their git or gh writes
-/// (`handlers_custody::TRIAGE_NOT_HANDLED`).
-fn triage_apply_direct(
-    ctx: &RuntimeContext,
-    git: &Git,
-    root: &Path,
-    rows: &[triage::Row],
-    decided: &[triage::reply::Decided],
-    primary: &str,
-    remote: Option<String>,
-) -> Result<ExitCode> {
-    let mut store = taskledger::open(ctx)?;
-    let gh = gh_bin();
-    let evidence = ctx
-        .paths
-        .ledger_db
-        .parent()
-        .map(|p| p.join("evidence"))
-        .unwrap_or_else(|| PathBuf::from("evidence"));
-    let jobs = JobProcess::of_this_process()?;
-    let env = triage::apply::Env {
-        git,
-        root,
-        evidence_root: &evidence,
-        gh: remote.is_some().then_some(gh.as_path()),
-        remote: remote.as_deref(),
-        primary,
-        jobs: &jobs,
-    };
-    let applied = triage::apply::apply(&mut store, &env, rows, decided)?;
-    for a in &applied {
-        println!("{}", a.line());
-    }
-    wake_for_finish(ctx, &store, &applied);
-    let failed = applied.iter().filter(|a| !a.ok).count();
-    if failed > 0 {
-        return Err(anyhow!(
-            "{failed} of {} decisions failed; nothing of theirs was deleted. Run horch worktree triage again",
-            applied.len()
-        ));
-    }
-    Ok(ExitCode::SUCCESS)
-}
-
-/// Wake each run's orchestrator for the tasks that `FINISH` queued.
-fn wake_for_finish(
-    ctx: &RuntimeContext,
-    store: &taskledger::Store,
-    applied: &[triage::apply::Applied],
-) {
-    for q in applied.iter().filter_map(|a| a.queued.as_ref()) {
-        match taskledger::runs::get(store.conn(), &q.run_id) {
-            Ok(run) => super::taskledger_wake::wake(
-                ctx,
-                store,
-                &run,
-                &format!(
-                    "NOTE: worktree triage queued {} (FINISH). It inherits its worktree. Spawn a worker for it.",
-                    q.task
-                ),
-            ),
-            Err(e) => eprintln!("horch worktree triage: no run {} to wake ({e:#})", q.run_id),
-        }
-    }
+/// A reply with an `ARCHIVE`, `DELETE`, `LAND` or `PR` decision is refused
+/// and runs nothing (T-885): only fleetd writes the ledger (RR-5), and no
+/// fleetd job does their git or gh writes yet
+/// (`handlers_custody::TRIAGE_NOT_HANDLED`). A later task gives them back
+/// as 1 fleetd job kind.
+fn refuse_direct_decisions(decided: &[triage::reply::Decided]) -> Result<ExitCode> {
+    let mut words: Vec<&str> = decided
+        .iter()
+        .filter(|d| TRIAGE_NOT_HANDLED.contains(&d.decision))
+        .map(|d| d.decision.as_str())
+        .collect();
+    words.sort_unstable();
+    words.dedup();
+    eprintln!(
+        "refused: fleetd does not apply the decisions {} in this version, and nothing ran. They return in a later task as a fleetd job. Use KEEP or FINISH now, or leave the worktree parked.",
+        words.join(", ")
+    );
+    Ok(ExitCode::from(1))
 }
 
 /// `horch worktree restore <name>`: a task (`T<seq>` of the active run) or

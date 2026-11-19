@@ -73,9 +73,11 @@ choose from** — there is no registry to update and nothing to recompile.
   tools cannot leave plan mode. See the `permission_mode` / `tools` block in
   `_template.md`.
 - **Personas do not carry protocol.** `_base/fleet-worker.md` owns the
-  `horch tell` / `horch note` / `horch done` contract, and
-  `_base/fleet-orchestrator.md` owns the spawning and ledger contract; a
-  persona that restates either will drift from it. `orchestrator.md` and
+  `START.md` / `horch ledger progress` / `horch ask` / `horch result`
+  contract of a worker, `_base/fleet-idea-lead.md` owns the phases of a
+  sub-orchestrator, and `_base/fleet-orchestrator.md` owns the briefing of
+  the retired long-lived orchestrator; a persona that restates one will
+  drift from it. `orchestrator.md` and
   `orchestrator-codex.md` are personas in exactly this sense: each is only the
   paragraph about writing for the workers below it, substituted into the one
   shared briefing at `{persona}`.

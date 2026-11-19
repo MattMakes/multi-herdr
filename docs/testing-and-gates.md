@@ -60,8 +60,9 @@ rustfmt --check <files>
 ```
 
 In a ledger run (see [fleet-workflow.md](fleet-workflow.md)), a worker runs
-only the tests it touches while it works. The `check` and `recheck` steps of
-`horch ledger finish` run the task's gate. In shared-checkout mode, the
+only the tests it touches while it works. After its `horch result`, the
+`check` and `recheck` steps of the fleetd verifier run the task's gate, and
+fleetd runs the full gate on the feature branch. In shared-checkout mode, the
 worker takes no gate slot.
 
 The rest of this section applies to parallel worktree runs. Run the full gate

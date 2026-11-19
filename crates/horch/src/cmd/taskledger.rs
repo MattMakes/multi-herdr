@@ -590,43 +590,12 @@ fn run_command(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode>
     if let Some(code) = worker_files_cmd(ctx, &command)? {
         return Ok(code);
     }
-    let store = if reads_only(&command) {
-        read_only(ctx)?
-    } else {
-        taskledger::open(ctx)?
-    };
+    // Each command opens the ledger read-only (RR-5): a command that changes
+    // state sends a request to fleetd (T-885).
+    let store = read_only(ctx)?;
     // One entry per `Group`, in its order.
     let dispatch: [GroupCmd; 4] = [board_cmd, control_cmd, worker_side_cmd, admin_cmd];
     dispatch[group_of(&command) as usize](ctx, store, command)
-}
-
-/// Whether `command` only reads the ledger, or changes it only through
-/// requests to fleetd, so that it opens the ledger read-only (RR-5). `run close` and
-/// `run gate` still open it to write: the custody of the gate folder and
-/// the stop of a worker are not their requests.
-fn reads_only(command: &LedgerCommand) -> bool {
-    use LedgerCommand as C;
-    match command {
-        C::Run { command } => matches!(command, RunCommand::List { .. }),
-        C::Import { dry_run, .. } => !dry_run,
-        C::Show { .. } | C::Events { .. } | C::Steps { .. } => true,
-        C::Fallback { .. }
-        | C::Cancel { .. }
-        | C::Unblock { .. }
-        | C::Requeue { .. }
-        | C::Waive { .. }
-        | C::Stop { .. }
-        | C::Reap { .. }
-        | C::Reopen { .. }
-        | C::Dismiss { .. }
-        | C::Worker { .. }
-        | C::Unfinished { .. } => true,
-        C::Worktree { command } => matches!(
-            command,
-            WorktreeCommand::Scratch { .. } | WorktreeCommand::Drop { .. }
-        ),
-        _ => false,
-    }
 }
 
 /// The ledger, opened read-only. fleetd creates it at its start.
@@ -888,13 +857,13 @@ fn handoff(ctx: &RuntimeContext, path: &Path) -> Result<ExitCode> {
 }
 
 /// Import, unfinished work, the watchdog and worker rows.
-fn admin_cmd(ctx: &RuntimeContext, mut store: Store, command: LedgerCommand) -> Result<ExitCode> {
+fn admin_cmd(ctx: &RuntimeContext, store: Store, command: LedgerCommand) -> Result<ExitCode> {
     if let LedgerCommand::Import {
         dry_run,
         json: as_json,
     } = command
     {
-        return import_cmd(ctx, &mut store, dry_run, as_json);
+        return import_cmd(ctx, &store, dry_run, as_json);
     }
     if let LedgerCommand::Unfinished {
         project,
@@ -1324,23 +1293,20 @@ fn events_cmd(
 
 fn import_cmd(
     ctx: &RuntimeContext,
-    store: &mut Store,
+    store: &Store,
     dry_run: bool,
     as_json: bool,
 ) -> Result<ExitCode> {
     let git = Git::new(&ctx.bins.harness.git);
     let state_root = &ctx.paths.state_root;
-    let report = if dry_run {
-        serde_json::to_value(import::import(store, &git, state_root, true)?)?
-    } else {
-        let facts = import::gather(store.conn(), &git, state_root)?;
-        let result = request(
-            ctx,
-            Kind::LedgerImport,
-            json!({ "state_root": state_root, "facts": facts }),
-        )?;
-        result.get("report").cloned().unwrap_or(Value::Null)
-    };
+    // A dry run is a request too: fleetd rolls its rows back (T-885).
+    let facts = import::gather(store.conn(), &git, state_root)?;
+    let result = request(
+        ctx,
+        Kind::LedgerImport,
+        json!({ "state_root": state_root, "facts": facts, "dry_run": dry_run }),
+    )?;
+    let report = result.get("report").cloned().unwrap_or(Value::Null);
     if as_json {
         json(&report)?;
         return Ok(ExitCode::SUCCESS);
@@ -1518,15 +1484,24 @@ fn print_ended(result: &Value, as_json: bool) -> Result<()> {
 /// A run created outside herdr has no workspace (#218). The first
 /// `status` or `plan-workers` from a herdr pane that is not a worker's
 /// records that pane's workspace on the run, so wakes find its orchestrator.
-fn adopt_workspace(ctx: &RuntimeContext, store: &Store, run: &Run) -> Result<()> {
+fn adopt_workspace(ctx: &RuntimeContext, run: &Run) -> Result<()> {
     let Some(ws) = adopted_workspace(ctx, run) else {
         return Ok(());
     };
-    let changed = store.conn().execute(
-        "UPDATE runs SET workspace_id = ?2 WHERE run_id = ?1 AND workspace_id IS NULL",
-        [&run.run_id, ws],
-    )?;
-    if changed == 1 {
+    // fleetd writes the workspace: 1 `run_adopt` request (T-885).
+    let payload = json!({ "run_id": run.run_id, "workspace": ws });
+    let adopted = match request(ctx, Kind::RunAdopt, payload) {
+        Ok(result) => result["adopted"].as_bool() == Some(true),
+        // The status is a read: a request that fails is a warning.
+        Err(e) => {
+            eprintln!(
+                "horch: run {} did not adopt workspace {ws}: {e:#}",
+                run.slug
+            );
+            false
+        }
+    };
+    if adopted {
         print_adopted(run, ws);
     }
     Ok(())
@@ -1597,7 +1572,7 @@ fn status_cmd(
         return print_no_runs(as_json);
     }
     let run = resolve_run(ctx, store, arg)?;
-    adopt_workspace(ctx, store, &run)?;
+    adopt_workspace(ctx, &run)?;
     // The pool of each persona: a ready task of a paced pool shows its hold.
     let roster = super::load_roster_unwarned(ctx, None)
         .or_else(|_| horch_core::roster::Roster::builtin())
@@ -2017,46 +1992,38 @@ fn sorted_subdirs(dir: &Path) -> Option<Vec<PathBuf>> {
     Some(subs)
 }
 
-/// `horch ledger done` (and `horch done` from a ledger worker): record the
-/// finish, then (in a pane) report, wake whoever must act on it and close
-/// the pane.
+/// `horch done` from a ledger worker with no live attempt: the retry of a
+/// `done` whose task fleetd finished already. It writes no row (RR-5,
+/// T-885): a worker finishes its task only through `result.json` of its
+/// live attempt. In a pane it reports and closes the pane.
 pub fn done_cmd(
     ctx: &RuntimeContext,
-    mut store: Store,
+    store: Store,
     summary: &str,
     unlanded: Option<&str>,
 ) -> Result<()> {
     let wid = worker_id(ctx)?;
     refuse_push_attempt(&store, &wid)?;
+    let c = finish::already_completed(store.conn(), &wid)?.with_context(|| {
+        format!(
+            "worker {wid} has no live attempt, so horch done writes no result.json. fleetd finishes the task of an attempt; ask the orchestrator"
+        )
+    })?;
+    drop(store);
     // The report to the orchestrator and the pane close: `horch done`'s
     // machinery, when this runs in a worker pane.
     let in_pane = in_worker_pane(ctx);
-    // One push budget for the wakes and the report, inside the agent's
-    // command timeout (#67).
+    // One push budget for the report, inside the agent's command timeout
+    // (#67).
     let budget = delivery::start_push_budget(delivery::done_push_budget(&ctx.settings.faults));
     if budget.is_some() && in_pane {
         eprintln!("{}", super::messaging::CLOSING);
     }
-    let c = finish::complete(&mut store, &wid, summary, unlanded)?;
-    let run = runs::get(store.conn(), &c.run_id)?;
-    // The wakes, at most once. In a pane they run after `done` marks the
-    // record done and before its report push, in the same budget (#67).
-    let woken = std::cell::Cell::new(c.already);
-    let wake = || {
-        if woken.replace(true) {
-            return;
-        }
-        wake_after_done(ctx, &store, &run, &c);
-    };
     output::println(&done_line(&c));
     if !in_pane {
-        wake();
         return Ok(());
     }
-    let done = super::messaging::done_then(ctx, summary, unlanded, &wake);
-    // A `done` that stopped before the record, or a retry, ran no wake.
-    wake();
-    done
+    super::messaging::done_then(ctx, summary, unlanded, &|| {})
 }
 
 /// Whether `horch done`'s report and pane close run: in a herdr pane of a
@@ -2069,18 +2036,6 @@ fn in_worker_pane(ctx: &RuntimeContext) -> bool {
             .is_some_and(|w| w.record_id.is_some() && w.role.is_some())
 }
 
-/// The wakes of a finished task: the author of a reviewed task, the tasks
-/// that wait for a parked one, and the orchestrator.
-fn wake_after_done(ctx: &RuntimeContext, store: &Store, run: &Run, c: &finish::Completed) {
-    if let Some((parent, Some(role))) = &c.reviews_in_for {
-        tell_reviews_in(ctx, store, run, &c.task_id, parent, role);
-    }
-    if c.unlanded {
-        wake_unlanded(ctx, store, run, c);
-    }
-    super::taskledger_wake::after_done(ctx, store, run);
-}
-
 /// The line `done` prints for the finished task.
 fn done_line(c: &finish::Completed) -> String {
     let what = if c.unlanded {
@@ -2089,50 +2044,6 @@ fn done_line(c: &finish::Completed) -> String {
         "done"
     };
     format!("{} {what}.", c.task)
-}
-
-/// The last review of `parent` is in: tell its author to run finish
-/// through its keyed `reviews-in` row (TRF-51).
-fn tell_reviews_in(
-    ctx: &RuntimeContext,
-    store: &Store,
-    run: &Run,
-    review_task_id: &str,
-    parent: &str,
-    role: &str,
-) {
-    // The author waits for this line until it runs finish (#177).
-    if let Err(e) = hold_for_finish(store, review_task_id) {
-        eprintln!("horch ledger: could not record the wait of {role}: {e:#}");
-    }
-    super::taskledger_wake::reviews_in(ctx, store, run, parent, role);
-}
-
-/// A parked task is not cancelled, but the tasks that wait for it cannot
-/// start until a requeue resumes it: wake on those tasks.
-fn wake_unlanded(ctx: &RuntimeContext, store: &Store, run: &Run, c: &finish::Completed) {
-    // The task is already done here, so a read error only costs the wake.
-    match tasks::dependents(store.conn(), &c.task_id) {
-        Ok(waiting) => {
-            super::taskledger_wake::stalled_dependents(ctx, store, run, &c.task, &waiting)
-        }
-        Err(e) => eprintln!(
-            "horch ledger: could not read the tasks that wait on {}: {e:#}",
-            c.task
-        ),
-    }
-}
-
-/// After the last review of a task: the author holds its reviewers wait
-/// until it runs `horch ledger finish` ([`workers::hold_for_finish`]).
-fn hold_for_finish(store: &Store, review_task_id: &str) -> Result<()> {
-    let Some(parent) = tasks::get(store.conn(), review_task_id)?.parent_task_id else {
-        return Ok(());
-    };
-    let Some(author) = tasks::get(store.conn(), &parent)?.current_worker_id else {
-        return Ok(());
-    };
-    workers::hold_for_finish(store.conn(), &author)
 }
 
 /// Whether this process is a task-ledger worker that holds (or finished) a
@@ -2179,16 +2090,35 @@ fn progress(ctx: &RuntimeContext, kind: LineKind, text: &str) -> Result<ExitCode
 
 /// Record `kind` with `text` on this worker's task ledger row. True when it
 /// did: a worker without `HORCH_WORKER_ID`, or whose row the ledger does
-/// not have, records nothing.
+/// not have, records nothing. It writes no row (RR-5, T-885): a process of
+/// a live attempt appends the line to `progress.jsonl` of its outbox, and
+/// fleetd ingests it. Another worker sends 1 `worker_progress` request.
 pub fn progress_from_worker(ctx: &RuntimeContext, kind: EventKind, text: &str) -> Result<bool> {
     let Some(wid) = worker_id_opt(ctx) else {
         return Ok(false);
     };
-    let mut s = taskledger::open(ctx)?;
-    if workers::find(s.conn(), &wid)?.is_none() {
+    let Some(store) = taskledger::open_existing_read_only(ctx)? else {
+        return Ok(false);
+    };
+    if workers::find(store.conn(), &wid)?.is_none() {
         return Ok(false);
     }
-    s.immediate(|tx| workers::progress(tx, &wid, ProgressSource::Agent, kind, text))?;
+    if let Ok(out) = own_outbox(ctx, &store) {
+        let line = match kind {
+            EventKind::Note => LineKind::Note,
+            _ => LineKind::Progress,
+        };
+        out.append(line, &taskledger::util::now(), text)?;
+        return Ok(true);
+    }
+    drop(store);
+    let payload = json!({
+        "worker_id": wid,
+        "kind": kind.as_str(),
+        "source": ProgressSource::Agent.as_str(),
+        "text": text,
+    });
+    request(ctx, Kind::WorkerProgress, payload)?;
     Ok(true)
 }
 

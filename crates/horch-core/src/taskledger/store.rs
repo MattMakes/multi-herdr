@@ -237,8 +237,22 @@ impl Store {
         &self.conn
     }
 
+    /// A second writable store of this writable ledger: the own connection
+    /// of the custody of a caller (`finish::with_custody`). A read-only
+    /// store gives an error. It opens through [`Store::open`], so the seam
+    /// checks the process again (T-885).
+    pub fn second_writer(&self) -> Result<Store> {
+        anyhow::ensure!(
+            !self.conn.is_readonly(rusqlite::MAIN_DB)?,
+            "the task ledger {} is open read-only; only fleetd writes it",
+            self.path.display()
+        );
+        let path: &Path = &self.path;
+        Store::open(path)
+    }
+
     /// The connection, for a call that takes `&mut Connection`: a custody
-    /// call that runs a job between its transactions.
+    /// call that runs a job between its transactions ([`Store::second_writer`]).
     pub fn conn_mut(&mut self) -> &mut Connection {
         &mut self.conn
     }

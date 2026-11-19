@@ -35,8 +35,9 @@ impl Class {
 /// Each request kind: the table "Request kinds" of
 /// `docs/tickets/fleetd-p5/MAP.md`, 1 kind for each command that changes
 /// state, with the 4 kinds of the records of 1 spawn after `spawn` (ticket
-/// 23 of fleetd-p5), then the idea kinds of Phase 6 (design, "Each request
-/// kind has a class"). A kind of [`RETIRED`] is not a kind.
+/// 23 of fleetd-p5), the 4 kinds of the last direct writers of the CLI
+/// after `rescue_drop` (T-885), then the idea kinds of Phase 6 (design,
+/// "Each request kind has a class"). A kind of [`RETIRED`] is not a kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Kind {
     LedgerImport,
@@ -67,6 +68,10 @@ pub enum Kind {
     FeatureAbandon,
     BranchAbandon,
     RescueDrop,
+    WorkerProgress,
+    WorkerDone,
+    RunAdopt,
+    QuestionAnswer,
     Progress,
     Result,
     Ask,
@@ -81,7 +86,7 @@ pub enum Kind {
 
 impl Kind {
     /// Each kind, in the order of the MAP table, then the idea kinds.
-    pub const ALL: [Kind; 38] = [
+    pub const ALL: [Kind; 42] = [
         Kind::LedgerImport,
         Kind::LedgerGc,
         Kind::TaskRequeue,
@@ -110,6 +115,10 @@ impl Kind {
         Kind::FeatureAbandon,
         Kind::BranchAbandon,
         Kind::RescueDrop,
+        Kind::WorkerProgress,
+        Kind::WorkerDone,
+        Kind::RunAdopt,
+        Kind::QuestionAnswer,
         Kind::Progress,
         Kind::Result,
         Kind::Ask,
@@ -153,6 +162,10 @@ impl Kind {
             Kind::FeatureAbandon => "feature_abandon",
             Kind::BranchAbandon => "branch_abandon",
             Kind::RescueDrop => "rescue_drop",
+            Kind::WorkerProgress => "worker_progress",
+            Kind::WorkerDone => "worker_done",
+            Kind::RunAdopt => "run_adopt",
+            Kind::QuestionAnswer => "question_answer",
             Kind::Progress => "progress",
             Kind::Result => "result",
             Kind::Ask => "ask",

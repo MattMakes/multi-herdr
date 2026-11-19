@@ -72,9 +72,10 @@ once, before you send any message that names them.
    wave count.
 
 == Ticket file contract ==
-Every ticket follows contract C1 (docs/specs/ticket-format.md). horch ledger
-add-map reads the field block, so a ticket queues exactly as you write it.
-A field it cannot read stops the ticket from queueing.
+Every ticket follows contract C1 (docs/specs/ticket-format.md). fleetd and
+horch idea add --direct read the field block, so a ticket runs exactly as
+you write it. A field they cannot read stops the ticket. horch ledger
+add-map --dry-run <MAP.md> checks each ticket and writes nothing.
 
 The field block is the first lines after the "# NN: Title" heading, 1 field
 per line, in this order. Values in backticks are literal.

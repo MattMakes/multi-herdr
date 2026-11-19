@@ -31,17 +31,17 @@ the last critic round passes, the orchestrator does these steps:
 3. Check the PR state before each push. Do not push to a merged or closed PR.
 4. Give the operator 1 link to the PR.
 
-### Queue each unit with horch 0.4.6
+### Add each unit as an idea
 
-Horch 0.4.6 refuses `horch spawn <persona> "task"`. Queue each one-off unit,
-then run the spawn line that the command prints:
+Write each unit as a ticket whose **Persona:** line names its seat and whose
+**Check:** line is `none`. Add it with:
 
 ```sh
-horch ledger task "<title>" --persona <seat> --file <plan> --check none
+horch idea add --direct <ticket file>
 ```
 
-Do not put task text in `horch spawn`. The worker reads its plan from the task
-ledger.
+fleetd dispatches it. Do not put task text in `horch spawn`. The worker reads
+its ticket from `START.md`.
 
 ## Required order and operator gates
 

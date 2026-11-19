@@ -1078,8 +1078,13 @@ impl JobPorts for Ports<'_> {
             .ledger
             .record_event(&self.record.record_id, event, text)?;
         if event == policy::EVENT_COMPACTED {
+            // The job reads the ledger, and fleetd writes the progress of
+            // each live worker of the record: 1 `worker_progress` request
+            // each (RR-5, T-885).
             let ctx = self.env.src.ctx;
-            let store = horch_core::taskledger::open(ctx)?;
+            let Some(store) = horch_core::taskledger::open_existing_read_only(ctx)? else {
+                return Ok(());
+            };
             let mut statement = store.conn().prepare(&format!(
                 "SELECT worker_id FROM workers WHERE legacy_record_id = ?1 AND status IN ({live})",
                 live = sql_words::list(sql_words::WORKERS_LIVE)
@@ -1088,14 +1093,18 @@ impl JobPorts for Ports<'_> {
                 .query_map([&self.record.record_id], |r| r.get::<_, String>(0))?
                 .collect::<Result<Vec<_>, _>>()?;
             for id in ids {
+                use super::operator_request::{request, Answer};
+                use horch_core::fleetd::fleet_runtime::domain::requests::Kind;
                 use horch_core::taskledger::model::{EventKind, ProgressSource};
-                horch_core::taskledger::workers::progress(
-                    store.conn(),
-                    &id,
-                    ProgressSource::Transcript,
-                    EventKind::Progress,
-                    &format!("compaction completed: {text}"),
-                )?;
+                let payload = serde_json::json!({
+                    "worker_id": id,
+                    "kind": EventKind::Progress.as_str(),
+                    "source": ProgressSource::Transcript.as_str(),
+                    "text": format!("compaction completed: {text}"),
+                });
+                if let Answer::Refused(reason) = request(ctx, Kind::WorkerProgress, payload)? {
+                    anyhow::bail!("fleetd refused the progress of worker {id}: {reason}");
+                }
             }
         }
         Ok(())

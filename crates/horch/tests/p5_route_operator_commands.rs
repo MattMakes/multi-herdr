@@ -453,9 +453,9 @@ fn worktree_restore_and_triage_send_their_kinds() {
 }
 
 /// `ARCHIVE` has no fleetd handler yet (`TRIAGE_NOT_HANDLED`): the command
-/// keeps its direct path, sends no request, and the folder is archived.
+/// refuses it, sends no request, and runs nothing (T-885).
 #[test]
-fn worktree_triage_archive_keeps_its_direct_path() {
+fn worktree_triage_archive_is_refused_and_runs_nothing() {
     let w = World::new();
     let proj = w.proj();
     let tree = proj.join(".worktrees").join("feat");
@@ -479,15 +479,20 @@ fn worktree_triage_archive_keeps_its_direct_path() {
         "| ID | Worktree | Suggested | Decision | Direction |\n|----|----|----|----|----|\n| W1 | feat | | ARCHIVE | |\n",
     )
     .unwrap();
-    let o = w.ok(&["worktree", "triage", "apply", reply.to_str().unwrap()]);
+    let o = w.horch_with(
+        &["worktree", "triage", "apply", reply.to_str().unwrap()],
+        &[],
+    );
+    assert_eq!(o.code, 1, "{}{}", o.out, o.err);
     assert!(
-        o.out
-            .starts_with("W1 feat ARCHIVE: archived at refs/horch/archive/feat"),
+        o.err
+            .contains("fleetd does not apply the decisions ARCHIVE in this version")
+            && o.err.contains("They return in a later task"),
         "{}",
-        o.out
+        o.err
     );
     assert!(w.requests().is_empty());
-    assert!(!tree.exists());
+    assert!(tree.exists());
 }
 
 #[test]
@@ -528,12 +533,18 @@ fn feature_branch_and_rescue_commands_send_their_kinds() {
         )),
         "abandoned"
     );
-    // `horch rescue drop` has no fleetd handler yet (`NOT_YET_HANDLED`): it
-    // keeps its direct path and sends no request.
+    // `horch rescue drop` sends 1 `rescue_drop` request, then deletes the
+    // ref (T-885).
     w.ok(&["rescue", "drop", &rescue]);
     assert_eq!(
         w.requests(),
-        applied(&["branch_abandon", "feature_abandon"])
+        applied(&["branch_abandon", "feature_abandon", "rescue_drop"])
+    );
+    assert_eq!(
+        w.one(&format!(
+            "SELECT count(*) FROM events WHERE entity_id = '{rescue}' AND kind = 'note'"
+        )),
+        "1"
     );
 }
 

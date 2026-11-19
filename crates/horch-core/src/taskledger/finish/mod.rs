@@ -26,7 +26,7 @@ use super::model::{
 };
 use super::runs::{self, Run};
 use super::sql_words::{self, word};
-use super::store::{optional, Store, BUSY_TIMEOUT};
+use super::store::{optional, Store};
 use super::tasks::{self, Task};
 use super::util::{self, About};
 use super::workers::{self, Worker};
@@ -538,15 +538,15 @@ pub(crate) fn live_attempt(conn: &Connection, worker_id: &str) -> Result<Option<
 /// Run [`create_and_wait`] for `lease` on the ledger of `store`, with the
 /// config of its fleet. It gives the id of the tree.
 pub(crate) fn lease_tree(store: &Store, jobs: &dyn RunJob, lease: &Lease<'_>) -> Result<String> {
-    lease_and_wait(store.path(), jobs, lease)
+    lease_and_wait(store, jobs, lease)
 }
 
 /// The custody setup of a command that needs a tree: the config of the
-/// fleet of the ledger `ledger`, the job context of a command, its own
-/// connection, then [`create_and_wait`] for `lease`. It gives the id of the
+/// fleet of the writable ledger `store`, the job context of a command, its
+/// own connection, then [`create_and_wait`] for `lease`. It gives the id of the
 /// tree. `horch ledger worktree new` and `horch worktree restore` call it.
-pub fn lease_and_wait(ledger: &Path, jobs: &dyn RunJob, lease: &Lease<'_>) -> Result<String> {
-    with_custody(ledger, |conn, ctx| {
+pub fn lease_and_wait(store: &Store, jobs: &dyn RunJob, lease: &Lease<'_>) -> Result<String> {
+    with_custody(store, |conn, ctx| {
         create::create_and_wait(conn, ctx, jobs, lease)
     })
 }
@@ -555,35 +555,32 @@ pub fn lease_and_wait(ledger: &Path, jobs: &dyn RunJob, lease: &Lease<'_>) -> Re
 /// [`lease_and_wait`], then [`remove::remove_tree`] of the row `id`. The
 /// inner `Err` is why custody refused it: the tree stays.
 pub(crate) fn remove_tree(
-    ledger: &Path,
+    store: &Store,
     jobs: &dyn RunJob,
     id: &str,
     cause: Cause<'_>,
     keep_branch: bool,
 ) -> Result<Result<(), String>> {
-    with_custody(ledger, |conn, ctx| {
+    with_custody(store, |conn, ctx| {
         remove::remove_tree(conn, ctx, jobs, id, cause, keep_branch)
     })
 }
 
-/// Run `f` with the custody setup of a command on the ledger `ledger`: the
-/// config of its fleet, the job context of a command and its own
-/// connection.
+/// Run `f` with the custody setup of a command on the writable ledger
+/// `store` of its caller: the config of its fleet, the job context of a
+/// command and its own connection ([`Store::second_writer`], T-885).
 pub(crate) fn with_custody<T>(
-    ledger: &Path,
+    store: &Store,
     f: impl FnOnce(&mut Connection, &JobCtx<'_>) -> Result<T>,
 ) -> Result<T> {
-    let config = create::fleet_config(ledger)?;
+    let config = create::fleet_config(store.path())?;
     let ctx = JobCtx {
         guard: None,
         config: &config,
         needs_you: &NeedsYouList,
     };
-    let mut conn = Connection::open(ledger)
-        .with_context(|| format!("opening the task ledger {}", ledger.display()))?;
-    conn.busy_timeout(BUSY_TIMEOUT)?;
-    conn.pragma_update(None, "foreign_keys", "ON")?;
-    f(&mut conn, &ctx)
+    let mut custody = store.second_writer()?;
+    f(custody.conn_mut(), &ctx)
 }
 
 /// The job runner of `tools`: its `jobs`, else the job process of this
@@ -1200,7 +1197,7 @@ pub fn complete(
 
 /// A retry after a crash between the write and the report: what the first
 /// `done` recorded, or `None` when the worker is not done.
-fn already_completed(conn: &Connection, worker_id: &str) -> Result<Option<Completed>> {
+pub fn already_completed(conn: &Connection, worker_id: &str) -> Result<Option<Completed>> {
     let w = workers::get(conn, worker_id)?;
     if w.status != "done" {
         return Ok(None);

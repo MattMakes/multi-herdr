@@ -18,8 +18,8 @@ Read these 4 pages in order:
 3. [testing-and-gates.md](testing-and-gates.md): the gate (never under
    `git rebase -x`), the gate slots, oracles, goldens, `HORCH_BLESS`, fakes and
    the e2e gotchas.
-4. [fleet-workflow.md](fleet-workflow.md): how the orchestrator runs units
-   of work with plans, worktrees, the merge protocol and `STATUS.md`.
+4. [fleet-workflow.md](fleet-workflow.md): how fleetd turns an idea into
+   landed work: the roles, the idea flow, worktrees and the merge protocol.
 
 ## Recipes
 

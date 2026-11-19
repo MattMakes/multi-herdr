@@ -1,21 +1,23 @@
 # How the fleet builds this repo
 
 Much of this repository was built by a horch fleet working on itself. This
-page tells you how an orchestrator runs a batch of work ("a run"), so you can
-read its files, join it as a worker, or run one yourself.
+page tells you how fleetd turns your ideas into landed work, so you can read
+its files, follow a worker, or run a fleet yourself. The first steps are in
+the section "Start" of the [README](../README.md#start).
 
 ## Roles
 
 | role | who | commands |
 |---|---|---|
-| orchestrator | 1 pane, started by `horch fleet` | `horch ledger` (queue, board, gate, close), `horch spawn`, `horch tell`, `horch route`, `horch inbox`, `horch fleet stop` |
-| worker | 1 pane per task, started by `horch spawn` | `horch ledger claim`, `horch ledger progress`, `horch tell orchestrator`, `horch ledger finish`, `horch ledger done`, `horch ledger handoff` |
+| you | the operator | `horch fleet`, `horch idea add`, `horch idea show`, `horch idea approve`, `horch idea revise`, `horch ideas`, `horch ledger status`, `horch feature abandon` |
+| fleetd | 1 daemon for each ledger, under the service manager of the OS | the only ledger writer: dispatch, the verifier, landing, the jobs |
+| sub-orchestrator | 1 pane for each feature (`idea-lead`), started by fleetd | `horch idea note`; it writes the files of its idea folder |
+| worker | 1 pane for each attempt, started by fleetd | `horch ledger progress`, `horch ask`, `horch result`, `horch ledger handoff` |
 
-The worker briefing is `teammates/_base/fleet-worker.md`; the orchestrator
-briefing is `teammates/_base/fleet-orchestrator.md`; the orchestrator's
-playbook is the bundled skill `skills/orchestrate/SKILL.md`. A worker never
-starts a subagent. A worker that needs more hands sends `QUESTION:` to the
-orchestrator, and the orchestrator spawns another pane.
+The worker briefing is `teammates/_base/fleet-worker.md`; the
+sub-orchestrator briefing is `teammates/_base/fleet-idea-lead.md`. A worker
+never starts a subagent. A worker that needs more hands asks with
+`horch ask`, and the sub-orchestrator of its feature replans.
 `horch inbox` lists the reachable roles, then prints and acknowledges pending
 messages, and ends with `N messages acknowledged`. `--roles` lists roles only.
 `--peek` prints messages and leaves them pending. Inside a fleet, only the
@@ -34,63 +36,52 @@ redelivery repeats the id. The orchestrator answers 1 question with
 `[orchestrator re #<id>] <text>`. A tell without `--answers` closes no
 question.
 
-The operator starts the orchestrator with no task. Its briefing ends with
-"Acknowledge and await further instruction.", so it acknowledges the briefing
-and waits for the operator's first message. Pull is the only dispatch model:
-`horch spawn` takes no task text, and a worker claims its task from the task
-ledger. A one-off goes through `horch ledger task "<title>" --persona <p>`.
-The 1 exception is a `spawn_only` controller, such as `skill-importer`, that
-sends a brief to a role with `horch_access: report`: a report pane cannot run
-`horch ledger claim`, so the brief is its task.
+Push is the only dispatch model: fleetd binds each task to its attempt
+before the pane opens, and writes `<task folder>/inbox/START.md`. A ticket
+that you wrote goes in with `horch idea add --direct <ticket file>`. The 1
+exception is a `spawn_only` controller, such as `skill-importer`, that sends
+a brief to a role with `horch_access: report`: the brief is its task.
 
-## Task ledger runs
+## From an idea to landed work
 
-Every run is driven by the task ledger (`docs/specs/task-ledger.md`). The
-orchestrator only queues work, and workers claim it:
+Every task belongs to an idea (`docs/specs/fleetd/design.md`, Ideas). fleetd
+moves each idea through a fixed state machine:
 
-| step | who | command |
+| step | who | command or file |
 |---|---|---|
-| write the spec and the tickets | spec-writer, ticket-writer | `docs/specs/<slug>.md`, `docs/tickets/<slug>/` (format: `docs/specs/ticket-format.md`) |
-| check the tickets | orchestrator | `horch ledger add-map --dry-run <MAP.md>` |
-| create the run and its run branch | orchestrator | `horch ledger run new <slug> [--check "<cmd>"]` |
-| queue the tickets | orchestrator | `horch ledger add-map <MAP.md>` or `horch ledger add --file <ticket> --primary <persona>` |
-| queue a one-off | orchestrator | `horch ledger task "<title>" --persona <p> [--file <ticket>] [--check "<cmd>"\|none]` |
-| spawn exactly the workers needed | orchestrator | `horch ledger plan-workers`, then `horch spawn <persona>` |
-| take a task | worker | `horch ledger claim` (prints the ticket snapshot, then the path) |
+| capture an idea | you | `horch idea add "<idea>"`, `horch idea add -f <file>`, `--to <feature>` to join an open feature |
+| add a ticket that you wrote | you | `horch idea add --direct <ticket file>` (no interview, 1 work task) |
+| interview, assumptions | sub-orchestrator | `interview.md`, `assumptions.md` in the idea folder |
+| approve or revise | you | `horch idea show <id>`, then `horch idea approve <id>` or `horch idea revise <id> "<text>"` |
+| spec and tickets | sub-orchestrator | `spec.md`, `requirements.yaml`, tickets in format C1 (`docs/specs/ticket-format.md`), `plan.yaml` |
+| check a map of tickets by hand | anyone | `horch ledger add-map --dry-run <MAP.md>` (writes nothing) |
+| validate the plan, make the tasks | fleetd | `plan.verdict.json` |
+| dispatch a ready task | fleetd | the worktree, `inbox/START.md`, a worker in exec mode |
 | record milestones | worker | `horch ledger progress "<text>"` |
-| finish: the run's steps (all 7 under `--verify full`: check, code-sweep, complexity-sweep, recheck, land, pr, cleanup) | worker | `horch ledger finish` (again after each fix) |
-| close the task | worker | `horch ledger done "<summary>"` |
-| hand the task to a fresh worker | worker | `horch ledger handoff <path>` |
-| read the board | anyone | `horch ledger status` (exit 0 = the run is settled) |
-| run the whole-run gate | orchestrator | `horch ledger run gate [--check "<cmd>"]` |
-| close the run | orchestrator | `horch ledger run close [--pr-declined "<reason>" \| --abandon "<reason>"]` |
+| ask a question | worker | `horch ask "<question>"`; the sub-orchestrator answers with `horch idea note` |
+| report the result | worker | `horch result --status completed --summary "<paragraph>"` |
+| hand the task to a fresh attempt | worker | `horch ledger handoff <path>` |
+| the finish steps (check, code-sweep, complexity-sweep, recheck) | fleetd | jobs of the verifier |
+| land the task branch on the feature branch | fleetd | the landing state machine, behind the fast gate |
+| the full gate and the pull request | fleetd | the feature branch is pushed for 1 pull request |
+| read the board | anyone | `horch ideas`, `horch ledger status` (each hold on dispatch with its cause) |
+| merge | you | merge the pull request; fleetd sees the merge |
+| drop a feature | you | `horch feature abandon <feature>` |
 
-A run has a default check (`run new --check`). A ticket with no `**Check:**`
-inherits it. A task with no check does not land, unless its ticket says
-`**Check:** none`. `run close` needs a settled run, a passing gate on the
-run-branch tip, and a merged or declined PR. The operator merges the PR.
+A task with no check does not land, unless its ticket says
+`**Check:** none`. The orchestrator commands of the old flow
+(`horch ledger run new`, `add-map` without `--dry-run`, `add`, `task`,
+`plan-workers`, `run gate`, `run close`) and the worker commands
+`horch ledger claim` and `horch ledger finish` are retired. Each one prints
+the command that replaces it.
 
-`horch ledger finish` spawns the code-sweep reviewers itself and sends the
-orchestrator 1 NOTE that names them. A ticket's `**Review:**` sets the rounds
-(none 0, light 1, full at most 3). Rounds 2 and 3 review only the change since
-the last reviewed tree, with `codex-reviewer-light` and
-`architect-reviewer-light`. Findings keep their `F<n>` id in every round. The
-author answers in the answers file (`F<n>: <reason>`), and the next round's
-reviewers write `- F<n> accepted` or `- F<n> rejected: <why>` under
-`## Answers`.
-
-A workspace holds at most 1 active run that is not a solo run. A spawn with
-no `--run` joins only the active run of its own workspace. A run made outside
-herdr by an older horch has no workspace id and needs `--run <slug>`. One-off
-tasks go to the solo run `solo-<workspace>`.
-
-The watchdog respawns a dead orchestrator: at most 1 time in 10 min and 3
-times in a run, never after `horch fleet stop` or `run close`. The new
-orchestrator first reads `ai_docs/handoffs/orchestrator-whats-next.md`, then
-`ai_docs/plans/<run>/decisions.md`, then `horch ledger status`. An
-orchestrator launch claims its run: it records the workspace and clears a
-recorded stop. The `Orchestrator` line of `horch ledger status` shows the
-respawns and the stop.
+The verifier starts the code-sweep reviewers itself. A ticket's
+`**Review:**` sets the rounds (none 0, light 1, full at most 3). Rounds 2
+and 3 review only the change since the last reviewed tree, with
+`codex-reviewer-light` and `architect-reviewer-light`. Findings keep their
+`F<n>` id in every round. The author answers in the answers file
+(`F<n>: <reason>`), and the next round's reviewers write `- F<n> accepted`
+or `- F<n> rejected: <why>` under `## Answers`.
 
 `horch worker` records the supervisor's and the agent's PIDs and checks in
 every 30 s. A watchdog checks every working worker every 10 minutes and
@@ -98,7 +89,7 @@ reaps a worker whose process is gone or that shows no progress for 3
 checks; its task is queued again first, and the replacement
 (`horch spawn <persona> --replaces <worker>`) gets the dead worker's
 transcript path and worktree. `horch ledger stop` stops 1 worker;
-`horch ledger cancel` and `run close --abandon` stop the worker of each task
+`horch ledger cancel` and `horch task cancel` stop the worker of each task
 they cancel. `horch ledger unfinished` lists past work that never landed,
 including the history imported from the old JSON ledgers
 (`horch ledger import`). Session records live in the `session_records`
@@ -137,8 +128,8 @@ applies the decisions; the `worktree-steward` teammate adds judgement.
 | delete trash refs older than 30 days | anyone | `horch ledger gc` |
 
 `horch fleet` runs the triage at start. When it finds 1 or more parked
-worktrees, it spawns `worktree-steward` in a pane beside the orchestrator.
-With none, no steward starts. The orchestrator does not run the triage.
+worktrees, it spawns `worktree-steward` in a pane beside the first pane.
+With none, no steward starts.
 
 Each row of `horch worktree triage` has an ID (`W1`, `W2`, ... in name order)
 and: the task, findings and origin; the branch, path and base; the created,
@@ -183,10 +174,8 @@ open `import_findings` row of the worktree closes: `requeued` for `FINISH`,
 `dismissed` for the others. `ARCHIVE` and `PR` leave the row `archived`;
 `DELETE` leaves it `trashed`.
 
-`horch ledger run close` refuses while a parked worktree of the run is on
-disk with no decision, and names `horch worktree triage`. `--abandon` cancels
-the open tasks first, then refuses the same way; the run stays active until
-each worktree has a decision. `horch ledger status` prints a
+A parked worktree with no decision stays on disk, and
+`horch ledger status` prints a
 `Parked worktrees: <count> (<disk>, measured <age> ago)` line. The disk is the
 size `horch worktree triage` stored at its last run, and `<age>` is the age
 of the oldest measurement; `status` walks no folder. Rows that triage has not
@@ -197,8 +186,8 @@ measured add `; <n> not measured`. With no measurement the line says
 
 The tickets are the contract. They live in git, in `docs/tickets/<slug>/`,
 beside the spec `docs/specs/<slug>.md`. Each ticket starts with the field
-block of `docs/specs/ticket-format.md`. `add-map` stores a snapshot of each
-ticket, and the claim prints it. A worker edits only the `**Own:**` paths of
+block of `docs/specs/ticket-format.md`. fleetd stores a snapshot of each
+ticket of a validated plan, and `START.md` holds it. A worker edits only the `**Own:**` paths of
 its ticket. A worker that needs another file asks first.
 
 `ai_docs/` is local scratch. It is not in git (no commit holds it), so a
@@ -227,32 +216,27 @@ executor in the implementation phase.
 
 ### Ledger worktree mode (current)
 
-In a task ledger run, each task gets its own worktree and branch, and
-`horch ledger finish` lands it.
+fleetd gives each task its own worktree and branch, and lands it.
 
-- The claim tells the worker when to make the worktree. The worker runs
-  `horch ledger worktree new <name>` and works in the path it prints. The
-  branch starts from the run branch, or from `--from <ref>`. The ledger
-  records the row, so `finish` can check, land and clean it up.
-- A worker never runs `git worktree add` or the plain `horch worktree new`
-  in a ledger run. A worktree that the ledger does not record is never
-  checked or landed.
-- `horch ledger worktree scratch <name>` makes recorded throwaway work that
-  never lands. `horch ledger worktree drop <name> --reason "<why>"` drops a
-  clean worktree that will not land.
+- fleetd makes the worktree before the attempt starts. `START.md` names the
+  worktree and the branch. The branch starts from the feature branch.
+- A worker never runs `git worktree add`, `horch worktree new` or the
+  `horch ledger worktree` commands. It works only in the worktree that
+  `START.md` names.
 - Worktrees live under `.worktrees/` in the main checkout. Each builds its
   own `target/` (2 to 8 GB). Never share one `CARGO_TARGET_DIR` between
   worktrees.
-- A worker commits exact files in its worktree, then runs
-  `horch ledger finish`. Its `land` step rebases the branch on the run
-  branch, runs the check again, and fast-forwards the run branch. Its
-  `pr` step writes the task's section in the run's 1 pull request. Its
-  `cleanup` step removes the worktree.
+- A worker commits exact files in its worktree, then runs `horch result`.
+  The verifier runs the finish steps. The landing state machine lands the
+  task branch on the feature branch, and fleetd removes the worktree when no
+  work can be lost. A branch that does not land keeps a rescue ref.
 - Nobody runs `git checkout` or `git switch` in the shared main checkout.
 
-### Shared-checkout mode (`horch ledger add --shared`)
+### Shared-checkout mode (retired with `horch ledger add --shared`)
 
-A task queued with `--shared` works in the main checkout, not a worktree.
+`horch ledger add` is retired, so no new task is queued in this mode. The
+rules below apply to a shared task of an older run. A task queued with
+`--shared` works in the main checkout, not a worktree.
 It is for repositories where worktrees are impractical (large game assets,
 Godot imports). The ledger enforces these limits (#166):
 

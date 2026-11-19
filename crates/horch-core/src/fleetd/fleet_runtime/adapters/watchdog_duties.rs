@@ -407,6 +407,8 @@ impl RunDuties for WatchdogDuties<'_> {
                 workers::sync_questions(tx, &self.state_root, workspace)?;
             }
         }
+        // The findings of `horch ledger unfinished`, which only reads (T-885).
+        crate::taskledger::import::sync_native(tx)?;
         let mut reaped = BTreeSet::new();
         if let Some(page) = state.pages.remove(WORKER_CHECKS) {
             self.check_page(tx, ctx, &runs, page, &state.observed, &now)?;

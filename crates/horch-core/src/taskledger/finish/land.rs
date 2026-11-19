@@ -1097,7 +1097,7 @@ impl Removal<'_> {
                 actor: Actor::Horch,
                 text: "cleanup",
             };
-            if let Err(why) = remove_tree(store.path(), jobs, &wt.worktree_id, cause, false)? {
+            if let Err(why) = remove_tree(store, jobs, &wt.worktree_id, cause, false)? {
                 return Ok(Some(why));
             }
         }

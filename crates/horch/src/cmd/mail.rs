@@ -104,8 +104,8 @@ impl<'a> Courier<'a> {
 
     fn run(&mut self) -> Result<()> {
         loop {
-            // Undelivered ledger wakes become mail first (trace-fixes C3).
-            super::taskledger_wake::drain_workspace(self.ctx, self.workspace);
+            // fleetd delivers the ledger wakes: its pass drains the outbox
+            // (trace-fixes C3). The courier writes no ledger row (T-885).
             let pending = self.mail.pending()?;
             let role_mail = pending_role_mail(&self.mail);
             match self.next_step(&pending, &role_mail)? {
