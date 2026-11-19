@@ -60,6 +60,7 @@ use crate::fleetd::fleet_runtime::application::pass::{
 };
 use crate::fleetd::fleet_runtime::domain::budget::{Cursor, PassBudget};
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
+use crate::fleetd::ideas::adapters::ideas_store;
 use crate::fleetd::ideas::application::answers::live_owner;
 use crate::fleetd::ideas::application::needs_you::NeedsYouList;
 use crate::fleetd::ideas::application::sub_orchestrators;
@@ -708,6 +709,9 @@ pub fn idea_lead_launch(
     let Some(phase) = phase_of_attempt(attempt, &idea) else {
         return Ok(None);
     };
+    let Some(feature) = ideas_store::idea(conn, &idea)?.map(|i| i.feature_id) else {
+        return Ok(None);
+    };
     let Some(row) = attempts_store::idea_attempts(conn, &idea)?
         .into_iter()
         .map(|(a, _)| a)
@@ -724,7 +728,7 @@ pub fn idea_lead_launch(
         attempt: attempt.to_string(),
         worker_id: row.worker_id,
         persona: sub_orchestrators::PERSONA.to_string(),
-        brief: idea_lead_brief(&idea, &phase, &folder),
+        brief: idea_lead_brief(&idea, &feature, &phase, &folder),
         idea,
         phase,
         folder,
@@ -746,11 +750,13 @@ fn phase_of_attempt(attempt: &str, idea: &str) -> Option<String> {
 }
 
 /// The launch argument of the idea-lead of `idea` in `phase`: the idea,
-/// the phase and the idea folder (FR-7). The folder is 1 word with a space
-/// after it, so a reader can split the line on spaces.
-fn idea_lead_brief(idea: &str, phase: &str, folder: &Path) -> String {
+/// the phase, the idea folder (FR-7) and the id of the feature of the idea,
+/// which plan.yaml names. The folder is 1 word with a space after it, so a
+/// reader can split the line on spaces.
+fn idea_lead_brief(idea: &str, feature: &str, phase: &str, folder: &Path) -> String {
     format!(
         "You are the idea-lead of idea {idea} in phase {phase}. \
+         The feature of your idea is {feature}. \
          Your idea folder is {} and it is your only memory. \
          Read idea.md in that folder, then do the {phase} phase.",
         folder.display()
@@ -2052,9 +2058,17 @@ mod idea_lead_tests {
         assert_eq!(l.run_slug, "r1");
         assert_eq!(l.project_root, run.project_root);
         assert_eq!(l.workspace_id.as_deref(), Some("w1"));
-        // The brief names the idea, the phase and the folder as 1 word.
+        // The brief names the idea, the phase, the feature id and the
+        // folder as 1 word.
         assert!(l.brief.contains(&idea), "{}", l.brief);
         assert!(l.brief.contains("phase clarifying"), "{}", l.brief);
+        let feature: String = conn
+            .query_row("SELECT feature_id FROM ideas WHERE id = ?1", [&idea], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let line = format!("The feature of your idea is {feature}.");
+        assert!(l.brief.contains(&line), "{}", l.brief);
         let word = folder.display().to_string();
         assert!(l.brief.split_whitespace().any(|w| w == word), "{}", l.brief);
     }

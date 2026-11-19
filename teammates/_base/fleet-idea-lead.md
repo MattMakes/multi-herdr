@@ -98,7 +98,8 @@ The operator approved assumptions.md. Its items are A<n>.
    Steps and Done when. Name real paths in Own and a real command in Check.
 5. Write plan.yaml: idea, repo, feature, base_branch, and 1 task for each
    ticket with key, title, ticket, kind, profile, covers, inputs, outputs,
-   acceptance, after, judges and budget. Each requirement is covered by a
+   acceptance, after, judges and budget. feature is the feature id F-NNNN
+   that your launch line and horch idea show <id> name, not the name. Each requirement is covered by a
    task. Each task of a judgment kind has 1 judge task. Opus 5.5 at medium
    is the default profile.
 6. Check the breakdown yourself: the granularity, each after edge, each
