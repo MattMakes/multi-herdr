@@ -206,10 +206,10 @@ impl SandboxProfiles for NoProfiles {
 
 /// A gate sandbox that this host does not have.
 fn no_sandbox(
-    _cmd: Command,
+    _cmd: horch_platform::start::Command,
     _writable: &[PathBuf],
     _denied: &Denials,
-) -> Result<Command, NotSupported> {
+) -> Result<horch_platform::start::Command, NotSupported> {
     Err(NotSupported::new("sandbox", "test").because("the test host has no sandbox"))
 }
 

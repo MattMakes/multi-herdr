@@ -966,11 +966,11 @@ fn lex(lines: &[&str]) -> Lexed {
 }
 
 /// The index of the line after the item that starts on line `start`: the
-/// line of its `;` outside a body, or of the `}` that closes its body.
-/// Braces in string, raw string and char literals and in comments do not
-/// count.
+/// line of its `;` outside a body and outside brackets (`[u8; 4]`), or of
+/// the `}` that closes its body. Braces in string, raw string and char
+/// literals and in comments do not count.
 fn item_end(lines: &[&str], start: usize) -> usize {
-    let mut depth = 0;
+    let (mut depth, mut nested) = (0, 0);
     for (i, line) in lex(&lines[start..]).code.iter().enumerate() {
         for c in line.chars() {
             match c {
@@ -981,7 +981,9 @@ fn item_end(lines: &[&str], start: usize) -> usize {
                         return start + i + 1;
                     }
                 }
-                ';' if depth == 0 => return start + i + 1,
+                '[' | '(' => nested += 1,
+                ']' | ')' => nested -= 1,
+                ';' if depth == 0 && nested == 0 => return start + i + 1,
                 _ => {}
             }
         }
@@ -2758,4 +2760,157 @@ fn ledger_writer_matcher_finds_each_writable_open() {
         );
     }
     assert!(names_ledger_store("horch-core/src/taskledger/x.rs", &[]));
+}
+
+/// SR-7: the 2 production files that may start a process directly: the
+/// platform start function and the launcher (docs/tickets/fleetd-p7/MAP.md,
+/// Q1). Each removes each forbidden name before the start.
+const PROCESS_START_ALLOWED: [&str; 2] = [
+    "horch-platform/src/start.rs",
+    "horch-core/src/fleetd/worker_profiles/adapters/launcher.rs",
+];
+
+/// Each direct process start in the production code of `text`, with its
+/// line number: a `Command::new` of a `process` module (`std::process`), or
+/// a bare `Command::new`. `horch_platform::start::Command` has no `new` (its
+/// start is `start::command`), so a bare `Command::new` is a `std` start. A
+/// `Command` of another module (`clap::Command`) and a
+/// `std::process::Command` as a type are not starts.
+fn process_starts(text: &str) -> Vec<(usize, String)> {
+    let production = production_lines(text);
+    let texts: Vec<&str> = production.lines.iter().map(|(_, l)| l.as_str()).collect();
+    code_paths(&lex(&texts).code)
+        .into_iter()
+        .filter(|(_, segs)| {
+            segs.windows(2)
+                .enumerate()
+                .any(|(k, w)| w == ["Command", "new"] && (k == 0 || segs[k - 1] == "process"))
+        })
+        .map(|(i, segs)| (production.lines[i].0, segs.join("::")))
+        .collect()
+}
+
+/// Each direct process start in the production code under `crates`, as
+/// `<crate>/src/<path>:<line>: <path>`, outside `PROCESS_START_ALLOWED`.
+/// It reads the `src/` of each crate. `horch-e2e` is test code: its library
+/// starts the development binaries with the environment that a test gives,
+/// and its `src/bin/` holds the fake agents. A `tests.rs` file and each
+/// module that a test-only `cfg` declares are test code.
+fn process_starts_under(crates: &Path) -> Vec<String> {
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(crates).unwrap() {
+        let dir = entry.unwrap().path();
+        if dir.file_name().is_some_and(|n| n != "horch-e2e") && dir.join("src").is_dir() {
+            rust_files(&dir.join("src"), &mut files);
+        }
+    }
+    let mut scanned = Vec::new();
+    let mut test_paths: Vec<PathBuf> = Vec::new();
+    for file in &files {
+        let text = std::fs::read_to_string(file).unwrap();
+        test_paths.extend(test_module_paths(file, &production_lines(&text).test_mods));
+        scanned.push((file, process_starts(&text)));
+    }
+    let mut found = Vec::new();
+    for (file, starts) in scanned {
+        let rel = relative(file, crates);
+        if file.file_name().is_some_and(|n| n == "tests.rs")
+            || test_paths.iter().any(|t| file.starts_with(t))
+            || PROCESS_START_ALLOWED.contains(&rel.as_str())
+        {
+            continue;
+        }
+        for (line, path) in starts {
+            found.push(format!("{rel}:{line}: {path}"));
+        }
+    }
+    found.sort();
+    found
+}
+
+/// SR-7: production code starts each process through the launcher or the
+/// platform start function, and through no other `Command::new`.
+#[test]
+fn fitness_no_process_start_outside_the_launcher() {
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    for allowed in PROCESS_START_ALLOWED {
+        assert!(crates.join(allowed).is_file(), "{allowed} is missing");
+    }
+    let found = process_starts_under(&crates);
+    assert!(
+        found.is_empty(),
+        "start the process with horch_platform::start::Command or the launcher:\n{}",
+        found.join("\n")
+    );
+}
+
+/// The process start rule's own cases: a start planted in a temporary file
+/// is found with its file and line, and test code, the 2 allowed files,
+/// `horch-e2e`, comments, strings and a `Command` of another module are not.
+#[test]
+fn fitness_process_start_rule_finds_a_planted_start() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plant = |rel: &str, text: &str| {
+        let path = tmp.path().join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    };
+    plant(
+        "a/src/lib.rs",
+        "#[cfg(all(test, unix))]\nmod test_support;\nmod qualified;\nmod imported;\n\
+         mod moved;\nmod grouped;\nmod typed;\n#[cfg(test)]\nmod tests {\n    \
+         fn t() { std::process::Command::new(\"sh\"); }\n}\n",
+    );
+    plant(
+        "a/src/qualified.rs",
+        "#[cfg(test)]\nconst VARS: [&str; 1] = {\n    [\"\"; 1]\n};\n\
+         // std::process::Command::new(\"sh\")\nfn f() {\n    \
+         let s = \"std::process::Command::new\";\n    \
+         let c = std::process::Command::new(\"sh\");\n}\n",
+    );
+    plant(
+        "a/src/imported.rs",
+        "use std::process::{Child, Command};\n\nfn f() -> Child {\n    \
+         Command::new(\"sh\").spawn().unwrap()\n}\n",
+    );
+    plant(
+        "a/src/grouped.rs",
+        "use std::{fs, process};\nfn f() {\n    process::Command::new(\"sh\");\n}\n",
+    );
+    plant(
+        "a/src/moved.rs",
+        "use horch_platform::start;\n\
+         fn f() {\n    start::command(\"sh\").spawn();\n    \
+         clap::Command::new(\"ledger\");\n}\n",
+    );
+    plant(
+        "a/src/typed.rs",
+        "fn f(c: &mut std::process::Command) -> &mut std::process::Command {\n    c\n}\n",
+    );
+    plant(
+        "a/src/test_support.rs",
+        "fn f() { std::process::Command::new(\"sh\"); }\n",
+    );
+    plant(
+        "a/src/x/tests.rs",
+        "fn f() { std::process::Command::new(\"sh\"); }\n",
+    );
+    let start = "fn f() { std::process::Command::new(\"sh\"); }\n";
+    plant("horch-platform/src/start.rs", start);
+    plant(
+        "horch-core/src/fleetd/worker_profiles/adapters/launcher.rs",
+        start,
+    );
+    plant("horch-e2e/src/harness.rs", start);
+    plant("horch-e2e/src/bin/fake-claude.rs", start);
+    assert_eq!(
+        process_starts_under(tmp.path()),
+        vec![
+            "a/src/grouped.rs:3: process::Command::new",
+            "a/src/imported.rs:4: Command::new",
+            "a/src/qualified.rs:8: std::process::Command::new",
+        ]
+    );
+    let bare = "fn f() { Command::new(\"sh\"); }\n";
+    assert_eq!(process_starts(bare), vec![(1, "Command::new".to_string())]);
 }
