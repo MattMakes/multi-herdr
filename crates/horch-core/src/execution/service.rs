@@ -175,7 +175,7 @@ impl ExecutionService<'_> {
             .map_err(|e| SpawnError::Store(e.into()))?;
         let outcome = self
             .store
-            .update(|records| self.claim(records, plan, role, &workspace));
+            .update(|records| self.claim(records, plan.clone(), role, &workspace));
         match outcome {
             Ok(Ok(plan)) => Ok(plan),
             Ok(Err(e)) => Err(e.into()),

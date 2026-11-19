@@ -1523,7 +1523,10 @@ mod trf_45_tests {
         // Only the imported copy remains.
         std::fs::remove_file(&file).unwrap();
 
-        let records = ExecutionStore::in_db(&state, &db, "/repo");
+        // A test of the store writes with the writer of fleetd (T-884).
+        let records = ExecutionStore::in_db(&state, &db, "/repo").with_writer(std::sync::Arc::new(
+            crate::taskledger::store::LedgerWriter::fleetd(),
+        ));
         let events = |records: &ExecutionStore| -> Vec<(String, String)> {
             records
                 .get("a")
