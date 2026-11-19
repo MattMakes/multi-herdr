@@ -1032,22 +1032,12 @@ mod phase4 {
                 "opus",
             ],
         );
-        let worker = horch_ok(
-            &h,
-            None,
-            &[
-                "ledger",
-                "worker",
-                "new",
-                "--persona",
-                "opus",
-                "--role",
-                "opus1",
-            ],
-        )
-        .trim()
-        .to_string();
-        horch_ok(&h, Some(&worker), &["ledger", "claim"]);
+        let new = horch_core::taskledger::workers::NewWorker {
+            persona: "opus".into(),
+            role: Some("opus1".into()),
+            ..Default::default()
+        };
+        let worker = horch_e2e::bind::bind_worker(&h, new, None).worker_id;
         horch_ok(&h, Some(&worker), &["ledger", "worktree", "new", "feat"]);
         let conn = rusqlite::Connection::open(&db).unwrap();
         let (task_id, n): (String, i64) = conn

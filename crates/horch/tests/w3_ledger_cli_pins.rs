@@ -10,6 +10,9 @@ mod support;
 use std::path::PathBuf;
 use std::process::Command;
 
+use horch_core::taskledger::model::FileMode;
+use horch_core::taskledger::workers::NewWorker;
+use horch_core::taskledger::{tasks, Store};
 use support::fleetd::{short_tempdir, TestFleetd};
 
 const HEALTHY_MACHINE: &str = r#"{"os":"linux","arch":"x86_64","cpus":8,"load_average_1m":1.0,"mem_total_bytes":17179869184,"mem_available_bytes":8589934592,"disk_free_bytes":214748364800,"disk_total_bytes":536870912000,"gpu":"none","max_open_files":1048576,"max_processes":100000}"#;
@@ -439,25 +442,26 @@ fn the_unfinished_import_and_refusal_arms_print_their_pinned_text() {
     assert_eq!(pid.err, "refused: no worker nobody in the task ledger\n");
 }
 
-/// A world with run `r1` (checks every 10 s) and 1 claimed task.
+/// A world with run `r1` (checks every 10 s) and 1 task bound to the
+/// worker `dev1` (FR-5).
 fn world_with_a_claimed_task() -> (World, String) {
     let w = World::new();
     w.ok(&["ledger", "run", "new", "r1", "--check-every", "10"]);
     w.ok(&["ledger", "add", "--file", "t1.md", "--primary", "dev"]);
-    let id = w
-        .ok(&[
-            "ledger",
-            "worker",
-            "new",
-            "--persona",
-            "dev",
-            "--role",
-            "dev1",
-        ])
-        .trim()
-        .to_string();
-    assert_eq!(w.run_as(Some(&id), &["ledger", "claim"]).code, 0);
+    let id = bind_dev1(&w, None);
     (w, id)
+}
+
+/// Bind the next task of `dev` to a new worker with the role `dev1` and the
+/// agent `agent` (FR-5). Gives the worker id.
+fn bind_dev1(w: &World, agent: Option<u32>) -> String {
+    let db = w.tmp.path().join("home/.horch/ledger.sqlite3");
+    let worker = NewWorker {
+        persona: "dev".into(),
+        role: Some("dev1".into()),
+        ..Default::default()
+    };
+    support::bind::bind(&db, worker, agent).worker_id
 }
 
 #[test]
@@ -496,34 +500,7 @@ fn watch_once_json_lists_each_checked_worker() {
         "1000",
     ]);
     w.ok(&["ledger", "add", "--file", "t1.md", "--primary", "dev"]);
-    let id = w
-        .ok(&[
-            "ledger",
-            "worker",
-            "new",
-            "--persona",
-            "dev",
-            "--role",
-            "dev1",
-        ])
-        .trim()
-        .to_string();
-    let db = w.tmp.path().join("home/.horch/ledger.sqlite3");
-    horch_core::taskledger::Store::open(&db)
-        .and_then(|mut store| {
-            let pid = std::process::id();
-            // The agent PID row that `horch worker` wrote before Phase 5.
-            store.immediate(|tx| {
-                horch_core::taskledger::workers::agent_started(
-                    tx,
-                    &id,
-                    pid,
-                    horch_core::procid::start_time(pid),
-                )
-            })
-        })
-        .unwrap();
-    assert_eq!(w.run_as(Some(&id), &["ledger", "claim"]).code, 0);
+    let id = bind_dev1(&w, Some(std::process::id()));
     let forced = w.run(&["ledger", "watch", "--once", "--force", "--json"]);
     assert_eq!(forced.code, 0, "{}", forced.err);
     let checked = json(&forced.out);
@@ -639,22 +616,28 @@ fn add_takes_the_title_check_and_files_from_the_ticket_unless_a_flag_names_them(
     let w = World::new();
     w.ok(&["ledger", "run", "new", "r1"]);
     std::fs::write(w.proj().join("facts.md"), TICKET_WITH_FACTS).unwrap();
-    let claim = |worker: &str| {
-        let o = w.run_as(Some(worker), &["ledger", "claim", "--json"]);
-        assert_eq!(o.code, 0, "{}", o.err);
-        json(&o.out)
-    };
-    let new_worker = || {
-        w.ok(&["ledger", "worker", "new", "--persona", "dev"])
-            .trim()
-            .to_string()
+    // The next task of `dev` is bound to a new worker (FR-5): its facts.
+    let db = w.tmp.path().join("home/.horch/ledger.sqlite3");
+    let claim = || {
+        let worker = NewWorker {
+            persona: "dev".into(),
+            ..Default::default()
+        };
+        let task = support::bind::bind(&db, worker, None).task_id;
+        let store = Store::open(&db).unwrap();
+        let c = store.conn();
+        serde_json::json!({
+            "task": tasks::get(c, &task).unwrap(),
+            "own": tasks::files(c, &task, FileMode::Own).unwrap(),
+            "do_not_touch": tasks::files(c, &task, FileMode::DoNotTouch).unwrap(),
+        })
     };
 
     assert_eq!(
         w.ok(&["ledger", "add", "--file", "facts.md", "--primary", "dev"]),
         "T-1 queued for dev: From the ticket.\n"
     );
-    let first = claim(&new_worker());
+    let first = claim();
     let task = &first["task"];
     assert_eq!(task["title"], "From the ticket");
     assert_eq!(task["land_check"], "true");
@@ -694,7 +677,7 @@ fn add_takes_the_title_check_and_files_from_the_ticket_unless_a_flag_names_them(
         "33",
     ];
     assert_eq!(w.ok(&flags), "T-2 queued for dev: Named.\n");
-    let second = claim(&new_worker());
+    let second = claim();
     let task = &second["task"];
     assert_eq!(task["title"], "Named");
     assert_eq!(task["land_check"], "echo hi");

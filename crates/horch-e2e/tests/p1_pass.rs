@@ -8,10 +8,10 @@
 //! `sleep` child of the test is the agent of each worker, and only fleetd
 //! sees that an agent died. The tests make their ledger rows in 2 ways:
 //!
-//! - The RR-4 and RR-7 tests run a plan of 3 tasks. The test is each
-//!   worker: it runs `horch ledger claim`, `finish` and `done` as the
-//!   worker.
-//! - The FM-11 test claims 1 task with `horch ledger claim`, then writes the
+//! - The RR-4 and RR-7 tests run a plan of 3 tasks. The test binds each
+//!   task to a worker with `horch_e2e::bind` (FR-5), then runs `finish` and
+//!   `done` as the worker.
+//! - The FM-11 test binds 1 task with `horch_e2e::bind`, then writes the
 //!   supervisor process of the worker and the agent of the orchestrator in
 //!   the ledger. The scan test writes its 10,000 rows of each kind in the
 //!   ledger directly, with no `horch` command.
@@ -323,40 +323,28 @@ struct Worker {
     agent: Agent,
 }
 
-fn worker(h: &Harness) -> Worker {
-    let id = ok(h, &["ledger", "worker", "new", "--persona", "opus"])
-        .trim()
-        .to_string();
+/// A new worker of persona `opus` with a live [`Agent`], bound to the next
+/// startable task (FR-5). Returns the worker and the seq of its task.
+fn bind(h: &Harness) -> (Worker, i64) {
     let agent = Agent::start();
-    horch_core::taskledger::Store::open(&db(h))
-        .and_then(|mut store| {
-            let pid = agent.pid();
-            // The agent PID row that `horch worker` wrote before Phase 5.
-            store.immediate(|tx| {
-                horch_core::taskledger::workers::agent_started(
-                    tx,
-                    &id,
-                    pid,
-                    horch_core::procid::start_time(pid),
-                )
-            })
+    let bound = horch_e2e::bind::bind(h, "opus", Some(agent.pid()));
+    let seq = horch_core::taskledger::Store::open(&db(h))
+        .and_then(|store| {
+            Ok(store.conn().query_row(
+                "SELECT seq FROM tasks WHERE task_id = ?1",
+                [&bound.task_id],
+                |r| r.get(0),
+            )?)
         })
         .unwrap();
-    Worker { id, agent }
+    let w = Worker {
+        id: bound.worker_id,
+        agent,
+    };
+    (w, seq)
 }
 
-/// `horch ledger claim` as `w`. Returns the seq of the task it claimed.
-fn claim(h: &Harness, w: &Worker) -> i64 {
-    let out = ok_as(h, &w.id, &["ledger", "claim"]);
-    let seq = out
-        .lines()
-        .find_map(|l| l.strip_prefix("Claimed T-"))
-        .and_then(|rest| rest.split_whitespace().next())
-        .and_then(|n| n.trim_end_matches(':').parse().ok());
-    seq.unwrap_or_else(|| panic!("no claimed task in: {out}"))
-}
-
-/// The work of `w` on its claimed task `seq`: its worktree, 1 commit, the
+/// The work of `w` on its bound task `seq`: its worktree, 1 commit, the
 /// finish steps and `horch ledger done`. Then its agent exits, as an agent
 /// does after `done`; only fleetd ends the attempt.
 fn complete(h: &Harness, w: &mut Worker, seq: i64) {
@@ -498,13 +486,10 @@ fn run_plan(h: &Harness, fault: Option<&str>, kill_fleetd: bool) -> Vec<TaskOutc
     let mut fleetds = Fleetds::new(h);
     let mut pid = start_fleetd(h, &mut fleetds, fault);
     plan(h, 3);
-    let workers: Vec<Worker> = (0..3).map(|_| worker(h)).collect();
-    let [mut w1, mut w2, mut w3] = <[Worker; 3]>::try_from(workers).ok().unwrap();
-    assert_eq!(
-        [claim(h, &w1), claim(h, &w2), claim(h, &w3)],
-        [1, 2, 3],
-        "each worker claims the next task"
-    );
+    let (mut w1, s1) = bind(h);
+    let (mut w2, s2) = bind(h);
+    let (mut w3, s3) = bind(h);
+    assert_eq!([s1, s2, s3], [1, 2, 3], "each bind takes the next task");
     complete(h, &mut w1, 1);
     if kill_fleetd {
         fleetds.kill_last();
@@ -526,8 +511,8 @@ fn run_plan(h: &Harness, fault: Option<&str>, kill_fleetd: bool) -> Vec<TaskOutc
     );
     // The retry waits for its backoff of 30 s on the fleet clock (rung 6).
     h.advance_fleet_clock(30);
-    let mut w4 = worker(h);
-    assert_eq!(claim(h, &w4), 2, "the new worker claims task 2");
+    let (mut w4, s4) = bind(h);
+    assert_eq!(s4, 2, "the new worker is bound to task 2");
     complete(h, &mut w4, 2);
     wait_until("fleetd ends each attempt whose agent exited", 30, || {
         (live_attempts(h) == 0).then_some(())
@@ -895,8 +880,8 @@ fn fleet_world(name: &str) -> Harness {
 fn fm11_fleetd_aborted_after_the_commit_does_each_effect_once_on_restart() {
     let h = fleet_world("p1-fm11");
     plan(&h, 1);
-    let mut w = worker(&h);
-    assert_eq!(claim(&h, &w), 1);
+    let (mut w, seq) = bind(&h);
+    assert_eq!(seq, 1);
     let stops = h.root.join("stops.txt");
     let mut supervisor = Polite::start(&stops);
     let pid = supervisor.0.id();

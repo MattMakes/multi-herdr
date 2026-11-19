@@ -80,27 +80,14 @@ impl World {
         w._fleetd = Some(TestFleetd::start(w.command(None), &w.root.join("fleet")));
         w.ok(&["ledger", "run", "new", "r1"]);
         w.ok(&["ledger", "add", "--file", "t1.md", "--primary", "dev"]);
-        w.worker = w
-            .ok(&[
-                "ledger",
-                "worker",
-                "new",
-                "--persona",
-                "dev",
-                "--role",
-                ROLE,
-            ])
-            .trim()
-            .to_string();
-        // `horch ledger worker new` names no workspace; a spawned worker
-        // has the workspace of its pane.
-        w.ledger()
-            .execute(
-                "UPDATE workers SET workspace_id = ?1 WHERE worker_id = ?2",
-                [WORKSPACE, w.worker.as_str()],
-            )
-            .unwrap();
-        w.ok(&["ledger", "claim"]);
+        // A spawned worker has the workspace of its pane.
+        let worker = horch_core::taskledger::workers::NewWorker {
+            persona: "dev".into(),
+            role: Some(ROLE.into()),
+            workspace_id: Some(WORKSPACE.into()),
+            ..Default::default()
+        };
+        w.worker = support::bind::bind(&w.root.join("ledger.sqlite3"), worker, None).worker_id;
         w.task_id = w
             .ledger()
             .query_row("SELECT task_id FROM tasks", [], |r| r.get(0))

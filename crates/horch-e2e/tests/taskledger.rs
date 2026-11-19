@@ -7,6 +7,10 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::time::{Duration, Instant};
 
+use horch_core::taskledger::tasks::{self, Task};
+use horch_core::taskledger::workers::NewWorker;
+use horch_core::taskledger::Store;
+use horch_e2e::bind::{bind, bind_worker, try_bind};
 use horch_e2e::fleetd::Fleetds;
 use horch_e2e::harness::{fixtures, Harness};
 use serde_json::Value;
@@ -112,6 +116,26 @@ fn worker_new(h: &Harness, persona: &str) -> String {
         .to_string()
 }
 
+/// The next task of `persona` is bound to a new worker with the role
+/// `role` (FR-5). Gives the worker id.
+fn bind_role(h: &Harness, persona: &str, role: &str) -> String {
+    let worker = NewWorker {
+        persona: persona.into(),
+        role: Some(role.into()),
+        ..Default::default()
+    };
+    bind_worker(h, worker, None).worker_id
+}
+
+/// The next task of `persona` is bound to a new worker (FR-5). Gives the
+/// worker id and the bound task.
+fn bind_task(h: &Harness, persona: &str) -> (String, Task) {
+    let b = bind(h, persona, None);
+    let store = Store::open(&h.ledger_db()).unwrap();
+    let task = tasks::get(store.conn(), &b.task_id).unwrap();
+    (b.worker_id, task)
+}
+
 #[test]
 fn status_on_a_fresh_ledger_creates_it_and_says_no_runs() {
     let h = world_without_fleetd("tl-fresh");
@@ -201,30 +225,10 @@ fn queue_claim_and_status_through_the_cli() {
     assert_eq!(o.status.code(), Some(1), "work remains: {}", text(&o));
     assert!(out(&o).contains("blocked by T-1 (queued)"), "{}", out(&o));
 
-    let w1 = worker_new(&h, "opus");
-    let claim = ok_as(&h, &w1, &["ledger", "claim"]);
-    assert!(claim.contains("Claimed T-1 (attempt 1): Parser"), "{claim}");
-    // This ticket is not committed, so a worktree would not hold it: the
-    // claim names it by its absolute path.
-    let ticket = ticket_line(&claim);
-    assert!(Path::new(&ticket).is_absolute(), "{claim}");
-    assert!(ticket.ends_with("tickets/01-a.md"), "{claim}");
-    assert!(claim.contains("Own: src/parse"), "{claim}");
-    assert!(
-        claim.contains("horch ledger worktree new parser"),
-        "{claim}"
-    );
-
-    let w2 = worker_new(&h, "opus");
-    // A claim that finds no task ends the worker and prints its done line
-    // (TRF-32).
-    let none = ok_as(&h, &w2, &["ledger", "claim"]);
-    assert!(
-        none.contains(
-            "No task for opus. Run this line to close your pane:\nhorch done \"No task for opus.\""
-        ),
-        "{none}"
-    );
+    let w1 = bind(&h, "opus", None).worker_id;
+    // T-2 waits for T-1: no bind takes it.
+    let none = try_bind(&h, "opus", None);
+    assert!(none.is_err(), "{none:?}");
 
     ok_as(&h, &w1, &["ledger", "progress", "parser compiles"]);
     let shown = json_of(&h, &["ledger", "show", "T-1", "--json"]);
@@ -234,11 +238,9 @@ fn queue_claim_and_status_through_the_cli() {
         .iter()
         .map(|e| e["kind"].as_str().unwrap())
         .collect();
-    // The claim also starts the live attempt of the task.
-    assert_eq!(
-        kinds,
-        vec!["added", "claimed", "attempt_started", "progress"]
-    );
+    // The bind writes its own events between the add and the progress.
+    assert_eq!(kinds.first(), Some(&"added"), "{kinds:?}");
+    assert_eq!(kinds.last(), Some(&"progress"), "{kinds:?}");
 
     ok(&h, &["ledger", "cancel", "T-2", "not needed"]);
     let st = json_of(&h, &["ledger", "status", "--json"]);
@@ -258,78 +260,6 @@ fn git_commit_all(h: &Harness, message: &str) {
         let o = h.git_cmd(args).current_dir(&h.project).output().unwrap();
         assert!(o.status.success(), "git {}: {}", args.join(" "), text(&o));
     }
-}
-
-/// The path on the claim's `Ticket:` line.
-fn ticket_line(claim: &str) -> String {
-    let line = claim
-        .lines()
-        .find_map(|l| l.strip_prefix("Ticket: "))
-        .unwrap_or_else(|| panic!("no Ticket line: {claim}"));
-    line.strip_suffix(". Read it in full and follow it exactly.")
-        .unwrap_or(line)
-        .to_string()
-}
-
-#[test]
-fn a_claim_names_an_ignored_ticket_by_an_absolute_path_that_opens_from_the_worktree() {
-    let h = world("tl-ignored");
-    project_file(&h, ".gitignore", "ai_docs/\n");
-    git_commit_all(&h, "ignore ai_docs");
-    ok(&h, &["ledger", "run", "new", "gamma"]);
-    project_file(&h, "ai_docs/tickets/01-x.md", "# 01: Ignored\n");
-    ok(
-        &h,
-        &[
-            "ledger",
-            "add",
-            "--file",
-            "ai_docs/tickets/01-x.md",
-            "--primary",
-            "opus",
-        ],
-    );
-    let w = worker_new(&h, "opus");
-    let claim = ok_as(&h, &w, &["ledger", "claim"]);
-    let ticket = ticket_line(&claim);
-    let made = ok_as(&h, &w, &["ledger", "worktree", "new", "ignored"]);
-    let worktree = made
-        .lines()
-        .find_map(|l| l.strip_prefix("path: "))
-        .unwrap_or_else(|| panic!("no worktree path: {made}"));
-    let worktree = Path::new(worktree.trim());
-    assert!(
-        !worktree.join("ai_docs/tickets/01-x.md").exists(),
-        "the ignored ticket is not in the worktree"
-    );
-    let opened = worktree.join(&ticket);
-    assert!(
-        opened.is_file(),
-        "Ticket {ticket} from {}: {claim}",
-        worktree.display()
-    );
-}
-
-#[test]
-fn a_claim_names_a_tracked_ticket_by_its_relative_path() {
-    let h = world("tl-tracked");
-    project_file(&h, "tickets/01-t.md", "# 01: Tracked\n");
-    git_commit_all(&h, "add a ticket");
-    ok(&h, &["ledger", "run", "new", "delta"]);
-    ok(
-        &h,
-        &[
-            "ledger",
-            "add",
-            "--file",
-            "tickets/01-t.md",
-            "--primary",
-            "opus",
-        ],
-    );
-    let w = worker_new(&h, "opus");
-    let claim = ok_as(&h, &w, &["ledger", "claim"]);
-    assert_eq!(ticket_line(&claim), "tickets/01-t.md", "{claim}");
 }
 
 #[test]
@@ -382,48 +312,6 @@ fn add_map_queues_a_ticket_map_in_one_step() {
         "{}",
         text(&o)
     );
-}
-
-#[test]
-fn eight_parallel_claim_processes_take_exactly_three_tasks() {
-    let h = world("tl-race");
-    ok(&h, &["ledger", "run", "new", "race"]);
-    for n in 0..3 {
-        let p = ticket(&h, &format!("t{n}"), &format!("# T{n}\n"));
-        ok(
-            &h,
-            &[
-                "ledger",
-                "add",
-                "--file",
-                &p.to_string_lossy(),
-                "--primary",
-                "opus",
-            ],
-        );
-    }
-    let ids: Vec<String> = (0..8).map(|_| worker_new(&h, "opus")).collect();
-    let children: Vec<_> = ids
-        .iter()
-        .map(|id| {
-            let mut cmd = h.horch(&["ledger", "claim", "--json"]);
-            cmd.env("HORCH_WORKER_ID", id);
-            cmd.stdout(std::process::Stdio::piped());
-            cmd.spawn().unwrap()
-        })
-        .collect();
-    let mut claimed = 0;
-    for c in children {
-        let o = c.wait_with_output().unwrap();
-        assert!(o.status.success(), "{}", text(&o));
-        let v: Value = serde_json::from_slice(&o.stdout).unwrap();
-        if v["outcome"] == "claimed" {
-            claimed += 1;
-        }
-    }
-    assert_eq!(claimed, 3);
-    let st = json_of(&h, &["ledger", "status", "--json"]);
-    assert_eq!(st["counts"]["running"], 3);
 }
 
 fn worker_json(h: &Harness, id: &str) -> Value {
@@ -531,8 +419,8 @@ fn a_spawned_worker_records_its_pids_session_and_checkins() {
                 "{w}"
             );
 
-            // The agent claims, then is killed: the task is queued again.
-            ok_as(&h, &id, &["ledger", "claim"]);
+            // The spawn bound the task to the attempt (FR-5). The agent is
+            // killed: the task is queued again.
             let agent = w["agent_pid"].as_i64().unwrap() as u32;
             let started = w["agent_started"].as_i64().unwrap() as u64;
             assert!(horch_core::procid::signal_same(
@@ -696,8 +584,7 @@ fn a_task_finishes_through_review_land_pr_and_cleanup() {
             "https://github.com/o/r/issues/29",
         ],
     );
-    let w = worker_new(&h, "opus");
-    ok_as(&h, &w, &["ledger", "claim"]);
+    let w = bind(&h, "opus", None).worker_id;
     let wt = ok_as(&h, &w, &["ledger", "worktree", "new", "feature"]);
     let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
     assert!(path.ends_with(".worktrees/T1-feature"), "{wt}");
@@ -744,12 +631,12 @@ fn a_task_finishes_through_review_land_pr_and_cleanup() {
     let plan = json_of(&h, &["ledger", "plan-workers", "--json"]);
     assert_eq!(plan[0]["persona"], "codex-reviewer", "{plan}");
 
-    // Each reviewer claims its task, writes findings, and finishes.
+    // Each reviewer is bound to its task, writes findings, and finishes.
     for _ in &reviews {
-        let rw = worker_new(&h, "codex-reviewer");
-        let c: Value =
-            serde_json::from_str(&ok_as(&h, &rw, &["ledger", "claim", "--json"])).unwrap();
-        let findings = c["task"]["spec_ref"].as_str().unwrap().to_string();
+        let (rw, task) = bind_task(&h, "codex-reviewer");
+        let findings = task
+            .spec_ref
+            .expect("a review task names its findings file");
         std::fs::write(
             &findings,
             "## Critical\n- none\n## Important\n- none\n## Minor\n- worker.txt:1 name it better\n",
@@ -828,8 +715,7 @@ fn a_critical_finding_fails_until_a_fix_is_reviewed_again() {
             "opus",
         ],
     );
-    let w = worker_new(&h, "opus");
-    ok_as(&h, &w, &["ledger", "claim"]);
+    let w = bind(&h, "opus", None).worker_id;
     let wt = ok_as(&h, &w, &["ledger", "worktree", "new", "f"]);
     let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
     std::fs::write(path.join("a.txt"), "1\n").unwrap();
@@ -845,10 +731,10 @@ fn a_critical_finding_fails_until_a_fix_is_reviewed_again() {
         let (_, r) = finish_json(&h, &w);
         let n = r["queued_reviews"].as_array().unwrap().len();
         for i in 0..n {
-            let rw = worker_new(&h, persona);
-            let c: Value =
-                serde_json::from_str(&ok_as(&h, &rw, &["ledger", "claim", "--json"])).unwrap();
-            let f = c["task"]["spec_ref"].as_str().unwrap().to_string();
+            let (rw, task) = bind_task(&h, persona);
+            let f = task
+                .spec_ref
+                .expect("a review task names its findings file");
             let (crit, imp) = if i == 0 {
                 (critical, important)
             } else {
@@ -918,21 +804,7 @@ fn a_failed_reviews_in_tell_wakes_the_orchestrator_once() {
         ],
     );
     // The author has a role but no pane: the tell to it fails.
-    let w = ok(
-        &h,
-        &[
-            "ledger",
-            "worker",
-            "new",
-            "--persona",
-            "opus",
-            "--role",
-            "opus-1",
-        ],
-    )
-    .trim()
-    .to_string();
-    ok_as(&h, &w, &["ledger", "claim"]);
+    let w = bind_role(&h, "opus", "opus-1");
     let wt = ok_as(&h, &w, &["ledger", "worktree", "new", "f"]);
     let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
     std::fs::write(path.join("a.txt"), "1\n").unwrap();
@@ -1019,21 +891,7 @@ fn a_failed_reviews_in_push_is_redelivered_until_the_author_runs_finish() {
             "opus",
         ],
     );
-    let w = ok(
-        &h,
-        &[
-            "ledger",
-            "worker",
-            "new",
-            "--persona",
-            "opus",
-            "--role",
-            "opus-1",
-        ],
-    )
-    .trim()
-    .to_string();
-    ok_as(&h, &w, &["ledger", "claim"]);
+    let w = bind_role(&h, "opus", "opus-1");
     let wt = ok_as(&h, &w, &["ledger", "worktree", "new", "f"]);
     let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
     std::fs::write(path.join("a.txt"), "1\n").unwrap();
@@ -1170,9 +1028,7 @@ fn stopping_one_of_three_workers_leaves_the_others_running() {
                     )
                 })
                 .collect();
-            for id in &ids {
-                ok_as(&h, id, &["ledger", "claim"]);
-            }
+            // The spawn bound each task to its attempt (FR-5).
             let o = ok(&h, &["ledger", "stop", &ids[0], "the operator dropped it"]);
             assert!(o.contains("Stopped"), "{o}");
             assert!(
@@ -1270,8 +1126,8 @@ fn a_worker_with_no_progress_is_stalled_by_the_ladder_and_stopped_by_its_pid() {
                 w["agent_pid"].as_i64().unwrap() as u32,
                 w["agent_started"].as_i64().unwrap() as u64,
             );
-            ok_as(&h, &id, &["ledger", "claim"]);
-            // The fake agent runs, but shows no timer and writes nothing more.
+            // The spawn bound T-1 to the attempt (FR-5). The fake agent runs,
+            // but shows no timer and writes nothing more.
             stall_by_the_ladder(&h, &id, pid, started);
             let shown = json_of(&h, &["ledger", "show", &id, "--json"]);
             assert_eq!(shown["worker"]["status"], "incomplete");
@@ -1298,27 +1154,19 @@ fn a_worker_with_no_progress_is_stalled_by_the_ladder_and_stopped_by_its_pid() {
             assert_eq!(t["task"]["status"], "queued");
             // The retry waits for its backoff of 30 s on the fleet clock (rung 6).
             h.advance_fleet_clock(30);
-            // The replacement claims the same task and gets the old transcript path.
+            // The replacement is bound to the same task, as attempt 2.
             let plan = json_of(&h, &["ledger", "plan-workers", "--json"]);
             assert_eq!(plan[0]["replaces"][0], id.as_str(), "{plan}");
-            let r = ok(
-                &h,
-                &[
-                    "ledger",
-                    "worker",
-                    "new",
-                    "--persona",
-                    "codex-terra",
-                    "--replaces",
-                    &id,
-                ],
-            );
-            let rid = r.trim().to_string();
-            let claim: Value =
-                serde_json::from_str(&ok_as(&h, &rid, &["ledger", "claim", "--json"])).unwrap();
-            assert_eq!(claim["task"]["seq"], 1);
-            assert_eq!(claim["prior"][0]["worker_id"], id.as_str());
-            assert_eq!(claim["attempt"], 2);
+            let replacement = NewWorker {
+                persona: "codex-terra".into(),
+                previous_worker_id: Some(id.clone()),
+                ..Default::default()
+            };
+            let b = bind_worker(&h, replacement, None);
+            assert_eq!(b.task_id, t["task"]["task_id"], "{b:?}");
+            let rw = worker_json(&h, &b.worker_id);
+            assert_eq!(rw["previous_worker_id"], id.as_str(), "{rw}");
+            assert_eq!(b.attempt, 2, "{b:?}");
         },
     );
 }
@@ -1408,9 +1256,9 @@ fn assert_ladder_texts(events: &Value, task: &str) {
 /// In `h`, run `zeta` with 1 running task of a worker whose agent is a
 /// live child of the test, and the fleetd check before each command on.
 /// The test runs within stall_after_s (300 s) of the claim on the fleet
-/// clock, so the stall ladder does not stop the worker. Gives the
-/// fleetds of the test, the agent and the output of the worker's `claim`.
-fn claimed_run(mut h: Harness) -> (Harness, Fleetds, Stand, Output) {
+/// clock, so the stall ladder does not stop the worker. The task is bound
+/// to the worker (FR-5). Gives the fleetds of the test and the agent.
+fn claimed_run(mut h: Harness) -> (Harness, Fleetds, Stand) {
     h.unset("HORCH_NO_WATCHDOG");
     ok(&h, &["ledger", "run", "new", "zeta", "--check-every", "1"]);
     let p = ticket(&h, "t0", "# T0\n");
@@ -1425,64 +1273,19 @@ fn claimed_run(mut h: Harness) -> (Harness, Fleetds, Stand, Output) {
             "opus",
         ],
     );
-    let w = worker_new(&h, "opus");
     // The test runs its own fleetd after the routed setup.
     h.stop_fleetd();
     let fleetds = Fleetds::new(&h);
     let agent = Stand::new();
-    horch_core::taskledger::Store::open(&ledger_db(&h))
-        .and_then(|mut store| {
-            let pid = agent.0.id();
-            // The agent PID row that `horch worker` wrote before Phase 5.
-            store.immediate(|tx| {
-                horch_core::taskledger::workers::agent_started(
-                    tx,
-                    &w,
-                    pid,
-                    horch_core::procid::start_time(pid),
-                )
-            })
-        })
-        .unwrap();
-    let mut cmd = h.horch(&["ledger", "claim"]);
-    cmd.env("HORCH_WORKER_ID", &w);
-    let o = cmd.output().unwrap();
-    assert!(o.status.success(), "{}", text(&o));
-    (h, fleetds, agent, o)
-}
-
-/// Phase 1: no command starts a watchdog. With no fleetd row, the check
-/// before the claim starts nothing, and the run has no watchdog lock and
-/// no recorded watchdog.
-#[test]
-fn a_claim_starts_no_watchdog() {
-    let (h, fleetds, _agent, o) = claimed_run(world("tl-no-wdog"));
-    assert!(!text(&o).contains("started it"), "{}", text(&o));
-    let locks: Vec<_> = std::fs::read_dir(h.root.join("locks"))
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path())
-        .collect();
-    assert!(locks.is_empty(), "{locks:?}");
-    let store = horch_core::taskledger::Store::open(&ledger_db(&h)).unwrap();
-    let recorded: i64 = store
-        .conn()
-        .query_row(
-            "SELECT count(*) FROM runs WHERE watchdog_pid IS NOT NULL",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(recorded, 0, "no run records a watchdog");
-    assert!(fleetds.row().is_none(), "the check starts no fleetd");
+    bind(&h, "opus", Some(agent.0.id()));
+    (h, fleetds, agent)
 }
 
 /// A dead fleetd is started again by the next horch command, in stand-in
 /// mode on this temporary ledger.
 #[test]
 fn a_dead_fleetd_is_restarted_by_the_next_command() {
-    let (h, mut fleetds, _agent, _) = claimed_run(world("tl-fleetd-dead"));
+    let (h, mut fleetds, _agent) = claimed_run(world("tl-fleetd-dead"));
     fleetds.start(&h, "fleetd-1");
     let (pid, _) = fleetds.kill_current();
     // `status` exits 1 while the run is not complete.
@@ -1523,7 +1326,7 @@ fn the_no_watchdog_setting_turns_off_the_fleetd_check() {
 /// second, which exits 0 and says so, and the row keeps the first.
 #[test]
 fn two_fleetds_started_at_once_leave_1() {
-    let (h, mut fleetds, _agent, _) = claimed_run(world("tl-fleetd-twice"));
+    let (h, mut fleetds, _agent) = claimed_run(world("tl-fleetd-twice"));
     let pids = [fleetds.spawn(&h, "fleetd-a"), fleetds.spawn(&h, "fleetd-b")];
     let (first, started) = wait_for("the fleetd row", || {
         fleetds.row().filter(|(p, _)| pids.contains(p))
@@ -1697,7 +1500,7 @@ fn the_import_finds_work_that_never_landed() {
     );
     assert!(un.exists());
 
-    // Reopen it: the new task's claim gets the old worktree.
+    // Reopen it: the new task gets the old worktree.
     ok(&h, &["ledger", "run", "new", "again"]);
     let t = ticket(&h, "finish-it", "# Finish the unlanded work\n");
     ok(
@@ -1712,24 +1515,13 @@ fn the_import_finds_work_that_never_landed() {
             "opus",
         ],
     );
-    let w = worker_new(&h, "opus");
-    let c = ok_as(&h, &w, &["ledger", "claim"]);
-    assert!(c.contains("Reopened from unfinished past work"), "{c}");
-    let un_claimed = link.join(un.strip_prefix(&proj).unwrap());
-    // The import adopts the tree as `orphaned`: the claim does not take it
+    // The import adopts the tree as `orphaned`: the bind does not take it
     // before its rescue (ticket 11 of fleetd-p3).
+    let refused = try_bind(&h, "opus", None);
     assert!(
-        c.contains(&format!(
-            "Orphaned: the worktree {} of the last attempt has no owner. Run horch ledger worktree new",
-            un_claimed.display()
-        )),
-        "{c}"
+        matches!(&refused, Err(e) if e.contains("is orphaned: its rescue comes first")),
+        "{refused:?}"
     );
-    // The inherited worktree lacks the untracked ticket: the claim names it
-    // by its absolute path.
-    let ticket = ticket_line(&c);
-    assert!(Path::new(&ticket).is_absolute(), "{c}");
-    assert!(ticket.ends_with("tickets/finish-it.md"), "{c}");
 }
 
 #[test]
@@ -1757,11 +1549,10 @@ fn review_all(h: &Harness, n: usize, findings: &str) -> String {
 fn review_all_as(h: &Harness, persona: &str, n: usize, findings: &str) -> String {
     let mut last = String::new();
     for _ in 0..n {
-        let rw = worker_new(h, persona);
-        let c: Value =
-            serde_json::from_str(&ok_as(h, &rw, &["ledger", "claim", "--json"])).unwrap();
-        assert_eq!(c["outcome"], "claimed", "{c}");
-        let f = c["task"]["spec_ref"].as_str().unwrap().to_string();
+        let (rw, task) = bind_task(h, persona);
+        let f = task
+            .spec_ref
+            .expect("a review task names its findings file");
         std::fs::write(&f, findings).unwrap();
         ok_as(h, &rw, &["ledger", "done", "reviewed"]);
         last = rw;
@@ -1858,8 +1649,8 @@ fn the_whole_flow_on_the_fake_herdr() {
             .map(|p| p["spawn"].as_i64().unwrap())
             .sum();
         assert_eq!(spawn, 2, "{plan}");
-        let wa = worker_new(&h, "opus");
-        assert!(ok_as(&h, &wa, &["ledger", "claim"]).contains("Claimed T-1"));
+        let (wa, ta) = bind_task(&h, "opus");
+        assert_eq!(ta.seq, 1, "{ta:?}");
         // B runs in a real pane: its agent is the fake codex that stays.
         let o = h.run(&[
             "spawn",
@@ -1888,7 +1679,9 @@ fn the_whole_flow_on_the_fake_herdr() {
             b["agent_pid"].as_i64().unwrap() as u32,
             b["agent_started"].as_i64().unwrap() as u64,
         );
-        assert!(ok_as(&h, &wb, &["ledger", "claim"]).contains("Claimed T-2"));
+        // The spawn bound T-2 to B (FR-5).
+        let t2 = json_of(&h, &["ledger", "show", "T-2", "--json"]);
+        assert_eq!(t2["task"]["current_worker_id"], wb.as_str(), "{t2}");
 
         // 3. B stops making progress: its fake agent runs, but shows no timer
         // and writes nothing.
@@ -1918,56 +1711,25 @@ fn the_whole_flow_on_the_fake_herdr() {
         );
         // B waits for its retry backoff of 30 s on the fleet clock (rung 6).
         h.advance_fleet_clock(30);
-        // C is claimed now (a worker row without a live process would be judged
+        // C is bound now (a worker row without a live process would be judged
         // dead by the checks above).
-        let wc = worker_new(&h, "opus");
-        assert!(ok_as(&h, &wc, &["ledger", "claim"]).contains("Claimed T-3"));
-        let rb = ok(
-            &h,
-            &[
-                "ledger",
-                "worker",
-                "new",
-                "--persona",
-                "codex-terra",
-                "--replaces",
-                &wb,
-            ],
-        )
-        .trim()
-        .to_string();
-        let claim: Value =
-            serde_json::from_str(&ok_as(&h, &rb, &["ledger", "claim", "--json"])).unwrap();
-        assert_eq!(claim["task"]["seq"], 2);
-        assert_eq!(claim["prior"][0]["worker_id"], wb.as_str());
-        assert!(
-            claim["prior"][0]["transcript_path"].is_string(),
-            "the old transcript path is handed over: {claim}"
-        );
+        let (wc, tc) = bind_task(&h, "opus");
+        assert_eq!(tc.seq, 3, "{tc:?}");
+        let replacement = NewWorker {
+            persona: "codex-terra".into(),
+            previous_worker_id: Some(wb.clone()),
+            ..Default::default()
+        };
+        let rb = bind_worker(&h, replacement, None);
+        let t2 = json_of(&h, &["ledger", "show", "T-2", "--json"]);
+        assert_eq!(rb.task_id, t2["task"]["task_id"], "{rb:?}");
+        let prior = worker_json(&h, &rb.worker_id);
+        assert_eq!(prior["previous_worker_id"], wb.as_str(), "{prior}");
+        let rb = rb.worker_id;
 
-        // 6. A spare worker finds no task and names its PID.
-        let spare = worker_new(&h, "opus");
-        ok(
-            &h,
-            &[
-                "ledger",
-                "worker",
-                "pid",
-                &spare,
-                "--supervisor",
-                &std::process::id().to_string(),
-            ],
-        );
-        let none: Value =
-            serde_json::from_str(&ok_as(&h, &spare, &["ledger", "claim", "--json"])).unwrap();
-        assert_eq!(none["outcome"], "no_task", "{none}");
-        assert!(
-            none["tell"].as_str().unwrap().contains(&format!(
-                "No task for opus. I exit. PID {}.",
-                std::process::id()
-            )),
-            "{none}"
-        );
+        // 6. No task is left for a spare worker of opus.
+        let none = try_bind(&h, "opus", None);
+        assert!(none.is_err(), "{none:?}");
 
         // 7. B (replaced) and C finish; everything is done and cleaned.
         work_and_finish(&h, &rb, "alpha_b");
@@ -2032,20 +1794,9 @@ fn a_shared_task_claims_on_the_run_branch_and_lands_only_new_clean_commits() {
             "true",
         ],
     );
-    let w = worker_new(&h, "opus");
-    // The main checkout is on main: the claim refuses and names the switch.
-    let o = as_worker(&h, &w, &["ledger", "claim"]);
-    assert!(!o.status.success(), "{}", text(&o));
-    assert!(text(&o).contains("git switch fleet/alpha"), "{}", text(&o));
-    let st = json_of(&h, &["ledger", "status", "--json"]);
-    assert_eq!(
-        st["tasks"][0]["task"]["status"], "queued",
-        "the refusal claims nothing: {st}"
-    );
-
     let project = h.project.clone();
     git_in(&h, &project, &["switch", "--quiet", "fleet/alpha"]);
-    ok_as(&h, &w, &["ledger", "claim"]);
+    let w = bind(&h, "opus", None).worker_id;
 
     // check judges committed work only, in a shared checkout too: a
     // changed tracked file fails it.
@@ -2116,8 +1867,7 @@ fn claimed_with_commit(
         add.extend(["--check".into(), c.to_string()]);
     }
     ok(h, &add.iter().map(|s| s.as_str()).collect::<Vec<_>>());
-    let w = worker_new(h, "opus");
-    ok_as(h, &w, &["ledger", "claim"]);
+    let w = bind(h, "opus", None).worker_id;
     let wt = ok_as(h, &w, &["ledger", "worktree", "new", "feat"]);
     let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
     commit_file(h, &path, file);
@@ -2216,23 +1966,12 @@ fn a_replacement_commit_after_the_land_lands_and_is_pushed() {
     assert_eq!(step_of(&r, "land").0, "passed", "{r}");
     assert_eq!(step_of(&r, "cleanup").0, "failed", "{r}");
     ok(&h, &["ledger", "stop", &w1, "reaped in the test"]);
-    let w2 = ok(
-        &h,
-        &[
-            "ledger",
-            "worker",
-            "new",
-            "--persona",
-            "opus",
-            "--replaces",
-            &w1,
-        ],
-    )
-    .trim()
-    .to_string();
-    let claim = ok_as(&h, &w2, &["ledger", "claim"]);
-    assert!(claim.contains("already landed"), "{claim}");
-    assert!(claim.contains("cleanup"), "the steps left: {claim}");
+    let replacement = NewWorker {
+        persona: "opus".into(),
+        previous_worker_id: Some(w1.clone()),
+        ..Default::default()
+    };
+    let w2 = bind_worker(&h, replacement, None).worker_id;
     lock_worktree(&h, &path, false);
     commit_file(&h, &path, "b.txt");
     let (code, r) = finish_json(&h, &w2);
@@ -2335,8 +2074,7 @@ fn a_check_past_its_timeout_is_killed_with_its_children() {
             "2",
         ],
     );
-    let w = worker_new(&h, "opus");
-    ok_as(&h, &w, &["ledger", "claim"]);
+    let w = bind(&h, "opus", None).worker_id;
     let wt = ok_as(&h, &w, &["ledger", "worktree", "new", "feat"]);
     let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
     commit_file(&h, &path, "a.txt");
@@ -2395,8 +2133,7 @@ fn claimed_check(
         add.extend(["--check-timeout", t]);
     }
     ok(h, &add);
-    let w = worker_new(h, persona);
-    ok_as(h, &w, &["ledger", "claim"]);
+    let w = bind(h, persona, None).worker_id;
     let wt = ok_as(h, &w, &["ledger", "worktree", "new", "feat"]);
     let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
     commit_file(h, &path, "a.txt");
@@ -2523,10 +2260,8 @@ fn a_land_checks_outside_the_lock_and_lands_after_a_faster_task() {
             ],
         );
     }
-    let wa = worker_new(&h, "opus");
-    ok_as(&h, &wa, &["ledger", "claim"]);
-    let wb = worker_new(&h, "opus");
-    ok_as(&h, &wb, &["ledger", "claim"]);
+    let wa = bind(&h, "opus", None).worker_id;
+    let wb = bind(&h, "opus", None).worker_id;
     let mut paths = Vec::new();
     for (w, name, file) in [(&wa, "a", "a.txt"), (&wb, "b", "b.txt")] {
         let wt = ok_as(&h, w, &["ledger", "worktree", "new", name]);
@@ -2700,8 +2435,7 @@ fn a_new_tree_supersedes_the_open_reviews_of_the_old_round() {
     let (_, r) = finish_json(&h, &w);
     let n = r["queued_reviews"].as_array().unwrap().len();
     // 1 reviewer holds a round-1 review when the tree changes.
-    let rw = worker_new(&h, "codex-reviewer");
-    ok_as(&h, &rw, &["ledger", "claim"]);
+    let rw = bind(&h, "codex-reviewer", None).worker_id;
     commit_file(&h, &path, "b.txt");
     let (code, r) = finish_json(&h, &w);
     assert_eq!(code, Some(1));
@@ -2734,21 +2468,12 @@ fn a_replacement_with_the_same_tree_reuses_the_finished_round() {
     let n = r["queued_reviews"].as_array().unwrap().len();
     review_all(&h, n, CLEAN);
     ok(&h, &["ledger", "stop", &w1, "reaped in the test"]);
-    let w2 = ok(
-        &h,
-        &[
-            "ledger",
-            "worker",
-            "new",
-            "--persona",
-            "opus",
-            "--replaces",
-            &w1,
-        ],
-    )
-    .trim()
-    .to_string();
-    ok_as(&h, &w2, &["ledger", "claim"]);
+    let replacement = NewWorker {
+        persona: "opus".into(),
+        previous_worker_id: Some(w1.clone()),
+        ..Default::default()
+    };
+    let w2 = bind_worker(&h, replacement, None).worker_id;
     let (code, r) = finish_json(&h, &w2);
     assert_eq!(code, Some(0), "{r}");
     assert_eq!(reviews(&h).len(), n, "no new review task");
@@ -3644,12 +3369,13 @@ fn replacing_a_live_worker_names_the_stop_command() {
 
 // ─── #168: a task that kills every worker is held, not retried forever ──────
 
+/// T-1 is bound to a new worker of `persona` (FR-5), which is reaped.
 fn claim_and_reap(h: &Harness, persona: &str, why: &str) -> String {
-    let w = worker_new(h, persona);
-    let claim = ok_as(h, &w, &["ledger", "claim"]);
-    assert!(claim.contains("Claimed T-1"), "{claim}");
-    ok(h, &["ledger", "reap", &w, why]);
-    w
+    let b = bind(h, persona, None);
+    let t1 = json_of(h, &["ledger", "show", "T-1", "--json"]);
+    assert_eq!(b.task_id, t1["task"]["task_id"], "{b:?}");
+    ok(h, &["ledger", "reap", &b.worker_id, why]);
+    b.worker_id
 }
 
 #[test]
@@ -3712,9 +3438,10 @@ fn a_task_reaped_max_attempts_times_fails_and_its_replan_requeues_it() {
     ok(&h, &["ledger", "requeue", "T-1", "ticket fixed"]);
     let t = json_of(&h, &["ledger", "show", "T-1", "--json"]);
     assert_eq!(t["task"]["replans"], 1, "{t}");
-    let w = worker_new(&h, "sonnet-x");
-    let claim = ok_as(&h, &w, &["ledger", "claim"]);
-    assert!(claim.contains("Claimed T-1 (attempt 3)"), "{claim}");
+    let b = bind(&h, "sonnet-x", None);
+    assert_eq!(b.task_id, t["task"]["task_id"], "{b:?}");
+    assert_eq!(b.attempt, 3, "{b:?}");
+    let w = b.worker_id;
     // The limit counts attempts since the requeue: 1 reap queues it again.
     ok(&h, &["ledger", "reap", &w, "once more"]);
     let t = json_of(&h, &["ledger", "show", "T-1", "--json"]);
@@ -3780,8 +3507,7 @@ fn an_unlanded_done_names_its_dependents_and_a_stuck_run_wakes_once() {
     ok(&h, &["ledger", "run", "new", "a"]);
     queue(&h, "01-a", "opus-a", &[]);
     queue(&h, "02-b", "opus-b", &["--blocked-by", "T-1"]);
-    let w = worker_new(&h, "opus-a");
-    ok_as(&h, &w, &["ledger", "claim"]);
+    let w = bind(&h, "opus-a", None).worker_id;
     ok_as(
         &h,
         &w,
@@ -3818,12 +3544,11 @@ fn a_stuck_run_wakes_from_the_watchdog_when_no_task_finishes() {
     queue(&h, "01-a", "opus-a", &[]);
     queue(&h, "02-b", "opus-b", &["--blocked-by", "T-1"]);
     // A live worker holds T-1: the run is not stuck.
-    let w = worker_new(&h, "opus-a");
+    let w = bind(&h, "opus-a", None).worker_id;
     let stand = Stand::new();
     let me = stand.pid();
     ok(&h, &["ledger", "worker", "pid", &w, "--supervisor", &me]);
     ok(&h, &["ledger", "worker", "pid", &w, "--agent", &me]);
-    ok_as(&h, &w, &["ledger", "claim"]);
     h.without_fleetd(|| ok(&h, &["ledger", "watch", "--once", "--force"]));
     assert!(
         !outbox(&h).iter().any(|w| w.contains("stuck")),
@@ -3843,11 +3568,10 @@ fn a_stuck_run_wakes_from_the_watchdog_when_no_task_finishes() {
 
 // ─── #136: a cancelled task never lands or turns done ───────────────────────
 
-/// Claim the next task as a new `persona` worker, make worktree `name` and
+/// Bind the next task to a new `persona` worker, make worktree `name` and
 /// commit `file` in it. Returns the worker and the worktree path.
 fn claim_and_commit(h: &Harness, persona: &str, name: &str, file: &str) -> (String, PathBuf) {
-    let w = worker_new(h, persona);
-    ok_as(h, &w, &["ledger", "claim"]);
+    let w = bind(h, persona, None).worker_id;
     let wt = ok_as(h, &w, &["ledger", "worktree", "new", name]);
     let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
     std::fs::write(path.join(file), "x\n").unwrap();
@@ -4001,21 +3725,7 @@ fn pane_world(name: &str, check: &str, timeout: Option<&str>) -> (Harness, Strin
         add.extend(["--check-timeout", t]);
     }
     ok(&h, &add);
-    let w = ok(
-        &h,
-        &[
-            "ledger",
-            "worker",
-            "new",
-            "--persona",
-            "opus",
-            "--role",
-            "opus-1",
-        ],
-    )
-    .trim()
-    .to_string();
-    ok_as(&h, &w, &["ledger", "claim"]);
+    let w = bind_role(&h, "opus", "opus-1");
     let wt = ok_as(&h, &w, &["ledger", "worktree", "new", "f"]);
     let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
     commit_file(&h, &path, "a.txt");
@@ -4137,9 +3847,4 @@ fn a_killed_detached_finish_is_reported_by_the_next_finish() {
     assert_ne!(detached_pid(&o), pid, "a new run starts");
     let mail = wait_for("the finish mail", || finish_mail(&h));
     assert!(mail.contains("every finish step passed"), "{mail}");
-}
-
-/// The ledger file of the harness `h`.
-fn ledger_db(h: &Harness) -> PathBuf {
-    h.root.join("ledger.sqlite3")
 }

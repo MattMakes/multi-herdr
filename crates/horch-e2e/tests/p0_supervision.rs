@@ -201,10 +201,10 @@ fn kill_lock_owner(lock: &Path) {
     }
 }
 
-/// In `h`, run `zeta` with task 1 claimed by a worker whose agent is a live
-/// `sleep` child of the test. Many stall rounds keep a watchdog from reaping
-/// the live worker. Returns the output of the worker's `claim`.
-fn claimed_run(h: &Harness) -> (WatchdogTeardown, Output) {
+/// In `h`, run `zeta` with task 1 bound to a worker whose agent is a live
+/// `sleep` child of the test (FR-5). Many stall rounds keep a watchdog from
+/// reaping the live worker.
+fn claimed_run(h: &Harness) -> WatchdogTeardown {
     // The test fleetd applies the routed setup; the test runs its own
     // fleetd and checks after it.
     h.serve_fleetd();
@@ -233,33 +233,13 @@ fn claimed_run(h: &Harness) -> (WatchdogTeardown, Output) {
             "opus",
         ],
     );
-    let w = ok(h, &["ledger", "worker", "new", "--persona", "opus"])
-        .trim()
-        .to_string();
     let teardown = WatchdogTeardown {
         agent: Command::new("/bin/sleep").arg("600").spawn().unwrap(),
         locks: h.root.join("locks"),
     };
-    horch_core::taskledger::Store::open(&db(h))
-        .and_then(|mut store| {
-            let pid = teardown.agent.id();
-            // The agent PID row that `horch worker` wrote before Phase 5.
-            store.immediate(|tx| {
-                horch_core::taskledger::workers::agent_started(
-                    tx,
-                    &w,
-                    pid,
-                    horch_core::procid::start_time(pid),
-                )
-            })
-        })
-        .unwrap();
     h.stop_fleetd();
-    let mut cmd = h.horch(&["ledger", "claim"]);
-    cmd.env("HORCH_WORKER_ID", &w);
-    let o = cmd.output().unwrap();
-    assert!(o.status.success(), "horch ledger claim: {}", text(&o));
-    (teardown, o)
+    horch_e2e::bind::bind(h, "opus", Some(teardown.agent.id()));
+    teardown
 }
 
 #[test]
@@ -271,7 +251,7 @@ fn fm7_killed_watchdog_does_not_stop_the_reconcile() {
             let mut h = world("p0-fm7");
             h.unset("HORCH_NO_WATCHDOG");
             let mut fleetds = Fleetds::new(&h);
-            let (mut teardown, _) = claimed_run(&h);
+            let mut teardown = claimed_run(&h);
             let st = json_of(&h, &["ledger", "status", "--json"]);
             let run_id = st["run"]["run_id"]
                 .as_str()
@@ -354,7 +334,7 @@ fn fm34_daemon_restart_on_a_new_binary_keeps_the_run() {
         "fm34_daemon_restart_on_a_new_binary_keeps_the_run",
         || {
             let h = world("p0-fm34");
-            let (_teardown, _) = claimed_run(&h);
+            let _teardown = claimed_run(&h);
             assert_eq!(task_row(&db(&h)), ("running".to_string(), 1));
             let copy = h.root.join("install").join("horch");
             let day = Duration::from_secs(24 * 3600);

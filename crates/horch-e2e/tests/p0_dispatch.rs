@@ -209,29 +209,12 @@ fn fm6_agent_that_exits_without_done_leaves_its_work_to_the_next_attempt() {
                 ],
                 "opus",
             );
-            let w = ok(&h, &["ledger", "worker", "new", "--persona", "opus"])
-                .trim()
-                .to_string();
             // The test plays the agent: a child process that it ends.
             let mut agent = std::process::Command::new("/bin/sleep")
                 .arg("600")
                 .spawn()
                 .unwrap();
-            horch_core::taskledger::Store::open(&h.root.join("ledger.sqlite3"))
-                .and_then(|mut store| {
-                    let pid = agent.id();
-                    // The agent PID row that `horch worker` wrote before Phase 5.
-                    store.immediate(|tx| {
-                        horch_core::taskledger::workers::agent_started(
-                            tx,
-                            &w,
-                            pid,
-                            horch_core::procid::start_time(pid),
-                        )
-                    })
-                })
-                .unwrap();
-            ok_as(&h, &w, &["ledger", "claim"]);
+            let w = horch_e2e::bind::bind(&h, "opus", Some(agent.id())).worker_id;
             let wt = ok_as(&h, &w, &["ledger", "worktree", "new", "work"]);
             let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
             std::fs::write(path.join("work.rs"), "fn work() {}\n").unwrap();

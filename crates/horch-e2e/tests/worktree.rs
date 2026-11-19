@@ -272,10 +272,7 @@ fn arc_31_e2e_a_ledger_worktree_is_not_unregistered() {
     ]);
     let o = add.output().unwrap();
     assert!(o.status.success(), "{}", stderr(&o));
-    let mut new_worker = h.horch(&["ledger", "worker", "new", "--persona", "sonnet"]);
-    let o = new_worker.output().unwrap();
-    assert!(o.status.success(), "{}", stderr(&o));
-    let worker = stdout(&o).trim().to_string();
+    let worker = horch_e2e::bind::bind(&h, "sonnet", None).worker_id;
 
     let as_worker = |args: &[&str]| {
         let mut command = h.horch(args);
@@ -289,7 +286,6 @@ fn arc_31_e2e_a_ledger_worktree_is_not_unregistered() {
         );
         stdout(&o)
     };
-    as_worker(&["ledger", "claim"]);
     let made = as_worker(&["ledger", "worktree", "new", "feature"]);
     let path = made
         .lines()

@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 
 use horch_core::taskledger::runs::Run;
 use horch_core::taskledger::sql_words::WORKERS_LIVE;
+use horch_core::taskledger::workers::NewWorker;
 use horch_core::taskledger::{tasks, watchdog, workers, Store};
 use horch_e2e::expected::check;
 use horch_e2e::fleetd::Fleetds;
@@ -115,8 +116,8 @@ impl Drop for Teardown {
 }
 
 /// 1 worker that holds task `name` in its own pane, with a `sleep` process
-/// as its agent. Returns the worker id, the pane and the output of the claim.
-fn held_task(h: &Harness, td: &mut Teardown, name: &str) -> (String, String, Output) {
+/// as its agent (FR-5). Returns the worker id and the pane.
+fn held_task(h: &Harness, td: &mut Teardown, name: &str) -> (String, String) {
     let p = ticket(h, name, &format!("# {name}\n\n**Check:** none\n"));
     let file = p.to_string_lossy();
     ok(h, &["ledger", "add", "--file", &file, "--primary", "opus"]);
@@ -125,38 +126,18 @@ fn held_task(h: &Harness, td: &mut Teardown, name: &str) -> (String, String, Out
         .as_str()
         .expect("the new pane")
         .to_string();
-    let args = [
-        "ledger",
-        "worker",
-        "new",
-        "--persona",
-        "opus",
-        "--pane",
-        &pane,
-    ];
-    let w = ok(h, &args).trim().to_string();
     let agent = std::process::Command::new("/bin/sleep")
         .arg("600")
         .spawn()
         .unwrap();
-    horch_core::taskledger::Store::open(&ledger(h))
-        .and_then(|mut store| {
-            let pid = agent.id();
-            // The agent PID row that `horch worker` wrote before Phase 5.
-            store.immediate(|tx| {
-                horch_core::taskledger::workers::agent_started(
-                    tx,
-                    &w,
-                    pid,
-                    horch_core::procid::start_time(pid),
-                )
-            })
-        })
-        .unwrap();
+    let worker = NewWorker {
+        persona: "opus".into(),
+        pane_id: Some(pane.clone()),
+        ..Default::default()
+    };
+    let w = horch_e2e::bind::bind_worker(h, worker, Some(agent.id())).worker_id;
     td.agents.push(agent);
-    let claim = as_worker(h, &w, &["ledger", "claim"]);
-    assert!(claim.status.success(), "{}", text(&claim));
-    (w, pane, claim)
+    (w, pane)
 }
 
 /// A herdr server restart: every agent process ends, and the panes are gone.
@@ -272,8 +253,8 @@ fn fm13_herdr_restart_ends_attempts_and_queues_tasks_again() {
                 agents: Vec::new(),
                 fleetds: Fleetds::new(&h),
             };
-            let (_, p1, _) = held_task(&h, &mut td, "t1");
-            let (_, p2, _) = held_task(&h, &mut td, "t2");
+            let (_, p1) = held_task(&h, &mut td, "t1");
+            let (_, p2) = held_task(&h, &mut td, "t2");
             let (run, ts, ws) = board(&h);
             // fleetd supervises the run.
             td.fleetds.start(&h, "fleetd");
@@ -325,7 +306,7 @@ fn fm13_herdr_restart_rescues_each_worktree_and_the_next_attempt_reuses_it() {
                 agents: Vec::new(),
                 fleetds: Fleetds::new(&h),
             };
-            let (w, pane, _) = held_task(&h, &mut td, "t1");
+            let (w, pane) = held_task(&h, &mut td, "t1");
             let (path, head) = worktree_with_commit(&h, &w);
             std::fs::write(path.join("feature.txt"), "committed\nand changed\n").unwrap();
 
@@ -347,22 +328,20 @@ fn fm13_herdr_restart_rescues_each_worktree_and_the_next_attempt_reuses_it() {
             // The retry waits for its backoff of 30 s on the fleet clock
             // (rung 6, Phase 2).
             h.advance_fleet_clock(30);
-            let next = ok(&h, &["ledger", "worker", "new", "--persona", "opus"]);
-            let claim = as_worker(&h, next.trim(), &["ledger", "claim", "--json"]);
-            let c: Value = serde_json::from_slice(&claim.stdout)
-                .unwrap_or_else(|e| panic!("{e}: {}", text(&claim)));
-            // A claim does not take a tree that is still `orphaned`: the
-            // next attempt takes it with `horch ledger worktree new`.
-            let reused = match c["worktree"].as_str() {
-                Some(p) => p.to_string(),
+            let next = horch_e2e::bind::bind(&h, "opus", None);
+            // The bind takes the tree of the last attempt. With no tree in
+            // the bind, the next attempt takes it with
+            // `horch ledger worktree new`.
+            let reused = match &next.worktree {
+                Some(tree) => tree.path.clone(),
                 None => {
-                    let wt = ok_as(&h, next.trim(), &["ledger", "worktree", "new", "feat"]);
+                    let wt = ok_as(&h, &next.worker_id, &["ledger", "worktree", "new", "feat"]);
                     let p = wt.lines().find_map(|l| l.strip_prefix("path: "));
-                    p.unwrap_or_else(|| panic!("no path: {wt}\nclaim: {}", text(&claim)))
+                    p.unwrap_or_else(|| panic!("no path: {wt}\nbind: {next:?}"))
                         .to_string()
                 }
             };
-            assert_eq!(reused, path.to_string_lossy(), "{}", text(&claim));
+            assert_eq!(reused, path.to_string_lossy(), "{next:?}");
         },
     );
 }
@@ -379,7 +358,7 @@ fn fm25_killed_worker_with_dirty_and_untracked_files_loses_nothing() {
                 agents: Vec::new(),
                 fleetds: Fleetds::new(&h),
             };
-            let (w, _, _) = held_task(&h, &mut td, "t1");
+            let (w, _) = held_task(&h, &mut td, "t1");
             let wt = ok_as(&h, &w, &["ledger", "worktree", "new", "feat"]);
             let path = PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());
             let tracked = b"one\ntwo\nthree, not committed\n";

@@ -551,6 +551,29 @@ fn a_moved_head_is_refused_and_stays() {
     assert_refused(&w, &tree, &job, "not its recorded branch moved");
 }
 
+/// A removal that fails after the rescue keeps the verified rescue ref:
+/// the failed fact names it, and the ingest moves the row to `rescued`
+/// with it before it records the failure (T-887). git refuses to remove a
+/// locked tree.
+#[test]
+fn a_failed_removal_after_the_rescue_keeps_the_rescue_ref() {
+    let mut w = world();
+    let tree = w.tree("locked");
+    write(&tree, "notes.txt", "untracked\n");
+    git(&w.root, &["worktree", "lock", &tree.to_string_lossy()]);
+    let job = w.decide("locked", "DELETE", "");
+    assert_eq!(job.state, State::Passed, "{}", text(&job));
+    assert!(text(&job).contains("DELETE FAILED"), "{}", text(&job));
+    assert!(tree.join("notes.txt").exists(), "the folder stays");
+    let rescue = w.refs("refs/horch/rescue/");
+    assert_eq!(rescue.len(), 1, "{rescue:?}");
+    let row = w.tree_row(&tree, "state,rescue_ref,status,decision");
+    assert_eq!(row[0].as_deref(), Some("rescued"));
+    assert_eq!(row[1].as_deref(), Some(rescue[0].as_str()));
+    assert_eq!(row[2].as_deref(), Some("cleanup_failed"));
+    assert_eq!(row[3], None);
+}
+
 // ─── the job input ──────────────────────────────────────────────────────
 
 #[test]

@@ -87,12 +87,6 @@ fn wait_for<T>(what: &str, mut f: impl FnMut() -> Option<T>) -> T {
     panic!("timed out waiting for {what}");
 }
 
-fn worker_new(h: &Harness, persona: &str) -> String {
-    ok(h, &["ledger", "worker", "new", "--persona", persona])
-        .trim()
-        .to_string()
-}
-
 fn git_in(h: &Harness, dir: &Path, args: &[&str]) -> String {
     let mut c = h.git_cmd(args);
     c.current_dir(dir);
@@ -187,8 +181,7 @@ fn given_3_ready_branches_when_bundle_then_fast_gate_runs_once_and_none_is_forgo
             }
             let mut workers = Vec::new();
             for (name, file) in [("a", "a.txt"), ("b", "b.txt"), ("c", "c.txt")] {
-                let w = worker_new(&h, "opus");
-                ok_as(&h, &w, &["ledger", "claim"]);
+                let w = horch_e2e::bind::bind(&h, "opus", None).worker_id;
                 let wt = ok_as(&h, &w, &["ledger", "worktree", "new", name]);
                 let path =
                     PathBuf::from(wt.lines().find_map(|l| l.strip_prefix("path: ")).unwrap());

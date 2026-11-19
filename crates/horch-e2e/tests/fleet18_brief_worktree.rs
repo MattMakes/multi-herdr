@@ -113,10 +113,7 @@ fn ledger_world(name: &str) -> (Harness, String) {
             "sonnet",
         ],
     );
-    let w = ok(&h, &["ledger", "worker", "new", "--persona", "sonnet"])
-        .trim()
-        .to_owned();
-    worker_ok(&h, &w, &["ledger", "claim"]);
+    let w = horch_e2e::bind::bind(&h, "sonnet", None).worker_id;
     (h, w)
 }
 fn git(h: &Harness, dir: &std::path::Path, args: &[&str]) -> String {
@@ -131,7 +128,7 @@ fn tree_path(text: &str) -> std::path::PathBuf {
         .into()
 }
 #[test]
-fn g56_facts_reach_claim_and_launch_context_and_are_project_scoped() {
+fn g56_facts_reach_the_launch_context_and_are_project_scoped() {
     let (h, w) = ledger_world("g56-context");
     worker_ok(&h, &w, &["note", "--fact", "Use BSD sed"]);
     worker_ok(&h, &w, &["note", "--fact", "Use BSD sed"]);
@@ -142,9 +139,6 @@ fn g56_facts_reach_claim_and_launch_context_and_are_project_scoped() {
     assert!(horch_core::project_notes::read(&h.state, &other)
         .unwrap()
         .is_empty());
-    // Claim is idempotent for this worker and prints project knowledge each time.
-    let claim = worker_ok(&h, &w, &["ledger", "claim"]);
-    assert!(claim.contains("Use BSD sed"), "{claim}");
     let r = Roster::builtin().unwrap();
     let host = horch_core::project_notes::host_line();
     let display = horch_core::project_notes::display(&h.state, &h.project).unwrap();
@@ -234,10 +228,11 @@ fn g69_from_scratch_and_drop_preserve_unpublished_work() {
         .to_string_lossy()
         .contains(".worktrees/_scratch/inspect"));
     let s = horch_core::taskledger::store::Store::open(&h.root.join("ledger.sqlite3")).unwrap();
-    let claim = worker_ok(&h, &w, &["ledger", "claim", "--json"]);
-    let v: serde_json::Value = serde_json::from_str(&claim).unwrap();
-    let task = v["task"]["task_id"].as_str().unwrap();
-    assert!(horch_core::taskledger::finish::worktree_of(s.conn(), task)
+    let task = horch_core::taskledger::workers::get(s.conn(), &w)
+        .unwrap()
+        .task_id
+        .expect("the bound task of the worker");
+    assert!(horch_core::taskledger::finish::worktree_of(s.conn(), &task)
         .unwrap()
         .is_none());
     // Dirt is always preserved, including when keeping the branch.

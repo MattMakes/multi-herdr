@@ -12,8 +12,10 @@
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
+use horch_core::fleetd::task_execution::application::dispatch::Bound;
 use horch_core::taskledger::finish::codesweep::REVIEWERS;
 use horch_core::taskledger::store::Store;
+use horch_e2e::bind::{bind, try_bind};
 use horch_e2e::harness::Harness;
 use serde_json::Value;
 
@@ -93,20 +95,22 @@ fn queue(h: &Harness, name: &str, persona: &str, extra: &[&str]) {
     ok(h, &args);
 }
 
-fn worker_new(h: &Harness, persona: &str) -> String {
-    ok(h, &["ledger", "worker", "new", "--persona", persona])
-        .trim()
-        .to_string()
-}
-
-/// A new worker of `persona` claims the next task and makes the tree
-/// `name` with 1 commit. Gives the worker, its claim output and the path.
-fn claim_and_work(h: &Harness, persona: &str, name: &str) -> (String, String, PathBuf) {
-    let w = worker_new(h, persona);
-    let claim = ok_as(h, &w, &["ledger", "claim"]);
+/// The next task of `persona` is bound to a new worker (FR-5), which makes
+/// the tree `name` with 1 commit. Gives the worker and the path.
+fn bind_and_work(h: &Harness, persona: &str, name: &str) -> (String, PathBuf) {
+    let w = bind(h, persona, None).worker_id;
     let path = tree_path(&ok_as(h, &w, &["ledger", "worktree", "new", name]));
     commit_file(h, &path, &format!("{name}.txt"));
-    (w, claim, path)
+    (w, path)
+}
+
+/// The tree path that the bind `b` names.
+fn bound_tree(b: &Bound) -> PathBuf {
+    let tree = b
+        .worktree
+        .as_ref()
+        .unwrap_or_else(|| panic!("no tree: {b:?}"));
+    PathBuf::from(&tree.path)
 }
 
 /// The values of the first column of `sql`.
@@ -215,7 +219,7 @@ fn parked(h: &Harness) -> (String, PathBuf) {
     ok(h, &["ledger", "run", "new", "alpha", "--steps", "land"]);
     queue(h, "01-a", "opus-a", &[]);
     queue(h, "02-b", "opus-b", &["--blocked-by", "T-1"]);
-    let (w, _, path) = claim_and_work(h, "opus-a", "feat");
+    let (w, path) = bind_and_work(h, "opus-a", "feat");
     std::fs::write(path.join("notes.txt"), "untracked\n").unwrap();
     ok_as(
         h,
@@ -252,9 +256,7 @@ fn pres_04_l5_unlanded_task_keeps_worktree_and_blocks_dependents() {
     assert_eq!(t1["held_reason"], "unlanded", "{t1}");
     let t2 = task(&h, 2);
     assert_eq!(t2["state"], "pending", "{t2}");
-    let w = worker_new(&h, "opus-b");
-    let c: Value = serde_json::from_str(&ok_as(&h, &w, &["ledger", "claim", "--json"])).unwrap();
-    assert_ne!(c["outcome"], "claimed", "T-2 waits for T-1: {c}");
+    assert!(try_bind(&h, "opus-b", None).is_err(), "T-2 waits for T-1");
 }
 
 #[test]
@@ -266,12 +268,13 @@ fn rr14_requeue_of_a_parked_task_runs_in_the_same_tree() {
     assert_eq!(column(&h, &path, "status"), "open");
     assert_eq!(column(&h, &path, "state"), "created");
 
-    let w = worker_new(&h, "opus-a");
-    let claim = ok_as(&h, &w, &["ledger", "claim"]);
-    assert!(claim.contains("Claimed T-1"), "{claim}");
-    assert!(
-        claim.contains(&path.display().to_string()),
-        "the claim names the tree {}: {claim}",
+    let b = bind(&h, "opus-a", None);
+    let w = b.worker_id.clone();
+    assert_eq!(b.task_id, task(&h, 1)["task_id"], "{b:?}");
+    assert_eq!(
+        stored(&h, &bound_tree(&b)),
+        stored(&h, &path),
+        "the bind names the tree {}: {b:?}",
         path.display()
     );
     assert_eq!(column(&h, &path, "state"), "active");
@@ -300,7 +303,7 @@ fn pres_04_l9_unlanded_work_is_listed_and_decided_once() {
     let h = world("p3-unl-record");
     let (_, dismissed) = parked(&h);
     queue(&h, "03-c", "opus-c", &[]);
-    let (w3, _, reopened) = claim_and_work(&h, "opus-c", "other");
+    let (w3, reopened) = bind_and_work(&h, "opus-c", "other");
     ok_as(
         &h,
         &w3,
@@ -335,7 +338,7 @@ fn pres_04_l9_unlanded_work_is_listed_and_decided_once() {
         "dismiss keeps the tree"
     );
 
-    // A reopen gives the tree to the new task, and its claim takes it.
+    // A reopen gives the tree to the new task, and its bind takes it.
     let ticket = h.project.join("tickets/04-again.md");
     std::fs::write(&ticket, "# 04: Again\n\n**Check:** none\n").unwrap();
     let sid = second["finding_id"].to_string();
@@ -362,13 +365,9 @@ fn pres_04_l9_unlanded_work_is_listed_and_decided_once() {
         "opus-d",
     ]);
     assert!(!o.status.success(), "{}", text(&o));
-    let w = worker_new(&h, "opus-d");
-    let claim = ok_as(&h, &w, &["ledger", "claim"]);
-    assert!(
-        claim.contains("Reopened from unfinished past work"),
-        "{claim}"
-    );
-    assert!(claim.contains(&reopened.display().to_string()), "{claim}");
+    let b = bind(&h, "opus-d", None);
+    let w = b.worker_id.clone();
+    assert_eq!(stored(&h, &bound_tree(&b)), stored(&h, &reopened), "{b:?}");
     assert_eq!(column(&h, &reopened, "state"), "active");
     assert_eq!(
         column(&h, &reopened, "owner_attempt"),
@@ -384,10 +383,10 @@ fn rr15_orphaned_and_rescued_trees_are_listed_with_their_rescue_ref() {
     queue(&h, "02-b", "opus", &[]);
 
     // T-1: its worker is reaped, and the reconcile orphans its tree.
-    let (w1, _, orphan) = claim_and_work(&h, "opus", "orphan");
+    let (w1, orphan) = bind_and_work(&h, "opus", "orphan");
     // T-2: its tree is dropped, but git refuses to remove a locked tree:
     // the drop leaves it `rescued`, on its verified rescue ref.
-    let (w2, _, rescued) = claim_and_work(&h, "opus", "rescued");
+    let (w2, rescued) = bind_and_work(&h, "opus", "rescued");
     git_in(
         &h,
         &h.project,
@@ -449,14 +448,13 @@ fn rr15_orphaned_and_rescued_trees_are_listed_with_their_rescue_ref() {
 fn orphan_then_land(h: &Harness, before_rescue: impl Fn(&Path)) -> PathBuf {
     ok(h, &["ledger", "run", "new", "alpha", "--steps", "land"]);
     queue(h, "01-a", "opus", &[]);
-    let (w1, _, path) = claim_and_work(h, "opus", "feat");
+    let (w1, path) = bind_and_work(h, "opus", "feat");
     ok(h, &["ledger", "reap", &w1, "it hung"]);
     h.without_fleetd(|| ok(h, &["ledger", "watch", "--once", "--force"]));
     assert_eq!(column(h, &path, "state"), "orphaned");
     before_rescue(&path);
 
-    let w2 = worker_new(h, "opus");
-    ok_as(h, &w2, &["ledger", "claim"]);
+    let w2 = bind(h, "opus", None).worker_id;
     let again = tree_path(&ok_as(h, &w2, &["ledger", "worktree", "new", "feat"]));
     assert_eq!(stored(h, &again), stored(h, &path));
     let rescue_ref = column(h, &path, "rescue_ref");
@@ -542,11 +540,9 @@ fn rr18_requeue_of_an_escalated_task_sets_its_attempt_count_to_0() {
     attempts(&h, 3..=4, "escalated");
     let t = task(&h, 1);
     assert_eq!(t["held_reason"], "2 attempts failed", "{t}");
-    let w = worker_new(&h, "opus");
-    let c: Value = serde_json::from_str(&ok_as(&h, &w, &["ledger", "claim", "--json"])).unwrap();
-    assert_ne!(
-        c["outcome"], "claimed",
-        "an escalated task does not run: {c}"
+    assert!(
+        try_bind(&h, "opus", None).is_err(),
+        "an escalated task does not run"
     );
 
     // Your requeue sets the count of the limit to 0: the task runs again,
@@ -558,17 +554,15 @@ fn rr18_requeue_of_an_escalated_task_sets_its_attempt_count_to_0() {
     attempts(&h, 5..=6, "escalated");
 }
 
-/// Attempts `ns` of T-1, each claimed by a new worker and reaped. Before
+/// Attempts `ns` of T-1, each bound to a new worker and reaped. Before
 /// the last, the task is queued again; after it, its state is `end`.
 fn attempts(h: &Harness, ns: std::ops::RangeInclusive<i64>, end: &str) {
     let last = *ns.end();
     for n in ns {
-        let w = worker_new(h, "opus");
-        let claim = ok_as(h, &w, &["ledger", "claim"]);
-        assert!(
-            claim.contains(&format!("Claimed T-1 (attempt {n})")),
-            "{claim}"
-        );
+        let b = bind(h, "opus", None);
+        assert_eq!(b.task_id, task(h, 1)["task_id"], "{b:?}");
+        assert_eq!(b.attempt, n, "{b:?}");
+        let w = b.worker_id;
         ok(h, &["ledger", "reap", &w, "it hung"]);
         let t = task(h, 1);
         let want = if n == last { end } else { "ready" };
@@ -635,7 +629,7 @@ fn rr18_review_requeue_keeps_the_attempt_count() {
         &["ledger", "run", "new", "alpha", "--steps", "code-sweep"],
     );
     queue(&h, "01-a", "opus", &[]);
-    let (w, _, _) = claim_and_work(&h, "opus", "feat");
+    let (w, _) = bind_and_work(&h, "opus", "feat");
     let r = finish_json(&h, &w);
     let n = r["queued_reviews"].as_array().unwrap().len();
     assert!(n > 0, "{r}");

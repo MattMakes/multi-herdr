@@ -23,11 +23,16 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
+use horch_core::execution::legacy::STATUS_WORKING;
+use horch_core::execution::records::{NewRecord, SessionLedger};
+use horch_core::execution::{ExecutionStatus, FailureKind};
 use horch_core::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use horch_core::fleetd::task_execution::adapters::attempt_files::{
     self, Found, OsProcesses, ProcessFacts, WrapperRead,
 };
 use horch_core::fleetd::task_execution::adapters::result_reader::AttemptRef;
+use horch_core::fleetd::task_execution::application::commands;
+use horch_core::fleetd::task_execution::domain::task::Reap;
 use horch_core::taskledger::model::{Actor, StopRequester, WorkerStatus};
 use horch_core::taskledger::runs::{self, NewRun};
 use horch_core::taskledger::stop::{self, Panes, StopOptions};
@@ -148,6 +153,28 @@ impl World {
     fn pass(&mut self, at: &str, procs: &dyn ProcessFacts) {
         let read = self.read();
         self.ingest(&read, at, procs);
+    }
+
+    /// The session records of the project `/r`, in the ledger file of the
+    /// world, read as stored: no worker row is laid over them.
+    fn sessions(&self) -> SessionLedger {
+        SessionLedger::for_project(self._tmp.path(), "/r")
+    }
+
+    /// A live session record `record` of the worker, as the launch writes it.
+    fn add_record(&self, record: &str) {
+        self.sessions()
+            .add(NewRecord {
+                record_id: record,
+                agent: "claude",
+                tier: "opus",
+                model: "opus",
+                role: "opus-x",
+                session_id: Some("s-1"),
+                task: "T-1: a",
+                phase: None,
+            })
+            .unwrap();
     }
 
     fn worker_row(&self) -> workers::Worker {
@@ -419,6 +446,110 @@ fn session_json_with_a_bad_record_id_is_rejected() {
         let rejected = "SELECT count(*) FROM ingested WHERE outcome = 'rejected' AND reason LIKE 'record_id %'";
         assert_eq!(w.count(rejected), 1, "{bad:?}");
     }
+}
+
+/// The ingest of `exit.json` ends the session record of the attempt in the
+/// same transaction as the worker row: the record leaves `working` and
+/// holds the exit state. `session.json` of the same pass names the record.
+/// A second ingest of the same file changes nothing.
+#[test]
+fn exit_json_ends_the_session_record_of_the_attempt() {
+    let mut w = World::new();
+    let procs = FakeProcesses::default();
+    w.add_record("r-1");
+    assert!(w
+        .sessions()
+        .get("r-1")
+        .unwrap()
+        .execution_status()
+        .is_live());
+    w.files()
+        .write_session("s-1", "claude", None, Some("r-1"))
+        .unwrap();
+    w.files().write_exit(Some(3), false).unwrap();
+    let read = w.read();
+    w.ingest(&read, T1, &procs);
+
+    let record = w.sessions().get("r-1").unwrap();
+    assert_eq!(
+        record.execution_status(),
+        ExecutionStatus::Failed {
+            failure: FailureKind::AgentExited { code: Some(3) }
+        }
+    );
+    assert_ne!(record.status, STATUS_WORKING);
+    assert_eq!(record.exit_code, Some(3));
+    assert_eq!(record.finished_at.as_deref(), Some(T1));
+    let stored = w.sessions().store().stored_json().unwrap();
+    w.ingest(&read, T2, &procs);
+    w.pass(T2, &procs);
+    assert_eq!(w.sessions().store().stored_json().unwrap(), stored);
+}
+
+/// Rule: an exit whose worker has no session record in this ledger file
+/// ends only the worker row. Here `session.json` names the record `r-9`,
+/// which the ledger does not hold (a moved state dir keeps its records in
+/// another file). The ingest succeeds and writes no session record.
+#[test]
+fn exit_json_with_no_session_record_ends_only_the_worker_row() {
+    let mut w = World::new();
+    let procs = FakeProcesses::default();
+    w.files()
+        .write_session("s-9", "claude", None, Some("r-9"))
+        .unwrap();
+    w.files().write_exit(Some(3), false).unwrap();
+    w.pass(T1, &procs);
+
+    let row = w.worker_row();
+    assert_eq!(row.legacy_record_id.as_deref(), Some("r-9"));
+    assert_eq!(row.exit_code, Some(3));
+    assert_eq!(row.status().unwrap(), WorkerStatus::LaunchFailed);
+    assert_eq!(w.count("SELECT count(*) FROM session_records"), 0);
+}
+
+/// Rule: a crash writes no `exit.json`, so no ingest ends the stored
+/// record. The pass sees that the process is gone and ends the attempt
+/// and the worker row (`EndAttempt`). A reader with the task ledger
+/// overlay, as `horch sessions`, shows the record ended from the worker
+/// row. The stored record keeps what the launch wrote.
+#[test]
+fn crash_with_no_exit_json_ends_the_record_through_the_worker_row() {
+    let mut w = World::new();
+    let procs = FakeProcesses::default();
+    w.add_record("r-1");
+    w.files()
+        .write_session("s-1", "claude", None, Some("r-1"))
+        .unwrap();
+    w.pass(T1, &procs);
+    let reap = Reap {
+        attempt: w.attempt.attempt_id.clone(),
+        worker: w.worker.clone(),
+        outcome: "no_result".into(),
+        end_worker: true,
+        task: None,
+        cleanup: Default::default(),
+    };
+    w.store
+        .immediate(|tx| commands::end_attempt(tx, &reap))
+        .unwrap();
+
+    assert_eq!(w.worker_row().status().unwrap(), WorkerStatus::Incomplete);
+    assert!(w
+        .sessions()
+        .get("r-1")
+        .unwrap()
+        .execution_status()
+        .is_live());
+    let db = w._tmp.path().join("ledger.sqlite3");
+    let overlaid = w
+        .sessions()
+        .with_task_ledger(&db, Path::new("/r"))
+        .get("r-1")
+        .unwrap();
+    assert!(matches!(
+        overlaid.execution_status(),
+        ExecutionStatus::Failed { .. }
+    ));
 }
 
 #[test]

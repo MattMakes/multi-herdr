@@ -1527,9 +1527,14 @@ fn run_item(fx: &mut InJob<'_>, env: &Env<'_>, item: &JobItem) -> DecisionFacts 
             rescue_ref: fx.rescue_ref.take(),
             removed: fx.removed,
         },
+        // A rescue ref that the run wrote and verified before the failure
+        // is kept, and so is a removal: a DELETE whose branch stays fails
+        // after its folder is gone. The ingest records both (T-887).
         Err(e) => DecisionFacts {
             worktree_id: item.worktree_id.clone(),
             text: clip(format!("{e:#}")),
+            rescue_ref: fx.rescue_ref.take(),
+            removed: fx.removed,
             ..DecisionFacts::default()
         },
     }
@@ -1670,6 +1675,14 @@ pub fn ingest(ctx: &JobCtx<'_>, tx: &Connection, job: &JobRow, ran: &Ran) -> Res
         check_fact(item, decision, fact)?;
         let wt = finish::worktree(tx, &item.worktree_id)?;
         if !fact.ok {
+            // The run can fail after it rescued or removed the folder: the
+            // rows keep what it did before the failure (T-887).
+            let id = wt.worktree_id.as_str();
+            match (fact.removed, fact.rescue_ref.as_deref()) {
+                (true, r) => settle_removed(ctx, tx, id, r)?,
+                (false, Some(r)) => settle_rescued(ctx, tx, id, r)?,
+                (false, None) => {}
+            }
             failed(tx, &item.row, &wt, decision, &fact.text)?;
             continue;
         }
@@ -1709,6 +1722,13 @@ fn check_fact(item: &JobItem, decision: TriageDecision, f: &DecisionFacts) -> Re
         );
     }
     check_text("text", &f.text, FACT_TEXT_MAX)?;
+    if let Some(r) = &f.rescue_ref {
+        let folder = rescue::ref_folder(&item.worktree_id);
+        let n = r.strip_prefix(&folder).unwrap_or("");
+        if n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) {
+            bail!("the rescue ref {r:?} is not a rescue ref of its worktree");
+        }
+    }
     if !f.ok {
         return Ok(());
     }
@@ -1739,28 +1759,15 @@ fn check_fact(item: &JobItem, decision: TriageDecision, f: &DecisionFacts) -> Re
             bail!("the landed commit {c:?} is not an object id");
         }
     }
-    if let Some(r) = &f.rescue_ref {
-        let folder = rescue::ref_folder(&item.worktree_id);
-        let n = r.strip_prefix(&folder).unwrap_or("");
-        if n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) {
-            bail!("the rescue ref {r:?} is not a rescue ref of its worktree");
-        }
-    }
     if f.bytes_freed.is_some_and(|b| b > i64::MAX as u64) {
         bail!("the bytes freed are out of range");
     }
     Ok(())
 }
 
-/// The custody rows of a folder that a run removed: `orphaned` (cause
-/// `triage`, no owner), then `rescued` with `rescue_ref` when the run
-/// wrote one, then `removed`.
-fn settle_removed(
-    ctx: &JobCtx<'_>,
-    tx: &Connection,
-    id: &str,
-    rescue_ref: Option<&str>,
-) -> Result<()> {
+/// Move the row `id` to `orphaned` (cause `triage`, no owner), unless it
+/// is `orphaned`, `rescued` or `landing` already.
+fn settle_orphaned(ctx: &JobCtx<'_>, tx: &Connection, id: &str) -> Result<()> {
     let row = trees::get(tx, id)?.with_context(|| format!("no worktree {id} in the ledger"))?;
     let keep = [
         WorktreeState::Orphaned,
@@ -1771,13 +1778,34 @@ fn settle_removed(
         door(ctx, tx, id, "orphaned", TRIAGE)?;
         trees::set_owner(tx, id, None)?;
     }
-    if let Some(r) = rescue_ref {
-        trees::set_rescue_ref(tx, id, r)?;
-        let cause = Cause {
-            actor: Actor::Operator,
-            text: "triage: its rescue ref is read back and verified",
-        };
-        door(ctx, tx, id, "rescued", cause)?;
+    Ok(())
+}
+
+/// The row `id` of a folder that a run rescued to the verified ref
+/// `rescue_ref`: [`settle_orphaned`], then `rescued` with the ref. A run
+/// whose decision failed after the rescue keeps the ref too (T-887).
+fn settle_rescued(ctx: &JobCtx<'_>, tx: &Connection, id: &str, rescue_ref: &str) -> Result<()> {
+    settle_orphaned(ctx, tx, id)?;
+    trees::set_rescue_ref(tx, id, rescue_ref)?;
+    let cause = Cause {
+        actor: Actor::Operator,
+        text: "triage: its rescue ref is read back and verified",
+    };
+    door(ctx, tx, id, "rescued", cause)
+}
+
+/// The custody rows of a folder that a run removed: [`settle_rescued`]
+/// when the run wrote a rescue ref, else [`settle_orphaned`], then
+/// `removed`.
+fn settle_removed(
+    ctx: &JobCtx<'_>,
+    tx: &Connection,
+    id: &str,
+    rescue_ref: Option<&str>,
+) -> Result<()> {
+    match rescue_ref {
+        Some(r) => settle_rescued(ctx, tx, id, r)?,
+        None => settle_orphaned(ctx, tx, id)?,
     }
     let cause = Cause {
         actor: Actor::Operator,

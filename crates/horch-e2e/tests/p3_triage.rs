@@ -91,7 +91,10 @@ fn commit_all(h: &Harness, dir: &Path, message: &str) {
 }
 
 /// `horch worktree triage apply` of 1 decision of the row W1 `name`: its
-/// result line. A failed decision exits non-zero.
+/// result line. fleetd applies `KEEP` in the request, and the command
+/// prints its line. fleetd applies `ARCHIVE`, `DELETE`, `LAND` and `PR` in
+/// a `triage_apply` job (T-888): the command prints that the job is queued,
+/// so this waits until the job ended and gives the line of its result.
 fn apply(h: &Harness, name: &str, decision: &str) -> String {
     let body = format!(
         "| ID | Worktree | Suggested | Decision | Direction |\n|----|----|----|----|----|\n\
@@ -99,10 +102,28 @@ fn apply(h: &Harness, name: &str, decision: &str) -> String {
     );
     let p = h.root.join("reply.md");
     std::fs::write(&p, body).unwrap();
+    let last = "SELECT CAST(COALESCE(MAX(id), 0) AS TEXT) FROM jobs WHERE kind = 'triage_apply'";
+    let last = |h: &Harness| query(h, last)[0].clone();
+    let before = last(h);
     let o = h.run(&["worktree", "triage", "apply", &p.to_string_lossy()]);
     let said = out(&o);
     assert!(said.starts_with("W1 "), "{}", text(&o));
-    said
+    let job = last(h);
+    if job == before {
+        return said;
+    }
+    let result = wait_for("the triage_apply job to end", || {
+        query(
+            h,
+            &format!(
+                "SELECT result_json FROM jobs WHERE id = {job} AND state IN ('passed', 'failed')"
+            ),
+        )
+        .into_iter()
+        .next()
+    });
+    let result: serde_json::Value = serde_json::from_str(&result).unwrap();
+    format!("{}\n", result["text"].as_str().unwrap_or_default())
 }
 
 /// The refs under `prefix`, in name order.
@@ -168,6 +189,14 @@ fn jobs(h: &Harness, kind: &str) -> Vec<String> {
     )
 }
 
+/// The read-back of each ref that triage writes fails. The `triage_apply`
+/// job reads the fault, and it runs under fleetd, so the test fleetd
+/// starts again with it (T-888).
+fn read_back_fault(h: &mut Harness) {
+    h.set("HORCH_FAULT", "triage-ref-read-back");
+    h.without_fleetd(|| ());
+}
+
 #[test]
 fn pres_04_w9_triage_commits_untracked_before_delete() {
     let h = world("p3-triage-w9");
@@ -189,11 +218,20 @@ fn pres_04_w9_triage_commits_untracked_before_delete() {
         assert_eq!(show(&h, r, "feat.txt"), "changed", "{r}");
         assert_eq!(show(&h, r, "new.txt"), "untracked", "{r}");
     }
-    // Row W7: the folder had no row; triage adopts it as `orphaned`, and
-    // the custody jobs move it to `rescued`, then `removed`.
+    // Row W7: the folder had no row; triage adopts it as `orphaned`. The
+    // triage_apply job rescues it and removes it with the custody adapters,
+    // and its ingest moves the row to `rescued`, then `removed` (T-888).
     assert_eq!(states(&h, &path), ["removed"]);
-    assert_eq!(jobs(&h, "rescue"), ["passed"]);
-    assert_eq!(jobs(&h, "worktree_remove"), ["passed"]);
+    assert_eq!(
+        query(
+            &h,
+            "SELECT rescue_ref FROM worktrees WHERE state = 'removed'"
+        ),
+        [rescue[0].clone()]
+    );
+    assert_eq!(jobs(&h, "triage_apply"), ["passed"]);
+    assert!(jobs(&h, "rescue").is_empty());
+    assert!(jobs(&h, "worktree_remove").is_empty());
     assert!(!git_ok(
         &h,
         &h.project,
@@ -241,7 +279,7 @@ fn rr17_triage_deletes_a_branch_only_when_the_trash_ref_holds_its_tip() {
     // branch and the folder stay.
     let mut h2 = world("p3-triage-branch-kept");
     let kept = folder(&h2, "feat");
-    h2.set("HORCH_FAULT", "triage-ref-read-back");
+    read_back_fault(&mut h2);
     let said = apply(&h2, "feat", "DELETE");
     assert!(said.contains("DELETE FAILED"), "{said}");
     assert!(kept.exists());
@@ -298,7 +336,7 @@ fn rr16_failed_read_back_keeps_the_folder() {
     let mut h = world("p3-triage-read-back");
     let path = folder(&h, "feat");
     std::fs::write(path.join("new.txt"), "untracked\n").unwrap();
-    h.set("HORCH_FAULT", "triage-ref-read-back");
+    read_back_fault(&mut h);
     let said = apply(&h, "feat", "ARCHIVE");
     assert!(
         said.starts_with("W1 feat ARCHIVE FAILED: refs/horch/archive/feat does not hold"),
@@ -467,5 +505,8 @@ fn a_folder_at_the_path_of_a_removed_row_is_a_new_orphaned_row_and_nothing_is_re
     assert!(said.starts_with("W1 feat KEEP: kept"), "{said}");
     assert_eq!(states(&h, &path), ["removed", "orphaned"]);
     assert!(path.join("again.txt").exists());
-    assert_eq!(jobs(&h, "worktree_remove"), ["passed"]);
+    // The triage_apply job removed the first folder with the custody
+    // removal adapter, in the job (T-888): no worktree_remove job ran.
+    assert_eq!(jobs(&h, "triage_apply"), ["passed"]);
+    assert!(jobs(&h, "worktree_remove").is_empty());
 }
