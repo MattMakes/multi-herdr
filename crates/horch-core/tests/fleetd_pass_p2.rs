@@ -26,7 +26,6 @@ use horch_core::fleetd::fleet_runtime::domain::health::Hold;
 use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
 use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
 use horch_core::fleetd::task_execution::application::cancel;
-use horch_core::fleetd::task_execution::application::quota::Restart;
 use horch_core::fleetd::task_execution::domain::task::{AttemptRow, InPane, Recorded};
 use horch_core::fleetd::worker_profiles::adapters::launcher::Launcher;
 use horch_core::fleetd::worker_profiles::application::ports::LaunchSpec;
@@ -101,12 +100,6 @@ impl World {
 
     fn file(&self, name: &str) -> PathBuf {
         self.dir.join(name)
-    }
-
-    fn lines(&self, name: &str) -> usize {
-        std::fs::read_to_string(self.file(name))
-            .map(|t| t.lines().count())
-            .unwrap_or(0)
     }
 
     fn settings(&self) -> Settings {
@@ -295,25 +288,19 @@ fn wait_for(mut cond: impl FnMut() -> bool) -> bool {
 /// The outside of the tests: no herdr snapshot and no observation, so an
 /// attempt earns no activity past its claim. With `claude_used`, the pools
 /// read `claude` at that share and `codex` at 0, and the roster has `dev`
-/// on claude with the fallback `alt` on codex. A restart appends 1 line
-/// to `restarts.txt`.
+/// on claude with the fallback `alt` on codex.
 struct Fake {
     claude_used: Option<f64>,
-    restarts: PathBuf,
 }
 
 impl Fake {
-    fn new(w: &World) -> Fake {
-        Fake {
-            claude_used: None,
-            restarts: w.file("restarts.txt"),
-        }
+    fn new(_w: &World) -> Fake {
+        Fake { claude_used: None }
     }
 
-    fn limited(w: &World) -> Fake {
+    fn limited(_w: &World) -> Fake {
         Fake {
             claude_used: Some(1.0),
-            ..Fake::new(w)
         }
     }
 }
@@ -378,23 +365,6 @@ impl Outside for Fake {
         };
         let quota = QuotaView::new(file, Utc::now(), Policy::default(), true);
         Some(PoolFacts { roster, quota })
-    }
-
-    fn restart_spec(&self, r: &Restart) -> anyhow::Result<LaunchSpec> {
-        let script = format!(
-            "echo '{} {}' >> '{}'",
-            r.attempt,
-            r.persona,
-            self.restarts.display()
-        );
-        Ok(LaunchSpec {
-            program: "/bin/sh".into(),
-            args: vec!["-c".into(), script.into()],
-            cwd: None,
-            env_rule: Default::default(),
-            detach: true,
-            output: None,
-        })
     }
 }
 
@@ -625,48 +595,17 @@ fn usage_limited_worker_restarts_on_the_fallback_and_burns_no_attempt() {
 
     w.pass_at(10, &worker, &fake);
     let attempts = w.attempts(&task);
-    assert_eq!(attempts.len(), 2, "{attempts:?}");
+    // This pass has no task work, so no dispatch binds the task:
+    // `fleetd_pass_p7.rs` binds the push attempt of the fallback.
+    assert_eq!(attempts.len(), 1, "{attempts:?}");
     assert_eq!(attempts[0].1, "ended");
     assert_eq!(attempts[0].2.as_deref(), Some("quota"));
-    assert_eq!(attempts[1].1, "launching", "the restart on the fallback");
     let t = w.task(&task);
-    assert_eq!(t.status, "ready");
+    assert_eq!(t.status, "ready", "ready for the fallback at once");
     assert_eq!(t.claimable_by.as_deref(), Some("alt"));
+    assert_eq!(t.not_before, None, "a usage limit sets no backoff");
     assert_eq!(burned(&t), 0, "a usage limit burns no attempt");
-
     assert!(agent.exits(), "the stop of the old attempt ended the agent");
-    w.pass_at(20, &worker, &fake);
-    assert!(
-        wait_for(|| w.lines("restarts.txt") == 1),
-        "the fallback started"
-    );
-    let line = std::fs::read_to_string(w.file("restarts.txt")).unwrap();
-    assert_eq!(line.trim(), format!("{} alt", attempts[1].0));
-}
-
-#[test]
-fn stop_of_the_old_attempt_comes_before_the_spawn_on_the_fallback() {
-    let mut w = world();
-    let mut agent = Agent::run("trap '' TERM INT HUP; while :; do sleep 0.1; done");
-    let (task, worker) = w.claimed_task(&agent);
-    let fake = Fake::limited(&w);
-
-    w.pass_at(10, &worker, &fake);
-    assert_eq!(w.attempts(&task)[1].1, "launching");
-    w.pass_at(15, &worker, &fake);
-    assert!(agent.alive(), "it ignores the polite stop");
-    assert_eq!(w.lines("restarts.txt"), 0, "no spawn while it lives");
-
-    // Past the grace of the polite stop (stop_grace_s, 20 s): the kill.
-    w.pass_at(45, &worker, &fake);
-    assert!(agent.exits(), "the kill ended it");
-    assert_eq!(w.lines("restarts.txt"), 0);
-
-    w.pass_at(50, &worker, &fake);
-    assert!(
-        wait_for(|| w.lines("restarts.txt") == 1),
-        "the spawn after the old process is gone"
-    );
 }
 
 /// herdr and the transcript: an agent that is alive and shows nothing.

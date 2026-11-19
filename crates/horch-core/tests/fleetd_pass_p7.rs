@@ -788,6 +788,77 @@ fn pass_moves_a_context_limit_task_to_ready() {
     );
 }
 
+/// RR-11: a usage limit ends A1 with `quota`, and the same pass binds A2
+/// on the fallback `codex-sol` as a push attempt. A2 has no backoff, no
+/// attempt is burned, and the old claim path writes no row.
+#[test]
+fn quota_outcome_restarts_as_a_push_attempt_of_the_fallback() {
+    let w = world();
+    let task = w.ready_task("t1", CLAUDE_PROFILE);
+    let worker = NewWorker {
+        run_id: w.run.run_id.clone(),
+        kind: Some(WorkerKind::Worker),
+        persona: CLAUDE_PROFILE.into(),
+        ..Default::default()
+    };
+    let bound = testing::bind_live(&w.conn, &task, &worker, None).unwrap();
+    let before = tasks::get(&w.conn, &task).unwrap();
+    let files = AttemptFiles::new(
+        &w.root(),
+        AttemptRef {
+            task_id: task.clone(),
+            attempt_id: bound.attempt_id.clone(),
+        },
+    );
+    fs::create_dir_all(files.dir()).unwrap();
+    fs::set_permissions(files.dir(), fs::Permissions::from_mode(0o700)).unwrap();
+    files
+        .write_exit_hinted(Some(1), false, Some(OutcomeHint::Quota))
+        .unwrap();
+    let fake = Fake::of(&w);
+    fake.used.set(1.0);
+
+    let report = run_pass(&w, &fake);
+    let mut stmt = w
+        .conn
+        .prepare(
+            "SELECT a.id, a.state, a.outcome, a.via, w.persona FROM attempts a
+             JOIN workers w ON w.worker_id = a.worker_id WHERE a.task_id = ?1 ORDER BY a.rowid",
+        )
+        .unwrap();
+    let rows: Vec<(String, String, Option<String>, String, Option<String>)> = stmt
+        .query_map([&task], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(rows.len(), 2, "A1 and 1 restart attempt: {rows:?}");
+    assert_eq!(rows[0].0, bound.attempt_id);
+    assert_eq!(rows[0].2.as_deref(), Some("quota"), "{rows:?}");
+    let (id, state, _, via, persona) = &rows[1];
+    assert_eq!(id, &format!("{task}/A2"), "{rows:?}");
+    assert_eq!(
+        (state.as_str(), via.as_str(), persona.as_deref()),
+        ("launching", "push", Some("codex-sol")),
+        "the restart is a push attempt of the fallback: {report:?}"
+    );
+    let t = tasks::get(&w.conn, &task).unwrap();
+    assert_eq!(t.status, "leased");
+    assert_eq!(t.not_before, None, "a quota outcome sets no backoff");
+    assert_eq!(
+        t.attempts - t.attempt_floor,
+        before.attempts - before.attempt_floor,
+        "no attempt is burned"
+    );
+    let claim_rows = w.count(&format!(
+        "SELECT COUNT(*) FROM attempts WHERE task_id = '{task}' AND via = 'claim'
+         AND id <> '{}'",
+        bound.attempt_id
+    ));
+    assert_eq!(claim_rows, 0, "the old claim path writes no row");
+}
+
 // ─── pacing ─────────────────────────────────────────────────────────────
 
 /// A paced pool holds the ready tasks of its personas in a pass, with 1

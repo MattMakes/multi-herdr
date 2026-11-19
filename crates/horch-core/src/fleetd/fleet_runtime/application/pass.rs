@@ -144,9 +144,7 @@ use crate::fleetd::task_execution::application::judge_pair::Settled;
 use crate::fleetd::task_execution::application::launch::{self as push, Launches};
 use crate::fleetd::task_execution::application::outbox_ingest::{self, OutboxRead};
 use crate::fleetd::task_execution::application::planned_tasks;
-use crate::fleetd::task_execution::application::quota::{
-    self, Pools, Restart, Restarted, Restarts,
-};
+use crate::fleetd::task_execution::application::quota::{self, Pools};
 use crate::fleetd::task_execution::application::stall as ladder;
 use crate::fleetd::task_execution::application::verifier::{self, Passed, Verifier};
 use crate::fleetd::task_execution::application::{cancel, commands, lease, retry};
@@ -286,11 +284,6 @@ pub trait Outside {
         anyhow::bail!("this fleetd sends no doorbell to pane {pane}")
     }
 
-    /// The launch of the fallback worker of the restart `r` (RR-11).
-    fn restart_spec(&self, r: &Restart) -> Result<LaunchSpec> {
-        anyhow::bail!("this fleetd starts no fallback worker for {}", r.task_id)
-    }
-
     /// Each CLI of the docs sources and the path of its binary, for the
     /// scan of the CLI binaries of Phase 7. An `Outside` with no CLIs, as a
     /// fake of a test, has none.
@@ -303,15 +296,6 @@ pub trait Outside {
 pub struct PoolFacts {
     pub roster: Roster,
     pub quota: QuotaView,
-}
-
-/// The restarts of part 3, through the [`Outside`] of the pass.
-struct OutsideRestarts<'a>(&'a dyn Outside);
-
-impl Restarts for OutsideRestarts<'_> {
-    fn spec(&self, r: &Restart) -> Result<LaunchSpec> {
-        self.0.restart_spec(r)
-    }
 }
 
 /// The work budget of the run duties in 1 pass (PL-5, A32).
@@ -487,7 +471,7 @@ enum Effect {
     StopJob(jobs::Stop),
     /// The doorbell of the stall ladder into the pane.
     Doorbell(Bell),
-    /// The launch of an attempt, or the restart of a task on its fallback.
+    /// The launch of an attempt of the run duties.
     Launch(AttemptRow),
     /// The spawn of a push attempt that fleetd bound, by its id.
     PushLaunch(String),
@@ -495,7 +479,7 @@ enum Effect {
 }
 
 /// The order of part 3 (MAP.md, "Part 3"): each stop, then each doorbell,
-/// then each launch and restart, then each job start.
+/// then each launch, then each job start.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Rank {
     Stop,
@@ -603,7 +587,7 @@ struct ProcessItems {
 }
 
 /// The attempts to launch in part 3: the attempts in `launching` of the
-/// run duties and of the restarts, and the push attempts by id.
+/// run duties, and the push attempts by id.
 struct ToLaunch {
     attempts: Vec<AttemptRow>,
     push: Vec<String>,
@@ -1743,9 +1727,6 @@ impl<'a> Pass<'a> {
                 Effect::Stop(s) => self.stop(conn, &s, clock, &mut stops, &mut report),
                 Effect::StopJob(s) => jobs::stop(&s).then_some(Done::StopJob(s.job_id)),
                 Effect::Doorbell(bell) => self.doorbell(bell, &mut sent, &mut report),
-                Effect::Launch(a) if quota::is_restart(&a) => {
-                    self.restart(conn, &a, clock, &mut report)
-                }
                 Effect::Launch(a) => self.launch(&a, clock, &mut report),
                 Effect::PushLaunch(id) => self.push_launch(conn, &id, clock, &mut report),
                 Effect::StartJob(job) => self.start_job(conn, &job, clock, &mut report),
@@ -1966,31 +1947,6 @@ impl<'a> Pass<'a> {
                 report
                     .failed
                     .push(format!("the doorbell of pane {pane}: {e:#}"));
-                None
-            }
-        }
-    }
-
-    /// Start the fallback worker of the restart attempt `a` (RR-11), once,
-    /// and only when each process of an older attempt of its task is gone
-    /// (FM-14).
-    fn restart(
-        &mut self,
-        conn: &Connection,
-        a: &AttemptRow,
-        clock: FleetSeconds,
-        report: &mut PassReport,
-    ) -> Option<Done> {
-        let root = &self.settings.fleet_root;
-        let ports = OutsideRestarts(self.ports.outside);
-        match quota::restart(conn, root, clock, &a.id, self.ports.host, &ports) {
-            Ok(Restarted::Launched(l)) => {
-                self.launched.push(l.child);
-                Some(Done::Launch(a.id.clone()))
-            }
-            Ok(Restarted::Done | Restarted::Waiting { .. }) => None,
-            Err(e) => {
-                report.failed.push(format!("{e:#}"));
                 None
             }
         }

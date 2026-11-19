@@ -17,7 +17,6 @@ use horch_core::execution::records::SessionLedger;
 use horch_core::execution::SessionMode;
 use horch_core::fleetd::fleet_runtime::domain::requests::retired;
 use horch_core::fleetd::task_execution::application::launch::PushLaunch;
-use horch_core::fleetd::task_execution::application::quota::{Restart, ADOPT_WORKER_ENV};
 use horch_core::fleetd::worker_profiles::application::ports::{EnvRule, LaunchSpec};
 use horch_core::harness::launch::{self, DiscoveryTarget, LaunchRequest};
 use horch_core::harness::HarnessKind;
@@ -33,7 +32,6 @@ use horch_core::workspace::model::{Direction, NewWorkspace};
 use horch_core::workspace::paneshell::PaneShell;
 
 use super::doctor;
-use super::taskledger_spawn::CLAIM_TARGET_ENV;
 
 /// What a launched pane should become.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -365,61 +363,6 @@ fn close_workspace(herdr: &Herdr, workspace_id: &str) {
     if let Err(e) = herdr.workspace_close(workspace_id) {
         eprintln!("warning: closing workspace {workspace_id} failed: {e:#}");
     }
-}
-
-/// The launch of the restart `r` of a task on its fallback persona (RR-11):
-/// today's `horch spawn <fallback>` in the run of the task, with the claim
-/// target of the task and the worker row that fleetd wrote for it. fleetd
-/// starts it through its launcher (`task_execution::application::quota::
-/// restart`), so it inherits the folders and the ledger of fleetd. `--exact`
-/// keeps the persona: a fallback does not move to a third persona.
-///
-/// The Phase 2 bridge: Phase 4 replaces it with the push dispatch, which
-/// binds the task to a worker before the pane opens.
-// The pass of Phase 2 (ticket 14 of `docs/tickets/fleetd-p2/`) calls it
-// from the composition root of `horch fleetd`.
-#[cfg_attr(not(test), allow(dead_code))]
-pub fn restart_spec(ctx: &RuntimeContext, r: &Restart) -> Result<LaunchSpec> {
-    let Some(pane) = r.from_pane.as_deref() else {
-        anyhow::bail!(
-            "the restart of {} on {} has no pane to split: the run has no orchestrator pane, \
-             and the worker that hit the usage limit had no pane",
-            r.task_id,
-            r.persona
-        );
-    };
-    // A detached launch removes the pane identity of fleetd, so the spawn
-    // finds its mailbox only through this variable.
-    let Some(workspace) = r.workspace_id.as_deref() else {
-        anyhow::bail!(
-            "the restart of {} on {} has no workspace: the worker row and the run name none",
-            r.task_id,
-            r.persona
-        );
-    };
-    let args = [
-        "spawn",
-        r.persona.as_str(),
-        "--run",
-        r.run_slug.as_str(),
-        "--exact",
-        "--from-pane",
-        pane,
-    ];
-    Ok(LaunchSpec {
-        program: ctx.bins.exe()?,
-        args: args.iter().map(OsString::from).collect(),
-        cwd: Some(PathBuf::from(&r.project_root)),
-        env_rule: EnvRule {
-            vars: vec![
-                (CLAIM_TARGET_ENV.into(), r.task_id.as_str().into()),
-                (ADOPT_WORKER_ENV.into(), r.worker_id.as_str().into()),
-                ("HORCH_WORKSPACE_ID".into(), workspace.into()),
-            ],
-        },
-        detach: true,
-        output: Some(ctx.paths.fleet_root.join("run").join("restart.log")),
-    })
 }
 
 /// The launch of the push attempt `l` that fleetd bound (ticket 10 of
@@ -912,88 +855,6 @@ mod tests {
         workspace_label(path, std::env::current_dir().ok().as_deref())
     }
 
-    fn restart(from_pane: Option<&str>) -> Restart {
-        Restart {
-            attempt: "T1/A2-fallback".into(),
-            task_id: "T1".into(),
-            worker_id: "W2".into(),
-            persona: "codex-sol".into(),
-            run_slug: "r1".into(),
-            project_root: "/work/proj".into(),
-            from_pane: from_pane.map(str::to_string),
-            workspace_id: Some("w0".into()),
-        }
-    }
-
-    /// RR-11: the restart on a fallback is today's `horch spawn <fallback>`
-    /// with the claim target of the task, the row that fleetd wrote, and no
-    /// fallback of its own (no third persona). It starts through the
-    /// launcher of fleetd and outlives the pass.
-    #[test]
-    fn restart_spec_spawns_the_fallback_for_the_task_and_its_row() {
-        let ctx = test_ctx();
-        let spec = restart_spec(&ctx, &restart(Some("w1:p3"))).unwrap();
-        assert_eq!(spec.program, PathBuf::from("/opt/horch/bin/horch"));
-        let args: Vec<String> = spec
-            .args
-            .iter()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(
-            args,
-            [
-                "spawn",
-                "codex-sol",
-                "--run",
-                "r1",
-                "--exact",
-                "--from-pane",
-                "w1:p3"
-            ]
-        );
-        assert_eq!(spec.cwd.as_deref(), Some(Path::new("/work/proj")));
-        let env: Vec<(String, String)> = spec
-            .env_rule
-            .vars
-            .iter()
-            .map(|(k, v)| {
-                (
-                    k.to_string_lossy().into_owned(),
-                    v.to_string_lossy().into_owned(),
-                )
-            })
-            .collect();
-        assert_eq!(
-            env,
-            [
-                (CLAIM_TARGET_ENV.to_string(), "T1".to_string()),
-                (ADOPT_WORKER_ENV.to_string(), "W2".to_string()),
-                ("HORCH_WORKSPACE_ID".to_string(), "w0".to_string()),
-            ]
-        );
-        assert!(spec.detach);
-        assert_eq!(
-            spec.output,
-            Some(ctx.paths.fleet_root.join("run").join("restart.log"))
-        );
-    }
-
-    #[test]
-    fn restart_with_no_pane_to_split_is_refused() {
-        let e = restart_spec(&test_ctx(), &restart(None)).unwrap_err();
-        assert!(format!("{e:#}").contains("no pane to split"), "{e:#}");
-    }
-
-    /// `horch spawn` resolves its mailbox from `HORCH_WORKSPACE_ID` or its
-    /// pane, and a detached launch has neither unless the spec sets it.
-    #[test]
-    fn restart_with_no_workspace_is_refused() {
-        let mut r = restart(Some("w1:p3"));
-        r.workspace_id = None;
-        let e = restart_spec(&test_ctx(), &r).unwrap_err();
-        assert!(format!("{e:#}").contains("no workspace"), "{e:#}");
-    }
-
     fn push(from_pane: Option<&str>, workspace: Option<&str>) -> PushLaunch {
         PushLaunch {
             attempt: "T1/A1".into(),
@@ -1077,8 +938,7 @@ mod tests {
 
     /// SR-7: the real detached launch of a push attempt through the
     /// launcher of fleetd. The child has the workspace of the run, though
-    /// the launcher removes the pane identity of its starter, and it has no
-    /// claim target.
+    /// the launcher removes the pane identity of its starter.
     #[cfg(unix)]
     #[test]
     fn detached_push_launch_gives_the_spawn_its_workspace() {
@@ -1095,43 +955,6 @@ mod tests {
         launched.child.wait().unwrap();
         let text = std::fs::read_to_string(&dump).unwrap();
         assert!(text.lines().any(|l| l == "HORCH_WORKSPACE_ID=w0"), "{text}");
-        assert!(!text.contains(&format!("{CLAIM_TARGET_ENV}=")), "{text}");
-        assert!(!text.contains(&format!("{ADOPT_WORKER_ENV}=")), "{text}");
-    }
-
-    /// The real detached launch of a restart: the child that fleetd starts
-    /// has the workspace, the claim target and the row, though the launcher
-    /// removes the pane identity of its starter. The context that `horch
-    /// spawn` builds from that environment names the workspace of its
-    /// mailbox.
-    #[cfg(unix)]
-    #[test]
-    fn detached_restart_gives_the_spawn_its_workspace() {
-        use horch_core::fleetd::worker_profiles::adapters::launcher::Launcher;
-        use horch_core::fleetd::worker_profiles::application::ports::ProcessHost;
-        let dir = tempfile::tempdir().unwrap();
-        let dump = dir.path().join("env.txt");
-        let mut spec = restart_spec(&test_ctx(), &restart(Some("w1:p3"))).unwrap();
-        spec.program = PathBuf::from("/bin/sh");
-        spec.args = vec!["-c".into(), format!("env > '{}'", dump.display()).into()];
-        spec.cwd = Some(dir.path().to_path_buf());
-        spec.output = None;
-        let mut launched = Launcher.launch(&spec).unwrap();
-        launched.child.wait().unwrap();
-        let text = std::fs::read_to_string(&dump).unwrap();
-        let mut env = horch_core::runtime::MapEnv::new(dir.path().to_str().unwrap())
-            .with_exe("/opt/horch/bin/horch");
-        for line in text.lines() {
-            if let Some((k, v)) = line.split_once('=') {
-                if k.starts_with("HORCH_") || k.starts_with("HERDR_") {
-                    env = env.with(k, v);
-                }
-            }
-        }
-        let ctx = RuntimeContext::from_env(&env).unwrap();
-        assert_eq!(ctx.herdr.workspace.as_ref().map(|w| w.as_str()), Some("w0"));
-        assert!(text.contains(&format!("{CLAIM_TARGET_ENV}=T1")), "{text}");
-        assert!(text.contains(&format!("{ADOPT_WORKER_ENV}=W2")), "{text}");
     }
 
     /// TRF-43: the worktree steward's work is a one-off ledger task, and its
