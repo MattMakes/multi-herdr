@@ -543,6 +543,37 @@ fn light_profile_runs_check_and_complexity_sweep_then_done() {
 }
 
 #[test]
+fn passed_task_gives_its_attempt_the_outcome_verified() {
+    let mut w = World::new(VerifyProfile::Light);
+    let t = w.task(ReviewMode::Light);
+    // The agent exits after its result: rung 5 ends the attempt of the
+    // verifying task with `no_result` before the verifier decides.
+    w.conn()
+        .execute(
+            "UPDATE attempts SET state = 'ended', outcome = 'no_result', ended_at = ?2
+             WHERE task_id = ?1",
+            params![t, util::now()],
+        )
+        .unwrap();
+    assert!(w.pass().is_empty());
+    w.end_check(&t, true);
+    w.pass();
+    w.run_complexity(&t);
+    assert_eq!(w.pass(), [(t.clone(), Reviewed::Done)]);
+    assert_eq!(w.status(&t), "done");
+    let (state, outcome): (String, String) = w
+        .conn()
+        .query_row(
+            "SELECT state, outcome FROM attempts WHERE task_id = ?1
+             ORDER BY rowid DESC LIMIT 1",
+            [&t],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((state.as_str(), outcome.as_str()), ("ended", "verified"));
+}
+
+#[test]
 fn full_profile_runs_code_sweep_rounds() {
     let mut w = World::new(VerifyProfile::Full);
     let t = w.task(ReviewMode::Light);
