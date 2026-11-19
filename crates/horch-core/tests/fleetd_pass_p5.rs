@@ -566,18 +566,17 @@ fn pass_ingests_progress_result_and_heartbeat() {
 /// At its first pass fleetd makes the outbox of each live attempt that has
 /// none, with mode 0700, so an old worker writes files from then (Q3).
 /// RR-11 in exec mode: the wrapper ends a push attempt at a usage limit
-/// and writes `exit.json` with the outcome hint `quota`. When the pass sees
-/// the wrapper gone, rung 5 ends the attempt with `quota`, which burns no
-/// attempt, and not with `no_result`.
+/// and writes `exit.json` with the outcome hint `quota`. The agent exited
+/// before fleetd recorded its wrapper. The pass ends the attempt by rung 5
+/// at once, with `quota`, which burns no attempt, and not with `no_result`
+/// or `launch_failed`.
 #[test]
 fn exit_with_the_quota_hint_ends_the_attempt_with_quota() {
     let mut w = world();
-    let wrapper = Proc::sleep();
-    let (task, attempt) = w.claimed_task("q", Some(wrapper.recorded()));
+    let (task, attempt) = w.claimed_task("q", None);
     w.conn
         .execute("UPDATE attempts SET via = 'push' WHERE id = ?1", [&attempt])
         .unwrap();
-    drop(wrapper);
     let exit = ExitFile {
         task: task.clone(),
         attempt: short(&attempt).into(),
@@ -607,6 +606,16 @@ fn exit_with_the_quota_hint_ends_the_attempt_with_quota() {
         .unwrap();
     assert_eq!(state, "ended");
     assert_eq!(outcome.as_deref(), Some("quota"));
+    let worker: String = w
+        .conn
+        .query_row(
+            "SELECT w.status FROM workers w JOIN attempts a ON a.worker_id = w.worker_id
+             WHERE a.id = ?1",
+            [&attempt],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(worker, "incomplete");
 }
 
 #[test]

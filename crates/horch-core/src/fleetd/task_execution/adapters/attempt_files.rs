@@ -105,6 +105,9 @@ pub struct WrapperRead {
 pub struct Report {
     /// The attempts whose heartbeat was used.
     pub checkins: Vec<String>,
+    /// The push attempts whose `exit.json` this ingest recorded with their
+    /// worker row left live: the pass ends each by rung 5.
+    pub exited: Vec<String>,
     /// The wrapper of each used heartbeat that passed the PID check, by
     /// attempt. The pass records it on the attempt row at `launching ->
     /// live`.
@@ -425,12 +428,14 @@ impl Ingest<'_> {
     }
 
     /// Settle the worker of attempt `id` with the new `exit`, and end its
-    /// session record. A live push attempt with a recorded wrapper keeps
-    /// its worker row: the pass ends both by rung 5 when it sees the
-    /// wrapper gone, so an agent that was live never ends `launch_failed`.
+    /// session record. A push attempt keeps its worker row: the pass ends
+    /// both by rung 5 in this pass, so an agent that ran never ends
+    /// `launch_failed`, also when it exited before fleetd recorded its
+    /// wrapper.
     fn exit(&mut self, id: &str, worker: &str, exit: &ExitFile) -> Result<()> {
         let ended = if self.pass_ends(id)? {
             supervisor::exit_seen(self.tx, worker, exit.code, self.at)?;
+            self.report.exited.push(id.to_string());
             Ended::Clean
         } else {
             supervisor::settle_exit(self.tx, worker, exit.code, self.at)?
@@ -459,17 +464,13 @@ impl Ingest<'_> {
         Ok(())
     }
 
-    /// Whether attempt `id` is a push attempt whose end the pass sees by
-    /// the process of its wrapper: `live` with a recorded wrapper, or with
-    /// a wrapper that a heartbeat of this ingest named. The pass records
-    /// that wrapper at `launching -> live` after the ingest.
+    /// Whether attempt `id` is a push attempt that is not ended: the pass
+    /// ends it by rung 5 at its `exit.json`.
     fn pass_ends(&self, id: &str) -> Result<bool> {
-        let named = self.report.wrappers.contains_key(id);
         let found: bool = self.tx.query_row(
             "SELECT EXISTS (SELECT 1 FROM attempts WHERE id = ?1 AND via = 'push'
-               AND ((state = 'live' AND pid IS NOT NULL AND pid_start IS NOT NULL)
-                 OR (?2 AND state IN ('launching', 'live'))))",
-            params![id, named],
+               AND state IN ('launching', 'live'))",
+            [id],
             |r| r.get(0),
         )?;
         Ok(found)

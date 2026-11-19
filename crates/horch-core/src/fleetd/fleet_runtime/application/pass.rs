@@ -1276,6 +1276,7 @@ impl<'a> Pass<'a> {
             config: &self.settings.config,
             needs_you: self.ports.needs_you,
             sent: &read.sent,
+            exited: &wrappers.exited,
         };
         let mut doorbells = Vec::new();
         rules.run(&read, &mut stops, &mut doorbells)?;
@@ -1996,6 +1997,8 @@ struct Rules<'a> {
     needs_you: &'a dyn NeedsYouItems,
     /// The doorbell events that part 3 typed, of each live attempt.
     sent: &'a BTreeMap<String, BTreeSet<i64>>,
+    /// The push attempts whose `exit.json` this pass ingested.
+    exited: &'a [String],
 }
 
 impl Rules<'_> {
@@ -2114,7 +2117,8 @@ impl Rules<'_> {
     /// `no_result` (rung 6). An attempt whose worker row ended first keeps
     /// the path of Phase 1.
     fn finish_exited(&self, facts: &Facts) -> Result<Vec<Stop>> {
-        let rows = attempts_store::rows(self.tx, &util::host_name())?;
+        let mut rows = attempts_store::rows(self.tx, &util::host_name())?;
+        exited_by_file(self.tx, self.guard, self.exited, &mut rows)?;
         let mut stops = Vec::new();
         for mut reap in task::dead_attempts(&rows, facts) {
             let why = format!("the process of attempt {} is gone", reap.attempt);
@@ -2872,6 +2876,37 @@ fn dispatch_holds(
     }
 }
 
+/// Each attempt of `exited`, whose wrapper wrote `exit.json` in this
+/// pass, ends by rung 5 as an attempt whose process is gone: its agent
+/// ended, also when the pass never saw its wrapper. A `launching` one goes
+/// `live` first, and its task joins `rows`.
+fn exited_by_file(
+    tx: &Connection,
+    guard: Option<Generation>,
+    exited: &[String],
+    rows: &mut task::Rows,
+) -> Result<()> {
+    let mut moved = false;
+    for a in rows.attempts.iter_mut().filter(|a| exited.contains(&a.id)) {
+        if a.state == AttemptState::Launching {
+            commands::attempt_live(tx, guard, &a.id, None)?;
+            a.state = AttemptState::Live;
+            moved = true;
+        }
+        if a.state == AttemptState::Live {
+            a.process = None;
+            a.pane = None;
+        }
+    }
+    if moved {
+        let fresh = attempts_store::rows(tx, &util::host_name())?;
+        for (id, t) in fresh.tasks {
+            rows.tasks.entry(id).or_insert(t);
+        }
+    }
+    Ok(())
+}
+
 /// Whether task `task` is `verifying`.
 fn verifying(tx: &Connection, task: &str) -> Result<bool> {
     Ok(tasks::get(tx, task)?.status == TaskStatus::Verifying.as_str())
@@ -2915,6 +2950,9 @@ fn start_running(
             continue;
         } else if let Some(w) = wrapper {
             commands::attempt_wrapper(tx, id, w)?;
+        }
+        if wrapper.is_some() {
+            commands::push_worker_working(tx, guard, id)?;
         }
         if tasks::get(tx, &task_id)?.status != TaskStatus::Leased.as_str() {
             continue;
