@@ -205,6 +205,23 @@ impl World {
             ),
             show("needs_you", "SELECT key, kind, state, text FROM needs_you"),
             show(
+                "jobs",
+                "SELECT id, kind, subject, state, substr(IFNULL(result_json, '-'), 1, 300) \
+                 FROM jobs WHERE kind <> 'conformance' ORDER BY id",
+            ),
+            show(
+                "task facts",
+                "SELECT event_id, entity_id, kind, substr(IFNULL(cause, '-'), 1, 300), \
+                 substr(IFNULL(data_json, '-'), 1, 400) \
+                 FROM events WHERE entity = 'task' AND kind <> 'transition' ORDER BY event_id",
+            ),
+            show(
+                "attempt facts",
+                "SELECT event_id, entity_id, kind, IFNULL(from_state, '-'), \
+                 IFNULL(to_state, '-'), substr(IFNULL(cause, '-'), 1, 200) \
+                 FROM events WHERE entity = 'attempt' ORDER BY event_id",
+            ),
+            show(
                 "ideas",
                 "SELECT id, state, IFNULL(plan_sha256, '-') FROM ideas",
             ),
