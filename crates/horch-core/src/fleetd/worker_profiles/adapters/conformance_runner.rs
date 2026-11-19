@@ -64,8 +64,11 @@ const ROLE: &str = "conformance";
 
 /// The fixed reference profile of `cli`: a sandboxed worker in exec mode,
 /// with the model, the effort and the permission mode of the generic worker
-/// of the CLI. The production `conformance` job runs the suite with it, and
-/// the hash of the adapter renders it (MAP.md of fleetd-p7, Q9).
+/// of the CLI. The Claude Code and Codex workers also have the skills of
+/// the implementation phase, as `opus` and `codex-sol` have; Antigravity
+/// gets no skills (`teammates/antigravity.md`). The production
+/// `conformance` job runs the suite with it, and the hash of the adapter
+/// renders it (MAP.md of fleetd-p7, Q9).
 pub fn reference_profile(cli: ExecCli) -> Teammate {
     let (name, agent, model) = match cli {
         ExecCli::Claude => ("conformance-claude", HarnessKind::Claude, "opus"),
@@ -90,6 +93,9 @@ pub fn reference_profile(cli: ExecCli) -> Teammate {
     let mut v = serde_json::to_value(&t).expect("a teammate serializes");
     v["mode"] = json!("exec");
     v["permission_mode"] = json!("auto");
+    if cli != ExecCli::Antigravity {
+        v["phase"] = json!("implementation");
+    }
     serde_json::from_value(v).expect("a teammate with mode exec deserializes")
 }
 
