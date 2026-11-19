@@ -128,10 +128,13 @@ impl World {
         git_ok(&h, &project, &["commit", "--quiet", "-m", "gates"]);
         git_ok(&h, &project, &["branch", FEATURE, "main"]);
         let task_id = seed(&h, max_attempts);
+        // The workspace has the name of the project folder as its label,
+        // as `horch fleet` names it: a push launch splits its first pane.
+        let label = project.file_name().unwrap().to_string_lossy().into_owned();
         let mut create = std::process::Command::new(h.bin.join("herdr"));
         h.seal(&mut create);
         let o = create
-            .args(["workspace", "create", "--label", name])
+            .args(["workspace", "create", "--label", &label])
             .output()
             .unwrap();
         assert!(o.status.success(), "{}", text(&o));
