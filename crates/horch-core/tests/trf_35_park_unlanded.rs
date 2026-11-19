@@ -18,7 +18,7 @@ use horch_core::taskledger::tasks::{self, NewTask, Wait};
 use horch_core::taskledger::testing;
 use horch_core::taskledger::triage::apply::{self, Env};
 use horch_core::taskledger::triage::{self, reply, Measure};
-use horch_core::taskledger::workers::{self, NewWorker};
+use horch_core::taskledger::workers::NewWorker;
 use i308_support::{commit, World};
 
 /// A run on `main` with T-1 and T-2 (blocked by T-1), and a worker that

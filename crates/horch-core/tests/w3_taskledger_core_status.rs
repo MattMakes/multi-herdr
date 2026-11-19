@@ -8,7 +8,7 @@ use horch_core::taskledger::runs::{self, NewRun, Run};
 use horch_core::taskledger::status;
 use horch_core::taskledger::tasks::{self, NewTask};
 use horch_core::taskledger::testing;
-use horch_core::taskledger::workers::{self, NewWorker};
+use horch_core::taskledger::workers::NewWorker;
 use horch_core::taskledger::Store;
 
 fn ledger() -> (tempfile::TempDir, Store, Run) {
