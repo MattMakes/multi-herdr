@@ -114,6 +114,14 @@ fn push_env(h: &mut Harness, scenario: &str) {
     let root = h.fleet_root();
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(root.join("fleet.toml"), "pass_period_s = 1\n").unwrap();
+    // The gates of the project: fleetd holds each dispatch of a project
+    // with no fast gate. The run branch gets them from main.
+    project_file(
+        h,
+        "fleet.toml",
+        "[gates]\nfast = \"true\"\nfull = \"true\"\n",
+    );
+    git_commit_all(h, "the gates of the project");
 }
 
 /// 1 queued task of `run` from `ticket` for `primary`, as `horch ledger
