@@ -363,9 +363,9 @@ fn global_only_mcp_server_is_not_listed() {
 #[test]
 fn exact_mcp_set_fails_when_the_profile_server_is_not_listed() {
     let m = Machine::new();
-    // The Codex launch renders no MCP server of the profile.
+    // The Antigravity launch renders no MCP server of the profile.
     let r = m.check(
-        &profile(HarnessKind::Codex),
+        &profile(HarnessKind::Antigravity),
         "conformance",
         Check::ExactMcpSet,
     );
@@ -491,7 +491,8 @@ fn exit_without_result_triggers_the_stop_gate() {
 #[test]
 fn stop_gate_fails_when_the_agent_leaves_a_result() {
     let m = Machine::new();
-    let r = m.check(&claude(), "conformance", Check::StopGate);
+    // The agent does not obey the prompt of the check.
+    let r = m.check(&claude(), "conformance,ignore_stop_gate", Check::StopGate);
     assert_verdict(&r, Check::StopGate, Verdict::Fail);
     assert!(r.evidence.contains("result"), "{r:?}");
 }

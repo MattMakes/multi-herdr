@@ -288,10 +288,13 @@ fn codex_config(argv: &[String]) -> Seen {
         .filter_map(|(k, _)| k.strip_prefix("mcp_servers.")?.split('.').next())
         .map(str::to_owned)
         .collect();
-    mcp_servers.extend(toml.lines().filter_map(|l| {
-        let name = l.trim().strip_prefix("[mcp_servers.")?;
-        Some(name.split(['.', ']']).next()?.to_owned())
-    }));
+    // `-c mcp_servers={}` empties the table of `config.toml`.
+    if !pairs.iter().any(|(k, _)| k == "mcp_servers") {
+        mcp_servers.extend(toml.lines().filter_map(|l| {
+            let name = l.trim().strip_prefix("[mcp_servers.")?;
+            Some(name.split(['.', ']']).next()?.to_owned())
+        }));
+    }
     let limit = "model_auto_compact_token_limit";
     let compaction = pairs
         .iter()
