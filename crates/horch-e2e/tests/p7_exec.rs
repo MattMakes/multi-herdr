@@ -131,18 +131,29 @@ struct World {
 impl World {
     fn new(name: &str, spec: &Spec<'_>) -> World {
         let mut h = Harness::new(name).with_git();
-        // The ledger is in the state folder and the fleet root is next to
-        // it, with no FLEET_ROOT: a pane gets only HORCH_STATE_DIR and
-        // HORCH_DATA_DIR, and its worker finds the same paths there.
-        let fleet = h.state.join("fleet");
+        // The ledger and the fleet root are where a real fleet has them, in
+        // `~/.horch`, outside the state folder. The spawn of each attempt
+        // gets both paths from fleetd (T-890). The conformance runs of fleetd
+        // put their throwaway folders under the fleet root: inside the state
+        // folder, which a Codex worker can write, "Sandbox boundary" fails
+        // and marks codex-sol unhealthy.
+        let fleet = h.home.join(".horch").join("fleet");
         std::fs::create_dir_all(&fleet).unwrap();
         std::fs::write(fleet.join("fleet.toml"), FLEET_TOML).unwrap();
+        // agy is unhealthy by design: it has no sandbox (A37), so its
+        // conformance run marks each Antigravity profile unhealthy, and a
+        // real fleetd gives agy no dispatch. These tests prove the exec
+        // adapter of agy only. So the world has no `agy` for the scan of the
+        // CLI binaries, and fleetd runs no agy conformance here. The
+        // attempts use the fake of `Cli::bin_env`.
+        std::fs::remove_file(h.bin.join("agy")).unwrap();
         // The fake agent runs `horch result` and `horch ask` from PATH.
         std::os::unix::fs::symlink(Harness::horch_bin(), h.bin.join("horch")).unwrap();
         h.set(
             "HORCH_LEDGER_DB",
-            h.state.join("ledger.sqlite3").to_string_lossy(),
+            h.home.join(".horch/ledger.sqlite3").to_string_lossy(),
         );
+        h.set("FLEET_ROOT", fleet.to_string_lossy());
         h.set("HORCH_NO_WAKE", "1");
         h.set("HORCH_NO_WATCHDOG", "1");
         h.set(

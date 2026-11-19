@@ -1244,14 +1244,18 @@ impl<'a> Pass<'a> {
         // the job observations: a result of this pass wins over an expiry
         // of this pass ("Order inside 1 pass").
         let guard = Some(self.settings.generation);
-        outbox_ingest::ingest(&tx, guard, &read.outboxes)?;
-        let limit_failed = context_limits(&tx, guard, &self.settings, &read.p7)?;
         let at = util::now();
         let wrappers = attempt_files::ingest(&tx, guard, &read.wrappers, clock, &at, &OsProcesses)?;
         start_running(&tx, guard, clock, &wrappers, |persona| {
             let roster = read.pools.as_ref().map(|p| &p.roster);
             seconds(profile_of(roster, persona).liveness.lease_s)
         })?;
+        // After the first heartbeat of this pass, so the task is `running`:
+        // a result, a question or a context limit that the agent and its
+        // wrapper wrote before this pass saw the attempt `live` acts here,
+        // before rung 5 can end the attempt with `no_result`.
+        outbox_ingest::ingest(&tx, guard, &read.outboxes)?;
+        let limit_failed = context_limits(&tx, guard, &self.settings, &read.p7)?;
         jobs::ingest_results(&self.job_ctx(), &tx, &read.job_files)?;
         token_item(&tx, &self.settings.fleet_root, read.token_fault.as_deref())?;
         let launches = self.observe_intents(&tx, &read.launching, clock)?;
@@ -2131,6 +2135,7 @@ impl Rules<'_> {
     /// the path of Phase 1.
     fn finish_exited(&self, facts: &Facts) -> Result<Vec<Stop>> {
         let mut rows = attempts_store::rows(self.tx, &util::host_name())?;
+        keep_unproven(&mut rows, self.exited);
         exited_by_file(self.tx, self.guard, self.exited, &mut rows)?;
         let mut stops = Vec::new();
         for mut reap in task::dead_attempts(&rows, facts) {
@@ -2900,6 +2905,20 @@ fn dispatch_holds(
         projects,
         ..DispatchHolds::default()
     }
+}
+
+/// Rung 5 does not judge a `live` attempt of a task that names no process
+/// and no pane: its wrapper wrote a heartbeat that proves no agent, so the
+/// pass cannot see whether the wrapper lives. Its `exit.json` ends it
+/// ([`exited_by_file`]), else the expiry of its lease does.
+fn keep_unproven(rows: &mut task::Rows, exited: &[String]) {
+    rows.attempts.retain(|a| {
+        let unproven = a.state == AttemptState::Live
+            && a.task_id.is_some()
+            && a.process.is_none()
+            && a.pane.is_none();
+        !unproven || exited.contains(&a.id)
+    });
 }
 
 /// Each attempt of `exited`, whose wrapper wrote `exit.json` in this
@@ -4076,8 +4095,9 @@ const IDEA_FILE_MODE: u32 = 0o600;
 // `docs/tickets/fleetd-p7/30-pass-wiring.md`. Part 1 scans the CLI
 // binaries within the scan budget from its cursor, and reads the worktree
 // at the end of each attempt that the wrapper ended at the context limit.
-// Part 2 ingests `context_limit` before the wrapper files settle the
-// worker (`finish_exited`), then, after the job observations, marks the
+// Part 2 ingests `context_limit` after the first heartbeat of the pass
+// moves a task to `running`, and before rung 5 ends an attempt whose
+// process is gone (`finish_exited`), then, after the job observations, marks the
 // health of the profiles after each ended `conformance` run, adds the
 // drift idea of a failed run, and queues the docs jobs (`queue_due_jobs`).
 // Part 3 starts the queued jobs with the other job starts of the pass, and
@@ -4298,13 +4318,13 @@ impl Pass<'_> {
     }
 }
 
-/// Part 2 of Phase 7, before the wrapper files settle the worker: each
+/// Part 2 of Phase 7, after the wrapper files and before rung 5: each
 /// attempt that the wrapper ended at the context limit ends with
 /// `context_limit`, burns no attempt, and its task goes to `ready` with a
 /// handoff file, or holds at a loop (FM-20, MAP.md of fleetd-p7, Q2).
 ///
 /// A failure keeps the rows of its attempt unchanged, and gives its line:
-/// the wrapper files then settle the worker as an exit with no result.
+/// rung 5 then ends the attempt as an exit with no result.
 fn context_limits(
     tx: &Transaction<'_>,
     guard: Option<Generation>,

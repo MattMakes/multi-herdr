@@ -1,8 +1,0 @@
-# Red tests of crates/horch-e2e/tests/p7_exec.rs.
-# Owner: T-895.
-# The usage limit ends A1 with quota (T-892), but fleetd writes the restart
-# attempt on the fallback with via=claim and starts it by the old claim
-# spawn. That attempt has no task.yaml and ends timed_out in launching, so
-# the exec run of A2 on Codex never starts.
-exec_usage_limit_restarts_on_the_fallback_and_burns_no_attempt | 7 | the exec run of A2
-new_attempt_gets_the_256000_window | 7 | the exec run of A2
