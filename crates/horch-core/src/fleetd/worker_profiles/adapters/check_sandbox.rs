@@ -209,7 +209,7 @@ impl WorkerSandboxes {
             connect: vec![paths.channel],
             write: vec![paths.run],
         };
-        let mut cmd = std::process::Command::new(horch_platform::shell::CHECK_SHELL);
+        let mut cmd = horch_platform::start::command(horch_platform::shell::CHECK_SHELL);
         cmd.arg("-c").arg(check);
         let cmd = sandboxed(cmd, &writable, &denied).ok()?;
         Some(LaunchSpec {
