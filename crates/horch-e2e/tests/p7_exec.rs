@@ -88,8 +88,9 @@ impl Cli {
 /// The script of the binary of 1 CLI. `$1` of a warm call is `warm`. The
 /// exec run of the attempt `A<n>` gets `runs[n - 1]`, and the last entry
 /// when `runs` is shorter. The script reads `n` from the path of the
-/// `START.md` of the attempt: it writes no file, so the sandbox of the CLI
-/// refuses nothing.
+/// `START.md` of the attempt with `sh` builtins only: it writes no file and
+/// needs no other program, so neither the sandbox nor the `PATH` of the CLI
+/// changes it.
 fn cli_script(fake: &std::path::Path, runs: &[&str]) -> String {
     let mut pick = String::new();
     for (i, s) in runs.iter().enumerate() {
@@ -102,7 +103,9 @@ fn cli_script(fake: &std::path::Path, runs: &[&str]) -> String {
          case \"$*\" in\n\
          */conformance/*) s=conformance ;;\n\
          */attempts/A*/inbox/START.md*)\n\
-         n=$(printf '%s\\n' \"$@\" | sed -n 's|.*/attempts/A\\([0-9]*\\)/inbox/START.md.*|\\1|p' | head -n 1)\n\
+         n=\n\
+         for a in \"$@\"; do case \"$a\" in */attempts/A*/inbox/START.md)\n\
+         t=${{a%/inbox/START.md}}; n=${{t##*/attempts/A}} ;; esac; done\n\
          case \"$n\" in\n{pick}  *) s='{last}' ;;\n esac ;;\n\
          *) s=default ;;\n\
          esac\n\
@@ -288,6 +291,16 @@ impl World {
         )
     }
 
+    /// `<attempt> <state>` of each attempt of the task, oldest first. The
+    /// outcome of an attempt that did the task is not checked: the design
+    /// names no outcome word for it.
+    fn states(&self) -> Vec<String> {
+        self.rows(
+            "SELECT substr(id, instr(id, '/') + 1) || ' ' || state
+             FROM attempts WHERE task_id IS NOT NULL ORDER BY rowid",
+        )
+    }
+
     /// The exec runs of the attempts by `cli`: each call of its fake with
     /// a `START.md` that is not a conformance run, oldest first.
     fn exec_runs(&self, cli: Cli) -> Vec<Value> {
@@ -420,7 +433,7 @@ fn task_runs_to_done(name: &str, persona: &str, cli: Cli) {
         "{}",
         runs[0]
     );
-    assert_eq!(w.attempts(), ["A1 ended done"], "{}", w.diagnostics());
+    assert_eq!(w.states(), ["A1 ended"], "{}", w.diagnostics());
     assert_eq!(w.used(), "1", "{}", w.diagnostics());
 }
 
@@ -474,12 +487,8 @@ fn exec_usage_limit_restarts_on_the_fallback_and_burns_no_attempt() {
             assert_eq!(w.wait_ended(1), "quota", "{}", w.diagnostics());
             w.assert_result_written(Cli::Codex, 2);
             w.wait_status("done");
-            assert_eq!(
-                w.attempts(),
-                ["A1 ended quota", "A2 ended done"],
-                "{}",
-                w.diagnostics()
-            );
+            assert_eq!(w.states(), ["A1 ended", "A2 ended"], "{}", w.diagnostics());
+            assert_eq!(w.attempts()[0], "A1 ended quota", "{}", w.diagnostics());
             assert_eq!(w.exec_runs(Cli::Claude).len(), 1, "{}", w.diagnostics());
             assert_eq!(w.exec_runs(Cli::Codex).len(), 1, "{}", w.diagnostics());
             // Only the attempt on the fallback counts.
@@ -554,9 +563,10 @@ fn agy_long_context_ends_with_context_limit_and_the_next_attempt_has_the_handoff
             assert_eq!(trees.len(), 1, "{trees:?}\n{}", w.diagnostics());
             w.assert_result_written(Cli::Agy, 2);
             w.wait_status("done");
+            assert_eq!(w.states(), ["A1 ended", "A2 ended"], "{}", w.diagnostics());
             assert_eq!(
-                w.attempts(),
-                ["A1 ended context_limit", "A2 ended done"],
+                w.attempts()[0],
+                "A1 ended context_limit",
                 "{}",
                 w.diagnostics()
             );
