@@ -486,7 +486,10 @@ fn end_if_pane_closed_ends_only_a_vanished_pane() {
     // The pane is open: the record stays working.
     let (ws, pane) = one_pane();
     let tmp = tempfile::tempdir().unwrap();
-    let store = ExecutionStore::for_project(tmp.path(), "/work/alpha");
+    // A test of the store writes with the writer of fleetd (T-884).
+    let store = ExecutionStore::for_project(tmp.path(), "/work/alpha").with_writer(
+        std::sync::Arc::new(horch_core::taskledger::store::LedgerWriter::fleetd()),
+    );
     store.insert(working(&pane)).unwrap();
     assert!(!store.end_if_pane_closed("r1", &ws).unwrap());
     assert_eq!(store.get("r1").unwrap().status, "working");

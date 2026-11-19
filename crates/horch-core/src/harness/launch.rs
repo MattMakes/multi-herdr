@@ -2411,6 +2411,10 @@ mod tests {
             poll: Duration::from_millis(1),
         };
         let tmp = tempfile::tempdir().unwrap();
+        // The fleetd of the session records (T-884).
+        let _fleetd = crate::execution::store::test_serve(
+            &tmp.path().join(crate::execution::store::STATE_DB),
+        );
         let ledger = SessionLedger::for_project(tmp.path(), "/proj");
         ledger
             .add(crate::execution::records::NewRecord {

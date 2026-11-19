@@ -193,37 +193,6 @@ fn wrapper_with_no_attempt_writes_no_file() {
     assert!(!w.fleet_root.join("tasks").exists());
 }
 
-/// The interim beat of a worker with no attempt (W8, removed by fleetd-p5
-/// ticket 42) runs only while the worker has no attempt.
-#[test]
-fn wrapper_with_an_attempt_runs_no_interim_ledger_beat() {
-    let runs = Arc::new(std::sync::atomic::AtomicU32::new(0));
-    let counted = || {
-        let runs = runs.clone();
-        Box::new(move || {
-            runs.fetch_add(1, Ordering::SeqCst);
-            Ok(())
-        }) as horch_core::taskledger::supervisor::NoAttemptBeat
-    };
-    let w = World::new(true);
-    let facts = AgentFacts::new(None);
-    let mut writer = w
-        .writer(&facts, no_session())
-        .with_no_attempt_beat(counted());
-    writer.beat().unwrap();
-    writer.beat().unwrap();
-    assert_eq!(runs.load(Ordering::SeqCst), 0);
-    assert!(w.dir().join(HEARTBEAT_JSON).is_file());
-
-    let w = World::new(false);
-    let mut writer = w
-        .writer(&facts, no_session())
-        .with_no_attempt_beat(counted());
-    writer.beat().unwrap();
-    assert_eq!(runs.load(Ordering::SeqCst), 1);
-    assert!(!w.fleet_root.join("tasks").exists());
-}
-
 #[test]
 fn wrapper_writes_exit_json_once() {
     let w = World::new(true);

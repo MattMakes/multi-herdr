@@ -15,6 +15,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use horch_core::fleetd::fleet_runtime::adapters::jobs_store;
 use horch_core::fleetd::fleet_runtime::application::jobs::JobCtx;
 use horch_core::fleetd::fleet_runtime::application::ledger::Cause;
 use horch_core::fleetd::fleet_runtime::domain::clock::FleetSeconds;
@@ -26,6 +27,10 @@ use horch_core::fleetd::integration::adapters::sqlite::{self as rows, NewFeature
 use horch_core::fleetd::integration::application::features::{self, Features};
 use horch_core::fleetd::integration::application::landing;
 use horch_core::fleetd::worktree_custody::adapters::git::CliWorktreeGit;
+use horch_core::fleetd::worktree_custody::application::create::{self, Observed};
+use horch_core::fleetd::worktree_custody::application::gate_tree::{
+    self, GateTree, GateTreeRequest,
+};
 use horch_core::taskledger::model::Actor;
 use horch_core::taskledger::runs::{self, NewRun, Run};
 use horch_core::taskledger::tasks::{self, NewTask};
@@ -132,10 +137,60 @@ fn world() -> World {
         git,
     };
     w.fetched_main();
+    w.gate_tree();
     w
 }
 
 impl World {
+    /// The gate tree of [`FEATURE`], so a full gate can run (Q18): its
+    /// reserved row, the folder that its `worktree_add` job makes, and the
+    /// observation of the passed job, as a pass observes it.
+    fn gate_tree(&self) {
+        let repo = PathBuf::from(&self.run.project_root);
+        let tip = self.tip(RUN_BRANCH);
+        let req = GateTreeRequest {
+            feature_id: FEATURE,
+            run_id: &self.run.run_id,
+            repo: &repo,
+            base: RUN_BRANCH,
+            tip: &tip,
+        };
+        let ctx = JobCtx {
+            guard: None,
+            config: &self.config,
+            needs_you: &NeedsYouList,
+        };
+        let tx = self.conn.unchecked_transaction().unwrap();
+        let job = match gate_tree::reserve(&ctx, &tx, &req, FleetSeconds(0)).unwrap() {
+            GateTree::Reserved { job, .. } => job,
+            other => panic!("expected a reserved gate tree, got {other:?}"),
+        };
+        tx.commit().unwrap();
+        let path = gate_tree::path(&repo, FEATURE);
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "--detach",
+                &path.to_string_lossy(),
+                &tip,
+            ],
+        );
+        self.conn
+            .execute(
+                "UPDATE jobs SET state = 'passed', result_json = ?2 WHERE id = ?1",
+                params![job, r#"{"passed":true,"verdict":true,"text":"made"}"#],
+            )
+            .unwrap();
+        let ended = jobs_store::get(&self.conn, job).unwrap().unwrap();
+        let tx = self.conn.unchecked_transaction().unwrap();
+        let seen = create::observe(&ctx, &tx, &ended).unwrap();
+        tx.commit().unwrap();
+        assert!(matches!(seen, Observed::Created(_)), "{seen:?}");
+    }
+
     /// 1 pass of the feature state machine.
     fn follow(&self) {
         let ctx = JobCtx {

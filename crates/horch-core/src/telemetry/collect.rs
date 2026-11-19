@@ -1688,6 +1688,10 @@ mod trf_45_tests {
     fn trf_45_read_ledgers_and_the_collector_read_the_session_records() {
         let tmp = tempfile::tempdir().unwrap();
         let state = tmp.path().join("state");
+        std::fs::create_dir_all(&state).unwrap();
+        // The fleetd of the session records (T-884).
+        let _fleetd =
+            crate::execution::store::test_serve(&state.join(crate::execution::store::STATE_DB));
         let ledger = SessionLedger::for_project(&state, "/repo");
         ledger
             .add(NewRecord {

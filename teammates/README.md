@@ -20,7 +20,7 @@ choose from** — there is no registry to update and nothing to recompile.
 
 ## Rules
 
-- **Filename is the id.** `opus.md` → `horch spawn opus`. `name:` in the
+- **Filename is the id.** `opus.md` → the persona `opus`. `name:` in the
   frontmatter must match, and a mismatch is a load-time error rather than a
   quietly-wrong roster.
 - **A leading `_` means "not parsed."** `_template.md` and `_base/` are not
@@ -36,11 +36,11 @@ choose from** — there is no registry to update and nothing to recompile.
 - **`hidden: true` means "loaded, but not offered."** The teammate never
   appears in the roster. `smoke.md` uses this, so `horch smoke fleet` keeps
   working without costing the orchestrator a roster line for a fake agent; the
-  two orchestrators use it because they are launched into a pane, never spawned
-  into one. An orchestrator starts with no task, so both orchestrator
-  briefings end with "Acknowledge and await further instruction."
+  two orchestrator personas use it because fleetd never launches them. An
+  orchestrator persona starts with no task, so both orchestrator briefings
+  end with "Acknowledge and await further instruction."
 - **The top tier is reserved for the orchestrator and the creative council.**
-  `fable` and `gpt-6-astra` are refused by `horch spawn` for every worker but
+  `fable` and `gpt-6-astra` are refused by the launch of every worker but
   the 2 seats `fable-creative` (Fable) and `astra-creative` (Astra), which
   start only when named: never as a fallback or a router's choice. The seats
   are a list in the code (`TOP_TIER_SEATS`), so a file cannot add one. The
@@ -120,7 +120,7 @@ plugins while preserving other operator settings and their declared MCP tools.
 
 Researcher, product-lead and designer default to `research`; staff-engineer and
 orchestrators to `plan`; reviewers and QA to `validation`; other workers to
-`implementation`. Override a task with `horch spawn opus --phase research`.
+`implementation`.
 Resume preserves the recorded phase unless `--phase` overrides it; old records
 without a phase use the current teammate default. A phase selects guidance,
 not permission mode or tool access.
@@ -160,7 +160,7 @@ plugin directories.
 Eleven `ue-*` specialists staff Unreal Engine work. Each sets
 `offer_when: ["*.uproject"]`, so the fleet orchestrator is offered them only
 when the project has a `.uproject` file at the top level or one level down.
-`horch spawn ue-<name>` still works in any project.
+A ticket whose **Persona:** line names `ue-<name>` still works in any project.
 
 | teammate | wave | phase | agent, model, effort | use for |
 |---|---|---|---|---|
@@ -221,8 +221,8 @@ Nineteen `godot-*` specialists staff Godot 4 work. Each sets
 only when the project has a `project.godot` file at the top level or one
 level down. Each also sets `requires: [godot]`, and `horch doctor` then looks
 for the engine (`GODOT_PATH`, then `godot` on PATH, then the macOS app
-bundle) and checks that `--version` is 4.3 or later. `horch spawn godot-<name>`
-still works in any project.
+bundle) and checks that `--version` is 4.3 or later. A ticket whose
+**Persona:** line names `godot-<name>` still works in any project.
 
 | teammate | wave | phase | agent, model, effort | use for |
 |---|---|---|---|---|
@@ -418,7 +418,7 @@ On a host without the export, `horch teammates --check` prints a `warning:`
 line for each missing skill and still passes. The launch skips the skill,
 and the worker's briefing says "Skipped: operator skill <name> is not
 installed on this host". A skill that changes or disappears between
-`horch spawn` and the worker's start fails the launch, because the worker
+the dispatch and the worker's start fails the launch, because the worker
 must run the skill digests that the ledger recorded.
 
 ## The effort-matrix personas
@@ -454,9 +454,9 @@ counterpart of `staff-engineer` (deep plans, high) and `architect-reviewer`
 
 `sonnet`, `opus`, `codex-sol`, `codex-network`, `codex-terra`, `codex-luna`, `opencode-ultra`,
 `opencode-pickle`, `opencode-lightning`, `pi` and `prime` are the fallbacks:
-what the orchestrator spawns when no specialist's `brief_description` matches
-the work. They are named after the tier or the harness on purpose, so
-`horch spawn opus`, the ledger's `tier` field, and the roster in the
+what a ticket names when no specialist's `brief_description` matches the
+work. They are named after the tier or the harness on purpose, so the
+**Persona:** line `opus`, the ledger's `tier` field, and the roster in the
 orchestrator briefing all keep meaning the same thing. There is no `fable` and
 no `astra` generic: those tiers belong to the orchestrator.
 
@@ -673,30 +673,29 @@ wall-clock time. Known Qwen3.8 issues (2026-09):
 
 ## The two orchestrators
 
-`orchestrator.md` (Claude Code) and `orchestrator-codex.md` (Codex) back the
-four fleet flavors: `horch fleet opus` (the default) and `fable` launch the
-first, `astra` and `sol` the second. The flavor passes the model as the pane's
-`--model`, which wins over the file's own `model:`; the file's value is only
-the fallback. They share one briefing — `_base/fleet-orchestrator.md` — and
-each file is only the paragraph about writing for the workers below it. Change
-how orchestration works in the base; change how one agent's orchestrator talks
-in its file.
+`orchestrator.md` (Claude Code) and `orchestrator-codex.md` (Codex) are the
+orchestrator persona: a chat with the operator, with no fleet duties. Since
+Phase 6 of fleetd it does not claim runs, spawn workers or get wakes: fleetd
+dispatches each task, and 1 sub-orchestrator (`idea-lead`) runs each feature.
+`horch fleet` starts no orchestrator pane. They share one briefing,
+`_base/fleet-orchestrator.md`, and each file is only the paragraph about
+writing tickets for the workers. Change the persona in the base; change how
+one agent's orchestrator talks in its file.
 
-Both also carry `skills: [orchestrate]`. That is the fleet playbook — how to
-decompose work, the plan-file template, how to choose a teammate, how to verify
-a `DONE:`, how to wrap up. It is attached **by name, not by phase**: adding it
-to the `plan` catalog in `crates/horch-core/src/skills.rs` would hand it to
-`staff-engineer` and to anything else spawned with `--phase plan`, none of
-which directs a fleet. A skill that arrives where it does not apply is context
-spent to no effect, and an instruction a worker may act on. `orchestrate` is
-own text; it was reconciled from the retired external `herdr-orchestrator`
-and `herdr-worker` skills against the real CLI, and every command in it is one
-`horch --help` prints.
+Both also carry `skills: [orchestrate]`. That is the operator's playbook: the
+idea commands, the old flow and its new commands, how to decompose work, the
+ticket template, how to choose a teammate and how to check finished work. It
+is attached **by name, not by phase**: adding it to the `plan` catalog in
+`crates/horch-core/src/skills.rs` would hand it to `staff-engineer` and to
+anything else with `--phase plan`, none of which directs a fleet. A skill
+that arrives where it does not apply is context spent to no effect, and an
+instruction a worker may act on. `orchestrate` is own text, and every command
+in it is one `horch --help` prints.
 
 The Codex one also needs `_base/codex-orchestrator-execpolicy.md`. Codex refuses
 any command outside its sandbox that its rules file does not name, and the
-worker rules allow `note` and `done` — nothing an orchestrator runs. Without the
-orchestrator rules that pane comes up able to think and unable to spawn.
+worker rules allow `note` and `done`, nothing the orchestrator persona runs.
+Without the orchestrator rules that pane comes up unable to read the fleet.
 `horch teammates --check` fails a rule that no briefing asks for, so the
 allowlist cannot quietly outgrow what the prompt actually uses.
 

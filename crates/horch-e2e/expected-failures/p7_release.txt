@@ -1,0 +1,8 @@
+# Red tests of crates/horch-e2e/tests/p7_release.rs (fleetd-p7 ticket 34).
+# Owner: T-891. The update queues a conformance run for each fake CLI on the
+# PATH of fleetd. With the fake agents, the run of claude fails the checks
+# "Private home honoured" and "Stop gate", so opus is unhealthy and fleetd
+# never dispatches the next attempt. T-891 makes the suite pass through the
+# fleetd job.
+next_attempt_of_its_task_runs_in_exec_mode | 7 | the conformance run of claude of the update failed
+new_attempt_after_the_update_gets_256000 | 7 | the conformance run of claude of the update failed

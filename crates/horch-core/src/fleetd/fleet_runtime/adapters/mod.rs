@@ -18,5 +18,6 @@ pub mod request_wire;
 pub mod requests_store;
 pub mod scans;
 pub mod sqlite;
+pub mod test_fleetd;
 pub mod token_file;
 pub mod watchdog_duties;

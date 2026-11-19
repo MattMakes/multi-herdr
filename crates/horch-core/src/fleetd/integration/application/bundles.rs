@@ -50,6 +50,7 @@ use crate::fleetd::integration::domain::bundle::{
     self as rules, BuildFact, BundleState, DropCause, Limits, Step,
 };
 use crate::fleetd::integration::domain::task_branch::{self, LandingState};
+use crate::fleetd::worktree_custody::application::gate_tree::{self, GateTreeRequest};
 use crate::taskledger::model::Actor;
 use crate::taskledger::runs;
 
@@ -86,10 +87,11 @@ fn by_fleetd(text: &str) -> Cause<'_> {
     }
 }
 
-/// The repository and the branch of a feature.
+/// The repository, the branch and the run of a feature.
 struct Target {
     repo: PathBuf,
     branch: String,
+    run_id: String,
 }
 
 impl Target {
@@ -125,7 +127,62 @@ pub fn advance_in(
             step(b, tx, clock, id)?;
         }
     }
+    late_candidates(b.jobs, tx, bundles)?;
     overdue_items(b.jobs, tx, clock)
+}
+
+/// The build job of a bundle is a separate process: a pass can drop the
+/// bundle while the job runs, and the job can still write the candidate
+/// ref after the drop. The ids of the dropped bundles whose build job has
+/// not ended, or passed with a candidate that the row does not record yet.
+/// A pass follows them, so [`advance_in`] records each such candidate.
+pub fn late_builds(conn: &Connection) -> Result<Vec<i64>> {
+    let mut ids = Vec::new();
+    for (id, job) in rows::dropped_without_candidate(conn)? {
+        let job = jobs_store::get(conn, job)?;
+        let late = job.as_ref().is_some_and(|j| j.kind == Kind::BundleBuild)
+            && matches!(
+                build_fact(job.as_ref()),
+                BuildFact::Pending | BuildFact::Built { .. }
+            );
+        if late {
+            ids.push(id);
+        }
+    }
+    Ok(ids)
+}
+
+/// Record the candidate of the passed build job of each dropped bundle of
+/// [`late_builds`] on its row, so the deletion of candidate refs deletes
+/// the ref. A recorded bundle has its `candidate_tip`, so it is recorded 1
+/// time.
+fn late_candidates(ctx: &JobCtx<'_>, tx: &Connection, bundles: Option<&[i64]>) -> Result<()> {
+    for id in late_builds(tx)? {
+        if bundles.is_some_and(|ids| !ids.contains(&id)) {
+            continue;
+        }
+        let bundle = rows::bundle(tx, id)?.with_context(|| format!("no bundle {id}"))?;
+        let job = match bundle.job_id {
+            Some(job) => jobs_store::get(tx, job)?,
+            None => None,
+        };
+        let BuildFact::Built {
+            candidate_ref,
+            candidate_tip,
+        } = build_fact(job.as_ref())
+        else {
+            continue;
+        };
+        let why = "its build job wrote the candidate after the drop";
+        let facts = [
+            BundleFact::CandidateRef(Some(&candidate_ref)),
+            BundleFact::CandidateTip(&candidate_tip),
+        ];
+        for fact in facts {
+            rows::set_bundle_fact(tx, ctx.guard, id, fact, by_fleetd(why))?;
+        }
+    }
+    Ok(())
 }
 
 /// The repository and the branch of `feature_id`, or `None` when the
@@ -137,6 +194,7 @@ fn target(tx: &Connection, feature_id: &str) -> Result<Option<Target>> {
     Ok(runs::feature_run(tx, feature_id)?.map(|run| Target {
         repo: PathBuf::from(run.project_root),
         branch,
+        run_id: run.run_id,
     }))
 }
 
@@ -365,6 +423,16 @@ fn gate(
         .candidate_tip
         .as_deref()
         .with_context(|| format!("bundle {} is gating with no candidate tip", bundle.id))?;
+    let tree = GateTreeRequest {
+        feature_id: &bundle.feature_id,
+        run_id: &t.run_id,
+        repo: &t.repo,
+        base: &t.branch,
+        tip: &bundle.base_tip,
+    };
+    if !gate_tree::ready(ctx, tx, &tree, clock)? {
+        return Ok(());
+    }
     let subject = bundle.id.to_string();
     let req = GateRequest {
         kind: Kind::FastGate,

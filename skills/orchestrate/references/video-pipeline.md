@@ -40,8 +40,8 @@ Write each unit as a ticket whose **Persona:** line names its seat and whose
 horch idea add --direct <ticket file>
 ```
 
-fleetd dispatches it. Do not put task text in `horch spawn`. The worker reads
-its ticket from `START.md`.
+fleetd dispatches it and launches its worker. The worker reads its ticket
+from `START.md`.
 
 ## Required order and operator gates
 
