@@ -129,16 +129,18 @@ struct World {
 impl World {
     fn new(name: &str, spec: &Spec<'_>) -> World {
         let mut h = Harness::new(name).with_git();
-        let fleet = h.root.join("fleet");
+        // The ledger is in the state folder and the fleet root is next to
+        // it, with no FLEET_ROOT: a pane gets only HORCH_STATE_DIR and
+        // HORCH_DATA_DIR, and its worker finds the same paths there.
+        let fleet = h.state.join("fleet");
         std::fs::create_dir_all(&fleet).unwrap();
         std::fs::write(fleet.join("fleet.toml"), FLEET_TOML).unwrap();
-        // The fake agent runs `horch result` and `horch tell` from PATH.
+        // The fake agent runs `horch result` and `horch ask` from PATH.
         std::os::unix::fs::symlink(Harness::horch_bin(), h.bin.join("horch")).unwrap();
         h.set(
             "HORCH_LEDGER_DB",
-            h.root.join("ledger.sqlite3").to_string_lossy(),
+            h.state.join("ledger.sqlite3").to_string_lossy(),
         );
-        h.set("FLEET_ROOT", fleet.to_string_lossy());
         h.set("HORCH_NO_WAKE", "1");
         h.set("HORCH_NO_WATCHDOG", "1");
         h.set(
@@ -185,7 +187,7 @@ impl World {
     }
 
     fn fleet_root(&self) -> PathBuf {
-        self.h.root.join("fleet")
+        self.h.fleet_root()
     }
 
     /// The project declares its gates, so no hold of a missing fast gate
