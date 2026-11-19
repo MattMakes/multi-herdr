@@ -151,7 +151,10 @@ pub struct Amendment {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct IdeaView {
     pub id: String,
+    /// The feature name, or its id when it has no name.
     pub feature: String,
+    /// The feature id (`F-NNNN`), as plan.yaml names it.
+    pub feature_id: String,
     pub state: String,
     /// `idea.md`, or `None` when the folder has none.
     pub idea: Option<String>,
@@ -177,6 +180,7 @@ pub fn idea_view(conn: &Connection, fleet_root: &Path, id: &str) -> Result<Optio
     });
     Ok(Some(IdeaView {
         feature: feature_name(conn, &row.feature_id)?,
+        feature_id: row.feature_id,
         id: row.id,
         state: row.state,
         idea: read_text(&dir.join("idea.md"))?,

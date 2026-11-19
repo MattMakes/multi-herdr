@@ -294,7 +294,33 @@ pub(crate) fn end_with(
     outcome: Outcome,
     text: &str,
 ) -> Result<()> {
-    let outcome = outcome.as_str();
+    end_as(
+        tx,
+        guard,
+        a,
+        outcome.as_str(),
+        WorkerStatus::Incomplete,
+        text,
+    )
+}
+
+/// The outcome of an attempt whose result the verifier passed
+/// (`docs/specs/fleetd/design.md`, the `attempts` table). It burns no
+/// attempt, and it is not an outcome of rung 6.
+pub const VERIFIED: &str = "verified";
+
+/// The attempt `a` ends with the outcome word `outcome` for the reason
+/// `text`, and its worker row ends with `status`. An attempt that ended
+/// first, at the exit of its process, gets `outcome` in place of the
+/// outcome of that exit.
+fn end_as(
+    tx: &Connection,
+    guard: Option<Generation>,
+    a: &Attempt,
+    outcome: &str,
+    status: WorkerStatus,
+    text: &str,
+) -> Result<()> {
     attempts_store::set_ended(tx, &a.id, outcome, &util::now())?;
     if a.state != AttemptState::Ended.as_str() {
         transition(
@@ -308,7 +334,7 @@ pub(crate) fn end_with(
         )?;
     }
     let reason = format!("{outcome}: attempt {}", a.id);
-    workers::end(tx, &a.worker_id, WorkerStatus::Incomplete, &reason, None)?;
+    workers::end(tx, &a.worker_id, status, &reason, None)?;
     Ok(())
 }
 
@@ -390,8 +416,9 @@ pub(crate) fn standing(tx: &Connection, task_id: &str, tip: &str) -> Result<Opti
 /// Move the task of `verified` from `verifying` to `done`, in the open
 /// transaction `tx`, when `verified` still stands: its verdict is the
 /// newest of the task, its attempt is the newest attempt, and `tip` is the
-/// tip that the verdict judged. The fleetd of generation `guard` writes.
-/// `false` when it moved nothing.
+/// tip that the verdict judged. Its attempt ends with the outcome
+/// [`VERIFIED`] in the same transaction. The fleetd of generation `guard`
+/// writes. `false` when it moved nothing.
 pub fn done(
     tx: &Connection,
     guard: Option<Generation>,
@@ -431,7 +458,11 @@ pub fn done(
         cause(&text),
         &NeedsYouList,
     ) {
-        Ok(_) => Ok(true),
+        Ok(_) => {
+            let a = attempt(tx, verified.attempt())?;
+            end_as(tx, guard, &a, VERIFIED, WorkerStatus::Done, &text)?;
+            Ok(true)
+        }
         Err(DoorError::Refused { .. }) => Ok(false),
         Err(e) => Err(e.into()),
     }

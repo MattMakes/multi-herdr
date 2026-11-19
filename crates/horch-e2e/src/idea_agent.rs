@@ -64,6 +64,9 @@ const IDEA_KEYS: [&str; 11] = [
     "operator_request",
 ];
 
+/// The words of the brief of fleetd before the feature id of the idea.
+const FEATURE_LINE: &str = "The feature of your idea is ";
+
 /// The keys of the fake judge.
 pub(crate) const VERDICT_KEYS: [&str; 3] = ["verdict_pass", "verdict_critical", "verdict_high"];
 
@@ -90,7 +93,7 @@ pub fn play(call: &mut Call) {
         call.flush();
         return;
     };
-    let lead = Lead::new(folder);
+    let lead = Lead::new(folder, feature_id(&call.argv));
     if scenario_has("die_mid_interview") {
         let note = lead.note("Which file does the idea change?", "fake.txt");
         call.extra.insert("notes".into(), json!([note]));
@@ -158,15 +161,21 @@ fn run_horch(dir: &Path, args: &[&str]) -> Value {
 struct Lead {
     folder: PathBuf,
     idea: String,
+    /// The feature id of the launch argument, if it names one.
+    feature_id: Option<String>,
 }
 
 impl Lead {
-    fn new(folder: PathBuf) -> Lead {
+    fn new(folder: PathBuf, feature_id: Option<String>) -> Lead {
         let idea = folder
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        Lead { folder, idea }
+        Lead {
+            folder,
+            idea,
+            feature_id,
+        }
     }
 
     /// The feature name of the idea: kebab-case.
@@ -219,12 +228,14 @@ impl Lead {
         )
     }
 
-    /// plan.yaml: 1 task, or 2 tasks that wait for each other.
+    /// plan.yaml: 1 task, or 2 tasks that wait for each other. Its feature
+    /// is the feature id of the launch argument, else the feature name when
+    /// the launch argument names none.
     fn plan(&self, cycle: bool) -> String {
         let mut text = format!(
             "idea: {}\nrepo: .\nfeature: {}\nbase_branch: main\ntasks:\n",
             self.idea,
-            self.feature()
+            self.feature_id.clone().unwrap_or_else(|| self.feature())
         );
         let task = |key: &str, after: &str| {
             format!(
@@ -308,6 +319,16 @@ impl Lead {
             "file": write_request_file(&fleet_root, &request("file")),
         })
     }
+}
+
+/// The feature id that the launch argument names in its line `The
+/// feature of your idea is F-NNNN.`, as the brief of fleetd gives it.
+fn feature_id(argv: &[String]) -> Option<String> {
+    argv.iter().find_map(|a| {
+        let rest = a.split(FEATURE_LINE).nth(1)?;
+        let id = rest.split_whitespace().next()?.trim_end_matches('.');
+        (!id.is_empty()).then(|| id.to_string())
+    })
 }
 
 /// The id of the oldest open question of the feature of `idea`.

@@ -195,6 +195,7 @@ fn idea_lead_briefing_names_each_phase() {
         "plan.yaml",
         "docs/specs/ticket-format.md",
         "horch idea show <id> --in-flight",
+        "feature id F-NNNN",
         // supervising
         "horch idea note <id> --question",
         "replan-<task key>.yaml",

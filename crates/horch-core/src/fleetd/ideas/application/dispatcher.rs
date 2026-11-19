@@ -49,7 +49,7 @@ use crate::fleetd::ideas::application::direct;
 use crate::fleetd::ideas::application::plan_commit::{
     validate_plan, PlanCommit, Verdict, PLAN_YAML, VERDICT_FILE,
 };
-use crate::fleetd::ideas::domain::idea_folder::FILE_LIMIT;
+use crate::fleetd::ideas::domain::idea_folder::{FILE_LIMIT, IDEA_MD};
 use crate::fleetd::integration::adapters::sqlite as feature_rows;
 use crate::fleetd::integration::application::new_features::{
     name_feature_branch, BranchRef, NameSource, Named,
@@ -224,7 +224,9 @@ fn dispatched(conn: &Connection) -> Result<Vec<String>> {
 /// `captured`: the oldest captured idea of a feature with no idea in
 /// planning moves to `clarifying`, or to `ticketing` when it is a
 /// `--direct` idea. A `--direct` idea whose files are not written yet
-/// stays.
+/// stays. Another idea with no idea.md stays too: the pass writes idea.md
+/// only for a `captured` idea, so an idea committed after that write waits
+/// for the next pass.
 fn captured(store: &mut Store, ctx: &Dispatch<'_>, idea: &IdeaRow, dir: &Path) -> Result<Step> {
     let to = if direct::is_direct(store.conn(), &idea.id)? {
         if !direct::files_written(dir) {
@@ -232,6 +234,9 @@ fn captured(store: &mut Store, ctx: &Dispatch<'_>, idea: &IdeaRow, dir: &Path) -
         }
         "ticketing"
     } else {
+        if !std::fs::symlink_metadata(dir.join(IDEA_MD)).is_ok_and(|m| m.is_file()) {
+            return Ok(Step::Stayed { wrote: false });
+        }
         "clarifying"
     };
     store.immediate(|tx| {
