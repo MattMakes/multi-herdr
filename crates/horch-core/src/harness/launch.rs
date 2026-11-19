@@ -613,6 +613,19 @@ pub(crate) fn run_exec_flow<T>(
     }
     env.task_dir = Some(task_dir.to_path_buf());
     env.worktree = Some(workdir.clone());
+    // The skills of the bundle, as an interactive launch exposes them
+    // (`command_with_skills_in`): Claude Code reads them from a
+    // `--plugin-dir`. Codex has them in its private home already.
+    if let Some(bundle) = launch
+        .skills
+        .as_ref()
+        .filter(|b| !b.plan().activated.is_empty())
+    {
+        teammate = kind
+            .adapter()
+            .expose_skills(&teammate, bundle, env.home())?;
+        env.skill_bundle = Some(bundle.root().to_path_buf());
+    }
     let mut cmd = match kind {
         HarnessKind::Claude => {
             let session = session_for(kind.adapter().capabilities(), req.session);
@@ -3315,5 +3328,58 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(home.join(".claude.json")).unwrap())
                 .unwrap();
         assert_eq!(kept["numStartups"], 3);
+    }
+
+    /// An exec launch of Claude Code exposes the skills of its bundle as a
+    /// `--plugin-dir`, as an interactive launch does: the plugin directory
+    /// is the private config home of the worker (conformance "Private home
+    /// honoured").
+    #[test]
+    fn claude_exec_launch_exposes_its_skills_as_a_plugin_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = |name: &str| tmp.path().join(name).to_string_lossy().into_owned();
+        for dir in ["home", "work", "task"] {
+            std::fs::create_dir_all(tmp.path().join(dir)).unwrap();
+        }
+        let env = crate::runtime::context::MapEnv::new(tmp.path().join("work"))
+            .with("HOME", &p("home"))
+            .with("PATH", &p("bin"))
+            .with("HORCH_STATE_DIR", &p("state"))
+            .with("HORCH_DATA_DIR", &p("data"))
+            .with("HORCH_CLAUDE_MANAGED_SETTINGS", &p("home/none.json"));
+        let ctx = RuntimeContext::from_env(&env).unwrap();
+        let mut v = serde_json::to_value(Teammate {
+            name: "exec-claude".into(),
+            agent: HarnessKind::Claude,
+            model: Some("opus".into()),
+            effort: Some("medium".into()),
+            sandbox: Some(serde_json::Map::new()),
+            ..Teammate::default()
+        })
+        .unwrap();
+        v["mode"] = serde_json::json!("exec");
+        v["phase"] = serde_json::json!("implementation");
+        let teammate: Teammate = serde_json::from_value(v).unwrap();
+        let session = SessionMode::Fresh(None);
+        let req = LaunchRequest {
+            role: "exec-test",
+            teammate: &teammate,
+            session: &session,
+            prompt: "/task/inbox/START.md",
+            model_override: None,
+            exec_rules: &[],
+            child_env: Vec::new(),
+            record: None,
+            fleet_window: None,
+            briefing_skill: None,
+        };
+        let a = run_exec_flow(&ctx, req, &tmp.path().join("task"), |cmd| Ok(argv(&cmd))).unwrap();
+        let dir = a
+            .windows(2)
+            .rfind(|w| w[0] == "--plugin-dir")
+            .map(|w| PathBuf::from(&w[1]))
+            .unwrap_or_else(|| panic!("no --plugin-dir: {a:?}"));
+        let parent = dir.parent().and_then(|d| d.file_name());
+        assert_eq!(parent, Some("skill-bundles".as_ref()), "{dir:?}");
     }
 }

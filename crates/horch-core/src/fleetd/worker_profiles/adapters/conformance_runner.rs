@@ -321,6 +321,10 @@ fn rendered_launch(cli: ExecCli, cmd: &Command, dir: &Path) -> Result<String> {
         }
         homes.push(home);
     }
+    // The skills bundle of Claude Code: a new folder for each launch.
+    if let Some(bundle) = plugin_dir(cmd) {
+        homes.push(bundle);
+    }
     homes.push(dir.to_path_buf());
     // The longest path first, so a folder inside another becomes its word.
     homes.sort_by_key(|p| std::cmp::Reverse(p.as_os_str().len()));
@@ -335,6 +339,16 @@ fn rendered_launch(cli: ExecCli, cmd: &Command, dir: &Path) -> Result<String> {
         text = text.replace(&path, word);
     }
     Ok(text)
+}
+
+/// The last `--plugin-dir` of the launch `cmd`: the skills bundle of a
+/// Claude Code launch.
+fn plugin_dir(cmd: &Command) -> Option<PathBuf> {
+    let args: Vec<_> = cmd.get_args().collect();
+    args.windows(2)
+        .rev()
+        .find(|w| w[0] == "--plugin-dir")
+        .map(|w| PathBuf::from(w[1]))
 }
 
 /// How long the runner waits for its own connect to the channel.
@@ -389,12 +403,7 @@ fn mark_private_home(
     };
     let (home, skills) = match cli {
         ExecCli::Claude => {
-            let args: Vec<_> = cmd.get_args().collect();
-            let dir = args
-                .windows(2)
-                .rev()
-                .find(|w| w[0] == "--plugin-dir")
-                .map(|w| PathBuf::from(w[1]));
+            let dir = plugin_dir(cmd);
             (dir.clone(), dir.map(|d| d.join("skills")))
         }
         ExecCli::Codex => {
