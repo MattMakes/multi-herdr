@@ -65,6 +65,7 @@ use std::process::Child;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use chrono::{DateTime, FixedOffset};
 use horch_platform::channel::User;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 
@@ -89,7 +90,7 @@ use crate::fleetd::fleet_runtime::application::ledger::DoorError;
 use crate::fleetd::fleet_runtime::application::ledger::{record, transition, Cause};
 use crate::fleetd::fleet_runtime::application::requests::Handlers;
 use crate::fleetd::fleet_runtime::domain::budget::{
-    id_key, Cursor, Deadline, PassBudget, RowKind, ScanKind,
+    id_key, Cursor, Deadline, IdeaCursor, PassBudget, RowKind, ScanKind,
 };
 use crate::fleetd::fleet_runtime::domain::clock::{AwakeReading, FleetSeconds};
 use crate::fleetd::fleet_runtime::domain::config::FleetConfig;
@@ -101,15 +102,27 @@ use crate::fleetd::fleet_runtime::domain::pass::{
     breaches, observe_launch, stop_step, Breach, Holding, Launch, LaunchStep, Proc, StopStep,
     TIMED_OUT,
 };
+use crate::fleetd::ideas::adapters::idea_folder_files::IdeaFolder;
+use crate::fleetd::ideas::adapters::needs_you_folder::{self, Mirrored};
 use crate::fleetd::ideas::adapters::questions_store;
-use crate::fleetd::ideas::application::intake::{self, pending_idea_files, write_idea_file};
+use crate::fleetd::ideas::application::dispatcher::{Dispatch, Dispatcher, PrimaryTip};
+use crate::fleetd::ideas::application::intake::{pending_idea_files, write_idea_file};
 use crate::fleetd::ideas::application::needs_you::{self, NeedsYouList};
+use crate::fleetd::ideas::application::plan_commit::{PlanCommit, PLAN_YAML};
+use crate::fleetd::ideas::application::replan::{self, Replan};
+use crate::fleetd::ideas::application::sub_orchestrators::{keep_sub_orchestrators, Keep};
+use crate::fleetd::ideas::application::waiting::{keep_waits, Wait};
+use crate::fleetd::ideas::application::{
+    answers, intake, notes_ingest, question_flow, release, rollup,
+};
 use crate::fleetd::ideas::domain::needs_you::Write as NeedsYouWrite;
+use crate::fleetd::ideas::domain::plan_validator::{DeclaredGates, RosterProfile};
 use crate::fleetd::integration::adapters::exec_rebase::GitRebaseRefs;
 use crate::fleetd::integration::adapters::git::{CliGitGateway, CliStackGit};
 use crate::fleetd::integration::adapters::sqlite as integration_rows;
 use crate::fleetd::integration::application as integration;
 use crate::fleetd::integration::application::new_features::Project;
+use crate::fleetd::integration::application::new_features::{self, BranchRef};
 use crate::fleetd::integration::application::ports::IntegrationGitGateway;
 use crate::fleetd::integration::domain::stack::StackPlanner;
 use crate::fleetd::integration::domain::task_branch::LandingState;
@@ -122,6 +135,7 @@ use crate::fleetd::task_execution::adapters::sqlite as attempts_store;
 use crate::fleetd::task_execution::application::dispatch::{self, DispatchCtx};
 use crate::fleetd::task_execution::application::launch::{self as push, Launches};
 use crate::fleetd::task_execution::application::outbox_ingest::{self, OutboxRead};
+use crate::fleetd::task_execution::application::planned_tasks;
 use crate::fleetd::task_execution::application::quota::{
     self, Pools, Restart, Restarted, Restarts,
 };
@@ -613,6 +627,8 @@ struct Decided {
     roster: Option<Roster>,
     /// The lines of what failed in part 2 and kept its row unchanged.
     failed: Vec<String>,
+    /// The process and pane facts of part 1, for the idea duties.
+    facts: Facts,
     /// The git effects of integration.
     integration: Integrated,
 }
@@ -702,6 +718,8 @@ pub struct Pass<'a> {
     /// The ports of the Phase 4 work of task execution; `None`: the pass
     /// does none of it.
     work: Option<TaskWork<'a>>,
+    /// The Phase 6 idea duties; `None`: the pass does none of them.
+    ideas: Option<IdeaWork<'a>>,
 }
 
 impl<'a> Pass<'a> {
@@ -721,6 +739,7 @@ impl<'a> Pass<'a> {
             full_passes: 0,
             requests: Handlers::new(),
             work: None,
+            ideas: None,
         }
     }
 
@@ -785,7 +804,8 @@ impl<'a> Pass<'a> {
         }
         let activity = effects::write_activity(&self.settings.fleet_root, &decided.activity);
         let passed = std::mem::take(&mut decided.passed);
-        let effects = std::mem::take(&mut decided.effects);
+        let mut effects = std::mem::take(&mut decided.effects);
+        failed.extend(self.idea_duties(conn, &decided, &mut effects, deadline)?);
         let sent = std::mem::take(&mut decided.sent);
         let (mut report, pending) = self.do_effects(conn, effects, sent, decided.clock, deadline);
         let git = std::mem::take(&mut decided.integration);
@@ -1341,6 +1361,7 @@ impl<'a> Pass<'a> {
             passed: work.passed,
             roster: read.pools.map(|p| p.roster),
             failed: work.failed,
+            facts: read.task,
             integration,
         })
     }
@@ -1478,8 +1499,9 @@ impl<'a> Pass<'a> {
             }
             match observe_launch(l.row_process, l.launch, clock) {
                 LaunchStep::Launch if self.ports.duties.launches(a) => {}
-                // The launch plan of Phase 4 launches a push attempt.
-                LaunchStep::Launch if via(tx, &a.id)? == PUSH => {}
+                // The launch plan of Phase 4 launches a push attempt of a
+                // task. The pass launches a sub-orchestrator attempt.
+                LaunchStep::Launch if a.task_id.is_some() && via(tx, &a.id)? == PUSH => {}
                 LaunchStep::Launch => launches.push(a.clone()),
                 LaunchStep::Wait => {}
                 LaunchStep::Live => {
@@ -3157,6 +3179,754 @@ fn i6_text(b: &I6) -> Option<(String, String)> {
         ),
     })
 }
+
+// ─── Phase 6: the idea duties ───────────────────────────────────────────
+
+/// The fault point after the last commit of the idea duties, before their
+/// effects (`fleetd_pass_p6a.rs`).
+pub const ABORT_AFTER_IDEA_COMMIT: &str = "abort-after-idea-commit";
+
+/// The folder of the idea folders in the fleet root.
+pub const IDEAS_DIR: &str = "ideas";
+
+/// The folder of the needs-you files in the fleet root (OR-3).
+const NEEDS_YOU_DIR: &str = "needs-you";
+
+/// The phase of the sub-orchestrator that asks you its interview questions.
+const ASKING_PHASE: &str = "clarifying";
+
+/// The herdr agent states of a pane that waits at its prompt.
+const AT_PROMPT: [&str; 2] = ["idle", "done"];
+
+/// The width of the row number of a `requests` row in its cursor key, so
+/// the keys sort as the numbers.
+const ROW_KEY_WIDTH: usize = 20;
+
+/// What the idea duties of Phase 6 read beside the ledger and the files of
+/// the fleet root (`docs/tickets/fleetd-p6/51-pass-ideas.md`). The
+/// composition root of `horch fleetd` gives it; a test gives fakes.
+pub trait IdeaPorts {
+    /// The profiles of the roster now, for the plan validator.
+    fn roster(&self) -> Vec<RosterProfile>;
+
+    /// The gates that the project declares, for the plan validator.
+    fn gates(&self, conn: &Connection) -> Result<DeclaredGates>;
+
+    /// The git of the feature branch refs.
+    fn git(&self) -> &dyn IntegrationGitGateway;
+
+    /// The tip of the primary branch of each project that has a feature
+    /// with no branch yet: the dispatcher names the branch from it.
+    fn primaries(&self, conn: &Connection) -> Result<Vec<Primary>>;
+
+    /// The calendar time now in the local zone of the machine: the
+    /// reminders, the working hours and the park of the waits.
+    fn now(&self) -> DateTime<FixedOffset>;
+
+    /// Report the needs-you files of 1 pass to herdr (OR-3). An error is 1
+    /// line of the pass, not a failure.
+    fn notify(&self, _mirrored: &Mirrored, _seq: u64) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// The fetched tip of the primary branch `branch` of the repository
+/// `repo`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Primary {
+    pub repo: PathBuf,
+    pub branch: String,
+    pub tip: String,
+}
+
+/// What the idea duties keep from pass to pass.
+struct IdeaWork<'a> {
+    ports: &'a dyn IdeaPorts,
+    dispatcher: Dispatcher,
+    /// The release duty runs at the first pass, and in each next pass while
+    /// the pass before used its whole budget.
+    release_due: bool,
+    /// The effects that a crash or an error left undone are found again
+    /// from the ledger: at the first pass, and after a pass with a failed
+    /// effect.
+    recover: bool,
+    /// The fleet clock of the pass before, for the question flow.
+    last_clock: Option<FleetSeconds>,
+    /// The answers whose files failed: the next pass writes them again.
+    unwritten: Vec<answers::Recorded>,
+}
+
+/// What the first transaction of the idea duties wrote.
+#[derive(Default)]
+struct Ingested {
+    released: Vec<release::ReleasedApproval>,
+    recorded: Vec<answers::Recorded>,
+}
+
+/// What the last transaction of the idea duties wrote: the effects of part
+/// 3, and the reminders of the waits.
+#[derive(Default)]
+struct IdeaKept {
+    effects: Vec<Effect>,
+    reminded: usize,
+}
+
+impl<'a> Pass<'a> {
+    /// Run the idea duties of Phase 6 with `ports` in each pass
+    /// (`docs/tickets/fleetd-p6/51-pass-ideas.md`).
+    pub fn with_idea_work(mut self, ports: &'a dyn IdeaPorts) -> Pass<'a> {
+        self.ideas = Some(IdeaWork {
+            ports,
+            dispatcher: Dispatcher::new(),
+            release_due: true,
+            recover: true,
+            last_clock: None,
+            unwritten: Vec::new(),
+        });
+        self
+    }
+
+    /// The idea duties after the commit of part 2, each in the order of
+    /// ticket 51: the release duty; the files of the idea requests and the
+    /// notes of the idea folders; the answers; the question flow; the
+    /// dispatcher with the plan commit; the replans; the roll-up; the
+    /// sub-orchestrators; the waits; the needs-you mirror. The rows of the
+    /// duties commit in their own transactions, each checks the generation
+    /// first, and each file effect comes after the commit of its row. The
+    /// stops, launches and doorbells go to `effects` for part 3. A duty
+    /// whose transaction fails writes nothing, and the next duties go on.
+    /// No duty starts after the time budget of the pass. Gives the lines of
+    /// what failed.
+    fn idea_duties(
+        &mut self,
+        conn: &mut Connection,
+        decided: &Decided,
+        effects: &mut Vec<Effect>,
+        deadline: Deadline,
+    ) -> Result<Vec<String>, PassError> {
+        let Some(mut work) = self.ideas.take() else {
+            return Ok(Vec::new());
+        };
+        let mut failed = Vec::new();
+        let out = self.idea_steps(conn, &mut work, decided, deadline, &mut failed);
+        if out.is_ok() {
+            work.recover = !failed.is_empty();
+        }
+        self.ideas = Some(work);
+        effects.extend(out?);
+        effects.sort_by_key(Effect::order);
+        Ok(failed)
+    }
+
+    fn idea_steps(
+        &mut self,
+        conn: &mut Connection,
+        work: &mut IdeaWork<'_>,
+        decided: &Decided,
+        deadline: Deadline,
+        failed: &mut Vec<String>,
+    ) -> Result<Vec<Effect>, PassError> {
+        let root = self.settings.fleet_root.clone();
+        let ideas = root.join(IDEAS_DIR);
+        let owner = User::current().context("reading the user of fleetd")?;
+        let stamp = util::now();
+        let clock = decided.clock;
+        let elapsed_s = work.last_clock.map_or(0, |c| (clock.0 - c.0).max(0));
+        work.last_clock = Some(clock);
+        let budget = PassBudget::new(self.settings.config.pass_budget);
+        let guard = self.settings.generation;
+        let git = work.ports.git();
+        // Part 1: the facts, with no transaction.
+        retry_answers(work, &root, &owner, failed);
+        let requests = request_effects(conn, &stamp, budget)?;
+        let effects_cursor = write_request_effects(&ideas, &owner, git, requests, failed);
+        self.recover_idea_files(conn, work, &ideas, &owner, failed);
+        let (folders_cursor, notes) = self.idea_notes(conn, &ideas, &owner, &stamp, deadline)?;
+        let asking = self.asking(conn)?;
+        // The release, the notes, the answers and the question flow.
+        let release_due = work.release_due;
+        let ingested = idea_tx(conn, guard, failed, "the notes and the questions", |tx| {
+            cursors_store::save(tx, IdeaCursor::IdeaFolders.as_str(), &folders_cursor)?;
+            cursors_store::save(tx, IdeaCursor::RequestEffects.as_str(), &effects_cursor)?;
+            let mut out = Ingested::default();
+            if release_due {
+                let ctx = release::Release {
+                    guard: Some(guard),
+                    ideas: &ideas,
+                    owner: owner.clone(),
+                    budget,
+                };
+                out.released = release::release(tx, &ctx)?.approvals;
+            }
+            let report = notes_ingest::ingest(tx, Some(guard), &ideas, &owner, &notes)?;
+            let ctx = answers::Answering {
+                guard: Some(guard),
+                clock,
+                root: &root,
+                owner: &owner,
+            };
+            for note in &report.answers {
+                if let answers::Answered::Recorded(r) = answers::answer_question(tx, &ctx, note)? {
+                    out.recorded.push(r);
+                }
+            }
+            answers::settle_revisions(tx)?;
+            let flow = question_flow::Flow {
+                guard: Some(guard),
+                clock,
+                elapsed_s,
+                stamp: &stamp,
+                budget,
+            };
+            question_flow::run(tx, &flow)?;
+            Ok(out)
+        })?;
+        if let Some(i) = ingested {
+            work.release_due = release_due && i.released.len() >= budget.rows();
+            for a in &i.released {
+                if let Err(e) = a.write(&ideas, owner.clone()) {
+                    failed.push(format!("the approval.json of idea {}: {e:#}", a.idea));
+                }
+            }
+            work.unwritten.extend(i.recorded);
+            retry_answers(work, &root, &owner, failed);
+        }
+        if deadline.reached((self.now)()) {
+            return Ok(Vec::new());
+        }
+        let replans =
+            self.plan_and_replan(conn, work, &ideas, &owner, clock, &stamp, deadline, failed)?;
+        if deadline.reached((self.now)()) {
+            return Ok(Vec::new());
+        }
+        let job = self.job_ctx();
+        let host = util::host_name();
+        let kept = idea_tx(
+            conn,
+            guard,
+            failed,
+            "the roll-up, the sub-orchestrators and the waits",
+            |tx| {
+                if let Some(cursor) = &replans {
+                    cursors_store::save(tx, IdeaCursor::Replans.as_str(), cursor)?;
+                }
+                rollup::roll_up_ideas(&job, tx)?;
+                let keep = Keep {
+                    guard: Some(guard),
+                    ideas: &ideas,
+                    facts: &decided.facts,
+                    stamp: &stamp,
+                    budget,
+                };
+                let subs = keep_sub_orchestrators(tx, &keep)?;
+                let wait = Wait {
+                    guard: Some(guard),
+                    config: &self.settings.config,
+                    clock,
+                    now: work.ports.now(),
+                    asking: &asking,
+                    facts: &decided.facts,
+                    ideas: &ideas,
+                    owner: owner.clone(),
+                    budget,
+                };
+                let waits = keep_waits(tx, &wait)?;
+                let mut out = IdeaKept {
+                    reminded: waits.reminded.len(),
+                    ..IdeaKept::default()
+                };
+                out.effects
+                    .extend(subs.stops.into_iter().chain(waits.stops).map(Effect::Stop));
+                out.effects.extend(subs.started.iter().map(|s| {
+                    Effect::Launch(AttemptRow {
+                        id: s.attempt.clone(),
+                        task_id: None,
+                        worker_id: s.worker_id.clone(),
+                        state: AttemptState::Launching,
+                        process: None,
+                        pane: s.pane.clone(),
+                    })
+                }));
+                let bells = unsent_bells(tx, &host, &decided.sent)?;
+                out.effects.extend(bells.into_iter().map(Effect::Doorbell));
+                Ok(out)
+            },
+        )?;
+        self.settings.faults.abort_if(ABORT_AFTER_IDEA_COMMIT);
+        let kept = kept.unwrap_or_default();
+        self.mirror_needs_you(conn, work, clock, &stamp, kept.reminded, failed)?;
+        Ok(kept.effects)
+    }
+
+    /// The dispatcher with the plan commit, then the replans, each in the
+    /// transactions of its use case. Gives the cursor of the replans to save,
+    /// `None` when the replans did not run.
+    #[allow(clippy::too_many_arguments)]
+    fn plan_and_replan(
+        &mut self,
+        conn: &Connection,
+        work: &mut IdeaWork<'_>,
+        ideas: &Path,
+        owner: &User,
+        clock: FleetSeconds,
+        stamp: &str,
+        deadline: Deadline,
+        failed: &mut Vec<String>,
+    ) -> Result<Option<Cursor>, PassError> {
+        let path = conn
+            .path()
+            .filter(|p| !p.is_empty())
+            .context("the ledger has no file")?;
+        let mut store = Store::open(Path::new(path))?;
+        let roster = work.ports.roster();
+        let gates = work.ports.gates(store.conn()).unwrap_or_else(|e| {
+            failed.push(format!("the gates of the project: {e:#}"));
+            DeclaredGates::default()
+        });
+        let git = work.ports.git();
+        let plan = || PlanCommit {
+            ideas,
+            owner,
+            roster: &roster,
+            gates: &gates,
+            guard: Some(self.settings.generation),
+            refusals: &NeedsYouList,
+        };
+        let budget = PassBudget::new(self.settings.config.pass_budget);
+        let primaries = match work.ports.primaries(store.conn()) {
+            Ok(p) => p,
+            Err(e) => {
+                failed.push(format!("the primary tips: {e:#}"));
+                Vec::new()
+            }
+        };
+        let tips: Vec<PrimaryTip<'_>> = primaries
+            .iter()
+            .map(|p| PrimaryTip {
+                repo: &p.repo,
+                branch: &p.branch,
+                tip: &p.tip,
+            })
+            .collect();
+        let dispatch = Dispatch {
+            plan: plan(),
+            job: self.job_ctx(),
+            git,
+            primaries: &tips,
+            clock,
+            stamp,
+            budget,
+        };
+        match work.dispatcher.pass(&mut store, &dispatch) {
+            Ok(report) => {
+                for (idea, e) in report.errors {
+                    failed.push(format!("the dispatch of idea {idea}: {e}"));
+                }
+                for r in &report.refs {
+                    if let Err(e) = new_features::create_ref(git, r) {
+                        failed.push(format!("the feature branch {}: {e:#}", r.name));
+                    }
+                }
+            }
+            Err(e) => failed.push(format!("the dispatcher: {e:#}")),
+        }
+        if deadline.reached((self.now)()) {
+            return Ok(None);
+        }
+        let mut keys = BTreeSet::new();
+        for t in tasks::failed(store.conn())? {
+            if planned_tasks::committed_task(store.conn(), &t.task_id)?.is_some() {
+                keys.insert(t.task_id);
+            }
+        }
+        keys.extend(answers::pending_replans(store.conn())?);
+        let keys: Vec<String> = keys.into_iter().collect();
+        let mut cursor = cursors_store::load(store.conn(), IdeaCursor::Replans.as_str(), stamp)?;
+        let turns: Vec<String> = cursor
+            .turns(&keys, |k| k.as_str())
+            .into_iter()
+            .take(budget.rows())
+            .cloned()
+            .collect();
+        for id in turns {
+            if deadline.reached((self.now)()) {
+                break;
+            }
+            let ctx = Replan {
+                plan: plan(),
+                jobs: self.job_ctx(),
+            };
+            if let Err(e) = replan::replan_task(&mut store, &ctx, &id, clock) {
+                failed.push(format!("the replan of task {id}: {e:#}"));
+            }
+            cursor.step(&id, stamp);
+        }
+        Ok(Some(cursor))
+    }
+
+    /// The idea.md of each captured idea, then, at a recovery pass, the
+    /// approval.json of each released idea and the ref of each feature
+    /// branch that a crash after their commit left unwritten.
+    fn recover_idea_files(
+        &self,
+        conn: &Connection,
+        work: &IdeaWork<'_>,
+        ideas: &Path,
+        owner: &User,
+        failed: &mut Vec<String>,
+    ) {
+        let mut step = |what: &str, r: Result<()>| {
+            if let Err(e) = r {
+                failed.push(format!("{what}: {e:#}"));
+            }
+        };
+        step(
+            "the idea.md files",
+            intake::pending_idea_files(conn, ideas).and_then(|files| {
+                for f in &files {
+                    intake::write_idea_file(ideas, owner.clone(), f)?;
+                }
+                Ok(())
+            }),
+        );
+        if !work.recover {
+            return;
+        }
+        step(
+            "the approval.json files of the release",
+            release::pending_approvals(conn, ideas)
+                .and_then(|files| files.iter().try_for_each(|a| a.write(ideas, owner.clone()))),
+        );
+        let git = work.ports.git();
+        step(
+            "the feature branch refs",
+            new_features::pending_refs(conn, git).and_then(|refs| {
+                for r in &refs {
+                    new_features::create_ref(git, r)?;
+                }
+                Ok(())
+            }),
+        );
+    }
+
+    /// The scan of the idea folders, from its cursor, within the time
+    /// budget of a fact scan: the new notes of each folder. Gives the
+    /// cursor after the scan and the notes.
+    fn idea_notes(
+        &mut self,
+        conn: &Connection,
+        ideas: &Path,
+        owner: &User,
+        stamp: &str,
+        deadline: Deadline,
+    ) -> Result<(Cursor, Vec<notes_ingest::IdeaNotes>)> {
+        let mut cursor = cursors_store::load(conn, IdeaCursor::IdeaFolders.as_str(), stamp)?;
+        let start = (self.now)();
+        let mut clock = ScanClock {
+            deadline: deadline.scan(start, self.settings.config.scan_budget_ms),
+            now: &mut *self.now,
+            stamp,
+        };
+        let scan = scans::scan_idea_folders(ideas, &mut cursor, &mut clock, |idea| {
+            notes_ingest::read(conn, ideas, std::slice::from_ref(idea), owner)
+        })
+        .with_context(|| format!("listing {}", ideas.display()))?;
+        let mut notes = Vec::new();
+        for read in scan.facts {
+            notes.extend(read?);
+        }
+        Ok((cursor, notes))
+    }
+
+    /// The fact of the waits that this pass fills: each idea whose live
+    /// sub-orchestrator of its `clarifying` phase herdr shows at its prompt
+    /// (agent state `idle` or `done`).
+    fn asking(&self, conn: &Connection) -> Result<BTreeSet<String>> {
+        let rows = attempts_store::rows(conn, &util::host_name())?;
+        let mut asking = BTreeSet::new();
+        for a in rows
+            .attempts
+            .iter()
+            .filter(|a| a.state == AttemptState::Live)
+        {
+            let Some((idea, ASKING_PHASE)) = sub_orchestrator_of(a) else {
+                continue;
+            };
+            let w = workers::get(conn, &a.worker_id)?;
+            let status = self.ports.outside.observe(&w).and_then(|o| o.herdr_status);
+            if status.is_some_and(|s| AT_PROMPT.contains(&s.as_str())) {
+                asking.insert(idea.to_string());
+            }
+        }
+        Ok(asking)
+    }
+
+    /// The needs-you mirror, last: the file of each open item, within the
+    /// work budget, then the herdr notification of the new items and of
+    /// the reminders of the waits.
+    fn mirror_needs_you(
+        &mut self,
+        conn: &mut Connection,
+        work: &IdeaWork<'_>,
+        clock: FleetSeconds,
+        stamp: &str,
+        reminded: usize,
+        failed: &mut Vec<String>,
+    ) -> Result<(), PassError> {
+        let open = needs_you::open_items(conn)?;
+        let mut cursor = cursors_store::load(conn, IdeaCursor::NeedsYou.as_str(), stamp)?;
+        let dir = self.settings.fleet_root.join(NEEDS_YOU_DIR);
+        let budget = PassBudget::new(self.settings.config.pass_budget);
+        let mirrored = match needs_you_folder::mirror(&dir, &open, &mut cursor, budget, stamp) {
+            Ok(m) => m,
+            Err(e) => {
+                failed.push(format!("the needs-you files: {e:#}"));
+                return Ok(());
+            }
+        };
+        idea_tx(
+            conn,
+            self.settings.generation,
+            failed,
+            "the needs-you cursor",
+            |tx| cursors_store::save(tx, IdeaCursor::NeedsYou.as_str(), &cursor),
+        )?;
+        // 2 numbers for each fleet second: the mirror, then the reminders.
+        let seq = u64::try_from(clock.0).unwrap_or(0) * 2;
+        if let Err(e) = work.ports.notify(&mirrored, seq) {
+            failed.push(format!("{e:#}"));
+        }
+        if reminded > 0 {
+            let reminders = Mirrored {
+                new: reminded,
+                open: open.len(),
+                ..Mirrored::default()
+            };
+            if let Err(e) = work.ports.notify(&reminders, seq + 1) {
+                failed.push(format!("{e:#}"));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Run `f` in 1 immediate transaction on `conn` after the check of the
+/// generation `guard`, and commit. A lost generation ends the pass. Another
+/// failure rolls back, adds 1 line on `what` to `failed`, and gives `None`.
+fn idea_tx<T>(
+    conn: &mut Connection,
+    guard: Generation,
+    failed: &mut Vec<String>,
+    what: &str,
+    f: impl FnOnce(&Transaction<'_>) -> Result<T>,
+) -> Result<Option<T>, PassError> {
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(anyhow::Error::from)?;
+    match fleetd_row::check_generation(&tx, guard) {
+        Ok(()) => {}
+        Err(e @ DoorError::GenerationLost { .. }) => return Err(PassError::GenerationLost(e)),
+        Err(e) => return Err(PassError::Failed(e.into())),
+    }
+    let out = f(&tx).and_then(|v| Ok(tx.commit().map(|()| v)?));
+    match out {
+        Ok(v) => Ok(Some(v)),
+        Err(e) => {
+            failed.push(format!("{what}: {e:#}"));
+            Ok(None)
+        }
+    }
+}
+
+/// The idea and the phase of the sub-orchestrator attempt `a`, whose id is
+/// `<idea>/<phase>/<n>` and which has no task.
+fn sub_orchestrator_of(a: &AttemptRow) -> Option<(&str, &str)> {
+    if a.task_id.is_some() {
+        return None;
+    }
+    let mut parts = a.id.split('/');
+    let (idea, phase, n) = (parts.next()?, parts.next()?, parts.next()?);
+    let ok = parts.next().is_none() && idea.starts_with("I-") && n.parse::<i64>().is_ok();
+    ok.then_some((idea, phase))
+}
+
+/// Each doorbell event of a live sub-orchestrator attempt with a pane that
+/// part 3 has not typed: the rings of the question flow and of a refused
+/// answer, also those that a crash after their commit lost.
+fn unsent_bells(
+    tx: &Connection,
+    host: &str,
+    sent: &BTreeMap<String, BTreeSet<i64>>,
+) -> Result<Vec<Bell>> {
+    let rows = attempts_store::rows(tx, host)?;
+    let mut bells = Vec::new();
+    for a in &rows.attempts {
+        let (AttemptState::Live, Some(pane), Some(_)) = (a.state, &a.pane, sub_orchestrator_of(a))
+        else {
+            continue;
+        };
+        let typed = sent.get(&a.id);
+        for (event, _) in doorbells_of(tx, &a.id)? {
+            if !typed.is_some_and(|s| s.contains(&event)) {
+                bells.push(Bell {
+                    attempt: a.id.clone(),
+                    event,
+                    pane: pane.clone(),
+                });
+            }
+        }
+    }
+    Ok(bells)
+}
+
+/// Write the files of each answer of `work.unwritten`; an answer whose
+/// files fail stays for the next pass.
+fn retry_answers(work: &mut IdeaWork<'_>, root: &Path, owner: &User, failed: &mut Vec<String>) {
+    work.unwritten.retain(|r| match r.write(root, owner) {
+        Ok(()) => false,
+        Err(e) => {
+            failed.push(format!("the files of the answer of {}: {e:#}", r.question));
+            true
+        }
+    });
+}
+
+/// 1 decided `requests` row after the cursor of the request effects.
+struct RequestRow {
+    key: String,
+    pending: bool,
+    effects: Option<serde_json::Value>,
+}
+
+/// The cursor of the request effects, and the decided `requests` rows after
+/// it in the order of their row numbers, at most `budget`. The rows stop
+/// before the first `pending` row: its effects come when it is decided,
+/// so the cursor never passes a row whose effects are not written.
+fn request_effects(
+    conn: &Connection,
+    stamp: &str,
+    budget: PassBudget,
+) -> Result<(Cursor, Vec<RequestRow>)> {
+    let cursor = cursors_store::load(conn, IdeaCursor::RequestEffects.as_str(), stamp)?;
+    let after: i64 = cursor
+        .after_key
+        .as_deref()
+        .map_or(Ok(0), str::parse)
+        .context("the cursor of the request effects is not a row number")?;
+    let limit = i64::try_from(budget.rows()).unwrap_or(i64::MAX);
+    let mut stmt = conn.prepare(
+        "SELECT rowid, state, result_json FROM requests WHERE rowid > ?1 ORDER BY rowid LIMIT ?2",
+    )?;
+    let rows = stmt
+        .query_map(rusqlite::params![after, limit], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut out = Vec::new();
+    for (n, state, result) in rows {
+        let effects = result
+            .and_then(|r| serde_json::from_str::<serde_json::Value>(&r).ok())
+            .and_then(|mut v| v.get_mut("effects").map(serde_json::Value::take))
+            .filter(serde_json::Value::is_object);
+        out.push(RequestRow {
+            key: format!("{n:0ROW_KEY_WIDTH$}"),
+            pending: state == "pending",
+            effects,
+        });
+    }
+    Ok((cursor, out))
+}
+
+/// Write the effects of each row of `requests` in order, and give the
+/// cursor after the last row whose effects are written. A failed effect
+/// stops there: the next pass writes that row again.
+fn write_request_effects(
+    ideas: &Path,
+    owner: &User,
+    git: &dyn IntegrationGitGateway,
+    (mut cursor, requests): (Cursor, Vec<RequestRow>),
+    failed: &mut Vec<String>,
+) -> Cursor {
+    let stamp = cursor.lap_started_at.clone();
+    for r in requests {
+        if r.pending {
+            break;
+        }
+        if let Some(effects) = &r.effects {
+            if let Err(e) = write_idea_effects(ideas, owner, git, effects) {
+                failed.push(format!("the effects of request row {}: {e:#}", r.key));
+                break;
+            }
+        }
+        cursor.step(&r.key, &stamp);
+    }
+    cursor
+}
+
+/// The effects of 1 idea request (`handlers_idea`), after its commit: the
+/// copied ticket and plan.yaml of `--direct`, approval.json, the next
+/// amendment, then the branch of a new feature. idea.md comes from
+/// [`intake::pending_idea_files`]. Each write gives the same result when it
+/// runs again.
+fn write_idea_effects(
+    ideas: &Path,
+    owner: &User,
+    git: &dyn IntegrationGitGateway,
+    effects: &serde_json::Value,
+) -> Result<()> {
+    let text = |v: &serde_json::Value, key: &str| -> Result<String> {
+        v[key]
+            .as_str()
+            .map(str::to_string)
+            .with_context(|| format!("the effect has no {key}"))
+    };
+    let idea = text(effects, "idea")?;
+    let folder = IdeaFolder::create(ideas, &idea, owner.clone())?;
+    let dir = folder.dir().to_path_buf();
+    if let Some(t) = effects.get("ticket") {
+        let rel = text(t, "path")?;
+        let path = dir.join(&rel);
+        anyhow::ensure!(
+            Path::new(&rel)
+                .components()
+                .all(|c| matches!(c, std::path::Component::Normal(_))),
+            "the ticket path {rel} leaves the idea folder"
+        );
+        if let Some(parent) = path.parent() {
+            crate::fsx::ensure_private_dir(parent)?;
+        }
+        crate::fsx::create_immutable(&path, text(t, "text")?.as_bytes(), IDEA_FILE_MODE)?;
+    }
+    if let Some(plan) = effects.get("plan_yaml").and_then(serde_json::Value::as_str) {
+        crate::fsx::write_atomic(&dir.join(PLAN_YAML), plan.as_bytes(), IDEA_FILE_MODE)?;
+    }
+    if let Some(a) = effects.get("approval_json") {
+        folder.write_approval(&text(a, "text")?)?;
+    }
+    if let Some(a) = effects.get("amendment") {
+        let n = a["n"]
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+            .context("the amendment has no number")?;
+        folder.write_amendment(n, &text(a, "text")?)?;
+    }
+    if let Some(b) = effects.get("branch") {
+        let r = BranchRef {
+            repo: PathBuf::from(text(b, "repo")?),
+            name: text(b, "name")?,
+            tip: text(b, "tip")?,
+        };
+        new_features::create_ref(git, &r)?;
+    }
+    Ok(())
+}
+
+/// The mode of a file that fleetd writes in an idea folder.
+const IDEA_FILE_MODE: u32 = 0o600;
 
 // ─── Phase 7 ────────────────────────────────────────────────────────────
 //

@@ -48,10 +48,11 @@ use horch_core::fleetd::fleet_runtime::adapters::scans::{CliPath, FolderItem};
 use horch_core::fleetd::fleet_runtime::adapters::watchdog_duties::{HerdrObserver, WatchdogDuties};
 use horch_core::fleetd::fleet_runtime::application::handlers_cli::{self, CliHandlers};
 use horch_core::fleetd::fleet_runtime::application::handlers_custody::{self, Custody};
+use horch_core::fleetd::fleet_runtime::application::handlers_idea::{self, IdeaHandlers};
 use horch_core::fleetd::fleet_runtime::application::handlers_task::{self, TaskHandlers};
 use horch_core::fleetd::fleet_runtime::application::handlers_worker::{self, WorkerDeps};
 use horch_core::fleetd::fleet_runtime::application::pass::{
-    Outside, Pass, PassError, PoolFacts, Ports, Settings, TaskWork,
+    IdeaPorts, Outside, Pass, PassError, PoolFacts, Ports, Primary, Settings, TaskWork, IDEAS_DIR,
 };
 use horch_core::fleetd::fleet_runtime::application::requests::Handlers;
 use horch_core::fleetd::fleet_runtime::application::{handlers_run, holds};
@@ -59,8 +60,16 @@ use horch_core::fleetd::fleet_runtime::domain::config::HANG_LIMIT_S;
 use horch_core::fleetd::fleet_runtime::domain::health::{Finding, Hold};
 use horch_core::fleetd::fleet_runtime::domain::heartbeat::{is_hung, is_older, Exe, Heartbeat};
 use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
+use horch_core::fleetd::ideas::adapters::needs_you_folder::Mirrored;
+use horch_core::fleetd::ideas::adapters::notify::{self, Notice};
 use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
+use horch_core::fleetd::ideas::domain::plan_validator::{DeclaredGates, RosterProfile};
+use horch_core::fleetd::integration::adapters::git::CliGitGateway;
+use horch_core::fleetd::integration::adapters::project_file;
+use horch_core::fleetd::integration::adapters::sqlite as feature_rows;
 use horch_core::fleetd::integration::application::commands::GitRefTips;
+use horch_core::fleetd::integration::application::ports::IntegrationGitGateway;
+use horch_core::fleetd::task_execution::application::dispatch::CheckSandboxes;
 use horch_core::fleetd::task_execution::application::launch::{Launches, PushLaunch};
 use horch_core::fleetd::task_execution::application::quota::Restart;
 use horch_core::fleetd::task_execution::domain::task::{AttemptRow, InPane};
@@ -76,12 +85,14 @@ use horch_core::runtime::{process, Paths, RuntimeContext};
 use horch_core::taskledger::finish::CodexSandbox;
 use horch_core::taskledger::model::RunStatus;
 use horch_core::taskledger::orchestrator;
+use horch_core::taskledger::runs;
 use horch_core::taskledger::sql_words::list;
 use horch_core::taskledger::store::{default_path, BUSY_TIMEOUT};
 use horch_core::taskledger::watchdog::{Observation, Observer};
 use horch_core::taskledger::workers::Worker;
 use horch_core::taskledger::{watchdog, LedgerWriter, Store};
 use horch_core::workspace::herdr::Herdr;
+use horch_platform::channel::User;
 use horch_platform::lock::FleetdLock;
 use horch_platform::service;
 use rusqlite::Connection;
@@ -640,7 +651,8 @@ fn start_channel(
 /// The handlers of the request kinds of Phase 5 (the table "Request kinds"
 /// of `docs/tickets/fleetd-p5/MAP.md`): the run and plan kinds, the task
 /// kinds, the worker kinds, the kinds of the last direct writers of the CLI
-/// (T-885) and the custody kinds. The channel server and
+/// (T-885) and the custody kinds, and the idea kinds of Phase 6 (T-553).
+/// The channel server and
 /// the request files of the fleetd of `settings` each get 1 copy.
 fn request_handlers(ctx: &RuntimeContext, settings: &Settings) -> Handlers {
     let config = Arc::new(settings.config.clone());
@@ -668,10 +680,161 @@ fn request_handlers(ctx: &RuntimeContext, settings: &Settings) -> Handlers {
         Arc::new(Custody {
             guard,
             config: settings.config.clone(),
-            refs: Box::new(GitRefTips { git }),
+            refs: Box::new(GitRefTips { git: git.clone() }),
         }),
     );
+    register_idea_handlers(ctx, settings, &mut handlers, git);
     handlers
+}
+
+/// The handlers of the idea request kinds of Phase 6 (T-553). With no user
+/// of fleetd, the kinds get no handler, and fleetd prints 1 line.
+fn register_idea_handlers(
+    ctx: &RuntimeContext,
+    settings: &Settings,
+    handlers: &mut Handlers,
+    git: CliWorktreeGit,
+) {
+    let owner = match User::current() {
+        Ok(owner) => owner,
+        Err(e) => {
+            eprintln!("horch fleetd: no idea requests: reading the user of fleetd: {e}");
+            return;
+        }
+    };
+    let roster_ctx = ctx.clone();
+    let sandboxes = check_sandboxes(ctx);
+    handlers_idea::register(
+        handlers,
+        IdeaHandlers {
+            guard: settings.generation,
+            config: Arc::new(settings.config.clone()),
+            ideas: settings.fleet_root.join(IDEAS_DIR),
+            owner,
+            roster: Arc::new(move || roster_profiles(&roster_ctx, &sandboxes)),
+            git: Arc::new(CliGitGateway::new(git)),
+        },
+    );
+}
+
+/// The profiles of the roster now, for the plan validator of Phase 6: the
+/// roster as `horch spawn` loads it, and the check sandbox of each persona
+/// on this host. A roster that does not load gives no profile, so the
+/// validator refuses each plan that names a profile.
+fn roster_profiles(ctx: &RuntimeContext, sandboxes: &WorkerSandboxes) -> Vec<RosterProfile> {
+    let Ok(roster) = super::load_roster_unwarned(ctx, None) else {
+        return Vec::new();
+    };
+    roster
+        .names()
+        .into_iter()
+        .filter_map(|name| roster.get(name))
+        .map(|t| RosterProfile {
+            name: t.name.clone(),
+            provider: t.agent.as_str().to_string(),
+            model: t.model.clone().unwrap_or_default(),
+            effort: t.effort.clone(),
+            fallback: t.fallbacks.first().cloned(),
+            sandbox_here: sandboxes.supported(&t.name),
+        })
+        .collect()
+}
+
+/// The live sources of the idea duties of Phase 6 (T-553). The launch of
+/// an idea-lead attempt is not here: [`Live::attempt_spec`] refuses it
+/// until T-890.
+struct LiveIdeas<'a> {
+    ctx: &'a RuntimeContext,
+    sandboxes: &'a WorkerSandboxes,
+    git: CliGitGateway,
+    herdr: Herdr,
+}
+
+impl LiveIdeas<'_> {
+    /// The repository and the primary branch of each open or ready feature,
+    /// sorted. `branchless` keeps only the features with no branch yet.
+    fn projects(&self, conn: &Connection, branchless: bool) -> Result<Vec<(PathBuf, String)>> {
+        let mut stmt = conn.prepare(
+            "SELECT id, primary_branch FROM features
+             WHERE state IN ('open', 'ready') AND (?1 = 0 OR branch IS NULL)",
+        )?;
+        let features = stmt
+            .query_map([branchless], |r| Ok((r.get::<_, String>(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<(String, String)>>>()
+            .context("reading the open features")?;
+        let mut projects = std::collections::BTreeSet::new();
+        for (id, branch) in features {
+            if let Some(run) = runs::feature_run(conn, &id)? {
+                projects.insert((PathBuf::from(run.project_root), branch));
+            }
+        }
+        Ok(projects.into_iter().collect())
+    }
+
+    /// The tip of `branch` of `repo`: the last fetched tip that is not
+    /// stale, else the local branch.
+    fn tip(&self, conn: &Connection, repo: &Path, branch: &str) -> Result<Option<String>> {
+        if let Some(row) = feature_rows::remote_tip(conn, &repo.to_string_lossy(), branch)? {
+            if row.stale_since.is_none() {
+                return Ok(Some(row.tip));
+            }
+        }
+        self.git.tip(repo, &format!("refs/heads/{branch}"))
+    }
+}
+
+impl IdeaPorts for LiveIdeas<'_> {
+    fn roster(&self) -> Vec<RosterProfile> {
+        roster_profiles(self.ctx, self.sandboxes)
+    }
+
+    /// The gates of the project `fleet.toml` at the primary tip of the
+    /// first project with an open feature, by path. No project, or no file
+    /// at the tip, gives no gate.
+    fn gates(&self, conn: &Connection) -> Result<DeclaredGates> {
+        let Some((repo, branch)) = self.projects(conn, false)?.into_iter().next() else {
+            return Ok(DeclaredGates::default());
+        };
+        let Some(tip) = self.tip(conn, &repo, &branch)? else {
+            return Ok(DeclaredGates::default());
+        };
+        let Some(text) = self.git.fleet_toml(&repo, &tip)? else {
+            return Ok(DeclaredGates::default());
+        };
+        let project =
+            project_file::parse(&text).with_context(|| format!("{} at {tip}", repo.display()))?;
+        Ok(DeclaredGates {
+            fast: project.fast_gate().map(str::to_string),
+            full: project.full_gate().map(str::to_string),
+        })
+    }
+
+    fn git(&self) -> &dyn IntegrationGitGateway {
+        &self.git
+    }
+
+    /// A project whose primary branch has no tip gets no entry: its ideas
+    /// wait in `clarifying`.
+    fn primaries(&self, conn: &Connection) -> Result<Vec<Primary>> {
+        let mut primaries = Vec::new();
+        for (repo, branch) in self.projects(conn, true)? {
+            if let Some(tip) = self.tip(conn, &repo, &branch)? {
+                primaries.push(Primary { repo, branch, tip });
+            }
+        }
+        Ok(primaries)
+    }
+
+    fn now(&self) -> chrono::DateTime<chrono::FixedOffset> {
+        chrono::Local::now().fixed_offset()
+    }
+
+    fn notify(&self, mirrored: &Mirrored, seq: u64) -> Result<()> {
+        match notify::notify(&self.herdr, mirrored, seq) {
+            Notice::Quiet | Notice::Sent => Ok(()),
+            Notice::Failed(line) => bail!("the needs-you report to herdr: {line}"),
+        }
+    }
 }
 
 /// The check sandbox of each worker on this host (ticket 18 of Phase 4):
@@ -760,6 +923,15 @@ fn with_pass<T>(
     let requests = request_handlers(ctx, &settings);
     let tools = super::taskledger::tools(ctx);
     let sandboxes = check_sandboxes(ctx);
+    let ideas = LiveIdeas {
+        ctx,
+        sandboxes: &sandboxes,
+        git: CliGitGateway::new(CliWorktreeGit::new(
+            &ctx.bins.harness.git,
+            &settings.fleet_root,
+        )),
+        herdr: herdr(),
+    };
     let spawns = PushSpawns { ctx };
     let work = TaskWork {
         tools: &tools,
@@ -768,7 +940,8 @@ fn with_pass<T>(
     };
     let mut pass = Pass::new(settings, ports)
         .with_requests(requests)
-        .with_task_work(work);
+        .with_task_work(work)
+        .with_idea_work(&ideas);
     f(&mut pass, &duties)
 }
 
