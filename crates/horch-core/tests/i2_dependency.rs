@@ -20,13 +20,18 @@ use horch_core::fleetd::fleet_runtime::domain::health::Hold;
 use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
 use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
 use horch_core::fleetd::integration::adapters::sqlite::{self as rows, NewBranch, NewFeature};
-use horch_core::fleetd::task_execution::domain::task::{AttemptRow, InPane};
+use horch_core::fleetd::task_execution::adapters::sqlite as attempts;
+use horch_core::fleetd::task_execution::adapters::verdict_file;
+use horch_core::fleetd::task_execution::domain::structural;
+use horch_core::fleetd::task_execution::domain::task::{AttemptRow, AttemptState, InPane};
+use horch_core::fleetd::task_execution::domain::verification::{Decision, Verdict};
 use horch_core::fleetd::worker_profiles::adapters::launcher::Launcher;
 use horch_core::fleetd::worker_profiles::application::ports::LaunchSpec;
 use horch_core::runtime::fault::Faults;
-use horch_core::taskledger::model::Actor;
+use horch_core::taskledger::model::{Actor, TaskKind, WorkerKind};
 use horch_core::taskledger::runs::{self, NewRun, Run};
 use horch_core::taskledger::tasks::{self, NewTask};
+use horch_core::taskledger::workers::{self, NewWorker};
 use horch_core::taskledger::{schema, util};
 use rusqlite::{params, Connection};
 
@@ -134,6 +139,16 @@ impl World {
             .unwrap();
     }
 
+    /// The task `task` is in `status`.
+    fn set_status(&self, task: &str, status: &str) {
+        self.conn
+            .execute(
+                "UPDATE tasks SET status = ?2 WHERE task_id = ?1",
+                params![task, status],
+            )
+            .unwrap();
+    }
+
     fn status(&self, task: &str) -> String {
         tasks::get(&self.conn, task).unwrap().status
     }
@@ -222,4 +237,69 @@ fn dependency_without_a_branch_row_keeps_the_done_rule() {
     w.done(&open);
     w.pass();
     assert_eq!(w.status(&dependent), "ready");
+}
+
+/// The `judges:` dependency in the pass (I2; the judge pair, steps 1 and
+/// 2; ticket 40 of fleetd-p6): a judge task stays `pending` while its
+/// judged task is `ready` or `verifying` with no passed structural check of
+/// its newest attempt. It is `ready` after that check passed. Else fleetd
+/// runs the judge beside the judged task (FM-9).
+#[test]
+fn judge_task_stays_pending_until_its_judged_task_passed_its_structural_check() {
+    let mut w = world();
+    let judged = w.task("w", &[]);
+    let mut new = NewTask::work("judge", "tickets/judge.md", "dev");
+    new.kind = TaskKind::Work;
+    new.parent_task_id = Some(judged.clone());
+    let judge = tasks::add(&w.conn, &w.run, &new, Actor::Orchestrator)
+        .unwrap()
+        .task_id;
+    w.set_status(&judge, "pending");
+    assert_eq!(w.status(&judged), "ready");
+
+    w.pass();
+    assert_eq!(w.status(&judge), "pending", "the judged task is ready");
+
+    let worker = workers::insert(
+        &w.conn,
+        &NewWorker {
+            run_id: w.run.run_id.clone(),
+            kind: Some(WorkerKind::Worker),
+            persona: "dev".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let attempt = AttemptRow {
+        id: "a1".into(),
+        task_id: Some(judged.clone()),
+        worker_id: worker,
+        state: AttemptState::Ended,
+        process: None,
+        pane: None,
+    };
+    attempts::insert_attempt(&w.conn, &attempt, &util::now()).unwrap();
+    w.set_status(&judged, "verifying");
+    w.pass();
+    assert_eq!(
+        w.status(&judge),
+        "pending",
+        "the judged task has no passed structural check"
+    );
+
+    let passed = Verdict {
+        task_id: judged.clone(),
+        attempt: "a1".into(),
+        n: 0,
+        decision: Decision::Passed,
+        tip: "0".repeat(40),
+        check_hash: String::new(),
+        job: None,
+        reason: structural::PASSED.into(),
+    };
+    let tx = w.conn.transaction().unwrap();
+    verdict_file::record(&tx, None, passed).unwrap();
+    tx.commit().unwrap();
+    w.pass();
+    assert_eq!(w.status(&judge), "ready", "the structural check passed");
 }

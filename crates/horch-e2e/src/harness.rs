@@ -280,6 +280,36 @@ impl Harness {
         cmd
     }
 
+    /// Make the herdr workspace of the fleet of this harness, as `horch
+    /// fleet` makes it: its label is the name of the project folder. fleetd
+    /// launches each attempt with no recorded pane in the first pane of
+    /// that workspace (T-890). Gives the workspace id, for example `w1`.
+    pub fn fleet_workspace(&self) -> String {
+        let label = self
+            .project
+            .file_name()
+            .expect("the project folder has a name")
+            .to_string_lossy()
+            .into_owned();
+        let mut create = Command::new(self.bin.join("herdr"));
+        self.seal(&mut create);
+        let o = create
+            .args(["workspace", "create", "--label", &label])
+            .output()
+            .expect("running the fake herdr");
+        assert!(
+            o.status.success(),
+            "herdr workspace create --label {label}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        let reply: serde_json::Value =
+            serde_json::from_slice(&o.stdout).expect("the reply of workspace create is JSON");
+        reply["result"]["workspace"]["workspace_id"]
+            .as_str()
+            .expect("the reply names the workspace id")
+            .to_string()
+    }
+
     /// The commit at `HEAD` of the project repo. `None` without git.
     pub fn head_sha(&self) -> Option<String> {
         self.git.as_ref()?;

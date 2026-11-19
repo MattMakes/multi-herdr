@@ -23,14 +23,18 @@ use horch_core::fleetd::integration::adapters::exec_bundle::{self, Build};
 use horch_core::fleetd::integration::adapters::exec_gate::gate_key;
 use horch_core::fleetd::integration::adapters::git::CliGitGateway;
 use horch_core::fleetd::integration::adapters::sqlite::{
-    self as rows, BundleRow, NewBranch, NewBundle, NewFeature,
+    self as rows, BranchFact, BundleRow, NewBranch, NewBundle, NewFeature,
 };
 use horch_core::fleetd::integration::application::bundles::{
-    self, overdue_key, Bundles, OVERDUE_KIND,
+    self, no_tip_key, overdue_key, Bundles, NO_TIP_KIND, OVERDUE_KIND,
 };
 use horch_core::fleetd::integration::application::landing;
 use horch_core::fleetd::integration::domain::task_branch::LandingState;
 use horch_core::fleetd::worktree_custody::adapters::git::CliWorktreeGit;
+use horch_core::fleetd::worktree_custody::application::create::{self, Observed};
+use horch_core::fleetd::worktree_custody::application::gate_tree::{
+    self, GateTree, GateTreeRequest,
+};
 use horch_core::taskledger::model::Actor;
 use horch_core::taskledger::runs::{self, NewRun, Run};
 use horch_core::taskledger::tasks::{self, NewTask};
@@ -98,7 +102,16 @@ fn open_ledger(root: &Path) -> Connection {
     conn
 }
 
+/// [`bare_world`] with the gate tree of [`FEATURE`] made, so a fast gate
+/// can run.
 fn world() -> World {
+    let mut w = bare_world();
+    w.gate_tree();
+    w
+}
+
+/// A world whose feature has no gate tree yet.
+fn bare_world() -> World {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
     let repo = root.join("repo");
@@ -318,6 +331,71 @@ impl World {
         ran.data.map(|d| serde_json::from_value(d).unwrap())
     }
 
+    /// The gate tree of [`FEATURE`]: its reserved row, then its made
+    /// folder.
+    fn gate_tree(&mut self) {
+        let job = self.reserve_gate_tree();
+        self.make_gate_tree(job);
+    }
+
+    /// The `worktree_add` run `job` of the gate tree makes its folder and
+    /// passes, and a pass observes it.
+    fn make_gate_tree(&mut self, job: i64) {
+        let path = gate_tree::path(&self.repo, FEATURE);
+        let tip = self.tip(FEATURE_BRANCH);
+        git(
+            &self.repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                &path.to_string_lossy(),
+                &tip,
+            ],
+        );
+        let json = r#"{"passed":true,"verdict":true,"text":"made"}"#;
+        self.end_job(job, "passed", Some(json));
+        let ended = jobs_store::get(&self.conn, job).unwrap().unwrap();
+        let config = self.config.clone();
+        let tx = self.conn.transaction().unwrap();
+        let ctx = JobCtx {
+            guard: None,
+            config: &config,
+            needs_you: &NeedsYouList,
+        };
+        let seen = create::observe(&ctx, &tx, &ended).unwrap();
+        tx.commit().unwrap();
+        assert!(matches!(seen, Observed::Created(_)), "{seen:?}");
+    }
+
+    /// The `worktree_add` run of the reserved gate tree of [`FEATURE`].
+    fn reserve_gate_tree(&mut self) -> i64 {
+        let repo = self.repo.clone();
+        let tip = self.tip(FEATURE_BRANCH);
+        let run_id = self.run.run_id.clone();
+        let req = GateTreeRequest {
+            feature_id: FEATURE,
+            run_id: &run_id,
+            repo: &repo,
+            base: FEATURE_BRANCH,
+            tip: &tip,
+        };
+        let config = self.config.clone();
+        let tx = self.conn.transaction().unwrap();
+        let ctx = JobCtx {
+            guard: None,
+            config: &config,
+            needs_you: &NeedsYouList,
+        };
+        let reserved = gate_tree::reserve(&ctx, &tx, &req, FleetSeconds(0)).unwrap();
+        tx.commit().unwrap();
+        match reserved {
+            GateTree::Reserved { job, .. } => job,
+            other => panic!("expected a reserved gate tree, got {other:?}"),
+        }
+    }
+
     fn end_job(&self, id: i64, state: &str, result_json: Option<&str>) {
         self.conn
             .execute(
@@ -438,6 +516,45 @@ fn passed_build_queues_1_fast_gate() {
     assert_eq!(w.only_bundle().state, "gating");
 }
 
+/// Q18: a fast gate runs only in the gate tree of its feature. A feature
+/// with no gate tree gets its reserved row and its `worktree_add` run when
+/// a bundle moves to `gating`, and no fast gate is queued. The pass after
+/// the tree is made queues 1 fast gate.
+#[test]
+fn fast_gate_waits_for_the_gate_tree_of_the_feature() {
+    let mut w = bare_world();
+    w.ready_branch("fleet/r1-a", "a1.txt");
+    w.pass(100);
+    let id = w.only_bundle().id;
+    let build = w.jobs_of(Kind::BundleBuild)[0].id;
+    assert!(matches!(w.run_build(build), Some(Build::Candidate { .. })));
+
+    w.pass(200);
+    assert_eq!(w.bundle(id).state, "gating");
+    assert!(
+        w.jobs_of(Kind::FastGate).is_empty(),
+        "no gate tree, no gate"
+    );
+    let adds = w.jobs_of(Kind::WorktreeAdd);
+    assert_eq!(adds.len(), 1, "the gate tree is reserved: {adds:?}");
+    let tree = gate_tree::of_feature(&w.conn, &w.repo, FEATURE)
+        .unwrap()
+        .expect("the reserved row of the gate tree");
+    assert_eq!(adds[0].subject, tree.worktree_id);
+
+    // The next pass reserves nothing new and still queues no gate.
+    w.pass(300);
+    assert_eq!(w.jobs_of(Kind::WorktreeAdd).len(), 1);
+    assert!(w.jobs_of(Kind::FastGate).is_empty());
+
+    // The tree is made: the next pass queues 1 fast gate.
+    w.make_gate_tree(adds[0].id);
+    w.pass(400);
+    let gates = w.jobs_of(Kind::FastGate);
+    assert_eq!(gates.len(), 1);
+    assert_eq!(w.bundle(id).job_id, Some(gates[0].id));
+}
+
 #[test]
 fn conflict_sends_the_member_to_conflicted_and_the_others_to_ready() {
     let mut w = world();
@@ -488,6 +605,54 @@ fn moved_feature_tip_drops_a_building_bundle() {
     let next = w.bundle(ids[1]);
     assert_eq!(next.base_tip, moved);
     assert_eq!(next.members, names(&ABC));
+}
+
+/// The build job of a bundle is a separate process. When the feature tip
+/// moves while the job runs, a pass drops the bundle, and the job can still
+/// write the candidate ref after the drop. The pass that sees the passed
+/// job records that ref on the dropped row, so fleetd deletes it ("fleetd
+/// owns the candidate refs").
+#[test]
+fn candidate_written_after_the_drop_is_recorded_for_its_deletion() {
+    let mut w = three_ready();
+    w.pass(100);
+    let id = w.only_bundle().id;
+    let build = w.jobs_of(Kind::BundleBuild)[0].id;
+    // The job process checks that the bundle is building and writes the
+    // ref, then fleetd drops the bundle, then the job ends.
+    let row = jobs_store::get(&w.conn, build).unwrap().unwrap();
+    let ran = exec_bundle::run(&w.conn, &row).unwrap();
+    let Some(Build::Candidate {
+        candidate_ref,
+        candidate_tip,
+    }) = ran.data.clone().map(|d| serde_json::from_value(d).unwrap())
+    else {
+        panic!("the build of 3 clean members gives a candidate");
+    };
+    w.commit_on(FEATURE_BRANCH, "f.txt", "moved\n");
+    w.pass(200);
+    assert_eq!(w.bundle(id).state, "dropped");
+    assert_eq!(w.bundle(id).candidate_ref, None);
+    let json = serde_json::json!({
+        "passed": true,
+        "verdict": true,
+        "text": ran.outcome.text,
+        "data": ran.data,
+    });
+    w.end_job(build, "passed", Some(&json.to_string()));
+
+    w.pass(300);
+    let bundle = w.bundle(id);
+    assert_eq!(bundle.state, "dropped");
+    assert_eq!(
+        bundle.candidate_ref.as_deref(),
+        Some(candidate_ref.as_str())
+    );
+    assert_eq!(
+        bundle.candidate_tip.as_deref(),
+        Some(candidate_tip.as_str())
+    );
+    assert_eq!(w.tip(&candidate_ref), candidate_tip);
 }
 
 #[test]
@@ -676,4 +841,93 @@ fn failed_build_drops_the_bundle_and_its_members_go_back_to_ready() {
         assert_eq!(w.landing_state(b), "ready");
     }
     assert!(w.jobs_of(Kind::FastGate).is_empty());
+}
+
+// ─── a member already in the feature (T-402, option 1) ──────────────────
+
+impl World {
+    /// The candidate of the only bundle after its build passes.
+    fn built_candidate(&mut self) -> String {
+        self.pass(100);
+        let build = self.jobs_of(Kind::BundleBuild)[0].id;
+        let Some(Build::Candidate { candidate_tip, .. }) = self.run_build(build) else {
+            panic!("the build gives a candidate");
+        };
+        candidate_tip
+    }
+
+    /// The merge commits of `rev` past `base`.
+    fn merges_past(&self, base: &str, rev: &str) -> Vec<String> {
+        let out = git(
+            &self.repo,
+            &["rev-list", "--merges", &format!("{base}..{rev}")],
+        );
+        out.lines().map(str::to_string).collect()
+    }
+}
+
+/// Run A: the old path already put the work of a ready task branch on the
+/// feature. Its bundle lands it with no candidate commit: the candidate is
+/// the feature tip, so the ref move later sees the feature at the candidate
+/// and moves nothing.
+#[test]
+fn member_already_in_the_feature_adds_no_candidate_commit() {
+    let mut w = world();
+    w.ready_branch("fleet/r1-a", "a1.txt");
+    let tip = w.tip("fleet/r1-a");
+    git(&w.repo, &["branch", "-f", FEATURE_BRANCH, &tip]);
+
+    let candidate = w.built_candidate();
+    assert_eq!(candidate, tip, "the candidate is the feature tip");
+    assert_eq!(w.only_bundle().base_tip, tip);
+    assert_eq!(w.landing_state("fleet/r1-a"), "in_bundle");
+}
+
+/// Run B: git no longer has the ready task branch. Its recorded tip is in
+/// the feature, so it lands the same way. A branch with no known tip gets
+/// 1 needs-you item and joins no bundle.
+#[test]
+fn lost_branch_lands_on_its_recorded_tip_else_opens_1_item() {
+    let mut w = world();
+    w.ready_branch("fleet/r1-a", "a1.txt");
+    w.ready_branch("fleet/r1-b", "b1.txt");
+    let tip = w.tip("fleet/r1-a");
+    git(&w.repo, &["branch", "-f", FEATURE_BRANCH, &tip]);
+    let tx = w.conn.transaction().unwrap();
+    let fact = BranchFact::SeenTip(&tip);
+    rows::set_branch_fact(&tx, None, "fleet/r1-a", fact, cause("fleetd read the tip")).unwrap();
+    tx.commit().unwrap();
+    git(&w.repo, &["branch", "-D", "fleet/r1-a", "fleet/r1-b"]);
+
+    let candidate = w.built_candidate();
+    assert_eq!(candidate, tip);
+    assert_eq!(w.landing_state("fleet/r1-a"), "in_bundle");
+    assert_eq!(w.landing_state("fleet/r1-b"), "ready");
+    let items = open_keys(&w.conn, NO_TIP_KIND).unwrap();
+    assert_eq!(items, [no_tip_key("fleet/r1-b")]);
+
+    // The next pass opens no second item.
+    w.pass(200);
+    let items = open_keys(&w.conn, NO_TIP_KIND).unwrap();
+    assert_eq!(items, [no_tip_key("fleet/r1-b")]);
+}
+
+/// A normal member next to a member already in the feature still gets its
+/// merge commit: 1 merge commit on the feature tip.
+#[test]
+fn normal_member_still_gets_its_candidate_commit() {
+    let mut w = world();
+    w.ready_branch("fleet/r1-a", "a1.txt");
+    w.ready_branch("fleet/r1-b", "b1.txt");
+    let a = w.tip("fleet/r1-a");
+    git(&w.repo, &["branch", "-f", FEATURE_BRANCH, &a]);
+
+    let candidate = w.built_candidate();
+    assert_ne!(candidate, a);
+    assert_eq!(w.merges_past(&a, &candidate).len(), 1);
+    let b = w.tip("fleet/r1-b");
+    assert_eq!(
+        git(&w.repo, &["merge-base", "--is-ancestor", &b, &candidate]),
+        ""
+    );
 }

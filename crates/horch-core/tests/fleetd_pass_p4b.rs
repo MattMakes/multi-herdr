@@ -48,7 +48,10 @@ use horch_core::fleetd::task_execution::domain::task::{AttemptRow, InPane};
 use horch_core::fleetd::worker_profiles::adapters::check_sandbox::WorkerSandboxes;
 use horch_core::fleetd::worker_profiles::adapters::launcher::Launcher;
 use horch_core::fleetd::worker_profiles::application::ports::LaunchSpec;
-use horch_core::fleetd::worktree_custody::application::create::RunJob;
+use horch_core::fleetd::worktree_custody::application::create::{self, Observed, RunJob};
+use horch_core::fleetd::worktree_custody::application::gate_tree::{
+    self, GateTree, GateTreeRequest,
+};
 use horch_core::runtime::fault::{Faults, ABORT_EXIT_CODE};
 use horch_core::taskledger::finish::{CodexSandbox, Tools};
 use horch_core::taskledger::git::Git;
@@ -166,6 +169,7 @@ fn world(remote: &str) -> World {
     drop(conn);
     let mut w = World::reopen(&dir);
     w._temp = Some(temp);
+    w.gate_tree();
     w
 }
 
@@ -207,6 +211,55 @@ impl World {
 
     fn root(&self) -> PathBuf {
         self.dir.join("fleet")
+    }
+
+    /// The gate tree of [`FEATURE`], so a fast gate can run (Q18): its
+    /// reserved row, the folder that its `worktree_add` job makes, and the
+    /// observation of the passed job, as a pass observes it.
+    fn gate_tree(&self) {
+        let repo = self.repo();
+        let tip = self.tip(FEATURE_BRANCH).unwrap();
+        let req = GateTreeRequest {
+            feature_id: FEATURE,
+            run_id: &self.run.run_id,
+            repo: &repo,
+            base: FEATURE_BRANCH,
+            tip: &tip,
+        };
+        let ctx = JobCtx {
+            guard: None,
+            config: &self.config,
+            needs_you: &NeedsYouList,
+        };
+        let tx = self.conn.unchecked_transaction().unwrap();
+        let job = match gate_tree::reserve(&ctx, &tx, &req, FleetSeconds(0)).unwrap() {
+            GateTree::Reserved { job, .. } => job,
+            other => panic!("expected a reserved gate tree, got {other:?}"),
+        };
+        tx.commit().unwrap();
+        let path = gate_tree::path(&repo, FEATURE);
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                &path.to_string_lossy(),
+                &tip,
+            ],
+        );
+        self.conn
+            .execute(
+                "UPDATE jobs SET state = 'passed', result_json = ?2 WHERE id = ?1",
+                params![job, r#"{"passed":true,"verdict":true,"text":"made"}"#],
+            )
+            .unwrap();
+        let ended = jobs_store::get(&self.conn, job).unwrap().unwrap();
+        let tx = self.conn.unchecked_transaction().unwrap();
+        let seen = create::observe(&ctx, &tx, &ended).unwrap();
+        tx.commit().unwrap();
+        assert!(matches!(seen, Observed::Created(_)), "{seen:?}");
     }
 
     fn repo(&self) -> PathBuf {
@@ -569,8 +622,10 @@ fn only_1_git_writer_job_runs_for_1_repository() {
             State::Queued,
             "the running {kind} holds the build"
         );
+        // A trial merge only reads git, so it runs beside the writer.
         let running = w.count(&format!(
-            "SELECT count(*) FROM jobs WHERE state = 'running' AND repo = '{repo}'"
+            "SELECT count(*) FROM jobs WHERE state = 'running' AND repo = '{repo}'
+             AND kind != 'trial_merge'"
         ));
         assert_eq!(running, 1, "1 git writer runs while {kind} runs");
         let pid = jobs_store::get(&conn, writer)

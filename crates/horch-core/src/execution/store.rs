@@ -316,13 +316,17 @@ pub fn from_execution(e: &Execution) -> LedgerRecordV1 {
 pub const STATE_DB: &str = "ledger.sqlite3";
 
 /// The task ledger file that holds the session records of `paths`
-/// (TRF-45): the task ledger, unless the state dir moved. A state dir moved
-/// with `HORCH_STATE_DIR` (a test, a smoke run) keeps its sessions in
-/// `<state_root>/ledger.sqlite3`, as it kept its JSON ledgers in the state
-/// dir before, so it never writes another ledger's sessions. A worker pane
-/// gets the default state dir by name, which is no move.
+/// (TRF-45, T-890). An explicit value wins, in this order:
+/// 1. An explicit `HORCH_LEDGER_DB` gives that ledger. Only fleetd writes
+///    the session rows (T-884), so they must be in the ledger of that
+///    fleetd, and the fleetd launches each process with its ledger.
+/// 2. With no explicit ledger, a state dir moved with `HORCH_STATE_DIR` (a
+///    test, a smoke run) gives `<state_root>/ledger.sqlite3`, so it never
+///    writes the sessions of the operator's ledger.
+/// 3. Else the task ledger. A worker pane gets the default state dir by
+///    name, which is no move.
 pub fn session_db(paths: &Paths) -> PathBuf {
-    if paths.state_root == paths.default_state_root {
+    if paths.ledger_override.is_some() || paths.state_root == paths.default_state_root {
         paths.ledger_db.clone()
     } else {
         paths.state_root.join(STATE_DB)
@@ -2041,7 +2045,10 @@ mod trf_45_tests {
     }
 
     /// A state dir moved alone keeps its sessions there; the default state
-    /// dir uses the task ledger.
+    /// dir uses the task ledger. An explicit `HORCH_LEDGER_DB` wins over a
+    /// moved state dir (T-890). This changes the old rule "a moved state dir
+    /// wins over HORCH_LEDGER_DB": after T-884 only fleetd writes the session
+    /// rows, so they must be in the ledger of that fleetd.
     #[test]
     fn trf_45_session_db_is_the_task_ledger_unless_the_state_dir_moved() {
         use crate::runtime::MapEnv;
@@ -2053,10 +2060,12 @@ mod trf_45_tests {
         assert_eq!(session_db(&named), home.join(".horch/ledger.sqlite3"));
         let scratch = at(MapEnv::new("/").with("HORCH_LEDGER_DB", "/tmp/l.sqlite3"));
         assert_eq!(session_db(&scratch), Path::new("/tmp/l.sqlite3"));
-        let moved = at(MapEnv::new("/")
+        let moved = at(MapEnv::new("/").with("HORCH_STATE_DIR", "/tmp/s"));
+        assert_eq!(session_db(&moved), Path::new("/tmp/s/ledger.sqlite3"));
+        let explicit = at(MapEnv::new("/")
             .with("HORCH_STATE_DIR", "/tmp/s")
             .with("HORCH_LEDGER_DB", "/tmp/l.sqlite3"));
-        assert_eq!(session_db(&moved), Path::new("/tmp/s/ledger.sqlite3"));
+        assert_eq!(session_db(&explicit), Path::new("/tmp/l.sqlite3"));
     }
 }
 

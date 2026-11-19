@@ -119,8 +119,29 @@ fn by_fleetd(text: &str) -> Cause<'_> {
 /// feature is `merged` or `abandoned`. Gives the rescue effects to run
 /// after the commit (`rebase::run`, then `rebase::observe`).
 pub fn follow(e: &Edges<'_>, tx: &Connection, clock: FleetSeconds) -> Result<Vec<Effect>> {
+    follow_in(e, tx, clock, None)
+}
+
+/// The upper feature of each stack edge whose lower feature is `merged` or
+/// `abandoned`, by id.
+pub fn ended_uppers(tx: &Connection) -> Result<Vec<String>> {
+    Ok(ended_edges(tx)?.into_iter().map(|e| e.upper).collect())
+}
+
+/// [`follow`] for the stack edge of the upper feature `upper` only, or for
+/// each edge with `None`: the pass gives each upper feature the profile of
+/// its own resolver tasks.
+pub fn follow_in(
+    e: &Edges<'_>,
+    tx: &Connection,
+    clock: FleetSeconds,
+    upper: Option<&str>,
+) -> Result<Vec<Effect>> {
     let mut effects = Vec::new();
-    for edge in ended_edges(tx)? {
+    let edges = ended_edges(tx)?
+        .into_iter()
+        .filter(|edge| upper.is_none_or(|u| u == edge.upper));
+    for edge in edges {
         let effect = follow_one(e, tx, clock, &edge)
             .with_context(|| format!("the stack edge of {} on {}", edge.upper, edge.lower))?;
         effects.extend(effect);
@@ -420,6 +441,7 @@ fn resolver_task(e: &Edges<'_>, idea: &str, key: &str, f: &RebaseFacts<'_>) -> P
         spec_json: spec.to_string(),
         after: Vec::new(),
         judges: None,
+        own: Vec::new(),
     }
 }
 
