@@ -267,10 +267,7 @@ impl World {
                 "requests",
                 "SELECT request_id, kind, class, state, IFNULL(reason, '-') FROM requests",
             ),
-            show(
-                "attempts",
-                "SELECT id, state, IFNULL(outcome, '-') FROM attempts",
-            ),
+            show("attempts", "SELECT * FROM attempts"),
             format!("calls:\n{}\n", calls.join("\n")),
             format!("idea files:\n{}\n", self.idea_files()),
             format!(
@@ -351,7 +348,12 @@ fn fr10_sub_orchestrator_approval_leaves_awaiting_approval() {
     let awaited = w.fake_extra("awaited");
     assert_eq!(awaited, "awaiting_approval", "{}", w.context());
     let approve = w.fake_extra("approve");
-    assert_ne!(approve["exit"], 0, "horch idea approve inside: {approve}");
+    assert_ne!(
+        approve["exit"],
+        0,
+        "horch idea approve inside: {approve}\n{}",
+        w.context()
+    );
     let err = approve["stderr"].as_str().unwrap_or_default();
     assert!(err.contains("refused inside a fleet attempt"), "{approve}");
     assert!(
