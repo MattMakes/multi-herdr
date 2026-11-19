@@ -2,19 +2,21 @@
 //! (`docs/specs/fleetd/design.md`, "No work is lost", I10, FM-40; ticket 43
 //! of `docs/tickets/fleetd-p4/`).
 //!
-//! The command shows the ref, its class, its size and its files. It commits
-//! 1 event, then deletes the ref with `git update-ref -d <ref> <tip>` and
+//! The command shows the ref, its class, its size and its files. It sends 1
+//! `rescue_drop` request, and fleetd commits 1 event (RR-5, T-885). Then
+//! the command deletes the ref with `git update-ref -d <ref> <tip>` and
 //! reads it back. A drop that dies after the commit is completed by the next
 //! drop, with no second event. A caller that is a ledger worker and not the
-//! orchestrator is refused: before Phase 5 this check is on the client side
-//! (the server check SR-8 is Phase 5).
+//! orchestrator is refused on the client side. fleetd needs the operator
+//! token, which a worker sandbox cannot read (SR-8).
 
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::ExitCode;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use clap::Subcommand;
+use horch_core::fleetd::fleet_runtime::domain::requests::Kind;
 use horch_core::fleetd::integration::adapters::git::CliGitGateway;
 use horch_core::fleetd::worktree_custody::adapters::git::{repo_git_dir, CliWorktreeGit};
 use horch_core::fleetd::worktree_custody::adapters::rescue_refs_git as refs_git;
@@ -25,6 +27,9 @@ use horch_core::taskledger::{
     self, finish, model::WorkerKind, triage::human_bytes, workers, Store,
 };
 
+use serde_json::json;
+
+use super::operator_request::{self, Answer};
 use super::taskledger::{project_root, resolve_run, worker_id_opt, RunArg};
 
 #[derive(Subcommand)]
@@ -52,9 +57,8 @@ pub fn run(ctx: &RuntimeContext, command: RescueCommand) -> Result<ExitCode> {
 /// Drop the rescue ref `name` of the repository `repo`, and give the last
 /// line.
 fn drop_ref(ctx: &RuntimeContext, repo: &Path, name: &str) -> Result<String> {
-    // The direct path of today: fleetd has no `rescue_drop` handler yet
-    // (`handlers_custody::NOT_YET_HANDLED`, T-386), so no request is sent.
-    let mut store = taskledger::open(ctx)?;
+    let store = taskledger::open_existing_read_only(ctx)?
+        .context("the task ledger does not exist. fleetd creates it at its start")?;
     refuse_worker(ctx, &store)?;
     let git = CliWorktreeGit::new(&ctx.bins.harness.git, &ctx.paths.fleet_root)
         .reading(&[repo.to_path_buf()]);
@@ -77,7 +81,21 @@ fn drop_ref(ctx: &RuntimeContext, repo: &Path, name: &str) -> Result<String> {
     for f in &files {
         println!("  {f}");
     }
-    store.immediate(|tx| rescue_refs::record_drop(tx, &plan))?;
+    drop(store);
+    let payload = json!({
+        "repo": d.repo,
+        "name": d.name,
+        "tip": d.tip,
+        "class": plan.class.as_str(),
+        "bytes": plan.bytes,
+    });
+    match operator_request::request(ctx, Kind::RescueDrop, payload)? {
+        Answer::Applied(_) => {}
+        Answer::Refused(reason) => bail!("refused: {reason}; nothing is deleted"),
+        Answer::Queued => bail!(
+            "fleetd is down: the drop waits in a request file. Run horch rescue drop {name} again after fleetd starts"
+        ),
+    }
     let gw = CliGitGateway::new(git.writing(&[repo_git_dir(repo)?]));
     rescue_refs::drop_ref(&gw, d)?;
     Ok(format!(

@@ -2510,7 +2510,8 @@ const LEDGER_WRITERS_EXEMPT: &[(&str, &str, &str)] = &[
     (
         "horch-core/src/taskledger/store.rs",
         "Store::open(path)",
-        "LedgerWriter::open: the writable open of fleetd, which only cmd/fleetd.rs makes",
+        "LedgerWriter::open: the writable open of fleetd, which only cmd/fleetd.rs makes, \
+         and Store::second_writer, which needs a writable store first",
     ),
     (
         "horch-core/src/taskledger/schema.rs",
@@ -2520,7 +2521,7 @@ const LEDGER_WRITERS_EXEMPT: &[(&str, &str, &str)] = &[
     (
         "horch-core/src/taskledger/mod.rs",
         "Store::open(&ctx.paths.ledger_db)",
-        "taskledger::open, the writable open of the T-884 and T-885 entries below",
+        "taskledger::open, the writable open of the T-884 entries below",
     ),
     (
         "horch-core/src/execution/lifecycle.rs",
@@ -2531,58 +2532,6 @@ const LEDGER_WRITERS_EXEMPT: &[(&str, &str, &str)] = &[
         "horch-core/src/execution/store.rs",
         "taskledger::Store::open(&self.db)",
         "T-884: ExecutionStore::update writes the session records",
-    ),
-    (
-        "horch/src/cmd/taskledger.rs",
-        "taskledger::open(ctx)?",
-        "T-885: run close, run gate, status (it adopts a workspace), watch, \
-         import --dry-run and the worktree commands that reads_only does not list",
-    ),
-    (
-        "horch/src/cmd/taskledger.rs",
-        "let mut s = taskledger::open(ctx)?",
-        "T-885: progress_from_worker writes the progress of a worker",
-    ),
-    (
-        "horch/src/cmd/rescuecmd.rs",
-        "taskledger::open(ctx)?",
-        "T-885: horch rescue drop writes directly; fleetd has no rescue_drop handler",
-    ),
-    (
-        "horch/src/cmd/messaging.rs",
-        "taskledger::open(ctx)?",
-        "T-885: record_answer writes the questions row of a mail answer",
-    ),
-    (
-        "horch/src/cmd/messaging.rs",
-        "horch_core::taskledger::open(ctx).and_then(",
-        "T-885: end_taskless_row of horch done ends the row of a report pane",
-    ),
-    (
-        "horch-core/src/taskledger/finish/mod.rs",
-        "Connection::open(ledger)",
-        "T-885: with_custody, the custody of worktree new, worktree restore, \
-         run gate and the finish cleanup",
-    ),
-    (
-        "horch/src/cmd/worktree.rs",
-        "taskledger::open_existing(ctx)",
-        "T-885: triage_rows writes the bytes cache of the worktree listing",
-    ),
-    (
-        "horch/src/cmd/worktree.rs",
-        "let mut store = taskledger::open(ctx)?",
-        "T-885: triage_apply_direct writes the ARCHIVE, DELETE, LAND and PR decisions",
-    ),
-    (
-        "horch/src/cmd/compact.rs",
-        "taskledger::open(ctx)?",
-        "T-885: the compact job writes the progress of a compacted worker",
-    ),
-    (
-        "horch/src/cmd/taskledger_wake.rs",
-        "taskledger::open_existing(ctx)",
-        "T-885: the drain of the mail courier marks the outbox rows",
     ),
 ];
 

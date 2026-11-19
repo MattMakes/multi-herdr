@@ -321,9 +321,7 @@ pub fn drop_worktree_with(
             actor: Actor::Worker,
             text: "dropped",
         };
-        if let Err(why) =
-            finish::remove_tree(store.path(), jobs, &wt.worktree_id, cause, keep_branch)?
-        {
+        if let Err(why) = finish::remove_tree(store, jobs, &wt.worktree_id, cause, keep_branch)? {
             bail!("the worktree stays: {why}; nothing removed");
         }
     }

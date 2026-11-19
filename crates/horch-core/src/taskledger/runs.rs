@@ -850,9 +850,9 @@ pub fn remove_gate_tree(store: &Store, tools: &Tools, run: &Run) -> Result<Optio
                 "it has modified or untracked files: {}",
                 dirty.join(", ")
             )),
-            Ok(_) => match finish::job_runner(tools).and_then(|jobs| {
-                finish::remove_tree(store.path(), jobs.as_ref(), &id, cause, false)
-            }) {
+            Ok(_) => match finish::job_runner(tools)
+                .and_then(|jobs| finish::remove_tree(store, jobs.as_ref(), &id, cause, false))
+            {
                 Ok(Ok(())) => None,
                 Ok(Err(why)) => Some(why),
                 Err(e) => Some(format!("{e:#}")),
@@ -913,7 +913,7 @@ fn checkout_tip(store: &mut Store, tools: &Tools, run: &Run, dir: &Path, tip: &s
         }
         Some(row) if row.state == WorktreeState::Reserved => {
             let jobs = finish::job_runner(tools)?;
-            let id = finish::with_custody(store.path(), |conn, ctx| {
+            let id = finish::with_custody(store, |conn, ctx| {
                 create::finish_reserved(conn, ctx, jobs.as_ref(), &row.worktree_id)
             })?;
             // As a new gate tree: no owner. A tree that is not `active`
@@ -978,7 +978,7 @@ fn add_gate_tree(
         from: None,
         new: Some(&new),
     };
-    let id = finish::lease_and_wait(store.path(), jobs, &lease)?;
+    let id = finish::lease_and_wait(store, jobs, &lease)?;
     store.immediate(|tx| create::give_to_operator(tx, &id))
 }
 

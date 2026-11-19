@@ -14,9 +14,7 @@ use std::sync::Arc;
 use horch_core::digest::sha256_bytes;
 use horch_core::fleetd::fleet_runtime::adapters::jobs_store::{self, NewRun};
 use horch_core::fleetd::fleet_runtime::adapters::request_wire::{Outcome, Reply, Request};
-use horch_core::fleetd::fleet_runtime::application::handlers_custody::{
-    register, Custody, NOT_YET_HANDLED,
-};
+use horch_core::fleetd::fleet_runtime::application::handlers_custody::{register, Custody};
 use horch_core::fleetd::fleet_runtime::application::ledger::{transition, Cause};
 use horch_core::fleetd::fleet_runtime::application::requests::{handle, Handlers, NOT_HANDLED};
 use horch_core::fleetd::fleet_runtime::domain::authorize::Decision;
@@ -533,12 +531,48 @@ fn worktree_triage_queues_its_jobs() {
     );
 }
 
+/// `rescue_drop` (T-885) checks its payload as untrusted input and records
+/// nothing that git does not confirm. The CLI test `p5_cli_writers` drops
+/// a real ref.
 #[test]
-fn feature_abandon_and_rescue_drop_stay_refused_until_their_use_cases_exist() {
+fn rescue_drop_refuses_a_payload_that_git_or_the_ledger_does_not_confirm() {
     let mut w = world();
-    for kind in NOT_YET_HANDLED {
-        assert_eq!(w.refused(kind, json!({})), NOT_HANDLED);
-    }
+    let good = |w: &World| {
+        json!({
+            "repo": w.root,
+            "name": "refs/horch/rescue/branch/side/1",
+            "tip": HEAD,
+            "class": "unique",
+            "bytes": 10,
+        })
+    };
+    let events = |w: &World| w.count("SELECT count(*) FROM events");
+    let before = events(&w);
+    let mut p = good(&w);
+    p["repo"] = json!("/not/a/project");
+    assert!(w
+        .refused(Kind::RescueDrop, p)
+        .contains("is not the root of a project"));
+    let mut p = good(&w);
+    p["name"] = json!("refs/heads/main");
+    assert!(w
+        .refused(Kind::RescueDrop, p)
+        .contains("is not a rescue ref"));
+    let mut p = good(&w);
+    p["class"] = json!("other");
+    assert!(w
+        .refused(Kind::RescueDrop, p)
+        .contains("is not unique or superseded"));
+    let mut p = good(&w);
+    p["extra"] = json!(1);
+    assert!(w
+        .refused(Kind::RescueDrop, p)
+        .contains("a bad rescue_drop payload"));
+    // git has no such ref: the handler records nothing.
+    let why = w.refused(Kind::RescueDrop, good(&w));
+    assert!(why.contains("does not exist"), "{why}");
+    assert_eq!(events(&w), before);
+    assert_ne!(why, NOT_HANDLED);
 }
 
 #[test]

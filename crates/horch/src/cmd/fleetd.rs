@@ -46,6 +46,7 @@ use horch_core::fleetd::fleet_runtime::adapters::fleetd_row::{self, lock_path, w
 use horch_core::fleetd::fleet_runtime::adapters::old_watchdog;
 use horch_core::fleetd::fleet_runtime::adapters::scans::FolderItem;
 use horch_core::fleetd::fleet_runtime::adapters::watchdog_duties::{HerdrObserver, WatchdogDuties};
+use horch_core::fleetd::fleet_runtime::application::handlers_cli::{self, CliHandlers};
 use horch_core::fleetd::fleet_runtime::application::handlers_custody::{self, Custody};
 use horch_core::fleetd::fleet_runtime::application::handlers_task::{self, TaskHandlers};
 use horch_core::fleetd::fleet_runtime::application::handlers_worker::{self, WorkerDeps};
@@ -638,7 +639,8 @@ fn start_channel(
 
 /// The handlers of the request kinds of Phase 5 (the table "Request kinds"
 /// of `docs/tickets/fleetd-p5/MAP.md`): the run and plan kinds, the task
-/// kinds, the worker kinds and the custody kinds. The channel server and
+/// kinds, the worker kinds, the kinds of the last direct writers of the CLI
+/// (T-885) and the custody kinds. The channel server and
 /// the request files of the fleetd of `settings` each get 1 copy.
 fn request_handlers(ctx: &RuntimeContext, settings: &Settings) -> Handlers {
     let config = Arc::new(settings.config.clone());
@@ -664,6 +666,12 @@ fn request_handlers(ctx: &RuntimeContext, settings: &Settings) -> Handlers {
         lock_holder: Arc::new(move |ws: &str| orchestrator::holder(&lock_dir, ws)),
     };
     handlers_worker::register(&mut handlers, &worker);
+    handlers_cli::register(
+        &mut handlers,
+        CliHandlers {
+            state_root: ctx.paths.state_root.clone(),
+        },
+    );
     let git = CliWorktreeGit::new(&ctx.bins.harness.git, &settings.fleet_root);
     handlers_custody::register(
         &mut handlers,

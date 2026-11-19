@@ -8,15 +8,22 @@ use horch_core::execution::lifecycle::ReportStatus;
 use horch_core::ids::WorkspaceId;
 use horch_core::messaging::mail;
 use horch_core::runtime::RuntimeContext;
-use horch_core::taskledger::model::{Actor, EventKind, OutboxEvent};
-use horch_core::taskledger::outbox::{self, Row, Scope, Wake, Written};
-use horch_core::taskledger::runs::{self, Run};
-use horch_core::taskledger::tasks;
+use horch_core::taskledger::model::{Actor, EventKind};
+use horch_core::taskledger::outbox::{self, Row, Scope};
+use horch_core::taskledger::runs::Run;
 use horch_core::taskledger::util::{self, About};
-use horch_core::taskledger::wakes::{
-    self, dependents_wake, reviews_in_wake, settled_wake, startable_wake, tagged,
-};
 use horch_core::taskledger::Store;
+// The wakes that only the tests of this module write: the CLI writes no
+// outbox row (RR-5, T-885), and the pass of fleetd writes each wake.
+#[cfg(test)]
+use horch_core::taskledger::model::OutboxEvent;
+#[cfg(test)]
+use horch_core::taskledger::outbox::{Wake, Written};
+#[cfg(test)]
+use horch_core::taskledger::wakes::{self, settled_wake, startable_wake, tagged};
+#[cfg(test)]
+use horch_core::taskledger::{runs, tasks};
+#[cfg(test)]
 use rusqlite::Transaction;
 
 /// `HORCH_NO_WAKE=1` turns wakes off (tests that run no herdr). A wake is
@@ -28,6 +35,7 @@ fn disabled() -> bool {
 /// Wake the run's orchestrator with the free-text line `text`. Every call
 /// is a new wake, as before the outbox. The event comes from the text
 /// ([`event_of`]); a caller that knows its event uses [`wake_as`].
+#[cfg(test)]
 pub fn wake(ctx: &RuntimeContext, store: &Store, run: &Run, text: &str) {
     let wake = Wake::new(event_of(text), util::new_id(), tagged(text));
     wake_as(ctx, store, run, |_| Ok(Some(wake)));
@@ -35,6 +43,7 @@ pub fn wake(ctx: &RuntimeContext, store: &Store, run: &Run, text: &str) {
 
 /// The outbox event of a free-text wake. The column allows only the C3
 /// events: a stall or suspect line about a worker is `held`.
+#[cfg(test)]
 fn event_of(text: &str) -> OutboxEvent {
     if text.contains("was reaped") {
         OutboxEvent::Reaped
@@ -49,6 +58,7 @@ fn event_of(text: &str) -> OutboxEvent {
 /// before any send, then drain the run's outbox. `decide` reads the board
 /// in the same transaction as the write. The result is what was written;
 /// an error is printed, never returned.
+#[cfg(test)]
 pub fn wake_as(
     ctx: &RuntimeContext,
     store: &Store,
@@ -79,26 +89,6 @@ pub fn drain_run(ctx: &RuntimeContext, store: &Store, run: &Run, new: Option<&st
     });
     if let Err(e) = drained {
         eprintln!("horch ledger: the outbox drain failed: {e:#}");
-    }
-}
-
-/// The courier's drain: the outbox rows of the runs of `workspace`. A
-/// missing ledger has no rows; an error is printed, never returned.
-pub fn drain_workspace(ctx: &RuntimeContext, workspace: &str) {
-    let store = match horch_core::taskledger::open_existing(ctx) {
-        Ok(Some(store)) => store,
-        Ok(None) => return,
-        Err(e) => {
-            eprintln!("horch courier: the ledger did not open: {e:#}");
-            return;
-        }
-    };
-    let drained = outbox::drain(&store, Scope::Workspace(workspace), |row| {
-        let run = runs::get(store.conn(), &row.run_id)?;
-        send_row(ctx, &store, &run, row, false)
-    });
-    if let Err(e) = drained {
-        eprintln!("horch courier: the outbox drain failed: {e:#}");
     }
 }
 
@@ -174,6 +164,7 @@ pub(crate) fn settled_note(store: &Store, run: &Run) -> anyhow::Result<Option<St
 
 /// After a task finishes: wake the orchestrator when tasks can start that
 /// no live worker is on its way to claim, or when the run is settled.
+#[cfg(test)]
 pub fn after_done(ctx: &RuntimeContext, store: &Store, run: &Run) {
     if wake_as(ctx, store, run, |tx| settled_wake(tx, run)) != Written::Nothing {
         return;
@@ -182,84 +173,16 @@ pub fn after_done(ctx: &RuntimeContext, store: &Store, run: &Run) {
     nudge_stuck(ctx, store, run);
 }
 
-/// After a task was cancelled or parked unlanded: tell the orchestrator
-/// which open tasks now wait for it (#119). No wake when none do. A parked
-/// task's wake is `held`, a cancelled task's wake is `cancelled`.
-pub fn stalled_dependents(
-    ctx: &RuntimeContext,
-    store: &Store,
-    run: &Run,
-    task: &str,
-    dependents: &[tasks::Task],
-) {
-    if dependents.is_empty() {
-        return;
-    }
-    wake_as(ctx, store, run, |tx| {
-        let t = tasks::resolve(tx, &run.run_id, task)?;
-        Ok(dependents_wake(&t, dependents))
-    });
-}
-
-/// The last review of `parent` is in (C3): write its keyed `reviews-in`
-/// row, tell the author `role` to run finish, then mark the row delivered.
-/// The outbox order is row, send, mark: a crash before the mark sends the
-/// row to the orchestrator. A failed tell sends it to the orchestrator now.
-pub fn reviews_in(ctx: &RuntimeContext, store: &Store, run: &Run, parent: &str, role: &str) {
-    let written = outbox::write_now(store, &run.run_id, |tx| {
-        let p = tasks::resolve(tx, &run.run_id, parent)?;
-        reviews_in_wake(tx, &p, role).map(Some)
-    });
-    let id = match written {
-        Ok(Written::New(id)) => id,
-        Ok(_) => return drain_run(ctx, store, run, None),
-        Err(e) => {
-            eprintln!("horch ledger: the reviews-in wake was not written: {e:#}");
-            return;
-        }
-    };
-    let line = format!("[horch] NOTE: The reviews of {parent} are in. Run horch ledger finish.");
-    let drained = outbox::drain(store, Scope::Run(&run.run_id), |row| {
-        if row.id != id {
-            return send_row(ctx, store, run, row, false);
-        }
-        match tell_author(ctx, role, &line) {
-            Ok(()) => Ok(()),
-            Err(e) => {
-                eprintln!("horch ledger: could not tell {role}: {e:#}");
-                send_row(ctx, store, run, row, true)
-            }
-        }
-    });
-    match drained {
-        Ok(d) if d.busy => eprintln!(
-            "horch ledger: another drain sends the reviews-in wake of {parent} to the orchestrator"
-        ),
-        Ok(_) => {}
-        Err(e) => eprintln!("horch ledger: the outbox drain failed: {e:#}"),
-    }
-}
-
-/// Tell the author `role` its line. Mail the courier still has to type is
-/// not a delivery: the orchestrator is told too. The tell is not a wake, so
-/// `HORCH_NO_WAKE` does not stop it (as before TRF-51).
-fn tell_author(ctx: &RuntimeContext, role: &str, line: &str) -> anyhow::Result<()> {
-    match super::messaging::tell_as(ctx, Some("horch".into()), role, line)? {
-        ReportStatus::Delivered => Ok(()),
-        ReportStatus::Queued(cause) => Err(anyhow::anyhow!(
-            "{cause}; the courier types it when the pane is idle"
-        )),
-    }
-}
-
 /// Wake the orchestrator once when the run has open tasks, none can start
 /// and no worker is live: nothing else would ever wake it (#119).
+#[cfg(test)]
 pub fn nudge_stuck(ctx: &RuntimeContext, store: &Store, run: &Run) {
     wake_as(ctx, store, run, |tx| wakes::stuck_wake(tx, run));
 }
 
 /// Wake the orchestrator when workers should be spawned now: 1 row per
 /// board state, so a repeat in the same state writes no new row.
+#[cfg(test)]
 pub fn nudge_startable(ctx: &RuntimeContext, store: &Store, run: &Run) {
     wake_as(ctx, store, run, |tx| startable_wake(tx, run));
 }
@@ -516,26 +439,6 @@ mod trf_21_tests {
             .unwrap();
         drain_run(&ctx, &store, &run, None);
         assert!(mail.pending().unwrap().is_empty());
-    }
-
-    #[test]
-    fn trf_21_the_courier_drain_delivers_the_rows_of_its_workspace() {
-        let (_dir, ctx, store, run) = world();
-        wake(&ctx, &store, &run, "NOTE: first.");
-        wake(&ctx, &store, &run, "NOTE: second.");
-        assert!(rows(&store, &run).iter().all(|(_, d)| d.is_none()));
-
-        // The courier of another workspace takes none of them.
-        give_workspace(&store, &run);
-        drain_workspace(&ctx, "w2");
-        assert!(rows(&store, &run).iter().all(|(_, d)| d.is_none()));
-
-        drain_workspace(&ctx, "w1");
-        assert!(rows(&store, &run).iter().all(|(_, d)| d.is_some()));
-        let mail = orchestrator_mail(&ctx);
-        assert_eq!(mail.len(), 2, "{mail:?}");
-        assert!(mail[0].contains("NOTE: first."), "oldest first: {mail:?}");
-        assert!(mail[1].contains("NOTE: second."), "{mail:?}");
     }
 
     #[test]

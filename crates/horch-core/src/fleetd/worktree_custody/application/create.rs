@@ -892,7 +892,7 @@ mod tests {
             from: None,
             new: Some(&new),
         };
-        let id = finish::lease_and_wait(&ledger, &TestJobs, &lease).unwrap();
+        let id = finish::lease_and_wait(&ledger_store, &TestJobs, &lease).unwrap();
         assert_eq!(id, new.worktree_id);
         let row = store::get(ledger_store.conn(), &id).unwrap().unwrap();
         assert_eq!(row.state, WorktreeState::Created);

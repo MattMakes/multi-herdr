@@ -1106,7 +1106,7 @@ impl Unfinished {
 /// Native runs feed `unfinished` too: a cancelled task that still has an
 /// open worktree, an `orphaned` or `rescued` tree of a task that is not
 /// done, and a task whose last attempt died and that no worker finished.
-/// Each becomes a finding once.
+/// Each becomes a finding once. The pass of fleetd runs it.
 pub fn sync_native(conn: &Connection) -> Result<()> {
     sync_worktrees(conn)?;
     sync_custody_trees(conn)?;
@@ -1204,14 +1204,16 @@ fn sync_tasks(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Every open finding, newest first; of 1 project when `root` is given.
+/// Every open finding, newest first; of 1 project when `root` is given. It
+/// only reads: the pass of fleetd writes the findings of native runs
+/// ([`sync_native`]), so `horch ledger unfinished` works on a read-only
+/// ledger (T-885).
 ///
 /// The detail of a finding whose tree has a rescue ref names that ref. A
 /// finding is not listed while the work of its tree is landed
 /// ([`work_landed`]); a tree with work that did not land stays listed
 /// until a decision, also when its task is done (RR-15).
 pub fn unfinished(conn: &Connection, root: Option<&Path>) -> Result<Vec<Unfinished>> {
-    sync_native(conn)?;
     let mut stmt = conn.prepare(&format!(
         "SELECT f.finding_id, f.kind, r.slug, p.root, f.task_id, f.worktree_id,
             f.detail || COALESCE('. Rescue ref: ' || w.rescue_ref, ''), f.created_at

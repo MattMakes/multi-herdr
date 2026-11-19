@@ -69,19 +69,34 @@ fn args<T: DeserializeOwned>(payload: &Value) -> Result<T> {
 
 // ─── ledger_import ──────────────────────────────────────────────────────
 
-/// `horch ledger import` (not `--dry-run`): the old files under
-/// `state_root`, and the facts of git and the disk that the command read.
+/// The savepoint of `horch ledger import --dry-run`: the import runs in it,
+/// and its rows roll back.
+const DRY_RUN_SAVEPOINT: &str = "ledger_import_dry_run";
+
+/// `horch ledger import`: the old files under `state_root`, and the facts
+/// of git and the disk that the command read. With `dry_run` (T-885) the
+/// handler gives the report and keeps no row of the import.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ImportArgs {
     state_root: PathBuf,
     facts: ImportFacts,
+    #[serde(default)]
+    dry_run: bool,
 }
 
 fn ledger_import(tx: &Transaction<'_>, payload: &Value) -> Result<Value> {
     let a: ImportArgs = args(payload)?;
-    let report = import::import_from(tx, &a.state_root, &a.facts, false)?;
-    Ok(json!({ "report": report }))
+    if !a.dry_run {
+        let report = import::import_from(tx, &a.state_root, &a.facts, false)?;
+        return Ok(json!({ "report": report }));
+    }
+    tx.execute_batch(&format!("SAVEPOINT {DRY_RUN_SAVEPOINT}"))?;
+    let report = import::import_from(tx, &a.state_root, &a.facts, true);
+    tx.execute_batch(&format!(
+        "ROLLBACK TO {DRY_RUN_SAVEPOINT}; RELEASE {DRY_RUN_SAVEPOINT}"
+    ))?;
+    Ok(json!({ "report": report? }))
 }
 
 // ─── ledger_gc ──────────────────────────────────────────────────────────

@@ -15,6 +15,7 @@ use horch_core::execution::lifecycle::{
     self, ClaimLine, DoneRequest, DoneSteps, ReportStatus, ReportTarget,
 };
 use horch_core::execution::records::{SessionLedger, EVENT_REPORT_FAILED, EVENT_REPORT_QUEUED};
+use horch_core::fleetd::fleet_runtime::domain::requests::Kind;
 use horch_core::fleetd::task_execution::adapters::outbox_writer::OutboxWriter;
 use horch_core::harness::launch;
 use horch_core::messaging::channel;
@@ -34,6 +35,7 @@ use horch_core::workspace::arrange;
 use horch_core::workspace::herdr::Herdr;
 
 use super::context::{self, Sources};
+use super::operator_request::Answer;
 use crate::output;
 
 /// Report mode: a `horch_access: report` pane runs `request`. `progress`
@@ -98,18 +100,21 @@ pub fn tell_answer(ctx: &RuntimeContext, role: &str, question: &str, text: &str)
 
 /// Record `text` as the answer of the `questions` row of mail question
 /// `id`, before the push closes the mail question: a worker that exited
-/// with its question gets the answer at the next claim of its task. A sync
-/// first writes the row of a question that no pass has seen yet. A
-/// question with no row (its worker holds no task, or it has its answer)
-/// records nothing.
+/// with its question gets the answer at the next claim of its task. fleetd
+/// writes it: 1 `question_answer` request (RR-5, T-885). Its handler first
+/// syncs the row of a question that no pass has seen yet. A question with
+/// no row (its worker holds no task, or it has its answer) records nothing.
+/// A refused or queued request is an error, so the question stays open.
 fn record_answer(ctx: &RuntimeContext, workspace: &str, id: &str, text: &str) -> Result<()> {
     if !ctx.paths.ledger_db.exists() {
         return Ok(());
     }
-    sync_question_waits(ctx, workspace)?;
-    let store = horch_core::taskledger::open(ctx)?;
-    horch_core::fleetd::ideas::application::questions::answer_mail(store.conn(), id, text)?;
-    Ok(())
+    let payload = serde_json::json!({ "workspace": workspace, "mail_id": id, "text": text });
+    match super::operator_request::request(ctx, Kind::QuestionAnswer, payload)? {
+        Answer::Applied(_) => Ok(()),
+        Answer::Refused(reason) => bail!("fleetd refused the answer: {reason}"),
+        Answer::Queued => bail!("fleetd is down: the answer waits in a request file"),
+    }
 }
 
 fn tell_outcome(ctx: &RuntimeContext, role: &str, text: &str) -> Result<ReportStatus> {
@@ -240,13 +245,9 @@ fn queue_as<'a>(
         let id = enqueued.id;
         // The first push shows the mail id too, as every redelivery does.
         line = message::with_mail_id(&line, from, &id.short());
-        // Worker mail holds no question for the orchestrator.
+        // Worker mail holds no question for the orchestrator. The pass of
+        // fleetd keeps the question waits from the mail (T-885).
         if role == "orchestrator" {
-            if let Err(error) = sync_question_waits(ctx, mailbox.workspace_id()) {
-                eprintln!(
-                    "horch tell: question wait projection failed ({error:#}); mail remains durable"
-                );
-            }
             if from != HORCH && asks_a_question(text) {
                 if let Err(error) = write_question_file(ctx, text) {
                     eprintln!(
@@ -439,7 +440,6 @@ impl Outgoing<'_> {
         // Only an answer by id closes a question; a plain tell closes none.
         if let Some(id) = &self.answers {
             mail.close_question(id)?;
-            sync_question_waits(self.ctx, self.mailbox.workspace_id())?;
         }
         Ok(ReportStatus::Delivered)
     }
@@ -583,10 +583,6 @@ pub fn inbox(ctx: &RuntimeContext, roles_only: bool, peek: bool) -> Result<()> {
     let herdr = Herdr::with_bin(&ctx.bins.harness.herdr).with_timeout(pane_list_timeout());
     let mailbox = Mailbox::resolve_in(&herdr, ctx)?;
     let roles = mailbox.role_states(&herdr);
-    // A horch question whose ledger action ran closes before the listing.
-    if let Err(error) = sync_question_waits(ctx, mailbox.workspace_id()) {
-        eprintln!("horch inbox: question wait projection failed ({error:#})");
-    }
     let question_mail = Mail::under(&ctx.paths.state_root, mailbox.workspace_id());
     let questions = question_mail.open_questions()?;
     let now: std::time::SystemTime = horch_core::clock::now().into();
@@ -922,7 +918,8 @@ pub fn done(ctx: &RuntimeContext, summary: &str, unlanded: Option<&str>) -> Resu
         return Ok(());
     }
     if super::taskledger::is_ledger_worker(ctx) {
-        let store = horch_core::taskledger::open(ctx)?;
+        let store = horch_core::taskledger::open_existing_read_only(ctx)?
+            .context("the task ledger does not exist")?;
         return super::taskledger::done_cmd(ctx, store, summary, unlanded);
     }
     done_then(ctx, summary, unlanded, &|| end_taskless_row(ctx))
@@ -930,20 +927,30 @@ pub fn done(ctx: &RuntimeContext, summary: &str, unlanded: Option<&str>) -> Resu
 
 /// End this pane's live ledger row when it holds no task, as a
 /// controller's report role does (T-38). `done` closes the pane next, and
-/// that ends the `horch worker` that would settle the row. A retry finds
-/// the row ended and changes nothing.
+/// that ends the `horch worker` that would settle the row. fleetd ends it:
+/// 1 `worker_done` request (RR-5, T-885). A retry finds the row ended and
+/// changes nothing.
 fn end_taskless_row(ctx: &RuntimeContext) {
-    use horch_core::taskledger::{model::WorkerStatus, workers};
+    use horch_core::taskledger::workers;
     let Some(wid) = super::taskledger::worker_id_opt(ctx) else {
         return;
     };
-    let ended =
-        horch_core::taskledger::open(ctx).and_then(|s| match workers::find(s.conn(), &wid)? {
-            Some(w) if w.task_id.is_none() => {
-                workers::end(s.conn(), &wid, WorkerStatus::Done, "done", None).map(|_| ())
-            }
-            _ => Ok(()),
-        });
+    let taskless = horch_core::taskledger::open_existing_read_only(ctx).and_then(|s| {
+        Ok(match s {
+            Some(s) => workers::find(s.conn(), &wid)?.is_some_and(|w| w.task_id.is_none()),
+            None => false,
+        })
+    });
+    let ended = taskless.and_then(|taskless| {
+        if !taskless {
+            return Ok(());
+        }
+        let payload = serde_json::json!({ "worker_id": wid });
+        match super::operator_request::request(ctx, Kind::WorkerDone, payload)? {
+            Answer::Applied(_) | Answer::Queued => Ok(()),
+            Answer::Refused(reason) => bail!("fleetd refused it: {reason}"),
+        }
+    });
     if let Err(e) = ended {
         eprintln!("horch done: the task ledger did not end worker {wid}: {e:#}");
     }
@@ -1291,14 +1298,6 @@ pub fn peek(ctx: &RuntimeContext, role: &str, lines: usize) -> Result<()> {
         output::println(line);
     }
     Ok(())
-}
-
-fn sync_question_waits(ctx: &RuntimeContext, workspace: &str) -> Result<()> {
-    if !ctx.paths.ledger_db.exists() {
-        return Ok(());
-    }
-    let store = horch_core::taskledger::open(ctx)?;
-    horch_core::taskledger::workers::sync_questions(store.conn(), &ctx.paths.state_root, workspace)
 }
 
 /// Whether a line of `text`, after an optional `[<role>]` tag, starts

@@ -1,6 +1,7 @@
 //! The handlers of the custody, job and integration request kinds:
 //! `job_requeue`, `worktree_scratch`, `worktree_drop`, `worktree_restore`,
-//! `worktree_triage`, `feature_abandon`, `branch_abandon` and `rescue_drop`.
+//! `worktree_triage`, `feature_abandon`, `branch_abandon` and `rescue_drop`
+//! (T-885).
 //!
 //! Requirements: RR-5, RR-8, RR-13 to RR-18 (ticket 20 of fleetd-p5).
 //!
@@ -43,20 +44,16 @@ use crate::fleetd::worktree_custody::adapters::sqlite::{
 use crate::fleetd::worktree_custody::application::create::{
     self, create_worktree, CreateOutcome, Lease,
 };
-use crate::fleetd::worktree_custody::application::{queries, remove};
+use crate::fleetd::worktree_custody::application::{queries, remove, rescue_refs};
+use crate::fleetd::worktree_custody::domain::rescue::REF_PREFIX;
+use crate::fleetd::worktree_custody::domain::rescue_class;
 use crate::taskledger::model::{Actor, TriageDecision, WorktreeStatus};
 use crate::taskledger::triage::{apply as triage_apply, refs, reply::Decided, Row};
 use crate::taskledger::{finish, runs, util, workers, worktree_ops};
 
-/// The kinds of this file that have no handler yet: each stays refused
-/// with [`super::requests::NOT_HANDLED`]. Their use cases come from
-/// fleetd-p4: `rescue_drop` from T-386. Each such task adds its handler in
-/// [`register`].
-pub const NOT_YET_HANDLED: [Kind; 1] = [Kind::RescueDrop];
-
 /// The triage decisions that the `worktree_triage` handler refuses: each
-/// runs git or gh writes, and no job kind does them yet. The command keeps
-/// its direct path of today for them.
+/// runs git or gh writes, and no job kind does them yet. The command
+/// refuses them too (T-885), until a later task gives them 1 job kind.
 pub const TRIAGE_NOT_HANDLED: [TriageDecision; 4] = [
     TriageDecision::Archive,
     TriageDecision::Delete,
@@ -96,9 +93,7 @@ pub fn register(handlers: &mut Handlers, custody: Arc<Custody>) {
     handlers.insert(Kind::WorktreeTriage, with(worktree_triage));
     handlers.insert(Kind::BranchAbandon, with(branch_abandon));
     handlers.insert(Kind::FeatureAbandon, with(feature_abandon));
-    // The handlers of NOT_YET_HANDLED go here, 1 line each, with the shape
-    // `fn(&Custody, &Connection, &Value) -> Result<Value>`:
-    // handlers.insert(Kind::RescueDrop, with(rescue_drop));
+    handlers.insert(Kind::RescueDrop, with(rescue_drop));
 }
 
 /// The payload of a kind, with no unknown field.
@@ -737,4 +732,63 @@ fn feature_abandon(c: &Custody, tx: &Connection, p: &Value) -> Result<Value> {
         "branches": branches,
         "to_stop": done.to_stop(),
     }))
+}
+
+// ─── rescue_drop ────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RescueDrop {
+    /// The main checkout of a project of the ledger.
+    repo: PathBuf,
+    /// The full name of the rescue ref.
+    name: String,
+    /// The tip of the ref that the command showed.
+    tip: String,
+    /// `unique` or `superseded`, as the command classed the ref.
+    class: String,
+    bytes: Option<u64>,
+}
+
+/// `horch rescue drop <ref>`: the command reads the facts of the ref and
+/// shows them. The handler checks that the repository is a project of the
+/// ledger and that git confirms the ref at its tip, with no write. Then it
+/// records the drop with 1 event (`rescue_refs::record_drop`). The command
+/// deletes the ref after the reply: the effect runs after the commit.
+fn rescue_drop(c: &Custody, tx: &Connection, p: &Value) -> Result<Value> {
+    let RescueDrop {
+        repo,
+        name,
+        tip,
+        class,
+        bytes,
+    } = payload("rescue_drop", p)?;
+    let repo_text = repo.to_string_lossy().into_owned();
+    if !repo.is_absolute() || runs::of_project(tx, &repo)?.is_empty() {
+        bail!("{repo_text} is not the root of a project of the ledger");
+    }
+    if rescue_class::parse(&name).is_none() {
+        bail!("{name} is not a rescue ref: horch rescue drop deletes only a ref {REF_PREFIX}<owner>/<n>");
+    }
+    let class = match class.as_str() {
+        "unique" => rescue_class::Class::Unique,
+        "superseded" => rescue_class::Class::Superseded,
+        other => bail!("the class {other:?} is not unique or superseded"),
+    };
+    match c.refs.tip(&repo, &name)? {
+        Some(at) if at == tip => {}
+        Some(at) => bail!("the rescue ref {name} is at {at}, not at {tip}"),
+        None => bail!("the rescue ref {name} does not exist in {repo_text}"),
+    }
+    let plan = rescue_refs::DropPlan {
+        deletion: rescue_refs::Deletion {
+            repo: repo_text,
+            name,
+            tip,
+        },
+        class,
+        bytes,
+    };
+    let recorded = rescue_refs::record_drop(tx, &plan)?;
+    Ok(json!({ "ref": plan.deletion.name, "tip": plan.deletion.tip, "recorded": recorded }))
 }

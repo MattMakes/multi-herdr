@@ -467,7 +467,11 @@ fn unfinished_lists_native_leftovers_once_and_get_finding_reads_one() {
     let f = fixture();
     native_fixture(&f);
     let c = f.store.conn();
+    // The pass of fleetd writes the findings; `unfinished` only reads.
+    assert_eq!(import::unfinished(c, None).unwrap(), vec![]);
+    import::sync_native(c).unwrap();
     let first = import::unfinished(c, None).unwrap();
+    import::sync_native(c).unwrap();
     let again = import::unfinished(c, None).unwrap();
     assert_eq!(first.len(), 2);
     assert_eq!(first, again, "the findings are written once");
