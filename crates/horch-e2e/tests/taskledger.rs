@@ -80,13 +80,27 @@ fn fleet(name: &str, scenario: &str) -> Harness {
 /// (Phase 5). Gives the harness when fleetd serves.
 fn push_fleet(name: &str, scenario: &str, slug: &str, tasks: &[&str]) -> Harness {
     let mut h = world_without_fleetd(name);
+    push_env(&mut h, name, scenario);
+    let run = seed_run(&h, slug, Some(1), "w1:p1");
+    for (n, title) in tasks.iter().enumerate() {
+        let p = ticket(&h, &format!("t{n}"), &format!("# {title}\n"));
+        seed_task(&h, &run, &p, "codex-terra");
+    }
+    h.serve_fleetd();
+    h
+}
+
+/// The environment of [`push_fleet`] in `h`, whose fleetd is down: the
+/// workspace `w1` of the fake herdr, codex-terra interactive, and a pass of
+/// fleetd each second.
+fn push_env(h: &mut Harness, name: &str, scenario: &str) {
     let quota = fixtures().join("quota/all-ok.json");
     h.set("HORCH_QUOTA_FILE", quota.to_string_lossy());
     h.set("HORCH_WORKSPACE_ID", "w1");
     h.set("HORCH_FAKE_SCENARIO", scenario);
     h.set("HORCH_FAULT", "delivery-probe-ms:100");
     h.set("HORCH_HOSTNAME", "test-host");
-    herdr_json(&h, &["workspace", "create", "--label", name]);
+    herdr_json(h, &["workspace", "create", "--label", name]);
     // codex-terra runs interactive, as before exec became the default mode
     // (fleetd-p7 ticket 19): the fake agent stays in its pane.
     let teammates = h.root.join("teammates");
@@ -97,16 +111,45 @@ fn push_fleet(name: &str, scenario: &str, slug: &str, tasks: &[&str]) -> Harness
     assert_ne!(interactive, md, "codex-terra.md names its agent");
     std::fs::write(&terra, interactive).unwrap();
     h.set("HORCH_TEAMMATES_DIR", teammates.to_string_lossy());
-    let run = seed_run(&h, slug, Some(1), "w1:p1");
-    for (n, title) in tasks.iter().enumerate() {
-        let p = ticket(&h, &format!("t{n}"), &format!("# {title}\n"));
-        seed_task(&h, &run, &p, "codex-terra");
-    }
     let root = h.fleet_root();
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(root.join("fleet.toml"), "pass_period_s = 1\n").unwrap();
-    h.serve_fleetd();
-    h
+}
+
+/// 1 queued task of `run` from `ticket` for `primary`, as `horch ledger
+/// add-map` made it from a map row: [`seed_task`] with the `**Check:**
+/// none` of the ticket and the task `blocked_by` that it waits for.
+fn seed_blocked_task(
+    h: &Harness,
+    run: &horch_core::taskledger::runs::Run,
+    ticket: &Path,
+    primary: &str,
+    blocked_by: Option<&str>,
+) -> Task {
+    let text = std::fs::read_to_string(ticket).unwrap();
+    let facts = horch_core::taskledger::map::ticket_facts(&text);
+    let new = tasks::NewTask {
+        land_check: facts.check.clone(),
+        check_none: facts.check_none,
+        ticket_snapshot: Some(text.clone()),
+        blocked_by: blocked_by.into_iter().map(String::from).collect(),
+        ..tasks::NewTask::work(
+            facts.title.as_deref().unwrap(),
+            &ticket.to_string_lossy(),
+            primary,
+        )
+    };
+    let mut store = Store::open(&h.ledger_db()).unwrap();
+    store
+        .immediate(|tx| {
+            tasks::add(
+                tx,
+                run,
+                &new,
+                horch_core::taskledger::model::Actor::Orchestrator,
+            )
+        })
+        .unwrap()
 }
 
 /// The JSON output of the fake herdr for `args`.
@@ -133,7 +176,7 @@ fn worker_rows(h: &Harness) -> Vec<Value> {
 /// Wait until fleetd has launched `n` workers and ingested the agent PID
 /// of each. Gives the worker rows.
 fn launched(h: &Harness, n: usize) -> Vec<Value> {
-    wait_for(&format!("{n} agent PIDs"), || {
+    wait_push(&format!("{n} agent PIDs"), || {
         let ws = worker_rows(h);
         (ws.len() == n && ws.iter().all(|w| w["agent_started"].is_i64())).then_some(ws)
     })
@@ -166,8 +209,19 @@ fn ticket(h: &Harness, name: &str, body: &str) -> PathBuf {
     p
 }
 
-fn wait_for<T>(what: &str, mut f: impl FnMut() -> Option<T>) -> T {
-    let until = Instant::now() + Duration::from_secs(30);
+fn wait_for<T>(what: &str, f: impl FnMut() -> Option<T>) -> T {
+    wait_within(Duration::from_secs(30), what, f)
+}
+
+/// [`wait_for`] for an event of the fleetd push flow: a launch, an ingest
+/// or a stop. Each one waits for a pass of fleetd, and parallel tests with
+/// their own fleetd and panes slow each pass, so the limit is longer.
+fn wait_push<T>(what: &str, f: impl FnMut() -> Option<T>) -> T {
+    wait_within(Duration::from_secs(120), what, f)
+}
+
+fn wait_within<T>(limit: Duration, what: &str, mut f: impl FnMut() -> Option<T>) -> T {
+    let until = Instant::now() + limit;
     while Instant::now() < until {
         if let Some(v) = f() {
             return v;
@@ -406,7 +460,7 @@ fn a_spawned_worker_records_its_pids_session_and_checkins() {
     );
 
     // The supervisor and the agent record their PIDs; the start times match.
-    let w = wait_for("both PIDs", || {
+    let w = wait_push("both PIDs", || {
         let w = worker_json(&h, &id);
         (w["agent_pid"].is_i64() && w["supervisor_pid"].is_i64()).then_some(w)
     });
@@ -420,7 +474,7 @@ fn a_spawned_worker_records_its_pids_session_and_checkins() {
     }
     // The agent was told to read START.md of its attempt (push). The
     // fake writes its call record after the PIDs are in, so wait for it.
-    wait_for("the agent's task names inbox/START.md", || {
+    wait_push("the agent's task names inbox/START.md", || {
         h.calls_of("codex")
             .into_iter()
             .rev()
@@ -429,7 +483,7 @@ fn a_spawned_worker_records_its_pids_session_and_checkins() {
 
     // Checkins advance while the agent runs.
     let first = w["last_checkin_at"].as_str().unwrap().to_string();
-    wait_for("2 more checkins", || {
+    wait_push("2 more checkins", || {
         let a = worker_json(&h, &id)["last_checkin_at"]
             .as_str()?
             .to_string();
@@ -441,14 +495,14 @@ fn a_spawned_worker_records_its_pids_session_and_checkins() {
         (b > a).then_some(())
     });
     // The discovered session and its transcript reach the row.
-    let w = wait_for("the session", || {
+    let w = wait_push("the session", || {
         let w = worker_json(&h, &id);
         w["session_id"].is_string().then_some(w)
     });
     let w = if w["transcript_path"].is_string() {
         w
     } else {
-        wait_for("the transcript", || {
+        wait_push("the transcript", || {
             let w = worker_json(&h, &id);
             w["transcript_path"].is_string().then_some(w)
         })
@@ -467,10 +521,11 @@ fn a_spawned_worker_records_its_pids_session_and_checkins() {
         started,
         libc_sigterm()
     ));
-    let w = wait_for("the exit", || {
+    let w = wait_push("the exit", || {
         let w = worker_json(&h, &id);
-        (w["status"] == "incomplete").then_some(w)
+        w["ended_at"].is_string().then_some(w)
     });
+    assert_eq!(w["status"], "incomplete", "{w}");
     // fleetd sees the process of the attempt gone, before a result.
     let task_id = w["task_id"].as_str().unwrap();
     assert_eq!(
@@ -1034,10 +1089,10 @@ fn stopping_one_of_three_workers_leaves_the_others_running() {
             let o = ok(&h, &["ledger", "stop", &ids[0], "the operator dropped it"]);
             assert!(o.contains("Stopped"), "{o}");
             // The next pass of fleetd stops the processes and closes the pane.
-            wait_for("the stopped agent is gone", || {
+            wait_push("the stopped agent is gone", || {
                 (!horch_core::procid::alive(pids[0].0, Some(pids[0].1))).then_some(())
             });
-            let shown = wait_for("the stop of the pane", || {
+            let shown = wait_push("the stop of the pane", || {
                 let shown = json_of(&h, &["ledger", "show", &ids[0], "--json"]);
                 shown["stops"]
                     .as_array()?
@@ -1566,94 +1621,46 @@ fn work_and_finish(h: &Harness, w: &str, name: &str) -> Value {
 fn the_whole_flow_on_the_fake_herdr() {
     horch_e2e::expected::check(file!(), "the_whole_flow_on_the_fake_herdr", || {
         let mut h = finish_world("tl-e2e");
-        let quota = fixtures().join("quota/all-ok.json");
-        h.set("HORCH_QUOTA_FILE", quota.to_string_lossy());
-        h.set("HORCH_WORKSPACE_ID", "w1");
-        h.set("HORCH_FAKE_SCENARIO", "exec,stay");
+        h.stop_fleetd();
         h.set("HORCH_STOP_GRACE_MS", "2000");
-        let mut create = std::process::Command::new(h.bin.join("herdr"));
-        h.seal(&mut create);
-        assert!(create
-            .args(["workspace", "create", "--label", "e2e"])
-            .output()
-            .unwrap()
-            .status
-            .success());
+        push_env(&mut h, "e2e", "exec,stay");
 
         // 1. The orchestrator queues 3 tasks: A and B parallel, C blocked by A.
-        ok(
-            &h,
-            &[
-                "ledger",
-                "run",
-                "new",
-                "alpha",
-                "--heartbeat-every",
-                "1",
-                "--verify",
-                "full",
-            ],
-        );
-        for (n, t, persona) in [
-            ("a", "A", "opus"),
-            ("b", "B", "codex-terra"),
-            ("c", "C", "opus"),
+        let run = seed_run(&h, "alpha", Some(1), "w1:p1");
+        for (n, t, persona, blocked_by) in [
+            ("a", "A", "opus", None),
+            ("b", "B", "codex-terra", None),
+            ("c", "C", "opus", Some("T-1")),
         ] {
-            ticket(
+            let p = ticket(
                 &h,
                 n,
                 &format!("# {t}\n\n**Persona:** primary `{persona}`\n**Check:** none\n"),
             );
+            seed_blocked_task(&h, &run, &p, persona, blocked_by);
         }
-        std::fs::write(
-        h.project.join("tickets/MAP.md"),
-        "| # | Title | Blocked by |\n|---|---|---|\n| [1](a.md) | A | - |\n| [2](b.md) | B | - |\n| [3](c.md) | C | 1 |\n",
-    )
-    .unwrap();
-        ok(&h, &["ledger", "add-map", "tickets/MAP.md"]);
 
-        // 2. plan-workers says 2: 1 opus (A) and 1 codex-terra (B).
-        let plan = json_of(&h, &["ledger", "plan-workers", "--json"]);
-        let spawn: i64 = plan
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|p| p["spawn"].as_i64().unwrap())
-            .sum();
-        assert_eq!(spawn, 2, "{plan}");
+        // 2. The test holds A as its worker (FR-5). fleetd launches B by push
+        // in a real pane: its agent is the fake codex that stays. C waits.
         let (wa, ta) = bind_task(&h, "opus");
         assert_eq!(ta.seq, 1, "{ta:?}");
-        // B runs in a real pane: its agent is the fake codex that stays.
-        let o = h.run(&[
-            "spawn",
-            "codex-terra",
-            "--from-pane",
-            "w1:p1",
-            "--no-tile",
-            "--force",
-        ]);
-        assert!(o.status.success(), "{}", text(&o));
-        let st = json_of(&h, &["ledger", "status", "--json"]);
-        let wb = st["workers"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|w| w["worker"]["persona"] == "codex-terra")
-            .unwrap()["worker"]["worker_id"]
-            .as_str()
-            .unwrap()
-            .to_string();
-        let b = wait_for("B's agent PID", || {
-            let w = worker_json(&h, &wb);
-            w["agent_started"].is_i64().then_some(w)
+        h.serve_fleetd();
+        let b = wait_push("B's agent PID", || {
+            worker_rows(&h)
+                .into_iter()
+                .find(|w| w["persona"] == "codex-terra" && w["agent_started"].is_i64())
         });
+        assert_eq!(worker_rows(&h).len(), 2, "1 worker for A and 1 for B");
+        let wb = b["worker_id"].as_str().unwrap().to_string();
         let (bpid, bstart) = (
             b["agent_pid"].as_i64().unwrap() as u32,
             b["agent_started"].as_i64().unwrap() as u64,
         );
-        // The spawn bound T-2 to B (FR-5).
+        // fleetd bound T-2 to B (FR-5), and C waits for A.
         let t2 = json_of(&h, &["ledger", "show", "T-2", "--json"]);
         assert_eq!(t2["task"]["current_worker_id"], wb.as_str(), "{t2}");
+        let t3 = json_of(&h, &["ledger", "show", "T-3", "--json"]);
+        assert_eq!(t3["task"]["status"], "queued", "{t3}");
 
         // 3. B stops making progress: its fake agent runs, but shows no timer
         // and writes nothing.
