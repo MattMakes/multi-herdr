@@ -12,8 +12,13 @@
 
 #![cfg(unix)]
 
-use std::process::Output;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
 
+use horch_core::taskledger::model::{Actor, TaskKind};
+use horch_core::taskledger::runs::{self, NewRun};
+use horch_core::taskledger::tasks::{self, NewTask};
+use horch_core::taskledger::{schema, util, Store};
 use horch_e2e::harness::{fixtures, wait_for_or, Harness};
 use rusqlite::{Connection, OpenFlags};
 
@@ -93,9 +98,8 @@ impl World {
         w.git(&["commit", "-q", "-m", "base"]);
 
         w.h.serve_fleetd();
-        let o = w
-            .h
-            .run(&["idea", "add", "--direct", &ticket.to_string_lossy()]);
+        let o =
+            w.h.run(&["idea", "add", "--direct", &ticket.to_string_lossy()]);
         assert!(o.status.success(), "horch idea add --direct: {}", text(&o));
         w
     }
@@ -113,10 +117,9 @@ impl World {
     /// The rows of `sql`, each row its columns joined with 1 space. No rows
     /// while the ledger does not exist yet.
     fn rows(&self, sql: &str) -> Vec<String> {
-        let Ok(conn) = Connection::open_with_flags(
-            self.h.ledger_db(),
-            OpenFlags::SQLITE_OPEN_READ_ONLY,
-        ) else {
+        let Ok(conn) =
+            Connection::open_with_flags(self.h.ledger_db(), OpenFlags::SQLITE_OPEN_READ_ONLY)
+        else {
             return Vec::new();
         };
         let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
@@ -149,7 +152,8 @@ impl World {
     /// What a failed wait shows: the features, the ideas, the tasks, the
     /// git refs and the fleetd stderr.
     fn context(&self) -> String {
-        let show = |title: &str, sql: &str| format!("{title}:\n  {}\n", self.rows(sql).join("\n  "));
+        let show =
+            |title: &str, sql: &str| format!("{title}:\n  {}\n", self.rows(sql).join("\n  "));
         [
             show(
                 "features",
@@ -161,7 +165,10 @@ impl World {
                 "SELECT task_id, kind, status, IFNULL(idea_id, '-') FROM tasks",
             ),
             format!("git refs:\n{}\n", self.refs()),
-            format!("fleetd stderr, each line 1 time:\n{}\n", self.fleetd_stderr()),
+            format!(
+                "fleetd stderr, each line 1 time:\n{}\n",
+                self.fleetd_stderr()
+            ),
         ]
         .concat()
     }
@@ -209,4 +216,181 @@ fn idea_add_direct_makes_the_feature_and_its_branch() {
             .any(|l| l.split(' ').next() == Some(name.as_str()))
             .then_some(())
     });
+}
+
+// ─── fault 3: each fake plays only the keys of its role ─────────────────
+
+/// The verdict file of the fake judge.
+const VERDICT_FILE: &str = "review.md";
+
+/// The scenario of each fake of a judge pair: the keys of the worker and
+/// of the judge together, as the fleet gives them to each pane.
+const PAIR_SCENARIO: &str = "commit,result,verdict_pass";
+
+/// A git project with a ledger that holds 1 judged task and its judge
+/// task. A stand-in `horch` before the real one on `PATH` logs the files
+/// of HEAD at each `horch result`.
+struct Pair {
+    h: Harness,
+    judged: String,
+    judge: String,
+    stub_log: PathBuf,
+}
+
+impl Pair {
+    fn new(name: &str) -> Pair {
+        let h = Harness::new(name).with_git();
+        let root = h.project.canonicalize().unwrap();
+        let mut store = Store::open(&h.ledger_db()).unwrap();
+        let (judged, judge) = store
+            .immediate(|tx| {
+                let run = runs::create(
+                    tx,
+                    &root,
+                    &NewRun {
+                        slug: "r1".into(),
+                        base_branch: Some("main".into()),
+                        ..Default::default()
+                    },
+                )?;
+                schema::run_idea(tx, &run.run_id, &util::now(), true)?;
+                let judged = tasks::add(
+                    tx,
+                    &run,
+                    &NewTask::work("Write the guide", "guide.md", "opus"),
+                    Actor::Horch,
+                )?;
+                let judge = tasks::add(
+                    tx,
+                    &run,
+                    &NewTask {
+                        kind: TaskKind::Work,
+                        parent_task_id: Some(judged.task_id.clone()),
+                        ..NewTask::work("Judge: Write the guide", "guide.md", "codex")
+                    },
+                    Actor::Horch,
+                )?;
+                Ok((judged.task_id, judge.task_id))
+            })
+            .unwrap();
+        let stub_log = h.root.join("stub-horch.log");
+        Pair {
+            h,
+            judged,
+            judge,
+            stub_log,
+        }
+    }
+
+    /// Run fake-claude with [`PAIR_SCENARIO`] as the attempt of `task_id`,
+    /// in the project. The stand-in `horch` writes 1 line for each
+    /// `horch result`: the files of HEAD then.
+    fn launch(&mut self, task_id: &str) {
+        let attempt = self.h.root.join(format!("attempt-{task_id}"));
+        std::fs::create_dir_all(&attempt).unwrap();
+        let task_yaml = attempt.join("task.yaml");
+        std::fs::write(
+            &task_yaml,
+            format!(
+                "task_id: {task_id}\nworktree: {}\n",
+                self.h.project.display()
+            ),
+        )
+        .unwrap();
+        let stub_dir = self.h.root.join("stub-bin");
+        std::fs::create_dir_all(&stub_dir).unwrap();
+        let stub = stub_dir.join("horch");
+        let script = format!(
+            "#!/bin/sh\n[ \"$1\" = result ] || exit 0\n\
+             printf 'result:' >> '{log}'\n\
+             \"$HORCH_GIT_BIN\" ls-tree --name-only HEAD | \
+             while read -r f; do printf ' %s' \"$f\"; done >> '{log}'\n\
+             echo >> '{log}'\n",
+            log = self.stub_log.display()
+        );
+        std::fs::write(&stub, script).unwrap();
+        make_executable(&stub);
+        self.h.set("HORCH_TASK_YAML", task_yaml.to_string_lossy());
+        self.h.set("HORCH_FAKE_SCENARIO", PAIR_SCENARIO);
+        let mut cmd = Command::new(self.h.bin.join("claude"));
+        self.h.seal(&mut cmd);
+        cmd.env(
+            "PATH",
+            format!("{}:{}", stub_dir.display(), self.h.bin.display()),
+        );
+        cmd.current_dir(&self.h.project);
+        let o = cmd.output().unwrap();
+        assert!(o.status.success(), "fake claude: {}", text(&o));
+    }
+
+    /// The files of HEAD of the project.
+    fn head_files(&self) -> Vec<String> {
+        let o = self
+            .h
+            .git_cmd(&["ls-tree", "--name-only", "HEAD"])
+            .current_dir(&self.h.project)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// The lines of the stand-in `horch`.
+    fn results(&self) -> Vec<String> {
+        std::fs::read_to_string(&self.stub_log)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+}
+
+fn make_executable(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// Fault 3: the fake worker of a judged task commits its work and says
+/// done. It writes no `review.md`: that is the work of the judge.
+#[test]
+fn fake_worker_writes_no_review_md() {
+    let mut p = Pair::new("p6-fake-worker");
+    let judged = p.judged.clone();
+    p.launch(&judged);
+    let files = p.head_files();
+    assert!(
+        files.iter().any(|f| f == "fake-claude.txt"),
+        "the worker commits its work: {files:?}"
+    );
+    assert!(
+        !files.iter().any(|f| f == VERDICT_FILE),
+        "the worker writes no {VERDICT_FILE}: {files:?}"
+    );
+    assert_eq!(p.results().len(), 1, "the worker says done 1 time");
+}
+
+/// Fault 3: the fake judge commits `review.md` before `horch result`, and
+/// does not do the work of the worker.
+#[test]
+fn fake_judge_commits_review_md_before_its_result() {
+    let mut p = Pair::new("p6-fake-judge");
+    let judge = p.judge.clone();
+    p.launch(&judge);
+    let files = p.head_files();
+    assert!(
+        files.iter().any(|f| f == VERDICT_FILE),
+        "the judge commits {VERDICT_FILE}: {files:?}"
+    );
+    assert!(
+        !files.iter().any(|f| f == "fake-claude.txt"),
+        "the judge does not do the work of the worker: {files:?}"
+    );
+    let results = p.results();
+    assert_eq!(results.len(), 1, "the judge says done 1 time: {results:?}");
+    assert!(
+        results[0].split(' ').any(|f| f == VERDICT_FILE),
+        "{VERDICT_FILE} is in HEAD at horch result: {results:?}"
+    );
 }
