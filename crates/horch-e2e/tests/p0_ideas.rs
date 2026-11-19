@@ -5,11 +5,11 @@
 
 #![cfg(unix)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
 
 use horch_e2e::expected::check;
-use horch_e2e::harness::Harness;
+use horch_e2e::harness::{wait_for_or, Harness};
 use serde_json::Value;
 
 fn text(o: &Output) -> String {
@@ -37,6 +37,20 @@ fn json_of(h: &Harness, args: &[&str]) -> Value {
     serde_json::from_slice(&o.stdout).unwrap_or_else(|e| panic!("{e}: {}", text(&o)))
 }
 
+/// The board of ideas, the files of `folder` and the log of the test
+/// fleetd, for the message of a failed wait.
+fn evidence(h: &Harness, folder: &Path) -> String {
+    let files: Vec<_> = std::fs::read_dir(folder)
+        .map(|d| d.flatten().map(|e| e.file_name()).collect())
+        .unwrap_or_default();
+    let log = std::fs::read_to_string(h.root.join("fleetd.stderr")).unwrap_or_default();
+    format!(
+        "board: {}\nfiles of {}: {files:?}\nfleetd.stderr: {log}",
+        text(&h.run(&["ideas", "--json"])),
+        folder.display()
+    )
+}
+
 fn ticket(h: &Harness, name: &str, body: &str) -> PathBuf {
     let dir = h.project.join("tickets");
     std::fs::create_dir_all(&dir).unwrap();
@@ -58,8 +72,8 @@ fn fm1_plan_with_an_uncovered_requirement_is_refused() {
             std::fs::write(
                 specs.join("xr.md"),
                 "# XR\n\n| ID | Requirement | Check |\n|---|---|---|\n\
-             | XR-01 | The tool reads the limit. | A test. |\n\
-             | XR-02 | The tool logs each retry. | A test. |\n",
+             | XRA-01 | The tool reads the limit. | A test. |\n\
+             | XRA-02 | The tool logs each retry. | A test. |\n",
             )
             .unwrap();
             ticket(
@@ -72,7 +86,7 @@ fn fm1_plan_with_an_uncovered_requirement_is_refused() {
              **Own:** `src/limit.rs`\n\n\
              Spec: `docs/specs/xr.md`\n\n\
              ## Goal\n\nThe tool reads the limit.\n\n\
-             ## Requirements\n\n- **XR-01**: The tool reads the limit.\n\n\
+             ## Requirements\n\n- **XRA-01**: The tool reads the limit.\n\n\
              ## Steps\n\n1. Read the limit.\n\n\
              ## Done when\n\nThe Check passes.\n",
             );
@@ -86,12 +100,12 @@ fn fm1_plan_with_an_uncovered_requirement_is_refused() {
             let o = h.run(&["ledger", "add-map", "--dry-run", "tickets/MAP.md"]);
             assert!(
                 !o.status.success(),
-                "add-map --dry-run accepts a plan with no task for XR-02: {}",
+                "add-map --dry-run accepts a plan with no task for XRA-02: {}",
                 text(&o)
             );
             assert!(
-                text(&o).contains("XR-02"),
-                "add-map --dry-run refuses the plan but does not name XR-02: {}",
+                text(&o).contains("XRA-02"),
+                "add-map --dry-run refuses the plan but does not name XRA-02: {}",
                 text(&o)
             );
         },
@@ -113,47 +127,64 @@ fn fm8_two_ideas_sent_back_to_back_stay_2_ideas() {
             let children: Vec<_> = texts
                 .iter()
                 .map(|t| {
-                    h.horch(&["idea", "add", t])
+                    h.horch(&["idea", "add", "--json", t])
                         .stdout(Stdio::piped())
                         .stderr(Stdio::piped())
                         .spawn()
                         .unwrap()
                 })
                 .collect();
+            // The id of each idea that the operator sent. A drift idea of
+            // the fleet can be on the board too, so the test counts only
+            // these ideas.
+            let mut sent = Vec::new();
             for (t, child) in texts.iter().zip(children) {
                 let o = child.wait_with_output().unwrap();
                 assert!(o.status.success(), "horch idea add \"{t}\": {}", text(&o));
+                let result: Value = serde_json::from_slice(&o.stdout)
+                    .unwrap_or_else(|e| panic!("{e}: {}", text(&o)));
+                let id = result["idea"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("horch idea add gives no idea id: {result}"))
+                    .to_string();
+                sent.push((*t, id));
             }
+            assert_ne!(sent[0].1, sent[1].1, "2 ideas got 1 id: {sent:?}");
 
             let board = json_of(&h, &["ideas", "--json"]);
-            let ideas = board["ideas"]
+            let ids: Vec<_> = board["ideas"]
                 .as_array()
-                .unwrap_or_else(|| panic!("horch ideas --json has no ideas list: {board}"));
-            assert_eq!(ideas.len(), 2, "horch ideas --json: {board}");
-            let mut folders = Vec::new();
-            let mut found_texts = Vec::new();
-            for idea in ideas {
-                let folder = PathBuf::from(
-                    idea["folder"]
-                        .as_str()
-                        .unwrap_or_else(|| panic!("idea has no folder: {idea}")),
+                .unwrap_or_else(|| panic!("horch ideas --json has no ideas list: {board}"))
+                .iter()
+                .filter_map(|i| i["id"].as_str())
+                .collect();
+            for (t, id) in &sent {
+                assert!(
+                    ids.contains(&id.as_str()),
+                    "the idea {id} of \"{t}\" is lost: {board}"
                 );
-                let body = std::fs::read_to_string(folder.join("idea.md"))
+                // The folder of an idea is `<fleet root>/ideas/<id>/`, and
+                // `horch idea show --json` gives its idea.md.
+                let folder = h.fleet_root().join("ideas").join(id);
+                let body = wait_for_or(
+                    &format!("idea.md of {id}"),
+                    || {
+                        json_of(&h, &["idea", "show", id, "--json"])["idea"]
+                            .as_str()
+                            .map(str::to_string)
+                    },
+                    || evidence(&h, &folder),
+                );
+                let on_disk = std::fs::read_to_string(folder.join("idea.md"))
                     .unwrap_or_else(|e| panic!("{}: {e}", folder.display()));
-                let matching_texts: Vec<_> = texts.iter().filter(|t| body.contains(*t)).collect();
+                assert_eq!(on_disk, body, "idea show {id} is not its idea.md");
+                let held: Vec<_> = texts.iter().filter(|x| body.contains(*x)).collect();
                 assert_eq!(
-                    matching_texts.len(),
-                    1,
-                    "idea.md holds not exactly 1 idea: {body}"
+                    held,
+                    [t],
+                    "idea.md of {id} does not hold exactly its 1 idea: {body}"
                 );
-                found_texts.push(*matching_texts[0]);
-                folders.push(folder);
             }
-            assert_ne!(folders[0], folders[1], "2 ideas share 1 folder: {board}");
-            found_texts.sort_unstable();
-            let mut sent_texts = texts.to_vec();
-            sent_texts.sort_unstable();
-            assert_eq!(found_texts, sent_texts, "an idea is lost: {board}");
         },
     );
 }
