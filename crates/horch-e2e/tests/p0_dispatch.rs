@@ -82,15 +82,12 @@ fn fleet(name: &str, scenario: &str) -> Harness {
     let mut h = world(name);
     let quota = fixtures().join("quota/all-ok.json");
     h.set("HORCH_QUOTA_FILE", quota.to_string_lossy());
-    h.set("HORCH_WORKSPACE_ID", "w1");
     h.set("HORCH_FAKE_SCENARIO", scenario);
-    let mut create = std::process::Command::new(h.bin.join("herdr"));
-    h.seal(&mut create);
-    let o = create
-        .args(["workspace", "create", "--label", name])
-        .output()
-        .unwrap();
-    assert!(o.status.success(), "{}", text(&o));
+    // The workspace of the fleet has the label of the project folder, so
+    // fleetd launches an attempt with no recorded pane in it.
+    let workspace = h.fleet_workspace();
+    assert_eq!(workspace, "w1");
+    h.set("HORCH_WORKSPACE_ID", workspace);
     h
 }
 

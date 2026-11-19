@@ -64,16 +64,17 @@ impl World {
     /// fleetd starts.
     fn fleet(name: &str, workspace: bool, seed: impl FnOnce(&Harness)) -> World {
         let mut h = Harness::new(name).with_git();
-        // The ledger is in the state folder and the fleet root is next to
-        // it, with no FLEET_ROOT: a pane gets only HORCH_STATE_DIR and
-        // HORCH_DATA_DIR, and its worker finds the same paths there.
-        let fleet = h.state.join("fleet");
+        // The ledger and the fleet root are outside the state folder. The
+        // launch gives the pane worker FLEET_ROOT, so it finds the operator
+        // token and the channel of this fleetd.
+        let fleet = h.root.join("fleet");
         std::fs::create_dir_all(&fleet).unwrap();
         std::fs::write(fleet.join("fleet.toml"), FLEET_TOML).unwrap();
         h.set(
             "HORCH_LEDGER_DB",
-            h.state.join("ledger.sqlite3").to_string_lossy(),
+            h.root.join("ledger.sqlite3").to_string_lossy(),
         );
+        h.set("FLEET_ROOT", fleet.to_string_lossy());
         h.set("HORCH_NO_WAKE", "1");
         h.set("HORCH_NO_WATCHDOG", "1");
         h.set(
@@ -83,19 +84,7 @@ impl World {
         // `exec`: each pane runs its command. `stay`: the fake agent stays.
         h.set("HORCH_FAKE_SCENARIO", "exec,stay");
         if workspace {
-            let label = h
-                .project
-                .file_name()
-                .unwrap()
-                .to_string_lossy()
-                .into_owned();
-            let mut create = std::process::Command::new(h.bin.join("herdr"));
-            h.seal(&mut create);
-            let o = create
-                .args(["workspace", "create", "--label", &label])
-                .output()
-                .unwrap();
-            assert!(o.status.success(), "{}", text(&o));
+            h.fleet_workspace();
         }
         seed(&h);
         h.serve_fleetd();
@@ -299,7 +288,9 @@ fn seed_task(h: &Harness) {
 }
 
 /// A push attempt of a task of a run with no orchestrator pane launches in
-/// the herdr workspace of the project, and reaches `live`.
+/// the herdr workspace of the project, and reaches `live`. The ledger and
+/// the fleet root are outside the state folder, so the pane worker finds
+/// the operator token only through the FLEET_ROOT of the launch.
 #[test]
 fn a_task_attempt_of_a_run_with_no_orchestrator_pane_reaches_live() {
     let w = World::fleet("p6-push", true, seed_task);
