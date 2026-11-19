@@ -491,7 +491,8 @@ fn exit_without_result_triggers_the_stop_gate() {
 #[test]
 fn stop_gate_fails_when_the_agent_leaves_a_result() {
     let m = Machine::new();
-    let r = m.check(&claude(), "conformance", Check::StopGate);
+    // The agent does not obey the prompt of the check.
+    let r = m.check(&claude(), "conformance,ignore_stop_gate", Check::StopGate);
     assert_verdict(&r, Check::StopGate, Verdict::Fail);
     assert!(r.evidence.contains("result"), "{r:?}");
 }

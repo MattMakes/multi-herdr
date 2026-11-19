@@ -15,9 +15,15 @@
 //! - `trust_prompt`: a dialog that is not a stream line, and no exit.
 //! - `conformance`: the probes of [`crate::probe`], and the write of
 //!   `outbox/result.json` of the task folder (`result_write`). The report
-//!   goes into the result line and into the log as `conformance`.
+//!   goes into the result line and into the log as `conformance`. For the
+//!   prompt of "Stop gate" the fake obeys the prompt: the progress lines,
+//!   and exit 0 with no result.
+//! - `ignore_stop_gate`: with `conformance`, the fake does not obey the
+//!   prompt of "Stop gate": it writes its result as for each other check.
 
 use serde_json::{json, Value};
+
+use horch_core::fleetd::worker_profiles::domain::conformance::STOP_GATE_PROMPT;
 
 use crate::{hang, probe, say, scenario_has, Call};
 
@@ -147,9 +153,11 @@ fn agy_kind(line: &Value) -> Kind {
 /// of [`crate::agent`] run first, so `bound` records the state at entry.
 pub fn run(mut call: Call, cli: Cli, prompt: &str) -> ! {
     crate::agent::play(&mut call);
-    match std::fs::read_to_string(prompt) {
+    let stop_gate = match std::fs::read_to_string(prompt) {
         Ok(text) => {
+            let stop_gate = text == STOP_GATE_PROMPT;
             call.extra.insert("exec_prompt".into(), Value::String(text));
+            stop_gate
         }
         Err(e) => {
             call.violate(format!(
@@ -158,7 +166,7 @@ pub fn run(mut call: Call, cli: Cli, prompt: &str) -> ! {
             call.flush();
             std::process::exit(2);
         }
-    }
+    };
     if scenario_has("trust_prompt") {
         call.flush();
         say(TRUST_DIALOG);
@@ -195,7 +203,9 @@ pub fn run(mut call: Call, cli: Cli, prompt: &str) -> ! {
         call.flush();
         hang();
     }
-    if scenario_has("exit_without_result") {
+    // A real agent obeys the prompt of "Stop gate": it ends with no result.
+    let obeys_stop_gate = stop_gate && !scenario_has("ignore_stop_gate");
+    if scenario_has("exit_without_result") || (obeys_stop_gate && scenario_has("conformance")) {
         call.flush();
         std::process::exit(0);
     }
