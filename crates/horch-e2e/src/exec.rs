@@ -13,7 +13,8 @@
 //!   and no exit. Codex prints its token count only in `turn.completed`.
 //! - `exit_without_result`: the progress lines, and exit 0.
 //! - `trust_prompt`: a dialog that is not a stream line, and no exit.
-//! - `conformance`: the probes of [`crate::probe`], and the write of
+//! - `conformance`, and with any key the prompt of a conformance check: the
+//!   probes of [`crate::probe`], and the write of
 //!   `outbox/result.json` of the task folder (`result_write`). The report
 //!   goes into the result line and into the log as `conformance`. For the
 //!   prompt of "Stop gate" the fake obeys the prompt: the progress lines,
@@ -26,6 +27,10 @@ use serde_json::{json, Value};
 use horch_core::fleetd::worker_profiles::domain::conformance::STOP_GATE_PROMPT;
 
 use crate::{hang, probe, say, scenario_has, Call};
+
+/// The first sentence of the prompt of each conformance check
+/// (`domain::conformance`, `PROBE_PROMPT` and the others).
+const CHECK_PROMPT_HEAD: &str = "This is a conformance check of horch.";
 
 /// The CLIs with an exec adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -153,11 +158,12 @@ fn agy_kind(line: &Value) -> Kind {
 /// of [`crate::agent`] run first, so `bound` records the state at entry.
 pub fn run(mut call: Call, cli: Cli, prompt: &str) -> ! {
     crate::agent::play(&mut call);
-    let stop_gate = match std::fs::read_to_string(prompt) {
+    let (check, stop_gate) = match std::fs::read_to_string(prompt) {
         Ok(text) => {
+            let check = text.starts_with(CHECK_PROMPT_HEAD);
             let stop_gate = text == STOP_GATE_PROMPT;
             call.extra.insert("exec_prompt".into(), Value::String(text));
-            stop_gate
+            (check, stop_gate)
         }
         Err(e) => {
             call.violate(format!(
@@ -204,13 +210,17 @@ pub fn run(mut call: Call, cli: Cli, prompt: &str) -> ! {
         hang();
     }
     // A real agent obeys the prompt of "Stop gate": it ends with no result.
+    // The fake acts on the prompt of a check as a real agent does, with any
+    // scenario: the production job runs each check with the scenario of
+    // the fleet.
+    let conformance = check || scenario_has("conformance");
     let obeys_stop_gate = stop_gate && !scenario_has("ignore_stop_gate");
-    if scenario_has("exit_without_result") || (obeys_stop_gate && scenario_has("conformance")) {
+    if scenario_has("exit_without_result") || (obeys_stop_gate && conformance) {
         call.flush();
         std::process::exit(0);
     }
     let mut result = first(Kind::Result);
-    if scenario_has("conformance") {
+    if conformance {
         let hooks = hook_events(&progress);
         let mut report = probe::report(cli, &call.argv, hooks);
         report["result_write"] = Value::String(probe::write_result(cli, &call.argv, prompt));
