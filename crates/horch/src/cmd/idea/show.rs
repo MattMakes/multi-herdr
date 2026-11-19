@@ -87,7 +87,10 @@ pub fn run(ctx: &RuntimeContext, args: ShowArgs) -> Result<ExitCode> {
 
 fn text(shown: &Shown) -> String {
     let i = &shown.idea;
-    let mut out = format!("{}  {}  idea {}\n", i.id, i.feature, i.state);
+    let mut out = format!(
+        "{}  {}  idea {}\nFeature id: {}\n",
+        i.id, i.feature, i.state, i.feature_id
+    );
     section(&mut out, "Idea", i.idea.as_deref());
     out.push_str("\nAmendments:\n");
     if i.amendments.is_empty() {
