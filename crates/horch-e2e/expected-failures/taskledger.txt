@@ -1,12 +1,13 @@
-# Red tests of crates/horch-e2e/tests/taskledger.rs. Each one tests the pull
-# flow after horch spawn (spawn, claim, then finish, stop or the ladder).
-# Since T-352, horch spawn binds a push attempt in launching, so the flow
-# waits for the push side of Phase 4: the attempt goes live when its agent
-# runs (ticket 10), horch result ends the work (tickets 12 and 13), and the
-# fixtures move to bind (the follow-up ticket of FR-5).
-# Since T-479 (fleetd-p5 ticket 30), the wrapper of an attempt writes no
-# worker row, so each of them now stops at the wait for the agent PID.
-the_whole_flow_on_the_fake_herdr | 4 | timed out waiting for B's agent PID
-a_spawned_worker_records_its_pids_session_and_checkins | 4 | timed out waiting for both PIDs
-stopping_one_of_three_workers_leaves_the_others_running | 4 | timed out waiting for the agent PID
-a_worker_with_no_progress_is_stalled_by_the_ladder_and_stopped_by_its_pid | 4 | timed out waiting for the agent PID
+# Red tests of crates/horch-e2e/tests/taskledger.rs. Each one tested the
+# pull flow after horch spawn. T-870 moved the setup to ledger_seed and the
+# fleetd push launch. These 3 tests stay red for a product cause:
+# - the_whole_flow_on_the_fake_herdr still uses the retired pull commands.
+#   Its push form needs horch result from the agent (T-892).
+# - stopping_one_of_three_workers_leaves_the_others_running: the worker_stop
+#   handler ends only the worker row, so the live attempt keeps its agent,
+#   and the pass writes no stops row.
+# - a_worker_with_no_progress_is_stalled_by_the_ladder_and_stopped_by_its_pid:
+#   the ladder pass makes the task ready while its old agent lives (FM-14).
+the_whole_flow_on_the_fake_herdr | 4 | horch ledger run new is retired
+stopping_one_of_three_workers_leaves_the_others_running | 4 | timed out waiting for the stopped agent is gone
+a_worker_with_no_progress_is_stalled_by_the_ladder_and_stopped_by_its_pid | 4 | its old process lived in the pass
