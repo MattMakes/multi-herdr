@@ -98,6 +98,69 @@ impl Default for StopOptions {
     }
 }
 
+/// What fleetd sent in 1 rung of a stop: the signal to 1 process, or the
+/// close of 1 pane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sent<'a> {
+    /// `kill`: the hard stop, else the polite stop.
+    Signal {
+        pid: u32,
+        pid_start: u64,
+        kill: bool,
+    },
+    Pane(&'a str),
+}
+
+/// The `stops` row of 1 rung that fleetd sent for worker `worker_id`
+/// (`preservation-04-behavior.md`, S8): `agent` when the process is the
+/// agent of the row, else `supervisor`. No row for a worker that is gone.
+pub(crate) fn record_sent(conn: &Connection, worker_id: &str, sent: Sent<'_>) -> Result<()> {
+    let Some(w) = workers::find(conn, worker_id)? else {
+        return Ok(());
+    };
+    let (step, started) = match sent {
+        Sent::Signal {
+            pid,
+            pid_start,
+            kill,
+        } => {
+            let pid = i64::from(pid);
+            let started = i64::try_from(pid_start).ok();
+            let agent = w.agent_pid == Some(pid) && w.agent_started == started;
+            let target = if agent {
+                StopTarget::Agent
+            } else {
+                StopTarget::Supervisor
+            };
+            let signal = if kill {
+                StopSignal::Kill
+            } else {
+                StopSignal::Term
+            };
+            let step = StopStep {
+                target: target.as_str().into(),
+                pid: Some(pid),
+                signal: Some(signal.as_str().into()),
+                pane_id: None,
+                result: StopResult::Sent.as_str().into(),
+            };
+            (step, started)
+        }
+        Sent::Pane(pane) => {
+            let step = StopStep {
+                target: StopTarget::Pane.as_str().into(),
+                pid: None,
+                signal: None,
+                pane_id: Some(pane.into()),
+                result: StopResult::PaneClosed.as_str().into(),
+            };
+            (step, None)
+        }
+    };
+    let reason = w.end_reason.as_deref().unwrap_or("fleetd stopped its row");
+    record(conn, &w, StopRequester::Watchdog, reason, &step, started)
+}
+
 fn record(
     conn: &Connection,
     w: &Worker,
