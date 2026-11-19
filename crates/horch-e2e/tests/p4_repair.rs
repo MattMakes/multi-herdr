@@ -686,7 +686,10 @@ fn failed_resolver_attempt_starts_the_next_and_at_max_attempts_opens_1_item() {
 /// the check, and the branch lands. The task stays `done`.
 #[test]
 fn gate_failed_branch_gets_a_fix_attempt_with_the_gate_output() {
-    let fast = format!("grep -q FIXED {FAKE_FILE} || {{ echo '{GATE_LINE}'; exit 1; }}");
+    // Only shell builtins: the PATH of a gate has no `grep`.
+    let fast = format!(
+        r#"while read -r l; do [ "$l" = FIXED ] && exit 0; done < {FAKE_FILE}; echo '{GATE_LINE}'; exit 1"#
+    );
     let mut w = World::new("p4-repair-fix", &fast, None);
     // The fix attempt only says "done". The test makes its fix.
     let worktree = w.first_attempt_done(RESULT_ONLY, |_, _| {});
