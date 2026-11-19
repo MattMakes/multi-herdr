@@ -269,7 +269,7 @@ fn ledger_worker() -> (
         model::Actor,
         runs::{self, NewRun},
         tasks::{self, NewTask},
-        workers::{self, NewWorker},
+        workers::NewWorker,
         Store,
     };
     let dir = tempfile::tempdir().unwrap();
@@ -665,7 +665,7 @@ fn pinned_worker(
         model::Actor,
         runs::{self, NewRun},
         tasks::{self, NewTask},
-        workers::{self, NewWorker},
+        workers::NewWorker,
         Store,
     };
     let mut h = world(name);
