@@ -94,19 +94,9 @@ impl World {
         h.set("HORCH_TEST_DOCS_FIXTURE", docs.to_string_lossy());
         // `exec`: each pane of the fake herdr runs its command.
         h.set("HORCH_FAKE_SCENARIO", format!("exec,{scenario}"));
-        let label = h
-            .project
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
-        let mut create = std::process::Command::new(h.bin.join("herdr"));
-        h.seal(&mut create);
-        let o = create
-            .args(["workspace", "create", "--label", &label])
-            .output()
-            .unwrap();
-        assert!(o.status.success(), "herdr workspace create: {}", text(&o));
+        // The herdr workspace of the fleet, as `horch fleet` makes it.
+        let ws = h.fleet_workspace();
+        h.set("HORCH_WORKSPACE_ID", ws);
 
         let tickets = h.project.join("tickets");
         std::fs::create_dir_all(&tickets).unwrap();
