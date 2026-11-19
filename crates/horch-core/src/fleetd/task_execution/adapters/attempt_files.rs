@@ -459,13 +459,17 @@ impl Ingest<'_> {
         Ok(())
     }
 
-    /// Whether attempt `id` is a live push attempt with a recorded
-    /// wrapper, whose end the pass sees by the process of the wrapper.
+    /// Whether attempt `id` is a push attempt whose end the pass sees by
+    /// the process of its wrapper: `live` with a recorded wrapper, or with
+    /// a wrapper that a heartbeat of this ingest named. The pass records
+    /// that wrapper at `launching -> live` after the ingest.
     fn pass_ends(&self, id: &str) -> Result<bool> {
+        let named = self.report.wrappers.contains_key(id);
         let found: bool = self.tx.query_row(
             "SELECT EXISTS (SELECT 1 FROM attempts WHERE id = ?1 AND via = 'push'
-               AND state = 'live' AND pid IS NOT NULL AND pid_start IS NOT NULL)",
-            [id],
+               AND ((state = 'live' AND pid IS NOT NULL AND pid_start IS NOT NULL)
+                 OR (?2 AND state IN ('launching', 'live'))))",
+            params![id, named],
             |r| r.get(0),
         )?;
         Ok(found)

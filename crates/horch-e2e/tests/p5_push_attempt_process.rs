@@ -68,7 +68,7 @@ fn fleet_with(name: &str, scenario: &str, first: Option<&str>) -> Harness {
         let fake = Harness::horch_bin().with_file_name("fake-claude");
         let script = format!(
             "#!/bin/sh\n[ \"$1\" = warm ] && exit 0\n\
-             case \"$*\" in\n*/inbox/START.md*) sleep 5; {first} ;;\nesac\n\
+             case \"$*\" in\n*/inbox/START.md*) /bin/sleep 5; {first} ;;\nesac\n\
              exec '{}' \"$@\"\n",
             fake.display()
         );
@@ -132,7 +132,8 @@ fn fake_key(h: &Harness, key: &str) -> Option<Value> {
 /// the log of the fake claude.
 fn context(h: &Harness) -> String {
     format!(
-        "show: {}\nclaude: {:?}\ningested: {:?}\nheartbeats: {:?}",
+        "attempt: {:?}\nshow: {}\nclaude: {:?}\ningested: {:?}\nheartbeats: {:?}",
+        first_attempt(h),
         show(h),
         h.calls_of("claude"),
         ingested(h),
@@ -281,6 +282,10 @@ fn push_attempt_agent_sends_its_result() {
         matches!(a.outcome.as_deref(), Some("verified" | "rejected")),
         "{a:?}"
     );
+    // The agent ran `horch result` at once and exited: its command waited
+    // for the wrapper on the attempt row, so the agent was live.
+    assert!(a.pid.is_some(), "no wrapper: {a:?}");
+    assert_ne!(a.worker, "launch_failed", "{a:?}");
 }
 
 #[test]
@@ -328,8 +333,9 @@ fn push_attempt_agent_that_exits_with_no_result_ends_by_its_exit() {
 
 #[test]
 fn push_attempt_agent_killed_while_it_works_ends_by_its_exit() {
-    // The agent works for 600 s: its process becomes `sleep`.
-    let h = slow_fleet("p5-push-kill", "exec", "exec sleep 600");
+    // The agent works for 600 s: its process becomes `sleep`. PATH of a
+    // pane holds only the fakes, so the script names /bin/sleep.
+    let h = slow_fleet("p5-push-kill", "exec", "exec /bin/sleep 600");
     queue_one(&h, "push-kill");
     // The ingest records the agent and its wrapper from 1 heartbeat.
     let live = live_with_wrapper(&h);
