@@ -342,8 +342,14 @@ fn fr1_two_ideas_make_two_files_and_two_rows() {
 /// leaves the idea in `awaiting_approval`.
 #[test]
 fn fr10_sub_orchestrator_approval_leaves_awaiting_approval() {
-    let w = World::new("p6-intake-fr10", "clarify,forge_approval,approve_inside");
+    let w = World::new(
+        "p6-intake-fr10",
+        "clarify,await_approval,forge_approval,approve_inside",
+    );
     let idea = w.add("Show the queue length in the status bar");
+    // The dangerous time: the fake acts while the idea waits for you.
+    let awaited = w.fake_extra("awaited");
+    assert_eq!(awaited, "awaiting_approval", "{}", w.context());
     let approve = w.fake_extra("approve");
     assert_ne!(approve["exit"], 0, "horch idea approve inside: {approve}");
     let err = approve["stderr"].as_str().unwrap_or_default();

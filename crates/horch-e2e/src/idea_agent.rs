@@ -22,6 +22,9 @@
 //!   feature of the idea with `horch idea note --question`, case `covered`
 //!   with a `--cite` of `assumptions.md`, or case `own_decision`. Logged as
 //!   `answers`.
+//! - `await_approval`: before `forge_approval`, `approve_inside` and
+//!   `operator_request`, wait until the idea is in `awaiting_approval`
+//!   (at most [`AWAIT_APPROVAL`]). Logged as `awaited` with the state seen.
 //! - `forge_approval`: write `approval.json` with the sha256 of
 //!   `assumptions.md`, as if the operator approved it.
 //! - `approve_inside`: run `horch idea approve <idea>`. Logged as `approve`.
@@ -50,7 +53,7 @@ use crate::agent::{git, horch, worktree};
 use crate::{hash16, scenario_has, Call};
 
 /// The idea-lead keys that need the idea folder.
-const IDEA_KEYS: [&str; 11] = [
+const IDEA_KEYS: [&str; 12] = [
     "die_mid_interview",
     "clarify",
     "clarify_open",
@@ -59,6 +62,7 @@ const IDEA_KEYS: [&str; 11] = [
     "ticket_cycle",
     "answer_covered",
     "answer_own",
+    "await_approval",
     "forge_approval",
     "approve_inside",
     "operator_request",
@@ -72,6 +76,9 @@ const VERDICT_FILE: &str = "review.md";
 
 /// The file mode of each file that the fake writes.
 const FILE_MODE: u32 = 0o600;
+
+/// The longest wait of `await_approval` for the state `awaiting_approval`.
+const AWAIT_APPROVAL: Duration = Duration::from_secs(60);
 
 /// The longest wait for a connect to the channel.
 const CONNECT_WAIT: Duration = Duration::from_secs(5);
@@ -123,6 +130,11 @@ pub fn play(call: &mut Call) {
     }
     if !answers.is_empty() {
         call.extra.insert("answers".into(), json!(answers));
+    }
+    if scenario_has("await_approval") {
+        call.extra
+            .insert("awaited".into(), json!(await_approval(&lead.idea)));
+        call.flush();
     }
     if scenario_has("forge_approval") {
         lead.write("approval.json", &lead.approval());
@@ -307,6 +319,30 @@ impl Lead {
             "file": write_request_file(&fleet_root, &request("file")),
         })
     }
+}
+
+/// Wait until `idea` is in `awaiting_approval`, at most [`AWAIT_APPROVAL`];
+/// the last state seen.
+fn await_approval(idea: &str) -> Option<String> {
+    let end = Instant::now() + AWAIT_APPROVAL;
+    loop {
+        let state = idea_state(idea);
+        if state.as_deref() == Some("awaiting_approval") || Instant::now() >= end {
+            return state;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// The state of `idea` in the ledger.
+fn idea_state(idea: &str) -> Option<String> {
+    let store = Store::open_read_only(&Paths::from_env(&ProcessEnv).ledger_db).ok()?;
+    store
+        .conn()
+        .query_row("SELECT state FROM ideas WHERE id = ?1", [idea], |r| {
+            r.get(0)
+        })
+        .ok()
 }
 
 /// The id of the oldest open question of the feature of `idea`.
