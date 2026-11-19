@@ -50,7 +50,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use rusqlite::{Connection, OptionalExtension, Transaction};
+use rusqlite::{Connection, Transaction};
 use serde_json::json;
 
 use crate::fleetd::fleet_runtime::adapters::cursors_store;
@@ -696,40 +696,33 @@ pub fn idea_lead_launch(
     fleet_root: &Path,
     attempt: &str,
 ) -> Result<Option<IdeaLeadLaunch>> {
-    let row = conn
-        .query_row(
-            "SELECT a.task_id IS NULL, a.idea_id, a.worker_id, a.mux_handle, a.state,
-                    w.persona, w.run_id
-             FROM attempts a JOIN workers w ON w.worker_id = a.worker_id
-             WHERE a.id = ?1",
-            [attempt],
-            |r| {
-                Ok((
-                    r.get::<_, bool>(0)?,
-                    r.get::<_, Option<String>>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, Option<String>>(3)?,
-                    r.get::<_, String>(4)?,
-                    r.get::<_, Option<String>>(5)?,
-                    r.get::<_, Option<String>>(6)?,
-                ))
-            },
-        )
-        .optional()?;
-    let Some((no_task, Some(idea), worker_id, pane, state, persona, Some(run_id))) = row else {
+    let Some((task, state, _, persona)) = attempts_store::attempt_via(conn, attempt)? else {
         return Ok(None);
     };
-    if !no_task || persona.as_deref() != Some(sub_orchestrators::PERSONA) {
+    if task.is_some() || persona.as_deref() != Some(sub_orchestrators::PERSONA) {
         return Ok(None);
     }
+    let Some((_, Some(idea))) = attempts_store::task_and_idea(conn, attempt)? else {
+        return Ok(None);
+    };
     let Some(phase) = phase_of_attempt(attempt, &idea) else {
+        return Ok(None);
+    };
+    let Some(row) = attempts_store::idea_attempts(conn, &idea)?
+        .into_iter()
+        .map(|(a, _)| a)
+        .find(|a| a.id == attempt)
+    else {
+        return Ok(None);
+    };
+    let Some(run_id) = workers::get(conn, &row.worker_id)?.run_id else {
         return Ok(None);
     };
     let run = crate::taskledger::runs::get(conn, &run_id)?;
     let folder = fleet_root.join(IDEAS_DIR).join(&idea);
     Ok(Some(IdeaLeadLaunch {
         attempt: attempt.to_string(),
-        worker_id,
+        worker_id: row.worker_id,
         persona: sub_orchestrators::PERSONA.to_string(),
         brief: idea_lead_brief(&idea, &phase, &folder),
         idea,
@@ -739,7 +732,7 @@ pub fn idea_lead_launch(
         run_id,
         run_slug: run.slug,
         project_root: run.project_root,
-        pane,
+        pane: row.pane,
         workspace_id: run.workspace_id,
     }))
 }
