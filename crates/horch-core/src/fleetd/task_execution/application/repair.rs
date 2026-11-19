@@ -102,6 +102,10 @@ const OUTPUT_TAIL_LINES: usize = 60;
 /// shows.
 const OUTPUT_TAIL_BYTES: usize = 8 * 1024;
 
+/// The kind of the needs-you item of a task branch whose repair attempt
+/// cannot start. Its key is `<kind>:<branch>`.
+pub const REPAIR_START_KIND: &str = "repair_start";
+
 /// The kind of an attempt of a task branch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RepairKind {
@@ -286,7 +290,11 @@ pub fn start_due(tx: &Connection, ctx: &DispatchCtx<'_>, budget: usize) -> Resul
     }
     let mut out = Vec::new();
     let mut at_limit = BTreeSet::new();
+    // The start items of the branches that wait for a repair and did not
+    // start one in this pass. Each other start item ends.
+    let mut waiting = BTreeSet::new();
     for r in repairing(tx)? {
+        waiting.insert(start_key(&r.branch));
         let failed_at = match newest_repair(tx, &r)? {
             // The attempt runs, or its result waits for its check.
             Some(attempt) => match failed_at(tx, &attempt)? {
@@ -316,16 +324,25 @@ pub fn start_due(tx: &Connection, ctx: &DispatchCtx<'_>, budget: usize) -> Resul
         match bind(tx, ctx, &r) {
             Ok(s) => {
                 tx.execute_batch("RELEASE repair_bind")?;
+                waiting.remove(&start_key(&r.branch));
                 out.push(s);
             }
+            // 1 branch that cannot start its attempt never stops the pass
+            // (Three rules, rule 1): its rows roll back, the branch goes
+            // on the needs-you list, and the next pass tries again.
             Err(e) => {
                 tx.execute_batch("ROLLBACK TO repair_bind; RELEASE repair_bind")?;
-                return Err(e.context(format!("the repair attempt of {}", r.branch)));
+                open_start_item(tx, &r, &e)?;
             }
         }
     }
     for key in needs_you::open_keys(tx, REPAIR_LIMIT_KIND)? {
         if !at_limit.contains(&key) {
+            needs_you::resolve(tx, &key)?;
+        }
+    }
+    for key in needs_you::open_keys(tx, REPAIR_START_KIND)? {
+        if !waiting.contains(&key) {
             needs_you::resolve(tx, &key)?;
         }
     }
@@ -340,6 +357,32 @@ fn repair_attempts(conn: &Connection, branch: &str) -> Result<i64> {
 }
 
 /// The key of the needs-you item of `branch` at its repair limit.
+fn start_key(branch: &str) -> String {
+    format!("{REPAIR_START_KIND}:{branch}")
+}
+
+/// Open the needs-you item of the branch of `r`, whose repair attempt
+/// cannot start for the cause `e`.
+fn open_start_item(tx: &Connection, r: &Repairing, e: &anyhow::Error) -> Result<()> {
+    let text = format!(
+        "The {} attempt of the task branch {} cannot start: {e:#}. fleetd tries again on \
+         each pass. Run `horch branch abandon {}` to end the branch.",
+        r.kind.as_str(),
+        r.branch,
+        r.branch
+    );
+    needs_you::open_item(
+        tx,
+        &Write {
+            key: &start_key(&r.branch),
+            kind: REPAIR_START_KIND,
+            entity: Entity::TaskBranch.as_str(),
+            entity_id: &r.branch,
+            text: &text,
+        },
+    )
+}
+
 fn limit_key(branch: &str) -> String {
     format!("{REPAIR_LIMIT_KIND}:{branch}")
 }
