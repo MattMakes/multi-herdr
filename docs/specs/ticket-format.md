@@ -1,12 +1,13 @@
 # Ticket format (contract C1)
 
-Producer: the ticket-writer (`teammates/ticket-writer.md`). Consumer: `horch ledger add-map`
-(`crates/horch-core/src/taskledger/map.rs`). Decisions D2, D5, D12 and D14 of
+Producer: the sub-orchestrator (`idea-lead`) in its ticketing phase, and the ticket-writer
+(`teammates/ticket-writer.md`). Consumer: the plan validator of fleetd, and `horch ledger add-map
+--dry-run` (`crates/horch-core/src/taskledger/map.rs`). Decisions D2, D5, D12 and D14 of
 `docs/specs/trace-fixes.md` set this contract. `trf_02_*` tests pin the ticket-writer's examples to
 it.
 
 Specs live in `docs/specs/<slug>.md`. Tickets and their map live in `docs/tickets/<slug>/`. Both are
-committed.
+committed. `plan.yaml` (section 4) names the tickets of an idea and replaces `MAP.md` for a new idea.
 
 ## 1. Ticket file
 
@@ -81,7 +82,9 @@ The Check passes, and a negative value gives an error that names the key.
 
 ## 2. Map file
 
-`docs/tickets/<slug>/MAP.md` schedules the tickets.
+`docs/tickets/<slug>/MAP.md` schedules the tickets of the old flow. A new idea uses `plan.yaml`
+(section 4). A `MAP.md` stays readable: the run in flight at the update to Phase 6 keeps its
+`MAP.md`, and `horch ledger add-map --dry-run <MAP.md>` still checks one.
 
 - A `Spec:` line names the spec path.
 - The first table has 1 row per ticket and the columns `#`, `Title`, `Blocked by` and `Wave`. The
@@ -130,3 +133,72 @@ fields, the snapshot and `--dry-run`. Until it lands, `add-map` reads `Persona`,
 - It stores the ticket text and its sha256 on the task (`ticket_snapshot`, `ticket_sha`). `claim`
   prints the snapshot, then the path.
 - `add-map --dry-run` parses the map and every ticket, and reports each error without a change.
+
+`horch ledger add-map` without `--dry-run` is retired: it exits 1 and names the new command. The
+sub-orchestrator writes `plan.yaml` and its tickets, and fleetd validates and commits the plan
+after your approval. For 1 ticket that you wrote, run `horch idea add --direct <ticket file>`.
+
+## 4. plan.yaml
+
+`plan.yaml` replaces `MAP.md` for a new idea. The sub-orchestrator writes it in the ticketing phase,
+in the idea folder `ideas/I-NNNN/`. A ticket stays a Markdown file in format C1 (section 1), and
+`plan.yaml` names it with the `ticket` field of its task. The plan validator checks the schema of
+each task, each ticket that the plan names, the DAG of `after`, and that each requirement of
+`requirements.yaml` has a task (`covers`). fleetd commits a valid plan and its tasks in 1
+transaction. `horch ledger add-map --dry-run <plan.yaml>` runs the same validator and writes
+nothing.
+
+### 4.1 Example plan
+
+The example of `docs/specs/fleetd/design.md` (Workspace layout and file protocol):
+
+```yaml
+idea: I-0007
+repo: /fleet/repos/app
+feature: F-0003
+base_branch: feature/retry-sync-backoff   # the feature branch; every task of the plan lands here
+tasks:
+  - key: backoff
+    title: Add exponential backoff to SyncClient.request
+    ticket: tickets/01-backoff.md   # Markdown, today's format C1
+    kind: feature
+    profile: coder-codex
+    covers: [R1]
+    inputs: [src/sync/client.py]
+    outputs: [src/sync/client.py, tests/test_backoff.py]
+    acceptance:
+      - run: pytest tests/test_backoff.py -q
+      - run: pytest tests/sync -q
+    budget: {max_minutes: 40}
+  - key: logging
+    title: Log each retry with attempt and delay
+    kind: feature
+    profile: coder-claude
+    covers: [R2]
+    after: [backoff]        # met when backoff is done and its task branch is landed on the feature branch
+    acceptance:
+      - run: pytest tests/test_backoff.py -q -k logs
+  - key: sync-suite
+    title: Run the existing sync suite on the feature branch
+    kind: quality
+    profile: coder-codex
+    covers: [R3]
+    after: [backoff, logging]
+    acceptance:
+      - run: pytest -q
+  - key: retry-doc
+    title: Document the retry behavior in docs/sync.md
+    kind: docs              # a judgment kind: structural check plus a judge
+    profile: writer-claude
+    covers: [R2]
+    outputs: [docs/sync.md]
+    acceptance:
+      - sections: [docs/sync.md, "## Retries"]   # structural: the file and the section exist
+  - key: retry-doc-judge
+    title: Judge docs/sync.md against R1 and R2
+    kind: judge             # not a judgment kind: it needs no judge of its own
+    judges: retry-doc       # plan validation refuses a judgment task with no judge; met when retry-doc is in verifying and its structural check passed
+    profile: judge-codex    # a different session, and a different provider from the author
+                            # no after: [retry-doc]; the worktree starts from the tip of the retry-doc task branch, and retry-doc is done only after this verdict
+    outputs: [docs/sync.review.md]   # each miss ranked CRITICAL, HIGH, MEDIUM or LOW
+```

@@ -54,7 +54,7 @@ moves each idea through a fixed state machine:
 | interview, assumptions | sub-orchestrator | `interview.md`, `assumptions.md` in the idea folder |
 | approve or revise | you | `horch idea show <id>`, then `horch idea approve <id>` or `horch idea revise <id> "<text>"` |
 | spec and tickets | sub-orchestrator | `spec.md`, `requirements.yaml`, tickets in format C1 (`docs/specs/ticket-format.md`), `plan.yaml` |
-| check a map of tickets by hand | anyone | `horch ledger add-map --dry-run <MAP.md>` (writes nothing) |
+| check a plan by hand | anyone | `horch ledger add-map --dry-run <file>`: the plan validator on a `MAP.md` or a `plan.yaml` (writes nothing) |
 | validate the plan, make the tasks | fleetd | `plan.verdict.json` |
 | dispatch a ready task | fleetd | the worktree, `inbox/START.md`, a worker in exec mode |
 | record milestones | worker | `horch ledger progress "<text>"` |
@@ -71,9 +71,12 @@ moves each idea through a fixed state machine:
 A task with no check does not land, unless its ticket says
 `**Check:** none`. The orchestrator commands of the old flow
 (`horch ledger run new`, `add-map` without `--dry-run`, `add`, `task`,
-`plan-workers`, `run gate`, `run close`) and the worker commands
+`plan-workers`, `run gate`, `run close`, `unblock`, `reap`, `spawn`,
+`worker new`, `worker pid`, and `horch spawn`) and the worker commands
 `horch ledger claim` and `horch ledger finish` are retired. Each one prints
-the command that replaces it.
+the command that replaces it. The table "The old flow and the new" in
+[command-flow.md](command-flow.md#2c-the-old-flow-and-the-new) lists each
+step of the old flow and what you do now.
 
 The verifier starts the code-sweep reviewers itself. A ticket's
 `**Review:**` sets the rounds (none 0, light 1, full at most 3). Rounds 2
@@ -83,14 +86,15 @@ and 3 review only the change since the last reviewed tree, with
 (`F<n>: <reason>`), and the next round's reviewers write `- F<n> accepted`
 or `- F<n> rejected: <why>` under `## Answers`.
 
-`horch worker` records the supervisor's and the agent's PIDs and checks in
-every 30 s. A watchdog checks every working worker every 10 minutes and
-reaps a worker whose process is gone or that shows no progress for 3
-checks; its task is queued again first, and the replacement
-(`horch spawn <persona> --replaces <worker>`) gets the dead worker's
-transcript path and worktree. `horch ledger stop` stops 1 worker;
-`horch ledger cancel` and `horch task cancel` stop the worker of each task
-they cancel. `horch ledger unfinished` lists past work that never landed,
+fleetd records each attempt at its launch, and stops an orphan worker by
+its recorded PID. The next attempt of the task gets the transcript path and
+the worktree of the attempt before it. You keep 4 powers:
+`horch ledger stop <worker> "<reason>"` stops 1 worker,
+`horch task cancel <task>` cancels 1 task and stops its worker,
+`horch ledger fallback` gives 1 task to another persona, and
+`horch idea add --direct <ticket file>` adds 1 task by hand.
+`horch idea cancel <idea> "<reason>"` cancels a whole idea.
+`horch task requeue <task>` queues a blocked task again. `horch ledger unfinished` lists past work that never landed,
 including the history imported from the old JSON ledgers
 (`horch ledger import`). Session records live in the `session_records`
 table of the task ledger; `import` copies an old JSON session ledger there

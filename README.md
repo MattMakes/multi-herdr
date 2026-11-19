@@ -98,9 +98,13 @@ you: horch idea add "<idea>"   (or --direct <ticket file>, --to <feature>)
 
 Dispatch is in code: no agent queues, claims or lands a task. The old
 orchestrator commands (`horch ledger run new`, `add-map`, `add`, `task`,
-`plan-workers`, `run gate`, `run close`, and the worker commands
-`horch ledger claim` and `horch ledger finish`) are retired: each one
-prints the command that replaces it. The deep sections:
+`plan-workers`, `unblock`, `reap`, `run gate`, `run close`, `horch spawn`,
+and the worker commands `horch ledger claim` and `horch ledger finish`) are
+retired: each one prints the command that replaces it. You keep
+`horch ledger stop`, `horch ledger fallback`, `horch task cancel` and
+`horch idea add --direct`. The table
+[The old flow and the new](docs/command-flow.md#2c-the-old-flow-and-the-new)
+lists each step. The deep sections:
 [The task ledger](#the-task-ledger),
 [How the panes talk](#how-the-panes-talk),
 [From a rough idea to tickets](#from-a-rough-idea-to-tickets),
@@ -380,8 +384,9 @@ redelivery repeats the id. A tell without `--answers` closes no question.
 | `horch inbox`                      | anyone       | List roles; the orchestrator's pane prints and acknowledges pending worker messages, a worker its own mail |
 | `horch peek <role> --lines 20`      | anyone       | Read the recent output of a registered worker |
 | `horch idea add --direct <ticket file>` | you | Add a ticket that you wrote as an idea with 1 work task |
-| `horch spawn <teammate> [--run <slug>]` | orchestrator | New pane, new agent session; it claims its task |
-| `horch spawn --resume <id>`        | orchestrator | New pane, resuming an old session     |
+| `horch ledger stop <worker> "<reason>"` | you | Stop 1 worker; fleetd launches each attempt, and `horch spawn` is retired |
+| `horch ledger fallback`            | you          | Give 1 task to another persona        |
+| `horch task cancel <task>`         | you          | Cancel 1 task and stop its worker     |
 | `horch sessions`                   | orchestrator | Read the session records              |
 | `horch layout`                     | orchestrator | Report the grid of every tab          |
 | `horch tile`                       | orchestrator | Rearrange every pane into the grid    |
@@ -464,8 +469,8 @@ persona), 1 fresh process for each phase:
    requirement cites an approved assumption or an answer.
 3. Ticketing: it writes 1 ticket per slice, in the format of
    `docs/specs/ticket-format.md`, and `plan.yaml`. fleetd validates the plan
-   and makes its tasks. `horch ledger add-map --dry-run <MAP.md>` still
-   checks a map of tickets and writes nothing.
+   and makes its tasks. `horch ledger add-map --dry-run <file>` runs the
+   plan validator on a `MAP.md` or a `plan.yaml` and writes nothing.
 4. Supervising: it answers the questions of the workers of the feature and
    replans a failed task 1 time.
 
@@ -473,8 +478,8 @@ persona), 1 fresh process for each phase:
 ticket that you wrote becomes a plan with 1 work task. `--to <feature>` adds
 an idea to an open feature.
 
-The `spec-writer` and `ticket-writer` teammates hold the same steps as
-standalone personas. Both writers report only file paths, and only once the file is complete. They
+The steps of the `spec-writer` and `ticket-writer` teammates are now the
+phases of `idea-lead`; the 2 files stay as standalone personas. Both writers report only file paths, and only once the file is complete. They
 run on the `google` pool, which horch reads with `agy -p /usage` (no model
 turn). When Argon's bucket is empty, or `agy` is not installed, `horch spawn`
 runs the same persona on Opus and prints `SUBSTITUTED:`. Install `agy` with

@@ -136,6 +136,9 @@ from another pane of the fleet prints the reports and leaves them pending too.
 
 ### The spawn registration wait
 
+This wait belongs to the old flow. fleetd launches each attempt, and
+`horch spawn` is retired (section 2c).
+
 `horch spawn` does not return when the pane opens. It waits up to
 `HORCH_SPAWN_WAIT_MS` (default 15000 ms; `0` skips the wait) for the role to
 register in the mailbox, or for `<data root>/startup-errors/<role>.txt`. The
@@ -236,7 +239,41 @@ repository, a missing fast gate or a `not_before` time. Anything that needs
 you lands in `~/.horch/fleet/needs-you/`, in `horch ideas`, and as a herdr
 notification. The retired commands (`horch ledger run new`, `add-map`,
 `add`, `task`, `plan-workers`, `run gate`, `run close`, `claim` and
-`finish`) print the command that replaces each one.
+`finish`) print the command that replaces each one. The next section lists
+each step of the old flow and what you do now.
+
+## 2c. The old flow and the new
+
+Each command and each skill step of the old orchestrator flow, and what you
+do now. A retired command exits 1 and prints its line of this table.
+
+| Old flow | Now |
+|---|---|
+| `horch ledger run new <slug>` | `horch idea add "<idea>"`: a new feature. fleetd makes its branch and its internal run. |
+| `horch ledger add-map <MAP.md>` | The sub-orchestrator writes `plan.yaml` and tickets. fleetd validates and commits the plan after your approval. For 1 ticket that you wrote: `horch idea add --direct <ticket file>`. |
+| `horch ledger add-map --dry-run <file>` | Stays. It runs the plan validator on a `MAP.md` or a `plan.yaml`. |
+| `horch ledger add`, `horch ledger task` | `horch idea add --direct <ticket file> [--to <feature>]`. |
+| `horch ledger plan-workers` | Nothing: fleetd dispatches each ready task. `horch ideas` and `horch status` show each hold. |
+| `horch spawn <persona>`, `horch ledger spawn` | Nothing for a task: fleetd launches each attempt. To pair with a persona, plan its task with an interactive persona. |
+| `horch ledger worker new`, `worker pid` | Nothing: fleetd records each attempt at its launch. |
+| `horch ledger reap` | Nothing: fleetd stops an orphan worker. To stop 1 worker: `horch ledger stop`. |
+| `horch ledger stop <worker> "<reason>"` | Stays: it stops 1 worker. |
+| `horch ledger unblock` | `horch task requeue <task>`. |
+| `horch ledger fallback` | Stays: it gives 1 task to another persona. |
+| `horch ledger cancel`, `horch task cancel` | `horch task cancel <task>`. For a whole idea: `horch idea cancel <idea> "<reason>"`. |
+| `horch ledger waive` | Stays. |
+| `horch ledger run gate` | Nothing: fleetd runs the full gate of a feature as a job when its task branches are landed. |
+| `horch ledger run close` | You merge the pull request, and fleetd sees the merge by content. To drop a feature: `horch feature abandon <feature>`. |
+| `horch fleet start` (the orchestrator claim and stop) | `horch fleet start` starts fleetd and herdr with no orchestrator. fleetd starts 1 sub-orchestrator for each feature. |
+| The orchestrator gets wakes and questions | The sub-orchestrator of the feature gets the questions of its feature. You get the needs-you list, `horch ideas` and herdr notifications. |
+| `horch ledger import`, `horch ledger gc` | Stay. |
+| `horch ledger worktree scratch`, `horch worktree triage` | Stay. |
+| The skill `horch:orchestrate` | Rewritten for you: `horch idea add`, `--direct`, `--to`, `horch ideas`, `horch idea show`, `approve`, `revise`, `amend`, `park`, `cancel`, and the kept commands above. |
+| The teammates `spec-writer` and `ticket-writer` | Their steps are the phases of `idea-lead`. |
+
+You keep 4 powers: stop 1 worker (`horch ledger stop`), cancel 1 task
+(`horch task cancel`), give a task to another persona (`horch ledger
+fallback`), and add 1 task by hand (`horch idea add --direct`).
 
 ## Together or apart
 
@@ -244,7 +281,7 @@ notification. The retired commands (`horch ledger run new`, `add-map`,
 |---|---|---|---|
 | `horch fleet` / `herdr-fleet` | yes | no (it creates one) | no |
 | `horch idea add`, `idea approve`, `ideas` | no | no | no (fleetd then starts the sub-orchestrator) |
-| `horch spawn`, `tell`, `inbox`, `tile` | yes | run inside a fleet pane | `spawn` does |
+| `horch tell`, `inbox`, `tile` | yes | run inside a fleet pane | no |
 | `horch ledger done` / `horch done` | yes | run by a worker | no |
 | `horch ledger progress` / `horch note` | no (it writes the ledger only) | run by a worker | no |
 | `horch ledger status`, `show`, `events` | no | no | no |
