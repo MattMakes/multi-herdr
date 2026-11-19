@@ -166,10 +166,18 @@ impl World {
         w.declare_gates();
         w.task_id = w.seed_task(spec);
         w.h.serve_fleetd();
+        // The workspace of the project, as `horch fleet` names it: fleetd
+        // opens the pane of each attempt beside its first pane.
+        let label =
+            w.h.project
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned();
         let mut create = std::process::Command::new(w.h.bin.join("herdr"));
         w.h.seal(&mut create);
         let o = create
-            .args(["workspace", "create", "--label", name])
+            .args(["workspace", "create", "--label", &label])
             .output()
             .unwrap();
         assert!(o.status.success(), "{}", text(&o));
