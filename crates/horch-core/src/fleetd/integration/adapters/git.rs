@@ -20,7 +20,7 @@ use crate::fleetd::integration::application::ports::{
     BranchTip, Candidate, IntegrationGitGateway, Member, RefMove,
 };
 use crate::fleetd::integration::application::stacks::StackGit;
-use crate::fleetd::worktree_custody::adapters::git::CliWorktreeGit;
+use crate::fleetd::worktree_custody::adapters::git::{repo_git_dir, CliWorktreeGit};
 
 /// The reflog message of each ref move of fleetd.
 const MOVE_MESSAGE: &str = "fleetd: compare-and-set";
@@ -89,21 +89,6 @@ impl CliGitGateway {
             );
         }
         Ok(RefMove::Mismatch { actual })
-    }
-
-    /// Whether `a` is an ancestor of `b`, or `a` is `b`.
-    fn is_ancestor(&self, repo: &Path, a: &str, b: &str) -> Result<bool> {
-        let out = self
-            .git
-            .checked(repo, &["merge-base", "--is-ancestor", a, b])?;
-        match out.status {
-            0 => Ok(true),
-            1 => Ok(false),
-            s => bail!(
-                "git merge-base --is-ancestor {a} {b} failed ({s}): {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            ),
-        }
     }
 
     /// The newest committer date of the commits `a` and `b`, as git reads
@@ -176,6 +161,20 @@ fn stash_branch(subject: &str) -> Option<&str> {
 }
 
 impl IntegrationGitGateway for CliGitGateway {
+    fn is_ancestor(&self, repo: &Path, a: &str, b: &str) -> Result<bool> {
+        let out = self
+            .git
+            .checked(repo, &["merge-base", "--is-ancestor", a, b])?;
+        match out.status {
+            0 => Ok(true),
+            1 => Ok(false),
+            s => bail!(
+                "git merge-base --is-ancestor {a} {b} failed ({s}): {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ),
+        }
+    }
+
     fn tip(&self, repo: &Path, name: &str) -> Result<Option<String>> {
         full_ref(name)?;
         Ok(self
@@ -219,6 +218,13 @@ impl IntegrationGitGateway for CliGitGateway {
         self.failed_move(repo, name, Some(expected_old), &out.stderr)
     }
 
+    fn contains(&self, repo: &Path, tip: &str, ancestor: &str) -> Result<bool> {
+        for id in [tip, ancestor] {
+            object_id(id)?;
+        }
+        self.is_ancestor(repo, ancestor, tip)
+    }
+
     fn changes_in(
         &self,
         repo: &Path,
@@ -251,6 +257,13 @@ impl IntegrationGitGateway for CliGitGateway {
         let mut head = base_tip.to_string();
         for member in members {
             object_id(&member.tip)?;
+            // A member that is already in the candidate, as a branch that the
+            // old path landed, adds no merge commit: the candidate stays at
+            // its tip, and a bundle of only such members lands at the base
+            // tip with no ref move.
+            if self.is_ancestor(repo, &member.tip, &head)? {
+                continue;
+            }
             let args = [
                 "merge-tree",
                 "--write-tree",
@@ -447,6 +460,102 @@ impl StackGit for CliStackGit {
             );
         }
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+}
+
+/// [`IntegrationGitGateway`] for a caller that does not know its
+/// repositories before a call: the idea duties and the idea requests of
+/// fleetd (Phase 6). Each git call can read the folder of its call
+/// ([`CliWorktreeGit`] adds it). A call that moves a ref, writes an object
+/// or sets a key gets its own [`CliGitGateway`] that can also write the git
+/// folder of that repository (`repo_git_dir`), as each other git job of
+/// fleetd (Q26 of fleetd-p4). It cannot write the files of the project.
+#[derive(Debug, Clone)]
+pub struct ProjectGitGateway {
+    git: CliWorktreeGit,
+}
+
+impl ProjectGitGateway {
+    pub fn new(git: CliWorktreeGit) -> ProjectGitGateway {
+        ProjectGitGateway { git }
+    }
+
+    /// The gateway of a call that only reads.
+    fn reader(&self) -> CliGitGateway {
+        CliGitGateway::new(self.git.clone())
+    }
+
+    /// The gateway of a call that writes the git folder of `repo`.
+    fn writer(&self, repo: &Path) -> Result<CliGitGateway> {
+        let git_dir = repo_git_dir(repo)?;
+        Ok(CliGitGateway::new(self.git.clone().writing(&[git_dir])))
+    }
+}
+
+impl IntegrationGitGateway for ProjectGitGateway {
+    fn tip(&self, repo: &Path, name: &str) -> Result<Option<String>> {
+        self.reader().tip(repo, name)
+    }
+
+    fn update_ref(
+        &self,
+        repo: &Path,
+        name: &str,
+        new: &str,
+        expected_old: Option<&str>,
+    ) -> Result<RefMove> {
+        self.writer(repo)?.update_ref(repo, name, new, expected_old)
+    }
+
+    fn delete_ref(&self, repo: &Path, name: &str, expected_old: &str) -> Result<RefMove> {
+        self.writer(repo)?.delete_ref(repo, name, expected_old)
+    }
+
+    fn contains(&self, repo: &Path, tip: &str, ancestor: &str) -> Result<bool> {
+        self.reader().contains(repo, tip, ancestor)
+    }
+
+    fn is_ancestor(&self, repo: &Path, a: &str, b: &str) -> Result<bool> {
+        self.reader().is_ancestor(repo, a, b)
+    }
+
+    fn changes_in(
+        &self,
+        repo: &Path,
+        branch_tip: &str,
+        base: &str,
+        target_tip: &str,
+    ) -> Result<bool> {
+        self.reader().changes_in(repo, branch_tip, base, target_tip)
+    }
+
+    fn build_candidate(
+        &self,
+        repo: &Path,
+        base_tip: &str,
+        members: &[Member],
+    ) -> Result<Candidate> {
+        self.writer(repo)?.build_candidate(repo, base_tip, members)
+    }
+
+    fn fleet_branches(&self, repo: &Path) -> Result<Vec<BranchTip>> {
+        self.reader().fleet_branches(repo)
+    }
+
+    fn task_branches(&self, repo: &Path, run_branch: &str) -> Result<Vec<BranchTip>> {
+        self.reader().task_branches(repo, run_branch)
+    }
+
+    fn stash_branches(&self, repo: &Path) -> Result<Vec<String>> {
+        self.reader().stash_branches(repo)
+    }
+
+    fn fleet_toml(&self, repo: &Path, tip: &str) -> Result<Option<String>> {
+        self.reader().fleet_toml(repo, tip)
+    }
+
+    fn ensure_settings(&self, dir: &Path) -> Result<()> {
+        self.writer(dir)?.ensure_settings(dir)
     }
 }
 

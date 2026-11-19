@@ -45,7 +45,9 @@ use horch_core::fleetd::fleet_runtime::adapters::effects::{
 use horch_core::fleetd::fleet_runtime::adapters::fleetd_row::{self, lock_path, wait_until_free};
 use horch_core::fleetd::fleet_runtime::adapters::old_watchdog;
 use horch_core::fleetd::fleet_runtime::adapters::scans::{CliPath, FolderItem};
-use horch_core::fleetd::fleet_runtime::adapters::watchdog_duties::{HerdrObserver, WatchdogDuties};
+use horch_core::fleetd::fleet_runtime::adapters::watchdog_duties::{
+    idea_lead_launch, HerdrObserver, WatchdogDuties,
+};
 use horch_core::fleetd::fleet_runtime::application::handlers_cli::{self, CliHandlers};
 use horch_core::fleetd::fleet_runtime::application::handlers_custody::{self, Custody};
 use horch_core::fleetd::fleet_runtime::application::handlers_idea::{self, IdeaHandlers};
@@ -64,7 +66,7 @@ use horch_core::fleetd::ideas::adapters::needs_you_folder::Mirrored;
 use horch_core::fleetd::ideas::adapters::notify::{self, Notice};
 use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
 use horch_core::fleetd::ideas::domain::plan_validator::{DeclaredGates, RosterProfile};
-use horch_core::fleetd::integration::adapters::git::CliGitGateway;
+use horch_core::fleetd::integration::adapters::git::ProjectGitGateway;
 use horch_core::fleetd::integration::adapters::project_file;
 use horch_core::fleetd::integration::adapters::sqlite as feature_rows;
 use horch_core::fleetd::integration::application::commands::GitRefTips;
@@ -712,7 +714,7 @@ fn register_idea_handlers(
             ideas: settings.fleet_root.join(IDEAS_DIR),
             owner,
             roster: Arc::new(move || roster_profiles(&roster_ctx, &sandboxes)),
-            git: Arc::new(CliGitGateway::new(git)),
+            git: Arc::new(ProjectGitGateway::new(git)),
         },
     );
 }
@@ -746,7 +748,7 @@ fn roster_profiles(ctx: &RuntimeContext, sandboxes: &WorkerSandboxes) -> Vec<Ros
 struct LiveIdeas<'a> {
     ctx: &'a RuntimeContext,
     sandboxes: &'a WorkerSandboxes,
-    git: CliGitGateway,
+    git: ProjectGitGateway,
     herdr: Herdr,
 }
 
@@ -853,12 +855,96 @@ fn check_sandboxes(ctx: &RuntimeContext) -> WorkerSandboxes {
 /// `horch spawn <persona> --attempt <id>` (ticket 10 of Phase 4).
 struct PushSpawns<'a> {
     ctx: &'a RuntimeContext,
+    herdr: Herdr,
 }
 
 impl Launches for PushSpawns<'_> {
     fn spec(&self, l: &PushLaunch) -> Result<LaunchSpec> {
-        super::recipes::push_launch_spec(self.ctx, l)
+        spawn_spec(self.ctx, &self.herdr, l.clone())
     }
+}
+
+/// The launch of the attempt of `l`: [`super::recipes::push_launch_spec`]
+/// with the pane of [`launch_pane`]. Each push attempt and each idea-lead
+/// attempt launches through it.
+fn spawn_spec(ctx: &RuntimeContext, herdr: &Herdr, mut l: PushLaunch) -> Result<LaunchSpec> {
+    let (pane, workspace) = launch_pane(herdr, &l)?;
+    l.from_pane = Some(pane);
+    l.workspace_id = Some(workspace);
+    super::recipes::push_launch_spec(ctx, &l)
+}
+
+/// The pane that the launch of `l` splits, and its workspace: the recorded
+/// pane of `l`, else the first pane of the herdr workspace whose label is
+/// the name of the project folder, as `horch fleet` names it. In Phase 6
+/// no run has an orchestrator pane, so the recorded pane is often missing.
+/// No other workspace is used: with neither, the launch fails, and the
+/// start timeout of the pass ends the attempt.
+fn launch_pane(herdr: &Herdr, l: &PushLaunch) -> Result<(String, String)> {
+    if let Some(pane) = &l.from_pane {
+        let workspace = match &l.workspace_id {
+            Some(w) => w.clone(),
+            None => herdr.pane_get(pane)?.workspace_id.with_context(|| {
+                format!(
+                    "herdr names no workspace of pane {pane} of attempt {}",
+                    l.attempt
+                )
+            })?,
+        };
+        return Ok((pane.clone(), workspace));
+    }
+    let label = Path::new(&l.project_root)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let no_pane = |why: &str| {
+        anyhow::anyhow!(
+            "the launch of attempt {} has no pane: the ledger records no pane for it, \
+             and {why}. Start the fleet with horch fleet in {}",
+            l.attempt,
+            l.project_root
+        )
+    };
+    let workspace = herdr
+        .workspace_list()?
+        .into_iter()
+        .find(|w| w.label.as_deref() == Some(label.as_str()))
+        .ok_or_else(|| no_pane(&format!("no herdr workspace has the label {label}")))?;
+    let pane = herdr
+        .pane_list(&workspace.workspace_id)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| no_pane(&format!("herdr workspace {label} has no pane")))?;
+    Ok((pane.pane_id, workspace.workspace_id))
+}
+
+/// The launch of the idea-lead attempt `a` (T-890), with the recipe of a
+/// push attempt: `horch spawn idea-lead --run <run> --exact --attempt <id>
+/// --from-pane <pane>`. The spawn takes the brief of the idea from the same
+/// rows. `None` when `a` is not an idea-lead attempt.
+fn idea_lead_spec(
+    ctx: &RuntimeContext,
+    herdr: &Herdr,
+    a: &AttemptRow,
+) -> Result<Option<LaunchSpec>> {
+    let Some(store) = horch_core::taskledger::open_existing_read_only(ctx)? else {
+        return Ok(None);
+    };
+    let Some(l) = idea_lead_launch(store.conn(), &ctx.paths.fleet_root, &a.id)? else {
+        return Ok(None);
+    };
+    let push = PushLaunch {
+        attempt: l.attempt,
+        // An idea-lead attempt has no task. The recipe does not read it.
+        task_id: String::new(),
+        worker_id: l.worker_id,
+        persona: l.persona,
+        run_slug: l.run_slug,
+        project_root: l.project_root,
+        from_pane: l.pane,
+        workspace_id: l.workspace_id,
+    };
+    spawn_spec(ctx, herdr, push).map(Some)
 }
 
 /// The settings of the fleetd of `generation` that runs `horch`.
@@ -926,13 +1012,16 @@ fn with_pass<T>(
     let ideas = LiveIdeas {
         ctx,
         sandboxes: &sandboxes,
-        git: CliGitGateway::new(CliWorktreeGit::new(
+        git: ProjectGitGateway::new(CliWorktreeGit::new(
             &ctx.bins.harness.git,
             &settings.fleet_root,
         )),
         herdr: herdr(),
     };
-    let spawns = PushSpawns { ctx };
+    let spawns = PushSpawns {
+        ctx,
+        herdr: herdr(),
+    };
     let work = TaskWork {
         tools: &tools,
         sandboxes: &sandboxes,
@@ -1179,10 +1268,13 @@ impl Outside for Live<'_> {
         roots.context("reading the repositories of the fleet")
     }
 
-    /// Phase 1 puts no task attempt in `launching`: the only attempt there
-    /// is a respawn of an orchestrator that an older fleetd wrote, and the
-    /// run duties end it (FM-16).
+    /// An idea-lead attempt gets [`idea_lead_spec`] (T-890). Phase 1 puts
+    /// no other attempt here: a respawn of an orchestrator that an older
+    /// fleetd wrote has no launch, and the run duties end it (FM-16).
     fn attempt_spec(&self, attempt: &AttemptRow) -> Result<LaunchSpec> {
+        if let Some(spec) = idea_lead_spec(self.ctx, &self.herdr, attempt)? {
+            return Ok(spec);
+        }
         bail!(
             "attempt {} has no launch: Phase 1 launches no task attempt",
             attempt.id

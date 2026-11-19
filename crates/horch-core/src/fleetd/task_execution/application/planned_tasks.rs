@@ -27,7 +27,7 @@ use crate::fleetd::fleet_runtime::application::ledger::{created, Cause};
 use crate::fleetd::fleet_runtime::domain::ledger::{Entity, Generation};
 use crate::fleetd::task_execution::application::cancel::{self, Cancel};
 use crate::fleetd::task_execution::domain::task::judged_task;
-use crate::taskledger::model::{Origin, TaskKind, TaskStatus, WorkKind, WorktreeMode};
+use crate::taskledger::model::{FileMode, Origin, TaskKind, TaskStatus, WorkKind, WorktreeMode};
 use crate::taskledger::runs::Run;
 use crate::taskledger::tasks::{self, ticket_sha, Task};
 use crate::taskledger::util;
@@ -54,6 +54,8 @@ pub struct PlannedTask {
     pub after: Vec<String>,
     /// For a judge task: the key of the task it judges.
     pub judges: Option<String>,
+    /// The paths that the task owns: its Own rows in `task_files`.
+    pub own: Vec<String>,
 }
 
 /// 1 task of a committed plan, as the ledger holds it.
@@ -359,6 +361,7 @@ fn insert(
         ],
     )
     .with_context(|| format!("inserting the task {} of {idea_id}", task.key))?;
+    tasks::add_files(tx, &id, &task.own, FileMode::Own)?;
     for dep in deps {
         tx.execute(
             "INSERT INTO task_deps (task_id, blocked_by) VALUES (?1, ?2)",

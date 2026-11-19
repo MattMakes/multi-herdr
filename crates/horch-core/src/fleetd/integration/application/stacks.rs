@@ -432,6 +432,7 @@ fn resolver_task(
         spec_json: spec.to_string(),
         after: Vec::new(),
         judges: None,
+        own: Vec::new(),
     }
 }
 

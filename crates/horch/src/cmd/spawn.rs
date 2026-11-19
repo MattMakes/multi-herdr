@@ -185,9 +185,10 @@ pub fn spawn(ctx: &RuntimeContext, args: SpawnArgs) -> Result<String> {
         Prepared::Pane(l) => Some(l),
         Prepared::Ended(line) => return Ok(line),
     };
-    // A push attempt is bound to a ready task, so it is never over the plan.
+    // A push attempt is bound to a ready task, and an idea-lead attempt has
+    // its idea, so neither is over the plan.
     let result = match ledger.as_ref() {
-        Some(l) if !brief && l.push.is_none() => refuse_over_plan(ctx, l)
+        Some(l) if !brief && l.claims() => refuse_over_plan(ctx, l)
             .and_then(|()| spawn_worker(ctx, args, ledger.as_ref(), controller, sandboxed)),
         _ => spawn_worker(ctx, args, ledger.as_ref(), controller, sandboxed),
     };

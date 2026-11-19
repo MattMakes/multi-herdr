@@ -100,6 +100,17 @@ impl Paths {
         })
     }
 
+    /// The variables that give a launched process the fleet of this process
+    /// (T-890): its task ledger as `HORCH_LEDGER_DB` and its fleet root as
+    /// `FLEET_ROOT`. Each process that a spawner or fleetd launches gets
+    /// them, so it never guesses its fleet from `HORCH_STATE_DIR`.
+    pub fn fleet_env(&self) -> [(&'static str, &Path); 2] {
+        [
+            ("HORCH_LEDGER_DB", self.ledger_db.as_path()),
+            ("FLEET_ROOT", self.fleet_root.as_path()),
+        ]
+    }
+
     /// Point every state lookup at `dir`, as `HORCH_STATE_DIR=<dir>` would.
     pub fn set_state_dir(&mut self, dir: impl Into<PathBuf>) {
         let dir = dir.into();
