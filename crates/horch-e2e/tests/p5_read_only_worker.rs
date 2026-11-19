@@ -36,8 +36,8 @@ use horch_core::roster::Roster;
 use horch_core::runtime::{MapEnv, RuntimeContext};
 use horch_core::taskledger::model::{Actor, WorkerKind, WorktreeStatus};
 use horch_core::taskledger::runs::{self, NewRun};
-use horch_core::taskledger::tasks::{self, ClaimOutcome, NewTask};
-use horch_core::taskledger::workers::{self, NewWorker};
+use horch_core::taskledger::tasks::{self, NewTask};
+use horch_core::taskledger::workers::NewWorker;
 use horch_core::taskledger::{schema, Store};
 use horch_e2e::fleetd::Fleetds;
 use horch_e2e::harness::{wait_for_or, Harness};
@@ -131,32 +131,29 @@ impl World {
         schema::run_idea(conn, &run.run_id, &now, true)
             .unwrap()
             .expect("the idea of r1");
-        let new = NewTask::work("t0", "tickets/t0.md", PROFILE);
+        let mut new = NewTask::work("t0", "tickets/t0.md", PROFILE);
+        // The claim made no tree: the task works in the shared checkout.
+        new.worktree_mode = horch_core::taskledger::model::WorktreeMode::Shared;
         let task = tasks::add(conn, &run, &new, Actor::Orchestrator).unwrap();
-        let worker = workers::insert(
+        // fleetd binds the task to the worker and its live attempt (FR-5).
+        let worker = horch_core::taskledger::testing::bind_live(
             conn,
+            &task.task_id,
             &NewWorker {
                 run_id: run.run_id.clone(),
                 kind: Some(WorkerKind::Worker),
                 persona: PROFILE.into(),
                 ..Default::default()
             },
+            None,
         )
-        .unwrap();
-        conn.execute(
-            "UPDATE workers SET status = 'spawning' WHERE worker_id = ?1",
-            [&worker],
-        )
-        .unwrap();
-        match tasks::claim(conn, &worker).unwrap() {
-            ClaimOutcome::Claimed(_) => {}
-            other => panic!("no claim: {other:?}"),
-        }
+        .unwrap()
+        .worker_id;
         let attempt = format!("{}/A1", task.task_id);
         let push = conn
             .execute("UPDATE attempts SET via = 'push' WHERE id = ?1", [&attempt])
             .unwrap();
-        assert_eq!(push, 1, "the claim writes the attempt {attempt}");
+        assert_eq!(push, 1, "the bind writes the attempt {attempt}");
         let tree = NewWorktree {
             worktree_id: "wt-t0".into(),
             task_id: Some(task.task_id.clone()),
