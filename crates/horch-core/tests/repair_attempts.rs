@@ -37,7 +37,7 @@ use horch_core::fleetd::task_execution::application::dispatch::{
 };
 use horch_core::fleetd::task_execution::application::lease::{self, Observed};
 use horch_core::fleetd::task_execution::application::repair::{
-    self, RepairKind, Report, Results, Started,
+    self, RepairKind, Report, Results, Started, REPAIR_START_KIND,
 };
 use horch_core::fleetd::task_execution::domain::lease::Limits;
 use horch_core::fleetd::task_execution::domain::task::Seen;
@@ -193,7 +193,8 @@ impl World {
     /// The task, its first attempt, its tree with 1 commit, the attempt
     /// ended, the task `done` and its branch `in_bundle`.
     fn first_attempt_done(&mut self) {
-        let mut t = NewTask::work("t1", "docs/t1.md", PERSONA);
+        let name = format!("t{}", self.task_count() + 1);
+        let mut t = NewTask::work(&name, &format!("docs/{name}.md"), PERSONA);
         t.ticket_snapshot = Some(SNAPSHOT.into());
         t.land_check = Some(CHECK.into());
         let run = self.run.clone();
@@ -278,14 +279,16 @@ impl World {
         conn.execute(
             "INSERT INTO jobs (kind, subject, repo, input_key, state, time_limit_s, result_json,
                 created_at)
-             VALUES (?1, ?2, ?3, 'k', ?4, 600, ?5, ?6)",
+             VALUES (?1, ?2, ?3, ?7, ?4, 600, ?5, ?6)",
             params![
                 kind,
                 subject,
                 self.root.display().to_string(),
                 state,
                 result.to_string(),
-                util::now()
+                util::now(),
+                // 1 job of each kind for each branch.
+                self.branch
             ],
         )
         .unwrap();
@@ -350,6 +353,13 @@ impl World {
             .unwrap();
         self.bundle("failed", job);
         self.enter(&[LandingState::GateFailed]);
+    }
+
+    fn task_count(&self) -> i64 {
+        self.store
+            .conn()
+            .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
+            .unwrap()
     }
 
     /// 1 pass of the repair start at fleet clock `clock`, committed.
@@ -819,4 +829,65 @@ fn branch_of_a_task_that_is_not_done_gets_no_repair_attempt() {
         )
         .unwrap();
     assert!(w.start(10).is_empty());
+}
+
+/// A repair attempt that cannot start fails only its own branch (the
+/// design, "Three rules that make the ledger trustworthy", rule 1: 1 bad
+/// row never stops the pass). The task of the first `gate_failed` branch
+/// has no worktree: its branch gets no attempt and 1 needs-you item. The
+/// start commits, and the second `gate_failed` branch gets its fix attempt.
+#[test]
+fn repair_that_cannot_start_fails_only_its_branch() {
+    let mut w = World::new();
+    w.gate_failed("exit 101\n");
+    let lost = w.branch.clone();
+    w.store
+        .conn()
+        .execute(
+            "UPDATE worktrees SET status = 'cleaned' WHERE task_id = ?1",
+            [&w.task],
+        )
+        .unwrap();
+    // A second task, done in its own tree, whose branch failed the gate
+    // also.
+    w.first_attempt_done();
+    w.gate_failed("exit 101\n");
+
+    let started = w.start(10);
+    let s = only(&started);
+    assert_eq!(s.branch, w.branch);
+    assert_eq!(s.kind, RepairKind::Fix);
+    assert_eq!(
+        w.attempts().len(),
+        2,
+        "the work and the fix attempt of the second task"
+    );
+
+    let items = |w: &World| -> Vec<(String, String)> {
+        let conn = w.store.conn();
+        let mut stmt = conn
+            .prepare(
+                "SELECT key, text FROM needs_you
+                 WHERE kind = ?1 AND entity_id = ?2 AND state = 'open'",
+            )
+            .unwrap();
+        stmt.query_map(params![REPAIR_START_KIND, lost], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect()
+    };
+    let open = items(&w);
+    assert_eq!(
+        open.len(),
+        1,
+        "1 item for the branch with no tree: {open:?}"
+    );
+    assert!(open[0].1.contains("no worktree"), "{}", open[0].1);
+    assert!(open[0].1.contains(&lost), "{}", open[0].1);
+
+    // The next start writes no second item.
+    assert!(w.start(11).is_empty());
+    assert_eq!(items(&w), open);
 }
