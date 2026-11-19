@@ -361,12 +361,7 @@ fn insert(
         ],
     )
     .with_context(|| format!("inserting the task {} of {idea_id}", task.key))?;
-    for path in &task.own {
-        tx.execute(
-            "INSERT OR IGNORE INTO task_files (task_id, path, mode) VALUES (?1, ?2, ?3)",
-            params![id, path.trim(), FileMode::Own.as_str()],
-        )?;
-    }
+    tasks::add_files(tx, &id, &task.own, FileMode::Own)?;
     for dep in deps {
         tx.execute(
             "INSERT INTO task_deps (task_id, blocked_by) VALUES (?1, ?2)",

@@ -721,14 +721,21 @@ fn insert(conn: &Connection, run: &Run, new: &NewTask, state: TaskStatus) -> Res
         (&new.own, FileMode::Own),
         (&new.no_touch, FileMode::DoNotTouch),
     ] {
-        for p in paths {
-            conn.execute(
-                "INSERT OR IGNORE INTO task_files (task_id, path, mode) VALUES (?1, ?2, ?3)",
-                params![id, p.trim(), mode.as_str()],
-            )?;
-        }
+        add_files(conn, &id, paths, mode)?;
     }
     Ok(id)
+}
+
+/// The rows of `paths` in `task_files` for the task `task_id`, each with
+/// `mode`. A row that exists stays.
+pub fn add_files(conn: &Connection, task_id: &str, paths: &[String], mode: FileMode) -> Result<()> {
+    for p in paths {
+        conn.execute(
+            "INSERT OR IGNORE INTO task_files (task_id, path, mode) VALUES (?1, ?2, ?3)",
+            params![task_id, p.trim(), mode.as_str()],
+        )?;
+    }
+    Ok(())
 }
 
 /// A cycle in `edges` (node -> the nodes it waits for), if any.
