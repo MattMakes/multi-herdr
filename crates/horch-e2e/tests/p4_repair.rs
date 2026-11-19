@@ -557,9 +557,11 @@ fn fm38_conflicted_branch_gets_a_resolver_attempt_and_lands() {
         git_ok(&w.h, &worktree, &["commit", "--quiet", "--no-edit"]);
     });
 
-    let start = w.until("the START.md of the resolver attempt A2", |w| {
-        w.attempt_file(2, "inbox/START.md")
+    // `task.yaml` is written after `START.md`.
+    w.until("the task files of the resolver attempt A2", |w| {
+        w.attempt_file(2, "task.yaml")
     });
+    let start = w.attempt_file(2, "inbox/START.md").unwrap();
     assert_eq!(
         w.kind(2),
         Some(RepairKind::Resolver),
@@ -707,9 +709,11 @@ fn gate_failed_branch_gets_a_fix_attempt_with_the_gate_output() {
         git_ok(&w.h, &worktree, &["rev-parse", "HEAD"])
     });
 
-    let start = w.until("the START.md of the fix attempt A2", |w| {
-        w.attempt_file(2, "inbox/START.md")
+    // `task.yaml` is written after `START.md`.
+    w.until("the task files of the fix attempt A2", |w| {
+        w.attempt_file(2, "task.yaml")
     });
+    let start = w.attempt_file(2, "inbox/START.md").unwrap();
     assert_eq!(
         w.kind(2),
         Some(RepairKind::Fix),
