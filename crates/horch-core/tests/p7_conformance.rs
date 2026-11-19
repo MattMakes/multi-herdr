@@ -363,9 +363,9 @@ fn global_only_mcp_server_is_not_listed() {
 #[test]
 fn exact_mcp_set_fails_when_the_profile_server_is_not_listed() {
     let m = Machine::new();
-    // The Codex launch renders no MCP server of the profile.
+    // The Antigravity launch renders no MCP server of the profile.
     let r = m.check(
-        &profile(HarnessKind::Codex),
+        &profile(HarnessKind::Antigravity),
         "conformance",
         Check::ExactMcpSet,
     );
