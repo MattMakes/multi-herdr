@@ -1239,14 +1239,13 @@ mod tests {
         pass(&mut w, &duties, Faults::default());
         assert!(
             w.items("feature_ready").is_empty(),
-            "the run has no feature"
+            "the feature of the run is not ready"
         );
 
         w.conn
             .execute(
-                "INSERT INTO features (id, primary_branch, state, created_at, updated_at)
-                 SELECT printf('F-%04d', rowid), 'main', 'ready', 'now', 'now'
-                 FROM runs WHERE run_id = ?1",
+                "UPDATE features SET state = 'ready'
+                 WHERE id = (SELECT printf('F-%04d', rowid) FROM runs WHERE run_id = ?1)",
                 [&w.run.run_id],
             )
             .unwrap();
