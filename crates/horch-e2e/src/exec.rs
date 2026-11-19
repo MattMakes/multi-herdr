@@ -194,12 +194,15 @@ pub fn run(mut call: Call, cli: Cli, prompt: &str) -> ! {
     for line in &progress {
         say(&line.to_string());
     }
-    if scenario_has("usage_limit") {
+    // The prompt of a conformance check wins over the scenario of the
+    // fleet: a test world with any scenario gets a passing conformance run,
+    // so fleetd keeps its profiles healthy.
+    if scenario_has("usage_limit") && !check {
         say(&first(Kind::UsageLimit).to_string());
         call.flush();
         std::process::exit(1);
     }
-    if scenario_has("long_context") {
+    if scenario_has("long_context") && !check {
         let kind = if cli == Cli::Codex {
             Kind::Result
         } else {
@@ -215,7 +218,7 @@ pub fn run(mut call: Call, cli: Cli, prompt: &str) -> ! {
     // the fleet.
     let conformance = check || scenario_has("conformance");
     let obeys_stop_gate = stop_gate && !scenario_has("ignore_stop_gate");
-    if scenario_has("exit_without_result") || (obeys_stop_gate && conformance) {
+    if (scenario_has("exit_without_result") && !check) || (obeys_stop_gate && conformance) {
         call.flush();
         std::process::exit(0);
     }
