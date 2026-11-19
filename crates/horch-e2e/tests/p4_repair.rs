@@ -93,7 +93,10 @@ impl World {
     /// has `max_attempts`.
     fn new(name: &str, fast: &str, max_attempts: Option<i64>) -> World {
         let mut h = Harness::new(name).with_git();
-        let fleet = h.root.join("fleet");
+        // The ledger is in the state folder and the fleet root is next to
+        // it, with no FLEET_ROOT: a pane gets only HORCH_STATE_DIR and
+        // HORCH_DATA_DIR, and its worker finds the same paths there.
+        let fleet = h.state.join("fleet");
         std::fs::create_dir_all(&fleet).unwrap();
         // A pass each second. The load of the build host does not hold
         // dispatch.
@@ -104,9 +107,8 @@ impl World {
         .unwrap();
         h.set(
             "HORCH_LEDGER_DB",
-            h.root.join("ledger.sqlite3").to_string_lossy(),
+            h.state.join("ledger.sqlite3").to_string_lossy(),
         );
-        h.set("FLEET_ROOT", fleet.to_string_lossy());
         h.set("HORCH_NO_WAKE", "1");
         h.set("HORCH_NO_WATCHDOG", "1");
         h.set(
@@ -167,6 +169,20 @@ impl World {
     /// its next start: a pane gets the environment of fleetd.
     fn scenario(&mut self, scenario: &str) {
         self.h.set("HORCH_FAKE_SCENARIO", scenario);
+    }
+
+    /// Move the fleet clock forward by `seconds`, in place of a wait for
+    /// it. A pass adds its awake time to the stored value, so the move
+    /// stays.
+    fn advance_clock(&self, seconds: i64) {
+        let moved = self
+            .conn()
+            .execute(
+                "UPDATE fleetd SET fleet_clock_s = fleet_clock_s + ?1 WHERE id = 1",
+                [seconds],
+            )
+            .unwrap();
+        assert_eq!(moved, 1, "the ledger has a fleetd row");
     }
 
     fn fleet_clock(&self) -> i64 {
@@ -604,7 +620,7 @@ fn failed_resolver_attempt_starts_the_next_and_at_max_attempts_opens_1_item() {
     w.until("the worker of A2 to end", |w| {
         w.worker_ended(2).then_some(())
     });
-    w.h.advance_fleet_clock(PAST_THE_LEASE_S);
+    w.advance_clock(PAST_THE_LEASE_S);
     w.until("repair_attempts 1 after the failure of A2", |w| {
         w.branch().filter(|b| b.2 == 1)
     });
@@ -615,7 +631,7 @@ fn failed_resolver_attempt_starts_the_next_and_at_max_attempts_opens_1_item() {
         "the next attempt starts in the backoff: {}",
         w.diagnostics()
     );
-    w.h.advance_fleet_clock(FIRST_BACKOFF_S);
+    w.advance_clock(FIRST_BACKOFF_S);
 
     // A3 is the next resolver attempt, and it fails also.
     assert_eq!(
@@ -625,7 +641,7 @@ fn failed_resolver_attempt_starts_the_next_and_at_max_attempts_opens_1_item() {
     w.until("the worker of A3 to end", |w| {
         w.worker_ended(3).then_some(())
     });
-    w.h.advance_fleet_clock(PAST_THE_LEASE_S);
+    w.advance_clock(PAST_THE_LEASE_S);
     let key = format!("{REPAIR_LIMIT_KIND}:{branch}");
     w.until("1 needs-you item at max_attempts", |w| {
         w.open_items(REPAIR_LIMIT_KIND)
@@ -635,7 +651,7 @@ fn failed_resolver_attempt_starts_the_next_and_at_max_attempts_opens_1_item() {
     });
 
     // More passes and a long time start no attempt and no second item.
-    w.h.advance_fleet_clock(3600);
+    w.advance_clock(3600);
     w.passes(3);
     let items = w.open_items(REPAIR_LIMIT_KIND);
     assert_eq!(items.len(), 1, "{items:?}\n{}", w.diagnostics());
