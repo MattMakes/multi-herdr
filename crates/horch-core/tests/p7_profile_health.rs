@@ -24,8 +24,8 @@ use horch_core::fleetd::worker_profiles::domain::health::{
 use horch_core::harness::HarnessKind;
 use horch_core::taskledger::model::Actor;
 use horch_core::taskledger::runs::{self, NewRun, Run};
-use horch_core::taskledger::tasks::{self, ClaimOutcome, NewTask};
-use horch_core::taskledger::workers::{self, NewWorker};
+use horch_core::taskledger::tasks::{self, NewTask};
+use horch_core::taskledger::workers::NewWorker;
 use horch_core::taskledger::Store;
 use serde_json::Value;
 
@@ -240,24 +240,22 @@ fn dialog_at_rung_4_marks_the_profile_unhealthy() {
     let worker = w
         .store
         .immediate(|tx| {
-            tasks::add(
-                tx,
-                &run,
-                &NewTask::work("a", "docs/a.md", "opus"),
-                Actor::Orchestrator,
-            )?;
+            // The claim made no tree: the task works in the shared checkout.
+            let mut a = NewTask::work("a", "docs/a.md", "opus");
+            a.worktree_mode = horch_core::taskledger::model::WorktreeMode::Shared;
+            let task = tasks::add(tx, &run, &a, Actor::Orchestrator)?.task_id;
             let new = NewWorker {
                 run_id: run.run_id.clone(),
                 persona: "opus".into(),
                 pane_id: Some("w0:p1".into()),
                 ..Default::default()
             };
-            let id = workers::insert(tx, &new)?;
-            workers::agent_started(tx, &id, 4_242, Some(77))?;
-            let ClaimOutcome::Claimed(_) = tasks::claim(tx, &id)? else {
-                panic!("no task");
+            // fleetd binds the task to the worker and its live attempt (FR-5).
+            let agent = horch_core::fleetd::task_execution::domain::task::Recorded {
+                pid: 4_242,
+                pid_start: Some(77),
             };
-            Ok(id)
+            Ok(horch_core::taskledger::testing::bind_live(tx, &task, &new, Some(agent))?.worker_id)
         })
         .unwrap();
     let attempt = attempts::attempts_of_worker(w.store.conn(), &worker)
