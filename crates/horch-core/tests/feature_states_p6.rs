@@ -103,14 +103,6 @@ fn world() -> World {
         ..Default::default()
     };
     let run = runs::create(&conn, &repo, &new_run).unwrap();
-    // FR-12: a task needs an idea in flight of the feature of its run.
-    horch_core::taskledger::schema::run_idea(
-        &conn,
-        &run.run_id,
-        &horch_core::taskledger::util::now(),
-        true,
-    )
-    .unwrap();
     let new = NewFeature {
         id: FEATURE,
         name: Some("r1"),
@@ -119,6 +111,14 @@ fn world() -> World {
     };
     let tx = conn.transaction().unwrap();
     rows::insert_feature(&tx, None, &new, cause("feature accepted")).unwrap();
+    // FR-12: a task needs an idea in flight of the feature of its run.
+    horch_core::taskledger::schema::run_idea(
+        &tx,
+        &run.run_id,
+        &horch_core::taskledger::util::now(),
+        true,
+    )
+    .unwrap();
     tx.commit().unwrap();
     let git = CliGitGateway::new(
         CliWorktreeGit::new("git", dir.join("fleet")).writing(&[repo.join(".git")]),
