@@ -1,8 +1,0 @@
-# Red tests of crates/horch-e2e/tests/p7_release.rs (fleetd-p7 ticket 34).
-# Owner: T-890. The conformance run of claude of the update passes (T-891).
-# The push launch of the next attempt fails: "has no pane to split: the run
-# has no orchestrator pane". The release duty of Phase 6 clears the
-# orchestrator pane of the run (T-553). T-890 corrects the push launch and
-# removes these lines.
-next_attempt_of_its_task_runs_in_exec_mode | 7 | waiting for the agent of the next attempt to run in exec mode
-new_attempt_after_the_update_gets_256000 | 7 | waiting for the agent of the next attempt to run in exec mode
