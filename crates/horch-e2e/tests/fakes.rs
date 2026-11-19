@@ -1909,6 +1909,16 @@ mod phase6 {
         assert!(plan_rules_dag::check(&plan, &PlanFacts::default()).is_empty());
     }
 
+    /// plan.yaml names the feature id of the idea, as plan commit checks.
+    #[test]
+    fn ticket_plan_names_the_feature_id_of_the_idea() {
+        let (mut h, folder) = idea("p6-ticket-feature");
+        ledger_with_a_question(&h);
+        launch(&mut h, "claude", "ticket", &folder);
+        let plan = plan_yaml::read(&folder.join("plan.yaml")).unwrap();
+        assert_eq!(plan.feature, "F-0001");
+    }
+
     #[test]
     fn ticket_cycle_writes_a_plan_with_a_cycle() {
         let (mut h, folder) = idea("p6-ticket-cycle");

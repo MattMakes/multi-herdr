@@ -218,12 +218,14 @@ impl Lead {
         )
     }
 
-    /// plan.yaml: 1 task, or 2 tasks that wait for each other.
+    /// plan.yaml: 1 task, or 2 tasks that wait for each other. Its feature
+    /// is the feature id of the idea, else the feature name when the
+    /// ledger has no idea row.
     fn plan(&self, cycle: bool) -> String {
         let mut text = format!(
             "idea: {}\nrepo: .\nfeature: {}\nbase_branch: main\ntasks:\n",
             self.idea,
-            self.feature()
+            feature_id(&self.idea).unwrap_or_else(|| self.feature())
         );
         let task = |key: &str, after: &str| {
             format!(
@@ -307,6 +309,18 @@ impl Lead {
             "file": write_request_file(&fleet_root, &request("file")),
         })
     }
+}
+
+/// The id of the feature of `idea` (`F-NNNN`), as plan.yaml names it. No
+/// command of the product prints it today, so the fake reads the ledger.
+fn feature_id(idea: &str) -> Option<String> {
+    let store = Store::open_read_only(&Paths::from_env(&ProcessEnv).ledger_db).ok()?;
+    store
+        .conn()
+        .query_row("SELECT feature_id FROM ideas WHERE id = ?1", [idea], |r| {
+            r.get(0)
+        })
+        .ok()
 }
 
 /// The id of the oldest open question of the feature of `idea`.
