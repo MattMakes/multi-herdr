@@ -480,7 +480,17 @@ fn fm33_two_fix_rounds_escalate() {
     let pair = w.pair();
     // 6 attempts run 1 after the other. Each judge verdict is 1 step of
     // the flow, and each step has its own deadline.
+    let attempts = |task: &str| {
+        w.one(&format!(
+            "SELECT COUNT(*) FROM attempts WHERE task_id = '{task}'"
+        ))
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(0)
+    };
     for n in 1..=3 {
+        w.wait(&format!("judge attempt {n} bound"), || {
+            (attempts(&pair.judge) >= n).then_some(())
+        });
         w.wait(
             &format!("judge attempt {n} with an open CRITICAL item"),
             || (w.attempts_with(&pair.judge, "critical_open") >= n).then_some(()),
