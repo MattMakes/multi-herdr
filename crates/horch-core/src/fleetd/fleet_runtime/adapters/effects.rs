@@ -39,7 +39,7 @@ use crate::exeid::{exe_identity, ExeIdentity};
 use crate::fleetd::fleet_runtime::domain::clock::{AwakeReading, FleetSeconds};
 use crate::fleetd::fleet_runtime::domain::heartbeat::{Exe, Heartbeat};
 use crate::fleetd::fleet_runtime::domain::ledger::Generation;
-use crate::fleetd::task_execution::domain::task::{ProcessScope, Recorded};
+use crate::fleetd::task_execution::domain::task::{GroupLeft, ProcessScope, Recorded};
 use crate::fleetd::worker_profiles::application::ports::{LaunchSpec, Launched, ProcessHost};
 use crate::fleetd::worktree_custody::adapters::git::{repo_git_dir, CliWorktreeGit};
 use crate::fsx;
@@ -64,7 +64,10 @@ fn run_dir(fleet_root: &Path) -> PathBuf {
 /// Stop the process `pid` with the start time `pid_start`: the polite stop
 /// that it can catch, or with `kill` the kill. With
 /// [`ProcessScope::LeaderGroup`], the stop goes to each process of the group
-/// of `pid` while `pid` leads it with that start. Whether a stop was sent.
+/// of `pid` while `pid` leads it with that start. With
+/// [`ProcessScope::OrphanGroup`], the stop goes to each process of the
+/// group whose id is `pid` while no process has `pid`. Whether a stop was
+/// sent.
 ///
 /// Windows has no polite stop and no process groups: there each stop ends
 /// the process at once, and the processes that it started live on
@@ -72,6 +75,9 @@ fn run_dir(fleet_root: &Path) -> PathBuf {
 pub fn stop_process(pid: u32, pid_start: u64, scope: ProcessScope, kill: bool) -> bool {
     use horch_platform::group;
     let how = if kill { How::Kill } else { How::Term };
+    if scope == ProcessScope::OrphanGroup {
+        return stop_orphan_group(pid, how);
+    }
     let leads = scope == ProcessScope::LeaderGroup
         && matches!(group::is_same_group(pid, pid_start), Ok(true));
     if !leads {
@@ -81,6 +87,12 @@ pub fn stop_process(pid: u32, pid_start: u64, scope: ProcessScope, kill: bool) -
         return group::kill_group_id(pid).unwrap_or(false);
     }
     let members = horch_platform::process::group_members(pid).unwrap_or_else(|_| vec![pid]);
+    stop_each(members, how)
+}
+
+/// Stop each process of `members` that has a start time, by its pid and
+/// that start time. Whether a stop was sent.
+fn stop_each(members: Vec<u32>, how: How) -> bool {
     let mut sent = false;
     for member in members {
         if let Some(start) = horch_platform::process::start_time(member) {
@@ -88,6 +100,41 @@ pub fn stop_process(pid: u32, pid_start: u64, scope: ProcessScope, kill: bool) -
         }
     }
     sent
+}
+
+/// The stop of the group `pgid` whose leader is gone. A process with the
+/// pid `pgid` makes the group a new group (FM-22): no stop then.
+fn stop_orphan_group(pgid: u32, how: How) -> bool {
+    if horch_platform::process::alive(pgid) {
+        return false;
+    }
+    match how {
+        How::Kill => horch_platform::group::kill_group_id(pgid).unwrap_or(false),
+        _ => stop_each(
+            horch_platform::process::group_members(pgid).unwrap_or_default(),
+            how,
+        ),
+    }
+}
+
+/// What is left of the group whose id is the pid of the gone process `p`
+/// (FR-10). A process with that pid and another start time is a new
+/// leader. A platform with no process groups gives [`GroupLeft::None`].
+pub fn group_left(p: Recorded) -> GroupLeft {
+    use horch_platform::process;
+    if !process::group_members(p.pid).is_ok_and(|m| !m.is_empty()) {
+        return GroupLeft::None;
+    }
+    if !process::alive(p.pid) {
+        return GroupLeft::Members;
+    }
+    // The leader itself lives: not a gone leader. A start time that
+    // cannot be read counts as another process: no stop.
+    if p.pid_start.is_some() && process::start_time(p.pid) == p.pid_start {
+        GroupLeft::None
+    } else {
+        GroupLeft::NewLeader
+    }
 }
 
 // ─── launches ───────────────────────────────────────────────────────────

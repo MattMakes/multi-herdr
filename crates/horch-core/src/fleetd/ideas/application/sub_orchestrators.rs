@@ -61,6 +61,7 @@ use crate::fleetd::ideas::domain::needs_you::Write;
 use crate::fleetd::ideas::domain::questions::State as QuestionState;
 use crate::fleetd::integration::adapters::sqlite as feature_rows;
 use crate::fleetd::task_execution::adapters::sqlite as attempts;
+use crate::fleetd::task_execution::application::commands::keep_groups;
 use crate::fleetd::task_execution::domain::task::{
     orphans, AttemptRow, AttemptState, Facts, InPane, Recorded, RowRef, Seen, Stop,
 };
@@ -588,6 +589,12 @@ fn stops(
             },
         )?;
     }
+    let groups: Vec<_> = cleanup
+        .kept_groups
+        .into_iter()
+        .filter(|k| ours(&k.row))
+        .collect();
+    keep_groups(tx, &groups)?;
     Ok(cleanup.stops.into_iter().filter(|s| ours(&s.row)).collect())
 }
 

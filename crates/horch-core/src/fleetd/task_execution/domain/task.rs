@@ -278,6 +278,27 @@ pub struct Stopped {
     /// The process, with its start time.
     pub process: Recorded,
     pub proof: PaneProof,
+    /// What is left of the process group whose id is the pid of the
+    /// process.
+    pub group: GroupLeft,
+}
+
+/// What is left of the process group of a gone leader: the group whose id
+/// is the pid of the leader.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GroupLeft {
+    /// No member, or the pass cannot tell (a platform with no process
+    /// groups).
+    #[default]
+    None,
+    /// The group has members, and no process has the pid of the leader. A
+    /// pid is not used again while a group with that id has a member, so
+    /// the members are of the group of the leader: an agent that outlived
+    /// its wrapper.
+    Members,
+    /// A process with another start time has the pid of the leader: the
+    /// group with that id is a new group, not the group of the leader.
+    NewLeader,
 }
 
 /// What the record of a polite stop says of a pane.
@@ -362,6 +383,11 @@ pub enum ProcessScope {
     /// process leads that group with its recorded start time at the time
     /// of the stop (FM-22). Else the process alone.
     LeaderGroup,
+    /// Each process of the group whose id is the pid of the process, which
+    /// is gone ([`GroupLeft::Members`]): the stop ladder goes on for the
+    /// group by its id. Only while no process has that pid at the time of
+    /// the stop: then the group can be a new group (FM-22).
+    OrphanGroup,
 }
 
 /// What a stop ends.
@@ -396,12 +422,21 @@ pub struct KeptPane {
     pub row: RowRef,
 }
 
-/// The stops and the kept panes of the rows that a pass acts on. Each
-/// process stop comes before each pane (S8).
+/// A process group that is not stopped: its id is the pid of a gone
+/// leader of `row`, and a new process has that pid ([`GroupLeft::NewLeader`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeptGroup {
+    pub group: u32,
+    pub row: RowRef,
+}
+
+/// The stops, the kept panes and the kept groups of the rows that a pass
+/// acts on. Each process stop comes before each pane (S8).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Cleanup {
     pub stops: Vec<Stop>,
     pub kept: Vec<KeptPane>,
+    pub kept_groups: Vec<KeptGroup>,
 }
 
 impl Cleanup {
@@ -421,6 +456,11 @@ impl Cleanup {
         for k in other.kept {
             if !self.kept.iter().any(|m| m.pane == k.pane) {
                 self.kept.push(k);
+            }
+        }
+        for g in other.kept_groups {
+            if !self.kept_groups.iter().any(|m| m.group == g.group) {
+                self.kept_groups.push(g);
             }
         }
         let stops = &self.stops;
@@ -544,7 +584,37 @@ pub fn orphans(rows: &Rows, facts: &Facts) -> Cleanup {
     }
     let naming = naming(rows, &facts.stopped);
     for s in &facts.stopped {
-        out.merge_row(after_polite_stop(&naming[&s.process], facts, &owned, s));
+        let named = &naming[&s.process];
+        out.merge_row(group_left(named, &owned, s));
+        out.merge_row(after_polite_stop(named, facts, &owned, s));
+    }
+    out
+}
+
+/// The group that the gone process `s` left (FR-10: no agent outlives its
+/// attempt). Members: the stop ladder goes on for the group by its id. A
+/// new leader with the pid: the group is kept, and the row says so.
+fn group_left(named: &[Named], owned: &Owned, s: &Stopped) -> Cleanup {
+    let mut out = Cleanup::default();
+    let (Some(pid_start), false) = (s.process.pid_start, owned.has(s.process)) else {
+        return out;
+    };
+    for n in named {
+        match s.group {
+            GroupLeft::None => {}
+            GroupLeft::Members => out.stops.push(Stop {
+                row: n.row.clone(),
+                target: Target::Process {
+                    pid: s.process.pid,
+                    pid_start,
+                    scope: ProcessScope::OrphanGroup,
+                },
+            }),
+            GroupLeft::NewLeader => out.kept_groups.push(KeptGroup {
+                group: s.process.pid,
+                row: n.row.clone(),
+            }),
+        }
     }
     out
 }
@@ -1180,8 +1250,57 @@ mod tests {
         f.stopped = vec![Stopped {
             process: SUPERVISOR,
             proof,
+            group: GroupLeft::None,
         }];
         (r, f)
+    }
+
+    /// The facts of [`after_stop`] with no pane, whose gone supervisor left
+    /// `group`.
+    fn group_after_stop(group: GroupLeft) -> (Rows, Facts) {
+        let (r, mut f) = after_stop(PaneProof::None, InPane::Unknown);
+        f.stopped[0].group = group;
+        (r, f)
+    }
+
+    #[test]
+    fn a_group_whose_leader_is_gone_is_stopped_by_its_id() {
+        let (r, f) = group_after_stop(GroupLeft::Members);
+        let out = orphans(&r, &f);
+        assert_eq!(
+            out.stops,
+            [Stop {
+                row: RowRef::Worker("W".into()),
+                target: Target::Process {
+                    pid: SUPERVISOR.pid,
+                    pid_start: SUPERVISOR.pid_start.unwrap(),
+                    scope: ProcessScope::OrphanGroup,
+                },
+            }]
+        );
+        assert!(out.kept_groups.is_empty());
+    }
+
+    #[test]
+    fn a_new_leader_with_the_pid_of_the_gone_leader_keeps_its_group() {
+        let (r, f) = group_after_stop(GroupLeft::NewLeader);
+        let out = orphans(&r, &f);
+        assert!(out.stops.is_empty(), "{:?}", out.stops);
+        assert_eq!(
+            out.kept_groups,
+            [KeptGroup {
+                group: SUPERVISOR.pid,
+                row: RowRef::Worker("W".into()),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_gone_leader_with_no_group_left_gets_no_stop() {
+        let (r, f) = group_after_stop(GroupLeft::None);
+        let out = orphans(&r, &f);
+        assert!(out.stops.is_empty(), "{:?}", out.stops);
+        assert!(out.kept_groups.is_empty(), "{:?}", out.kept_groups);
     }
 
     /// herdr names the pid of the supervisor in the pane, and no process
@@ -1195,6 +1314,7 @@ mod tests {
                 pane: "w0:p1".into(),
                 row: RowRef::Worker("W".into()),
             }],
+            kept_groups: vec![],
         }
     }
 

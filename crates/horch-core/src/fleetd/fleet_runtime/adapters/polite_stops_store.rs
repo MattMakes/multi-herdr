@@ -23,7 +23,7 @@ use serde::Deserialize;
 use crate::fleetd::fleet_runtime::adapters::fleetd_row;
 use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use crate::fleetd::fleet_runtime::domain::ledger::Generation;
-use crate::fleetd::task_execution::domain::task::{PaneProof, Recorded, Stopped};
+use crate::fleetd::task_execution::domain::task::{GroupLeft, PaneProof, Recorded, Stopped};
 
 /// The largest old file that [`import_old_files`] reads. A file of an older
 /// fleetd has less than 200 bytes.
@@ -103,7 +103,8 @@ fn rows(conn: &Connection) -> Result<Vec<(u32, u64, Option<String>)>> {
 }
 
 /// The polite stop of each process that is `gone(pid, start)`, with the
-/// pane that it proves.
+/// pane that it proves. Its group is [`GroupLeft::None`]: the pass reads
+/// the group of each with the facts of the OS.
 pub fn stopped(conn: &Connection, gone: impl Fn(u32, u64) -> bool) -> Result<Vec<Stopped>> {
     Ok(rows(conn)
         .context("reading the polite stops")?
@@ -115,6 +116,7 @@ pub fn stopped(conn: &Connection, gone: impl Fn(u32, u64) -> bool) -> Result<Vec
                 pid_start: Some(start),
             },
             proof: pane.map_or(PaneProof::None, PaneProof::Pane),
+            group: GroupLeft::None,
         })
         .collect())
 }

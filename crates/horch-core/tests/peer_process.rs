@@ -20,10 +20,12 @@ struct Wrapper {
 
 impl Wrapper {
     /// Start `sh -c <script> <arg>`. The script prints 1 pid on its first
-    /// line.
+    /// line. Its stdin is a pipe that stays open until the test closes it.
     fn start(script: &str, arg: &str) -> Wrapper {
         let mut cmd = Command::new("sh");
-        cmd.args(["-c", script, arg]).stdout(Stdio::piped());
+        cmd.args(["-c", script, arg])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped());
         group::new_group(&mut cmd);
         let mut child = cmd.spawn().unwrap();
         let mut line = String::new();
@@ -164,8 +166,9 @@ fn orphan_in_the_group_of_an_ended_wrapper_is_a_fleet_process() {
     // The wrapper starts `sleep` in its group and exits: `sleep` lives on
     // with no parent chain to the wrapper, as an agent that outlives its
     // attempt.
-    let mut w = Wrapper::start("sleep 30 & echo $!", "");
+    let mut w = Wrapper::start("sleep 30 & echo $!; read _", "");
     let attempt = w.attempt("A-6");
+    drop(w.child.stdin.take());
     let _ = w.child.wait();
     assert_eq!(
         process::group_of(w.printed).unwrap(),
