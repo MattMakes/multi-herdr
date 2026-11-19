@@ -15,8 +15,8 @@
 //!   approval.json and the feature branch.
 //! - plan.yaml has 1 work task: its profile from the Persona line and its
 //!   check from the Check line. For a judgment kind fleetd adds the judge
-//!   task: kind `judge`, `judges:` the work task, and the first profile of
-//!   another provider of the roster with a sandbox on this OS.
+//!   task: kind `judge`, `judges:` the work task, and the first healthy
+//!   profile of another provider of the roster with a sandbox on this OS.
 //! - [`start_direct`] moves the idea to `ticketing` under the rule of the
 //!   feature, then validates its plan (`ValidatePlan`). A refused plan
 //!   opens 1 needs-you item with the reason, and the idea stays in
@@ -24,6 +24,7 @@
 //! - [`direct_requirement`] gives the plan validator the 1 requirement of a
 //!   `--direct` idea: the approved ticket, which cites itself.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
@@ -55,6 +56,7 @@ use crate::fleetd::integration::application::new_features::{
     create_ref, name_feature_branch, name_from_title, BranchRef, NameSource, Named,
 };
 use crate::fleetd::integration::application::ports::IntegrationGitGateway;
+use crate::fleetd::worker_profiles::application::health;
 use crate::fsx;
 use crate::taskledger::map::ticket_facts;
 use crate::taskledger::model::Actor;
@@ -180,6 +182,7 @@ pub fn add_direct_idea(
         run.run_branch.as_deref().unwrap_or(""),
         &work,
         direct.roster,
+        &health::unhealthy_profiles(tx)?,
     )?;
     let sha256 = sha256_bytes(ticket.as_bytes()).hex();
     let approval = Approval {
@@ -245,6 +248,7 @@ fn plan_yaml(
     branch: &str,
     work: &WorkTask<'_>,
     roster: &[RosterProfile],
+    unhealthy: &BTreeMap<String, String>,
 ) -> Result<String> {
     let acceptance: Vec<_> = work.check.iter().map(|c| json!({ "run": c })).collect();
     let mut tasks = vec![json!({
@@ -262,7 +266,7 @@ fn plan_yaml(
             "title": format!("Judge: {}", work.title),
             "kind": Kind::Judge.as_str(),
             "judges": work.key,
-            "profile": judge_profile(&work.profile, roster),
+            "profile": judge_profile(&work.profile, roster, unhealthy),
             "outputs": [verdict_file(work)],
         }));
     }
@@ -291,22 +295,75 @@ fn verdict_file(work: &WorkTask<'_>) -> String {
 }
 
 /// The profile of the judge of a task of the profile `author` (MAP.md, Q8):
-/// the first profile of the roster of another provider with a sandbox on
-/// this OS. An empty name when the roster has none, so the plan validator
-/// refuses the plan with the reason.
-fn judge_profile(author: &str, roster: &[RosterProfile]) -> String {
-    let Some(provider) = roster
-        .iter()
-        .find(|p| p.name == author)
-        .map(|p| &p.provider)
-    else {
-        return String::new();
-    };
-    roster
-        .iter()
-        .find(|p| &p.provider != provider && p.sandbox_here)
+/// the first healthy profile of the roster of another provider with a
+/// sandbox on this OS, at the plan time. An empty name when the roster has
+/// none, so the plan validator refuses the plan, and [`start_direct`] names
+/// the cause.
+fn judge_profile(
+    author: &str,
+    roster: &[RosterProfile],
+    unhealthy: &BTreeMap<String, String>,
+) -> String {
+    judge_candidates(author, roster)
+        .find(|p| !unhealthy.contains_key(&p.name))
         .map(|p| p.name.clone())
         .unwrap_or_default()
+}
+
+/// The profiles of the roster that can judge a task of the profile
+/// `author`: another provider, with a sandbox on this OS.
+fn judge_candidates<'a>(
+    author: &str,
+    roster: &'a [RosterProfile],
+) -> impl Iterator<Item = &'a RosterProfile> {
+    let provider = roster
+        .iter()
+        .find(|p| p.name == author)
+        .map(|p| p.provider.clone());
+    roster.iter().filter(move |p| {
+        provider
+            .as_ref()
+            .is_some_and(|provider| &p.provider != provider && p.sandbox_here)
+    })
+}
+
+/// The problem of a judge task of the plan of `idea` that has no profile
+/// because each profile that can judge is unhealthy: it names each of them
+/// and its cause. `None` for each other plan.
+fn judge_gap(conn: &Connection, ctx: &PlanCommit<'_>, idea: &str) -> Result<Option<Problem>> {
+    let Ok(text) = std::fs::read_to_string(ctx.ideas.join(idea).join(PLAN_YAML)) else {
+        return Ok(None);
+    };
+    let Ok(plan) = serde_yaml::from_str::<serde_json::Value>(&text) else {
+        return Ok(None);
+    };
+    let tasks = plan["tasks"].as_array().cloned().unwrap_or_default();
+    let field = |t: &serde_json::Value, k: &str| t[k].as_str().unwrap_or("").to_string();
+    let Some(judge) = tasks
+        .iter()
+        .find(|t| field(t, "kind") == Kind::Judge.as_str() && field(t, "profile").is_empty())
+    else {
+        return Ok(None);
+    };
+    let judged = field(judge, "judges");
+    let Some(author) = tasks.iter().find(|t| field(t, "key") == judged) else {
+        return Ok(None);
+    };
+    let unhealthy = health::unhealthy_profiles(conn)?;
+    let named: Vec<String> = judge_candidates(&field(author, "profile"), ctx.roster)
+        .filter_map(|p| unhealthy.get(&p.name).map(|c| format!("{}: {c}", p.name)))
+        .collect();
+    if named.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(Problem::task(
+        "profile",
+        &field(judge, "key"),
+        format!(
+            "no healthy profile of another provider with a sandbox on this OS can judge {judged}; unhealthy: {}",
+            named.join("; ")
+        ),
+    )))
 }
 
 /// What [`start_direct`] did.
@@ -358,7 +415,8 @@ pub fn start_direct(store: &mut Store, ctx: &PlanCommit<'_>, idea: &str) -> Resu
         return Ok(Started::Waiting);
     }
     match validate_plan(store, ctx, idea)? {
-        Verdict::Refused { problems } => {
+        Verdict::Refused { mut problems } => {
+            problems.extend(judge_gap(store.conn(), ctx, idea)?);
             store.immediate(|tx| open_refused(tx, idea, &problems))?;
             Ok(Started::Refused(problems))
         }

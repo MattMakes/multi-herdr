@@ -30,6 +30,7 @@ use horch_core::fleetd::ideas::domain::plan_validator::{DeclaredGates, RosterPro
 use horch_core::fleetd::integration::adapters::git::CliGitGateway;
 use horch_core::fleetd::integration::adapters::sqlite as features;
 use horch_core::fleetd::integration::application::new_features::Project;
+use horch_core::fleetd::worker_profiles::application::health;
 use horch_core::fleetd::worktree_custody::adapters::git::CliWorktreeGit;
 use horch_core::taskledger::model::{Actor, FileMode};
 use horch_core::taskledger::tasks;
@@ -476,4 +477,62 @@ fn committed_judge_task_has_its_verdict_file_as_own() {
         rows[1].3["outputs"],
         serde_json::json!(["docs/sync.review.md"])
     );
+}
+
+impl World {
+    /// Mark `profile` unhealthy, as the conformance job of fleetd does.
+    fn unhealthy(&mut self, profile: &str) {
+        self.store
+            .immediate(|tx| {
+                health::mark_unhealthy(tx, None, profile, "adapter-conformance-failed: test")
+            })
+            .unwrap();
+    }
+}
+
+/// The judge task gets no unhealthy profile at the plan time: it takes the
+/// next healthy profile of another provider with a sandbox (fault 9 of
+/// T-561).
+#[test]
+fn judge_task_skips_an_unhealthy_profile() {
+    let mut w = world();
+    w.roster
+        .push(profile("coder-agy", "agy", "gemini-3", "coder-claude"));
+    w.unhealthy("coder-codex");
+    let added = w.add(DOCS_TICKET, None);
+    let idea = added.idea.file.id.clone();
+    let started = w.start(&idea);
+    assert!(
+        matches!(started, Started::Committed(Verdict::Committed { .. })),
+        "the plan is not committed: {started:?}"
+    );
+    let rows = w.tasks(&idea);
+    assert_eq!(rows[1].1, "coder-agy");
+}
+
+/// With no healthy profile of another provider with a sandbox, the plan is
+/// refused, and the reason names each unhealthy profile and its cause
+/// (fault 9 of T-561).
+#[test]
+fn plan_with_no_healthy_judge_profile_is_refused_with_the_cause() {
+    let mut w = world();
+    w.unhealthy("coder-codex");
+    let added = w.add(DOCS_TICKET, None);
+    let idea = added.idea.file.id.clone();
+    let started = w.start(&idea);
+    let Started::Refused(problems) = started else {
+        panic!("the plan is not refused: {started:?}");
+    };
+    let named = |text: &str| {
+        text.contains("no healthy profile")
+            && text.contains("coder-codex: adapter-conformance-failed: test")
+    };
+    assert!(problems.iter().any(|p| named(&p.message)), "{problems:?}");
+    assert!(w.tasks(&idea).is_empty());
+    let items = open_items(w.store.conn()).unwrap();
+    let item = items
+        .iter()
+        .find(|i| i.key == plan_refused_key(&idea))
+        .unwrap_or_else(|| panic!("no needs-you item: {items:?}"));
+    assert!(named(&item.text), "{}", item.text);
 }
