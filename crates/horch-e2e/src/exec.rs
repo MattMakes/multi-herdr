@@ -219,9 +219,17 @@ pub fn run(mut call: Call, cli: Cli, prompt: &str) -> ! {
         match cli {
             Cli::Claude => result["result"] = Value::String(text),
             Cli::Agy => result["result"]["response"] = Value::String(text),
-            Cli::Codex => say(&json!({"type": "item.completed",
+            Cli::Codex => {
+                // The probes are commands: Codex ends each with an
+                // `item.completed` of its `command_execution` item.
+                say(&json!({"type": "item.completed", "item": {"id": "item_1",
+                    "type": "command_execution", "command": "bash -lc ls",
+                    "exit_code": 0, "status": "completed"}})
+                .to_string());
+                say(&json!({"type": "item.completed",
                     "item": {"id": "item_probe", "type": "agent_message", "text": text}})
-            .to_string()),
+                .to_string());
+            }
         }
     }
     say(&result.to_string());
