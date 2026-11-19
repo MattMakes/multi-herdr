@@ -25,7 +25,7 @@
 //! - A bundle past the time limit of its state has 1 needs-you item, and
 //!   the item ends when the bundle is no longer past it.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -50,6 +50,8 @@ use crate::fleetd::integration::domain::bundle::{
     self as rules, BuildFact, BundleState, DropCause, Limits, Step,
 };
 use crate::fleetd::integration::domain::task_branch::{self, LandingState};
+use crate::fleetd::worktree_custody::adapters::sqlite::WorktreeState;
+use crate::fleetd::worktree_custody::application::gate_tree::{self, GateTree, GateTreeRequest};
 use crate::taskledger::model::Actor;
 use crate::taskledger::runs;
 
@@ -86,10 +88,11 @@ fn by_fleetd(text: &str) -> Cause<'_> {
     }
 }
 
-/// The repository and the branch of a feature.
+/// The repository, the branch and the run of a feature.
 struct Target {
     repo: PathBuf,
     branch: String,
+    run_id: String,
 }
 
 impl Target {
@@ -137,6 +140,7 @@ fn target(tx: &Connection, feature_id: &str) -> Result<Option<Target>> {
     Ok(runs::feature_run(tx, feature_id)?.map(|run| Target {
         repo: PathBuf::from(run.project_root),
         branch,
+        run_id: run.run_id,
     }))
 }
 
@@ -365,6 +369,9 @@ fn gate(
         .candidate_tip
         .as_deref()
         .with_context(|| format!("bundle {} is gating with no candidate tip", bundle.id))?;
+    if !gate_tree_ready(ctx, tx, clock, bundle, t)? {
+        return Ok(());
+    }
     let subject = bundle.id.to_string();
     let req = GateRequest {
         kind: Kind::FastGate,
@@ -379,6 +386,31 @@ fn gate(
         // The gates of the feature hold for want of a sandbox.
         None => Ok(()),
     }
+}
+
+/// Whether the gate tree of the feature of `bundle` can hold its fast gate
+/// (Q18). A feature with no gate tree gets its row and its `worktree_add`
+/// run, and a later pass queues the gate.
+fn gate_tree_ready(
+    ctx: &JobCtx<'_>,
+    tx: &Connection,
+    clock: FleetSeconds,
+    bundle: &BundleRow,
+    t: &Target,
+) -> Result<bool> {
+    let req = GateTreeRequest {
+        feature_id: &bundle.feature_id,
+        run_id: &t.run_id,
+        repo: &t.repo,
+        base: &t.branch,
+        tip: &bundle.base_tip,
+    };
+    Ok(match gate_tree::reserve(ctx, tx, &req, clock)? {
+        GateTree::Ready(tree) => {
+            tree.state == WorktreeState::Created && Path::new(&tree.path).is_dir()
+        }
+        GateTree::Reserved { .. } => false,
+    })
 }
 
 /// The word of the fast gate in `gate_runs`.
