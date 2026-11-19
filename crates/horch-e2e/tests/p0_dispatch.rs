@@ -28,9 +28,10 @@ fn out(o: &Output) -> String {
     String::from_utf8_lossy(&o.stdout).into_owned()
 }
 
-/// A harness with its own ledger file, a git repository and a fleet.toml.
-/// No fleetd serves it: each pass of the test is 1 `horch ledger watch
-/// --once`, so no pass of a fleetd binds the task first.
+/// A harness with its own ledger file, a git repository and a fleet.toml
+/// with 1 pass each second. A test starts its test fleetd after it queued
+/// its task: after T-884 a launched spawn writes its session record through
+/// fleetd, so a push launch needs a fleetd that runs (T-890).
 fn world(name: &str) -> Harness {
     let mut h = Harness::new(name).with_git();
     let db = h.root.join("ledger.sqlite3");
@@ -42,17 +43,17 @@ fn world(name: &str) -> Harness {
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(
         root.join("fleet.toml"),
-        "health_max_load_per_cpu = 1000000.0\n",
+        "health_max_load_per_cpu = 1000000.0\npass_period_s = 1\n",
     )
     .unwrap();
     h
 }
 
-/// Run 1 pass: `horch ledger watch --once`.
+/// Wait for about 1 pass of the test fleetd, and give `horch ledger status
+/// --json` for a panic message. `status` exits 1 while work remains.
 fn pass(h: &Harness) -> Output {
-    let o = h.run(&["ledger", "watch", "--once", "--force", "--json"]);
-    assert!(o.status.success(), "{}", text(&o));
-    o
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    h.run(&["ledger", "status", "--json"])
 }
 
 /// The `task.yaml` of attempt `attempt` under the fleet root, when it
@@ -207,6 +208,7 @@ fn fm2_agent_that_never_claims_has_its_task_bound_at_spawn() {
         || {
             let h = fleet("p0-fm2", "exec,bound");
             queue_one(&h, "alpha", Thresholds::default(), "opus");
+            h.serve_fleetd();
             // A pass dispatches the task by push. Its worktree job runs,
             // and a later pass launches the agent.
             // The fake agent never runs `horch ledger claim`. Its `bound`
@@ -270,10 +272,12 @@ fn fm6_agent_that_exits_without_done_leaves_its_work_to_the_next_attempt() {
                 },
                 "opus",
             );
+            h.serve_fleetd();
             // A1 starts by push dispatch.
-            let watch = pass(&h);
-            let (_, a1) = task_yaml_of(&h, "A1")
-                .unwrap_or_else(|| panic!("no task.yaml of A1: {}", text(&watch)));
+            let (_, a1) = wait_for("no task.yaml of A1", || {
+                pass(&h);
+                task_yaml_of(&h, "A1")
+            });
             let path = PathBuf::from(yaml_key(&a1, "worktree").expect("the worktree of A1"));
             let commit = wait_for(&format!("no commit of A1 in {}", path.display()), || {
                 pass(&h);
