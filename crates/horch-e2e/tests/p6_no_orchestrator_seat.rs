@@ -144,9 +144,7 @@ const FEATURE: &str = "F-0001";
 /// The `fleet.toml` of a test: 1 pass each second, the longest heartbeat
 /// age, and the retired key that named the old seat.
 fn fleet_toml() -> String {
-    format!(
-        "pass_period_s = 1\nheartbeat_max_age_s = 300\norchestrator_seats = [\"{OLD_SEAT}\"]\n"
-    )
+    format!("pass_period_s = 1\nheartbeat_max_age_s = 300\norchestrator_seats = [\"{OLD_SEAT}\"]\n")
 }
 
 /// A row of the `requests` table.
@@ -395,7 +393,10 @@ fn assert_refused(row: &RequestRow, reason_has: &str) {
     assert_eq!(row.state, "refused", "{row:?}");
     assert_eq!(row.auth, None, "a refused request has no auth: {row:?}");
     let reason = row.reason.as_deref().unwrap_or_default();
-    assert!(reason.contains(reason_has), "the reason names `{reason_has}`: {row:?}");
+    assert!(
+        reason.contains(reason_has),
+        "the reason names `{reason_has}`: {row:?}"
+    );
 }
 
 // ─── the tests ──────────────────────────────────────────────────────────
@@ -406,14 +407,25 @@ fn assert_refused(row: &RequestRow, reason_has: &str) {
 fn old_seat_operator_request_on_the_channel_is_refused() {
     let mut w = World::new("p6-old-seat-channel");
     let a = w.old_seat_attempt();
-    let token = token_file::read(&w.fleet_root()).unwrap().text().to_string();
+    let token = token_file::read(&w.fleet_root())
+        .unwrap()
+        .text()
+        .to_string();
     let id = RequestId::parse("p6-old-seat-channel").unwrap();
-    let reply = w.agent(&a, "connect", &w.paths().channel, &gc_line(&id, Some(token)));
+    let reply = w.agent(
+        &a,
+        "connect",
+        &w.paths().channel,
+        &gc_line(&id, Some(token)),
+    );
     let reply: Value = serde_json::from_str(&reply).unwrap();
     assert_eq!(reply["state"], "refused", "{reply}");
 
     let row = w.decided(&id);
-    assert_refused(&row, &format!("the peer process is in live attempt {}", a.id));
+    assert_refused(
+        &row,
+        &format!("the peer process is in live attempt {}", a.id),
+    );
     assert!(
         row.reason.as_deref().unwrap_or_default().contains(OLD_SEAT),
         "the reason names the persona of the attempt: {row:?}"

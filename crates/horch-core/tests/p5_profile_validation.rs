@@ -319,9 +319,9 @@ fn fallback_with_a_sandbox_takes_the_task() {
 ///   as a worker here (A37);
 /// - the 2 panes of the `horch orchestration` recipe take no ledger task,
 ///   so fleetd never dispatches them, and they keep their launch of today;
-/// - `orchestrator`, the old orchestrator seat: Phase 6 removed its
-///   exemption (ticket 44 of fleetd-p6), and fleetd launches no
-///   orchestrator.
+/// - `orchestrator` and `orchestrator-codex`, the old orchestrator seats:
+///   Phase 6 removed their exemption (ticket 44 of fleetd-p6), and fleetd
+///   launches no orchestrator.
 #[test]
 fn builtin_roster_has_no_refused_worker_profile_on_macos() {
     let not_supported = |adapter| ("not supported", adapter);
@@ -339,6 +339,7 @@ fn builtin_roster_has_no_refused_worker_profile_on_macos() {
         ("orchestration-orchestrator", recipe_pane),
         ("orchestration-worker", recipe_pane),
         ("orchestrator", recipe_pane),
+        ("orchestrator-codex", recipe_pane),
     ]);
     let roster = Roster::builtin().unwrap();
     let fleet_root = Path::new("/fleet");
