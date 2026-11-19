@@ -1,7 +1,7 @@
 //! The fleetd handlers of the task kinds: `task_requeue`, `task_cancel`,
-//! `task_unblock`, `task_fallback`, `ledger_waive`, `ledger_reopen` and
-//! `ledger_dismiss` (docs/tickets/fleetd-p5/18-handlers-task.md; RR-5,
-//! RR-8).
+//! `task_fallback`, `ledger_waive`, `ledger_reopen` and `ledger_dismiss`
+//! (docs/tickets/fleetd-p5/18-handlers-task.md; RR-5, RR-8). Ticket 48 of
+//! fleetd-p6 retires `task_unblock`.
 //!
 //! Each test sends 1 request through `requests::handle` to a temp ledger at
 //! generation 1, and checks the rows that the command of today writes.
@@ -359,19 +359,8 @@ fn task_cancel_of_a_queued_task_cancels_it_at_once() {
 }
 
 #[test]
-fn task_unblock_and_task_fallback_write_the_rows_of_today() {
+fn task_fallback_writes_the_rows_of_today() {
     let mut w = world();
-    let reply = w.send(Kind::TaskUnblock, json!({ "task": "T-2", "from": "T-1" }));
-    assert_eq!(lines(applied(&reply)), ["T-2 no longer waits for T-1."]);
-    assert_eq!(
-        w.one(&format!(
-            "SELECT count(*) FROM task_deps WHERE task_id = '{}'",
-            w.t2
-        )),
-        "0"
-    );
-    assert_eq!(w.one("SELECT status FROM tasks WHERE seq = 2"), "ready");
-
     let reply = w.send_as(
         "7f1c2a3e-0b9d-4c55-8e7f-1a2b3c4d5e6f",
         Kind::TaskFallback,
@@ -539,15 +528,6 @@ fn each_kind_twice_with_1_request_id_has_1_effect() {
         json!({ "task": "T-1", "reason": "r" }),
         &fb,
         "1",
-    );
-
-    let unblocked = format!("SELECT count(*) FROM task_deps WHERE task_id = '{}'", w.t2);
-    twice(
-        &mut w,
-        Kind::TaskUnblock,
-        json!({ "task": "T-2", "from": "T-1" }),
-        &unblocked,
-        "0",
     );
 
     w.code_sweep_round();

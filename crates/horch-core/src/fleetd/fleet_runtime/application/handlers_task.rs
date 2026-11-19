@@ -1,8 +1,8 @@
 //! The handlers of the task request kinds: `task_requeue`, `task_cancel`,
-//! `task_unblock`, `task_fallback`, `ledger_waive`, `ledger_reopen` and
-//! `ledger_dismiss`.
+//! `task_fallback`, `ledger_waive`, `ledger_reopen` and `ledger_dismiss`.
 //!
-//! Requirements: RR-5, RR-8. Ticket 18 of fleetd-p5 fills it.
+//! Requirements: RR-5, RR-8. Ticket 18 of fleetd-p5 fills it. Ticket 48 of
+//! fleetd-p6 retires `task_unblock`: `horch task requeue` replaces it.
 //!
 //! Each handler writes the rows that its `horch` command of today writes,
 //! through the same functions, in the transaction of its request. It
@@ -61,10 +61,9 @@ type TaskHandler = fn(&TaskHandlers, &Connection, &Value) -> Result<Value>;
 /// Register the handler of each task kind in `handlers`.
 pub fn register(handlers: &mut Handlers, ctx: TaskHandlers) {
     let ctx = Arc::new(ctx);
-    let entries: [(Kind, TaskHandler); 7] = [
+    let entries: [(Kind, TaskHandler); 6] = [
         (Kind::TaskRequeue, requeue),
         (Kind::TaskCancel, cancel),
-        (Kind::TaskUnblock, unblock),
         (Kind::TaskFallback, fallback),
         (Kind::LedgerWaive, waive),
         (Kind::LedgerReopen, reopen),
@@ -93,12 +92,6 @@ struct Target {
 struct TaskReason {
     task: String,
     reason: String,
-}
-
-#[derive(Deserialize)]
-struct UnblockArgs {
-    task: String,
-    from: String,
 }
 
 #[derive(Deserialize)]
@@ -213,17 +206,6 @@ fn cancel(_: &TaskHandlers, tx: &Connection, payload: &Value) -> Result<Value> {
     let mut lines = judges;
     lines.push(line);
     Ok(result(values, lines, note))
-}
-
-/// `horch ledger unblock`.
-fn unblock(_: &TaskHandlers, tx: &Connection, payload: &Value) -> Result<Value> {
-    let a: UnblockArgs = parse(payload)?;
-    let (run, note) = run_of(tx, payload)?;
-    let t = tasks::resolve(tx, &run.run_id, &a.task)?;
-    let b = tasks::resolve(tx, &run.run_id, &a.from)?;
-    tasks::unblock(tx, &t, &b)?;
-    let line = format!("{} no longer waits for {}.", t.short(), a.from);
-    Ok(result(json!({ "task": t.short() }), vec![line], note))
 }
 
 /// `horch ledger fallback`.

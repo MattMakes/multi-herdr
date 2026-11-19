@@ -31,7 +31,6 @@ use horch_core::taskledger::model::{EventKind, ProgressSource, WorkerKind};
 use horch_core::taskledger::runs::{self, Run};
 use horch_core::taskledger::status;
 use horch_core::taskledger::tasks;
-use horch_core::taskledger::wakes;
 use horch_core::taskledger::workers;
 use horch_core::taskledger::{self, Store};
 use serde::Deserialize;
@@ -107,14 +106,9 @@ pub enum LedgerCommand {
         #[command(flatten)]
         run: RunArg,
     },
-    /// Drop 1 dependency: TASK no longer waits for --from (orchestrator).
-    Unblock {
-        task: String,
-        #[arg(long = "from", value_name = "BLOCKER")]
-        from: String,
-        #[command(flatten)]
-        run: RunArg,
-    },
+    /// Retired: `horch task requeue <task>`.
+    #[command(hide = true)]
+    Unblock(RetiredArgs),
     /// Queue a held task again (orchestrator). It keeps its attempt
     /// history and gets the run's attempt limit anew. A cancelled task is
     /// terminal: drop each dependency on it (unblock), or cancel the
@@ -195,16 +189,9 @@ pub enum LedgerCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Reap a dead worker: stop it by its recorded PIDs, end its attempt
-    /// incomplete, and queue its task again, first in line.
-    Reap {
-        worker: String,
-        reason: String,
-        #[command(flatten)]
-        run: RunArg,
-        #[arg(long)]
-        json: bool,
-    },
+    /// Retired: fleetd stops an orphan worker; `horch ledger stop` stops 1.
+    #[command(hide = true)]
+    Reap(RetiredArgs),
     /// fleetd does the watch: it checks every working worker every check
     /// interval, reaps the dead and wakes the orchestrator. With no `--once`
     /// this runs the check of `horch fleetd check`. `--once` runs 1 pass of
@@ -264,7 +251,7 @@ pub enum LedgerCommand {
         #[arg(long)]
         cleanup: bool,
     },
-    /// Worker rows (plumbing for tests and debugging).
+    /// Retired: fleetd records each attempt at its launch.
     #[command(hide = true)]
     Worker {
         #[command(subcommand)]
@@ -348,28 +335,10 @@ pub struct RetiredArgs {
 
 #[derive(Subcommand)]
 pub enum WorkerCommand {
-    /// Insert a worker row and print its id.
-    New {
-        #[arg(long)]
-        persona: String,
-        #[arg(long)]
-        role: Option<String>,
-        #[arg(long)]
-        replaces: Option<String>,
-        /// The herdr pane the worker runs in.
-        #[arg(long)]
-        pane: Option<String>,
-        #[command(flatten)]
-        run: RunArg,
-    },
-    /// Record a PID for a worker row (supervisor or agent).
-    Pid {
-        worker: String,
-        #[arg(long)]
-        supervisor: Option<u32>,
-        #[arg(long)]
-        agent: Option<u32>,
-    },
+    /// Retired: fleetd records each attempt at its launch.
+    New(RetiredArgs),
+    /// Retired: fleetd records each attempt at its launch.
+    Pid(RetiredArgs),
 }
 
 #[derive(Args, Clone, Default)]
@@ -497,11 +466,9 @@ fn group_of(command: &LedgerCommand) -> Group {
         command,
         C::Fallback { .. }
             | C::Cancel { .. }
-            | C::Unblock { .. }
             | C::Requeue { .. }
             | C::Waive { .. }
             | C::Stop { .. }
-            | C::Reap { .. }
     ) {
         Group::Control
     } else if matches!(
@@ -536,8 +503,8 @@ pub fn run(ctx: &RuntimeContext, command: LedgerCommand) -> Result<ExitCode> {
     }
 }
 
-/// The retired kind of `command` when it is a retired command (ticket 47
-/// of fleetd-p6).
+/// The retired kind of `command` when it is a retired command (tickets 47
+/// and 48 of fleetd-p6).
 fn retired_command(command: &LedgerCommand) -> Option<&'static Retired> {
     use LedgerCommand as C;
     let kind = match command {
@@ -554,6 +521,14 @@ fn retired_command(command: &LedgerCommand) -> Option<&'static Retired> {
         C::AddMap { dry_run: false, .. } => "map_add",
         C::Task(_) => "task_solo",
         C::PlanWorkers(_) => "plan_workers",
+        C::Unblock(_) => "task_unblock",
+        C::Reap(_) => "worker_reap",
+        C::Worker {
+            command: WorkerCommand::New(_),
+        } => "worker_new",
+        C::Worker {
+            command: WorkerCommand::Pid(_),
+        } => "worker_pid",
         _ => return None,
     };
     retired(kind)
@@ -688,9 +663,6 @@ fn control_cmd(ctx: &RuntimeContext, store: Store, command: LedgerCommand) -> Re
     {
         return cancel_cmd(ctx, &store, &task, &reason, &run);
     }
-    if let LedgerCommand::Unblock { task, from, run } = command {
-        return unblock_cmd(ctx, &store, &task, &from, &run);
-    }
     if let LedgerCommand::Requeue { task, reason, run } = command {
         return requeue_cmd(ctx, &store, &task, &reason, &run);
     }
@@ -711,15 +683,6 @@ fn control_cmd(ctx: &RuntimeContext, store: Store, command: LedgerCommand) -> Re
     } = command
     {
         return stop_cmd(ctx, &store, &worker, &reason, &run, as_json);
-    }
-    if let LedgerCommand::Reap {
-        worker,
-        reason,
-        run,
-        json: as_json,
-    } = command
-    {
-        return reap_cmd(ctx, &store, &worker, &reason, &run, as_json);
     }
     unreachable!("not a control command")
 }
@@ -899,9 +862,6 @@ fn admin_cmd(ctx: &RuntimeContext, store: Store, command: LedgerCommand) -> Resu
     {
         return dismiss_cmd(ctx, finding, &reason, cleanup);
     }
-    if let LedgerCommand::Worker { command } = command {
-        return worker_cmd(ctx, &store, command);
-    }
     if let LedgerCommand::Watch {
         run,
         once,
@@ -980,20 +940,6 @@ fn print_waiting(task: &str, waiting: &[tasks::Task]) {
     }
     let names: Vec<String> = waiting.iter().map(|d| d.short()).collect();
     output::println(&format!("Waiting for {task}: {}.", names.join(", ")));
-}
-
-fn unblock_cmd(
-    ctx: &RuntimeContext,
-    store: &Store,
-    task: &str,
-    from: &str,
-    run: &RunArg,
-) -> Result<ExitCode> {
-    orchestrator_only(ctx, store, "unblock")?;
-    let r = resolve_run(ctx, store, run)?;
-    let args = json!({ "task": task, "from": from });
-    print_lines(&request(ctx, Kind::TaskUnblock, run_payload(&r, args))?)?;
-    Ok(ExitCode::SUCCESS)
 }
 
 /// `horch ledger requeue` and `horch task requeue`.
@@ -1442,30 +1388,7 @@ fn stop_cmd(
     Ok(ExitCode::SUCCESS)
 }
 
-fn reap_cmd(
-    ctx: &RuntimeContext,
-    store: &Store,
-    worker: &str,
-    reason: &str,
-    run: &RunArg,
-    as_json: bool,
-) -> Result<ExitCode> {
-    let r = resolve_run(ctx, store, run)?;
-    let args = json!({ "run_id": r.run_id, "worker": worker, "reason": reason });
-    let result = request(ctx, Kind::WorkerReap, args)?;
-    print_ended(&result, as_json)?;
-    if !as_json {
-        // The caller is the orchestrator: it reads what to spawn here.
-        let id: String = field(&result, "worker_id")?;
-        let who: String = field(&result, "worker")?;
-        let persona: Option<String> = field(&result, "persona")?;
-        let next = wakes::reaped_wake(store.conn(), &who, &id, persona.as_deref());
-        output::println(&next.text);
-    }
-    Ok(ExitCode::SUCCESS)
-}
-
-/// What `stop` and `reap` print of the result of fleetd. The pass of
+/// What `stop` prints of the result of fleetd. The pass of
 /// fleetd stops the processes of the ended worker row and closes its pane.
 fn print_ended(result: &Value, as_json: bool) -> Result<()> {
     if as_json {
@@ -2161,45 +2084,6 @@ fn handoff_warning(state: horch_core::compaction::policy::RowState, role: &str) 
              Do not wait for a compaction. Write {file}, then run: horch ledger handoff {file}"
         )
     })
-}
-
-fn worker_cmd(ctx: &RuntimeContext, store: &Store, command: WorkerCommand) -> Result<ExitCode> {
-    match command {
-        WorkerCommand::New {
-            persona,
-            role,
-            replaces,
-            pane,
-            run,
-        } => {
-            let r = resolve_run(ctx, store, &run)?;
-            let args = json!({
-                "run_id": r.run_id,
-                "persona": persona,
-                "role": role,
-                "replaces": replaces,
-                "pane": pane,
-            });
-            let result = request(ctx, Kind::WorkerNew, args)?;
-            output::println(&field::<String>(&result, "worker_id")?);
-        }
-        WorkerCommand::Pid {
-            worker,
-            supervisor,
-            agent,
-        } => {
-            // The start time of each PID, read here as today.
-            let pid =
-                |pid: u32| json!({ "pid": pid, "started": horch_core::procid::start_time(pid) });
-            let args = json!({
-                "worker": worker,
-                "supervisor": supervisor.map(pid),
-                "agent": agent.map(pid),
-            });
-            request(ctx, Kind::WorkerPid, args)?;
-        }
-    }
-    Ok(ExitCode::SUCCESS)
 }
 
 #[cfg(test)]

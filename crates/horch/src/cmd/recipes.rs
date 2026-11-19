@@ -15,9 +15,7 @@ use anyhow::{Context, Result};
 use horch::project::project_facts;
 use horch_core::execution::records::SessionLedger;
 use horch_core::execution::SessionMode;
-use horch_core::fleetd::fleet_runtime::adapters::channel_client::{self, Sent};
-use horch_core::fleetd::fleet_runtime::adapters::request_wire::Outcome;
-use horch_core::fleetd::fleet_runtime::domain::requests::Kind;
+use horch_core::fleetd::fleet_runtime::domain::requests::retired;
 use horch_core::fleetd::task_execution::application::launch::PushLaunch;
 use horch_core::fleetd::task_execution::application::quota::{Restart, ADOPT_WORKER_ENV};
 use horch_core::fleetd::worker_profiles::application::ports::{EnvRule, LaunchSpec};
@@ -473,74 +471,13 @@ pub fn push_launch_spec(ctx: &RuntimeContext, l: &PushLaunch) -> Result<LaunchSp
     })
 }
 
-/// `horch fleet stop`: record a deliberate stop of the orchestrator of each
-/// active run of the project, so the watchdog never respawns it (C7). It
-/// does not end the agent. fleetd records it: the command sends 1
-/// `orchestrator_stop` request with the active runs (RR-5).
-pub fn fleet_stop(ctx: &RuntimeContext, cwd: Option<&str>) -> Result<ExitCode> {
-    let root = resolve_cwd(ctx, cwd)?;
-    let Some(store) = horch_core::taskledger::open_existing_read_only(ctx)? else {
-        println!("No task ledger. Nothing to stop.");
-        return Ok(ExitCode::SUCCESS);
-    };
-    let active = horch_core::taskledger::model::RunStatus::Active.as_str();
-    let runs: Vec<_> = horch_core::taskledger::runs::of_project(store.conn(), Path::new(&root))?
-        .into_iter()
-        .filter(|r| r.status == active)
-        .collect();
-    drop(store);
-    if runs.is_empty() {
-        println!("No active run in {root}. Nothing to stop.");
-        return Ok(ExitCode::SUCCESS);
-    }
-    let run_ids: Vec<&str> = runs.iter().map(|r| r.run_id.as_str()).collect();
-    let payload = serde_json::json!({ "run_ids": run_ids });
-    let result = match send_request(ctx, Kind::OrchestratorStop, payload)? {
-        Reply::Applied(result) => result,
-        Reply::Refused => return Ok(ExitCode::from(1)),
-        Reply::Queued => return Ok(ExitCode::SUCCESS),
-    };
-    for run in result["runs"].as_array().into_iter().flatten() {
-        let slug = run["slug"].as_str().unwrap_or_default();
-        if run["recorded"].as_bool() == Some(true) {
-            println!("Run {slug}: the orchestrator stop is recorded. horch does not respawn it.");
-        } else {
-            println!("Run {slug}: the orchestrator stop was recorded before.");
-        }
-    }
-    Ok(ExitCode::SUCCESS)
-}
-
-/// What became of 1 request of this module.
-enum Reply {
-    /// fleetd applied it: its result.
-    Applied(serde_json::Value),
-    /// fleetd refused it: `refused: <reason>` is printed.
-    Refused,
-    /// fleetd is down: the request waits in its request file, and the
-    /// channel client printed where.
-    Queued,
-}
-
-/// Send 1 operator request of `kind` to fleetd (ticket 15). A refused
-/// request prints `refused: <reason>`.
-fn send_request(ctx: &RuntimeContext, kind: Kind, payload: serde_json::Value) -> Result<Reply> {
-    let serde_json::Value::Object(payload) = payload else {
-        anyhow::bail!(
-            "the payload of a {} request is not an object",
-            kind.as_str()
-        );
-    };
-    Ok(match channel_client::send(ctx, kind, payload)? {
-        Sent::Replied(reply) => match reply.outcome {
-            Outcome::Applied(result) => Reply::Applied(result),
-            Outcome::Refused(reason) => {
-                eprintln!("refused: {reason}");
-                Reply::Refused
-            }
-        },
-        Sent::Queued { .. } => Reply::Queued,
-    })
+/// `horch fleet stop`, retired by ticket 48 of fleetd-p6: no orchestrator
+/// runs, so it has none to stop. It prints the line of the retired kind
+/// `orchestrator_stop`, sends nothing and exits 1.
+pub fn fleet_stop(_ctx: &RuntimeContext, _cwd: Option<&str>) -> Result<ExitCode> {
+    let r = retired("orchestrator_stop").expect("orchestrator_stop is a retired kind");
+    eprintln!("{}", r.line());
+    Ok(ExitCode::from(1))
 }
 
 /// The fleet workspace is named after the project folder; a path with no final
@@ -1598,58 +1535,6 @@ mod tests {
     }
 
     /// A context whose ledger lives in `dir`.
-    /// The fleetd of a unit test: the token of the fleet root of `ctx`, a
-    /// `fleetd` row that names this test process, and the channel server
-    /// with the handlers of the worker kinds in a thread. The ledger of
-    /// `ctx` must exist. The lock holder is the real one of the ledger.
-    fn test_fleetd(
-        ctx: &RuntimeContext,
-    ) -> horch_core::fleetd::fleet_runtime::adapters::channel_server::ChannelServer {
-        use horch_core::fleetd::fleet_runtime::adapters::channel_server::ChannelServer;
-        use horch_core::fleetd::fleet_runtime::application::handlers_worker::{
-            register, WorkerDeps,
-        };
-        use horch_core::fleetd::fleet_runtime::application::requests::Handlers;
-        use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
-        use std::sync::Arc;
-
-        struct AllSandboxes;
-        impl horch_core::fleetd::task_execution::application::dispatch::CheckSandboxes for AllSandboxes {
-            fn supported(&self, _persona: &str) -> bool {
-                true
-            }
-        }
-
-        let root = &ctx.paths.fleet_root;
-        std::fs::create_dir_all(root).unwrap();
-        horch_core::fleetd::fleet_runtime::adapters::token_file::ensure(root).unwrap();
-        let pid = std::process::id();
-        let start = horch_platform::process::start_time(pid).unwrap();
-        let conn = rusqlite::Connection::open(&ctx.paths.ledger_db).unwrap();
-        conn.busy_timeout(std::time::Duration::from_secs(10))
-            .unwrap();
-        conn.execute(
-            "INSERT OR REPLACE INTO fleetd
-             (id, generation, pid, pid_start, started_at, fleet_clock_s, clock_ticked_at)
-             VALUES (1, 1, ?1, ?2, 'now', 0, 'now')",
-            rusqlite::params![i64::from(pid), i64::try_from(start).unwrap()],
-        )
-        .unwrap();
-        let lock_dir = orchestrator::lock_dir(&ctx.paths.ledger_db);
-        let deps = WorkerDeps {
-            guard: Generation(1),
-            config: Arc::new(Default::default()),
-            needs_you: Arc::new(horch_core::fleetd::ideas::application::needs_you::NeedsYouList),
-            git: Arc::new(horch_core::taskledger::git::Git::new("git")),
-            holds: Arc::new(Default::default),
-            sandboxes: Arc::new(AllSandboxes),
-            lock_holder: Arc::new(move |ws: &str| orchestrator::holder(&lock_dir, ws)),
-        };
-        let mut handlers = Handlers::new();
-        register(&mut handlers, &deps);
-        ChannelServer::start(root, conn, Generation(1), handlers).unwrap()
-    }
-
     fn ledger_ctx(dir: &Path) -> RuntimeContext {
         RuntimeContext::from_env(
             &horch_core::runtime::MapEnv::new("/")
@@ -1715,38 +1600,6 @@ mod tests {
         assert_eq!(pane, "p2");
         assert!(lock.is_some());
         assert_eq!(mailbox.pane_for("orchestrator").as_deref(), Some("p2"));
-    }
-
-    #[test]
-    fn trf_39_fleet_stop_records_the_stop_of_each_active_run() {
-        let dir = tempfile::tempdir().unwrap();
-        let ctx = ledger_ctx(dir.path());
-        let root = dir.path().join("repo");
-        std::fs::create_dir_all(&root).unwrap();
-        let mut store = horch_core::taskledger::open(&ctx).unwrap();
-        let run = store
-            .immediate(|tx| {
-                horch_core::taskledger::runs::create(
-                    tx,
-                    &root,
-                    &horch_core::taskledger::runs::NewRun {
-                        slug: "r1".into(),
-                        ..Default::default()
-                    },
-                )
-            })
-            .unwrap();
-        let stopped = |store: &horch_core::taskledger::Store| {
-            orchestrator::guard(store.conn(), &run.run_id)
-                .unwrap()
-                .stopped_at
-        };
-        assert_eq!(stopped(&store), None);
-        let _fleetd = test_fleetd(&ctx);
-        assert_eq!(fleet_stop(&ctx, root.to_str()).unwrap(), ExitCode::SUCCESS);
-        let first = stopped(&store).expect("the stop is recorded");
-        assert_eq!(fleet_stop(&ctx, root.to_str()).unwrap(), ExitCode::SUCCESS);
-        assert_eq!(stopped(&store), Some(first), "the first stop stays");
     }
 
     #[test]

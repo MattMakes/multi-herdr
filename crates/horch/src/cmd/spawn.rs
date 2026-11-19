@@ -157,6 +157,11 @@ fn shell_quote(text: &str) -> String {
 /// Spawn a worker pane, returning its pane id so callers can chain splits.
 /// A refusal is a [`SpawnError::Refused`]; its REFUSED line is on stdout.
 pub fn spawn(ctx: &RuntimeContext, args: SpawnArgs) -> Result<String> {
+    // fleetd launches each attempt (ticket 48 of fleetd-p6): only its own
+    // spawns still run.
+    if !super::taskledger_spawn::launched_by_fleetd(&args) {
+        bail!("{}", super::taskledger_spawn::retired_line());
+    }
     // Before the ledger row: a refused caller leaves nothing behind.
     let roster_dir = super::path_text(ctx.bins.roster_override.as_deref());
     let caller = caller(ctx);

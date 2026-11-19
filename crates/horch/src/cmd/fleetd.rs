@@ -63,7 +63,6 @@ use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
 use horch_core::fleetd::integration::application::commands::GitRefTips;
 use horch_core::fleetd::task_execution::application::launch::{Launches, PushLaunch};
 use horch_core::fleetd::task_execution::application::quota::Restart;
-use horch_core::fleetd::task_execution::domain::dispatch::Holds;
 use horch_core::fleetd::task_execution::domain::task::{AttemptRow, InPane};
 use horch_core::fleetd::worker_profiles::adapters::check_sandbox::WorkerSandboxes;
 use horch_core::fleetd::worker_profiles::adapters::launcher::Launcher;
@@ -75,7 +74,6 @@ use horch_core::messaging::delivery::{self, TypedLine};
 use horch_core::procid;
 use horch_core::runtime::{process, Paths, RuntimeContext};
 use horch_core::taskledger::finish::CodexSandbox;
-use horch_core::taskledger::git::Git;
 use horch_core::taskledger::model::RunStatus;
 use horch_core::taskledger::orchestrator;
 use horch_core::taskledger::sql_words::list;
@@ -656,17 +654,7 @@ fn request_handlers(ctx: &RuntimeContext, settings: &Settings) -> Handlers {
             evidence_root: super::taskledger::tools(ctx).evidence_root,
         },
     );
-    let lock_dir = orchestrator::lock_dir(&ctx.paths.ledger_db);
-    let worker = WorkerDeps {
-        guard,
-        config: Arc::clone(&config),
-        needs_you: Arc::new(NeedsYouList),
-        git: Arc::new(Git::new(&ctx.bins.harness.git)),
-        // The holds of today's `horch spawn`: the fleet clock only.
-        holds: Arc::new(Holds::default),
-        sandboxes: Arc::new(check_sandboxes(ctx)),
-        lock_holder: Arc::new(move |ws: &str| orchestrator::holder(&lock_dir, ws)),
-    };
+    let worker = WorkerDeps { guard };
     handlers_worker::register(&mut handlers, &worker);
     handlers_cli::register(
         &mut handlers,

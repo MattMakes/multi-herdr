@@ -1,6 +1,8 @@
-//! The handlers of the worker kinds: `spawn`, `worker_stop`, `worker_reap`,
-//! `worker_new`, `worker_pid`, `orchestrator_claim` and `orchestrator_stop`
-//! (docs/tickets/fleetd-p5/19-handlers-worker.md; RR-5, RR-8).
+//! The handlers of the worker kinds: `worker_stop` and the records of 1
+//! spawn of fleetd (docs/tickets/fleetd-p5/19-handlers-worker.md; RR-5,
+//! RR-8). Ticket 48 of fleetd-p6 retires `spawn`, `worker_reap`,
+//! `worker_new`, `worker_pid`, `orchestrator_claim` and
+//! `orchestrator_stop`.
 //!
 //! Each test sends its request through `requests::handle` to a temp ledger
 //! at generation 1 and checks the rows that the command of today writes.
@@ -9,22 +11,21 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Arc;
 use std::time::Duration;
 
+use horch_core::fleetd::fleet_runtime::adapters::clock_store;
 use horch_core::fleetd::fleet_runtime::adapters::request_wire::{Outcome, Request};
 use horch_core::fleetd::fleet_runtime::application::handlers_worker::{register, WorkerDeps};
+use horch_core::fleetd::fleet_runtime::application::jobs::JobCtx;
 use horch_core::fleetd::fleet_runtime::application::requests::{handle, Handlers};
 use horch_core::fleetd::fleet_runtime::domain::authorize::Decision;
 use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
 use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
 use horch_core::fleetd::fleet_runtime::domain::requests::{Kind, RequestId};
 use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
-use horch_core::fleetd::task_execution::application::dispatch::CheckSandboxes;
-use horch_core::fleetd::task_execution::domain::dispatch::Holds;
+use horch_core::fleetd::task_execution::application::dispatch::{self, DispatchCtx};
 use horch_core::taskledger::git::Git;
 use horch_core::taskledger::model::{Actor, WorkerKind, WorktreeMode};
-use horch_core::taskledger::orchestrator::Holder;
 use horch_core::taskledger::runs::{self, NewRun, Run};
 use horch_core::taskledger::tasks::{self, NewTask};
 use horch_core::taskledger::workers::{self, NewWorker};
@@ -33,14 +34,6 @@ use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 
 const RUN_BRANCH: &str = "fleet/r1";
-
-struct AllSandboxes;
-
-impl CheckSandboxes for AllSandboxes {
-    fn supported(&self, _persona: &str) -> bool {
-        true
-    }
-}
 
 struct World {
     _tmp: tempfile::TempDir,
@@ -115,12 +108,6 @@ fn world() -> World {
     .unwrap();
     let deps = WorkerDeps {
         guard: Generation(1),
-        config: Arc::new(FleetConfig::default()),
-        needs_you: Arc::new(NeedsYouList),
-        git: Arc::new(Git::new("git")),
-        holds: Arc::new(Holds::default),
-        sandboxes: Arc::new(AllSandboxes),
-        lock_holder: Arc::new(|_: &str| None::<Holder>),
     };
     let mut handlers = Handlers::new();
     register(&mut handlers, &deps);
@@ -134,6 +121,27 @@ fn world() -> World {
 }
 
 impl World {
+    /// The bind of `task` to 1 push attempt in `launching` of a new
+    /// `spawning` worker, as the dispatch of fleetd does it. Gives its
+    /// worker.
+    fn bind(&mut self, task: &str) -> String {
+        let tx = self.conn.transaction().unwrap();
+        let config = FleetConfig::default();
+        let git = Git::new("git");
+        let ctx = DispatchCtx {
+            jobs: JobCtx {
+                guard: Some(Generation(1)),
+                config: &config,
+                needs_you: &NeedsYouList,
+            },
+            clock: clock_store::read(&tx).unwrap(),
+            git: &git,
+        };
+        let bound = dispatch::bind(&tx, &ctx, task, "opus", &NewWorker::default()).unwrap();
+        tx.commit().unwrap();
+        bound.worker_id
+    }
+
     fn add(&self, title: &str, mode: WorktreeMode) -> String {
         let mut t = NewTask::work(title, &format!("docs/{title}.md"), "opus");
         t.ticket_snapshot = Some("# A ticket\n".into());
@@ -267,71 +275,6 @@ impl World {
 }
 
 #[test]
-fn spawn_binds_the_task_and_writes_the_rows_of_today() {
-    let mut w = world();
-    let id = w.add("T", WorktreeMode::Worktree);
-    let out = w.send(
-        Kind::Spawn,
-        json!({ "run_id": w.run.run_id, "persona": "opus", "workspace_id": "ws1" }),
-    );
-    assert_eq!(out["task_id"], json!(id));
-    assert_eq!(out["attempt"], json!(1));
-    let wid = out["worker_id"].as_str().unwrap();
-    assert_eq!(w.task_status(&id), "leased");
-    let t = tasks::get(&w.conn, &id).unwrap();
-    assert_eq!(t.current_worker_id.as_deref(), Some(wid));
-    assert_eq!(t.attempts, 1);
-    let worker = workers::get(&w.conn, wid).unwrap();
-    assert_eq!(worker.persona.as_deref(), Some("opus"));
-    assert_eq!(worker.kind, "worker");
-    assert_eq!(worker.workspace_id.as_deref(), Some("ws1"));
-    assert_eq!(worker.task_id.as_deref(), Some(id.as_str()));
-    assert_eq!(worker.agent_pid, None, "the pass launches the attempt");
-    let (attempt, state, via): (String, String, String) = w
-        .conn
-        .query_row(
-            "SELECT id, state, via FROM attempts WHERE task_id = ?1",
-            [&id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .unwrap();
-    assert_eq!(out["attempt_id"], json!(attempt));
-    assert_eq!((state.as_str(), via.as_str()), ("launching", "push"));
-    let tree = &out["worktree"];
-    assert!(tree["path"].as_str().unwrap().contains(".worktrees"));
-    assert!(
-        tree["add_job"].is_i64(),
-        "the job adds the tree after the commit"
-    );
-    assert!(
-        !Path::new(tree["path"].as_str().unwrap()).exists(),
-        "the handler makes no tree"
-    );
-
-    let why = w.refused(
-        Kind::Spawn,
-        json!({ "run_id": w.run.run_id, "persona": "opus" }),
-    );
-    assert!(why.contains("no ready task for persona opus"), "{why}");
-}
-
-#[test]
-fn spawn_of_a_role_writes_its_row_and_its_no_claim_verdict() {
-    let mut w = world();
-    let task = w.add("T", WorktreeMode::Shared);
-    let out = w.send(
-        Kind::Spawn,
-        json!({ "run_id": w.run.run_id, "persona": "opus", "controller": "W-ctl" }),
-    );
-    let wid = out["worker_id"].as_str().unwrap();
-    assert_eq!(workers::get(&w.conn, wid).unwrap().status, "spawning");
-    assert_eq!(w.task_status(&task), "ready", "a role binds no task");
-    let verdicts = w.events(wid, "verdict");
-    assert_eq!(verdicts.len(), 1);
-    assert!(verdicts[0].starts_with("No claim: a role of controller worker W-ctl"));
-}
-
-#[test]
 fn worker_stop_records_an_intended_stop_and_signals_nothing() {
     let mut w = world();
     let task = w.add("T", WorktreeMode::Shared);
@@ -380,153 +323,16 @@ fn worker_stop_records_an_intended_stop_and_signals_nothing() {
 }
 
 #[test]
-fn worker_reap_requeues_as_today() {
-    let mut w = world();
-    let task = w.add("T", WorktreeMode::Shared);
-    let wid = w.worker(Some(&task));
-    let out = w.send(
-        Kind::WorkerReap,
-        json!({ "run_id": w.run.run_id, "worker": wid, "reason": "no heartbeat" }),
-    );
-    assert_eq!(
-        out["requeued"],
-        json!(tasks::get(&w.conn, &task).unwrap().short())
-    );
-    let row = workers::get(&w.conn, &wid).unwrap();
-    assert_eq!(row.status, "incomplete");
-    assert_eq!(row.end_reason.as_deref(), Some("dead: no heartbeat"));
-    assert_eq!(w.task_status(&task), "ready");
-    let reaped = w.events(&wid, "reaped");
-    assert_eq!(reaped.len(), 1);
-    assert!(
-        reaped[0].ends_with(" reaped: no heartbeat"),
-        "{}",
-        reaped[0]
-    );
-
-    let gone = w.worker(None);
-    w.send(
-        Kind::WorkerStop,
-        json!({ "run_id": w.run.run_id, "worker": gone, "reason": "done" }),
-    );
-    let why = w.refused(
-        Kind::WorkerReap,
-        json!({ "run_id": w.run.run_id, "worker": gone, "reason": "again" }),
-    );
-    assert!(
-        why.contains("only a live or incomplete worker is reaped"),
-        "{why}"
-    );
-}
-
-#[test]
-fn worker_new_and_worker_pid_write_the_rows_of_today() {
-    let mut w = world();
-    let out = w.send(
-        Kind::WorkerNew,
-        json!({ "run_id": w.run.run_id, "persona": "opus", "role": "opus-1", "pane": "p-7" }),
-    );
-    let wid = out["worker_id"].as_str().unwrap().to_string();
-    let row = workers::get(&w.conn, &wid).unwrap();
-    assert_eq!(row.kind, "worker");
-    assert_eq!(row.persona.as_deref(), Some("opus"));
-    assert_eq!(row.role.as_deref(), Some("opus-1"));
-    assert_eq!(row.pane_id.as_deref(), Some("p-7"));
-    assert_eq!(row.run_id.as_deref(), Some(w.run.run_id.as_str()));
-
-    w.send(
-        Kind::WorkerPid,
-        json!({ "worker": wid, "supervisor": { "pid": 4000, "started": 11 },
-                "agent": { "pid": 4001, "started": 12 } }),
-    );
-    let row = workers::get(&w.conn, &wid).unwrap();
-    assert_eq!(
-        (row.supervisor_pid, row.supervisor_started),
-        (Some(4000), Some(11))
-    );
-    assert_eq!((row.agent_pid, row.agent_started), (Some(4001), Some(12)));
-}
-
-#[test]
-fn orchestrator_claim_and_stop_write_the_rows_of_fleet_start_and_stop() {
-    let mut w = world();
-    let out = w.send(
-        Kind::OrchestratorClaim,
-        json!({ "run_id": w.run.run_id, "workspace": "ws1", "pane": "p-1",
-                "harness": "claude", "model": "opus" }),
-    );
-    assert_eq!(out["claim"]["state"], json!("changed"));
-    assert!(out["claim"]["text"]
-        .as_str()
-        .unwrap()
-        .starts_with("An orchestrator launch claims run r1: workspace (none) -> ws1"));
-    assert_eq!(out["harness_rows"], json!(1));
-    let run = runs::get(&w.conn, &w.run.run_id).unwrap();
-    assert_eq!(run.workspace_id.as_deref(), Some("ws1"));
-    let orch = workers::get(&w.conn, run.orchestrator_worker_id.as_deref().unwrap()).unwrap();
-    assert_eq!(orch.kind, "orchestrator");
-    assert_eq!(orch.status, "working");
-    assert_eq!(orch.pane_id.as_deref(), Some("p-1"));
-    assert_eq!(orch.harness.as_deref(), Some("claude"));
-    assert_eq!(orch.model.as_deref(), Some("opus"));
-
-    let out = w.send(Kind::OrchestratorStop, json!({ "run_ids": [w.run.run_id] }));
-    assert_eq!(
-        out["runs"],
-        json!([{ "run_id": w.run.run_id, "slug": "r1", "recorded": true }])
-    );
-    let stopped: Option<String> = w
-        .conn
-        .query_row(
-            "SELECT orchestrator_stopped_at FROM runs WHERE run_id = ?1",
-            [&w.run.run_id],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert!(stopped.is_some());
-    let out = w.send(Kind::OrchestratorStop, json!({ "run_ids": [w.run.run_id] }));
-    assert_eq!(out["runs"][0]["recorded"], json!(false), "recorded before");
-
-    let out = w.send(
-        Kind::OrchestratorClaim,
-        json!({ "run_id": w.run.run_id, "workspace": "ws1" }),
-    );
-    assert!(out["claim"]["text"]
-        .as_str()
-        .unwrap()
-        .contains("-> cleared"));
-}
-
-#[test]
 fn each_kind_twice_with_1_request_id_has_1_effect() {
     let mut w = world();
     w.add("T", WorktreeMode::Worktree);
     let held = w.add("H", WorktreeMode::Shared);
     let stopped = w.worker(Some(&held));
-    let reaped = w.worker(None);
-    let pid_of = w.worker(None);
     let run = w.run.run_id.clone();
-    let cases = [
-        (Kind::Spawn, json!({ "run_id": run, "persona": "opus" })),
-        (
-            Kind::WorkerStop,
-            json!({ "run_id": run, "worker": stopped, "reason": "r" }),
-        ),
-        (
-            Kind::WorkerReap,
-            json!({ "run_id": run, "worker": reaped, "reason": "r" }),
-        ),
-        (Kind::WorkerNew, json!({ "run_id": run, "persona": "opus" })),
-        (
-            Kind::WorkerPid,
-            json!({ "worker": pid_of, "supervisor": { "pid": 7, "started": 1 } }),
-        ),
-        (
-            Kind::OrchestratorClaim,
-            json!({ "run_id": run, "workspace": "ws1" }),
-        ),
-        (Kind::OrchestratorStop, json!({ "run_ids": [run] })),
-    ];
+    let cases = [(
+        Kind::WorkerStop,
+        json!({ "run_id": run, "worker": stopped, "reason": "r" }),
+    )];
     for (kind, payload) in cases {
         let req = w.request(kind, payload);
         let first = w.send_request(&req);
@@ -581,11 +387,7 @@ fn worker_of_other_run(w: &World) -> String {
 fn spawn_adopt_adopts_a_restart_row_once() {
     let mut w = world();
     let task = w.add("T", WorktreeMode::Shared);
-    let out = w.send(
-        Kind::Spawn,
-        json!({ "run_id": w.run.run_id, "persona": "opus" }),
-    );
-    let wid = out["worker_id"].as_str().unwrap().to_string();
+    let wid = w.bind(&task);
     w.conn
         .execute(
             "UPDATE workers SET target_task_id = ?2 WHERE worker_id = ?1",

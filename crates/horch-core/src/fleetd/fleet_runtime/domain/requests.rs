@@ -4,7 +4,7 @@
 //! `adapters/request_wire.rs`, because a domain module names only `std`.
 //!
 //! Requirements: RR-8, SR-8, FM-15, FR-10. Ticket 08 of fleetd-p5, and
-//! tickets 06 and 47 of fleetd-p6.
+//! tickets 06, 47 and 48 of fleetd-p6.
 
 use std::path::Path;
 
@@ -34,32 +34,25 @@ impl Class {
 
 /// Each request kind: the table "Request kinds" of
 /// `docs/tickets/fleetd-p5/MAP.md`, 1 kind for each command that changes
-/// state, with the 4 kinds of the records of 1 spawn after `spawn` (ticket
-/// 23 of fleetd-p5), the 4 kinds of the last direct writers of the CLI
-/// after `rescue_drop` (T-885), then the idea kinds of Phase 6 (design,
-/// "Each request kind has a class"). A kind of [`RETIRED`] is not a kind.
+/// state, with the 4 kinds of the records of 1 spawn of fleetd (ticket 23
+/// of fleetd-p5), the 4 kinds of the last direct writers of the CLI after
+/// `rescue_drop` (T-885), then the idea kinds of Phase 6 (design, "Each
+/// request kind has a class"). A kind of [`RETIRED`] is not a kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Kind {
     LedgerImport,
     LedgerGc,
     TaskRequeue,
     TaskCancel,
-    TaskUnblock,
     TaskFallback,
     LedgerWaive,
     LedgerReopen,
     LedgerDismiss,
     WorkerStop,
-    WorkerReap,
-    WorkerNew,
-    WorkerPid,
-    Spawn,
     SpawnAdopt,
     SpawnGateNote,
     WorkerLaunched,
     WorkerLaunchFailed,
-    OrchestratorClaim,
-    OrchestratorStop,
     JobRequeue,
     WorktreeScratch,
     WorktreeDrop,
@@ -86,27 +79,20 @@ pub enum Kind {
 
 impl Kind {
     /// Each kind, in the order of the MAP table, then the idea kinds.
-    pub const ALL: [Kind; 42] = [
+    pub const ALL: [Kind; 35] = [
         Kind::LedgerImport,
         Kind::LedgerGc,
         Kind::TaskRequeue,
         Kind::TaskCancel,
-        Kind::TaskUnblock,
         Kind::TaskFallback,
         Kind::LedgerWaive,
         Kind::LedgerReopen,
         Kind::LedgerDismiss,
         Kind::WorkerStop,
-        Kind::WorkerReap,
-        Kind::WorkerNew,
-        Kind::WorkerPid,
-        Kind::Spawn,
         Kind::SpawnAdopt,
         Kind::SpawnGateNote,
         Kind::WorkerLaunched,
         Kind::WorkerLaunchFailed,
-        Kind::OrchestratorClaim,
-        Kind::OrchestratorStop,
         Kind::JobRequeue,
         Kind::WorktreeScratch,
         Kind::WorktreeDrop,
@@ -138,22 +124,15 @@ impl Kind {
             Kind::LedgerGc => "ledger_gc",
             Kind::TaskRequeue => "task_requeue",
             Kind::TaskCancel => "task_cancel",
-            Kind::TaskUnblock => "task_unblock",
             Kind::TaskFallback => "task_fallback",
             Kind::LedgerWaive => "ledger_waive",
             Kind::LedgerReopen => "ledger_reopen",
             Kind::LedgerDismiss => "ledger_dismiss",
             Kind::WorkerStop => "worker_stop",
-            Kind::WorkerReap => "worker_reap",
-            Kind::WorkerNew => "worker_new",
-            Kind::WorkerPid => "worker_pid",
-            Kind::Spawn => "spawn",
             Kind::SpawnAdopt => "spawn_adopt",
             Kind::SpawnGateNote => "spawn_gate_note",
             Kind::WorkerLaunched => "worker_launched",
             Kind::WorkerLaunchFailed => "worker_launch_failed",
-            Kind::OrchestratorClaim => "orchestrator_claim",
-            Kind::OrchestratorStop => "orchestrator_stop",
             Kind::JobRequeue => "job_requeue",
             Kind::WorktreeScratch => "worktree_scratch",
             Kind::WorktreeDrop => "worktree_drop",
@@ -228,10 +207,13 @@ impl Retired {
 const DIRECT: &str =
     "Add a ticket that you wrote: horch idea add --direct <ticket file> [--to <feature>]";
 
-/// Each retired kind (ticket 47 of fleetd-p6). fleetd refuses a request of
-/// one with the reason `retired kind: <instead>`: a request file of an old
-/// client, written before the update.
-pub const RETIRED: [Retired; 7] = [
+/// What you do in place of `horch ledger worker new` and `worker pid`.
+const RECORDS: &str = "fleetd records each attempt at its launch";
+
+/// Each retired kind (tickets 47 and 48 of fleetd-p6). fleetd refuses a
+/// request of one with the reason `retired kind: <instead>`: a request
+/// file of an old client, written before the update.
+pub const RETIRED: [Retired; 14] = [
     Retired {
         kind: "run_new",
         command: "horch ledger run new",
@@ -266,6 +248,41 @@ pub const RETIRED: [Retired; 7] = [
         kind: "plan_workers",
         command: "horch ledger plan-workers",
         instead: "fleetd dispatches each ready task: horch ideas and horch ledger status show each hold",
+    },
+    Retired {
+        kind: "spawn",
+        command: "horch spawn",
+        instead: "fleetd launches each attempt. To pair with a persona, plan its task with an interactive persona",
+    },
+    Retired {
+        kind: "worker_new",
+        command: "horch ledger worker new",
+        instead: RECORDS,
+    },
+    Retired {
+        kind: "worker_pid",
+        command: "horch ledger worker pid",
+        instead: RECORDS,
+    },
+    Retired {
+        kind: "worker_reap",
+        command: "horch ledger reap",
+        instead: r#"fleetd stops an orphan worker. To stop 1 worker: horch ledger stop <worker> "<reason>""#,
+    },
+    Retired {
+        kind: "task_unblock",
+        command: "horch ledger unblock",
+        instead: "Queue the task again: horch task requeue <task>",
+    },
+    Retired {
+        kind: "orchestrator_claim",
+        command: "the orchestrator claim",
+        instead: "horch fleet start starts fleetd and herdr with no orchestrator, and fleetd starts 1 sub-orchestrator for each feature",
+    },
+    Retired {
+        kind: "orchestrator_stop",
+        command: "horch fleet stop",
+        instead: r#"No orchestrator runs, so there is none to stop. fleetd and the herdr server stay under the service manager of the OS. To stop 1 worker: horch ledger stop <worker> "<reason>""#,
     },
 ];
 
@@ -600,27 +617,20 @@ mod tests {
 
     /// The table "Request kinds" of `docs/tickets/fleetd-p5/MAP.md` with no
     /// retired kind, then the idea kinds of Phase 6.
-    const MAP_TABLE: [(&str, Class); 42] = [
+    const MAP_TABLE: [(&str, Class); 35] = [
         ("ledger_import", Class::Operator),
         ("ledger_gc", Class::Operator),
         ("task_requeue", Class::Operator),
         ("task_cancel", Class::Operator),
-        ("task_unblock", Class::Operator),
         ("task_fallback", Class::Operator),
         ("ledger_waive", Class::Operator),
         ("ledger_reopen", Class::Operator),
         ("ledger_dismiss", Class::Operator),
         ("worker_stop", Class::Operator),
-        ("worker_reap", Class::Operator),
-        ("worker_new", Class::Operator),
-        ("worker_pid", Class::Operator),
-        ("spawn", Class::Operator),
         ("spawn_adopt", Class::Operator),
         ("spawn_gate_note", Class::Operator),
         ("worker_launched", Class::Operator),
         ("worker_launch_failed", Class::Operator),
-        ("orchestrator_claim", Class::Operator),
-        ("orchestrator_stop", Class::Operator),
         ("job_requeue", Class::Operator),
         ("worktree_scratch", Class::Operator),
         ("worktree_drop", Class::Operator),
@@ -740,7 +750,10 @@ mod tests {
         assert!(
             check_spawn_record(Kind::SpawnGateNote, &[("text", "x"), ("run_id", "R1")]).is_err()
         );
-        assert_eq!(check_spawn_record(Kind::Spawn, &[("anything", "")]), Ok(()));
+        assert_eq!(
+            check_spawn_record(Kind::WorkerStop, &[("anything", "")]),
+            Ok(())
+        );
         for kind in [
             Kind::SpawnAdopt,
             Kind::SpawnGateNote,

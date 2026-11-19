@@ -250,14 +250,13 @@ fn the_board_commands_print_their_pinned_text() {
         w.ok(&["ledger", "fallback", "T-1", "because"]),
         "T-1 can now be claimed by dev2.\n"
     );
+    // Ticket 48 of fleetd-p6 retires unblock.
     let unblock = w.run(&["ledger", "unblock", "T-2", "--from", "T-1"]);
+    assert_eq!((unblock.code, unblock.out.as_str()), (1, ""));
     assert_eq!(
-        (unblock.code, unblock.out.as_str()),
-        (0, "T-2 no longer waits for T-1.\n")
+        unblock.err,
+        "horch ledger unblock is retired. Queue the task again: horch task requeue <task>\n"
     );
-    // The command writes no wake (ticket 22 of fleetd-p5, T-471), so it
-    // prints no wake note.
-    assert_eq!(unblock.err, "");
     assert_eq!(
         w.ok(&["ledger", "cancel", "T-2", "nope"]),
         "T-2 cancelled.\n"
@@ -437,9 +436,13 @@ fn the_unfinished_import_and_refusal_arms_print_their_pinned_text() {
     let stop = w.run(&["ledger", "stop", "nobody", "why"]);
     assert_eq!(stop.code, 1);
     assert!(stop.err.starts_with("refused: "), "{}", stop.err);
+    // Ticket 48 of fleetd-p6 retires worker pid.
     let pid = w.run(&["ledger", "worker", "pid", "nobody", "--agent", "1"]);
     assert_eq!(pid.code, 1, "{}", pid.err);
-    assert_eq!(pid.err, "refused: no worker nobody in the task ledger\n");
+    assert_eq!(
+        pid.err,
+        "horch ledger worker pid is retired. fleetd records each attempt at its launch\n"
+    );
 }
 
 /// A world with run `r1` (checks every 10 s) and 1 task bound to the
@@ -547,63 +550,6 @@ fn ensure_starts_nothing_with_the_watchdog_off_or_without_a_ledger() {
     assert_eq!(none.code, 0);
     assert!(!none.err.contains("watchdog"), "{}", none.err);
     assert!(!bare.tmp.path().join("home/.horch/ledger.sqlite3").exists());
-}
-
-#[test]
-fn spawn_checks_the_run_the_persona_and_the_replaced_worker() {
-    let w = World::new();
-    let no_run = w.run(&["spawn", "sonnet", "--replaces", "nope"]);
-    assert_eq!(no_run.code, 1);
-    assert!(
-        no_run
-            .err
-            .starts_with("horch: --replaces needs an active task-ledger run in ")
-            && no_run.err.ends_with("/proj\n"),
-        "{}",
-        no_run.err
-    );
-    w.ok(&["ledger", "run", "new", "r1"]);
-    let id = w
-        .ok(&[
-            "ledger",
-            "worker",
-            "new",
-            "--persona",
-            "dev",
-            "--role",
-            "dev1",
-        ])
-        .trim()
-        .to_string();
-    let live = w.run(&["spawn", "sonnet", "--replaces", &id]);
-    assert_eq!(live.code, 1);
-    assert_eq!(
-        live.err,
-        format!("horch: worker dev1 is still spawning. Run horch ledger stop {id} \"<reason>\" --run r1, then spawn again\n")
-    );
-    let text = w.run(&["spawn", "sonnet", "do a thing"]);
-    assert_eq!(text.code, 1);
-    assert!(
-        text.err
-            .contains("horch ledger task 'do a thing' --persona sonnet"),
-        "{}",
-        text.err
-    );
-    let missing = w.run(&["spawn", "sonnet", "--run", "nosuch"]);
-    assert_eq!(missing.code, 1);
-    assert!(
-        missing.err.starts_with("horch: no run 'nosuch' in "),
-        "{}",
-        missing.err
-    );
-    w.ok(&["ledger", "run", "gate", "--check", "true"]);
-    w.ok(&["ledger", "run", "close"]);
-    let closed = w.run(&["spawn", "sonnet", "--run", "r1"]);
-    assert_eq!(closed.code, 1);
-    assert_eq!(
-        closed.err,
-        "horch: run r1 is done; a closed run takes no new worker\n"
-    );
 }
 
 const TICKET_WITH_FACTS: &str =

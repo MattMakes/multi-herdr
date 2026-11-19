@@ -273,14 +273,14 @@ mod tests {
         );
 
         let bad = |text: &str| parse_request(text.as_bytes(), MAX).unwrap_err();
-        let ok = format!(r#""request_id":"{ID}","kind":"spawn","payload":{{}}"#);
+        let ok = format!(r#""request_id":"{ID}","kind":"worker_stop","payload":{{}}"#);
         assert!(parse_request(format!("{{{ok}}}").as_bytes(), MAX).is_ok());
         assert!(matches!(
             bad(&format!(r#"{{{ok},"extra":1}}"#)),
             RequestError::Malformed(_)
         ));
         assert!(matches!(
-            bad(r#"{"request_id":"a/b","kind":"spawn","payload":{}}"#),
+            bad(r#"{"request_id":"a/b","kind":"worker_stop","payload":{}}"#),
             RequestError::BadRequestId(_)
         ));
         assert_eq!(
@@ -290,10 +290,10 @@ mod tests {
             RequestError::UnknownKind("idea_show".into())
         );
         for text in [
-            format!(r#"{{"request_id":"{ID}","kind":"spawn","payload":[]}}"#),
-            format!(r#"{{"request_id":"{ID}","kind":"spawn"}}"#),
-            format!(r#"{{"request_id":"{ID}","kind":"spawn","payload":{{}},"token":1}}"#),
-            format!(r#"{{{ok},"kind":"spawn"}}"#),
+            format!(r#"{{"request_id":"{ID}","kind":"worker_stop","payload":[]}}"#),
+            format!(r#"{{"request_id":"{ID}","kind":"worker_stop"}}"#),
+            format!(r#"{{"request_id":"{ID}","kind":"worker_stop","payload":{{}},"token":1}}"#),
+            format!(r#"{{{ok},"kind":"worker_stop"}}"#),
             format!(r#"{{{ok}}} {{}}"#),
             "\u{1b}[2J".to_string(),
         ] {

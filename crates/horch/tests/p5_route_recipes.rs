@@ -1,6 +1,6 @@
-//! `horch fleet stop` sends 1 request to fleetd, the pane of a fleet
-//! orchestrator sends none (FM-16), and `horch sessions` opens the ledger
-//! read-only (RR-5, FM-24; ticket 24 of fleetd-p5).
+//! The pane of a fleet orchestrator sends no request (FM-16), and `horch
+//! sessions` opens the ledger read-only (RR-5, FM-24; ticket 24 of
+//! fleetd-p5). Ticket 48 of fleetd-p6 retires `horch fleet stop`.
 //!
 //! Each test runs the development binary with its own ledger, state, data
 //! and fleet folders, and the watchdog off. The fleetd of a test is the
@@ -12,19 +12,12 @@
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Arc;
 
 use horch_core::fleetd::fleet_runtime::adapters::channel_server::ChannelServer;
 use horch_core::fleetd::fleet_runtime::adapters::token_file;
 use horch_core::fleetd::fleet_runtime::application::handlers_worker::{register, WorkerDeps};
 use horch_core::fleetd::fleet_runtime::application::requests::Handlers;
-use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
 use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
-use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
-use horch_core::fleetd::task_execution::application::dispatch::CheckSandboxes;
-use horch_core::fleetd::task_execution::domain::dispatch::Holds;
-use horch_core::taskledger::git::Git;
-use horch_core::taskledger::orchestrator::Holder;
 use horch_core::taskledger::runs::{self, NewRun, Run};
 use horch_core::taskledger::workers::{self, NewWorker};
 use horch_core::taskledger::Store;
@@ -33,14 +26,6 @@ use rusqlite::{params, Connection};
 const PATH: &str = "/usr/bin:/bin";
 const WORKSPACE: &str = "w1";
 const PANE: &str = "p1";
-
-struct AllSandboxes;
-
-impl CheckSandboxes for AllSandboxes {
-    fn supported(&self, _persona: &str) -> bool {
-        true
-    }
-}
 
 /// A project, a ledger with 1 active run, a fleet root with its token, a
 /// fake herdr, and (after [`World::fleetd`]) a fleetd that serves the
@@ -121,12 +106,6 @@ impl World {
             .unwrap();
         let deps = WorkerDeps {
             guard: Generation(1),
-            config: Arc::new(FleetConfig::default()),
-            needs_you: Arc::new(NeedsYouList),
-            git: Arc::new(Git::new("git")),
-            holds: Arc::new(Holds::default),
-            sandboxes: Arc::new(AllSandboxes),
-            lock_holder: Arc::new(|_: &str| None::<Holder>),
         };
         let mut handlers = Handlers::new();
         register(&mut handlers, &deps);
@@ -187,43 +166,6 @@ impl World {
             )
             .unwrap()
     }
-}
-
-fn applied(kind: &str) -> Vec<(String, String)> {
-    vec![(kind.to_string(), "applied".to_string())]
-}
-
-#[test]
-fn fleet_stop_sends_orchestrator_stop() {
-    let mut w = World::new();
-    w.fleetd();
-    let (code, out, err) = w.horch(&["fleet", "stop"], &[]);
-    assert_eq!(code, 0, "horch fleet stop: {out}{err}");
-    assert_eq!(
-        out,
-        "Run r1: the orchestrator stop is recorded. horch does not respawn it.\n"
-    );
-    assert_eq!(w.requests(), applied("orchestrator_stop"));
-    assert!(w.run_column("orchestrator_stopped_at").is_some());
-
-    // A second stop keeps the first time, and says so.
-    let (code, out, err) = w.horch(&["fleet", "stop"], &[]);
-    assert_eq!(code, 0, "horch fleet stop: {out}{err}");
-    assert_eq!(out, "Run r1: the orchestrator stop was recorded before.\n");
-}
-
-#[test]
-fn fleet_stop_with_fleetd_down_queues_the_request() {
-    let w = World::new();
-    let (code, out, err) = w.horch(&["fleet", "stop"], &[]);
-    assert_eq!(code, 0, "horch fleet stop: {out}{err}");
-    assert!(err.contains("fleetd is down: request"), "{err}");
-    assert!(w.requests().is_empty());
-    assert!(w.run_column("orchestrator_stopped_at").is_none());
-    let queued = std::fs::read_dir(w.fleet().join("run/requests"))
-        .unwrap()
-        .count();
-    assert_eq!(queued, 1);
 }
 
 /// FM-16 (ticket 45 of fleetd-p6): the pane of a fleet orchestrator is

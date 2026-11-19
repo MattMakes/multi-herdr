@@ -27,13 +27,8 @@ use horch_core::fleetd::fleet_runtime::application::handlers_worker::{self, Work
 use horch_core::fleetd::fleet_runtime::application::requests::Handlers;
 use horch_core::fleetd::fleet_runtime::domain::config::FleetConfig;
 use horch_core::fleetd::fleet_runtime::domain::ledger::Generation;
-use horch_core::fleetd::ideas::application::needs_you::NeedsYouList;
 use horch_core::fleetd::integration::application::commands::RefTips;
-use horch_core::fleetd::task_execution::application::dispatch::CheckSandboxes;
-use horch_core::fleetd::task_execution::domain::dispatch::Holds;
-use horch_core::taskledger::git::Git;
 use horch_core::taskledger::model::WorkerKind;
-use horch_core::taskledger::orchestrator::Holder;
 use horch_core::taskledger::workers::{self, NewWorker};
 use horch_core::taskledger::{util, Store};
 use rusqlite::{params, Connection};
@@ -46,14 +41,6 @@ struct Out {
     code: i32,
     out: String,
     err: String,
-}
-
-struct AllSandboxes;
-
-impl CheckSandboxes for AllSandboxes {
-    fn supported(&self, _persona: &str) -> bool {
-        true
-    }
 }
 
 struct NoRefs;
@@ -120,12 +107,6 @@ impl World {
             &mut handlers,
             &WorkerDeps {
                 guard: Generation(1),
-                config: Arc::new(FleetConfig::default()),
-                needs_you: Arc::new(NeedsYouList),
-                git: Arc::new(Git::new("git")),
-                holds: Arc::new(Holds::default),
-                sandboxes: Arc::new(AllSandboxes),
-                lock_holder: Arc::new(|_: &str| None::<Holder>),
             },
         );
         handlers_custody::register(
@@ -380,68 +361,12 @@ fn worker_that_removes_horch_role_is_refused_by_fleetd() {
     let w = World::up();
     w.run_with_task();
     w.attempt_of_this_process();
-    let o = w.horch_with(&["ledger", "unblock", "T-1", "--from", "T-1"], &[]);
+    let o = w.horch_with(&["ledger", "requeue", "T-1", "again"], &[]);
     assert_eq!(o.code, 1, "stdout:\n{}\nstderr:\n{}", o.out, o.err);
     assert!(o.err.contains("refused: "), "{}", o.err);
     assert_eq!(
         w.requests().last().unwrap(),
-        &("task_unblock".to_string(), "refused".to_string())
-    );
-}
-
-#[test]
-fn stop_and_reap_send_their_kinds() {
-    let w = World::up();
-    w.run_with_task();
-    let one = w.ok(&[
-        "ledger",
-        "worker",
-        "new",
-        "--persona",
-        "dev",
-        "--role",
-        "dev-1",
-    ]);
-    let one = one.out.trim().to_string();
-    w.ok(&[
-        "ledger",
-        "worker",
-        "new",
-        "--persona",
-        "dev",
-        "--role",
-        "dev-2",
-    ]);
-    w.ok(&["ledger", "worker", "pid", &one, "--supervisor", "1"]);
-    assert_eq!(
-        w.one(&format!(
-            "SELECT CAST(supervisor_pid AS TEXT) FROM workers WHERE worker_id = '{one}'"
-        )),
-        "1"
-    );
-    let o = w.ok(&["ledger", "stop", "dev-1", "done with it"]);
-    assert!(o.out.contains("Stopped dev-1"), "{}", o.out);
-    let o = w.ok(&["ledger", "reap", "dev-2", "gone"]);
-    assert!(o.out.contains("dev-2"), "{}", o.out);
-    assert_eq!(
-        w.one("SELECT status FROM workers WHERE role = 'dev-1'"),
-        "stopped"
-    );
-    assert_eq!(
-        w.one("SELECT status FROM workers WHERE role = 'dev-2'"),
-        "incomplete"
-    );
-    assert_eq!(
-        w.requests(),
-        applied(&[
-            "run_new",
-            "task_add",
-            "worker_new",
-            "worker_new",
-            "worker_pid",
-            "worker_stop",
-            "worker_reap"
-        ])
+        &("task_requeue".to_string(), "refused".to_string())
     );
 }
 
