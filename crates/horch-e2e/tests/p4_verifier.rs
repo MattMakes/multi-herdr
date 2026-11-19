@@ -17,19 +17,18 @@
 #![cfg(unix)]
 
 use std::io::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Child, Command, Output, Stdio};
 
-use horch_core::fleetd::fleet_runtime::application::ledger::Cause;
 use horch_core::fleetd::task_execution::adapters::task_files::{attempt_dir, write_attempt_files};
+use horch_core::fleetd::task_execution::domain::task::Recorded;
 use horch_core::fleetd::task_execution::domain::task_files::TaskFacts;
-use horch_core::fleetd::worktree_custody::adapters::sqlite::{self as trees, NewWorktree};
 use horch_core::procid;
-use horch_core::taskledger::model::{Actor, VerifyProfile, WorkKind, WorkerKind, WorktreeStatus};
+use horch_core::taskledger::model::{Actor, VerifyProfile, WorkKind, WorkerKind};
 use horch_core::taskledger::runs::{self, NewRun};
-use horch_core::taskledger::tasks::{self, ClaimOutcome, NewTask};
-use horch_core::taskledger::workers::{self, NewWorker};
-use horch_core::taskledger::{schema, util};
+use horch_core::taskledger::tasks::{self, NewTask};
+use horch_core::taskledger::workers::NewWorker;
+use horch_core::taskledger::{schema, testing, util};
 use horch_e2e::fleetd::Fleetds;
 use horch_e2e::harness::{wait_for_or, Harness};
 use rusqlite::{params, Connection};
@@ -106,12 +105,6 @@ impl World {
             "pass_period_s = 1\nheartbeat_max_age_s = 300\n",
         )
         .unwrap();
-        let base = h.head_sha().expect("the head of the project");
-        let worktree = fleet.join("work").join("t0");
-        let mut add = h.git_cmd(&["worktree", "add", "-q", "-b", "fleet/r1-t0"]);
-        add.arg(&worktree).current_dir(&h.project);
-        let o = add.output().unwrap();
-        assert!(o.status.success(), "git worktree add: {}", text(&o));
         // The wrapper of the attempt: a real `sh` that waits for its keys,
         // then runs the fake `claude` as its child, as the wrapper of a
         // pane runs its agent. `horch result` finds the attempt by the
@@ -122,19 +115,18 @@ impl World {
         let agent = cmd
             .args([
                 "-c",
-                "read s; read w; read y; \
+                "read s; read w; read y; read d; cd \"$d\"; \
                  HORCH_FAKE_SCENARIO=\"$s\" HORCH_WORKER_ID=\"$w\" HORCH_TASK_YAML=\"$y\" \"$@\"; \
                  exec sleep 600",
                 "sh",
             ])
             .arg(h.bin.join("claude"))
-            .current_dir(&worktree)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
             .unwrap();
-        let (task_id, worker) = World::record(&h, spec, &worktree, &base, &agent);
+        let (task_id, worker, worktree) = World::record(&h, spec, &agent);
         let fleetds = Fleetds::new(&h);
         World {
             fleetds,
@@ -147,17 +139,19 @@ impl World {
         }
     }
 
-    /// Write the rows that fleetd writes before a launch: the run (the
-    /// verification profile `minimal`: the check, then land, so no review
-    /// step runs), the idea, the task, its worker, the claimed push attempt
-    /// `A1`, the worktree, and the 2 files of the attempt.
-    fn record(
-        h: &Harness,
-        spec: &Spec,
-        worktree: &Path,
-        base: &str,
-        agent: &Child,
-    ) -> (String, String) {
+    /// Write what fleetd writes before a launch: the run (the verification
+    /// profile `minimal`: the check, then land, so no review step runs), the
+    /// idea, the task, and its bind to a live push attempt `A1` of the
+    /// wrapper `agent` (the same door that fleetd uses). The bind reserves
+    /// the worktree and queues its `worktree_add` job, which the fleetd of
+    /// the test runs. Then the 2 files of the attempt. Gives the task id,
+    /// the worker id and the path of the worktree.
+    fn record(h: &Harness, spec: &Spec, agent: &Child) -> (String, String, PathBuf) {
+        // The run branch exists before the run, as `horch idea` makes it.
+        let mut branch = h.git_cmd(&["branch", "fleet/r1", "main"]);
+        branch.current_dir(&h.project);
+        let o = branch.output().unwrap();
+        assert!(o.status.success(), "git branch: {}", text(&o));
         let mut conn = Connection::open(h.root.join("ledger.sqlite3")).unwrap();
         schema::migrate_to(&mut conn, schema::VERSION).unwrap();
         let run = runs::create(
@@ -165,6 +159,8 @@ impl World {
             &h.project,
             &NewRun {
                 slug: "r1".into(),
+                base_branch: Some("main".into()),
+                run_branch: Some("fleet/r1".into()),
                 finish_steps: VerifyProfile::Minimal.steps(),
                 ..Default::default()
             },
@@ -179,62 +175,44 @@ impl World {
         new.work_kind = Some(spec.kind);
         new.own = spec.own.iter().map(|s| s.to_string()).collect();
         let task = tasks::add(&conn, &run, &new, Actor::Orchestrator).unwrap();
-        let worker = workers::insert(
+        let pid = agent.id();
+        let started = procid::start_time(pid).expect("the start time of the agent");
+        let wrapper = Recorded {
+            pid,
+            pid_start: Some(started),
+        };
+        let bound = testing::bind_live(
             &conn,
+            &task.task_id,
             &NewWorker {
                 run_id: run.run_id.clone(),
                 kind: Some(WorkerKind::Worker),
                 persona: PERSONA.into(),
                 ..Default::default()
             },
+            Some(wrapper),
         )
         .unwrap();
-        conn.execute(
-            "UPDATE workers SET status = 'spawning' WHERE worker_id = ?1",
-            [&worker],
-        )
-        .unwrap();
-        match tasks::claim(&conn, &worker).unwrap() {
-            ClaimOutcome::Claimed(_) => {}
-            other => panic!("no claim: {other:?}"),
-        }
-        let pid = agent.id();
-        let started = procid::start_time(pid).expect("the start time of the agent");
-        let id = format!("{}/A1", task.task_id);
         let set = conn
             .execute(
                 "UPDATE attempts SET via = 'push', pid = ?2, pid_start = ?3 WHERE id = ?1",
-                params![id, i64::from(pid), i64::try_from(started).unwrap()],
+                params![
+                    bound.attempt_id,
+                    i64::from(pid),
+                    i64::try_from(started).unwrap()
+                ],
             )
             .unwrap();
-        assert_eq!(set, 1, "the claim writes the attempt {id}");
-        let tree = NewWorktree {
-            worktree_id: "wt-t0".into(),
-            task_id: Some(task.task_id.clone()),
-            worker_id: Some(worker.clone()),
-            repo_root: h.project.to_string_lossy().into_owned(),
-            path: worktree.to_string_lossy().into_owned(),
-            branch: "fleet/r1-t0".into(),
-            base: base.into(),
-            base_commit: Some(base.into()),
-            status: WorktreeStatus::Open,
-            mode: None,
-        };
-        let cause = Cause {
-            actor: Actor::Orchestrator,
-            text: "the worktree of t0",
-        };
-        let tx = conn.unchecked_transaction().unwrap();
-        trees::insert_reserved(&tx, None, &tree, cause).unwrap();
-        tx.commit().unwrap();
+        assert_eq!(set, 1, "the bind writes the attempt {}", bound.attempt_id);
+        let tree = bound.worktree.expect("a worktree task binds a worktree");
         let facts = TaskFacts {
             task: "T1".into(),
             task_id: task.task_id.clone(),
             run: "r1".into(),
             attempt: "A1".into(),
             profile: PERSONA.into(),
-            worktree: worktree.to_string_lossy().into_owned(),
-            branch: "fleet/r1-t0".into(),
+            worktree: tree.path.clone(),
+            branch: tree.branch.clone(),
             read_first: "tickets/t0.md".into(),
             goal: "t0".into(),
             check: Some(spec.check.into()),
@@ -248,7 +226,7 @@ impl World {
             verdict: None,
         };
         write_attempt_files(&h.root.join("fleet"), &facts, &[]).unwrap();
-        (task.task_id, worker)
+        (task.task_id, bound.worker_id, PathBuf::from(tree.path))
     }
 
     fn conn(&self) -> Connection {
@@ -268,7 +246,12 @@ impl World {
     /// "done".
     fn worker_says_done(&mut self, scenario: &str) {
         let yaml = self.attempt_folder().join("task.yaml");
-        let keys = format!("{scenario}\n{}\n{}\n", self.worker, yaml.display());
+        let keys = format!(
+            "{scenario}\n{}\n{}\n{}\n",
+            self.worker,
+            yaml.display(),
+            self.worktree.display()
+        );
         self.agent
             .stdin
             .take()
@@ -303,11 +286,18 @@ impl World {
         }
     }
 
-    /// Start `horch fleetd` on the ledger.
+    /// Start `horch fleetd` on the ledger, and wait until its `worktree_add`
+    /// job made the worktree of the attempt.
     fn start_fleetd(&mut self) -> u32 {
         let name = format!("fleetd-{}", self.started);
         self.started += 1;
-        self.fleetds.start(&self.h, &name)
+        let pid = self.fleetds.start(&self.h, &name);
+        wait_for_or(
+            "the worktree of the attempt",
+            || self.worktree.join(".git").exists().then_some(()),
+            || self.evidence(),
+        );
+        pid
     }
 
     fn task_status(&self) -> String {
@@ -430,11 +420,9 @@ fn passing_code_task_reaches_done_only_through_the_verifier() {
             own: &[],
         },
     );
-    w.worker_says_done("commit,result");
-    // The worker said "done". The task is not done: only the verifier moves
-    // it, and no fleetd ran yet.
-    assert_ne!(w.task_status(), "done");
     w.start_fleetd();
+    w.worker_says_done("commit,result");
+    // The worker said "done". Only the verifier moves the task.
     let verdict = w.verdict(1);
     assert_eq!(verdict["decision"], "passed", "{verdict}");
     wait_for_or(
@@ -467,8 +455,8 @@ fn fm9_code_task_with_a_failing_check_stays_not_done() {
             own: &[],
         },
     );
-    w.worker_says_done("commit,result");
     w.start_fleetd();
+    w.worker_says_done("commit,result");
     let verdict = w.verdict(1);
     assert_eq!(verdict["decision"], "failed", "{verdict}");
     wait_for_or(
@@ -490,9 +478,9 @@ fn fm9_docs_task_without_its_section_stays_not_done() {
             own: &["docs/guide.md"],
         },
     );
+    w.start_fleetd();
     w.commit_file("docs/guide.md", "The guide has text and no section.\n");
     w.worker_says_done("result");
-    w.start_fleetd();
     wait_for_or(
         "attempt A1 to end rejected",
         || (w.attempt().1.as_deref() == Some("rejected")).then_some(()),
@@ -532,8 +520,8 @@ fn sr4_check_that_writes_outside_its_paths_is_refused() {
             own: &[],
         },
     );
-    w.worker_says_done("commit,result");
     w.start_fleetd();
+    w.worker_says_done("commit,result");
     // The sandbox of the check on the `PATH` that fleetd and its jobs get.
     if let Some(gap) = horch_platform::sandbox::host_problem(Some(w.h.bin.as_os_str())) {
         // Orchestrator answer Q-A, rule 3: a host with no sandbox (Linux
