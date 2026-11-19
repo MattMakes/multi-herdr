@@ -63,9 +63,9 @@ const OUTSIDE_FILE: &str = "horch-conformance-outside";
 const ROLE: &str = "conformance";
 
 /// The fixed reference profile of `cli`: a sandboxed worker in exec mode,
-/// with the model and the effort of the generic worker of the CLI. The
-/// production `conformance` job runs the suite with it, and the hash of the
-/// adapter renders it (MAP.md of fleetd-p7, Q9).
+/// with the model, the effort and the permission mode of the generic worker
+/// of the CLI. The production `conformance` job runs the suite with it, and
+/// the hash of the adapter renders it (MAP.md of fleetd-p7, Q9).
 pub fn reference_profile(cli: ExecCli) -> Teammate {
     let (name, agent, model) = match cli {
         ExecCli::Claude => ("conformance-claude", HarnessKind::Claude, "opus"),
@@ -89,6 +89,7 @@ pub fn reference_profile(cli: ExecCli) -> Teammate {
     // `mode: exec`, as a teammate file writes it.
     let mut v = serde_json::to_value(&t).expect("a teammate serializes");
     v["mode"] = json!("exec");
+    v["permission_mode"] = json!("auto");
     serde_json::from_value(v).expect("a teammate with mode exec deserializes")
 }
 
