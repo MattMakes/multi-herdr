@@ -452,11 +452,11 @@ impl StackGit for CliStackGit {
 
 /// [`IntegrationGitGateway`] for a caller that does not know its
 /// repositories before a call: the idea duties and the idea requests of
-/// fleetd (Phase 6). Each call gets its own [`CliGitGateway`] that can read
-/// only the repository of the call. A call that moves a ref, writes an
-/// object or sets a key can also write the git folder of that repository
-/// (`repo_git_dir`), as each other git job of fleetd (Q26 of fleetd-p4).
-/// It cannot write the files of the project.
+/// fleetd (Phase 6). Each git call can read the folder of its call
+/// ([`CliWorktreeGit`] adds it). A call that moves a ref, writes an object
+/// or sets a key gets its own [`CliGitGateway`] that can also write the git
+/// folder of that repository (`repo_git_dir`), as each other git job of
+/// fleetd (Q26 of fleetd-p4). It cannot write the files of the project.
 #[derive(Debug, Clone)]
 pub struct ProjectGitGateway {
     git: CliWorktreeGit,
@@ -467,26 +467,21 @@ impl ProjectGitGateway {
         ProjectGitGateway { git }
     }
 
-    /// The gateway of a call that reads `repo`.
-    fn reader(&self, repo: &Path) -> CliGitGateway {
-        CliGitGateway::new(self.git.clone().reading(&[repo.to_path_buf()]))
+    /// The gateway of a call that only reads.
+    fn reader(&self) -> CliGitGateway {
+        CliGitGateway::new(self.git.clone())
     }
 
     /// The gateway of a call that writes the git folder of `repo`.
     fn writer(&self, repo: &Path) -> Result<CliGitGateway> {
         let git_dir = repo_git_dir(repo)?;
-        Ok(CliGitGateway::new(
-            self.git
-                .clone()
-                .reading(&[repo.to_path_buf()])
-                .writing(&[git_dir]),
-        ))
+        Ok(CliGitGateway::new(self.git.clone().writing(&[git_dir])))
     }
 }
 
 impl IntegrationGitGateway for ProjectGitGateway {
     fn tip(&self, repo: &Path, name: &str) -> Result<Option<String>> {
-        self.reader(repo).tip(repo, name)
+        self.reader().tip(repo, name)
     }
 
     fn update_ref(
@@ -510,8 +505,7 @@ impl IntegrationGitGateway for ProjectGitGateway {
         base: &str,
         target_tip: &str,
     ) -> Result<bool> {
-        self.reader(repo)
-            .changes_in(repo, branch_tip, base, target_tip)
+        self.reader().changes_in(repo, branch_tip, base, target_tip)
     }
 
     fn build_candidate(
@@ -524,19 +518,19 @@ impl IntegrationGitGateway for ProjectGitGateway {
     }
 
     fn fleet_branches(&self, repo: &Path) -> Result<Vec<BranchTip>> {
-        self.reader(repo).fleet_branches(repo)
+        self.reader().fleet_branches(repo)
     }
 
     fn task_branches(&self, repo: &Path, run_branch: &str) -> Result<Vec<BranchTip>> {
-        self.reader(repo).task_branches(repo, run_branch)
+        self.reader().task_branches(repo, run_branch)
     }
 
     fn stash_branches(&self, repo: &Path) -> Result<Vec<String>> {
-        self.reader(repo).stash_branches(repo)
+        self.reader().stash_branches(repo)
     }
 
     fn fleet_toml(&self, repo: &Path, tip: &str) -> Result<Option<String>> {
-        self.reader(repo).fleet_toml(repo, tip)
+        self.reader().fleet_toml(repo, tip)
     }
 
     fn ensure_settings(&self, dir: &Path) -> Result<()> {
