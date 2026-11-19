@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::process::{Output, Stdio};
 
 use horch_e2e::expected::check;
-use horch_e2e::harness::Harness;
+use horch_e2e::harness::{wait_for, Harness};
 use serde_json::Value;
 
 fn text(o: &Output) -> String {
@@ -58,8 +58,8 @@ fn fm1_plan_with_an_uncovered_requirement_is_refused() {
             std::fs::write(
                 specs.join("xr.md"),
                 "# XR\n\n| ID | Requirement | Check |\n|---|---|---|\n\
-             | XR-01 | The tool reads the limit. | A test. |\n\
-             | XR-02 | The tool logs each retry. | A test. |\n",
+             | XRA-01 | The tool reads the limit. | A test. |\n\
+             | XRA-02 | The tool logs each retry. | A test. |\n",
             )
             .unwrap();
             ticket(
@@ -72,7 +72,7 @@ fn fm1_plan_with_an_uncovered_requirement_is_refused() {
              **Own:** `src/limit.rs`\n\n\
              Spec: `docs/specs/xr.md`\n\n\
              ## Goal\n\nThe tool reads the limit.\n\n\
-             ## Requirements\n\n- **XR-01**: The tool reads the limit.\n\n\
+             ## Requirements\n\n- **XRA-01**: The tool reads the limit.\n\n\
              ## Steps\n\n1. Read the limit.\n\n\
              ## Done when\n\nThe Check passes.\n",
             );
@@ -86,12 +86,12 @@ fn fm1_plan_with_an_uncovered_requirement_is_refused() {
             let o = h.run(&["ledger", "add-map", "--dry-run", "tickets/MAP.md"]);
             assert!(
                 !o.status.success(),
-                "add-map --dry-run accepts a plan with no task for XR-02: {}",
+                "add-map --dry-run accepts a plan with no task for XRA-02: {}",
                 text(&o)
             );
             assert!(
-                text(&o).contains("XR-02"),
-                "add-map --dry-run refuses the plan but does not name XR-02: {}",
+                text(&o).contains("XRA-02"),
+                "add-map --dry-run refuses the plan but does not name XRA-02: {}",
                 text(&o)
             );
         },
@@ -133,13 +133,20 @@ fn fm8_two_ideas_sent_back_to_back_stay_2_ideas() {
             let mut folders = Vec::new();
             let mut found_texts = Vec::new();
             for idea in ideas {
-                let folder = PathBuf::from(
-                    idea["folder"]
+                let id = idea["id"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("idea has no id: {idea}"));
+                // The folder of an idea is `<fleet root>/ideas/<id>/`, and
+                // `horch idea show --json` gives its idea.md.
+                let folder = h.fleet_root().join("ideas").join(id);
+                let body = wait_for(&format!("idea.md of {id}"), || {
+                    json_of(&h, &["idea", "show", id, "--json"])["idea"]
                         .as_str()
-                        .unwrap_or_else(|| panic!("idea has no folder: {idea}")),
-                );
-                let body = std::fs::read_to_string(folder.join("idea.md"))
+                        .map(str::to_string)
+                });
+                let on_disk = std::fs::read_to_string(folder.join("idea.md"))
                     .unwrap_or_else(|e| panic!("{}: {e}", folder.display()));
+                assert_eq!(on_disk, body, "idea show {id} is not its idea.md");
                 let matching_texts: Vec<_> = texts.iter().filter(|t| body.contains(*t)).collect();
                 assert_eq!(
                     matching_texts.len(),
