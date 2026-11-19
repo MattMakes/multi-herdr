@@ -60,7 +60,6 @@ fn fleet(name: &str, scenario: &str) -> Harness {
     let mut h = world(name);
     let quota = fixtures().join("quota/all-ok.json");
     h.set("HORCH_QUOTA_FILE", quota.to_string_lossy());
-    h.set("HORCH_WORKSPACE_ID", "w1");
     h.set("HORCH_FAKE_SCENARIO", scenario);
     let mut create = std::process::Command::new(h.bin.join("herdr"));
     h.seal(&mut create);
@@ -91,28 +90,17 @@ fn push_fleet(name: &str, scenario: &str, slug: &str, tasks: &[&str]) -> Harness
 }
 
 /// The environment of [`push_fleet`] in `h`, whose fleetd is down: the
-/// workspace `w1` of the fake herdr with the label of the project folder,
-/// as `horch fleet` makes it (fleetd opens the pane of an attempt there),
-/// codex-terra interactive, and a pass of fleetd each second.
+/// herdr workspace of the fleet ([`Harness::fleet_workspace`]), where fleetd
+/// opens the pane of each attempt, codex-terra interactive, and a pass of
+/// fleetd each second.
 fn push_env(h: &mut Harness, scenario: &str) {
     let quota = fixtures().join("quota/all-ok.json");
     h.set("HORCH_QUOTA_FILE", quota.to_string_lossy());
-    h.set("HORCH_WORKSPACE_ID", "w1");
     h.set("HORCH_FAKE_SCENARIO", scenario);
     h.set("HORCH_FAULT", "delivery-probe-ms:100");
     h.set("HORCH_HOSTNAME", "test-host");
-    // The session records and the task ledger share 1 file below the state
-    // folder, as in production: the session store sends its requests to
-    // the fleet root next to that file, which is the fleet root of fleetd.
-    let db = h.state.join("ledger.sqlite3");
-    h.set("HORCH_LEDGER_DB", db.to_string_lossy());
-    let label = h
-        .project
-        .file_name()
-        .unwrap()
-        .to_string_lossy()
-        .into_owned();
-    herdr_json(h, &["workspace", "create", "--label", &label]);
+    let ws = h.fleet_workspace();
+    h.set("HORCH_WORKSPACE_ID", ws);
     // codex-terra runs interactive, as before exec became the default mode
     // (fleetd-p7 ticket 19): the fake agent stays in its pane.
     let teammates = h.root.join("teammates");

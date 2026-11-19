@@ -592,11 +592,12 @@ impl Harness {
         crate::violations(&self.log)
     }
 
-    /// Move the fleet clock of the ledger [`Harness::ledger_db`] forward
+    /// Move the fleet clock of the ledger `<root>/ledger.sqlite3` forward
     /// by `seconds`, in place of a wait for it. A fleetd pass adds its
     /// awake time to the stored value, so the move stays.
     pub fn advance_fleet_clock(&self, seconds: i64) {
-        let store = horch_core::taskledger::Store::open(&self.ledger_db()).unwrap();
+        let db = self.root.join("ledger.sqlite3");
+        let store = horch_core::taskledger::Store::open(&db).unwrap();
         let moved = store
             .conn()
             .execute(
