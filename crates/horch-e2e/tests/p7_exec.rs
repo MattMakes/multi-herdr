@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use std::process::Output;
 
 use horch_core::fleetd::task_execution::application::retry::CONTEXT_LIMIT_LOOP;
-use horch_core::taskledger::model::{Actor, WorkerKind};
+use horch_core::taskledger::model::{Actor, ReviewMode, WorkerKind};
 use horch_core::taskledger::runs::{self, NewRun};
 use horch_core::taskledger::tasks::{self, NewTask};
 use horch_core::taskledger::workers::{self, NewWorker};
@@ -248,6 +248,9 @@ impl World {
         new.fallback = spec.fallback.map(str::to_string);
         new.ticket_snapshot = Some(ticket.to_string());
         new.land_check = Some("true".into());
+        // The ticket says `Review: none`: no reviewer runs, so the task
+        // needs no code-sweep skill on this host.
+        new.review_mode = Some(ReviewMode::NoReview);
         tasks::add(conn, &run, &new, Actor::Orchestrator)
             .unwrap()
             .task_id
