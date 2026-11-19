@@ -34,7 +34,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 
 use crate::fleetd::fleet_runtime::application::jobs::{self, JobCtx, JobKey, Queued};
@@ -347,6 +347,23 @@ fn stands(tx: &Connection, task: &Task, verified: &Verified, tip: &str) -> Resul
     // A judgment kind and a judge task stand only on a passed structural
     // check (ticket 21).
     Ok(next_of(tx, task)? != Next::Structural || structural::is_pass(&newest))
+}
+
+/// Whether the newest verdict of `task_id` is a passed structural check of
+/// its newest attempt: the `judges:` dependency of its judge task waits for
+/// it (I2; ticket 40 of fleetd-p6).
+pub fn structural_passed(conn: &Connection, task_id: &str) -> Result<bool> {
+    let Some(newest) = verdict_file::newest(conn, task_id)? else {
+        return Ok(false);
+    };
+    let attempt: Option<String> = conn
+        .query_row(
+            "SELECT id FROM attempts WHERE task_id = ?1 ORDER BY rowid DESC LIMIT 1",
+            [task_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(structural::is_pass(&newest) && attempt.as_deref() == Some(newest.attempt.as_str()))
 }
 
 /// The passed structural check of `task_id` that stands for `tip`, from

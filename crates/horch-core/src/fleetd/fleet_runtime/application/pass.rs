@@ -155,8 +155,8 @@ use crate::fleetd::task_execution::domain::quota::limited;
 use crate::fleetd::task_execution::domain::retry::Outcome;
 use crate::fleetd::task_execution::domain::stall::{self as rungs, Decision, PaneStatus};
 use crate::fleetd::task_execution::domain::task::{
-    self, promotable, AttemptRow, AttemptState, Facts, InPane, ProcessScope, Reap, Recorded,
-    RowRef, Rows, Seen, Stop, Target,
+    self, judged_task, promotable_deps, AttemptRow, AttemptState, Dep, DepKind, Facts, InPane,
+    ProcessScope, Reap, Recorded, RowRef, Rows, Seen, Stop, Target,
 };
 use crate::fleetd::worker_profiles::adapters::check_sandbox::WorkerSandboxes;
 use crate::fleetd::worker_profiles::application::conformance::read_conformance_json;
@@ -2243,7 +2243,17 @@ impl Rules<'_> {
                 }
             }
             let landed = integration_rows::tasks_landed(self.tx)?;
-            for id in promotable(&statuses, &deps, &landed) {
+            let (judges, passed) = judge_deps(self.tx, &all)?;
+            let deps: Vec<Dep> = deps
+                .into_iter()
+                .map(|(t, on)| Dep {
+                    task: t,
+                    on,
+                    kind: DepKind::After,
+                })
+                .chain(judges)
+                .collect();
+            for id in promotable_deps(&statuses, &deps, &landed, &passed) {
                 let to = TaskStatus::Ready.as_str();
                 let by = cause("each task that it waits for is done and landed (I2)");
                 transition(
@@ -4944,6 +4954,31 @@ fn feature_persona(tx: &Connection, id: &str) -> Result<Option<String>> {
 
 /// The repository of each feature, each 1 time: the git of integration
 /// reads them. A folder that is not a git repository is left out.
+/// The `judges:` dependency of each `pending` judge task of `all`, and the
+/// judged tasks whose structural check passed for their newest attempt
+/// (I2; ticket 40 of fleetd-p6). A judge task has no `task_deps` row.
+fn judge_deps(tx: &Connection, all: &[tasks::Task]) -> Result<(Vec<Dep>, BTreeSet<String>)> {
+    let mut deps = Vec::new();
+    let mut passed = BTreeSet::new();
+    for t in all
+        .iter()
+        .filter(|t| t.status == TaskStatus::Pending.as_str())
+    {
+        let Some(judged) = judged_task(&t.kind, t.parent_task_id.as_deref()) else {
+            continue;
+        };
+        if verifier::structural_passed(tx, judged)? {
+            passed.insert(judged.to_string());
+        }
+        deps.push(Dep {
+            task: t.task_id.clone(),
+            on: judged.to_string(),
+            kind: DepKind::Judges,
+        });
+    }
+    Ok((deps, passed))
+}
+
 fn feature_repos(conn: &Connection) -> Result<Vec<PathBuf>> {
     let mut repos = Vec::new();
     for id in integration_rows::feature_ids(conn, false)? {
