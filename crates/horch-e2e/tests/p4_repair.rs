@@ -132,14 +132,8 @@ impl World {
         let task_id = seed(&h, max_attempts);
         // The workspace has the name of the project folder as its label,
         // as `horch fleet` names it: a push launch splits its first pane.
-        let label = project.file_name().unwrap().to_string_lossy().into_owned();
-        let mut create = std::process::Command::new(h.bin.join("herdr"));
-        h.seal(&mut create);
-        let o = create
-            .args(["workspace", "create", "--label", &label])
-            .output()
-            .unwrap();
-        assert!(o.status.success(), "{}", text(&o));
+        let ws = h.fleet_workspace();
+        h.set("HORCH_WORKSPACE_ID", ws);
         // The test fleetd: it applies the spawn requests, launches each
         // attempt, and runs a pass each second. The drop of the harness
         // stops it.
