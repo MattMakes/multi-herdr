@@ -80,6 +80,13 @@ fn world() -> World {
     let run = store
         .immediate(|tx| {
             let run = runs::create(tx, &root, &new_run)?;
+            let feature = NewFeature {
+                id: FEATURE,
+                name: Some("rescue-test"),
+                branch: Some(FEATURE_BRANCH),
+                primary_branch: "main",
+            };
+            rows::insert_feature(tx, None, &feature, cause("feature"))?;
             // FR-12: a task needs an idea in flight of the feature of its run.
             horch_core::taskledger::schema::run_idea(
                 tx,
@@ -102,13 +109,6 @@ fn world() -> World {
         .unwrap();
     store
         .immediate(|tx| {
-            let feature = NewFeature {
-                id: FEATURE,
-                name: Some("rescue-test"),
-                branch: Some(FEATURE_BRANCH),
-                primary_branch: "main",
-            };
-            rows::insert_feature(tx, None, &feature, cause("feature"))?;
             for (name, task_id) in [
                 (FEATURE_BRANCH, None),
                 (TASK_BRANCH, Some(task.task_id.as_str())),

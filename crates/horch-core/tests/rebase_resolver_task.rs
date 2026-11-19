@@ -120,6 +120,13 @@ fn world(files: &[&str]) -> World {
         ..Default::default()
     };
     let run = runs::create(&tx, &repo, &new_run).unwrap();
+    let feature = NewFeature {
+        id: FEATURE,
+        name: Some("r1"),
+        branch: Some(FEATURE_BRANCH),
+        primary_branch: "main",
+    };
+    rows::insert_feature(&tx, None, &feature, cause("the run starts")).unwrap();
     // FR-12: a task needs an idea in flight of the feature of its run.
     horch_core::taskledger::schema::run_idea(
         &tx,
@@ -128,13 +135,6 @@ fn world(files: &[&str]) -> World {
         true,
     )
     .unwrap();
-    let feature = NewFeature {
-        id: FEATURE,
-        name: Some("r1"),
-        branch: Some(FEATURE_BRANCH),
-        primary_branch: "main",
-    };
-    rows::insert_feature(&tx, None, &feature, cause("the run starts")).unwrap();
     let branch = NewBranch {
         name: FEATURE_BRANCH,
         feature_id: FEATURE,
