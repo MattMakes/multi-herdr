@@ -47,21 +47,22 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use rusqlite::{Connection, Transaction};
+use rusqlite::{Connection, OptionalExtension, Transaction};
 use serde_json::json;
 
 use crate::fleetd::fleet_runtime::adapters::cursors_store;
 use crate::fleetd::fleet_runtime::application::ledger::{record, transition, Cause};
 use crate::fleetd::fleet_runtime::application::pass::{
-    ActCtx, DutyBudget, DutyCtx, DutyReport, RunDuties,
+    ActCtx, DutyBudget, DutyCtx, DutyReport, RunDuties, IDEAS_DIR,
 };
 use crate::fleetd::fleet_runtime::domain::budget::{Cursor, PassBudget};
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
 use crate::fleetd::ideas::application::answers::live_owner;
 use crate::fleetd::ideas::application::needs_you::NeedsYouList;
+use crate::fleetd::ideas::application::sub_orchestrators;
 use crate::fleetd::task_execution::adapters::sqlite as attempts_store;
 use crate::fleetd::task_execution::application::commands;
 use crate::fleetd::task_execution::domain::task::{AttemptRow, AttemptState, RowRef, Stop};
@@ -652,6 +653,114 @@ fn transcript_facts(w: &Worker) -> (Option<i64>, Option<String>) {
         meta.as_ref().map(|m| m.len() as i64),
         meta.and_then(|m| m.modified().ok())
             .map(|t| crate::clock::stamp(chrono::DateTime::<chrono::Utc>::from(t))),
+    )
+}
+
+// ─── the launch of an idea-lead attempt (T-890) ─────────────────────────
+
+/// The launch facts of 1 idea-lead sub-orchestrator attempt, from its
+/// rows. fleetd builds its launch from them, and `horch spawn --attempt`
+/// takes its first line ([`IdeaLeadLaunch::brief`]) from them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdeaLeadLaunch {
+    pub attempt: String,
+    pub worker_id: String,
+    /// Always [`sub_orchestrators::PERSONA`].
+    pub persona: String,
+    pub idea: String,
+    /// The phase in the attempt id `<idea>/<phase>/<n>`.
+    pub phase: String,
+    /// The idea folder: the only memory of the process.
+    pub folder: PathBuf,
+    /// The first instruction of the process, its launch argument (FR-7).
+    pub brief: String,
+    /// The state of the attempt row now.
+    pub state: String,
+    /// The internal run of the feature, which holds the worker row.
+    pub run_id: String,
+    pub run_slug: String,
+    /// The working folder of the process: the project of the feature.
+    pub project_root: String,
+    /// The pane of the feature that the attempt takes, if herdr proved one.
+    pub pane: Option<String>,
+    pub workspace_id: Option<String>,
+}
+
+/// The launch facts of the attempt `attempt`, when it is an idea-lead
+/// attempt: it has no task, it has an idea, its id has the form
+/// `<idea>/<phase>/<n>`, and its worker has the persona
+/// [`sub_orchestrators::PERSONA`]. Each other attempt gives `None`.
+/// `fleet_root` holds the idea folders.
+pub fn idea_lead_launch(
+    conn: &Connection,
+    fleet_root: &Path,
+    attempt: &str,
+) -> Result<Option<IdeaLeadLaunch>> {
+    let row = conn
+        .query_row(
+            "SELECT a.task_id IS NULL, a.idea_id, a.worker_id, a.mux_handle, a.state,
+                    w.persona, w.run_id
+             FROM attempts a JOIN workers w ON w.worker_id = a.worker_id
+             WHERE a.id = ?1",
+            [attempt],
+            |r| {
+                Ok((
+                    r.get::<_, bool>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, Option<String>>(5)?,
+                    r.get::<_, Option<String>>(6)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((no_task, Some(idea), worker_id, pane, state, persona, Some(run_id))) = row else {
+        return Ok(None);
+    };
+    if !no_task || persona.as_deref() != Some(sub_orchestrators::PERSONA) {
+        return Ok(None);
+    }
+    let Some(phase) = phase_of_attempt(attempt, &idea) else {
+        return Ok(None);
+    };
+    let run = crate::taskledger::runs::get(conn, &run_id)?;
+    let folder = fleet_root.join(IDEAS_DIR).join(&idea);
+    Ok(Some(IdeaLeadLaunch {
+        attempt: attempt.to_string(),
+        worker_id,
+        persona: sub_orchestrators::PERSONA.to_string(),
+        brief: idea_lead_brief(&idea, &phase, &folder),
+        idea,
+        phase,
+        folder,
+        state,
+        run_id,
+        run_slug: run.slug,
+        project_root: run.project_root,
+        pane,
+        workspace_id: run.workspace_id,
+    }))
+}
+
+/// The phase in the attempt id `<idea>/<phase>/<n>` of `idea`.
+fn phase_of_attempt(attempt: &str, idea: &str) -> Option<String> {
+    let rest = attempt.strip_prefix(idea)?.strip_prefix('/')?;
+    let (phase, n) = rest.split_once('/')?;
+    n.parse::<i64>().ok()?;
+    Some(phase.to_string())
+}
+
+/// The launch argument of the idea-lead of `idea` in `phase`: the idea,
+/// the phase and the idea folder (FR-7). The folder is 1 word with a space
+/// after it, so a reader can split the line on spaces.
+fn idea_lead_brief(idea: &str, phase: &str, folder: &Path) -> String {
+    format!(
+        "You are the idea-lead of idea {idea} in phase {phase}. \
+         Your idea folder is {} and it is your only memory. \
+         Read idea.md in that folder, then do the {phase} phase.",
+        folder.display()
     )
 }
 
@@ -1871,5 +1980,105 @@ mod tests {
         assert_eq!(w.items("held").len(), HELD);
         assert_eq!(duty(6, 0), all[..6], "the next lap starts at row 1");
         assert_eq!(w.items("held").len(), HELD, "1 item for each held task");
+    }
+}
+
+#[cfg(test)]
+mod idea_lead_tests {
+    //! The launch facts of an idea-lead attempt (T-890), on a temp ledger.
+
+    use std::path::Path;
+
+    use rusqlite::Connection;
+
+    use super::*;
+    use crate::taskledger::model::WorkerKind;
+    use crate::taskledger::runs::{self, NewRun};
+    use crate::taskledger::schema;
+    use crate::taskledger::workers::NewWorker;
+
+    /// A temp ledger with 1 run and its idea in flight. Gives the idea.
+    fn ledger(dir: &Path) -> (Connection, Run, String) {
+        let mut conn = Connection::open(dir.join("ledger.sqlite3")).unwrap();
+        schema::migrate_to(&mut conn, schema::VERSION).unwrap();
+        let new_run = NewRun {
+            slug: "r1".into(),
+            workspace_id: Some("w1".into()),
+            ..Default::default()
+        };
+        let run = runs::create(&conn, dir, &new_run).unwrap();
+        let idea = schema::run_idea(&conn, &run.run_id, &util::now(), true)
+            .unwrap()
+            .expect("the idea of the run");
+        (conn, run, idea)
+    }
+
+    /// 1 attempt `id` in `launching` with no task, the idea `idea` and a
+    /// new worker of `persona`, as the sub-orchestrators write it.
+    fn attempt(conn: &Connection, run: &Run, id: &str, idea: &str, persona: &str) {
+        let worker_id = workers::insert(
+            conn,
+            &NewWorker {
+                run_id: run.run_id.clone(),
+                kind: Some(WorkerKind::Worker),
+                persona: persona.into(),
+                ..NewWorker::default()
+            },
+        )
+        .unwrap();
+        let row = AttemptRow {
+            id: id.into(),
+            task_id: None,
+            worker_id,
+            state: AttemptState::Launching,
+            process: None,
+            pane: None,
+        };
+        attempts_store::insert_attempt(conn, &row, &util::now()).unwrap();
+        attempts_store::set_idea(conn, id, idea).unwrap();
+    }
+
+    #[test]
+    fn an_idea_lead_attempt_gives_its_persona_folder_and_brief() {
+        let temp = tempfile::tempdir().unwrap();
+        let (conn, run, idea) = ledger(temp.path());
+        let id = format!("{idea}/clarifying/1");
+        attempt(&conn, &run, &id, &idea, sub_orchestrators::PERSONA);
+        let fleet = temp.path().join("fleet");
+
+        let l = idea_lead_launch(&conn, &fleet, &id)
+            .unwrap()
+            .expect("an idea-lead attempt has a launch");
+
+        let folder = fleet.join("ideas").join(&idea);
+        assert_eq!(l.persona, "idea-lead");
+        assert_eq!(l.idea, idea);
+        assert_eq!(l.phase, "clarifying");
+        assert_eq!(l.folder, folder);
+        assert_eq!(l.state, "launching");
+        assert_eq!(l.run_slug, "r1");
+        assert_eq!(l.project_root, run.project_root);
+        assert_eq!(l.workspace_id.as_deref(), Some("w1"));
+        // The brief names the idea, the phase and the folder as 1 word.
+        assert!(l.brief.contains(&idea), "{}", l.brief);
+        assert!(l.brief.contains("phase clarifying"), "{}", l.brief);
+        let word = folder.display().to_string();
+        assert!(
+            l.brief.split_whitespace().any(|w| w == word),
+            "{}",
+            l.brief
+        );
+    }
+
+    #[test]
+    fn an_attempt_with_no_task_of_another_persona_is_no_idea_lead() {
+        let temp = tempfile::tempdir().unwrap();
+        let (conn, run, idea) = ledger(temp.path());
+        let id = format!("{idea}/clarifying/1");
+        attempt(&conn, &run, &id, &idea, "orchestrator");
+        let fleet = temp.path().join("fleet");
+
+        assert_eq!(idea_lead_launch(&conn, &fleet, &id).unwrap(), None);
+        assert_eq!(idea_lead_launch(&conn, &fleet, "no-such").unwrap(), None);
     }
 }

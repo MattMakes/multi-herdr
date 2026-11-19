@@ -45,7 +45,9 @@ use horch_core::fleetd::fleet_runtime::adapters::effects::{
 use horch_core::fleetd::fleet_runtime::adapters::fleetd_row::{self, lock_path, wait_until_free};
 use horch_core::fleetd::fleet_runtime::adapters::old_watchdog;
 use horch_core::fleetd::fleet_runtime::adapters::scans::{CliPath, FolderItem};
-use horch_core::fleetd::fleet_runtime::adapters::watchdog_duties::{HerdrObserver, WatchdogDuties};
+use horch_core::fleetd::fleet_runtime::adapters::watchdog_duties::{
+    idea_lead_launch, HerdrObserver, IdeaLeadLaunch, WatchdogDuties,
+};
 use horch_core::fleetd::fleet_runtime::application::handlers_cli::{self, CliHandlers};
 use horch_core::fleetd::fleet_runtime::application::handlers_custody::{self, Custody};
 use horch_core::fleetd::fleet_runtime::application::handlers_idea::{self, IdeaHandlers};
@@ -861,6 +863,72 @@ impl Launches for PushSpawns<'_> {
     }
 }
 
+/// The launch of the idea-lead attempt `a` (T-890), with the recipe of a
+/// push attempt: `horch spawn idea-lead --run <run> --exact --attempt <id>
+/// --from-pane <pane>`. The spawn takes the brief of the idea from the same
+/// rows. `None` when `a` is not an idea-lead attempt.
+fn idea_lead_spec(ctx: &RuntimeContext, herdr: &Herdr, a: &AttemptRow) -> Result<Option<LaunchSpec>> {
+    let Some(store) = horch_core::taskledger::open_existing_read_only(ctx)? else {
+        return Ok(None);
+    };
+    let Some(l) = idea_lead_launch(store.conn(), &ctx.paths.fleet_root, &a.id)? else {
+        return Ok(None);
+    };
+    let (pane, workspace) = idea_lead_pane(herdr, &l)?;
+    let push = PushLaunch {
+        attempt: l.attempt,
+        // An idea-lead attempt has no task. The recipe does not read it.
+        task_id: String::new(),
+        worker_id: l.worker_id,
+        persona: l.persona,
+        run_slug: l.run_slug,
+        project_root: l.project_root,
+        from_pane: Some(pane),
+        workspace_id: Some(workspace),
+    };
+    super::recipes::push_launch_spec(ctx, &push).map(Some)
+}
+
+/// The pane that the launch of `l` splits, and its workspace: the pane of
+/// the feature that herdr proved, else the first pane of the herdr
+/// workspace whose label is the name of the project folder, as `horch
+/// fleet` names it. No other workspace is used: with neither, the launch
+/// fails, and the start timeout of the pass ends the attempt.
+fn idea_lead_pane(herdr: &Herdr, l: &IdeaLeadLaunch) -> Result<(String, String)> {
+    if let Some(pane) = &l.pane {
+        let workspace = match &l.workspace_id {
+            Some(w) => w.clone(),
+            None => herdr.pane_get(pane)?.workspace_id.with_context(|| {
+                format!("herdr names no workspace of pane {pane} of attempt {}", l.attempt)
+            })?,
+        };
+        return Ok((pane.clone(), workspace));
+    }
+    let label = Path::new(&l.project_root)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let no_pane = |why: &str| {
+        anyhow::anyhow!(
+            "the launch of idea-lead attempt {} has no pane: no pane of its feature is recorded, \
+             and {why}. Start the fleet with horch fleet in {}",
+            l.attempt,
+            l.project_root
+        )
+    };
+    let workspace = herdr
+        .workspace_list()?
+        .into_iter()
+        .find(|w| w.label.as_deref() == Some(label.as_str()))
+        .ok_or_else(|| no_pane(&format!("no herdr workspace has the label {label}")))?;
+    let pane = herdr
+        .pane_list(&workspace.workspace_id)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| no_pane(&format!("herdr workspace {label} has no pane")))?;
+    Ok((pane.pane_id, workspace.workspace_id))
+}
+
 /// The settings of the fleetd of `generation` that runs `horch`.
 fn settings(ctx: &RuntimeContext, generation: Generation, horch: &Path) -> Result<Settings> {
     let root = &ctx.paths.fleet_root;
@@ -1179,10 +1247,13 @@ impl Outside for Live<'_> {
         roots.context("reading the repositories of the fleet")
     }
 
-    /// Phase 1 puts no task attempt in `launching`: the only attempt there
-    /// is a respawn of an orchestrator that an older fleetd wrote, and the
-    /// run duties end it (FM-16).
+    /// An idea-lead attempt gets [`idea_lead_spec`] (T-890). Phase 1 puts
+    /// no other attempt here: a respawn of an orchestrator that an older
+    /// fleetd wrote has no launch, and the run duties end it (FM-16).
     fn attempt_spec(&self, attempt: &AttemptRow) -> Result<LaunchSpec> {
+        if let Some(spec) = idea_lead_spec(self.ctx, &self.herdr, attempt)? {
+            return Ok(spec);
+        }
         bail!(
             "attempt {} has no launch: Phase 1 launches no task attempt",
             attempt.id
