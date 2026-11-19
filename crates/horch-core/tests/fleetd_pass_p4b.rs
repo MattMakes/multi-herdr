@@ -622,8 +622,10 @@ fn only_1_git_writer_job_runs_for_1_repository() {
             State::Queued,
             "the running {kind} holds the build"
         );
+        // A trial merge only reads git, so it runs beside the writer.
         let running = w.count(&format!(
-            "SELECT count(*) FROM jobs WHERE state = 'running' AND repo = '{repo}'"
+            "SELECT count(*) FROM jobs WHERE state = 'running' AND repo = '{repo}'
+             AND kind != 'trial_merge'"
         ));
         assert_eq!(running, 1, "1 git writer runs while {kind} runs");
         let pid = jobs_store::get(&conn, writer)
