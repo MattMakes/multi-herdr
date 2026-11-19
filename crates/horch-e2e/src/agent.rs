@@ -13,6 +13,8 @@
 //! - `commit`: append 1 line to `fake-<fake>.txt` in the worktree of
 //!   `task.yaml` (else the cwd) and commit that file. Logged as `commit`.
 //! - `ask`: `horch tell orchestrator "QUESTION: ..."`. Logged as `ask`.
+//! - `ask_file`: `horch ask "..."`, the question file of the attempt.
+//!   Logged as `ask_file`.
 //! - `result`: `horch result --status completed --summary ...` in the
 //!   worktree. Logged as `result`.
 //! - `noresult`: exit with no result. It wins over `result`.
@@ -35,7 +37,7 @@ const TASK_YAML_ENV: &str = "HORCH_TASK_YAML";
 /// Run the Phase 4 keys of `$HORCH_FAKE_SCENARIO` for a pane launch. Call it
 /// first in the launch path, so `bound` records the state at entry.
 pub fn play(call: &mut Call) {
-    let keys = ["bound", "commit", "ask", "result", "noresult"];
+    let keys = ["bound", "commit", "ask", "ask_file", "result", "noresult"];
     if !keys.iter().any(|k| scenario_has(k)) {
         return;
     }
@@ -63,6 +65,12 @@ pub fn play(call: &mut Call) {
         let mut out = horch(&worktree, &["tell", "orchestrator", &text]);
         out["text"] = json!(text);
         call.extra.insert("ask".into(), out);
+    }
+    if scenario_has("ask_file") {
+        let text = format!("fake {} asks: which option is correct?", call.fake);
+        let mut out = horch(&worktree, &["ask", &text]);
+        out["text"] = json!(text);
+        call.extra.insert("ask_file".into(), out);
     }
     if scenario_has("result") && !scenario_has("noresult") {
         let summary = format!("fake {} committed its work", call.fake);

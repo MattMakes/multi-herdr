@@ -16,6 +16,10 @@
 //! - `conformance`: the probes of [`crate::probe`], and the write of
 //!   `outbox/result.json` of the task folder (`result_write`). The report
 //!   goes into the result line and into the log as `conformance`.
+//!
+//! Before the stream, an exec run also plays the keys `bound`, `commit`,
+//! `ask`, `ask_file`, `result` and `noresult` of [`crate::agent`], so an e2e
+//! test can play each end of an exec attempt.
 
 use serde_json::{json, Value};
 
@@ -159,6 +163,7 @@ pub fn run(mut call: Call, cli: Cli, prompt: &str) -> ! {
             std::process::exit(2);
         }
     }
+    crate::agent::play(&mut call);
     if scenario_has("trust_prompt") {
         call.flush();
         say(TRUST_DIALOG);
