@@ -14,6 +14,17 @@
 //! reason, and its `requests` row records the try (design, "The `requests`
 //! row records the decision"). A forged `approval.json` is ignored, and 1
 //! event of the idea records it.
+//!
+//! What the PID rule (`fleet_process`) covers: the process tree, the
+//! process group and the session of each wrapper and agent that fleetd
+//! recorded, of live attempts and of attempts that ended in the last 24 h.
+//! An orphan that leaves all 3 (a double fork with a new session) is
+//! covered only by the sandbox: the conformance check "Operator boundary"
+//! proves for each exec adapter that such an orphan cannot read the
+//! operator token, connect to the channel or write a request file
+//! (`crates/horch-core/tests/p7_operator_boundary.rs`). A profile with no
+//! sandbox gets no dispatch (design A37). A fake agent here has no
+//! sandbox, so this file has no orphan test.
 
 #![cfg(unix)]
 
@@ -317,6 +328,50 @@ fn fr10_a_agent_of_a_live_attempt_cannot_approve() {
     w.assert_still_waiting(&waiting);
 }
 
+/// Fix A, result 1: the idea-lead attempt goes live on the wrapper in its
+/// pane, not on the `horch spawn` process that exits when the pane runs.
+/// While its agent runs, the attempt stays live: fleetd does not end it
+/// `no_result` and does not launch it again.
+#[test]
+fn fix_a_idea_lead_attempt_stays_live_while_its_agent_runs() {
+    let w = World::new("p6-fr10-fa", "");
+    let idea = w.add("Show the disk use [fr10:stay]");
+    w.fake_call("note");
+    w.later_passes();
+    w.later_passes();
+    let attempts = w.rows(&format!(
+        "SELECT id || ' ' || state || ' ' || IFNULL(outcome, '-') FROM attempts
+           WHERE idea_id = '{idea}' ORDER BY rowid"
+    ));
+    assert_eq!(
+        attempts,
+        [format!("{idea}/clarifying/1 live -")],
+        "{}",
+        w.context()
+    );
+    let launches =
+        w.h.calls_of("claude")
+            .into_iter()
+            .filter(|c| c.get("note").is_some())
+            .count();
+    assert_eq!(launches, 1, "1 launch of the agent\n{}", w.context());
+}
+
+/// Fix A, result 2: `horch idea note` of the agent of a live idea-lead
+/// attempt is accepted (it found no live attempt of its process before).
+#[test]
+fn fix_a_idea_note_of_the_idea_lead_is_accepted() {
+    let w = World::new("p6-fr10-fb", "");
+    let idea = w.add("Show the disk use [fr10:stay]");
+    let call = w.fake_call("note");
+    let note = &call["note"];
+    assert_eq!(note["exit"], 0, "{note}\n{}", w.context());
+    let notes = std::fs::read_dir(w.folder(&idea).join("notes"))
+        .map(|d| d.count())
+        .unwrap_or(0);
+    assert_eq!(notes, 1, "the note file\n{}", w.context());
+}
+
 /// Step 1b: fleetd ended the attempt of the agent, and the agent still
 /// runs: it ignores the polite stop. The operator approves the own idea of
 /// the agent, so fleetd ends its `clarifying` attempt (an old phase) and
@@ -365,21 +420,6 @@ fn fr10_c_child_shell_and_detached_child_cannot_approve() {
     w.assert_cli_refused("child_shell", &call["tries"]["child_shell"]);
     w.assert_cli_refused("detached", &call["tries"]["detached"]);
     w.assert_still_waiting(&waiting);
-}
-
-/// Step 1c, the hard case: a double fork. The child makes a new session
-/// and a new process group, starts the grandchild and exits. The
-/// grandchild runs `horch idea approve` with no parent in the attempt.
-#[test]
-fn fr10_c_double_fork_orphan_cannot_approve() {
-    horch_e2e::expected::check(file!(), "fr10_c_double_fork_orphan_cannot_approve", || {
-        let w = World::new("p6-fr10-c2", "clarify");
-        let waiting = w.add(WAITING_IDEA);
-        w.add("Show the disk use [fr10:orphan]");
-        let call = w.fake_call("tries");
-        w.assert_cli_refused("orphan", &call["tries"]["orphan"]);
-        w.assert_still_waiting(&waiting);
-    });
 }
 
 /// Step 1d: the agent writes `approval.json` itself, with the sha256 of

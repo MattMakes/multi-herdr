@@ -164,6 +164,9 @@ pub fn read_probe_report(text: &str) -> Option<ProbeReport> {
         read_token: text_of(&v["operator_boundary"]["read_token"]),
         connect_channel: text_of(&v["operator_boundary"]["connect_channel"]),
         write_requests: text_of(&v["operator_boundary"]["write_requests"]),
+        orphan_read_token: text_of(&v["operator_boundary"]["orphan"]["read_token"]),
+        orphan_connect_channel: text_of(&v["operator_boundary"]["orphan"]["connect_channel"]),
+        orphan_write_requests: text_of(&v["operator_boundary"]["orphan"]["write_requests"]),
     })
 }
 

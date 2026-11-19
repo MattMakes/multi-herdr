@@ -218,6 +218,12 @@ impl Machine {
 
     /// The verdict of "Operator boundary" for `teammate`.
     fn check(&self, teammate: &Teammate) -> CheckResult {
+        self.check_in(teammate, "conformance")
+    }
+
+    /// The verdict of "Operator boundary" for `teammate`, with the fake
+    /// scenario `scenario`.
+    fn check_in(&self, teammate: &Teammate, scenario: &str) -> CheckResult {
         let ctx = self.ctx();
         let mut runner = ConformanceRunner {
             ctx: &ctx,
@@ -227,7 +233,7 @@ impl Machine {
             // the prompt. Without it they probe the fleet root of the
             // host.
             env_rule: vec![
-                ("HORCH_FAKE_SCENARIO".into(), "conformance".into()),
+                ("HORCH_FAKE_SCENARIO".into(), scenario.into()),
                 (
                     "HORCH_FAKE_LOG".into(),
                     self.log().to_string_lossy().into_owned(),
@@ -330,11 +336,16 @@ fn assert_verdict(r: &CheckResult, verdict: Verdict) {
     assert!(!r.evidence.is_empty(), "{r:?}");
 }
 
-/// The check fails, and its evidence names `act` as the only allowed act.
+/// The check fails, and its evidence names `act` as the only allowed act,
+/// of the agent and of its double-fork orphan under the same rules.
 #[track_caller]
 fn assert_only_allowed(r: &CheckResult, act: Act) {
     assert_verdict(r, Verdict::Fail);
-    assert!(r.evidence.starts_with(&format!("allowed: {act};")), "{r:?}");
+    assert!(
+        r.evidence
+            .starts_with(&format!("allowed: {act}, orphan: {act};")),
+        "{r:?}"
+    );
     for other in Act::ALL.into_iter().filter(|a| *a != act) {
         let refused = r.evidence.split_once("refused: ").map(|(_, r)| r);
         assert!(
@@ -368,6 +379,46 @@ fn conformance_operator_boundary_check_runs_for_each_adapter() {
         }
     }
     m.assert_no_violation();
+    m.assert_clean();
+}
+
+#[test]
+fn operator_boundary_passes_when_the_double_fork_orphan_is_refused_each_act() {
+    // FR-10: the orphan leaves the process tree, the group and the session
+    // of the agent, so only the sandbox stops it.
+    let m = Machine::new(Codex::WithNetworkProxy);
+    for agent in [HarnessKind::Claude, HarnessKind::Codex] {
+        let r = m.check(&profile(agent));
+        assert_verdict(&r, Verdict::Pass);
+        for act in Act::ALL {
+            assert!(
+                r.evidence.contains(&format!("orphan: {act}")),
+                "{agent:?}: {r:?}"
+            );
+        }
+    }
+    m.assert_no_violation();
+    m.assert_clean();
+}
+
+#[test]
+fn operator_boundary_fails_when_the_double_fork_orphan_escapes_the_sandbox() {
+    let m = Machine::new(Codex::WithNetworkProxy);
+    let r = m.check_in(&profile(HarnessKind::Claude), "conformance,orphan_escapes");
+    let orphan: Vec<String> = Act::ALL.iter().map(|a| format!("orphan: {a}")).collect();
+    assert_verdict(&r, Verdict::Fail);
+    assert!(
+        r.evidence
+            .starts_with(&format!("allowed: {};", orphan.join(", "))),
+        "{r:?}"
+    );
+    for act in Act::ALL {
+        let refused = r.evidence.split_once("refused: ").map(|(_, r)| r);
+        assert!(
+            refused.is_some_and(|r| r.starts_with(&act.to_string()) || r.contains(&format!(", {act}"))),
+            "the agent act {act} is not refused: {r:?}"
+        );
+    }
     m.assert_clean();
 }
 

@@ -11,10 +11,9 @@
 //!   child in a new session and a new process group, whose parent waits),
 //!   and `raw` (a raw `idea_approve` on the channel with the operator
 //!   token). Then write a valid `assumptions.md`.
-//! - `orphan`: as `approve_waiting`, but 1 try only, `orphan`: a double
-//!   fork. The child makes a new session and a new process group, starts
-//!   the grandchild and exits, so the grandchild has no parent in the
-//!   attempt.
+//! - `stay`: run `horch idea note` of the own idea (logged as `note`),
+//!   then keep running, as an agent in its interview, until fleetd stops
+//!   it (fix A: the attempt stays live while its agent runs).
 //! - `outlive`: write a valid `assumptions.md` and ignore `SIGTERM`, so the
 //!   agent lives on after fleetd ended its attempt. Wait until each own
 //!   `clarifying` attempt is ended (the operator approves the own idea, so the phase of
@@ -46,9 +45,6 @@ use crate::{hash16, Call};
 /// The longest wait for an idea state.
 const STATE_WAIT: Duration = Duration::from_secs(60);
 
-/// The longest wait for the result of the orphan.
-const ORPHAN_WAIT: Duration = Duration::from_secs(60);
-
 /// The longest wait of `outlive` for its stop: longer than each wait of
 /// the test, so only a stop of fleetd ends it in time.
 const STOP_WAIT: Duration = Duration::from_secs(600);
@@ -71,7 +67,7 @@ pub fn play(call: &mut Call) -> bool {
         return true;
     }
     let lead = Lead::new(folder);
-    if has("approve_waiting") || has("orphan") {
+    if has("approve_waiting") {
         let Some(target) = lead.other_waiting() else {
             call.extra
                 .insert("fr10".into(), json!({"error": "no other idea waits"}));
@@ -80,17 +76,21 @@ pub fn play(call: &mut Call) -> bool {
         call.extra.insert("target".into(), json!(target));
         call.extra.insert("attempts".into(), json!(lead.attempts()));
         let mut tries = Map::new();
-        if has("orphan") {
-            tries.insert("orphan".into(), lead.orphan(&target));
-        } else {
-            tries.insert("cli".into(), lead.cli(&target));
-            tries.insert("child_shell".into(), lead.child_shell(&target));
-            tries.insert("detached".into(), lead.detached(&target));
-            tries.insert("raw".into(), lead.raw(&target, &call.call_id));
-        }
+        tries.insert("cli".into(), lead.cli(&target));
+        tries.insert("child_shell".into(), lead.child_shell(&target));
+        tries.insert("detached".into(), lead.detached(&target));
+        tries.insert("raw".into(), lead.raw(&target, &call.call_id));
         call.extra.insert("tries".into(), Value::Object(tries));
         call.flush();
         lead.write_assumptions();
+        return true;
+    }
+    if has("stay") {
+        let text = format!("{} - fake.txt", "Which file does the idea change?");
+        let note = output(Command::new("horch").args(["idea", "note", &lead.idea, &text]));
+        call.extra.insert("note".into(), note);
+        call.flush();
+        std::thread::sleep(STOP_WAIT);
         return true;
     }
     if has("outlive") {
@@ -260,34 +260,6 @@ impl Lead {
             return json!({"error": format!("detach: {e:?}")});
         }
         output(&mut cmd)
-    }
-
-    /// A double fork: the child makes a new session and a new process
-    /// group, starts the grandchild and exits. The grandchild runs
-    /// `horch idea approve <idea>` and writes its output in the idea folder
-    /// of the target.
-    fn orphan(&self, idea: &str) -> Value {
-        const PERL: &str = r#"use POSIX; my $p = fork(); if ($p == 0) { POSIX::setsid(); my $q = fork(); if ($q == 0) { exec("/bin/sh", "-c", $ARGV[0]); } exit 0; } waitpid($p, 0);"#;
-        let out = self.ideas().join(format!("fr10-orphan-{}.out", self.idea));
-        let code = out.with_extension("code");
-        let line = format!(
-            "echo $$ > {pid}; horch idea approve {idea} > {out} 2>&1; echo $? > {code}.tmp; /bin/mv {code}.tmp {code}",
-            pid = out.with_extension("pid").display(),
-            out = out.display(),
-            code = code.display(),
-        );
-        let started = output(Command::new("/usr/bin/perl").args(["-e", PERL, &line]));
-        let end = Instant::now() + ORPHAN_WAIT;
-        while !code.is_file() && Instant::now() < end {
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        let read = |p: &Path| std::fs::read_to_string(p).unwrap_or_default();
-        json!({
-            "started": started,
-            "pid": read(&out.with_extension("pid")).trim(),
-            "exit": read(&code).trim().parse::<i32>().ok(),
-            "stderr": read(&out),
-        })
     }
 
     /// A raw `idea_approve` of `idea` on the channel, with the operator
