@@ -24,6 +24,9 @@ use rusqlite::{Connection, OpenFlags};
 /// The `fleet.toml` of each test: 1 pass each second.
 const FLEET_TOML: &str = "pass_period_s = 1\n";
 
+/// The `fleet.toml` of the project: a fast gate and a full gate that pass.
+const PROJECT_FLEET_TOML: &str = "[gates]\nfast = \"true\"\nfull = \"true\"\n";
+
 /// The ticket of each test: 1 task of the judgment kind `docs`.
 const TICKET: &str = "# 01: Write the queue guide\n\n\
 <!-- horch-ticket: 1 -->\n\
@@ -109,6 +112,8 @@ impl World {
         std::fs::create_dir_all(&tickets).unwrap();
         let ticket = tickets.join("01-queue-guide.md");
         std::fs::write(&ticket, TICKET).unwrap();
+        // The plan validator needs a fast gate and a full gate.
+        std::fs::write(h.project.join("fleet.toml"), PROJECT_FLEET_TOML).unwrap();
         let w = World { h };
         w.git(&["add", "-A"]);
         w.git(&["commit", "-q", "-m", "base"]);
@@ -194,6 +199,7 @@ impl World {
                  FROM events WHERE kind = 'transition' AND entity = 'task' ORDER BY event_id",
             ),
             format!("git refs:\n{}\n", self.refs()),
+            format!("idea folder files:\n{}\n", self.idea_files()),
             format!(
                 "fleetd stderr, each line 1 time:\n{}\n",
                 self.fleetd_stderr()
@@ -211,6 +217,30 @@ impl World {
             .output()
             .unwrap();
         String::from_utf8_lossy(&o.stdout).into_owned()
+    }
+
+    /// The files of the folder of the first idea, with the text of
+    /// `plan.verdict.json`.
+    fn idea_files(&self) -> String {
+        let dir = self.h.fleet_root().join("ideas/I-0001");
+        let mut out = Vec::new();
+        let mut stack = vec![dir.clone()];
+        while let Some(d) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&d) else {
+                continue;
+            };
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else {
+                    out.push(p.strip_prefix(&dir).unwrap_or(&p).display().to_string());
+                }
+            }
+        }
+        out.sort();
+        let verdict = std::fs::read_to_string(dir.join("plan.verdict.json")).unwrap_or_default();
+        format!("  {}\nplan.verdict.json: {verdict}", out.join("\n  "))
     }
 
     /// The lines of the fleetd stderr, each 1 time, in order.
