@@ -425,6 +425,25 @@ fn second_idea_of_a_feature_waits_in_captured_until_the_first_leaves_ticketing()
     assert_eq!(w.state(&second), "clarifying");
 }
 
+/// The pass writes idea.md only for a `captured` idea. An idea committed
+/// after that write in a pass stays in `captured` until its idea.md exists,
+/// so it never reaches its sub-orchestrator with no idea.md (FM-8).
+#[test]
+fn an_idea_never_goes_to_clarifying_when_a_pass_runs_before_its_idea_md() {
+    let mut w = world();
+    let f = w.feature();
+    let idea = w.idea(&f);
+    let text = std::fs::read_to_string(w.folder(&idea).join("idea.md")).unwrap();
+    w.remove(&idea, "idea.md");
+
+    w.pass();
+    assert_eq!(w.state(&idea), "captured", "idea.md is not written yet");
+
+    w.write(&idea, "idea.md", &text);
+    w.pass();
+    assert_eq!(w.state(&idea), "clarifying");
+}
+
 #[test]
 fn a_younger_idea_never_passes_an_older_captured_idea_of_its_feature() {
     let mut w = world();

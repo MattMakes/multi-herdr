@@ -289,6 +289,24 @@ fn idea_show_prints_the_assumptions_and_their_sha256() {
     assert_eq!(json["amendments"][0]["name"], "01.md");
 }
 
+/// plan.yaml names the feature id, so `horch idea show` prints it, in text
+/// and in JSON, also when the feature has a name.
+#[test]
+fn idea_show_prints_the_feature_id() {
+    let mut w = world();
+    w.idea("I-0001", "F-0001", "ticketing");
+
+    let out = w.horch(&["idea", "show", "I-0001"]).out;
+    assert!(
+        out.contains("Feature id: F-0001\n"),
+        "no feature id in:\n{out}"
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_str(&w.horch(&["idea", "show", "I-0001", "--json"]).out).unwrap();
+    assert_eq!(json["feature_id"], "F-0001", "{json}");
+}
+
 fn git(repo: &Path, args: &[&str]) {
     let out = Command::new("git")
         .args(args)
