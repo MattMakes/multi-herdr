@@ -285,7 +285,12 @@ fn worker(tx: &rusqlite::Transaction<'_>, run: &Run) -> anyhow::Result<String> {
     let id = {
         // These tests make the tree with `horch ledger worktree new`, as the
         // worker of a claim did: the bind reserves no tree for a task of the
-        // shared checkout, and the task uses a worktree again after it.
+        // shared checkout, and the task takes its own mode again after it.
+        let mode: String = tx.query_row(
+            "SELECT worktree_mode FROM tasks WHERE task_id = ?1",
+            [&task],
+            |r| r.get(0),
+        )?;
         tx.execute(
             "UPDATE tasks SET worktree_mode = 'shared' WHERE task_id = ?1",
             [&task],
@@ -293,8 +298,8 @@ fn worker(tx: &rusqlite::Transaction<'_>, run: &Run) -> anyhow::Result<String> {
         let id =
             horch_core::taskledger::testing::bind_live(tx, &task, &new, Some(agent))?.worker_id;
         tx.execute(
-            "UPDATE tasks SET worktree_mode = 'worktree' WHERE task_id = ?1",
-            [&task],
+            "UPDATE tasks SET worktree_mode = ?2 WHERE task_id = ?1",
+            rusqlite::params![task, mode],
         )?;
         id
     };
