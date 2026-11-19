@@ -31,7 +31,8 @@ use horch_core::fleetd::integration::adapters::git::CliGitGateway;
 use horch_core::fleetd::integration::adapters::sqlite as features;
 use horch_core::fleetd::integration::application::new_features::Project;
 use horch_core::fleetd::worktree_custody::adapters::git::CliWorktreeGit;
-use horch_core::taskledger::model::Actor;
+use horch_core::taskledger::model::{Actor, FileMode};
+use horch_core::taskledger::tasks;
 use horch_core::taskledger::Store;
 use horch_marketplace::git::scrub_repo_env;
 use horch_platform::channel::User;
@@ -448,4 +449,31 @@ fn idea_with_approved_assumptions_and_no_requirements_yaml_is_refused() {
     );
     assert_eq!(w.idea(&idea).state, "ticketing");
     assert!(w.tasks(&idea).is_empty());
+}
+
+/// The judge task of a `--direct` plan has 1 Own row: its verdict file, the
+/// first Own path of the judged ticket with the extension `review.md`
+/// (ticket 39 of fleetd-p6; fault 8 of T-561). The work task keeps the Own
+/// paths of its ticket.
+#[test]
+fn committed_judge_task_has_its_verdict_file_as_own() {
+    let mut w = world();
+    let added = w.add(DOCS_TICKET, None);
+    let idea = added.idea.file.id.clone();
+    let started = w.start(&idea);
+    assert!(
+        matches!(started, Started::Committed(Verdict::Committed { .. })),
+        "the plan is not committed: {started:?}"
+    );
+    let rows = w.tasks(&idea);
+    let work_key = rows[0].3["key"].as_str().unwrap().to_string();
+    let judge_key = rows[1].3["key"].as_str().unwrap().to_string();
+    let own =
+        |key: &str| tasks::files(w.store.conn(), &w.task_id(&idea, key), FileMode::Own).unwrap();
+    assert_eq!(own(&judge_key), vec!["docs/sync.review.md".to_string()]);
+    assert_eq!(own(&work_key), vec!["docs/sync.md".to_string()]);
+    assert_eq!(
+        rows[1].3["outputs"],
+        serde_json::json!(["docs/sync.review.md"])
+    );
 }

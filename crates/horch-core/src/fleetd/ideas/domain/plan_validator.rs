@@ -185,6 +185,41 @@ pub fn schema(plan: &Plan, _facts: &PlanFacts) -> Vec<Problem> {
                 add(format!("ticket {}: {p}", ticket.path));
             }
         }
+        for path in &task.outputs {
+            if let Some(why) = unsafe_output(path) {
+                add(format!("the output `{path}` {why}"));
+            }
+            let first = plan
+                .tasks
+                .iter()
+                .position(|t| t.outputs.contains(path))
+                .is_some_and(|f| f == i);
+            let owners = plan
+                .tasks
+                .iter()
+                .filter(|t| t.outputs.contains(path))
+                .count();
+            if first && owners > 1 {
+                add(format!(
+                    "{owners} tasks have the output `{path}`: each output path is unique in the plan"
+                ));
+            }
+        }
     }
     out
+}
+
+/// Why the output path `path` of plan.yaml, an untrusted input, is not a
+/// relative path inside the repository. `None`: it is.
+fn unsafe_output(path: &str) -> Option<&'static str> {
+    if path.trim().is_empty() {
+        return Some("is empty");
+    }
+    if path.starts_with('/') || path.starts_with('\\') || path.contains(':') {
+        return Some("is not a relative path");
+    }
+    if path.split(['/', '\\']).any(|part| part == "..") {
+        return Some("goes out of the repository with `..`");
+    }
+    None
 }

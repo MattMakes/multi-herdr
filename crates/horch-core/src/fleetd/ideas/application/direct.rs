@@ -172,6 +172,7 @@ pub fn add_direct_idea(
         kind: facts.kind.map(|k| k.as_str()).unwrap_or(""),
         profile: facts.primary.clone().unwrap_or_default(),
         check: facts.check.clone(),
+        first_own: facts.own.first().cloned(),
     };
     let plan = plan_yaml(
         &idea,
@@ -232,6 +233,8 @@ struct WorkTask<'a> {
     kind: &'a str,
     profile: String,
     check: Option<String>,
+    /// The first `**Own:**` path of the ticket.
+    first_own: Option<String>,
 }
 
 /// The text of plan.yaml: the work task, and its judge task when its kind
@@ -260,6 +263,7 @@ fn plan_yaml(
             "kind": Kind::Judge.as_str(),
             "judges": work.key,
             "profile": judge_profile(&work.profile, roster),
+            "outputs": [verdict_file(work)],
         }));
     }
     let plan = json!({
@@ -270,6 +274,20 @@ fn plan_yaml(
         "tasks": tasks,
     });
     Ok(serde_yaml::to_string(&plan)?)
+}
+
+/// The verdict file of the judge of `work`, its 1 output: the first Own
+/// path of the ticket with the extension `review.md` (`docs/sync.md` gives
+/// `docs/sync.review.md`, as in ticket 39 of fleetd-p6), else
+/// `<task key>.review.md`. The design names no file name (MAP.md, Q18).
+fn verdict_file(work: &WorkTask<'_>) -> String {
+    match &work.first_own {
+        Some(own) => Path::new(own)
+            .with_extension("review.md")
+            .to_string_lossy()
+            .into_owned(),
+        None => format!("{}.review.md", work.key),
+    }
 }
 
 /// The profile of the judge of a task of the profile `author` (MAP.md, Q8):
