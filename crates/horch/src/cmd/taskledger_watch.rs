@@ -140,6 +140,8 @@ fn report(checked: &[watchdog::Checked], as_json: bool) -> Result<String> {
 mod tests {
     use horch_core::fleetd::fleet_runtime::adapters::watchdog_duties::HerdrObserver as Live;
     use horch_core::taskledger::runs::{self, NewRun};
+    use horch_core::taskledger::schema::run_idea;
+    use horch_core::taskledger::util;
     use horch_core::taskledger::watchdog::{Observation, Observer};
     use horch_core::taskledger::workers::{self, NewWorker, Worker};
     use horch_core::taskledger::Store;
@@ -444,7 +446,17 @@ mod tests {
             assert!(ok, "git {args:?}");
         };
         git(&["init", "-q", "-b", "main"]);
-        git(&["-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "a"]);
+        git(&[
+            "-c",
+            "user.email=t@example.com",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "a",
+        ]);
         let db = dir.join("ledger.sqlite3");
         let env = MapEnv::new(dir)
             .with("HORCH_STATE_DIR", dir.join("state").to_str().unwrap())
@@ -461,6 +473,9 @@ mod tests {
         let (run, task) = store
             .immediate(|tx| {
                 let run = runs::create(tx, &project, &new_run)?;
+                // A task needs an idea in flight of the feature of its run
+                // (FR-12).
+                run_idea(tx, &run.run_id, &util::now(), true)?;
                 let mut t = NewTask::work("a", "a.md", "dev");
                 t.worktree_mode = WorktreeMode::Shared;
                 let task = tasks::add(tx, &run, &t, Actor::Orchestrator)?;
@@ -474,9 +489,11 @@ mod tests {
         if horch_platform::sandbox::host_problem(None).is_some() {
             let status: String = store
                 .conn()
-                .query_row("SELECT status FROM tasks WHERE task_id = ?1", [&task], |r| {
-                    r.get(0)
-                })
+                .query_row(
+                    "SELECT status FROM tasks WHERE task_id = ?1",
+                    [&task],
+                    |r| r.get(0),
+                )
                 .unwrap();
             assert_eq!(status, "ready", "no check sandbox: no bind");
             return;

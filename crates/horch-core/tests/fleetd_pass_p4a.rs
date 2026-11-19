@@ -115,7 +115,9 @@ fn world() -> World {
         finish_steps: vec![StepName::Check, StepName::Land],
         ..Default::default()
     };
-    runs::create(&conn, &project, &new_run).unwrap();
+    let run = runs::create(&conn, &project, &new_run).unwrap();
+    // A task needs an idea in flight of the feature of its run (FR-12).
+    schema::run_idea(&conn, &run.run_id, &util::now(), true).unwrap();
     fs::create_dir_all(dir.join("fleet")).unwrap();
     drop(conn);
     let mut w = World::reopen(&dir);
