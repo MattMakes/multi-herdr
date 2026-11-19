@@ -828,7 +828,9 @@ impl IdeaPorts for LiveIdeas<'_> {
     }
 
     fn now(&self) -> chrono::DateTime<chrono::FixedOffset> {
-        chrono::Local::now().fixed_offset()
+        horch_core::clock::now()
+            .with_timezone(&chrono::Local)
+            .fixed_offset()
     }
 
     fn notify(&self, mirrored: &Mirrored, seq: u64) -> Result<()> {
