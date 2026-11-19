@@ -53,8 +53,11 @@ fn text(o: &Output) -> String {
 #[derive(Debug, Clone)]
 struct Pair {
     judged: String,
+    /// The short name of the judged task, `T-<seq>`, as a reason names it.
+    judged_short: String,
     judge: String,
     run: String,
+    idea: String,
 }
 
 /// A fleet with a test fleetd and 1 `--direct` idea of the kind `docs`.
@@ -111,15 +114,19 @@ impl World {
         w.git(&["commit", "-q", "-m", "base"]);
 
         w.h.serve_fleetd();
-        let o = w
-            .h
-            .run(&["idea", "add", "--direct", &ticket.to_string_lossy()]);
+        let o =
+            w.h.run(&["idea", "add", "--direct", &ticket.to_string_lossy()]);
         assert!(o.status.success(), "horch idea add --direct: {}", text(&o));
         w
     }
 
     fn git(&self, args: &[&str]) {
-        let o = self.h.git_cmd(args).current_dir(&self.h.project).output().unwrap();
+        let o = self
+            .h
+            .git_cmd(args)
+            .current_dir(&self.h.project)
+            .output()
+            .unwrap();
         assert!(o.status.success(), "git {}: {}", args.join(" "), text(&o));
     }
 
@@ -164,7 +171,8 @@ impl World {
     /// What a failed wait shows: the tasks, the attempts, the verdicts, the
     /// needs-you items and the task moves.
     fn context(&self) -> String {
-        let show = |title: &str, sql: &str| format!("{title}:\n  {}\n", self.rows(sql).join("\n  "));
+        let show =
+            |title: &str, sql: &str| format!("{title}:\n  {}\n", self.rows(sql).join("\n  "));
         [
             show(
                 "tasks",
@@ -175,10 +183,7 @@ impl World {
                 "attempts",
                 "SELECT id, IFNULL(task_id, '-'), state, IFNULL(outcome, '-') FROM attempts",
             ),
-            show(
-                "needs_you",
-                "SELECT key, kind, state, text FROM needs_you",
-            ),
+            show("needs_you", "SELECT key, kind, state, text FROM needs_you"),
             show(
                 "ideas",
                 "SELECT id, state, IFNULL(plan_sha256, '-') FROM ideas",
@@ -189,7 +194,10 @@ impl World {
                  FROM events WHERE kind = 'transition' AND entity = 'task' ORDER BY event_id",
             ),
             format!("git refs:\n{}\n", self.refs()),
-            format!("fleetd stderr, each line 1 time:\n{}\n", self.fleetd_stderr()),
+            format!(
+                "fleetd stderr, each line 1 time:\n{}\n",
+                self.fleetd_stderr()
+            ),
         ]
         .concat()
     }
@@ -224,15 +232,17 @@ impl World {
     fn pair(&self) -> Pair {
         self.wait("the judged task and its judge task", || {
             let row = self.one(
-                "SELECT j.parent_task_id, j.task_id, j.run_id FROM tasks j \
-                 JOIN tasks w ON w.task_id = j.parent_task_id \
+                "SELECT w.task_id, 'T-' || w.seq, j.task_id, j.run_id, j.idea_id \
+                 FROM tasks j JOIN tasks w ON w.task_id = j.parent_task_id \
                  WHERE j.idea_id IS NOT NULL AND w.idea_id = j.idea_id",
             )?;
             let mut it = row.split(' ').map(str::to_string);
             Some(Pair {
                 judged: it.next()?,
+                judged_short: it.next()?,
                 judge: it.next()?,
                 run: it.next()?,
+                idea: it.next()?,
             })
         })
     }
@@ -269,13 +279,27 @@ impl World {
         .unwrap_or(0)
     }
 
-    /// The plan of the idea: its plan sha256 and its task ids.
-    fn plan(&self) -> (String, Vec<String>) {
+    /// The plan of the idea of `pair`: its plan sha256 and its task ids.
+    fn plan(&self, pair: &Pair) -> (String, Vec<String>) {
+        let idea = &pair.idea;
         let sha = self
-            .one("SELECT IFNULL(plan_sha256, '-') FROM ideas")
+            .one(&format!(
+                "SELECT IFNULL(plan_sha256, '-') FROM ideas WHERE id = '{idea}'"
+            ))
             .unwrap_or_default();
-        let tasks = self.rows("SELECT task_id FROM tasks WHERE idea_id IS NOT NULL ORDER BY task_id");
+        let tasks = self.rows(&format!(
+            "SELECT task_id FROM tasks WHERE idea_id = '{idea}' ORDER BY task_id"
+        ));
         (sha, tasks)
+    }
+
+    /// True when `task` moved from `from` to `to`.
+    fn moved(&self, task: &str, from: &str, to: &str) -> bool {
+        self.one(&format!(
+            "SELECT 1 FROM events WHERE kind = 'transition' AND entity = 'task' \
+             AND entity_id = '{task}' AND from_state = '{from}' AND to_state = '{to}'"
+        ))
+        .is_some()
     }
 
     /// `horch task cancel <task> <reason> --run <run>`, the real client.
@@ -291,10 +315,15 @@ impl World {
 fn rr3_judgment_and_judge_reach_done_with_no_plan_change() {
     let w = World::new("p6-judge-done", "commit,result,verdict_pass");
     let pair = w.pair();
-    let planned = w.plan();
+    let planned = w.plan(&pair);
     w.wait_status(&pair.judge, "done");
     w.wait_status(&pair.judged, "done");
-    assert_eq!(w.plan(), planned, "the plan does not change\n{}", w.context());
+    assert_eq!(
+        w.plan(&pair),
+        planned,
+        "the plan does not change\n{}",
+        w.context()
+    );
     let fix_rounds = w.one(&format!(
         "SELECT fix_rounds FROM tasks WHERE task_id = '{}'",
         pair.judged
@@ -325,17 +354,19 @@ fn rr3_critical_gives_1_fix_round() {
     let cols: Vec<&str> = first.split(' ').collect();
     let (rounds, floor, critical) = (cols[0], cols[1], cols[2]);
     assert_eq!(
-        rounds, critical,
+        rounds,
+        critical,
         "each critical_open judge attempt gives 1 fix round\n{}",
         w.context()
     );
     assert_eq!(
-        floor, rounds,
+        floor,
+        rounds,
         "a fix attempt takes no attempt of max_attempts\n{}",
         w.context()
     );
     assert!(
-        w.moved_at(&pair.judged, "ready").is_some() && w.moved_at(&pair.judge, "pending").is_some(),
+        w.moved(&pair.judged, "verifying", "ready") && w.moved(&pair.judge, "verifying", "pending"),
         "the judged task gets a fix attempt and the judge task waits\n{}",
         w.context()
     );
@@ -358,15 +389,11 @@ fn fm9_judgment_task_is_done_only_after_its_judge() {
         w.context()
     );
     let verifying = w.moved_at(&pair.judged, "verifying").unwrap();
-    let judge_attempt = w.one(&format!(
-        "SELECT MIN(event_id) FROM events WHERE kind = 'transition' AND entity = 'attempt' \
-         AND entity_id IN (SELECT id FROM attempts WHERE task_id = '{}')",
-        pair.judge
-    ));
-    let judge_attempt: i64 = judge_attempt.and_then(|v| v.parse().ok()).unwrap_or(i64::MAX);
+    // The judge task is `pending` until its judged task is in `verifying`.
+    let judge_ready = w.moved_at(&pair.judge, "ready").unwrap_or(i64::MAX);
     assert!(
-        verifying < judge_attempt,
-        "the judge runs only after the judged task is in verifying\n{}",
+        verifying < judge_ready,
+        "the judge task is ready only after the judged task is in verifying\n{}",
         w.context()
     );
     let moves = w.rows(&format!(
@@ -439,7 +466,7 @@ fn cancel_of_a_judge_task_alone_is_refused() {
     let said = text(&o);
     assert!(!o.status.success(), "the cancel is refused: {said}");
     assert!(
-        said.contains(JUDGE_CANCEL_REFUSED) && said.contains(&pair.judged),
+        said.contains(JUDGE_CANCEL_REFUSED) && said.contains(&pair.judged_short),
         "the refusal names the judged task: {said}"
     );
     assert_ne!(w.status(&pair.judge), "cancelled", "{}", w.context());
