@@ -2165,13 +2165,28 @@ mod tests {
             needs_you: &NeedsYouList,
             host: &NoHost,
         };
-        let report = Pass::new(settings, ports).run(&mut w.conn).unwrap();
+        // The clock of each pass stands still: the time budget alone ends
+        // the duties, on a slow host too.
+        let start = Instant::now();
+        let report = Pass::new(settings, ports)
+            .with_clock(Box::new(move || start))
+            .run(&mut w.conn)
+            .unwrap();
 
         assert!(report.heartbeat, "{report:?}");
         assert!(duties.take_rows().values().all(Vec::is_empty));
         assert_eq!(w.count("SELECT count(*) FROM checks"), 0);
 
-        pass(&mut w, &duties, Faults::default());
+        let ports = Ports {
+            outside: &NoOutside,
+            duties: &duties,
+            needs_you: &NeedsYouList,
+            host: &NoHost,
+        };
+        Pass::new(w.settings(Faults::default()), ports)
+            .with_clock(Box::new(move || start))
+            .run(&mut w.conn)
+            .unwrap();
         assert_eq!(w.count("SELECT count(*) FROM checks"), 50);
     }
 
