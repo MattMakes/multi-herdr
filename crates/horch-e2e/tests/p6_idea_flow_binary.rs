@@ -25,6 +25,9 @@ use rusqlite::{Connection, OpenFlags};
 /// The `fleet.toml` of each test: 1 pass each second.
 const FLEET_TOML: &str = "pass_period_s = 1\n";
 
+/// The source of the idea.md of a `--direct` idea.
+const DIRECT_SOURCE: &str = "horch idea add --direct";
+
 /// The ticket of each test: 1 task of the code kind.
 const TICKET: &str = "# 01: Write the queue guide\n\n\
 <!-- horch-ticket: 1 -->\n\
@@ -75,33 +78,37 @@ impl World {
         h.set("HORCH_TEST_DOCS_FIXTURE", docs.to_string_lossy());
         // `exec`: each pane of the fake herdr runs its command.
         h.set("HORCH_FAKE_SCENARIO", format!("exec,{scenario}"));
-        let label = h
-            .project
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
-        let mut create = std::process::Command::new(h.bin.join("herdr"));
-        h.seal(&mut create);
-        let o = create
-            .args(["workspace", "create", "--label", &label])
-            .output()
-            .unwrap();
-        assert!(o.status.success(), "herdr workspace create: {}", text(&o));
-
-        let tickets = h.project.join("tickets");
-        std::fs::create_dir_all(&tickets).unwrap();
-        let ticket = tickets.join("01-queue-guide.md");
-        std::fs::write(&ticket, TICKET).unwrap();
+        h.fleet_workspace();
         let w = World { h };
+        // Plan validation refuses a plan when the project declares no gates.
+        std::fs::write(
+            w.h.project.join("fleet.toml"),
+            "[gates]\nfast = \"true\"\nfull = \"true\"\n",
+        )
+        .unwrap();
+        w.write_ticket("01-queue-guide.md", TICKET);
         w.git(&["add", "-A"]);
         w.git(&["commit", "-q", "-m", "base"]);
 
         w.h.serve_fleetd();
-        let o =
-            w.h.run(&["idea", "add", "--direct", &ticket.to_string_lossy()]);
-        assert!(o.status.success(), "horch idea add --direct: {}", text(&o));
+        w.add_direct("01-queue-guide.md");
         w
+    }
+
+    /// Write the ticket `name` of the project folder `tickets` with `text`.
+    fn write_ticket(&self, name: &str, text: &str) {
+        let tickets = self.h.project.join("tickets");
+        std::fs::create_dir_all(&tickets).unwrap();
+        std::fs::write(tickets.join(name), text).unwrap();
+    }
+
+    /// `horch idea add --direct` of the ticket `name` of the project.
+    fn add_direct(&self, name: &str) {
+        let ticket = self.h.project.join("tickets").join(name);
+        let o = self
+            .h
+            .run(&["idea", "add", "--direct", &ticket.to_string_lossy()]);
+        assert!(o.status.success(), "horch idea add --direct: {}", text(&o));
     }
 
     fn git(&self, args: &[&str]) {
@@ -160,10 +167,17 @@ impl World {
                 "SELECT id, IFNULL(branch, '-'), state FROM features",
             ),
             show("ideas", "SELECT id, state FROM ideas"),
+            show("needs-you items", "SELECT key, state, text FROM needs_you"),
+            show(
+                "idea sources",
+                "SELECT entity_id, json_extract(data_json, '$.source') FROM events
+                 WHERE entity = 'idea' AND kind = 'added'",
+            ),
             show(
                 "tasks",
                 "SELECT task_id, kind, status, IFNULL(idea_id, '-') FROM tasks",
             ),
+            format!("plan verdicts:\n{}\n", self.verdicts()),
             format!("git refs:\n{}\n", self.refs()),
             format!(
                 "fleetd stderr, each line 1 time:\n{}\n",
@@ -171,6 +185,22 @@ impl World {
             ),
         ]
         .concat()
+    }
+
+    /// The plan.verdict.json of each idea folder that has one.
+    fn verdicts(&self) -> String {
+        let ideas = self.h.state.join("fleet").join("ideas");
+        let mut dirs: Vec<_> = std::fs::read_dir(&ideas)
+            .map(|d| d.filter_map(Result::ok).map(|e| e.path()).collect())
+            .unwrap_or_default();
+        dirs.sort();
+        dirs.iter()
+            .filter_map(|d| {
+                let v = std::fs::read_to_string(d.join("plan.verdict.json")).ok()?;
+                Some(format!("  {}: {v}", d.display()))
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// The refs of the project repository.
@@ -216,6 +246,53 @@ fn idea_add_direct_makes_the_feature_and_its_branch() {
             .any(|l| l.split(' ').next() == Some(name.as_str()))
             .then_some(())
     });
+}
+
+/// Ticket 58 of fleetd-build: 10 `--direct` ideas in a row, with 1 pass
+/// each second. A pass can come between the commit of a request and its
+/// files. Each idea reaches `ticketing` and gets its planned task, no idea
+/// is ever in `clarifying`, and fleetd starts no clarifying process.
+#[test]
+fn ten_direct_ideas_in_a_row_all_reach_ticketing() {
+    let w = World::new("p6-flow-ten-direct", "commit,result");
+    for n in 2..=10 {
+        let name = format!("{n:02}-queue-guide.md");
+        let ticket = TICKET.replacen(
+            "# 01: Write the queue guide",
+            &format!("# {n:02}: Write the queue guide {n}"),
+            1,
+        );
+        w.write_ticket(&name, &ticket);
+        w.add_direct(&name);
+    }
+    w.wait(
+        "10 --direct ideas that were in ticketing, each with its task",
+        || {
+            let ticketed = w.one(
+                "SELECT COUNT(DISTINCT e.entity_id) FROM events e
+             WHERE e.entity = 'idea' AND e.to_state = 'ticketing'
+               AND EXISTS (SELECT 1 FROM tasks t WHERE t.idea_id = e.entity_id)",
+            );
+            (ticketed.as_deref() == Some("10")).then_some(())
+        },
+    );
+    // fleetd can add other ideas, for example 1 for each agent CLI of the
+    // host that fails its conformance check. The checks below read only
+    // the `--direct` ideas.
+    let direct = format!("SELECT entity_id FROM events WHERE entity = 'idea' AND kind = 'added' AND json_extract(data_json, '$.source') = '{DIRECT_SOURCE}'");
+    assert_eq!(w.rows(&direct).len(), 10, "{}", w.context());
+    let clarifying = w.rows(&format!(
+        "SELECT entity_id FROM events WHERE entity = 'idea' AND to_state = 'clarifying'
+           AND entity_id IN ({direct})"
+    ));
+    assert!(
+        clarifying.is_empty(),
+        "--direct ideas in clarifying: {clarifying:?}"
+    );
+    let leads = w.rows(&format!(
+        "SELECT id FROM attempts WHERE id LIKE '%/clarifying/%' AND idea_id IN ({direct})"
+    ));
+    assert!(leads.is_empty(), "clarifying processes: {leads:?}");
 }
 
 // ─── fault 3: each fake plays only the keys of its role ─────────────────

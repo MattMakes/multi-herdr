@@ -699,6 +699,8 @@ impl Harness for Codex {
     /// extensions with a CLI switch.
     fn validate(&self, t: &Teammate) -> Vec<&'static str> {
         let mut out = generic_validate(self, t);
+        // `-c mcp_servers.<name>.*` pairs express it ([`mcp_server_problems`]).
+        out.retain(|field| *field != "mcp_servers");
         if !t.inherit_plugins {
             out.push("inherit_plugins");
             out.sort_unstable();
@@ -1696,6 +1698,7 @@ fn push_launch_args(
     model_override: Option<&str>,
     mode: Mode,
 ) -> Result<()> {
+    push_mcp_server_args(cmd, teammate)?;
     if teammate.worker_channel {
         push_channel_args(cmd, env)?;
     }
@@ -1868,6 +1871,160 @@ fn push_channel_args(cmd: &mut Command, env: &LaunchEnv) -> Result<()> {
         format!("mcp_servers.horch.env_vars=[{env_vars}]"),
     ] {
         cmd.arg("-c").arg(pair);
+    }
+    Ok(())
+}
+
+/// The keys of 1 entry of `mcp_servers` that a Codex launch renders.
+const MCP_SERVER_KEYS: [&str; 5] = ["type", "command", "args", "env", "url"];
+
+/// The name of the worker channel server ([`push_channel_args`]).
+const CHANNEL_SERVER: &str = "horch";
+
+/// A server name: 1 to 64 of `A-Z a-z 0-9 _ -`.
+fn server_name_ok(name: &str) -> bool {
+    (1..=64).contains(&name.len())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// An env name: `A-Z a-z 0-9 _`, and not a digit first.
+fn env_name_ok(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with(|c: char| c.is_ascii_digit())
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn plain_text(v: &serde_json::Value) -> bool {
+    v.as_str().is_some_and(|s| !s.chars().any(char::is_control))
+}
+
+/// Each problem of the `mcp_servers` of `t` for a Codex launch. A name or a
+/// value of a profile is untrusted: a server name has only `A-Z a-z 0-9 _
+/// -`, a value is a string with no control character (no newline), and an
+/// entry has only the keys of [`MCP_SERVER_KEYS`]. A text never shows an
+/// env value.
+pub fn mcp_server_problems(t: &Teammate) -> Vec<String> {
+    let mut out = Vec::new();
+    let who = &t.name;
+    for (name, server) in t.mcp_servers.iter().flatten() {
+        if !server_name_ok(name) || name == CHANNEL_SERVER {
+            out.push(format!(
+                "{who}: the MCP server name {name:?} is refused: use only A-Z, a-z, 0-9, _ and -, and not '{CHANNEL_SERVER}'"
+            ));
+            continue;
+        }
+        let bad = |what: &str| format!("{who}: MCP server '{name}': {what}");
+        let Some(entry) = server.as_object() else {
+            out.push(bad("the entry is not an object"));
+            continue;
+        };
+        for key in entry
+            .keys()
+            .filter(|k| !MCP_SERVER_KEYS.contains(&k.as_str()))
+        {
+            out.push(bad(&format!(
+                "the key {key:?} is not something codex can express; use {}",
+                MCP_SERVER_KEYS.join(", ")
+            )));
+        }
+        let kind = entry.get("type").map(|v| v.as_str());
+        let (command, url) = (entry.get("command"), entry.get("url"));
+        match (kind, command, url) {
+            (None | Some(Some("stdio")), Some(_), None)
+            | (None | Some(Some("http")), None, Some(_)) => {}
+            _ => out.push(bad(
+                "an entry is type stdio with a command, or type http with a url",
+            )),
+        }
+        if command.is_some_and(|c| !plain_text(c)) {
+            out.push(bad("the command is not a string of 1 line"));
+        }
+        if url.is_some_and(|u| {
+            !plain_text(u)
+                || u.as_str().is_some_and(|u| {
+                    u.contains(' ') || !(u.starts_with("https://") || u.starts_with("http://"))
+                })
+        }) {
+            out.push(bad("the url is not an http or https URL of 1 line"));
+        }
+        if let Some(args) = entry.get("args") {
+            let ok = args.as_array().is_some_and(|a| a.iter().all(plain_text));
+            if !ok {
+                out.push(bad("args is not a list of strings of 1 line"));
+            }
+        }
+        if let Some(env) = entry.get("env") {
+            match env.as_object() {
+                None => out.push(bad("env is not a table")),
+                Some(env) => {
+                    for (key, value) in env {
+                        if !env_name_ok(key) {
+                            out.push(bad(
+                                "an env name has a character other than A-Z, a-z, 0-9 and _",
+                            ));
+                        } else if !plain_text(value) {
+                            out.push(bad(&format!(
+                                "the env value of {key} is not a string of 1 line"
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// A TOML basic string of `s`. A JSON string is a TOML basic string, and
+/// [`mcp_server_problems`] refuses each control character.
+fn toml_basic(s: &str) -> String {
+    serde_json::to_string(s).expect("a string serializes")
+}
+
+/// The `-c` pairs of the `mcp_servers` of `teammate`. `None` leaves the MCP
+/// servers of the operator's `config.toml` alone. `Some` sets the table
+/// `mcp_servers` to empty first, so the launch has exactly the servers of
+/// the profile, and the worker channel server where it has one, as
+/// `--strict-mcp-config` does for Claude Code. A refused entry ends the
+/// launch with the text of its problem.
+fn push_mcp_server_args(cmd: &mut Command, teammate: &Teammate) -> Result<()> {
+    let Some(servers) = &teammate.mcp_servers else {
+        return Ok(());
+    };
+    if let Some(problem) = mcp_server_problems(teammate).into_iter().next() {
+        bail!("{problem}");
+    }
+    cmd.args(["-c", "mcp_servers={}"]);
+    for (name, server) in servers {
+        let text = |key: &str| server.get(key).and_then(|v| v.as_str()).map(toml_basic);
+        let key = |k: &str| format!("mcp_servers.{name}.{k}");
+        let mut pairs = Vec::new();
+        if let Some(command) = text("command") {
+            pairs.push(format!("{}={command}", key("command")));
+        }
+        if let Some(args) = server.get("args").and_then(|v| v.as_array()) {
+            let list: Vec<String> = args
+                .iter()
+                .filter_map(|a| a.as_str())
+                .map(toml_basic)
+                .collect();
+            pairs.push(format!("{}=[{}]", key("args"), list.join(",")));
+        }
+        if let Some(env) = server.get("env").and_then(|v| v.as_object()) {
+            let table: Vec<String> = env
+                .iter()
+                .filter_map(|(k, v)| Some(format!("{k}={}", toml_basic(v.as_str()?))))
+                .collect();
+            pairs.push(format!("{}={{{}}}", key("env"), table.join(",")));
+        }
+        if let Some(url) = text("url") {
+            pairs.push(format!("{}={url}", key("url")));
+        }
+        for pair in pairs {
+            cmd.arg("-c").arg(pair);
+        }
     }
     Ok(())
 }
@@ -3919,5 +4076,112 @@ mod tests {
         std::fs::write(&path, own).unwrap();
         ensure_rules(home.path(), Roster::builtin().unwrap().exec_rules()).unwrap();
         assert!(std::fs::read_to_string(&path).unwrap().starts_with(own));
+    }
+
+    /// The `-c` values of `cmd`, in order.
+    fn c_values(cmd: &Command) -> Vec<String> {
+        let args = command_args(cmd);
+        args.windows(2)
+            .filter(|w| w[0] == "-c")
+            .map(|w| w[1].clone())
+            .collect()
+    }
+
+    fn mcp_teammate(servers: Value) -> Teammate {
+        Teammate {
+            name: "mcp-worker".into(),
+            agent: HarnessKind::Codex,
+            model: Some("gpt-5.6-sol".into()),
+            mcp_servers: Some(serde_json::from_value(servers).unwrap()),
+            ..Default::default()
+        }
+    }
+
+    /// Each `mcp_servers` entry of the profile becomes `-c` pairs with TOML
+    /// values, after 1 pair that empties the table.
+    #[test]
+    fn profile_mcp_servers_render_as_config_pairs() {
+        let t = mcp_teammate(json!({
+            "docs": {"type": "stdio", "command": "/opt/my server", "args": ["--a", "x\"y"],
+                     "env": {"DOCS_MODE": "fast"}},
+            "web": {"type": "http", "url": "https://mcp.example.com/v1"},
+        }));
+        assert!(Codex.validate(&t).is_empty(), "{:?}", Codex.validate(&t));
+        assert!(mcp_server_problems(&t).is_empty());
+        let pairs = c_values(&exec_command(&LaunchEnv::for_test(), &t, "p").unwrap());
+        let mcp: Vec<&str> = pairs
+            .iter()
+            .map(String::as_str)
+            .filter(|p| p.starts_with("mcp_servers"))
+            .collect();
+        assert_eq!(
+            mcp,
+            [
+                "mcp_servers={}",
+                "mcp_servers.docs.command=\"/opt/my server\"",
+                "mcp_servers.docs.args=[\"--a\",\"x\\\"y\"]",
+                "mcp_servers.docs.env={DOCS_MODE=\"fast\"}",
+                "mcp_servers.web.url=\"https://mcp.example.com/v1\"",
+            ]
+        );
+        for pair in &mcp[1..] {
+            let (key, value) = pair.split_once('=').unwrap();
+            let parsed: toml::Table = toml::from_str(&format!("v = {value}")).unwrap();
+            assert!(parsed.contains_key("v"), "{key}: {value}");
+        }
+    }
+
+    /// With `mcp_servers`, the launch has no other server: the table is empty
+    /// before each server pair, and only the profile's servers and the worker
+    /// channel server follow. With no `mcp_servers`, the launch empties no
+    /// table.
+    #[test]
+    fn profile_mcp_servers_leave_no_other_server() {
+        let mut env = LaunchEnv::for_test();
+        env.workdir = Some("/work".into());
+        let mut t = mcp_teammate(json!({"docs": {"command": "docs-mcp"}}));
+        t.worker_channel = true;
+        let pairs = c_values(&exec_command(&env, &t, "p").unwrap());
+        let reset = pairs.iter().position(|p| p == "mcp_servers={}").unwrap();
+        let mut names = std::collections::BTreeSet::new();
+        for (i, pair) in pairs.iter().enumerate() {
+            if let Some(rest) = pair.strip_prefix("mcp_servers.") {
+                assert!(i > reset, "{pair} comes before the reset");
+                names.insert(rest.split('.').next().unwrap().to_owned());
+            }
+        }
+        assert_eq!(names, ["docs", "horch"].map(String::from).into());
+        t.mcp_servers = None;
+        let pairs = c_values(&exec_command(&env, &t, "p").unwrap());
+        assert!(!pairs.iter().any(|p| p == "mcp_servers={}"), "{pairs:?}");
+    }
+
+    /// A bad entry is refused at validation and at launch, and no text shows
+    /// an env value.
+    #[test]
+    fn bad_mcp_server_entries_are_refused_without_env_values() {
+        let cases = [
+            json!({"a b": {"command": "x"}}),
+            json!({"horch": {"command": "x"}}),
+            json!({"x": {"command": "x\nrm -rf /"}}),
+            json!({"x": {"command": "x", "args": ["ok", "a\nb"]}}),
+            json!({"x": {"command": "x", "url": "https://a"}}),
+            json!({"x": {"type": "sse", "url": "https://a"}}),
+            json!({"x": {"url": "file:///etc/passwd"}}),
+            json!({"x": {"command": "x", "headers": {}}}),
+            json!({"x": {"command": "x", "env": {"A=B": "v"}}}),
+            json!({"x": {"command": "x", "env": {"KEY": "secret-value\n"}}}),
+        ];
+        for servers in cases {
+            let t = mcp_teammate(servers.clone());
+            let problems = mcp_server_problems(&t);
+            assert!(!problems.is_empty(), "{servers}");
+            assert!(
+                !problems.iter().any(|p| p.contains("secret-value")),
+                "{problems:?}"
+            );
+            let err = exec_command(&LaunchEnv::for_test(), &t, "p").unwrap_err();
+            assert!(!format!("{err:#}").contains("secret-value"), "{err:#}");
+        }
     }
 }

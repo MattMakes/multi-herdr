@@ -1025,8 +1025,6 @@ pub struct PaneWorker<'a> {
     pub enter_dir: &'a dyn Fn(&Path) -> Result<()>,
     mailbox: Option<Mailbox>,
     path: Option<std::ffi::OsString>,
-    /// The agent ran: [`WorkerSteps::launch`] returned its exit.
-    launched: bool,
     /// The task ledger file and this worker's row in it, from the brief.
     ledger: Option<(PathBuf, String)>,
     /// What this wrapper knows of its agent, for its heartbeat. Made at the
@@ -1051,7 +1049,6 @@ impl<'a> PaneWorker<'a> {
             enter_dir,
             mailbox: None,
             path: None,
-            launched: false,
             ledger: None,
             facts: None,
             repaired: false,
@@ -1133,18 +1130,6 @@ impl<'a> PaneWorker<'a> {
         self.ledger
             .as_ref()
             .is_some_and(|(db, id)| worker_has_attempt(db, id, &self.ctx.paths.fleet_root))
-    }
-
-    /// Tell the orchestrator that the agent exited early.
-    fn tell_early_exit(&self, brief: &Brief, code: Option<i32>) -> Result<()> {
-        let env = child_env(self.mailbox()?, brief, self.path.clone());
-        let line = early_exit_line(brief, code);
-        warn_worker(
-            &brief.role,
-            "could not tell the orchestrator about the exit",
-            run_horch(&env, &["tell", "orchestrator", &line]),
-        );
-        Ok(())
     }
 
     /// The roster of this launch and the teammate the brief names.
@@ -1293,7 +1278,6 @@ impl<'a> PaneWorker<'a> {
                 c.stop();
             }
             let end = end?;
-            self.launched = true;
             // The first run decides `exit.json`; a repair resume does not.
             self.exec.get_or_insert((files, end));
             Ok(end.code())
@@ -1303,9 +1287,7 @@ impl<'a> PaneWorker<'a> {
                 teammate: &teammate,
                 prompt: &prompt,
             };
-            let code = run_agent(ctx, brief, mailbox, &plan, env, checkins)?;
-            self.launched = true;
-            Ok(code)
+            run_agent(ctx, brief, mailbox, &plan, env, checkins)
         }
     }
 
@@ -1408,22 +1390,14 @@ impl WorkerSteps for PaneWorker<'_> {
     }
 
     /// The wrapper writes `exit.json` of its attempt, and fleetd settles the
-    /// worker row and the session record from it. An agent that exits
-    /// before `horch done` reported nothing, and the orchestrator would wait
-    /// for it forever: this process, still alive in the pane, tells the
-    /// orchestrator. Only after an agent ran: a startup failure is `horch
-    /// spawn`'s to report. A failed tell is printed. A worker with no
-    /// attempt writes nothing (T-884: after T-550 no command starts one).
+    /// worker row, the session record and the task from it (rung 5). The
+    /// wrapper reports facts and tells no one: a tell from it would be an
+    /// open question of the worker, and rung 5 would end the attempt
+    /// `asked` (T-892). A worker with no attempt writes nothing (T-884:
+    /// after T-550 no command starts one).
     fn agent_exited(&mut self, brief: &Brief, code: Option<i32>) -> Result<()> {
-        if !self.has_attempt() {
-            return Ok(());
-        }
-        self.write_exit(brief, code);
-        // A record that `horch done` ended told the orchestrator already.
-        let record = self.store()?.get(&brief.record_id)?;
-        let live = !record.is_orchestrator() && record.execution_status().is_live();
-        if live && self.launched && brief.report_to == ReportTarget::Orchestrator {
-            self.tell_early_exit(brief, code)?;
+        if self.has_attempt() {
+            self.write_exit(brief, code);
         }
         Ok(())
     }
@@ -1585,19 +1559,6 @@ fn run_smoke(env: &[(String, String)]) -> Result<()> {
     // `done` closes this pane, which kills this process tree; nothing after
     // it runs.
     run_horch(&env, &["done", "smoke: machinery verified end to end"])
-}
-
-/// The report of a worker whose agent exited before `horch done`.
-fn early_exit_line(brief: &Brief, code: Option<i32>) -> String {
-    let how = match code {
-        Some(code) => format!("exited with code {code}"),
-        None => "was ended by a signal".to_string(),
-    };
-    format!(
-        "[{}] BLOCKED: My agent {how} before horch done. The work can be incomplete. \
-         Resume it with: horch spawn --resume {}",
-        brief.role, brief.record_id
-    )
 }
 
 /// [`run_horch`] with its output captured: the agent's screen is this

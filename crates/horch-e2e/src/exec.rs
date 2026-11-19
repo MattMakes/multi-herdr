@@ -13,13 +13,24 @@
 //!   and no exit. Codex prints its token count only in `turn.completed`.
 //! - `exit_without_result`: the progress lines, and exit 0.
 //! - `trust_prompt`: a dialog that is not a stream line, and no exit.
-//! - `conformance`: the probes of [`crate::probe`], and the write of
+//! - `conformance`, and with any key the prompt of a conformance check: the
+//!   probes of [`crate::probe`], and the write of
 //!   `outbox/result.json` of the task folder (`result_write`). The report
-//!   goes into the result line and into the log as `conformance`.
+//!   goes into the result line and into the log as `conformance`. For the
+//!   prompt of "Stop gate" the fake obeys the prompt: the progress lines,
+//!   and exit 0 with no result.
+//! - `ignore_stop_gate`: with `conformance`, the fake does not obey the
+//!   prompt of "Stop gate": it writes its result as for each other check.
 
 use serde_json::{json, Value};
 
+use horch_core::fleetd::worker_profiles::domain::conformance::STOP_GATE_PROMPT;
+
 use crate::{hang, probe, say, scenario_has, Call};
+
+/// The first sentence of the prompt of each conformance check
+/// (`domain::conformance`, `PROBE_PROMPT` and the others).
+const CHECK_PROMPT_HEAD: &str = "This is a conformance check of horch.";
 
 /// The CLIs with an exec adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,9 +158,12 @@ fn agy_kind(line: &Value) -> Kind {
 /// of [`crate::agent`] run first, so `bound` records the state at entry.
 pub fn run(mut call: Call, cli: Cli, prompt: &str) -> ! {
     crate::agent::play(&mut call);
-    match std::fs::read_to_string(prompt) {
+    let (check, stop_gate) = match std::fs::read_to_string(prompt) {
         Ok(text) => {
+            let check = text.starts_with(CHECK_PROMPT_HEAD);
+            let stop_gate = text == STOP_GATE_PROMPT;
             call.extra.insert("exec_prompt".into(), Value::String(text));
+            (check, stop_gate)
         }
         Err(e) => {
             call.violate(format!(
@@ -158,7 +172,7 @@ pub fn run(mut call: Call, cli: Cli, prompt: &str) -> ! {
             call.flush();
             std::process::exit(2);
         }
-    }
+    };
     if scenario_has("trust_prompt") {
         call.flush();
         say(TRUST_DIALOG);
@@ -180,12 +194,15 @@ pub fn run(mut call: Call, cli: Cli, prompt: &str) -> ! {
     for line in &progress {
         say(&line.to_string());
     }
-    if scenario_has("usage_limit") {
+    // The prompt of a conformance check wins over the scenario of the
+    // fleet: a test world with any scenario gets a passing conformance run,
+    // so fleetd keeps its profiles healthy.
+    if scenario_has("usage_limit") && !check {
         say(&first(Kind::UsageLimit).to_string());
         call.flush();
         std::process::exit(1);
     }
-    if scenario_has("long_context") {
+    if scenario_has("long_context") && !check {
         let kind = if cli == Cli::Codex {
             Kind::Result
         } else {
@@ -195,12 +212,18 @@ pub fn run(mut call: Call, cli: Cli, prompt: &str) -> ! {
         call.flush();
         hang();
     }
-    if scenario_has("exit_without_result") {
+    // A real agent obeys the prompt of "Stop gate": it ends with no result.
+    // The fake acts on the prompt of a check as a real agent does, with any
+    // scenario: the production job runs each check with the scenario of
+    // the fleet.
+    let conformance = check || scenario_has("conformance");
+    let obeys_stop_gate = stop_gate && !scenario_has("ignore_stop_gate");
+    if (scenario_has("exit_without_result") && !check) || (obeys_stop_gate && conformance) {
         call.flush();
         std::process::exit(0);
     }
     let mut result = first(Kind::Result);
-    if scenario_has("conformance") {
+    if conformance {
         let hooks = hook_events(&progress);
         let mut report = probe::report(cli, &call.argv, hooks);
         report["result_write"] = Value::String(probe::write_result(cli, &call.argv, prompt));
@@ -209,9 +232,17 @@ pub fn run(mut call: Call, cli: Cli, prompt: &str) -> ! {
         match cli {
             Cli::Claude => result["result"] = Value::String(text),
             Cli::Agy => result["result"]["response"] = Value::String(text),
-            Cli::Codex => say(&json!({"type": "item.completed",
+            Cli::Codex => {
+                // The probes are commands: Codex ends each with an
+                // `item.completed` of its `command_execution` item.
+                say(&json!({"type": "item.completed", "item": {"id": "item_1",
+                    "type": "command_execution", "command": "bash -lc ls",
+                    "exit_code": 0, "status": "completed"}})
+                .to_string());
+                say(&json!({"type": "item.completed",
                     "item": {"id": "item_probe", "type": "agent_message", "text": text}})
-            .to_string()),
+                .to_string());
+            }
         }
     }
     say(&result.to_string());

@@ -49,7 +49,9 @@ use horch_core::fleetd::worker_profiles::application::ports::LaunchSpec;
 use horch_core::runtime::fault::Faults;
 use horch_core::taskledger::model::{Actor, WorkerKind, WorktreeMode};
 use horch_core::taskledger::runs::{self, NewRun, Run};
-use horch_core::taskledger::supervisor::{HeartbeatFile, HEARTBEAT_JSON};
+use horch_core::taskledger::supervisor::{
+    ExitFile, HeartbeatFile, OutcomeHint, EXIT_JSON, HEARTBEAT_JSON,
+};
 use horch_core::taskledger::tasks::{self, NewTask};
 use horch_core::taskledger::testing::bind_live;
 use horch_core::taskledger::workers::{self, NewWorker};
@@ -563,6 +565,59 @@ fn pass_ingests_progress_result_and_heartbeat() {
 
 /// At its first pass fleetd makes the outbox of each live attempt that has
 /// none, with mode 0700, so an old worker writes files from then (Q3).
+/// RR-11 in exec mode: the wrapper ends a push attempt at a usage limit
+/// and writes `exit.json` with the outcome hint `quota`. The agent exited
+/// before fleetd recorded its wrapper. The pass ends the attempt by rung 5
+/// at once, with `quota`, which burns no attempt, and not with `no_result`
+/// or `launch_failed`.
+#[test]
+fn exit_with_the_quota_hint_ends_the_attempt_with_quota() {
+    let mut w = world();
+    let (task, attempt) = w.claimed_task("q", None);
+    w.conn
+        .execute("UPDATE attempts SET via = 'push' WHERE id = ?1", [&attempt])
+        .unwrap();
+    let exit = ExitFile {
+        task: task.clone(),
+        attempt: short(&attempt).into(),
+        code: Some(1),
+        repaired: false,
+        at: util::now(),
+        outcome_hint: Some(OutcomeHint::Quota),
+    };
+    make_dir(&w.attempt_dir(&task, &attempt));
+    let path = w.attempt_dir(&task, &attempt).join(EXIT_JSON);
+    write_mode(
+        &path,
+        serde_json::to_string(&exit).unwrap().as_bytes(),
+        0o600,
+    );
+    let mut pass = w.pass(&Fake, &Launcher);
+
+    run(&mut pass, &mut w);
+
+    let (state, outcome): (String, Option<String>) = w
+        .conn
+        .query_row(
+            "SELECT state, outcome FROM attempts WHERE id = ?1",
+            [&attempt],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(state, "ended");
+    assert_eq!(outcome.as_deref(), Some("quota"));
+    let worker: String = w
+        .conn
+        .query_row(
+            "SELECT w.status FROM workers w JOIN attempts a ON a.worker_id = w.worker_id
+             WHERE a.id = ?1",
+            [&attempt],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(worker, "incomplete");
+}
+
 #[test]
 fn first_pass_makes_the_outbox_of_each_live_attempt() {
     let mut w = world();

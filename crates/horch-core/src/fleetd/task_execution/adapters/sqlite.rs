@@ -216,6 +216,20 @@ pub fn set_process(conn: &Connection, id: &str, p: Recorded) -> Result<()> {
     Ok(())
 }
 
+/// Write the process `p` on the attempt `id` when its row has no process.
+/// Gives whether it wrote.
+pub fn set_missing_process(conn: &Connection, id: &str, p: Recorded) -> Result<bool> {
+    let n = conn.execute(
+        "UPDATE attempts SET pid = ?2, pid_start = ?3 WHERE id = ?1 AND pid IS NULL",
+        params![
+            id,
+            i64::from(p.pid),
+            p.pid_start.and_then(|s| i64::try_from(s).ok())
+        ],
+    )?;
+    Ok(n == 1)
+}
+
 /// Write the outcome and the end time of the attempt `id`, which
 /// `transition()` moves to `ended`.
 pub fn set_ended(conn: &Connection, id: &str, outcome: &str, now: &str) -> Result<()> {
