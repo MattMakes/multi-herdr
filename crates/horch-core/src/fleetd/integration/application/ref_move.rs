@@ -112,8 +112,22 @@ fn by_fleetd(text: &str) -> Cause<'_> {
 /// fleet clock `clock`: step each `passed` bundle, and keep 1 needs-you item
 /// for each bundle past its limit. Gives the moves to run after the commit.
 pub fn advance(r: &RefMoves<'_>, tx: &Connection, clock: FleetSeconds) -> Result<Vec<Move>> {
+    advance_in(r, tx, clock, None)
+}
+
+/// [`advance`] for the work budget of 1 pass: step only the bundles of
+/// `bundles`. `None` is each bundle.
+pub fn advance_in(
+    r: &RefMoves<'_>,
+    tx: &Connection,
+    clock: FleetSeconds,
+    bundles: Option<&[i64]>,
+) -> Result<Vec<Move>> {
     let mut moves = Vec::new();
     for id in passed_bundles(tx)? {
+        if bundles.is_some_and(|ids| !ids.contains(&id)) {
+            continue;
+        }
         let bundle = rows::bundle(tx, id)?.with_context(|| format!("no bundle {id}"))?;
         if let Some(mv) = step(r, tx, clock, &bundle).with_context(|| format!("bundle {id}"))? {
             moves.push(mv);

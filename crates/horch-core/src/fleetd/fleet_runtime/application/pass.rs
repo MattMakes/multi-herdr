@@ -47,6 +47,16 @@
 //! 1 git writer for each repository (MAP.md of fleetd-p3, Q12): part 2
 //! takes a due `worktree_add`, `worktree_remove` or `rescue` job only when
 //! no such job of its repository runs or is already an effect of the pass.
+//!
+//! The integration of Phase 4 (ticket 47 of fleetd-p4), with the Phase 4
+//! work of the pass: after the verifier, part 2 queues the due fetch and
+//! push jobs, follows the task branches, the bundles, the ref moves, the
+//! candidate refs, the features and the rebases, opens the resolver tasks
+//! of a rebase conflict, and checks I11, I12 and the rescue classes. The
+//! branches, the bundles and the features each have their cursor in
+//! `pass_cursors`. Part 3 then writes the rescue refs, moves the feature
+//! refs and deletes the refs that are due, each by compare-and-set, after
+//! the other effects and within the time budget.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -78,7 +88,9 @@ use crate::fleetd::fleet_runtime::application::jobs::{
 use crate::fleetd::fleet_runtime::application::ledger::DoorError;
 use crate::fleetd::fleet_runtime::application::ledger::{record, transition, Cause};
 use crate::fleetd::fleet_runtime::application::requests::Handlers;
-use crate::fleetd::fleet_runtime::domain::budget::{Cursor, Deadline, PassBudget, ScanKind};
+use crate::fleetd::fleet_runtime::domain::budget::{
+    id_key, Cursor, Deadline, PassBudget, RowKind, ScanKind,
+};
 use crate::fleetd::fleet_runtime::domain::clock::{AwakeReading, FleetSeconds};
 use crate::fleetd::fleet_runtime::domain::config::FleetConfig;
 use crate::fleetd::fleet_runtime::domain::health::Hold;
@@ -93,8 +105,13 @@ use crate::fleetd::ideas::adapters::questions_store;
 use crate::fleetd::ideas::application::intake::{self, pending_idea_files, write_idea_file};
 use crate::fleetd::ideas::application::needs_you::{self, NeedsYouList};
 use crate::fleetd::ideas::domain::needs_you::Write as NeedsYouWrite;
+use crate::fleetd::integration::adapters::exec_rebase::GitRebaseRefs;
+use crate::fleetd::integration::adapters::git::{CliGitGateway, CliStackGit};
 use crate::fleetd::integration::adapters::sqlite as integration_rows;
+use crate::fleetd::integration::application as integration;
 use crate::fleetd::integration::application::new_features::Project;
+use crate::fleetd::integration::application::ports::IntegrationGitGateway;
+use crate::fleetd::integration::domain::stack::StackPlanner;
 use crate::fleetd::integration::domain::task_branch::LandingState;
 use crate::fleetd::task_execution::adapters::attempt_files::{
     self, Found, OsProcesses, WrapperRead,
@@ -138,6 +155,7 @@ use crate::fleetd::worktree_custody::application::disk::disk_budget;
 use crate::fleetd::worktree_custody::application::reconcile::{
     check_i6, reconcile_worktrees, Facts as WorktreeFacts, Listed, WorkDir,
 };
+use crate::fleetd::worktree_custody::application::rescue_refs::{self, RepoFacts};
 use crate::fleetd::worktree_custody::domain::worktree::Breach as I6;
 use crate::harness::HarnessKind;
 use crate::roster::Roster;
@@ -396,6 +414,8 @@ pub enum Done {
     StartJob(i64),
     /// An effect of the run duties.
     Duty(String),
+    /// A git effect of integration on a local ref.
+    Git(String),
 }
 
 /// What 1 pass did.
@@ -593,6 +613,8 @@ struct Decided {
     roster: Option<Roster>,
     /// The lines of what failed in part 2 and kept its row unchanged.
     failed: Vec<String>,
+    /// The git effects of integration.
+    integration: Integrated,
 }
 
 /// The pane stops of the effects of 1 pass, as part 3 does them.
@@ -766,6 +788,8 @@ impl<'a> Pass<'a> {
         let effects = std::mem::take(&mut decided.effects);
         let sent = std::mem::take(&mut decided.sent);
         let (mut report, pending) = self.do_effects(conn, effects, sent, decided.clock, deadline);
+        let git = std::mem::take(&mut decided.integration);
+        self.integration_effects(conn, git, decided.clock, deadline, &mut report);
         if let Some(w) = self.work {
             let lines = self.verify_after_commit(conn, w, &decided, passed, deadline);
             report.failed.extend(lines);
@@ -1282,6 +1306,10 @@ impl<'a> Pass<'a> {
             };
             repair::observe(&r, &tx)?;
         }
+        let integration = match self.work {
+            Some(w) => self.integrate(&tx, &w, clock, &read.stamp)?,
+            None => Integrated::default(),
+        };
         rules.check_i1()?;
         let breaches = self.check_invariants(&tx, &read.worktrees)?;
         self.queue_lists(&ctx, &tx, &read.repos, clock)?;
@@ -1313,6 +1341,7 @@ impl<'a> Pass<'a> {
             passed: work.passed,
             roster: read.pools.map(|p| p.roster),
             failed: work.failed,
+            integration,
         })
     }
 
@@ -3511,4 +3540,391 @@ fn ended_not_noted(tx: &Connection, kind: Kind, cause: &str, budget: usize) -> R
         |r| r.get(0),
     )?;
     Ok(ids.collect::<rusqlite::Result<_>>()?)
+}
+
+// ─── the integration of Phase 4 (ticket 47) ─────────────────────────────
+
+/// The name of the savepoint of the integration rows of part 2.
+const INTEGRATION: &str = "integration";
+
+/// The git effects that the integration rows of part 2 intend, to do after
+/// the commit. Each is keyed by its row and safe to repeat: the next pass
+/// reads the refs again and gives the effect again when it is not done.
+#[derive(Default)]
+struct Integrated {
+    /// The repositories of the features: the git of part 3 reads them and
+    /// writes their git folders.
+    repos: Vec<PathBuf>,
+    /// The rescue refs of the branches of cancelled tasks (FM-39).
+    rescues: Vec<integration::landing::Effect>,
+    /// The rescue refs of feature branches before a rebase (I10).
+    rebase_rescues: Vec<integration::rebase::Effect>,
+    /// The moves of feature refs by compare-and-set (I9).
+    moves: Vec<integration::ref_move::Move>,
+    /// The deletions of the candidate refs of ended bundles.
+    candidates: Vec<integration::candidates::Deletion>,
+    /// The deletions of branches that the guard of I12 lets go.
+    branches: Vec<integration::branches::Deletion>,
+    /// The deletions of `superseded` rescue refs that expired (FM-40).
+    rescue_refs: Vec<rescue_refs::Deletion>,
+    /// The lines of what failed.
+    failed: Vec<String>,
+}
+
+impl Integrated {
+    fn is_empty(&self) -> bool {
+        self.rescues.is_empty()
+            && self.rebase_rescues.is_empty()
+            && self.moves.is_empty()
+            && self.candidates.is_empty()
+            && self.branches.is_empty()
+            && self.rescue_refs.is_empty()
+    }
+}
+
+impl Pass<'_> {
+    /// Part 2 of integration, in a savepoint of `tx`: an error rolls back
+    /// only the integration rows of this pass, and gives its line. The
+    /// other rows of the pass commit.
+    fn integrate(
+        &self,
+        tx: &Transaction<'_>,
+        w: &TaskWork<'_>,
+        clock: FleetSeconds,
+        stamp: &str,
+    ) -> Result<Integrated> {
+        tx.execute_batch(&format!("SAVEPOINT {INTEGRATION}"))?;
+        match self.integration_rows(tx, w, clock, stamp) {
+            Ok(done) => {
+                tx.execute_batch(&format!("RELEASE {INTEGRATION}"))?;
+                Ok(done)
+            }
+            Err(e) => {
+                tx.execute_batch(&format!("ROLLBACK TO {INTEGRATION}; RELEASE {INTEGRATION}"))?;
+                Ok(Integrated {
+                    failed: vec![format!("the integration rows: {e:#}")],
+                    ..Integrated::default()
+                })
+            }
+        }
+    }
+
+    /// The integration rows in the order of the design: `queue_due_jobs`
+    /// (fetch and push), `land_bundles` (the task branches, the bundles,
+    /// the ref moves and the candidate refs), `integrate_features` (the
+    /// feature state machine, the rebases and their resolver tasks), and
+    /// the checks of I11, I12 and the rescue classes from the last
+    /// `worktree_list` run of each repository. I8 holds at each transition
+    /// to `landed` or `merged`, I9 at each ref move, and I10 before each
+    /// rebase: the use cases check them.
+    fn integration_rows(
+        &self,
+        tx: &Transaction<'_>,
+        w: &TaskWork<'_>,
+        clock: FleetSeconds,
+        stamp: &str,
+    ) -> Result<Integrated> {
+        use integration::{branches, bundles, candidates, features, landing, rebase, ref_move};
+        let ctx = self.job_ctx();
+        let budget = PassBudget::new(self.settings.config.pass_budget);
+        let repos = feature_repos(tx)?;
+        let git = effects::integration_git(&self.settings.fleet_root, &repos);
+        let gw = CliGitGateway::new(git.clone());
+        let live = integration_rows::feature_ids(tx, true)?;
+        let chosen = take(tx, RowKind::Features.as_str(), &live, budget, stamp)?;
+        let keys: Vec<String> = integration_rows::bundles_to_follow(tx)?
+            .into_iter()
+            .map(id_key)
+            .collect();
+        let ids: Vec<i64> = take(tx, RowKind::Bundles.as_str(), &keys, budget, stamp)?
+            .iter()
+            .filter_map(|k| k.parse().ok())
+            .collect();
+        let mut out = Integrated {
+            repos,
+            ..Integrated::default()
+        };
+        for feature in &chosen {
+            out.failed
+                .extend(queue_remote(&ctx, tx, &gw, feature, clock)?);
+        }
+        let finishes = landing::RunFiles {
+            evidence_root: &w.tools.evidence_root,
+        };
+        let l = landing::Landing {
+            jobs: &ctx,
+            finishes: &finishes,
+        };
+        out.rescues = landing::follow(&l, tx, clock, budget.rows())?;
+        let b = bundles::Bundles {
+            jobs: &ctx,
+            git: &gw,
+        };
+        bundles::advance_in(&b, tx, clock, Some(&chosen), Some(&ids))?;
+        let r = ref_move::RefMoves {
+            jobs: &ctx,
+            git: &gw,
+        };
+        out.moves = ref_move::advance_in(&r, tx, clock, Some(&ids))?;
+        let c = candidates::Candidates {
+            jobs: &ctx,
+            git: &gw,
+        };
+        out.candidates = candidates::advance_in(&c, tx, Some(&ids))?;
+        let f = features::Features {
+            jobs: &ctx,
+            git: &gw,
+        };
+        features::follow_in(&f, tx, clock, Some(&chosen))?;
+        let refs = GitRebaseRefs::new(git.clone());
+        let r = rebase::Rebases {
+            jobs: &ctx,
+            git: &gw,
+            refs: &refs,
+        };
+        out.rebase_rescues = rebase::follow_in(&r, tx, clock, Some(&chosen))?;
+        self.open_resolvers(tx, &gw, &CliStackGit::new(git), &chosen)?;
+        let lists = branches::listings(tx)?;
+        branches::adopt_orphans(&ctx, tx, &lists, clock)?;
+        out.branches = branches::deletions(tx, &lists)?;
+        self.check_i12(tx)?;
+        let facts: Vec<RepoFacts> = lists
+            .into_iter()
+            .map(|l| RepoFacts {
+                repo: l.repo,
+                refs: l.rescue,
+            })
+            .collect();
+        out.rescue_refs = rescue_refs::collect(&ctx, tx, &facts, chrono::Utc::now())?.deletions;
+        Ok(out)
+    }
+
+    /// The resolver tasks of each rebase conflict of the features of
+    /// `chosen`. Each takes the persona of
+    /// [`integration::branches::resolver_persona`]; a feature with no task
+    /// that has a persona opens none.
+    fn open_resolvers(
+        &self,
+        tx: &Transaction<'_>,
+        gw: &CliGitGateway,
+        stack: &CliStackGit,
+        chosen: &[String],
+    ) -> Result<()> {
+        use integration::branches::{self, Resolvers};
+        let config = &self.settings.config;
+        for (feature, branch, _) in integration_rows::live_feature_branches(tx)? {
+            if !chosen.contains(&feature) {
+                continue;
+            }
+            let Some(persona) = branches::resolver_persona(tx, &feature, &branch)? else {
+                continue;
+            };
+            let r = Resolvers {
+                git: gw,
+                conflicts: stack,
+                planner: StackPlanner {
+                    max_lines: config.resolver_max_lines,
+                    max_files: config.resolver_max_files,
+                },
+                profile: &persona,
+                guard: Some(self.settings.generation),
+            };
+            let why = cause("a rebase of the feature branch conflicts");
+            branches::open_rebase_resolvers_in(tx, &r, why, Some(std::slice::from_ref(&feature)))?;
+        }
+        Ok(())
+    }
+
+    /// I12: a task branch is a member of at most 1 bundle that is not
+    /// ended. Each breach gets 1 needs-you item, and the item of a breach
+    /// that ended is resolved.
+    fn check_i12(&self, tx: &Transaction<'_>) -> Result<()> {
+        let prefix = format!("{BREACH}:I12:{}:", Entity::TaskBranch.as_str());
+        let mut open = BTreeSet::new();
+        for (branch, ids) in integration_rows::branches_in_open_bundles(tx)? {
+            let key = format!("{prefix}{branch}");
+            let list: Vec<String> = ids.iter().map(i64::to_string).collect();
+            let text = format!(
+                "I12: the task branch {branch} is a member of {} bundles that are not ended: {}. \
+                 fleetd does not drop a bundle for it. End the bundles that must not land.",
+                ids.len(),
+                list.join(", ")
+            );
+            let item = NewItem {
+                key: &key,
+                kind: BREACH,
+                entity: Entity::TaskBranch,
+                entity_id: &branch,
+                text: &text,
+            };
+            self.ports.needs_you.open_item(tx, &item)?;
+            open.insert(key);
+        }
+        for key in needs_you::open_keys(tx, BREACH)? {
+            if key.starts_with(&prefix) && !open.contains(&key) {
+                self.ports.needs_you.resolve_item(tx, &key)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Part 3 of integration, after the other effects: write the rescue
+    /// refs and record them in 1 transaction, then move the feature refs
+    /// and delete the refs that are due. Each effect waits for the next
+    /// pass when the time budget of the pass ends.
+    fn integration_effects(
+        &mut self,
+        conn: &mut Connection,
+        mut todo: Integrated,
+        clock: FleetSeconds,
+        deadline: Deadline,
+        report: &mut PassReport,
+    ) {
+        use integration::{branches, candidates, landing, rebase, ref_move};
+        report.failed.append(&mut todo.failed);
+        if todo.is_empty() {
+            return;
+        }
+        let git = effects::integration_git(&self.settings.fleet_root, &todo.repos);
+        let gw = CliGitGateway::new(git.clone());
+        let mut failed = Vec::new();
+        let mut done = Vec::new();
+        let mut landed = Vec::new();
+        let rescues = landing::GitBranchRescues { git: &git };
+        for e in &todo.rescues {
+            if deadline.reached((self.now)()) {
+                break;
+            }
+            match landing::run(e, &rescues) {
+                Ok(d) => landed.push(d),
+                Err(err) => failed.push(format!("the rescue ref of {e:?}: {err:#}")),
+            }
+        }
+        let refs = GitRebaseRefs::new(git.clone());
+        let mut rebased = Vec::new();
+        for e in &todo.rebase_rescues {
+            if deadline.reached((self.now)()) {
+                break;
+            }
+            match rebase::run(e, &refs) {
+                Ok(d) => rebased.push(d),
+                Err(err) => failed.push(format!("the rescue ref of {e:?}: {err:#}")),
+            }
+        }
+        if !landed.is_empty() || !rebased.is_empty() {
+            match self.observe_rescues(conn, clock, &landed, &rebased) {
+                Ok(()) => done.extend(landed.iter().map(|d| format!("{d:?}"))),
+                Err(e) => failed.push(format!("the record of the rescue refs: {e:#}")),
+            }
+            done.extend(rebased.iter().map(|d| format!("rescue {}", d.rescue_ref)));
+        }
+        for mv in &todo.moves {
+            if deadline.reached((self.now)()) {
+                break;
+            }
+            match ref_move::run(conn, &gw, mv) {
+                Ok(ran) => done.push(format!("move {} to {}: {ran:?}", mv.name, mv.to)),
+                Err(e) => failed.push(format!("the move of {}: {e:#}", mv.name)),
+            }
+        }
+        for d in &todo.candidates {
+            if deadline.reached((self.now)()) {
+                break;
+            }
+            match candidates::run(&gw, d) {
+                Ok(ran) => done.push(format!("delete {}: {ran:?}", d.name)),
+                Err(e) => failed.push(format!("the deletion of {}: {e:#}", d.name)),
+            }
+        }
+        for d in &todo.branches {
+            if deadline.reached((self.now)()) {
+                break;
+            }
+            match branches::run(&gw, d) {
+                Ok(ran) => done.push(format!("delete {}: {ran:?}", d.branch)),
+                Err(e) => failed.push(format!("the deletion of {}: {e:#}", d.branch)),
+            }
+        }
+        for d in &todo.rescue_refs {
+            if deadline.reached((self.now)()) {
+                break;
+            }
+            match rescue_refs::delete(&gw, d) {
+                Ok(ran) => done.push(format!("delete {}: {ran:?}", d.name)),
+                Err(e) => failed.push(format!("the deletion of {}: {e:#}", d.name)),
+            }
+        }
+        report.done.extend(done.into_iter().map(Done::Git));
+        report.failed.extend(failed);
+    }
+
+    /// Record the written rescue refs on their branch rows in 1
+    /// transaction: each branch of a cancelled task moves to `abandoned`.
+    fn observe_rescues(
+        &self,
+        conn: &mut Connection,
+        clock: FleetSeconds,
+        landed: &[integration::landing::Done],
+        rebased: &[integration::rebase::Rescued],
+    ) -> Result<()> {
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        fleetd_row::check_generation(&tx, self.settings.generation)?;
+        let ctx = self.job_ctx();
+        for d in landed {
+            integration::landing::observe(&ctx, &tx, clock, d)?;
+        }
+        for d in rebased {
+            integration::rebase::observe(&ctx, &tx, d)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+}
+
+/// The repository of each feature, each 1 time: the git of integration
+/// reads them. A folder that is not a git repository is left out.
+fn feature_repos(conn: &Connection) -> Result<Vec<PathBuf>> {
+    let mut repos = Vec::new();
+    for id in integration_rows::feature_ids(conn, false)? {
+        if let Some(run) = runs::feature_run(conn, &id)? {
+            if !repos.contains(&run.project_root) {
+                repos.push(run.project_root);
+            }
+        }
+    }
+    Ok(git_repositories(repos)
+        .into_iter()
+        .map(PathBuf::from)
+        .collect())
+}
+
+/// `queue_due_jobs` of 1 feature: the fetch of its repository at each
+/// period, and the push of its branch when it is due, each with the remote
+/// of the project file at the feature tip. A feature with no branch tip
+/// waits. Gives the line of a project file that does not parse.
+fn queue_remote(
+    ctx: &JobCtx<'_>,
+    tx: &Connection,
+    gw: &CliGitGateway,
+    feature: &str,
+    clock: FleetSeconds,
+) -> Result<Option<String>> {
+    let Some(branch) = integration_rows::feature(tx, feature)?.and_then(|f| f.branch) else {
+        return Ok(None);
+    };
+    let Some(run) = runs::feature_run(tx, feature)? else {
+        return Ok(None);
+    };
+    let repo = PathBuf::from(&run.project_root);
+    let Some(tip) = gw.tip(&repo, &format!("refs/heads/{branch}"))? else {
+        return Ok(None);
+    };
+    let settings = match integration::features::project_settings(gw, &repo, &tip) {
+        Ok(s) => s,
+        Err(e) => return Ok(Some(format!("feature {feature}: {e:#}"))),
+    };
+    let root = &run.project_root;
+    integration::remote::queue_fetch(ctx, tx, root, &settings.remote, clock)?;
+    integration::remote::queue_push(ctx, tx, root, feature, &settings.remote, false, clock)?;
+    Ok(None)
 }

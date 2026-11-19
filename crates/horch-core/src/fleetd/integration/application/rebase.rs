@@ -191,8 +191,22 @@ pub fn gate_tree_busy(conn: &Connection, feature_id: &str) -> Result<bool> {
 /// give the rescue effects or queue the rebase of each feature whose
 /// branch does not contain the fetched primary tip.
 pub fn follow(r: &Rebases<'_>, tx: &Connection, clock: FleetSeconds) -> Result<Vec<Effect>> {
+    follow_in(r, tx, clock, None)
+}
+
+/// [`follow`] for the work budget of 1 pass: only the features of
+/// `features`. `None` is each feature.
+pub fn follow_in(
+    r: &Rebases<'_>,
+    tx: &Connection,
+    clock: FleetSeconds,
+    features: Option<&[String]>,
+) -> Result<Vec<Effect>> {
     let mut effects = Vec::new();
     for (feature_id, branch, _) in rows::live_feature_branches(tx)? {
+        if features.is_some_and(|ids| !ids.contains(&feature_id)) {
+            continue;
+        }
         if let Some(effect) = follow_one(r, tx, clock, &feature_id, &branch)? {
             effects.push(effect);
         }

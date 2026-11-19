@@ -23,6 +23,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction};
 use crate::fleetd::fleet_runtime::adapters::cursors_store;
 use crate::fleetd::fleet_runtime::application::jobs::{JobCtx, NewItem};
 use crate::fleetd::fleet_runtime::application::ledger::{transition, Cause, DoorError, Moved};
+use crate::fleetd::fleet_runtime::domain::budget::RowKind;
 use crate::fleetd::fleet_runtime::domain::clock::FleetSeconds;
 use crate::fleetd::fleet_runtime::domain::config::FleetConfig;
 use crate::fleetd::fleet_runtime::domain::ledger::Entity;
@@ -42,7 +43,7 @@ use crate::taskledger::{runs, tasks, util};
 pub const OVERDUE_KIND: &str = "landing_overdue";
 
 /// The pass cursor of [`follow`].
-pub const CURSOR: &str = "landing";
+pub const CURSOR: &str = RowKind::Branches.as_str();
 
 /// The key of the needs-you item of the branch `branch` past its limit.
 pub fn overdue_key(branch: &str) -> String {

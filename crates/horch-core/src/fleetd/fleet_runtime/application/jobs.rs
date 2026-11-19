@@ -492,13 +492,17 @@ fn result_json(ran: &Ran) -> String {
 }
 
 /// The kinds that change the git state of their repository. At most 1 run
-/// of them runs for 1 repository at a time (MAP.md of fleetd-p3, Q12).
-const GIT_WRITERS: [Kind; 5] = [
+/// of them runs for 1 repository at a time (MAP.md of fleetd-p3, Q12;
+/// design, "1 git writer for each repository").
+const GIT_WRITERS: [Kind; 8] = [
     Kind::WorktreeAdd,
     Kind::WorktreeRemove,
     Kind::Rescue,
     Kind::BundleBuild,
     Kind::TriageApply,
+    Kind::Rebase,
+    Kind::Fetch,
+    Kind::Push,
 ];
 
 /// Whether a run of `kind` changes the git state of its repository.
@@ -506,8 +510,7 @@ pub fn is_git_writer(kind: Kind) -> bool {
     GIT_WRITERS.contains(&kind)
 }
 
-/// The `running` runs of `worktree_add`, `worktree_remove`, `rescue` and
-/// `bundle_build` of the repository `repo`.
+/// The `running` runs of the git writers of the repository `repo`.
 pub fn git_writers_running(conn: &Connection, repo: &str) -> Result<Vec<JobRow>> {
     Ok(store::running(conn)?
         .into_iter()
@@ -515,9 +518,8 @@ pub fn git_writers_running(conn: &Connection, repo: &str) -> Result<Vec<JobRow>>
         .collect())
 }
 
-/// Whether a run of `worktree_add`, `worktree_remove`, `rescue` or
-/// `bundle_build` of the repository `repo` is `running` ("1 git writer for
-/// each repository").
+/// Whether a run of a git writer of the repository `repo` is `running`
+/// ("1 git writer for each repository").
 pub fn git_writer_busy(conn: &Connection, repo: &str) -> Result<bool> {
     Ok(!git_writers_running(conn, repo)?.is_empty())
 }

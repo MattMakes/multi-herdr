@@ -101,8 +101,22 @@ pub fn open_rebase_resolvers(
     r: &Resolvers<'_>,
     cause: Cause<'_>,
 ) -> Result<Vec<Opened>> {
+    open_rebase_resolvers_in(tx, r, cause, None)
+}
+
+/// [`open_rebase_resolvers`] for the work budget of 1 pass: only the
+/// features of `features`. `None` is each feature.
+pub fn open_rebase_resolvers_in(
+    tx: &Connection,
+    r: &Resolvers<'_>,
+    cause: Cause<'_>,
+    features: Option<&[String]>,
+) -> Result<Vec<Opened>> {
     let mut out = Vec::new();
     for (feature_id, branch, _) in rows::live_feature_branches(tx)? {
+        if features.is_some_and(|ids| !ids.contains(&feature_id)) {
+            continue;
+        }
         if let Some(opened) = open_one(tx, r, &feature_id, &branch, cause)? {
             out.push(opened);
         }
@@ -202,6 +216,27 @@ fn open_one(
         onto: onto.to_string(),
         tasks: ids,
     }))
+}
+
+/// The persona of the resolver tasks of a conflict of the branch `branch`
+/// of the feature `feature_id` (the rule of the orchestrator for T-390): the
+/// primary persona of the task of the branch, the task that the resolver
+/// repairs. A branch with no task, as a feature branch, takes the primary
+/// persona of the newest task of the feature that has one. `None` when no
+/// task of the feature has a primary persona.
+pub fn resolver_persona(conn: &Connection, feature_id: &str, branch: &str) -> Result<Option<String>> {
+    if let Some(task) = rows::branch(conn, branch)?.and_then(|b| b.task_id) {
+        if let Some(persona) = tasks::get(conn, &task)?.primary_persona {
+            return Ok(Some(persona));
+        }
+    }
+    let Some(run) = runs::feature_run(conn, feature_id)? else {
+        return Ok(None);
+    };
+    Ok(tasks::of_run(conn, &run.run_id)?
+        .into_iter()
+        .rev()
+        .find_map(|t| t.primary_persona))
 }
 
 /// The first line of each ticket of the conflict of `branch` at `tip` onto

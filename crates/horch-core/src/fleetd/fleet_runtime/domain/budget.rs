@@ -83,6 +83,37 @@ impl ScanKind {
     }
 }
 
+/// The 3 row kinds of integration that part 2 of a pass walks within
+/// `pass_budget`, each with its row in `pass_cursors`
+/// (`docs/tickets/fleetd-p4/47-pass-wiring-integration.md`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowKind {
+    /// The task branches that are not terminal: each follows its task.
+    Branches,
+    /// The bundles that are not ended, and the ended bundles whose
+    /// candidate ref is not verified as deleted.
+    Bundles,
+    /// The `open` and `ready` features.
+    Features,
+}
+
+impl RowKind {
+    /// The `kind` of its row in `pass_cursors`.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            RowKind::Branches => "branches",
+            RowKind::Bundles => "bundles",
+            RowKind::Features => "features",
+        }
+    }
+}
+
+/// The cursor key of the row id `id`: a fixed width, so that the order of
+/// the keys is the order of the ids.
+pub fn id_key(id: i64) -> String {
+    format!("{id:020}")
+}
+
 /// 1 row of `pass_cursors`: where the next pass continues for 1 kind.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cursor {
@@ -153,6 +184,15 @@ mod tests {
 
     fn keys(n: usize) -> Vec<String> {
         (0..n).map(|i| format!("k{i:04}")).collect()
+    }
+
+    #[test]
+    fn id_keys_sort_as_the_ids() {
+        let keys: Vec<String> = [2, 10, 9].into_iter().map(id_key).collect();
+        let mut sorted = keys.clone();
+        sorted.sort();
+        assert_eq!(sorted, [id_key(2), id_key(9), id_key(10)]);
+        assert_eq!(RowKind::Branches.as_str(), "branches");
     }
 
     #[test]

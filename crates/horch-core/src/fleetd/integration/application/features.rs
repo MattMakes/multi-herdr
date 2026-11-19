@@ -84,8 +84,22 @@ pub fn follow(
     tx: &Connection,
     clock: FleetSeconds,
 ) -> Result<Vec<(String, Step)>> {
+    follow_in(f, tx, clock, None)
+}
+
+/// [`follow`] for the work budget of 1 pass: only the features of
+/// `features`. `None` is each feature.
+pub fn follow_in(
+    f: &Features<'_>,
+    tx: &Connection,
+    clock: FleetSeconds,
+    features: Option<&[String]>,
+) -> Result<Vec<(String, Step)>> {
     let mut steps = Vec::new();
     for id in live_features(tx)? {
+        if features.is_some_and(|ids| !ids.contains(&id)) {
+            continue;
+        }
         let step = follow_one(f, tx, &id, clock).with_context(|| format!("feature {id}"))?;
         steps.push((id, step));
     }

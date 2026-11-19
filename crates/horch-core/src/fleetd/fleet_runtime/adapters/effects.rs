@@ -19,6 +19,9 @@
 //!   atomically after each full pass. [`read_heartbeat`] reads it for
 //!   `horch fleetd check`.
 //! - [`watchdog_ping`]: the systemd watchdog.
+//! - [`integration_git`]: the git of the integration rows and effects of a
+//!   pass: it reads the repositories and runs `git update-ref` on a local
+//!   ref (ticket 47 of fleetd-p4).
 //!
 //! [`Watch`] is the file watching of part 1: a hint that puts a changed
 //! folder first in its scan.
@@ -38,7 +41,10 @@ use crate::fleetd::fleet_runtime::domain::heartbeat::{Exe, Heartbeat};
 use crate::fleetd::fleet_runtime::domain::ledger::Generation;
 use crate::fleetd::task_execution::domain::task::{ProcessScope, Recorded};
 use crate::fleetd::worker_profiles::application::ports::{LaunchSpec, Launched, ProcessHost};
+use crate::fleetd::worktree_custody::adapters::git::{repo_git_dir, CliWorktreeGit};
 use crate::fsx;
+use crate::runtime::bins::{git_bin, BinOverrides};
+use crate::runtime::context::ProcessEnv;
 
 /// The file mode of the files of this module.
 const MODE: u32 = 0o644;
@@ -303,6 +309,21 @@ pub fn read_heartbeat(fleet_root: &Path) -> Result<Option<Heartbeat>> {
 /// that stops its pings.
 pub fn watchdog_ping() {
     let _ = horch_platform::service::watchdog_ping();
+}
+
+// ─── the git of integration ─────────────────────────────────────────────
+
+/// The git of fleetd for the integration of 1 pass (the fleetd git rule,
+/// Q26 of `docs/tickets/fleetd-p4/MAP.md`: no hook, no program of the
+/// project, in its sandbox). It reads each repository of `repos` and
+/// writes only their git folders: a short `git update-ref` of a local ref,
+/// a rescue ref or a deletion. A repository with no git folder is not
+/// writable.
+pub fn integration_git(fleet_root: &Path, repos: &[PathBuf]) -> CliWorktreeGit {
+    let git_dirs: Vec<PathBuf> = repos.iter().filter_map(|r| repo_git_dir(r).ok()).collect();
+    CliWorktreeGit::new(git_bin(&BinOverrides::from_env(&ProcessEnv)), fleet_root)
+        .reading(repos)
+        .writing(&git_dirs)
 }
 
 // ─── activity ───────────────────────────────────────────────────────────

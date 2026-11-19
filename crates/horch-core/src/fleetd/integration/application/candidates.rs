@@ -66,8 +66,21 @@ fn due(state: BundleState, open_child: bool) -> bool {
 /// clear `candidate_ref` of each due bundle whose ref is gone, and give 1
 /// deletion for each due bundle whose ref is there, by bundle id.
 pub fn advance(c: &Candidates<'_>, tx: &Connection) -> Result<Vec<Deletion>> {
+    advance_in(c, tx, None)
+}
+
+/// [`advance`] for the work budget of 1 pass: only the bundles of
+/// `bundles`. `None` is each bundle.
+pub fn advance_in(
+    c: &Candidates<'_>,
+    tx: &Connection,
+    bundles: Option<&[i64]>,
+) -> Result<Vec<Deletion>> {
     let mut deletions = Vec::new();
     for id in with_candidate_ref(tx)? {
+        if bundles.is_some_and(|ids| !ids.contains(&id)) {
+            continue;
+        }
         let bundle = rows::bundle(tx, id)?.with_context(|| format!("no bundle {id}"))?;
         let state = BundleState::parse(&bundle.state)
             .with_context(|| format!("{:?} is not a bundle state", bundle.state))?;

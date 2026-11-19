@@ -102,11 +102,28 @@ impl Target {
 /// clock `clock`: form the new bundles, step each `building` and `gating`
 /// bundle, and keep 1 needs-you item for each bundle past its limit.
 pub fn advance(b: &Bundles<'_>, tx: &Connection, clock: FleetSeconds) -> Result<()> {
+    advance_in(b, tx, clock, None, None)
+}
+
+/// [`advance`] for the work budget of 1 pass: form bundles only for the
+/// features of `features`, and step only the bundles of `bundles`. `None`
+/// is each row.
+pub fn advance_in(
+    b: &Bundles<'_>,
+    tx: &Connection,
+    clock: FleetSeconds,
+    features: Option<&[String]>,
+    bundles: Option<&[i64]>,
+) -> Result<()> {
     for (feature, branch) in live_features(tx)? {
-        form(b, tx, clock, &feature, &branch)?;
+        if features.is_none_or(|f| f.contains(&feature)) {
+            form(b, tx, clock, &feature, &branch)?;
+        }
     }
     for id in bundles_in(tx, &[BundleState::Building, BundleState::Gating])? {
-        step(b, tx, clock, id)?;
+        if bundles.is_none_or(|ids| ids.contains(&id)) {
+            step(b, tx, clock, id)?;
+        }
     }
     overdue_items(b.jobs, tx, clock)
 }

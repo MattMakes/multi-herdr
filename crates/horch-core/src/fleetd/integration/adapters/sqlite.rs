@@ -607,6 +607,55 @@ pub fn name_taken(conn: &Connection, name: &str, branch: &str) -> Result<bool> {
     )?)
 }
 
+/// The ids of the features, by id; with `live`, only the `open` and
+/// `ready` features.
+pub fn feature_ids(conn: &Connection, live: bool) -> Result<Vec<String>> {
+    let sql = if live {
+        "SELECT id FROM features WHERE state IN ('open', 'ready') ORDER BY id"
+    } else {
+        "SELECT id FROM features ORDER BY id"
+    };
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map([], |r| r.get(0))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// The ids of the bundles that a pass follows: each bundle that is not
+/// ended, and each ended bundle whose candidate ref is not verified as
+/// deleted, by id.
+pub fn bundles_to_follow(conn: &Connection) -> Result<Vec<i64>> {
+    let mut stmt = conn.prepare(
+        "SELECT id FROM bundles
+         WHERE state IN ('building', 'gating', 'passed') OR candidate_ref IS NOT NULL
+         ORDER BY id",
+    )?;
+    let rows = stmt.query_map([], |r| r.get(0))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// Each task branch that is a member of more than 1 bundle that is not
+/// ended (a breach of I12), with the ids of those bundles, by name.
+pub fn branches_in_open_bundles(conn: &Connection) -> Result<Vec<(String, Vec<i64>)>> {
+    let mut stmt = conn.prepare(
+        "SELECT m.branch, group_concat(b.id) FROM bundle_members m
+         JOIN bundles b ON b.id = m.bundle_id
+         WHERE b.state IN ('building', 'gating', 'passed')
+         GROUP BY m.branch HAVING count(*) > 1 ORDER BY m.branch",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        let ids: String = r.get(1)?;
+        Ok((r.get::<_, String>(0)?, ids))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (branch, ids) = row?;
+        let mut ids: Vec<i64> = ids.split(',').filter_map(|i| i.parse().ok()).collect();
+        ids.sort_unstable();
+        out.push((branch, ids));
+    }
+    Ok(out)
+}
+
 /// The branch of each `open` or `ready` feature that has its branch row,
 /// with the `seen_tip` of that row, as (feature id, branch, seen tip), by
 /// feature id.
