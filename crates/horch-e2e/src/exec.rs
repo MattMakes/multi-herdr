@@ -143,8 +143,10 @@ fn agy_kind(line: &Value) -> Kind {
 }
 
 /// Run `call` in exec mode for `cli` with the prompt at `prompt`. Never
-/// returns: the fake exits or hangs as its scenario says.
+/// returns: the fake exits or hangs as its scenario says. The Phase 4 keys
+/// of [`crate::agent`] run first, so `bound` records the state at entry.
 pub fn run(mut call: Call, cli: Cli, prompt: &str) -> ! {
+    crate::agent::play(&mut call);
     match std::fs::read_to_string(prompt) {
         Ok(text) => {
             call.extra.insert("exec_prompt".into(), Value::String(text));
