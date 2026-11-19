@@ -510,8 +510,8 @@ fn judge_task_skips_an_unhealthy_profile() {
     assert_eq!(rows[1].1, "coder-agy");
 }
 
-/// With no healthy profile of another provider with a sandbox, the plan is
-/// refused, and the reason names each unhealthy profile and its cause
+/// With no profile of another provider with a sandbox that can judge, the
+/// plan is refused, and the reason names each skipped profile and its cause
 /// (fault 9 of T-561).
 #[test]
 fn plan_with_no_healthy_judge_profile_is_refused_with_the_cause() {
@@ -524,8 +524,8 @@ fn plan_with_no_healthy_judge_profile_is_refused_with_the_cause() {
         panic!("the plan is not refused: {started:?}");
     };
     let named = |text: &str| {
-        text.contains("no healthy profile")
-            && text.contains("coder-codex: adapter-conformance-failed: test")
+        text.contains("no profile of another provider")
+            && text.contains("coder-codex: unhealthy: adapter-conformance-failed: test")
     };
     assert!(problems.iter().any(|p| named(&p.message)), "{problems:?}");
     assert!(w.tasks(&idea).is_empty());
@@ -535,4 +535,83 @@ fn plan_with_no_healthy_judge_profile_is_refused_with_the_cause() {
         .find(|i| i.key == plan_refused_key(&idea))
         .unwrap_or_else(|| panic!("no needs-you item: {items:?}"));
     assert!(named(&item.text), "{}", item.text);
+}
+
+/// The judge pick never gives a council seat, and never a profile that
+/// the profile rules of the plan validator refuse: each seat of the roster
+/// is before a profile that can judge, and the pick skips it (fault 10 of
+/// T-561). The seats are as in their teammate files.
+#[test]
+fn judge_task_never_gets_a_council_seat() {
+    let seat = |name: &str, provider: &str, model: &str, fallback: Option<&str>| RosterProfile {
+        name: name.into(),
+        provider: provider.into(),
+        model: model.into(),
+        effort: Some("high".into()),
+        fallback: fallback.map(Into::into),
+        sandbox_here: true,
+    };
+    let seats = [
+        // A reserved top tier, and at effort high.
+        seat("fable-creative", "claude", "fable", Some("coder-claude")),
+        // A reserved top tier, and at effort high.
+        seat(
+            "astra-creative",
+            "codex",
+            "gpt-6-astra",
+            Some("coder-codex"),
+        ),
+        // No fallback, and at effort high.
+        seat("opus-creative", "claude", "opus", None),
+    ];
+    for s in seats {
+        let mut w = world();
+        let (author, judge) = if s.provider == "claude" {
+            ("coder-codex", "coder-claude")
+        } else {
+            ("coder-claude", "coder-codex")
+        };
+        let name = s.name.clone();
+        let at = w.roster.iter().position(|p| p.name == judge).unwrap();
+        w.roster.insert(at, s);
+        let ticket = DOCS_TICKET.replace("`coder-claude`", &format!("`{author}`"));
+        let added = w.add(&ticket, None);
+        let idea = added.idea.file.id.clone();
+        let started = w.start(&idea);
+        assert!(
+            matches!(started, Started::Committed(Verdict::Committed { .. })),
+            "{name}: the plan is not committed: {started:?}"
+        );
+        assert_eq!(w.tasks(&idea)[1].1, judge, "{name}");
+    }
+}
+
+/// With only a council seat to judge, the refused plan names the seat and
+/// why the pick skips it (fault 10 of T-561).
+#[test]
+fn plan_with_only_a_council_seat_to_judge_is_refused_with_the_cause() {
+    let mut w = world();
+    w.roster.retain(|p| p.name != "coder-codex");
+    w.roster.push(RosterProfile {
+        name: "astra-creative".into(),
+        provider: "codex".into(),
+        model: "gpt-6-astra".into(),
+        effort: Some("high".into()),
+        fallback: None,
+        sandbox_here: true,
+    });
+    // The work task keeps a fallback in the roster.
+    w.roster[0].fallback = Some("coder-claude".into());
+    let added = w.add(DOCS_TICKET, None);
+    let idea = added.idea.file.id.clone();
+    let started = w.start(&idea);
+    let Started::Refused(problems) = started else {
+        panic!("the plan is not refused: {started:?}");
+    };
+    assert!(
+        problems.iter().any(|p| p
+            .message
+            .contains("astra-creative: its model gpt-6-astra is of the reserved tier astra")),
+        "{problems:?}"
+    );
 }
