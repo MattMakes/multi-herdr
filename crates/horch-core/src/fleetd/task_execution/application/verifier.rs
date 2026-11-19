@@ -193,6 +193,9 @@ fn verify_one(
         None
     };
     let hash = check_hash(check.as_deref());
+    // A judge task has no check of its own (the plan validator gives it
+    // none): its structural check and its verdict decide (ticket 41).
+    let judge = judged_task(&task.kind, task.parent_task_id.as_deref()).is_some();
     let facts = Facts {
         task_id: &task.task_id,
         attempt: &a.id,
@@ -200,7 +203,7 @@ fn verify_one(
         base: base.as_deref(),
         check: check.as_deref(),
         check_hash: &hash,
-        check_none: task.check_none,
+        check_none: task.check_none || (judge && check.is_none()),
     };
     let next = next_of(tx, &task)?;
     // The verdict of this attempt, tip and check stands: decide no more.
